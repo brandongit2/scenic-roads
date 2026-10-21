@@ -18,39 +18,63 @@
 - `read_resolution` keeps its role for the roads (8 m: the Fine path and road results unchanged);
   the map's terrain reads every fine dataset at full resolution.
 
-## Making (in the terrain z6 run, after its hi pack: `terrain_fine::make`)
-- One sampler for the z6 tile (crate::dem::generic, its block caches and COG headers shared):
-  plan = the fine datasets meeting the tile at full resolution, then the stored base tiles as a last
-  pseudo-dataset (`scenic-terrain:{z}/{x}/{y}`, served from the run's memory), so the generic
-  sampler's own edge blend (4 coarser pixels) blends fine data into the base where it ends.
+## Making (step `terrain-fine`, a z8 tile a target: `terrain_fine::make`)
+- Runs once its z6 tile's terrain is done under its current key (the forecast's chain dep on the
+  terrain); any Mac; resumable (each z8 tile its own target, saved as it ends); measured by the pool
+  like any step (cost key `terrain-fine 8/x/y`; honours its granted threads: rayon over base tiles).
+- One sampler per z8 tile (crate::dem::generic): the fine datasets meeting it at full resolution,
+  converted to EGM2008 as the roads' are (`declared::plan_converted` with the accepted geoid
+  sources), then the stored base tiles (its z6 tile's hi pack, read for that z8 tile only) as a last
+  pseudo-dataset (`scenic-terrain:{z}/{x}/{y}`), so the sampler's edge blend (4 coarser pixels)
+  blends fine data into the base where it ends.
 - Presence: a 128×128 grid per base tile read at the roads' resolution; no data → nothing made.
-- Fine tile: pixels sampled; no fine pixel → not stored. NaN → base bilinear; water: each pixel by its
-  share of the base tile's sea+lake (terrain_water at the base zoom) takes the base's flattened
-  height; < 0 → 0; rounded to 0.1 m; PNG High compression (2.7× smaller than 1/256 m Fast).
-- Heights in each dataset's own reference (no geoid conversion; the base is mixed itself).
-- Packs: `layers/terrain/fine/10-x-y` (z13+ under a z10 tile), uploaded one by one (a z6 tile's would
-  be 45–130 GB: too big for one hi pack or a Mac's scratch). Stale ones under the z6 tile dropped;
-  a z6 tile the coverage leaves drops them with its hi pack.
-- The base levels z9–12 are untouched: the z11 analysis grid and the roads don't shift; slope's
-  stored levels (z≤11, reading z≤12) don't change.
+- Fine tile: no fine pixel → not stored. NaN → base bilinear; water: each pixel by its share of the
+  base tile's sea+lake takes the base's flattened height; < 0 → 0; rounded to 1 cm (owner, 21 Oct);
+  Terrarium RGB as lossless JPEG XL (crate `jxl`: libjxl 0.12 static, effort 7; CMake from mise).
+- Packs: `layers/terrain/fine/10-x-y`. A run drops its z8 tile's packs it no longer makes; with no
+  fine dataset there (or no hi pack) all of them; a z8 tile with packs and no target gets a "none"
+  target that drops them.
+- The terrain step itself is as before: hi packs, keys and z9–12 identical with or without fine
+  data (a test holds the keys equal).
 
 ## Keys / what rebuilds
-- Terrain z6 key: `sources` = pin, plus `fine FINE_V` and the fine datasets' `id keyed` lines only
-  where one meets the tile and is finer there (`TerrainPin::sources_of`). Every other z6 tile keeps
-  its key. Rebuilds: the terrain z6 tiles meeting HRDEM / 3DEP / GSI cover (most of Canada, the US,
-  Japan), each remaking its z9–12 identically plus its fine packs; slope/units don't rerun (they key
-  on tile contents, which are the same). The re-accepted elevation index (version 2) changes nothing
-  else.
+- terrain-fine key: `terrain_fine::versions()` (FINE_V, quantum, JXL effort, FINER, MAX_Z, PRESENCE,
+  PACK_Z), the tile, each meeting fine dataset's line (`id keyed` + its geoid conversion) and the
+  zoom it reaches there, the z6 tile's hi pack by content and its terrain key. HRDEM counting as 8 m
+  until the elevation check re-measures it, then 2 m: its zoom moves (14 → 16) and so its keys.
+- Nothing else rebuilds: the terrain's keys don't name the fine datasets.
 
 ## Serving
-- Catalog: layer `fine` map (z10 keys); terrain `maxzoom` = `terrain_fine::max_zoom` (16) when fine
-  packs exist, else 12. Server: z ≥ 13 reads the fine pack, else the hi pack; absent → made from its
-  nearest ancestor (as before), so overzoom elsewhere. Slope on demand to the terrain's maxzoom
-  (was 14). Fine packs aren't mirrored (read from the NAS) and not in downloads.
-- Client: terrain `dem`, `dem-hs`, slope sources and the contours' DemSource take the catalog's
-  terrain maxzoom (trees keep 12).
+- Catalog: terrain layer `fine` (z10 keys) and `fine_zoom` (`terrain_fine::zoom_of` per pack);
+  `maxzoom` the finest of those. Meta: `terrainAreas` `{zoom: 10, tiles: {"x/y": z}}`.
+- Server: past the base's zoom at the tile's latitude it reads the fine pack; a fine tile that
+  can't be read (NAS away: fine packs aren't mirrored, not in downloads) is made from its hi-pack
+  ancestor instead of a 503. Content type by bytes (`image/jxl` for the fine tiles). Slope on demand
+  to the terrain's maxzoom; it decodes JXL with jxl-oxide (`roadcore::grid::decode_terrain`).
+- Client: `dem`, `dem-hs` and `slope` keep maxzoom 12 and carry `scenic:zoom-by-area`
+  (= terrainAreas); our MapLibre's cover caps each tile at its area's zoom (`areaMaxZoom`), so
+  outside the areas the cover is today's, inside it goes on to z16; the terrain's DEM lookup
+  (`getSourceTile`) follows the same cap. raster-dem tiles are decoded with createImageBitmap
+  (`colorSpaceConversion: 'none'`), which reads JXL natively in Chrome and Safari (owner checked:
+  exact).
+- Contours keep reading z12 (maplibre-contour's DemSource has one maxzoom; its worker fetches the
+  DEM itself): finer contours in fine areas need that package changed (a follow-up).
 
-## Measured (M4, 8 threads, read-only NAS, network reads)
+## Measured, 1 cm JXL (M4, 21 Oct; network reads; `encode` timed on one thread)
+| sample (z12 subtree) | tiles | MB | z13 / z14 / z15 / z16 KB | encode ms/tile |
+|---|---|---|---|---|
+| HRDEM 12/942/1391 (flat field, MB) | 340 | 10.25 | 235 / 767 / 2478 / 6524 | 32 |
+| HRDEM 12/1215/1457 (hills, QC) | 340 | 11.09 | 208 / 717 / 2369 / 7531 | 35 |
+| HRDEM 12/1169/1449 (QC) | 340 | 13.96 | 260 / 955 / 3221 / 9195 | 35 |
+| 3DEP 12/837/1560 (Rockies) | 20 | 1.34 | 295 / 1017 | 47 |
+| 3DEP 12/880/1580 (plains) | 20 | 0.57 | 155 / 402 | 36 |
+- cjxl 0.12 `-d 0 -e 7` gives the same bytes ±0.1 %. For reference on the flat field: PNG High at
+  1/256 m 18.4 MB, at 1 cm 16.2 MB; zune-jpegxl (pure Rust) 2.8× libjxl's: not used.
+- Extrapolated: HRDEM 48.6 k × ~11.8 MB ≈ 0.57 TB (0.50–0.68); 3DEP 154 k × ~0.95 MB ≈ 0.15 TB +
+  Alaska 101 k × ~0.2 MB ≈ 0.02 TB. Total ≈ 0.74 TB. Encode adds ~11.6 s per HRDEM subtree (~157
+  process-hours) and ~0.8 s per 3DEP one (~34 h) to the sampling's ~160 h and ~64 h.
+
+## Measured earlier (0.1 m PNG, before the owner's 1 cm and JXL)
 - HRDEM 6/18/22 (z6, Quebec/Ontario, 100 % lidar), 14 random z12 subtrees to z16:
   1/256 m PNG Fast 31–33 MB per z12 subtree, 0.1 m PNG High 10.5–11.8 MB; per level (0.1 m High,
   mean tile): z13 62 KB, z14 51 KB, z15 39 KB, z16 27–31 KB. Time ~10–15 s per subtree (sampling ~8–11 s,

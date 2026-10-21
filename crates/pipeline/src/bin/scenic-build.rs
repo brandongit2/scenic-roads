@@ -778,6 +778,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         }
         "bldtile-task" => bldtile_task_step(&mut out, &args)?,
         "depth-lo" | "depth" => depth_step(&mut out, &args, step.as_str())?,
+        "terrain-fine" => terrain_fine_step(&mut out, &args)?,
         "trees" => {
             // trees <tile …> [--pass d] [--dem dir] [--chm dir] [--expect-same T,…]: the tree cover
             // of z6 tiles (z6 tiles: their hi packs and mids; pipeline::treepacks::build_piece), or a
@@ -1843,11 +1844,19 @@ fn catalog(
             (x.minzoom, x.maxzoom) = zs;
         }
     }
-    // (The terrain to the finest zoom its fine datasets make, where it has fine packs:
+    // (The terrain's finest zoom by fine pack, where it has them, and so its maxzoom:
     // pipeline::terrain_fine.)
     if let Some(x) = layers.get_mut("terrain").filter(|x| !x.fine.is_empty()) {
-        let d = pipeline::terrain_sources::read(out)?;
-        x.maxzoom = pipeline::terrain_fine::max_zoom(d.fine.as_ref().map_or(&[][..], |f| &f.sets));
+        let sets = pipeline::terrain_fine::Fine::read(out.root(), &out.manifest)?.map(|f| f.sets).unwrap_or_default();
+        x.fine_zoom = x
+            .fine
+            .keys()
+            .filter_map(|k| {
+                let u = TileId::parse(k)?;
+                Some((k.clone(), pipeline::terrain_fine::zoom_of(&sets, u.z, u.x, u.y)?))
+            })
+            .collect();
+        x.maxzoom = x.fine_zoom.values().copied().fold(x.maxzoom, u8::max);
     }
     global.extend(worldwide_globals(&out.manifest));
     drop(p);
@@ -5150,6 +5159,55 @@ fn depth_step(out: &mut Out, args: &[String], step: &str) -> Result<()> {
         eprintln!("{step} {}: {n} tiles", t.slash());
         pipeline::control::done(step, &t.slash());
         note_cost(step, &t.slash(), c);
+    }
+    Ok(())
+}
+
+/// terrain-fine <8/x/y …>: the terrain finer than its base under each z8 tile (its fine packs,
+/// pipeline::terrain_fine), from its z6 tile's hi pack as stored; a z8 tile with nothing fine (no
+/// fine dataset there, or no hi pack) has its fine packs dropped.
+fn terrain_fine_step(out: &mut Out, args: &[String]) -> Result<()> {
+    use pipeline::terrain_fine as tf;
+    let ts: Vec<TileId> = positional(args)
+        .iter()
+        .map(|t| TileId::parse(t).filter(|u| u.z == tf::TARGET_Z).with_context(|| format!("not a z8 tile: {t}")))
+        .collect::<Result<_>>()?;
+    anyhow::ensure!(!ts.is_empty(), "terrain-fine <8/x/y …>");
+    let p = phase("the fine datasets' declarations read and the basemap's water opened", Class::NasRead);
+    let fine = tf::Fine::read(out.root(), &out.manifest)?.filter(|f| !f.sets.is_empty());
+    let water = pipeline::terrain_pack::open_water(out)?;
+    drop(p);
+    let fetch = pipeline::fetch::Fetcher::from_env();
+    let names: Vec<String> = ts.iter().map(|t| format!("Making the fine terrain of {}", t.slash())).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    for (k, &t) in ts.iter().enumerate() {
+        pipeline::control::safe_point(tf::STEP);
+        pipeline::agent::jobs::part(k, &names);
+        let c = cost_start(tf::STEP, &t.slash());
+        let shift = tf::TARGET_Z - 6;
+        let hi = out.get(&format!("layers/terrain/hi/6-{}-{}", t.x >> shift, t.y >> shift)).map(|c| out.path(c));
+        let p = phase("its base tiles read", Class::NasRead);
+        let base = match &hi {
+            Some(h) if fine.is_some() => tf::base_tiles(h, (t.x, t.y))?,
+            _ => Default::default(),
+        };
+        drop(p);
+        let p = phase("its fine tiles made and uploaded", Class::Mixed);
+        let r = tf::make(out, (t.x, t.y), &base, Some(&water), fine.as_ref(), &fetch, &|_, _, _| {})?;
+        drop(p);
+        out.save()?;
+        eprintln!(
+            "terrain-fine {}: {} of {} base tiles with finer data, {} tiles in {} packs, {} MB; {} dropped",
+            t.slash(),
+            r.with_data,
+            r.base_tiles,
+            r.tiles,
+            r.packs,
+            r.bytes >> 20,
+            r.dropped
+        );
+        pipeline::control::done(tf::STEP, &t.slash());
+        note_cost(tf::STEP, &t.slash(), c);
     }
     Ok(())
 }

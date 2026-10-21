@@ -1,0 +1,64 @@
+<!doctype html>
+<!--
+  A source's finest zoom by area (FORK.md, `scenic:zoom-by-area`) at an area's edge, without the
+  backend: a raster source whose tiles say their zoom (a colour a zoom, the tile's outline and
+  "z/x/y"), maxzoom 12, with z10 tile 296/367 (by Ottawa) going on to z16. At z14.5 over the area's
+  west edge the left half should show z12 tiles, the right half z14–15 ones, nothing missing between.
+  Through the app's dev server (`pnpm run dev` in web/): /maplibre/test/scenic/zoom-by-area.html.
+  `window.__asked` lists the tiles asked for.
+-->
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zoom by area</title>
+  <style>
+    html, body, #map { margin: 0; height: 100%; background: #0b0f14; }
+  </style>
+</head>
+<body>
+<div id="map"></div>
+<script type="module">
+import * as maplibregl from 'maplibre-gl';
+import 'maplibre-gl/built/maplibre-gl.css';
+import workerUrl from 'maplibre-gl/src/source/worker.ts?worker&url';
+
+maplibregl.setWorkerUrl(workerUrl);
+const COLOURS = {12: '#3b6ea5', 13: '#4e9a6b', 14: '#c08a2e', 15: '#a8445a', 16: '#7a5aa8'};
+window.__asked = [];
+maplibregl.addProtocol('zba', async (params) => {
+  const [z, x, y] = params.url.slice('zba://'.length).split('/').map(Number);
+  window.__asked.push(`${z}/${x}/${y}`);
+  const c = new OffscreenCanvas(256, 256);
+  const g = c.getContext('2d');
+  g.fillStyle = COLOURS[z] ?? '#555';
+  g.fillRect(0, 0, 256, 256);
+  g.strokeStyle = '#e8e8e8';
+  g.lineWidth = 2;
+  g.strokeRect(1, 1, 254, 254);
+  g.fillStyle = '#fff';
+  g.font = '20px system-ui';
+  g.fillText(`${z}/${x}/${y}`, 10, 30);
+  const blob = await c.convertToBlob({type: 'image/png'});
+  return {data: await blob.arrayBuffer()};
+});
+const west = 296 / 1024 * 360 - 180;
+const map = new maplibregl.Map({
+  container: 'map',
+  center: [west, 45.3],
+  zoom: 14.5,
+  canvasContextAttributes: {preserveDrawingBuffer: true},
+  fadeDuration: 0,
+  style: {
+    version: 8,
+    sources: {
+      zba: {type: 'raster', tiles: ['zba://{z}/{x}/{y}'], tileSize: 256, maxzoom: 12,
+        'scenic:zoom-by-area': {zoom: 10, tiles: {'296/367': 16}}},
+    },
+    layers: [{id: 'zba', type: 'raster', source: 'zba', paint: {'raster-fade-duration': 0}}],
+  },
+});
+window.__map = map;
+</script>
+</body>
+</html>

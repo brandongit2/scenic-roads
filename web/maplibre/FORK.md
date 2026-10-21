@@ -96,6 +96,17 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
 
 ### Tile covers over 3D terrain
 
+- **A source's finest zoom by area** (`scenic:zoom-by-area` on a `raster` or `raster-dem` source,
+  `{"zoom": z, "tiles": {"x/y": finest zoom}}`; covering_tiles.ts `ZoomByArea`, `areaMaxZoom`;
+  `RasterTileSource.zoomByArea`, `TileManager`'s cover and its memo key, `TerrainTileManager.getSourceTile`):
+  in a listed tile of zoom z (z at most the source's maxzoom) the cover goes on to that tile's own
+  finest zoom, overzoomed past it; elsewhere it is upstream's, so a source with finer data in some
+  places asks for no extra tiles anywhere else, and the finer tiles sit beside the coarser cover
+  with no gap (a cover is a partition). The terrain's elevations read the DEM at the same cap. The
+  app's terrain, hill-shading and slope go to z16 where the catalog has 2 m terrain
+  (`covering_tiles_area.test.ts`; `test/scenic/zoom-by-area.html` shows an edge). Read when the
+  source loads: new areas take a new style.
+
 - **Covers redone when elevations arrive** (`bounding_volume_cache.ts`, `TileManager.demVersion`,
   `Terrain.demVersion`): the globe's cached bounding volumes are cleared whenever a DEM tile loads
   or the terrain or exaggeration changes, so slopes near the camera aren't culled at sea level.

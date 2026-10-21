@@ -840,6 +840,19 @@ fn meta_json(s: &AppState) -> serde_json::Value {
         m.insert("versions".into(), serde_json::Value::Object(versions));
         m.insert("packs".into(), serde_json::Value::Object(packs));
         m.insert("layers".into(), serde_json::Value::Object(zooms));
+        // Where the terrain goes past its base (pipeline::terrain_fine): its z10 tiles with fine
+        // packs and their finest zoom, "x/y" (the map's zoom by area: web/src/basemap.ts).
+        if let Some(l) = cat.layers.get("terrain").filter(|l| !l.fine_zoom.is_empty()) {
+            let tiles: serde_json::Map<String, serde_json::Value> = l
+                .fine_zoom
+                .iter()
+                .filter_map(|(k, z)| Some((k.split_once('/')?.1.to_string(), serde_json::json!(z))))
+                .collect();
+            m.insert(
+                "terrainAreas".into(),
+                serde_json::json!({"zoom": pipeline::terrain_fine::PACK_Z, "tiles": tiles}),
+            );
+        }
         m.insert("catalog".into(), serde_json::json!(cat.n));
         m.insert("online".into(), serde_json::json!(s.data.online()));
         m.insert("labelTiles".into(), serde_json::json!(cat.layers.contains_key("labels")));

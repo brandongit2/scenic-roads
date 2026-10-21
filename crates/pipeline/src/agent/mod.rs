@@ -7611,7 +7611,7 @@ impl Agent {
 
     /// The forecast (crate::agent::forecast) of the work left: `before`, the lead's jobs before
     /// the regions'; `regions`, the plan's; `backfill`, the z6 tiles whose mids it makes in
-    /// idle time (build::Plan::backfill); `chains`, the trains', landmarks', 3D buildings' and depths' work to come
+    /// idle time (build::Plan::backfill); `chains`, the trains', landmarks', 3D buildings', depths' and fine terrain's work to come
     /// (build::chains_left); `blind`, why the work can't all be listed now. Each target's time (at
     /// the lead's pace: a time measured on a member over its speed) and memory as last measured,
     /// else its step's mean or a first guess (`first_secs`; `peak` for its memory); the helpers at
@@ -7623,7 +7623,7 @@ impl Agent {
         before: &[JobSpec],
         regions: &[build::RegionLeft],
         backfill: &[build::Work],
-        chains: [Vec<build::Work>; 4],
+        chains: [Vec<build::Work>; 5],
         blind: Option<String>,
         peak: &dyn Fn(&str, &str) -> u64,
     ) -> forecast::Forecast {
@@ -7722,7 +7722,7 @@ impl Agent {
             .collect();
         // (A region's map tiles each at its measured time, `cost`; the whole-map steps by their
         // cadence, as last run.)
-        let [rail, landmarks, buildings, depth] = chains;
+        let [rail, landmarks, buildings, depth, fine] = chains;
         let cadence = {
             let c = self.catalogs.borrow();
             let now = now_s();
@@ -7736,7 +7736,7 @@ impl Agent {
         // built: forecast::chain_deps), but the overlays (they read the built z6 tiles) after everything
         // else; and a catalog after them with what the chains made since.
         let (mut chain_jobs, mut after): (Vec<forecast::Job>, Vec<forecast::Job>) = (Vec::new(), Vec::new());
-        for w in rail.iter().chain(landmarks.iter()).chain(buildings.iter()).chain(depth.iter()) {
+        for w in rail.iter().chain(landmarks.iter()).chain(buildings.iter()).chain(depth.iter()).chain(fine.iter()) {
             let jobs: Vec<forecast::Job> = if steps::SHARED.contains(&w.step.as_str()) {
                 w.targets.iter().map(|t| (w.step.clone(), t.0.clone(), cost(&w.step, &t.0))).collect()
             } else {
@@ -7752,7 +7752,7 @@ impl Agent {
                 chain_jobs.extend(jobs)
             }
         }
-        if !rail.is_empty() || !landmarks.is_empty() || !buildings.is_empty() || !depth.is_empty() {
+        if !rail.is_empty() || !landmarks.is_empty() || !buildings.is_empty() || !depth.is_empty() || !fine.is_empty() {
             after.push(("catalog".into(), "after the chains".into(), mine("catalog", 1)));
         }
         // Each slot's job's time left: its pace says only its part's; its targets not yet done, as
@@ -10796,6 +10796,9 @@ fn first_secs(step: &str) -> f64 {
         "bld-fetch" => 300.0,
         "bldprep" => 6.0,
         "bldtiles" => 2.0,
+        // (A z8 tile of dense 2 m lidar to z16: 256 z12 subtrees at ~10 s sampling and ~11 s encoding
+        // each, on its ~3 granted threads.)
+        "terrain-fine" => 1800.0,
         "catalog" => 60.0,
         "names-todo" => 1070.0,
         "timetables-todo" => 10.0,

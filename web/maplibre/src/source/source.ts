@@ -6,7 +6,7 @@ import {VideoSource} from '../source/video_source.ts';
 import {ImageSource} from '../source/image_source.ts';
 import {CanvasSource} from '../source/canvas_source.ts';
 
-import type {CalculateTileZoomFunction} from '../geo/projection/covering_tiles.ts';
+import type {CalculateTileZoomFunction, ZoomByArea} from '../geo/projection/covering_tiles.ts';
 import type {Dispatcher} from '../util/dispatcher.ts';
 import type {SourceSpecification} from '@maplibre/maplibre-gl-style-spec';
 import type {Event, Evented} from '../util/evented.ts';
@@ -122,6 +122,11 @@ export interface Source {
      * Optional function to redefine how tiles are loaded at high pitch angles.
      */
     calculateTileZoom?: CalculateTileZoomFunction;
+    /**
+     * Scenic Roads: the source's finest zoom by area (raster and raster-dem sources'
+     * `scenic:zoom-by-area`; see covering_tiles.ts `ZoomByArea`).
+     */
+    zoomByArea?: ZoomByArea;
     /**
      * Optional function to determine whether a tile should be reloaded, given a
      * set of options associated with a `MapSourceDataChangedEvent`.

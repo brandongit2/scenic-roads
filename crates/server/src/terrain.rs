@@ -26,10 +26,13 @@ static FLAT_SLOPE: OnceLock<Vec<u8>> = OnceLock::new();
 static SLOPE: OnceLock<Mutex<HashMap<(u8, u32, u32, u64), Vec<u8>>>> = OnceLock::new();
 static FLOOR: OnceLock<Mutex<HashMap<(u8, u32, u32, u64), Vec<u8>>>> = OnceLock::new();
 
+/// A tile's response: a PNG, or a JPEG XL codestream (the fine terrain's stored tiles,
+/// pipeline::terrain_fine).
 fn png(b: Vec<u8>, versioned: bool, etag: Option<String>) -> Response {
+    let kind = if b.starts_with(&[0xff, 0x0a]) { "image/jxl" } else { "image/png" };
     let mut r = (
         [
-            (header::CONTENT_TYPE, HeaderValue::from_static("image/png")),
+            (header::CONTENT_TYPE, HeaderValue::from_static(kind)),
             (header::CACHE_CONTROL, crate::cache::cache_control(versioned, "no-cache")),
         ],
         b,
@@ -50,18 +53,27 @@ fn gen(s: &crate::AppState) -> u64 {
     s.data.generation.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// A terrain tile's PNG bytes as stored.
+/// A terrain tile's bytes as stored (PNG; JPEG XL past the base's zooms).
 pub fn terrain_png(s: &crate::AppState, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
     Ok(s.data.tile("terrain", z, x, y)?.map(|(b, _)| b.bytes().to_vec()))
 }
 
-/// Terrain heights (m) of a tile, from its nearest stored ancestor when it isn't stored: None
-/// outside the data, an error when a tile couldn't be read (the NAS away).
+/// The fine terrain's zooms (pipeline::terrain_fine's fine packs, past the base's finest): no Mac
+/// mirrors them, so away from the NAS a tile there that can't be read is made from its ancestor in
+/// the hi packs.
+fn fine_zoom(z: u8, y: u32) -> bool {
+    z > pipeline::terrain_pack::max_zoom_at(pipeline::terrain_pack::tile_lat(z, y))
+}
+
+/// Terrain heights (m) of a tile, from its nearest stored ancestor when it isn't stored, or is a
+/// fine tile that can't be read now (`fine_zoom`): None outside the data, an error when a tile of
+/// z12 or coarser couldn't be read (the NAS away and no mirror of it).
 pub fn terrain_f32(s: &crate::AppState, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<f32>>> {
     let failed = std::cell::RefCell::new(None);
     let got = tile_with_fallback_by(
         &|z, x, y| match terrain_png(s, z, x, y) {
             Ok(b) => b,
+            Err(_) if fine_zoom(z, y) => None,
             Err(e) => {
                 failed.borrow_mut().get_or_insert(e);
                 None
@@ -177,8 +189,11 @@ pub async fn terrain_tile(
                 Ok(crate::depth::terrain_floor_png(&s, z, x, y)?.unwrap_or_else(flat))
             });
         }
-        if let Some(g) = stored(&s, "terrain", z, x, y, &headers) {
-            return g;
+        match stored(&s, "terrain", z, x, y, &headers) {
+            // (A fine tile that can't be read now: made from its ancestor, `terrain_f32`.)
+            Some(Got::Failed) if fine_zoom(z, y) => {}
+            Some(g) => return g,
+            None => {}
         }
         made(&SYNTH, gen(&s), z, x, y, || {
             Ok(terrain_f32(&s, z, x, y)?.and_then(|e| encode_terrain_png(&e, 256, 256).ok()).unwrap_or_else(flat))
@@ -238,6 +253,12 @@ pub fn slope_png(s: &crate::AppState, z: u8, x: u32, y: u32) -> anyhow::Result<O
     Ok(roadcore::slope::encode_slope4(&q, 256, 256).ok())
 }
 
+/// The finest slope made: z14, or as deep as the terrain is stored anywhere (its fine tiles' zooms,
+/// pipeline::terrain_fine); finer, flat.
+fn slope_depth(cat: &store::catalog::Catalog) -> u8 {
+    cat.layers.get("terrain").map_or(14, |l| l.maxzoom.max(14))
+}
+
 pub async fn slope_tile(
     State(s): State<S>,
     Path((z, x, y)): Path<(u8, u32, u32)>,
@@ -251,8 +272,7 @@ pub async fn slope_tile(
         if let Some(g) = stored(&s, "slope", z, x, y, &headers) {
             return g;
         }
-        // (Made as deep as the terrain is stored anywhere: its fine tiles' zooms, pipeline::terrain_fine.)
-        if z > s.data.catalog().layers.get("terrain").map_or(14, |l| l.maxzoom.max(14)) {
+        if z > slope_depth(&s.data.catalog()) {
             return Got::Made(flat());
         }
         made(&SLOPE, gen(&s), z, x, y, || Ok(slope_png(&s, z, x, y)?.unwrap_or_else(flat)))
@@ -260,4 +280,80 @@ pub async fn slope_tile(
     .await
     .unwrap_or(Got::Failed);
     respond(got, v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pack of terrain tiles at `path`, each `(z, x, y, metres)`: PNG, or as the fine terrain
+    /// stores them (JPEG XL, `fine`).
+    fn pack(path: &std::path::Path, tiles: &[(u8, u32, u32, f32)], fine: bool) -> u64 {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut w = store::pack::PackWriter::create(path, serde_json::json!({"layer": "terrain"}), false).unwrap();
+        for &(z, x, y, h) in tiles {
+            let e = vec![h; 65536];
+            let b = if fine {
+                pipeline::terrain_fine::encode(&e).unwrap()
+            } else {
+                encode_terrain_png(&e, 256, 256).unwrap()
+            };
+            w.add(z, x, y, &b, b.len() as u32).unwrap();
+        }
+        w.finish().unwrap();
+        std::fs::metadata(path).unwrap().len()
+    }
+
+    /// A NAS with a terrain hi pack (z12 at 50 m) and a fine pack (z13 at 100 m) under z10 tile
+    /// (296, 360), and a catalog naming them; the fine pack's path.
+    fn nas(root: &std::path::Path) -> std::path::PathBuf {
+        let (hi, fine) = ("layers/terrain/hi/6-18-22", "layers/terrain/fine/10-296-360");
+        let (hc, fc) = (format!("{hi}.0000000000000001.pack"), format!("{fine}.0000000000000002.pack"));
+        let hs = pack(&root.join(&hc), &[(12, 296 * 4, 360 * 4, 50.0)], false);
+        let fs = pack(&root.join(&fc), &[(13, 296 * 8, 360 * 8, 100.0)], true);
+        let mut cat = store::catalog::Catalog::new(1);
+        let mut l = store::catalog::Layer { encoding: "terrarium-png".into(), maxzoom: 16, ..Default::default() };
+        l.hi.insert("6/18/22".into(), hi.into());
+        l.fine.insert("10/296/360".into(), fine.into());
+        cat.layers.insert("terrain".into(), l);
+        for (lg, c, size) in [(hi, &hc, hs), (fine, &fc, fs)] {
+            cat.files.insert(lg.into(), store::catalog::FileRef { file: c.clone(), size, ..Default::default() });
+        }
+        store::catalog::write_copy(&root.join("catalog"), &cat).unwrap();
+        root.join(fc)
+    }
+
+    #[test]
+    fn fine_tiles_come_from_the_fine_packs_and_from_their_ancestor_when_those_cant_be_read() {
+        let (root, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        nas(root.path());
+        let s = crate::test_state(home.path(), root.path());
+        let at = |z: u8, x: u32, y: u32| terrain_f32(&s, z, x, y).unwrap().map(|e| e[0]);
+        // z12 from the hi pack, z13 from the fine pack, z14 made from the fine z13.
+        assert_eq!(at(12, 296 * 4, 360 * 4), Some(50.0));
+        assert_eq!(at(13, 296 * 8, 360 * 8), Some(100.0));
+        assert_eq!(at(14, 296 * 16, 360 * 16), Some(100.0));
+        // (Served as stored, a JPEG XL tile, so named.)
+        let b = terrain_png(&s, 13, 296 * 8, 360 * 8).unwrap().unwrap();
+        assert_eq!(png(b, false, None).headers()[header::CONTENT_TYPE], "image/jxl");
+        // The fine pack unreadable (the NAS away, no mirror of it): made from the hi pack's z12.
+        let (root, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::remove_file(nas(root.path())).unwrap();
+        let s = crate::test_state(home.path(), root.path());
+        let at = |z: u8, x: u32, y: u32| terrain_f32(&s, z, x, y).unwrap().map(|e| e[0]);
+        assert_eq!(at(13, 296 * 8, 360 * 8), Some(50.0));
+        assert_eq!(at(15, 296 * 32, 360 * 32), Some(50.0));
+        // (Read as stored, it is an error: the terrain made it from its ancestor instead.)
+        assert!(s.data.tile("terrain", 13, 296 * 8, 360 * 8).is_err());
+    }
+
+    #[test]
+    fn slope_is_made_as_deep_as_the_terrain_goes() {
+        let mut cat = store::catalog::Catalog::new(1);
+        assert_eq!(slope_depth(&cat), 14);
+        cat.layers.insert("terrain".into(), store::catalog::Layer { maxzoom: 12, ..Default::default() });
+        assert_eq!(slope_depth(&cat), 14);
+        cat.layers.get_mut("terrain").unwrap().maxzoom = 16;
+        assert_eq!(slope_depth(&cat), 16);
+    }
 }

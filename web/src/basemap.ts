@@ -1,6 +1,6 @@
 import type { ExpressionSpecification, LayerSpecification, StyleSpecification } from 'maplibre-gl';
 import { LAND_COLOUR } from './basecolours';
-import { ver } from './api';
+import { ver, type TerrainAreas } from './api';
 import { hostFor } from './hosts';
 import { DEFAULT_DENSITY, kindSpacing, type DensityKind, type LabelDensity, type LineKind, type LineWeights } from './state';
 
@@ -246,11 +246,6 @@ export const HYPSO: [number, string][] = [
 export const basemapTiles = (): string => `${hostFor('base')}/tiles/base/{z}/{x}/{y}${ver('base.pmtiles')}`;
 /** The terrain tiles (Terrarium), as the terrain sources and the contours (terrain.ts) read them. */
 export const terrainTiles = (): string => `${hostFor('terrain')}/tiles/terrain/{z}/{x}/{y}${ver('terrain.tiles')}`;
-/** The terrain's finest zoom anywhere (the catalog's `layers.terrain`): 12, or past it where a
- * declared dataset is finer than the base (pipeline::terrain_fine); the server makes the tiles
- * finer than the data from their ancestors elsewhere. Set by baseStyle. */
-let TERRAIN_MAXZOOM = 12;
-export const terrainMaxzoom = (): number => TERRAIN_MAXZOOM;
 
 /** The style's tile sources whose URLs carry a data file's version, with that file: baseStyle
  * builds them from here, and a new catalog switches them in place (main.ts). */
@@ -419,9 +414,8 @@ const LANDMARK_LABEL_IDS = new Set(Object.values(LANDMARK_LABELS));
  * landmark names alone (set with their dots). */
 export const overlayLabelScale = (f: number) => (id: string) => (LANDMARK_LABEL_IDS.has(id) ? NaN : OVERLAY_IDS.has(id) ? f : 1);
 
-export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DENSITY, waterTiles = false, terrainMaxzoom = 12): StyleSpecification {
+export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DENSITY, waterTiles = false, terrainAreas?: TerrainAreas): StyleSpecification {
   WATER_TILES = waterTiles;
-  TERRAIN_MAXZOOM = terrainMaxzoom;
   const base = hostFor('base');
   const tiles = Object.fromEntries(versionedTiles().map((t) => [t.source, t.url]));
   // Places, water and parks from the labels by importance, where the server has them: name n (with
@@ -443,7 +437,10 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
     tiles: [tiles.dem],
     encoding: 'terrarium' as const,
     tileSize: 256,
-    maxzoom: TERRAIN_MAXZOOM,
+    maxzoom: 12,
+    // Finer where the catalog has fine terrain (its z10 tiles' zooms): our MapLibre takes the
+    // terrain, hillshade and slope tiles there to that zoom, elsewhere z12 as before.
+    ...(terrainAreas ? { 'scenic:zoom-by-area': terrainAreas } : {}),
   };
   const empty = { type: 'geojson' as const, data: { type: 'FeatureCollection' as const, features: [] } };
   // Point overlays (heritage sites, stops & sights): vector tiles the landmarks worker makes from
@@ -490,7 +487,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
       },
       // Tree cover layer (crates/pipeline/src/trees): values Terrarium-encoded as if they were elevation.
       ...Object.fromEntries((['cover', 'height', 'leaf'] as const).map((v) => [`trees-${v}`, {
-        ...dem, minzoom: 4, maxzoom: 12, tiles: [tiles[`trees-${v}`]], attribution: '',
+        type: 'raster-dem' as const, encoding: 'terrarium' as const, tileSize: 256, minzoom: 4, maxzoom: 12, tiles: [tiles[`trees-${v}`]], attribution: '',
       }])),
       selection: empty,
       drives: empty,

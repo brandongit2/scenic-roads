@@ -86,6 +86,9 @@ pub struct Keys {
     pub depth: BTreeMap<String, String>,
     #[serde(default)]
     pub depth_lo: BTreeMap<String, String>,
+    /// The terrain finer than its base, per z8 tile ("8/x/y": `fine_targets`).
+    #[serde(default)]
+    pub terrain_fine: BTreeMap<String, String>,
     /// The served files the last catalog was made from.
     #[serde(default)]
     pub catalog: Option<String>,
@@ -161,6 +164,7 @@ impl Keys {
             "bldfield-lo" => &mut self.bldfield_lo,
             "depth" => &mut self.depth,
             "depth-lo" => &mut self.depth_lo,
+            "terrain-fine" => &mut self.terrain_fine,
             _ => &mut self.lo,
         }
     }
@@ -184,6 +188,7 @@ impl Keys {
             "bldfield-lo" => &self.bldfield_lo,
             "depth" => &self.depth,
             "depth-lo" => &self.depth_lo,
+            "terrain-fine" => &self.terrain_fine,
             _ => return None,
         };
         m.get(target).map(String::as_str)
@@ -1162,7 +1167,6 @@ pub fn terrain_slope_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles
         &named(crate::terrain_water::IDX_PREFIX),
         &crate::terrain_pack::water_source_pin(m).unwrap_or_default(),
         tiles.terrain_sources(m).map_or("-", |p| p.pin.as_str()),
-        &tiles.terrain_sources(m).map_or_else(String::new, |p| p.fine_tag()),
     ]);
     let made = std::cell::RefCell::new(None);
     let kept = tiles.memo("terrain-targets", &from, || {
@@ -1192,7 +1196,7 @@ fn terrain_slope_targets_made(cov: &Coverage, m: &BTreeMap<String, String>, tile
     let idx = pin.as_deref().and_then(|p| tiles.water_idx(m, p));
     let water = |t: &str, from: &str| water_key(pin.as_deref(), idx, t, from);
     // (The terrain's declared sources: its z6 tiles wait while there are none.)
-    let sources = tiles.terrain_sources(m);
+    let sources = tiles.terrain_sources(m).map(|p| p.pin.as_str());
     let mut out = TerrainTargets::default();
     let near = coverage_tiles(cov);
     for (q, ts) in &near {
@@ -1204,10 +1208,9 @@ fn terrain_slope_targets_made(cov: &Coverage, m: &BTreeMap<String, String>, tile
             let hi = crate::terrain_pack::makes_hi(cov, (x, y));
             out.terrain.push((
                 t.clone(),
-                water(&t, &fp).zip(sources).map_or_else(
-                    || UNKNOWN.to_string(),
-                    |(w, s)| piece_key_made((x, y), &fp, &s.sources_of((x, y)), &w, hi),
-                ),
+                water(&t, &fp)
+                    .zip(sources)
+                    .map_or_else(|| UNKNOWN.to_string(), |(w, s)| piece_key_made((x, y), &fp, s, &w, hi)),
             ));
             out.slope.push((t.clone(), slope_piece_key((x, y), m, tiles).ok()));
             tmids.push(format!("{t}={}", get(&crate::terrain_pack::mid_logical(x, y))));
@@ -2114,6 +2117,7 @@ pub fn plan(
         let each: Vec<&Coverage> = updates.each.iter().map(|(_, c)| c).collect();
         work.extend(bld_work(cov, m, done, inputs, &bld_rank(&each)));
         work.extend(depth_work(cov, m, done, tiles));
+        work.extend(fine_work(cov, m, done, tiles));
         work.extend(backfill.iter().cloned());
         let why = match heritage_awaits_acceptance(cov, date, m, inputs) {
             Some(r) => format!("the regions' z6 tiles wait for the pass's heritage sites: {r}"),
@@ -2562,6 +2566,7 @@ pub fn plan(
     work.extend(chains(last_now));
     work.extend(bld);
     work.extend(depth);
+    work.extend(fine_work(cov, m, done, tiles));
     // Last of all, in idle time: the mids of current z6 tiles that have none (expected the same).
     work.extend(backfill.iter().cloned());
     Plan {
@@ -3695,6 +3700,83 @@ pub fn depth_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, til
     out
 }
 
+/// The terrain finer than its base's targets (crate::terrain_fine), with their keys and whether
+/// each can run now; None while the fine datasets can't be read.
+///
+/// - a z8 tile near the coverage where a fine dataset meets it and is finer there: the code's
+///   versions, the tile, those datasets (their lines and the zoom each reaches there), its z6 tile's
+///   hi pack (its base tiles) and terrain key (its water, its declared sources); it runs once that
+///   z6 tile's terrain is done under that key;
+/// - a z8 tile with fine packs named and no target now ("none"): its run drops them.
+pub fn fine_targets(
+    cov: &Coverage,
+    m: &BTreeMap<String, String>,
+    done: &Keys,
+    tiles: &TerrainTiles,
+) -> Option<Vec<(String, String, bool)>> {
+    use crate::terrain_fine as tf;
+    let sets = tiles.fine(m)?;
+    let mut out = Vec::new();
+    if !sets.is_empty() {
+        let k = tf::TARGET_Z - 6;
+        for (t6, key) in &terrain_slope_targets(cov, m, tiles).terrain {
+            let Some(u) = TileId::parse(t6).filter(|u| u.z == 6) else { continue };
+            let Some(hi) = m.get(&format!("layers/terrain/hi/6-{}-{}", u.x, u.y)) else { continue };
+            let ready = key != UNKNOWN && done.terrain.get(t6) == Some(key);
+            for x in u.x << k..(u.x + 1) << k {
+                for y in u.y << k..(u.y + 1) << k {
+                    let lines = tf::key_lines(&sets, tf::TARGET_Z, x, y);
+                    if lines.is_empty() || !crate::terrain_pack::near_coverage(cov, tf::TARGET_Z, x, y, 20.0) {
+                        continue;
+                    }
+                    let t = format!("{}/{x}/{y}", tf::TARGET_Z);
+                    out.push((t.clone(), h(&[&tf::versions(), &t, &lines.join("\n"), hi, key]), ready));
+                }
+            }
+        }
+    }
+    let targets: BTreeSet<String> = out.iter().map(|(t, _, _)| t.clone()).collect();
+    let k = tf::PACK_Z - tf::TARGET_Z;
+    let left: BTreeSet<String> = m
+        .range("layers/terrain/fine/".to_string()..)
+        .take_while(|(l, _)| l.starts_with("layers/terrain/fine/"))
+        .filter_map(|(l, _)| tf::pack_tile(l))
+        .map(|(x, y)| format!("{}/{}/{}", tf::TARGET_Z, x >> k, y >> k))
+        .filter(|t| !targets.contains(t))
+        .collect();
+    for t in left {
+        out.push((t.clone(), h(&[&tf::versions(), &t, "none"]), true));
+    }
+    Some(out)
+}
+
+/// The terrain finer than its base's work that can run now: its stale targets whose z6 tile's
+/// terrain is done.
+pub fn fine_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, tiles: &TerrainTiles) -> Vec<Work> {
+    let targets: Vec<(String, String)> = fine_targets(cov, m, done, tiles)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(t, k, ready)| *ready && done.terrain_fine.get(t) != Some(k))
+        .map(|(t, k, _)| (t, k))
+        .collect();
+    if targets.is_empty() {
+        Vec::new()
+    } else {
+        vec![Work { step: crate::terrain_fine::STEP.into(), targets }]
+    }
+}
+
+/// The fine terrain's stale targets, whether or not their terrain is done yet (the forecast's: its
+/// items wait for the terrain, forecast::chain_deps).
+fn fine_next(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, tiles: &TerrainTiles) -> Option<Work> {
+    let targets: Vec<(String, String)> = fine_targets(cov, m, done, tiles)?
+        .into_iter()
+        .filter(|(t, k, _)| done.terrain_fine.get(t) != Some(k))
+        .map(|(t, k, _)| (t, k))
+        .collect();
+    (!targets.is_empty()).then(|| Work { step: crate::terrain_fine::STEP.into(), targets })
+}
+
 /// The depth chain's first stale step, as if each before it succeeded (`remaining`).
 fn depth_next(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, tiles: &TerrainTiles) -> Option<Work> {
     let dt = depth_targets(cov, m, tiles)?;
@@ -3823,7 +3905,11 @@ impl Line {
                 if of.iter().all(|j| j.total.is_some()) {
                     let (d, t): (usize, usize) =
                         (of.iter().map(|j| j.done).sum(), of.iter().map(|j| j.total.unwrap_or(0)).sum());
-                    out.push(format!("{d} of {t} {noun}s"));
+                    // (A noun past the line's own with nothing to do isn't said: the fine
+                    // terrain's z8 tiles where no dataset is fine.)
+                    if t > 0 || out.is_empty() {
+                        out.push(format!("{d} of {t} {noun}s"));
+                    }
                 } else {
                     out.push(format!("{noun}s to come"));
                 }
@@ -3922,7 +4008,7 @@ pub fn mark_shared(lines: &mut [Line]) {
 
 /// The steps the checklist counts, in order: the regions' build to the end (the pass's own are the
 /// agent's, before them).
-pub const COUNTED: [&str; 32] = [
+pub const COUNTED: [&str; 33] = [
     "heritage-sites",
     "terrain",
     "terrain-lo",
@@ -3932,6 +4018,7 @@ pub const COUNTED: [&str; 32] = [
     "trees-lo",
     "depth-lo",
     "depth",
+    "terrain-fine",
     "unit",
     "pack",
     "lo",
@@ -3980,7 +4067,7 @@ fn remaining(done: &Keys, next: impl Fn(&Keys) -> Option<Work>) -> Vec<Work> {
 }
 
 /// The chains' work still to run, as if each step succeeded (`remaining`): the trains', the
-/// landmarks', the 3D buildings' and the depths', for the forecast (crate::agent::forecast; the
+/// landmarks', the 3D buildings', the depths' and the fine terrain's, for the forecast (crate::agent::forecast; the
 /// regions' map tiles are each region's, `RegionLeft::packs`, and the whole-map steps go by their
 /// cadence).
 pub fn chains_left(
@@ -3990,12 +4077,13 @@ pub fn chains_left(
     done: &Keys,
     inputs: &BTreeMap<String, String>,
     tiles: &TerrainTiles,
-) -> [Vec<Work>; 4] {
+) -> [Vec<Work>; 5] {
     [
         remaining(done, |d| rail_chain(cov, date, m, d, inputs)),
         remaining(done, |d| landmarks_chain(cov, date, m, d, inputs)),
         remaining(done, |d| bld_next(cov, m, d, inputs)),
         remaining(done, |d| depth_next(cov, m, d, tiles)),
+        remaining(done, |d| fine_next(cov, m, d, tiles)),
     ]
 }
 
@@ -4062,6 +4150,10 @@ pub fn checklist(
     let d = dt.as_ref().unwrap_or(&empty);
     out.push(sized("depth-lo", &d.lo, &done.depth_lo, dk));
     out.push(sized("depth", &d.hi, &done.depth, dk));
+    // (Known once the fine datasets are read.)
+    let ft = fine_targets(cov, m, done, tiles);
+    let fk: Vec<(String, String)> = ft.iter().flatten().map(|(t, k, _)| (t.clone(), k.clone())).collect();
+    out.push(sized(crate::terrain_fine::STEP, &fk, &done.terrain_fine, ft.is_some()));
     next.insert("depth", next_of(&remaining(done, |k| depth_next(cov, m, k, tiles))));
     let pieces = m.keys().any(|l| l.starts_with(&format!("sources/osm/{date}/pieces/")));
     let units = unit_keys(cov, date, m, reach, tiles);
@@ -4934,6 +5026,63 @@ pub(crate) mod tests {
             assert_eq!(crate::agent::pool::check(&e, &crate::pool::records::Records::default()), Ok(()), "{step}");
             assert_eq!(crate::agent::steps::outside(&e), None, "{step}");
         }
+    }
+
+    #[test]
+    fn the_fine_terrain_runs_by_z8_tile_once_its_terrain_is_built_and_drops_what_it_no_longer_makes() {
+        use crate::terrain_fine as tf;
+        let c = cov();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        m.insert(crate::inputs::logical(crate::inputs::elevation::UNIT), "elevation-index".into());
+        let mut done = Keys::default();
+        let mut tiles = TerrainTiles::new(None);
+        let lidar = tf::FineSet {
+            id: "lidar".into(),
+            line: "lidar k".into(),
+            cover: crate::dem::declared::Cover::of(None),
+            detail: tf::Detail::Pyramid(14),
+        };
+        tiles.hold_fine(&m, vec![lidar.clone()]);
+        // Nothing before the terrain's hi packs.
+        assert!(fine_targets(&c, &m, &done, &tiles).unwrap().is_empty());
+        let tt = terrain_slope_targets(&c, &m, &tiles);
+        // (The terrain's own keys, so its hi packs, are the same with fine datasets or without.)
+        assert_eq!(tt.terrain, terrain_slope_targets(&c, &m, &TerrainTiles::new(None)).terrain);
+        let w = Work { step: "terrain".into(), targets: tt.terrain.clone() };
+        for (t, _) in &tt.terrain {
+            let u = TileId::parse(t).unwrap();
+            m.insert(format!("layers/terrain/hi/{}", u.dash()), format!("hi-{}", u.dash()));
+        }
+        // Its z8 tiles near the coverage, waiting for their terrain to be done.
+        let ft = fine_targets(&c, &m, &done, &tiles).unwrap();
+        assert!(!ft.is_empty() && ft.iter().all(|(t, _, ready)| t.starts_with("8/") && !ready));
+        assert!(fine_work(&c, &m, &done, &tiles).is_empty());
+        did(&mut m, &mut done, &w);
+        let fw = fine_work(&c, &m, &done, &tiles);
+        assert_eq!((fw.len(), fw[0].step.as_str(), fw[0].targets.len()), (1, tf::STEP, ft.len()));
+        // Done: nothing; a new hi pack (its base) runs its z8 tiles again.
+        did(&mut m, &mut done, &fw[0]);
+        assert!(fine_work(&c, &m, &done, &tiles).is_empty());
+        let t6 = tt.terrain[0].0.replace('/', "-");
+        m.insert(format!("layers/terrain/hi/{t6}"), "hi-new".into());
+        let again = fine_work(&c, &m, &done, &tiles);
+        let under = |t: &str| TileId::parse(t).is_some_and(|u| format!("6-{}-{}", u.x >> 2, u.y >> 2) == t6);
+        let mine: Vec<&String> = ft.iter().map(|f| &f.0).filter(|t| under(t)).collect();
+        assert!(!mine.is_empty());
+        assert_eq!(again[0].targets.iter().map(|t| &t.0).collect::<Vec<_>>(), mine, "its z6 tile's z8 tiles");
+        did(&mut m, &mut done, &again[0]);
+        // The dataset no longer fine: no targets but those with fine packs, which drop them.
+        let (x, y) = TileId::parse(&ft[0].0).map(|u| (u.x, u.y)).unwrap();
+        m.insert(tf::pack_logical(x << 2, y << 2), "fine-pack".into());
+        tiles.hold_fine(&m, Vec::new());
+        let gone = fine_work(&c, &m, &done, &tiles);
+        assert_eq!(gone[0].targets, vec![(ft[0].0.clone(), h(&[&tf::versions(), &ft[0].0, "none"]))]);
+        // (A finer measured resolution moves the keys.)
+        tiles.hold_fine(&m, vec![tf::FineSet { detail: tf::Detail::Pyramid(15), ..lidar }]);
+        assert!(fine_targets(&c, &m, &done, &tiles)
+            .unwrap()
+            .iter()
+            .all(|(t, k, _)| done.terrain_fine.get(t) != Some(k)));
     }
 
     #[test]
@@ -6109,10 +6258,10 @@ pub(crate) mod tests {
             "two pieces, their assembly apart"
         );
         // Every line names every step of its stage, its items in the table's order.
-        assert_eq!(line(&l, "terrain").steps, ["terrain-water", "terrain", "terrain-lo"]);
+        assert_eq!(line(&l, "terrain").steps, ["terrain-water", "terrain", "terrain-lo", "terrain-fine"]);
         assert_eq!(
             line(&l, "terrain").items.iter().map(|i| i.step.as_str()).collect::<Vec<_>>(),
-            ["terrain", "terrain-lo"]
+            ["terrain", "terrain-lo", "terrain-fine"]
         );
         // Terrain, slope, the heritage sites and the area done.
         for step in ["heritage-sites", "terrain", "terrain-lo", "unit", "slope", "slope-lo", "trees", "trees-lo"] {

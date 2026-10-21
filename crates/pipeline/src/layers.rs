@@ -31,6 +31,9 @@ pub struct LayerOut {
     /// The terrain's fine packs by z10 tile (crate::terrain_fine).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub fine: BTreeMap<String, String>,
+    /// The finest zoom of each fine pack's tiles (crate::terrain_fine::zoom_of), by its z10 tile.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fine_zoom: BTreeMap<String, u8>,
 }
 
 impl LayerOut {

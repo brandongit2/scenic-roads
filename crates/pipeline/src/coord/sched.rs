@@ -153,8 +153,9 @@ pub(crate) struct Need {
 /// The steps known to honour the threads they're granted (task #499 review): their cold starts
 /// count as the packed share, the others' as the whole Mac. `slope`: a Rust step on the rayon pool
 /// the agent sizes (`RAYON_NUM_THREADS`, crate::agent::jobs); `bld-fetch`: its downloads bounded
-/// by its `--jobs` (3 by default, at most 4), waiting on the network.
-const THREADS_HONOURED: &[&str] = &["slope", "bld-fetch"];
+/// by its `--jobs` (3 by default, at most 4), waiting on the network; `terrain-fine`: its base
+/// tiles sampled on the rayon pool (crate::terrain_fine).
+const THREADS_HONOURED: &[&str] = &["slope", "bld-fetch", "terrain-fine"];
 
 /// Whether `step` honours the threads it's granted (`THREADS_HONOURED`).
 pub(super) fn honours_threads(step: &str) -> bool {

@@ -44,6 +44,44 @@ export type CoveringTilesOptions = {
     tileSize: number;
 };
 
+/**
+ * Scenic Roads: a source's finest zoom by area (a raster or raster-dem source's
+ * `scenic:zoom-by-area`): where a tile of zoom `zoom` is listed, its own finest zoom; elsewhere the
+ * source's `maxzoom`. `zoom` is at most the source's maxzoom, so outside the listed tiles the cover is
+ * upstream's; inside, tiles go on to the listed zoom (overzoomed past it), each area's tiles next to
+ * the coarser cover around it (a cover never has gaps). Built by `zoomByArea`.
+ */
+export type ZoomByArea = {
+    zoom: number;
+    /** Finest zoom by tile of `zoom`, keyed `y * 2^zoom + x`. */
+    max: ReadonlyMap<number, number>;
+    /** Changes with the areas (the tile managers' cover memo). */
+    key: string;
+};
+
+/**
+ * Scenic Roads: `ZoomByArea` from its style form, `{zoom, tiles: {"x/y": finest zoom}}`; undefined
+ * without tiles, or with a zoom past `maxzoom` (it would change the cover outside the areas).
+ */
+export function zoomByArea(spec: unknown, maxzoom: number): ZoomByArea | undefined {
+    const s = spec as {zoom?: unknown; tiles?: Record<string, unknown>} | undefined;
+    if (!s || typeof s.zoom !== 'number' || !s.tiles || s.zoom > maxzoom) return undefined;
+    const max = new Map<number, number>();
+    for (const [k, z] of Object.entries(s.tiles)) {
+        const [x, y] = k.split('/').map(Number);
+        if (Number.isInteger(x) && Number.isInteger(y) && typeof z === 'number') max.set(y * 2 ** s.zoom + x, z);
+    }
+    if (max.size === 0) return undefined;
+    return {zoom: s.zoom, max, key: `${s.zoom}:${[...max].join(',')}`};
+}
+
+/** Scenic Roads: the finest zoom of tile `z/x/y`'s area (`ZoomByArea`), else `maxzoom`. */
+export function areaMaxZoom(a: ZoomByArea | undefined, maxzoom: number, z: number, x: number, y: number): number {
+    if (!a || z < a.zoom) return maxzoom;
+    const d = z - a.zoom;
+    return a.max.get(Math.floor(y / 2 ** d) * 2 ** a.zoom + Math.floor(x / 2 ** d)) ?? maxzoom;
+}
+
 export type CoveringTilesOptionsInternal = CoveringTilesOptions & {
     /**
      * `true` if tiles should be sent back to the worker for each overzoomed zoom level, `false` if not.
@@ -80,6 +118,11 @@ export type CoveringTilesOptionsInternal = CoveringTilesOptions & {
      * (tileFootprintPx, with the canvas's `pixelRatio`); never coarser than upstream's zoom.
      */
     texelParity?: {texels: number; pixelRatio: number};
+    /**
+     * Scenic Roads: the source's finest zoom by area (`ZoomByArea`): in a listed area a tile's
+     * maxzoom is the area's.
+     */
+    zoomByArea?: ZoomByArea;
 };
 
 /**
@@ -450,6 +493,8 @@ export function coveringTiles(transform: IReadonlyTransform, options: CoveringTi
             fullyVisible = intersectResult === IntersectionResult.Full;
         }
 
+        // Scenic Roads: this tile's own finest zoom (`zoomByArea`).
+        const tileMaxZoom = areaMaxZoom(options.zoomByArea, maxZoom, it.zoom, x, y);
         const distToTile2d = depthDistance2d(tileID, it.wrap, detailsProvider.distanceToTile2d(cameraCoord.x, cameraCoord.y, tileID, boundingVolume));
 
         let thisTileDesiredZ = desiredZ;
@@ -479,14 +524,14 @@ export function coveringTiles(transform: IReadonlyTransform, options: CoveringTi
                     // Scenic Roads: the gain picks finer tiles, but lays a reparsed (vector) tile
                     // out no deeper than the source's maxzoom + 1 beyond what upstream would: a
                     // camera low over the ground would otherwise lay its tiles out again at z19+.
-                    layoutZCap = Math.max((options.roundZoom ? Math.round : Math.floor)(thisTileDesiredZ), maxZoom + 1);
+                    layoutZCap = Math.max((options.roundZoom ? Math.round : Math.floor)(thisTileDesiredZ), tileMaxZoom + 1);
                     thisTileDesiredZ = Math.min(thisTileDesiredZ + scaleZoom(assumed / actual), Math.max(thisTileDesiredZ, maxTerrainLodZoom));
                 }
             }
         }
         thisTileDesiredZ = (options.roundZoom ? Math.round : Math.floor)(thisTileDesiredZ);
         thisTileDesiredZ = Math.max(0, thisTileDesiredZ);
-        const z = parityStop ? Math.min(thisTileDesiredZ, maxZoom, it.zoom) : Math.min(thisTileDesiredZ, maxZoom);
+        const z = parityStop ? Math.min(thisTileDesiredZ, tileMaxZoom, it.zoom) : Math.min(thisTileDesiredZ, tileMaxZoom);
 
         // We need to compute a valid wrap value for the tile to keep globe compatibility with mercator
         it.wrap = detailsProvider.getWrap(centerCoord, tileID, it.wrap);
@@ -501,7 +546,7 @@ export function coveringTiles(transform: IReadonlyTransform, options: CoveringTi
             const dy = cameraPoint[1] - 0.5 - (y << dz);
             const overscaledZ = options.reparseOverscaled ? Math.max(it.zoom, Math.min(thisTileDesiredZ, layoutZCap)) : it.zoom;
             result.push({
-                tileID: new OverscaledTileID(it.zoom === maxZoom ? overscaledZ : it.zoom, it.wrap, it.zoom, x, y),
+                tileID: new OverscaledTileID(it.zoom === tileMaxZoom ? overscaledZ : it.zoom, it.wrap, it.zoom, x, y),
                 distanceSq: vec2.sqrLen([centerPoint[0] - 0.5 - x, centerPoint[1] - 0.5 - y]),
                 // this variable is currently not used, but may be important to reduce the amount of loaded tiles
                 tileDistanceToCamera: Math.sqrt(dx * dx + dy * dy)

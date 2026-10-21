@@ -128,6 +128,9 @@ pub struct Layer {
     /// (pipeline::terrain_fine).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub fine: BTreeMap<String, String>,
+    /// The finest zoom of each fine pack's tiles, by its z10 tile (the map's zoom by area).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fine_zoom: BTreeMap<String, u8>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -733,6 +736,7 @@ mod tests {
                 lo: [("3/4/2".to_string(), lo)].into(),
                 hi: [("6/32/21".to_string(), hi)].into(),
                 fine: BTreeMap::new(),
+                fine_zoom: BTreeMap::new(),
                 extra: BTreeMap::new(),
             },
         );

@@ -76,6 +76,15 @@ export interface Meta {
   catalog?: number;
   /** The catalog's tile layers and their zooms (the 3D buildings: `buildings`). */
   layers?: Record<string, [number, number]>;
+  /** Where the terrain goes past z12 (pipeline::terrain_fine): its z10 tiles with fine tiles,
+   * "x/y", and the finest zoom of each. */
+  terrainAreas?: TerrainAreas;
+}
+
+/** A raster source's finest zoom by area (our MapLibre's `scenic:zoom-by-area`). */
+export interface TerrainAreas {
+  zoom: number;
+  tiles: Record<string, number>;
 }
 
 // Tiles and layers are cached by the browser, so their URLs carry the version of the file they

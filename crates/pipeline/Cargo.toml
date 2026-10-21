@@ -43,6 +43,8 @@ hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 socket2 = { version = "0.6", features = ["all"] }
 futures-util = { version = "0.3", default-features = false }
+# The fine terrain's tiles (terrain_fine::encode): libjxl, C++ built by CMake.
+jxl = { path = "../jxl" }
 
 [target.'cfg(target_os = "wasi")'.dependencies]
 # Pinned: coord::client's idle transport uses ureq's unversioned::transport API (no semver promise).

@@ -609,11 +609,13 @@ export class TileManager extends Evented<SourceEventType> {
                 terrain,
                 calculateTileZoom: this._source.calculateTileZoom,
                 maxContentElevation: this._updateMaxContentElevation(),
+                // Scenic Roads: the source's finest zoom by area.
+                zoomByArea: this._source.zoomByArea,
             };
             // Scenic Roads: the same cover asked for by another source this update (see _coverMemo).
             const memo = this._coverMemo;
             const key = memo ? [options.tileSize, options.minzoom, options.maxzoom, options.roundZoom ? 1 : 0, options.reparseOverscaled ? 1 : 0,
-                options.maxContentElevation, options.calculateTileZoom ? coverFnKey(options.calculateTileZoom) : ''].join('|') : '';
+                options.maxContentElevation, options.calculateTileZoom ? coverFnKey(options.calculateTileZoom) : '', options.zoomByArea?.key ?? ''].join('|') : '';
             const known = memo?.get(key);
             if (known) {
                 idealTileIDs = known.slice();

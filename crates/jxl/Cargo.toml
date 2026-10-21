@@ -1,0 +1,12 @@
+[package]
+name = "jxl"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Lossless JPEG XL encoding of 8-bit RGB images through libjxl (static, built by CMake)."
+
+[dependencies]
+
+[build-dependencies]
+jpegxl-src = "=0.12.0"
+cc = "1"

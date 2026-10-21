@@ -3,7 +3,7 @@ import {EXTENT} from '../data/extent.ts';
 import {mat4} from 'gl-matrix';
 import {Evented} from '../util/evented.ts';
 import {now} from '../util/time_control.ts';
-import {coveringTiles, coveringZoomLevel, focalLengthPx, tileFootprintPx} from '../geo/projection/covering_tiles.ts';
+import {areaMaxZoom, coveringTiles, coveringZoomLevel, focalLengthPx, tileFootprintPx} from '../geo/projection/covering_tiles.ts';
 import {cameraMercatorCoordinate} from '../geo/projection/mercator_utils.ts';
 import {mercatorZfromAltitude} from '../geo/mercator_coordinate.ts';
 import {createMat4f64} from '../util/util.ts';
@@ -421,7 +421,9 @@ export class TerrainTileManager extends Evented {
     getSourceTile(tileID: OverscaledTileID, searchForDEM?: boolean): Tile | undefined {
         const source = this.tileManager._source;
         let z = tileID.overscaledZ - this.deltaZoom;
-        if (z > source.maxzoom) z = source.maxzoom;
+        // Scenic Roads: the DEM's finest zoom where the tile lies (`zoomByArea`).
+        const maxzoom = areaMaxZoom(source.zoomByArea, source.maxzoom, tileID.canonical.z, tileID.canonical.x, tileID.canonical.y);
+        if (z > maxzoom) z = maxzoom;
         if (z < source.minzoom) return undefined;
         // cache for tileID to terrain-tileID
         this._sourceTileCache[tileID.key] ||= tileID.scaledTo(z).key;

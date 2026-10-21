@@ -162,6 +162,29 @@ pub fn decode_terrain_png(bytes: &[u8]) -> Result<Vec<f32>> {
     Ok(out)
 }
 
+/// Decode a terrain tile to metres: a Terrarium PNG (`decode_terrain_png`), or a lossless JPEG XL
+/// codestream of Terrarium RGB (the fine terrain's tiles: pipeline::terrain_fine).
+pub fn decode_terrain(bytes: &[u8]) -> Result<Vec<f32>> {
+    if !bytes.starts_with(&[0xff, 0x0a]) {
+        return decode_terrain_png(bytes);
+    }
+    let img = jxl_oxide::JxlImage::builder()
+        .read(std::io::Cursor::new(bytes))
+        .map_err(|e| anyhow::anyhow!("JPEG XL: {e}"))?;
+    let render = img.render_frame(0).map_err(|e| anyhow::anyhow!("JPEG XL: {e}"))?;
+    let mut stream = render.stream();
+    let ch = stream.channels() as usize;
+    let n = (stream.width() * stream.height()) as usize;
+    if ch < 3 {
+        bail!("a JPEG XL terrain tile of {ch} channels");
+    }
+    let mut buf = vec![0u8; n * ch];
+    stream.write_to_buffer(&mut buf);
+    let mut out = vec![0f32; n];
+    terrarium_decode(&buf, ch, &mut out);
+    Ok(out)
+}
+
 /// Above Everest: not an elevation. AWS Terrain Tiles fill some voids with 32767 m (a z9 pixel on
 /// the Toyama shore, clusters of hundreds of z12 pixels along the US–Canada border).
 pub const MAX_ELEV: f32 = 8900.0;
@@ -1628,11 +1651,7 @@ fn pull_push(t: &mut [f32], hole: &[bool]) {
 
 /// Encode metres as a Terrarium RGB PNG (quantised to 1/256 m).
 pub fn encode_terrain_png(elev: &[f32], w: u32, h: u32) -> Result<Vec<u8>> {
-    let mut rgb = Vec::with_capacity(elev.len() * 3);
-    for &e in elev {
-        let v = ((e + 32768.0) * 256.0).round().clamp(0.0, 16_777_215.0) as u32;
-        rgb.extend_from_slice(&[(v >> 16) as u8, (v >> 8) as u8, v as u8]);
-    }
+    let rgb = terrarium_rgb(elev);
     let mut out = Vec::new();
     {
         let mut enc = png::Encoder::new(&mut out, w, h);
@@ -1645,20 +1664,30 @@ pub fn encode_terrain_png(elev: &[f32], w: u32, h: u32) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Metres as Terrarium RGB (3 bytes a pixel, 1/256 m).
+pub fn terrarium_rgb(elev: &[f32]) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity(elev.len() * 3);
+    for &e in elev {
+        let v = ((e + 32768.0) * 256.0).round().clamp(0.0, 16_777_215.0) as u32;
+        rgb.extend_from_slice(&[(v >> 16) as u8, (v >> 8) as u8, v as u8]);
+    }
+    rgb
+}
+
 /// Decode tile (z, x, y); if absent, crop + bilinearly upsample the nearest stored ancestor.
 pub fn tile_with_fallback(arc: &crate::archive::Archive, z: u8, x: u32, y: u32) -> Option<Vec<f32>> {
     tile_with_fallback_by(&|z, x, y| arc.get(z, x, y).map(<[u8]>::to_vec), z, x, y)
 }
 
-/// `tile_with_fallback` over any source of Terrarium PNG tiles.
+/// `tile_with_fallback` over any source of terrain tiles (`decode_terrain`).
 pub fn tile_with_fallback_by(get: &dyn Fn(u8, u32, u32) -> Option<Vec<u8>>, z: u8, x: u32, y: u32) -> Option<Vec<f32>> {
     if let Some(b) = get(z, x, y) {
-        return decode_terrain_png(&b).ok();
+        return decode_terrain(&b).ok();
     }
     for dz in 1..=z.min(8) {
         let (pz, px, py) = (z - dz, x >> dz, y >> dz);
         let Some(b) = get(pz, px, py) else { continue };
-        let p = decode_terrain_png(&b).ok()?;
+        let p = decode_terrain(&b).ok()?;
         return Some(upsampled(&p, dz, x, y));
     }
     None

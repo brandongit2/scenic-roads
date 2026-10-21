@@ -106,6 +106,7 @@ pub const SCENIC_BUILD: Table = Table {
         c("bldtiles", "<T …> [--pass d] [--regions dir]", "the 3D buildings' tiles of z6 tiles T", &[], PASS_REGIONS, ANY),
         c("bldfield-lo", "<Q …>", "z3 tiles Q's zoomed-out buildings field", &[], &[], ANY),
         c("depth-lo", "<Q …>", "z3 tiles Q's zoomed-out depth (lo packs, z3–8) from the declared depth sources", &[], &[], ANY),
+        c("terrain-fine", "<8/x/y …>", "z8 tiles' terrain finer than its base (fine packs, z13 and finer) where a declared elevation dataset has the detail", &[], &[], ANY),
         c("depth", "<T …>", "z6 tiles T's depth (hi packs, z9–16) where a depth source is finer than z8", &[], &[], ANY),
         c("bldtile-task", "<8/x/y | 6/x/y> --out dir [--pass d] [--regions dir]", "a z8 tile's task folder as a bldtiles job cuts it", &[], &["--out", "--pass", "--regions"], 1),
         c("trees", "<T …> [--pass d] [--regions dir] [--dem dir] [--chm dir] [--expect-same T,…]", "the tree cover layers, clipped to the coverage: of z6 tiles T, or a z3 tile's whole", &[], &["--pass", "--regions", "--dem", "--chm", "--expect-same"], ANY),

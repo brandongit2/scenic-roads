@@ -1,3 +1,4 @@
+import {zoomByArea, type ZoomByArea} from '../geo/projection/covering_tiles.ts';
 import {ensureError, extend, isSafari, pick} from '../util/util.ts';
 import {pngToRGBA} from '../util/png_rgba.ts';
 import {ImageRequest} from '../util/image_request.ts';
@@ -66,6 +67,8 @@ export class RasterTileSource extends Evented<SourceEventType> implements Source
     bounds: [number, number, number, number];
     tileBounds: TileBounds;
     roundZoom: boolean;
+    /** Scenic Roads: its finest zoom by area (`scenic:zoom-by-area`, covering_tiles.ts). */
+    zoomByArea?: ZoomByArea;
     dispatcher: Dispatcher;
     map: Map;
     tiles: string[];
@@ -105,6 +108,8 @@ export class RasterTileSource extends Evented<SourceEventType> implements Source
             if (tileJSON) {
                 extend(this, tileJSON);
                 if (tileJSON.bounds) this.tileBounds = new TileBounds(tileJSON.bounds, this.minzoom, this.maxzoom);
+                // Scenic Roads: once its maxzoom is known.
+                this.zoomByArea = zoomByArea((this._options as Record<string, unknown>)['scenic:zoom-by-area'], this.maxzoom);
 
                 // `content` is included here to prevent a race condition where `Style._updateSources` is called
                 // before the TileJSON arrives. this makes sure the tiles needed are loaded once TileJSON arrives

@@ -48,10 +48,19 @@ const zOffset = (prefix: string) => ({
     'property-type': 'data-driven',
 });
 
+/** A raster or raster-dem source's finest zoom by area (Scenic Roads). */
+const zoomByAreaSpec = {
+    type: '*',
+    doc: 'Where the source has finer tiles than its maxzoom: `{"zoom": z, "tiles": {"x/y": finest zoom}}`, the tiles of zoom z (at most the source\'s maxzoom) whose area goes on to a finer zoom (Scenic Roads).',
+};
+
 export const SCENIC_PROPERTIES: Record<string, Record<string, unknown>> = {
     paint_line: {'line-z-offset': zOffset('line'), 'line-elevation-reference': elevationReference('line')},
     paint_fill: {'fill-z-offset': zOffset('fill'), 'fill-elevation-reference': elevationReference('fill')},
     paint_raster: {'raster-z-offset': rasterZOffset, 'raster-elevation-reference': elevationReference('raster')},
+    // A source's finest zoom by area: `{zoom, tiles: {"x/y": finest zoom}}` (covering_tiles.ts `ZoomByArea`).
+    source_raster: {'scenic:zoom-by-area': zoomByAreaSpec},
+    source_raster_dem: {'scenic:zoom-by-area': zoomByAreaSpec},
 };
 
 // Point labels on the same terms: `symbol-height-anchor` `sea`, its `symbol-height-offset` an
