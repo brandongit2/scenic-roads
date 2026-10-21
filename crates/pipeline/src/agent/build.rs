@@ -3181,11 +3181,9 @@ fn landmarks_work(
     if !stale_pois.is_empty() {
         out.push(Work { step: "pois".into(), targets: stale_pois });
     }
-    let mut peaks_built = false;
     if pois_built && m.contains_key(&format!("work/summits/{date}")) && summits_work(date, m, done).is_none() {
         let stale_peaks: Vec<(TileId, String)> =
             peaks_keys(cov, date, m).into_iter().filter(|(u, k)| stale(&done.peaks, &u.slash(), k)).collect();
-        peaks_built = stale_peaks.is_empty();
         let ready: Vec<(String, String)> = stale_peaks
             .into_iter()
             .filter(|(u, _)| peaks_terrain(*u).is_disjoint(terrain_left))
@@ -3196,11 +3194,9 @@ fn landmarks_work(
         }
     }
     let pois_now = if pois_built { current_pois(cov, date, m) } else { Vec::new() };
-    let mut items_built = false;
     if !pois_now.is_empty() {
         let k = items_key(date, &pois_now);
-        items_built = done.lo.get("items").map(String::as_str) == Some(k.as_str());
-        if !items_built {
+        if done.lo.get("items").map(String::as_str) != Some(k.as_str()) {
             out.push(Work { step: "items".into(), targets: vec![("items".into(), k)] });
         }
     }
@@ -3209,16 +3205,10 @@ fn landmarks_work(
     // not, and the marks and overlays wait.)
     let sites_due =
         heritage_sites_key(cov, date, m, inputs).is_none() || heritage_sites_work(cov, date, m, done, inputs).is_some();
-    let heritage_built = match heritage_key(cov, date, m) {
-        _ if sites_due => false,
-        None => false,
-        Some(k) if done.lo.get("heritage") != Some(&k) => {
-            out.push(Work { step: "heritage".into(), targets: vec![("heritage".into(), k)] });
-            false
-        }
-        Some(_) => true,
-    };
-    if peaks_built && items_built && heritage_built {
+    if let Some(k) = heritage_key(cov, date, m).filter(|k| !sites_due && done.lo.get("heritage") != Some(k)) {
+        out.push(Work { step: "heritage".into(), targets: vec![("heritage".into(), k)] });
+    }
+    if marks_ready(cov, date, m, done, inputs) {
         let k = marks_key(date, m, &units.iter().map(|(u, _)| *u).collect::<Vec<_>>());
         if done.lo.get("marks").map(String::as_str) != Some(k.as_str())
             && gate_open(last, way.since_marks, MARKS_EVERY_S)
@@ -3236,6 +3226,34 @@ fn landmarks_work(
         }
     }
     out
+}
+
+/// Whether the landmark points' inputs are built as `landmarks_work` decides it (the candidates,
+/// their peaks, the items and the heritage chain, each current), so the points may run: the
+/// checklist's view of the points and overlays, whatever the chain before them can be told.
+fn marks_ready(
+    cov: &Coverage,
+    date: &str,
+    m: &BTreeMap<String, String>,
+    done: &Keys,
+    inputs: &BTreeMap<String, String>,
+) -> bool {
+    let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
+    let Some(units) = pois_keys(cov, date, m, inputs) else { return false };
+    let pois_built = m.contains_key(&format!("work/trailends/{date}"))
+        && trailends_work(date, m, done).is_none()
+        && units.iter().all(|(u, k)| !stale(&done.pois, &u.slash(), k));
+    let peaks_built = pois_built
+        && m.contains_key(&format!("work/summits/{date}"))
+        && summits_work(date, m, done).is_none()
+        && peaks_keys(cov, date, m).iter().all(|(u, k)| !stale(&done.peaks, &u.slash(), k));
+    let pois_now = if peaks_built { current_pois(cov, date, m) } else { Vec::new() };
+    let items_built =
+        !pois_now.is_empty() && done.lo.get("items").map(String::as_str) == Some(items_key(date, &pois_now).as_str());
+    items_built
+        && heritage_sites_key(cov, date, m, inputs).is_some()
+        && heritage_sites_work(cov, date, m, done, inputs).is_none()
+        && heritage_key(cov, date, m).is_some_and(|k| done.lo.get("heritage") == Some(&k))
 }
 
 /// The 3D buildings' sources fetched onto the NAS (dem/bldfetch.py, `scenic-build bld-fetch`): the
@@ -4090,6 +4108,22 @@ pub fn checklist(
         let left = heritage_sites_key(cov, date, m, inputs).is_some()
             && (sites_left || heritage_key(cov, date, m).is_none_or(|k| done.lo.get("heritage") != Some(&k)));
         i.left = Some(left as usize);
+    }
+    // (The landmark points and the overlays likewise, as landmarks_work decides them: a run of each
+    // left while what they read isn't all built (it will be, and they run after), or their key
+    // isn't recorded; none without registers accepted (the heritage chain never runs, nor they).)
+    let registers = heritage_sites_key(cov, date, m, inputs).is_some();
+    let inputs_built = registers && !sites_left && marks_ready(cov, date, m, done, inputs);
+    let units: Vec<TileId> = pois_keys(cov, date, m, inputs).unwrap_or_default().into_iter().map(|(u, _)| u).collect();
+    let marks_left = registers && (!inputs_built || done.lo.get("marks") != Some(&marks_key(date, m, &units)));
+    let overlays_left = registers
+        && (marks_left
+            || !m.contains_key(crate::markconv::HERITAGE_DOTS)
+            || overlays_key(date, m).is_none_or(|k| done.lo.get("overlays") != Some(&k)));
+    for (step, left) in [("marks", marks_left), ("overlays", overlays_left)] {
+        if let Some(i) = out.iter_mut().find(|i| i.step == step && i.known()) {
+            i.left = Some(left as usize);
+        }
     }
     next.insert("landmarks", next_of(&landmarks));
     // (Its tiles' normalized files and tiles together; known once the sources' indexes read.)
@@ -6095,6 +6129,21 @@ pub(crate) mod tests {
         let mut d2 = done.clone();
         heritage_chain_done(&c, &m, &mut d2, "d");
         assert_eq!(item(&checklist(&c, "d", &m, &d2, &BTreeMap::new(), false), "heritage").left, Some(0));
+        // (Task #529) The landmark points and the overlays likewise: a run left each while the
+        // candidates before them are stale, their keys recorded or not; with everything before them
+        // built, a run while their key isn't recorded, none once it is.
+        for step in ["marks", "overlays"] {
+            assert_eq!(item(&l, step).left, Some(1), "{step}");
+        }
+        let mut d3 = d2.clone();
+        let units: Vec<TileId> =
+            pois_keys(&c, "d", &m, &BTreeMap::new()).unwrap_or_default().into_iter().map(|(u, _)| u).collect();
+        d3.record("marks", &[("marks".to_string(), marks_key("d", &m, &units))]);
+        if let Some(k) = overlays_key("d", &m) {
+            d3.record("overlays", &[("overlays".to_string(), k)]);
+        }
+        let l3 = checklist(&c, "d", &m, &d3, &BTreeMap::new(), false);
+        assert_eq!((item(&l3, "marks").left, item(&l3, "overlays").left), (Some(1), Some(1)), "pois stale");
         for what in ["terrain", "slope", "sites", "roads", "trees"] {
             assert!(line(&l, what).finished(), "{what} done");
         }
@@ -7131,6 +7180,16 @@ pub(crate) mod tests {
         let due = gated(&m, &done, way(0, OVERLAYS_EVERY_S));
         assert_eq!(due.iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), ["overlays"]);
         assert_eq!(due, gated(&m, &done, Publishing::default()));
+        // (Task #529) The checklist sizes them as planned: everything before them built, the
+        // points recorded and the overlays not, a run of the overlays left; recorded, none.
+        let left = |done: &Keys| {
+            let l = checklist(&c, "d", &m, done, &BTreeMap::new(), false);
+            let left = |s: &str| l.iter().flat_map(|x| x.items.iter()).find(|i| i.step == s).unwrap().left;
+            (left("marks"), left("overlays"))
+        };
+        assert_eq!(left(&done), (Some(0), Some(1)));
+        done.record("overlays", &[("overlays".into(), due[0].1.clone())]);
+        assert_eq!(left(&done), (Some(0), Some(0)));
     }
 
     /// The steps gated by time: when each last ran, as its recorded key changed; its gate open
