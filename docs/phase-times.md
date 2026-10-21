@@ -78,8 +78,8 @@ but holds the sources' reads as sub-phases, so depth's NAS share is really highe
 
 | change | bound by | before → after (measured) | ethernet |
 |---|---|---|---|
-| A GeoTIFF's header read in windows and its tile arrays kept (`geotiff::Windowed`, `STRILES_KEPT`): an open 1–2 reads (was 24–38), a block's read 1 (was 3); commit 64a7c64a | round trips | 3/3/2: 64,802 → 17,525 reads; 122 s → 32 s cold (§6) | helps little: a round trip on the NAS under load is its disks' seeks, not the link |
-| A block's water tiles read from the basemap in runs (`PmTiles::get_many`, `WaterSource::depth_polys_many`), decoded and rasterised on the job's threads; commit ac2387a1 | round trips, then CPU | the water phase 11.3 s → 1.8 s warm, 17 s → 2 s cold (§6) | the same |
+| A GeoTIFF's header read in windows and its tile arrays kept (`geotiff::Windowed`, `STRILES_KEPT`): an open 1–2 reads (was 24–38), a block's read 1 (was 3); commit 64a7c64a | round trips | 3.7–5.9× fewer range reads on three tiles; wall 36.9 → 26.2 s warm on 3/3/2, cold-to-cold not measured (§6) | helps little: a round trip on the NAS under load is its disks' seeks, not the link |
+| A block's water tiles read from the basemap in runs (`PmTiles::get_many`, `WaterSource::depth_polys_many`), decoded and rasterised on the job's threads; commit ac2387a1 | round trips, then CPU | the water phase 11.3 → 1.8 s and 6.4 → 1.8 s warm, 14.3 → 1.3 s cold-then-warm (§6) | the same |
 
 Byte-identical outputs: the same bytes are read, in fewer reads; the measure's digest of the
 tiles made is the same before and after (§6). No version bump.
@@ -102,27 +102,38 @@ tiles made is the same before and after (§6). No version bump.
 6. **slope's untimed 67 %** over the window: the landing of put-off uploads, timed since #445
    ("the uploads beside landed"); the last 20 runs are 0.4 % untimed.
 
-## 6. The measure (3/3/2's assembly to z8, `SCENIC_DEPTH_MEASURE`, release, the NAS read-only)
+## 6. The measure (`SCENIC_DEPTH_MEASURE`, release, the NAS read-only, a z3 tile's assembly to z8)
 
-The M4, 20 Oct 19:35–19:45, the publish test suite running beside it (noisy); 1,716 grids opened,
-1,338 tiles made, digest 23c0bb46697c9d15 in every run.
+The M4, 20 Oct 19:35–20:27, other agents' test suites running beside (noisy). "Cold": the tile's
+grids not read on this Mac today; "warm": read minutes before (the page cache holds some of it;
+what it holds varies, so only a cold run is a job's case, and a cold pair needs two tiles). The
+digest of the tiles made is the same before and after on every tile: 3/3/2 23c0bb46697c9d15,
+3/0/1 397ae0955752fa00, 3/1/3 554253309d46a6cf.
 
-| run | wall | range reads | water read | files opened | windows read |
-|---|---|---|---|---|---|
-| before, the Mac's cache cold | 122.3 s | 64,802 | 17.0 s | 36.6 s | 52.8 s |
-| the GeoTIFF change, warm | 31.7 s | 17,525 | 6.3 s | 12.7 s | 3.7 s |
-| both changes, under load | 83.1 s | 17,525 | 2.1 s | 24.0 s | 47.1 s |
-| before, warm | 36.9 s | 64,802 | 11.3 s | 5.8 s | 6.4 s |
-| both changes, warm | 26.2 s | 17,525 | 1.8 s | 5.0 s | 6.4 s |
+| tile | run | wall | range reads | water read | files opened | windows read |
+|---|---|---|---|---|---|---|
+| 3/3/2 (1,716 grids) | before, cold, the publish suite beside | 122.3 s | 64,802 | 17.0 s | 36.6 s | 52.8 s |
+| | the GeoTIFF change, warm | 31.7 s | 17,525 | 6.3 s | 12.7 s | 3.7 s |
+| | both changes, warm, under load | 83.1 s | 17,525 | 2.1 s | 24.0 s | 47.1 s |
+| | before, warm | 36.9 s | 64,802 | 11.3 s | 5.8 s | 6.4 s |
+| | both changes, warm | 26.2 s | 17,525 | 1.8 s | 5.0 s | 6.4 s |
+| 3/0/1 (1,900 grids) | final code, cold | 83.6 s | 14,219 | 2.7 s | 40.4 s | 30.1 s |
+| | before, warm | 24.6 s | 55,971 | 6.4 s | 5.6 s | 2.8 s |
+| | final code, warm | 23.8 s | 14,219 | 1.8 s | 3.9 s | 3.8 s |
+| 3/1/3 (29,909 opens: more grids than a reader keeps) | before, cold | 464.0 s | 520,752 | 14.3 s | 84.1 s | 347.5 s |
+| | final code, warm | 361.4 s | 87,648 | 1.3 s | 76.0 s | 273.8 s |
 
-Warm, the Mac's page cache hides the NAS's round trips (the opens and windows cost the same
-either way), so the warm pair understates a job's gain: a job reads its grids once. The cold run
-is the job's case: 3.7× fewer reads, and the water phase 6× faster either way (its reads were a
-tenth of the block, its rasterising the rest, now on the job's threads). Expected on the live
-steps: depth-lo's "files opened" (21 %) and "windows read" (74 %) fall by about their round-trip
-share (CPU/wall 0.0 and 0.2: most of it), depth's water read (32 %) by 5–6× and its windows
-read (17 %) likewise; a depth-lo run of 41 min to roughly 10–15, a depth run of 18 min to
-roughly 8–10. Not measured end to end: the next runs' `scenic timings` will say.
+What is measured: **3.7–5.9× fewer range reads** on every tile (64,802 → 17,525; 55,971 →
+14,219; 520,752 → 87,648), and **the water phase 4–11× faster** in every pair (11.3 → 1.8 s
+warm, 6.4 → 1.8 s warm, 14.3 → 1.3 s). What is not: a cold-to-cold wall time on one tile (3/3/2's
+cold before, 122 s, was under the publish suite; 3/0/1's cold after, 84 s, under other agents'
+tests; the warm pairs, 36.9 → 26.2 s and 24.6 → 23.8 s, hide the round trips in the page cache).
+On 3/1/3 the second run still read the NAS (361 s against 464 s cold: the reads left are the
+grids' block data, one each, and its 29,909 opens are SMB opens, not reads). So the opens' and
+windows' gain in a job is the round trips removed (depth-lo's "files opened" 21 % and "windows
+read" 74 % at CPU/wall 0.0–0.2, depth's windows 17 %), bounded by the data reads that remain;
+the water read's (depth's 32 %) is measured. Estimated: a depth run of 18 min to roughly 10–12, a
+depth-lo run of 41 min to roughly 20–30; the next runs' `scenic timings` will say.
 
 ## 7. What ethernet changes
 
