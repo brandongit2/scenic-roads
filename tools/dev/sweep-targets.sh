@@ -63,6 +63,8 @@ for wt in $repo/.claude/worktrees/*(N/); do
   # data/ uncommitted or ignored, and no live process holding Claude Code's lock.
   [[ -n $onmain && ${wt:t} == agent-* ]] || continue
   [[ -n $b ]] || { skip "no branch"; continue; }
+  # (a grace period: an agent's report is often followed by a review and a resume within minutes)
+  if [[ -n $(find $wt -maxdepth 1 -newermt '15 minutes ago' -print -quit 2>/dev/null) ]]; then skip "$why, but touched in the last 15 min"; continue; fi
   extra=$(git -C $wt status --porcelain --ignored 2>/dev/null | grep -vxE '!! (target|data)/')
   [[ -z $extra ]] || { skip "$why; has $(print -r -- $extra | head -3 | tr '\n' ' ')"; continue; }
   lock=$(print -r -- "$locks" | awk -v w=$wt '/^worktree /{c=($2==w)} c && /^locked/{print; exit}')
