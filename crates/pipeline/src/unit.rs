@@ -1024,11 +1024,9 @@ fn run(mut c: Command, what: &str, log: &Path) -> Result<()> {
     // (Its phase, the program's own phases under it where it says them.)
     let _p = crate::timings::phase(what, program_class(what));
     crate::timings::child(&mut c);
-    // (What it and its programs read and open, counted in a folder of their own: added to this
-    // process's as it ends, store::nasio.)
-    let counts = std::path::PathBuf::from(format!("{}.counts", log.display()));
-    std::fs::remove_dir_all(&counts).ok();
-    std::fs::create_dir_all(&counts).ok();
+    // (What it and its programs read and open, counted in a folder of their own inside this
+    // process's, seen as it runs: added to this process's as it ends, store::nasio.)
+    let counts = store::nasio::program_dir(Path::new(&format!("{}.counts", log.display())));
     c.env(store::nasio::ENV, &counts);
     let t = std::time::Instant::now();
     let mut child = store::spawn::spawn(c.stdout(f.try_clone()?).stderr(std::process::Stdio::piped()))
@@ -1054,10 +1052,7 @@ fn run(mut c: Command, what: &str, log: &Path) -> Result<()> {
     // Waited for with what it used: its (and its programs') peak memory.
     let waited = crate::sys::wait_with_peak(child).with_context(|| format!("wait for {what}"));
     read.join().ok();
-    if let Some(n) = store::nasio::sum_dir(&counts) {
-        store::nasio::add_counts(&n);
-    }
-    std::fs::remove_dir_all(&counts).ok();
+    store::nasio::take_program(&counts);
     let (st, peak) = waited?;
     PEAK.fetch_max(peak, std::sync::atomic::Ordering::Relaxed);
     if !st.success() {

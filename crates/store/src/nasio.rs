@@ -13,8 +13,9 @@
 //! that mapping (no write call). The agent sums the folder's files (`sum_dir`), folding the files of
 //! processes that ended into one (`BASE`, `fold_ended`) so a long job's many programs keep the read
 //! small; a job's totals only grow. Without `ENV` (or its file not made) the counts stay in this
-//! process's memory alone. A program a step runs gets a folder of its own, whose sums its runner adds
-//! to its own as it ends (`add_counts`; pipeline::unit's `run`).
+//! process's memory alone. A program a step runs gets a folder of its own inside its runner's
+//! (`program_dir`: summed one level down, so it shows as it runs), whose sums its runner takes into
+//! its own as it ends (`take_program`; pipeline::unit's `run`).
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -145,13 +146,60 @@ fn bytes(c: &Counts) -> Vec<u8> {
 /// gave none: no measure).
 pub fn sum_dir(dir: &Path) -> Option<Counts> {
     let mut out = [0u64; SLOTS];
-    for e in std::fs::read_dir(dir).ok()?.flatten() {
-        let Ok(b) = std::fs::read(e.path()) else { continue };
-        for (o, v) in out.iter_mut().zip(parse(&b)) {
-            *o += v;
+    add_dir(dir, &mut out, true).then_some(out)
+}
+
+/// Adds folder `dir`'s counts files (`BASE` and `<pid>-<nonce>`; nothing else, `base.tmp` not) to
+/// `out`, and with `subs` its running programs' folders' (`SUB`*, one level); false when it can't be
+/// read.
+fn add_dir(dir: &Path, out: &mut Counts, subs: bool) -> bool {
+    let Ok(rd) = std::fs::read_dir(dir) else { return false };
+    for e in rd.flatten() {
+        let Ok(name) = e.file_name().into_string() else { continue };
+        if name.starts_with(SUB) {
+            if subs {
+                add_dir(&e.path(), out, false);
+            }
+        } else if name == BASE || name.split_once('-').is_some_and(|(p, _)| p.parse::<u32>().is_ok()) {
+            let Ok(b) = std::fs::read(e.path()) else { continue };
+            for (o, v) in out.iter_mut().zip(parse(&b)) {
+                *o += v;
+            }
         }
     }
-    Some(out)
+    true
+}
+
+/// The prefix of a running program's counts folder inside its runner's (`program_dir`).
+pub const SUB: &str = "sub-";
+
+/// A folder for a program this process runs to count in (`ENV`), new: inside this process's own
+/// counts folder when it has one (so the agent sees the program's traffic as it runs: `sum_dir`
+/// goes one level into it), else `fallback`. Its runner, as it ends, calls `take_program`.
+pub fn program_dir(fallback: &Path) -> std::path::PathBuf {
+    static N: AtomicU64 = AtomicU64::new(0);
+    let d = match std::env::var_os(ENV) {
+        Some(own) => Path::new(&own).join(format!("{SUB}{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed))),
+        None => fallback.to_path_buf(),
+    };
+    std::fs::remove_dir_all(&d).ok();
+    std::fs::create_dir_all(&d).ok();
+    d
+}
+
+/// A program's folder (`program_dir`) as it ended: moved out of the summed folder first, then its
+/// counts added to this process's (so nothing is summed twice; the agent's rates take a dip in the
+/// meantime as none), and removed.
+pub fn take_program(dir: &Path) {
+    let gone = dir.with_file_name(format!(
+        ".taken-{}",
+        dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    ));
+    let at = if std::fs::rename(dir, &gone).is_ok() { gone } else { dir.to_path_buf() };
+    if let Some(n) = sum_dir(&at) {
+        add_counts(&n);
+    }
+    std::fs::remove_dir_all(&at).ok();
 }
 
 /// Whether process `pid` is running (a process of another user's counts as running).
@@ -231,6 +279,25 @@ mod tests {
         let before = get(Count::Listed);
         add(Count::Listed, 3);
         assert!(get(Count::Listed) >= before + 3);
+    }
+
+    /// A running program's folder inside its runner's is summed with it; taken as it ends, its
+    /// counts move to the runner's own (none twice); `base.tmp` is never summed.
+    #[test]
+    fn a_running_programs_counts_show_in_the_slots_sum() {
+        let d = tempfile::tempdir().unwrap();
+        let sub = d.path().join(format!("{SUB}1-0"));
+        std::fs::create_dir(&sub).unwrap();
+        let mut c = [0u64; SLOTS];
+        c[Count::ReadBytes as usize] = 40;
+        std::fs::write(sub.join("2147483646-9"), bytes(&c)).unwrap();
+        std::fs::write(d.path().join("base.tmp"), bytes(&c)).unwrap();
+        assert_eq!(sum_dir(d.path()).unwrap()[0], 40);
+        let before = get(Count::ReadBytes);
+        take_program(&sub);
+        assert!(get(Count::ReadBytes) >= before + 40);
+        assert_eq!(sum_dir(d.path()).unwrap()[0], 0);
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
     }
 
     /// A process given the pid of one that ended makes a file of its own: the ended one's counts

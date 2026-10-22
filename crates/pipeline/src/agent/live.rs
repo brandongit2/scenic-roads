@@ -378,7 +378,7 @@ fn sample(s: &Store, home: &Path, guard: &super::memguard::Sampler, t: u64) {
     }
 }
 
-/// The jobs' NAS counts as last read, for their rates (module doc).
+/// The jobs' NAS counts, the most yet read, for their rates (module doc).
 #[derive(Default)]
 struct NasRates {
     /// Per job (process group): its counts and when they were read (unix s).
@@ -399,13 +399,19 @@ impl NasRates {
                 whole = false;
                 continue;
             };
+            let mut high = c;
             if let Some((was, at)) = self.last.get(pgid) {
                 let dt = t.saturating_sub(*at).max(1) as f64;
                 for (i, o) in out.iter_mut().enumerate() {
                     *o += c[i].saturating_sub(was[i]) as f64 / dt;
                 }
+                // (The most seen: a program's counts moving to its runner's dip a moment, never
+                // counted twice as they come back.)
+                for (h, w) in high.iter_mut().zip(was) {
+                    *h = (*h).max(*w);
+                }
             }
-            seen.insert(*pgid, (c, t));
+            seen.insert(*pgid, (high, t));
         }
         self.last = seen;
         for i in [0, 2] {
@@ -501,6 +507,7 @@ mod tests {
         std::fs::create_dir(&a).unwrap();
         std::fs::create_dir(&b).unwrap();
         let put = |dir: &Path, pid: &str, c: [u64; 2]| {
+            // (Named as a running process's, this one's: never folded.)
             let mut v = vec![0u8; store::nasio::SLOTS * 8];
             v[..8].copy_from_slice(&c[0].to_le_bytes());
             v[24..32].copy_from_slice(&c[1].to_le_bytes());
@@ -508,15 +515,20 @@ mod tests {
         };
         let mut r = NasRates::default();
         assert_eq!(r.rates(&[], 10), Some([0.0; 7]));
-        put(&a, "1", [4 << 20, 1]);
+        put(&a, &format!("{}-1", std::process::id()), [4 << 20, 1]);
         // (First seen: its baseline.)
         assert_eq!(r.rates(&[(7, a.clone())], 10), Some([0.0; 7]));
-        put(&a, "2", [2 << 20, 3]);
-        put(&b, "3", [1 << 20, 0]);
+        put(&a, &format!("{}-2", std::process::id()), [2 << 20, 3]);
+        put(&b, &format!("{}-3", std::process::id()), [1 << 20, 0]);
         let x = r.rates(&[(7, a.clone()), (8, b.clone())], 12).unwrap();
         assert_eq!((x[0], x[3]), (1.0, 1.5));
         // (A job given no folder: the second unmeasured.)
-        assert_eq!(r.rates(&[(7, a), (9, d.path().join("none"))], 13), None);
+        // (A dip as a program's counts move to its runner's, then back: nothing counted twice.)
+        put(&a, &format!("{}-2", std::process::id()), [0, 0]);
+        assert_eq!(r.rates(&[(7, a.clone())], 13).unwrap()[0], 0.0);
+        put(&a, &format!("{}-2", std::process::id()), [2 << 20, 3]);
+        assert_eq!(r.rates(&[(7, a.clone())], 14).unwrap()[0], 0.0);
+        assert_eq!(r.rates(&[(7, a), (9, d.path().join("none"))], 15), None);
     }
 
     #[test]

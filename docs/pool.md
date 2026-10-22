@@ -992,8 +992,10 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   a build's `Out`, the metadata walks `costin::meta` notes; beside the NAS's, the local disk's
   reads and the GeoTIFFs opened) into a file of its own, `<agent folder>/nascounts[-k]/<pid>-<nonce>`
   (a later process with an ended one's pid makes its own), ten u64s mapped shared (no write call a
-  count; on this Mac's disk, never the NAS). A program a step runs counts in a folder of its own,
-  added to its runner's as it ends (so its traffic shows then). The agent folds the files of
+  count; on this Mac's disk, never the NAS). A program a step runs counts in a folder of its own
+  inside its runner's (`sub-<runner pid>-<n>`, summed one level down, so its traffic shows as it
+  runs), moved out and added to its runner's as it ends (the rates keep the most seen, so that
+  moment's dip is never counted twice). The agent folds the files of
   processes that ended into the folder's `base`, sums each job's folder and records the jobs' NAS
   traffic as rates: `nas_read_mbs`, `nas_write_mbs` (MB/s), `nas_files_s` (files opened to read),
   `nas_creates_s`, `nas_listed_s` (entries), `nas_stats_s`, `nas_deletes_s`. A job's first second
