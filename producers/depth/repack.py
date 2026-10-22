@@ -76,7 +76,7 @@ class Remote:
         if self.host == "local":
             return ["sh", "-c", cmd]
         return ["ssh", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=30",
-                    # AES-GCM first (2.4x the default's rate from the NAS); the server's own pick if it lacks it
+                    # AES-GCM first (2.4x the default's rate from the NAS); else the next in the list
                     "-c", "aes128-gcm@openssh.com,chacha20-poly1305@openssh.com,aes128-ctr", self.host, cmd]
 
     def run(self, cmd: str, stdin: bytes | None = None) -> bytes:
