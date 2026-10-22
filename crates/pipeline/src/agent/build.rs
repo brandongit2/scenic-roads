@@ -1003,8 +1003,9 @@ pub const ROADUNITS_V: u32 = 1;
 pub const STATIONS_V: u32 = 1;
 pub const FERRIES_V: u32 = 3;
 /// The landmark points from the candidates (crate::marksjob). (2: the markdata and each kind's
-/// thinned tiles written as bundles, docs/formats.md "Bundles", task #449.)
-pub const MARKS_V: u32 = 2;
+/// thinned tiles written as bundles, docs/formats.md "Bundles", task #449. 3: the heritage dots
+/// name their layer-heritage, #562.)
+pub const MARKS_V: u32 = 3;
 /// The rest of the heritage chain on the heritage-sites outputs (scenic-build heritage), and the
 /// area overlays from it with the marks' World Heritage dots (ovconv::overlays). (2: the registers
 /// read generically, their caches the pass's answers alone, docs/inputs.md §6.5. 3: no seeds, the
