@@ -144,8 +144,7 @@ pub struct Input<'a> {
 
 /// What held a Mac back over the last `HELD_S` (task #563; `held_back`): the jobs it ran at once
 /// while it ran any (`lanes`, the mean, rounded; one at least), and the share of those lanes'
-/// time it kept busy while the pool ran planned work and it was around (`util`, `UTIL_MIN`–1:
-/// a minute it was away or asleep isn't counted, `AWAY_S`). The lead's ramp, its slot
+/// time it kept busy while the pool ran planned work (`util`, `UTIL_MIN`–1). The lead's ramp, its slot
 /// cap, the NAS budget, a member's memory and the plan feeding work gradually all show in them;
 /// the forecast's run, which releases work by the plan's dependencies alone, sees none of that
 /// otherwise (the backtest, on the history's job set and order: 65 % early without, 35 % with).
@@ -158,12 +157,11 @@ pub struct Held {
 /// The span `held_back` reads.
 pub const HELD_S: u64 = 86_400;
 
-/// A Mac with no job for longer than twice this was away (asleep, off, on battery, held) but
-/// for this much either side of its jobs; `util`'s floor: a quiet day never slows a Mac more
-/// than fourfold.
-/// (The backtest, finish error median: no such cut and no floor 34 %; 2 h and 0.25 35 %; 30 min
-/// and 0.4 42 %: most idle time while the pool worked was work held back, not a Mac away.)
-const AWAY_S: usize = 7200;
+/// `util`'s floor: a quiet day never slows a Mac more than fourfold.
+/// (The backtest, task #568: finish error median 35 % at 0.25, 34 % at 0.1, 42 % at 0.4. A cut
+/// leaving out the minutes a Mac was away, more than 2 h from any job of it, brought nothing to
+/// the finish and put the Mac-mini-led days' 6 h progress error (median) at 32 % from 8 %: a Mac kept
+/// idle for a day by the owner's other work is the same Mac with room, so its idle time counts.)
 const UTIL_MIN: f64 = 0.25;
 
 /// Each Mac's `Held` from the history (`events`: the jobs done, ended and failed, a slot's worker
@@ -186,28 +184,11 @@ pub fn held_back(events: &[crate::coord::history::Event], now: u64) -> BTreeMap<
             pool[m] |= !CLOCKED.contains(&step);
         }
     }
-    let near = AWAY_S / 60;
+    let worked = pool.iter().filter(|&&p| p).count().max(1) as f64;
     per.into_iter()
         .filter_map(|(m, c)| {
             let busy = c.iter().filter(|&&c| c > 0).count();
             let sum: f64 = c.iter().map(|&c| c as f64).sum();
-            // (The minutes the pool worked while this Mac was around: within `AWAY_S` of a job.)
-            let mut last = None;
-            let mut around = vec![false; n];
-            for k in 0..n {
-                if c[k] > 0 {
-                    last = Some(k);
-                }
-                around[k] = last.is_some_and(|l| k - l <= near);
-            }
-            last = None;
-            for k in (0..n).rev() {
-                if c[k] > 0 {
-                    last = Some(k);
-                }
-                around[k] |= last.is_some_and(|l| l - k <= near);
-            }
-            let worked = (0..n).filter(|&k| pool[k] && around[k]).count().max(1) as f64;
             (busy > 0).then(|| {
                 let lanes = ((sum / busy as f64).round() as usize).max(1);
                 (m, Held { lanes, util: (sum / worked / lanes as f64).clamp(UTIL_MIN, 1.0) })
@@ -3093,8 +3074,8 @@ mod tests {
             ..Default::default()
         };
         // (m4: two slots at once for 2 h, its second by its old name; m1: one job, the first of
-        // those hours, around all of them: 60 of 120 minutes; ipad: 10 minutes of the
-        // pool's 2 h of work around it: its floor, not a twelfth.)
+        // those hours: 60 of 120 minutes; ipad: 10 minutes of the pool's 2 h of work: its
+        // floor, not a twelfth.)
         let events = vec![
             job("m4", now - 3600, 7200.0, 1),
             job("m4 (second job)", now - 3600, 7200.0, 1),
