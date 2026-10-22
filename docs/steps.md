@@ -112,7 +112,7 @@ What each step does, in detail. The steps as one table (names, chains, the check
     sampler does, the stored base tile (from its z6 tile's hi pack) last so the data blends into it
     over four base pixels where it ends; where only the base gives a height, the base read across its
     tiles' edges (each padded by a pixel of its neighbours, a ring of one tile read past the z8 tile,
-    as MapLibre draws the base: no seam at a base tile's edge); the base's water kept by each pixel's share of the base
+    as MapLibre draws the base: no seam at a base tile's edge inside a z6 tile; at a z6 tile's edge the base still clamps, task #559); the base's water kept by each pixel's share of the base
     tile's sea and lakes; below zero to 0; rounded to 1 cm; Terrarium RGB as lossless JPEG XL
     (libjxl, effort 7: Chrome and Safari decode it natively, every value exact; the same bytes on
     every Mac, crates/jxl's golden hashes). Only base tiles
