@@ -14,7 +14,7 @@ export type DEMEncoding = 'mapbox' | 'terrarium' | 'custom';
  * elevation data as an Int32 value. we add 65536 (2^16) to eliminate negative values and enable the use of
  * integer overflow when creating the texture used in the hillshadePrepare step.
  *
- * DEMData also handles the backfilling of data from a tile's neighboring tiles. This is necessary because we use a pixel's 8
+ * DEMData also handles the backfilling of data from a tile's neighboring tiles (`backfillFrom`). This is necessary because we use a pixel's 8
  * surrounding pixel values to compute the slope at that pixel, and we cannot accurately calculate the slope at pixels on a
  * tile's edge without backfilling from neighboring tiles.
  */
@@ -101,7 +101,7 @@ export class DEMData {
 
         // in order to avoid flashing seams between tiles, here we are initially populating a 2px border of pixels around the image
         // with the data of the nearest pixel from the image. this data is eventually replaced when the tile's neighboring
-        // tiles are loaded and the accurate data can be backfilled using DEMData#backfillBorder
+        // tiles are loaded and the accurate data can be backfilled using DEMData#backfillFrom
         for (let y = -2; y < dim + 2; y++) {
             const offset = this._idx(0, Math.max(0, Math.min(dim - 1, y)));
             if (y < 0 || y >= dim) this.data.copyWithin(this._idx(0, y), offset, offset + dim);
@@ -233,37 +233,41 @@ export class DEMData {
         return new RGBAImage({width: this.stride, height: this.stride}, this._getByteView());
     }
 
-    backfillBorder(borderTile: DEMData, dx: number, dy: number): void {
-        if (this.dim !== borderTile.dim) throw new Error('dem dimension mismatch');
-
-        let xMin = dx * this.dim,
-            xMax = dx * this.dim + this.dim,
-            yMin = dy * this.dim,
-            yMax = dy * this.dim + this.dim;
-
-        switch (dx) {
-            case -1:
-                xMin = xMax - 2;
-                break;
-            case 1:
-                xMax = xMin + 2;
-                break;
-        }
-
-        switch (dy) {
-            case -1:
-                yMin = yMax - 2;
-                break;
-            case 1:
-                yMax = yMin + 2;
-                break;
-        }
-
-        const ox = -dx * this.dim;
-        const oy = -dy * this.dim;
-        for (let y = yMin; y < yMax; y++) {
-            for (let x = xMin; x < xMax; x++) {
-                this.data[this._idx(x, y)] = borderTile.data[this._idx(x + ox, y + oy)];
+    /**
+     * Scenic Roads: fills the part of this tile's 2 px border that `other` covers from `other`'s
+     * pixels, bilinearly at each border pixel's centre (exact where the pixels line up, as between
+     * tiles of one zoom). `other` covers [ox, ox + size) × [oy, oy + size) in units of this tile
+     * (0 to 1 west to east and north to south), at any zoom: a finer or coarser neighbour, so the
+     * hill-shading and the terrain meet across an edge between zooms (`scenic:zoom-by-area`).
+     * Replaces upstream's `backfillBorder`, which took same-zoom neighbours only.
+     */
+    backfillFrom(other: DEMData, ox: number, oy: number, size: number): void {
+        const dim = this.dim, odim = other.dim;
+        const scale = odim / size;
+        const pixels = other._getByteView();
+        for (let y = -2; y < dim + 2; y++) {
+            const fy = (y + 0.5) / dim;
+            if (fy < oy || fy >= oy + size) continue;
+            const v = Math.min(odim - 1, Math.max(0, (fy - oy) * scale - 0.5));
+            const y0 = Math.floor(v), ty = v - y0, y1 = Math.min(odim - 1, y0 + 1);
+            const inside = y >= 0 && y < dim;
+            for (let x = -2; x < dim + 2; x++) {
+                if (inside && x === 0) x = dim;
+                const fx = (x + 0.5) / dim;
+                if (fx < ox || fx >= ox + size) continue;
+                const u = Math.min(odim - 1, Math.max(0, (fx - ox) * scale - 0.5));
+                const x0 = Math.floor(u), tx = u - x0, x1 = Math.min(odim - 1, x0 + 1);
+                const i = this._idx(x, y);
+                if (tx < 1e-6 && ty < 1e-6) {
+                    this.data[i] = other.data[other._idx(x0, y0)];
+                    continue;
+                }
+                const z = (a: number, b: number) => other._unpackAtIndex(pixels, other._idx(a, b) * 4);
+                const e = z(x0, y0) * (1 - tx) * (1 - ty) + z(x1, y0) * tx * (1 - ty) +
+                    z(x0, y1) * (1 - tx) * ty + z(x1, y1) * tx * ty;
+                const c = this.pack(e);
+                const alpha = other.data[other._idx(x0, y0)] & 0xff000000;
+                this.data[i] = (c.r | (c.g << 8) | (c.b << 16) | alpha) >>> 0;
             }
         }
     }

@@ -37,6 +37,7 @@ export type HillshadePrepareUniformsType = {
     'u_image': Uniform1i;
     'u_dimension': Uniform2f;
     'u_zoom': Uniform1f;
+    'u_dem_zoom': Uniform1f;
     'u_unpack': Uniform4f;
 };
 
@@ -57,6 +58,7 @@ const hillshadePrepareUniforms = (context: Context, locations: UniformLocations)
     'u_image': new Uniform1i(context, locations.u_image),
     'u_dimension': new Uniform2f(context, locations.u_dimension),
     'u_zoom': new Uniform1f(context, locations.u_zoom),
+    'u_dem_zoom': new Uniform1f(context, locations.u_dem_zoom),
     'u_unpack': new Uniform4f(context, locations.u_unpack)
 });
 
@@ -120,6 +122,8 @@ const hillshadeUniformPrepareValues = (tileID: OverscaledTileID, dem: DEMData): 
         'u_image': 1,
         'u_dimension': [stride, stride],
         'u_zoom': tileID.overscaledZ,
+        // Scenic Roads: its pixels' size (the prepare shader)
+        'u_dem_zoom': tileID.canonical.z,
         'u_unpack': dem.getUnpackVector()
     };
 };

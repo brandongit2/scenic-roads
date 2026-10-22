@@ -106,6 +106,18 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
   app's terrain, hill-shading and slope go to z16 where the catalog has 2 m terrain
   (`covering_tiles_area.test.ts`; `test/scenic/zoom-by-area.html` shows an edge). Read when the
   source loads, and anew by `RasterTileSource.setZoomByArea` (a new catalog's areas, main.ts).
+- **DEM borders filled across zooms** (`tile_manager_raster_dem.ts` `backfillDEM`,
+  `DEMData.backfillFrom`): a loaded DEM tile's 2 px border, and that of each renderable tile it
+  touches, is filled from every renderable tile touching it, of any zoom, bilinearly at each border
+  pixel's centre (exact between tiles of one zoom), coarsest first so the finest data at a place is
+  written last. Upstream filled it from its eight same-zoom neighbours only (their `neighboringTiles`
+  and `backfillBorder`, gone), so beside a tile of another zoom (an area's edge, or a coarser tile
+  standing in) the border clamped: a dark line in the hill-shading along the edge.
+- **Hill-shading at the DEM's own pixel size** (`hillshade_prepare.fragment.glsl` `u_dem_zoom`): the
+  slopes take the DEM tile's canonical zoom for its pixels' size, the drawn zoom only for the
+  exaggeration. Upstream took the drawn zoom for both, so a tile overzoomed n levels shaded 2^n too
+  steep, and stepped in tone beside a tile of finer data at the same zoom (an area's edge at z14).
+  Past the data's zoom the shading is now that of the true slopes, softer than upstream's.
 
 - **Covers redone when elevations arrive** (`bounding_volume_cache.ts`, `TileManager.demVersion`,
   `Terrain.demVersion`): the globe's cached bounding volumes are cleared whenever a DEM tile loads

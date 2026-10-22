@@ -8,6 +8,8 @@ in vec2 v_pos;
 
 uniform vec2 u_dimension;
 uniform float u_zoom;
+// Scenic Roads: the DEM tile's own zoom (its pixels' size); u_zoom is the zoom it's drawn at.
+uniform float u_dem_zoom;
 uniform vec4 u_unpack;
 
 float getElevation(ivec2 texel) {
@@ -57,6 +59,10 @@ void main() {
     // that corresponds to the max zoom level of Mapbox terrain-RGB tiles.
     // See nickidlugash's awesome breakdown for more info:
     // https://github.com/mapbox/mapbox-gl-js/pull/5286#discussion_r148419556
+    // Scenic Roads: the pixel size is the DEM tile's (u_dem_zoom), not the zoom it's drawn at:
+    // upstream's slopes of a tile overzoomed n levels were 2^n too steep, so beside a tile of
+    // finer data at that zoom (scenic:zoom-by-area) the shading stepped in tone at the edge.
+    // The exaggeration stays the drawn zoom's, the same for every tile in view.
 
     float exaggerationFactor = u_zoom < 2.0 ? 0.4 : u_zoom < 4.5 ? 0.35 : 0.3;
     float exaggeration = u_zoom < 15.0 ? (u_zoom - 15.0) * exaggerationFactor : 0.0;
@@ -64,7 +70,7 @@ void main() {
     vec2 deriv = vec2(
         (c + f + f + i) - (a + d + d + g),
         (g + h + h + i) - (a + b + b + c)
-    ) * tileSize / pow(2.0, exaggeration + (28.2562 - u_zoom));
+    ) * tileSize / pow(2.0, exaggeration + (28.2562 - u_dem_zoom));
 
     // Flat ground is stored as 128/255, which 8 bits hold exactly, so that it reads back as no slope at all.
     fragColor = clamp(vec4(

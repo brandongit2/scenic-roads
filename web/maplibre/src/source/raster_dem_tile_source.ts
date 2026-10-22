@@ -3,7 +3,6 @@ import {ResourceType} from '../util/request_manager.ts';
 import {extend, isImageBitmap, readImageUsingVideoFrame} from '../util/util.ts';
 import {browser} from '../util/browser.ts';
 import {offscreenCanvasSupported} from '../util/offscreen_canvas_supported.ts';
-import {OverscaledTileID} from '../tile/tile_id.ts';
 import {RasterTileSource} from './raster_tile_source.ts';
 // ensure DEMData is registered for worker transfer on main thread:
 import '../data/dem_data.ts';
@@ -55,7 +54,6 @@ export class RasterDEMTileSource extends RasterTileSource implements Source {
 
     override async loadTile(tile: Tile): Promise<void> {
         const url = tile.tileID.canonical.url(this.tiles, this.map.getPixelRatio(), this.scheme);
-        tile.neighboringTiles = this._getNeighboringTiles(tile.tileID);
         tile.abortController = new AbortController();
         try {
             const response = await ImageRequest.transformAndGetImage(this.map._requestManager, url, ResourceType.Tile, tile.abortController, this.map._refreshExpiredTiles, {colorSpaceConversion: 'none'});
@@ -70,7 +68,7 @@ export class RasterDEMTileSource extends RasterTileSource implements Source {
                 }
                 // An empty response (e.g. HTTP 204 for a missing DEM tile) carries no elevation
                 // data: treat the tile as loaded without a DEM instead of building a degenerate
-                // one that would fail against its neighbors in backfillBorder (#1551).
+                // one that would fail against its neighbors in backfillDEM (#1551).
                 if (!response.data) {
                     tile.state = 'loaded';
                     return;
@@ -127,36 +125,6 @@ export class RasterDEMTileSource extends RasterTileSource implements Source {
         return browser.getImageData(img, 2);
     }
 
-    _getNeighboringTiles(tileID: OverscaledTileID): Record<string, {backfilled: boolean}> {
-        const canonical = tileID.canonical;
-        const dim = Math.pow(2, canonical.z);
-
-        const px = (canonical.x - 1 + dim) % dim;
-        const pxw = canonical.x === 0 ? tileID.wrap - 1 : tileID.wrap;
-        const nx = (canonical.x + 1 + dim) % dim;
-        const nxw = canonical.x + 1 === dim ? tileID.wrap + 1 : tileID.wrap;
-
-        const neighboringTiles: Record<string, {backfilled: boolean}> = {};
-        // add adjacent tiles
-        neighboringTiles[new OverscaledTileID(tileID.overscaledZ, pxw, canonical.z, px, canonical.y).key] = {backfilled: false};
-        neighboringTiles[new OverscaledTileID(tileID.overscaledZ, nxw, canonical.z, nx, canonical.y).key] = {backfilled: false};
-
-        // Add upper neighboringTiles
-        if (canonical.y > 0) {
-            neighboringTiles[new OverscaledTileID(tileID.overscaledZ, pxw, canonical.z, px, canonical.y - 1).key] = {backfilled: false};
-            neighboringTiles[new OverscaledTileID(tileID.overscaledZ, tileID.wrap, canonical.z, canonical.x, canonical.y - 1).key] = {backfilled: false};
-            neighboringTiles[new OverscaledTileID(tileID.overscaledZ, nxw, canonical.z, nx, canonical.y - 1).key] = {backfilled: false};
-        }
-        // Add lower neighboringTiles
-        if (canonical.y + 1 < dim) {
-            neighboringTiles[new OverscaledTileID(tileID.overscaledZ, pxw, canonical.z, px, canonical.y + 1).key] = {backfilled: false};
-            neighboringTiles[new OverscaledTileID(tileID.overscaledZ, tileID.wrap, canonical.z, canonical.x, canonical.y + 1).key] = {backfilled: false};
-            neighboringTiles[new OverscaledTileID(tileID.overscaledZ, nxw, canonical.z, nx, canonical.y + 1).key] = {backfilled: false};
-        }
-
-        return neighboringTiles;
-    }
-
     async unloadTile(tile: Tile): Promise<void> {
         if (tile.demTexture) this.map.painter.saveTileTexture(tile.demTexture);
         if (tile.fbo) {
@@ -164,7 +132,6 @@ export class RasterDEMTileSource extends RasterTileSource implements Source {
             delete tile.fbo;
         }
         if (tile.dem) delete tile.dem;
-        delete tile.neighboringTiles;
 
         tile.state = 'unloaded';
         if (tile.actor) {

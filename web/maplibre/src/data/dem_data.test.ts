@@ -98,48 +98,48 @@ function expectDEMBorderRegion(dem: DEMData) {
 
 function expectDEMBackfill(dem0: DEMData, dem1: DEMData) {
     return  () => {
-        dem0.backfillBorder(dem1, -1, 0);
+        dem0.backfillFrom(dem1, -1, 0, 1);
         for (let y = 0; y < 4; y++) {
             // dx = -1, dy = 0, so the left edge of dem1 should equal the right edge of dem0
             expect(dem0.get(-1, y) === dem1.get(3, y)).toBeTruthy();
         }
 
-        dem0.backfillBorder(dem1, 0, -1);
+        dem0.backfillFrom(dem1, 0, -1, 1);
         for (let x = 0; x < 4; x++) {
             expect(dem0.get(x, -1) === dem1.get(x, 3)).toBeTruthy();
         }
 
-        dem0.backfillBorder(dem1, 1, 0);
+        dem0.backfillFrom(dem1, 1, 0, 1);
         for (let y = 0; y < 4; y++) {
             expect(dem0.get(4, y) === dem1.get(0, y)).toBeTruthy();
         }
 
-        dem0.backfillBorder(dem1, 0, 1);
+        dem0.backfillFrom(dem1, 0, 1, 1);
         for (let x = 0; x < 4; x++) {
             expect(dem0.get(x, 4) === dem1.get(x, 0)).toBeTruthy();
         }
 
-        dem0.backfillBorder(dem1, -1, 1);
+        dem0.backfillFrom(dem1, -1, 1, 1);
         expect(dem0.get(-1, 4) === dem1.get(3, 0)).toBeTruthy();
 
-        dem0.backfillBorder(dem1, 1, 1);
+        dem0.backfillFrom(dem1, 1, 1, 1);
         expect(dem0.get(4, 4) === dem1.get(0, 0)).toBeTruthy();
 
-        dem0.backfillBorder(dem1, -1, -1);
+        dem0.backfillFrom(dem1, -1, -1, 1);
         expect(dem0.get(-1, -1) === dem1.get(3, 3)).toBeTruthy();
 
-        dem0.backfillBorder(dem1, 1, -1);
+        dem0.backfillFrom(dem1, 1, -1, 1);
         expect(dem0.get(4, -1) === dem1.get(0, 3)).toBeTruthy();
     };
 }
 
-describe('DEMData.backfillBorder with encoding', () => {
+describe('DEMData.backfillFrom with encoding', () => {
     describe('mapbox encoding', () => {
         const dem0 = new DEMData('0', createMockImage(4, 4), 'mapbox');
         const dem1 = new DEMData('1', createMockImage(4, 4), 'mapbox');
 
         test('border region is initially populated with neighboring data', expectDEMBorderRegion(dem0));
-        test('backfillBorder correctly populates borders with neighboring data', expectDEMBackfill(dem0, dem1));
+        test('backfillFrom correctly populates borders with neighboring data', expectDEMBackfill(dem0, dem1));
     });
 
     describe('terrarium encoding', () => {
@@ -147,7 +147,53 @@ describe('DEMData.backfillBorder with encoding', () => {
         const dem1 = new DEMData('1', createMockImage(4, 4), 'terrarium');
 
         test('border region is initially populated with neighboring data', expectDEMBorderRegion(dem0));
-        test('backfillBorder correctly populates borders with neighboring data', expectDEMBackfill(dem0, dem1));
+        test('backfillFrom correctly populates borders with neighboring data', expectDEMBackfill(dem0, dem1));
+    });
+});
+
+describe('DEMData.backfillFrom across zooms', () => {
+    // A terrarium tile `dim` pixels across whose height is `f` of each pixel centre in world units
+    // (the tile covering [x0, x0 + size) × [y0, y0 + size)).
+    function plane(dim: number, x0: number, y0: number, size: number, f: (x: number, y: number) => number) {
+        const stride = dim + 4;
+        const pixels = new Uint8Array(stride * stride * 4);
+        for (let y = 0; y < dim; y++) {
+            for (let x = 0; x < dim; x++) {
+                const v = f(x0 + (x + 0.5) / dim * size, y0 + (y + 0.5) / dim * size) + 32768;
+                const i = ((y + 2) * stride + x + 2) * 4;
+                pixels[i] = Math.floor(v / 256);
+                pixels[i + 1] = Math.floor(v) % 256;
+                pixels[i + 2] = Math.round((v % 1) * 256);
+                pixels[i + 3] = 255;
+            }
+        }
+        return new DEMData('0', new RGBAImage({width: stride, height: stride}, pixels), 'terrarium');
+    }
+    const f = (x: number, y: number) => 100 * x + 50 * y;
+
+    test('a coarser neighbour, bilinearly', () => {
+        const tile = plane(4, 0, 0, 1, f);
+        // east, a zoom coarser: [1, 3) × [0, 2)
+        tile.backfillFrom(plane(4, 1, 0, 2, f), 1, 0, 2);
+        for (let y = 0; y < 4; y++) {
+            // (its first pixel centres are at 1.25 and 0.25: the border's first column, at 1.125,
+            // and the first row, at 0.125, clamp to them)
+            const at = Math.max(0.25, (y + 0.5) / 4);
+            expect(tile.get(4, y)).toBeCloseTo(f(1.25, at), 1);
+            expect(tile.get(5, y)).toBeCloseTo(f(1.375, at), 1);
+        }
+        // the north border isn't the neighbour's: as it was
+        expect(tile.get(1, -1)).toBe(tile.get(1, 0));
+    });
+
+    test('a finer neighbour, exactly where its pixels meet ours', () => {
+        const tile = plane(4, 0, 0, 1, f);
+        // south-west, a zoom finer: [-0.5, 0) × [1, 1.5)
+        tile.backfillFrom(plane(4, -0.5, 1, 0.5, f), -0.5, 1, 0.5);
+        expect(tile.get(-1, 4)).toBeCloseTo(f(-0.125, 1.125), 1);
+        expect(tile.get(-2, 5)).toBeCloseTo(f(-0.375, 1.375), 1);
+        // only its corner of the border
+        expect(tile.get(-1, 3)).toBe(tile.get(0, 3));
     });
 });
 
