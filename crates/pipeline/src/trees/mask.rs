@@ -1,8 +1,8 @@
-//! Which pixels of a zoom-8 block are inside the coverage, as trees.py's `shape_mask` has rasterio
-//! (GDAL 3.12) burn them: each ring of a shape a polygon of its own, added up (MERGE_ALG=ADD), a
+//! Which pixels of a zoom-8 block are inside the coverage, as rasterio (GDAL 3.12)
+//! burns them: each ring of a shape a polygon of its own, added up (MERGE_ALG=ADD), a
 //! pixel inside a shape where an odd number of its rings hold it, inside the coverage where it's
 //! inside any shape.
-//! - **Rings** as trees.py loads them (`load_shapes`): densified so no edge spans more than 0.05° on
+//! - **Rings** loaded: densified so no edge spans more than 0.05° on
 //!   either axis, in Mercator metres, closed as shapely closes them, and walked clockwise (OGR's
 //!   test, crate::areaflags).
 //! - **Burn:** GDAL's scanline fill (GDALdllImageFilledPolygon): a pixel whose centre the ring holds;
@@ -10,13 +10,13 @@
 //!   that row starts where it does (GDAL's guard against adding twice).
 //! - **Arithmetic:** GDAL's, as built for the Mac's Python (as crate::areaflags): rasterio's
 //!   `from_bounds` transform inverted (GDALInvGeoTransform) and applied with fused multiply-adds.
-//!   Mercator's tangent and logarithm are det's where trees.py's are Apple's (a few ulp apart): a
+//!   Mercator's tangent and logarithm are det's where Python's are Apple's (a few ulp apart): a
 //!   pixel could differ only where an edge passes within about 1e-9 pixels of its centre.
 
 use super::{merc, BS};
 use anyhow::{ensure, Context, Result};
 
-/// A coverage ring as trees.py loads it: its box in degrees (west, south, east, north, of its
+/// A coverage ring as it is loaded: its box in degrees (west, south, east, north, of its
 /// points densified) and its points in Mercator metres, closed and clockwise.
 pub struct Ring {
     pub bbox: [f64; 4],
@@ -29,7 +29,7 @@ pub struct Shapes {
 }
 
 /// A ring (degrees) with points added so no edge spans more than `most` degrees on either axis,
-/// as trees.py's `densify` adds them (its edges, not the closing one).
+/// as densifying adds them (its edges, not the closing one).
 fn densify(r: &[[f64; 2]], most: f64) -> Vec<[f64; 2]> {
     let mut out = vec![r[0]];
     for e in r.windows(2) {
@@ -70,7 +70,7 @@ impl Ring {
 
 impl Shapes {
     /// From cov.json's text: `{"shapes": [[ring, …], …]}`, each ring's points in degrees; a ring of
-    /// fewer than 3 points is left out, as trees.py leaves it.
+    /// fewer than 3 points is left out.
     pub fn parse(json: &str) -> Result<Shapes> {
         #[derive(serde::Deserialize)]
         struct Cov {
@@ -86,7 +86,7 @@ impl Shapes {
     }
 
     /// Each shape's rings whose box meets box `b` (degrees: a ring that doesn't can't change which
-    /// points there are inside), trees.py's `shapes_meeting`.
+    /// points there are inside).
     pub fn meeting(&self, b: [f64; 4]) -> Vec<Vec<&Ring>> {
         self.shapes.iter().map(|rings| rings.iter().filter(|r| r.meets(b)).collect()).collect()
     }

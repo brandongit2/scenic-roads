@@ -207,7 +207,7 @@ pub fn same(a: &str, b: &str) -> bool {
 
 /// The port the map's server listens on unless `--port` says otherwise (not 8080: other tools
 /// default to it). Repeated where another language can't read this: web/vite.config.ts, the
-/// status app (tools/status/main.swift), tools/bench, dem/bldfetch.py, dem/bldmeasure.py,
+/// status app (tools/status/main.swift), tools/bench, dem/bldfetch.py,
 /// .claude/launch.json and the docs; the server's test pins it.
 pub const DEFAULT_PORT: u16 = 7311;
 

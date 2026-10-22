@@ -1,6 +1,5 @@
 //! The tree cover layers' tiles (docs/steps.md §2, Trees): tree cover, canopy height and leaf type,
-//! zoom 4–12, of a z3 tile the coverage meets, clipped to it. dem/trees.py's `--z3` run in Rust (the
-//! `trees` program), the same tiles to the pixel:
+//! zoom 4–12, of a z3 tile the coverage meets, clipped to it, the `trees` program's `--z3` run:
 //! - **Sampling:** each zoom-8 block is sampled at zoom 12, at its pixels' centres (the source pixel
 //!   they fall in), from Meta's canopy squares (`cover5m`, ‰ of the ground under trees over 5 m, and
 //!   `p95`, canopy height in cm; 0.00025°, 10° squares) and the leaf-type squares (dem/leaftype.py;
@@ -8,7 +7,7 @@
 //! - **Pyramid:** zoom 11 to 8 are float32 means of four pixels, summed as numpy sums them; leaf type
 //!   goes as each class's share, a pixel showing the commonest type where forest is at least half
 //!   of what's known (`pyramid`). Zoom 7 to 4 come from the blocks' zoom-8 values (`Tops`).
-//! - **Tiles:** Terrarium-encoded lossless WebP (`crate::webp`): trees.py's pixels, not its bytes
+//! - **Tiles:** Terrarium-encoded lossless WebP (`crate::webp`): exact pixels, not exact bytes
 //!   (another encoder).
 //!
 //! A block runs on its own (`block`, so a worker can be given one: tasks of it are planned): what it
@@ -46,9 +45,9 @@ pub const ZMIN: u8 = 4;
 pub const TS: usize = 256;
 /// A block's side in zoom-12 pixels.
 pub const BS: usize = TS << (ZMAX - ZBLOCK);
-/// The layers, in trees.py's order: their archives are `trees-<layer>.tiles`.
+/// The layers, in order: their archives are `trees-<layer>.tiles`.
 pub const LAYERS: [&str; 3] = ["cover", "height", "leaf"];
-/// The archives' metadata, trees.py's.
+/// The archives' metadata.
 pub const META: &str = r#"{"source":"Meta/WRI canopy height; Copernicus HRL DLT 2018; NALCMS 2020","encoding":"terrarium","format":"webp"}"#;
 /// A block's zoom-8 values beside its archives (`block`).
 pub const TOPS: &str = "trees-tops.bin";
@@ -66,18 +65,18 @@ const LEAF_CACHE: usize = 8 << 20;
 const CHM_ROW_CACHE: usize = 32 << 20;
 const LEAF_ROW_CACHE: usize = 16 << 20;
 
-/// A pixel column's longitude at zoom `z` (trees.py's `lon_of`).
+/// A pixel column's longitude at zoom `z` .
 fn lon_of(px: f64, z: u8) -> f64 {
     px / (TS << z) as f64 * 360.0 - 180.0
 }
 
-/// A pixel row's latitude at zoom `z` (trees.py's `lat_of`; det's sinh and atan where numpy's are
+/// A pixel row's latitude at zoom `z` (det's sinh and atan where numpy's are
 /// Apple's: a few ulp apart in some rows, never another canopy row, checked over all 2^20).
 fn lat_of(py: f64, z: u8) -> f64 {
     (PI * (1.0 - 2.0 * py / (TS << z) as f64)).dsinh().datan().to_degrees()
 }
 
-/// Tile (`z`, `x`, `y`)'s box in degrees: west, south, east, north (trees.py's `tile_bounds`).
+/// Tile (`z`, `x`, `y`)'s box in degrees: west, south, east, north..
 pub fn tile_bounds(z: u8, x: u32, y: u32) -> [f64; 4] {
     let (x, y) = (x as usize, y as usize);
     [
@@ -88,7 +87,7 @@ pub fn tile_bounds(z: u8, x: u32, y: u32) -> [f64; 4] {
     ]
 }
 
-/// Degrees to Web Mercator metres (trees.py's `merc`).
+/// Degrees to Web Mercator metres..
 pub fn merc(lon: f64, lat: f64) -> [f64; 2] {
     [R * lon.to_radians(), R * (PI / 4.0 + lat.to_radians() / 2.0).dtan().dln()]
 }
@@ -229,7 +228,7 @@ pub struct Inputs<'a> {
     pub fetch: &'a dyn Fetch,
     pub record: Option<PathBuf>,
     /// The canopy squares found there before the blocks began (a z3 run's), (top, left): one of them
-    /// not there when a block opens it fails the block (trees.py's did), never a block without its
+    /// not there when a block opens it fails the block (as ever), never a block without its
     /// trees. None: what's there is all there is.
     pub there: Option<Vec<(i32, i32)>>,
 }
@@ -293,7 +292,7 @@ struct Pixels {
 }
 
 /// A 10° square's pixels of `res` degrees from (`left`, `top`) that a block's rows and columns
-/// fall in (trees.py's `sample`); None outside it.
+/// fall in; None outside it.
 fn indices(top: i32, left: i32, res: f64, lon: &[f64], lat: &[f64]) -> Pixels {
     let n = (10.0 / res).round();
     let at = |v: f64| {
@@ -406,7 +405,7 @@ struct Sources {
     squares: Vec<(Layer, Layer, Option<Layer>)>,
 }
 
-/// Opens block (`bx`, `by`)'s squares (trees.py's `z3_block`): a canopy square is there when both
+/// Opens block (`bx`, `by`)'s squares: a canopy square is there when both
 /// its files are, and not empty (Meta's "none"); a leaf-type square, when it is.
 fn sources(files: &mut Files, bx: u32, by: u32, lon: &[f64], lat: &[f64]) -> Result<Sources> {
     let inp = files.inp;
@@ -435,7 +434,7 @@ fn sources(files: &mut Files, bx: u32, by: u32, lon: &[f64], lat: &[f64]) -> Res
     Ok(Sources { squares })
 }
 
-/// Squares in trees.py's order (sorted).
+/// Squares in sorted order.
 fn sorted(mut v: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
     v.sort_unstable();
     v
@@ -450,8 +449,7 @@ pub struct BlockOut {
     pub kept: u64,
 }
 
-/// Zoom-8 block (`bx`, `by`)'s tiles, zoom 12 to 8, inside the coverage's shapes (trees.py's
-/// `z3_block`), and its zoom-8 values.
+/// Zoom-8 block (`bx`, `by`)'s tiles, zoom 12 to 8, inside the coverage's shapes, and its zoom-8 values.
 pub fn block(shapes: &mask::Shapes, inp: &Inputs, bx: u32, by: u32) -> Result<BlockOut> {
     Ok(blocks(shapes, inp, &[(bx, by)])?.pop().expect("a block"))
 }
@@ -698,7 +696,7 @@ fn in_order<T: Send>(
 }
 
 /// The blocks of tile (`z`, `x`, `y`) (zoom 3 or 6) the coverage meets (a ring's box meets theirs),
-/// in trees.py's order: by column, then row.
+/// in order: by column, then row.
 pub fn blocks_of(shapes: &mask::Shapes, z: u8, x: u32, y: u32) -> Vec<(u32, u32)> {
     let k = 1u32 << (ZBLOCK - z);
     let mut out = Vec::new();
@@ -712,12 +710,12 @@ pub fn blocks_of(shapes: &mask::Shapes, z: u8, x: u32, y: u32) -> Vec<(u32, u32)
     out
 }
 
-/// The blocks of z3 tile (`qx`, `qy`) the coverage meets, in trees.py's order (`blocks_of`).
+/// The blocks of z3 tile (`qx`, `qy`) the coverage meets, in order.
 pub fn z3_blocks(shapes: &mask::Shapes, qx: u32, qy: u32) -> Vec<(u32, u32)> {
     blocks_of(shapes, 3, qx, qy)
 }
 
-/// A run's arguments: trees.py's `--z3` (a z3 tile: its zoom 4–12 tiles, `z3`), or the same for a z6
+/// A run's arguments: `--z3` (a z3 tile: its zoom 4–12 tiles, `z3`), or the same for a z6
 /// tile (`--z6`: its zoom 9–12 tiles and its mid, `z6`).
 pub struct Run {
     /// The tile: zoom (3 or 6), column, row.
@@ -740,7 +738,7 @@ type Begun = (mask::Shapes, Vec<(u32, u32)>, Vec<(i32, i32)>);
 
 /// A run begun: its tile's blocks the coverage meets, their canopy squares fetched where missing
 /// and their leaf-type squares made; the coverage's shapes, the blocks and the canopy squares
-/// there, with trees.py's line.
+/// there, with its line.
 fn begin(a: &Run) -> Result<Begun> {
     use crate::timings::{phase, Class};
     let t0 = std::time::Instant::now();
@@ -825,7 +823,7 @@ fn end(a: &Run, n: [usize; 3], t0: std::time::Instant) -> [usize; 3] {
     n
 }
 
-/// trees.py's `--z3` run: z3 tile `a.tile`'s blocks the coverage meets, their canopy squares
+/// The `--z3` run: z3 tile `a.tile`'s blocks the coverage meets, their canopy squares
 /// fetched where missing and their leaf-type squares made, then every block (on rayon's threads)
 /// and zoom 7 to 4, into `out`'s three archives; the same progress lines.
 pub fn z3(a: &Run) -> Result<[usize; 3]> {

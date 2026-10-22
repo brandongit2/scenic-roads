@@ -1,5 +1,4 @@
-//! The squares a z3 tile's blocks read, made ready first (the hub's work, as trees.py's
-//! `canopy_square` and its call of leaftype.py's `make` do it):
+//! The squares a z3 tile's blocks read, made ready first (the hub's work):
 //! - **Canopy squares** copied into the cache (`--chm`, the units' too) from the NAS's store
 //!   (`--chm-store`), downloaded from Meta into the store first, once: under a `<file>.lock` there,
 //!   made exclusively, a job on the other Mac waiting for it (a lock not touched for 30 minutes is a

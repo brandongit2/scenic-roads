@@ -49,7 +49,7 @@ pub const ROLES: [(&str, &[&str], &[&str]); 18] = [
     (LEAF_NORTH_AMERICA, &["zip-geotiff"], &[]),
     // (Building footprints, a release: crate::buildtiles, crate::bld, dem/buildings.py, dem/bldfetch.py.)
     (BUILDINGS, &["geoparquet"], &[]),
-    // (Building heights on a grid: crate::bld, dem/bldfetch.py, dem/bldprep.py, dem/bldmeasure.py.)
+    // (Building heights on a grid: crate::bld, dem/bldfetch.py, dem/bldprep.py.)
     (BUILDING_HEIGHTS, &["zip-geotiff"], &[]),
     // (Wikidata's facts: dem/heritagewd.py.)
     (WIKIDATA, &["sparql"], &[]),

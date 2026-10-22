@@ -1,7 +1,7 @@
 // Colour ramps, shared by every colour-map picker, and baked into a 256 × 2N RGBA lookup texture
 // (each ramp forwards and reversed) for the road shader. Polynomial fits of matplotlib's viridis /
 // magma / plasma (Matt Zucker) and Google's turbo, plus ramps sampled from their reference
-// implementations by dem/ramps.py (data/ramps.json: matplotlib, seaborn, ColorBrewer, Crameri's
+// implementations (data/ramps.json: matplotlib, seaborn, ColorBrewer, Crameri's
 // Scientific colour maps, cmocean, colorcet). Each is trimmed at the dark end so it stays legible
 // on the dark background. A key ending in "_r" is the ramp reversed.
 import RAMPS from './data/ramps.json';

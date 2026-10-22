@@ -61,7 +61,7 @@ grow ~1.2 m a floor and rarely reach 20 m, so they rank after floors).
 
 Each building's height is the first of these it has; it records which (`s`, 0–5) for the hover and
 the source colouring (`pipeline::bld::fill`). The order, fits and defaults were set by a held-out
-tenth of the measured heights (`dem/bldmeasure.py`; median error of the chain 0.7 m, p90 2.9 m;
+tenth of the measured heights (measured when the tables were fitted; median error of the chain 0.7 m, p90 2.9 m;
 tall unmeasured buildings still come out low).
 
 0. **Measured:** Overture's `height` from anything but Microsoft (USGS lidar, OSM, Esri, a city),

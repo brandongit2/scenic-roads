@@ -1,11 +1,11 @@
-//! A block's tiles, zoom 12 to 8, as trees.py's `pyramid` makes them, a band of 256 zoom-12 rows at
-//! a time (each zoom keeps its rows until it has a band of its own: ~30 MB, not trees.py's 1.8 GB);
+//! A block's tiles, zoom 12 to 8, as the pyramid makes them, a band of 256 zoom-12 rows at
+//! a time (each zoom keeps its rows until it has a band of its own: ~30 MB; a whole block of every zoom would be 1.8 GB);
 //! and zoom 7 to 4 from the blocks' zoom-8 values, as its `lower_zooms`.
 //! - **Cover and height** are float32 as numpy has them: a zoom-12 pixel `f32(c / 10.0)` (‰ to %,
 //!   divided in float64), `f32(h / 100.0)` (cm to m) where cover is at least 5 %; a coarser pixel
 //!   the mean of its four, summed as numpy's two-axis mean sums them, `(a + b) + (c + d)` (row by
 //!   row), then divided by 4.
-//! - **Leaf type** is trees.py's shares of not forest, broadleaf, conifer, mixed and no data, kept
+//! - **Leaf type** is the shares of not forest, broadleaf, conifer, mixed and no data, kept
 //!   as the count of zoom-12 pixels behind each (a share times its pixels, exact in float32 down to
 //!   zoom 4, so any summing order gives numpy's): a pixel shows the commonest leaf type (the first,
 //!   tied) where forest is at least half of what's known, 255 where nothing is.
@@ -67,7 +67,7 @@ impl Rows {
         class([self.leaf[0][i], self.leaf[1][i], self.leaf[2][i], self.leaf[3][i]])
     }
 
-    /// Half the size: each pixel the mean of its four (trees.py's `down`), the leaf counts summed.
+    /// Half the size: each pixel the mean of its four (`down`), the leaf counts summed.
     fn down(&self) -> Rows {
         let (w, h) = (self.width / 2, self.rows() / 2);
         let mut out = Rows {
@@ -110,7 +110,7 @@ impl Rows {
 }
 
 /// The leaf-type class of a pixel holding `c` zoom-12 pixels of not forest, broadleaf, conifer
-/// and mixed (trees.py's `leaf_class`).
+/// and mixed.
 pub fn class(c: [u32; 4]) -> u8 {
     let forest = c[1] as u64 + c[2] as u64 + c[3] as u64;
     let known = forest + c[0] as u64;
@@ -130,7 +130,7 @@ pub fn class(c: [u32; 4]) -> u8 {
     k as u8
 }
 
-/// A zoom-12 pixel's leaf-type class from its sampled value: trees.py's one-hot shares give the
+/// A zoom-12 pixel's leaf-type class from its sampled value: one-hot shares give the
 /// class back, any other value none.
 fn class12(v: u8) -> u8 {
     if v <= 3 {
@@ -140,7 +140,7 @@ fn class12(v: u8) -> u8 {
     }
 }
 
-/// 256 × 256 values in whole `step`s, Terrarium-encoded (trees.py's `terrarium`, in float32 as
+/// 256 × 256 values in whole `step`s, Terrarium-encoded (in float32 as
 /// numpy computes it) as lossless WebP.
 fn terrarium(v: impl Fn(usize) -> f32, step: f32) -> Vec<u8> {
     let mut rgb = vec![0u8; TS * TS * 3];
@@ -312,7 +312,7 @@ impl Pyramid {
     }
 }
 
-/// A block's zoom-8 values (trees.py's tops): 256 × 256 of each.
+/// A block's zoom-8 values (the tops): 256 × 256 of each.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tops {
     pub x: u32,
@@ -372,8 +372,8 @@ impl Tops {
     }
 }
 
-/// Zoom 7 to 4 from the blocks' zoom-8 values (`tops`, each as `Tops::to_bytes` has it), as trees.py's
-/// `lower_zooms`: a tile wherever one of its blocks is, its missing quarters no cover, no height
+/// Zoom 7 to 4 from the blocks' zoom-8 values (`tops`, each as `Tops::to_bytes` has it):
+/// a tile wherever one of its blocks is, its missing quarters no cover, no height
 /// and no data; its tiles' children before it. `said` is told how many tiles are made, of how
 /// many, at the start and the end and at most once a second between.
 pub fn lower(tops: &BTreeMap<(u32, u32), Vec<u8>>, said: &(dyn Fn(u64, u64) + Sync)) -> Result<Vec<Tile>> {

@@ -1,4 +1,4 @@
-//! The tree cover layers' tiles (`pipeline::trees`): dem/trees.py's `--z3` run, its command line,
+//! The tree cover layers' tiles (`pipeline::trees`): the `--z3` run, its command line,
 //! outputs and progress lines; a z6 tile's run and a z3 tile's assembly from them, as the build makes
 //! the layers; and the same work a block at a time, for workers.
 //!

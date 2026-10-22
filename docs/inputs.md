@@ -1610,9 +1610,8 @@ declarations are made and staged there.
 | `scripts/fonts.sh` | the app's own assets (§6.9, also kept) |
 | `tools/app/install.sh`'s uv link | documentation, in a message |
 
-Of what §6.9 keeps in code, Planetiler (a version, `water::PLANETILER_VERSION`),
-`bld::fill::ESTIMATES` (Overture's dataset name the fill's rule matches) and
-`dem/bldmeasure.py`'s store folders name no marker, so none needs an exemption. The 3D buildings'
+Of what §6.9 keeps in code, Planetiler (a version, `water::PLANETILER_VERSION`) and
+`bld::fill::ESTIMATES` (Overture's dataset name the fill's rule matches) name no marker, so neither needs an exemption. The 3D buildings'
 details name their source from the catalog's credits (`web/src/buildings.ts`, `setBuildingsCredit`).
 Short names other than the ids (`Terrarium`, an encoding; `GHSL`, `EEA`) and store folders
 (`sources/overture/`) aren't markers.
@@ -1666,8 +1665,7 @@ agent) stay.
 - **Terrain:** the raw tiles' store path (`sources/aws-terrarium/`, named for its source) and the
   credit in `rules::CREDITS` the base's declaration takes over once accepted.
 - **Trees and land cover:** the canopy and leaf-type squares' resolutions (D, read from data).
-- **Buildings:** `bld/prep.rs`'s `ghsl` meta (D); `dem/bldmeasure.py`'s own Overture and GHSL
-  folders and estimates (P: a measuring tool run by hand, not a build step). `rules::CREDITS`'
+- **Buildings:** `bld/prep.rs`'s `ghsl` meta (D). `rules::CREDITS`'
   Overture and GHSL entries, which their declarations' credits replace once accepted (§4.8). `bld/fill.rs`'s `ESTIMATES` stays
   the fill's rule (§6.9).
 - **Kept by design:** `dem/budget.py`'s and `budget`'s metered hosts (the polite-use budget, by

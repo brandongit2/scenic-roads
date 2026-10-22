@@ -16,7 +16,7 @@
 //! A building part (OSM's `building:part`) takes rules 0, 1, 2 and 5 (its footprint alone: parts
 //! have no class); its base is `min_height`, else `min_floor` storeys up; a top at or under its base
 //! is raised a storey above it. Heights are whole decimetres; a median of an even count takes the
-//! lower middle. The tables are B0's measurements (dem/bldmeasure.py's fit.json, 2026-10-06):
+//! lower middle. The tables are B0's measurements (fitted 2026-10-06 on Overture and GHSL data held on the NAS):
 //! [`super::BUILDINGS_V`] names them.
 
 /// A height taken (rules 0 and 2), decimetres.
