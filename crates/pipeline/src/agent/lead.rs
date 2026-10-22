@@ -840,11 +840,13 @@ pub fn away(
     if !v.leading || !long || !enough || busy || !calm {
         return None;
     }
-    let to = v
-        .members
-        .iter()
-        .filter(|m| !m.me && !m.leads && m.can_lead && reached(&m.member))
-        .min_by_key(|m| (!m.conds.is_some_and(|c| c.home && (c.ac || c.battery.is_none())), m.conds.is_some_and(|c| c.battery.is_some()), m.host.clone()))?;
+    let to = v.members.iter().filter(|m| !m.me && !m.leads && m.can_lead && reached(&m.member)).min_by_key(|m| {
+        (
+            !m.conds.is_some_and(|c| c.home && (c.ac || c.battery.is_none())),
+            m.conds.is_some_and(|c| c.battery.is_some()),
+            m.host.clone(),
+        )
+    })?;
     kept.away_at = now;
     Some(to.member.clone())
 }
