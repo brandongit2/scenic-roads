@@ -228,7 +228,7 @@ fn ring_meets_box(ring: &[[f64; 2]], b: [f64; 4]) -> bool {
 }
 
 /// Point in ring, even–odd.
-pub fn inside(ring: &[[f64; 2]], p: [f64; 2]) -> bool {
+fn inside(ring: &[[f64; 2]], p: [f64; 2]) -> bool {
     let mut inside = false;
     let mut j = ring.len() - 1;
     for i in 0..ring.len() {

@@ -51,7 +51,7 @@ def build(check=False):
     src_l = lines_of(['OSM planet, twice a year', 'AWS terrain · GLO-30', 'DEMs · canopy · land cover', 'depth grids', 'Overture · GHSL buildings',
                       'Wikidata · pageviews', 'registers (a snapshot)', 'timetables'], sw)
     rows_l = [(f, wrap('st-l', t, nw - fw - 14)) for f, t in rows]
-    mac_l = lines_of(['the map is always on (a launcher)', 'copy what you download: the World, zoomed out; regions; views',
+    mac_l = lines_of(['the map is always on (a launcher)', 'copy what you download: the World, zoomed out; regions',
                       'read the rest from the NAS (timeouts, an offline banner)', 'Regions panel: the regions, read only',
                       'menu bar: the build, who leads', 'each helps build (below)'], aw)
     brw_l = lines_of(['the map: MapLibre and WebGL', 'the build page, on any device (below)'], W - 16 - bx)

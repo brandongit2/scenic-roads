@@ -59,19 +59,21 @@
   checking, held), and on the map the published coverage and each region's accepted outline.
   Regions change only as files in `inputs/regions/` (docs/inputs.md §6.1); the app writes none.
 - **Downloads on this Mac** (docs/macs.md, Mirror): nothing is copied to a Mac unless downloaded there.
-  - **World, zoomed out**: its own row, Download or Remove. Without it the map needs the NAS.
+  - **World, zoomed out**: its own row, Download or Remove, downloaded on its own (a region doesn't
+    bring it; it can go while regions stay). Without it the map needs the NAS; while a region is
+    downloaded and the World isn't, the row is marked and warns that away from the NAS, zoomed out,
+    the map shows nothing.
   - **Each region**: its size, Download or Remove, and its state (downloaded, copying N %, next,
-    waiting for room, away). A region brings the World; the World can't be removed while a region
-    or view is downloaded. A region still building says "x of y tiles, on the map as they come"
+    waiting for room, away). A region still building says "x of y tiles, on the map as they come"
     (every z6 tile built but not yet recorded built: "finishing: x of x tiles, the last map tiles and
     layers being made")
     (its catalog's `tiles`; the menu bar and `scenic status` say the same, from the agent's
     status) and can be downloaded: its download grows with each catalog, what's here never fetched
     again, copied at the build's slow rate.
   - **Fine terrain** (a region's second line, only where it has any): the share of the region the
-    terrain finer than z12 covers, its size, Download or Remove, its state. An add-on: downloading
-    it downloads the region (and the World); removing the region removes it. No part of a region.
-  - **Download this view**: the ground on screen, named after the most important place in it.
+    terrain finer than z12 covers, its size, Download or Remove, its state. An add-on: its Download
+    is disabled ("needs the region") until the region is downloaded, and the server refuses it
+    before; removing the region removes it.
   - Remove confirms with the size. A download that wouldn't fit above the reserve is refused.
   - The Mac's line: what's downloaded, free space, the reserve, the copy under way, and that copies
     keep to 20 MB/s while the build runs.

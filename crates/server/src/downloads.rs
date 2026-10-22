@@ -5,19 +5,12 @@
 //!   GET    /api/downloads                 this Mac's room, the World download, every region the
 //!                                         catalog has (a region still building with its `tiles`
 //!                                         built of total) with its size, how much of it is here
-//!                                         and whether it's downloaded, the downloaded views, the
-//!                                         copy under way
+//!                                         and whether it's downloaded, the copy under way
 //!   PUT    /api/downloads/world           {on}: download the World, zoomed out, or remove it
-//!   PUT    /api/downloads/regions/{id}    {on}: download a region (with the World), or remove it
-//!                                         (with its fine terrain)
-//!   PUT    /api/downloads/regions/{id}/fine {on}: download a region's fine terrain (with the
-//!                                         region and the World), or remove it
-//!   POST   /api/downloads/views/size      {outline}: what downloading that view would take
-//!   POST   /api/downloads/views           {outline: [[lon, lat], …], name?}: download an area (the
-//!                                         ground in view), named after the place search's most
-//!                                         important place in it unless named
-//!   PUT    /api/downloads/views/{id}      {name}: rename a downloaded view
-//!   DELETE /api/downloads/views/{id}      remove it
+//!   PUT    /api/downloads/regions/{id}    {on}: download a region, or remove it (with its fine
+//!                                         terrain)
+//!   PUT    /api/downloads/regions/{id}/fine {on}: download a downloaded region's fine terrain, or
+//!                                         remove it
 //!   PUT    /api/downloads/reserve         {gb}: the free space downloads leave on the disk
 //!                                         (crate::reserve)
 //!
@@ -28,17 +21,18 @@
 //! - **The World, zoomed out** (`world_part`): the worldwide files, every layer's root and lo
 //!   packs, the landmark points and area details (store::mirror::essentials), and the basemap's
 //!   zooms 0–10 (its `lo` piece, store::pieces). Without it the map works only while the NAS is
-//!   reachable. A region or view needs it to work offline: downloading one downloads the World too,
-//!   and the World isn't removed while one is downloaded.
-//! - **An area** (a region, or a view: `files_of`, `pieces_of`): every layer's hi pack (zooms
+//!   reachable. It's downloaded on its own: a region doesn't bring it, and it can be removed while
+//!   regions are downloaded (away from the NAS, zoomed out, the map then shows nothing: the panel
+//!   warns of it).
+//! - **A region** (`area_part`): every layer's hi pack (zooms
 //!   9–14), and the base pack and road values, of each z6 tile within 2 km of it (its outlines are
 //!   simplified), and the basemap's zooms 11–14 over those tiles; the terrain's and the grids' hi
 //!   packs within 25 km (the viewshed's reach, so one from inside works offline); and the hi data
-//!   of the z6 tiles within 50 km (what a view's lists read around it).
+//!   of the z6 tiles within 50 km (what the lists of a view read around it).
 //! - **A region's fine terrain** (`fine_of`), an add-on to its download: the terrain's fine packs
 //!   (pipeline::terrain_fine, z13 and finer, by z10 tile) within 2 km of it. They cover only parts
 //!   of a region; its coarse terrain (the hi packs, to z12) is the rest and every zoom to z12, so
-//!   it needs the region. The server makes the slope, and the map the hill-shading and contours,
+//!   it needs the region: downloaded only while the region is. The server makes the slope, and the map the hill-shading and contours,
 //!   from them as from any terrain tile (crate::terrain). Copied after every other download.
 
 use crate::data::Data;
@@ -61,13 +55,9 @@ use store::catalog::Catalog;
 use store::mirror::{Control, Item, Mirror, SyncEnd, Wanted};
 use store::pieces::Piece;
 
-/// How long a new view waits for the place search to name it.
-const NAMING: Duration = Duration::from_secs(8);
-/// A view's outline: the ground on screen, a few dozen points.
-const MAX_POINTS: usize = 1000;
 const FILE: &str = "downloads.json";
-/// What this Mac kept before downloads (`fmt` 1): read once, made downloads.
-const OLD_FILE: &str = "keep.json";
+/// `downloads.json`'s format: 3 since downloaded views went (2 had `views`).
+const FMT: u32 = 3;
 
 /// What this Mac has downloaded (`downloads.json`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -79,9 +69,6 @@ pub struct Asked {
     /// Downloaded regions, by id, as they were named then (for one the map no longer has).
     #[serde(default)]
     pub regions: Vec<AskedRegion>,
-    /// Downloaded views, in the order they were downloaded.
-    #[serde(default)]
-    pub views: Vec<AskedView>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -93,22 +80,6 @@ pub struct AskedRegion {
     /// Its fine terrain downloaded too (`fine_of`).
     #[serde(default)]
     pub fine: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct AskedView {
-    pub id: String,
-    pub name: String,
-    /// The ground that was in view: [lon, lat] degrees, a ring (longitudes may run past ±180 where
-    /// it crosses the antimeridian).
-    pub outline: Vec<[f64; 2]>,
-    pub at: u64,
-}
-
-impl Asked {
-    fn any_area(&self) -> bool {
-        !self.regions.is_empty() || !self.views.is_empty()
-    }
 }
 
 /// What a download copies: files of the catalog and pieces of its basemap's archives, in copy order.
@@ -178,14 +149,12 @@ pub struct Plan {
     /// The catalog generation and the downloads' version it was made for.
     generation: u64,
     version: u64,
-    /// What's downloaded, in copy order: the World, then the regions and views as they were asked,
-    /// then the regions' fine terrain.
+    /// What's downloaded, in copy order: the World, then the regions as they were asked, then their
+    /// fine terrain.
     pub wanted: Wanted,
     pub world: Part,
     /// Every region the catalog records (for its size, downloaded or not).
     pub regions: Regions,
-    /// The downloaded views', in their order.
-    pub views: Vec<Part>,
     pub asked: Asked,
 }
 
@@ -204,20 +173,34 @@ pub struct Downloads {
 
 impl Downloads {
     /// The downloads in `home` (none yet: none). A file that doesn't read is set aside as
-    /// `downloads.json.bad`. What a Mac kept before downloads (`keep.json`: kept regions and views)
-    /// becomes downloads, with the World when there were any, and that file goes.
+    /// `downloads.json.bad`. One from before views went (`fmt` 2) is written again without them:
+    /// their files no region needs go at the mirror's next round.
     pub fn load(home: &std::path::Path) -> Arc<Downloads> {
         let path = home.join(FILE);
-        let asked = match std::fs::read(&path) {
-            Ok(b) => serde_json::from_slice::<Asked>(&b).unwrap_or_else(|e| {
-                eprintln!("downloads: {} doesn't read ({e}); set aside as {FILE}.bad", path.display());
-                let _ = std::fs::rename(&path, home.join(format!("{FILE}.bad")));
-                Asked::default()
-            }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => from_kept(home).unwrap_or_default(),
+        let (asked, old) = match std::fs::read(&path) {
+            Ok(b) => match serde_json::from_slice::<Asked>(&b) {
+                Ok(a) => {
+                    let views = serde_json::from_slice::<Value>(&b)
+                        .ok()
+                        .and_then(|v| v["views"].as_array().map(Vec::len))
+                        .unwrap_or(0);
+                    if views > 0 {
+                        eprintln!("downloads: the downloaded views ({views}) are removed: views went in fmt {FMT}");
+                    }
+                    let old = a.fmt < FMT;
+                    (a, old)
+                }
+                Err(e) => {
+                    eprintln!("downloads: {} doesn't read ({e}); set aside as {FILE}.bad", path.display());
+                    let _ = std::fs::rename(&path, home.join(format!("{FILE}.bad")));
+                    (Asked::default(), false)
+                }
+            },
             Err(e) => {
-                eprintln!("downloads: can't read {}: {e}", path.display());
-                Asked::default()
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!("downloads: can't read {}: {e}", path.display());
+                }
+                (Asked::default(), false)
             }
         };
         let d = Arc::new(Downloads {
@@ -228,17 +211,9 @@ impl Downloads {
             regions: Mutex::new(None),
             wake: (Mutex::new(false), Condvar::new()),
         });
-        if asked != Asked::default() && !d.path.exists() {
-            match d.edit(|_| Ok(())) {
-                Ok(()) => {
-                    let _ = std::fs::remove_file(home.join(OLD_FILE));
-                    eprintln!(
-                        "downloads: what this Mac kept is downloaded now ({} regions, {} views, and the World)",
-                        asked.regions.len(),
-                        asked.views.len()
-                    );
-                }
-                Err(e) => eprintln!("downloads: {e:#}"),
+        if old {
+            if let Err(e) = d.edit(|_| Ok(())) {
+                eprintln!("downloads: {e:#}");
             }
         }
         d
@@ -258,7 +233,7 @@ impl Downloads {
         let mut g = self.asked.lock().unwrap();
         let mut next = g.clone();
         let out = f(&mut next)?;
-        next.fmt = 2;
+        next.fmt = FMT;
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, serde_json::to_vec_pretty(&next)?).with_context(|| format!("write {}", tmp.display()))?;
         std::fs::rename(&tmp, &self.path).with_context(|| format!("rename {}", tmp.display()))?;
@@ -319,7 +294,6 @@ impl Downloads {
 
 fn make_plan(cat: &Catalog, generation: u64, version: u64, asked: Asked, regions: Regions) -> Plan {
     let world = world_part(cat);
-    let views: Vec<Part> = asked.views.iter().map(|v| area_part(cat, std::slice::from_ref(&v.outline))).collect();
     let mut wanted = Wanted::default();
     let mut seen = HashSet::new();
     let parts = asked
@@ -328,29 +302,13 @@ fn make_plan(cat: &Catalog, generation: u64, version: u64, asked: Asked, regions
         .then_some(&world)
         .into_iter()
         .chain(asked.regions.iter().filter_map(|r| regions.get(&r.id).map(|p| &p.coarse)))
-        .chain(&views)
         .chain(asked.regions.iter().filter(|r| r.fine).filter_map(|r| regions.get(&r.id).map(|p| &p.fine)));
     for p in parts {
         for i in &p.items {
             wanted.push(i.clone(), &mut seen);
         }
     }
-    Plan { generation, version, wanted, world, regions, views, asked }
-}
-
-/// `keep.json` (what a Mac kept before downloads) as downloads: its regions and views, and the
-/// World with them.
-fn from_kept(home: &std::path::Path) -> Option<Asked> {
-    #[derive(Deserialize)]
-    struct Kept {
-        #[serde(default)]
-        regions: Vec<AskedRegion>,
-        #[serde(default)]
-        views: Vec<AskedView>,
-    }
-    let k: Kept = serde_json::from_slice(&std::fs::read(home.join(OLD_FILE)).ok()?).ok()?;
-    let any = !k.regions.is_empty() || !k.views.is_empty();
-    Some(Asked { fmt: 2, world: any.then(now), regions: k.regions, views: k.views })
+    Plan { generation, version, wanted, world, regions, asked }
 }
 
 /// The World, zoomed out: the essentials and the basemap's zooms 0–10.
@@ -360,7 +318,7 @@ fn world_part(cat: &Catalog) -> Part {
     Part::new(cat, files, &basemap_archives(cat), &[Piece::Lo])
 }
 
-/// An area's download (`rings`, each read as a filled area): its files, then its basemap pieces.
+/// A region's download (`rings`, each read as a filled area): its files, then its basemap pieces.
 fn area_part(cat: &Catalog, rings: &[Vec<[f64; 2]>]) -> Part {
     let pieces: Vec<Piece> = tiles_meeting(rings, NEAR_KM).into_iter().map(|(x, y)| Piece::Tile(x, y)).collect();
     Part::new(cat, files_of(cat, rings), &basemap_archives(cat), &pieces)
@@ -453,11 +411,7 @@ fn once(s: &crate::AppState, m: &Mirror) -> bool {
             if changed() {
                 return true;
             }
-            let all = plan
-                .world
-                .pieces()
-                .chain(plan.regions.values().flat_map(|r| r.coarse.pieces()))
-                .chain(plan.views.iter().flat_map(Part::pieces));
+            let all = plan.world.pieces().chain(plan.regions.values().flat_map(|r| r.coarse.pieces()));
             if let Err(e) = size_pieces(m, all, &root, &pool, &changed) {
                 eprintln!("mirror: sizing the basemap's pieces: {e:#}");
             }
@@ -527,7 +481,7 @@ fn now() -> u64 {
 /// The downloads' state for the panel (`GET /api/downloads`, docs/formats.md).
 pub fn status(s: &crate::AppState) -> Result<Value> {
     let Some(m) = s.data.mirror.as_ref() else {
-        return Ok(json!({ "mirror": false, "online": s.data.online(), "regions": {}, "views": [] }));
+        return Ok(json!({ "mirror": false, "online": s.data.online(), "regions": {} }));
     };
     let plan = s.downloads.plan(&s.data);
     let room = m.room(&plan.wanted)?;
@@ -575,25 +529,6 @@ pub fn status(s: &crate::AppState) -> Result<Value> {
             || json!({ "name": r.name, "bytes": 0, "here": 0, "unknown": 0, "on": true, "state": "missing" }),
         );
     }
-    let views: Vec<Value> = plan
-        .asked
-        .views
-        .iter()
-        .zip(&plan.views)
-        .map(|(v, p)| {
-            let mut o = tally(p);
-            for (k, x) in [
-                ("id", json!(v.id)),
-                ("name", json!(v.name)),
-                ("outline", json!(v.outline)),
-                ("at", json!(v.at)),
-                ("state", json!(state(p))),
-            ] {
-                o[k] = x;
-            }
-            o
-        })
-        .collect();
     let mut world = tally(&plan.world);
     world["on"] = json!(plan.asked.world.is_some());
     world["at"] = json!(plan.asked.world);
@@ -634,12 +569,11 @@ pub fn status(s: &crate::AppState) -> Result<Value> {
         "copying": copying.as_ref().map(|c| json!({ "what": what(c), "bytes": c.size, "have": c.have, "slow": c.slow })),
         "last": last,
         "regions": regions,
-        "views": views,
     }))
 }
 
 /// What this Mac has downloaded, in brief, for the menu bar (`/api/build`'s `offline`): whether the
-/// World is, how many regions and views, their bytes and how many of those are here, and whether
+/// World is, how many regions, their bytes and how many of those are here, and whether
 /// the NAS is reachable from here. Null without a mirror.
 pub fn summary(s: &crate::AppState) -> Value {
     let Some(m) = s.data.mirror.as_ref() else { return Value::Null };
@@ -651,7 +585,7 @@ pub fn summary(s: &crate::AppState) -> Value {
             here += m.item_here(i).min(b);
         }
     }
-    json!({ "world": plan.asked.world.is_some(), "areas": plan.asked.regions.len() + plan.asked.views.len(), "bytes": bytes, "here": here, "nas": s.data.online() })
+    json!({ "world": plan.asked.world.is_some(), "regions": plan.asked.regions.len(), "bytes": bytes, "here": here, "nas": s.data.online() })
 }
 
 // ---- the API ----------------------------------------------------------------------------------
@@ -713,16 +647,14 @@ fn need(s: &crate::AppState, m: &Mirror, next: &Asked) -> Result<(u64, u64)> {
 }
 
 /// Refuses `next` when it wouldn't fit, saying why with the numbers (`what` the download asked
-/// for; the World named with it when it comes too).
+/// for).
 fn check_fits(s: &crate::AppState, next: &Asked, what: &str) -> Result<()> {
     let Some(m) = s.data.mirror.as_ref() else { bail!("this server keeps no copy of the map (--no-mirror)") };
     let (need, room) = need(s, m, next)?;
-    let before = s.downloads.asked();
-    let with = if before.world.is_none() && next.any_area() { ", with the World, zoomed out," } else { "" };
-    let already = if before.world.is_some() { ", with what's downloaded already" } else { "" };
+    let already = if s.downloads.asked() != Asked::default() { ", with what's downloaded already" } else { "" };
     ensure!(
         need <= room,
-        "Downloading {what}{with} takes {} more on this Mac{already}, and it has {} free above the reserve ({}): free some space, or remove a download",
+        "Downloading {what} takes {} more on this Mac{already}, and it has {} free above the reserve ({}): free some space, or remove a download",
         size(need),
         size(room),
         size(m.reserve())
@@ -759,8 +691,7 @@ pub struct On {
     on: bool,
 }
 
-/// Downloads the World, zoomed out, or removes it (refused while a region or view is downloaded:
-/// they need it away from the NAS).
+/// Downloads the World, zoomed out, or removes it.
 pub async fn put_world(State(s): State<S>, Json(q): Json<On>) -> Response {
     blocking(s, move |s| {
         ensure!(s.data.mirror.is_some(), "this server keeps no copy of the map (--no-mirror)");
@@ -771,10 +702,6 @@ pub async fn put_world(State(s): State<S>, Json(q): Json<On>) -> Response {
                 check_fits(s, &next, "the World, zoomed out")?;
             }
         } else {
-            ensure!(
-                !next.any_area(),
-                "Remove the downloaded regions and views first: away from the NAS they need the World, zoomed out"
-            );
             next.world = None;
         }
         s.downloads.edit(|a| {
@@ -786,7 +713,7 @@ pub async fn put_world(State(s): State<S>, Json(q): Json<On>) -> Response {
     .await
 }
 
-/// Downloads a region (and the World with it), or removes it. A region the catalog doesn't have yet
+/// Downloads a region, or removes it (with its fine terrain). A region the catalog doesn't have yet
 /// can be downloaded: its files come once a catalog has it. One still building (its `tiles`) is
 /// downloaded as its tiles come: its files are those of the catalog served, more with each catalog
 /// (what's here already never fetched again), copied at the slow rate while the build runs.
@@ -810,7 +737,6 @@ pub async fn put_region(State(s): State<S>, Path(id): Path<String>, Json(q): Jso
         if q.on {
             let fine = was.as_ref().is_some_and(|r| r.fine);
             next.regions.push(AskedRegion { id: id.clone(), name: name.clone(), at: now(), fine });
-            next.world.get_or_insert_with(now);
             if was.is_none() {
                 check_fits(s, &next, &format!("“{name}”"))?;
             }
@@ -824,7 +750,7 @@ pub async fn put_region(State(s): State<S>, Path(id): Path<String>, Json(q): Jso
     .await
 }
 
-/// Downloads a region's fine terrain (and the region and the World with it: it needs them), or
+/// Downloads a region's fine terrain (refused unless the region is downloaded: it needs it), or
 /// removes it (the region stays).
 pub async fn put_region_fine(State(s): State<S>, Path(id): Path<String>, Json(q): Json<On>) -> Response {
     blocking(s, move |s| {
@@ -833,181 +759,19 @@ pub async fn put_region_fine(State(s): State<S>, Path(id): Path<String>, Json(q)
         let mut next = s.downloads.asked();
         let at = next.regions.iter().position(|r| r.id == id);
         if q.on {
+            let Some(i) = at else { bail!("Download the region first: its fine terrain needs it") };
             let plan = s.downloads.plan(&s.data);
             let has = plan.regions.get(&id).is_some_and(|p| !p.fine.items.is_empty());
             ensure!(has, "{id:?} has no fine terrain on the map");
-            let name = crate::regions::recorded_list(&s.data.catalog())
-                .iter()
-                .find(|r| r["id"] == id.as_str())
-                .and_then(|r| r["name"].as_str().map(str::to_string))
-                .unwrap_or_else(|| id.clone());
-            let was = match at {
-                Some(i) => std::mem::replace(&mut next.regions[i].fine, true),
-                None => {
-                    next.regions.push(AskedRegion { id: id.clone(), name: name.clone(), at: now(), fine: true });
-                    false
-                }
-            };
-            next.world.get_or_insert_with(now);
-            if !was {
-                let with = if at.is_none() { ", with the region" } else { "" };
-                check_fits(s, &next, &format!("the fine terrain of “{name}”{with}"))?;
+            if !std::mem::replace(&mut next.regions[i].fine, true) {
+                let name = next.regions[i].name.clone();
+                check_fits(s, &next, &format!("the fine terrain of “{name}”"))?;
             }
         } else if let Some(i) = at {
             next.regions[i].fine = false;
         }
         s.downloads.edit(|a| {
             *a = next;
-            Ok(())
-        })?;
-        Ok(json!({ "ok": true }))
-    })
-    .await
-}
-
-#[derive(Deserialize)]
-pub struct NewView {
-    outline: Vec<[f64; 2]>,
-    name: Option<String>,
-}
-
-/// A view's name as given: trimmed, one line, 80 characters at most.
-fn clean_name(n: &str) -> Result<String> {
-    let n: String = n.split_whitespace().collect::<Vec<_>>().join(" ");
-    ensure!(!n.is_empty(), "a name, please");
-    Ok(n.chars().take(80).collect())
-}
-
-fn check_outline(outline: &[[f64; 2]]) -> Result<()> {
-    ensure!((3..=MAX_POINTS).contains(&outline.len()), "an outline of 3 to {MAX_POINTS} points");
-    ensure!(
-        outline.iter().all(|p| p[0].is_finite() && p[1].is_finite() && p[0].abs() <= 540.0 && p[1].abs() <= 90.0),
-        "points are [lon, lat] degrees"
-    );
-    Ok(())
-}
-
-/// The downloads with the view `outline` added (and the World).
-fn with_view(s: &crate::AppState, outline: &[[f64; 2]], name: &str) -> Asked {
-    let mut next = s.downloads.asked();
-    next.world.get_or_insert_with(now);
-    next.views.push(AskedView { id: String::new(), name: name.to_string(), outline: outline.to_vec(), at: now() });
-    next
-}
-
-#[derive(Deserialize)]
-pub struct Outline {
-    outline: Vec<[f64; 2]>,
-}
-
-/// What downloading the view `outline` would take: its own files and pieces (`bytes`, `here` of
-/// them, and `with_world`, the World's still missing when it isn't downloaded), all that would
-/// still be copied with it (`need`), and the free space above the reserve (`room`).
-pub async fn post_view_size(State(s): State<S>, Json(o): Json<Outline>) -> Response {
-    blocking(s, move |s| {
-        check_outline(&o.outline)?;
-        let Some(m) = s.data.mirror.as_ref() else { bail!("this server keeps no copy of the map (--no-mirror)") };
-        let next = with_view(s, &o.outline, "");
-        let (need, room) = need(s, m, &next)?;
-        let own = area_part(&s.data.catalog(), std::slice::from_ref(&o.outline));
-        let (bytes, here, _) = own.tally(m);
-        let plan = s.downloads.plan(&s.data);
-        let world = if plan.asked.world.is_none() {
-            let (b, h, _) = plan.world.tally(m);
-            b - h.min(b)
-        } else {
-            0
-        };
-        Ok(json!({ "bytes": bytes, "here": here, "with_world": world, "need": need, "room": room, "fits": need <= room }))
-    })
-    .await
-}
-
-/// Downloads an area (the ground in view): named as given, else after the most important place in
-/// it that the place search knows (waiting a few seconds for its index while it's made), else by
-/// where it is. Refused, with why, when it wouldn't fit.
-pub async fn post_view(State(s): State<S>, Json(v): Json<NewView>) -> Response {
-    blocking(s, move |s| {
-        check_outline(&v.outline)?;
-        let name = match v.name.as_deref() {
-            Some(n) => clean_name(n)?,
-            None => name_of(s, &v.outline),
-        };
-        check_fits(s, &with_view(s, &v.outline, &name), &format!("“{name}”"))?;
-        let at = now();
-        let id = s.downloads.edit(|p| {
-            let mut id = format!("v{at}");
-            let mut k = 2;
-            while p.views.iter().any(|x| x.id == id) {
-                id = format!("v{at}-{k}");
-                k += 1;
-            }
-            p.world.get_or_insert(at);
-            p.views.push(AskedView { id: id.clone(), name: name.clone(), outline: v.outline.clone(), at });
-            Ok(id)
-        })?;
-        Ok(json!({ "id": id, "name": name }))
-    })
-    .await
-}
-
-/// A view's name: the most important place in it the place search knows, else where it is (the
-/// middle of its box).
-fn name_of(s: &crate::AppState, ring: &[[f64; 2]]) -> String {
-    let (mut w, mut so, mut e, mut n) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
-    for p in ring {
-        (w, e, so, n) = (w.min(p[0]), e.max(p[0]), so.min(p[1]), n.max(p[1]));
-    }
-    let c = ((w + e) / 2.0, (so + n) / 2.0);
-    let until = Instant::now() + NAMING;
-    loop {
-        match s.places.get(&s.data, &s.names) {
-            crate::places::Got::Ready(p) => {
-                if let Some(name) = p.naming(ring, c) {
-                    return name;
-                }
-                break;
-            }
-            crate::places::Got::Making if Instant::now() < until => std::thread::sleep(Duration::from_millis(200)),
-            _ => break,
-        }
-    }
-    let lon = (c.0 + 180.0).rem_euclid(360.0) - 180.0;
-    format!(
-        "{:.2}° {}, {:.2}° {}",
-        c.1.abs(),
-        if c.1 >= 0.0 { "N" } else { "S" },
-        lon.abs(),
-        if lon >= 0.0 { "E" } else { "W" }
-    )
-}
-
-#[derive(Deserialize)]
-pub struct Rename {
-    name: String,
-}
-
-pub async fn put_view(State(s): State<S>, Path(id): Path<String>, Json(r): Json<Rename>) -> Response {
-    blocking(s, move |s| {
-        let name = clean_name(&r.name)?;
-        s.downloads.edit(|p| match p.views.iter_mut().find(|v| v.id == id) {
-            Some(v) => {
-                v.name = name.clone();
-                Ok(())
-            }
-            None => bail!("no downloaded view {id}"),
-        })?;
-        Ok(json!({ "ok": true, "name": name }))
-    })
-    .await
-}
-
-pub async fn delete_view(State(s): State<S>, Path(id): Path<String>) -> Response {
-    blocking(s, move |s| {
-        s.downloads.edit(|p| {
-            let before = p.views.len();
-            p.views.retain(|v| v.id != id);
-            ensure!(p.views.len() < before, "no downloaded view {id}");
             Ok(())
         })?;
         Ok(json!({ "ok": true }))

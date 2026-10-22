@@ -5,9 +5,9 @@
 // The coverage drawn is the one the map's catalog was built for; a region it doesn't have (added
 // or redrawn since) is listed as pending.
 // Downloads (docs/macs.md, "Mirror, per Mac"): nothing is copied to this Mac unless it's
-// downloaded here: the World, zoomed out, and each region or view, each with its size, its state
-// and a Download or Remove button; this Mac's room (downloads.ts).
-import { dlFine, dlRegion, dlStatus, dlView, dlWorld, dropView, renameView, setReserve, size, sizeOf, stateClass, stateText, viewSize, type DlStatus, type FineDl, type RegionDl, type ViewDl } from '../downloads';
+// downloaded here: the World, zoomed out, each region, and a downloaded region's fine terrain, each
+// with its size, its state and a Download or Remove button; this Mac's room (downloads.ts).
+import { dlFine, dlRegion, dlStatus, dlWorld, setReserve, size, sizeOf, stateClass, stateText, type DlStatus, type FineDl, type RegionDl } from '../downloads';
 import * as prefs from '../prefs';
 import {
   RegionLayers, RegionsError, areaOutline, entryLabel, getCoverage, getRegionsLayer, listRegions, tilesText,
@@ -49,8 +49,6 @@ export class RegionsPanel {
   readonly nodes: Node[];
   /** Set by the app: the view framed on a box [w, s, e, n]. */
   onFit: (bbox: Bbox) => void = () => {};
-  /** Set by the app: the ground in view, [lon, lat] points (Download this view). */
-  viewOutline: () => [number, number][] = () => [];
 
   private covBox = h('input', { type: 'checkbox' });
   private covCount = h('span', { class: 'km' });
@@ -59,7 +57,7 @@ export class RegionsPanel {
   private layer: RegionsLayer | null = null;
   private list = h('div', { class: 'rg-list' });
   private note = h('div', { class: 'rg-note' });
-  // Downloads: this Mac's room, the World, Download this view, the views downloaded.
+  // Downloads: this Mac's room, the World.
   private dlSum = h('div', { class: 'kp-sum' });
   private worldRow = h('div', { class: 'rg dl-world' });
   private worldBtn: HTMLButtonElement | null = null;
@@ -75,11 +73,7 @@ export class RegionsPanel {
   private resBusy = false;
   /** The server refused the last save: its message stays until the field is edited again. */
   private resRefused = false;
-  private dlBtn = h('button', { class: 'pill', type: 'button', title: 'Download the area in view to this Mac, for when it’s away from the NAS' }, 'Download this view');
-  private dlViews = h('div', { class: 'rg-list kp-views' });
   private dlMsg = h('div', { class: 'rg-msg' });
-  /** Download this view's question: the view's size, and download it or not. */
-  private dlAsk = h('div', { class: 'rg-ask kp-ask' });
   /** The downloads' state, as last asked (null: not yet), when (ms), or why it couldn't be. */
   private dl: DlStatus | null = null;
   private dlAt = 0;
@@ -89,9 +83,6 @@ export class RegionsPanel {
   /** What each region row shows of its download, updated in place as the state comes (a row isn't
    * drawn again: a hover or a rename in it stays). */
   private dlEls = new Map<string, { row: HTMLElement; slot: HTMLElement; btn: HTMLButtonElement | null; on: boolean; size: HTMLElement; fine: HTMLElement; fineSize: HTMLElement; fineBtn: HTMLButtonElement | null; fineOn: boolean }>();
-  /** The downloaded views listed (their ids and names), and their size lines. */
-  private viewsKey = '';
-  private viewEls = new Map<string, HTMLElement>();
 
   private regions: Region[] = [];
   /** The folders the list is grouped by (null: a server from before folders). */
@@ -121,8 +112,6 @@ export class RegionsPanel {
       this.layers.setRegions(this.regBox.checked, this.layer ?? undefined);
       if (this.regBox.checked && !this.layer) void this.refresh();
     });
-    this.dlAsk.hidden = true;
-    this.dlBtn.addEventListener('click', () => void this.downloadThisView());
     this.resBtn.hidden = true;
     this.resRow.hidden = true;
     this.resIn.addEventListener('input', () => {
@@ -146,9 +135,6 @@ export class RegionsPanel {
       this.resRow,
       this.worldRow,
       this.dlNow,
-      this.dlViews,
-      h('div', { class: 'kp-act' }, this.dlBtn),
-      this.dlAsk,
       this.dlMsg,
       h('div', { class: 'subhd', title: 'Each region’s size, and Download or Remove' }, 'Regions'),
       this.list,
@@ -323,8 +309,8 @@ export class RegionsPanel {
       });
       const slot = h('span', { class: 'rg-dlslot' });
       const sz = h('span', { class: 'rg-size' });
-      const fineSize = h('span', { class: 'rg-size' });
-      const fine = h('div', { class: 'rg2', hidden: true }, h('span', { class: 'rg2s', title: 'The terrain finer than z12 (to z13–z16), where its data is finer: an add-on to the region, which gives the rest of it and every zoom to z12' }, 'Fine terrain'), fineSize);
+      const fineSize = h('span', { class: 'rg-size rg-fsize' });
+      const fine = h('div', { class: 'rg2', hidden: true }, h('span', { class: 'rg2s rg-fine', title: 'The terrain finer than z12 (to z13–z16), where its data is finer: an add-on to the region, which gives the rest of it and every zoom to z12' }, 'Fine terrain'), fineSize);
       this.dlEls.set(r.id, { row, slot, btn: null, on: false, size: sz, fine, fineSize, fineBtn: null, fineOn: false });
       row.replaceChildren(
         h('div', { class: 'rg1' }, name, h('span', { class: 'rg-id faint', title: `Its file: inputs/regions/${r.path ?? `${r.id}.toml`}` }, r.id),
@@ -415,8 +401,8 @@ export class RegionsPanel {
       els.btn = null;
       return;
     }
-    this.showFine(id, k?.mirror ? rk?.fine : undefined, r?.name ?? rk?.name ?? id);
-    let text = '', cls = 'rg-size', title = '';
+    this.showFine(id, k?.mirror ? rk?.fine : undefined, r?.name ?? rk?.name ?? id, !!rk?.on);
+    let text = '', cls = 'rg-size';
     if (!k || !k.mirror) text = '';
     else if (!rk) text = 'not built yet';
     else if (rk.on) {
@@ -424,19 +410,17 @@ export class RegionsPanel {
       cls += ` ${stateClass(rk.state)}`;
     } else {
       text = sizeOf(rk);
-      const world = k.world && !k.world.on ? k.world : null;
-      title = world ? `Its packs and the basemap’s zooms 11–14 over it: ${size(rk.bytes)}. Downloading it downloads the World, zoomed out (${sizeOf(world)}), too: it needs it away from the NAS` : '';
     }
     els.size.className = cls;
     els.size.textContent = text;
-    els.size.title = title || (rk ? `Its packs and the basemap’s zooms 11–14 over it: ${size(rk.bytes)}, of which ${size(rk.here)} on this Mac` : '');
+    els.size.title = (rk ? `Its packs and the basemap’s zooms 11–14 over it: ${size(rk.bytes)}, of which ${size(rk.here)} on this Mac` : '');
     // (Still building: so far; a download of it grows with each catalog, copied slowly meanwhile.)
     if (rk?.tiles) els.size.title += `\nSo far: ${tilesText(rk.tiles)}. Downloaded, it grows with each catalog, copied slowly while the build runs`;
     const on = !!rk?.on;
     if (els.on !== on || !els.btn) {
       const name = r?.name ?? rk?.name ?? id;
       const btn = this.dlButton(on, `“${name}”`, () => (this.dl?.regions[id]?.bytes ?? 0) + (this.dl?.regions[id]?.fine?.on ? this.dl.regions[id].fine!.bytes : 0), (o) => dlRegion(id, o), (o) =>
-        o ? `Downloading “${name}” to this Mac${this.dl?.world?.on ? '' : ', with the World, zoomed out'}.` : `“${name}” is removed from this Mac.`, (t, w) => this.sayRow(els.row, t, w));
+        o ? `Downloading “${name}” to this Mac.` : `“${name}” is removed from this Mac.`, (t, w) => this.sayRow(els.row, t, w));
       btn.hidden = !k?.mirror;
       if (els.btn) els.btn.replaceWith(btn);
       else els.slot.append(btn);
@@ -447,43 +431,46 @@ export class RegionsPanel {
   }
 
   /** A region's fine terrain, where it has any: the share of it covered, its size and state, its
-   * button (downloading it downloads the region too; removing the region removes it). */
-  private showFine(id: string, f: FineDl | undefined, name: string) {
+   * button: Download only once the region is downloaded (it needs it; removing the region removes
+   * it). */
+  private showFine(id: string, f: FineDl | undefined, name: string, regionOn: boolean) {
     const els = this.dlEls.get(id)!;
     els.fine.hidden = !f;
     if (!f) return;
     const cover = `${f.cover < 1 && f.cover > 0 ? '<1' : fmt.n(f.cover)} % of it`;
-    els.fineSize.className = `rg-size${f.on ? ` ${stateClass(f.state)}` : ''}`;
-    els.fineSize.textContent = f.on ? `${cover} · ${sizeOf(f)} · ${stateText(f, f.state)}` : `${cover} · ${sizeOf(f)}`;
-    els.fineSize.title = `The fine packs over it: ${size(f.bytes)}, of which ${size(f.here)} on this Mac; they cover ${fmt.n(f.cover)} % of the region`;
+    const needs = !f.on && !regionOn;
+    els.fineSize.className = `rg-size rg-fsize${f.on ? ` ${stateClass(f.state)}` : ''}`;
+    els.fineSize.textContent = f.on ? `${cover} · ${sizeOf(f)} · ${stateText(f, f.state)}` : needs ? `${sizeOf(f)} · needs the region` : `${cover} · ${sizeOf(f)}`;
+    els.fineSize.title = `The fine packs over it: ${size(f.bytes)}, of which ${size(f.here)} on this Mac; they cover ${fmt.n(f.cover)} % of the region${needs ? '. Download the region first: they need it' : ''}`;
     if (els.fineOn !== f.on || !els.fineBtn) {
       const btn = this.dlButton(f.on, `the fine terrain of “${name}”`, () => this.dl?.regions[id]?.fine?.bytes ?? 0, (o) => dlFine(id, o), (o) =>
-        o ? `Downloading the fine terrain of “${name}”${this.dl?.regions[id]?.on ? '' : ', with the region'}.` : `The fine terrain of “${name}” is removed from this Mac.`, (t, w) => this.sayRow(els.row, t, w));
+        o ? `Downloading the fine terrain of “${name}”.` : `The fine terrain of “${name}” is removed from this Mac.`, (t, w) => this.sayRow(els.row, t, w));
       if (els.fineBtn) els.fineBtn.replaceWith(btn);
       else els.fine.append(btn);
       els.fineBtn = btn;
       els.fineOn = f.on;
     }
+    // (A click in flight keeps its own state until the answer redraws the row.)
+    if (!els.fineBtn.textContent?.endsWith('…')) {
+      els.fineBtn.disabled = needs;
+      els.fineBtn.title = needs ? `Download “${name}” first: its fine terrain is an add-on to it` : f.on ? `Remove the fine terrain of “${name}” from this Mac` : `Download the fine terrain of “${name}” to this Mac, for when it’s away from the NAS`;
+    }
   }
 
-  /** The block: this Mac's room; the World row; what's being copied and why it's slow or waits;
-   * the views. */
+  /** The block: this Mac's room; the World row; what's being copied and why it's slow or waits. */
   private renderDl() {
     const k = this.dl;
     for (const id of this.dlEls.keys()) this.showDl(id);
     if (!k) {
       this.dlSum.replaceChildren(this.dlErr ? h('div', { class: 'kp-line warn' }, this.dlErr) : h('div', { class: 'kp-line faint' }, h('span', { class: 'spin' }), ' Asking the map server…'));
-      this.dlBtn.hidden = true;
       this.worldRow.hidden = true;
       this.resRow.hidden = true;
       return;
     }
-    this.dlBtn.hidden = !k.mirror;
     this.worldRow.hidden = !k.mirror;
     this.resRow.hidden = !k.mirror;
     if (!k.mirror) {
       this.dlSum.replaceChildren(h('div', { class: 'kp-line faint' }, 'This server keeps no copy of the map (it runs without a mirror)'));
-      this.renderViews([]);
       return;
     }
     const lines: HTMLElement[] = [];
@@ -524,14 +511,15 @@ export class RegionsPanel {
       }
     }
     this.dlNow.replaceChildren(...act);
-    this.renderViews(k.views);
   }
 
-  /** The World, zoomed out: its size, its state or what the map needs without it, its button. */
+  /** The World, zoomed out: its size, its state or what the map needs without it, its button; a
+   * warning while regions are downloaded without it (away from the NAS, zoomed out, the map shows
+   * nothing). */
   private renderWorld(k: DlStatus) {
     const wd = k.world;
     if (!wd) return;
-    const areas = Object.values(k.regions).filter((r) => r.on).length + k.views.length;
+    const regions = Object.values(k.regions).filter((r) => r.on).length;
     const state = wd.on ? h('span', { class: `rg-size ${stateClass(wd.state)}` }, `${sizeOf(wd)} · ${stateText(wd, wd.state)}`) : h('span', { class: 'rg-size' }, sizeOf(wd));
     if (this.worldOn !== wd.on || !this.worldBtn) {
       this.worldBtn = this.dlButton(wd.on, 'the World, zoomed out', () => this.dl?.world?.bytes ?? 0, (o) => dlWorld(o), (o) =>
@@ -539,56 +527,20 @@ export class RegionsPanel {
       this.worldOn = wd.on;
     }
     const btn = this.worldBtn;
-    btn.disabled = wd.on && areas > 0;
-    btn.title = btn.disabled ? 'The downloaded regions and views need it away from the NAS: remove them first' : wd.on ? 'Remove the World, zoomed out, from this Mac' : 'Download the World, zoomed out, to this Mac';
+    btn.title = wd.on ? `Remove the World, zoomed out, from this Mac${regions ? ': away from the NAS, the downloaded regions then show only zoomed in' : ''}` : 'Download the World, zoomed out, to this Mac';
+    const lacking = !wd.on && regions > 0;
+    this.worldRow.classList.toggle('dl-lack', lacking);
+    const off = lacking
+      ? h('span', { class: 'rg2s warn', title: 'Away from the NAS, the downloaded regions show only zoomed in (zoom 11 and closer); zoomed out, and everywhere else, the map is blank. Download the World to see the whole map.' },
+        `⚠ Not downloaded, but ${regions === 1 ? 'a region is' : `${regions} regions are`}: away from the NAS, zoomed out, the map shows nothing`)
+      : h('span', { class: 'rg2s warn', title: 'Nothing is copied to this Mac unless it’s downloaded.' }, 'not downloaded: the map needs the NAS to show anything');
     this.worldRow.replaceChildren(
       h('div', { class: 'rg1' }, h('span', { class: 'rg-name rg-static', title: 'The worldwide files, every layer’s zooms 0–8, the landmark points and area details, and the basemap to zoom 10' }, 'World, zoomed out'),
         h('span', { class: 'rg-id faint' }, 'zooms 0–10'), btn),
       h('div', { class: 'rg2' },
-        wd.on ? h('span', { class: 'rg2s faint' }, `downloaded ${new Date((wd.at ?? 0) * 1000).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' })}`) : h('span', { class: 'rg2s warn', title: 'Nothing is copied to this Mac unless it’s downloaded. A region’s or a view’s download brings it too.' }, 'not downloaded: the map needs the NAS to show anything'),
+        wd.on ? h('span', { class: 'rg2s faint' }, `downloaded ${new Date((wd.at ?? 0) * 1000).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' })}`) : off,
         state),
     );
-  }
-
-  /** The downloaded views: listed again when they change, else their lines updated in place. */
-  private renderViews(views: ViewDl[]) {
-    const key = JSON.stringify(views.map((v) => [v.id, v.name]));
-    if (key !== this.viewsKey) {
-      this.viewsKey = key;
-      this.viewEls.clear();
-      this.dlViews.replaceChildren(...views.map((v) => this.viewRow(v)));
-    }
-    for (const v of views) {
-      const el = this.viewEls.get(v.id);
-      if (!el) continue;
-      el.textContent = `${sizeOf(v)} · ${stateText(v, v.state)}`;
-      el.className = `rg-size ${stateClass(v.state)}`;
-    }
-  }
-
-  private viewRow(v: ViewDl): HTMLElement {
-    const row = h('div', { class: 'rg' });
-    const ring = v.outline;
-    const box = (): Bbox => [Math.min(...ring.map((p) => p[0])), Math.min(...ring.map((p) => p[1])), Math.max(...ring.map((p) => p[0])), Math.max(...ring.map((p) => p[1]))];
-    const feature: GeoJSON.Feature = { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[...ring, ring[0]]] } };
-    const show = () => {
-      const name = h('span', { class: 'rg-name', title: `${v.name}: show it` }, v.name);
-      name.addEventListener('click', () => this.onFit(box()));
-      const sz = h('span', { class: 'rg-size' });
-      this.viewEls.set(v.id, sz);
-      const rm = this.dlButton(true, `“${v.name}”`, () => this.dl?.views.find((x) => x.id === v.id)?.bytes ?? 0, () => dropView(v.id).then(() => this.layers.setHover(null)), () => `“${v.name}” is removed from this Mac.`);
-      row.replaceChildren(
-        h('div', { class: 'rg1' }, name, h('span', { class: 'rg-id faint' }, 'view'),
-          h('button', { class: 'rg-act', type: 'button', title: 'Rename', onclick: () => this.renameView(v, row, show) }, '✎'), rm),
-        h('div', { class: 'rg2' }, h('span', { class: 'rg2s faint' }, `downloaded ${new Date(v.at * 1000).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' })}`), sz),
-      );
-      sz.textContent = `${sizeOf(v)} · ${stateText(v, v.state)}`;
-      sz.className = `rg-size ${stateClass(v.state)}`;
-    };
-    show();
-    row.addEventListener('mouseenter', () => this.layers.setHover([feature]));
-    row.addEventListener('mouseleave', () => this.layers.setHover(null));
-    return row;
   }
 
   /** A line under a region's row: what its Download or Remove did, or why it didn't (gone a little
@@ -668,72 +620,4 @@ export class RegionsPanel {
     this.dlMsg.textContent = text;
     this.dlMsg.classList.toggle('warn', warn);
   }
-
-  /** Download this view: what it would take first (the ground on screen now), then download it or
-   * not. */
-  private async downloadThisView() {
-    const outline = this.viewOutline();
-    if (outline.length < 3) return this.sayDl('No ground in view to download', true);
-    this.dlBtn.disabled = true;
-    this.sayDl('');
-    const done = () => {
-      this.dlAsk.hidden = true;
-      this.dlBtn.disabled = false;
-    };
-    try {
-      const z = await viewSize(outline);
-      const go = h('button', { class: 'pill on', type: 'button' }, 'Download');
-      go.addEventListener('click', () => {
-        go.disabled = true;
-        go.textContent = 'Downloading…';
-        void dlView(outline)
-          .then((v) => this.sayDl(`Downloading “${v.name}” to this Mac (✎ renames it).`), (e) => this.sayDl(says(e), true))
-          .finally(() => {
-            done();
-            void this.pollDl();
-          });
-      });
-      const cancel = h('button', { class: 'pill', type: 'button', onclick: done }, z.fits ? 'Cancel' : 'OK');
-      const world = z.with_world > 0 ? `, and the World, zoomed out (${size(z.with_world)}), with it` : '';
-      this.dlAsk.replaceChildren(
-        z.fits
-          ? h('div', {}, `This view: ${size(z.bytes)}${z.here ? ` (${size(z.here)} here)` : ''}${world}. ${size(z.need)} to copy in all, of the ${size(z.room)} free above the reserve.`)
-          : h('div', { class: 'warn' }, `This view${world} takes ${size(z.need)} more on this Mac with what’s downloaded, and it has ${size(z.room)} free above the reserve: free some space, or download a smaller view.`),
-        h('div', { class: 'pills' }, ...(z.fits ? [go] : []), cancel),
-      );
-      this.dlAsk.hidden = false;
-    } catch (e) {
-      this.sayDl(says(e), true);
-      done();
-    }
-  }
-
-  private renameView(v: ViewDl, row: HTMLElement, back: () => void) {
-    const input = h('input', { type: 'text', class: 'rg-in', value: v.name, spellcheck: false });
-    const save = async () => {
-      const name = input.value.trim();
-      if (!name || name === v.name) return back();
-      try {
-        await renameView(v.id, name);
-        this.sayDl(`Renamed “${v.name}” to “${name}”`);
-      } catch (e) {
-        this.sayDl(says(e), true);
-        back();
-      }
-      void this.pollDl();
-    };
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') void save();
-      else if (e.key === 'Escape') {
-        e.stopPropagation();
-        back();
-      }
-    });
-    row.replaceChildren(h('div', { class: 'rg1' }, input,
-      h('button', { class: 'rg-act on', type: 'button', title: 'Save', onclick: () => void save() }, '✓'),
-      h('button', { class: 'rg-act on', type: 'button', title: 'Cancel', onclick: back }, '×')));
-    input.focus();
-    input.select();
-  }
-
 }

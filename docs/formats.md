@@ -569,10 +569,10 @@ names/spoken-<content>.bin   languages spoken where, for a catalog without `glob
                         count, 23,041 u32 row starts, runs of (u32 first column, u16 region))
 regions.json            the last regions read
 reserve.json            the mirror's reserve {gb} (crates/server/src/reserve.rs); default 30 GB
-downloads.json          {fmt: 2, world: at | null, regions: [{id, name, at, fine}], views: [{id, name,
-                        outline: [[lon, lat], …], at}]} (crates/server/src/downloads.rs; `at` unix
-                        seconds); one that doesn't read is set aside as downloads.json.bad; an old
-                        keep.json is converted once
+downloads.json          {fmt: 3, world: at | null, regions: [{id, name, at, fine}]}
+                        (crates/server/src/downloads.rs; `at` unix seconds); one that doesn't read is
+                        set aside as downloads.json.bad; a fmt 2 file is written again without its
+                        `views` (their files no region needs are deleted)
 map-page                the address to open the map on another device (docs/macs.md, Devices; 0600)
 pool-<id>.lock          the lock of this Mac's member `<id>` (crate::pool::MemberLock)
 ```
@@ -698,7 +698,7 @@ Where they're kept:
   `l=` before its `at`): `[{main, sub}]`.
 - `/api/build`: the agent's status (this Mac's when it leads, else the lead's heartbeat, or this
   member's `helper.json` when that is ten minutes stale), `pool`, `lead_asked`, and `offline:
-  {world, areas, bytes, here, nas}` (null without a mirror).
+  {world, regions, bytes, here, nas}` (null without a mirror).
 - **Remote access** (docs/macs.md, Devices): no key. A request from anywhere but this Mac, its LAN and
   the tailnet (through `tailscale serve` or Caddy on this Mac too; never Funnel) is 403 ("not from
   here"), as is one whose `Host` isn't the map's (an address, a local or tailnet name, or one in
@@ -706,14 +706,13 @@ Where they're kept:
 - **Downloads** (`downloads.rs`): `GET /api/downloads` → `{mirror, online, slow, rate, free,
   reserve, reserve_min, disk, here, world: {bytes, here, unknown, on, at, state}, wanted: {bytes,
   here, more, unknown}, copying: {what, bytes, have, slow} | null, last: {…} | null, regions: {id:
-  {name, bytes, here, unknown, on, state, tiles?, fine?: {bytes, here, unknown, on, state, cover}}}, views: [{id, name, outline, at, bytes, here, unknown,
-  state}]}` (`unknown`: basemap pieces not yet sized; `state`: done, copying, queued, room, away,
+  {name, bytes, here, unknown, on, state, tiles?, fine?: {bytes, here, unknown, on, state, cover}}}}`
+  (`unknown`: basemap pieces not yet sized; `state`: done, copying, queued, room, away,
   missing; `tiles`: a region still building, as its catalog has it, its files those of the catalog
-  served, more with each catalog). `PUT /api/downloads/world {on}` (off refused while a region or view is downloaded);
-  `PUT /api/downloads/regions/{id} {on}` (on downloads the World too; off removes its fine terrain too); `PUT /api/downloads/regions/{id}/fine {on}` (its fine terrain; on downloads the region and the World too); `POST
-  /api/downloads/views/size {outline}` → `{bytes, here, with_world, need, room, fits}`; `POST
-  /api/downloads/views {outline, name?}` → `{id, name}`; `PUT /api/downloads/views/{id} {name}`;
-  `DELETE /api/downloads/views/{id}`; `PUT /api/downloads/reserve {gb}` (whole GB, 5 to under the
+  served, more with each catalog). `PUT /api/downloads/world {on}` (each on its own: a region
+  doesn't bring the World, and the World goes while regions stay); `PUT /api/downloads/regions/{id}
+  {on}` (off removes its fine terrain too); `PUT /api/downloads/regions/{id}/fine {on}` (its fine
+  terrain; on refused unless the region is downloaded); `PUT /api/downloads/reserve {gb}` (whole GB, 5 to under the
   disk size) → `{ok, reserve}`. A download that wouldn't fit is refused; refusals are 400 `{error}`.
 - **Regions** (read only): `GET /api/regions`, `/api/regions/layer`, `/api/areas/{id}`,
   `/api/coverage` (the catalog's coverage as GeoJSON, one feature per outline entry, with `regions`

@@ -152,7 +152,7 @@ fn settle(s: &S) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn downloading_the_world_regions_and_views() {
+async fn downloading_the_world_and_regions() {
     let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let cat = catalog(nas.path());
     let s = crate::test_state_with(home.path(), nas.path(), true);
@@ -177,16 +177,18 @@ async fn downloading_the_world_regions_and_views() {
         json!({"name": "London", "bytes": london.files.bytes + piece, "here": 0, "unknown": 0, "on": false, "state": null})
     );
 
-    // London downloaded: the World with it; written to downloads.json; copied by the thread.
+    // London downloaded: not the World with it; written to downloads.json; copied by the thread.
     let (code, _) = region(&s, "london", true).await;
     assert_eq!(code, StatusCode::OK);
     let asked = Downloads::load(home.path()).asked();
-    assert!(asked.world.is_some() && asked.regions.iter().map(|r| r.name.as_str()).eq(["London"]));
+    assert!(asked.world.is_none() && asked.regions.iter().map(|r| r.name.as_str()).eq(["London"]));
     let v = get(&s).await;
-    assert_eq!(
-        (v["world"]["state"].as_str(), v["regions"]["london"]["state"].as_str()),
-        (Some("queued"), Some("queued"))
-    );
+    assert_eq!((v["world"]["on"].as_bool(), v["regions"]["london"]["state"].as_str()), (Some(false), Some("queued")));
+    tokio::task::block_in_place(|| settle(&s));
+    let v = get(&s).await;
+    assert_eq!(v["regions"]["london"]["state"].as_str(), Some("done"));
+    assert_eq!(v["here"].as_u64(), v["regions"]["london"]["bytes"].as_u64(), "London alone");
+    assert_eq!(call(put_world(State(s.clone()), Json(On { on: true })).await).await.0, StatusCode::OK);
     tokio::task::block_in_place(|| settle(&s));
     let v = get(&s).await;
     assert_eq!((v["world"]["state"].as_str(), v["regions"]["london"]["state"].as_str()), (Some("done"), Some("done")));
@@ -194,15 +196,13 @@ async fn downloading_the_world_regions_and_views() {
     assert_eq!(v["wanted"]["here"], v["wanted"]["bytes"]);
     assert_eq!(v["here"].as_u64(), v["wanted"]["bytes"].as_u64(), "nothing else");
 
-    // The World can't go while London needs it; London can.
-    let (code, e) = call(put_world(State(s.clone()), Json(On { on: false })).await).await;
-    assert_eq!(code, StatusCode::BAD_REQUEST);
-    assert!(e["error"].as_str().unwrap().contains("Remove the downloaded regions"), "{e}");
-    assert_eq!(region(&s, "london", false).await.0, StatusCode::OK);
+    // Either goes on its own: the World while London stays, then London.
+    assert_eq!(call(put_world(State(s.clone()), Json(On { on: false })).await).await.0, StatusCode::OK);
     tokio::task::block_in_place(|| settle(&s));
     let v = get(&s).await;
-    assert_eq!((v["regions"]["london"]["here"].as_u64(), v["world"]["state"].as_str()), (Some(0), Some("done")));
-    assert_eq!(call(put_world(State(s.clone()), Json(On { on: false })).await).await.0, StatusCode::OK);
+    assert_eq!((v["regions"]["london"]["state"].as_str(), v["world"]["here"].as_u64()), (Some("done"), Some(0)));
+    assert_eq!(v["here"].as_u64(), v["regions"]["london"]["bytes"].as_u64(), "the World's files went");
+    assert_eq!(region(&s, "london", false).await.0, StatusCode::OK);
     tokio::task::block_in_place(|| settle(&s));
     assert_eq!(m.usage(), (0, 0), "removed: nothing here");
 
@@ -216,38 +216,7 @@ async fn downloading_the_world_regions_and_views() {
     let (code, v) = region(&s, "../x", true).await;
     assert_eq!(code, StatusCode::BAD_REQUEST, "{v}");
     region(&s, "kanto", false).await;
-
-    // A view: its size first, then downloaded, renamed, removed. Named by where it is when the
-    // place search knows no place in it (this catalog has no labels).
-    let outline = rect(4.0, 51.7, 4.6, 52.1);
-    let (code, v) = call(post_view_size(State(s.clone()), Json(Outline { outline: outline.clone() })).await).await;
-    assert_eq!(code, StatusCode::OK, "{v}");
-    assert_eq!((v["with_world"].as_u64(), v["fits"].as_bool()), (Some(0), Some(true)), "the World's here already");
-    let (code, v) =
-        call(post_view(State(s.clone()), Json(NewView { outline: outline.clone(), name: None })).await).await;
-    assert_eq!(code, StatusCode::OK, "{v}");
-    assert_eq!(v["name"].as_str(), Some("51.90° N, 4.30° E"));
-    let id = v["id"].as_str().unwrap().to_string();
-    let (code, _) =
-        call(put_view(State(s.clone()), Path(id.clone()), Json(Rename { name: "  Rotterdam\n ".into() })).await).await;
-    assert_eq!(code, StatusCode::OK);
-    tokio::task::block_in_place(|| settle(&s));
-    let v = get(&s).await;
-    let view = &v["views"][0];
-    assert_eq!(
-        (view["id"].as_str(), view["name"].as_str(), view["state"].as_str()),
-        (Some(id.as_str()), Some("Rotterdam"), Some("done"))
-    );
-    for bad in [
-        NewView { outline: outline[..2].to_vec(), name: None },
-        NewView { outline: vec![[0.0, 95.0]; 4], name: None },
-        NewView { outline: outline.clone(), name: Some(" ".into()) },
-    ] {
-        assert_eq!(call(post_view(State(s.clone()), Json(bad)).await).await.0, StatusCode::BAD_REQUEST);
-    }
-    assert_eq!(call(delete_view(State(s.clone()), Path(id.clone())).await).await.0, StatusCode::OK);
-    assert_eq!(call(delete_view(State(s.clone()), Path(id)).await).await.0, StatusCode::BAD_REQUEST);
-    assert!(get(&s).await["views"].as_array().unwrap().is_empty());
+    assert!(get(&s).await.get("views").is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -266,32 +235,26 @@ async fn a_download_that_wouldnt_fit_is_refused_with_the_numbers() {
     let (code, v) = region(&s, "london", true).await;
     assert_eq!(code, StatusCode::BAD_REQUEST);
     let e = v["error"].as_str().unwrap();
-    assert!(
-        e.starts_with("Downloading “London”, with the World, zoomed out, takes ")
-            && e.contains("it has 0 MB free above the reserve"),
-        "{e}"
-    );
+    assert!(e.starts_with("Downloading “London” takes ") && e.contains("it has 0 MB free above the reserve"), "{e}");
     assert_eq!(s.downloads.asked(), Asked::default(), "not downloaded");
     let (code, v) = call(put_world(State(s.clone()), Json(On { on: true })).await).await;
     assert_eq!(code, StatusCode::BAD_REQUEST, "{v}");
-    let (_, v) =
-        call(post_view_size(State(s.clone()), Json(Outline { outline: rect(-0.3, 51.4, -0.1, 51.6) })).await).await;
-    assert_eq!((v["room"].as_u64(), v["fits"].as_bool()), (Some(0), Some(false)));
-    assert!(v["with_world"].as_u64().unwrap() > 3_300);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn what_a_mac_kept_becomes_downloads_and_the_rest_goes() {
+async fn a_macs_downloaded_views_are_removed_and_their_files_go() {
     let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let cat = catalog(nas.path());
-    // Before downloads: London kept, and the mirror holding all of the map (the old essentials,
-    // London's, the rest, the whole basemap).
+    // Before views went: London and a view over Rotterdam downloaded, with the World, all here.
+    let view = rect(4.0, 51.7, 4.6, 52.1);
     std::fs::write(
-        home.path().join(OLD_FILE),
-        serde_json::to_vec(&json!({"fmt": 1, "regions": [{"id": "london", "name": "London", "at": 1}], "views": []}))
-            .unwrap(),
+        home.path().join(FILE),
+        serde_json::to_vec(&json!({"fmt": 2, "world": 1, "regions": [{"id": "london", "name": "London", "at": 1}],
+            "views": [{"id": "v1", "name": "Rotterdam", "outline": view, "at": 1}]}))
+        .unwrap(),
     )
     .unwrap();
+    let rotterdam = area_part(&cat, std::slice::from_ref(&view));
     {
         let m = Mirror::open(home.path().to_owned(), 0).unwrap();
         let all =
@@ -302,16 +265,23 @@ async fn what_a_mac_kept_becomes_downloads_and_the_rest_goes() {
     let s = crate::test_state_with(home.path(), nas.path(), true);
     let asked = s.downloads.asked();
     assert!(asked.world.is_some() && asked.regions.len() == 1);
-    assert!(!home.path().join(OLD_FILE).exists() && home.path().join(FILE).exists());
+    let on_disk: Value = serde_json::from_slice(&std::fs::read(home.path().join(FILE)).unwrap()).unwrap();
+    assert_eq!((on_disk["fmt"].as_u64(), on_disk.get("views")), (Some(3), None), "written again without them");
     tokio::task::block_in_place(|| settle(&s));
     let m = s.data.mirror.clone().unwrap();
-    // The World's and London's stay, the rest went (the whole basemap among them); only the
-    // pieces were copied.
+    // The World's and London's stay; the view's files no region needs went.
+    let plan = s.downloads.plan(&s.data);
+    let gone: Vec<&String> = rotterdam
+        .files
+        .names
+        .iter()
+        .map(|(n, _)| n)
+        .filter(|n| !plan.wanted.items.iter().any(|i| store::mirror::copy_name(i) == n.as_str()))
+        .collect();
+    assert!(!gone.is_empty() && gone.iter().all(|n| !m.has(n)), "{gone:?}");
     let v = get(&s).await;
-    assert_eq!(v["wanted"]["here"], v["wanted"]["bytes"]);
     assert_eq!(v["here"], v["wanted"]["here"]);
-    assert!(!m.has(cat.content("base/6-30-21").unwrap()) && !m.has(cat.content("layers/basemap/world").unwrap()));
-    assert_eq!(m.usage().0, s.downloads.plan(&s.data).wanted.items.len());
+    assert_eq!(m.usage().0, plan.wanted.items.len());
 }
 
 #[test]
@@ -481,10 +451,17 @@ async fn fine_terrain_downloads_with_its_region_and_is_read_from_this_mac() {
     );
     assert!(f["cover"].as_f64().unwrap() > 50.0, "{f}");
 
-    // Downloaded: London and the World with it; copied after them; the server reads it here.
+    // Refused until London is downloaded.
+    let (code, v) = fine(&s, true).await;
+    assert_eq!(code, StatusCode::BAD_REQUEST, "{v}");
+    assert!(v["error"].as_str().unwrap().contains("Download the region first"), "{v}");
+    assert_eq!(s.downloads.asked(), Asked::default());
+
+    // Downloaded, after London: copied after it; the server reads it here.
+    assert_eq!(region(&s, "london", true).await.0, StatusCode::OK);
     assert_eq!(fine(&s, true).await.0, StatusCode::OK);
     let asked = s.downloads.asked();
-    assert!(asked.world.is_some() && asked.regions.len() == 1 && asked.regions[0].fine);
+    assert!(asked.world.is_none() && asked.regions.len() == 1 && asked.regions[0].fine);
     let plan = s.downloads.plan(&s.data);
     assert_eq!(plan.wanted.items.last(), Some(&Item::File { name: pack.file.clone(), size: pack.size }));
     tokio::task::block_in_place(|| settle(&s));

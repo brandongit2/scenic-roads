@@ -537,15 +537,14 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 #layers .rg-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); cursor: pointer; }
 #layers .rg-name:hover { color: #fff; }
 #layers .rg-id { flex: 1; min-width: 0; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#layers .rg-act { flex: none; width: 16px; height: 16px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--faint); font-size: 12px; line-height: 16px; opacity: 0; }
-#layers .rg:hover .rg-act, #layers .rg-act.on, #layers .rg-act:focus-visible { opacity: 1; }
-#layers .rg-act:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
 #layers .rg2 { display: flex; gap: 8px; margin-top: 1px; color: var(--faint); font-size: 10.5px; }
 #layers .rg2[hidden] { display: none; }
 #layers .rg2s { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Downloads (ui/regions.ts, downloads.ts): the World, each region's size and its Download or Remove,
-   this Mac's room, the downloaded views. */
+   a region's fine terrain (its name kept whole, its line cut short), this Mac's room. */
 #layers .rg-size { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+#layers .rg2s.rg-fine { flex: 1 0 auto; }
+#layers .rg-size.rg-fsize { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 #layers :is(.rg-size, .kp-line) .ok, #layers .rg-size.ok { color: var(--accent); }
 #layers :is(.rg-size, .kp-line) .on, #layers .rg-size.on { color: var(--text); }
 #layers :is(.rg-size, .kp-line) .warn, #layers :is(.rg-size, .kp-line).warn { color: #f3c77a; }
@@ -560,6 +559,7 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 #layers .rg-static:hover { color: var(--text); }
 #layers .dl-world { margin-top: 3px; }
 #layers .dl-world[hidden] { display: none; }
+#layers .dl-world.dl-lack { margin-left: -6px; padding-left: 4px; border-left: 2px solid #f3c77a; border-radius: 4px; background: rgba(243, 199, 122, 0.07); }
 #layers .rg2s.warn { color: #f3c77a; white-space: normal; }
 #layers .rg-rowmsg { margin-top: 2px; font-size: 10.5px; line-height: 1.45; color: var(--muted); }
 #layers .rg-rowmsg.warn { color: #f3c77a; }
@@ -577,14 +577,6 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 #layers .kp-res-say.warn { color: #f3c77a; }
 #layers .kp-bar { height: 3px; margin: 2px 0 3px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
 #layers .kp-bar i { display: block; height: 100%; background: var(--accent); transition: width 0.4s ease; }
-#layers .kp-act { display: flex; gap: 6px; margin: 6px 0 2px; }
-#layers .kp-act .pill:disabled { opacity: 0.6; }
-#layers .kp-views:empty { display: none; }
-#layers .kp-ask { margin: 4px 0 2px; color: var(--muted); }
-#layers .kp-ask .warn { color: #f3c77a; }
-#layers .kp-ask[hidden] { display: none; }
-#layers .rg-ask { display: grid; gap: 6px; padding: 2px 0; font-size: 11px; line-height: 1.45; }
-#layers .rg-ask .pills .pill { flex: 1; padding: 3px 8px; }
 #layers .rg-bad { color: #f3c77a; font-size: 10.5px; line-height: 1.4; padding: 2px 0; overflow-wrap: anywhere; }
 #layers .rg-empty { font-size: 11px; padding: 2px 0; }
 #layers :is(.rg-note, .rg-msg) { font-size: 10.5px; line-height: 1.45; color: var(--muted); }
@@ -593,7 +585,6 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 #layers :is(.rg-note, .rg-msg).warn { color: #f3c77a; }
 #layers .rg-in { min-width: 0; background: var(--card-solid); border: 1px solid var(--line-strong); border-radius: 5px; padding: 3px 6px; font-size: 11px; color: var(--text); outline: none; }
 #layers .rg-in:focus { border-color: rgba(255, 255, 255, 0.28); }
-#layers .rg-in { flex: 1; }
 
 /* The map server and NAS connection and the reload prompt in the status bar (ui/mapstatus.ts): a few words each, the details
    on a click. */
@@ -734,7 +725,6 @@ body.panel-off #viewshed { --vs-left: calc(60px + env(safe-area-inset-left)); }
   #layers .row, #layers .fade, #layers .wgrid { padding: 5px 0; row-gap: 8px; }
   #layers .levels .lv { padding: 7px 0; }
   #layers .rg { padding: 8px 6px; }
-  #layers .rg-act { opacity: 1; width: 30px; height: 30px; font-size: 15px; }
   #layers .rg-dl { height: 30px; padding: 0 10px; font-size: 12px; }
   .pick { padding: 11px 6px; }
   #stats dd a, #stats dt { padding: 3px 0; }

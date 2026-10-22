@@ -88,7 +88,7 @@ page = head + f'''<title>Scenic Roads Data Pipeline</title>
 <figure>
 <h3>Where the data lives</h3>
 <div class="scroll">{storage.build(CHECK)}</div>
-<figcaption>Big files live only on the NAS. Every Mac’s jobs put their files there and their results in the journal; the lead alone merges them into the build’s records. What was made by hand goes straight into the NAS’s inputs/ (its drop boxes) and sources/. GC removes unreferenced files after 14 days: daily, when the NAS is quiet (or after waiting a day). Your Macs copy only what you download in the Regions panel (the World, zoomed out; regions; views), and read the rest from the NAS.</figcaption>
+<figcaption>Big files live only on the NAS. Every Mac’s jobs put their files there and their results in the journal; the lead alone merges them into the build’s records. What was made by hand goes straight into the NAS’s inputs/ (its drop boxes) and sources/. GC removes unreferenced files after 14 days: daily, when the NAS is quiet (or after waiting a day). Your Macs copy only what you download in the Regions panel (the World, zoomed out; regions, and their fine terrain), and read the rest from the NAS.</figcaption>
 </figure>
 <figure>
 <h3>Who builds it</h3>

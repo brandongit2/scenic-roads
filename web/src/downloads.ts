@@ -1,5 +1,5 @@
 // Downloads (docs/macs.md, "Mirror, per Mac"): what this Mac has downloaded for when it's away
-// from the NAS (the World, zoomed out; regions; views), and the mirror's state (/api/downloads,
+// from the NAS (the World, zoomed out; regions, and their fine terrain), and the mirror's state (/api/downloads,
 // crates/server/src/downloads.rs). Nothing else is copied to this Mac, and nothing downloaded goes
 // until it's removed. The Regions panel (ui/regions.ts) shows them.
 import { RegionsError } from './regions';
@@ -41,15 +41,6 @@ export interface WorldDl extends Tally {
   state: DlState | null;
 }
 
-export interface ViewDl extends Tally {
-  id: string;
-  name: string;
-  /** The ground that was in view: [lon, lat] points. */
-  outline: [number, number][];
-  at: number;
-  state: DlState;
-}
-
 export interface DlStatus {
   /** False: this server keeps no copy of the map (--no-mirror). */
   mirror: boolean;
@@ -72,7 +63,6 @@ export interface DlStatus {
   copying?: { what: string; bytes: number; have: number; slow: boolean } | null;
   last?: { at: number; copied: number; copied_bytes: number; removed: number; removed_bytes: number; waiting: number; waiting_bytes: number; failed: number; pending: number; end: 'done' | 'paused' | 'offline' } | null;
   regions: Record<string, RegionDl>;
-  views: ViewDl[];
 }
 
 async function call<T>(url: string, init?: RequestInit): Promise<T> {
@@ -89,27 +79,16 @@ async function call<T>(url: string, init?: RequestInit): Promise<T> {
 const json = (method: string, body: unknown): RequestInit => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
 export const dlStatus = () => call<DlStatus>('/api/downloads');
-/** Downloads the World, zoomed out, or removes it (refused, with why, when it won't fit, or while a
- * region or view needs it). */
+/** Downloads the World, zoomed out, or removes it (refused, with why, when it won't fit). */
 export const dlWorld = (on: boolean) => call<{ ok: boolean }>('/api/downloads/world', json('PUT', { on }));
-/** Downloads a region (and the World with it), or removes it. */
+/** Downloads a region, or removes it (with its fine terrain). */
 export const dlRegion = (id: string, on: boolean) => call<{ ok: boolean }>(`/api/downloads/regions/${encodeURIComponent(id)}`, json('PUT', { on }));
-/** Downloads a region's fine terrain (and the region and the World with it), or removes it (the
+/** Downloads a region's fine terrain (refused unless the region is downloaded), or removes it (the
  * region stays). */
 export const dlFine = (id: string, on: boolean) => call<{ ok: boolean }>(`/api/downloads/regions/${encodeURIComponent(id)}/fine`, json('PUT', { on }));
-/** Downloads the ground in view; named after its most important place unless `name` (the server
- * may take a few seconds to name it). */
-export const dlView = (outline: [number, number][], name?: string) => call<{ id: string; name: string }>('/api/downloads/views', json('POST', { outline, name }));
-/** What downloading a view would take: its own size (`bytes`, `here` of them), the World's still
- * missing when it isn't downloaded (`with_world`), all that would still be copied (`need`) and the
- * free space above the reserve (`room`). */
-export const viewSize = (outline: [number, number][]) => call<{ bytes: number; here: number; with_world: number; need: number; room: number; fits: boolean }>('/api/downloads/views/size', json('POST', { outline }));
 /** Sets the free space downloads leave on this Mac's disk (whole GB; refused, with why, out of
  * bounds). */
 export const setReserve = (gb: number) => call<{ ok: boolean; reserve: number }>('/api/downloads/reserve', json('PUT', { gb }));
-export const renameView = (id: string, name: string) => call<{ ok: boolean; name: string }>(`/api/downloads/views/${encodeURIComponent(id)}`, json('PUT', { name }));
-export const dropView = (id: string) => call<{ ok: boolean }>(`/api/downloads/views/${encodeURIComponent(id)}`, { method: 'DELETE' });
-
 /** Bytes in metric units: 840 MB, 2.4 GB, 251 GB. */
 export function size(b: number): string {
   if (b < 1e9) return `${fmt.n(Math.max(0, b) / 1e6)} MB`;

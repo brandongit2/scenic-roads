@@ -78,7 +78,7 @@ struct HeldInfo: Decodable {
 /// This Mac's downloads (crates/server/src/downloads.rs `summary`).
 struct Offline: Decodable {
     let world: Bool
-    let areas: Int
+    let regions: Int
     let bytes: Int
     let here: Int
     /// The NAS is reachable from this Mac.
@@ -87,11 +87,17 @@ struct Offline: Decodable {
 
 /// The menu's line on what this Mac can show without the NAS.
 func offlineText(_ o: Offline) -> String {
-    if !o.world {
+    let regions = "\(o.regions) region\(o.regions == 1 ? "" : "s")"
+    if !o.world && o.regions == 0 {
         return o.nas ? "Nothing downloaded: the map needs the NAS to show anything (Settings → Regions)" : "Away from the NAS with nothing downloaded: the map can't show anything"
     }
-    var t = "Downloaded: the World, zoomed out"
-    if o.areas > 0 { t += " and \(o.areas) area\(o.areas == 1 ? "" : "s")" }
+    var t: String
+    if !o.world {
+        t = "Downloaded: \(regions), not the World: away from the NAS, zoomed out, the map shows nothing"
+    } else {
+        t = "Downloaded: the World, zoomed out"
+        if o.regions > 0 { t += " and \(regions)" }
+    }
     if o.here < o.bytes { t += o.nas ? " · \(min(99, o.here * 100 / max(1, o.bytes))) % here" : " · \(min(99, o.here * 100 / max(1, o.bytes))) % here, away from the NAS" }
     return t
 }

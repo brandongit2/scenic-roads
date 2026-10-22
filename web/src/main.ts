@@ -2207,7 +2207,6 @@ async function main() {
   };
   regions.onFit = (b) => fitGround(new maplibregl.LngLatBounds([b[0], b[1]], [b[2], b[3]]), { top: 60, bottom: 60, left: 60, right: 340 });
   // Keep this view: the ground on screen, as the lists "in view" take it.
-  regions.viewOutline = () => groundOutline().map((ll) => [ll.lng, ll.lat] as [number, number]);
 
   // ---- first view ----------------------------------------------------------------------
   // The load bar runs until the road tiles in view are in (or FIRST_VIEW_MS); the overlays then,

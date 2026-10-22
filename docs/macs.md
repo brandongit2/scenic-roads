@@ -216,13 +216,14 @@ and codesign.
   (`work/lakefill/<date>`, read by the water's deeper zooms anywhere in Canada), every layer's root
   and lo packs (z0–8), markdata, ovdata, and the basemap's zooms 0–10: about 10 GB. Not the pass's
   outlines.
-- **A region, or a view:** every layer's hi pack and the base pack and road values of each z6 tile
+- **A region:** every layer's hi pack and the base pack and road values of each z6 tile
   within 2 km of it; the basemap's zooms 11–14 over those tiles; the terrain's and grids' hi packs
   within 25 km (the viewshed's reach); the hi data of the z6 tiles within 50 km. With the World,
   that's what the map reads there (but task #457).
 - **A region's fine terrain** (an add-on to the region, which it needs): the terrain's fine packs
   (z13 and finer, by z10 tile) within 2 km of it, where the terrain has finer data; the panel says
-  the share of the region they cover and their size first. Copied after everything else.
+  the share of the region they cover and their size first. Downloaded only while the region is;
+  copied after everything else.
 - **The basemap's pieces** (`mirror/.basemap/<archive hash>/`): each a PMTiles archive of its own,
   `lo` (zooms 0–10) and `6-x-y` (a z6 tile's zooms 11–14, shared by every download meeting it). On
   PMTiles' Hilbert curve a z6 tile's tiles at each zoom are one run, so a piece is four directory
