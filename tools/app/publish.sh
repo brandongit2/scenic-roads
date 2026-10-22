@@ -115,6 +115,13 @@ fi
 # publish before the build rather than after.
 # Without it nothing is published: an ad-hoc signature would lose every Mac's firewall allow.
 sign_id="Scenic Code Signing"
+# A Mac that publishes over ssh (the mini) keeps the key in its own keychain, unlocked here with
+# the password beside it: an ssh session can't reach the login keychain the desktop unlocked.
+signing_kc=~/Library/Keychains/scenic-signing.keychain-db
+signing_pw=~/.config/scenic/signing-keychain-pass
+if [[ -f $signing_kc && -r $signing_pw ]]; then
+  security unlock-keychain -p "$(<$signing_pw)" $signing_kc || { echo "publish: can't unlock $signing_kc"; exit 1; }
+fi
 security find-identity -p codesigning 2>/dev/null | grep -q "\"$sign_id\"" || { echo "publish: no \"$sign_id\" identity in this Mac's keychain (docs/building.md, App publishing)"; exit 1; }
 probe=$(mktemp -d)/probe; cp /usr/bin/true $probe
 codesign -s "$sign_id" --force $probe </dev/null || { echo "publish: codesign can't use the \"$sign_id\" key: unlock the login keychain and let codesign use the key (docs/building.md, App publishing)"; exit 1; }

@@ -484,11 +484,15 @@ on the PATH itself and takes the rest from mise.toml, so no shell profile is nee
 `publish.sh --rollback` swaps `current.json` and `previous.json`. The agent never fetches from git.
 
 The publishing Mac's signing identity, set up once by the owner at that Mac (the key never leaves
-the keychains): import "Scenic Code Signing" (a .p12 exported from the M1's Keychain Access) into
-the login keychain, then let codesign use it without a prompt, and keep the keychain unlocked over
-ssh (the mini is always logged in; its login keychain stays unlocked while it is):
-`security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k <login password> ~/Library/Keychains/login.keychain-db`.
-The check: `ssh m6 'cp /usr/bin/true /tmp/t && codesign -s "Scenic Code Signing" -f /tmp/t'`.
+the keychains). An ssh session can't use the login keychain the desktop unlocked, so a Mac that
+publishes over ssh (the mini) keeps the key in a keychain of its own, which publish.sh unlocks with
+the password beside it (`~/.config/scenic/signing-keychain-pass`, mode 600): `security create-keychain`
+`~/Library/Keychains/scenic-signing.keychain-db` with a new password, `set-keychain-settings` (no
+auto-lock), `security import` the .p12 exported from the M1 with `-T /usr/bin/codesign`,
+`set-key-partition-list -S apple-tool:,apple:,codesign:` on it, add it to `security list-keychains -d user`,
+save its password in that file, and delete the .p12. A Mac publishing at its desktop uses its login
+keychain as before.
+The check: `ssh m6 'security unlock-keychain -p "$(<~/.config/scenic/signing-keychain-pass)" ~/Library/Keychains/scenic-signing.keychain-db && cp /usr/bin/true /tmp/t && codesign -s "Scenic Code Signing" -f /tmp/t'`.
 
 **Programs:** `scenic` (the user's command and the agent); `scenic-build` (the build steps);
 `server`; the `unit` job's programs `extract`, `elev`, `areaflags`, `landcover`, `tile`, `scenic-metrics`
