@@ -4769,6 +4769,7 @@ impl Agent {
                 }
             }
         }
+        self.tend_threads(k, c);
         Ok(false)
     }
 
@@ -6369,6 +6370,12 @@ impl Agent {
         env.push((store::cachefile::WRITTEN_ENV.into(), written.to_string_lossy().into_owned()));
         // The owner's room target it keeps free past what it writes (the OSM pass, pass-sets).
         env.push(self.target_env(&spec));
+        // An input check's threads, kept as cores free up (`tend_threads`; crate::inputs::pace).
+        if step_of(&spec.id).as_deref() == Some("inputs") {
+            let f = self.threads_path(k);
+            std::fs::write(&f, threads.to_string()).with_context(|| format!("write {}", f.display()))?;
+            env.push((crate::inputs::pace::THREADS_ENV.into(), f.to_string_lossy().into_owned()));
+        }
         // Where it says it waits on a worker holding its z6 tile's tail, while it does (`waiting_on`),
         // afresh.
         let waiting = self.waiting_path(k);
@@ -8426,6 +8433,33 @@ impl Agent {
             eprintln!("agent: keeping the pause: {e:#}");
         }
         self.pause = p;
+    }
+
+    /// Where slot `k`'s input check is told the threads it may use now (`tend_threads`).
+    fn threads_path(&self, k: usize) -> PathBuf {
+        self.o.home.join(format!("threads{}", slot_suffix(k)))
+    }
+
+    /// Tells slot `k`'s input check the threads it may use now (docs/inputs.md §4.3, Threads): this
+    /// Mac's cores less those kept for its owner and those its other jobs were given, `MOST` at
+    /// most. It takes more as they free up, and fewer when a job starts beside it.
+    fn tend_threads(&self, k: usize, c: &Conditions) {
+        let Some(r) = self.slots[k].running.as_ref().filter(|r| step_of(&r.spec.id).as_deref() == Some("inputs"))
+        else {
+            return;
+        };
+        let cores = mac_cores() as usize;
+        let kept = if c.user_active() { share::cores(self.in_use_share.as_ref(), cores as u32) as usize } else { 0 };
+        let beside: usize =
+            self.slots.iter().enumerate().filter(|(j, _)| *j != k).filter_map(|(_, s)| s.running.as_ref()).map(|b| b.threads).sum();
+        let most = crate::inputs::pace::MOST;
+        let now = cores.saturating_sub(kept + beside).clamp(r.threads.clamp(1, most), most).to_string();
+        let f = self.threads_path(k);
+        if std::fs::read_to_string(&f).ok().as_deref() != Some(now.as_str()) {
+            if let Err(e) = std::fs::write(&f, &now) {
+                eprintln!("agent: telling {} its threads: {e}", r.spec.id);
+            }
+        }
     }
 
     /// Slot `k`'s job's channel (crate::control: "run" or "drain").

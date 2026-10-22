@@ -280,9 +280,20 @@ fn inputs(args: &[String]) -> Result<()> {
         pipeline::out::read_record(&r.join("state/build/manifest.json"))?;
     let units = gi::units(&r);
     // (Checking, as the lead's status says.)
-    let checking: std::collections::BTreeSet<String> = agent::read_status(Some(&r), &home)
-        .map(|s| s.inputs.into_iter().filter(|v| v.state == view::State::Checking).map(|v| v.unit).collect())
+    let status = agent::read_status(Some(&r), &home);
+    let checking: std::collections::BTreeSet<String> = status
+        .as_ref()
+        .map(|s| s.inputs.iter().filter(|v| v.checking).map(|v| v.unit.clone()).collect())
         .unwrap_or_default();
+    // (A running check's job on the lead, for its progress: "Checking the inputs dropped in <unit>".)
+    let running: Vec<(String, agent::JobView)> = status
+        .iter()
+        .flat_map(|s| s.jobs())
+        .filter_map(|j| {
+            let unit = j.what.strip_prefix("Checking the inputs dropped in ")?;
+            Some((unit.strip_suffix(", every file").unwrap_or(unit).to_string(), j))
+        })
+        .collect();
     let views = view::of(&r, &manifest, &units, &checking, &Default::default(), &mut view::Cache::default());
     let by = format!("scenic inputs on {}", agent::cond::host_name());
     let unit_arg = |i: usize| -> Result<String> {
@@ -305,6 +316,12 @@ fn inputs(args: &[String]) -> Result<()> {
                     view::State::Held => "held",
                 }, v.checked.map(|t| format!(", checked {}", ago(t))).unwrap_or_default());
                 println!("  version: {}", v.version.as_deref().unwrap_or("none yet"));
+                if v.checking {
+                    match running.iter().find(|(u, _)| *u == v.unit) {
+                        Some((_, j)) => println!("  {}", check_line(j)),
+                        None => println!("  check: planned, not running yet"),
+                    }
+                }
                 if let Some(u) = &v.unread {
                     println!("  can't be read now: {u}");
                 }
@@ -492,6 +509,31 @@ fn ramp_words(r: &agent::RampView) -> String {
         }
     }
     s
+}
+
+/// A running input check in a line: "check: running since 40 min ago, stage 1 of 5: reading and
+/// checking the files (33%), about 9 min left, 6 threads at its start". Its progress is the stage
+/// it is in (`inputs::gate::decide`'s `STAGES`) and how far within it.
+fn check_line(j: &agent::JobView) -> String {
+    let mut v = vec![format!("check: running since {}", ago(j.started))];
+    if let Some(p) = j.progress.as_ref().filter(|p| p.total > 0.0) {
+        let stage = p.unit.split_once(" (").map_or(p.unit.as_str(), |(_, w)| w.trim_end_matches(')'));
+        v.push(format!(
+            "stage {} of {}: {stage} ({}%)",
+            p.done.floor() as u64,
+            p.total,
+            (p.done.fract() * 100.0).floor()
+        ));
+        if let Some(e) = p.eta_s {
+            v.push(format!("about {} min left", e.div_ceil(60)));
+        }
+    } else {
+        v.push("no progress said yet".into());
+    }
+    if let Some(t) = j.threads {
+        v.push(format!("{t} threads at its start (more as cores free up)"));
+    }
+    v.join(", ")
 }
 
 /// A job in a line: "slot 2: Terrain: 4 tiles · 40% · about 12 min left · since 20 min ago".

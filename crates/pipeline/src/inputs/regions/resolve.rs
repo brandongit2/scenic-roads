@@ -263,11 +263,9 @@ pub struct Outcome {
 /// Every region of `folder` resolved against `ctx`, in an order where each comes after those it
 /// names (`region:`); a region naming one that's held is held too.
 pub fn resolve(folder: &Folder, ctx: &Context) -> Outcome {
-    // (At most four regions at once: each operation's memory grows with its region.)
-    match rayon::ThreadPoolBuilder::new()
-        .num_threads(std::env::var("SCENIC_REGIONS_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(4))
-        .build()
-    {
+    // (As many regions at once as the agent allows now, `pace`: each operation's memory grows with
+    // its region.)
+    match rayon::ThreadPoolBuilder::new().num_threads(crate::inputs::pace::width()).build() {
         Ok(pool) => pool.install(|| resolve_all(folder, ctx)),
         Err(_) => resolve_all(folder, ctx),
     }
@@ -307,7 +305,9 @@ fn resolve_all(folder: &Folder, ctx: &Context) -> Outcome {
         }
         pending.push((id, key));
     }
+    let regions = pending.len().max(1);
     while !pending.is_empty() {
+        crate::agent::jobs::within((regions - pending.len()) as f64 / regions as f64);
         let (wave, rest): (Vec<(String, String)>, Vec<(String, String)>) = pending.into_iter().partition(|(id, _)| {
             folder.deps(&folder.regions[id].1).iter().all(|d| out.resolved.contains_key(d) || held.contains(d))
         });
@@ -320,6 +320,7 @@ fn resolve_all(folder: &Folder, ctx: &Context) -> Outcome {
             let held = &held;
             wave.par_iter()
                 .map(|(id, key)| {
+                    let _turn = crate::inputs::pace::permit();
                     let (path, r) = &folder.regions[id];
                     if let Some(dep) = folder.deps(r).into_iter().find(|d| held.contains(d)) {
                         return (

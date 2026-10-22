@@ -36,6 +36,7 @@ pub mod heritage;
 pub mod heritage_matches;
 pub mod languages;
 pub mod lint;
+pub mod pace;
 pub mod regions;
 pub mod served;
 pub mod sources;

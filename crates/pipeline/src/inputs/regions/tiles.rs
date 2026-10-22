@@ -137,7 +137,13 @@ impl TArea {
     /// Cell by cell.
     pub fn zip(&self, other: &TArea, f: impl Fn(&Area, &Area) -> Area + Sync) -> TArea {
         let cs: BTreeSet<Cell> = self.cells.keys().chain(other.cells.keys()).copied().collect();
-        let v: Vec<(Cell, Area)> = cs.into_par_iter().map(|c| (c, f(&self.get(c), &other.get(c)))).collect();
+        let v: Vec<(Cell, Area)> = cs
+            .into_par_iter()
+            .map(|c| {
+                let _turn = crate::inputs::pace::permit();
+                (c, f(&self.get(c), &other.get(c)))
+            })
+            .collect();
         let mut t = TArea::default();
         for (c, a) in v {
             t.set(c, a);
@@ -594,7 +600,7 @@ struct Made {
 /// Every region with water resolved (those without, `resolve`'s, as they were): into `out`.
 pub fn resolve(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome) {
     // (On threads whose operations snap: `geom::snap_here`.)
-    let threads = std::env::var("SCENIC_REGIONS_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(4);
+    let threads = crate::inputs::pace::width();
     match rayon::ThreadPoolBuilder::new().num_threads(threads).start_handler(|_| geom::snap_here()).build() {
         Ok(pool) => pool.install(|| geom::snapping(|| resolve_in(folder, ctx, out))),
         Err(_) => geom::snapping(|| resolve_in(folder, ctx, out)),
@@ -666,6 +672,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
     // 1. Land, in waves by what outlines name.
     let mut left: Vec<String> = ids.clone();
     while !left.is_empty() {
+        crate::agent::jobs::within((ids.len() - left.len()) as f64 / ids.len() as f64);
         let (wave, rest): (Vec<String>, Vec<String>) = left.into_iter().partition(|id| {
             folder.deps(&folder.regions[id].1).iter().all(|d| {
                 // (One with water is ready once made; its placeholder in `out` isn't it.)
@@ -774,6 +781,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
     let lake_cuts: Vec<(String, Cell, Area)> = lake_cells
         .into_par_iter()
         .flat_map_iter(|c| {
+            let _turn = crate::inputs::pace::permit();
             let mine: Vec<(&String, Area)> =
                 made.iter().map(|(id, m)| (id, m.lakes.get(c))).filter(|(_, a)| !a.is_empty()).collect();
             let waters: Vec<(&String, Area)> =
@@ -831,6 +839,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         let moves: Vec<(String, BTreeMap<Cell, Area>)> = components(&mine)
             .into_par_iter()
             .filter_map(|comp| {
+                let _turn = crate::inputs::pace::permit();
                 let km2: f64 = comp.values().map(geom::area_km2).sum();
                 let mut edge: Vec<f64> = vec![0.0; theirs.len()];
                 for (c, p) in &comp {
@@ -1096,6 +1105,7 @@ fn make_land(
     let got: Vec<Result<(Cell, Area, Area), Problem>> = cells
         .into_par_iter()
         .map(|c| {
+            let _turn = crate::inputs::pace::permit();
             geom::set_label(format!("the land of {id}, the cell from {}°, {}°", c.0 * 2, c.1 * 2));
             let o =
                 geom::union_all(&r.outline.iter().map(|p| eval(p, c, &env, r, path)).collect::<Result<Vec<_>, _>>()?);
@@ -1164,6 +1174,7 @@ fn make_water(
     let got: Vec<Result<(Cell, Area), Problem>> = cells
         .into_par_iter()
         .map(|c| {
+            let _turn = crate::inputs::pace::permit();
             geom::set_label(format!("the water of {id}, the cell from {}°, {}°", c.0 * 2, c.1 * 2));
             let w = geom::union_all(&r.water.iter().map(|p| eval(p, c, &env, r, path)).collect::<Result<Vec<_>, _>>()?);
             if w.is_empty() {
@@ -1320,6 +1331,7 @@ fn slivers(
         let moves: Vec<(String, BTreeMap<Cell, Area>)> = comps
             .into_par_iter()
             .filter_map(|comp| {
+                let _turn = crate::inputs::pace::permit();
                 let piece = TArea { cells: comp };
                 if piece.km2() >= km2 || shared_km(&piece, &land) > 0.0 {
                     return None;
@@ -1376,6 +1388,7 @@ fn cells_pass(
     let done: Vec<One> = cells
         .par_iter()
         .map(|&c| {
+            let _turn = crate::inputs::pace::permit();
             geom::set_label(format!("the cover check, the cell from {}°, {}°", c.0 * 2, c.1 * 2));
             {
                 static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

@@ -131,6 +131,18 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   7. Hands off the records: `sources/inputs/<unit>/@index` (when it differs; the replaced index is
      touched so GC keeps it, §4.9), `@listed`, and `@held` (the held report, or none). `@` starts
      no drop-box path component or unit name, so these never clash with copies or nested units.
+- **Threads and progress.** A job's threads are set as it starts, and a check lasts hours, so the
+  check doesn't keep its grant: its agent keeps a file (`SCENIC_THREADS_FILE`,
+  `Agent::tend_threads`, every loop) with the threads it may use now: the Mac's cores less those
+  kept for its owner and those its other jobs were given, never fewer than its grant and at most 8
+  (`inputs::pace::MOST`; the regions' work ran four at once before). The check's pools are as wide
+  as the cores (8 at most), and each task of them (a file read, hashed and checked; a region; a
+  cell) takes a `pace::permit` for as long as it runs, waiting while as many run as the file says;
+  a raise is seen within a second. Without the file (a hand run) every core is allowed. It reports
+  its progress as five stages (the files read and checked, the candidate checked whole, the next
+  version checked whole, what is derived from it, the files stored), with how far within a stage
+  where it knows (files; regions), as `progress:` lines like any job (docs/building.md); `scenic
+  inputs` shows a checking unit's stage, share, time left and threads from the lead's status.
 - **Derived facts** (a register's box and count, a GeoTIFF's resolution and extent) go in the index
   with each file, computed from content, so steps read the index rather than every file.
 - **Deterministic:** the next version is a function of the candidate's bytes, the previous version
@@ -530,11 +542,11 @@ and may record other datasets a shape came from (`gadm = "4.1"`, checked only as
   outcome itself) and the datasets, read only once a region in the folder names them (about 1 GB).
   A zone's internal waters are unioned with it. The datasets' rings are simplified within 20 m as
   read, the points two rings of the zones share kept (neighbours' borders the same on both sides). The regions with water resolve one at a time, their cells several at once (regions without
-  water: at most four at once). A region's parts naming other regions (`region:`, `land:`,
+  water: as many at once as the check is allowed threads, §4.3). A region's parts naming other regions (`region:`, `land:`,
   `group:`) are read cell by cell where those are kept, never copied. With
   `SCENIC_REGIONS_TRACE` set, the check prints each step's and each region's water's footprint
   and its buffers' and nearest-coast splits' count, time and footprint; `SCENIC_REGIONS_THREADS`
-  sets how many cells at once (4). A buffer of a cell reads its neighbours' pieces each buffered
+  sets how wide the pools are (the cores, 8 at most). A buffer of a cell reads its neighbours' pieces each buffered
   once, within 16 columns each way (25 in the north, enough for 200 nmi at 86°N) and not from the cells south of 80°S (Antarctica's inland ice) or
   north of 86°N (where no land is); a buffer of
   50 km or more is drawn as discs at the pieces' points a thirty-second of the distance apart

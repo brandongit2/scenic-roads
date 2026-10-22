@@ -45,11 +45,7 @@ fn check(
     store: &Store,
     full: bool,
 ) -> Decision {
-    let read = RefCell::new(Vec::<String>::new());
-    let read_new = |p: &str| {
-        read.borrow_mut().push(p.to_string());
-        Ok(b.files[p].0.clone())
-    };
+    let read_new = |p: &str| Ok(b.files[p].0.clone());
     let read_old = |e: &FileEntry| store.copies.borrow().get(&e.file).cloned().context("no copy");
     let acc: BTreeSet<String> = accepted.iter().map(|s| s.to_string()).collect();
     let listing = b.listing();

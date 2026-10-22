@@ -20,7 +20,13 @@
 use super::{Checks, FileEntry, Finding, Index, Level, Listing, Report, Version};
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
+use crate::agent::jobs;
+use rayon::prelude::*;
 use std::sync::Arc;
+
+/// The stages `decide` reports (`jobs::stage`): the files read and checked, the candidate checked
+/// whole, the next version checked whole, what's derived from it, and the files stored.
+const STAGES: u64 = 5;
 
 /// What a check is given.
 pub struct Given<'a> {
@@ -39,7 +45,7 @@ pub struct Given<'a> {
     /// Every file read and hashed, whatever its size and time.
     pub full: bool,
     /// A drop-box file's bytes now.
-    pub read_new: &'a dyn Fn(&str) -> Result<Vec<u8>>,
+    pub read_new: &'a (dyn Fn(&str) -> Result<Vec<u8>> + Sync),
     /// An accepted file's bytes (its checked copy), by its entry.
     pub read_old: &'a dyn Fn(&FileEntry) -> Result<Vec<u8>>,
 }
@@ -84,39 +90,67 @@ pub fn decide(g: &Given) -> Result<Decision> {
     let mut changes: BTreeMap<String, Change> = BTreeMap::new();
     let mut findings: Vec<Finding> = Vec::new();
     // 1. What changed, by content.
-    for (p, &listed) in &g.listing.files {
-        if g.unsettled.contains(p) {
-            continue;
-        }
-        let was = prev.files.get(p);
-        if !g.full && was.is_some() && g.prev_listed.get(p) == Some(&listed) {
-            continue;
-        }
-        let bytes = (g.read_new)(p).with_context(|| format!("read {p} in the drop box"))?;
+    jobs::stage(1, STAGES, "inputs check (reading and checking the files)");
+    let to_read: Vec<&String> = g
+        .listing
+        .files
+        .iter()
+        .filter(|(p, &listed)| {
+            !g.unsettled.contains(*p)
+                && (g.full || !prev.files.contains_key(*p) || g.prev_listed.get(*p) != Some(&listed))
+        })
+        .map(|(p, _)| p)
+        .collect();
+    // (Read, hashed and checked a file at a time, as many at once as the agent allows now: `pace`.)
+    let counted = std::sync::Mutex::new(0usize);
+    type Looked = Option<(Vec<u8>, String, super::FileCheck)>;
+    let pool = super::pace::pool()?;
+    let looked: Vec<Result<(String, Looked)>> = pool.install(|| {
+        to_read
+            .par_iter()
+            .map(|&p| {
+            let _turn = super::pace::permit();
+            let one = (|| {
+                let bytes = (g.read_new)(p).with_context(|| format!("read {p} in the drop box"))?;
+                let hash = store::naming::hash16(&bytes);
+                if prev.files.get(p).and_then(|w| super::hash_of(&w.file)) == Some(hash.as_str()) {
+                    return Ok((p.clone(), None));
+                }
+                // 2. Its shape.
+                let mut check = g.checks.file(p, &bytes);
+                // (The rules of a program of its own, on a file in the shape: one with an error is held
+                // whatever they say.)
+                if !check.findings.iter().any(|f| f.level == Level::Error) {
+                    check.findings.extend(g.checks.lint(p, &bytes).with_context(|| format!("check {p}"))?);
+                }
+                if super::copy_name(unit, p, &hash).is_none() {
+                    check.findings.push(Finding::new(
+                        "name",
+                        Level::Error,
+                        &[p],
+                        &[],
+                        vec![p.clone()],
+                        format!("{p}: a name the store can't keep (no backslashes)"),
+                    ));
+                }
+                Ok((p.clone(), Some((bytes, hash, check))))
+            })();
+            let mut n = counted.lock().unwrap_or_else(|e| e.into_inner());
+            *n += 1;
+            if *n == to_read.len() || *n % (to_read.len() / 200).max(1) == 0 {
+                jobs::within(*n as f64 / to_read.len() as f64);
+            }
+            one
+        })
+        .collect()
+    });
+    for l in looked {
+        let (p, put) = l?;
         read.push(p.clone());
-        let hash = store::naming::hash16(&bytes);
-        if was.and_then(|w| super::hash_of(&w.file)) == Some(hash.as_str()) {
-            continue;
+        if let Some((bytes, hash, check)) = put {
+            findings.extend(check.findings.iter().cloned());
+            changes.insert(p, Change::Put { bytes: Arc::new(bytes), hash, check });
         }
-        // 2. Its shape.
-        let mut check = g.checks.file(p, &bytes);
-        // (The rules of a program of its own, on a file in the shape: one with an error is held
-        // whatever they say.)
-        if !check.findings.iter().any(|f| f.level == Level::Error) {
-            check.findings.extend(g.checks.lint(p, &bytes).with_context(|| format!("check {p}"))?);
-        }
-        if super::copy_name(unit, p, &hash).is_none() {
-            check.findings.push(Finding::new(
-                "name",
-                Level::Error,
-                &[p],
-                &[],
-                vec![p.clone()],
-                format!("{p}: a name the store can't keep (no backslashes)"),
-            ));
-        }
-        findings.extend(check.findings.iter().cloned());
-        changes.insert(p.clone(), Change::Put { bytes: Arc::new(bytes), hash, check });
     }
     for (p, was) in &prev.files {
         if !g.listing.files.contains_key(p) && !g.unsettled.contains(p) {
@@ -150,6 +184,7 @@ pub fn decide(g: &Given) -> Result<Decision> {
         ));
     }
     // The candidate, checked whole: the files held still, and those that aren't as accepted.
+    jobs::stage(2, STAGES, "inputs check (the candidate checked whole)");
     let candidate: BTreeMap<String, Option<Arc<Vec<u8>>>> = g
         .listing
         .files
@@ -238,6 +273,7 @@ pub fn decide(g: &Given) -> Result<Decision> {
     let mut together = None;
     let mut whole_found: Vec<Finding> = Vec::new();
     // 5. The next version checked whole.
+    jobs::stage(3, STAGES, "inputs check (the next version checked whole)");
     if files != prev.files {
         let next: BTreeMap<String, Option<Arc<Vec<u8>>>> = files
             .keys()
@@ -274,6 +310,7 @@ pub fn decide(g: &Given) -> Result<Decision> {
     }
     // What's derived from the version whole (the regions' stored geometry): for every file but
     // those kept as accepted.
+    jobs::stage(4, STAGES, "inputs check (what's derived from the version)");
     if files != prev.files || (g.checks.holds_unchanged() && !changes.is_empty()) {
         let keep: BTreeSet<String> = held.iter().chain(&stuck).cloned().collect();
         let next: BTreeMap<String, Option<Arc<Vec<u8>>>> = files
@@ -469,6 +506,7 @@ pub fn run(out: &mut crate::out::Out, unit: &str, full: bool, planned: Option<su
     })?;
     p.count(d.store.values().map(|b| b.len() as u64).sum(), d.read.len() as u64);
     drop(p);
+    jobs::stage(5, STAGES, "inputs check (the accepted files stored)");
     let p = phase("the accepted files, the index and the report stored", Class::NasWrite);
     for (name, bytes) in &d.store {
         let c = store::naming::parse_content_name(name).context("a copy's name")?;
