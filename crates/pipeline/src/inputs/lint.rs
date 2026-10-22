@@ -60,6 +60,23 @@ pub fn stub(s: Stub) {
     STUB.with(|c| *c.borrow_mut() = Some(s));
 }
 
+/// How the checker runs on a thread (`here`), for the pool threads a check hands its files to.
+#[derive(Clone)]
+pub struct Setting(Option<Python>, Option<Stub>);
+
+impl Setting {
+    /// Makes it how the checker runs on the calling thread.
+    pub fn install(&self) {
+        PYTHON.with(|c| *c.borrow_mut() = self.0.clone());
+        STUB.with(|c| *c.borrow_mut() = self.1);
+    }
+}
+
+/// How the checker runs on this thread.
+pub fn here() -> Setting {
+    Setting(PYTHON.with(|c| c.borrow().clone()), STUB.with(|c| *c.borrow()))
+}
+
 /// A line, or a stretch of lines, the checker flags (line numbers from 1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Flag {

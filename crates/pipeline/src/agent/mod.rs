@@ -8450,8 +8450,14 @@ impl Agent {
         };
         let cores = mac_cores() as usize;
         let kept = if c.user_active() { share::cores(self.in_use_share.as_ref(), cores as u32) as usize } else { 0 };
-        let beside: usize =
-            self.slots.iter().enumerate().filter(|(j, _)| *j != k).filter_map(|(_, s)| s.running.as_ref()).map(|b| b.threads).sum();
+        let beside: usize = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != k)
+            .filter_map(|(_, s)| s.running.as_ref())
+            .map(|b| b.threads)
+            .sum();
         let most = crate::inputs::pace::MOST;
         let now = cores.saturating_sub(kept + beside).clamp(r.threads.clamp(1, most), most).to_string();
         let f = self.threads_path(k);

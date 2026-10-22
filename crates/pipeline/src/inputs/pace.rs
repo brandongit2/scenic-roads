@@ -52,7 +52,12 @@ pub struct Permit<'a> {
 impl Pace {
     pub fn new(file: Option<PathBuf>, fallback: usize) -> Pace {
         let fallback = fallback.max(1);
-        Pace { file, fallback, state: Mutex::new(State { active: 0, allowed: fallback, read_at: None }), freed: Condvar::new() }
+        Pace {
+            file,
+            fallback,
+            state: Mutex::new(State { active: 0, allowed: fallback, read_at: None }),
+            freed: Condvar::new(),
+        }
     }
 
     fn refresh(&self, s: &mut State) {
@@ -129,9 +134,11 @@ pub fn width() -> usize {
 }
 
 /// A pool `width` wide for a check's parallel work (the process's own, `RAYON_NUM_THREADS`, is the
-/// threads it was granted at its start).
+/// threads it was granted at its start), its threads run the translations' checker as the calling
+/// thread's do (`lint::here`).
 pub fn pool() -> anyhow::Result<rayon::ThreadPool> {
-    Ok(rayon::ThreadPoolBuilder::new().num_threads(width()).build()?)
+    let lint = super::lint::here();
+    Ok(rayon::ThreadPoolBuilder::new().num_threads(width()).start_handler(move |_| lint.install()).build()?)
 }
 
 /// The right to run a task, under the threads allowed now (the file the agent keeps).
