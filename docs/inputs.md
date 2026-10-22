@@ -900,7 +900,7 @@ The old `sources/registers/legacy-seeds` archive is read by nothing:
   `english_at`: a site's UNESCO name or English Wikipedia title, an area's `name_en`). Other English
   is the server's, from the translations as it serves the layers (docs/names.md). A name lacking English
   goes onto the translations' to-do (`pipeline::namestodo` reads the landmarks' `en`).
-- **Park facts:** areadetails.py's cache is the pass's answers (`areas-wikidata.json`,
+- **Park facts:** pipeline::areadetails' cache is the pass's answers (`areas-wikidata.json`,
   `pipeline::answers`), asking Wikidata only for parks it lacks.
 - **Pageviews:** the items job's months' indexes (`sources/pageviews/`, docs/steps.md).
 

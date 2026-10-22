@@ -1,5 +1,7 @@
 pub mod agent;
 pub mod answers;
+#[cfg(not(target_os = "wasi"))]
+pub mod areadetails;
 pub mod areafiles;
 pub mod areaflags;
 pub mod basepack;

@@ -40,7 +40,7 @@ const ZEROS: [u32; 76] = [
 ];
 
 /// A decimal digit's value (Python's `unicodedata.decimal`).
-fn decimal(c: char) -> Option<u32> {
+pub fn decimal(c: char) -> Option<u32> {
     let c = c as u32;
     let i = ZEROS.partition_point(|&z| z <= c).checked_sub(1)?;
     (c - ZEROS[i] < 10).then(|| c - ZEROS[i])

@@ -211,7 +211,7 @@ after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sit
 
 ### Heritage and area flags
 
-The heritage chain (heritage.py, pipeline::heritagewd, pipeline::heritagedetails, areadetails.py, whsshapes.py,
+The heritage chain (heritage.py, pipeline::heritagewd, pipeline::heritagedetails, pipeline::areadetails, whsshapes.py,
 pipeline::filterprops, pageviews.py, interest.py) runs in a stand-in root laid out as the
 repository (`dem/` the app's scripts, `data/heritage/` the pass's working copy of the answers;
 docs/inputs.md §6.5.2), split into two jobs so the z6 tiles never wait on Wikidata.
@@ -239,7 +239,7 @@ docs/inputs.md §6.5.2), split into two jobs so the z6 tiles never wait on Wikid
   grid and asks what the answers lack through crate::wikiask (the job's proxy, each host's
   robots.txt read first and obeyed, but for the declared Wikipedia API, which the owner exempted
   (22 Oct 2026: English Wikipedia's robots.txt disallows `/w/` to crawlers; Wikimedia's API
-  etiquette, a User-Agent and a polite rate, is kept by the budget's proxy)); areadetails.py asks Wikidata for parks the answers lack; pageviews.py takes the pass's
+  etiquette, a User-Agent and a polite rate, is kept by the budget's proxy)); pipeline::areadetails asks Wikidata for parks the answers lack; pageviews.py takes the pass's
   months. The map's layers are written last, in Rust (`pipeline::heritage_layers`: the lean
   layer files, the sites' popup records, the areas simplified by a port of GEOS's topology-preserving
   simplifier, `pipeline::tpsimplify`). The layers' `en` is the things' own; the server adds

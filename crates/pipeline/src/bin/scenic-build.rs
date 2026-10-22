@@ -3450,12 +3450,12 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 }
 
 /// heritage [--pass <date>] [--dem dir] [--cache dir]: the rest of the heritage chain
-/// (pipeline::heritagewd, pipeline::heritagedetails, areadetails, whsshapes, pipeline::filterprops, interest's heritage part,
+/// (pipeline::heritagewd, pipeline::heritagedetails, pipeline::areadetails, whsshapes, pipeline::filterprops, interest's heritage part,
 /// pageviews; then the map's layers, pipeline::heritage_layers) in the stand-in root on the
 /// heritage-sites job's outputs (docs/phase5.md "Heritage and area flags"), over the same cover: the pass's areas and named objects within it
 /// (named with the chain's filter), and for the World Heritage parts the pass's `whs` set within
 /// it (one clip per set and cover, kept in the cache: `whs_over_cover`). The park facts are the pass's answers'
-/// (`areas-wikidata.json`: areadetails.py asks Wikidata for those it lacks); the pageview months are
+/// (`areas-wikidata.json`: pipeline::areadetails asks Wikidata for those it lacks); the pageview months are
 /// the items job's cache, the epoch's months; the layers' English is the things' own (the map's
 /// server adds the translations' as it serves them: docs/inputs.md §6.5.3).
 /// No stops & sights (the marks job's). Its outputs go to `work/heritage/<date>/<file>`. Its
@@ -3483,7 +3483,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let chain = [
         (1, "heritagewd", vec![]),
         (1, "heritagedetails", vec![]),
-        (1, "areadetails.py", vec![]),
+        (1, "areadetails", vec![]),
         (2, "whsshapes.py", vec![]),
         (2, "filterprops", vec![]),
         (3, "pageviews.py", vec!["--epoch", date.as_str()]),
@@ -3566,7 +3566,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     drop(p);
     let p = phase("the caches linked", Class::Disk);
     pipeline::sys::symlink(&merged, &root.join("data/osm/merged.osm.pbf"))?;
-    // The park facts: the pass's answers' (none yet: areadetails.py asks for them all).
+    // The park facts: the pass's answers' (none yet: pipeline::areadetails asks for them all).
     let facts = epoch.dir.join("areas-wikidata.json");
     if !facts.exists() {
         std::fs::write(&facts, b"{}")?;
@@ -3594,12 +3594,16 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         let mine: Vec<&str> = chain.iter().filter(|c| c.0 == *part).map(|c| c.1).collect();
         stage(mine.iter().position(|s| s == script).unwrap_or(0) as u64, mine.len() as u64, script);
         if *script == "heritagewd" {
-            // (Ours, as the next: pipeline::heritagewd, pipeline::heritagedetails, pipeline::filterprops.)
+            // (Ours, as the next: pipeline::heritagewd, pipeline::heritagedetails, pipeline::areadetails,
+            // pipeline::filterprops.)
             let _p = phase("heritagewd", Class::Mixed);
             pipeline::heritagewd::run(&root, &ends)?;
         } else if *script == "heritagedetails" {
             let _p = phase("heritagedetails", Class::Mixed);
             pipeline::heritagedetails::run(&root)?;
+        } else if *script == "areadetails" {
+            let _p = phase("areadetails", Class::Mixed);
+            pipeline::areadetails::run(&root, &ends.wikidata)?;
         } else if *script == "filterprops" {
             let _p = phase("filterprops", Class::Mixed);
             pipeline::filterprops::run(&b)?;

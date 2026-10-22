@@ -1,7 +1,7 @@
 //! What the internet answered the steps that ask it a great deal, kept on the NAS (docs/pool.md §2,
 //! durable state on the NAS): the items job's Wikidata facts and Wikipedia articles, and the
 //! heritage chain's (crate::heritagewd's and whsshapes.py's Wikidata and Wikipedia
-//! caches, areadetails.py's park facts). A step keeps them on its Mac, in its cache, where its scripts add to them as
+//! caches, pipeline::areadetails' park facts). A step keeps them on its Mac, in its cache, where its scripts add to them as
 //! they fetch (a chunk or a file at a time), and on the NAS as one archive a pass (`Kept::nas`: tar,
 //! zstd with its checksum), written whole (crate::whole) when the step starts and the NAS hasn't what
 //! this Mac has, and when it ends, failed or not, if it changed them: a few large writes a run, never
@@ -395,7 +395,7 @@ impl Kept {
 
 /// A file both sides changed made one (`Kept::reconcile`), by its name: answers kept as a JSON line
 /// per item (`.jsonl`: by its "qid", or its "prop" and "id"), or as a JSON object's entries
-/// (crate::heritagewd's short descriptions, areadetails.py's park facts), which
+/// (crate::heritagewd's short descriptions, pipeline::areadetails' park facts), which
 /// runs only add to: the NAS's, then this Mac's the NAS's lack; and the days the items job fetched
 /// (`fetched-<date>.json`), the first and the last. None for any other file, or one that isn't
 /// what its name says.
