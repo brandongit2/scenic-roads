@@ -35,8 +35,8 @@
 //!   (`aws-terrarium/packs/`) go as the copies of the records' files do, each by its own use (a
 //!   job marks one used when it opens it), without asking it.
 //! - A pageview month's index goes once the NAS has it at its size; one it lacks stays (crate::pageviews
-//!   puts it there when it next reads it), as do the counts from before the indexes: none is copied
-//!   there from here.
+//!   puts it there when it next reads it): none is copied there from here. Any other file there
+//!   (an older format's counts, a dead stream's temporary file) goes as any unheld cache file.
 //!
 //! - A file the jobs queued and running read (`Hints`: a terrain run's own shard's archive copies;
 //!   the pageview months, for an items or heritage job; a z6 tile's canopy squares and packs; the
@@ -127,15 +127,9 @@ pub fn cheap_bytes(cache: &Path, sources: Option<&Path>) -> u64 {
     files.iter().map(|f| f.1).sum::<u64>() + sources.map_or(0, |s| months_bytes(cache, s))
 }
 
-/// Whether `p`, a file of the cheap caches, is one they may lose: of the pageview months, an index
-/// only (the counts from before them, and a stream's temporary file, stay: `fate`).
-fn cheap_file(cache: &Path, p: &Path) -> bool {
-    !p.starts_with(cache.join(MONTHS)) || p.to_string_lossy().ends_with(".tsv.zst")
-}
-
-/// The bytes of the pageview months' indexes here that the NAS's `sources` has at their size: what
-/// room-making or a clear can free of them (one it lacks stays, for crate::pageviews to put
-/// there). Nothing in the NAS's project folder (`ours`).
+/// The bytes of the pageview months here that room-making or a clear can free: the indexes the NAS's
+/// `sources` has at their size (one it lacks stays, for crate::pageviews to put there) and every
+/// other file there (`fate`). Nothing in the NAS's project folder (`ours`).
 fn months_bytes(cache: &Path, sources: &Path) -> u64 {
     let mut files = Vec::new();
     walk_cheap(cache, MONTHS, sources.parent(), &mut files);
@@ -144,7 +138,8 @@ fn months_bytes(cache: &Path, sources: &Path) -> u64 {
             std::fs::metadata(sources.join("pageviews").join(n)).is_ok_and(|m| m.is_file() && m.len() == len)
         })
     };
-    files.iter().filter(|f| cheap_file(cache, &f.2) && there(&f.2, f.1)).map(|f| f.1).sum()
+    let index = |p: &Path| p.to_string_lossy().ends_with(".tsv.zst");
+    files.iter().filter(|f| !index(&f.2) || there(&f.2, f.1)).map(|f| f.1).sum()
 }
 
 /// What `make_room` can free on a helper: the cheap caches but the loose raw tiles (`aws-terrarium/
@@ -824,14 +819,14 @@ pub fn sizes(cache: &Path, helper: bool, root: Option<&Path>) -> Sizes {
 }
 
 /// The bytes the cheap caches at `cache` hold in files (not empty markers) `spare` doesn't keep and
-/// they may lose (`cheap_file`: of the pageview months, the indexes), of this Mac's own (not in the
+/// they may lose, of this Mac's own (not in the
 /// NAS's project folder `root`).
 fn cheap_left(cache: &Path, root: Option<&Path>) -> u64 {
     let mut files = Vec::new();
     for (d, _) in CHEAP {
         walk_cheap(cache, d, root, &mut files);
     }
-    files.iter().filter(|f| cheap_file(cache, &f.2)).map(|f| f.1).sum()
+    files.iter().map(|f| f.1).sum()
 }
 
 /// The bytes of the loose raw tiles in `tiles` (`<z>/<x>/<y>.png`: not the archives' copies).
@@ -1011,11 +1006,11 @@ fn fate(cache: &Path, sources: &Path, p: &Path, listed: &mut Listed) -> Fate {
         return Fate::Go;
     }
     let Some(dest) = nas_path(cache, sources, p) else { return Fate::Stay };
-    // (Of the pageview months, only an index may go: the counts from before them, and a stream's
-    // temporary file, stay.)
+    // (Of the pageview months, what isn't an index goes: nothing reads it. An index waits for the
+    // NAS to have it.)
     let month = p.starts_with(cache.join(MONTHS));
     if month && !p.to_string_lossy().ends_with(".tsv.zst") {
-        return Fate::Stay;
+        return Fate::Go;
     }
     let (Some(folder), Some(name)) = (dest.parent(), dest.file_name()) else { return Fate::Stay };
     let Ok(len) = std::fs::metadata(p).map(|m| m.len()) else { return Fate::Stay };
@@ -1553,17 +1548,17 @@ mod tests {
 
     #[test]
     fn what_can_go_counts_only_the_months_the_nas_has() {
-        // (The review's case, 2026-10-06.) An index the NAS lacks and the counts from before the
-        // indexes stay: not counted as room (the OSM pass's admission adds it to the free space).
+        // (The review's case, 2026-10-06.) An index the NAS lacks stays: not counted as room (the
+        // OSM pass's admission adds it to the free space). Any other file there goes.
         let d = tempfile::tempdir().unwrap();
         let c = &d.path().join("cache");
         let nas = &d.path().join("nas/sources");
         let months = c.join(MONTHS);
         file(&months.join("2026-05.tsv.zst"), 1000, 7200);
         file(&months.join("2026-08.json"), 300, 7200);
-        file(&months.join("2026-08.counted.json"), 200, 7200);
-        assert_eq!(cheap_bytes(c, Some(nas)), 0);
-        assert_eq!(make_room_spared(c, nas, 1 << 40, 1 << 40, &|_| Ok(0)).unwrap(), 0, "none of it freed");
+        assert_eq!(cheap_bytes(c, Some(nas)), 300);
+        assert_eq!(make_room_spared(c, nas, 1 << 40, 1 << 40, &|_| Ok(0)).unwrap(), 300, "the index not freed");
+        assert!(months.join("2026-05.tsv.zst").exists() && !months.join("2026-08.json").exists());
         // The NAS has it now: counted, and freed.
         file(&nas.join("pageviews/2026-05.tsv.zst"), 1000, 0);
         assert_eq!(cheap_bytes(c, Some(nas)), 1000);
@@ -1575,8 +1570,8 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let c = &d.path().join("cache");
         let nas = &d.path().join("nas/sources");
-        // Two indexes the NAS has (one at another size), one it lacks, the counts from before the
-        // indexes, a stream's temporary file, and the items job's answers beside them.
+        // Two indexes the NAS has (one at another size), one it lacks, an older format's counts, a
+        // dead stream's temporary file, and the items job's answers beside them.
         let months = c.join(MONTHS);
         for (m, len) in [("2025-11", 1000), ("2026-02", 900), ("2026-05", 800)] {
             file(&months.join(format!("{m}.tsv.zst")), len, 7200);
@@ -1587,27 +1582,26 @@ mod tests {
             file(&months.join(f), 100, 7200);
         }
         file(&c.join("items/facts-2026-09-28.jsonl"), 100, 7200);
-        // What room-making can free of them: the index the NAS has at its size, not the counts from
-        // before the indexes nor one it lacks (the review's case, 2026-10-06: the OSM pass counts it
-        // as room); none without the NAS to ask.
-        assert_eq!((cheap_bytes(c, Some(nas)), cheap_bytes(c, None)), (1000, 0));
+        // What room-making can free of them: the index the NAS has at its size and the files that
+        // aren't indexes, not one it lacks (the review's case, 2026-10-06: the OSM pass counts it as
+        // room); none without the NAS to ask.
+        assert_eq!((cheap_bytes(c, Some(nas)), cheap_bytes(c, None)), (1300, 0));
         let all = used_with(c, &["items"]);
         let disk = move |p: &Path| Ok(all - used_with(p, &["items"]));
-        assert_eq!(make_room_spared(c, nas, 1 << 40, 1 << 40, &disk).unwrap(), 1000);
-        assert!(!months.join("2025-11.tsv.zst").exists());
-        for f in
-            ["2026-02.tsv.zst", "2026-05.tsv.zst", "2026-08.json", "2026-08.counted.json", "2026-08.tsv.zst.123.tmp"]
-        {
+        assert_eq!(make_room_spared(c, nas, 1 << 40, 1 << 40, &disk).unwrap(), 1300);
+        for f in ["2025-11.tsv.zst", "2026-08.json", "2026-08.counted.json", "2026-08.tsv.zst.123.tmp"] {
+            assert!(!months.join(f).exists(), "{f} goes");
+        }
+        for f in ["2026-02.tsv.zst", "2026-05.tsv.zst"] {
             assert!(months.join(f).exists(), "{f} stays");
         }
         assert!(c.join("items/facts-2026-09-28.jsonl").exists());
         assert!(!nas.join("pageviews/2026-05.tsv.zst").exists(), "never copied there from here");
         file(&nas.join("pageviews/2026-02.tsv.zst"), 900, 0);
-        // A trim: the one the NAS has now goes; the one it lacks stays, said as kept (the counts
-        // from before the indexes stay unsaid: nothing would take them).
+        // A trim: the one the NAS has now goes; the one it lacks stays, said as kept.
         let t = trim(c, nas).unwrap();
         assert_eq!((t.freed, t.left), (BTreeMap::from([("months".to_string(), 900)]), 800));
-        assert!(months.join("2026-05.tsv.zst").exists() && months.join("2026-08.json").exists());
+        assert!(months.join("2026-05.tsv.zst").exists());
     }
 
     /// The bytes under the caches' folders and `more` of the cache's.
@@ -1775,7 +1769,7 @@ mod tests {
     fn a_clear_names_the_pageview_months_it_frees() {
         // (The review's case, 2026-10-06.) The months the NAS has: in what a clear would free (the
         // owner's confirmation), freed as themselves by a clear and by room-making; one it
-        // lacks stays, said as kept; the counts from before the indexes neither.
+        // lacks stays, said as kept; a file that isn't an index goes with them.
         let d = tempfile::tempdir().unwrap();
         let c = &d.path().join("app/agent/cache");
         let nas = &d.path().join("nas/sources");
@@ -1785,7 +1779,7 @@ mod tests {
         file(&c.join(MONTHS).join("2026-08.tsv.zst"), 50, 7200);
         file(&c.join(MONTHS).join("2026-08.json"), 30, 7200);
         let said = sizes(c, false, nas.parent());
-        assert_eq!((said.clear.get("months"), said.cheap), (Some(&600), 600));
+        assert_eq!((said.clear.get("months"), said.cheap), (Some(&630), 630));
         assert_eq!(sizes(c, false, None).clear.get("months"), None, "not without the NAS to ask");
         let g = gone(&said.clear, 60.0);
         assert_eq!(
@@ -1796,14 +1790,14 @@ mod tests {
             ("pageview months", true)
         );
         let f = clear(c, nas).unwrap();
-        assert!(!c.join(MONTHS).join("2026-05.tsv.zst").exists());
-        assert_eq!((f.freed.clone(), f.left), (BTreeMap::from([("months".to_string(), 600)]), 50));
+        assert!(!c.join(MONTHS).join("2026-05.tsv.zst").exists() && !c.join(MONTHS).join("2026-08.json").exists());
+        assert_eq!((f.freed.clone(), f.left), (BTreeMap::from([("months".to_string(), 630)]), 50));
         assert!(f.say().contains("pageview months 0 MB"), "{}", f.say());
         // Room-making takes them too.
         file(&c.join(MONTHS).join("2026-05.tsv.zst"), 600, 7200);
         let t = trim(c, nas).unwrap();
         assert_eq!((t.freed.get("months"), t.left), (Some(&600), 50));
-        assert!(c.join(MONTHS).join("2026-08.tsv.zst").exists() && c.join(MONTHS).join("2026-08.json").exists());
+        assert!(c.join(MONTHS).join("2026-08.tsv.zst").exists());
     }
 
     #[test]

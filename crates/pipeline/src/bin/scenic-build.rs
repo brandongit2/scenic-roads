@@ -3373,7 +3373,7 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             .join("items");
     let (mut facts, mut views) = (std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
     let is_qid = |q: &str| q.len() > 1 && q.starts_with('Q') && q[1..].bytes().all(|b| b.is_ascii_digit());
-    // (items.py marks its three: SCENIC_PARTS names them.)
+    // (items.py starts parts 1 and 2, SCENIC_PARTS naming them; this step starts 0, 3 and 4.)
     const PARTS: &[&str] = &[
         "Gathering the landmark candidates' Wikidata items",
         "Fetching their facts from Wikidata",

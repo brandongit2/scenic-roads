@@ -637,13 +637,16 @@ fn sweep_nas(d: &Path) {
     for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
         let n = e.file_name().to_string_lossy().into_owned();
         let parts: Vec<&str> = n.split('.').collect();
-        if !n.ends_with(".tmp") || !n.contains(".tsv.zst.") || parts.len() < 2 {
+        // (Only a name this Mac's copy gave: one it can't tell, or another Mac's, isn't judged by a pid here.)
+        if host.is_empty()
+            || !n.ends_with(".tmp")
+            || !n.contains(".tsv.zst.")
+            || parts.len() < 6
+            || parts[parts.len() - 3] != host
+        {
             continue;
         }
         let Ok(pid) = parts[parts.len() - 2].parse::<i32>() else { continue };
-        if parts.len() >= 6 && parts[parts.len() - 3] != host {
-            continue;
-        }
         // SAFETY: kill with signal 0 only asks whether the process is there.
         let gone = unsafe { libc::kill(pid, 0) } != 0 && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
         if gone {
