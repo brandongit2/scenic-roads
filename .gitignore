@@ -2,6 +2,7 @@
 /target/
 /tools/*
 !/tools/bench/
+!/tools/dev/
 !/tools/launcher/
 /tools/launcher/scenic-launcher
 !/tools/nas/
@@ -26,4 +27,6 @@ __pycache__/
 *.tmp
 *.log
 /.claude/worktrees/
+/.claude/health-stamp
+/.claude/sweep-keep
 /docs/diagram/pipeline.html
