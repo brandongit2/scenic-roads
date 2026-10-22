@@ -76,7 +76,7 @@ floor (docs/pool.md §7.2). A member's status is `state/helpers/<host>.json`, th
 
 **The Mac mini (M6, 32 GB, 1 TB)** is always on, at home and headless: a member of the pool like the
 M1, with room for more at once (build memory 28 GB by default). It also hosts the task board
-(`tools/taskboard`, http://Mac-mini.local:8077, its LaunchAgent and nightly NAS backup from
+(`tools/taskboard`, http://mac-mini-de-brandon:8077, its LaunchAgent and nightly NAS backup from
 `tools/taskboard/launchd/install.sh`) and is the map's address for the phone, the iPad and devices
 away from home.
 
