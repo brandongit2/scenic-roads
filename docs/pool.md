@@ -550,7 +550,7 @@ on done) 17 / 48 / −14 %; asserted: as live at most 40 % and at most two third
 back. The live error said then was off by 38 % (median). The Mac-mini-led days (from 21 Oct
 23:00) have no finish yet (its work never ran out); their progress over the next 6 h (the time
 the run took to do what the history did, against 6 h): median 8 % over 11 starts (all leads: 30 %
-over 66). The forecast also assumes no load from outside the
+over 68). The forecast also assumes no load from outside the
 pool (each ask's `cores_free` taken as its cores): while the owner uses a Mac it's optimistic. The
 lead logs a departure only when a Mac's jobs of a step differ from the forecast's by 2 or more and
 by more than half, each Mac and step at most once an hour.
