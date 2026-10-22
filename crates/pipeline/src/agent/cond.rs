@@ -78,6 +78,15 @@ impl Mac {
         }
     }
 
+    /// Whether the share is mounted by the NAS's LAN name (store::nas::lan_mounted); a fixed Mac's
+    /// never (its `home` alone says).
+    pub fn lan_mounted(&self) -> bool {
+        match *self {
+            Mac::Real => store::nas::lan_mounted(),
+            Mac::Fixed { .. } => false,
+        }
+    }
+
     /// `load1`: a fixed Mac's none (its cores all free).
     pub fn load1(&self) -> Option<f64> {
         match *self {
@@ -112,6 +121,14 @@ impl Mac {
             },
         }
     }
+}
+
+/// Whether the Mac is at home: the NAS answered the probe by its LAN name (`probe`), or the share
+/// answers and is mounted by that name (`lan_mount_answers`). The second keeps a Mac home whose probe fails for
+/// its own reasons (the process refused the LAN, a resolver gone stale) while it works on the LAN:
+/// it stayed "away" for hours with the share mounted by the LAN name and answering (task #569).
+pub fn home(probe: bool, lan_mount_answers: bool) -> bool {
+    probe || lan_mount_answers
 }
 
 /// On mains power, and the battery's charge: `pmset -g ps` names the source ("Now drawing from
@@ -328,6 +345,17 @@ pub fn host_name() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn home_when_the_probe_fails_but_the_lan_mount_answers() {
+        use super::home;
+        assert!(home(true, false), "the probe answered");
+        assert!(home(false, true), "the probe failed, the LAN-name mount answers: still home");
+        assert!(!home(false, false), "neither: away");
+        // A fixed Mac has no mount: its home alone decides.
+        assert!(!super::Mac::Fixed { ac: true, battery: None, idle_s: 0, home: false, mem_gb: 16.0, mem_free_pct: 75 }
+            .lan_mounted());
+    }
+
     use super::*;
 
     #[test]

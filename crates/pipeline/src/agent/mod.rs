@@ -4056,6 +4056,7 @@ impl Agent {
         if root.is_some() {
             self.last_root = root.clone();
         }
+        let home = cond::home(home, root.is_some() && self.mac.lan_mounted());
         // The owner's disk room target, as set now (`scenic room`, the menu bar).
         let target = room::target(&self.o.home);
         if target.as_ref().map(|t| t.bytes) != self.room_target.as_ref().map(|t| t.bytes) {

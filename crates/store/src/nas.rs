@@ -80,6 +80,12 @@ pub fn at_home() -> bool {
     addrs.into_iter().any(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_secs(2)).is_ok())
 }
 
+/// Whether the share is mounted by the NAS's LAN name: a Mac that got it that way reaches the NAS on
+/// the LAN, whatever `at_home`'s own probe says of this process.
+pub fn lan_mounted() -> bool {
+    find_mount(HOST, SHARE).is_some_and(|m| by_lan_name(&m))
+}
+
 /// Unmounts the share at `point`, forced (files open on it fail, as they would with the connection
 /// gone), within `timeout`.
 pub fn unmount(point: &Path, timeout: Duration) -> Result<()> {
