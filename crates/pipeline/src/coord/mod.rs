@@ -6360,7 +6360,7 @@ mod tests {
             job: Some("rail 6/1/1".into()),
         });
         c.offer("p", offers);
-        let w2 = client::Client::at(c.contact.urls.clone(), c.contact.token.clone(), "m2");
+        let w2 = client::Client::at(w.urls(), c.contact.token.clone(), "m2");
         let by = |n: &str| if n == "m1" { &w } else { &w2 };
         let m = |n: &str| Ask { want: 1, ..every_ask(n, "slope", 64_000, 100_000) };
         let one = |n: &str| all_granted(by(n), &m(n)).into_iter().flatten().collect::<Vec<_>>();
