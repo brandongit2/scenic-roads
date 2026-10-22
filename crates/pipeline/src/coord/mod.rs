@@ -2311,6 +2311,7 @@ fn nas_prober(
         let mut nas_loop = nas::Loop::default();
         // (Its config file removed when this thread ends: the lead stood down or stopped.)
         let mut session: Option<crate::budget::snmp::Session> = None;
+        let mut told_unusable: Option<&'static str> = None;
         let mut last: Option<std::time::Instant> = None;
         let mut cleaned = false;
         while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
@@ -2352,8 +2353,21 @@ fn nas_prober(
                         // (The NAS's own disk load against the owner's target, read outside the
                         // lock: up to snmp::TIMEOUT.)
                         let keys = crate::budget::snmp::read_keys(&r);
-                        if keys.as_ref().is_none_or(|k| !session.as_ref().is_some_and(|s| s.is_for(k))) {
-                            session = keys.and_then(|k| {
+                        // (Keys that are there but unusable: said once, and again when that changes.)
+                        let unusable = match keys {
+                            Err(crate::budget::snmp::NoKeys::Unusable(k)) => Some(k),
+                            _ => None,
+                        };
+                        if unusable != told_unusable {
+                            if let Some(k) = unusable {
+                                eprintln!(
+                                    "coordinator: {k} has whitespace or '#', which net-snmp's conf can't carry: the NAS load gate is off"
+                                );
+                            }
+                            told_unusable = unusable;
+                        }
+                        if keys.as_ref().map_or(true, |k| !session.as_ref().is_some_and(|s| s.is_for(k))) {
+                            session = keys.ok().and_then(|k| {
                                 crate::budget::snmp::Session::new(k)
                                     .inspect_err(|e| eprintln!("coordinator: no SNMP session: {e}"))
                                     .ok()

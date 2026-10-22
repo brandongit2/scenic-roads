@@ -31,24 +31,43 @@ impl std::fmt::Debug for Keys {
     }
 }
 
-/// The keys in a `KEY=value` file's text (None: either missing, or a value net-snmp's conf format
-/// can't carry: it splits a line at whitespace and ends it at `#`, so such a user or passphrase
-/// would be read as another string; refused rather than quoted, and the gate stays open).
-pub fn parse_keys(s: &str) -> Option<Keys> {
-    let get = |k: &str| {
-        s.lines().find_map(|l| {
-            let (a, b) = l.trim().split_once('=')?;
-            (a.trim() == k)
-                .then(|| b.trim().trim_matches(['"', '\'']).to_string())
-                .filter(|v| !v.is_empty() && !v.contains(|c: char| c.is_whitespace() || c == '#'))
-        })
-    };
-    Some(Keys { user: get("NAS_SNMP_USER")?, auth: get("NAS_SNMP_AUTH")? })
+/// Why there are no keys to use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoKeys {
+    /// No file, or a key missing or empty in it.
+    Missing,
+    /// A key is there but net-snmp's conf format can't carry its value (it splits a line at
+    /// whitespace and ends it at `#`, so it would be read as another string): refused rather than
+    /// quoted. Names the key only, never the value.
+    Unusable(&'static str),
 }
 
-/// The keys under the project folder `root` (None: no file, or no keys in it).
-pub fn read_keys(root: &Path) -> Option<Keys> {
-    parse_keys(&std::fs::read_to_string(root.join(KEYS)).ok()?)
+/// The keys in a `KEY=value` file's text.
+pub fn parse_keys(s: &str) -> Result<Keys, NoKeys> {
+    let get = |k: &'static str| -> Result<String, NoKeys> {
+        let v = s
+            .lines()
+            .find_map(|l| {
+                let (a, b) = l.trim().split_once('=')?;
+                (a.trim() == k).then(|| b.trim().trim_matches(['"', '\'']).to_string()).filter(|v| !v.is_empty())
+            })
+            .ok_or(NoKeys::Missing)?;
+        if v.contains(|c: char| c.is_whitespace() || c == '#') {
+            Err(NoKeys::Unusable(k))
+        } else {
+            Ok(v)
+        }
+    };
+    match (get("NAS_SNMP_USER"), get("NAS_SNMP_AUTH")) {
+        (Ok(user), Ok(auth)) => Ok(Keys { user, auth }),
+        (Err(e @ NoKeys::Unusable(_)), _) | (_, Err(e @ NoKeys::Unusable(_))) => Err(e),
+        _ => Err(NoKeys::Missing),
+    }
+}
+
+/// The keys under the project folder `root`.
+pub fn read_keys(root: &Path) -> Result<Keys, NoKeys> {
+    parse_keys(&std::fs::read_to_string(root.join(KEYS)).map_err(|_| NoKeys::Missing)?)
 }
 
 /// How long a poll may run at all before it's killed (snmpget's own timeout doesn't cover the
@@ -172,8 +191,8 @@ mod tests {
         let k = parse_keys("OTHER=1\nNAS_SNMP_USER=u\nNAS_SNMP_AUTH=\"secret\"\n").unwrap();
         assert_eq!((k.user.as_str(), k.auth.as_str()), ("u", "secret"));
         assert!(!format!("{k:?}").contains("secret"));
-        assert!(parse_keys("NAS_SNMP_USER=u\n").is_none());
-        assert!(parse_keys("NAS_SNMP_USER=u\nNAS_SNMP_AUTH=\n").is_none());
+        assert_eq!(parse_keys("NAS_SNMP_USER=u\n").unwrap_err(), NoKeys::Missing);
+        assert_eq!(parse_keys("NAS_SNMP_USER=u\nNAS_SNMP_AUTH=\n").unwrap_err(), NoKeys::Missing);
     }
 
     /// A session's config file is private and gone when it's dropped.
@@ -195,10 +214,12 @@ mod tests {
     /// Values net-snmp's conf couldn't carry are refused.
     #[test]
     fn keys_the_conf_format_cant_carry_are_refused() {
-        assert!(parse_keys("NAS_SNMP_USER=u\nNAS_SNMP_AUTH=two words\n").is_none());
-        assert!(parse_keys("NAS_SNMP_USER=u\nNAS_SNMP_AUTH=ab#cd\n").is_none());
-        assert!(parse_keys("NAS_SNMP_USER=a b\nNAS_SNMP_AUTH=x\n").is_none());
-        assert!(parse_keys("NAS_SNMP_USER=u\nNAS_SNMP_AUTH='x-y_z'\n").is_some());
+        let auth = NoKeys::Unusable("NAS_SNMP_AUTH");
+        assert_eq!(parse_keys("NAS_SNMP_USER=u\nNAS_SNMP_AUTH=two words\n").unwrap_err(), auth);
+        assert_eq!(parse_keys("NAS_SNMP_USER=u\nNAS_SNMP_AUTH=ab#cd\n").unwrap_err(), auth);
+        assert_eq!(parse_keys("NAS_SNMP_AUTH=ab#cd\n").unwrap_err(), auth, "named with the user missing too");
+        assert_eq!(parse_keys("NAS_SNMP_USER=a b\nNAS_SNMP_AUTH=x\n").unwrap_err(), NoKeys::Unusable("NAS_SNMP_USER"));
+        assert!(parse_keys("NAS_SNMP_USER=u\nNAS_SNMP_AUTH='x-y_z'\n").is_ok());
     }
 
     /// A dead process's session folder is removed; a live one's and others' stay.

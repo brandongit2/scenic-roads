@@ -149,7 +149,12 @@ impl Loop {
     /// Why the budget is held, for the lead's waiting lines (None: not held).
     pub fn why(&self) -> Option<String> {
         let l = self.load.filter(|_| self.held())?;
-        Some(format!("held by NAS load ({l:.0} % > target {} %)", self.target))
+        let (t, under) = (self.target, self.target as f64 - BAND);
+        Some(if l > t as f64 {
+            format!("held by NAS load ({l:.0} % > target {t} %)")
+        } else {
+            format!("held by NAS load ({l:.0} %, target {t} %, reopens under {under:.0} %)")
+        })
     }
 }
 
@@ -568,6 +573,7 @@ mod tests {
             l.read(&[84.0], 85);
         }
         assert!(l.held(), "just under the target: held in the band");
+        assert_eq!(l.why().unwrap(), "held by NAS load (84 %, target 85 %, reopens under 82 %)");
         for _ in 0..30 {
             l.read(&[81.0], 85);
         }
