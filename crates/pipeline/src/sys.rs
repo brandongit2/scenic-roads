@@ -73,6 +73,100 @@ pub fn process_start(pid: i32) -> Option<u64> {
     }
 }
 
+/// A process as `process` reads it: its parent, when it started (microseconds since the epoch) and
+/// its executable's file name.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Proc {
+    pub pid: i32,
+    pub ppid: i32,
+    pub start_us: u64,
+    pub exe: String,
+}
+
+/// A process, when it exists and is readable (this user's).
+pub fn process(pid: i32) -> Option<Proc> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: as in `process_start`.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        let n = unsafe {
+            libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size)
+        };
+        if n != size {
+            return None;
+        }
+        let mut buf = vec![0u8; 4096];
+        // SAFETY: proc_pidpath writes at most the buffer's size.
+        let len = unsafe { libc::proc_pidpath(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
+        buf.truncate(len.max(0) as usize);
+        let path = String::from_utf8_lossy(&buf);
+        Some(Proc {
+            pid,
+            ppid: info.pbi_ppid as i32,
+            start_us: info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec,
+            exe: path.rsplit('/').next().unwrap_or("").to_string(),
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// The processes (other than this one) with a file at `path` open: who holds a lock on it.
+pub fn openers(path: &std::path::Path) -> Vec<i32> {
+    #[cfg(target_os = "macos")]
+    {
+        // libproc's, not in the libc crate.
+        unsafe extern "C" {
+            fn proc_listpidspath(
+                kind: u32,
+                info: u32,
+                path: *const libc::c_char,
+                flags: u32,
+                buf: *mut libc::c_void,
+                size: libc::c_int,
+            ) -> libc::c_int;
+        }
+        const PROC_ALL_PIDS: u32 = 1;
+        let Ok(c) = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()) else { return Vec::new() };
+        let mut buf = vec![0i32; 1024];
+        // SAFETY: the buffer holds `len` pids and its size in bytes is passed; the path is a C string.
+        let n = unsafe {
+            proc_listpidspath(PROC_ALL_PIDS, 0, c.as_ptr(), 0, buf.as_mut_ptr().cast(), (buf.len() * 4) as libc::c_int)
+        };
+        if n <= 0 {
+            return Vec::new();
+        }
+        buf.truncate(n as usize / 4);
+        let me = std::process::id() as i32;
+        buf.retain(|&p| p > 0 && p != me);
+        buf
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        Vec::new()
+    }
+}
+
+/// SIGTERM to one process; whether it was delivered.
+pub fn terminate(pid: i32) -> bool {
+    #[cfg(unix)]
+    {
+        // (Never 0 or less: a group, or every process.)
+        // SAFETY: a plain syscall on an exact pid.
+        pid > 0 && unsafe { libc::kill(pid, libc::SIGTERM) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 /// The processes of a process group.
 pub fn group_members(pgid: i32) -> Vec<i32> {
     // (No group: none.)

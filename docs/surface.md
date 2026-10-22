@@ -41,9 +41,18 @@
   (`spawnBroken`: needs LWCR update, or spawn failed with exit 78) is registered again the same
   way. Once per launch at most (with the restart's fallback above), each step in update.log; the
   window says "launchd can't start it". By hand: `scenic-status --unregister`, quit, open Scenic.
-  `scenic-status --test-launchd tools/status/test` checks the detection against captured
-  `launchctl print` output (check.sh's swift part runs it). When
- the agent's log shows
+  `scenic-status --test tools/status/test` checks the detection against captured
+  `launchctl print` output, the reopen helper and the arguments (check.sh's swift part runs it).
+  Strays (#582): after registering again, and each poll, a launcher of this app or of a copy left
+  aside that isn't the job's own is ended (SIGTERM to that pid; update.log says so). An agent its
+  launcher starts that finds the agent's lock held by an orphan agent (ppid 1) or by an older
+  launcher's agent ends that one (SIGTERM to the orphan, or to the older launcher, which passes it
+  on) and takes the lock once it lets go, waiting up to 150 s; the stopping agent leaves its jobs
+  running for it, as for an update (crates/pipeline/src/agent/takeover.rs). An agent run by hand,
+  or under a newer launcher, ends nothing. Before each open the reopen helper ends a running copy
+  of the app with its bundle id at another path (`open` would only activate it), and
+  `scenic-status` refuses an unknown argument (exit 2) and prints its usage for `--help`/`-h`,
+  never starting the app. When the agent's log shows
   "Operation not permitted" on the NAS since it started, the menu and window say the build service
   can't reach the NAS (allow Scenic in Files and Folders).
 - **Switching a Mac over** from the login items Scenic replaces (`local.scenic.agent`,

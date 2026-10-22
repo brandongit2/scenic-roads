@@ -45,6 +45,7 @@ pub mod resume;
 pub mod room;
 pub mod share;
 pub mod steps;
+pub mod takeover;
 pub mod tiles;
 
 use anyhow::{Context, Result};
@@ -1629,7 +1630,11 @@ impl Agent {
         // that version as theirs (`job_apps`) once `current` names a newer one.
         o.bin = o.bin.canonicalize().unwrap_or(o.bin);
         std::fs::create_dir_all(&o.home).with_context(|| format!("create {}", o.home.display()))?;
-        let lock = AgentLock::try_take(&o.home)?;
+        let mut lock = AgentLock::try_take(&o.home)?;
+        // (Held by an agent outside this one's launcher: ended, and the lock taken over.)
+        if lock.is_none() && !o.dry_run {
+            lock = takeover::take_over(&o.home, takeover::WAIT)?;
+        }
         if lock.is_none() {
             anyhow::ensure!(
                 o.dry_run,

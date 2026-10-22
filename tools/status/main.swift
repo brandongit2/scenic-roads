@@ -25,21 +25,8 @@
 //
 //   tools/status/bundle.sh <folder> [sandbox options]   builds Scenic.app (both files, its launcher
 //                                                        and its build service's launchd plist)
-//   scenic-status --plan                    whether opening it would manage the build service, or why not
-//   scenic-status --services                the build service's and the map server's state
-//   scenic-status --unregister              the build service and the app off the login items
-//   scenic-status --test-launchd <dir>      the build service's launchd state and LWCR failure read
-//                                           from captured launchctl output (tools/status/test)
-//   scenic-status --print                   the icon, the status's lines and the menu's items now, as text
-//   scenic-status --replay a.json b.json …  the notifications a sequence of answers would send (each
-//                                           file /api/build's answer, with this Mac's agent's
-//                                           own status beside it as "own", and "clear_asked"
-//                                           while an ask to clear its caches waits), and the
-//                                           caches' item
-//   scenic-status --render lines.png         the status's lines drawn as they lay out (dark), for checking
-//   scenic-status --show panel|menu         runs, and opens the panel (closed 20 s later) or the menu
-//   scenic-status --menu-proof              runs, its polls and notifications printed with the time,
-//                                           a menu held open 25 s between: they go on while it's open
+//   scenic-status --help                    its arguments (`usage` below); an unknown one is refused
+//                                           (exit 2), never the app started
 // SCENIC_STATUS_SERVER overrides the server (http://127.0.0.1:7311; else Info.plist's ScenicServer),
 // SCENIC_HOME the app folder (else Info.plist's ScenicHome), SCENIC_STATUS_APPEARANCE (light,
 // dark) the system's appearance.
@@ -2465,14 +2452,66 @@ func stamp() -> String {
     return f.string(from: Date())
 }
 
+let usage = """
+usage: scenic-status [option]
+  (none)                     the app: the menu bar item, the build service and the map server's window
+  --no-window                the app, its window not opened (an update's reopen)
+  --plan                     whether opening it would manage the build service, or why not
+  --services                 the build service's and the map server's state
+  --unregister               the build service and the app off the login items
+  --print                    the icon, the status's lines and the menu's items now, as text
+  --replay a.json b.json …   the notifications a sequence of answers would send (each file
+                             /api/build's answer, with this Mac's agent's own status beside it as
+                             "own", and "clear_asked" while an ask to clear its caches waits), and
+                             the caches' item
+  --render lines.png         the status's lines drawn as they lay out (dark), for checking
+  --show panel|menu          runs, and opens the panel (closed 20 s later) or the menu
+  --menu-proof               runs, its polls and notifications printed with the time, a menu held
+                             open 25 s between: they go on while it's open
+  --reopen <pid> <app>       an update's helper: opens <app> once <pid> has ended
+  --test <dir>               its self-tests: arguments, the reopen helper, launchd's state read from
+                             captured launchctl output (tools/status/test)
+  --help, -h                 this
+"""
+
+/// The options and how many values each takes (-1: all the rest, at least one).
+let options: [String: Int] = [
+    "--no-window": 0, "--plan": 0, "--services": 0, "--unregister": 0, "--print": 0, "--replay": -1,
+    "--render": 1, "--show": 1, "--menu-proof": 0, "--reopen": 2, "--test": 1,
+]
+
+/// What's wrong with the arguments (after the program's name): nil when they're fine, "" for
+/// --help/-h, else the problem. LaunchServices' own (-psn_…) are passed over. As the Rust
+/// programs' (pipeline::cli, the server's bad_args): help anywhere wins; an unknown is refused.
+func argsProblem(_ a: [String]) -> String? {
+    if a.contains("--help") || a.contains("-h") { return "" }
+    var i = 0
+    while i < a.count {
+        let o = a[i]
+        if o.hasPrefix("-psn_") { i += 1; continue }
+        guard let n = options[o] else { return "unknown argument \(o)" }
+        let need = n < 0 ? 1 : n
+        let values = a[(i + 1)...].prefix { !$0.hasPrefix("--") }
+        if values.count < need { return "\(o) needs \(need == 1 ? "a value" : "\(need) values")" }
+        i += 1 + (n < 0 ? values.count : n)
+    }
+    return nil
+}
+
 let args = CommandLine.arguments
-if let i = args.firstIndex(of: "--reopen"), i + 2 < args.count {
+if let p = argsProblem(Array(args.dropFirst())) {
+    if p.isEmpty {
+        print(usage, terminator: "")
+        exit(0)
+    }
+    FileHandle.standardError.write(Data("scenic-status: \(p)\n\(usage)".utf8))
+    exit(2)
+}
+if let i = args.firstIndex(of: "--reopen") {
     // The helper an update starts: the app opened again once the old process ended (service.swift).
     reopenHelper(args[i + 1], args[i + 2])
-} else if args.contains("--test-reopen") {
-    testReopen()
-} else if let i = args.firstIndex(of: "--test-launchd"), i + 1 < args.count {
-    testLaunchd(args[i + 1])
+} else if let i = args.firstIndex(of: "--test") {
+    selfTest(args[i + 1])
 } else if args.contains("--unregister") {
     // The build service and the app taken off the login items (the service stopped and unloaded):
     // a sandbox's cleanup, or before the app is removed.
@@ -2528,7 +2567,7 @@ if let i = args.firstIndex(of: "--reopen"), i + 2 < args.count {
             for c in li.children { print("    ▸ \(c.title)\(c.enabled ? "" : " (disabled: \(c.tip))")") }
         }
     }
-} else if let i = args.firstIndex(of: "--render"), i + 1 < args.count {
+} else if let i = args.firstIndex(of: "--render") {
     // The menu's information lines as views, stacked as the menu stacks them, drawn into a PNG.
     let done = DispatchSemaphore(value: 0)
     var r: Reply?
@@ -2598,7 +2637,7 @@ if let i = args.firstIndex(of: "--reopen"), i + 2 < args.count {
     let app = NSApplication.shared
     let delegate = AppDelegate()
     delegate.proof = args.contains("--menu-proof")
-    if let i = args.firstIndex(of: "--show"), i + 1 < args.count { delegate.showAtStart = args[i + 1] }
+    if let i = args.firstIndex(of: "--show") { delegate.showAtStart = args[i + 1] }
     app.delegate = delegate
     // (Never in the Dock (Info.plist's LSUIElement too): the menu bar item and the app's window.)
     app.setActivationPolicy(.accessory)

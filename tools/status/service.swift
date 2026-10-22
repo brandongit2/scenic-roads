@@ -245,6 +245,34 @@ final class BuildService {
         refresh()
         if !state.running { kick() }
         updateLog("the build service registered again: \(broken.map { "still \($0)" } ?? (state.running ? "running" : "not running"))")
+        endStaleLaunchers()
+    }
+
+    /// Launchers of this app (or of a copy an update left aside) other than the job's own, ended
+    /// (SIGTERM to each exact pid: it passes it on to its agent, which leaves its jobs for the next,
+    /// and exits). Unregistering doesn't always end the job's process (the M1, 22 Oct): left, its
+    /// agent holds the lock under no registered job. Only while launchd names the job's own (a
+    /// launcher it is starting now never counted stale). The agent ends such a holder too
+    /// (crates/pipeline/src/agent/takeover.rs); this ends the launcher, which would start it again.
+    func endStaleLaunchers() {
+        guard case .running(let job) = state else { return }
+        for (pid, exe) in launcherProcesses() where pid != Int32(job) && kill(pid, SIGTERM) == 0 {
+            updateLog("ended a stale launcher (pid \(pid), \(exe)): not the build service's (pid \(job))")
+        }
+    }
+
+    /// The running launchers of this app or of its copies left aside (.<name>.old-<pid>): pid and
+    /// executable.
+    func launcherProcesses() -> [(Int32, String)] {
+        let me = Bundle.main.bundleURL
+        guard let dir = realPath(me.deletingLastPathComponent().path) else { return [] }
+        let mine = launcherPath(URL(fileURLWithPath: dir).appendingPathComponent(me.lastPathComponent))
+        let aside = "\(dir)/.\(me.lastPathComponent).old-"
+        return allPids().compactMap { pid in
+            guard let p = executablePath(pid).map({ realPath($0) ?? $0 }) else { return nil }
+            let ours = p == mine || (p.hasPrefix(aside) && p.hasSuffix("/Contents/MacOS/scenic-launcher"))
+            return ours ? (pid, p) : nil
+        }
     }
     /// Registered again this launch (`reregister`): once at most.
     var reregistered = false
@@ -346,6 +374,7 @@ final class BuildService {
             kick()
         }
         followApp()
+        endStaleLaunchers()
         refused = nasRefused()
     }
 
@@ -649,12 +678,14 @@ func updateLog(_ line: String) {
 /// off; about two minutes in all.
 let reopenDelays: [Double] = [1, 2, 4, 8, 15, 30, 60]
 
-/// The reopen helper's steps, apart from the system so they can be tested (`--test-reopen`): waits
-/// up to `exitWait` seconds for the old process to end, then for each delay waits, opens the app
-/// unless it already runs, and checks for up to `verifyWait` seconds that it runs. True once it
-/// runs; false after the last attempt, or when the old process never ended.
-func reopenLoop(oldGone: () -> Bool, open: () -> (Int32, String), running: () -> Bool, sleep: (Double) -> Void,
-                log: (String) -> Void, delays: [Double] = reopenDelays, exitWait: Double = 120, verifyWait: Double = 10) -> Bool {
+/// The reopen helper's steps, apart from the system so they can be tested (`--test`): waits up to
+/// `exitWait` seconds for the old process to end, then for each delay waits, ends a stray copy of
+/// the app (`endStray`: what it ended, if any), opens the app unless it already runs, and checks for
+/// up to `verifyWait` seconds that it runs. True once it runs; false after the last attempt, or
+/// when the old process never ended.
+func reopenLoop(oldGone: () -> Bool, endStray: () -> String?, open: () -> (Int32, String), running: () -> Bool,
+                sleep: (Double) -> Void, log: (String) -> Void, delays: [Double] = reopenDelays, exitWait: Double = 120,
+                verifyWait: Double = 10) -> Bool {
     var waited = 0.0
     while !oldGone() {
         if waited >= exitWait {
@@ -671,6 +702,7 @@ func reopenLoop(oldGone: () -> Bool, open: () -> (Int32, String), running: () ->
             log("attempt \(n + 1): the app runs (opened elsewhere)")
             return true
         }
+        if let s = endStray() { log("attempt \(n + 1): \(s)") }
         let (st, out) = open()
         var checked = 0.0
         while checked < verifyWait {
@@ -693,10 +725,28 @@ func reopenLoop(oldGone: () -> Bool, open: () -> (Int32, String), running: () ->
 func appRuns(_ app: String) -> Bool {
     guard let exe = Bundle(path: app)?.executableURL?.path else { return false }
     let want = realPath(exe) ?? exe
-    var pids = [Int32](repeating: 0, count: 8192)
-    let n = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<Int32>.size))
-    guard n > 0 else { return false }
-    return pids.prefix(Int(n)).contains { $0 != getpid() && executablePath($0).map { realPath($0) ?? $0 } == want }
+    return allPids().contains { $0 != getpid() && executablePath($0).map { realPath($0) ?? $0 } == want }
+}
+
+/// Another copy of the app at `app` running as an app (its bundle id, at another path: a build
+/// run by hand, as `scenic-status --help` did before it refused unknown flags) ended: `open` only
+/// activates a running app of the same bundle id, so the update's app never started (the mini, 22
+/// Oct: "not running 10 s after open (exited 0)" seven times). SIGTERM to that exact pid ends it
+/// without its quit (which would stop the build service); waited for up to 5 s. What it ended.
+func endStrayCopy(_ app: String) -> String? {
+    guard let b = Bundle(path: app), let id = b.bundleIdentifier, let exe = b.executableURL?.lastPathComponent,
+          let mine = realPath(app) else { return nil }
+    var ended: [String] = []
+    for pid in allPids() where pid != getpid() {
+        guard let p = executablePath(pid).map({ realPath($0) ?? $0 }), p.hasSuffix("/Contents/MacOS/\(exe)") else { continue }
+        let bundle = URL(fileURLWithPath: p).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().path
+        // (A command-line run, never registered with LaunchServices, doesn't stop `open`: left.)
+        guard bundle != mine, Bundle(path: bundle)?.bundleIdentifier == id,
+              NSRunningApplication(processIdentifier: pid) != nil, kill(pid, SIGTERM) == 0 else { continue }
+        for _ in 0..<25 where kill(pid, 0) == 0 { Thread.sleep(forTimeInterval: 0.2) }
+        ended.append("pid \(pid) from \(bundle)")
+    }
+    return ended.isEmpty ? nil : "ended a stray copy with this app's bundle id (\(ended.joined(separator: ", "))), which open would have activated instead"
 }
 
 /// `--reopen <pid> <app>`: the helper an update starts (`replaceSelf`): the app opened again once
@@ -709,29 +759,41 @@ func reopenHelper(_ pidArg: String, _ app: String) -> Never {
     }
     let ok = reopenLoop(
         oldGone: { kill(pid, 0) != 0 && errno == ESRCH },
-        open: { run("/usr/bin/open", [app, "--args", "--no-window"]) },
+        endStray: { endStrayCopy(app) },
+        open:{ run("/usr/bin/open", [app, "--args", "--no-window"]) },
         running: { appRuns(app) },
         sleep: { Thread.sleep(forTimeInterval: $0) },
         log: { updateLog("reopen \(app): \($0)") })
     exit(ok ? 0 : 1)
 }
 
-/// `--test-reopen`: `reopenLoop`'s cases against fakes; prints each and PASS or FAIL, exits 1 on a
+/// `--test <dir>`: the arguments' check (`argsProblem`), `reopenLoop`'s cases against fakes, and
+/// `parseJobState` and `spawnBroken` over captured `launchctl print` output (<dir>/launchctl-*.txt:
+/// the live job running, its LWCR failure, stopped); prints each and PASS or FAIL, exits 1 on a
 /// failure.
-func testReopen() -> Never {
+func selfTest(_ dir: String) -> Never {
     var failed = 0
     func check(_ name: String, _ ok: Bool) {
         print("\(ok ? "ok" : "FAIL") \(name)")
         if !ok { failed += 1 }
     }
-    // A fake system: the old process ends after `exitAfter` polls; each open succeeds from attempt
-    // `worksFrom` on (earlier ones go to the old process, as procNotFound did); the app runs from
-    // the check after a successful open.
-    func sim(exitAfter: Int, worksFrom: Int, already: Bool = false) -> (ok: Bool, opens: Int, slept: Double, log: [String]) {
-        var polls = 0, opens = 0, runs = already, slept = 0.0, log: [String] = []
+    // The arguments.
+    check("no arguments, or LaunchServices' own: the app", argsProblem([]) == nil && argsProblem(["-psn_0_12345"]) == nil)
+    check("--help and -h anywhere: the usage", argsProblem(["--help"]) == "" && argsProblem(["-h"]) == "" && argsProblem(["--plan", "--help"]) == "")
+    check("an unknown flag refused, never the app", argsProblem(["--hepl"])?.contains("unknown") == true && argsProblem(["plan"])?.contains("unknown") == true)
+    check("values counted", argsProblem(["--reopen", "12", "/Applications/Scenic.app"]) == nil && argsProblem(["--reopen", "12"])?.contains("2 values") == true
+        && argsProblem(["--show"])?.contains("a value") == true && argsProblem(["--replay", "a.json", "b.json"]) == nil && argsProblem(["--replay"]) != nil
+        && argsProblem(["--no-window", "--show", "panel"]) == nil)
+    // The reopen helper. A fake system: the old process ends after `exitAfter` polls; each open
+    // succeeds from attempt `worksFrom` on (earlier ones go to the old process, as procNotFound did,
+    // or to a stray copy until it's ended, `stray`); the app runs from the check after a
+    // successful open.
+    func sim(exitAfter: Int, worksFrom: Int, already: Bool = false, stray: Bool = false) -> (ok: Bool, opens: Int, slept: Double, log: [String]) {
+        var polls = 0, opens = 0, runs = already, slept = 0.0, log: [String] = [], strayRuns = stray
         let ok = reopenLoop(
             oldGone: { polls += 1; return polls > exitAfter },
-            open: { opens += 1; if opens >= worksFrom { runs = true }; return (opens >= worksFrom ? 0 : 1, opens >= worksFrom ? "" : "procNotFound") },
+            endStray: { defer { strayRuns = false }; return strayRuns ? "ended a stray copy" : nil },
+            open: { opens += 1; if opens >= worksFrom && !strayRuns { runs = true }; return (opens >= worksFrom ? 0 : 1, opens >= worksFrom ? "" : "procNotFound") },
             running: { runs },
             sleep: { slept += $0 },
             log: { log.append($0) },
@@ -749,19 +811,10 @@ func testReopen() -> Never {
     let e = sim(exitAfter: 0, worksFrom: 1, already: true)
     check("doesn't open a second copy when it already runs", e.ok && e.opens == 0)
     check("the real schedule waits before its first attempt and spans about two minutes", reopenDelays.first! >= 1 && reopenDelays.reduce(0, +) >= 100)
-    print(failed == 0 ? "PASS" : "FAIL (\(failed))")
-    exit(failed == 0 ? 0 : 1)
-}
-
-/// `--test-launchd <dir>`: `parseJobState` and `spawnBroken` over captured `launchctl print`
-/// output (tools/status/test/launchctl-*.txt: the live job running, its LWCR failure, stopped);
-/// prints each and PASS or FAIL, exits 1 on a failure.
-func testLaunchd(_ dir: String) -> Never {
-    var failed = 0
-    func check(_ name: String, _ ok: Bool) {
-        print("\(ok ? "ok" : "FAIL") \(name)")
-        if !ok { failed += 1 }
-    }
+    let s = sim(exitAfter: 0, worksFrom: 1, stray: true)
+    check("a stray copy (which open would activate) ended before the open", s.ok && s.opens == 1 && s.log.contains { $0.contains("attempt 1: ended a stray copy") })
+    check("no stray copy of a missing app", endStrayCopy("/nonexistent/Scenic.app") == nil)
+    // launchd's state.
     func load(_ f: String) -> String { (try? String(contentsOfFile: "\(dir)/launchctl-\(f).txt", encoding: .utf8)) ?? "" }
     let (running, lwcr, stopped) = (load("running"), load("lwcr"), load("stopped"))
     check("the fixtures read", !running.isEmpty && !lwcr.isEmpty && !stopped.isEmpty)
@@ -790,13 +843,15 @@ func realPath(_ p: String) -> String? {
     return String(cString: r)
 }
 
-/// The executables of the processes whose path can be read (this user's).
-func runningExecutables() -> [String] {
+/// Every process's pid.
+func allPids() -> [Int32] {
     var pids = [Int32](repeating: 0, count: 8192)
     let n = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<Int32>.size))
-    guard n > 0 else { return [] }
-    return pids.prefix(Int(n)).compactMap { executablePath($0) }
+    return n > 0 ? pids.prefix(Int(n)).filter { $0 > 0 } : []
 }
+
+/// The executables of the processes whose path can be read (this user's).
+func runningExecutables() -> [String] { allPids().compactMap { executablePath($0) } }
 
 /// Why the system quits the app, if it's for a logout, restart or shutdown.
 func quitForLogout() -> Bool {
