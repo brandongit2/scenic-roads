@@ -31,12 +31,16 @@ impl std::fmt::Debug for Keys {
     }
 }
 
-/// The keys in a `KEY=value` file's text (None: either missing).
+/// The keys in a `KEY=value` file's text (None: either missing, or a value net-snmp's conf format
+/// can't carry: it splits a line at whitespace and ends it at `#`, so such a user or passphrase
+/// would be read as another string; refused rather than quoted, and the gate stays open).
 pub fn parse_keys(s: &str) -> Option<Keys> {
     let get = |k: &str| {
         s.lines().find_map(|l| {
             let (a, b) = l.trim().split_once('=')?;
-            (a.trim() == k).then(|| b.trim().trim_matches(['"', '\'']).to_string()).filter(|v| !v.is_empty())
+            (a.trim() == k)
+                .then(|| b.trim().trim_matches(['"', '\'']).to_string())
+                .filter(|v| !v.is_empty() && !v.contains(|c: char| c.is_whitespace() || c == '#'))
         })
     };
     Some(Keys { user: get("NAS_SNMP_USER")?, auth: get("NAS_SNMP_AUTH")? })
@@ -51,6 +55,27 @@ pub fn read_keys(root: &Path) -> Option<Keys> {
 /// host's mDNS lookup).
 pub const KILL: Duration = Duration::from_secs(8);
 
+/// A session's folder is this prefix and its process's id.
+const PREFIX: &str = "scenic-snmp-";
+
+/// Removes the session folders under `tmp` whose process is gone (a crashed lead leaves its conf,
+/// with the auth key in it); returns how many. A folder of a live process, or of a name not ours,
+/// stays.
+fn clean_stale(tmp: &Path) -> usize {
+    let Ok(rd) = std::fs::read_dir(tmp) else { return 0 };
+    rd.flatten()
+        .filter(|e| {
+            let name = e.file_name();
+            let pid = name.to_str().and_then(|n| n.strip_prefix(PREFIX)).and_then(|p| p.parse::<i32>().ok());
+            pid.is_some_and(|p| {
+                p > 0
+                    && unsafe { libc::kill(p, 0) } != 0
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+            }) && std::fs::remove_dir_all(e.path()).is_ok()
+        })
+        .count()
+}
+
 /// A session's keys in an `snmp.conf` of its own (0600, in a 0700 folder under the temp folder,
 /// `SNMPCONFPATH`), so the auth key is never in a command line; removed when dropped. One per
 /// lead's coordinator, made again only when the keys change. `~/.snmp` is never touched.
@@ -63,7 +88,8 @@ impl Session {
     pub fn new(keys: Keys) -> std::io::Result<Session> {
         use std::io::Write;
         use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-        let dir = std::env::temp_dir().join(format!("scenic-snmp-{}", std::process::id()));
+        clean_stale(&std::env::temp_dir());
+        let dir = std::env::temp_dir().join(format!("{PREFIX}{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
         let s = Session { keys, dir };
@@ -164,6 +190,35 @@ mod tests {
         let dir = s.dir.clone();
         drop(s);
         assert!(!dir.exists());
+    }
+
+    /// Values net-snmp's conf couldn't carry are refused.
+    #[test]
+    fn keys_the_conf_format_cant_carry_are_refused() {
+        assert!(parse_keys("NAS_SNMP_USER=u\nNAS_SNMP_AUTH=two words\n").is_none());
+        assert!(parse_keys("NAS_SNMP_USER=u\nNAS_SNMP_AUTH=ab#cd\n").is_none());
+        assert!(parse_keys("NAS_SNMP_USER=a b\nNAS_SNMP_AUTH=x\n").is_none());
+        assert!(parse_keys("NAS_SNMP_USER=u\nNAS_SNMP_AUTH='x-y_z'\n").is_some());
+    }
+
+    /// A dead process's session folder is removed; a live one's and others' stay.
+    #[test]
+    fn a_crashs_session_folders_are_cleaned() {
+        let tmp = std::env::temp_dir().join(format!("snmp-clean-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let mk = |n: String| {
+            std::fs::create_dir_all(tmp.join(&n)).unwrap();
+            tmp.join(n)
+        };
+        let live = mk(format!("{PREFIX}{}", std::process::id()));
+        let other = mk("scenic-snmp-x".into());
+        let mut c = store::spawn::spawn(&mut store::spawn::command("/usr/bin/true")).unwrap();
+        let dead_pid = c.id();
+        c.wait().unwrap();
+        let dead = mk(format!("{PREFIX}{dead_pid}"));
+        assert_eq!(clean_stale(&tmp), 1);
+        assert!(live.exists() && other.exists() && !dead.exists());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

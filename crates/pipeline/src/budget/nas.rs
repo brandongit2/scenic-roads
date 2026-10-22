@@ -102,14 +102,20 @@ pub fn set_target(root: &Path, pct: Option<u32>, by: &str) -> anyhow::Result<Opt
 /// against the owner's target. Over it, the budget is held (`Limits::held`): no new job that
 /// weighs anything is granted but beside nothing that weighs anything (`Limits::open`); the
 /// weights and the room are as the probes' limits give them, so a held NAS never admits what an
-/// unheld one refuses. Nothing to wind up: it holds exactly while the load is over the target.
+/// unheld one refuses. It holds once the load is over the target and opens again only below
+/// `target - BAND`, so a load hovering at the target doesn't open and shut every reading.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Loop {
     /// The busiest disk's busy share, smoothed (%; None: not read, the gate open).
     pub load: Option<f64>,
     /// The target it was last read against (%).
     pub target: u32,
+    /// Whether the gate is shut (set over the target, cleared under `target - BAND`).
+    shut: bool,
 }
+
+/// How far under the target (%) the load must fall for a held gate to reopen.
+pub const BAND: f64 = 3.0;
 
 /// The smoothing's weight of a new reading (one each 10 s: about half a minute's memory, so one
 /// busy second doesn't hold the pool, nor one quiet one open it).
@@ -121,6 +127,12 @@ impl Loop {
         let Some(now) = busy.iter().copied().filter(|b| b.is_finite()).reduce(f64::max) else { return };
         self.load = Some(self.load.map_or(now, |l| l + SMOOTH * (now - l)));
         self.target = pct;
+        let l = self.load.unwrap_or_default();
+        if l > pct as f64 {
+            self.shut = true;
+        } else if l < pct as f64 - BAND {
+            self.shut = false;
+        }
     }
 
     /// No reading to be had (no keys, the NAS not answering): the gate open, the probes' limits
@@ -129,9 +141,9 @@ impl Loop {
         *self = Loop::default();
     }
 
-    /// Whether the load is over the target.
+    /// Whether the gate is shut: the load went over the target and hasn't fallen below the band.
     pub fn held(&self) -> bool {
-        self.load.is_some_and(|l| l > self.target as f64)
+        self.load.is_some() && self.shut
     }
 
     /// Why the budget is held, for the lead's waiting lines (None: not held).
@@ -544,6 +556,30 @@ mod tests {
         l.read(&[99.0], 85);
         l.lost();
         assert_eq!(l, Loop::default());
+    }
+
+    /// Held, the gate reopens only below the target less the band; open, it shuts above the target.
+    #[test]
+    fn the_gate_has_a_band() {
+        let mut l = Loop::default();
+        l.read(&[86.0], 85);
+        assert!(l.held());
+        for _ in 0..30 {
+            l.read(&[84.0], 85);
+        }
+        assert!(l.held(), "just under the target: held in the band");
+        for _ in 0..30 {
+            l.read(&[81.0], 85);
+        }
+        assert!(!l.held(), "below target - band: open");
+        for _ in 0..30 {
+            l.read(&[84.0], 85);
+        }
+        assert!(!l.held(), "in the band, open stays open");
+        for _ in 0..30 {
+            l.read(&[86.0], 85);
+        }
+        assert!(l.held());
     }
 
     /// Admission is monotonic in the load: held, the gate never admits what open refuses (the
