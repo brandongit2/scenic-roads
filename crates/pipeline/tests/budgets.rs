@@ -6,11 +6,10 @@
 //!
 //! - every file of the jobs' code (the crates' Rust, dem/'s Python) that names a metered host is
 //!   listed in `ASKS` with how its requests go (through the proxy, a client honouring
-//!   `HTTPS_PROXY`), or that it asks nothing; and the Python that asks reports a 429 to the proxy
-//!   (`budget.seen`, dem/budget.py), so the budget holds every process and Mac;
+//!   `HTTPS_PROXY`), or that it asks nothing (a step that sees a 429 tells the proxy:
+//!   crate::budget::seen, so the budget holds every process and Mac);
 //! - nothing turns the proxy off (`.proxy(None)`, `ProxyHandler({})`, curl's `--noproxy`, a
-//!   `no_proxy` of its own) but what `BYPASS` lists, with why;
-//! - dem/budget.py's hosts are crate::budget's.
+//!   `no_proxy` of its own) but what `BYPASS` lists, with why.
 //!
 //! A step asking a declared source (docs/inputs.md §6.9) by role (`import declared`,
 //! `declared.url(`: dem/declared.py) names no host to scan, so it counts as asking one: it's listed
@@ -30,19 +29,23 @@ const ASKS: &[(&str, &str)] = &[
     ("crates/pipeline/src/budget/tests.rs", "the budget's tests"),
     ("crates/pipeline/src/agent/jobs.rs", "a test: a sandboxed job's request through the proxy"),
     ("crates/pipeline/src/inputs/sources.rs", "its tests: the staged declarations' URLs, compared, asked of no one"),
-    ("dem/budget.py", "the steps' side of the budget: its lists of the metered hosts, and the hold it tells the proxy"),
     ("crates/pipeline/src/wikiask.rs", "ureq (honours HTTPS_PROXY: Proxy::try_from_env); a 429 told (budget::seen)"),
-    ("crates/pipeline/src/heritagewd.rs", "names Wikidata's links and Wikipedia's sites in its queries, asked through crate::wikiask"),
+    (
+        "crates/pipeline/src/heritagewd.rs",
+        "names Wikidata's links and Wikipedia's sites in its queries, asked through crate::wikiask",
+    ),
     ("crates/pipeline/src/areadetails.rs", "names English Wikipedia's site in its query, asked through crate::wikiask"),
-    ("crates/pipeline/src/items.rs", "names Wikidata's entities and English Wikipedia's site in its queries, asked through crate::wikiask"),
-    ("dem/whsshapes.py", "urllib (honours HTTPS_PROXY), a query its cache lacks, of the declared wikidata-live source; a 429 told (budget.seen)"),
-    ("dem/bldfetch.py", "the declared buildings and building-heights sources (Overture's bucket, GHSL's tiles), not metered"),
+    (
+        "crates/pipeline/src/items.rs",
+        "names Wikidata's entities and English Wikipedia's site in its queries, asked through crate::wikiask",
+    ),
+    (
+        "dem/bldfetch.py",
+        "the declared buildings and building-heights sources (Overture's bucket, GHSL's tiles), not metered",
+    ),
     ("dem/buildings.py", "the declared buildings source's bucket (DuckDB), not metered"),
     ("dem/bldprep.py", "the declared building-heights source's version alone (its folder): asks nothing"),
 ];
-
-/// The Python that asks, so reports a 429 (`budget.seen`).
-const REPORTS: &[&str] = &["dem/whsshapes.py"];
 
 /// What turns the proxy off, in a line.
 const OFF: &[&str] = &[".proxy(None)", "ProxyHandler({})", "--noproxy", "no_proxy", "NO_PROXY"];
@@ -54,7 +57,6 @@ const BYPASS: &[(&str, &str, &str)] = &[
         ".proxy(None)",
         "the owner's metrics tool, run by hand on this Mac, asking the agents here and on the LAN: never a job",
     ),
-    ("dem/budget.py", "ProxyHandler({})", "the hold told to the proxy itself, on this Mac"),
     (
         "crates/pipeline/src/budget/mod.rs",
         ".proxy(None)",
@@ -132,18 +134,6 @@ fn every_file_naming_wikimedia_is_listed_with_how_it_asks() {
 }
 
 #[test]
-fn the_python_that_asks_tells_a_429() {
-    let code: std::collections::BTreeMap<String, String> = jobs_code().into_iter().collect();
-    for f in REPORTS {
-        let t = &code[*f];
-        assert!(
-            t.contains("import budget") && t.contains("budget.seen("),
-            "{f}: asks a metered host, so tells the proxy a 429 (budget.seen)"
-        );
-    }
-}
-
-#[test]
 fn nothing_turns_the_proxy_off_but_what_is_listed() {
     let mut bad = Vec::new();
     let mut used = std::collections::BTreeSet::new();
@@ -166,20 +156,4 @@ fn nothing_turns_the_proxy_off_but_what_is_listed() {
         .collect();
     assert!(bad.is_empty(), "lines turning the proxy off, not listed in BYPASS with why:\n{}", bad.join("\n"));
     assert!(stale.is_empty(), "BYPASS lists lines that aren't there any more: {stale:?}");
-}
-
-/// dem/budget.py's metered hosts are crate::budget's (the Python names them to tell the proxy only
-/// a metered host's 429).
-#[test]
-fn the_pythons_hosts_are_the_budgets() {
-    let t = std::fs::read_to_string(root().join("dem/budget.py")).unwrap();
-    let list = |name: &str| -> Vec<String> {
-        let start =
-            t.find(&format!("\n{name} = (")).unwrap_or_else(|| panic!("{name} in dem/budget.py")) + name.len() + 5;
-        let end = start + t[start..].find(')').unwrap();
-        t[start..end].split(',').map(|s| s.trim().trim_matches('"').to_string()).filter(|s| !s.is_empty()).collect()
-    };
-    assert_eq!(list("QUERY"), QUERY_HOSTS);
-    assert_eq!(list("QUERY_DOMAINS"), QUERY_DOMAINS);
-    assert_eq!(list("WIKIMEDIA"), WIKIMEDIA);
 }

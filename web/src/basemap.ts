@@ -659,7 +659,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
         layout: hvis,
         paint: { 'line-color': '#e7a0ff', 'line-opacity': 0.7, 'line-width': ['interpolate', ['linear'], ['zoom'], 8, 0.6, 15, 1.6] },
       },
-      // World Heritage Sites as their lines and areas (dem/whsshapes.py: a canal, a wall, a site
+      // World Heritage Sites as their lines and areas (pipeline::whsshapes: a canal, a wall, a site
       // boundary), under the dots, with the Heritage sites overlay (overlays.ts filters them by
       // the World Heritage kinds shown).
       {

@@ -113,6 +113,11 @@ impl Asker {
     /// (no answer, not a result) are tried again with growing pauses, longer when rate-limited
     /// (429), ten times in all.
     pub fn sparql(&self, endpoint: &str, q: &str) -> Result<Vec<Py>> {
+        Ok(self.sparql_answer(endpoint, q)?.1)
+    }
+
+    /// `sparql`'s answer with its body as it came (a cache of it keeps the service's bytes).
+    pub fn sparql_answer(&self, endpoint: &str, q: &str) -> Result<(String, Vec<Py>)> {
         anyhow::ensure!(self.may(endpoint)?, "{endpoint}: its robots.txt disallows us");
         let body = format!("{PREFIXES}{q}");
         let mut last = String::new();
@@ -128,7 +133,7 @@ impl Asker {
             };
             if status == 200 {
                 if let Some(Py::List(b)) = loads(&text).ok().and_then(|v| v.at("results").get("bindings").cloned()) {
-                    return Ok(b);
+                    return Ok((text, b));
                 }
             }
             crate::budget::seen(endpoint, status, retry.as_deref());

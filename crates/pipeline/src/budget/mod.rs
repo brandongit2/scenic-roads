@@ -24,7 +24,7 @@
 //! (`Budget::charge`).
 //!
 //! A 429 or a `Retry-After` seen by any process holds every process and Mac: the process tells its
-//! proxy (`/hold`, dem/budget.py), which takes every slot of the windows the wait spans, so no one
+//! proxy (`/hold`: `seen`), which takes every slot of the windows the wait spans, so no one
 //! can lease them (`Budget::hold`). With the NAS out of reach, each Mac takes the rate divided by
 //! the members it knows (`Budget::members`), in memory.
 //!
@@ -118,13 +118,13 @@ pub const CLEAN_BY_NAME: u64 = 64;
 /// The hold a 429 without a `Retry-After` gives (s).
 pub const HOLD_DEFAULT_S: u64 = 60;
 /// The environment variable a job is told its proxy's address by (`http://127.0.0.1:<port>`), to
-/// report a 429 to (`/hold`; dem/budget.py).
+/// report a 429 to (`/hold`: `seen`).
 pub const PROXY_ENV: &str = "SCENIC_BUDGETS";
 
 /// A step's answer from `url`: a 429, or a `Retry-After`, from a metered host told to its proxy
 /// (`/hold`), so the budget holds every process and Mac that long (`HOLD_DEFAULT_S` when it says
 /// none). Whether a proxy was told (false: not metered, nothing to tell, the budgets off, or the
-/// proxy didn't answer: the step's own wait is all). dem/budget.py's `seen`, for the Rust steps.
+/// proxy didn't answer: the step's own wait is all).
 #[cfg(not(target_os = "wasi"))]
 pub fn seen(url: &str, status: u16, retry_after: Option<&str>) -> bool {
     let host = url.split("://").nth(1).unwrap_or(url).split(['/', '?', ':']).next().unwrap_or("");
@@ -203,8 +203,7 @@ impl Class {
 pub const QUERY_HOSTS: [&str; 3] = ["query.wikidata.org", "query-main.wikidata.org", "query-scholarly.wikidata.org"];
 /// The query services' domains, with their subdomains (QLever's, which the heritage chain asks).
 pub const QUERY_DOMAINS: [&str; 2] = ["qlever.dev", "qlever.cs.uni-freiburg.de"];
-/// Wikimedia's sites' domains, with their subdomains (`Class::Wiki`). dem/budget.py keeps the same
-/// lists (tests/budgets.rs checks that they're the same).
+/// Wikimedia's sites' domains, with their subdomains (`Class::Wiki`).
 pub const WIKIMEDIA: [&str; 13] = [
     "wikipedia.org",
     "wikidata.org",

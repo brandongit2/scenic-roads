@@ -5,7 +5,7 @@
 //!
 //!   heritage         points sorted by fame (fa, least known first), so the best known are drawn
 //!                    on top without a sort key (which would cost a draw call per dot). A World
-//!                    Heritage Site in several components (whs-sites.json, from whsshapes.py) is
+//!                    Heritage Site in several components (whs-sites.json, from crate::whsshapes) is
 //!                    one dot at its centre (with the lead component's record and np, the number
 //!                    of components), and its components parts (pt 1, cn the component's name),
 //!                    drawn small close in. Sites keep what the dots, labels, filters and hover
@@ -161,7 +161,7 @@ fn round_geometry(f: &mut Py) -> Result<()> {
 }
 
 /// The World Heritage id of a heritage.json site (its register's `site`), else none.
-fn whs_id(p: &Py) -> Option<String> {
+pub(crate) fn whs_id(p: &Py) -> Option<String> {
     let level_one = p.at("level").number() == Some(1.0);
     (level_one && p.at("site").truthy()).then(|| p.at("site").py_str())
 }
@@ -400,7 +400,7 @@ fn polygons(b: &Path, src: &str, tol: f64) -> Result<Py> {
         let mut kind = g.at("type").clone();
         let mut c = g.at("coordinates").clone();
         if tol != 0.0 {
-            if let Some((k, simplified)) = simplify(&kind, &c, tol)? {
+            if let Some((k, simplified)) = crate::tpsimplify::simplify_geojson(&kind, &c, tol)? {
                 kind = Py::Str(k.into());
                 c = simplified;
             }
@@ -414,59 +414,6 @@ fn polygons(b: &Path, src: &str, tol: f64) -> Result<Py> {
     write(b, &format!("layer-{src}.json"), &fc)?;
     eprintln!("layers: {src}: {n} areas");
     Ok(Py::Dict(vec![("n".into(), Py::Int(n.to_string())), ("a".into(), Py::List(areas))]))
-}
-
-/// A Polygon's or MultiPolygon's coordinates simplified as shapely's `simplify(tol,
-/// preserve_topology=True)` makes them: its type (a MultiPolygon of one polygon comes back a
-/// Polygon, as GEOS builds it) and coordinates; none when it is empty (kept as it was).
-fn simplify(kind: &Py, c: &Py, tol: f64) -> Result<Option<(&'static str, Py)>> {
-    let polys: Vec<&Py> = match kind {
-        Py::Str(k) if k == "Polygon" => vec![c],
-        Py::Str(k) if k == "MultiPolygon" => c.list().context("MultiPolygon coordinates")?.iter().collect(),
-        k => bail!("can't simplify a {}", dumps(k)),
-    };
-    let mut lines = Vec::new();
-    let mut shape: Vec<usize> = Vec::new();
-    for poly in &polys {
-        let rings = poly.list().context("Polygon coordinates")?;
-        shape.push(rings.len());
-        for r in rings {
-            let mut pts = Vec::new();
-            for p in r.list().context("a ring")? {
-                match p.list().map(|a| a.as_slice()) {
-                    Some([x, y]) => {
-                        pts.push([x.number().context("a coordinate")?, y.number().context("a coordinate")?])
-                    }
-                    _ => bail!("not a 2D position"),
-                }
-            }
-            // (shapely closes an open ring; one of under 4 points it refuses.)
-            if pts.first() != pts.last() {
-                pts.push(pts[0]);
-            }
-            anyhow::ensure!(pts.len() >= 4, "a ring of {} points", pts.len());
-            lines.push(crate::tpsimplify::Line { pts, ring: true });
-        }
-    }
-    // (An empty polygon's rings are none: shapely's simplified empty geometry is kept as it was.)
-    let polys_left: Vec<usize> = shape.iter().copied().filter(|n| *n > 0).collect();
-    if polys_left.is_empty() {
-        return Ok(None);
-    }
-    let out = crate::tpsimplify::simplify(&lines, tol);
-    let mut it = out.into_iter();
-    let mut built: Vec<Py> = Vec::new();
-    for n in polys_left {
-        let rings: Vec<Py> = (0..n)
-            .map(|_| {
-                Py::List(
-                    it.next().unwrap().into_iter().map(|[x, y]| Py::List(vec![Py::Float(x), Py::Float(y)])).collect(),
-                )
-            })
-            .collect();
-        built.push(Py::List(rings));
-    }
-    Ok(Some(if built.len() == 1 { ("Polygon", built.pop().unwrap()) } else { ("MultiPolygon", Py::List(built)) }))
 }
 
 /// A name's English for the layers' `en`: its own, when it truly differs; else none (the map's

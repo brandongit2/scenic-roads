@@ -1,0 +1,13 @@
+# geos-src 0.2.4's static GEOS build (MIT), its GEOS 3.13.1 (LGPL-2.1, COPYING in its tree): the
+# workspace patches crates.io's geos-src with it (the root Cargo.toml says why).
+[package]
+name = "geos-src"
+version = "0.2.4"
+edition = "2018"
+links = "geossrc"
+build = "build.rs"
+description = "static library build for geos-sys"
+license = "MIT"
+
+[build-dependencies]
+cmake = "0.1.45"

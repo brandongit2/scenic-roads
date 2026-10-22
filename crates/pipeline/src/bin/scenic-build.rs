@@ -3438,7 +3438,7 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 }
 
 /// heritage [--pass <date>] [--dem dir] [--cache dir]: the rest of the heritage chain
-/// (pipeline::heritagewd, pipeline::heritagedetails, pipeline::areadetails, whsshapes, pipeline::filterprops,
+/// (pipeline::heritagewd, pipeline::heritagedetails, pipeline::areadetails, pipeline::whsshapes, pipeline::filterprops,
 /// pipeline::pageviews, interest's heritage part; then the map's layers, pipeline::heritage_layers) in the stand-in root on the
 /// heritage-sites job's outputs (docs/phase5.md "Heritage and area flags"), over the same cover: the pass's areas and named objects within it
 /// (named with the chain's filter), and for the World Heritage parts the pass's `whs` set within
@@ -3472,7 +3472,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         (1, "heritagewd"),
         (1, "heritagedetails"),
         (1, "areadetails"),
-        (2, "whsshapes.py"),
+        (2, "whsshapes"),
         (2, "filterprops"),
         (3, "pageviews"),
         (3, "interest.py"),
@@ -3546,7 +3546,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     std::fs::remove_file(&named).ok();
     std::fs::remove_file(&named_today).ok();
     drop(p);
-    // The pass's World Heritage sources within the cover, once per pass and cover (whsshapes.py's
+    // The pass's World Heritage sources within the cover, once per pass and cover (pipeline::whsshapes'
     // merged.osm.pbf).
     stage(4, 5, "clipping the pass's World Heritage sources to the coverage (osmium, once a pass)");
     let p = phase("the World Heritage sources clipped to the cover (osmium, once a pass)", Class::NasRead);
@@ -3592,6 +3592,9 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         } else if *script == "areadetails" {
             let _p = phase("areadetails", Class::Mixed);
             pipeline::areadetails::run(&root, &ends.wikidata)?;
+        } else if *script == "whsshapes" {
+            let _p = phase("whsshapes", Class::Mixed);
+            pipeline::whsshapes::run(&root, &ends.wikidata)?;
         } else if *script == "filterprops" {
             let _p = phase("filterprops", Class::Mixed);
             pipeline::filterprops::run(&b)?;
@@ -3689,7 +3692,7 @@ fn areas_over_cover(out: &Out, date: &str, poly: &Path, scratch: &Path, dest: &P
 
 /// The pass's World Heritage sources (its `whs` set, pipeline::osmpass::SETS) within the cover
 /// (whole multipolygons: smart), kept in the cache for the set and cover
-/// (`heritage-merged-<date>-<set and cover>.osm.pbf`; others go): whsshapes.py's merged.osm.pbf,
+/// (`heritage-merged-<date>-<set and cover>.osm.pbf`; others go): pipeline::whsshapes' merged.osm.pbf,
 /// what it reads of it the same as the filtered planet's clip gave it (task #496). The set, about
 /// a fifth of the filtered planet, is copied here first when there's room (osmium reads its input
 /// three times), else read where it is; once per set and cover.

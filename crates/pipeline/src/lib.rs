@@ -59,6 +59,7 @@ pub mod peaks;
 pub mod pool;
 pub mod pubtimes;
 pub mod pyjson;
+pub mod pynumpy;
 pub mod pytext;
 pub mod rail;
 pub mod rawpack;
@@ -93,6 +94,8 @@ pub mod water;
 pub mod watercov;
 pub mod webp;
 pub mod whole;
+#[cfg(not(target_os = "wasi"))]
+pub mod whsshapes;
 #[cfg(not(target_os = "wasi"))]
 pub mod wikiask;
 

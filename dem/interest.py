@@ -17,7 +17,7 @@
   mz  the zoom from which that distance spans one pixel (512 px tiles); the map shows a place from
       mz + log2(spacing in px).
 
-A World Heritage Site in several components (whsshapes.py) counts once, at its dot: its lead
+A World Heritage Site in several components (pipeline::whsshapes) counts once, at its dot: its lead
 component carries the site's isolation there, and the others (drawn small, close in) have none. A
 World Heritage Site's fame is its best-known item's: its own or one of its components' (the Rideau
 Canal's own item has no articles; the canal's has).
@@ -40,12 +40,12 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial import cKDTree
 
-import whsshapes
 from timings import phase
 
 ROOT = Path(__file__).resolve().parent.parent
 B = ROOT / "data" / "build"
 PV = ROOT / "data" / "pageviews" / "items.json"
+SITES = B / "whs-sites.json"
 # A viewpoint's Wikidata item is often the thing it looks at or stands on; its fame counts only when
 # that is a landscape, a lookout or the like (not a mine, chapel or barrow tagged as a viewpoint).
 VIEW_ITEM = re.compile(r"viewpoint|lookout|observation|belvedere|mirador|mountain|hill|peak|summit|cliff|headland|promontory|"
@@ -206,15 +206,15 @@ def main() -> None:
         hfc = json.load(open(B / "heritage.json"))
         hdet = jsonl("details-heritage.jsonl")
         hf = hfc["features"]
-        whs = whsshapes.load_sites()
+        whs = load_sites()
     with phase("the fame scored", "compute"):
-        role = whsshapes.roles(hf, whs)
+        role = roles(hf, whs)
         base = np.zeros(len(hf))
         for i, f in enumerate(hf):
             p = f["properties"]
             d = hdet.get(p.get("i"), {})
             fm, pv = fame(d.get("qid"), d.get("sl", 0))
-            sid = whsshapes.whs_id(p)
+            sid = whs_id(p)
             for q in whs.get(sid, {}).get("q", []) if sid else []:
                 if views.get(q) and math.log10(1 + views[q]) > fm:
                     fm, pv = math.log10(1 + views[q]), views[q]
@@ -239,6 +239,33 @@ def main() -> None:
           f"({len(at)} World Heritage Sites as one dot, {len(hf) - len(keep)} of their components apart)", file=sys.stderr)
     with phase("the layers written", "disk"):
         write(hfc, "heritage.json")
+
+
+def whs_id(p: dict) -> str | None:
+    """The World Heritage id of a heritage.json site (its register's `site`), else None."""
+    return str(p["site"]) if p.get("level") == 1 and p.get("site") else None
+
+
+def load_sites() -> dict[str, dict]:
+    """whs-sites.json (pipeline::whsshapes'; empty before that step has run)."""
+    return json.loads(SITES.read_text()) if SITES.exists() else {}
+
+
+def roles(feats: list[dict], sites: dict[str, dict]) -> dict[int, tuple[str, str]]:
+    """Per heritage.json feature index, for the sites in several components: ("lead", site id) for
+    the component the site's dot takes its record from, ("part", site id) for the others."""
+    out: dict[int, tuple[str, str]] = {}
+    led: set[str] = set()
+    for i, f in enumerate(feats):
+        sid = whs_id(f["properties"])
+        s = sites.get(sid) if sid else None
+        if not s or "dot" not in s:
+            continue
+        lead = sid not in led and [round(c, 6) for c in f["geometry"]["coordinates"][:2]] == s["lead"]
+        if lead:
+            led.add(sid)
+        out[i] = ("lead" if lead else "part", sid)
+    return out
 
 
 def min_zoom(lat: float, ia_km: float) -> float:

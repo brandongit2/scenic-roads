@@ -10,6 +10,8 @@
 //! segment indexes answer "is there any": any index that finds every segment whose box meets the
 //! query's gives the same answers as GEOS's quadtree.
 
+use crate::pyjson::{dumps, Py};
+use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
 
 type P = [f64; 2];
@@ -28,6 +30,76 @@ pub fn simplify(lines: &[Line], tol: f64) -> Vec<Vec<P>> {
         s.simplify_line(l, tol);
     }
     (0..lines.len()).map(|l| s.result_coords(l)).collect()
+}
+
+/// A GeoJSON geometry's coordinates (LineString, MultiLineString, Polygon or MultiPolygon)
+/// simplified as shapely's `simplify(tol, preserve_topology=True)` makes them: its type (a multi
+/// geometry of one part comes back that part, as GEOS builds it) and coordinates; none when it is
+/// empty (kept as it was).
+pub fn simplify_geojson(kind: &Py, c: &Py, tol: f64) -> Result<Option<(&'static str, Py)>> {
+    let (lineal, parts): (bool, Vec<&Py>) = match kind.as_str() {
+        Some("LineString") => (true, vec![c]),
+        Some("MultiLineString") => (true, c.list().context("MultiLineString coordinates")?.iter().collect()),
+        Some("Polygon") => (false, vec![c]),
+        Some("MultiPolygon") => (false, c.list().context("MultiPolygon coordinates")?.iter().collect()),
+        _ => bail!("can't simplify a {}", dumps(kind)),
+    };
+    let points = |l: &Py| -> Result<Vec<P>> {
+        let mut pts = Vec::new();
+        for p in l.list().context("a line")? {
+            match p.list().map(|a| a.as_slice()) {
+                Some([x, y]) => pts.push([x.number().context("a coordinate")?, y.number().context("a coordinate")?]),
+                _ => bail!("not a 2D position"),
+            }
+        }
+        Ok(pts)
+    };
+    let mut lines = Vec::new();
+    // (Per part, its number of lines: a line string's one, a polygon's rings.)
+    let mut shape: Vec<usize> = Vec::new();
+    for part in &parts {
+        if lineal {
+            let pts = points(part)?;
+            // (An empty line string is a part of none.)
+            if pts.is_empty() {
+                shape.push(0);
+                continue;
+            }
+            anyhow::ensure!(pts.len() >= 2, "a line of {} point", pts.len());
+            shape.push(1);
+            lines.push(Line { pts, ring: false });
+            continue;
+        }
+        let rings = part.list().context("Polygon coordinates")?;
+        shape.push(rings.len());
+        for r in rings {
+            let mut pts = points(r)?;
+            // (shapely closes an open ring; one of under 4 points it refuses.)
+            if pts.first() != pts.last() {
+                pts.push(pts[0]);
+            }
+            anyhow::ensure!(pts.len() >= 4, "a ring of {} points", pts.len());
+            lines.push(Line { pts, ring: true });
+        }
+    }
+    // (An empty part has no lines: shapely's simplified empty geometry is kept as it was.)
+    let left: Vec<usize> = shape.iter().copied().filter(|n| *n > 0).collect();
+    if left.is_empty() {
+        return Ok(None);
+    }
+    let mut it = simplify(&lines, tol).into_iter();
+    let pos =
+        |pts: Vec<P>| Py::List(pts.into_iter().map(|[x, y]| Py::List(vec![Py::Float(x), Py::Float(y)])).collect());
+    let mut built: Vec<Py> = Vec::new();
+    for n in left {
+        built.push(if lineal {
+            pos(it.next().unwrap())
+        } else {
+            Py::List((0..n).map(|_| pos(it.next().unwrap())).collect())
+        });
+    }
+    let (one, many) = if lineal { ("LineString", "MultiLineString") } else { ("Polygon", "MultiPolygon") };
+    Ok(Some(if built.len() == 1 { (one, built.pop().unwrap()) } else { (many, Py::List(built)) }))
 }
 
 #[derive(Clone, Copy)]

@@ -99,9 +99,9 @@ pub const SETS: &[(&str, u32, &[&str])] = &[
             "nwr/heritage:operator=whc",
         ],
     ),
-    // The World Heritage outlines' sources (dem/whsshapes.py's filter, its objects' references
+    // The World Heritage outlines' sources (crate::whsshapes' filter, its objects' references
     // with them), and every multipolygon, so the heritage job's clip of this to the cover (its smart
-    // strategy completing the multipolygons that reach it) holds what whsshapes.py reads of the
+    // strategy completing the multipolygons that reach it) holds what crate::whsshapes reads of the
     // filtered planet's clip: about a fifth of the filtered planet, read in its place (task #496).
     ("whs", 1, &["nwr/wikidata", "nwr/ref:whc", "nwr/heritage:operator=whc", "r/type=multipolygon"]),
 ];

@@ -74,8 +74,6 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     // Allowlists by host.
     ("crates/pipeline/src/budget/mod.rs", "QUERY_HOSTS", "\"query.wikidata.org\"", "the polite-use budget is by host (docs/pool.md §7.7): the query services' own limits, which hold for any request to them"),
     ("crates/pipeline/src/budget/mod.rs", "QUERY_DOMAINS", "\"qlever.dev\"", "the polite-use budget is by host (docs/pool.md §7.7): the query services' own limits, which hold for any request to them"),
-    ("dem/budget.py", "QUERY", "\"query.wikidata.org\"", "the polite-use budget is by host (docs/pool.md §7.7), as crate::budget"),
-    ("dem/budget.py", "QUERY_DOMAINS", "\"qlever.dev\"", "the polite-use budget is by host (docs/pool.md §7.7), as crate::budget"),
     // Protocols.
     ("dem/bldfetch.py", "s3_list", "\"http://s3.amazonaws.com/doc/2006-03-01/\"", "S3's listing namespace, the protocol's"),
     // Links that open a place elsewhere.

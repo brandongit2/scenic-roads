@@ -882,7 +882,7 @@ Derived: `facts.box`, `facts.entries`, and `facts.extent` (the box) for the cred
 
 The chain's scripts (docs/phase5.md) read the registers' fields, not per-register knowledge:
 pipeline::heritagewd looks a site up by `ref` under its register's `wikidata_property` (a World Heritage
-site by `site`) and links through OSM by `osm_ref_tags`; whsshapes.py finds a site by `site`, its
+site by `site`) and links through OSM by `osm_ref_tags`; pipeline::whsshapes finds a site by `site`, its
 components by `ref`, its area by `site_area_km2`, its outlines by OSM's World Heritage tags;
 pipeline::filterprops takes `t` from `tier`. Names chosen per language (`lang_at`) are the producers'.
 
@@ -1602,7 +1602,7 @@ declarations are made and staged there.
 | `dem/leaftype.py`'s `fetch_nalcms` | the reader of NALCMS's zip, made for its layout; its messages name what they read |
 | `dem/bldprep.py`'s `read_rg`, `dem/bldfetch.py`'s `overture_jobs` | readers of Overture's schema and release folders, made for their layout; their messages name what they read |
 | timing phases (`scenic-build`'s lake fill, `dem/leaftype.py`'s NALCMS squares) | a phase's name is its key in the timings kept |
-| `budget::QUERY_HOSTS`, `QUERY_DOMAINS`; `dem/budget.py`'s | the polite-use budget is by host (docs/pool.md §7.7): the query services' limits hold for any request to them |
+| `budget::QUERY_HOSTS`, `QUERY_DOMAINS` | the polite-use budget is by host (docs/pool.md §7.7): the query services' limits hold for any request to them |
 | `dem/bldfetch.py`'s S3 listing namespace | the protocol's |
 | `web/src/main.ts`'s Google Maps link | opens the place elsewhere |
 | `tools/check/pool-two-macs.sh`'s budget test | a request the budgets' proxy must meter, not a read |
@@ -1668,6 +1668,6 @@ agent) stay.
 - **Buildings:** `bld/prep.rs`'s `ghsl` meta (D). `rules::CREDITS`'
   Overture and GHSL entries, which their declarations' credits replace once accepted (§4.8). `bld/fill.rs`'s `ESTIMATES` stays
   the fill's rule (§6.9).
-- **Kept by design:** `dem/budget.py`'s and `budget`'s metered hosts (the polite-use budget, by
+- **Kept by design:** `budget`'s metered hosts (the polite-use budget, by
   host: §7.2); `markconv.rs`'s id schemes (`whc:`, `reg:dfhd:`, `legacy:`: ids must not
   change, docs/phase5.md, Ids); `pipeline::legacy` (a name for live code).

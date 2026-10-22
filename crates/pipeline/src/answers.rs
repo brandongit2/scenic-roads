@@ -1,6 +1,6 @@
 //! What the internet answered the steps that ask it a great deal, kept on the NAS (docs/pool.md §2,
 //! durable state on the NAS): the items job's Wikidata facts and Wikipedia articles, and the
-//! heritage chain's (crate::heritagewd's and whsshapes.py's Wikidata and Wikipedia
+//! heritage chain's (crate::heritagewd's and crate::whsshapes' Wikidata and Wikipedia
 //! caches, pipeline::areadetails' park facts). A step keeps them on its Mac, in its cache, where its scripts add to them as
 //! they fetch (a chunk or a file at a time), and on the NAS as one archive a pass (`Kept::nas`: tar,
 //! zstd with its checksum), written whole (crate::whole) when the step starts and the NAS hasn't what
@@ -580,7 +580,7 @@ pub fn items(root: &Path, dir: &Path, date: &str) -> Kept {
 }
 
 /// What the heritage chain makes again on every run from the pass, in its working copy: not answers.
-/// The named places' export (`osm/`, the heritage job's), whsshapes.py's extracts of the pass's
+/// The named places' export (`osm/`, the heritage job's), crate::whsshapes' extracts of the pass's
 /// planet (`whs/`) and crate::heritagewd's matches (`wd/items.jsonl`).
 const REMADE: [&str; 6] = [
     "whs/tagged.osm.pbf",

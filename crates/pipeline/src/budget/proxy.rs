@@ -5,7 +5,7 @@
 //! client's TLS, end to end, never read (its certificate checks are the client's, unchanged). A
 //! plain HTTP request (`GET http://…`) is passed on as one request, its connection closed after
 //! it. It listens on this Mac alone (127.0.0.1). A process that sees a 429 or a `Retry-After`
-//! tells it (`POST /hold?s=<seconds>`, dem/budget.py), and the budget holds every process and Mac.
+//! tells it (`POST /hold?s=<seconds>`: crate::budget::seen), and the budget holds every process and Mac.
 
 use super::{Budget, Class};
 use anyhow::{Context, Result};

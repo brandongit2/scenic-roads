@@ -5,7 +5,7 @@ licence = "CC0-1.0"
 licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
 source = "https://query.wikidata.org/"
 territory = "world"
-notes = "dem/whsshapes.py's query of the items with a World Heritage id (P757), asked by GET with its built-in prefixes, once (its answer cached)."
+notes = "Asked by no step: its robots.txt disallows /sparql (2026-10-22), so pipeline::whsshapes asks QLever (the wikidata role) for its two queries."
 
 [data]
 role = "wikidata-live"
