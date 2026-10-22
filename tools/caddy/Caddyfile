@@ -1,0 +1,31 @@
+# The map's public name on the M6 (docs/macs.md, Devices): https://{$SCENIC_MAP_NAME} on the tailnet
+# alone (its DNS record is the M6's Tailscale address), with the owner's certificate (acme.sh,
+# renewed outside Caddy, which then restarts it: `launchctl kickstart -k gui/<uid>/local.scenic.caddy`).
+# The paths come from the LaunchAgent (install.sh): SCENIC_MAP_NAME, SCENIC_CERT, SCENIC_KEY.
+{
+	# (No admin API, no ACME, no :80 redirect: the certificate's files are all it serves with.)
+	admin off
+	auto_https off
+}
+
+https://{$SCENIC_MAP_NAME}:443 {
+	tls {$SCENIC_CERT} {$SCENIC_KEY}
+
+	# The build page (the agent's coordinator, docs/workers.md §7), its page at /build/work/.
+	redir /build /build/work/
+	redir /build/ /build/work/
+	handle_path /build/* {
+		reverse_proxy 127.0.0.1:8090
+	}
+
+	# The task board (tools/taskboard).
+	redir /task-board /task-board/
+	handle_path /task-board/* {
+		reverse_proxy 127.0.0.1:8077
+	}
+
+	# The map (crates/server).
+	handle {
+		reverse_proxy 127.0.0.1:7311
+	}
+}

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>local.scenic.caddy</string>
+  <key>ProgramArguments</key><array>
+    <string>@CADDY@</string><string>run</string><string>--config</string><string>@DIR@/Caddyfile</string><string>--adapter</string><string>caddyfile</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>SCENIC_MAP_NAME</key><string>@NAME@</string>
+    <key>SCENIC_CERT</key><string>@CERT@</string>
+    <key>SCENIC_KEY</key><string>@KEY@</string>
+  </dict>
+  <key>WorkingDirectory</key><string>@DIR@</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>@HOME@/Library/Logs/scenic/caddy.log</string>
+  <key>StandardErrorPath</key><string>@HOME@/Library/Logs/scenic/caddy.log</string>
+</dict></plist>

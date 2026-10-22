@@ -60,6 +60,8 @@ pub struct Brokers {
     pub peers: Vec<Peer>,
     /// The origins whose pages may call this coordinator (`origins`).
     pub origins: BTreeSet<String>,
+    /// This coordinator's own broker (its addresses): `/work/where`'s `own`.
+    pub own: Broker,
 }
 
 impl Brokers {
@@ -71,7 +73,7 @@ impl Brokers {
                 origins.extend(origins_of(b));
             }
         }
-        Brokers { peers, origins }
+        Brokers { peers, origins, own: own.clone() }
     }
 }
 
@@ -106,8 +108,17 @@ pub fn origins_of(b: &Broker) -> BTreeSet<String> {
     } else {
         all
     };
-    out.extend(b.pages.iter().filter_map(|u| origin(u)));
+    out.extend(b.pages.iter().filter_map(|u| page_origin(u)));
     out
+}
+
+/// A proxy's page origin (`Broker::pages`) when it is "https://<host>" alone, lowercased: no port,
+/// path, query or user; anything else none.
+fn page_origin(u: &str) -> Option<String> {
+    let host = u.strip_prefix("https://").or_else(|| u.strip_prefix("HTTPS://"))?;
+    let host = host.strip_suffix('/').unwrap_or(host);
+    (!host.is_empty() && host.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-'))
+        .then(|| format!("https://{}", host.to_ascii_lowercase()))
 }
 
 /// A broker's base address for a page: over HTTPS when the page is (a secure page can't call a
@@ -155,7 +166,8 @@ pub fn answer(b: &Brokers, a: &Ask) -> serde_json::Value {
         asks.iter().map(|(n, _, base)| serde_json::json!({ "base": base, "waiting": n })).collect();
     let members: Vec<String> = b.peers.iter().filter_map(|p| base(p.broker.as_ref()?, a.https)).collect();
     let lead = b.peers.iter().find(|p| p.lead).and_then(|p| base(p.broker.as_ref()?, a.https));
-    serde_json::json!({ "brokers": brokers, "members": members, "lead": lead })
+    // (`own`: this member's address, which a page served elsewhere, a proxy's, names when it moves.)
+    serde_json::json!({ "brokers": brokers, "members": members, "lead": lead, "own": base(&b.own, a.https) })
 }
 
 /// The CORS headers' values (docs/pool.md §8): the methods and headers a member's page may send.
@@ -209,6 +221,18 @@ mod tests {
             Broker { pages: vec!["https://Map.Example.net".into()], ..broker(&["http://100.1.1.1:8090"], None, &[]) };
         assert!(origins_of(&named).contains("https://map.example.net"));
         assert_eq!(base(&named, true), None);
+        // Only "https://<host>": no other scheme, port, path, query or user.
+        for bad in [
+            "http://map.example.net",
+            "https://map.example.net:8443",
+            "https://map.example.net/build",
+            "https://u@map.example.net",
+            "https://map.example.net?x",
+            "https://",
+        ] {
+            let b = Broker { pages: vec![bad.into()], ..Default::default() };
+            assert!(origins_of(&b).is_empty(), "{bad}");
+        }
     }
 
     #[test]

@@ -389,7 +389,7 @@ async function where(free) {
     const [code, w] = await call("/work/where", { can: CAN, mem_mb: free, https: location.protocol === "https:" });
     peers = code === 200 ? w : null;
   } catch { /* (Its own member away: the members kept from before.) */ }
-  store.set("peers", peers && { members: peers.members, lead: peers.lead });
+  store.set("peers", peers && { members: peers.members, lead: peers.lead, own: peers.own });
   return peers;
 }
 async function elsewhere(ask, free) {
@@ -434,7 +434,7 @@ async function fill() {
   if (moveTo && slots.every((s) => !s.lease || !s.base)) {
     // (The member it leaves named, so the next page passes over it a while too.)
     const q = new URLSearchParams(location.search);
-    q.set("from", location.origin);
+    q.set("from", peers?.own || location.origin);
     location.href = `${moveTo}/work/?${q}`;
     return;
   }

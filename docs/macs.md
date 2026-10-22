@@ -199,7 +199,8 @@ itself.
   else is 403, Funnel included. No key.
 - **A page elsewhere is never the map's:** the `Host` must be an address, localhost, a name only a
   tailnet or local network resolves, or a name the owner gave this Mac (`~/.config/scenic/names`, a
-  name a line, written by `tools/caddy/install.sh`; `pipeline::net::names`): DNS rebinding refused.
+  name a line, written by `tools/caddy/install.sh`; `pipeline::net::names`, read again each minute,
+  so a new name is taken within a minute, no restart): DNS rebinding refused.
   An `Origin` must be the map's own page or this Mac's; CORS only to this Mac's own pages.
 - **The address** is `<home>/map-page` (`crates/server/src/remote.rs`): the first name in
   `~/.config/scenic/names` (https), else HTTPS where `tailscale serve --bg --https=8443
