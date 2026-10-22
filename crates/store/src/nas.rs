@@ -73,11 +73,42 @@ pub fn tunnel_url() -> Option<&'static str> {
 }
 
 /// Whether the NAS answers on the SMB port (TCP 445) by its LAN name within two seconds: this Mac
-/// is at home.
+/// is at home. Each change in what the probe saw (the name's addresses and each connect's error with
+/// its errno: EHOSTUNREACH after a good resolve is macOS's Local Network privacy refusing this
+/// process, docs/macs.md) goes to the log, once.
 pub fn at_home() -> bool {
     use std::net::ToSocketAddrs;
-    let Ok(addrs) = (LAN_HOST, 445).to_socket_addrs() else { return false };
-    addrs.into_iter().any(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_secs(2)).is_ok())
+    use std::sync::Mutex;
+    static LAST: Mutex<String> = Mutex::new(String::new());
+    let (home, seen) = match (LAN_HOST, 445).to_socket_addrs() {
+        Err(e) => (false, format!("{LAN_HOST} doesn't resolve: {e}")),
+        Ok(addrs) => {
+            let mut tried = Vec::new();
+            let mut home = false;
+            for a in addrs {
+                let fam = if a.is_ipv4() { "IPv4" } else { "IPv6" };
+                match std::net::TcpStream::connect_timeout(&a, Duration::from_secs(2)) {
+                    Ok(_) => {
+                        tried.push(format!("{a} ({fam}) answers"));
+                        home = true;
+                        break;
+                    }
+                    Err(e) => tried.push(format!("{a} ({fam}): {e} (errno {})", e.raw_os_error().unwrap_or(0))),
+                }
+            }
+            if tried.is_empty() {
+                (false, format!("{LAN_HOST} resolves to no address"))
+            } else {
+                (home, format!("{LAN_HOST}: {}", tried.join("; ")))
+            }
+        }
+    };
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if *last != seen {
+        eprintln!("nas: at home: {}; {seen}", if home { "yes" } else { "no" });
+        *last = seen;
+    }
+    home
 }
 
 /// Whether the share is mounted by the NAS's LAN name: a Mac that got it that way reaches the NAS on

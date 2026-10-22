@@ -110,7 +110,11 @@ and codesign.
 - **The launcher** (`tools/launcher/launcher.c`) runs the command in `~/Library/Application
   Support/scenic/run/<name>` and restarts it when it exits: `bin/scenic-launcher server` (the map
   server's LaunchAgent), and Scenic.app's own copy running `agent` (the build service; there an
-  agent exiting with `QUIT_EXIT` ends it cleanly, so launchd leaves it stopped). A server started
+  agent exiting with `QUIT_EXIT` ends it cleanly, so launchd leaves it stopped). macOS's Local
+  Network privacy counts the agent as the app's launcher (its launchd program), listed as
+  "Scenic build service" in Privacy & Security › Local Network: its Info.plist is embedded
+  (`tools/status/bundle.sh`). Without the grant the agent's probe of `fishandchips.local:445` fails
+  (the log's `nas: at home: no; … (errno 65)`, EHOSTUNREACH) while `nc` and the mount work. A server started
   any other way (such as the desktop app's preview) waits on macOS's network-volume prompt; test
   servers run from the shell.
 - **The updater** checks the NAS's `app/current.json` every five minutes, copies a newer app locally

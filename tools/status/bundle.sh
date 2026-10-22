@@ -26,7 +26,17 @@ app="$out/$name.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Library/LaunchAgents"
 swiftc -O -swift-version 5 -target arm64-apple-macos26.0 -o "$app/Contents/MacOS/scenic-status" "$src/main.swift" "$src/service.swift"
-xcrun clang -O2 -Wall -target arm64-apple-macos26.0 -o "$app/Contents/MacOS/scenic-launcher" "$src/../launcher/launcher.c"
+# The launcher is the build service's launchd program, so macOS's Local Network privacy counts the
+# agent (its child) as it: an Info.plist embedded in it (its signed identifier as CFBundleIdentifier,
+# and NSLocalNetworkUsageDescription) makes it a program that may ask for and keep that grant.
+lplist=$(mktemp -d)/Info.plist
+plutil -create xml1 "$lplist"
+plutil -insert CFBundleIdentifier -string ${id%.app}.launcher "$lplist"
+plutil -insert CFBundleName -string "$name build service" "$lplist"
+plutil -insert NSLocalNetworkUsageDescription -string "Scenic's build service finds the NAS and the other Macs on this network." "$lplist"
+xcrun clang -O2 -Wall -target arm64-apple-macos26.0 -Wl,-sectcreate,__TEXT,__info_plist,"$lplist" \
+  -o "$app/Contents/MacOS/scenic-launcher" "$src/../launcher/launcher.c"
+rm -rf "${lplist:h}"
 cp -X "$src/Info.plist" "$app/Contents/Info.plist"
 zsh "$src/icon/build.sh" "$app/Contents/Resources"
 info="$app/Contents/Info.plist"
