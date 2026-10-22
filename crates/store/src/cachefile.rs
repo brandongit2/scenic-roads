@@ -370,16 +370,30 @@ pub fn tmp_of(path: &Path) -> PathBuf {
 /// Makes folder `d` of the caches (and those above it), as `create_dir_all`, but made again when
 /// room-making takes one, empty, as it's made (which `create_dir_all` gives up on: EEXIST, ENOENT,
 /// or as it goes on macOS, EINVAL).
+/// Any other error (a full disk, no permission, a file in the way) is returned at once.
 pub fn make_dir(d: &Path) -> io::Result<()> {
-    let mut last = None;
     for _ in tries() {
-        match std::fs::create_dir_all(d) {
-            Ok(()) => return Ok(()),
-            Err(_) if d.is_dir() => return Ok(()),
-            Err(e) => last = Some(e),
+        if make_once(d)? {
+            return Ok(());
         }
     }
-    Err(with(last.unwrap_or_else(|| io::Error::other("no folder")), "make", d))
+    Err(with(io::Error::other("taken each time it was made"), "make", d))
+}
+
+/// One try of `make_dir`: true when `d` is there, false when room-making raced it (try again), the
+/// error when it's another.
+fn make_once(d: &Path) -> io::Result<bool> {
+    match std::fs::create_dir_all(d) {
+        Ok(()) => Ok(true),
+        Err(_) if d.is_dir() => Ok(true),
+        Err(e)
+            if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::AlreadyExists)
+                || e.raw_os_error() == Some(libc_einval()) =>
+        {
+            Ok(false)
+        }
+        Err(e) => Err(with(e, "make", d)),
+    }
 }
 
 /// A temporary file beside cache file `path` (`tmp_of`), made and locked (shared) at once, so
@@ -390,11 +404,9 @@ pub fn scratch(path: &Path) -> io::Result<(PathBuf, File)> {
     let mut last = String::new();
     for _ in tries() {
         // (A folder room-making takes as it's made, empty: made again.)
-        if let Err(e) = std::fs::create_dir_all(dir) {
-            if !dir.is_dir() {
-                last = format!(" (make {}: {e})", dir.display());
-                continue;
-            }
+        if !make_once(dir)? {
+            last = format!(" (make {}: taken as it was made)", dir.display());
+            continue;
         }
         let tmp = tmp_of(path);
         let f = match File::options().read(true).write(true).create_new(true).open(&tmp) {
@@ -623,6 +635,18 @@ pub fn remove_tree(dir: &Path) -> Tree {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    /// An error that isn't room-making's race (a file where a folder goes: ENOTDIR) is returned at
+    /// once, not retried for `tries`' 30 s.
+    #[test]
+    fn a_folder_that_cant_be_made_fails_at_once() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("f"), b"").unwrap();
+        let t = std::time::Instant::now();
+        assert!(make_dir(&d.path().join("f/a")).is_err());
+        assert!(scratch(&d.path().join("f/a/b.bin")).is_err());
+        assert!(t.elapsed() < std::time::Duration::from_secs(5), "{:?}", t.elapsed());
+    }
 
     #[test]
     fn a_held_file_stays_and_one_let_go_goes() {
