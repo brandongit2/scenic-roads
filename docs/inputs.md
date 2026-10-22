@@ -884,7 +884,7 @@ The chain's scripts (docs/phase5.md) read the registers' fields, not per-registe
 heritagewd.py looks a site up by `ref` under its register's `wikidata_property` (a World Heritage
 site by `site`) and links through OSM by `osm_ref_tags`; whsshapes.py finds a site by `site`, its
 components by `ref`, its area by `site_area_km2`, its outlines by OSM's World Heritage tags;
-filterprops.py takes `t` from `tier`. Names chosen per language (`lang_at`) are the producers'.
+pipeline::filterprops takes `t` from `tier`. Names chosen per language (`lang_at`) are the producers'.
 
 #### 6.5.2 The heritage chain's stand-in root
 

@@ -20,6 +20,7 @@ pub mod depth;
 pub mod elev;
 pub mod extents;
 pub mod fetch;
+pub mod filterprops;
 pub mod geotiff;
 pub mod handoff;
 pub mod heritage;

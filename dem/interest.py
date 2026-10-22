@@ -25,7 +25,7 @@ Canal's own item has no articles; the canal's has).
 The map shows a place from the zoom where its isolation spans enough pixels (an even density at
 every zoom, the best-known and locally best first), sized and labelled by fame.
 
-Rewrites pois.json and heritage.json in data/build (after filterprops.py).
+Rewrites pois.json and heritage.json in data/build (after the filters' values: pipeline::filterprops).
 
 usage: interest.py
 """

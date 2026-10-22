@@ -212,7 +212,7 @@ after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sit
 ### Heritage and area flags
 
 The heritage chain (heritage.py, heritagewd.py, heritagedetails.py, areadetails.py, whsshapes.py,
-filterprops.py, pageviews.py, interest.py, layers.py) runs in Python in a stand-in root laid out as
+the filters' values (pipeline::filterprops, in scenic-build), pageviews.py, interest.py, layers.py) runs in a stand-in root laid out as
 the repository (`dem/` the app's scripts, `data/heritage/` the pass's working copy of the answers;
 docs/inputs.md §6.5.2), split into two jobs so the z6 tiles never wait on Wikidata.
 - **The registers** are an input (docs/inputs.md §6.5): heritage-sites links the accepted registers

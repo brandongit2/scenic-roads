@@ -388,9 +388,9 @@ mod tests {
     }
 }
 
-// ---- the filters' values (dem/filterprops.py) ------------------------------------------------------
+// ---- the stops & sights' filter values ------------------------------------------------------
 
-/// filterprops.py `num`: the first number in a value, a comma as its decimal point ("12,5 m" →
+/// The first number in a value, a comma as its decimal point ("12,5 m" →
 /// 12.5); none without one.
 pub fn fp_num(v: &serde_json::Value) -> Option<f64> {
     let s = match v {
@@ -432,7 +432,7 @@ pub fn fp_num(v: &serde_json::Value) -> Option<f64> {
     None
 }
 
-/// filterprops.py `year`: the first run of 3–4 digits (with a minus sign before it).
+/// The first run of 3–4 digits (with a minus sign before it).
 pub fn fp_year(v: &serde_json::Value) -> Option<i64> {
     let s = match v {
         serde_json::Value::Null => return None,
@@ -484,7 +484,7 @@ fn round_json(v: f64, n: usize, was_int: bool) -> serde_json::Value {
     }
 }
 
-/// A stop & sight's filter values (filterprops.py `pois`) from its details record `d` (OSM tags and
+/// A stop & sight's filter values from its details record `d` (OSM tags and
 /// `wd`, the Wikidata facts) and its peak computation `pk` (prominence `p`, isolation `iso`).
 pub fn poi_filter_props(
     kind: &str,

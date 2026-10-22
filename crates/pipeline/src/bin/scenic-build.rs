@@ -3450,7 +3450,7 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 }
 
 /// heritage [--pass <date>] [--dem dir] [--cache dir]: the rest of the heritage chain
-/// (heritagewd, heritagedetails, areadetails, whsshapes, filterprops' and interest's heritage parts,
+/// (heritagewd, heritagedetails, areadetails, whsshapes, pipeline::filterprops, interest's heritage part,
 /// pageviews, layers) in the stand-in root on the heritage-sites job's outputs (docs/phase5.md
 /// "Heritage and area flags"), over the same cover: the pass's areas and named objects within it
 /// (named with the chain's filter), and for the World Heritage parts the pass's `whs` set within
@@ -3485,7 +3485,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         (1, "heritagedetails.py", vec![]),
         (1, "areadetails.py", vec![]),
         (2, "whsshapes.py", vec![]),
-        (2, "filterprops.py", vec![]),
+        (2, "filterprops", vec![]),
         (3, "pageviews.py", vec!["--epoch", date.as_str()]),
         (3, "interest.py", vec![]),
         (4, "layers.py", vec![]),
@@ -3591,7 +3591,13 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             mine.len() as u64 + (*part == 4) as u64,
             script,
         );
-        heritage_script(&root, &dem, out.root(), Some(&declared), script, sargs)?;
+        if *script == "filterprops" {
+            // (Ours: pipeline::filterprops.)
+            let _p = phase("filterprops", Class::Mixed);
+            pipeline::filterprops::run(&b)?;
+        } else {
+            heritage_script(&root, &dem, out.root(), Some(&declared), script, sargs)?;
+        }
     }
     stage(1, 2, "uploading");
     let p = phase("uploaded", Class::NasWrite);
