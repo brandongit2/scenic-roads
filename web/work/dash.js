@@ -1047,7 +1047,7 @@ async function loadRegions(sw) {
     const [code, v] = await ctx.call("/work/regions", {});
     if (code !== 200 || !v?.regions) return;
     drawn.byId = Object.fromEntries(v.regions.map((r) => [r.id, r]));
-    drawn.catalog = n;
+    drawn.catalog = v.catalog ?? null; // the catalogue it was made from: asked again until it catches up
     drawn.at = Date.now();
     render();
   } catch { /* (Asked again with the next poll.) */ } finally {
