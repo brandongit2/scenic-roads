@@ -21,13 +21,6 @@ import type {HillshadeStyleLayer} from '../../style/style_layer/hillshade_style_
 import type {DEMData} from '../../data/dem_data.ts';
 import type {MaskCell} from '../draw/water_mask.ts';
 
-/**
- * Scenic Roads: whether a tile's slopes are upstream's, its pixels sized by the drawn zoom (a tile
- * overzoomed n levels shades 2^n too steep: the app's look past z12, but a step in tone beside a
- * tile of finer data at an area's edge), or, false, the true slopes, its pixels sized by its own
- * zoom (no step; softer past z12). On until the owner decides. FORK.md, "Hill-shading".
- */
-export const HILLSHADE_OVERZOOM_STEEPENS = true;
 import type {OverscaledTileID} from '../../tile/tile_id.ts';
 
 export type HillshadeUniformsType = {
@@ -51,7 +44,6 @@ export type HillshadePrepareUniformsType = {
     'u_image': Uniform1i;
     'u_dimension': Uniform2f;
     'u_zoom': Uniform1f;
-    'u_dem_zoom': Uniform1f;
     'u_unpack': Uniform4f;
 };
 
@@ -76,7 +68,6 @@ const hillshadePrepareUniforms = (context: Context, locations: UniformLocations)
     'u_image': new Uniform1i(context, locations.u_image),
     'u_dimension': new Uniform2f(context, locations.u_dimension),
     'u_zoom': new Uniform1f(context, locations.u_zoom),
-    'u_dem_zoom': new Uniform1f(context, locations.u_dem_zoom),
     'u_unpack': new Uniform4f(context, locations.u_unpack)
 });
 
@@ -145,8 +136,6 @@ const hillshadeUniformPrepareValues = (tileID: OverscaledTileID, dem: DEMData): 
         'u_image': 1,
         'u_dimension': [stride, stride],
         'u_zoom': tileID.overscaledZ,
-        // Scenic Roads: the zoom its pixels' size is taken at (the prepare shader; FORK.md)
-        'u_dem_zoom': HILLSHADE_OVERZOOM_STEEPENS ? tileID.overscaledZ : tileID.canonical.z,
         'u_unpack': dem.getUnpackVector()
     };
 };

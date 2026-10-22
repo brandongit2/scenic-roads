@@ -122,16 +122,10 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
   written last. Upstream filled it from its eight same-zoom neighbours only (their `neighboringTiles`
   and `backfillBorder`, gone), so beside a tile of another zoom (an area's edge, or a coarser tile
   standing in) the border clamped: a dark line in the hill-shading along the edge.
-- **Hill-shading's slopes, a switch** (`hillshade_program.ts` `HILLSHADE_OVERZOOM_STEEPENS`,
-  `u_dem_zoom` in `hillshade_prepare.fragment.glsl`): upstream sizes a DEM tile's pixels by the
-  drawn zoom, so a tile overzoomed n levels shades 2^n too steep, and steps in tone beside a tile of
-  finer data at the same drawn zoom (an area's edge at z14). Two behaviours:
-  - **`true` (on):** upstream's, the app's look past z12.
-  - **`false`:** the tile's own zoom: true slopes, softer past z12. The owner's call.
-  Measured in Chrome at Maui's area edge (hill-shading alone, mean luminance step across the edge):
-  upstream 0.56 at z14 and z15; with the borders filled across zooms (above) 0.28 and 0.30 either
-  way, the rest the data's own difference. Steepening every tile alike by the drawn zoom (keeping
-  the look over the base) made it 2.5–3.4: the fine data's detail steepened.
+- **No steepness correction for overzoomed DEM tiles:** DEM tiles are never prepared overscaled in
+  this fork (`covering_tiles.ts`), so a tile's drawn zoom is its own and the prepare shader sizes
+  pixels by `u_zoom` alone, as upstream does. (Rendering z13-18 at four places with and without a
+  separate DEM zoom gave byte-identical images.)
 - **Known gap:** a border filled from a neighbour stays when that neighbour unloads (as upstream);
   it's filled again when a tile touching it loads.
 
