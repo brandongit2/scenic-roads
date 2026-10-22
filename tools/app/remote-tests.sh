@@ -157,7 +157,7 @@ remote_main() {  # on the M4: <key> <owner> <command>
     export RUSTC_WRAPPER=/opt/homebrew/bin/sccache SCCACHE_DIR=~/Library/Caches/scenic-sccache SCCACHE_CACHE_SIZE=10G
   fi
   ulimit -n 8192 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null
-  # The watcher: this connection's sshd gone (the M1's side stopped), the run's process group goes.
+  # The watcher: this connection's sshd gone (the calling Mac's side stopped), the run's process group goes.
   local p=$$ sshd=
   while [[ $p -gt 1 ]]; do
     [[ $(ps -o comm= -p $p) == *sshd* ]] && { sshd=$p; break; }
@@ -266,7 +266,7 @@ local_main() {  # <key> <source dir> <command>
     print "remote-tests: copying to the M4 failed ($rc): running here"
     run_local $src "$cmd"; return
   fi
-  print "remote-tests: tree copied to the M4 in $(( SECONDS - t0 )) s (M1 load $(loadavg))"
+  print "remote-tests: tree copied to the M4 in $(( SECONDS - t0 )) s (this Mac's load $(loadavg))"
   # This side's settings the tests read, exported there too.
   local v envs=
   for v in RUST_LOG RUST_BACKTRACE RUST_TEST_THREADS RUST_MIN_STACK CARGO_TERM_COLOR CARGO_INCREMENTAL \
