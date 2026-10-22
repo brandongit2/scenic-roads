@@ -3705,8 +3705,9 @@ pub fn depth_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, til
 ///
 /// - a z8 tile near the coverage where a fine dataset meets it and is finer there: the code's
 ///   versions, the tile, those datasets (their lines and the zoom each reaches there), its z6 tile's
-///   hi pack (its base tiles) and terrain key (its water, its declared sources); it runs once that
-///   z6 tile's terrain is done under that key;
+///   hi pack (its base tiles) and terrain key (its water, its declared sources), and the hi packs
+///   of the z6 tiles its ring crosses into (crate::terrain_fine::ring_packs); it runs once its own
+///   z6 tile's terrain is done under that key (a neighbour's new hi pack runs it again);
 /// - a z8 tile with fine packs named and no target now ("none"): its run drops them.
 pub fn fine_targets(
     cov: &Coverage,
@@ -3730,7 +3731,13 @@ pub fn fine_targets(
                         continue;
                     }
                     let t = format!("{}/{x}/{y}", tf::TARGET_Z);
-                    out.push((t.clone(), h(&[&tf::versions(), &t, &lines.join("\n"), hi, key]), ready));
+                    // (Its ring's hi packs past its z6 tile's: at that tile's edge.)
+                    let ring: Vec<&str> = tf::ring_packs((x, y))[1..]
+                        .iter()
+                        .map(|&(a, b)| m.get(&format!("layers/terrain/hi/6-{a}-{b}")).map_or("-", String::as_str))
+                        .collect();
+                    let key = h(&[&tf::versions(), &t, &lines.join("\n"), hi, key, &ring.join(" ")]);
+                    out.push((t.clone(), key, ready));
                 }
             }
         }
@@ -5066,10 +5073,17 @@ pub(crate) mod tests {
         let t6 = tt.terrain[0].0.replace('/', "-");
         m.insert(format!("layers/terrain/hi/{t6}"), "hi-new".into());
         let again = fine_work(&c, &m, &done, &tiles);
+        let reads = |t: &str| {
+            TileId::parse(t).is_some_and(|u| tf::ring_packs((u.x, u.y)).iter().any(|p| format!("6-{}-{}", p.0, p.1) == t6))
+        };
         let under = |t: &str| TileId::parse(t).is_some_and(|u| format!("6-{}-{}", u.x >> 2, u.y >> 2) == t6);
-        let mine: Vec<&String> = ft.iter().map(|f| &f.0).filter(|t| under(t)).collect();
-        assert!(!mine.is_empty());
-        assert_eq!(again[0].targets.iter().map(|t| &t.0).collect::<Vec<_>>(), mine, "its z6 tile's z8 tiles");
+        let mine: Vec<&String> = ft.iter().map(|f| &f.0).filter(|t| reads(t)).collect();
+        assert!(mine.iter().any(|t| under(t)) && mine.iter().any(|t| !under(t)), "{mine:?}");
+        assert_eq!(
+            again[0].targets.iter().map(|t| &t.0).collect::<Vec<_>>(),
+            mine,
+            "its z6 tile's z8 tiles, and its neighbours' whose ring crosses into it"
+        );
         did(&mut m, &mut done, &again[0]);
         // The dataset no longer fine: no targets but those with fine packs, which drop them.
         let (x, y) = TileId::parse(&ft[0].0).map(|u| (u.x, u.y)).unwrap();

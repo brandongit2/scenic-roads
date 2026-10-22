@@ -5167,8 +5167,9 @@ fn depth_step(out: &mut Out, args: &[String], step: &str) -> Result<()> {
 }
 
 /// terrain-fine <8/x/y …>: the terrain finer than its base under each z8 tile (its fine packs,
-/// pipeline::terrain_fine), from its z6 tile's hi pack as stored; a z8 tile with nothing fine (no
-/// fine dataset there, or no hi pack) has its fine packs dropped.
+/// pipeline::terrain_fine), from its z6 tile's hi pack as stored (its ring from its neighbours'
+/// too); a z8 tile with nothing fine (no fine dataset there, or no hi pack) has its fine packs
+/// dropped.
 fn terrain_fine_step(out: &mut Out, args: &[String]) -> Result<()> {
     use pipeline::terrain_fine as tf;
     let ts: Vec<TileId> = positional(args)
@@ -5187,11 +5188,16 @@ fn terrain_fine_step(out: &mut Out, args: &[String]) -> Result<()> {
         pipeline::control::safe_point(tf::STEP);
         pipeline::agent::jobs::part(k, &names);
         let c = cost_start(tf::STEP, &t.slash());
-        let shift = tf::TARGET_Z - 6;
-        let hi = out.get(&format!("layers/terrain/hi/6-{}-{}", t.x >> shift, t.y >> shift)).map(|c| out.path(c));
+        // (Its z6 tile's hi pack, and its neighbours' its ring crosses into.)
+        let his: Vec<Option<PathBuf>> = tf::ring_packs((t.x, t.y))
+            .iter()
+            .map(|&(x, y)| out.get(&format!("layers/terrain/hi/6-{x}-{y}")).map(|c| out.path(c)))
+            .collect();
         let p = phase("its base tiles read", Class::NasRead);
-        let base = match &hi {
-            Some(h) if fine.is_some() => tf::base_tiles(h, (t.x, t.y))?,
+        let base = match his.split_first() {
+            Some((Some(_), _)) if fine.is_some() => {
+                tf::base_tiles(&his.into_iter().flatten().collect::<Vec<_>>(), (t.x, t.y))?
+            }
             _ => Default::default(),
         };
         drop(p);

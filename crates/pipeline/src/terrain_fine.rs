@@ -17,7 +17,9 @@
 //!   EGM2008 as the roads' are (crate::dem::geoid), with the stored base tile last (`BASE_URL`), so
 //!   the fine data blends into the base over four base pixels where it ends; where only the base
 //!   gives a height, the base read across its tiles' edges (`padded`: a ring of one tile past the z8
-//!   tile read with it, `base_tiles`), as the map draws the base. The base's water is
+//!   tile read with it, from its z6 tile's hi pack and its neighbours' where the ring crosses into
+//!   them, `base_tiles`, `ring_packs`; a neighbour of another zoom where the base's finest zoom
+//!   changes with latitude), as the map draws the base. The base's water is
 //!   kept: each pixel by its share of the base tile's sea and lakes (crate::terrain_water, at the
 //!   base's zoom) takes the base's flattened height. Below zero to 0, as the base. Rounded to
 //!   1 cm (`QUANTUM_M`, the owner's), Terrarium RGB as lossless JPEG XL (`encode`, `ENCODING`: Chrome and Safari
@@ -58,7 +60,7 @@ pub const PRESENCE: usize = 128;
 /// The stored base tiles, as the sampler reads them (a tile pyramid served from the run's memory).
 pub const BASE_URL: &str = "scenic-terrain:{z}/{x}/{y}";
 /// Bumped with any change to the fine tiles' bytes from the same inputs.
-pub const FINE_V: u32 = 2;
+pub const FINE_V: u32 = 3;
 /// The fine packs' encoding (their header's `encoding`): Terrarium RGB as JPEG XL.
 pub const ENCODING: &str = "terrarium-jxl";
 
@@ -298,9 +300,13 @@ fn up(v: &[f32], side: usize, zb: u8, z: u8, x: u32, y: u32, i: usize, j: usize)
 pub const PADDED: usize = 258;
 
 /// Base tile `b`'s heights (`tiles`: the base tiles decoded) padded by a pixel of each of its eight
-/// neighbours of its zoom (`PADDED` × `PADDED`), so a fine tile reads the base across the base
-/// tiles' edges as MapLibre draws it (its DEM tiles' borders filled from their neighbours); where a
-/// neighbour isn't stored, the padding's next pixel in (a corner: the side neighbour's, where stored).
+/// neighbours (`PADDED` × `PADDED`), so a fine tile reads the base across the base tiles' edges as
+/// MapLibre draws it (its DEM tiles' borders filled from their neighbours, our fork's
+/// `DEMData.backfillFrom`): a neighbour of its zoom pixel for pixel; where none is stored, a stored
+/// tile up to two zooms finer or coarser holding the pixel's centre, bilinearly there (clamped
+/// inside that tile), as the server makes a missing tile from its ancestor
+/// (roadcore::grid::upsampled) and the map fills a border from a neighbour of another zoom; else the
+/// padding's next pixel in (a corner: the side neighbour's, where there is one).
 pub fn padded(tiles: &HashMap<(u8, u32, u32), Vec<f32>>, b: (u8, u32, u32)) -> Vec<f32> {
     let (z, x, y) = b;
     let n = 1i64 << z;
@@ -320,6 +326,17 @@ pub fn padded(tiles: &HashMap<(u8, u32, u32), Vec<f32>>, b: (u8, u32, u32)) -> V
     }
     for j in 0..p {
         for i in 0..p {
+            let k = (j * p + i) as usize;
+            if out[k].is_nan() {
+                // (The pixel's centre in tiles of zoom z, x within the world.)
+                let fx = ((x as i64 * 256 + i - 1) as f64 + 0.5) / 256.0;
+                let fy = ((y as i64 * 256 + j - 1) as f64 + 0.5) / 256.0;
+                out[k] = other_zoom(tiles, z, fx.rem_euclid(n as f64), fy).unwrap_or(f32::NAN);
+            }
+        }
+    }
+    for j in 0..p {
+        for i in 0..p {
             if out[(j * p + i) as usize].is_nan() {
                 let (ci, cj) = (i.clamp(1, p - 2), j.clamp(1, p - 2));
                 let v =
@@ -329,6 +346,21 @@ pub fn padded(tiles: &HashMap<(u8, u32, u32), Vec<f32>>, b: (u8, u32, u32)) -> V
         }
     }
     out
+}
+
+/// The height at `(fx, fy)` (in tiles of zoom `z`) from a stored tile up to two zooms finer or
+/// coarser than `z` holding it, bilinearly at that point (clamped inside the tile): finer first.
+fn other_zoom(tiles: &HashMap<(u8, u32, u32), Vec<f32>>, z: u8, fx: f64, fy: f64) -> Option<f32> {
+    if !(0.0..(1u64 << z) as f64).contains(&fy) {
+        return None;
+    }
+    [1i32, 2, -1, -2].iter().filter(|&&d| (0..=MAX_Z as i32).contains(&(z as i32 + d))).find_map(|&d| {
+        let s = 2f64.powi(d);
+        let (gx, gy) = (fx * s, fy * s);
+        let (tx, ty) = (gx.floor(), gy.floor());
+        let t = tiles.get(&((z as i32 + d) as u8, tx as u32, ty as u32))?;
+        Some(roadcore::grid::bilinear(t, 256, (gx - tx) * 256.0 - 0.5, (gy - ty) * 256.0 - 0.5))
+    })
 }
 
 /// A fine tile's heights finished: where the sampler has none, or only the base's (NaN), the base
@@ -385,30 +417,57 @@ pub fn named_under(m: &BTreeMap<String, String>, z: u8, x: u32, y: u32) -> Vec<S
         .collect()
 }
 
-/// The base tiles under z8 tile `t` in its z6 tile's hi pack `pack` (each place's finest stored
-/// zoom), as stored, and the ring of one tile around them where the pack has it (a fine tile at
-/// `t`'s edge reads the base across it: `padded`).
-pub fn base_tiles(pack: &std::path::Path, t: (u32, u32)) -> Result<HashMap<(u8, u32, u32), Vec<u8>>> {
-    let f = store::range::PlainFile::open(pack).with_context(|| format!("open {}", pack.display()))?;
-    let idx = store::pack::PackIndex::read_from(&f)?;
+/// The z6 tiles whose hi packs hold z8 tile `t`'s base tiles and their ring (`base_tiles`): its
+/// own first, then those its ring crosses into (at a z6 tile's edge or corner; across the
+/// antimeridian too).
+pub fn ring_packs(t: (u32, u32)) -> Vec<(u32, u32)> {
+    let n = 1i64 << TARGET_Z;
+    let k = TARGET_Z - 6;
+    let mut out = vec![(t.0 >> k, t.1 >> k)];
+    for dy in -1i64..=1 {
+        for dx in -1i64..=1 {
+            let y = t.1 as i64 + dy;
+            if !(0..n).contains(&y) {
+                continue;
+            }
+            let p = (((t.0 as i64 + dx).rem_euclid(n) as u32) >> k, (y as u32) >> k);
+            if !out.contains(&p) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+/// The base tiles under z8 tile `t` (each place's finest stored zoom) in the hi packs `packs` (its
+/// z6 tile's and its neighbours': `ring_packs`), as stored, and the ring of one tile around them
+/// where those packs have it (a fine tile at `t`'s edge reads the base across it: `padded`).
+pub fn base_tiles(packs: &[std::path::PathBuf], t: (u32, u32)) -> Result<HashMap<(u8, u32, u32), Vec<u8>>> {
     let mut out = HashMap::new();
-    for e in &idx.entries {
-        let (z, x, y) = e.zxy();
-        if z >= TARGET_Z
-            && z == crate::terrain_pack::max_zoom_at(crate::terrain_pack::tile_lat(z, y))
-            && near(z, x, t.0)
-            && near(z, y, t.1)
-        {
-            out.insert((z, x, y), idx.read_blob(&f, e)?);
+    for pack in packs {
+        let f = store::range::PlainFile::open(pack).with_context(|| format!("open {}", pack.display()))?;
+        let idx = store::pack::PackIndex::read_from(&f)?;
+        for e in &idx.entries {
+            let (z, x, y) = e.zxy();
+            if z >= TARGET_Z
+                && z == crate::terrain_pack::max_zoom_at(crate::terrain_pack::tile_lat(z, y))
+                && near(z, x, t.0)
+                && near(z, y, t.1)
+            {
+                out.insert((z, x, y), idx.read_blob(&f, e)?);
+            }
         }
     }
     Ok(out)
 }
 
-/// Whether column (or row) `v` of zoom `z` lies under z8 tile column `t`, or one tile past it.
+/// Whether column (or row) `v` of zoom `z` lies under z8 tile column `t`, or one tile past it
+/// (columns across the antimeridian too).
 fn near(z: u8, v: u32, t: u32) -> bool {
     let s = z - TARGET_Z;
-    (v as i64 + 1) >> s >= t as i64 && (v as i64 - 1) >> s <= t as i64
+    let n = 1i64 << TARGET_Z;
+    let c = |v: i64| (v >> s).rem_euclid(n);
+    [c(v as i64 - 1), c(v as i64), c(v as i64 + 1)].contains(&(t as i64))
 }
 
 /// Whether tile `z/x/y` lies under z8 tile `t`.
@@ -727,6 +786,38 @@ mod tests {
         assert!(!near(12, 74 * 16 - 2, t.0) && !near(12, 75 * 16 + 1, t.0));
     }
 
+    #[test]
+    fn the_base_meets_a_neighbour_of_another_zoom_as_the_server_and_the_map_make_it() {
+        // Where the base's finest zoom changes with latitude (z12 to 67°, z11 past it): z12 tile
+        // 12/x/y, its north neighbour stored at z11 only. Heights rising 1 m a z12 pixel northward.
+        let rise = |z: u8, y: u32| -> Vec<f32> {
+            let k = (1u32 << (12 - z)) as f32;
+            (0..65536).map(|i| -((y as f32 * 256.0 + (i / 256) as f32 + 0.5) * k) + 5000.0).collect()
+        };
+        let (x, y) = (1000u32, 502u32);
+        let tiles = HashMap::from([((12, x, y), rise(12, y)), ((11, x / 2, (y - 1) / 2), rise(11, (y - 1) / 2))]);
+        let p = padded(&tiles, (12, x, y));
+        // The padding's north row: the z11 tile at those pixel centres, bilinearly (a plane: exact),
+        // as the server makes 12/x/(y-1) from it (roadcore::grid::upsampled), clamped inside it.
+        let up = roadcore::grid::upsampled(&tiles[&(11, x / 2, (y - 1) / 2)], 1, x, y - 1);
+        for i in 1..PADDED - 1 {
+            assert!((p[i] - up[255 * 256 + i - 1]).abs() < 1e-3, "column {i}");
+        }
+        // (Its last pixel centres half a z12 pixel short of the padding's: the edge's, clamped.)
+        assert!((p[1] - p[PADDED + 1] - 1.5).abs() < 1e-3);
+        // The other way: a z11 tile's padding from a z12 neighbour, at the z11 pixel's centre (between
+        // four z12 pixels: their mean).
+        let tiles = HashMap::from([((11, 500, 250), rise(11, 250)), ((12, 1000, 502), rise(12, 502))]);
+        let p = padded(&tiles, (11, 500, 250));
+        let fine = &tiles[&(12, 1000, 502)];
+        let want = (fine[0] + fine[1] + fine[256] + fine[257]) / 4.0;
+        assert!((p[(PADDED - 1) * PADDED + 1] - want).abs() < 1e-3);
+        // Across the antimeridian, at a z6 tile's corner.
+        assert_eq!(ring_packs((255, 92)), vec![(63, 23), (63, 22), (0, 22), (0, 23)]);
+        assert_eq!(ring_packs((10, 0)), vec![(2, 0)], "no row past the pole");
+        assert!(near(12, 0, 255) && near(12, 4095, 0));
+    }
+
     /// The fixture's roads dataset's tiles, all 100 m (its z10 pyramid, read as if finer).
     struct Flat(Vec<u8>);
     impl crate::fetch::Fetch for Flat {
@@ -739,7 +830,7 @@ mod tests {
     }
 
     #[test]
-    fn a_z8_tile_is_made_from_its_hi_pack_as_stored_and_its_ring_read_only() {
+    fn a_z8_tile_is_made_from_its_hi_pack_as_stored_and_its_ring_read_only_from_its_neighbours_too() {
         let d = tempfile::tempdir().unwrap();
         let mut m = std::collections::BTreeMap::new();
         crate::inputs::elevation::accept_fixture(d.path(), &mut m);
@@ -754,33 +845,32 @@ mod tests {
         let root = d.path().join("nas");
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
-        // Z6 tile 6/18/23's hi pack: z8 tile 8/74/92's base tiles (one at its east edge, one inside),
-        // one a tile past its edge (its ring) and one further, each z12 at 50 m; and their z9.
-        let t = (74u32, 92u32);
+        // Z8 tile 8/75/92 at its z6 tile's east edge: in 6/18/23's hi pack its base tiles (one at its
+        // east edge, one inside) and their z9; in 6/19/23's, east of it, one a tile past its edge
+        // (its ring) and one further; each z12 at 50 m.
+        let t = (75u32, 92u32);
         let (edge, inside, ring, far) =
-            ((12u8, 1199u32, 1477u32), (12, 1195, 1477), (12, 1200, 1477), (12, 1202, 1477));
+            ((12u8, 1215u32, 1477u32), (12, 1210, 1477), (12, 1216, 1477), (12, 1218, 1477));
         let png = |m: f32| roadcore::grid::encode_terrain_png(&vec![m; 65536], 256, 256).unwrap();
-        let mut tiles: Vec<(u8, u32, u32, Vec<u8>, u32)> = [(9u8, 149u32, 184u32), edge, inside, ring, far]
-            .iter()
-            .map(|&(z, x, y)| {
-                let b = png(50.0);
-                let n = b.len() as u32;
-                (z, x, y, b, n)
-            })
-            .collect();
-        tiles.sort_by_key(|t| (t.0, t.1, t.2));
-        let (hi, _) = crate::layers::write_pack(
-            &mut out,
-            "terrain",
-            "terrarium-png",
-            false,
-            "hi",
-            (6, 18, 23),
-            &mut tiles.into_iter(),
-        )
-        .unwrap()
-        .unwrap();
-        let base = base_tiles(&out.path(out.get(&hi).unwrap()), t).unwrap();
+        let mut hi = |p: (u32, u32), ts: &[(u8, u32, u32)]| {
+            let mut tiles: Vec<(u8, u32, u32, Vec<u8>, u32)> = ts
+                .iter()
+                .map(|&(z, x, y)| {
+                    let b = png(50.0);
+                    let n = b.len() as u32;
+                    (z, x, y, b, n)
+                })
+                .collect();
+            tiles.sort_by_key(|t| (t.0, t.1, t.2));
+            let it = &mut tiles.into_iter();
+            let (l, _) = crate::layers::write_pack(&mut out, "terrain", "terrarium-png", false, "hi", (6, p.0, p.1), it)
+                .unwrap()
+                .unwrap();
+            out.path(out.get(&l).unwrap())
+        };
+        assert_eq!(ring_packs(t), vec![(18, 23), (18, 22), (19, 22), (19, 23)], "its own z6 tile's, then those north and east");
+        let packs = [hi((18, 23), &[(9u8, 151u32, 184u32), edge, inside]), hi((19, 23), &[ring, far])];
+        let base = base_tiles(&packs, t).unwrap();
         let mut got: Vec<_> = base.keys().copied().collect();
         got.sort();
         assert_eq!(got, vec![inside, edge, ring], "its own base tiles and its ring, not its z9 nor past the ring");

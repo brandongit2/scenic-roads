@@ -45,7 +45,10 @@ index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
   `terrain_fine::zoom_of`), and its terrain's `maxzoom` is the finest of those. The app's meta
   passes `fine_zoom` on as `terrainAreas` (`{"zoom": 10, "tiles": {"x/y": z}}`), and the map takes
   its terrain, hill-shading and slope tiles to that zoom there (our MapLibre's
-  `scenic:zoom-by-area`), z12 elsewhere. **Offline:** no Mac mirrors the fine packs and downloads
+  `scenic:zoom-by-area`), z12 elsewhere. The meta's `packs.terrain.fine` gives each fine pack's
+  version by z10 tile (`"10/x/y"`), as `lo` and `hi` do theirs, so a tile past z12 there carries
+  its fine pack's `?v=` and a new catalog asks again only for the tiles of the fine packs it
+  changed. **Offline:** no Mac mirrors the fine packs and downloads
   leave them out (for now: an optional download is planned), so away from the NAS a fine tile that
   can't be read is made from its ancestor in the hi packs (the z12 terrain, overzoomed), as
   anywhere past the data; the server never answers 503 for one. A tile lives in exactly one pack.
