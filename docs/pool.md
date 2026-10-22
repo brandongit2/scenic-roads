@@ -515,22 +515,34 @@ grants since the last forecast departed from that forecast's first hour (`foreca
 times and NAS weights are measured estimates, and the repack, the owner's pauses, battery
 handovers and a NAS slower than its probe are not foreseen.
 
-**The live forecast's finish is early by a median of about 65 %** (task #539's backtest, over 58
-starts of the M4-led days of 18–21 Oct): live, each job is released by the plan's dependencies
-alone (`Input::release` is empty), and work reached the plan slower than its dependencies allow
-(the lead idle half the time on 18 Oct, its slots held at 2 by its ramp and the NAS budget).
-The backtest (`backtest_against_the_history`, run by hand on the NAS's `state/` and the leads'
-`agent.log`; without them it prints that it skipped and checks nothing) forecasts from each term's
-recorded state the jobs the history shows started until the plan's work first ran out (30 min with
-none of it running, within a day), the lead's clocked jobs (catalogs, backups, inputs) when they
-started, the lead's own held to the probes' limits the logs show (the members' budget switch was
-off; the NAS's load gate never read). With the history's release times (each job ready when the
-history shows what it waits on done: a map tile its z6 tiles, an assembly its pieces, a z6 tile its
-terrain, a chain's step what it reads) and each Mac's slots then, the error left once arrival is
-known: a median 16 % (80th percentile 55 %, mean −23 %, early), asserted ≤ 20 %; 14 % (at most
-34 %) over the 32 starts of 50 jobs or more. Given each job's real start: 2 %. Busy time with 1 job
-at once M4 58 % (history 72 %), M1 27 % (48 %); 4+ jobs M4 15 % (5 %), M1 22 % (12 %): the run
-packs more than the lead did then. The forecast also assumes no load from outside the
+**What holds work back, from the history** (task #563, `forecast::held_back`/`hold_back`): the
+run releases work by the plan's dependencies alone, and alone it finished a median 65 % early, for
+work reached the Macs slower than that (the lead's ramp and slot cap, the NAS budget, the plan
+feeding work gradually: the lead idle half the time on 18 Oct). So before each run every Mac is
+held to what the history shows of it over the last day: its lanes to the jobs it ran at once
+while it ran any (the mean, rounded; a lane running a job kept), each at the share of those
+lanes' time it kept busy while the pool ran planned work (0.1–1). The forecast says these
+(`Forecast::held`) and the **live error** (`forecast::pace`, `Forecast::pace`): the oldest
+forecast of the last 1–6 h (the lead keeps their runs' progress, `Forecast::curve`, a point each
+10 min) against the planned targets the history shows done since, the build page beside the
+finish ("live error: the forecast of 14:05 did the 40 targets done since in 1 h, not 3 h"). It is
+said, not applied: as a stretch it made the finish worse (the backtest: 74 % from 65 %).
+
+The backtest (`backtest_against_the_history`, run by hand on a copy of the NAS's `state/coord`
+and the leads' `agent.log`; without them it prints that it skipped and checks nothing) forecasts
+from each term's recorded state since 18 Oct, whichever Mac led (`lead_at`: the Mac whose own
+jobs come next; a Mac renamed, one), the jobs the history shows started until the plan's work
+first ran out (30 min with none of it running, within a day), each released once the run has
+done what it waits on (the plan's dependencies, those the history shows started before it), the
+lead's clocked jobs when they started, the lead's own held to the probes' limits the logs show.
+Over the 58 starts that ran out (18–21 Oct, M4- and M1-led), the finish's error, median / 80th
+percentile / mean: **as live, held back, 34 / 64 / −21 %**; nothing held back 65 / 79 / −51 %;
+with the history's release times instead (each job ready when the history shows what it waits
+on done) 21 / 48 / −11 %; asserted: as live at most 40 % and at most two thirds of nothing held
+back. The live error said then was off by 52 % (median). The Mac-mini-led days (from 21 Oct
+23:00) have no finish yet (its work never ran out); their progress over the next 6 h (the time
+the run took to do what the history did, against 6 h): median 8 % over 9 starts (all leads: 34 %
+over 66). The forecast also assumes no load from outside the
 pool (each ask's `cores_free` taken as its cores): while the owner uses a Mac it's optimistic. The
 lead logs a departure only when a Mac's jobs of a step differ from the forecast's by 2 or more and
 by more than half, each Mac and step at most once an hour.

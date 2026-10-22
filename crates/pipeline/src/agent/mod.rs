@@ -1457,6 +1457,9 @@ pub struct Agent {
     /// When each (Mac, step) last had its grants' departure from the forecast logged
     /// (`forecast_now`): once an hour at most.
     departed: std::cell::RefCell<BTreeMap<(String, String), u64>>,
+    /// The forecasts' runs of the last `forecast::PACE_MAX_S`, one each `forecast::CURVE_S` at most
+    /// (`Forecast::at`, `Forecast::curve`): what the next is held to (`forecast::pace`).
+    curves: std::cell::RefCell<Vec<(u64, Vec<u32>)>>,
     /// The last forecast's record (forecast::Record::bytes), until the lead's pool step writes it
     /// to the NAS (`pool_lead_files`).
     forecast_input: std::cell::RefCell<Option<Vec<u8>>>,
@@ -1846,6 +1849,7 @@ impl Agent {
             last_cond: None,
             forecast: Default::default(),
             departed: Default::default(),
+            curves: Default::default(),
             forecast_input: Default::default(),
             regions_view: Default::default(),
             regions_tried: Default::default(),
@@ -7970,6 +7974,9 @@ impl Agent {
                 });
             }
         }
+        // (Each Mac held to what held it back over the last day: its lanes and their pace.)
+        let held = forecast::held_back(&events, now_s());
+        let machines = forecast::hold_back(machines, &held);
         // What's being built now, and by which.
         let mut running: BTreeMap<(String, String), usize> = BTreeMap::new();
         for k in 0..self.slots.len() {
@@ -8007,6 +8014,8 @@ impl Agent {
             macs: rooms,
             sched: self.coord.as_ref().map(|c| c.sched_state()),
             release: Vec::new(),
+            held,
+            pace: forecast::pace(&self.curves.borrow(), &events, now_s()),
         };
         // (Each step's time a target, for the page to weigh the targets done: the headline.)
         let each_s = steps::TABLE.iter().map(|r| (r.name.to_string(), (per(r.name) * 10.0).round() / 10.0)).collect();
@@ -8052,6 +8061,13 @@ impl Agent {
                     Ok(b) => *self.forecast_input.borrow_mut() = Some(b),
                     Err(e) => eprintln!("agent: the forecast's input as data: {e:#}"),
                 }
+                let f = &done.forecast;
+                let mut curves = self.curves.borrow_mut();
+                curves.retain(|c| c.0 + forecast::PACE_MAX_S > f.at);
+                if !f.curve.is_empty() && curves.last().is_none_or(|c| c.0 + forecast::CURVE_S <= f.at) {
+                    curves.push((f.at, f.curve.clone()));
+                }
+                drop(curves);
                 *self.forecast.borrow_mut() = Some(done.forecast);
             }
             Err(_) => {

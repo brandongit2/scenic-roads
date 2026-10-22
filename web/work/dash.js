@@ -280,6 +280,15 @@ function nextOnMap(m) {
   return { at, regions: regs.filter((r) => r.map_at === at) };
 }
 
+// The live error beside the finish (task #563): how the forecast of an hour or more ago fared
+// against the work done since, and what each Mac was held to over the last day.
+function liveError(fc) {
+  const p = fc.pace;
+  const err = p ? `live error: the forecast of ${clock(p.since)} did the ${p.real_n} targets done since in ${dur(p.run_s)}, not ${dur(p.real_s)} (${p.error > 0 ? "+" : ""}${Math.round(p.error * 100)}%)` : "live error: not yet measured (a forecast an hour old is needed)";
+  const held = Object.entries(fc.held || {}).map(([mac, x]) => `${mac} ${x.lanes} job${x.lanes > 1 ? "s" : ""} at ${Math.round(x.util * 100)}%`);
+  return held.length ? `${err} · held to the last day's pace: ${held.join(", ")}` : err;
+}
+
 // ---- The overview -------------------------------------------------------------------------------
 // How far (the whole build's work, every stage's: sums.js wholeProgress), how long (the same work
 // left), and the numbers that aren't a step's: the regions, the map, the machines.
@@ -291,6 +300,7 @@ function overview(m) {
     h("div", "big", whole ? `${whole.pct}%` : "–", h("small", null, whole ? ` of the whole build's work done (${dur(whole.done_s)} of ${dur(whole.done_s + whole.left_s)}, every stage's)` : "")),
     h("div", "small dim", !fc ? "No forecast yet (the lead makes one with each plan)" : fc.done_at ? `${dur(workLeft)} of work left at the lead's pace; with every machine, done ≈ ${clock(fc.done_at)}, if the Macs keep going (awake, on mains or above 30%, reaching the NAS)` : `No finish to forecast: ${fc.why || "unknown"}`),
     fc?.done_at ? h("div", "small dim", `${Math.round((fc.measured || 0) * 100)}% of that time measured, the rest estimated · forecast ${ago(now, fc.at)}`) : null,
+    fc?.done_at ? h("div", "small dim", liveError(fc)) : null,
   );
   // The stages as a strip, each its colour, the one under way outlined.
   const strip = h("div", "strip", lines.map((l) => {
