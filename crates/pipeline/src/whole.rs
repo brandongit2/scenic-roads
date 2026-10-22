@@ -155,11 +155,8 @@ fn aside_with(
 /// that stays busy (`rename_or_aside`), so a file another SMB session holds open (a Mac killed with
 /// it open: the server may keep its handle for hours) never blocks a write. Readers of a file that
 /// must never read as missing read it through `read_replaced`. The folder's day-old asides are
-/// swept (`sweep_hourly`).
+/// swept once it is written (`sweep_hourly`).
 pub fn write(path: &Path, b: &[u8]) -> Result<()> {
-    if let Some(d) = path.parent() {
-        sweep_hourly(d);
-    }
     let tmp = tmp_name(path);
     let r = (|| -> Result<()> {
         let mut f = std::fs::File::create(&tmp)?;
@@ -171,8 +168,11 @@ pub fn write(path: &Path, b: &[u8]) -> Result<()> {
         rename_or_aside(&tmp, path)?;
         Ok(())
     })();
-    if r.is_err() {
-        std::fs::remove_file(&tmp).ok();
+    match (&r, path.parent()) {
+        (Err(_), _) => drop(std::fs::remove_file(&tmp)),
+        // (Once the file is in place: a slow listing never holds up the write. It can't fail.)
+        (Ok(()), Some(d)) => sweep_hourly(d),
+        (Ok(()), None) => {}
     }
     r.with_context(|| format!("write {}", path.display()))
 }
