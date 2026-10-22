@@ -197,14 +197,15 @@ mod tests {
         let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         std::thread::scope(|s| {
-            let hold = s.spawn(|| {
+            let pace = &pace;
+            let hold = s.spawn(move || {
                 let _p = pace.permit();
                 held_tx.send(()).unwrap();
                 release_rx.recv().unwrap();
             });
             held_rx.recv().unwrap();
             std::fs::write(&f, "3").unwrap();
-            let seen = s.spawn(|| {
+            let seen = s.spawn(move || {
                 let _p = pace.permit();
                 pace.active()
             });
