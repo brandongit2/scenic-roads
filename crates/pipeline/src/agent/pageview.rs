@@ -5,7 +5,8 @@
 //! A thread of the agent (`spawn`) reads them only while a page has asked in the last
 //! `ASKED_FOR_S`, every `EVERY` at most: the lead's status (`state/status.json`), its
 //! coordinator's view (`state/coord/term/<E>/view.json`), its forecast's input
-//! (`state/build/term/<E>/forecast-input.json`, read again only when its time changes), the
+//! (`state/build/term/<E>/forecast-input.json`, read again only when its time changes), its
+//! regions for the page (`state/build/term/<E>/regions.json`, the same), the
 //! pause (`state/build/pause.json`), each member's heartbeat (`state/pool/members/<id>.json`, the
 //! members as the pool's driver knows them: its host) and own status
 //! (`state/helpers/<host>.json`), and what the members' history files of the two newest days
@@ -163,6 +164,8 @@ struct State {
     snap: Option<Snap>,
     /// The forecast's input as last read, by its file's time.
     record: Option<(SystemTime, Arc<Record<'static>>)>,
+    /// The lead's regions for the page (crate::agent::regionsview) as last read, by its file's time.
+    regions: Option<(SystemTime, Arc<Value>)>,
     /// Each history file read up to (bytes: the end of its last whole line), and which file it was.
     offsets: BTreeMap<String, (u64, FileId)>,
     /// The events taken in (writer, time, number, kind): one read again (its file made again) isn't
@@ -245,9 +248,9 @@ impl PageView {
     /// snapshot (under it, briefly).
     fn refresh(&self, src: &dyn Source, now: u64) {
         let inp = self.inputs.lock().unwrap().clone();
-        let (offsets, had) = {
+        let (offsets, had, had_regions) = {
             let st = self.state.lock().unwrap();
-            (st.offsets.clone(), st.record.clone())
+            (st.offsets.clone(), st.record.clone(), st.regions.clone())
         };
         let json = |p: &str| src.read(p).and_then(|b| serde_json::from_slice::<Value>(&b).ok());
         let status = json("state/status.json").unwrap_or(Value::Null);
@@ -288,6 +291,15 @@ impl PageView {
             None => None,
         };
         self.forecast_run(record.as_ref(), now, &inp.own);
+        // The regions, again only when their file changed.
+        let rpath = super::pool::regions_path(inp.term);
+        let regions = match src.mtime(&rpath) {
+            Some(t) if had_regions.as_ref().is_none_or(|r| r.0 != t) => {
+                json(&rpath).map(|v| (t, Arc::new(v))).or(had_regions)
+            }
+            Some(_) => had_regions,
+            None => None,
+        };
         // The history: what each member's files of the two newest days gained.
         let mut new: Vec<(u64, String, u64, Event)> = Vec::new();
         let mut read_to: BTreeMap<String, (u64, FileId)> = BTreeMap::new();
@@ -335,6 +347,7 @@ impl PageView {
         // (Days gone from the two: their offsets forgotten.)
         st.offsets = read_to;
         st.record = record;
+        st.regions = regions;
         if st.history.is_none() {
             st.epoch = format!("view {} {}", std::process::id(), now);
         }
@@ -367,6 +380,13 @@ impl PageView {
         let st = self.state.lock().unwrap();
         let s = st.snap.as_ref()?;
         Some(answer(s, forecast.as_ref(), st.history.as_ref(), &st.epoch, &app, now_s()))
+    }
+
+    /// `/work/regions`' answer (crate::agent::regionsview): the lead's as last read; None before
+    /// they're read (or while the lead hasn't written them). A page asked.
+    pub fn regions(&self) -> Option<Arc<Value>> {
+        self.touch();
+        self.state.lock().unwrap().regions.as_ref().map(|r| r.1.clone())
     }
 
     /// `/work/history`'s answer: the events after number `since` (this Mac's numbering, `epoch`),
@@ -628,6 +648,35 @@ mod tests {
             a["macs"],
             serde_json::json!([{ "host": "m1", "urls": ["http://100.1.1.1:8090"], "https": "https://m1.t.ts.net/" }])
         );
+    }
+
+    #[test]
+    fn the_regions_are_the_leads_read_again_only_when_their_file_changes() {
+        let d = tempfile::tempdir().unwrap();
+        let now = now_s();
+        fixture(d.path(), now);
+        let src = Dir(d.path().into(), AtomicUsize::new(0));
+        let pv = PageView::default();
+        pv.set_inputs(inputs(""));
+        pv.touch_at(now);
+        pv.tick(&src, now);
+        assert!(pv.regions().is_none(), "none written yet");
+        let path = d.path().join(super::super::pool::regions_path(7));
+        put(d.path(), &super::super::pool::regions_path(7), br#"{"catalog":3,"regions":[{"id":"a"}]}"#);
+        pv.state.lock().unwrap().last = None;
+        pv.tick(&src, now);
+        assert_eq!(pv.regions().unwrap()["catalog"], 3);
+        // (The same time, other bytes: not read again; a new time: read.)
+        let t = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::fs::write(&path, br#"{"catalog":4,"regions":[]}"#).unwrap();
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(t).unwrap();
+        pv.state.lock().unwrap().last = None;
+        pv.tick(&src, now);
+        assert_eq!(pv.regions().unwrap()["catalog"], 3);
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(t + Duration::from_secs(5)).unwrap();
+        pv.state.lock().unwrap().last = None;
+        pv.tick(&src, now);
+        assert_eq!(pv.regions().unwrap()["catalog"], 4);
     }
 
     #[test]

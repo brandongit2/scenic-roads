@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod answers;
+pub mod areafiles;
 pub mod areaflags;
 pub mod basepack;
 pub mod basepart;

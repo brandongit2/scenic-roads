@@ -177,8 +177,9 @@ same tab; an alert links to the tab that says more.
   job by its slot (name, parts, progress, running since, memory; frozen or stuck) with that slot's
   next work; why nothing more fits; facts as chips; its day as a spark line. Pages one card.
 - **The pool:** `pool.js`, under the machines (the Machines tab).
-- **Regions:** a row per region: name, state, when it's done and all on the map, its tiles
-  built (on the map as they come), what's left by step.
+- **Regions:** a row per region: its folders and name, state, when it's done and all on the map,
+  its download's size, its tiles built (on the map as they come), what's left by step; found by
+  name, id or folder (`/work/regions`, docs/pool.md §10, Regions).
 - **Activity:** the hours, and a sentence per event.
 - **Details:** tables, unfolded, among them the steps table itself.
 - **This device:** helping with this tab (index.html; not in `?view`).

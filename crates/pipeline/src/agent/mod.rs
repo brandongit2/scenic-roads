@@ -39,6 +39,7 @@ pub mod placement;
 pub mod pool;
 pub mod publish;
 pub mod recipes;
+pub mod regionsview;
 pub mod rekey;
 pub mod resume;
 pub mod room;
@@ -1459,6 +1460,10 @@ pub struct Agent {
     /// The last forecast's record (forecast::Record::bytes), until the lead's pool step writes it
     /// to the NAS (`pool_lead_files`).
     forecast_input: std::cell::RefCell<Option<Vec<u8>>>,
+    /// The build page's regions as last made (crate::agent::regionsview), by what they were made of;
+    /// and the last catalogue's sizes, by its number.
+    regions_view: std::cell::RefCell<Option<(RegionsKey, std::sync::Arc<serde_json::Value>)>>,
+    region_bytes: std::cell::RefCell<Option<(u64, BTreeMap<String, u64>)>>,
     /// The forecast being run off the loop (its own thread, `start_forecast`): its answer, its
     /// record's bytes and how long it took, taken in once it's done (`take_forecast`).
     forecasting: std::cell::RefCell<Option<std::thread::JoinHandle<Forecasted>>>,
@@ -1547,6 +1552,8 @@ struct Gate {
 /// The caches' sizes as last counted (room::sizes: what room-making can free, what a clear would),
 /// and when that count began.
 type CacheCount = (Option<Instant>, Option<room::Sizes>);
+/// What the build page's regions were made of: the regions' accepted version and the catalogue.
+type RegionsKey = (String, Option<u64>);
 
 /// The target of the idle-time whole catalog's job (`--whole`; its key the last catalog's).
 const WHOLE: &str = "whole";
@@ -1837,6 +1844,8 @@ impl Agent {
             forecast: Default::default(),
             departed: Default::default(),
             forecast_input: Default::default(),
+            regions_view: Default::default(),
+            region_bytes: Default::default(),
             forecasting: Default::default(),
             publish_line: Default::default(),
             timetables: Default::default(),
@@ -6841,9 +6850,11 @@ impl Agent {
         }
         // (The regions from the same records as the coverage.)
         let (recipes, unread): (Vec<recipes::Recipe>, Vec<(String, String)>) =
-            match crate::inputs::regions::read::source(root, &manifest)
-                .and_then(|a| crate::inputs::regions::read::recipes(&a))
-            {
+            match crate::inputs::regions::read::source(root, &manifest).and_then(|a| {
+                let r = crate::inputs::regions::read::recipes(&a)?;
+                self.regions_view(root, &a, &r);
+                Ok(r)
+            }) {
                 Ok(r) => (r, Vec::new()),
                 Err(e) => (Vec::new(), vec![("regions".into(), format!("{e:#}"))]),
             };
@@ -8289,6 +8300,40 @@ impl Agent {
         // (Not kept when the outline files couldn't be listed: made again next time.)
         *self.coverage.borrow_mut() = key.map(|k| (k, c.clone()));
         Ok(c)
+    }
+
+    /// The build page's regions (crate::agent::regionsview), made again when the regions' accepted
+    /// version `a` or the served catalogue changed: the regions' drawn files read then, the
+    /// catalogue's sizes once per catalogue. Given to this Mac's coordinator (the page out of the
+    /// pool); the lead's pool step writes them for the others' (`pool_lead_files`).
+    fn regions_view(&self, root: &Path, a: &crate::inputs::Accepted, regions: &[recipes::Recipe]) {
+        let dir = root.join("catalog");
+        let n = store::catalog::list(&dir).ok().and_then(|ns| ns.into_iter().next());
+        let key: RegionsKey = (a.version.clone(), n);
+        if self.regions_view.borrow().as_ref().is_some_and(|(k, _)| *k == key) {
+            return;
+        }
+        if let Some(n) = n.filter(|n| self.region_bytes.borrow().as_ref().is_none_or(|(m, _)| m != n)) {
+            match store::catalog::read_n(&dir, n) {
+                Ok(cat) => *self.region_bytes.borrow_mut() = Some((n, regionsview::bytes_of(&cat))),
+                Err(e) => eprintln!("agent: the regions' sizes from catalogue {n}: {e:#}"),
+            }
+        }
+        let drawn = match crate::inputs::regions::read::drawn(root, a, regions) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("agent: the regions' outlines for the build page: {e:#}");
+                return;
+            }
+        };
+        let bytes = self.region_bytes.borrow().as_ref().filter(|(m, _)| Some(*m) == n).map(|(_, b)| b.clone());
+        let tree = crate::inputs::regions::read::tree(&a.index);
+        let v =
+            std::sync::Arc::new(regionsview::make(&a.version, n, regions, &drawn, &tree, &bytes.unwrap_or_default()));
+        if let Some(c) = &self.coord {
+            c.set_regions(v.clone());
+        }
+        *self.regions_view.borrow_mut() = Some((key, v));
     }
 
     /// The regions the last catalog in `dir` has, by id: whether as its recipe is now (same outline
@@ -9851,6 +9896,19 @@ impl Agent {
                 Err(e) => eprintln!("agent: the coordinator's view of term {term}: {e:#}"),
             }
         }
+        // The build page's regions, each time they're made again (and in each new term).
+        if let Some((key, v)) = self.regions_view.borrow().as_ref() {
+            if run.regions_written.as_ref() != Some(&(term, key.clone())) {
+                match run
+                    .side
+                    .nas()
+                    .write_whole(&pool::regions_path(term), &serde_json::to_vec(&**v).unwrap_or_default())
+                {
+                    Ok(()) => run.regions_written = Some((term, key.clone())),
+                    Err(e) => eprintln!("agent: the build page's regions of term {term}: {e:#}"),
+                }
+            }
+        }
         // The forecast's input, each time the forecast's made (at most each minute).
         if let Some(b) = self.forecast_input.borrow_mut().take() {
             if let Err(e) = run.side.nas().write_whole(&pool::forecast_input_path(term), &b) {
@@ -11359,6 +11417,41 @@ mod tests {
             helper: false,
         })
         .unwrap()
+    }
+
+    #[test]
+    fn the_build_pages_regions_are_made_again_with_a_new_catalogue_and_given_to_the_page() {
+        let (d, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = d.path();
+        let recipes = vec![recipes::Recipe { id: "a".into(), name: "Alpha".into(), outline: vec!["osm:5".into()] }];
+        let mut m = BTreeMap::new();
+        crate::inputs::regions::accept_fixture(root, root, &recipes, &mut m);
+        let a = crate::inputs::open(root, &m, crate::inputs::regions::UNIT).unwrap().unwrap();
+        let ag = agent(root, &home.path().join("home"));
+        // No catalogue yet: its name and crumbs, no size.
+        ag.regions_view(root, &a, &recipes);
+        let v = ag.regions_view.borrow().as_ref().unwrap().1.clone();
+        assert_eq!(
+            (v["catalog"].clone(), v["regions"][0]["crumbs"].clone()),
+            (serde_json::Value::Null, serde_json::json!(["Alpha"]))
+        );
+        assert_eq!(v["regions"][0]["bytes"], serde_json::Value::Null);
+        // A catalogue recording it over z6 tile 6/40/31, whose base pack weighs 777 bytes.
+        let mut c = store::catalog::Catalog::new(1);
+        c.base.insert("6/40/31".into(), "base/6-40-31".into());
+        let f = store::catalog::FileRef {
+            file: "base/6-40-31.1111111111111111.base".into(),
+            size: 777,
+            fmt: 0,
+            extra: BTreeMap::new(),
+        };
+        c.files.insert("base/6-40-31".into(), f);
+        c.coverage = serde_json::json!({ "regions": [{ "id": "a", "name": "Alpha", "outline": ["osm:5"],
+            "shapes": { "osm:5": [[[[50.0, 0.5], [50.1, 0.5], [50.1, 0.6], [50.0, 0.6], [50.0, 0.5]]]] } }] });
+        store::catalog::write(&root.join("catalog"), &c).unwrap();
+        ag.regions_view(root, &a, &recipes);
+        let v = ag.regions_view.borrow().as_ref().unwrap().1.clone();
+        assert_eq!((v["catalog"].as_u64(), v["regions"][0]["bytes"].as_u64()), (Some(1), Some(777)));
     }
 
     #[test]

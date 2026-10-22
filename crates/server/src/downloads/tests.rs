@@ -1,4 +1,5 @@
 use super::*;
+use pipeline::areafiles::{clip, lat_y, lon_x, ring_area, LISTS_KM};
 use store::catalog::{FileRef, Layer};
 use store::naming::{write_atomic, Source};
 use store::pmtiles::Compression;

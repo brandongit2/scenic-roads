@@ -662,7 +662,7 @@ impl Places {
             } else {
                 lon
             };
-            if lon < w || lon > e || lat < s || lat > n || !crate::downloads::inside(ring, [lon, lat]) {
+            if lon < w || lon > e || lat < s || lat > n || !pipeline::areafiles::inside(ring, [lon, lat]) {
                 continue;
             }
             let r = if p.kind == 0 { 1000.0 } else { 0.0 }

@@ -327,6 +327,9 @@ pub struct Shared {
     pub pageview: Option<Arc<crate::agent::pageview::PageView>>,
     /// This Mac's live store (crate::agent::live): `/work/live`. None: not given one (503).
     pub live: Option<Arc<crate::agent::live::Store>>,
+    /// The build page's regions as this Mac's agent last made them (crate::agent::regionsview):
+    /// `/work/regions` out of the pool. None: not made yet (503).
+    pub regions: Option<Arc<serde_json::Value>>,
     /// A viewer alone (`Coordinator::viewer`): the page and its views, nothing else (but this
     /// Mac's own page's asks, passed to its agent).
     pub viewer: bool,
@@ -1158,6 +1161,7 @@ impl Coordinator {
             brokers: None,
             pageview: None,
             live: None,
+            regions: None,
             viewer,
             forward: None,
             page_acts: Vec::new(),
@@ -1968,6 +1972,11 @@ impl Coordinator {
         let mut s = self.shared.lock().unwrap();
         s.moving = why;
         s.told = Some(as_of.min(wall_now()));
+    }
+
+    /// The build page's regions as this Mac's agent made them (`Shared::regions`).
+    pub fn set_regions(&self, v: Arc<serde_json::Value>) {
+        self.shared.lock().unwrap().regions = Some(v);
     }
 
     /// The app the newer readers' switch was recorded on (`Shared::min_app`; None: none recorded).
@@ -3639,6 +3648,16 @@ fn route(
             let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
             Ok(live.map_or_else(not_ready, |l| (200, l.answer(&a, unix))))
         }
+        "/work/regions" => {
+            // The build page's regions (crate::agent::regionsview): in the pool, the lead's as this
+            // Mac read them; out of it, this Mac's agent's.
+            let pv = shared.lock().unwrap().pageview.clone().filter(|p| p.active());
+            let v = match pv {
+                Some(p) => p.regions(),
+                None => shared.lock().unwrap().regions.clone(),
+            };
+            Ok(v.map_or_else(not_ready, |v| (200, (*v).clone())))
+        }
         "/work/steps" => {
             // The steps table (crate::agent::steps, docs/pipeline.md): every step's and task's row
             // and the stages, for the page's words and colours (read once a load).
@@ -3818,6 +3837,9 @@ mod http {
         ("pool.js", "text/javascript", include_bytes!("../../../../web/work/pool.js")),
         ("sums.js", "text/javascript", include_bytes!("../../../../web/work/sums.js")),
         ("dash.css", "text/css; charset=utf-8", include_bytes!("../../../../web/work/dash.css")),
+        // The world's countries' outlines for the overview's map (Natural Earth 1:50m, public domain): rings
+        // in Web Mercator, the world 0–1000 each way.
+        ("countries.json", "application/json", include_bytes!("../../../../web/work/countries.json")),
         ("sw.js", "text/javascript", include_bytes!("../../../../web/work/sw.js")),
         (
             "manifest.webmanifest",
@@ -3996,6 +4018,7 @@ mod http {
             .route("/work/history", any(json))
             .route("/work/steps", any(json))
             .route("/work/live", any(json))
+            .route("/work/regions", any(json))
             .route("/work/timings", any(json))
             .route("/work/floors", any(json))
             .route("/work/in/{lease}/{*path}", get(input))
@@ -4214,7 +4237,10 @@ mod http {
         let is_page = req.method() == Method::GET
             && (path == "/work" || path.strip_prefix("/work/").is_some_and(|p| PAGE.iter().any(|(n, _, _)| *n == p)));
         let is_view = req.method() == Method::POST
-            && matches!(path.as_str(), "/work/swarm" | "/work/history" | "/work/steps" | "/work/live");
+            && matches!(
+                path.as_str(),
+                "/work/swarm" | "/work/history" | "/work/steps" | "/work/live" | "/work/regions"
+            );
         if is_page || is_view {
             return next.run(req).await;
         }
@@ -8729,6 +8755,21 @@ mod tests {
         let r = post(Some(page));
         assert_eq!((status(&r), header_of(&r, "access-control-allow-origin")), (200, Some(page)), "{r}");
         assert_eq!(status(&post(Some("https://evil.example"))), 403);
+    }
+
+    /// `/work/regions` (docs/pool.md §10, Regions) out of the pool, with no key: 503 until this
+    /// Mac's agent made them, then theirs.
+    #[test]
+    fn the_regions_answer_the_page_once_the_agent_made_them() {
+        let (_d, c, w) = start();
+        let addr = w.urls()[0].trim_start_matches("http://").to_string();
+        let post = || raw(&addr, "POST", "/work/regions", &[("Content-Type", "application/json")], b"{}");
+        assert_eq!(status(&post()), 503);
+        c.set_regions(Arc::new(serde_json::json!({ "catalog": 4, "regions": [{ "id": "a" }] })));
+        let r = post();
+        assert_eq!(status(&r), 200, "{r}");
+        let a: serde_json::Value = serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!((a["catalog"].as_u64(), a["regions"][0]["id"].as_str()), (Some(4), Some("a")));
     }
 
     /// Tasks brokered by every member (docs/pool.md §8): a page from another member's address takes

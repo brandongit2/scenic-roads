@@ -694,9 +694,12 @@ function regionsList(m, rerender) {
   return h("div", null, bar, host);
 }
 
+// A download's size in words: "640 MB", "9.0 GB".
+const size = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1e6))} MB`);
+
 function regionRows(m, rerender) {
   const fc = m.fc, built = m.a.built || {};
-  const regs = (fc?.regions || []).map((r) => ({ ...r, name: m.regionName[r.id] || r.id, built: built[r.id] }));
+  const regs = (fc?.regions || []).map((r) => ({ ...r, name: m.regionName[r.id] || r.id, built: built[r.id], drawn: drawn.byId[r.id] }));
   if (!regs.length) {
     // (An older lead: its roads' tiles built alone.)
     const ids = Object.keys(built);
@@ -705,7 +708,8 @@ function regionRows(m, rerender) {
   }
   const q = ui.filter.trim().toLowerCase();
   const leftOf = (r) => Object.values(r.left).reduce((t, k) => t + k, 0);
-  let list = regs.filter((r) => !q || r.name.toLowerCase().includes(q) || r.id.includes(q));
+  // (Found by its folders' names too: "united states" finds every state.)
+  let list = regs.filter((r) => !q || r.id.includes(q) || (r.drawn?.crumbs || [r.name]).some((c) => c.toLowerCase().includes(q)));
   const mapOrder = (r) => (r.on_map === true && !leftOf(r) ? 2e12 : r.map_at || 1e12) + r.rank;
   if (ui.order === "map") list.sort((x, y) => mapOrder(x) - mapOrder(y));
   else if (ui.order === "name") list.sort((x, y) => x.name.localeCompare(y.name));
@@ -736,8 +740,11 @@ function regionRows(m, rerender) {
       const seg = (k, c) => { const i = h("i"); Object.assign(i.style, { width: `${(k / tot) * 100}%`, background: c }); return i; };
       stack.append(seg(r.built.built, "var(--ok)"), seg(r.left.unit || 0, "var(--spark)"));
     }
+    // (Where it sits in the regions' tree, and what downloading it copies of the catalogue's files.)
+    const above = r.drawn?.crumbs?.slice(0, -1).join(" › ");
+    const dl = r.drawn?.bytes != null ? `${size(r.drawn.bytes)} to download` : "";
     out.append(h("div", { class: `rg ${!lft && r.on_map === true ? "done" : ""}` },
-      h("span", "nm", r.name, " ", chip(state, cls)), h("span", "when", when),
+      h("span", "nm", above ? h("span", "dim", `${above} › `) : null, r.name, " ", chip(state, cls)), h("span", "when", [when, dl].filter(Boolean).join(" · ")),
       h("div", "left", tot ? stack : null, [tot ? (r.built.built < tot ? `${r.built.built} of ${tot} tiles, on the map as they come` : `${tot} tiles built`) : "", leftWords ? `left: ${leftWords}` : ""].filter(Boolean).join(" · "))));
   }
   const more = !q && total > list.length ? h("button", { class: "quiet more", onclick: () => { ui.all = true; rerender(); } }, `Show all ${total}`) : null;
@@ -909,6 +916,10 @@ function details(m) {
 // ---- The page -----------------------------------------------------------------------------------
 let ctx = null;
 let last = null;
+// The regions' outlines, folders and sizes (`/work/regions`: crate::agent::regionsview), by id; the
+// catalogue they were sized by, and when they were asked.
+const drawn = { byId: {}, catalog: undefined, at: 0 };
+const REGIONS_EVERY_MS = 600000;
 let events = [];
 // What this browser last showed: its last event's time (unix s; null: a first visit). By time, not
 // by number: an event's number is the answering Mac's (`epoch`), new when its agent restarts.
@@ -1025,6 +1036,21 @@ async function loadTable() {
   } catch { /* (Asked again with the next poll.) */ }
 }
 
+// The regions as `/work/regions` has them: again when the lead's last catalogue changes, else every
+// ten minutes (a region's folder or outline changes with the regions' accepted version); not yet
+// made (503): asked again next poll.
+async function loadRegions(sw) {
+  const n = sw.agent?.catalog?.n ?? null;
+  if (drawn.at && drawn.catalog === n && Date.now() - drawn.at < REGIONS_EVERY_MS) return;
+  try {
+    const [code, v] = await ctx.call("/work/regions", {});
+    if (code !== 200 || !v?.regions) return;
+    drawn.byId = Object.fromEntries(v.regions.map((r) => [r.id, r]));
+    drawn.catalog = n;
+    drawn.at = Date.now();
+  } catch { /* (Asked again with the next poll.) */ }
+}
+
 // (Told when the numbering changes: the page's own record of what it showed starts again too.)
 let onEpoch = null;
 
@@ -1041,6 +1067,7 @@ async function pollOnce() {
     readSince = null;
     clearTimeout(retry);
     last = sw;
+    await loadRegions(sw);
     ctx.onAnswer?.();
     // (Another numbering, or this one gone back past the last event this page has: started again.)
     if (sw.epoch !== epoch || (sw.seq != null && events.length && sw.seq < events[events.length - 1].seq)) {

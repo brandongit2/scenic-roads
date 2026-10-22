@@ -904,7 +904,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   coordinator answers from its memory, as before. A thread of the agent reads only while a page
   has asked in the last 60 s, every 12 s at most, by known name (no listing): the lead's
   `state/status.json`, the term's `view.json`, its `forecast-input.json` (again only when its
-  time changes), `state/build/pause.json`, each member's heartbeat (`state/pool/members/<id>.json`,
+  time changes), `state/build/pause.json`, the term's `regions.json` (again only when its time changes), each member's heartbeat (`state/pool/members/<id>.json`,
   for its host) and own status (`state/helpers/<host>.json`), and what each member's history
   file of the two newest days gained since the offset it last read to (whole lines; from the
   start again when the file is now shorter than that). The agent's loop hands it only what it
@@ -957,6 +957,19 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   `cond::Resources::chip`). Each lane runs at its slot's measured speed (else the lead's other
   slots' guess, four fifths of its pace, or a member's): slots on one Mac share its cores, so the
   forecast is optimistic until each slot's speed is measured under that sharing.
+- **Regions** (`agent::regionsview`, task #512): each enabled region's outline for drawing (its
+  drawn shapes in Web Mercator, the world 0–1000 each way, simplified to about 7 km: `fill`, the
+  outer rings; `edge`, the lines to stroke, a stretch two of its shapes share along a parallel or
+  meridian left out), its `crumbs` (its folders' names in the regions' tree, then its own) and
+  `bytes`, the catalogue's files a download of it copies (`areafiles::files_of`, as the map server's
+  downloads count them; the basemap's pieces and its fine terrain not counted; null while the
+  catalogue lacks it). Made by the lead when the regions' accepted version or the served catalogue
+  changes (the drawn files read then, the sizes once per catalogue), in its planning; written by
+  its pool step as `state/build/term/<E>/regions.json` (again in each new term), read by each Mac's
+  page data when its time changes. Every Mac's port answers `POST /work/regions` with no key: in
+  the pool from that read, out of it from this Mac's agent's; 503 until there is one. The page's
+  own files carry the world's countries' outlines (`countries.json`, Natural Earth 1:50m, the
+  same projection).
 - **Live** (`agent::live`, task #514): each Mac's own measures over time, in rings on its own
   disk (the agent's folder's `live.bin`, never the NAS; written every 5 minutes and as the agent
   stops, read back as it starts): a point a second for an hour, every 10 s for a day, a minute

@@ -1141,6 +1141,8 @@ pub struct Run {
     pub state_written: Option<(u64, Vec<u8>)>,
     /// The coordinator's view (`view_path`) as last written: its term, its bytes, when.
     pub view_written: Option<(u64, Vec<u8>, std::time::Instant)>,
+    /// The build page's regions as last written: the term and what they were made of.
+    pub regions_written: Option<(u64, super::RegionsKey)>,
     pub history_seq: u64,
     /// The terms this process led (a take-up of the next one after them keeps its coordinator's
     /// state; one after another lead's loads that lead's).
@@ -1416,6 +1418,7 @@ impl Run {
             marks: Vec::new(),
             state_written: None,
             view_written: None,
+            regions_written: None,
             history_seq: 0,
             led: BTreeSet::new(),
             asks: Vec::new(),
@@ -2023,6 +2026,11 @@ pub const VIEW_EVERY: std::time::Duration = std::time::Duration::from_secs(15);
 /// zstd-compressed JSON when it's large (told by its first bytes).
 pub fn forecast_input_path(term: u64) -> String {
     format!("state/build/term/{term}/forecast-input.json")
+}
+
+/// The build page's regions of term `term` (§10, Regions; crate::agent::regionsview): JSON.
+pub fn regions_path(term: u64) -> String {
+    format!("state/build/term/{term}/regions.json")
 }
 
 /// The pool's copy of the workers' token (§8: the same on every member).
