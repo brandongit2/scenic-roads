@@ -44,6 +44,7 @@ const EXEMPT: &[(&str, &str, &str)] = &[
     ("crates/pipeline/src/dem/mod.rs", "*", "elev's slice of the DEM cache in the unit's own folder, not the agent's"),
     ("crates/pipeline/src/bin/terrain.rs", "*", "the terrain scan tool's own cache, not the agent's"),
     ("crates/pipeline/src/answers.rs", "*", "the items and heritage answers, which room-making never deletes"),
+    ("crates/pipeline/src/items.rs", "run", "the items job's answers (crate::answers), which room-making never deletes"),
     ("crates/pipeline/src/unit.rs", "dem_units", "the units' kept samples (dem-units/), which room-making never deletes"),
     ("crates/pipeline/src/unit.rs", "scenic_kept", "the units' kept results (scenic-units/), which room-making never deletes"),
     ("crates/pipeline/src/unit.rs", "move_kept_to_shared", "the units' kept results, which room-making never deletes"),

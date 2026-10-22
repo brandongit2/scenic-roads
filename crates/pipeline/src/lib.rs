@@ -33,6 +33,7 @@ pub mod heritagewd;
 pub mod hipack;
 pub mod inputs;
 pub mod interest;
+#[cfg(not(target_os = "wasi"))]
 pub mod items;
 pub mod labels;
 pub mod lakefill;
