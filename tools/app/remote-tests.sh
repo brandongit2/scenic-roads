@@ -109,7 +109,7 @@ remote_main() {  # on the test Mac: <key> <owner> <command>
     if (( waited == 0 )); then
       print "remote-tests: the test Mac's $slots test slots are taken ($(awk '{print $NF}' $base/.slots/[0-9]*/owner 2>/dev/null | tr '\n' ' ')): waiting"
     fi
-    (( waited >= 1800 )) && none "no test Mac test slot within 30 min"
+    (( waited >= 1800 )) && none "no test-Mac slot within 30 min"
     sleep 5; (( waited += 5 ))
   done
   # On any exit: the watcher stopped (by its PID), the slot freed while still this run's.
@@ -127,7 +127,7 @@ remote_main() {  # on the test Mac: <key> <owner> <command>
     exit 143
   }
   trap on_signal TERM HUP INT
-  (( waited )) && print "remote-tests: got an test Mac test slot after ${waited} s"
+  (( waited )) && print "remote-tests: got a test-Mac slot after ${waited} s"
   # Disk: stale keys, then the least recently used past the cap; never a locked one (a lock older
   # than 6 h aside), whose stamp was touched as it was taken.
   local d f
