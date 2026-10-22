@@ -522,11 +522,11 @@ feeding work gradually: the lead idle half the time on 18 Oct). So before each r
 held to what the history shows of it over the last day: its lanes to the jobs it ran at once
 while it ran any (the mean, rounded; a lane running a job kept), each at the share of those
 lanes' time it kept busy while the pool ran planned work (0.25–1, so a Mac idle most of the day
-isn't slowed more than fourfold; a 0.4 floor cost the backtest 7 points on the finish, 0.1 gave
-the same median and a worse live error). An earlier cut leaving out the minutes a Mac was more
-than 2 h from any job of it was removed (task #568): it brought nothing to the finish and raised
-the Mac-mini-led days' progress error from 8 % to 32 % (median) (a Mac idle for a day is the same Mac
-with room, not one away). Placement's slack (`placement::slack`, the steps' ends
+isn't slowed more than fourfold). Every idle minute counts: a Mac idle for a day is the same Mac
+with room, and most idle time while the pool worked was work held back, so the floor is low.
+Backtest finish medians: 35 % at 0.25, 34 % at 0.1 (the live error said 52 % against 38 %), 42 %
+at 0.4. Leaving out the minutes more than 2 h from a job of the Mac: finish unchanged, the
+Mac-mini-led days' 6 h progress error 32 % against 8 % (median). Placement's slack (`placement::slack`, the steps' ends
 against the finish) comes from this held-back forecast. The forecast says these
 (`Forecast::held`) and the **live error** (`forecast::pace`, `Forecast::pace`): the oldest
 forecast of the last 1–6 h (the lead keeps their runs' progress, `Forecast::curve`, a point each

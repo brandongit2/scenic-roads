@@ -158,10 +158,11 @@ pub struct Held {
 pub const HELD_S: u64 = 86_400;
 
 /// `util`'s floor: a quiet day never slows a Mac more than fourfold.
-/// (The backtest, task #568: finish error median 35 % at 0.25, 34 % at 0.1, 42 % at 0.4. A cut
-/// leaving out the minutes a Mac was away, more than 2 h from any job of it, brought nothing to
-/// the finish and put the Mac-mini-led days' 6 h progress error (median) at 32 % from 8 %: a Mac kept
-/// idle for a day by the owner's other work is the same Mac with room, so its idle time counts.)
+/// Every idle minute while the pool worked counts: a Mac idle for a day is the same Mac with
+/// room, and most idle time while the pool worked was work held back, so the floor is low.
+/// (The backtest, finish error median: 35 % at 0.25, 34 % at 0.1 (live error said 52 % against
+/// 38 %), 42 % at 0.4. Leaving out the minutes more than 2 h from a job of the Mac: finish
+/// unchanged, Mac-mini-led 6 h progress error 32 % against 8 %.)
 const UTIL_MIN: f64 = 0.25;
 
 /// Each Mac's `Held` from the history (`events`: the jobs done, ended and failed, a slot's worker
