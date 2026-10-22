@@ -38,8 +38,6 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run() -> Result<()> {
-    // (What it reads, for its unit\'s sizes: pipeline::costin.)
-    pipeline::costin::report_on_exit();
     let args: Vec<String> = std::env::args().collect();
     // (Checked as `<step> <unit_dir> …`, its table's order: `--help` or an unknown flag runs nothing.)
     let mut swapped = args.clone();

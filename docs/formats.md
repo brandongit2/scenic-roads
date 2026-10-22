@@ -837,8 +837,8 @@ class, id) within a tile. The client sends the id with the clicked point.
     (bytes: what the store's readers read for the target, plus a step's own inputs: a z6 tile's extract,
     pack's and lo's base packs, pois' extract); `km2` (the tile's size in km²) and `tiffs` (GeoTIFFs opened)
     for every tile target; a z6 tile's `ways` and `vertices` kept, `piece_ways`, `dem_tiles`. A z6 tile's
-    bytes and tiffs include its programs' own (each run with `SCENIC_READS` naming a file it
-    appends `<bytes> <tiffs>` to as it exits, `costin::report_on_exit`), its tail's steps run here
+    bytes, local and tiffs include its programs' own (each run with `SCENIC_NAS_COUNTS` naming a
+    folder of its own it counts in, store::nasio, added to its runner's as it ends), its tail's steps run here
     after its other measures were taken among them; a tail a worker ran (settled remotely) adds
     nothing, nor do reads outside the store's readers, remote reads, or Python steps; pack's and
     lo's `units` and `ways`; peaks' `peaks`, `z12_tiles`; bldprep's `rows`, `buildings`, `parts`;

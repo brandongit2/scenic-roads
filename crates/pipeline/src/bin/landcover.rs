@@ -17,8 +17,6 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run() -> Result<()> {
-    // (What it reads, for its unit\'s sizes: pipeline::costin.)
-    pipeline::costin::report_on_exit();
     let mut build: Option<PathBuf> = None;
     let (mut workers, mut only) = (32usize, None::<PathBuf>);
     let mut args = std::env::args().skip(1);

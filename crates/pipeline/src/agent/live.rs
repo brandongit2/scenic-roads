@@ -14,7 +14,8 @@
 //!   a listing of the project's folder through the records' readers (crate::agent::nasread::probe;
 //!   a stat would be answered from the SMB client's cache), never two at once.
 //! - **The jobs' NAS traffic** every second (`NasRates`): each job's processes' counts summed from
-//!   their files (store::nasio; the agent's folder per slot), as rates over the second: bytes read
+//!   their files (store::nasio; the agent's folder per slot; the files of processes that ended
+//!   folded into one first), as rates over the second: bytes read
 //!   and written (MB/s), files opened and made, entries listed, files statted and deleted (a
 //!   second). A job first seen sets its baseline (its first second not counted); one whose agent
 //!   gave it no folder (from an older app) leaves the second unmeasured.
@@ -392,6 +393,8 @@ impl NasRates {
         let mut seen = BTreeMap::new();
         let mut whole = true;
         for (pgid, dir) in jobs {
+            // (Its ended programs' files folded into one: a long job's read stays small.)
+            store::nasio::fold_ended(dir);
             let Some(c) = store::nasio::sum_dir(dir) else {
                 whole = false;
                 continue;

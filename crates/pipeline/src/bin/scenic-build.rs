@@ -6663,7 +6663,7 @@ mod tests {
     #[test]
     fn done_line_carries_sizes() {
         let t = super::cost_start("terrain", "6/33/22");
-        store::range::count_read(4096);
+        store::nasio::read(4096);
         pipeline::costin::set("ways", 12);
         let l = super::done_line("terrain", "6/33/22", t);
         assert_eq!(l["unit"], "terrain 6/33/22");

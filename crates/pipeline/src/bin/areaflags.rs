@@ -7,8 +7,6 @@ use anyhow::{bail, Result};
 use std::path::Path;
 
 fn main() -> Result<()> {
-    // (What it reads, for its unit\'s sizes: pipeline::costin.)
-    pipeline::costin::report_on_exit();
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
         bail!("usage: areaflags <unit_dir> <area-shapes.geojsonseq>");

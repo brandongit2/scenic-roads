@@ -10,7 +10,7 @@
 //! (crate::agent::room::toward). A copy is made only when the disk has room for it past the
 //! owner's room target; short of it (a laptop), or with no cache named (a job run by
 //! hand, a test), the NAS's file is read in place, as before. The copies' reads count as the local
-//! disk's (store::range::local_bytes, crate::costin's `local`), so the NAS's weight of a run that
+//! disk's (store::nasio's `Local`, crate::costin's `local`), so the NAS's weight of a run that
 //! reads them is what it copied (crate::needs::nas_rate); the copies are one shared cache a Mac
 //! fills once (crate::needs::CACHES: `CACHE`), reserved only on a Mac with room for it
 //! (crate::needs::ROOM_ONLY). One process copies a file at a time (`making`, and across processes a
@@ -92,7 +92,6 @@ impl Local {
         let t = std::time::Instant::now();
         match self.blobs.get(&self.root, &content) {
             Ok(l) => {
-                store::range::count_read(len);
                 store::nasio::read(len);
                 store::nasio::opened();
                 crate::timings::count(len, 1);
@@ -153,20 +152,20 @@ mod tests {
         let l = Local::new(&nas, &cache, 0);
         let outside = d.path().join("elsewhere.tar");
         assert_eq!(l.path(&outside), outside);
-        let read = store::range::read_bytes();
+        let read = store::nasio::get(store::nasio::Count::ReadBytes);
         let got = l.path(&nas.join(name));
         assert_eq!(got, cache.join("blobs").join(name));
-        assert!(store::range::read_bytes() - read >= 4096, "the copy counted as read");
+        assert!(store::nasio::get(store::nasio::Count::ReadBytes) - read >= 4096, "the copy counted as read");
         assert_eq!(std::fs::read(&got).unwrap(), vec![5u8; 4096]);
         assert_eq!(held(&cache), 4096);
         std::fs::remove_dir_all(&nas).unwrap();
         // (Here already: no room asked, the NAS not read.)
         assert_eq!(full.path(&nas.join(name)), got);
         // Its reads are the local disk's.
-        let local = store::range::local_bytes();
+        let local = store::nasio::get(store::nasio::Count::Local);
         let f = store::range::PlainFile::open(&got).unwrap();
         store::range::RangeRead::read_at(&f, 0, 100).unwrap();
-        assert!(store::range::local_bytes() - local >= 100);
+        assert!(store::nasio::get(store::nasio::Count::Local) - local >= 100);
         store::cachefile::release(&got);
     }
 }

@@ -1024,10 +1024,12 @@ fn run(mut c: Command, what: &str, log: &Path) -> Result<()> {
     // (Its phase, the program's own phases under it where it says them.)
     let _p = crate::timings::phase(what, program_class(what));
     crate::timings::child(&mut c);
-    // (What it reads and opens, noted as it exits, counted here: crate::costin::child_reads.)
-    let reads = std::path::PathBuf::from(format!("{}.reads", log.display()));
-    std::fs::remove_file(&reads).ok();
-    c.env(crate::costin::READS_ENV, &reads);
+    // (What it and its programs read and open, counted in a folder of their own: added to this
+    // process's as it ends, store::nasio.)
+    let counts = std::path::PathBuf::from(format!("{}.counts", log.display()));
+    std::fs::remove_dir_all(&counts).ok();
+    std::fs::create_dir_all(&counts).ok();
+    c.env(store::nasio::ENV, &counts);
     let t = std::time::Instant::now();
     let mut child = store::spawn::spawn(c.stdout(f.try_clone()?).stderr(std::process::Stdio::piped()))
         .with_context(|| format!("start {what}"))?;
@@ -1052,7 +1054,10 @@ fn run(mut c: Command, what: &str, log: &Path) -> Result<()> {
     // Waited for with what it used: its (and its programs') peak memory.
     let waited = crate::sys::wait_with_peak(child).with_context(|| format!("wait for {what}"));
     read.join().ok();
-    crate::costin::child_reads(&reads);
+    if let Some(n) = store::nasio::sum_dir(&counts) {
+        store::nasio::add_counts(&n);
+    }
+    std::fs::remove_dir_all(&counts).ok();
     let (st, peak) = waited?;
     PEAK.fetch_max(peak, std::sync::atomic::Ordering::Relaxed);
     if !st.success() {
@@ -1527,23 +1532,23 @@ pub fn run_tail(runs: &[Run], dir: &Path, tools: &Tools) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// What a z6 tile's spawned program reads (noted as it exits, `costin::READS_ENV`) lands in the
+    /// What a z6 tile's spawned program reads (counted in its own folder, store::nasio) lands in the
     /// z6 tile's measures, as its tail's steps run here (task #235).
     #[test]
     fn a_spawned_steps_reads_land_on_its_unit() {
         let _l = crate::costin::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let d = tempfile::tempdir().unwrap();
         let mut c = store::spawn::command("sh");
-        c.arg("-c").arg("echo '5000000000 7' >> \"$SCENIC_READS\"");
+        c.arg("-c").arg(counts_sh(5_000_000_000, 7));
         crate::costin::begin();
         crate::costin::set("km2", 1);
         run(c, "a step", &d.path().join("step.log")).unwrap();
         let m = crate::costin::take();
         assert!(m["bytes"] >= 5_000_000_000 && m["tiffs"] >= 7, "{m:?}");
-        assert!(!d.path().join("step.log.reads").exists());
+        assert!(!d.path().join("step.log.counts").exists());
         // (A tail's, after its z6 tile's measures were taken.)
         let mut c = store::spawn::command("sh");
-        c.arg("-c").arg("echo '300 2' >> \"$SCENIC_READS\"");
+        c.arg("-c").arg(counts_sh(300, 2));
         let (r, t) = crate::costin::measured(|| run(c, "a tail step", &d.path().join("tail.log")));
         r.unwrap();
         assert!(t.bytes >= 300 && t.tiffs >= 2);
@@ -1557,6 +1562,16 @@ mod tests {
         let mut m = BTreeMap::from([("cpu_ms".to_string(), 7u64)]);
         crate::costin::add_to(&mut m, t);
         assert_eq!(m["cpu_ms"], 7 + ms);
+    }
+
+    /// A shell line writing a counts file (store::nasio) of `read` NAS bytes and `tiffs` GeoTIFFs
+    /// into its folder, as a program counting them would.
+    fn counts_sh(read: u64, tiffs: u64) -> String {
+        let mut c = [0u64; store::nasio::SLOTS];
+        c[store::nasio::Count::ReadBytes as usize] = read;
+        c[store::nasio::Count::Tiffs as usize] = tiffs;
+        let esc: String = c.iter().flat_map(|v| v.to_le_bytes()).map(|b| format!("\\{b:03o}")).collect();
+        format!("printf '{esc}' > \"$SCENIC_NAS_COUNTS/$$-1\"")
     }
 
     /// Kept samples judged as the seed's: every one made so is valid.

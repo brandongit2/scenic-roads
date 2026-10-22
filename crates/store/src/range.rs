@@ -10,34 +10,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// The bytes this process has read through these sources so far: a mapped file's whole length as it
-/// is mapped, a pooled or plain file's reads (and `cachefile::read`'s). A build step's done line
-/// notes what its target added (pipeline::costin: its `bytes` input measure).
-static READ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// The bytes read through these sources so far (`READ`).
-pub fn read_bytes() -> u64 {
-    READ.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// Counts `n` bytes read (`READ`).
-pub fn count_read(n: u64) {
-    READ.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// Of `READ`, the bytes read from this Mac's own disk (a mapped file, a plain file on a local
-/// filesystem): what isn't the NAS's (pipeline::costin's `local`, task #551).
-static LOCAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// The bytes of `read_bytes` read from this Mac's own disk (`LOCAL`).
-pub fn local_bytes() -> u64 {
-    LOCAL.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// Counts `n` bytes read from this Mac's own disk (`READ` and `LOCAL`).
+/// Counts `n` bytes read from this Mac's own disk (crate::nasio's `Local`: a mapped file's whole
+/// length as it is mapped, a plain local file's reads, `cachefile::read`'s).
 pub(crate) fn count_local(n: u64) {
-    count_read(n);
-    LOCAL.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+    crate::nasio::add(crate::nasio::Count::Local, n);
 }
 
 /// Random access to an immutable file's bytes.
@@ -184,7 +160,6 @@ impl RangeRead for PooledFile {
     fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
         check_range(self.len, off, len)?;
         let b = self.pool.read_at(&self.file, off, len)?;
-        count_read(len as u64);
         crate::nasio::read(len as u64);
         Ok(b)
     }
@@ -224,7 +199,6 @@ impl RangeRead for PlainFile {
         if self.local {
             count_local(len as u64);
         } else {
-            count_read(len as u64);
             crate::nasio::read(len as u64);
         }
         Ok(b)
