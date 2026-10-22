@@ -51,7 +51,7 @@ const STEPS: &[Step] = &[
     s("summits", "[--pass d] [--cache dir]", "the world's summits", &[], &["--pass", "--cache"], 0),
     s("peaks", "[U …] [--pass d] [--cache dir] [--raw dir] [--coarse-threads n]", "the units' peaks", &[], &["--pass", "--cache", "--raw", "--coarse-threads"], ANY),
     s("marks", "[--pass d] [--regions dir] [--facts f] [--views f]", "the landmarks", &[], &["--pass", "--regions", "--facts", "--views"], 0),
-    s("items", "[--pass d] [--regions dir] [--dem dir] [--cache dir]", "the landmarks' Wikidata items", &[], &["--pass", "--regions", "--dem", "--cache"], 0),
+    s("items", "[--pass d] [--regions dir] [--cache dir]", "the landmarks' Wikidata items", &[], &["--pass", "--regions", "--cache"], 0),
     s("heritage", "[--pass d] [--regions dir] [--dem dir] [--cache dir]", "the heritage chain", &[], &["--pass", "--regions", "--dem", "--cache"], 0),
     s("heritage-sites", "[--pass d] [--regions dir] [--dem dir] [--cache dir] [--heritage-index i] [--heritage-matches-index i]", "the heritage sites", &[], &["--pass", "--regions", "--dem", "--cache", "--heritage-index", "--heritage-matches-index"], 0),
     s("overlays", "[--pass d]", "the overlays", &[], PASS, 0),

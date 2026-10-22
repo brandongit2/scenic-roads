@@ -15,6 +15,7 @@
 //! Wikidata (crate::wikiask) and added to it after each batch. The files' bytes are as Python's
 //! `json` writes them (crate::pyjson), every float operation in the order the Python's was.
 
+use crate::interest::py_round;
 use crate::pyjson::{dumps, dumps_spaced, loads, Py};
 use crate::timings::{phase, Class};
 use crate::wikiask::{val, Asker};
@@ -46,11 +47,6 @@ const PARK_TAGS: [&str; 17] = [
 
 /// Items asked a query.
 const BATCH: usize = 250;
-
-/// Python's `round(x, n)` (half-even on the exact binary value, as Rust formats).
-fn py_round(x: f64, n: usize) -> f64 {
-    format!("{x:.n$}").parse().unwrap_or(x)
-}
 
 fn num(v: &Py) -> Result<f64> {
     v.number().context("a coordinate not a number")

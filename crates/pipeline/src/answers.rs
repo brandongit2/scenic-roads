@@ -414,7 +414,7 @@ fn merge(name: &str, theirs: &[u8], ours: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// JSON lines by key: `theirs`, then those of `ours` with a key `theirs` lacks. (A last line cut
-/// short, a run stopped mid-write, is dropped: dem/items.py's reader does the same.)
+/// short, a run stopped mid-write, is dropped: crate::items's reader does the same.)
 fn merge_lines(theirs: &[u8], ours: &[u8]) -> Option<Vec<u8>> {
     let lines = |b: &[u8]| -> Option<Vec<(String, Vec<u8>)>> {
         let whole = &b[..b.iter().rposition(|&c| c == b'\n').map_or(0, |i| i + 1)];
@@ -559,7 +559,7 @@ fn unpack(from: &Path, dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The items job's answers for pass `date` in its cache `dir` (dem/items.py's): the items' facts,
+/// The items job's answers for pass `date` in its cache `dir` (crate::items's): the items' facts,
 /// their Wikipedia articles and the days they were fetched.
 pub fn items_files(dir: &Path, date: &str) -> Vec<String> {
     [format!("facts-{date}.jsonl"), format!("wp-{date}.jsonl"), format!("fetched-{date}.json")]

@@ -2071,7 +2071,8 @@ impl Agent {
             "bldprep" => vec!["--dem".into(), dem()],
             "bldtiles" => vec!["--pass".into(), date.to_string()],
             "terrain-water" => vec!["--pass".into(), date.to_string()],
-            "items" | "heritage-sites" | "heritage" | "rail" => {
+            "items" => vec!["--pass".into(), date.to_string(), "--cache".into(), s(&cache)],
+            "heritage-sites" | "heritage" | "rail" => {
                 vec!["--pass".into(), date.to_string(), "--dem".into(), dem(), "--cache".into(), s(&cache)]
             }
             "peaks" => vec![

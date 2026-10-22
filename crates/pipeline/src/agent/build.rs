@@ -992,7 +992,7 @@ fn peaks_keys_at(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, terra
 /// at every latitude; a covered bridge's length only for a line.
 pub const POIS_V: u32 = 2;
 
-/// The facts and pageviews of the candidates' items, per pass (dem/items.py).
+/// The facts and pageviews of the candidates' items, per pass (crate::items, crate::pageviews).
 pub const ITEMS_V: u32 = 1;
 /// The road → z6 tiles index from every z6 tile's road values (the server's whole-road lookups).
 pub const ROADUNITS_V: u32 = 1;

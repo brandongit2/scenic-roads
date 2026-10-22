@@ -31,11 +31,10 @@ const ASKS: &[(&str, &str)] = &[
     ("crates/pipeline/src/agent/jobs.rs", "a test: a sandboxed job's request through the proxy"),
     ("crates/pipeline/src/inputs/sources.rs", "its tests: the staged declarations' URLs, compared, asked of no one"),
     ("dem/budget.py", "the steps' side of the budget: its lists of the metered hosts, and the hold it tells the proxy"),
-    ("dem/wdquery.py", "curl (honours HTTPS_PROXY); a 429 told (budget.seen)"),
     ("crates/pipeline/src/wikiask.rs", "ureq (honours HTTPS_PROXY: Proxy::try_from_env); a 429 told (budget::seen)"),
     ("crates/pipeline/src/heritagewd.rs", "names Wikidata's links and Wikipedia's sites in its queries, asked through crate::wikiask"),
     ("crates/pipeline/src/areadetails.rs", "names English Wikipedia's site in its query, asked through crate::wikiask"),
-    ("dem/items.py", "names Wikidata's entities in its queries, asked through wdquery.sparql"),
+    ("crates/pipeline/src/items.rs", "names Wikidata's entities and English Wikipedia's site in its queries, asked through crate::wikiask"),
     ("dem/whsshapes.py", "urllib (honours HTTPS_PROXY), a query its cache lacks, of the declared wikidata-live source; a 429 told (budget.seen)"),
     ("dem/bldfetch.py", "the declared buildings and building-heights sources (Overture's bucket, GHSL's tiles), not metered"),
     ("dem/buildings.py", "the declared buildings source's bucket (DuckDB), not metered"),
@@ -43,7 +42,7 @@ const ASKS: &[(&str, &str)] = &[
 ];
 
 /// The Python that asks, so reports a 429 (`budget.seen`).
-const REPORTS: &[&str] = &["dem/wdquery.py", "dem/whsshapes.py"];
+const REPORTS: &[&str] = &["dem/whsshapes.py"];
 
 /// What turns the proxy off, in a line.
 const OFF: &[&str] = &[".proxy(None)", "ProxyHandler({})", "--noproxy", "no_proxy", "NO_PROXY"];

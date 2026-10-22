@@ -51,7 +51,7 @@ pub const ROLES: [(&str, &[&str], &[&str]); 18] = [
     (BUILDINGS, &["geoparquet"], &[]),
     // (Building heights on a grid: crate::bld, dem/bldfetch.py, dem/bldprep.py.)
     (BUILDING_HEIGHTS, &["zip-geotiff"], &[]),
-    // (Wikidata's facts: crate::heritagewd, dem/wdquery.py.)
+    // (Wikidata's facts: crate::heritagewd, crate::areadetails, crate::items, crate::pageviews.)
     (WIKIDATA, &["sparql"], &[]),
     // (Wikidata as it is now, by the Query Service's built-in prefixes: dem/whsshapes.py.)
     (WIKIDATA_LIVE, &["sparql"], &[]),

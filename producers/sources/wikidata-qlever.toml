@@ -5,7 +5,7 @@ licence = "CC0-1.0"
 licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
 source = "https://qlever.dev/wikidata"
 territory = "world"
-notes = "The heritage chain's and the items job's queries (pipeline::heritagewd and pipeline::areadetails through crate::wikiask; items.py through dem/wdquery.py's sparql), POSTed with the chain's prefixes. The Wikidata Query Service was rate-limiting to one request a minute during an outage (2026-09-28)."
+notes = "The heritage chain's and the items job's queries (pipeline::heritagewd, pipeline::areadetails, pipeline::items and pipeline::pageviews through crate::wikiask), POSTed with the chain's prefixes. The Wikidata Query Service was rate-limiting to one request a minute during an outage (2026-09-28)."
 
 [data]
 role = "wikidata"

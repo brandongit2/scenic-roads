@@ -33,6 +33,7 @@ pub mod heritagewd;
 pub mod hipack;
 pub mod inputs;
 pub mod interest;
+pub mod items;
 pub mod labels;
 pub mod lakefill;
 pub mod landcover;

@@ -3356,10 +3356,10 @@ fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// items [--pass <date>] [--dem dir] [--cache dir]: facts and pageviews for the current z6 tiles'
-/// candidates' Wikidata items (dem/items.py, then pipeline::pageviews, per pass epoch), as
+/// items [--pass <date>] [--cache dir]: facts and pageviews for the current z6 tiles'
+/// candidates' Wikidata items (pipeline::items, then pipeline::pageviews, per pass epoch), as
 /// sources/items/<date>/{facts,views}.
-/// What items.py fetched is kept on the NAS too (pipeline::answers:
+/// What pipeline::items fetched is kept on the NAS too (pipeline::answers:
 /// sources/items/<date>/answers.tar.zst), made one with its cache here as it starts, and sent there
 /// as it ends, finished or not, or at the next start when it was stopped (the agent's SIGTERM ends
 /// it at once).
@@ -3367,13 +3367,11 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let date =
         opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
     let cov = coverage_of(out, args)?;
-    let dem = PathBuf::from(opt(args, "--dem").unwrap_or_else(|| "dem".into()));
     let cache =
         PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned()))
             .join("items");
     let (mut facts, mut views) = (std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
     let is_qid = |q: &str| q.len() > 1 && q.starts_with('Q') && q[1..].bytes().all(|b| b.is_ascii_digit());
-    // (items.py starts parts 1 and 2, SCENIC_PARTS naming them; this step starts 0, 3 and 4.)
     const PARTS: &[&str] = &[
         "Gathering the landmark candidates' Wikidata items",
         "Fetching their facts from Wikidata",
@@ -3397,9 +3395,6 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             }
         }
     }
-    std::fs::create_dir_all(scratch)?;
-    let qfile = scratch.join("qids.json");
-    std::fs::write(&qfile, serde_json::to_vec(&serde_json::json!({"facts": facts, "views": views}))?)?;
     drop(p);
     // The pass's answers: this Mac's and the NAS's made one.
     // (With the budgets on: this Mac's answers held while the step runs, after the agent sending
@@ -3412,22 +3407,12 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     eprintln!("items: the pass's answers {}", kept.sync(&answers(), &scratch.join("answers"))?.words());
     drop(p);
     let dir = scratch.join("items-out");
-    let mut c = store::spawn::command("uv");
-    let declared = pipeline::inputs::sources::write_for_python(out.root(), &out.manifest, scratch)?;
-    c.current_dir(&dem)
-        .env("SCENIC_PARTS", serde_json::to_string(PARTS)?)
-        .env(pipeline::inputs::sources::PYTHON_ENV, &declared)
-        .args(["run", "python", "items.py", "--qids"])
-        .arg(&qfile)
-        .arg("--epoch")
-        .arg(&date)
-        .arg("--cache")
-        .arg(&cache)
-        .arg("--out")
-        .arg(&dir);
-    let p = phase("items.py", Class::Mixed);
-    pipeline::timings::child(&mut c);
-    let st = store::spawn::status(&mut c).context("run items.py")?;
+    let wikidata = {
+        let s = pipeline::inputs::sources::read(out.root(), &out.manifest)?;
+        s.role(pipeline::inputs::sources::WIKIDATA)?.url()?.to_string()
+    };
+    let p = phase("items", Class::Mixed);
+    let ran = pipeline::items::run(&wikidata, &facts, &views, &date, &cache, &dir, &|i| parts.start(i));
     drop(p);
     // What it fetched, on the NAS whether or not it finished (stopped, at the next start).
     let p = phase("the pass's answers sent to the NAS", Class::NasWrite);
@@ -3438,7 +3423,7 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         Ok(false) => {}
         Err(e) => eprintln!("items: the pass's answers not sent to the NAS now ({e:#}); the next start sends them"),
     }
-    anyhow::ensure!(st.success(), "items.py failed: {st}");
+    ran?;
     parts.start(3);
     let months = pageview_months(out, cache.join("months"))?;
     pipeline::pageviews::items(&cache, &date, &views, facts.len(), &months, &dir)?;

@@ -440,6 +440,16 @@ fn item(i: usize, prop: &str, id: &str, rec: &[(String, Py)]) -> Py {
 
 /// Per item: the number of Wikipedia articles (any language) and their `lang|title` list.
 pub(crate) fn wikipedias(ask: &Asker, endpoint: &str, qids: &[String]) -> Result<Vec<(String, Py)>> {
+    wikipedias_told(ask, endpoint, qids, &mut |_| {})
+}
+
+/// `wikipedias`, `progress` told how many are done after each batch.
+pub(crate) fn wikipedias_told(
+    ask: &Asker,
+    endpoint: &str,
+    qids: &[String],
+    progress: &mut dyn FnMut(usize),
+) -> Result<Vec<(String, Py)>> {
     let _p = phase("Wikipedia articles looked up", Class::Net);
     let mut out = Vec::new();
     for (k, chunk) in qids.chunks(1000).enumerate() {
@@ -471,6 +481,7 @@ pub(crate) fn wikipedias(ask: &Asker, endpoint: &str, qids: &[String]) -> Result
         if k % 20 == 0 {
             eprintln!("  Wikipedia articles: {}/{}", k * 1000 + chunk.len(), qids.len());
         }
+        progress(k * 1000 + chunk.len());
     }
     Ok(out)
 }

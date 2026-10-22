@@ -195,7 +195,7 @@ after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sit
     bound; nothing higher within 5,000 km gives a lower bound).
   - "Sea" is ≤ 0 m (negative values are clamped).
   - **Output:** `work/peaks/<u>` by candidate key: e, p, pl, c, ce, iso, il, hi.
-- **`items`** (`dem/items.py`, then `pipeline::pageviews`, per pass): Wikidata facts for single-QID
+- **`items`** (`pipeline::items`, then `pipeline::pageviews`, per pass): Wikidata facts for single-QID
   tags, and pageviews for the first QID: the mean of the last November, February, May and August ended 20 days before the pass.
   Everything is fetched again each pass; between passes only QIDs not seen. Caches are appended
   5,000 items at a time. The answers are kept on the NAS (`sources/items/<d>/answers.tar.zst`:
