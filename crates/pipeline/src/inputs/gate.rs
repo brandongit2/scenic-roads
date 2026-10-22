@@ -20,7 +20,6 @@
 use super::{Checks, FileEntry, Finding, Index, Level, Listing, Report, Version};
 use crate::agent::jobs;
 use anyhow::{Context, Result};
-use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -106,43 +105,39 @@ pub fn decide(g: &Given) -> Result<Decision> {
     type Looked = Option<(Vec<u8>, String, super::FileCheck)>;
     let pool = super::pace::pool()?;
     let looked: Vec<Result<(String, Looked)>> = pool.install(|| {
-        to_read
-            .par_iter()
-            .map(|&p| {
-                let _turn = super::pace::permit();
-                let one = (|| {
-                    let bytes = (g.read_new)(p).with_context(|| format!("read {p} in the drop box"))?;
-                    let hash = store::naming::hash16(&bytes);
-                    if prev.files.get(p).and_then(|w| super::hash_of(&w.file)) == Some(hash.as_str()) {
-                        return Ok((p.clone(), None));
-                    }
-                    // 2. Its shape.
-                    let mut check = g.checks.file(p, &bytes);
-                    // (The rules of a program of its own, on a file in the shape: one with an error is held
-                    // whatever they say.)
-                    if !check.findings.iter().any(|f| f.level == Level::Error) {
-                        check.findings.extend(g.checks.lint(p, &bytes).with_context(|| format!("check {p}"))?);
-                    }
-                    if super::copy_name(unit, p, &hash).is_none() {
-                        check.findings.push(Finding::new(
-                            "name",
-                            Level::Error,
-                            &[p],
-                            &[],
-                            vec![p.clone()],
-                            format!("{p}: a name the store can't keep (no backslashes)"),
-                        ));
-                    }
-                    Ok((p.clone(), Some((bytes, hash, check))))
-                })();
-                let mut n = counted.lock().unwrap_or_else(|e| e.into_inner());
-                *n += 1;
-                if *n == to_read.len() || *n % (to_read.len() / 200).max(1) == 0 {
-                    jobs::within(*n as f64 / to_read.len() as f64);
+        super::pace::par_map(to_read.clone(), |p| {
+            let one = (|| {
+                let bytes = (g.read_new)(p).with_context(|| format!("read {p} in the drop box"))?;
+                let hash = store::naming::hash16(&bytes);
+                if prev.files.get(p).and_then(|w| super::hash_of(&w.file)) == Some(hash.as_str()) {
+                    return Ok((p.clone(), None));
                 }
-                one
-            })
-            .collect()
+                // 2. Its shape.
+                let mut check = g.checks.file(p, &bytes);
+                // (The rules of a program of its own, on a file in the shape: one with an error is held
+                // whatever they say.)
+                if !check.findings.iter().any(|f| f.level == Level::Error) {
+                    check.findings.extend(g.checks.lint(p, &bytes).with_context(|| format!("check {p}"))?);
+                }
+                if super::copy_name(unit, p, &hash).is_none() {
+                    check.findings.push(Finding::new(
+                        "name",
+                        Level::Error,
+                        &[p],
+                        &[],
+                        vec![p.clone()],
+                        format!("{p}: a name the store can't keep (no backslashes)"),
+                    ));
+                }
+                Ok((p.clone(), Some((bytes, hash, check))))
+            })();
+            let mut n = counted.lock().unwrap_or_else(|e| e.into_inner());
+            *n += 1;
+            if *n == to_read.len() || *n % (to_read.len() / 200).max(1) == 0 {
+                jobs::within(*n as f64 / to_read.len() as f64);
+            }
+            one
+        })
     });
     for l in looked {
         let (p, put) = l?;

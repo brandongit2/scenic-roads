@@ -8445,6 +8445,20 @@ impl Agent {
         self.o.home.join(format!("threads{}", slot_suffix(k)))
     }
 
+    /// The memory free on this Mac (MB), as last read (at most every 10 s: reading it spawns a program).
+    fn free_mem_mb(&self) -> Option<u64> {
+        static LAST: std::sync::Mutex<Option<(Instant, Option<u64>)>> = std::sync::Mutex::new(None);
+        let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((t, v)) = *last {
+            if t.elapsed() < Duration::from_secs(10) {
+                return v;
+            }
+        }
+        let v = self.mac.resources(&self.o.home, None, None, None).mem_free().map(|b| b >> 20);
+        *last = Some((Instant::now(), v));
+        v
+    }
+
     /// Tells slot `k`'s input check the threads it may use now (docs/inputs.md §4.3, Threads): this
     /// Mac's cores less those kept for its owner and those its other jobs were given, `MOST` at
     /// most. It takes more as they free up, and fewer when a job starts beside it.
@@ -8462,8 +8476,14 @@ impl Agent {
             .filter_map(|(_, s)| s.running.as_ref())
             .map(|b| b.threads)
             .sum();
-        let most = crate::inputs::pace::MOST;
-        let now = cores.saturating_sub(kept + beside).clamp(r.threads.clamp(1, most), most).to_string();
+        // Past its grant only while the memory free covers its measured peak per thread for each
+        // extra (the free memory read at most every 10 s: it asks the system). A regions check once
+        // took 39 GB; with no peak measured yet it stays at its grant.
+        let peak = self.measured_job(&r.spec).map(|m| m.mem_mb);
+        let wide =
+            crate::inputs::pace::allowed_now(cores, kept, beside, r.threads, peak, Some(u64::MAX >> 20)) > r.threads;
+        let free = (peak.is_some() && wide).then(|| self.free_mem_mb()).flatten();
+        let now = crate::inputs::pace::allowed_now(cores, kept, beside, r.threads, peak, free).to_string();
         let f = self.threads_path(k);
         if std::fs::read_to_string(&f).ok().as_deref() != Some(now.as_str()) {
             if let Err(e) = std::fs::write(&f, &now) {

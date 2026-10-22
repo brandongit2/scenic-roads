@@ -46,7 +46,7 @@ pub struct Pace {
 
 /// A task's right to run (`Pace::permit`), given back as it drops.
 pub struct Permit<'a> {
-    pace: Option<&'a Pace>,
+    pace: &'a Pace,
 }
 
 impl Pace {
@@ -81,13 +81,9 @@ impl Pace {
         s.allowed
     }
 
-    /// Waits until fewer tasks run than are allowed, then counts this one (a thread already running
-    /// one takes none more).
+    /// Waits until fewer tasks run than are allowed, then counts this one. Only a thread holding
+    /// none asks (`par_map`).
     pub fn permit(&self) -> Permit<'_> {
-        if HELD.with(|h| h.get()) > 0 {
-            HELD.with(|h| h.set(h.get() + 1));
-            return Permit { pace: None };
-        }
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             self.refresh(&mut s);
@@ -98,7 +94,7 @@ impl Pace {
         }
         s.active += 1;
         HELD.with(|h| h.set(1));
-        Permit { pace: Some(self) }
+        Permit { pace: self }
     }
 
     /// The tasks running under permits now.
@@ -109,11 +105,9 @@ impl Pace {
 
 impl Drop for Permit<'_> {
     fn drop(&mut self) {
-        HELD.with(|h| h.set(h.get().saturating_sub(1)));
-        if let Some(p) = self.pace {
-            p.state.lock().unwrap_or_else(|e| e.into_inner()).active -= 1;
-            p.freed.notify_one();
-        }
+        HELD.with(|h| h.set(0));
+        self.pace.state.lock().unwrap_or_else(|e| e.into_inner()).active -= 1;
+        self.pace.freed.notify_one();
     }
 }
 
@@ -131,6 +125,44 @@ pub fn cores() -> usize {
 /// otherwise); `permit` holds the tasks running to the threads allowed.
 pub fn width() -> usize {
     std::env::var("SCENIC_REGIONS_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(cores().min(MOST)).max(1)
+}
+
+/// The threads a check may use now (the agent's rule, `Agent::tend_threads`): its `grant` at least
+/// (at most `MOST`), and past it, one more for each core `cores` less `kept` for the owner and
+/// `beside` given to other jobs leaves, but only while the memory free (`free_mb`) covers the
+/// check's measured peak (`peak_mb`) per thread granted, once more for each extra thread. With no
+/// peak measured yet, or no free memory said, it holds at its grant.
+pub fn allowed_now(
+    cores: usize,
+    kept: usize,
+    beside: usize,
+    grant: usize,
+    peak_mb: Option<u64>,
+    free_mb: Option<u64>,
+) -> usize {
+    let grant = grant.clamp(1, MOST);
+    let extra = cores.saturating_sub(kept + beside).clamp(grant, MOST) - grant;
+    let (Some(peak), Some(free)) = (peak_mb, free_mb) else { return grant };
+    let per_thread = (peak / grant as u64).max(1);
+    grant + extra.min((free / per_thread) as usize)
+}
+
+/// `f` on each of `items`, in order, in parallel: each task under a permit, so no more run at once
+/// than are allowed. Inside a task already under a permit it runs the items one after another on
+/// that thread, within the permit's budget: a permit's holder never waits on a task that needs one,
+/// and a nested operation no other thread can take beyond what is allowed.
+pub fn par_map<I: Send, R: Send>(items: Vec<I>, f: impl Fn(I) -> R + Sync + Send) -> Vec<R> {
+    use rayon::prelude::*;
+    if HELD.with(|h| h.get()) > 0 {
+        return items.into_iter().map(f).collect();
+    }
+    items
+        .into_par_iter()
+        .map(|x| {
+            let _turn = permit();
+            f(x)
+        })
+        .collect()
 }
 
 /// A pool `width` wide for a check's parallel work (the process's own, `RAYON_NUM_THREADS`, is the
@@ -216,14 +248,39 @@ mod tests {
     }
 
     #[test]
-    fn a_task_inside_another_on_a_thread_takes_no_permit() {
-        let pace = Pace::new(None, 1);
-        let outer = pace.permit();
-        let inner = pace.permit();
-        assert_eq!(pace.active(), 1);
-        drop(inner);
-        assert_eq!(pace.active(), 1);
-        drop(outer);
-        assert_eq!(pace.active(), 0);
+    fn threads_widen_on_free_cores_while_free_memory_covers_each_extra() {
+        // 14 cores, none kept, 1 granted, a peak of 4,000 MB on that one thread.
+        let now = |kept, beside, grant, peak, free| allowed_now(14, kept, beside, grant, peak, free);
+        // Cores free and memory plenty: up to MOST.
+        assert_eq!(now(0, 0, 1, Some(4000), Some(100_000)), MOST);
+        // Memory for two more threads (8,000 MB): three.
+        assert_eq!(now(0, 0, 1, Some(4000), Some(8500)), 3);
+        // Memory short, or no peak measured, or free memory unsaid: the grant.
+        assert_eq!(now(0, 0, 1, Some(4000), Some(3000)), 1);
+        assert_eq!(now(0, 0, 2, None, Some(100_000)), 2);
+        assert_eq!(now(0, 0, 2, Some(8000), None), 2);
+        // Cores taken by the owner and other jobs: only the rest widen it (14 - 2 - 9 = 3 left).
+        assert_eq!(now(2, 9, 1, Some(4000), Some(100_000)), 3);
+        // Never below the grant, whatever the cores.
+        assert_eq!(now(2, 12, 4, Some(4000), Some(100_000)), 4);
+        // The per-thread peak is the measured peak over the grant (8,000 over 2 = 4,000).
+        assert_eq!(now(0, 0, 2, Some(8000), Some(4500)), 3);
+    }
+
+    #[test]
+    fn a_parallel_operation_inside_a_task_runs_in_order_on_its_thread() {
+        // Two pool threads, eight outer tasks each with four inner: the inner run on the outer's
+        // thread, one after another (nothing waits on a permit while holding one: this ends).
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+        let seen = pool.install(|| {
+            par_map((0..8).collect(), |o: usize| {
+                let me = std::thread::current().id();
+                let inner = par_map((0..4).collect(), |i: usize| (i, std::thread::current().id()));
+                assert!(inner.iter().enumerate().all(|(k, (i, t))| k == *i && *t == me));
+                o
+            })
+        });
+        assert_eq!(seen, (0..8).collect::<Vec<_>>());
+        assert_eq!(global().active(), 0);
     }
 }

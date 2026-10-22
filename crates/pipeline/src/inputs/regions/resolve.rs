@@ -315,41 +315,37 @@ fn resolve_all(folder: &Folder, ctx: &Context) -> Outcome {
             break;
         }
         let made: Vec<(String, Result<(Result<Resolved, Vec<Problem>>, Vec<Id>), Problem>)> = {
-            use rayon::prelude::*;
             let done = &out.resolved;
             let held = &held;
-            wave.par_iter()
-                .map(|(id, key)| {
-                    let _turn = crate::inputs::pace::permit();
-                    let (path, r) = &folder.regions[id];
-                    if let Some(dep) = folder.deps(r).into_iter().find(|d| held.contains(d)) {
-                        return (
-                            id.clone(),
-                            Err(Problem {
-                                check: "rg-ref",
-                                about: vec![id.to_string(), format!("region:{dep}")],
-                                found: vec!["held".into()],
-                                files: vec![path.clone()],
-                                message: format!("{id}: region:{dep} is held, and so this region with it"),
-                            }),
-                        );
-                    }
-                    let kept = ctx.memo.and_then(|m| m.lock().unwrap().get(key).cloned());
-                    let k = match kept {
-                        Some(k) => k,
-                        None => {
-                            let mut needs = BTreeSet::new();
-                            let res = resolve_one(r, path, folder, ctx, done, done, false, &mut needs);
-                            let needs: Vec<Id> = needs.into_iter().collect();
-                            if let Some(m) = ctx.memo {
-                                m.lock().unwrap().insert(key.clone(), (res.clone(), needs.clone()));
-                            }
-                            (res, needs)
+            crate::inputs::pace::par_map(wave.iter().collect(), |(id, key)| {
+                let (path, r) = &folder.regions[id];
+                if let Some(dep) = folder.deps(r).into_iter().find(|d| held.contains(d)) {
+                    return (
+                        id.clone(),
+                        Err(Problem {
+                            check: "rg-ref",
+                            about: vec![id.to_string(), format!("region:{dep}")],
+                            found: vec!["held".into()],
+                            files: vec![path.clone()],
+                            message: format!("{id}: region:{dep} is held, and so this region with it"),
+                        }),
+                    );
+                }
+                let kept = ctx.memo.and_then(|m| m.lock().unwrap().get(key).cloned());
+                let k = match kept {
+                    Some(k) => k,
+                    None => {
+                        let mut needs = BTreeSet::new();
+                        let res = resolve_one(r, path, folder, ctx, done, done, false, &mut needs);
+                        let needs: Vec<Id> = needs.into_iter().collect();
+                        if let Some(m) = ctx.memo {
+                            m.lock().unwrap().insert(key.clone(), (res.clone(), needs.clone()));
                         }
-                    };
-                    (id.clone(), Ok(k))
-                })
-                .collect()
+                        (res, needs)
+                    }
+                };
+                (id.clone(), Ok(k))
+            })
         };
         for (id, m) in made {
             match m {

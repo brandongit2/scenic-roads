@@ -133,12 +133,18 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
      no drop-box path component or unit name, so these never clash with copies or nested units.
 - **Threads and progress.** A job's threads are set as it starts, and a check lasts hours, so the
   check doesn't keep its grant: its agent keeps a file (`SCENIC_THREADS_FILE`,
-  `Agent::tend_threads`, every loop) with the threads it may use now: the Mac's cores less those
-  kept for its owner and those its other jobs were given, never fewer than its grant and at most 8
-  (`inputs::pace::MOST`; the regions' work ran four at once before). The check's pools are as wide
-  as the cores (8 at most), and each task of them (a file read, hashed and checked; a region; a
-  cell) takes a `pace::permit` for as long as it runs, waiting while as many run as the file says;
-  a raise is seen within a second. Without the file (a hand run) every core is allowed. It reports
+  `Agent::tend_threads`, every loop) with the threads it may use now (`pace::allowed_now`). Never
+  fewer than its grant, at most 8 (`pace::MOST`; the regions' work ran four at once before), and
+  past the grant one thread more for each core the Mac has left (its cores less those kept for its
+  owner and those its other jobs were given), **only while the memory free covers the step's
+  measured peak per granted thread for each extra thread**. With no peak measured yet, or no free
+  memory said, it holds at its grant, and it falls back to the grant when free memory falls (the
+  file is read again within a second; a regions check once took 39 GB and panicked a 16 GB Mac).
+  The check's pools are as wide as the cores (8 at most). The outermost parallel operation of a
+  task takes a `pace::par_map` permit per task, waiting while as many run as the file says; an
+  operation inside a task runs its items one after another on that task's thread, inside its
+  permit's budget, so a permit's holder never waits for another permit (no deadlock) and nothing
+  runs beyond what is allowed. Without the file (a hand run) every core is allowed. It reports
   its progress as five stages (the files read and checked, the candidate checked whole, the next
   version checked whole, what is derived from it, the files stored), with how far within a stage
   where it knows (files; regions), as `progress:` lines like any job (docs/building.md); `scenic
