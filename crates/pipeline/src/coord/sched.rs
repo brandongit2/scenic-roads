@@ -1062,7 +1062,7 @@ impl Sched {
             .map(|i| i + 1);
         let start = match &self.placement {
             // (Placement on: from the target measured to take longest that's drawn to this worker.)
-            Some((p, since)) => self.placed_start(o, a, p, *since, now, &held, &takeable),
+            Some((p, since)) => self.placed_start(o, a, p, *since, now, &held, after, &takeable),
             None => after
                 .filter(|&i| i < o.targets.len() && takeable(i))
                 .or_else(|| (0..o.targets.len()).find(|&i| takeable(i))),
@@ -1145,11 +1145,14 @@ impl Sched {
     }
 
     /// Placement on (crate::agent::placement): where `a`'s worker's run of offer `o` starts. The
-    /// targets it may take (`takeable`) from the one measured to take longest (`secs_of`; plan
-    /// order between equals, those never measured last), the first drawn to it among the members
-    /// asking lately whose room fits it (`placement::draw`, by their measured speeds, in the window
-    /// `now` is in since `since`); a cold start (none of its step measured) undrawn, by its
-    /// provisional need (`cold_fits`).
+    /// targets it may take (`takeable`): those in its last one's neighbourhood (`after`, its last
+    /// of the step's index past it; `placement::group`: a z6 tile's z3 tile) first, from just after
+    /// it in plan order, so its consecutive jobs share their inputs (task #552); then from the one
+    /// measured to take longest (`secs_of`; plan order between equals, those never measured last).
+    /// The first drawn to it among the members asking lately that would take it now
+    /// (`would_take_now`; `placement::draw`, each by `draw_weight`, in the window `now` is in since
+    /// `since`); a cold start (none of its step measured) undrawn, by its provisional need
+    /// (`cold_fits`).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn placed_start(
         &self,
@@ -1159,20 +1162,33 @@ impl Sched {
         since: Instant,
         now: Instant,
         held: &BTreeSet<String>,
+        after: Option<usize>,
         takeable: &dyn Fn(usize) -> bool,
     ) -> Option<usize> {
         use crate::agent::placement;
         let mut order: Vec<(Option<u64>, usize)> =
             (0..o.targets.len()).map(|i| (self.secs_of(&o.step, &o.targets[i].0, &a.worker), i)).collect();
         order.sort_by(|x, y| y.0.is_some().cmp(&x.0.is_some()).then(y.0.cmp(&x.0)).then(x.1.cmp(&y.1)));
+        // (Its last one's neighbourhood first, in plan order from just after it.)
+        let near: Vec<usize> = match after.and_then(|i| o.targets.get(i.checked_sub(1)?)) {
+            // (A target with no neighbourhood but itself (not a z6 tile): none.)
+            Some(last) if placement::group(&last.0) != last.0.as_str() => {
+                let g = placement::group(&last.0);
+                let from = after.unwrap_or(0);
+                (from..o.targets.len()).chain(0..from).filter(|&i| placement::group(&o.targets[i].0) == g).collect()
+            }
+            _ => Vec::new(),
+        };
+        let rest = order.into_iter().map(|(_, i)| i).filter(|i| !near.contains(i));
         let window = now.saturating_duration_since(since).as_secs();
-        order.into_iter().map(|(_, i)| i).find(|&i| {
+        near.iter().copied().chain(rest).find(|&i| {
             if !takeable(i) {
                 return false;
             }
             let (t, k, _) = &o.targets[i];
             let Some(m) = self.measured(&o.step, t) else { return true };
-            // (Each other member by the rules its own ask would meet: not one that couldn't take it.)
+            // (Each other member by the rules its own ask would meet, and only one that would take
+            // it now: a draw's winner never leaves it untaken.)
             let mut who: Vec<(String, f64)> = self
                 .workers
                 .iter()
@@ -1184,17 +1200,43 @@ impl Sched {
                         && w.asked.is_some_and(|at| now.duration_since(at) < ASKING)
                         && w.app.as_ref().is_none_or(|x| *x == self.app)
                 })
-                .filter(|(n, w)| {
-                    w.ask.as_ref().is_some_and(|x| {
-                        x.can.contains(&o.step)
-                            && self.may_take_measured(o, x, t, k, &m, held, now)
-                            && !self.swamped(n, x, now)
-                    })
+                .filter_map(|(n, w)| {
+                    let x = w.ask.as_ref()?;
+                    let takes = x.can.contains(&o.step)
+                        && self.may_take_measured(o, x, t, k, &m, held, now)
+                        && !self.swamped(n, x, now)
+                        && self.would_take_now(n, w.asked?, x, &m, now);
+                    takes.then(|| (n.clone(), self.draw_weight(p, &o.step, n, x)))
                 })
-                .map(|(n, _)| (n.clone(), p.weight(n)))
                 .collect();
-            who.push((a.worker.clone(), p.weight(&a.worker)));
+            who.push((a.worker.clone(), self.draw_weight(p, &o.step, &a.worker, a)));
             placement::draw(&placement::key(&format!("{} {t}", o.step), window), &who) == Some(a.worker.as_str())
+        })
+    }
+
+    /// Whether worker `n`, by its last ask `x` (made at `asked`), would take a target measured `m`
+    /// now: a slot free (fewer jobs granted it since than the ask wanted, one for an ask saying
+    /// none) and the memory its Mac had free then (`Capacity::mem_mb`, when its capacity is said) fits it.
+    pub(super) fn would_take_now(&self, n: &str, asked: Instant, x: &Ask, m: &Measured, now: Instant) -> bool {
+        let since = self.job_leases(n, now).iter().filter(|l| l.granted >= asked).count();
+        since < x.want.max(1) && x.cap.as_ref().filter(|c| c.limit_mb > 0).is_none_or(|c| m.mem_mb <= c.mem_mb)
+    }
+
+    /// Worker `n`'s weight in placement's draw for a target of `step`, as its last ask `x` says:
+    /// its measured speed at the step (`Placement::weight`), `CACHE_PREFER` times that where its
+    /// Mac holds the step's shared cache whole (`holds_cache`).
+    pub(super) fn draw_weight(&self, p: &crate::agent::placement::Placement, step: &str, n: &str, x: &Ask) -> f64 {
+        let cache = if self.holds_cache(step, x) { crate::agent::placement::CACHE_PREFER } else { 1.0 };
+        p.weight(n, step) * cache
+    }
+
+    /// Whether the Mac asking `a` holds the shared cache a job of `step` reads whole (its ask's
+    /// capacity says at least the cache's last fill): placement's `CACHE_PREFER` (task #552). A
+    /// fill not measured yet, or a step reading none: no.
+    pub(super) fn holds_cache(&self, step: &str, a: &Ask) -> bool {
+        crate::needs::cache_of(step).is_some_and(|c| {
+            let fill = self.fill_mb(c);
+            fill > 0 && a.cap.as_ref().and_then(|x| x.caches.get(c)).is_some_and(|h| h.have_mb >= fill)
         })
     }
 }

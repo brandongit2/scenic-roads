@@ -579,9 +579,24 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   member's asks try the shared steps first, by their rank, then the others in plan order; the
   lead's own, the plan's order.
 - **Placement by how crucial** (`crate::agent::placement`, behind `state/pool/placement`): asks are
-  tried on steps by their forecast slack (least first), within a step from the longest target; each
-  target is drawn among the members that could take it, weighted by measured speed
-  (`placement::draw`, stable per minute window), the lead's own agent among them. A task offered
+  tried on steps by their forecast slack (least first); within a step, the targets in the asker's
+  last one's z3 tile first (`placement::group`, from just after it in plan order: its jobs read
+  the same neighbourhood's inputs, task #552), then from the longest. Each target is drawn among
+  the members asking lately that would take it now (`Sched::would_take_now`: by their last ask,
+  a slot free and their free memory fitting it; a busy Mac is never drawn a target it would leave
+  untaken), the lead's own agent among them (`placement::draw`, stable per minute window); an
+  asker passed by goes on down the offer to the next target drawn to it. A worker's weight
+  (`Sched::draw_weight`) is its Mac's measured speed at the step against the lead's
+  (`placement::step_speeds`: the history's median time a target, three runs or more each, its
+  slots' runs its Mac's, held to 0.33â€“3 (`STEP_SPEED`); worked out again only as the history
+  grows), else its speed over the shared steps, else the lead's; times `CACHE_PREFER` (4) where its
+  ask's capacity says it holds the step's shared cache (`needs::CACHES`: the DEM cache, the whole
+  copies) whole. Trade-offs: weights only, so a Mac asking alone takes what it can and the
+  weights act only where Macs ask together (no Mac idles for a draw); medians of different
+  targets' times read a Mac given a step's large targets as slower, which the clamp bounds; a
+  minute's window keeps a target drawn to one Mac until the next window. The forecast runs the
+  same draws (the placement is in the scheduler's state it's given), its lanes asking as its
+  model has them. A task offered
   ahead goes to a slower worker only while its head start covers that worker's run. The lead's own
   planned jobs keep plan order.
 - **Resuming** (`crate::agent::resume`, behind `state/pool/resume`): a job interrupted with progress

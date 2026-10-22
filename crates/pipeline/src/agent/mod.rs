@@ -8696,6 +8696,7 @@ impl Agent {
             let names: Vec<String> = c.workers().into_iter().map(|(n, _)| n).filter(|n| *n != self.host).collect();
             let events = c.for_forecast().2;
             p.speed = placement::measured_speeds(&events, &self.host, &names);
+            p.step_speed = placement::step_speeds(&events, &self.host, &names);
         }
         Some(p)
     }

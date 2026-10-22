@@ -7,13 +7,18 @@
 //!   last target's forecast end and the whole build's (`slack`): the long poles (no slack) first.
 //!   The lead's coordinator tries a member's ask on the offers in that order, and within a step
 //!   from its target measured to take longest (crate::coord's `pick_every`).
-//! - **Who takes it** (`draw`): of the members asking lately whose measured room fits a target,
-//!   one drawn with a weight of its measured speed (the forecast's, against the lead's; one not
-//!   measured, the lead's own), as a function of the target and the time (a minute's window,
-//!   `DRAW_S`, from when the coordinator was told): the same inputs, the same draw. A member asking
-//!   for a target drawn to another passes it by; a task likewise among the pages and workers that
-//!   could take it, weighted by their measured pace at its kind. No rule names a Mac or a kind of
-//!   job.
+//! - **Who takes it** (`draw`): of the members asking lately that would take a target now (its
+//!   room fits it by their last ask, with a slot free), one drawn with a weight of its measured
+//!   speed at the target's step (`step_speeds`: its Mac's median time a target against the lead's
+//!   at that step, held to `STEP_SPEED`, task #552; a step not measured on both, its speed over the
+//!   shared steps, the forecast's; neither, the lead's own), times `CACHE_PREFER` where its Mac
+//!   holds the step's shared cache whole (crate::needs::CACHES: no copy, no NAS read in place), as
+//!   a function of the target and the time (a minute's window, `DRAW_S`, from when the coordinator
+//!   was told): the same inputs, the same draw. A member asking for a target drawn to another
+//!   passes it by for the next one drawn to it; its next target is one in its last one's
+//!   neighbourhood (`group`) when one is drawn to it; a task likewise among the pages and workers that
+//!   could take it, weighted by their measured pace at its kind. Weights only, never exclusive: no
+//!   rule names a Mac or a kind of job.
 //! - **Offered ahead** (`AHEAD_ENV`, told to every job): a terrain job offers its next z6 tile's
 //!   subtrees as it begins a z6 tile; each task of a terrain z6 tile or a tree cover's row says how
 //!   much of this Mac's work comes before the job needs it (`ahead`, in tasks' worth: a head start
@@ -55,7 +60,16 @@ pub struct Placement {
     pub slack: BTreeMap<String, u64>,
     /// Each worker's measured speed against the lead's (a worker not in it: 1).
     pub speed: BTreeMap<String, f64>,
+    /// Each worker's measured speed against the lead's at each step (worker → step → speed:
+    /// `step_speeds`); a step not in it: `speed`'s.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub step_speed: BTreeMap<String, BTreeMap<String, f64>>,
 }
+
+/// The weight a Mac holding a step's shared cache whole has in a draw, against one that would copy
+/// it or read the NAS in place (task #552): one random 64 KB NAS read takes ~40 ms where the local
+/// disk takes 0.2 ms, and a whole copy is GBs.
+pub const CACHE_PREFER: f64 = 4.0;
 
 impl Placement {
     /// From the forecast: its steps' slack, and the speeds it measured (not those it guessed).
@@ -68,6 +82,7 @@ impl Placement {
                 .filter(|(w, s)| !f.guessed.contains(w) && s.is_finite() && **s > 0.0)
                 .map(|(w, s)| (w.clone(), *s))
                 .collect(),
+            step_speed: BTreeMap::new(),
         }
     }
 
@@ -76,9 +91,10 @@ impl Placement {
         self.slack.get(step).copied().unwrap_or(u64::MAX)
     }
 
-    /// Worker `w`'s weight in a draw: its measured speed, else the lead's (1).
-    pub fn weight(&self, w: &str) -> f64 {
-        self.speed.get(w).copied().unwrap_or(1.0)
+    /// Worker `w`'s weight in a draw for a target of `step`: its measured speed at the step, else
+    /// over the shared steps, else the lead's (1).
+    pub fn weight(&self, w: &str, step: &str) -> f64 {
+        self.step_speed.get(w).and_then(|m| m.get(step)).or_else(|| self.speed.get(w)).copied().unwrap_or(1.0)
     }
 }
 
@@ -90,6 +106,76 @@ pub fn measured_speeds(events: &[crate::coord::history::Event], lead: &str, name
         .filter(|(_, (_, m))| *m)
         .map(|(n, (s, _))| (n, s))
         .collect()
+}
+
+/// The range a Mac's speed at a step is held to (`step_speeds`): its weight against another's at
+/// most 3:1 before the cache's `CACHE_PREFER`, so a few odd runs never take a step off a Mac.
+pub const STEP_SPEED: (f64, f64) = (0.33, 3.0);
+
+/// Each of the workers `names` measured against the lead (`lead`) at each step by the build's
+/// history: its Mac's (crate::agent::host_of: its slots' runs together) median time a target of
+/// the step over the lead's, three runs or more each, held to `STEP_SPEED`; a step one of them
+/// hasn't run that often left out. Every step, not only the shared ones: a step bound by the NAS's
+/// seeks runs faster on the wired Mac than its speed elsewhere says (task #552). Medians of
+/// different targets' times: a Mac given a step's large targets reads slower than it is, which
+/// the clamp bounds. Worked out again only when the history's length or the names change (the
+/// agent asks each loop).
+pub fn step_speeds(
+    events: &[crate::coord::history::Event],
+    lead: &str,
+    names: &[String],
+) -> BTreeMap<String, BTreeMap<String, f64>> {
+    type Kept = Option<((usize, String, Vec<String>), BTreeMap<String, BTreeMap<String, f64>>)>;
+    static KEPT: std::sync::Mutex<Kept> = std::sync::Mutex::new(None);
+    let key = (events.len(), lead.to_string(), names.to_vec());
+    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((k, v)) = kept.as_ref().filter(|(k, _)| *k == key) {
+        let _ = k;
+        return v.clone();
+    }
+    // ((host, step) → seconds a target, each run's.)
+    let mut per: BTreeMap<(&str, &str), Vec<f64>> = BTreeMap::new();
+    for e in events {
+        let (Some(w), Some(step), Some(secs)) = (&e.worker, &e.step, e.secs) else { continue };
+        if matches!(e.kind.as_str(), "end" | "done") && e.ok == Some(true) && !e.targets.is_empty() {
+            per.entry((super::host_of(w), step)).or_default().push(secs / e.targets.len() as f64);
+        }
+    }
+    for v in per.values_mut() {
+        v.sort_by(f64::total_cmp);
+    }
+    let median = |v: &Vec<f64>| (v.len() >= 3).then(|| v[v.len() / 2]);
+    let lead = super::host_of(lead);
+    let out: BTreeMap<String, BTreeMap<String, f64>> = names
+        .iter()
+        .map(|n| {
+            let host = super::host_of(n);
+            let m: BTreeMap<String, f64> = per
+                .iter()
+                .filter(|((h, _), _)| *h == host)
+                .filter_map(|((_, step), v)| {
+                    let theirs = median(per.get(&(lead, *step))?)?;
+                    let mine = median(v).filter(|m| *m > 0.0)?;
+                    Some((step.to_string(), (theirs / mine).clamp(STEP_SPEED.0, STEP_SPEED.1)))
+                })
+                .collect();
+            (n.clone(), m)
+        })
+        .filter(|(_, m)| !m.is_empty())
+        .collect();
+    *kept = Some((key, out.clone()));
+    out
+}
+
+/// A target's neighbourhood (task #552): a z6 tile's z3 tile (`6/x/y` → `3/(x/8)/(y/8)`); any
+/// other target its own. An asker's next target is one in its last one's neighbourhood when it can
+/// be (crate::coord::sched's `placed_start`): its jobs there read the same inputs.
+pub fn group(target: &str) -> std::borrow::Cow<'_, str> {
+    let mut it = target.split('/');
+    match (it.next(), it.next().map(str::parse::<u32>), it.next().map(str::parse::<u32>), it.next()) {
+        (Some("6"), Some(Ok(x)), Some(Ok(y)), None) => format!("3/{}/{}", x >> 3, y >> 3).into(),
+        _ => target.into(),
+    }
 }
 
 /// Each step's slack in forecast `f` (s): the build's end less the step's (0 when it ends last).
@@ -202,6 +288,43 @@ mod tests {
         assert!((s["MacBook-Pro-de-Brandon"] - 1.0 / 3.0).abs() < 1e-9);
     }
 
+    /// Task #552: a member measured at each step against the lead by medians, its slots' runs its
+    /// Mac's, held to `STEP_SPEED`; a step either ran fewer than three times left out; a member
+    /// with none, absent.
+    #[test]
+    fn step_speeds_are_measured_by_mac_and_step() {
+        use crate::coord::history::Event;
+        let run = |w: &str, step: &str, secs: f64, n: usize| Event {
+            worker: Some(w.into()),
+            step: Some(step.into()),
+            targets: (0..n).map(|i| format!("6/1/{i}")).collect(),
+            secs: Some(secs),
+            ok: Some(true),
+            ..Event::new("done")
+        };
+        let mut ev = Vec::new();
+        for _ in 0..3 {
+            ev.push(run("mini", "depth", 100.0, 1));
+            ev.push(run("mini #2", "terrain", 300.0, 1));
+            // (Its slots' runs together; a target's time a run's over its targets.)
+            ev.push(run("m1", "depth", 800.0, 2));
+            ev.push(run("m1 #2", "terrain", 150.0, 1));
+            ev.push(run("m1", "unit", 10.0, 1));
+        }
+        let s = step_speeds(&ev, "mini", &["m1 #3".into(), "m4".into()]);
+        assert_eq!(s.len(), 1, "{s:?}");
+        assert_eq!(s["m1 #3"], [("depth".to_string(), STEP_SPEED.0), ("terrain".to_string(), 2.0)].into());
+    }
+
+    #[test]
+    fn a_z6_tiles_group_is_its_z3_tile() {
+        assert_eq!(group("6/17/22"), "3/2/2");
+        assert_eq!(group("6/23/23"), "3/2/2");
+        assert_eq!(group("6/24/23"), "3/3/2");
+        assert_eq!(group("catalog"), "catalog");
+        assert_eq!(group("8/1/1"), "8/1/1");
+    }
+
     #[test]
     fn the_long_poles_have_no_slack() {
         use super::super::forecast::{Forecast, StepFc};
@@ -218,6 +341,6 @@ mod tests {
         };
         let p = Placement::from_forecast(&f);
         assert_eq!((p.slack_of("terrain"), p.slack_of("pack"), p.slack_of("x")), (0, 600, u64::MAX));
-        assert_eq!((p.weight("m1"), p.weight("ipad"), p.weight("m4")), (0.5, 1.0, 1.0));
+        assert_eq!((p.weight("m1", "pack"), p.weight("ipad", "pack"), p.weight("m4", "pack")), (0.5, 1.0, 1.0));
     }
 }

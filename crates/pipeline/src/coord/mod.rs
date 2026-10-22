@@ -6240,6 +6240,75 @@ mod tests {
         assert!(c.ask_own(&a, &BTreeSet::new()).is_some(), "the first ended: the second goes");
     }
 
+    /// Task #552: placement's draw weighs a worker by its measured speed at the target's step
+    /// (else over the shared steps, else the lead's), `CACHE_PREFER` times where its Mac holds the
+    /// step's shared cache whole by its ask (its fill measured); short of it, or a step reading
+    /// none, no more.
+    #[test]
+    fn the_draw_weighs_the_step_speed_and_the_cache_held() {
+        use crate::agent::placement::{Placement, CACHE_PREFER};
+        let cache = crate::localread::CACHE;
+        let mut s = sched::Sched::default();
+        s.fills.insert(cache.to_string(), 20_000);
+        let p = Placement {
+            speed: [("m1".to_string(), 0.5)].into(),
+            step_speed: [("mini".to_string(), [("depth".to_string(), 3.0)].into())].into(),
+            ..Default::default()
+        };
+        let holding = |mb: u64| Ask {
+            cap: Some(Capacity {
+                caches: [(cache.to_string(), CacheHere { have_mb: mb })].into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(s.draw_weight(&p, "depth", "mini", &holding(0)), 3.0, "its speed at the step");
+        assert_eq!(s.draw_weight(&p, "slope", "mini", &holding(0)), 1.0, "unmeasured: the lead's");
+        assert_eq!(s.draw_weight(&p, "depth", "m1", &holding(20_000)), 0.5 * CACHE_PREFER, "holds it whole");
+        assert_eq!(s.draw_weight(&p, "depth", "m1", &holding(19_000)), 0.5, "short of it");
+        assert_eq!(s.draw_weight(&p, "slope", "m1", &holding(20_000)), 0.5, "a step reading none");
+        s.fills.clear();
+        assert_eq!(s.draw_weight(&p, "depth", "m1", &holding(20_000)), 0.5, "no fill measured");
+    }
+
+    /// Task #552 review: a draw's winner is a member that would take the target now. One whose
+    /// last ask wanted a job and was granted it since (its slots full) isn't drawn: the other
+    /// takes every target, the z6 tiles of one z3 tile among them, so none sits untaken. A member
+    /// passed by for one target takes the next drawn to it, down the offer.
+    #[test]
+    fn placement_draws_only_among_those_who_would_take_it_now() {
+        let (_d, c, w1, _clock) = every((0, 0));
+        let w2 = client::Client::at(w1.urls(), c.contact.token.clone(), "m2");
+        // (Clustered: 64 z6 tiles, one z3 tile.)
+        let ts: Vec<String> = (0..64).map(|i| format!("6/{}/{}", i % 8, i / 8)).collect();
+        let cost = Cost { peak_mb: 500, secs: 900, worker: None, v: cost_version("pack"), ..Default::default() };
+        c.add_costs_by(&ts.iter().map(|t| (cost_key("pack", t), cost.clone())).collect::<Vec<_>>(), "m1");
+        c.add_disks(&ts.iter().map(|t| (cost_key("pack", t), 10)).collect::<Vec<_>>());
+        let (a1, a2) =
+            (every_ask("m1", "pack", 4096, 10_000), Ask { want: 1, ..every_ask("m2", "pack", 4096, 10_000) });
+        assert!(w1.ask(&a1).unwrap().is_none() && w2.ask(&a2).unwrap().is_none());
+        c.set_placement(Some(placement(&[], &[("m1", 1.0), ("m2", 1.0)])));
+        let all =
+            Offer { step: "pack".into(), targets: ts.iter().map(|t| (t.clone(), "k".into(), 0)).collect(), job: None };
+        let one = |t: &str| Offer { step: "pack".into(), targets: vec![(t.to_string(), "k".into(), 0)], job: None };
+        let drawn_to_m1 = |c: &Coordinator| {
+            let s = c.shared.lock().unwrap();
+            let now = s.now();
+            ts.iter().filter(|t| !s.pick_every(&one(t), &a1, now).is_empty()).count()
+        };
+        // Both free: about half each, and m1 passed by for one goes on to the next drawn to it.
+        let n = drawn_to_m1(&c);
+        assert!(n > 16 && n < 48, "{n}");
+        {
+            let s = c.shared.lock().unwrap();
+            assert!(!s.pick_every(&all, &a1, s.now()).is_empty(), "down the offer to one drawn to it");
+        }
+        // m2 granted the one job its ask wanted: full, it's drawn nothing; m1 takes every one.
+        c.offer("p", vec![all.clone()]);
+        assert!(w2.ask(&a2).unwrap().is_some());
+        assert_eq!(drawn_to_m1(&c), ts.len() - 1);
+    }
+
     /// Task #552 (22 Oct, the lead: 52 units aged an hour, every other step "waiting for room in
     /// the NAS budget", the lead idle while two members ran units back to back): a step granted
     /// target by target doesn't keep the aged reservation for itself, each grant handing it to its
@@ -7007,6 +7076,7 @@ mod tests {
         crate::agent::placement::Placement {
             slack: slack.iter().map(|(s, v)| (s.to_string(), *v)).collect(),
             speed: speed.iter().map(|(w, v)| (w.to_string(), *v)).collect(),
+            ..Default::default()
         }
     }
 
@@ -7072,7 +7142,9 @@ mod tests {
         let offer = c.shared.lock().unwrap().offers[0].clone();
         let one = |i: usize| Offer { targets: vec![offer.targets[i].clone()], ..offer.clone() };
         let a1 = every_ask("m1", "slope", 64_000, 100_000);
+        // (Its slots past the job it holds free: it would take another, task #552.)
         let a2 = Ask {
+            want: 2,
             cap: Some(Capacity { at: unix_now(), cores: 8, cores_free: 0, ..Default::default() }),
             ..every_ask("m2", "slope", 64_000, 100_000)
         };
