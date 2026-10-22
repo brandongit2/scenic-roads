@@ -144,10 +144,11 @@ pub struct Input<'a> {
 
 /// What held a Mac back over the last `HELD_S` (task #563; `held_back`): the jobs it ran at once
 /// while it ran any (`lanes`, the mean, rounded; one at least), and the share of those lanes'
-/// time it kept busy while the pool ran planned work (`util`, 0.1–1). The lead's ramp, its slot
+/// time it kept busy while the pool ran planned work and it was around (`util`, `UTIL_MIN`–1:
+/// a minute it was away or asleep isn't counted, `AWAY_S`). The lead's ramp, its slot
 /// cap, the NAS budget, a member's memory and the plan feeding work gradually all show in them;
 /// the forecast's run, which releases work by the plan's dependencies alone, sees none of that
-/// otherwise (the backtest: 65 % early without, 30 % with).
+/// otherwise (the backtest, on the history's job set and order: 65 % early without, 35 % with).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Held {
     pub lanes: usize,
@@ -157,12 +158,21 @@ pub struct Held {
 /// The span `held_back` reads.
 pub const HELD_S: u64 = 86_400;
 
+/// A Mac with no job for longer than twice this was away (asleep, off, on battery, held) but
+/// for this much either side of its jobs; `util`'s floor: a quiet day never slows a Mac more
+/// than fourfold.
+/// (The backtest, finish error median: no such cut and no floor 34 %; 2 h and 0.25 35 %; 30 min
+/// and 0.4 42 %: most idle time while the pool worked was work held back, not a Mac away.)
+const AWAY_S: usize = 7200;
+const UTIL_MIN: f64 = 0.25;
+
 /// Each Mac's `Held` from the history (`events`: the jobs done, ended and failed, a slot's worker
 /// counted for its Mac) over the `HELD_S` before `now`. A Mac that ran none is left out.
 pub fn held_back(events: &[crate::coord::history::Event], now: u64) -> BTreeMap<String, Held> {
     let from = now.saturating_sub(HELD_S);
     let n = (HELD_S / 60) as usize;
-    let mac = |w: &str| w.split(" #").next().unwrap_or(w).to_string();
+    // (A slot's worker counted for its Mac, an old second slot's name too.)
+    let mac = |w: &str| w.split(" #").next().unwrap_or(w).trim_end_matches(" (second job)").to_string();
     // (Each Mac's jobs running each minute, and the planned work's anywhere.)
     let mut per: BTreeMap<String, Vec<u16>> = BTreeMap::new();
     let mut pool = vec![false; n];
@@ -176,14 +186,31 @@ pub fn held_back(events: &[crate::coord::history::Event], now: u64) -> BTreeMap<
             pool[m] |= !CLOCKED.contains(&step);
         }
     }
-    let pool_min = pool.iter().filter(|&&p| p).count().max(1) as f64;
+    let near = AWAY_S / 60;
     per.into_iter()
         .filter_map(|(m, c)| {
             let busy = c.iter().filter(|&&c| c > 0).count();
             let sum: f64 = c.iter().map(|&c| c as f64).sum();
+            // (The minutes the pool worked while this Mac was around: within `AWAY_S` of a job.)
+            let mut last = None;
+            let mut around = vec![false; n];
+            for k in 0..n {
+                if c[k] > 0 {
+                    last = Some(k);
+                }
+                around[k] = last.is_some_and(|l| k - l <= near);
+            }
+            last = None;
+            for k in (0..n).rev() {
+                if c[k] > 0 {
+                    last = Some(k);
+                }
+                around[k] |= last.is_some_and(|l| l - k <= near);
+            }
+            let worked = (0..n).filter(|&k| pool[k] && around[k]).count().max(1) as f64;
             (busy > 0).then(|| {
                 let lanes = ((sum / busy as f64).round() as usize).max(1);
-                (m, Held { lanes, util: (sum / pool_min / lanes as f64).clamp(0.1, 1.0) })
+                (m, Held { lanes, util: (sum / worked / lanes as f64).clamp(UTIL_MIN, 1.0) })
             })
         })
         .collect()
@@ -2480,14 +2507,17 @@ mod tests {
     /// each Mac's slots then (the most it ran at once the day before), against when it ran out.
     /// Whichever Mac led (`lead_at`: the Mac whose own jobs, "start" and "end", come next; a Mac
     /// renamed, `ALIAS`, one), its members the Macs that ran jobs from a day before to the end.
-    /// Three forecasts of each: as live (the work all ready at the start, released by the plan
-    /// alone), that one held to the live error (`pace`: the earlier terms' runs against the history
-    /// before the start, as the lead holds its forecasts), and with the history's release times
-    /// (`Release`: each job ready when the history shows what it waits on done: a map tile its
-    /// "planned" event's z6 tiles; a z3 tile's assembly its z6 tiles; a z6 tile's slope and a z6
-    /// tile the terrain of its z3 tile and its neighbours', a z6 tile also the pass's heritage sites,
-    /// reaches and buildings; a chain's step the steps it reads, `chain_deps`; the lead's jobs on its
-    /// own clock, `CLOCKED`, when they started, left out of the finish), whose busy shares (1, 2, 3,
+    /// Three runs of each, on the history's job set (the jobs started in the window) and order:
+    /// "as live" (each Mac held back, `held_back` over the day before; each job released once the
+    /// run has done what it waits on, `Release::after`, those the history shows started before it,
+    /// and one waiting on a job under way at the start once that really ended), the same with
+    /// nothing held back (each Mac's slots the most it ran at once the day before), and with the
+    /// history's release times (`Release`: each job ready when the history shows what it waits on
+    /// done: a map tile its "planned" event's z6 tiles; a z3 tile's assembly its z6 tiles; a z6
+    /// tile's slope and a z6 tile the terrain of its z3 tile and its neighbours', a z6 tile also
+    /// the pass's heritage sites, reaches and buildings; a chain's step the steps it reads,
+    /// `chain_deps`; the lead's jobs on its own clock, `CLOCKED`, when they started, left out of
+    /// the finish), whose busy shares (1, 2, 3,
     /// 4+ jobs at once) are printed beside the history's. The NAS's limits: the lead's own held to
     /// the best of the last day's probes the logs show by then (`nas::Probes`; each probe timed by
     /// the term the log last named), the members' not (the switch, state/pool/nas-budget, was off).
@@ -3062,24 +3092,28 @@ mod tests {
             targets: vec!["x".into(); n],
             ..Default::default()
         };
-        // (m4: two slots at once for 2 h; m1: one, the first of those hours.)
+        // (m4: two slots at once for 2 h, its second by its old name; m1: one job, the first of
+        // those hours, around all of them: 60 of 120 minutes; ipad: 10 minutes of the
+        // pool's 2 h of work around it: its floor, not a twelfth.)
         let events = vec![
             job("m4", now - 3600, 7200.0, 1),
-            job("m4 #2", now - 3600, 7200.0, 1),
+            job("m4 (second job)", now - 3600, 7200.0, 1),
             job("m1", now - 7200, 3600.0, 1),
+            job("ipad", now - 9000, 600.0, 1),
         ];
         let h = held_back(&events, now);
         assert_eq!(h["m4"], Held { lanes: 2, util: 1.0 });
         assert_eq!(h["m1"].lanes, 1);
         assert!((h["m1"].util - 0.5).abs() < 0.02, "{:?}", h["m1"]);
+        assert_eq!(h["ipad"].util, UTIL_MIN);
         let lane = |host: &str, k: usize, busy: f64| Machine {
             busy_s: busy,
             mac: Some(host.into()),
             ..mac(&super::super::slot_worker(host, k), 1.0, false)
         };
-        let ms = vec![lane("m1", 0, 0.0), lane("m1", 1, 0.0), lane("m1", 2, 50.0), lane("ipad", 0, 0.0)];
+        let ms = vec![lane("m1", 0, 0.0), lane("m1", 1, 0.0), lane("m1", 2, 50.0), lane("mini", 0, 0.0)];
         let kept = hold_back(ms, &h);
-        assert_eq!(kept.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["m1", "m1 #3", "ipad"]);
+        assert_eq!(kept.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["m1", "m1 #3", "mini"]);
         assert!((kept[0].speed - h["m1"].util).abs() < 1e-9 && kept[2].speed == 1.0);
         // (A run that had done 4 targets 600 s in; the history 2 in the 7200 s since: 300 s.)
         let p = pace(&[(now - 7200, vec![0, 4, 8])], &events, now).unwrap();
