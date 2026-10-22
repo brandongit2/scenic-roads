@@ -151,12 +151,15 @@ fn aside_with(
     r.map(|()| Some(aside))
 }
 
-/// Writes `b` as `path`, whole.
-/// A temporary name renamed over it; the old file renamed aside when that stays busy
-/// (`rename_or_aside`), so a file another SMB session holds open (a Mac killed with it open: the
-/// server may keep its handle for hours) never blocks a write. Readers of a file written so read
-/// through `read` or `retried`, which wait out the moment between the two renames.
+/// Writes `b` as `path`, whole: a temporary name renamed over it; the old file renamed aside when
+/// that stays busy (`rename_or_aside`), so a file another SMB session holds open (a Mac killed with
+/// it open: the server may keep its handle for hours) never blocks a write. Readers of a file that
+/// must never read as missing read it through `read_replaced`. The folder's day-old asides are
+/// swept (`sweep_hourly`).
 pub fn write(path: &Path, b: &[u8]) -> Result<()> {
+    if let Some(d) = path.parent() {
+        sweep_hourly(d);
+    }
     let tmp = tmp_name(path);
     let r = (|| -> Result<()> {
         let mut f = std::fs::File::create(&tmp)?;
@@ -174,13 +177,10 @@ pub fn write(path: &Path, b: &[u8]) -> Result<()> {
     r.with_context(|| format!("write {}", path.display()))
 }
 
-/// Tries `op` on `path` (a read or an open of a file `write` replaces) through the NAS's moments:
-/// busy (EBUSY: another session holds the file), tried again for a few seconds; missing while an
-/// aside of it exists (a writer between `rename_or_aside`'s two renames), tried again, then `op`
-/// on the newest aside (that writer's second rename failed: its aside is the last version written
-/// whole). Missing with no aside is missing.
+/// Tries `op` on `path` (a read or an open) again while it's busy (EBUSY: another SMB session
+/// holds the file), for a few seconds. No listing: for any file.
 pub fn retried<T>(path: &Path, op: &dyn Fn(&Path) -> std::io::Result<T>) -> std::io::Result<T> {
-    retried_with(path, op, std::time::Duration::from_millis(250))
+    retried_with(path, op, false, PAUSE)
 }
 
 /// Reads `path` (`retried`).
@@ -188,20 +188,36 @@ pub fn read(path: &Path) -> std::io::Result<Vec<u8>> {
     retried(path, &|p| std::fs::read(p))
 }
 
-/// How many times `retried` tries again on busy, and on missing with an aside there.
+/// Reads `path`, a file `write` replaces and nothing removes on purpose (the manifest, pending,
+/// sizes, status, extents, summaries): `read`, and when it's missing while an aside of it exists
+/// (a writer between `rename_or_aside`'s two renames) tried again for 2 s, then the newest aside
+/// read (that writer's second rename failed: the aside is the last version written whole, and the
+/// file stays missing until the next write, maybe hours, so no shorter window would keep a
+/// manifest from being read as empty). An aside put aside more than `ASIDE_KEPT` ago is passed
+/// over (the sweeps remove those). Missing with no aside is missing. A missing file lists its
+/// folder, so not for files that are often missing.
+pub fn read_replaced(path: &Path) -> std::io::Result<Vec<u8>> {
+    retried_with(path, &|p| std::fs::read(p), true, PAUSE)
+}
+
+const PAUSE: std::time::Duration = std::time::Duration::from_millis(250);
+/// How many times `retried` tries again on busy, and `read_replaced` on missing with an aside there.
 const BUSY_TRIES: u32 = 20;
 const MISSING_TRIES: u32 = 8;
+/// An aside older than this (since it was put aside) is never read, and is removed by the sweeps.
+const ASIDE_KEPT: std::time::Duration = std::time::Duration::from_secs(86_400);
 
 fn retried_with<T>(
     path: &Path,
     op: &dyn Fn(&Path) -> std::io::Result<T>,
+    asides: bool,
     pause: std::time::Duration,
 ) -> std::io::Result<T> {
     let (mut busy, mut missing) = (0, 0);
     loop {
         match op(path) {
             Err(e) if e.kind() == std::io::ErrorKind::ResourceBusy && busy < BUSY_TRIES => busy += 1,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(e) if asides && e.kind() == std::io::ErrorKind::NotFound => {
                 let Some(aside) = newest_aside(path) else { return Err(e) };
                 if missing == MISSING_TRIES {
                     eprintln!("whole: {} missing, read from its aside {}", path.display(), aside.display());
@@ -216,9 +232,10 @@ fn retried_with<T>(
 }
 
 /// The newest (by modification time, which a rename keeps: the last written) of `path`'s asides in
-/// its folder, any Mac's or process's.
+/// its folder, any Mac's or process's, put aside within `ASIDE_KEPT`.
 fn newest_aside(path: &Path) -> Option<PathBuf> {
     let prefix = format!("{}.", path.file_name()?.to_string_lossy());
+    let now = std::time::SystemTime::now();
     std::fs::read_dir(path.parent()?)
         .ok()?
         .flatten()
@@ -226,9 +243,63 @@ fn newest_aside(path: &Path) -> Option<PathBuf> {
             let n = e.file_name().to_string_lossy().into_owned();
             n.starts_with(&prefix) && n.ends_with(".aside.tmp")
         })
-        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .filter_map(|e| {
+            let m = e.metadata().ok()?;
+            (aside_age(&m, now) <= ASIDE_KEPT).then_some((m.modified().ok()?, e.path()))
+        })
         .max()
         .map(|(_, p)| p)
+}
+
+/// How long ago a file or folder was put aside: since its status last changed (a rename changes
+/// it; its modification time is its content's), else its modification time.
+fn aside_age(m: &std::fs::Metadata, now: std::time::SystemTime) -> std::time::Duration {
+    #[cfg(unix)]
+    let at = {
+        use std::os::unix::fs::MetadataExt;
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(m.ctime().max(0) as u64)
+    };
+    #[cfg(not(unix))]
+    let at = m.modified().unwrap_or(now);
+    now.duration_since(at).unwrap_or_default()
+}
+
+/// Removes the asides (files or folders, `*.aside.tmp`) in folder `dir` put aside more than
+/// `ASIDE_KEPT` ago, failures passed over (one still held: the next sweep). `prefix`: only names
+/// starting with it. Run by every `write`, at most hourly a folder a process
+/// (`sweep_hourly`), so the asides of a file rarely written still go.
+pub fn sweep_asides(dir: &Path, prefix: &str, older: std::time::Duration) -> usize {
+    let now = std::time::SystemTime::now();
+    let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+    let mut n = 0;
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !name.starts_with(prefix) || !name.ends_with(".aside.tmp") {
+            continue;
+        }
+        let Ok(m) = std::fs::symlink_metadata(e.path()) else { continue };
+        if aside_age(&m, now) < older {
+            continue;
+        }
+        let r = if m.is_dir() { std::fs::remove_dir_all(e.path()) } else { std::fs::remove_file(e.path()) };
+        n += r.is_ok() as usize;
+    }
+    n
+}
+
+/// `sweep_asides` of `dir`'s day-old asides, when this process hasn't swept it within the hour.
+fn sweep_hourly(dir: &Path) {
+    static SWEPT: std::sync::Mutex<Vec<(PathBuf, std::time::Instant)>> = std::sync::Mutex::new(Vec::new());
+    let now = std::time::Instant::now();
+    {
+        let mut s = SWEPT.lock().unwrap();
+        if s.iter().any(|(d, t)| d == dir && now.saturating_duration_since(*t) < std::time::Duration::from_secs(3600)) {
+            return;
+        }
+        s.retain(|(d, _)| d != dir);
+        s.push((dir.to_path_buf(), now));
+    }
+    sweep_asides(dir, "", ASIDE_KEPT);
 }
 
 /// Copies `src` to `dst`, whole; the bytes copied.
@@ -493,11 +564,11 @@ mod tests {
             std::fs::read(q)
         };
         std::fs::write(&p, b"m").unwrap();
-        assert_eq!(retried_with(&p, &busy_twice, pause).unwrap(), b"m");
+        assert_eq!(retried_with(&p, &busy_twice, true, pause).unwrap(), b"m");
         assert_eq!(tries.get(), 3);
         // Busy for good: an error, once the tries are spent.
         let always = |_: &Path| -> std::io::Result<()> { Err(std::io::Error::from(std::io::ErrorKind::ResourceBusy)) };
-        assert_eq!(retried_with(&p, &always, pause).unwrap_err().kind(), std::io::ErrorKind::ResourceBusy);
+        assert_eq!(retried_with(&p, &always, true, pause).unwrap_err().kind(), std::io::ErrorKind::ResourceBusy);
         // Missing, no aside: missing at once.
         std::fs::remove_file(&p).unwrap();
         tries.set(10);
@@ -505,7 +576,7 @@ mod tests {
             tries.set(tries.get() + 1);
             std::fs::read(q)
         };
-        assert_eq!(retried_with(&p, &counted, pause).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(retried_with(&p, &counted, true, pause).unwrap_err().kind(), std::io::ErrorKind::NotFound);
         assert_eq!(tries.get(), 11);
         // Missing beside asides: the newest one's bytes, after the waits.
         let old = d.path().join("manifest.json.a.1.0.aside.tmp");
@@ -521,13 +592,34 @@ mod tests {
             .unwrap();
         std::fs::write(d.path().join("other.json.a.1.0.aside.tmp"), b"x").unwrap();
         assert_eq!(read_with_zero(&p), b"new");
+        // A plain read (`read`, `retried`) never lists: missing is missing.
+        let plain = retried_with(&p, &|q| std::fs::read(q), false, pause);
+        assert_eq!(plain.unwrap_err().kind(), std::io::ErrorKind::NotFound);
         // The file back (the writer's second rename landed): the file's bytes.
         std::fs::write(&p, b"m2").unwrap();
         assert_eq!(read_with_zero(&p), b"m2");
     }
 
+    /// A sweep removes the asides (files and folders) put aside longer ago than its age, only those
+    /// of its prefix, and keeps the younger ones and other files.
+    #[test]
+    fn a_sweep_removes_old_asides_only() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("m.json.a.1.0.aside.tmp"), b"x").unwrap();
+        std::fs::create_dir_all(d.path().join("6-1-1.a.1.aside.tmp/sub")).unwrap();
+        std::fs::write(d.path().join("6-1-1.a.1.aside.tmp/sub/f"), b"x").unwrap();
+        std::fs::write(d.path().join("m.json"), b"x").unwrap();
+        let hour = std::time::Duration::from_secs(3600);
+        assert_eq!(sweep_asides(d.path(), "", hour), 0, "all younger than an hour");
+        assert_eq!(sweep_asides(d.path(), "6-1-1.", std::time::Duration::ZERO), 1);
+        assert!(!d.path().join("6-1-1.a.1.aside.tmp").exists());
+        assert!(d.path().join("m.json.a.1.0.aside.tmp").exists(), "another prefix's kept");
+        assert_eq!(sweep_asides(d.path(), "", std::time::Duration::ZERO), 1);
+        assert!(d.path().join("m.json").exists());
+    }
+
     fn read_with_zero(p: &Path) -> Vec<u8> {
-        retried_with(p, &|q| std::fs::read(q), std::time::Duration::ZERO).unwrap()
+        retried_with(p, &|q| std::fs::read(q), true, std::time::Duration::ZERO).unwrap()
     }
 
     /// The second rename failing leaves the aside where it is (renaming it back could replace a

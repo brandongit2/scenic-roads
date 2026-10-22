@@ -19,7 +19,7 @@ pub type Extents = BTreeMap<String, [i32; 4]>;
 
 /// The extents kept (none when the file isn't there or can't be read).
 pub fn load(root: &Path) -> Extents {
-    crate::whole::read(&root.join(FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    crate::whole::read_replaced(&root.join(FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
 /// `known`, with the extents of manifest `m`'s base packs it lacks read from their headers, and

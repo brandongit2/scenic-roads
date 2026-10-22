@@ -1576,7 +1576,7 @@ fn units_meta(out: &Out, base: &BTreeMap<String, String>, now: u64) -> Result<se
     use pipeline::summary::Summary;
     let path = out.root().join("state/build/summaries.json");
     let mut known: BTreeMap<String, Summary> =
-        pipeline::whole::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        pipeline::whole::read_replaced(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let mut total = Summary::default();
     let mut used: std::collections::BTreeSet<String> = Default::default();
     let mut made = 0;

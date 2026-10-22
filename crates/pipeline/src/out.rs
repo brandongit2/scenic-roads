@@ -141,7 +141,7 @@ pub fn read_manifest(root: &Path) -> Result<BTreeMap<String, String>> {
 }
 
 pub fn read_record<T: Default + serde::de::DeserializeOwned>(p: &Path) -> Result<T> {
-    match crate::whole::read(p) {
+    match crate::whole::read_replaced(p) {
         Ok(b) => serde_json::from_slice(&b).with_context(|| format!("parse {}", p.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
         Err(e) => Err(e).with_context(|| format!("read {}", p.display())),

@@ -55,14 +55,24 @@ The share is SMB 3 on a Synology. The design assumes:
   fallback removes up to 4 (the oldest first), finds any Mac's or process's asides of that file by
   listing its folder at most once a minute, and remembers at most 16 not yet removable. Listings
   skip asides as temporary. When the second rename fails the aside stays (renaming it back could
-  replace a newer file), so the file is missing until the next write. Readers go through
-  `crate::whole::retried` (`whole::read`, `out::read_record`, `Nas::read`/`read_fresh`): a busy
-  read or open is tried again for 5 s; a missing file with an aside beside it is tried again for
-  2 s, then the newest aside (by modification time) is read, the last version written whole, so a
-  manifest is never taken as empty. The fallbacks log `whole: rename over <path> busy: …` and
-  `whole: <path> missing, read from its aside …`. No shared file on the NAS is locked or opened
-  exclusively: every lock (`sys::PathLock`: the build lock, the member and agent locks) is a local
-  file.
+  replace a newer file), so the file is missing until the next write. Every read of the NAS
+  (`crate::whole::read`/`retried`: `Nas::read`/`read_fresh`) tries a busy read or open again for
+  5 s, and never lists. The files that must never read as missing, all replaced by
+  `whole::write` and never removed on purpose (`state/build/manifest.json`, `pending.json`,
+  `sizes.json`, `summaries.json`, the extents, `state/status.json`), are read with
+  `whole::read_replaced` (`out::read_record`): missing with an aside beside it, it is tried again
+  for 2 s, then the newest aside (by modification time) is read, the last version written whole,
+  so a manifest is never taken as empty. An aside put aside (its status change time) more than a
+  day ago is never read, so a stale aside can't bring back a file. Sweeps: each fallback removes
+  asides as above; every `whole::write` also removes its folder's day-old asides (a listing at
+  most hourly a folder a process), so a rarely written file's go too; and a kept scenic-units
+  folder that can't be removed (a held file) is renamed aside (`scache::drop_dir`), the unit's
+  earlier folder asides removed at its next save. The fallbacks log
+  `whole: rename over <path> busy: …`, `whole: <path> missing, read from its aside …` and
+  `scache: <dir> not removed …`. No NAS file is flock'd or opened with O_EXLOCK/O_SHLOCK: every
+  lock (`sys::PathLock`: the build lock, the member and agent locks; store::cachefile's holds) is
+  on a local file; terms and leases use create-new (O_EXCL), an atomic create whose handle is
+  closed once written.
 - **No conditional writes or atomic appends** between clients.
 - **Listings are slow** (3–33 s a folder under load): nothing lists in a loop; the current term is
   found by stat'ing the next, heartbeats are read by member id, the journal is listed off the loop.

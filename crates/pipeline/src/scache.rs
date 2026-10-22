@@ -232,7 +232,11 @@ fn grid_basis(build: &Path) -> Result<Vec<([u32; 2], String)>> {
 /// Removes kept folder `dir`; when a file in it can't be removed (the NAS holding it for another
 /// SMB session, maybe for hours), the folder is renamed aside (`<name>.<host>.<pid>.aside.tmp`, a
 /// temporary name) so its name is free: keeping results is never blocked by a dead Mac's handle.
+/// Its earlier asides (any Mac's) are removed first, those still held passed over.
 fn drop_dir(dir: &Path) -> Result<()> {
+    if let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) {
+        crate::whole::sweep_asides(parent, &format!("{}.", name.to_string_lossy()), std::time::Duration::ZERO);
+    }
     if !dir.exists() {
         return Ok(());
     }
@@ -349,6 +353,19 @@ impl Carry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Dropping a kept folder removes its earlier asides (any Mac's) and leaves other units'.
+    #[test]
+    fn dropping_a_kept_folder_sweeps_its_asides() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("6-1-1");
+        std::fs::create_dir_all(dir.join("x")).unwrap();
+        std::fs::create_dir_all(d.path().join("6-1-1.m.7.aside.tmp/y")).unwrap();
+        std::fs::create_dir_all(d.path().join("6-1-2.m.7.aside.tmp")).unwrap();
+        drop_dir(&dir).unwrap();
+        assert!(!dir.exists() && !d.path().join("6-1-1.m.7.aside.tmp").exists());
+        assert!(d.path().join("6-1-2.m.7.aside.tmp").exists());
+    }
     use det::Det;
 
     /// A z6 tile's folder after a run: `tiles` in grid.idx, terrain `elev` for every cell.

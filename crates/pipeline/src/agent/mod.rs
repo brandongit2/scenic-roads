@@ -10668,7 +10668,7 @@ fn write_replace(p: &Path, bytes: &[u8]) -> Result<()> {
 
 /// The status a `scenic status` shows: the NAS's heartbeat, else this Mac's copy.
 pub fn read_status(root: Option<&Path>, home: &Path) -> Option<Status> {
-    root.and_then(|r| crate::whole::read(&r.join("state/status.json")).ok())
+    root.and_then(|r| crate::whole::read_replaced(&r.join("state/status.json")).ok())
         .or_else(|| std::fs::read(home.join("status.json")).ok())
         .and_then(|b| serde_json::from_slice(&b).ok())
 }
