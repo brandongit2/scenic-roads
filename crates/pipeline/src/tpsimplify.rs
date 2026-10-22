@@ -671,9 +671,10 @@ impl Index {
         let (qy0, qy1) = (q.0[1].min(q.1[1]), q.0[1].max(q.1[1]));
         for level in 0..self.levels {
             let c = self.cell * f64::powi(2.0, level as i32);
-            // A segment of this class meeting the box has its lower corner within c below it.
-            let (cx0, cx1) = (((qx0 - c) / c).floor() as i64, (qx1 / c).floor() as i64);
-            let (cy0, cy1) = (((qy0 - c) / c).floor() as i64, (qy1 / c).floor() as i64);
+            // A segment of this class meeting the box has its lower corner within c below it (one
+            // cell more: a segment's floored size can round to its class's edge by an ulp).
+            let (cx0, cx1) = (((qx0 - c) / c).floor() as i64 - 1, (qx1 / c).floor() as i64);
+            let (cy0, cy1) = (((qy0 - c) / c).floor() as i64 - 1, (qy1 / c).floor() as i64);
             let all = &self.by_level[level as usize];
             if (cx1 - cx0 + 1) as f64 * (cy1 - cy0 + 1) as f64 > all.len() as f64 {
                 if all.iter().any(|&id| look(id)) {

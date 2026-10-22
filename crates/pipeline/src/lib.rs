@@ -25,6 +25,7 @@ pub mod geotiff;
 pub mod handoff;
 pub mod heritage;
 pub mod heritage_layers;
+pub mod heritagedetails;
 pub mod hipack;
 pub mod inputs;
 pub mod interest;

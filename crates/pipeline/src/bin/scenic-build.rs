@@ -3450,7 +3450,7 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 }
 
 /// heritage [--pass <date>] [--dem dir] [--cache dir]: the rest of the heritage chain
-/// (heritagewd, heritagedetails, areadetails, whsshapes, pipeline::filterprops, interest's heritage part,
+/// (heritagewd, pipeline::heritagedetails, areadetails, whsshapes, pipeline::filterprops, interest's heritage part,
 /// pageviews; then the map's layers, pipeline::heritage_layers) in the stand-in root on the
 /// heritage-sites job's outputs (docs/phase5.md "Heritage and area flags"), over the same cover: the pass's areas and named objects within it
 /// (named with the chain's filter), and for the World Heritage parts the pass's `whs` set within
@@ -3482,7 +3482,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     ]);
     let chain = [
         (1, "heritagewd.py", vec![]),
-        (1, "heritagedetails.py", vec![]),
+        (1, "heritagedetails", vec![]),
         (1, "areadetails.py", vec![]),
         (2, "whsshapes.py", vec![]),
         (2, "filterprops", vec![]),
@@ -3585,8 +3585,11 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         }
         let mine: Vec<&str> = chain.iter().filter(|c| c.0 == *part).map(|c| c.1).collect();
         stage(mine.iter().position(|s| s == script).unwrap_or(0) as u64, mine.len() as u64, script);
-        if *script == "filterprops" {
-            // (Ours: pipeline::filterprops.)
+        if *script == "heritagedetails" {
+            // (Ours, as the next: pipeline::heritagedetails, pipeline::filterprops.)
+            let _p = phase("heritagedetails", Class::Mixed);
+            pipeline::heritagedetails::run(&root)?;
+        } else if *script == "filterprops" {
             let _p = phase("filterprops", Class::Mixed);
             pipeline::filterprops::run(&b)?;
         } else {

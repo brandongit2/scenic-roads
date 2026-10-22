@@ -1,6 +1,6 @@
 //! What the internet answered the steps that ask it a great deal, kept on the NAS (docs/pool.md §2,
 //! durable state on the NAS): the items job's Wikidata facts and Wikipedia articles, and the
-//! heritage chain's (heritagewd.py's, heritagedetails.py's and whsshapes.py's Wikidata and Wikipedia
+//! heritage chain's (heritagewd.py's and whsshapes.py's Wikidata and Wikipedia
 //! caches, areadetails.py's park facts). A step keeps them on its Mac, in its cache, where its scripts add to them as
 //! they fetch (a chunk or a file at a time), and on the NAS as one archive a pass (`Kept::nas`: tar,
 //! zstd with its checksum), written whole (crate::whole) when the step starts and the NAS hasn't what

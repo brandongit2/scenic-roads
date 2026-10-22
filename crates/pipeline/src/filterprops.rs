@@ -1,5 +1,5 @@
 //! The numbers the heritage layers' filters work on, stamped onto their features in the heritage
-//! chain's stand-in root (`data/build`, after heritagedetails.py and areadetails.py; the details
+//! chain's stand-in root (`data/build`, after pipeline::heritagedetails and areadetails.py; the details
 //! stay on the server, these few fields are what MapLibre filters and the in-view counts need):
 //!
 //!   heritage.json   by (year built), dy (year designated), sl (Wikipedia/Wikimedia sitelinks),
