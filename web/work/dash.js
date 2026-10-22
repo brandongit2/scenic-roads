@@ -49,7 +49,7 @@ const plural = (k, one, many = `${one}s`) => `${n(k)} ${k === 1 ? one : many}`;
 // Every word about a step comes from its row: its title, the noun its targets are counted in, its
 // stage (its colour) and where it runs. Before the table has loaded (or from a lead without it) a
 // step goes by its id.
-const STAGE_COLOURS = { pass: "#8fa2b5", sites: "#c47fb5", terrain: "#c98b4a", slope: "#d9c35a", trees: "#5fae6b", roads: "#5b8fd8", depth: "#2f5d9e", tiles: "#4fb3c6", finish: "#7fb3a8", trains: "#a9a0d6", landmarks: "#9b7be0", buildings: "#a39a8c", publish: "#d9667a", upkeep: "#7b8590" };
+const STAGE_COLOURS = { pass: "#8fa2b5", sites: "#c47fb5", terrain: "#c98b4a", slope: "#d9c35a", trees: "#5fae6b", roads: "#5b8fd8", depth: "#2f5d9e", fine: "#a8703a", tiles: "#4fb3c6", finish: "#7fb3a8", trains: "#a9a0d6", landmarks: "#9b7be0", buildings: "#a39a8c", publish: "#d9667a", upkeep: "#7b8590" };
 const table = { steps: {}, stages: [] };
 const S = {
   row: (id) => table.steps[id],

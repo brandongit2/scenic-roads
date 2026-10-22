@@ -6219,6 +6219,7 @@ pub(crate) mod tests {
                 "slope",
                 "trees",
                 "depth",
+                "fine",
                 "roads",
                 "tiles",
                 "finish",
@@ -6258,11 +6259,13 @@ pub(crate) mod tests {
             "two pieces, their assembly apart"
         );
         // Every line names every step of its stage, its items in the table's order.
-        assert_eq!(line(&l, "terrain").steps, ["terrain-water", "terrain", "terrain-lo", "terrain-fine"]);
+        assert_eq!(line(&l, "terrain").steps, ["terrain-water", "terrain", "terrain-lo"]);
         assert_eq!(
             line(&l, "terrain").items.iter().map(|i| i.step.as_str()).collect::<Vec<_>>(),
-            ["terrain", "terrain-lo", "terrain-fine"]
+            ["terrain", "terrain-lo"]
         );
+        // (The fine terrain its own line: the terrain reads done without it.)
+        assert_eq!(line(&l, "fine").steps, ["terrain-fine"]);
         // Terrain, slope, the heritage sites and the area done.
         for step in ["heritage-sites", "terrain", "terrain-lo", "unit", "slope", "slope-lo", "trees", "trees-lo"] {
             let w = past_publishing(&c, "d", &mut m, &mut done);

@@ -13627,7 +13627,8 @@ mod tests {
     fn the_checklist_says_which_steps_helpers_take() {
         let steps = build::fold(&build::checklist_to_come(), &BTreeMap::new(), &BTreeMap::new());
         let shared = |id: &str| steps.iter().find(|s| s.id == id).and_then(|s| s.shared.clone());
-        assert_eq!(shared("terrain").as_deref(), Some("Terrain and Terrain, finer"), "the pieces, not the assemblies");
+        assert_eq!(shared("terrain").as_deref(), Some("Terrain"), "the pieces, not the assemblies");
+        assert_eq!(shared("fine").as_deref(), Some("all"));
         assert_eq!(shared("slope").as_deref(), Some("Slope"));
         assert_eq!(shared("roads").as_deref(), Some("all"));
         assert_eq!(shared("landmarks").as_deref(), Some("Landmark candidates and Peaks"));

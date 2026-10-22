@@ -115,13 +115,14 @@ pub struct Stage {
 }
 
 /// The stages, in the build's order (docs/pipeline.md §2).
-pub const STAGES: [Stage; 14] = [
+pub const STAGES: [Stage; 15] = [
     Stage { id: "pass", title: "OpenStreetMap pass", does: "The newest planet read once for the whole world: its sets, outlines, pieces and road values, the basemap, the water, and what the regions' steps read." },
     Stage { id: "sites", title: "Heritage sites", does: "The heritage sites and designated areas the regions' tiles read." },
     Stage { id: "terrain", title: "Terrain", does: "The terrain packs, a tile at a time, assembled zoomed out by z3 tile." },
     Stage { id: "slope", title: "Slope", does: "The slope packs from the terrain, a tile at a time, assembled zoomed out by z3 tile." },
     Stage { id: "trees", title: "Tree cover", does: "The tree cover, height and leaf type, a tile at a time, assembled zoomed out by z3 tile." },
     Stage { id: "depth", title: "Water depth", does: "The depth under the seas and lakes from the depth sources: zoomed out by z3 tile, then a tile at a time where a source has finer detail." },
+    Stage { id: "fine", title: "Terrain, finer", does: "The terrain past the base's zoom where a declared elevation dataset has the detail, a z8 tile at a time." },
     Stage { id: "roads", title: "Roads", does: "Each tile's roads, their elevations and scenery: the base packs the map's details and profiles read." },
     Stage { id: "tiles", title: "Map tiles", does: "The road and rail map tiles drawn from the base packs, by tile and zoomed out by z3 tile." },
     Stage { id: "finish", title: "Map finishing", does: "What publishing adds around the tiles: the road index, rail stops, ferries, the world levels, and a prune." },
@@ -374,13 +375,13 @@ pub const TABLE: [Step; 52] = [
         )
     },
     // (The terrain finer than its base, a z8 tile's at a time, pipeline::terrain_fine: its base tiles,
-    // a z10 tile's fine tiles made, as PNG, ~0.2 GB; a 1M-point batch a thread, ~30 MB; the
+    // a z10 tile's fine tiles made, as JPEG XL, ~0.2 GB; a 1M-point batch a thread, ~30 MB; the
     // sampler's block cache. Until a target's own run says.)
     Step {
         mem_mb: 2500,
         shared: Some(9),
         ..step(
-            "terrain",
+            "fine",
             Pack,
             Z8,
             "terrain-fine",
