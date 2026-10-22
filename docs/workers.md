@@ -158,8 +158,10 @@ Common rules:
   minute of them; a new `epoch` (the
   Mac's agent restarted) starts the events again. "Since you last looked" goes by the events' time,
   so it outlives a restart.
-- **HTTPS** through `tailscale serve` (docs/pool.md §14) gives the secure context the wake lock
-  and PWA need; plain HTTP on the tailnet still works.
+- **HTTPS** through `tailscale serve` (docs/pool.md §14), or the M6's
+  https://map.brandontsang.net/build (Caddy, docs/macs.md), gives the secure context the wake lock
+  and PWA need; plain HTTP on the tailnet still works. The page's files and requests are relative
+  to where it was served (the path before `/work/`), so it works under a proxy's path.
 - **The page as an app** (`manifest.webmanifest`, `sw.js`, `icons/`): installable; its service
   worker caches the page's files and the programs' WebAssembly by version (`?v=`), takes a new
   page when the coordinator's hash changes, reloading once no task runs. It works only while open

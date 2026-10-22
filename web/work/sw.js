@@ -9,8 +9,11 @@
 // VERSION is the page's own (the coordinator's hash of its files) and PAGE their addresses (the
 // coordinator's list): a new version is a new worker, which takes over; the page then reloads into
 // it once no task is running.
+// ROOT: the path before /work/ where this worker was found ("" straight, "/build" through
+// tools/caddy's proxy); the coordinator's list names the page's files under /work/.
 const VERSION = "__VERSION__";
-const PAGE = __PAGE__;
+const ROOT = self.location.pathname.slice(0, self.location.pathname.lastIndexOf("/work/"));
+const PAGE = __PAGE__.map((p) => ROOT + p);
 const SHELL = `shell-${VERSION}`;
 const PROGS = "progs";
 const WAIT_MS = 4000;
@@ -40,8 +43,8 @@ self.addEventListener("activate", (e) => {
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.origin !== self.location.origin) return;
-  const p = url.pathname === "/work" ? "/work/" : url.pathname;
-  if (p.startsWith("/work/prog/")) e.respondWith(program(e.request, url));
+  const p = url.pathname === `${ROOT}/work` ? `${ROOT}/work/` : url.pathname;
+  if (p.startsWith(`${ROOT}/work/prog/`)) e.respondWith(program(e.request, url));
   else if (PAGE.includes(p)) e.respondWith(page(e, p));
 });
 

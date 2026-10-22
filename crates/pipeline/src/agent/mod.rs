@@ -10596,6 +10596,18 @@ fn served_https(_port: u16) -> Option<String> {
     None
 }
 
+/// The origins a proxy on this Mac serves its pages under (crate::net::names, "https://<name>"):
+/// its broker's `pages`. None in WebAssembly.
+#[cfg(not(target_os = "wasi"))]
+fn proxy_pages() -> Vec<String> {
+    crate::net::names().iter().map(|n| format!("https://{n}")).collect()
+}
+
+#[cfg(target_os = "wasi")]
+fn proxy_pages() -> Vec<String> {
+    Vec::new()
+}
+
 /// The app versions the programs `cmds` start are in (`<apps>/<version>/<program>`), the apps'
 /// folder that of an agent whose programs are in `bin`, other than its own `app` (Agent::job_apps).
 /// Both sides compared resolved: a job's command names its agent's resolved folder (Agent::new_with),

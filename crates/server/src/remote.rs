@@ -29,10 +29,14 @@ impl Remote {
     }
 
     /// The address to open on a device, written to `<home>/map-page` (0600) when it changes: the
+    /// public name a proxy on this Mac serves it under (pipeline::net::names, tools/caddy), else the
     /// HTTPS one where `tailscale serve` proxies `port`, else the tailnet's (or the LAN name's).
     pub fn write_page(&self, port: u16) {
-        let base =
-            pipeline::net::served_https(port).or_else(|| pipeline::net::urls(port).first().map(|u| format!("{u}/")));
+        let base = pipeline::net::names()
+            .first()
+            .map(|n| format!("https://{n}/"))
+            .or_else(|| pipeline::net::served_https(port))
+            .or_else(|| pipeline::net::urls(port).first().map(|u| format!("{u}/")));
         let Some(base) = base else { return };
         let text = format!("{base}\n");
         if std::fs::read_to_string(&self.page).ok().as_deref() != Some(text.as_str())

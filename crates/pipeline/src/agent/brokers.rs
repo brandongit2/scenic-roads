@@ -118,7 +118,7 @@ mod tests {
             } else {
                 Default::default()
             },
-            out: 0,
+            ..Default::default()
         }
     }
 

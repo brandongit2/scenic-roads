@@ -791,7 +791,9 @@ Any worker that can run its programs takes it: a page or a member's idle slot.
   waiting first. A page leases from that broker directly (`/work/ask`, `/work/in`, `/work/net`,
   `/work/out`, `/work/done`); the lead isn't on a task's path.
 - **Cross-member calls:** members allow each other's page origins (CORS, preflight for
-  `Authorization`, `X-Worker`, `Range`, `PUT`). HTTPS needs `tailscale serve` on each Mac (§14).
+  `Authorization`, `X-Worker`, `Range`, `PUT`): their addresses, and the public names a proxy on
+  one serves its page under (its broker's `pages`, from `~/.config/scenic/names`: the M6's
+  https://map.brandontsang.net/build). HTTPS needs `tailscale serve` on each Mac (§14).
   Chrome's Local Network Access may still block calls to another member; the page's own member is
   the sure path.
 - **One page, any member:** the page loads from any member and moves to the next that answers when
@@ -1054,8 +1056,15 @@ tiles (`pack_raw_with`) stays inside that z6 tile's job.
 - **Automatic takeover** of a lead that stood down, or that went silent for `SILENT_S` (#435, 19
   Oct: a lead restarted to its FileVault login screen left the pool without a lead for 85 min);
   the lead otherwise moves only by the owner's hand, its battery low, or the NAS lost (§6.4, #497).
-- **`tailscale serve` on every Mac** (`tailscale serve --bg 8090`) gives pages HTTPS; the agent
-  finds it via `tailscale serve status --json` and puts it in its heartbeat. Without it, plain HTTP
-  on the tailnet reaches every member, and an HTTPS page reaches only members with HTTPS. The
-  owner also allows `scenic` through each Mac's firewall (§6.8).
+- **`tailscale serve` on every Mac** (`tailscale serve --bg 8090`, port 443) gives pages HTTPS;
+  the agent finds it via `tailscale serve status --json` (on any port: the address keeps it) and
+  puts it in its heartbeat. Without it, plain HTTP on the tailnet reaches every member, and an
+  HTTPS page reaches only members with HTTPS. The owner also allows `scenic` through each Mac's
+  firewall (§6.8).
+- **The M6's on 8444** (`tailscale serve --bg --https=8444 8090`, #550): its port 443 is Caddy's,
+  for https://map.brandontsang.net (docs/macs.md, Devices), and `tailscale serve` on 443 would take
+  every connection to the tailnet address there, whatever name it asks (it can't share the port by
+  name). Caddy serves the build page under `/build` too (`/build/work/`), and the page asks its own
+  member under that path; its broker address stays the 8444 one (a broker's address is a root:
+  the pages call `/work/…` on it).
 - **Work order:** every slot from the front of the plan, in contiguous runs.

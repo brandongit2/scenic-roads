@@ -78,7 +78,7 @@ floor (docs/pool.md §7.2). A member's status is `state/helpers/<host>.json`, th
 M1, with room for more at once (build memory 28 GB by default). It also hosts the task board
 (`tools/taskboard`, http://mac-mini-de-brandon:8077, its LaunchAgent and nightly NAS backup from
 `tools/taskboard/launchd/install.sh`) and is the map's address for the phone, the iPad and devices
-away from home.
+away from home: https://map.brandontsang.net (Devices).
 
 **A new (headless) Mac**, in this order:
 1. `sudo scutil --set LocalHostName <name>` first: the pool's identity (a member's status file is
@@ -182,17 +182,30 @@ away from home.
 - `/api/downloads` gives the panel its state; the menu bar says what's downloaded.
 
 **Devices: an iPhone, an iPad.** Any Mac's map opens on them over the tailnet; the address they keep
-is the M6's (always on), its HTTPS from `tailscale serve` on the M6. Each Mac keeps its own map
-server for itself.
-- **Who's answered:** the server answers only this Mac, its LAN and the tailnet, also through
-  `tailscale serve` (`pipeline::net::reached`); anything else is 403, Funnel included. No key.
-- **A page elsewhere is never the map's:** the `Host` must be an address, localhost, or a name only a
-  tailnet or local network resolves (DNS rebinding refused); an `Origin` must be the map's own page
-  or this Mac's; CORS only to this Mac's own pages.
-- **The address** is `<home>/map-page` (`crates/server/src/remote.rs`): HTTPS where `tailscale serve
-  --bg --https=8443 http://127.0.0.1:7311` proxies the server, else the tailnet address. The menu's
-  Copy the Map's Address and `scenic status` give it. Only a proxy that says so (`X-Forwarded-For`)
-  keeps its requests from passing for this Mac's own.
+is the M6's (always on): **https://map.brandontsang.net**. Each Mac keeps its own map server for
+itself.
+- **map.brandontsang.net** (`tools/caddy`): its DNS record (Cloudflare, DNS only) is the M6's
+  Tailscale address, so only the tailnet reaches it. Caddy on the M6 (`brew install caddy`; the
+  LaunchAgent `local.scenic.caddy` from `tools/caddy/install.sh`, log
+  `~/Library/Logs/scenic/caddy.log`) serves it on port 443 with the owner's Let's Encrypt
+  certificate (`~/certs/map.crt`, `map.key`; acme.sh with Cloudflare DNS renews it and restarts
+  Caddy, the owner's token never in the repo): `/` the map (:7311), `/build` the build page (the
+  agent, :8090; the page at `/build/work/`), `/task-board` the board (:8077). The macOS firewall
+  must let Caddy in (`socketfilterfw --add` its Cellar binary, again after `brew upgrade caddy`).
+  `tailscale serve` holds port 443 on the tailnet address whatever the name asked (it ends any
+  other name's TLS), so the M6's own `tailscale serve` of the agent is on 8444 instead (pool.md §14).
+- **Who's answered:** the server answers only this Mac, its LAN and the tailnet, also through a
+  proxy on this Mac (`tailscale serve`, Caddy) from those alone (`pipeline::net::reached`); anything
+  else is 403, Funnel included. No key.
+- **A page elsewhere is never the map's:** the `Host` must be an address, localhost, a name only a
+  tailnet or local network resolves, or a name the owner gave this Mac (`~/.config/scenic/names`, a
+  name a line, written by `tools/caddy/install.sh`; `pipeline::net::names`): DNS rebinding refused.
+  An `Origin` must be the map's own page or this Mac's; CORS only to this Mac's own pages.
+- **The address** is `<home>/map-page` (`crates/server/src/remote.rs`): the first name in
+  `~/.config/scenic/names` (https), else HTTPS where `tailscale serve --bg --https=8443
+  http://127.0.0.1:7311` proxies the server, else the tailnet address. The menu's Copy the Map's
+  Address and `scenic status` give it. Only a proxy that says so (`X-Forwarded-For`) keeps its
+  requests from passing for this Mac's own.
 - **An app** (`web/public/manifest.webmanifest`): Add to Home Screen. Its service worker
   (`web/public/sw.js`, HTTPS only, never on localhost) keeps the page, its scripts and the catalog's
   metadata, plus the fonts, icons and `immutable` data as viewed (12,000 files; 3D buildings' tiles

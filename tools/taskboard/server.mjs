@@ -216,7 +216,7 @@ async function api(req, res, url) {
     const sha = crypto.createHash("sha256").update(data).digest("hex");
     const bid = sha.slice(0, 32);
     stmt(`INSERT OR IGNORE INTO blobs (id, type, data, sha256, created) VALUES (?, ?, ?, ?, ?)`).run(bid, type, data, sha, new Date().toISOString());
-    return send(res, 200, { id: bid, url: "/_blob/" + bid });
+    return send(res, 200, { id: bid, url: "_blob/" + bid });
   }
   if (what !== "c" || !(col in COLS || col === "meta")) return fail(res, 404, "not_found", "no such route");
 

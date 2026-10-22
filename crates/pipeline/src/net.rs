@@ -1,8 +1,9 @@
 //! What this Mac's services share about the network: who may connect (this Mac, its LAN, the
 //! tailnet, also through a proxy on this Mac), which requests are this Mac's own and where the
 //! others came from, what a request must name to be one of theirs (never a web page elsewhere's),
-//! the addresses others reach it by, whether `tailscale serve` proxies a port over HTTPS, and the
-//! tokens a service keeps (made once, readable by its owner alone). The lead's coordinator
+//! the addresses others reach it by, whether `tailscale serve` proxies a port over HTTPS, the
+//! tokens a service keeps (made once, readable by its owner alone), and the public names a proxy
+//! on this Mac serves it under (`names`, tools/caddy). The lead's coordinator
 //! (crate::coord) and the map's server (crates/server, docs/macs.md) use them.
 
 use anyhow::{Context, Result};
@@ -102,11 +103,51 @@ pub fn reached(peer: IpAddr, h: &HeaderMap) -> bool {
     !h.contains_key("tailscale-funnel-request") && source(peer, h).parse().is_ok_and(allowed)
 }
 
-/// Whether a host (a `Host` header's, an `Origin`'s; a port after it is ignored) names this Mac: an
-/// IP address, localhost or a name under it, or a name only a tailnet or a local network resolves
-/// (one label, or under .local, .home, .lan, .internal, .ts.net). Never a public name, which a web
-/// page elsewhere could point at this Mac (DNS rebinding).
+/// Where the public names a proxy on this Mac serves it under are kept (`names`), one a line.
+pub const NAMES: &str = ".config/scenic/names";
+
+/// The public names a proxy on this Mac serves it under (tools/caddy: map.brandontsang.net on the
+/// M6), from `~/<NAMES>`: names the owner gave it, so `ours` takes them and the members' pages
+/// there may call the others (crate::coord::brokers::Broker's `pages`). Read again every minute;
+/// none in tests.
+pub fn names() -> Vec<String> {
+    use std::sync::Mutex;
+    static KEPT: Mutex<Option<(Instant, Vec<String>)>> = Mutex::new(None);
+    if cfg!(test) {
+        return Vec::new();
+    }
+    let mut k = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, n)) = k.as_ref().filter(|(at, _)| at.elapsed() < Duration::from_secs(60)) {
+        return n.clone();
+    }
+    let text = std::env::var_os("HOME")
+        .and_then(|h| std::fs::read_to_string(Path::new(&h).join(NAMES)).ok())
+        .unwrap_or_default();
+    let n = names_in(&text);
+    *k = Some((Instant::now(), n.clone()));
+    n
+}
+
+/// The names in a `NAMES` file's text: a name a line, lowercased; blank lines and `#` comments
+/// skipped.
+pub fn names_in(text: &str) -> Vec<String> {
+    text.lines()
+        .map(|l| l.split('#').next().unwrap_or("").trim().trim_end_matches('.').to_ascii_lowercase())
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// Whether a host (a `Host` header's, an `Origin`'s; a port after it is ignored) names this Mac
+/// (`ours_in`, with the names the owner gave it: `names`).
 pub fn ours(host: &str) -> bool {
+    ours_in(host, &names())
+}
+
+/// Whether a host names this Mac: an IP address, localhost or a name under it, a name only a
+/// tailnet or a local network resolves (one label, or under .local, .home, .lan, .internal,
+/// .ts.net), or one of `names`. Never another public name, which a web page elsewhere could point
+/// at this Mac (DNS rebinding).
+pub fn ours_in(host: &str, names: &[String]) -> bool {
     let h = host.trim().to_ascii_lowercase();
     let name = match h.strip_prefix('[') {
         Some(v6) => return v6.split(']').next().is_some_and(|a| a.parse::<std::net::Ipv6Addr>().is_ok()),
@@ -119,7 +160,8 @@ pub fn ours(host: &str) -> bool {
         && (name.parse::<IpAddr>().is_ok()
             || name == "localhost"
             || !name.contains('.')
-            || [".localhost", ".local", ".home", ".lan", ".internal", ".ts.net"].iter().any(|s| name.ends_with(s)))
+            || [".localhost", ".local", ".home", ".lan", ".internal", ".ts.net"].iter().any(|s| name.ends_with(s))
+            || names.iter().any(|n| n == name))
 }
 
 /// Whether a page's origin is one of this Mac's own (localhost, a name under it, a loopback
@@ -400,6 +442,11 @@ mod tests {
         ] {
             assert!(!ours(h), "{h}");
         }
+        // A public name the owner gave this Mac (its proxy's), and that alone.
+        let given = names_in("# the M6's\nMap.Example.net.\n\n");
+        assert_eq!(given, ["map.example.net"]);
+        assert!(ours_in("map.example.net", &given) && ours_in("MAP.example.net:443", &given));
+        assert!(!ours_in("evil.example.net", &given) && !ours_in("map.example.net.evil.example", &given));
         for o in ["http://localhost:8080", "http://roads.localhost:8080", "http://127.0.0.1:5173", "http://[::1]:8080"]
         {
             assert!(local_origin(o), "{o}");

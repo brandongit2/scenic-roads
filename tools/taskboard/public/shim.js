@@ -24,7 +24,7 @@
   let es = null;
   function stream() {
     if (es) return;
-    es = new EventSource("/api/stream");
+    es = new EventSource("api/stream");
     es.addEventListener("change", (e) => { const col = JSON.parse(e.data).col; for (const l of listeners) if (l.col === col) l.run(); });
     es.onopen = () => { for (const l of listeners) l.run(); }; // (after a drop, everything is read again)
   }
@@ -45,7 +45,7 @@
   }
 
   function docRef(col, id) {
-    const url = `/api/c/${encodeURIComponent(col)}/${encodeURIComponent(id)}`;
+    const url = `api/c/${encodeURIComponent(col)}/${encodeURIComponent(id)}`;
     const ref = {
       id,
       get: async () => docSnap(id, await call("GET", url)),
@@ -54,12 +54,12 @@
       delete: () => call("DELETE", url).then(() => {}),
       onSnapshot: (next, error) => listen(col, () => call("GET", url), (j) => docSnap(id, j), next, error),
     };
-    if (col === "meta" && id === "counter") ref.acquire = ({ holder, ttlMs }) => call("POST", "/api/lease", { name: "counter", holder, ttlMs });
+    if (col === "meta" && id === "counter") ref.acquire = ({ holder, ttlMs }) => call("POST", "api/lease", { name: "counter", holder, ttlMs });
     return ref;
   }
   const rnd = () => { const a = "abcdefghijklmnopqrstuvwxyz0123456789"; return Array.from(crypto.getRandomValues(new Uint8Array(20)), (x) => a[x % a.length]).join(""); };
   function query(col, opts) {
-    const qs = () => { const p = new URLSearchParams(); if (opts.orderBy) { p.set("orderBy", opts.orderBy); p.set("dir", opts.dir || "asc"); } if (opts.limit) p.set("limit", opts.limit); return `/api/c/${encodeURIComponent(col)}?${p}`; };
+    const qs = () => { const p = new URLSearchParams(); if (opts.orderBy) { p.set("orderBy", opts.orderBy); p.set("dir", opts.dir || "asc"); } if (opts.limit) p.set("limit", opts.limit); return `api/c/${encodeURIComponent(col)}?${p}`; };
     return {
       orderBy: (orderBy, dir) => query(col, { ...opts, orderBy, dir }),
       limit: (limit) => query(col, { ...opts, limit }),
@@ -73,7 +73,7 @@
   };
   const assets = {
     upload: async (file) => {
-      const r = await call("POST", "/api/blob", file, { "content-type": file.type || "application/octet-stream" });
+      const r = await call("POST", "api/blob", file, { "content-type": file.type || "application/octet-stream" });
       return { id: r.id, url: r.url };
     },
   };

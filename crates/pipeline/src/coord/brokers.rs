@@ -26,6 +26,11 @@ pub struct Broker {
     /// Its address over HTTPS, when its owner has `tailscale serve` proxy it ("https://<name>/").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub https: Option<String>,
+    /// The other origins its page is served from: a proxy on it under a public name
+    /// (crate::net::names; "https://map.brandontsang.net" on the M6), whose pages may call the
+    /// members too. Never a broker's address: the proxy serves the page under a path.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pages: Vec<String>,
     /// The tasks waiting for a worker, by kind.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub waiting: BTreeMap<String, Waiting>,
@@ -92,14 +97,17 @@ fn tailnet(o: &str) -> bool {
 }
 
 /// The origins of a broker's pages: each of its addresses, but its LAN names (`.local`) when it has
-/// a tailnet address (a page calls it there; a LAN name is any device's on the network to claim).
+/// a tailnet address (a page calls it there; a LAN name is any device's on the network to claim),
+/// and its `pages`.
 pub fn origins_of(b: &Broker) -> BTreeSet<String> {
     let all: BTreeSet<String> = b.urls.iter().chain(b.https.iter()).filter_map(|u| origin(u)).collect();
-    if all.iter().any(|o| tailnet(o)) {
+    let mut out: BTreeSet<String> = if all.iter().any(|o| tailnet(o)) {
         all.into_iter().filter(|o| !o.ends_with(".local") && !o.contains(".local:")).collect()
     } else {
         all
-    }
+    };
+    out.extend(b.pages.iter().filter_map(|u| origin(u)));
+    out
 }
 
 /// A broker's base address for a page: over HTTPS when the page is (a secure page can't call a
@@ -165,7 +173,7 @@ mod tests {
             urls: urls.iter().map(|u| u.to_string()).collect(),
             https: https.map(str::to_string),
             waiting: waiting.iter().map(|(k, n, mb)| (k.to_string(), Waiting { n: *n, mb: *mb })).collect(),
-            out: 0,
+            ..Default::default()
         }
     }
 
@@ -196,6 +204,11 @@ mod tests {
             origins_of(&broker(&["http://m4.local:8090"], None, &[])),
             ["http://m4.local:8090".to_string()].into()
         );
+        // A proxy's public name for its page: an origin of its pages, never a broker's address.
+        let named =
+            Broker { pages: vec!["https://Map.Example.net".into()], ..broker(&["http://100.1.1.1:8090"], None, &[]) };
+        assert!(origins_of(&named).contains("https://map.example.net"));
+        assert_eq!(base(&named, true), None);
     }
 
     #[test]

@@ -240,7 +240,7 @@ always on. Every Mac's agent is a member; one leads each term. A process not in 
 start, or its member lock held) starts nothing new. `scenic pool [status]` shows it, and `scenic
 status` labels the Mac by its part: "lead, coordinator", "member", or "not in the pool: waiting to
 join (why)" (`Status::role`, `out_of_pool`). Every Mac serves its own map; the phone, the iPad and
-devices away use the M6's (always on; HTTPS by `tailscale serve` there, docs/macs.md, Devices).
+devices away use the M6's (always on; https://map.brandontsang.net, docs/macs.md, Devices).
 - **Joining after an update** (task #423): the agent before may still hold the member lock while it
   drains, so a new agent tries the lock each second for up to two minutes as it starts
   (`JOIN_WAIT`), and joins as it starts once the lock is let go. Still held past that, it starts

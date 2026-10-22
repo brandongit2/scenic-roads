@@ -1523,6 +1523,7 @@ impl Run {
         let own = crate::coord::brokers::Broker {
             urls: c.contact.urls.clone(),
             https: self.cx.broker_https.clone(),
+            pages: super::proxy_pages(),
             waiting,
             out,
         };

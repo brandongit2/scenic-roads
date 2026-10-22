@@ -696,8 +696,9 @@ Where they're kept:
   member's `helper.json` when that is ten minutes stale), `pool`, `lead_asked`, and `offline:
   {world, areas, bytes, here, nas}` (null without a mirror).
 - **Remote access** (docs/macs.md, Devices): no key. A request from anywhere but this Mac, its LAN and
-  the tailnet (`tailscale serve` too; never Funnel) is 403 ("not from here"), as is one whose `Host`
-  isn't the map's or whose `Origin` is another page's. CORS answers only this Mac's own origins.
+  the tailnet (through `tailscale serve` or Caddy on this Mac too; never Funnel) is 403 ("not from
+  here"), as is one whose `Host` isn't the map's (an address, a local or tailnet name, or one in
+  `~/.config/scenic/names`) or whose `Origin` is another page's. CORS answers only this Mac's own origins.
 - **Downloads** (`downloads.rs`): `GET /api/downloads` → `{mirror, online, slow, rate, free,
   reserve, reserve_min, disk, here, world: {bytes, here, unknown, on, at, state}, wanted: {bytes,
   here, more, unknown}, copying: {what, bytes, have, slow} | null, last: {…} | null, regions: {id:

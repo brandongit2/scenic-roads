@@ -3923,11 +3923,10 @@ mod http {
     ) -> Result<Vec<String>> {
         listener.set_nonblocking(true)?;
         let routes = Router::new()
-            .route("/work", get(|| async { (StatusCode::FOUND, [(header::LOCATION, "/work/")]) }))
+            // (Relative redirects: a proxy may serve the page under a path, tools/caddy's /build.)
+            .route("/work", get(|| async { (StatusCode::FOUND, [(header::LOCATION, "work/")]) }))
             .route("/work/", get(|| page(Url(String::new()))))
             // (The watching page's old address: the page is the dashboard now, helping opt-in.)
-            .route("/work/watch", get(|| async { (StatusCode::FOUND, [(header::LOCATION, "/work/")]) }))
-            .route("/work/watch/", get(|| async { (StatusCode::FOUND, [(header::LOCATION, "/work/")]) }))
             .route("/work/{*file}", get(page))
             .route("/work/ask", any(json))
             .route("/work/where", any(json))
@@ -4159,8 +4158,7 @@ mod http {
         let job = key.as_deref().is_some_and(|k| crate::net::same(k, &c.job_token));
         req.extensions_mut().insert(Caller { local, page: key.is_none(), from });
         let is_page = req.method() == Method::GET
-            && (matches!(path.as_str(), "/work" | "/work/watch" | "/work/watch/")
-                || path.strip_prefix("/work/").is_some_and(|p| PAGE.iter().any(|(n, _, _)| *n == p)));
+            && (path == "/work" || path.strip_prefix("/work/").is_some_and(|p| PAGE.iter().any(|(n, _, _)| *n == p)));
         let is_view =
             req.method() == Method::POST && matches!(path.as_str(), "/work/swarm" | "/work/history" | "/work/steps");
         if is_page || is_view {
@@ -7690,7 +7688,7 @@ mod tests {
         assert!(
             manifest.starts_with("HTTP/1.1 200")
                 && manifest.contains("application/manifest+json")
-                && manifest.contains("\"start_url\": \"/work/\"")
+                && manifest.contains("\"start_url\": \"./\"")
         );
         let sw = String::from_utf8(get("/work/sw.js")).unwrap();
         assert!(
@@ -7810,8 +7808,8 @@ mod tests {
         assert_eq!(code, 200);
         assert_eq!(steps["steps"][0]["id"], "osm-pass");
         assert_eq!(steps["stages"][0]["id"], "pass");
-        // The old watching-only address leads to it.
-        assert_eq!(ask("GET", "/work/watch/", None), (302, "/work/".to_string()));
+        // Its address without the slash leads to it, wherever a proxy serves it.
+        assert_eq!(ask("GET", "/work", None), (302, "work/".to_string()));
         // Pausing: no key; the agents' own requests: the build's key.
         assert_eq!(ask("POST", "/work/pause", None).0, 200);
         assert_eq!(ask("POST", "/work/status", None).0, 403);

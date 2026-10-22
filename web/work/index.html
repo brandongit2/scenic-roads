@@ -2,8 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<!-- (Its files are /work/'s, whatever address led here.) -->
-<base href="/work/">
+<!-- (Its files are beside it, relative: a proxy may serve it under a path, tools/caddy's /build.) -->
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#0e1013" media="(prefers-color-scheme: dark)">
@@ -103,15 +102,11 @@ const $ = (id) => document.getElementById(id);
 const viewer = new URLSearchParams(location.search).has("view");
 const store = { get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
 
-// Whether this device helps: its owner's choice here, kept. (A device that helped when a page needed
-// the lead's yes, one that had learned its memory ceiling, keeps helping; any other starts out
-// watching. The key such a page kept is no more: no key is asked for now.)
-if (!viewer && store.get("helping", null) === null) store.set("helping", !!(store.get("secret", "") || store.get("token", "")) && store.get("ceiling", null) !== null);
+// Whether this device helps: its owner's choice here, kept (watching at first).
 let helping = !viewer && store.get("helping", false);
-for (const k of ["secret", "token", "asking"]) { try { localStorage.removeItem(k); } catch {} }
-// (What the dashboard showed, once kept per numbering: "seenSeq:<epoch>"; now one "seenAt".)
-try { for (let i = localStorage.length - 1; i >= 0; i--) { const k = localStorage.key(i); if (k && (k === "seenSeq" || k.startsWith("seenSeq:"))) localStorage.removeItem(k); } } catch {}
-if (location.hash.includes("k=")) history.replaceState(null, "", location.pathname + location.search);
+// Where this page's member answers: the path before /work/ ("" straight, "/build" through
+// tools/caddy's proxy), so its own requests go there; another member's go to its address.
+const ROOT = location.pathname.slice(0, location.pathname.lastIndexOf("/work/"));
 // (This browser's id, in its name among the build's workers.)
 const newId = () => { const v = Math.random().toString(36).slice(2, 8); store.set("id", v); return v; };
 let id = store.get("id", null) || newId();
@@ -197,13 +192,13 @@ function reap() {
 reap();
 let nearMisses = store.get("near", 0);
 
-// A POST of JSON to this page's own member (`base` ""), or straight to another member's broker
+// A POST of JSON to this page's own member (`base` "", at ROOT), or straight to another member's broker
 // (docs/pool.md §8: its address, with CORS), given up after eight seconds there: a member whose
 // firewall drops connections mustn't hold the page up.
 const READING = new Set(["/work/swarm", "/work/history"]);
 async function call(path, body, base = "") {
   const headers = { "Content-Type": "application/json", "X-Worker": worker };
-  const r = await fetch(base + path, { method: "POST", headers, body: JSON.stringify(body), signal: base && AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined });
+  const r = await fetch((base || ROOT) + path, { method: "POST", headers, body: JSON.stringify(body), signal: base && AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined });
   if (r.status === 204) return [204, null];
   const text = await r.text();
   // (A 503 from the build at a glance is an answer: this Mac hasn't read the build's state yet,
@@ -290,7 +285,7 @@ window.addEventListener("pagehide", () => {
   const r = leased();
   for (const t of r) {
     try {
-      fetch((t.base || "") + "/work/fail", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json", "X-Worker": worker }, body: JSON.stringify({ worker, lease: t.lease, error: "the page was reloaded or closed", interrupted: true }) }).catch(() => {});
+      fetch((t.base || ROOT) + "/work/fail", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json", "X-Worker": worker }, body: JSON.stringify({ worker, lease: t.lease, error: "the page was reloaded or closed", interrupted: true }) }).catch(() => {});
     } catch {}
   }
   try {
@@ -465,7 +460,7 @@ async function fill() {
     reserved += g.mem_mb;
     remember();
     $("state").textContent = "working";
-    idle.w.postMessage({ run: { lease: g.lease, task: g.task, mem_mb: g.mem_mb, base } });
+    idle.w.postMessage({ run: { lease: g.lease, task: g.task, mem_mb: g.mem_mb, base: base || ROOT } });
     show();
   } catch (e) {
     lastNone = performance.now();
