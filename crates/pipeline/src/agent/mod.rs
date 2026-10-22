@@ -8479,11 +8479,24 @@ impl Agent {
         // Past its grant only while the memory free covers its measured peak per thread for each
         // extra (the free memory read at most every 10 s: it asks the system). A regions check once
         // took 39 GB; with no peak measured yet it stays at its grant.
+        // Each extra thread counted at the peak over the threads that peak was measured at (the whole
+        // peak when unknown), after the growth the check has still to come (its peak less what it
+        // holds now) is taken out of the free memory: `pace::allowed_now`.
+        use crate::inputs::pace::{allowed_now, Memory};
         let peak = self.measured_job(&r.spec).map(|m| m.mem_mb);
-        let wide =
-            crate::inputs::pace::allowed_now(cores, kept, beside, r.threads, peak, Some(u64::MAX >> 20)) > r.threads;
-        let free = (peak.is_some() && wide).then(|| self.free_mem_mb()).flatten();
-        let now = crate::inputs::pace::allowed_now(cores, kept, beside, r.threads, peak, free).to_string();
+        let width = r
+            .spec
+            .record
+            .as_ref()
+            .and_then(|w| Some((w.step.clone(), w.targets.first()?.0.clone())))
+            .and_then(|(s, t)| self.coord.as_ref()?.peak_threads(&s, &t))
+            .map(|t| t as usize);
+        let held = self.held_mb(k).unwrap_or(0);
+        let memory = |free_mb| peak.map(|peak_mb| Memory { peak_mb, width, held_mb: held, free_mb });
+        // (Free memory read only when cores allow a widening at all.)
+        let wide = allowed_now(cores, kept, beside, r.threads, memory(u64::MAX >> 20)) > r.threads;
+        let free = if wide { self.free_mem_mb() } else { None };
+        let now = allowed_now(cores, kept, beside, r.threads, free.and_then(memory)).to_string();
         let f = self.threads_path(k);
         if std::fs::read_to_string(&f).ok().as_deref() != Some(now.as_str()) {
             if let Err(e) = std::fs::write(&f, &now) {

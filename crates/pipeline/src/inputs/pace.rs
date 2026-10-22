@@ -127,24 +127,33 @@ pub fn width() -> usize {
     std::env::var("SCENIC_REGIONS_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(cores().min(MOST)).max(1)
 }
 
+/// What the memory says of a check's threads (`allowed_now`).
+#[derive(Clone, Copy, Debug)]
+pub struct Memory {
+    /// Its measured peak (MB), and the threads the run that measured it had, when that says.
+    pub peak_mb: u64,
+    pub width: Option<usize>,
+    /// What it holds now (MB): its peak less this is the growth still to come.
+    pub held_mb: u64,
+    /// The memory free now (MB).
+    pub free_mb: u64,
+}
+
 /// The threads a check may use now (the agent's rule, `Agent::tend_threads`): its `grant` at least
 /// (at most `MOST`), and past it, one more for each core `cores` less `kept` for the owner and
-/// `beside` given to other jobs leaves, but only while the memory free (`free_mb`) covers the
-/// check's measured peak (`peak_mb`) per thread granted, once more for each extra thread. With no
-/// peak measured yet, or no free memory said, it holds at its grant.
-pub fn allowed_now(
-    cores: usize,
-    kept: usize,
-    beside: usize,
-    grant: usize,
-    peak_mb: Option<u64>,
-    free_mb: Option<u64>,
-) -> usize {
+/// `beside` given to other jobs leaves, but only while memory covers each extra thread. An extra
+/// thread is counted at the measured peak over the threads that peak was measured at (a peak
+/// measured on a narrower run is not spread over more threads than it had), the whole peak when
+/// that width isn't known (one extra thread of a regions check can need about a region's worth);
+/// and the check's growth still to come (its peak less what it holds now) is taken out of the free
+/// memory first. With no peak measured yet, or no memory said, it holds at its grant.
+pub fn allowed_now(cores: usize, kept: usize, beside: usize, grant: usize, memory: Option<Memory>) -> usize {
     let grant = grant.clamp(1, MOST);
     let extra = cores.saturating_sub(kept + beside).clamp(grant, MOST) - grant;
-    let (Some(peak), Some(free)) = (peak_mb, free_mb) else { return grant };
-    let per_thread = (peak / grant as u64).max(1);
-    grant + extra.min((free / per_thread) as usize)
+    let Some(m) = memory else { return grant };
+    let per_thread = (m.peak_mb / m.width.unwrap_or(1).max(1) as u64).max(1);
+    let spare = m.free_mb.saturating_sub(m.peak_mb.saturating_sub(m.held_mb));
+    grant + extra.min((spare / per_thread) as usize)
 }
 
 /// `f` on each of `items`, in order, in parallel: each task under a permit, so no more run at once
@@ -248,23 +257,50 @@ mod tests {
     }
 
     #[test]
-    fn threads_widen_on_free_cores_while_free_memory_covers_each_extra() {
-        // 14 cores, none kept, 1 granted, a peak of 4,000 MB on that one thread.
-        let now = |kept, beside, grant, peak, free| allowed_now(14, kept, beside, grant, peak, free);
+    fn threads_widen_on_free_cores_while_memory_covers_each_extra() {
+        // 14 cores, none kept; a peak of 4,000 MB measured at 1 thread, all of it held now.
+        let mem = |width, held, free| Some(Memory { peak_mb: 4000, width, held_mb: held, free_mb: free });
+        let now = |kept, beside, grant, memory| allowed_now(14, kept, beside, grant, memory);
         // Cores free and memory plenty: up to MOST.
-        assert_eq!(now(0, 0, 1, Some(4000), Some(100_000)), MOST);
+        assert_eq!(now(0, 0, 1, mem(Some(1), 4000, 100_000)), MOST);
         // Memory for two more threads (8,000 MB): three.
-        assert_eq!(now(0, 0, 1, Some(4000), Some(8500)), 3);
-        // Memory short, or no peak measured, or free memory unsaid: the grant.
-        assert_eq!(now(0, 0, 1, Some(4000), Some(3000)), 1);
-        assert_eq!(now(0, 0, 2, None, Some(100_000)), 2);
-        assert_eq!(now(0, 0, 2, Some(8000), None), 2);
+        assert_eq!(now(0, 0, 1, mem(Some(1), 4000, 8500)), 3);
+        // Memory short, or no peak measured: the grant.
+        assert_eq!(now(0, 0, 1, mem(Some(1), 4000, 3000)), 1);
+        assert_eq!(now(0, 0, 2, None), 2);
         // Cores taken by the owner and other jobs: only the rest widen it (14 - 2 - 9 = 3 left).
-        assert_eq!(now(2, 9, 1, Some(4000), Some(100_000)), 3);
+        assert_eq!(now(2, 9, 1, mem(Some(1), 4000, 100_000)), 3);
         // Never below the grant, whatever the cores.
-        assert_eq!(now(2, 12, 4, Some(4000), Some(100_000)), 4);
-        // The per-thread peak is the measured peak over the grant (8,000 over 2 = 4,000).
-        assert_eq!(now(0, 0, 2, Some(8000), Some(4500)), 3);
+        assert_eq!(now(2, 12, 4, mem(Some(1), 4000, 100_000)), 4);
+    }
+
+    #[test]
+    fn the_peak_is_spread_over_the_width_it_was_measured_at_or_not_at_all() {
+        let now = |width, held, free| {
+            allowed_now(14, 0, 0, 2, Some(Memory { peak_mb: 8000, width, held_mb: held, free_mb: free }))
+        };
+        // Measured at 2 threads: 4,000 MB a thread, so 4,500 free covers one more.
+        assert_eq!(now(Some(2), 8000, 4500), 3);
+        // Measured at 8 threads: 1,000 a thread, so 4,500 covers four more.
+        assert_eq!(now(Some(8), 8000, 4500), 6);
+        // Width unknown: the whole peak for each extra, so 4,500 covers none and 17,000 two.
+        assert_eq!(now(None, 8000, 4500), 2);
+        assert_eq!(now(None, 8000, 17_000), 4);
+    }
+
+    #[test]
+    fn growth_still_to_come_is_taken_out_of_the_free_memory_first() {
+        let now = |held, free| {
+            allowed_now(14, 0, 0, 1, Some(Memory { peak_mb: 8000, width: Some(1), held_mb: held, free_mb: free }))
+        };
+        // Holding all its peak: 17,000 free covers two extra of 8,000.
+        assert_eq!(now(8000, 17_000), 3);
+        // Holding 2,000 of 8,000: 6,000 more to come first, leaving 11,000: one extra.
+        assert_eq!(now(2000, 17_000), 2);
+        // Holding nothing yet: all 8,000 to come, leaving 9,000: one extra.
+        assert_eq!(now(0, 17_000), 2);
+        // Growth alone using up the free memory: the grant.
+        assert_eq!(now(0, 7000), 1);
     }
 
     #[test]

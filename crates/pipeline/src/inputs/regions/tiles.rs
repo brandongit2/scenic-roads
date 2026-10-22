@@ -791,11 +791,22 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         made.get_mut(&id).unwrap().lakes.set(c, a);
     }
     // Each region's area by cell: land, water, lakes.
-    let mut areas: BTreeMap<String, TArea> = pace::par_map(made.iter().collect(), |(id, m)| {
-        (id.clone(), m.land.zip(&m.water, |a, b| a.union(b)).zip(&m.lakes, |a, b| a.union(b)))
-    })
-    .into_iter()
-    .collect();
+    // (Fanned out over (region, cell) pairs, not regions: one large region still uses every thread
+    // allowed, its cells' unions being the work.)
+    let pairs: Vec<(&String, &Made, Cell)> = made
+        .iter()
+        .flat_map(|(id, m)| {
+            let cells: BTreeSet<Cell> =
+                m.land.cells.keys().chain(m.water.cells.keys()).chain(m.lakes.cells.keys()).copied().collect();
+            cells.into_iter().map(move |c| (id, m, c))
+        })
+        .collect();
+    let mut areas: BTreeMap<String, TArea> = made.keys().map(|id| (id.clone(), TArea::default())).collect();
+    for (id, c, a) in
+        pace::par_map(pairs, |(id, m, c)| (id, c, m.land.get(c).union(&m.water.get(c)).union(&m.lakes.get(c))))
+    {
+        areas.get_mut(id).unwrap().set(c, a);
+    }
     // (The lands kept only for the slivers' rule; otherwise only whether each is empty.)
     let cover = rules.cover.as_deref() == Some("earth");
     let land_empty: BTreeMap<String, bool> = made.iter().map(|(id, m)| (id.clone(), m.land.is_empty())).collect();

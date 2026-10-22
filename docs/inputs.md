@@ -136,10 +136,15 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   `Agent::tend_threads`, every loop) with the threads it may use now (`pace::allowed_now`). Never
   fewer than its grant, at most 8 (`pace::MOST`; the regions' work ran four at once before), and
   past the grant one thread more for each core the Mac has left (its cores less those kept for its
-  owner and those its other jobs were given), **only while the memory free covers the step's
-  measured peak per granted thread for each extra thread**. With no peak measured yet, or no free
-  memory said, it holds at its grant, and it falls back to the grant when free memory falls (the
-  file is read again within a second; a regions check once took 39 GB and panicked a 16 GB Mac).
+  owner and those its other jobs were given), **only while the memory free covers each extra
+  thread**. An extra thread is counted at the step's measured peak over the threads that peak was
+  measured at (the cost record's `sizes.threads`; a peak from a narrower run isn't spread over
+  more threads than it had), the whole peak when that width isn't recorded (one extra thread of a
+  regions check can need about a region's worth). The check's growth still to come (its peak
+  less what the memory guard's sampler says it holds now) is taken out of the free memory first.
+  With no peak measured yet, or no free memory said, it holds at its grant, and it falls back to
+  the grant when free memory falls (the file is read again within a second; a regions check once
+  took 39 GB and panicked a 16 GB Mac).
   The check's pools are as wide as the cores (8 at most). The outermost parallel operation of a
   task takes a `pace::par_map` permit per task, waiting while as many run as the file says; an
   operation inside a task runs its items one after another on that task's thread, inside its

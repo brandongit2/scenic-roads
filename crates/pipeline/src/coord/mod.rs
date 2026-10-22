@@ -1850,6 +1850,18 @@ impl Coordinator {
         }
     }
 
+    /// The threads the run that measured `step`'s `target` had (its cost record's `sizes.threads`),
+    /// when it says: the width its peak was measured at.
+    pub fn peak_threads(&self, step: &str, target: &str) -> Option<u32> {
+        let s = self.shared.lock().unwrap();
+        let book = s.book();
+        let c = book.costs.get(&cost_key(step, target))?;
+        if c.v < cost_version(step) {
+            return None;
+        }
+        c.sizes.get("threads").map(|&t| t as u32)
+    }
+
     /// Notes what happened (`history`): this Mac's jobs started and ended, catalogs, its conditions.
     pub fn note(&self, e: history::Event) {
         self.shared.lock().unwrap().history.add(e);
