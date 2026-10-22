@@ -2,6 +2,7 @@
 // the outlines of the administrative areas they're made of (/api/areas/{id}), and the coverage the
 // map's catalog was built for, drawn on the map (/api/coverage). The panel is ui/regions.ts.
 import type { ExpressionSpecification, GeoJSONSource, Map as MLMap } from 'maplibre-gl';
+import { nested } from './rings';
 import { fmt } from './ui/dom';
 
 /** An administrative or ISO 3166 area from the OSM pass's outlines. */
@@ -114,52 +115,6 @@ export function areaOutline(id: number): Promise<GeoJSON.Feature<GeoJSON.MultiPo
     p.catch(() => outlines.get(id) === p && outlines.delete(id));
   }
   return p;
-}
-
-type Ring = GeoJSON.Position[];
-const ringBox = (r: Ring) => {
-  let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
-  for (const [x, y] of r) {
-    w = Math.min(w, x);
-    s = Math.min(s, y);
-    e = Math.max(e, x);
-    n = Math.max(n, y);
-  }
-  return [w, s, e, n];
-};
-const inRing = (r: Ring, [x, y]: GeoJSON.Position) => {
-  let inside = false;
-  for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
-    if (r[i][1] > y !== r[j][1] > y && x < ((r[j][0] - r[i][0]) * (y - r[i][1])) / (r[j][1] - r[i][1]) + r[i][0]) inside = !inside;
-  }
-  return inside;
-};
-
-/**
- * An outline's rings as polygons with their holes. Outlines from passes before ring kinds were
- * recorded come with every ring as a polygon of its own, read even–odd (a ring inside another is a
- * hole in it, an island in that hole a ring again), which MapLibre would fill solid, an enclave over
- * its surroundings; newer ones come nested. Either way the rings are nested again by containment,
- * each hole with the smallest ring around it.
- */
-function nested(f: GeoJSON.Feature<GeoJSON.MultiPolygon>): GeoJSON.Feature<GeoJSON.MultiPolygon> {
-  const rings = f.geometry.coordinates.flat(1);
-  if (rings.length < 2) return f;
-  const box = rings.map(ringBox);
-  const around = rings.map((r, i) =>
-    rings.flatMap((_, j) => (j !== i && box[j][0] <= box[i][0] && box[j][1] <= box[i][1] && box[j][2] >= box[i][2] && box[j][3] >= box[i][3] && inRing(rings[j], r[0]) ? [j] : [])),
-  );
-  const depth = around.map((a) => a.length);
-  const size = box.map((b) => (b[2] - b[0]) * (b[3] - b[1]));
-  const polys = new Map<number, Ring[]>();
-  rings.forEach((r, i) => depth[i] % 2 === 0 && polys.set(i, [r]));
-  rings.forEach((r, i) => {
-    if (depth[i] % 2 === 0) return;
-    const outer = around[i].filter((j) => depth[j] === depth[i] - 1).sort((a, b) => size[a] - size[b])[0];
-    if (outer === undefined) polys.set(i, [r]);
-    else polys.get(outer)!.push(r);
-  });
-  return { ...f, geometry: { type: 'MultiPolygon', coordinates: [...polys.values()] } };
 }
 
 const LEVELS: Record<number, string> = { 2: 'country', 3: 'region', 4: 'state/province', 5: 'region', 6: 'county', 7: 'district', 8: 'municipality' };
