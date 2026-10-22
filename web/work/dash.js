@@ -918,7 +918,7 @@ let ctx = null;
 let last = null;
 // The regions' outlines, folders and sizes (`/work/regions`: crate::agent::regionsview), by id; the
 // catalogue they were sized by, and when they were asked.
-const drawn = { byId: {}, catalog: undefined, at: 0 };
+const drawn = { byId: {}, catalog: undefined, at: 0, asking: false };
 const REGIONS_EVERY_MS = 600000;
 let events = [];
 // What this browser last showed: its last event's time (unix s; null: a first visit). By time, not
@@ -1041,14 +1041,18 @@ async function loadTable() {
 // made (503): asked again next poll.
 async function loadRegions(sw) {
   const n = sw.agent?.catalog?.n ?? null;
-  if (drawn.at && drawn.catalog === n && Date.now() - drawn.at < REGIONS_EVERY_MS) return;
+  if (drawn.asking || (drawn.at && drawn.catalog === n && Date.now() - drawn.at < REGIONS_EVERY_MS)) return;
+  drawn.asking = true;
   try {
     const [code, v] = await ctx.call("/work/regions", {});
     if (code !== 200 || !v?.regions) return;
     drawn.byId = Object.fromEntries(v.regions.map((r) => [r.id, r]));
     drawn.catalog = n;
     drawn.at = Date.now();
-  } catch { /* (Asked again with the next poll.) */ }
+    render();
+  } catch { /* (Asked again with the next poll.) */ } finally {
+    drawn.asking = false;
+  }
 }
 
 // (Told when the numbering changes: the page's own record of what it showed starts again too.)
@@ -1067,7 +1071,8 @@ async function pollOnce() {
     readSince = null;
     clearTimeout(retry);
     last = sw;
-    await loadRegions(sw);
+    // (Not waited for: the rows show the regions' folders and sizes once they come.)
+    loadRegions(sw);
     ctx.onAnswer?.();
     // (Another numbering, or this one gone back past the last event this page has: started again.)
     if (sw.epoch !== epoch || (sw.seq != null && events.length && sw.seq < events[events.length - 1].seq)) {

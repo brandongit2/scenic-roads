@@ -26,6 +26,50 @@ pub const SIMPLIFY: f64 = 0.000_18;
 /// A ring or line spanning less than this each way is left out.
 const TINY: f64 = 0.000_15;
 
+/// What `build` made: the page's regions (None: the outlines couldn't be read), the catalogue's
+/// sizes as read (its number; None: none read), and how long it took.
+pub struct Made {
+    pub view: Option<Value>,
+    pub bytes: Option<(u64, BTreeMap<String, u64>)>,
+    pub took: std::time::Duration,
+}
+
+/// The page's regions of accepted version `a` (its enabled `regions`) and served catalogue `n` in
+/// `root`: its drawn files read, and the catalogue's sizes unless `had` has them (its number's).
+/// Run off the agent's loop (`Agent::regions_view`); a read that fails is logged, its part left out.
+pub fn build(
+    root: &std::path::Path,
+    a: &crate::inputs::Accepted,
+    regions: &[crate::agent::recipes::Recipe],
+    n: Option<u64>,
+    had: Option<(u64, BTreeMap<String, u64>)>,
+) -> Made {
+    let t = std::time::Instant::now();
+    let bytes = match (n, had) {
+        (Some(n), Some((m, b))) if m == n => Some((n, b)),
+        (Some(n), _) => match store::catalog::read_n(&root.join("catalog"), n) {
+            Ok(cat) => Some((n, bytes_of(&cat))),
+            Err(e) => {
+                eprintln!("agent: the regions' sizes from catalogue {n}: {e:#}");
+                None
+            }
+        },
+        (None, _) => None,
+    };
+    let view = match crate::inputs::regions::read::drawn(root, a, regions) {
+        Ok(drawn) => {
+            let tree = crate::inputs::regions::read::tree(&a.index);
+            let b = bytes.as_ref().map(|(_, b)| b.clone()).unwrap_or_default();
+            Some(make(&a.version, n, regions, &drawn, &tree, &b))
+        }
+        Err(e) => {
+            eprintln!("agent: the regions' outlines for the build page: {e:#}");
+            None
+        }
+    };
+    Made { view, bytes, took: t.elapsed() }
+}
+
 /// The page's regions: `regions` (the enabled ones, by id), drawn as `drawn` has them, each in the
 /// regions' `tree`, its bytes from `bytes` (by id: the catalogue's). `version` and `catalog` name
 /// what it was made of.
@@ -66,7 +110,10 @@ fn crumbs_of(tree: &Folder) -> BTreeMap<String, Vec<String>> {
     fn walk(f: &Folder, above: &[String], out: &mut BTreeMap<String, Vec<String>>) {
         let mut here = above.to_vec();
         if !f.path.is_empty() {
-            here.push(f.name.clone());
+            // (A folder without a `_group.toml` name goes by its own: "united-states" as
+            // "United States".)
+            let own = f.path.rsplit('/').next().unwrap_or_default();
+            here.push(if f.name == own { said(own) } else { f.name.clone() });
         }
         for id in &f.regions {
             out.insert(id.clone(), here.clone());
@@ -78,6 +125,23 @@ fn crumbs_of(tree: &Folder) -> BTreeMap<String, Vec<String>> {
     let mut out = BTreeMap::new();
     walk(tree, &[], &mut out);
     out
+}
+
+/// A folder's own name in words: hyphens as spaces, each word capitalised but the small ones.
+fn said(slug: &str) -> String {
+    let words: Vec<String> = slug
+        .split('-')
+        .filter(|w| !w.is_empty())
+        .enumerate()
+        .map(|(i, w)| {
+            if i > 0 && ["and", "of", "the", "da", "de"].contains(&w) {
+                return w.to_string();
+            }
+            let mut c = w.chars();
+            c.next().map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
+        })
+        .collect();
+    words.join(" ")
 }
 
 /// A point in Web Mercator, the world 1 each way (latitudes past ±85° at the edge).
@@ -259,6 +323,9 @@ mod tests {
         assert_eq!((v["version"].as_str(), v["catalog"].as_u64()), (Some("v1"), Some(7)));
         let a = &v["regions"][0];
         assert_eq!(a["crumbs"], json!(["Europe", "Some X", "Alpha"]));
+        // (A folder without a name of its own: its folder's, in words.)
+        let bare = folder("", "", &[], vec![folder("isle-of-man", "isle-of-man", &["a"], vec![])]);
+        assert_eq!(crumbs_of(&bare)["a"], ["Isle of Man"]);
         assert_eq!(a["bytes"], 1234);
         assert_eq!(a["fill"].as_array().unwrap().len(), 2);
         // (The cut along 10° E isn't stroked: the edge is the outer border alone, one line round.)

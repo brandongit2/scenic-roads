@@ -155,10 +155,11 @@ Common rules:
   machine, the pool: who leads, "Make lead", "Take it"); Regions; Activity (last day by the hour,
   events); Details (leases, waits, each Mac's capacity, workers, the steps table); This device. It reads
   `/work/steps` once (the steps table: every word about a step), `/work/swarm` every 10 s and
-  `/work/history` incrementally; `/work/regions` (each region's outline, folders and download
-  size: docs/pool.md §10, Regions) when the last catalogue changes, else every ten minutes; the
-  world's countries' outlines (`countries.json`, one of the page's files, for the overview's map); each Mac's measures over time from its own port's `/work/live`
-  (docs/pool.md §10, Live). A 503 (the Mac hasn't read the build's state yet) says so quietly and asks
+  `/work/history` incrementally; `/work/regions` (each region's folders, download size and
+  outline: docs/pool.md §10, Regions) when the last catalogue changes, else every ten minutes;
+  each Mac's measures over time from its own port's `/work/live` (docs/pool.md §10, Live). The
+  regions' outlines and the countries' (`countries.json`, one of the page's files) are for the
+  overview's map (task #513), not drawn yet. A 503 (the Mac hasn't read the build's state yet) says so quietly and asks
   again every 2 s, what's shown said to be stale if it had an answer before, an error only after a
   minute of them; a new `epoch` (the
   Mac's agent restarted) starts the events again. "Since you last looked" goes by the events' time,

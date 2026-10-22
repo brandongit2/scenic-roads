@@ -1461,9 +1461,12 @@ pub struct Agent {
     /// to the NAS (`pool_lead_files`).
     forecast_input: std::cell::RefCell<Option<Vec<u8>>>,
     /// The build page's regions as last made (crate::agent::regionsview), by what they were made of;
-    /// and the last catalogue's sizes, by its number.
+    /// what they were last tried for (each once, failed or not); the last catalogue's sizes, by its
+    /// number; and the making under way, off the loop.
     regions_view: std::cell::RefCell<Option<(RegionsKey, std::sync::Arc<serde_json::Value>)>>,
+    regions_tried: std::cell::RefCell<Option<RegionsKey>>,
     region_bytes: std::cell::RefCell<Option<(u64, BTreeMap<String, u64>)>>,
+    regions_making: std::cell::RefCell<Option<std::thread::JoinHandle<regionsview::Made>>>,
     /// The forecast being run off the loop (its own thread, `start_forecast`): its answer, its
     /// record's bytes and how long it took, taken in once it's done (`take_forecast`).
     forecasting: std::cell::RefCell<Option<std::thread::JoinHandle<Forecasted>>>,
@@ -1845,7 +1848,9 @@ impl Agent {
             departed: Default::default(),
             forecast_input: Default::default(),
             regions_view: Default::default(),
+            regions_tried: Default::default(),
             region_bytes: Default::default(),
+            regions_making: Default::default(),
             forecasting: Default::default(),
             publish_line: Default::default(),
             timetables: Default::default(),
@@ -8303,33 +8308,49 @@ impl Agent {
     }
 
     /// The build page's regions (crate::agent::regionsview), made again when the regions' accepted
-    /// version `a` or the served catalogue changed: the regions' drawn files read then, the
-    /// catalogue's sizes once per catalogue. Given to this Mac's coordinator (the page out of the
-    /// pool); the lead's pool step writes them for the others' (`pool_lead_files`).
+    /// version `a` or the served catalogue (the status's) changes, once each (a failed read isn't
+    /// tried again until one of them changes), on a thread of its own (`regionsview::build`: the
+    /// drawn files, the catalogue's sizes once per catalogue). Given to this Mac's coordinator (the
+    /// page out of the pool) once made; the lead's pool step writes them for the others'
+    /// (`pool_lead_files`).
     fn regions_view(&self, root: &Path, a: &crate::inputs::Accepted, regions: &[recipes::Recipe]) {
-        let dir = root.join("catalog");
-        let n = store::catalog::list(&dir).ok().and_then(|ns| ns.into_iter().next());
+        self.take_regions();
+        let n = served_catalog(&root.join("catalog")).map(|c| c.n);
         let key: RegionsKey = (a.version.clone(), n);
-        if self.regions_view.borrow().as_ref().is_some_and(|(k, _)| *k == key) {
+        if self.regions_making.borrow().is_some() || self.regions_tried.borrow().as_ref() == Some(&key) {
             return;
         }
-        if let Some(n) = n.filter(|n| self.region_bytes.borrow().as_ref().is_none_or(|(m, _)| m != n)) {
-            match store::catalog::read_n(&dir, n) {
-                Ok(cat) => *self.region_bytes.borrow_mut() = Some((n, regionsview::bytes_of(&cat))),
-                Err(e) => eprintln!("agent: the regions' sizes from catalogue {n}: {e:#}"),
+        let (root, a, regions, had) =
+            (root.to_path_buf(), a.clone(), regions.to_vec(), self.region_bytes.borrow().clone());
+        let run = std::thread::Builder::new()
+            .name("regions-view".into())
+            .spawn(move || regionsview::build(&root, &a, &regions, n, had));
+        match run {
+            Ok(h) => {
+                *self.regions_making.borrow_mut() = Some(h);
+                *self.regions_tried.borrow_mut() = Some(key);
             }
+            Err(e) => eprintln!("agent: the build page's regions' thread: {e}"),
         }
-        let drawn = match crate::inputs::regions::read::drawn(root, a, regions) {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("agent: the regions' outlines for the build page: {e:#}");
-                return;
-            }
+    }
+
+    /// The build page's regions made off the loop (`regions_view`), taken in once done.
+    fn take_regions(&self) {
+        if !self.regions_making.borrow().as_ref().is_some_and(|h| h.is_finished()) {
+            return;
+        }
+        let Some(h) = self.regions_making.borrow_mut().take() else { return };
+        let Ok(made) = h.join() else {
+            eprintln!("agent: making the build page's regions failed");
+            return;
         };
-        let bytes = self.region_bytes.borrow().as_ref().filter(|(m, _)| Some(*m) == n).map(|(_, b)| b.clone());
-        let tree = crate::inputs::regions::read::tree(&a.index);
-        let v =
-            std::sync::Arc::new(regionsview::make(&a.version, n, regions, &drawn, &tree, &bytes.unwrap_or_default()));
+        eprintln!("agent: the build page's regions took {} ms", made.took.as_millis());
+        if made.bytes.is_some() {
+            *self.region_bytes.borrow_mut() = made.bytes;
+        }
+        let Some(v) = made.view else { return };
+        let v = std::sync::Arc::new(v);
+        let key: RegionsKey = (v["version"].as_str().unwrap_or_default().to_string(), v["catalog"].as_u64());
         if let Some(c) = &self.coord {
             c.set_regions(v.clone());
         }
@@ -9897,6 +9918,7 @@ impl Agent {
             }
         }
         // The build page's regions, each time they're made again (and in each new term).
+        self.take_regions();
         if let Some((key, v)) = self.regions_view.borrow().as_ref() {
             if run.regions_written.as_ref() != Some(&(term, key.clone())) {
                 match run
@@ -11419,6 +11441,14 @@ mod tests {
         .unwrap()
     }
 
+    /// The build page's regions made off the loop, waited for and taken in.
+    fn settle(ag: &Agent) {
+        while ag.regions_making.borrow().as_ref().is_some_and(|h| !h.is_finished()) {
+            std::thread::yield_now();
+        }
+        ag.take_regions();
+    }
+
     #[test]
     fn the_build_pages_regions_are_made_again_with_a_new_catalogue_and_given_to_the_page() {
         let (d, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
@@ -11430,6 +11460,7 @@ mod tests {
         let ag = agent(root, &home.path().join("home"));
         // No catalogue yet: its name and crumbs, no size.
         ag.regions_view(root, &a, &recipes);
+        settle(&ag);
         let v = ag.regions_view.borrow().as_ref().unwrap().1.clone();
         assert_eq!(
             (v["catalog"].clone(), v["regions"][0]["crumbs"].clone()),
@@ -11450,8 +11481,12 @@ mod tests {
             "shapes": { "osm:5": [[[[50.0, 0.5], [50.1, 0.5], [50.1, 0.6], [50.0, 0.6], [50.0, 0.5]]]] } }] });
         store::catalog::write(&root.join("catalog"), &c).unwrap();
         ag.regions_view(root, &a, &recipes);
+        settle(&ag);
         let v = ag.regions_view.borrow().as_ref().unwrap().1.clone();
         assert_eq!((v["catalog"].as_u64(), v["regions"][0]["bytes"].as_u64()), (Some(1), Some(777)));
+        // (Made once for the same version and catalogue: not again, even had it failed.)
+        ag.regions_view(root, &a, &recipes);
+        assert!(ag.regions_making.borrow().is_none());
     }
 
     #[test]
