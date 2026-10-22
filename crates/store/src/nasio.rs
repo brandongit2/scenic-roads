@@ -157,8 +157,17 @@ pub fn sum_dir(dir: &Path) -> Option<Counts> {
 /// Whether process `pid` is running (a process of another user's counts as running).
 fn running(pid: i32) -> bool {
     // SAFETY: signal 0 sends nothing; it only checks the process is there.
-    let alive = unsafe { libc::kill(pid, 0) } == 0;
-    alive || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    #[cfg(unix)]
+    {
+        let alive = unsafe { libc::kill(pid, 0) } == 0;
+        alive || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+    // (No processes to fold: the wasm build's.)
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        true
+    }
 }
 
 /// Folds the files in folder `dir` of processes that ended into its `BASE` (written whole, then
