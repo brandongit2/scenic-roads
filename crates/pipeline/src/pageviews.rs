@@ -720,7 +720,7 @@ pub fn heritage(root: &Path, epoch: &str, wikidata: &str, months: &Months) -> Re
 }
 
 /// The items job's pageviews: per item of `views_q` (the candidates' first QIDs), its articles from
-/// the epoch's article cache (`<cache>/wp-<epoch>.jsonl`, the job's items.py fills it), over the
+/// the epoch's article cache (`<cache>/wp-<epoch>.jsonl`, crate::items fills it), over the
 /// epoch's months. Writes `<out>/views.json` and `<out>/meta.json` (the epoch, its months, the days
 /// anything was fetched for it, `<cache>/fetched-<epoch>.json`, and the counts: `facts`, the items
 /// whose facts were asked); then this Mac's indexes of months before the epoch's go (the NAS keeps
