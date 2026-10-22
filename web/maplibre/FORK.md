@@ -108,8 +108,9 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
   source loads, and anew by `RasterTileSource.setZoomByArea` (a new catalog's areas, main.ts).
 - **DEM borders filled across zooms** (`tile_manager_raster_dem.ts` `backfillDEM`,
   `DEMData.backfillFrom`): a loaded DEM tile's 2 px border, and that of each renderable tile it
-  touches, is filled from every renderable tile touching it, of any zoom, bilinearly at each border
-  pixel's centre (exact between tiles of one zoom), coarsest first so the finest data at a place is
+  touches, is filled from every renderable tile touching it, of any zoom, each border pixel from the
+  pixel holding its centre, as stored (exact between tiles of one zoom; the slope's and the trees'
+  packed pixels kept whole, so not interpolated), coarsest first so the finest data at a place is
   written last. Upstream filled it from its eight same-zoom neighbours only (their `neighboringTiles`
   and `backfillBorder`, gone), so beside a tile of another zoom (an area's edge, or a coarser tile
   standing in) the border clamped: a dark line in the hill-shading along the edge.

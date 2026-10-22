@@ -171,29 +171,35 @@ describe('DEMData.backfillFrom across zooms', () => {
     }
     const f = (x: number, y: number) => 100 * x + 50 * y;
 
-    test('a coarser neighbour, bilinearly', () => {
+    test('a coarser neighbour: the pixel holding each border pixel\'s centre', () => {
         const tile = plane(4, 0, 0, 1, f);
-        // east, a zoom coarser: [1, 3) × [0, 2)
+        // east, a zoom coarser: [1, 3) × [0, 2), its pixels half a tile wide, centred at 1.25, …
         tile.backfillFrom(plane(4, 1, 0, 2, f), 1, 0, 2);
         for (let y = 0; y < 4; y++) {
-            // (its first pixel centres are at 1.25 and 0.25: the border's first column, at 1.125,
-            // and the first row, at 0.125, clamp to them)
-            const at = Math.max(0.25, (y + 0.5) / 4);
-            expect(tile.get(4, y)).toBeCloseTo(f(1.25, at), 1);
-            expect(tile.get(5, y)).toBeCloseTo(f(1.375, at), 1);
+            const row = y < 2 ? 0.25 : 0.75;
+            expect(tile.get(4, y)).toBeCloseTo(f(1.25, row), 1);
+            expect(tile.get(5, y)).toBeCloseTo(f(1.25, row), 1);
         }
         // the north border isn't the neighbour's: as it was
         expect(tile.get(1, -1)).toBe(tile.get(1, 0));
     });
 
-    test('a finer neighbour, exactly where its pixels meet ours', () => {
+    test('a finer neighbour', () => {
         const tile = plane(4, 0, 0, 1, f);
-        // south-west, a zoom finer: [-0.5, 0) × [1, 1.5)
+        // south-west, a zoom finer: [-0.5, 0) × [1, 1.5), its pixels an eighth wide
         tile.backfillFrom(plane(4, -0.5, 1, 0.5, f), -0.5, 1, 0.5);
-        expect(tile.get(-1, 4)).toBeCloseTo(f(-0.125, 1.125), 1);
-        expect(tile.get(-2, 5)).toBeCloseTo(f(-0.375, 1.375), 1);
+        expect(tile.get(-1, 4)).toBeCloseTo(f(-0.0625, 1.1875), 1);
+        expect(tile.get(-2, 5)).toBeCloseTo(f(-0.3125, 1.4375), 1);
         // only its corner of the border
         expect(tile.get(-1, 3)).toBe(tile.get(0, 3));
+    });
+
+    test('the pixels as stored, whatever they pack', () => {
+        const tile = plane(4, 0, 0, 1, f);
+        const other = plane(4, 1, 0, 2, f);
+        other.data[other._idx(0, 0)] = 0x12345678;
+        tile.backfillFrom(other, 1, 0, 2);
+        expect(tile.data[tile._idx(5, 1)]).toBe(0x12345678);
     });
 });
 

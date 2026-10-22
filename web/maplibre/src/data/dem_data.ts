@@ -234,40 +234,27 @@ export class DEMData {
     }
 
     /**
-     * Scenic Roads: fills the part of this tile's 2 px border that `other` covers from `other`'s
-     * pixels, bilinearly at each border pixel's centre (exact where the pixels line up, as between
-     * tiles of one zoom). `other` covers [ox, ox + size) × [oy, oy + size) in units of this tile
-     * (0 to 1 west to east and north to south), at any zoom: a finer or coarser neighbour, so the
-     * hill-shading and the terrain meet across an edge between zooms (`scenic:zoom-by-area`).
-     * Replaces upstream's `backfillBorder`, which took same-zoom neighbours only.
+     * Scenic Roads: fills the part of this tile's 2 px border that `other` covers, each pixel from
+     * `other`'s pixel holding its centre, as stored (exact between tiles of one zoom; a source whose
+     * pixels pack more than a height, the slope's four slopes or the trees' classes, kept whole).
+     * `other` covers [ox, ox + size) × [oy, oy + size) in units of this tile (0 to 1 west to east
+     * and north to south), at any zoom: a finer or coarser neighbour, so the hill-shading and the
+     * terrain meet across an edge between zooms (`scenic:zoom-by-area`). Replaces upstream's
+     * `backfillBorder`, which took same-zoom neighbours only.
      */
     backfillFrom(other: DEMData, ox: number, oy: number, size: number): void {
         const dim = this.dim, odim = other.dim;
-        const scale = odim / size;
-        const pixels = other._getByteView();
+        const at = (v: number, o: number) => Math.min(odim - 1, Math.max(0, Math.floor(((v + 0.5) / dim - o) / size * odim)));
         for (let y = -2; y < dim + 2; y++) {
             const fy = (y + 0.5) / dim;
             if (fy < oy || fy >= oy + size) continue;
-            const v = Math.min(odim - 1, Math.max(0, (fy - oy) * scale - 0.5));
-            const y0 = Math.floor(v), ty = v - y0, y1 = Math.min(odim - 1, y0 + 1);
+            const v = at(y, oy);
             const inside = y >= 0 && y < dim;
             for (let x = -2; x < dim + 2; x++) {
                 if (inside && x === 0) x = dim;
                 const fx = (x + 0.5) / dim;
                 if (fx < ox || fx >= ox + size) continue;
-                const u = Math.min(odim - 1, Math.max(0, (fx - ox) * scale - 0.5));
-                const x0 = Math.floor(u), tx = u - x0, x1 = Math.min(odim - 1, x0 + 1);
-                const i = this._idx(x, y);
-                if (tx < 1e-6 && ty < 1e-6) {
-                    this.data[i] = other.data[other._idx(x0, y0)];
-                    continue;
-                }
-                const z = (a: number, b: number) => other._unpackAtIndex(pixels, other._idx(a, b) * 4);
-                const e = z(x0, y0) * (1 - tx) * (1 - ty) + z(x1, y0) * tx * (1 - ty) +
-                    z(x0, y1) * (1 - tx) * ty + z(x1, y1) * tx * ty;
-                const c = this.pack(e);
-                const alpha = other.data[other._idx(x0, y0)] & 0xff000000;
-                this.data[i] = (c.r | (c.g << 8) | (c.b << 16) | alpha) >>> 0;
+                this.data[this._idx(x, y)] = other.data[other._idx(at(x, ox), v)];
             }
         }
     }
