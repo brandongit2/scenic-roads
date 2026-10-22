@@ -2,7 +2,7 @@
 //! each job the lead started and ended, each lease a worker took, handed back, failed or let
 //! lapse, each task done or failed, the catalogs written and the map tiles planned, the pauses,
 //! the workers first heard from, the devices let help or not, the agents started, the
-//! lead's conditions changing, and each Mac's build caches trimmed or cleared. Kept on the
+//! lead's conditions changing, and each Mac's build caches cleared or freed. Kept on the
 //! lead's disk (`history.jsonl`, a line an event, the last week's, KEEP_MAX at most), served by
 //! `/work/history` (the events after a number) and summed by the hour for the page (`rates`).
 
@@ -30,8 +30,8 @@ pub struct Event {
     /// "merged" (journal entries merged: their keys), "planned" (map tiles first
     /// planned: crate::pubtimes::planned_event), "pause" and "resume", "worker" (first heard from), "device" (a device's ask to
     /// help accepted or declined, a device forgotten: its asks aren't), "agent" (one started),
-    /// "conditions" (the lead's changed), "caches" (a Mac's build caches trimmed after the
-    /// build, or cleared on its owner's ask: what was freed, in the note).
+    /// "conditions" (the lead's changed), "caches" (a Mac's build caches cleared on its
+    /// owner's ask, or freed toward its room target: what was freed, in the note).
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker: Option<String>,

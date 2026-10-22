@@ -44,10 +44,10 @@ lead's coordinator. Below, the M4 (48 GB) unless said.
   - **What's fetched again** is only new data (a planet, Wikidata facts and pageviews, timetables, an
     Overture release) or a window not yet covered (DEM points not sampled before, WorldCover tiles
     the packs lack).
-- **Caches** (`~/Library/Application Support/scenic/agent/cache`): what a trim or clear empties is a
+- **Caches** (`~/Library/Application Support/scenic/agent/cache`): what room-making or a clear empties is a
   copy of what the NAS keeps, or made from it, refilled from the NAS, never the internet.
-  - **The cheap ones** (emptied for room, trimmed after the build, cleared): canopy squares
-    (`chm10/`; the M4's trim keeps them), raw terrain tiles and archive copies (`aws-terrarium/`),
+  - **The cheap ones** (emptied for room, cleared; kept after a build while the disk has room): canopy squares
+    (`chm10/`), raw terrain tiles and archive copies (`aws-terrarium/`),
     copies of record files staging reads (`blobs/`: hi packs, roadside buildings' z8 tiles, z6 tiles'
     kept DEM samples), pageview month indexes (`items/months/`).
   - **Cleared too, on the owner's ask:** the pack cache (`base/`, the base packs' way indexes for

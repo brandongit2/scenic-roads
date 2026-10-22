@@ -863,7 +863,7 @@ fn room_making_mid_run_never_reads_a_square_as_none_there() {
         let room = s.spawn(|| {
             let mut n = 0;
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                crate::agent::room::trim(&cache, &sources, &|_| false, u64::MAX).unwrap();
+                crate::agent::room::make_room(&cache, &sources, u64::MAX, 0, &Default::default()).unwrap();
                 n += 1;
             }
             n

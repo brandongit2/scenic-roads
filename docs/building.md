@@ -124,9 +124,9 @@ from the first (`edit_held`).
   - The order of freeing: canopy squares and copies idle an hour, least recently used first; then
     raw tiles a folder at a time and the squares read since. A file goes once the NAS has it at the
     same size; what the NAS lacks is put there first (raw tiles packed as an archive), or kept.
-  - **After the build** (`room::trim`): once the lead's forecast says nothing is left, each agent at
-    home empties those copies once (the M4 keeps the canopy squares), and again only after a job has
-    run there. Logged in its status (`caches.trimmed`) and the history.
+  - **After the build** nothing is emptied: a Mac keeps its caches while it has room, and frees them
+    only when the disk is short of a job's room or of the owner's room target (`room::toward`), as
+    far as that needs, least recently used first.
   - **On the owner's ask** (`room::clear`): Clear the Build's Caches in the menu bar, or `scenic
     clean`, after a confirmation naming each cache and how it comes back, writes `clear-request.json`;
     once the build is done the agent empties every cache a later job refills from the NAS
@@ -140,7 +140,7 @@ from the first (`edit_held`).
     nothing more to free, it says so (`caches.room.short`). It never deletes what a job holds.
   - **With the mirror's reserve** (docs/macs.md, Mirror): the two floors are apart; the mirror never frees for
     the agent's target and the agent never touches the mirror (task #460).
-  - A trim, clear or freeing runs on its own thread; jobs run meanwhile. Nothing goes through a link.
+  - A clear or freeing runs on its own thread; jobs run meanwhile. Nothing goes through a link.
     Each ends early when the agent is asked to stop.
 - **Z6 tiles run in map order** (by 10° square, then tile), so what one fetches serves the next.
 - **Retries:** a failed job is retried after 10 minutes, doubling to 6 hours.
@@ -201,7 +201,7 @@ from the first (`edit_held`).
   finish.
 - **The history** (`coord::history`): the last week's events (50,000 at most) on the lead's disk
   (`coord/history.jsonl`): jobs, leases, tasks, map tiles planned, catalogs, pauses, workers,
-  agents, conditions, cache trims and clears. Summed by the hour for the worker page, and the
+  agents, conditions, cache clears and freeings. Summed by the hour for the worker page, and the
   forecast's measure of members' pace and of publishing's time.
 - **Timings** (`pipeline::timings`; `dem/timings.py`; a page's task in `web/work/worker.js`): every
   job's run is broken into named phases, each with wall time, CPU time (`getrusage`), its class

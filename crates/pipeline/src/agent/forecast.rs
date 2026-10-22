@@ -313,7 +313,7 @@ pub struct Cadence {
 }
 
 /// The forecast's `why` when the build is done: no work left, nothing to publish and no machine
-/// busy (each Mac's agent then trims its caches: crate::agent::room::trim).
+/// busy.
 pub const NOTHING_LEFT: &str = "nothing left to build";
 
 /// The forecast (`forecast`).

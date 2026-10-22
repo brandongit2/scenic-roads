@@ -800,7 +800,7 @@ Still under no deadline (planned): the NAS's mount and probe (`root`); the build
 (`build::Keys::load`, `load_with`); the manifest read through `out::read_record`; the regions'
 held report (`inputs::read_report`); the helpers' listing (`state/helpers`); the coordinator's
 contact published and removed; GC's reads of the journal and records;
-the caches' trims and clears; and every NAS call of the coordinator's and the jobs' own.
+the caches' clears; and every NAS call of the coordinator's and the jobs' own.
 
 ## 8. Tasks, and the pages as workers
 

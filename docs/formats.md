@@ -910,7 +910,7 @@ class, id) within a tile. The client sends the id with the clicked point.
   forecast (`regions` with `map_at`; `publishes`: `{what: low | marks | overlays, at}`), the checklist (a line per stage: `id`, `what`, `steps`, `done`/`total`/`left`,
   `unit`, `items` (per step: `step`, `title`, `noun`, `done`, `total`, `left`), `next`, `note`,
   `shared`: docs/pipeline.md §4), `caches`
-  (agent::room::Caches: `clearable`, `each`, `why_not`, `trimmed`, `cleared`, `declined`, `room`),
+  (agent::room::Caches: `clearable`, `each`, `why_not`, `cleared`, `declined`, `room`),
   `pool`, `lead` (crate::agent::lead::View), `inputs`
   (pipeline::inputs::view::InputView: per unit `version`, `state` ok | checking | held, `checked`,
   `held`, `findings`, `accepted`, `stale`). `state/build/{manifest,jobs,pending,summaries,pause}.json`

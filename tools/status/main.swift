@@ -8,7 +8,7 @@
 // (`/api/build`), which answers with this Mac's own agent's status when the agent runs here and
 // with the heartbeat the agent copies to the NAS otherwise. This Mac's own agent's status, read
 // from its file, says what its build caches hold, whether they can be cleared now,
-// and the last trim and clear (crates/pipeline/src/agent/room.rs): Clear the Build's Caches asks
+// and the last clear (crates/pipeline/src/agent/room.rs): Clear the Build's Caches asks
 // that agent to clear them. Disk Room shows the disk's free space and the owner's room target, and
 // sets it (a few presets, or Off): the free space that agent keeps, freeing its caches to it; its
 // title says the free space, what's left of it for jobs and what keeps the rest. Memory shows and
@@ -365,12 +365,11 @@ func poolLines(_ v: PoolView, now: Int) -> [Line] {
 
 /// This Mac's build caches (crates/pipeline/src/agent/room.rs Caches): what a clear would free
 /// (bytes, and cache by cache with how each comes back), why they can't be cleared now (none: they
-/// can), and the last trim after the build, the last clear done and the last ask declined.
+/// can), and the last clear done and the last ask declined.
 struct Caches: Decodable {
     let clearable: Int?
     let each: [Gone]?
     let why_not: String?
-    let trimmed: Freed?
     let cleared: Freed?
     let declined: Freed?
     let room: RoomView?
@@ -406,7 +405,7 @@ struct Gone: Decodable {
     let back: String
 }
 
-/// What a trim or a clear did (room.rs Freed): when, the bytes freed by cache, what stays, and for
+/// What a clear did (room.rs Freed): when, the bytes freed by cache, what stays, and for
 /// a clear asked for when it couldn't be, why not.
 struct Freed: Decodable {
     let at: Int
@@ -827,7 +826,7 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
     out.append(Line(text: "\(power) · NAS \(!s.conditions.nas ? "not reachable" : s.conditions.home == false ? "through Tailscale" : "reachable")", style: .small))
     out.append(Line(text: "\(s.host) · \(r.local ? "this Mac" : "via the NAS") · heard from \(duration(r.now - s.beat)) ago", style: .small))
     if let app = s.app { out.append(Line(text: "App \(app)", style: .small)) }
-    // This Mac's build caches: what a clear would free, and the last trim after the build and clear.
+    // This Mac's build caches: what a clear would free, and the last clear.
     if let c = own?.caches { out.append(Line(text: cachesLine(c), style: .small)) }
     // The pool: who leads, each member (this Mac's agent's view).
     if let v = own?.pool?.lead { out += poolLines(v, now: r.now) }
@@ -913,7 +912,6 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
 /// and clear.
 func cachesLine(_ c: Caches) -> String {
     var t = "Build caches here: \(c.clearable.map(gb) ?? "not counted yet")"
-    if let f = c.trimmed, f.why_not == nil { t += " · trimmed \(clock(f.at)), \(gb(f.bytes)) freed" }
     if let f = c.cleared, f.why_not == nil { t += " · cleared \(clock(f.at)), \(gb(f.bytes)) freed" }
     return t
 }
@@ -1498,7 +1496,7 @@ func gb(_ b: Int) -> String {
     b >= 1 << 30 ? String(format: "%.1f\u{00A0}GB", Double(b) / Double(1 << 30)) : "\(b >> 20)\u{00A0}MB"
 }
 
-/// What a trim or a clear freed, by cache, the most first: "canopy squares 45.0 GB, raw terrain
+/// What a clear freed, by cache, the most first: "canopy squares 45.0 GB, raw terrain
 /// tiles 24.1 GB", and what stays.
 func freedText(_ f: Freed) -> String {
     let words = ["canopy": "canopy squares", "terrain": "raw terrain tiles", "blobs": "copies of the records' files", "base": "base packs", "dem": "the DEM seed", "copies": "copies of the NAS's files", "heritage": "the heritage jobs' planet clip"]
@@ -1525,10 +1523,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     lazy var item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     var reply: Reply?
     var seen: Seen?
-    /// This Mac's agent's own status (its caches), read with each answer, and its last trim's and
-    /// clear's times as last told.
+    /// This Mac's agent's own status (its caches), read with each answer, and its last clear's
+    /// and declined ask's times as last told.
     var own: Own?
-    var seenCaches: (trimmed: Int, cleared: Int, declined: Int)?
+    var seenCaches: (cleared: Int, declined: Int)?
     var polling = false
     /// The app's build service, the map server, and the window (service.swift).
     let build = BuildService()
@@ -2434,11 +2432,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    /// This Mac's caches trimmed after the build, cleared, or not cleared and why, each told once
+    /// This Mac's caches cleared, or not cleared and why, each told once
     /// (the first look at its agent's status only sets where they're told from).
     func tellCaches() {
         guard let c = own?.caches else { return }
-        let now = (trimmed: c.trimmed?.at ?? 0, cleared: c.cleared?.at ?? 0, declined: c.declined?.at ?? 0)
+        let now = (cleared: c.cleared?.at ?? 0, declined: c.declined?.at ?? 0)
         defer { seenCaches = now }
         guard let was = seenCaches else { return }
         if let f = c.cleared, f.at != was.cleared {
@@ -2446,10 +2444,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         if let f = c.declined, f.at != was.declined {
             post("Build caches not cleared", f.why_not ?? "")
-        }
-        // (Not one with nothing to do, the caches empty already.)
-        if let f = c.trimmed, f.at != was.trimmed, f.bytes >= 50 << 20 {
-            post("Build caches trimmed", "Freed \(gb(f.bytes)) on this Mac now that the build is done: \(freedText(f))")
         }
     }
 

@@ -837,7 +837,7 @@ fn status(args: &[String]) -> Result<()> {
             println!("  {l}");
         }
     }
-    // Each Mac's build caches (agent::room): what a clear would free, the last trim and clear.
+    // Each Mac's build caches (agent::room): what a clear would free, the last clear.
     for (host, c) in std::iter::once((&st.host, &st.caches)).chain(st.helpers.iter().map(|h| (&h.host, &h.caches))) {
         if let Some(c) = c {
             println!("Caches on {host}: {}", caches_line(c));
@@ -938,7 +938,7 @@ fn count_line(done: usize, total: Option<usize>, left: Option<usize>, noun: &str
 }
 
 /// A Mac's build caches in a line: what a clear would free (`scenic clean` there) or why not now,
-/// and the last trim after the build and the last clear.
+/// and the last clear.
 fn caches_line(c: &agent::room::Caches) -> String {
     let mut s =
         c.clearable.map_or_else(|| "not counted yet".to_string(), |n| format!("{} to clear", agent::room::size(n)));
@@ -946,9 +946,6 @@ fn caches_line(c: &agent::room::Caches) -> String {
         Some(w) => format!(" (not now: {w})"),
         None => " (`scenic clean` there)".to_string(),
     };
-    if let Some(f) = &c.trimmed {
-        s += &format!("; trimmed after the build {}: {}", ago(f.at), f.say());
-    }
     if let Some(f) = &c.cleared {
         s += &format!("; cleared {}: {}", ago(f.at), f.say());
     }
