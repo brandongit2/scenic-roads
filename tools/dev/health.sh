@@ -2,6 +2,11 @@
 # The PM's health check of the build and the agents. Prints what needs attention and stamps the
 # time (.claude/health-stamp), which tools/dev/health-due.sh reads: Claude Code's hooks make the PM
 # run this at least every 20 minutes.
+case $#:${1:-} in
+  0:) ;;
+  1:-h|1:--help) print "usage: tools/dev/health.sh   (no arguments)"; exit 0 ;;
+  *) print -u2 "health.sh takes no arguments: $*"; exit 2 ;;
+esac
 repo=${$(git -C ${0:A:h} rev-parse --path-format=absolute --git-common-dir):h}   # the main checkout, found from this script (also from a worktree copy)
 cd $repo || exit 1
 date +%s > .claude/health-stamp

@@ -1,15 +1,10 @@
 //! A unit's area flags (`grid.areas.u8`) on its own z11 grid (`grid.idx`), from the flagged
-//! polygons near it: pipeline::areaflags.
-//!
-//! usage: areaflags <unit_dir> <area-shapes.geojsonseq>
+//! polygons near it: pipeline::areaflags. Its command line: pipeline::cli::progs::Areaflags.
 
-use anyhow::{bail, Result};
-use std::path::Path;
+use anyhow::Result;
+use clap::Parser;
 
 fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 3 {
-        bail!("usage: areaflags <unit_dir> <area-shapes.geojsonseq>");
-    }
-    pipeline::areaflags::run(Path::new(&args[1]), Path::new(&args[2]))
+    let a = pipeline::cli::progs::Areaflags::parse();
+    pipeline::areaflags::run(&a.unit_dir, &a.shapes)
 }

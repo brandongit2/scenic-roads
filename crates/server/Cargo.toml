@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 libc = "0.2"
 sha2 = "0.10"
+clap.workspace = true
 pipeline = { path = "../pipeline" }
 toml = "0.9"
 unicode-normalization = "0.1"

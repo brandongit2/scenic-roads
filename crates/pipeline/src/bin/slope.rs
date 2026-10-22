@@ -2,7 +2,7 @@
 //! quarters of the z12 slopes beneath it (roadcore::slope: the map colours each and averages the
 //! colours, so a pixel shows the mix of colours its ground would).
 //!
-//! usage: slope <build_dir> [--seed] [--coarse]
+//! Its command line: pipeline::cli::progs::Slope (`slope [<build_dir>] [--seed] [--coarse]`).
 //!
 //! Slope depends on scale: computed directly from a coarse DEM, the peaks and valleys merge into a
 //! gentle surface and low zooms look flat (the White Mountains' high ground: 25 % at z12, 15 % at
@@ -34,7 +34,6 @@ use roadcore::archive::{Archive, ArchiveWriter};
 use roadcore::grid::tile_with_fallback;
 use roadcore::slope::{decode_slope4, encode_slope4, merge4, Quarters};
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const TS: usize = 256;
@@ -187,7 +186,8 @@ fn build(b: &Build, z: u8, x: u32, y: u32) -> Result<Built> {
 }
 
 fn main() -> Result<()> {
-    let dir = PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "data/build".into()));
+    let pipeline::cli::progs::Slope { build_dir: dir, seed, coarse } =
+        <pipeline::cli::progs::Slope as clap::Parser>::parse();
     let t0 = std::time::Instant::now();
     let arc = Archive::open(&dir.join("terrain.tiles"))?;
     // Last run: its terrain keys and slope tiles (still in place until the commit).
@@ -195,7 +195,7 @@ fn main() -> Result<()> {
     std::fs::create_dir_all(&cdir)?;
     let keys_path = cdir.join("slope.keys");
     // --seed: record the current terrain keys (for a slope.tiles built before this cache existed).
-    if std::env::args().any(|a| a == "--seed") {
+    if seed {
         let keys: Vec<u64> = arc.entries().iter().map(|e| e.key).collect();
         std::fs::write(&keys_path, bytemuck::cast_slice(&keys))?;
         eprintln!("slope: seeded {} terrain keys", keys.len());
@@ -241,8 +241,7 @@ fn main() -> Result<()> {
         &roadcore::tmp(&dir, "slope.tiles"),
         r#"{"format":"png","encoding":"slope4","value":"slope percent, quarter means"}"#,
     )?);
-    // --coarse: every level below z12 again (z12 copied).
-    let coarse = std::env::args().any(|a| a == "--coarse");
+    // (--coarse: every level below z12 again, z12 copied.)
     // Every slope tile: the terrain's and their ancestors (a parent of finer tiles exists even where
     // the terrain archive has none).
     let mut tiles: HashSet<u64> = HashSet::new();

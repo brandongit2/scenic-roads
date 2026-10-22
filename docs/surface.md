@@ -73,9 +73,8 @@
 - `scenic status` and the menu bar item (Scenic's) show the build's state. A click
   opens the build page in a popover; the menu pauses and resumes the build, hands over the lead,
   sets the disk room and clears the Mac's build caches (`scenic clean`). It notifies on every change.
-- `scenic`, `scenic-build`, `scenic-metrics`, `lakefill` and `coastcheck` check their command line
-  first (pipeline::cli): `--help`/`-h` prints usage; an unknown flag, a missing value or an extra
-  argument is refused with usage (exit 2).
+- Every program checks its command line first (docs/building.md, "Command lines"): `--help`/`-h`
+  prints usage; an unknown flag, a missing value or an extra argument is refused with usage (exit 2).
 - The server mounts the NAS itself when it's missing, at home.
 
 **The Regions panel** (Settings → Regions):

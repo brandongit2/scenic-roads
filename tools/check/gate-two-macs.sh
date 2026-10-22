@@ -84,7 +84,12 @@
 # folder without the pool) checked, held, accepted, taken in and swept the same way. After `test
 # off` no check runs; the status still lists the unit while its records are there.
 set -euo pipefail
-cmd=${1:?root, app, run, stop, drop, big, touch, remove, state, wait, page-accept, menu-accept or lead}
+usage="usage: tools/check/gate-two-macs.sh root|app|run|stop|drop|big|touch|remove|state|wait|page-accept|menu-accept|lead … (see the top of this file)"
+case ${1:-} in
+  -h|--help) print -r -- $usage; exit 0 ;;
+  ""|-*) print -ru2 -- "gate-two-macs.sh: unexpected ${1:-end}"$'\n'"$usage"; exit 2 ;;
+esac
+cmd=$1
 V=20261010-0000-gatetest
 U=_gate-test
 # A drop box's file, written whole by a temporary name (passed over: names starting with "."), then

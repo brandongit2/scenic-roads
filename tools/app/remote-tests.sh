@@ -300,6 +300,7 @@ local_main() {  # <key> <source dir> <command>
 }
 
 case ${1:-} in
+  -h|--help) print "usage: remote-tests.sh <key> <source dir> <command> | --drop <key>"; exit 0 ;;
   --remote) remote_main $2 $3 $4 ;;
   --remote-lock) remote_lock $2 $3 ;;
   --remote-unlock) remote_unlock $2 $3; exit $? ;;
@@ -310,6 +311,6 @@ case ${1:-} in
     if [[ -d ~/scenic-check ]]; then remote_drop $2
     else ssh -o ConnectTimeout=5 -o BatchMode=yes $host zsh -s -- --remote-drop $2 < $self; fi ;;
   *)
-    (( $# == 3 )) || { print "usage: remote-tests.sh <key> <source dir> <command> | --drop <key>"; exit 2; }
+    (( $# == 3 )) && [[ $1 != -* ]] || { print -u2 "usage: remote-tests.sh <key> <source dir> <command> | --drop <key>"; exit 2; }
     local_main "$@"; exit $? ;;
 esac

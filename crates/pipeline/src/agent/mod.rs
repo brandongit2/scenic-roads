@@ -6706,7 +6706,7 @@ impl Agent {
         // (In the tests, every planned command checked against its program's table, crate::cli.)
         #[cfg(test)]
         for j in &jobs {
-            if let Some(Err(e)) = crate::cli::tables::check_command(&j.cmd) {
+            if let Some(Err(e)) = crate::cli::check_command(&j.cmd) {
                 panic!("{e}");
             }
         }
@@ -11321,7 +11321,7 @@ mod tests {
     }
 
     /// Every scenic-build command line the agent makes, by its own code (step_args, the targets as
-    /// named, the OSM pass's), passes the steps' table (crate::cli): none refused at its start.
+    /// named, the OSM pass's), passes its command line (crate::cli): none refused at its start.
     #[test]
     fn the_agents_commands_pass_the_steps_table() {
         let d = tempfile::tempdir().unwrap();
@@ -11341,11 +11341,13 @@ mod tests {
             let step = st.name.to_string();
             // (gc and backup: `scenic`'s, their commands checked as the plan makes them.)
             // (catalog-held: `catalog --held --ready …`, as the plan makes it.)
-            if crate::cli::tables::SCENIC.get(&step).is_some() || step == "catalog-held" {
+            let scenics = crate::cli::command("scenic").unwrap().find_subcommand(&step).is_some();
+            let takes = crate::cli::build::takes_targets(&step);
+            if (scenics && takes.is_none()) || step == "catalog-held" {
                 continue;
             }
             for target in [step.as_str(), "6/1/1", "3/1/1", "inputs/regions"] {
-                if crate::cli::tables::SCENIC_BUILD.get(&step).is_some_and(|c| c.pos == 0) && target != step {
+                if takes == Some(false) && target != step {
                     continue;
                 }
                 let mut cmd = vec![
@@ -11362,29 +11364,39 @@ mod tests {
                 if matches!(step.as_str(), "trees" | "terrain" | "slope") {
                     cmd.extend(["--expect-same".to_string(), "6/1/1".into()]);
                 }
-                if let Some(Err(e)) = crate::cli::tables::check_command(&cmd) {
+                if let Some(Err(e)) = crate::cli::check_command(&cmd) {
                     panic!("{e}");
                 }
             }
         }
         let pass = a.osm_pass_cmd(&root, &root.join("planet.osm.pbf"), "2026-10-01");
-        assert_eq!(crate::cli::tables::check_command(&pass), Some(Ok(())));
+        assert_eq!(crate::cli::check_command(&pass), Some(Ok(())));
     }
 
-    /// A z6 tile's tail as it runs its programs (scenic-metrics and the rest: crate::unit::tail)
-    /// passes their tables.
+    /// A z6 tile's tail as it runs its programs (scenic-metrics and the rest: crate::unit::tail),
+    /// and the tasks' programs as their specs run them (trees, bldtile, terrainsub), pass their
+    /// command lines (crate::cli): every one of them a program of this crate's.
     #[test]
-    fn a_units_programs_pass_their_tables() {
+    fn the_tasks_programs_pass_their_command_lines() {
         let u = crate::legacy::TileId::parse("6/1/1").unwrap();
-        let mut seen = 0;
-        for r in crate::unit::tail(u, true, true) {
-            let cmd: Vec<String> = std::iter::once(format!("/app/{}", r.prog)).chain(r.args.iter().cloned()).collect();
-            if let Some(c) = crate::cli::tables::check_command(&cmd) {
-                c.unwrap();
-                seen += 1;
-            }
+        let mut runs: Vec<serde_json::Value> =
+            crate::unit::tail(u, true, true).iter().map(|r| serde_json::to_value(r).unwrap()).collect();
+        let none = BTreeMap::new();
+        for spec in [
+            // (A square south of the equator first: its negative top a value, not a flag.)
+            crate::trees::task::spec(&[(1, 1), (2, 1)], &[(-10, -80), (40, 10)], "v", &none),
+            crate::bld::task::spec(crate::legacy::TileId::parse("8/1/1").unwrap(), "v", &none),
+            crate::terrain_task::spec(&[(1, 1), (1, 2)], "v", 1),
+        ] {
+            runs.extend(spec["runs"].as_array().unwrap().iter().cloned());
         }
-        assert!(seen >= 5, "{seen}");
+        for r in &runs {
+            let cmd: Vec<String> = std::iter::once(format!("/app/{}", r["prog"].as_str().unwrap()))
+                .chain(r["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap().to_string()))
+                .collect();
+            crate::cli::check_command(&cmd).unwrap_or_else(|| panic!("{cmd:?}: not a program of this crate")).unwrap();
+        }
+        assert!(runs.len() >= 8, "{}", runs.len());
     }
 
     #[test]

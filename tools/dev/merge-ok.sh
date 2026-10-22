@@ -3,6 +3,10 @@
 # <commit> or on a later commit of the same branch (one that has <commit> as an ancestor);
 # otherwise says so and exits 1.
 #   tools/dev/merge-ok.sh <commit>...
+case ${1:-} in
+  -h|--help) print "usage: tools/dev/merge-ok.sh <commit>..."; exit 0 ;;
+  ""|-*) print -u2 "merge-ok.sh: which commits? (merge-ok.sh <commit>...)"; exit 2 ;;
+esac
 repo=${$(git -C ${0:A:h} rev-parse --path-format=absolute --git-common-dir):h}   # the main checkout, found from this script (also from a worktree copy)
 passed=( ${(f)"$(cut -d' ' -f1 $repo/.git/check-passed 2>/dev/null)"} )
 rc=0

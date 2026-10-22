@@ -791,6 +791,10 @@ func selfTest(_ dir: String) -> Never {
     check("values counted", argsProblem(["--reopen", "12", "/Applications/Scenic.app"]) == nil && argsProblem(["--reopen", "12"])?.contains("2 values") == true
         && argsProblem(["--show"])?.contains("a value") == true && argsProblem(["--replay", "a.json", "b.json"]) == nil && argsProblem(["--replay"]) != nil
         && argsProblem(["--no-window", "--show", "panel"]) == nil)
+    check("one mode at a time, nothing twice", argsProblem(["--print", "--plan"])?.contains("together") == true
+        && argsProblem(["--test", "d", "--no-window"])?.contains("together") == true
+        && argsProblem(["--show", "menu", "--show", "panel"])?.contains("twice") == true
+        && argsProblem(["--menu-proof", "--show", "menu"]) == nil)
     // The reopen helper. A fake system: the old process ends after `exitAfter` polls; each open
     // succeeds from attempt `worksFrom` on (earlier ones go to the old process, as procNotFound did,
     // or to a stray copy until it's ended, `stray`); the app runs from the check after a

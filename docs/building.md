@@ -500,3 +500,18 @@ The check: `ssh m6 'security unlock-keychain -p "$(<~/.config/scenic/signing-key
 steps, run in `dem/.venv`, which uv makes from `uv.lock` at a Mac's first Python step: task #456),
 Scenic.app, `web/` and `fonts/`. `tools/app/install.sh` gives the agent a PATH with uv, osmium, zstd
 and Java 21.
+
+**Command lines:** every program checks its arguments before it does anything. `--help` (or `-h`)
+prints its usage and exits 0; an unknown flag, command or argument, a flag without its value or
+given twice, or two that can't go together is refused with the usage (exit 2). Nothing is run
+either way: no default action on a typo. The Rust binaries parse with clap: each one's definition
+is in `pipeline::cli` (the server's in its `main.rs`), where the agent's tests also check the
+command lines it makes for its jobs and tasks (`cli::check_command`); `scenic-build`'s steps read
+their flags by name from the line clap checked. `scenic-status` (Swift) has a small parser of the
+same rules (`argsProblem`; a mode at a time). The shell tools in `tools/` do the same with a `case`
+on their arguments, first thing. `crates/pipeline/tests/cli.rs` runs every binary of the workspace
+with `--help` and a flag it doesn't take, in an empty home (a new binary fails it until added to
+`pipeline::cli`), checks the calls in the docs and in `tools/` against the definitions, and that
+every shell tool checks its arguments; `crates/server/tests/cli.rs` does the same for the server.
+Planned: the launcher (`tools/launcher/launcher.c`, one argument, its run file's name, else exit 2)
+taking `--help` too (a change to it changes its signature's hash, so it's done on its own).

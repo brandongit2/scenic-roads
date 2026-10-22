@@ -13,10 +13,12 @@
 #                                   switched over
 set -euo pipefail
 legacy=0
-case ${1:-} in
-  "") ;;
-  --legacy) legacy=1 ;;
-  *) echo "tools/app/install.sh [--legacy]" >&2; exit 2 ;;
+usage="usage: tools/app/install.sh [--legacy]"
+case $#:${1:-} in
+  0:) ;;
+  1:--legacy) legacy=1 ;;
+  1:-h|1:--help) print -r -- $usage; exit 0 ;;
+  *) print -ru2 -- "install.sh: unexpected arguments: $*"$'\n'"$usage"; exit 2 ;;
 esac
 NAS=/Volumes/personal/projects/scenic-roads
 HOME_S="$HOME/Library/Application Support/scenic"

@@ -4,6 +4,12 @@
 # backup to the NAS (backup.sh). Re-run after moving the checkout or Node.
 # Usage: install.sh [path/to/node]   (default: `mise which node` in the checkout, mise.toml's pin)
 set -eu
+usage="usage: tools/taskboard/launchd/install.sh [path/to/node]"
+case "${1:-}" in
+  -h|--help) echo "$usage"; exit 0 ;;
+  -*) printf '%s\n%s\n' "install.sh: unexpected $1" "$usage" >&2; exit 2 ;;
+esac
+[ $# -le 1 ] || { printf '%s\n%s\n' "install.sh: too many arguments" "$usage" >&2; exit 2; }
 board=$(cd "$(dirname "$0")/.." && pwd)
 node=${1:-$(cd "$board" && mise which node)}
 case $node in */shims/*) echo "$node is a shim; pass the real node" >&2; exit 1;; esac

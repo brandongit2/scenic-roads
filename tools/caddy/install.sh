@@ -8,6 +8,12 @@
 # Usage: install.sh [name] [cert] [key]
 #   (default map.brandontsang.net ~/certs/map.crt ~/certs/map.key)
 set -eu
+usage="usage: tools/caddy/install.sh [name] [cert] [key]"
+case "${1:-}" in
+  -h|--help) echo "$usage"; exit 0 ;;
+  -*) printf '%s\n%s\n' "install.sh: unexpected $1" "$usage" >&2; exit 2 ;;
+esac
+[ $# -le 3 ] || { printf '%s\n%s\n' "install.sh: too many arguments" "$usage" >&2; exit 2; }
 dir=$(cd "$(dirname "$0")" && pwd)
 name=${1:-map.brandontsang.net}
 cert=${2:-$HOME/certs/map.crt}

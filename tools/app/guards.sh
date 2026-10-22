@@ -7,6 +7,11 @@
 # so); exits non-zero, saying why, on a failure. The tests' whole output is kept
 # (~/Library/Logs/scenic/guards-<time>.log); shown on a failure: each failed test's own.
 set -euo pipefail
+case $#:${1:-} in
+  0:) ;;
+  1:-h|1:--help) print "usage: tools/app/guards.sh   (no arguments)"; exit 0 ;;
+  *) print -u2 "guards.sh takes no arguments: $*"; exit 2 ;;
+esac
 cd ${0:A:h}/../..
 mkdir -p ~/Library/Logs/scenic
 log=~/Library/Logs/scenic/guards-$(date +%Y%m%d-%H%M%S).log

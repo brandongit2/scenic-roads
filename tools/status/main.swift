@@ -2480,20 +2480,31 @@ let options: [String: Int] = [
     "--render": 1, "--show": 1, "--menu-proof": 0, "--reopen": 2, "--test": 1,
 ]
 
+/// The options that run something other than the app: one at a time, and not with the app's own
+/// (--no-window, --show, --menu-proof).
+let modes: Set<String> = ["--plan", "--services", "--unregister", "--print", "--replay", "--render", "--reopen", "--test"]
+
 /// What's wrong with the arguments (after the program's name): nil when they're fine, "" for
 /// --help/-h, else the problem. LaunchServices' own (-psn_…) are passed over. As the Rust
-/// programs' (pipeline::cli, the server's bad_args): help anywhere wins; an unknown is refused.
+/// programs' (clap, docs/building.md "Command lines"): help anywhere wins; an unknown option, one
+/// given twice, or two that can't go together is refused.
 func argsProblem(_ a: [String]) -> String? {
     if a.contains("--help") || a.contains("-h") { return "" }
+    var seen: [String] = []
     var i = 0
     while i < a.count {
         let o = a[i]
         if o.hasPrefix("-psn_") { i += 1; continue }
         guard let n = options[o] else { return "unknown argument \(o)" }
+        if seen.contains(o) { return "\(o) given twice" }
+        seen.append(o)
         let need = n < 0 ? 1 : n
         let values = a[(i + 1)...].prefix { !$0.hasPrefix("--") }
         if values.count < need { return "\(o) needs \(need == 1 ? "a value" : "\(need) values")" }
         i += 1 + (n < 0 ? values.count : n)
+    }
+    if let m = seen.first(where: { modes.contains($0) }), let other = seen.first(where: { $0 != m }) {
+        return "\(m) and \(other) can't go together"
     }
     return nil
 }

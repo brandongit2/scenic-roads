@@ -139,8 +139,8 @@
 //!                                last runs (`f`: the coordinator's costs.json). Reads only
 //!
 //! `--cache` is where base packs are kept locally (copied from the NAS when missing). `--help` (or
-//! `-h`) on any step prints its usage and does nothing; a flag the step doesn't know or an argument
-//! too many is refused before anything runs (pipeline::cli::tables::SCENIC_BUILD, the steps' table).
+//! `-h`) on any step prints its usage and does nothing; a flag the step doesn't take or an argument
+//! too many is refused before anything runs (pipeline::cli::build, the steps' command lines).
 
 use anyhow::{bail, Context, Result};
 use pipeline::basepack::BasePack;
@@ -185,25 +185,19 @@ fn opt(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned())
 }
 
-/// Positional arguments after the step (not options or their values).
+/// The step's arguments (not flags or their values), as clap read the line.
 fn positional(args: &[String]) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut i = 2;
-    while i < args.len() {
-        if args[i].starts_with("--") {
-            i += 2;
-        } else {
-            out.push(args[i].clone());
-            i += 1;
-        }
-    }
-    out
+    pipeline::cli::build::targets(args).1
 }
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    // (Its flags and arguments checked first: `--help` or a flag the step doesn't know runs nothing.)
-    let step = pipeline::cli::tables::SCENIC_BUILD.gate(&args).name.to_string();
+    // (Its command line checked first, pipeline::cli::build: `--help` or a flag the step doesn't
+    // take runs nothing. The steps read their flags from the line it checked: `opt`, `positional`.)
+    if let Err(e) = pipeline::cli::build::command().try_get_matches_from(&args) {
+        e.exit();
+    }
+    let step = pipeline::cli::build::targets(&args).0;
     // (Run by hand, its limit is the shell's, 256 on macOS: an agent's jobs inherit its raised one.)
     pipeline::sys::raise_open_files();
     // Its phases' times (pipeline::timings: the log's table, the agent's record), however it ends.

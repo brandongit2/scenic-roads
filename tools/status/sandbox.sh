@@ -17,7 +17,13 @@
 # The stand-in agent: a job while <dir>/home/job exists (its seconds left in it, counting down); no
 # job otherwise. Its log: <dir>/home/build.log.
 set -euo pipefail
-cmd=${1:?setup|update|clean} dir=${2:?<dir>}
+usage="usage: tools/status/sandbox.sh setup|update|clean <dir>"
+case $#:${1:-} in
+  1:-h|1:--help) print -r -- $usage; exit 0 ;;
+  2:setup|2:update|2:clean) ;;
+  *) print -ru2 -- "sandbox.sh: unexpected arguments: $*"$'\n'"$usage"; exit 2 ;;
+esac
+cmd=$1 dir=$2
 dir=${dir:A}
 home=$dir/home
 src=${0:A:h}
@@ -123,5 +129,4 @@ clean)
   rm -rf $dir
   echo "cleaned"
   ;;
-*) echo "setup|update|clean" >&2; exit 2 ;;
 esac

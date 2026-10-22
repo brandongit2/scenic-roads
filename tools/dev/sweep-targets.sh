@@ -16,9 +16,16 @@
 # Build folders of new worktrees are seeded from main's by tools/dev/seed-target.sh.
 # The agents' compile cache (sccache) is emptied when free disk is below 20 GB (end of this file).
 setopt extendedglob
+usage="usage: tools/dev/sweep-targets.sh [--dry-run]"
+dry=
+case $#:${1:-} in
+  0:) ;;
+  1:--dry-run) dry=1 ;;
+  1:-h|1:--help) print -r -- $usage; exit 0 ;;
+  *) print -ru2 -- "sweep-targets.sh: unexpected arguments: $*"$'\n'"$usage"; exit 2 ;;
+esac
 repo=${$(git -C ${0:A:h} rev-parse --path-format=absolute --git-common-dir):h}   # the main checkout, found from this script (also from a worktree copy)
 log=$repo/.claude/sweep-targets.log
-dry=; [[ $1 == --dry-run ]] && dry=1
 cd $repo || exit 1
 say() { if [[ -n $dry ]]; then print "would: $*"; else print "$(date '+%F %T') $*" >> $log; fi }
 skip() { [[ -n $dry ]] && print "keep ${wt:t}: $*"; }

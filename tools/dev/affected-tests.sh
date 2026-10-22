@@ -11,6 +11,12 @@
 # under crates/<crate>/tests/ that name it, or that changed. Modules without tests are left out.
 # Lines starting with # explain; the others are the commands. No command for doc-only or non-Rust
 # changes. tools/dev/test-guard.sh holds agents' cargo test to this set.
+usage="usage: tools/dev/affected-tests.sh [<commit> | <a>..<b>]"
+case $#:${1:-} in
+  1:-h|1:--help) print -r -- $usage; exit 0 ;;
+  0:|1:[^-]*) ;;
+  *) print -ru2 -- "affected-tests.sh: unexpected arguments: $*"$'\n'"$usage"; exit 2 ;;
+esac
 exec python3 - "$@" <<'PY'
 import os, re, subprocess, sys
 from collections import OrderedDict

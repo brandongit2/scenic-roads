@@ -1,47 +1,25 @@
 //! Elevations at every road vertex from the declared elevation datasets (`pipeline::dem`), by the
 //! plan the unit job wrote in the build folder (`elevation.json`): its outputs (elev.f32, src.u8,
-//! dem-stats.json, the cache's dem-cache.*).
-//!
-//! usage: elev <build_dir> [--workers N] [--cache DIR] [--no-cache]
+//! dem-stats.json, the cache's dem-cache.*). Its command line: pipeline::cli::progs::Elev.
 //!
 //!   SCENIC_STORE         the stores' folder (sources/fetched/): a dataset declared `store` is
 //!                        read there alone (a file it lacks is an error naming it)
 //!   SCENIC_FETCH_*       mirror folders, recording, no network (`pipeline::fetch`)
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
+use clap::Parser;
+use pipeline::cli::progs::Elev;
 use pipeline::dem::{self, Config};
 use pipeline::fetch::Fetcher;
 use std::path::PathBuf;
 
 fn main() -> std::process::ExitCode {
+    let a = Elev::parse();
     // (A server that gave no answer: its own exit status, pipeline::fetch::UNREACHABLE_EXIT.)
-    pipeline::fetch::exit_with(run())
+    pipeline::fetch::exit_with(run(a))
 }
 
-fn run() -> Result<()> {
-    let mut build: Option<PathBuf> = None;
-    let (mut workers, mut cache, mut no_cache) = (48usize, None::<PathBuf>, false);
-    let mut args = std::env::args().skip(1);
-    while let Some(a) = args.next() {
-        let (flag, inline) = match a.split_once('=') {
-            Some((f, v)) if f.starts_with("--") => (f.to_string(), Some(v.to_string())),
-            _ => (a.clone(), None),
-        };
-        let mut value = |name: &str| -> Result<String> {
-            inline.clone().or_else(|| args.next()).with_context(|| format!("{name} needs a value"))
-        };
-        match flag.as_str() {
-            "--workers" => workers = value("--workers")?.parse().context("--workers")?,
-            "--cache" => cache = Some(PathBuf::from(value("--cache")?)),
-            "--no-cache" => no_cache = true,
-            f if f.starts_with('-') => {
-                bail!("unknown option {f}\nusage: elev <build_dir> [--workers N] [--cache DIR] [--no-cache]")
-            }
-            _ if build.is_none() => build = Some(PathBuf::from(a)),
-            _ => bail!("one build folder only\nusage: elev <build_dir> [--workers N] [--cache DIR] [--no-cache]"),
-        }
-    }
-    let build = build.context("usage: elev <build_dir> [--workers N] [--cache DIR] [--no-cache]")?;
+fn run(Elev { build_dir: build, workers, cache, no_cache }: Elev) -> Result<()> {
     let cache = cache.unwrap_or_else(|| build.parent().unwrap_or(&build).join("cache"));
     let env_dir = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
     let cfg = Config { build, workers, cache, no_cache, store: env_dir("SCENIC_STORE") };

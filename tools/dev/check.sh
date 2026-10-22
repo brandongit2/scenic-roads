@@ -20,6 +20,11 @@
 # $(git rev-parse --git-common-dir)/check-passed, which the SubagentStop hook
 # (tools/dev/report-guard.sh) and tools/dev/merge-ok.sh read. Exit 0 only when all passed.
 set -uo pipefail
+case $#:${1:-} in
+  0:) ;;
+  1:-h|1:--help) sed -n '2,20p' ${0:A} | sed 's/^# \{0,1\}//'; exit 0 ;;
+  *) print -u2 "check.sh takes no arguments (check.sh --help)"; exit 2 ;;
+esac
 root=$(git rev-parse --show-toplevel) || exit 2
 cd $root
 eval "$(mise env -s zsh 2>/dev/null)" 2>/dev/null

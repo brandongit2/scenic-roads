@@ -7,6 +7,9 @@ anyhow = "1"
 rayon = "1.10"
 memmap2 = "0.9"
 bytemuck = { version = "1.19", features = ["derive", "extern_crate_alloc"] }
+# Every program's command line (pipeline::cli; docs/building.md, "Command lines"): strict, its
+# usage generated. No colour: plain text in logs and in the pages' consoles.
+clap = { version = "4.5", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions", "string"] }
 
 # Tests and debug builds keep only line tables (panics and backtraces still name file and line).
 # Full debug info on macOS stays in each build's object files beside the binaries, and they

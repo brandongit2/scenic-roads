@@ -2,6 +2,12 @@
 # Two versions of the renderer, A B A B, with the gated time.mjs (whole frames on − off) on three
 # views; web/src/bldfield.ts swapped between runs (vite reloads it) and restored however it ends:
 #   sh tools/bldcheck/abcode.sh <commit A> <out dir>   (B: the working tree's bldfield.ts; run from the repo)
+case "$#:${1:-}" in
+  1:-h|1:--help) echo "usage: abcode.sh <commit A> <out dir>"; exit 0 ;;
+  2:-*) echo "usage: abcode.sh <commit A> <out dir>" >&2; exit 2 ;;
+  2:*) ;;
+  *) echo "usage: abcode.sh <commit A> <out dir>" >&2; exit 2 ;;
+esac
 A=$1; S=$2
 [ -n "$A" ] && [ -n "$S" ] || { echo "usage: abcode.sh <commit A> <out dir>" >&2; exit 2; }
 mkdir -p "$S" || exit 1

@@ -8,6 +8,11 @@
 #
 #   tools/app/wasm.sh
 set -euo pipefail
+case $#:${1:-} in
+  0:) ;;
+  1:-h|1:--help) print "usage: tools/app/wasm.sh   (no arguments)"; exit 0 ;;
+  *) print -u2 "wasm.sh takes no arguments: $*"; exit 2 ;;
+esac
 cd ${0:A:h}/../..
 eval "$(mise env -s zsh)"
 wasi=$(mise where "github:WebAssembly/wasi-sdk" 2>/dev/null) || wasi=

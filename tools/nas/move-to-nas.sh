@@ -10,6 +10,15 @@
 # Prints "VERIFIED <n> files" and exits 0 only when every file matches; the local copy is left in
 # place (delete it separately once verified). Re-running resumes: rsync skips files already there.
 set -euo pipefail
+usage="usage: tools/nas/move-to-nas.sh <local_dir> <dest_rel> [--copy-only]
+       tools/nas/move-to-nas.sh --verify-from <ssh host> <remote local_dir> <dest_rel>"
+case $#:${1:-}:${3:-} in
+  1:-h:*|1:--help:*) print -r -- $usage; exit 0 ;;
+  4:--verify-from:*) ;;
+  2:-*|3:-*) print -ru2 -- "move-to-nas.sh: unexpected $1"$'\n'"$usage"; exit 2 ;;
+  2:*:|3:*:--copy-only) ;;
+  *) print -ru2 -- "move-to-nas.sh: unexpected arguments: $*"$'\n'"$usage"; exit 2 ;;
+esac
 ROOT_SMB=/Volumes/personal/projects/scenic-roads
 ROOT_NAS=/volume1/personal/projects/scenic-roads
 NAS=(ssh -o ControlMaster=auto -o 'ControlPath=~/.ssh/cm-%r@%h:%p' -o ControlPersist=12h -o LogLevel=ERROR brandontsang@fishandchips.local)

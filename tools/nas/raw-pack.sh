@@ -13,6 +13,12 @@
 #
 #   tools/nas/raw-pack.sh [scenic-build]
 set -euo pipefail
+usage="usage: tools/nas/raw-pack.sh [scenic-build]"
+case $#:${1:-} in
+  1:-h|1:--help) print -r -- $usage; exit 0 ;;
+  0:|1:[^-]*) ;;
+  *) print -ru2 -- "raw-pack.sh: unexpected arguments: $*"$'\n'"$usage"; exit 2 ;;
+esac
 NAS=brandontsang@fishandchips.local
 STORE=/volume1/personal/projects/scenic-roads/sources/aws-terrarium
 ROOT=/Volumes/personal/projects/scenic-roads

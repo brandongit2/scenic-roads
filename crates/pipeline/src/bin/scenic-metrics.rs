@@ -1,6 +1,7 @@
 //! Scenic analysis of a unit's roads: the unit's steps (pipeline::unit).
 //!
-//! usage: scenic-metrics <unit_dir> prep|canopy|view|buildings <dir>|flags
+//! Its command line: pipeline::cli::progs::Metrics
+//! (`scenic-metrics <unit_dir> prep|canopy|view|buildings <dir>|flags`).
 //!
 //! prep    road sample points (~100 m apart) with observer eye heights; per-vertex drape
 //!         heights on the Terrarium surface (what MapLibre renders in 3D)
@@ -15,7 +16,9 @@
 //! flags   the flag channels again (heritage, areas, buildings) on the view's metrics
 
 use anyhow::{bail, ensure, Context, Result};
+use clap::Parser;
 use det::Det;
+use pipeline::cli::progs::{Metrics, MetricsStep};
 use pipeline::count_bar;
 use pipeline::scache::{self, GridChange};
 use pipeline::terr::TerrainCache;
@@ -33,31 +36,21 @@ use std::sync::atomic::{AtomicI8, AtomicU8, Ordering::Relaxed};
 use std::sync::LazyLock;
 
 fn main() -> std::process::ExitCode {
+    let a = Metrics::parse();
     // (A server that gave no answer: its own exit status, pipeline::fetch::UNREACHABLE_EXIT.)
-    pipeline::fetch::exit_with(run())
+    pipeline::fetch::exit_with(run(a))
 }
 
-fn run() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-    // (Checked as `<step> <unit_dir> …`, its table's order: `--help` or an unknown flag runs nothing.)
-    let mut swapped = args.clone();
-    if swapped.len() >= 3 && !swapped[1].starts_with('-') {
-        swapped.swap(1, 2);
-    }
-    pipeline::cli::tables::SCENIC_METRICS.gate(&swapped);
-    ensure!(args.len() >= 3, "usage: scenic-metrics <unit_dir> prep|canopy|view|buildings <dir>|flags");
-    let dir = PathBuf::from(&args[1]);
-    let step = args[2].as_str();
+fn run(Metrics { unit_dir: dir, step, dir: footprints }: Metrics) -> Result<()> {
     let t0 = std::time::Instant::now();
     match step {
-        "prep" => prep(&dir)?,
-        "canopy" => canopy(&dir)?,
-        "view" => pipeline::view::run(&dir)?,
-        "flags" => pipeline::view::flags(&dir)?,
-        "buildings" => pipeline::buildings::run(&dir, &PathBuf::from(args.get(3).context("buildings <dir>")?))?,
-        s => bail!("unknown step {s}"),
+        MetricsStep::Prep => prep(&dir)?,
+        MetricsStep::Canopy => canopy(&dir)?,
+        MetricsStep::View => pipeline::view::run(&dir)?,
+        MetricsStep::Flags => pipeline::view::flags(&dir)?,
+        MetricsStep::Buildings => pipeline::buildings::run(&dir, &footprints.context("buildings <dir>")?)?,
     }
-    eprintln!("scenic {step}: done in {:.0?}", t0.elapsed());
+    eprintln!("scenic {}: done in {:.0?}", step.name(), t0.elapsed());
     Ok(())
 }
 

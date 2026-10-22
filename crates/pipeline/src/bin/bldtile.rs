@@ -1,37 +1,21 @@
 //! A z8 tile's 3D buildings tiles from its task folder (`pipeline::bld::task`; docs/buildings3d.md
-//! §3.6): the program a `bldtiles` job's task runs, natively or as WebAssembly in a page.
-//!
-//! usage: bldtile <dir> <8/x/y> [--workers n]
-//!            dir: the z8 tile's task folder (its work files' blocks, `coverage.sect`); writes there
-//!            `area.tiles` (its z14 tiles, RDTILES) and `area.json` (what it made)
+//! §3.6): the program a `bldtiles` job's task runs, natively or as WebAssembly in a page. Writes in
+//! the folder `area.tiles` (its z14 tiles, RDTILES) and `area.json` (what it made). Its command
+//! line: pipeline::cli::progs::Bldtile.
 
-use anyhow::{bail, Context, Result};
-use std::path::PathBuf;
-
-const USAGE: &str = "usage: bldtile <dir> <8/x/y> [--workers n]";
+use anyhow::{Context, Result};
+use clap::Parser;
+use pipeline::cli::progs::Bldtile;
 
 fn main() -> Result<()> {
-    let mut rest: Vec<String> = Vec::new();
-    let mut workers: Option<usize> = None;
-    let mut args = std::env::args().skip(1);
-    while let Some(a) = args.next() {
-        if a == "--workers" {
-            workers = Some(args.next().context("--workers n")?.parse::<usize>().context("--workers")?.max(1));
-        } else if a.starts_with("--") {
-            bail!("unknown option {a}\n{USAGE}");
-        } else {
-            rest.push(a);
-        }
-    }
-    let [dir, tile] = &rest[..] else { bail!("{USAGE}") };
-    let a = pipeline::legacy::TileId::parse(tile)
+    let Bldtile { dir, tile, workers } = Bldtile::parse();
+    let a = pipeline::legacy::TileId::parse(&tile)
         .filter(|u| u.z == 8)
-        .with_context(|| format!("not a z8 tile: {tile}\n{USAGE}"))?;
-    let dir = PathBuf::from(dir);
+        .with_context(|| format!("not a z8 tile: {tile}"))?;
     // (Threads as many as said, else rayon's; in WebAssembly, none can be made: this one.)
     let mut pool = rayon::ThreadPoolBuilder::new();
     if let Some(w) = workers {
-        pool = pool.num_threads(w);
+        pool = pool.num_threads(w.max(1));
     }
     let pool = pool.build().ok();
     let t0 = std::time::Instant::now();

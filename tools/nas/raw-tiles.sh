@@ -8,6 +8,11 @@
 #
 #   tools/nas/raw-tiles.sh
 set -euo pipefail
+case $#:${1:-} in
+  0:) ;;
+  1:-h|1:--help) print "usage: tools/nas/raw-tiles.sh   (no arguments)"; exit 0 ;;
+  *) print -u2 "raw-tiles.sh takes no arguments: $*"; exit 2 ;;
+esac
 CACHE="$HOME/Library/Application Support/scenic/agent/cache/aws-terrarium"
 NAS=brandontsang@fishandchips.local
 STORE=/volume1/personal/projects/scenic-roads/sources/aws-terrarium

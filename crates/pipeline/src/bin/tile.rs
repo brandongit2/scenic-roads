@@ -1,17 +1,13 @@
 //! A unit folder's sampled elevations post-processed (`pipeline::elev`): final.u16 and grade.u8,
-//! which the scenic steps read.
-//!
-//! usage: tile <unit_dir> elev
+//! which the scenic steps read. Its command line: pipeline::cli::progs::Tile.
 
-use anyhow::{ensure, Result};
+use anyhow::Result;
+use clap::Parser;
 use roadcore::elev;
 use roadcore::{Array, Ways};
-use std::path::PathBuf;
 
 fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-    ensure!(args.len() == 3 && args[2] == "elev", "usage: tile <unit_dir> elev");
-    let dir = PathBuf::from(&args[1]);
+    let dir = pipeline::cli::progs::Tile::parse().unit_dir;
     let t0 = std::time::Instant::now();
     let wv = Ways::open(&dir)?;
     let raw = Array::<f32>::open(&dir.join("elev.f32"))?;

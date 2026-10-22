@@ -60,21 +60,15 @@
 //!                                       build's (its coordinator's log, asked of it from another
 //!                                       Mac), or with --here this Mac's own jobs' alone
 //!
-//! `--root <dir>` points at the NAS project folder (default: the mounted share). `--help` (or `-h`)
-//! on any command prints its usage and does nothing; an unknown flag or an argument too many is
-//! refused before anything runs (pipeline::cli::tables::SCENIC, the commands' table).
+//! `--root <dir>` points at the NAS project folder (default: the mounted share). The command line
+//! is pipeline::cli::scenic's: `--help` (or `-h`) on any command prints its usage and does nothing;
+//! an unknown command, flag or argument is refused before anything runs.
 
 use anyhow::{bail, Context, Result};
+use clap::Parser;
 use pipeline::agent::{self, backup, gc, jobs::now_s, Options};
+use pipeline::cli::scenic::{self as cli, Cmd};
 use std::path::{Path, PathBuf};
-
-fn opt(args: &[String], name: &str) -> Option<String> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned())
-}
-
-fn flag(args: &[String], name: &str) -> bool {
-    args.iter().any(|a| a == name)
-}
 
 /// `~/Library/Application Support/scenic`.
 fn app_home() -> PathBuf {
@@ -82,9 +76,15 @@ fn app_home() -> PathBuf {
     home.join("Library/Application Support/scenic")
 }
 
-fn root(args: &[String], mount: bool) -> Result<PathBuf> {
-    match opt(args, "--root") {
-        Some(r) => Ok(PathBuf::from(r)),
+/// This Mac's agent's folder: `--home`'s, else the app's.
+fn home_or_default(home: &Option<PathBuf>) -> PathBuf {
+    home.clone().unwrap_or_else(|| app_home().join("agent"))
+}
+
+/// The NAS project folder: `--root`'s, else the share (mounted first if `mount`).
+fn root(root: &Option<PathBuf>, mount: bool) -> Result<PathBuf> {
+    match root {
+        Some(r) => Ok(r.clone()),
         None => agent::find_root(mount).context("the NAS isn't mounted (and couldn't be mounted)"),
     }
 }
@@ -100,25 +100,24 @@ fn ago(t: u64) -> String {
 }
 
 /// `scenic timings`: the jobs' phases, summed by kind (pipeline::timings::summary).
-fn timings(args: &[String]) -> Result<()> {
+fn timings(a: &cli::Timings) -> Result<()> {
     use pipeline::timings::{read_log, summary, summary_text, RunRec};
-    if args.get(2).map(String::as_str) == Some("publish") {
-        return timings_publish(args);
+    if let Some(cli::TimingsCmd::Publish { last, file, json, places }) = &a.cmd {
+        return timings_publish(*last, file.as_deref(), *json, places);
     }
-    let kind = args.get(2).filter(|a| !a.starts_with("--")).map(String::as_str);
-    let last: usize = opt(args, "--last").map(|n| n.parse()).transpose()?.unwrap_or(20);
-    let home = opt(args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
+    let (kind, last) = (a.kind.as_deref(), a.last);
+    let home = home_or_default(&a.places.home);
     // The build's log: this Mac's coordinator's, else the coordinator's answer; --here, this Mac's
     // own jobs'.
-    let (runs, from): (Vec<RunRec>, String) = if let Some(f) = opt(args, "--file") {
-        (read_log(Path::new(&f)), f)
-    } else if flag(args, "--here") {
+    let (runs, from): (Vec<RunRec>, String) = if let Some(f) = &a.file {
+        (read_log(f), f.display().to_string())
+    } else if a.here {
         (read_log(&home.join("timings.jsonl")), "this Mac's jobs".into())
     } else if home.join("coord/timings.jsonl").exists() {
         (read_log(&home.join("coord/timings.jsonl")), "the build's jobs (this Mac's coordinator)".into())
     } else {
         let asked = (|| -> Result<Vec<RunRec>> {
-            let root = root(args, false)?;
+            let root = root(&a.places.root, false)?;
             let c = pipeline::coord::client::Client::from_nas(&root, &agent::cond::host_name())?
                 .context("no coordinator to ask")?;
             let (code, v) = c.post_json("/work/timings", &serde_json::json!({ "kind": kind, "last": last }))?;
@@ -133,8 +132,8 @@ fn timings(args: &[String]) -> Result<()> {
             }
         }
     };
-    let sums = summary(&runs, kind, last, opt(args, "--host").as_deref());
-    if flag(args, "--json") {
+    let sums = summary(&runs, kind, last, a.host.as_deref());
+    if a.json {
         println!("{}", serde_json::to_string_pretty(&sums)?);
         return Ok(());
     }
@@ -150,20 +149,19 @@ fn timings(args: &[String]) -> Result<()> {
 /// `scenic timings publish [--last N]`: publishing end to end (pipeline::pubtimes), from the
 /// build's history (the NAS's, else this Mac's coordinator's; `--file` a history file) and the map
 /// servers' log on the NAS: each catalog of the last N (10) and its z6 tiles, then the medians.
-fn timings_publish(args: &[String]) -> Result<()> {
+fn timings_publish(last: usize, file: Option<&Path>, json: bool, places: &cli::Places) -> Result<()> {
     use pipeline::pubtimes;
-    let last: usize = opt(args, "--last").map(|n| n.parse()).transpose()?.unwrap_or(10);
-    let home = opt(args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
-    let root = root(args, false).ok();
+    let home = home_or_default(&places.home);
+    let root = root(&places.root, false).ok();
     let days = 8;
-    let events = match opt(args, "--file") {
-        Some(f) => pubtimes::load_history(None, Some(Path::new(&f)), days),
+    let events = match file {
+        Some(f) => pubtimes::load_history(None, Some(f), days),
         None => pubtimes::load_history(root.as_deref(), Some(&home.join("coord/history.jsonl")), days),
     };
     let servers =
         root.as_deref().map(|r| pubtimes::read_servers(r, now_s().saturating_sub(days * 86400))).unwrap_or_default();
     let (cats, units) = pubtimes::chains(&events, &servers);
-    if flag(args, "--json") {
+    if json {
         let from = cats.len().saturating_sub(last);
         println!(
             "{}",
@@ -182,36 +180,25 @@ fn timings_publish(args: &[String]) -> Result<()> {
 
 /// `scenic lead`: the pool's lead as this Mac's agent sees it; an ask of it, followed until it's
 /// done or refused (docs/pool.md §11).
-fn lead(args: &[String]) -> Result<()> {
+fn lead(a: &cli::Lead) -> Result<()> {
+    use cli::LeadCmd;
     use pipeline::agent::lead::{self as l, State};
     use pipeline::control::LeadAsk;
-    let home = opt(args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
+    let home = home_or_default(&a.home);
     let host = agent::cond::host_name();
     let view = || l::own_status(&home).and_then(|s| s.pool).and_then(|p| p.lead);
-    // (Its words, the options and their values aside.)
-    let mut pos: Vec<&str> = Vec::new();
-    let mut it = args.iter().skip(2);
-    while let Some(a) = it.next() {
-        if a == "--home" || a == "--root" {
-            it.next();
-        } else if !a.starts_with("--") {
-            pos.push(a);
-        }
-    }
-    let ask = match pos.first().copied() {
-        None | Some("status") => {
+    let ask = match &a.cmd {
+        None | Some(LeadCmd::Status) => {
             let v = view().context("this Mac's agent isn't in the pool (`scenic pool status`), or hasn't said yet")?;
             for line in l::said(&v, now_s()) {
                 println!("{line}");
             }
             return Ok(());
         }
-        Some("give") => {
-            let to =
-                pos.get(1).map(|s| s.to_string()).context("scenic lead give <member: its host name or member id>")?;
+        Some(LeadCmd::Give { member: to }) => {
             // (What the agent would say, said at once when it says so already.)
             if let Some(m) =
-                view().and_then(|v| v.members.into_iter().find(|m| m.member == to || m.host.eq_ignore_ascii_case(&to)))
+                view().and_then(|v| v.members.into_iter().find(|m| m.member == *to || m.host.eq_ignore_ascii_case(to)))
             {
                 if !m.can_lead {
                     bail!("the lead can't be handed to {}: {}", m.host, m.why_not.unwrap_or_default());
@@ -219,8 +206,8 @@ fn lead(args: &[String]) -> Result<()> {
             }
             LeadAsk::Give { to: to.clone() }
         }
-        Some("take") => {
-            let (force, downgrade) = (flag(args, "--force"), flag(args, "--downgrade"));
+        Some(LeadCmd::Take { force, downgrade }) => {
+            let (force, downgrade) = (*force, *downgrade);
             if let Some(t) = view().and_then(|v| v.takeover) {
                 if let Some(w) = t.refused {
                     bail!("this Mac can't take the lead over: {w}");
@@ -234,7 +221,6 @@ fn lead(args: &[String]) -> Result<()> {
             }
             LeadAsk::Take { force, downgrade }
         }
-        Some(x) => bail!("scenic lead [give <member> | take [--force] [--downgrade]], not {x}"),
     };
     let r = pipeline::control::request_lead(&home, ask, &format!("scenic lead on {host}"))?;
     println!("asked this Mac's agent; its pool's next step takes the ask up, within half a minute");
@@ -262,20 +248,11 @@ fn lead(args: &[String]) -> Result<()> {
 }
 
 /// `scenic inputs`: the gate (docs/inputs.md §4.5, §4.7), from the records on the NAS.
-fn inputs(args: &[String]) -> Result<()> {
+fn inputs(a: &cli::Inputs) -> Result<()> {
+    use cli::{InputsCmd, OnOff};
     use pipeline::inputs::{self as gi, view};
-    let home = opt(args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
-    let r = root(args, false)?;
-    // (Its words, the options and their values aside.)
-    let mut pos: Vec<&str> = Vec::new();
-    let mut it = args.iter().skip(2);
-    while let Some(a) = it.next() {
-        if a == "--home" || a == "--root" {
-            it.next();
-        } else if !a.starts_with("--") {
-            pos.push(a);
-        }
-    }
+    let home = home_or_default(&a.home);
+    let r = root(&a.root, false)?;
     let manifest: std::collections::BTreeMap<String, String> =
         pipeline::out::read_record(&r.join("state/build/manifest.json"))?;
     let units = gi::units(&r);
@@ -296,25 +273,29 @@ fn inputs(args: &[String]) -> Result<()> {
         .collect();
     let views = view::of(&r, &manifest, &units, &checking, &Default::default(), &mut view::Cache::default());
     let by = format!("scenic inputs on {}", agent::cond::host_name());
-    let unit_arg = |i: usize| -> Result<String> {
-        let u = pos.get(i).map(|s| s.to_string()).context("which unit?")?;
+    let unit_arg = |u: &str| -> Result<String> {
         anyhow::ensure!(
-            gi::checks(&u).is_some() || views.iter().any(|v| v.unit == u),
+            gi::checks(u).is_some() || views.iter().any(|v| v.unit == u),
             "{u} isn't a gate unit (scenic inputs lists them)"
         );
-        Ok(u)
+        Ok(u.to_string())
     };
-    match pos.first().copied() {
-        None | Some("list") => {
+    match &a.cmd {
+        None | Some(InputsCmd::List) => {
             if views.is_empty() {
                 println!("no unit is on the gate (`scenic inputs test on` puts the test unit on it)");
             }
             for v in &views {
-                println!("{}: {}{}", v.unit, match v.state {
-                    view::State::Ok => "taken in",
-                    view::State::Checking => "checking",
-                    view::State::Held => "held",
-                }, v.checked.map(|t| format!(", checked {}", ago(t))).unwrap_or_default());
+                println!(
+                    "{}: {}{}",
+                    v.unit,
+                    match v.state {
+                        view::State::Ok => "taken in",
+                        view::State::Checking => "checking",
+                        view::State::Held => "held",
+                    },
+                    v.checked.map(|t| format!(", checked {}", ago(t))).unwrap_or_default()
+                );
                 println!("  version: {}", v.version.as_deref().unwrap_or("none yet"));
                 if v.checking {
                     match running.iter().find(|(u, _)| *u == v.unit) {
@@ -333,7 +314,12 @@ fn inputs(args: &[String]) -> Result<()> {
                 }
                 for s in &v.findings {
                     let f = &s.finding;
-                    println!("  {} {}: {}", if f.level == gi::Level::Error { "error" } else { "warning" }, f.id, f.message);
+                    println!(
+                        "  {} {}: {}",
+                        if f.level == gi::Level::Error { "error" } else { "warning" },
+                        f.id,
+                        f.message
+                    );
                     for (n, l) in f.lines.iter().take(10) {
                         println!("      line {n}: {l}");
                     }
@@ -343,33 +329,46 @@ fn inputs(args: &[String]) -> Result<()> {
                     }
                 }
                 for id in &v.accepted {
-                    println!("  accepted: {id}{}", if v.stale.contains(id) { " (stale: no check raises it any more)" } else { "" });
+                    println!(
+                        "  accepted: {id}{}",
+                        if v.stale.contains(id) { " (stale: no check raises it any more)" } else { "" }
+                    );
                 }
             }
             Ok(())
         }
-        Some("check") => {
-            let full = flag(args, "--full");
-            let which: Vec<String> = match pos.get(1) {
-                Some(_) => vec![unit_arg(1)?],
+        Some(InputsCmd::Check { unit, full }) => {
+            let full = *full;
+            let which: Vec<String> = match unit {
+                Some(u) => vec![unit_arg(u)?],
                 None => units.iter().map(|u| u.to_string()).collect(),
             };
             for u in &which {
-                gi::ask(&home, &gi::Ask { unit: u.clone(), check: true, full, by: by.clone(), at: now_s(), ..Default::default() })?;
+                gi::ask(
+                    &home,
+                    &gi::Ask { unit: u.clone(), check: true, full, by: by.clone(), at: now_s(), ..Default::default() },
+                )?;
             }
             println!("asked this Mac's agent to list the drop boxes now{}: the lead checks what changed (`scenic inputs` says how it stands)", if full { ", hashing every file" } else { "" });
             Ok(())
         }
-        Some("accept") => {
-            let u = unit_arg(1)?;
+        Some(InputsCmd::Accept { unit, id, all }) => {
+            let u = unit_arg(unit)?;
             let v = views.iter().find(|v| v.unit == u).context("nothing held")?;
-            let report = gi::Report { findings: v.findings.iter().map(|s| s.finding.clone()).collect(), ..Default::default() };
-            let a = match (flag(args, "--all"), pos.get(2)) {
+            let report =
+                gi::Report { findings: v.findings.iter().map(|s| s.finding.clone()).collect(), ..Default::default() };
+            let ask = match (all, id) {
                 (true, _) => gi::Ask { unit: u.clone(), all: true, by: by.clone(), at: now_s(), ..Default::default() },
-                (false, Some(id)) => gi::Ask { unit: u.clone(), accept: vec![id.to_string()], by: by.clone(), at: now_s(), ..Default::default() },
-                _ => bail!("scenic inputs accept <unit> <finding id>|--all"),
+                (false, Some(id)) => gi::Ask {
+                    unit: u.clone(),
+                    accept: vec![id.clone()],
+                    by: by.clone(),
+                    at: now_s(),
+                    ..Default::default()
+                },
+                (false, None) => bail!("scenic inputs accept <unit> <finding id>|--all"),
             };
-            let said = gi::apply_ask(&r, &a, Some(&report), &gi::member_of(&home))?;
+            let said = gi::apply_ask(&r, &ask, Some(&report), &gi::member_of(&home))?;
             if said.is_empty() {
                 println!("nothing new to accept");
             }
@@ -380,15 +379,22 @@ fn inputs(args: &[String]) -> Result<()> {
             gi::ask(&home, &gi::Ask { unit: u, check: true, by, at: now_s(), ..Default::default() })?;
             Ok(())
         }
-        Some("unaccept") => {
-            let u = unit_arg(1)?;
-            let ids: Vec<String> = match (flag(args, "--stale"), pos.get(2)) {
+        Some(InputsCmd::Unaccept { unit, id, stale }) => {
+            let u = unit_arg(unit)?;
+            let ids: Vec<String> = match (stale, id) {
                 (true, _) => views.iter().find(|v| v.unit == u).map(|v| v.stale.clone()).unwrap_or_default(),
-                (false, Some(id)) => vec![id.to_string()],
-                _ => bail!("scenic inputs unaccept <unit> <finding id>|--stale"),
+                (false, Some(id)) => vec![id.clone()],
+                (false, None) => bail!("scenic inputs unaccept <unit> <finding id>|--stale"),
             };
             for id in &ids {
-                println!("{}", if gi::unaccept(&r, &u, id)? { format!("unaccepted {id}") } else { format!("{id} wasn't accepted") });
+                println!(
+                    "{}",
+                    if gi::unaccept(&r, &u, id)? {
+                        format!("unaccepted {id}")
+                    } else {
+                        format!("{id} wasn't accepted")
+                    }
+                );
             }
             if ids.is_empty() {
                 println!("no stale acceptance");
@@ -396,36 +402,48 @@ fn inputs(args: &[String]) -> Result<()> {
             gi::ask(&home, &gi::Ask { unit: u, check: true, by, at: now_s(), ..Default::default() })?;
             Ok(())
         }
-        Some("test") => {
+        Some(InputsCmd::Test { state, forget }) => {
             let p = r.join(gi::TEST_FLAG);
-            match pos.get(1).copied() {
-                Some("on") => {
+            match state {
+                Some(OnOff::On) => {
                     std::fs::create_dir_all(p.parent().unwrap())?;
                     pipeline::whole::write(&p, format!("turned on by {by}\n").as_bytes())?;
-                    println!("on: {} is on the gate (its drop box inputs/{}/, .jsonl files of {{\"k\": …, \"v\": …}} lines)", gi::TEST_UNIT, gi::TEST_UNIT);
+                    println!(
+                        "on: {} is on the gate (its drop box inputs/{}/, .jsonl files of {{\"k\": …, \"v\": …}} lines)",
+                        gi::TEST_UNIT,
+                        gi::TEST_UNIT
+                    );
                 }
-                Some("off") => {
+                Some(OnOff::Off) => {
                     if let Err(e) = std::fs::remove_file(&p) {
                         anyhow::ensure!(e.kind() == std::io::ErrorKind::NotFound, "{e}");
                     }
-                    if flag(args, "--forget") {
+                    if *forget {
                         // Its acceptances removed here; its records by the lead (a job of the
                         // lead's: the records are its to write), asked through this Mac's agent.
                         let acc = r.join(gi::ACCEPTED).join(gi::TEST_UNIT);
                         if let Err(e) = std::fs::remove_dir_all(&acc) {
                             anyhow::ensure!(e.kind() == std::io::ErrorKind::NotFound, "remove {}: {e}", acc.display());
                         }
-                        gi::ask(&home, &gi::Ask { unit: gi::TEST_UNIT.into(), forget: true, by: by.clone(), at: now_s(), ..Default::default() })?;
+                        gi::ask(
+                            &home,
+                            &gi::Ask {
+                                unit: gi::TEST_UNIT.into(),
+                                forget: true,
+                                by: by.clone(),
+                                at: now_s(),
+                                ..Default::default()
+                            },
+                        )?;
                         println!("off: {} is off the gate, its acceptances removed; the lead removes its records from the build's (its copies go with GC's 14 days; its drop box is yours)", gi::TEST_UNIT);
                     } else {
                         println!("off: {} is off the gate and no longer shown (its records stay: `scenic inputs test off --forget` removes them)", gi::TEST_UNIT);
                     }
                 }
-                _ => println!("{}", if p.exists() { "on" } else { "off" }),
+                None => println!("{}", if p.exists() { "on" } else { "off" }),
             }
             Ok(())
         }
-        Some(x) => bail!("scenic inputs [check [<unit>] [--full] | accept <unit> <id>|--all | unaccept <unit> <id>|--stale | test on|off [--forget]], not {x}"),
     }
 }
 
@@ -701,14 +719,12 @@ fn plural(n: usize, one: &str) -> String {
     format!("{n} {one}{}", if n == 1 { "" } else { "s" })
 }
 
-fn status(args: &[String]) -> Result<()> {
-    let root = root(args, false).ok();
+fn status(places: &cli::Places) -> Result<()> {
+    let root = root(&places.root, false).ok();
     // (This Mac's own agent's folder, for what its own status adds (its memory, its view of the
     // pool): `--home`'s; with a `--root` of another build (a scratch one) and no `--home`, none:
     // that build's status alone, never this Mac's real agent's.)
-    let own_home = opt(args, "--home")
-        .map(PathBuf::from)
-        .or_else(|| opt(args, "--root").is_none().then(|| app_home().join("agent")));
+    let own_home = places.home.clone().or_else(|| places.root.is_none().then(|| app_home().join("agent")));
     let Some(st) = agent::read_status(root.as_deref(), own_home.as_deref().unwrap_or(Path::new("/nonexistent"))) else {
         bail!("no status yet: the build agent hasn't run (or the NAS isn't mounted)");
     };
@@ -933,10 +949,10 @@ fn status(args: &[String]) -> Result<()> {
 
 /// `scenic steps [--json]`: the steps table (crate::agent::steps, docs/pipeline.md), a stage at a
 /// time, each step one line of the same columns; `--json` as `/work/steps` serves it.
-fn steps(args: &[String]) -> Result<()> {
+fn steps(json: bool) -> Result<()> {
     use agent::steps::{self, Kind, Place, Scope};
     let rows = steps::table();
-    if flag(args, "--json") {
+    if json {
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "steps": rows, "stages": steps::STAGES }))?);
         return Ok(());
     }
@@ -1009,9 +1025,9 @@ fn caches_line(c: &agent::room::Caches) -> String {
 
 /// `scenic in-use [--cores <n>] | off`: this Mac's in-use share (agent::share), set in its agent's
 /// folder, which the agent reads each loop; without --cores, how it stands.
-fn in_use(args: &[String]) -> Result<()> {
+fn in_use(cores_asked: Option<u32>, off: bool, home: &Option<PathBuf>) -> Result<()> {
     use agent::share;
-    let home = opt(args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
+    let home = home_or_default(home);
     let cores = std::thread::available_parallelism().map_or(4, |n| n.get() as u32);
     let say = |s: Option<&share::Share>| {
         println!(
@@ -1023,15 +1039,13 @@ fn in_use(args: &[String]) -> Result<()> {
             }
         )
     };
-    if args.iter().skip(2).any(|a| a == "off") {
+    if off {
         share::set(&home, None, "")?;
         say(None);
         return Ok(());
     }
-    let n: Option<u32> = opt(args, "--cores")
-        .map(|c| {
-            c.parse().ok().filter(|&c: &u32| c < cores).with_context(|| format!("--cores: 0 to {}, not {c}", cores - 1))
-        })
+    let n: Option<u32> = cores_asked
+        .map(|c| (c < cores).then_some(c).with_context(|| format!("--cores: 0 to {}, not {c}", cores - 1)))
         .transpose()?;
     let Some(n) = n else {
         match share::read_checked(&home) {
@@ -1053,19 +1067,9 @@ fn in_use(args: &[String]) -> Result<()> {
 /// `scenic nas-target [<percent> | off]`: the pool's NAS load target (pipeline::budget::nas::Target),
 /// set in the project folder on the NAS (`state/pool/nas-target.json`), which the lead reads each
 /// 10 s, whichever Mac set it; off: the default; with none, how it stands.
-fn nas_target(args: &[String]) -> Result<()> {
+fn nas_target(what: Option<&str>, root_: &Option<PathBuf>) -> Result<()> {
     use pipeline::budget::nas;
-    let r = root(args, true)?;
-    let mut words = args.iter().skip(2);
-    let mut what = None;
-    while let Some(a) = words.next() {
-        if a == "--home" || a == "--root" {
-            words.next();
-        } else if !a.starts_with("--") {
-            what = Some(a.as_str());
-            break;
-        }
-    }
+    let r = root(root_, true)?;
     let by = format!("scenic nas-target on {}", agent::cond::host_name());
     let t = match what {
         Some("off") => nas::set_target(&r, None, &by)?,
@@ -1092,23 +1096,12 @@ fn nas_target(args: &[String]) -> Result<()> {
 /// `scenic memory [<GB> | off]`: the memory this Mac gives the build's jobs together
 /// (agent::buildmem), set in its agent's folder, which the agent reads each loop; within the memory
 /// guard's limit; off: the limit alone; with none, how it stands.
-fn memory(args: &[String]) -> Result<()> {
+fn memory(what: Option<&str>, home: &Option<PathBuf>) -> Result<()> {
     use agent::buildmem;
-    let home = opt(args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
+    let home = home_or_default(home);
     let by = format!("scenic memory on {}", agent::cond::host_name());
     let total_mb = pipeline::sys::memsize().map_or(0, |b| b >> 20);
     let limit = agent::memguard::limit_mb(total_mb);
-    // (The first word after `memory` that isn't an option or an option's value: `--home X 10`.)
-    let mut words = args.iter().skip(2);
-    let mut what = None;
-    while let Some(a) = words.next() {
-        if a == "--home" || a == "--root" {
-            words.next();
-        } else if !a.starts_with("--") {
-            what = Some(a.as_str());
-            break;
-        }
-    }
     let set = match what {
         Some("off") => {
             buildmem::set(&home, None, &by)?;
@@ -1164,21 +1157,10 @@ fn memory_line(set: Option<&agent::buildmem::Memory>, limit_mb: u64, ago: impl F
 
 /// `scenic room [<GB> | off]`: this Mac's disk room target (agent::room::Target), set in its agent's
 /// folder, which the agent reads each loop; and how it stands, as the agent's status says.
-fn room(args: &[String]) -> Result<()> {
+fn room(what: Option<&str>, home: &Option<PathBuf>) -> Result<()> {
     use agent::room::{set_target, size, target};
-    let home = opt(args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
+    let home = home_or_default(home);
     let by = format!("scenic room on {}", agent::cond::host_name());
-    // (The first word after `room` that isn't an option or an option's value: `--home X 50`.)
-    let mut words = args.iter().skip(2);
-    let mut what = None;
-    while let Some(a) = words.next() {
-        if a == "--home" || a == "--root" {
-            words.next();
-        } else if !a.starts_with("--") {
-            what = Some(a.as_str());
-            break;
-        }
-    }
     match what {
         Some("off") => {
             set_target(&home, None, &by)?;
@@ -1267,8 +1249,8 @@ fn own_status(home: &Path) -> Option<agent::Status> {
 
 /// `scenic clean`: an ask to this Mac's agent to clear its build caches (agent::room::clear), and
 /// what it says it freed, once it has.
-fn clean(args: &[String]) -> Result<()> {
-    let home = opt(args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
+fn clean(yes: bool, home: &Option<PathBuf>) -> Result<()> {
+    let home = home_or_default(home);
     let st = own_status(&home).context("this Mac's agent has no status: is it installed here?")?;
     // (Not written while it makes room for a job, minutes at most.)
     anyhow::ensure!(
@@ -1288,7 +1270,7 @@ fn clean(args: &[String]) -> Result<()> {
         println!("  {} {}: {}", g.what, agent::room::size(g.bytes), g.back);
     }
     println!("Kept: the Wikidata and Wikipedia answers (the NAS has them too; they free little), a pageview month the NAS lacks, and the map's offline copy.");
-    if !flag(args, "--yes") {
+    if !yes {
         use std::io::Write;
         print!("Clear them? [y/N] ");
         std::io::stdout().flush()?;
@@ -1325,29 +1307,10 @@ fn clean(args: &[String]) -> Result<()> {
 
 /// `scenic job cancel <target>`: an ask to this Mac's agent (pipeline::control::Cancel), followed
 /// until it says what it stopped.
-fn job_cancel(args: &[String]) -> Result<()> {
-    let home = opt(args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
-    // (Its words, the options and their values aside: `job cancel <target>`.)
-    let mut pos: Vec<&str> = Vec::new();
-    let mut it = args.iter().skip(1);
-    while let Some(a) = it.next() {
-        if matches!(a.as_str(), "--home" | "--step") {
-            it.next();
-        } else if !a.starts_with("--") {
-            pos.push(a);
-        }
-    }
-    let target = match pos.as_slice() {
-        ["job", "cancel", t] => *t,
-        _ => bail!("scenic job cancel <target> [--step <step>] [--rerun-after-update]"),
-    };
+fn job_cancel(target: &str, step: Option<&str>, rerun_after_update: bool, home: &Option<PathBuf>) -> Result<()> {
+    let home = home_or_default(home);
     let host = agent::cond::host_name();
-    let c = pipeline::control::Cancel::new(
-        target,
-        opt(args, "--step").as_deref(),
-        flag(args, "--rerun-after-update"),
-        &format!("scenic job cancel on {host}"),
-    );
+    let c = pipeline::control::Cancel::new(target, step, rerun_after_update, &format!("scenic job cancel on {host}"));
     pipeline::control::request_cancel(&home, &c)?;
     let t = std::time::Instant::now();
     loop {
@@ -1364,23 +1327,16 @@ fn job_cancel(args: &[String]) -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-    // (Its flags and arguments checked first: `--help` or a flag it doesn't know runs nothing.)
-    let cmd = pipeline::cli::tables::SCENIC.gate(&args).name.split(' ').next().unwrap_or_default().to_string();
-    match cmd.as_str() {
-        "status" => status(&args),
-        "lead" => lead(&args),
-        "agent" => {
+    // (Its command line checked first: `--help` or a flag it doesn't know runs nothing.)
+    let cli = cli::Cli::parse();
+    match cli.cmd {
+        None => status(&cli.status),
+        Some(Cmd::Status(places)) => status(&places),
+        Some(Cmd::Lead(a)) => lead(&a),
+        Some(Cmd::Agent { once, dry_run, helper: _, places }) => {
             let bin = std::env::current_exe()?.parent().map(Path::to_path_buf).context("the agent's folder")?;
-            let home = opt(&args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
-            let o = Options {
-                root: opt(&args, "--root").map(PathBuf::from),
-                home,
-                bin,
-                dry_run: flag(&args, "--dry-run"),
-                once: flag(&args, "--once"),
-                helper: false,
-            };
+            let o =
+                Options { home: home_or_default(&places.home), root: places.root, bin, dry_run, once, helper: false };
             eprintln!(
                 "agent: started (app {}, root {})",
                 o.bin.display(),
@@ -1400,31 +1356,23 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        "pool" => {
+        Some(Cmd::Pool(pool)) => {
+            use cli::PoolCmd;
             // The pool (docs/pool.md): how it stands, and the owner's asks of its lead.
-            let r = root(&args, false)?;
-            match args.get(2).map(String::as_str) {
-                Some("status") | None => println!("{}", agent::pool::status(&r)),
-                Some("release") => {
+            let r = root(&pool.root, false)?;
+            match pool.cmd {
+                Some(PoolCmd::Status) | None => println!("{}", agent::pool::status(&r)),
+                Some(PoolCmd::Release { member, job }) => {
                     // A job's progress on a member's Mac given up (crate::agent::resume): the lead
                     // runs it wherever it fits from then.
-                    let (Some(m), Some(job)) = (args.get(3), args.get(4)) else {
-                        anyhow::bail!("scenic pool release <member> \"<job>\" (e.g. \"osm-pass 2026-10-01\")")
-                    };
-                    println!("{}", agent::resume::release(&r, m, job)?);
+                    println!("{}", agent::resume::release(&r, &member, &job)?);
                 }
-                Some("needs") => {
+                Some(PoolCmd::Needs { fit: _, costs }) => {
                     // Each step's model of what its jobs need (pipeline::needs): `--fit` prints its
                     // fits' errors on held-out runs and the steps that don't fit. Read only: the
                     // coordinator's costs (`--costs <costs.json | costs.jsonl>`, else this Mac's
                     // agent's), its disk floors beside them.
-                    anyhow::ensure!(
-                        flag(&args, "--fit"),
-                        "scenic pool needs --fit [--costs <costs.json | costs.jsonl>]"
-                    );
-                    let p = opt(&args, "--costs")
-                        .map(PathBuf::from)
-                        .unwrap_or_else(|| app_home().join("agent/coord/costs.json"));
+                    let p = costs.unwrap_or_else(|| app_home().join("agent/coord/costs.json"));
                     let (costs, mut disks) =
                         pipeline::needs::read_costs(&p).with_context(|| format!("reading {}", p.display()))?;
                     let kept: std::collections::BTreeMap<String, u64> = std::fs::read(p.with_file_name("disks.json"))
@@ -1446,13 +1394,11 @@ fn main() -> Result<()> {
                         print!("{}", pipeline::timings::peak_text(&holders));
                     }
                 }
-                Some("nas-probe") => {
+                Some(PoolCmd::NasProbe { dir }) => {
                     // The NAS budget's probe once (pipeline::budget::nas), in `--dir <folder>` (made,
                     // then removed with what it holds), else a folder of its own under the project
                     // folder's `state/pool/nas-probe`.
-                    let dir = opt(&args, "--dir")
-                        .map(PathBuf::from)
-                        .unwrap_or_else(|| pipeline::budget::nas::probe_dir(&r, &agent::cond::host_name()));
+                    let dir = dir.unwrap_or_else(|| pipeline::budget::nas::probe_dir(&r, &agent::cond::host_name()));
                     anyhow::ensure!(!dir.exists(), "{} exists: the probe makes its own folder", dir.display());
                     let p =
                         pipeline::budget::nas::probe(&dir).with_context(|| format!("probing in {}", dir.display()))?;
@@ -1466,21 +1412,15 @@ fn main() -> Result<()> {
                         p.deletes_s
                     );
                 }
-                Some("floors") => {
+                Some(PoolCmd::Floors { clear, step, target }) => {
                     // The targets' floors the lead's coordinator keeps (crate::agent::memguard):
                     // `--clear` clears them all, `--clear <step>` a step's, `--clear <step> <target>`
                     // one target's (a step fixed, or a floor learned wrong).
-                    let clear = flag(&args, "--clear");
-                    let rest: Vec<&String> = args
-                        .iter()
-                        .skip(3)
-                        .filter(|a| !a.starts_with("--") && Some(*a) != opt(&args, "--root").as_ref())
-                        .collect();
                     let c = pipeline::coord::client::Client::from_nas(&r, &agent::cond::host_name())?
                         .context("no lead's coordinator to ask")?;
                     let (code, v) = c.post_json(
                         "/work/floors",
-                        &serde_json::json!({ "clear": clear, "step": rest.first(), "target": rest.get(1) }),
+                        &serde_json::json!({ "clear": clear, "step": step, "target": target }),
                     )?;
                     anyhow::ensure!(code == 200, "the lead's coordinator answered {code} (an older app?)");
                     if clear {
@@ -1511,22 +1451,13 @@ fn main() -> Result<()> {
                         println!("{k}: disk {:.1} GB", mb as f64 / 1024.0);
                     }
                 }
-                Some(x) => bail!(
-                    "scenic pool status | release <member> \"<job>\" | floors [--clear [<step> [<target>]]], not {x}"
-                ),
             }
             Ok(())
         }
-        "run-task" => {
+        Some(Cmd::RunTask { spec, lease, dir, result, root: cli::Root { root } }) => {
             // A task a member's agent leased (pipeline::offload::run_task), run here; its result
             // written for the agent to hand back.
-            let spec: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(opt(&args, "--spec").context("--spec <file>")?)?)?;
-            let lease: u64 = opt(&args, "--lease").context("--lease <id>")?.parse()?;
-            let (dir, result) = (
-                PathBuf::from(opt(&args, "--dir").context("--dir <folder>")?),
-                PathBuf::from(opt(&args, "--result").context("--result <file>")?),
-            );
+            let spec: serde_json::Value = serde_json::from_slice(&std::fs::read(spec)?)?;
             let urls: Vec<String> = std::env::var("SCENIC_COORD_URLS")
                 .unwrap_or_default()
                 .split(',')
@@ -1539,7 +1470,6 @@ fn main() -> Result<()> {
                 &std::env::var("SCENIC_WORKER").unwrap_or_default(),
             );
             let bin = std::env::current_exe()?.parent().map(Path::to_path_buf).context("the agent's folder")?;
-            let root = opt(&args, "--root").map(PathBuf::from);
             // (Timed as a task of its kind: a tail's, a 3D buildings' z3 tile's, tree cover's blocks'.)
             let kind = format!("task {}", pipeline::offload::task_kind(&spec));
             let r = pipeline::timings::job(&kind, || {
@@ -1553,93 +1483,73 @@ fn main() -> Result<()> {
             pipeline::whole::write(&result, v.to_string().as_bytes())?;
             r.map(|_| ())
         }
-        "pause" | "resume" => {
-            // An ask to this Mac's agent, which passes it on to the lead's (crate::control).
-            use pipeline::control::{Mode, Pause};
-            let home = opt(&args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
-            let host = pipeline::agent::cond::host_name();
-            // One Mac alone (task #224): this one (`--here`) or a member named.
-            let named: Option<&String> = {
-                let mut it = args.iter().skip_while(|a| **a != cmd).skip(1);
-                let mut found = None;
-                while let Some(a) = it.next() {
-                    if a == "--home" {
-                        it.next();
-                    } else if !a.starts_with("--") {
-                        found = Some(a);
-                        break;
-                    }
-                }
-                found
-            };
-            if flag(&args, "--here") || named.is_some() {
-                anyhow::ensure!(
-                    !flag(&args, "--now"),
-                    "--now pauses the whole build: one Mac alone stops at its next safe point"
-                );
-                let held = (cmd == "pause").then(|| pipeline::control::Hold::new(&format!("scenic pause on {host}")));
-                let r = pipeline::control::request_hold(&home, named.map(String::as_str), held)?;
-                let waited = std::time::Instant::now();
-                while waited.elapsed() < std::time::Duration::from_secs(60) {
-                    if let Some(a) = pipeline::control::hold_answer(&home, &r) {
-                        anyhow::ensure!(a.ok, "{}", a.said);
-                        println!(
-                            "{}{}",
-                            a.said,
-                            if cmd == "pause" {
-                                ": its running jobs stop at their next safe point and are given back, it takes no new work (leading, it keeps the lead and grants the others' work), until `scenic resume`; the rest of the pool goes on"
-                            } else {
-                                ""
-                            }
-                        );
-                        return Ok(());
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                }
-                bail!("this Mac's agent hasn't taken the ask up in a minute (is it running?); it stays asked");
-            }
-            let pause = (cmd == "pause").then(|| {
-                Pause::new(
-                    if flag(&args, "--now") { Mode::Freeze } else { Mode::Drain },
-                    &format!("scenic pause on {host}"),
-                )
-            });
-            pipeline::control::request(&home, pause)?;
-            println!(
-                "{}",
-                match (cmd.as_str(), flag(&args, "--now")) {
-                    ("pause", false) => "pausing: each Mac's running job stops at its next safe point (within minutes), and nothing new starts until `scenic resume`",
-                    ("pause", true) => "pausing now: each Mac's running job is frozen where it is, until `scenic resume`",
-                    _ => "going on: the build picks up where it stopped",
-                }
-            );
-            Ok(())
+        Some(Cmd::Pause { now, here, member, home }) => pause_resume(true, now, here, member.as_deref(), &home.home),
+        Some(Cmd::Resume { here, member, home }) => pause_resume(false, false, here, member.as_deref(), &home.home),
+        Some(Cmd::Job(cli::Job::Cancel { target, step, rerun_after_update, home })) => {
+            job_cancel(&target, step.as_deref(), rerun_after_update, &home.home)
         }
-        "job" => job_cancel(&args),
-        "clean" => clean(&args),
-        "room" => room(&args),
-        "in-use" => in_use(&args),
-        "nas-target" => nas_target(&args),
-        "memory" => memory(&args),
-        "gc" => {
-            let days: u64 = opt(&args, "--days").map(|d| d.parse()).transpose()?.unwrap_or(14);
-            let r = pipeline::timings::job("gc", || gc::run(&root(&args, true)?, days, flag(&args, "--dry-run")))?;
+        Some(Cmd::Clean { yes, home }) => clean(yes, &home.home),
+        Some(Cmd::Room { what, places }) => room(what.as_deref(), &places.home),
+        Some(Cmd::InUse { cores, off, places }) => in_use(cores, off.is_some(), &places.home),
+        Some(Cmd::NasTarget { what, root }) => nas_target(what.as_deref(), &root.root),
+        Some(Cmd::Memory { what, places }) => memory(what.as_deref(), &places.home),
+        Some(Cmd::Gc { dry_run, days, root: r }) => {
+            let r = pipeline::timings::job("gc", || gc::run(&root(&r.root, true)?, days, dry_run))?;
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
-        "backup" => {
-            let local = opt(&args, "--local").map(PathBuf::from);
+        Some(Cmd::Backup { local, root: r }) => {
             let today = backup::format_day(std::time::SystemTime::now());
             let r =
-                pipeline::timings::job("backup", || backup::run(&root(&args, true)?, local.as_deref(), &today, 30))?;
+                pipeline::timings::job("backup", || backup::run(&root(&r.root, true)?, local.as_deref(), &today, 30))?;
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
-        "timings" => timings(&args),
-        "steps" => steps(&args),
-        "inputs" => inputs(&args),
-        c => bail!("{c}: in the table (pipeline::cli::tables::SCENIC) but not run here"),
+        Some(Cmd::Timings(a)) => timings(&a),
+        Some(Cmd::Steps { json }) => steps(json),
+        Some(Cmd::Inputs(a)) => inputs(&a),
     }
+}
+
+/// `scenic pause` (`pause`) or `scenic resume`: an ask to this Mac's agent, which passes it on to
+/// the lead's (crate::control); `--here` or a member: that Mac alone (task #224).
+fn pause_resume(pause: bool, now: bool, here: bool, member: Option<&str>, home: &Option<PathBuf>) -> Result<()> {
+    use pipeline::control::{Mode, Pause};
+    let home = home_or_default(home);
+    let host = pipeline::agent::cond::host_name();
+    if here || member.is_some() {
+        let held = pause.then(|| pipeline::control::Hold::new(&format!("scenic pause on {host}")));
+        let r = pipeline::control::request_hold(&home, member, held)?;
+        let waited = std::time::Instant::now();
+        while waited.elapsed() < std::time::Duration::from_secs(60) {
+            if let Some(a) = pipeline::control::hold_answer(&home, &r) {
+                anyhow::ensure!(a.ok, "{}", a.said);
+                println!(
+                    "{}{}",
+                    a.said,
+                    if pause {
+                        ": its running jobs stop at their next safe point and are given back, it takes no new work (leading, it keeps the lead and grants the others' work), until `scenic resume`; the rest of the pool goes on"
+                    } else {
+                        ""
+                    }
+                );
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        bail!("this Mac's agent hasn't taken the ask up in a minute (is it running?); it stays asked");
+    }
+    let p = pause.then(|| Pause::new(if now { Mode::Freeze } else { Mode::Drain }, &format!("scenic pause on {host}")));
+    pipeline::control::request(&home, p)?;
+    println!(
+        "{}",
+        match (pause, now) {
+            (true, false) => "pausing: each Mac's running job stops at its next safe point (within minutes), and nothing new starts until `scenic resume`",
+            (true, true) => "pausing now: each Mac's running job is frozen where it is, until `scenic resume`",
+            (false, _) => "going on: the build picks up where it stopped",
+        }
+    );
+    Ok(())
 }
 
 #[cfg(test)]

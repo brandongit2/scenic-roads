@@ -32,43 +32,71 @@
 //!
 //! `lakefill view …`: a box of the basemap's water with the sheets' edges, for checking by eye.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
+use clap::Parser;
+use pipeline::cli::progs::{Declaration, Lakefill, LakefillCmd};
 use pipeline::lakefill::{nts, run};
 use pipeline::watercov::Raster;
 use std::path::Path;
 
 fn main() -> Result<()> {
-    let a: Vec<String> = std::env::args().collect();
-    // (Checked first: `--help` or an unknown flag runs nothing.)
-    pipeline::cli::tables::LAKEFILL.gate(&a);
-    match a.get(1).map(String::as_str) {
-        Some("survey") if a.len() == 5 => {
-            let rows = run::survey(Path::new(&a[2]), Path::new(&a[3]), &|d, n| eprintln!("lakefill: {d}/{n} z5 tiles"))?;
-            std::fs::write(&a[4], run::sheets_csv(&rows))?;
+    match Lakefill::parse().cmd {
+        LakefillCmd::Survey { basemap, outlines, out } => {
+            let rows = run::survey(&basemap, &outlines, &|d, n| eprintln!("lakefill: {d}/{n} z5 tiles"))?;
+            std::fs::write(out, run::sheets_csv(&rows))?;
             Ok(())
         }
-        Some("gaps") if a.len() == 4 => {
-            let g = run::gaps(&run::read_sheets_csv(&std::fs::read_to_string(&a[2])?)?);
+        LakefillCmd::Gaps { sheets, out } => {
+            let g = run::gaps(&run::read_sheets_csv(&std::fs::read_to_string(sheets)?)?);
             eprintln!("lakefill: {} gap sheets, {:.0} km²", g.len(), g.iter().map(|v| v.area_km2).sum::<f64>());
-            std::fs::write(&a[3], run::gaps_csv(&g))?;
+            std::fs::write(out, run::gaps_csv(&g))?;
             Ok(())
         }
-        Some("all") => {
-            let p = |k: &str| opt(&a, k).map(std::path::PathBuf::from).with_context(|| k.to_string());
-            let f = run::all(&p("--basemap")?, &p("--outlines")?, &p("--source")?, &declaration(&a)?, &p("--work")?, &|k| eprintln!("lakefill: part {k}"), &|_, _| {})?;
+        LakefillCmd::All { basemap, outlines, source, declaration: d, work } => {
+            let f = run::all(
+                &basemap,
+                &outlines,
+                &source,
+                &declaration(&d)?,
+                &work,
+                &|k| eprintln!("lakefill: part {k}"),
+                &|_, _| {},
+            )?;
             eprintln!("lakefill: {}", f.display());
             Ok(())
         }
-        Some("view") if a.len() == 6 => {
-            let b: Vec<f64> = a[3].split(',').map(str::parse).collect::<Result<_, _>>()?;
-            view(Path::new(&a[2]), [b[0], b[1], b[2], b[3]], a[4].parse()?, Path::new(&a[5]))
+        LakefillCmd::View { basemap, bbox, z, out } => {
+            let b: Vec<f64> = bbox.split(',').map(str::parse).collect::<Result<_, _>>()?;
+            anyhow::ensure!(b.len() == 4, "the box is w,s,e,n, not {bbox}");
+            view(&basemap, [b[0], b[1], b[2], b[3]], z, &out)
         }
-        Some("fill") => fill(&a[2..]),
-        Some("catalog-add") => catalog_add(&a[2..]),
-        Some("stats") => stats(&a[2..]),
-        Some("seamcheck") => seamcheck(&a[2..]),
-        Some("merge") => merge(&a[2..]),
-        _ => bail!("usage: lakefill survey <basemap.pmtiles> <outlines.sect> <out.csv> | gaps <sheets.csv> <out.csv> | fill --basemap <pmtiles> --sheets <gap-sheets.csv> --source <dir|zip>… [--band w,e] [--no-complete-halves] [--tol <m>] [--confirm <share>] --out <dir> | merge --out <dir> <run>… | all --basemap <pmtiles> --outlines <sect> --source <dir> --work <dir> | view <basemap.pmtiles> <w,s,e,n> <z> <out.png> | stats … | seamcheck … | catalog-add …"),
+        LakefillCmd::Fill { basemap, sheets, source, declaration: d, band, no_complete_halves, tol, confirm, out } => {
+            let gaps = run::read_gaps_csv(&std::fs::read_to_string(sheets)?)?;
+            let mut o = run::FillOpts::declared(&basemap, &source[0], &declaration(&d)?)?;
+            o.sources = source;
+            if let Some(t) = tol {
+                o.rules.tol_m = t;
+            }
+            o.rules.complete_halves = !no_complete_halves;
+            if confirm.is_some() {
+                o.confirm = confirm;
+            }
+            let band: Option<(f64, f64)> = band
+                .map(|b| -> Result<(f64, f64)> {
+                    let (w, e) = b.split_once(',').context("--band w,e")?;
+                    Ok((w.parse()?, e.parse()?))
+                })
+                .transpose()?;
+            run::fill(&o, &gaps, band, &out)?;
+            Ok(())
+        }
+        LakefillCmd::CatalogAdd { root, fill } => catalog_add(&root, &fill),
+        LakefillCmd::Stats { fill, sheets } => stats(&fill, &sheets),
+        LakefillCmd::Seamcheck { fill, basemap, max } => seamcheck(&fill, &basemap, max),
+        LakefillCmd::Merge { out, runs } => {
+            run::merge(&runs, &out)?;
+            Ok(())
+        }
     }
 }
 
@@ -132,65 +160,17 @@ fn view(base: &Path, b: [f64; 4], z: u8, out: &Path) -> Result<()> {
     Ok(())
 }
 
-fn opt(a: &[String], k: &str) -> Option<String> {
-    a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned()
-}
-
-fn opts(a: &[String], k: &str) -> Vec<String> {
-    a.windows(2).filter(|w| w[0] == k).map(|w| w[1].clone()).collect()
-}
-
 /// The lake-fill source's declaration (`--declaration <file.toml>`: one as dropped into
 /// inputs/sources/, producers/sources/canvec-lakes.toml), as the step reads it accepted.
-fn declaration(a: &[String]) -> Result<pipeline::inputs::sources::Source> {
-    let p = std::path::PathBuf::from(
-        opt(a, "--declaration").context("--declaration <file.toml>: the lake-fill source's declaration")?,
-    );
-    let d = pipeline::inputs::sources::parse(&std::fs::read(&p).with_context(|| p.display().to_string())?)
+fn declaration(d: &Declaration) -> Result<pipeline::inputs::sources::Source> {
+    let p = &d.declaration;
+    let d = pipeline::inputs::sources::parse(&std::fs::read(p).with_context(|| p.display().to_string())?)
         .map_err(|why| anyhow::anyhow!("{}: {}", p.display(), why.join("; ")))?;
     let id = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     Ok(pipeline::inputs::sources::Source { id, data: d.data, keyed: String::new(), index: Vec::new() })
 }
 
-fn fill(a: &[String]) -> Result<()> {
-    let base = std::path::PathBuf::from(opt(a, "--basemap").context("--basemap")?);
-    let gaps = run::read_gaps_csv(&std::fs::read_to_string(opt(a, "--sheets").context("--sheets")?)?)?;
-    let srcs = opts(a, "--source");
-    anyhow::ensure!(!srcs.is_empty(), "--source");
-    let mut o = run::FillOpts::declared(&base, Path::new(&srcs[0]), &declaration(a)?)?;
-    o.sources = srcs.iter().map(std::path::PathBuf::from).collect();
-    if let Some(t) = opt(a, "--tol") {
-        o.rules.tol_m = t.parse()?;
-    }
-    o.rules.complete_halves = !a.iter().any(|x| x == "--no-complete-halves");
-    if let Some(c) = opt(a, "--confirm") {
-        o.confirm = Some(c.parse()?);
-    }
-    let band: Option<(f64, f64)> = opt(a, "--band")
-        .map(|b| -> Result<(f64, f64)> {
-            let (w, e) = b.split_once(',').context("--band w,e")?;
-            Ok((w.parse()?, e.parse()?))
-        })
-        .transpose()?;
-    run::fill(&o, &gaps, band, Path::new(&opt(a, "--out").context("--out")?))?;
-    Ok(())
-}
-
-fn merge(a: &[String]) -> Result<()> {
-    let out = std::path::PathBuf::from(opt(a, "--out").context("--out")?);
-    let runs: Vec<std::path::PathBuf> = a
-        .iter()
-        .enumerate()
-        .filter(|(i, x)| !x.starts_with("--") && (*i == 0 || a[i - 1] != "--out"))
-        .map(|(_, x)| x.into())
-        .collect();
-    run::merge(&runs, &out)?;
-    Ok(())
-}
-
-fn catalog_add(a: &[String]) -> Result<()> {
-    let root = std::path::PathBuf::from(opt(a, "--root").context("--root")?);
-    let fill = std::path::PathBuf::from(opt(a, "--fill").context("--fill")?);
+fn catalog_add(root: &Path, fill: &Path) -> Result<()> {
     anyhow::ensure!(!root.starts_with("/Volumes"), "a test root, not the NAS's");
     let dir = root.join("catalog");
     let n = *store::catalog::list(&dir)?.first().context("no catalog in the root")?;
@@ -200,12 +180,12 @@ fn catalog_add(a: &[String]) -> Result<()> {
     let logical = format!("{}test", pipeline::lakefill::PREFIX);
     let content = store::naming::content_name(&logical, hash, "sect");
     std::fs::create_dir_all(root.join(&content).parent().unwrap())?;
-    std::fs::copy(&fill, root.join(&content))?;
+    std::fs::copy(fill, root.join(&content))?;
     cat.files.insert(
         logical.clone(),
         store::catalog::FileRef {
             file: content.clone(),
-            size: std::fs::metadata(&fill)?.len(),
+            size: std::fs::metadata(fill)?.len(),
             fmt: 1,
             ..Default::default()
         },
@@ -217,13 +197,11 @@ fn catalog_add(a: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn stats(a: &[String]) -> Result<()> {
+fn stats(path: &Path, sheets: &Path) -> Result<()> {
     use pipeline::lakefill as lf;
-    let path = std::path::PathBuf::from(opt(a, "--fill").context("--fill")?);
-    let f = lf::Fill::open(&path, "stats")?;
+    let f = lf::Fill::open(path, "stats")?;
     let mut region: std::collections::HashMap<nts::Key, String> = std::collections::HashMap::new();
-    let mut rd =
-        std::io::BufRead::lines(std::io::BufReader::new(std::fs::File::open(opt(a, "--sheets").context("--sheets")?)?));
+    let mut rd = std::io::BufRead::lines(std::io::BufReader::new(std::fs::File::open(sheets)?));
     let head: Vec<String> = rd.next().context("empty")??.split(',').map(str::to_string).collect();
     let col = |n: &str| head.iter().position(|h| h == n).context("a column");
     let (cw, cs, cr) = (col("west")?, col("south")?, col("region")?);
@@ -270,15 +248,11 @@ fn stats(a: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn seamcheck(a: &[String]) -> Result<()> {
+fn seamcheck(fill: &Path, basemap: &Path, max: usize) -> Result<()> {
     use pipeline::lakefill as lf;
     use pipeline::lakefill::OsmWater;
-    let f = lf::Fill::open(Path::new(&opt(a, "--fill").context("--fill")?), "check")?;
-    let max: usize = opt(a, "--max").map(|v| v.parse()).transpose()?.unwrap_or(2000);
-    let pm = store::pmtiles::PmTiles::with_leaf_cache(
-        Box::new(store::range::PlainFile::open(Path::new(&opt(a, "--basemap").context("--basemap")?))?),
-        4096,
-    )?;
+    let f = lf::Fill::open(fill, "check")?;
+    let pm = store::pmtiles::PmTiles::with_leaf_cache(Box::new(store::range::PlainFile::open(basemap)?), 4096)?;
     let osm = lf::BasemapOsm::new(pm);
     // The cut edges: a lake's edge along a sheet line (north–south on a sheet's longitude, or
     // east–west on a quarter degree), at least 20 m long.

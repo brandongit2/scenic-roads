@@ -1,6 +1,6 @@
 //! Passenger rail service frequency on the OSM track network: trains a day each way per rail way.
 //!
-//! usage: railfreq <build_dir> <pairs.bin>...
+//! Its command line: pipeline::cli::progs::Railfreq (`railfreq <build_dir> <pairs.bin>...`).
 //!
 //! Input pairs (dem/railgtfs.py: the feeds' and static files' trains, and the static files' count rows): little-endian records
 //! f32 lon_a, lat_a, lon_b, lat_b, u8 mode (0 tram, 1 metro, 2 rail, 3 funicular; bit 0x80: the
@@ -52,7 +52,6 @@ use rayon::prelude::*;
 use roadcore::{class, dist_m, Ways, E7};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
-use std::path::PathBuf;
 
 const SNAP_M: f64 = 300.0;
 const SNAP_FAR_M: f64 = 1000.0;
@@ -122,12 +121,11 @@ fn mode_bits(mode: u8) -> u8 {
 }
 
 fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-    anyhow::ensure!(args.len() >= 3, "usage: railfreq <build_dir> <pairs.bin>...");
-    let dir = PathBuf::from(&args[1]);
+    let pipeline::cli::progs::Railfreq { build_dir: dir, pairs: files } =
+        <pipeline::cli::progs::Railfreq as clap::Parser>::parse();
     let t0 = std::time::Instant::now();
     let mut pairs: Vec<Pair> = Vec::new();
-    for p in &args[2..] {
+    for p in &files {
         let b = std::fs::read(p)?;
         for r in b.chunks_exact(21) {
             let f = |i: usize| f32::from_le_bytes(r[i..i + 4].try_into().unwrap()) as f64;

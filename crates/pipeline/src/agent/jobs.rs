@@ -160,7 +160,7 @@ impl Running {
         // (In the tests, every job's command as the agent made it, checked against its program's
         // table: one the program would refuse fails the test.)
         #[cfg(test)]
-        if let Some(Err(e)) = crate::cli::tables::check_command(&spec.cmd) {
+        if let Some(Err(e)) = crate::cli::check_command(&spec.cmd) {
             panic!("{e}");
         }
         let (prog, args) = spec.cmd.split_first().context("empty command")?;

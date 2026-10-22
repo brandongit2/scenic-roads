@@ -138,7 +138,12 @@
 # complete by the records, the M1's file dropping it; the lead never starts the pass.
 #
 set -euo pipefail
-cmd=${1:?root, region, publish, app, run, older, newer, newest, jobs, outside, fill, extra, wiki, upstream, resume, brokers, placement, task, page, page-done, planet, progress or stop}
+usage="usage: tools/check/pool-two-macs.sh root|region|publish|app|run|older|newer|newest|jobs|outside|fill|extra|wiki|upstream|resume|brokers|placement|task|page|page-done|planet|progress|stop … (see the top of this file)"
+case ${1:-} in
+  -h|--help) print -r -- $usage; exit 0 ;;
+  ""|-*) print -ru2 -- "pool-two-macs.sh: unexpected ${1:-end}"$'\n'"$usage"; exit 2 ;;
+esac
+cmd=$1
 case $cmd in
   root)
     r=${2:?the scratch folder}

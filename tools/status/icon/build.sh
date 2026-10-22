@@ -6,6 +6,12 @@
 #
 #   tools/status/icon/build.sh <out> [--preview]
 set -euo pipefail
+usage="usage: tools/status/icon/build.sh <out> [--preview]"
+case $#:${1:-}:${2:-} in
+  1:-h:|1:--help:) print -r -- $usage; exit 0 ;;
+  1:[^-]*:|2:[^-]*:--preview) ;;
+  *) print -ru2 -- "build.sh: unexpected arguments: $*"$'\n'"$usage"; exit 2 ;;
+esac
 src=${0:A:h}
 out=$1
 tmp=$(mktemp -d)

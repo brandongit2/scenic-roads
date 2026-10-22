@@ -1,7 +1,6 @@
 //! The map's server: tiles, layers and the APIs over the catalog's data (docs/macs.md).
 //!
-//! usage: server [--port 7311] [--web web/dist] [--fonts data/fonts] [--home <dir>] [--root <dir>]
-//!               [--no-mirror | --mirror] [--listen <IPv4 address>]
+//! Its command line: `Cli` below (`server --help`).
 //!
 //! Data comes from the NAS project folder (found and mounted by itself), read from this Mac's mirror
 //! when it's there. `--root` serves a local folder laid out like the project folder instead
@@ -363,37 +362,42 @@ fn same_dir(a: &std::path::Path, b: &std::path::Path) -> bool {
     }
 }
 
-/// The options it takes, with a value or not (the usage above).
-const VALUED: [&str; 7] = ["--port", "--web", "--fonts", "--home", "--root", OLD_RESERVE, "--listen"];
-/// Taken and ignored (warned): a run file written before the reserve became the Regions panel's
-/// setting still passes it until tools/app/install.sh writes it again.
-const OLD_RESERVE: &str = "--reserve-gb";
-const FLAGS: [&str; 2] = ["--no-mirror", "--mirror"];
-
-/// Why the arguments are refused, if they are: `--help`, `-h` or anything it doesn't take. Checked
-/// before anything starts, so a mistyped or unknown option never runs the server with its defaults
-/// (this Mac's own app folder and the real NAS).
-fn bad_args(a: &[String]) -> Option<String> {
-    let mut i = 0;
-    while i < a.len() {
-        match a[i].as_str() {
-            o if VALUED.contains(&o) => {
-                if a.get(i + 1).is_none_or(|v| v.starts_with("--")) {
-                    return Some(format!("{o} needs a value"));
-                }
-                i += 2;
-            }
-            o if FLAGS.contains(&o) => i += 1,
-            "--help" | "-h" => return Some(String::new()),
-            o => return Some(format!("unknown argument {o:?}")),
-        }
-    }
-    None
-}
-
-fn arg(name: &str) -> Option<String> {
-    let a: Vec<String> = std::env::args().collect();
-    a.iter().position(|x| x == name).and_then(|i| a.get(i + 1).cloned())
+/// The map's server: tiles, layers and the APIs over the catalog's data (docs/macs.md). Its command
+/// line, checked before anything starts (clap: docs/building.md, "Command lines"), so a mistyped or
+/// unknown option never runs the server with its defaults (this Mac's own app folder and the NAS).
+#[derive(clap::Parser, Debug)]
+#[command(name = "server")]
+struct Cli {
+    /// The port
+    #[arg(long, default_value_t = pipeline::net::DEFAULT_PORT)]
+    port: u16,
+    /// The web app's built files
+    #[arg(long, value_name = "DIR", default_value = "web/dist")]
+    web: PathBuf,
+    /// The map's fonts
+    #[arg(long, value_name = "DIR", default_value = "data/fonts")]
+    fonts: PathBuf,
+    /// Its folder (default: this Mac's app folder)
+    #[arg(long, value_name = "DIR")]
+    home: Option<PathBuf>,
+    /// A local folder laid out like the project folder, served instead of the NAS's (no mirror
+    /// unless --mirror)
+    #[arg(long, value_name = "DIR")]
+    root: Option<PathBuf>,
+    /// No mirror of the NAS's files on this Mac
+    #[arg(long, conflicts_with = "mirror")]
+    no_mirror: bool,
+    /// --root's files mirrored into --home's as from the NAS (a --home of its own)
+    #[arg(long)]
+    mirror: bool,
+    /// The one address to answer on (a test server's 127.0.0.1), else every IPv4 address and IPv6's
+    /// loopback
+    #[arg(long, value_name = "IPV4 ADDRESS")]
+    listen: Option<std::net::Ipv4Addr>,
+    /// Taken and ignored (warned): a run file written before the reserve became the Regions panel's
+    /// setting passes it until tools/app/install.sh writes it again
+    #[arg(long, value_name = "GB", hide = true)]
+    reserve_gb: Option<String>,
 }
 
 /// Raises the open-file limit (launchd starts us at 256): NAS handles, mapped files and
@@ -414,29 +418,17 @@ fn raise_open_files() {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if let Some(why) = bad_args(&args) {
-        if !why.is_empty() {
-            eprintln!("server: {why}");
-        }
-        eprintln!("usage: server [--port {}] [--web web/dist] [--fonts data/fonts] [--home <dir>] [--root <dir>]\n              [--no-mirror | --mirror] [--listen <IPv4 address>]", pipeline::net::DEFAULT_PORT);
-        std::process::exit(if why.is_empty() { 0 } else { 2 });
-    }
+    let Cli { port, web, fonts, home: home_arg, root, no_mirror, mirror: mirror_root, listen, reserve_gb } =
+        <Cli as clap::Parser>::parse();
     raise_open_files();
-    let web = PathBuf::from(arg("--web").unwrap_or_else(|| "web/dist".into()));
-    let fonts = PathBuf::from(arg("--fonts").unwrap_or_else(|| "data/fonts".into()));
-    let port: u16 = arg("--port").map(|p| p.parse()).transpose()?.unwrap_or(pipeline::net::DEFAULT_PORT);
-    let home = arg("--home").map(PathBuf::from).unwrap_or_else(data::default_home);
-    if arg(OLD_RESERVE).is_some() {
+    let home = home_arg.clone().unwrap_or_else(data::default_home);
+    if reserve_gb.is_some() {
         eprintln!(
-            "server: {OLD_RESERVE} is ignored: the reserve is set in the Regions panel ({} GB now)",
+            "server: --reserve-gb is ignored: the reserve is set in the Regions panel ({} GB now)",
             reserve::load(&home)
         );
     }
-    let no_mirror = std::env::args().any(|a| a == "--no-mirror");
-    let root = arg("--root").map(PathBuf::from);
-    let mirror_root = std::env::args().any(|a| a == "--mirror");
-    check_root_mirror(root.is_some(), mirror_root, arg("--home").map(PathBuf::from).as_deref(), &data::default_home())?;
+    check_root_mirror(root.is_some(), mirror_root, home_arg.as_deref(), &data::default_home())?;
     let mirror = !no_mirror && (root.is_none() || mirror_root);
     // Soft mounts whichever name the share is mounted by.
     for host in [data::NAS_HOST, store::nas::LAN_HOST] {
@@ -596,7 +588,6 @@ async fn main() -> Result<()> {
         .with_state(state);
 
     // This Mac, and devices on its LAN and the tailnet (the gate answers them alone).
-    let listen: Option<std::net::Ipv4Addr> = arg("--listen").map(|a| a.parse()).transpose()?;
     let addr = std::net::SocketAddr::from((listen.unwrap_or(std::net::Ipv4Addr::UNSPECIFIED), port));
     eprintln!("listening on http://{addr} (devices: the map's address, <home>/map-page)");
     // (Made, and their connections taken, while no child is being started, store::spawn: a child
@@ -1150,16 +1141,22 @@ mod tests {
 
     #[test]
     fn help_and_unknown_options_never_start_it() {
-        let v = |a: &[&str]| bad_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-        assert_eq!(v(&[]), None);
-        assert_eq!(v(&["--port", "18150", "--home", "/tmp/h", "--root", "/tmp/r", "--no-mirror"]), None);
-        assert_eq!(v(&["--help"]), Some(String::new()));
-        assert_eq!(v(&["-h"]), Some(String::new()));
+        use clap::error::ErrorKind;
+        let v = |a: &[&str]| {
+            <Cli as clap::Parser>::try_parse_from(std::iter::once("server").chain(a.iter().copied()))
+                .map_err(|e| e.kind())
+        };
+        assert!(v(&[]).is_ok());
+        assert!(v(&["--port", "18150", "--home", "/tmp/h", "--root", "/tmp/r", "--no-mirror"]).is_ok());
+        assert_eq!(v(&["--help"]).unwrap_err(), ErrorKind::DisplayHelp);
+        assert_eq!(v(&["-h"]).unwrap_err(), ErrorKind::DisplayHelp);
         // An old run file's reserve: taken (and ignored), never a server that won't start.
-        assert_eq!(v(&["--web", "w", "--reserve-gb", "150"]), None);
-        assert!(v(&["--verbose"]).is_some_and(|w| w.contains("unknown")));
-        assert!(v(&["--home"]).is_some_and(|w| w.contains("needs a value")));
-        assert!(v(&["--home", "--root", "/tmp/r"]).is_some_and(|w| w.contains("needs a value")));
+        assert!(v(&["--web", "w", "--reserve-gb", "150"]).is_ok());
+        assert_eq!(v(&["--verbose"]).unwrap_err(), ErrorKind::UnknownArgument);
+        assert!(v(&["--home"]).is_err());
+        assert!(v(&["--home", "--root", "/tmp/r"]).is_err());
+        assert!(v(&["--mirror", "--no-mirror"]).is_err());
+        assert!(v(&["--listen", "nowhere"]).is_err());
     }
 
     #[test]

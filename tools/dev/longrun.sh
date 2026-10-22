@@ -41,8 +41,9 @@ cmd_start() {
   local name=$1 wd=$2 log=$3; shift 3
   valid $name
   local quiet=30
-  [[ ${1-} == --quiet ]] && { quiet=$2; shift 2 }
-  [[ ${1-} == -- ]] && shift
+  [[ ${1-} == --quiet ]] && { [[ ${2-} == <-> ]] || die "--quiet <min>, not ${2-nothing}"; quiet=$2; shift 2 }
+  [[ ${1-} == -- ]] || die "unexpected ${1-end}: start <name> <workdir> <log> [--quiet min] -- <command…>"
+  shift
   (( $# )) || die "no command"
   [[ -d $wd ]] || die "no such folder: $wd"
   wd=${wd:A}; [[ $log == /* ]] || log=$wd/$log
@@ -157,15 +158,17 @@ describe() {
 
 names() { for d in $state_root/*(N/); do [[ -f $d/env ]] && print ${d:t}; done }
 
-case ${1-} in
-  start) shift; (( $# >= 4 )) || die "usage: start <name> <workdir> <log> [--quiet min] -- <command…>"; cmd_start "$@" ;;
-  _run) cmd_run $2 ;;
-  stop) cmd_stop $2 ;;
-  forget) cmd_stop $2; rm -rf $state_root/$2 ;;
-  status) valid $2; [[ -f $state_root/$2/env ]] || die "no run $2"; describe $2
+usage() { sed -n '2,17p' $me | sed 's/^# \{0,1\}//' }
+case $#:${1-} in
+  <5->:start) shift; cmd_start "$@" ;;
+  2:_run) cmd_run $2 ;;
+  2:stop) cmd_stop $2 ;;
+  2:forget) cmd_stop $2; rm -rf $state_root/$2 ;;
+  2:status) valid $2; [[ -f $state_root/$2/env ]] || die "no run $2"; describe $2
           local wd log quiet cmd; source $state_root/$2/env; print "command: $cmd"; tail -5 $log ;;
-  list|check) typeset -a flags; n=0
+  1:list|1:check) typeset -a flags; n=0
           for x in $(names); do n=1; [[ $1 == check ]] && print -n "  "; describe $x; done
           (( n )) || print "  none" ;;
-  *) sed -n '2,17p' $me | sed 's/^# \{0,1\}//'; exit 2 ;;
+  1:-h|1:--help) usage ;;
+  *) print -u2 "longrun: unexpected arguments: $*"; usage >&2; exit 2 ;;
 esac

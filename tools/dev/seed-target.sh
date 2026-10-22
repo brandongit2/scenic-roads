@@ -11,6 +11,11 @@
 # Usage: seed-target.sh <worktree>. Also a PreToolUse hook on Bash (.claude/settings.local.json):
 # reads the call's JSON on stdin and seeds the worktree it runs in, once, when the command runs cargo.
 setopt extendedglob
+case $#:${1:-} in
+  1:-h|1:--help) print "usage: tools/dev/seed-target.sh <worktree>   (no argument: a hook, the call's JSON on stdin)"; exit 0 ;;
+  0:|1:[^-]*) ;;
+  *) print -u2 "seed-target.sh: unexpected arguments: $* (seed-target.sh --help)"; exit 2 ;;
+esac
 repo=${$(git -C ${0:A:h} rev-parse --path-format=absolute --git-common-dir):h}   # the main checkout, found from this script (also from a worktree copy)
 log=$repo/.claude/sweep-targets.log
 if [[ -n $1 ]]; then wt=${1:A}

@@ -11,6 +11,15 @@
 # app/current.json at once, and a publish is only ever of a clean tree whose commit is on origin's
 # main (no -dirty versions).
 set -euo pipefail
+# (Its arguments checked before anything: `--help` publishes nothing.)
+usage="usage: tools/app/publish.sh [--rollback]"
+rollback=
+case $#:${1:-} in
+  0:) ;;
+  1:--rollback) rollback=asked ;;
+  1:-h|1:--help) print -r -- $usage; exit 0 ;;
+  *) print -ru2 -- "publish.sh: unexpected arguments: $*"$'\n'"$usage"; exit 2 ;;
+esac
 cd ${0:A:h}/../..
 # Its tools found without a login shell's profile (over ssh, `ssh m6 '…/publish.sh'`, the PATH is the
 # system's): brew's mise and rustup's cargo; the rest come from mise.toml through `mise env` below.
@@ -63,7 +72,7 @@ if ! ( set -o noclobber; print -r -- "$who" > $lock ) 2>/dev/null; then
 fi
 # (Removed only while it's still this publish's.)
 cleanup+=('[[ $(cat $lock 2>/dev/null) == $who ]] && rm -f $lock')
-if [[ ${1:-} == --rollback ]]; then
+if [[ $rollback == asked ]]; then
   [[ -f $NAS/app/previous.json ]] || { echo "no previous version to roll back to"; exit 1; }
   cp -X $NAS/app/current.json $NAS/app/current.json.tmp.old
   cp -X $NAS/app/previous.json $NAS/app/current.json.tmp && mv $NAS/app/current.json.tmp $NAS/app/current.json

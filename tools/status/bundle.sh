@@ -16,10 +16,15 @@
 # page's too: ScenicPage), never added
 # to the login items. It never touches the live app, services or home. (tools/status/sandbox.sh)
 set -euo pipefail
+usage="usage: tools/status/bundle.sh <folder> <version> <identity> [--sandbox <home>]"
+case $#:${1:-}:${4:-} in
+  1:-h:|1:--help:) print -r -- $usage; exit 0 ;;
+  3:[^-]*:|5:[^-]*:--sandbox) ;;
+  *) print -ru2 -- "bundle.sh: unexpected arguments: $*"$'\n'"$usage"; exit 2 ;;
+esac
 src=${0:A:h}
 out=$1 version=$2 sign_id=$3
-sandbox=
-if [[ ${4:-} == --sandbox ]]; then sandbox=${5:?--sandbox <home>}; fi
+sandbox=${5:-}
 name=Scenic id=local.scenic.status label=local.scenic.build
 if [[ -n $sandbox ]]; then name="Scenic Sandbox" id=local.scenic-sandbox.app label=local.scenic-sandbox.build; fi
 app="$out/$name.app"

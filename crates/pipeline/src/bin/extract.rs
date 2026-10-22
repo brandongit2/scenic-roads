@@ -8,7 +8,7 @@
 //! funiculars). Tracks without a route relation are kept when their type says what they are
 //! (tram, subway, funicular, preserved or tourist lines).
 //!
-//! usage: extract <out_dir> <spacing> [--rail-rels-only] <file.osm.pbf>...
+//! Its command line: pipeline::cli::progs::Extract (`extract <out_dir> <spacing> <file.osm.pbf>...`).
 //!
 //! Pass 1 collects matching ways; pass 2 resolves node coordinates and private gates.
 //! Besides the ways: rail-rels.bin, each rail track's primary service (the route relation that
@@ -29,7 +29,7 @@ use roadcore::{class, dist_m, flag, WayRec, E7, WAYS_MAGIC};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering::Relaxed};
 
 struct RawWay {
@@ -847,29 +847,15 @@ fn route_per_way(scenic: &mut Vec<(i64, String)>) {
 }
 
 fn main() -> Result<()> {
-    let mut args: Vec<String> = std::env::args().collect();
-    let rail_rels_only = args.iter().any(|a| a == "--rail-rels-only");
-    args.retain(|a| a != "--rail-rels-only");
-    // The landmark candidates' points (poi_kind), for the pois job.
-    let candidates = args.iter().any(|a| a == "--candidates");
-    args.retain(|a| a != "--candidates");
-    // The pass's hiking-route ends (pipeline::trailends), instead of working them out from the input.
-    let trailends: Option<PathBuf> = args.iter().position(|a| a == "--trailends").map(|i| {
-        let p = PathBuf::from(args.get(i + 1).cloned().unwrap_or_default());
-        args.drain(i..(i + 2).min(args.len()));
-        p
-    });
-    if args.len() < 4 {
-        eprintln!("usage: extract <out_dir> <spacing_m | spacing.json> [--rail-rels-only] [--candidates] [--trailends <file>] <file.osm.pbf>...");
-        std::process::exit(2);
-    }
-    let out = PathBuf::from(&args[1]);
+    // (`--candidates`: the landmark candidates' points (poi_kind), for the pois job; `--trailends`:
+    // the pass's hiking-route ends (pipeline::trailends), instead of working them out from the input.)
+    let pipeline::cli::progs::Extract { out_dir: out, spacing, inputs, rail_rels_only, candidates, trailends } =
+        <pipeline::cli::progs::Extract as clap::Parser>::parse();
     use pipeline::dem::spacing::{Fine, Spacing, Uniform};
-    let spacing: Box<dyn Spacing + Sync> = match args[2].parse::<f64>() {
+    let spacing: Box<dyn Spacing + Sync> = match spacing.parse::<f64>() {
         Ok(m) => Box::new(Uniform(m)),
-        Err(_) => Box::new(Fine::read(std::path::Path::new(&args[2]))?),
+        Err(_) => Box::new(Fine::read(std::path::Path::new(&spacing))?),
     };
-    let inputs: Vec<PathBuf> = args[3..].iter().map(PathBuf::from).collect();
     std::fs::create_dir_all(&out)?;
     let t0 = std::time::Instant::now();
 

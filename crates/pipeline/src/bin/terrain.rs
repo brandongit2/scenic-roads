@@ -1,6 +1,6 @@
 //! Terrain tiles for 3D terrain / hillshade, and the z11 terrain analysis grid.
 //!
-//! usage: terrain <build_dir> [--root <project folder>]
+//! Its command line: pipeline::cli::progs::Terrain (`terrain [<build_dir>] [--root <project folder>]`).
 //!
 //! Downloads Terrarium-encoded DEM tiles from the terrain's declared base (`--root`'s records name
 //! it: pipeline::terrain_sources; AWS Terrain Tiles: USGS 3DEP in the US, NRCan
@@ -65,9 +65,10 @@ pub fn near_roads(verts: &[[i32; 2]], z: u8, ring: i64) -> Vec<[u32; 2]> {
 }
 
 fn main() -> Result<()> {
-    let dir = PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "data/build".into()));
-    if std::env::args().any(|a| a == "--scan") {
-        return scan();
+    let pipeline::cli::progs::Terrain { build_dir: dir, root, scan: s } =
+        <pipeline::cli::progs::Terrain as clap::Parser>::parse();
+    if s.scan {
+        return scan(&root, &s);
     }
     let t0 = std::time::Instant::now();
     let wv = Ways::open(&dir)?;
@@ -101,12 +102,6 @@ fn main() -> Result<()> {
 
     // Download (reusing a previous archive), by the terrain's declared base (`--root`: the project
     // folder whose records name it, crate::terrain_sources).
-    let args: Vec<String> = std::env::args().collect();
-    let root = args
-        .iter()
-        .position(|a| a == "--root")
-        .and_then(|i| args.get(i + 1))
-        .map_or_else(|| PathBuf::from("/Volumes/personal/projects/scenic-roads"), PathBuf::from);
     let base = pipeline::terrain_sources::read(&pipeline::out::Out::unbound(&root, &dir.join("scratch"))?)?.base;
     let archive_path = dir.join("terrain.tiles");
     let old = Archive::open(&archive_path).ok();
@@ -214,14 +209,11 @@ fn main() -> Result<()> {
 /// second pass is over that terrain as stored. `--fixed-out <dir>` writes that terrain there too,
 /// as the terrain job's packs (a project folder of its own: its manifest, `layers/terrain/…`).
 /// `--world-z8` does the same for the worldwide z8 (terrain_z8: each tile alone).
-fn scan() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-    let opt = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
-    let root = PathBuf::from(opt("--root").unwrap_or_else(|| "/Volumes/personal/projects/scenic-roads".into()));
-    let cache = PathBuf::from(opt("--cache").unwrap_or_else(|| "data/scan-cache".into()));
-    let outd = PathBuf::from(opt("--out").unwrap_or_else(|| "data/scan".into()));
+fn scan(root: &Path, s: &pipeline::cli::progs::TerrainScan) -> Result<()> {
+    let root = root.to_path_buf();
+    let (cache, outd) = (s.cache.clone(), s.out.clone());
     std::fs::create_dir_all(outd.join("views"))?;
-    let views: HashSet<(u8, u32, u32)> = match opt("--views") {
+    let views: HashSet<(u8, u32, u32)> = match &s.views {
         Some(f) => std::fs::read_to_string(f)?
             .lines()
             .filter_map(|l| {
@@ -231,7 +223,7 @@ fn scan() -> Result<()> {
             .collect(),
         None => HashSet::new(),
     };
-    let only: Option<HashSet<(u32, u32)>> = opt("--only").map(|s| {
+    let only: Option<HashSet<(u32, u32)>> = s.only.as_ref().map(|s| {
         s.split(',')
             .filter_map(|q| {
                 let v: Vec<u32> = q.split('/').filter_map(|s| s.parse().ok()).collect();
@@ -241,7 +233,7 @@ fn scan() -> Result<()> {
     });
     // (`--z6 <file>`: only those z6 tiles made, `6/x/y` a line; the others' z9 tiles, for their z3
     // pack's coarser levels, read from `--fixed-out` where it has them made by an earlier run.)
-    let z6: Option<HashSet<(u32, u32)>> = match opt("--z6") {
+    let z6: Option<HashSet<(u32, u32)>> = match &s.z6 {
         Some(f) => Some(
             std::fs::read_to_string(f)?
                 .lines()
@@ -255,14 +247,14 @@ fn scan() -> Result<()> {
     };
     // (The sources, as the terrain job opens them, from the NAS read only: nothing fetched.)
     let base = pipeline::terrain_sources::read(&pipeline::out::Out::unbound(&root, &cache.join("scratch"))?)?.base;
-    let opened = if args.iter().any(|a| a == "--bare") {
+    let opened = if s.bare {
         None
     } else {
         let o = pipeline::out::Out::unbound(&root, &cache.join("scratch"))?;
         Some(pipeline::terrain_pack::SourceFiles::open(&o, false)?)
     };
-    let mut fixed = match opt("--fixed-out") {
-        Some(d) => Some(pipeline::out::Out::unbound(Path::new(&d), &cache.join("fixed-scratch"))?),
+    let mut fixed = match &s.fixed_out {
+        Some(d) => Some(pipeline::out::Out::unbound(d, &cache.join("fixed-scratch"))?),
         None => None,
     };
     let sc = Scan {
@@ -292,7 +284,7 @@ fn scan() -> Result<()> {
     writeln!(sc.lefts.lock().unwrap(), "which\tz\tx\ty\tpx\tpy\tlon\tlat\tv\tground\tupper")?;
     let store = root.join("sources/aws-terrarium");
     let t0 = std::time::Instant::now();
-    if let Some(f) = opt("--tiles") {
+    if let Some(f) = &s.tiles {
         // (Tiles alone, each from its raw tile only, with their views: for a look.)
         let raw = pipeline::terrain_pack::RawTiles::with_store(&cache, &store, &base);
         let list: Vec<(u8, u32, u32)> = std::fs::read_to_string(f)?
@@ -314,7 +306,7 @@ fn scan() -> Result<()> {
         std::fs::remove_dir_all(cache.join("packs")).ok();
         return Ok(());
     }
-    if args.iter().any(|a| a == "--world-z8") {
+    if s.world_z8 {
         let raw = pipeline::terrain_pack::RawTiles::with_store(&cache, &store, &base);
         let n = 1u32 << 8;
         let tiles: Vec<(u32, u32)> = (0..n).flat_map(|x| (0..n).map(move |y| (x, y))).collect();

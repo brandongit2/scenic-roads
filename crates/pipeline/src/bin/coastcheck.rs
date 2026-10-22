@@ -14,31 +14,23 @@
 //! the sea's, green the inland water's), for the coastal shading's reference.
 
 use anyhow::{bail, Context, Result};
+use clap::Parser;
+use pipeline::cli::progs::{Coastcheck, CoastcheckCmd as C};
 use pipeline::watercov::{self as wc, Geom, GeomWriter};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-fn opt(args: &[String], name: &str) -> Option<String> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned())
-}
-
 fn main() -> Result<()> {
-    let all: Vec<String> = std::env::args().collect();
-    // (Checked first: `--help` or an unknown flag runs nothing.)
-    pipeline::cli::tables::COASTCHECK.gate(&all);
-    let args: Vec<String> = all[1..].to_vec();
-    match args.first().map(String::as_str) {
-        Some("build") => build(&args),
-        Some("serve") => serve(&args),
-        Some("stats") => stats(&args),
-        Some("water-packs") => {
-            // water-packs --tiles <dir> --catalog <n.json.zst> --root <dir>: water-build's tiles as
-            // the water layer's packs (pipeline::layers' scopes) in a test root, and a catalog one
-            // newer than --catalog with them (written into <root>/catalog). Never the NAS's.
-            let tiles = PathBuf::from(opt(&args, "--tiles").context("--tiles")?);
-            let root = PathBuf::from(opt(&args, "--root").context("--root")?);
-            let mut cat = store::catalog::read(&PathBuf::from(opt(&args, "--catalog").context("--catalog")?))?;
+    match Coastcheck::parse().cmd {
+        C::Build { set, water_polygons, out, index } => build(&set, &water_polygons, &out, &index),
+        C::Serve { store, port } => serve(&store, port),
+        C::Stats { store, z, sample, size } => stats(&store, z, sample, size),
+        C::WaterPacks { tiles, catalog, root } => {
+            // water-build's tiles as the water layer's packs (pipeline::layers' scopes) in a test
+            // root, and a catalog one newer than --catalog with them (written into <root>/catalog).
+            // Never the NAS's.
+            let mut cat = store::catalog::read(&catalog)?;
             let mut all: Vec<(u8, u32, u32, PathBuf)> = Vec::new();
             for z in 0..=pipeline::water::STORED_MAXZ {
                 let zd = tiles.join(z.to_string());
@@ -106,32 +98,28 @@ fn main() -> Result<()> {
             eprintln!("coastcheck: {}", p.display());
             Ok(())
         }
-        Some("water-build") => {
-            // water-build --basemap <pmtiles> [--only x/y,…] --out <dir>: pipeline::water's build
-            // as the step runs it, its tiles written as files (<dir>/z/x/y.png), for a regional run
-            // measured without the NAS.
+        C::WaterBuild { basemap, only, lakefill, out: dir } => {
+            // pipeline::water's build as the step runs it, its tiles written as files
+            // (<dir>/z/x/y.png), for a regional run measured without the NAS.
             use pipeline::water as wt;
             let t = std::time::Instant::now();
-            let pm = store::pmtiles::PmTiles::open(Box::new(store::range::PlainFile::open(&PathBuf::from(
-                opt(&args, "--basemap").context("--basemap")?,
-            ))?))?;
+            let pm = store::pmtiles::PmTiles::open(Box::new(store::range::PlainFile::open(&basemap)?))?;
             let z14 = wt::Z14::read(&pm)?;
             eprintln!("coastcheck: z14 directory read in {:.0} s", t.elapsed().as_secs_f64());
-            let only: Option<Vec<(u32, u32)>> = opt(&args, "--only").map(|o| {
+            let only: Option<Vec<(u32, u32)>> = only.map(|o| {
                 o.split(',')
                     .filter_map(|t| t.split_once('/').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?))))
                     .collect()
             });
             // (--lakefill f: the lakes filled from Canada's own data drawn too.)
-            let fill = match opt(&args, "--lakefill") {
-                Some(f) => Some(pipeline::lakefill::Fill::open(Path::new(&f), &f)?),
+            let fill = match lakefill {
+                Some(f) => Some(pipeline::lakefill::Fill::open(&f, &f.to_string_lossy())?),
                 None => None,
             };
             let (tiles, made) =
                 wt::build(&pm, &z14, fill.as_ref().map(|f| f as &dyn wt::Extra), only.as_deref(), &|d, n| {
                     eprintln!("coastcheck: {d}/{n} z5 tiles")
                 })?;
-            let dir = PathBuf::from(opt(&args, "--out").context("--out")?);
             for (z, x, y, png) in &tiles {
                 let f = dir.join(format!("{z}/{x}/{y}.png"));
                 std::fs::create_dir_all(f.parent().unwrap())?;
@@ -143,16 +131,15 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
-        Some("mark-sea") => {
-            // mark-sea --store <dir> --water-polygons <zip>: a store made before it recorded which
-            // rings are the sea's (they're the first: as many as the zip gives).
-            let dir = PathBuf::from(opt(&args, "--store").context("--store")?);
+        C::MarkSea { store: dir, water_polygons } => {
+            // A store made before it recorded which rings are the sea's (they're the first: as many
+            // as the zip gives).
             let tmp = dir.join("sea-count.tmp");
             let mut w = GeomWriter::create(&tmp)?;
             let mut unzip = store::spawn::spawn(
                 store::spawn::command("/usr/bin/unzip")
                     .arg("-p")
-                    .arg(opt(&args, "--water-polygons").context("--water-polygons")?)
+                    .arg(&water_polygons)
                     .arg("water-polygons-split-3857/water_polygons.shp")
                     .stdout(std::process::Stdio::piped()),
             )?;
@@ -169,27 +156,19 @@ fn main() -> Result<()> {
             eprintln!("coastcheck: {n} sea rings");
             Ok(())
         }
-        Some("tile") => {
-            let g = Geom::open(&PathBuf::from(opt(&args, "--store").context("--store")?))?;
-            let n: Vec<u32> = args.iter().skip(1).filter_map(|a| a.parse().ok()).take(3).collect();
-            let [z, x, y] = n[..] else { bail!("tile <z> <x> <y>") };
-            let size = opt(&args, "--size").map_or(Ok(512), |s| s.parse())?;
+        C::Tile { store, z, x, y, size } => {
+            let g = Geom::open(&store)?;
             let t = std::time::Instant::now();
-            let png = cov_png(&g, z as u8, x, y, size, wc::Which::All)?;
+            let png = cov_png(&g, z, x, y, size, wc::Which::All)?;
             eprintln!("{} bytes in {:.0} ms", png.len(), t.elapsed().as_secs_f64() * 1e3);
             std::io::Write::write_all(&mut std::io::stdout(), &png)?;
             Ok(())
         }
-        _ => bail!("coastcheck build|serve|tile (see its doc comment)"),
     }
 }
 
-fn build(args: &[String]) -> Result<()> {
-    let set = PathBuf::from(opt(args, "--set").context("--set")?);
-    let zip = PathBuf::from(opt(args, "--water-polygons").context("--water-polygons")?);
-    let out = PathBuf::from(opt(args, "--out").context("--out")?);
-    let index = opt(args, "--index").unwrap_or_else(|| "sparse_mem_array".into());
-    let mut w = GeomWriter::create(&out)?;
+fn build(set: &Path, zip: &Path, out: &Path, index: &str) -> Result<()> {
+    let mut w = GeomWriter::create(out)?;
     let t = std::time::Instant::now();
     // The sea's water polygons.
     let mut unzip = store::spawn::spawn(
@@ -283,12 +262,11 @@ fn raw_png(g: &Geom, z: u8, x: u32, y: u32, size: usize) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-fn serve(args: &[String]) -> Result<()> {
+fn serve(store: &Path, port: u16) -> Result<()> {
     use axum::extract::{Path as P, Query, State};
     use axum::http::{header, StatusCode};
     use axum::response::IntoResponse;
-    let g = Arc::new(Geom::open(&PathBuf::from(opt(args, "--store").context("--store")?))?);
-    let port: u16 = opt(args, "--port").map_or(Ok(18095), |p| p.parse())?;
+    let g = Arc::new(Geom::open(store)?);
     eprintln!("coastcheck: {} rings; serving on 127.0.0.1:{port}", g.rings());
     async fn tile(
         State(g): State<Arc<Geom>>,
@@ -341,12 +319,9 @@ fn serve(args: &[String]) -> Result<()> {
 /// stats --store <dir> --z <zoom> [--sample n] [--size 512]: the tiles at a zoom some shore passes
 /// through (every ring's edges walked), and a sample of them drawn and compressed: how big a
 /// coverage layer would be.
-fn stats(args: &[String]) -> Result<()> {
+fn stats(store: &Path, z: u8, sample: usize, size: usize) -> Result<()> {
     use rayon::prelude::*;
-    let g = Geom::open(&PathBuf::from(opt(args, "--store").context("--store")?))?;
-    let z: u8 = opt(args, "--z").context("--z")?.parse()?;
-    let sample: usize = opt(args, "--sample").map_or(Ok(200), |s| s.parse())?;
-    let size: usize = opt(args, "--size").map_or(Ok(512), |s| s.parse())?;
+    let g = Geom::open(store)?;
     let n = 1usize << z;
     let shift = 32 - u32::from(z);
     let t = std::time::Instant::now();
