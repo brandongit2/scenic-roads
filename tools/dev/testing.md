@@ -55,12 +55,12 @@ incremental builds through). `sccache --show-stats` shows hits. tools/dev/seed-t
 clones main's compiled third-party crates into a new worktree (one cp per folder, ~7 s);
 tools/dev/sweep-targets.sh empties the cache when free disk is below 20 GB.
 
-## Tests on the M4 (#442, 19 Oct)
+## Tests on the test Mac (#442, 19 Oct)
 
-check.sh's `tests` part and publish.sh's nextest suite run on the M4 through
+check.sh's `tests` part and publish.sh's nextest suite run on the test Mac through
 `tools/app/remote-tests.sh <key> <tree> <command>` (tracked). Key: the worktree's folder name
 (`main-checkout` for the main checkout, `publish` for publish's snapshot).
-- One run per key at a time: a lock on the M4 (`~/scenic-check/<key>/.busy`, naming this Mac, the
+- One run per key at a time: a lock on the test Mac (`~/scenic-check/<key>/.busy`, naming this Mac, the
   process, its start time and a nonce), taken before the copy and held to the end. A second run of
   the same key prints "key … is in use … waiting" and waits (30 min, then runs here). A lock whose
   process on this Mac is gone (or is another process under a reused PID), or older than 6 h, is
@@ -68,20 +68,20 @@ check.sh's `tests` part and publish.sh's nextest suite run on the M4 through
 - The copy: the tree's tracked and untracked-not-ignored files and symlinks (uncommitted edits
   included) rsync into `~/scenic-check/<key>/src`; files and symlinks not in that list, then empty
   folders, are deleted there. Build folder `~/scenic-check/<key>/target`, kept between runs; rustc
-  through the M4's sccache.
+  through the test Mac's sccache.
 - The run: nice 10, 8192 open files, `mise env` of the tree, with this side's exported RUST_LOG,
   RUST_BACKTRACE, RUST_TEST_THREADS, RUST_MIN_STACK, CARGO_TERM_COLOR, CARGO_INCREMENTAL,
   CARGO_BUILD_JOBS, CARGO_PROFILE_*, NEXTEST_* and SCENIC_*. Both sides print their rustc, cargo
-  and nextest versions and whether the NAS is mounted. Three runs at a time on the M4; the rest
-  queue (30 min, then here). A stopped run is stopped on the M4 too.
-- The result: the M4's side ends with a status line (read, not shown); the exit status is the
+  and nextest versions and whether the NAS is mounted. Three runs at a time on the test Mac; the rest
+  queue (30 min, then here). A stopped run is stopped on the test Mac too.
+- The result: the test Mac's side ends with a status line (read, not shown); the exit status is the
   command's. Without one (connection lost, no tree, no slot) it prints
   `--- remote result discarded, local rerun ---` and runs here: what follows the last such line is
   the result (publish.sh reads its Summary and FAIL lines only from there).
-- Runs here instead: on the M4 itself; when the M4 can't be reached or the copy fails; when the tree
+- Runs here instead: on the test Mac itself; when the test Mac can't be reached or the copy fails; when the tree
   has `data/build` (ignored test data that tests skip without, which the copy wouldn't carry); with
   `SCENIC_CHECK_LOCAL=1` (also `SCENIC_TESTS_LOCAL=1`).
-- Disk on the M4: a key unused 3 days goes; past 60 GB in all the least recently used go; never a
+- Disk on the test Mac: a key unused 3 days goes; past 60 GB in all the least recently used go; never a
   locked key. The sweep drops a removed worktree's key (`remote-tests.sh --drop <key>`).
 fmt, clippy, guards, wasm, web, swift and python stay on this Mac.
 

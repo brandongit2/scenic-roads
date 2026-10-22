@@ -28,7 +28,7 @@
 //!   size (downloaded before it kept them, or a copy cut short), is copied there first (whole and
 //!   flushed: crate::whole: one large file), and kept here when that fails; a raw tile it lacks
 //!   stays here until it reaches the NAS in bulk (copied a tile at a time, with a flush each, small
-//!   files stall the NAS: ~23 a second, and both Macs' processes wait on it meanwhile). One that
+//!   files stall the NAS: ~23 a second, and each Mac's processes wait on it meanwhile). One that
 //!   isn't whole itself (cut short, or a temporary file) is deleted without being kept anywhere.
 //! - Raw tiles the NAS lacks are packed onto it first (crate::rawpack: an archive of their own for
 //!   each shard, one large write each, none kept here), then go; the copies of its archives here

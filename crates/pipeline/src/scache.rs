@@ -186,7 +186,7 @@ impl GridChange {
     }
 }
 
-/// A z6 tile's scenic results kept between its runs (in the NAS's `cache/scenic-units/`, both Macs'), so a rerun (a new pass,
+/// A z6 tile's scenic results kept between its runs (in the NAS's `cache/scenic-units/`, each Mac's), so a rerun (a new pass,
 /// a region nearby changed) redoes only the samples that are new or near what changed:
 /// - kept after a run: the canopy and view steps' sample keys and grid tiles, their per-sample
 ///   outputs, the canopy and cover grids (zstd), and `basis`, a hash of each grid tile's terrain
@@ -236,7 +236,7 @@ impl Carry {
         let cache = unit_dir(build);
         let have = KEPT_OUTPUTS.iter().chain(&KEPT_GRIDS).all(|f| build.join(f).exists())
             && KEPT_CACHE.iter().all(|f| cache.join(f).exists());
-        // (This Mac's own temporary folder: both Macs may keep the same z6 tile's at once.)
+        // (This Mac's own temporary folder: each Mac may keep the same z6 tile's at once.)
         let tmp = self.dir.with_extension(format!("{}.tmp", crate::agent::cond::host()));
         if tmp.exists() {
             std::fs::remove_dir_all(&tmp)?;

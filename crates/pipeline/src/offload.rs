@@ -550,7 +550,7 @@ pub fn task_kind(spec: &serde_json::Value) -> String {
     }
 }
 
-/// Runs task `lease` here, natively (a worker's agent: the M1's): its files fetched from the
+/// Runs task `lease` here, natively (a worker's agent): its files fetched from the
 /// coordinator into `dir`, its steps run over them with the programs in `bin`, and the files they
 /// changed sent back; what to hand back with its done (outputs, inputs removed, time, peak memory).
 /// What a page reads through the coordinator (`/net`), it reads where it lies: the NAS's data in

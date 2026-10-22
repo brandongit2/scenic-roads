@@ -4184,7 +4184,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     }
     // (The DEM cache's seed, where the z6 tiles' elevations start from, is copied here once a Mac by
     // the first z6 tile that it can serve: unit::prepare_folder.)
-    // What z6 tiles kept in this Mac's own cache: moved to the shared one (both Macs' z6 tiles read it).
+    // What z6 tiles kept in this Mac's own cache: moved to the shared one (each Mac's z6 tiles read it).
     let _p = phase("kept results moved to the shared cache", Class::NasWrite);
     if let Some(shared) = &tools.shared {
         match pipeline::unit::move_kept_to_shared(&tools.cache, shared) {

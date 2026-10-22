@@ -483,8 +483,9 @@ pub fn after(run: &mut Run, out: &Out, root: &Path, home: &Path, coord: Option<&
             || v.handing.is_some();
         if let Some(to) = low_battery(&v, &mut run.controls.kept, now, going) {
             let host = host_of(run, &to);
-            let pct = v.members.iter().find(|m| m.me).and_then(|m| m.conds).and_then(|c| c.battery).unwrap_or(0);
-            let why = format!("its battery at {pct} %, below {} %", crate::agent::cond::BATTERY_MIN);
+            let pct = v.members.iter().find(|m| m.me).and_then(|m| m.conds).and_then(|c| c.battery);
+            let pct = pct.map_or("unknown".to_string(), |p| format!("{p} %"));
+            let why = format!("its battery at {pct}, below {} %", crate::agent::cond::BATTERY_MIN);
             run.controls.page.push(LeadRequest {
                 ask: LeadAsk::Give { to: to.clone() },
                 by: format!("the pool by itself ({why})"),
@@ -823,7 +824,7 @@ pub struct Unreached {
 /// nothing under way (`busy`: a handover, an ask); its term `AWAY_S` old or more (`last_change`)
 /// and its last such ask `CALM_S` ago or more (`kept.away_at`). To the member that can lead
 /// (`Member::can_lead`: which no member reports unreachable), that another member reached lately
-/// (`reached`), home on power first, then by host; none: nothing. The ask's time is kept.
+/// (`reached`): home on power first, then one with no battery (a desktop) before laptops, then by host; none: nothing. The ask's time is kept.
 pub fn away(
     v: &View,
     u: Unreached,
@@ -843,7 +844,7 @@ pub fn away(
         .members
         .iter()
         .filter(|m| !m.me && !m.leads && m.can_lead && reached(&m.member))
-        .min_by_key(|m| (!m.conds.is_some_and(|c| c.home && c.ac), m.host.clone()))?;
+        .min_by_key(|m| (!m.conds.is_some_and(|c| c.home && (c.ac || c.battery.is_none())), m.conds.is_some_and(|c| c.battery.is_some()), m.host.clone()))?;
     kept.away_at = now;
     Some(to.member.clone())
 }
@@ -1247,6 +1248,7 @@ mod tests {
             members: vec![
                 m("m1", true, false, home),
                 m("air", false, true, batt),
+                m("alpha", false, true, Conds { battery: Some(90), ..home }),
                 m("mini", false, true, home),
                 m("old", false, false, home),
             ],
@@ -1264,7 +1266,7 @@ mod tests {
         assert_eq!(away(&v, Unreached::default(), &mut k, t0, 0, false, &all), None);
         // No member another reached: nothing.
         assert_eq!(away(&v, u(AWAY_S, 1, 1), &mut k, t0, 0, false, &|_| false), None);
-        // Half of them, long enough: to the one home on power that can lead, then not again for CALM_S.
+        // Half of them, long enough: to the one home on power that can lead, a desktop (no battery) before a laptop on mains whose host sorts first, then not again for CALM_S.
         assert_eq!(away(&v, u(AWAY_S, 1, 2), &mut k, t0, 0, false, &all), Some("m-mini".into()));
         assert_eq!(away(&v, u(AWAY_S, 1, 2), &mut k, t0 + CALM_S - 1, 0, false, &all), None);
         assert_eq!(away(&v, u(AWAY_S, 1, 2), &mut k, t0 + CALM_S, 0, false, &|id| id == "m-air"), Some("m-air".into()));

@@ -4,7 +4,7 @@
 //!
 //! Two kinds of work, by what a worker can reach (§2):
 //! - **Jobs** of the plan (crate::agent::steps::SHARED: z6 tiles, terrain, slope, tree cover,
-//!   landmark candidates and peaks), for workers that mount the NAS (the M1's agent, `--helper`). A
+//!   landmark candidates and peaks), for workers that mount the NAS (a member's agent, `--helper`). A
 //!   worker's job saves through the coordinator: its hand-off (its manifest changes and done record,
 //!   one per job) is journaled on this Mac's disk, written whole, then merged into the records by the
 //!   agent (crate::handoff::merge_from), all of it or none.

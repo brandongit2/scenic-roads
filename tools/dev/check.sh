@@ -11,7 +11,7 @@
 #             pipeline, store, names)
 #   web       pnpm typecheck and vite build (to a scratch folder), when web/ changed
 #   swift     swiftc of tools/status/main.swift (publish's line), when tools/status changed
-#   tests     each command tools/dev/affected-tests.sh prints, run on the M4 (tools/app/remote-tests.sh;
+#   tests     each command tools/dev/affected-tests.sh prints, run on the test Mac (tools/app/remote-tests.sh;
 #             here when it can't be reached or SCENIC_CHECK_LOCAL=1)
 #   python    pyflakes on the changed .py files and unittest in their folders' test_*.py, when
 #             producers/ or dem/ changed
@@ -50,8 +50,8 @@ if has 'tools/status/*'; then
   part swift swiftc -O -swift-version 5 -target arm64-apple-macos26.0 -o $logs/scenic-status tools/status/*.swift
 else skip swift "tools/status unchanged"; fi
 tests=( ${(f)"$(${0:A:h}/affected-tests.sh | grep -v '^#')"} )
-# The tests run on the M4 (tools/app/remote-tests.sh, #442: an exact copy of this tree, its own
-# build folder per worktree, three runs at a time there, the rest queued); here when the M4 can't
+# The tests run on the test Mac (tools/app/remote-tests.sh, #442: an exact copy of this tree, its own
+# build folder per worktree, three runs at a time there, the rest queued); here when the test Mac can't
 # be reached or with SCENIC_CHECK_LOCAL=1.
 rt=$root/tools/app/remote-tests.sh
 if (( ${#tests} )) && [[ -x $rt ]]; then

@@ -1272,7 +1272,7 @@ pub fn newer_planet(root: &Path, have: Option<&str>) -> Result<Option<(PathBuf, 
 /// An extract that lacks none stays as it is, so only the z6 tiles whose extracts change are built again,
 /// and a run after it changes nothing. Only the extracts of the z6 tiles `only` takes. The extracts changed
 /// and the ways they gained. The records are saved once, at the end: a extract changed goes stale the
-/// roads' reach, and with it the z6 tiles' planning on both Macs, so saving each as it changed would
+/// roads' reach, and with it the z6 tiles' planning on each Mac, so saving each as it changed would
 /// hold the z6 tiles up for the whole run (a run stopped part way saves none, and is run again).
 pub fn patch_ferries(
     out: &mut Out,

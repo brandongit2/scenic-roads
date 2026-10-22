@@ -74,10 +74,10 @@ for wt in $repo/.claude/worktrees/*(N/); do
   if [[ -z $dry ]]; then
     [[ -n $lock ]] && git worktree unlock $wt 2>/dev/null
     git worktree remove $wt 2>/dev/null || say "could not remove ${wt:t}"
-    # Its copy and build folder on the M4 (tools/app/remote-tests.sh, #442), unless a run uses it;
-    # an unreachable M4 drops it later itself (3 days unused, or past its disk cap).
+    # Its copy and build folder on the test Mac (tools/app/remote-tests.sh, #442), unless a run uses it;
+    # an unreachable test Mac drops it later itself (3 days unused, or past its disk cap).
     if [[ ! -d $wt && -x $repo/tools/app/remote-tests.sh ]]; then
-      $repo/tools/app/remote-tests.sh --drop ${wt:t} >/dev/null 2>&1 && say "dropped ${wt:t}'s folder on the M4"
+      $repo/tools/app/remote-tests.sh --drop ${wt:t} >/dev/null 2>&1 && say "dropped ${wt:t}'s folder on the test Mac"
     fi
   fi
 done
@@ -92,7 +92,7 @@ if ! print -r -- "$busy" | grep -qx "$repo"; then
   fi
 fi
 # The agents' shared compile cache (#439; sccache, set up by .claude/worktrees/.cargo/config.toml):
-# sccache holds it under its 10G cap by itself. When the disk's free space falls below the M1's
+# sccache holds it under its 10G cap by itself. When the disk's free space falls below this Mac's
 # room target (20 GB), it is emptied: it is only a cache, and builds refill it (a removed entry is a
 # miss; the server stays up and writes new entries as before).
 cache=~/Library/Caches/scenic-sccache

@@ -1,4 +1,4 @@
-//! A worker's side of the coordinator (the M1's agent, a job offering tasks). It finds the
+//! A worker's side of the coordinator (a member's agent, a job offering tasks). It finds the
 //! coordinator in `state/coordinator.json` on the NAS and reads that again whenever it can't reach
 //! it, or the token is refused: the lead may have restarted, moved networks, or made a new
 //! token.

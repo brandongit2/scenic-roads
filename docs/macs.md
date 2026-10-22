@@ -62,7 +62,7 @@ lead's coordinator. Below, the M4 (48 GB) unless said.
 - **Its own map** is served from the NAS and what it has downloaded (Mirror).
 - **An OSM pass** starts with 80 GB free (the pack cache counting as free) and copies the planet to
   the SSD when there's room, else reads it from the NAS.
-- **What a z6 tile keeps for its later runs** is on the NAS (`cache/`), shared by both Macs: its DEM
+- **What a z6 tile keeps for its later runs** is on the NAS (`cache/`), shared by every Mac: its DEM
   samples (`dem-units/`) and canopy and view results (`scenic-units/`, docs/steps.md §6). A z6 tile's build
   folders go once it's built.
 
@@ -74,13 +74,13 @@ processes held together last time, else about ten times its extract, never under
 floor (docs/pool.md §7.2). A member's status is `state/helpers/<host>.json`, the lead's the heartbeat
 (`state/status.json`).
 
-**The Mac mini (M6, 32 GB, 1 TB)** is always on, at home and headless: a member of the pool like the
-M1, with room for more at once (build memory 28 GB by default). It also hosts the task board
+**The Mac mini (M6, 32 GB, 1 TB)** is always on, at home and headless: a member of the pool like any
+other Mac, with room for more at once (build memory 28 GB by default). It also hosts the task board
 (`tools/taskboard`, http://mac-mini-de-brandon:8077, its LaunchAgent and nightly NAS backup from
 `tools/taskboard/launchd/install.sh`) and is the map's address for the phone, the iPad and devices
 away from home: https://map.brandontsang.net (Devices). It publishes the app (`ssh m6 'cd
 ~/projets/scenic-roads && tools/app/publish.sh'`, docs/building.md, App publishing), its tests
-still sent to the M4 when it's reachable (`tools/app/remote-tests.sh`). Its toolchain: brew's mise
+run on the test Mac (`SCENIC_TEST_HOST`, default `m6`: itself, so locally; `tools/app/remote-tests.sh`). Its toolchain: brew's mise
 and rustup (`/opt/homebrew/bin`, `~/.cargo/bin`, which publish.sh puts on the PATH itself) and,
 from `mise install` in the checkout, everything mise.toml and rust-toolchain.toml pin (Rust with
 its wasm32-wasip1 target, the wasi-sdk, Node, pnpm, uv, cargo-nextest, CMake); Xcode for swiftc

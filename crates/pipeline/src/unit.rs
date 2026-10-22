@@ -40,7 +40,7 @@ fn dem_in_box(keys: &[u64], elev: &[f32], srcs: &[u8], b: [i32; 4], out: &mut Ve
     }
 }
 
-/// The per-z6 tile DEM samples (`dem-units/<unit>.<box>.dem`, in the NAS's `cache/` so both Macs'
+/// The per-z6 tile DEM samples (`dem-units/<unit>.<box>.dem`, in the NAS's `cache/` so each Mac's
 /// z6 tiles read them; `Tools::dem_units`): one file per z6 tile, replaced after each of its runs (written
 /// whole, then renamed; the old one deleted after): "RDDEM002", the count (u64), the box of its
 /// points (4 × i32, E7), what it was sampled under (4 × u32: `DemValidity`), then the
@@ -185,7 +185,7 @@ fn dem_file(name: &str) -> Option<(String, Option<[i32; 4]>)> {
 }
 
 /// Moves what z6 tiles kept in this Mac's own cache (`dem-units/`, `scenic-units/`) to the shared one
-/// (`Tools::shared`), once: both Macs' z6 tiles read them there. Two `unit` jobs on one Mac may do this
+/// (`Tools::shared`), once: each Mac's z6 tiles read them there. Two `unit` jobs on one Mac may do this
 /// at once (crate::agent: a Mac's jobs at once): what the other moved first is passed over.
 pub fn move_kept_to_shared(cache: &Path, shared: &Path) -> Result<usize> {
     let gone = |e: &std::io::Error| e.kind() == std::io::ErrorKind::NotFound;
@@ -702,7 +702,7 @@ pub struct Tools {
     /// (`canopy/`) and the declared elevation datasets' kept files (`fetched/<dataset>/`: FABDEM's tiles); the local caches fill from it. None: local
     /// caches alone.
     pub sources: Option<PathBuf>,
-    /// The NAS's `cache/`, where what a z6 tile keeps for its later runs is shared by both Macs: its DEM
+    /// The NAS's `cache/`, where what a z6 tile keeps for its later runs is shared by every Mac: its DEM
     /// samples (`dem-units/`) and scenic results (`scenic-units/`). None: the local cache.
     pub shared: Option<PathBuf>,
     /// The canopy squares read where they lie (the NAS's `sources/canopy/`), for a worker that

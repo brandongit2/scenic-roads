@@ -871,7 +871,7 @@ fn pack_local_to(
         return Ok(0);
     }
     let mut p = Packer::open(dir, store, root, handoff)?;
-    // (A helper keeps none: the M1's disk is small, and the NAS has them.)
+    // (A helper keeps none: a member's disk is small, and the NAS has them.)
     p.keep = keep && p.handoff.is_none();
     let mut packed = Vec::new();
     let (n, mut said) = (loose.len() as u64, std::time::Instant::now());
