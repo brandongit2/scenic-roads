@@ -1441,6 +1441,14 @@ fn main() -> Result<()> {
                         &serde_json::json!({ "clear": clear, "step": rest.first(), "target": rest.get(1) }),
                     )?;
                     anyhow::ensure!(code == 200, "the lead's coordinator answered {code} (an older app?)");
+                    if clear {
+                        // (What the running coordinator took out of its memory: the clear reached it.)
+                        println!(
+                            "the lead's coordinator cleared {} floor(s) and {} disk floor(s)",
+                            v["cleared"]["floors"].as_u64().unwrap_or(0),
+                            v["cleared"]["disks"].as_u64().unwrap_or(0)
+                        );
+                    }
                     let floors: std::collections::BTreeMap<String, pipeline::agent::memguard::Floor> =
                         serde_json::from_value(v["floors"].clone())?;
                     if floors.is_empty() {

@@ -137,6 +137,9 @@ pub fn cost_version(step: &str) -> u32 {
         // (1: the World Heritage outlines clipped from the pass's `whs` set, not the filtered
         // planet; 0's floor, 21.9 GB, no run with its memory timed came near: 6.4 GB, the clip's 4 GB.)
         "heritage" => 1,
+        // (1: the coverage asked by distance, never grown, task #493: 0's floors, 43 GB from
+        // buffering the regions' outlines, no run since came near: 0.2 GB.)
+        "bld-fetch" => 1,
         "trees-lo" | "terrain-lo" | "slope-lo" => 1,
         // (A grid lined up with no overview sampled from one askew, task #433: the assemblies
         // that read tens of GB read a hundredth of it.)
@@ -3616,9 +3619,12 @@ fn route(
             // of its `target`) first when asked: `scenic pool floors`.
             let b: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
             let mut s = shared.lock().unwrap();
+            let (n, d) = (s.floors.len(), s.disks.len());
             let floors =
                 floors_cleared(&mut s, b["clear"].as_bool() == Some(true), b["step"].as_str(), b["target"].as_str());
-            Ok((200, serde_json::json!({ "floors": floors, "disks": s.disks })))
+            // (What the clear took out of this coordinator's memory, for the CLI to say.)
+            let cleared = serde_json::json!({ "floors": n - floors.len(), "disks": d - s.disks.len() });
+            Ok((200, serde_json::json!({ "floors": floors, "disks": s.disks, "cleared": cleared })))
         }
         "/work/timings" => {
             // The runs' timings kept (crate::timings), the last `last` of each kind (or of `kind`):
@@ -5545,6 +5551,32 @@ mod tests {
         );
         assert!(c.floors(true, Some("peaks"), None).keys().all(|k| !k.starts_with("peaks ")));
         assert!(c.floors(true, None, None).is_empty());
+    }
+
+    #[test]
+    fn a_clear_over_http_changes_what_the_running_coordinator_sizes_and_holds() {
+        let (_d, c, w) = start();
+        c.offer(
+            "p",
+            vec![Offer { step: "peaks".into(), targets: vec![("6/1/1".into(), "k".into(), 2500)], job: None }],
+        );
+        c.add_floors(&[(cost_key("peaks", "6/1/1"), Floor { mb: 43_000, alone: true, v: 0 })]);
+        assert_eq!(c.peak("peaks", "6/1/1"), Some(43_000));
+        assert!(c.holding_floor("peaks", "6/1/1").is_some());
+        let (code, v) = w.post_json("/work/floors", &serde_json::json!({ "clear": true, "step": "peaks" })).unwrap();
+        assert_eq!(code, 200);
+        assert_eq!((v["cleared"]["floors"].as_u64(), v["cleared"]["disks"].as_u64()), (Some(1), Some(0)), "{v}");
+        assert_eq!(c.holding_floor("peaks", "6/1/1"), None, "the floor held it off a Mac still");
+        assert!(c.peak("peaks", "6/1/1").unwrap() < 43_000, "and sized it: {:?}", c.peak("peaks", "6/1/1"));
+    }
+
+    #[test]
+    fn a_floor_of_before_a_steps_fix_neither_holds_nor_sizes_it() {
+        let (_d, c, _w) = start();
+        assert_eq!(cost_version("bld-fetch"), 1);
+        c.add_floors(&[(cost_key("bld-fetch", "6/1/1"), Floor { mb: 43_000, alone: true, v: 0 })]);
+        assert_eq!(c.holding_floor("bld-fetch", "6/1/1"), None);
+        assert!(c.peak("bld-fetch", "6/1/1").is_none_or(|mb| mb < 43_000));
     }
 
     #[test]

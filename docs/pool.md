@@ -662,7 +662,10 @@ not counted as a failure, no floor learned) when it resumes and the jobs no long
   floor exceeds this Mac's limit goes to a Mac with room; past every Mac's, it waits; for a lead-only
   step, the status names a member with room, for the owner to hand the lead to by hand
   (`scenic lead give`) if wanted. `scenic pool floors [--clear
-  [<step> [<target>]]]` lists or clears them.
+  [<step> [<target>]]]` lists or clears them: the clear is a request to the running lead's coordinator
+  (`/work/floors`), which takes them out of its memory, its files and its next state at once (no
+  restart), and the command says how many floors and disk floors it cleared. A floor learned before a
+  step's fix stops counting once the step's `cost_version` is raised for the fix (`bld-fetch` 1, task #557).
 
 ### 7.3 Results: the journal
 
