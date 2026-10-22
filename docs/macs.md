@@ -75,7 +75,10 @@ floor (docs/pool.md §7.2). A member's status is `state/helpers/<host>.json`, th
 (`state/status.json`).
 
 **The Mac mini (M6, 32 GB, 1 TB)** is always on, at home and headless: a member of the pool like the
-M1, with room for more at once (build memory 28 GB by default).
+M1, with room for more at once (build memory 28 GB by default). It also hosts the task board
+(`tools/taskboard`, http://Mac-mini.local:8077, its LaunchAgent and nightly NAS backup from
+`tools/taskboard/launchd/install.sh`) and is the map's address for the phone, the iPad and devices
+away from home.
 
 **A new (headless) Mac**, in this order:
 1. `sudo scutil --set LocalHostName <name>` first: the pool's identity (a member's status file is
@@ -178,7 +181,9 @@ M1, with room for more at once (build memory 28 GB by default).
 - **Pack indexes** are cached as they're read (`idx/`), for offline starts.
 - `/api/downloads` gives the panel its state; the menu bar says what's downloaded.
 
-**Devices: an iPhone, an iPad.** Either Mac's map opens on them over the tailnet.
+**Devices: an iPhone, an iPad.** Any Mac's map opens on them over the tailnet; the address they keep
+is the M6's (always on), its HTTPS from `tailscale serve` on the M6. Each Mac keeps its own map
+server for itself.
 - **Who's answered:** the server answers only this Mac, its LAN and the tailnet, also through
   `tailscale serve` (`pipeline::net::reached`); anything else is 403, Funnel included. No key.
 - **A page elsewhere is never the map's:** the `Host` must be an address, localhost, or a name only a

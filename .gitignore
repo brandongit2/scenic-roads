@@ -30,3 +30,6 @@ __pycache__/
 /.claude/health-stamp
 /.claude/sweep-keep
 /docs/diagram/pipeline.html
+/tools/taskboard/*.db
+/tools/taskboard/*.db-wal
+/tools/taskboard/*.db-shm
