@@ -45,8 +45,7 @@
 //! After the build (`trim`): once the build has nothing left to build (the lead's forecast:
 //! no work, nothing to publish), jobs running here or not, the agent trims those caches by the same
 //! rules, once (again only after a job has run here since), only while the disk has under the room
-//! target free (`trim_goal`: the owner's, else `TRIM_KEEPS_FREE`, 150 GB, what the map's mirror
-//! wants), and only as far as that, the least recently used first: a Mac with room keeps what the
+//! target free (the owner's, plus the jobs' reservations; none set: nothing goes), and only as far as that, the least recently used first: a Mac with room keeps what the
 //! next build would copy again (the mini's ~100 GB), the lead's canopy squares always (`spare`:
 //! every pass's z3 tiles read them again and they never change).
 //!
@@ -407,23 +406,8 @@ pub fn clear_answered(home: &Path) {
     std::fs::remove_file(home.join(CLEAR_TAKEN)).ok();
 }
 
-/// The free space a trim after the build keeps when the owner has set no room target (bytes): the
-/// room the offline map's copy wants before it mirrors anything. A Mac with more free keeps its caches.
-pub const TRIM_KEEPS_FREE: u64 = 150 << 30;
-
-/// The free space a trim after the build frees toward (bytes): the owner's room target `target` (0:
-/// none) and the jobs' reservations past it as `Agent::goal` says (`goal`), else `keeps`
-/// (`TRIM_KEEPS_FREE`).
-pub fn trim_goal(goal: u64, keeps: u64) -> u64 {
-    if goal > 0 {
-        goal
-    } else {
-        keeps
-    }
-}
-
 /// Trims the cheap caches at `cache` once the build is done (the module's doc, After the build):
-/// only when the disk has under `goal` free (`trim_goal`), and then only as far as that, by
+/// only when the disk has under `goal` free (0: never), and then only as far as that, by
 /// room-making's rules and order (the least recently used first, each file once the NAS's `sources`
 /// has it), but those `spare` keeps (the lead's canopy squares). A Mac with room keeps them all. What
 /// it freed, and when the goal isn't reached, what stays but the spared.
@@ -1697,13 +1681,10 @@ mod tests {
         assert!(c.join("chm10/2.tif").exists() && c.join("chm10/3.tif").exists());
         // Short of more than the caches hold: all go but the spared, which count as kept off the goal.
         let f = trim_with(c, nas, &|p| p.ends_with("3.tif"), 1 << 40, &disk).unwrap();
-        assert_eq!(f.bytes(), 1 << 20);
+        assert_eq!((f.bytes(), f.left), (1 << 20, 0));
         assert!(c.join("chm10/3.tif").exists());
-    }
-
-    #[test]
-    fn a_trim_goal_is_the_owners_target_else_the_maps_reserve() {
-        assert_eq!((trim_goal(0, TRIM_KEEPS_FREE), trim_goal(40 << 30, TRIM_KEEPS_FREE)), (TRIM_KEEPS_FREE, 40 << 30));
+        // No goal (no room target): nothing goes.
+        assert_eq!(trim_with(c, nas, &|_| false, 0, &disk).unwrap().bytes(), 0);
     }
 
     #[test]

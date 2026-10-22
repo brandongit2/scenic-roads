@@ -1261,8 +1261,6 @@ pub struct Agent {
     /// jobs after it wait without making room again, until a job ends, the target changes or ten
     /// minutes pass.
     room_target: Option<room::Target>,
-    /// The free space a trim after the build keeps when no room target is set (room::trim_goal; a test's own).
-    trim_keeps: u64,
     /// The owner's in-use share (share::Share: the cores kept free of its jobs while they use the
     /// Mac), read each loop from the agent's folder.
     in_use_share: Option<share::Share>,
@@ -1747,7 +1745,6 @@ impl Agent {
             free_set: None,
             grace: DRAIN_GRACE,
             room_target: None,
-            trim_keeps: room::TRIM_KEEPS_FREE,
             in_use_share: None,
             build_memory: None,
             toward_tried: None,
@@ -5851,7 +5848,7 @@ impl Agent {
         }) {
             // (The lead keeps its canopy squares: every pass's areas read them again.)
             let (squares, helper) = (cache.join("chm10"), self.o.helper);
-            let keep = room::trim_goal(self.goal(), self.trim_keeps);
+            let keep = self.goal();
             self.caches_start(None, move || room::trim(&cache, &s, &|p| !helper && p.starts_with(&squares), keep));
         }
         // (One loop at a time, `--once`: waited for, so its heartbeat says what it did.)
