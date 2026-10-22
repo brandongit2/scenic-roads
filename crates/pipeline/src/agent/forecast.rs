@@ -679,7 +679,7 @@ struct Sim {
     done: bool,
     /// The jobs the scheduler granted in the run's first `GRANTS_S` (`Forecast::grants`).
     grants: Vec<Grant>,
-    /// Cut at its deadline before every item was placed (`forecast_by`).
+    /// Cut at its time budget before every item was placed (`forecast_by`).
     cut: bool,
 }
 
@@ -1039,8 +1039,9 @@ fn mac_of(m: &Machine) -> String {
 /// its targets one after another at the lane's pace, its lease out until it ends. Refused, a lane
 /// asks again once a job ends (or `ASK_AGAIN_S`). The pages' lane takes the shared steps' targets
 /// alone, as tasks.
-/// Cut at `deadline` (`Sim::cut`).
-fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64, deadline: Instant) -> Sim {
+/// Cut once its thread has computed `budget` (`Sim::cut`, `thread_cpu`).
+fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64, budget: Duration) -> Sim {
+    let cpu0 = thread_cpu();
     let (mut items, region_items) = items(inp);
     for it in &mut items {
         it.cost.secs = scale(&it.cost).max(1.0);
@@ -1155,7 +1156,7 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64, deadline: Instant) -> Sim {
         if guard > 40 * (items.len() + 10) * n.max(1) || unassigned == 0 {
             break;
         }
-        if guard.is_multiple_of(32) && Instant::now() >= deadline {
+        if guard.is_multiple_of(32) && thread_cpu().saturating_sub(cpu0) >= budget {
             cut = true;
             break;
         }
@@ -1408,11 +1409,21 @@ fn offers(items: &[Item], order: &[Vec<usize>], ask: &Ask) -> Vec<Offer> {
 /// The key the run's targets are offered under (no work of the run is done under it yet).
 const KEY: &str = "forecast";
 
-/// How long a forecast's three runs may take together (wall time): past it, each run stops where
-/// it is (`Sim::cut`) and the forecast is partial (`Forecast::partial`). It runs off the agent's
-/// loop (crate::agent's `start_forecast`); this bounds a run at a scale it was never measured at
-/// (task #544).
+/// How long each of a forecast's three runs may compute (its own thread's CPU time, not wall
+/// time): past it, the run stops where it is (`Sim::cut`) and the forecast is partial
+/// (`Forecast::partial`). It runs off the agent's loop (crate::agent's `start_forecast`); this bounds
+/// a run at a scale it was never measured at (task #544). CPU time, task #584: at the utility QoS a
+/// loaded Mac starves the runs (the mini at load 34: 4 s of CPU took 15 s of wall), and a wall-time
+/// cut then hid the finish of an input no bigger than usual. A run at live scale computes 1-4 s.
 pub const BUDGET: Duration = Duration::from_secs(15);
+
+/// The calling thread's CPU time so far.
+fn thread_cpu() -> Duration {
+    let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: writes only `t`.
+    unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) };
+    Duration::new(t.tv_sec as u64, t.tv_nsec as u32)
+}
 
 /// The calling thread at the utility QoS (macOS): a forecast's runs give way to the jobs and the
 /// owner's own work. Elsewhere, nothing.
@@ -1426,23 +1437,23 @@ pub fn low_priority() {
 
 /// The forecast for `inp`, within `BUDGET`.
 pub fn forecast(inp: &Input) -> Forecast {
-    forecast_by(inp, Instant::now() + BUDGET)
+    forecast_by(inp, BUDGET)
 }
 
-/// The forecast for `inp`, its runs cut at `deadline`.
-pub fn forecast_by(inp: &Input, deadline: Instant) -> Forecast {
+/// The forecast for `inp`, each run cut once it has computed `budget`.
+pub fn forecast_by(inp: &Input, budget: Duration) -> Forecast {
     let now = inp.now as f64;
     // (The three runs side by side, each on a thread of its own.)
     let (expected, soon, late) = std::thread::scope(|s| {
         let soon = s.spawn(|| {
             low_priority();
-            run(inp, &|c| c.secs * if c.known { 0.95 } else { 0.75 }, deadline)
+            run(inp, &|c| c.secs * if c.known { 0.95 } else { 0.75 }, budget)
         });
         let late = s.spawn(|| {
             low_priority();
-            run(inp, &|c| c.secs * if c.known { 1.15 } else { 1.6 }, deadline)
+            run(inp, &|c| c.secs * if c.known { 1.15 } else { 1.6 }, budget)
         });
-        let expected = run(inp, &|c| c.secs, deadline);
+        let expected = run(inp, &|c| c.secs, budget);
         let join =
             |h: std::thread::ScopedJoinHandle<'_, Sim>| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
         (expected, join(soon), join(late))
@@ -1727,9 +1738,9 @@ mod tests {
         }
     }
 
-    /// A deadline no test's run meets.
-    fn far() -> Instant {
-        Instant::now() + Duration::from_secs(3600)
+    /// A budget no test's run meets.
+    fn far() -> Duration {
+        Duration::from_secs(3600)
     }
 
     fn cost(step: &str, _t: &str) -> Cost {
@@ -3133,16 +3144,15 @@ mod tests {
         assert_eq!(s["ipad"], (0.5, false));
     }
 
-    /// At live scale (task #544: the scheduler's run of 21 Oct's lead took a quarter hour): tens
-    /// of thousands of targets across regions and chains, twenty lanes on two Macs, the
-    /// scheduler's state with thousands of measures (their NAS rates too), the NAS budget on and
-    /// leases out. The forecast runs whole in bounded time, and within its budget.
-    #[test]
-    fn a_live_scale_forecast_runs_whole_and_bounded() {
+    /// An input at live scale: `n_regions` regions of 15 z6 tiles each (their units, slope, trees,
+    /// packs), `n_chain` targets in each of four chains, twenty lanes on two Macs, the scheduler's
+    /// state with measures for a sixth of the regions' targets (their NAS rates too), the NAS
+    /// budget on and leases out.
+    fn live_scale_input(n_regions: usize, n_chain: usize) -> Input<'static> {
         use crate::coord::sched::{Asked, Leased};
         let z6 = |i: usize| format!("6/{}/{}", i / 64, i % 64);
         let z8 = |i: usize, j: usize| format!("8/{i}/{j}");
-        let regions: Vec<RegionLeft> = (0..400)
+        let regions: Vec<RegionLeft> = (0..n_regions)
             .map(|r| {
                 let terrain: Vec<String> = (0..15).map(|j| z6(r * 15 + j)).collect();
                 let units: Vec<String> = terrain[..3].to_vec();
@@ -3192,7 +3202,7 @@ mod tests {
         let chains: Vec<Job> = ["pois", "bldtiles", "depth", "peaks"]
             .iter()
             .flat_map(|s| {
-                (0..1500).map(move |i| (s.to_string(), z6(i), Cost { secs: 90.0, known: true, peak_mb: 700 }))
+                (0..n_chain).map(move |i| (s.to_string(), z6(i), Cost { secs: 90.0, known: true, peak_mb: 700 }))
             })
             .collect();
         let ask = |w: &str, mem_mb: u64, cores: u32| Asked {
@@ -3251,7 +3261,7 @@ mod tests {
                 .collect()
         };
         let machines: Vec<Machine> = lanes("m4", 12, true).into_iter().chain(lanes("m1", 8, false)).collect();
-        let inp = Input {
+        Input {
             now: 1_792_605_430,
             before: Vec::new(),
             costs: cost_table(&regions, &cost),
@@ -3268,23 +3278,48 @@ mod tests {
             release: Vec::new(),
             held: BTreeMap::new(),
             pace: None,
-        };
+        }
+    }
+
+    /// At live scale (task #544: the scheduler's run of 21 Oct's lead took a quarter hour): tens
+    /// of thousands of targets across regions and chains, twenty lanes on two Macs, the
+    /// scheduler's state with thousands of measures (their NAS rates too), the NAS budget on and
+    /// leases out. The forecast runs whole in bounded time; past its budget, cut and said so.
+    #[test]
+    fn a_live_scale_forecast_runs_whole_and_bounded() {
+        let inp = live_scale_input(400, 1500);
         let n = items(&inp).0.len();
         assert!(n > 30_000, "{n} targets");
         // (Whole, its time bounded well past what it takes (12.5 s in a release build on the M4,
         // its three runs side by side; 21 Oct's code took over 200 s at a tenth of the scale) and
         // short of the regression's.)
         let t = Instant::now();
-        let f = forecast_by(&inp, t + Duration::from_secs(600));
+        let f = forecast_by(&inp, Duration::from_secs(600));
         let took = t.elapsed();
         eprintln!("live scale, {n} targets: {} ms", took.as_millis());
         assert!(!f.partial && f.done_at.is_some(), "{:?}", f.why);
         assert!(took < Duration::from_secs(90), "{took:?}");
-        // Within its budget: cut there, partial and said so.
+        // Past its budget: cut there, partial and said so.
+        let f = forecast_by(&inp, Duration::from_millis(50));
+        assert!(f.partial && f.done_at.is_none(), "{:?}", f.why);
+    }
+
+    /// At 22 Oct's live scale (134 regions, about 4,600 chain targets): whole within its budget.
+    /// The budget is each run's CPU time (task #584), so a Mac whose cores are all busy, starving
+    /// the utility QoS, slows the runs but cuts them no sooner: a thread waiting counts nothing.
+    #[test]
+    fn a_live_forecast_is_whole_within_its_budget_however_busy_the_mac() {
+        let inp = live_scale_input(134, 1150);
+        // (The test build computes ~4x slower than the app's, release: its budget so much longer.
+        // Release, on the M1 at load 140: 48 s of wall, whole.)
+        let budget = if cfg!(debug_assertions) { BUDGET * 4 } else { BUDGET };
         let t = Instant::now();
-        let f = forecast(&inp);
-        assert!(t.elapsed() < BUDGET + Duration::from_secs(10), "{:?}", t.elapsed());
-        assert!(f.done_at.is_some() || f.partial, "{:?}", f.why);
+        let f = forecast_by(&inp, budget);
+        eprintln!("22 Oct's live scale: {} ms", t.elapsed().as_millis());
+        assert!(!f.partial && f.done_at.is_some(), "{:?}", f.why);
+        let cpu0 = thread_cpu();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(thread_cpu() - cpu0 < Duration::from_millis(50), "a wait is no CPU time");
     }
 
     /// A recorded forecast (SCENIC_FORECAST_RECORD: a forecast-input.json) timed. For profiling at live scale (unset: nothing).
@@ -3296,7 +3331,7 @@ mod tests {
         let (items, _) = items(&r.input);
         eprintln!("items {}, machines {}", items.len(), r.input.machines.len());
         let t = Instant::now();
-        let f = forecast_by(&r.input, Instant::now() + Duration::from_secs(limit));
+        let f = forecast_by(&r.input, Duration::from_secs(limit));
         eprintln!("lead: {} ms, partial {}, done_at {:?}", t.elapsed().as_millis(), f.partial, f.done_at);
     }
 }

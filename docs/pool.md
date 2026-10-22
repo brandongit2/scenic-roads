@@ -637,7 +637,9 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
 - **The forecast runs off the loop** (task #544): the lead makes its input on the loop and runs it
   on a thread of its own (`Agent::start_forecast`); the status keeps the last one done, so reaping,
   starting jobs and writing the status never wait on it. Its three runs go side by side (three
-  threads, each at the utility QoS: `forecast::low_priority`), cut at `forecast::BUDGET` (15 s): one
+  threads, each at the utility QoS: `forecast::low_priority`), each cut once it has computed
+  `forecast::BUDGET` (15 s of its thread's CPU time, not wall time, #584: a loaded Mac starves
+  utility threads, 4 s of CPU took 15 s on the mini at load 34; a live run computes 1-4 s): one
   cut is `partial`, its `why` says so, no finish shown, and the build page marks its lanes and next
   jobs partial. On 21 Oct's live input (4,155 targets, 20 lanes) it took 3.7 s (205 s before #544).
 
