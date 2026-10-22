@@ -6240,6 +6240,77 @@ mod tests {
         assert!(c.ask_own(&a, &BTreeSet::new()).is_some(), "the first ended: the second goes");
     }
 
+    /// Task #552 (22 Oct, the lead: 52 units aged an hour, every other step "waiting for room in
+    /// the NAS budget", the lead idle while two members ran units back to back): a step granted
+    /// target by target doesn't keep the aged reservation for itself, each grant handing it to its
+    /// next target. Its other waits restart with each of its grants, so the next oldest, the lead's
+    /// own job, is held room for: a member's next unit waits, and the lead's job goes.
+    #[test]
+    fn a_step_granted_one_by_one_doesnt_keep_the_reservation() {
+        let (_d, c, w, clock) = every((0, 0));
+        let limits =
+            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
+        {
+            let mut s = c.shared.lock().unwrap();
+            (s.nas, s.nas_own) = (Some(limits), Some(limits));
+        }
+        let cost = |step: &str, bytes: u64| Cost {
+            peak_mb: 500,
+            secs: 600,
+            worker: None,
+            v: cost_version(step),
+            sizes: [("threads".to_string(), 1), ("bytes".to_string(), bytes)].into(),
+            ..Default::default()
+        };
+        packable(&c, "slope", 6, Some(1));
+        for i in 1..=6 {
+            // (40 MB/s: 400 of the NAS each.)
+            c.add_costs_by(&[(cost_key("slope", &format!("6/1/{i}")), cost("slope", 24_000_000_000))], "m1");
+        }
+        let mut offers = c.shared.lock().unwrap().offers.clone();
+        packable(&c, "rail", 1, Some(1));
+        // (30 MB/s: 300.)
+        c.add_costs_by(&[(cost_key("rail", "6/1/1"), cost("rail", 18_000_000_000))], "m4");
+        offers.push(Offer {
+            step: "rail".into(),
+            targets: vec![("6/1/1".into(), "k 6/1/1".into(), 0)],
+            job: Some("rail 6/1/1".into()),
+        });
+        c.offer("p", offers);
+        let w2 = client::Client::at(c.contact.urls.clone(), c.contact.token.clone(), "m2");
+        let by = |n: &str| if n == "m1" { &w } else { &w2 };
+        let m = |n: &str| Ask { want: 1, ..every_ask(n, "slope", 64_000, 100_000) };
+        let one = |n: &str| all_granted(by(n), &m(n)).into_iter().flatten().collect::<Vec<_>>();
+        let lease_of = |n: &str| {
+            let s = c.shared.lock().unwrap();
+            s.leases.all(s.now()).iter().filter(|l| l.worker == n).map(|l| l.id).max().unwrap()
+        };
+        assert_eq!(one("m1"), ["6/1/1"]);
+        assert_eq!(one("m2"), ["6/1/2"]);
+        // (800 leased: the slope's next held back, then the lead's rail.)
+        assert!(one("m1").is_empty());
+        clock.advance(Duration::from_secs(1));
+        let lead = Ask { want: 1, can: vec!["rail".into()], ..every_ask("m4", "rail", 64_000, 100_000) };
+        assert!(c.ask_own(&lead, &BTreeSet::new()).is_none(), "800 + 300: past the whole");
+        // (Aged, the leases kept alive, the waits passed over again lately.)
+        for _ in 0..20 {
+            clock.advance(crate::budget::nas::OWN_AGE / 20);
+            for n in ["m1", "m2"] {
+                assert!(by(n).beat(lease_of(n), None).unwrap());
+            }
+        }
+        assert!(one("m1").is_empty());
+        assert!(c.ask_own(&lead, &BTreeSet::new()).is_none());
+        // m1's ends: the slope's oldest wait goes (400 + 400).
+        w.give_back(lease_of("m1"), "done").unwrap();
+        assert_eq!(one("m1").len(), 1, "the oldest wait goes");
+        // m2's ends: the slope just took room, so the rail's wait is the oldest now: room held for
+        // it, m2's next slope waits (400 + 400 + 300 past the whole), and the lead's rail goes.
+        w2.give_back(lease_of("m2"), "done").unwrap();
+        assert!(one("m2").is_empty(), "room held for the lead's aged rail");
+        assert!(c.ask_own(&lead, &BTreeSet::new()).is_some(), "the lead's aged rail goes");
+    }
+
     /// Task #451 (20 Oct: GC beside two depth-lo jobs, the NAS at 34 % IO wait, all three stalled):
     /// the clean-up weighs its metadata work (folder entries listed, files statted and deleted over
     /// the NAS's probed rates for them), starts only on a quiet NAS (unmeasured, alone; measured,
@@ -6847,7 +6918,7 @@ mod tests {
     /// it, nor it beside a measured job; a cold slope job takes the packed share.
     #[test]
     fn a_cold_start_counts_the_whole_mac_unless_its_step_honours_its_threads() {
-        assert!(sched::honours_threads("slope") && !sched::honours_threads("terrain"));
+        assert!(sched::THREADS_HONOURED.contains(&"slope") && !sched::THREADS_HONOURED.contains(&"terrain"));
         let a =
             Ask { want: 4, can: vec!["trees".into(), "terrain".into()], ..every_ask("m1", "trees", 64_000, 100_000) };
         let cold = Offer { step: "terrain".into(), targets: vec![("6/2/2".into(), "k".into(), 0)], job: None };

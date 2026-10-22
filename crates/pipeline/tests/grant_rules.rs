@@ -17,7 +17,6 @@ const RULES: &[&str] = &[
     "fits_quiet(",
     "provisional_mb(",
     "packed_share(",
-    "honours_threads(",
     "outside_cores(",
     "ask_cores(",
     "every::grants(",

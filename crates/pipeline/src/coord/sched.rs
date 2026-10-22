@@ -159,12 +159,7 @@ pub(crate) struct Need {
 /// the agent sizes (`RAYON_NUM_THREADS`, crate::agent::jobs); `bld-fetch`: its downloads bounded
 /// by its `--jobs` (3 by default, at most 4), waiting on the network; `terrain-fine`: its base
 /// tiles sampled on the rayon pool (crate::terrain_fine).
-const THREADS_HONOURED: &[&str] = &["slope", "bld-fetch", "terrain-fine"];
-
-/// Whether `step` honours the threads it's granted (`THREADS_HONOURED`).
-pub(super) fn honours_threads(step: &str) -> bool {
-    THREADS_HONOURED.contains(&step)
-}
+pub(super) const THREADS_HONOURED: &[&str] = &["slope", "bld-fetch", "terrain-fine"];
 
 /// A cold start's provisional memory (MB) from the most its step declares or it was offered with,
 /// `mb`: times 3/2 (task #499; `Shared::provisional`, the forecast's packing too).
@@ -815,9 +810,37 @@ impl Sched {
         );
         self.leases.set_threads(lease, threads);
         {
+            // (Its step's other waits weighing no more than this job restart now: the step isn't
+            // starved of room for them, it took it. Else a step granted target by target in its
+            // waits' order holds the aged reservation for good, each grant handing it to its next
+            // target, and every other step waits behind it (task #552: 52 units aged an hour kept
+            // the lead idle while the members ran them back to back).)
+            // (Weighed by the NAS's own limits (`nas_own`), whoever asked: the lead's own aged waits
+            // restart on a member's grant too.)
+            // (Only its aged ones: the others hold no room yet, and the step's next grant restarts
+            // them once they've aged. Its own range of the waits: a grant doesn't weigh them all.)
+            let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
             let mut g = self.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
-            for t in &pick {
-                g.remove(&(o.step.clone(), t.0.clone()));
+            for t in &ts {
+                g.remove(&(o.step.clone(), t.clone()));
+            }
+            let aged_by = clock.now.checked_sub(crate::budget::nas::OWN_AGE);
+            let from = (o.step.clone(), String::new());
+            let aged: Vec<String> = g
+                .range(from..)
+                .take_while(|((st, _), _)| *st == o.step)
+                .filter(|(_, (since, _))| aged_by.is_some_and(|a| *since <= a))
+                .map(|((_, t), _)| t.clone())
+                .collect();
+            if !aged.is_empty() {
+                if let Some((nw, ..)) = self.nas_room(clock.now, true) {
+                    let w = Self::job_nas(&nw, &o.step, &ts).0;
+                    for t in aged.into_iter().filter(|t| nw.weight(&o.step, t) <= w) {
+                        if let Some(e) = g.get_mut(&(o.step.clone(), t)) {
+                            e.0 = clock.now;
+                        }
+                    }
+                }
             }
             self.quiet_since.lock().unwrap_or_else(|e| e.into_inner()).remove(&o.step);
         }
