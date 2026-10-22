@@ -251,15 +251,22 @@ final class BuildService {
     /// Launchers of this app (or of a copy an update left aside) other than the job's own, ended
     /// (SIGTERM to each exact pid: it passes it on to its agent, which leaves its jobs for the next,
     /// and exits). Unregistering doesn't always end the job's process (the M1, 22 Oct): left, its
-    /// agent holds the lock under no registered job. Only while launchd names the job's own (a
-    /// launcher it is starting now never counted stale). The agent ends such a holder too
-    /// (crates/pipeline/src/agent/takeover.rs); this ends the launcher, which would start it again.
+    /// agent holds the lock under no registered job. launchd's state read afresh first, and only
+    /// launchers that started before the job's own (a launcher launchd has just started is never
+    /// one). The agent ends such a holder too (crates/pipeline/src/agent/takeover.rs); this ends
+    /// the launcher, which would start it again. Each pid logged once.
     func endStaleLaunchers() {
-        guard case .running(let job) = state else { return }
-        for (pid, exe) in launcherProcesses() where pid != Int32(job) && kill(pid, SIGTERM) == 0 {
-            updateLog("ended a stale launcher (pid \(pid), \(exe)): not the build service's (pid \(job))")
+        refresh()
+        guard case .running(let job) = state, let jobStart = processStart(Int32(job)) else { return }
+        let found = launcherProcesses().compactMap { l in processStart(l.0).map { (l.0, $0, l.1) } }
+        for pid in staleLaunchers(found.map { ($0.0, $0.1) }, job: (Int32(job), jobStart)) where kill(pid, SIGTERM) == 0 {
+            if endedLaunchers.insert(pid).inserted {
+                updateLog("ended a stale launcher (pid \(pid), \(found.first { $0.0 == pid }?.2 ?? "?")): not the build service's (pid \(job))")
+            }
         }
     }
+    /// The launchers `endStaleLaunchers` ended (logged once each).
+    var endedLaunchers = Set<Int32>()
 
     /// The running launchers of this app or of its copies left aside (.<name>.old-<pid>): pid and
     /// executable.
@@ -814,6 +821,10 @@ func selfTest(_ dir: String) -> Never {
     let s = sim(exitAfter: 0, worksFrom: 1, stray: true)
     check("a stray copy (which open would activate) ended before the open", s.ok && s.opens == 1 && s.log.contains { $0.contains("attempt 1: ended a stray copy") })
     check("no stray copy of a missing app", endStrayCopy("/nonexistent/Scenic.app") == nil)
+    // Stale launchers.
+    check("a launcher older than the job's: stale; the job's own and a newer one: not",
+          staleLaunchers([(10, 100), (20, 500), (30, 900)], job: (20, 500)) == [10])
+    check("this process's start read", processStart(getpid()).map { $0 > 0 } == true)
     // launchd's state.
     func load(_ f: String) -> String { (try? String(contentsOfFile: "\(dir)/launchctl-\(f).txt", encoding: .utf8)) ?? "" }
     let (running, lwcr, stopped) = (load("running"), load("lwcr"), load("stopped"))
@@ -841,6 +852,19 @@ func realPath(_ p: String) -> String? {
     guard let r = realpath(p, nil) else { return nil }
     defer { free(r) }
     return String(cString: r)
+}
+
+/// Of launchers (pid, start), the stale ones beside the job's own: not it, and started before it.
+func staleLaunchers(_ launchers: [(Int32, UInt64)], job: (Int32, UInt64)) -> [Int32] {
+    launchers.filter { $0.0 != job.0 && $0.1 < job.1 }.map { $0.0 }
+}
+
+/// When a process started (microseconds since the epoch), nil if it can't be read.
+func processStart(_ pid: Int32) -> UInt64? {
+    var info = proc_bsdinfo()
+    let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+    guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+    return info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec
 }
 
 /// Every process's pid.

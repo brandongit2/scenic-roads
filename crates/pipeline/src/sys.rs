@@ -74,12 +74,13 @@ pub fn process_start(pid: i32) -> Option<u64> {
 }
 
 /// A process as `process` reads it: its parent, when it started (microseconds since the epoch) and
-/// its executable's file name.
+/// its executable (its full path, and its file name).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Proc {
     pub pid: i32,
     pub ppid: i32,
     pub start_us: u64,
+    pub path: String,
     pub exe: String,
 }
 
@@ -106,6 +107,7 @@ pub fn process(pid: i32) -> Option<Proc> {
             ppid: info.pbi_ppid as i32,
             start_us: info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec,
             exe: path.rsplit('/').next().unwrap_or("").to_string(),
+            path: path.into_owned(),
         })
     }
     #[cfg(not(target_os = "macos"))]

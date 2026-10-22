@@ -8,7 +8,8 @@
 //! next agent (`Agent::hand_over_jobs`), which takes them over (`adopt_jobs`). This one waits for
 //! the lock (`WAIT`, past the stopping agent's own bounded waits) and goes on as the agent.
 //!
-//! An agent no launcher started (run by hand) ends nothing; nor does one whose holder's launcher
+//! An agent run by hand and detached (ppid 1) counts as an orphan and is ended too. An agent no
+//! launcher started (run by hand) ends nothing; nor does one whose holder's launcher
 //! started after its own (the newest launcher is the registered one: two launchers never take turns
 //! ending each other's agents).
 
@@ -23,20 +24,28 @@ const LAUNCHER: &str = "scenic-launcher";
 /// then the pool's thread (a minute at most) and a caches' task (a minute at most) are waited for.
 pub const WAIT: Duration = Duration::from_secs(150);
 
-/// Whom to end for the lock (a pid, and why), from this process's parent, the holder and the
-/// holder's parent; None: leave it (and fail as before).
-pub fn verdict(me_parent: Option<&Proc>, holder: &Proc, holder_parent: Option<&Proc>) -> Option<(i32, String)> {
+/// Whom to end for the lock (the process, and why), from this process's parent, the holder and the
+/// holder's parent; None: leave it (and fail as before). An older launcher counts only when it runs
+/// the same executable as this one's (the old login item's launcher and the app's never end each
+/// other's agents).
+pub fn verdict(me_parent: Option<&Proc>, holder: &Proc, holder_parent: Option<&Proc>) -> Option<(Proc, String)> {
     let mine = me_parent.filter(|p| p.exe == LAUNCHER)?;
     if holder.ppid == mine.pid {
         // (Its own earlier child, still ending: the launcher waits for it before starting another.)
         return None;
     }
     if holder.ppid == 1 {
-        return Some((holder.pid, format!("an orphan agent (pid {}, its launcher gone) holds the lock", holder.pid)));
+        return Some((
+            holder.clone(),
+            format!("an orphan agent (pid {}, its launcher gone) holds the lock", holder.pid),
+        ));
     }
-    let theirs = holder_parent.filter(|p| p.exe == LAUNCHER && p.pid == holder.ppid)?;
+    let theirs = holder_parent.filter(|p| p.pid == holder.ppid && p.path == mine.path)?;
     ((theirs.start_us, theirs.pid) < (mine.start_us, mine.pid)).then(|| {
-        (theirs.pid, format!("an agent (pid {}) of an older launcher (pid {}) holds the lock", holder.pid, theirs.pid))
+        (
+            theirs.clone(),
+            format!("an agent (pid {}) of an older launcher (pid {}) holds the lock", holder.pid, theirs.pid),
+        )
     })
 }
 
@@ -54,7 +63,12 @@ pub fn take_over(home: &Path, wait: Duration) -> anyhow::Result<Option<super::Ag
         return Ok(None);
     };
     let holder_parent = crate::sys::process(holder.ppid);
-    let Some((pid, why)) = verdict(me_parent.as_ref(), &holder, holder_parent.as_ref()) else { return Ok(None) };
+    let Some((target, why)) = verdict(me_parent.as_ref(), &holder, holder_parent.as_ref()) else { return Ok(None) };
+    let pid = target.pid;
+    // (Read again right before the signal: a pid freed and reused meanwhile is someone else's.)
+    if !same_process(&target, crate::sys::process(pid).as_ref()) {
+        return Ok(None);
+    }
     eprintln!("agent: {why}: asking pid {pid} to stop (SIGTERM), its jobs left for this agent");
     if !crate::sys::terminate(pid) {
         return Ok(None);
@@ -71,12 +85,18 @@ pub fn take_over(home: &Path, wait: Duration) -> anyhow::Result<Option<super::Ag
     Ok(None)
 }
 
+/// Whether `now` (the pid read again) is still the process `was`: its start and executable.
+fn same_process(was: &Proc, now: Option<&Proc>) -> bool {
+    now.is_some_and(|n| n.pid == was.pid && n.start_us == was.start_us && n.path == was.path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn p(pid: i32, ppid: i32, start_us: u64, exe: &str) -> Proc {
-        Proc { pid, ppid, start_us, exe: exe.into() }
+        let path = if exe == LAUNCHER { "/Applications/Scenic.app/Contents/MacOS/scenic-launcher" } else { exe };
+        Proc { pid, ppid, start_us, path: path.into(), exe: exe.into() }
     }
 
     #[test]
@@ -84,21 +104,33 @@ mod tests {
         let mine = p(100, 1, 5_000, LAUNCHER);
         // An orphan: ended.
         let orphan = p(50, 1, 1_000, "scenic");
-        assert_eq!(verdict(Some(&mine), &orphan, None).map(|v| v.0), Some(50));
+        assert_eq!(verdict(Some(&mine), &orphan, None).map(|v| v.0.pid), Some(50));
         // Not run by a launcher (by hand, or a test): nothing ended.
         assert_eq!(verdict(Some(&p(100, 1, 5_000, "zsh")), &orphan, None), None);
         assert_eq!(verdict(None, &orphan, None), None);
         // An older launcher's agent: that launcher ended (it passes SIGTERM on).
         let old = p(40, 1, 1_000, LAUNCHER);
         let theirs = p(41, 40, 1_100, "scenic");
-        assert_eq!(verdict(Some(&mine), &theirs, Some(&old)).map(|v| v.0), Some(40));
+        assert_eq!(verdict(Some(&mine), &theirs, Some(&old)).map(|v| v.0.pid), Some(40));
         // A newer launcher's: left (this launcher is the stale one).
         let newer = p(140, 1, 9_000, LAUNCHER);
         assert_eq!(verdict(Some(&mine), &p(141, 140, 9_100, "scenic"), Some(&newer)), None);
+        // An older launcher at another path (the old login item's): left.
+        let legacy = Proc { path: "/Users/x/Library/Application Support/scenic/scenic-launcher".into(), ..old.clone() };
+        assert_eq!(verdict(Some(&mine), &theirs, Some(&legacy)), None);
         // Its own launcher's earlier child: left.
         assert_eq!(verdict(Some(&mine), &p(101, 100, 5_100, "scenic"), Some(&mine)), None);
         // A holder under something else (a shell): left.
         assert_eq!(verdict(Some(&mine), &p(61, 60, 1_100, "scenic"), Some(&p(60, 1, 1_000, "zsh"))), None);
+    }
+
+    #[test]
+    fn a_reused_pid_is_not_the_same_process() {
+        let was = p(50, 1, 1_000, "scenic");
+        assert!(same_process(&was, Some(&was.clone())));
+        assert!(!same_process(&was, None));
+        assert!(!same_process(&was, Some(&Proc { start_us: 2_000, ..was.clone() })));
+        assert!(!same_process(&was, Some(&Proc { path: "/bin/sleep".into(), ..was.clone() })));
     }
 
     #[test]

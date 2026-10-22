@@ -44,9 +44,11 @@
   `scenic-status --test tools/status/test` checks the detection against captured
   `launchctl print` output, the reopen helper and the arguments (check.sh's swift part runs it).
   Strays (#582): after registering again, and each poll, a launcher of this app or of a copy left
-  aside that isn't the job's own is ended (SIGTERM to that pid; update.log says so). An agent its
-  launcher starts that finds the agent's lock held by an orphan agent (ppid 1) or by an older
-  launcher's agent ends that one (SIGTERM to the orphan, or to the older launcher, which passes it
+  aside that started before the job's own is ended (launchd's state read just before; SIGTERM to
+  that pid, logged once). An agent its launcher starts that finds the agent's lock held by an
+  orphan agent (ppid 1: a launcher's left behind, but also an agent run by hand and detached, which
+  is ended the same way) or by an older launcher at the same path's agent ends that one (the pid
+  read again just before the signal, its start and executable unchanged) (SIGTERM to the orphan, or to the older launcher, which passes it
   on) and takes the lock once it lets go, waiting up to 150 s; the stopping agent leaves its jobs
   running for it, as for an update (crates/pipeline/src/agent/takeover.rs). An agent run by hand,
   or under a newer launcher, ends nothing. Before each open the reopen helper ends a running copy
