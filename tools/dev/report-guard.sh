@@ -17,5 +17,5 @@ if [[ -n $(git -C $wt status --porcelain --untracked-files=no) ]]; then
   exit 2
 fi
 grep -q "^$head " $repo/.git/check-passed 2>/dev/null && exit 0
-print -u2 "tools/dev/check.sh hasn't passed on HEAD ${head:0:7} of $wt. Run it there (cd $wt && tools/dev/check.sh), fix what fails, commit, and report only after it prints PASS. See tools/dev/testing.md."
+print -u2 "tools/dev/check.sh hasn't passed on HEAD ${head:0:7} of $wt. Run it there (cd $wt && $repo/tools/dev/check.sh, which also works on a branch older than #548), fix what fails, commit, and report only after it prints PASS. See tools/dev/testing.md."
 exit 2
