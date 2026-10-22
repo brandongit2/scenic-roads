@@ -212,7 +212,7 @@ local_main() {  # <key> <source dir> <command>
   local why= rname
   if [[ -n ${SCENIC_CHECK_LOCAL:-}${SCENIC_TESTS_LOCAL:-} ]]; then why="SCENIC_CHECK_LOCAL set"
   elif [[ -d $src/data/build ]]; then why="the tree has ignored test data in data/build, which the test Mac's copy wouldn't"
-  elif ! rname=$(ssh -o ConnectTimeout=5 -o BatchMode=yes $host scutil --get LocalHostName 2>/dev/null); then why="the test Mac isn't reachable"
+  elif ! rname=$(ssh -o ConnectTimeout=5 -o BatchMode=yes $host scutil --get LocalHostName 2>/dev/null); then why="the test Mac is down (ssh failed)"
   elif [[ $rname == "$(scutil --get LocalHostName 2>/dev/null)" ]]; then why="this is the test Mac"
   fi
   if [[ -n $why ]]; then

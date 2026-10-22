@@ -90,18 +90,17 @@ pub enum Special {
 }
 
 /// Which known special file a drop-box path is: `_group.toml` in any folder, `_pins.toml` and
-/// `_rules.toml` at the top. (Their old names too, `renamed`, while a version still has them, so it
-/// reads as before until the update that renames them is in; #536.)
+/// `_rules.toml` at the top.
 pub fn special(path: &str) -> Option<Special> {
     match (file_name(path), path.contains('/')) {
         (GROUP, _) => Some(Special::Group),
-        (PINS | "pins.toml", false) => Some(Special::Pins),
-        (RULES | "rules.toml", false) => Some(Special::Rules),
+        (PINS, false) => Some(Special::Pins),
+        (RULES, false) => Some(Special::Rules),
         _ => None,
     }
 }
 
-/// The new name of a special file under its old one (at the top): what the check says to rename it to.
+/// The new name of a special file under its pre-#536 one (at the top): what the check says to rename it to.
 pub fn renamed(path: &str) -> Option<&'static str> {
     match path {
         "pins.toml" => Some(PINS),
@@ -123,8 +122,8 @@ impl Folder {
         for p in &paths {
             let p = p.clone();
             let kind = special(&p);
-            // (Group files are the index's; an old name yields to the new one when both are there.)
-            if kind == Some(Special::Group) || renamed(&p).is_some_and(|new| paths.iter().any(|q| q == new)) {
+            // (Group files are the index's.)
+            if kind == Some(Special::Group) {
                 continue;
             }
             let bytes = read(&p)?;

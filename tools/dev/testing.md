@@ -78,7 +78,8 @@ check.sh's `tests` part and publish.sh's nextest suite run on the test Mac throu
   command's. Without one (connection lost, no tree, no slot) it prints
   `--- remote result discarded, local rerun ---` and runs here: what follows the last such line is
   the result (publish.sh reads its Summary and FAIL lines only from there).
-- Runs here instead: on the test Mac itself; when the test Mac can't be reached or the copy fails; when the tree
+- Runs here instead: on the test Mac itself (the Mac mini, which also publishes, so publish's suite always runs
+  there); when the test Mac is down or the copy fails; when the tree
   has `data/build` (ignored test data that tests skip without, which the copy wouldn't carry); with
   `SCENIC_CHECK_LOCAL=1` (also `SCENIC_TESTS_LOCAL=1`).
 - Disk on the test Mac: a key unused 3 days goes; past 60 GB in all the least recently used go; never a

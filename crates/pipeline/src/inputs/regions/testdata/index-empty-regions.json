@@ -72,13 +72,13 @@
    "keyed": "sources/inputs/regions/@geometry/hong-kong.2af07b789a9e9127.rgeo",
    "size": 274
   },
-  "pins.toml": {
+  "_pins.toml": {
    "facts": {
     "pins": {
      "osm": "2026-09-28"
     }
    },
-   "file": "sources/inputs/regions/pins.0428252f8eba6092.toml",
+   "file": "sources/inputs/regions/_pins.0428252f8eba6092.toml",
    "keyed": "0428252f8eba6092",
    "size": 19
   }

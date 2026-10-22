@@ -100,13 +100,13 @@ pub struct Stored {
 }
 
 /// The regions of an accepted version, by id: each region file's (a `.toml` but the special files:
-/// the `_` names, and the old `pins.toml` and `rules.toml`). One missing a fact (its id, name or outline; its drawing without its geometry or
+/// the `_` names). One missing a fact (its id, name or outline; its drawing without its geometry or
 /// the other way round) is an error, never left out; one with neither resolved to nothing (empty)
 /// and is listed with no stored files.
 pub fn listed(a: &Accepted) -> Result<Vec<Listed>> {
     let mut v: Vec<Listed> = Vec::new();
     for (p, f) in &a.index.files {
-        if !p.ends_with(".toml") || super::resolve::is_special(p) || super::resolve::special(p).is_some() {
+        if !p.ends_with(".toml") || super::resolve::is_special(p) {
             continue;
         }
         let s = |k: &str| {

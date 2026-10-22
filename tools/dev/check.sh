@@ -51,8 +51,8 @@ if has 'tools/status/*'; then
 else skip swift "tools/status unchanged"; fi
 tests=( ${(f)"$(${0:A:h}/affected-tests.sh | grep -v '^#')"} )
 # The tests run on the test Mac (tools/app/remote-tests.sh, #442: an exact copy of this tree, its own
-# build folder per worktree, three runs at a time there, the rest queued); here when the test Mac can't
-# be reached or with SCENIC_CHECK_LOCAL=1.
+# build folder per worktree, three runs at a time there, the rest queued); here on the test Mac itself
+# (the publishing Mac), when it is down, or with SCENIC_CHECK_LOCAL=1.
 rt=$root/tools/app/remote-tests.sh
 if (( ${#tests} )) && [[ -x $rt ]]; then
   key=${root:t}; [[ $root == */.claude/worktrees/* ]] || key=main-checkout

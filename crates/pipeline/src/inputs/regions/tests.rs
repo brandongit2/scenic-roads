@@ -442,19 +442,6 @@ fn a_name_starting_with_an_underscore_is_special() {
     assert_eq!(folder.pins.get("osm").map(String::as_str), Some("2026-09-28"));
     assert_eq!(folder.rules.unwrap().cover.as_deref(), Some("earth"));
     assert!(folder.regions.is_empty() && folder.unread.contains("_draft.toml"));
-    // Both names of the pins, or the rules, in one version: the new name's file is read.
-    let files: BTreeMap<String, Vec<u8>> = [
-        ("_pins.toml", "osm = \"2026-09-28\"\n"),
-        ("pins.toml", "osm = \"2026-01-01\"\n"),
-        ("_rules.toml", "cover = \"earth\"\n"),
-        ("rules.toml", "sliver_km2 = 7.0\n"),
-    ]
-    .iter()
-    .map(|(p, t)| (p.to_string(), t.as_bytes().to_vec()))
-    .collect();
-    let folder = resolve::Folder::read(files.keys().cloned(), &|p| Ok(files[p].clone())).unwrap();
-    assert_eq!(folder.pins.get("osm").map(String::as_str), Some("2026-09-28"));
-    assert_eq!(folder.rules.unwrap().cover.as_deref(), Some("earth"));
 }
 
 /// A NAS root for the check job: the records naming pass `PASS` (and its outline set, when
@@ -524,9 +511,9 @@ fn a_region_missing_a_fact_is_an_error() {
     assert!(read::listed(&a).is_err());
 }
 
-/// `_rules.toml` (and `rules.toml`, its old name, while a version has it) taken in beside the regions
+/// `_rules.toml` taken in beside the regions
 /// (its facts the rules, no outline): not a region, so the regions read (21 Oct: the index taking it
-/// in stopped the regions' build, "rules.toml has no outline").
+/// in stopped the regions' build, "has no outline").
 #[test]
 fn the_rules_file_is_not_a_region() {
     let index: Index = serde_json::from_str(include_str!("testdata/index-empty-regions.json")).unwrap();
@@ -536,7 +523,7 @@ fn the_rules_file_is_not_a_region() {
     let n = read::listed(&a).unwrap().len();
     let mut rules = a.index.files.values().next().unwrap().clone();
     rules.facts = serde_json::from_str(r#"{"rules": {"cover": "earth", "sliver_km2": 50.0}}"#).unwrap();
-    for name in ["rules.toml", "_rules.toml", "_pins.toml"] {
+    for name in ["_rules.toml", "_pins.toml"] {
         a.index.files.insert(name.into(), rules.clone());
     }
     assert_eq!(read::listed(&a).unwrap().len(), n);

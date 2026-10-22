@@ -664,16 +664,11 @@ mod tests {
         )
         .unwrap();
         // Broken ones reported; other files (a `.toml.removed` among them), ignored names, the special files (`_`
-        // names; the old pins.toml and rules.toml too) and how/ left out.
+        // names) and how/ left out.
         std::fs::write(dir.join("bad.toml"), "id = \"other\"\nname = \"x\"\noutline = [\"osm:1\"]").unwrap();
         std::fs::write(dir.join("old.toml.removed"), region("old", "Old")).unwrap();
         std::fs::write(dir.join(".half.toml.tmp"), "half").unwrap();
-        for (n, t) in [
-            ("_pins.toml", "osm = \"2026-09-28\"\n"),
-            ("_rules.toml", "cover = \"earth\"\n"),
-            ("pins.toml", "osm = \"2026-09-28\"\n"),
-            ("rules.toml", "cover = \"earth\"\n"),
-        ] {
+        for (n, t) in [("_pins.toml", "osm = \"2026-09-28\"\n"), ("_rules.toml", "cover = \"earth\"\n")] {
             std::fs::write(dir.join(n), t).unwrap();
         }
         std::fs::create_dir_all(dir.join("how")).unwrap();
