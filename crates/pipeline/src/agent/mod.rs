@@ -7966,6 +7966,7 @@ impl Agent {
             running,
             macs: rooms,
             sched: self.coord.as_ref().map(|c| c.sched_state()),
+            release: Vec::new(),
         };
         // (Each step's time a target, for the page to weigh the targets done: the headline.)
         let each_s = steps::TABLE.iter().map(|r| (r.name.to_string(), (per(r.name) * 10.0).round() / 10.0)).collect();

@@ -552,6 +552,7 @@ mod tests {
                 running: BTreeMap::new(),
                 macs: BTreeMap::new(),
                 sched: None,
+                release: Vec::new(),
             },
             each_s: BTreeMap::new(),
             waiting: BTreeMap::new(),

@@ -459,6 +459,22 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                     cfg.macs[k].name
                 ));
             }
+            // (The NAS budget on, a member's job only within what the pool's jobs leave by their
+            // true weights (crate::budget::nas::Limits::fits_job, an aged whole one let past them):
+            // the budget's rules checked by outcome, not by a copy of them.)
+            if k > 0 && cfg.nas.is_some() {
+                let members: u32 = running[1..].iter().flatten().map(|j| j.nas).sum();
+                let all: u32 = running.iter().flatten().map(|j| j.nas).sum();
+                let heaviest = running.iter().flatten().map(|j| j.nas).max().unwrap_or(0);
+                if !crate::budget::nas::Limits::fits_job(members, all, heaviest, job.nas, true) {
+                    return Err(format!(
+                        "{} placed {step} {targets:?} past the NAS budget: {all} + {} > {} (members' {members})",
+                        cfg.macs[k].name,
+                        job.nas,
+                        crate::budget::nas::WHOLE
+                    ));
+                }
+            }
             let (mem, disk, threads) = used(&running[k]);
             if mem + job.mem_mb > limit(k) {
                 if !cold {

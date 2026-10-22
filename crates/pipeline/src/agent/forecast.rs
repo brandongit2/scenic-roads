@@ -128,6 +128,18 @@ pub struct Input<'a> {
     /// state for every job (`run`). None (a test, or no coordinator): the work's measures alone.
     #[serde(default)]
     pub sched: Option<State>,
+    /// Jobs of `before` not ready at the start (`Release`): none live; the backtest's, each when
+    /// the history shows what it waits on done.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub release: Vec<Release>,
+}
+
+/// A job of `Input::before` (`step`, `target`) not ready before `at` (unix s).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Release {
+    pub step: String,
+    pub target: String,
+    pub at: u64,
 }
 
 /// A slot's job under way, as its lane's time left is worked out (`SlotJob::busy_s`): the lead's
@@ -905,6 +917,19 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64, deadline: Instant) -> Sim {
             }
         }
     }
+    // (Those not ready before a time (`Input::release`): counted as waiting until then, the
+    // latest first.)
+    let mut timed: Vec<(f64, usize)> = inp
+        .release
+        .iter()
+        .filter(|r| r.at > inp.now)
+        .filter_map(|r| at.get(&(r.step.clone(), r.target.clone())).map(|&i| ((r.at - inp.now) as f64, i)))
+        .filter(|&(_, i)| items[i].by.is_none())
+        .collect();
+    timed.sort_by(|a, b| b.0.total_cmp(&a.0));
+    for &(_, i) in &timed {
+        pending[i] += 1;
+    }
     let mut ready = Ready::default();
     for (i, it) in items.iter().enumerate() {
         if it.by.is_none() && pending[i] == 0 {
@@ -979,6 +1004,14 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64, deadline: Instant) -> Sim {
             on
         });
         changes += ended.len() as u64;
+        while timed.last().is_some_and(|r| r.0 <= t + 1e-9) {
+            let (_, w) = timed.pop().unwrap_or_default();
+            changes += 1;
+            pending[w] -= 1;
+            if pending[w] == 0 {
+                ready.insert(w, &items[w], pi(items[w].phase));
+            }
+        }
         for d in ended {
             for &w in &waiting_on[d] {
                 pending[w] -= 1;
@@ -1013,6 +1046,7 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64, deadline: Instant) -> Sim {
                 .map(|&i| items[i].end)
                 .chain(others)
                 .chain(out.iter().map(|o| o.0))
+                .chain(timed.last().map(|r| r.0))
                 .fold(f64::INFINITY, f64::min)
         };
         // The order the lane takes the work ready in: the lead's first lane, while the regions have
@@ -1533,7 +1567,23 @@ mod tests {
             running: BTreeMap::new(),
             macs: BTreeMap::new(),
             sched: None,
+            release: Vec::new(),
         }
+    }
+
+    /// A job released later (`Release`, task #539) starts no sooner, its lane idle until then,
+    /// and the job beside it goes now.
+    #[test]
+    fn a_released_job_waits_for_its_time_and_the_rest_go_now() {
+        let c = Cost { secs: 100.0, known: true, peak_mb: 100 };
+        let mut inp = input(&[], vec![mac("m4", 1.0, false)], &cost);
+        inp.after.clear();
+        inp.before = vec![("rail".into(), "a".into(), c), ("trains".into(), "b".into(), c)];
+        inp.release = vec![Release { step: "rail".into(), target: "a".into(), at: inp.now + 1000 }];
+        let sim = run(&inp, &|c| c.secs, far());
+        let of = |s: &str| sim.items.iter().find(|i| i.step == s).map(|i| (i.from, i.end));
+        assert_eq!(of("trains"), Some((0.0, 100.0)));
+        assert_eq!(of("rail"), Some((1000.0, 1100.0)));
     }
 
     #[test]
@@ -2239,19 +2289,34 @@ mod tests {
         assert_eq!(first, real);
     }
 
-    /// The backtest of task #535 (by hand: `SCENIC_BACKTEST=<the NAS's state folder>`, read only):
-    /// from each term's recorded state (state/coord/term/<E>/state.json: the leases out and the
-    /// measures) the forecast of the jobs the history shows granted in the next `H` s, on the two
-    /// Macs' slots, against what the history shows ran: the share of each Mac's busy time with 1, 2,
-    /// 3 and 4+ jobs at once, and when the last of that work ended. A start whose window holds a
-    /// pause is skipped. The NAS's limits aren't on the NAS (the lead's probe keeps them): 100 MB/s
-    /// and 40 creates/s, the simulator's.
+    /// The lead's steps on its own clock, not the plan's dependencies: the catalogs and low zooms
+    /// published, the backups, the sweeps, the inputs' refreshes, the names' and timetables' todo
+    /// lists, the tasks (the backtest takes each as ready when it started).
+    const CLOCKED: [&str; 8] = ["catalog", "lo", "backup", "gc", "inputs", "names-todo", "timetables-todo", "task"];
+
+    /// The backtest of tasks #535 and #539 (by hand: `SCENIC_BACKTEST=<the NAS's state folder>`,
+    /// read only, and `SCENIC_BACKTEST_LOGS=<the leads' agent.log, comma-separated>`): from each
+    /// term's recorded state (state/coord/term/<E>/state.json: the leases out and the measures, as
+    /// current then) the forecast of the jobs the history shows started from then until the plan's
+    /// work first ran out (no job of it running for `GAP` s, within `H`), on each Mac's slots then
+    /// (the most it ran at once the day before), against what the history shows ran: the share of
+    /// each Mac's busy time with 1, 2, 3 and 4+ jobs at once, and when the plan's work ran out.
+    /// Each job comes ready when the history shows what it waits on done (`Release`): a map tile
+    /// its "planned" event's z6 tiles; a z3 tile's assembly its z6 tiles; a z6 tile's slope and a
+    /// z6 tile the terrain of its z3 tile and its neighbours', a z6 tile also the pass's heritage
+    /// sites, reaches and buildings; a chain's step the steps it reads (`chain_deps`); the lead's
+    /// jobs on its own clock (`CLOCKED`) when they started, left out of the finish. The NAS's
+    /// limits: the lead's own held to the best of the last day's probes the logs show by then
+    /// (`nas::Probes`; each probe timed by the term the log last named), the members' not (the
+    /// switch, state/pool/nas-budget, was off), the gate open (the NAS's own load was never read:
+    /// no SNMP). A start whose window holds a pause is skipped. Also times the scheduler's state
+    /// copied (`Sched::state`, what `Coordinator::sched_state` does under its lock) at each.
     #[test]
-    #[ignore]
     fn backtest_against_the_history() {
         use crate::coord::history::Event;
         use crate::coord::lease::{Lease, Work};
-        const H: u64 = 6 * 3600;
+        const H: u64 = 24 * 3600;
+        const GAP: u64 = 1800;
         let Ok(root) = std::env::var("SCENIC_BACKTEST") else { return };
         let root = std::path::Path::new(&root);
         let (m4, m1) = ("Brandons-MacBook-Pro", "MacBook-Pro-de-Brandon");
@@ -2277,9 +2342,72 @@ mod tests {
             .filter(|e| matches!(e.kind.as_str(), "end" | "done" | "fail"))
             .filter_map(|e| {
                 let secs = e.secs? as u64;
-                Some((host(e.worker.as_deref()?), e.step.clone()?, e.targets.clone(), e.t.saturating_sub(secs), e.t))
+                Some((
+                    host(e.worker.as_deref()?),
+                    e.step.clone()?,
+                    if e.targets.is_empty() { vec![e.step.clone()?] } else { e.targets.clone() },
+                    e.t.saturating_sub(secs),
+                    e.t,
+                ))
             })
             .collect();
+        // (Each target's job's end, by its step; each map tile's z6 tiles, by its "planned" events.)
+        let mut done_at: BTreeMap<(String, String), Vec<u64>> = BTreeMap::new();
+        for j in &jobs {
+            for t in &j.2 {
+                done_at.entry((j.1.clone(), t.clone())).or_default().push(j.4);
+            }
+        }
+        let mut pack_units: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for e in events.iter().filter(|e| e.kind == "planned") {
+            let Some(units) = e.data.as_ref().and_then(|d| d["units"].as_object()) else { continue };
+            for (u, packs) in units {
+                for p in packs.as_array().into_iter().flatten().filter_map(|p| p.as_str()) {
+                    pack_units.entry(p.to_string()).or_default().insert(u.clone());
+                }
+            }
+        }
+        // (The probes the logs show, each timed by the term the log last named.)
+        let term_at: BTreeMap<u64, u64> = std::fs::read_dir(root.join("coord/term"))
+            .unwrap()
+            .flatten()
+            .filter_map(|e| {
+                let n: u64 = e.file_name().to_str()?.parse().ok()?;
+                let v: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(e.path().join("view.json")).ok()?).ok()?;
+                Some((n, v["at"].as_u64()?))
+            })
+            .collect();
+        let mut probes: Vec<crate::budget::nas::Probe> = Vec::new();
+        for log in std::env::var("SCENIC_BACKTEST_LOGS").unwrap_or_default().split(',').filter(|l| !l.is_empty()) {
+            let mut at = None;
+            for l in std::fs::read_to_string(log).unwrap_or_default().lines() {
+                if let Some(n) = l
+                    .split("term ")
+                    .nth(1)
+                    .and_then(|r| r.split(|c: char| !c.is_ascii_digit()).next().and_then(|d| d.parse::<u64>().ok()))
+                {
+                    at = term_at.get(&n).copied().or(at);
+                }
+                let Some(r) = l.strip_prefix("coordinator: the NAS probed: ") else { continue };
+                let nums: Vec<f64> =
+                    r.split(|c: char| !(c.is_ascii_digit() || c == '.')).filter_map(|x| x.parse().ok()).collect();
+                if let (Some(at), [mb, creates, ..]) = (at, nums.as_slice()) {
+                    probes.push(crate::budget::nas::Probe {
+                        at,
+                        bytes_s: mb * 1e6,
+                        creates_s: *creates,
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+        let limits_at = |t: u64| {
+            let p = crate::budget::nas::Probes(
+                probes.iter().filter(|p| p.at <= t && p.at + crate::budget::nas::KEEP_S > t).copied().collect(),
+            );
+            p.limits(None)
+        };
         let pauses: Vec<u64> = events.iter().filter(|e| e.kind == "pause" || e.kind == "resume").map(|e| e.t).collect();
         let busy_share = |runs: &[(u64, u64)], from: u64, to: u64| {
             let mut n = [0u64; 5];
@@ -2293,7 +2421,7 @@ mod tests {
         let mut terms: Vec<std::path::PathBuf> =
             std::fs::read_dir(root.join("coord/term")).unwrap().flatten().map(|e| e.path()).collect();
         terms.sort();
-        let (mut fin_err, mut n_ok) = (Vec::new(), 0);
+        let (mut fin_err, mut n_ok, mut copy_ms) = (Vec::new(), 0, Vec::new());
         let mut sum: BTreeMap<(&str, &str), Vec<f64>> = BTreeMap::new();
         for dir in terms {
             let Ok(view) = std::fs::read(dir.join("view.json")) else { continue };
@@ -2301,7 +2429,7 @@ mod tests {
             else {
                 continue;
             };
-            if !(1_792_281_600..1_792_627_200).contains(&t0) || pauses.iter().any(|&p| p >= t0 && p < t0 + H) {
+            if !(1_792_281_600..1_792_627_200).contains(&t0) {
                 continue;
             }
             let Ok(raw) = std::fs::read(dir.join("state.json")) else { continue };
@@ -2312,11 +2440,34 @@ mod tests {
             fn get<T: serde::de::DeserializeOwned + Default>(v: &serde_json::Value, k: &str) -> T {
                 serde_json::from_value(v[k].clone()).unwrap_or_default()
             }
-            let costs: BTreeMap<String, crate::coord::Cost> = get(&v, "costs");
+            // (Its measures as current then: a step's way changed since (`cost_version`, as unit's
+            // did on 21 Oct) would leave the backtest's run every target of it cold.)
+            let mut costs: BTreeMap<String, crate::coord::Cost> = get(&v, "costs");
+            for (k, c) in costs.iter_mut() {
+                c.v = crate::coord::cost_version(k.split_once(' ').map_or("unit", |s| s.0));
+            }
             let leases: Vec<Lease> = serde_json::from_value(v["leases"]["leases"].clone()).unwrap_or_default();
             let running: Vec<_> = jobs.iter().filter(|j| j.3 <= t0 && t0 < j.4).collect();
-            let work: Vec<_> = jobs.iter().filter(|j| j.3 > t0 && j.3 <= t0 + H).collect();
-            if work.is_empty() {
+            // (The work: every job started from then until the plan's work first ran out, no job of it
+            // running for `GAP` s.)
+            let planned = |step: &str| !CLOCKED.contains(&step);
+            let mut until = running.iter().filter(|j| planned(&j.1)).map(|j| j.4).max().unwrap_or(t0);
+            let mut ran_out = None;
+            let mut later: Vec<_> = jobs.iter().filter(|j| j.3 > t0 && planned(&j.1)).collect();
+            later.sort_by_key(|j| j.3);
+            for j in later {
+                if j.3 > until + GAP {
+                    ran_out = Some(until);
+                    break;
+                }
+                until = until.max(j.4);
+            }
+            let Some(end) = ran_out.filter(|&e| e > t0 && e <= t0 + H) else { continue };
+            if pauses.iter().any(|&p| p >= t0 && p < end) {
+                continue;
+            }
+            let work: Vec<_> = jobs.iter().filter(|j| j.3 > t0 && j.3 <= end).collect();
+            if !work.iter().any(|j| planned(&j.1)) {
                 continue;
             }
             let ask = |w: &str, mem_mb: u64, cores: u32| crate::coord::sched::Asked {
@@ -2325,7 +2476,14 @@ mod tests {
                     kind: "native".into(),
                     mem_mb,
                     cores,
-                    cap: Some(Capacity { cores, cores_free: cores, ..Default::default() }),
+                    cap: Some(Capacity {
+                        cores,
+                        cores_free: cores,
+                        mem_mb,
+                        build_mb: mem_mb,
+                        limit_mb: mem_mb,
+                        ..Default::default()
+                    }),
                     want: 1,
                     ..Default::default()
                 },
@@ -2351,18 +2509,23 @@ mod tests {
                 job_disks: get(&v, "job_peaks"),
                 fills: get(&v, "fills"),
                 lead_name: m4.into(),
-                nas: Some(crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, ..Default::default() }),
-                nas_own: Some(crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, ..Default::default() }),
+                nas: None,
+                nas_own: limits_at(t0),
                 ..Default::default()
             };
+            let clock = Clock { now: Instant::now(), unix: t0 };
+            let sch = Sched::from_state(&st, clock, RUN_TTL);
+            let copied = Instant::now();
+            std::hint::black_box(sch.state(clock.now));
+            copy_ms.push(copied.elapsed().as_secs_f64() * 1e3);
             let before: Vec<_> = events.iter().filter(|e| e.t < t0).cloned().collect();
             let sp = speeds(&before, m4, &[m1.to_string()], 0.5);
             let pace = |w: Option<&String>| w.and_then(|w| sp.get(w)).map_or(1.0, |s| s.0);
             let mean = |step: &str| {
                 let v: Vec<f64> = before
                     .iter()
-                    .filter(|e| e.kind == "done" && e.step.as_deref() == Some(step) && !e.targets.is_empty())
-                    .filter_map(|e| Some(e.secs? / e.targets.len() as f64))
+                    .filter(|e| matches!(e.kind.as_str(), "done" | "end") && e.step.as_deref() == Some(step))
+                    .filter_map(|e| Some(e.secs? / e.targets.len().max(1) as f64))
                     .collect();
                 if v.is_empty() {
                     600.0
@@ -2370,9 +2533,34 @@ mod tests {
                     v.iter().sum::<f64>() / v.len() as f64
                 }
             };
+            // (An unmeasured target's memory: its step's measured targets' mean peak, as the book
+            // sizes it; none such, 0.)
+            let peak = |step: &str| {
+                let v: Vec<u64> = costs
+                    .iter()
+                    .filter(|(k, c)| k.split_once(' ').map_or("unit", |s| s.0) == step && c.peak_mb > 0)
+                    .map(|(_, c)| c.peak_mb)
+                    .collect();
+                v.iter().sum::<u64>() / v.len().max(1) as u64
+            };
+            let at_lead = |c: &crate::coord::Cost| c.secs as f64 * pace(c.worker.as_ref());
+            // (An unmeasured target's time, as the live forecast takes it: its step's measured
+            // targets' mean, else what its jobs took a target, else a first guess.)
+            let each = |step: &str| {
+                let v: Vec<f64> = costs
+                    .iter()
+                    .filter(|(k, _)| k.split_once(' ').map_or("unit", |s| s.0) == step)
+                    .map(|(_, c)| at_lead(c))
+                    .collect();
+                if v.is_empty() {
+                    mean(step)
+                } else {
+                    v.iter().sum::<f64>() / v.len() as f64
+                }
+            };
             let cost_of = |step: &str, t: &str| match costs.get(&cost_key(step, t)) {
-                Some(c) => Cost { secs: c.secs as f64 * pace(c.worker.as_ref()), known: true, peak_mb: c.peak_mb },
-                None => Cost { secs: mean(step), known: false, peak_mb: 0 },
+                Some(c) => Cost { secs: at_lead(c), known: true, peak_mb: c.peak_mb },
+                None => Cost { secs: each(step), known: false, peak_mb: peak(step) },
             };
             let mut seen = BTreeSet::new();
             let items: Vec<Job> = work
@@ -2384,6 +2572,80 @@ mod tests {
                     (s, t, c)
                 })
                 .collect();
+            // (Each item's real start, and when it comes ready: `Release`.)
+            let mut start: BTreeMap<(String, String), u64> = BTreeMap::new();
+            for j in &work {
+                for t in &j.2 {
+                    start.entry((j.1.clone(), t.clone())).or_insert(j.3);
+                }
+            }
+            // (The targets running at the start: what a job may wait on too.)
+            let ran: BTreeSet<(String, String)> =
+                running.iter().flat_map(|j| j.2.iter().map(move |t| (j.1.clone(), t.clone()))).collect();
+            let z3s = |t: &str| -> Vec<String> {
+                match crate::legacy::TileId::parse(t) {
+                    Some(u) if u.z == 6 => std::iter::once((u.x, u.y))
+                        .chain(crate::agent::build::edge_neighbours(6, u.x, u.y))
+                        .map(|(x, y)| format!("3/{}/{}", x >> 3, y >> 3))
+                        .collect(),
+                    _ => Vec::new(),
+                }
+            };
+            let in_z3 = |step: &str, qs: &[String]| -> Vec<(String, String)> {
+                start
+                    .keys()
+                    .chain(ran.iter())
+                    .filter(|k| k.0 == step && crate::agent::build::z3_of(&k.1).is_some_and(|q| qs.contains(&q)))
+                    .cloned()
+                    .collect()
+            };
+            let release: Vec<Release> = start
+                .iter()
+                .map(|((step, t), &s0)| {
+                    if CLOCKED.contains(&step.as_str()) {
+                        return Release { step: step.clone(), target: t.clone(), at: s0 };
+                    }
+                    let q = || vec![t.clone()];
+                    let deps: Vec<(String, String)> = match step.as_str() {
+                        "pack" => {
+                            pack_units.get(t).into_iter().flatten().map(|u| ("unit".to_string(), u.clone())).collect()
+                        }
+                        "terrain-lo" => in_z3("terrain", &q()),
+                        "slope-lo" => [in_z3("slope", &q()), in_z3("terrain", &q())].concat(),
+                        "trees-lo" => in_z3("trees", &q()),
+                        "depth-lo" => in_z3("depth", &q()),
+                        "slope" => in_z3("terrain", &z3s(t)),
+                        "unit" => {
+                            let mut d = in_z3("terrain", &z3s(t));
+                            d.extend(
+                                start.keys().chain(ran.iter()).filter(|k| UNITS_NEED.contains(&k.0.as_str())).cloned(),
+                            );
+                            d
+                        }
+                        s => {
+                            let (pre, earlier, _) = chain_deps(s);
+                            let reads =
+                                |k: &&(String, String)| pre.contains(&k.0.as_str()) || earlier.contains(&k.0.as_str());
+                            start.keys().chain(ran.iter()).filter(reads).cloned().collect()
+                        }
+                    };
+                    // (The last the history shows done since the start and before it started.)
+                    let at = deps
+                        .iter()
+                        .filter(|k| **k != (step.clone(), t.clone()))
+                        .filter_map(|k| done_at.get(k)?.iter().copied().filter(|&d| d > t0 && d <= s0).max())
+                        .max()
+                        .unwrap_or(0);
+                    Release { step: step.clone(), target: t.clone(), at }
+                })
+                .filter(|r| r.at > t0)
+                .collect();
+            // (Each Mac's slots then: the most jobs the history shows it running at once in the day
+            // before, its ramp's and its memory's doing alike; one at least.)
+            let slots = |host: &str| {
+                let mine: Vec<_> = jobs.iter().filter(|j| j.0 == host && j.4 > t0 - 86_400 && j.3 <= t0).collect();
+                mine.iter().map(|a| mine.iter().filter(|b| b.3 <= a.3 && a.3 < b.4).count()).max().unwrap_or(1).max(1)
+            };
             let lanes = |host: &str, n: usize, lead: bool| -> Vec<Machine> {
                 let mine: Vec<_> = running.iter().filter(|j| j.0 == host).collect();
                 (0..n)
@@ -2411,14 +2673,18 @@ mod tests {
                 chains: Vec::new(),
                 after: Vec::new(),
                 idle: Vec::new(),
-                machines: lanes(m4, 6, true).into_iter().chain(lanes(m1, 8, false)).collect(),
+                machines: lanes(m4, slots(m4), true).into_iter().chain(lanes(m1, slots(m1), false)).collect(),
                 running: BTreeMap::new(),
                 macs: BTreeMap::new(),
                 sched: Some(st),
+                release,
             };
             let sim = run(&inp, &|c| c.secs, far());
-            let last_real = work.iter().map(|j| j.4).max().unwrap_or(t0) - t0;
-            let last_fc = sim.items.iter().map(|i| i.end).fold(0.0, f64::max);
+            let last_real = end - t0;
+            let last_fc = sim.items.iter().filter(|i| planned(&i.step)).map(|i| i.end).fold(0.0, f64::max);
+            if last_real == 0 {
+                continue;
+            }
             for (host, name) in [(m4, "M4"), (m1, "M1")] {
                 let real: Vec<(u64, u64)> =
                     running.iter().chain(&work).filter(|j| j.0 == host).map(|j| (j.3.max(t0) - t0, j.4 - t0)).collect();
@@ -2462,11 +2728,20 @@ mod tests {
         }
         let mut abs: Vec<f64> = fin_err.iter().map(|e| e.abs()).collect();
         abs.sort_by(f64::total_cmp);
+        let median = abs.get(abs.len() / 2).copied().unwrap_or(0.0);
         eprintln!(
-            "{n_ok} starts; finish error: median {:.0} %, mean {:+.0} %",
-            abs.get(abs.len() / 2).copied().unwrap_or(0.0) * 100.0,
+            "{n_ok} starts; finish error: median {:.0} %, 80th percentile {:.0} %, mean {:+.0} %",
+            median * 100.0,
+            abs.get(abs.len() * 4 / 5).copied().unwrap_or(0.0) * 100.0,
             fin_err.iter().sum::<f64>() / fin_err.len().max(1) as f64 * 100.0
         );
+        copy_ms.sort_by(f64::total_cmp);
+        eprintln!(
+            "the scheduler's state copied: median {:.1} ms, most {:.1} ms",
+            copy_ms.get(copy_ms.len() / 2).copied().unwrap_or(0.0),
+            copy_ms.last().copied().unwrap_or(0.0)
+        );
+        assert!(median <= 0.2, "the finish's median error past 20 %");
     }
 
     #[test]
@@ -2631,6 +2906,7 @@ mod tests {
             running: BTreeMap::new(),
             macs: BTreeMap::new(),
             sched: Some(st),
+            release: Vec::new(),
         };
         let n = items(&inp).0.len();
         assert!(n > 30_000, "{n} targets");
