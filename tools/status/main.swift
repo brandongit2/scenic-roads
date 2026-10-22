@@ -1895,7 +1895,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             do { let page = Panel.page
                 let show = NSMenuItem(title: "Show on the Build Page", action: #selector(openPage), keyEquivalent: "")
                 show.target = self
-                show.representedObject = page.hasSuffix("#inputs") ? page : page + "#inputs"
+                show.representedObject = page.hasSuffix("#overview") ? page : page + "#inputs"
                 sub.addItem(show)
             }
             it.submenu = sub
