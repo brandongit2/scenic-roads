@@ -68,6 +68,9 @@
     (its catalog's `tiles`; the menu bar and `scenic status` say the same, from the agent's
     status) and can be downloaded: its download grows with each catalog, what's here never fetched
     again, copied at the build's slow rate.
+  - **Fine terrain** (a region's second line, only where it has any): the share of the region the
+    terrain finer than z12 covers, its size, Download or Remove, its state. An add-on: downloading
+    it downloads the region (and the World); removing the region removes it. No part of a region.
   - **Download this view**: the ground on screen, named after the most important place in it.
   - Remove confirms with the size. A download that wouldn't fit above the reserve is refused.
   - The Mac's line: what's downloaded, free space, the reserve, the copy under way, and that copies

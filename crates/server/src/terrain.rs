@@ -58,9 +58,9 @@ pub fn terrain_png(s: &crate::AppState, z: u8, x: u32, y: u32) -> anyhow::Result
     Ok(s.data.tile("terrain", z, x, y)?.map(|(b, _)| b.bytes().to_vec()))
 }
 
-/// The fine terrain's zooms (pipeline::terrain_fine's fine packs, past the base's finest): no Mac
-/// mirrors them, so away from the NAS a tile there that can't be read is made from its ancestor in
-/// the hi packs.
+/// The fine terrain's zooms (pipeline::terrain_fine's fine packs, past the base's finest): read from
+/// this Mac where a region's fine terrain is downloaded (crate::downloads), else from the NAS; away
+/// from it, a tile there that can't be read is made from its ancestor in the hi packs.
 fn fine_zoom(z: u8, y: u32) -> bool {
     z > pipeline::terrain_pack::max_zoom_at(pipeline::terrain_pack::tile_lat(z, y))
 }

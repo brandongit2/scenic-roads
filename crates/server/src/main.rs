@@ -555,6 +555,7 @@ async fn main() -> Result<()> {
         .route("/api/downloads", get(downloads::get_status))
         .route("/api/downloads/world", axum::routing::put(downloads::put_world))
         .route("/api/downloads/regions/{id}", axum::routing::put(downloads::put_region))
+        .route("/api/downloads/regions/{id}/fine", axum::routing::put(downloads::put_region_fine))
         .route("/api/downloads/views", axum::routing::post(downloads::post_view))
         .route("/api/downloads/reserve", axum::routing::put(downloads::put_reserve))
         .route("/api/downloads/views/size", axum::routing::post(downloads::post_view_size))

@@ -7,7 +7,7 @@
 // Downloads (docs/macs.md, "Mirror, per Mac"): nothing is copied to this Mac unless it's
 // downloaded here: the World, zoomed out, and each region or view, each with its size, its state
 // and a Download or Remove button; this Mac's room (downloads.ts).
-import { dlRegion, dlStatus, dlView, dlWorld, dropView, renameView, setReserve, size, sizeOf, stateClass, stateText, viewSize, type DlStatus, type RegionDl, type ViewDl } from '../downloads';
+import { dlFine, dlRegion, dlStatus, dlView, dlWorld, dropView, renameView, setReserve, size, sizeOf, stateClass, stateText, viewSize, type DlStatus, type FineDl, type RegionDl, type ViewDl } from '../downloads';
 import * as prefs from '../prefs';
 import {
   RegionLayers, RegionsError, areaOutline, entryLabel, getCoverage, getRegionsLayer, listRegions, tilesText,
@@ -88,7 +88,7 @@ export class RegionsPanel {
   private dlTimer = 0;
   /** What each region row shows of its download, updated in place as the state comes (a row isn't
    * drawn again: a hover or a rename in it stays). */
-  private dlEls = new Map<string, { row: HTMLElement; slot: HTMLElement; btn: HTMLButtonElement | null; on: boolean; size: HTMLElement }>();
+  private dlEls = new Map<string, { row: HTMLElement; slot: HTMLElement; btn: HTMLButtonElement | null; on: boolean; size: HTMLElement; fine: HTMLElement; fineSize: HTMLElement; fineBtn: HTMLButtonElement | null; fineOn: boolean }>();
   /** The downloaded views listed (their ids and names), and their size lines. */
   private viewsKey = '';
   private viewEls = new Map<string, HTMLElement>();
@@ -323,12 +323,15 @@ export class RegionsPanel {
       });
       const slot = h('span', { class: 'rg-dlslot' });
       const sz = h('span', { class: 'rg-size' });
-      this.dlEls.set(r.id, { row, slot, btn: null, on: false, size: sz });
+      const fineSize = h('span', { class: 'rg-size' });
+      const fine = h('div', { class: 'rg2', hidden: true }, h('span', { class: 'rg2s', title: 'The terrain finer than z12 (to z13–z16), where its data is finer: an add-on to the region, which gives the rest of it and every zoom to z12' }, 'Fine terrain'), fineSize);
+      this.dlEls.set(r.id, { row, slot, btn: null, on: false, size: sz, fine, fineSize, fineBtn: null, fineOn: false });
       row.replaceChildren(
         h('div', { class: 'rg1' }, name, h('span', { class: 'rg-id faint', title: `Its file: inputs/regions/${r.path ?? `${r.id}.toml`}` }, r.id),
           ...(state ? [h('span', { class: `rg-state ${state.cls}`, title: state.title }, state.text)] : []),
           slot),
         h('div', { class: 'rg2' }, h('span', { class: 'rg2s', title: summary }, summary), sz),
+        this.dlEls.get(r.id)!.fine,
       );
       this.showDl(r.id);
     };
@@ -412,6 +415,7 @@ export class RegionsPanel {
       els.btn = null;
       return;
     }
+    this.showFine(id, k?.mirror ? rk?.fine : undefined, r?.name ?? rk?.name ?? id);
     let text = '', cls = 'rg-size', title = '';
     if (!k || !k.mirror) text = '';
     else if (!rk) text = 'not built yet';
@@ -431,7 +435,7 @@ export class RegionsPanel {
     const on = !!rk?.on;
     if (els.on !== on || !els.btn) {
       const name = r?.name ?? rk?.name ?? id;
-      const btn = this.dlButton(on, `“${name}”`, () => this.dl?.regions[id]?.bytes ?? 0, (o) => dlRegion(id, o), (o) =>
+      const btn = this.dlButton(on, `“${name}”`, () => (this.dl?.regions[id]?.bytes ?? 0) + (this.dl?.regions[id]?.fine?.on ? this.dl.regions[id].fine!.bytes : 0), (o) => dlRegion(id, o), (o) =>
         o ? `Downloading “${name}” to this Mac${this.dl?.world?.on ? '' : ', with the World, zoomed out'}.` : `“${name}” is removed from this Mac.`, (t, w) => this.sayRow(els.row, t, w));
       btn.hidden = !k?.mirror;
       if (els.btn) els.btn.replaceWith(btn);
@@ -440,6 +444,26 @@ export class RegionsPanel {
       els.on = on;
     }
     els.btn.hidden = !k?.mirror;
+  }
+
+  /** A region's fine terrain, where it has any: the share of it covered, its size and state, its
+   * button (downloading it downloads the region too; removing the region removes it). */
+  private showFine(id: string, f: FineDl | undefined, name: string) {
+    const els = this.dlEls.get(id)!;
+    els.fine.hidden = !f;
+    if (!f) return;
+    const cover = `${f.cover < 1 && f.cover > 0 ? '<1' : fmt.n(f.cover)} % of it`;
+    els.fineSize.className = `rg-size${f.on ? ` ${stateClass(f.state)}` : ''}`;
+    els.fineSize.textContent = f.on ? `${cover} · ${sizeOf(f)} · ${stateText(f, f.state)}` : `${cover} · ${sizeOf(f)}`;
+    els.fineSize.title = `The fine packs over it: ${size(f.bytes)}, of which ${size(f.here)} on this Mac; they cover ${fmt.n(f.cover)} % of the region`;
+    if (els.fineOn !== f.on || !els.fineBtn) {
+      const btn = this.dlButton(f.on, `the fine terrain of “${name}”`, () => this.dl?.regions[id]?.fine?.bytes ?? 0, (o) => dlFine(id, o), (o) =>
+        o ? `Downloading the fine terrain of “${name}”${this.dl?.regions[id]?.on ? '' : ', with the region'}.` : `The fine terrain of “${name}” is removed from this Mac.`, (t, w) => this.sayRow(els.row, t, w));
+      if (els.fineBtn) els.fineBtn.replaceWith(btn);
+      else els.fine.append(btn);
+      els.fineBtn = btn;
+      els.fineOn = f.on;
+    }
   }
 
   /** The block: this Mac's room; the World row; what's being copied and why it's slow or waits;

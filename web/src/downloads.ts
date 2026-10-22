@@ -21,8 +21,17 @@ export interface RegionDl extends Tally {
   name: string;
   on: boolean;
   state: DlState | null;
+  /** Its fine terrain (z13 and finer, where the terrain has finer data), an add-on to it: the share
+   * of the region it covers (per cent). Absent where it has none. */
+  fine?: FineDl;
   /** Still building: its tiles built of total; its files grow with each catalog. */
   tiles?: { built: number; total: number };
+}
+
+export interface FineDl extends Tally {
+  cover: number;
+  on: boolean;
+  state: DlState | null;
 }
 
 export interface WorldDl extends Tally {
@@ -85,6 +94,9 @@ export const dlStatus = () => call<DlStatus>('/api/downloads');
 export const dlWorld = (on: boolean) => call<{ ok: boolean }>('/api/downloads/world', json('PUT', { on }));
 /** Downloads a region (and the World with it), or removes it. */
 export const dlRegion = (id: string, on: boolean) => call<{ ok: boolean }>(`/api/downloads/regions/${encodeURIComponent(id)}`, json('PUT', { on }));
+/** Downloads a region's fine terrain (and the region and the World with it), or removes it (the
+ * region stays). */
+export const dlFine = (id: string, on: boolean) => call<{ ok: boolean }>(`/api/downloads/regions/${encodeURIComponent(id)}/fine`, json('PUT', { on }));
 /** Downloads the ground in view; named after its most important place unless `name` (the server
  * may take a few seconds to name it). */
 export const dlView = (outline: [number, number][], name?: string) => call<{ id: string; name: string }>('/api/downloads/views', json('POST', { outline, name }));

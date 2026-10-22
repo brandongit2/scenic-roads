@@ -9,6 +9,9 @@
 //!                                         copy under way
 //!   PUT    /api/downloads/world           {on}: download the World, zoomed out, or remove it
 //!   PUT    /api/downloads/regions/{id}    {on}: download a region (with the World), or remove it
+//!                                         (with its fine terrain)
+//!   PUT    /api/downloads/regions/{id}/fine {on}: download a region's fine terrain (with the
+//!                                         region and the World), or remove it
 //!   POST   /api/downloads/views/size      {outline}: what downloading that view would take
 //!   POST   /api/downloads/views           {outline: [[lon, lat], …], name?}: download an area (the
 //!                                         ground in view), named after the place search's most
@@ -32,6 +35,11 @@
 //!   simplified), and the basemap's zooms 11–14 over those tiles; the terrain's and the grids' hi
 //!   packs within 25 km (the viewshed's reach, so one from inside works offline); and the hi data
 //!   of the z6 tiles within 50 km (what a view's lists read around it).
+//! - **A region's fine terrain** (`fine_of`), an add-on to its download: the terrain's fine packs
+//!   (pipeline::terrain_fine, z13 and finer, by z10 tile) within 2 km of it. They cover only parts
+//!   of a region; its coarse terrain (the hi packs, to z12) is the rest and every zoom to z12, so
+//!   it needs the region. The server makes the slope, and the map the hill-shading and contours,
+//!   from them as from any terrain tile (crate::terrain). Copied after every other download.
 
 use crate::data::Data;
 use crate::S;
@@ -92,6 +100,9 @@ pub struct AskedRegion {
     pub name: String,
     /// When it was downloaded (seconds since 1970).
     pub at: u64,
+    /// Its fine terrain downloaded too (`fine_of`).
+    #[serde(default)]
+    pub fine: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -178,15 +189,25 @@ impl Part {
     }
 }
 
+/// What a region's downloads copy: the region, and its fine terrain (an add-on), with the share of
+/// the region the fine terrain covers (per cent).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RegionParts {
+    pub coarse: Part,
+    pub fine: Part,
+    pub cover: f64,
+}
+
 /// Every region the catalog records, what downloading it copies, by id.
-type Regions = Arc<BTreeMap<String, Part>>;
+type Regions = Arc<BTreeMap<String, RegionParts>>;
 
 /// What the mirror copies for one catalog and one set of downloads.
 pub struct Plan {
     /// The catalog generation and the downloads' version it was made for.
     generation: u64,
     version: u64,
-    /// What's downloaded, in copy order: the World, then the regions and views as they were asked.
+    /// What's downloaded, in copy order: the World, then the regions and views as they were asked,
+    /// then the regions' fine terrain.
     pub wanted: Wanted,
     pub world: Part,
     /// Every region the catalog records (for its size, downloaded or not).
@@ -309,7 +330,7 @@ impl Downloads {
                     let r: Regions = Arc::new(
                         crate::regions::recorded(&cat)
                             .iter()
-                            .map(|r| (r.id.clone(), area_part(&cat, &outer_rings(r))))
+                            .map(|r| (r.id.clone(), region_parts(&cat, &outer_rings(r))))
                             .collect(),
                     );
                     *g = Some((generation, r.clone()));
@@ -334,8 +355,9 @@ fn make_plan(cat: &Catalog, generation: u64, version: u64, asked: Asked, regions
         .is_some()
         .then_some(&world)
         .into_iter()
-        .chain(asked.regions.iter().filter_map(|r| regions.get(&r.id)))
-        .chain(&views);
+        .chain(asked.regions.iter().filter_map(|r| regions.get(&r.id).map(|p| &p.coarse)))
+        .chain(&views)
+        .chain(asked.regions.iter().filter(|r| r.fine).filter_map(|r| regions.get(&r.id).map(|p| &p.fine)));
     for p in parts {
         for i in &p.items {
             wanted.push(i.clone(), &mut seen);
@@ -370,6 +392,12 @@ fn world_part(cat: &Catalog) -> Part {
 fn area_part(cat: &Catalog, rings: &[Vec<[f64; 2]>]) -> Part {
     let pieces: Vec<Piece> = tiles_meeting(rings, NEAR_KM).into_iter().map(|(x, y)| Piece::Tile(x, y)).collect();
     Part::new(cat, files_of(cat, rings), &basemap_archives(cat), &pieces)
+}
+
+/// A region's downloads (`rings`, its outer rings): the region, and its fine terrain.
+fn region_parts(cat: &Catalog, rings: &[Vec<[f64; 2]>]) -> RegionParts {
+    let (files, cover) = fine_of(cat, rings);
+    RegionParts { coarse: area_part(cat, rings), fine: Part::new(cat, files, &[], &[]), cover }
 }
 
 fn basemap_archives(cat: &Catalog) -> Vec<String> {
@@ -426,6 +454,85 @@ pub fn files_of(cat: &Catalog, rings: &[Vec<[f64; 2]>]) -> Files {
         }
     }
     Files::from_map(out)
+}
+
+/// The terrain's fine packs an area (`rings`, each read as a filled area) needs: those whose z10
+/// tile meets it grown by 2 km; and the share of the area the fine terrain covers (per cent, in
+/// Web Mercator: the fine packs' z10 tiles clipped to it, over its area).
+pub fn fine_of(cat: &Catalog, rings: &[Vec<[f64; 2]>]) -> (Files, f64) {
+    let Some(l) = cat.layers.get("terrain").filter(|l| !l.fine.is_empty()) else { return (Files::default(), 0.0) };
+    let rings: Vec<&Vec<[f64; 2]>> =
+        rings.iter().filter(|r| r.len() >= 3 && r.iter().all(|p| p[0].is_finite() && p[1].is_finite())).collect();
+    // (Tiles of z10 per tile of z6, each way.) The rings in z10 tiles.
+    let k = f64::from(1u32 << (pipeline::terrain_fine::PACK_Z - 6));
+    let flat: Vec<Vec<[f64; 2]>> =
+        rings.iter().map(|r| r.iter().map(|p| [lon_x(p[0]) * k, lat_y(p[1]) * k]).collect()).collect();
+    let area: f64 = flat.iter().map(|r| ring_area(r)).sum();
+    let boxes: Vec<[f64; 4]> = rings
+        .iter()
+        .map(|r| {
+            r.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| {
+                [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
+            })
+        })
+        .collect();
+    let dlat = NEAR_KM / 111.32;
+    let (mut out, mut covered) = (BTreeMap::new(), 0.0);
+    for (key, logical) in &l.fine {
+        let mut it = key.split('/').skip(1).map(str::parse::<u32>);
+        let (Some(Ok(x)), Some(Ok(y))) = (it.next(), it.next()) else { continue };
+        let (bn, bs) = (y_lat(f64::from(y) / k), y_lat(f64::from(y + 1) / k));
+        let g = km_lon(NEAR_KM, bs.abs().max(bn.abs()));
+        let mut meets = false;
+        // (Rings may run past 180°: the tile there too.)
+        for shift in [0.0, 360.0] {
+            let (w, e) = (x_lon(f64::from(x) / k) + shift, x_lon(f64::from(x + 1) / k) + shift);
+            let grown = [w - g, bs - dlat, e + g, bn + dlat];
+            for ((r, b), f) in rings.iter().zip(&boxes).zip(&flat) {
+                if grown[0] > b[2] || grown[2] < b[0] || grown[1] > b[3] || grown[3] < b[1] {
+                    continue;
+                }
+                meets = meets || ring_meets_box(r, grown);
+                let x0 = f64::from(x) + shift / 360.0 * N6 * k;
+                covered += ring_area(&clip(f, [x0, f64::from(y), x0 + 1.0, f64::from(y + 1)]));
+            }
+        }
+        if meets {
+            if let Some(f) = cat.files.get(logical) {
+                out.insert(f.file.clone(), f.size);
+            }
+        }
+    }
+    let cover = if area > 0.0 { (covered / area * 100.0).min(100.0) } else { 0.0 };
+    (Files::from_map(out), cover)
+}
+
+/// A ring's area (shoelace; either winding).
+fn ring_area(r: &[[f64; 2]]) -> f64 {
+    let n = r.len();
+    ((0..n).map(|i| r[i][0] * r[(i + 1) % n][1] - r[(i + 1) % n][0] * r[i][1]).sum::<f64>() / 2.0).abs()
+}
+
+/// A ring clipped to a box [x0, y0, x1, y1] (Sutherland–Hodgman: its area is that of the ring
+/// within the box).
+fn clip(ring: &[[f64; 2]], b: [f64; 4]) -> Vec<[f64; 2]> {
+    let mut out = ring.to_vec();
+    // Each edge of the box: (axis, bound, whether inside is below the bound).
+    for (axis, bound, below) in [(0, b[0], false), (0, b[2], true), (1, b[1], false), (1, b[3], true)] {
+        let ins = |p: &[f64; 2]| if below { p[axis] <= bound } else { p[axis] >= bound };
+        let input = std::mem::take(&mut out);
+        for i in 0..input.len() {
+            let (p, q) = (input[i], input[(i + 1) % input.len()]);
+            if ins(&p) {
+                out.push(p);
+            }
+            if ins(&p) != ins(&q) {
+                let t = (bound - p[axis]) / (q[axis] - p[axis]);
+                out.push([p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])]);
+            }
+        }
+    }
+    out
 }
 
 const N6: f64 = 64.0;
@@ -590,7 +697,7 @@ fn once(s: &crate::AppState, m: &Mirror) -> bool {
             let all = plan
                 .world
                 .pieces()
-                .chain(plan.regions.values().flat_map(Part::pieces))
+                .chain(plan.regions.values().flat_map(|r| r.coarse.pieces()))
                 .chain(plan.views.iter().flat_map(Part::pieces));
             if let Err(e) = size_pieces(m, all, &root, &pool, &changed) {
                 eprintln!("mirror: sizing the basemap's pieces: {e:#}");
@@ -680,9 +787,19 @@ pub fn status(s: &crate::AppState) -> Result<Value> {
         .filter_map(|r| Some((r["id"].as_str()?.to_string(), r)))
         .collect();
     let mut regions = serde_json::Map::new();
-    for (id, p) in plan.regions.iter() {
+    for (id, rp) in plan.regions.iter() {
+        let p = &rp.coarse;
         let mut v = tally(p);
         let downloaded = on.contains(id.as_str());
+        // (Its fine terrain, where it has any: its size, the share of the region it covers.)
+        let fine_on = plan.asked.regions.iter().any(|r| r.id == *id && r.fine);
+        if !rp.fine.items.is_empty() || fine_on {
+            let mut f = tally(&rp.fine);
+            f["cover"] = json!((rp.cover * 10.0).round() / 10.0);
+            f["on"] = json!(fine_on);
+            f["state"] = json!(fine_on.then(|| state(&rp.fine)));
+            v["fine"] = f;
+        }
         let r = listed.get(id);
         v["name"] = json!(r.and_then(|r| r["name"].as_str()).unwrap_or_default());
         // (Still building: its tiles built of total; its files grow with each catalog.)
@@ -929,14 +1046,56 @@ pub async fn put_region(State(s): State<S>, Path(id): Path<String>, Json(q): Jso
             .and_then(|r| r["name"].as_str().map(str::to_string))
             .unwrap_or_else(|| id.clone());
         let mut next = s.downloads.asked();
-        let was = next.regions.iter().any(|r| r.id == id);
+        let was = next.regions.iter().find(|r| r.id == id).cloned();
         next.regions.retain(|r| r.id != id);
         if q.on {
-            next.regions.push(AskedRegion { id: id.clone(), name: name.clone(), at: now() });
+            let fine = was.as_ref().is_some_and(|r| r.fine);
+            next.regions.push(AskedRegion { id: id.clone(), name: name.clone(), at: now(), fine });
             next.world.get_or_insert_with(now);
-            if !was {
+            if was.is_none() {
                 check_fits(s, &next, &format!("“{name}”"))?;
             }
+        }
+        s.downloads.edit(|a| {
+            *a = next;
+            Ok(())
+        })?;
+        Ok(json!({ "ok": true }))
+    })
+    .await
+}
+
+/// Downloads a region's fine terrain (and the region and the World with it: it needs them), or
+/// removes it (the region stays).
+pub async fn put_region_fine(State(s): State<S>, Path(id): Path<String>, Json(q): Json<On>) -> Response {
+    blocking(s, move |s| {
+        ensure!(pipeline::agent::recipes::valid_id(&id), "{id:?} isn't a region id");
+        ensure!(s.data.mirror.is_some(), "this server keeps no copy of the map (--no-mirror)");
+        let mut next = s.downloads.asked();
+        let at = next.regions.iter().position(|r| r.id == id);
+        if q.on {
+            let plan = s.downloads.plan(&s.data);
+            let has = plan.regions.get(&id).is_some_and(|p| !p.fine.items.is_empty());
+            ensure!(has, "{id:?} has no fine terrain on the map");
+            let name = crate::regions::recorded_list(&s.data.catalog())
+                .iter()
+                .find(|r| r["id"] == id.as_str())
+                .and_then(|r| r["name"].as_str().map(str::to_string))
+                .unwrap_or_else(|| id.clone());
+            let was = match at {
+                Some(i) => std::mem::replace(&mut next.regions[i].fine, true),
+                None => {
+                    next.regions.push(AskedRegion { id: id.clone(), name: name.clone(), at: now(), fine: true });
+                    false
+                }
+            };
+            next.world.get_or_insert_with(now);
+            if !was {
+                let with = if at.is_none() { ", with the region" } else { "" };
+                check_fits(s, &next, &format!("the fine terrain of “{name}”{with}"))?;
+            }
+        } else if let Some(i) = at {
+            next.regions[i].fine = false;
         }
         s.downloads.edit(|a| {
             *a = next;

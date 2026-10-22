@@ -48,9 +48,10 @@ index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
   `scenic:zoom-by-area`), z12 elsewhere. The meta's `packs.terrain.fine` gives each fine pack's
   version by z10 tile (`"10/x/y"`), as `lo` and `hi` do theirs, so a tile past z12 there carries
   its fine pack's `?v=` and a new catalog asks again only for the tiles of the fine packs it
-  changed. **Offline:** no Mac mirrors the fine packs and downloads
-  leave them out (for now: an optional download is planned), so away from the NAS a fine tile that
-  can't be read is made from its ancestor in the hi packs (the z12 terrain, overzoomed), as
+  changed. **Offline:** a region's fine packs are on a Mac only where its
+  fine terrain is downloaded (an add-on to the region: crates/server/src/downloads.rs); the server
+  makes the slope, and the map the hill-shading and contours, from them as from any terrain tile.
+  Elsewhere, away from the NAS, a fine tile that can't be read is made from its ancestor in the hi packs (the z12 terrain, overzoomed), as
   anywhere past the data; the server never answers 503 for one. A tile lives in exactly one pack.
 - Readers fetch header and index once (two range reads) and keep the index locally
   (`idx/<file hash>.idx`), so serving a tile is one range read.
@@ -568,7 +569,7 @@ names/spoken-<content>.bin   languages spoken where, for a catalog without `glob
                         count, 23,041 u32 row starts, runs of (u32 first column, u16 region))
 regions.json            the last regions read
 reserve.json            the mirror's reserve {gb} (crates/server/src/reserve.rs); default 30 GB
-downloads.json          {fmt: 2, world: at | null, regions: [{id, name, at}], views: [{id, name,
+downloads.json          {fmt: 2, world: at | null, regions: [{id, name, at, fine}], views: [{id, name,
                         outline: [[lon, lat], …], at}]} (crates/server/src/downloads.rs; `at` unix
                         seconds); one that doesn't read is set aside as downloads.json.bad; an old
                         keep.json is converted once
@@ -705,11 +706,11 @@ Where they're kept:
 - **Downloads** (`downloads.rs`): `GET /api/downloads` → `{mirror, online, slow, rate, free,
   reserve, reserve_min, disk, here, world: {bytes, here, unknown, on, at, state}, wanted: {bytes,
   here, more, unknown}, copying: {what, bytes, have, slow} | null, last: {…} | null, regions: {id:
-  {name, bytes, here, unknown, on, state, tiles?}}, views: [{id, name, outline, at, bytes, here, unknown,
+  {name, bytes, here, unknown, on, state, tiles?, fine?: {bytes, here, unknown, on, state, cover}}}, views: [{id, name, outline, at, bytes, here, unknown,
   state}]}` (`unknown`: basemap pieces not yet sized; `state`: done, copying, queued, room, away,
   missing; `tiles`: a region still building, as its catalog has it, its files those of the catalog
   served, more with each catalog). `PUT /api/downloads/world {on}` (off refused while a region or view is downloaded);
-  `PUT /api/downloads/regions/{id} {on}` (on downloads the World too); `POST
+  `PUT /api/downloads/regions/{id} {on}` (on downloads the World too; off removes its fine terrain too); `PUT /api/downloads/regions/{id}/fine {on}` (its fine terrain; on downloads the region and the World too); `POST
   /api/downloads/views/size {outline}` → `{bytes, here, with_world, need, room, fits}`; `POST
   /api/downloads/views {outline, name?}` → `{id, name}`; `PUT /api/downloads/views/{id} {name}`;
   `DELETE /api/downloads/views/{id}`; `PUT /api/downloads/reserve {gb}` (whole GB, 5 to under the
