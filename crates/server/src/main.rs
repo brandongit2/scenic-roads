@@ -176,7 +176,7 @@ impl AppState {
         // The packs' tokens (tiles' `?v=`).
         for l in meta.get("packs").and_then(|v| v.as_object()).into_iter().flat_map(|m| m.values()) {
             t.extend(l.get("root").and_then(tok));
-            for scope in ["lo", "hi"] {
+            for scope in ["lo", "hi", "fine"] {
                 t.extend(l.get(scope).and_then(|v| v.as_object()).into_iter().flat_map(|m| m.values()).filter_map(tok));
             }
         }
@@ -809,7 +809,8 @@ fn meta_json(s: &AppState) -> serde_json::Value {
     versions.insert("water".into(), serde_json::Value::from(water::version(s)));
     // Each tiled layer's packs' versions (a tile's `?v=` is that of the pack holding it): a new
     // catalog changes only the tokens of the packs it changed, so a browser asks again only for
-    // their tiles. Root: z0–2; lo: z3–8, by z3 tile; hi: z9–14, by z6 tile ("z/x/y").
+    // their tiles. Root: z0–2; lo: z3–8, by z3 tile; hi: z9–14, by z6 tile; the terrain's fine
+    // packs past z12, by z10 tile (Data::pack_of) ("z/x/y").
     let mut packs = serde_json::Map::new();
     for (k, l) in &cat.layers {
         let names = k == "labels" || k == "stations" || k == "ferries" || k.starts_with("ov-");
@@ -832,6 +833,9 @@ fn meta_json(s: &AppState) -> serde_json::Value {
         }
         o.insert("lo".into(), serde_json::Value::Object(by(&l.lo)));
         o.insert("hi".into(), serde_json::Value::Object(by(&l.hi)));
+        if !l.fine.is_empty() {
+            o.insert("fine".into(), serde_json::Value::Object(by(&l.fine)));
+        }
         packs.insert(k.clone(), serde_json::Value::Object(o));
     }
     let zooms: serde_json::Map<String, serde_json::Value> =

@@ -1,4 +1,5 @@
 import { tasks } from './tasks';
+import { packToken, type LayerPacks, type TerrainAreas } from './packs';
 
 export interface WayInfo {
   /** The OSM way id (both fields). */
@@ -81,12 +82,6 @@ export interface Meta {
   terrainAreas?: TerrainAreas;
 }
 
-/** A raster source's finest zoom by area (our MapLibre's `scenic:zoom-by-area`). */
-export interface TerrainAreas {
-  zoom: number;
-  tiles: Record<string, number>;
-}
-
 // Tiles and layers are cached by the browser, so their URLs carry the version of the file they
 // come from: when the data changes the URLs change and the new data is fetched. Every URL built
 // from a version goes through ver() or version(); a new catalog (catalog.ts) brings new versions
@@ -119,13 +114,6 @@ export function onVersions(reads: string[] | ((file: string) => boolean), apply:
   watchers.push({ reads: typeof reads === 'function' ? reads : (f) => reads.includes(f), apply });
 }
 
-/** A tiled layer's packs' versions (meta.packs): the root's (z0–2), the lo packs' (z3–8) by z3
- * tile and the hi packs' (z9–14) by z6 tile, "z/x/y". */
-export interface LayerPacks {
-  root?: string;
-  lo?: Record<string, string>;
-  hi?: Record<string, string>;
-}
 let packs: Record<string, LayerPacks> | null = null;
 let oldPacks: Record<string, LayerPacks> | null = null;
 
@@ -138,11 +126,11 @@ export function setPacks(p: Record<string, LayerPacks> | undefined) {
 
 function packOf(from: Record<string, LayerPacks> | null, layer: string, z: number, x: number, y: number): string | undefined {
   const l = from?.[layer];
-  if (!l) return undefined;
-  if (z <= 2) return l.root ?? '';
-  const pz = z <= 8 ? 3 : 6;
-  return (z <= 8 ? l.lo : l.hi)?.[`${pz}/${x >> (z - pz)}/${y >> (z - pz)}`] ?? '';
+  return l && packToken(l, z, x, y);
 }
+
+/** The packs of a catalog layer (undefined when meta gave none). */
+export const layerPacks = (layer: string): LayerPacks | undefined => packs?.[layer];
 
 /** The version token of tile z/x/y of a catalog layer (`roads`, `ov-whs`, …): its pack's, '' when no
  * pack holds it, or undefined when meta gave no packs for the layer (then its layer version). */

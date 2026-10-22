@@ -1,20 +1,18 @@
-// The contour lines' tiles as a MapLibre protocol (`contour://z/x/y?d=<density>&g=<generation>`),
-// made in a worker of their own (dem.worker.ts) from the terrain's DEM, by area.
+// The contour lines' tiles as a MapLibre protocol (`contour://z/x/y?d=<density>`), made in a
+// worker of their own (dem.worker.ts) from the terrain's DEM, by area.
 import * as maplibregl from 'maplibre-gl';
-import type { TerrainAreas } from '../api';
-import type { ContourMsg, ContourReply } from './dem.worker';
+import type { ContourMsg, ContourReply, Dem } from './dem.worker';
 
 let worker: Worker | null = null;
 let seq = 0;
-let gen = 0;
 const waiting = new Map<number, { resolve: (r: ContourReply) => void; reject: (e: Error) => void }>();
 
 /**
  * The protocol, once (`levels`: a tile zoom's contour intervals [minor, major] at a density, none
- * for no lines), and its DEM: `url` (with {z}, {x} and {y}), `maxzoom`, and the areas finer than
- * it. A new DEM empties the worker's cache; the URL `contourTiles` gives changes with it.
+ * for no lines), and its DEM (a catalog's: the tiles asked for from now on read it; the source's
+ * tiles it changed are for the caller to ask for again).
  */
-export function setContourDem(url: string, maxzoom: number, areas: TerrainAreas | undefined, levels: (z: number, density: number) => number[]) {
+export function setContourDem(dem: Dem, levels: (z: number, density: number) => number[]) {
   if (!worker) {
     worker = new Worker(new URL('./dem.worker.ts', import.meta.url), { type: 'module' });
     worker.onmessage = (ev: MessageEvent<ContourReply>) => {
@@ -42,9 +40,8 @@ export function setContourDem(url: string, maxzoom: number, areas: TerrainAreas 
       return { data: r.data! };
     });
   }
-  gen++;
-  worker.postMessage({ type: 'init', url, maxzoom, areas } satisfies ContourMsg);
+  worker.postMessage({ type: 'dem', ...dem } satisfies ContourMsg);
 }
 
-/** The contour source's tile URL at a density (for the DEM set last). */
-export const contourTiles = (density: number) => `contour://{z}/{x}/{y}?d=${density}&g=${gen}`;
+/** The contour source's tile URL at a density. */
+export const contourTiles = (density: number) => `contour://{z}/{x}/{y}?d=${density}`;

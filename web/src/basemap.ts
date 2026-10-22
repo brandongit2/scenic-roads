@@ -1,6 +1,7 @@
 import type { ExpressionSpecification, LayerSpecification, StyleSpecification } from 'maplibre-gl';
 import { LAND_COLOUR } from './basecolours';
-import { ver, type TerrainAreas } from './api';
+import { ver } from './api';
+import type { TerrainAreas } from './packs';
 import { hostFor } from './hosts';
 import { DEFAULT_DENSITY, kindSpacing, type DensityKind, type LabelDensity, type LineKind, type LineWeights } from './state';
 

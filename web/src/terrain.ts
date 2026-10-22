@@ -6,7 +6,8 @@ import { PALETTES, baseKey, isRev, paletteFn } from './palettes';
 import type { ScaleFields, Terrain } from './state';
 import { CONTOUR_MINZOOM } from './contours';
 import { contourTiles, setContourDem } from './contour/dem';
-import type { TerrainAreas } from './api';
+import { layerPacks, packChanged } from './api';
+import { areaMaxZoom, type TerrainAreas } from './packs';
 
 type RGB = [number, number, number];
 
@@ -190,10 +191,13 @@ let terrainAreas: TerrainAreas | undefined;
 /** A contour tile's intervals: from z8 (none coarser). */
 const contourLevels = (z: number, density: number) => (z < 8 ? [] : contourInterval(Math.min(z, 16), density));
 
+/** The contours' DEM's finest zoom where the catalog has no finer terrain. */
+const CONTOUR_DEM_MAXZOOM = 12;
+
 /** The contours' terrain tiles (contour/dem.ts reads them itself, in its worker): to z12, finer
- * in the areas the catalog has finer terrain. */
+ * in the areas the catalog has finer terrain; each tile at its pack's version. */
 function newContourDem() {
-  setContourDem(terrainTiles(), 12, terrainAreas, contourLevels);
+  setContourDem({ url: terrainTiles(), packs: layerPacks('terrain'), maxzoom: CONTOUR_DEM_MAXZOOM, areas: terrainAreas }, contourLevels);
   contourDem = true;
 }
 
@@ -201,8 +205,41 @@ function newContourDem() {
  * sources take them from the style: basemap.ts). */
 export function setTerrainAreas(map: MLMap, a: TerrainAreas | undefined) {
   if (JSON.stringify(a) === JSON.stringify(terrainAreas)) return;
+  const old = terrainAreas;
   terrainAreas = a;
-  switchContours(map);
+  refreshContours(map, old, false);
+}
+
+/** New terrain tiles (a new catalog): the contours' DEM anew, and the contour tiles reading the
+ * DEM tiles of the packs it changed asked for again. */
+export function switchContours(map: MLMap) {
+  refreshContours(map, terrainAreas, true);
+}
+
+/** The contours' DEM anew (its areas were `old`; `packs`: the terrain's packs changed too), and
+ * the contour tiles whose DEM changed asked for again: those whose area's zoom changed, or (with
+ * `packs`) one of whose nine DEM tiles' pack did (dem.worker.ts reads them). The others, and the
+ * worker's DEM tiles still current, are kept. */
+function refreshContours(map: MLMap, old: TerrainAreas | undefined, packs: boolean) {
+  if (!contourDem || !map.getSource('contours')) return;
+  newContourDem();
+  const dz = (a: TerrainAreas | undefined, z: number, x: number, y: number) => Math.max(0, Math.min(z - 1, areaMaxZoom(a, CONTOUR_DEM_MAXZOOM, z, x, y)));
+  map.refreshTilesWhere('contours', (z, x, y) => {
+    if (!contourLevels(z, contourDensity).length) return false;
+    const d = dz(terrainAreas, z, x, y);
+    if (d !== dz(old, z, x, y)) return true;
+    if (!packs) return false;
+    const n = 1 << z;
+    const k = 1 << (z - d);
+    for (let oy = -1; oy <= 1; oy++) {
+      const ty = y + oy;
+      if (ty < 0 || ty >= n) continue;
+      for (let ox = -1; ox <= 1; ox++) {
+        if (packChanged('terrain', d, Math.floor(((x + ox + n) % n) / k), Math.floor(ty / k))) return true;
+      }
+    }
+    return false;
+  });
 }
 
 /**
@@ -252,14 +289,6 @@ function setupContours(map: MLMap, density: number) {
     },
     'park-label',
   );
-}
-
-/** New terrain tiles or areas (a new catalog): the contours' DEM anew, and their tiles from it. */
-export function switchContours(map: MLMap) {
-  const src = map.getSource('contours') as maplibregl.VectorTileSource | undefined;
-  if (!contourDem || !src) return;
-  newContourDem();
-  src.setTiles([contourTiles(contourDensity)]);
 }
 
 export function applyTerrain(map: MLMap, t: Terrain) {
