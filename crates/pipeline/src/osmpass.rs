@@ -185,6 +185,12 @@ fn read_input(src: &Input, dir: &Path, reads: u32, run: impl FnOnce(&Path, bool)
     }
 }
 
+/// The ciphers `ssh` prefers for the planet's stream, in order: AES-GCM (hardware-accelerated on
+/// both ends: 25 -> 59 MB/s for 1 GiB from the NAS on the Mac mini, task #554); ssh uses the first
+/// the server also offers, so a server without it falls to the next.
+#[cfg(not(target_os = "wasi"))]
+const STREAM_CIPHERS: &str = "aes128-gcm@openssh.com,chacha20-poly1305@openssh.com,aes128-ctr";
+
 /// `ssh` to the NAS in batch mode (no prompts), through the job's proxy when it has one (a job
 /// under the budgets' sandbox, crate::budget::SANDBOX, connects only to this Mac: the proxy
 /// tunnels the connection, `CONNECT`, unmetered).
@@ -192,6 +198,7 @@ fn read_input(src: &Input, dir: &Path, reads: u32, run: impl FnOnce(&Path, bool)
 fn ssh() -> Command {
     let mut c = store::spawn::command("ssh");
     c.args(["-o", "BatchMode=yes", "-o", "ServerAliveInterval=30", "-o", "ConnectTimeout=20"]);
+    c.args(["-c", STREAM_CIPHERS]);
     if let Some(p) = std::env::var(crate::budget::PROXY_ENV).ok().and_then(|u| proxy_addr(&u)) {
         c.arg("-o").arg(format!("ProxyCommand=/usr/bin/nc -X connect -x {p} %h %p"));
     }
@@ -1531,6 +1538,14 @@ mod tests {
                 c
             })
         }
+    }
+
+    /// The stream's `ssh` asks for the AES-GCM-first cipher list.
+    #[test]
+    fn the_stream_ssh_prefers_aes_gcm() {
+        let a: Vec<_> = ssh().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let i = a.iter().position(|x| x == "-c").expect("-c");
+        assert!(a[i + 1].starts_with("aes128-gcm@openssh.com,"), "{a:?}");
     }
 
     /// A filter of a file on the NAS streamed over SSH (`streamed`): osmium reads it twice (the

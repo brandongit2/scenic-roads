@@ -17,7 +17,7 @@ What each step does, in detail. The steps as one table (names, chains, the check
 
    A filter whose input isn't copied here reads it off the NAS over SSH, never the SMB mount
    (`osmpass::streamed`: `ssh brandontsang@fishandchips.local cat …`, one stream for each of
-   osmium's two reads, through a named pipe; the soft mount timed out on the hour-long reads). It
+   osmium's two reads, through a named pipe, cipher list `aes128-gcm@openssh.com,chacha20-poly1305@openssh.com,aes128-ctr` (the first the NAS also offers; GCM measured 25 -> 59 MB/s on the Mac mini); the soft mount timed out on the hour-long reads). It
    needs SSH keys to the NAS (docs/macs.md) and fails saying so. A job under the budgets' sandbox
    reaches the NAS through its agent's proxy (`CONNECT`, unmetered). The bytes count as NAS reads;
    each read must carry the file's whole size (taken over SSH first). The first cut (`osmium
