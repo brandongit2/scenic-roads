@@ -13016,7 +13016,8 @@ mod tests {
         // A target the disk is short of: freed toward it, and only then.
         a.room_target = Some(room::Target { bytes: 1 << 50, by: String::new(), at: 0 });
         a.tend_caches(Some(&root));
-        assert!(a.caches_task.as_ref().is_some_and(|t| t.toward.is_some()));
+        // (One loop at a time: waited for.)
+        assert!(!copy.exists() && a.mem.toward.as_ref().is_some_and(|f| f.bytes() >= 1000));
     }
 
     #[test]
