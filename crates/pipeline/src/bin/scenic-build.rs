@@ -4633,6 +4633,7 @@ fn settle_tails(
             let (r, t) = pipeline::costin::measured(|| pipeline::unit::run_tail(&anywhere, &dir, &tools));
             read = pipeline::costin::Taken {
                 bytes: read.bytes + t.bytes,
+                local: read.local + t.local,
                 tiffs: read.tiffs + t.tiffs,
                 cpu_ms: match (read.cpu_ms, t.cpu_ms) {
                     (Some(a), Some(b)) => Some(a + b),
@@ -5143,8 +5144,11 @@ fn depth_step(out: &mut Out, args: &[String], step: &str) -> Result<()> {
     let sources = pipeline::depth::grids::declared(out.root(), &out.manifest)?;
     anyhow::ensure!(!sources.is_empty(), "no depth source is declared (inputs/sources/, docs/inputs.md §6.10)");
     drop(p);
+    // (The basemap and the sources' packs read from this Mac's whole copies where it has room for
+    // them: pipeline::localread.)
+    let local = pipeline::localread::Local::from_env(out.root()).map(std::sync::Arc::new);
     let p = phase("the basemap's water opened", Class::NasRead);
-    let water = pipeline::terrain_pack::open_water(out)?;
+    let water = pipeline::terrain_pack::open_water_with(out, local.as_deref())?;
     drop(p);
     let names: Vec<String> = ts.iter().map(|t| format!("Composing the depth of {}", t.slash())).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
@@ -5153,9 +5157,9 @@ fn depth_step(out: &mut Out, args: &[String], step: &str) -> Result<()> {
         pipeline::agent::jobs::part(k, &names);
         let c = cost_start(step, &t.slash());
         let n = if z == 3 {
-            pipeline::depth::build::build_lo(out, &sources, &water, (t.x, t.y))?
+            pipeline::depth::build::build_lo(out, &sources, &water, local.clone(), (t.x, t.y))?
         } else {
-            pipeline::depth::build::build_hi(out, &sources, &water, (t.x, t.y))?
+            pipeline::depth::build::build_hi(out, &sources, &water, local.clone(), (t.x, t.y))?
         };
         eprintln!("{step} {}: {n} tiles", t.slash());
         pipeline::control::done(step, &t.slash());
@@ -5553,7 +5557,9 @@ fn terrain_pieces(
 fn terrain_water_step(out: &mut Out, args: &[String]) -> Result<()> {
     let cov = coverage_of(out, args)?;
     let p = phase("the basemap's water opened", Class::NasRead);
-    let src = pipeline::terrain_pack::open_water(out)?;
+    // (From this Mac's whole copy where it has room for one: pipeline::localread.)
+    let local = pipeline::localread::Local::from_env(out.root());
+    let src = pipeline::terrain_pack::open_water_with(out, local.as_ref())?;
     drop(p);
     let idx = water_idx_of(out, &cov, &src, &|done, total| pipeline::agent::jobs::report(done, total, "targets"))?;
     let p = phase("the digests written", Class::NasWrite);
@@ -6286,7 +6292,9 @@ fn lakefill_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         Some(d) => d,
         None => pipeline::osmpass::latest_pass(out.root()).context("no complete OSM pass")?,
     };
+    // (Read from this Mac's whole copy when it has room for one: pipeline::localread.)
     let basemap = out.path(out.get(&format!("layers/basemap/world-{date}")).context("the pass has no basemap")?);
+    let basemap = pipeline::localread::path(pipeline::localread::Local::from_env(out.root()).as_ref(), &basemap);
     let outlines = out.path(out.get(&format!("sources/osm/{date}/outlines")).context("the pass's outlines")?);
     let decl = pipeline::inputs::sources::read(out.root(), &out.manifest)?;
     let decl = decl.role(pipeline::inputs::sources::LAKE_FILL)?;
@@ -6345,7 +6353,11 @@ fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     };
     let basemap = match opt(args, "--basemap") {
         Some(f) => PathBuf::from(f),
-        None => out.path(out.get(&format!("layers/basemap/world-{date}")).context("the pass has no basemap")?),
+        // (Read from this Mac's whole copy when it has room for one: pipeline::localread.)
+        None => pipeline::localread::path(
+            pipeline::localread::Local::from_env(out.root()).as_ref(),
+            &out.path(out.get(&format!("layers/basemap/world-{date}")).context("the pass has no basemap")?),
+        ),
     };
     let only: Option<Vec<(u32, u32)>> = opt(args, "--only").map(|o| {
         o.split(',')

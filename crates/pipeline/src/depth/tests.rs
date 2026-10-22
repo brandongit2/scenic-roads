@@ -121,13 +121,13 @@ fn the_depth_of_a_tile_follows_its_sources_detail() {
     let srcs = sources(d.path());
     let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
     let q = (T.0 >> 3, T.1 >> 3);
-    let n_lo = build_lo(&mut out, &srcs, &Fixture, q).unwrap();
+    let n_lo = build_lo(&mut out, &srcs, &Fixture, None, q).unwrap();
     assert!(
         n_lo > 0
             && out.get(&lo_logical(LAYER, q.0, q.1)).is_some()
             && out.get(&lo_logical(CLASS_LAYER, q.0, q.1)).is_some()
     );
-    let n_hi = build_hi(&mut out, &srcs, &Fixture, T).unwrap();
+    let n_hi = build_hi(&mut out, &srcs, &Fixture, None, T).unwrap();
     assert!(n_hi > 0 && out.get(&hi_logical(LAYER, T.0, T.1)).is_some());
     let lo = (3, q.0, q.1);
     let hi = (6, T.0, T.1);
@@ -182,7 +182,7 @@ fn the_depth_of_a_tile_follows_its_sources_detail() {
         .iter()
         .map(|l| out.get(l).map(str::to_string))
         .collect();
-    build_hi(&mut out, &srcs, &Fixture, T).unwrap();
+    build_hi(&mut out, &srcs, &Fixture, None, T).unwrap();
     let again: Vec<Option<String>> = [hi_logical(LAYER, T.0, T.1), hi_logical(CLASS_LAYER, T.0, T.1)]
         .iter()
         .map(|l| out.get(l).map(str::to_string))
@@ -230,8 +230,8 @@ impl WaterSource for WithMore {
 fn packs(srcs: &[Source], water: &dyn WaterSource, root: &Path) -> (Out, Vec<Option<String>>) {
     let mut out = Out::unbound(&root.join("root"), &root.join("scratch")).unwrap();
     let q = (T.0 >> 3, T.1 >> 3);
-    build_lo(&mut out, srcs, water, q).unwrap();
-    build_hi(&mut out, srcs, water, T).unwrap();
+    build_lo(&mut out, srcs, water, None, q).unwrap();
+    build_hi(&mut out, srcs, water, None, T).unwrap();
     let names = [
         lo_logical(LAYER, q.0, q.1),
         lo_logical(CLASS_LAYER, q.0, q.1),
@@ -600,7 +600,9 @@ fn measure_the_waters_reads() {
 /// at once (1: in turn, the grids too), and prints its phases, the depth files opened and read, and
 /// the digest of the tiles made. `SCENIC_DEPTH_PACKED="<id>=<index>=<folder> …"` (task #452) reads
 /// source `id`'s grids by a packed index (producers/depth/repack.py's) from its packs in `folder`
-/// instead: the same digest is the same output.
+/// instead: the same digest is the same output. With `SCENIC_CACHE` (and `SCENIC_ROOM_TARGET_MB`)
+/// set, the basemap and the packs are read from whole local copies there, as a job's are
+/// (crate::localread, task #551; the copies' time is the phase "whole local copies made").
 /// A packed index's feature as the build reads it (`Source::from_declared`'s, one grid).
 fn grid_of(root: &Path, id: &str, f: &crate::inputs::sources::Feature) -> grids::Grid {
     let decl = "name = \"N\"\ncredit = \"C\"\nlicence = \"CC0-1.0\"\nterritory = \"world\"\n[data]\nrole = \"depth\"\nformat = \"depth-grid\"\nindex = \"i.geojson\"\n[data.params]\ncode = 3\nwater = \"sea\"\nlabel = \"L\"\ndatum = \"D\"\n";
@@ -653,14 +655,18 @@ fn measure_a_real_assembly() {
         s.grids = all;
         println!("{id}: {n} grids read from packs in {}", dir.display());
     }
-    let water = crate::terrain_pack::open_water(&out).unwrap();
-    let io0 = grids::io_counts();
     crate::timings::start(if z == 3 { "depth-lo" } else { "depth" });
     let t0 = std::time::Instant::now();
+    let local = crate::localread::Local::from_env(root).map(std::sync::Arc::new);
+    let water = {
+        let _p = crate::timings::phase("the basemap's water opened", crate::timings::Class::NasRead);
+        crate::terrain_pack::open_water_with(&out, local.as_deref()).unwrap()
+    };
+    let io0 = grids::io_counts();
     let made = if z == 3 {
-        super::build::compose_lo(&out, &srcs, &water, q, upto).unwrap()
+        super::build::compose_lo(&out, &srcs, &water, local.clone(), q, upto).unwrap()
     } else {
-        super::build::compose_hi(&out, &srcs, &water, q, upto).unwrap()
+        super::build::compose_hi(&out, &srcs, &water, local.clone(), q, upto).unwrap()
     };
     let wall = t0.elapsed().as_secs_f64();
     let r = crate::timings::snapshot(true).unwrap();

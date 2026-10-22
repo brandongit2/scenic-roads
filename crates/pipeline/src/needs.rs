@@ -76,8 +76,10 @@ pub fn batch_disk(step: &str, each: impl IntoIterator<Item = u64>) -> u64 {
 /// need is its own output (`Book::disk`: a measure past its step's 90th percentile taken for a
 /// fill), and the cache is reserved once per Mac, not once per job (crate::coord's grants:
 /// `cache_mb`). (`pack` and `lo` read only the parts of the base packs they need, into their own
-/// scratch, since Task #396: their disk is their own.)
-pub const CACHES: [(&str, &[&str]); 1] = [("DEM", &["unit"])];
+/// scratch, since Task #396: their disk is their own.) And the whole local copies of the basemap
+/// and the depth sources' packs the depth's and the water's steps read (crate::localread, task #551).
+pub const CACHES: [(&str, &[&str]); 2] =
+    [("DEM", &["unit"]), (crate::localread::CACHE, &["depth", "depth-lo", "terrain-water", "lakefill", "water"])];
 
 /// The shared cache a job of `step` reads (`CACHES`), if any.
 pub fn cache_of(step: &str) -> Option<&'static str> {
@@ -317,7 +319,8 @@ fn judge(runs: &[Run], size: &str) -> Option<Fit> {
     })
 }
 
-/// A run's NAS rate (`bytes` plus `wrote`, and `creates`, over its time; its metadata work,
+/// A run's NAS rate (`bytes` less what of them it read from this Mac's own disk, `local` (its whole
+/// local copies', task #551), plus `wrote`, and `creates`, over its time; its metadata work,
 /// `listed`, `stats` and `deletes`, likewise), when it was measured the
 /// way its step runs now and says its `bytes`. A `HALO_STEPS` step's reads are its job's, not its
 /// own: `nas_read` over `nas_secs` (the job's reads and the time they took, the same on each of its
@@ -330,7 +333,7 @@ fn nas_rate(step: &str, c: &Cost) -> Option<crate::budget::nas::Rate> {
     let read_s = if HALO_STEPS.contains(&step) {
         c.sizes.get("nas_secs").filter(|&&s| s > 0).map_or(0.0, |&s| g("nas_read") / s as f64)
     } else {
-        g("bytes") / secs
+        (g("bytes") - g("local")).max(0.0) / secs
     };
     (c.v >= cost_version(step) && c.sizes.contains_key("bytes")).then(|| crate::budget::nas::Rate {
         bytes_s: read_s + g("wrote") / secs,
@@ -823,6 +826,11 @@ mod tests {
         // (Rates 20..110, and 100 the first's: the 90th percentile of 11 the 10th, 100.)
         assert_eq!(b.nas("slope", "6/9/9").map(|r| r.bytes_s), Some(100.0));
         assert_eq!(b.nas("lo", "3/1/1"), None);
+        // (Task #551: what it read of its local copies, `local`, isn't the NAS's.)
+        let mut costs = BTreeMap::new();
+        let v = cost_version("depth");
+        costs.insert(cost_key("depth", "6/1/1"), Cost { v, ..cost(100, 10, &[("bytes", 1000), ("local", 800)]) });
+        assert_eq!(Book::new(&costs).nas("depth", "6/1/1").map(|r| r.bytes_s), Some(20.0));
     }
 
     /// A halo step's NAS rate (task #260: `pack`): its job's reads over the time they took (task

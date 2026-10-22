@@ -29,6 +29,7 @@ pub mod lakefill;
 pub mod landcover;
 pub mod layers;
 pub mod legacy;
+pub mod localread;
 pub mod markconv;
 pub mod marks;
 pub mod marksjob;

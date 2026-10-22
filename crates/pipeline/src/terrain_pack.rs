@@ -84,10 +84,19 @@ pub fn water_source_pin(m: &std::collections::BTreeMap<String, String>) -> Optio
 /// The terrain's water source, open (its pin `water_source_pin`'s): the latest pass's basemap, with
 /// the fill's lakes when the manifest has a fill.
 pub fn open_water(out: &Out) -> anyhow::Result<crate::lakefill::FilledWater<crate::terrain_water::BasemapWater>> {
+    open_water_with(out, None)
+}
+
+/// `open_water`, the basemap read from `local`'s whole copy where it gives one (crate::localread:
+/// the steps reading it in thousands of ranges, its shared cache's, crate::needs::CACHES).
+pub fn open_water_with(
+    out: &Out,
+    local: Option<&crate::localread::Local>,
+) -> anyhow::Result<crate::lakefill::FilledWater<crate::terrain_water::BasemapWater>> {
     use anyhow::Context;
     let (_, c) = water_pin(&out.manifest)
         .context("no basemap (layers/basemap/world-<date>): the terrain's water is the latest pass's basemap's")?;
-    let base = crate::terrain_water::BasemapWater::open(&out.path(c), c)?;
+    let base = crate::terrain_water::BasemapWater::open(&crate::localread::path(local, &out.path(c)), c)?;
     let fill = match crate::lakefill::current(&out.manifest) {
         Some((_, f)) => Some(crate::lakefill::Fill::open(&out.path(f), f)?),
         None => None,

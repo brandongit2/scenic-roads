@@ -221,6 +221,9 @@ pub struct Reader {
     open: Mutex<Open>,
     cache: Arc<Mutex<BlockCache>>,
     keep: usize,
+    /// This Mac's whole copies of the packs (task #551: crate::localread), read in place of the
+    /// NAS's where it has them or room for them; None, the NAS's read.
+    local: Option<Arc<crate::localread::Local>>,
 }
 
 #[derive(Default)]
@@ -323,7 +326,14 @@ impl Reader {
             open: Mutex::new(Open::default()),
             cache: Arc::new(Mutex::new(BlockCache::new(512 << 20))),
             keep: keep.max(1),
+            local: None,
         }
+    }
+
+    /// It reading the packs from `local`'s copies.
+    pub fn with_local(mut self, local: Option<Arc<crate::localread::Local>>) -> Self {
+        self.local = local;
+        self
     }
 
     /// How many grids are open now.
@@ -356,8 +366,11 @@ impl Reader {
                 return Ok(e.0.clone());
             }
         }
-        let f = open_retrying(p, &|p| within(p, OPEN_DEADLINE, store::range::PlainFile::open), &OPEN_WAITS)
-            .with_context(|| format!("{}", p.display()))?;
+        // (Its whole local copy where there's one or room for one: one sequential read of the NAS,
+        // in place of a seek a grid's every block.)
+        let at = crate::localread::path(self.local.as_deref(), p);
+        let f = open_retrying(&at, &|p| within(p, OPEN_DEADLINE, store::range::PlainFile::open), &OPEN_WAITS)
+            .with_context(|| format!("{}", at.display()))?;
         IO[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut o = self.open.lock().unwrap();
         if let Some(e) = o.packs.get(p) {
@@ -1432,6 +1445,21 @@ pub(crate) mod tests {
                 assert_eq!(rb.open.lock().unwrap().packs.len(), 2);
                 assert_eq!(rb.open_count(), 14);
             }
+        }
+        // Task #551: read from whole local copies of the packs, the same, the copies made once.
+        let cache = tempfile::tempdir().unwrap();
+        let local = Arc::new(crate::localread::Local::new(d.path(), cache.path(), 0));
+        let (ra, rl) = (Reader::keeping(100), Reader::keeping(100).with_local(Some(local)));
+        let sa = sample(&ra, &a, zoom, c, r, 320, 64).unwrap().unwrap();
+        let sl = sample(&rl, &b, zoom, c, r, 320, 64).unwrap().unwrap();
+        assert_eq!(
+            sa.v.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            sl.v.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+        assert_eq!((sa.zoom, sa.class), (sl.zoom, sl.class));
+        for k in 0..2 {
+            assert_eq!(std::fs::read(cache.path().join(format!("blobs/pack{k}.tar"))).unwrap(), packs[k]);
+            store::cachefile::release(&cache.path().join(format!("blobs/pack{k}.tar")));
         }
         // A range past its pack's end is an error, never a short read.
         let mut bad = b.grids[0].clone();

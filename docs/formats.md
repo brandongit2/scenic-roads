@@ -829,7 +829,7 @@ class, id) within a tile. The client sends the id with the clicked point.
     pool's journal); `tasks/<id>/`; `pause.json` (`{pause: {mode: "drain" | "freeze", by, at} | null,
     at}`, `pipeline::control::Pause`); `costs.jsonl` (`SCENIC_COSTS`: `{unit, started}` (`unit`: the target, stored so) as a target
     begins, `{unit, peak_mb, secs, v, disk_mb, sizes}` as it ends; `sizes`, `pipeline::costin`, a
-    map of the target's input measures, absent from lines before it: `bytes` and `threads` (the threads it was given) always, `cpu_ms` (its process's CPU time over the target, its programs' as each is waited for; a z6 tile's with its tail's steps run here after its other measures were taken) where it can be read
+    map of the target's input measures, absent from lines before it: `bytes` and `threads` (the threads it was given) always, `local` (of `bytes`, those read from this Mac's own disk: a mapped or local file's, its whole local copies', task #551) where any were, `cpu_ms` (its process's CPU time over the target, its programs' as each is waited for; a z6 tile's with its tail's steps run here after its other measures were taken) where it can be read
     (bytes: what the store's readers read for the target, plus a step's own inputs: a z6 tile's extract,
     pack's and lo's base packs, pois' extract); `km2` (the tile's size in km²) and `tiffs` (GeoTIFFs opened)
     for every tile target; a z6 tile's `ways` and `vertices` kept, `piece_ways`, `dem_tiles`. A z6 tile's

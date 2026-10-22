@@ -25,6 +25,21 @@ pub fn count_read(n: u64) {
     READ.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Of `READ`, the bytes read from this Mac's own disk (a mapped file, a plain file on a local
+/// filesystem): what isn't the NAS's (pipeline::costin's `local`, task #551).
+static LOCAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The bytes of `read_bytes` read from this Mac's own disk (`LOCAL`).
+pub fn local_bytes() -> u64 {
+    LOCAL.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Counts `n` bytes read from this Mac's own disk (`READ` and `LOCAL`).
+pub(crate) fn count_local(n: u64) {
+    count_read(n);
+    LOCAL.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Random access to an immutable file's bytes.
 pub trait RangeRead: Send + Sync {
     /// The length in bytes: an error when it can't be learnt (a NAS file whose share is away).
@@ -70,7 +85,7 @@ impl MmapFile {
         // SAFETY: the files mapped here are content-named and never modified once written, and
         // the mirror evicts by unlinking (never truncating), so the mapping stays valid.
         let map = unsafe { Mmap::map(&f) }.with_context(|| format!("map {}", path.display()))?;
-        count_read(map.len() as u64);
+        count_local(map.len() as u64);
         Ok(Self { map, path: path.to_owned() })
     }
 
@@ -91,6 +106,14 @@ impl std::fmt::Debug for MmapFile {
 
 /// An error when `f` lives on a filesystem the kernel doesn't call local (an SMB share).
 fn ensure_local(f: &File) -> Result<()> {
+    if let Some(fstype) = network_fs(f)? {
+        anyhow::bail!("the file is on a network filesystem ({fstype}); NAS files are never mmapped");
+    }
+    Ok(())
+}
+
+/// The network filesystem `f` lives on (an SMB share: "smbfs"); None when the kernel calls it local.
+fn network_fs(f: &File) -> io::Result<Option<String>> {
     #[cfg(target_os = "macos")]
     {
         use std::os::fd::AsRawFd;
@@ -98,16 +121,15 @@ fn ensure_local(f: &File) -> Result<()> {
         let mut st: libc::statfs = unsafe { std::mem::zeroed() };
         // SAFETY: a valid descriptor and a valid out-pointer.
         if unsafe { libc::fstatfs(f.as_raw_fd(), &mut st) } != 0 {
-            return Err(io::Error::last_os_error().into());
+            return Err(io::Error::last_os_error());
         }
         if st.f_flags & libc::MNT_LOCAL as u32 == 0 {
-            let fstype: String = st.f_fstypename.iter().take_while(|&&c| c != 0).map(|&c| c as u8 as char).collect();
-            anyhow::bail!("the file is on a network filesystem ({fstype}); NAS files are never mmapped");
+            return Ok(Some(st.f_fstypename.iter().take_while(|&&c| c != 0).map(|&c| c as u8 as char).collect()));
         }
     }
     #[cfg(not(target_os = "macos"))]
     let _ = f;
-    Ok(())
+    Ok(None)
 }
 
 impl RangeRead for MmapFile {
@@ -168,16 +190,19 @@ impl RangeRead for PooledFile {
 
 /// A file read with plain positioned reads (no pool, never mapped): for build steps, which may read
 /// the NAS directly (they run alone, and a stalled share just stalls the step).
+/// Its reads are counted as this Mac's own disk's (`LOCAL`) when it's on one.
 pub struct PlainFile {
     file: File,
     len: u64,
+    local: bool,
 }
 
 impl PlainFile {
     pub fn open(path: &Path) -> std::io::Result<Self> {
         let file = File::open(path)?;
         let len = file.metadata()?.len();
-        Ok(Self { file, len })
+        let local = network_fs(&file)?.is_none();
+        Ok(Self { file, len, local })
     }
 }
 
@@ -191,7 +216,11 @@ impl RangeRead for PlainFile {
         check_range(self.len, off, len)?;
         let mut b = vec![0u8; len];
         self.file.read_exact_at(&mut b, off).map_err(IoError::Io)?;
-        count_read(len as u64);
+        if self.local {
+            count_local(len as u64);
+        } else {
+            count_read(len as u64);
+        }
         Ok(b)
     }
 }

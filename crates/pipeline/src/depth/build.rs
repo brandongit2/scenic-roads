@@ -17,6 +17,9 @@
 use super::compose::{compose, tiles, Block, Water, BLOCK, PAD};
 use super::fall::{self, Grid, Kind, Stored};
 use super::grids::{Reader, Source};
+
+/// This Mac's whole copies of the depth sources' packs a reader reads (crate::localread), if any.
+type Local = Option<std::sync::Arc<crate::localread::Local>>;
 use super::{CLASS_ENCODING, CLASS_LAYER, ENCODING, LAYER, NODATA, NODATA_MIN};
 use crate::out::Out;
 use crate::terrain_water::{water_tile, Poly, WaterSource, WaterTile};
@@ -610,8 +613,15 @@ fn from_children(t: &Tiles, z: u8, x: u32, y: u32) -> Result<Option<(Vec<f32>, V
 }
 
 /// The assembly of z3 tile `q`: its lo packs (z3–8); how many tiles.
-pub fn build_lo(out: &mut Out, sources: &[Source], water: &dyn WaterSource, q: (u32, u32)) -> Result<usize> {
-    let made = compose_lo(out, sources, water, q, LO_COMPOSED.1)?;
+/// (`local`: this Mac's whole copies of the sources' packs, crate::localread; None, the NAS's read.)
+pub fn build_lo(
+    out: &mut Out,
+    sources: &[Source],
+    water: &dyn WaterSource,
+    local: Local,
+    q: (u32, u32),
+) -> Result<usize> {
+    let made = compose_lo(out, sources, water, local, q, LO_COMPOSED.1)?;
     put_packs(out, &made, "lo", (3, q.0, q.1))
 }
 
@@ -621,10 +631,11 @@ pub fn compose_lo(
     out: &Out,
     sources: &[Source],
     water: &dyn WaterSource,
+    local: Local,
     q: (u32, u32),
     upto: u8,
 ) -> Result<BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>> {
-    let rd = Reader::default();
+    let rd = Reader::default().with_local(local);
     let mut wc = WaterCache::default();
     let upto = upto.min(LO_COMPOSED.1);
     Ok({
@@ -666,8 +677,15 @@ fn close(rd: Reader, wc: WaterCache) {
 }
 
 /// The piece of z6 tile `t`: its hi packs (z9–16); how many tiles.
-pub fn build_hi(out: &mut Out, sources: &[Source], water: &dyn WaterSource, t: (u32, u32)) -> Result<usize> {
-    let made = compose_hi(out, sources, water, t, HI.1)?;
+/// (`local`: as `build_lo`'s.)
+pub fn build_hi(
+    out: &mut Out,
+    sources: &[Source],
+    water: &dyn WaterSource,
+    local: Local,
+    t: (u32, u32),
+) -> Result<usize> {
+    let made = compose_hi(out, sources, water, local, t, HI.1)?;
     put_packs(out, &made, "hi", (6, t.0, t.1))
 }
 
@@ -677,10 +695,11 @@ pub fn compose_hi(
     out: &Out,
     sources: &[Source],
     water: &dyn WaterSource,
+    local: Local,
     t: (u32, u32),
     upto: u8,
 ) -> Result<BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>> {
-    let rd = Reader::default();
+    let rd = Reader::default().with_local(local);
     let upto = upto.min(HI.1);
     let mut tl = Tiles::new(out, true);
     let mut wc = WaterCache::default();

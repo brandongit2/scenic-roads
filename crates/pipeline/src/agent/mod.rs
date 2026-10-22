@@ -1087,12 +1087,16 @@ fn job_run(c: &crate::coord::Coordinator, step: &str, outcome: Outcome, done: &[
 }
 
 /// What this Mac's cache folder `cache` holds of each shared cache (crate::needs::CACHES; task
-/// #392), read off the disk: the DEM cache's files (`dem-cache.*`). Read as it asks, so whatever
-/// emptied them (room-making, the OSM pass's clear, a hand) counts.
+/// #392), read off the disk: the DEM cache's files (`dem-cache.*`), and the whole local
+/// copies (crate::localread::held). Read as it asks, so whatever emptied them (room-making, the OSM
+/// pass's clear, a hand) counts.
 fn caches_here(cache: &Path) -> BTreeMap<String, crate::coord::CacheHere> {
     // (Through the caches' accessor: sizes alone, a copy not yet in place (`.tmp`) left out.)
     let dem = store::cachefile::bytes_of(cache, "dem-cache.");
-    [("DEM", dem)].into_iter().map(|(n, b)| (n.to_string(), crate::coord::CacheHere { have_mb: b >> 20 })).collect()
+    [("DEM", dem), (crate::localread::CACHE, crate::localread::held(cache))]
+        .into_iter()
+        .map(|(n, b)| (n.to_string(), crate::coord::CacheHere { have_mb: b >> 20 }))
+        .collect()
 }
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -10867,7 +10871,15 @@ mod tests {
         // (A copy not yet in place counts for nothing.)
         std::fs::write(d.path().join("dem-cache.elev.f32.1.2.tmp"), vec![0u8; 4 << 20]).unwrap();
         assert_eq!(have("DEM"), 2);
-        assert_eq!(caches_here(d.path()).len(), 1, "the DEM cache alone");
+        assert_eq!(caches_here(d.path()).len(), 2, "the DEM cache and the depth's copies");
+        assert_eq!(have(crate::localread::CACHE), 0);
+        std::fs::create_dir_all(d.path().join("blobs/layers/basemap")).unwrap();
+        std::fs::write(d.path().join("blobs/layers/basemap/world-d.0123456789abcdef.pmtiles"), vec![0u8; 3 << 20])
+            .unwrap();
+        // (A unit's staging copy isn't of it.)
+        std::fs::create_dir_all(d.path().join("blobs/layers/lo")).unwrap();
+        std::fs::write(d.path().join("blobs/layers/lo/6-1-2.0123456789abcdef.pack"), vec![0u8; 1 << 20]).unwrap();
+        assert_eq!(have(crate::localread::CACHE), 3);
         std::fs::remove_file(d.path().join("dem-cache.elev.f32")).unwrap();
         assert_eq!(have("DEM"), 0, "cleared: missing again");
     }

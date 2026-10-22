@@ -4,6 +4,8 @@
 //!
 //! Keys (docs/formats.md, costs.jsonl): `bytes` (always: what the store's readers read for the
 //! target, store::range::read_bytes, plus the inputs a step opens itself and notes with `add`),
+//! `local` (of `bytes`, those read from this Mac's own disk, store::range::local_bytes: a whole
+//! local copy's reads, task #551; not the NAS's, so not in its NAS weight),
 //! `threads` (always), `cpu_ms` (the CPU time its process took over it, where it can be read), and the step's own: `ways`/`vertices` (z6 tile, pack, lo), `units` (pack, lo:
 //! the base packs met), `nas_read` and `nas_secs` (pack, lo: the bytes the job read of the base packs
 //! from the NAS and the seconds that took, the same on each of its targets), `buildings` (bldprep, bldtiles), `tiffs` (the GeoTIFFs opened) and `km2`
@@ -19,15 +21,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 struct State {
-    /// The store's read count and the GeoTIFFs opened as the target began.
+    /// The store's read count (and of it, the local disk's) and the GeoTIFFs opened as the target
+    /// began.
     read_at: u64,
+    local_at: u64,
     tiffs_at: u64,
     /// The process's CPU time as the target began (µs: crate::timings::cpu_us).
     cpu_at: Option<u64>,
     m: BTreeMap<String, u64>,
 }
 
-static STATE: Mutex<State> = Mutex::new(State { read_at: 0, tiffs_at: 0, cpu_at: None, m: BTreeMap::new() });
+static STATE: Mutex<State> =
+    Mutex::new(State { read_at: 0, local_at: 0, tiffs_at: 0, cpu_at: None, m: BTreeMap::new() });
 
 /// The GeoTIFFs this process has opened (crate::geotiff::Tiff::open).
 static TIFFS: AtomicU64 = AtomicU64::new(0);
@@ -46,6 +51,7 @@ fn state() -> std::sync::MutexGuard<'static, State> {
 pub fn begin() {
     let mut s = state();
     s.read_at = store::range::read_bytes();
+    s.local_at = store::range::local_bytes();
     s.tiffs_at = TIFFS.load(Ordering::Relaxed);
     s.cpu_at = crate::timings::cpu_us();
     s.m.clear();
@@ -81,14 +87,19 @@ pub fn set(key: &str, n: u64) {
     state().m.insert(key.to_string(), n);
 }
 
-/// The target's measures (since `begin`), with `bytes` (the store's reads added), `threads`, and
-/// `tiffs` where any were opened or the step noted an area.
+/// The target's measures (since `begin`), with `bytes` (the store's reads added), `local` where any
+/// of them were the local disk's, `threads`, and `tiffs` where any were opened or the step noted an
+/// area.
 pub fn take() -> BTreeMap<String, u64> {
     let mut s = state();
     let read = store::range::read_bytes().saturating_sub(s.read_at);
+    let local = store::range::local_bytes().saturating_sub(s.local_at);
     let tiffs = TIFFS.load(Ordering::Relaxed).saturating_sub(s.tiffs_at);
     let mut m = std::mem::take(&mut s.m);
     *m.entry("bytes".into()).or_default() += read;
+    if local > 0 {
+        *m.entry("local".into()).or_default() += local;
+    }
     if tiffs > 0 || m.contains_key("km2") {
         m.insert("tiffs".into(), tiffs);
     }
@@ -99,11 +110,12 @@ pub fn take() -> BTreeMap<String, u64> {
     m
 }
 
-/// What `measured` took: the bytes read, the GeoTIFFs opened and the CPU time (ms; None where
-/// it can't be read).
+/// What `measured` took: the bytes read (and of them, the local disk's), the GeoTIFFs opened and
+/// the CPU time (ms; None where it can't be read).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Taken {
     pub bytes: u64,
+    pub local: u64,
     pub tiffs: u64,
     pub cpu_ms: Option<u64>,
 }
@@ -113,7 +125,12 @@ pub struct Taken {
 /// own (`child_reads`; their CPU as each is waited for) among them. (Reads and CPU on other
 /// threads meanwhile are counted too.)
 pub fn measured<T>(f: impl FnOnce() -> T) -> (T, Taken) {
-    let (r0, t0, c0) = (store::range::read_bytes(), TIFFS.load(Ordering::Relaxed), crate::timings::cpu_us());
+    let (r0, l0, t0, c0) = (
+        store::range::read_bytes(),
+        store::range::local_bytes(),
+        TIFFS.load(Ordering::Relaxed),
+        crate::timings::cpu_us(),
+    );
     let v = f();
     let cpu_ms = match (c0, crate::timings::cpu_us()) {
         (Some(a), Some(b)) => Some(b.saturating_sub(a) / 1000),
@@ -121,6 +138,7 @@ pub fn measured<T>(f: impl FnOnce() -> T) -> (T, Taken) {
     };
     let t = Taken {
         bytes: store::range::read_bytes().saturating_sub(r0),
+        local: store::range::local_bytes().saturating_sub(l0),
         tiffs: TIFFS.load(Ordering::Relaxed).saturating_sub(t0),
         cpu_ms,
     };
@@ -174,6 +192,9 @@ pub fn child_reads(p: &Path) {
 /// target's whole time, the tail's included).
 pub fn add_to(m: &mut BTreeMap<String, u64>, t: Taken) {
     *m.entry("bytes".into()).or_default() += t.bytes;
+    if t.local > 0 {
+        *m.entry("local".into()).or_default() += t.local;
+    }
     if t.tiffs > 0 || m.contains_key("km2") {
         *m.entry("tiffs".into()).or_default() += t.tiffs;
     }
@@ -246,7 +267,7 @@ mod tests {
         assert!(t.bytes >= 1024 && t.tiffs >= 4);
         assert!(!p.exists());
         let mut m = BTreeMap::from([("km2".to_string(), 5)]);
-        add_to(&mut m, Taken { bytes: 7, tiffs: 2, cpu_ms: None });
+        add_to(&mut m, Taken { bytes: 7, local: 0, tiffs: 2, cpu_ms: None });
         assert_eq!((m["bytes"], m["tiffs"]), (7, 2));
         assert!(!m.contains_key("cpu_ms"));
     }
