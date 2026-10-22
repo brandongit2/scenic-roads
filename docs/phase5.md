@@ -212,7 +212,7 @@ after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sit
 ### Heritage and area flags
 
 The heritage chain (heritage.py, heritagewd.py, heritagedetails.py, areadetails.py, whsshapes.py,
-pipeline::filterprops, pageviews.py, interest.py, layers.py) runs in a stand-in root laid out as the
+pipeline::filterprops, pageviews.py, interest.py) runs in a stand-in root laid out as the
 repository (`dem/` the app's scripts, `data/heritage/` the pass's working copy of the answers;
 docs/inputs.md §6.5.2), split into two jobs so the z6 tiles never wait on Wikidata.
 - **The registers** are an input (docs/inputs.md §6.5): heritage-sites links the accepted registers
@@ -237,7 +237,10 @@ docs/inputs.md §6.5.2), split into two jobs so the z6 tiles never wait on Wikid
   sample z6 tile), from about a fifth of the bytes: copied here first when there's room, read
   three times by osmium. heritagewd.py indexes named objects with a Wikidata item on a 0.01°
   grid; areadetails.py asks Wikidata for parks the answers lack; pageviews.py takes the pass's
-  months. The layers' `en` is the things' own; the server adds translations. Outputs:
+  months. The map's layers are written last, in Rust (`pipeline::heritage_layers`: the lean
+  layer files, the sites' popup records, the areas simplified by a port of GEOS's topology-preserving
+  simplifier, `pipeline::tpsimplify`). The layers' `en` is the things' own; the server adds
+  translations. Outputs:
   `work/heritage/<d>/<stem>`.
 - **Its readers:** marks (`markconv::heritage_source`, waiting for it), which saves the World Heritage
   dots' ids (`work/marks/heritage-dots`, with the `layer-heritage` whose record indexes they key);

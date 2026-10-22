@@ -278,7 +278,7 @@ function longSource(d: Detail): string | undefined {
 
 export function enrichHeritage(d: Detail): Enriched {
   const facts: string[] = [], rows: [string, string][] = [], links: [string, string][] = [];
-  // The site's own record (dem/layers.py leaves it out of the map's layer).
+  // The site's own record (pipeline::heritage_layers leaves it out of the map's layer).
   const p = d.props ?? {};
   if (p.category ?? p.type) facts.push(String(p.category ?? p.type));
   if (p.in_danger) facts.push('in danger');

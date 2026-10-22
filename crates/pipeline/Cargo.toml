@@ -28,6 +28,8 @@ toml = "0.9"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 # (The regions' set operations, in integer coordinates: docs/inputs.md §6.1.4.)
 i_overlay = { version = "=9.0.0", default-features = false }
+# (Names compared as the heritage chain does: crate::heritage_layers.)
+unicode-normalization = "0.1"
 
 # (WebAssembly has no sockets, and ring's C doesn't build for it: there the programs read what they
 # need from their inputs, docs/workers.md.)

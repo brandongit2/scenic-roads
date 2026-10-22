@@ -1,5 +1,5 @@
 //! The `marks` job (docs/phase5.md "Build"): landmark points from their candidates, as the heritage
-//! chain's scripts make theirs (interest::poi_filter_props, dem/interest.py, dem/layers.py), for markdata and the
+//! chain's scripts make theirs (interest::poi_filter_props, dem/interest.py, crate::heritage_layers), for markdata and the
 //! thinned tiles (`markconv::write`). This part: the stops & sights.
 
 use crate::interest::{
@@ -334,7 +334,7 @@ pub fn from_unit(c: &crate::candidates::Cand, peak: Option<Value>, facts: &HashM
 }
 
 /// The named peaks with a height, by height (stable over the map's order), for the highest in
-/// view (dem/layers.py's summits list: positions to 5 decimals, heights whole).
+/// view (positions to 5 decimals, heights whole).
 pub fn summits_list(pts: &[Point]) -> Vec<(marks::SummitRec, String)> {
     let k = marks::kind_index("peak").unwrap();
     let mut named: Vec<(f64, f64, f64, String)> = pts
@@ -350,7 +350,7 @@ pub fn summits_list(pts: &[Point]) -> Vec<(marks::SummitRec, String)> {
     named
         .into_iter()
         .enumerate()
-        // (As layers.py rounds: the points to 6 decimals, then the summits list to 5.)
+        // (The points to 6 decimals, as the layers hold them, then the list to 5.)
         .map(|(rank, (e, x, y, n))| {
             (
                 marks::SummitRec {

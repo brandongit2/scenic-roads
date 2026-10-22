@@ -248,10 +248,10 @@ pub fn poi_base(fame: f64, named: bool, rich: usize, size_rank: f64) -> f64 {
 }
 
 /// A repeated name waits until the nearest more interesting place of its kind and name is 2^NAME_GAP
-/// times the label spacing away on screen (dem/layers.py).
+/// times the label spacing away on screen (crate::heritage_layers, crate::marksjob).
 pub const NAME_GAP: f64 = 3.0;
 
-/// layers.py `same_names`: each named place's mz at least NAME_GAP after the zoom where the nearest
+/// Each named place's mz at least NAME_GAP after the zoom where the nearest
 /// more interesting place of its kind and name spans a pixel (between equally known ones, the more
 /// isolated is the more interesting). `order`: the places as the layer has them (by fame); `key`:
 /// a place's kind group and name; `fa`, `ia` rounded as the files hold them. Returns how many wait.

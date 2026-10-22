@@ -20,7 +20,7 @@ Rideau Canal in 6) gets one dot at its centre, on the site: of the site's points
 inside its areas clear of their edges, and its components with no outline near), the one with the
 least total distance to all of the site (the cells it touches at 1/256 of its extent: lines, areas
 and components alike). So a winding canal's dot is on the canal, and a site in scattered pieces
-has it on the piece nearest the middle. The components are drawn small from zoom 10 (layers.py).
+has it on the piece nearest the middle. The components are drawn small from zoom 10 (pipeline::heritage_layers).
 A site with one component keeps UNESCO's point.
 
 Input: data/build/heritage.json (the sites in our regions: components, names; a World Heritage

@@ -896,7 +896,7 @@ pass's working copy of the chain's answers (`cache/heritage-<date>/`).
 #### 6.5.3 English names, park facts and pageviews
 
 The old `sources/registers/legacy-seeds` archive is read by nothing:
-- **English:** the heritage layers' `en` is the thing's own English only (`dem/names.py`
+- **English:** the heritage layers' `en` is the thing's own English only (`pipeline::heritage_layers`
   `english_at`: a site's UNESCO name or English Wikipedia title, an area's `name_en`). Other English
   is the server's, from the translations as it serves the layers (docs/names.md). A name lacking English
   goes onto the translations' to-do (`pipeline::namestodo` reads the landmarks' `en`).

@@ -1074,6 +1074,7 @@ dependencies = [
  "toml",
  "tower",
  "tower-http",
+ "unicode-normalization",
  "ureq",
  "weezl",
  "xxhash-rust",

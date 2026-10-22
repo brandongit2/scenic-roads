@@ -3451,8 +3451,8 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 
 /// heritage [--pass <date>] [--dem dir] [--cache dir]: the rest of the heritage chain
 /// (heritagewd, heritagedetails, areadetails, whsshapes, pipeline::filterprops, interest's heritage part,
-/// pageviews, layers) in the stand-in root on the heritage-sites job's outputs (docs/phase5.md
-/// "Heritage and area flags"), over the same cover: the pass's areas and named objects within it
+/// pageviews; then the map's layers, pipeline::heritage_layers) in the stand-in root on the
+/// heritage-sites job's outputs (docs/phase5.md "Heritage and area flags"), over the same cover: the pass's areas and named objects within it
 /// (named with the chain's filter), and for the World Heritage parts the pass's `whs` set within
 /// it (one clip per set and cover, kept in the cache: `whs_over_cover`). The park facts are the pass's answers'
 /// (`areas-wikidata.json`: areadetails.py asks Wikidata for those it lacks); the pageview months are
@@ -3488,7 +3488,6 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         (2, "filterprops", vec![]),
         (3, "pageviews.py", vec!["--epoch", date.as_str()]),
         (3, "interest.py", vec![]),
-        (4, "layers.py", vec![]),
     ];
     parts.start(0);
     stage(0, 5, "reading the pass's answers and the heritage sites");
@@ -3585,11 +3584,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             parts.start(*part);
         }
         let mine: Vec<&str> = chain.iter().filter(|c| c.0 == *part).map(|c| c.1).collect();
-        stage(
-            mine.iter().position(|s| s == script).unwrap_or(0) as u64,
-            mine.len() as u64 + (*part == 4) as u64,
-            script,
-        );
+        stage(mine.iter().position(|s| s == script).unwrap_or(0) as u64, mine.len() as u64, script);
         if *script == "filterprops" {
             // (Ours: pipeline::filterprops.)
             let _p = phase("filterprops", Class::Mixed);
@@ -3598,9 +3593,12 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             heritage_script(&root, &dem, out.root(), Some(&declared), script, sargs)?;
         }
     }
+    parts.start(4);
+    stage(0, 2, "the map's layers");
+    pipeline::heritage_layers::write_all(&b, &root.join("data/heritage/wd/items.jsonl"))?;
     stage(1, 2, "uploading");
     let p = phase("uploaded", Class::NasWrite);
-    // Outputs (not the stops & sights' stand-ins, nor the layers made from them), the pass's
+    // Outputs (not the stops & sights' stand-ins), the pass's
     // earlier ones this run didn't make dropped.
     let mut wrote: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut files: Vec<PathBuf> = std::fs::read_dir(&b)?.flatten().map(|e| e.path()).filter(|p| p.is_file()).collect();
@@ -3610,12 +3608,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         pipeline::agent::jobs::within(k as f64 / n);
         let name = p.file_name().unwrap().to_string_lossy().into_owned();
         let (stem, ext) = name.split_once('.').unwrap_or((name.as_str(), "bin"));
-        if inputs.contains(&name.as_str())
-            || name.ends_with(".tmp")
-            || name.starts_with('.')
-            || stem.starts_with("layer-pois")
-            || stem == "layer-summits"
-        {
+        if inputs.contains(&name.as_str()) || name.ends_with(".tmp") || name.starts_with('.') {
             continue;
         }
         let l = format!("work/heritage/{date}/{stem}");

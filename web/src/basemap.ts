@@ -840,7 +840,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
           'text-opacity': TEXT_OPACITY,
         },
       },
-      // The components of a World Heritage Site shown as one dot (dem/layers.py: pt, cn), small
+      // The components of a World Heritage Site shown as one dot (pipeline::heritage_layers: pt, cn), small
       // and unnamed, fading in from zoom 10, under the dots.
       {
         id: 'heritage-part',
