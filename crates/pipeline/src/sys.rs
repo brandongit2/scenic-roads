@@ -425,6 +425,17 @@ pub fn memory_pressure() -> Option<u32> {
     None
 }
 
+/// The memory available now (%: the kernel's `kern.memorystatus_level`, what `memory_pressure`
+/// prints as its free percentage); None where it can't be read.
+pub fn memory_free_pct() -> Option<u32> {
+    #[cfg(target_os = "macos")]
+    {
+        sysctl::<u32>("kern.memorystatus_level").filter(|&p| p <= 100)
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
+}
+
 /// The swap in use now (bytes); None where it can't be read.
 pub fn swap_used() -> Option<u64> {
     #[cfg(target_os = "macos")]

@@ -132,6 +132,8 @@ struct Snap {
     view: Value,
     pause: Value,
     helpers: Vec<Value>,
+    /// Each member's addresses, from its heartbeat's broker: where a page reads its `/work/live`.
+    macs: Vec<Value>,
 }
 
 /// The forecast run here off the reads (`PageView::forecast_run`): the last one done; the one
@@ -251,11 +253,12 @@ impl PageView {
         let status = json("state/status.json").unwrap_or(Value::Null);
         let view = json(&super::pool::view_path(inp.term)).map_or(Value::Null, |v| v["view"].clone());
         let pause = json("state/build/pause.json").unwrap_or(Value::Null);
-        // (Each member's host, from its heartbeat; then its own status.)
-        let helpers: Vec<Value> = inp
-            .members
+        // (Each member's host and addresses, from its heartbeat; then its own status.)
+        let beats: Vec<Value> =
+            inp.members.iter().filter_map(|m| json(&format!("state/pool/members/{m}.json"))).collect();
+        let macs: Vec<Value> = beats.iter().filter_map(mac_of).collect();
+        let helpers: Vec<Value> = beats
             .iter()
-            .filter_map(|m| json(&format!("state/pool/members/{m}.json")))
             .filter_map(|b| b["host"].as_str().map(str::to_string))
             .filter_map(|h| json(&format!("state/helpers/{h}.json")))
             .filter(|h| now.saturating_sub(h["beat"].as_u64().unwrap_or(0)) < HELPER_FRESH_S)
@@ -347,7 +350,7 @@ impl PageView {
             // (Numbered here: the page's cursor, rising as events arrive.)
             h.add(e);
         }
-        st.snap = Some(Snap { status, view, pause, helpers });
+        st.snap = Some(Snap { status, view, pause, helpers, macs });
         st.last = Some(Instant::now());
     }
 
@@ -403,7 +406,16 @@ fn answer(s: &Snap, forecast: Option<&Forecast>, h: Option<&History>, epoch: &st
         "epoch": epoch,
         "rates": h.map(|h| h.rates(now, 24)),
         "app": app,
+        "macs": s.macs,
     })
+}
+
+/// A member's host and addresses (`{host, urls, https}`: its broker's, HTTP then HTTPS) from its
+/// heartbeat; None without a host or a broker (an app before the brokers, or their switch off).
+fn mac_of(beat: &Value) -> Option<Value> {
+    let host = beat["host"].as_str()?;
+    let b: crate::coord::brokers::Broker = serde_json::from_value(beat.get("broker")?.clone()).ok()?;
+    Some(serde_json::json!({ "host": host, "urls": b.urls, "https": b.https }))
 }
 
 impl PageView {
@@ -567,7 +579,11 @@ mod tests {
             (ev(1, now - 50, "start") + &ev(2, now - 20, "done")).as_bytes(),
         );
         put(root, &format!("state/coord/history/{day}/m-b.jsonl"), ev(9, now - 30, "lease").as_bytes());
-        put(root, "state/pool/members/m-a.json", br#"{"member":"m-a","host":"m1"}"#);
+        put(
+            root,
+            "state/pool/members/m-a.json",
+            br#"{"member":"m-a","host":"m1","broker":{"urls":["http://100.1.1.1:8090"],"https":"https://m1.t.ts.net/"}}"#,
+        );
         put(root, "state/pool/members/m-b.json", br#"{"member":"m-b","host":"gone"}"#);
         put(root, "state/helpers/m1.json", format!(r#"{{"host":"m1","beat":{now},"regions":[1]}}"#).as_bytes());
     }
@@ -606,6 +622,11 @@ mod tests {
         assert!(a["agent"]["helpers"][0].get("regions").is_none());
         assert_eq!(a["seq"], 3);
         assert_eq!(a["rates"]["rows"].as_array().unwrap().len(), 24);
+        // (Each member with a broker, where its `/work/live` is read; one without, missing.)
+        assert_eq!(
+            a["macs"],
+            serde_json::json!([{ "host": "m1", "urls": ["http://100.1.1.1:8090"], "https": "https://m1.t.ts.net/" }])
+        );
     }
 
     #[test]

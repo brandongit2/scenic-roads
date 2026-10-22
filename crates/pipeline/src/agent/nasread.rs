@@ -348,6 +348,30 @@ pub fn with<T: Send + 'static>(p: &Path, f: impl FnOnce() -> io::Result<T> + Sen
     noted(p, records().call(p, DEADLINE, f))
 }
 
+/// How long the NAS takes to answer one stat of `p` (the latency series, crate::agent::live), on
+/// the records' readers within `DEADLINE`: None when it didn't answer in time, or when the last
+/// probe is still stuck in its call (never two at once, so a hung share holds one reader at most).
+pub fn probe(p: &Path) -> Option<Duration> {
+    static PROBING: AtomicBool = AtomicBool::new(false);
+    /// Clears `PROBING` as the call's closure is dropped: once it ran, or refused unrun.
+    struct Done;
+    impl Drop for Done {
+        fn drop(&mut self) {
+            PROBING.store(false, Ordering::SeqCst);
+        }
+    }
+    if PROBING.swap(true, Ordering::SeqCst) {
+        return None;
+    }
+    let (owned, done) = (p.to_path_buf(), Done);
+    let r = records().call(p, DEADLINE, move || {
+        let _done = done;
+        let t = std::time::Instant::now();
+        std::fs::metadata(owned).is_ok().then(|| t.elapsed())
+    });
+    r.ok().flatten()
+}
+
 /// The watchdog's file in the agent's folder while its loop is stalled (`Stall`).
 pub const STALL_FILE: &str = "loop-stall.json";
 /// A loop that hasn't finished a round in this long is stalled (its start counts as a round).
@@ -425,6 +449,15 @@ pub fn stall(home: &Path) -> Option<Stall> {
 pub(crate) mod tests {
     use super::*;
     use std::time::Instant;
+
+    #[test]
+    fn a_probe_times_a_stat_and_one_that_fails_is_none() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(probe(d.path()).is_some_and(|t| t < DEADLINE));
+        assert_eq!(probe(&d.path().join("missing")), None);
+        // (Its flag cleared each time: a third answers too.)
+        assert!(probe(d.path()).is_some());
+    }
 
     /// A NAS whose calls on paths starting with `stuck` never return (until `release` drops),
     /// the rest a real share's.

@@ -173,4 +173,7 @@ kind's others, with templated words.
 - **Activity:** the hours, and a sentence per event.
 - **Details:** tables, among them the steps table itself.
 
+Each Mac's measures over time (NAS latency, load, memory, power, disk, jobs) come from its own
+`/work/live` (docs/pool.md §10, Live); a series missing is shown as no measure yet.
+
 Colours are the stage's (`STAGE_COLOURS` in `dash.js`), never a step's own.

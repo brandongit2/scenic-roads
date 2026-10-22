@@ -325,6 +325,8 @@ pub struct Shared {
     /// The page's data as this Mac reads it from the NAS (crate::agent::pageview): `/work/swarm`
     /// and `/work/history` answered from it once it has a snapshot.
     pub pageview: Option<Arc<crate::agent::pageview::PageView>>,
+    /// This Mac's live store (crate::agent::live): `/work/live`. None: not given one (503).
+    pub live: Option<Arc<crate::agent::live::Store>>,
     /// A viewer alone (`Coordinator::viewer`): the page and its views, nothing else (but this
     /// Mac's own page's asks, passed to its agent).
     pub viewer: bool,
@@ -989,7 +991,8 @@ impl Coordinator {
     }
 
     /// A viewer alone, from birth, answering on `listener` (docs/pool.md §10): the page and its
-    /// views (`/work/swarm`, `/work/history`, `/work/steps`, from a pageview once it's given one),
+    /// views (`/work/swarm`, `/work/history`, `/work/steps`, from a pageview once it's given one;
+    /// `/work/live`, from the live store),
     /// every other call refused. No state of a coordinator's: nothing loaded nor kept (its token,
     /// the one thing it makes, in a scratch folder of its own, emptied as it starts), no history,
     /// no background loop, no page address written.
@@ -1154,6 +1157,7 @@ impl Coordinator {
             refused: BTreeMap::new(),
             brokers: None,
             pageview: None,
+            live: None,
             viewer,
             forward: None,
             page_acts: Vec::new(),
@@ -2012,6 +2016,16 @@ impl Coordinator {
     /// Whether it serves the page's data from a pageview.
     pub fn has_pageview(&self) -> bool {
         self.shared.lock().unwrap().pageview.is_some()
+    }
+
+    /// `/work/live` answered from `store` (crate::agent::live) from here on.
+    pub fn set_live(&self, store: Arc<crate::agent::live::Store>) {
+        self.shared.lock().unwrap().live = Some(store);
+    }
+
+    /// Whether it answers `/work/live`.
+    pub fn has_live(&self) -> bool {
+        self.shared.lock().unwrap().live.is_some()
     }
 
     /// Its state as the pool keeps it per term (docs/pool.md §6.2, §7.5): the jobs' leases (each
@@ -3606,6 +3620,13 @@ fn route(
             let s = shared.lock().unwrap();
             Ok((200, serde_json::json!({ "seq": s.history.seq(), "events": s.history.since(since, max) })))
         }
+        "/work/live" => {
+            // This Mac's measures over time (crate::agent::live): a window, or the points since.
+            let a: crate::agent::live::Ask = serde_json::from_slice(body).unwrap_or_default();
+            let live = shared.lock().unwrap().live.clone();
+            let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            Ok(live.map_or_else(not_ready, |l| (200, l.answer(&a, unix))))
+        }
         "/work/steps" => {
             // The steps table (crate::agent::steps, docs/pipeline.md): every step's and task's row
             // and the stages, for the page's words and colours (read once a load).
@@ -3962,6 +3983,7 @@ mod http {
             .route("/work/swarm", any(json))
             .route("/work/history", any(json))
             .route("/work/steps", any(json))
+            .route("/work/live", any(json))
             .route("/work/timings", any(json))
             .route("/work/floors", any(json))
             .route("/work/in/{lease}/{*path}", get(input))
@@ -4179,8 +4201,8 @@ mod http {
         req.extensions_mut().insert(Caller { local, page: key.is_none(), from });
         let is_page = req.method() == Method::GET
             && (path == "/work" || path.strip_prefix("/work/").is_some_and(|p| PAGE.iter().any(|(n, _, _)| *n == p)));
-        let is_view =
-            req.method() == Method::POST && matches!(path.as_str(), "/work/swarm" | "/work/history" | "/work/steps");
+        let is_view = req.method() == Method::POST
+            && matches!(path.as_str(), "/work/swarm" | "/work/history" | "/work/steps" | "/work/live");
         if is_page || is_view {
             return next.run(req).await;
         }
@@ -8664,6 +8686,42 @@ mod tests {
     /// the preflight answered for `Authorization`, `X-Worker`, `Range` and `PUT` (and a private
     /// network's ask), every answer allowed to that page. Switched off, the same page is refused as
     /// before, its preflight unanswered.
+    #[test]
+    fn the_live_store_answers_the_page_and_a_members_with_cors() {
+        let (_d, c, w) = start();
+        let addr = w.urls()[0].trim_start_matches("http://").to_string();
+        let page = "https://m1.t.ts.net";
+        let post = |origin: Option<&str>| {
+            let mut h = vec![("Content-Type", "application/json")];
+            h.extend(origin.map(|o| ("Origin", o)));
+            raw(&addr, "POST", "/work/live", &h, br#"{"range": 60}"#)
+        };
+        // No store yet: not ready.
+        assert_eq!(status(&post(None)), 503);
+        let store = crate::agent::live::Store::new(None, "m4");
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        store.record(crate::agent::live::LOAD, now, 2.5);
+        c.set_live(store);
+        let r = post(None);
+        assert_eq!(status(&r), 200, "{r}");
+        let a: serde_json::Value = serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!((a["host"].as_str(), a["step"].as_u64()), (Some("m4"), Some(1)));
+        assert_eq!(a["series"]["load1"][0][2], 2.5);
+        // Another Mac's page: allowed once it's a member's (its brokers told), never elsewhere's.
+        assert_eq!(status(&post(Some(page))), 403);
+        let own = brokers::Broker { urls: c.contact.urls.clone(), ..Default::default() };
+        let m1 = brokers::Peer {
+            member: "m-1".into(),
+            host: "m1".into(),
+            lead: false,
+            broker: Some(brokers::Broker { https: Some(format!("{page}/")), ..Default::default() }),
+        };
+        c.set_brokers(Some(brokers::Brokers::new(vec![m1], &own)));
+        let r = post(Some(page));
+        assert_eq!((status(&r), header_of(&r, "access-control-allow-origin")), (200, Some(page)), "{r}");
+        assert_eq!(status(&post(Some("https://evil.example"))), 403);
+    }
+
     #[test]
     fn a_members_page_takes_a_brokers_task_with_cors_and_off_is_refused() {
         let (d, c, w) = start();

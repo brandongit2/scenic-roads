@@ -548,6 +548,15 @@ impl Sampler {
         w.current()
     }
 
+    /// The jobs watched now, and what they hold together (MB, as last sampled; None while none
+    /// is measured): the live store's `jobs` and `held_mb` (crate::agent::live).
+    pub fn watched(&self) -> (usize, Option<u64>) {
+        let Ok(g) = self.inner.lock() else { return (0, None) };
+        let ws: Vec<&Watch> = g.watches.iter().flatten().collect();
+        let held: Vec<u64> = ws.iter().filter_map(|w| w.held).collect();
+        (ws.len(), (!held.is_empty()).then(|| held.iter().sum()))
+    }
+
     /// What slot `k`'s job holds now (MB), as last sampled.
     pub fn held(&self, k: usize) -> Option<u64> {
         self.inner.lock().ok()?.watches.get(k)?.as_ref()?.held

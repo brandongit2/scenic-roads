@@ -153,7 +153,8 @@ Common rules:
   per step); a card per machine; the pool (who leads, "Make lead", "Take it"); the regions; the activity (last day by
   the hour, events); folded details (leases, waits, each Mac's capacity, workers, the steps table). It reads
   `/work/steps` once (the steps table: every word about a step), `/work/swarm` every 10 s and
-  `/work/history` incrementally. A 503 (the Mac hasn't read the build's state yet) says so quietly and asks
+  `/work/history` incrementally; each Mac's measures over time from its own port's `/work/live`
+  (docs/pool.md §10, Live). A 503 (the Mac hasn't read the build's state yet) says so quietly and asks
   again every 2 s, what's shown said to be stale if it had an answer before, an error only after a
   minute of them; a new `epoch` (the
   Mac's agent restarted) starts the events again. "Since you last looked" goes by the events' time,

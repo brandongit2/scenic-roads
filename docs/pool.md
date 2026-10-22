@@ -947,6 +947,28 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   `cond::Resources::chip`). Each lane runs at its slot's measured speed (else the lead's other
   slots' guess, four fifths of its pace, or a member's): slots on one Mac share its cores, so the
   forecast is optimistic until each slot's speed is measured under that sharing.
+- **Live** (`agent::live`, task #514): each Mac's own measures over time, in rings on its own
+  disk (the agent's folder's `live.bin`, never the NAS; written every 5 minutes and as the agent
+  stops, read back as it starts): a point a second for an hour, every 10 s for a day, a minute
+  for three days, each point the least, mean and most of its samples. Sampled on the agent's own
+  threads, never its loop: every second the load (`load1`), memory available (`mem_free_pct`,
+  `kern.memorystatus_level`), its pressure (`mem_pressure`: 1, 2, 4) and the swap (`swap_mb`),
+  and the jobs running (`jobs`); every 5 s what they hold (`held_mb`, the memory guard's last
+  sample); every 10 s the disk's free space (`disk_free_gb`); the power (`ac`, `battery_pct`) and
+  the owner's idleness (`idle_s`) as each loop reads them. The NAS's latency (`nas_ms`) a second
+  only while a build runs here (a job of this Mac's, or its coordinator's leases out): one stat of
+  `catalog/` on the records' readers (`nasread::probe`, never two at once, a stat past 20 s
+  dropped); the status's `nas_ms` is its last second within half a minute. Every Mac's port
+  answers `POST /work/live` with no key: `{range}` (seconds back from now, an hour by default,
+  three days at most) or `{since}` (unix seconds: the points from then on, the last again as it
+  may have grown), `series` to pick names; the answer `{host, now, step, from, series: {name:
+  [[t, lo, mean, hi], …]}}` from the finest ring covering the window. A series missing has no
+  measure yet (or none in the window): readers say so, never zero. 503 until the agent gives its
+  port the store. Another Mac's page reads it directly: `/work/swarm`'s `macs` lists each member's
+  host and addresses (`{host, urls, https}`, its heartbeat's broker; none with the brokers'
+  switch off), and the answer is allowed to the members' origins (CORS as for tasks, §8; the
+  M6's https://map.brandontsang.net among them), the page reading by the scheme it was served
+  over.
 - **Views** (menu bar, worker page, `scenic lead`, `scenic status`) read the
   agent's `pool.lead` (`crate::agent::lead::View`) or the fresher `agent/pool/view.json`
   (`lead::own_status`): each member's state and whether the lead can be handed to it

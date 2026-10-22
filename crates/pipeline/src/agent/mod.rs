@@ -31,6 +31,7 @@ pub mod gc;
 pub mod heal;
 pub mod jobs;
 pub mod lead;
+pub mod live;
 pub mod memguard;
 pub mod nasread;
 pub mod pageview;
@@ -1180,9 +1181,6 @@ fn find_live_root(mount: bool) -> Option<PathBuf> {
 static CHECKING: std::sync::Mutex<std::collections::BTreeSet<PathBuf>> =
     std::sync::Mutex::new(std::collections::BTreeSet::new());
 
-/// How long the NAS took to answer the last check (ms; u64::MAX: it didn't), for the status.
-static ANSWERED_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
-
 /// Whether `root` answers within a few seconds (a stat on a worker thread; a hung share counts as
 /// away, and its thread is left to finish on its own, the only one for that share until it does).
 fn answers(root: &Path) -> bool {
@@ -1191,15 +1189,12 @@ fn answers(root: &Path) -> bool {
     }
     let (tx, rx) = std::sync::mpsc::channel();
     let p = root.to_path_buf();
-    let t = Instant::now();
     std::thread::spawn(move || {
         let ok = std::fs::metadata(p.join("catalog")).is_ok();
         CHECKING.lock().unwrap().remove(&p);
         let _ = tx.send(ok);
     });
-    let ok = rx.recv_timeout(Duration::from_secs(8)).unwrap_or(false);
-    ANSWERED_MS.store(if ok { t.elapsed().as_millis() as u64 } else { u64::MAX }, std::sync::atomic::Ordering::Relaxed);
-    ok
+    rx.recv_timeout(Duration::from_secs(8)).unwrap_or(false)
 }
 
 /// The agent's lock (one agent per Mac): an exclusive flock on a local file, held while it runs.
@@ -1321,6 +1316,9 @@ pub struct Agent {
     /// after it failed).
     pageview: std::sync::Arc<pageview::PageView>,
     pageview_reading: bool,
+    /// This Mac's live store (crate::agent::live), kept in its folder and answered on its port's
+    /// `/work/live`: made as the loop starts, on a real Mac with the agent's lock alone.
+    live: Option<std::sync::Arc<live::Store>>,
     /// The pages' cancel and retry asks waiting for the pool's run (a tick held it).
     page_acts: Vec<crate::pool::driver::Act>,
     viewer: Option<std::sync::Arc<crate::coord::Coordinator>>,
@@ -1772,6 +1770,7 @@ impl Agent {
             broker: None,
             pageview: pageview::PageView::new(),
             pageview_reading: false,
+            live: None,
             page_acts: Vec::new(),
             viewer: None,
             viewer_failed: None,
@@ -3417,6 +3416,12 @@ impl Agent {
         // sample written for the status whatever this loop waits on.
         self.sampler.write_to(self.o.home.join(memguard::LIVE));
         self.sampler.spawn();
+        // This Mac's measures over time (crate::agent::live), on threads of their own.
+        if self._lock.is_some() && !self.o.dry_run && self.mac == cond::Mac::Real {
+            let store = live::Store::new(Some(self.o.home.join(live::FILE)), &self.host);
+            live::spawn(store.clone(), self.o.home.clone(), self.sampler.clone());
+            self.live = Some(store);
+        }
         // The pool's own thread: its driver stepped while this loop is busy (`pool::Ticker`).
         self.ticker = self.pool.clone().map(pool::Ticker::start);
         if self._lock.is_some() {
@@ -3478,6 +3483,10 @@ impl Agent {
             }
         }
         nasread::WATCH_DONE.store(true, Ordering::SeqCst);
+        // (The live store kept for the next agent.)
+        if let Some(l) = &self.live {
+            l.save();
+        }
         // The jobs running left running for the next agent, first (launchd may kill this process
         // within seconds of the SIGTERM that ended the loop): it takes them over (`adopt_jobs`).
         // Not when the app quits (its jobs stopped or ended first, `quit_due`), nor a single loop's.
@@ -4056,6 +4065,7 @@ impl Agent {
         let c = Conditions { ac, battery, nas: root.is_some(), home, idle_s: self.mac.idle_seconds() };
         self.note_conditions(&c, slept);
         self.pool_switch(root.as_deref());
+        self.tend_live(root.as_deref(), &c);
         let mut waiting: Vec<Waiting> = Vec::new();
         if let Some(why) = self.heal.warning() {
             waiting.push(Waiting { step: None, what: "the NAS".into(), why });
@@ -5852,12 +5862,14 @@ impl Agent {
                 }
             });
         }
-        let ms = ANSWERED_MS.load(std::sync::atomic::Ordering::Relaxed);
+        // (The NAS's latency as the live store last measured it, within half a minute: none
+        // while no build runs.)
+        let ms = self.live.as_ref().and_then(|l| l.latest(live::NAS_MS, now_s(), 30));
         self.mac.resources(
             &self.o.home,
             root,
             bytes.map(|b| (b.cheap as f64 / (1u64 << 30) as f64 * 10.0).round() / 10.0),
-            (ms != u64::MAX && root.is_some()).then_some(ms),
+            ms.filter(|_| root.is_some()).map(|m| m.round() as u64),
         )
     }
 
@@ -8786,6 +8798,29 @@ impl Agent {
         if brokers::stale(self.broker_https.as_ref().map(|h| h.0), now, brokers::HTTPS_EVERY) {
             self.broker_https = Some((now, served_https(c.port())));
         }
+    }
+
+    /// The live store (crate::agent::live), each loop: answered on this Mac's port (its coordinator,
+    /// broker or viewer), and the NAS's latency sampled while a build runs here (a job of this
+    /// Mac's, or its coordinator's leases out); the power and the owner's idleness as this loop
+    /// read them (`c`), recorded.
+    fn tend_live(&mut self, root: Option<&Path>, c: &Conditions) {
+        let Some(l) = &self.live else { return };
+        let t = now_s();
+        l.record(live::AC, t, if c.ac { 1.0 } else { 0.0 });
+        if let Some(b) = c.battery {
+            l.record(live::BATTERY, t, f64::from(b));
+        }
+        if c.idle_s != u64::MAX {
+            l.record(live::IDLE, t, c.idle_s as f64);
+        }
+        for c in [&self.coord, &self.broker, &self.viewer].into_iter().flatten() {
+            if !c.has_live() {
+                c.set_live(l.clone());
+            }
+        }
+        let building = self.running_jobs() > 0 || self.coord.as_ref().is_some_and(|c| c.leases_out() > 0);
+        l.set_nas(root.filter(|_| building));
     }
 
     /// The page on this Mac's port (crate::agent::pageview), each loop: a viewer alone started when
