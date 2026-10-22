@@ -1074,7 +1074,9 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64, deadline: Instant) -> Sim {
                     let on = |k: usize| !inp.machines[k].helper && mac_of(&inp.machines[k]) == g;
                     (0..free.len()).filter(|&k| on(k) && free[k] <= t + 1e-9).count()
                 };
-                pool.sched.asking(pool.asks.keys().map(|g| (g.as_str(), idle(g))), pool.clock(t).now);
+                let room = |g: &str| pool.asks[g].cap.as_ref().map_or(0, |c| c.mem_mb);
+                let who: Vec<(&str, usize, u64)> = pool.asks.keys().map(|g| (g.as_str(), idle(g), room(g))).collect();
+                pool.sched.asking(who, pool.clock(t).now);
                 pool.sched.pack(ask, &offers, lead, pool.clock(t)).0
             };
             if picks.is_empty() {

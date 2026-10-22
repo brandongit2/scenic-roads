@@ -1214,21 +1214,21 @@ impl Sched {
         })
     }
 
+    /// The memory (MB) a job under lease `l` takes: its heaviest target's, by the book's estimate
+    /// (a step never measured: its table's or the offer's guess, not 0).
+    pub(super) fn lease_mem(&self, l: &Lease) -> u64 {
+        let Work::Job { step, targets } = &l.work else { return 0 };
+        let b = self.book();
+        targets.iter().map(|t| b.mem(step, &t.0, 0, self.offered_guess(step, &t.0)).0).max().unwrap_or(0)
+    }
+
     /// Whether worker `n`, by its last ask `x` (made at `asked`), would take a target measured `m`
     /// now: a slot free (fewer jobs granted it since than the ask wanted, one for an ask saying
     /// none) and the memory its Mac had free then (`Capacity::mem_mb`, when its capacity is said),
-    /// less that of the jobs granted it since (each its heaviest target's measure), fits it.
+    /// less that of the jobs granted it since (`lease_mem`), fits it.
     pub(super) fn would_take_now(&self, n: &str, asked: Instant, x: &Ask, m: &Measured, now: Instant) -> bool {
         let since: Vec<Lease> = self.job_leases(n, now).into_iter().filter(|l| l.granted >= asked).collect();
-        let taken: u64 = since
-            .iter()
-            .map(|l| match &l.work {
-                Work::Job { step, targets } => {
-                    targets.iter().filter_map(|t| self.measured(step, &t.0)).map(|m| m.mem_mb).max().unwrap_or(0)
-                }
-                _ => 0,
-            })
-            .sum();
+        let taken: u64 = since.iter().map(|l| self.lease_mem(l)).sum();
         since.len() < x.want.max(1)
             && x.cap.as_ref().filter(|c| c.limit_mb > 0).is_none_or(|c| m.mem_mb.saturating_add(taken) <= c.mem_mb)
     }
@@ -1443,18 +1443,28 @@ impl Sched {
         }
     }
 
-    /// The members in `idle` (name, slots free now) ask again at `now`, as the live ones do each
-    /// loop, wanting a job a free slot (and those granted them this instant, which count since
-    /// their ask): the forecast's lanes ask only as they free, so its members would age out of
-    /// placement's draws (`ASKING`) as simulated time passes, and one granted a job would read
-    /// as full.
-    pub fn asking<'a>(&mut self, idle: impl IntoIterator<Item = (&'a str, usize)>, now: Instant) {
-        for (n, free) in idle {
-            let granted = self.job_leases(n, now).iter().filter(|l| l.granted >= now).count();
+    /// The members in `idle` (name, slots free now, the memory its Mac has with no job of the pool
+    /// running, MB) ask again at `now`, as the live ones do each loop, wanting a job a free slot
+    /// (and those granted them this instant, which count since their ask), their memory less that
+    /// of every job running that began before. Only a member with a slot free asks: a busy one
+    /// keeps its last ask and ages out of placement's draws (`ASKING`), as a live one's does. (The
+    /// forecast's lanes ask only as they free, so its members would otherwise age out as simulated
+    /// time passes, and one granted a job would read as full.)
+    pub fn asking<'a>(&mut self, idle: impl IntoIterator<Item = (&'a str, usize, u64)>, now: Instant) {
+        for (n, free, room) in idle {
+            if free == 0 {
+                continue;
+            }
+            let mine = self.job_leases(n, now);
+            let granted = mine.iter().filter(|l| l.granted >= now).count();
+            let running: u64 = mine.iter().filter(|l| l.granted < now).map(|l| self.lease_mem(l)).sum();
             if let Some(w) = self.workers.get_mut(n) {
                 (w.seen, w.asked) = (now, Some(now));
                 if let Some(x) = w.ask.as_mut() {
                     x.want = free + granted;
+                    if let Some(c) = x.cap.as_mut() {
+                        c.mem_mb = room.saturating_sub(running);
+                    }
                 }
             }
         }

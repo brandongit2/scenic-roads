@@ -6383,8 +6383,25 @@ mod tests {
         clock.advance(ASKING);
         let now = s.now();
         assert!(now.duration_since(s.workers["m2"].asked.unwrap()) >= ASKING);
-        s.asking([("m2", 2)], now);
-        assert_eq!(s.workers["m2"].ask.as_ref().unwrap().want, 2);
+        // A member with no slot free doesn't ask: it keeps its old ask and stays aged out.
+        s.asking([("m2", 0, 1000)], now);
+        assert!(now.duration_since(s.workers["m2"].asked.unwrap()) >= ASKING);
+        s.asking([("m2", 2, 1000)], now);
+        // (Asking again: the job granted before, 600 MB, is running: 400 free of the 1000.)
+        let x = s.workers["m2"].ask.clone().unwrap();
+        assert_eq!((x.want, x.cap.as_ref().unwrap().mem_mb), (2, 400));
+        let asked = s.workers["m2"].asked.unwrap();
+        assert!(!s.would_take_now("m2", asked, &x, &Measured { mem_mb: 500, ..m }, now), "500 > 400");
+        assert!(s.would_take_now("m2", asked, &x, &Measured { mem_mb: 300, ..m }, now), "300 fits");
+        // A job of a target never measured counts its estimate (the step's table or prior), not 0.
+        let id = s.leases.grant_at(
+            "m2",
+            Work::Job { step: "pack".into(), targets: vec![("6/9/9".into(), "k".into())] },
+            now,
+            unix_now(),
+        );
+        let l = s.leases.of(id).unwrap().clone();
+        assert_eq!(s.lease_mem(&l), s.book().mem("pack", "6/9/9", 0, 0).0);
         assert!(now.duration_since(s.workers["m2"].asked.unwrap()) < ASKING);
     }
 
