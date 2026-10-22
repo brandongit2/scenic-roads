@@ -19,7 +19,7 @@ pub type Extents = BTreeMap<String, [i32; 4]>;
 
 /// The extents kept (none when the file isn't there or can't be read).
 pub fn load(root: &Path) -> Extents {
-    std::fs::read(root.join(FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    crate::whole::read(&root.join(FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
 /// `known`, with the extents of manifest `m`'s base packs it lacks read from their headers, and
@@ -55,17 +55,12 @@ fn header_extent(p: &Path) -> Result<[i32; 4]> {
 }
 
 /// The lead's keeping (as it plans, with its manifest `m`): the file brought in line with `m`
-/// (`fill`), written, by a temporary name of this Mac and process then renamed, only when it
-/// changed. How many headers were read.
+/// (`fill`), written whole (crate::whole::write), only when it changed. How many headers were read.
 pub fn keep(root: &Path, m: &BTreeMap<String, String>) -> Result<usize> {
     let old = load(root);
     let (new, read) = fill(root, m, old.clone())?;
     if new != old {
-        let path = root.join(FILE);
-        let host = store::sys::hostname().unwrap_or_else(|| "host".into());
-        let tmp = path.with_extension(format!("json.{host}.{}.tmp", std::process::id()));
-        std::fs::write(&tmp, serde_json::to_vec(&new)?)?;
-        std::fs::rename(&tmp, &path)?;
+        crate::whole::write(&root.join(FILE), &serde_json::to_vec(&new)?)?;
     }
     Ok(read)
 }

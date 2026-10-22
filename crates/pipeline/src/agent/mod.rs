@@ -10657,21 +10657,18 @@ fn present_or_missing(r: std::io::Result<Vec<u8>>) -> Option<Option<Vec<u8>>> {
     }
 }
 
-/// Writes a small file that is replaced each time (status files), through a `.tmp` and a rename.
+/// Writes a small file that is replaced each time (status files), its folder made
+/// (crate::whole::write: this Mac's own temporary name, a busy rename falling back to an aside).
 fn write_replace(p: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d)?;
     }
-    let tmp = p.with_extension("json.tmp");
-    std::fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
-    // (A rename over a file another Mac has open, its server reading the heartbeat: tried again,
-    // then the old file renamed aside: crate::whole::rename_or_aside.)
-    crate::whole::rename_or_aside(&tmp, p).map(drop).with_context(|| format!("rename to {}", p.display()))
+    crate::whole::write(p, bytes)
 }
 
 /// The status a `scenic status` shows: the NAS's heartbeat, else this Mac's copy.
 pub fn read_status(root: Option<&Path>, home: &Path) -> Option<Status> {
-    root.and_then(|r| std::fs::read(r.join("state/status.json")).ok())
+    root.and_then(|r| crate::whole::read(&r.join("state/status.json")).ok())
         .or_else(|| std::fs::read(home.join("status.json")).ok())
         .and_then(|b| serde_json::from_slice(&b).ok())
 }

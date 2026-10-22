@@ -1576,7 +1576,7 @@ fn units_meta(out: &Out, base: &BTreeMap<String, String>, now: u64) -> Result<se
     use pipeline::summary::Summary;
     let path = out.root().join("state/build/summaries.json");
     let mut known: BTreeMap<String, Summary> =
-        std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        pipeline::whole::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let mut total = Summary::default();
     let mut used: std::collections::BTreeSet<String> = Default::default();
     let mut made = 0;
@@ -1603,9 +1603,7 @@ fn units_meta(out: &Out, base: &BTreeMap<String, String>, now: u64) -> Result<se
     }
     if made > 0 || known.len() != used.len() {
         known.retain(|c, _| used.contains(c));
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(&known)?)?;
-        std::fs::rename(&tmp, &path)?;
+        pipeline::whole::write(&path, &serde_json::to_vec(&known)?)?;
         eprintln!("catalog: {made} unit summaries made from their packs");
     }
     let mut m = total.meta();

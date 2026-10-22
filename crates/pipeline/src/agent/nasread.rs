@@ -316,11 +316,6 @@ impl Nas for Deadlined {
         self.run(self.writes, path, self.deadline, move |n| n.write_whole(&p, &b))
     }
 
-    fn write_aside(&self, path: &str, bytes: &[u8]) -> anyhow::Result<()> {
-        let (p, b) = (path.to_string(), bytes.to_vec());
-        self.run(self.writes, path, self.deadline, move |n| n.write_aside(&p, &b))
-    }
-
     fn read(&self, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
         let p = path.to_string();
         self.run(self.reads, path, self.deadline, move |n| n.read(&p))
@@ -547,19 +542,19 @@ pub(crate) mod tests {
         // The heartbeat's write stuck: an error within its deadline; a second write to that path
         // refused at once while the first still runs (never two at once on one temporary name).
         let t = Instant::now();
-        assert!(n.write_aside("state/pool/members/m.json", b"{}").is_err());
+        assert!(n.write_whole("state/pool/members/m.json", b"{}").is_err());
         store::clock::ended_before(t, Duration::from_secs(60), "the stuck write ends at its deadline");
         assert_eq!(writes.busy(), 1);
         let t = Instant::now();
-        let e = n.write_aside("state/pool/members/m.json", b"{}").unwrap_err();
+        let e = n.write_whole("state/pool/members/m.json", b"{}").unwrap_err();
         assert!(timed_out(&e) && format!("{e}").contains("still runs"), "{e:#}");
         store::clock::ended_before(t, Duration::from_secs(4), "refused at once, not at the write deadline");
         assert_eq!(writes.busy(), 1, "no second thread on it");
         // Another path's write takes the other writer; then every writer is stuck: at once.
-        assert!(n.write_aside("state/pool/members/o.json", b"{}").is_err());
+        assert!(n.write_whole("state/pool/members/o.json", b"{}").is_err());
         assert_eq!(writes.busy(), 2);
         let t = Instant::now();
-        assert!(n.write_aside("state/pool/members/p.json", b"{}").is_err());
+        assert!(n.write_whole("state/pool/members/p.json", b"{}").is_err());
         store::clock::ended_before(t, Duration::from_secs(4), "refused at once, not at the write deadline");
         // The reads go on: the terms listed, read.
         assert_eq!(n.list("state/pool/terms").unwrap(), vec!["1.json".to_string()]);
@@ -570,7 +565,7 @@ pub(crate) mod tests {
         // The share answers: the path's write ends on its thread, and the path is free again.
         drop(hold);
         store::clock::eventually("the path's write ends", || writes.busy() == 0);
-        n.write_aside("state/pool/members/m.json", b"{\"a\":1}").unwrap();
+        n.write_whole("state/pool/members/m.json", b"{\"a\":1}").unwrap();
         assert_eq!(std::fs::read(d.path().join("state/pool/members/m.json")).unwrap(), b"{\"a\":1}");
     }
 

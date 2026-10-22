@@ -105,23 +105,14 @@ fn days(dir: &Path) -> Vec<String> {
     v
 }
 
-/// Copies `src` to `dst` through a `.tmp` and a rename.
+/// Copies `src` to `dst`, whole (crate::whole::copy), its folder made.
 fn copy_atomic(src: &Path, dst: &Path) -> Result<u64> {
     if let Some(d) = dst.parent() {
         std::fs::create_dir_all(d)?;
     }
-    let tmp = dst.with_extension("tmp");
-    let n = store::sys::copy_data(src, &tmp).with_context(|| format!("copy {} to {}", src.display(), tmp.display()))?;
-    std::fs::rename(&tmp, dst)?;
+    let n = crate::whole::copy(src, dst)?;
     crate::timings::count(n, 1);
     Ok(n)
-}
-
-fn write_atomic(dst: &Path, bytes: &[u8]) -> Result<()> {
-    let tmp = dst.with_extension("tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, dst)?;
-    Ok(())
 }
 
 /// Backs up the user's folders under `root` into `root/state/backups` (and mirrors that to
@@ -176,7 +167,7 @@ pub fn run(root: &Path, local: Option<&Path>, today: &str, keep_days: u64) -> Re
     rep.files = now.len();
     if now != prev {
         let _p = phase("day's list written", Class::NasWrite);
-        write_atomic(&dir.join(format!("{today}.json")), &serde_json::to_vec_pretty(&now)?)?;
+        crate::whole::write(&dir.join(format!("{today}.json")), &serde_json::to_vec_pretty(&now)?)?;
         rep.written = Some(today.to_string());
     }
     let (d, b) = {

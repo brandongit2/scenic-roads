@@ -135,9 +135,6 @@ impl Nas for Clocked<'_> {
     fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
         self.nas.write_whole(path, bytes)
     }
-    fn write_aside(&self, path: &str, bytes: &[u8]) -> Result<()> {
-        self.nas.write_aside(path, bytes)
-    }
     fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
         self.nas.read(path)
     }
@@ -831,7 +828,7 @@ impl Side {
         stamped.pool.reach = reach;
         match serde_json::to_vec(&stamped)
             .map_err(anyhow::Error::from)
-            .and_then(|b| self.nas.write_aside(&crate::pool::beat::path(&self.me.id), &b))
+            .and_then(|b| self.nas.write_whole(&crate::pool::beat::path(&self.me.id), &b))
         {
             Ok(()) => self.beat = Some((hb, now, self.ahead)),
             Err(e) => eprintln!("pool: heartbeat: {e:#}"),

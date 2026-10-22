@@ -48,15 +48,21 @@ The share is SMB 3 on a Synology. The design assumes:
   `crate::whole::rename_over` retries for 5 s. The server can hold a file for hours with no process
   on either Mac having it open;
   renaming the held file away, and renaming into its free name, still work, but removing it fails
-  until it's let go. So heartbeats (the pool's, `Nas::write_aside`, and `state/status.json`) fall
-  back to `crate::whole::rename_or_aside`: the old file renamed to
+  until it's let go (a Mac killed with a file open: kill -9, Migration Assistant). So every
+  replaced file (`crate::whole::write`/`copy`, `Nas::write_whole`: heartbeats, `state/status.json`,
+  the manifest, pending, sizes, records) falls back to `crate::whole::rename_or_aside`: the old file renamed to
   `<name>.<host>.<pid>.<n>.aside.tmp`, the new one renamed into place, then asides removed: each
   fallback removes up to 4 (the oldest first), finds any Mac's or process's asides of that file by
   listing its folder at most once a minute, and remembers at most 16 not yet removable. Listings
   skip asides as temporary. When the second rename fails the aside stays (renaming it back could
-  replace a newer file), so the heartbeat is missing until the next write. A reader may find no
-  heartbeat between the two renames, never a torn one. The fallback logs
-  `whole: rename over <path> busy: …`. Other files keep the plain retry.
+  replace a newer file), so the file is missing until the next write. Readers go through
+  `crate::whole::retried` (`whole::read`, `out::read_record`, `Nas::read`/`read_fresh`): a busy
+  read or open is tried again for 5 s; a missing file with an aside beside it is tried again for
+  2 s, then the newest aside (by modification time) is read, the last version written whole, so a
+  manifest is never taken as empty. The fallbacks log `whole: rename over <path> busy: …` and
+  `whole: <path> missing, read from its aside …`. No shared file on the NAS is locked or opened
+  exclusively: every lock (`sys::PathLock`: the build lock, the member and agent locks) is a local
+  file.
 - **No conditional writes or atomic appends** between clients.
 - **Listings are slow** (3–33 s a folder under load): nothing lists in a loop; the current term is
   found by stat'ing the next, heartbeats are read by member id, the journal is listed off the loop.

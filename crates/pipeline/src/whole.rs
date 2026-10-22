@@ -152,18 +152,11 @@ fn aside_with(
 }
 
 /// Writes `b` as `path`, whole.
+/// A temporary name renamed over it; the old file renamed aside when that stays busy
+/// (`rename_or_aside`), so a file another SMB session holds open (a Mac killed with it open: the
+/// server may keep its handle for hours) never blocks a write. Readers of a file written so read
+/// through `read` or `retried`, which wait out the moment between the two renames.
 pub fn write(path: &Path, b: &[u8]) -> Result<()> {
-    write_by(path, b, &rename_over)
-}
-
-/// Writes `b` as `path`, whole, its rename over `path` falling back to renaming `path` aside when
-/// that stays busy (`rename_or_aside`): for a file only one writer replaces, whose readers take a
-/// moment without it in their stride.
-pub fn write_aside(path: &Path, b: &[u8]) -> Result<()> {
-    write_by(path, b, &|f, t| rename_or_aside(f, t).map(drop))
-}
-
-fn write_by(path: &Path, b: &[u8], rename: Rename) -> Result<()> {
     let tmp = tmp_name(path);
     let r = (|| -> Result<()> {
         let mut f = std::fs::File::create(&tmp)?;
@@ -172,13 +165,70 @@ fn write_by(path: &Path, b: &[u8], rename: Rename) -> Result<()> {
         drop(f);
         let n = std::fs::metadata(&tmp)?.len();
         ensure!(n == b.len() as u64, "{n} of {} bytes written", b.len());
-        rename(&tmp, path)?;
+        rename_or_aside(&tmp, path)?;
         Ok(())
     })();
     if r.is_err() {
         std::fs::remove_file(&tmp).ok();
     }
     r.with_context(|| format!("write {}", path.display()))
+}
+
+/// Tries `op` on `path` (a read or an open of a file `write` replaces) through the NAS's moments:
+/// busy (EBUSY: another session holds the file), tried again for a few seconds; missing while an
+/// aside of it exists (a writer between `rename_or_aside`'s two renames), tried again, then `op`
+/// on the newest aside (that writer's second rename failed: its aside is the last version written
+/// whole). Missing with no aside is missing.
+pub fn retried<T>(path: &Path, op: &dyn Fn(&Path) -> std::io::Result<T>) -> std::io::Result<T> {
+    retried_with(path, op, std::time::Duration::from_millis(250))
+}
+
+/// Reads `path` (`retried`).
+pub fn read(path: &Path) -> std::io::Result<Vec<u8>> {
+    retried(path, &|p| std::fs::read(p))
+}
+
+/// How many times `retried` tries again on busy, and on missing with an aside there.
+const BUSY_TRIES: u32 = 20;
+const MISSING_TRIES: u32 = 8;
+
+fn retried_with<T>(
+    path: &Path,
+    op: &dyn Fn(&Path) -> std::io::Result<T>,
+    pause: std::time::Duration,
+) -> std::io::Result<T> {
+    let (mut busy, mut missing) = (0, 0);
+    loop {
+        match op(path) {
+            Err(e) if e.kind() == std::io::ErrorKind::ResourceBusy && busy < BUSY_TRIES => busy += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let Some(aside) = newest_aside(path) else { return Err(e) };
+                if missing == MISSING_TRIES {
+                    eprintln!("whole: {} missing, read from its aside {}", path.display(), aside.display());
+                    return op(&aside);
+                }
+                missing += 1;
+            }
+            r => return r,
+        }
+        std::thread::sleep(pause);
+    }
+}
+
+/// The newest (by modification time, which a rename keeps: the last written) of `path`'s asides in
+/// its folder, any Mac's or process's.
+fn newest_aside(path: &Path) -> Option<PathBuf> {
+    let prefix = format!("{}.", path.file_name()?.to_string_lossy());
+    std::fs::read_dir(path.parent()?)
+        .ok()?
+        .flatten()
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            n.starts_with(&prefix) && n.ends_with(".aside.tmp")
+        })
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .max()
+        .map(|(_, p)| p)
 }
 
 /// Copies `src` to `dst`, whole; the bytes copied.
@@ -193,7 +243,7 @@ pub fn copy(src: &Path, dst: &Path) -> Result<u64> {
         drop(to);
         let got = std::fs::metadata(&tmp)?.len();
         ensure!(n == want && got == want, "{got} of {want} bytes copied");
-        rename_over(&tmp, dst)?;
+        rename_or_aside(&tmp, dst)?;
         Ok(want)
     })();
     if r.is_err() {
@@ -427,6 +477,59 @@ mod tests {
         assert!(!d.path().join("x.json").exists());
     }
 
+    /// A read retries a busy file, waits out a missing one while an aside of it exists, then reads
+    /// the newest aside; a file missing with no aside is missing at once.
+    #[test]
+    fn a_read_waits_out_busy_and_falls_back_to_the_newest_aside() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("manifest.json");
+        let pause = std::time::Duration::ZERO;
+        let tries = std::cell::Cell::new(0);
+        let busy_twice = |q: &Path| {
+            tries.set(tries.get() + 1);
+            if tries.get() <= 2 {
+                return Err(std::io::Error::from(std::io::ErrorKind::ResourceBusy));
+            }
+            std::fs::read(q)
+        };
+        std::fs::write(&p, b"m").unwrap();
+        assert_eq!(retried_with(&p, &busy_twice, pause).unwrap(), b"m");
+        assert_eq!(tries.get(), 3);
+        // Busy for good: an error, once the tries are spent.
+        let always = |_: &Path| -> std::io::Result<()> { Err(std::io::Error::from(std::io::ErrorKind::ResourceBusy)) };
+        assert_eq!(retried_with(&p, &always, pause).unwrap_err().kind(), std::io::ErrorKind::ResourceBusy);
+        // Missing, no aside: missing at once.
+        std::fs::remove_file(&p).unwrap();
+        tries.set(10);
+        let counted = |q: &Path| {
+            tries.set(tries.get() + 1);
+            std::fs::read(q)
+        };
+        assert_eq!(retried_with(&p, &counted, pause).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(tries.get(), 11);
+        // Missing beside asides: the newest one's bytes, after the waits.
+        let old = d.path().join("manifest.json.a.1.0.aside.tmp");
+        let new = d.path().join("manifest.json.b.2.0.aside.tmp");
+        std::fs::write(&old, b"old").unwrap();
+        std::fs::write(&new, b"new").unwrap();
+        let t = std::time::SystemTime::now();
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(t - std::time::Duration::from_secs(60))
+            .unwrap();
+        std::fs::write(d.path().join("other.json.a.1.0.aside.tmp"), b"x").unwrap();
+        assert_eq!(read_with_zero(&p), b"new");
+        // The file back (the writer's second rename landed): the file's bytes.
+        std::fs::write(&p, b"m2").unwrap();
+        assert_eq!(read_with_zero(&p), b"m2");
+    }
+
+    fn read_with_zero(p: &Path) -> Vec<u8> {
+        retried_with(p, &|q| std::fs::read(q), std::time::Duration::ZERO).unwrap()
+    }
+
     /// The second rename failing leaves the aside where it is (renaming it back could replace a
     /// newer file someone wrote meanwhile).
     #[test]
@@ -491,11 +594,11 @@ mod tests {
     }
 
     #[test]
-    fn write_aside_writes_whole() {
+    fn a_write_writes_whole() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("m.json");
-        write_aside(&p, b"a").unwrap();
-        write_aside(&p, b"bb").unwrap();
+        write(&p, b"a").unwrap();
+        write(&p, b"bb").unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), b"bb");
         assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1, "no temporary file left");
     }

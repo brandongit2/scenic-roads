@@ -28,20 +28,12 @@ pub trait Nas {
     /// two. An error when it can't be said whether the file was made (its answer lost).
     fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created>;
 
-    /// Writes `path` whole: a temporary name, renamed over it, the rename tried again for a few
-    /// seconds while another Mac has the file open (crate::whole::rename_over). The rename may land
-    /// long after the call began (this Mac asleep in between), over whatever was written there
-    /// meanwhile; and it may have landed when the call says it failed (its answer lost).
+    /// Writes `path` whole: a temporary name, renamed over it; when that rename stays busy (the
+    /// server holding the old file open for another session, maybe for hours) the old file is
+    /// renamed aside first (crate::whole::write). The rename may land long after the call began
+    /// (this Mac asleep in between), over whatever was written there meanwhile; and it may have
+    /// landed when the call says it failed (its answer lost). `read` waits out the moment between.
     fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()>;
-
-    /// Writes `path` whole as `write_whole` does, but when the rename over it stays busy (the
-    /// server holding the old file open for another session, maybe for hours), the old file is
-    /// renamed aside first (crate::whole::rename_or_aside): readers may find no file for a moment.
-    /// For a file only its writer replaces whose readers take a missing one in their stride: a
-    /// member's heartbeat.
-    fn write_aside(&self, path: &str, bytes: &[u8]) -> Result<()> {
-        self.write_whole(path, bytes)
-    }
 
     /// The bytes of `path`; None when there's no such file. Possibly an older version than another
     /// Mac wrote last (macOS caches what it read), or a file being made: empty or short.
@@ -174,13 +166,9 @@ impl Nas for Share {
         self.write_by(path, bytes, crate::whole::write)
     }
 
-    fn write_aside(&self, path: &str, bytes: &[u8]) -> Result<()> {
-        self.write_by(path, bytes, crate::whole::write_aside)
-    }
-
     fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
         let p = self.at(path);
-        match std::fs::read(&p) {
+        match crate::whole::read(&p) {
             Ok(b) => Ok(Some(b)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e).with_context(|| format!("read {}", p.display())),
@@ -190,7 +178,7 @@ impl Nas for Share {
     fn read_fresh(&self, path: &str) -> Result<Option<Vec<u8>>> {
         use std::io::Read;
         let p = self.at(path);
-        let mut f = match std::fs::File::open(&p) {
+        let mut f = match crate::whole::retried(&p, &|q| std::fs::File::open(q)) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e).with_context(|| format!("open {}", p.display())),
@@ -311,7 +299,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let s = Share::new(d.path());
         assert_eq!(s.read_fresh("state/pool/x.json").unwrap(), None);
-        s.write_aside("state/pool/x.json", b"{\"beat\":1}").unwrap();
+        s.write_whole("state/pool/x.json", b"{\"beat\":1}").unwrap();
         assert_eq!(s.read_fresh("state/pool/x.json").unwrap().as_deref(), Some(&b"{\"beat\":1}"[..]));
     }
 
