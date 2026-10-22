@@ -5,7 +5,7 @@
 //    sources that depth.worker.ts makes from the server's depth tiles (crates/server/src/depth.rs:
 //    a tile the layer lacks comes from its nearest ancestor), masked by the basemap's own water at
 //    the display's resolution.
-// 2. Depth contours with labels: vector tiles the same worker makes (maplibre-contour's
+// 2. Depth contours with labels: vector tiles the same worker makes (maplibre-contour's, contour/:
 //    isolines), clipped to the water.
 // All go over the water fill and under the coast shading and everything else, draped on the 3D
 // terrain like the water (which stays flat at the surface). Depth is below the local water

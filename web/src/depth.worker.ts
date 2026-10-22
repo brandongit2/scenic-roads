@@ -7,11 +7,12 @@
 //   relief   depth in the water; elsewhere +12,000 m, which the colour ramp leaves transparent
 //   shade    depth in the water; 0 on land; water without data takes its nearest depth, so
 //            neither casts a false cliff
-//   contour  a vector tile of depth contours (maplibre-contour's isolines over the shade values of
+//   contour  a vector tile of depth contours (maplibre-contour's isolines, contour/, over the shade values of
 //            the tile and its eight neighbours, so lines meet across tiles)
 // and, on request, the depth, class and source at a point (the readout), depth histograms of the
 // tiles in view (the colour scale fitted to the view) and the sources in them (the attribution).
-import mlcontour from 'maplibre-contour';
+import { HeightTile } from './contour/height-tile';
+import generateIsolines from './contour/isolines';
 import { HBINS, hbin } from './depthlook';
 import { encodeLines, readPolygons } from './mvt';
 
@@ -335,12 +336,12 @@ async function contourTile(z: number, x: number, y: number, q: Record<string, st
       if (ty < 0 || ty >= n2) return undefined;
       const c = await composite(z, (x + dx + n2) % n2, ty);
       if (c.empty) return undefined;
-      return mlcontour.HeightTile.fromRawDem({ width: N, height: N, data: shadeValues(c) });
+      return HeightTile.fromRawDem({ width: N, height: N, data: shadeValues(c) });
     })),
   );
   if (!tiles[4]) return new ArrayBuffer(0);
-  const t = mlcontour.HeightTile.combineNeighbors(tiles)!.averagePixelCentersToGrid().materialize(1);
-  const lines = mlcontour.generateIsolines(iv, t, 4096, 1);
+  const t = HeightTile.combineNeighbors(tiles)!.averagePixelCentersToGrid().materialize(1);
+  const lines = generateIsolines(iv, t, 4096, 1);
   const out: { runs: number[][]; props: Record<string, number> }[] = [];
   for (const [eleS, runs] of Object.entries(lines)) {
     const ele = Number(eleS);

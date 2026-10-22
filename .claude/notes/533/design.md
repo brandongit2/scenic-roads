@@ -57,8 +57,9 @@
   (`getSourceTile`) follows the same cap. raster-dem tiles are decoded with createImageBitmap
   (`colorSpaceConversion: 'none'`), which reads JXL natively in Chrome and Safari (owner checked:
   exact).
-- Contours keep reading z12 (maplibre-contour's DemSource has one maxzoom; its worker fetches the
-  DEM itself): finer contours in fine areas need that package changed (a follow-up).
+- Contours read the DEM by area too (#543: our copy of maplibre-contour, web/src/contour/, its worker
+  capping each contour tile's DEM at its area's zoom); a new catalog's areas are taken in place
+  (`RasterTileSource.setZoomByArea`, the contours' DEM anew).
 
 ## Measured, 1 cm JXL (M4, 21 Oct; network reads; `encode` timed on one thread)
 | sample (z12 subtree) | tiles | MB | z13 / z14 / z15 / z16 KB | encode ms/tile |

@@ -105,7 +105,7 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
   with no gap (a cover is a partition). The terrain's elevations read the DEM at the same cap. The
   app's terrain, hill-shading and slope go to z16 where the catalog has 2 m terrain
   (`covering_tiles_area.test.ts`; `test/scenic/zoom-by-area.html` shows an edge). Read when the
-  source loads: new areas take a new style.
+  source loads, and anew by `RasterTileSource.setZoomByArea` (a new catalog's areas, main.ts).
 
 - **Covers redone when elevations arrive** (`bounding_volume_cache.ts`, `TileManager.demVersion`,
   `Terrain.demVersion`): the globe's cached bounding volumes are cleared whenever a DEM tile loads

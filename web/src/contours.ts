@@ -3,7 +3,7 @@
 // blurred them and drew them thick), with widths that scale with distance as the roads' do
 // (Perspective: the width at the view centre, wider nearer, narrower further away).
 //
-// The lines are the 'contours' vector source's (terrain.ts: maplibre-contour, from the terrain
+// The lines are the 'contours' vector source's (terrain.ts: contour/dem.ts, from the terrain
 // tiles), which stays the loader: MapLibre picks its tiles for the view as for the labels, and
 // each tile's data is decoded in contours.worker.ts into runs of points, drawn as instanced
 // segments that read their neighbours for mitred joins (the lines are translucent: overlapping

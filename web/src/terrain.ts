@@ -1,11 +1,12 @@
 // Terrain presentation: 3D mesh + exaggeration, hillshade, hypsometric tint, contours, sky.
 import type { Map as MLMap } from 'maplibre-gl';
 import * as maplibregl from 'maplibre-gl';
-import mlcontour from 'maplibre-contour';
 import { HYPSO, terrainTiles } from './basemap';
 import { PALETTES, baseKey, isRev, paletteFn } from './palettes';
 import type { ScaleFields, Terrain } from './state';
 import { CONTOUR_MINZOOM } from './contours';
+import { contourTiles, setContourDem } from './contour/dem';
+import type { TerrainAreas } from './api';
 
 type RGB = [number, number, number];
 
@@ -182,19 +183,26 @@ export function contourInterval(z: number, density = 0): [number, number] {
   return r;
 }
 
-let demSource: InstanceType<typeof mlcontour.DemSource> | null = null;
+let contourDem = false;
 let contourDensity = 0;
-const contourUrl = (density: number) => {
-  const thresholds: Record<number, [number, number]> = {};
-  for (let z = 8; z <= 16; z++) thresholds[z] = contourInterval(z, density);
-  return demSource!.contourProtocolUrl({ thresholds, elevationKey: 'ele', levelKey: 'level', contourLayer: 'contours', overzoom: 1 });
-};
+/** The catalog's areas of terrain finer than its base (the meta's terrainAreas). */
+let terrainAreas: TerrainAreas | undefined;
+/** A contour tile's intervals: from z8 (none coarser). */
+const contourLevels = (z: number, density: number) => (z < 8 ? [] : contourInterval(Math.min(z, 16), density));
 
-/** The contours' terrain tiles (maplibre-contour fetches them itself, in its worker). */
-function newDemSource() {
-  const d = new mlcontour.DemSource({ url: terrainTiles(), encoding: 'terrarium', maxzoom: 12, worker: true, cacheSize: 200 });
-  d.setupMaplibre(maplibregl);
-  return d;
+/** The contours' terrain tiles (contour/dem.ts reads them itself, in its worker): to z12, finer
+ * in the areas the catalog has finer terrain. */
+function newContourDem() {
+  setContourDem(terrainTiles(), 12, terrainAreas, contourLevels);
+  contourDem = true;
+}
+
+/** The catalog's areas of terrain finer than its base: the contours' DEM follows them (the terrain
+ * sources take them from the style: basemap.ts). */
+export function setTerrainAreas(map: MLMap, a: TerrainAreas | undefined) {
+  if (JSON.stringify(a) === JSON.stringify(terrainAreas)) return;
+  terrainAreas = a;
+  switchContours(map);
 }
 
 /**
@@ -204,9 +212,9 @@ function newDemSource() {
  */
 function setupContours(map: MLMap, density: number) {
   if (map.getSource('contours')) return;
-  demSource ??= newDemSource();
+  if (!contourDem) newContourDem();
   contourDensity = density;
-  map.addSource('contours', { type: 'vector', tiles: [contourUrl(density)], maxzoom: 16 });
+  map.addSource('contours', { type: 'vector', tiles: [contourTiles(density)], maxzoom: 16 });
   map.addLayer(
     {
       id: 'contour-line',
@@ -246,13 +254,12 @@ function setupContours(map: MLMap, density: number) {
   );
 }
 
-/** New terrain tiles (a new catalog): the contours' DEM source anew (its URL is fixed when made,
- * under a protocol of its own), and their tiles from it. */
+/** New terrain tiles or areas (a new catalog): the contours' DEM anew, and their tiles from it. */
 export function switchContours(map: MLMap) {
   const src = map.getSource('contours') as maplibregl.VectorTileSource | undefined;
-  if (!demSource || !src) return;
-  demSource = newDemSource();
-  src.setTiles([contourUrl(contourDensity)]);
+  if (!contourDem || !src) return;
+  newContourDem();
+  src.setTiles([contourTiles(contourDensity)]);
 }
 
 export function applyTerrain(map: MLMap, t: Terrain) {
@@ -287,7 +294,7 @@ export function applyTerrain(map: MLMap, t: Terrain) {
   if (src) {
     if (cl.density !== contourDensity) {
       contourDensity = cl.density;
-      src.setTiles([contourUrl(cl.density)]);
+      src.setTiles([contourTiles(cl.density)]);
     }
     map.setLayoutProperty('contour-line', 'visibility', t.contours ? 'visible' : 'none');
     map.setLayoutProperty('contour-label', 'visibility', t.contours && cl.labels ? 'visible' : 'none');

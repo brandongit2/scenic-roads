@@ -132,6 +132,14 @@ export class RasterTileSource extends Evented<SourceEventType> implements Source
         return this._loaded;
     }
 
+    /** Scenic Roads: new areas (`scenic:zoom-by-area`'s form; a new catalog's), taken now: the covers
+     * follow at the next frame (their memo keys name the areas). */
+    setZoomByArea(spec: unknown): void {
+        (this._options as Record<string, unknown>)['scenic:zoom-by-area'] = spec;
+        if (this._loaded) this.zoomByArea = zoomByArea(spec, this.maxzoom);
+        this.map?.triggerRepaint();
+    }
+
     onAdd(map: Map): void {
         this.map = map;
         this.load();

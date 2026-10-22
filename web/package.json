@@ -22,7 +22,6 @@
     "earcut": "3.2.3",
     "gl-matrix": "3.4.4",
     "kdbush": "4.1.0",
-    "maplibre-contour": "^0.1.1",
     "murmurhash-js": "1.0.0",
     "pbf": "5.1.2",
     "potpack": "2.1.0",

@@ -38,7 +38,7 @@ import { metricOf, modeDef } from './scenic';
 import * as prefs from './prefs';
 import { ROAD_WEIGHT, Store, classMask, defaults, labelShown, modeGroup, fromHash, fromSaved, groupMask, lineWeight, railMask, roadLenKm, roadLenM, surfaceMask, toHash, tollMask, unnamedHideClasses, unnamedHideGroups, type AppState, type Selection, type Stretch } from './state';
 import * as cam3d from './camera3d';
-import { applyLabelOpacity, applyLabelSize, applyTerrain, applyTint, cacheTerrainRays, switchContours, TINT_VARS, tintColourAt, tintCss } from './terrain';
+import { applyLabelOpacity, applyLabelSize, applyTerrain, applyTint, cacheTerrainRays, setTerrainAreas, switchContours, TINT_VARS, tintColourAt, tintCss } from './terrain';
 import { applyWater, switchCoast, updateCoastRamp } from './coast';
 import { CatalogWatch } from './catalog';
 import { TileRetry } from './retry';
@@ -171,6 +171,7 @@ async function main() {
   setWaterColours(store.s.water.colour, lakeColour(store.s.water.colour));
   // diff: false, so the new style loads as one (style.load, below) rather than as edits to the empty one.
   map.setStyle(baseStyle(!!meta.labelTiles, store.s.labelDensity, !!meta.water, meta.terrainAreas), { diff: false });
+  setTerrainAreas(map, meta.terrainAreas);
   if (EVAL) installEval(map);
   // The far buildings' field (bldfield.ts, task #102), on by default where the catalog has its
   // layer (`buildings-field`); `?bldfield=off` leaves it out, `?bldfield=<url>` takes its tiles from
@@ -2198,6 +2199,10 @@ async function main() {
       addField();
     }
     if (!!m.labelTiles !== labelTilesOn() || !!m.water !== waterTilesOn()) watch?.wantReload('New map data');
+    // The areas of terrain finer than its base, as they grow: the terrain sources' covers and the
+    // contours follow in place.
+    for (const id of ['dem', 'dem-hs', 'slope']) (map.getSource(id) as maplibregl.RasterTileSource | undefined)?.setZoomByArea(m.terrainAreas);
+    setTerrainAreas(map, m.terrainAreas);
     markDirty();
   };
   regions.onFit = (b) => fitGround(new maplibregl.LngLatBounds([b[0], b[1]], [b[2], b[3]]), { top: 60, bottom: 60, left: 60, right: 340 });
