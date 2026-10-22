@@ -13115,6 +13115,7 @@ mod tests {
         store::cachefile::release(&copy(4));
         a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
         a.slots[0].running = None;
+        a.room_target = None;
         // Not without the NAS (what goes must be kept there).
         put(&copy(3), &[1; 1000]);
         a.worked("pack 6/1/1");
