@@ -1,6 +1,6 @@
 //! The step programs' command lines: what a unit's tail runs (extract, elev, tile, scenic-metrics,
 //! areaflags, landcover), the tasks' programs (trees, bldtile, terrainsub, also as WebAssembly in
-//! a page), the rail step's railfreq, and the tools run by hand (lakefill, coastcheck, slope,
+//! a page), the rail step's railfreq, and the tools run by hand (lakefill, coastcheck,
 //! terrain). Each binary in src/bin/ of the same name parses with its own.
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -237,30 +237,11 @@ pub struct Terrainsub {
     pub workers: Option<usize>,
 }
 
-/// Terrain slope tiles for the slope tint from a build folder's terrain.tiles (slope.tiles):
-/// incremental, by the terrain keys of the last run
-#[derive(Parser, Debug)]
-#[command(name = "slope")]
-pub struct Slope {
-    /// The build folder
-    #[arg(default_value = "data/build")]
-    pub build_dir: PathBuf,
-    /// Records the current terrain keys (a slope.tiles built before the cache existed), nothing made
-    #[arg(long)]
-    pub seed: bool,
-    /// Every level below z12 again, from the z12 tiles
-    #[arg(long)]
-    pub coarse: bool,
-}
-
-/// Terrain tiles for 3D terrain and hillshade, and the z11 terrain analysis grid, of a build
-/// folder; or (--scan) the repair over the coverage's tiles, from AWS's raw tiles
+/// The terrain's repair over the coverage's tiles, every level, from AWS's raw tiles, beside the
+/// first repair and repaired again: a check, reading the NAS, writing only under --out
 #[derive(Parser, Debug)]
 #[command(name = "terrain")]
 pub struct Terrain {
-    /// The build folder
-    #[arg(default_value = "data/build")]
-    pub build_dir: PathBuf,
     /// The project folder whose records name the terrain's sources
     #[arg(long, value_name = "DIR", default_value = "/Volumes/personal/projects/scenic-roads")]
     pub root: PathBuf,
@@ -271,35 +252,35 @@ pub struct Terrain {
 /// `terrain --scan`'s options.
 #[derive(Args, Debug)]
 pub struct TerrainScan {
-    /// The repair over the coverage's tiles, every level (writes only under --out)
-    #[arg(long)]
+    /// The scan (all it does: the flag kept for its callers)
+    #[arg(long, required = true)]
     pub scan: bool,
     /// Where the raw archives are copied, a z3 pack at a time
-    #[arg(long, value_name = "DIR", default_value = "data/scan-cache", requires = "scan")]
+    #[arg(long, value_name = "DIR", default_value = "data/scan-cache")]
     pub cache: PathBuf,
     /// The scan's output folder
-    #[arg(long, value_name = "DIR", default_value = "data/scan", requires = "scan")]
+    #[arg(long, value_name = "DIR", default_value = "data/scan")]
     pub out: PathBuf,
     /// Tiles whose values are written to views/ (z/x/y a line)
-    #[arg(long, value_name = "FILE", requires = "scan")]
+    #[arg(long, value_name = "FILE")]
     pub views: Option<PathBuf>,
     /// Only these z3 packs (3/x/y,…)
-    #[arg(long, value_name = "3/X/Y,…", requires = "scan")]
+    #[arg(long, value_name = "3/X/Y,…")]
     pub only: Option<String>,
     /// Only these z6 tiles made (6/x/y a line)
-    #[arg(long, value_name = "FILE", requires = "scan")]
+    #[arg(long, value_name = "FILE")]
     pub z6: Option<PathBuf>,
     /// AWS's tiles alone (no northern dataset, water or walled patches)
-    #[arg(long, requires = "scan")]
+    #[arg(long)]
     pub bare: bool,
     /// The terrain made written there too, as the terrain job's packs (a project folder of its own)
-    #[arg(long, value_name = "DIR", requires = "scan")]
+    #[arg(long, value_name = "DIR")]
     pub fixed_out: Option<PathBuf>,
     /// Tiles alone, each from its raw tile only, with their views (z/x/y a line)
-    #[arg(long, value_name = "FILE", requires = "scan")]
+    #[arg(long, value_name = "FILE")]
     pub tiles: Option<PathBuf>,
     /// The worldwide z8, each tile alone
-    #[arg(long, requires = "scan")]
+    #[arg(long)]
     pub world_z8: bool,
 }
 

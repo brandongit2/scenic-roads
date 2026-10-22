@@ -181,6 +181,11 @@ impl Parts {
     }
 }
 
+/// Whether a flag that takes no value (`--full`) is given, as clap read the line.
+fn flag(args: &[String], name: &str) -> bool {
+    pipeline::cli::build::flag(args, name)
+}
+
 /// A flag's value (`--pass`), as clap read the line.
 fn opt(args: &[String], name: &str) -> Option<String> {
     pipeline::cli::build::values(args, name).into_iter().next()
@@ -213,7 +218,7 @@ fn main() -> Result<()> {
 fn inputs_step(out: &mut Out, args: &[String]) -> Result<()> {
     let unit =
         positional(args).first().map(|u| u.trim_start_matches("inputs/").to_string()).context("inputs <unit>")?;
-    if args.iter().any(|a| a == "--forget") {
+    if flag(&args, "--forget") {
         eprintln!("inputs: {}", pipeline::inputs::gate::forget(out, &unit)?);
         return Ok(());
     }
@@ -232,7 +237,7 @@ fn inputs_step(out: &mut Out, args: &[String]) -> Result<()> {
     // (Its cost noted, as every step's: measured, a check goes beside running jobs, crate::coord.)
     let target = format!("inputs/{unit}");
     let c = cost_start("inputs", &target);
-    let said = pipeline::inputs::gate::run(out, &unit, args.iter().any(|a| a == "--full"), planned)?;
+    let said = pipeline::inputs::gate::run(out, &unit, flag(&args, "--full"), planned)?;
     eprintln!("inputs: {said}");
     note_cost("inputs", &target, c);
     Ok(())
@@ -458,7 +463,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 .or_else(|| pipeline::osmpass::latest_pass(out.root()))
                 .context("no complete OSM pass")?;
             // --near-coverage: the extracts meeting the regions, 10 km round (as their candidates read them).
-            let cov = if args.iter().any(|a| a == "--near-coverage") { Some(coverage_of(&out, &args)?) } else { None };
+            let cov = if flag(&args, "--near-coverage") { Some(coverage_of(&out, &args)?) } else { None };
             let near = |u: TileId| {
                 cov.as_ref().is_none_or(|c| {
                     let b = pipeline::stage::tile_box_grown(u.z, u.x, u.y, 10.0);
@@ -509,7 +514,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 })
                 .transpose()?
                 .unwrap_or_default();
-            let has = |f: &str| args.iter().any(|a| a == f);
+            let has = |f: &str| flag(&args, f);
             catalog(
                 &mut out,
                 has("--held"),
@@ -538,7 +543,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 opt(&args, "--cache")
                     .unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
             );
-            if args.iter().any(|a| a == "--order") {
+            if flag(&args, "--order") {
                 let mut paths = String::new();
                 std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut paths)?;
                 let have = pipeline::rawpack::packed(&store)?;
@@ -549,7 +554,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                     paths.lines().count()
                 );
                 print!("{list}");
-            } else if args.iter().any(|a| a == "--check") {
+            } else if flag(&args, "--check") {
                 let every = opt(&args, "--every").map(|n| n.parse()).transpose()?.unwrap_or(0);
                 let c = pipeline::rawpack::check(&store, every)?;
                 eprintln!(
@@ -966,7 +971,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let coarse = pipeline::terrain_pack::Coarse::new(&raw);
             let src = opened.sources(Some(&coarse));
             let levels = pipeline::terrain_pack::piece_levels(&cov, (t.x, t.y));
-            let whole = args.iter().any(|a| a == "--whole");
+            let whole = flag(&args, "--whole");
             let t0 = std::time::Instant::now();
             let (hi, mid) = if whole {
                 pipeline::terrain_pack::make_piece_whole(&raw, &src, levels)?
@@ -2708,7 +2713,7 @@ fn water_key_check(root: &Path, args: &[String]) -> Result<()> {
         }
         (None, None) => {
             anyhow::ensure!(
-                args.iter().any(|a| a == "--compute"),
+                flag(&args, "--compute"),
                 "the manifest has no water digests for {pin}: --compute works them out here, in memory"
             );
             let src = pipeline::terrain_water::BasemapWater::open(&root.join(&pin), &pin)?;
@@ -4075,9 +4080,7 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
             store::sys::copy_data(e.path(), kept.join(&name))?;
         }
     }
-    let carry = args
-        .iter()
-        .any(|a| a == "--carry")
+    let carry = flag(args, "--carry")
         .then(|| -> Result<pipeline::scache::Carry> {
             let (from, to) =
                 (out.root().join("cache/scenic-units").join(u.dash()), shared.join("scenic-units").join(u.dash()));

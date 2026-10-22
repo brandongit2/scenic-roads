@@ -197,6 +197,13 @@ pub fn values(args: &[String], flag: &str) -> Vec<String> {
     }
 }
 
+/// Whether a flag that takes no value (`--full`) is given on a checked command line; false when the
+/// step doesn't take it.
+pub fn flag(args: &[String], flag: &str) -> bool {
+    let (_, sm) = step_matches(args);
+    matches!(sm.try_get_one::<bool>(flag.trim_start_matches("--")), Ok(Some(true)))
+}
+
 /// The step named and its arguments (not flags or their values), in order, from a command line
 /// clap has checked (`args`: the program's name first).
 pub fn targets(args: &[String]) -> (String, Vec<String>) {

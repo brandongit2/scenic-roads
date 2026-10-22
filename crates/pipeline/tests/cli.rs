@@ -29,7 +29,6 @@ fn exe(prog: &str) -> &'static str {
         "terrainsub" => env!("CARGO_BIN_EXE_terrainsub"),
         "lakefill" => env!("CARGO_BIN_EXE_lakefill"),
         "coastcheck" => env!("CARGO_BIN_EXE_coastcheck"),
-        "slope" => env!("CARGO_BIN_EXE_slope"),
         "terrain" => env!("CARGO_BIN_EXE_terrain"),
         p => panic!("no binary for {p}: add it to exe() and pipeline::cli::PROGRAMS"),
     }
@@ -155,11 +154,9 @@ fn what_went_wrong_before() {
     assert_eq!(code, 2);
     let (code, _, _) = run("scenic", &s(&["in-use", "3"]));
     assert_eq!(code, 2, "in-use takes off, or --cores");
-    // `slope --seed` took "--seed" for its build folder; `scenic --root x pool` ran the status.
+    // `scenic --root x pool` ran the status.
     let (code, _, _) = run("scenic", &s(&["--root", "/nonexistent", "pool"]));
     assert_eq!(code, 2);
-    let (code, _, _) = run("slope", &s(&["--seed", "--help"]));
-    assert_eq!(code, 0);
 }
 
 /// The command `words` name in `c` (its subcommands followed as far as they go), with the commands

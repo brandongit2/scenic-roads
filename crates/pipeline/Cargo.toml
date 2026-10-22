@@ -35,6 +35,7 @@ unicode-normalization = "0.1"
 # (WebAssembly has no sockets, and ring's C doesn't build for it: there the programs read what they
 # need from their inputs, docs/workers.md.)
 [target.'cfg(not(target_os = "wasi"))'.dependencies]
+clap = { workspace = true, features = ["help", "usage", "error-context", "suggestions"] }
 # Pinned: coord::client's idle transport uses ureq's unversioned::transport API (no semver promise).
 ureq = "=3.4.2"
 axum = "0.8"

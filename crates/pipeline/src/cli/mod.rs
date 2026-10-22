@@ -12,7 +12,7 @@ pub mod scenic;
 use clap::CommandFactory;
 
 /// Every program of this crate (its src/bin/), by name.
-pub const PROGRAMS: [&str; 16] = [
+pub const PROGRAMS: [&str; 15] = [
     "scenic",
     "scenic-build",
     "scenic-metrics",
@@ -27,7 +27,6 @@ pub const PROGRAMS: [&str; 16] = [
     "terrainsub",
     "lakefill",
     "coastcheck",
-    "slope",
     "terrain",
 ];
 
@@ -49,7 +48,6 @@ pub fn command(prog: &str) -> Option<clap::Command> {
         "terrainsub" => Terrainsub::command(),
         "lakefill" => Lakefill::command(),
         "coastcheck" => Coastcheck::command(),
-        "slope" => Slope::command(),
         "terrain" => Terrain::command(),
         _ => return None,
     })
