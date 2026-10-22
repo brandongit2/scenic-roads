@@ -81,6 +81,11 @@ pub fn batch_disk(step: &str, each: impl IntoIterator<Item = u64>) -> u64 {
 pub const CACHES: [(&str, &[&str]); 2] =
     [("DEM", &["unit"]), (crate::localread::CACHE, &["depth", "depth-lo", "terrain-water", "lakefill", "water"])];
 
+/// The shared caches its jobs copy only where the Mac has room for them past its room target
+/// (crate::localread), else read the NAS in place: reserved only on a Mac with that room
+/// (crate::coord's `missing`).
+pub const ROOM_ONLY: [&str; 1] = [crate::localread::CACHE];
+
 /// The shared cache a job of `step` reads (`CACHES`), if any.
 pub fn cache_of(step: &str) -> Option<&'static str> {
     CACHES.iter().find(|(_, steps)| steps.contains(&step)).map(|(c, _)| *c)

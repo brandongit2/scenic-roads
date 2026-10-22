@@ -2510,7 +2510,7 @@ fn targets_p90(disks: &BTreeMap<String, u64>, step: &str) -> Option<u64> {
 }
 
 /// Whether a disk measure `mb` is no measure of a job whose targets measure `base` (MB): past
-/// three times it and a GB (`stale_peak`).
+/// three times it and a GB (`stale_peak`, `remeasured`).
 fn far_above(mb: u64, base: u64) -> bool {
     mb > base.saturating_mul(3) + 1024
 }
@@ -2521,6 +2521,30 @@ fn far_above(mb: u64, base: u64) -> bool {
 /// their most, so a peak within reason of the one job measured stays.
 fn stale_peak(disks: &BTreeMap<String, u64>, step: &str, mb: u64) -> bool {
     targets_p90(disks, step).is_some_and(|p| far_above(mb, p))
+}
+
+/// The steps whose kept disk measures may hold a run that measured more than the job (task #398:
+/// `depth-lo`, a 35 GB job peak against its targets' 65 MB, which kept its jobs on the lead's Mac).
+const REMEASURED: [&str; 1] = ["depth-lo"];
+
+/// `REMEASURED`'s job peaks and target measures far above what its targets measure (past three
+/// times their median and a GB: an outlier or two can't lift a median as they lift a 90th
+/// percentile) dropped, as each load reads them, so its jobs are sized by their measured use;
+/// written without them at the next save. With no target measured, nothing dropped.
+fn remeasured(job_disks: &mut BTreeMap<String, Vec<u64>>, disks: &mut BTreeMap<String, u64>) {
+    for step in REMEASURED {
+        let mut own: Vec<u64> =
+            disks.iter().filter(|(k, _)| crate::agent::memguard::step_of_key(k) == step).map(|(_, d)| *d).collect();
+        if own.is_empty() {
+            continue;
+        }
+        own.sort_unstable();
+        let far = |mb: u64| far_above(mb, own[own.len() / 2]);
+        disks.retain(|k, mb| crate::agent::memguard::step_of_key(k) != step || !far(*mb));
+        if let Some(runs) = job_disks.get_mut(step) {
+            runs.retain(|mb| !far(*mb));
+        }
+    }
 }
 
 /// The disk each step's last jobs took, as kept in `dir`, and the shared caches' fills:
@@ -2546,6 +2570,7 @@ fn job_disks_load(
             f
         });
     if let Some(mut m) = std::fs::read(dir.join(JOB_DISKS)).ok().and_then(|b| serde_json::from_slice(&b).ok()) {
+        remeasured(&mut m, disks);
         return (m, fills.unwrap_or_default());
     }
     // (Before v5: pack's and lo's measures dropped, their targets' disks too, written at once.)
@@ -5328,6 +5353,35 @@ mod tests {
         assert!(c.disks().is_empty());
     }
 
+    /// Task #398: depth-lo's 35 GB job peak (its targets 65 MB) and a target's outlier are dropped
+    /// as the coordinator loads them, so its jobs are sized by their measured use and fit any Mac.
+    #[test]
+    fn depth_lo_is_sized_by_its_measured_use() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("coord");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(JOB_DISKS), r#"{"depth-lo":[35000,70,65],"peaks":[35000]}"#).unwrap();
+        std::fs::write(
+            dir.join("disks.json"),
+            serde_json::to_vec(&BTreeMap::from([
+                ("depth-lo 3/1/3".to_string(), 65u64),
+                ("depth-lo 3/2/2".into(), 60),
+                ("depth-lo 3/2/3".into(), 36_000),
+                ("peaks 6/1/1".into(), 10),
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+        let (c, _port) = start_for_test(&dir, "m4", "");
+        // (A shared cache's step since task #551: its jobs' runs that cache's fill, never a job floor.)
+        assert_eq!(c.job_disk("depth-lo"), 0);
+        assert!(!c.disks().contains_key("depth-lo 3/2/3"));
+        assert_eq!(c.disks().get("depth-lo 3/1/3"), Some(&65));
+        // Another step's measures stay as they were.
+        assert_eq!(c.job_disk("peaks"), 35_000);
+        assert!(super::super::agent::every::offered("depth-lo"));
+    }
+
     /// Task #381: `lo` a halo step (a pass's z3 tiles their owners' base packs): a job of them
     /// reserves the most of its tiles' own, not the sum; task #392: the z3 `terrain` and `trees`
     /// runs' measures (an old step shape) gone; task #396: `pack` and `lo` no longer fill a cache of
@@ -6674,6 +6728,33 @@ mod tests {
             filled(&c);
             let g = w.ask(&here(have)).unwrap().unwrap();
             assert_eq!(g.disk_mb, want, "{have:?}");
+        }
+    }
+
+    /// Task #551 review: the whole copies (crate::needs::ROOM_ONLY) are reserved only on a Mac with
+    /// room for them past its target; one short of it (a laptop) reads the NAS in place, so it's
+    /// granted the job with its output alone, not held off.
+    #[test]
+    fn a_room_only_cache_is_reserved_only_where_there_is_room() {
+        let one = |i: usize| Offer {
+            step: "depth".into(),
+            targets: vec![(format!("6/1/{i}"), format!("k 6/1/{i}"), 0)],
+            job: None,
+        };
+        for (disk, want) in [(40_000, 30_100), (10_050, 100)] {
+            let (_d, c, w, _clock) = every((0, 0));
+            packable(&c, "depth", 6, Some(1));
+            c.add_job_run("depth", &["6/1/1".to_string()], 30_100);
+            c.offer("p", (1..=3).map(one).collect());
+            assert_eq!(c.fill_mb(crate::localread::CACHE), 30_000);
+            let a = Ask {
+                want: 1,
+                can: vec!["depth".into()],
+                cap: Some(Capacity { cores: 8, cores_free: 8, disk_mb: disk, ..Default::default() }),
+                ..every_ask("m1", "depth", 64_000, disk)
+            };
+            let g = w.ask(&a).unwrap().expect("granted");
+            assert_eq!(g.disk_mb, want, "{disk} MB of room");
         }
     }
 

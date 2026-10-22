@@ -370,11 +370,19 @@ one work of a pass's z3 tiles (the low zooms' gate opens for a pass as a whole).
 job's disk is its own: the parts of its halo's base packs it reads from the NAS, into its scratch,
 and its output (task #396; docs/steps.md §8); their runs and targets' disks from when their
 jobs copied whole base packs into a cache of the Mac's are dropped once, as `job-disks-v5.json`
-is first written (docs/formats.md). **Shared caches** (task #392, `needs::CACHES`): a `unit`
+is first written (docs/formats.md). `depth-lo`'s (task #398, `coord::REMEASURED`): its job
+peaks and targets' measures past three times its targets' median and a GB (a 35 GB peak against
+65 MB targets, which kept it on the lead's Mac) are dropped each time the coordinator loads them,
+so it runs on any Mac by its measured use. **Shared caches** (task #392, `needs::CACHES`): a `unit`
 reads the DEM cache on a Mac; `depth`, `depth-lo`, `terrain-water`, `lakefill` and `water` read the whole copies (task
 #551, `localread`: whole local copies of the basemap and the depth sources' packs in the cache's
-`blobs/`, made where the disk has room for one past the room target and 10 GB, else the NAS read in
-place; their reads are the local disk's, `costin`'s `local`, not in a run's NAS weight). The run that fills it measures it whole, the warm runs after it
+`blobs/`, made where the disk has room for one past the room target, else the NAS read in place; one
+process copies a file at a time, the others waiting for its copy (a lock file in the cache's
+`copying/`); their reads are the local disk's, `costin`'s `local`, not in a run's NAS weight; a
+copy room-making frees is copied again by the next job reading it). Reserved only where it would be
+copied (`needs::ROOM_ONLY`, `coord`'s `missing`): on a Mac whose room past its target (its ask's
+`disk_mb`) is short of what it lacks of the fill, nothing is reserved and its jobs there read the
+NAS, so a laptop keeps getting them. The run that fills it measures it whole, the warm runs after it
 their output alone. So a target of such a step counts its own output (its disk floor at most its
 step's 90th percentile, `needs::Book::disk`), and the cache is reserved apart. What's reserved
 and when:

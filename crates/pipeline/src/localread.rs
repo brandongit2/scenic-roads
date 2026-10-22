@@ -8,11 +8,17 @@
 //! content-named, so never stale; kept between jobs, so the targets after share them; held while a
 //! job reads them, and otherwise freed by room-making, the least recently used first
 //! (crate::agent::room::toward). A copy is made only when the disk has room for it past the
-//! owner's room target and `SLACK`; short of it (a laptop), or with no cache named (a job run by
+//! owner's room target; short of it (a laptop), or with no cache named (a job run by
 //! hand, a test), the NAS's file is read in place, as before. The copies' reads count as the local
 //! disk's (store::range::local_bytes, crate::costin's `local`), so the NAS's weight of a run that
 //! reads them is what it copied (crate::needs::nas_rate); the copies are one shared cache a Mac
-//! fills once (crate::needs::CACHES: `CACHE`).
+//! fills once (crate::needs::CACHES: `CACHE`), reserved only on a Mac with room for it
+//! (crate::needs::ROOM_ONLY). One process copies a file at a time (`making`, and across processes a
+//! lock file in the cache's `copying/`): another wanting it waits, then reads that copy.
+//!
+//! (A copy room-making frees between jobs is copied again by the next job that reads it: with the
+//! disk near its target, the basemap's 28.6 GB may go and come back job after job. Its reads are
+//! the NAS's then, as before, plus the copy's.)
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -25,13 +31,12 @@ pub const CACHE: &str = "whole copies";
 /// `caches_here`).
 pub const FOLDERS: [(&str, &str); 2] = [("layers", "basemap"), ("sources", "fetched")];
 
-/// The room a copy leaves free past itself and the room target: what the job writes beside it.
-pub const SLACK: u64 = 10 << 30;
-
 /// This Mac's copies of the NAS's files under `root`.
 pub struct Local {
     root: PathBuf,
     blobs: store::blobs::Blobs,
+    /// Where the copies' lock files are (`<cache>/copying/`).
+    locks: PathBuf,
     /// The owner's room target (bytes), kept free.
     target: u64,
     /// The copies being made by this process, one at a time each (the readers' threads wanting the
@@ -51,6 +56,7 @@ impl Local {
         Local {
             root: root.to_path_buf(),
             blobs: store::blobs::Blobs::new(cache.join("blobs")),
+            locks: cache.join("copying"),
             target,
             making: Mutex::new(HashMap::new()),
         }
@@ -71,9 +77,14 @@ impl Local {
         if let Some(l) = self.blobs.have(&content) {
             return l;
         }
+        // (Another process copying it: waited for, its copy read.)
+        let _lock = self.lock(&content);
+        if let Some(l) = self.blobs.have(&content) {
+            return l;
+        }
         let Ok(len) = std::fs::metadata(p).map(|m| m.len()) else { return p.to_path_buf() };
         if std::fs::create_dir_all(self.blobs.dir()).is_err()
-            || crate::agent::room::free_past(self.blobs.dir(), self.target) < len.saturating_add(SLACK)
+            || crate::agent::room::free_past(self.blobs.dir(), self.target) < len
         {
             return p.to_path_buf();
         }
@@ -91,6 +102,23 @@ impl Local {
                 p.to_path_buf()
             }
         }
+    }
+}
+
+impl Local {
+    /// The lock on copying `content` across processes (an exclusive `flock` on its lock file, held
+    /// until it's dropped); None when it can't be taken (copied unlocked, as before).
+    fn lock(&self, content: &str) -> Option<std::fs::File> {
+        use std::os::fd::AsRawFd;
+        std::fs::create_dir_all(&self.locks).ok()?;
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.locks.join(format!("{}.lock", store::naming::hash16(content.as_bytes()))))
+            .ok()?;
+        // SAFETY: a valid descriptor; the lock goes with the file.
+        (unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } == 0).then_some(f)
     }
 }
 
