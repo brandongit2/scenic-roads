@@ -8,8 +8,11 @@ uniform sampler2D u_elevation_stops;
 uniform sampler2D u_color_stops;
 uniform int u_color_ramp_size;
 uniform float u_opacity;
+uniform sampler2D u_mask;
+uniform float u_masked;
 
 in vec2 v_pos;
+in vec2 v_mask;
 
 float getElevation(vec2 coord) {
     // Convert encoded elevation value to meters
@@ -51,6 +54,30 @@ vec4 rampAt(float el) {
     return texture(u_color_stops, vec2(x, 0));
 }
 
+// Scenic Roads: masked (water_mask.ts), the elevation interpolated bilinearly from the texels
+// holding one (below 9,000 m: the app's depth is +12,000 m where there's none), so a value never
+// mixes with none; 12,000 m when none of the four has one.
+float elevationOf(vec2 coord) {
+    ivec2 size = textureSize(u_image, 0);
+    vec2 p = coord * vec2(size) - 0.5;
+    ivec2 i0 = ivec2(floor(p));
+    vec2 f = p - floor(p);
+    float sum = 0.0;
+    float wsum = 0.0;
+    for (int k = 0; k < 4; k++) {
+        ivec2 o = ivec2(k & 1, k >> 1);
+        vec4 data = texelFetch(u_image, clamp(i0 + o, ivec2(0), size - 1), 0) * 255.0;
+        data.a = -1.0;
+        float e = dot(data, u_unpack);
+        float w = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
+        if (e < 9000.0) {
+            sum += w * e;
+            wsum += w;
+        }
+    }
+    return wsum > 0.0 ? sum / wsum : 12000.0;
+}
+
 // A premultiplied colour in linear light.
 vec3 linOf(vec4 c) {
     return c.a > 0.0 ? pow(c.rgb / c.a, vec3(2.2)) * c.a : vec3(0.0);
@@ -73,6 +100,8 @@ void main() {
         float a = 0.25 * (c0.a + c1.a + c2.a + c3.a);
         vec3 lin = 0.25 * (linOf(c0) + linOf(c1) + linOf(c2) + linOf(c3));
         col = a > 0.0 ? vec4(pow(lin / a, vec3(1.0 / 2.2)) * a, a) : vec4(0.0);
+    } else if (u_masked > 0.5) {
+        col = rampAt(elevationOf(v_pos)) * texture(u_mask, v_mask).a;
     } else {
         col = rampAt(getElevation(v_pos));
     }

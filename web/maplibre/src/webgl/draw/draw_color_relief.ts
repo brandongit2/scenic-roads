@@ -12,6 +12,7 @@ import type {Painter} from '../../render/painter.ts';
 import type {TileManager} from '../../tile/tile_manager.ts';
 import type {ColorReliefStyleLayer} from '../../style/style_layer/color_relief_style_layer.ts';
 import type {OverscaledTileID} from '../../tile/tile_id.ts';
+import {maskCells, maskTileManager, type MaskCell} from './water_mask.ts';
 
 export function drawColorRelief(painter: Painter, tileManager: TileManager, layer: ColorReliefStyleLayer, tileIDs: OverscaledTileID[], renderContext: RenderContext): void {
     if (renderContext.currentPass !== 'translucent') return;
@@ -22,6 +23,14 @@ export function drawColorRelief(painter: Painter, tileManager: TileManager, laye
 
     const depthMode = painter.getDepthModeForSublayer(0, DepthMode.ReadOnly);
     const colorMode = painter.colorModeForRenderPass();
+
+    // Scenic Roads: drawn as the mask source's raster (water_mask.ts).
+    const mask = maskTileManager(painter, layer);
+    if (mask) {
+        const cells = maskCells(painter, mask, tileIDs);
+        renderColorRelief(painter, tileManager, layer, cells.map((c) => c.id), {}, depthMode, colorMode, false, renderContext, cells);
+        return;
+    }
 
     // Globe (or any projection with subdivision) needs two-pass rendering to avoid artifacts when rendering texture tiles.
     // See comments in draw_raster.ts for more details.
@@ -53,7 +62,8 @@ function renderColorRelief(
     depthMode: Readonly<DepthMode>,
     colorMode: Readonly<ColorMode>,
     useBorder: boolean,
-    renderContext: RenderContext
+    renderContext: RenderContext,
+    cells?: MaskCell[]
 ) {
     const projection = painter.style.projection;
     const context = painter.context;
@@ -66,8 +76,9 @@ function renderColorRelief(
     let firstTile = true;
     let colorRampSize = 0;
 
-    for (const coord of coords) {
-        const tile = tileManager.getTile(coord);
+    for (let i = 0; i < coords.length; i++) {
+        const coord = coords[i], cell = cells?.[i];
+        const tile = tileManager.getTile(cell ? cell.dem : coord);
         const dem = tile.dem;
         if (!dem?.data) {
             continue;
@@ -96,7 +107,12 @@ function renderColorRelief(
             tile.demTexture.update(dem.getPixels(), {premultiply: false});
             tile.needsColorReliefPrepare = false;
         }
-        tile.demTexture.bind(textureFilter, gl.CLAMP_TO_EDGE);
+        // (Scenic Roads: masked, the shader interpolates the depths itself, those with none left out.)
+        tile.demTexture.bind(cell ? gl.NEAREST : textureFilter, gl.CLAMP_TO_EDGE);
+        if (cell) {
+            context.activeTexture.set(gl.TEXTURE2);
+            cell.mask.bind(gl.LINEAR, gl.CLAMP_TO_EDGE, gl.LINEAR_MIPMAP_LINEAR);
+        }
 
         const mesh = projection.getMeshFromTileID(context, coord.canonical, useBorder, true, 'raster');
 
@@ -104,7 +120,7 @@ function renderColorRelief(
 
         const projectionData = getProjectionDataForTile(renderContext, coord, {aligned: align});
 
-        program.draw(context, gl.TRIANGLES, depthMode, stencilModes[coord.overscaledZ], colorMode, CullFaceMode.backCCW,
-            colorReliefUniformValues(layer, tile.dem, colorRampSize), terrainData, projectionData, layer.id, mesh.vertexBuffer, mesh.indexBuffer, mesh.segments);
+        program.draw(context, gl.TRIANGLES, depthMode, cell ? cell.stencil : stencilModes[coord.overscaledZ], colorMode, CullFaceMode.backCCW,
+            colorReliefUniformValues(layer, tile.dem, colorRampSize, cell), terrainData, projectionData, layer.id, mesh.vertexBuffer, mesh.indexBuffer, mesh.segments);
     }
 }

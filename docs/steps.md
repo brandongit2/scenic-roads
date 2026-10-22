@@ -248,9 +248,14 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   draped on the water kept at the surface) is planned (task #466).
 - **The map:** two layers, each switched on its own (Layers → Depth): the depth's colour with the
   floor's shading (nautical blues on a log scale to 300 m by default; the panel's ramp picker; linear,
-  log or fitted to the view), and contours with labels (on demand). Masked by the basemap's water at
-  the display's resolution, over the water fill and under the coast shading, draped on the 3D
-  terrain. The cursor's readout says the depth, its class and source; the map names the sources in
+  log or fitted to the view), and contours with labels (on demand). The colour and shading are drawn
+  as the water itself: our MapLibre draws them over the water tiles the map draws, as those tiles'
+  alpha (`scenic:mask`, web/maplibre FORK.md), so they never leave the water nor leave it uncovered
+  while tiles load or overzoom; the depth is interpolated bilinearly among pixels with data and
+  reaches 8 pixels past its data (the nearest's value), so water a coarse tile's rule left out
+  takes its neighbour's depth, and water with no depth near shows the water's own colour. Without
+  the water tiles, masked by the basemap's water at the display's resolution. Over the water fill
+  and under the coast shading, draped on the 3D terrain. The cursor's readout says the depth, its class and source; the map names the sources in
   view, "not for navigation", and the notices their licences ask for (CHS's, naming the owner as the
   maker), which the credits carry too.
 - **The rollout:**

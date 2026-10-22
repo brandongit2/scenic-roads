@@ -1,5 +1,8 @@
 uniform sampler2D u_image;
 in highp vec2 v_pos;
+in vec2 v_mask;
+uniform sampler2D u_mask;
+uniform float u_masked;
 
 uniform vec2 u_latrange;
 uniform float u_exaggeration;
@@ -174,6 +177,8 @@ void main() {
     } else {
         standard_hillshade(deriv);
     }
+    // Scenic Roads: masked (water_mask.ts), as the mask's drawn alpha.
+    if (u_masked > 0.5) fragColor *= texture(u_mask, v_mask).a;
 
 #ifdef OVERDRAW_INSPECTOR
     fragColor = vec4(1.0);

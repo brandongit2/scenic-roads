@@ -4,9 +4,11 @@
 // 256-px tiles: the stored ones, or the server's from their nearest ancestor: crates/server/src/
 // depth.rs) and the basemap's own water (its vector tile of zoom min(z, 14), as the map draws it),
 // painted at 512 px. From that one composite come:
-//   relief   depth in the water; elsewhere +12,000 m, which the colour ramp leaves transparent
-//   shade    depth in the water; 0 on land; water without data takes its nearest depth, so
-//            neither casts a false cliff
+//   relief   depth, reaching REACH px past its data (?mask=1: on land too, the map drawing it
+//            only in its water tiles' water; else in the basemap's water); elsewhere +12,000 m,
+//            which the colour ramp leaves transparent
+//   shade    ?mask=1: every pixel its depth or its nearest; else depth in the water, 0 on land,
+//            water without data its nearest depth, so neither casts a false cliff
 //   contour  a vector tile of depth contours (maplibre-contour's isolines, contour/, over the shade values of
 //            the tile and its eight neighbours, so lines meet across tiles)
 // and, on request, the depth, class and source at a point (the readout), depth histograms of the
@@ -75,7 +77,7 @@ const post = (r: DepthReply, transfer: Transferable[] = []) => (self as unknown 
 async function handle(m: Exclude<DepthMsg, { type: 'init' } | { type: 'cancel' }>) {
   if (m.type === 'tile') {
     if (cancelled.delete(m.id)) return;
-    const data = m.kind === 'contour' ? await contourTile(m.z, m.x, m.y, m.q) : await rasterTile(m.kind, m.z, m.x, m.y);
+    const data = m.kind === 'contour' ? await contourTile(m.z, m.x, m.y, m.q) : await rasterTile(m.kind, m.z, m.x, m.y, m.q.mask === '1');
     post({ id: m.id, data }, [data]);
   } else if (m.type === 'probe') {
     const c = await composite(m.z, m.x, m.y);
@@ -255,20 +257,21 @@ async function encode(img: ImageData): Promise<ArrayBuffer> {
   return (await outCanvas.convertToBlob({ type: 'image/png' })).arrayBuffer();
 }
 
-/** Shade values: water with data as it is, land 0, water without data its nearest depth (two-pass
- * chamfer propagation of the nearest pixel with data). */
-function shadeValues(c: Composite): Float32Array {
-  const v = new Float32Array(N * N);
+/** How far (px) a depth reaches past its data for the colour: across the shore's pixels with none
+ * (a coarse tile's water rule, a lake under a pixel) to the water the map draws. */
+const REACH = 8;
+
+/** Each pixel's nearest pixel with data (two-pass chamfer propagation), its sources the water's
+ * (`water`) or all with data (the server's land band too); -1: none in the tile. */
+function nearest(c: Composite, water: boolean): { src: Int32Array; dist: Float32Array } {
   const src = new Int32Array(N * N).fill(-1);
+  const dist = new Float32Array(N * N).fill(1e9);
   for (let i = 0; i < N * N; i++) {
-    if (!c.w[i]) continue;
-    if (c.d[i] < NODATA_MIN) {
-      v[i] = c.d[i];
+    if (c.d[i] < NODATA_MIN && (!water || c.w[i])) {
       src[i] = i;
+      dist[i] = 0;
     }
   }
-  const dist = new Float32Array(N * N).fill(1e9);
-  for (let i = 0; i < N * N; i++) if (src[i] >= 0) dist[i] = 0;
   const relax = (i: number, j: number, cost: number) => {
     if (src[j] >= 0 && dist[j] + cost < dist[i]) {
       dist[i] = dist[j] + cost;
@@ -293,26 +296,47 @@ function shadeValues(c: Composite): Float32Array {
       if (x > 0) relax(i, i + N - 1, 1.414);
     }
   }
+  return { src, dist };
+}
+
+/** Shade values for the contours and the unmasked shading: water with data as it is, land 0, water
+ * without data its nearest depth in the water. */
+function shadeValues(c: Composite): Float32Array {
+  const { src } = nearest(c, true);
+  const v = new Float32Array(N * N);
+  for (let i = 0; i < N * N; i++) v[i] = c.w[i] && src[i] >= 0 ? c.d[src[i]] : 0;
+  return v;
+}
+
+/** Relief values: a pixel's depth (its nearest within REACH where it has none), +12,000 m beyond;
+ * masked, on land too (the map draws it only in its water: depth.ts), else only in the basemap's
+ * water. Water that dries at low water takes the ramp's drying colours (heights above 0): those
+ * below mean sea level at its lowest; the depth itself stays below MSL everywhere else (readout,
+ * shade). */
+function reliefValues(c: Composite, masked: boolean): Float32Array {
+  const { src, dist } = nearest(c, false);
+  const v = new Float32Array(N * N).fill(SENTINEL);
   for (let i = 0; i < N * N; i++) {
-    if (!c.w[i]) v[i] = 0;
-    else if (!(c.d[i] < NODATA_MIN)) v[i] = src[i] >= 0 ? v[src[i]] : 0;
+    const j = src[i];
+    if (j < 0 || dist[i] > REACH || (!masked && !c.w[i])) continue;
+    v[i] = c.k[j] & 8 ? Math.max(c.d[j], 0.05) : c.d[j];
   }
   return v;
 }
 
-async function rasterTile(kind: 'relief' | 'shade', z: number, x: number, y: number): Promise<ArrayBuffer> {
+/** Masked shade values: every pixel its depth or its nearest (no cliff at the shore, which the map
+ * draws only in its water). */
+function maskedShade(c: Composite): Float32Array {
+  const { src } = nearest(c, false);
+  const v = new Float32Array(N * N);
+  for (let i = 0; i < N * N; i++) v[i] = src[i] >= 0 ? c.d[src[i]] : 0;
+  return v;
+}
+
+async function rasterTile(kind: 'relief' | 'shade', z: number, x: number, y: number, masked: boolean): Promise<ArrayBuffer> {
   const c = await composite(z, x, y);
-  if (kind === 'relief') {
-    // Water that dries at low water takes the ramp's drying colours (heights above 0): those below
-    // mean sea level at its lowest; the depth itself stays below MSL everywhere else (readout, shade).
-    const v = new Float32Array(N * N);
-    for (let i = 0; i < N * N; i++) {
-      const d = c.d[i];
-      v[i] = c.w[i] && d < NODATA_MIN ? (c.k[i] & 8 ? Math.max(d, 0.05) : d) : SENTINEL;
-    }
-    return encode(terrarium(v));
-  }
-  return encode(terrarium(shadeValues(c)));
+  if (kind === 'relief') return encode(terrarium(reliefValues(c, masked)));
+  return encode(terrarium(masked ? maskedShade(c) : shadeValues(c)));
 }
 
 // ---- contours ---------------------------------------------------------------------------------

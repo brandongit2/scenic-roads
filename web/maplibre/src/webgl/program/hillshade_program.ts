@@ -3,6 +3,7 @@ import {
     Uniform1i,
     Uniform1f,
     Uniform2f,
+    Uniform3f,
     UniformColor,
     UniformFloatArray,
     UniformColorArray,
@@ -18,6 +19,7 @@ import type {Tile} from '../../tile/tile.ts';
 import type {Painter} from '../../render/painter.ts';
 import type {HillshadeStyleLayer} from '../../style/style_layer/hillshade_style_layer.ts';
 import type {DEMData} from '../../data/dem_data.ts';
+import type {MaskCell} from '../draw/water_mask.ts';
 
 /**
  * Scenic Roads: whether a tile's slopes are upstream's, its pixels sized by the drawn zoom (a tile
@@ -38,6 +40,10 @@ export type HillshadeUniformsType = {
     'u_method': Uniform1i;
     'u_shadows': UniformColorArray;
     'u_highlights': UniformColorArray;
+    'u_cell': Uniform3f;
+    'u_mask_cell': Uniform3f;
+    'u_mask': Uniform1i;
+    'u_masked': Uniform1f;
 };
 
 export type HillshadePrepareUniformsType = {
@@ -58,7 +64,11 @@ const hillshadeUniforms = (context: Context, locations: UniformLocations): Hills
     'u_accent': new UniformColor(context, locations.u_accent),
     'u_method': new Uniform1i(context, locations.u_method),
     'u_shadows': new UniformColorArray(context, locations.u_shadows),
-    'u_highlights': new UniformColorArray(context, locations.u_highlights)
+    'u_highlights': new UniformColorArray(context, locations.u_highlights),
+    'u_cell': new Uniform3f(context, locations.u_cell),
+    'u_mask_cell': new Uniform3f(context, locations.u_mask_cell),
+    'u_mask': new Uniform1i(context, locations.u_mask),
+    'u_masked': new Uniform1f(context, locations.u_masked)
 });
 
 const hillshadePrepareUniforms = (context: Context, locations: UniformLocations): HillshadePrepareUniformsType => ({
@@ -74,6 +84,7 @@ const hillshadeUniformValues = (
     painter: Painter,
     tile: Tile,
     layer: HillshadeStyleLayer,
+    cell?: MaskCell
 ): UniformValues<HillshadeUniformsType> => {
     const accent = layer.paint.get('hillshade-accent-color');
     let method;
@@ -113,7 +124,11 @@ const hillshadeUniformValues = (
         'u_accent': accent,
         'u_method': method,
         'u_highlights': illumination.highlightColor,
-        'u_shadows': illumination.shadowColor
+        'u_shadows': illumination.shadowColor,
+        'u_cell': cell ? cell.demCell : [0, 0, 1],
+        'u_mask_cell': cell ? cell.maskCell : [0, 0, 1],
+        'u_mask': 2,
+        'u_masked': cell ? 1 : 0
     };
 };
 
