@@ -56,6 +56,7 @@ const PY_ACCESSOR: &[&str] = &["inputs.arg("];
 /// with why.
 const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/agent/every.rs", "LEAD_ONLY", "\"inputs\"", "the `inputs` step's name, kept to the lead, not a drop box"),
+    ("crates/pipeline/src/agent/forecast.rs", "CLOCKED", "\"gc\", \"inputs\"", "the `inputs` step's name among the lead's clocked steps, not a drop box"),
     ("crates/pipeline/src/trees/task.rs", "spec", "\"inputs\": list", "a task's input files (its spec's \"inputs\"), not a drop box"),
     ("crates/pipeline/src/bin/scenic.rs", "main", "\"inputs\" => inputs(&args)", "the `inputs` command's name"),
     ("crates/pipeline/src/bld/task.rs", "spec", "\"inputs\": list", "a task's input files (its spec's \"inputs\"), not a drop box"),
