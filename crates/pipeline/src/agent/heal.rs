@@ -85,16 +85,18 @@ impl Heal {
                 }
                 Act::Nothing
             }
-            Some(_) if idle => Act::Remount,
+            // (The deadline first: idle with the pool's lock never free still gives up.)
             Some(d) if now >= d + DRAIN_MAX => {
                 eprintln!(
-                    "agent: the jobs didn't end within {} min: the NAS remount is given up for now",
+                    "agent: no remount within {} min of draining (jobs running, or the pool's lock held): given up for now",
                     DRAIN_MAX / 60
                 );
                 self.draining = None;
                 self.last = Some((now, false));
+                self.every = (self.every() * 2).min(EVERY_MAX);
                 Act::Nothing
             }
+            Some(_) if idle => Act::Remount,
             Some(_) => Act::Nothing,
         }
     }
@@ -161,12 +163,26 @@ mod tests {
     }
 
     #[test]
+    fn idle_but_the_lock_never_free_gives_up() {
+        let mut h = Heal::default();
+        let t = 1_000_000;
+        h.tick((0..3).map(|i| st(t + i, "s")).collect(), t + 5, false);
+        // Idle each round, but the remount never done (`heal_step` found the pool's lock held).
+        for m in 1..30 {
+            assert_eq!(h.tick(vec![], t + 5 + m * 60, true), Act::Remount);
+        }
+        assert_eq!(h.tick(vec![], t + 5 + DRAIN_MAX, true), Act::Nothing);
+        assert!(h.drain_why().is_none() && h.every() == 2 * EVERY);
+    }
+
+    #[test]
     fn a_drain_gives_up_without_cutting_jobs() {
         let mut h = Heal::default();
         let t = 1_000_000;
         h.tick((0..3).map(|i| st(t + i, "s")).collect(), t + 5, false);
         assert!(h.drain_why().is_some());
         assert_eq!(h.tick(vec![], t + 5 + DRAIN_MAX, false), Act::Nothing);
+        assert!(h.every() == 2 * EVERY, "backed off");
         assert!(h.drain_why().is_none());
         // Not again before the interval.
         h.tick((0..3).map(|i| st(t + 10 + DRAIN_MAX + i, "s")).collect(), t + 20 + DRAIN_MAX, false);

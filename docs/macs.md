@@ -134,7 +134,8 @@ and codesign.
   remount (calls stuck busy on <path>)". Once the slots and the agent's own NAS threads (cache
   trims and freeing, the answers' seeding, the forecast, unpublishing) are done, the share is
   unmounted forced under the pool's lock (no tick mid-write) and mounted again in the same round.
-  A drain waits 30 minutes at most, then is given up without cutting a job. Drains come at most
+  A drain waits 30 minutes at most (jobs running, or the pool's lock never free), then is given
+  up without cutting a job and the interval doubles. Drains come at most
   every 30 minutes; when calls stay busy after a remount, the status warns naming the file (another
   Mac's dead session, most likely: disconnect it in DSM) and the interval doubles, up to 4 hours,
   back to 30 minutes after 10 quiet ones. A remount ends only this Mac's session. (The "home

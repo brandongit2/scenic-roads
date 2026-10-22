@@ -1352,8 +1352,8 @@ pub struct Agent {
     /// The self-heal for stale SMB handles: stuck NAS calls seen, its drain and remounts
     /// (crate::agent::heal).
     heal: heal::Heal,
-    /// This process's stuck calls already taken in (`whole::stuck` keeps the newest 16).
-    heal_seen: Vec<crate::whole::Stuck>,
+    /// How many of this process's stuck calls were taken in (`whole::stuck_after`).
+    heal_seen: u64,
     /// The heartbeat last written to the NAS (without its time) and when: written again only when it
     /// changes or every five minutes, so an idle NAS can rest.
     last_beat: Option<(Vec<u8>, Instant)>,
@@ -1785,7 +1785,7 @@ impl Agent {
             sleep: SleepWatch::default(),
             last_mount_try: None,
             heal: Default::default(),
-            heal_seen: Vec::new(),
+            heal_seen: 0,
             last_beat: None,
             progress: None,
             reach: Default::default(),
@@ -3810,9 +3810,8 @@ impl Agent {
     /// in; once drained, the share unmounted under the pool's lock (no tick mid-write) and mounted
     /// again by this loop's `root` at once.
     fn heal_step(&mut self) {
-        let mut new = crate::whole::stuck();
-        new.retain(|s| !self.heal_seen.contains(s));
-        self.heal_seen = crate::whole::stuck();
+        let (mut new, seen) = crate::whole::stuck_after(self.heal_seen);
+        self.heal_seen = seen;
         new.extend(crate::whole::take_reported(&self.stuck_log()));
         let idle = self.idle() && self.nas_threads_idle();
         if self.heal.tick(new, now_s(), idle) != heal::Act::Remount {

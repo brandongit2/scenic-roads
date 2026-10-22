@@ -245,7 +245,8 @@ pub struct Stuck {
 
 /// This process's stuck calls, the newest `STUCK_KEPT`. The agent's self-heal (crate::agent::heal)
 /// reads its own here and its jobs' in the file `STUCK_ENV` names (`take_reported`).
-static STUCK: std::sync::Mutex<Vec<Stuck>> = std::sync::Mutex::new(Vec::new());
+/// With them, how many were ever noted (so a reader takes in only those it hasn't seen).
+static STUCK: std::sync::Mutex<(u64, Vec<Stuck>)> = std::sync::Mutex::new((0, Vec::new()));
 const STUCK_KEPT: usize = 16;
 /// Set by the agent for its jobs: a file each of their stuck calls is appended to, a line
 /// `<unix seconds>\t<path>`.
@@ -263,7 +264,9 @@ fn note_stuck(path: &Path) {
             let _ = f.write_all(line.as_bytes());
         }
     }
-    let mut v = STUCK.lock().unwrap();
+    let mut g = STUCK.lock().unwrap();
+    g.0 += 1;
+    let v = &mut g.1;
     v.push(s);
     let over = v.len().saturating_sub(STUCK_KEPT);
     v.drain(..over);
@@ -275,9 +278,12 @@ fn note_if_busy(e: &std::io::Error, path: &Path) {
     }
 }
 
-/// This process's stuck calls (oldest first; at most 16).
-pub fn stuck() -> Vec<Stuck> {
-    STUCK.lock().unwrap().clone()
+/// This process's stuck calls noted after the first `seen` (oldest first; at most 16), and how many
+/// were noted in all (the next `seen`).
+pub fn stuck_after(seen: u64) -> (Vec<Stuck>, u64) {
+    let g = STUCK.lock().unwrap();
+    let new = (g.0.saturating_sub(seen) as usize).min(g.1.len());
+    (g.1[g.1.len() - new..].to_vec(), g.0)
 }
 
 /// The stuck calls jobs appended to `log` since the last take: the file renamed away (writers
