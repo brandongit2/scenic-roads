@@ -43,12 +43,12 @@
 //!   base packs copied here for the map tiles) goes last.
 //!
 //! After the build (`trim`): once the build has nothing left to build (the lead's forecast:
-//! no work, nothing to publish), jobs running here or not, the agent empties those caches by the same
-//! rules, once (again only after a job has run here since): a member all of them, the lead all
-//! but the canopy squares, which every pass's z3 tiles read again and which never change. (Not down
-//! to the room target: room-making makes that much room before each job, so the build ends with
-//! about that free, and a trim to it would free little or nothing, while that Mac's mirror copies
-//! nothing until 150 GB are free.)
+//! no work, nothing to publish), jobs running here or not, the agent trims those caches by the same
+//! rules, once (again only after a job has run here since), only while the disk has under the room
+//! target free (`trim_goal`: the owner's, else `TRIM_KEEPS_FREE`, 150 GB, what the map's mirror
+//! wants), and only as far as that, the least recently used first: a Mac with room keeps what the
+//! next build would copy again (the mini's ~100 GB), the lead's canopy squares always (`spare`:
+//! every pass's z3 tiles read them again and they never change).
 //!
 //! On the owner's ask (`clear`: the menu bar's Clear the Build's Caches, `scenic clean`, a
 //! `ClearRequest`), once the build is done, jobs running here or not: those caches, the canopy squares
@@ -407,16 +407,44 @@ pub fn clear_answered(home: &Path) {
     std::fs::remove_file(home.join(CLEAR_TAKEN)).ok();
 }
 
-/// Empties the cheap caches at `cache` once the build is done (the module's doc, After the build):
-/// every file that may go by room-making's rules, each once the NAS's `sources` has it, but those
-/// `spare` keeps (the lead's canopy squares). What it freed, and what stays but the spared.
-pub fn trim(cache: &Path, sources: &Path, spare: &dyn Fn(&Path) -> bool) -> Result<Freed> {
+/// The free space a trim after the build keeps when the owner has set no room target (bytes): the
+/// room the offline map's copy wants before it mirrors anything. A Mac with more free keeps its caches.
+pub const TRIM_KEEPS_FREE: u64 = 150 << 30;
+
+/// The free space a trim after the build frees toward (bytes): the owner's room target `target` (0:
+/// none) and the jobs' reservations past it as `Agent::goal` says, else `TRIM_KEEPS_FREE`.
+pub fn trim_goal(goal: u64) -> u64 {
+    if goal > 0 {
+        goal
+    } else {
+        TRIM_KEEPS_FREE
+    }
+}
+
+/// Trims the cheap caches at `cache` once the build is done (the module's doc, After the build):
+/// only when the disk has under `goal` free (`trim_goal`), and then only as far as that, by
+/// room-making's rules and order (the least recently used first, each file once the NAS's `sources`
+/// has it), but those `spare` keeps (the lead's canopy squares). A Mac with room keeps them all. What
+/// it freed, and when the goal isn't reached, what stays but the spared.
+pub fn trim(cache: &Path, sources: &Path, spare: &dyn Fn(&Path) -> bool, goal: u64) -> Result<Freed> {
+    trim_with(cache, sources, spare, goal, &disk_free)
+}
+
+fn trim_with(
+    cache: &Path,
+    sources: &Path,
+    spare: &dyn Fn(&Path) -> bool,
+    goal: u64,
+    free_space: &dyn Fn(&Path) -> std::io::Result<u64>,
+) -> Result<Freed> {
     // (None yet: no job has run here.)
     if !cache.is_dir() {
         return Ok(Freed::default());
     }
-    let freed = free_cheap(cache, sources, u64::MAX, u64::MAX, &disk_free, spare, &|_| false, None)?;
-    Ok(Freed { freed, left: cheap_left(cache, sources.parent(), spare), ..Default::default() })
+    let freed = free_cheap(cache, sources, goal, goal, free_space, spare, &|_| false, None)?;
+    // (Short still: what stays of what could go; else the caches kept on purpose aren't "left".)
+    let left = if free_space(cache)? < goal { cheap_left(cache, sources.parent(), spare) } else { 0 };
+    Ok(Freed { freed, left, ..Default::default() })
 }
 
 /// Clears this Mac's build caches at `cache` on the owner's ask (the module's doc, On the owner's
@@ -1451,7 +1479,7 @@ mod tests {
         // A job holds the older (store::cachefile): room-making passes it over, whatever its age.
         let held = c.join("blobs/a/6-1-2.0000000000000001.pack");
         store::cachefile::hold_existing(&held).unwrap();
-        let t = trim(c, nas, &|_| false).unwrap();
+        let t = trim(c, nas, &|_| false, u64::MAX).unwrap();
         assert_eq!((t.freed, t.left), (BTreeMap::from([("blobs".to_string(), 500)]), 1000));
         assert!(held.exists());
         // Let go: it goes. (A sibling test's child may hold a copy of the hold's descriptor a
@@ -1459,10 +1487,10 @@ mod tests {
         // watchdog.)
         store::cachefile::release(&held);
         let end = std::time::Instant::now() + Duration::from_secs(300);
-        let mut freed = trim(c, nas, &|_| false).unwrap().bytes();
+        let mut freed = trim(c, nas, &|_| false, u64::MAX).unwrap().bytes();
         while freed == 0 && std::time::Instant::now() < end {
             std::thread::sleep(Duration::from_millis(10));
-            freed = trim(c, nas, &|_| false).unwrap().bytes();
+            freed = trim(c, nas, &|_| false, u64::MAX).unwrap().bytes();
         }
         assert_eq!(freed, 1000);
     }
@@ -1607,7 +1635,7 @@ mod tests {
         file(&nas.join("pageviews/2026-02.tsv.zst"), 900, 0);
         // A trim: the one the NAS has now goes; the one it lacks stays, said as kept (the counts
         // from before the indexes stay unsaid: nothing would take them).
-        let t = trim(c, nas, &|_| false).unwrap();
+        let t = trim(c, nas, &|_| false, u64::MAX).unwrap();
         assert_eq!((t.freed, t.left), (BTreeMap::from([("months".to_string(), 900)]), 800));
         assert!(months.join("2026-05.tsv.zst").exists() && months.join("2026-08.json").exists());
     }
@@ -1640,6 +1668,41 @@ mod tests {
         assert_eq!(freed, 2 << 20);
         assert_eq!(calls.get(), 2);
         assert!(!c.join("chm10/0.tif").exists() && !c.join("chm10/1.tif").exists() && c.join("chm10/3.tif").exists());
+    }
+
+    #[test]
+    fn a_trim_keeps_the_caches_while_the_disk_has_room_and_frees_only_the_lack() {
+        let d = tempfile::tempdir().unwrap();
+        let c = &d.path().join("cache");
+        let nas = &d.path().join("nas/sources");
+        for i in 0..4 {
+            file(&c.join(format!("chm10/{i}.tif")), 1 << 20, 100 - i);
+        }
+        // (The NAS has each square at the size.)
+        std::fs::create_dir_all(nas.join("canopy")).unwrap();
+        for i in 0..4 {
+            std::fs::copy(c.join(format!("chm10/{i}.tif")), nas.join(format!("canopy/{i}.tif"))).unwrap();
+        }
+        let all = used(c);
+        let disk = move |p: &Path| Ok((8 << 20) + all - used(p));
+        // Room (8 MB free of a 6 MB goal): nothing goes, nothing is said to stay.
+        let f = trim_with(c, nas, &|_| false, 6 << 20, &disk).unwrap();
+        assert_eq!((f.bytes(), f.left), (0, 0));
+        assert!(c.join("chm10/0.tif").exists());
+        // 2 MB short of 10 MB: the two least recently used squares go, the others stay, none "left".
+        let f = trim_with(c, nas, &|_| false, 10 << 20, &disk).unwrap();
+        assert_eq!((f.bytes(), f.left), (2 << 20, 0));
+        assert!(!c.join("chm10/0.tif").exists() && !c.join("chm10/1.tif").exists());
+        assert!(c.join("chm10/2.tif").exists() && c.join("chm10/3.tif").exists());
+        // Short of more than the caches hold: all go but the spared, which count as kept off the goal.
+        let f = trim_with(c, nas, &|p| p.ends_with("3.tif"), 1 << 40, &disk).unwrap();
+        assert_eq!(f.bytes(), 1 << 20);
+        assert!(c.join("chm10/3.tif").exists());
+    }
+
+    #[test]
+    fn a_trim_goal_is_the_owners_target_else_the_maps_reserve() {
+        assert_eq!((trim_goal(0), trim_goal(40 << 30)), (TRIM_KEEPS_FREE, 40 << 30));
     }
 
     #[test]
@@ -1709,7 +1772,7 @@ mod tests {
         ] {
             file(&c.join(f), 100, 60);
         }
-        let f = trim(c, nas, &|_| false).unwrap();
+        let f = trim(c, nas, &|_| false, u64::MAX).unwrap();
         assert_eq!(
             f.freed,
             BTreeMap::from([
@@ -1754,7 +1817,7 @@ mod tests {
         file(&c.join("blobs/layers/terrain/hi/6-1-2.0000000000000001.pack"), 1000, 60);
         let tiles = whole(&c.join("aws-terrarium/12/2048/1365.png"), 9000)
             + whole(&c.join("aws-terrarium/12/2048/1366.png"), 9000);
-        let f = trim(c, nas, &spare).unwrap();
+        let f = trim(c, nas, &spare, u64::MAX).unwrap();
         // The raw tiles packed onto the NAS (an archive for their shard, named in the index), gone
         // here with the copy; the square kept, and not counted as left.
         let index = crate::rawpack::Index::load(&nas.join("aws-terrarium")).unwrap();
@@ -1769,7 +1832,7 @@ mod tests {
         assert_eq!(f.left, 0);
         assert!(!nas.join("canopy").exists(), "the square wasn't asked about");
         // Again: nothing more to free.
-        assert_eq!(trim(c, nas, &spare).unwrap().bytes(), 0);
+        assert_eq!(trim(c, nas, &spare, u64::MAX).unwrap().bytes(), 0);
     }
 
     #[test]
@@ -1802,7 +1865,7 @@ mod tests {
         assert!(f.say().contains("pageview months 0 MB"), "{}", f.say());
         // The lead's trim (the canopy squares spared) takes them too.
         file(&c.join(MONTHS).join("2026-05.tsv.zst"), 600, 7200);
-        let t = trim(c, nas, &|p| p.starts_with(c.join("chm10"))).unwrap();
+        let t = trim(c, nas, &|p| p.starts_with(c.join("chm10")), u64::MAX).unwrap();
         assert_eq!((t.freed.get("months"), t.left), (Some(&600), 50));
         assert!(c.join(MONTHS).join("2026-08.tsv.zst").exists() && c.join(MONTHS).join("2026-08.json").exists());
     }
@@ -2136,7 +2199,7 @@ mod tests {
         whole(&nas.join("canopy/a.tif"), 60);
         std::fs::create_dir_all(c).unwrap();
         std::os::unix::fs::symlink(nas.join("canopy"), c.join("chm10")).unwrap();
-        let f = trim(c, &nas, &|_| false).unwrap();
+        let f = trim(c, &nas, &|_| false, u64::MAX).unwrap();
         let g = clear(c, &nas).unwrap();
         assert!(nas.join("canopy/a.tif").exists(), "the NAS's copy deleted through the link");
         assert_eq!((f.bytes(), f.left, g.bytes(), cheap_bytes(c, Some(&nas))), (0, 0, 0, 0));
@@ -2156,7 +2219,7 @@ mod tests {
         let own = whole(&c.join("chm10/b.tif"), 60);
         std::os::unix::fs::symlink(nas.join("canopy"), c.join("chm10/sub")).unwrap();
         std::os::unix::fs::symlink(nas.join("canopy/a.tif"), c.join("chm10/a.tif")).unwrap();
-        let f = trim(c, &nas, &|_| false).unwrap();
+        let f = trim(c, &nas, &|_| false, u64::MAX).unwrap();
         assert!(nas.join("canopy/a.tif").exists() && c.join("chm10/a.tif").exists());
         // Its own square, copied there first, gone here.
         assert_eq!(
@@ -2176,7 +2239,7 @@ mod tests {
         file(&there.join("base/base/6-1-1.0000000000000001.base"), 100, 60);
         let c = &d.path().join("cache");
         std::os::unix::fs::symlink(&there, c).unwrap();
-        assert_eq!((trim(c, &nas, &|_| false).unwrap().bytes(), clear(c, &nas).unwrap().bytes()), (0, 0));
+        assert_eq!((trim(c, &nas, &|_| false, u64::MAX).unwrap().bytes(), clear(c, &nas).unwrap().bytes()), (0, 0));
         assert!(
             there.join("chm10/a.tif").exists()
                 && there.join("blobs/layers/x.0000000000000001.pack").exists()
@@ -2199,7 +2262,7 @@ mod tests {
         std::os::unix::fs::symlink(&elsewhere, c.join("aws-terrarium/12/2048")).unwrap();
         // (And a tile of its own beside it, packed as ever.)
         let own = whole(&c.join("aws-terrarium/12/2049/1365.png"), 9000);
-        let f = trim(c, nas, &|_| false).unwrap();
+        let f = trim(c, nas, &|_| false, u64::MAX).unwrap();
         assert!(elsewhere.join("1365.png").exists(), "deleted through the link");
         assert!(!c.join("aws-terrarium/12/2049/1365.png").exists());
         // (At least the own tile: an archive's local copy another test's forked child held a lock on

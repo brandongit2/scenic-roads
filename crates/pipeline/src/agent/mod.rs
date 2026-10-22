@@ -5848,7 +5848,8 @@ impl Agent {
         }) {
             // (The lead keeps its canopy squares: every pass's areas read them again.)
             let (squares, helper) = (cache.join("chm10"), self.o.helper);
-            self.caches_start(None, move || room::trim(&cache, &s, &|p| !helper && p.starts_with(&squares)));
+            let keep = room::trim_goal(self.goal());
+            self.caches_start(None, move || room::trim(&cache, &s, &|p| !helper && p.starts_with(&squares), keep));
         }
         // (One loop at a time, `--once`: waited for, so its heartbeat says what it did.)
         if self.o.once {
