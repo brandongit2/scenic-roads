@@ -62,7 +62,6 @@ pub const SCENIC: Table = Table {
 };
 
 const PASS: &[&str] = &["--pass"];
-const PASS_DEM: &[&str] = &["--pass", "--dem"];
 const PASS_REGIONS: &[&str] = &["--pass", "--regions"];
 
 /// `scenic-build`, the build's steps (src/bin/scenic-build.rs; its doc comment says more of each).
@@ -116,7 +115,7 @@ pub const SCENIC_BUILD: Table = Table {
         c("terrain-same", "<6/x/y> [--whole] [--raw dir] [--pass d] [--regions dir]", "a terrain z6 tile made by subtree (or whole), its pack and mid's content names beside the manifest's; nothing written to the NAS", &["--whole"], &["--raw", "--pass", "--regions"], 1),
         c("terrainsub-task", "<6/x/y> --out dir [--group 8/x/y] [--raw dir] [--pass d] [--regions dir]", "a terrain z6 tile's z8 subtrees' task files; nothing written to the NAS", &[], &["--out", "--group", "--raw", "--pass", "--regions"], 1),
         c("reach", "[--pass d] [U …]", "every unit's reach (units named: printed, nothing written)", &[], PASS, ANY),
-        c("labels", "[--pass d] [--dem dir]", "the labels by importance, worldwide, as the labels layer's packs", &[], PASS_DEM, 0),
+        c("labels", "[--pass d]", "the labels by importance, worldwide, as the labels layer's packs", &[], PASS, 0),
         c("spoken", "[--pass d] [--languages-index i]", "the languages spoken where, for names", &[], &["--pass", "--languages-index"], 0),
         c("lakefill", "[--pass d]", "Canada's lakes missing from OpenStreetMap filled in", &[], PASS, 0),
         c("water", "[--pass d] [--basemap f] [--only x/y,…] [--archive f] [--lakefill f]", "the water layer, z0–9 (--archive: into that local file, the NAS untouched)", &[], &["--pass", "--basemap", "--only", "--archive", "--lakefill"], 0),

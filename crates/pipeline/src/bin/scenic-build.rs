@@ -86,8 +86,8 @@
 //!   reach [--pass d] [U …]       every z6 tile's reach (pipeline::reach): the boxes of its extract's
 //!                                roads, rail and ferries, owned and all (z6 tiles named: printed,
 //!                                nothing written)
-//!   labels [--pass d] [--dem dir]  the labels by importance, worldwide, from the pass's labels set
-//!                                (dem/labels.py), as the labels layer's packs
+//!   labels [--pass d]            the labels by importance, worldwide, from the pass's labels set
+//!                                (pipeline::labels), as the labels layer's packs
 //!   water [--pass d] [--basemap f] [--only x/y,…] [--archive f]  the water layer
 //!                                (pipeline::water): each pixel's share of sea and inland water,
 //!                                z0–9, drawn from the pass's basemap's z14 water, as the water
@@ -6220,7 +6220,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The labels by importance, worldwide (dem/labels.py on the pass's labels set), split into the
+/// The labels by importance, worldwide (pipeline::labels on the pass's labels set), split into the
 /// labels layer's packs.
 fn labels_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let date = match opt(args, "--pass") {
@@ -6234,27 +6234,15 @@ fn labels_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let work = scratch.join("labels");
     std::fs::create_dir_all(&work)?;
     let local = work.join("labels-set.osm.pbf");
-    let parts = Parts(&["Copying the labels set", "Ranking the labels (labels.py)", "Cutting them into packs"]);
+    let parts = Parts(&["Copying the labels set", "Ranking the labels", "Cutting them into packs"]);
     parts.start(0);
     let p = phase("the labels set copied here", Class::NasRead);
     p.count(store::sys::copy_data(out.path(&set), &local).with_context(|| format!("copy {set}"))?, 1);
     drop(p);
     parts.start(1);
     let tiles = work.join("labels.tiles");
-    let dem = PathBuf::from(opt(args, "--dem").unwrap_or_else(|| "dem".into()));
-    let p = phase("labels.py", Class::Mixed);
-    let mut c = store::spawn::command("uv");
-    c.current_dir(&dem)
-        .args(["run", "python", "labels.py", "--src"])
-        .arg(&local)
-        .arg("--out")
-        .arg(&tiles)
-        .arg("--work")
-        .arg(&work);
-    pipeline::timings::child(&mut c);
-    let st = store::spawn::status(&mut c).context("run labels.py")?;
-    anyhow::ensure!(st.success(), "labels.py failed: {st}");
-    drop(p);
+    pipeline::labels::run(&local, &tiles, &work)?;
+    std::fs::remove_file(&local).ok();
     parts.start(2);
     let p = phase("cut into packs and uploaded", Class::NasWrite);
     let arc = roadcore::archive::Archive::open(&tiles)?;

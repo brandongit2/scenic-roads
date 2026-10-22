@@ -7000,12 +7000,7 @@ impl Agent {
                 ));
             }
             if let Some(w) = build::labels_work(date, &manifest, &keys) {
-                jobs.push(job(
-                    format!("labels {date}"),
-                    "labels",
-                    [p.clone(), vec!["--dem".into(), s(&self.o.bin.join("dem"))]].concat(),
-                    Some(w),
-                ));
+                jobs.push(job(format!("labels {date}"), "labels", p.clone(), Some(w)));
             }
             let table = manifest.get(&crate::inputs::logical(crate::inputs::languages::UNIT));
             if let (Some(w), Some(table)) = (build::spoken_work(date, &manifest, &keys), table) {

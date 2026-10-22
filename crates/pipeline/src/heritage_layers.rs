@@ -31,12 +31,12 @@
 
 use crate::interest::{py_round, same_names};
 use crate::pyjson::{dumps, loads, Py};
+use crate::pytext::{circled, differs, word_char};
 use crate::timings::{phase, Class};
 use anyhow::{bail, Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use unicode_normalization::char::is_combining_mark;
-use unicode_normalization::UnicodeNormalization;
 
 /// Heritage properties kept on the map (style, filters, labels, hover title, Sights list).
 const KEEP: [&str; 18] = [
@@ -474,27 +474,6 @@ fn simplify(kind: &Py, c: &Py, tol: f64) -> Result<Option<(&'static str, Py)>> {
 fn english_at(name: Option<&str>, own: Option<&str>) -> Option<String> {
     let name = name.filter(|n| !n.is_empty())?;
     differs(name, own).then(|| own.unwrap().trim().to_string())
-}
-
-/// Whether `en` is there and differs from `name` more than in accents, case, punctuation or spacing.
-fn differs(name: &str, en: Option<&str>) -> bool {
-    en.is_some_and(|en| !en.is_empty() && norm(en) != norm(name))
-}
-
-/// Python's `\w` (str.isalnum, or `_`).
-fn word_char(c: char) -> bool {
-    c == '_' || (c.is_alphanumeric() && !is_combining_mark(c) && !circled(c))
-}
-
-/// Letters Rust counts alphabetic and Python doesn't (So): the circled and squared Latin letters.
-fn circled(c: char) -> bool {
-    matches!(c as u32, 0x24B6..=0x24E9 | 0x1F130..=0x1F149 | 0x1F150..=0x1F169 | 0x1F170..=0x1F189)
-}
-
-/// Lower-cased (Python's `str.lower`), decomposed (NFKD), without combining marks or anything but
-/// letters and digits.
-fn norm(s: &str) -> String {
-    s.to_lowercase().nfkd().filter(|c| word_char(*c) && *c != '_').collect()
 }
 
 /// Python's `str.isalpha` (the L categories).

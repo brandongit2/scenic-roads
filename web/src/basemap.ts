@@ -157,7 +157,7 @@ export const LABEL_SPACING_PX = DEFAULT_DENSITY.px;
 export const spacingFilter = (px: number): ExpressionSpecification | null =>
   px > 0 ? ['>=', ['zoom'], ['+', ['coalesce', ['get', 'mz'], -99], Math.log2(px)]] : null;
 
-/** The labels by importance (dem/labels.py, served at /tiles/labels): layer → its kind and
+/** The labels by importance (pipeline::labels, served at /tiles/labels): layer → its kind and
  * classes. Each shows from the zoom where its isolation spans the label spacing (applyLabelDensity). */
 export const LABEL_TILE_LAYERS: Record<string, { kind: string; classes: string[] | null; density: DensityKind }> = {
   'place-city': { kind: 'place', classes: ['city'], density: 'places' },

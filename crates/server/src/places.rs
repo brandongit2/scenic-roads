@@ -1,5 +1,5 @@
 //! Place search (docs/macs.md, The map): the map's own place names, from its labels layer
-//! (dem/labels.py): every label in the tiles of the map's areas (its z6 tiles with roads), and the
+//! (pipeline::labels): every label in the tiles of the map's areas (its z6 tiles with roads), and the
 //! labels that show by zoom 8 worldwide (cities and towns, seas, states, big lakes and parks).
 //! Found by a word of the name the map shows (its translation's main and sub, docs/names.md) or of the
 //! place's own name and English, as typed: accents, case and punctuation aside, the words in order.
@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use store::catalog::Catalog;
 use unicode_normalization::UnicodeNormalization;
 
-/// The labels' kinds (dem/labels.py `k`).
+/// The labels' kinds (pipeline::labels `k`).
 const KINDS: [&str; 4] = ["place", "state", "water", "park"];
 
 /// The threads the places are made on: their own few, not the pool the map's requests use, which
@@ -226,7 +226,7 @@ pub struct Places {
 /// A label as its tile has it.
 #[derive(Clone, Copy, Debug)]
 struct Label<'a> {
-    /// Its feature id: dem/labels.py's row, the same in each tile and zoom it's in (`same`).
+    /// Its feature id: pipeline::labels' row, the same in each tile and zoom it's in (`same`).
     id: Option<u64>,
     name: &'a str,
     en: Option<&'a str>,
@@ -236,7 +236,7 @@ struct Label<'a> {
     langs: Option<&'a str>,
     kind: &'a str,
     class: &'a str,
-    /// dem/labels.py's importance (its kind's own scale), the zoom it shows from at the default
+    /// pipeline::labels' importance (its kind's own scale), the zoom it shows from at the default
     /// spacing, and an area's zoom it spans 20 px from.
     s: f64,
     mz: f64,
@@ -245,10 +245,10 @@ struct Label<'a> {
     lat: f64,
 }
 
-/// One importance for every kind, as a search ranks them: a place's own (dem/labels.py: 10 a
+/// One importance for every kind, as a search ranks them: a place's own (pipeline::labels: 10 a
 /// locality to 79 a big capital, ten a class), a state 66 and the log10 of its population (with
 /// the big towns and the cities), a sea or an ocean 85, above all; other water and parks by their
-/// area (labels.py's: a bay or a strait mapped as a point is 1 km², or 10), a hamlet's at 1 km²
+/// area (pipeline::labels': a bay or a strait mapped as a point is 1 km², or 10), a hamlet's at 1 km²
 /// (30), a village's at 10,000 (58), up to a city's (72) from 1,000,000, a national park as one ten
 /// times its size.
 fn rank(kind: &str, class: &str, s: f64) -> f64 {
@@ -319,8 +319,8 @@ fn each_label(tile: &[u8], z: u8, x: u32, y: u32, mut f: impl FnMut(&Label)) -> 
     Ok(())
 }
 
-/// What makes two labels one place: their feature id (dem/labels.py's row: a label's copies at
-/// zooms 8 and 12 have the same) and their name (ids are rows of one run of labels.py, and nothing
+/// What makes two labels one place: their feature id (pipeline::labels' row: a label's copies at
+/// zooms 8 and 12 have the same) and their name (ids are rows of one run of pipeline::labels, and nothing
 /// else ties a catalog's packs to one run). 0 for a label without an id: kept, its copies too.
 fn same(id: Option<u64>, name: &str) -> u64 {
     let Some(id) = id else { return 0 };
@@ -1214,7 +1214,7 @@ mod tests {
     }
 
     /// A zoom-`z` labels tile of `labels` (id, name, English, kind, class, importance, where in
-    /// the tile), as dem/labels.py writes them.
+    /// the tile), as pipeline::labels writes them.
     fn labels_tile(labels: &[(u64, &str, Option<&str>, &str, &str, f64, (i32, i32))]) -> Vec<u8> {
         use names::mvt::Value;
         let keys: Vec<String> = ["n", "en", "k", "c", "s"].iter().map(|k| k.to_string()).collect();
@@ -1288,7 +1288,7 @@ mod tests {
     }
 
     /// A lo pack (3/4/2) with a zoom-8 tile of Banff and Yokohama, and a hi pack of one of the
-    /// map's areas (6/32/21) with a zoom-12 tile of Lake Louise and Banff (its copy: dem/labels.py
+    /// map's areas (6/32/21) with a zoom-12 tile of Lake Louise and Banff (its copy: pipeline::labels
     /// puts what shows by zoom 8 in its zoom-12 tile too).
     fn packs() -> Vec<Pack<'static>> {
         let lo = labels_tile(&[

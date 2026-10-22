@@ -75,7 +75,7 @@ export interface LabelDensity {
   horizon: number;
 }
 export const DEFAULT_DENSITY: LabelDensity = { px: 90, kinds: { places: 1, water: 1, parks: 1, landmarks: 1, stations: 1 }, horizon: 0.5 };
-/** The label spacing range (px); per kind, no closer than MIN_SPACING_PX (dem/labels.py MIN_PX:
+/** The label spacing range (px); per kind, no closer than MIN_SPACING_PX (pipeline::labels MIN_PX:
  * the label tiles hold a label from the zoom it shows at that). */
 export const SPACING_RANGE: [number, number] = [30, 300];
 export const MIN_SPACING_PX = 16;

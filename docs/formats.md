@@ -424,7 +424,7 @@ Each a folder on the job's Mac, its files sent to the worker as `u/…`, not in 
   `about.toml` beside them (§5.1).
 - **Labels** (`layers/labels`, layer `l`): `n` name, `en` its English (`name:en`, else romanised),
   `kana` (when no English), `l` OSM's languages of the name (comma-separated), `o` OSM object
-  (`n123`, `w123`, `r123`), `k` kind, `c` class, `mz`, `ms`, `s` (dem/labels.py). Before `LABELS_V`
+  (`n123`, `w123`, `r123`), `k` kind, `c` class, `mz`, `ms`, `s` (crates/pipeline/src/labels.rs). Before `LABELS_V`
   2: `n`, `en`, `k`, `c`, `mz`, `ms`, `s`.
 - **To translate** (`inputs/translations/todo/<language>.jsonl`, `names-todo`'s, rewritten after
   each catalog that changed what it reads): `{"n", "kind", "langs", "things", "example": {"osm" | "qid" | "label", "at": [lon,

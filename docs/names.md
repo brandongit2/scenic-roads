@@ -65,7 +65,7 @@ The tables converted from the earlier translation work are `0-converted/<languag
 (converted once; the log is `inputs/translations/how/conversion-log.txt`); their
 lines hold for their source area's languages.
 
-**The build carries each thing's own English and language tags:** labels (`dem/labels.py`: `en`,
+**The build carries each thing's own English and language tags:** labels (`crates/pipeline/src/labels.rs`: `en`,
 `kana`, `l` the languages OSM gives its name, `o` its OSM object); the basemap (`name:en`, `name:fr`,
 and from the next pass `osmpass::BASEMAP_LANGUAGES`); roads (`global/roaden/<u>`, no language tags).
 

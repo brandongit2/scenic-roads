@@ -159,7 +159,7 @@ fn recall(key: &(u8, u8, u32, u32, u64, u64)) -> Option<Arc<Vec<u8>>> {
     REWRITTEN.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap().get(key).cloned()
 }
 
-/// Labels by importance (dem/labels.py): gzip'd MVT, one layer "l", name n, OSM's English en.
+/// Labels by importance (pipeline::labels): gzip'd MVT, one layer "l", name n, OSM's English en.
 pub async fn label_tile(
     State(s): State<S>,
     Path((z, x, y)): Path<(u8, u32, u32)>,

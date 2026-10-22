@@ -418,7 +418,7 @@ index, so a new release rebuilds every z6 tile.
 - **Road → z6 tiles index** (`global/roadunits`, its stored name): for whole-road hover. From the z6 tiles' road ids
   (`global/roadids/<u>`; a z6 tile built before them: its road values), keyed on them by content; it
   reads only the lists changed since the index before, which names each by content (`srcs`).
-- **Labels** (per pass): places, states, seas, lakes and parks from the labels set (`dem/labels.py`,
+- **Labels** (per pass): places, states, seas, lakes and parks from the labels set (`crates/pipeline/src/labels.rs`,
   with own English, kana reading, OSM languages and OSM object: docs/names.md).
 - **Water** (per pass): above.
 - **Spoken languages** (per pass, the `spoken` job): `global/spoken` (docs/names.md).
