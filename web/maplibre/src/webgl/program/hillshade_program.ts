@@ -18,6 +18,14 @@ import type {Tile} from '../../tile/tile.ts';
 import type {Painter} from '../../render/painter.ts';
 import type {HillshadeStyleLayer} from '../../style/style_layer/hillshade_style_layer.ts';
 import type {DEMData} from '../../data/dem_data.ts';
+
+/**
+ * Scenic Roads: whether a tile's slopes are upstream's, its pixels sized by the drawn zoom (a tile
+ * overzoomed n levels shades 2^n too steep: the app's look past z12, but a step in tone beside a
+ * tile of finer data at an area's edge), or, false, the true slopes, its pixels sized by its own
+ * zoom (no step; softer past z12). On until the owner decides. FORK.md, "Hill-shading".
+ */
+export const HILLSHADE_OVERZOOM_STEEPENS = true;
 import type {OverscaledTileID} from '../../tile/tile_id.ts';
 
 export type HillshadeUniformsType = {
@@ -122,8 +130,8 @@ const hillshadeUniformPrepareValues = (tileID: OverscaledTileID, dem: DEMData): 
         'u_image': 1,
         'u_dimension': [stride, stride],
         'u_zoom': tileID.overscaledZ,
-        // Scenic Roads: its pixels' size (the prepare shader)
-        'u_dem_zoom': tileID.canonical.z,
+        // Scenic Roads: the zoom its pixels' size is taken at (the prepare shader; FORK.md)
+        'u_dem_zoom': HILLSHADE_OVERZOOM_STEEPENS ? tileID.overscaledZ : tileID.canonical.z,
         'u_unpack': dem.getUnpackVector()
     };
 };

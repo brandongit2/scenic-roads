@@ -17,6 +17,8 @@ const FINE_Z = 10;
 /** The version token of tile z/x/y of a layer with packs `l`: its pack's, or '' when no pack holds it. */
 export function packToken(l: LayerPacks, z: number, x: number, y: number): string {
   if (z <= 2) return l.root ?? '';
+  // ('' past z12 outside the fine packs: the server makes those tiles from their ancestor and
+  // serves them uncached for good (no current token), so no stale copy outlives a catalog.)
   if (z > FINE_Z + 2 && l.fine) return l.fine[`${FINE_Z}/${x >> (z - FINE_Z)}/${y >> (z - FINE_Z)}`] ?? '';
   const pz = z <= 8 ? 3 : 6;
   return (z <= 8 ? l.lo : l.hi)?.[`${pz}/${x >> (z - pz)}/${y >> (z - pz)}`] ?? '';

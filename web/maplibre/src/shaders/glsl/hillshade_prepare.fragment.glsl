@@ -8,7 +8,7 @@ in vec2 v_pos;
 
 uniform vec2 u_dimension;
 uniform float u_zoom;
-// Scenic Roads: the DEM tile's own zoom (its pixels' size); u_zoom is the zoom it's drawn at.
+// Scenic Roads: the zoom the pixels' size is taken at (hillshade_program.ts); u_zoom is the drawn zoom.
 uniform float u_dem_zoom;
 uniform vec4 u_unpack;
 
@@ -59,10 +59,8 @@ void main() {
     // that corresponds to the max zoom level of Mapbox terrain-RGB tiles.
     // See nickidlugash's awesome breakdown for more info:
     // https://github.com/mapbox/mapbox-gl-js/pull/5286#discussion_r148419556
-    // Scenic Roads: the pixel size is the DEM tile's (u_dem_zoom), not the zoom it's drawn at:
-    // upstream's slopes of a tile overzoomed n levels were 2^n too steep, so beside a tile of
-    // finer data at that zoom (scenic:zoom-by-area) the shading stepped in tone at the edge.
-    // The exaggeration stays the drawn zoom's, the same for every tile in view.
+    // Scenic Roads: the pixel size at u_dem_zoom (HILLSHADE_OVERZOOM_STEEPENS: the drawn zoom as
+    // upstream, or the tile's own for the true slopes); the exaggeration stays the drawn zoom's.
 
     float exaggerationFactor = u_zoom < 2.0 ? 0.4 : u_zoom < 4.5 ? 0.35 : 0.3;
     float exaggeration = u_zoom < 15.0 ? (u_zoom - 15.0) * exaggerationFactor : 0.0;
