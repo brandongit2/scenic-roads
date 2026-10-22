@@ -138,8 +138,8 @@ fn aside_with(
         r => return r.map(|()| None),
     }
     let aside = aside_name(to);
-    raw(to, &aside)?;
-    let r = over(from, to);
+    raw(to, &aside).inspect_err(note_if_busy)?;
+    let r = over(from, to).inspect_err(note_if_busy);
     let mut a = asides.lock().unwrap();
     a.sweep(to, &aside, remove, now);
     eprintln!(
@@ -217,6 +217,10 @@ fn retried_with<T>(
     loop {
         match op(path) {
             Err(e) if e.kind() == std::io::ErrorKind::ResourceBusy && busy < BUSY_TRIES => busy += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::ResourceBusy => {
+                note_stuck();
+                return Err(e);
+            }
             Err(e) if asides && e.kind() == std::io::ErrorKind::NotFound => {
                 let Some(aside) = newest_aside(path) else { return Err(e) };
                 if missing == MISSING_TRIES {
@@ -229,6 +233,30 @@ fn retried_with<T>(
         }
         std::thread::sleep(pause);
     }
+}
+
+/// When this process's NAS calls last stayed busy past these retries (a read or open busy for
+/// `BUSY_TRIES`, or a rename aside or into place busy): the newest `STUCK_KEPT`. The agent's
+/// self-heal (crate::agent::heal) reads them.
+static STUCK: std::sync::Mutex<Vec<std::time::Instant>> = std::sync::Mutex::new(Vec::new());
+const STUCK_KEPT: usize = 16;
+
+fn note_stuck() {
+    let mut s = STUCK.lock().unwrap();
+    s.push(std::time::Instant::now());
+    let over = s.len().saturating_sub(STUCK_KEPT);
+    s.drain(..over);
+}
+
+fn note_if_busy(e: &std::io::Error) {
+    if e.kind() == std::io::ErrorKind::ResourceBusy {
+        note_stuck();
+    }
+}
+
+/// When calls last stayed busy past the retries (oldest first; at most 16).
+pub fn stuck_times() -> Vec<std::time::Instant> {
+    STUCK.lock().unwrap().clone()
 }
 
 /// The newest (by modification time, which a rename keeps: the last written) of `path`'s asides in

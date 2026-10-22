@@ -69,7 +69,10 @@ The share is SMB 3 on a Synology. The design assumes:
   folder that can't be removed (a held file) is renamed aside (`scache::drop_dir`), the unit's
   earlier folder asides removed at its next save. The fallbacks log
   `whole: rename over <path> busy: …`, `whole: <path> missing, read from its aside …` and
-  `scache: <dir> not removed …`. No NAS file is flock'd or opened with O_EXLOCK/O_SHLOCK: every
+  `scache: <dir> not removed …`. Calls still busy past the retries (a read busy for 5 s, a rename aside or into
+  place busy) are noted (`whole::stuck_times`); three within 10 minutes remount the share while the
+  agent's slots are empty, at most every 30 minutes (`crate::agent::heal`, docs/macs.md). A writer
+  killed mid-write leaves only its temporary file (test `whole_kill`). No NAS file is flock'd or opened with O_EXLOCK/O_SHLOCK: every
   lock (`sys::PathLock`: the build lock, the member and agent locks; store::cachefile's holds) is
   on a local file; terms and leases use create-new (O_EXCL), an atomic create whose handle is
   closed once written.

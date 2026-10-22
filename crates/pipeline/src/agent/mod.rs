@@ -28,6 +28,7 @@ pub mod cond;
 pub mod every;
 pub mod forecast;
 pub mod gc;
+pub mod heal;
 pub mod jobs;
 pub mod lead;
 pub mod memguard;
@@ -1348,6 +1349,8 @@ pub struct Agent {
     pub(crate) mac: cond::Mac,
     sleep: SleepWatch,
     last_mount_try: Option<Instant>,
+    /// When the agent last remounted the share for stale handles (crate::agent::heal).
+    last_heal: Option<Instant>,
     /// The heartbeat last written to the NAS (without its time) and when: written again only when it
     /// changes or every five minutes, so an idle NAS can rest.
     last_beat: Option<(Vec<u8>, Instant)>,
@@ -1778,6 +1781,7 @@ impl Agent {
             mac: cond::Mac::Real,
             sleep: SleepWatch::default(),
             last_mount_try: None,
+            last_heal: None,
             last_beat: None,
             progress: None,
             reach: Default::default(),
@@ -3952,6 +3956,22 @@ impl Agent {
                 }
                 self.last_mount_try = None;
             }
+        }
+        // NAS calls staying busy past whole's retries (a stale handle of this Mac's session):
+        // remounted while nothing runs, at most every half hour (crate::agent::heal).
+        if self.o.root.is_none() && heal::due(&crate::whole::stuck_times(), self.last_heal, self.idle(), Instant::now())
+        {
+            if let Some(m) = store::nas::find_mount(store::nas::HOST, store::nas::SHARE) {
+                eprintln!(
+                    "agent: NAS calls stay busy (stale SMB handles); remounting {} to end this Mac's session",
+                    m.point.display()
+                );
+                if let Err(e) = store::nas::unmount(&m.point, Duration::from_secs(30)) {
+                    eprintln!("agent: {e:#}");
+                }
+                self.last_mount_try = None;
+            }
+            self.last_heal = Some(Instant::now());
         }
         let root = self.root();
         if root.is_some() {

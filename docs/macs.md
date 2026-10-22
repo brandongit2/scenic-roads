@@ -123,6 +123,38 @@ and codesign.
   answers on 445) it mounts the share with `osascript` and the Keychain, at most every five minutes,
   by the LAN name when the Keychain has it, else the bare (Tailscale) name. `nsmb.conf` makes it a
   soft mount.
+- **Stale SMB handles** (docs/pool.md §3): a Mac that dies with files open on the share (kill -9,
+  Migration Assistant, a power cut) leaves its session's handles on the NAS until the server drops
+  the session. Writers rename a held file aside meanwhile (`crate::whole`). The build agent heals
+  its own session (`crate::agent::heal`): 3 NAS calls busy past whole's 5 s retries within 10
+  minutes, while none of its jobs runs (a forced unmount fails every file open on the share, so a
+  running job is never cut; the remount waits for the slots to empty), unmount the share forced and
+  mount it again on the next loop, at most once every 30 minutes, logged as `agent: NAS calls stay
+  busy …`. That ends only this Mac's session; another Mac's handles go when the NAS drops it.
+- **Settings that shorten a dead client's hold** (the owner applies them; nothing in the repo
+  changes system settings):
+  - Synology, DSM Control Panel → File Services → SMB → Advanced settings: turn **off** "SMB durable
+    handles" (with them on, a disconnected client's handles are kept open for it to reclaim), and
+    turn **off** "SMB2 lease" and "opportunistic locking" (a lease or oplock held by a dead client
+    makes others wait for a break it never answers). The share's files are small and written
+    whole, so client caching gains little. A dead client's handles then close with its session,
+    once the server finds its TCP connection dead.
+  - Each Mac, `/etc/nsmb.conf` (system-wide; `sudo`, applies to mounts made afterwards; the agent
+    already keeps `soft=yes` in the per-user `~/Library/Preferences/nsmb.conf`):
+
+    ```
+    [default]
+    # Fail calls on a dead or unreachable NAS instead of hanging them.
+    soft=yes
+    # Seconds to wait for an answer before a call fails.
+    max_resp_timeout=20
+    # No change notifications: fewer long-lived handles per session.
+    notify_off=yes
+    ```
+
+    These keep this Mac from hanging on the NAS; they can't shorten what the server keeps for a dead
+    Mac (the Synology side above does). If a session still holds files after a crash: DSM →
+    Control Panel → File Services → SMB (or Resource Monitor → Connections), disconnect that Mac.
 - **NAS access** goes through a bounded I/O pool with timeouts. An overrun trips the breaker (offline
   banner) only when a quick probe also fails. Files are read in 1 MB pieces with handles kept open,
   never mmapped; base packs and hidata in 256 KB pages, or whole sections for scans.
