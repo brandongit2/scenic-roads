@@ -109,7 +109,6 @@ impl Local {
     /// The lock on copying `content` across processes (an exclusive `flock` on its lock file, held
     /// until it's dropped); None when it can't be taken (copied unlocked, as before).
     fn lock(&self, content: &str) -> Option<std::fs::File> {
-        use std::os::fd::AsRawFd;
         std::fs::create_dir_all(&self.locks).ok()?;
         let f = std::fs::OpenOptions::new()
             .create(true)
@@ -117,8 +116,8 @@ impl Local {
             .write(true)
             .open(self.locks.join(format!("{}.lock", store::naming::hash16(content.as_bytes()))))
             .ok()?;
-        // SAFETY: a valid descriptor; the lock goes with the file.
-        (unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } == 0).then_some(f)
+        // (std's `File::lock`: flock on macOS; the lock goes with the file.)
+        f.lock().ok().map(|()| f)
     }
 }
 
