@@ -1378,6 +1378,9 @@ pub struct Agent {
     /// The served catalog's key (`Keys::catalog`) last asked whether a whole catalog is due
     /// (store::catalog::whole_due, in idle time): asked once a catalog.
     whole_asked: std::cell::RefCell<Option<String>>,
+    /// The placement's per-step speeds last worked out and what from (`placement::step_speeds_key`):
+    /// the history is read again only when it changed.
+    step_speeds: std::cell::RefCell<placement::StepSpeedsKept>,
     /// What the last plan found waiting and the regions it read, and when: while
     /// a job runs nothing new can start, so the plan (the manifest, the keys, a dozen NAS listings)
     /// is made again only every five minutes, for the status, and when the job ends.
@@ -1798,6 +1801,7 @@ impl Agent {
             me,
             piece_sizes: Default::default(),
             whole_asked: Default::default(),
+            step_speeds: Default::default(),
             planned: None,
             queued: Default::default(),
             coord,
@@ -8696,7 +8700,12 @@ impl Agent {
             let names: Vec<String> = c.workers().into_iter().map(|(n, _)| n).filter(|n| *n != self.host).collect();
             let events = c.for_forecast().2;
             p.speed = placement::measured_speeds(&events, &self.host, &names);
-            p.step_speed = placement::step_speeds(&events, &self.host, &names);
+            let key = placement::step_speeds_key(&events, &self.host, &names);
+            let mut kept = self.step_speeds.borrow_mut();
+            if kept.as_ref().is_none_or(|(k, _)| *k != key) {
+                *kept = Some((key, placement::step_speeds(&events, &self.host, &names)));
+            }
+            p.step_speed = kept.as_ref().map(|(_, v)| v.clone()).unwrap_or_default();
         }
         Some(p)
     }

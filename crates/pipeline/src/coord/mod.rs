@@ -6355,6 +6355,39 @@ mod tests {
         assert_eq!(drawn_to_m1(&c), ts.len() - 1);
     }
 
+    /// Task #560: a member's room is its ask's free memory less the jobs granted it since (a
+    /// second slot's job can't fit where the first's took the room), and a member passed over
+    /// (`ASKING` since its ask) is drawn again once it asks (`Sched::asking`, the forecast's).
+    #[test]
+    fn placement_counts_the_memory_granted_since_the_ask_and_asking_again_draws() {
+        let (_d, c, w1, clock) = every((0, 0));
+        let w2 = client::Client::at(w1.urls(), c.contact.token.clone(), "m2");
+        let cost = Cost { peak_mb: 600, secs: 900, worker: None, v: cost_version("pack"), ..Default::default() };
+        c.add_costs_by(&[(cost_key("pack", "6/1/1"), cost.clone()), (cost_key("pack", "6/1/2"), cost)], "m1");
+        let mut a2 = every_ask("m2", "pack", 4096, 10_000);
+        a2.want = 2;
+        a2.cap = Some(Capacity { limit_mb: 8000, mem_mb: 1000, ..a2.cap.clone().unwrap() });
+        assert!(w2.ask(&a2).unwrap().is_none());
+        let mut s = c.shared.lock().unwrap();
+        let (now, asked) = (s.now(), s.workers["m2"].asked.unwrap());
+        let m = s.measured("pack", "6/1/2").unwrap();
+        assert!(s.would_take_now("m2", asked, &a2, &m, now), "1000 MB free, 600 needed");
+        s.leases.grant_at(
+            "m2",
+            Work::Job { step: "pack".into(), targets: vec![("6/1/1".into(), "k".into())] },
+            now,
+            unix_now(),
+        );
+        assert!(!s.would_take_now("m2", asked, &a2, &m, now), "a slot left, but 400 MB");
+        // Not asking for ASKING: out of the draws; asking again: back in.
+        clock.advance(ASKING);
+        let now = s.now();
+        assert!(now.duration_since(s.workers["m2"].asked.unwrap()) >= ASKING);
+        s.asking([("m2", 2)], now);
+        assert_eq!(s.workers["m2"].ask.as_ref().unwrap().want, 2);
+        assert!(now.duration_since(s.workers["m2"].asked.unwrap()) < ASKING);
+    }
+
     /// Task #552 (22 Oct, the lead: 52 units aged an hour, every other step "waiting for room in
     /// the NAS budget", the lead idle while two members ran units back to back): a step granted
     /// target by target doesn't keep the aged reservation for itself, each grant handing it to its

@@ -1216,10 +1216,21 @@ impl Sched {
 
     /// Whether worker `n`, by its last ask `x` (made at `asked`), would take a target measured `m`
     /// now: a slot free (fewer jobs granted it since than the ask wanted, one for an ask saying
-    /// none) and the memory its Mac had free then (`Capacity::mem_mb`, when its capacity is said) fits it.
+    /// none) and the memory its Mac had free then (`Capacity::mem_mb`, when its capacity is said),
+    /// less that of the jobs granted it since (each its heaviest target's measure), fits it.
     pub(super) fn would_take_now(&self, n: &str, asked: Instant, x: &Ask, m: &Measured, now: Instant) -> bool {
-        let since = self.job_leases(n, now).iter().filter(|l| l.granted >= asked).count();
-        since < x.want.max(1) && x.cap.as_ref().filter(|c| c.limit_mb > 0).is_none_or(|c| m.mem_mb <= c.mem_mb)
+        let since: Vec<Lease> = self.job_leases(n, now).into_iter().filter(|l| l.granted >= asked).collect();
+        let taken: u64 = since
+            .iter()
+            .map(|l| match &l.work {
+                Work::Job { step, targets } => {
+                    targets.iter().filter_map(|t| self.measured(step, &t.0)).map(|m| m.mem_mb).max().unwrap_or(0)
+                }
+                _ => 0,
+            })
+            .sum();
+        since.len() < x.want.max(1)
+            && x.cap.as_ref().filter(|c| c.limit_mb > 0).is_none_or(|c| m.mem_mb.saturating_add(taken) <= c.mem_mb)
     }
 
     /// Worker `n`'s weight in placement's draw for a target of `step`, as its last ask `x` says:
@@ -1429,6 +1440,23 @@ impl Sched {
             quiet_since: Mutex::new(s.quiet_since.iter().map(|(st, a)| (st.clone(), ago(now, *a))).collect()),
             last: s.last.iter().map(|(w, st, t)| ((w.clone(), st.clone()), t.clone())).collect(),
             measured_steps: Default::default(),
+        }
+    }
+
+    /// The members in `idle` (name, slots free now) ask again at `now`, as the live ones do each
+    /// loop, wanting a job a free slot (and those granted them this instant, which count since
+    /// their ask): the forecast's lanes ask only as they free, so its members would age out of
+    /// placement's draws (`ASKING`) as simulated time passes, and one granted a job would read
+    /// as full.
+    pub fn asking<'a>(&mut self, idle: impl IntoIterator<Item = (&'a str, usize)>, now: Instant) {
+        for (n, free) in idle {
+            let granted = self.job_leases(n, now).iter().filter(|l| l.granted >= now).count();
+            if let Some(w) = self.workers.get_mut(n) {
+                (w.seen, w.asked) = (now, Some(now));
+                if let Some(x) = w.ask.as_mut() {
+                    x.want = free + granted;
+                }
+            }
         }
     }
 

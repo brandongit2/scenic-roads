@@ -1068,6 +1068,13 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64, deadline: Instant) -> Sim {
             } else {
                 let ask = &pool.asks[&g];
                 let offers = offers(&items, &order, ask);
+                // (Every member asking, as the live ones do each loop: placement draws among those
+                // asking lately, which aged out as the run's seconds passed.)
+                let idle = |g: &str| {
+                    let on = |k: usize| !inp.machines[k].helper && mac_of(&inp.machines[k]) == g;
+                    (0..free.len()).filter(|&k| on(k) && free[k] <= t + 1e-9).count()
+                };
+                pool.sched.asking(pool.asks.keys().map(|g| (g.as_str(), idle(g))), pool.clock(t).now);
                 pool.sched.pack(ask, &offers, lead, pool.clock(t)).0
             };
             if picks.is_empty() {

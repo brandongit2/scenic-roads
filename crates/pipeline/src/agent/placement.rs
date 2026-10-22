@@ -112,27 +112,31 @@ pub fn measured_speeds(events: &[crate::coord::history::Event], lead: &str, name
 /// most 3:1 before the cache's `CACHE_PREFER`, so a few odd runs never take a step off a Mac.
 pub const STEP_SPEED: (f64, f64) = (0.33, 3.0);
 
+/// What a worked-out `step_speeds` answer was made from: the history's length and its last event
+/// (number and time: a rewrite of the same length changes them), the lead and the names.
+pub type StepSpeedsKey = (usize, Option<(u64, u64)>, String, Vec<String>);
+
+/// A kept `step_speeds` answer (the agent's, `StepSpeedsKey`).
+pub type StepSpeedsKept = Option<(StepSpeedsKey, BTreeMap<String, BTreeMap<String, f64>>)>;
+
+/// `step_speeds`' key for these arguments.
+pub fn step_speeds_key(events: &[crate::coord::history::Event], lead: &str, names: &[String]) -> StepSpeedsKey {
+    (events.len(), events.last().map(|e| (e.seq, e.t)), lead.to_string(), names.to_vec())
+}
+
 /// Each of the workers `names` measured against the lead (`lead`) at each step by the build's
 /// history: its Mac's (crate::agent::host_of: its slots' runs together) median time a target of
 /// the step over the lead's, three runs or more each, held to `STEP_SPEED`; a step one of them
 /// hasn't run that often left out. Every step, not only the shared ones: a step bound by the NAS's
 /// seeks runs faster on the wired Mac than its speed elsewhere says (task #552). Medians of
 /// different targets' times: a Mac given a step's large targets reads slower than it is, which
-/// the clamp bounds. Worked out again only when the history's length or the names change (the
-/// agent asks each loop).
+/// the clamp bounds. (Not kept here: the agent asks each loop, and keeps the
+/// answer itself (`StepSpeedsKept`) while the history is the same.)
 pub fn step_speeds(
     events: &[crate::coord::history::Event],
     lead: &str,
     names: &[String],
 ) -> BTreeMap<String, BTreeMap<String, f64>> {
-    type Kept = Option<((usize, String, Vec<String>), BTreeMap<String, BTreeMap<String, f64>>)>;
-    static KEPT: std::sync::Mutex<Kept> = std::sync::Mutex::new(None);
-    let key = (events.len(), lead.to_string(), names.to_vec());
-    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((k, v)) = kept.as_ref().filter(|(k, _)| *k == key) {
-        let _ = k;
-        return v.clone();
-    }
     // ((host, step) → seconds a target, each run's.)
     let mut per: BTreeMap<(&str, &str), Vec<f64>> = BTreeMap::new();
     for e in events {
@@ -163,7 +167,6 @@ pub fn step_speeds(
         })
         .filter(|(_, m)| !m.is_empty())
         .collect();
-    *kept = Some((key, out.clone()));
     out
 }
 
@@ -314,6 +317,17 @@ mod tests {
         let s = step_speeds(&ev, "mini", &["m1 #3".into(), "m4".into()]);
         assert_eq!(s.len(), 1, "{s:?}");
         assert_eq!(s["m1 #3"], [("depth".to_string(), STEP_SPEED.0), ("terrain".to_string(), 2.0)].into());
+    }
+
+    /// Task #560: the kept answer's key changes with a rewritten history of the same length.
+    #[test]
+    fn step_speeds_key_follows_the_last_event() {
+        use crate::coord::history::Event;
+        let ev = |seq| Event { seq, t: seq, ..Event::new("done") };
+        let names = ["m1".to_string()];
+        let (a, b) = (vec![ev(1), ev(2)], vec![ev(1), ev(3)]);
+        assert_eq!(step_speeds_key(&a, "m", &names), step_speeds_key(&a.clone(), "m", &names));
+        assert_ne!(step_speeds_key(&a, "m", &names), step_speeds_key(&b, "m", &names));
     }
 
     #[test]
