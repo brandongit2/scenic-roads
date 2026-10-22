@@ -150,28 +150,38 @@ per step with its count, then its jobs to come; its panel is the page itself), a
 `web/work/` (workers.md §7). One rule: an element is a card or a row of the same cells as its
 kind's others, with templated words.
 
-- **Verdict:** one sentence (state, done ≈, next on the map), the alerts as chips, the pause
-  controls.
+The shell: a header kept at the top (the title; the verdict; Pause, Freeze or Resume; the
+alerts; the tabs) and a footer fixed at the bottom (the charts' range, the Live dot). A tab per
+part, chosen by the address's `#hash` (`#overview`, `#stages`, `#machines`, `#regions`,
+`#activity`, `#details`, `#device`; none or another: Overview), so a link or a reload opens the
+same tab; an alert links to the tab that says more.
+
+- **Header's verdict:** one sentence (state, done ≈, next on the map), the alerts as chips, the
+  pause controls: Pause (each job stops at its next safe point), Freeze (each job frozen where it
+  is, after a confirm), Resume.
+- **Footer:** the range the charts over time show (1 min to 72 h, this browser's own, kept; no
+  chart reads it yet: planned, #507's later parts); the Live dot, green and blinking while the
+  build's state answered in the last 30 s, else Stale with the time of the last answer.
+- **Overview tab:** the gate's banners (held inputs), then the overview and the road to done.
 - **Overview:** how far: the whole build's work done, every stage's (`sums.js` wholeProgress:
   each step's targets done at the forecast's time for a target of it, `each_s`, measured or
   estimated, of that plus the forecast's work left; 100% only when every stage is done), how long
   (the same work left), the stages as a coloured strip; three numbers that aren't a step's
-  (regions on the map, the map's last update, machines working).
+  (regions on the map; the map's last update with its catalogue's number and kind (with the low
+  zooms or map tiles only), the next ≈ and the map tiles to draw; machines working).
 - **Road to done:** each machine's lane (segments in the stages' colours, the map tiles' among
   them); only the lanes with a bar in the window shown, in their order.
-- **Publishing:** what publishing does now and why; the last catalog (number, when, with the low
-  zooms or map tiles only); the map tiles to draw, by the Mac drawing them; when the low zooms, the
-  landmarks and the area overlays may next go out; each Mac's map server's catalog.
 - **Stages:** a card per stage: mark, title, count, bar; a row per step: mark, title, ⇄ when any
   Mac may take it, count, bar, its forecast (work, done ≈); the stage's jobs to come and note.
 - **Machines:** a card per Mac: name, role, state, heard from; its capacity; a block per running
   job by its slot (name, parts, progress, running since, memory; frozen or stuck) with that slot's
   next work; why nothing more fits; facts as chips; its day as a spark line. Pages one card.
-- **The pool:** `pool.js`.
+- **The pool:** `pool.js`, under the machines (the Machines tab).
 - **Regions:** a row per region: name, state, when it's done and all on the map, its tiles
   built (on the map as they come), what's left by step.
 - **Activity:** the hours, and a sentence per event.
-- **Details:** tables, among them the steps table itself.
+- **Details:** tables, unfolded, among them the steps table itself.
+- **This device:** helping with this tab (index.html; not in `?view`).
 
 Each Mac's measures over time (NAS latency, load, memory, power, disk, jobs) come from its own
 `/work/live` (docs/pool.md §10, Live); a series missing is shown as no measure yet.

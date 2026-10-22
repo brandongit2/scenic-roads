@@ -70,7 +70,7 @@ export function poolSection(agent, now, ask) {
   for (const u of v.unreached || []) top.push(h("div", "pool-ctl warnline", h("span", null, u)));
   if (v.asked) top.push(h("div", "sub", `The last ask (${v.asked.by}, ${ago(now, v.asked.at)}): ${v.asked.state} — ${v.asked.said}`));
   if (v.change && now - v.change.at < 86400) top.push(h("div", "sub", `${v.change.said} (${clock(v.change.at)})`));
-  return h("section", { class: "d-pool", id: "pool" }, h("h2", null, "The pool", h("span", null, sub)),
+  return h("section", "d-pool", h("h2", null, "The pool", h("span", null, sub)),
     h("div", "pool-top", top), h("div", "machines", cards));
 }
 

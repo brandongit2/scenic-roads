@@ -793,7 +793,7 @@ pub struct Status {
     /// The last catalog the plan read: its number and when it went out (seconds since the epoch).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog: Option<CatalogSeen>,
-    /// Publishing as it stands (`Published`; the lead's): the build page's Publishing card and
+    /// Publishing as it stands (`Published`; the lead's): the build page's map KPI (its last catalogue) and
     /// `scenic status`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published: Option<Published>,
@@ -858,7 +858,7 @@ pub struct CatalogSeen {
     pub at: u64,
 }
 
-/// Publishing as it stands, for the build page's Publishing card and `scenic status` (the
+/// Publishing as it stands, for the build page's map KPI and `scenic status` (the
 /// lead's; docs/building.md §2, Publishing): the last catalog, whether it went with the low zooms
 /// (build::LastCatalog::low_at), the map tiles being drawn by Mac (pack's targets leased), and the
 /// catalog each Mac's map server last adopted (crate::pubtimes, the servers' log on the NAS).

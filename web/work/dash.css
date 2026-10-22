@@ -1,48 +1,30 @@
 /* The build at a glance (dash.js), the page at /work/. The page's own tokens
    (index.html's :root) are used throughout. */
 
-#dash { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); grid-template-areas: "verdict" "overview" "road" "stages" "machines" "pool" "regions" "activity" "details"; }
-#dash.gated { grid-template-areas: "verdict" "inputs" "overview" "road" "stages" "machines" "pool" "regions" "activity" "details"; }
-@media (min-width: 1100px) {
-  #dash { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); grid-template-areas: "verdict verdict" "overview overview" "road road" "stages stages" "machines regions" "pool regions" "activity regions" "details details"; align-items: start; }
-  #dash.gated { grid-template-areas: "verdict verdict" "inputs inputs" "overview overview" "road road" "stages stages" "machines regions" "pool regions" "activity regions" "details details"; }
-}
-#dash > section { min-width: 0; }
-.d-verdict { grid-area: verdict; }
-.d-inputs { grid-area: inputs; }
-/* (Its row only while a unit is held or checking: #dash.gated.) */
-.d-inputs:empty { display: none; }
-.d-overview { grid-area: overview; }
-.d-stages { grid-area: stages; }
-.d-machines { grid-area: machines; }
-.d-pool { grid-area: pool; }
-.d-road { grid-area: road; }
-.d-regions { grid-area: regions; }
-.d-activity { grid-area: activity; }
-.d-details { grid-area: details; }
+/* A tab's sections, one under the other. */
+.panel { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); align-content: start; }
+.panel > section { min-width: 0; }
+.d-inputs:empty, .d-pool:empty { display: none; }
 
 /* Headings: a section's name, then a line of its own words. */
-#dash h2 { font-size: 11px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; margin: 0 0 6px; display: flex; gap: 10px; justify-content: space-between; align-items: baseline; }
-#dash h2 span { text-transform: none; letter-spacing: 0; font-weight: 400; }
-#dash h3 { font-size: 12px; font-weight: 600; margin: 12px 0 6px; color: var(--text); display: flex; gap: 10px; align-items: baseline; justify-content: space-between; }
-#dash h3 span { color: var(--dim); font-weight: 400; font-size: 11.5px; }
+.panel h2 { font-size: 11px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; margin: 0 0 6px; display: flex; gap: 10px; justify-content: space-between; align-items: baseline; }
+.panel h2 span { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.panel h3 { font-size: 12px; font-weight: 600; margin: 12px 0 6px; color: var(--text); display: flex; gap: 10px; align-items: baseline; justify-content: space-between; }
+.panel h3 span { color: var(--dim); font-weight: 400; font-size: 11.5px; }
 .box { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
 .dim { color: var(--dim); }
 .small { font-size: 11.5px; }
 .warn { color: var(--warn); } .bad { color: var(--bad); } .ok { color: var(--ok); } .run { color: var(--accent); }
 .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
 
-/* The verdict: sticky under the page's header, one sentence, then the alerts and the pause. */
-/* (Pinned on wider screens only: on a phone it would take half of it.) */
-@media (max-width: 719px) { .d-verdict { position: static !important; } }
-.d-verdict { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); padding: 8px 0 6px; margin: -8px 0 -6px; }
+/* The verdict, in the header: one sentence, the pause controls, then the alerts. */
 .verdict { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .verdict .say { flex: 1 1 320px; font-size: 14px; line-height: 1.4; }
 .verdict .say b { font-weight: 600; }
 .verdict .ctl { display: flex; gap: 6px; }
 .alerts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 .alerts:empty { display: none; }
-.alert { font-size: 11.5px; border-radius: 10px; padding: 1px 8px; border: 1px solid var(--line); background: var(--panel); color: var(--dim); cursor: pointer; }
+.alert { font-size: 11.5px; border-radius: 10px; padding: 1px 8px; border: 1px solid var(--line); background: var(--panel); color: var(--dim); text-decoration: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .alert.warn { color: var(--warn); border-color: var(--warn-line); } .alert.bad { color: var(--bad); border-color: var(--bad-line); } .alert.info { color: var(--accent); border-color: var(--info-line); }
 button.primary { background: var(--primary-bg); border-color: var(--info-line); color: var(--primary-fg); }
 button.quiet { color: var(--dim); }
@@ -72,7 +54,8 @@ button:disabled { opacity: .5; }
 .stack > i { display: block; height: 100%; }
 
 /* Machines. */
-.machines { display: grid; gap: 8px; }
+.machines { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 440px), 1fr)); align-items: start; }
+.machines > * { min-width: 0; }
 .mc { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; }
 .mc.off { opacity: .7; }
 .mc .top { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
@@ -112,7 +95,6 @@ button:disabled { opacity: .5; }
 .pages .pg:first-of-type { border-top: 0; }
 
 /* The road to done: the schedule, the steps, the regions. */
-.road { display: grid; gap: 12px; }
 .sched { position: relative; }
 .sched .lanes { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 6px 8px; align-items: center; }
 @media (max-width: 719px) { .sched .lanes { grid-template-columns: 64px minmax(0, 1fr); } }
@@ -125,13 +107,6 @@ button:disabled { opacity: .5; }
 .legend i.rmark { width: 2px; height: 11px; background: var(--mark); opacity: .75; border-radius: 1px; }
 .sched .axis { position: relative; height: 16px; font-size: 10px; color: var(--dim); }
 .sched .axis > span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
-/* The Publishing card: a key and its value a row, hairlines between. */
-.pub .pubwhy { font-size: 12.5px; margin-bottom: 6px; }
-.pub .pubrow { display: grid; grid-template-columns: 136px 1fr; gap: 8px; padding: 4px 0; border-top: 1px solid var(--line); font-size: 12.5px; }
-.pub .pubrow .k { color: var(--dim); }
-.pub .pubrow .v { font-size: 12.5px; margin-top: 0; }
-.pub .by { white-space: nowrap; margin-right: 10px; }
-.pub .by.behind { color: var(--warn); }
 .pbar.dimbar > i { background: var(--dimbar); }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; font-size: 11px; color: var(--dim); }
 .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
@@ -153,7 +128,7 @@ button:disabled { opacity: .5; }
 .stage .pbar { margin: 2px 0 3px 21px; }
 .stage .row.item + .pbar { margin-left: 33px; height: 3px; }
 .stage .note { color: var(--dim); font-size: 11px; margin: 3px 0 0 21px; }
-.road .note { color: var(--dim); font-size: 11px; margin: 6px 0 0; }
+.d-road .note { color: var(--dim); font-size: 11px; margin: 6px 0 0; }
 .mark { color: var(--dim); text-align: center; } .mark.ok { color: var(--ok); } .mark.run { color: var(--accent); }
 .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
 
@@ -187,9 +162,7 @@ button:disabled { opacity: .5; }
 .feed .day { grid-column: 1 / 3; color: var(--dim); font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; padding-top: 8px; border: 0; }
 .since { font-size: 12px; margin: 6px 0; }
 
-/* Details: tables, folded. */
-details.more-box > summary { cursor: pointer; color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; list-style: none; }
-details.more-box > summary::before { content: "▸ "; } details.more-box[open] > summary::before { content: "▾ "; }
+/* Details: tables. */
 .twrap { overflow-x: auto; }
 table.t { width: 100%; border-collapse: collapse; font-size: 11.5px; margin: 6px 0 10px; }
 table.t th { text-align: left; color: var(--dim); font-weight: 500; padding: 3px 6px; border-bottom: 1px solid var(--line); }

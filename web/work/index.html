@@ -36,11 +36,33 @@
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; font-variant-numeric: tabular-nums; }
-  main { max-width: 1400px; margin: 0 auto; padding: 16px; }
+  main { max-width: 1400px; margin: 0 auto; padding: 14px 16px 56px; }
   #device { max-width: 760px; }
-  header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
+  /* The header, kept at the top: the title, the build's status and controls, the tabs. */
+  body > header { position: sticky; top: 0; z-index: 10; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+  body > header > div { max-width: 1400px; margin: 0 auto; padding: 8px 16px 0; }
+  .top { display: flex; align-items: baseline; gap: 12px; }
   h1 { font-size: 15px; font-weight: 600; margin: 0; }
-  #state { color: var(--dim); }
+  #state { color: var(--dim); font-size: 11.5px; }
+  #status { margin-top: 4px; }
+  #status:empty { display: none; }
+  nav { display: flex; gap: 2px; margin-top: 6px; overflow-x: auto; scrollbar-width: none; }
+  nav::-webkit-scrollbar { display: none; }
+  nav a { color: var(--dim); text-decoration: none; padding: 5px 10px 6px; border-bottom: 2px solid transparent; white-space: nowrap; font-size: 12.5px; }
+  nav a:hover { color: var(--text); }
+  nav a.on { color: var(--text); border-bottom-color: var(--accent); }
+  .panel[hidden] { display: none; }
+  /* The footer, fixed at the bottom: the charts' range, and whether the page is live. */
+  body > footer { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border-top: 1px solid var(--line); font-size: 11.5px; color: var(--dim); }
+  body > footer > div { max-width: 1400px; margin: 0 auto; padding: 6px 16px calc(6px + env(safe-area-inset-bottom)); display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+  #range { margin: 0 0 0 4px; width: auto; padding: 1px 4px; font-size: 11.5px; background: var(--panel); }
+  #live { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+  #live i { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
+  #live.on i { background: var(--ok); animation: blink 2s ease-in-out infinite; }
+  #live.stale i { background: var(--warn); }
+  #live b { font-weight: 600; color: var(--text); }
+  @keyframes blink { 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) { #live.on i { animation: none; } }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 12px; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
   .k { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
@@ -64,13 +86,25 @@
 </style>
 </head>
 <body>
+<header><div>
+  <div class="top"><h1 id="title">Scenic build</h1><span id="state">starting…</span><span style="flex:1"></span><button id="install" hidden>Install</button></div>
+  <!-- The build's status (dash.js): the verdict, the pause controls, the alerts. -->
+  <div id="status"></div>
+  <nav id="tabs">
+    <a href="#overview">Overview</a><a href="#stages">Stages</a><a href="#machines">Machines</a><a href="#regions">Regions</a><a href="#activity">Activity</a><a href="#details">Details</a><a href="#device" id="tab-device">This device</a>
+  </nav>
+</div></header>
 <main>
-  <header><h1 id="title">Scenic build</h1><span id="state">starting…</span><span style="flex:1"></span><button id="install" hidden>Install</button></header>
   <p class="note" id="note" hidden></p>
   <p class="hint" id="hint" hidden></p>
-  <!-- The whole build at a glance (dash.js): the verdict, the machines, the road to done, the activity. -->
-  <div id="dash"></div>
-  <section id="device">
+  <!-- A panel a tab (dash.js fills all but This device's). -->
+  <div class="panel" data-tab="overview"></div>
+  <div class="panel" data-tab="stages" hidden></div>
+  <div class="panel" data-tab="machines" hidden></div>
+  <div class="panel" data-tab="regions" hidden></div>
+  <div class="panel" data-tab="activity" hidden></div>
+  <div class="panel" data-tab="details" hidden></div>
+  <section id="device" class="panel" data-tab="device" hidden>
   <h2>This device <span><button id="toggle" hidden>Pause</button> <button id="help">Help with this tab</button></span></h2>
   <p class="hint" id="helphint">Helping runs the build's tasks in this tab while it's open (on an iPhone or an iPad, while it's on screen).</p>
   <div id="helping" hidden>
@@ -86,6 +120,10 @@
   </div>
   </section>
 </main>
+<footer><div>
+  <label>Charts show the last<select id="range"></select></label>
+  <span id="live" title="Green and blinking: the build's state is asked for every 10 s and answered"><i></i><b>Live</b><span id="live-at"></span></span>
+</div></footer>
 <script type="module">
 import { dashboard } from "./dash.js";
 // The build's page (docs/workers.md §7): the whole build at a glance for anyone it answers; and,
@@ -543,7 +581,7 @@ function stopHelping() {
   if (lock) { lock.release().catch(() => {}); lock = null; }
 }
 $("help").onclick = () => (helping ? stopHelping() : startHelping());
-if (viewer) { $("device").hidden = true; $("help").remove(); }
+if (viewer) { $("device").removeAttribute("data-tab"); $("tab-device").remove(); }
 
 // The page as an app (sw.js, manifest.webmanifest): kept for when the lead doesn't answer, its
 // programs kept by version. A new version taking over (a newly published app): reloaded into it
@@ -596,10 +634,41 @@ $("cap").onchange = (e) => {
 // (Paused before the reload into a new version: still paused.)
 try { if (sessionStorage.getItem("paused") === "1") setPaused(true); sessionStorage.removeItem("paused"); } catch {}
 
+// ---- Tabs, by the address's #hash (kept in it: a link or a reload opens the same tab) -------------
+const panels = Object.fromEntries([...document.querySelectorAll(".panel[data-tab]")].map((el) => [el.dataset.tab, el]));
+function showTab() {
+  const want = location.hash.slice(1);
+  const name = panels[want] ? want : "overview";
+  for (const [k, el] of Object.entries(panels)) el.hidden = k !== name;
+  for (const a of $("tabs").children) a.classList.toggle("on", a.getAttribute("href") === `#${name}`);
+}
+window.addEventListener("hashchange", () => { showTab(); window.scrollTo(0, 0); });
+showTab();
+
+// ---- The footer: the charts' range (this browser's own, kept), and the Live dot ---------------------
+// (The range is for the charts over time, from each Mac's /work/live: docs/pipeline.md §5.)
+const RANGES = [[60, "1 min"], [300, "5 min"], [900, "15 min"], [3600, "1 h"], [21600, "6 h"], [86400, "24 h"], [259200, "72 h"]];
+{
+  const kept = store.get("range", 3600);
+  $("range").replaceChildren(...RANGES.map(([v, t]) => { const o = document.createElement("option"); o.value = String(v); o.textContent = t; o.selected = v === kept; return o; }));
+  $("range").onchange = (e) => store.set("range", Number(e.target.value));
+}
+// Live while the build's state answered in the last 30 s (three polls); else stale, since when.
+let answeredAt = 0;
+function liveDot() {
+  const on = answeredAt && Date.now() - answeredAt < 30000;
+  $("live").className = answeredAt ? (on ? "on" : "stale") : "";
+  $("live").querySelector("b").textContent = on || !answeredAt ? "Live" : "Stale";
+  $("live-at").textContent = answeredAt ? `updated ${new Date(answeredAt).toLocaleTimeString([], { hour12: false })}` : "waiting for the build";
+}
+setInterval(liveDot, 5000);
+liveDot();
+
 // ---- The whole build at a glance (dash.js) -------------------------------------------------------
 let buildState = "";
 dashboard({
-  root: $("dash"), call: dashCall, label, store,
+  head: $("status"), panels, call: dashCall, label, store,
+  onAnswer: () => { answeredAt = Date.now(); liveDot(); },
   // (The header says how the build goes; while this device helps, how its own work goes.)
   onState: (st) => { buildState = st; if (!helping) $("state").textContent = st; },
   onError: (m) => log(`<span class="bad">${esc(m)}</span>`),

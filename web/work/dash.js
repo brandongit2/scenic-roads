@@ -7,12 +7,11 @@
 // One shape for everything: a step is named by its title, its targets counted in its noun ("8 of
 // 480 tiles"), coloured by its stage; a stage is a card of its steps' rows, each row the same
 // cells; a machine is a card of its jobs, each job the same lines; an event is one templated
-// sentence. The parts: the verdict (going or not, done when, next on the map, what needs a look,
-// the pause), the overview (how far, how long), the road to done (each machine's schedule) and
-// publishing (the last catalog, the map tiles to draw by Mac, the cadenced publishes next, each
-// Mac's catalog), the stages (each step to the end), the machines (what each does now and next,
+// sentence. The parts: the header's verdict (going or not, done when, next on the map, what needs
+// a look, the pause); by tab, the overview (how far, how long, the map's last catalogue) and the
+// road to done (each machine's schedule), the stages (each step to the end), the machines (what each does now and next,
 // why one waits, its power, disk, memory and pace), the regions, and the activity (the hours,
-// what happened).
+// what happened), and the details.
 
 import { poolSection, termText } from "./pool.js";
 import { busyLanes, finished, notRead, wholeProgress } from "./sums.js";
@@ -187,7 +186,7 @@ function alerts(m) {
   const { a, now } = m;
   if (!a.host) return [{ cls: "bad", text: "No word from the lead yet", to: "machines" }];
   if (!m.fresh(a.beat)) out.push({ cls: "bad", text: `Lead out of touch for ${dur(now - a.beat)}`, to: "machines" });
-  if (a.pool?.lead?.alert) out.push({ cls: "bad", text: a.pool.lead.alert, to: "pool" });
+  if (a.pool?.lead?.alert) out.push({ cls: "bad", text: a.pool.lead.alert, to: "machines" });
   for (const w of m.gone) if (w.seen_s < 86400) out.push({ cls: "warn", text: w.seen_s < 360 ? `${w.name}'s status is old (can it reach the NAS?)` : `${w.name} out of touch for ${dur(w.seen_s)}`, to: "machines" });
   for (const x of m.macs) {
     const st = x.status, r = st.resources || {}, c = st.conditions || {};
@@ -207,7 +206,7 @@ function alerts(m) {
   const failed = (a.recent || []).filter((d) => !d.ok && now - d.ended < 6 * 3600);
   if (failed.length) out.push({ cls: "bad", text: `${plural(failed.length, "job")} failed in the last 6 h`, to: "activity" });
   for (const w of a.waiting || []) {
-    if (/held for review/.test(w.why)) out.push({ cls: "warn", text: "Publishing held for review", to: "road" });
+    if (/held for review/.test(w.why)) out.push({ cls: "warn", text: "Publishing held for review", to: "overview" });
     else if (/failed \d+ times?/.test(w.why)) out.push({ cls: "warn", text: `${w.what}: waiting out a failure`, to: "details" });
   }
   // Things to know that hold nothing back (agent::Notice): an info line each, apart from the waits.
@@ -217,7 +216,7 @@ function alerts(m) {
     else if (p.visible === false && p.seen_s < 300) out.push({ cls: "warn", text: `${p.label} is in the background (iPhones and iPads stop it)`, to: "machines" });
   }
   if ((a.bad_recipes || []).length) out.push({ cls: "warn", text: `${plural(a.bad_recipes.length, "region recipe")} doesn't read`, to: "details" });
-  for (const v of (a.inputs || []).filter((v) => v.state === "held")) out.push({ cls: (v.findings || []).some((f) => f.level === "error") ? "bad" : "warn", text: `${v.unit}: a change held`, to: "inputs" });
+  for (const v of (a.inputs || []).filter((v) => v.state === "held")) out.push({ cls: (v.findings || []).some((f) => f.level === "error") ? "bad" : "warn", text: `${v.unit}: a change held`, to: "overview" });
   return out;
 }
 
@@ -308,12 +307,12 @@ function overview(m) {
   const onMap = regs.filter((r) => r.on_map === true && !Object.keys(r.left).length).length;
   const asWas = regs.filter((r) => r.on_map === false || (r.on_map === true && Object.keys(r.left).length)).length;
   const readyNow = regs.filter((r) => !Object.keys(r.left).length && r.on_map !== true).length;
-  const lastAt = lastUpdate(m);
+  const cat = lastCatalogue(m);
   const nextUpdate = nextOnMap(m);
   const busy = m.macs.filter((x) => x.fresh && jobsOf(x.status).length).length;
   const kpis = h("div", "kpis",
-    kpi("Regions on the map", regs.length ? `${onMap} of ${regs.length}` : "–", [asWas ? `${asWas} more as they were` : "", readyNow ? `${readyNow} done, recorded built by the next catalog` : ""].filter(Boolean).join(" · ") || null),
-    kpi("Map last updated", lastAt ? ago(now, lastAt) : "–", nextUpdate ? `next ≈ ${clock(nextUpdate.at)}` : null),
+    kpi("Regions on the map", regs.length ? `${onMap} of ${regs.length}` : "–", [asWas ? `${asWas} more as they were` : "", readyNow ? `${readyNow} done, recorded built by the next catalogue` : ""].filter(Boolean).join(" · ") || null),
+    kpi("Map last updated", cat ? ago(now, cat.at) : "–", [cat?.n != null ? `catalogue ${cat.n}${cat.kind ? `, ${cat.kind}` : ""}` : "", nextUpdate ? `next ≈ ${clock(nextUpdate.at)}` : "", m.a.publishing?.tiles ? `${plural(m.a.publishing.tiles, "map tile")} to draw` : ""].filter(Boolean).join(" · ") || null),
     kpi("Machines", `${busy} of ${m.macs.length} Macs working`, m.pages.length ? `and ${plural(m.pages.length, "page")}` : null),
   );
   return h("div", "overview", h("div", "box", left, strip, stagesLine), kpis);
@@ -723,7 +722,7 @@ function regionRows(m, rerender) {
     }
     let state, cls = "";
     if (!lft && r.on_map === true) [state, cls] = ["on the map", "ok"];
-    else if (!lft) [state, cls] = ["done; recorded built by the next catalog", "ok"];
+    else if (!lft) [state, cls] = ["done; recorded built by the next catalogue", "ok"];
     else if (r.rank === 0) [state, cls] = ["building now", "run"];
     else [state, cls] = [`#${r.rank + 1} in line`, ""];
     if (r.on_map === false) state += " · on the map as it was";
@@ -745,42 +744,13 @@ function regionRows(m, rerender) {
   return [out, more].filter(Boolean);
 }
 
-// When the map last got new data: the last catalog the lead read (its number and time), else
-// its last catalog job's end.
-function lastUpdate(m) {
-  return m.a.catalog?.at || (m.a.recent || []).find((d) => stepOf(d.id) === "catalog" && d.ok)?.ended || null;
-}
-
-// The cadenced publishes (agent::forecast::PublishFc) in words, as `scenic status` says them.
-const PUBLISH_NAMES = { low: "the low zooms", marks: "the landmarks", overlays: "the area overlays" };
-
-// The Publishing card (agent::Published, agent::build::PublishLine, the forecast's `publishes`):
-// what publishing does and why; the last catalog, its number, when and its kind; the map tiles to
-// draw, by the Mac drawing them; when each cadenced publish may next go out; the catalog each Mac's
-// map server adopted.
-function publishing(m) {
-  const { a, fc, now } = m;
-  const u = a.publishing, p = a.published || {};
-  const short = shortNames(m), nm = (host) => short[host] || host;
-  const rows = [];
-  const row = (k, ...v) => rows.push(h("div", "pubrow", h("span", "k", k), h("span", "v", ...v)));
-  if (u) rows.push(h("div", "pubwhy", u.why));
-  const last = p.last || a.catalog;
-  row("Last catalog", last ? [h("b", null, `${last.n}`), ` · ${clock(last.at)} (${ago(now, last.at)})`, h("span", "dim", p.last ? ` · ${p.low ? "with the low zooms" : "map tiles only"}` : "")] : "none yet");
-  if (u) {
-    const by = Object.entries(p.drawing || {});
-    row("Map tiles to draw", h("b", null, n(u.tiles || 0)), by.length ? h("span", "dim", " · being drawn: ") : null, ...by.map(([host, k]) => h("span", { class: "by", title: host }, swatch(m.colourOf(host)), `${nm(host)}: ${plural(k, "tile")}`)));
-  }
-  if (fc?.publishes?.length) {
-    row("Next", fc.publishes.map((x, i) => [i ? " · " : "", `${PUBLISH_NAMES[x.what] || x.what} `, h("b", null, x.what === "low" && u?.low ? "now" : x.at <= now + 59 ? "now" : `≈ ${clock(x.at)}`)]).flat());
-  }
-  const ad = Object.entries(p.adopted || {});
-  if (ad.length) row("Each Mac's map", ...ad.map(([host, c], i) => h("span", { class: `by ${last && c.n < last.n ? "behind" : ""}`, title: `${host}'s map server adopted catalog ${c.n} ${ago(now, c.at)}` }, i ? " " : "", swatch(m.colourOf(host)), `${nm(host)}: ${c.n}`)));
-  const waits = (a.waiting || []).filter((w) => w.step === "catalog" || /publish/i.test(w.what));
-  for (const w of waits) rows.push(h("div", "small warn", w.why));
-  if (u?.regions?.length) rows.push(h("div", "small", `Done, not on the map as they are: ${u.regions.slice(0, 6).map((r) => `${m.regionName[r.id] || r.id} (${r.kinds.join(", ")})`).join(", ")}${u.regions.length > 6 ? ` and ${u.regions.length - 6} more` : ""}`));
-  if (!u) rows.push(h("div", "small dim", "A z6 tile's map tiles are drawn as soon as it's built, and a catalog goes out at most each minute."));
-  return h("div", "pub", rows);
+// The map's last catalogue (agent::Published's `last`, else the last the lead read, else its last
+// catalogue job's end): when, its number and its kind (with the low zooms or map tiles only).
+function lastCatalogue(m) {
+  const p = m.a.published?.last || m.a.catalog;
+  if (p) return { at: p.at, n: p.n, kind: m.a.published?.last ? (m.a.published.low ? "with the low zooms" : "map tiles only") : null };
+  const at = (m.a.recent || []).find((d) => stepOf(d.id) === "catalog" && d.ok)?.ended;
+  return at ? { at } : null;
 }
 
 // ---- Activity -----------------------------------------------------------------------------------
@@ -894,7 +864,7 @@ function sinceLine(m, events, seen) {
   const total = Object.values(tiles).reduce((t, k) => t + k, 0);
   const bits = [];
   if (total) bits.push(`${S.said("unit", total)} built (${Object.entries(tiles).map(([w, k]) => `${k} by ${w}`).join(", ")})`);
-  if (updates.length) bits.push(`${plural(updates.length, "catalog")}${updates.some((r) => r.targets?.length) ? `: ${updates.flatMap((r) => r.targets || []).slice(0, 4).map((id) => m.regionName[id] || id).join(", ")}` : ""}`);
+  if (updates.length) bits.push(`${plural(updates.length, "catalogue")}${updates.some((r) => r.targets?.length) ? `: ${updates.flatMap((r) => r.targets || []).slice(0, 4).map((id) => m.regionName[id] || id).join(", ")}` : ""}`);
   if (failures) bits.push(h("span", "bad", plural(failures, "failure")));
   const first = fresh[0];
   return h("div", "since", `Since ${clock(first.t)}: `, ...bits.flatMap((b, i) => (i ? [" · ", b] : [b])), bits.length ? "" : `${plural(fresh.length, "event")}`);
@@ -933,7 +903,7 @@ function details(m) {
   const rows = Object.values(table.steps);
   if (rows.length) box.append(h("h3", null, "The steps", h("span", null, "every step's row of the table: what it makes, of what, where it runs")), tbl(["Stage", "Step", "Does", "Kind", "Each target", "Runs on", "A job"], rows.map((s) => [S.stageTitle(s.stage), s.title, s.does, s.kind, s.of ? `a task of ${S.title(s.of)}` : s.scope === "world" ? "the world" : `${/^[aeiou]/.test(s.noun) ? "an" : "a"} ${s.noun}`, s.place === "any" ? "any Mac" : "the lead", s.of ? "" : s.place === "any" ? "a quarter hour's" : "all"])));
   box.append(h("div", "fresh", `Updated ${clock(now)} · the lead's heartbeat ${a.beat ? ago(now, a.beat) : "–"}${a.started ? `, its agent running since ${clock(a.started)} (app ${a.app})` : ""}${m.fc ? ` · forecast ${ago(now, m.fc.at)}` : ""} · history #${sw.seq ?? "–"}`));
-  return h("details", { class: "more-box", open: ui.detailsOpen || null, ontoggle: (e) => (ui.detailsOpen = e.target.open) }, h("summary", null, "Details"), box);
+  return box;
 }
 
 // ---- The page -----------------------------------------------------------------------------------
@@ -966,55 +936,69 @@ function waitRead() {
   if (w.retryMs) retry = setTimeout(() => document.visibilityState === "visible" && poll(), w.retryMs);
 }
 
-function section(cls, id, title, sub, ...body) {
-  return h("section", { class: cls, id }, title ? h("h2", null, title, sub ? h("span", null, sub) : null) : null, ...body);
+function section(cls, title, sub, ...body) {
+  return h("section", { class: cls }, title ? h("h2", null, title, sub ? h("span", null, sub) : null) : null, ...body);
+}
+
+// The header's status: the verdict's sentence, the pause controls, the alerts (each a link to the
+// tab that says more).
+function head(m) {
+  const pausing = !!m.sw.pause;
+  const ctl = h("div", "ctl",
+    pausing ? h("button", { class: "primary", onclick: () => ctx.ask(null) }, "Resume")
+      : [h("button", { onclick: () => ctx.ask({ mode: "drain" }), title: "Every Mac's job stops at its next safe point; nothing new starts" }, "Pause"),
+        h("button", { class: "quiet", onclick: () => confirm("Freeze every Mac's job where it is now? (It goes on from there when resumed.)") && ctx.ask({ mode: "freeze" }), title: "Freeze every Mac's job where it is, at once" }, "Freeze")]);
+  return [h("div", "verdict", h("div", "say", verdictText(m)), ctl),
+    h("div", "alerts", alerts(m).map((x) => h("a", { class: `alert ${x.cls}`, href: `#${x.to}` }, x.text)))];
+}
+
+// Each tab's sections, in order (index.html's panels, by the tab's name).
+function tabs(m) {
+  const fin = m.lines.filter(finished).length;
+  const banners = gateBanners(m, (body) => ctx.call("/work/inputs", body).then(poll, (e) => ctx.onError?.(`couldn't accept: ${e.message}`)));
+  const pool = poolSection(last.agent, m.now, (body) => ctx.call("/work/lead", body).then(poll, (e) => ctx.onError?.(`couldn't ask about the lead: ${e.message}`))) || section("d-pool");
+  return {
+    overview: [
+      h("section", "d-inputs", banners),
+      section("d-overview", null, null, overview(m)),
+      section("d-road", "Road to done", m.fc?.done_at ? `done ≈ ${clock(m.fc.done_at)}` : "",
+        h("div", "box", h("h3", null, "Schedule", h("span", null, "each machine's work from now to the end")), schedule(m),
+          // (What the coordinator's own scheduler decides, run ahead: docs/pool.md §7.2. What it can't see, said.)
+          h("p", "note", "Granted as the coordinator grants: by each Mac's room, cores and the NAS budget. Times and NAS weights are measured estimates, and no load from outside the build is assumed (optimistic while a Mac is in use); a pause, a repack, a Mac handing over on battery or a slow NAS moves the finish."))),
+    ],
+    stages: [section("d-stages", "Stages", m.lines.length ? `${fin} of ${m.lines.length} done · ⇄ any Mac may take it` : "", stages(m))],
+    machines: [
+      section("d-machines", "Machines", `${m.macs.filter((x) => x.fresh).length} Macs${m.pages.length ? `, ${plural(m.pages.length, "page")}` : ""}`,
+        h("div", "machines", m.macs.map((x) => machineCard(m, x)), m.gone.map(goneCard), pagesCard(m))),
+      pool,
+    ],
+    // (Their own part: while their search has the keyboard, only it waits to be refreshed.)
+    regions: [section("d-regions", null, null,
+      h("div", "box", h("h3", null, "Regions", h("span", null, m.fc ? "built one at a time: those the map lacks first, then those with the fewest tiles left" : "")), regionsList(m, render)))],
+    activity: [section("d-activity", "Activity", "the last day",
+      h("div", "box", hours(m),
+        h("div", "feedbar", h("div", "seg", [["all", "All"], ["problems", "Problems"], ["publishing", "Publishing"], ["pauses", "Pauses & conditions"]].map(([k, t]) => h("button", { class: ui.feed === k ? "on" : "", onclick: () => { ui.feed = k; render(); } }, t)))),
+        sinceLine(m, events, seenAt), feed(m, events, seenAt)))],
+    details: [section("d-details", null, null, details(m))],
+  };
 }
 
 function render() {
   if (!last || !ctx) return;
   const m = model(last);
-  const root = ctx.root;
-  const al = alerts(m);
-  const pausing = !!last.pause;
-  const ctl = h("div", "ctl",
-    pausing ? h("button", { class: "primary", onclick: () => ctx.ask(null) }, "Resume the build")
-      : [h("button", { onclick: () => ctx.ask({ mode: "drain" }), title: "Every Mac's job stops at its next safe point; nothing new starts" }, "Pause the build"),
-        h("button", { class: "quiet", onclick: () => confirm("Freeze every Mac's job where it is now? (It goes on from there when resumed.)") && ctx.ask({ mode: "freeze" }), title: "Freeze every Mac's job where it is, at once" }, "Pause it now")]);
-  const verdict = section("d-verdict", "verdict", null, null,
-    h("div", "verdict", h("div", "say", verdictText(m)), ctl),
-    h("div", "alerts", al.map((x) => h("span", { class: `alert ${x.cls}`, onclick: () => document.getElementById(x.to)?.scrollIntoView({ behavior: "smooth", block: "start" }) }, x.text))));
-  const fin = m.lines.filter(finished).length;
-  const stagesSec = section("d-stages", "stages", "Stages", m.lines.length ? `${fin} of ${m.lines.length} done · ⇄ any Mac may take it` : "", stages(m));
-  const machines = section("d-machines", "machines", "Machines", `${m.macs.filter((x) => x.fresh).length} Macs${m.pages.length ? `, ${plural(m.pages.length, "page")}` : ""}`,
-    h("div", "machines", m.macs.map((x) => machineCard(m, x)), m.gone.map(goneCard), pagesCard(m)));
-  const road = section("d-road", "road", "Road to done", m.fc?.done_at ? `done ≈ ${clock(m.fc.done_at)}` : "",
-    h("div", "road",
-      h("div", "box", h("h3", null, "Schedule", h("span", null, "each machine's work from now to the end")), schedule(m),
-        // (What the coordinator's own scheduler decides, run ahead: docs/pool.md §7.2. What it can't see, said.)
-        h("p", "note", "Granted as the coordinator grants: by each Mac's room, cores and the NAS budget. Times and NAS weights are measured estimates, and no load from outside the build is assumed (optimistic while a Mac is in use); a pause, a repack, a Mac handing over on battery or a slow NAS moves the finish.")),
-      h("div", "box", h("h3", null, "Publishing"), publishing(m))));
-  // (Their own part: while their search has the keyboard, only it waits to be refreshed.)
-  const regions = section("d-regions", "regions", null, null,
-    h("div", "box", h("h3", null, "Regions", h("span", null, m.fc ? "built one at a time: those the map lacks first, then those with the fewest tiles left" : "")), regionsList(m, render)));
-  const activity = section("d-activity", "activity", "Activity", "the last day",
-    h("div", "box", hours(m),
-      h("div", "feedbar", h("div", "seg", [["all", "All"], ["problems", "Problems"], ["publishing", "Publishing"], ["pauses", "Pauses & conditions"]].map(([k, t]) => h("button", { class: ui.feed === k ? "on" : "", onclick: () => { ui.feed = k; render(); } }, t)))),
-      sinceLine(m, events, seenAt), feed(m, events, seenAt)));
-  const scrollY = window.scrollY;
-  const feedTop = root.querySelector(".feed")?.scrollTop || 0;
-  const pool = poolSection(last.agent, m.now, (body) => ctx.call("/work/lead", body).then(poll, (e) => ctx.onError?.(`couldn't ask about the lead: ${e.message}`))) || section("d-pool", "pool", null, null);
-  const banners = gateBanners(m, (body) => ctx.call("/work/inputs", body).then(poll, (e) => ctx.onError?.(`couldn't accept: ${e.message}`)));
-  root.classList.toggle("gated", banners.length > 0);
-  const gate = h("section", { class: "d-inputs", id: "inputs" }, banners);
-  const next = [verdict, gate, section("d-overview", "overview", "Overview", null, overview(m)), road, stagesSec, machines, pool, regions, activity, section("d-details", "details", null, null, details(m))];
-  // (A section where the user is typing or has text selected stays as it was until they're done:
-  // a refresh would take their keyboard or selection away.)
+  // (A part where the user is typing or has text selected stays as it was until they're done: a
+  // refresh would take their keyboard or selection away.)
   const sel = window.getSelection();
-  const busy = (el) => el && (el.contains(document.activeElement) && document.activeElement.tagName === "INPUT" || (sel && !sel.isCollapsed && el.contains(sel.anchorNode)));
-  if (root.children.length === next.length) {
-    next.forEach((el, i) => { if (!busy(root.children[i])) root.children[i].replaceWith(el); });
-  } else root.replaceChildren(...next);
-  const feedEl = root.querySelector(".feed");
+  const busy = (el) => el && ((el.contains(document.activeElement) && document.activeElement.tagName === "INPUT") || (sel && !sel.isCollapsed && el.contains(sel.anchorNode)));
+  const put = (root, next) => {
+    if (root.children.length === next.length) next.forEach((el, i) => { if (!busy(root.children[i])) root.children[i].replaceWith(el); });
+    else root.replaceChildren(...next);
+  };
+  const scrollY = window.scrollY;
+  const feedTop = document.querySelector(".feed")?.scrollTop || 0;
+  put(ctx.head, head(m));
+  for (const [name, next] of Object.entries(tabs(m))) if (ctx.panels[name]) put(ctx.panels[name], next);
+  const feedEl = document.querySelector(".feed");
   if (feedEl) feedEl.scrollTop = feedTop;
   window.scrollTo(0, scrollY);
   ctx.onState?.(m.sw.pause ? "paused" : !m.a.host ? "no word from the lead" : m.fresh(m.a.beat) ? (jobsOf(m.a).length ? "building" : "idle") : "lead out of touch");
@@ -1057,6 +1041,7 @@ async function pollOnce() {
     readSince = null;
     clearTimeout(retry);
     last = sw;
+    ctx.onAnswer?.();
     // (Another numbering, or this one gone back past the last event this page has: started again.)
     if (sw.epoch !== epoch || (sw.seq != null && events.length && sw.seq < events[events.length - 1].seq)) {
       epoch = sw.epoch;
@@ -1083,7 +1068,8 @@ async function pollOnce() {
   }
 }
 
-/** Starts the dashboard in `root`: `call(path, body)` asks the coordinator ([status, json]); `ask(pause)`
+/** Starts the dashboard: its header status in `head`, each tab's sections in `panels[tab]`;
+ * `onAnswer()` on each answer of the build's (the footer's Live dot); `call(path, body)` asks the coordinator ([status, json]); `ask(pause)`
  * pauses the build (null: lets it go on); `store` keeps this browser's own (what it last showed). */
 export function dashboard(opts) {
   ctx = opts;

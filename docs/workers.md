@@ -147,11 +147,13 @@ Common rules:
   own page alone, its agent passing them on. This Mac's own page may also cancel a job and try a
   failed target again (`/work/act`). `/work/?view` only watches. Each slot (a Web Worker per core, less one) runs a
   task's programs over an in-memory filesystem (`web/work/runtime.js`, over browser_wasi_shim).
-- **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`, `sums.js`; docs/pipeline.md §5): the
-  verdict (going, done when, what needs a look, pause controls); the overview; the
-  road to done (each machine's forecast lane) and publishing; the stages (a card per stage, a row
-  per step); a card per machine; the pool (who leads, "Make lead", "Take it"); the regions; the activity (last day by
-  the hour, events); folded details (leases, waits, each Mac's capacity, workers, the steps table). It reads
+- **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`, `sums.js`; docs/pipeline.md §5): a
+  sticky header (the verdict: going, done when, what needs a look; Pause, Freeze, Resume; the
+  tabs), a tab per part by the address's `#hash`, and a fixed footer (the charts' range, the Live
+  dot). Overview: the overview (its map figure from the last catalogue) and the road to done
+  (each machine's forecast lane); Stages (a card per stage, a row per step); Machines (a card per
+  machine, the pool: who leads, "Make lead", "Take it"); Regions; Activity (last day by the hour,
+  events); Details (leases, waits, each Mac's capacity, workers, the steps table); This device. It reads
   `/work/steps` once (the steps table: every word about a step), `/work/swarm` every 10 s and
   `/work/history` incrementally; each Mac's measures over time from its own port's `/work/live`
   (docs/pool.md §10, Live). A 503 (the Mac hasn't read the build's state yet) says so quietly and asks

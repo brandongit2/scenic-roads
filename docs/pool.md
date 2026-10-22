@@ -969,7 +969,8 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   host and addresses (`{host, urls, https}`, its heartbeat's broker; none with the brokers'
   switch off), and the answer is allowed to the members' origins (CORS as for tasks, §8; the
   M6's https://map.brandontsang.net among them), the page reading by the scheme it was served
-  over.
+  over. The build page's footer keeps the range its charts are to show (planned: no chart reads
+  `/work/live` yet).
 - **Views** (menu bar, worker page, `scenic lead`, `scenic status`) read the
   agent's `pool.lead` (`crate::agent::lead::View`) or the fresher `agent/pool/view.json`
   (`lead::own_status`): each member's state and whether the lead can be handed to it

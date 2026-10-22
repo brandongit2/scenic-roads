@@ -616,7 +616,7 @@ fn publish_name(what: &str) -> &str {
     }
 }
 
-/// Publishing as it stands (the build page's Publishing card, in the same words): what it does and
+/// Publishing as it stands (the build page's map KPI says its last catalogue): what it does and
 /// why (agent::build::PublishLine), the last catalog, the map tiles to draw and by which Mac, the
 /// cadenced publishes next (agent::forecast), each Mac's catalog adopted (agent::Published).
 fn publishing_lines(st: &agent::Status) -> Vec<String> {
@@ -714,7 +714,7 @@ fn status(args: &[String]) -> Result<()> {
     for n in &st.notices {
         println!("note: {} — {}", n.what, n.why);
     }
-    // Publishing as it stands (the build page's Publishing card).
+    // Publishing as it stands (the build page's map KPI has its last catalogue).
     for l in publishing_lines(&st) {
         println!("{l}");
     }
