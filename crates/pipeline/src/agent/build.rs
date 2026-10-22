@@ -5074,7 +5074,8 @@ pub(crate) mod tests {
         m.insert(format!("layers/terrain/hi/{t6}"), "hi-new".into());
         let again = fine_work(&c, &m, &done, &tiles);
         let reads = |t: &str| {
-            TileId::parse(t).is_some_and(|u| tf::ring_packs((u.x, u.y)).iter().any(|p| format!("6-{}-{}", p.0, p.1) == t6))
+            TileId::parse(t)
+                .is_some_and(|u| tf::ring_packs((u.x, u.y)).iter().any(|p| format!("6-{}-{}", p.0, p.1) == t6))
         };
         let under = |t: &str| TileId::parse(t).is_some_and(|u| format!("6-{}-{}", u.x >> 2, u.y >> 2) == t6);
         let mine: Vec<&String> = ft.iter().map(|f| &f.0).filter(|t| reads(t)).collect();

@@ -115,7 +115,7 @@ What each step does, in detail. The steps as one table (names, chains, the check
     from its z6 tile's hi pack and the neighbouring z6 tiles' where the ring crosses into them, so
     those packs are in its key; where the base's finest zoom changes with latitude, the neighbour of
     another zoom read bilinearly at each padding pixel, as the server makes a missing tile from its
-    ancestor and our MapLibre fills a DEM tile's border from a neighbour of another zoom: no seam at
+    ancestor (the map's DEM goes to z12 everywhere, so it meets those made tiles): no seam at
     a base tile's edge); the base's water kept by each pixel's share of the base
     tile's sea and lakes; below zero to 0; rounded to 1 cm; Terrarium RGB as lossless JPEG XL
     (libjxl, effort 7: Chrome and Safari decode it natively, every value exact; the same bytes on

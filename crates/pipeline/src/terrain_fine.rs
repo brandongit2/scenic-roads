@@ -305,7 +305,7 @@ pub const PADDED: usize = 258;
 /// `DEMData.backfillFrom`): a neighbour of its zoom pixel for pixel; where none is stored, a stored
 /// tile up to two zooms finer or coarser holding the pixel's centre, bilinearly there (clamped
 /// inside that tile), as the server makes a missing tile from its ancestor
-/// (roadcore::grid::upsampled) and the map fills a border from a neighbour of another zoom; else the
+/// (roadcore::grid::upsampled: the map's base goes to z12 everywhere, so it draws those); else the
 /// padding's next pixel in (a corner: the side neighbour's, where there is one).
 pub fn padded(tiles: &HashMap<(u8, u32, u32), Vec<f32>>, b: (u8, u32, u32)) -> Vec<f32> {
     let (z, x, y) = b;
@@ -863,12 +863,17 @@ mod tests {
                 .collect();
             tiles.sort_by_key(|t| (t.0, t.1, t.2));
             let it = &mut tiles.into_iter();
-            let (l, _) = crate::layers::write_pack(&mut out, "terrain", "terrarium-png", false, "hi", (6, p.0, p.1), it)
-                .unwrap()
-                .unwrap();
+            let (l, _) =
+                crate::layers::write_pack(&mut out, "terrain", "terrarium-png", false, "hi", (6, p.0, p.1), it)
+                    .unwrap()
+                    .unwrap();
             out.path(out.get(&l).unwrap())
         };
-        assert_eq!(ring_packs(t), vec![(18, 23), (18, 22), (19, 22), (19, 23)], "its own z6 tile's, then those north and east");
+        assert_eq!(
+            ring_packs(t),
+            vec![(18, 23), (18, 22), (19, 22), (19, 23)],
+            "its own z6 tile's, then those north and east"
+        );
         let packs = [hi((18, 23), &[(9u8, 151u32, 184u32), edge, inside]), hi((19, 23), &[ring, far])];
         let base = base_tiles(&packs, t).unwrap();
         let mut got: Vec<_> = base.keys().copied().collect();
