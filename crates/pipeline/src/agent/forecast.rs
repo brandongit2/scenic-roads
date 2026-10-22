@@ -1039,9 +1039,10 @@ fn mac_of(m: &Machine) -> String {
 /// its targets one after another at the lane's pace, its lease out until it ends. Refused, a lane
 /// asks again once a job ends (or `ASK_AGAIN_S`). The pages' lane takes the shared steps' targets
 /// alone, as tasks.
-/// Cut once its thread has computed `budget` (`Sim::cut`, `thread_cpu`).
+/// Cut once its thread has computed `budget`, or after `BACKSTOP` times it on the wall clock
+/// (`Sim::cut`, `thread_cpu`).
 fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64, budget: Duration) -> Sim {
-    let cpu0 = thread_cpu();
+    let (cpu0, wall0) = (thread_cpu(), Instant::now());
     let (mut items, region_items) = items(inp);
     for it in &mut items {
         it.cost.secs = scale(&it.cost).max(1.0);
@@ -1156,7 +1157,9 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64, budget: Duration) -> Sim {
         if guard > 40 * (items.len() + 10) * n.max(1) || unassigned == 0 {
             break;
         }
-        if guard.is_multiple_of(32) && thread_cpu().saturating_sub(cpu0) >= budget {
+        if guard.is_multiple_of(32)
+            && (thread_cpu().saturating_sub(cpu0) >= budget || wall0.elapsed() >= budget * BACKSTOP)
+        {
             cut = true;
             break;
         }
@@ -1416,6 +1419,11 @@ const KEY: &str = "forecast";
 /// loaded Mac starves the runs (the mini at load 34: 4 s of CPU took 15 s of wall), and a wall-time
 /// cut then hid the finish of an input no bigger than usual. A run at live scale computes 1-4 s.
 pub const BUDGET: Duration = Duration::from_secs(15);
+
+/// A run is cut too after this many times its budget on the wall clock (120 s for `BUDGET`), so a
+/// starved one can't hold the lead's next forecast (`Agent::forecasting`) nor the NAS self-heal's
+/// wait for idle threads indefinitely.
+const BACKSTOP: u32 = 8;
 
 /// The calling thread's CPU time so far (in the browser's build, which has no such clock, the
 /// wall time since the first call: a page's forecast runs alone in its worker).
@@ -1697,16 +1705,6 @@ pub fn speeds(
 
 #[cfg(test)]
 mod tests {
-    /// This thread's CPU time (ms): a timing test's measure, not wall time, so a loaded Mac (tests
-    /// in parallel) doesn't fail it; its bound catches a complexity regression (an O(n³) run took
-    /// 16 s), not jitter.
-    fn thread_cpu_ms() -> u128 {
-        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-        // SAFETY: a valid timespec for the call to fill.
-        assert_eq!(unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) }, 0);
-        ts.tv_sec as u128 * 1000 + ts.tv_nsec as u128 / 1_000_000
-    }
-
     /// The CPU time (ms) a timing test's forecast may take (a debug build: well under a second
     /// in a release one); every job of its runs the coordinator's scheduler's decision.
     const CPU_BOUND_MS: u128 = 8000;
@@ -2300,9 +2298,9 @@ mod tests {
             ("m1".to_string(), MacRoom { mem_mb: 8_000, cores: 8 }),
         ]
         .into();
-        let took = thread_cpu_ms();
+        let took = super::thread_cpu().as_millis();
         let f = forecast(&inp);
-        let ms = thread_cpu_ms() - took;
+        let ms = super::thread_cpu().as_millis() - took;
         eprintln!("the forecast took {ms} ms (3,000 units, 3,000 map tiles, 8 lanes)");
         assert!(f.done_at.is_some() && f.regions.iter().all(|r| r.map_at.is_some()));
         assert!(ms < CPU_BOUND_MS, "{ms} ms of CPU");
@@ -2367,9 +2365,9 @@ mod tests {
         for all_cold in [true, false] {
             let c = mixed(all_cold);
             let inp = two_macs(&regions, &c);
-            let took = thread_cpu_ms();
+            let took = super::thread_cpu().as_millis();
             let f = forecast(&inp);
-            let ms = thread_cpu_ms() - took;
+            let ms = super::thread_cpu().as_millis() - took;
             eprintln!(
                 "the forecast took {ms} ms (3,000 units, {})",
                 if all_cold { "all cold" } else { "cold and big mixed" }
@@ -3313,11 +3311,10 @@ mod tests {
         assert!(f.partial && f.done_at.is_none(), "{:?}", f.why);
     }
 
-    /// At 22 Oct's live scale (134 regions, about 4,600 chain targets): whole within its budget.
-    /// The budget is each run's CPU time (task #584), so a Mac whose cores are all busy, starving
-    /// the utility QoS, slows the runs but cuts them no sooner: a thread waiting counts nothing.
+    /// At 22 Oct's live scale (134 regions, about 4,600 chain targets): whole within its budget;
+    /// and the budget is CPU time (task #584): a thread's wait counts nothing.
     #[test]
-    fn a_live_forecast_is_whole_within_its_budget_however_busy_the_mac() {
+    fn a_live_scale_forecast_is_whole_and_a_wait_is_no_cpu_time() {
         let inp = live_scale_input(134, 1150);
         // (The test build computes ~4x slower than the app's, release: its budget so much longer.
         // Release, on the M1 at load 140: 48 s of wall, whole.)

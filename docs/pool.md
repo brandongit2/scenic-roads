@@ -639,7 +639,9 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   starting jobs and writing the status never wait on it. Its three runs go side by side (three
   threads, each at the utility QoS: `forecast::low_priority`), each cut once it has computed
   `forecast::BUDGET` (15 s of its thread's CPU time, not wall time, #584: a loaded Mac starves
-  utility threads, 4 s of CPU took 15 s on the mini at load 34; a live run computes 1-4 s): one
+  utility threads, 4 s of CPU took 15 s on the mini at load 34; a live run computes 1-4 s), or
+  after 120 s of wall time (a backstop, so a starved run can't hold the next forecast or the NAS
+  self-heal); the trade-off: the three runs may take up to 3 Ã— 15 s of CPU together: one
   cut is `partial`, its `why` says so, no finish shown, and the build page marks its lanes and next
   jobs partial. On 21 Oct's live input (4,155 targets, 20 lanes) it took 3.7 s (205 s before #544).
 
