@@ -10,3 +10,6 @@ description = "Lossless JPEG XL encoding of 8-bit RGB images through libjxl (sta
 [build-dependencies]
 jpegxl-src = "=0.12.0"
 cc = "1"
+
+[dev-dependencies]
+sha2 = "0.10"

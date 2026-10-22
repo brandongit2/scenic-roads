@@ -15,10 +15,12 @@
 //! - **What a fine tile is:** its pixels sampled from the datasets meeting its z8 tile (in their
 //!   order, blended at their edges: crate::dem::generic), at their full resolution and brought to
 //!   EGM2008 as the roads' are (crate::dem::geoid), with the stored base tile last (`BASE_URL`), so
-//!   the fine data blends into the base over four base pixels where it ends. The base's water is
+//!   the fine data blends into the base over four base pixels where it ends; where only the base
+//!   gives a height, the base read across its tiles' edges (`padded`: a ring of one tile past the z8
+//!   tile read with it, `base_tiles`), as the map draws the base. The base's water is
 //!   kept: each pixel by its share of the base tile's sea and lakes (crate::terrain_water, at the
 //!   base's zoom) takes the base's flattened height. Below zero to 0, as the base. Rounded to
-//!   1 cm (`QUANTUM_M`, the owner's), Terrarium RGB as lossless JPEG XL (`encode`: Chrome and Safari
+//!   1 cm (`QUANTUM_M`, the owner's), Terrarium RGB as lossless JPEG XL (`encode`, `ENCODING`: Chrome and Safari
 //!   decode it natively, every value exact; ~45 % of the bytes of PNG at 1/256 m).
 //! - **Only where there's data:** a base tile whose datasets have no data in a 128 × 128 grid of
 //!   it (`PRESENCE`, read as their roads read them) makes none; a fine tile none of whose pixels
@@ -56,11 +58,28 @@ pub const PRESENCE: usize = 128;
 /// The stored base tiles, as the sampler reads them (a tile pyramid served from the run's memory).
 pub const BASE_URL: &str = "scenic-terrain:{z}/{x}/{y}";
 /// Bumped with any change to the fine tiles' bytes from the same inputs.
-pub const FINE_V: u32 = 1;
+pub const FINE_V: u32 = 2;
+/// The fine packs' encoding (their header's `encoding`): Terrarium RGB as JPEG XL.
+pub const ENCODING: &str = "terrarium-jxl";
 
-/// What a target's key names of the code: its version and every constant its bytes follow.
+/// What a target's key names of the code: its version, every constant its bytes follow and the
+/// linked libjxl's version (crate jxl: its bytes are its encoder's).
 pub fn versions() -> String {
-    format!("{STEP} {FINE_V} quantum {QUANTUM_M} jxl {JXL_EFFORT} finer {FINER} max {MAX_Z} presence {PRESENCE} pack {PACK_Z}")
+    format!(
+        "{STEP} {FINE_V} quantum {QUANTUM_M} jxl {JXL_EFFORT} libjxl {} finer {FINER} max {MAX_Z} presence {PRESENCE} pack {PACK_Z}",
+        libjxl()
+    )
+}
+
+#[cfg(not(target_os = "wasi"))]
+fn libjxl() -> String {
+    jxl::version()
+}
+
+/// (No libjxl in the WebAssembly build, which makes no fine tile.)
+#[cfg(target_os = "wasi")]
+fn libjxl() -> String {
+    "none".into()
 }
 
 /// The finest zoom at latitude `lat` whose pixels are no finer than half of `res` metres.
@@ -262,34 +281,68 @@ fn pixel_lonlat(z: u8, x: u32, y: u32, i: usize, j: usize) -> (f64, f64) {
     (fx * 360.0 - 180.0, (std::f64::consts::PI * (1.0 - 2.0 * fy)).dsinh().datan().to_degrees())
 }
 
-/// `v` (256 × 256) at fine tile `z/x/y`'s pixel `(i, j)`, its base tile at zoom `zb` (`v` its
-/// values), bilinearly, its edges clamping.
-fn up(v: &[f32], zb: u8, z: u8, x: u32, y: u32, i: usize, j: usize) -> f32 {
+/// `v` (`side` × `side`: a base tile at zoom `zb`, padded by `(side - 256) / 2` pixels of its
+/// neighbours: `padded`) at fine tile `z/x/y`'s pixel `(i, j)`, bilinearly, its edges clamping.
+#[allow(clippy::too_many_arguments)]
+fn up(v: &[f32], side: usize, zb: u8, z: u8, x: u32, y: u32, i: usize, j: usize) -> f32 {
+    let pad = ((side - 256) / 2) as f64;
     let k = (1u32 << (z - zb)) as f64;
     let bx = (x as f64 / k).floor();
     let by = (y as f64 / k).floor();
-    let u = ((x as f64 + (i as f64 + 0.5) / 256.0) / k - bx) * 256.0 - 0.5;
-    let w = ((y as f64 + (j as f64 + 0.5) / 256.0) / k - by) * 256.0 - 0.5;
-    let (u, w) = (u.clamp(0.0, 255.0), w.clamp(0.0, 255.0));
-    let (u0, w0) = (u.floor() as usize, w.floor() as usize);
-    let (u1, w1) = ((u0 + 1).min(255), (w0 + 1).min(255));
-    let (fu, fw) = ((u - u0 as f64) as f32, (w - w0 as f64) as f32);
-    let a = v[w0 * 256 + u0] * (1.0 - fu) + v[w0 * 256 + u1] * fu;
-    let b = v[w1 * 256 + u0] * (1.0 - fu) + v[w1 * 256 + u1] * fu;
-    a * (1.0 - fw) + b * fw
+    let u = ((x as f64 + (i as f64 + 0.5) / 256.0) / k - bx) * 256.0 - 0.5 + pad;
+    let w = ((y as f64 + (j as f64 + 0.5) / 256.0) / k - by) * 256.0 - 0.5 + pad;
+    roadcore::grid::bilinear(v, side, u, w)
 }
 
-/// A fine tile's heights finished: where the sampler has none (past the stored base), the base;
-/// each pixel by its share of water (`water`, 0–1 at the base's pixels) to the base's height;
-/// below zero to 0; rounded to `QUANTUM_M`.
+/// The side of a base tile padded by a pixel of its neighbours (`padded`).
+pub const PADDED: usize = 258;
+
+/// Base tile `b`'s heights (`tiles`: the base tiles decoded) padded by a pixel of each of its eight
+/// neighbours of its zoom (`PADDED` × `PADDED`), so a fine tile reads the base across the base
+/// tiles' edges as MapLibre draws it (its DEM tiles' borders filled from their neighbours); where a
+/// neighbour isn't stored, the padding's next pixel in (a corner: the side neighbour's, where stored).
+pub fn padded(tiles: &HashMap<(u8, u32, u32), Vec<f32>>, b: (u8, u32, u32)) -> Vec<f32> {
+    let (z, x, y) = b;
+    let n = 1i64 << z;
+    let p = PADDED as i64;
+    let mut out = vec![f32::NAN; PADDED * PADDED];
+    for j in 0..p {
+        for i in 0..p {
+            let (dx, dy) = ((i - 1).div_euclid(256), (j - 1).div_euclid(256));
+            let ny = y as i64 + dy;
+            if (0..n).contains(&ny) {
+                if let Some(t) = tiles.get(&(z, (x as i64 + dx).rem_euclid(n) as u32, ny as u32)) {
+                    out[(j * p + i) as usize] =
+                        t[(j - 1).rem_euclid(256) as usize * 256 + (i - 1).rem_euclid(256) as usize];
+                }
+            }
+        }
+    }
+    for j in 0..p {
+        for i in 0..p {
+            if out[(j * p + i) as usize].is_nan() {
+                let (ci, cj) = (i.clamp(1, p - 2), j.clamp(1, p - 2));
+                let v =
+                    [(i, cj), (ci, j), (ci, cj)].iter().map(|&(a, b)| out[(b * p + a) as usize]).find(|v| !v.is_nan());
+                out[(j * p + i) as usize] = v.unwrap_or(f32::NAN);
+            }
+        }
+    }
+    out
+}
+
+/// A fine tile's heights finished: where the sampler has none, or only the base's (NaN), the base
+/// (`base`: `padded`, so it meets its neighbours' as the map draws the base); each pixel by its share
+/// of water (`water`, 0–1 at the base's 256 × 256 pixels) to the base's height; below zero to 0;
+/// rounded to `QUANTUM_M`.
 pub fn finish(e: &mut [f32], base: &[f32], water: Option<&[f32]>, zb: u8, z: u8, x: u32, y: u32) {
     for j in 0..256 {
         for i in 0..256 {
             let k = j * 256 + i;
-            let b = up(base, zb, z, x, y, i, j);
+            let b = up(base, PADDED, zb, z, x, y, i, j);
             let mut v = if e[k].is_finite() { e[k] } else { b };
             if let Some(w) = water {
-                let s = up(w, zb, z, x, y, i, j).clamp(0.0, 1.0);
+                let s = up(w, 256, zb, z, x, y, i, j).clamp(0.0, 1.0);
                 v = s * b + (1.0 - s) * v;
             }
             e[k] = (v.max(0.0) / QUANTUM_M).round() * QUANTUM_M;
@@ -333,7 +386,8 @@ pub fn named_under(m: &BTreeMap<String, String>, z: u8, x: u32, y: u32) -> Vec<S
 }
 
 /// The base tiles under z8 tile `t` in its z6 tile's hi pack `pack` (each place's finest stored
-/// zoom), as stored.
+/// zoom), as stored, and the ring of one tile around them where the pack has it (a fine tile at
+/// `t`'s edge reads the base across it: `padded`).
 pub fn base_tiles(pack: &std::path::Path, t: (u32, u32)) -> Result<HashMap<(u8, u32, u32), Vec<u8>>> {
     let f = store::range::PlainFile::open(pack).with_context(|| format!("open {}", pack.display()))?;
     let idx = store::pack::PackIndex::read_from(&f)?;
@@ -341,13 +395,25 @@ pub fn base_tiles(pack: &std::path::Path, t: (u32, u32)) -> Result<HashMap<(u8, 
     for e in &idx.entries {
         let (z, x, y) = e.zxy();
         if z >= TARGET_Z
-            && (x >> (z - TARGET_Z), y >> (z - TARGET_Z)) == t
             && z == crate::terrain_pack::max_zoom_at(crate::terrain_pack::tile_lat(z, y))
+            && near(z, x, t.0)
+            && near(z, y, t.1)
         {
             out.insert((z, x, y), idx.read_blob(&f, e)?);
         }
     }
     Ok(out)
+}
+
+/// Whether column (or row) `v` of zoom `z` lies under z8 tile column `t`, or one tile past it.
+fn near(z: u8, v: u32, t: u32) -> bool {
+    let s = z - TARGET_Z;
+    (v as i64 + 1) >> s >= t as i64 && (v as i64 - 1) >> s <= t as i64
+}
+
+/// Whether tile `z/x/y` lies under z8 tile `t`.
+fn under(z: u8, x: u32, y: u32, t: (u32, u32)) -> bool {
+    z >= TARGET_Z && (x >> (z - TARGET_Z), y >> (z - TARGET_Z)) == t
 }
 
 /// What a target's run did.
@@ -361,7 +427,8 @@ pub struct Report {
     pub bytes: u64,
 }
 
-/// Z8 tile `t`'s fine tiles made and uploaded, from its base tiles as stored (`base`: `base_tiles`),
+/// Z8 tile `t`'s fine tiles made and uploaded, from its base tiles as stored and their ring (`base`:
+/// `base_tiles`; the ring read, not made),
 /// the water `water` and the fine datasets `fine` (None: none declared): its fine packs
 /// (`pack_logical`), and those it no longer makes dropped (all of them where no dataset is fine);
 /// not saved.
@@ -377,8 +444,9 @@ pub fn make(
     let mut rep = Report::default();
     let before = named_under(&out.manifest, TARGET_Z, t.0, t.1);
     let b = crate::stage::tile_box_grown(TARGET_Z, t.0, t.1, 0.0);
+    let inside: Vec<(u8, u32, u32)> = base.keys().copied().filter(|&(z, x, y)| under(z, x, y, t)).collect();
     let plans = match fine {
-        Some(f) if !base.is_empty() => f.plans(b)?,
+        Some(f) if !inside.is_empty() => f.plans(b)?,
         _ => None,
     };
     let (Some(fine), Some((presence, full))) = (fine, plans) else {
@@ -386,10 +454,12 @@ pub fn make(
         return Ok(rep);
     };
     let mut groups: BTreeMap<(u32, u32), Vec<(u8, u32, u32)>> = BTreeMap::new();
-    for &(z, x, y) in base.keys() {
+    for &(z, x, y) in &inside {
         groups.entry((x >> (z - PACK_Z), y >> (z - PACK_Z))).or_default().push((z, x, y));
     }
-    rep.base_tiles = base.len();
+    rep.base_tiles = inside.len();
+    let decoded: HashMap<(u8, u32, u32), Vec<f32>> =
+        base.par_iter().map(|(&k, png)| Ok((k, roadcore::grid::decode_terrain_png(png)?))).collect::<Result<_>>()?;
     let bf = BaseFetch { base, inner: fetch };
     let o = Opts { fetch: &bf, store: Some(out.root().join("sources/fetched")), pool: None };
     let presence = Sampler::new(&presence, &o)?;
@@ -406,7 +476,7 @@ pub fn make(
                 let bb = crate::stage::tile_box_grown(zb, bx, by, 0.0);
                 let zf = here.iter().filter(|s| s.cover.meets(bb)).map(|s| s.detail.zoom_at(lat)).max();
                 let Some(zf) = zf.filter(|&z| z > zb) else { return Ok((false, Vec::new())) };
-                base_tile(&presence, &full, water, &base[&(zb, bx, by)], (zb, bx, by), zf)
+                base_tile(&presence, &full, water, &decoded, (zb, bx, by), zf)
             })
             .collect();
         let mut tiles = Vec::new();
@@ -424,7 +494,7 @@ pub fn make(
                 (z, x, y, b, n)
             });
             if let Some((l, _)) =
-                crate::layers::write_pack(out, "terrain", "terrarium-png", false, "fine", (PACK_Z, g.0, g.1), &mut it)?
+                crate::layers::write_pack(out, "terrain", ENCODING, false, "fine", (PACK_Z, g.0, g.1), &mut it)?
             {
                 rep.packs += 1;
                 written.push(l);
@@ -452,13 +522,13 @@ fn points(z: u8, tiles: &[(u32, u32)]) -> (Vec<f64>, Vec<f64>) {
     (lon, lat)
 }
 
-/// Base tile `b` (its PNG `png`)'s fine tiles to zoom `zf`: whether its datasets have data in it,
-/// and the tiles with some.
+/// Base tile `b`'s fine tiles to zoom `zf` (`tiles`: the base tiles decoded, its neighbours with
+/// it): whether its datasets have data in it, and the tiles with some.
 fn base_tile(
     presence: &Sampler,
     full: &Sampler,
     water: Option<&dyn crate::terrain_water::WaterSource>,
-    png: &[u8],
+    tiles: &HashMap<(u8, u32, u32), Vec<f32>>,
     b: (u8, u32, u32),
     zf: u8,
 ) -> Result<(bool, Vec<(u8, u32, u32, Vec<u8>)>)> {
@@ -478,7 +548,7 @@ fn base_tile(
     if !presence.sample(&lon, &lat, &|_| {})?.elev.iter().any(|v| v.is_finite()) {
         return Ok((false, Vec::new()));
     }
-    let base = roadcore::grid::decode_terrain_png(png)?;
+    let base = padded(tiles, b);
     let share = water_share(water, b)?;
     let mut out = Vec::new();
     for z in zb + 1..=zf {
@@ -494,7 +564,9 @@ fn base_tile(
                 if !s.src[r.clone()].iter().any(|&c| c != 0) {
                     continue;
                 }
-                let mut e = s.elev[r].to_vec();
+                // (Where only the base gives a height, the base read across its edges: `finish`.)
+                let mut e: Vec<f32> =
+                    r.map(|k| if s.src[k] == 0 && !s.blended[k] { f32::NAN } else { s.elev[k] }).collect();
                 finish(&mut e, &base, share.as_deref(), zb, z, x, y);
                 out.push((z, x, y, encode(&e)?));
             }
@@ -580,12 +652,13 @@ mod tests {
     #[test]
     fn a_fine_tile_takes_the_base_where_it_has_no_data_and_on_water() {
         // The base: 10 m plus its column; its lower half water.
-        let base: Vec<f32> = (0..65536).map(|k| 10.0 + (k % 256) as f32).collect();
+        let (bx, by) = (100, 200);
+        let one: Vec<f32> = (0..65536).map(|k| 10.0 + (k % 256) as f32).collect();
+        let base = padded(&HashMap::from([((12, bx, by), one)]), (12, bx, by));
         let mut water = vec![0f32; 65536];
         for v in water.iter_mut().skip(128 * 256) {
             *v = 1.0;
         }
-        let (bx, by) = (100, 200);
         // Fine tile 13/2bx/2by+1, under the base's lower half: data everywhere, but water.
         let mut e = vec![500.04f32; 65536];
         finish(&mut e, &base, Some(&water), 12, 13, bx * 2, by * 2 + 1);
@@ -628,6 +701,32 @@ mod tests {
         assert!(!saves("8/74/92", "layers/terrain/fine/10-296-364") && !saves("8/74/91", "layers/terrain/hi/6-18-22"));
     }
 
+    #[test]
+    fn the_base_meets_its_neighbours_across_a_base_tiles_edge() {
+        // Base tile 12/x/y at 50 m, its east neighbour at 80 m; all water, so a fine tile is the
+        // base's alone.
+        let (x, y) = (1199, 1477);
+        let tiles = HashMap::from([((12, x, y), vec![50f32; 65536]), ((12, x + 1, y), vec![80f32; 65536])]);
+        let water = vec![1f32; 65536];
+        let fine = |b: (u8, u32, u32), fx: u32| {
+            let mut e = vec![f32::NAN; 65536];
+            finish(&mut e, &padded(&tiles, b), Some(&water), 12, 16, fx, y * 16);
+            e
+        };
+        // Z16 tiles either side of the edge: the last column of the west one, the first of the east.
+        let (w, e) = (fine((12, x, y), x * 16 + 15), fine((12, x + 1, y), (x + 1) * 16));
+        let (a, b) = (w[255], e[0]);
+        // (A z16 pixel is a sixteenth of a base pixel: 30 m ÷ 16 apart.)
+        assert!(a > 50.0 && b < 80.0 && (b - a) < 2.0, "a ramp across the edge, not a step: {a} → {b}");
+        assert!(((a + b) / 2.0 - 65.0).abs() < 0.01, "halfway between the base tiles at the edge: {a} {b}");
+        // (The west edge has no neighbour stored: its own edge.)
+        assert_eq!(fine((12, x, y), x * 16)[0], 50.0);
+        // The ring around a z8 tile: under it or a tile past it.
+        let t = (74u32, 92u32);
+        assert!(near(12, 74 * 16 - 1, t.0) && near(12, 75 * 16, t.0) && near(12, 74 * 16, t.0));
+        assert!(!near(12, 74 * 16 - 2, t.0) && !near(12, 75 * 16 + 1, t.0));
+    }
+
     /// The fixture's roads dataset's tiles, all 100 m (its z10 pyramid, read as if finer).
     struct Flat(Vec<u8>);
     impl crate::fetch::Fetch for Flat {
@@ -637,6 +736,65 @@ mod tests {
         fn get(&self, url: &str) -> Result<Option<Vec<u8>>> {
             Ok(url.starts_with("https://e.org/10/").then(|| self.0.clone()))
         }
+    }
+
+    #[test]
+    fn a_z8_tile_is_made_from_its_hi_pack_as_stored_and_its_ring_read_only() {
+        let d = tempfile::tempdir().unwrap();
+        let mut m = std::collections::BTreeMap::new();
+        crate::inputs::elevation::accept_fixture(d.path(), &mut m);
+        let a = crate::inputs::open(d.path(), &m, crate::inputs::elevation::UNIT).unwrap().unwrap();
+        let mut fine = Fine::of(a, Vec::new()).unwrap();
+        fine.sets = vec![FineSet {
+            id: "world".into(),
+            line: "world w".into(),
+            cover: Cover::of(None),
+            detail: Detail::Pyramid(13),
+        }];
+        let root = d.path().join("nas");
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
+        // Z6 tile 6/18/23's hi pack: z8 tile 8/74/92's base tiles (one at its east edge, one inside),
+        // one a tile past its edge (its ring) and one further, each z12 at 50 m; and their z9.
+        let t = (74u32, 92u32);
+        let (edge, inside, ring, far) =
+            ((12u8, 1199u32, 1477u32), (12, 1195, 1477), (12, 1200, 1477), (12, 1202, 1477));
+        let png = |m: f32| roadcore::grid::encode_terrain_png(&vec![m; 65536], 256, 256).unwrap();
+        let mut tiles: Vec<(u8, u32, u32, Vec<u8>, u32)> = [(9u8, 149u32, 184u32), edge, inside, ring, far]
+            .iter()
+            .map(|&(z, x, y)| {
+                let b = png(50.0);
+                let n = b.len() as u32;
+                (z, x, y, b, n)
+            })
+            .collect();
+        tiles.sort_by_key(|t| (t.0, t.1, t.2));
+        let (hi, _) = crate::layers::write_pack(
+            &mut out,
+            "terrain",
+            "terrarium-png",
+            false,
+            "hi",
+            (6, 18, 23),
+            &mut tiles.into_iter(),
+        )
+        .unwrap()
+        .unwrap();
+        let base = base_tiles(&out.path(out.get(&hi).unwrap()), t).unwrap();
+        let mut got: Vec<_> = base.keys().copied().collect();
+        got.sort();
+        assert_eq!(got, vec![inside, edge, ring], "its own base tiles and its ring, not its z9 nor past the ring");
+        let flat = Flat(png(100.0));
+        let rep = make(&mut out, t, &base, None, Some(&fine), &flat, &|_, _, _| {}).unwrap();
+        assert_eq!((rep.base_tiles, rep.with_data, rep.tiles, rep.packs), (2, 2, 8, 2), "the ring's tiles not made");
+        assert!(out.get(&pack_logical(ring.1 >> 2, ring.2 >> 2)).is_none());
+        let pack = out.path(out.get(&pack_logical(edge.1 >> 2, edge.2 >> 2)).unwrap());
+        let f = store::range::PlainFile::open(&pack).unwrap();
+        let idx = store::pack::PackIndex::read_from(&f).unwrap();
+        assert_eq!(idx.meta["encoding"], ENCODING, "the fine packs say what their tiles are");
+        let e = idx.find(13, edge.1 * 2 + 1, edge.2 * 2).unwrap();
+        let v = roadcore::grid::decode_terrain(&idx.read_blob(&f, &e).unwrap()).unwrap();
+        assert!(v.iter().all(|&h| (h - 100.0).abs() < 0.01), "the data's heights");
     }
 
     #[test]

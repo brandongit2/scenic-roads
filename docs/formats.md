@@ -39,8 +39,8 @@ index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
   tile. The terrain's tiles finer than z12 (where a dataset is finer than its base,
   pipeline::terrain_fine) are in fine packs, `layers/terrain/fine/10-<x>-<y>`: z13 and finer under
   one z10 tile, only where they have the finer data (a z6 tile's would be up to 130 GB). Their
-  tiles are lossless JPEG XL codestreams of Terrarium RGB (`ff 0a`), heights rounded to 1 cm,
-  served as `image/jxl`; every other terrain tile is PNG. The catalog names them under the layer's
+  tiles are lossless JPEG XL codestreams of Terrarium RGB (`ff 0a`; the pack's encoding
+  `terrarium-jxl`), heights rounded to 1 cm, served as `image/jxl`; every other terrain tile is PNG. The catalog names them under the layer's
   `fine`, the finest zoom of each under `fine_zoom` (the datasets' zoom there,
   `terrain_fine::zoom_of`), and its terrain's `maxzoom` is the finest of those. The app's meta
   passes `fine_zoom` on as `terrainAreas` (`{"zoom": 10, "tiles": {"x/y": z}}`), and the map takes

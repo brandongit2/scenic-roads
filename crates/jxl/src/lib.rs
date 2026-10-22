@@ -1,5 +1,6 @@
 //! Lossless JPEG XL encoding of 8-bit RGB images through libjxl (jpegxl-src's copy, built by
-//! CMake, which `mise install` provides; linked statically, so every Mac makes the same bytes).
+//! CMake, which `mise install` provides; linked statically). Every Mac makes the same bytes: the golden
+//! hashes of tests/encode.rs hold on the M1, M4 and M6 alike (#543), so no SIMD target is pinned.
 //! For the fine terrain's Terrarium tiles (pipeline::terrain_fine), which Chrome and Safari decode
 //! natively with every value exact.
 
@@ -15,6 +16,14 @@ extern "C" {
         len: *mut usize,
     ) -> c_int;
     fn free(p: *mut c_void);
+    fn JxlEncoderVersion() -> u32;
+}
+
+/// The linked libjxl's version, as it says it ("0.12.0"): what a key naming the encoder's bytes names.
+pub fn version() -> String {
+    // SAFETY: no arguments, no state.
+    let v = unsafe { JxlEncoderVersion() };
+    format!("{}.{}.{}", v / 1_000_000, v / 1000 % 1000, v % 1000)
 }
 
 /// RGB image `rgb` (`w` × `h`, 3 bytes a pixel, row by row) as a lossless JPEG XL codestream, at

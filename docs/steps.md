@@ -110,9 +110,12 @@ What each step does, in detail. The steps as one table (names, chains, the check
     resolution and brought to EGM2008 as the roads' are (inputs.md §6.8, `heights`: so fine tiles,
     the base, the lakes' levels and the road profiles agree), blended at their edges as the roads'
     sampler does, the stored base tile (from its z6 tile's hi pack) last so the data blends into it
-    over four base pixels where it ends; the base's water kept by each pixel's share of the base
+    over four base pixels where it ends; where only the base gives a height, the base read across its
+    tiles' edges (each padded by a pixel of its neighbours, a ring of one tile read past the z8 tile,
+    as MapLibre draws the base: no seam at a base tile's edge); the base's water kept by each pixel's share of the base
     tile's sea and lakes; below zero to 0; rounded to 1 cm; Terrarium RGB as lossless JPEG XL
-    (libjxl, effort 7: Chrome and Safari decode it natively, every value exact). Only base tiles
+    (libjxl, effort 7: Chrome and Safari decode it natively, every value exact; the same bytes on
+    every Mac, crates/jxl's golden hashes). Only base tiles
     whose datasets have data in a 128 × 128 grid of them make any, and only tiles with some of that
     data are stored, in fine packs by z10 tile (formats.md, Pack); elsewhere the server makes finer
     tiles from their ancestors. A run drops its z8 tile's packs it no longer makes, all of them where
@@ -488,7 +491,7 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   its water (`agent::build::water_key`), and "no hi tiles" for a z6 tile making none
   (`piece_key_made`). A "none" z6 tile is keyed on the version and the tile (`none_piece_key`).
 - **terrain-fine (a z8 tile):** `terrain_fine::versions()` (its version, 1 cm, the JXL effort,
-  `FINER`, `MAX_Z`, the presence grid, the pack zoom), the tile, each fine dataset meeting it and
+  the linked libjxl's version, `FINER`, `MAX_Z`, the presence grid, the pack zoom), the tile, each fine dataset meeting it and
   finer there by its line (`id keyed`, and its heights' conversion to EGM2008) and the zoom it
   reaches there (so a dataset's measured resolution moving moves the key), its z6 tile's hi pack by
   content and its terrain key. A z8 tile with fine packs and no dataset fine there: "none".
