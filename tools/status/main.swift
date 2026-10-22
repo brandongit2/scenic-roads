@@ -908,8 +908,7 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
     return out
 }
 
-/// This Mac's build caches in a line: what a clear would free, and the last trim after the build
-/// and clear.
+/// This Mac's build caches in a line: what a clear would free, and the last clear.
 func cachesLine(_ c: Caches) -> String {
     var t = "Build caches here: \(c.clearable.map(gb) ?? "not counted yet")"
     if let f = c.cleared, f.why_not == nil { t += " · cleared \(clock(f.at)), \(gb(f.bytes)) freed" }

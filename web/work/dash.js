@@ -840,7 +840,7 @@ function eventText(m, e, k = 1) {
     case "worker": return [`${who}${e.note && e.note !== who ? ` (${e.note})` : ""} joined`, "run"];
     case "agent": return [`${who}'s agent started (${e.note})`, "run"];
     case "conditions": return [`${who}: ${e.note}`, /doesn't answer|battery|away/.test(e.note) ? "warn" : ""];
-    // (A Mac's build caches trimmed after the build, or cleared on its owner's ask: what was freed.)
+    // (A Mac's build caches cleared on its owner's ask (older history: trimmed after the build): what was freed.)
     case "caches": return [`${who} ${e.note}`, /^didn't/.test(e.note || "") ? "warn" : ""];
     case "term": return termText(e);
     default: return [`${e.kind} ${who} ${what}`, ""];
