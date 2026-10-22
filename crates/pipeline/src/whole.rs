@@ -138,8 +138,8 @@ fn aside_with(
         r => return r.map(|()| None),
     }
     let aside = aside_name(to);
-    raw(to, &aside).inspect_err(note_if_busy)?;
-    let r = over(from, to).inspect_err(note_if_busy);
+    raw(to, &aside).inspect_err(|e| note_if_busy(e, to))?;
+    let r = over(from, to).inspect_err(|e| note_if_busy(e, to));
     let mut a = asides.lock().unwrap();
     a.sweep(to, &aside, remove, now);
     eprintln!(
@@ -218,7 +218,7 @@ fn retried_with<T>(
         match op(path) {
             Err(e) if e.kind() == std::io::ErrorKind::ResourceBusy && busy < BUSY_TRIES => busy += 1,
             Err(e) if e.kind() == std::io::ErrorKind::ResourceBusy => {
-                note_stuck();
+                note_stuck(path);
                 return Err(e);
             }
             Err(e) if asides && e.kind() == std::io::ErrorKind::NotFound => {
@@ -235,28 +235,66 @@ fn retried_with<T>(
     }
 }
 
-/// When this process's NAS calls last stayed busy past these retries (a read or open busy for
-/// `BUSY_TRIES`, or a rename aside or into place busy): the newest `STUCK_KEPT`. The agent's
-/// self-heal (crate::agent::heal) reads them.
-static STUCK: std::sync::Mutex<Vec<std::time::Instant>> = std::sync::Mutex::new(Vec::new());
-const STUCK_KEPT: usize = 16;
-
-fn note_stuck() {
-    let mut s = STUCK.lock().unwrap();
-    s.push(std::time::Instant::now());
-    let over = s.len().saturating_sub(STUCK_KEPT);
-    s.drain(..over);
+/// A NAS call that stayed busy past these retries (a read or open busy for `BUSY_TRIES`, or a
+/// rename aside or into place busy): when (Unix seconds) and on which file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stuck {
+    pub at: u64,
+    pub path: String,
 }
 
-fn note_if_busy(e: &std::io::Error) {
+/// This process's stuck calls, the newest `STUCK_KEPT`. The agent's self-heal (crate::agent::heal)
+/// reads its own here and its jobs' in the file `STUCK_ENV` names (`take_reported`).
+static STUCK: std::sync::Mutex<Vec<Stuck>> = std::sync::Mutex::new(Vec::new());
+const STUCK_KEPT: usize = 16;
+/// Set by the agent for its jobs: a file each of their stuck calls is appended to, a line
+/// `<unix seconds>\t<path>`.
+pub const STUCK_ENV: &str = "SCENIC_NAS_STUCK";
+
+fn note_stuck(path: &Path) {
+    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let s = Stuck { at, path: path.display().to_string() };
+    eprintln!("whole: {} stays busy past the retries (a stale SMB handle?)", s.path);
+    static LOG: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    if let Some(log) = LOG.get_or_init(|| std::env::var_os(STUCK_ENV).map(PathBuf::from)) {
+        // (One short line in one append: whole even with other jobs appending.)
+        let line = format!("{}\t{}\n", s.at, s.path.replace(['\n', '\t'], " "));
+        if let Ok(mut f) = std::fs::File::options().create(true).append(true).open(log) {
+            let _ = f.write_all(line.as_bytes());
+        }
+    }
+    let mut v = STUCK.lock().unwrap();
+    v.push(s);
+    let over = v.len().saturating_sub(STUCK_KEPT);
+    v.drain(..over);
+}
+
+fn note_if_busy(e: &std::io::Error, path: &Path) {
     if e.kind() == std::io::ErrorKind::ResourceBusy {
-        note_stuck();
+        note_stuck(path);
     }
 }
 
-/// When calls last stayed busy past the retries (oldest first; at most 16).
-pub fn stuck_times() -> Vec<std::time::Instant> {
+/// This process's stuck calls (oldest first; at most 16).
+pub fn stuck() -> Vec<Stuck> {
     STUCK.lock().unwrap().clone()
+}
+
+/// The stuck calls jobs appended to `log` since the last take: the file renamed away (writers
+/// append to a new one meanwhile), read and removed.
+pub fn take_reported(log: &Path) -> Vec<Stuck> {
+    let taken = log.with_extension("taken");
+    if std::fs::rename(log, &taken).is_err() {
+        return Vec::new();
+    }
+    let text = std::fs::read_to_string(&taken).unwrap_or_default();
+    std::fs::remove_file(&taken).ok();
+    text.lines()
+        .filter_map(|l| {
+            let (at, path) = l.split_once('\t')?;
+            Some(Stuck { at: at.parse().ok()?, path: path.to_string() })
+        })
+        .collect()
 }
 
 /// The newest (by modification time, which a rename keeps: the last written) of `path`'s asides in

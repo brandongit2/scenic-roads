@@ -1349,8 +1349,11 @@ pub struct Agent {
     pub(crate) mac: cond::Mac,
     sleep: SleepWatch,
     last_mount_try: Option<Instant>,
-    /// When the agent last remounted the share for stale handles (crate::agent::heal).
-    last_heal: Option<Instant>,
+    /// The self-heal for stale SMB handles: stuck NAS calls seen, its drain and remounts
+    /// (crate::agent::heal).
+    heal: heal::Heal,
+    /// This process's stuck calls already taken in (`whole::stuck` keeps the newest 16).
+    heal_seen: Vec<crate::whole::Stuck>,
     /// The heartbeat last written to the NAS (without its time) and when: written again only when it
     /// changes or every five minutes, so an idle NAS can rest.
     last_beat: Option<(Vec<u8>, Instant)>,
@@ -1781,7 +1784,8 @@ impl Agent {
             mac: cond::Mac::Real,
             sleep: SleepWatch::default(),
             last_mount_try: None,
-            last_heal: None,
+            heal: Default::default(),
+            heal_seen: Vec::new(),
             last_beat: None,
             progress: None,
             reach: Default::default(),
@@ -3784,7 +3788,51 @@ impl Agent {
 
     /// Why nothing new starts here: this Mac is paused alone.
     fn hold_why(&self) -> Option<String> {
-        self.hold.held.as_ref().map(|h| h.why())
+        self.hold.held.as_ref().map(|h| h.why()).or_else(|| self.heal.drain_why())
+    }
+
+    /// Where this Mac's jobs report their NAS calls stuck busy (crate::whole::STUCK_ENV).
+    fn stuck_log(&self) -> PathBuf {
+        self.o.home.join("nas-stuck.log")
+    }
+
+    /// Whether none of the agent's own threads that use the NAS is under way: the caches' trims,
+    /// clears and freeing, the answers' seeding, the forecast, the coordinator's unpublishing.
+    fn nas_threads_idle(&self) -> bool {
+        let busy = |h: Option<bool>| h.unwrap_or(false);
+        self.caches_task.is_none()
+            && !busy(self.answers_seed.as_ref().map(|h| !h.is_finished()))
+            && !busy(self.forecasting.borrow().as_ref().map(|h| !h.is_finished()))
+            && !busy(self.unpublishing.as_ref().map(|h| !h.is_finished()))
+    }
+
+    /// The self-heal's round (crate::agent::heal): this process's and its jobs' stuck calls taken
+    /// in; once drained, the share unmounted under the pool's lock (no tick mid-write) and mounted
+    /// again by this loop's `root` at once.
+    fn heal_step(&mut self) {
+        let mut new = crate::whole::stuck();
+        new.retain(|s| !self.heal_seen.contains(s));
+        self.heal_seen = crate::whole::stuck();
+        new.extend(crate::whole::take_reported(&self.stuck_log()));
+        let idle = self.idle() && self.nas_threads_idle();
+        if self.heal.tick(new, now_s(), idle) != heal::Act::Remount {
+            return;
+        }
+        // (The pool's lock held: a tick never writes as the share goes. Taken by another thread
+        // now: the next round.)
+        let guard = match self.try_pooled() {
+            Some(None) => return,
+            g => g.flatten(),
+        };
+        if let Some(m) = store::nas::find_mount(store::nas::HOST, store::nas::SHARE) {
+            eprintln!("agent: drained; remounting {} to end this Mac's SMB session", m.point.display());
+            if let Err(e) = store::nas::unmount(&m.point, Duration::from_secs(30)) {
+                eprintln!("agent: {e:#}");
+            }
+        }
+        drop(guard);
+        self.last_mount_try = None;
+        self.heal.remounted(now_s());
     }
 
     /// The hold ask's file's time, if one waits.
@@ -3958,20 +4006,9 @@ impl Agent {
             }
         }
         // NAS calls staying busy past whole's retries (a stale handle of this Mac's session):
-        // remounted while nothing runs, at most every half hour (crate::agent::heal).
-        if self.o.root.is_none() && heal::due(&crate::whole::stuck_times(), self.last_heal, self.idle(), Instant::now())
-        {
-            if let Some(m) = store::nas::find_mount(store::nas::HOST, store::nas::SHARE) {
-                eprintln!(
-                    "agent: NAS calls stay busy (stale SMB handles); remounting {} to end this Mac's session",
-                    m.point.display()
-                );
-                if let Err(e) = store::nas::unmount(&m.point, Duration::from_secs(30)) {
-                    eprintln!("agent: {e:#}");
-                }
-                self.last_mount_try = None;
-            }
-            self.last_heal = Some(Instant::now());
+        // new work drained, then the share remounted (crate::agent::heal).
+        if self.o.root.is_none() {
+            self.heal_step();
         }
         let root = self.root();
         if root.is_some() {
@@ -4017,6 +4054,9 @@ impl Agent {
         self.note_conditions(&c, slept);
         self.pool_switch(root.as_deref());
         let mut waiting: Vec<Waiting> = Vec::new();
+        if let Some(why) = self.heal.warning() {
+            waiting.push(Waiting { step: None, what: "the NAS".into(), why });
+        }
         let mut ended = false;
         self.begin_round();
         // The build's pause: this Mac's ask passed on; the lead's coordinator's.
@@ -6319,6 +6359,8 @@ impl Agent {
         let waiting = self.waiting_path(k);
         std::fs::remove_file(&waiting).ok();
         env.push((crate::offload::WAITING_ENV.into(), waiting.to_string_lossy().into_owned()));
+        // Where it reports NAS calls stuck busy (crate::agent::heal).
+        env.push((crate::whole::STUCK_ENV.into(), self.stuck_log().to_string_lossy().into_owned()));
         // Its connections out through the proxy (Wikimedia's metered by the pool's budget), this
         // Mac's own direct, and no other way out (the sandbox).
         let sandbox = match &self.proxy {

@@ -1,6 +1,7 @@
 //! A writer killed mid-write (SIGKILL) never leaves a torn file: a child process (this test binary
 //! again, `WHOLE_KILL_DIR` set) runs `whole::write` in a loop while this one reads the file; each
-//! read is a whole version, and after the kill the file still is.
+//! read is a whole version, and after the kill the file still is. On this Mac's disk, not over SMB:
+//! it checks the write's own steps (a temporary name, flushed, checked, renamed), not the NAS.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -26,6 +27,10 @@ fn writer() {
     let path = Path::new(&dir).join("f.json");
     for i in 0.. {
         pipeline::whole::write(&path, &version(i)).unwrap();
+        if i == 0 {
+            // (The parent's kill clock starts once this one is writing.)
+            std::fs::write(Path::new(&dir).join("started"), b"").unwrap();
+        }
     }
 }
 
@@ -44,6 +49,14 @@ fn killed_writer_leaves_whole_files() {
                 .stderr(std::process::Stdio::null()),
         )
         .unwrap();
+        let started = dir.path().join("started");
+        let wait = Instant::now() + Duration::from_secs(60);
+        while !started.exists() {
+            assert!(Instant::now() < wait, "round {round}: the writer never started");
+            let b = pipeline::whole::read(&path).unwrap();
+            assert!(whole(&b), "round {round}: a torn read ({} bytes)", b.len());
+        }
+        std::fs::remove_file(&started).unwrap();
         let until = Instant::now() + Duration::from_millis(300 + 97 * round);
         let mut reads = 0;
         while Instant::now() < until {
