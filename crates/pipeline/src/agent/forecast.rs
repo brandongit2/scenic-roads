@@ -1417,7 +1417,16 @@ const KEY: &str = "forecast";
 /// cut then hid the finish of an input no bigger than usual. A run at live scale computes 1-4 s.
 pub const BUDGET: Duration = Duration::from_secs(15);
 
+/// The calling thread's CPU time so far (in the browser's build, which has no such clock, the
+/// wall time since the first call: a page's forecast runs alone in its worker).
+#[cfg(target_family = "wasm")]
+fn thread_cpu() -> Duration {
+    static T0: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    T0.get_or_init(Instant::now).elapsed()
+}
+
 /// The calling thread's CPU time so far.
+#[cfg(not(target_family = "wasm"))]
 fn thread_cpu() -> Duration {
     let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     // SAFETY: writes only `t`.
@@ -3318,7 +3327,7 @@ mod tests {
         eprintln!("22 Oct's live scale: {} ms", t.elapsed().as_millis());
         assert!(!f.partial && f.done_at.is_some(), "{:?}", f.why);
         let cpu0 = thread_cpu();
-        std::thread::sleep(Duration::from_millis(300));
+        std::thread::sleep(Duration::from_millis(300)); // (sleep ok: a wait whose CPU time is measured)
         assert!(thread_cpu() - cpu0 < Duration::from_millis(50), "a wait is no CPU time");
     }
 
