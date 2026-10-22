@@ -170,11 +170,38 @@ pub fn takes_targets(step: &str) -> Option<bool> {
     STEPS.iter().find(|s| s.name == step).map(|s| s.pos > 0)
 }
 
+/// The step's matches, from a command line clap has checked (`args`: the program's name first);
+/// the process's own line read once.
+fn step_matches(args: &[String]) -> (String, clap::ArgMatches) {
+    static FIRST: std::sync::OnceLock<(Vec<String>, String, clap::ArgMatches)> = std::sync::OnceLock::new();
+    let read = |args: &[String]| {
+        let m = command().try_get_matches_from(args).expect("a command line checked in main");
+        let (step, sm) = m.subcommand().expect("a step");
+        (args.to_vec(), step.to_string(), sm.clone())
+    };
+    let (a, step, sm) = FIRST.get_or_init(|| read(args));
+    if a == args {
+        return (step.clone(), sm.clone());
+    }
+    let (_, step, sm) = read(args);
+    (step, sm)
+}
+
+/// A flag's values on a checked command line (`--pass`: its one; `--clear`: each; `--pass=d` too),
+/// none when it isn't given or the step doesn't take it.
+pub fn values(args: &[String], flag: &str) -> Vec<String> {
+    let (_, sm) = step_matches(args);
+    match sm.try_get_many::<String>(flag.trim_start_matches("--")) {
+        Ok(Some(v)) => v.cloned().collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// The step named and its arguments (not flags or their values), in order, from a command line
 /// clap has checked (`args`: the program's name first).
 pub fn targets(args: &[String]) -> (String, Vec<String>) {
-    let m = command().try_get_matches_from(args).expect("a command line checked in main");
-    let (step, sm) = m.subcommand().expect("a step");
+    let (step, sm) = step_matches(args);
+    let step = step.as_str();
     let ids: Vec<String> = command()
         .find_subcommand(step)
         .map(|c| c.get_positionals().map(|a| a.get_id().to_string()).collect())

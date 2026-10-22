@@ -109,4 +109,14 @@ mod tests {
         assert_eq!(t("scenic-build regions-fixture --root /r b4 -7,46,20").1, ["b4", "-7,46,20"]);
         assert!(t("scenic-build verify").1.is_empty());
     }
+
+    #[test]
+    fn a_steps_flags() {
+        let v = |l: &str, f: &str| build::values(&line(l), f);
+        assert_eq!(v("scenic-build unit --pass=d --root /r", "--pass"), ["d"]);
+        assert_eq!(v("scenic-build --root /r unit", "--root"), ["/r"]);
+        assert_eq!(v("scenic-build osm-pass --planet p --date d --clear a --clear=b", "--clear"), ["a", "b"]);
+        assert!(v("scenic-build unit --pass d", "--cache").is_empty(), "a flag the step doesn't take");
+        assert!(v("scenic-build verify", "--scratch").is_empty());
+    }
 }

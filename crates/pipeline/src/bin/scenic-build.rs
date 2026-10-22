@@ -181,8 +181,9 @@ impl Parts {
     }
 }
 
+/// A flag's value (`--pass`), as clap read the line.
 fn opt(args: &[String], name: &str) -> Option<String> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned())
+    pipeline::cli::build::values(args, name).into_iter().next()
 }
 
 /// The step's arguments (not flags or their values), as clap read the line.
@@ -439,7 +440,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             pipeline::osmpass::check_tools(&extract, &planetiler)?;
             // Room first: caches the pass makes worthless or can refill (the pack cache), through
             // their accessor, which passes over every file another job holds (store::cachefile).
-            for dir in args.windows(2).filter(|w| w[0] == "--clear").map(|w| PathBuf::from(&w[1])) {
+            for dir in pipeline::cli::build::values(&args, "--clear").into_iter().map(PathBuf::from) {
                 if dir.exists() {
                     let t = store::cachefile::remove_tree(&dir);
                     eprintln!(
