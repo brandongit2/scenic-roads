@@ -194,18 +194,22 @@ mod tests {
         assert_eq!(most.load(Ordering::SeqCst), 1);
         assert_eq!(pace.active(), 0);
         // Raised while a task waits: it goes on at the new count, beside the one holding.
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         std::thread::scope(|s| {
             let hold = s.spawn(|| {
                 let _p = pace.permit();
-                std::thread::sleep(Duration::from_millis(3500));
+                held_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
             });
-            std::thread::sleep(Duration::from_millis(200));
+            held_rx.recv().unwrap();
             std::fs::write(&f, "3").unwrap();
             let seen = s.spawn(|| {
                 let _p = pace.permit();
                 pace.active()
             });
             assert_eq!(seen.join().unwrap(), 2);
+            release_tx.send(()).unwrap();
             hold.join().unwrap();
         });
     }

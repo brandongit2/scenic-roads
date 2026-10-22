@@ -609,6 +609,11 @@ fn far_over(spare: u64) -> u64 {
     spare + (spare / 2).max(4096)
 }
 
+/// Whether `spec` is an input check (the `inputs` step's job).
+fn is_input_check(spec: &JobSpec) -> bool {
+    step_of(&spec.id).as_deref() == Some("inputs")
+}
+
 /// This Mac's cores.
 fn mac_cores() -> u32 {
     std::thread::available_parallelism().map_or(4, |n| n.get() as u32)
@@ -6371,7 +6376,7 @@ impl Agent {
         // The owner's room target it keeps free past what it writes (the OSM pass, pass-sets).
         env.push(self.target_env(&spec));
         // An input check's threads, kept as cores free up (`tend_threads`; crate::inputs::pace).
-        if step_of(&spec.id).as_deref() == Some("inputs") {
+        if is_input_check(&spec) {
             let f = self.threads_path(k);
             std::fs::write(&f, threads.to_string()).with_context(|| format!("write {}", f.display()))?;
             env.push((crate::inputs::pace::THREADS_ENV.into(), f.to_string_lossy().into_owned()));
@@ -8444,8 +8449,7 @@ impl Agent {
     /// Mac's cores less those kept for its owner and those its other jobs were given, `MOST` at
     /// most. It takes more as they free up, and fewer when a job starts beside it.
     fn tend_threads(&self, k: usize, c: &Conditions) {
-        let Some(r) = self.slots[k].running.as_ref().filter(|r| step_of(&r.spec.id).as_deref() == Some("inputs"))
-        else {
+        let Some(r) = self.slots[k].running.as_ref().filter(|r| is_input_check(&r.spec)) else {
             return;
         };
         let cores = mac_cores() as usize;
