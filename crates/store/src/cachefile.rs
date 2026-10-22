@@ -149,6 +149,23 @@ pub fn release(path: &Path) {
     }
 }
 
+/// The attempts a step racing room-making gets: as many as 30 s allow, each after the 8th a
+/// millisecond or more later (to 50 ms). Counted spins alone ran out under load, while the deleter
+/// that took the folder or file each time sat descheduled mid-delete (an APFS folder being
+/// removed gives EINVAL until it's gone).
+fn tries() -> impl Iterator<Item = ()> {
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    (0u32..).map_while(move |n| {
+        if n >= 8 {
+            if std::time::Instant::now() >= end {
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(u64::from((n - 7).min(50))));
+        }
+        Some(())
+    })
+}
+
 /// EINVAL's number.
 fn libc_einval() -> i32 {
     #[cfg(unix)]
@@ -252,7 +269,7 @@ pub fn touch(path: &Path) {
 /// Holds the cache file at `path` (shared lock, until the process ends or `release_before`),
 /// filled first by `refill` when it isn't there (`create`); marked used. Its name, as given.
 pub fn hold(path: &Path, refill: &mut dyn FnMut(&Path) -> io::Result<()>) -> io::Result<PathBuf> {
-    for _ in 0..100 {
+    for _ in tries() {
         if let Some(f) = open_shared(path)? {
             keep(f, path)?;
             touch(path);
@@ -277,7 +294,7 @@ pub fn hold_untouched(path: &Path) -> io::Result<Option<PathBuf>> {
 }
 
 fn hold_there(path: &Path, mark_used: bool) -> io::Result<Option<PathBuf>> {
-    for _ in 0..100 {
+    for _ in tries() {
         match open_shared(path)? {
             Some(f) => {
                 keep(f, path)?;
@@ -297,7 +314,7 @@ fn hold_there(path: &Path, mark_used: bool) -> io::Result<Option<PathBuf>> {
 /// whole at once, as a raw tile); None when it isn't there.
 pub fn read(path: &Path) -> io::Result<Option<Vec<u8>>> {
     use std::io::Read;
-    for _ in 0..100 {
+    for _ in tries() {
         match open_shared(path)? {
             Some(mut f) => {
                 let mut b = Vec::new();
@@ -355,7 +372,7 @@ pub fn tmp_of(path: &Path) -> PathBuf {
 /// or as it goes on macOS, EINVAL).
 pub fn make_dir(d: &Path) -> io::Result<()> {
     let mut last = None;
-    for _ in 0..100 {
+    for _ in tries() {
         match std::fs::create_dir_all(d) {
             Ok(()) => return Ok(()),
             Err(_) if d.is_dir() => return Ok(()),
@@ -370,14 +387,23 @@ pub fn make_dir(d: &Path) -> io::Result<()> {
 /// folder is made (again, if room-making took it meanwhile). Named with `publish`, or deleted.
 pub fn scratch(path: &Path) -> io::Result<(PathBuf, File)> {
     let dir = path.parent().unwrap_or(Path::new("."));
-    for _ in 0..100 {
+    let mut last = String::new();
+    for _ in tries() {
         // (A folder room-making takes as it's made, empty: made again.)
-        make_dir(dir)?;
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            if !dir.is_dir() {
+                last = format!(" (make {}: {e})", dir.display());
+                continue;
+            }
+        }
         let tmp = tmp_of(path);
         let f = match File::options().read(true).write(true).create_new(true).open(&tmp) {
             Ok(f) => f,
             // (Its folder taken meanwhile: gone, or, as it goes, EINVAL on macOS.)
-            Err(e) if e.kind() == io::ErrorKind::NotFound || e.raw_os_error() == Some(libc_einval()) => continue,
+            Err(e) if e.kind() == io::ErrorKind::NotFound || e.raw_os_error() == Some(libc_einval()) => {
+                last = format!(" (make {}: {e})", tmp.display());
+                continue;
+            }
             Err(e) => return Err(with(e, "make", &tmp)),
         };
         #[cfg(unix)]
@@ -388,7 +414,7 @@ pub fn scratch(path: &Path) -> io::Result<(PathBuf, File)> {
         }
         return Ok((tmp, f));
     }
-    Err(io::Error::other(format!("{}: no temporary file could be kept beside it", path.display())))
+    Err(io::Error::other(format!("{}: no temporary file could be kept beside it{last}", path.display())))
 }
 
 /// Gives scratch file `tmp` (its open file `f`, from `scratch`) the name `path` if that's free

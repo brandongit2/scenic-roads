@@ -16313,8 +16313,15 @@ mod pool_tests {
         exited(pid);
         lead.step().unwrap();
         assert!(lead.slots[0].running.is_none() && lead.coord.is_none(), "its job ended, its coordinator stopped");
-        until(&mut m, |m| !m.coord.as_ref().unwrap().held("pack").contains("6/4/4"));
-        assert!(lead.owed.is_empty());
+        // (The old lead stepped too: a tell that timed out on a loaded Mac is owed and told again
+        // on its next loop, `tell_owed`.)
+        let end = Instant::now() + WATCHDOG;
+        while m.coord.as_ref().unwrap().held("pack").contains("6/4/4") || !lead.owed.is_empty() {
+            assert!(Instant::now() < end, "not told in {WATCHDOG:?}: owed {}", lead.owed.len());
+            std::thread::sleep(Duration::from_millis(250));
+            lead.step().unwrap();
+            m.step().unwrap();
+        }
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
         TEST_ABLE.with(|c| c.set(None));
