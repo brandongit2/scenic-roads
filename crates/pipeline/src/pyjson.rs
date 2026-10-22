@@ -361,11 +361,18 @@ impl Parser<'_> {
 /// `json.dumps(v, ensure_ascii=False, separators=(",", ":"))`.
 pub fn dumps(v: &Py) -> String {
     let mut s = String::new();
-    dump(v, &mut s);
+    dump(v, &mut s, (",", ":"));
     s
 }
 
-fn dump(v: &Py, out: &mut String) {
+/// `json.dumps(v, ensure_ascii=False)`: Python's default separators, ", " and ": ".
+pub fn dumps_spaced(v: &Py) -> String {
+    let mut s = String::new();
+    dump(v, &mut s, (", ", ": "));
+    s
+}
+
+fn dump(v: &Py, out: &mut String, sep: (&str, &str)) {
     match v {
         Py::Null => out.push_str("null"),
         Py::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -376,9 +383,9 @@ fn dump(v: &Py, out: &mut String) {
             out.push('[');
             for (k, x) in l.iter().enumerate() {
                 if k > 0 {
-                    out.push(',');
+                    out.push_str(sep.0);
                 }
-                dump(x, out);
+                dump(x, out, sep);
             }
             out.push(']');
         }
@@ -386,11 +393,11 @@ fn dump(v: &Py, out: &mut String) {
             out.push('{');
             for (k, (key, x)) in d.iter().enumerate() {
                 if k > 0 {
-                    out.push(',');
+                    out.push_str(sep.0);
                 }
                 dump_str(key, out);
-                out.push(':');
-                dump(x, out);
+                out.push_str(sep.1);
+                dump(x, out, sep);
             }
             out.push('}');
         }
@@ -442,5 +449,12 @@ mod tests {
     fn round_trips_as_python() {
         let src = "{ \"b\": 1, \"a\": [1.50, -0, 2E3, \"\\u00e9\\n\\ud83d\\ude00/\\u0001\"], \"b\": null }";
         assert_eq!(dumps(&loads(src).unwrap()), "{\"b\":null,\"a\":[1.5,0,2000.0,\"é\\n😀/\\u0001\"]}");
+    }
+
+    #[test]
+    fn spaced_as_python() {
+        let v = loads(r#"{"i":3,"a":[1,2.5,{"x":null}],"s":"é"}"#).unwrap();
+        assert_eq!(dumps_spaced(&v), r#"{"i": 3, "a": [1, 2.5, {"x": null}], "s": "é"}"#);
+        assert_eq!(dumps_spaced(&loads("[]").unwrap()), "[]");
     }
 }
