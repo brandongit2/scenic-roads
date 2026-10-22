@@ -412,12 +412,13 @@ pub fn clear_answered(home: &Path) {
 pub const TRIM_KEEPS_FREE: u64 = 150 << 30;
 
 /// The free space a trim after the build frees toward (bytes): the owner's room target `target` (0:
-/// none) and the jobs' reservations past it as `Agent::goal` says, else `TRIM_KEEPS_FREE`.
-pub fn trim_goal(goal: u64) -> u64 {
+/// none) and the jobs' reservations past it as `Agent::goal` says (`goal`), else `keeps`
+/// (`TRIM_KEEPS_FREE`).
+pub fn trim_goal(goal: u64, keeps: u64) -> u64 {
     if goal > 0 {
         goal
     } else {
-        TRIM_KEEPS_FREE
+        keeps
     }
 }
 
@@ -1702,7 +1703,7 @@ mod tests {
 
     #[test]
     fn a_trim_goal_is_the_owners_target_else_the_maps_reserve() {
-        assert_eq!((trim_goal(0), trim_goal(40 << 30)), (TRIM_KEEPS_FREE, 40 << 30));
+        assert_eq!((trim_goal(0, TRIM_KEEPS_FREE), trim_goal(40 << 30, TRIM_KEEPS_FREE)), (TRIM_KEEPS_FREE, 40 << 30));
     }
 
     #[test]

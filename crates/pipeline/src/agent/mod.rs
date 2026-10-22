@@ -1261,6 +1261,8 @@ pub struct Agent {
     /// jobs after it wait without making room again, until a job ends, the target changes or ten
     /// minutes pass.
     room_target: Option<room::Target>,
+    /// The free space a trim after the build keeps when no room target is set (room::trim_goal; a test's own).
+    trim_keeps: u64,
     /// The owner's in-use share (share::Share: the cores kept free of its jobs while they use the
     /// Mac), read each loop from the agent's folder.
     in_use_share: Option<share::Share>,
@@ -1745,6 +1747,7 @@ impl Agent {
             free_set: None,
             grace: DRAIN_GRACE,
             room_target: None,
+            trim_keeps: room::TRIM_KEEPS_FREE,
             in_use_share: None,
             build_memory: None,
             toward_tried: None,
@@ -5848,7 +5851,7 @@ impl Agent {
         }) {
             // (The lead keeps its canopy squares: every pass's areas read them again.)
             let (squares, helper) = (cache.join("chm10"), self.o.helper);
-            let keep = room::trim_goal(self.goal());
+            let keep = room::trim_goal(self.goal(), self.trim_keeps);
             self.caches_start(None, move || room::trim(&cache, &s, &|p| !helper && p.starts_with(&squares), keep));
         }
         // (One loop at a time, `--once`: waited for, so its heartbeat says what it did.)
@@ -13062,11 +13065,12 @@ mod tests {
         *a.forecast.borrow_mut() = Some(forecast_now(true));
         assert_eq!(a.tend_caches(Some(&root), false), None);
         assert!(copy(1).exists() && a.mem.trimmed.is_none());
-        // Home with room (400 GB free, the keep's 150): the caches stay, the trim done all the same.
+        // Home with room (the keep a byte): the caches stay, the trim done all the same.
+        a.trim_keeps = 1;
         assert_eq!(a.tend_caches(Some(&root), true), None);
         assert!(copy(1).exists() && a.mem.trimmed.as_ref().is_some_and(|f| f.bytes() == 0));
         // Short of it: the copies go, the canopy squares stay; said in the status's memory, once.
-        room::TEST_FREE.with(|c| c.set(Some(100 << 30)));
+        a.trim_keeps = u64::MAX;
         a.mem.trimmed = None;
         assert_eq!(a.tend_caches(Some(&root), true), None);
         assert!(!copy(1).exists() && c.join("chm10/a.tif").exists());
@@ -13336,9 +13340,9 @@ mod tests {
         a.heard = None;
         assert!(a.tend_caches(Some(&root), true).is_some_and(|w| w.starts_with("the lead runs a job (Ranking")));
         assert!(c.join("chm10/a.tif").exists());
-        // Fresh, and the build done, the disk short of the keep's 150 GB: every cheap cache goes,
+        // Fresh, and the build done, the disk short of the keep: every cheap cache goes,
         // the canopy squares too.
-        room::TEST_FREE.with(|c| c.set(Some(100 << 30)));
+        a.trim_keeps = u64::MAX;
         beat(now_s(), true, None);
         a.heard = None;
         assert_eq!(a.tend_caches(Some(&root), true), None);
