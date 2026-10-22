@@ -161,6 +161,7 @@ impl PooledFile {
     /// Opens `path` through the pool (open and fstat in one trip).
     pub fn open(pool: &Arc<IoPool>, path: &Path) -> Result<Self, IoError> {
         let (file, len) = pool.open_len(path)?;
+        crate::nasio::opened();
         Ok(Self { file, len, pool: pool.clone(), path: path.to_owned() })
     }
 
@@ -184,6 +185,7 @@ impl RangeRead for PooledFile {
         check_range(self.len, off, len)?;
         let b = self.pool.read_at(&self.file, off, len)?;
         count_read(len as u64);
+        crate::nasio::read(len as u64);
         Ok(b)
     }
 }
@@ -202,6 +204,9 @@ impl PlainFile {
         let file = File::open(path)?;
         let len = file.metadata()?.len();
         let local = network_fs(&file)?.is_none();
+        if !local {
+            crate::nasio::opened();
+        }
         Ok(Self { file, len, local })
     }
 }
@@ -220,6 +225,7 @@ impl RangeRead for PlainFile {
             count_local(len as u64);
         } else {
             count_read(len as u64);
+            crate::nasio::read(len as u64);
         }
         Ok(b)
     }

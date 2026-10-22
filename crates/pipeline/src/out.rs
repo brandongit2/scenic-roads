@@ -396,6 +396,9 @@ impl Out {
     fn landed(&mut self, l: Landed) -> String {
         let made = if l.sha.is_some() { l.size } else { 0 };
         crate::timings::count(made, 1);
+        if made > 0 {
+            store::nasio::wrote(made);
+        }
         if let Some(sha) = l.sha {
             self.pending.insert(l.name.clone(), sha);
         }
@@ -566,6 +569,7 @@ impl Out {
         crate::timings::count(if existed { 0 } else { bytes.len() as u64 }, 1);
         if !existed {
             crate::costin::wrote(bytes.len() as u64);
+            store::nasio::wrote(bytes.len() as u64);
         }
         self.sizes.insert(name.clone(), bytes.len() as u64);
         if !existed {

@@ -74,6 +74,10 @@ pub fn wrote(bytes: u64) {
 /// `deletes` files deleted, for its weight beside its bytes and creates (crate::budget::nas). A
 /// walk that only lists, stats and removes (GC's) reads and writes next to nothing.
 pub fn meta(listed: u64, stats: u64, deletes: u64) {
+    use store::nasio::Count;
+    store::nasio::add(Count::Listed, listed);
+    store::nasio::add(Count::Stats, stats);
+    store::nasio::add(Count::Deletes, deletes);
     let mut s = state();
     for (k, n) in [("listed", listed), ("stats", stats), ("deletes", deletes)] {
         if n > 0 {

@@ -986,7 +986,16 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   only while a build runs here (a job of this Mac's, or its coordinator's leases out): a listing
   of the project's folder on the records' readers, timed inside the reader (`nasread::probe`; a
   stat would come from macOS's SMB attribute cache; never two at once, one past 20 s dropped);
-  the status's `nas_ms` is its last within half a minute. Every Mac's port
+  the status's `nas_ms` is its last within half a minute. The jobs' NAS traffic every second
+  (task #527): each process of a job counts what it does on the NAS where it happens
+  (`store::nasio`: the store's readers, a build's `Out`, the metadata walks `costin::meta`
+  notes) into a file of its own, `<agent folder>/nascounts[-k]/<pid>`, eight u64s mapped shared
+  (no write call a count; on this Mac's disk, never the NAS); the agent sums each job's folder and
+  records the rates: `nas_read_mbs`, `nas_write_mbs` (MB/s), `nas_files_s` (files opened to
+  read), `nas_creates_s`, `nas_listed_s` (entries), `nas_stats_s`, `nas_deletes_s`. A job's first
+  second sets its baseline; a job given no folder (an older agent's) leaves the second
+  unmeasured. Not yet counted: the build's own copies to the NAS outside `Out` (scenic-build's
+  direct copies), and the agent's own NAS work. Every Mac's port
   answers `POST /work/live` with no key: `{range}` (seconds back from now, an hour by default,
   three days at most) or `{since}` (unix seconds: the points from then on, the last again as it
   may have grown), `series` to pick names; the answer `{host, now, step, from, series: {name:

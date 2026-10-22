@@ -10,6 +10,7 @@ pub mod iopool;
 pub mod mirror;
 pub mod naming;
 pub mod nas;
+pub mod nasio;
 pub mod pack;
 pub mod pieces;
 pub mod pmtiles;

@@ -13,6 +13,11 @@
 //!   owner's idleness as the agent's loop reads them (each round, ~20 s). The NAS's latency every 5 s (`NAS_EVERY`), while a build runs (`set_nas`):
 //!   a listing of the project's folder through the records' readers (crate::agent::nasread::probe;
 //!   a stat would be answered from the SMB client's cache), never two at once.
+//! - **The jobs' NAS traffic** every second (`NasRates`): each job's processes' counts summed from
+//!   their files (store::nasio; the agent's folder per slot), as rates over the second: bytes read
+//!   and written (MB/s), files opened and made, entries listed, files statted and deleted (a
+//!   second). A job first seen sets its baseline (its first second not counted); one whose agent
+//!   gave it no folder (from an older app) leaves the second unmeasured.
 //! - **A series missing** from an answer has no measure yet (or none in the window): readers say
 //!   so, never zero.
 
@@ -51,6 +56,9 @@ pub const DISK: &str = "disk_free_gb";
 pub const BATTERY: &str = "battery_pct";
 pub const AC: &str = "ac";
 pub const IDLE: &str = "idle_s";
+/// The jobs' NAS traffic (store::nasio::Count's order), per second.
+pub const NAS_TRAFFIC: [&str; 7] =
+    ["nas_read_mbs", "nas_files_s", "nas_write_mbs", "nas_creates_s", "nas_listed_s", "nas_stats_s", "nas_deletes_s"];
 
 /// A point: the samples in its time.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -313,9 +321,15 @@ pub fn spawn(store: Arc<Store>, home: PathBuf, guard: super::memguard::Sampler) 
         .name("live-sampler".into())
         .spawn(move || {
             let mut saved = std::time::Instant::now();
+            let mut nas = NasRates::default();
             loop {
                 let t = now_s();
                 sample(&s, &home, &guard, t);
+                if let Some(r) = nas.rates(&guard.nas_counts(), t) {
+                    for (name, v) in NAS_TRAFFIC.iter().zip(r) {
+                        s.record(name, t, v);
+                    }
+                }
                 if saved.elapsed() >= SAVE_EVERY {
                     s.save();
                     saved = std::time::Instant::now();
@@ -360,6 +374,41 @@ fn sample(s: &Store, home: &Path, guard: &super::memguard::Sampler, t: u64) {
     }
     if t % 10 == 0 {
         put(DISK, super::room::disk_free(home).ok().map(|b| b as f64 / (1u64 << 30) as f64));
+    }
+}
+
+/// The jobs' NAS counts as last read, for their rates (module doc).
+#[derive(Default)]
+struct NasRates {
+    /// Per job (process group): its counts and when they were read (unix s).
+    last: BTreeMap<i32, (store::nasio::Counts, u64)>,
+}
+
+impl NasRates {
+    /// The jobs' traffic a second at `t` (`NAS_TRAFFIC`'s order; MB for bytes), from each job's
+    /// (process group, counts folder): zero with no jobs; None while one has no folder.
+    fn rates(&mut self, jobs: &[(i32, PathBuf)], t: u64) -> Option<[f64; 7]> {
+        let mut out = [0.0; 7];
+        let mut seen = BTreeMap::new();
+        let mut whole = true;
+        for (pgid, dir) in jobs {
+            let Some(c) = store::nasio::sum_dir(dir) else {
+                whole = false;
+                continue;
+            };
+            if let Some((was, at)) = self.last.get(pgid) {
+                let dt = t.saturating_sub(*at).max(1) as f64;
+                for (i, o) in out.iter_mut().enumerate() {
+                    *o += c[i].saturating_sub(was[i]) as f64 / dt;
+                }
+            }
+            seen.insert(*pgid, (c, t));
+        }
+        self.last = seen;
+        for i in [0, 2] {
+            out[i] /= (1u64 << 20) as f64;
+        }
+        whole.then_some(out)
     }
 }
 
@@ -440,6 +489,31 @@ mod tests {
         std::fs::write(&f, b"nonsense").unwrap();
         assert_eq!(Store::new(Some(f), "m1").answer(&ask, t0 + 99)["series"], serde_json::json!({}));
         assert!(decode(&encode(&BTreeMap::new())).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_jobs_nas_traffic_as_rates() {
+        let d = tempfile::tempdir().unwrap();
+        let (a, b) = (d.path().join("a"), d.path().join("b"));
+        std::fs::create_dir(&a).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        let put = |dir: &Path, pid: &str, c: [u64; 2]| {
+            let mut v = vec![0u8; store::nasio::SLOTS * 8];
+            v[..8].copy_from_slice(&c[0].to_le_bytes());
+            v[24..32].copy_from_slice(&c[1].to_le_bytes());
+            std::fs::write(dir.join(pid), v).unwrap();
+        };
+        let mut r = NasRates::default();
+        assert_eq!(r.rates(&[], 10), Some([0.0; 7]));
+        put(&a, "1", [4 << 20, 1]);
+        // (First seen: its baseline.)
+        assert_eq!(r.rates(&[(7, a.clone())], 10), Some([0.0; 7]));
+        put(&a, "2", [2 << 20, 3]);
+        put(&b, "3", [1 << 20, 0]);
+        let x = r.rates(&[(7, a.clone()), (8, b.clone())], 12).unwrap();
+        assert_eq!((x[0], x[3]), (1.0, 1.5));
+        // (A job given no folder: the second unmeasured.)
+        assert_eq!(r.rates(&[(7, a), (9, d.path().join("none"))], 13), None);
     }
 
     #[test]

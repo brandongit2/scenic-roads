@@ -3120,6 +3120,12 @@ impl Agent {
         self.o.home.join(format!("written{}", slot_suffix(k)))
     }
 
+    /// The folder slot `k`'s job's processes count their NAS traffic in (store::nasio::ENV), on
+    /// this Mac's disk, for the live store (crate::agent::live).
+    fn nas_counts_path(&self, k: usize) -> PathBuf {
+        self.o.home.join(format!("nascounts{}", slot_suffix(k)))
+    }
+
     /// Where slot `k`'s job keeps the file that says it waits on a worker (crate::offload's
     /// WAITING_ENV), while it does.
     fn waiting_path(&self, k: usize) -> PathBuf {
@@ -3741,6 +3747,7 @@ impl Agent {
                 targets,
                 own_key,
                 written: self.written_path(k),
+                nas_counts: self.nas_counts_path(k),
                 scratch,
                 ..Default::default()
             },
@@ -6387,6 +6394,11 @@ impl Agent {
         let written = self.written_path(k);
         std::fs::remove_file(&written).ok();
         env.push((store::cachefile::WRITTEN_ENV.into(), written.to_string_lossy().into_owned()));
+        // Where its processes count their NAS traffic, afresh (store::nasio).
+        let nas_counts = self.nas_counts_path(k);
+        std::fs::remove_dir_all(&nas_counts).ok();
+        std::fs::create_dir_all(&nas_counts).ok();
+        env.push((store::nasio::ENV.into(), nas_counts.to_string_lossy().into_owned()));
         // The owner's room target it keeps free past what it writes (the OSM pass, pass-sets).
         env.push(self.target_env(&spec));
         // An input check's threads, kept as cores free up (`tend_threads`; crate::inputs::pace).

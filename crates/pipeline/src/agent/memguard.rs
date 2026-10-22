@@ -222,6 +222,8 @@ pub struct Watch {
     /// `WRITTEN_ENV`), and its scratch folder (its top looked at every `DISK_EVERY`).
     pub written: PathBuf,
     pub scratch: Option<PathBuf>,
+    /// The folder its processes count their NAS traffic in (store::nasio::ENV), for the live store.
+    pub nas_counts: PathBuf,
     /// The disk it takes now, by those counts (bytes): what its accessors wrote, and the files at
     /// the top of its scratch folder as last looked at.
     pub disk_now: u64,
@@ -555,6 +557,13 @@ impl Sampler {
         let ws: Vec<&Watch> = g.watches.iter().flatten().collect();
         let held: Vec<u64> = ws.iter().filter_map(|w| w.held).collect();
         (ws.len(), (!held.is_empty()).then(|| held.iter().sum()))
+    }
+
+    /// The jobs watched now: each one's process group and the folder its NAS counts are in (the live
+    /// store's NAS traffic, crate::agent::live).
+    pub fn nas_counts(&self) -> Vec<(i32, PathBuf)> {
+        let Ok(g) = self.inner.lock() else { return Vec::new() };
+        g.watches.iter().flatten().map(|w| (w.pgid, w.nas_counts.clone())).collect()
     }
 
     /// What slot `k`'s job holds now (MB), as last sampled.
