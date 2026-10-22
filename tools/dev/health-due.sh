@@ -9,8 +9,8 @@ input=$(cat)
 [[ $input == *'"agent_id"'* ]] && exit 0
 now=$(date +%s)
 last=$(cat $repo/.claude/health-stamp 2>/dev/null || echo 0)
-upd=$(sqlite3 -readonly $repo/tools/taskboard/taskboard.db "select json_extract(v,'$.updated') from meta where k='status'" 2>/dev/null)
-[[ -z $upd ]] && upd=$(sqlite3 -readonly $repo/tools/taskboard/taskboard.db "select json_extract(value,'$.updated') from meta where key='status'" 2>/dev/null)
+source ${0:A:h}/board.sh
+upd=$(curl -s --max-time 5 $BOARD/api/c/meta/status 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["updated"])' 2>/dev/null)
 board=$(date -j -u -f '%Y-%m-%dT%H:%M:%S' "${upd%%.*}" +%s 2>/dev/null || echo 0)
 msg=
 (( now - last >= 1200 )) && msg+="HEALTH CHECK OVERDUE (last $(( (now - last) / 60 )) min ago): run tools/dev/health.sh now, act on what it flags, check every running agent. "

@@ -7,7 +7,7 @@
 #   cherry-picks) loses its target/. The whole worktree goes (`git worktree remove`, branch kept)
 #   only when it is on a branch, has nothing uncommitted and no ignored file besides target/ and
 #   data/ (`git status --porcelain --ignored`), and Claude Code's lock on it names a pid that is gone.
-# - A worktree whose "Task #N" commits are all done on the board (localhost:8077), with no `+` in
+# - A worktree whose "Task #N" commits are all done on the board ($BOARD, tools/dev/board.sh), with no `+` in
 #   `git cherry`, loses only its target/.
 # - Any worktree's target/ untouched for 2 days goes.
 # - data/ is never deleted on its own; it goes only with its whole worktree.
@@ -25,7 +25,8 @@ skip() { [[ -n $dry ]] && print "keep ${wt:t}: $*"; }
 busy=$(for p in $(pgrep -x cargo; pgrep -x rustc); do lsof -a -d cwd -p $p -Fn 2>/dev/null | sed -n 's/^n//p'; done | sort -u)
 keep=$(cat $repo/.claude/sweep-keep 2>/dev/null)
 locks=$(git worktree list --porcelain)
-done_tasks=$(curl -s --max-time 5 localhost:8077/api/c/items 2>/dev/null | python3 -c '
+source ${0:A:h}/board.sh
+done_tasks=$(curl -s --max-time 5 $BOARD/api/c/items 2>/dev/null | python3 -c '
 import json, sys
 for i in json.load(sys.stdin).get("docs", []):
     d = i.get("data") or {}

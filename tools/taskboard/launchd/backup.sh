@@ -6,11 +6,13 @@ dest=/Volumes/personal/projects/scenic-roads/state/taskboard
 [ -d /Volumes/personal/projects ] || { echo "$(date -u +%FT%TZ) taskboard backup: NAS not mounted" >&2; exit 1; }
 mkdir -p "$dest"
 day=$(date +%F)
-# .backup to a local file, then one copy: the NAS takes few small writes well (docs/macs.md).
+# .backup to a local file, checked, then one copy: the NAS takes few small writes well (docs/macs.md).
 tmp=$(mktemp -t taskboard)
+trap 'rm -f "$tmp" "$dest/$day.db.part"' EXIT
 /usr/bin/sqlite3 "$board/taskboard.db" ".backup '$tmp'"
-cp "$tmp" "$dest/$day.db.part"
+ok=$(/usr/bin/sqlite3 "$tmp" "PRAGMA quick_check")
+[ "$ok" = ok ] || { echo "$(date -u +%FT%TZ) taskboard backup: quick_check: $ok" >&2; exit 1; }
+cp -X "$tmp" "$dest/$day.db.part"   # -X: the NAS refuses macOS's provenance xattrs (as publish.sh)
 mv "$dest/$day.db.part" "$dest/$day.db"
-rm -f "$tmp"
 ls -1 "$dest"/*.db | sort -r | tail -n +15 | while read -r old; do rm -f "$old"; done
 echo "$(date -u +%FT%TZ) taskboard backup: $dest/$day.db"

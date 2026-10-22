@@ -9,7 +9,7 @@
 #
 # Either Mac may publish: a lock on the NAS (app/publish.lock) keeps two publishes from writing
 # app/current.json at once, and a publish is only ever of a clean tree whose commit is on origin's
-# main (no -dirty versions; the task board's database, tools/taskboard/taskboard.db, aside).
+# main (no -dirty versions).
 set -euo pipefail
 cd ${0:A:h}/../..
 NAS=/Volumes/personal/projects/scenic-roads

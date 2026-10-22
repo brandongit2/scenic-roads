@@ -15,7 +15,9 @@
     },
     {
       "name": "taskboard",
-      "url": "http://Mac-mini.local:8077"
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["tools/taskboard/server.mjs", "--port", "8077"],
+      "port": 8077
     }
   ]
 }

@@ -4,7 +4,7 @@
   <key>Label</key><string>local.scenic.taskboard</string>
   <key>ProgramArguments</key><array>
     <string>@NODE@</string><string>@BOARD@/server.mjs</string>
-    <string>--host</string><string>0.0.0.0</string><string>--port</string><string>8077</string>
+    <string>--host</string><string>::</string><string>--port</string><string>8077</string>
   </array>
   <key>WorkingDirectory</key><string>@BOARD@</string>
   <key>RunAtLoad</key><true/>
