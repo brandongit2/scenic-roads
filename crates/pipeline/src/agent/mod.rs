@@ -13105,7 +13105,10 @@ mod tests {
         store::cachefile::hold_existing(&copy(4)).unwrap();
         a.mem.trimmed.as_mut().unwrap().at -= 10;
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        // (No target while the job starts, then one the disk is short of.)
+        let target = a.room_target.take();
         assert!(a.try_start(0, waiting_job("pack 6/1/1"), &cond, Some(&root), &mut Vec::new()));
+        a.room_target = target;
         assert_eq!(a.tend_caches(Some(&root), true), None);
         assert!(!copy(3).exists() && copy(4).exists());
         assert_eq!(a.mem.trimmed.as_ref().map(|t| (t.bytes(), t.left)), Some((1000, 1000)));
