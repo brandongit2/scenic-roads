@@ -9,7 +9,7 @@ use crate::terrain_pack::ManifestTiles;
 use anyhow::Result;
 use det::Det;
 use rayon::prelude::*;
-use roadcore::grid::{decode_terrain_png, upsampled};
+use roadcore::grid::{decode_terrain, upsampled};
 use roadcore::slope::{channels, decode_slope4, merge4, png_rgba, quarters, Quarters};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -75,7 +75,7 @@ impl<'a> Terrain<'a> {
 
     /// A tile's own: None when its bytes can't be read (a missing tile, to tile_with_fallback_by).
     fn decode(&self, z: u8, x: u32, y: u32) -> Option<Tile> {
-        (self.get)(z, x, y).map(|b| decode_terrain_png(&b).ok().map(Arc::new))
+        (self.get)(z, x, y).map(|b| decode_terrain(&b).ok().map(Arc::new))
     }
 
     /// `k`'s tile, made by `make` unless it's kept.
@@ -118,7 +118,14 @@ impl<'a> Terrain<'a> {
 
 /// Slope in percent (Horn's method) of tile (z, x, y), using its edge neighbours.
 pub fn slope_tile(terrain: &Terrain, z: u8, x: u32, y: u32) -> Option<Vec<f32>> {
-    let e = terrain.tile(z, x, y)?;
+    horn(&|x, y| terrain.tile(z, x, y), z, x, y)
+}
+
+/// Slope in percent (Horn's method) of tile (z, x, y) from `tile`'s heights of the tiles at its
+/// zoom (its own and its edge neighbours'; past a missing neighbour, its own edge): the slope
+/// step's, and the server's past the stored levels (crates/server's terrain.rs).
+pub fn horn(tile: &dyn Fn(u32, u32) -> Option<Arc<Vec<f32>>>, z: u8, x: u32, y: u32) -> Option<Vec<f32>> {
+    let e = tile(x, y)?;
     let n = 1u32 << z;
     let nb = |dx: i64, dy: i64| -> Option<Arc<Vec<f32>>> {
         let nx = (x as i64 + dx).rem_euclid(n as i64) as u32;
@@ -126,7 +133,7 @@ pub fn slope_tile(terrain: &Terrain, z: u8, x: u32, y: u32) -> Option<Vec<f32>> 
         if ny < 0 || ny >= n as i64 {
             return None;
         }
-        terrain.tile(z, nx, ny as u32)
+        tile(nx, ny as u32)
     };
     let (west, east, north, south) = (nb(-1, 0), nb(1, 0), nb(0, -1), nb(0, 1));
     let (e, west, east, north, south) = (
@@ -755,11 +762,6 @@ pub fn build_lo(
     out.save()?;
     on("packs written", 1, 1);
     Ok(rep)
-}
-
-/// Whether a terrain PNG decodes (for checks).
-pub fn decodes(b: &[u8]) -> bool {
-    decode_terrain_png(b).is_ok()
 }
 
 /// The root pack (z0–2) made from the 64 z3 slope tiles as stored (their quadrants), where a z3

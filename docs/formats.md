@@ -658,7 +658,7 @@ Where they're kept:
   `/tiles/trees/{var}/{z}/{x}/{y}`. Strong `ETag`: the stored blob's hash, plus for named tiles the
   versions of the languages spoken within them and of the spoken-languages raster (docs/names.md);
   `/tiles/base`'s a hash of the basemap archives' content names, the tile's z/x/y and the names
-  version; tiles the server makes (missing terrain and slope, slope z12) carry none. With `?v=` (the
+  version; tiles the server makes (missing terrain and slope, slope z12 and the fine terrain's) carry none. With `?v=` (the
   app's URLs): `public, max-age=31536000, immutable` while that version is current, else
   `no-cache`; the tiles the server makes (terrain and slope from ancestors or neighbours, flat
   tiles, the floor under the water, depth made from a coarser zoom) always `no-cache`, as their sources can lie in other packs. `/api/meta` versions each layer (`buildings.tiles`, `water`: the drawing's, its packs'

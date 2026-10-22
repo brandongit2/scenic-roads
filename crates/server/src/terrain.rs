@@ -5,9 +5,9 @@
 //! Slope tiles carry terrain slope in percent, Terrarium-encoded in place of elevation, so a
 //! MapLibre colour-relief layer can colour the terrain by slope with the same machinery. The slope
 //! layer stores z11 and coarser (four quarter slopes a pixel); z12, and any tile the layer lacks,
-//! is made here from the terrain (Horn's method with the neighbouring tiles), as the slope step
-//! makes its finest level: to z14, or as deep as the terrain's fine tiles go (from them where
-//! they're stored, so the slope there is the fine data's).
+//! is made here from the terrain (pipeline::slope_pack::horn with the neighbouring tiles), as the
+//! slope step makes its finest level: to z12, and where the terrain has fine tiles to their zoom
+//! there, from them (so the slope there is the fine data's; none stored).
 
 use crate::tiles::{etag_match, not_modified, versioned};
 use crate::S;
@@ -204,59 +204,34 @@ pub async fn terrain_tile(
     respond(got, v)
 }
 
-/// Slope (percent, Horn's method with the edge neighbours) of a terrain tile, as the slope step
-/// makes z12: four equal quarters a pixel.
-/// None outside the data.
+/// Slope (percent) of a terrain tile, as the slope step makes z12 (pipeline::slope_pack::horn, with
+/// the edge neighbours): four equal quarters a pixel. None outside the data.
 pub fn slope_png(s: &crate::AppState, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
-    let Some(e) = terrain_f32(s, z, x, y)? else { return Ok(None) };
-    let n = 1u32 << z;
-    let nb = |dx: i32, dy: i32| -> anyhow::Result<Option<Vec<f32>>> {
-        let (nx, ny) = ((x as i64 + dx as i64).rem_euclid(n as i64) as u32, y as i64 + dy as i64);
-        if ny < 0 || ny >= n as i64 {
-            return Ok(None);
-        }
-        terrain_f32(s, z, nx, ny as u32)
-    };
-    let (west, east, north, south) = (nb(-1, 0)?, nb(1, 0)?, nb(0, -1)?, nb(0, 1)?);
-    let at = |i: i32, j: i32| -> f32 {
-        let (ci, cj) = (i.clamp(0, 255), j.clamp(0, 255));
-        let pick = |t: &Option<Vec<f32>>, ii: i32, jj: i32| t.as_ref().map(|v| v[(jj * 256 + ii) as usize]);
-        let v = if i < 0 {
-            pick(&west, 255, cj)
-        } else if i > 255 {
-            pick(&east, 0, cj)
-        } else if j < 0 {
-            pick(&north, ci, 255)
-        } else if j > 255 {
-            pick(&south, ci, 0)
-        } else {
+    let failed = std::cell::RefCell::new(None);
+    let tile = |x: u32, y: u32| match terrain_f32(s, z, x, y) {
+        Ok(e) => e.map(std::sync::Arc::new),
+        Err(e) => {
+            failed.borrow_mut().get_or_insert(e);
             None
-        };
-        v.unwrap_or(e[(cj * 256 + ci) as usize])
-    };
-    let mut out = vec![0f32; 256 * 256];
-    let world = 40_075_016.686f64;
-    for j in 0..256i32 {
-        let yy = (y as f64 + (j as f64 + 0.5) / 256.0) / n as f64;
-        let lat = (std::f64::consts::PI * (1.0 - 2.0 * yy)).sinh().atan();
-        let d = (world * lat.cos() / (256.0 * n as f64)) as f32; // metres per pixel
-        for i in 0..256i32 {
-            let (a, b, c) = (at(i - 1, j - 1), at(i, j - 1), at(i + 1, j - 1));
-            let (dd, f) = (at(i - 1, j), at(i + 1, j));
-            let (g, h, k) = (at(i - 1, j + 1), at(i, j + 1), at(i + 1, j + 1));
-            let dzdx = ((c + 2.0 * f + k) - (a + 2.0 * dd + g)) / (8.0 * d);
-            let dzdy = ((g + 2.0 * h + k) - (a + 2.0 * b + c)) / (8.0 * d);
-            out[(j * 256 + i) as usize] = ((dzdx * dzdx + dzdy * dzdy).sqrt() * 100.0).min(500.0);
         }
+    };
+    let out = pipeline::slope_pack::horn(&tile, z, x, y);
+    if let Some(e) = failed.into_inner() {
+        return Err(e);
     }
+    let Some(out) = out else { return Ok(None) };
     let q: Vec<[f32; 4]> = out.iter().map(|&v| [v; 4]).collect();
     Ok(roadcore::slope::encode_slope4(&q, 256, 256).ok())
 }
 
-/// The finest slope made: z14, or as deep as the terrain is stored anywhere (its fine tiles' zooms,
-/// pipeline::terrain_fine); finer, flat.
-fn slope_depth(cat: &store::catalog::Catalog) -> u8 {
-    cat.layers.get("terrain").map_or(14, |l| l.maxzoom.max(14))
+/// The finest slope made at tile (z, x, y): z12 (the stored terrain's finest), or where the terrain
+/// has fine tiles (pipeline::terrain_fine), their zoom there (the catalog's `fine_zoom` by z10
+/// tile, the map's zoom by area); finer, flat.
+fn slope_depth(cat: &store::catalog::Catalog, z: u8, x: u32, y: u32) -> u8 {
+    let fine = (z > 10)
+        .then(|| cat.layers.get("terrain")?.fine_zoom.get(&format!("10/{}/{}", x >> (z - 10), y >> (z - 10))).copied())
+        .flatten();
+    fine.unwrap_or(0).max(pipeline::slope_pack::MAXZ)
 }
 
 pub async fn slope_tile(
@@ -272,7 +247,7 @@ pub async fn slope_tile(
         if let Some(g) = stored(&s, "slope", z, x, y, &headers) {
             return g;
         }
-        if z > slope_depth(&s.data.catalog()) {
+        if z > slope_depth(&s.data.catalog(), z, x, y) {
             return Got::Made(flat());
         }
         made(&SLOPE, gen(&s), z, x, y, || Ok(slope_png(&s, z, x, y)?.unwrap_or_else(flat)))
@@ -348,12 +323,33 @@ mod tests {
     }
 
     #[test]
-    fn slope_is_made_as_deep_as_the_terrain_goes() {
+    fn slope_is_made_as_deep_as_the_terrain_goes_there() {
         let mut cat = store::catalog::Catalog::new(1);
-        assert_eq!(slope_depth(&cat), 14);
-        cat.layers.insert("terrain".into(), store::catalog::Layer { maxzoom: 12, ..Default::default() });
-        assert_eq!(slope_depth(&cat), 14);
-        cat.layers.get_mut("terrain").unwrap().maxzoom = 16;
-        assert_eq!(slope_depth(&cat), 16);
+        assert_eq!(slope_depth(&cat, 13, 296 * 8, 360 * 8), 12);
+        let mut l = store::catalog::Layer { maxzoom: 16, ..Default::default() };
+        l.fine_zoom.insert("10/296/360".into(), 16);
+        cat.layers.insert("terrain".into(), l);
+        // Under the fine pack's z10 tile, to its zoom; beside it, z12.
+        assert_eq!(slope_depth(&cat, 16, 296 * 64 + 63, 360 * 64), 16);
+        assert_eq!(slope_depth(&cat, 13, 297 * 8, 360 * 8), 12);
+        assert_eq!(slope_depth(&cat, 9, 148, 180), 12);
+    }
+
+    #[test]
+    fn fine_slope_is_the_fine_terrains_and_meets_the_coarse_slope_without_a_seam() {
+        let (root, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        nas(root.path());
+        let s = crate::test_state(home.path(), root.path());
+        let q =
+            |z: u8, x: u32, y: u32| roadcore::slope::decode_slope4(&slope_png(&s, z, x, y).unwrap().unwrap()).unwrap();
+        // The fixture's tiles are level: 50 m at z12, 100 m in its one fine z13 tile, so the fine
+        // tile's slope is its own (flat inside) and its east edge meets the 50 m overzoomed beside
+        // it, which the tile beside sees too.
+        let fine = q(13, 296 * 8, 360 * 8);
+        assert_eq!(fine[128 * 256 + 128][0], 0.0);
+        assert!(fine[128 * 256 + 255][0] > 0.0, "the step to the 50 m beside it");
+        let beside = q(13, 296 * 8 + 1, 360 * 8);
+        assert!(beside[128 * 256][0] > 0.0, "the same step, seen from beside it");
+        assert_eq!(beside[128 * 256 + 128][0], 0.0);
     }
 }

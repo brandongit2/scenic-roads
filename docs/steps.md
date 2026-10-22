@@ -130,9 +130,20 @@ What each step does, in detail. The steps as one table (names, chains, the check
     encoding ~11 s on a thread; to z14 (3DEP, 20 tiles) 0.6–1.3 MB, ~1.3 s + 0.8 s. Over the
     coverage (HRDEM 48.6 k z12 tiles, 3DEP 154 k south of 50° to z14 and 101 k in Alaska to z13):
     ~0.57 TB HRDEM, ~0.17 TB 3DEP; ~310 and ~90 process-hours.
-- **Slope** (`pipeline::slope_pack`): z11 and coarser stored, from transient z12 Horn slope; the
-  server makes z12 and finer on demand (to z14, or as deep as the terrain's fine tiles go: the
-  catalog's terrain maxzoom). **slope**, a run per z6 tile (its z9–11 hi pack and its mid,
+- **Slope** (`pipeline::slope_pack`): z11 and coarser stored, from transient z12 Horn slope
+  (`slope_pack::horn`); the server makes z12 the same way on demand, and where the terrain has
+  fine tiles, the slope at their zooms there from them (the catalog's `fine_zoom` by z10 tile, the
+  map's zoom by area; elsewhere nothing past z12). Fine slope isn't stored: as slope4 PNG it
+  measured ~1.9–2.2× its fine terrain tile's bytes (3DEP z13–14, two fine packs: 43–63 KB terrain,
+  96–118 KB slope a tile), ~1.1–1.5 TB over the fine coverage, while making one on demand takes
+  ~5 tile decodes (~11 ms each) and ~6–9 ms of PNG; a fine pack's change reaches it with the
+  catalog (the server's made tiles are kept per catalog generation), and at a fine area's edge the
+  Horn window reads the overzoomed z12 terrain beside it, which the slope beside reads too. The
+  stored z11 and coarser stay from z12 terrain where fine data exists too: the fine slopes there
+  averaged 20–30 % steeper than the same ground at z12 (5.5 against 4.6 %, 9.1 against 6.9 %), so
+  aggregating them would make the tint jump at z12 (made from the base) unless z12 were stored
+  from them as well, for a pass reading all the fine terrain (~0.74 TB, ~11 ms a tile to decode).
+  **slope**, a run per z6 tile (its z9–11 hi pack and its mid,
   `work/slope-mid/6-x-y`: its z6–8 tiles), reading the terrain packs (its own z6 tile's copied
   whole first) and its neighbours' edge strips; **slope-lo**, an assembly per z3 tile from its
   z6 tiles' mids (each read whole, eight at once, under a deadline and tried again while it fails
