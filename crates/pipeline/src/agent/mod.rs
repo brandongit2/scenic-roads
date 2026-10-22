@@ -13062,7 +13062,12 @@ mod tests {
         *a.forecast.borrow_mut() = Some(forecast_now(true));
         assert_eq!(a.tend_caches(Some(&root), false), None);
         assert!(copy(1).exists() && a.mem.trimmed.is_none());
-        // Home: the copies go, the canopy squares stay; said in the status's memory, once.
+        // Home with room (400 GB free, the keep's 150): the caches stay, the trim done all the same.
+        assert_eq!(a.tend_caches(Some(&root), true), None);
+        assert!(copy(1).exists() && a.mem.trimmed.as_ref().is_some_and(|f| f.bytes() == 0));
+        // Short of it: the copies go, the canopy squares stay; said in the status's memory, once.
+        room::TEST_FREE.with(|c| c.set(Some(100 << 30)));
+        a.mem.trimmed = None;
         assert_eq!(a.tend_caches(Some(&root), true), None);
         assert!(!copy(1).exists() && c.join("chm10/a.tif").exists());
         assert_eq!(a.mem.trimmed.as_ref().map(|f| (f.bytes(), f.left)), Some((1000, 0)));
@@ -13331,7 +13336,9 @@ mod tests {
         a.heard = None;
         assert!(a.tend_caches(Some(&root), true).is_some_and(|w| w.starts_with("the lead runs a job (Ranking")));
         assert!(c.join("chm10/a.tif").exists());
-        // Fresh, and the build done: every cheap cache goes, the canopy squares too.
+        // Fresh, and the build done, the disk short of the keep's 150 GB: every cheap cache goes,
+        // the canopy squares too.
+        room::TEST_FREE.with(|c| c.set(Some(100 << 30)));
         beat(now_s(), true, None);
         a.heard = None;
         assert_eq!(a.tend_caches(Some(&root), true), None);
