@@ -43,6 +43,7 @@ const EXEMPT: &[(&str, &str, &str)] = &[
     ("crates/pipeline/src/agent/backup.rs", "*", "the NAS's backups' own blobs/, not the agent's cache"),
     ("crates/pipeline/src/agent/gc.rs", "*", "the NAS's base/ folder, not the agent's cache"),
     ("crates/pipeline/src/scache.rs", "*", "a unit folder's own scenic cache (its scache/), not the agent's"),
+    ("crates/pipeline/src/localread.rs", "new", "names its folders: reads go through store::blobs (store::cachefile holds); copying/ holds only lock files"),
     ("crates/pipeline/src/dem/mod.rs", "*", "elev's slice of the DEM cache in the unit's own folder, not the agent's"),
     ("crates/pipeline/src/bin/terrain.rs", "*", "the terrain scan tool's own cache, not the agent's"),
     ("crates/pipeline/src/answers.rs", "*", "the items and heritage answers, which room-making never deletes"),
