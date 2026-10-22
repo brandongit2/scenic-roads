@@ -13062,12 +13062,14 @@ mod tests {
         *a.forecast.borrow_mut() = Some(forecast_now(true));
         assert_eq!(a.tend_caches(Some(&root), false), None);
         assert!(copy(1).exists() && a.mem.trimmed.is_none());
-        // Home with room (the keep a byte): the caches stay, the trim done all the same.
-        a.trim_keeps = 1;
+        // Home with room (a target of a byte): the caches stay, the trim done all the same.
+        a.room_target = Some(room::Target { bytes: 1, by: String::new(), at: 0 });
         assert_eq!(a.tend_caches(Some(&root), true), None);
         assert!(copy(1).exists() && a.mem.trimmed.as_ref().is_some_and(|f| f.bytes() == 0));
         // Short of it: the copies go, the canopy squares stay; said in the status's memory, once.
-        a.trim_keeps = u64::MAX;
+        // (The freeing toward the target tried just now, so the trim is what runs.)
+        a.room_target = Some(room::Target { bytes: u64::MAX >> 2, by: String::new(), at: 0 });
+        a.toward_tried = Some((u64::MAX, now_s()));
         a.mem.trimmed = None;
         assert_eq!(a.tend_caches(Some(&root), true), None);
         assert!(!copy(1).exists() && c.join("chm10/a.tif").exists());
@@ -13337,9 +13339,10 @@ mod tests {
         a.heard = None;
         assert!(a.tend_caches(Some(&root), true).is_some_and(|w| w.starts_with("the lead runs a job (Ranking")));
         assert!(c.join("chm10/a.tif").exists());
-        // Fresh, and the build done, the disk short of the keep: every cheap cache goes,
+        // Fresh, and the build done, the disk short of the target: every cheap cache goes,
         // the canopy squares too.
-        a.trim_keeps = u64::MAX;
+        a.room_target = Some(room::Target { bytes: u64::MAX >> 2, by: String::new(), at: 0 });
+        a.toward_tried = Some((u64::MAX, now_s()));
         beat(now_s(), true, None);
         a.heard = None;
         assert_eq!(a.tend_caches(Some(&root), true), None);
