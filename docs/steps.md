@@ -150,8 +150,7 @@ What each step does, in detail. The steps as one table (names, chains, the check
   - Together the same bytes as a z3 tile's whole run (`trees --z3`, `scenic-build trees 3/x/y`), from
     Meta's canopy squares (`sources/canopy/`, each downloaded once under a `<file>.lock`) and the
     leaf-type squares (`sources/trees/leaf/`, made by `dem/leaftype.py`).
-  - Lossless WebP by `pipeline::webp`. `tools/check/trees-same.py` compares it with `dem/trees.py
-    --z3` (same pixels); `SCENIC_TREES_PY=1` uses trees.py for a whole run.
+  - Lossless WebP by `pipeline::webp`.
   - `trees --block`, `--blocks` and `--assemble` run blocks alone; a row of a z6 tile's blocks is a
     task (`treeblock`, docs/workers.md §3), the same bytes natively and in WebAssembly.
 - **Area overlays** (the heritage and designated areas' outlines): `docs/phase5.md`. The `overlays` job runs after marks (it needs the World

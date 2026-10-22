@@ -23,7 +23,7 @@ leaf-type-europe and leaf-type-north-america roles), in --sources as the trees r
 `north_america_box`).
 
 The build agent's trees job has it make the squares its z3 tile needs (the trees program,
-crates/pipeline/src/trees; dem/trees.py --z3 calls it too): whole squares, tagged complete (a square
+crates/pipeline/src/trees): whole squares, tagged complete (a square
 not tagged so, or not whole, is made again, keeping its chunks fetched whole). An EEA square's
 chunks are kept on the NAS as they come (`parts/`), so a square that fails part way asks again only
 for what it lacks.

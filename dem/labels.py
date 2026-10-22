@@ -285,7 +285,7 @@ def encode(points: list[tuple[int, int, int, dict]]) -> bytes:
 
 
 class Writer:
-    """roadcore::archive format (as trees.py's): magic, index offset, count, metadata JSON, blobs, index."""
+    """roadcore::archive format (as the trees program's): magic, index offset, count, metadata JSON, blobs, index."""
 
     def __init__(self, path: Path, meta: str):
         self.path, self.tmp = path, path.with_suffix(".tiles.tmp")

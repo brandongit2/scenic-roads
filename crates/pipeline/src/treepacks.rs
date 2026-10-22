@@ -1,5 +1,5 @@
 //! The tree cover layers (docs/steps.md §2, Trees): tree cover, canopy height and leaf type, zoom 4–12,
-//! clipped to the coverage, made by the `trees` program (crate::trees, dem/trees.py's port) from
+//! clipped to the coverage, made by the `trees` program (crate::trees) from
 //! Meta's canopy squares, kept on the NAS (`sources/canopy/`, each downloaded once, and copied into
 //! the agent's cache the z6 tiles read too) and the leaf-type squares on the NAS
 //! (`sources/trees/leaf/`, made whole by `dem/leaftype.py` where missing), packed as the layers
@@ -13,8 +13,7 @@
 //!   its z6 tiles' mids; a z3 tile with lo packs and no z6 tile drops them.
 //!
 //! Together the same packs, byte for byte, as a z3 tile's whole run (`build`: by hand, and for a
-//! lease of the scheme before, agent::rekey::v1::trees_targets; with SCENIC_TREES_PY=1 trees.py
-//! itself, to compare the two).
+//! lease of the scheme before, agent::rekey::v1::trees_targets).
 
 use crate::coverage::Coverage;
 use crate::legacy::TileId;
@@ -156,12 +155,6 @@ pub fn targets_with(cov: &Coverage, m: &BTreeMap<String, String>, sources: Optio
     out
 }
 
-/// Whether dem/trees.py makes a z3 tile's layers rather than its port (SCENIC_TREES_PY=1), to
-/// compare them.
-fn by_python() -> bool {
-    std::env::var("SCENIC_TREES_PY").is_ok_and(|v| !v.is_empty() && v != "0")
-}
-
 /// The coverage's shapes inside tile `t` (a z3 or z6 tile), for the trees program: each shape's rings
 /// whose box meets the tile, in degrees (inside by even–odd, as the shape has them; a ring that
 /// doesn't meet the tile can't change which of its points are inside).
@@ -205,22 +198,13 @@ fn fresh(cov: &Coverage, t: TileId, scratch: &Path, always: bool) -> Result<Opti
     Ok(Some(dir))
 }
 
-/// The trees program (`trees`, beside this one), or with SCENIC_TREES_PY=1 (a z3 tile's run alone)
-/// trees.py, run in the Python steps' folder `dem` (the port runs leaftype.py there for leaf-type
-/// squares to make) with `args`.
-fn run_trees(dem: &Path, python: bool, args: &[std::ffi::OsString]) -> Result<()> {
-    let (mut c, prog) = if python {
-        let mut c = store::spawn::command("uv");
-        c.args(["run", "python", "trees.py"]);
-        (c, "trees.py")
-    } else {
-        (
-            store::spawn::command(std::env::current_exe()?.parent().context("the programs' folder")?.join("trees")),
-            "the trees program",
-        )
-    };
+/// The trees program (`trees`, beside this one), run in the Python steps' folder `dem` (it runs
+/// leaftype.py there for leaf-type squares to make) with `args`.
+fn run_trees(dem: &Path, args: &[std::ffi::OsString]) -> Result<()> {
+    let prog = "the trees program";
+    let mut c = store::spawn::command(std::env::current_exe()?.parent().context("the programs' folder")?.join("trees"));
     // (Its phase, its own under it: crate::timings.)
-    let _p = crate::timings::phase(if python { "trees.py" } else { "the trees program" }, crate::timings::Class::Mixed);
+    let _p = crate::timings::phase(prog, crate::timings::Class::Mixed);
     c.current_dir(dem).args(args);
     crate::timings::child(&mut c);
     let st = store::spawn::status(&mut c).with_context(|| format!("run {prog}"))?;
@@ -290,8 +274,7 @@ pub fn build_with(
         drop_packs(out, q, &crate::layers::LayerOut::default())?;
         return Ok(());
     };
-    run_trees(dem, by_python(), &run_args(out, q, &dir, chm, workers)?)
-        .with_context(|| format!("z3 tile {}", q.slash()))?;
+    run_trees(dem, &run_args(out, q, &dir, chm, workers)?).with_context(|| format!("z3 tile {}", q.slash()))?;
     writing();
     put_z3(out, q, &dir)?;
     std::fs::remove_dir_all(&dir).ok();
@@ -372,7 +355,7 @@ pub fn build_piece(
         return Ok(());
     }
     let dir = fresh(cov, t, scratch, true)?.context("a piece's scratch folder")?;
-    run_trees(dem, false, &run_args(out, t, &dir, chm, workers)?).with_context(|| format!("z6 tile {}", t.slash()))?;
+    run_trees(dem, &run_args(out, t, &dir, chm, workers)?).with_context(|| format!("z6 tile {}", t.slash()))?;
     writing();
     put_piece(out, t, &dir, expect_same)?;
     std::fs::remove_dir_all(&dir).ok();
@@ -553,7 +536,7 @@ pub fn build_lo(out: &mut Out, cov: &Coverage, q: TileId, scratch: &Path, worker
         workers.to_string().into(),
     ];
     a.extend(args);
-    run_trees(Path::new("."), false, &a).with_context(|| format!("z3 tile {}'s assembly", q.slash()))?;
+    run_trees(Path::new("."), &a).with_context(|| format!("z3 tile {}'s assembly", q.slash()))?;
     put_lo(out, q, &dir, false)?;
     std::fs::remove_dir_all(&dir).ok();
     Ok(())

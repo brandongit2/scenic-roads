@@ -65,7 +65,6 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("dem/leaftype.py", "complete", ".startswith(\"NALCMS\")", "reads the made squares' tags, as above"),
     ("crates/pipeline/src/trees/squares.rs", "complete", "starts_with(\"NALCMS\")", "reads the made squares' tags, as dem/leaftype.py's"),
     ("crates/pipeline/src/trees/mod.rs", "META", "Copernicus HRL DLT 2018; NALCMS 2020", "the tree tiles' metadata, part of their content: changed, every tree tile would be made again for nothing"),
-    ("dem/trees.py", "z3_main", "Copernicus HRL DLT 2018; NALCMS 2020", "the tree tiles' metadata, as crate::trees::META"),
     ("dem/leaftype.py", "fetch_nalcms", "NALCMS", "the reader of NALCMS's zip, made for its layout (a member streamed out by the declared offset and size): its messages name what they read"),
     ("dem/leaftype.py", "north_america_squares", "\"the NALCMS squares resampled\"", "a timing phase's name, its key in the timings kept (the same phase over time)"),
     ("crates/pipeline/src/bin/scenic-build.rs", "lakefill_step", "\"the lakes filled from CanVec's zips\"", "a timing phase's name, its key in the timings kept (the same phase over time)"),

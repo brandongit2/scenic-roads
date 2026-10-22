@@ -1330,7 +1330,7 @@ newest pass's outlines.
 **How the steps read them.** Rust steps through `inputs::sources::open`/`read` (one read per
 accepted version); a unit's programs from `sources.json` in its folder (`unit::UnitSources`: the
 land cover, the canopy files' URLs); a tree cover run from `sources.json` beside its coverage
-(`trees::RunSources`, passed to the trees program, `trees.py` and `leaftype.py` as `--sources`);
+(`trees::RunSources`, passed to the trees program and `leaftype.py` as `--sources`);
 Python steps by role from the file `SCENIC_SOURCES` names (`dem/declared.py`, written by
 `inputs::sources::write_for_python`). The jobs that read them (the z6 tiles, tree cover, items, the
 heritage chain) wait until a version is accepted (the agent's `hold_for_sources`); the lake fill,
@@ -1598,7 +1598,7 @@ declarations are made and staged there.
 | `rules::CREDITS` (the declared sources' entries, the CanVec licence's notice) | the credits' fallback (§4.8): a declared source's entry is replaced by its declaration's credit once one is accepted, and stands in until then, so a catalog never lacks a licence's notice |
 | `lakefill::run::fill`'s metadata | part of the fill's content name: changed, the fill and the water, terrain and catalog reading it would be made again for nothing |
 | `dem/leaftype.py`'s square tags, and `complete` there and in `trees::squares` | a made square's GeoTIFF `source`, as every square already made says it (`trees::squares::complete` reads the tags) |
-| `trees::META`, `dem/trees.py`'s meta | the tree tiles' metadata, part of their content: changed, every tree tile would be made again for nothing |
+| `trees::META` | the tree tiles' metadata, part of their content: changed, every tree tile would be made again for nothing |
 | `dem/leaftype.py`'s `fetch_nalcms` | the reader of NALCMS's zip, made for its layout; its messages name what they read |
 | `dem/bldprep.py`'s `read_rg`, `dem/bldfetch.py`'s `overture_jobs` | readers of Overture's schema and release folders, made for their layout; their messages name what they read |
 | timing phases (`scenic-build`'s lake fill, `dem/leaftype.py`'s NALCMS squares) | a phase's name is its key in the timings kept |
