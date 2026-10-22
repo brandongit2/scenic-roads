@@ -3514,8 +3514,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     // No stops & sights.
     std::fs::write(b.join("pois.json"), br#"{"type":"FeatureCollection","features":[]}"#)?;
     std::fs::write(b.join("details-poi.jsonl"), b"")?;
-    std::fs::write(b.join("peaks.json"), b"[]")?;
-    let inputs = ["pois.json", "details-poi.jsonl", "peaks.json"];
+    let inputs = ["pois.json", "details-poi.jsonl"];
     // The cover, and the pass's sets within it.
     let tiles = cover_tiles(&cov);
     let poly = scratch.join("cover.geojson");
