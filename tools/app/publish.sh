@@ -12,6 +12,9 @@
 # main (no -dirty versions).
 set -euo pipefail
 cd ${0:A:h}/../..
+# Its tools found without a login shell's profile (over ssh, `ssh m6 '…/publish.sh'`, the PATH is the
+# system's): brew's mise and rustup's cargo; the rest come from mise.toml through `mise env` below.
+path=(/opt/homebrew/bin ~/.cargo/bin $path)
 NAS=/Volumes/personal/projects/scenic-roads
 # (Every copy leaves the extended attributes behind, cp -X: the NAS refuses macOS's provenance one
 # when it differs from the folder's, failing the copy.)
@@ -110,14 +113,11 @@ fi
 # The certificate the listening programs are signed with (below), tried now on a scratch file so a
 # keychain that won't let codesign use its key (locked, or no GUI to answer its prompt) stops the
 # publish before the build rather than after.
-sign_id=-
-if security find-identity -p codesigning 2>/dev/null | grep -q '"Scenic Code Signing"'; then
-  sign_id="Scenic Code Signing"
-  probe=$(mktemp -d)/probe; cp /usr/bin/true $probe
-  codesign -s "$sign_id" --force $probe || { echo "publish: codesign can't use the \"Scenic Code Signing\" key: allow it in Keychain Access (Always Allow), or unlock the login keychain"; exit 1; }
-else
-  echo "publish: no \"Scenic Code Signing\" certificate on this Mac: signing ad hoc (a firewall's allow won't outlive this update)"
-fi
+# Without it nothing is published: an ad-hoc signature would lose every Mac's firewall allow.
+sign_id="Scenic Code Signing"
+security find-identity -p codesigning 2>/dev/null | grep -q "\"$sign_id\"" || { echo "publish: no \"$sign_id\" identity in this Mac's keychain (docs/building.md, App publishing)"; exit 1; }
+probe=$(mktemp -d)/probe; cp /usr/bin/true $probe
+codesign -s "$sign_id" --force $probe </dev/null || { echo "publish: codesign can't use the \"$sign_id\" key: unlock the login keychain and let codesign use the key (docs/building.md, App publishing)"; exit 1; }
 # The guards first (tools/app/guards.sh, docs/inputs.md §7): the drop boxes read only through their
 # accessor, no data source named in the app's code, and the Python steps loaded from the app's dem/
 # in a stand-in NAS root whose drop boxes can't be read (and checked by pyflakes).

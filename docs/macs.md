@@ -78,7 +78,13 @@ floor (docs/pool.md §7.2). A member's status is `state/helpers/<host>.json`, th
 M1, with room for more at once (build memory 28 GB by default). It also hosts the task board
 (`tools/taskboard`, http://mac-mini-de-brandon:8077, its LaunchAgent and nightly NAS backup from
 `tools/taskboard/launchd/install.sh`) and is the map's address for the phone, the iPad and devices
-away from home: https://map.brandontsang.net (Devices).
+away from home: https://map.brandontsang.net (Devices). It publishes the app (`ssh m6 'cd
+~/projets/scenic-roads && tools/app/publish.sh'`, docs/building.md, App publishing), its tests
+still sent to the M4 when it's reachable (`tools/app/remote-tests.sh`). Its toolchain: brew's mise
+and rustup (`/opt/homebrew/bin`, `~/.cargo/bin`, which publish.sh puts on the PATH itself) and,
+from `mise install` in the checkout, everything mise.toml and rust-toolchain.toml pin (Rust with
+its wasm32-wasip1 target, the wasi-sdk, Node, pnpm, uv, cargo-nextest, CMake); Xcode for swiftc
+and codesign.
 
 **A new (headless) Mac**, in this order:
 1. `sudo scutil --set LocalHostName <name>` first: the pool's identity (a member's status file is

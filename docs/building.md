@@ -464,9 +464,14 @@ or its siblings' order:
 **Format bumps:** publish an app that reads both forms, then the data; drop the old reader once
 everything is rebuilt.
 
-**App publishing:** `tools/app/publish.sh`, run on either Mac with the NAS mounted:
+**App publishing:** `tools/app/publish.sh`, run on any Mac with the NAS mounted and the
+"Scenic Code Signing" identity in its login keychain; normally on the Mac mini over ssh:
+`ssh m6 'cd ~/projets/scenic-roads && tools/app/publish.sh'` (it puts brew's and rustup's folders
+on the PATH itself and takes the rest from mise.toml, so no shell profile is needed). It
 1. takes a lock on the NAS (`app/publish.lock`, create-new; one over six hours old taken over);
-2. refuses unless the tree is clean (the task board's db aside) and HEAD is on origin's main;
+2. builds the tip of origin's main, fetched now, in its own snapshot
+   (`~/Library/Caches/scenic-publish/tree`, kept as a build cache), whatever this checkout holds;
+   refuses without the signing identity, or when codesign can't use its key unprompted;
 3. refuses while the lead's role's old name appears in the code, docs or UI (`tools/taskboard`
    exempt);
 4. builds the server and pipeline;
@@ -477,6 +482,13 @@ everything is rebuilt.
 8. copies `tools/nas/fetch-planet.sh` to the NAS's `nas/` when it differs.
 
 `publish.sh --rollback` swaps `current.json` and `previous.json`. The agent never fetches from git.
+
+The publishing Mac's signing identity, set up once by the owner at that Mac (the key never leaves
+the keychains): import "Scenic Code Signing" (a .p12 exported from the M1's Keychain Access) into
+the login keychain, then let codesign use it without a prompt, and keep the keychain unlocked over
+ssh (the mini is always logged in; its login keychain stays unlocked while it is):
+`security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k <login password> ~/Library/Keychains/login.keychain-db`.
+The check: `ssh m6 'cp /usr/bin/true /tmp/t && codesign -s "Scenic Code Signing" -f /tmp/t'`.
 
 **Programs:** `scenic` (the user's command and the agent); `scenic-build` (the build steps);
 `server`; the `unit` job's programs `extract`, `elev`, `areaflags`, `landcover`, `tile`, `scenic-metrics`
