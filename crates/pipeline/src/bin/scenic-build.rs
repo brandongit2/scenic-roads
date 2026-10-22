@@ -2948,7 +2948,7 @@ fn p5_check(root: &Path, args: &[String]) -> Result<()> {
         let made = lo.and_then(|c| mtime(c.as_str())).map_or("?".to_string(), utc);
         let by = match times.trees_by_program(&m, u.x, u.y) {
             Some(true) => "the trees program",
-            Some(false) => "trees.py",
+            Some(false) => "trees.py (before the trees program)",
             None => "? (its times unread)",
         };
         let n = tt.pieces_of(q).count();

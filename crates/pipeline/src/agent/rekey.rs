@@ -1815,7 +1815,7 @@ mod tests {
         );
         assert!(
             r.trees_dropped.len() == 1
-                && r.trees_dropped[0].1.contains("trees.py")
+                && r.trees_dropped[0].1.contains("are trees.py's")
                 && py.trees.is_empty()
                 && py.trees_lo.is_empty(),
             "{r:?}"
