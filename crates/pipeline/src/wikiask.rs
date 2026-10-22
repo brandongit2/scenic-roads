@@ -89,6 +89,19 @@ impl Asker {
         Ok(m[&origin].allows(&path))
     }
 
+    /// The size `url`'s server says it has (a HEAD's Content-Length): 0 when it doesn't say, or
+    /// can't be asked (offline, its robots.txt, no answer).
+    pub fn content_length(&self, url: &str) -> u64 {
+        if crate::fetch::online(url).is_err() || !self.may(url).unwrap_or(false) {
+            return 0;
+        }
+        let r = self.agent.head(url).config().timeout_global(Some(Duration::from_secs(30))).build().call();
+        r.ok()
+            .filter(|r| r.status() == 200)
+            .and_then(|r| r.headers().get("content-length")?.to_str().ok()?.trim().parse().ok())
+            .unwrap_or(0)
+    }
+
     /// GET: the status, the body, and a `Retry-After` if any.
     fn get_text(&self, url: &str, timeout_s: u64) -> Result<(u16, String, Option<String>)> {
         crate::fetch::online(url)?;

@@ -608,7 +608,7 @@ until packed onto the NAS; `packs/`, archive copies), `blobs/`, `base/`, `source
 index copies), `rail/` (stop pairs), `heritage-<date>/` (the heritage chain's answers, with its
 `.kept.json`), `unit-stages.json`, and the flocks `answers.gate`, `answers.use`
 (crate::answers::Local). Room-making, trimming and clearing are agent::room's (docs/macs.md and docs/building.md §2). Every
-file is read and made through store::cachefile (dem/cachefile.py): a shared flock while a job uses
+file is read and made through store::cachefile: a shared flock while a job uses
 it; made as `<name>.<pid>.<n>.tmp`, locked, and hard-linked to its name only if the name is free;
 deleted only under an exclusive flock taken without waiting.
 
@@ -783,7 +783,7 @@ class, id) within a tile. The client sends the id with the clicked point.
     [{name, bytes}, …]}, gone: {name: unix seconds}}`, archives oldest first, read newest first;
     `gone` deleted a day after), and loose `sources/aws-terrarium/<z>/<x>/<y>.png` (`.none`);
     `sources/pageviews/<YYYY-MM>.tsv.zst` (a `#langs\t<lang>,…` line, then
-    `<lang>|<Title>\t<views>` lines; dem/pageviews.py); `sources/fetched/<dataset>/<file>` (a
+    `<lang>|<Title>\t<views>` lines; pipeline::pageviews); `sources/fetched/<dataset>/<file>` (a
     declared elevation dataset's `store` files, deflate GeoTIFF, `.none` where missing;
     docs/inputs.md §6.8).
   - `sources/dem-cache/dem-cache.{keys.u64,elev.f32,src.u8}`: the DEM cache's seed (sorted keys

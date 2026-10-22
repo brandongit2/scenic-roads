@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Wikidata's query service and Wikipedia's articles for the Python steps that still ask them
-(items.py, pageviews.py; the heritage chain's pipeline::heritagewd and pipeline::areadetails ask
+(items.py; the heritage chain's pipeline::heritagewd and pipeline::areadetails ask
 the same way in Rust: crate::wikiask). Queries go to the declared `wikidata` source
 (docs/inputs.md §6.9: QLever's endpoint) through the job's proxy (curl honours HTTPS_PROXY), a 429
 told to it (budget.seen).

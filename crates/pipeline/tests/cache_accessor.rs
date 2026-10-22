@@ -1,5 +1,5 @@
-//! The build agent's caches are read only through their accessor (store::cachefile;
-//! dem/cachefile.py): a guard for docs/building.md §2's room-making mid-job. Every function outside
+//! The build agent's caches are read only through their accessor (store::cachefile): a guard for
+//! docs/building.md §2's room-making mid-job. Every function outside
 //! tests that names a cache path (`MARKERS`) uses the accessor, or is listed in `EXEMPT` with why
 //! it may not: it builds a job's arguments, counts, or the path isn't the agent's cache at all.
 //! A new reader of the caches fails here until it's routed through the accessor (or, if it truly
@@ -24,9 +24,6 @@ const MARKERS: &[&str] = &[
     "cache.join(",
     "self.dir.join(\"packs\")",
 ];
-
-/// What names a cache path in the Python steps.
-const PY_MARKERS: &[&str] = &["OUT / \"months\""];
 
 /// Functions that name a cache path without reading a cache file, by file (from the repository's
 /// root) and name, with why.
@@ -73,7 +70,8 @@ const EXEMPT: &[(&str, &str, &str)] = &[
     ("crates/pipeline/src/bin/scenic-build.rs", "unit_snap", "the unit's tools' arguments"),
     ("crates/pipeline/src/bin/scenic-build.rs", "unit_step", "the unit's tools' arguments; the squares and packs held as they're copied ahead"),
     ("crates/pipeline/src/bin/scenic-build.rs", "rail_step", "the rail job's own stop pairs (pairs-*.bin), which room-making never deletes"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "heritage_step", "links the items job's pageview months for pageviews.py, which holds each it reads (dem/cachefile.py)"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "heritage_step", "links the items job's pageview months: pipeline::pageviews holds each it reads (store::cachefile)"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "items_step", "the items job's arguments: pipeline::pageviews holds each month it reads (store::cachefile)"),
     ("crates/pipeline/src/bin/scenic-build.rs", "heritage_epoch", "the heritage epoch's folder, which room-making never deletes"),
     ("crates/pipeline/src/bin/scenic-build.rs", "peaks_step", "the peaks job's arguments: RawTiles holds what it reads"),
     ("crates/pipeline/src/bin/scenic-build.rs", "terrain_step", "the terrain job's arguments: RawTiles holds what it reads"),
@@ -156,26 +154,7 @@ fn every_cache_read_goes_through_the_accessor() {
             bad.push(format!("{rel}:{} in fn {name}: {}", i + 1, l.trim()));
         }
     }
-    let mut py = Vec::new();
-    files(&root.join("dem"), "py", &mut py);
-    for f in py {
-        let rel = f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
-        let text = std::fs::read_to_string(&f).unwrap();
-        let lines: Vec<&str> = text.lines().collect();
-        for (i, l) in lines.iter().enumerate() {
-            if l.trim_start().starts_with('#') || !PY_MARKERS.iter().any(|m| l.contains(m)) {
-                continue;
-            }
-            let Some((name, body)) = enclosing(&lines, i, "def ") else { continue };
-            // (The counts from before the indexes, {month}.json, which room-making never deletes;
-            // the progress line's estimate of the bytes to move, which relies on nothing it reads.)
-            if body.contains("cachefile.") || name == "_cached" || name == "_plan" {
-                continue;
-            }
-            bad.push(format!("{rel}:{} in def {name}: {}", i + 1, l.trim()));
-        }
-    }
-    assert!(bad.is_empty(), "cache paths named outside the accessor (store::cachefile, dem/cachefile.py); route them through it, or list the function in EXEMPT with why:\n{}", bad.join("\n"));
+    assert!(bad.is_empty(), "cache paths named outside the accessor (store::cachefile); route them through it, or list the function in EXEMPT with why:\n{}", bad.join("\n"));
 }
 
 /// Every exemption still names a function that's there (a stale one would let a new reader by).
@@ -189,36 +168,6 @@ fn every_exemption_names_a_function_there() {
             "{f}: no fn {name}"
         );
     }
-}
-
-/// The Python steps' side, under the same chaos (tools/check/pageviews_chaos.py): pageviews.py's
-/// lookups, while another process deletes every cache file no job holds as fast as it can, give
-/// what the first did. (Passed over, said, where python3 has no `compression.zstd`: before 3.14.)
-#[test]
-fn the_python_steps_hold_what_they_read() {
-    let ok = store::spawn::status(store::spawn::command("python3").args(["-I", "-c", "from compression import zstd"]))
-        .is_ok_and(|s| s.success());
-    if !ok {
-        eprintln!("python3 with compression.zstd isn't here: pageviews_chaos.py not run");
-        return;
-    }
-    let d = tempfile::tempdir().unwrap();
-    // (No network, as the script makes sure for itself too: SCENIC_FETCH_OFFLINE, and a proxy that
-    // refuses for what it runs.)
-    let out = store::spawn::output(
-        store::spawn::command("python3")
-            .env("SCENIC_FETCH_OFFLINE", "1")
-            .env("ALL_PROXY", "http://127.0.0.1:9")
-            .env("HTTPS_PROXY", "http://127.0.0.1:9")
-            .env("HTTP_PROXY", "http://127.0.0.1:9")
-            .arg("-I")
-            .arg(root().join("tools/check/pageviews_chaos.py"))
-            .arg(d.path()),
-    )
-    .unwrap();
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "{err}");
-    assert!(err.contains("40 lookups alike") && !err.contains("\"deleted\": 0"), "{err}");
 }
 
 /// Every request to the internet asks `pipeline::fetch::online` first, so a check run on scratch

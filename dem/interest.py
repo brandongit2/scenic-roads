@@ -2,7 +2,7 @@
 """How interesting each stop & sight and heritage site is: fame, and rarity nearby.
 
   fa  fame: log10(1 + average monthly Wikipedia pageviews), summed over the place's articles in
-      the map's languages (pageviews.py); without any, a little for Wikidata sitelinks (articles
+      the map's languages (pipeline::pageviews); without any, a little for Wikidata sitelinks (articles
       in other languages). A viewpoint's item counts only when it is a landscape or lookout
       (VIEW_ITEM), not a mine or chapel that happens to be tagged as a viewpoint. Places with
       neither tie at 0, and ties are broken by a small amount (at most 0.01, so never above a
@@ -143,7 +143,7 @@ def main() -> None:
     with phase("the layers and details read", "disk"):
         views = json.loads(PV.read_text()) if PV.exists() else {}
     if not views:
-        print("interest: no pageviews yet (pageviews.py); fame from sitelinks only", file=sys.stderr)
+        print("interest: no pageviews yet (pipeline::pageviews); fame from sitelinks only", file=sys.stderr)
 
     def fame(qid: str | None, sl: int) -> tuple[float, float | None]:
         pv = views.get(qid) if qid else None

@@ -25,8 +25,8 @@
 //! over as in use.)
 //!
 //! A cache file read whole at once (a raw terrain tile) is locked only while it's read (`read`).
-//! Folders go file by file, then empty folders (`remove_tree`). dem/cachefile.py is the same for
-//! the Python steps. On WebAssembly (no locks, no deleter) it only reads and fills.
+//! Folders go file by file, then empty folders (`remove_tree`). On WebAssembly (no locks, no
+//! deleter) it only reads and fills.
 
 use std::collections::HashMap;
 use std::fs::File;

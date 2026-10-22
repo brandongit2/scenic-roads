@@ -3357,7 +3357,8 @@ fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
 }
 
 /// items [--pass <date>] [--dem dir] [--cache dir]: facts and pageviews for the current z6 tiles'
-/// candidates' Wikidata items (dem/items.py, per pass epoch), as sources/items/<date>/{facts,views}.
+/// candidates' Wikidata items (dem/items.py, then pipeline::pageviews, per pass epoch), as
+/// sources/items/<date>/{facts,views}.
 /// What items.py fetched is kept on the NAS too (pipeline::answers:
 /// sources/items/<date>/answers.tar.zst), made one with its cache here as it starts, and sent there
 /// as it ends, finished or not, or at the next start when it was stopped (the agent's SIGTERM ends
@@ -3415,7 +3416,6 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let declared = pipeline::inputs::sources::write_for_python(out.root(), &out.manifest, scratch)?;
     c.current_dir(&dem)
         .env("SCENIC_PARTS", serde_json::to_string(PARTS)?)
-        .env("SCENIC_PAGEVIEWS_STORE", out.root().join("sources/pageviews"))
         .env(pipeline::inputs::sources::PYTHON_ENV, &declared)
         .args(["run", "python", "items.py", "--qids"])
         .arg(&qfile)
@@ -3439,6 +3439,9 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         Err(e) => eprintln!("items: the pass's answers not sent to the NAS now ({e:#}); the next start sends them"),
     }
     anyhow::ensure!(st.success(), "items.py failed: {st}");
+    parts.start(3);
+    let months = pageview_months(out, cache.join("months"))?;
+    pipeline::pageviews::items(&cache, &date, &views, facts.len(), &months, &dir)?;
     parts.start(4);
     let _p = phase("uploaded", Class::NasWrite);
     for name in ["facts", "views", "meta"] {
@@ -3450,8 +3453,8 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 }
 
 /// heritage [--pass <date>] [--dem dir] [--cache dir]: the rest of the heritage chain
-/// (pipeline::heritagewd, pipeline::heritagedetails, pipeline::areadetails, whsshapes, pipeline::filterprops, interest's heritage part,
-/// pageviews; then the map's layers, pipeline::heritage_layers) in the stand-in root on the
+/// (pipeline::heritagewd, pipeline::heritagedetails, pipeline::areadetails, whsshapes, pipeline::filterprops,
+/// pipeline::pageviews, interest's heritage part; then the map's layers, pipeline::heritage_layers) in the stand-in root on the
 /// heritage-sites job's outputs (docs/phase5.md "Heritage and area flags"), over the same cover: the pass's areas and named objects within it
 /// (named with the chain's filter), and for the World Heritage parts the pass's `whs` set within
 /// it (one clip per set and cover, kept in the cache: `whs_over_cover`). The park facts are the pass's answers'
@@ -3481,13 +3484,13 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         "Writing the map's layers and uploading them",
     ]);
     let chain = [
-        (1, "heritagewd", vec![]),
-        (1, "heritagedetails", vec![]),
-        (1, "areadetails", vec![]),
-        (2, "whsshapes.py", vec![]),
-        (2, "filterprops", vec![]),
-        (3, "pageviews.py", vec!["--epoch", date.as_str()]),
-        (3, "interest.py", vec![]),
+        (1, "heritagewd"),
+        (1, "heritagedetails"),
+        (1, "areadetails"),
+        (2, "whsshapes.py"),
+        (2, "filterprops"),
+        (3, "pageviews"),
+        (3, "interest.py"),
     ];
     parts.start(0);
     stage(0, 5, "reading the pass's answers and the heritage sites");
@@ -3587,7 +3590,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             wikipedia: s.role(WIKIPEDIA)?.url()?.to_string(),
         }
     };
-    for (k, (part, script, sargs)) in chain.iter().enumerate() {
+    for (k, (part, script)) in chain.iter().enumerate() {
         if k == 0 || chain[k - 1].0 != *part {
             parts.start(*part);
         }
@@ -3595,7 +3598,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         stage(mine.iter().position(|s| s == script).unwrap_or(0) as u64, mine.len() as u64, script);
         if *script == "heritagewd" {
             // (Ours, as the next: pipeline::heritagewd, pipeline::heritagedetails, pipeline::areadetails,
-            // pipeline::filterprops.)
+            // pipeline::filterprops, pipeline::pageviews.)
             let _p = phase("heritagewd", Class::Mixed);
             pipeline::heritagewd::run(&root, &ends)?;
         } else if *script == "heritagedetails" {
@@ -3607,8 +3610,11 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         } else if *script == "filterprops" {
             let _p = phase("filterprops", Class::Mixed);
             pipeline::filterprops::run(&b)?;
+        } else if *script == "pageviews" {
+            let _p = phase("pageviews", Class::Mixed);
+            pipeline::pageviews::heritage(&root, &date, &ends.wikidata, &pageview_months(out, pv.join("months"))?)?;
         } else {
-            heritage_script(&root, &dem, out.root(), Some(&declared), script, sargs)?;
+            heritage_script(&root, &dem, Some(&declared), script, &[])?;
         }
     }
     parts.start(4);
@@ -3852,23 +3858,14 @@ fn heritage_root(scratch: &Path, dem: &Path, epoch: Option<&Path>) -> Result<Pat
 /// (`dem/.venv`, which uv makes from the app's lock file the first time a step runs on a Mac, as
 /// for every other Python step; the lock file as is), given the declared sources' file `declared`
 /// when it reads any (pipeline::inputs::sources::write_for_python).
-fn heritage_script(
-    root: &Path,
-    dem: &Path,
-    nas: &Path,
-    declared: Option<&Path>,
-    script: &str,
-    args: &[&str],
-) -> Result<()> {
+fn heritage_script(root: &Path, dem: &Path, declared: Option<&Path>, script: &str, args: &[&str]) -> Result<()> {
     let t = std::time::Instant::now();
     let mut c = store::spawn::command("uv");
     if let Some(d) = declared {
         c.env(pipeline::inputs::sources::PYTHON_ENV, d);
     }
-    // (The pageview months' indexes the items job keeps, on the NAS: pageviews.py.)
     c.current_dir(root.join("dem"))
         .env("UV_PROJECT_ENVIRONMENT", dem.join(".venv"))
-        .env("SCENIC_PAGEVIEWS_STORE", nas.join("sources/pageviews"))
         .args(["run", "--frozen", "python", script])
         .args(args);
     // (Its phase, its own phases under it: dem/timings.py.)
@@ -3878,6 +3875,15 @@ fn heritage_script(
     anyhow::ensure!(st.success(), "{script} failed: {st}");
     eprintln!("heritage: {script} done ({:.0?})", t.elapsed());
     Ok(())
+}
+
+/// The pageview months' indexes (pipeline::pageviews): this Mac's in `dir` (the items job's cache's
+/// `months`), the NAS's in `sources/pageviews`, a month's dump where the declared `pageviews` source
+/// says.
+fn pageview_months(out: &Out, dir: PathBuf) -> Result<pipeline::pageviews::Months> {
+    let s = pipeline::inputs::sources::read(out.root(), &out.manifest)?;
+    let url = s.role(pipeline::inputs::sources::PAGEVIEWS)?.url()?.to_string();
+    Ok(pipeline::pageviews::Months::new(dir, Some(out.root().join("sources/pageviews")), url))
 }
 
 /// The accepted version of input `unit` the step reads: the index the agent names (`--<unit>-index`,
@@ -3989,7 +3995,7 @@ fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result
     if let Some(m) = &match_arg {
         hargs.extend(["--matches", m.as_str()]);
     }
-    heritage_script(&root, &dem, out.root(), None, "heritage.py", &hargs)?;
+    heritage_script(&root, &dem, None, "heritage.py", &hargs)?;
     parts.start(3);
     // The z6 tiles' slices, then the whole files.
     let p = phase("the sites and areas sliced per z6 tile", Class::Compute);

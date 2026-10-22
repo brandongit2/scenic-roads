@@ -57,7 +57,7 @@ pub const ROLES: [(&str, &[&str], &[&str]); 18] = [
     (WIKIDATA_LIVE, &["sparql"], &[]),
     // (Wikipedia's short descriptions: crate::heritagewd.)
     (WIKIPEDIA, &["mediawiki-api"], &[]),
-    // (Wikipedia's monthly pageviews: dem/pageviews.py; the months are the items job's.)
+    // (Wikipedia's monthly pageviews: crate::pageviews, which picks the months.)
     (PAGEVIEWS, &["pageviews-dump"], &["{y}", "{m}"]),
     // (Lakes missing from OSM, Canada: crate::lakefill. Shapefile zips, its files kept by hand.)
     (LAKE_FILL, &["zip-shapefile"], &[]),
@@ -975,7 +975,7 @@ mod tests {
         accept_fixture(d.path(), &mut m);
         let p = write_for_python(d.path(), &m, &d.path().join("job")).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap();
-        // (crate::heritagewd's query service and its Wikipedia API, whsshapes.py's query service, pageviews.py's DUMP.)
+        // (crate::heritagewd's query service and its Wikipedia API, whsshapes.py's query service, crate::pageviews's dumps.)
         assert_eq!(v[WIKIDATA]["url"], "https://qlever.dev/api/wikidata");
         assert_eq!(v[WIKIPEDIA]["url"], "https://en.wikipedia.org/w/api.php");
         assert_eq!(v[WIKIDATA_LIVE]["url"], "https://query.wikidata.org/sparql");

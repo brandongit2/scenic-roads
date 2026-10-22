@@ -67,23 +67,23 @@ pub struct Endpoints {
 }
 
 /// A dict that keeps its keys' first places, as Python's.
-struct Ordered<V> {
-    keys: Vec<String>,
-    vals: Vec<V>,
+pub(crate) struct Ordered<V> {
+    pub(crate) keys: Vec<String>,
+    pub(crate) vals: Vec<V>,
     at: HashMap<String, usize>,
 }
 
 impl<V> Ordered<V> {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Ordered { keys: vec![], vals: vec![], at: HashMap::new() }
     }
-    fn get(&self, k: &str) -> Option<&V> {
+    pub(crate) fn get(&self, k: &str) -> Option<&V> {
         self.at.get(k).map(|&i| &self.vals[i])
     }
-    fn has(&self, k: &str) -> bool {
+    pub(crate) fn has(&self, k: &str) -> bool {
         self.at.contains_key(k)
     }
-    fn set(&mut self, k: &str, v: V) {
+    pub(crate) fn set(&mut self, k: &str, v: V) {
         match self.at.get(k) {
             Some(&i) => self.vals[i] = v,
             None => {
@@ -100,7 +100,7 @@ impl<V> Ordered<V> {
         let i = self.at[k];
         &mut self.vals[i]
     }
-    fn iter(&self) -> impl Iterator<Item = (&String, &V)> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&String, &V)> {
         self.keys.iter().zip(&self.vals)
     }
 }
@@ -115,7 +115,7 @@ fn dict(kv: Vec<(&str, Py)>) -> Py {
 }
 
 /// Writes through a temporary file and a rename: a run stopped midway leaves the old file.
-fn write_atomic(p: &Path, text: &str) -> Result<()> {
+pub(crate) fn write_atomic(p: &Path, text: &str) -> Result<()> {
     let tmp = p.with_file_name(format!("{}.tmp", p.file_name().unwrap().to_string_lossy()));
     std::fs::write(&tmp, text).with_context(|| format!("write {}", tmp.display()))?;
     std::fs::rename(&tmp, p)?;
@@ -439,7 +439,7 @@ fn item(i: usize, prop: &str, id: &str, rec: &[(String, Py)]) -> Py {
 }
 
 /// Per item: the number of Wikipedia articles (any language) and their `lang|title` list.
-fn wikipedias(ask: &Asker, endpoint: &str, qids: &[String]) -> Result<Vec<(String, Py)>> {
+pub(crate) fn wikipedias(ask: &Asker, endpoint: &str, qids: &[String]) -> Result<Vec<(String, Py)>> {
     let _p = phase("Wikipedia articles looked up", Class::Net);
     let mut out = Vec::new();
     for (k, chunk) in qids.chunks(1000).enumerate() {
@@ -554,7 +554,7 @@ fn shortdescs(ask: &Asker, api: &str, titles: &[String]) -> Result<Ordered<Strin
 }
 
 /// A JSON-lines cache: each line by its key (`key` of the line), first places kept, last values.
-fn read_lines(p: &Path, key: impl Fn(&Py) -> Result<String>) -> Result<Ordered<Py>> {
+pub(crate) fn read_lines(p: &Path, key: impl Fn(&Py) -> Result<String>) -> Result<Ordered<Py>> {
     let mut out = Ordered::new();
     if p.exists() {
         let text = std::fs::read_to_string(p).with_context(|| format!("read {}", p.display()))?;

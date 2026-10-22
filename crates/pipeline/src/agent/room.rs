@@ -9,7 +9,7 @@
 //! square; scenic-metrics marks a square used when it reads it), AWS's raw terrain tiles
 //! (`aws-terrarium/`, read once per terrain run), the copies of the records' files staging
 //! reads (`blobs/`, store::blobs), and the pageview months' indexes (`items/months/`, ~600 MB each,
-//! read once per items or heritage run: dem/pageviews.py's copies, which it marks used as it reads
+//! read once per items or heritage run: crate::pageviews's copies, which it marks used as it reads
 //! them). They fill again from the NAS (`sources/canopy/`, `sources/aws-terrarium/`, the store,
 //! `sources/pageviews/`), never from the internet.
 //! - Canopy squares, copies of the records' files and pageview months not read in the last hour go
@@ -34,7 +34,7 @@
 //!   each shard, one large write each, none kept here), then go; the copies of its archives here
 //!   (`aws-terrarium/packs/`) go as the copies of the records' files do, each by its own use (a
 //!   job marks one used when it opens it), without asking it.
-//! - A pageview month's index goes once the NAS has it at its size; one it lacks stays (pageviews.py
+//! - A pageview month's index goes once the NAS has it at its size; one it lacks stays (crate::pageviews
 //!   puts it there when it next reads it), as do the counts from before the indexes: none is copied
 //!   there from here.
 //!
@@ -113,7 +113,7 @@ const RECENT: std::time::Duration = std::time::Duration::from_secs(3600);
 const CHEAP: [(&str, &str); 4] =
     [("chm10", "canopy"), ("aws-terrarium", "aws-terrarium"), ("blobs", ""), (MONTHS, "pageviews")];
 
-/// The pageview months' indexes here (dem/pageviews.py's copies of the NAS's `sources/pageviews/`).
+/// The pageview months' indexes here (crate::pageviews's copies of the NAS's `sources/pageviews/`).
 pub const MONTHS: &str = "items/months";
 
 /// Bytes the cheap caches hold (what `make_room` can free on the lead: a member's,
@@ -134,7 +134,7 @@ fn cheap_file(cache: &Path, p: &Path) -> bool {
 }
 
 /// The bytes of the pageview months' indexes here that the NAS's `sources` has at their size: what
-/// room-making or a clear can free of them (one it lacks stays, for pageviews.py to put
+/// room-making or a clear can free of them (one it lacks stays, for crate::pageviews to put
 /// there). Nothing in the NAS's project folder (`ours`).
 fn months_bytes(cache: &Path, sources: &Path) -> u64 {
     let mut files = Vec::new();
@@ -251,7 +251,7 @@ pub struct Freed {
     pub freed: BTreeMap<String, u64>,
     /// What stays of what it went through: files the NAS hasn't (a helper's loose raw tiles, which
     /// only its own jobs pack; a canopy square it couldn't take now; a pageview month's index, which
-    /// pageviews.py puts there when it next reads it; the DEM seed, for a clear).
+    /// crate::pageviews puts there when it next reads it; the DEM seed, for a clear).
     #[serde(default)]
     pub left: u64,
     /// Why it wasn't done, when it wasn't (a clear asked for while a job ran here, or while the
@@ -1030,7 +1030,7 @@ fn fate(cache: &Path, sources: &Path, p: &Path, listed: &mut Listed) -> Fate {
     if names.get(name) == Some(&len) || there() {
         return Fate::Go;
     }
-    // (An index the NAS lacks: pageviews.py puts it there when it next reads it.)
+    // (An index the NAS lacks: crate::pageviews puts it there when it next reads it.)
     if month {
         return Fate::Stay;
     }
@@ -1832,7 +1832,7 @@ mod tests {
             file(&nas.join(format!("dem-cache/dem-cache.{n}")), len, 60);
         }
         // What stays: the answers the NAS keeps too (they free little), a pageview month the NAS
-        // lacks (said as kept: pageviews.py puts it there when it next reads it), what frees next to
+        // lacks (said as kept: crate::pageviews puts it there when it next reads it), what frees next to
         // nothing, the agent's own timings, what z6 tiles kept that isn't on the NAS yet; and
         // everything outside the caches (the agent's state, logs, work and outbox, the map's
         // mirror).

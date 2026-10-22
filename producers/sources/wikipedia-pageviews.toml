@@ -5,7 +5,7 @@ licence = "CC0-1.0"
 licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
 source = "https://dumps.wikimedia.org/other/pageview_complete/readme.html"
 territory = "world"
-notes = "A month's dump streamed once into an index kept in sources/pageviews/ (dem/pageviews.py); which months are read is the items job's rule (MONTHS), not the declaration's."
+notes = "A month's dump streamed once into an index kept in sources/pageviews/ (pipeline::pageviews); which months are read is the jobs' rule (pipeline::pageviews::months_before), not the declaration's."
 
 [data]
 role = "pageviews"

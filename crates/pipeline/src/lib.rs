@@ -51,6 +51,8 @@ pub mod osmpass;
 pub mod out;
 pub mod outlines;
 pub mod ovconv;
+#[cfg(not(target_os = "wasi"))]
+pub mod pageviews;
 pub mod peaks;
 pub mod pool;
 pub mod pubtimes;

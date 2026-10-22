@@ -195,8 +195,8 @@ after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sit
     bound; nothing higher within 5,000 km gives a lower bound).
   - "Sea" is ≤ 0 m (negative values are clamped).
   - **Output:** `work/peaks/<u>` by candidate key: e, p, pl, c, ce, iso, il, hi.
-- **`items`** (`dem/items.py`, per pass): Wikidata facts for single-QID tags, and pageviews for the
-  first QID: the mean of the last November, February, May and August ended 20 days before the pass.
+- **`items`** (`dem/items.py`, then `pipeline::pageviews`, per pass): Wikidata facts for single-QID
+  tags, and pageviews for the first QID: the mean of the last November, February, May and August ended 20 days before the pass.
   Everything is fetched again each pass; between passes only QIDs not seen. Caches are appended
   5,000 items at a time. The answers are kept on the NAS (`sources/items/<d>/answers.tar.zst`:
   docs/macs.md, Downloads). meta holds the months and the fetch days. User-Agent "scenic-roads/0.1
@@ -212,7 +212,7 @@ after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sit
 ### Heritage and area flags
 
 The heritage chain (heritage.py, pipeline::heritagewd, pipeline::heritagedetails, pipeline::areadetails, whsshapes.py,
-pipeline::filterprops, pageviews.py, interest.py) runs in a stand-in root laid out as the
+pipeline::filterprops, pipeline::pageviews, interest.py) runs in a stand-in root laid out as the
 repository (`dem/` the app's scripts, `data/heritage/` the pass's working copy of the answers;
 docs/inputs.md §6.5.2), split into two jobs so the z6 tiles never wait on Wikidata.
 - **The registers** are an input (docs/inputs.md §6.5): heritage-sites links the accepted registers
@@ -239,8 +239,8 @@ docs/inputs.md §6.5.2), split into two jobs so the z6 tiles never wait on Wikid
   grid and asks what the answers lack through crate::wikiask (the job's proxy, each host's
   robots.txt read first and obeyed, but for the declared Wikipedia API, which the owner exempted
   (22 Oct 2026: English Wikipedia's robots.txt disallows `/w/` to crawlers; Wikimedia's API
-  etiquette, a User-Agent and a polite rate, is kept by the budget's proxy)); pipeline::areadetails asks Wikidata for parks the answers lack; pageviews.py takes the pass's
-  months. The map's layers are written last, in Rust (`pipeline::heritage_layers`: the lean
+  etiquette, a User-Agent and a polite rate, is kept by the budget's proxy)); pipeline::areadetails asks Wikidata for parks the answers lack; pipeline::pageviews takes the
+  pass's months. The map's layers are written last, in Rust (`pipeline::heritage_layers`: the lean
   layer files, the sites' popup records, the areas simplified by a port of GEOS's topology-preserving
   simplifier, `pipeline::tpsimplify`). The layers' `en` is the things' own; the server adds
   translations. Outputs:

@@ -37,7 +37,6 @@ const ASKS: &[(&str, &str)] = &[
     ("crates/pipeline/src/areadetails.rs", "names English Wikipedia's site in its query, asked through crate::wikiask"),
     ("dem/items.py", "names Wikidata's entities in its queries, asked through wdquery.sparql"),
     ("dem/whsshapes.py", "urllib (honours HTTPS_PROXY), a query its cache lacks, of the declared wikidata-live source; a 429 told (budget.seen)"),
-    ("dem/pageviews.py", "curl and urllib (both honour HTTPS_PROXY): a month's dump of the declared pageviews source a connection; a 429 fails the month (curl --fail), tried again by the step's next run, not told"),
     ("dem/bldfetch.py", "the declared buildings and building-heights sources (Overture's bucket, GHSL's tiles), not metered"),
     ("dem/buildings.py", "the declared buildings source's bucket (DuckDB), not metered"),
     ("dem/bldprep.py", "the declared building-heights source's version alone (its folder): asks nothing"),

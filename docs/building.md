@@ -107,7 +107,7 @@ from the first (`edit_held`).
   past the target; no fixed reserve; pass-sets, which makes the pass's missing sets, copies the
   filtered planet here only with its size and 20 GB free past the target), copies of what the NAS keeps
   lose files until there's a sixth more.
-  - **Mid-job, safely by design** (`store::cachefile`, `dem/cachefile.py`): every cache read goes
+  - **Mid-job, safely by design** (`store::cachefile`): every cache read goes
     through one accessor that refills a missing file from where that cache fills from, so a wrong
     deletion costs a fetch, never a failure. A job holds each cache file it uses with a shared
     `flock`; a file is deleted only under an exclusive lock taken without waiting; a file is made

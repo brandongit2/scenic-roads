@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Facts and pageviews for the landmark candidates' Wikidata items, per pass epoch (the `items`
-job, docs/phase5.md "items").
+"""Facts and Wikipedia articles for the landmark candidates' Wikidata items, per pass epoch (the
+`items` job, docs/phase5.md "items"; their pageviews are the job's next part, pipeline::pageviews).
 
 Input (--qids): JSON {"facts": [QIDs], "views": [QIDs]}, from the current units' candidates:
 "facts" the items of tags that are one QID (as today: a multi-QID tag gets no facts), "views"
@@ -13,21 +13,15 @@ under --cache, appended a chunk at a time (a run stopped midway keeps what it fe
   facts-<epoch>.jsonl      QID → its facts (`wikidata`: sitelinks, descriptions, heights …)
   wp-<epoch>.jsonl         QID → its Wikipedia articles (wdquery.wikipedias)
   fetched-<epoch>.json     the first and last days anything was fetched for the epoch
-  months/<m>.tsv.zst       one month's index: every article of the map's languages with its
-                           views, streamed once, kept on the NAS too (pageviews.month_views)
-  months/<m>.json, <m>.counted.json   from before the index: the views of the articles asked
-The first three are kept on the NAS too (sources/items/<epoch>/answers.tar.zst, with
+They are kept on the NAS too (sources/items/<epoch>/answers.tar.zst, with
 kept-<epoch>.json here saying which of its archives they last matched: scenic-build's items step,
 pipeline::answers), so a run on another Mac, or here after the cache is lost, asks only about items
 not seen yet. To ask Wikidata again, delete facts-<epoch>.jsonl (or wp-) here: the deletion goes to
-the NAS with the next run, which asks about every item again. Older epochs' files, and months older
-than the epoch's (here: the NAS keeps its indexes), go at the end of a run.
-The four months are the last November, February, May and August whose dumps are out by the epoch
-(ended at least 20 days before it), pinned for it.
+the NAS with the next run, which asks about every item again. Older epochs' files go at the end of a
+run.
 
-Output (--out dir): facts.json (QID → record) and views.json (QID → mean monthly views over the
-four months, 1 dp), with meta.json (epoch, months, the days fetched, counts). Every failed query or
-download fails the run (no silently skipped batch).
+Output (--out dir): facts.json (QID → record). Every failed query fails the run (no silently
+skipped batch).
 
 usage: items.py --qids qids.json --epoch 2026-09-28 --cache dir --out dir
 """
@@ -41,7 +35,6 @@ import sys
 from pathlib import Path
 
 import wdquery
-import pageviews
 from wdquery import sparql, val
 from timings import count, phase
 
@@ -50,9 +43,6 @@ CHUNK = 5000
 # Items per Wikidata query.
 WD_BATCH = 250
 
-
-# The epoch's four months (pageviews.months_before, shared with the heritage chain).
-months_before = pageviews.months_before
 
 
 def wikidata(qids: list[str], progress=None) -> dict[str, dict]:
@@ -139,7 +129,7 @@ def append_jsonl(p: Path, rows: list[dict]) -> None:
 
 def part(i: int) -> None:
     """Marks one of the job's parts beginning, for the build's status (scenic-build's items step
-    names them, SCENIC_PARTS: this script's are the facts, the articles, the pageviews), with its
+    names them, SCENIC_PARTS: this script's are the facts and the articles), with its
     progress line, so the part before's last one isn't shown under it."""
     names = os.environ.get("SCENIC_PARTS")
     if names:
@@ -210,33 +200,15 @@ def main() -> None:
             wp.update((r["qid"], r) for r in rows)
             note_fetch()
 
-    # Pageviews over the epoch's four months (pageviews.month_views caches each month's counts).
-    months = months_before(a.epoch)
-    pageviews.OUT = cache
-    with phase("the articles listed", "compute"):
-        arts_of = {q: [x for x in wp.get(q, {}).get("arts", []) if "|" in x and x.split("|", 1)[0] in pageviews.LANGS] for q in views_q}
-        norm = lambda x: x.split("|", 1)[0] + "|" + x.split("|", 1)[1].replace(" ", "_")
-        wanted = {norm(x) for arts in arts_of.values() for x in arts}
-    part(3)
-    print(f"views: {len(wanted)} articles over {', '.join(months)}", file=sys.stderr, flush=True)
-    per_month = pageviews.months_views(months, wanted)
-    with phase("the views summed", "compute"):
-        views = {q: round(sum(pm.get(norm(x), 0) for pm in per_month for x in arts) / len(months), 1) for q, arts in arts_of.items() if arts}
-
     with phase("the outputs written", "disk"):
         write_json(out / "facts.json", {q: facts[q] for q in facts_q if not facts[q].get("missing")})
-        write_json(out / "views.json", views)
-        write_json(out / "meta.json", {"epoch": a.epoch, "months": months, "fetched": [fetched.get("first"), fetched.get("last")], "facts": len(facts_q), "views": len(views)})
-    # Older epochs' caches go, and months before this epoch's (later epochs' months are later).
+    # Older epochs' caches go.
     with phase("the old caches deleted", "disk"):
         for p in cache.iterdir():
             stem = p.name.split(".", 1)[0]
             if p.is_file() and "-" in stem and stem.split("-", 1)[0] in ("facts", "wp", "fetched", "kept") and stem.split("-", 1)[1] < a.epoch:
                 p.unlink()
-        for p in (cache / "months").iterdir() if (cache / "months").is_dir() else ():
-            if p.is_file() and p.name[:7] < months[0]:
-                p.unlink()
-    print(f"items: {len(facts_q)} facts, {len(views)} items with views", file=sys.stderr)
+    print(f"items: {len(facts_q)} facts, articles for {len(views_q)} items", file=sys.stderr)
 
 
 if __name__ == "__main__":
