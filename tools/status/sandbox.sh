@@ -29,6 +29,11 @@ setup)
     mkdir -p $home/app/$v
     zsh $src/bundle.sh $home/app/$v $v - --sandbox $home >/dev/null
   done
+  # (v2's launcher signed otherwise, with the hardened runtime: another cdhash, as an update that
+  # changes the launcher brings, so the update tests the build service registered again.)
+  v2="$home/app/v2/Scenic Sandbox.app"
+  codesign -s - -i local.scenic-sandbox.launcher -o runtime --force "$v2/Contents/MacOS/scenic-launcher"
+  codesign -s - -i local.scenic-sandbox.app --force "$v2"
   ln -sfh v1 $home/app/current
   rm -rf "$dir/Applications/Scenic Sandbox.app"
   ditto "$home/app/v1/Scenic Sandbox.app" "$dir/Applications/Scenic Sandbox.app"

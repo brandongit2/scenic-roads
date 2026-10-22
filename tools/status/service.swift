@@ -24,6 +24,7 @@
 // ScenicOpenAtLogin (whether the app adds itself to the login items).
 
 import AppKit
+import Security
 import ServiceManagement
 
 let info = Bundle.main.infoDictionary ?? [:]
@@ -92,16 +93,54 @@ enum JobState: Equatable {
     var running: Bool { if case .running = self { return true } else { return false } }
 }
 
-func jobState(_ label: String) -> JobState {
+func jobState(_ label: String) -> JobState { launchdPrint(label).map(parseJobState) ?? .unloaded }
+
+/// `launchctl print`'s output for a job of this user's domain, nil when it isn't loaded.
+func launchdPrint(_ label: String) -> String? {
     let (st, out) = run("/bin/launchctl", ["print", "\(domain)/\(label)"])
-    if st != 0 { return .unloaded }
-    let lines = out.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
-    // (The job's own lines, before its nested sections: "state = running", "pid = 123".)
+    return st == 0 ? out : nil
+}
+
+/// The job's own lines (one tab deep in `launchctl print`, not its nested sections' such as a
+/// coalition's "state = active"), trimmed.
+func jobLines(_ out: String) -> [String] {
+    out.split(separator: "\n").filter { $0.hasPrefix("\t") && !$0.hasPrefix("\t\t") }.map { $0.trimmingCharacters(in: .whitespaces) }
+}
+
+func parseJobState(_ out: String) -> JobState {
+    let lines = jobLines(out)
     if lines.contains("state = running"), let pid = lines.first(where: { $0.hasPrefix("pid = ") }).flatMap({ Int($0.dropFirst(6)) }) {
         return .running(pid)
     }
     return .stopped
 }
+
+/// Why launchd can't start the job, from its `launchctl print` (nil: nothing says so). A launcher
+/// whose code signature changed (a new cdhash) no longer matches the launch constraint (LWCR)
+/// launchd kept from the registration: "needs LWCR update" among its properties, and each spawn
+/// fails with EX_CONFIG (state "spawn failed", last exit code 78). Registering it again clears it.
+func spawnBroken(_ out: String) -> String? {
+    let lines = jobLines(out)
+    func value(_ key: String) -> String { lines.first { $0.hasPrefix(key + " = ") }.map { String($0.dropFirst(key.count + 3)) } ?? "" }
+    if value("properties").contains("needs LWCR update") { return "its launch constraint is out of date (needs LWCR update)" }
+    if (value("state") == "spawn failed" || value("job state") == "spawn failed") && value("last exit code").hasPrefix("78") {
+        return "spawn failed, last exit code \(value("last exit code"))"
+    }
+    return nil
+}
+
+/// The cdhash of a program's code signature, in hex (nil: unsigned or unreadable).
+func cdhash(_ path: String) -> String? {
+    var code: SecStaticCode?
+    guard SecStaticCodeCreateWithPath(URL(fileURLWithPath: path) as CFURL, [], &code) == errSecSuccess, let code else { return nil }
+    var info: CFDictionary?
+    guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
+          let d = (info as? [String: Any])?[kSecCodeInfoUnique as String] as? Data else { return nil }
+    return d.map { String(format: "%02x", $0) }.joined()
+}
+
+/// The app's launcher (the build service's launchd program) in a bundle.
+func launcherPath(_ bundle: URL) -> String { bundle.appendingPathComponent("Contents/MacOS/scenic-launcher").path }
 
 // MARK: the build service
 
@@ -120,6 +159,7 @@ final class BuildService {
     /// In words, for the window and the menu.
     var said: String {
         if let b = blocked { return "Build service: \(b)" }
+        if let b = broken { return "Build service: launchd can't start it: \(b)" }
         switch service.status {
         case .requiresApproval: return "Build service: off in Login Items (System Settings → General → Login Items)"
         case .notRegistered, .notFound: return "Build service: not set up"
@@ -142,7 +182,11 @@ final class BuildService {
         writeRunFile()
         switch service.status {
         case .enabled:
-            break
+            // (Registered by an app whose launcher was signed otherwise, as after an update that
+            // changed it: launchd's launch constraint names the old cdhash and refuses the new one.)
+            if let was = UserDefaults.standard.string(forKey: launcherKey), let now = cdhash(launcherPath(Bundle.main.bundleURL)), was != now {
+                reregister("the launcher's signature changed (cdhash \(was.prefix(12))… → \(now.prefix(12))…)")
+            }
         case .requiresApproval:
             SMAppService.openSystemSettingsLoginItems()
             return
@@ -153,12 +197,58 @@ final class BuildService {
                 return
             }
         }
+        noteLauncher()
         refresh()
+        repair()
         if !state.running { kick() }
         followApp()
     }
 
-    func refresh() { state = jobState(buildLabel) }
+    func refresh() {
+        let out = launchdPrint(buildLabel)
+        state = out.map(parseJobState) ?? .unloaded
+        broken = out.flatMap(spawnBroken)
+    }
+    /// Why launchd can't start it (`spawnBroken`), as the last refresh found.
+    var broken: String?
+
+    /// The cdhash of the launcher the service was registered with (kept in the app's defaults:
+    /// the sandbox's are its own), noted while it's registered.
+    let launcherKey = "registeredLauncherCDHash"
+    func noteLauncher() {
+        if service.status == .enabled, let h = cdhash(launcherPath(Bundle.main.bundleURL)) { UserDefaults.standard.set(h, forKey: launcherKey) }
+    }
+
+    /// launchd refuses to start it (`broken`): registered again and started. At launch and each poll.
+    func repair() {
+        guard blocked == nil, quitting == nil, let why = broken else { return }
+        reregister("launchd can't start the build service: \(why)")
+    }
+
+    /// The job registered afresh from this app (unregistered, gone from launchd, registered: a new
+    /// launch constraint) and started, each step in update.log. Once per launch at most: after
+    /// that it's logged and left (by hand: `scenic-status --unregister`, quit, open the app).
+    func reregister(_ why: String) {
+        guard !reregistered else {
+            if loggedLeft != why { updateLog("\(why); registered again once this launch already: left as it is"); loggedLeft = why }
+            return
+        }
+        reregistered = true
+        updateLog("\(why): registering the build service again")
+        do { try service.unregister() } catch { updateLog("unregistering the build service: \(error)") }
+        for _ in 0..<25 {
+            if jobState(buildLabel) == .unloaded { break }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        do { try service.register() } catch { updateLog("registering the build service: \(error)") }
+        noteLauncher()
+        refresh()
+        if !state.running { kick() }
+        updateLog("the build service registered again: \(broken.map { "still \($0)" } ?? (state.running ? "running" : "not running"))")
+    }
+    /// Registered again this launch (`reregister`): once at most.
+    var reregistered = false
+    var loggedLeft: String?
 
     /// The running launcher's executable when it isn't this app's (nil: it is, or nothing runs).
     /// After an update swapped the app, the launcher launchd started goes on from the old bundle,
@@ -186,19 +276,10 @@ final class BuildService {
         NSLog("scenic: the build service's launcher runs from \(path), not this app: restarting it")
         run("/bin/launchctl", ["kickstart", "-k", "\(domain)/\(buildLabel)"])
         refresh()
-        if !reregistered, let still = launcherElsewhere() {
-            reregistered = true
-            NSLog("scenic: the launcher still runs from \(still): registering the build service again")
-            try? service.unregister()
-            do { try service.register() } catch { NSLog("scenic: registering the build service: \(error)") }
-            refresh()
-            if !state.running { kick() }
-        }
+        if let still = launcherElsewhere() { reregister("the launcher still runs from \(still)") }
         return true
     }
     var lastFollow = Date.distantPast
-    /// The fallback (registered again) taken this launch: once at most.
-    var reregistered = false
 
     /// The app's copies left aside by updates (.<name>.old-<pid> beside it), deleted once no process
     /// runs from them.
@@ -260,6 +341,7 @@ final class BuildService {
     func tend() {
         refresh()
         if blocked != nil { return }
+        repair()
         if quitting == nil, service.status == .enabled, !state.running, Date().timeIntervalSince(lastKick) > 60 {
             kick()
         }
@@ -501,6 +583,11 @@ func replaceSelf(with new: URL) -> Bool {
         try? FileManager.default.removeItem(at: tmp)
         return false
     }
+    // (A launcher signed otherwise no longer matches launchd's launch constraint: the new app,
+    // opened, registers the service again before it starts it, BuildService.start.)
+    if let a = cdhash(launcherPath(me)), let b = cdhash(launcherPath(tmp)), a != b {
+        updateLog("the new app's launcher is signed otherwise (cdhash \(a.prefix(12))… → \(b.prefix(12))…): it registers the build service again when it opens")
+    }
     guard rename(me.path, old.path) == 0 else {
         try? FileManager.default.removeItem(at: tmp)
         return false
@@ -662,6 +749,29 @@ func testReopen() -> Never {
     let e = sim(exitAfter: 0, worksFrom: 1, already: true)
     check("doesn't open a second copy when it already runs", e.ok && e.opens == 0)
     check("the real schedule waits before its first attempt and spans about two minutes", reopenDelays.first! >= 1 && reopenDelays.reduce(0, +) >= 100)
+    print(failed == 0 ? "PASS" : "FAIL (\(failed))")
+    exit(failed == 0 ? 0 : 1)
+}
+
+/// `--test-launchd <dir>`: `parseJobState` and `spawnBroken` over captured `launchctl print`
+/// output (tools/status/test/launchctl-*.txt: the live job running, its LWCR failure, stopped);
+/// prints each and PASS or FAIL, exits 1 on a failure.
+func testLaunchd(_ dir: String) -> Never {
+    var failed = 0
+    func check(_ name: String, _ ok: Bool) {
+        print("\(ok ? "ok" : "FAIL") \(name)")
+        if !ok { failed += 1 }
+    }
+    func load(_ f: String) -> String { (try? String(contentsOfFile: "\(dir)/launchctl-\(f).txt", encoding: .utf8)) ?? "" }
+    let (running, lwcr, stopped) = (load("running"), load("lwcr"), load("stopped"))
+    check("the fixtures read", !running.isEmpty && !lwcr.isEmpty && !stopped.isEmpty)
+    check("running: its pid, not broken (its coalitions' \"state = active\" ignored)", parseJobState(running) == .running(19704) && spawnBroken(running) == nil)
+    check("needs LWCR update: broken, not running", parseJobState(lwcr) == .stopped && spawnBroken(lwcr)?.contains("LWCR") == true)
+    let failedOnly = lwcr.replacingOccurrences(of: "needs LWCR update | ", with: "")
+    check("spawn failed with exit 78 alone: broken", spawnBroken(failedOnly)?.contains("78") == true)
+    check("spawn failed with another exit: not this", spawnBroken(failedOnly.replacingOccurrences(of: "78: EX_CONFIG", with: "1")) == nil)
+    check("stopped (the agent quit, exit 76): not broken", parseJobState(stopped) == .stopped && spawnBroken(stopped) == nil)
+    check("a nested section's line doesn't count", spawnBroken(running.replacingOccurrences(of: "\t\tname = local.scenic.build", with: "\t\tproperties = needs LWCR update")) == nil)
     print(failed == 0 ? "PASS" : "FAIL (\(failed))")
     exit(failed == 0 ? 0 : 1)
 }

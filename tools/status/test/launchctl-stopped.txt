@@ -1,0 +1,92 @@
+gui/501/local.scenic.build = {
+	active count = 1
+	path = (submitted by smd.586)
+	type = Submitted
+	managed_by = com.apple.xpc.ServiceManagement
+	state = not running
+
+	program identifier = Contents/MacOS/scenic-launcher (mode: 2)
+	parent bundle identifier = local.scenic.status
+	parent bundle version = 1
+	BTM uuid = 8B99376F-D21F-44E4-A681-99E8B42491C7
+	arguments = {
+		scenic-launcher
+		agent
+	}
+
+	inherited environment = {
+		SSH_AUTH_SOCK => /var/run/com.apple.launchd.gyJRWYf6VV/Listeners
+	}
+
+	default environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+	}
+
+	environment = {
+		OSLogRateLimit => 64
+		SCENIC_LAUNCHER_LOG => ~/Library/Logs/scenic/agent.log
+		XPC_SERVICE_NAME => local.scenic.build
+	}
+
+	LWCR = {
+		"reqs" => {
+			"cdhash" => {
+				"$in" => [
+					0 = 				]
+			}
+		}
+		"vers" => 1
+		"comp" => 1
+		"ccat" => 0
+	}
+
+	domain = gui/501 [103532]
+	asid = 103532
+	minimum runtime = 10
+	exit timeout = 5
+	runs = 1
+	immediate reason = speculative
+	forks = 1
+	execs = 1
+	initialized = 1
+	trampolined = 1
+	started suspended = 0
+	proxy started suspended = 0
+	checked allocations = 0 (queried = 1)
+	checked allocations reason = no host
+	checked allocations flags = 0x0
+	last exit code = 76
+
+	semaphores = {
+		successful exit => 0
+	}
+
+	resource coalition = {
+		ID = 79385
+		type = resource
+		state = active
+		active count = 1
+		name = local.scenic.build
+	}
+
+	jetsam coalition = {
+		ID = 79386
+		type = jetsam
+		state = active
+		active count = 1
+		name = local.scenic.build
+	}
+
+	spawn type = daemon (3)
+	jetsam priority = 40
+	jetsam memory limit (active) = (unlimited)
+	jetsam memory limit (inactive) = (unlimited)
+	jetsamproperties category = daemon
+	submitted job. ignore execute allowed
+	jetsam thread limit = 32
+	cpumon = default
+	job state = exited
+	sanitizer flags = 0x0
+
+	properties = partial import | runatload | resolve program | has LWCR
+}

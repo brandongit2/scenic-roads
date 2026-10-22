@@ -30,7 +30,20 @@
   registering it again, once per launch, if that isn't enough): the agent's jobs, in process groups
   of their own, run on through it, and the agent it starts takes them over (docs/building.md §2, Restarts). It
   deletes the old copies
-  nothing runs from (the swap itself leaves them). When the agent's log shows
+  nothing runs from (the swap itself leaves them). launchd keeps a launch constraint (LWCR) for
+  the job from its registration, naming the launcher's cdhash: a launcher signed otherwise (any
+  change to `tools/launcher/launcher.c`, its build flags or its signing in `tools/status/bundle.sh`)
+  is refused at every spawn (`launchctl print gui/$UID/local.scenic.build`: "job state = spawn
+  failed", "last exit code = 78: EX_CONFIG", properties "needs LWCR update"). So the app notes the
+  cdhash it registered with (its defaults, `registeredLauncherCDHash`), and opened with another
+  launcher (an update that changed it; the swap logs it) it unregisters and registers the job
+  again before starting it; and opened, and each poll, a job launchd says it can't start
+  (`spawnBroken`: needs LWCR update, or spawn failed with exit 78) is registered again the same
+  way. Once per launch at most (with the restart's fallback above), each step in update.log; the
+  window says "launchd can't start it". By hand: `scenic-status --unregister`, quit, open Scenic.
+  `scenic-status --test-launchd tools/status/test` checks the detection against captured
+  `launchctl print` output (check.sh's swift part runs it). When
+ the agent's log shows
   "Operation not permitted" on the NAS since it started, the menu and window say the build service
   can't reach the NAS (allow Scenic in Files and Folders).
 - **Switching a Mac over** from the login items Scenic replaces (`local.scenic.agent`,

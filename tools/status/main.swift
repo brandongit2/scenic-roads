@@ -28,6 +28,8 @@
 //   scenic-status --plan                    whether opening it would manage the build service, or why not
 //   scenic-status --services                the build service's and the map server's state
 //   scenic-status --unregister              the build service and the app off the login items
+//   scenic-status --test-launchd <dir>      the build service's launchd state and LWCR failure read
+//                                           from captured launchctl output (tools/status/test)
 //   scenic-status --print                   the icon, the status's lines and the menu's items now, as text
 //   scenic-status --replay a.json b.json …  the notifications a sequence of answers would send (each
 //                                           file /api/build's answer, with this Mac's agent's
@@ -2469,6 +2471,8 @@ if let i = args.firstIndex(of: "--reopen"), i + 2 < args.count {
     reopenHelper(args[i + 1], args[i + 2])
 } else if args.contains("--test-reopen") {
     testReopen()
+} else if let i = args.firstIndex(of: "--test-launchd"), i + 1 < args.count {
+    testLaunchd(args[i + 1])
 } else if args.contains("--unregister") {
     // The build service and the app taken off the login items (the service stopped and unloaded):
     // a sandbox's cleanup, or before the app is removed.

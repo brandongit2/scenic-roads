@@ -111,10 +111,18 @@ and codesign.
   Support/scenic/run/<name>` and restarts it when it exits: `bin/scenic-launcher server` (the map
   server's LaunchAgent), and Scenic.app's own copy running `agent` (the build service; there an
   agent exiting with `QUIT_EXIT` ends it cleanly, so launchd leaves it stopped). macOS's Local
-  Network privacy counts the agent as the app's launcher (its launchd program), listed as
-  "Scenic build service" in Privacy & Security › Local Network: its Info.plist is embedded
-  (`tools/status/bundle.sh`). Without the grant the agent's probe of `fishandchips.local:445` fails
-  (the log's `nas: at home: no; … (errno 65)`, EHOSTUNREACH) while `nc` and the mount work. A server started
+  Network privacy counts the agent as the app's launcher (its launchd program); the launcher has
+  no Info.plist of its own (task #570's embedded one changed its signature and was reverted).
+  Without the grant the agent's probe of `fishandchips.local:445` fails
+  (the log's `nas: at home: no; … (errno 65)`, EHOSTUNREACH) while `nc` and the mount work.
+  A launcher whose signature changed no longer matches the build service's launch constraint
+  (LWCR, launchd: spawn failed, exit 78): Scenic registers the service again when it opens with a
+  new launcher or finds the job refused (docs/surface.md). The test, in a sandbox: `tools/status/
+  sandbox.sh setup <dir>` (v2's launcher is re-signed with the hardened runtime: another cdhash),
+  open `<dir>/Applications/Scenic Sandbox.app`, check `launchctl print gui/$UID/local.scenic-
+  sandbox.build` runs, `sandbox.sh update <dir>`; within about a minute the app replaces itself
+  and reopens, update.log says the new launcher's cdhash and "registering the build service
+  again", and the job runs (no "needs LWCR update"); `sandbox.sh clean <dir>`. A server started
   any other way (such as the desktop app's preview) waits on macOS's network-volume prompt; test
   servers run from the shell.
 - **The updater** checks the NAS's `app/current.json` every five minutes, copies a newer app locally
