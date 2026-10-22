@@ -513,22 +513,24 @@ holds the forecast's first grants to the coordinator's; at run time the lead log
 grants since the last forecast departed from that forecast's first hour (`forecast::departures`,
 "the grants departed from the forecast"). What stays outside the scheduler moves the finish: the
 times and NAS weights are measured estimates, and the repack, the owner's pauses, battery
-handovers and a NAS slower than its probe are not foreseen. The backtest
-(`backtest_against_the_history`, run by hand on the NAS's `state/` and the leads' `agent.log`)
-forecasts from each term's recorded state the jobs the history shows started until the plan's work
-first ran out (30 min with none of it running, within a day), on each Mac's slots then, each job
-ready when the history shows what it waits on done (a map tile its z6 tiles, an assembly its
-pieces, a z6 tile its terrain, a chain's step what it reads), the lead's clocked jobs (catalogs,
-backups, inputs) when they started, the lead's own held to the probes' limits the logs show (the
-members' budget switch was off; the NAS's load gate never read). Over 58 starts of 18–21 Oct
-(task #539): the plan's work runs out off by a median 16 % (80th percentile 55 %, mean −23 %, so
-early); over the 32 starts of 50 jobs or more, a median 14 %, at most 34 %; the small windows' error
-is their last job's (one with no dependency the backtest knows starts late). Busy time with 1 job
+handovers and a NAS slower than its probe are not foreseen.
+
+**The live forecast's finish is early by a median of about 65 %** (task #539's backtest, over 58
+starts of the M4-led days of 18–21 Oct): live, each job is released by the plan's dependencies
+alone (`Input::release` is empty), and work reached the plan slower than its dependencies allow
+(the lead idle half the time on 18 Oct, its slots held at 2 by its ramp and the NAS budget).
+The backtest (`backtest_against_the_history`, run by hand on the NAS's `state/` and the leads'
+`agent.log`; without them it prints that it skipped and checks nothing) forecasts from each term's
+recorded state the jobs the history shows started until the plan's work first ran out (30 min with
+none of it running, within a day), the lead's clocked jobs (catalogs, backups, inputs) when they
+started, the lead's own held to the probes' limits the logs show (the members' budget switch was
+off; the NAS's load gate never read). With the history's release times (each job ready when the
+history shows what it waits on done: a map tile its z6 tiles, an assembly its pieces, a z6 tile its
+terrain, a chain's step what it reads) and each Mac's slots then, the error left once arrival is
+known: a median 16 % (80th percentile 55 %, mean −23 %, early), asserted ≤ 20 %; 14 % (at most
+34 %) over the 32 starts of 50 jobs or more. Given each job's real start: 2 %. Busy time with 1 job
 at once M4 58 % (history 72 %), M1 27 % (48 %); 4+ jobs M4 15 % (5 %), M1 22 % (12 %): the run
-packs more than the lead did then. Released by the dependencies alone (none of the history's
-times) the forecast is early by a median 65 %: work reached the plan slower than its dependencies
-allow (the lead idle half the time on 18 Oct, its slots held at 2 by its ramp and the NAS
-budget). Given each job's real start it's off by a median 2 %. The forecast also assumes no load from outside the
+packs more than the lead did then. The forecast also assumes no load from outside the
 pool (each ask's `cores_free` taken as its cores): while the owner uses a Mac it's optimistic. The
 lead logs a departure only when a Mac's jobs of a step differ from the forecast's by 2 or more and
 by more than half, each Mac and step at most once an hour.

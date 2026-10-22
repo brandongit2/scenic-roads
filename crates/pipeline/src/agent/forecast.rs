@@ -2317,7 +2317,10 @@ mod tests {
         use crate::coord::lease::{Lease, Work};
         const H: u64 = 24 * 3600;
         const GAP: u64 = 1800;
-        let Ok(root) = std::env::var("SCENIC_BACKTEST") else { return };
+        let Ok(root) = std::env::var("SCENIC_BACKTEST") else {
+            eprintln!("backtest skipped: SCENIC_BACKTEST unset (no bound checked)");
+            return;
+        };
         let root = std::path::Path::new(&root);
         let (m4, m1) = ("Brandons-MacBook-Pro", "MacBook-Pro-de-Brandon");
         let mut events: Vec<Event> = Vec::new();
