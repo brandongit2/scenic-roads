@@ -11,7 +11,7 @@ Per epoch (--epoch, the pass's date): everything is fetched again at a new epoch
 only items not seen yet (a run started by new coverage doesn't move anyone else's fame). Caches
 under --cache, appended a chunk at a time (a run stopped midway keeps what it fetched):
   facts-<epoch>.jsonl      QID → its facts (`wikidata`: sitelinks, descriptions, heights …)
-  wp-<epoch>.jsonl         QID → its Wikipedia articles (heritagewd.wikipedias)
+  wp-<epoch>.jsonl         QID → its Wikipedia articles (wdquery.wikipedias)
   fetched-<epoch>.json     the first and last days anything was fetched for the epoch
   months/<m>.tsv.zst       one month's index: every article of the map's languages with its
                            views, streamed once, kept on the NAS too (pageviews.month_views)
@@ -40,9 +40,9 @@ import os
 import sys
 from pathlib import Path
 
-import heritagewd
+import wdquery
 import pageviews
-from heritagewd import sparql, val
+from wdquery import sparql, val
 from timings import count, phase
 
 # Items fetched between cache writes.
@@ -204,7 +204,7 @@ def main() -> None:
         print(f"progress: {k}/{len(need)} items' Wikipedia articles looked up", file=sys.stderr, flush=True)
         # (Said again after each of the chunk's batches, as the facts' are.)
         said = lambda n, k=k: print(f"progress: {k + n}/{len(need)} items' Wikipedia articles looked up", file=sys.stderr, flush=True)
-        rows = [{"qid": q, **r} for q, r in heritagewd.wikipedias(need[k:k + CHUNK], said).items()]
+        rows = [{"qid": q, **r} for q, r in wdquery.wikipedias(need[k:k + CHUNK], said).items()]
         with phase("the caches appended", "disk"):
             append_jsonl(wpath, rows)
             wp.update((r["qid"], r) for r in rows)

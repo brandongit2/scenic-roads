@@ -1,6 +1,6 @@
 //! What the internet answered the steps that ask it a great deal, kept on the NAS (docs/pool.md §2,
 //! durable state on the NAS): the items job's Wikidata facts and Wikipedia articles, and the
-//! heritage chain's (heritagewd.py's and whsshapes.py's Wikidata and Wikipedia
+//! heritage chain's (crate::heritagewd's and whsshapes.py's Wikidata and Wikipedia
 //! caches, areadetails.py's park facts). A step keeps them on its Mac, in its cache, where its scripts add to them as
 //! they fetch (a chunk or a file at a time), and on the NAS as one archive a pass (`Kept::nas`: tar,
 //! zstd with its checksum), written whole (crate::whole) when the step starts and the NAS hasn't what
@@ -395,7 +395,7 @@ impl Kept {
 
 /// A file both sides changed made one (`Kept::reconcile`), by its name: answers kept as a JSON line
 /// per item (`.jsonl`: by its "qid", or its "prop" and "id"), or as a JSON object's entries
-/// (heritagewd.py's short descriptions, areadetails.py's park facts), which
+/// (crate::heritagewd's short descriptions, areadetails.py's park facts), which
 /// runs only add to: the NAS's, then this Mac's the NAS's lack; and the days the items job fetched
 /// (`fetched-<date>.json`), the first and the last. None for any other file, or one that isn't
 /// what its name says.
@@ -430,7 +430,7 @@ fn merge_lines(theirs: &[u8], ours: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// A JSON line's key: its "qid", or its "prop" and "id" (heritagewd.py's answers by register ID).
+/// A JSON line's key: its "qid", or its "prop" and "id" (crate::heritagewd's answers by register ID).
 fn line_key(line: &[u8]) -> Option<String> {
     let v: serde_json::Value = serde_json::from_slice(line).ok()?;
     if let Some(q) = v.get("qid").and_then(|q| q.as_str()) {
@@ -581,7 +581,7 @@ pub fn items(root: &Path, dir: &Path, date: &str) -> Kept {
 
 /// What the heritage chain makes again on every run from the pass, in its working copy: not answers.
 /// The named places' export (`osm/`, the heritage job's), whsshapes.py's extracts of the pass's
-/// planet (`whs/`) and heritagewd.py's matches (`wd/items.jsonl`).
+/// planet (`whs/`) and crate::heritagewd's matches (`wd/items.jsonl`).
 const REMADE: [&str; 6] = [
     "whs/tagged.osm.pbf",
     "whs/ids.txt",

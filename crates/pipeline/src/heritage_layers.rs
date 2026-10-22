@@ -64,7 +64,7 @@ const KEEP: [&str; 18] = [
 const SIMPLIFY_DEG: f64 = 1e-5;
 
 /// Writes the layers into `b` (the chain's `data/build`) from its files there, the sites' English
-/// Wikipedia titles from `items` (heritagewd.py's matches, `wd/items.jsonl`, when there).
+/// Wikipedia titles from `items` (crate::heritagewd's matches, `wd/items.jsonl`, when there).
 pub fn write_all(b: &Path, items: &Path) -> Result<()> {
     let _p = phase("the map's layers", Class::Mixed);
     let record = heritage(b, items)?;

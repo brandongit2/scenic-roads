@@ -22,7 +22,7 @@ import re
 import sys
 from pathlib import Path
 
-from heritagewd import sparql, val
+from wdquery import sparql, val
 from timings import phase
 
 ROOT = Path(__file__).resolve().parent.parent

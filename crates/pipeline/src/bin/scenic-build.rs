@@ -3450,7 +3450,7 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 }
 
 /// heritage [--pass <date>] [--dem dir] [--cache dir]: the rest of the heritage chain
-/// (heritagewd, pipeline::heritagedetails, areadetails, whsshapes, pipeline::filterprops, interest's heritage part,
+/// (pipeline::heritagewd, pipeline::heritagedetails, areadetails, whsshapes, pipeline::filterprops, interest's heritage part,
 /// pageviews; then the map's layers, pipeline::heritage_layers) in the stand-in root on the
 /// heritage-sites job's outputs (docs/phase5.md "Heritage and area flags"), over the same cover: the pass's areas and named objects within it
 /// (named with the chain's filter), and for the World Heritage parts the pass's `whs` set within
@@ -3481,7 +3481,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         "Writing the map's layers and uploading them",
     ]);
     let chain = [
-        (1, "heritagewd.py", vec![]),
+        (1, "heritagewd", vec![]),
         (1, "heritagedetails", vec![]),
         (1, "areadetails.py", vec![]),
         (2, "whsshapes.py", vec![]),
@@ -3579,14 +3579,25 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     drop(p);
     // (The declared sources the chain asks: Wikidata, Wikipedia, the pageviews.)
     let declared = pipeline::inputs::sources::write_for_python(out.root(), &out.manifest, scratch)?;
+    let ends = {
+        use pipeline::inputs::sources::{read, WIKIDATA, WIKIPEDIA};
+        let s = read(out.root(), &out.manifest)?;
+        pipeline::heritagewd::Endpoints {
+            wikidata: s.role(WIKIDATA)?.url()?.to_string(),
+            wikipedia: s.role(WIKIPEDIA)?.url()?.to_string(),
+        }
+    };
     for (k, (part, script, sargs)) in chain.iter().enumerate() {
         if k == 0 || chain[k - 1].0 != *part {
             parts.start(*part);
         }
         let mine: Vec<&str> = chain.iter().filter(|c| c.0 == *part).map(|c| c.1).collect();
         stage(mine.iter().position(|s| s == script).unwrap_or(0) as u64, mine.len() as u64, script);
-        if *script == "heritagedetails" {
-            // (Ours, as the next: pipeline::heritagedetails, pipeline::filterprops.)
+        if *script == "heritagewd" {
+            // (Ours, as the next: pipeline::heritagewd, pipeline::heritagedetails, pipeline::filterprops.)
+            let _p = phase("heritagewd", Class::Mixed);
+            pipeline::heritagewd::run(&root, &ends)?;
+        } else if *script == "heritagedetails" {
             let _p = phase("heritagedetails", Class::Mixed);
             pipeline::heritagedetails::run(&root)?;
         } else if *script == "filterprops" {

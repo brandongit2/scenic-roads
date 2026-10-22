@@ -26,6 +26,8 @@ pub mod handoff;
 pub mod heritage;
 pub mod heritage_layers;
 pub mod heritagedetails;
+#[cfg(not(target_os = "wasi"))]
+pub mod heritagewd;
 pub mod hipack;
 pub mod inputs;
 pub mod interest;
@@ -85,6 +87,8 @@ pub mod water;
 pub mod watercov;
 pub mod webp;
 pub mod whole;
+#[cfg(not(target_os = "wasi"))]
+pub mod wikiask;
 
 use indicatif::{ProgressBar, ProgressStyle};
 use std::io::Read;

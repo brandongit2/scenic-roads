@@ -211,7 +211,7 @@ after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sit
 
 ### Heritage and area flags
 
-The heritage chain (heritage.py, heritagewd.py, pipeline::heritagedetails, areadetails.py, whsshapes.py,
+The heritage chain (heritage.py, pipeline::heritagewd, pipeline::heritagedetails, areadetails.py, whsshapes.py,
 pipeline::filterprops, pageviews.py, interest.py) runs in a stand-in root laid out as the
 repository (`dem/` the app's scripts, `data/heritage/` the pass's working copy of the answers;
 docs/inputs.md §6.5.2), split into two jobs so the z6 tiles never wait on Wikidata.
@@ -235,8 +235,10 @@ docs/inputs.md §6.5.2), split into two jobs so the z6 tiles never wait on Wikid
   every multipolygon, with what they reference, so the clip (osmium's smart strategy) holds what
   whsshapes reads of the filtered planet's clip (task #496: the same export and relations on a
   sample z6 tile), from about a fifth of the bytes: copied here first when there's room, read
-  three times by osmium. heritagewd.py indexes named objects with a Wikidata item on a 0.01°
-  grid; areadetails.py asks Wikidata for parks the answers lack; pageviews.py takes the pass's
+  three times by osmium. pipeline::heritagewd indexes named objects with a Wikidata item on a 0.01°
+  grid and asks what the answers lack through crate::wikiask (the job's proxy, each host's
+  robots.txt read first: English Wikipedia's disallows `/w/`, so short descriptions not in the
+  answers are skipped, said in the log, and asked again next run); areadetails.py asks Wikidata for parks the answers lack; pageviews.py takes the pass's
   months. The map's layers are written last, in Rust (`pipeline::heritage_layers`: the lean
   layer files, the sites' popup records, the areas simplified by a port of GEOS's topology-preserving
   simplifier, `pipeline::tpsimplify`). The layers' `en` is the things' own; the server adds

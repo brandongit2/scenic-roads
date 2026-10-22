@@ -7,7 +7,7 @@ component (data/build/whs-sites.json) or a POI (data/build/details-poi.jsonl), i
 articles in the languages of the map's regions
 (English, French, Spanish, Catalan, Portuguese, Chinese, Welsh, Irish, Scottish Gaelic, Galician,
 Basque …) are counted and summed. The item's articles come from data/heritage/wd/wp.jsonl
-(heritagewd.py), filled here for POI items not in it.
+(pipeline::heritagewd), filled here for POI items not in it.
 
 Views come from Wikimedia's monthly pageview dumps (the declared `pageviews` source: pageview_complete, user
 agents only). The API allows anonymous clients ten requests a minute, too few for ~100,000
@@ -41,7 +41,7 @@ from pathlib import Path
 
 import cachefile
 import declared
-import heritagewd
+import wdquery
 from timings import count, phase
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -468,7 +468,7 @@ def main() -> None:
         if (B / "whs-sites.json").exists():
             for s in json.loads((B / "whs-sites.json").read_text()).values():
                 qids.update(s.get("q", []))
-        # Every item's Wikipedia articles (shared cache with heritagewd.py).
+        # Every item's Wikipedia articles (shared cache with pipeline::heritagewd).
         wp: dict[str, dict] = {}
         wp_path = W / "wp.jsonl"
         if wp_path.exists():
@@ -478,10 +478,10 @@ def main() -> None:
         need = sorted(qids - set(wp))
     print(f"{len(qids)} items; articles to look up for {len(need)}", file=sys.stderr, flush=True)
     if need:
-        for q, r in heritagewd.wikipedias(need).items():
+        for q, r in wdquery.wikipedias(need).items():
             wp[q] = {"qid": q, **r}
         with phase("the article cache written", "disk"):
-            heritagewd.write_atomic(wp_path, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in wp.values()))
+            wdquery.write_atomic(wp_path, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in wp.values()))
     with phase("the articles listed", "compute"):
         arts_of = {q: [a for a in wp.get(q, {}).get("arts", []) if "|" in a and a.split("|", 1)[0] in LANGS] for q in qids}
 
@@ -494,7 +494,7 @@ def main() -> None:
         per_item = {q: round(sum(views.get(a.split("|", 1)[0] + "|" + a.split("|", 1)[1].replace(" ", "_"), 0) for a in arts) / months, 1)
                     for q, arts in arts_of.items() if arts}
     with phase("the views written", "disk"):
-        heritagewd.write_atomic(OUT / "items.json", json.dumps(per_item, ensure_ascii=False))
+        wdquery.write_atomic(OUT / "items.json", json.dumps(per_item, ensure_ascii=False))
     top = sorted(per_item.items(), key=lambda x: -x[1])[:10]
     print(f"items.json: {len(per_item)} items; most read: {top}", file=sys.stderr)
 

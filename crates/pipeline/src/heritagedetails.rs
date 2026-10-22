@@ -1,5 +1,5 @@
-//! Heritage site details, in the heritage chain's stand-in root (after heritagewd.py): the short
-//! description and Wikipedia facts from heritagewd.py's answers, and the long (paraphrased)
+//! Heritage site details, in the heritage chain's stand-in root (after crate::heritagewd): the short
+//! description and Wikipedia facts from crate::heritagewd's answers, and the long (paraphrased)
 //! descriptions.
 //!
 //!   data/build/details-heritage.jsonl  per site (by index in heritage.json, which gains `i`):
@@ -221,6 +221,42 @@ mod tests {
             "{\"i\": 0, \"qid\": \"Q2\", \"sl\": 1, \"short\": \"short A\", \"inst\": [\"x\"], \"wiki\": {\"lang\": \"en\", \"title\": \"A\"}, \"long\": \"L\", \"long_src\": {\"lang\": \"en\", \"title\": \"A\"}}\n"
         );
         assert!(std::fs::read_to_string(t.join("data/build/heritage.json")).unwrap().contains(r#"{"n":"A","i":0}"#));
+        std::fs::remove_dir_all(&t).ok();
+    }
+
+    /// A researched description's sources (`src`) become `long_src: {"refs": …}`; a later `drop`
+    /// removes an earlier description; an extract names the article a description came from.
+    #[test]
+    fn researched_sources_and_drops() {
+        let t = std::env::temp_dir().join(format!("heritagedetails-refs-{}", std::process::id()));
+        for d in ["data/build", "data/heritage/wd", "data/heritage/desc"] {
+            std::fs::create_dir_all(t.join(d)).unwrap();
+        }
+        let w = |p: &str, s: &str| std::fs::write(t.join(p), s).unwrap();
+        w("data/build/heritage.json", r#"{"features":[{"properties":{}},{"properties":{}},{"properties":{}}]}"#);
+        w(
+            "data/heritage/wd/items.jsonl",
+            "{\"i\":0,\"qid\":\"Q1\",\"sl\":1,\"wiki\":{},\"desc\":{}}\n\
+             {\"i\":1,\"qid\":\"Q2\",\"sl\":1,\"wiki\":{},\"desc\":{}}\n\
+             {\"i\":2,\"qid\":\"Q3\",\"sl\":1,\"wiki\":{\"fr\":\"T\"},\"desc\":{}}\n",
+        );
+        // (batch- before v2- before research-: research's drop removes Q2's.)
+        w(
+            "data/heritage/desc/batch-00.out.jsonl",
+            "{\"qid\":\"Q2\",\"long\":\"old\"}\n{\"qid\":\"Q3\",\"long\":\"L3\"}\n",
+        );
+        w(
+            "data/heritage/desc/research-00.out.jsonl",
+            "{\"qid\":\"Q1\",\"long\":\"L1\",\"src\":[{\"t\":\"Site\",\"u\":\"https://e.org\"}]}\n{\"qid\":\"Q2\",\"drop\":true}\n",
+        );
+        w("data/heritage/desc/extracts.jsonl", "{\"qid\":\"Q3\",\"lang\":\"en\",\"title\":\"E\"}\n");
+        run(&t).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(t.join("data/build/details-heritage.jsonl")).unwrap(),
+            "{\"i\": 0, \"qid\": \"Q1\", \"sl\": 1, \"long\": \"L1\", \"long_src\": {\"refs\": [{\"t\": \"Site\", \"u\": \"https://e.org\"}]}}\n\
+             {\"i\": 1, \"qid\": \"Q2\", \"sl\": 1}\n\
+             {\"i\": 2, \"qid\": \"Q3\", \"sl\": 1, \"wiki\": {\"lang\": \"fr\", \"title\": \"T\"}, \"long\": \"L3\", \"long_src\": {\"lang\": \"en\", \"title\": \"E\"}}\n"
+        );
         std::fs::remove_dir_all(&t).ok();
     }
 }

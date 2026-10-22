@@ -51,11 +51,11 @@ pub const ROLES: [(&str, &[&str], &[&str]); 18] = [
     (BUILDINGS, &["geoparquet"], &[]),
     // (Building heights on a grid: crate::bld, dem/bldfetch.py, dem/bldprep.py.)
     (BUILDING_HEIGHTS, &["zip-geotiff"], &[]),
-    // (Wikidata's facts: dem/heritagewd.py.)
+    // (Wikidata's facts: crate::heritagewd, dem/wdquery.py.)
     (WIKIDATA, &["sparql"], &[]),
     // (Wikidata as it is now, by the Query Service's built-in prefixes: dem/whsshapes.py.)
     (WIKIDATA_LIVE, &["sparql"], &[]),
-    // (Wikipedia's short descriptions and links: dem/heritagewd.py.)
+    // (Wikipedia's short descriptions: crate::heritagewd.)
     (WIKIPEDIA, &["mediawiki-api"], &[]),
     // (Wikipedia's monthly pageviews: dem/pageviews.py; the months are the items job's.)
     (PAGEVIEWS, &["pageviews-dump"], &["{y}", "{m}"]),
@@ -975,7 +975,7 @@ mod tests {
         accept_fixture(d.path(), &mut m);
         let p = write_for_python(d.path(), &m, &d.path().join("job")).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap();
-        // (heritagewd.py's WDQS and its Wikipedia API, whsshapes.py's query service, pageviews.py's DUMP.)
+        // (crate::heritagewd's query service and its Wikipedia API, whsshapes.py's query service, pageviews.py's DUMP.)
         assert_eq!(v[WIKIDATA]["url"], "https://qlever.dev/api/wikidata");
         assert_eq!(v[WIKIPEDIA]["url"], "https://en.wikipedia.org/w/api.php");
         assert_eq!(v[WIKIDATA_LIVE]["url"], "https://query.wikidata.org/sparql");

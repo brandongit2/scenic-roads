@@ -120,6 +120,28 @@ pub const HOLD_DEFAULT_S: u64 = 60;
 /// The environment variable a job is told its proxy's address by (`http://127.0.0.1:<port>`), to
 /// report a 429 to (`/hold`; dem/budget.py).
 pub const PROXY_ENV: &str = "SCENIC_BUDGETS";
+
+/// A step's answer from `url`: a 429, or a `Retry-After`, from a metered host told to its proxy
+/// (`/hold`), so the budget holds every process and Mac that long (`HOLD_DEFAULT_S` when it says
+/// none). Whether a proxy was told (false: not metered, nothing to tell, the budgets off, or the
+/// proxy didn't answer: the step's own wait is all). dem/budget.py's `seen`, for the Rust steps.
+#[cfg(not(target_os = "wasi"))]
+pub fn seen(url: &str, status: u16, retry_after: Option<&str>) -> bool {
+    let host = url.split("://").nth(1).unwrap_or(url).split(['/', '?', ':']).next().unwrap_or("");
+    if class_of(host).is_none() || (status != 429 && retry_after.is_none_or(|r| r.trim().is_empty())) {
+        return false;
+    }
+    let Ok(proxy) = std::env::var(PROXY_ENV) else { return false };
+    let s = retry_after.and_then(|r| r.trim().parse::<f64>().ok()).unwrap_or(HOLD_DEFAULT_S as f64);
+    // (Straight to the proxy, on this Mac: not through itself.)
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .proxy(None)
+        .timeout_global(Some(std::time::Duration::from_secs(30)))
+        .build()
+        .into();
+    let secs = (s.max(1.0).ceil() as u64).max(1);
+    agent.post(&format!("{}/hold?s={secs}", proxy.trim_end_matches('/'))).send_empty().is_ok()
+}
 /// The sandbox profile every job runs under with the budgets on (`sandbox-exec -p`): every outbound
 /// connection denied but to the Mac itself (its proxy, its coordinator) and its local sockets (the
 /// name service's), so a job that goes around the proxy fails at once, never reaching Wikimedia
@@ -179,7 +201,7 @@ impl Class {
 
 /// The query services' hosts, by name (WDQS's), metered by count and query time (`Class::Query`).
 pub const QUERY_HOSTS: [&str; 3] = ["query.wikidata.org", "query-main.wikidata.org", "query-scholarly.wikidata.org"];
-/// The query services' domains, with their subdomains (QLever's, which heritagewd.py asks).
+/// The query services' domains, with their subdomains (QLever's, which the heritage chain asks).
 pub const QUERY_DOMAINS: [&str; 2] = ["qlever.dev", "qlever.cs.uni-freiburg.de"];
 /// Wikimedia's sites' domains, with their subdomains (`Class::Wiki`). dem/budget.py keeps the same
 /// lists (tests/budgets.rs checks that they're the same).
