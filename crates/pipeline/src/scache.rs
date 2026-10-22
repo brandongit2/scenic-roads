@@ -229,6 +229,21 @@ fn grid_basis(build: &Path) -> Result<Vec<([u32; 2], String)>> {
         .collect())
 }
 
+/// Removes kept folder `dir`; when a file in it can't be removed (the NAS holding it for another
+/// SMB session, maybe for hours), the folder is renamed aside (`<name>.<host>.<pid>.aside.tmp`, a
+/// temporary name) so its name is free: keeping results is never blocked by a dead Mac's handle.
+fn drop_dir(dir: &Path) -> Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    if let Err(e) = std::fs::remove_dir_all(dir) {
+        let aside = crate::whole::tmp_name(dir).with_extension("aside.tmp");
+        std::fs::rename(dir, &aside).with_context(|| format!("remove {} ({e}), or rename it aside", dir.display()))?;
+        eprintln!("scache: {} not removed ({e}): renamed aside to {}", dir.display(), aside.display());
+    }
+    Ok(())
+}
+
 impl Carry {
     /// Keeps the results of the run in `build` (replacing what was kept), or drops what was kept
     /// when the run made none (a z6 tile left without ways).
@@ -242,10 +257,7 @@ impl Carry {
             std::fs::remove_dir_all(&tmp)?;
         }
         if !have {
-            if self.dir.exists() {
-                std::fs::remove_dir_all(&self.dir)?;
-            }
-            return Ok(());
+            return drop_dir(&self.dir);
         }
         let basis = grid_basis(build)?;
         std::fs::create_dir_all(&tmp)?;
@@ -260,9 +272,7 @@ impl Carry {
             std::fs::write(tmp.join(format!("{f}.zst")), zstd::bulk::compress(&raw, 3)?)?;
         }
         std::fs::write(tmp.join("basis.json"), serde_json::to_vec(&Kept { v: SCENIC_V, basis })?)?;
-        if self.dir.exists() {
-            std::fs::remove_dir_all(&self.dir)?;
-        }
+        drop_dir(&self.dir)?;
         std::fs::rename(&tmp, &self.dir)?;
         Ok(())
     }

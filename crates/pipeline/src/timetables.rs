@@ -267,11 +267,9 @@ pub fn merge(rail: &Value, ferries: &Value, inside: &dyn Fn([i32; 2]) -> bool) -
     (todo, report, r)
 }
 
-/// Writes a file whole (a temporary name, then renamed).
+/// Writes a file whole (crate::whole::write: a held old file renamed aside).
 fn put(path: &Path, bytes: &[u8]) -> Result<()> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).with_context(|| format!("rename {}", path.display()))
+    crate::whole::write(path, bytes)
 }
 
 /// The job: the two pieces read from `out`'s records, the to-do list and its brief written whole

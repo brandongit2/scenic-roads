@@ -782,11 +782,9 @@ fn example((id, lon, lat): &(String, f64, f64)) -> Value {
     }
 }
 
-/// Writes a file whole (a temporary name, then renamed).
+/// Writes a file whole (crate::whole::write: a held old file renamed aside).
 fn put(path: &Path, bytes: &[u8]) -> Result<()> {
-    let tmp = path.with_extension(format!("{}.tmp", path.extension().and_then(|e| e.to_str()).unwrap_or("")));
-    std::fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).with_context(|| format!("rename {}", path.display()))
+    crate::whole::write(path, bytes)
 }
 
 /// Makes the lists from the newest catalog under `root` into `out` (the translations' and the
