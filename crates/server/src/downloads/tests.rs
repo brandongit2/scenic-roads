@@ -106,11 +106,12 @@ fn an_areas_files_are_its_tiles_hi_packs_and_base_packs_and_the_hi_data_around()
     let cat = catalog(nas.path());
     let f = files_of(&cat, &[rect(-0.3, 51.4, -0.1, 51.6)]);
     // Its tile's packs, the terrain of the tile within 25 km across the meridian (for the
-    // viewshed), the hi data within 50 km.
+    // viewshed), the hi data within 50 km, the worldwide file (read zoomed in too).
     assert_eq!(
         logicals(&f),
         [
             "base/6-31-21",
+            "global/railfreq",
             "global/roads/6-31-21",
             "hidata/6-31-21",
             "hidata/6-32-21",
@@ -119,14 +120,14 @@ fn an_areas_files_are_its_tiles_hi_packs_and_base_packs_and_the_hi_data_around()
             "layers/terrain/hi/6-32-21"
         ]
     );
-    assert_eq!(f.bytes, 30_031 + 4_031 + 5_031 + 5_032 + 20_031 + 10_031 + 10_032);
+    assert_eq!(f.bytes, 30_031 + 300 + 4_031 + 5_031 + 5_032 + 20_031 + 10_031 + 10_032);
     // And the basemap's zooms 11–14 over its tile, after its files.
     let p = area_part(&cat, &[rect(-0.3, 51.4, -0.1, 51.6)]);
     assert_eq!(
         p.items.last(),
         Some(&Item::Piece { archive: cat.content("layers/basemap/world").unwrap().into(), piece: Piece::Tile(31, 21) })
     );
-    assert_eq!(p.items.len(), 8);
+    assert_eq!(p.items.len(), 9);
 }
 
 async fn call(r: Response) -> (StatusCode, Value) {
@@ -200,8 +201,12 @@ async fn downloading_the_world_and_regions() {
     assert_eq!(call(put_world(State(s.clone()), Json(On { on: false })).await).await.0, StatusCode::OK);
     tokio::task::block_in_place(|| settle(&s));
     let v = get(&s).await;
-    assert_eq!((v["regions"]["london"]["state"].as_str(), v["world"]["here"].as_u64()), (Some("done"), Some(0)));
-    assert_eq!(v["here"].as_u64(), v["regions"]["london"]["bytes"].as_u64(), "the World's files went");
+    assert_eq!(
+        (v["regions"]["london"]["state"].as_str(), v["world"]["here"].as_u64()),
+        (Some("done"), Some(300)),
+        "London keeps the worldwide file"
+    );
+    assert_eq!(v["here"].as_u64(), v["regions"]["london"]["bytes"].as_u64(), "the rest of the World went");
     assert_eq!(region(&s, "london", false).await.0, StatusCode::OK);
     tokio::task::block_in_place(|| settle(&s));
     assert_eq!(m.usage(), (0, 0), "removed: nothing here");
@@ -487,7 +492,40 @@ async fn fine_terrain_downloads_with_its_region_and_is_read_from_this_mac() {
     assert_eq!(fine(&s, true).await.0, StatusCode::OK);
     assert_eq!(region(&s, "london", false).await.0, StatusCode::OK);
     assert!(s.downloads.asked().regions.is_empty());
-    // A region with no fine terrain: refused.
+    // A downloaded region with no fine terrain: refused.
+    region(&s, "kanto", true).await;
     let (code, v) = call(put_region_fine(State(s.clone()), Path("kanto".into()), Json(On { on: true })).await).await;
     assert_eq!(code, StatusCode::BAD_REQUEST, "{v}");
+    assert!(v["error"].as_str().unwrap().contains("no fine terrain"), "{v}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_region_alone_has_what_the_map_reads_zoomed_in() {
+    let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut cat = catalog(nas.path());
+    // The World's per-tile records over London (landmarks, area details, roads' English names), and
+    // one far away.
+    put(nas.path(), &mut cat, "markdata/6-31-21", 700);
+    cat.markdata.insert("6/31/21".into(), "markdata/6-31-21".into());
+    put(nas.path(), &mut cat, "ovdata/3-3-2", 800);
+    cat.ovdata.insert("3/3/2".into(), "ovdata/3-3-2".into());
+    for t in ["6-31-21", "6-10-10"] {
+        put(nas.path(), &mut cat, &format!("global/roaden/{t}"), 90);
+        cat.global.insert(format!("roaden/{t}"), format!("global/roaden/{t}"));
+    }
+    cat.n = 2;
+    cat.validate().unwrap();
+    store::catalog::write(&nas.path().join("catalog"), &cat).unwrap();
+    let s = crate::test_state_with(home.path(), nas.path(), true);
+    assert_eq!(region(&s, "london", true).await.0, StatusCode::OK);
+    assert!(s.downloads.asked().world.is_none());
+    tokio::task::block_in_place(|| settle(&s));
+    let m = s.data.mirror.clone().unwrap();
+    for l in ["markdata/6-31-21", "ovdata/3-3-2", "global/roaden/6-31-21", "global/railfreq"] {
+        assert!(m.has(cat.content(l).unwrap()), "{l} here with London alone");
+    }
+    assert!(!m.has(cat.content("global/roaden/6-10-10").unwrap()), "not a far tile's");
+    assert!(!m.has(cat.content("layers/terrain/lo/3-3-2").unwrap()), "nor the World's zoomed-out packs");
+    let v = get(&s).await;
+    assert_eq!(v["regions"]["london"]["here"], v["regions"]["london"]["bytes"], "counted in its size");
 }

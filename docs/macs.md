@@ -218,8 +218,10 @@ and codesign.
   outlines.
 - **A region:** every layer's hi pack and the base pack and road values of each z6 tile
   within 2 km of it; the basemap's zooms 11–14 over those tiles; the terrain's and grids' hi packs
-  within 25 km (the viewshed's reach); the hi data of the z6 tiles within 50 km. With the World,
-  that's what the map reads there (but task #457).
+  within 25 km (the viewshed's reach); the hi data, landmark points (markdata) and area details
+  (ovdata, by z3 tile) within 50 km; the worldwide `global/` files (those by z6 tile, such as the
+  roads' English names and ids, only for its tiles); the Canadian lake fill when it meets Canada.
+  So a region works zoomed in without the World; only zoomed out is missing (but task #457).
 - **A region's fine terrain** (an add-on to the region, which it needs): the terrain's fine packs
   (z13 and finer, by z10 tile) within 2 km of it, where the terrain has finer data; the panel says
   the share of the region they cover and their size first. Downloaded only while the region is;

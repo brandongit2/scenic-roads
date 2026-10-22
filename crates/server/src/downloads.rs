@@ -28,7 +28,8 @@
 //!   9–14), and the base pack and road values, of each z6 tile within 2 km of it (its outlines are
 //!   simplified), and the basemap's zooms 11–14 over those tiles; the terrain's and the grids' hi
 //!   packs within 25 km (the viewshed's reach, so one from inside works offline); and the hi data
-//!   of the z6 tiles within 50 km (what the lists of a view read around it).
+//!   of the z6 tiles within 50 km (what the lists of a view read around it); and what the map reads
+//!   zoomed in from the World's files (pipeline::areafiles::files_of), so only zoomed out needs it.
 //! - **A region's fine terrain** (`fine_of`), an add-on to its download: the terrain's fine packs
 //!   (pipeline::terrain_fine, z13 and finer, by z10 tile) within 2 km of it. They cover only parts
 //!   of a region; its coarse terrain (the hi packs, to z12) is the rest and every zoom to z12, so

@@ -72,8 +72,37 @@ pub fn files_of(cat: &Catalog, rings: &[Vec<[f64; 2]>]) -> Files {
             }
         }
     }
-    for (x, y) in tiles_meeting(rings, LISTS_KM) {
-        if let Some(l) = cat.hidata.get(&format!("6/{x}/{y}")) {
+    let lists = tiles_meeting(rings, LISTS_KM);
+    for &(x, y) in &lists {
+        let key = format!("6/{x}/{y}");
+        for m in [&cat.hidata, &cat.markdata] {
+            if let Some(l) = m.get(&key) {
+                add(l);
+            }
+        }
+        if let Some(l) = cat.ovdata.get(&format!("3/{}/{}", x >> 3, y >> 3)) {
+            add(l);
+        }
+    }
+    // What the map reads zoomed in from the World's part too (store::mirror's essentials), so a
+    // region works away from the NAS without it: the worldwide files, those of a z6 tile
+    // (`…/6-x-y.<hash>…`) only for its tiles; the Canadian lake fill only when it meets Canada.
+    let near: BTreeSet<String> = tiles_meeting(rings, NEAR_KM).iter().map(|(x, y)| format!("6-{x}-{y}")).collect();
+    let canada = rings.iter().flatten().any(|p| (-141.5..=-52.0).contains(&p[0]) && (41.5..=84.0).contains(&p[1]));
+    for l in cat.global.values() {
+        if l.starts_with("work/lakefill/") {
+            if canada {
+                add(l);
+            }
+            continue;
+        }
+        if !l.starts_with("global/") {
+            continue;
+        }
+        let last = l.rsplit('/').next().unwrap_or("");
+        let tile = last.split('.').next().unwrap_or("");
+        let per_tile = tile.starts_with("6-") && tile.split('-').count() == 3;
+        if !per_tile || near.contains(tile) {
             add(l);
         }
     }
