@@ -1,5 +1,5 @@
 //! The `marks` job (docs/phase5.md "Build"): landmark points from their candidates, as the heritage
-//! chain's scripts make theirs (interest::poi_filter_props, dem/interest.py, crate::heritage_layers), for markdata and the
+//! chain's scripts make theirs (interest::poi_filter_props, crate::interest, crate::heritage_layers), for markdata and the
 //! thinned tiles (`markconv::write`). This part: the stops & sights.
 
 use crate::interest::{

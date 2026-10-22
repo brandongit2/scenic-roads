@@ -1,5 +1,6 @@
-//! How interesting each landmark is (dem/interest.py, ported value for value for the `marks` job):
-//! interest isolation, the zoom its names show from, and Python's rounding.
+//! How interesting each landmark is, value for value as the heritage chain's Python had it: interest isolation,
+//! the zoom its names show from, and Python's rounding, for the `marks` job; and the heritage
+//! chain's sites' fame and isolation (`heritage`).
 //!
 //!   ia  the distance (km) to the nearest place of the same kind that scores higher (ties: the
 //!       earlier one); within 60 km on the plane (each point's x scaled by its own latitude),
@@ -101,7 +102,7 @@ fn ring<const D: usize>(c: [i64; D], r: i64, f: &mut dyn FnMut([i64; D])) {
 }
 
 /// Distance (km) from each point to the nearest point with a higher score (ties: the earlier index);
-/// `IA_BEST` for the best (dem/interest.py `isolation`).
+/// `IA_BEST` for the best (the Python's `isolation`: scipy's k nearest neighbours).
 pub fn isolation(lon: &[f64], lat: &[f64], score: &[f64]) -> Vec<f64> {
     let n = lon.len();
     let mut out = vec![IA_BEST; n];
@@ -175,7 +176,7 @@ pub fn isolation(lon: &[f64], lat: &[f64], score: &[f64]) -> Vec<f64> {
 }
 
 /// A viewpoint's Wikidata item counts for its fame only when it's a landscape, a lookout or the
-/// like (interest.py VIEW_ITEM: a mine or chapel tagged as a viewpoint doesn't).
+/// like (VIEW_ITEM: a mine or chapel tagged as a viewpoint doesn't).
 pub fn view_item(description_en: &str) -> bool {
     const WORDS: [&str; 30] = [
         "viewpoint",
@@ -221,7 +222,7 @@ pub fn view_item(description_en: &str) -> bool {
 }
 
 /// Fame from pageviews (log10 of 1 + the monthly average), else a little for Wikidata sitelinks;
-/// and the pageviews when there are any (interest.py `fame`).
+/// and the pageviews when there are any.
 pub fn fame(pv: Option<f64>, sitelinks: u64) -> (f64, Option<f64>) {
     match pv {
         Some(pv) if pv != 0.0 => ((1.0 + pv).dlog10(), Some(pv)),
@@ -229,8 +230,8 @@ pub fn fame(pv: Option<f64>, sitelinks: u64) -> (f64, Option<f64>) {
     }
 }
 
-/// Each value's rank among the known ones, 0–1 (unknown: 0) (interest.py `percentile`:
-/// searchsorted, side right).
+/// Each value's rank among the known ones, 0–1 (unknown: 0) (numpy's searchsorted, side
+/// right).
 pub fn percentile(vals: &[Option<f64>]) -> Vec<f64> {
     let mut known: Vec<f64> = vals.iter().flatten().copied().collect();
     if known.is_empty() {
@@ -240,7 +241,7 @@ pub fn percentile(vals: &[Option<f64>]) -> Vec<f64> {
     vals.iter().map(|v| v.map_or(0.0, |v| known.partition_point(|k| *k <= v) as f64 / known.len() as f64)).collect()
 }
 
-/// A stop & sight's score before isolation (interest.py): fame, plus at most 0.01 for being named,
+/// A stop & sight's score before isolation: fame, plus at most 0.01 for being named,
 /// how much OpenStreetMap says about it (`rich`, of 5 tags, ÷ 3), and its size's rank in its kind.
 pub fn poi_base(fame: f64, named: bool, rich: usize, size_rank: f64) -> f64 {
     let tie = 0.5 * (named as u8 as f64) + 0.2 * (rich as f64 / 3.0).min(1.0) + 0.3 * size_rank;
@@ -291,6 +292,126 @@ pub fn same_names(
         }
     }
     n
+}
+
+/// The heritage chain's interest, in its stand-in root `root`:
+/// each heritage site's fame (`fa`, `pv`: its Wikidata item's pageviews, a World Heritage Site's
+/// best-known item's) and isolation (`ia`, `mz`: among the sites as the map shows them, a World
+/// Heritage Site in several components once, at its dot; its other components get none), written
+/// back into data/build/heritage.json as Python's `json` writes it.
+pub fn heritage(root: &std::path::Path) -> anyhow::Result<()> {
+    use crate::pyjson::{dumps, loads, Py};
+    use crate::timings::{phase, Class};
+    use anyhow::Context;
+    let b = root.join("data/build");
+    let p = phase("the layers and details read", Class::Disk);
+    let pv_path = root.join("data/pageviews/items.json");
+    let views: HashMap<String, Py> = if pv_path.exists() {
+        match loads(&std::fs::read_to_string(&pv_path)?).context("parse items.json")? {
+            Py::Dict(d) => d.into_iter().collect(),
+            _ => anyhow::bail!("items.json not an object"),
+        }
+    } else {
+        HashMap::new()
+    };
+    if views.is_empty() {
+        eprintln!("interest: no pageviews yet (pageviews.py); fame from sitelinks only");
+    }
+    let mut hfc = loads(&std::fs::read_to_string(b.join("heritage.json"))?).context("parse heritage.json")?;
+    let mut det: HashMap<String, Py> = HashMap::new();
+    if b.join("details-heritage.jsonl").exists() {
+        for line in std::fs::read_to_string(b.join("details-heritage.jsonl"))?.lines() {
+            let r = loads(line).context("a line of details-heritage.jsonl")?;
+            det.insert(r.at("i").key(), r);
+        }
+    }
+    let sites = match b.join("whs-sites.json") {
+        s if s.exists() => loads(&std::fs::read_to_string(s)?).context("parse whs-sites.json")?,
+        _ => Py::Dict(vec![]),
+    };
+    drop(p);
+    let p = phase("the fame scored", Class::Compute);
+    let Some(Py::List(hf)) = hfc.get_mut("features") else { anyhow::bail!("heritage.json: no features") };
+    let role = crate::heritage_layers::roles(hf, &sites)?;
+    let views_of = |q: &str| views.get(q).filter(|v| v.truthy());
+    let mut base = vec![0.0; hf.len()];
+    for (i, f) in hf.iter_mut().enumerate() {
+        let p = f.get_mut("properties").context("a site without properties")?;
+        let empty = Py::Dict(vec![]);
+        let d = det.get(&p.at("i").key()).unwrap_or(&empty);
+        let qid = d.at("qid").as_str().filter(|q| !q.is_empty());
+        let sl = d.get("sl").map_or(Some(0.0), Py::number).context("sl not a number")?;
+        // (Python's fame: the item's pageviews, else a little for its sitelinks.)
+        let pv0 = qid.and_then(views_of);
+        let (mut fm, mut pv): (f64, Option<&Py>) = match pv0 {
+            Some(v) => (crate::interest::fame(v.number(), 0).0, Some(v)),
+            None => (fame(None, sl as u64).0, None),
+        };
+        if let Some(sid) = crate::heritage_layers::whs_id(p) {
+            for q in sites.at(&sid).at("q").list().into_iter().flatten() {
+                if let Some(v) = q.as_str().and_then(views_of) {
+                    let f = (1.0 + v.number().context("pageviews not a number")?).dlog10();
+                    if f > fm {
+                        (fm, pv) = (f, Some(v));
+                    }
+                }
+            }
+        }
+        let level = Some(p.at("level")).filter(|l| l.truthy()).map_or(Some(5.0), Py::number).context("level")?;
+        let tie = 0.5 * (p.at("name").truthy() as u8 as f64)
+            + 0.2 * (d.at("qid").truthy() as u8 as f64)
+            + 0.3 * (5.0 - level) / 4.0;
+        base[i] = fm + 0.01 * tie;
+        for k in ["fa", "pv", "ia", "mz"] {
+            p.pop(k);
+        }
+        p.set("fa", Py::Float(py_round(base[i], 3)));
+        if let Some(v) = pv {
+            // (Python's round(pv): an integer, half to even.)
+            let n = match v {
+                Py::Int(s) => s.clone(),
+                v => format!("{:.0}", v.number().context("pageviews not a number")?.round_ties_even()),
+            };
+            p.set("pv", Py::Int(n));
+        }
+    }
+    drop(p);
+    // Isolation among the sites as the map shows them: a merged site once, at its dot.
+    let p = phase("the isolation measured", Class::Compute);
+    let keep: Vec<usize> = (0..hf.len()).filter(|i| !role.get(i).is_some_and(|r| !r.0)).collect();
+    let mut lon = Vec::with_capacity(keep.len());
+    let mut lat = Vec::with_capacity(keep.len());
+    let mut n_at = 0;
+    for &i in &keep {
+        let at = match role.get(&i) {
+            Some((true, sid)) => {
+                n_at += 1;
+                sites.at(sid).at("dot")
+            }
+            _ => hf[i].at("geometry").at("coordinates"),
+        };
+        let c = at.list().context("a site without coordinates")?;
+        lon.push(c[0].number().context("a coordinate")?);
+        lat.push(c.get(1).and_then(Py::number).context("a coordinate")?);
+    }
+    let ia = isolation(&lon, &lat, &keep.iter().map(|&i| base[i]).collect::<Vec<_>>());
+    for (n, &i) in keep.iter().enumerate() {
+        let p = hf[i].get_mut("properties").unwrap();
+        p.set("ia", Py::Float(py_round(ia[n], 1)));
+        p.set("mz", Py::Float(min_zoom(lat[n], ia[n])));
+    }
+    drop(p);
+    eprintln!(
+        "interest: heritage        {:7}, {} best within 20 km ({n_at} World Heritage Sites as one dot, {} of their components apart)",
+        keep.len(),
+        ia.iter().filter(|&&x| x >= 20.0).count(),
+        hf.len() - keep.len()
+    );
+    let _p = phase("the layers written", Class::Disk);
+    let tmp = b.join("heritage.json.tmp");
+    std::fs::write(&tmp, dumps(&hfc))?;
+    std::fs::rename(&tmp, b.join("heritage.json"))?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -150,7 +150,7 @@ export const SLOPE4_SHIFT = 32768.5;
 export const SLOPE4_MAX = 400;
 /** All labels slightly transparent. */
 const TEXT_OPACITY = 0.8;
-/** Names appear once a place's interest isolation spans this many pixels (interest.py mz: the zoom
+/** Names appear once a place's interest isolation spans this many pixels (pipeline::interest's mz: the zoom
  * where it spans one), the best-known winning collisions: the default label spacing (state.ts
  * LabelDensity). */
 export const LABEL_SPACING_PX = DEFAULT_DENSITY.px;

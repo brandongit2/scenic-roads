@@ -3439,7 +3439,7 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 
 /// heritage [--pass <date>] [--dem dir] [--cache dir]: the rest of the heritage chain
 /// (pipeline::heritagewd, pipeline::heritagedetails, pipeline::areadetails, pipeline::whsshapes, pipeline::filterprops,
-/// pipeline::pageviews, interest's heritage part; then the map's layers, pipeline::heritage_layers) in the stand-in root on the
+/// pipeline::pageviews, pipeline::interest::heritage; then the map's layers, pipeline::heritage_layers) in the stand-in root on the
 /// heritage-sites job's outputs (docs/phase5.md "Heritage and area flags"), over the same cover: the pass's areas and named objects within it
 /// (named with the chain's filter), and for the World Heritage parts the pass's `whs` set within
 /// it (one clip per set and cover, kept in the cache: `whs_over_cover`). The park facts are the pass's answers'
@@ -3475,7 +3475,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         (2, "whsshapes"),
         (2, "filterprops"),
         (3, "pageviews"),
-        (3, "interest.py"),
+        (3, "interest"),
     ];
     parts.start(0);
     stage(0, 5, "reading the pass's answers and the heritage sites");
@@ -3565,8 +3565,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     std::fs::create_dir_all(pv.join("months"))?;
     pipeline::sys::symlink(&pv, &root.join("data/pageviews"))?;
     drop(p);
-    // (The declared sources the chain asks: Wikidata, Wikipedia, the pageviews.)
-    let declared = pipeline::inputs::sources::write_for_python(out.root(), &out.manifest, scratch)?;
+    // (The declared sources the chain asks: Wikidata, Wikipedia.)
     let ends = {
         use pipeline::inputs::sources::{read, WIKIDATA, WIKIPEDIA};
         let s = read(out.root(), &out.manifest)?;
@@ -3595,6 +3594,9 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         } else if *script == "whsshapes" {
             let _p = phase("whsshapes", Class::Mixed);
             pipeline::whsshapes::run(&root, &ends.wikidata)?;
+        } else if *script == "interest" {
+            let _p = phase("interest", Class::Mixed);
+            pipeline::interest::heritage(&root)?;
         } else if *script == "filterprops" {
             let _p = phase("filterprops", Class::Mixed);
             pipeline::filterprops::run(&b)?;
@@ -3602,7 +3604,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             let _p = phase("pageviews", Class::Mixed);
             pipeline::pageviews::heritage(&root, &date, &ends.wikidata, &pageview_months(out, pv.join("months"))?)?;
         } else {
-            heritage_script(&root, &dem, Some(&declared), script, &[])?;
+            unreachable!("{script}: not a step of the chain");
         }
     }
     parts.start(4);
@@ -3844,14 +3846,10 @@ fn heritage_root(scratch: &Path, dem: &Path, epoch: Option<&Path>) -> Result<Pat
 
 /// Runs one of the heritage scripts in a stand-in root, in the Python environment of the app's `dem`
 /// (`dem/.venv`, which uv makes from the app's lock file the first time a step runs on a Mac, as
-/// for every other Python step; the lock file as is), given the declared sources' file `declared`
-/// when it reads any (pipeline::inputs::sources::write_for_python).
-fn heritage_script(root: &Path, dem: &Path, declared: Option<&Path>, script: &str, args: &[&str]) -> Result<()> {
+/// for every other Python step; the lock file as is).
+fn heritage_script(root: &Path, dem: &Path, script: &str, args: &[&str]) -> Result<()> {
     let t = std::time::Instant::now();
     let mut c = store::spawn::command("uv");
-    if let Some(d) = declared {
-        c.env(pipeline::inputs::sources::PYTHON_ENV, d);
-    }
     c.current_dir(root.join("dem"))
         .env("UV_PROJECT_ENVIRONMENT", dem.join(".venv"))
         .args(["run", "--frozen", "python", script])
@@ -3983,7 +3981,7 @@ fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result
     if let Some(m) = &match_arg {
         hargs.extend(["--matches", m.as_str()]);
     }
-    heritage_script(&root, &dem, None, "heritage.py", &hargs)?;
+    heritage_script(&root, &dem, "heritage.py", &hargs)?;
     parts.start(3);
     // The z6 tiles' slices, then the whole files.
     let p = phase("the sites and areas sliced per z6 tile", Class::Compute);

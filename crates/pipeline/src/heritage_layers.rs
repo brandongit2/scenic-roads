@@ -21,7 +21,7 @@
 //! site's UNESCO name or English Wikipedia title, an area's `name_en`); any other English is the
 //! map's server's, from the translations' live tables, as it serves them.
 //!
-//! A point's name shows from mz (interest.py). A name repeated nearby waits longer
+//! A point's name shows from mz (crate::interest). A name repeated nearby waits longer
 //! (crate::interest::same_names). Only the labels wait: the dots, counts and lists are the same.
 //!
 //! Also layer-summary.json: per polygon overlay, the feature count and each feature's area (km²),
@@ -169,7 +169,7 @@ pub(crate) fn whs_id(p: &Py) -> Option<String> {
 /// Per feature, for the World Heritage Sites in several components (those with a `dot` in
 /// whs-sites.json): (true, id) for the component the site's dot takes its record from (the first at
 /// the site's `lead` position), (false, id) for the others.
-fn roles(feats: &[Py], sites: &Py) -> Result<HashMap<usize, (bool, String)>> {
+pub(crate) fn roles(feats: &[Py], sites: &Py) -> Result<HashMap<usize, (bool, String)>> {
     let mut out = HashMap::new();
     let mut led: HashSet<String> = HashSet::new();
     for (i, f) in feats.iter().enumerate() {

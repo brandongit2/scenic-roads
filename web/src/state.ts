@@ -67,7 +67,7 @@ export const DENSITY_KINDS = [
 export type DensityKind = (typeof DENSITY_KINDS)[number][0];
 export interface LabelDensity {
   /** A label shows once the distance to the nearest label of its kind that matters more spans this
-   * many pixels (dem/interest.py isolation; rail stops: their line's stop spacing). */
+   * many pixels (pipeline::interest's isolation; rail stops: their line's stop spacing). */
   px: number;
   /** Per kind, a factor on density: ×2 halves its spacing. */
   kinds: Record<DensityKind, number>;
