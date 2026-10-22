@@ -627,9 +627,17 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let src = pipeline::markconv::heritage_source(&date);
             stage(0, 1, "making the area overlays' tiles");
             let p = phase("the marks' heritage dots read", Class::NasRead);
-            let dots = pipeline::ovconv::marks_dots(&out)?;
+            let dots = pipeline::ovconv::marks_dots(&out, &src)?;
             drop(p);
-            pipeline::ovconv::overlays(&mut out, &src, &dots)?;
+            // (Dots of an older heritage: its record indexes aren't these. The overlays kept as
+            // they are; the marks' run on this heritage writes new dots, which the overlays' key
+            // follows, so they run again then.)
+            match dots {
+                Some(dots) => drop(pipeline::ovconv::overlays(&mut out, &src, &dots)?),
+                None => eprintln!(
+                    "overlays: the marks' dots are of an older heritage than {src}'s; kept until the marks run"
+                ),
+            }
             out.save()?;
         }
         "slope" => slope_step(&mut out, &args)?,
@@ -3343,7 +3351,7 @@ fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
     all.extend(pipeline::markconv::heritage_marks(out, &src)?);
     drop(p);
     parts.start(2);
-    let c = pipeline::markconv::write(out, all, summits)?;
+    let c = pipeline::markconv::write(out, &src, all, summits)?;
     eprintln!("marks: {} points, {} markdata tiles, {} thinned tiles", c.points, c.tiles, c.thinned);
     Ok(())
 }

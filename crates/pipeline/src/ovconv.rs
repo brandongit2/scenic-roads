@@ -124,11 +124,14 @@ pub fn cover_of<'a>(names: impl Iterator<Item = &'a String>) -> std::collections
     s
 }
 
-/// The heritage dots the last marks job wrote (markconv::HERITAGE_DOTS).
-pub fn marks_dots(out: &Out) -> Result<HashMap<u64, (u64, f64, f64)>> {
+/// The heritage dots the last marks job wrote (markconv::Dots), when that run read the heritage
+/// records `src` has now (the dots' indexes are its): None while the marks haven't run on a newer
+/// heritage (or the dots predate the record of theirs).
+pub fn marks_dots(out: &Out, src: &str) -> Result<Option<HashMap<u64, (u64, f64, f64)>>> {
     let c = out.get(markconv::HERITAGE_DOTS).context("no heritage dots (the marks step writes them)")?;
-    let m: BTreeMap<u64, (u64, f64, f64)> = serde_json::from_slice(&std::fs::read(out.path(c))?)?;
-    Ok(m.into_iter().collect())
+    let Ok(d) = serde_json::from_slice::<markconv::Dots>(&std::fs::read(out.path(c))?) else { return Ok(None) };
+    let now = out.get(&format!("{src}/layer-heritage")).unwrap_or_default();
+    Ok((d.heritage == now).then(|| d.dots.into_iter().collect()))
 }
 
 /// Details records by their index (`i`).
@@ -759,6 +762,33 @@ pub fn stations_job(out: &mut Out, date: &str, geojson: Option<&std::path::Path>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The live failure of 22 Oct ("layer-whs-shapes #0: no heritage dot for record 210576"): a
+    /// heritage rerun gave its records new indexes while the dots were the last marks run's, on the
+    /// heritage before. The overlays take the dots only when they are of the heritage there now.
+    #[test]
+    fn the_overlays_take_only_dots_of_the_heritage_there() {
+        let d = tempfile::tempdir().unwrap();
+        let mut out = Out::unbound(&d.path().join("root"), &d.path().join("s0")).unwrap();
+        let src = markconv::heritage_source("d");
+        let lh = format!("{src}/layer-heritage");
+        out.set(&lh, Some(format!("{lh}.0123456789abcdef.json")));
+        let dots = BTreeMap::from([(210576u64, (7u64, -3.68, 40.41))]);
+        let heritage = out.get(&lh).unwrap().to_string();
+        out.put_bytes(
+            markconv::HERITAGE_DOTS,
+            "json",
+            &serde_json::to_vec(&markconv::Dots { heritage, dots }).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(marks_dots(&out, &src).unwrap().unwrap()[&210576], (7, -3.68, 40.41));
+        // The heritage made again: the dots aren't of it.
+        out.set(&lh, Some(format!("{lh}.fedcba9876543210.json")));
+        assert!(marks_dots(&out, &src).unwrap().is_none());
+        // Dots written before they named their heritage (a bare map): not taken either.
+        out.put_bytes(markconv::HERITAGE_DOTS, "json", br#"{"210576":[7,-3.68,40.41]}"#).unwrap();
+        assert!(marks_dots(&out, &src).unwrap().is_none());
+    }
 
     /// A step's sweep of its stale packs removes only names its outputs function allows: a legacy
     /// or malformed name under its prefix stays, and the save goes through, rather than fail every

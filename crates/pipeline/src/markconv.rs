@@ -11,8 +11,17 @@ use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
-/// The heritage dots the last marks wrote: site record (`i`) → [id, lon, lat] (the overlays job's).
+/// The heritage dots the last marks wrote (`Dots`, the overlays job's).
 pub const HERITAGE_DOTS: &str = "work/marks/heritage-dots";
+
+/// `HERITAGE_DOTS`' contents: the World Heritage sites' dots, site record (`i`) → (id, lon, lat),
+/// and the content name of the `layer-heritage` whose records those `i`s index: the overlays run on
+/// the last marks' dots, which a newer heritage's indexes don't match until the marks run on it.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Dots {
+    pub heritage: String,
+    pub dots: BTreeMap<u64, (u64, f64, f64)>,
+}
 
 /// The stops & sights kinds (each its own file; heritage is one more).
 pub const POI_KINDS: [&str; 7] =
@@ -193,7 +202,7 @@ fn id_sources(pts: &[Point]) -> Vec<IdSource> {
 /// point has it), the thinned tiles' keep rule, markdata per z6 tile, thinned tiles per kind (packs
 /// `layers/marks-<kind>/{root,lo}`), and `global/marks/summary`; with the named peaks for the
 /// highest in view.
-pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) -> Result<Converted> {
+pub fn write(out: &mut Out, src: &str, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) -> Result<Converted> {
     use crate::timings::{phase, Class};
     let t0 = std::time::Instant::now();
     let p = phase("their ids and zooms worked out", Class::Compute);
@@ -215,7 +224,8 @@ pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) 
         .collect();
     {
         let _p = phase("markdata tiles uploaded", Class::NasWrite);
-        out.put_bytes(HERITAGE_DOTS, "json", &serde_json::to_vec(&dots)?)?;
+        let heritage = out.get(&format!("{src}/layer-heritage")).unwrap_or_default().to_string();
+        out.put_bytes(HERITAGE_DOTS, "json", &serde_json::to_vec(&Dots { heritage, dots })?)?;
     }
 
     // The keep rule, per kind.

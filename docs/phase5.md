@@ -240,8 +240,10 @@ docs/inputs.md §6.5.2), split into two jobs so the z6 tiles never wait on Wikid
   months. The layers' `en` is the things' own; the server adds translations. Outputs:
   `work/heritage/<d>/<stem>`.
 - **Its readers:** marks (`markconv::heritage_source`, waiting for it), which saves the World Heritage
-  dots' ids (`work/marks/heritage-dots`); then the overlays job, whose `global/heritage/…` the server
-  reads.
+  dots' ids (`work/marks/heritage-dots`, with the `layer-heritage` whose record indexes they key);
+  then the overlays job, whose `global/heritage/…` the server reads. The overlays run on the last
+  marks' dots, current or not, but take them only when they are of the heritage there now: after a
+  heritage rerun they keep their outputs until the marks run on it (the new dots change their key).
 
 ## Storage
 
