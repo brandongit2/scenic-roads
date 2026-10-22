@@ -955,10 +955,11 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   `kern.memorystatus_level`), its pressure (`mem_pressure`: 1, 2, 4) and the swap (`swap_mb`),
   and the jobs running (`jobs`); every 5 s what they hold (`held_mb`, the memory guard's last
   sample); every 10 s the disk's free space (`disk_free_gb`); the power (`ac`, `battery_pct`) and
-  the owner's idleness (`idle_s`) as each loop reads them. The NAS's latency (`nas_ms`) a second
-  only while a build runs here (a job of this Mac's, or its coordinator's leases out): one stat of
-  `catalog/` on the records' readers (`nasread::probe`, never two at once, a stat past 20 s
-  dropped); the status's `nas_ms` is its last second within half a minute. Every Mac's port
+  the owner's idleness (`idle_s`) as each loop reads them. The NAS's latency (`nas_ms`) every 5 s
+  only while a build runs here (a job of this Mac's, or its coordinator's leases out): a listing
+  of the project's folder on the records' readers, timed inside the reader (`nasread::probe`; a
+  stat would come from macOS's SMB attribute cache; never two at once, one past 20 s dropped);
+  the status's `nas_ms` is its last within half a minute. Every Mac's port
   answers `POST /work/live` with no key: `{range}` (seconds back from now, an hour by default,
   three days at most) or `{since}` (unix seconds: the points from then on, the last again as it
   may have grown), `series` to pick names; the answer `{host, now, step, from, series: {name:

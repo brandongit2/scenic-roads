@@ -348,7 +348,8 @@ pub fn with<T: Send + 'static>(p: &Path, f: impl FnOnce() -> io::Result<T> + Sen
     noted(p, records().call(p, DEADLINE, f))
 }
 
-/// How long the NAS takes to answer one stat of `p` (the latency series, crate::agent::live), on
+/// How long the NAS takes to list folder `p` (the latency series, crate::agent::live: a listing,
+/// which macOS's SMB client asks the server for, where a stat may come from its cache), on
 /// the records' readers within `DEADLINE`: None when it didn't answer in time, or when the last
 /// probe is still stuck in its call (never two at once, so a hung share holds one reader at most).
 pub fn probe(p: &Path) -> Option<Duration> {
@@ -367,7 +368,7 @@ pub fn probe(p: &Path) -> Option<Duration> {
     let r = records().call(p, DEADLINE, move || {
         let _done = done;
         let t = std::time::Instant::now();
-        std::fs::metadata(owned).is_ok().then(|| t.elapsed())
+        std::fs::read_dir(owned).map(|d| d.count()).is_ok().then(|| t.elapsed())
     });
     r.ok().flatten()
 }
@@ -451,7 +452,7 @@ pub(crate) mod tests {
     use std::time::Instant;
 
     #[test]
-    fn a_probe_times_a_stat_and_one_that_fails_is_none() {
+    fn a_probe_times_a_listing_and_one_that_fails_is_none() {
         let d = tempfile::tempdir().unwrap();
         assert!(probe(d.path()).is_some_and(|t| t < DEADLINE));
         assert_eq!(probe(&d.path().join("missing")), None);

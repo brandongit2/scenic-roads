@@ -8681,11 +8681,8 @@ mod tests {
             .find_map(|l| l.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.trim()))
     }
 
-    /// Tasks brokered by every member (docs/pool.md §8): a page from another member's address takes
-    /// a task this Mac's job offered, straight from this Mac's coordinator (its broker), with CORS:
-    /// the preflight answered for `Authorization`, `X-Worker`, `Range` and `PUT` (and a private
-    /// network's ask), every answer allowed to that page. Switched off, the same page is refused as
-    /// before, its preflight unanswered.
+    /// `/work/live` (docs/pool.md §10, Live): 503 until the agent gives it a store; then the
+    /// store's answer, allowed to a member's page (CORS) once the brokers are told, never elsewhere's.
     #[test]
     fn the_live_store_answers_the_page_and_a_members_with_cors() {
         let (_d, c, w) = start();
@@ -8722,6 +8719,11 @@ mod tests {
         assert_eq!(status(&post(Some("https://evil.example"))), 403);
     }
 
+    /// Tasks brokered by every member (docs/pool.md §8): a page from another member's address takes
+    /// a task this Mac's job offered, straight from this Mac's coordinator (its broker), with CORS:
+    /// the preflight answered for `Authorization`, `X-Worker`, `Range` and `PUT` (and a private
+    /// network's ask), every answer allowed to that page. Switched off, the same page is refused as
+    /// before, its preflight unanswered.
     #[test]
     fn a_members_page_takes_a_brokers_task_with_cors_and_off_is_refused() {
         let (d, c, w) = start();

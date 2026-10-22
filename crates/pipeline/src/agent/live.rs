@@ -10,8 +10,9 @@
 //! - **Sampled** on threads of the agent's own (`spawn`), never its loop: every second the load,
 //!   memory free, its pressure, the swap and the jobs running; every 5 s what they hold (the memory
 //!   guard's last sample); every 10 s the disk's free space. The battery, mains power and the
-//!   owner's idleness as the agent's loop reads them (each round, ~20 s). The NAS's latency a second, while a build runs (`set_nas`): one stat of
-//!   `catalog` through the records' readers (crate::agent::nasread::probe), never two at once.
+//!   owner's idleness as the agent's loop reads them (each round, ~20 s). The NAS's latency every 5 s (`NAS_EVERY`), while a build runs (`set_nas`):
+//!   a listing of the project's folder through the records' readers (crate::agent::nasread::probe;
+//!   a stat would be answered from the SMB client's cache), never two at once.
 //! - **A series missing** from an answer has no measure yet (or none in the window): readers say
 //!   so, never zero.
 
@@ -31,6 +32,9 @@ pub const FILE: &str = "live.bin";
 
 /// How often the store is written to the disk (and as the agent stops).
 pub const SAVE_EVERY: Duration = Duration::from_secs(300);
+
+/// How often the NAS's latency is measured while a build runs.
+pub const NAS_EVERY: Duration = Duration::from_secs(5);
 
 /// The file's first bytes (its format's version).
 const MAGIC: &[u8; 8] = b"SCLIVE01";
@@ -329,11 +333,11 @@ pub fn spawn(store: Arc<Store>, home: PathBuf, guard: super::memguard::Sampler) 
             let root = store.nas.lock().ok().and_then(|n| n.clone());
             if let Some(r) = root {
                 let t = now_s();
-                if let Some(d) = super::nasread::probe(&r.join("catalog")) {
+                if let Some(d) = super::nasread::probe(&r) {
                     store.record(NAS_MS, t, d.as_secs_f64() * 1000.0);
                 }
             }
-            std::thread::sleep(Duration::from_secs(1));
+            std::thread::sleep(NAS_EVERY);
         })
         .ok();
 }
