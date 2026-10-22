@@ -3,7 +3,10 @@
 //! offline first (crate::fetch::online), through the job's proxy (`HTTPS_PROXY`, which takes each
 //! from the pool's budget by its rate class: crate::budget), a 429 or a `Retry-After` told to it
 //! (crate::budget::seen), and a host's robots.txt read before its first request: a path it
-//! disallows to us is never asked (an unreadable robots.txt, or none, allows everything). Answers
+//! disallows to us is never asked (an unreadable robots.txt, or none, allows everything), but a
+//! MediaWiki API exempted by `exempt_api` (the owner's decision, 22 Oct 2026: Wikimedia's API
+//! etiquette asks a User-Agent and a polite rate, which the budget's proxy keeps; English
+//! Wikipedia's robots.txt disallows `/w/`, its API's folder, to crawlers). Answers
 //! are read as Python's `json` reads them (crate::pyjson), for caches whose bytes stay the Python's.
 
 use crate::pyjson::{loads, Py};
@@ -27,6 +30,8 @@ pub fn val<'a>(b: &'a Py, k: &str) -> Option<&'a str> {
 pub struct Asker {
     agent: ureq::Agent,
     robots: Mutex<HashMap<String, Robots>>,
+    /// MediaWiki APIs asked whatever robots.txt says: (origin, path).
+    exempt: Vec<(String, String)>,
 }
 
 impl Default for Asker {
@@ -43,9 +48,29 @@ impl Asker {
             .user_agent(crate::fetch::USER_AGENT)
             .http_status_as_error(false)
             .proxy(ureq::Proxy::try_from_env())
+            // (No redirect followed: its target's robots.txt would go unread. MediaWiki resolves
+            // redirects in its answer.)
+            .max_redirects(0)
             .build()
             .into();
-        Asker { agent, robots: Mutex::new(HashMap::new()) }
+        Asker { agent, robots: Mutex::new(HashMap::new()), exempt: vec![] }
+    }
+
+    /// Asks the MediaWiki API at `api` (a declared source's URL, `…/w/api.php`) whatever its
+    /// host's robots.txt says (the owner's decision: see above); robots.txt still rules the rest.
+    pub fn exempt_api(&mut self, api: &str) -> Result<()> {
+        let (origin, path) = split_url(api).with_context(|| format!("not an http(s) URL: {api}"))?;
+        let path = path.split('?').next().unwrap_or("").to_string();
+        anyhow::ensure!(path.ends_with("/api.php"), "{api}: not a MediaWiki API");
+        self.exempt.push((origin, path));
+        Ok(())
+    }
+
+    /// Whether `origin` and `path` are an exempted API's (its path, with a query or none).
+    fn exempted(&self, origin: &str, path: &str) -> bool {
+        self.exempt.iter().any(|(o, p)| {
+            o == origin && (path == p || path.strip_prefix(p.as_str()).is_some_and(|r| r.starts_with('?')))
+        })
     }
 
     /// Whether `url` may be asked: offline refused (an error), a path its host's robots.txt
@@ -53,6 +78,9 @@ impl Asker {
     pub fn may(&self, url: &str) -> Result<bool> {
         crate::fetch::online(url)?;
         let (origin, path) = split_url(url).with_context(|| format!("not an http(s) URL: {url}"))?;
+        if self.exempted(&origin, &path) {
+            return Ok(true);
+        }
         let mut m = self.robots.lock().unwrap();
         if !m.contains_key(&origin) {
             let r = self.get_text(&format!("{origin}/robots.txt"), 60).ok().filter(|(s, _, _)| *s == 200);
@@ -180,7 +208,9 @@ impl Robots {
                         groups.push((vec![], vec![]));
                         in_agents = true;
                     }
-                    groups.last_mut().unwrap().0.push(v.to_ascii_lowercase());
+                    if !v.is_empty() {
+                        groups.last_mut().unwrap().0.push(v.to_ascii_lowercase());
+                    }
                 }
                 "allow" | "disallow" => {
                     in_agents = false;
@@ -263,6 +293,22 @@ mod tests {
         assert!(own.allows("/a"));
         assert!(!own.allows("/p1q"));
         assert!(Robots::parse("", "scenic-roads").allows("/"));
+        // (An empty agent names no one: `*`'s rules apply.)
+        let empty = Robots::parse("User-agent:\nAllow: /\n\nUser-agent: *\nDisallow: /w/\n", "scenic-roads");
+        assert!(!empty.allows("/w/api.php"));
+    }
+
+    #[test]
+    fn the_api_is_exempt() {
+        let mut a = Asker::new();
+        a.exempt_api("https://en.wikipedia.org/w/api.php").unwrap();
+        let r = Robots::parse("User-agent: *\nDisallow: /w/\n", "scenic-roads");
+        let may = |path: &str| a.exempted("https://en.wikipedia.org", path) || r.allows(path);
+        assert!(may("/w/api.php?action=query"));
+        assert!(!may("/w/index.php?title=X"));
+        assert!(!may("/w/api.php.bak"));
+        assert!(!a.exempted("https://fr.wikipedia.org", "/w/api.php"));
+        assert!(a.exempt_api("https://en.wikipedia.org/wiki/").is_err());
     }
 
     #[test]

@@ -491,8 +491,8 @@ fn other_article(arts: &Py) -> Option<(String, String)> {
 
 /// English Wikipedia's short descriptions, 50 titles a request: every title asked for is in the
 /// answer ("" when it has none), and the titles they were normalized or redirected from. A batch
-/// that can't be fetched fails the run; one the API's robots.txt disallows is left out (asked
-/// again next run).
+/// that can't be fetched fails the run; the API is exempt from its robots.txt
+/// (`Asker::exempt_api`), so none is left out.
 fn shortdescs(ask: &Asker, api: &str, titles: &[String]) -> Result<Ordered<String>> {
     let _p = phase("short descriptions fetched from Wikipedia", Class::Net);
     let mut out = Ordered::new();
@@ -512,7 +512,7 @@ fn shortdescs(ask: &Asker, api: &str, titles: &[String]) -> Result<Ordered<Strin
         );
         let Some(d) = ask.get_json(&url)? else {
             eprintln!(
-                "  short descriptions: {api} is disallowed by its robots.txt; {} titles left for later",
+                "  short descriptions: {api} is disallowed by its robots.txt; {} titles not fetched",
                 titles.len()
             );
             break;
@@ -575,7 +575,9 @@ fn str_at<'a>(r: &'a Py, k: &str) -> Result<&'a str> {
 pub fn run(root: &Path, ends: &Endpoints) -> Result<()> {
     let b = root.join("data/build");
     let w = root.join("data/heritage/wd");
-    let ask = Asker::new();
+    let mut ask = Asker::new();
+    // (Wikipedia's API asked whatever its robots.txt says: the owner's decision, crate::wikiask.)
+    ask.exempt_api(&ends.wikipedia)?;
     let p = phase("the sites and their registers read", Class::Disk);
     std::fs::create_dir_all(&w)?;
     let fc = loads(&std::fs::read_to_string(b.join("heritage.json"))?).context("parse heritage.json")?;
@@ -884,7 +886,8 @@ mod tests {
             "\x1e{\"type\":\"Feature\",\"geometry\":{\"type\":\"Polygon\",\"coordinates\":[[[-0.2001,51.3999],[-0.1999,51.3999],[-0.1999,51.4001],[-0.2001,51.3999]]]},\"properties\":{\"name\":\"Saint Anne Chapel\",\"wikidata\":\"Q9;Q10\"}}\n\
 \x1e{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[5,5]},\"properties\":{\"name\":\"Far\",\"wikidata\":\"Q11\"}}\n",
         );
-        let ends = Endpoints { wikidata: "https://query.invalid/".into(), wikipedia: "https://wiki.invalid/".into() };
+        let ends =
+            Endpoints { wikidata: "https://query.invalid/".into(), wikipedia: "https://wiki.invalid/w/api.php".into() };
         run(&t, &ends).unwrap();
         let r = |p: &str| std::fs::read_to_string(t.join(p)).unwrap();
         assert_eq!(

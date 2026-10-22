@@ -237,8 +237,9 @@ docs/inputs.md §6.5.2), split into two jobs so the z6 tiles never wait on Wikid
   sample z6 tile), from about a fifth of the bytes: copied here first when there's room, read
   three times by osmium. pipeline::heritagewd indexes named objects with a Wikidata item on a 0.01°
   grid and asks what the answers lack through crate::wikiask (the job's proxy, each host's
-  robots.txt read first: English Wikipedia's disallows `/w/`, so short descriptions not in the
-  answers are skipped, said in the log, and asked again next run); areadetails.py asks Wikidata for parks the answers lack; pageviews.py takes the pass's
+  robots.txt read first and obeyed, but for the declared Wikipedia API, which the owner exempted
+  (22 Oct 2026: English Wikipedia's robots.txt disallows `/w/` to crawlers; Wikimedia's API
+  etiquette, a User-Agent and a polite rate, is kept by the budget's proxy)); areadetails.py asks Wikidata for parks the answers lack; pageviews.py takes the pass's
   months. The map's layers are written last, in Rust (`pipeline::heritage_layers`: the lean
   layer files, the sites' popup records, the areas simplified by a port of GEOS's topology-preserving
   simplifier, `pipeline::tpsimplify`). The layers' `en` is the things' own; the server adds
