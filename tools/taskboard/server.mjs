@@ -24,6 +24,7 @@ const db = new DatabaseSync(DB_PATH);
 // A task's stage is one of these, enforced by the table itself (a CHECK constraint): the page's
 // list (public/index.html STAGES), '' meaning queued. A changed list rebuilds the table at start.
 const STAGES = ["", "working", "backgrounded", "integrating", "review", "waiting", "done", "abandoned"];
+const STAGE_LABEL = { "": "Queued", working: "Under way", backgrounded: "Backgrounded", integrating: "Integrating", review: "In review", waiting: "Waiting on you", done: "Done", abandoned: "Abandoned" };
 const STAGE_CHECK = `CHECK (stage IN (${STAGES.map((s) => `'${s}'`).join(", ")}))`;
 const itemsTable = (name) => `CREATE TABLE ${name} (
     id TEXT PRIMARY KEY,
@@ -192,6 +193,17 @@ const newId = () => { const a = "abcdefghijklmnopqrstuvwxyz0123456789"; const b 
 // Every task has a number, and no two share one (owner, 18 Oct): a task written without `num` is
 // given the next (the larger of the counter, meta/counter's `next`, and one past the highest), the
 // counter moved past it; one written with another item's number is refused (409), whoever writes.
+// Every change of a task's stage leaves a history event, whoever writes it (the page, a script):
+// `kind: "stage"`, the old and new stages, and what wrote it (the page, or the client's User-Agent).
+function logStage(id, before, after, req) {
+  const from = before?.stage ?? "", to = after?.stage ?? "";
+  if (!after || after.kind !== "task" || (before && from === to) || (!before && to === "")) return;
+  const ua = String(req.headers["user-agent"] || "unknown");
+  const by = /Mozilla/.test(ua) ? "the page" : ua.split(/[ /]/)[0];
+  const text = before ? `Stage ${STAGE_LABEL[from] ?? from} → ${STAGE_LABEL[to] ?? to} (by ${by})` : `Stage ${STAGE_LABEL[to] ?? to} (by ${by})`;
+  putDoc("events", crypto.randomUUID(), { item: id, t: new Date().toISOString(), kind: "stage", text });
+}
+
 function numberTask(id, doc) {
   if (!doc || doc.kind !== "task") return null;
   if (doc.num === undefined || doc.num === null) {
@@ -258,6 +270,7 @@ async function api(req, res, url) {
     if (!b || typeof b !== "object" || Array.isArray(b)) return fail(res, 400, "invalid_argument", "body must be an object");
     db.exec("BEGIN IMMEDIATE");
     try {
+      const before = col === "items" ? getDoc(col, id) : null;
       if (req.method === "PATCH") {
         const cur = getDoc(col, id);
         if (cur === null) { db.exec("ROLLBACK"); return fail(res, 404, "invalid_argument", "no such document"); }
@@ -271,6 +284,7 @@ async function api(req, res, url) {
         if (bad) { db.exec("ROLLBACK"); return fail(res, 409, "conflict", bad); }
         putDoc(col, id, b);
       }
+      if (col === "items") logStage(id, before, getDoc(col, id), req);
       db.exec("COMMIT");
     } catch (e) {
       db.exec("ROLLBACK");
@@ -278,6 +292,7 @@ async function api(req, res, url) {
       return fail(res, 500, "internal", String(e.message));
     }
     changed(col);
+    if (col === "items") changed("events");
     return send(res, 200, {});
   }
   return fail(res, 405, "invalid_argument", "method not allowed");
