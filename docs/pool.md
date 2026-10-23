@@ -932,7 +932,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   for its host) and own status (`state/helpers/<host>.json`), and what each member's history
   file of the last 7 days (today's and the six before: `pageview::DAYS`) gained since the offset
   it last read to (whole lines, 4 MiB of a file a read at most, `CHUNK_MAX`, the rest the next
-  time; from the start again when the file is now shorter than that). A day before yesterday
+  time; a whole 4 MiB without a line's end passed over, counted and logged; from the start again when the file is now shorter than that). A day before yesterday
   read to its end isn't read again. Of the events, the last week's are kept, without their
   `data` (the page doesn't show it), the newest 50 000 at most (`history::KEEP_MAX`, as the
   lead's own history): `/work/history` answers from those. Measured on the NAS's real history (23 Oct: two writers, 3.9 MB over the

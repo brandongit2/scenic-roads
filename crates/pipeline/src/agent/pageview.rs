@@ -183,6 +183,8 @@ struct State {
     /// The history's numbering: made with the first snapshot (a new one each process).
     epoch: String,
     last: Option<Instant>,
+    /// History chunks of CHUNK_MAX passed over for holding no line's end.
+    skipped: u64,
 }
 
 /// The page's data on this Mac.
@@ -315,6 +317,7 @@ impl PageView {
             .filter_map(|k| crate::pool::journal::day(now.saturating_sub(k * 86_400)).map(|d| (k, d)))
             .collect();
         let week = now.saturating_sub(history::KEEP_S);
+        let mut skipped = 0;
         for (k, day) in &days {
             for m in &inp.members {
                 let p = format!("state/coord/history/{day}/{m}.jsonl");
@@ -344,7 +347,11 @@ impl PageView {
                 let all = (b.len() as u64) < CHUNK_MAX;
                 // (Whole lines alone: one being written is read next time.)
                 let Some(end) = b.iter().rposition(|&c| c == b'\n') else {
-                    read_to.insert(p, (from, c.id, all));
+                    // (A whole chunk without a line's end: a line longer than CHUNK_MAX, never
+                    // whole; passed over, counted, so the file isn't stuck on it.)
+                    let to = if all { from } else { from + b.len() as u64 };
+                    skipped += u64::from(!all);
+                    read_to.insert(p, (to, c.id, all));
                     continue;
                 };
                 for l in b[..end].split(|&c| c == b'\n') {
@@ -365,6 +372,10 @@ impl PageView {
         let mut st = self.state.lock().unwrap();
         // (Days gone from the last DAYS: their offsets forgotten.)
         st.offsets = read_to;
+        if skipped > 0 {
+            st.skipped += skipped;
+            eprintln!("pageview: {} history chunks passed over without a line's end", st.skipped);
+        }
         st.record = record;
         st.regions = regions;
         if st.history.is_none() {
@@ -946,8 +957,9 @@ mod tests {
         let first = src.1.load(Ordering::Relaxed);
         pv.state.lock().unwrap().last = None;
         pv.tick(&src, now);
-        // (And the forecast's input, its time unchanged.)
-        assert_eq!(first - (src.1.load(Ordering::Relaxed) - first), 5 + 1, "m-a's five old days");
+        let history = 2 * 2 + 5; // (today's and yesterday's of both; m-b's five missing old days)
+        let others = 9; // (the lead's files, the beats and the members' statuses; not the forecast's input)
+        assert_eq!(src.1.load(Ordering::Relaxed) - first, history + others);
     }
 
     #[test]
@@ -982,5 +994,30 @@ mod tests {
         pv.state.lock().unwrap().last = None;
         pv.tick(&src, now);
         assert_eq!(pv.history(0, 1).unwrap()["seq"].as_u64(), Some(history::KEEP_MAX as u64));
+    }
+
+    #[test]
+    fn a_line_longer_than_a_chunk_is_passed_over() {
+        // (Task #509 review) a chunk with no line's end: skipped, counted, the lines after it read.
+        let d = tempfile::tempdir().unwrap();
+        let now = now_s();
+        fixture(d.path(), now);
+        let day = crate::pool::journal::day(now).unwrap();
+        let p = d.path().join(format!("state/coord/history/{day}/m-b.jsonl"));
+        let mut text = "x".repeat(CHUNK_MAX as usize + 10) + "\n";
+        text += &(serde_json::to_string(&Event { seq: 1, t: now - 5, ..Event::new("pause") }).unwrap() + "\n");
+        std::fs::write(&p, text).unwrap();
+        let src = Dir(d.path().into(), AtomicUsize::new(0));
+        let pv = PageView::default();
+        pv.set_inputs(inputs(""));
+        pv.touch_at(now);
+        for _ in 0..3 {
+            pv.state.lock().unwrap().last = None;
+            pv.tick(&src, now);
+        }
+        assert_eq!(pv.state.lock().unwrap().skipped, 1);
+        let h = pv.history(0, 10).unwrap();
+        let kinds: Vec<&str> = h["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["start", "done", "pause"]);
     }
 }
