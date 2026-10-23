@@ -1153,7 +1153,7 @@ NAD83(CSRS) by EPSG:1946's Helmert, then Canada Atlas Lambert (EPSG:3979: HRDEM,
 UTM north zone (EPSG:26901–26923: USGS's 1 m tiles; NAD83(2011) taken as NAD83(CSRS), so through
 the same Helmert, not PROJ's null pick for EPSG:269zz, a metre off in the north-east), for the
 input check, the plan (`declared::projected_cells`, `plan_converted`) and the sampler
-(`proj::Projection`, in crate::dem::generic).
+(`proj::Projection`, in crate::dem::generic) and the fine terrain's reading ahead (`terrain_fine::plan_files`, `plan_items`).
 
 **Ingesting.**
 - **Order at a point:** the datasets covering it by `rank`, then resolution (finest first), then
