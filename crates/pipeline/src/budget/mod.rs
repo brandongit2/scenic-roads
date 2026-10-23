@@ -65,7 +65,7 @@ impl Proxy {
     pub fn view(&self) -> View {
         View::default()
     }
-    pub fn env(&self) -> Vec<(String, String)> {
+    pub fn env_for(&self, _tag: &str) -> Vec<(String, String)> {
         Vec::new()
     }
     pub fn url(&self) -> String {

@@ -1667,6 +1667,7 @@ mod tests {
             threads: Some(3),
             waiting: None,
             slot: Some(k),
+            live: None,
         };
         // (The lead on the new wire; its member on the old one, its jobs not saying their slots.)
         let with = |host: &str, n: usize, all_new: bool| {
