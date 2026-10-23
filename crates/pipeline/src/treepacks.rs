@@ -271,11 +271,14 @@ pub fn build_with(
         drop_packs(out, q, &crate::layers::LayerOut::default())?;
         return Ok(());
     };
-    run_trees(&run_args(out, q, &dir, chm, workers)?).with_context(|| format!("z3 tile {}", q.slash()))?;
-    writing();
-    put_z3(out, q, &dir)?;
+    // (Its scratch removed whatever the run's end: a failed run's canopy rows are hundreds of MB.)
+    let r = (|| {
+        run_trees(&run_args(out, q, &dir, chm, workers)?).with_context(|| format!("z3 tile {}", q.slash()))?;
+        writing();
+        put_z3(out, q, &dir)
+    })();
     std::fs::remove_dir_all(&dir).ok();
-    Ok(())
+    r
 }
 
 /// Uploads z3 tile `q`'s packs from its whole run's archives in `dir`, dropping its packs it no
@@ -351,11 +354,14 @@ pub fn build_piece(
         return Ok(());
     }
     let dir = fresh(cov, t, scratch, true)?.context("a piece's scratch folder")?;
-    run_trees(&run_args(out, t, &dir, chm, workers)?).with_context(|| format!("z6 tile {}", t.slash()))?;
-    writing();
-    put_piece(out, t, &dir, expect_same)?;
+    // (Its scratch removed whatever the run's end, as `build_with`'s.)
+    let r = (|| {
+        run_trees(&run_args(out, t, &dir, chm, workers)?).with_context(|| format!("z6 tile {}", t.slash()))?;
+        writing();
+        put_piece(out, t, &dir, expect_same)
+    })();
     std::fs::remove_dir_all(&dir).ok();
-    Ok(())
+    r
 }
 
 /// A tile as a pack takes it: zoom, column, row, its bytes and their length.

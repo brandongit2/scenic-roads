@@ -484,6 +484,9 @@ pub fn blocks(shapes: &mask::Shapes, inp: &Inputs, list: &[(u32, u32)]) -> Resul
     let px = |i: usize, b: u32| (i + b as usize * BS) as f64 + 0.5;
     let mut files = Files::new(inp, list.len());
     let mut doing = Vec::with_capacity(list.len());
+    // (The strips read and decoded under a permit too: the rows a z6 run has under way at once
+    // (`in_order_by`'s window) are as many as its pool's threads, not its grant's.)
+    let turn = crate::inputs::pace::permit_unless_held();
     for &(bx, by) in list {
         let lon: Vec<f64> = (0..BS).map(|j| lon_of(px(j, bx), ZMAX)).collect();
         let lat: Vec<f64> = (0..BS).map(|i| lat_of(px(i, by), ZMAX)).collect();
@@ -491,6 +494,7 @@ pub fn blocks(shapes: &mask::Shapes, inp: &Inputs, list: &[(u32, u32)]) -> Resul
         let src = sources(&mut files, bx, by, &lon, &lat)?;
         doing.push(Doing { src, inside: mask::inside(&shapes.meeting(b), b), pyr: pyramid::Pyramid::new(bx, by) });
     }
+    drop(turn);
     const BAND: usize = TS;
     for band in 0..BS / BAND {
         let r0 = band * BAND;

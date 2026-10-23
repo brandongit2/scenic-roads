@@ -187,6 +187,11 @@ pub fn permit() -> Permit<'static> {
     global().permit()
 }
 
+/// `permit`, unless this thread holds one already (then None: its work is within that one's).
+pub fn permit_unless_held() -> Option<Permit<'static>> {
+    (HELD.with(|h| h.get()) == 0).then(permit)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

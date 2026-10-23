@@ -844,6 +844,21 @@ fn canopy_rows_read_first_are_the_files_bytes() {
     for (off, len) in [(0, 16), (1000, 4096), (whole.len() as u64 / 2, 9000), (whole.len() as u64 - 100, 100)] {
         assert_eq!(f.read_at(off, len).unwrap(), whole[off as usize..off as usize + len]);
     }
+    // At the square's edges: its first row, its last, and rows past its end (its last strip); a
+    // sparse strip (none stored) read where it lies.
+    let img = crate::geotiff::Tiff::open(std::sync::Arc::new(store::range::PlainFile::open(&p).unwrap()))
+        .unwrap()
+        .level(0)
+        .unwrap()
+        .height;
+    for (k, rows) in [(0, 0), (img - 1, img - 1), (img - 3, img + 500), (img + 10, img + 20)].into_iter().enumerate() {
+        let f = squares::rows_here(&p, rows, &o.path().join(format!("edge{k}")), &|_, _| {}).unwrap();
+        // Every strip's bytes, read through it, the file's.
+        for off in (0..whole.len() as u64).step_by(4093) {
+            let len = 4093.min(whole.len() - off as usize);
+            assert_eq!(f.read_at(off, len).unwrap(), whole[off as usize..off as usize + len], "{rows:?} at {off}");
+        }
+    }
 }
 /// Room-making while tree cover runs (docs/building.md §2, store::cachefile): a run reads this Mac's
 /// whole copies of the canopy squares (the units') where it has them, held, so room-making can't
