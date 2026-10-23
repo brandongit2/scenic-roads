@@ -1258,7 +1258,9 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   (`terrain.tiles`, crate::stage), the fine tiles under its vertices (`fine.tiles`, from the fine
   packs `layers/terrain/fine/10-x-y`: `road_terrain::fine_tiles`, `stage::stage_fine`) and the
   datasets' codes by coverage (`codes.json`, `road_terrain::Codes`: a vertex's `src.u8` is the
-  first dataset in the order whose coverage holds it). `elev` reads those and `verts.bin` alone (no
+  first dataset in the order whose measured coverage, in 1° cells, holds it: a label, so in a cell
+  a dataset covers only in part it names that dataset where the terrain may have taken the next one
+  through its voids). `elev` reads those and `verts.bin` alone (no
   NAS, no server), natively or as WebAssembly. A z6 tile waits for the stale terrain targets under
   its box, the fine ones (z8) as well.
 - **Densification** (crate::dem::spacing, `extract`): a way's points are put as far apart as the

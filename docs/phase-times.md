@@ -59,7 +59,8 @@ but holds the sources' reads as sub-phases, so depth's NAS share is really highe
 - **depth-lo** (41 min a run): the sources' windows read 74 % (CPU/wall 0.2), the source files
   opened 21 % (10,000 a run, 51 ms each with 8 at once: each open was 24–38 round trips), the
   water 1.5 %. These are round trips, not bytes: the overviews read are a few MB a grid.
-- **unit** (a full build's: 46 h over 319 runs): elevations 58 % (3DEP sampled 19 %, the edges
+- **unit** (a full build's: 46 h over 319 runs, measured before #595, when the roads sampled the
+  elevation datasets themselves; they now read the finished terrain): elevations 58 % (3DEP sampled 19 %, the edges
   blended 28 %: the internet, 0.5–3 MB/s a connection from S3, task #216), layers staged from the
   packs 8 %, the next z6 tile's packs copied ahead 5 % (beside), base pack written 5 %, DEM cache
   slice 5 %. In the small rebuilds of the last 20 runs, "missing grids written" is 38 %
@@ -102,7 +103,8 @@ tiles made is the same before and after (§6). No version bump.
    brings 70 min to about 28. A local copy doesn't fit the M4's disk (43 GB free). `-s
    complete_ways` reads twice but changes what is clipped: not byte-identical.
 4. **The uploads at 13 MB/s** (bldtiles 13 %, slope 42 %, lo 20 %, pack 13 %): Wi-Fi; ethernet.
-5. **The z6 tile's elevations**: the internet (S3), tasks #216 and #445; not the NAS.
+5. **The z6 tile's elevations** (before #595; the roads now read the staged terrain): the internet
+   (S3), tasks #216 and #445; not the NAS.
 6. **slope's untimed 67 %** over the window: the landing of put-off uploads, timed since #445
    ("the uploads beside landed"); the last 20 runs are 0.4 % untimed.
 
@@ -149,4 +151,5 @@ depth-lo run of 41 min to roughly 20–30; the next runs' `scenic timings` will 
   staging and small writes. These are what this task cut.
 - **Compute-bound (nothing changes)**: bldtiles' tiles (84 %), terrain's (82 %), depth's gaps
   filled and scaling, lo's drawing, peaks' measures.
-- **Internet-bound**: the z6 tile's elevations (58 % of a full build's z6 tile time).
+- **Internet-bound**: the z6 tile's elevations (58 % of a full build's z6 tile time, before #595:
+  they now read the staged terrain, no server).

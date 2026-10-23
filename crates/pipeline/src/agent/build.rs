@@ -685,7 +685,10 @@ pub fn terrain_digest(tiles: &[Tile]) -> String {
 ///   own long ways (extract puts points along them in degrees; a ferry's are its nodes alone, but
 ///   its segments are taken), each tile tested grown by `EDGE_DEG`.
 ///
-/// Nothing else a z6 tile makes reads terrain. A tile staged but missing is named by its absence: one
+/// The roads' heights (crate::road_terrain) read the staged tiles too, at every vertex of the ways
+/// staged, buffer ways included: those aren't listed here, but `unit_key` names the hi packs and
+/// fine packs over `b` whole (`terrain_packs`), so any of their tiles changing re-keys it. Nothing
+/// else a z6 tile makes reads terrain. A tile staged but missing is named by its absence: one
 /// appearing (the coverage grown) changes the list, as does any tile read changing.
 pub fn unit_terrain_tiles(
     u: TileId,
@@ -2273,18 +2276,16 @@ pub fn plan(
                 .collect()
         })
         .collect();
-    // (And for the fine terrain under them: their roads' heights read it, crate::road_terrain.)
-    let fine_left: BTreeSet<String> = fine_targets(cov, m, done, tiles)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|(t, k, _)| done.terrain_fine.get(t) != Some(k))
-        .map(|(t, _, _)| t)
-        .collect();
+    // (And for the fine terrain under them: their roads' heights read it, crate::road_terrain. While
+    // its datasets can't be read, which of its targets are stale isn't known: every z6 tile waits.)
+    let fine_left: Option<BTreeSet<String>> = fine_targets(cov, m, done, tiles)
+        .map(|ft| ft.into_iter().filter(|(t, k, _)| done.terrain_fine.get(t) != Some(k)).map(|(t, _, _)| t).collect());
     let fine_waits = |u: TileId| {
+        let Some(left) = &fine_left else { return true };
         let z = crate::terrain_fine::TARGET_Z;
         crate::stage::tiles_in(z, crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM))
             .into_iter()
-            .any(|(x, y)| fine_left.contains(&format!("{z}/{x}/{y}")))
+            .any(|(x, y)| left.contains(&format!("{z}/{x}/{y}")))
     };
     let buildable = |i: usize| units[i].1.is_some() && reads[i].is_disjoint(&terrain_left) && !fine_waits(units[i].0);
     let unknown: Vec<String> = units.iter().filter(|(_, k)| k.is_none()).map(|(u, _)| u.slash()).collect();
@@ -6414,6 +6415,55 @@ pub(crate) mod tests {
         rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
         let s = steps(&m, &done);
         assert_eq!(s["a"]["unit"][0], 1, "{s:?}");
+    }
+
+    /// A z6 tile waits for the stale fine terrain under it (its roads' heights read the fine packs,
+    /// crate::road_terrain), and builds once that's done.
+    #[test]
+    fn a_unit_waits_for_the_fine_terrain_under_it() {
+        use crate::terrain_fine as tf;
+        let (c, reach, m, mut done) = three();
+        let each = c.by_region();
+        let plan = |t: &TerrainTiles, done: &Keys| {
+            super::plan(
+                &c,
+                "d",
+                &m,
+                done,
+                &BTreeMap::new(),
+                Some(&reach),
+                t,
+                Publish {
+                    each: &each,
+                    on_map: &BTreeMap::new(),
+                    served: &BTreeMap::new(),
+                    since_catalog: None,
+                    held_for: None,
+                    held: false,
+                    way: Default::default(),
+                },
+            )
+        };
+        let units = |p: &Plan| p.work.iter().filter(|w| w.step == "unit").map(|w| w.targets.len()).sum::<usize>();
+        let mut t = tiles_for(&m);
+        assert_eq!(units(&plan(&t, &done)), 4);
+        t.hold_fine(
+            &m,
+            vec![tf::FineSet {
+                id: "lidar".into(),
+                line: "lidar k".into(),
+                cover: crate::dem::declared::Cover::of(None),
+                detail: tf::Detail::Pyramid(14),
+                cut: None,
+            }],
+        );
+        let ft = fine_targets(&c, &m, &done, &t).unwrap();
+        assert!(!ft.is_empty());
+        assert_eq!(units(&plan(&t, &done)), 0, "every z6 tile here has stale fine terrain under it");
+        for (f, k, _) in &ft {
+            done.terrain_fine.insert(f.clone(), k.clone());
+        }
+        assert_eq!(units(&plan(&t, &done)), 4);
     }
 
     #[test]

@@ -2160,7 +2160,7 @@ impl Agent {
                 "--coarse-threads".into(),
                 "6".into(),
             ],
-            "unit" => vec!["--pass".into(), date.to_string(), "--dem".into(), dem(), "--cache-dir".into(), s(&cache)],
+            "unit" => vec!["--pass".into(), date.to_string(), "--cache-dir".into(), s(&cache)],
             "trees" => {
                 vec!["--pass".into(), date.to_string(), "--chm".into(), s(&cache.join("chm10"))]
             }

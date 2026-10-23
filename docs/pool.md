@@ -415,7 +415,7 @@ so it runs on any Mac by its measured use. **Shared caches** (task #392, `needs:
 process copies a file at a time, the others waiting for its copy (a lock file in the cache's
 `copying/`); their reads are the local disk's, `costin`'s `local`, not in a run's NAS weight; a
 copy room-making frees is copied again by the next job reading it). Reserved only where it would be
-copied (`needs::ROOM_ONLY`, `coord`'s `missing`): on a Mac whose room past its target (its ask's
+copied (`needs::CACHES`, `coord`'s `missing`): on a Mac whose room past its target (its ask's
 `disk_mb`) is short of what it lacks of the fill, nothing is reserved and its jobs there read the
 NAS, so a laptop keeps getting them. The run that fills it measures it whole, the warm runs after it
 their output alone. So a target of such a step counts its own output (its disk floor at most its

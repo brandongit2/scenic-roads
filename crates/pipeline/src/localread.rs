@@ -13,7 +13,7 @@
 //! disk's (store::nasio's `Local`, crate::costin's `local`), so the NAS's weight of a run that
 //! reads them is what it copied (crate::needs::nas_rate); the copies are one shared cache a Mac
 //! fills once (crate::needs::CACHES: `CACHE`), reserved only on a Mac with room for it
-//! (crate::needs::ROOM_ONLY). One process copies a file at a time (`making`, and across processes a
+//! (crate::coord's `missing`). One process copies a file at a time (`making`, and across processes a
 //! lock file in the cache's `copying/`): another wanting it waits, then reads that copy.
 //!
 //! (A copy room-making frees between jobs is copied again by the next job that reads it: with the

@@ -11,7 +11,7 @@
 //!   patch-ferries [--pass d] [--near-coverage]  the pass's extracts given the standalone ferry ways
 //!                                its filtered planet lacked (pipeline::osmpass::patch_ferries), all
 //!                                or those meeting the regions (10 km round); run by hand
-//!   z6 tile [U …] [--pass d] [--layers-root r] [--regions dir] [--dem dir] [--cache-dir dir] [--buildings dir]
+//!   z6 tile [U …] [--pass d] [--layers-root r] [--regions dir] [--cache-dir dir] [--buildings dir]
 //!                                base(U) from the pass's extracts (the z6 tile's programs on a z6 tile folder):
 //!                                default every z6 tile whose extract meets the coverage
 //!   unit-snap U --out d --cache c [--carry]  z6 tile U's folder built from the records into d, nothing

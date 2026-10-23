@@ -2,8 +2,7 @@
 //! §6.8): every tile sampled from the same datasets, in the same order and blended at their edges
 //! the same way, as the roads' elevations (crate::dem::generic), so the roads and the terrain use
 //! one dataset at every point. Each pixel is the mean of 2 × 2 samples over it (`K`), each dataset
-//! read at the level's detail: a GeoTIFF at its overview nearest half a pixel (never finer than its
-//! `read_resolution`), a Terrarium pyramid at the level's own zoom (AWS's publishes every zoom),
+//! read at the level's detail: a GeoTIFF at its overview nearest half a pixel, a Terrarium pyramid at the level's own zoom (AWS's publishes every zoom),
 //! another pyramid at its declared zoom. Where no dataset has data, sea level. Heights are EGM2008
 //! (each dataset's brought there as the roads' are). The tiles come out as Terrarium PNGs, the
 //! terrain's levels made from them as from any raw tile (crate::terrain_pack: the water, the coarser
@@ -98,9 +97,8 @@ impl Pool {
         for d in &mut p.datasets {
             match &mut d.source {
                 Source::Geotiff { read_resolution, .. } => {
-                    let r = read_resolution.map_or(half, |r| r.max(half));
-                    *read_resolution = Some(r);
-                    d.resolution = d.resolution.max(r);
+                    *read_resolution = Some(half);
+                    d.resolution = d.resolution.max(half);
                 }
                 Source::Tiles { zoom, encoding, .. } if encoding == "terrarium" && *zoom > z as u32 => {
                     *zoom = z as u32;
@@ -452,13 +450,7 @@ mod tests {
                 ds(
                     "lidar",
                     8.0,
-                    Source::Geotiff {
-                        crs: 4326,
-                        read_resolution: Some(8.0),
-                        store: false,
-                        files: vec![],
-                        masks: vec![],
-                    },
+                    Source::Geotiff { crs: 4326, read_resolution: None, store: false, files: vec![], masks: vec![] },
                 ),
                 ds("t", 38.0, Source::Tiles { url: "u".into(), zoom: 12, encoding: "terrarium".into() }),
                 ds("g", 5.0, Source::Tiles { url: "v".into(), zoom: 15, encoding: "gsi-png".into() }),

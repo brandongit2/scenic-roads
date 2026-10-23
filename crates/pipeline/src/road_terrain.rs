@@ -9,7 +9,9 @@
 //! crate::stage), the fine tiles under its vertices and their neighbours across a near edge
 //! (`fine.tiles`: `fine_tiles`, `stage_fine`), and the pool's datasets' codes by coverage
 //! (`codes.json`: `Codes`), which name each vertex's source (`src.u8`): the first dataset in the
-//! order whose coverage holds it.
+//! order whose coverage (its measured 1° cells) holds it. That's a label, not the terrain's own
+//! record: in a cell a dataset covers only in part, it names that dataset where the terrain took the
+//! next one through its voids.
 
 use crate::dem::declared::Cover;
 use crate::dem::spacing::{cell, Fine};

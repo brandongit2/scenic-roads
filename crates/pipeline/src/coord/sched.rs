@@ -243,13 +243,13 @@ impl Sched {
 
     /// What of shared cache `cache` the Mac asking `a` lacks (MB): its fill less what its capacity
     /// says its cache folder holds of it; the whole fill when its ask says nothing of its caches
-    /// (an older agent's). A cache its jobs copy only where there's room (crate::needs::ROOM_ONLY:
-    /// the whole copies) lacks nothing on a Mac whose room past its target is short of what it
-    /// lacks: its jobs there read the NAS in place, nothing copied.
+    /// (an older agent's). Nothing on a Mac whose room past its target is short of what it lacks:
+    /// a shared cache is copied only where there's room (crate::localread), its jobs there reading
+    /// the NAS in place.
     pub(super) fn missing(&self, cache: &str, a: &Ask) -> u64 {
         let have = a.cap.as_ref().and_then(|c| c.caches.get(cache)).map_or(0, |h| h.have_mb);
         let lacks = self.fill_mb(cache).saturating_sub(have);
-        if crate::needs::ROOM_ONLY.contains(&cache) && a.disk_mb.is_some_and(|d| d < lacks) {
+        if a.disk_mb.is_some_and(|d| d < lacks) {
             return 0;
         }
         lacks

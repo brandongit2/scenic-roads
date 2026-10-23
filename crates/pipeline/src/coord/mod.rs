@@ -7657,7 +7657,7 @@ mod tests {
         }
     }
 
-    /// Task #551 review: the whole copies (crate::needs::ROOM_ONLY) are reserved only on a Mac with
+    /// Task #551 review: the whole copies (crate::needs::CACHES) are reserved only on a Mac with
     /// room for them past its target; one short of it (a laptop) reads the NAS in place, so it's
     /// granted the job with its output alone, not held off.
     #[test]

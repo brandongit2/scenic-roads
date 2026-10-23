@@ -78,14 +78,10 @@ pub fn batch_disk(step: &str, each: impl IntoIterator<Item = u64>) -> u64 {
 /// `cache_mb`). (`pack` and `lo` read only the parts of the base packs they need, into their own
 /// scratch, since Task #396: their disk is their own.) The one shared cache: the whole local copies
 /// of the basemap and the depth sources' packs the depth's and the water's steps read
-/// (crate::localread, task #551).
+/// (crate::localread, task #551), copied only where the Mac has room for it past its room target,
+/// else read in place: reserved only on a Mac with that room (crate::coord's `missing`).
 pub const CACHES: [(&str, &[&str]); 1] =
     [(crate::localread::CACHE, &["depth", "depth-lo", "terrain-water", "lakefill", "water"])];
-
-/// The shared caches its jobs copy only where the Mac has room for them past its room target
-/// (crate::localread), else read the NAS in place: reserved only on a Mac with that room
-/// (crate::coord's `missing`).
-pub const ROOM_ONLY: [&str; 1] = [crate::localread::CACHE];
 
 /// The shared cache a job of `step` reads (`CACHES`), if any.
 pub fn cache_of(step: &str) -> Option<&'static str> {
