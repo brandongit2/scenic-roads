@@ -21,17 +21,18 @@ const HOST = arg("host", process.env.HOST || "127.0.0.1");
 const DB_PATH = path.resolve(arg("db", process.env.TASKBOARD_DB || path.join(here, "taskboard.db")));
 
 const db = new DatabaseSync(DB_PATH);
-db.exec(`
-  PRAGMA journal_mode = WAL;
-  PRAGMA foreign_keys = ON;
-  CREATE TABLE IF NOT EXISTS items (
+// A task's stage is one of these, enforced by the table itself (a CHECK constraint): the page's
+// list (public/index.html STAGES), '' meaning queued. A changed list rebuilds the table at start.
+const STAGES = ["", "working", "backgrounded", "integrating", "review", "waiting", "done", "abandoned"];
+const STAGE_CHECK = `CHECK (stage IN (${STAGES.map((s) => `'${s}'`).join(", ")}))`;
+const itemsTable = (name) => `CREATE TABLE ${name} (
     id TEXT PRIMARY KEY,
     kind TEXT,                 -- 'task' | 'folder'
     text TEXT,
     parent TEXT,
     "order" REAL,
     num INTEGER,               -- a task's number, #57
-    stage TEXT,                -- '' (queued) | working | backgrounded | integrating | review | waiting | done | abandoned
+    stage TEXT ${STAGE_CHECK},  -- STAGES: the page's (public/index.html), '' queued
     "where" TEXT,              -- who or what it runs on
     note TEXT,
     reply TEXT,
@@ -43,10 +44,14 @@ db.exec(`
     added TEXT, started TEXT, finished TEXT,   -- ISO times
     photos TEXT,               -- JSON array of blob ids
     extra TEXT                 -- JSON: any other field
-  );
+  )`;
+const ITEMS_INDEXES = `
   CREATE INDEX IF NOT EXISTS items_parent ON items(parent);
   CREATE INDEX IF NOT EXISTS items_num ON items(num);
-  CREATE UNIQUE INDEX IF NOT EXISTS items_num_unique ON items(num) WHERE num IS NOT NULL;
+  CREATE UNIQUE INDEX IF NOT EXISTS items_num_unique ON items(num) WHERE num IS NOT NULL;`;
+db.exec(`
+  PRAGMA journal_mode = WAL;
+  PRAGMA foreign_keys = ON;
   CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY,
     item TEXT,
@@ -60,6 +65,18 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);   -- JSON
   CREATE TABLE IF NOT EXISTS blobs (id TEXT PRIMARY KEY, type TEXT NOT NULL, data BLOB NOT NULL, sha256 TEXT, created TEXT);
 `);
+{
+  const cur = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'items'`).get();
+  if (!cur) db.exec(itemsTable("items") + ";" + ITEMS_INDEXES);
+  else if (!cur.sql.includes(STAGE_CHECK)) {
+    // (Rows with a stage outside the list are refused by the copy: the rebuild fails, nothing changes.)
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.exec(`${itemsTable("items_new")}; INSERT INTO items_new SELECT * FROM items; DROP TABLE items; ALTER TABLE items_new RENAME TO items;${ITEMS_INDEXES}`);
+      db.exec("COMMIT");
+    } catch (e) { db.exec("ROLLBACK"); throw e; }
+  }
+}
 
 // ---- documents <-> rows -------------------------------------------------------------------------
 const BOOL = new Set(["discuss", "archived"]);
@@ -175,10 +192,7 @@ const newId = () => { const a = "abcdefghijklmnopqrstuvwxyz0123456789"; const b 
 // Every task has a number, and no two share one (owner, 18 Oct): a task written without `num` is
 // given the next (the larger of the counter, meta/counter's `next`, and one past the highest), the
 // counter moved past it; one written with another item's number is refused (409), whoever writes.
-// A stage is one the page shows (public/index.html STAGES); any other is refused, whoever writes.
-const STAGES = ["", "working", "backgrounded", "integrating", "review", "waiting", "done", "abandoned"];
 function numberTask(id, doc) {
-  if (doc && doc.stage !== undefined && !STAGES.includes(doc.stage)) return `stage must be one of ${STAGES.map((s) => JSON.stringify(s)).join(", ")}`;
   if (!doc || doc.kind !== "task") return null;
   if (doc.num === undefined || doc.num === null) {
     const top = stmt(`SELECT MAX(num) AS m FROM items`).get().m || 0;
@@ -260,6 +274,7 @@ async function api(req, res, url) {
       db.exec("COMMIT");
     } catch (e) {
       db.exec("ROLLBACK");
+      if (/CHECK constraint failed/.test(e.message)) return fail(res, 400, "invalid_argument", `stage must be one of ${STAGES.map((x) => JSON.stringify(x)).join(", ")}`);
       return fail(res, 500, "internal", String(e.message));
     }
     changed(col);
