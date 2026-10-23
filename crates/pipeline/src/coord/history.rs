@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 /// How long events are kept (seconds), and the most kept (a week of a busy build is a few thousand).
 pub const KEEP_S: u64 = 7 * 86400;
-const KEEP_MAX: usize = 50_000;
+pub const KEEP_MAX: usize = 50_000;
 
 /// One thing that happened.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -120,6 +120,11 @@ impl History {
             h.events.pop_front();
         }
         h
+    }
+
+    /// The oldest event's time.
+    pub fn oldest(&self) -> Option<u64> {
+        self.events.front().map(|e| e.t)
     }
 
     /// The last event's number.

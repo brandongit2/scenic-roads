@@ -9,9 +9,11 @@
 //! regions for the page (`state/build/term/<E>/regions.json`, the same), the
 //! pause (`state/build/pause.json`), each member's heartbeat (`state/pool/members/<id>.json`, the
 //! members as the pool's driver knows them: its host) and own status
-//! (`state/helpers/<host>.json`), and what the members' history files of the two newest days
+//! (`state/helpers/<host>.json`), and what the members' history files of the last `DAYS` days
 //! (`state/coord/history/<day>/<member>.jsonl`) gained since the last read (from the offset read
-//! up to; from the start again when a file is now shorter). Every read is done before its state's
+//! up to; from the start again when a file is now shorter; a day older than yesterday once read,
+//! not again), `CHUNK_MAX` of a file a read at most, the week's events kept (`data` dropped: the
+//! page doesn't show it), `history::KEEP_MAX` at most. Every read is done before its state's
 //! lock is taken, so a slow NAS never holds up an answer. It keeps one snapshot: those, the history
 //! merged and numbered here (`epoch` names the numbering), and the forecast run here
 //! (`forecast::Record::forecast`) with its time brought to now, this Mac's own lanes as its slots
@@ -20,7 +22,7 @@
 //! `FORECAST_EVERY` passed: the snapshot carries the last one done, never waiting on it.
 
 use super::forecast::{Forecast, Record, SlotJob};
-use crate::coord::history::{Event, History};
+use crate::coord::history::{self, Event, History};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -36,6 +38,10 @@ pub const EVERY: Duration = Duration::from_secs(12);
 const FORECAST_EVERY: Duration = Duration::from_secs(60);
 /// A member's status older than this (s) isn't shown (as the lead's own `helpers` takes them).
 const HELPER_FRESH_S: u64 = 600;
+/// The days of history read (today's and the six before it: "Show past tasks").
+pub const DAYS: u64 = 7;
+/// The most of a history file taken in a read (bytes); the rest is read the next time.
+pub const CHUNK_MAX: u64 = 4 << 20;
 
 /// Where the files are read: the NAS (`NasFiles`), or a test's.
 pub trait Source {
@@ -100,7 +106,7 @@ impl Source for NasFiles {
             head.truncate(n);
             f.seek(std::io::SeekFrom::Start(from))?;
             let mut b = Vec::new();
-            f.read_to_end(&mut b)?;
+            f.take(CHUNK_MAX).read_to_end(&mut b)?;
             Ok(Chunk { from, bytes: b, id: (ino(&m), head_of(&head)) })
         })
         .ok()
@@ -166,10 +172,12 @@ struct State {
     record: Option<(SystemTime, Arc<Record<'static>>)>,
     /// The lead's regions for the page (crate::agent::regionsview) as last read, by its file's time.
     regions: Option<(SystemTime, Arc<Value>)>,
-    /// Each history file read up to (bytes: the end of its last whole line), and which file it was.
-    offsets: BTreeMap<String, (u64, FileId)>,
+    /// Each history file read up to (bytes: the end of its last whole line), which file it was,
+    /// and whether that read took in all it held (not cut at CHUNK_MAX).
+    offsets: BTreeMap<String, (u64, FileId, bool)>,
     /// The events taken in (writer, time, number, kind): one read again (its file made again) isn't
-    /// taken twice. A week's kept, as the history keeps.
+    /// taken twice. A week's kept, as the history keeps, and no older than its oldest once over
+    /// history::KEEP_MAX.
     taken: std::collections::BTreeSet<(String, u64, u64, String)>,
     history: Option<History>,
     /// The history's numbering: made with the first snapshot (a new one each process).
@@ -300,19 +308,24 @@ impl PageView {
             Some(_) => had_regions,
             None => None,
         };
-        // The history: what each member's files of the two newest days gained.
+        // The history: what each member's files of the last DAYS days gained.
         let mut new: Vec<(u64, String, u64, Event)> = Vec::new();
-        let mut read_to: BTreeMap<String, (u64, FileId)> = BTreeMap::new();
-        let days: Vec<String> = [now.saturating_sub(86_400), now]
-            .iter()
-            .filter_map(|&t| crate::pool::journal::day(t))
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
+        let mut read_to: BTreeMap<String, (u64, FileId, bool)> = BTreeMap::new();
+        let days: Vec<(u64, String)> = (0..DAYS)
+            .filter_map(|k| crate::pool::journal::day(now.saturating_sub(k * 86_400)).map(|d| (k, d)))
             .collect();
-        for day in &days {
+        let week = now.saturating_sub(history::KEEP_S);
+        for (k, day) in &days {
             for m in &inp.members {
                 let p = format!("state/coord/history/{day}/{m}.jsonl");
                 let kept = offsets.get(&p);
+                // (A day before yesterday, read already to its end: done with, kept as read.)
+                if *k >= 2 {
+                    if let Some(kk) = kept.filter(|kk| kk.2) {
+                        read_to.insert(p, kk.clone());
+                        continue;
+                    }
+                }
                 let Some(mut c) = src.read_from(&p, kept.map_or(0, |k| k.0)) else {
                     if let Some(k) = kept {
                         read_to.insert(p, k.clone());
@@ -328,30 +341,35 @@ impl PageView {
                     }
                 }
                 let (from, b) = (c.from, &c.bytes);
+                let all = (b.len() as u64) < CHUNK_MAX;
                 // (Whole lines alone: one being written is read next time.)
                 let Some(end) = b.iter().rposition(|&c| c == b'\n') else {
-                    read_to.insert(p, (from, c.id));
+                    read_to.insert(p, (from, c.id, all));
                     continue;
                 };
                 for l in b[..end].split(|&c| c == b'\n') {
-                    if let Ok(e) = serde_json::from_slice::<Event>(l) {
-                        new.push((e.t, m.clone(), e.seq, e));
+                    if let Ok(mut e) = serde_json::from_slice::<Event>(l) {
+                        if e.t >= week {
+                            e.data = None;
+                            new.push((e.t, m.clone(), e.seq, e));
+                        }
                     }
                 }
-                read_to.insert(p, (from + end as u64 + 1, c.id));
+                read_to.insert(p, (from + end as u64 + 1, c.id, all));
             }
         }
         new.sort_by(|a, b| (a.0, &a.1, a.2).cmp(&(b.0, &b.1, b.2)));
+        // (The newest KEEP_MAX alone: the most the history keeps.)
+        new.drain(..new.len().saturating_sub(history::KEEP_MAX));
         // Swapped in.
         let mut st = self.state.lock().unwrap();
-        // (Days gone from the two: their offsets forgotten.)
+        // (Days gone from the last DAYS: their offsets forgotten.)
         st.offsets = read_to;
         st.record = record;
         st.regions = regions;
         if st.history.is_none() {
             st.epoch = format!("view {} {}", std::process::id(), now);
         }
-        let week = now.saturating_sub(8 * 86_400);
         st.taken.retain(|k| k.1 >= week);
         let fresh: Vec<Event> = new
             .into_iter()
@@ -362,6 +380,11 @@ impl PageView {
         for e in fresh {
             // (Numbered here: the page's cursor, rising as events arrive.)
             h.add(e);
+        }
+        // (What's taken in, as many as the history keeps: those it let go of forgotten.)
+        if st.taken.len() > history::KEEP_MAX {
+            let oldest = st.history.as_ref().and_then(History::oldest).unwrap_or(week);
+            st.taken.retain(|k| k.1 >= oldest);
         }
         st.snap = Some(Snap { status, view, pause, helpers, macs });
         st.last = Some(Instant::now());
@@ -541,7 +564,8 @@ mod tests {
             let b = local(&self.0, p)?;
             let ino = ino(&std::fs::metadata(self.0.join(p)).ok()?);
             let from = if (b.len() as u64) < offset { 0 } else { offset };
-            Some(Chunk { from, bytes: b[from as usize..].to_vec(), id: (ino, head_of(&b)) })
+            let to = b.len().min(from as usize + CHUNK_MAX as usize);
+            Some(Chunk { from, bytes: b[from as usize..to].to_vec(), id: (ino, head_of(&b)) })
         }
     }
 
@@ -886,5 +910,77 @@ mod tests {
         let h = pv.history(3, 10).unwrap();
         let kinds: Vec<&str> = h["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
         assert_eq!(kinds, ["catalog", "pause", "resume"], "the old second not again");
+    }
+
+    #[test]
+    fn the_history_is_the_last_seven_days_an_old_day_read_once() {
+        // (Task #509) today's and the six days before; the eighth not; `data` dropped.
+        let d = tempfile::tempdir().unwrap();
+        let now = now_s();
+        fixture(d.path(), now);
+        for k in 1..=DAYS {
+            let t = now - k * 86_400 + 60;
+            let day = crate::pool::journal::day(t).unwrap();
+            let e = Event {
+                seq: 100 + k,
+                t,
+                note: format!("day {k}"),
+                data: Some(serde_json::json!({ "big": 1 })),
+                ..Event::new("task")
+            };
+            let line = serde_json::to_string(&e).unwrap() + "\n";
+            put(d.path(), &format!("state/coord/history/{day}/m-a.jsonl"), line.as_bytes());
+        }
+        let src = Dir(d.path().into(), AtomicUsize::new(0));
+        let pv = PageView::default();
+        pv.set_inputs(inputs(""));
+        pv.touch_at(now);
+        pv.tick(&src, now);
+        let h = pv.history(0, 1000).unwrap();
+        let evs = h["events"].as_array().unwrap();
+        let notes: Vec<&str> = evs.iter().filter_map(|e| e["note"].as_str()).collect();
+        assert_eq!(notes, ["day 6", "day 5", "day 4", "day 3", "day 2", "day 1"], "the 7th day back is past the week");
+        assert!(evs.iter().all(|e| e.get("data").is_none()));
+        // (A second read: m-a's five days before yesterday not read again; today's and
+        // yesterday's are, and m-b's missing files are tried again.)
+        let first = src.1.load(Ordering::Relaxed);
+        pv.state.lock().unwrap().last = None;
+        pv.tick(&src, now);
+        // (And the forecast's input, its time unchanged.)
+        assert_eq!(first - (src.1.load(Ordering::Relaxed) - first), 5 + 1, "m-a's five old days");
+    }
+
+    #[test]
+    fn the_history_read_is_bounded_by_the_history_keep() {
+        // (Task #509) more events across days than history::KEEP_MAX: the newest kept alone.
+        let d = tempfile::tempdir().unwrap();
+        let now = now_s();
+        let per = (history::KEEP_MAX / 2 + 1000) as u64;
+        for k in 0..3u64 {
+            let base = now - k * 86_400 - 3600;
+            let day = crate::pool::journal::day(base).unwrap();
+            let text: String = (0..per)
+                .map(|i| {
+                    serde_json::to_string(&Event { seq: i + 1, t: base - per + i, ..Event::new("lease") }).unwrap()
+                        + "\n"
+                })
+                .collect();
+            put(d.path(), &format!("state/coord/history/{day}/m-b.jsonl"), text.as_bytes());
+        }
+        put(d.path(), "state/status.json", b"{}");
+        let src = Dir(d.path().into(), AtomicUsize::new(0));
+        let pv = PageView::default();
+        pv.set_inputs(inputs(""));
+        pv.touch_at(now);
+        pv.tick(&src, now);
+        let h = pv.history(0, usize::MAX).unwrap();
+        let evs = h["events"].as_array().unwrap();
+        assert_eq!(evs.len(), history::KEEP_MAX);
+        assert_eq!(evs.last().unwrap()["t"].as_u64(), Some(now - 3600 - 1));
+        assert!(pv.state.lock().unwrap().taken.len() <= history::KEEP_MAX);
+        // (Read again with nothing new: none added.)
+        pv.state.lock().unwrap().last = None;
+        pv.tick(&src, now);
+        assert_eq!(pv.history(0, 1).unwrap()["seq"].as_u64(), Some(history::KEEP_MAX as u64));
     }
 }

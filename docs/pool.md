@@ -930,8 +930,16 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   `state/status.json`, the term's `view.json`, its `forecast-input.json` (again only when its
   time changes), `state/build/pause.json`, the term's `regions.json` (again only when its time changes), each member's heartbeat (`state/pool/members/<id>.json`,
   for its host) and own status (`state/helpers/<host>.json`), and what each member's history
-  file of the two newest days gained since the offset it last read to (whole lines; from the
-  start again when the file is now shorter than that). The agent's loop hands it only what it
+  file of the last 7 days (today's and the six before: `pageview::DAYS`) gained since the offset
+  it last read to (whole lines, 4 MiB of a file a read at most, `CHUNK_MAX`, the rest the next
+  time; from the start again when the file is now shorter than that). A day before yesterday
+  read to its end isn't read again. Of the events, the last week's are kept, without their
+  `data` (the page doesn't show it), the newest 50 000 at most (`history::KEEP_MAX`, as the
+  lead's own history): `/work/history` answers from those. Measured on the NAS's real history (23 Oct: two writers, 3.9 MB over the
+  days kept, 9 719 events in the week): the first read 1.4–10 s (the NAS's own speed: a plain
+  `cat` of the same files took 4.6 s), its peak memory about 20 MB; each read after it 0.13–0.15 s;
+  `/work/history` with all 9 719 events about 1.9 MB of JSON, made in ~20 ms. The reads are off
+  the answers' path, so a page waits only on its first (the 503s above). The agent's loop hands it only what it
   holds already (the term and the members' ids from the pool's driver, this Mac's app): no NAS
   read on the loop, and this Mac's lanes worked out only while a page asks. Every read is done
   before the pageview's state is locked, and the results swapped in after, so a slow NAS never
