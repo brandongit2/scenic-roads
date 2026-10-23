@@ -66,7 +66,7 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/agent/backup.rs", "FOLDERS", "[\"inputs\",", "the backups: every drop box and the acceptances, by design (§4.9)"),
     ("crates/pipeline/src/agent/mod.rs", "finished", "\"inputs \"", "the `inputs` step's job ids"),
     ("crates/pipeline/src/cli/build.rs", "STEPS", "s(\"inputs", "the `inputs` step's name and usage"),
-    ("crates/pipeline/src/agent/mod.rs", "is_input_check", "Some(\"inputs\")", "the `inputs` step's name"),
+    ("crates/pipeline/src/agent/mod.rs", "is_paced", "Some(\"inputs\" | \"trees\")", "the `inputs` step's name"),
     ("crates/pipeline/src/agent/mod.rs", "plan_unchecked","w.step == \"inputs\"", "the `inputs` step's name; inputs/hold-catalog, a control (§2)"),
     ("crates/pipeline/src/agent/mod.rs", "region_jobs", "\"inputs/hold-catalog\"", "inputs/hold-catalog and keys.env (not inputs, §2)"),
     ("crates/pipeline/src/agent/mod.rs", "region_jobs", "\"inputs/keys.env can't be read now\"", "inputs/hold-catalog and keys.env (not inputs, §2)"),
