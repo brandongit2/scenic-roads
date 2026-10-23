@@ -1135,7 +1135,11 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   M6's https://map.brandontsang.net among them), the page reading by the scheme it was served
   over. The build page's Machines tab draws it (docs/pipeline.md §5, Machines), asking with
   `net: false` (the proxy's counts left out); an answer also says the Mac's size, `mac: {cores,
-  cores_e, mem_gb}` (read once), the charts' scales.
+  cores_e, mem_gb}` (read once), the charts' scales. Its NAS section (`web/work/nas.js`) asks
+  the same answers for `nas_read_mbs`, `nas_write_mbs`, `nas_ms`, `nas_calls`, `nas_missed` of
+  each Mac, and of the lead the `pool_nas_*` and `nas_disk_busy_pct` series (missing from a
+  member's answer), beside the status's `nas` (`NasView`) and `nas_share`; nothing server-side
+  was added for it.
 - **Views** (menu bar, worker page, `scenic lead`, `scenic status`) read the
   agent's `pool.lead` (`crate::agent::lead::View`) or the fresher `agent/pool/view.json`
   (`lead::own_status`): each member's state and whether the lead can be handed to it

@@ -15,7 +15,9 @@ const EVERY_MS = 1500;
 // How old the power's last reading may be and still be said (the agent's loop reads it).
 const POWER_FRESH_S = 900;
 const SERIES = ["nas_read_mbs", "nas_write_mbs", "net_in_mbs", "net_out_mbs", "build_cores", "others_cores", "cores_busy", "cores_busy_e", "cores_busy_p", "load1",
-  "mem_free_pct", "mem_pressure", "swap_mb", "build_mem_gb", "disk_free_gb", "disk_write_mbs", "battery_pct", "ac", "nas_ms", "nas_calls", "jobs"];
+  "mem_free_pct", "mem_pressure", "swap_mb", "build_mem_gb", "disk_free_gb", "disk_write_mbs", "battery_pct", "ac", "nas_ms", "nas_calls", "nas_missed", "jobs",
+  // (The lead's alone, summed over the pool; missing from the others' answers: nas.js.)
+  "pool_nas_read_mbs", "pool_nas_write_mbs", "pool_nas_files_s", "pool_nas_creates_s", "pool_nas_listed_s", "nas_disk_busy_pct"];
 
 let cfg = null;
 // Per host: {series, step, now, mac, at (ms), error, asking, url (the address that answered)}.
@@ -37,6 +39,12 @@ export function startLive(c) {
   window.addEventListener("hashchange", tick);
   tick();
 }
+
+/** A Mac's kept answer ({series, now, step, range, mac, error}; null before the first) for the NAS
+ * section (nas.js), and `onLive(fn)`: `fn(host)` after each answer or failure. */
+export const liveOf = (host) => kept.get(host) || null;
+const listeners = [];
+export const onLive = (fn) => listeners.push(fn);
 
 const range = () => cfg.store.get("range", 3600);
 
@@ -140,6 +148,7 @@ function build() {
 const words = (v, text, cls = "", title = "") => { v.textContent = text; v.className = `v ${cls}`; v.title = title; };
 
 function paint(host) {
+  for (const f of listeners) f(host);
   const b = blocks.get(host);
   const st = kept.get(host);
   if (!b || !b.root.isConnected) return;

@@ -229,6 +229,20 @@ same tab; an alert links to the tab that says more.
   first Mac that reaches the NAS (`/work/settings`, workers.md §7); read every 30 s while the
   Machines tab is shown, and after each Set or Off. Every control on the page (Pause, Freeze,
   Resume, the lead's, Accept, Cancel, Try again, the settings) works from any device.
+- **The NAS:** `nas.js`, under the pool (the Machines tab), the answers `live.js` already asks
+  (it keeps them and tells `nas.js` of each), drawn by `chart.js`. A card for the NAS itself, from
+  the lead's status (`agent.nas`, docs/pool.md §10): the gate (open or shut), the disks' smoothed
+  busy share against the owner's target (a bar with the target marked), the limits its probes give
+  (MB/s, new files a second), the pool's traffic now; and, from the lead's `/work/live`, over time
+  the pool's NAS reads and writes (`pool_nas_*`, MB/s), its files opened, made and listed a second,
+  and the busiest disk's busy share against the target (`nas_disk_busy_pct`). A card a Mac: its
+  share of the NAS budget (the status's `nas_share`, a bar, shown warn over the whole), and from its
+  own `/work/live` its jobs' NAS reads and writes (`nas_read_mbs`, `nas_write_mbs`, each said as the
+  last minute's mean), the answer time of the agent's listing (`nas_ms`, least to most), the calls
+  in flight (`nas_calls`) and those that missed their deadline in the last minute (`nas_missed`). A
+  measure missing or a Mac that doesn't answer is said so, never drawn as zero. The page's other
+  NAS words (the capacity table's NAS column, a Mac's capacity bar, the alerts when one can't reach
+  it) are as they were.
 - **Regions:** a row per region: its folders and name, state, when it's done and all on the map,
   its download's size, its tiles built (on the map as they come), what's left by step; found by
   name, id or folder (`/work/regions`, docs/pool.md §10, Regions).

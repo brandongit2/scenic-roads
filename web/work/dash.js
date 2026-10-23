@@ -20,6 +20,7 @@ import { fmt, timeTicks } from "./chartmath.js";
 import { liveBlock, startLive } from "./live.js";
 import { createMap } from "./worldmap.js";
 import { loadSettings, settingsSection } from "./settings.js";
+import { nasSection } from "./nas.js";
 
 const POLL_MS = 10000;
 const STALE_S = 360;
@@ -1227,6 +1228,7 @@ function tabs(m) {
         h("div", "machines", m.macs.map((x) => machineCard(m, x)), m.gone.map(goneCard), pagesCard(m))),
       pool,
       settingsSection(ctx.call, last?.macs || [], render, ctx.onError),
+      nasSection(last.agent, m.macs),
     ],
     // (Their own part: while their search has the keyboard, only it waits to be refreshed.)
     regions: [section("d-regions", null, null,

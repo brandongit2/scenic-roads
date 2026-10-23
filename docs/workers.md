@@ -163,14 +163,14 @@ Common rules:
   presses Set or Off. The menu bar's settings are unchanged. There's no battery floor to set: the
   lead's battery floor is fixed (`cond::BATTERY_MIN`). Each slot (a Web Worker per core, less one) runs a
   task's programs over an in-memory filesystem (`web/work/runtime.js`, over browser_wasi_shim).
-- **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`, `settings.js`, `sums.js`, `live.js`, `chart.js`, `chartmath.js`, `worldmap.js`; docs/pipeline.md §5): a
+- **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`, `settings.js`, `sums.js`, `live.js`, `nas.js`, `chart.js`, `chartmath.js`, `worldmap.js`; docs/pipeline.md §5): a
   sticky header (the verdict: going, done when, what needs a look; Pause, Freeze, Resume; the
   tabs), a tab per part by the address's `#hash`, and a fixed footer (the charts' range, the Live
   dot). Overview: the overview (its map figure from the last catalogue) and the world map
   (`worldmap.js`: regions, running and finished tiles, docs/pipeline.md §5); Jobs (the schedule: each
   Mac's lanes with the jobs that ran, running and to come; the stages: a row per step with a cell
   per job; a card on hover, pinned on a click or tap); Machines (a card per
-  machine, the pool: who leads, "Make lead", "Take it"); Regions; Activity (last day by the hour,
+  machine, the pool: who leads, "Make lead", "Take it"; the NAS: a card for it and one a Mac, `nas.js`); Regions; Activity (last day by the hour,
   events); Details (leases, waits, each Mac's capacity, workers, the steps table with each step's measured
   phase shares: the lead's status's `phase_shares`, docs/pool.md §10); This device. It reads
   `/work/steps` once (the steps table: every word about a step), `/work/swarm` every 10 s and

@@ -4052,6 +4052,7 @@ mod http {
         ("settings.js", "text/javascript", include_bytes!("../../../../web/work/settings.js")),
         // Live on each Mac (the Machines tab), its charts and their sums.
         ("live.js", "text/javascript", include_bytes!("../../../../web/work/live.js")),
+        ("nas.js", "text/javascript", include_bytes!("../../../../web/work/nas.js")),
         ("chart.js", "text/javascript", include_bytes!("../../../../web/work/chart.js")),
         ("chartmath.js", "text/javascript", include_bytes!("../../../../web/work/chartmath.js")),
         ("dash.css", "text/css; charset=utf-8", include_bytes!("../../../../web/work/dash.css")),
