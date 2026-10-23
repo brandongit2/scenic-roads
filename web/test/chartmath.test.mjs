@@ -1,7 +1,7 @@
 // node web/test/chartmath.test.mjs (tools/dev/check.sh's web part): the build page's charts' sums
 // (web/work/chartmath.js).
 import assert from "node:assert/strict";
-import { commonGaps, fmt, footer, gaps, hhmm, latest, merge, niceMax, pressureClass, recentMean, runs, spanText, ticks, timeTicks, topOf } from "../work/chartmath.js";
+import { commonGaps, fmt, footer, gaps, hhmm, latest, merge, niceMax, pressureClass, recentMean, runs, spanText, timeTicks, topOf } from "../work/chartmath.js";
 
 // Scales.
 assert.equal(niceMax(0), 1);
@@ -11,10 +11,6 @@ assert.equal(niceMax(1.3), 2);
 assert.equal(niceMax(2.2), 2.5);
 assert.equal(niceMax(37), 50);
 assert.equal(niceMax(8), 10);
-assert.deepEqual(ticks(10), [0, 5, 10]);
-assert.deepEqual(ticks(50), [0, 25, 50]);
-assert.deepEqual(ticks(2), [0, 1, 2]);
-assert.deepEqual(ticks(1), [0, 0.5, 1]);
 
 // Units, metric, as short as they read.
 assert.equal(fmt(null, "MB/s"), "–");

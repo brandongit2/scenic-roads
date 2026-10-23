@@ -10,16 +10,6 @@ export function niceMax(v) {
   return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p;
 }
 
-// The lines across a scale up to `max` (a niceMax): 0 and two to four between, ending at max.
-export function ticks(max) {
-  const p = 10 ** Math.floor(Math.log10(max));
-  const f = Math.round((max / p) * 100) / 100;
-  const step = (f === 1 ? 0.5 : f === 2 ? 1 : f === 2.5 ? 0.5 : f === 5 ? 2.5 : 5) * p;
-  const out = [];
-  for (let v = 0; v <= max + step / 1000; v += step) out.push(Math.round(v / step) * step);
-  return out;
-}
-
 const fix = (v, d) => {
   const s = v.toFixed(d);
   return d && s.includes(".") ? s.replace(/\.?0+$/, "") : s;

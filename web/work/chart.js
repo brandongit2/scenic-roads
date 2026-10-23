@@ -3,16 +3,21 @@
 // band faint when asked, filled or stacked when asked), the scale's lines and its top in the unit,
 // reference lines (a Mac's cores), the gaps where its Mac was silent shaded, the time below when
 // asked; under the pointer, the time and each series' value there.
-import { fmt, gapOver, hhmm, runs, ticks, timeTicks, topOf } from "./chartmath.js";
+import { fmt, gapOver, hhmm, runs, topOf } from "./chartmath.js";
 
 const opts = new WeakMap();
+// The scale's gutter (px): the same in every chart, so their plots start and end at the same x.
+const AXIS_W = 58;
+// The time's tick steps (s), and a time ago in words: "now", "-45 s", "-10 min", "-6 h".
+const AGO_STEPS = [15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
+const ago = (a) => (a === 0 ? "now" : a < 60 ? `−${a} s` : a < 3600 ? `−${a / 60} min` : `−${+(a / 3600).toFixed(1)} h`);
 const hover = new WeakMap();
 
 // The page's colours (index.html's tokens), read once a draw.
 function tokens(el) {
   const cs = getComputedStyle(el);
   const v = (k, d) => cs.getPropertyValue(k).trim() || d;
-  return { line: v("--line", "#262c33"), dim: v("--dim", "#8a939c"), text: v("--text", "#d7dce2"), panel: v("--panel", "#161a1f"), bad: v("--bad", "#e5534b") };
+  return { line: v("--line", "#262c33"), grid: v("--grid", "#1c2127"), warn: v("--warn", "#e0b45a"), dim: v("--dim", "#8a939c"), text: v("--text", "#d7dce2"), panel: v("--panel", "#161a1f"), bad: v("--bad", "#e5534b") };
 }
 
 // The canvas sized to its box at the screen's pixels: [context, width, height] in CSS pixels.
@@ -49,11 +54,15 @@ function paint(c) {
   const [g, W, H] = fit(c);
   const k = tokens(c);
   g.clearRect(0, 0, W, H);
-  const bottom = o.axis && o.times !== false ? 13 : 0;
-  const top = o.axis ? 2 : 1;
+  // (The mockup's frame: the scale's labels in a gutter at the left, every chart's the same width so
+  // their plots line up; the time under it.)
+  const L = o.axis ? AXIS_W : 0, R = o.axis ? 4 : 0;
+  const bottom = o.axis && o.times !== false ? 14 : 0;
+  const top = o.axis ? 6 : 1;
   const ph = Math.max(1, H - bottom - top);
+  const pw = Math.max(1, W - L - R);
   const span = Math.max(1, o.to - o.from);
-  const X = (t) => ((t - o.from) / span) * W;
+  const X = (t) => L + ((t - o.from) / span) * pw;
   const lists = o.series.map((s) => s.points || []);
   const max = o.max ?? topOf(lists, { band: o.series.some((s) => s.band), least: Math.max(o.least || 0, ...(o.refs || []).map((r) => r.v)), stacked: o.stacked });
   const Y = (v) => top + ph - (Math.max(0, Math.min(max, v)) / max) * ph;
@@ -63,7 +72,7 @@ function paint(c) {
   // Silent stretches: shaded, hatched lightly.
   g.fillStyle = k.line;
   for (const gp of o.gaps || []) {
-    const x0 = Math.max(0, X(gp.from)), x1 = Math.min(W, X(gp.to));
+    const x0 = Math.max(L, X(gp.from)), x1 = Math.min(W - R, X(gp.to));
     if (x1 - x0 < 0.5) continue;
     g.globalAlpha = 0.35;
     g.fillRect(x0, top, x1 - x0, ph);
@@ -86,13 +95,33 @@ function paint(c) {
     g.fillStyle = k.bad;
     for (const t of o.marks) if (t >= o.from && t <= o.to) g.fillRect(Math.round(X(t)), top, 1, ph);
   }
-  // The scale's lines.
+  // The scale: a line at 0, half and the top (0's the stronger), each labelled in the gutter; the
+  // time's lines at its ticks, labelled under (seconds ago, "now" at the right).
   if (o.axis) {
-    g.strokeStyle = k.line;
     g.lineWidth = 1;
-    for (const v of ticks(max)) {
+    const ys = [0, max / 2, max];
+    ys.forEach((v, i) => {
       const y = Math.round(Y(v)) + 0.5;
-      g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke();
+      g.strokeStyle = i ? k.grid : k.line;
+      g.beginPath(); g.moveTo(L, y); g.lineTo(W - R, y); g.stroke();
+    });
+    g.fillStyle = k.dim; g.textAlign = "right"; g.textBaseline = "middle";
+    const drawn = [];
+    for (const i of [0, 2, 1]) {
+      const y = Y(ys[i]);
+      if (drawn.some((d) => Math.abs(d - y) < 12)) continue;
+      drawn.push(y);
+      g.fillText(fmt(ys[i], o.unit), L - 4, y);
+    }
+    if (o.times !== false) {
+      const step = AGO_STEPS.find((x) => span / x <= Math.max(2, Math.floor(pw / 80))) ?? 86400;
+      g.textBaseline = "top";
+      for (let a = 0; a <= span + 1e-6; a += step) {
+        const x = L + (1 - a / span) * pw;
+        g.strokeStyle = k.grid; g.beginPath(); g.moveTo(Math.round(x) + 0.5, top); g.lineTo(Math.round(x) + 0.5, top + ph); g.stroke();
+        g.fillStyle = k.dim; g.textAlign = a === 0 ? "right" : Math.abs(a - span) < 1e-6 ? "left" : "center";
+        g.fillText(ago(a), x, top + ph + 3);
+      }
     }
   }
   // The series: stacked fills in order, or each its line (and band, fill).
@@ -109,13 +138,13 @@ function paint(c) {
         g.closePath(); g.fill(); g.globalAlpha = 1;
       }
       if (s.fill || o.stacked) {
-        g.fillStyle = s.colour; g.globalAlpha = o.stacked ? 0.55 : 0.22;
+        g.fillStyle = s.colour; g.globalAlpha = o.stacked ? 0.35 : 0.18;
         g.beginPath();
         run.forEach((p, i) => (i ? g.lineTo(X(p[0]), Y(hi[i])) : g.moveTo(X(p[0]), Y(hi[i]))));
         for (let i = run.length - 1; i >= 0; i--) g.lineTo(X(run[i][0]), Y(lo[i]));
         g.closePath(); g.fill(); g.globalAlpha = 1;
       }
-      g.lineWidth = 1.25;
+      g.lineWidth = 1.5;
       g.lineJoin = "round";
       if (run.length === 1) { g.fillStyle = s.colour; g.fillRect(X(run[0][0]) - 1, Y(hi[0]) - 1, 2, 2); }
       for (let i = 1; i < run.length; i++) {
@@ -124,32 +153,27 @@ function paint(c) {
       }
       if (o.stacked) run.forEach((p, i) => base.set(p[0], hi[i]));
     }
+    // (The newest point, a dot.)
+    const ps = s.points || [], last = ps[ps.length - 1];
+    if (last && o.to - last[0] <= gapOver(o.step)) {
+      g.fillStyle = o.colourOf?.(last) || s.colour;
+      g.beginPath(); g.arc(X(last[0]), Y(o.stacked ? base.get(last[0]) || 0 : last[2]), 2.5, 0, Math.PI * 2); g.fill();
+    }
   });
-  // Reference lines, dashed, labelled at their right.
+  // Reference lines, dashed, in the warning's colour (or their own), labelled over their right end.
   for (const r of o.refs || []) {
     if (r.v > max) continue;
     const y = Math.round(Y(r.v)) + 0.5;
-    g.strokeStyle = k.dim; g.setLineDash([3, 3]); g.lineWidth = 1;
-    g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); g.setLineDash([]);
-    if (r.label && o.axis) { g.fillStyle = k.dim; g.textAlign = "right"; g.fillText(r.label, W - 2, Math.min(H - bottom - 11, y + 2)); }
-  }
-  // The scale's top, and the time.
-  if (o.axis) {
-    g.fillStyle = k.dim;
-    g.textAlign = "left";
-    g.fillText(fmt(max, o.unit), 2, top + 1);
-    g.textBaseline = "bottom";
-    if (o.times !== false) for (const tk of timeTicks(o.from, o.to, Math.max(2, Math.floor(W / 70)))) {
-      const x = X(tk.t);
-      g.textAlign = x < 20 ? "left" : x > W - 20 ? "right" : "center";
-      g.fillText(tk.label, x, H);
-    }
+    const col = r.colour || k.warn;
+    g.strokeStyle = col; g.setLineDash([4, 3]); g.lineWidth = 1;
+    g.beginPath(); g.moveTo(L, y); g.lineTo(W - R, y); g.stroke(); g.setLineDash([]);
+    if (r.label && o.axis) { g.fillStyle = col; g.textAlign = "right"; g.textBaseline = "bottom"; g.fillText(r.label, W - R - 4, Math.max(top + 10, y - 2)); }
   }
   // Under the pointer: its time and each series' mean there.
   const hx = hover.get(c);
   if (hx != null) {
-    const t = o.from + hx * span;
-    const x = hx * W;
+    const x = Math.max(L, Math.min(W - R, hx * W));
+    const t = o.from + ((x - L) / pw) * span;
     g.strokeStyle = k.dim; g.lineWidth = 1;
     g.beginPath(); g.moveTo(Math.round(x) + 0.5, top); g.lineTo(Math.round(x) + 0.5, top + ph); g.stroke();
     const said = o.series.map((s) => {

@@ -3,7 +3,7 @@
 // Machines tab is on screen: the window the footer's range picks at first, then the points since
 // the newest it has (the same ring, so one resolution). This page's own Mac through its own calls;
 // the others at their addresses in /work/swarm's `macs` (by the scheme the page came over).
-// Drawn per Mac (docs/mockups/build-live.html's vitals): each core's share busy now, its transfers
+// Drawn per Mac as docs/mockups/build-live.html draws it (a row a measure: its name over its words, its chart beside): each core's share busy now, its transfers
 // (the jobs' NAS reads and writes, the internet in and out), then a chart a measure: CPU use (the
 // build's and the rest's, stacked, against its cores and the build's limit), the load, memory (the
 // build's and the rest's against the build's limit), its pressure, the swap, the disk's free space
@@ -130,14 +130,20 @@ export function liveBlock(host, guard) {
   return b.root;
 }
 
-// A row: its name (its tip on hover), a canvas (a chart with its axis; tall for the transfers), its words.
-function row(root, name, tip, tall) {
-  const r = el("div", `lrow ${tall ? "tall" : ""}`);
+// A row (the mockup's .rate): its name over its words (its tip on hover) on the left, its chart on the right; `col`, a swatch before the name.
+function row(root, name, tip, col, cls = "vrow") {
+  const r = el("div", `rate ${cls}`);
+  const lab = el("div", "lab");
+  lab.title = tip;
+  const k = el("span", "k");
+  if (col) { const sw = el("i"); sw.style.background = `var(${col})`; k.append(sw); }
+  k.append(name);
+  const v = el("span", "v");
+  lab.append(k, v);
+  const cw = el("div", "cw");
   const c = el("canvas");
-  const v = el("div", "v");
-  const k = el("span", "k", name);
-  k.title = tip;
-  r.append(k, c, v);
+  cw.append(c);
+  r.append(lab, cw);
   root.append(r);
   return { c, v };
 }
@@ -146,40 +152,50 @@ function build() {
   const root = el("div", "live");
   const head = el("div", "lhead");
   const said = el("span", "dim");
-  head.append(el("b", null, "Live"), said);
+  head.append(el("b", null, "Live on this Mac"), said);
   root.append(head);
   const body = el("div", "lbody");
   root.append(body);
-  const nowRow = el("div", "lrow");
-  const bars = el("div", "cnow");
-  const nowV = el("div", "v");
-  const nowK = el("span", "k", "Cores now");
-  nowK.title = "Each core's share busy over the last second: the efficiency cores (dimmer) first, then the performance ones.";
-  nowRow.append(nowK, bars, nowV);
-  body.append(nowRow);
+  const io = el("div", "mac");
+  const xfer = (name, col, tip) => row(io, name, tip, col, "");
+  const ioRows = {
+    nr: xfer("NAS read", "--nas-r", "Bytes this Mac's jobs read from the NAS each second."),
+    nw: xfer("NAS write", "--nas-w", "Bytes this Mac's jobs wrote to the NAS each second."),
+    nd: xfer("From internet", "--net-d", "Bytes this Mac's jobs downloaded from the internet each second."),
+    nu: xfer("To internet", "--net-u", "Bytes this Mac's jobs sent to the internet each second: requests and queries."),
+  };
+  const vit = el("div", "mac");
+  const legend = el("div", "phlegend");
+  for (const [c, t] of [["var(--accent)", "busy"], ["var(--line)", "idle"]]) { const sp = el("span"); const sw = el("i"); sw.style.background = c; sp.append(sw, t); legend.append(sp); }
+  const bars = el("div", "cores");
+  bars.title = "Each core's share busy over the last second: the efficiency cores first, then the performance ones.";
+  const nowV = el("div", "dim small");
+  vit.append(legend, bars, nowV);
+  body.append(io, vit);
   return {
-    root, said, body, bars, nowV,
-    io: row(body, "Transfers", "The jobs' NAS reads and writes, the internet in and out", true),
-    cpu: row(body, "CPU use", "Cores busy, summed over every core, stacked: the build's jobs (blue) and everything else (grey). Dashed: the Mac's cores, and the cores the build may use now (fewer while the owner uses the Mac)."),
-    load: row(body, "Load", "Threads ready to run, averaged over a minute. Above the dashed line (the core count), work waits for a core."),
-    mem: row(body, "Memory", "RAM in use, stacked: the build's jobs (blue) and every other process (grey). Dashed: the memory the build's jobs may hold together."),
-    press: row(body, "Pressure", "100 % less macOS's memory-free percentage (kern.memorystatus_level); the line's colour is macOS's pressure level. Dashed: 50 % and 80 %."),
-    swap: row(body, "Swap", "Memory macOS has written out to disk. Rising swap means jobs slow down."),
-    disk: row(body, "Disk free", "Free space on the Mac's disk. Dashed: the owner's room target; below it the disk guard freezes the fastest-growing job."),
-    dw: row(body, "Disk write", "Bytes written to this Mac's disks each second: the jobs' scratch and caches, and every other app's."),
-    power: row(body, "Battery", "Battery charge; shaded while on mains. Dashed: on battery, a Mac below it can't lead."),
-    nas: row(body, "NAS", "How long this Mac's listing of the NAS took (measured while a build runs here); its NAS calls in flight; those past their deadline or refused (every thread busy)"),
-    heat: row(body, "Heat", "macOS's own thermal state (ProcessInfo.thermalState's four levels): nominal, fair (slightly raised), serious (macOS slows the Mac), critical (it slows it hard)."),
-    use: row(body, "In use", "Whether the owner is using this Mac (a keyboard or trackpad touch lately), shaded while so. While in use, the build leaves cores free for them."),
+    root, said, body, bars, nowV, ioRows,
+    cpu: row(vit, "cpu use", "Cores busy, summed over every core, stacked: the build's jobs (blue) and everything else (grey). Dashed: the Mac's cores, and the cores the build may use now (fewer while the owner uses the Mac)."),
+    load: row(vit, "load", "Threads ready to run, averaged over a minute. Above the dashed line (the core count), work waits for a core."),
+    mem: row(vit, "memory", "RAM in use, stacked: the build's jobs (blue) and every other process (grey). Dashed: the memory the build's jobs may hold together."),
+    press: row(vit, "memory pressure", "100 % less macOS's memory-free percentage (kern.memorystatus_level); the line's colour is macOS's pressure level. Dashed: 50 % and 80 %."),
+    swap: row(vit, "swap used", "Memory macOS has written out to disk. Rising swap means jobs slow down."),
+    disk: row(vit, "disk free", "Free space on the Mac's disk. Dashed: the owner's room target; below it the disk guard freezes the fastest-growing job."),
+    dw: row(vit, "disk write", "Bytes written to this Mac's disks each second: the jobs' scratch and caches, and every other app's."),
+    power: row(vit, "battery", "Battery charge; shaded while on mains. Dashed: on battery, a Mac below it can't lead."),
+    nas: row(vit, "NAS response", "How long this Mac's listing of the NAS took (measured while a build runs here); its NAS calls in flight; those past their deadline or refused (every thread busy)"),
+    use: row(vit, "someone using this Mac?", "Whether the owner is using this Mac (a keyboard or trackpad touch lately), shaded while so. While in use, the build leaves cores free for them."),
+    heat: row(vit, "heat", "macOS's own thermal state (ProcessInfo.thermalState's four levels): nominal, fair (slightly raised), serious (macOS slows the Mac), critical (it slows it hard)."),
   };
 }
 
 // A value's words: its lines (the first the figure, the rest dim; [colour, text] keyed), coloured when it's a worry.
 function words(v, lines, cls = "", title = "") {
-  v.replaceChildren(...lines.filter((t) => t).map((t, i) => {
-    if (!Array.isArray(t)) return el("div", i ? "dim" : null, t);
-    const d = el("div", "dim");
-    const sw = el("i", "sw");
+  const shown = lines.filter((t) => t);
+  v.replaceChildren(...shown.map((t, i) => {
+    if (!i && !Array.isArray(t)) return document.createTextNode(t);
+    if (!Array.isArray(t)) return el("small", null, t);
+    const d = el("small", "memline");
+    const sw = el("i");
     sw.style.background = t[0];
     d.append(sw, t[1]);
     return d;
@@ -212,8 +228,8 @@ function paint(host) {
   // (Read by the agent's loop, not the sampler: a point a loop, minutes apart when a step's long or
   // the Mac's starved; their lines joined over that.)
   const loop = (k) => latest(s[k], now, LOOP_FRESH_S);
-  // (The transfers' chart says the time; the rest share its range, their scales alone.)
-  const base = { from, to: now, step, gaps: gapList, axis: true, times: false };
+  // (Every chart says the time under it, as the mockup's.)
+  const base = { from, to: now, step, gaps: gapList, axis: true, times: true };
   const loopBase = { ...base, step: Math.max(step, LOOP_FRESH_S / 2) };
   const nr = css("--nas-r"), nw = css("--nas-w"), nd = css("--net-d"), nu = css("--net-u"), acc = css("--accent"), dim = css("--dim");
   const ok = css("--ok"), warn = css("--warn"), bad = css("--bad");
@@ -222,23 +238,31 @@ function paint(host) {
   // Cores now: each core's share busy over the last second, efficiency cores first.
   const each = st.cores_now || [];
   const ne = mac.cores_e || 0;
-  if (b.bars.childElementCount !== each.length) {
-    b.bars.replaceChildren(...each.map((_, i) => {
-      const c = el("i", i < ne ? "e" : "");
-      c.append(el("b"));
-      c.title = `${i < ne ? "efficiency" : "performance"} core ${i < ne ? i + 1 : i - ne + 1}`;
-      return c;
+  if (b.bars.querySelectorAll("i:not(.rule)").length !== each.length) {
+    const groups = (ne ? [["efficiency", 0, ne], ["performance", ne, each.length]] : [["", 0, each.length]]).filter(([, a0, a1]) => a1 > a0);
+    b.bars.replaceChildren(...groups.map(([kind, a0, a1]) => {
+      const g = el("div", "cgrp");
+      g.style.flex = String(a1 - a0);
+      const cb = el("div", "cbars");
+      for (let i = a0; i < a1; i++) { const c = el("i"); c.append(el("b")); c.title = `${kind || "core"} ${kind ? `core ${i - a0 + 1}` : i + 1}`; cb.append(c); }
+      const cn = el("div", "cname");
+      cn.append(el("span", null, `${a1 - a0} ${kind ? `${kind} cores` : "cores"}`), el("i", "rule"));
+      g.append(cb, cn);
+      return g;
     }));
   }
-  each.forEach((f, i) => { b.bars.children[i].firstChild.style.height = `${Math.round(f * 100)}%`; });
-  words(b.nowV, each.length ? [ne ? `${ne} E · ${each.length - ne} P` : `${each.length} cores`] : ["not measured"]);
+  const coreBars = b.bars.querySelectorAll(".cbars > i");
+  each.forEach((f, i) => { coreBars[i].firstChild.style.height = `${Math.round(f * 100)}%`; });
+  b.bars.hidden = !each.length;
+  b.nowV.textContent = each.length ? "" : "cores now: not measured";
 
   // Transfers: the jobs' NAS reads and writes, the internet in and out (MB/s).
-  draw(b.io.c, { ...base, times: true, unit: "MB/s", series: [
-    { points: s.nas_read_mbs, colour: nr, label: "NAS ↓" }, { points: s.nas_write_mbs, colour: nw, label: "NAS ↑" },
-    { points: s.net_in_mbs, colour: nd, label: "net ↓" }, { points: s.net_out_mbs, colour: nu, label: "net ↑" }] });
-  // (Their last minute's mean: a transfer comes in bursts, its newest second mostly none.)
-  words(b.io.v, ["last min", ...[["NAS ↓", "nas_read_mbs", nr], ["NAS ↑", "nas_write_mbs", nw], ["net ↓", "net_in_mbs", nd], ["net ↑", "net_out_mbs", nu]].map(([t, k, col]) => [col, `${t} ${fmt(recentMean(s[k], now), "MB/s")}`])]);
+  for (const [key, k, col] of [["nr", "nas_read_mbs", nr], ["nw", "nas_write_mbs", nw], ["nd", "net_in_mbs", nd], ["nu", "net_out_mbs", nu]]) {
+    const r = b.ioRows[key];
+    draw(r.c, { ...base, unit: "MB/s", series: [{ points: s[k], colour: col, fill: true, label: "" }] });
+    const now1 = at(k);
+    words(r.v, [now1 == null ? "not measured" : fmt(now1, "MB/s"), `last min ${fmt(recentMean(s[k], now), "MB/s")}`]);
+  }
 
   // CPU use: the build's and the rest's, stacked, against the Mac's cores and the build's limit.
   const n = mac.cores;
@@ -270,7 +294,7 @@ function paint(host) {
   const colourOf = (p) => { const c = pressureClass(level.get(p[0])); return c === "bad" ? bad : c === "warn" ? warn : null; };
   // (What the memory guard last did, when in the range: a mark on the chart, and its words.)
   const g = b.guard && b.guard[0] >= from ? b.guard : null;
-  draw(b.press.c, { ...base, unit: "%", max: 100, colourOf, marks: g ? [g[0]] : [], refs: [{ v: 50, label: "warn" }, { v: 80, label: "critical" }], series: [{ points: used, colour: ok, fill: true, label: "pressure", unit: "%" }] });
+  draw(b.press.c, { ...base, unit: "%", max: 100, colourOf, marks: g ? [g[0]] : [], refs: [{ v: 50, label: "warn" }, { v: 80, label: "critical", colour: bad }], series: [{ points: used, colour: ok, fill: true, label: "pressure", unit: "%" }] });
   const pr = at("mem_pressure");
   const comp = at("mem_compressed_gb");
   words(b.press.v, free == null ? ["not measured"] : [`${fmt(100 - free, "%")} · ${pressureWord(pr).replace("pressure ", "")}`, `memory free ${fmt(free, "%")}`,

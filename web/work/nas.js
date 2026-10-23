@@ -23,10 +23,13 @@ const parts = {};
 // What the last render said: {agent, macs} (dash.js's model), for the repaints live answers bring.
 let seen = null;
 
-// A chart row: its name, a canvas, its words.
+// A chart row (live.js's, the mockup's .rate): its name over its words, its chart beside.
 function chartRow(name, tall) {
-  const r = { row: el("div", `lrow ${tall ? "tall" : ""}`), c: el("canvas"), v: el("div", "v") };
-  r.row.append(el("span", "k", name), r.c, r.v);
+  const r = { row: el("div", `rate ${tall ? "" : "vrow"}`), c: el("canvas"), v: el("span", "v") };
+  const lab = el("div", "lab"), cw = el("div", "cw");
+  lab.append(el("span", "k", name), r.v);
+  cw.append(r.c);
+  r.row.append(lab, cw);
   return r;
 }
 

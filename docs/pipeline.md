@@ -207,16 +207,18 @@ same tab; an alert links to the tab that says more.
   step's forecast and jobs; a stage's note and next jobs), shown on hover with a mouse or trackpad
   and pinned on a click or tap, refreshed with each render; Escape, × or a click elsewhere closes
   it. No phase bars yet: they wait for the lead's measured phase shares (task #511).
-- **Machines:** a card per Mac: name, role, state, heard from; its capacity; a block per running
+- **Machines:** a card per Mac, one under the other at every width (the pool's cards too): name, role, state, heard from; its capacity; a block per running
   job by its slot (name, parts, progress, running since, memory; frozen or stuck) with what's
   inside it (the status's `jobs[].live`, docs/pool.md §10, Live: its phase and since when, its
   target under way against the step's `each_s`, its targets done, its NAS and internet bytes);
   then **Live** (`live.js`): the Mac's own `/work/live`, asked every 1.5 s while the tab is shown
   (the footer's range, then the points since), drawn by `chart.js` (its sums in `chartmath.js`,
   tested by web/test/chartmath.test.mjs), as docs/mockups/build-live.html's vitals: each core's
-  share busy now (bars, efficiency cores first: `cores_now`); Transfers (the jobs' NAS reads and
-  writes, the internet in and out, each said as its last minute's mean; the time below it); then a
-  chart a measure, its scale's top and its figures beside it: CPU use (the build's and the rest's,
+  share busy now (bars, the efficiency and performance groups named: `cores_now`); four transfer
+  charts (the jobs' NAS reads and writes, the internet in and out, each its last minute's mean
+  said); then a chart a measure. As in the mockup, each row is its name over its figures in a
+  150 px column, its chart beside (the scale's 0, half and top in a 58 px gutter, the time under it
+  as time ago, limits dashed in the warning's colour, the newest point a dot): CPU use (the build's and the rest's,
   stacked, against the Mac's cores and the cores the build may use now; P and E said), the load
   (against the cores; what waits for a core said), memory (the build's and the rest's, stacked, in
   GB, against the build's memory), its pressure (100 % less memory free, the line coloured by
