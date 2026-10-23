@@ -206,3 +206,14 @@ test('regions: a virtual list\'s window', () => {
   assert.deepEqual(rowsWindow(400, 100, 20, 22, 2), [18, 22]);
   assert.deepEqual(rowsWindow(0, 100, 20, 0), [0, 0]);
 });
+
+test('settings: an answer lacking a setting shows "not set" for it alone, the others as said', async () => {
+  const { macRows, nasRow } = await import('../../web/work/settings.js');
+  const live = { mac: 'm1', in_use: { cores: 2, of: 10, set: false, default: 2 }, memory: { mb: 10240, total_mb: 16384, set: true, by: 'x' }, room: { bytes: null, free: null, disk: null } };
+  assert.deepEqual(macRows(live).map((r) => r.now), ['2 of 10 cores', '10.0 GB', 'off']);
+  assert.ok(macRows(live).every((r) => r.input));
+  const rows = macRows({ mac: 'm1', memory: live.memory });
+  assert.deepEqual(rows.map((r) => [r.key, r.now, !!r.input]), [['in_use', 'not set', false], ['memory', '10.0 GB', true], ['room', 'not set', false]]);
+  assert.deepEqual(macRows({}).map((r) => r.now), ['not set', 'not set', 'not set']);
+  assert.equal(nasRow({ bytes: 3 * 2 ** 30, free: null }).now, '3.0 GB');
+});

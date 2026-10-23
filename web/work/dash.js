@@ -1313,38 +1313,46 @@ function head(m) {
     h("div", "alerts", alerts(m).map((x) => h("a", { class: `alert ${x.cls}`, href: `#${x.to}` }, x.text)))];
 }
 
+// One section, built alone: a failure (an answer missing a field, say) shows in that section, and
+// the others and the tab still render.
+function part(cls, build) {
+  try { return build(); } catch (e) {
+    console.error(`the ${cls} section:`, e);
+    return section(cls, null, null, h("div", "box dim small", `This part couldn't be shown: ${e.message}`));
+  }
+}
+
 // Each tab's sections, in order (index.html's panels, by the tab's name).
 function tabs(m) {
   const fin = m.lines.filter(finished).length;
-  const banners = gateBanners(m, (body) => ctx.call("/work/inputs", body).then(poll, (e) => ctx.onError?.(`couldn't accept: ${e.message}`)));
-  const md = mapData(m);
-  const pool = poolSection(last.agent, m.now, (body) => ctx.call("/work/lead", body).then(poll, (e) => ctx.onError?.(`couldn't ask about the lead: ${e.message}`))) || section("d-pool");
+  let md = null;
+  try { md = mapData(m); } catch (e) { console.error("the map's data:", e); }
   return {
     overview: [
-      h("section", "d-inputs", banners),
-      section("d-overview", null, null, overview(m)),
-      mapSection(md),
+      part("d-inputs", () => h("section", "d-inputs", gateBanners(m, (body) => ctx.call("/work/inputs", body).then(poll, (e) => ctx.onError?.(`couldn't accept: ${e.message}`))))),
+      part("d-overview", () => section("d-overview", null, null, overview(m))),
+      part("d-map", () => mapSection(md)),
     ],
     jobs: [
-      section("d-sched", "Schedule", "each Mac's jobs: those that ran, running, to come",
+      part("d-sched", () => section("d-sched", "Schedule", "each Mac's jobs: those that ran, running, to come",
         h("div", "box", schedule(m),
           // (What the coordinator's own scheduler decides, run ahead: docs/pool.md §7.2. What it can't see, said.)
-          h("p", "note", "To come as the coordinator grants: by each Mac's room, cores and the NAS budget. Times and NAS weights are measured estimates, and no load from outside the build is assumed (optimistic while a Mac is in use); a pause, a repack, a Mac handing over on battery or a slow NAS moves the finish."))),
-      section("d-stages", "Stages", m.lines.length ? `${fin} of ${m.lines.length} done · ⇄ any Mac may take it` : "", h("div", "box", stagesList(m))),
+          h("p", "note", "To come as the coordinator grants: by each Mac's room, cores and the NAS budget. Times and NAS weights are measured estimates, and no load from outside the build is assumed (optimistic while a Mac is in use); a pause, a repack, a Mac handing over on battery or a slow NAS moves the finish.")))),
+      part("d-stages", () => section("d-stages", "Stages", m.lines.length ? `${fin} of ${m.lines.length} done · ⇄ any Mac may take it` : "", h("div", "box", stagesList(m)))),
     ],
     machines: [
-      section("d-machines", "Machines", `${m.macs.filter((x) => x.fresh).length} Macs${m.pages.length ? `, ${plural(m.pages.length, "page")}` : ""}`,
-        h("div", "machines", m.macs.map((x) => machineCard(m, x)), m.gone.map(goneCard), pagesCard(m))),
-      pool,
-      settingsSection(ctx.call, last?.macs || [], render, ctx.onError),
-      nasSection(last.agent, m.macs),
+      part("d-machines", () => section("d-machines", "Machines", `${m.macs.filter((x) => x.fresh).length} Macs${m.pages.length ? `, ${plural(m.pages.length, "page")}` : ""}`,
+        h("div", "machines", m.macs.map((x) => machineCard(m, x)), m.gone.map(goneCard), pagesCard(m)))),
+      part("d-pool", () => poolSection(last.agent, m.now, (body) => ctx.call("/work/lead", body).then(poll, (e) => ctx.onError?.(`couldn't ask about the lead: ${e.message}`))) || section("d-pool")),
+      part("d-settings", () => settingsSection(ctx.call, last?.macs || [], render, ctx.onError)),
+      part("d-nas", () => nasSection(last.agent, m.macs)),
     ],
-    regions: [regionsPane(m, md)],
-    activity: [section("d-activity", "Activity", "the last day",
+    regions: [part("d-regions", () => regionsPane(m, md))],
+    activity: [part("d-activity", () => section("d-activity", "Activity", "the last day",
       h("div", "box", hours(m),
         h("div", "feedbar", h("div", "seg", [["all", "All"], ["problems", "Problems"], ["publishing", "Publishing"], ["pauses", "Pauses & conditions"]].map(([k, t]) => h("button", { class: ui.feed === k ? "on" : "", onclick: () => { ui.feed = k; render(); } }, t)))),
-        sinceLine(m, events, seenAt), feed(m, events, seenAt)))],
-    details: [section("d-details", null, null, details(m))],
+        sinceLine(m, events, seenAt), feed(m, events, seenAt))))],
+    details: [part("d-details", () => section("d-details", null, null, details(m)))],
   };
 }
 

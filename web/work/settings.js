@@ -85,12 +85,14 @@ export function settingsSection(call, macs, done, onError) {
     document.activeElement?.blur();
     done();
   };
-  const row = (put, key, what, now, note, input) => {
+  const row = (put, r) => {
+    if (!r.input) return h("div", "setting", h("span", "k", r.what), h("b", null, r.now), h("span", "dim small", r.note));
+    const { key, what, input } = r;
     const field = h("input", { type: "number", min: input.min, max: input.max, step: input.step, placeholder: input.placeholder, "aria-label": what });
     const go = () => field.value !== "" && put({ [key]: field.value }, what);
     field.addEventListener("keydown", (e) => e.key === "Enter" && go());
     return h("div", "setting",
-      h("span", "k", what), h("b", null, now), h("span", "dim small", note),
+      h("span", "k", what), h("b", null, r.now), h("span", "dim small", r.note),
       h("span", "ctl", field, h("button", { onclick: go }, "Set"),
         h("button", { class: "quiet", title: input.offTitle, onclick: () => put({ [key]: "off" }, what) }, "Off")));
   };
@@ -103,16 +105,7 @@ export function settingsSection(call, macs, done, onError) {
     const name = s?.mac || host || "this page's Mac";
     const head = h("h3", null, name, h("span", "dim small", m ? "" : " (this page's Mac)"));
     if (!s) return h("div", "box settings", head, h("div", "setting dim small", st.error ? `can't be read: ${st.error}` : "reading…"));
-    return h("div", "box settings", head,
-      row(put, "in_use", "In-use share", `${s.in_use.cores} of ${s.in_use.of} cores`,
-        `kept free of the build's jobs while the Mac is used${s.in_use.set ? by(s.in_use) : ` (the default, ${s.in_use.default})`}`,
-        { min: 0, max: s.in_use.of - 1, step: 1, placeholder: "cores", offTitle: "Back to the default" }),
-      row(put, "memory", "Build memory", gb(s.memory.mb * 2 ** 20),
-        `for the build's jobs together, of ${gb(s.memory.total_mb * 2 ** 20)}${s.memory.set ? by(s.memory) : " (the memory guard's limit)"}`,
-        { min: 1, max: Math.floor(s.memory.total_mb / 1024) || null, step: 0.5, placeholder: "GB", offTitle: "The memory guard's limit alone" }),
-      row(put, "room", "Disk room target", s.room.bytes ? gb(s.room.bytes) : "off",
-        `free space kept on ${s.mac}'s disk${s.room.free != null ? `, ${gb(s.room.free)} free now` : ""}${by(s.room)}`,
-        { min: 1, max: s.room.disk ? Math.floor(s.room.disk / GiB) - 1 : null, step: 1, placeholder: "GB", offTitle: "No target" }));
+    return h("div", "box settings", head, macRows(s).map((r) => row(put, r)));
   });
   // (The NAS reserve, the pool's: once, through the first Mac that reaches the NAS.)
   const nas = list.map(([m, host]) => [m, kept.get(host) || {}]).find(([, st]) => st.said?.nas_room);
@@ -120,10 +113,47 @@ export function settingsSection(call, macs, done, onError) {
     ? (() => {
       const [m, st] = nas, n = st.said.nas_room;
       return h("div", "box settings", h("h3", null, "The pool"),
-        row((body, what) => set(m, st, body, what), "nas_room", "NAS reserve", n.bytes ? gb(n.bytes) : "off",
-          `kept free on the NAS past what the build writes there${n.free != null ? `, ${gb(n.free)} free now` : ""}${by(n)}`,
-          { min: 1, step: 1, placeholder: "GB", offTitle: "No reserve" }));
+        row((body, what) => set(m, st, body, what), nasRow(n)));
     })()
     : h("div", "box settings", h("h3", null, "The pool"), h("div", "setting dim small", "NAS reserve: no Mac shown here reaches the NAS now"));
   return h("section", "d-settings", h("h2", null, "Settings", h("span", null, "each Mac's own, set on that Mac; the NAS reserve, pool-wide")), blocks, pool);
+}
+
+// A row's words and field, or, when the answer lacks the setting or it can't be read, "not set"
+// without a field: one setting's trouble never takes its block or the page with it.
+function guarded(key, what, make) {
+  try { return { key, what, ...make() }; } catch (e) {
+    return { key, what, now: "not set", note: e instanceof TypeError ? "" : e.message, input: null };
+  }
+}
+
+/** A Mac's rows from its `/work/settings` answer `s`: {key, what, now, note, input} each (`input`
+ * null: shown, not settable). */
+export function macRows(s) {
+  return [
+    guarded("in_use", "In-use share", () => ({
+      now: `${s.in_use.cores} of ${s.in_use.of} cores`,
+      note: `kept free of the build's jobs while the Mac is used${s.in_use.set ? by(s.in_use) : ` (the default, ${s.in_use.default})`}`,
+      input: { min: 0, max: s.in_use.of - 1, step: 1, placeholder: "cores", offTitle: "Back to the default" },
+    })),
+    guarded("memory", "Build memory", () => ({
+      now: gb(s.memory.mb * 2 ** 20),
+      note: `for the build's jobs together, of ${gb(s.memory.total_mb * 2 ** 20)}${s.memory.set ? by(s.memory) : " (the memory guard's limit)"}`,
+      input: { min: 1, max: Math.floor(s.memory.total_mb / 1024) || null, step: 0.5, placeholder: "GB", offTitle: "The memory guard's limit alone" },
+    })),
+    guarded("room", "Disk room target", () => ({
+      now: s.room.bytes ? gb(s.room.bytes) : "off",
+      note: `free space kept on ${s.mac || "this Mac"}'s disk${s.room.free != null ? `, ${gb(s.room.free)} free now` : ""}${by(s.room)}`,
+      input: { min: 1, max: s.room.disk ? Math.floor(s.room.disk / GiB) - 1 : null, step: 1, placeholder: "GB", offTitle: "No target" },
+    })),
+  ];
+}
+
+/** The pool's NAS reserve row, from an answer's `nas_room`. */
+export function nasRow(n) {
+  return guarded("nas_room", "NAS reserve", () => ({
+    now: n.bytes ? gb(n.bytes) : "off",
+    note: `kept free on the NAS past what the build writes there${n.free != null ? `, ${gb(n.free)} free now` : ""}${by(n)}`,
+    input: { min: 1, step: 1, placeholder: "GB", offTitle: "No reserve" },
+  }));
 }
