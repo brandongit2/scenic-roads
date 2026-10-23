@@ -603,9 +603,16 @@ fn a_z3_tiles_pieces_and_their_assembly_make_its_tiles() {
     let m = read_mid(&mids[3]).unwrap();
     assert_eq!((m.tile, m.tops.keys().copied().collect::<Vec<_>>()), ((33, 22), vec![(132, 88), (133, 88), (134, 88)]));
     assert!(m.z8.iter().all(|t| t.z == 8) && m.z8.iter().any(|t| (t.x, t.y) == (132, 88)));
-    // The same on one thread: the same mid, byte for byte.
-    pool(1).install(|| z6(&run((6, 33, 22), "again"))).unwrap();
-    assert_eq!(std::fs::read(o.path().join("again").join(MID)).unwrap(), std::fs::read(&mids[3]).unwrap());
+    // The same on one thread and on three: the same mid, byte for byte, and the same tiles.
+    for n in [1, 3] {
+        let again = format!("again-{n}");
+        pool(n).install(|| z6(&run((6, 33, 22), &again))).unwrap();
+        assert_eq!(std::fs::read(o.path().join(&again).join(MID)).unwrap(), std::fs::read(&mids[3]).unwrap());
+        for l in LAYERS {
+            let f = format!("trees-{l}.tiles");
+            assert_eq!(tiles_of(&o.path().join(&again).join(&f)), tiles_of(&o.path().join("z6-33-22").join(&f)));
+        }
+    }
     // Assembled again in another order: the same archives.
     let rev: Vec<PathBuf> = mids.iter().rev().cloned().collect();
     assemble_lo(&rev, &o.path().join("lo2"), &|_, _| {}).unwrap();
@@ -785,7 +792,8 @@ fn leaf_type_squares_complete() {
 }
 
 #[test]
-fn canopy_squares_from_the_store() {
+fn canopy_squares_from_the_store_or_this_macs_copies() {
+    use squares::Here;
     let d = tempfile::tempdir().unwrap();
     let (chm, store) = (d.path().join("chm"), d.path().join("store"));
     std::fs::create_dir_all(&chm).unwrap();
@@ -796,24 +804,52 @@ fn canopy_squares_from_the_store() {
         std::fs::write(store.join(chm_name(40, 0, k)), b"").unwrap();
     }
     let said = std::sync::Mutex::new(Vec::new());
-    assert!(squares::canopy(&chm, &store, 50, 0, &|f| said.lock().unwrap().push(f), &BTreeMap::new()).unwrap());
+    let got = squares::canopy(&chm, &store, 50, 0, &|f| said.lock().unwrap().push(f), &BTreeMap::new()).unwrap();
     assert_eq!(said.into_inner().unwrap(), [0.5, 1.0]);
-    assert_eq!(std::fs::read(chm.join(chm_name(50, 0, "p95"))).unwrap(), t);
+    // Read where they lie: nothing copied.
+    assert_eq!(
+        got,
+        Some([Here::Nas(store.join(chm_name(50, 0, "cover5m"))), Here::Nas(store.join(chm_name(50, 0, "p95")))])
+    );
+    assert!(!chm.join(chm_name(50, 0, "p95")).exists());
     // Meta's "none": empty files, the square not there.
-    assert!(!squares::canopy(&chm, &store, 40, 0, &|_| {}, &BTreeMap::new()).unwrap());
-    assert_eq!(std::fs::metadata(chm.join(chm_name(40, 0, "cover5m"))).unwrap().len(), 0);
-    // A copy cut short is taken again.
-    std::fs::write(chm.join(chm_name(50, 0, "cover5m")), &t[..50]).unwrap();
-    assert!(squares::canopy(&chm, &store, 50, 0, &|_| {}, &BTreeMap::new()).unwrap());
-    assert_eq!(std::fs::read(chm.join(chm_name(50, 0, "cover5m"))).unwrap(), t);
+    assert_eq!(squares::canopy(&chm, &store, 40, 0, &|_| {}, &BTreeMap::new()).unwrap(), None);
+    // This Mac's whole copy read here; one cut short passed over for the store's.
+    std::fs::write(chm.join(chm_name(50, 0, "cover5m")), &t).unwrap();
+    std::fs::write(chm.join(chm_name(50, 0, "p95")), &t[..50]).unwrap();
+    let got = squares::canopy(&chm, &store, 50, 0, &|_| {}, &BTreeMap::new()).unwrap();
+    assert_eq!(
+        got,
+        Some([Here::Local(chm.join(chm_name(50, 0, "cover5m"))), Here::Nas(store.join(chm_name(50, 0, "p95")))])
+    );
+    store::cachefile::release(&chm.join(chm_name(50, 0, "cover5m")));
 }
 
-/// Room-making while tree cover runs (docs/building.md §2, store::cachefile): the canopy squares a z3
-/// run copies into the agent's cache are read by its blocks by name, and a square room-making
-/// deleted in between failed the run ("gone since this run found it"; a block not told which
-/// squares are there would read it as Meta's "none there"). Held as they're copied now: with
-/// room-making trimming the cache as fast as it can the whole time, the run makes what it makes
-/// left alone.
+/// The rows a run reads of a canopy file on the NAS, read first into a local file (task #606): every
+/// read the same bytes as the file's, the strips holding the rows from the local file.
+#[test]
+fn canopy_rows_read_first_are_the_files_bytes() {
+    let d = squares_dir();
+    let o = tempfile::tempdir().unwrap();
+    let p = d.path().join(chm_name(50, 0, "cover5m"));
+    let whole = std::fs::read(&p).unwrap();
+    let n = std::sync::atomic::AtomicU64::new(0);
+    let f = squares::rows_here(&p, (4100, 4500), &o.path().join("rows"), &|done, _| {
+        n.store(done, std::sync::atomic::Ordering::Relaxed)
+    })
+    .unwrap();
+    let kept = std::fs::metadata(o.path().join("rows")).unwrap().len();
+    assert!(kept > 0 && kept < whole.len() as u64 && n.into_inner() == kept);
+    assert_eq!(f.len().unwrap(), whole.len() as u64);
+    for (off, len) in [(0, 16), (1000, 4096), (whole.len() as u64 / 2, 9000), (whole.len() as u64 - 100, 100)] {
+        assert_eq!(f.read_at(off, len).unwrap(), whole[off as usize..off as usize + len]);
+    }
+}
+/// Room-making while tree cover runs (docs/building.md §2, store::cachefile): a run reads this Mac's
+/// whole copies of the canopy squares (the units') where it has them, held, so room-making can't
+/// delete one under it; the NAS's where it hasn't (only the rows it needs, read first: task #606).
+/// With room-making trimming the cache as fast as it can the whole time, the run makes what it makes
+/// left alone, and the same from the NAS's alone.
 #[test]
 fn room_making_mid_run_never_reads_a_square_as_none_there() {
     // (No network: what isn't on the scratch NAS fails, never downloads.)
@@ -822,12 +858,14 @@ fn room_making_mid_run_never_reads_a_square_as_none_there() {
     let o = tempfile::tempdir().unwrap();
     const COV: &str = r#"{"shapes": [[[[5.66, 48.2], [7.2, 48.2], [7.2, 48.91], [5.66, 48.91]]]]}"#;
     std::fs::write(o.path().join("cov.json"), COV).unwrap();
-    // The NAS's store has the squares; the agent's cache (`chm10/`) fills from it.
+    // The NAS's store has the squares, and the agent's cache (`chm10/`) copies of them.
     let (cache, sources) = (o.path().join("cache"), o.path().join("nas/sources"));
     let (chm, store) = (cache.join("chm10"), sources.join("canopy"));
     std::fs::create_dir_all(&store).unwrap();
+    std::fs::create_dir_all(&chm).unwrap();
     for k in ["cover5m", "p95"] {
         std::fs::copy(d.path().join(chm_name(50, 0, k)), store.join(chm_name(50, 0, k))).unwrap();
+        std::fs::copy(d.path().join(chm_name(50, 0, k)), chm.join(chm_name(50, 0, k))).unwrap();
     }
     let run = |out: &str| {
         let a = Run {
@@ -873,6 +911,18 @@ fn room_making_mid_run_never_reads_a_square_as_none_there() {
             "{l}: the same with room-making under way"
         );
     }
+    // No copies here: the NAS's rows, the same.
+    std::fs::remove_dir_all(&chm).unwrap();
+    assert_eq!(run("nas"), calm);
+    for l in LAYERS {
+        let f = format!("trees-{l}.tiles");
+        assert_eq!(
+            std::fs::read(o.path().join("nas").join(&f)).unwrap(),
+            std::fs::read(o.path().join("calm").join(&f)).unwrap(),
+            "{l}: the same from the NAS's rows"
+        );
+    }
+    assert!(!o.path().join("nas").join(ROWS_DIR).exists(), "the rows read are removed");
 }
 
 #[test]

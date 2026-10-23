@@ -147,7 +147,9 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   less what the memory guard's sampler says it holds now) is taken out of the free memory first.
   With no peak measured yet, or no free memory said, it holds at its grant, and it falls back to
   the grant when free memory falls (the file is read again within a second; a regions check once
-  took 39 GB and panicked a 16 GB Mac).
+  took 39 GB and panicked a 16 GB Mac). Tree cover jobs (`trees`) are paced the same way (their
+  blocks' bands under permits, docs/steps.md §2); a paced job beside another counts at what it's
+  allowed now.
   The check's pools are as wide as the cores (8 at most). The outermost parallel operation of a
   task takes a `pace::par_map` permit per task, waiting while as many run as the file says; an
   operation inside a task runs its items one after another on that task's thread, inside its

@@ -619,9 +619,10 @@ fn far_over(spare: u64) -> u64 {
     spare + (spare / 2).max(4096)
 }
 
-/// Whether `spec` is an input check (the `inputs` step's job).
-fn is_input_check(spec: &JobSpec) -> bool {
-    step_of(&spec.id).as_deref() == Some("inputs")
+/// Whether `spec`'s job is paced (crate::inputs::pace, `Agent::tend_threads`): an input check (the
+/// `inputs` step's), or tree cover (`trees`, task #606: its blocks take the cores the Mac has idle).
+fn is_paced(spec: &JobSpec) -> bool {
+    matches!(step_of(&spec.id).as_deref(), Some("inputs" | "trees"))
 }
 
 /// This Mac's cores.
@@ -6465,8 +6466,9 @@ impl Agent {
         env.push((store::nasio::ENV.into(), nas_counts.to_string_lossy().into_owned()));
         // The owner's room target it keeps free past what it writes (the OSM pass, pass-sets).
         env.push(self.target_env(&spec));
-        // An input check's threads, kept as cores free up (`tend_threads`; crate::inputs::pace).
-        if is_input_check(&spec) {
+        // A paced job's threads (an input check's, tree cover's), kept as cores free up
+        // (`tend_threads`; crate::inputs::pace).
+        if is_paced(&spec) {
             let f = self.threads_path(k);
             std::fs::write(&f, threads.to_string()).with_context(|| format!("write {}", f.display()))?;
             env.push((crate::inputs::pace::THREADS_ENV.into(), f.to_string_lossy().into_owned()));
@@ -8584,7 +8586,7 @@ impl Agent {
         self.pause = p;
     }
 
-    /// Where slot `k`'s input check is told the threads it may use now (`tend_threads`).
+    /// Where slot `k`'s paced job is told the threads it may use now (`tend_threads`).
     fn threads_path(&self, k: usize) -> PathBuf {
         self.o.home.join(format!("threads{}", slot_suffix(k)))
     }
@@ -8603,11 +8605,11 @@ impl Agent {
         v
     }
 
-    /// Tells slot `k`'s input check the threads it may use now (docs/inputs.md §4.3, Threads): this
+    /// Tells slot `k`'s paced job (`is_paced`) the threads it may use now (docs/inputs.md §4.3, Threads): this
     /// Mac's cores less those kept for its owner and those its other jobs were given, `MOST` at
     /// most. It takes more as they free up, and fewer when a job starts beside it.
     fn tend_threads(&self, k: usize, c: &Conditions) {
-        let Some(r) = self.slots[k].running.as_ref().filter(|r| is_input_check(&r.spec)) else {
+        let Some(r) = self.slots[k].running.as_ref().filter(|r| is_paced(&r.spec)) else {
             return;
         };
         let cores = mac_cores() as usize;
@@ -8617,8 +8619,16 @@ impl Agent {
             .iter()
             .enumerate()
             .filter(|(j, _)| *j != k)
-            .filter_map(|(_, s)| s.running.as_ref())
-            .map(|b| b.threads)
+            .filter_map(|(j, s)| Some((j, s.running.as_ref()?)))
+            // (A paced job beside it at what it's allowed now: so two don't widen into the same cores.)
+            .map(|(j, b)| {
+                let now = || std::fs::read_to_string(self.threads_path(j)).ok()?.trim().parse::<usize>().ok();
+                if is_paced(&b.spec) {
+                    now().unwrap_or(0).max(b.threads)
+                } else {
+                    b.threads
+                }
+            })
             .sum();
         // Past its grant only while the memory free covers its measured peak per thread for each
         // extra (the free memory read at most every 10 s: it asks the system). A regions check once
@@ -15056,7 +15066,7 @@ mod tests {
         assert!(expect_same(&w("trees-lo", &[("3/3/2", "d")]), &done).is_empty());
         assert!(expect_same(&w("unit", &[("6/28/16", "a")]), &done).is_empty());
         // The times kept here go by the way a step runs now: a z3 tile's tree cover isn't a z6 tile's.
-        assert_eq!([secs_key("trees"), secs_key("trees-lo"), secs_key("unit")], ["trees v2", "trees-lo v1", "unit v3"]);
+        assert_eq!([secs_key("trees"), secs_key("trees-lo"), secs_key("unit")], ["trees v3", "trees-lo v1", "unit v3"]);
     }
 
     #[test]

@@ -5,7 +5,8 @@
 //!
 //!   trees --z3 x,y --coverage cov.json --sources sources.json --chm dir --chm-store dir --leaf dir --out dir
 //!         [--workers n]
-//!       z3 tile x,y: its canopy squares made ready in `chm` (from the NAS's `chm-store`), its
+//!       z3 tile x,y: its canopy squares read from this Mac's whole copies in `chm`, else the
+//!       rows it needs of the NAS's `chm-store` (pipeline::trees::squares::rows_here), its
 //!       leaf-type squares in `leaf` (made where missing: pipeline::leaftype),
 //!       out/trees-{cover,height,leaf}.tiles holding its zoom 4–12 tiles;
 //!       `sources.json`: where the declared canopy and leaf-type sources are
@@ -49,10 +50,14 @@ fn need<'a, T>(v: &'a Option<T>, k: &str) -> Result<&'a T> {
 }
 
 fn run(a: &Trees) -> Result<()> {
-    // (Threads as many as said, else rayon's; in WebAssembly, none can be made: this one.)
+    // (Threads as many as said, else rayon's; in WebAssembly, none can be made: this one. A job its
+    // agent paces (pipeline::inputs::pace's file named) gets a pool as wide as pace allows, its
+    // blocks under permits: as many at once as the agent says now, its grant at least.)
     let mut pool = rayon::ThreadPoolBuilder::new();
     if let Some(w) = a.workers {
-        pool = pool.num_threads(w.max(1));
+        let paced = std::env::var_os(pipeline::inputs::pace::THREADS_ENV).is_some();
+        let wide = if paced { pipeline::inputs::pace::cores().min(pipeline::inputs::pace::MOST) } else { 1 };
+        pool = pool.num_threads(w.max(wide).max(1));
     }
     let pool = pool.build().ok();
     let within = |f: &(dyn Fn() -> Result<()> + Sync)| pipeline::dem::sample::within(pool.as_ref(), f);

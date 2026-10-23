@@ -206,7 +206,14 @@ fn run_trees(args: &[std::ffi::OsString]) -> Result<()> {
     let _p = crate::timings::phase(prog, crate::timings::Class::Mixed);
     c.args(args);
     crate::timings::child(&mut c);
-    let st = store::spawn::status(&mut c).with_context(|| format!("run {prog}"))?;
+    // (What it reads of the NAS, the canopy rows above all, counted in a folder of its own, seen as
+    // it runs, and added to this process's as it ends: the target's `bytes`, its NAS weight,
+    // crate::costin. Task #606: they weren't, so tree cover weighed only its uploads.)
+    let counts = store::nasio::program_dir(&std::env::temp_dir().join(format!("trees-{}.counts", std::process::id())));
+    c.env(store::nasio::ENV, &counts);
+    let st = store::spawn::status(&mut c).with_context(|| format!("run {prog}"));
+    store::nasio::take_program(&counts);
+    let st = st?;
     anyhow::ensure!(st.success(), "{prog}: {st}");
     Ok(())
 }

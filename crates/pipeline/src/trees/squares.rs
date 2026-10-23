@@ -1,16 +1,20 @@
 //! The squares a z3 tile's blocks read, made ready first (the hub's work):
-//! - **Canopy squares** copied into the cache (`--chm`, the units' too) from the NAS's store
-//!   (`--chm-store`), downloaded from Meta into the store first, once: under a `<file>.lock` there,
-//!   made exclusively, a job on the other Mac waiting for it (a lock not touched for 30 minutes is a
-//!   holder that died). An empty file is Meta's "none there". A copy that isn't whole is taken
-//!   again (crate::whole).
+//! - **Canopy squares** read from this Mac's whole copies in the cache (`--chm`, the units'
+//!   copies) where it has them, else from the NAS's store (`--chm-store`): only the rows the run
+//!   needs, read first in big reads (`rows_here`; whole squares were copied before task #606, ~2 GB a
+//!   pair in Siberia, at 3–10 MB/s while the NAS was busy). A square not in the store is downloaded
+//!   from Meta into it first, once: under a `<file>.lock` there, made exclusively, a job on the other
+//!   Mac waiting for it (a lock not touched for 30 minutes is a holder that died). An empty file is
+//!   Meta's "none there".
 //! - **Leaf-type squares** made whole where they aren't (whole and tagged complete, or NALCMS's):
 //!   by crate::leaftype, which fetches the EEA's chunks or resamples NALCMS, and says how far it
 //!   is; with none to make, nothing is asked.
 
 use super::{chm_name, leaf_name, LeafSources};
 use anyhow::{bail, Context, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use store::range::{PlainFile, RangeRead};
 
 /// Whether `f` is kept whole: there, and empty (Meta's "none") or a whole TIFF. One that isn't is
 /// deleted, to be taken again.
@@ -24,9 +28,12 @@ fn kept_whole(f: &Path) -> bool {
     false
 }
 
-/// Canopy square (`top`, `left`)'s cover and height files in `chm`: copied from the NAS's `store`,
-/// or downloaded into it first (once); false when Meta has none there. `said` is told how much of
-/// the square is done (0–1): each file half of it, a download's share as it comes.
+/// Canopy square (`top`, `left`)'s cover and height files where the run reads them: this Mac's
+/// whole copies in `chm` when it has them (the z6 tiles' canopy step leaves them there), held for the
+/// rest of the job (store::cachefile: room-making leaves them) and marked used; else the NAS's
+/// `store`, downloaded into it first (once) when it isn't there whole, read where it lies (only the
+/// rows the run needs: `rows_here`). None when Meta has none there. `said` is told how much of the
+/// square is ready (0–1): each file half of it, a download's share as it comes.
 pub fn canopy(
     chm: &Path,
     store: &Path,
@@ -34,42 +41,139 @@ pub fn canopy(
     left: i32,
     said: &dyn Fn(f64),
     urls: &std::collections::BTreeMap<String, String>,
-) -> Result<bool> {
-    let mut there = true;
+) -> Result<Option<[Here; 2]>> {
+    let mut out = Vec::new();
     for (j, kind) in ["cover5m", "p95"].into_iter().enumerate() {
         let name = chm_name(top, left, kind);
-        let p = chm.join(&name);
-        // Held for the rest of the job (store::cachefile: the blocks read it by name, and a square
-        // room-making deleted would fail the run, or read as none there), and marked used; taken
-        // again when it isn't here whole.
-        let mut held = false;
-        for _ in 0..3 {
-            if store::cachefile::hold_existing(&p)?.is_some() {
-                if std::fs::metadata(&p).is_ok_and(|m| m.len() == 0) || crate::whole::tiff_file_whole(&p) {
-                    held = true;
-                    break;
-                }
-                eprintln!("canopy: {} isn't whole: taken again", p.display());
-                store::cachefile::discard(&p);
-            }
+        let copy = chm.join(&name);
+        let here = if store::cachefile::hold_existing(&copy)?.is_some()
+            && (std::fs::metadata(&copy).is_ok_and(|m| m.len() == 0) || crate::whole::tiff_file_whole(&copy))
+        {
+            Here::Local(copy)
+        } else {
+            store::cachefile::release(&copy);
             let kept = store.join(&name);
             fetch_once(store, &kept, urls.get(&name).map(String::as_str), &|f| said((j as f64 + f) / 2.0))?;
-            store::cachefile::create(&p, &mut |t| {
-                let (n, want) = (store::sys::copy_data(&kept, t)?, std::fs::metadata(&kept)?.len());
-                if n != want {
-                    return Err(std::io::Error::other(format!("{}: {n} of {want} bytes copied", kept.display())));
-                }
-                Ok(())
-            })
-            .with_context(|| p.display().to_string())?;
-            said((j + 1) as f64 / 2.0);
+            Here::Nas(kept)
+        };
+        said((j + 1) as f64 / 2.0);
+        let p = here.path();
+        if std::fs::metadata(p).with_context(|| p.display().to_string())?.len() == 0 {
+            return Ok(None);
         }
-        anyhow::ensure!(held, "{}: not here whole after three copies", p.display());
-        if std::fs::metadata(&p).with_context(|| p.display().to_string())?.len() == 0 {
-            there = false;
+        out.push(here);
+    }
+    let h = out.pop().context("a height file")?;
+    let c = out.pop().context("a cover file")?;
+    Ok(Some([c, h]))
+}
+
+/// Where a run reads a canopy file (`canopy`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Here {
+    /// This Mac's whole copy (`chm`), held.
+    Local(PathBuf),
+    /// The NAS's (`store`): only the rows the run needs, read first (`rows_here`).
+    Nas(PathBuf),
+}
+
+impl Here {
+    pub fn path(&self) -> &Path {
+        match self {
+            Here::Local(p) | Here::Nas(p) => p,
         }
     }
-    Ok(there)
+}
+
+/// The size of each read `rows_here` makes of the NAS (over SMB each read is a round trip, 50–120
+/// ms under load: big ones), and how many it has under way at once.
+const ROWS_READ: u64 = 8 << 20;
+const ROWS_READERS: usize = 4;
+
+/// A canopy file at `path` (on the NAS) for a run whose blocks read its rows `rows` (first and
+/// last, of its full-resolution image): the bytes of the strips holding them (a canopy square's
+/// strips are rows of its whole width) read first in big reads, `ROWS_READERS` at once, into
+/// `local` (the run's scratch), and read from there; anything else (its header and strip arrays)
+/// where it lies. The same bytes as the file's, so the same tiles. `done` is told the bytes read so
+/// far, of how many.
+pub fn rows_here(
+    path: &Path,
+    rows: (u32, u32),
+    local: &Path,
+    done: &(dyn Fn(u64, u64) + Sync),
+) -> Result<Arc<dyn RangeRead>> {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    use store::sys::PosIo;
+    let what = || path.display().to_string();
+    let src: Arc<dyn RangeRead> = Arc::new(PlainFile::open(path).with_context(what)?);
+    let (lo, hi) = {
+        let t = crate::geotiff::Tiff::open(src.clone()).with_context(what)?;
+        let img = t.level(0)?;
+        let (across, bh) = (img.width.div_ceil(img.block_w.max(1)), img.block_h.max(1));
+        let last = img.height.div_ceil(bh).saturating_sub(1);
+        let (mut lo, mut hi) = (u64::MAX, 0u64);
+        for by in (rows.0 / bh).min(last)..=(rows.1 / bh).min(last) {
+            for bx in 0..across {
+                if let Some((o, n)) = t.block_span(0, bx, by)? {
+                    (lo, hi) = (lo.min(o), hi.max(o + n));
+                }
+            }
+        }
+        (lo, hi)
+    };
+    if lo >= hi {
+        return Ok(src);
+    }
+    let f = std::fs::File::create(local).with_context(|| local.display().to_string())?;
+    let len = hi - lo;
+    let (next, got) = (AtomicU64::new(0), AtomicU64::new(0));
+    std::thread::scope(|s| -> Result<()> {
+        let hs: Vec<_> = (0..ROWS_READERS)
+            .map(|_| {
+                s.spawn(|| -> Result<()> {
+                    loop {
+                        let at = next.fetch_add(ROWS_READ, Relaxed);
+                        if at >= len {
+                            return Ok(());
+                        }
+                        let n = ROWS_READ.min(len - at);
+                        let b = src.read_at(lo + at, n as usize).with_context(what)?;
+                        f.write_all_at(&b, at).with_context(|| local.display().to_string())?;
+                        done(got.fetch_add(n, Relaxed) + n, len);
+                    }
+                })
+            })
+            .collect();
+        for h in hs {
+            h.join().map_err(|_| anyhow::anyhow!("a reader of {} panicked", what()))??;
+        }
+        Ok(())
+    })?;
+    drop(f);
+    let local = PlainFile::open(local).with_context(|| local.display().to_string())?;
+    Ok(Arc::new(Rows { src, local, at: lo, len }))
+}
+
+/// A file read where it lies but for a span of it read before into a local file (`rows_here`).
+struct Rows {
+    src: Arc<dyn RangeRead>,
+    local: PlainFile,
+    at: u64,
+    len: u64,
+}
+
+impl RangeRead for Rows {
+    fn len(&self) -> Result<u64, store::IoError> {
+        self.src.len()
+    }
+
+    fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, store::IoError> {
+        if off >= self.at && off.saturating_add(len as u64) <= self.at + self.len {
+            self.local.read_at(off - self.at, len)
+        } else {
+            self.src.read_at(off, len)
+        }
+    }
 }
 
 /// The NAS's copy `kept`, whole; else the right to download it there (`<file>.lock`), or the copy

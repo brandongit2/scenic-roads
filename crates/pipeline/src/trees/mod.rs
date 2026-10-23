@@ -193,11 +193,23 @@ pub fn leaf_name(top: i32, left: i32) -> String {
 }
 
 /// Where a block's squares are: a folder, or URLs under a prefix, read through `crate::fetch` (its
-/// mirror folder first; a `file://` prefix names a folder's files there, as `--record` keeps them).
-#[derive(Clone, Debug)]
+/// mirror folder first; a `file://` prefix names a folder's files there, as `--record` keeps them),
+/// or files opened already, by name (a run's canopy files: `begin`), one not among them not there.
+#[derive(Clone)]
 pub enum Source {
     Dir(PathBuf),
     Url(String),
+    Given(Arc<BTreeMap<String, Arc<dyn RangeRead>>>),
+}
+
+impl std::fmt::Debug for Source {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Source::Dir(d) => write!(f, "Dir({})", d.display()),
+            Source::Url(u) => write!(f, "Url({u})"),
+            Source::Given(m) => write!(f, "Given({:?})", m.keys().collect::<Vec<_>>()),
+        }
+    }
 }
 
 impl Source {
@@ -213,6 +225,7 @@ impl Source {
     fn url(&self, name: &str) -> String {
         match self {
             Source::Url(u) => format!("{u}/{name}"),
+            Source::Given(_) => format!("given:{name}"),
             Source::Dir(d) => {
                 format!("file://{}", std::path::absolute(d.join(name)).unwrap_or_else(|_| d.join(name)).display())
             }
@@ -249,6 +262,7 @@ impl Inputs<'_> {
                 }
             }
             Source::Url(_) => self.fetch.open(&src.url(name))?,
+            Source::Given(m) => m.get(name).cloned(),
         };
         if self.record.is_none() {
             return Ok(f);
@@ -464,9 +478,9 @@ struct Doing {
 /// Blocks `list`'s tiles and values (`block`'s each), made together a band at a time: blocks of
 /// one row (the same `by`) read the same canopy rows, read and decoded once for all of them
 /// (`Files`; a row's task, crate::trees::task). Each block's pyramid is fed the same bands in the
-/// same order as on its own, so its bytes are `block`'s. The blocks of a band on rayon's threads.
+/// same order as on its own, so its bytes are `block`'s. The blocks of a band on rayon's threads, each
+/// under a permit (crate::inputs::pace: the job's threads now, which its agent raises as cores idle).
 pub fn blocks(shapes: &mask::Shapes, inp: &Inputs, list: &[(u32, u32)]) -> Result<Vec<BlockOut>> {
-    use rayon::prelude::*;
     let px = |i: usize, b: u32| (i + b as usize * BS) as f64 + 0.5;
     let mut files = Files::new(inp, list.len());
     let mut doing = Vec::with_capacity(list.len());
@@ -480,7 +494,10 @@ pub fn blocks(shapes: &mask::Shapes, inp: &Inputs, list: &[(u32, u32)]) -> Resul
     const BAND: usize = TS;
     for band in 0..BS / BAND {
         let r0 = band * BAND;
-        doing.par_iter_mut().try_for_each(|d| -> Result<()> {
+        // (Each block's band under a permit: no more at once than the job's threads allow now,
+        // crate::inputs::pace.)
+        let each: Vec<&mut Doing> = doing.iter_mut().collect();
+        crate::inputs::pace::par_map(each, |d| -> Result<()> {
             let (mut cover, mut height, mut leaf) =
                 (vec![0u16; BAND * BS], vec![0u16; BAND * BS], vec![255u8; BAND * BS]);
             for (c, h, l) in &d.src.squares {
@@ -492,7 +509,9 @@ pub fn blocks(shapes: &mask::Shapes, inp: &Inputs, list: &[(u32, u32)]) -> Resul
             }
             d.pyr.band(&cover, &height, &leaf, &d.inside[r0 * BS / 64..(r0 + BAND) * BS / 64]);
             Ok(())
-        })?;
+        })
+        .into_iter()
+        .collect::<Result<()>>()?;
     }
     let kept = inp.keep(&files.opened)?;
     Ok(doing
@@ -620,10 +639,23 @@ fn in_order<T: Send>(
     n: usize,
     f: impl Fn(usize) -> Result<T> + Sync,
     done: impl Fn(usize) + Sync,
+    sink: impl FnMut(usize, T) -> Result<()>,
+) -> Result<()> {
+    in_order_by(n, 2 * rayon::current_num_threads(), f, done, sink)
+}
+
+/// `in_order` with at most `window` items under way or waiting to be written at once (a z6 tile's
+/// rows: each one's own work as wide as its blocks, so fewer).
+fn in_order_by<T: Send>(
+    n: usize,
+    window: usize,
+    f: impl Fn(usize) -> Result<T> + Sync,
+    done: impl Fn(usize) + Sync,
     mut sink: impl FnMut(usize, T) -> Result<()>,
 ) -> Result<()> {
     let threads = rayon::current_num_threads();
-    if threads <= 1 {
+    let window = window.max(1);
+    if threads <= 1 || window <= 1 {
         for i in 0..n {
             let r = f(i)?;
             done(i);
@@ -633,7 +665,6 @@ fn in_order<T: Send>(
     }
     use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
     use std::sync::{Condvar, Mutex};
-    let window = 2 * threads;
     let ready: Mutex<BTreeMap<usize, Result<T>>> = Mutex::new(BTreeMap::new());
     let cv = Condvar::new();
     let stop = AtomicBool::new(false);
@@ -721,8 +752,10 @@ pub struct Run {
     /// The tile: zoom (3 or 6), column, row.
     pub tile: (u8, u32, u32),
     pub coverage: PathBuf,
-    /// The canopy squares' cache (the units read it too), filled from `chm_store` (the NAS's).
+    /// This Mac's canopy squares' cache (the units' copies): a whole square there is read there.
     pub chm: PathBuf,
+    /// The NAS's canopy squares (`sources/canopy/`): the rest read there, only the rows the run
+    /// needs (squares::rows_here).
     pub chm_store: PathBuf,
     /// The declared sources as the run reads them (`RunSources`, a JSON file: crate::treepacks writes
     /// it beside the coverage).
@@ -732,12 +765,30 @@ pub struct Run {
     pub out: PathBuf,
 }
 
-/// A run begun (`begin`): the coverage's shapes, the blocks they meet, and the canopy squares there.
-type Begun = (mask::Shapes, Vec<(u32, u32)>, Vec<(i32, i32)>);
+/// A run begun (`begin`): the coverage's shapes, the blocks they meet, the canopy squares there and
+/// their files opened (`Source::Given`).
+type Begun = (mask::Shapes, Vec<(u32, u32)>, Vec<(i32, i32)>, Source);
 
-/// A run begun: its tile's blocks the coverage meets, their canopy squares fetched where missing
-/// and their leaf-type squares made; the coverage's shapes, the blocks and the canopy squares
-/// there, with its line.
+/// Where a run keeps the canopy rows it read from the NAS (squares::rows_here), in its `out`;
+/// removed as the blocks are made.
+const ROWS_DIR: &str = "canopy-rows";
+
+/// The canopy rows (first, last) of square (`top`, `left`) that `blocks` read; None when none.
+fn chm_rows(blocks: &[(u32, u32)], top: i32, left: i32) -> Option<(u32, u32)> {
+    let mut out: Option<(u32, u32)> = None;
+    for &(_, by) in blocks {
+        let lat: Vec<f64> = (0..BS).map(|i| lat_of((i + by as usize * BS) as f64 + 0.5, ZMAX)).collect();
+        for r in indices(top, left, CHM_RES, &[], &lat).rows.into_iter().flatten() {
+            out = Some(out.map_or((r, r), |(a, b)| (a.min(r), b.max(r))));
+        }
+    }
+    out
+}
+
+/// A run begun: its tile's blocks the coverage meets, their canopy squares found (fetched into the
+/// NAS's store where missing) and opened, the rows the blocks read of those on the NAS read first
+/// (squares::rows_here), and their leaf-type squares made; the coverage's shapes, the blocks, the
+/// canopy squares there and their files, with its line.
 fn begin(a: &Run) -> Result<Begun> {
     use crate::timings::{phase, Class};
     let t0 = std::time::Instant::now();
@@ -758,16 +809,54 @@ fn begin(a: &Run) -> Result<Begun> {
     want.sort_unstable();
     want.dedup();
     let mut sqs = Vec::new();
-    let p = phase("canopy squares here (the NAS's store, else fetched)", Class::NasRead);
+    let mut files: Vec<(String, squares::Here, (i32, i32))> = Vec::new();
+    let p = phase("canopy squares found (the NAS's store, else fetched)", Class::NasRead);
     for (i, &(top, left)) in want.iter().enumerate() {
         crate::agent::jobs::report(i as u64, want.len() as u64, "canopy squares");
         // (And within the square, as its files come.)
         let said = |f: f64| crate::agent::jobs::report_f(i as f64 + f, want.len() as u64, "canopy squares");
-        if squares::canopy(&a.chm, &a.chm_store, top, left, &said, &sources.canopy)? {
+        if let Some(here) = squares::canopy(&a.chm, &a.chm_store, top, left, &said, &sources.canopy)? {
             sqs.push((top, left));
+            for (kind, h) in ["cover5m", "p95"].into_iter().zip(here) {
+                files.push((chm_name(top, left, kind), h, (top, left)));
+            }
         }
     }
     crate::agent::jobs::report(want.len() as u64, want.len() as u64, "canopy squares");
+    drop(p);
+    let p = phase("canopy rows read from the NAS", Class::NasRead);
+    let rows_dir = a.out.join(ROWS_DIR);
+    std::fs::create_dir_all(&rows_dir).with_context(|| rows_dir.display().to_string())?;
+    let mut given: BTreeMap<String, Arc<dyn RangeRead>> = BTreeMap::new();
+    for (k, (name, here, (top, left))) in files.iter().enumerate() {
+        let f: Arc<dyn RangeRead> = match (here, chm_rows(&blocks, *top, *left)) {
+            (squares::Here::Nas(p), Some(rows)) => {
+                let said = |done: u64, of: u64| {
+                    crate::agent::jobs::report_f(
+                        k as f64 + done as f64 / of.max(1) as f64,
+                        files.len() as u64,
+                        "canopy rows",
+                    )
+                };
+                squares::rows_here(p, rows, &rows_dir.join(name), &said)?
+            }
+            (h, _) => Arc::new(PlainFile::open(h.path()).with_context(|| h.path().display().to_string())?),
+        };
+        given.insert(name.clone(), f);
+    }
+    let read: u64 =
+        files.iter().filter_map(|(n, _, _)| std::fs::metadata(rows_dir.join(n)).ok()).map(|m| m.len()).sum();
+    let whole: u64 = files
+        .iter()
+        .filter(|(_, h, _)| matches!(h, squares::Here::Nas(_)))
+        .filter_map(|(_, h, _)| std::fs::metadata(h.path()).ok())
+        .map(|m| m.len())
+        .sum();
+    eprintln!(
+        "trees z{z} {x},{y}: {:.0} MB of the canopy rows read from the NAS's {:.0} MB",
+        read as f64 / 1e6,
+        whole as f64 / 1e6
+    );
     drop(p);
     let p = phase("leaf-type squares made", Class::Mixed);
     squares::leaf_types(&sqs, &a.leaf, &sources.leaf)?;
@@ -778,26 +867,21 @@ fn begin(a: &Run) -> Result<Begun> {
         sqs.len(),
         t0.elapsed().as_secs_f64()
     );
-    Ok((shapes, blocks, sqs))
+    Ok((shapes, blocks, sqs, Source::Given(Arc::new(given))))
 }
 
-/// Every one of `blocks` (on rayon's threads), its squares in `a`'s folders (`sqs` there), given to
-/// `sink` in order as it's made, how many are made said.
+/// Every one of `blocks` (on rayon's threads), its canopy squares `chm` (`sqs` there), its leaf
+/// types in `a`'s folder, given to `sink` in order as it's made, how many are made said.
 fn each_block(
     a: &Run,
     shapes: &mask::Shapes,
     blocks: &[(u32, u32)],
     sqs: Vec<(i32, i32)>,
+    chm: Source,
     mut sink: impl FnMut((u32, u32), BlockOut) -> Result<()>,
 ) -> Result<()> {
     let fetch = crate::fetch::MapFetch::default();
-    let inp = Inputs {
-        chm: Source::Dir(a.chm.clone()),
-        leaf: Source::Dir(a.leaf.clone()),
-        fetch: &fetch,
-        record: None,
-        there: Some(sqs),
-    };
+    let inp = Inputs { chm, leaf: Source::Dir(a.leaf.clone()), fetch: &fetch, record: None, there: Some(sqs) };
     // (Said before the first block is back, so the stage before's last line isn't shown meanwhile.)
     crate::agent::jobs::report(0, blocks.len() as u64, "zoom-8 blocks");
     let finished = std::sync::atomic::AtomicUsize::new(0);
@@ -828,17 +912,18 @@ fn end(a: &Run, n: [usize; 3], t0: std::time::Instant) -> [usize; 3] {
 pub fn z3(a: &Run) -> Result<[usize; 3]> {
     ensure!(a.tile.0 == 3, "a z3 run of a zoom-{} tile", a.tile.0);
     let t0 = std::time::Instant::now();
-    let (shapes, blocks, sqs) = begin(a)?;
+    let (shapes, blocks, sqs, chm) = begin(a)?;
     let mut w = Writers::create(&a.out)?;
     let mut tops: BTreeMap<(u32, u32), Vec<u8>> = BTreeMap::new();
     let p = crate::timings::phase("zoom-8 blocks made", crate::timings::Class::Compute);
-    each_block(a, &shapes, &blocks, sqs, |at, b| {
+    each_block(a, &shapes, &blocks, sqs, chm, |at, b| {
         for t in &b.tiles {
             w.add(t)?;
         }
         tops.insert(at, b.tops.to_bytes()?);
         Ok(())
     })?;
+    std::fs::remove_dir_all(a.out.join(ROWS_DIR)).ok();
     drop(p);
     let _p = crate::timings::phase("zoom 7 to 4 made and the archives written", crate::timings::Class::Compute);
     for t in pyramid::lower(&tops, &|done, total| crate::agent::jobs::report(done, total, "zoom 7–4 tiles"))? {
@@ -848,12 +933,13 @@ pub fn z3(a: &Run) -> Result<[usize; 3]> {
 }
 
 /// A z6 tile's run (docs/steps.md §2, Trees: a z6 tile): z6 tile `a.tile`'s blocks the coverage meets,
-/// as `z3` runs them, its zoom 9–12 tiles into `out`'s three archives (its hi packs' tiles), and
-/// its blocks' zoom-8 tiles and values into its mid, `out/MID` (`write_mid`), from which its z3
-/// tile's assembly (`assemble_lo`) makes zoom 8 to 4. A z3 run's tiles are its z6 tiles' runs' and
-/// their assembly's, the same bytes. With a coordinator to offer tasks through (the job's,
-/// crate::offload), some of its rows of blocks go to workers that take them (`task::Offers`),
-/// taken in their blocks' turn: the same bytes.
+/// a row of them at a time (`blocks`: each canopy strip read and decoded once for the row), its
+/// zoom 9–12 tiles into `out`'s three archives (its hi packs' tiles), and its blocks' zoom-8 tiles
+/// and values into its mid, `out/MID` (`write_mid`), from which its z3 tile's assembly
+/// (`assemble_lo`) makes zoom 8 to 4. A z3 run's tiles are its z6 tiles' runs' and their
+/// assembly's, the same bytes. With a coordinator to offer tasks through (the job's,
+/// crate::offload), some of its rows go to workers that take them (`task::Offers`), taken in
+/// their turn: the same bytes.
 pub fn z6(a: &Run) -> Result<[usize; 3]> {
     let offload = crate::offload::Offload::from_env(&a.out.join("offload"));
     z6_with(a, offload.as_ref())
@@ -861,82 +947,81 @@ pub fn z6(a: &Run) -> Result<[usize; 3]> {
 
 /// `z6`, its rows offered through `offload` (none: all made here).
 pub fn z6_with(a: &Run, offload: Option<&crate::offload::Offload>) -> Result<[usize; 3]> {
+    use crate::timings::{phase, Class};
     ensure!(a.tile.0 == 6, "a z6 run of a zoom-{} tile", a.tile.0);
     let t0 = std::time::Instant::now();
-    let (shapes, blocks, sqs) = begin(a)?;
-    z6_blocks(a, &shapes, &blocks, sqs, offload, t0)
-}
-
-/// `z6_with`'s blocks once begun (`begin`: the coverage's `shapes`, the `blocks` they meet, the
-/// canopy squares there `sqs`), its run begun at `t0`.
-pub fn z6_blocks(
-    a: &Run,
-    shapes: &mask::Shapes,
-    blocks: &[(u32, u32)],
-    sqs: Vec<(i32, i32)>,
-    offload: Option<&crate::offload::Offload>,
-    t0: std::time::Instant,
-) -> Result<[usize; 3]> {
-    use crate::timings::{phase, Class};
+    let (shapes, blocks, sqs, chm) = begin(a)?;
+    let shapes = &shapes;
     let coverage = std::fs::read_to_string(&a.coverage).with_context(|| a.coverage.display().to_string())?;
     let p = phase("rows of blocks offered to other workers", Class::Net);
     let offers = task::Offers::offer(
         offload,
         (a.tile.1, a.tile.2),
         &coverage,
-        blocks,
+        &blocks,
         &sqs,
         &a.out.join("offload").join("results"),
     );
     drop(p);
-    // (Made here on rayon's threads, others' taken in their turn, and written as they come: one
+    // (Made here on rayon's threads, others' taken in their turn, and written once all are made: one
     // phase.)
     let p = phase("zoom-8 blocks made (some by other workers)", Class::Compute);
     let fetch = crate::fetch::MapFetch::default();
-    let inp = Inputs {
-        chm: Source::Dir(a.chm.clone()),
-        leaf: Source::Dir(a.leaf.clone()),
-        fetch: &fetch,
-        record: None,
-        there: Some(sqs),
-    };
+    let inp = Inputs { chm, leaf: Source::Dir(a.leaf.clone()), fetch: &fetch, record: None, there: Some(sqs) };
     let here = task::here_run(shapes, &inp);
     let mut w = Writers::create(&a.out)?;
     let mut mid: MidBlocks = BTreeMap::new();
+    let rows = task::rows_of(&blocks);
     crate::agent::jobs::report(0, blocks.len() as u64, "zoom-8 blocks");
     let finished = std::sync::atomic::AtomicUsize::new(0);
-    let offers_ref = &offers;
-    in_order(
-        blocks.len(),
-        |i| -> Result<Option<BlockOut>> {
-            if offers_ref.is_out(blocks[i]) {
+    let (offers_ref, rows_ref) = (&offers, &rows);
+    // (As many rows under way as keep the threads busy, a row as wide as its blocks, and one
+    // ahead: each holds its strips decoded, so no more.)
+    let wide = rows.iter().map(Vec::len).max().unwrap_or(1).max(1);
+    let mut made_all: BTreeMap<(u32, u32), (Vec<Tile>, Vec<u8>)> = BTreeMap::new();
+    in_order_by(
+        rows.len(),
+        rayon::current_num_threads().div_ceil(wide) + 1,
+        |i| -> Result<Option<Vec<BlockOut>>> {
+            let row = &rows_ref[i];
+            if offers_ref.is_out(row[0]) {
                 return Ok(None);
             }
             let t = std::time::Instant::now();
-            let b = block(shapes, &inp, blocks[i].0, blocks[i].1)?;
-            offers_ref.made_here(t.elapsed().as_secs_f64());
-            Ok(Some(b))
+            let made = self::blocks(shapes, &inp, row)?;
+            // (Each block of the row took the row's time on its thread: made side by side.)
+            for _ in row {
+                offers_ref.made_here(t.elapsed().as_secs_f64());
+            }
+            Ok(Some(made))
         },
-        |_| {
-            let k = finished.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        |i| {
+            let k = finished.fetch_add(rows_ref[i].len(), std::sync::atomic::Ordering::Relaxed) + rows_ref[i].len();
             crate::agent::jobs::report(k as u64, blocks.len() as u64, "zoom-8 blocks");
         },
-        |i, b| {
-            let at = blocks[i];
-            let (tiles, tops) = match b {
-                Some(b) => (b.tiles, b.tops.to_bytes()?),
-                // (Its row's task: its worker's result, or made here, in its turn.)
-                None => offers.take(at, &here)?,
+        |i, made| {
+            let row = &rows[i];
+            let made: Vec<(Vec<Tile>, Vec<u8>)> = match made {
+                Some(m) => m.into_iter().map(|b| Ok((b.tiles, b.tops.to_bytes()?))).collect::<Result<_>>()?,
+                // (Its task: its worker's result, or made here, in its turn.)
+                None => row.iter().map(|&at| offers.take(at, &here)).collect::<Result<_>>()?,
             };
-            let (z8, hi): (Vec<Tile>, Vec<Tile>) = tiles.into_iter().partition(|t| t.z == ZBLOCK);
-            for t in &hi {
-                w.add(t)?;
-            }
-            mid.insert(at, (z8, tops));
+            made_all.extend(row.iter().copied().zip(made));
             Ok(())
         },
     )?;
+    // (Written in the blocks' order, by column then row, as they were made one by one: the same
+    // archives.)
+    for at in &blocks {
+        let (tiles, tops) = made_all.remove(at).context("a block not made")?;
+        let (z8, hi): (Vec<Tile>, Vec<Tile>) = tiles.into_iter().partition(|t| t.z == ZBLOCK);
+        for t in &hi {
+            w.add(t)?;
+        }
+        mid.insert(*at, (z8, tops));
+    }
     std::fs::remove_dir_all(a.out.join("offload")).ok();
+    std::fs::remove_dir_all(a.out.join(ROWS_DIR)).ok();
     drop(p);
     let _p = phase("its mid and archives written", Class::Disk);
     write_mid(&a.out.join(MID), (a.tile.1, a.tile.2), &mid)?;

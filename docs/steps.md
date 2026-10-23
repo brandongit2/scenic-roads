@@ -171,6 +171,13 @@ What each step does, in detail. The steps as one table (names, chains, the check
     Meta's canopy squares (`sources/canopy/`, each downloaded once under a `<file>.lock`) and the
     leaf-type squares (`sources/trees/leaf/`, made by `pipeline::leaftype`: the EEA's chunks, or
     NALCMS resampled as GDAL's warper did).
+  - Reading (task #606): a run reads this Mac's whole copies of the canopy squares (`chm10/`, the
+    z6 tiles' canopy step's) where it has them, held for the job; else only the rows its blocks need
+    of the NAS's, read first in 8 MB reads, four at once, into its scratch (`trees::squares::rows_here`).
+    A z6 tile makes its blocks a row at a time (each strip decoded once for the row), each block's
+    band under a permit: a trees job is paced like an input check (docs/inputs.md §4.3, Threads),
+    taking the cores its Mac has idle past its grant. The trees program's NAS reads count in the
+    target's NAS weight (`bytes`; `coord::cost_version` 3).
   - Lossless WebP by `pipeline::webp`.
   - `trees --block`, `--blocks` and `--assemble` run blocks alone; a row of a z6 tile's blocks is a
     task (`treeblock`, docs/workers.md §3), the same bytes natively and in WebAssembly.

@@ -132,7 +132,9 @@ pub fn cost_version(step: &str) -> u32 {
     match step {
         "terrain" => 4,
         "slope" => 3,
-        "trees" => 2,
+        // (3: the canopy rows read where they lie and counted, its blocks paced, task #606: 2's
+        // copied whole squares uncounted, so its NAS weight was its uploads alone.)
+        "trees" => 3,
         // (A z6 tile's measure its job's processes together, as the memory guard measures a job; 0
         // was its programs' most, one at a time; 2: its processes started without malloc's large
         // cache, store::spawn::NO_LARGE_CACHE, where 1's measures counted 6–7 GB of freed blocks;
