@@ -106,11 +106,12 @@ What each step does, in detail. The steps as one table (names, chains, the check
     is finer than the terrain's finest declared dataset by over a tenth (by its full resolution,
     inputs.md §6.8 `full`: HRDEM 2 m, USGS 3DEP 10 m, GSI's), the terrain goes on past its finest
     base zoom to the dataset's (pixels no finer than half its cell: 2 m to z16, 3DEP to z14, z13
-    north of ~55°; a tile pyramid to its own zoom). A fine tile is the datasets read at full
+    north of ~55°; a tile pyramid to its own zoom), never past z16 (`MAX_Z`, the owner's: 1 m data
+    stops there too). A fine tile is the datasets read at full
     resolution and brought to EGM2008 as the roads' are (inputs.md §6.8, `heights`: so fine tiles,
     the base, the lakes' levels and the road profiles agree), blended at their edges as the roads'
     sampler does, the stored base tile (from its z6 tile's hi pack) last so the data blends into it
-    over four base pixels where it ends; where only the base gives a height, the base read across its
+    over four base pixels (the base's at the z8 tile's middle latitude) where it ends; where only the base gives a height, the base read across its
     tiles' edges (each padded by a pixel of its neighbours, a ring of one tile read past the z8 tile,
     from its z6 tile's hi pack and the neighbouring z6 tiles' where the ring crosses into them, so
     those packs are in its key; where the base's finest zoom changes with latitude, the neighbour of
@@ -118,7 +119,7 @@ What each step does, in detail. The steps as one table (names, chains, the check
     ancestor (the map's DEM goes to z12 everywhere, so it meets those made tiles): no seam at
     a base tile's edge); the base's water kept by each pixel's share of the base
     tile's sea and lakes; below zero to 0; rounded to 1 cm; Terrarium RGB as lossless JPEG XL
-    (libjxl, effort 7: Chrome and Safari decode it natively, every value exact; the same bytes on
+    (libjxl, effort 6, the owner's: Chrome and Safari decode it natively, every value exact; the same bytes on
     every Mac, crates/jxl's golden hashes). Only base tiles
     whose datasets have data in a 128 × 128 grid of them make any, and only tiles with some of that
     data are stored, in fine packs by z10 tile (formats.md, Pack); elsewhere the server makes finer
@@ -129,11 +130,15 @@ What each step does, in detail. The steps as one table (names, chains, the check
     drops its z8 tile's packs it no longer makes, all of them where
     no dataset is fine any more (a z8 tile with packs and no target runs for that alone). The base's
     levels (z9–12) and the terrain's keys don't depend on it, so the analysis grid (z11) and the
-    roads don't change. Measured (M4, read over the network; JXL at 1 cm): a z12 tile's subtree to
-    z16 (340 tiles) 10–14 MB (HRDEM: a flat field 10.3, hills 11.1, Quebec 14.0), sampling ~10 s and
-    encoding ~11 s on a thread; to z14 (3DEP, 20 tiles) 0.6–1.3 MB, ~1.3 s + 0.8 s. Over the
-    coverage (HRDEM 48.6 k z12 tiles, 3DEP 154 k south of 50° to z14 and 101 k in Alaska to z13):
-    ~0.57 TB HRDEM, ~0.17 TB 3DEP; ~310 and ~90 process-hours.
+    roads don't change. A target reads its GeoTIFF blocks ahead of their sampling, 48 at once, each
+    once, kept in memory until the last z10 tile reading them is made (2 GB at most), each file
+    opened once; a target no fine dataset meets drops its packs without opening the water. Measured
+    (Mac mini, 12 cores shared with other jobs, read over the network, 23 Oct): z8 tile 8/75/91
+    (Montreal, all 256 z12 tiles with HRDEM, some 3DEP): 86,773 tiles, 2.95 GB, in 27 min with
+    12.6 GB fetched (before task #599: 48 min, 32.4 GB); a target no dataset meets 0.2 s (was 14 s).
+    Encoding 400 of its z16 tiles on a thread: effort 5 25.8 ms and 34.6 KB a tile, 6 29.1 ms and
+    32.8 KB, 7 31.2 ms and 32.3 KB. The rest of a target's time is the sampling's CPU (decoding
+    blocks, the blends, the geoid).
 - **Slope** (`pipeline::slope_pack`): z11 and coarser stored, from transient z12 Horn slope
   (`slope_pack::horn`); the server makes z12 the same way on demand, and where the terrain has
   fine tiles, the slope at their zooms there from them (the catalog's `fine_zoom` by z10 tile, the
