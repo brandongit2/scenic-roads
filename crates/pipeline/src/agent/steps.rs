@@ -1500,7 +1500,7 @@ mod tests {
             ("heritage", 6144),
             ("rail", 6144),
             ("items", 3072),
-            ("rail-feeds", 2560),
+            ("rail-feeds", 4500),
             ("bld-fetch", 2560),
             ("marks", 4096),
             ("overlays", 4096),
