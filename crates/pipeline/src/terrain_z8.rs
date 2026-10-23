@@ -1,56 +1,80 @@
-//! AWS's z8 terrain worldwide, made as the packs' tiles are and nothing more (docs/phase5.md
-//! "terrain-z8"): the peaks' coarse stage reads it, the same whatever the coverage. One pack of
-//! the 65,536 tiles (`terrain_pack::process` with no children) and each tile's maximum after the
-//! peaks' despike (for skipping tiles in isolation searches), under a versioned logical name: the
-//! agent makes it when the manifest lacks the current version.
+//! The terrain's z8 worldwide (docs/phase5.md "terrain-z8"): the elevation pool's base tiles at z8
+//! (crate::terrain_base: the same datasets and order as the terrain and the roads), made as the
+//! packs' tiles are and nothing more; the peaks' coarse stage reads it, the same whatever the
+//! coverage. One pack of the 65,536 tiles (`terrain_pack::process` with no children or water) and
+//! each tile's maximum after the peaks' despike (for skipping tiles in isolation searches), under
+//! a logical name naming its version and the accepted elevation and sources versions the pool is
+//! read from (`logical`): the agent makes it when the manifest lacks that name.
 
 use crate::out::Out;
-use crate::terrain_pack::{process, RawTiles};
+use crate::terrain_pack::{process, RawSource};
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 use roadcore::grid::decode_terrain_png;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 pub const Z: u8 = 8;
-/// Its version: a change to how it's made is a new logical name (4: AWS's tiles but for their
-/// voids, not GLO-30 nor the water, task #465).
-pub const V: u32 = 4;
+/// Its version: a change to how it's made is a new logical name (5: the elevation pool's tiles,
+/// not the water: task #465).
+pub const V: u32 = 5;
 
-pub fn logical() -> String {
-    format!("sources/terrain-z8-v{V}")
+/// The prefix of its logical names.
+const PREFIX: &str = "sources/terrain-z8-v";
+
+/// What its logical names name of manifest `m`: the accepted elevation and sources versions the
+/// pool is read from (their content names' digest), so a new version is a new z8.
+fn pool_of(m: &BTreeMap<String, String>) -> String {
+    let get = |u: &str| m.get(&crate::inputs::logical(u)).map_or("-", String::as_str);
+    store::naming::hash16(
+        format!("{} {}", get(crate::inputs::elevation::UNIT), get(crate::inputs::sources::UNIT)).as_bytes(),
+    )
 }
 
-pub fn max_logical() -> String {
-    format!("sources/terrain-z8-v{V}-max")
+/// Its pack's logical name for manifest `m`.
+pub fn logical(m: &BTreeMap<String, String>) -> String {
+    format!("{PREFIX}{V}-{}", pool_of(m))
 }
 
-/// Makes it from the raw tiles (fetched into `raw`'s cache when missing; a fetch that fails fails
-/// the build) and uploads the pack and the maxima. Returns (tiles, tiles AWS has none of).
-pub fn build(out: &mut Out, raw: &RawTiles) -> Result<(usize, usize)> {
+/// Its maxima's logical name for manifest `m`.
+pub fn max_logical(m: &BTreeMap<String, String>) -> String {
+    format!("{}-max", logical(m))
+}
+
+/// Whether `l` is one of its logical names (of this version, any pool).
+pub fn is_logical(l: &str) -> bool {
+    let Some(rest) = l.strip_prefix(&format!("{PREFIX}{V}-")) else { return false };
+    let h = rest.strip_suffix("-max").unwrap_or(rest);
+    h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Tiles made at once (the pool sampled for them together, then processed).
+const CHUNK: usize = 256;
+
+/// Makes it from the pool's base tiles `raw` (crate::terrain_base over the world) and uploads the
+/// pack and the maxima under the manifest's names (`logical`). Returns (tiles, tiles no dataset has
+/// data in).
+pub fn build(out: &mut Out, raw: &dyn RawSource) -> Result<(usize, usize)> {
     use crate::timings::{phase, Class};
     let n = 1u32 << Z;
-    // (AWS's tiles, cached or fetched, made as they come, in parallel: one phase.)
-    let p = phase("the world's z8 tiles fetched and made", Class::Net);
-    let done = std::sync::atomic::AtomicUsize::new(0);
-    let made: Vec<Result<(u32, u32, Option<(Vec<u8>, f32)>)>> = (0..n * n)
-        .into_par_iter()
-        .map(|i| {
-            let (x, y) = (i / n, i % n);
+    let p = phase("the world's z8 tiles sampled and made", Class::Net);
+    let all: Vec<(u32, u32)> = (0..n * n).map(|i| (i / n, i % n)).collect();
+    let here = std::sync::atomic::AtomicU64::new(0);
+    let mut made: Vec<Result<(u32, u32, Option<(Vec<u8>, f32)>)>> = Vec::with_capacity(all.len());
+    for (k, chunk) in all.chunks(CHUNK).enumerate() {
+        raw.prefetch_counted(Z, chunk, 1, &here)?;
+        crate::agent::jobs::report((k * CHUNK) as u64, (n * n) as u64, "z8 tiles");
+        made.par_extend(chunk.par_iter().map(|&(x, y)| -> Result<(u32, u32, Option<(Vec<u8>, f32)>)> {
             let (b, _) = raw.get(Z, x, y)?;
-            let k = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if k % 256 == 0 {
-                crate::agent::jobs::report(k as u64, (n * n) as u64, "z8 tiles");
-            }
             let Some(b) = b else { return Ok((x, y, None)) };
             let (png, _, _) = process(b, Z, x, y, &HashMap::new(), &crate::terrain_pack::Sources::default());
             let mut e = decode_terrain_png(&png).with_context(|| format!("8/{x}/{y}"))?;
             crate::peaks::despike(&mut e, Z, crate::peaks::tile_lat(Z, y));
             let mx = e.iter().cloned().fold(0f32, f32::max);
             Ok((x, y, Some((png, mx))))
-        })
-        .collect();
+        }));
+    }
     let mut tiles: Vec<(u32, u32, Vec<u8>)> = Vec::new();
     let mut maxes = vec![0f32; (n * n) as usize];
     let mut none = 0;
@@ -82,8 +106,9 @@ pub fn build(out: &mut Out, raw: &RawTiles) -> Result<(usize, usize)> {
     std::fs::write(&mfile, bytemuck::cast_slice(&maxes))?;
     drop(p);
     let p = phase("uploaded", Class::NasWrite);
-    out.put_file(&logical(), "pack", &local)?;
-    out.put_file(&max_logical(), "f32", &mfile)?;
+    let (l, ml) = (logical(&out.manifest), max_logical(&out.manifest));
+    out.put_file(&l, "pack", &local)?;
+    out.put_file(&ml, "f32", &mfile)?;
     drop(p);
     out.save()?;
     std::fs::remove_file(&local).ok();
@@ -92,7 +117,7 @@ pub fn build(out: &mut Out, raw: &RawTiles) -> Result<(usize, usize)> {
 }
 
 /// The artifact, read: tiles decoded and despiked on demand, kept in a bounded cache shared by
-/// the threads; each tile's maximum. A tile AWS has none of is the open sea (0 m).
+/// the threads; each tile's maximum. A tile no dataset has data in is the open sea (0 m).
 pub struct Z8 {
     file: std::fs::File,
     idx: store::pack::PackIndex,
@@ -233,6 +258,28 @@ mod tests {
             .collect()
     }
 
+    /// Its names name the pool's versions: a new elevation or sources version, a new z8.
+    #[test]
+    fn its_names_are_the_pools() {
+        let mut m = BTreeMap::new();
+        let none = logical(&m);
+        m.insert(
+            crate::inputs::logical(crate::inputs::elevation::UNIT),
+            "sources/inputs/elevation/@index.1.json".into(),
+        );
+        let a = logical(&m);
+        m.insert(crate::inputs::logical(crate::inputs::sources::UNIT), "sources/inputs/sources/@index.2.json".into());
+        let b = logical(&m);
+        assert!(none != a && a != b && b.starts_with("sources/terrain-z8-v5-"));
+        assert_eq!(max_logical(&m), format!("{b}-max"));
+        assert!(is_logical(&a) && is_logical(&max_logical(&m)));
+        assert!(
+            !is_logical("sources/terrain-z8-v4")
+                && !is_logical("sources/terrain-z8-v5-x")
+                && !is_logical(&format!("{b}-other"))
+        );
+    }
+
     #[test]
     fn the_raw_path_is_versioned() {
         // A change here is a change to the z8 (bump `V`: a new logical name, so the summits and
@@ -240,7 +287,7 @@ mod tests {
         // crate::agent::build::TERRAIN_V, which the peaks' key names); then update the values.
         assert_eq!(
             (V, crate::agent::build::TERRAIN_V),
-            (4, 5),
+            (5, 5),
             "the raw path's versions changed: update the values below"
         );
         assert_eq!(

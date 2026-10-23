@@ -935,7 +935,7 @@ pub const SUMMITS_V: u32 = 1;
 
 pub fn summits_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
     let set = m.get(&crate::osmpass::set_name(date, "summits"))?;
-    let (z8, z8m) = (m.get(&crate::terrain_z8::logical())?, m.get(&crate::terrain_z8::max_logical())?);
+    let (z8, z8m) = (m.get(&crate::terrain_z8::logical(m))?, m.get(&crate::terrain_z8::max_logical(m))?);
     let k = h(&[&format!("summits {SUMMITS_V}"), set, z8, z8m]);
     (done.lo.get("summits").map(String::as_str) != Some(k.as_str()))
         .then(|| Work { step: "summits".into(), targets: vec![("summits".into(), k)] })
@@ -959,9 +959,11 @@ fn tiles_in_wrapped(z: u8, b: [f64; 4]) -> Vec<(u32, u32)> {
 }
 
 /// The coverage's z6 tiles with candidates, each with its peaks' key: the candidates, the summits,
-/// the z8, the terrain hi packs within 30 km of it, across the antimeridian too, and the terrain's
-/// version (its peaks' z12: the packs', else AWS's raw tiles, which don't change, processed by the
-/// terrain's code as it is now: `terrain_pack::process`, which `TERRAIN_V` versions).
+/// the z8 (named for the elevation and sources versions the pool is read from: crate::terrain_z8),
+/// the terrain hi packs within 30 km of it, across the antimeridian too, and the terrain's version
+/// (its peaks' z12: the packs', else the pool's base tiles, crate::terrain_base, of those versions,
+/// processed by the terrain's code as it is now: `terrain_pack::process`, which `TERRAIN_V`
+/// versions).
 pub fn peaks_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Vec<(TileId, String)> {
     peaks_keys_at(cov, date, m, TERRAIN_V)
 }
@@ -971,8 +973,8 @@ fn peaks_keys_at(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, terra
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     let common = [
         get(&format!("work/summits/{date}")),
-        get(&crate::terrain_z8::logical()),
-        get(&crate::terrain_z8::max_logical()),
+        get(&crate::terrain_z8::logical(m)),
+        get(&crate::terrain_z8::max_logical(m)),
     ]
     .join(",");
     let mut out = Vec::new();
@@ -4951,8 +4953,8 @@ pub(crate) mod tests {
         for l in [
             "work/trailends/d".to_string(),
             "work/summits/d".to_string(),
-            crate::terrain_z8::logical(),
-            crate::terrain_z8::max_logical(),
+            crate::terrain_z8::logical(&m),
+            crate::terrain_z8::max_logical(&m),
         ] {
             m.insert(l.clone(), format!("{l}.6161616161616161.bin"));
         }

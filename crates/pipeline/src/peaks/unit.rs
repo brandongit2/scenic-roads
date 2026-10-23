@@ -112,20 +112,20 @@ pub fn tile_lower_bound_m(lon: f64, lat: f64, z: u8, tx: u32, ty: u32) -> f64 {
 }
 
 /// A z6 tile's z12 tiles, read before the run: each is the terrain pack's when the manifest has it,
-/// else AWS's raw tile from the cache (fetched when missing; a failed fetch fails) processed the
-/// same way and read back from its PNG; AWS having none is the open sea. A tile asked for that
+/// else the elevation pool's base tile (crate::terrain_base: a failed read fails) processed the
+/// same way and read back from its PNG; no dataset having data there is the open sea. A tile asked for that
 /// wasn't read before is counted (`unexpected`), and fails the run.
 pub struct UnitZ12 {
     tiles: HashMap<(u32, u32), Option<Arc<Vec<u8>>>>,
     unexpected: AtomicUsize,
-    /// How many came from the packs, from AWS, as sea.
+    /// How many came from the packs, from the pool, as sea.
     pub from: (usize, usize, usize),
 }
 
 impl UnitZ12 {
     pub fn load(
         out: &crate::out::Out,
-        raw: &crate::terrain_pack::RawTiles,
+        raw: &dyn crate::terrain_pack::RawSource,
         want: &BTreeSet<(u32, u32)>,
     ) -> Result<UnitZ12> {
         Self::load_from(&crate::terrain_pack::ManifestTiles::new(out, "terrain"), raw, want)
@@ -134,12 +134,13 @@ impl UnitZ12 {
     /// `load`, from the terrain packs `packs` reads (a job's several z6 tiles', each pack opened once).
     pub fn load_from(
         packs: &crate::terrain_pack::ManifestTiles,
-        raw: &crate::terrain_pack::RawTiles,
+        raw: &dyn crate::terrain_pack::RawSource,
         want: &BTreeSet<(u32, u32)>,
     ) -> Result<UnitZ12> {
-        // (From the terrain packs on the NAS, else AWS's raw tiles, cached or fetched: in parallel,
-        // one phase, its tiles' bytes counted.)
-        let p = crate::timings::phase("z12 terrain tiles loaded (packs, else AWS)", crate::timings::Class::NasRead);
+        // (From the terrain packs on the NAS, else the pool's base tiles: in parallel, one phase,
+        // its tiles' bytes counted.)
+        let p =
+            crate::timings::phase("z12 terrain tiles loaded (packs, else the pool)", crate::timings::Class::NasRead);
         // (The packs' tiles read in spans, a pack's at once: `get_many`.)
         let want: Vec<(u32, u32)> = want.iter().copied().collect();
         let from_packs = packs.get_many(&want.iter().map(|&(x, y)| (Z12, x, y)).collect::<Vec<_>>())?;
@@ -155,13 +156,7 @@ impl UnitZ12 {
                 match raw.get(Z12, x, y)?.0 {
                     Some(b) => {
                         p.count(b.len() as u64, 1);
-                        // A cached tile that doesn't decode is fetched again, once.
-                        let b = if decode_terrain_png(&b).is_ok() {
-                            b
-                        } else {
-                            raw.refetch(Z12, x, y)?.with_context(|| format!("AWS's z12 {x}/{y} is gone"))?
-                        };
-                        anyhow::ensure!(decode_terrain_png(&b).is_ok(), "AWS's z12 {x}/{y} doesn't decode");
+                        anyhow::ensure!(decode_terrain_png(&b).is_ok(), "the pool's z12 {x}/{y} doesn't decode");
                         let (png, _, _) = crate::terrain_pack::process(
                             b,
                             Z12,

@@ -155,8 +155,10 @@ What each step does, in detail. The steps as one table (names, chains, the check
   whole first) and its neighbours' edge strips; **slope-lo**, an assembly per z3 tile from its
   z6 tiles' mids (each read whole, eight at once, under a deadline and tried again while it fails
   transiently). Together the z3 tile's whole run's packs, byte for byte.
-- **Worldwide z8 terrain** (`sources/terrain-z8-v4`, once, not served): every z8 tile made as the packs' are, with
-  each tile's maximum (AWS's tiles alone, task #465). Peaks read it.
+- **Worldwide z8 terrain** (`sources/terrain-z8-v5-<pool>`, once for the accepted elevation and
+  sources versions, `<pool>` their content names' digest; not served): every z8 tile the elevation
+  pool's base tile there (crate::terrain_base, as the terrain's), made as the packs' are, without
+  the water (task #465), with each tile's maximum. Peaks read it.
 - **Grids (z11):** land cover, canopy and cover, for analysis only. Each `unit` job makes the grid tiles
   its packs lack and uploads them as its z6 tile's `grid-*` hi packs; they aren't in those jobs' keys
   (made from fixed datasets, the same whether read or made).

@@ -589,19 +589,21 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             }
         }
         "terrain-z8" => {
-            // terrain-z8 [--raw dir]: AWS's z8 worldwide, repaired (pipeline::terrain_z8), once.
-            if out.get(&pipeline::terrain_z8::logical()).is_some() {
-                eprintln!("terrain-z8: already made ({})", pipeline::terrain_z8::logical());
+            // terrain-z8 [--raw dir]: the elevation pool's z8 worldwide (pipeline::terrain_z8), once for
+            // the accepted elevation and sources versions.
+            let l = pipeline::terrain_z8::logical(&out.manifest);
+            if out.get(&l).is_some() {
+                eprintln!("terrain-z8: already made ({l})");
             } else {
                 let raw_dir = PathBuf::from(
                     opt(&args, "--raw")
                         .unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
                 );
                 let raw = raw_tiles(&out, &raw_dir)?;
-                let parts =
-                    Parts(&["Fetching and repairing the world's z8 terrain", "Packing the new raw tiles onto the NAS"]);
+                let pool = base_pool(&out, 0, &[(0, 0)])?;
+                let parts = Parts(&["Sampling the world's z8 terrain", "Packing the new raw tiles onto the NAS"]);
                 parts.start(0);
-                let (n, none) = pipeline::terrain_z8::build(&mut out, &raw)?;
+                let (n, none) = pool.with_tiles(&raw, |tiles| pipeline::terrain_z8::build(&mut out, tiles))??;
                 eprintln!("terrain-z8: {n} tiles ({none} of open sea)");
                 parts.start(1);
                 pack_raw_with(&out, &raw_dir, &|what, done, total| pipeline::agent::jobs::report(done, total, what));
@@ -3139,8 +3141,8 @@ fn local_copy(out: &Out, logical: &str, cache: &Path) -> Result<PathBuf> {
 
 /// The z8 artifact, from local copies under `cache`.
 fn open_z8(out: &Out, cache: &Path) -> Result<pipeline::terrain_z8::Z8> {
-    let pack = local_copy(out, &pipeline::terrain_z8::logical(), cache)?;
-    let maxes = local_copy(out, &pipeline::terrain_z8::max_logical(), cache)?;
+    let pack = local_copy(out, &pipeline::terrain_z8::logical(&out.manifest), cache)?;
+    let maxes = local_copy(out, &pipeline::terrain_z8::max_logical(&out.manifest), cache)?;
     pipeline::terrain_z8::Z8::open(&pack, &maxes, 4096)
 }
 
@@ -3218,6 +3220,38 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let pois: Vec<Option<PathBuf>> =
         units.iter().map(|u| out.get(&format!("work/pois/{}", u.dash())).map(|c| out.path(c))).collect();
     let packs = pipeline::terrain_pack::ManifestTiles::new(out, "terrain");
+    // (Their z12 the packs' tiles, else the pool's base tiles over the z6 tiles and 30 km more.)
+    let ts: Vec<(u32, u32)> = units.iter().map(|u| (u.x, u.y)).collect();
+    let b = pipeline::terrain_base::tiles_box(6, &ts);
+    let pool = pipeline::terrain_base::Pool::read(
+        out.root(),
+        &out.manifest,
+        [b[0] - 0.5, (b[1] - 0.3).max(-85.0), b[2] + 0.5, (b[3] + 0.3).min(85.0)],
+    )?;
+    pool.with_tiles(&raw, |raw| {
+        peaks_from(out, scratch, &units, &pois, &packs, raw, &summits, &base8, &z8, coarse_threads)
+    })??;
+    drop(packs);
+    parts.start(1);
+    pack_raw_with(out, &raw_dir, &|what, done, total| pipeline::agent::jobs::report(done, total, what));
+    Ok(())
+}
+
+/// `peaks_step`'s z6 tiles measured, their z12 from the packs `packs`, else the pool's base tiles `raw`.
+#[allow(clippy::too_many_arguments)]
+fn peaks_from(
+    out: &mut Out,
+    scratch: &Path,
+    units: &[TileId],
+    pois: &[Option<PathBuf>],
+    packs: &pipeline::terrain_pack::ManifestTiles,
+    raw: &dyn pipeline::terrain_pack::RawSource,
+    summits: &[pipeline::summits::Summit],
+    base8: &pipeline::peaks::unit::Z8Base,
+    z8: &pipeline::terrain_z8::Z8,
+    coarse_threads: usize,
+) -> Result<()> {
+    use pipeline::peaks::unit;
     let load = |&k: &usize| -> Result<(Vec<unit::UnitPeak>, unit::UnitZ12)> {
         let u = units[k];
         let p = phase("candidates read", Class::NasRead);
@@ -3232,7 +3266,7 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             &peaks.iter().map(|p| (p.lon as f64 * 1e-7, p.lat as f64 * 1e-7)).collect::<Vec<_>>(),
             29.5,
         );
-        Ok((peaks, unit::UnitZ12::load_from(&packs, &raw, &want)?))
+        Ok((peaks, unit::UnitZ12::load_from(packs, raw, &want)?))
     };
     let order: Vec<usize> = (0..units.len()).collect();
     unit::read_ahead(&order, load, |k, _, (peaks, z12)| {
@@ -3242,7 +3276,7 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         pipeline::agent::jobs::report(k as u64, units.len() as u64, "z6 tiles");
         let t = cost_start("peaks", &u.slash());
         let p = phase("prominence and isolation measured", Class::Compute);
-        let res = unit::run(&peaks, &summits, &base8, &z12, &z8, coarse_threads)?;
+        let res = unit::run(&peaks, summits, base8, &z12, z8, coarse_threads)?;
         drop(p);
         let file = scratch.join(format!("peaks-{}.jsonl.zst", u.dash()));
         let p = phase("results written", Class::Disk);
@@ -3265,7 +3299,7 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         pipeline::control::done("peaks", &u.slash());
         std::fs::remove_file(&file).ok();
         eprintln!(
-            "peaks {}: {} peaks; z12 tiles {} from the packs, {} from AWS, {} sea ({:.0?})",
+            "peaks {}: {} peaks; z12 tiles {} from the packs, {} from the pool, {} sea ({:.0?})",
             u.slash(),
             res.len(),
             z12.from.0,
@@ -3280,8 +3314,6 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         Ok(())
     })?;
     pipeline::agent::jobs::report(units.len() as u64, units.len() as u64, "z6 tiles");
-    parts.start(1);
-    pack_raw_with(out, &raw_dir, &|what, done, total| pipeline::agent::jobs::report(done, total, what));
     Ok(())
 }
 

@@ -7154,7 +7154,7 @@ impl Agent {
                     }),
                 }
             }
-            if !manifest.contains_key(&crate::terrain_z8::logical()) {
+            if !manifest.contains_key(&crate::terrain_z8::logical(&manifest)) {
                 jobs.push(job(
                     "terrain-z8".into(),
                     "terrain-z8",
@@ -8365,7 +8365,7 @@ impl Agent {
             build::trailends_work(&date, &manifest, &keys).is_some()
                 || !manifest.contains_key(&crate::osmpass::set_name(&date, "hikes")),
             build::reach_work(&date, &manifest, &keys).is_some(),
-            !manifest.contains_key(&crate::terrain_z8::logical()),
+            !manifest.contains_key(&crate::terrain_z8::logical(&manifest)),
             crate::buildtiles::release_of(root, &manifest)
                 .map_or(true, |r| !manifest.contains_key(&crate::buildtiles::index_logical(&r))),
             build::summits_work(&date, &manifest, &keys).is_some()

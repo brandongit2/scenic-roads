@@ -172,7 +172,7 @@ def build(check=False):
     n_slo = d.card('terr', 'd3', n_slope.b + 22, 'slope, zoomed out', 'Rust', ['z3–8 from its z6 tiles’ mids;', 'the root once none is left'],
                    [(['layers/slope/ lo · root'], 'packs · PNG')], scope='z3', shared=True)
     n_z8 = d.card('terr', 'd2', n_tlo.b + 22, 'z8 terrain', 'Rust', ['every z8 tile, repaired,', 'with its maximum, once', '(peaks read it; not served)'],
-                  [(['sources/terrain-z8-v4'], 'one pack')], scope='global')
+                  [(['sources/terrain-z8-v5-<pool>'], 'one pack')], scope='global')
     p_t = d.pill('terr', cy + 12, ['/tiles/terrain'], note='the pack for the tile')
     b_terr = d.layer('terr', 0, '3D terrain · hill-shading', ['elevation tint'], cy=p_t.my)
     b_cont = d.layer('terr', b_terr.b + 8, 'Contour lines', ['traced from terrain tiles'], computed=True)
