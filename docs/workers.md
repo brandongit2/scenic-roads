@@ -150,12 +150,13 @@ Common rules:
 - **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`, `sums.js`, `live.js`, `chart.js`, `chartmath.js`; docs/pipeline.md §5): a
   sticky header (the verdict: going, done when, what needs a look; Pause, Freeze, Resume; the
   tabs), a tab per part by the address's `#hash`, and a fixed footer (the charts' range, the Live
-  dot). Overview: the overview (its map figure from the last catalogue) and the road to done
-  (each machine's forecast lane); Stages (a card per stage, a row per step); Machines (a card per
+  dot). Overview: the overview (its map figure from the last catalogue); Jobs (the schedule: each
+  Mac's lanes with the jobs that ran, running and to come; the stages: a row per step with a cell
+  per job; a card on hover, pinned on a click or tap); Machines (a card per
   machine, the pool: who leads, "Make lead", "Take it"); Regions; Activity (last day by the hour,
   events); Details (leases, waits, each Mac's capacity, workers, the steps table); This device. It reads
   `/work/steps` once (the steps table: every word about a step), `/work/swarm` every 10 s and
-  `/work/history` incrementally; `/work/regions` (each region's folders, download size and
+  `/work/history` incrementally (and further back, a chunk at a time, for the schedule's past jobs); `/work/regions` (each region's folders, download size and
   outline: docs/pool.md §10, Regions) when the last catalogue changes, else every ten minutes;
   each Mac's measures over time (on the lead also the NAS's disks and the pool's NAS traffic), and its internet's counts by host and last transfers, from its own port's `/work/live` (docs/pool.md §10, Live; the Machines tab asks each Mac's every 1.5 s while shown);
   each running job's phase, target and NAS and internet bytes in the status (`jobs[].live`, and a

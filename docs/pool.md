@@ -961,7 +961,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   before the pageview's state is locked, and the results swapped in after, so a slow NAS never
   holds up an answer. The history is merged by time, writer and number, and numbered by this Mac
   as it arrives; the answers carry the numbering's `epoch` (new with each process's first read),
-  and the page starts its cursor again when the epoch changes or `seq` falls below its last event
+  and the page starts its cursor again when the epoch changes (the Jobs tab's past jobs are asked further back by `since`, at most 5 000 a time) or `seq` falls below its last event
   ("since you last looked" goes by the events' time, so it outlives a restart). Until its first
   read a Mac answers 503 (never its memory's views: another numbering), and the page says it's
   reading the build's state (quietly, not as an error) and asks again every 2 s, saying it as an

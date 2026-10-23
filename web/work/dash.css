@@ -104,43 +104,87 @@ button:disabled { opacity: .5; }
 .pages .pg { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; padding: 5px 0; border-top: 1px solid var(--line); }
 .pages .pg:first-of-type { border-top: 0; }
 
-/* The road to done: the schedule, the steps, the regions. */
+/* The Jobs tab's schedule: each Mac's name over its slots' lanes; segments in the stages' colours
+   (ran: solid; failed: outlined red; running: bright, to the now line; to come: faint); the now
+   line; a dense time axis. */
 .sched { position: relative; }
-.sched .lanes { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 6px 8px; align-items: center; }
-@media (max-width: 719px) { .sched .lanes { grid-template-columns: 64px minmax(0, 1fr); } }
-.sched .ln { font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sched .track { position: relative; height: 16px; background: var(--bg); border-radius: 3px; overflow: hidden; }
-.sched .track > i { position: absolute; top: 2px; bottom: 2px; border-radius: 2px; min-width: 2px; }
+.schedtop { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; margin-bottom: 6px; }
+.schedtop span:last-child { margin-left: auto; }
+select.past { margin-left: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; font: inherit; font-size: 11.5px; padding: 1px 4px; }
+.sched .lanes { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 2px 8px; align-items: center; }
+@media (max-width: 719px) { .sched .lanes { grid-template-columns: 56px minmax(0, 1fr); } }
+.sched .gh { font-size: 11px; font-weight: 600; padding-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sched .ghr { border-bottom: 1px solid var(--row-line); align-self: end; }
+.sched .ln { font-size: 10.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+.sched .track { position: relative; height: 13px; background: var(--bg); border-radius: 2px; overflow: hidden; }
+.sched .track > i { position: absolute; top: 1px; bottom: 1px; border-radius: 1.5px; min-width: 2px; cursor: pointer; }
+.sched .track > i.past { opacity: .8; }
+.sched .track > i.failed { box-shadow: inset 0 0 0 1px var(--bad); }
+.sched .track > i.running { top: 0; bottom: 0; box-shadow: inset 0 0 0 1px var(--mark); }
+.sched .track > i.next { opacity: .4; }
+.sched .track > i:hover { opacity: 1; filter: brightness(1.15); }
+.sched .track > .nowl { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--mark); opacity: .7; pointer-events: none; }
 .sched .track.outs { background: none; overflow: visible; }
-.sched .track.outs > b { position: absolute; top: 2px; bottom: 2px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--mark); opacity: .75; cursor: help; }
+.sched .track.outs > b { position: absolute; top: 1px; bottom: 1px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--mark); opacity: .75; cursor: pointer; }
 .sched .track.outs > b:hover { opacity: 1; }
 .legend i.rmark { width: 2px; height: 11px; background: var(--mark); opacity: .75; border-radius: 1px; }
-.sched .axis { position: relative; height: 16px; font-size: 10px; color: var(--dim); }
-.sched .axis > span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.sched .axis { position: relative; height: 18px; font-size: 10px; color: var(--dim); border-top: 1px solid var(--line); }
+.sched .axis > b { position: absolute; top: 0; width: 1px; height: 3px; background: var(--rule); }
+.sched .axis > span { position: absolute; top: 3px; transform: translateX(-50%); white-space: nowrap; }
+.sched .axis > span::before { content: ""; position: absolute; left: 50%; top: -3px; width: 1px; height: 5px; background: var(--dim); }
+.sched .axis > span.day { color: var(--text); font-weight: 600; }
+.sched .axis > span.now { color: var(--text); }
+.legend .keys { display: inline-flex; gap: 4px; align-items: center; }
+.legend .keys i { width: 14px; height: 8px; margin: 0 0 0 6px; background: var(--dim); }
+.legend .keys i:first-child { margin-left: 0; }
+.legend i.k-past { opacity: .8; } .legend i.k-failed { box-shadow: inset 0 0 0 1px var(--bad); } .legend i.k-run { box-shadow: inset 0 0 0 1px var(--mark); background: var(--accent); } .legend i.k-next { opacity: .4; }
 .pbar.dimbar > i { background: var(--dimbar); }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; font-size: 11px; color: var(--dim); }
 .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
-.tip { position: fixed; z-index: 20; pointer-events: none; background: var(--tip); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font-size: 11.5px; max-width: 280px; box-shadow: 0 4px 14px var(--shadow); }
+.d-sched .note { color: var(--dim); font-size: 11px; margin: 6px 0 0; }
 
-/* The stages: a card per stage, a row per step, every row the same cells (mark, title, count,
-   when); the stage's colour on its edge, its bars and its swatches. */
-.stages { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
-.stage { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px 7px 9px; }
-.stage.done { opacity: .6; }
-.stage .row { display: grid; grid-template-columns: 14px minmax(0, 1fr) max-content; gap: 1px 7px; align-items: baseline; }
-.stage .row.head { font-weight: 600; }
-.stage .row.head .n { font-weight: 400; }
-.stage .row.item { padding-left: 12px; font-size: 12px; }
-.stage .row.item.done { color: var(--dim); }
-.stage .row .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.stage .row .n { color: var(--dim); font-size: 11.5px; text-align: right; white-space: nowrap; }
-.stage .when { color: var(--dim); font-size: 11px; margin: -1px 0 2px 33px; }
-.stage .pbar { margin: 2px 0 3px 21px; }
-.stage .row.item + .pbar { margin-left: 33px; height: 3px; }
-.stage .note { color: var(--dim); font-size: 11px; margin: 3px 0 0 21px; }
-.d-road .note { color: var(--dim); font-size: 11px; margin: 6px 0 0; }
+/* The stages: a list, a stage's line (its colour on its edge, mark, title, counts, bar) over a row
+   per step (mark, id, title, count, a cell per job: finished, running, to come). */
+.stages { display: grid; grid-template-columns: 14px minmax(70px, 120px) minmax(90px, 210px) minmax(90px, 170px) minmax(0, 1fr); gap: 0 8px; align-items: center; font-size: 12px; }
+.stages > .sh { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center; padding: 5px 0 2px 6px; margin: 6px 0 1px -6px; border-left: 3px solid var(--line); font-weight: 600; cursor: pointer; }
+.stages > .sh:first-child { margin-top: 0; }
+.stages > .sh .title { grid-column: 2 / 4; }
+.stages > .sh .n { font-weight: 400; }
+.stages > .sh .pbar { margin: 0; height: 4px; }
+.stages > .sh.done { opacity: .6; }
+.stages > .st { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center; padding: 1px 0; border-bottom: 1px solid var(--row-line); }
+.stages > .st.done { color: var(--dim); }
+.stages .title, .stages .n, .stages .id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stages .st .title { cursor: pointer; }
+.stages .n { color: var(--dim); font-size: 11px; }
+.mono { font: 10.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.stages .id { color: var(--dim); }
+.cells { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; min-height: 12px; }
+.cells > i { width: 7px; height: 10px; border-radius: 1.5px; cursor: pointer; box-sizing: border-box; }
+.cells > i.c-done { opacity: .75; }
+.cells > i.c-failed { background: var(--bad); }
+.cells > i.c-run { border: 2px solid; background: var(--mark); }
+.cells > i.c-next { border: 1px solid; opacity: .6; }
+.cells > i:hover { opacity: 1; outline: 1px solid var(--mark); }
+.cells > .more { color: var(--dim); font-size: 10px; margin: 0 2px; }
+@media (max-width: 719px) {
+  .stages { grid-template-columns: 14px minmax(0, 1fr) max-content; }
+  .stages > .sh .title { grid-column: 2; } .stages > .sh .pbar { grid-column: 2 / -1; }
+  .stages .id { display: none; }
+  .stages > .st .cells { grid-column: 2 / -1; padding-bottom: 2px; }
+}
 .mark { color: var(--dim); text-align: center; } .mark.ok { color: var(--ok); } .mark.run { color: var(--accent); }
 .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
+
+/* A card (dash.js withCard): on hover under the pointer; pinned on a click, with its close button. */
+.card-tip { position: fixed; z-index: 20; pointer-events: none; background: var(--tip); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; font-size: 11.5px; width: max-content; max-width: min(340px, calc(100vw - 16px)); box-shadow: 0 4px 14px var(--shadow); }
+.card-tip[hidden] { display: none; }
+.card-tip.pinned { pointer-events: auto; z-index: 21; padding-right: 26px; border-color: var(--rule); }
+.card-tip.pinned.gone { opacity: .75; }
+.card-tip .x { position: absolute; top: 2px; right: 2px; padding: 0 6px; border: 0; background: none; font-size: 14px; line-height: 1.2; }
+.card-tip .ct { font-weight: 600; margin-bottom: 3px; }
+.card-tip .ckv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 1px 8px; }
+.card-tip .ckv .k { color: var(--dim); font-size: 11px; text-transform: none; letter-spacing: 0; }
 
 .regbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
 .regbar input { flex: 1 1 160px; width: auto; margin: 0; }

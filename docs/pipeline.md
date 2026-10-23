@@ -152,7 +152,7 @@ kind's others, with templated words.
 
 The shell: a header kept at the top (the title; the verdict; Pause, Freeze or Resume; the
 alerts; the tabs) and a footer fixed at the bottom (the charts' range, the Live dot). A tab per
-part, chosen by the address's `#hash` (`#overview`, `#stages`, `#machines`, `#regions`,
+part, chosen by the address's `#hash` (`#overview`, `#jobs`, `#machines`, `#regions`,
 `#activity`, `#details`, `#device`; none or another: Overview), so a link or a reload opens the
 same tab; an alert links to the tab that says more.
 
@@ -162,17 +162,29 @@ same tab; an alert links to the tab that says more.
 - **Footer:** the range the Machines tab's live charts show (1 min to 72 h, this browser's own,
   kept); the Live dot, green and blinking while the
   build's state answered in the last 30 s, else Stale with the time of the last answer.
-- **Overview tab:** the gate's banners (held inputs), then the overview and the road to done.
+- **Overview tab:** the gate's banners (held inputs), then the overview.
 - **Overview:** how far: the whole build's work done, every stage's (`sums.js` wholeProgress:
   each step's targets done at the forecast's time for a target of it, `each_s`, measured or
   estimated, of that plus the forecast's work left; 100% only when every stage is done), how long
   (the same work left), the stages as a coloured strip; three numbers that aren't a step's
   (regions on the map; the map's last update with its catalogue's number and kind (with the low
   zooms or map tiles only), the next ≈ and the map tiles to draw; machines working).
-- **Road to done:** each machine's lane (segments in the stages' colours, the map tiles' among
-  them); only the lanes with a bar in the window shown, in their order.
-- **Stages:** a card per stage: mark, title, count, bar; a row per step: mark, title, ⇄ when any
-  Mac may take it, count, bar, its forecast (work, done ≈); the stage's jobs to come and note.
+- **Jobs tab, the schedule:** lanes grouped by Mac (its short name over a lane per slot, the lead
+  first, a Mac gone after), each segment in its stage's colour: the jobs that ran (the history's
+  job ends, back as far as the Past jobs choice: none, 1 h, 6 h, 24 h, 3 days or 7 days, this
+  browser's own; read back from `/work/history` 5 000 events at a time; runs of one step closer
+  than a pixel packed into one segment: `sums.js` pastRuns, packRuns, laneGroups, pastFrom, tested
+  by tools/check/worksums.test.mjs), failed ones outlined red, those running now (to the now line)
+  and the forecast's to come, faint; a now line; each region's mark where it's all on the map; a
+  dense time axis (`chartmath.js` timeTicks, midnight a day's name); the pages' lane when a page
+  helps.
+- **Jobs tab, the stages:** a list: a stage's line (mark, title, counts, bar), then a row per step
+  (mark, id, title, ⇄ when any Mac may take it, count) with a cell per job: finished (the history
+  held), running, to come (the forecast's).
+- **Cards:** everything in the Jobs tab has a card (what, where, when, how long, how it went; a
+  step's forecast and jobs; a stage's note and next jobs), shown on hover with a mouse or trackpad
+  and pinned on a click or tap, refreshed with each render; Escape, × or a click elsewhere closes
+  it. No phase bars yet: they wait for the lead's measured phase shares (task #511).
 - **Machines:** a card per Mac: name, role, state, heard from; its capacity; a block per running
   job by its slot (name, parts, progress, running since, memory; frozen or stuck) with what's
   inside it (the status's `jobs[].live`, docs/pool.md §10, Live: its phase and since when, its
