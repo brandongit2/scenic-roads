@@ -162,13 +162,29 @@ same tab; an alert links to the tab that says more.
 - **Footer:** the range the Machines tab's live charts show (1 min to 72 h, this browser's own,
   kept); the Live dot, green and blinking while the
   build's state answered in the last 30 s, else Stale with the time of the last answer.
-- **Overview tab:** the gate's banners (held inputs), then the overview.
+- **Overview tab:** the gate's banners (held inputs), the overview, then the world map.
 - **Overview:** how far: the whole build's work done, every stage's (`sums.js` wholeProgress:
   each step's targets done at the forecast's time for a target of it, `each_s`, measured or
   estimated, of that plus the forecast's work left; 100% only when every stage is done), how long
-  (the same work left), the stages as a coloured strip; three numbers that aren't a step's
-  (regions on the map; the map's last update with its catalogue's number and kind (with the low
+  (the same work left), the stages as a coloured strip; two numbers that aren't a step's
+  (the map's last update with its catalogue's number and kind (with the low
   zooms or map tiles only), the next ≈ and the map tiles to draw; machines working).
+- **World map** (`worldmap.js`, a canvas in Web Mercator, the world 0–1000 each way): the z3 grid
+  (z6's too once its cells are 12 px), the countries (`countries.json`), the regions' outlines
+  (`/work/regions`) coloured by state (on the map or done, building, to come; counted in the
+  legend), the tiles finished in the Jobs tab's past window (the history's ends, `sums.js`
+  finishedTiles; each fades in as it comes, the window's history played back on the first look,
+  paler as it ages; a low zoom's tile paler still), and each running job's target tiles (the
+  history's start or lease event, else the tiles its id or words name: `sums.js` targetsOf) in
+  its stage's colour, filled as far as they're done (`sums.js` runningTiles: from the job's
+  `live`, its targets done taken as the first of its list and the one under way at its time so
+  far against the step's `each_s`, under 95%; where `live` is missing, the job's progress or the
+  lease's beat `frac` spread over its tiles). Hover cards (the Jobs tab's cards, pinned on a
+  click or tap) for a tile (its step, state, phase, job and Mac, or when it finished, and a
+  minimap of it and half a tile around) and a region (its folders, state, tiles, what's left,
+  download size). Moved by a drag, zoomed by a pinch (ctrl+wheel in Chrome, gesture events in
+  Safari, two fingers on a touch screen), a double click, its +/− and whole-map buttons or the
+  keyboard; a two-finger scroll moves it only once zoomed in. Drawn only when something changes.
 - **Jobs tab, the schedule:** lanes grouped by Mac (its short name over a lane per slot, the lead
   first, a Mac gone after), each segment in its stage's colour (a `--st-<stage>` token in
   index.html, a hue each in either theme): the jobs that ran (the history's job ends: a lead's

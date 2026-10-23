@@ -1028,7 +1028,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   names in the regions' tree, a folder without a `_group.toml` name by its own in words, then its
   own), its `bytes` (the catalogue's files a download of it copies, `areafiles::files_of` as the map
   server's downloads count them; not the basemap's pieces nor its fine terrain; null while the
-  catalogue lacks it), and its outline for the overview's map (task #513; not drawn yet): its
+  catalogue lacks it), and its outline for the Overview tab's world map: its
   drawn shapes in Web Mercator, the world 0–1000 each way, simplified to about 7 km, `fill` the
   outer rings and `edge` the lines to stroke (a stretch two of its shapes share along a parallel
   or meridian left out). Made by the lead, on a thread of its own, once per regions' accepted
@@ -1040,7 +1040,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   each Mac's page data when its time changes. Every Mac's port answers `POST /work/regions` with
   no key: in the pool from that read, out of it from this Mac's agent's; 503 until there is one.
   The page's own files carry the world's countries' outlines for the same map (`countries.json`,
-  Natural Earth 1:50m, the same projection; not drawn yet).
+  Natural Earth 1:50m, the same projection).
 - **Live** (`agent::live`, task #514): each Mac's own measures over time, in rings on its own
   disk (the agent's folder's `live.bin`, never the NAS; written every 5 minutes and as the agent
   stops, read back as it starts): a point a second for an hour, every 10 s for a day, a minute

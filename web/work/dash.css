@@ -46,6 +46,25 @@ button:disabled { opacity: .5; }
 .kpi .v { font-size: 15px; margin-top: 1px; }
 .kpi .s { color: var(--dim); font-size: 11px; margin-top: 1px; }
 
+/* The world map (worldmap.js): its canvas, its zoom buttons over it, the legend under it. */
+.wmap-box { padding: 6px; }
+.wmap-wrap { position: relative; }
+.wmap { display: block; width: 100%; height: clamp(240px, 52vh, 560px); border-radius: 5px; cursor: grab; touch-action: pan-y; outline: none; }
+.wmap:active { cursor: grabbing; }
+.wmap:focus-visible { box-shadow: 0 0 0 1px var(--accent); }
+.wmap-ctl { position: absolute; top: 6px; right: 6px; display: flex; flex-direction: column; gap: 2px; }
+.wmap-ctl button { width: 26px; height: 26px; padding: 0; background: var(--panel); border: 1px solid var(--line); line-height: 1; }
+.wmap-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; padding: 6px 4px 0; }
+.wmap-legend .lg { display: inline-flex; gap: 5px; align-items: center; }
+.wmap-legend .lg i { width: 10px; height: 10px; border-radius: 2px; border: 1px solid; }
+.wmap-legend .rg.on { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 25%, transparent); }
+.wmap-legend .rg.building { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 25%, transparent); }
+.wmap-legend .rg.queued { border-color: var(--dim); }
+.wmap-legend .tl.run { border-color: var(--st-roads); background: linear-gradient(to top, var(--st-roads) 55%, transparent 55%); }
+.wmap-legend .tl.fin { border-color: transparent; background: color-mix(in srgb, var(--st-tiles) 55%, transparent); }
+.wmap-legend .hint { margin-left: auto; }
+.wmap-mini { display: block; margin-top: 5px; border-radius: 4px; border: 1px solid var(--line); }
+
 /* Bars. */
 .pbar { height: 5px; background: var(--line); border-radius: 3px; overflow: hidden; margin: 5px 0 3px; }
 .pbar > i { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width .4s; }

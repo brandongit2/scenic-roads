@@ -147,10 +147,11 @@ Common rules:
   own page alone, its agent passing them on. This Mac's own page may also cancel a job and try a
   failed target again (`/work/act`). `/work/?view` only watches: the same tabbed page minus "This device", in the popover's fixed 780 pt width (no horizontal scroll on any tab; checked 2026-10-23), its height the page's up to 900 pt, scrolling inside beyond that. Each slot (a Web Worker per core, less one) runs a
   task's programs over an in-memory filesystem (`web/work/runtime.js`, over browser_wasi_shim).
-- **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`, `sums.js`, `live.js`, `chart.js`, `chartmath.js`; docs/pipeline.md §5): a
+- **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`, `sums.js`, `live.js`, `chart.js`, `chartmath.js`, `worldmap.js`; docs/pipeline.md §5): a
   sticky header (the verdict: going, done when, what needs a look; Pause, Freeze, Resume; the
   tabs), a tab per part by the address's `#hash`, and a fixed footer (the charts' range, the Live
-  dot). Overview: the overview (its map figure from the last catalogue); Jobs (the schedule: each
+  dot). Overview: the overview (its map figure from the last catalogue) and the world map
+  (`worldmap.js`: regions, running and finished tiles, docs/pipeline.md §5); Jobs (the schedule: each
   Mac's lanes with the jobs that ran, running and to come; the stages: a row per step with a cell
   per job; a card on hover, pinned on a click or tap); Machines (a card per
   machine, the pool: who leads, "Make lead", "Take it"); Regions; Activity (last day by the hour,
@@ -162,8 +163,8 @@ Common rules:
   each Mac's measures over time (on the lead also the NAS's disks and the pool's NAS traffic), and its internet's counts by host and last transfers, from its own port's `/work/live` (docs/pool.md §10, Live; the Machines tab asks each Mac's every 1.5 s while shown);
   each running job's phase, target and NAS and internet bytes in the status (`jobs[].live`, and a
   member's on its lease, from its beat: the same section). The
-  regions' outlines and the countries' (`countries.json`, one of the page's files) are for the
-  overview's map (task #513), not drawn yet. A 503 (the Mac hasn't read the build's state yet) says so quietly and asks
+  world map draws the regions' outlines and the countries' (`countries.json`, one of the page's
+  files). A 503 (the Mac hasn't read the build's state yet) says so quietly and asks
   again every 2 s, what's shown said to be stale if it had an answer before, an error only after a
   minute of them; a new `epoch` (the
   Mac's agent restarted) starts the events again. "Since you last looked" goes by the events' time,

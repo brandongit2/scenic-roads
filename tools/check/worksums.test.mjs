@@ -3,7 +3,47 @@
 // slots and Macs, and the wait while this Mac hasn't read the build's state.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { busyLanes, isSlotOf, laneGroups, macSlot, notRead, packRuns, pastFrom, pastRuns, READ_RETRY_MS, READ_WAIT_MS, slotName, slotNo, wholeProgress } from '../../web/work/sums.js';
+import { busyLanes, finishedTiles, inRings, isSlotOf, laneGroups, macSlot, notRead, packRuns, pastFrom, pastRuns, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, targetsOf, tileBox, tileOf, wholeProgress } from '../../web/work/sums.js';
+
+test('map: tiles from targets, their squares', () => {
+  assert.deepEqual(tileOf('6/10/15'), { z: 6, x: 10, y: 15 });
+  assert.equal(tileOf('catalog'), null);
+  assert.equal(tileOf('3/8/0'), null);
+  assert.deepEqual(tileBox({ z: 3, x: 1, y: 2 }), [125, 250, 125]);
+});
+
+test('map: a job\'s targets from its start or lease event, else its words', () => {
+  const evs = [{ kind: 'start', step: 'pack', t: 100, targets: ['6/1/1', '6/1/2'] }, { kind: 'lease', lease: 7, targets: ['6/2/2'] }];
+  assert.deepEqual(targetsOf({ step: 'pack', id: 'pack 6/1/1', started: 103 }, evs), ['6/1/1', '6/1/2']);
+  assert.deepEqual(targetsOf({ step: 'pack', id: 'pack 6/1/1', started: 200 }, evs), ['6/1/1']);
+  assert.deepEqual(targetsOf({ lease: 7, what: 'x' }, evs), ['6/2/2']);
+  assert.deepEqual(targetsOf({ lease: 8, what: 'unit 6/3/3 6/3/4' }, evs), ['6/3/3', '6/3/4']);
+});
+
+test('map: running tiles filled from live, else the beat\'s frac', () => {
+  const live = runningTiles([{ step: 'unit', targets: ['6/1/1', '6/1/2', '6/1/3'], live: { targets: 3, targets_done: 1, target: '6/1/2', target_since: 940 } }], { unit: 120 }, 1000);
+  assert.deepEqual([...live].map(([k, v]) => [k, v.frac, v.current]), [['6/1/1', 1, false], ['6/1/2', 0.5, true], ['6/1/3', 0, false]]);
+  const capped = runningTiles([{ step: 'unit', targets: ['6/1/2'], live: { targets: 1, target: '6/1/2', target_since: 0 } }], { unit: 10 }, 1000);
+  assert.equal(capped.get('6/1/2').frac, 0.95);
+  const beat = runningTiles([{ step: 'unit', targets: ['6/1/1', '6/1/2', 'x'], frac: 0.75 }], {}, 0);
+  assert.deepEqual([...beat].map(([k, v]) => [k, v.frac]), [['6/1/1', 1], ['6/1/2', 0.5]]);
+});
+
+test('map: finished tiles in the window, the last end each', () => {
+  const f = finishedTiles([
+    { kind: 'end', step: 'pack', t: 50, targets: ['6/1/1'] },
+    { kind: 'end', step: 'pack', t: 150, targets: ['6/1/1', 'catalog'] },
+    { kind: 'done', step: 'unit', t: 160, ok: false, targets: ['6/2/2'] },
+    { kind: 'start', step: 'unit', t: 170, targets: ['6/3/3'] },
+  ], 100);
+  assert.deepEqual([...f].map(([k, v]) => [k, v.t]), [['6/1/1', 150]]);
+});
+
+test('map: a point in rings, nonzero', () => {
+  const sq = [0, 0, 10, 0, 10, 10, 0, 10, 0, 0];
+  assert.equal(inRings([sq], 5, 5), true);
+  assert.equal(inRings([sq], 15, 5), false);
+});
 
 const line = (step, done, total) => ({ steps: [step], done, total, left: total - done, items: [{ step, done, total, left: total - done }] });
 

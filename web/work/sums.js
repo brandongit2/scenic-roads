@@ -135,3 +135,82 @@ export function pastFrom(first, from, chunk = 5000) {
   if (!first || first.t <= from || first.seq <= 1) return null;
   return Math.max(0, first.seq - 1 - chunk);
 }
+
+// ---- The overview's map -------------------------------------------------------------------------
+// A target's tile ("z/x/y", crate::coord's cost key for a tile step) as {z, x, y}; null for any
+// other target (a worldwide step's, an input's).
+export function tileOf(t) {
+  const m = /^(\d{1,2})\/(\d+)\/(\d+)$/.exec(String(t));
+  if (!m) return null;
+  const [z, x, y] = [+m[1], +m[2], +m[3]];
+  return x < 2 ** z && y < 2 ** z ? { z, x, y } : null;
+}
+// A tile's square on the map (Web Mercator, the world 0–1000 each way, y down): [x0, y0, side].
+export const tileBox = ({ z, x, y }) => { const s = 1000 / 2 ** z; return [x * s, y * s, s]; };
+const tileWords = (s) => String(s || "").split(/\s+/).filter((w) => tileOf(w));
+
+// A running job's targets: a lead's or helper's job (`{step, id, started}`) as its "start" event
+// names them (its step's, within 10 s of its start: its id names the first alone), a leased one
+// (`{lease, what}`) as its "lease" event does; else the tiles its id or words name.
+export function targetsOf(run, events) {
+  const last = (ok) => { for (let i = (events || []).length - 1; i >= 0; i--) if (events[i].targets?.length && ok(events[i])) return events[i]; return null; };
+  if (run.lease != null) return last((v) => v.kind === "lease" && v.lease === run.lease)?.targets || tileWords(run.what);
+  return last((v) => v.kind === "start" && v.step === run.step && Math.abs(v.t - run.started) <= 10)?.targets || tileWords(String(run.id || "").split(" ").slice(1).join(" "));
+}
+
+// Each running job's tiles, by key ("z/x/y"): {step, frac (0–1 of the tile done), current (the
+// one under way), run}. From its live data (crate::agent::jobs::Live) where it has some: its
+// targets done (taken as the first of its list, its current one aside) whole, the one under way
+// at its time so far against the step's time a target (`each_s`, under 95% until it ends), the
+// rest none; else from the beat's `frac` of the whole job, spread over its tiles in order; else
+// none. A tile two runs hold keeps the further one. `runs`: [{step, targets, live, frac}].
+export function runningTiles(runs, eachS, now) {
+  const out = new Map();
+  for (const r of runs) {
+    const tiles = (r.targets || []).filter((t) => tileOf(t));
+    if (!tiles.length) continue;
+    const l = r.live, fr = {};
+    if (l && (l.targets || l.target)) {
+      let done = l.targets_done || 0;
+      for (const t of tiles) {
+        if (t === l.target) {
+          const each = eachS?.[r.step];
+          fr[t] = each && l.target_since != null ? Math.min(0.95, Math.max(0, (now - l.target_since) / each)) : 0;
+        } else fr[t] = done-- > 0 ? 1 : 0;
+      }
+    } else {
+      const k = Math.max(0, Math.min(1, r.frac || 0)) * tiles.length;
+      tiles.forEach((t, i) => { fr[t] = Math.max(0, Math.min(1, k - i)); });
+    }
+    for (const t of tiles) {
+      const had = out.get(t);
+      if (!had || fr[t] > had.frac) out.set(t, { step: r.step, frac: fr[t], current: t === l?.target, run: r });
+    }
+  }
+  return out;
+}
+
+// The tiles jobs finished well at or after `from`, by key: the last one's {t, step, worker}, from
+// the history's ends (a lead's "end", a worker's "done").
+export function finishedTiles(ends, from) {
+  const out = new Map();
+  for (const e of ends || []) {
+    if ((e.kind !== "end" && e.kind !== "done") || e.ok === false || e.t < from) continue;
+    for (const t of e.targets || []) if (tileOf(t) && !(out.get(t)?.t > e.t)) out.set(t, { t: e.t, step: e.step, worker: e.worker });
+  }
+  return out;
+}
+
+// Whether point (x, y) is inside rings (flat [x0, y0, x1, y1, …] each, closed), nonzero, as the
+// map fills them.
+export function inRings(rings, x, y) {
+  let wind = 0;
+  for (const r of rings || []) {
+    for (let i = 0; i + 3 < r.length; i += 2) {
+      const [ax, ay, bx, by] = [r[i], r[i + 1], r[i + 2], r[i + 3]];
+      const side = (bx - ax) * (y - ay) - (x - ax) * (by - ay);
+      if (ay <= y) { if (by > y && side > 0) wind++; } else if (by <= y && side < 0) wind--;
+    }
+  }
+  return wind !== 0;
+}

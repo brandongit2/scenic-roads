@@ -9,15 +9,16 @@
 // 480 tiles"), coloured by its stage; a stage is a line over its steps' rows, each row the same
 // cells; a machine is a card of its jobs, each job the same lines; an event is one templated
 // sentence. The parts: the header's verdict (going or not, done when, next on the map, what needs
-// a look, the pause); by tab, the overview (how far, how long, the map's last catalogue), the
+// a look, the pause); by tab, the overview (how far, how long, the map's last catalogue, the world map: worldmap.js), the
 // jobs (each Mac's schedule, past and to come; the stages, each step's jobs), the machines (what each does now, inside
 // each job, why one waits, and live on each: live.js), the regions, and the activity (the hours,
 // what happened), and the details.
 
 import { poolSection, termText } from "./pool.js";
-import { busyLanes, finished, isSlotOf, laneGroups, notRead, packRuns, pastFrom, pastRuns, slotName, slotNo, wholeProgress } from "./sums.js";
+import { busyLanes, finished, finishedTiles, isSlotOf, laneGroups, notRead, packRuns, pastFrom, pastRuns, runningTiles, slotName, slotNo, targetsOf, wholeProgress } from "./sums.js";
 import { fmt, timeTicks } from "./chartmath.js";
 import { liveBlock, startLive } from "./live.js";
+import { createMap } from "./worldmap.js";
 
 const POLL_MS = 10000;
 const STALE_S = 360;
@@ -295,7 +296,7 @@ function liveError(fc) {
 
 // ---- The overview -------------------------------------------------------------------------------
 // How far (the whole build's work, every stage's: sums.js wholeProgress), how long (the same work
-// left), and the numbers that aren't a step's: the regions, the map, the machines.
+// left), and the numbers that aren't a step's: the map, the machines (the regions: the world map's legend).
 function overview(m) {
   const { a, fc, now, lines } = m;
   const whole = wholeProgress(lines, fc);
@@ -317,19 +318,97 @@ function overview(m) {
   const fin = lines.filter(finished).length;
   const nowLines = lines.filter((l) => !finished(l) && (l.steps || []).some((s) => m.running.has(s))).map((l) => l.what);
   const stagesLine = h("div", "small dim", lines.length ? `${fin} of ${lines.length} stages done${nowLines.length ? ` · now: ${nowLines.join(", ")}` : ""}` : "");
-  const regs = fc?.regions || [];
-  const onMap = regs.filter((r) => r.on_map === true && !Object.keys(r.left).length).length;
-  const asWas = regs.filter((r) => r.on_map === false || (r.on_map === true && Object.keys(r.left).length)).length;
-  const readyNow = regs.filter((r) => !Object.keys(r.left).length && r.on_map !== true).length;
   const cat = lastCatalogue(m);
   const nextUpdate = nextOnMap(m);
   const busy = m.macs.filter((x) => x.fresh && jobsOf(x.status).length).length;
   const kpis = h("div", "kpis",
-    kpi("Regions on the map", regs.length ? `${onMap} of ${regs.length}` : "–", [asWas ? `${asWas} more as they were` : "", readyNow ? `${readyNow} done, recorded built by the next catalogue` : ""].filter(Boolean).join(" · ") || null),
     kpi("Map last updated", cat ? ago(now, cat.at) : "–", [cat?.n != null ? `catalogue ${cat.n}${cat.kind ? `, ${cat.kind}` : ""}` : "", nextUpdate ? `next ≈ ${clock(nextUpdate.at)}` : "", m.a.publishing?.tiles ? `${plural(m.a.publishing.tiles, "map tile")} to draw` : ""].filter(Boolean).join(" · ") || null),
     kpi("Machines", `${busy} of ${m.macs.length} Macs working`, m.pages.length ? `and ${plural(m.pages.length, "page")}` : null),
   );
   return h("div", "overview", h("div", "box", left, strip, stagesLine), kpis);
+}
+
+// ---- The world map (worldmap.js) -----------------------------------------------------------------
+// The countries' outlines (countries.json, one of the page's files), fetched once (again on a
+// render after a failure).
+let countries = [];
+let countriesAsked = false;
+function loadCountries() {
+  if (countriesAsked) return;
+  countriesAsked = true;
+  fetch("countries.json").then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status))))).then((c) => { countries = c; render(); }, () => { countriesAsked = false; });
+}
+let worldMap = null;
+// A region's state on the map, as the Regions tab says it: on the map (nothing left), done (on
+// the map with the next catalogue), building (first in line), to come; none without a forecast.
+function regionState(r) {
+  if (!r) return "";
+  const left = Object.values(r.left || {}).some((k) => k);
+  return !left ? (r.on_map === true ? "on" : "done") : r.rank === 0 ? "building" : "queued";
+}
+// Every running job, the lead's and its helpers' (their status's `jobs`) and the leased (the
+// coordinator's leases), with its targets (the history's word: sums.js targetsOf), where it runs,
+// its live data and, for where that's missing, its share done (a job's progress, a lease's beat).
+function mapRuns(m) {
+  const runs = [
+    ...m.macs.flatMap((x) => jobsOf(x.status).map((j) => ({ step: stepOf(j.id), id: j.id, started: j.started, live: j.live, frac: j.progress?.total ? j.progress.done / j.progress.total : null, what: j.what, mac: x.name }))),
+    ...(m.sw.leases || []).map((l) => ({ step: l.step, lease: l.id, what: l.what, live: l.live, frac: l.frac, mac: l.worker })),
+  ];
+  for (const r of runs) r.targets = targetsOf(r, events);
+  return runs;
+}
+const REGION_WORDS = { on: ["on the map", "ok"], done: ["done; on the map with the next catalogue", "ok"], building: ["building now", "run"], queued: ["to come", ""] };
+function mapSection(m) {
+  loadCountries();
+  worldMap ||= createMap();
+  const from = m.now - (ui.past || 6 * 3600);
+  const running = runningTiles(mapRuns(m), m.fc?.each_s, m.now);
+  const done = finishedTiles(endsHeld(), from);
+  const fcRegs = Object.fromEntries((m.fc?.regions || []).map((r) => [r.id, r]));
+  const regs = Object.values(drawn.byId).map((r) => ({ ...r, state: regionState(fcRegs[r.id]) }));
+  worldMap.update({ countries, regions: regs, running, finished: done, now: m.now, from, colour: S.colour });
+  // Its cards (the map names the one under the pointer: worldmap.js): each tile shown, each region.
+  for (const [key, r] of running) {
+    cards.set(`mt ${key}`, () => cardBody([swatch(S.colour(r.step)), ` Tile ${key}`], [
+      ["step", S.title(r.step)],
+      ["state", h("span", "run", r.current ? "under way" : r.frac >= 1 ? "done, its job running" : r.frac > 0 ? "under way" : "to come in its job")],
+      ["done", r.frac > 0 && r.frac < 1 ? `≈ ${Math.round(r.frac * 100)}%` : null],
+      ["phase", r.current ? r.run.live?.phase : null],
+      ["job", r.run.what],
+      ["on", r.run.mac],
+    ], worldMap.minimap(key)));
+  }
+  for (const [key, f] of done) {
+    if (running.has(key)) continue;
+    cards.set(`mt ${key}`, () => cardBody([swatch(S.colour(f.step)), ` Tile ${key}`], [
+      ["step", S.title(f.step)],
+      ["finished", `${ago(m.now, f.t)} (${clock(f.t)})`],
+      ["on", f.worker],
+    ], worldMap.minimap(key)));
+  }
+  for (const r of regs) {
+    const fr = fcRegs[r.id], b = m.a.built?.[r.id];
+    const [st, cls] = REGION_WORDS[r.state] || ["", ""];
+    cards.set(`mr ${r.id}`, () => cardBody(r.name || m.regionName[r.id] || r.id, [
+      ["in", r.crumbs?.slice(0, -1).join(" › ")],
+      ["state", st ? h("span", cls, st) : null],
+      ["tiles", b?.total ? `${n(b.built)} of ${n(b.total)} built` : null],
+      ["left", fr ? Object.entries(fr.left || {}).filter(([, k]) => k).map(([s, k]) => S.said(s, k)).join(" · ") : null],
+      ["done", fr && (r.state === "building" || r.state === "queued") && fr.ready_at ? `≈ ${clock(fr.ready_at)}` : null],
+      ["download", r.bytes != null ? size(r.bytes) : null],
+    ]));
+  }
+  // The legend: what's drawn, counted.
+  const count = (st) => regs.filter((r) => r.state === st).length;
+  const key = (cls, text) => h("span", "lg", h("i", cls), text);
+  const span = PAST.find(([s]) => s === ui.past)?.[1] || "6 h";
+  const finishedN = [...done.keys()].filter((k) => !running.has(k)).length;
+  const legend = h("div", "wmap-legend small dim",
+    regs.length ? [key("rg on", `${count("on") + count("done")} on the map`), key("rg building", `${count("building")} building`), key("rg queued", `${count("queued")} to come`)] : h("span", null, "No regions' outlines from this Mac yet"),
+    key("tl run", `${plural(running.size, "tile")} running`),
+    key("tl fin", `${plural(finishedN, "tile")} finished in the last ${span}`),
+    h("span", "hint", "drag to move · pinch, double-click or +/− to zoom"));
+  return section("d-map", "Map", `${regs.length ? plural(regs.length, "region") : "no regions"} · the z3 grid · tiles in their stage's colour`, h("div", "box wmap-box", worldMap.el, legend));
 }
 
 // ---- Machines -----------------------------------------------------------------------------------
@@ -1130,6 +1209,7 @@ function tabs(m) {
     overview: [
       h("section", "d-inputs", banners),
       section("d-overview", null, null, overview(m)),
+      mapSection(m),
     ],
     jobs: [
       section("d-sched", "Schedule", "each Mac's jobs: those that ran, running, to come",

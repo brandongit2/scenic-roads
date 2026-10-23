@@ -4000,8 +4000,9 @@ mod http {
         ("chart.js", "text/javascript", include_bytes!("../../../../web/work/chart.js")),
         ("chartmath.js", "text/javascript", include_bytes!("../../../../web/work/chartmath.js")),
         ("dash.css", "text/css; charset=utf-8", include_bytes!("../../../../web/work/dash.css")),
-        // The world's countries' outlines for the overview's map (Natural Earth 1:50m, public domain): rings
-        // in Web Mercator, the world 0–1000 each way.
+        // The overview's world map, and the world's countries' outlines it draws (Natural Earth
+        // 1:50m, public domain): rings in Web Mercator, the world 0–1000 each way.
+        ("worldmap.js", "text/javascript", include_bytes!("../../../../web/work/worldmap.js")),
         ("countries.json", "application/json", include_bytes!("../../../../web/work/countries.json")),
         ("sw.js", "text/javascript", include_bytes!("../../../../web/work/sw.js")),
         (
