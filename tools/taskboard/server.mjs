@@ -175,7 +175,10 @@ const newId = () => { const a = "abcdefghijklmnopqrstuvwxyz0123456789"; const b 
 // Every task has a number, and no two share one (owner, 18 Oct): a task written without `num` is
 // given the next (the larger of the counter, meta/counter's `next`, and one past the highest), the
 // counter moved past it; one written with another item's number is refused (409), whoever writes.
+// A stage is one the page shows (public/index.html STAGES); any other is refused, whoever writes.
+const STAGES = ["", "working", "backgrounded", "integrating", "review", "waiting", "done", "abandoned"];
 function numberTask(id, doc) {
+  if (doc && doc.stage !== undefined && !STAGES.includes(doc.stage)) return `stage must be one of ${STAGES.map((s) => JSON.stringify(s)).join(", ")}`;
   if (!doc || doc.kind !== "task") return null;
   if (doc.num === undefined || doc.num === null) {
     const top = stmt(`SELECT MAX(num) AS m FROM items`).get().m || 0;
