@@ -242,10 +242,70 @@ struct GeoSet<'a> {
     opened: Mutex<HashMap<usize, Option<(Arc<Tiff>, usize)>>>,
     /// By file: its open fill mask (None: it has none).
     opened_masks: Mutex<HashMap<usize, Option<Arc<Tiff>>>>,
+    /// The files by where their footprints lie, for a plan of many (`FileGrid`).
+    grid: Option<FileGrid>,
     /// By file: which of its blocks are known to hold data in every pixel.
     clean: Vec<Clean>,
     /// The decoded blocks of every file, under one budget.
     cache: Arc<Mutex<BlockCache>>,
+}
+
+/// A plan's files by where their footprints lie, for a plan of many (a terrain's base over a z3
+/// tile or the world lists thousands): each square of the grid (as wide as the footprints'
+/// median) with the files whose footprint meets it, and those without one, so a point's files are
+/// looked for among a few, in the plan's order.
+struct FileGrid {
+    side: f64,
+    squares: HashMap<(i64, i64), Vec<usize>>,
+    everywhere: Vec<usize>,
+}
+
+impl FileGrid {
+    /// The files a plan has past which they're found by the grid.
+    const FROM: usize = 64;
+
+    fn of(files: &[(String, Option<[f64; 4]>)]) -> FileGrid {
+        let mut w: Vec<f64> = files.iter().filter_map(|(_, b)| b.map(|b| (b[2] - b[0]).max(b[3] - b[1]))).collect();
+        w.sort_by(f64::total_cmp);
+        let side = w.get(w.len() / 2).copied().filter(|s| *s > 0.0 && s.is_finite()).unwrap_or(1.0);
+        let mut g = FileGrid { side, squares: HashMap::new(), everywhere: Vec::new() };
+        for (k, (_, b)) in files.iter().enumerate() {
+            match b {
+                None => g.everywhere.push(k),
+                Some(b) => {
+                    let (x0, y0) = g.square(b[0], b[1]);
+                    let (x1, y1) = g.square(b[2], b[3]);
+                    // (A footprint far wider than the rest: everywhere, not in thousands of squares.)
+                    if (x1 - x0 + 1) * (y1 - y0 + 1) > 4096 {
+                        g.everywhere.push(k);
+                        continue;
+                    }
+                    for sx in x0..=x1 {
+                        for sy in y0..=y1 {
+                            g.squares.entry((sx, sy)).or_default().push(k);
+                        }
+                    }
+                }
+            }
+        }
+        g
+    }
+
+    fn square(&self, x: f64, y: f64) -> (i64, i64) {
+        ((x / self.side).floor() as i64, (y / self.side).floor() as i64)
+    }
+
+    /// The files whose footprint may hold (x, y), in the plan's order.
+    fn near(&self, x: f64, y: f64) -> Vec<usize> {
+        if !(x.is_finite() && y.is_finite()) {
+            return Vec::new();
+        }
+        let mut v: Vec<usize> = self.squares.get(&self.square(x, y)).cloned().unwrap_or_default();
+        v.extend(&self.everywhere);
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
 }
 
 /// A point in a footprint (min x ≤ x < max x, min y < y ≤ max y).
@@ -314,7 +374,15 @@ impl GeoSet<'_> {
 
     /// The files whose footprint holds native point (x, y), in order.
     fn holding(&self, x: f64, y: f64) -> impl Iterator<Item = usize> + '_ {
-        self.files.iter().enumerate().filter(move |(_, (_, b))| b.is_none_or(|b| in_box(&b, x, y))).map(|(k, _)| k)
+        // (Among the grid's few where it has one, else every file.)
+        let (near, all) = match &self.grid {
+            Some(g) => (Some(g.near(x, y).into_iter()), None),
+            None => (None, Some(0..self.files.len())),
+        };
+        near.into_iter()
+            .flatten()
+            .chain(all.into_iter().flatten())
+            .filter(move |&k| self.files[k].1.is_none_or(|b| in_box(&b, x, y)))
     }
 
     /// Points `sel` (native `x`, `y`) sampled: each one's value (NaN: none) and the file it came from.
@@ -1143,6 +1211,7 @@ impl<'a> Set<'a> {
                     o,
                     opened: Mutex::new(HashMap::new()),
                     opened_masks: Mutex::new(HashMap::new()),
+                    grid: (files.len() > FileGrid::FROM).then(|| FileGrid::of(files)),
                     clean: (0..files.len()).map(|_| Clean::default()).collect(),
                     cache: cache.clone(),
                 })

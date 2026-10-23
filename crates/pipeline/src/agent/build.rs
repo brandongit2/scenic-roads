@@ -18,16 +18,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// Step versions: bumping one rebuilds that step everywhere (oldest first, when idle).
-/// Terrain 4: AWS's tiles but for their voids, GLO-30 north of 60°N, the water flattened from the
-/// pass's basemap (the digest of what each target reads of it in the key: `water_key`; docs/steps.md
-/// §2, Terrain).
-pub const TERRAIN_V: u32 = 4;
+/// Terrain 5: the elevation pool's base tiles (crate::terrain_base: the datasets meeting a target in
+/// its key), each coarser level from the finer, the water flattened from the pass's basemap (the
+/// digest of what each target reads of it in the key: `water_key`; docs/steps.md §2, Terrain).
+pub const TERRAIN_V: u32 = 5;
 pub const SLOPE_V: u32 = 1;
 /// 2: elevations up to 6,053 m (`final.u16`, base packs' `elevu`; were clamped at ±3,200 m).
 /// 3: heritage sites and area flags from the pass's heritage-sites job (crate::heritage), the
 /// flags rasterised per z6 tile.
 /// 4: the roads' own English (`global/roaden/<u>`); a z6 tile left with no ways drops its outputs.
-pub const UNIT_V: u32 = 4;
+/// 5: one elevation pool (GLO-30 and the Terrarium tiles among the roads' datasets, FABDEM and MRDEM
+/// gone), so no record from before is re-keyed as current (agent::rekey's older schemes).
+pub const UNIT_V: u32 = 5;
 /// 3: keyed on the tile's owners alone; hidata of the tile's own ways (here, query parts, rail
 /// lines, zoomed-out summaries).
 pub const PACK_V: u32 = 3;
@@ -1298,7 +1300,8 @@ pub fn terrain_slope_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles
         &named("work/slope-mid/"),
         &named(crate::terrain_water::IDX_PREFIX),
         &crate::terrain_pack::water_source_pin(m).unwrap_or_default(),
-        tiles.terrain_sources(m).map_or("-", |p| p.pin.as_str()),
+        m.get(&crate::inputs::logical(crate::inputs::elevation::UNIT)).map_or("-", String::as_str),
+        m.get(&crate::inputs::logical(crate::inputs::sources::UNIT)).map_or("-", String::as_str),
     ]);
     let made = std::cell::RefCell::new(None);
     let kept = tiles.memo("terrain-targets", &from, || {
@@ -1327,8 +1330,8 @@ fn terrain_slope_targets_made(cov: &Coverage, m: &BTreeMap<String, String>, tile
     let pin = crate::terrain_pack::water_source_pin(m);
     let idx = pin.as_deref().and_then(|p| tiles.water_idx(m, p));
     let water = |t: &str, from: &str| water_key(pin.as_deref(), idx, t, from);
-    // (The terrain's declared sources: its z6 tiles wait while there are none.)
-    let sources = tiles.terrain_sources(m).map(|p| p.pin.as_str());
+    // (The elevation pool's datasets each target reads: its targets wait while they can't be told.)
+    let datasets = |z: u8, x: u32, y: u32| tiles.terrain_datasets(m, crate::stage::tile_box_grown(z, x, y, 0.0));
     let mut out = TerrainTargets::default();
     let near = coverage_tiles(cov);
     for (q, ts) in &near {
@@ -1341,8 +1344,8 @@ fn terrain_slope_targets_made(cov: &Coverage, m: &BTreeMap<String, String>, tile
             out.terrain.push((
                 t.clone(),
                 water(&t, &fp)
-                    .zip(sources)
-                    .map_or_else(|| UNKNOWN.to_string(), |(w, s)| piece_key_made((x, y), &fp, s, &w, hi)),
+                    .zip(datasets(6, x, y))
+                    .map_or_else(|| UNKNOWN.to_string(), |(w, s)| piece_key_made((x, y), &fp, &s, &w, hi)),
             ));
             out.slope.push((t.clone(), slope_piece_key((x, y), m, tiles).ok()));
             tmids.push(format!("{t}={}", get(&crate::terrain_pack::mid_logical(x, y))));
@@ -1351,7 +1354,8 @@ fn terrain_slope_targets_made(cov: &Coverage, m: &BTreeMap<String, String>, tile
         out.terrain_lo.push((
             qs.clone(),
             water(&qs, crate::terrain_water::AREA_FROM)
-                .map_or_else(|| UNKNOWN.to_string(), |w| terrain_lo_key(*q, &w, &tmids)),
+                .zip(datasets(3, q.0, q.1))
+                .map_or_else(|| UNKNOWN.to_string(), |(w, s)| terrain_lo_key(*q, &w, &s, &tmids)),
         ));
         out.slope_lo.push((qs.clone(), slope_lo_key(*q, &smids, get(&format!("layers/terrain/lo/3-{}-{}", q.0, q.1)))));
     }
@@ -1447,8 +1451,8 @@ pub fn water_key(
 }
 
 /// Terrain z6 tile `t`'s key (z6 tile (x, y)): the version, the coverage within 20 km (`fp`: which
-/// decides its tiles), the terrain's declared sources (`sources`: crate::terrain_sources::pin) and
-/// the water it reads (`water_key`).
+/// decides its tiles), the elevation pool's datasets meeting it (`sources`:
+/// TerrainTiles::terrain_datasets) and the water it reads (`water_key`).
 pub fn terrain_piece_key(t: (u32, u32), fp: &str, sources: &str, water: &str) -> String {
     h(&[&format!("terrain {TERRAIN_V}"), &format!("6/{}/{}", t.0, t.1), fp, sources, water])
 }
@@ -1523,12 +1527,13 @@ pub fn terrain_water_work(
 
 /// Terrain's assembly of z3 tile `q`'s key: `mids`, its z6 tiles' as "6/x/y=<content name | ->", in
 /// column then row order; `water`, the water it reads (`water_key`).
-pub fn terrain_lo_key(q: (u32, u32), water: &str, mids: &[String]) -> String {
+pub fn terrain_lo_key(q: (u32, u32), water: &str, sources: &str, mids: &[String]) -> String {
     h(&[
         &format!("terrain-lo {TERRAIN_LO_V}"),
         &format!("terrain {TERRAIN_V}"),
         &format!("3/{}/{}", q.0, q.1),
         water,
+        sources,
         &mids.join(","),
     ])
 }
@@ -6052,6 +6057,36 @@ pub(crate) mod tests {
             "work/heritage/d/areas/6-28-16.9090909090909090.jsonl".into(),
         );
         assert_ne!(key(&m), k0, "its own tile's areas");
+    }
+
+    /// A terrain target's key names the elevation pool's datasets meeting it, and only those: a
+    /// dataset's change makes again the z6 tiles and assemblies it meets alone.
+    #[test]
+    fn a_terrain_targets_key_names_the_datasets_meeting_it() {
+        let mut m = BTreeMap::new();
+        elevation_inputs(&mut m);
+        let index = m[&crate::inputs::logical(crate::inputs::elevation::UNIT)].clone();
+        let at = |lidar: &str| {
+            let mut t = TerrainTiles::new(None);
+            t.terrain_names_datasets = true;
+            t.hold_elevation(
+                &index,
+                vec![dataset("lidar", lidar, Some(vec![[-22.0, 64.0, -21.0, 65.0]])), dataset("world", "w1", None)],
+            );
+            t
+        };
+        let (a, b) = (at("l1"), at("l2"));
+        // (Reykjavik's z6 tile, 6/28/17, meets the lidar's cell; the east's, 6/29/16, doesn't.)
+        let r = |t: &TerrainTiles, z, x, y| t.terrain_datasets(&m, crate::stage::tile_box_grown(z, x, y, 0.0)).unwrap();
+        assert_ne!(r(&a, 6, 28, 17), r(&b, 6, 28, 17));
+        assert_eq!(r(&a, 6, 29, 16), r(&b, 6, 29, 16));
+        assert!(r(&a, 6, 29, 16).contains("world w1") && !r(&a, 6, 29, 16).contains("lidar"));
+        assert_ne!(r(&a, 3, 3, 2), r(&b, 3, 3, 2), "the assembly over both");
+        // (None read: the terrain waits.)
+        let mut none = TerrainTiles::new(None);
+        none.terrain_names_datasets = true;
+        none.hold_elevation("another", Vec::new());
+        assert_eq!(none.terrain_datasets(&m, [0.0, 0.0, 1.0, 1.0]), None);
     }
 
     /// A declared elevation dataset for the keys: its id, `keyed` digest and cover.

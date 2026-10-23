@@ -1114,7 +1114,7 @@ reported).
 **Kind:** source declarations, one per dataset; a small dataset's files may lie beside it. **Drop
 box:** `inputs/elevation/`: `<dataset>.toml`, tile indexes (`<name>.geojson`) and `<dataset>/` for
 local files. Code: crate::inputs::elevation (the check), crate::dem::generic and crate::dem::declared
-(the sampler and blend), crate::dem::encoding, crate::dem::store_fetch (the store), crate::terrain_sources
+(the sampler and blend), crate::dem::encoding, crate::dem::store_fetch (the store), crate::terrain_base
 (the terrain's base), crate::dem::spacing (the densification), crate::dem::geoid (the heights brought
 to EGM2008). Built for the roads' elevations (#143 step 1), the densification (step 2), the
 heights' conversion (step 3) and the 3D terrain (#144). One pool: the roads and the terrain read
@@ -1297,15 +1297,15 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   alike); 3DEP 1 m takes code 8, the last free one. Their heights reach EGM2008 by the existing
   chains (CGVD2013 by CGG2013a, NAVD88 by GEOID18).
 
-**The 3D terrain's base** (crate::terrain_sources) is read from the same pool: the last tile
-pyramid in the `terrarium` encoding with no `regions` (the Terrarium tiles), fetched raw by its
-template and packed onto the NAS (`sources/aws-terrarium/`, docs/macs.md), and the last GeoTIFF
-dataset with no `regions` by an index of 1° tiles in EPSG:4326 with their fill masks (GLO-30),
-blended in north of 60°N, its files read from its store. The voids, the water's flattening, the
-blend by latitude and the mask's reading are the terrain's code (docs/steps.md §2, Terrain).
-- **Keys:** a terrain z6 tile names those two declarations by their ids and `keyed` digests
-  (`terrain_sources::pin`, in `agent::build::terrain_piece_key`); with none accepted (or one that
-  can't be read) its key is unknown and the terrain waits.
+**The 3D terrain** reads the same pool (crate::terrain_base; docs/steps.md §2, Terrain): its base
+tiles are sampled from these datasets in this order, blended as the roads' are, so the roads and
+the terrain use one dataset at every point; the Terrarium tiles through the NAS's archive of them
+(`sources/aws-terrarium/`, docs/macs.md). A dataset finer than the worldwide ones (rank above 0)
+takes the terrain past z12 (terrain-fine). The roads read a dataset at its `read_resolution` (8 m
+for the lidar), the terrain at its full resolution past z12: the same dataset, read finer.
+- **Keys:** a terrain target names the datasets meeting it by their lines, as the roads' keys do
+  (`agent::tiles::TerrainTiles::terrain_datasets`); while they can't be read its key is unknown
+  and the terrain waits.
 - **The rollout:** first `scenic-build store-fetch glo30 --index <the drop box's glo30-tiles.geojson>`
   fills GLO-30's store (`sources/fetched/glo30/` holds the tiles north of 60°N already); then, together,
   the app that reads one pool is published and `glo30.toml` and `terrarium.toml` replace the drop

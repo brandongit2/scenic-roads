@@ -1,0 +1,414 @@
+//! The terrain's base tiles (z0–12) from the elevation pool (docs/steps.md §2, Terrain; docs/inputs.md
+//! §6.8): every tile sampled from the same datasets, in the same order and blended at their edges
+//! the same way, as the roads' elevations (crate::dem::generic), so the roads and the terrain use
+//! one dataset at every point. Each pixel is the mean of 2 × 2 samples over it (`K`), each dataset
+//! read at the level's detail: a GeoTIFF at its overview nearest half a pixel (never finer than its
+//! `read_resolution`), a Terrarium pyramid at the level's own zoom (AWS's publishes every zoom),
+//! another pyramid at its declared zoom. Where no dataset has data, sea level. Heights are EGM2008
+//! (each dataset's brought there as the roads' are). The tiles come out as Terrarium PNGs, the
+//! terrain's levels made from them as from any raw tile (crate::terrain_pack: the water, the coarser
+//! levels from the finer).
+//!
+//! A Terrarium pyramid's tiles are read through `RawTiles` (this Mac's cache, the NAS's archives,
+//! else AWS: crate::terrain_pack), not fetched by the sampler; every other file as the roads read
+//! them (the store, `sources/fetched/`, for a stored dataset; else the network).
+
+use crate::dem::declared::{Plan, Source};
+use crate::dem::generic::{tile_resolution, Opts, Sampler};
+use crate::fetch::Fetch;
+use crate::terrain_pack::{RawSource, RawTiles};
+use anyhow::{Context, Result};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use store::range::RangeRead;
+
+/// Samples a side over a pixel.
+pub const K: usize = 2;
+/// The finest zoom of the base (crate::terrain_pack::max_zoom_at's at the equator).
+pub const MAX_Z: u8 = 12;
+/// Tiles sampled in one call (each 256 × 256 × K² points).
+const CHUNK: usize = 16;
+
+/// The Terrarium pyramid's URL template in the accepted elevation version manifest `m` names
+/// under `root` (the last declared: the base's raw tiles are its, through `RawTiles`).
+pub fn terrarium_template(root: &std::path::Path, m: &std::collections::BTreeMap<String, String>) -> Result<String> {
+    use crate::dem::declared::Data;
+    let a = crate::inputs::open(root, m, crate::inputs::elevation::UNIT)?
+        .context("no version of the elevation datasets is accepted (docs/inputs.md §6.8)")?;
+    crate::dem::declared::accepted(&a)?
+        .iter()
+        .rev()
+        .find_map(|d| match &d.declaration.data {
+            Data::Tiles { url, encoding, .. } if encoding == "terrarium" => Some(url.clone()),
+            _ => None,
+        })
+        .context("no tile pyramid in the Terrarium encoding is declared (the terrain's raw tiles: docs/inputs.md §6.8)")
+}
+
+/// The box (west, south, east, north) of tiles `ts` of zoom `z`.
+pub fn tiles_box(z: u8, ts: &[(u32, u32)]) -> [f64; 4] {
+    let mut b = [180.0f64, 90.0f64, -180.0f64, -90.0f64];
+    for &(x, y) in ts {
+        let t = crate::stage::tile_box_grown(z, x, y, 0.0);
+        b = [b[0].min(t[0]), b[1].min(t[1]), b[2].max(t[2]), b[3].max(t[3])];
+    }
+    b
+}
+
+/// The pool over an area, as the base reads it.
+pub struct Pool {
+    /// The datasets meeting the area (crate::dem::declared::plan_converted), in their order.
+    pub plan: Plan,
+    /// The Terrarium pyramid's URL template, where one is declared (read through `RawTiles`).
+    pub terrarium: Option<String>,
+    /// The stores' folder (`sources/fetched/`).
+    pub store: std::path::PathBuf,
+    /// The area (west, south, east, north): its middle latitude sets the detail each level reads.
+    pub area: [f64; 4],
+}
+
+impl Pool {
+    /// The pool over box `b` (west, south, east, north) of the accepted elevation and sources
+    /// versions manifest `m` names under `root`.
+    pub fn read(root: &std::path::Path, m: &std::collections::BTreeMap<String, String>, b: [f64; 4]) -> Result<Pool> {
+        let a = crate::inputs::open(root, m, crate::inputs::elevation::UNIT)?.context(
+            "no version of the elevation datasets is accepted: the terrain's are declared there (docs/inputs.md §6.8)",
+        )?;
+        let geoid = match crate::inputs::sources::open(root, m)? {
+            Some(s) => s.many(crate::inputs::sources::GEOID).to_vec(),
+            None => Vec::new(),
+        };
+        Ok(Pool::of(crate::dem::declared::plan_converted(&a, b, &geoid)?, root.join("sources/fetched"), b))
+    }
+
+    /// The pool of plan `plan` over area `area`, its stores in `store`.
+    pub fn of(plan: Plan, store: std::path::PathBuf, area: [f64; 4]) -> Pool {
+        let terrarium = plan.datasets.iter().rev().find_map(|d| match &d.source {
+            Source::Tiles { url, encoding, .. } if encoding == "terrarium" => Some(url.clone()),
+            _ => None,
+        });
+        Pool { plan, terrarium, store, area }
+    }
+
+    /// The plan read at zoom `z` over latitude `lat` (`Pool`'s rule).
+    fn at_zoom(&self, z: u8, lat: f64) -> Plan {
+        let half = tile_resolution(z as u32, lat) / 2.0;
+        let mut p = self.plan.clone();
+        for d in &mut p.datasets {
+            match &mut d.source {
+                Source::Geotiff { read_resolution, .. } => {
+                    let r = read_resolution.map_or(half, |r| r.max(half));
+                    *read_resolution = Some(r);
+                    d.resolution = d.resolution.max(r);
+                }
+                Source::Tiles { zoom, encoding, .. } if encoding == "terrarium" && *zoom > z as u32 => {
+                    *zoom = z as u32;
+                    d.resolution = d.resolution.max(tile_resolution(z as u32, lat));
+                }
+                Source::Tiles { .. } => {}
+            }
+        }
+        p
+    }
+
+    /// `f` given the pool's tiles (`Tiles`), the Terrarium pyramid's read through `raw`.
+    pub fn with_tiles<R>(&self, raw: &RawTiles, f: impl FnOnce(&Tiles) -> R) -> Result<R> {
+        let net = crate::fetch::Fetcher::from_env();
+        let fetch = RawFetch { raw, url: self.terrarium.as_deref(), inner: &net };
+        let o = Opts { fetch: &fetch, store: Some(self.store.clone()), pool: None };
+        let mid = (self.area[1] + self.area[3]) / 2.0;
+        let plans: Vec<Plan> = (0..=MAX_Z).map(|z| self.at_zoom(z, mid)).collect();
+        let t = Tiles::new(&plans, &o);
+        Ok(f(&t))
+    }
+}
+
+/// The fetch the sampler reads through: a Terrarium pyramid's tiles from `raw`, the rest `inner`.
+struct RawFetch<'a> {
+    raw: &'a RawTiles,
+    url: Option<&'a str>,
+    inner: &'a dyn Fetch,
+}
+
+impl RawFetch<'_> {
+    /// Tile z/x/y of the Terrarium template, when `url` is one of its tiles.
+    fn tile(&self, url: &str) -> Option<(u8, u32, u32)> {
+        let t = self.url?;
+        let (pre, rest) = t.split_once("{z}")?;
+        let suf = rest.strip_prefix("/{x}/{y}")?;
+        let mid = url.strip_prefix(pre)?.strip_suffix(suf)?;
+        let mut it = mid.split('/').map(|v| v.parse::<u32>().ok());
+        let (z, x, y) = (it.next()??, it.next()??, it.next()??);
+        (it.next().is_none() && z <= 30).then_some((z as u8, x, y))
+    }
+}
+
+impl Fetch for RawFetch<'_> {
+    fn open(&self, url: &str) -> Result<Option<Arc<dyn RangeRead>>> {
+        match self.tile(url) {
+            Some((z, x, y)) => Ok(self.raw.get(z, x, y)?.0.map(|b| Arc::new(b) as Arc<dyn RangeRead>)),
+            None => self.inner.open(url),
+        }
+    }
+
+    fn get(&self, url: &str) -> Result<Option<Vec<u8>>> {
+        match self.tile(url) {
+            Some((z, x, y)) => Ok(self.raw.get(z, x, y)?.0),
+            None => self.inner.get(url),
+        }
+    }
+}
+
+/// The pool's base tiles, as raw tiles (crate::terrain_pack::RawSource): each sampled once, those
+/// of a level all at once (`prefetch_counted`), held until the level takes them.
+pub struct Tiles<'a> {
+    plans: &'a [Plan],
+    o: &'a Opts<'a>,
+    samplers: Vec<OnceLock<Result<Sampler<'a>, String>>>,
+    held: Mutex<HashMap<(u8, u32, u32), Option<Vec<u8>>>>,
+}
+
+impl<'a> Tiles<'a> {
+    fn new(plans: &'a [Plan], o: &'a Opts<'a>) -> Tiles<'a> {
+        Tiles { plans, o, samplers: plans.iter().map(|_| OnceLock::new()).collect(), held: Mutex::new(HashMap::new()) }
+    }
+
+    fn sampler(&self, z: u8) -> Result<&Sampler<'a>> {
+        let z = (z as usize).min(self.plans.len() - 1);
+        self.samplers[z]
+            .get_or_init(|| Sampler::new(&self.plans[z], self.o).map_err(|e| format!("{e:#}")))
+            .as_ref()
+            .map_err(|e| anyhow::anyhow!("the terrain's datasets at z{z}: {e}"))
+    }
+
+    /// Tiles `ts` of zoom `z` sampled: each its Terrarium PNG, None where no dataset has data.
+    pub fn sample(&self, z: u8, ts: &[(u32, u32)]) -> Result<Vec<Option<Vec<u8>>>> {
+        let s = self.sampler(z)?;
+        let (lon, lat) = points(z, ts);
+        let got = s.sample(&lon, &lat, &|_| {})?;
+        let per = 256 * 256;
+        let mut out = Vec::with_capacity(ts.len());
+        for t in 0..ts.len() {
+            let mut e = vec![0f32; per];
+            let mut any = false;
+            for (p, v) in e.iter_mut().enumerate() {
+                let (j, i) = (p / 256, p % 256);
+                let (mut sum, mut n) = (0f32, 0u32);
+                for b in 0..K {
+                    for a in 0..K {
+                        let q = t * per * K * K + (j * K + b) * 256 * K + i * K + a;
+                        let h = got.elev[q];
+                        if h.is_finite() {
+                            sum += h;
+                            n += 1;
+                        }
+                    }
+                }
+                if n > 0 {
+                    *v = sum / n as f32;
+                    any = true;
+                }
+            }
+            out.push(if any { Some(roadcore::grid::encode_terrain_png(&e, 256, 256)?) } else { None });
+        }
+        Ok(out)
+    }
+}
+
+/// The sample points of tiles `ts` of zoom `z`: K × K a pixel, by tile, row (of samples) and
+/// column.
+fn points(z: u8, ts: &[(u32, u32)]) -> (Vec<f64>, Vec<f64>) {
+    let n = (1u64 << z) as f64;
+    let side = 256 * K;
+    let (mut lon, mut lat) = (Vec::with_capacity(ts.len() * side * side), Vec::with_capacity(ts.len() * side * side));
+    for &(x, y) in ts {
+        for r in 0..side {
+            let fy = (y as f64 + (r as f64 + 0.5) / side as f64) / n;
+            let la = (std::f64::consts::PI * (1.0 - 2.0 * fy)).sinh().atan().to_degrees();
+            for c in 0..side {
+                lon.push((x as f64 + (c as f64 + 0.5) / side as f64) / n * 360.0 - 180.0);
+                lat.push(la);
+            }
+        }
+    }
+    (lon, lat)
+}
+
+impl RawSource for Tiles<'_> {
+    fn get(&self, z: u8, x: u32, y: u32) -> Result<(Option<Vec<u8>>, bool)> {
+        if let Some(t) = self.held.lock().unwrap().remove(&(z, x, y)) {
+            return Ok((t, false));
+        }
+        Ok((self.sample(z, &[(x, y)])?.pop().flatten(), false))
+    }
+
+    fn prefetch_counted(&self, z: u8, tiles: &[(u32, u32)], _threads: usize, done: &AtomicU64) -> Result<usize> {
+        for c in tiles.chunks(CHUNK) {
+            let got = self.sample(z, c)?;
+            let mut h = self.held.lock().unwrap();
+            for (&(x, y), t) in c.iter().zip(got) {
+                h.insert((z, x, y), t);
+            }
+            done.fetch_add(c.len() as u64, Ordering::Relaxed);
+        }
+        Ok(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dem::declared::Dataset;
+
+    /// A pool of two: a GLO-30-like 1° tile in the store (its west half filled from another DEM, by
+    /// its mask), then a Terrarium pyramid in the cache; a z12 tile across the mask's edge.
+    #[test]
+    fn a_base_tile_is_the_pools_order_and_its_voids_the_next_datasets() {
+        let d = tempfile::tempdir().unwrap();
+        let (store, local) = (d.path().join("fetched"), d.path().join("local"));
+        std::fs::create_dir_all(store.join("glo")).unwrap();
+        // (1/1000° pixels over 10–11°E, 45–46°N: 100 m plus 1 m a pixel east; the mask 3 in its
+        // west half.)
+        let n = 1000usize;
+        let gt = [10.0, 0.001, 0.0, 46.0, 0.0, -0.001];
+        let e: Vec<f32> = (0..n * n).map(|p| 100.0 + (p % n) as f32).collect();
+        let m: Vec<f32> = (0..n * n).map(|p| if p % n < 500 { 3.0 } else { 1.0 }).collect();
+        let tif = |v: &[f32]| crate::geotiff::write_f32(n as u32, n as u32, v, 256, gt, 4326, None).unwrap();
+        std::fs::write(store.join("glo/T_DEM.tif"), tif(&e)).unwrap();
+        std::fs::write(store.join("glo/T_FLM.tif"), tif(&m)).unwrap();
+        // The z12 tile over 10.5°E, 45.5°N, and its Terrarium tile: 500 m flat.
+        let z = 12u8;
+        let nn = (1u64 << z) as f64;
+        let x = ((10.5 + 180.0) / 360.0 * nn) as u32;
+        let y = ((1.0 - 45.5f64.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * nn) as u32;
+        std::fs::create_dir_all(local.join(format!("{z}/{x}"))).unwrap();
+        std::fs::write(
+            local.join(format!("{z}/{x}/{y}.png")),
+            roadcore::grid::encode_terrain_png(&vec![500.0; 65536], 256, 256).unwrap(),
+        )
+        .unwrap();
+        let plan = Plan {
+            fmt: 1,
+            version: "test".into(),
+            tag: "t".into(),
+            datasets: vec![
+                Dataset {
+                    id: "glo".into(),
+                    code: 3,
+                    resolution: 78.0,
+                    cover: Some(vec![[10.0, 45.0, 11.0, 46.0]]),
+                    source: Source::Geotiff {
+                        crs: 4326,
+                        read_resolution: None,
+                        store: true,
+                        files: vec![("https://e.org/T/T_DEM.tif".into(), Some([10.0, 45.0, 11.0, 46.0]))],
+                        masks: vec![Some("https://e.org/T/T_FLM.tif".into())],
+                    },
+                    convert: None,
+                },
+                Dataset {
+                    id: "terrarium".into(),
+                    code: 4,
+                    resolution: tile_resolution(12, 45.5),
+                    cover: None,
+                    source: Source::Tiles {
+                        url: crate::terrain_pack::TEST_BASE.into(),
+                        zoom: 12,
+                        encoding: "terrarium".into(),
+                    },
+                    convert: None,
+                },
+            ],
+        };
+        let pool = Pool::of(plan, store, [10.0, 45.0, 11.0, 46.0]);
+        assert_eq!(pool.terrarium.as_deref(), Some(crate::terrain_pack::TEST_BASE));
+        let raw = RawTiles::new(&local, crate::terrain_pack::TEST_BASE);
+        crate::fetch::go_offline();
+        let (png, again) = pool
+            .with_tiles(&raw, |t| {
+                let done = AtomicU64::new(0);
+                t.prefetch_counted(z, &[(x, y)], 1, &done).unwrap();
+                assert_eq!(done.load(Ordering::Relaxed), 1);
+                (t.get(z, x, y).unwrap().0.unwrap(), t.get(z, x, y).unwrap().0.unwrap())
+            })
+            .unwrap();
+        assert_eq!(png, again, "held, then sampled again: the same");
+        let h = roadcore::grid::decode_terrain_png(&png).unwrap();
+        // Each pixel's longitude: east of the mask's edge (10.5°E) past the blend (four of its 78 m
+        // pixels), GLO-30's field;
+        // west of it, the Terrarium tiles' 500 m.
+        let lon = |i: usize| (x as f64 + (i as f64 + 0.5) / 256.0) / nn * 360.0 - 180.0;
+        let (mut east, mut west) = (0, 0);
+        for i in 0..256 {
+            let v = h[128 * 256 + i];
+            let l = lon(i);
+            if l > 10.506 {
+                let want = 100.0 + ((l - 10.0) / 0.001 - 0.5) as f32;
+                assert!((v - want).abs() < 1.5, "{l}: {v} for {want}");
+                east += 1;
+            } else if l < 10.4995 {
+                assert!((v - 500.0).abs() < 0.01, "{l}: {v}");
+                west += 1;
+            }
+        }
+        assert!(east > 10 && west > 10, "{east} {west}");
+    }
+
+    #[test]
+    fn the_raw_tiles_are_told_by_the_template() {
+        let raw = RawTiles::new(std::path::Path::new("/nonexistent"), crate::terrain_pack::TEST_BASE);
+        let net = crate::fetch::MapFetch::default();
+        let f = RawFetch { raw: &raw, url: Some("https://t.org/a/{z}/{x}/{y}.png"), inner: &net };
+        assert_eq!(f.tile("https://t.org/a/12/3/4.png"), Some((12, 3, 4)));
+        assert_eq!(f.tile("https://t.org/a/12/3.png"), None);
+        assert_eq!(f.tile("https://t.org/b/12/3/4.png"), None);
+        assert_eq!(f.tile("https://t.org/a/12/3/4.png?x"), None);
+    }
+
+    #[test]
+    fn a_level_reads_its_detail() {
+        let ds = |id: &str, resolution: f64, source: Source| Dataset {
+            id: id.into(),
+            code: 1,
+            resolution,
+            cover: None,
+            source,
+            convert: None,
+        };
+        let plan = Plan {
+            fmt: 1,
+            version: "t".into(),
+            tag: "t".into(),
+            datasets: vec![
+                ds(
+                    "lidar",
+                    8.0,
+                    Source::Geotiff {
+                        crs: 4326,
+                        read_resolution: Some(8.0),
+                        store: false,
+                        files: vec![],
+                        masks: vec![],
+                    },
+                ),
+                ds("t", 38.0, Source::Tiles { url: "u".into(), zoom: 12, encoding: "terrarium".into() }),
+                ds("g", 5.0, Source::Tiles { url: "v".into(), zoom: 15, encoding: "gsi-png".into() }),
+            ],
+        };
+        let pool = Pool::of(plan, "/s".into(), [0.0, -1.0, 1.0, 1.0]);
+        let p12 = pool.at_zoom(12, 0.0);
+        let half = tile_resolution(12, 0.0) / 2.0;
+        assert!(
+            matches!(&p12.datasets[0].source, Source::Geotiff { read_resolution: Some(r), .. } if (*r - half).abs() < 1e-9)
+        );
+        assert!(matches!(&p12.datasets[1].source, Source::Tiles { zoom: 12, .. }));
+        let p5 = pool.at_zoom(5, 0.0);
+        assert!(
+            matches!(&p5.datasets[1].source, Source::Tiles { zoom: 5, .. }),
+            "a Terrarium pyramid at the level's zoom"
+        );
+        assert!(matches!(&p5.datasets[2].source, Source::Tiles { zoom: 15, .. }), "another at its own");
+        assert!(p5.datasets[0].resolution > 1000.0);
+    }
+}

@@ -106,12 +106,6 @@ pub const CREDITS: &[Credit] = &[
         areas: CANADA,
     },
     Credit {
-        what: "3D terrain, hill-shading, contours, slope",
-        source: "Terrain Tiles (Terrarium) on AWS Open Data",
-        terms: "Mapzen / various open sources",
-        areas: WORLD,
-    },
-    Credit {
         what: "Tree canopy height & cover (scenic factors, tree cover layer)",
         source: "Meta & WRI global canopy height",
         terms: "CC BY 4.0",
@@ -328,7 +322,7 @@ mod tests {
         let s = crate::inputs::sources::staged();
         let release = s.role(crate::inputs::sources::BUILDINGS).unwrap().version().unwrap().to_string();
         assert!(CREDITS.iter().any(|c| c.what == "3D buildings" && c.source.contains(&release)));
-        assert_eq!(CREDITS.len(), 19);
+        assert_eq!(CREDITS.len(), 18);
         // As catalogs carry them: areas only where a credit has some.
         let v = serde_json::to_value(&CREDITS[..2]).unwrap();
         assert!(v[0].get("areas").is_none() && v[1]["areas"][0][2] == -52.5);

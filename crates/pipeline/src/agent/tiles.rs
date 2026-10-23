@@ -62,9 +62,6 @@ pub struct TerrainTiles {
     elevation_geoid: Option<String>,
     /// The held datasets no chain of declared geoid sources brings to EGM2008: why, each.
     elevation_unconverted: Vec<String>,
-    /// The terrain's declared sources (crate::terrain_sources) as its keys name them: the accepted
-    /// elevation index's content name, and their pin or why they can't be read.
-    terrain: Option<(String, Result<TerrainPin, String>)>,
     /// The declared sources as the z6 tiles' and tree cover's keys name them (crate::inputs::sources):
     /// the accepted sources' index content name, and what they read of it (None: not declared, or
     /// not to be read now).
@@ -76,6 +73,10 @@ pub struct TerrainTiles {
     /// conversions as the roads': the accepted elevation and sources indexes' content names, and
     /// the sets (None: they can't be read now; the fine terrain's work waits).
     fine: Option<(String, Option<std::sync::Arc<Vec<crate::terrain_fine::FineSet>>>)>,
+    /// (Tests: whether the terrain's keys name the held datasets, `terrain_datasets`; else
+    /// `TEST_SOURCES`, the older schemes' tests' sources.)
+    #[cfg(test)]
+    pub terrain_names_datasets: bool,
 }
 
 /// What the z6 tiles' and tree cover's keys name of the declared sources: the buildings source's
@@ -88,17 +89,11 @@ pub struct KeyedSources {
     pub trees: Option<String>,
 }
 
-/// The terrain's sources in tests holding none (`terrain_sources`).
+/// What a terrain target's key names of the elevation pool in tests holding no datasets, or not
+/// naming them (`terrain_datasets`): the sources as the older schemes' keys named them, so the
+/// tests' records of those schemes read as current (agent::rekey::derive).
 #[cfg(test)]
-pub const TEST_SOURCES: &str = "terrain-sources test";
-
-/// The terrain's declared sources as its keys name them (crate::terrain_sources::pin), and whether
-/// they're what the keys named before they were declared (rekey::named_before).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TerrainPin {
-    pub pin: String,
-    pub as_before: bool,
-}
+pub const TEST_SOURCES: &str = super::rekey::SOURCES_BEFORE;
 
 /// The declared elevation datasets as the z6 tiles' keys name them: each with its coverage.
 pub type Elevation = Vec<(crate::dem::declared::Accepted, crate::dem::declared::Cover)>;
@@ -121,7 +116,6 @@ impl TerrainTiles {
         use rayon::prelude::*;
         self.load_water(root, m);
         self.load_elevation(root, m);
-        self.load_terrain(root, m);
         self.load_buildings(root, m);
         self.load_depth(root, m);
         self.load_fine(root, m);
@@ -199,30 +193,6 @@ impl TerrainTiles {
                 self.unread.insert(want.clone(), format!("{e:#}"));
             }
         }
-    }
-
-    /// Holds the terrain's declared sources of the accepted elevation version `m` names (none: its
-    /// keys wait; one that can't be read now: tried again with the next load).
-    fn load_terrain(&mut self, root: &Path, m: &BTreeMap<String, String>) {
-        use crate::inputs::elevation;
-        let Some(want) = m.get(&crate::inputs::logical(elevation::UNIT)) else {
-            self.terrain = None;
-            return;
-        };
-        if self.terrain.as_ref().is_some_and(|(c, r)| c == want && r.is_ok()) {
-            return;
-        }
-        let got = crate::inputs::open(root, m, elevation::UNIT)
-            .and_then(|a| crate::terrain_sources::of(&a.ok_or_else(|| anyhow::anyhow!("no accepted version"))?))
-            .map(|d| TerrainPin { as_before: super::rekey::named_before(&d), pin: d.pin })
-            .map_err(|e| format!("{e:#}"));
-        // (Said once a reason: the terrain's keys wait meanwhile.)
-        if let Err(why) = &got {
-            if !self.terrain.as_ref().is_some_and(|(c, r)| c == want && r.as_ref().err() == Some(why)) {
-                eprintln!("agent: the terrain waits: its declared sources in {want} can't be read ({why})");
-            }
-        }
-        self.terrain = Some((want.clone(), got));
     }
 
     /// Holds the declared buildings source's release of the accepted sources `m` names.
@@ -358,26 +328,17 @@ impl TerrainTiles {
         self.buildings = Some((content.to_string(), Some(k)));
     }
 
-    /// The terrain's declared sources as its keys name them, of the accepted elevation version `m`
-    /// names; None while there's none, or it can't be read now (the terrain's keys wait).
-    pub fn terrain_sources(&self, m: &BTreeMap<String, String>) -> Option<&TerrainPin> {
-        // (Tests holding none: `TEST_SOURCES`.)
+    /// What a terrain target's key names of the elevation pool over box `b` (west, south, east,
+    /// north): the held datasets meeting it (crate::dem::declared::meeting), as the roads' keys
+    /// name them; None while they can't be told (the terrain's keys wait).
+    pub fn terrain_datasets(&self, m: &BTreeMap<String, String>, b: [f64; 4]) -> Option<String> {
+        // (Tests holding none, or not naming them: `TEST_SOURCES`.)
         #[cfg(test)]
-        if self.terrain.is_none() {
-            static TEST: std::sync::OnceLock<TerrainPin> = std::sync::OnceLock::new();
-            return Some(TEST.get_or_init(|| TerrainPin { pin: TEST_SOURCES.into(), as_before: true }));
+        if self.elevation.is_none() || !self.terrain_names_datasets {
+            return Some(TEST_SOURCES.into());
         }
-        let want = m.get(&crate::inputs::logical(crate::inputs::elevation::UNIT))?;
-        match &self.terrain {
-            Some((c, Ok(p))) if c == want => Some(p),
-            _ => None,
-        }
-    }
-
-    /// Holds the terrain's declared sources of accepted elevation index `content` (as `load` reads
-    /// them; tests).
-    pub fn hold_terrain(&mut self, content: &str, p: TerrainPin) {
-        self.terrain = Some((content.to_string(), Ok(p)));
+        let e = self.elevation(m).ok()??;
+        Some(format!("elevation {}", crate::dem::declared::meeting(&e, b).join(",")))
     }
 
     /// The declared elevation datasets the z6 tiles' keys name: None before the build reads them; an

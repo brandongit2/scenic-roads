@@ -44,8 +44,7 @@ pub fn build(out: &mut Out, raw: &RawTiles) -> Result<(usize, usize)> {
                 crate::agent::jobs::report(k as u64, (n * n) as u64, "z8 tiles");
             }
             let Some(b) = b else { return Ok((x, y, None)) };
-            let (png, _, _) =
-                process(b, Z, x, y, &HashMap::new(), &HashMap::new(), &crate::terrain_pack::Sources::default());
+            let (png, _, _) = process(b, Z, x, y, &HashMap::new(), &crate::terrain_pack::Sources::default());
             let mut e = decode_terrain_png(&png).with_context(|| format!("8/{x}/{y}"))?;
             crate::peaks::despike(&mut e, Z, crate::peaks::tile_lat(Z, y));
             let mx = e.iter().cloned().fold(0f32, f32::max);
@@ -223,15 +222,8 @@ mod tests {
         [(Z, 40, 90), (9, 145, 195), (12, 640, 1440)]
             .iter()
             .map(|&(z, x, y)| {
-                let (out, _, _) = process(
-                    png.clone(),
-                    z,
-                    x,
-                    y,
-                    &HashMap::new(),
-                    &HashMap::new(),
-                    &crate::terrain_pack::Sources::default(),
-                );
+                let (out, _, _) =
+                    process(png.clone(), z, x, y, &HashMap::new(), &crate::terrain_pack::Sources::default());
                 let got = roadcore::grid::decode_terrain_png(&out).unwrap();
                 // (Its voids and bathymetry change it: the values below see them.)
                 assert_ne!(got, input);
@@ -248,7 +240,7 @@ mod tests {
         // crate::agent::build::TERRAIN_V, which the peaks' key names); then update the values.
         assert_eq!(
             (V, crate::agent::build::TERRAIN_V),
-            (4, 4),
+            (4, 5),
             "the raw path's versions changed: update the values below"
         );
         assert_eq!(

@@ -72,20 +72,26 @@ What each step does, in detail. The steps as one table (names, chains, the check
   - Together they make the same packs, byte for byte, as the z3 tile's whole run (`build_q_with`,
     `scenic-build terrain 3/x/y`; `terrain_pack` tests).
   - **The root (z0–2)** is made from the lo packs once no terrain work is left.
-  - **Sources:** the elevation pool's worldwide datasets (`inputs/elevation/`, docs/inputs.md §6.8,
-    crate::terrain_sources): the base's raw tiles (AWS's Terrarium tiles, fetched once by the
-    declared template, packed onto the NAS: docs/macs.md); north of 60°N, Copernicus GLO-30 by its declared
-    index (kept in `sources/fetched/glo30/`); and the water of the latest pass's basemap. Each is
-    pinned in the key (`TERRAIN_V`, the declarations' `keyed` digests, the digest of the water the
-    target reads), so
-    a rebuild with the same key gives identical packs. The digests are worked out once a basemap by
-    the `terrain-water` job, so a new pass remakes only z6 tiles whose water changed.
-  - **Voids** (pixels above 8,900 m or below −11,500 m, `roadcore::grid::defined`) go to sea level;
-    AWS's values are otherwise taken as they are, bathymetry included.
-  - **North of 60°N, GLO-30** (crate::terrain_north): AWS mixes an ellipsoidal source with sea-level
-    ones there (lakes 10–50 m off). Tiles of z9 and finer are resampled from GLO-30 (EGM2008, its
-    water flattened) and blended in by a smoothstep from 59.5°N to 60°N. Where GLO-30 was filled
-    (filling mask ≥ 3), AWS's tile is taken, shifted by the median difference. Credited.
+  - **Sources: the elevation pool** (`inputs/elevation/`, docs/inputs.md §6.8; crate::terrain_base),
+    the roads' datasets, in the roads' order and blended at their edges as the roads' sampler does
+    (crate::dem::generic), so the roads and the terrain use one dataset at every point: the regional
+    datasets where they're declared, then Copernicus GLO-30 (its fill mask's voids left to the next),
+    then AWS's Terrarium tiles where GLO-30 has nothing. Each raw tile (the finest level's, and a
+    coarser one's quarters with no finer tile under them) is sampled from the pool at 2 × 2 points a
+    pixel (their mean), each dataset read at the level's detail: a GeoTIFF at its overview nearest
+    half a pixel (never finer than its `read_resolution`: HRDEM's and 3DEP 1 m's 8 m), a Terrarium
+    pyramid at the level's zoom, another pyramid at its own; heights brought to EGM2008 as the
+    roads' are; where no dataset has data, sea level. The Terrarium tiles are read through this
+    Mac's cache and the NAS's archives (fetched once, packed onto the NAS: docs/macs.md), GLO-30
+    from its store (`sources/fetched/glo30/`). Then the water of the latest pass's basemap. Each is
+    pinned in the key (`TERRAIN_V`, the datasets meeting the target by their lines as the roads'
+    keys name them, the digest of the water the target reads), so a rebuild with the same key gives
+    identical packs. The digests are worked out once a basemap by the `terrain-water` job, so a
+    new pass remakes only z6 tiles whose water changed.
+  - **Coarser zooms from the finer:** every quarter of a tile whose child exists is that child's
+    2×2 means (its water flattened), at every level (z11 from z12, … z0 from z1), so a zoom's pixel
+    is the mean of the best data under it; the pool is sampled at a coarser level only where no
+    finer tile lies under it (outside the coverage's 20 km).
   - **Water flattened** (crate::terrain_water): from the basemap's `water` layer at the tile's zoom,
     4 × 4 samples a pixel. The sea goes to 0; each lake, pond, reservoir or dock to its level (the
     10th percentile of its shore's dry pixels, or its source's own lower level); rivers,
@@ -93,8 +99,9 @@ What each step does, in detail. The steps as one table (names, chains, the check
     together. Partly-water pixels are blended.
   - **Below zero** is clamped to 0 after the water. Planned: polders keeping their depth.
   - **Finer than the base: terrain-fine** (crate::terrain_fine, task #533; a z8 tile a target, any
-    Mac, once its z6 tile's terrain is done under its current key): where a roads' elevation dataset
-    is finer than the terrain's finest declared dataset by over a tenth (by its full resolution,
+    Mac, once its z6 tile's terrain is done under its current key): where a dataset of the pool is
+    finer than the worldwide datasets (those ranked after the unranked, `rank` above 0: GLO-30's
+    30 m, `terrain_fine::base_resolution`) by over a tenth (by its full resolution,
     inputs.md §6.8 `full`: HRDEM 2 m, USGS 3DEP 10 m, GSI's), the terrain goes on past its finest
     base zoom to the dataset's (pixels no finer than half its cell: 2 m to z16, 3DEP to z14, z13
     north of ~55°; a tile pyramid to its own zoom), never past z16 (`MAX_Z`, the owner's: 1 m data
@@ -512,9 +519,9 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   when a target's digest is missing. The digest (`terrain_water::tiles_digest`) is over the
   polygons as the terrain reads them, so only a change the terrain could see changes it. Until a
   target's digest exists its key is unknown and its z3 tile waits.
-- **terrain (a z6 tile):** the coverage within 20 km of its tile, the terrain's declarations
-  (crate::terrain_sources::pin: their ids and `keyed` digests; until they're accepted its key is
-  unknown and it waits), the digest of
+- **terrain (a z6 tile):** the coverage within 20 km of its tile, the elevation pool's datasets
+  meeting the tile (`TerrainTiles::terrain_datasets`: their lines as the roads' keys name them; until
+  they're read its key is unknown and it waits), the digest of
   its water (`agent::build::water_key`), and "no hi tiles" for a z6 tile making none
   (`piece_key_made`). A "none" z6 tile is keyed on the version and the tile (`none_piece_key`).
 - **terrain-fine (a z8 tile):** `terrain_fine::versions()` (its version, 1 cm, the JXL effort,

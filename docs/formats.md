@@ -394,14 +394,11 @@ Each a folder on the job's Mac, its files sent to the worker as `u/…`, not in 
   `trees-height.tiles`, `trees-leaf.tiles` (RDTILES, meta `trees::META`: zoom 8–12 tiles) and
   `trees-tops.bin` (`pyramid::Tops::to_bytes`).
 - **A terrain z6 tile's subtrees** (`pipeline::terrain_task`, docs/steps.md §2, Terrain): `in.sect`, meta
-  `{"fmt": 1, "step": "terrainsub", "v": TERRAIN_V, "piece": "6/x/y", "subtrees": "8/x/y,…",
-  "levels": [[z, [[x, y], …]], …] (z12 → z9), "water", "north", "coarse", "cells": [[lat, lon, "sea"
-  | "missing" | "cell", width, first row, rows, first column, columns], …]}` (GLO-30 cells and the
-  windows read, two pixels' margin); sections `r-<z>-<x>-<y>` (a raw PNG tile; none: AWS lacks it;
-  with "coarse", AWS's z9 tile over each of z10–12), `w-<z>-<x>-<y>` (water polygons: u32 count,
-  each u8 kind (1 sea, 2 lake), u64 key, u32 ring count, each ring u32 point count and f64 pairs)
-  and `c-<lat>-<lon>` (a cell's window, zstd: f32 heights row by row, then a byte a pixel, filled
-  from another DEM or not). `terrainsub` writes `hi.sect` (meta `{"fmt": 1, "step": "terrainsub",
+  `{"fmt": 2, "step": "terrainsub", "v": TERRAIN_V, "piece": "6/x/y", "subtrees": "8/x/y,…",
+  "levels": [[z, [[x, y], …]], …] (z12 → z9), "water"}`; sections `r-<z>-<x>-<y>` (a raw PNG tile,
+  the pool's base tile as the job sampled it: crate::terrain_base; none: no dataset has data there)
+  and `w-<z>-<x>-<y>` (water polygons: u32 count, each u8 kind (1 sea, 2 lake), u64 key, u32 ring
+  count, each ring u32 point count and f64 pairs). `terrainsub` writes `hi.sect` (meta `{"fmt": 1, "step": "terrainsub",
   "piece", "subtrees"}`, a section `t-<z>-<x>-<y>` per tile as the hi pack holds it) and `mid.sect`
   (the group's part of `work/terrain-mid/6-x-y`).
 

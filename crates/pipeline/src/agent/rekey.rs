@@ -843,27 +843,11 @@ pub struct Derived {
     /// Terrain's z6 tiles and assemblies recorded under the keys that named the basemap (`v2`): read
     /// under their keys now, each with the basemap.
     pub water: Vec<(String, String)>,
-    /// Terrain's z6 tiles recorded under the keys that named its sources in code (`SOURCES_BEFORE`),
-    /// read under the keys naming their declarations now (`named_before`).
-    pub sources: Vec<String>,
 }
 
 /// What the terrain's keys named its sources by before they were declared (#144): AWS's Terrarium
 /// tiles and GLO-30's tiles of May 2022 (`NORTH_PIN`, as the code had it).
 pub const SOURCES_BEFORE: &str = "glo30 2022-05";
-
-/// The digest of the base's URL template the code fetched before the sources were declared.
-const BASE_BEFORE: &str = "fd2de15d34da9ee7";
-
-/// The digest of the origin (`https://host`) the code fetched GLO-30's tiles and fill masks from.
-const NORTH_BEFORE: &str = "81c289cf40bc1fc2";
-
-/// The digest of GLO-30's 1° cells the code read (`cells_digest` of its tile list's), so an index
-/// of more or fewer cells re-keys nothing. (In tests: `inputs::elevation::accept_fixture`'s two.)
-#[cfg(not(test))]
-const NORTH_CELLS_BEFORE: &str = "bc9f2dd40c4e2736";
-#[cfg(test)]
-const NORTH_CELLS_BEFORE: &str = "a1b550d6992e52bc";
 
 /// What the steps' keys named of the sources declared in `inputs/sources/` (#145) while they were in
 /// code: the digest (`Source::digest`) of each source's declaration as staged for the switch
@@ -887,39 +871,6 @@ pub mod declared_before {
     /// The building heights' (ghsl-built-h.toml): the bldprep keys named the GHSL tiles it read (by
     /// name and size), not where they come from.
     pub const BUILDING_HEIGHTS: &str = "909a01a4faed972e";
-}
-
-/// The digest of a set of 1° cells (south-west corners): "lat lon" a line, sorted.
-pub fn cells_digest<'a>(cells: impl Iterator<Item = &'a (i32, i32)>) -> String {
-    let mut v: Vec<&(i32, i32)> = cells.collect();
-    v.sort();
-    let lines: Vec<String> = v.iter().map(|(la, lo)| format!("{la} {lo}")).collect();
-    store::naming::hash16(lines.join("\n").as_bytes())
-}
-
-/// A URL's origin: its scheme and host.
-fn origin(url: &str) -> &str {
-    let rest = url.find("://").map_or(0, |i| i + 3);
-    url[rest..].find('/').map_or(url, |j| &url[..rest + j])
-}
-
-/// Whether the terrain's declared sources `d` are what `SOURCES_BEFORE` named: the base by the URL
-/// template the code had, and every 1° tile and fill mask of the northern dataset from the origin
-/// it had, its cells the set the code read (digests, so no source is named in code). A key naming
-/// the sources as they were is then the same build as one naming their declarations.
-pub fn named_before(d: &crate::terrain_sources::Declared) -> bool {
-    named_before_with(d, NORTH_CELLS_BEFORE)
-}
-
-fn named_before_with(d: &crate::terrain_sources::Declared, cells: &str) -> bool {
-    let h = |s: &str| store::naming::hash16(s.as_bytes());
-    let north_ok = |u: &str| h(origin(u)) == NORTH_BEFORE;
-    h(&d.base) == BASE_BEFORE
-        && d.north.as_ref().is_some_and(|n| {
-            !n.cells.is_empty()
-                && cells_digest(n.cells.keys()) == cells
-                && n.cells.values().all(|(u, m)| north_ok(u) && m.as_deref().is_some_and(north_ok))
-        })
 }
 
 /// The records as every reader reads them (the plan, the checklist, the regions' state, the jobs'
@@ -973,58 +924,12 @@ pub fn as_read(
 /// app's job), of the latest basemap or an earlier one with digests, is read under its key now by
 /// that basemap's digests (its mids those of the manifest, or all "-").
 pub fn derive(keys: &mut Keys, cov: &Coverage, m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> Derived {
-    let mut out = derive_runs(keys, cov, m, tiles);
-    derive_sources(keys, cov, m, tiles, &mut out);
-    out
-}
-
-/// Terrain's z6 tiles recorded under the keys naming its sources as they were in code
-/// (`SOURCES_BEFORE`: an older app's, or `derive_runs`' from the older schemes), read under the keys
-/// naming their declarations, when the declarations name the same (`named_before`), into `out`:
-/// a z6 tile's record whose key is the one its key now gives with the sources as they were, by the
-/// water's digests of the latest basemap or an earlier one with digests, with or without hi tiles.
-/// Declarations naming other sources leave them as they are: stale, the z6 tiles made again.
-fn derive_sources(
-    keys: &mut Keys,
-    cov: &Coverage,
-    m: &BTreeMap<String, String>,
-    tiles: &TerrainTiles,
-    out: &mut Derived,
-) {
-    let Some(now) = tiles.terrain_sources(m).filter(|p| p.as_before) else { return };
-    let latest = crate::terrain_pack::water_source_pin(m);
-    let mut basemaps: Vec<Option<String>> = vec![latest.clone()];
-    basemaps.extend(tiles.water_pins(m).into_iter().filter(|p| Some(p) != latest.as_ref()).map(Some));
-    let water = |b: &Option<String>, t: &str, from: &str| {
-        build::water_key(b.as_deref(), b.as_deref().and_then(|p| tiles.water_idx(m, p)), t, from)
-    };
-    // (Those current as they are passed over: a record a job saved under its key now.)
-    let tt = build::terrain_slope_targets(cov, m, tiles);
-    let current: BTreeMap<&String, &String> = tt.terrain.iter().map(|(t, k)| (t, k)).collect();
-    let moved: Vec<(String, String)> = keys
-        .terrain
-        .iter()
-        .filter(|(t, k)| current.get(t) != Some(k))
-        .filter_map(|(t, k)| {
-            let u = TileId::parse(t).filter(|u| u.z == 6)?;
-            let f = cov.fingerprint(build::grown_e7(6, u.x, u.y, 20.0));
-            basemaps.iter().filter_map(|b| water(b, t, &f)).find_map(|w| {
-                [true, false]
-                    .into_iter()
-                    .find(|hi| build::piece_key_made((u.x, u.y), &f, SOURCES_BEFORE, &w, *hi) == *k)
-                    .map(|hi| (t.clone(), build::piece_key_made((u.x, u.y), &f, &now.pin, &w, hi)))
-            })
-        })
-        .collect();
-    for (t, k) in moved {
-        keys.terrain.insert(t.clone(), k);
-        out.sources.push(t);
-    }
+    derive_runs(keys, cov, m, tiles)
 }
 
 /// `derive`'s older schemes: a z3 tile's whole run (`v1`), and the z6 tiles' and assemblies' keys
 /// that named the basemap (`v2`), each read under the keys that came after them, naming the sources
-/// as they were in code (`SOURCES_BEFORE`: `derive_sources` takes them on).
+/// as they were in code (`SOURCES_BEFORE`).
 fn derive_runs(keys: &mut Keys, cov: &Coverage, m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> Derived {
     let mut out = Derived::default();
     let z3 = |map: &BTreeMap<String, String>| -> Vec<(String, String)> {
@@ -1108,7 +1013,12 @@ fn derive_runs(keys: &mut Keys, cov: &Coverage, m: &BTreeMap<String, String>, ti
                     .and_then(|(b, l)| {
                         Some((
                             q.clone(),
-                            build::terrain_lo_key((u.x, u.y), &water(b, q, crate::terrain_water::AREA_FROM)?, l),
+                            build::terrain_lo_key(
+                                (u.x, u.y),
+                                &water(b, q, crate::terrain_water::AREA_FROM)?,
+                                SOURCES_BEFORE,
+                                l,
+                            ),
                             b.clone().unwrap_or_default(),
                         ))
                     })
@@ -1180,7 +1090,7 @@ fn derive_runs(keys: &mut Keys, cov: &Coverage, m: &BTreeMap<String, String>, ti
             })
             .collect();
         let lo = water(&b, &q, crate::terrain_water::AREA_FROM)
-            .map(|w| build::terrain_lo_key((u.x, u.y), &w, &none_mids(&q)));
+            .map(|w| build::terrain_lo_key((u.x, u.y), &w, SOURCES_BEFORE, &none_mids(&q)));
         let (Some(made), Some(lo)) = (made, lo) else {
             out.unknown.push((
                 q,
@@ -2180,7 +2090,12 @@ mod tests {
                 } else {
                     let mids: Vec<String> =
                         build::coverage_tiles(&c)[&(u.x, u.y)].iter().map(|(x, y)| format!("6/{x}/{y}=-")).collect();
-                    build::terrain_lo_key((u.x, u.y), &key(t, crate::terrain_water::AREA_FROM), &mids)
+                    build::terrain_lo_key(
+                        (u.x, u.y),
+                        &key(t, crate::terrain_water::AREA_FROM),
+                        crate::agent::tiles::TEST_SOURCES,
+                        &mids,
+                    )
                 };
                 (t.clone(), k)
             })
@@ -2188,117 +2103,5 @@ mod tests {
         let changed: Vec<&String> = before.keys().filter(|t| before[*t] != after[*t]).collect();
         // The z6 tile under the fill and its z3 tile's assembly (its z6–8 tiles), nothing else.
         assert_eq!(changed, [&format!("3/{}/{}", f.0 >> 3, f.1 >> 3), &format!("6/{}/{}", f.0, f.1)]);
-    }
-
-    /// Declared sources: the base by `base`, the north's two tiles by `north` (`{}`: the tile's name).
-    fn declared(base: &str, north: Option<&str>) -> crate::terrain_sources::Declared {
-        let north = north.map(|n| crate::terrain_sources::North {
-            id: "glo30".into(),
-            cells: [(64, -148), (65, -148)]
-                .into_iter()
-                .map(|(la, lo)| {
-                    (
-                        (la, lo),
-                        (
-                            n.replace("{}", &format!("N{la}_W{}_DEM.tif", -lo)),
-                            Some(n.replace("{}", &format!("N{la}_W{}_FLM.tif", -lo))),
-                        ),
-                    )
-                })
-                .collect(),
-        });
-        crate::terrain_sources::Declared { base: base.into(), north, pin: "p".into(), resolution: 30.0 }
-    }
-
-    #[test]
-    fn the_declarations_name_what_the_code_fetched() {
-        // (What the code fetched before the terrain's sources were declared.)
-        let base = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png";
-        let north = "https://copernicus-dem-30m.s3.amazonaws.com/x/{}";
-        assert!(named_before(&declared(base, Some(north))));
-        assert!(!named_before(&declared(&base.replace("terrarium", "normal"), Some(north))), "another base");
-        assert!(!named_before(&declared(base, Some("https://example.org/{}"))), "another northern host");
-        assert!(!named_before(&declared(base, None)), "no northern dataset");
-        let mut no_mask = declared(base, Some(north));
-        no_mask.north.as_mut().unwrap().cells.values_mut().next().unwrap().1 = None;
-        assert!(!named_before(&no_mask), "a tile without its fill mask");
-        assert_eq!(
-            cells_digest(declared(base, Some(north)).north.unwrap().cells.keys()),
-            NORTH_CELLS_BEFORE,
-            "the fixture's cells"
-        );
-        let mut more = declared(base, Some(north));
-        let n = more.north.as_mut().unwrap();
-        let one = n.cells[&(64, -148)].clone();
-        n.cells.insert((66, -148), one.clone());
-        assert!(!named_before(&more), "a cell more");
-        let mut other = declared(base, Some(north));
-        let n = other.north.as_mut().unwrap();
-        n.cells.remove(&(65, -148));
-        n.cells.insert((65, -147), one);
-        assert!(!named_before(&other), "one cell other");
-    }
-
-    /// Not a test: the `cells_digest` of a GLO-30 tile list (`GLO30_TILE_LIST`, a tileList.txt), the
-    /// value of `NORTH_CELLS_BEFORE`.
-    #[test]
-    #[ignore]
-    fn glo30_cells_digest() {
-        let text = std::fs::read_to_string(std::env::var("GLO30_TILE_LIST").expect("GLO30_TILE_LIST")).unwrap();
-        let num =
-            |s: &str| s[1..].parse::<i32>().ok().map(|v| if s.starts_with('S') || s.starts_with('W') { -v } else { v });
-        let cells: Vec<(i32, i32)> = text
-            .lines()
-            .filter_map(|l| {
-                let p: Vec<&str> = l.trim().split('_').collect();
-                (p.len() >= 9).then(|| Some((num(p[4])?, num(p[6])?))).flatten()
-            })
-            .collect();
-        println!("{} cells, digest {}", cells.len(), cells_digest(cells.iter()));
-    }
-
-    #[test]
-    fn pieces_keyed_on_the_sources_in_code_are_read_under_their_declarations() {
-        let (c, _, m, _) = iceland(&|_| {});
-        let wa = digests(&c, &Basemap { pin: A.into(), lakes: vec![] });
-        let (mut ma, _) = with_water(&m, Some(A), &[&wa]);
-        let ev = crate::inputs::logical(crate::inputs::elevation::UNIT);
-        ma.insert(ev.clone(), "elevation-index".into());
-        let at = |pin: &str, as_before: bool| {
-            let (_, mut t) = with_water(&m, Some(A), &[&wa]);
-            t.hold_terrain("elevation-index", crate::agent::tiles::TerrainPin { pin: pin.into(), as_before });
-            t
-        };
-        // The terrain made by an older app: its z6 tiles' keys name the sources as the code had them.
-        let mut done = Keys::default();
-        let old = build::terrain_slope_targets(&c, &ma, &at(SOURCES_BEFORE, true));
-        done.record("terrain", &old.terrain);
-        done.record("terrain-lo", &old.terrain_lo);
-        // Declarations naming the same: every z6 tile read under its key now, nothing made.
-        let now = at("terrain-sources 0123456789abcdef", true);
-        let mut read = done.clone();
-        let d = derive(&mut read, &c, &ma, &now);
-        let pieces: Vec<String> =
-            build::coverage_tiles(&c).into_values().flatten().map(|(x, y)| format!("6/{x}/{y}")).collect();
-        assert_eq!(d.sources.len(), pieces.len(), "{d:?}");
-        let w = build::terrain_work(&build::terrain_slope_targets(&c, &ma, &now), &ma, &read);
-        assert!(w.terrain_pieces_left.is_empty() && w.terrain_lo_left.is_empty() && w.terrain.is_empty(), "{w:?}");
-        let tt = build::terrain_slope_targets(&c, &ma, &now);
-        assert_eq!(read.terrain, tt.terrain.into_iter().collect::<BTreeMap<_, _>>());
-        // Twice is once.
-        let mut twice = read.clone();
-        assert!(derive(&mut twice, &c, &ma, &now).sources.is_empty() && twice == read);
-        // Declarations naming other sources: every z6 tile made again.
-        let other = at("terrain-sources fedcba9876543210", false);
-        let mut read = done.clone();
-        assert!(derive(&mut read, &c, &ma, &other).sources.is_empty());
-        let w = build::terrain_work(&build::terrain_slope_targets(&c, &ma, &other), &ma, &read);
-        assert_eq!(w.terrain_pieces_left.len(), pieces.len());
-        // None declared: the terrain waits (its z6 tiles' keys unknown, nothing made).
-        let (_, mut none) = with_water(&m, Some(A), &[&wa]);
-        none.load(Path::new("/nonexistent"), &ma);
-        let tt = build::terrain_slope_targets(&c, &ma, &none);
-        assert!(tt.terrain.iter().all(|(_, k)| k == build::UNKNOWN));
-        assert!(build::terrain_work(&tt, &ma, &done).terrain.is_empty());
     }
 }

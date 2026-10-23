@@ -928,8 +928,9 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
             );
             let raw = raw_tiles(&out, &raw_dir)?;
-            let opened = pipeline::terrain_pack::SourceFiles::open(&out, false)?;
-            let src = opened.sources();
+            let water = pipeline::terrain_pack::open_water(&out)?;
+            let src = pipeline::terrain_pack::Sources { water: Some(&water) };
+            let pool = base_pool(&out, 6, &[(t.x, t.y)])?;
             let levels = pipeline::terrain_pack::piece_levels(&cov, (t.x, t.y));
             let t0 = std::time::Instant::now();
             let groups = pipeline::terrain_task::groups(&levels, src.water)?;
@@ -944,10 +945,11 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 let lv = pipeline::terrain_task::levels_of(&levels, &g.iter().copied().collect(), true);
                 let path = dir.join(format!("{}-{}", g[0].0, g[0].1)).join("u").join(pipeline::terrain_task::INPUT);
                 let t0 = std::time::Instant::now();
-                let c = pipeline::terrain_task::cut((t.x, t.y), g, &lv, &raw, &src, &path)?;
+                let c = pool
+                    .with_tiles(&raw, |tiles| pipeline::terrain_task::cut((t.x, t.y), g, &lv, tiles, &src, &path))??;
                 println!(
                     "{}",
-                    serde_json::json!({ "group": pipeline::terrain_task::subtrees_arg(g), "tiles": c.tiles, "made": c.made.len(), "raw": c.raw, "cells": c.cells, "bytes": c.bytes, "mem_mb": pipeline::terrain_task::mem_mb(c.bytes, &lv), "secs": t0.elapsed().as_secs_f64() })
+                    serde_json::json!({ "group": pipeline::terrain_task::subtrees_arg(g), "tiles": c.tiles, "made": c.made.len(), "raw": c.raw, "bytes": c.bytes, "mem_mb": pipeline::terrain_task::mem_mb(c.bytes, &lv), "secs": t0.elapsed().as_secs_f64() })
                 );
             }
             return Ok(());
@@ -969,16 +971,19 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
             );
             let raw = raw_tiles(&out, &raw_dir)?;
-            let opened = pipeline::terrain_pack::SourceFiles::open(&out, false)?;
-            let src = opened.sources();
+            let water = pipeline::terrain_pack::open_water(&out)?;
+            let src = pipeline::terrain_pack::Sources { water: Some(&water) };
+            let pool = base_pool(&out, 6, &[(t.x, t.y)])?;
             let levels = pipeline::terrain_pack::piece_levels(&cov, (t.x, t.y));
             let whole = flag(&args, "--whole");
             let t0 = std::time::Instant::now();
-            let (hi, mid) = if whole {
-                pipeline::terrain_pack::make_piece_whole(&raw, &src, levels)?
-            } else {
-                pipeline::terrain_pack::make_piece(&raw, &src, levels)?
-            };
+            let (hi, mid) = pool.with_tiles(&raw, |tiles| {
+                if whole {
+                    pipeline::terrain_pack::make_piece_whole(tiles, &src, levels)
+                } else {
+                    pipeline::terrain_pack::make_piece(tiles, &src, levels)
+                }
+            })??;
             let secs = t0.elapsed().as_secs_f64();
             let n = hi.len();
             let mut it = hi.into_iter().map(|(z, x, y, b)| {
@@ -1034,9 +1039,11 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             );
             let p = phase("the raw tiles and the terrain's sources opened", Class::NasRead);
             let raw = raw_tiles(&out, &raw_dir)?;
-            let opened = pipeline::terrain_pack::SourceFiles::open(&out, true)?;
+            let water = pipeline::terrain_pack::open_water(&out)?;
+            let pool = base_pool(&out, 0, &[(0, 0)])?;
             drop(p);
-            let n = pipeline::terrain_pack::build_root(&mut out, &raw, &opened.sources())?;
+            let src = pipeline::terrain_pack::Sources { water: Some(&water) };
+            let n = pool.with_tiles(&raw, |tiles| pipeline::terrain_pack::build_root(&mut out, tiles, &src))??;
             eprintln!("terrain root: {n} tiles");
             pack_raw(&out, &raw_dir);
         }
@@ -2227,12 +2234,18 @@ fn pack_raw_with(out: &Out, dir: &Path, progress: pipeline::rawpack::Progress) {
     }
 }
 
-/// The terrain's raw tiles: the local cache `dir`, where each is downloaded once (from the declared
-/// base, pipeline::terrain_sources), filled from the NAS's archives (`sources/aws-terrarium/packs/`)
+/// The Terrarium pyramid's raw tiles (the elevation pool's: pipeline::terrain_base): the local cache
+/// `dir`, where each is downloaded once, filled from the NAS's archives (`sources/aws-terrarium/packs/`)
 /// when it lacks one.
 fn raw_tiles(out: &Out, dir: &Path) -> Result<pipeline::terrain_pack::RawTiles> {
-    let base = pipeline::terrain_sources::read(out)?.base;
-    Ok(pipeline::terrain_pack::RawTiles::with_store(dir, &out.root().join("sources/aws-terrarium"), &base))
+    let url = pipeline::terrain_base::terrarium_template(out.root(), &out.manifest)?;
+    Ok(pipeline::terrain_pack::RawTiles::with_store(dir, &out.root().join("sources/aws-terrarium"), &url))
+}
+
+/// The elevation pool over the box of tiles `ts` of zoom `z` (pipeline::terrain_base::Pool): the
+/// terrain's base tiles there are sampled from it.
+fn base_pool(out: &Out, z: u8, ts: &[(u32, u32)]) -> Result<pipeline::terrain_base::Pool> {
+    pipeline::terrain_base::Pool::read(out.root(), &out.manifest, pipeline::terrain_base::tiles_box(z, ts))
 }
 
 /// Seconds since the epoch as RFC 3339 UTC (`2026-10-05T03:55:11Z`).
@@ -2782,11 +2795,10 @@ fn water_key_check(root: &Path, args: &[String]) -> Result<()> {
         let unknown = tt.terrain.iter().chain(&tt.terrain_lo).filter(|(_, k)| k == build::UNKNOWN).count();
         println!("{what}:");
         println!(
-            "  derived: {} z3 tiles as their pieces and assembly ({} from an earlier basemap), {} pieces and assemblies of the keys that named the basemap, {} pieces of the keys that named their sources in code; stale under the old scheme: {}; kept, their water unknown: {}; deriving {:.0} ms the first time, {:.0} ms again",
+            "  derived: {} z3 tiles as their pieces and assembly ({} from an earlier basemap), {} pieces and assemblies of the keys that named the basemap; stale under the old scheme: {}; kept, their water unknown: {}; deriving {:.0} ms the first time, {:.0} ms again",
             d.terrain.len(),
             d.older.len(),
             d.water.len(),
-            d.sources.len(),
             d.stale.len(),
             d.unknown.len(),
             first.as_secs_f64() * 1e3,
@@ -5500,11 +5512,26 @@ fn terrain_pieces(
         opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
     );
     let raw = raw_tiles(out, &raw_dir)?;
-    let opened = pipeline::terrain_pack::SourceFiles::open(out, true)?;
-    let src = opened.sources();
+    let water = pipeline::terrain_pack::open_water(out)?;
+    let src = pipeline::terrain_pack::Sources { water: Some(&water) };
+    let pool = base_pool(out, 6, &ts.iter().map(|t| (t.x, t.y)).collect::<Vec<_>>())?;
+    pool.with_tiles(&raw, |tiles| terrain_pieces_from(out, cov, ts, same, tiles, &src))??;
+    pack_raw_with(out, &raw_dir, &|what: &str, done: u64, total: u64| pipeline::agent::jobs::report(done, total, what));
+    Ok(())
+}
+
+/// `terrain_pieces`' z6 tiles made from the base's tiles `raw` and the water `src`.
+fn terrain_pieces_from(
+    out: &mut Out,
+    cov: &pipeline::coverage::Coverage,
+    ts: &[TileId],
+    same: &BTreeSet<String>,
+    raw: &dyn pipeline::terrain_pack::RawSource,
+    src: &pipeline::terrain_pack::Sources,
+) -> Result<()> {
     let n = ts.len();
     let mut names: Vec<String> =
-        ts.iter().map(|t| format!("Fetching, shading and writing {}'s terrain tiles", t.slash())).collect();
+        ts.iter().map(|t| format!("Sampling, shading and writing {}'s terrain tiles", t.slash())).collect();
     names.push("Packing the new raw tiles onto the NAS".into());
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     let say = |what: &str, done: u64, total: u64| pipeline::agent::jobs::report(done, total, what);
@@ -5518,8 +5545,8 @@ fn terrain_pieces(
             offload.as_ref(),
             (t.x, t.y),
             &pipeline::terrain_pack::piece_levels(cov, (t.x, t.y)),
-            &raw,
-            &src,
+            raw,
+            src,
             before,
         )
     };
@@ -5544,10 +5571,10 @@ fn terrain_pieces(
         let r = landing.after(out, |out| {
             pipeline::terrain_pack::build_piece_later(
                 out,
-                &raw,
+                raw,
                 (t.x, t.y),
                 cov,
-                &src,
+                src,
                 same.contains(&t.slash()),
                 &say,
                 offers,
@@ -5559,7 +5586,6 @@ fn terrain_pieces(
     landing.land(out)?;
     pipeline::control::safe_point("terrain");
     pipeline::agent::jobs::part(names.len() - 1, &names);
-    pack_raw_with(out, &raw_dir, &say);
     Ok(())
 }
 
@@ -5633,8 +5659,8 @@ fn terrain_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
         opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
     );
     let raw = raw_tiles(out, &raw_dir)?;
-    let opened = pipeline::terrain_pack::SourceFiles::open(out, true)?;
-    let src = opened.sources();
+    let water = pipeline::terrain_pack::open_water(out)?;
+    let src = pipeline::terrain_pack::Sources { water: Some(&water) };
     let mut names: Vec<String> =
         qs.iter().map(|(q, _)| format!("Assembling {}'s zoomed-out terrain", q.slash())).collect();
     names.push("Packing the new raw tiles onto the NAS".into());
@@ -5644,7 +5670,9 @@ fn terrain_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
         pipeline::control::safe_point("terrain-lo");
         pipeline::agent::jobs::part(k, &names);
         let c = cost_start("terrain-lo", &q.slash());
-        let r = pipeline::terrain_pack::build_lo(out, &raw, (q.x, q.y), ts, &src, &say)?;
+        let pool = base_pool(out, 3, &[(q.x, q.y)])?;
+        let r =
+            pool.with_tiles(&raw, |tiles| pipeline::terrain_pack::build_lo(out, tiles, (q.x, q.y), ts, &src, &say))??;
         eprintln!("terrain-lo {}: {r:?} ({:.0?})", q.slash(), c.elapsed());
         pipeline::control::done("terrain-lo", &q.slash());
         note_cost("terrain-lo", &q.slash(), c);
@@ -5808,10 +5836,9 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
         opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
     );
     let raw = raw_tiles(out, &raw_dir)?;
-    // GLO-30 north of 60°N and the pass's basemap's water (docs/steps.md §2, Terrain), and AWS's z9
-    // tiles for the walled patches.
-    let opened = pipeline::terrain_pack::SourceFiles::open(out, true)?;
-    let src = opened.sources();
+    // The pass's basemap's water (docs/steps.md §2, Terrain).
+    let water = pipeline::terrain_pack::open_water(out)?;
+    let src = pipeline::terrain_pack::Sources { water: Some(&water) };
     // Its parts, for the status (agent::jobs::part): each z3 tile's tiles fetched and shaded, then its
     // terrain written; then the raw tiles AWS gave packed onto the NAS. Each says how far it is.
     let n = by_q.len();
@@ -5829,12 +5856,15 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
         pipeline::agent::jobs::part(2 * k, &names);
         let writing = std::sync::atomic::AtomicBool::new(false);
         let t = cost_start("terrain", &format!("3/{}/{}", q.0, q.1));
-        let r = pipeline::terrain_pack::build_q_with(out, &raw, q, &list, &cov, &src, &|what, done, total| {
-            if what == "packs" && !writing.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                pipeline::agent::jobs::part(2 * k + 1, &names);
-            }
-            say(what, done, total);
-        })?;
+        let pool = base_pool(out, 3, &[q])?;
+        let r = pool.with_tiles(&raw, |tiles| {
+            pipeline::terrain_pack::build_q_with(out, tiles, q, &list, &cov, &src, &|what, done, total| {
+                if what == "packs" && !writing.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    pipeline::agent::jobs::part(2 * k + 1, &names);
+                }
+                say(what, done, total);
+            })
+        })??;
         eprintln!("terrain 3/{}/{}: {r:?} ({:.0?})", q.0, q.1, t.elapsed());
         pipeline::control::done("terrain", &format!("3/{}/{}", q.0, q.1));
         note_cost("terrain", &format!("3/{}/{}", q.0, q.1), t);

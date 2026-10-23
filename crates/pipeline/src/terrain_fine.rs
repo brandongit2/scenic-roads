@@ -5,8 +5,8 @@
 //! `terrain-fine`, a z8 tile a target, once its z6 tile's terrain is built.
 //!
 //! - **Which datasets:** those whose full resolution (`Measured::full`, else `resolution`) is finer
-//!   than the terrain's own finest declared dataset by over a tenth (`FINER`): HRDEM, USGS 3DEP and
-//!   GSI's, not GLO-30 (30 m: the base's own). None is named in code: one dropped into
+//!   than the worldwide datasets' finest by over a tenth (`FINER`, `base_resolution`): HRDEM, USGS
+//!   3DEP and GSI's, not GLO-30 (30 m: a worldwide one). None is named in code: one dropped into
 //!   `inputs/elevation/` later is taken the same way.
 //! - **How fine:** a dataset's zoom at a latitude is the finest whose pixels are no finer than half
 //!   its cell (`zoom_for`): 2 m data to z16 in most of Canada, 3DEP's 10 m to z14 (z13 north of
@@ -138,9 +138,17 @@ pub fn full_resolution(d: &Accepted) -> f64 {
     d.measured.full.unwrap_or(d.measured.resolution)
 }
 
-/// The datasets `ds` (their conversions set: declared::convert) finer than the terrain's base, of
-/// resolution `base` (m: crate::terrain_sources::Declared::resolution), by `FINER`, in their order.
-pub fn sets(ds: &[Accepted], base: f64) -> Vec<FineSet> {
+/// The base's resolution among datasets `ds` (m): the finest full resolution of the worldwide
+/// datasets, those ranked after every unranked one (`rank` above 0, as the pool declares GLO-30 and
+/// the Terrarium tiles: docs/inputs.md §6.8); none: no dataset is finer than the base.
+pub fn base_resolution(ds: &[Accepted]) -> f64 {
+    ds.iter().filter(|d| d.declaration.rank.unwrap_or(0) > 0).map(full_resolution).fold(f64::INFINITY, f64::min)
+}
+
+/// The datasets `ds` (their conversions set: declared::convert) finer than the terrain's base (`FINER`
+/// of `base_resolution`), in their order.
+pub fn sets(ds: &[Accepted]) -> Vec<FineSet> {
+    let base = base_resolution(ds);
     ds.iter()
         .filter(|d| full_resolution(d) < base * FINER)
         .map(|d| FineSet {
@@ -220,7 +228,7 @@ impl Fine {
         let mut ds = declared::accepted(&a)?;
         // (Said by the roads' own plans: crate::dem::declared::plan_converted.)
         let _ = declared::convert(&mut ds, &geoid);
-        let sets = sets(&ds, crate::terrain_sources::of(&a)?.resolution);
+        let sets = sets(&ds);
         Ok(Fine { elevation: a, geoid, sets })
     }
 
@@ -1172,9 +1180,8 @@ mod tests {
         let mut m = std::collections::BTreeMap::new();
         crate::inputs::elevation::accept_fixture(d.path(), &mut m);
         let a = crate::inputs::open(d.path(), &m, crate::inputs::elevation::UNIT).unwrap().unwrap();
-        let terrain = crate::terrain_sources::of(&a).unwrap().resolution;
         let mut ds = declared::accepted(&a).unwrap();
-        assert!(sets(&ds, terrain).is_empty(), "the fixture's datasets are no finer than the terrain's base");
+        assert!(sets(&ds).is_empty(), "the fixture's datasets are no finer than the terrain's base");
         assert!(Fine::of(a.clone(), Vec::new()).unwrap().sets.is_empty());
         // (A job reads them again only when the records name other versions.)
         let mut c = Current::read(d.path(), &m).unwrap();
@@ -1186,7 +1193,7 @@ mod tests {
         assert!(c.fine.is_some() && c.read_at == Current::versions(&m), "an unreadable new version too");
         // (Its full resolution counts, not the one it's read at.)
         ds[0].measured.full = Some(2.0);
-        let s = sets(&ds, terrain);
+        let s = sets(&ds);
         assert_eq!(s.len(), 1);
         let Data::Tiles { zoom, .. } = &ds[0].declaration.data else { panic!("the fixture's is a pyramid") };
         assert_eq!(s[0].detail, Detail::Pyramid(*zoom as u8));

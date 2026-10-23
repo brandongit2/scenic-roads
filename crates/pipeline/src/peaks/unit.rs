@@ -168,7 +168,6 @@ impl UnitZ12 {
                             x,
                             y,
                             &HashMap::new(),
-                            &HashMap::new(),
                             &crate::terrain_pack::Sources::default(),
                         );
                         Ok(((x, y), Some(Arc::new(png)), 1))

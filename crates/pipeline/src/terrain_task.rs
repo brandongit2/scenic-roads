@@ -1,7 +1,7 @@
 //! A terrain z6 tile's z8 subtrees as tasks (kind `terrainsub`; docs/workers.md §3, docs/steps.md
 //! Terrain): a z6 tile (a z6 tile's levels z12 → z9, crate::terrain_pack::build_piece) is 16 z8
 //! subtrees, each a z8 tile's z9–12 tiles near the coverage. A tile's making reads only its own raw
-//! tile, its children's changes and AWS's z9 tile over it, all within its subtree, and GLO-30 and
+//! tile (the pool's base tile: crate::terrain_base) and its children, all within its subtree, and
 //! the water at its place; but a lake's level is one, from all its shore in the z6 tile's level that
 //! first has it. So the subtrees go out in groups closed under the lakes they share (a lake whose
 //! water reaches two subtrees' tiles puts them in one group): a group made alone then makes each of
@@ -9,22 +9,19 @@
 //! others the same as of the whole (`groups`).
 //!
 //! A task's one file (`u/in.sect`; docs/formats.md) holds everything its group reads, cut by the
-//! job from what it reads itself: the raw tiles (`r-<z>-<x>-<y>`, as the job's `RawTiles` gives
-//! them; one AWS hasn't, absent), the water's polygons as the basemap gives them (`w-…`), and north
-//! of 59.5°N the windows of GLO-30's cells its tiles sample (`c-<lat>-<lon>`, zstd), its meta the
-//! z6 tile, the group's levels and which sources the job's run has. A worker reads nothing else: no
+//! job from what it reads itself: the raw tiles (`r-<z>-<x>-<y>`, as the job's sampled them; one
+//! no dataset has data in, absent), the water's polygons as the basemap gives them (`w-…`), its meta
+//! the z6 tile, the group's levels and whether the job's run has the water. A worker reads nothing else: no
 //! NAS, no network. Its run (the program `terrainsub`) writes the group's tiles (`u/hi.sect`) and
 //! its mid's part (`u/mid.sect`, crate::terrain_pack::write_mid's), which the job takes into the
 //! z6 tile as if made here: the same bytes.
 
 use crate::offload::{Offered, Offload, Patience, Settled};
-use crate::terrain_north::{Cell, Cells, Got};
 use crate::terrain_pack::{Made, Mid, RawSource, Sources};
 use crate::terrain_water::{Kind, Poly, WaterSource};
 use anyhow::{bail, ensure, Context, Result};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
-use std::sync::Arc;
 
 /// The task's kind (and what the coordinator keeps its cost under, with its group's first
 /// subtree).
@@ -48,8 +45,8 @@ pub fn offer_ahead() -> bool {
 }
 /// A group of more subtrees than this isn't offered (its memory, and the z6 tile's run waiting on it).
 pub const MOST_SUBTREES: usize = 2;
-/// The files' format.
-const FMT: u64 = 1;
+/// The files' format (2: no GLO-30 windows: the raw tiles are the pool's, crate::terrain_base).
+const FMT: u64 = 2;
 
 /// A z6 tile's levels, or a part of them: (zoom, its tiles), z12 → z9.
 pub type Levels = Vec<(u8, Vec<(u32, u32)>)>;
@@ -207,32 +204,6 @@ pub fn polys_from(b: &[u8]) -> Result<Vec<Poly>> {
     Ok(out)
 }
 
-/// The window of cell (`la`, `lo`) of width `w` that samples in box `b` (west, south, east, north)
-/// read, with two pixels' margin: its first row, rows, first column and columns (empty: none).
-/// A sample at latitude `lat` reads the cell's rows around (90 − lat)·3600, global, and at longitude
-/// `lon` its columns around (lon − lo)·w, and the next cell's first beside its last
-/// (crate::terrain_north's `Near`); a box across the antimeridian is taken a turn either way.
-fn window(la: i32, lo: i32, w: usize, b: [f64; 4]) -> (usize, usize, usize, usize) {
-    let rows = crate::terrain_north::ROWS as f64;
-    let top_row = (89 - la) as f64 * rows;
-    let r_lo = ((90.0 - b[3]) * rows).floor() - 2.0 - top_row;
-    let r_hi = ((90.0 - b[1]) * rows).floor() + 3.0 - top_row;
-    let (r0, r1) = (r_lo.max(0.0), r_hi.min(rows));
-    let (mut c0, mut c1) = (f64::MAX, f64::MIN);
-    for turn in [-360.0, 0.0, 360.0] {
-        let a = ((b[0] + turn - lo as f64) * w as f64).floor() - 2.0;
-        let e = ((b[2] + turn - lo as f64) * w as f64).floor() + 3.0;
-        let (a, e) = (a.max(0.0), e.min(w as f64));
-        if a < e {
-            (c0, c1) = (c0.min(a), c1.max(e));
-        }
-    }
-    if r0 >= r1 || c0 >= c1 {
-        return (0, 0, 0, 0);
-    }
-    (r0 as usize, (r1 - r0) as usize, c0 as usize, (c1 - c0) as usize)
-}
-
 /// What a task's file says, but for its sections.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Meta {
@@ -243,21 +214,16 @@ pub struct Meta {
     pub piece: String,
     pub subtrees: String,
     pub levels: Levels,
-    /// Which sources the job's run has (crate::terrain_pack::Sources).
+    /// Whether the job's run has the water (crate::terrain_pack::Sources).
     pub water: bool,
-    pub north: bool,
-    /// GLO-30's cells its tiles ask for: (latitude, longitude, "sea", "missing" or "cell", its
-    /// width, and its window: first row, rows, first column, columns).
-    pub cells: Vec<(i32, i32, String, usize, usize, usize, usize, usize)>,
 }
 
-/// What `cut` wrote: the file's bytes, its tiles, the raw tiles and GLO-30's windows in it, and
-/// the tiles a run of it makes (those whose raw tile AWS has).
+/// What `cut` wrote: the file's bytes, its tiles, the raw tiles in it, and the tiles a run of it
+/// makes (those with a raw tile).
 pub struct CutReport {
     pub bytes: u64,
     pub tiles: usize,
     pub raw: usize,
-    pub cells: usize,
     pub made: BTreeSet<(u8, u32, u32)>,
 }
 
@@ -282,19 +248,7 @@ pub fn cut(
         Some(w) => tiles.par_iter().map(|&(z, x, y)| w.polys(z, x, y)).collect(),
         None => Vec::new(),
     };
-    // GLO-30's cells, each with the box of the samples read from it.
-    let mut cells: BTreeMap<(i32, i32), Vec<[f64; 4]>> = BTreeMap::new();
-    if src.north.is_some() {
-        for &(z, x, y) in &tiles {
-            if let Some((cs, b)) = crate::terrain_north::cells_of(z, x, y) {
-                for c in cs {
-                    cells.entry(c).or_default().push(b);
-                }
-            }
-        }
-    }
-    let meta_cells: Vec<(i32, i32, String, usize, usize, usize, usize, usize)> = Vec::new();
-    let mut meta = Meta {
+    let meta = Meta {
         fmt: FMT,
         step: KIND.into(),
         v: crate::agent::build::TERRAIN_V as u64,
@@ -302,44 +256,7 @@ pub fn cut(
         subtrees: subtrees_arg(group),
         levels: levels.clone(),
         water: src.water.is_some(),
-        north: src.north.is_some(),
-        cells: meta_cells,
     };
-    let mut windows: Vec<((i32, i32), Vec<u8>)> = Vec::new();
-    if let Some(n) = src.north {
-        for (&(la, lo), boxes) in &cells {
-            match n.cell(la, lo) {
-                Got::Sea => meta.cells.push((la, lo, "sea".into(), 0, 0, 0, 0, 0)),
-                Got::Missing => meta.cells.push((la, lo, "missing".into(), 0, 0, 0, 0, 0)),
-                Got::Cell(c) => {
-                    ensure!(c.win == (0, 0, c.w), "GLO-30 cell {la},{lo} isn't whole");
-                    // (The union of its tiles' windows: they're the same rows and columns, or next.)
-                    let (mut r0, mut r1, mut c0, mut c1) = (usize::MAX, 0, usize::MAX, 0);
-                    for &b in boxes {
-                        let (a, n, s, m) = window(la, lo, c.w, b);
-                        if n > 0 && m > 0 {
-                            (r0, r1, c0, c1) = (r0.min(a), r1.max(a + n), c0.min(s), c1.max(s + m));
-                        }
-                    }
-                    if r0 >= r1 {
-                        (r0, r1, c0, c1) = (0, 0, 0, 0);
-                    }
-                    let (rows, cols) = (r1 - r0, c1 - c0);
-                    let mut b = Vec::with_capacity(rows * cols * 5);
-                    for r in r0..r1 {
-                        for k in c0..c1 {
-                            b.extend(c.e[r * c.w + k].to_le_bytes());
-                        }
-                    }
-                    for r in r0..r1 {
-                        b.extend(c.filled[r * c.w + c0..r * c.w + c1].iter().map(|&f| f as u8));
-                    }
-                    meta.cells.push((la, lo, "cell".into(), c.w, r0, rows, c0, cols));
-                    windows.push(((la, lo), zstd::bulk::compress(&b, 3)?));
-                }
-            }
-        }
-    }
     let mut w = store::sect::SectWriter::create(path, serde_json::to_value(&meta)?)?;
     let mut n_raw = 0;
     let mut made = BTreeSet::new();
@@ -359,12 +276,8 @@ pub fn cut(
             w.add(&name("w", z, x, y), &polys_bytes(&p))?;
         }
     }
-    let n_cells = windows.len();
-    for ((la, lo), b) in windows {
-        w.add(&format!("c-{la}-{lo}"), &b)?;
-    }
     let bytes = w.finish()?;
-    Ok(CutReport { bytes, tiles: tiles.len(), raw: n_raw, cells: n_cells, made })
+    Ok(CutReport { bytes, tiles: tiles.len(), raw: n_raw, made })
 }
 
 /// A task's file, open: what its group reads (crate::terrain_pack's sources, from it alone).
@@ -373,7 +286,6 @@ pub struct Inputs {
     pub meta: Meta,
     /// The raw tiles it may read (`raw_read`): one asked for outside them is an error, never "none".
     reads: BTreeSet<(u8, u32, u32)>,
-    cells: HashMap<(i32, i32), Got>,
 }
 
 impl Inputs {
@@ -391,29 +303,8 @@ impl Inputs {
             meta.v,
             crate::agent::build::TERRAIN_V
         );
-        let mut cells = HashMap::new();
-        for (la, lo, kind, w, r0, rows, c0, cols) in &meta.cells {
-            let got = match kind.as_str() {
-                "sea" => Got::Sea,
-                "missing" => Got::Missing,
-                "cell" => {
-                    let n = rows * cols;
-                    let b = if n == 0 {
-                        Vec::new()
-                    } else {
-                        zstd::bulk::decompress(&r.read(&format!("c-{la}-{lo}"))?, n * 5)?
-                    };
-                    ensure!(b.len() == n * 5, "GLO-30 cell {la},{lo}: {} bytes, not {}", b.len(), n * 5);
-                    let e = b[..n * 4].chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
-                    let filled = b[n * 4..].iter().map(|&f| f != 0).collect();
-                    Got::Cell(Arc::new(Cell { w: *w, e, filled, win: (*r0, *c0, *cols) }))
-                }
-                k => bail!("GLO-30 cell {la},{lo} of kind {k}"),
-            };
-            cells.insert((*la, *lo), got);
-        }
         let reads = raw_read(&meta.levels);
-        Ok(Inputs { r, meta, reads, cells })
+        Ok(Inputs { r, meta, reads })
     }
 
     /// The z6 tile and the group's subtrees.
@@ -427,10 +318,7 @@ impl Inputs {
     /// The group's tiles made (crate::terrain_pack::make_piece over its levels, with the sources
     /// the job's run has): its tiles, sorted, and its mid's part.
     pub fn make(&self) -> Result<(Vec<Made>, Mid)> {
-        let src = Sources {
-            north: self.meta.north.then_some(self as &dyn Cells),
-            water: self.meta.water.then_some(self as &dyn WaterSource),
-        };
+        let src = Sources { water: self.meta.water.then_some(self as &dyn WaterSource) };
         crate::terrain_pack::make_piece(self, &src, self.meta.levels.clone())
     }
 }
@@ -463,13 +351,6 @@ impl WaterSource for Inputs {
     }
     fn pin(&self) -> String {
         "a terrain task's".into()
-    }
-}
-
-impl Cells for Inputs {
-    fn cell(&self, la: i32, lo: i32) -> Got {
-        // (One the job didn't ask for is one no sample reads: north_tile asks for a ring more.)
-        self.cells.get(&(la, lo)).cloned().unwrap_or(Got::Missing)
     }
 }
 
@@ -772,7 +653,6 @@ mod tests {
     use crate::coord::client::Client;
     use crate::coverage::Coverage;
     use crate::out::Out;
-    use crate::terrain_north::tests::FnCells;
     use crate::terrain_pack::{build_piece_with, mid_logical, piece_levels, read_mid, RawTiles};
     use std::path::PathBuf;
 
@@ -840,8 +720,7 @@ mod tests {
         }
     }
 
-    /// A z6 tile in the far north (GLO-30 blended in, the walled patches' z9 tiles), the coverage at
-    /// a corner of four of its subtrees (12.656°E, 70.10°N: z8 columns 136–137, rows 56–57, in z6
+    /// A z6 tile in the far north, the coverage at a corner of four of its subtrees (12.656°E, 70.10°N: z8 columns 136–137, rows 56–57, in z6
     /// tile 6/34/14), and its raw tiles under `d`: the z6 tile, its coverage, its raw tiles' cache.
     fn north_piece(d: &Path) -> ((u32, u32), Coverage, RawTiles) {
         let cov = Coverage::fixture(
@@ -858,11 +737,7 @@ mod tests {
         let (&q, ts) = by_q.iter().next().unwrap();
         assert!(ts.contains(&(34, 14)), "{ts:?}");
         crate::terrain_pack::tests::synthetic_raw(&d.join("local"), &cov, q, &[(34, 14)]);
-        ((34, 14), cov, RawTiles::with_store(&d.join("local"), &d.join("store"), crate::terrain_sources::TEST_BASE))
-    }
-
-    fn cells() -> FnCells {
-        FnCells::new(|lat, lon| (200.0 + (lat - 70.0) * 100.0 + (lon - 10.0) * 50.0) as f32)
+        ((34, 14), cov, RawTiles::with_store(&d.join("local"), &d.join("store"), crate::terrain_pack::TEST_BASE))
     }
 
     #[test]
@@ -880,8 +755,7 @@ mod tests {
             .find(|(a, b)| (b.0 == a.0 + 1 && b.1 == a.1) || (b.0 == a.0 && b.1 == a.1 + 1))
             .unwrap();
         let water = Across { a, b };
-        let cells = cells();
-        let src = Sources { north: Some(&cells), water: Some(&water) };
+        let src = Sources { water: Some(&water) };
         let gs = groups(&levels, Some(&water)).unwrap();
         assert_eq!(gs.len(), subs.len() - 1, "the lake's two subtrees in one group");
         let joint = gs.iter().find(|g| g.contains(&a)).unwrap();
@@ -901,7 +775,6 @@ mod tests {
             let lv = levels_of(&levels, &g.iter().copied().collect(), true);
             let path = d.path().join(format!("t-{}-{}", g[0].0, g[0].1)).join(INPUT);
             let c = cut(t, g, &lv, &raw, &src, &path).unwrap();
-            assert!(c.cells > 0, "GLO-30's windows");
             let inp = Inputs::open(&path).unwrap();
             let one = inp.make().unwrap();
             // (Written and read back as the job takes them.)
@@ -930,13 +803,10 @@ mod tests {
             x.1.levels.get(&9) != whole.1.levels.get(&9) || y.1.levels.get(&9) != whole.1.levels.get(&9),
             "the test's lake has a level of each side's own"
         );
-        // A tile the task wasn't cut for is refused, not "none"; a window too small, a panic.
+        // A tile the task wasn't cut for is refused, not "none".
         let g = &gs[0];
         let inp = Inputs::open(&d.path().join(format!("t-{}-{}", g[0].0, g[0].1)).join(INPUT)).unwrap();
         assert!(RawSource::get(&inp, 12, 0, 0).is_err());
-        let (la, lo, ..) = inp.meta.cells.iter().find(|c| c.2 == "cell" && c.6 > 0).unwrap().clone();
-        let Got::Cell(c) = Cells::cell(&inp, la, lo) else { panic!() };
-        assert!(std::panic::catch_unwind(|| c.at(0, 0)).is_err() || c.win.0 == 0 && c.win.1 == 0);
         // Polygons read back bit for bit.
         let p = water.polys(12, (a.0 << 4) + 15, (a.1 << 4) + 15).unwrap();
         assert!(!p.is_empty(), "the lake at its corner");
@@ -1056,8 +926,7 @@ mod tests {
             .find(|(a, b)| (b.0 == a.0 + 1 && b.1 == a.1) || (b.0 == a.0 && b.1 == a.1 + 1))
             .unwrap();
         let water = Across { a, b };
-        let cells = cells();
-        let src = Sources { north: Some(&cells), water: Some(&water) };
+        let src = Sources { water: Some(&water) };
         let alone = piece(p, "alone", t, &cov, &raw, &src, None);
         assert!(alone.0.is_some() && alone.1.is_some());
         let (c, port) = crate::coord::start_for_test(&p.join("coord"), "m4", "");
@@ -1193,13 +1062,13 @@ mod tests {
         let port: u16 = env("TT_PORT").parse().unwrap();
         let mut out = Out::unbound(&root, &scratch.join("job")).unwrap();
         let cov = live_coverage(&out);
-        let opened = crate::terrain_pack::SourceFiles::open(&out, false).unwrap();
         let raw = RawTiles::with_store(
             &PathBuf::from(env("TT_RAW")),
             &root.join("sources/aws-terrarium"),
-            &opened.declared.base,
+            &crate::terrain_base::terrarium_template(&root, &out.manifest).unwrap(),
         );
-        let src = opened.sources();
+        let water = crate::terrain_pack::open_water(&out).unwrap();
+        let src = Sources { water: Some(&water) };
         let c = crate::coord::Coordinator::start(
             &scratch.join("coord"),
             Some(PathBuf::from(env("TT_WASM"))),

@@ -938,3 +938,31 @@ fn a_tile_fetch_that_panics_ends_the_sampling_in_an_error() {
     let e = r.unwrap_err();
     assert!(e.contains("103/82.png") && e.contains("panicked: a bad tile"), "{e}");
 }
+
+/// A plan of many files finds a point's files by its grid: those a scan of every file finds, in
+/// the plan's order (footprints of 1°, one of the world, one without a footprint).
+#[test]
+fn many_files_are_found_by_their_grid_as_by_a_scan() {
+    let mut files: Vec<(String, Option<[f64; 4]>)> = Vec::new();
+    for la in 40..50 {
+        for lo in -10..10 {
+            files.push((format!("{la} {lo}"), Some([lo as f64, la as f64, lo as f64 + 1.0, la as f64 + 1.0])));
+        }
+    }
+    files.insert(37, ("world".into(), Some([-180.0, -90.0, 180.0, 90.0])));
+    files.insert(5, ("any".into(), None));
+    files.push(("again".into(), Some([0.0, 45.0, 1.0, 46.0])));
+    let g = FileGrid::of(&files);
+    assert!(files.len() > FileGrid::FROM && g.side == 1.0);
+    let scan = |x: f64, y: f64| -> Vec<usize> {
+        (0..files.len()).filter(|&k| files[k].1.is_none_or(|b| in_box(&b, x, y))).collect()
+    };
+    let grid = |x: f64, y: f64| -> Vec<usize> {
+        g.near(x, y).into_iter().filter(|&k| files[k].1.is_none_or(|b| in_box(&b, x, y))).collect()
+    };
+    for (x, y) in [(0.5, 45.5), (0.0, 46.0), (1.0, 45.0), (-10.0, 40.5), (9.99, 49.99), (50.0, 0.0), (-0.0, 40.0)] {
+        assert_eq!(grid(x, y), scan(x, y), "({x}, {y})");
+    }
+    assert_eq!(grid(0.5, 45.5).len(), 4, "its own, the world's, the one without, the other");
+    assert!(g.near(f64::NAN, 1.0).is_empty());
+}

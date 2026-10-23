@@ -1397,7 +1397,7 @@ mod tests {
                     .unwrap();
             }
         }
-        let raw = RawTiles::with_store(&local, &d.path().join("store"), crate::terrain_sources::TEST_BASE);
+        let raw = RawTiles::with_store(&local, &d.path().join("store"), crate::terrain_pack::TEST_BASE);
         let terrain = d.path().join("terrain");
         for (&q, ts) in &by_q {
             crate::terrain_pack::build_q(
@@ -1531,7 +1531,7 @@ mod tests {
             }
             std::fs::write(local.join(format!("{z}/{x}/{y}.png")), encode_terrain_png(&e, 256, 256).unwrap()).unwrap();
         }
-        let raw = RawTiles::with_store(&local, &d.path().join("store"), crate::terrain_sources::TEST_BASE);
+        let raw = RawTiles::with_store(&local, &d.path().join("store"), crate::terrain_pack::TEST_BASE);
         let terrain = d.path().join("terrain");
         crate::terrain_pack::build_q(
             &mut Out::unbound(&terrain, &d.path().join("terrain-scratch")).unwrap(),
