@@ -120,11 +120,12 @@ const pbar = (frac, cls = "", colour) => { const i = h("i"); i.style.width = `${
 const chip = (text, cls = "", title) => h("span", { class: `chip ${cls}`, title }, text);
 const swatch = (colour) => h("i", { class: "sw", style: { background: colour } });
 // A step's phase shares (crate::timings::PhaseShares) in a line: its three largest phases by
-// their mean share of a run's time, each with its share of the bytes moved; "" before any run.
+// their mean share of a run's time, each with its share of the bytes its phases read and wrote
+// (local disk, NAS and internet alike); "" before any run.
 const phaseShares = (ps) => {
   if (!ps?.phases?.length) return "";
-  const pc = (f) => `${Math.round(f * 100)}%`;
-  return `${ps.phases.slice(0, 3).map((p) => `${p.name} ${pc(p.wall)}${p.bytes ? ` (${pc(p.bytes)} of bytes)` : ""}`).join(" · ")} · ${ps.runs} run${ps.runs === 1 ? "" : "s"}`;
+  const pc = (f) => (f > 0 && f < 0.005 ? "<1%" : `${Math.round(f * 100)}%`);
+  return `${ps.phases.slice(0, 3).map((p) => `${p.name} ${pc(p.wall)}${p.bytes ? ` (${pc(p.bytes)} of I/O)` : ""}`).join(" · ")} · ${ps.runs} run${ps.runs === 1 ? "" : "s"}`;
 };
 // A step's mark: done, under way, to come.
 const mark = (done, running) => h("span", `mark ${done ? "ok" : running ? "run" : ""}`, done ? "✓" : running ? "▸" : "○");
@@ -1065,7 +1066,7 @@ function details(m) {
   // The steps table itself: every step the same row (docs/pipeline.md), with where its runs' time
   // goes (the lead's measured phase shares, `a.phase_shares`: the mean over its last runs).
   const rows = Object.values(table.steps);
-  if (rows.length) box.append(h("h3", null, "The steps", h("span", null, "every step's row of the table: what it makes, of what, where it runs, and where its last runs' time and bytes went")), tbl(["Stage", "Step", "Does", "Kind", "Each target", "Runs on", "A job", "Time by phase"], rows.map((s) => [S.stageTitle(s.stage), s.title, s.does, s.kind, s.of ? `a task of ${S.title(s.of)}` : s.scope === "world" ? "the world" : `${/^[aeiou]/.test(s.noun) ? "an" : "a"} ${s.noun}`, s.place === "any" ? "any Mac" : "the lead", s.of ? "" : s.place === "any" ? "a quarter hour's" : "all", phaseShares(a.phase_shares?.[s.id])])));
+  if (rows.length) box.append(h("h3", null, "The steps", h("span", null, "every step's row of the table: what it makes, of what, where it runs; time by phase: each phase's mean share of a run's time over its last good runs, and of the bytes read and written (I/O: local disk, NAS and internet alike)")), tbl(["Stage", "Step", "Does", "Kind", "Each target", "Runs on", "A job", "Time by phase"], rows.map((s) => [S.stageTitle(s.stage), s.title, s.does, s.kind, s.of ? `a task of ${S.title(s.of)}` : s.scope === "world" ? "the world" : `${/^[aeiou]/.test(s.noun) ? "an" : "a"} ${s.noun}`, s.place === "any" ? "any Mac" : "the lead", s.of ? "" : s.place === "any" ? "a quarter hour's" : "all", phaseShares(a.phase_shares?.[s.id])])));
   box.append(h("div", "fresh", `Updated ${clock(now)} · the lead's heartbeat ${a.beat ? ago(now, a.beat) : "–"}${a.started ? `, its agent running since ${clock(a.started)} (app ${a.app})` : ""}${m.fc ? ` · forecast ${ago(now, m.fc.at)}` : ""} · history #${sw.seq ?? "–"}`));
   return box;
 }

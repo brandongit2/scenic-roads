@@ -1109,12 +1109,18 @@ pub struct PhaseShare {
     pub bytes: f64,
 }
 
-/// The phase shares of each kind's runs in `runs` (oldest first): its last `SHARES_RUNS` that
-/// ended well.
+/// The step a run of `kind` is a job of (crate::agent::steps' id): a leased task's runs are timed
+/// as "task <its step>" (`scenic task`), every other job under its step's id.
+pub fn step_of(kind: &str) -> &str {
+    kind.strip_prefix("task ").unwrap_or(kind)
+}
+
+/// The phase shares of each step's runs in `runs` (oldest first; by `step_of`): its last
+/// `SHARES_RUNS` that ended well.
 pub fn phase_shares<'a>(runs: impl IntoIterator<Item = &'a RunRec>) -> std::collections::BTreeMap<String, PhaseShares> {
     let mut by: std::collections::BTreeMap<&str, Vec<&RunRec>> = Default::default();
     for r in runs.into_iter().filter(|r| r.ok && r.wall_s > 0.0) {
-        by.entry(r.kind.as_str()).or_default().push(r);
+        by.entry(step_of(&r.kind)).or_default().push(r);
     }
     by.into_iter()
         .map(|(k, mut rs)| {
@@ -1150,24 +1156,30 @@ pub fn phase_shares<'a>(runs: impl IntoIterator<Item = &'a RunRec>) -> std::coll
 }
 
 /// A timings log read as it grows (`PhaseShares` on the lead): only what was appended since the
-/// last read, each kind's last `SHARES_RUNS` runs that ended well kept; read whole again when the
-/// log is cut (`append`) or replaced.
+/// last read, each step's last `SHARES_RUNS` runs that ended well kept; read whole again when the
+/// log is cut (`append` writes its newer half as a new file) or replaced: another file (inode) at
+/// its path, or a shorter one.
+#[cfg(unix)]
 #[derive(Default)]
 pub struct LogTail {
     at: u64,
+    file: u64,
     runs: std::collections::BTreeMap<String, std::collections::VecDeque<RunRec>>,
 }
 
+#[cfg(unix)]
 impl LogTail {
     /// Reads what the log at `p` gained since the last read (its size taken first, read-only; a
     /// partly written last line left for the next read). True when anything new was read.
     pub fn read(&mut self, p: &Path) -> bool {
         use std::io::{Read, Seek};
-        let Ok(len) = std::fs::metadata(p).map(|m| m.len()) else {
+        use std::os::unix::fs::MetadataExt;
+        // (Its size taken before reading: what's appended meanwhile waits for the next read.)
+        let Ok((len, file)) = std::fs::metadata(p).map(|m| (m.len(), m.ino())) else {
             return false;
         };
-        if len < self.at {
-            *self = Self::default();
+        if len < self.at || file != self.file {
+            *self = Self { file, ..Self::default() };
         }
         if len == self.at {
             return false;
@@ -1188,7 +1200,7 @@ impl LogTail {
             if !r.ok || r.wall_s <= 0.0 {
                 continue;
             }
-            let q = self.runs.entry(r.kind.clone()).or_default();
+            let q = self.runs.entry(step_of(&r.kind).to_string()).or_default();
             q.push_back(r);
             if q.len() > SHARES_RUNS {
                 q.pop_front();
@@ -1197,7 +1209,7 @@ impl LogTail {
         true
     }
 
-    /// Each kind's phase shares over the runs kept.
+    /// Each step's phase shares over the runs kept.
     pub fn shares(&self) -> std::collections::BTreeMap<String, PhaseShares> {
         phase_shares(self.runs.values().flatten())
     }
@@ -1380,6 +1392,22 @@ mod tests {
         std::fs::write(&log, format!("{line}\n")).unwrap();
         assert!(t.read(&log));
         assert!(!t.shares().contains_key("a"));
+        // (Replaced by a longer file, as a cut is written: read whole again, not from the old end.)
+        let mut longer = String::new();
+        for _ in 0..3 {
+            longer += &format!("{}\n", serde_json::to_string(&share_run("c", true, 2.0, &[("z", 1.0, 0)])).unwrap());
+        }
+        write_whole(&log, longer.as_bytes()).unwrap();
+        assert!(t.read(&log));
+        assert!(!t.shares().contains_key("b"));
+        assert_eq!(t.shares()["c"].runs, 3);
+    }
+
+    #[test]
+    fn a_task_is_its_step() {
+        // (`scenic task` times a leased task as "task <step>": its shares are its step's.)
+        let s = phase_shares(&[share_run("task treeblock", true, 2.0, &[("y", 1.0, 0)]), share_run("trees", true, 2.0, &[])]);
+        assert_eq!(s.keys().collect::<Vec<_>>(), ["treeblock", "trees"]);
     }
 
     // (One test: the run is the process's.)

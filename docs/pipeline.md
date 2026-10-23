@@ -212,7 +212,7 @@ same tab; an alert links to the tab that says more.
 - **Activity:** the hours, and a sentence per event.
 - **Details:** tables, unfolded, among them the steps table itself, each step with where its runs'
   time goes: its three largest phases by their mean share of a run's wall time, each with its share
-  of the bytes moved, over its last 10 runs that ended well (the lead's status's `phase_shares`,
+  of the bytes read and written (local disk, NAS and internet: "I/O"), over its last 10 runs that ended well (the lead's status's `phase_shares`,
   docs/pool.md §10; measured, none typed by hand; blank before a step's first run).
 - **This device:** helping with this tab (index.html; not in `?view`).
 

@@ -986,13 +986,21 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   start, the events taken in already passed over. The menu bar's panel loads this Mac's own page
   alone (docs/building.md §2, Status).
 - **Phase shares** (task #511): for each step, its top-level phases' mean share of a run's wall
-  time and of the bytes its phases moved, over its last 10 runs that ended well
-  (`timings::SHARES_RUNS`; the bytes' mean over the runs that moved any), largest by time first:
-  the lead's status's `phase_shares` (`timings::PhaseShares`, by step), so every Mac's page shows
-  the same. Only the lead holds the build's `coord/timings.jsonl`; its coordinator reads it on a
-  thread of its own every minute (`coord::phase_sharer`), never on the agent's loop or under the
-  pool's lock: the file's size taken first, then only the lines added since (`timings::LogTail`;
-  a log cut to its newer half, or replaced, is read whole again). A member's status carries none.
+  time and of the bytes its phases counted as read or written (local disk, NAS and internet alike:
+  `timings::count`; the page says "I/O"), over its last 10 runs that ended well
+  (`timings::SHARES_RUNS`; the bytes' mean over the runs that counted any), largest by time first.
+  The lead's status carries them as `phase_shares`, by step id (the steps table's; a leased task's
+  runs, timed as "task <step>", are its step's: `timings::step_of`):
+  `{"<step>": {"runs": n, "phases": [{"name", "class", "wall", "bytes"}]}}`, `wall` and `bytes`
+  fractions 0–1 (`timings::PhaseShares`); a step with no good run in the log is absent. A phase
+  missing from a run counts 0 there; the rest of a run's time is in no phase. Every Mac's page shows
+  the same. Only the lead holds the build's `coord/timings.jsonl` (in its agent's folder, on its
+  own disk); its coordinator reads it on a thread of its own every minute (`coord::phase_sharer`,
+  ending within a second of the coordinator's stop), never on the agent's loop or under the pool's
+  lock: the file's size taken first, then only the whole lines added since (`timings::LogTail`; a
+  partly written last line waits for the next read; a log cut to its newer half, or replaced, i.e.
+  another file at the path or a shorter one, is read whole again, at most 16 MB). A member's status
+  carries none.
 - **Each Mac's jobs** (the build page's machines, `scenic status`, task #246): a block per Mac,
   the lead's first, marked coordinator (`scenic status` with its ramp, §7.1); its capacity as the coordinator last
   heard it (memory held of the guard's limit and free for more, cores busy, disk reserved and
