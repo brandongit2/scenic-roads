@@ -111,10 +111,14 @@ and codesign.
   Support/scenic/run/<name>` and restarts it when it exits: `bin/scenic-launcher server` (the map
   server's LaunchAgent), and Scenic.app's own copy running `agent` (the build service; there an
   agent exiting with `QUIT_EXIT` ends it cleanly, so launchd leaves it stopped). macOS's Local
-  Network privacy counts the agent as the app's launcher (its launchd program); the launcher has
-  no Info.plist of its own (task #570's embedded one changed its signature and was reverted).
-  Without the grant the agent's probe of `fishandchips.local:445` fails
-  (the log's `nas: at home: no; … (errno 65)`, EHOSTUNREACH) while `nc` and the mount work.
+  Network privacy counts the agent as the app's launcher (its launchd program), not as the app
+  (the app's own entry stays undecided while the agent connects): the launcher carries an embedded
+  Info.plist (`tools/status/bundle.sh`: CFBundleIdentifier its signing identifier
+  `local.scenic.status.launcher`, NSLocalNetworkUsageDescription) so macOS can ask for the grant,
+  listed as "Scenic build service". macOS keeps the grant by the launcher's signing identifier and
+  path, so a launcher rebuilt or signed otherwise keeps it. Without the grant the agent's probe of
+  `fishandchips.local:445` fails (the log's `nas: at home: no; … (errno 65)`, EHOSTUNREACH) while
+  `nc` from a shell and the mount work (shells and ssh are exempt).
   A launcher whose signature changed no longer matches the build service's launch constraint
   (LWCR, launchd: spawn failed, exit 78): Scenic registers the service again when it opens with a
   new launcher or finds the job refused (docs/surface.md). The test, in a sandbox: `tools/status/
@@ -122,7 +126,8 @@ and codesign.
   open `<dir>/Applications/Scenic Sandbox.app`, check `launchctl print gui/$UID/local.scenic-
   sandbox.build` runs, `sandbox.sh update <dir>`; within about a minute the app replaces itself
   and reopens, update.log says the new launcher's cdhash and "registering the build service
-  again", and the job runs (no "needs LWCR update"); `sandbox.sh clean <dir>`. A server started
+  again", and the job runs (no "needs LWCR update"; the first registration after the swap can keep the old
+  constraint, the next, 30 s later, takes); `sandbox.sh clean <dir>`. A server started
   any other way (such as the desktop app's preview) waits on macOS's network-volume prompt; test
   servers run from the shell.
 - **The updater** checks the NAS's `app/current.json` every five minutes, copies a newer app locally
