@@ -138,10 +138,7 @@ mod tests {
         crate::inputs::sources::accept_fixture(d.path(), &mut m);
         crate::inputs::elevation::accept_fixture(d.path(), &mut m);
         let h = of(d.path(), &m).unwrap();
-        assert_eq!(
-            h.into_iter().collect::<Vec<_>>(),
-            ["esa-worldcover.s3.eu-central-1.amazonaws.com"]
-        );
+        assert_eq!(h.into_iter().collect::<Vec<_>>(), ["esa-worldcover.s3.eu-central-1.amazonaws.com"]);
     }
 
     /// The cache: the records read at most every RECHECK; a failed read keeps the last set; with
