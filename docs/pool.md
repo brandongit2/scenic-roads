@@ -64,8 +64,10 @@ The share is SMB 3 on a Synology. The design assumes:
   for 2 s, then the newest aside (by modification time) is read, the last version written whole,
   so a manifest is never taken as empty. An aside put aside (its status change time) more than a
   day ago is never read, so a stale aside can't bring back a file. Sweeps: each fallback removes
-  asides as above; every `whole::write` also removes its folder's day-old asides (a listing at
-  most hourly a folder a process), so a rarely written file's go too; and a kept scenic-units
+  asides as above; every `whole::write` also removes its folder's day-old asides and the day-old temporary files
+  writes left there (`<name>.<host>.<pid>.tmp`: a process ended, or a call given up on, before its
+  rename), a listing at most hourly a folder a process, so a rarely written file's go too (the
+  members folder's, its members'); and a kept scenic-units
   folder that can't be removed (a held file) is renamed aside (`scache::drop_dir`), the unit's
   earlier folder asides removed at its next save. The fallbacks log
   `whole: rename over <path> busy: …`, `whole: <path> missing, read from its aside …` and

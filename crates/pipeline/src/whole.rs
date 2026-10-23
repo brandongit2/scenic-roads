@@ -154,8 +154,8 @@ fn aside_with(
 /// Writes `b` as `path`, whole: a temporary name renamed over it; the old file renamed aside when
 /// that stays busy (`rename_or_aside`), so a file another SMB session holds open (a Mac killed with
 /// it open: the server may keep its handle for hours) never blocks a write. Readers of a file that
-/// must never read as missing read it through `read_replaced`. The folder's day-old asides are
-/// swept once it is written (`sweep_hourly`).
+/// must never read as missing read it through `read_replaced`. The folder's day-old asides and
+/// writes' leftover temporary files are swept once it is written (`sweep_hourly`).
 pub fn write(path: &Path, b: &[u8]) -> Result<()> {
     let tmp = tmp_name(path);
     let r = (|| -> Result<()> {
@@ -341,12 +341,27 @@ fn aside_age(m: &std::fs::Metadata, now: std::time::SystemTime) -> std::time::Du
 /// starting with it. Run by every `write`, at most hourly a folder a process
 /// (`sweep_hourly`), so the asides of a file rarely written still go.
 pub fn sweep_asides(dir: &Path, prefix: &str, older: std::time::Duration) -> usize {
+    sweep_where(dir, older, &|name, _| name.starts_with(prefix) && name.ends_with(".aside.tmp"))
+}
+
+/// Whether `name` is a temporary file a `write` left (`tmp_name`'s `<name>.<host>.<pid>.tmp`: its
+/// process ended, or its call was given up on, before its rename).
+fn left_by_write(name: &str) -> bool {
+    let Some(rest) = name.strip_suffix(".tmp") else { return false };
+    let pid = rest.rsplit('.').next().unwrap_or_default();
+    !name.ends_with(".aside.tmp") && !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Removes what's in `dir` that `which` (its name, whether a folder) picks and that last changed
+/// `older` ago or more; failures passed over. How many went.
+fn sweep_where(dir: &Path, older: std::time::Duration, which: &dyn Fn(&str, bool) -> bool) -> usize {
     let now = std::time::SystemTime::now();
     let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
     let mut n = 0;
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        if !name.starts_with(prefix) || !name.ends_with(".aside.tmp") {
+        // (Its type from the listing: a stat only for those picked.)
+        if !which(&name, e.file_type().is_ok_and(|t| t.is_dir())) {
             continue;
         }
         let Ok(m) = std::fs::symlink_metadata(e.path()) else { continue };
@@ -359,7 +374,9 @@ pub fn sweep_asides(dir: &Path, prefix: &str, older: std::time::Duration) -> usi
     n
 }
 
-/// `sweep_asides` of `dir`'s day-old asides, when this process hasn't swept it within the hour.
+/// `dir`'s day-old asides and temporary files its writes left (`left_by_write`: any Mac's or
+/// process's, as the asides), removed when this process hasn't swept it within the hour: the
+/// folder's writers sweep it (the pool's members folder, its members).
 fn sweep_hourly(dir: &Path) {
     static SWEPT: std::sync::Mutex<Vec<(PathBuf, std::time::Instant)>> = std::sync::Mutex::new(Vec::new());
     let now = std::time::Instant::now();
@@ -371,7 +388,12 @@ fn sweep_hourly(dir: &Path) {
         s.retain(|(d, _)| d != dir);
         s.push((dir.to_path_buf(), now));
     }
-    sweep_asides(dir, "", ASIDE_KEPT);
+    sweep_where(dir, ASIDE_KEPT, &swept_hourly);
+}
+
+/// What `sweep_hourly` removes once old: asides, and files a write left.
+fn swept_hourly(name: &str, folder: bool) -> bool {
+    name.ends_with(".aside.tmp") || (!folder && left_by_write(name))
 }
 
 /// Copies `src` to `dst`, whole; the bytes copied.
@@ -688,6 +710,25 @@ mod tests {
         assert!(d.path().join("m.json.a.1.0.aside.tmp").exists(), "another prefix's kept");
         assert_eq!(sweep_asides(d.path(), "", std::time::Duration::ZERO), 1);
         assert!(d.path().join("m.json").exists());
+    }
+
+    /// The hourly sweep takes the temporary files writes left too (task #605: a members folder's
+    /// heartbeats' from days before), not another program's or a folder.
+    #[test]
+    fn the_hourly_sweep_takes_writes_leftovers() {
+        let d = tempfile::tempdir().unwrap();
+        for f in ["m.json.Mac-mini.18643.tmp", "m.json.mac.5.0.aside.tmp", "m.json", "x.part", "notes.tmp", "a.b.tmp"] {
+            std::fs::write(d.path().join(f), b"x").unwrap();
+        }
+        std::fs::create_dir_all(d.path().join("u.mac.7.tmp")).unwrap();
+        assert_eq!(sweep_where(d.path(), std::time::Duration::from_secs(3600), &swept_hourly), 0, "all young");
+        assert_eq!(sweep_where(d.path(), std::time::Duration::ZERO, &swept_hourly), 2);
+        let mut left: Vec<String> = std::fs::read_dir(d.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["a.b.tmp", "m.json", "notes.tmp", "u.mac.7.tmp", "x.part"]);
     }
 
     fn read_with_zero(p: &Path) -> Vec<u8> {

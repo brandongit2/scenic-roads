@@ -722,7 +722,11 @@ impl Packer {
 
 /// The archives a helper's jobs put on the NAS (crate::handoff::Handoff::raw), named in `store`'s
 /// index, each that's there whole (one that isn't goes as an unnamed one does); how many were new
-/// to it. The caller holds the build lock (merging the hand-offs).
+/// to it. One its shard names already is passed over unread, and the index saved only when it
+/// changed: the lead's records keep every archive handed (thousands), and each new process of the
+/// lead names them all again, a read or two on the NAS each (task #605: 8 minutes of a restarted
+/// lead's first step, its heartbeat stale meanwhile). The caller holds the build lock (merging the
+/// hand-offs).
 pub fn name_handed(store: &Path, handed: &[(String, Pack)], _held: &crate::out::BuildLock) -> Result<Named> {
     if handed.is_empty() {
         return Ok(Named::default());
@@ -730,7 +734,11 @@ pub fn name_handed(store: &Path, handed: &[(String, Pack)], _held: &crate::out::
     let naming: Vec<&str> = handed.iter().map(|(_, p)| p.name.as_str()).collect();
     let mut ix = Index::load_to_change(store, &naming)?;
     let mut n = Named::default();
+    let mut changed = false;
     for (shard, p) in handed {
+        if ix.of(shard).contains(p) && !ix.gone.contains_key(&p.name) {
+            continue;
+        }
         if !there(store, p) {
             eprintln!("rawpack: {} was handed over, but isn't on the NAS whole: not named", p.name);
             continue;
@@ -750,14 +758,17 @@ pub fn name_handed(store: &Path, handed: &[(String, Pack)], _held: &crate::out::
                 continue;
             }
         }
-        ix.gone.remove(&p.name);
+        changed |= ix.gone.remove(&p.name).is_some();
         let l = ix.shards.entry(shard.clone()).or_default();
         if !l.contains(p) {
             l.push(p.clone());
             n.new += 1;
+            changed = true;
         }
     }
-    ix.save(store)?;
+    if changed {
+        ix.save(store)?;
+    }
     Ok(n)
 }
 
@@ -1348,6 +1359,33 @@ mod tests {
         assert_eq!(name_handed(&store, &raw, &lock).unwrap().new, 1);
         drop(lock);
         assert_eq!(Index::load(&store).unwrap().of(&raw[0].0).len(), 1);
+    }
+
+    #[test]
+    fn archives_named_already_are_passed_over_unread() {
+        use std::os::unix::fs::MetadataExt;
+        let d = tempfile::tempdir().unwrap();
+        let (store, dir, root) = nas(d.path());
+        let outbox = d.path().join("outbox");
+        std::fs::create_dir_all(&outbox).unwrap();
+        put(&dir, "12/2048/1365.png", &png(), 120);
+        pack_local_to(&dir, &store, &root, true, Some(outbox.clone()), &|_, _, _| {}).unwrap();
+        let raw: Vec<(String, Pack)> =
+            crate::handoff::written_in(&outbox).unwrap().unwrap().into_iter().flat_map(|h| h.raw).collect();
+        let lock = crate::out::BuildLock::take(&root).unwrap();
+        assert_eq!(name_handed(&store, &raw, &lock).unwrap().new, 1);
+        // Named again (a new process of the lead, its records' archives all handed again): its
+        // archive not read (gone from the folder here), the index not written again (its file's).
+        let ino = std::fs::metadata(store.join(INDEX)).unwrap().ino();
+        std::fs::remove_file(store.join("packs").join(&raw[0].1.name)).unwrap();
+        let n = name_handed(&store, &raw, &lock).unwrap();
+        drop(lock);
+        assert!(n.new == 0 && n.again.is_empty());
+        assert_eq!(std::fs::metadata(store.join(INDEX)).unwrap().ino(), ino);
+        assert_eq!(
+            Index::load(&store).unwrap().of(&raw[0].0),
+            &raw[..1].iter().map(|r| r.1.clone()).collect::<Vec<_>>()[..]
+        );
     }
 
     #[test]
