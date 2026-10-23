@@ -1588,10 +1588,11 @@ impl Coordinator {
         (!s.nas_probes.is_empty() || l.load.is_some()).then(|| NasView {
             probes: s.nas_probes.clone(),
             limits: s.nas_own,
-            load_pct: l.load.map(|v| (v * 10.0).round() / 10.0),
+            load_pct: l.load.filter(|v| v.is_finite()).map(|v| (v * 10.0).round() / 10.0),
             target_pct: l.target,
             held: l.held(),
-            disks_pct: s.nas_disks.clone(),
+            // (Finite alone: a NaN would be written null and the status read back not at all.)
+            disks_pct: s.nas_disks.iter().copied().filter(|v| v.is_finite()).collect(),
             traffic: pool_traffic(&s.capacities(&self.me)),
         })
     }
@@ -5083,6 +5084,12 @@ mod tests {
         assert_eq!(v.disks_pct, vec![60.0, 91.0]);
         let t = v.traffic.unwrap();
         assert_eq!((t[0], t[3], t[2]), (25.0, 8.0, 0.0), "the lead's and m1's summed; the unmeasured left out");
+        // A disk read as NaN: left out, and the status still reads back.
+        c.shared.lock().unwrap().nas_disks = vec![f64::NAN, 50.0];
+        let v = c.nas_view().unwrap();
+        assert_eq!(v.disks_pct, vec![50.0]);
+        let back: NasView = serde_json::from_str(&serde_json::to_string(&v).unwrap()).unwrap();
+        assert_eq!(back, v);
     }
 
     fn handoff(units: &[(&str, &str)]) -> Handoff {

@@ -121,26 +121,26 @@ impl Calls {
     }
 }
 
-static SWITCHES: OnceLock<Calls> = OnceLock::new();
-static RECORDS: OnceLock<Calls> = OnceLock::new();
-static WRITERS_: OnceLock<Calls> = OnceLock::new();
+static SWITCH_CALLS: OnceLock<Calls> = OnceLock::new();
+static RECORD_CALLS: OnceLock<Calls> = OnceLock::new();
+static WRITE_CALLS: OnceLock<Calls> = OnceLock::new();
 
 fn switches() -> &'static Calls {
-    SWITCHES.get_or_init(|| Calls::new("nas-switch", SWITCH_READERS))
+    SWITCH_CALLS.get_or_init(|| Calls::new("nas-switch", SWITCH_READERS))
 }
 
 fn records() -> &'static Calls {
-    RECORDS.get_or_init(|| Calls::new("nas-read", READERS))
+    RECORD_CALLS.get_or_init(|| Calls::new("nas-read", READERS))
 }
 
 fn writers() -> &'static Calls {
-    WRITERS_.get_or_init(|| Calls::new("nas-write", WRITERS))
+    WRITE_CALLS.get_or_init(|| Calls::new("nas-write", WRITERS))
 }
 
 /// The process's NAS calls through the three pools (the live store's, crate::agent::live): those in
 /// flight now (stuck ones included) and those missed so far (`Calls::missed`).
 pub fn calls() -> (usize, u64) {
-    [&SWITCHES, &RECORDS, &WRITERS_]
+    [&SWITCH_CALLS, &RECORD_CALLS, &WRITE_CALLS]
         .iter()
         .filter_map(|c| c.get())
         .fold((0, 0), |(b, m), c| (b + c.busy(), m + c.missed()))

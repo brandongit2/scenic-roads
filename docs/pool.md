@@ -1048,9 +1048,8 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   thread busy, over the second. The lead's status says the rest (`nas`, `coord::NasView`): the
   day's probes as its prober keeps them (the ones in `state/pool/nas-probes.json`, read from there
   and saved there, no other copy), the limits they give, the gate's smoothed load, target and
-  whether it holds, the disks' last reading, and the pool's traffic summed. All of this adds
-  three atomic reads to the sampler's second (a round measured 0.27 ms of CPU on the M1, 23 Oct)
-  and seven numbers to an ask. **The internet** (task #516), counted by the agent's proxy (§7.7), which
+  whether it holds, the disks' last reading (finite values alone), and the pool's traffic summed.
+  The sampler's cost shows in `sampler_cpu_ms`; an ask carries seven more numbers. **The internet** (task #516), counted by the agent's proxy (§7.7), which
   every job's connection out goes through (`budget::net`): per host, the bytes in (to the jobs)
   and out, added as each chunk is relayed (one atomic add a read, so a long download shows as it
   goes), the requests asked (a tunnel is one: what's inside is the client's TLS), the connections
