@@ -1,18 +1,20 @@
 //! The history's old days, one tar a day (docs/pool.md §7.5, task #531): `state/coord/history/<day>/`
-//! folders hold a file a writer, so a week of them is hundreds of small files on a share that
-//! makes 20-55 a second. A day the page view no longer reads (`history::DAYS`: today's and the six
-//! before) is packed as `state/coord/history-archive/<day>.tar` and its folder removed.
+//! folders hold a file per writer (two a day in October 2026, 17 KB-1.4 MB a day), one folder a
+//! day for good. A day the page view no longer reads (`history::DAYS`: today's and the six
+//! before) is packed into `state/coord/history-archive/<day>.tar` and its folder removed;
+//! `pubtimes::load_history` reads the tars for days it wants whose folders are gone.
 //!
 //! Run by the daily `gc` job (lead only, outside the agent's loop and the pool's lock), every NAS
 //! call under `nasread`'s deadlines. A day:
-//! - its files read whole (one read each), the tar built in memory and written in one stream to a
-//!   temporary name (one fsync), read back and its listing and bytes checked against what was
-//!   read, then renamed into place;
-//! - only then the folder's files and the folder removed, and only if the folder still lists what
-//!   was packed (a late append to an old day leaves the folder; the next run packs the day again,
-//!   replacing the tar);
-//! - a tar already there that matches the folder (a run stopped between the rename and the
-//!   removals) is not written again;
+//! - its files read whole (one read each) and merged into what its tar already holds (`merge`:
+//!   a late write, an event of an old day appended after the day was packed, is added, never
+//!   written over the tar; a tar that can't be read is never replaced, the day waits, said);
+//! - the tar built in memory, written in one stream to a temporary name (one fsync), read back
+//!   and checked against what was built, then renamed into place;
+//! - only then the folder's files and the folder removed, and only if the folder still lists
+//!   what was packed (names and sizes; else it waits for the next run). An append landing between
+//!   that listing and the file's removal (milliseconds, and only to a week-old day) is the one
+//!   way a line is lost;
 //! - temporary files a stopped run left are removed once an hour old.
 
 use super::nasread;
@@ -148,10 +150,17 @@ fn archive_day(folder: &Path, arch: &Path, day: &str, dry_run: bool, rep: &mut R
     if dry_run {
         return Ok(());
     }
-    // A complete tar of the same files is there already: a run stopped before the removals.
-    let have = nasread::read(&tar_path).ok().is_some_and(|t| list_tar(&t).is_ok_and(|l| l == members));
-    if !have {
-        let tar = build(&members)?;
+    // What a tar already there holds (an earlier run's, the folder since written to late, or a
+    // run stopped before the removals) is kept: the folder's files are merged into it, never
+    // over it. A tar that can't be read is never replaced: the day waits, said.
+    let old = match nasread::read(&tar_path) {
+        Ok(t) => list_tar(&t).with_context(|| format!("{} unreadable, left as it is", tar_path.display()))?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(e).with_context(|| format!("read {}", tar_path.display())),
+    };
+    let packed = merge(&old, members);
+    if packed != old {
+        let tar = build(&packed)?;
         std::fs::create_dir_all(arch)?;
         let tmp = crate::whole::tmp_name(&tar_path);
         let (t, bytes) = (tmp.clone(), tar);
@@ -164,7 +173,7 @@ fn archive_day(folder: &Path, arch: &Path, day: &str, dry_run: bool, rep: &mut R
         });
         let r = written.and_then(|()| {
             let back = nasread::read(&tmp)?;
-            ensure!(list_tar(&back)? == members, "the written tar does not match what was read");
+            ensure!(list_tar(&back)? == packed, "the written tar does not match what was read");
             crate::whole::rename_over(&tmp, &tar_path)?;
             Ok(())
         });
@@ -184,6 +193,25 @@ fn archive_day(folder: &Path, arch: &Path, day: &str, dry_run: bool, rep: &mut R
     }
     std::fs::remove_dir(folder).with_context(|| format!("remove {}", folder.display()))?;
     Ok(())
+}
+
+/// The tar's members with the folder's merged in, by name: a folder file that begins with the
+/// member's bytes (the same file, packed by a stopped run, maybe appended to since) takes its place;
+/// one the member ends with was merged by a run stopped before the removals; any other (a file
+/// begun again after its day was packed: a late write) is appended to it.
+fn merge(old: &[(String, Vec<u8>)], folder: Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>)> {
+    let mut m: std::collections::BTreeMap<String, Vec<u8>> = old.iter().cloned().collect();
+    for (name, b) in folder {
+        match m.get_mut(&name) {
+            Some(have) if b.starts_with(have) => *have = b,
+            Some(have) if have.ends_with(&b) => {}
+            Some(have) => have.extend_from_slice(&b),
+            None => {
+                m.insert(name, b);
+            }
+        }
+    }
+    m.into_iter().collect()
 }
 
 /// A tar (ustar) of `members`, in order: the whole stream.
@@ -321,30 +349,50 @@ mod tests {
     }
 
     #[test]
-    fn a_damaged_or_stale_tar_is_replaced_from_the_folder() {
+    fn a_damaged_tar_is_never_replaced_and_its_day_kept() {
         let r = tempfile::tempdir().unwrap();
         let old = day_of(8);
         put(r.path(), &old, "m1", "a\nb\n");
         std::fs::create_dir_all(r.path().join(ARCHIVE)).unwrap();
         let tp = r.path().join(ARCHIVE).join(format!("{old}.tar"));
         std::fs::write(&tp, b"cut short").unwrap();
-        run(r.path(), NOW, false, &|| {}).unwrap();
-        assert_eq!(list_tar(&std::fs::read(&tp).unwrap()).unwrap()[0].1, b"a\nb\n");
-        assert!(!r.path().join(DIR).join(&old).exists());
+        let rep = run(r.path(), NOW, false, &|| {}).unwrap();
+        assert_eq!(rep.warnings.len(), 1, "{rep:?}");
+        assert_eq!(std::fs::read(&tp).unwrap(), b"cut short");
+        assert!(r.path().join(DIR).join(&old).join("m1.jsonl").exists());
     }
 
     #[test]
-    fn a_late_write_to_an_archived_day_is_packed_again_over_the_tar() {
+    fn a_late_write_to_an_archived_day_is_merged_into_its_tar() {
         let r = tempfile::tempdir().unwrap();
         let old = day_of(8);
         put(r.path(), &old, "m1", "a\n");
+        put(r.path(), &old, "m2", "b\n");
         run(r.path(), NOW, false, &|| {}).unwrap();
-        put(r.path(), &old, "m3", "later\n");
+        put(r.path(), &old, "m1", "later\n");
+        put(r.path(), &old, "m3", "new\n");
         let rep = run(r.path(), NOW, false, &|| {}).unwrap();
-        assert_eq!(rep.days_archived, 1);
+        assert_eq!((rep.days_archived, rep.files_removed), (1, 2), "{rep:?}");
+        assert!(!r.path().join(DIR).join(&old).exists());
         let t = list_tar(&std::fs::read(r.path().join(ARCHIVE).join(format!("{old}.tar"))).unwrap()).unwrap();
-        assert_eq!(t.len(), 1);
-        assert_eq!(t[0].1, b"later\n");
+        let want: Vec<(String, Vec<u8>)> = vec![
+            (format!("{old}/m1.jsonl"), b"a\nlater\n".to_vec()),
+            (format!("{old}/m2.jsonl"), b"b\n".to_vec()),
+            (format!("{old}/m3.jsonl"), b"new\n".to_vec()),
+        ];
+        assert_eq!(t, want);
+    }
+
+    #[test]
+    fn merging_again_after_a_stop_neither_loses_nor_doubles() {
+        let n = |s: &str| s.to_string();
+        let tar = vec![(n("d/m1"), b"a\nb\n".to_vec()), (n("d/m2"), b"c\n".to_vec())];
+        // Packed then appended to (a stopped run, then a write): the folder's file takes its place.
+        assert_eq!(merge(&tar, vec![(n("d/m1"), b"a\nb\nz\n".to_vec())])[0].1, b"a\nb\nz\n");
+        // A late file merged, the run stopped before its removal: not appended twice.
+        assert_eq!(merge(&tar, vec![(n("d/m1"), b"b\n".to_vec())]), tar);
+        // A late file: appended.
+        assert_eq!(merge(&tar, vec![(n("d/m2"), b"x\n".to_vec())])[1].1, b"c\nx\n");
     }
 
     #[test]

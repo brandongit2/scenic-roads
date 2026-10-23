@@ -686,7 +686,8 @@ pub fn text(cats: &[CatalogChain], units: &[UnitChain], last: usize) -> String {
     o
 }
 
-/// The build's history: the NAS's (`state/coord/history/<day>/*.jsonl`, the last `days` days',
+/// The build's history: the NAS's (`state/coord/history/<day>/*.jsonl`, or the day's tar in
+/// `history-archive/` once GC packed it, the last `days` days',
 /// every writer's), else the lead's own (`local`, its coordinator's file); duplicates once.
 pub fn load_history(root: Option<&Path>, local: Option<&Path>, days: u64) -> Vec<Event> {
     let mut out: Vec<Event> = Vec::new();
@@ -698,9 +699,23 @@ pub fn load_history(root: Option<&Path>, local: Option<&Path>, days: u64) -> Vec
     };
     if let Some(dir) = root.map(|r| r.join("state/coord/history")).filter(|d| d.is_dir()) {
         for d in (0..=days).filter_map(|k| crate::pool::journal::day(since + k * 86400)) {
-            if let Ok(rd) = std::fs::read_dir(dir.join(d)) {
+            if let Ok(rd) = std::fs::read_dir(dir.join(&d)) {
                 for f in rd.flatten() {
                     out.extend(read(&f.path()));
+                }
+            }
+            // A day packed by GC (agent::histarchive); a folder and tar both there: duplicates once.
+            let tar = dir.with_file_name("history-archive").join(format!("{d}.tar"));
+            if let Ok(members) =
+                std::fs::read(&tar).map_err(anyhow::Error::from).and_then(|t| crate::agent::histarchive::list_tar(&t))
+            {
+                for (_, b) in members {
+                    out.extend(
+                        String::from_utf8_lossy(&b)
+                            .lines()
+                            .filter_map(|l| serde_json::from_str::<Event>(l).ok())
+                            .filter(|e| e.t >= since),
+                    );
                 }
             }
         }
@@ -1098,5 +1113,25 @@ mod tests {
         let local = d.path().join("h.jsonl");
         std::fs::write(&local, line(&b)).unwrap();
         assert_eq!(load_history(None, Some(&local), 2).len(), 1);
+    }
+
+    #[test]
+    fn the_history_reads_a_day_packed_by_gc() {
+        let d = tempfile::tempdir().unwrap();
+        let t = now_s() - 86400;
+        let day = crate::pool::journal::day(t).unwrap();
+        let line = |e: &Event| serde_json::to_string(e).unwrap() + "\n";
+        let a = Event { seq: 1, ..ev("catalog", t) };
+        let b = Event { seq: 2, ..ev("merged", t + 1) };
+        let arch = d.path().join("state/coord/history-archive");
+        std::fs::create_dir_all(&arch).unwrap();
+        let members = vec![(format!("{day}/m-a.jsonl"), line(&a).into_bytes())];
+        std::fs::write(arch.join(format!("{day}.tar")), crate::agent::histarchive::build(&members).unwrap()).unwrap();
+        // The folder there too (a run stopped before the removals), with a later line: each once.
+        let dir = d.path().join("state/coord/history").join(&day);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("m-a.jsonl"), line(&a) + &line(&b)).unwrap();
+        let h = load_history(Some(d.path()), None, 3);
+        assert_eq!(h.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(), ["catalog", "merged"]);
     }
 }

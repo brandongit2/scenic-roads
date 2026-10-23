@@ -744,14 +744,17 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
   `history::DAYS` (7) days, the days the page view reads (`pageview` takes the same constant). A
   day before them is packed as one tar, `state/coord/history-archive/<day>.tar` (members
   `<day>/<member>.jsonl`), by the daily `gc` job, so the lead alone, outside its loop and the
-  pool's lock (`agent::histarchive`, task #531). Per day: its files read whole, the tar built in
-  memory and written in one stream to a temporary name (one fsync), read back and its listing
-  and bytes checked against what was read, renamed into place; only then the folder's files and
-  folder removed, and only if the folder still lists what was packed. A late write to an
-  archived day is packed again over the tar by the next run; a complete tar left by a stopped
-  run is kept and the folder removed; a stopped run's temporary file is removed once an hour
-  old. A day that fails (a folder holding anything but files, over 512 MB, a deadline) is left
-  as it is and said as a warning in the job's note. Every call goes through `nasread`'s deadlines.
+  pool's lock (`agent::histarchive`, task #531). Per day: its files read whole and merged into
+  what the day's tar holds already (a late write, an old day's event appended after the day was
+  packed, is added to the tar, never written over it; a tar that can't be read is never
+  replaced), the tar built in memory and written in one stream to a temporary name (one fsync),
+  read back and checked, renamed into place; only then the folder's files and folder removed,
+  and only if the folder still lists the same names and sizes (an append between that listing
+  and the removal, milliseconds, is the one way a line can be lost). A stopped run's temporary
+  file is removed once an hour old. A day that fails (a folder holding anything but files, over
+  512 MB, a deadline, an unreadable tar) is left as it is and said as a warning in the job's
+  note. Every call goes through `nasread`'s deadlines. `pubtimes::load_history` (`scenic
+  status`, a lead's planned notes) reads a day's tar alongside its folder.
 - **The contact** `state/coordinator.json`: a stopping lead removes it only if it still names its
   own addresses.
 - **Its port is free for the next:** children are started (`store::spawn`) only while no listener
