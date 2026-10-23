@@ -4434,7 +4434,7 @@ impl Agent {
         // (Recomputed after a job ends, or every five minutes: it reads the manifest and outlines.)
         if ended || self.progress.as_ref().is_none_or(|(t, _, _)| t.elapsed() >= Duration::from_secs(300)) {
             if let Some(r) = root.as_ref() {
-                self.progress = Some((Instant::now(), self.region_progress(r, &regions), self.checklist(r, &regions)));
+                self.progress = Some((Instant::now(), self.region_progress(r), self.checklist(r, &regions)));
             }
         }
         let built = self.progress.as_ref().map(|(_, b, _)| b.clone()).unwrap_or_default();
@@ -7169,7 +7169,7 @@ impl Agent {
         };
         // (The pass's worldwide jobs: the forecast's before the regions'.)
         let before = jobs.clone();
-        let covs = match self.coverage(root, &manifest, date, &recipes, unread.is_empty()) {
+        let covs = match self.coverage(root, &manifest, unread.is_empty()) {
             Ok(c) => c,
             Err(why) => {
                 waiting.push(Waiting { step: None, what: "Building the regions".into(), why });
@@ -8242,7 +8242,7 @@ impl Agent {
         if regions.is_empty() {
             return build::fold(&items, &next, &notes);
         }
-        let Ok(covs) = self.coverage(root, &manifest, &date, regions, false) else {
+        let Ok(covs) = self.coverage(root, &manifest, false) else {
             return build::fold(&items, &next, &notes);
         };
         let cov = &covs.all;
@@ -8270,13 +8270,13 @@ impl Agent {
     }
 
     /// Per region, how many of its z6 tiles are built (none before the first pass makes the outlines).
-    fn region_progress(&self, root: &Path, regions: &[recipes::Recipe]) -> BTreeMap<String, build::RegionState> {
+    fn region_progress(&self, root: &Path) -> BTreeMap<String, build::RegionState> {
         let Some(date) = self.latest_pass(root) else { return BTreeMap::new() };
         let manifest: BTreeMap<String, String> = nasread::read(&root.join("state/build/manifest.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
-        let Ok(covs) = self.coverage(root, &manifest, &date, regions, false) else { return BTreeMap::new() };
+        let Ok(covs) = self.coverage(root, &manifest, false) else { return BTreeMap::new() };
         let (cov, each) = (&covs.all, &covs.each);
         let mut keys = build::Keys::load(root);
         let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
@@ -8300,7 +8300,7 @@ impl Agent {
         else {
             return keys;
         };
-        let Ok(covs) = self.coverage(root, &manifest, &date, &recipes, false) else { return keys };
+        let Ok(covs) = self.coverage(root, &manifest, false) else { return keys };
         let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
         let tiles = self.terrain_tiles(root, &manifest);
         let times = rekey::FileTimes::new(root);
@@ -8355,26 +8355,22 @@ impl Agent {
         Ok(Some(r))
     }
 
-    /// The coverage of `recipes`, and each region's, as last made: made again only when the recipes,
-    /// the pass's outlines or the outline files change. (An `osm:` outline is read from the pass's
-    /// file on the NAS, 2.7 GB: made three times a loop, then each region's again, they had the loop
-    /// take a quarter of an hour once the US's states were in, 2026-10-05.) `edits`: the recipes
-    /// are all of them (every one read), and a change to them is the owner's edit (the plan's; not
-    /// the heartbeat's, whose read may have failed).
+    /// The coverage of the regions' accepted version, and each region's, as last made: made again
+    /// only for a new version (an edit is one), and then from this Mac's cache (by the version) when
+    /// it holds it, so a restart reads none of the geometry files off the NAS (#608). `edits`: a
+    /// change of version is the owner's edit (the plan's look; not the heartbeat's, whose read may
+    /// have failed).
     fn coverage(
         &self,
         root: &Path,
         manifest: &BTreeMap<String, String>,
-        date: &str,
-        recipes: &[recipes::Recipe],
         edits: bool,
     ) -> Result<std::rc::Rc<Coverages>, String> {
-        let _ = (date, recipes);
         // (The accepted version: keyed by its index's name, an edit being a new version.)
         let a = crate::inputs::regions::read::source(root, manifest)
             .map_err(|e| format!("the regions' accepted version: {e:#}"))?;
-        let (key, seen) = (Some(format!("accepted {}", a.version)), Some(a.version.clone()));
-        if let Some(e) = seen.filter(|_| edits) {
+        if edits {
+            let e = a.version.clone();
             if self.edits.borrow().as_ref().is_some_and(|last| *last != e) {
                 let now = std::time::SystemTime::now();
                 let first = self
@@ -8387,14 +8383,16 @@ impl Agent {
             *self.edits.borrow_mut() = Some(e);
         }
         if let Some((k, c)) = self.coverage.borrow().as_ref() {
-            if Some(k) == key.as_ref() {
+            if *k == a.version {
                 return Ok(c.clone());
             }
         }
-        let all = crate::coverage::Coverage::accepted(root, &a, None).map_err(|e| format!("{e:#}"))?;
+        // (Kept in this Mac's cache by the version, #608: a restart reads no geometry file off the
+        // NAS, ~1000 small reads that held the first round 20 minutes.)
+        let all = crate::coverage::Coverage::accepted(root, &a, Some(&self.o.home.join("cache")))
+            .map_err(|e| format!("{e:#}"))?;
         let c = std::rc::Rc::new(Coverages { each: all.by_region(), all });
-        // (Not kept when the outline files couldn't be listed: made again next time.)
-        *self.coverage.borrow_mut() = key.map(|k| (k, c.clone()));
+        *self.coverage.borrow_mut() = Some((a.version.clone(), c.clone()));
         Ok(c)
     }
 
@@ -14202,6 +14200,36 @@ mod tests {
     }
 
     #[test]
+    fn a_restart_reads_no_geometry_off_the_nas() {
+        // (#608: ~1000 small reads over SMB held a restarted agent's first round 20 minutes.)
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        let r = |p: &str| {
+            vec![recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec![format!("place:{p},20")] }]
+        };
+        let rings = |c: &Coverages| c.all.shapes.iter().map(|s| s.rings.clone()).collect::<Vec<_>>();
+        let mut m1 = BTreeMap::new();
+        crate::inputs::regions::accept_fixture(&root, &root, &r("-21.9,64.13"), &mut m1);
+        let first = rings(&agent(&root, &home).coverage(&root, &m1, false).unwrap());
+        let a = crate::inputs::regions::read::source(&root, &m1).unwrap();
+        let geoms: Vec<PathBuf> = crate::inputs::regions::read::listed(&a)
+            .unwrap()
+            .iter()
+            .map(|l| root.join(&l.stored.as_ref().unwrap().geometry))
+            .collect();
+        assert!(!geoms.is_empty());
+        for g in &geoms {
+            std::fs::remove_file(g).unwrap();
+        }
+        // The restart: a new agent, the same home, the files gone from the NAS: the cache answers.
+        assert_eq!(rings(&agent(&root, &home).coverage(&root, &m1, false).unwrap()), first);
+        // A new version isn't the cached one: read from its own files.
+        let mut m2 = BTreeMap::new();
+        crate::inputs::regions::accept_fixture(&root, &root, &r("-21.9,64.2"), &mut m2);
+        assert_ne!(rings(&agent(&root, &home).coverage(&root, &m2, false).unwrap()), first);
+    }
+
+    #[test]
     fn an_edit_to_the_regions_is_noticed() {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
@@ -14215,11 +14243,11 @@ mod tests {
         // The agent: the first look isn't an edit; a new accepted version is (the plan's look, not
         // the heartbeat's).
         let a = agent(&root, &home);
-        a.coverage(&root, &m1, "2026-09-28", &[], true).unwrap();
-        a.coverage(&root, &m1, "2026-09-28", &[], true).unwrap();
-        a.coverage(&root, &m1, "2026-09-28", &[], false).unwrap();
+        a.coverage(&root, &m1, true).unwrap();
+        a.coverage(&root, &m1, true).unwrap();
+        a.coverage(&root, &m1, false).unwrap();
         assert!(a.edited_at.get().is_none());
-        a.coverage(&root, &m2, "2026-09-28", &[], true).unwrap();
+        a.coverage(&root, &m2, true).unwrap();
         let (first, last) = a.edited_at.get().unwrap();
         assert_eq!(edit_held(Some((first, last)), last), Some((Duration::ZERO, EDIT_HOLD)));
         // A run of edits holds the work an hour at most.
