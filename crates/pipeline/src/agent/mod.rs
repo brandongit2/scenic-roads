@@ -1398,7 +1398,9 @@ pub struct Agent {
     tiles: std::cell::RefCell<tiles::TerrainTiles>,
     /// The coverage and each region's as last made, with what they were made from (`coverage`).
     coverage: std::cell::RefCell<Option<(String, std::rc::Rc<Coverages>)>>,
-    /// The recipes' and outline files' key as last seen, and when it changed while this agent ran
+    /// The coverage being read off the loop (`coverage`), by the accepted version it's of.
+    coverage_making: std::cell::RefCell<Option<(String, std::thread::JoinHandle<Result<Coverages, String>>)>>,
+    /// The regions' accepted version as last seen, and when it changed while this agent ran
     /// (an edit: `EDIT_HOLD`): first in a run of edits, and last.
     edits: std::cell::RefCell<Option<String>>,
     edited_at: std::cell::Cell<Option<(std::time::SystemTime, std::time::SystemTime)>>,
@@ -1855,6 +1857,7 @@ impl Agent {
             reach: Default::default(),
             tiles,
             coverage: Default::default(),
+            coverage_making: Default::default(),
             edits: Default::default(),
             edited_at: Default::default(),
             _lock: lock,
@@ -8357,9 +8360,11 @@ impl Agent {
 
     /// The coverage of the regions' accepted version, and each region's, as last made: made again
     /// only for a new version (an edit is one), and then from this Mac's cache (by the version) when
-    /// it holds it, so a restart reads none of the geometry files off the NAS (#608). `edits`: a
-    /// change of version is the owner's edit (the plan's look; not the heartbeat's, whose read may
-    /// have failed).
+    /// it holds it, so a restart reads none of the geometry files off the NAS (#608). Made on a
+    /// thread of its own, waited for a second as it starts: a longer read (a new version's geometry off the NAS)
+    /// goes on while the loop steps and beats, an error saying so until it's done (the plan's
+    /// regions wait for it). `edits`: a change of version is the owner's edit (the plan's look; not
+    /// the heartbeat's, whose read may have failed).
     fn coverage(
         &self,
         root: &Path,
@@ -8387,11 +8392,32 @@ impl Agent {
                 return Ok(c.clone());
             }
         }
-        // (Kept in this Mac's cache by the version, #608: a restart reads no geometry file off the
-        // NAS, ~1000 small reads that held the first round 20 minutes.)
-        let all = crate::coverage::Coverage::accepted(root, &a, Some(&self.o.home.join("cache")))
-            .map_err(|e| format!("{e:#}"))?;
-        let c = std::rc::Rc::new(Coverages { each: all.by_region(), all });
+        let mut making = self.coverage_making.borrow_mut();
+        let fresh = if making.as_ref().is_none_or(|(v, h)| *v != a.version && h.is_finished()) {
+            let (root, cache, a) = (root.to_path_buf(), self.o.home.join("cache"), a.clone());
+            let run = std::thread::Builder::new().name("coverage".into()).spawn(move || {
+                let all = crate::coverage::Coverage::accepted(&root, &a, Some(&cache)).map_err(|e| format!("{e:#}"))?;
+                Ok(Coverages { each: all.by_region(), all })
+            });
+            *making = Some((a.version.clone(), run.map_err(|e| format!("the coverage's thread: {e}"))?));
+            true
+        } else {
+            false
+        };
+        let Some((v, h)) = making.as_ref() else { unreachable!() };
+        if *v != a.version {
+            return Err(format!("reading the regions' coverage (of {v}, then {})", a.version));
+        }
+        // (Waited for a second when just started; after, only looked at.)
+        let until = Instant::now() + Duration::from_secs(if fresh { 1 } else { 0 });
+        while !h.is_finished() {
+            if Instant::now() >= until {
+                return Err(format!("reading the regions' coverage ({})", a.version));
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let (_, h) = making.take().unwrap();
+        let c = std::rc::Rc::new(h.join().map_err(|_| "reading the regions' coverage failed".to_string())??);
         *self.coverage.borrow_mut() = Some((a.version.clone(), c.clone()));
         Ok(c)
     }
@@ -14210,8 +14236,13 @@ mod tests {
         let rings = |c: &Coverages| c.all.shapes.iter().map(|s| s.rings.clone()).collect::<Vec<_>>();
         let mut m1 = BTreeMap::new();
         crate::inputs::regions::accept_fixture(&root, &root, &r("-21.9,64.13"), &mut m1);
-        let first = rings(&agent(&root, &home).coverage(&root, &m1, false).unwrap());
         let a = crate::inputs::regions::read::source(&root, &m1).unwrap();
+        // A kept file of another format is made again in its place, not read past every time.
+        let kept = home.join("cache/coverage").join(format!("{}.cov", store::naming::hash16(a.version.as_bytes())));
+        std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
+        std::fs::write(&kept, b"RDCOV001").unwrap();
+        let first = rings(&agent(&root, &home).coverage(&root, &m1, false).unwrap());
+        assert!(crate::coverage::from_kept(&std::fs::read(&kept).unwrap()).is_some());
         let geoms: Vec<PathBuf> = crate::inputs::regions::read::listed(&a)
             .unwrap()
             .iter()

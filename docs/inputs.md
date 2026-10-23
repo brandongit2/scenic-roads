@@ -606,8 +606,12 @@ resolved to nothing (a `hand_out_all` region, every stretch handed out) is store
 facts name neither, and the readers list it (the Regions list shows it) but leave it out of the
 regions built, the coverage and the drawing (no area to cover).
 
-**Reading:** `Coverage::accepted(root, accepted)` (crate::inputs::regions::read) builds the coverage
-from the stored shapes, regions in id order, shapes in stored order. Nothing rebuilds the coverage
+**Reading:** `Coverage::accepted(root, accepted, cache)` (crate::inputs::regions::read) builds the
+coverage from the stored shapes, regions in id order, shapes in stored order. The agent passes its
+cache folder: the coverage is kept there by the accepted version (`coverage/<hash16>.cov`, the
+others deleted), so each Mac reads a version's geometry files off the NAS once, a restart none; that
+first read runs on a thread of its own, the plan's region jobs waiting for it. `scenic-build` passes
+none. Nothing rebuilds the coverage
 from outlines, GeoJSON or region files. `scenic-build`'s `--regions <dir>` (a scratch folder, for
 trying regions) runs the same check in memory and stores nothing. Tests build coverages with
 `Coverage::fixture` and put accepted fixtures in their records (`inputs::regions::accept_fixture`).

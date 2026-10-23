@@ -56,8 +56,7 @@ lead's coordinator. Below, the M4 (48 GB) unless said.
     read, and the heritage job's clip of the pass's `whs` set (made again by osmium).
   - **Kept:** the answers (`items/`, `heritage-<date>/`), the trains' stop pairs (`rail/`), the z6 tile
     stages' timings (`unit-stages.json`), what a z6 tile kept that isn't on the NAS yet, and the
-    coverage as last read (`coverage/<key>.cov`, reused while every recipe and outline file has the
-    name, length and time it had).
+    coverage as last read (`coverage/<hash16>.cov`, by the regions' accepted version).
   - Nothing is deleted through a link, nor anything in the NAS's project folder.
 - **Its own map** is served from the NAS and what it has downloaded (Mirror).
 - **An OSM pass** starts with 80 GB free (the pack cache counting as free) and copies the planet to

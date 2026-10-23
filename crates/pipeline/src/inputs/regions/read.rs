@@ -280,11 +280,16 @@ impl Coverage {
         };
         let Some(dir) = cache.map(|c| c.join("coverage")) else { return made() };
         let at = dir.join(format!("{}.cov", store::naming::hash16(a.version.as_bytes())));
-        if let Some((c, _)) = store::cachefile::read(&at).ok().flatten().and_then(|b| crate::coverage::from_kept(&b)) {
-            return Ok(c);
+        match store::cachefile::read(&at) {
+            Ok(Some(b)) => match crate::coverage::from_kept(&b) {
+                Some(c) => return Ok(c),
+                // (Another format's: made again in its place, not read past forever.)
+                None => drop(store::cachefile::try_remove(&at)),
+            },
+            _ => {}
         }
         let c = made()?;
-        if store::cachefile::create_bytes(&at, &crate::coverage::kept_bytes(&c, &[])).is_ok() {
+        if store::cachefile::create_bytes(&at, &crate::coverage::kept_bytes(&c)).is_ok() {
             store::cachefile::release(&at);
             for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
                 if e.path() != at {

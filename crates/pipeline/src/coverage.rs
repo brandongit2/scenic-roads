@@ -548,21 +548,15 @@ pub fn fixture_circle(lon: f64, lat: f64, km: f64) -> Vec<[i32; 2]> {
 /// `Coverage::accepted` keeps the coverage it reads.
 pub const CACHE_ENV: &str = "SCENIC_CACHE";
 
-const KEPT_MAGIC: &[u8; 8] = b"RDCOV002";
+const KEPT_MAGIC: &[u8; 8] = b"RDCOV003";
 
-/// The coverage's shapes as kept (`Coverage::accepted`): their source, country, buffer and rings, and
-/// the recipes that didn't read.
-pub(crate) fn kept_bytes(c: &Coverage, bad: &[(String, String)]) -> Vec<u8> {
+/// The coverage's shapes as kept (`Coverage::accepted`): their source, country, buffer and rings.
+pub(crate) fn kept_bytes(c: &Coverage) -> Vec<u8> {
     let mut b = KEPT_MAGIC.to_vec();
     let s = |b: &mut Vec<u8>, t: &str| {
         b.extend_from_slice(&(t.len() as u64).to_le_bytes());
         b.extend_from_slice(t.as_bytes());
     };
-    b.extend_from_slice(&(bad.len() as u64).to_le_bytes());
-    for (f, e) in bad {
-        s(&mut b, f);
-        s(&mut b, e);
-    }
     for list in [&c.shapes, &c.depth_only] {
         b.extend_from_slice(&(list.len() as u64).to_le_bytes());
         for sh in list {
@@ -581,7 +575,7 @@ pub(crate) fn kept_bytes(c: &Coverage, bad: &[(String, String)]) -> Vec<u8> {
 
 /// `kept_bytes` read back: the shapes made again from their rings (`Shape::new`, as
 /// `Coverage::accepted` makes them); None when they don't read.
-pub(crate) fn from_kept(b: &[u8]) -> Option<(Coverage, Vec<(String, String)>)> {
+pub(crate) fn from_kept(b: &[u8]) -> Option<Coverage> {
     struct Rd<'a>(&'a [u8]);
     impl<'a> Rd<'a> {
         fn take(&mut self, n: usize) -> Option<&'a [u8]> {
@@ -604,10 +598,6 @@ pub(crate) fn from_kept(b: &[u8]) -> Option<(Coverage, Vec<(String, String)>)> {
     if r.take(8)? != KEPT_MAGIC {
         return None;
     }
-    let mut bad = Vec::new();
-    for _ in 0..r.n()? {
-        bad.push((r.text()?, r.text()?));
-    }
     let mut lists = [Vec::new(), Vec::new()];
     for shapes in lists.iter_mut() {
         for _ in 0..r.n()? {
@@ -625,7 +615,7 @@ pub(crate) fn from_kept(b: &[u8]) -> Option<(Coverage, Vec<(String, String)>)> {
         }
     }
     let [shapes, depth_only] = lists;
-    r.0.is_empty().then_some((Coverage { shapes, depth_only }, bad))
+    r.0.is_empty().then_some(Coverage { shapes, depth_only })
 }
 
 impl Coverage {
