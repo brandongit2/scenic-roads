@@ -203,6 +203,10 @@ select.past { margin-left: 4px; background: var(--bg); color: var(--text); borde
 .card-tip .ct { font-weight: 600; margin-bottom: 3px; }
 .card-tip .ckv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 1px 8px; }
 .card-tip .ckv .k { color: var(--dim); font-size: 11px; text-transform: none; letter-spacing: 0; }
+.card-tip .cstats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 2px 0 6px; }
+.card-tip .cstat { background: var(--bg); border: 1px solid var(--row-line); border-radius: 5px; padding: 3px 7px; }
+.card-tip .cstat .n { font-size: 13.5px; font-weight: 600; }
+.card-tip .cstat .l { font-size: 10px; color: var(--dim); }
 
 .regbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
 .regbar input { flex: 1 1 160px; width: auto; margin: 0; }

@@ -601,36 +601,44 @@ function pagesCard(m) {
 // words made again at each render while what it's about is still shown (by its key); Escape, the
 // close button or a click outside it lets it go.
 const cards = new Map();
-const pin = { key: null, el: null };
+const pin = { key: null, el: null, also: "" };
 let hoverCard = null;
-// `el`'s card: `build()` its rows (made when shown), `key` naming it across renders.
+// `el`'s card: `build(also)` its rows (made when shown; `also`: what else is under the point, the
+// element's `data-also`, as the world map says it), `key` naming it across renders.
 function withCard(el, key, build) {
   cards.set(key, build);
   el.dataset.card = key;
   return el;
 }
-// A card's rows: its title, then [key, value] pairs (a value null: no row), then any lines.
-const cardBody = (title, pairs, ...more) => [h("div", "ct", title), h("div", "ckv", pairs.filter(([, v]) => v != null && v !== "").flatMap(([k, v]) => [h("span", "k", k), h("span", null, v)])), ...more];
+// A card's rows: its title, then [key, value] pairs (a value null: no row), then any lines; a
+// title given as {title, stats} has stat tiles under it ([number, label] pairs, none null).
+const cardBody = (title, pairs, ...more) => {
+  const stats = title?.stats?.filter(([v]) => v != null);
+  return [h("div", "ct", title?.stats ? title.title : title),
+    stats?.length ? h("div", "cstats", stats.map(([v, l]) => h("div", "cstat", h("div", "n", v), h("div", "l", l)))) : null,
+    h("div", "ckv", pairs.filter(([, v]) => v != null && v !== "").flatMap(([k, v]) => [h("span", "k", k), h("span", null, v)])), ...more].filter(Boolean);
+};
 function placeCard(el, x, y) {
   const r = el.getBoundingClientRect();
   el.style.left = `${Math.max(8, Math.min(window.innerWidth - r.width - 8, x + 12))}px`;
   el.style.top = `${y + 14 + r.height > window.innerHeight - 40 ? Math.max(8, y - r.height - 10) : y + 14}px`;
 }
-function showHover(key, x, y) {
+function showHover(key, x, y, also = "") {
   const build = cards.get(key);
   if (!build || pin.key === key) return hideHover();
   if (!hoverCard) { hoverCard = h("div", "card-tip"); document.body.append(hoverCard); }
-  if (hoverCard.dataset.key !== key) { hoverCard.replaceChildren(...build()); hoverCard.dataset.key = key; }
+  if (hoverCard.dataset.key !== `${key}|${also}`) { hoverCard.replaceChildren(...build(also)); hoverCard.dataset.key = `${key}|${also}`; }
   hoverCard.hidden = false;
   placeCard(hoverCard, x, y);
 }
 function hideHover() { if (hoverCard) { hoverCard.hidden = true; hoverCard.dataset.key = ""; } }
-function pinCard(key, x, y) {
+function pinCard(key, x, y, also = "") {
   unpin();
   hideHover();
   const close = h("button", { class: "quiet x", title: "Close (Esc)", "aria-label": "Close", onclick: unpin }, "×");
   pin.key = key;
-  pin.el = h("div", { class: "card-tip pinned", role: "dialog" }, close, h("div", "cb", cards.get(key)()));
+  pin.also = also;
+  pin.el = h("div", { class: "card-tip pinned", role: "dialog" }, close, h("div", "cb", cards.get(key)(also)));
   document.body.append(pin.el);
   placeCard(pin.el, x, y);
 }
@@ -641,23 +649,23 @@ function refreshPin() {
   if (!pin.el) return;
   const build = cards.get(pin.key);
   const body = pin.el.querySelector(".cb");
-  if (build) body.replaceChildren(...build());
+  if (build) body.replaceChildren(...build(pin.also));
   else if (!pin.el.classList.contains("gone")) { pin.el.classList.add("gone"); body.append(h("div", "dim small", "No longer shown (the schedule moved on).")); }
 }
 let cardsWired = false;
 function wireCards() {
   if (cardsWired) return;
   cardsWired = true;
-  const keyAt = (t) => t instanceof Element && t.closest("[data-card]")?.dataset.card;
+  const at = (t) => (t instanceof Element && t.closest("[data-card]")?.dataset) || {};
   document.addEventListener("pointermove", (e) => {
-    const key = e.pointerType === "touch" ? null : keyAt(e.target);
-    if (key) showHover(key, e.clientX, e.clientY);
+    const d = e.pointerType === "touch" ? {} : at(e.target);
+    if (d.card) showHover(d.card, e.clientX, e.clientY, d.also);
     else hideHover();
   });
   document.addEventListener("click", (e) => {
     if (pin.el?.contains(e.target)) return;
-    const key = keyAt(e.target);
-    if (key && cards.has(key)) pinCard(key, e.clientX, e.clientY);
+    const d = at(e.target), key = d.card;
+    if (key && cards.has(key)) pinCard(key, e.clientX, e.clientY, d.also);
     else unpin();
   });
   document.addEventListener("keydown", (e) => e.key === "Escape" && unpin());
@@ -924,13 +932,15 @@ const size = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(1, Ma
 
 // Each region as the tab shows it: the forecast's (its `left` by step, rank, times) with its
 // folders, size and outline (/work/regions), its tiles built (the lead's `built`), its recipe
-// (the lead's `regions`); without a forecast, the lead's regions alone.
+// (the lead's `regions`); those the forecast lacks (or every one without a forecast) without its words.
 function regionRows(m) {
   const fc = m.fc, built = m.a.built || {};
   const order = Object.keys(table.steps), stages = table.stages.map((g) => g.id);
   const recipe = Object.fromEntries((m.a.regions || []).map((r) => [r.id, r]));
   const fcBy = Object.fromEntries((fc?.regions || []).map((r) => [r.id, r]));
-  const ids = fc?.regions?.length ? fc.regions.map((r) => r.id) : [...new Set([...(m.a.regions || []).map((r) => r.id), ...Object.keys(built)])];
+  // (The forecast's first, in its order; then any it lacks that the lead, its built tiles or the
+  // outlines name: the waters regions aren't in the plan, yet they're on the map.)
+  const ids = [...new Set([...(fc?.regions || []).map((r) => r.id), ...(m.a.regions || []).map((r) => r.id), ...Object.keys(built), ...Object.keys(drawn.byId)])];
   return ids.map((id) => {
     const f = fcBy[id], d = drawn.byId[id];
     const work = regionWork(f?.left, fc?.each_s, order);
@@ -948,21 +958,24 @@ function rowState(r) {
   return [st, cls];
 }
 
-// Each region's card (the list's rows and both maps' regions): its folders, state, tiles, when
-// it's built and on the map, its place in the build's order, its download, its work left by step,
-// its outline's recipe.
+// Each region's card (the list's rows and both maps' regions): its folders, its download and tiles
+// built (stat tiles), state, when it's built and on the map, its place in the build's order, the
+// other regions under the map's pointer (`also`: their ids), its work left by step, its outline's
+// recipe.
 function regionCards(rows) {
-  for (const r of rows) cards.set(`mr ${r.id}`, () => {
+  const nameOf = new Map(rows.map((r) => [r.id, r.name]));
+  const ranked = rows.filter((r) => r.f).length;
+  for (const r of rows) cards.set(`mr ${r.id}`, (also) => {
     const [st, cls] = rowState(r);
     const b = r.built;
-    return cardBody(r.name, [
+    const others = (also || "").split(",").filter((id) => id && id !== r.id).map((id) => nameOf.get(id) || id);
+    return cardBody({ title: r.name, stats: [[r.bytes != null ? size(r.bytes) : null, "to download"], [b?.total ? `${n(b.built)} / ${n(b.total)}` : null, "tiles built"]] }, [
       ["in", r.crumbs?.slice(0, -1).join(" › ")],
       ["state", st ? h("span", cls, st) : null],
-      ["tiles", b?.total ? `${n(b.built)} of ${n(b.total)} built` : null],
       ["on the map", r.f ? (r.on_map === true && !r.count ? "yes" : r.map_at ? `all ≈ ${clock(r.map_at)}` : r.on_map === false ? "as it was" : "not yet") : null],
       ["all built", r.count && r.ready_at ? `≈ ${clock(r.ready_at)}` : null],
-      ["build order", r.rank != null ? `${n(r.rank + 1)} of ${n(rows.length)}` : null],
-      ["download", r.bytes != null ? size(r.bytes) : null],
+      ["build order", r.rank != null ? `${n(r.rank + 1)} of ${n(ranked)}` : null],
+      ["also here", others.length ? others.join(", ") : null],
       ["work left", r.count ? h("span", null, r.work.map((w) => h("div", null, swatch(S.colour(w.step)), S.said(w.step, w.k), w.s ? h("span", "dim", ` · ${dur(w.s)}`) : null))) : null],
       ["outline", r.outline?.join(" + ")],
     ], b?.total ? pbar(b.built / b.total, "ok") : null);
@@ -1057,7 +1070,10 @@ function regionsPane(m, md) {
     rp.rowsEl = h("div", "rrows");
     rp.list = h("div", { class: "rlist", role: "list", "aria-label": "Regions" }, rp.rowsEl);
     let ticking = false;
-    rp.list.addEventListener("scroll", () => { if (!ticking) { ticking = true; requestAnimationFrame(() => { ticking = false; paintRows(false); }); } }, { passive: true });
+    const later = () => { if (!ticking) { ticking = true; requestAnimationFrame(() => { ticking = false; if (rp.shown.length) paintRows(false); }); } };
+    rp.list.addEventListener("scroll", later, { passive: true });
+    // (Its height changed (the window, the tab shown again): the rows that now fit.)
+    new ResizeObserver(later).observe(rp.list);
     rp.list.addEventListener("pointerover", (e) => { if (e.pointerType !== "touch") light(e.target.closest?.(".rrow")?.dataset.id || null); });
     rp.list.addEventListener("pointerleave", () => light(null));
     rp.legend = h("div");

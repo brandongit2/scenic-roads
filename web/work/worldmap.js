@@ -16,6 +16,8 @@ import { inRings, tileBox, tileOf } from "./sums.js";
 const FADE_MS = 900;
 const MAX_K = 48; // pixels a world unit, most zoomed in (a z6 tile ≈ 750 px)
 const Z6 = 1000 / 64;
+// The regions' paths, made once for every map (the Overview's and the Regions tab's), by outline.
+const regionPaths = new WeakMap();
 
 /** A map: `el` to place, `highlight(id)` to light a region, `update(data)` with {countries (rings), regions [{id, fill, edge, state}],
  * running (Map key → {step, frac, current}), finished (Map key → {t}), from, now, colour(step)
@@ -216,7 +218,8 @@ export function createMap() {
   }
 
   function draw() {
-    if (!size.w || !canvas.isConnected) return;
+    // (Not shown, its tab another: drawn when it's shown again, as its size comes.)
+    if (!size.w || !canvas.offsetParent) return;
     readTokens();
     const dpr = window.devicePixelRatio || 1;
     const c = canvas.getContext("2d");
@@ -249,22 +252,25 @@ export function createMap() {
   });
 
   // ---- What's at a point -----------------------------------------------------------------------
+  // [its card's key, the ids of every region there (regions overlap: the card names the others)].
   function keyAt(px, py) {
     const [wx, wy] = toWorld(px, py);
     for (const z of [6, 3]) {
       const n = 2 ** z, key = `${z}/${Math.floor((wx / 1000) * n)}/${Math.floor((wy / 1000) * n)}`;
-      if (data.running.has(key) || data.finished.has(key)) return `mt ${key}`;
+      if (data.running.has(key) || data.finished.has(key)) return [`mt ${key}`, ""];
     }
+    const ids = [];
     for (const r of data.regions) {
       const p = paths.regions.get(r.id);
-      if (p && wx >= p.bbox[0] && wx <= p.bbox[2] && wy >= p.bbox[1] && wy <= p.bbox[3] && inRings(p.rings, wx, wy)) return `mr ${r.id}`;
+      if (p && wx >= p.bbox[0] && wx <= p.bbox[2] && wy >= p.bbox[1] && wy <= p.bbox[3] && inRings(p.rings, wx, wy)) ids.push(r.id);
     }
-    return "";
+    return [ids.length ? `mr ${ids[0]}` : "", ids.join(",")];
   }
   const local = (e) => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
   const point = (e) => {
-    const key = keyAt(...local(e));
+    const [key, also] = keyAt(...local(e));
     canvas.dataset.card = key;
+    canvas.dataset.also = also;
     if (key !== (hover || "")) { hover = key || null; draw(); }
   };
 
@@ -356,9 +362,13 @@ export function createMap() {
       const had = paths.regions;
       paths.regions = new Map();
       for (const r of next.regions) {
-        const old = had.get(r.id);
-        if (!(old && old.src === r.fill)) outlines = true;
-        paths.regions.set(r.id, old && old.src === r.fill ? old : { src: r.fill, rings: r.fill, fill: ringsPath(r.fill, true), edge: ringsPath(r.edge, false), bbox: bboxOf(r.fill) });
+        if (had.get(r.id)?.rings !== r.fill) outlines = true;
+        let p = r.fill && regionPaths.get(r.fill);
+        if (!p) {
+          p = { rings: r.fill, fill: ringsPath(r.fill, true), edge: ringsPath(r.edge, false), bbox: bboxOf(r.fill) };
+          if (r.fill) regionPaths.set(r.fill, p);
+        }
+        paths.regions.set(r.id, p);
       }
     }
     // (Tiles new to the map fade in: at once as they come, staggered by their finish on the first

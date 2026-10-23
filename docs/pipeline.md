@@ -256,8 +256,9 @@ same tab; an alert links to the tab that says more.
   left by stage (the forecast's `left` per step at each step's measured seconds a target, the
   region with the most full width). Above, what's left in all regions by step, summed in the page
   (sums.js `stepTotals`). A row under the pointer lights its region on the map; its card (the
-  Jobs tab's, also on the map's regions) says its folders, state, tiles, times, build order,
-  download, work left and outline recipe (`/work/regions`, docs/pool.md §10, Regions).
+  Jobs tab's, also on the map's regions) says its folders, its download and tiles built (stat
+  tiles), state, times, build order, the other regions under the map's pointer (regions overlap),
+  work left and outline recipe (`/work/regions`, docs/pool.md §10, Regions).
 - **Activity:** the hours, and a sentence per event.
 - **Details:** tables, unfolded, among them the steps table itself, each step with where its runs'
   time goes: its three largest phases by their mean share of a run's wall time, each with its share
