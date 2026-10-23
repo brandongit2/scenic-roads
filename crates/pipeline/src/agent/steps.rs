@@ -263,7 +263,11 @@ pub const TABLE: [Step; 52] = [
         )
     },
     Step { alone: true, ..step("pass", Derive, World, "summits", "Summits", "Finds the world's summits.", w_summits) },
+    // (The labels' 6.7M rows held with their tiles: the process peaked at 2.6 GB on the 2026-09-28
+    // pass, 23 Oct, measured by sampling its RSS; osmium's own processes, run beside it, are
+    // not in that.)
     Step {
+        mem_mb: 3072,
         alone: true,
         ..step(
             "pass",
@@ -1516,7 +1520,7 @@ mod tests {
         for (s, mb) in mem {
             assert_eq!(mem_mb(s), mb, "{s}");
         }
-        assert_eq!(mem_mb("labels"), 1500);
+        assert_eq!(mem_mb("labels"), 3072);
         assert_eq!(mem_mb("not a step"), 1500);
         // No row twice.
         for s in TABLE.iter().map(|s| s.name) {

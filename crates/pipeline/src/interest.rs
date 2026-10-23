@@ -56,8 +56,8 @@ struct Level {
     reach: f64,
     /// A cell's span in `items`.
     cells: HashMap<u64, (u32, u32), std::hash::BuildHasherDefault<CellHasher>>,
-    /// (rank, position), grouped by cell.
-    items: Vec<(u32, [f64; 2])>,
+    /// The ranks, grouped by cell.
+    items: Vec<u32>,
 }
 
 impl Level {
@@ -73,28 +73,31 @@ impl Level {
         let mut l = Level { cell, reach, cells: HashMap::default(), items: Vec::new() };
         let mut ix: Vec<(u64, u32)> = xy.iter().enumerate().map(|(r, p)| (Self::pack(l.key(p)), r as u32)).collect();
         ix.par_sort(); // by cell, then rank
-        l.items = ix.iter().map(|&(_, r)| (r, xy[r as usize])).collect();
         let mut s = 0;
         while s < ix.len() {
             let e = s + ix[s..].iter().take_while(|x| x.0 == ix[s].0).count();
             l.cells.insert(ix[s].0, (s as u32, e as u32));
             s = e;
         }
+        l.items = ix.iter().map(|&(_, r)| r).collect();
+        drop(ix);
         l
     }
 
-    /// The nearest point of a lower rank than `r` (a better one) within `reach` of `p`, searching
+    /// The nearest point of a lower rank than `r` (a better one) within `reach` of its position, searching
     /// rings of cells outward until no nearer one can be farther out.
-    fn nearest(&self, r: u32, p: &[f64; 2]) -> Option<f64> {
-        let c = self.key(p);
+    fn nearest(&self, xy: &[[f64; 2]], r: u32) -> Option<f64> {
+        let p = xy[r as usize];
+        let c = self.key(&p);
         let mut best: Option<f64> = None;
         let rings = (self.reach / self.cell).ceil() as i64 + 1;
         let scan = |dx: i64, dy: i64, best: &mut Option<f64>| {
             let Some(&(s, e)) = self.cells.get(&Self::pack([c[0] + dx, c[1] + dy])) else { return };
-            for &(j, q) in &self.items[s as usize..e as usize] {
+            for &j in &self.items[s as usize..e as usize] {
                 if j >= r {
                     break;
                 }
+                let q = xy[j as usize];
                 let (ex, ey) = (p[0] - q[0], p[1] - q[1]);
                 let d = (ex * ex + ey * ey).sqrt();
                 if d <= self.reach && best.is_none_or(|b| d < b) {
@@ -126,77 +129,57 @@ impl Level {
     }
 }
 
-/// A uniform grid of points by cell, for nearest-neighbour searches in growing rings.
-struct Grid<const D: usize> {
+/// A uniform grid of unit-sphere points by cell, for nearest-neighbour searches in growing rings.
+struct Grid {
     cell: f64,
-    cells: HashMap<[i64; D], Vec<u32>>,
+    cells: HashMap<[i64; 3], Vec<u32>>,
 }
 
-impl<const D: usize> Grid<D> {
+impl Grid {
     fn new(cell: f64) -> Self {
         Grid { cell, cells: HashMap::new() }
     }
 
-    fn key(&self, p: &[f64; D]) -> [i64; D] {
-        let mut k = [0i64; D];
-        for d in 0..D {
-            k[d] = (p[d] / self.cell).floor() as i64;
-        }
-        k
+    fn key(&self, p: &[f64; 3]) -> [i64; 3] {
+        p.map(|v| (v / self.cell).floor() as i64)
     }
 
-    fn insert(&mut self, p: &[f64; D], i: u32) {
+    fn insert(&mut self, p: &[f64; 3], i: u32) {
         self.cells.entry(self.key(p)).or_default().push(i);
     }
 
     /// The nearest point (by `dist`) within `max` of `p`, searching rings of cells outward until no
     /// nearer one can be farther out.
-    fn nearest(&self, p: &[f64; D], max: f64, dist: &dyn Fn(u32) -> f64) -> Option<f64> {
+    fn nearest(&self, p: &[f64; 3], max: f64, dist: &dyn Fn(u32) -> f64) -> Option<f64> {
         let c = self.key(p);
         let mut best: Option<f64> = None;
         let rings = (max / self.cell).ceil() as i64 + 1;
         for r in 0..=rings {
             // Every point within (r − 1) cells of the point's cell is at least (r − 1) × cell away
             // (in every coordinate), so a ring can stop the search once that exceeds the best.
-            if let Some(b) = best {
-                if (r - 1) as f64 * self.cell > b {
-                    break;
-                }
-            }
-            if (r - 1) as f64 * self.cell > max {
+            let lo = (r - 1) as f64 * self.cell;
+            if lo > max || best.is_some_and(|b| lo > b) {
                 break;
             }
-            ring::<D>(c, r, &mut |k| {
-                if let Some(v) = self.cells.get(&k) {
-                    for &j in v {
-                        let d = dist(j);
-                        if d <= max && best.is_none_or(|b| d < b) {
-                            best = Some(d);
+            // The cells at Chebyshev distance exactly `r` from the point's.
+            for x in -r..=r {
+                for y in -r..=r {
+                    let step = if x.abs() == r || y.abs() == r { 1 } else { (2 * r).max(1) };
+                    for z in (-r..=r).step_by(step as usize) {
+                        if let Some(v) = self.cells.get(&[c[0] + x, c[1] + y, c[2] + z]) {
+                            for &j in v {
+                                let d = dist(j);
+                                if d <= max && best.is_none_or(|b| d < b) {
+                                    best = Some(d);
+                                }
+                            }
                         }
                     }
                 }
-            });
+            }
         }
         best
     }
-}
-
-/// The cells at Chebyshev distance exactly `r` from `c`.
-fn ring<const D: usize>(c: [i64; D], r: i64, f: &mut dyn FnMut([i64; D])) {
-    let mut k = [0i64; D];
-    fn rec<const D: usize>(c: &[i64; D], r: i64, d: usize, edge: bool, k: &mut [i64; D], f: &mut dyn FnMut([i64; D])) {
-        if d == D {
-            if edge || r == 0 {
-                f(*k);
-            }
-            return;
-        }
-        for o in -r..=r {
-            k[d] = c[d] + o;
-            rec::<D>(c, r, d + 1, edge || o.abs() == r, k, f);
-        }
-    }
-    rec::<D>(&c, r, 0, false, &mut k, f);
 }
 
 /// Distance (km) from each point to the nearest point with a higher score (ties: the earlier index);
@@ -225,7 +208,7 @@ pub fn isolation(lon: &[f64], lat: &[f64], score: &[f64]) -> Vec<f64> {
     // Each point's nearest better one in the plane within NEAR_KM, the points at once: every
     // answer is an exact minimum over the better ones, whatever order they are found in.
     let near: Vec<Option<f64>> =
-        (1..n as u32).into_par_iter().map(|r| levels.iter().find_map(|l| l.nearest(r, &xy[r as usize]))).collect();
+        (1..n as u32).into_par_iter().map(|r| levels.iter().find_map(|l| l.nearest(&xy, r))).collect();
     let mut far: Vec<u32> = Vec::new();
     for (r, d) in near.into_iter().enumerate() {
         match d {
@@ -256,7 +239,7 @@ pub fn isolation(lon: &[f64], lat: &[f64], score: &[f64]) -> Vec<f64> {
     // Far ones in rank order, each against the better ones: all of them when they're few (the best
     // of a kind have their nearest better anywhere on Earth), else a grid over the unit sphere.
     far.sort_by_key(|&i| rank[i as usize]);
-    let mut sphere: Grid<3> = Grid::new(0.01);
+    let mut sphere = Grid::new(0.01);
     let mut next = 0usize;
     for &i in &far {
         let ri = rank[i as usize] as usize;
@@ -599,6 +582,49 @@ mod tests {
             assert_eq!(got[i].to_bits(), want[i].to_bits(), "point {i}: {} vs {}", got[i], want[i]);
         }
         assert_eq!(got.iter().filter(|&&v| v == IA_BEST).count(), 1);
+    }
+
+    /// Seeded clouds of every spacing the levels' edges care about, against the brute force bit for
+    /// bit, on one thread and on the default pool.
+    #[test]
+    fn isolation_is_the_nearest_better_in_random_clouds() {
+        for seed in 1..=6u64 {
+            let mut s = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let mut rnd = move || {
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (s >> 11) as f64 / (1u64 << 53) as f64
+            };
+            let (mut lon, mut lat, mut sc) = (Vec::new(), Vec::new(), Vec::new());
+            // Clusters of very different densities (km → degrees at ~110 km a degree), some south
+            // and west of the origin.
+            for (spread_km, count) in [(0.1, 60), (20.0, 120), (60.0, 120), (800.0, 40)] {
+                let (clon, clat) = (rnd() * 120.0 - 60.0, rnd() * 100.0 - 50.0);
+                for _ in 0..count {
+                    lon.push(clon + (rnd() - 0.5) * spread_km / 111.0);
+                    lat.push(clat + (rnd() - 0.5) * spread_km / 110.0);
+                }
+            }
+            // Pairs exactly at the levels' reaches, and points at the same spot.
+            for km in [8.0, 32.0, 60.0, 59.9, 60.1] {
+                let (a, b) = (rnd() * 100.0 - 50.0, rnd() * 100.0 - 50.0);
+                lon.extend([b, b]);
+                lat.extend([a, a + km / 110.57]);
+            }
+            for _ in 0..4 {
+                let (a, b) = (rnd() * 100.0 - 50.0, rnd() * 100.0 - 50.0);
+                lon.extend([b; 3]);
+                lat.extend([a; 3]);
+            }
+            // Heavy ties: a handful of distinct scores.
+            sc.extend((0..lon.len()).map(|_| (rnd() * 4.0).floor()));
+            let want = brute(&lon, &lat, &sc);
+            let one = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+            for got in [isolation(&lon, &lat, &sc), one.install(|| isolation(&lon, &lat, &sc))] {
+                for i in 0..lon.len() {
+                    assert_eq!(got[i].to_bits(), want[i].to_bits(), "seed {seed} point {i}: {} vs {}", got[i], want[i]);
+                }
+            }
+        }
     }
 
     #[test]
