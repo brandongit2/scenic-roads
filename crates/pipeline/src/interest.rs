@@ -10,6 +10,7 @@
 //! Every floating-point operation is in the script's order, so results are bit for bit numpy's.
 
 use det::Det;
+use rayon::prelude::*;
 use std::collections::HashMap;
 
 /// Isolation within this on the plane, farther by great circle.
@@ -26,6 +27,103 @@ pub fn py_round(x: f64, n: usize) -> f64 {
 /// to 2 decimals as the script does).
 pub fn min_zoom(lat: f64, ia_km: f64) -> f64 {
     py_round((78.2715 * lat.to_radians().dcos() / ia_km.max(0.01)).dlog2(), 2)
+}
+
+/// The (cell, reach) km of each level of the plane search, finest first: a level answers a point
+/// whose nearest better one is within its reach; the last reach is NEAR_KM.
+const PLANE_LEVELS: [(f64, f64); 3] = [(2.0, 8.0), (8.0, 32.0), (20.0, NEAR_KM)];
+
+/// A packed cell key's hash (the keys are already well spread).
+#[derive(Default)]
+struct CellHasher(u64);
+
+impl std::hash::Hasher for CellHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, _: &[u8]) {
+        unreachable!("cell keys are u64")
+    }
+    fn write_u64(&mut self, k: u64) {
+        let h = k.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        self.0 = h ^ (h >> 32);
+    }
+}
+
+/// Points in rank order by uniform cell of the plane, each cell's points still in rank order.
+struct Level {
+    cell: f64,
+    reach: f64,
+    /// A cell's span in `items`.
+    cells: HashMap<u64, (u32, u32), std::hash::BuildHasherDefault<CellHasher>>,
+    /// (rank, position), grouped by cell.
+    items: Vec<(u32, [f64; 2])>,
+}
+
+impl Level {
+    fn key(&self, p: &[f64; 2]) -> [i64; 2] {
+        [(p[0] / self.cell).floor() as i64, (p[1] / self.cell).floor() as i64]
+    }
+
+    fn pack(k: [i64; 2]) -> u64 {
+        ((k[0] as u32 as u64) << 32) | k[1] as u32 as u64
+    }
+
+    fn new(xy: &[[f64; 2]], cell: f64, reach: f64) -> Self {
+        let mut l = Level { cell, reach, cells: HashMap::default(), items: Vec::new() };
+        let mut ix: Vec<(u64, u32)> = xy.iter().enumerate().map(|(r, p)| (Self::pack(l.key(p)), r as u32)).collect();
+        ix.par_sort(); // by cell, then rank
+        l.items = ix.iter().map(|&(_, r)| (r, xy[r as usize])).collect();
+        let mut s = 0;
+        while s < ix.len() {
+            let e = s + ix[s..].iter().take_while(|x| x.0 == ix[s].0).count();
+            l.cells.insert(ix[s].0, (s as u32, e as u32));
+            s = e;
+        }
+        l
+    }
+
+    /// The nearest point of a lower rank than `r` (a better one) within `reach` of `p`, searching
+    /// rings of cells outward until no nearer one can be farther out.
+    fn nearest(&self, r: u32, p: &[f64; 2]) -> Option<f64> {
+        let c = self.key(p);
+        let mut best: Option<f64> = None;
+        let rings = (self.reach / self.cell).ceil() as i64 + 1;
+        let scan = |dx: i64, dy: i64, best: &mut Option<f64>| {
+            let Some(&(s, e)) = self.cells.get(&Self::pack([c[0] + dx, c[1] + dy])) else { return };
+            for &(j, q) in &self.items[s as usize..e as usize] {
+                if j >= r {
+                    break;
+                }
+                let (ex, ey) = (p[0] - q[0], p[1] - q[1]);
+                let d = (ex * ex + ey * ey).sqrt();
+                if d <= self.reach && best.is_none_or(|b| d < b) {
+                    *best = Some(d);
+                }
+            }
+        };
+        for k in 0..=rings {
+            // Every point within (k − 1) cells of the point's cell is at least (k − 1) × cell away
+            // (in every coordinate), so a ring can stop the search once that exceeds the best.
+            let lo = (k - 1) as f64 * self.cell;
+            if lo > self.reach || best.is_some_and(|b| lo > b) {
+                break;
+            }
+            if k == 0 {
+                scan(0, 0, &mut best);
+                continue;
+            }
+            for o in -k..=k {
+                scan(o, -k, &mut best);
+                scan(o, k, &mut best);
+            }
+            for o in -k + 1..k {
+                scan(-k, o, &mut best);
+                scan(k, o, &mut best);
+            }
+        }
+        best
+    }
 }
 
 /// A uniform grid of points by cell, for nearest-neighbour searches in growing rings.
@@ -115,23 +213,25 @@ pub fn isolation(lon: &[f64], lat: &[f64], score: &[f64]) -> Vec<f64> {
     order.sort_by(|&a, &b| {
         (-score[a as usize]).partial_cmp(&(-score[b as usize])).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(&b))
     });
-    // The plane: x scaled by each point's own latitude.
-    let xy: Vec<[f64; 2]> = (0..n).map(|i| [lon[i] * 111.32 * lat[i].to_radians().dcos(), lat[i] * 110.57]).collect();
-    let planar = |i: usize, j: u32| -> f64 {
-        let (a, b) = (xy[i], xy[j as usize]);
-        let (dx, dy) = (a[0] - b[0], a[1] - b[1]);
-        (dx * dx + dy * dy).sqrt()
-    };
-    let mut grid: Grid<2> = Grid::new(NEAR_KM);
+    // The plane: x scaled by each point's own latitude, the points in rank order.
+    let xy: Vec<[f64; 2]> = order
+        .iter()
+        .map(|&i| {
+            let i = i as usize;
+            [lon[i] * 111.32 * lat[i].to_radians().dcos(), lat[i] * 110.57]
+        })
+        .collect();
+    let levels: Vec<Level> = PLANE_LEVELS.iter().map(|&(cell, reach)| Level::new(&xy, cell, reach)).collect();
+    // Each point's nearest better one in the plane within NEAR_KM, the points at once: every
+    // answer is an exact minimum over the better ones, whatever order they are found in.
+    let near: Vec<Option<f64>> =
+        (1..n as u32).into_par_iter().map(|r| levels.iter().find_map(|l| l.nearest(r, &xy[r as usize]))).collect();
     let mut far: Vec<u32> = Vec::new();
-    for (r, &i) in order.iter().enumerate() {
-        if r > 0 {
-            match grid.nearest(&xy[i as usize], NEAR_KM, &|j| planar(i as usize, j)) {
-                Some(d) => out[i as usize] = d,
-                None => far.push(i),
-            }
+    for (r, d) in near.into_iter().enumerate() {
+        match d {
+            Some(d) => out[order[r + 1] as usize] = d,
+            None => far.push(order[r + 1]),
         }
-        grid.insert(&xy[i as usize], i);
     }
     if far.is_empty() {
         return out;
