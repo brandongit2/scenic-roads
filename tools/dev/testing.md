@@ -117,18 +117,19 @@ Every brief that changes web/work runs both and looks at the screenshots. Neithe
 that changes anything: the page opens as `?view` from a read-only server (`touch-test.mjs --serve`,
 port 8097) that serves web/work and forwards only the reading calls (swarm, steps, regions,
 settings with `{}`, history, live) to this Mac's agent on 127.0.0.1:8090, refusing the rest.
-- `node tools/dev/touch-test.mjs [--out DIR]` (~25 s): headless Chrome as a 390×844 phone (DPR 3,
+- `node tools/dev/touch-test.mjs [--out DIR]` (35–55 s on the M1): headless Chrome as a 390×844 phone (DPR 3,
   mobile, 5 touch points, iPhone user agent), real touches through CDP. Each tab: no sideways
   scroll (else the elements past the edge), no console errors, a screenshot (`chrome-<tab>.png`,
   1 px a CSS px). Then: a card pins on a tap and unpins on a tap elsewhere; every world map zooms
-  with a pinch and pans with a drag, the page staying put; the Regions split stacked at phone width
+  with a pinch (its touch-action turns `none`, its zoomed-in sign) and pans
+  with a drag (pixels changed once it held still), the page staying put; the Regions split stacked at phone width
   and dragged at 900 px; the schedule's dropdown takes a tap and a choice; settings fields focus on a
   tap without a jump (never Set). One PASS/FAIL line a check, exit 1 on a FAIL. The other Macs'
   live/settings calls fail from this test origin (CORS) or when away: counted on an INFO line.
   Chrome is its own child, killed by PID; its profile is a temp folder, deleted.
 - `tools/dev/safari-sim.sh [out-dir] [device]` (~1.5 min; this M1 only, the M4 has no simulators):
   boots the simulator (default iPhone 18 Pro), opens each tab in Mobile Safari and saves
-  `safari-<tab>.png` (`xcrun simctl io`), then shuts it and the server down. `simctl openurl` may say
+  `safari-<tab>.png` (`xcrun simctl io`), then shuts the server down and the simulator if it booted it (one already running, someone's, stays), on any exit. `simctl openurl` may say
   "Operation timed out" while Safari starts; the page opens anyway. For touch, set
   `SCENIC_SIM_HOLD=<s>` and drive it meanwhile with the Simulator control tools (tap, swipe,
   touch2_path for a pinch, screenshot; the first input after a boot may need a few retries).

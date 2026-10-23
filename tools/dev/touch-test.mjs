@@ -87,6 +87,7 @@ async function run() {
     const wsBrowser = await new Promise((ok, no) => {
       let err = "";
       chrome.stderr.on("data", (d) => { err += d; const m = err.match(/ws:\/\/[^\s]+/); if (m) ok(m[0]); });
+      chrome.once("error", no); // (No Chrome there: no exit event follows.)
       setTimeout(() => no(new Error("Chrome didn't start in 15 s")), 15000);
     });
     const list = await (await fetch(`http://${new URL(wsBrowser).host}/json/list`)).json();
@@ -154,14 +155,20 @@ async function run() {
       const m = await at("canvas.wmap");
       if (!m) continue;
       maps++;
-      const px = () => js(`(() => { const cv = [...document.querySelectorAll("canvas.wmap")].find((e) => e.getClientRects().length && e.closest(".panel:not([hidden])")); return cv.toDataURL(); })()`);
+      const cv = `[...document.querySelectorAll("canvas.wmap")].find((e) => e.getClientRects().length && e.closest(".panel:not([hidden])"))`;
+      const px = () => js(`${cv}.toDataURL()`);
       const y0 = await js("scrollY");
-      const a = await px();
+      // (The map's own say: its touch-action turns "none" only once zoomed in past the fit.)
+      const wasZoomed = await js(`${cv}.style.touchAction === "none"`);
       await pinch(m[0], m[1], 20, 80);
-      const b = await px();
-      check(`${tab}: the world map zooms with a pinch`, a !== b && (await js("scrollY")) === y0);
+      const zoomedNow = await js(`${cv}.style.touchAction === "none"`);
+      check(`${tab}: the world map zooms with a pinch`, !wasZoomed && zoomedNow && (await js("scrollY")) === y0, `zoomed before ${wasZoomed}, after ${zoomedNow}`);
+      // (A redraw of its own, tiles fading in after the zoom or new data, would pass a pixel
+      // compare: the map waited on until it holds still for 400 ms, at most 4 s.)
+      let b = await px(), still = false;
+      for (let t = 0; t < 10 && !still; t++) { await sleep(400); const c = await px(); still = c === b; b = c; }
       await drag(m[0] + m[2] * 0.25, m[1], -m[2] * 0.3, 0);
-      check(`${tab}: the world map pans with a drag`, b !== (await px()) && (await js("scrollY")) === y0);
+      check(`${tab}: the world map pans with a drag`, still && b !== (await px()) && (await js("scrollY")) === y0, still ? "" : "the map redrew by itself: the pan can't be told");
       await shot(`chrome-${tab}-map-moved`);
     }
     check("world maps shown", maps > 0, `${maps}`);
@@ -214,7 +221,7 @@ async function run() {
     check("the run", false, e.message);
   } finally {
     chrome.kill("SIGTERM");
-    await new Promise((ok) => (chrome.exitCode !== null ? ok() : chrome.once("exit", ok)));
+    await new Promise((ok) => (chrome.exitCode !== null || chrome.pid === undefined ? ok() : chrome.once("exit", ok)));
     rmSync(profile, { recursive: true, force: true });
     srv.close();
   }

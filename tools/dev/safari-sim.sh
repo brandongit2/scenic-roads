@@ -13,12 +13,17 @@ mkdir -p "$out"
 udid=$(xcrun simctl list devices available | sed -n "s/^ *${dev} (\([0-9A-F-]*\)).*/\1/p" | head -1)
 [[ -n $udid ]] || { echo "FAIL no simulator named '$dev' (xcrun simctl list devices)"; exit 1; }
 
+# (Set before anything starts, so every exit, an error, Ctrl-C or a kill, stops what did; once.)
+srv= booted=0
+cleanup() {
+  [[ $booted = 1 ]] && xcrun simctl shutdown "$udid"; booted=0
+  [[ -n $srv ]] && kill -TERM $srv 2>/dev/null; srv=
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
 node "$here/touch-test.mjs" --serve --port $port >"$out/server.log" 2>&1 &
 srv=$!
-booted=0
-xcrun simctl list devices | grep -q "$udid) (Booted)" || { xcrun simctl boot "$udid" && booted=1; }
-cleanup() { [[ $booted = 1 ]] && xcrun simctl shutdown "$udid"; kill -TERM $srv 2>/dev/null; }
-trap cleanup EXIT INT TERM
+xcrun simctl list devices | grep -q "$udid) (Booted)" || { booted=1; xcrun simctl boot "$udid" || exit 1; }
 xcrun simctl bootstatus "$udid" -b >/dev/null
 for tab in overview jobs machines regions activity details; do
   xcrun simctl openurl "$udid" "http://localhost:$port/work/?view#$tab"
