@@ -1262,8 +1262,9 @@ pub fn fetch_checked(agent: &ureq::Agent, url: &str, z: u8, x: u32, y: u32) -> a
     let url = crate::terrain_sources::tile_url(url, z, x, y);
     crate::fetch::online(&url)?;
     let mut last = None;
-    let mut missing = 0;
-    for attempt in 0..5 {
+    let (mut missing, mut busy) = (0, 0);
+    let mut attempt = 0;
+    while attempt < 5 {
         match agent.get(&url).call() {
             Ok(mut r) => match r.body_mut().with_config().limit(20_000_000).read_to_vec() {
                 Ok(b) if crate::whole::png_whole(&b) => return Ok(Some(b)),
@@ -1277,9 +1278,17 @@ pub fn fetch_checked(agent: &ureq::Agent, url: &str, z: u8, x: u32, y: u32) -> a
                 }
                 last = Some(anyhow::anyhow!("{url}: {c}"));
             }
+            // (The budgets' proxy busy past its wait: no attempt spent, a minute's more waits.)
+            Err(e @ ureq::Error::ConnectProxyFailed(_)) if busy < 30 => {
+                busy += 1;
+                last = Some(anyhow::anyhow!("{url}: {e}"));
+                std::thread::sleep(Duration::from_secs(2));
+                continue;
+            }
             Err(e) => last = Some(anyhow::anyhow!("{url}: {e}")),
         }
         std::thread::sleep(Duration::from_millis(if missing > 0 { 2000 } else { 300 << attempt }));
+        attempt += 1;
     }
     Err(last.unwrap_or_else(|| anyhow::anyhow!("{url}: no answer")))
 }
