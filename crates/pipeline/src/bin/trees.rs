@@ -4,10 +4,10 @@
 //! pipeline::cli::progs::Trees, one mode a run:
 //!
 //!   trees --z3 x,y --coverage cov.json --sources sources.json --chm dir --chm-store dir --leaf dir --out dir
-//!         [--workers n] [--dem dir]
+//!         [--workers n]
 //!       z3 tile x,y: its canopy squares made ready in `chm` (from the NAS's `chm-store`), its
-//!       leaf-type squares in `leaf` (made by `dem`'s leaftype.py where missing: the current
-//!       folder unless said), out/trees-{cover,height,leaf}.tiles holding its zoom 4–12 tiles;
+//!       leaf-type squares in `leaf` (made where missing: pipeline::leaftype),
+//!       out/trees-{cover,height,leaf}.tiles holding its zoom 4–12 tiles;
 //!       `sources.json`: where the declared canopy and leaf-type sources are
 //!       (pipeline::trees::RunSources, written by the trees job)
 //!   trees --z6 x,y (the same options)
@@ -88,7 +88,6 @@ fn run(a: &Trees) -> Result<()> {
             sources: need(&a.sources, "sources")?.clone(),
             leaf: PathBuf::from(need(&a.leaf, "leaf")?),
             out: out.clone(),
-            dem: a.dem.clone().unwrap_or_else(|| PathBuf::from(".")),
         };
         return within(&|| (if z == 3 { trees::z3(&r) } else { trees::z6(&r) }).map(|_| ()));
     }

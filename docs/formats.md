@@ -772,8 +772,9 @@ class, id) within a tile. The client sends the id with the clicked point.
     sorted, duplicates once) and `index` (`{fmt, release, zoom, tiles: {"8/x/y": count}}`, written
     last).
   - `sources/trees/leaf/lat<top>_lon<left>.tif` (a 10° square's dominant leaf type at 0.0005°: u8,
-    0 not forest, 1 broadleaf, 2 conifer, 3 mixed, 255 no data; `dem/leaftype.py`; tag `complete=1`
-    when whole; chunks kept in `parts/lat<top>_lon<left>/<row>-<col>.npy` or `.none` while made);
+    0 not forest, 1 broadleaf, 2 conifer, 3 mixed, 255 no data; `pipeline::leaftype`, GDAL's GeoTIFF
+    bytes; tag `complete=1` when whole; chunks kept in `parts/lat<top>_lon<left>/<row>-<col>.npy`
+    (numpy's format) or `.none` while made);
     `sources/trees/nalcms-2020.tif` (size and CRC-32 checked).
   - Downloads kept so each is made once (temporary names end `.<host>.<pid>.tmp`):
     `sources/canopy/meta_chm_lat=<top>.0_lon=<left>.0_{median,p95,cover5m}.tif` (empty: Meta lacks

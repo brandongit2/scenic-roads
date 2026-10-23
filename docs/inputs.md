@@ -1338,7 +1338,8 @@ The Rust fetchers (`crate::fetch`'s `Fetcher`, `crate::wikiask`) fetch only APIs
 **How the steps read them.** Rust steps through `inputs::sources::open`/`read` (one read per
 accepted version); a unit's programs from `sources.json` in its folder (`unit::UnitSources`: the
 land cover, the canopy files' URLs); a tree cover run from `sources.json` beside its coverage
-(`trees::RunSources`, passed to the trees program and `leaftype.py` as `--sources`);
+(`trees::RunSources`, passed to the trees program as `--sources`, which makes its leaf-type
+squares from them: `leaftype`);
 Python steps by role from the file `SCENIC_SOURCES` names (`dem/declared.py`, written by
 `inputs::sources::write_for_python`). The jobs that read them (the z6 tiles, tree cover, items, the
 heritage chain) wait until a version is accepted (the agent's `hold_for_sources`); the lake fill,
@@ -1372,7 +1373,7 @@ URL one the code asked for; the leaf sources, boxes and zip member the same),
 | Planetiler and its data | kept in code: `water::PLANETILER_VERSION` is a code contract (the water layer's simplification was checked against that version's z14 water, `osmpass::check_planetiler`), and Natural Earth, the water polygons and lake centrelines are the jar's own downloads (`--download`), named by it, not by the app | — |
 | ESA WorldCover | built: `esa-worldcover.toml`, the `land-cover` role | `geotiff`, URL template (`{tile}`), version; its class table is its legend (`params.legend`) |
 | Meta & WRI canopy height | built: `meta-canopy.toml`, the `canopy` role, its index `canopy-squares.geojson` (`producers/sources/canopy.py`, from the bucket's listing: the equator row's `lat=-0.0` read there); a file the index doesn't list is none there | `geotiff` with an index: a file's `url`, `kind` and 10° square |
-| Leaf type (EEA HRL, NALCMS) | built: `eea-leaf-type.toml`, `nalcms.toml`, the `leaf-type-europe` and `leaf-type-north-america` roles; the build still makes the squares where a run needs them (`dem/leaftype.py`, given the sources), since the coverage decides which | `image-service` and `zip-geotiff`: URL, the box each covers, NALCMS's zip member |
+| Leaf type (EEA HRL, NALCMS) | built: `eea-leaf-type.toml`, `nalcms.toml`, the `leaf-type-europe` and `leaf-type-north-america` roles; the build still makes the squares where a run needs them (`pipeline::leaftype`, given the sources), since the coverage decides which | `image-service` and `zip-geotiff`: URL, the box each covers, NALCMS's zip member |
 | Overture buildings | built: `overture-buildings.toml`, the `buildings` role (the release its `version`; `dem/buildings.py`, `dem/bldfetch.py` read the bucket by role); `bld/fill.rs`'s `ESTIMATES` stays in code, the fill's rule 2 (its tables were fitted with it) | `geoparquet`: the bucket, release, its DuckDB path and region, the types read |
 | GHSL building heights | built: `ghsl-built-h.toml`, the `building-heights` role, its index `ghsl-tiles.geojson` (`producers/sources/ghsl.py`, from the tiles folder's listing: the tiles' grid read there) | `zip-geotiff` by an index of its tiles, its version naming its folder |
 | Wikidata, Wikipedia's API | built: `wikidata-qlever.toml`, `wikipedia-api.toml`, the `wikidata` and `wikipedia` roles | endpoints (`sparql`, `mediawiki-api`, `refresh = "live"`) |
@@ -1603,11 +1604,11 @@ declarations are made and staged there.
 |---|---|
 | `rules::CREDITS` (the declared sources' entries, the CanVec licence's notice) | the credits' fallback (§4.8): a declared source's entry is replaced by its declaration's credit once one is accepted, and stands in until then, so a catalog never lacks a licence's notice |
 | `lakefill::run::fill`'s metadata | part of the fill's content name: changed, the fill and the water, terrain and catalog reading it would be made again for nothing |
-| `dem/leaftype.py`'s square tags, and `complete` there and in `trees::squares` | a made square's GeoTIFF `source`, as every square already made says it (`trees::squares::complete` reads the tags) |
+| `leaftype`'s square tags, and `trees::squares::complete` | a made square's GeoTIFF `source`, as every square already made says it (`trees::squares::complete` reads the tags) |
 | `trees::META` | the tree tiles' metadata, part of their content: changed, every tree tile would be made again for nothing |
-| `dem/leaftype.py`'s `fetch_nalcms` | the reader of NALCMS's zip, made for its layout; its messages name what they read |
+| `leaftype`'s `fetch_nalcms` and `nalcms_centre` | the reader of NALCMS's zip and its GeoTIFF's projection, made for their layout; their messages name what they read |
 | `dem/bldprep.py`'s `read_rg`, `dem/bldfetch.py`'s `overture_jobs` | readers of Overture's schema and release folders, made for their layout; their messages name what they read |
-| timing phases (`scenic-build`'s lake fill, `dem/leaftype.py`'s NALCMS squares) | a phase's name is its key in the timings kept |
+| timing phases (`scenic-build`'s lake fill, `leaftype`'s NALCMS download and squares) | a phase's name is its key in the timings kept |
 | `budget::QUERY_HOSTS`, `QUERY_DOMAINS` | the polite-use budget is by host (docs/pool.md §7.7): the query services' limits hold for any request to them |
 | `dem/bldfetch.py`'s S3 listing namespace | the protocol's |
 | `web/src/main.ts`'s Google Maps link | opens the place elsewhere |

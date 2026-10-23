@@ -39,6 +39,8 @@ pub mod labels;
 pub mod lakefill;
 pub mod landcover;
 pub mod layers;
+#[cfg(not(target_os = "wasi"))]
+pub mod leaftype;
 pub mod legacy;
 pub mod localread;
 pub mod markconv;

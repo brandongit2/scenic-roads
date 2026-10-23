@@ -789,13 +789,12 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         "depth-lo" | "depth" => depth_step(&mut out, &args, step.as_str())?,
         "terrain-fine" => terrain_fine_step(&mut out, &args)?,
         "trees" => {
-            // trees <tile …> [--pass d] [--dem dir] [--chm dir] [--expect-same T,…]: the tree cover
+            // trees <tile …> [--pass d] [--chm dir] [--expect-same T,…]: the tree cover
             // of z6 tiles (z6 tiles: their hi packs and mids; pipeline::treepacks::build_piece), or a
             // z3 tile's whole (by hand, and a lease of the old scheme: treepacks::build_with).
             // `--expect-same`: those z6 tiles made again as they are (their mids backfilled), each
             // pack as the manifest has it, else the job fails, uploading nothing for it.
             let cov = coverage_of(&out, &args)?;
-            let dem = std::fs::canonicalize(opt(&args, "--dem").unwrap_or_else(|| "dem".into()))?;
             let chm = PathBuf::from(opt(&args, "--chm").unwrap_or_else(|| "data/cache/chm10".into()));
             let workers: usize = std::env::var("RAYON_NUM_THREADS").ok().and_then(|t| t.parse().ok()).unwrap_or(8);
             let ts: Vec<TileId> = positional(&args)
@@ -832,13 +831,12 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 let t = cost_start("trees", &u.slash());
                 let writing = || pipeline::agent::jobs::part(2 * k + 1, &names);
                 if u.z == 3 {
-                    pipeline::treepacks::build_with(&mut out, &cov, u, &dem, &chm, &scratch, workers, &writing)?;
+                    pipeline::treepacks::build_with(&mut out, &cov, u, &chm, &scratch, workers, &writing)?;
                 } else {
                     pipeline::treepacks::build_piece(
                         &mut out,
                         &cov,
                         u,
-                        &dem,
                         &chm,
                         &scratch,
                         workers,

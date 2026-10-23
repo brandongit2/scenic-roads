@@ -38,7 +38,7 @@ lead's coordinator. Below, the M4 (48 GB) unless said.
     an archive that doesn't read whole is moved aside, not written over. A new pass's answers start
     from the last pass's.
   - **Whole:** each copy is written by a temporary name, flushed and its length checked before the
-    rename, and checked whole when read (`pipeline::whole`, `dem/whole.py`). One that isn't is taken
+    rename, and checked whole when read (`pipeline::whole`). One that isn't is taken
     again from the NAS, else the source.
   - **"Not there"** (a 404, or S3's 403) is remembered only once the source says so twice.
   - **What's fetched again** is only new data (a planet, Wikidata facts and pageviews, timetables, an

@@ -189,9 +189,6 @@ pub struct Trees {
     /// Threads
     #[arg(long, value_name = "N")]
     pub workers: Option<usize>,
-    /// Where dem/ is (leaftype.py, for a run's missing leaf-type squares; default: here)
-    #[arg(long, value_name = "DIR")]
-    pub dem: Option<PathBuf>,
     /// The bytes read kept in this mirror folder (blocks)
     #[arg(long, value_name = "DIR")]
     pub record: Option<PathBuf>,

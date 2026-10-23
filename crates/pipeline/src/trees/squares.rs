@@ -5,8 +5,8 @@
 //!   holder that died). An empty file is Meta's "none there". A copy that isn't whole is taken
 //!   again (crate::whole).
 //! - **Leaf-type squares** made whole where they aren't (whole and tagged complete, or NALCMS's):
-//!   by dem/leaftype.py (`--make`), which fetches the EEA's chunks or reprojects NALCMS, and says
-//!   how far it is; with none to make, nothing is run.
+//!   by crate::leaftype, which fetches the EEA's chunks or resamples NALCMS, and says how far it
+//!   is; with none to make, nothing is asked.
 
 use super::{chm_name, leaf_name, LeafSources};
 use anyhow::{bail, Context, Result};
@@ -228,7 +228,7 @@ fn download(url: Option<&str>, path: &Path, _coming: &dyn Fn(f64)) -> Result<()>
 }
 
 /// Whether leaf-type square `p` was made whole (tagged so; NALCMS's always are), not only over some
-/// regions, and is whole on the disk (leaftype.py's `complete`).
+/// regions, and is whole on the disk.
 pub fn complete(p: &Path) -> bool {
     if !crate::whole::tiff_file_whole(p) {
         return false;
@@ -242,11 +242,12 @@ pub fn complete(p: &Path) -> bool {
     t.metadata_item("complete") == Some("1") || t.metadata_item("source").is_some_and(|s| s.starts_with("NALCMS"))
 }
 
-/// The leaf-type squares among `sqs` (top, left) that `dir` lacks whole, made by `dem`'s leaftype.py
-/// (`--make`, its NALCMS GeoTIFF kept in `dir`'s parent; the run's sources file `file`, of which
-/// `leaf` is the leaf-type sources), which says how far it is: inside the European source's box from
-/// it, inside the North American's from it, none elsewhere (no source).
-pub fn leaf_types(sqs: &[(i32, i32)], dir: &Path, dem: &Path, leaf: &LeafSources, file: &Path) -> Result<()> {
+/// The leaf-type squares among `sqs` (top, left) that `dir` lacks whole, made in this process
+/// (crate::leaftype, its NALCMS GeoTIFF kept in `dir`'s parent; `leaf` the declared sources), which
+/// says how far it is: inside the European source's box from it, inside the North American's from
+/// it, none elsewhere (no source). With none to make, nothing is asked. (WebAssembly has no
+/// network: there a square to make is an error.)
+pub fn leaf_types(sqs: &[(i32, i32)], dir: &Path, leaf: &LeafSources) -> Result<()> {
     let meets = |b: [f64; 4], top: i32, left: i32| {
         (left as f64) < b[2] && (left + 10) as f64 > b[0] && ((top - 10) as f64) < b[3] && top as f64 > b[1]
     };
@@ -260,15 +261,8 @@ pub fn leaf_types(sqs: &[(i32, i32)], dir: &Path, dem: &Path, leaf: &LeafSources
     if to_make == 0 {
         return Ok(());
     }
-    let mut c = store::spawn::command("uv");
-    c.current_dir(dem)
-        .args(["run", "python", "leaftype.py", "--make"])
-        .arg(dir)
-        .arg("--sources")
-        .arg(std::path::absolute(file)?)
-        .args(sqs.iter().map(|(t, l)| format!("{t},{l}")));
-    crate::timings::child(&mut c);
-    let st = store::spawn::status(&mut c).context("run leaftype.py")?;
-    anyhow::ensure!(st.success(), "leaftype.py: {st}");
-    Ok(())
+    #[cfg(not(target_os = "wasi"))]
+    return crate::leaftype::make(sqs, dir, leaf);
+    #[cfg(target_os = "wasi")]
+    bail!("{to_make} leaf-type squares to make, and there's no network here")
 }

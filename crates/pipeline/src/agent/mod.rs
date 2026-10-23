@@ -2104,7 +2104,7 @@ impl Agent {
             ],
             "unit" => vec!["--pass".into(), date.to_string(), "--dem".into(), dem(), "--cache-dir".into(), s(&cache)],
             "trees" => {
-                vec!["--pass".into(), date.to_string(), "--dem".into(), dem(), "--chm".into(), s(&cache.join("chm10"))]
+                vec!["--pass".into(), date.to_string(), "--chm".into(), s(&cache.join("chm10"))]
             }
             "trees-lo" => vec!["--pass".into(), date.to_string()],
             // The server's mirror on this Mac (the agent's home is inside the app's) has the same

@@ -164,7 +164,8 @@ What each step does, in detail. The steps as one table (names, chains, the check
   - **trees-lo**, an assembly per z3 tile (`trees --assemble-lo`): zoom 8–4 from its z6 tiles' mids.
   - Together the same bytes as a z3 tile's whole run (`trees --z3`, `scenic-build trees 3/x/y`), from
     Meta's canopy squares (`sources/canopy/`, each downloaded once under a `<file>.lock`) and the
-    leaf-type squares (`sources/trees/leaf/`, made by `dem/leaftype.py`).
+    leaf-type squares (`sources/trees/leaf/`, made by `pipeline::leaftype`: the EEA's chunks, or
+    NALCMS resampled as GDAL's warper did).
   - Lossless WebP by `pipeline::webp`.
   - `trees --block`, `--blocks` and `--assemble` run blocks alone; a row of a z6 tile's blocks is a
     task (`treeblock`, docs/workers.md §3), the same bytes natively and in WebAssembly.

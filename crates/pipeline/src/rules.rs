@@ -83,7 +83,7 @@ fn anywhere(areas: &&'static [[f64; 4]]) -> bool {
     areas.is_empty()
 }
 
-/// dem/leaftype.py: the EEA's dominant leaf type within this box (NALCMS west of 40° W, as
+/// crate::leaftype: the EEA's dominant leaf type within this box (NALCMS west of 40° W, as
 /// `NORTH_AMERICA`).
 const EEA_LEAF: &[[f64; 4]] = &[[-40.0, 20.0, 40.0, 75.0]];
 

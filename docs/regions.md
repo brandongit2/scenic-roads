@@ -43,7 +43,7 @@ check requires, while only some of it is built.
 - timetables: the Mobility Database feeds of the countries the coverage is in, declared feeds and
   static timetables (docs/steps.md, Rail service; docs/inputs.md §6.7);
 - road network codes (`extract`) and their colours (`web/src/mapschemes.ts`);
-- leaf-type source: EEA in Europe, NALCMS in North America, none elsewhere (`dem/leaftype.py`);
+- leaf-type source: EEA in Europe, NALCMS in North America, none elsewhere (`pipeline::leaftype`);
 - the languages spoken there (docs/names.md; docs/inputs.md §6.2);
 - credits (`pipeline::rules::CREDITS`; a catalog lists those meeting its coverage + 20 km or its
   z6 tiles' ways).

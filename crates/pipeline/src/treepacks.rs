@@ -2,7 +2,7 @@
 //! clipped to the coverage, made by the `trees` program (crate::trees) from
 //! Meta's canopy squares, kept on the NAS (`sources/canopy/`, each downloaded once, and copied into
 //! the agent's cache the z6 tiles read too) and the leaf-type squares on the NAS
-//! (`sources/trees/leaf/`, made whole by `dem/leaftype.py` where missing), packed as the layers
+//! (`sources/trees/leaf/`, made whole by crate::leaftype where missing), packed as the layers
 //! `trees-cover`, `trees-height` and `trees-leaf` (a lo pack per z3 tile, hi packs per z6 tile).
 //!
 //! The build makes them in two steps (`targets`):
@@ -198,14 +198,13 @@ fn fresh(cov: &Coverage, t: TileId, scratch: &Path, always: bool) -> Result<Opti
     Ok(Some(dir))
 }
 
-/// The trees program (`trees`, beside this one), run in the Python steps' folder `dem` (it runs
-/// leaftype.py there for leaf-type squares to make) with `args`.
-fn run_trees(dem: &Path, args: &[std::ffi::OsString]) -> Result<()> {
+/// The trees program (`trees`, beside this one), run with `args`.
+fn run_trees(args: &[std::ffi::OsString]) -> Result<()> {
     let prog = "the trees program";
     let mut c = store::spawn::command(std::env::current_exe()?.parent().context("the programs' folder")?.join("trees"));
     // (Its phase, its own under it: crate::timings.)
     let _p = crate::timings::phase(prog, crate::timings::Class::Mixed);
-    c.current_dir(dem).args(args);
+    c.args(args);
     crate::timings::child(&mut c);
     let st = store::spawn::status(&mut c).with_context(|| format!("run {prog}"))?;
     anyhow::ensure!(st.success(), "{prog}: {st}");
@@ -245,16 +244,8 @@ fn run_args(out: &Out, t: TileId, dir: &Path, chm: &Path, workers: usize) -> Res
 
 /// Makes z3 tile `q`'s tree layers in one run and uploads them, dropping its packs it no longer makes
 /// (all of them when the coverage has left it): by hand, and for a lease of the old scheme.
-pub fn build(
-    out: &mut Out,
-    cov: &Coverage,
-    q: TileId,
-    dem: &Path,
-    chm: &Path,
-    scratch: &Path,
-    workers: usize,
-) -> Result<()> {
-    build_with(out, cov, q, dem, chm, scratch, workers, &|| {})
+pub fn build(out: &mut Out, cov: &Coverage, q: TileId, chm: &Path, scratch: &Path, workers: usize) -> Result<()> {
+    build_with(out, cov, q, chm, scratch, workers, &|| {})
 }
 
 /// `build`, telling `writing` when it begins writing the packs (after the trees program), whose
@@ -264,7 +255,6 @@ pub fn build_with(
     out: &mut Out,
     cov: &Coverage,
     q: TileId,
-    dem: &Path,
     chm: &Path,
     scratch: &Path,
     workers: usize,
@@ -274,7 +264,7 @@ pub fn build_with(
         drop_packs(out, q, &crate::layers::LayerOut::default())?;
         return Ok(());
     };
-    run_trees(dem, &run_args(out, q, &dir, chm, workers)?).with_context(|| format!("z3 tile {}", q.slash()))?;
+    run_trees(&run_args(out, q, &dir, chm, workers)?).with_context(|| format!("z3 tile {}", q.slash()))?;
     writing();
     put_z3(out, q, &dir)?;
     std::fs::remove_dir_all(&dir).ok();
@@ -338,7 +328,6 @@ pub fn build_piece(
     out: &mut Out,
     cov: &Coverage,
     t: TileId,
-    dem: &Path,
     chm: &Path,
     scratch: &Path,
     workers: usize,
@@ -355,7 +344,7 @@ pub fn build_piece(
         return Ok(());
     }
     let dir = fresh(cov, t, scratch, true)?.context("a piece's scratch folder")?;
-    run_trees(dem, &run_args(out, t, &dir, chm, workers)?).with_context(|| format!("z6 tile {}", t.slash()))?;
+    run_trees(&run_args(out, t, &dir, chm, workers)?).with_context(|| format!("z6 tile {}", t.slash()))?;
     writing();
     put_piece(out, t, &dir, expect_same)?;
     std::fs::remove_dir_all(&dir).ok();
@@ -536,7 +525,7 @@ pub fn build_lo(out: &mut Out, cov: &Coverage, q: TileId, scratch: &Path, worker
         workers.to_string().into(),
     ];
     a.extend(args);
-    run_trees(Path::new("."), &a).with_context(|| format!("z3 tile {}'s assembly", q.slash()))?;
+    run_trees(&a).with_context(|| format!("z3 tile {}'s assembly", q.slash()))?;
     put_lo(out, q, &dir, false)?;
     std::fs::remove_dir_all(&dir).ok();
     Ok(())
@@ -667,7 +656,6 @@ mod tests {
                 sources: crate::trees::tests::sources_file(dir),
                 leaf: sq.path().into(),
                 out: dir.into(),
-                dem: d.path().into(),
             };
             (if t.z == 3 { crate::trees::z3(&r) } else { crate::trees::z6(&r) }).unwrap();
         };
@@ -730,13 +718,12 @@ mod tests {
             d.path(),
         )
         .unwrap();
-        build_piece(&mut parts, &gone, t, d.path(), sq.path(), &d.path().join("s"), 1, false, &|| {}).unwrap();
+        build_piece(&mut parts, &gone, t, sq.path(), &d.path().join("s"), 1, false, &|| {}).unwrap();
         assert!(
             LAYERS.iter().all(|l| parts.get(&format!("layers/{l}/hi/6-33-22")).is_none()) && parts.get(&mid).is_none()
         );
         assert!(
-            build_piece(&mut parts, &gone, pieces[0], d.path(), sq.path(), &d.path().join("s"), 1, true, &|| {})
-                .is_err(),
+            build_piece(&mut parts, &gone, pieces[0], sq.path(), &d.path().join("s"), 1, true, &|| {}).is_err(),
             "not as it is: it's gone"
         );
     }
@@ -835,7 +822,6 @@ mod tests {
                 },
                 leaf: leaf_dir(&root),
                 out: dir.into(),
-                dem: data.clone(),
             };
             (if t.z == 3 { crate::trees::z3(&r) } else { crate::trees::z6(&r) }).unwrap();
         };

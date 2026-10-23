@@ -19,8 +19,8 @@ pub(crate) fn sources_file(dir: &Path) -> PathBuf {
 /// The declared canopy source's index (producers/sources/canopy.py's, from the bucket's listing)
 /// names, for each file the map reads, a URL the code asked for before the source was declared: the
 /// file's own name, or in the equator's row its `lat=-0.0` spelling (asked second). And the
-/// leaf-type sources are where leaftype.py read them, with the boxes it had: the squares are the
-/// same.
+/// leaf-type sources are where the code read them before they were declared, with the boxes it
+/// had: the squares are the same.
 #[test]
 fn the_declared_squares_are_where_the_code_read_them() {
     let s = run_sources();
@@ -495,7 +495,6 @@ fn the_z3_run_and_its_blocks_alike() {
             sources: sources_file(o.path()),
             leaf: d.path().into(),
             out: o.path().join(out),
-            dem: o.path().into(),
         };
         rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap().install(|| z3(&a)).unwrap()
     };
@@ -562,7 +561,6 @@ fn a_z3_tiles_pieces_and_their_assembly_make_its_tiles() {
         sources: sources_file(o.path()),
         leaf: d.path().into(),
         out: o.path().join(out),
-        dem: o.path().into(),
     };
     let pool = |n: usize| rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap();
     let n3 = pool(4).install(|| z3(&run((3, 4, 2), "z3"))).unwrap();
@@ -780,17 +778,10 @@ fn leaf_type_squares_complete() {
     std::fs::write(d.path().join("d.tif"), cut).unwrap();
     let c = |f: &str| squares::complete(&d.path().join(f));
     assert_eq!((c("a.tif"), c("b.tif"), c("c.tif"), c("d.tif"), c("e.tif")), (true, true, false, false, false));
-    // None to make (outside both sources' boxes, or complete): leaftype.py isn't run.
+    // None to make (outside both sources' boxes, or complete): nothing is asked.
     std::fs::write(d.path().join(leaf_name(50, 0)), small(&[("complete", "1")])).unwrap();
     let s = run_sources();
-    squares::leaf_types(
-        &[(50, 0), (40, 120)],
-        d.path(),
-        Path::new("/nonexistent"),
-        &s.leaf,
-        Path::new("/nonexistent/sources.json"),
-    )
-    .unwrap();
+    squares::leaf_types(&[(50, 0), (40, 120)], d.path(), &s.leaf).unwrap();
 }
 
 #[test]
@@ -847,7 +838,6 @@ fn room_making_mid_run_never_reads_a_square_as_none_there() {
             sources: sources_file(o.path()),
             leaf: d.path().into(),
             out: o.path().join(out),
-            dem: o.path().into(),
         };
         let n = z3(&a).unwrap();
         // (This process's holds let go, as the job's end would.)

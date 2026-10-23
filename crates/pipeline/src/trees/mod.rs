@@ -2,7 +2,7 @@
 //! zoom 4–12, of a z3 tile the coverage meets, clipped to it, the `trees` program's `--z3` run:
 //! - **Sampling:** each zoom-8 block is sampled at zoom 12, at its pixels' centres (the source pixel
 //!   they fall in), from Meta's canopy squares (`cover5m`, ‰ of the ground under trees over 5 m, and
-//!   `p95`, canopy height in cm; 0.00025°, 10° squares) and the leaf-type squares (dem/leaftype.py;
+//!   `p95`, canopy height in cm; 0.00025°, 10° squares) and the leaf-type squares (crate::leaftype;
 //!   0.0005°), inside the coverage (`mask`).
 //! - **Pyramid:** zoom 11 to 8 are float32 means of four pixels, summed as numpy sums them; leaf type
 //!   goes as each class's share, a pixel showing the commonest type where forest is at least half
@@ -140,7 +140,7 @@ pub fn canopy_urls(s: &crate::inputs::sources::Source) -> Result<BTreeMap<String
     Ok(out)
 }
 
-/// The leaf-type sources as dem/leaftype.py reads them (crate::inputs::sources, the
+/// The leaf-type sources as crate::leaftype reads them (crate::inputs::sources, the
 /// `leaf-type-europe` and `leaf-type-north-america` roles): Europe's image service and the box it
 /// covers; North America's GeoTIFF in a zip (its member's local header and compressed size, read by
 /// range) and its box. A square outside both boxes has no leaf type.
@@ -727,10 +727,9 @@ pub struct Run {
     /// The declared sources as the run reads them (`RunSources`, a JSON file: crate::treepacks writes
     /// it beside the coverage).
     pub sources: PathBuf,
-    /// The leaf-type squares (the NAS's), made where missing by `dem`'s leaftype.py.
+    /// The leaf-type squares (the NAS's), made where missing (crate::leaftype).
     pub leaf: PathBuf,
     pub out: PathBuf,
-    pub dem: PathBuf,
 }
 
 /// A run begun (`begin`): the coverage's shapes, the blocks they meet, and the canopy squares there.
@@ -771,7 +770,7 @@ fn begin(a: &Run) -> Result<Begun> {
     crate::agent::jobs::report(want.len() as u64, want.len() as u64, "canopy squares");
     drop(p);
     let p = phase("leaf-type squares made", Class::Mixed);
-    squares::leaf_types(&sqs, &a.leaf, &a.dem, &sources.leaf, &a.sources)?;
+    squares::leaf_types(&sqs, &a.leaf, &sources.leaf)?;
     drop(p);
     eprintln!(
         "trees z{z} {x},{y}: {} zoom-8 blocks, {} canopy squares ({:.0} s)",

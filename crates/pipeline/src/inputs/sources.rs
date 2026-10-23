@@ -43,9 +43,9 @@ pub const ROLES: [(&str, &[&str], &[&str]); 17] = [
     (LAND_COVER, &["geotiff"], &["{tile}"]),
     // (Canopy height and cover: crate::trees, scenic-metrics' canopy step. By an index of 10° squares.)
     (CANOPY, &["geotiff"], &[]),
-    // (Forest leaf type, Europe: dem/leaftype.py, through the trees program.)
+    // (Forest leaf type, Europe: crate::leaftype, in the trees program.)
     (LEAF_EUROPE, &["image-service"], &[]),
-    // (Forest leaf type, North America: dem/leaftype.py, one GeoTIFF in a zip read by range.)
+    // (Forest leaf type, North America: crate::leaftype, one GeoTIFF in a zip read by range.)
     (LEAF_NORTH_AMERICA, &["zip-geotiff"], &[]),
     // (Building footprints, a release: crate::buildtiles, crate::bld, dem/buildings.py, dem/bldfetch.py.)
     (BUILDINGS, &["geoparquet"], &[]),

@@ -61,16 +61,16 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/rules.rs", "CREDITS", "open.canada.ca/en/open-government-licence-canada", "the credits' fallback (§4.8): the licence's own notice"),
     // Content already made, named by its content.
     ("crates/pipeline/src/lakefill/run.rs", "fill", "\"source\": \"CanVec (Natural Resources Canada)", "the lake fill's own metadata, part of its content name: changed, the fill and the water, terrain and catalog reading it would be made again for no change in what they hold"),
-    ("dem/leaftype.py", "north_america_squares", "\"NALCMS 2020 land cover 30 m (CEC)", "a made square's tag, as above"),
-    ("dem/leaftype.py", "complete", ".startswith(\"NALCMS\")", "reads the made squares' tags, as above"),
-    ("crates/pipeline/src/trees/squares.rs", "complete", "starts_with(\"NALCMS\")", "reads the made squares' tags, as dem/leaftype.py's"),
+    ("crates/pipeline/src/leaftype/mod.rs", "NALCMS_SOURCE", "\"NALCMS 2020 land cover 30 m (CEC)", "a made square's tag, as above"),
+    ("crates/pipeline/src/trees/squares.rs", "complete", "starts_with(\"NALCMS\")", "reads the made squares' tags, as above"),
     ("crates/pipeline/src/trees/mod.rs", "META", "Copernicus HRL DLT 2018; NALCMS 2020", "the tree tiles' metadata, part of their content: changed, every tree tile would be made again for nothing"),
-    ("dem/leaftype.py", "fetch_nalcms", "NALCMS", "the reader of NALCMS's zip, made for its layout (a member streamed out by the declared offset and size): its messages name what they read"),
-    ("dem/leaftype.py", "north_america_squares", "\"the NALCMS squares resampled\"", "a timing phase's name, its key in the timings kept (the same phase over time)"),
+    ("crates/pipeline/src/leaftype/mod.rs", "fetch_nalcms", "NALCMS", "the reader of NALCMS's zip, made for its layout (a member streamed out by the declared offset and size): its messages, and its timing phase's name (its key in the timings kept), name what they read"),
+    ("crates/pipeline/src/leaftype/mod.rs", "nalcms_centre", "NALCMS", "the reader of NALCMS's GeoTIFF's projection, made for it (the warp is PROJ's Lambert azimuthal equal-area, as GDAL warped it): its messages name what they read"),
+    ("crates/pipeline/src/leaftype/mod.rs", "north_america_squares", "\"the NALCMS squares resampled\"", "a timing phase's name, its key in the timings kept (the same phase over time)"),
     ("crates/pipeline/src/bin/scenic-build.rs", "lakefill_step", "\"the lakes filled from CanVec's zips\"", "a timing phase's name, its key in the timings kept (the same phase over time)"),
     ("dem/bldprep.py", "read_rg", "Overture's columns changed", "the reader of Overture's GeoParquet schema (the `geoparquet` format is its layout): its messages name what they read"),
     ("dem/bldfetch.py", "overture_jobs", "Overture's release", "the lister of Overture's release folders on S3, its layout: its message names what it reads"),
-    ("dem/leaftype.py", "europe_square","\"Copernicus HRL Dominant Leaf Type 2018 (EEA), 10 m", "a made square's tag (its GeoTIFF's `source`), as every square already made says it: a square's tag is how it's known (crate::trees::squares::complete), so it doesn't change with the declaration's wording"),
+    ("crates/pipeline/src/leaftype/mod.rs", "EEA_SOURCE", "\"Copernicus HRL Dominant Leaf Type 2018 (EEA), 10 m", "a made square's tag (its GeoTIFF's `source`), as every square already made says it: a square's tag is how it's known (crate::trees::squares::complete), so it doesn't change with the declaration's wording"),
     // Allowlists by host.
     ("crates/pipeline/src/budget/mod.rs", "QUERY_DOMAINS", "\"qlever.dev\"", "the polite-use budget is by host (docs/pool.md §7.7): the query services' own limits, which hold for any request to them"),
     // Protocols.
