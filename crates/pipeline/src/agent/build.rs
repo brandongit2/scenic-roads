@@ -6459,7 +6459,19 @@ pub(crate) mod tests {
         );
         let ft = fine_targets(&c, &m, &done, &t).unwrap();
         assert!(!ft.is_empty());
-        assert_eq!(units(&plan(&t, &done)), 0, "every z6 tile here has stale fine terrain under it");
+        // (Those whose box meets a fine target wait; the rest build.)
+        let under = ["6/28/16", "6/29/16", "6/30/16", "6/31/16"]
+            .iter()
+            .filter(|u| {
+                let u = TileId::parse(u).unwrap();
+                let z = tf::TARGET_Z;
+                crate::stage::tiles_in(z, crate::stage::tile_box_grown(6, u.x, u.y, crate::stage::MARGIN_KM))
+                    .iter()
+                    .any(|(x, y)| ft.iter().any(|f| f.0 == format!("{z}/{x}/{y}")))
+            })
+            .count();
+        assert!(under > 0);
+        assert_eq!(units(&plan(&t, &done)), 4 - under, "the z6 tiles with stale fine terrain under them wait");
         for (f, k, _) in &ft {
             done.terrain_fine.insert(f.clone(), k.clone());
         }
