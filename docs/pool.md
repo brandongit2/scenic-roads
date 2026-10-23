@@ -140,7 +140,10 @@ A term is `state/build/terms/<E>.json`, made once with create-new (`crate::pool:
 - **One file per term** (`crate::pool::records`): `state/build/term/<E>/records.json` holds the
   manifest, keys, pending uploads, the sizes of the files the manifest names (from the entries'
   hand-offs, for the catalogs: `sizes.json` beside `manifest.json`), raw archives awaiting the
-  index, the journal entries it reflects
+  index (each taken off once the lead has named it in the raw store's index and saved that,
+  `Heard::named_raw`, with the next snapshot; one named but not yet off when the lead restarts is
+  named again, passed over unread; an archive that index lists as merged away is never named
+  again, task #607), the journal entries it reflects
   and refused (with why), the lease that last set each target, the forget horizon, and `seq`. A
   handover's last snapshot also holds the coordinator's state. Written whole (`Nas::write_whole`)
   after each merge.

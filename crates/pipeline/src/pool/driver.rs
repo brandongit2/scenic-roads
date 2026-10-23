@@ -275,6 +275,11 @@ pub struct Heard {
     /// Settling a handover (`Out::settle`): the coordinator's state as the agent wrote it once it
     /// stopped granting and cancelled its duties in flight; handed over with the records.
     pub settled: Option<serde_json::Value>,
+    /// Raw tiles' archives its records hold (`Records::raw`) that the agent has named in the raw
+    /// store's index since (crate::rawpack::name_handed, the index saved): taken off the records,
+    /// saved with this step's snapshot. (One named and not taken off yet, a restart between, is
+    /// named again: passed over unread.)
+    pub named_raw: Vec<String>,
     /// Whether this Mac can lead now if offered the lead, or take over a lead that stood down (its
     /// disk, home and power; the app rule is the driver's). The agent sets it.
     pub able: bool,
@@ -763,7 +768,18 @@ impl Driver {
         }
         self.restarted = false;
         if self.lead.is_some() {
-            self.lead_step(io, &mut out, tells, hand_asks, heard.listed, heard.settled, check, busy, learnt.is_ok());
+            self.lead_step(
+                io,
+                &mut out,
+                tells,
+                hand_asks,
+                heard.listed,
+                heard.settled,
+                &heard.named_raw,
+                check,
+                busy,
+                learnt.is_ok(),
+            );
         } else if let Some(t) = self.cur.lead.as_ref().filter(|t| t.member != self.me.id) {
             out.send.extend(hand_asks.into_iter().map(|to| (t.member.clone(), Msg::HandTo(to))));
         }
@@ -1137,6 +1153,7 @@ impl Driver {
         asks: Vec<String>,
         listed: Option<Listed>,
         settled: Option<serde_json::Value>,
+        named_raw: &[String],
         check: Check,
         busy: u64,
         learnt: bool,
@@ -1176,6 +1193,13 @@ impl Driver {
                 }
             }
             keys.extend(listed.keys.into_iter().filter(|k| !l.records.handles(k)));
+        }
+        // The raw archives the agent named: off the records, for good.
+        if !named_raw.is_empty() {
+            let named: BTreeSet<&str> = named_raw.iter().map(String::as_str).collect();
+            let was = l.records.raw.len();
+            l.records.raw.retain(|(_, p)| !named.contains(p.name.as_str()));
+            l.dirty |= l.records.raw.len() != was;
         }
         // Settling: the coordinator's state, as the agent wrote it, saved with the records.
         if let (Some(c), Handover::Settling { .. }) = (settled, &l.hand) {
@@ -2398,6 +2422,32 @@ mod tests {
         let o = step(&mut c, &ic, able());
         assert!(c.mine().to_tell(1).is_empty() && o.send.is_empty(), "{:?}", o.send);
         assert_eq!(c.saved().member, C);
+    }
+
+    #[test]
+    fn raw_archives_named_come_off_the_saved_records() {
+        // (Task #607) the records held every raw archive ever handed; named ones now come off, saved,
+        // and one not yet named stays.
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
+        let pack = |n: &str| crate::rawpack::Pack { name: format!("6-1-1.{n}.tiles"), bytes: 9 };
+        let mut e = entry(A, 1, 1, "6-1-1");
+        e.handoff.raw = vec![("6-1-1".into(), pack("0000000000000001")), ("6-1-1".into(), pack("0000000000000002"))];
+        ia.pass(5);
+        step(&mut a, &ia, Heard { entries: vec![e], ..able() });
+        for _ in 0..3 {
+            ia.pass(5);
+            step(&mut a, &ia, able());
+        }
+        assert_eq!(a.records().unwrap().raw.len(), 2);
+        ia.pass(5);
+        step(&mut a, &ia, Heard { named_raw: vec![pack("0000000000000001").name], ..able() });
+        let saved = Records::load(&mem, 1).unwrap().unwrap();
+        assert_eq!(saved.raw, vec![("6-1-1".to_string(), pack("0000000000000002"))]);
+        assert_eq!(a.records().unwrap().raw, saved.raw);
     }
 
     #[test]

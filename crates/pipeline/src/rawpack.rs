@@ -14,7 +14,8 @@
 //!
 //! On the NAS, the lead's archives are named by the index or listed in its `gone`, with when:
 //! an archive is listed before it's put there and taken off once named (named only once it's there
-//! whole), and one the index stops naming (merged) is listed then. A day later, unnamed, it's
+//! whole), and one the index stops naming (merged) is listed then, and marked merged: a hand-off
+//! naming it again never brings it back. A day later, unnamed, it's
 //! deleted: so a job that read the index before stays right, and one cut short putting an archive
 //! there leaves nothing behind (its temporary file is swept a day later too). An archive the index
 //! names that's gone from the NAS is passed over and taken out of it. The lead alone changes
@@ -31,7 +32,7 @@
 use anyhow::{bail, ensure, Context, Result};
 use roadcore::archive::{tile_key, Archive, ArchiveWriter, Entry, MAGIC};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::{BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use store::sys::PosIo;
@@ -71,13 +72,17 @@ pub struct Pack {
 
 /// Each shard's archives, oldest first (stored as `areas`, its name when a shard was called an area:
 /// the NAS's `packs/index.json` keeps it); and the archives on the NAS it doesn't name, with when they
-/// were listed (unix seconds): deleted GRACE later.
+/// were listed (unix seconds): deleted GRACE later. Of those, the ones merged away (`merged`): a
+/// hand-off naming one again (a lead's records still holding it) leaves it to go, where one only not
+/// yet named (a helper's, its hand-off late) is named.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Index {
     #[serde(rename = "areas")]
     pub shards: BTreeMap<String, Vec<Pack>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub gone: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub merged: BTreeSet<String>,
 }
 
 impl Index {
@@ -610,8 +615,9 @@ impl Packer {
                 let l = ix.shards.entry(shard.to_string()).or_default();
                 if let Some(i) = l.windows(run.len()).position(|w| w == run.as_slice()) {
                     l.splice(i..i + run.len(), [merged.clone()]);
-                    for p in &run {
+                    for p in run.iter().filter(|p| p.name != merged.name) {
                         ix.gone.insert(p.name.clone(), now);
+                        ix.merged.insert(p.name.clone());
                     }
                     named = true;
                 }
@@ -712,6 +718,7 @@ impl Packer {
                 }
             }
         }
+        ix.merged.retain(|n| gone.contains_key(n));
         ix.gone = gone;
         ix.save(&self.store)?;
         drop(lock);
@@ -722,11 +729,10 @@ impl Packer {
 
 /// The archives a helper's jobs put on the NAS (crate::handoff::Handoff::raw), named in `store`'s
 /// index, each that's there whole (one that isn't goes as an unnamed one does); how many were new
-/// to it. One its shard names already is passed over unread, and the index saved only when it
-/// changed: the lead's records keep every archive handed (thousands), and each new process of the
-/// lead names them all again, a read or two on the NAS each (task #605: 8 minutes of a restarted
-/// lead's first step, its heartbeat stale meanwhile). The caller holds the build lock (merging the
-/// hand-offs).
+/// to it. One its shard names already, or that the index lists as merged away, is passed over
+/// unread, and the index saved only when it changed: a restarted lead names again those its records
+/// still hold (named, not yet taken off them: crate::pool::driver::Heard::named_raw). The caller
+/// holds the build lock (merging the hand-offs).
 pub fn name_handed(store: &Path, handed: &[(String, Pack)], _held: &crate::out::BuildLock) -> Result<Named> {
     if handed.is_empty() {
         return Ok(Named::default());
@@ -736,7 +742,7 @@ pub fn name_handed(store: &Path, handed: &[(String, Pack)], _held: &crate::out::
     let mut n = Named::default();
     let mut changed = false;
     for (shard, p) in handed {
-        if ix.of(shard).contains(p) && !ix.gone.contains_key(&p.name) {
+        if (ix.of(shard).contains(p) && !ix.gone.contains_key(&p.name)) || ix.merged.contains(&p.name) {
             continue;
         }
         if !there(store, p) {
@@ -1498,6 +1504,40 @@ mod tests {
             );
         }
         assert_eq!(names(&store).len(), 4);
+    }
+
+    #[test]
+    fn an_archive_merged_away_and_handed_again_isnt_named_again() {
+        let d = tempfile::tempdir().unwrap();
+        let (store, dir, root) = nas(d.path());
+        let outbox = d.path().join("outbox");
+        std::fs::create_dir_all(&outbox).unwrap();
+        for y in 0..4 {
+            put(&dir, &format!("12/2048/{}.png", 1344 + y), &png(), 120);
+        }
+        pack_local(&dir, &store, &root, true).unwrap();
+        // A helper's archive of the shard, handed off and named.
+        put(&dir, "12/2049/1344.png", &png(), 120);
+        pack_local_to(&dir, &store, &root, true, Some(outbox.clone()), &|_, _, _| {}).unwrap();
+        let raw: Vec<(String, Pack)> =
+            crate::handoff::written_in(&outbox).unwrap().unwrap().into_iter().flat_map(|h| h.raw).collect();
+        let lock = crate::out::BuildLock::take(&root).unwrap();
+        assert_eq!(name_handed(&store, &raw, &lock).unwrap().new, 1);
+        drop(lock);
+        // More of the shard: its archives merged into one, the helper's among them (on the NAS a day).
+        for y in 0..4 {
+            put(&dir, &format!("12/2050/{}.png", 1344 + y), &png(), 120);
+        }
+        pack_local(&dir, &store, &root, true).unwrap();
+        let ix = Index::load(&store).unwrap();
+        assert_eq!(ix.of("6-32-21").len(), 1);
+        assert!(ix.gone.contains_key(&raw[0].1.name) && ix.merged.contains(&raw[0].1.name));
+        assert!(there(&store, &raw[0].1));
+        // Handed again (a lead's records still holding it, a restart): not named beside its merged copy.
+        let lock = crate::out::BuildLock::take(&root).unwrap();
+        assert_eq!(name_handed(&store, &raw, &lock).unwrap().new, 0);
+        drop(lock);
+        assert_eq!(Index::load(&store).unwrap(), ix);
     }
 
     #[test]

@@ -778,8 +778,9 @@ class, id) within a tile. The client sends the id with the clicked point.
     it); `sources/aws-terrarium/packs/<shard>.<hash16>.tiles` (AWS's raw tiles in RDTILES1, shards
     `6-<x>-<y>` for zooms 9–12, `3-<x>-<y>` for 3–8, `root` for 0–2; an empty entry where AWS lacks
     the tile; meta `{"kind":"aws-terrarium raw tiles"}`) with `packs/index.json` (`{areas: {shard:
-    [{name, bytes}, …]}, gone: {name: unix seconds}}`, archives oldest first, read newest first;
-    `gone` deleted a day after), and loose `sources/aws-terrarium/<z>/<x>/<y>.png` (`.none`);
+    [{name, bytes}, …]}, gone: {name: unix seconds}, merged: [name, …]}`, archives oldest first,
+    read newest first; `gone` deleted a day after; `merged` those of `gone` merged away, never
+    named again from a hand-off), and loose `sources/aws-terrarium/<z>/<x>/<y>.png` (`.none`);
     `sources/pageviews/<YYYY-MM>.tsv.zst` (a `#langs\t<lang>,…` line, then
     `<lang>|<Title>\t<views>` lines; pipeline::pageviews); `sources/fetched/<dataset>/<file>` (a
     declared elevation dataset's `store` files, deflate GeoTIFF, `.none` where missing;

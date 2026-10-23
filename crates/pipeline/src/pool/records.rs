@@ -65,8 +65,9 @@ pub struct Records {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sizes: BTreeMap<String, u64>,
     /// Raw terrain tiles' archives handed off, to be named in the raw store's index: the lead names
-    /// them (crate::rawpack::name_handed, which passes over any already named without reading
-    /// them). They stay here once named; each process of the lead names those it hasn't yet.
+    /// them (crate::rawpack::name_handed), then takes them off here (crate::pool::driver::Heard::
+    /// named_raw), saved with its next snapshot. One named but not yet off (a restart between) is
+    /// named again: passed over unread.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub raw: Vec<(String, Pack)>,
     /// The journal entries applied (or passed over: `apply`), by key (crate::pool::journal::Entry::key).

@@ -314,6 +314,8 @@ pub struct Give {
     pub conds: Option<Conds>,
     /// When the lead's coordinator last answered this Mac (`Heard::answered`).
     pub answered: Option<u64>,
+    /// The raw archives named since its records last dropped them (`Heard::named_raw`).
+    pub named_raw: Vec<String>,
 }
 
 /// One member's part in the pool, in this process.
@@ -669,6 +671,7 @@ impl Side {
             members: self.members.iter().cloned().collect(),
             reports: self.beats.clone(),
             answered: give.answered,
+            named_raw: give.named_raw,
         };
         self.conds = give.conds;
         let io = Clocked { nas: &*self.nas, clock: &*self.clock, start: self.start, ahead: self.ahead };
@@ -1130,7 +1133,8 @@ pub struct Run {
     drain_n: u64,
     /// When the NAS's folder of hand-offs was last drained, and whether it was found empty.
     left_taken: bool,
-    /// The records (term, seq) last written to today's files; the raw tiles' archives named.
+    /// The records (term, seq) last written to today's files; the raw tiles' archives named in the
+    /// raw store's index and not yet off the records (`Give::named_raw`).
     pub today: Option<(u64, u64)>,
     pub named_raw: BTreeSet<String>,
     /// The outbox drained (once a process), and the hand-off folders' last files drained, to mark
@@ -1710,6 +1714,7 @@ impl Run {
             asks: std::mem::take(&mut self.asks),
             conds: self.conds,
             answered: self.cx.lead_answered,
+            named_raw: self.named_raw.iter().cloned().collect(),
         };
         let marks = std::mem::take(&mut self.marks);
         // (The merge's checks, an entry outside its step's write-set from a member on a newer app
@@ -1728,6 +1733,15 @@ impl Run {
         };
         let checked = |e: &Entry, r: &Records| check_from(e, r, &lead_app, &app_of);
         let out = self.side.step(give, &checked);
+        // (Named and off the records now, or no longer leading: forgotten here.)
+        let raw: BTreeSet<&str> = self
+            .side
+            .driver
+            .as_ref()
+            .and_then(Driver::records)
+            .map(|r| r.raw.iter().map(|(_, p)| p.name.as_str()).collect())
+            .unwrap_or_default();
+        self.named_raw.retain(|n| raw.contains(n.as_str()));
         self.last_step = Some(self.side.io().awake());
         // (Drained hand-offs held by the state just saved: their folders marked merged, so one whose
         // removal failed isn't drained again by a later process.)
