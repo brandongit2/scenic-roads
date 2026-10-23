@@ -45,6 +45,11 @@ use std::time::{Duration, Instant};
 
 /// The coordinator's port.
 pub const PORT: u16 = 8090;
+/// The address a coordinator (or a member's broker, or viewer) listens on: every interface, for
+/// the other Macs; loopback alone in a unit test, whose members are in the same process and reach
+/// it at 127.0.0.1 (crate::net::urls): a freshly built test binary is no app a Mac's firewall lets
+/// its Tailscale or LAN addresses reach (#596).
+pub const LISTEN: &str = if cfg!(test) { "127.0.0.1" } else { "0.0.0.0" };
 /// How long a lease lasts without a heartbeat (workers beat every minute).
 pub const TTL: Duration = Duration::from_secs(600);
 /// How long a worker counts as around after its last request.
@@ -1026,7 +1031,7 @@ impl Coordinator {
         // (Listening first: a port in use writes nothing of its state. A coordinator this process
         // stopped has let its port go as its `stop` returned; another process's is no reason to
         // wait, and isn't waited for.)
-        let listener = anyhow::Context::with_context(store::spawn::listen((crate::net::LISTEN, port)), || {
+        let listener = anyhow::Context::with_context(store::spawn::listen((crate::coord::LISTEN, port)), || {
             format!("listen on port {port}")
         })?;
         Coordinator::start_on(dir, wasm, listener, me, app)
@@ -4718,7 +4723,7 @@ pub(crate) fn take_test_listener(port: u16) -> Option<std::net::TcpListener> {
 /// the listener.
 #[cfg(test)]
 pub(crate) fn port_free(port: u16) -> std::io::Result<()> {
-    store::spawn::listen((crate::net::LISTEN, port)).map(|l| store::spawn::sockets(|| drop(l)))
+    store::spawn::listen((crate::coord::LISTEN, port)).map(|l| store::spawn::sockets(|| drop(l)))
 }
 
 /// A listener on a port no other test of this process has been given, and its port.
@@ -4728,7 +4733,7 @@ fn test_listener() -> (std::net::TcpListener, u16) {
     let mut g = GIVEN.lock().unwrap();
     // (Each turn a port given before: not time, but ports.)
     for _ in 0..1000 {
-        let l = store::spawn::listen((crate::net::LISTEN, 0)).unwrap();
+        let l = store::spawn::listen((crate::coord::LISTEN, 0)).unwrap();
         let port = l.local_addr().unwrap().port();
         if g.insert(port) {
             return (l, port);

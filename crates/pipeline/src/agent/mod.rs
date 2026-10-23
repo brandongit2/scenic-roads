@@ -10811,7 +10811,7 @@ fn make_viewer(app: &str, host: &str) -> Option<crate::coord::Coordinator> {
     let held: Option<std::net::TcpListener> = None;
     let l = match held {
         Some(l) => Ok(l),
-        None => store::spawn::listen((crate::net::LISTEN, port)),
+        None => store::spawn::listen((crate::coord::LISTEN, port)),
     };
     match l.map_err(anyhow::Error::from).and_then(|l| crate::coord::Coordinator::viewer(l, host, app)) {
         Ok(v) => Some(v),

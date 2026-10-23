@@ -231,13 +231,9 @@ pub fn catalog_written() {
     });
 }
 
-/// The address a coordinator (or a member's broker, or viewer) listens on: every interface, for
-/// the other Macs; loopback alone in a unit test, whose members are in the same process: a freshly
-/// built test binary is no app the firewall lets other interfaces reach (#596).
-pub const LISTEN: &str = if cfg!(test) { "127.0.0.1" } else { "0.0.0.0" };
-
 /// This Mac's addresses for others: its Tailscale address (100.64.0.0/10), then its LAN name. In a
-/// unit test, loopback alone (`LISTEN`): never the Mac's network names, Tailscale or firewall.
+/// unit test, loopback alone (crate::coord::LISTEN): never the Mac's network names, Tailscale or
+/// firewall.
 pub fn urls(port: u16) -> Vec<String> {
     if cfg!(test) {
         return vec![format!("http://127.0.0.1:{port}")];
