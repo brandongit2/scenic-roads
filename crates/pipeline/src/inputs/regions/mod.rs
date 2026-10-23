@@ -149,8 +149,9 @@ impl Checks for Regions {
     }
 
     fn version(&self) -> u32 {
-        // (2: `disabled`, #495: files an older app held as an unknown field are checked again.)
-        2
+        // (2: `disabled`, #495: files an older app held as an unknown field are checked again.
+        // 3: #600: a region resolved by cell is drawn with its cells dissolved.)
+        3
     }
 
     fn recursive(&self) -> bool {

@@ -127,6 +127,9 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   5. **Checks that version whole.** If it raises a finding neither accepted nor raised by the
      current version, every changed file of the unit is held and the version stays; the banner says
      they were held together and why.
+     What's derived from the version whole is made again, files unchanged, when the accepted
+     index's `checks` isn't this app's (`unit` and the unit's `Checks::version`): a bump of a
+     unit's version rolls its derived files out by itself.
   6. Stores each file content-named under `sources/inputs/<unit>/` (uploaded and read back, docs/storage.md).
   7. Hands off the records: `sources/inputs/<unit>/@index` (when it differs; the replaced index is
      touched so GC keeps it, §4.9), `@listed`, and `@held` (the held report, or none). `@` starts

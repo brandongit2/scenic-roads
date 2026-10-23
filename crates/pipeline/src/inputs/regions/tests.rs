@@ -296,6 +296,63 @@ fn the_gate_takes_regions_in_and_holds_them_on_a_new_pass() {
     let _: &Index = &prev;
 }
 
+/// A new version of the checks derives again with the files unchanged: only the drawn files (and the
+/// index's `checks`) change; the stored geometry and the `keyed` digests the builds' keys read stay.
+#[test]
+fn a_new_checks_version_derives_again_and_changes_only_the_drawn_files() {
+    let f = fx();
+    let checks = Regions::new(Some(Prepared {
+        pass: Some(PASS.into()),
+        outlines: Some(Outlines::open(&f._d.path().join("outlines.sect")).unwrap()),
+        ..Default::default()
+    }));
+    let a = region("a", "outline = [\"osm:1\"]\n");
+    let drop: BTreeMap<String, Vec<u8>> = [("_pins.toml", PINS.1), ("eu/a.toml", a.as_str())]
+        .iter()
+        .map(|(p, t)| (p.to_string(), t.as_bytes().to_vec()))
+        .collect();
+    let listing =
+        Listing { files: drop.keys().map(|p| (p.clone(), (drop[p].len() as u64, 1))).collect(), ..Default::default() };
+    let (accepted, unsettled) = (Default::default(), Default::default());
+    let rn = |p: &str| Ok(drop[p].clone());
+    let kept = std::cell::RefCell::new(BTreeMap::<String, Arc<Vec<u8>>>::new());
+    let ro = |e: &FileEntry| -> Result<Vec<u8>> { Ok(kept.borrow()[&e.file].to_vec()) };
+    let run = |prev: Option<&Index>, listed: &BTreeMap<String, (u64, u64)>| {
+        decide(&Given {
+            checks: &checks,
+            prev,
+            prev_listed: listed,
+            listing: &listing,
+            unsettled: &unsettled,
+            accepted: &accepted,
+            full: false,
+            read_new: &rn,
+            read_old: &ro,
+        })
+        .unwrap()
+    };
+    let d = run(None, &BTreeMap::new());
+    kept.borrow_mut().extend(d.store.clone());
+    // The accepted version as an older app made it: its checks version lower, its drawing other.
+    let mut old = d.index.clone();
+    old.checks = format!("regions {}", checks.version() - 1);
+    old.files
+        .get_mut("eu/a.toml")
+        .unwrap()
+        .facts
+        .insert("drawn".into(), "sources/inputs/regions/@drawn/a.0.json".into());
+    let d2 = run(Some(&old), &d.listed);
+    assert!(d2.changed, "not changed");
+    assert!(d2.report.as_ref().is_none_or(|r| r.findings.is_empty() && r.held.is_empty()), "{:?}", d2.report);
+    assert_eq!(d2.index.checks, d.index.checks);
+    let (e, e0) = (&d2.index.files["eu/a.toml"], &old.files["eu/a.toml"]);
+    assert_eq!((&e.file, &e.keyed, &e.facts["geometry"]), (&e0.file, &e0.keyed, &e0.facts["geometry"]));
+    assert_eq!(e.facts["drawn"], d.index.files["eu/a.toml"].facts["drawn"]);
+    assert_ne!(e.facts["drawn"], e0.facts["drawn"]);
+    // Taken: it derives no more.
+    assert!(!run(Some(&d2.index), &d2.listed).changed);
+}
+
 #[test]
 fn a_line_from_ways_buffered_and_ways_that_dont_join() {
     let f = fx();

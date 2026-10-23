@@ -85,6 +85,8 @@ pub fn decide(g: &Given) -> Result<Decision> {
     let empty =
         Index { fmt: 1, unit: unit.into(), checks: format!("{unit} {}", g.checks.version()), ..Default::default() };
     let prev = g.prev.unwrap_or(&empty);
+    // A version of the checks the accepted one wasn't made by: what's derived is made again.
+    let rederive = prev.checks != empty.checks;
     let mut read = Vec::new();
     let mut changes: BTreeMap<String, Change> = BTreeMap::new();
     let mut findings: Vec<Finding> = Vec::new();
@@ -306,7 +308,7 @@ pub fn decide(g: &Given) -> Result<Decision> {
     // What's derived from the version whole (the regions' stored geometry): for every file but
     // those kept as accepted.
     jobs::stage(4, STAGES, "inputs check (what's derived from the version)");
-    if files != prev.files || (g.checks.holds_unchanged() && !changes.is_empty()) {
+    if files != prev.files || rederive || (g.checks.holds_unchanged() && !changes.is_empty()) {
         let keep: BTreeSet<String> = held.iter().chain(&stuck).cloned().collect();
         let next: BTreeMap<String, Option<Arc<Vec<u8>>>> = files
             .keys()
@@ -347,9 +349,9 @@ pub fn decide(g: &Given) -> Result<Decision> {
             }
         }
     }
-    let changed = files != prev.files || accepted != prev.accepted;
+    let changed = files != prev.files || accepted != prev.accepted || rederive;
     let index = if changed {
-        Index { fmt: 1, unit: unit.into(), checks: format!("{unit} {}", g.checks.version()), files, accepted }
+        Index { fmt: 1, unit: unit.into(), checks: empty.checks.clone(), files, accepted }
     } else {
         prev.clone()
     };
