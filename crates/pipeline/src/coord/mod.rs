@@ -321,6 +321,8 @@ pub struct Shared {
     /// crate::budget::nas::PROBES_FILE), and the disks' busy shares it read last (%): the status's.
     pub nas_probes: Vec<crate::budget::nas::Probe>,
     pub nas_disks: Vec<f64>,
+    /// The NAS's mount as the prober last read it (`NasMount`), each `MOUNT_EVERY_S`.
+    pub nas_mount: Option<NasMount>,
     /// Why each worker's last ask was granted fewer jobs than it wanted (`pack`: the packing's
     /// refusal, in words), and when (unix s); none once an ask got all it wanted. The status's
     /// (`Coordinator::refusals`): why nothing more fits a Mac.
@@ -898,6 +900,44 @@ pub struct NasView {
     pub disks_pct: Vec<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub traffic: Option<[f64; 7]>,
+    /// The NAS's mount (the project folder's filesystem), as the prober last read it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mount: Option<NasMount>,
+}
+
+/// The filesystem holding the NAS's project folder (store::sys::mount_of): the server's name as
+/// mounted (`//user@fishandchips.local/personal` gives `fishandchips`), its protocol (`SMB`, `NFS`,
+/// `AFP`, else the filesystem's kind) and the bytes free on the share.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NasMount {
+    pub name: String,
+    pub proto: String,
+    pub free: u64,
+}
+
+/// How often the prober reads the NAS's mount (`NasMount`): its free space moves slowly.
+#[cfg(not(target_os = "wasi"))]
+const MOUNT_EVERY_S: u64 = 60;
+
+impl NasMount {
+    /// From statfs's mounted-from name and filesystem kind.
+    pub fn of(from: &str, kind: &str, free: u64) -> NasMount {
+        let host = from.trim_start_matches('/');
+        let host = host.split('/').next().unwrap_or(host);
+        let host = host.rsplit('@').next().unwrap_or(host);
+        // (`host:/path` for NFS; a port or `.local` dropped.)
+        let host = host.split(':').next().unwrap_or(host);
+        let name = host.strip_suffix(".local").unwrap_or(host).to_string();
+        let proto = match kind {
+            "smbfs" => "SMB",
+            "nfs" => "NFS",
+            "afpfs" => "AFP",
+            k => k,
+        }
+        .to_string();
+        NasMount { name, proto, free }
+    }
 }
 
 /// What a Mac holds of a shared cache (`Capacity::caches`): its files' bytes on its disk (MB).
@@ -1225,6 +1265,7 @@ impl Coordinator {
             nas_loop: Default::default(),
             nas_probes: Vec::new(),
             nas_disks: Vec::new(),
+            nas_mount: None,
             refused: BTreeMap::new(),
             brokers: None,
             pageview: None,
@@ -1614,6 +1655,7 @@ impl Coordinator {
             // (Finite alone: a NaN would be written null and the status read back not at all.)
             disks_pct: s.nas_disks.iter().copied().filter(|v| v.is_finite()).collect(),
             traffic: pool_traffic(&s.capacities(&self.me)),
+            mount: s.nas_mount.clone(),
         })
     }
 
@@ -1648,6 +1690,23 @@ impl Coordinator {
                 let (w, _) = sched::Sched::job_nas(&nw, step, &targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>());
                 let e = out.entry(lease.worker.clone()).or_default();
                 *e = e.saturating_add(w);
+            }
+        }
+        out
+    }
+
+    /// What one job of each step leased now weighs of the NAS budget (its heaviest's, thousandths
+    /// of the whole): the page's "a terrain job is allowed 12 %". Empty before the NAS is probed.
+    pub fn nas_step_weights(&self) -> BTreeMap<String, u32> {
+        let s = self.shared.lock().unwrap();
+        let now = s.now();
+        let Some((nw, _, _, _)) = s.nas_room(now, true) else { return BTreeMap::new() };
+        let mut out: BTreeMap<String, u32> = BTreeMap::new();
+        for lease in s.leases.all(now) {
+            if let Work::Job { step, targets } = &lease.work {
+                let (w, _) = sched::Sched::job_nas(&nw, step, &targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>());
+                let e = out.entry(step.clone()).or_default();
+                *e = (*e).max(w);
             }
         }
         out
@@ -2452,6 +2511,7 @@ fn nas_prober(
         let mut told_unusable: Option<&'static str> = None;
         let mut last: Option<std::time::Instant> = None;
         let mut cleaned = false;
+        let mut mounted: Option<std::time::Instant> = None;
         while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
             let r = root.lock().unwrap_or_else(|e| e.into_inner()).clone();
             if let Some(r) = r {
@@ -2528,6 +2588,13 @@ fn nas_prober(
                                     .ok()
                             });
                         }
+                        // (The mount, read outside the lock: statfs can wait on the NAS.)
+                        let mount = if mounted.is_none_or(|t| t.elapsed() >= Duration::from_secs(MOUNT_EVERY_S)) {
+                            mounted = Some(std::time::Instant::now());
+                            Some(store::sys::mount_of(&r).ok().map(|(f, k, free)| NasMount::of(&f, &k, free)))
+                        } else {
+                            None
+                        };
                         let mut disks = Vec::new();
                         match session.as_ref().map(|s| s.disk_busy()) {
                             Some(Ok(busy)) => {
@@ -2559,6 +2626,9 @@ fn nas_prober(
                             }
                         }
                         s.nas_disks = disks;
+                        if let Some(m) = mount {
+                            s.nas_mount = m;
+                        }
                         match failed {
                             Some(true) => s.nas_failures = s.nas_failures.saturating_add(1),
                             Some(false) => s.nas_failures = 0,
@@ -5164,6 +5234,17 @@ mod tests {
     /// Task #517: the NAS as the lead sees it: the probes kept, the limits, the gate's reading and
     /// the disks', and the pool's traffic, the members' with a measure summed.
     #[test]
+    fn the_nas_mount_is_named_from_what_it_mounts() {
+        let m = NasMount::of("//brandontsang@fishandchips.local/personal", "smbfs", 7);
+        assert_eq!(m, NasMount { name: "fishandchips".into(), proto: "SMB".into(), free: 7 });
+        assert_eq!(NasMount::of("nas.lan:/volume1/x", "nfs", 0).name, "nas.lan");
+        assert_eq!(
+            NasMount::of("/dev/disk3s1", "apfs", 0),
+            NasMount { name: "dev".into(), proto: "apfs".into(), free: 0 }
+        );
+    }
+
+    #[test]
     fn the_status_shows_the_nas_as_the_lead_sees_it() {
         let (_d, c, w) = start();
         assert_eq!(c.nas_view(), None, "nothing probed or read yet");
@@ -6423,6 +6504,7 @@ mod tests {
         let m = Ask { want: 3, ..every_ask("m1", "slope", 64_000, 100_000) };
         assert_eq!(all_granted(&w, &m).len(), 3, "the members unbudgeted");
         assert_eq!(c.nas_shares().get("m1"), Some(&1500), "its share shown past the whole");
+        assert_eq!(c.nas_step_weights().get("slope"), Some(&500), "one slope job's weight");
         // The lead's own: held within the whole by its own jobs alone (task #440: the members'
         // unheld jobs no longer keep it idle).
         assert!(!c.nas_over(), "the lead's ramp counts its own");

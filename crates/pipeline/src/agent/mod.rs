@@ -782,6 +782,10 @@ pub struct Status {
     /// whole (crate::coord::Coordinator::nas_shares): by its worker's name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub nas_share: BTreeMap<String, u32>,
+    /// What one job of each step leased now weighs of the NAS budget, thousandths of the whole
+    /// (crate::coord::Coordinator::nas_step_weights): by step.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub nas_step: BTreeMap<String, u32>,
     /// Each step's phases as mean shares of wall time and bytes over its last runs, measured from
     /// the build's timings by the lead's coordinator (crate::coord::Coordinator::phase_shares): by
     /// step. Empty on a member, and until the lead has read them.
@@ -4482,6 +4486,7 @@ impl Agent {
             capacity: self.coord.as_ref().map(|c| c.capacities()).unwrap_or_default(),
             packing: self.coord.as_ref().map(|c| c.refusals()).unwrap_or_default(),
             nas_share: self.coord.as_ref().map(|c| c.nas_shares()).unwrap_or_default(),
+            nas_step: self.coord.as_ref().map(|c| c.nas_step_weights()).unwrap_or_default(),
             phase_shares: self.coord.as_ref().map(|c| c.phase_shares()).unwrap_or_default(),
             nas: self.coord.as_ref().and_then(|c| c.nas_view()),
             workers: self

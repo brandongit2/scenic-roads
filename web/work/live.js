@@ -12,6 +12,8 @@ import { draw } from "./chart.js";
 import { commonGaps, fmt, footer, latest, merge, pressureClass, pressureWord, recentMean } from "./chartmath.js";
 
 const EVERY_MS = 1500;
+// How often a Mac's day of missed NAS calls is asked (nas.js's "timed out").
+const DAY_EVERY_MS = 60000;
 // How old the power's last reading may be and still be said (the agent's loop reads it).
 const POWER_FRESH_S = 900;
 const SERIES = ["nas_read_mbs", "nas_write_mbs", "net_in_mbs", "net_out_mbs", "build_cores", "others_cores", "cores_busy", "cores_busy_e", "cores_busy_p", "load1",
@@ -40,8 +42,9 @@ export function startLive(c) {
   tick();
 }
 
-/** A Mac's kept answer ({series, now, step, range, mac, error}; null before the first) for the NAS
- * section (nas.js), and `onLive(fn)`: `fn(host)` after each answer or failure. */
+/** A Mac's kept answer ({series, now, step, range, mac, error, day}; null before the first) for the
+ * NAS section (nas.js), and `onLive(fn)`: `fn(host)` after each answer or failure. `day`: its NAS
+ * calls missed over the last day (the live store's minutes, asked once a minute; null till then). */
 export const liveOf = (host) => kept.get(host) || null;
 const listeners = [];
 export const onLive = (fn) => listeners.push(fn);
@@ -76,6 +79,14 @@ async function ask(m) {
     } else ans = await remote(m, st, body);
     st.series = merge(fresh ? st.series : null, ans, ans.now - r);
     Object.assign(st, { range: r, step: ans.step, now: ans.now, mac: ans.mac, at: Date.now(), error: null });
+    if (!(Date.now() - st.dayAt < DAY_EVERY_MS)) {
+      st.dayAt = Date.now();
+      const dayBody = { range: 86400, series: ["nas_missed"], net: false };
+      // (Its own failure kept apart: the minute's answer stands; the day said unknown till the next.)
+      const d = await (m ? remote(m, st, dayBody) : cfg.call("/work/live", dayBody).then(([code, v]) => (code === 200 ? v : null))).catch(() => null);
+      // (A point's mean a second times its span: the calls missed in it.)
+      st.day = d?.series ? (d.series.nas_missed || []).reduce((t, p) => t + p[2] * d.step, 0) : null;
+    }
   } catch (e) {
     st.error = e.name === "TimeoutError" ? "no answer in 5 s" : e.message;
   } finally {
@@ -221,5 +232,9 @@ function paint(host) {
   // NAS: how long a listing took (measured only while a build runs here); the calls in flight.
   const ms = latest(s.nas_ms, now, 30);
   draw(b.nas.c, { ...base, unit: "ms", series: [{ points: s.nas_ms, colour: nr, label: "answer", band: true }] });
-  words(b.nas.v, ms == null ? "not measured (no build here now)" : `${fmt(ms, "ms")} · ${fmt(at("nas_calls"))} calls`, ms != null && ms > 1000 ? "bad" : ms != null && ms > 200 ? "warn" : "");
+  // (Missed: a rate a second; the last minute's mean times 60 is its count.)
+  const missed = Math.round((recentMean(s.nas_missed, now) || 0) * 60);
+  words(b.nas.v, `${ms == null ? "not measured (no build here now)" : fmt(ms, "ms")} · ${fmt(at("nas_calls"))} calls${missed ? ` · ${missed} missed in the last min` : ""}`,
+    missed || (ms != null && ms > 1000) ? "bad" : ms != null && ms > 200 ? "warn" : "",
+    "How long this Mac's listing of the NAS took (measured while a build runs here); its NAS calls in flight; those past their deadline or refused (every thread busy)");
 }

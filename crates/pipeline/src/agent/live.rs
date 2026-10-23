@@ -200,7 +200,7 @@ pub struct Ask {
 }
 
 /// This Mac's size, the charts' scales (`mac` in an answer): its cores, its efficiency cores, its
-/// memory (GB). Read once.
+/// memory (GB), its NAS call threads. Read once.
 fn mac() -> &'static serde_json::Value {
     static MAC: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
     MAC.get_or_init(|| {
@@ -208,6 +208,8 @@ fn mac() -> &'static serde_json::Value {
             "cores": crate::inputs::pace::cores(),
             "cores_e": crate::sys::efficiency_cores(),
             "mem_gb": crate::sys::memsize().map(|b| round(b as f64 / GB)),
+            // (Its NAS call threads, crate::agent::nasread: the most calls in flight at once.)
+            "nas_threads": crate::agent::nasread::SWITCH_READERS + crate::agent::nasread::READERS + crate::agent::nasread::WRITERS,
         })
     })
 }

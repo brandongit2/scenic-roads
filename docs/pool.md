@@ -1091,7 +1091,12 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   thread busy, over the second. The lead's status says the rest (`nas`, `coord::NasView`): the
   day's probes as its prober keeps them (the ones in `state/pool/nas-probes.json`, read from there
   and saved there, no other copy), the limits they give, the gate's smoothed load, target and
-  whether it holds, the disks' last reading (finite values alone), and the pool's traffic summed.
+  whether it holds, the disks' last reading (finite values alone), the pool's traffic summed, and
+  the NAS's mount (`mount: {name, proto, free}`: the server's name and protocol from what the
+  project folder's filesystem mounts, `//user@fishandchips.local/personal` giving `fishandchips`
+  and `SMB`, and the bytes free; a statfs by the prober's thread once a minute, never the agent's
+  loop). Beside it, `nas_step`: what one job of each step leased now weighs of the budget
+  (`Coordinator::nas_step_weights`, thousandths of the whole).
   The sampler's cost shows in `sampler_cpu_ms`; an ask carries seven more numbers. **The internet** (task #516), counted by the agent's proxy (§7.7), which
   every job's connection out goes through (`budget::net`): per host, the bytes in (to the jobs)
   and out, added as each chunk is relayed (one atomic add a read, so a long download shows as it
@@ -1134,11 +1139,12 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   M6's https://map.brandontsang.net among them), the page reading by the scheme it was served
   over. The build page's Machines tab draws it (docs/pipeline.md §5, Machines), asking with
   `net: false` (the proxy's counts left out); an answer also says the Mac's size, `mac: {cores,
-  cores_e, mem_gb}` (read once), the charts' scales. Its NAS section (`web/work/nas.js`) asks
-  the same answers for `nas_read_mbs`, `nas_write_mbs`, `nas_ms`, `nas_calls`, `nas_missed` of
-  each Mac, and of the lead the `pool_nas_*` and `nas_disk_busy_pct` series (missing from a
-  member's answer), beside the status's `nas` (`NasView`) and `nas_share` (their leased jobs' NAS weights in thousandths of the whole, `Coordinator::nas_shares`, shown as "who is using the NAS"); nothing server-side
-  was added for it.
+  cores_e, mem_gb, nas_threads}` (read once: `nas_threads` its NAS call threads, the most calls in
+  flight at once), the charts' scales. Its NAS section (`web/work/nas.js`) reads the same answers:
+  each Mac's `nas_calls` and, asked once a minute over the last day, `nas_missed`; the lead's
+  `nas_ms`, `pool_nas_*` and `nas_disk_busy_pct` (missing from a member's answer); beside the
+  status's `nas` (`NasView`), `nas_share` (their leased jobs' NAS weights in thousandths of the
+  whole, `Coordinator::nas_shares`, shown as "who is using the NAS") and `nas_step`.
 - **Views** (menu bar, worker page, `scenic lead`, `scenic status`) read the
   agent's `pool.lead` (`crate::agent::lead::View`) or the fresher `agent/pool/view.json`
   (`lead::own_status`): each member's state and whether the lead can be handed to it

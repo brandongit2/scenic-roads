@@ -273,3 +273,18 @@ button[disabled] { opacity: .5; }
 .settings .setting .k { color: var(--dim); min-width: 112px; }
 .settings .setting .ctl { margin-left: auto; display: flex; gap: 6px; align-items: center; }
 .settings .setting input { width: 76px; margin: 0; }
+/* The NAS (nas.js): the mockup's two columns, one on a phone; gauges over their scales' ticks. */
+.d-nas .nasgrid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 10px 16px; margin-bottom: 6px; }
+@media (max-width: 640px) { .d-nas .nasgrid { grid-template-columns: 1fr; } }
+.d-nas h3 { font-size: 12px; font-weight: 600; margin: 2px 0 4px; display: flex; flex-direction: column; gap: 1px; }
+.d-nas h3 span { color: var(--dim); font-weight: 400; font-size: 11px; }
+.d-nas .shares .k { text-transform: none; letter-spacing: 0; }
+.d-nas .caps + h3 { margin-top: 8px; }
+.d-nas .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.d-nas .barcell { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.d-nas .scale { display: flex; justify-content: space-between; font-size: 9.5px; color: var(--dim); line-height: 1.1; opacity: .85; }
+.d-nas .scale:empty { display: none; }
+.mc .cbar.ok > i { background: var(--ok); }
+.mc .cbar.bad > i { background: var(--bad); }
+.mc .cbar.free > i { background: var(--dim); opacity: .45; }
+.mc .lbody[hidden], .mc .caps[hidden] { display: none; }

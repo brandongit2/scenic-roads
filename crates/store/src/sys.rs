@@ -97,6 +97,30 @@ pub fn disk_free(path: &Path) -> io::Result<u64> {
     }
 }
 
+/// The filesystem holding `path` (macOS's statfs): what it mounts (`//user@host/share` for a
+/// network share), its kind (`smbfs`, `nfs`, `apfs`, ...) and the bytes free for an unprivileged
+/// user. Can hang on a NAS path: off any loop that must keep time.
+pub fn mount_of(path: &Path) -> io::Result<(String, String, u64)> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::{CStr, CString};
+        use std::os::unix::ffi::OsStrExt;
+        let c = CString::new(path.as_os_str().as_bytes())?;
+        // SAFETY: as disk_free; the names are NUL-terminated within their arrays.
+        let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+        if unsafe { libc::statfs(c.as_ptr(), &mut st) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let text = |a: &[libc::c_char]| unsafe { CStr::from_ptr(a.as_ptr()) }.to_string_lossy().into_owned();
+        Ok((text(&st.f_mntfromname), text(&st.f_fstypename), st.f_bavail.saturating_mul(u64::from(st.f_bsize))))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        Err(io::Error::new(io::ErrorKind::Unsupported, "no mount query on this platform"))
+    }
+}
+
 /// The size of the (local) filesystem holding `path`, in bytes.
 pub fn disk_size(path: &Path) -> io::Result<u64> {
     #[cfg(unix)]
