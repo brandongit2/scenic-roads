@@ -226,15 +226,18 @@ final class BuildService {
     }
 
     /// The job registered afresh from this app (unregistered, gone from launchd, registered: a new
-    /// launch constraint) and started, each step in update.log. Once per launch at most: after
-    /// that it's logged and left (by hand: `scenic-status --unregister`, quit, open the app).
+    /// launch constraint) and started, each step in update.log. Registering right after an update
+    /// swapped the app can keep the old constraint (the M4, 23 Oct: "needs LWCR update" again; 30 s
+    /// later it took), so it's tried again while the job is refused, 30 s apart, 4 times a launch at
+    /// most: after that it's logged and left (by hand: `scenic-status --unregister`, quit, open the app).
     func reregister(_ why: String) {
-        guard !reregistered else {
-            if loggedLeft != why { updateLog("\(why); registered again once this launch already: left as it is"); loggedLeft = why }
+        guard reregistrations < 4, Date().timeIntervalSince(lastReregister) > 30 else {
+            if reregistrations >= 4, loggedLeft != why { updateLog("\(why); registered again 4 times this launch already: left as it is"); loggedLeft = why }
             return
         }
-        reregistered = true
-        updateLog("\(why): registering the build service again")
+        reregistrations += 1
+        lastReregister = Date()
+        updateLog("\(why): registering the build service again (\(reregistrations) of 4 this launch)")
         do { try service.unregister() } catch { updateLog("unregistering the build service: \(error)") }
         for _ in 0..<25 {
             if jobState(buildLabel) == .unloaded { break }
@@ -281,8 +284,9 @@ final class BuildService {
             return ours ? (pid, p) : nil
         }
     }
-    /// Registered again this launch (`reregister`): once at most.
-    var reregistered = false
+    /// Times registered again this launch (`reregister`), and when last.
+    var reregistrations = 0
+    var lastReregister = Date.distantPast
     var loggedLeft: String?
 
     /// The running launcher's executable when it isn't this app's (nil: it is, or nothing runs).

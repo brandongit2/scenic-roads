@@ -27,7 +27,7 @@
   network-volume permission is granted to /Applications/Scenic.app, not to the old copy an update
   leaves aside, `.Scenic.app.old-<pid>`); a launcher whose executable can't be read counts as
   elsewhere. If not, it restarts the job (`launchctl kickstart -k`, at most once a minute;
-  registering it again, once per launch, if that isn't enough): the agent's jobs, in process groups
+  registering it again if that isn't enough): the agent's jobs, in process groups
   of their own, run on through it, and the agent it starts takes them over (docs/building.md §2, Restarts). It
   deletes the old copies
   nothing runs from (the swap itself leaves them). launchd keeps a launch constraint (LWCR) for
@@ -39,7 +39,10 @@
   launcher (an update that changed it; the swap logs it) it unregisters and registers the job
   again before starting it; and opened, and each poll, a job launchd says it can't start
   (`spawnBroken`: needs LWCR update, or spawn failed with exit 78) is registered again the same
-  way. Once per launch at most (with the restart's fallback above), each step in update.log; the
+  way. Registering right after an update's swap can keep the old constraint (the job still "needs
+  LWCR update"; on the M4, 23 Oct, the next registration 30 s later took), so it's done again while
+  the job is refused, 30 s apart, 4 times a launch at most (with the restart's fallback above),
+  each step in update.log; the
   window says "launchd can't start it". By hand: `scenic-status --unregister`, quit, open Scenic.
   `scenic-status --test tools/status/test` checks the detection against captured
   `launchctl print` output, the reopen helper and the arguments (check.sh's swift part runs it).
