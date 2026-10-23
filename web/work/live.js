@@ -96,8 +96,8 @@ async function ask(m) {
 }
 
 // Another Mac's answer, at its addresses (HTTPS over an HTTPS page: a browser refuses plain HTTP
-// there), the last one that answered first.
-async function remote(m, st, body) {
+// there), the last one that answered first. (activity.js asks with it too.)
+export async function remote(m, st, body) {
   const https = location.protocol === "https:";
   const urls = https ? [m.https].filter(Boolean) : [...(m.urls || [])];
   if (!urls.length) throw new Error(https ? "no HTTPS address (this page came over HTTPS)" : "no address");

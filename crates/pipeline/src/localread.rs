@@ -93,7 +93,7 @@ impl Local {
         match self.blobs.get(&self.root, &content) {
             Ok(l) => {
                 store::nasio::read(len);
-                store::nasio::opened();
+                store::nasio::opened(p, len, t.elapsed().as_millis() as u64);
                 crate::timings::count(len, 1);
                 eprintln!("{content}: copied here ({} MB in {:.1} s)", len >> 20, t.elapsed().as_secs_f64());
                 l

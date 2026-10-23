@@ -59,11 +59,11 @@ pub fn add(key: &str, n: u64) {
     *state().m.entry(key.to_string()).or_default() += n;
 }
 
-/// Counts a file of `bytes` made on the NAS (crate::out's `put_file`, `store_bytes`): `wrote`
+/// Counts file `path` of `bytes` made on the NAS in `ms` (crate::out's `put_file`, `store_bytes`): `wrote`
 /// and `creates`, and this process's NAS count (store::nasio). One already there (reused, touched)
 /// isn't counted.
-pub fn wrote(bytes: u64) {
-    store::nasio::wrote(bytes);
+pub fn wrote(path: &std::path::Path, bytes: u64, ms: u64) {
+    store::nasio::wrote(path, bytes, ms);
     let mut s = state();
     *s.m.entry("wrote".into()).or_default() += bytes;
     *s.m.entry("creates".into()).or_default() += 1;
@@ -190,8 +190,8 @@ mod tests {
         assert!(m["threads"] >= 1);
         assert!(!m.contains_key("wrote"));
         begin();
-        wrote(10);
-        wrote(5);
+        wrote(std::path::Path::new("a"), 10, 0);
+        wrote(std::path::Path::new("b"), 5, 0);
         let m = take();
         assert_eq!((m["wrote"], m["creates"]), (15, 2));
         begin();
@@ -226,7 +226,7 @@ mod tests {
         begin();
         store::nasio::read(300);
         store::nasio::add(Count::Local, 200);
-        wrote(50);
+        wrote(std::path::Path::new("a"), 50, 0);
         let m = take();
         assert!(m["bytes"] >= 500 && m["local"] >= 200, "{m:?}");
         assert_eq!((m["wrote"], m["creates"]), (50, 1));

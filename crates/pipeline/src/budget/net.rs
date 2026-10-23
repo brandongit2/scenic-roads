@@ -146,8 +146,9 @@ impl Net {
         h.iter().filter(|(n, _)| pick(n)).map(|(_, c)| field(c).load(Ordering::Relaxed)).sum()
     }
 
-    /// `/work/live`'s `net`: `{hosts: {host: {in, out, requests, conns, retries, holds}}, events:
-    /// [{t, host, in, out, ms, outcome}, …]}`, the events oldest first.
+    /// `/work/live`'s `net`: `{hosts: {host: {in, out, requests, conns, retries, holds, limit}},
+    /// events: [{t, host, in, out, ms, outcome}, …]}`, the events oldest first; `limit`, the budget
+    /// its connections are metered by (`limit_of`), null when none.
     pub fn view(&self) -> serde_json::Value {
         let hosts: serde_json::Map<String, serde_json::Value> = self
             .hosts
@@ -161,12 +162,40 @@ impl Net {
                     serde_json::json!({
                         "in": l(&c.bytes_in), "out": l(&c.bytes_out), "requests": l(&c.requests),
                         "conns": l(&c.conns), "retries": l(&c.retries), "holds": l(&c.holds),
+                        "limit": limit_of(n),
                     }),
                 )
             })
             .collect();
         let events: Vec<Event> = self.events.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect();
         serde_json::json!({ "hosts": hosts, "events": events })
+    }
+}
+
+/// The budget `host`'s connections are metered by, in words, from its class's rate (the pool's
+/// whole: crate::budget::Class::rate); None: not metered.
+pub fn limit_of(host: &str) -> Option<String> {
+    let c = super::class_of(host)?;
+    let r = c.rate();
+    let per_s = f64::from(r.tokens) * 1000.0 / r.window_ms as f64;
+    let who = match c {
+        super::Class::Wiki => "Wikimedia",
+        super::Class::Query => "Wikidata queries",
+    };
+    let rate =
+        if per_s >= 1.0 { format!("{} a second", fmt_n(per_s)) } else { format!("1 every {} s", fmt_n(1.0 / per_s)) };
+    Some(if r.per_token_ms > 0 {
+        format!("{who}: {rate}, {} s of query time each", fmt_n(r.per_token_ms as f64 / 1000.0))
+    } else {
+        format!("{who}: {rate}")
+    })
+}
+
+fn fmt_n(v: f64) -> String {
+    if (v - v.round()).abs() < 1e-9 {
+        format!("{}", v.round())
+    } else {
+        format!("{v:.1}")
     }
 }
 
@@ -209,5 +238,16 @@ mod tests {
         n.host("a.example").bytes_out.fetch_add(4, Ordering::Relaxed);
         assert_eq!(n.totals(), (3, 4));
         assert_eq!(n.view()["hosts"]["a.example"]["out"], 4);
+        assert_eq!(n.view()["hosts"]["a.example"]["limit"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn a_hosts_limit_is_its_budgets_rate() {
+        assert_eq!(limit_of("www.wikidata.org").as_deref(), Some("Wikimedia: 4 a second"));
+        assert_eq!(
+            limit_of("query.wikidata.org").as_deref(),
+            Some("Wikidata queries: 1 every 2 s, 2 s of query time each")
+        );
+        assert_eq!(limit_of("s3.amazonaws.com"), None);
     }
 }

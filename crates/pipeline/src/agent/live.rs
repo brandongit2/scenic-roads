@@ -27,6 +27,11 @@
 //!   missed (crate::agent::nasread::calls); on the lead, every 10 s from its coordinator's NAS
 //!   prober, the disks' busy shares (`record_disks`, the load gate's own reading) and the pool's NAS
 //!   traffic, the members' summed (`record_pool`).
+//! - **The file stream** (task #522): every second the NAS files each job's running processes
+//!   noted (store::nasio's rings: opened for reading or made, with their bytes and the open's or
+//!   copy's ms) taken into one ring of the newest `FILES` (`Store::files`), each with its job's
+//!   slot; memory alone, never saved. A process's notes overwritten before the second's look are
+//!   missed (its ring keeps the last store::nasio::RING).
 //! - **A series missing** from an answer has no measure yet (or none in the window): readers say
 //!   so, never zero.
 
@@ -98,6 +103,23 @@ pub const NAS_MISSED: &str = "nas_missed";
 /// The NAS's disks' busy share (%), as the lead's load gate reads them every 10 s (crate::budget::snmp):
 /// the busiest, and each disk's (`NAS_DISK_BUSY`, a dot, its number from 1).
 pub const NAS_DISK_BUSY: &str = "nas_disk_busy_pct";
+
+/// The NAS files kept for the file stream (the newest).
+pub const FILES: usize = 200;
+
+/// A NAS file in the file stream (module doc).
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct FileNote {
+    /// Unix ms.
+    pub t: u64,
+    pub kind: store::nasio::Kind,
+    /// Its path below the NAS's root (whole when it's elsewhere or cut).
+    pub path: String,
+    pub bytes: u64,
+    pub ms: u64,
+    /// Its job's slot.
+    pub slot: usize,
+}
 
 /// A point: the samples in its time.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -228,6 +250,8 @@ pub struct Store {
     nas: Mutex<Option<PathBuf>>,
     /// The proxy's counts (`set_net`): answered as `net`, their rates sampled.
     net: Mutex<Option<Arc<crate::budget::net::Net>>>,
+    /// The file stream (module doc), oldest first.
+    files: Mutex<std::collections::VecDeque<FileNote>>,
     sampling: AtomicBool,
 }
 
@@ -258,6 +282,7 @@ impl Store {
             host: host.to_string(),
             nas: Mutex::new(None),
             net: Mutex::new(None),
+            files: Mutex::default(),
             sampling: AtomicBool::new(false),
         })
     }
@@ -308,6 +333,26 @@ impl Store {
         }
     }
 
+    /// Files noted, into the file stream (each as `FileNote`; their paths below the NAS's root when
+    /// it's set), the newest `FILES` kept.
+    fn add_files(&self, mut notes: Vec<FileNote>) {
+        if notes.is_empty() {
+            return;
+        }
+        notes.sort_by_key(|n| n.t);
+        let root = self.nas.lock().ok().and_then(|n| n.clone());
+        let Ok(mut f) = self.files.lock() else { return };
+        for mut n in notes {
+            if let Some(rel) = root.as_ref().and_then(|r| Path::new(&n.path).strip_prefix(r).ok()) {
+                n.path = rel.to_string_lossy().into_owned();
+            }
+            if f.len() == FILES {
+                f.pop_front();
+            }
+            f.push_back(n);
+        }
+    }
+
     /// Whether it has the proxy's counts.
     pub fn has_net(&self) -> bool {
         self.net.lock().is_ok_and(|n| n.is_some())
@@ -318,9 +363,10 @@ impl Store {
     }
 
     /// `/work/live`'s answer at `now` (unix s): `{host, now, step, from, mac, series: {name: [[t,
-    /// lo, mean, hi], …]}, net}`, each series with a point in the window alone; `mac`, its size
-    /// (`mac()`); `net`, the proxy's counts (crate::budget::net::Net::view) once it has them,
-    /// unless asked without.
+    /// lo, mean, hi], …]}, net, files}`, each series with a point in the window alone; `mac`, its
+    /// size (`mac()`); unless asked without (`net: false`): `net`, the proxy's counts
+    /// (crate::budget::net::Net::view) once it has them, and `files`, the file stream (`FileNote`s,
+    /// oldest first).
     pub fn answer(&self, a: &Ask, now: u64) -> serde_json::Value {
         let max = TIERS[TIERS.len() - 1].0 * TIERS[TIERS.len() - 1].1 as u64;
         let range = a.range.unwrap_or_else(|| a.since.map_or(3600, |s| now.saturating_sub(s).max(1))).min(max);
@@ -342,8 +388,12 @@ impl Store {
             Err(_) => Default::default(),
         };
         let mut v = serde_json::json!({ "host": self.host, "now": now, "step": step, "from": from, "mac": mac(), "series": out });
-        if let Some(n) = self.net().filter(|_| a.net != Some(false)) {
-            v["net"] = n.view();
+        if a.net != Some(false) {
+            if let Some(n) = self.net() {
+                v["net"] = n.view();
+            }
+            let files: Vec<FileNote> = self.files.lock().map(|f| f.iter().cloned().collect()).unwrap_or_default();
+            v["files"] = serde_json::json!(files);
         }
         v
     }
@@ -489,6 +539,8 @@ struct Rates {
     net: Option<(u64, u64, u64)>,
     /// The NAS calls missed so far, as last read.
     missed: Option<u64>,
+    /// Per counts file (its folder and name): the newest of its notes taken into the file stream.
+    noted: BTreeMap<(PathBuf, String), u64>,
 }
 
 impl Rates {
@@ -547,12 +599,33 @@ impl Rates {
             put(NAS_MISSED, Some(missed.saturating_sub(was) as f64));
         }
         self.missed = Some(missed);
+        s.add_files(self.notes(&jobs));
         let counts: Vec<(i32, PathBuf)> = jobs.into_iter().map(|(_, g, d)| (g, d)).collect();
         if let Some(r) = self.nas.rates(&counts, t) {
             for (name, v) in NAS_TRAFFIC.iter().zip(r) {
                 s.record(name, t, v);
             }
         }
+    }
+
+    /// The files each job's (slot, process group, counts folder) running processes noted since the
+    /// last look (store::nasio::notes_in); the files no longer there forgotten.
+    fn notes(&mut self, jobs: &[(usize, i32, PathBuf)]) -> Vec<FileNote> {
+        let mut out = Vec::new();
+        let mut seen = BTreeMap::new();
+        for (k, _, dir) in jobs {
+            for (name, n) in store::nasio::notes_in(dir) {
+                let key = (dir.clone(), name);
+                let last = self.noted.get(&key).copied();
+                if last.is_none_or(|l| n.n > l) {
+                    out.push(FileNote { t: n.t_ms, kind: n.kind, path: n.path, bytes: n.bytes, ms: n.ms, slot: *k });
+                }
+                let e = seen.entry(key).or_insert(n.n);
+                *e = (*e).max(n.n).max(last.unwrap_or(0));
+            }
+        }
+        self.noted = seen;
+        out
     }
 
     /// The proxy's bytes in and out over the second at `t`, once the store has its counts (the
@@ -934,5 +1007,35 @@ mod tests {
         let v = Store::new(None, "m1").answer(&Ask::default(), 1_000_000_000);
         assert!(v["mac"]["cores"].as_u64().is_some_and(|c| c >= 1));
         assert!(v["mac"]["cores_e"].as_u64().is_some_and(|e| e <= v["mac"]["cores"].as_u64().unwrap()));
+    }
+
+    /// The file stream: the newest FILES kept, their paths below the NAS's root, answered oldest
+    /// first unless asked without; a job's notes taken once each.
+    #[test]
+    fn the_file_stream_keeps_the_newest_files_below_the_root() {
+        let s = Store::new(None, "m4");
+        s.set_nas(Some(Path::new("/Volumes/p/scenic")));
+        let note = |t: u64, path: &str| FileNote {
+            t,
+            kind: store::nasio::Kind::Wrote,
+            path: path.into(),
+            bytes: 5,
+            ms: 2,
+            slot: 1,
+        };
+        s.add_files((0..FILES as u64 + 5).rev().map(|t| note(t, "/Volumes/p/scenic/terrain/6-1-2.z")).collect());
+        s.add_files(vec![note(9999, "/elsewhere/x")]);
+        let a = s.answer(&Ask::default(), 10);
+        let f = a["files"].as_array().unwrap();
+        assert_eq!(f.len(), FILES);
+        assert_eq!(
+            (f[0]["t"].as_u64(), f[0]["path"].as_str(), f[0]["kind"].as_str()),
+            (Some(6), Some("terrain/6-1-2.z"), Some("wrote"))
+        );
+        assert_eq!(f[FILES - 1]["path"], "/elsewhere/x");
+        assert!(s.answer(&Ask { net: Some(false), ..Default::default() }, 10).get("files").is_none());
+        let mut r = Rates::default();
+        let d = tempfile::tempdir().unwrap();
+        assert!(r.notes(&[(0, 1, d.path().to_path_buf())]).is_empty());
     }
 }

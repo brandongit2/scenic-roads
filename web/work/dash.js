@@ -12,7 +12,7 @@
 // a look, the pause); by tab, the overview (how far, how long, the map's last catalogue, the world map: worldmap.js), the
 // jobs (each Mac's schedule, past and to come; the stages, each step's jobs), the machines (what each does now, inside
 // each job, why one waits, and live on each: live.js), the regions, and the activity (the hours,
-// what happened), and the details.
+// what happened, what each Mac moves now and the internet by website: activity.js), and the details.
 
 import { poolSection, termText } from "./pool.js";
 import { busyLanes, finished, finishedTiles, isSlotOf, laneGroups, notRead, packRuns, pastFrom, pastRuns, regionWork, regionsShown, rowsWindow, runningTiles, slotName, slotNo, stageSegments, stepTotals, targetsOf, tileOf, wholeProgress } from "./sums.js";
@@ -21,6 +21,7 @@ import { liveBlock, startLive } from "./live.js";
 import { createMap } from "./worldmap.js";
 import { loadSettings, settingsSection } from "./settings.js";
 import { nasSection } from "./nas.js";
+import { startActivity, transfersPart } from "./activity.js";
 
 const POLL_MS = 10000;
 const STALE_S = 360;
@@ -1353,7 +1354,7 @@ function tabs(m) {
     activity: [part("d-activity", () => section("d-activity", "Activity", "the last day",
       h("div", "box", hours(m),
         h("div", "feedbar", h("div", "seg", [["all", "All"], ["problems", "Problems"], ["publishing", "Publishing"], ["pauses", "Pauses & conditions"]].map(([k, t]) => h("button", { class: ui.feed === k ? "on" : "", onclick: () => { ui.feed = k; render(); } }, t)))),
-        sinceLine(m, events, seenAt), feed(m, events, seenAt))))],
+        sinceLine(m, events, seenAt), feed(m, events, seenAt)))), part("d-xfer", () => transfersPart())],
     details: [part("d-details", () => section("d-details", null, null, details(m)))],
   };
 }
@@ -1504,4 +1505,5 @@ export function dashboard(opts) {
   setInterval(() => document.visibilityState === "visible" && poll(), POLL_MS);
   poll();
   startLive({ call: ctx.call, store: ctx.store, macs: () => last?.macs || [], active: () => location.hash === "#machines" });
+  startActivity({ call: ctx.call, macs: () => last?.macs || [], active: () => location.hash === "#activity" });
 }

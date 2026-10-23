@@ -163,7 +163,7 @@ Common rules:
   presses Set or Off. The menu bar's settings are unchanged. There's no battery floor to set: the
   lead's battery floor is fixed (`cond::BATTERY_MIN`). Each slot (a Web Worker per core, less one) runs a
   task's programs over an in-memory filesystem (`web/work/runtime.js`, over browser_wasi_shim).
-- **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`, `settings.js`, `sums.js`, `live.js`, `nas.js`, `chart.js`, `chartmath.js`, `worldmap.js`; docs/pipeline.md §5): a
+- **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`, `settings.js`, `sums.js`, `live.js`, `nas.js`, `activity.js`, `chart.js`, `chartmath.js`, `worldmap.js`; docs/pipeline.md §5): a
   sticky header (the verdict: going, done when, what needs a look; Pause, Freeze, Resume; the
   tabs), a tab per part by the address's `#hash`, and a fixed footer (the charts' range, the Live
   dot). Overview: the overview (its map figure from the last catalogue) and the world map
@@ -171,7 +171,7 @@ Common rules:
   Mac's lanes with the jobs that ran, running and to come; the stages: a row per step with a cell
   per job; a card on hover, pinned on a click or tap); Machines (a card per
   machine, the pool: who leads, "Make lead", "Take it"; the NAS, `nas.js`: how fast it responds, use against its limits, who is using it, its use over time); Regions (a virtual list beside a second world map, split by a bar to drag; a row under the pointer lights its region on the map and shows its card); Activity (last day by the hour,
-  events); Details (leases, waits, each Mac's capacity, workers, the steps table with each step's measured
+  events, the file stream and the internet by website: `activity.js`); Details (leases, waits, each Mac's capacity, workers, the steps table with each step's measured
   phase shares: the lead's status's `phase_shares`, docs/pool.md §10); This device. It reads
   `/work/steps` once (the steps table: every word about a step), `/work/swarm` every 10 s and
   `/work/history` incrementally (and further back, a chunk at a time, for the schedule's past jobs); `/work/regions` (each region's folders, download size and

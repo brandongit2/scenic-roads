@@ -311,3 +311,17 @@ button[disabled] { opacity: .5; }
 .mc .cbar.bad > i { background: var(--bad); }
 .mc .cbar.free > i { background: var(--dim); opacity: .45; }
 .mc .lbody[hidden], .mc .caps[hidden] { display: none; }
+
+/* Activity: the transfers (activity.js). */
+.d-xfer { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; margin-top: 14px; min-width: 0; }
+.d-xfer > .box { min-width: 0; }
+.d-xfer h3 { font-size: 12px; font-weight: 600; margin: 0 0 6px; }
+.d-xfer .xlog { font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dim); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; height: 220px; overflow: auto; }
+.d-xfer .xlog div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.d-xfer .xlog b { color: var(--text); font-weight: 500; }
+.d-xfer .xlog .t, .d-xfer .xlog .m { opacity: .7; }
+.d-xfer .xlog .put { color: var(--nas-w); } .d-xfer .xlog .get { color: var(--nas-r); } .d-xfer .xlog .fetch { color: var(--net-d); } .d-xfer .xlog .bad { color: var(--bad); }
+.d-xfer .tablewrap { overflow-x: auto; min-width: 0; }
+.d-xfer table.t { margin: 0 0 4px; }
+.d-xfer table.t td { white-space: nowrap; }
+@media (max-width: 640px) { .d-xfer .xlog .t { display: none; } }

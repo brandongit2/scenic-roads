@@ -86,6 +86,8 @@ struct Landed {
     /// Its SHA-256, when it was copied (not one already there): its check is pending.
     sha: Option<String>,
     size: u64,
+    /// How long its copy took (ms; 0: none made).
+    ms: u64,
 }
 
 /// The uploads put off up to a moment (`Out::mark`): `Out::save_upto` waits for those alone.
@@ -336,7 +338,7 @@ impl Out {
         if self.uploaded.get(logical) == Some(&name) {
             // Uploaded under it by this very run already: nothing to look at again.
             std::fs::remove_file(local).ok();
-            return Ok(self.landed(Landed { logical: logical.to_string(), name, sha: None, size }));
+            return Ok(self.landed(Landed { logical: logical.to_string(), name, sha: None, size, ms: 0 }));
         }
         if self.manifest.get(logical) == Some(&name) {
             // The records name this very file under it: one look (task #449: heritage-sites'
@@ -354,13 +356,13 @@ impl Out {
                     .is_ok();
             if here {
                 std::fs::remove_file(local).ok();
-                return Ok(self.landed(Landed { logical: logical.to_string(), name, sha: None, size }));
+                return Ok(self.landed(Landed { logical: logical.to_string(), name, sha: None, size, ms: 0 }));
             }
         }
         let landed = upload_hashed(&self.root, logical, ext, local, (h, sha), size)?;
         self.uploaded.insert(landed.logical.clone(), landed.name.clone());
         if landed.sha.is_some() {
-            crate::costin::wrote(landed.size);
+            crate::costin::wrote(&self.root.join(&landed.name), landed.size, landed.ms);
         }
         Ok(self.landed(landed))
     }
@@ -499,7 +501,7 @@ impl Out {
             self.later.landed += 1;
             if l.sha.is_some() {
                 // (Its NAS write counted as it lands; its cost line's as its target claims it.)
-                store::nasio::wrote(l.size);
+                store::nasio::wrote(&self.root.join(&l.name), l.size, l.ms);
                 self.later.unclaimed.push((seq, l.size));
             }
             self.uploaded.insert(l.logical.clone(), l.name.clone());
@@ -548,6 +550,7 @@ impl Out {
         let mut existed = dest.exists();
         let local = self.scratch_file(&format!("{logical}.{ext}"));
         std::fs::write(&local, bytes)?;
+        let t = std::time::Instant::now();
         let got = store::naming::write_atomic_hashed(&self.root, logical, ext, &local, &h, bytes.len() as u64);
         if got.is_ok() && existed {
             let touched = std::fs::File::options()
@@ -567,7 +570,7 @@ impl Out {
         anyhow::ensure!(got? == name, "{logical}: wrote another name than {name}");
         crate::timings::count(if existed { 0 } else { bytes.len() as u64 }, 1);
         if !existed {
-            crate::costin::wrote(bytes.len() as u64);
+            crate::costin::wrote(&dest, bytes.len() as u64, t.elapsed().as_millis() as u64);
         }
         self.sizes.insert(name.clone(), bytes.len() as u64);
         if !existed {
@@ -810,6 +813,7 @@ fn upload_hashed(
     let name = store::naming::content_name(logical, &h, ext);
     let dest = root.join(&name);
     let mut existed = dest.exists();
+    let t = std::time::Instant::now();
     let got = store::naming::write_atomic_hashed(root, logical, ext, local, &h, size)?;
     anyhow::ensure!(got == name, "{logical}: wrote {got}, expected {name}");
     if existed {
@@ -828,7 +832,8 @@ fn upload_hashed(
         }
     }
     std::fs::remove_file(local).ok();
-    Ok(Landed { logical: logical.to_string(), name, sha: (!existed).then_some(sha), size })
+    let ms = t.elapsed().as_millis() as u64;
+    Ok(Landed { logical: logical.to_string(), name, sha: (!existed).then_some(sha), size, ms })
 }
 
 /// `upload`, tried again after each of `waits` while it fails transiently

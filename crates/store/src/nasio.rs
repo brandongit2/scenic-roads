@@ -21,6 +21,13 @@
 //! pipeline::timings has open on a job's main thread, and since when), written under a sequence
 //! number (odd while it's written) so a reader never takes half of one; never summed or folded.
 //! The agent reads it from the newest running process's file at the folder's top (`phase_in`).
+//!
+//! After the phase, the last `RING` NAS files this process opened for reading or made (`opened`,
+//! `wrote`: each one's path, its bytes and how long its open or its copy took), in a ring of slots
+//! each written under a sequence number of its own: stores into the mapping, no write call, nothing
+//! on the NAS. The agent reads the running processes' rings once a second (`notes_in`) for its live
+//! file stream (docs/pool.md §10, Live). A ring's slot overwritten before the agent read it is
+//! missed: the stream shows the recent files, not every one.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -66,15 +73,58 @@ type Cells = [AtomicU64; SLOTS];
 /// The phase's text's room (bytes; longer is cut at a character's end).
 pub const PHASE_MAX: usize = 48;
 
+/// The files a process's ring keeps (`note`).
+pub const RING: usize = 32;
+
+/// A noted path's room (bytes; a longer one keeps its end, cut at a character's start).
+pub const PATH_MAX: usize = 112;
+
+/// A ring's slot: its sequence number (odd while written; `2 n + 2` once file `n` is in it), when
+/// the file was noted (unix ms), its kind (`Kind`), bytes, ms, path (zero-padded).
+#[repr(C)]
+struct Slot {
+    seq: AtomicU64,
+    t_ms: AtomicU64,
+    kind: AtomicU64,
+    bytes: AtomicU64,
+    ms: AtomicU64,
+    path: [AtomicU64; PATH_MAX / 8],
+}
+
+impl Slot {
+    const fn new() -> Slot {
+        Slot {
+            seq: AtomicU64::new(0),
+            t_ms: AtomicU64::new(0),
+            kind: AtomicU64::new(0),
+            bytes: AtomicU64::new(0),
+            ms: AtomicU64::new(0),
+            path: [const { AtomicU64::new(0) }; PATH_MAX / 8],
+        }
+    }
+}
+
+/// A slot's length (u64 words).
+const SLOT_WORDS: usize = std::mem::size_of::<Slot>() / 8;
+
 /// A counts file's layout: the counts, then the phase (`set_phase`): its sequence number, when it
-/// was set (unix ms), its text (zero-padded).
+/// was set (unix ms), its text (zero-padded); then the files noted (`note`): how many so far, and
+/// the ring.
 #[repr(C)]
 struct File {
     counts: Cells,
     seq: AtomicU64,
     since_ms: AtomicU64,
     text: [AtomicU64; PHASE_MAX / 8],
+    noted: AtomicU64,
+    ring: [Slot; RING],
 }
+
+/// Where the phase ends in a counts file (an older one's ends there: no ring).
+const PHASE_END: usize = (SLOTS + 2) * 8 + PHASE_MAX;
+
+/// Where the ring begins.
+const RING_AT: usize = PHASE_END + 8;
 
 /// A counts file's length.
 const FILE_LEN: usize = std::mem::size_of::<File>();
@@ -84,6 +134,8 @@ static OWN: File = File {
     seq: AtomicU64::new(0),
     since_ms: AtomicU64::new(0),
     text: [const { AtomicU64::new(0) }; PHASE_MAX / 8],
+    noted: AtomicU64::new(0),
+    ring: [const { Slot::new() }; RING],
 };
 
 fn file() -> &'static File {
@@ -125,7 +177,7 @@ fn cut(text: &str) -> [u8; PHASE_MAX] {
 /// one's (counts alone). (One copy alone may hold a text torn by a write begun after its sequence
 /// was copied: `settled`.)
 fn phase_of(b: &[u8]) -> Option<(u64, String, u64)> {
-    if b.len() < FILE_LEN {
+    if b.len() < PHASE_END {
         return None;
     }
     let word = |i: usize| u64::from_le_bytes(b[i * 8..i * 8 + 8].try_into().unwrap_or_default());
@@ -133,7 +185,7 @@ fn phase_of(b: &[u8]) -> Option<(u64, String, u64)> {
     if seq == 0 || seq % 2 == 1 {
         return None;
     }
-    let text = &b[(SLOTS + 2) * 8..FILE_LEN];
+    let text = &b[(SLOTS + 2) * 8..PHASE_END];
     let text = String::from_utf8_lossy(&text[..text.iter().position(|&c| c == 0).unwrap_or(text.len())]).into_owned();
     Some((seq, text, word(SLOTS + 1)))
 }
@@ -211,9 +263,10 @@ pub fn add_counts(c: &Counts) {
     }
 }
 
-/// A file opened on the NAS for reading.
-pub fn opened() {
+/// File `path` opened on the NAS for reading (`bytes` long; its open took `ms`): counted and noted.
+pub fn opened(path: &Path, bytes: u64, ms: u64) {
     add(Count::Files, 1);
+    note(Kind::Read, path, bytes, ms);
 }
 
 /// `n` bytes read from the NAS.
@@ -221,10 +274,123 @@ pub fn read(n: u64) {
     add(Count::ReadBytes, n);
 }
 
-/// A file of `n` bytes made on the NAS.
-pub fn wrote(n: u64) {
+/// File `path` of `n` bytes made on the NAS (its copy took `ms`): counted and noted.
+pub fn wrote(path: &Path, n: u64, ms: u64) {
     add(Count::WroteBytes, n);
     add(Count::Creates, 1);
+    note(Kind::Wrote, path, n, ms);
+}
+
+/// What a noted file was.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    /// Opened for reading.
+    Read = 1,
+    /// Made.
+    Wrote = 2,
+}
+
+/// A file noted in a process's ring (`notes_in`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Note {
+    /// Its place among its process's notes (0 the first).
+    pub n: u64,
+    /// Unix ms.
+    pub t_ms: u64,
+    pub kind: Kind,
+    pub bytes: u64,
+    pub ms: u64,
+    pub path: String,
+}
+
+/// Notes a file in this process's ring (module doc): a few relaxed stores, no lock, no call.
+fn note(kind: Kind, path: &Path, bytes: u64, ms: u64) {
+    let f = file();
+    let n = f.noted.fetch_add(1, Ordering::Relaxed);
+    let s = &f.ring[(n % RING as u64) as usize];
+    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    s.seq.store(2 * n + 1, Ordering::Relaxed);
+    std::sync::atomic::fence(Ordering::Release);
+    s.t_ms.store(t, Ordering::Relaxed);
+    s.kind.store(kind as u64, Ordering::Relaxed);
+    s.bytes.store(bytes, Ordering::Relaxed);
+    s.ms.store(ms, Ordering::Relaxed);
+    for (cell, w) in s.path.iter().zip(tail(&path.to_string_lossy()).chunks_exact(8)) {
+        cell.store(u64::from_le_bytes(w.try_into().unwrap_or_default()), Ordering::Relaxed);
+    }
+    s.seq.store(2 * n + 2, Ordering::Release);
+}
+
+/// `path`'s last `PATH_MAX` bytes, from a character's start, zero-padded.
+fn tail(path: &str) -> [u8; PATH_MAX] {
+    let mut from = path.len().saturating_sub(PATH_MAX);
+    while !path.is_char_boundary(from) {
+        from += 1;
+    }
+    let mut b = [0u8; PATH_MAX];
+    b[..path.len() - from].copy_from_slice(&path.as_bytes()[from..]);
+    b
+}
+
+/// A counts file's notes (its bytes, read whole): its ring's slots written whole (an even sequence
+/// past none); an older file's (no ring), none.
+fn notes_of(b: &[u8]) -> Vec<Note> {
+    if b.len() < FILE_LEN {
+        return Vec::new();
+    }
+    let word = |i: usize| u64::from_le_bytes(b[i..i + 8].try_into().unwrap_or_default());
+    (0..RING)
+        .filter_map(|k| {
+            let at = RING_AT + k * SLOT_WORDS * 8;
+            let seq = word(at);
+            if seq == 0 || seq % 2 == 1 {
+                return None;
+            }
+            let kind = match word(at + 16) {
+                1 => Kind::Read,
+                2 => Kind::Wrote,
+                _ => return None,
+            };
+            let p = &b[at + 40..at + 40 + PATH_MAX];
+            let path = String::from_utf8_lossy(&p[..p.iter().position(|&c| c == 0).unwrap_or(PATH_MAX)]).into_owned();
+            Some(Note { n: seq / 2 - 1, t_ms: word(at + 8), kind, bytes: word(at + 24), ms: word(at + 32), path })
+        })
+        .collect()
+}
+
+/// The files folder `dir`'s running processes noted (its top's and its programs' folders', one
+/// level), each by its file's name: each file read twice, a note taken only when both reads have it
+/// alike (a slot rewritten between is left for the next look).
+pub fn notes_in(dir: &Path) -> Vec<(String, Note)> {
+    let mut out = Vec::new();
+    let look = |d: &Path, out: &mut Vec<(String, Note)>| {
+        let Ok(rd) = std::fs::read_dir(d) else { return Vec::new() };
+        let mut subs = Vec::new();
+        for e in rd.flatten() {
+            let Ok(name) = e.file_name().into_string() else { continue };
+            if name.starts_with(SUB) {
+                subs.push(e.path());
+                continue;
+            }
+            let Some(pid) = name.split_once('-').and_then(|(p, _)| p.parse::<i32>().ok()) else { continue };
+            if !running(pid) {
+                continue;
+            }
+            let (Ok(a), Ok(b)) = (std::fs::read(e.path()), std::fs::read(e.path())) else { continue };
+            let again = notes_of(&b);
+            for n in notes_of(&a) {
+                if again.contains(&n) {
+                    out.push((name.clone(), n));
+                }
+            }
+        }
+        subs
+    };
+    for s in look(dir, &mut out) {
+        look(&s, &mut out);
+    }
+    out
 }
 
 /// This process's counts so far.
@@ -489,6 +655,65 @@ mod tests {
         }
         let ns = t.elapsed().as_nanos() / 100_000;
         eprintln!("set_phase: {ns} ns a call");
+        assert!(ns < 20_000, "{ns} ns a call");
+    }
+
+    /// A file's notes are read back from its counts file, the newest `RING` kept, a long path's end
+    /// kept; one mid-write and an older file's (no ring) aren't taken; the counts' sums don't change.
+    #[test]
+    fn the_files_noted_are_read_from_the_ring() {
+        let d = tempfile::tempdir().unwrap();
+        let f = mapped(d.path()).unwrap();
+        let put = |n: u64, kind: Kind, path: &str| {
+            let s = &f.ring[(n % RING as u64) as usize];
+            s.seq.store(2 * n + 1, Ordering::Relaxed);
+            s.kind.store(kind as u64, Ordering::Relaxed);
+            s.bytes.store(n * 10, Ordering::Relaxed);
+            s.ms.store(n, Ordering::Relaxed);
+            s.t_ms.store(1000 + n, Ordering::Relaxed);
+            for (c, w) in s.path.iter().zip(tail(path).chunks_exact(8)) {
+                c.store(u64::from_le_bytes(w.try_into().unwrap()), Ordering::Relaxed);
+            }
+            s.seq.store(2 * n + 2, Ordering::Relaxed);
+        };
+        for n in 0..(RING as u64 + 3) {
+            put(n, if n % 2 == 0 { Kind::Read } else { Kind::Wrote }, &format!("terrain/6-{n}.z"));
+        }
+        let mut got: Vec<Note> = notes_in(d.path()).into_iter().map(|(_, n)| n).collect();
+        got.sort_by_key(|n| n.n);
+        assert_eq!(got.len(), RING);
+        assert_eq!(got[0].n, 3);
+        let last = &got[RING - 1];
+        assert_eq!(
+            (last.kind, last.bytes, last.ms, last.t_ms, last.path.as_str()),
+            (Kind::Read, 340, 34, 1034, "terrain/6-34.z")
+        );
+        // (Mid-write: not taken.)
+        f.ring[(34 % RING as u64) as usize].seq.store(2 * 66 + 1, Ordering::Relaxed);
+        assert_eq!(notes_in(d.path()).len(), RING - 1);
+        // (A long path's end, from a character's start.)
+        let long = format!("/Volumes/x/{}é.z", "a".repeat(PATH_MAX));
+        assert_eq!(String::from_utf8_lossy(&tail(&long)), format!("{}é.z", "a".repeat(PATH_MAX - 4)));
+        let cut = format!("{}é", "a".repeat(PATH_MAX - 1));
+        assert_eq!(
+            String::from_utf8_lossy(&tail(&cut)).trim_end_matches('\0'),
+            "a".repeat(PATH_MAX - 1).get(1..).unwrap().to_owned() + "é"
+        );
+        // (An older file's, counts and phase alone: none.)
+        assert!(notes_of(&[0u8; PHASE_END]).is_empty());
+        assert_eq!(sum_dir(d.path()).unwrap(), [0; SLOTS]);
+    }
+
+    /// What noting a file costs (every NAS file opened or made calls it).
+    #[test]
+    fn noting_a_file_is_cheap() {
+        let p = Path::new("/Volumes/personal/projects/scenic-roads/terrain/6-4-36.z");
+        let t = std::time::Instant::now();
+        for i in 0..100_000 {
+            note(if i % 2 == 0 { Kind::Read } else { Kind::Wrote }, p, i, 3);
+        }
+        let ns = t.elapsed().as_nanos() / 100_000;
+        eprintln!("note: {ns} ns a call");
         assert!(ns < 20_000, "{ns} ns a call");
     }
 }

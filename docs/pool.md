@@ -1080,7 +1080,19 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   `nas_creates_s`, `nas_listed_s` (entries), `nas_stats_s`, `nas_deletes_s`. A job's first second
   sets its baseline; a job given no folder (an older agent's) leaves the second unmeasured. Not
   yet counted: the build's own copies to the NAS outside `Out` (scenic-build's direct copies), and
-  the agent's own NAS work. **The NAS as a whole** (task #517): each member's ask carries its
+  the agent's own NAS work. **The file stream** (task #522): after its counts and its phase, a
+  process's counts file keeps a ring of the last 32 NAS files it opened for reading (the store's
+  pooled and plain readers, `localread`'s whole copies) or made (`Out`'s uploads and
+  `store_bytes`): each its path's last 112 bytes, its bytes, how long its open or copy took (ms)
+  and when, in a slot of its own written under a sequence number (odd while written; a few relaxed
+  stores in the mapped page, no write call, nothing on the NAS: ~125 ns a file measured, against
+  the NAS's tens of ms an open). Every second the agent reads each job's running processes' rings
+  (`store::nasio::notes_in`: each file read twice, a slot taken only when both reads agree) and
+  keeps the newest 200 files in memory (`agent::live::FILES`, never saved), each with its job's
+  slot and its path below the NAS's root. A ring's slot overwritten within the second is missed:
+  the stream is what moves now, not a ledger. At the pool's rates measured on 23 Oct over a day
+  (the lead's `pool_nas_files_s` and `pool_nas_creates_s`: means 0.25 and 0.16 a second, peaks 18
+  and 5 a second) that is under 30 files a second at the most, a few µs of CPU a second. **The NAS as a whole** (task #517): each member's ask carries its
   jobs' NAS traffic now (`Capacity::nas_traffic`, its newest second of the seven series), and the
   lead sums the fresh ones (its own among them) every 10 s into `pool_nas_read_mbs` and the other
   six (`pool_` then the name); on the lead too, from the load gate's own SNMP reading every 10 s
@@ -1102,7 +1114,9 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   and out, added as each chunk is relayed (one atomic add a read, so a long download shows as it
   goes), the requests asked (a tunnel is one: what's inside is the client's TLS), the connections
   opened, the retries (crate::fetch's: each wait before asking again tells the proxy, `POST
-  /retry?host=`) and the 429 holds told (`/hold?s=&host=`); and a ring of the last 200 transfers,
+  /retry?host=`) and the 429 holds told (`/hold?s=&host=`), and the budget its connections are
+  metered by (`limit`: `budget::net::limit_of`, in words from its class's rate; none unmetered);
+  and a ring of the last 200 transfers,
   each `{t, host, in, out, ms, outcome}` as it ended (`ok`, `broken`, `unreached`: answered 502,
   `refused`: 503). The counts are since the proxy started, in memory alone; their totals sampled
   each second as `net_in_mbs`, `net_out_mbs` (MB/s). The status's budget counts (`wiki`, `query`,
@@ -1128,10 +1142,12 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   answers `POST /work/live` with no key: `{range}` (seconds back from now, an hour by default,
   three days at most) or `{since}` (unix seconds: the points from then on, the last again as it
   may have grown), `series` to pick names; the answer `{host, now, step, from, series: {name:
-  [[t, lo, mean, hi], …]}, net}` from the finest ring covering the window, its buckets grouped
+  [[t, lo, mean, hi], …]}, net, files}` from the finest ring covering the window, its buckets grouped
   to at most 600 points a series (`POINTS_MAX`; an hour is a point every 6 s, a `since` ask grouped
   the same, by its `range`); `net`, the internet's
-  counts (`{hosts: {host: {in, out, requests, conns, retries, holds}}, events}`) once the proxy runs. A series missing has no
+  counts (`{hosts: {host: {in, out, requests, conns, retries, holds, limit}}, events}`) once the
+  proxy runs; `files`, the file stream, oldest first (`[{t, kind: read|wrote, path, bytes, ms,
+  slot}]`; both left out when asked with `net: false`). A series missing has no
   measure yet (or none in the window): readers say so, never zero. 503 until the agent gives its
   port the store. Another Mac's page reads it directly: `/work/swarm`'s `macs` lists each member's
   host and addresses (`{host, urls, https}`, its heartbeat's broker; none with the brokers'
@@ -1144,7 +1160,10 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   each Mac's `nas_calls` and, asked once a minute over the last day, `nas_missed`; the lead's
   `nas_ms`, `pool_nas_*` and `nas_disk_busy_pct` (missing from a member's answer); beside the
   status's `nas` (`NasView`), `nas_share` (their leased jobs' NAS weights in thousandths of the
-  whole, `Coordinator::nas_shares`, shown as "who is using the NAS") and `nas_step`.
+  whole, `Coordinator::nas_shares`, shown as "who is using the NAS") and `nas_step`. The
+  Activity tab (`web/work/activity.js`) asks every Mac every 2 s while it shows, with no series:
+  their `files` and `net` for the file stream and the internet by website. No robots.txt result is
+  recorded anywhere (the producers that read one keep no result), so none is shown.
 - **Views** (menu bar, worker page, `scenic lead`, `scenic status`) read the
   agent's `pool.lead` (`crate::agent::lead::View`) or the fresher `agent/pool/view.json`
   (`lead::own_status`): each member's state and whether the lead can be handed to it

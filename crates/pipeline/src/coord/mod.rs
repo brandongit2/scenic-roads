@@ -4120,9 +4120,10 @@ mod http {
         ("pool.js", "text/javascript", include_bytes!("../../../../web/work/pool.js")),
         ("sums.js", "text/javascript", include_bytes!("../../../../web/work/sums.js")),
         ("settings.js", "text/javascript", include_bytes!("../../../../web/work/settings.js")),
-        // Live on each Mac (the Machines tab), its charts and their sums.
+        // Live on each Mac (the Machines tab), its charts and their sums; the Activity tab's transfers.
         ("live.js", "text/javascript", include_bytes!("../../../../web/work/live.js")),
         ("nas.js", "text/javascript", include_bytes!("../../../../web/work/nas.js")),
+        ("activity.js", "text/javascript", include_bytes!("../../../../web/work/activity.js")),
         ("chart.js", "text/javascript", include_bytes!("../../../../web/work/chart.js")),
         ("chartmath.js", "text/javascript", include_bytes!("../../../../web/work/chartmath.js")),
         ("dash.css", "text/css; charset=utf-8", include_bytes!("../../../../web/work/dash.css")),

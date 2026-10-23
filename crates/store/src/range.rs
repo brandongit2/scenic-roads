@@ -136,8 +136,9 @@ pub struct PooledFile {
 impl PooledFile {
     /// Opens `path` through the pool (open and fstat in one trip).
     pub fn open(pool: &Arc<IoPool>, path: &Path) -> Result<Self, IoError> {
+        let t = std::time::Instant::now();
         let (file, len) = pool.open_len(path)?;
-        crate::nasio::opened();
+        crate::nasio::opened(path, len, t.elapsed().as_millis() as u64);
         Ok(Self { file, len, pool: pool.clone(), path: path.to_owned() })
     }
 
@@ -176,11 +177,12 @@ pub struct PlainFile {
 
 impl PlainFile {
     pub fn open(path: &Path) -> std::io::Result<Self> {
+        let t = std::time::Instant::now();
         let file = File::open(path)?;
         let len = file.metadata()?.len();
         let local = network_fs(&file)?.is_none();
         if !local {
-            crate::nasio::opened();
+            crate::nasio::opened(path, len, t.elapsed().as_millis() as u64);
         }
         Ok(Self { file, len, local })
     }
