@@ -234,53 +234,6 @@ pub struct Terrainsub {
     pub workers: Option<usize>,
 }
 
-/// The terrain's repair over the coverage's tiles, every level, from AWS's raw tiles, beside the
-/// first repair and repaired again: a check, reading the NAS, writing only under --out
-#[derive(Parser, Debug)]
-#[command(name = "terrain")]
-pub struct Terrain {
-    /// The project folder whose records name the terrain's sources
-    #[arg(long, value_name = "DIR", default_value = "/Volumes/personal/projects/scenic-roads")]
-    pub root: PathBuf,
-    #[command(flatten)]
-    pub scan: TerrainScan,
-}
-
-/// `terrain --scan`'s options.
-#[derive(Args, Debug)]
-pub struct TerrainScan {
-    /// The scan (all it does: the flag kept for its callers)
-    #[arg(long, required = true)]
-    pub scan: bool,
-    /// Where the raw archives are copied, a z3 pack at a time
-    #[arg(long, value_name = "DIR", default_value = "data/scan-cache")]
-    pub cache: PathBuf,
-    /// The scan's output folder
-    #[arg(long, value_name = "DIR", default_value = "data/scan")]
-    pub out: PathBuf,
-    /// Tiles whose values are written to views/ (z/x/y a line)
-    #[arg(long, value_name = "FILE")]
-    pub views: Option<PathBuf>,
-    /// Only these z3 packs (3/x/y,…)
-    #[arg(long, value_name = "3/X/Y,…")]
-    pub only: Option<String>,
-    /// Only these z6 tiles made (6/x/y a line)
-    #[arg(long, value_name = "FILE")]
-    pub z6: Option<PathBuf>,
-    /// AWS's tiles alone (no northern dataset, water or walled patches)
-    #[arg(long)]
-    pub bare: bool,
-    /// The terrain made written there too, as the terrain job's packs (a project folder of its own)
-    #[arg(long, value_name = "DIR")]
-    pub fixed_out: Option<PathBuf>,
-    /// Tiles alone, each from its raw tile only, with their views (z/x/y a line)
-    #[arg(long, value_name = "FILE")]
-    pub tiles: Option<PathBuf>,
-    /// The worldwide z8, each tile alone
-    #[arg(long)]
-    pub world_z8: bool,
-}
-
 /// Canada's lakes missing from OSM, sheet by sheet: the lakefill step's parts (pipeline::lakefill::run)
 /// one at a time, and checks of a fill. Scratch folders only
 #[derive(Parser, Debug)]

@@ -1,4 +1,4 @@
-//! AWS's z8 terrain worldwide, repaired as the packs' tiles are and nothing more (docs/phase5.md
+//! AWS's z8 terrain worldwide, made as the packs' tiles are and nothing more (docs/phase5.md
 //! "terrain-z8"): the peaks' coarse stage reads it, the same whatever the coverage. One pack of
 //! the 65,536 tiles (`terrain_pack::process` with no children) and each tile's maximum after the
 //! peaks' despike (for skipping tiles in isolation searches), under a versioned logical name: the
@@ -14,10 +14,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 pub const Z: u8 = 8;
-/// Its version: a change to how it's made is a new logical name. 2: the one-pass repair
-/// (roadcore::grid::repair_terrain, through terrain_pack::process). 3: with the seam spikes'
-/// rule (AWS's tiles alone: not GLO-30 nor the water, task #465).
-pub const V: u32 = 3;
+/// Its version: a change to how it's made is a new logical name (4: AWS's tiles but for their
+/// voids, not GLO-30 nor the water, task #465).
+pub const V: u32 = 4;
 
 pub fn logical() -> String {
     format!("sources/terrain-z8-v{V}")
@@ -32,8 +31,8 @@ pub fn max_logical() -> String {
 pub fn build(out: &mut Out, raw: &RawTiles) -> Result<(usize, usize)> {
     use crate::timings::{phase, Class};
     let n = 1u32 << Z;
-    // (AWS's tiles, cached or fetched, repaired as they come, in parallel: one phase.)
-    let p = phase("the world's z8 tiles fetched and repaired", Class::Net);
+    // (AWS's tiles, cached or fetched, made as they come, in parallel: one phase.)
+    let p = phase("the world's z8 tiles fetched and made", Class::Net);
     let done = std::sync::atomic::AtomicUsize::new(0);
     let made: Vec<Result<(u32, u32, Option<(Vec<u8>, f32)>)>> = (0..n * n)
         .into_par_iter()
@@ -234,29 +233,12 @@ mod tests {
                     &crate::terrain_pack::Sources::default(),
                 );
                 let got = roadcore::grid::decode_terrain_png(&out).unwrap();
-                // (The repair changes it: the values below see its rules.)
+                // (Its voids and bathymetry change it: the values below see them.)
                 assert_ne!(got, input);
                 let bits: Vec<u8> = got.iter().flat_map(|v| v.to_bits().to_le_bytes()).collect();
                 store::naming::xxh3(&bits)
             })
             .collect()
-    }
-
-    #[test]
-    fn the_raw_tile_meets_the_seam_rule() {
-        // (Maryland's ringing and needle: the seam rule takes both at z9, as the blobs' rules
-        // don't; and its towers come down into the ground's range through `process`.)
-        let mut t = raw_tile();
-        let (r, _) = roadcore::grid::repair_terrain_with(&mut t, 9, crate::terrain_pack::tile_lat(9, 195), None);
-        assert!(r.seam >= 3, "{r:?}");
-        let png = roadcore::grid::encode_terrain_png(&raw_tile(), 256, 256).unwrap();
-        let (out, _, _) =
-            process(png, 9, 145, 195, &HashMap::new(), &HashMap::new(), &crate::terrain_pack::Sources::default());
-        let got = roadcore::grid::decode_terrain_png(&out).unwrap();
-        for ox in [140, 170] {
-            let v = got[(145 + 7) * 256 + ox + 7];
-            assert!(v <= 200.0, "the tower at {ox}: {v}");
-        }
     }
 
     #[test]
@@ -266,12 +248,12 @@ mod tests {
         // crate::agent::build::TERRAIN_V, which the peaks' key names); then update the values.
         assert_eq!(
             (V, crate::agent::build::TERRAIN_V),
-            (3, 3),
+            (4, 4),
             "the raw path's versions changed: update the values below"
         );
         assert_eq!(
             raw_path(),
-            vec![12970933280215579373, 1265511795488754836, 16515892396236032722],
+            vec![12970933280215579373, 12970933280215579373, 12970933280215579373],
             "terrain_pack::process's raw path makes other elevations: bump terrain_z8::V and TERRAIN_V"
         );
     }

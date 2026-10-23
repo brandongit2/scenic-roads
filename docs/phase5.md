@@ -128,7 +128,7 @@ The jobs form a chain without cycles; the landmark chain runs beside the roads c
 |---|---|---|
 | OSM pass sets | the filtered planet | `summits` (`-v2`), `hikes`, `named` (the heritage chain's filter plus World Heritage tags), `whs` (pipeline::whsshapes' objects and every multipolygon, with their references), `marks` |
 | `trailends` (per pass) | `hikes` | `work/trailends/<d>`: every simple linear hiking route's two ends |
-| `terrain-z8` (once; network) | AWS's raw z8 tiles | `sources/terrain-z8-v3` and `-v3-max` |
+| `terrain-z8` (once; network) | AWS's raw z8 tiles | `sources/terrain-z8-v4` and `-v4-max` |
 | `summits` (per pass) | `summits` set, `terrain-z8` | `work/summits/<d>` |
 | `heritage-sites` (before the z6 tiles) | the registers meeting the cover, the matches (docs/inputs.md §6.5), the pass's `areas` set, the coverage | `work/heritage/<d>/base/…` and per z6 tile slices |
 | `unit` | as docs/steps.md, with the heritage slices within U + 30 km | the base pack |
@@ -156,7 +156,7 @@ and `TERRAIN_V` (raw tiles outside the packs are processed by its code), not the
 "none".
 
 **Determinism across z6 tiles:** a peak's result reads only z12 within 28 km and the worldwide z8, the
-same whichever z6 tile computes it (z12 the pack's tile, else AWS's raw tile repaired; a missing z12
+same whichever z6 tile computes it (z12 the pack's tile, else AWS's raw tile; a missing z12
 tile is sea level). Neighbouring summits count at their own heights; ties go by tagged height,
 distance, OSM id. Trailheads within 150 m are de-duplicated on U plus the extract's buffer in one
 order, so neighbouring z6 tiles agree; route ends come from the whole route; the coverage clip comes
@@ -174,7 +174,7 @@ after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sit
   bridges, `viewpoint: "yes"` for peaks tagged so.
 - **`trailends`** (per pass): each `hikes` route's way-end nodes used once; exactly two make a simple
   linear route. Worldwide, so every z6 tile sees the same ends.
-- **`terrain-z8`** (once): AWS's 65,536 raw z8 tiles repaired (`terrain_pack::process`), one
+- **`terrain-z8`** (once): AWS's 65,536 raw z8 tiles (`terrain_pack::process`), one
   content-named pack under `sources/` with each tile's maximum. Coverage-free (the packs' z8 isn't),
   so floods and isolation searches don't depend on what's built.
 - **`summits`** (per pass): the `summits` set, nodes then ways by id. A summit's position and `ele`
@@ -182,7 +182,7 @@ after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sit
   plausible: at most 8,900 m, at most 1,500 m over the highest z8 pixel within one pixel, and at
   most twice that plus 300 m.
 - **`peaks`** (per z6 tile, `pipeline::peaks`):
-  - z12 is the pack's tile when the manifest has it, else AWS's raw tile repaired with no sources
+  - z12 is the pack's tile when the manifest has it, else AWS's raw tile with no sources
     (not GLO-30 nor the water: task #465), read back from the PNG as stored. A z6 tile's pack tiles
     are read in spans (neighbours under 256 KB apart together, up to 32 MB a read, 8 reads at
     once, each under a 2-minute deadline and retried after 2, 5, 15, 30 s when it fails

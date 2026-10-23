@@ -80,16 +80,8 @@ What each step does, in detail. The steps as one table (names, chains, the check
     target reads), so
     a rebuild with the same key gives identical packs. The digests are worked out once a basemap by
     the `terrain-water` job, so a new pass remakes only z6 tiles whose water changed.
-  - **Repair** (`roadcore::grid::repair_terrain`, README "Terrain repair"): one pass taking what is
-    broken or undefined and nothing else. Voids are filled; a tower or pit is a blob of the tile's
-    component tree, taken whole and judged against the ground it meets (standing out over 100 m,
-    steeper than terrain can be, towering over its surroundings); small spikes go when two of three
-    hold (walled, on flat ground, beside a blob taken). Repairing its own output changes nothing
-    (`terrain --scan`). It reads AWS's values, bathymetry included.
-  - **Seam spikes and walled patches** (`seam_spikes`, `walled_patches`): towers and pits where AWS's
-    sources meet are clamped into the ground around them; a region of a z10–12 tile walled by sharp
-    steps that AWS's z9 tile doesn't show is moved down by its step. The whole repair runs again on
-    each tile as stored (`terrain_pack::repair_stored`).
+  - **Voids** (pixels above 8,900 m or below −11,500 m, `roadcore::grid::defined`) go to sea level;
+    AWS's values are otherwise taken as they are, bathymetry included.
   - **North of 60°N, GLO-30** (crate::terrain_north): AWS mixes an ellipsoidal source with sea-level
     ones there (lakes 10–50 m off). Tiles of z9 and finer are resampled from GLO-30 (EGM2008, its
     water flattened) and blended in by a smoothstep from 59.5°N to 60°N. Where GLO-30 was filled
@@ -157,7 +149,7 @@ What each step does, in detail. The steps as one table (names, chains, the check
   whole first) and its neighbours' edge strips; **slope-lo**, an assembly per z3 tile from its
   z6 tiles' mids (each read whole, eight at once, under a deadline and tried again while it fails
   transiently). Together the z3 tile's whole run's packs, byte for byte.
-- **Worldwide z8 terrain** (`sources/terrain-z8-v3`, once, not served): every z8 tile repaired, with
+- **Worldwide z8 terrain** (`sources/terrain-z8-v4`, once, not served): every z8 tile made as the packs' are, with
   each tile's maximum (AWS's tiles alone, task #465). Peaks read it.
 - **Grids (z11):** land cover, canopy and cover, for analysis only. Each `unit` job makes the grid tiles
   its packs lack and uploads them as its z6 tile's `grid-*` hi packs; they aren't in those jobs' keys

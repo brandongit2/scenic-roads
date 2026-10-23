@@ -1310,7 +1310,7 @@ terrain's base (AWS's Terrarium tiles, `heights = "mixed"`: its sources mix refe
 raw by its template and packed onto the NAS (`sources/aws-terrarium/`, docs/macs.md); and at most one
 GeoTIFF dataset of 1° tiles by an index in EPSG:4326, each tile with its fill mask (`mask`),
 blended in north of 60°N (Copernicus GLO-30: the index from the bucket's tile list,
-`indexes.py glo30`), its files kept in `sources/fetched/<id>/` by their URLs' names. The repair,
+`indexes.py glo30`), its files kept in `sources/fetched/<id>/` by their URLs' names. The voids,
 the water's flattening, the blend by latitude and the mask's reading (3 and up: filled from another
 source) are the terrain's code. The declarations themselves are kept in
 `producers/elevation/terrain/` (`terrarium.toml`, `glo30.toml`).

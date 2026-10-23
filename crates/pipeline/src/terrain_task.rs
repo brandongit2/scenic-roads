@@ -136,19 +136,9 @@ fn count(levels: &Levels) -> usize {
     levels.iter().map(|(_, t)| t.len()).sum()
 }
 
-/// The raw tiles a run of `levels` reads: their own, and with `coarse` AWS's z9 tile over each of
-/// z10–12 (crate::terrain_pack::Coarse).
-fn raw_read(levels: &Levels, coarse: bool) -> BTreeSet<(u8, u32, u32)> {
-    let mut v = BTreeSet::new();
-    for (z, t) in levels {
-        for &(x, y) in t {
-            v.insert((*z, x, y));
-            if coarse && (10..=12).contains(z) {
-                v.insert((9, x >> (z - 9), y >> (z - 9)));
-            }
-        }
-    }
-    v
+/// The raw tiles a run of `levels` reads: their own.
+fn raw_read(levels: &Levels) -> BTreeSet<(u8, u32, u32)> {
+    levels.iter().flat_map(|(z, t)| t.iter().map(move |&(x, y)| (*z, x, y))).collect()
 }
 
 /// A tile's section name (`prefix-z-x-y`).
@@ -256,7 +246,6 @@ pub struct Meta {
     /// Which sources the job's run has (crate::terrain_pack::Sources).
     pub water: bool,
     pub north: bool,
-    pub coarse: bool,
     /// GLO-30's cells its tiles ask for: (latitude, longitude, "sea", "missing" or "cell", its
     /// width, and its window: first row, rows, first column, columns).
     pub cells: Vec<(i32, i32, String, usize, usize, usize, usize, usize)>,
@@ -286,7 +275,7 @@ pub fn cut(
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
-    let reads: Vec<(u8, u32, u32)> = raw_read(levels, src.coarse.is_some()).into_iter().collect();
+    let reads: Vec<(u8, u32, u32)> = raw_read(levels).into_iter().collect();
     let got: Vec<Result<Option<Vec<u8>>>> = reads.par_iter().map(|&(z, x, y)| raw.get(z, x, y).map(|r| r.0)).collect();
     let tiles: Vec<(u8, u32, u32)> = levels.iter().flat_map(|(z, t)| t.iter().map(move |&(x, y)| (*z, x, y))).collect();
     let water: Vec<Result<Vec<Poly>>> = match src.water {
@@ -314,7 +303,6 @@ pub fn cut(
         levels: levels.clone(),
         water: src.water.is_some(),
         north: src.north.is_some(),
-        coarse: src.coarse.is_some(),
         cells: meta_cells,
     };
     let mut windows: Vec<((i32, i32), Vec<u8>)> = Vec::new();
@@ -424,7 +412,7 @@ impl Inputs {
             };
             cells.insert((*la, *lo), got);
         }
-        let reads = raw_read(&meta.levels, meta.coarse);
+        let reads = raw_read(&meta.levels);
         Ok(Inputs { r, meta, reads, cells })
     }
 
@@ -439,11 +427,9 @@ impl Inputs {
     /// The group's tiles made (crate::terrain_pack::make_piece over its levels, with the sources
     /// the job's run has): its tiles, sorted, and its mid's part.
     pub fn make(&self) -> Result<(Vec<Made>, Mid)> {
-        let coarse = crate::terrain_pack::Coarse::new(self);
         let src = Sources {
             north: self.meta.north.then_some(self as &dyn Cells),
             water: self.meta.water.then_some(self as &dyn WaterSource),
-            coarse: self.meta.coarse.then_some(&coarse),
         };
         crate::terrain_pack::make_piece(self, &src, self.meta.levels.clone())
     }
@@ -787,7 +773,7 @@ mod tests {
     use crate::coverage::Coverage;
     use crate::out::Out;
     use crate::terrain_north::tests::FnCells;
-    use crate::terrain_pack::{build_piece_with, mid_logical, piece_levels, read_mid, Coarse, RawTiles};
+    use crate::terrain_pack::{build_piece_with, mid_logical, piece_levels, read_mid, RawTiles};
     use std::path::PathBuf;
 
     /// Water across two subtrees' edge (`a` west or north of `b`): a lake straddling it (key 9),
@@ -895,8 +881,7 @@ mod tests {
             .unwrap();
         let water = Across { a, b };
         let cells = cells();
-        let coarse = Coarse::new(&raw);
-        let src = Sources { north: Some(&cells), water: Some(&water), coarse: Some(&coarse) };
+        let src = Sources { north: Some(&cells), water: Some(&water) };
         let gs = groups(&levels, Some(&water)).unwrap();
         assert_eq!(gs.len(), subs.len() - 1, "the lake's two subtrees in one group");
         let joint = gs.iter().find(|g| g.contains(&a)).unwrap();
@@ -1072,8 +1057,7 @@ mod tests {
             .unwrap();
         let water = Across { a, b };
         let cells = cells();
-        let coarse = Coarse::new(&raw);
-        let src = Sources { north: Some(&cells), water: Some(&water), coarse: Some(&coarse) };
+        let src = Sources { north: Some(&cells), water: Some(&water) };
         let alone = piece(p, "alone", t, &cov, &raw, &src, None);
         assert!(alone.0.is_some() && alone.1.is_some());
         let (c, port) = crate::coord::start_for_test(&p.join("coord"), "m4", "");
@@ -1215,8 +1199,7 @@ mod tests {
             &root.join("sources/aws-terrarium"),
             &opened.declared.base,
         );
-        let coarse = Coarse::new(&raw);
-        let src = opened.sources(Some(&coarse));
+        let src = opened.sources();
         let c = crate::coord::Coordinator::start(
             &scratch.join("coord"),
             Some(PathBuf::from(env("TT_WASM"))),

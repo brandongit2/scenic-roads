@@ -1,14 +1,13 @@
-//! Terrai tiles (docs/steps.md, global-source layers): AWS's Terrarium tiles, repaired.
+//! Terrain tiles (docs/steps.md, global-source layers): AWS's Terrarium tiles.
 //!
-//! Levels are made finest first: each tile is repaired (voids, towers and pits:
-//! `roadcore::grid::repair_terrain`; then bathymetry to sea level), the pixels above a repaired one
-//! are made again from it, and
+//! Levels are made finest first: each tile's voids go to sea level, its water is flattened and its
+//! bathymetry goes to sea level; the pixels above a changed one are made again from it, and
 //! from `REBUILD_Z` down every quarter whose child exists is made again from that child (AWS's
 //! coarse levels come from coarser sources and lose peaks). Today's `terrain` step runs this over a
 //! region's archive; `scenic-build terrain` runs it per z6 pack.
 
 use det::Det;
-use roadcore::grid::{decode_terrain_png, encode_terrain_png, repair_terrain_with};
+use roadcore::grid::{decode_terrain_png, encode_terrain_png};
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -49,13 +48,12 @@ pub fn fetch(agent: &ureq::Agent, url: &str, z: u8, x: u32, y: u32) -> Option<Ve
 }
 
 /// What the terrain is made from besides AWS's tiles (docs/steps.md §2, Terrain): GLO-30 north of
-/// 60°N (crate::terrain_north), OSM's water (crate::terrain_water), and AWS's z9 tiles for the
-/// walled patches' rule (roadcore::grid::walled_patches). None of them: AWS's tiles repaired alone.
+/// 60°N (crate::terrain_north) and OSM's water (crate::terrain_water). None of them: AWS's tiles
+/// alone.
 #[derive(Clone, Copy, Default)]
 pub struct Sources<'a> {
     pub north: Option<&'a dyn crate::terrain_north::Cells>,
     pub water: Option<&'a dyn crate::terrain_water::WaterSource>,
-    pub coarse: Option<&'a Coarse<'a>>,
 }
 
 /// The basemap the terrain's water comes from: the latest pass's (`layers/basemap/world-<date>`),
@@ -129,12 +127,8 @@ impl SourceFiles {
         Ok(SourceFiles { north, water: open_water(out)?, declared })
     }
 
-    pub fn sources<'a>(&'a self, coarse: Option<&'a Coarse<'a>>) -> Sources<'a> {
-        Sources {
-            north: self.north.as_ref().map(|n| n as &dyn crate::terrain_north::Cells),
-            water: Some(&self.water),
-            coarse,
-        }
+    pub fn sources(&self) -> Sources<'_> {
+        Sources { north: self.north.as_ref().map(|n| n as &dyn crate::terrain_north::Cells), water: Some(&self.water) }
     }
 }
 
@@ -169,78 +163,16 @@ impl RawSource for RawTiles {
     }
 }
 
-/// AWS's z9 tiles, raw and decoded, the last few kept: the walled patches' rule compares a z10–12
-/// tile with the z9 one over it.
-pub struct Coarse<'a> {
-    pub raw: &'a dyn RawSource,
-    kept: Mutex<(u64, HashMap<(u32, u32), (u64, Option<std::sync::Arc<Vec<f32>>>)>)>,
-}
-
-impl<'a> Coarse<'a> {
-    pub fn new(raw: &'a dyn RawSource) -> Self {
-        Coarse { raw, kept: Mutex::new((0, HashMap::new())) }
-    }
-
-    /// AWS's z9 tile over z/x/y, upsampled onto it (z10–12); None elsewhere or when AWS has none.
-    pub fn over(&self, z: u8, x: u32, y: u32) -> Option<Vec<f32>> {
-        if !(10..=12).contains(&z) {
-            return None;
-        }
-        let dz = z - 9;
-        let k = (x >> dz, y >> dz);
-        let got = {
-            let mut g = self.kept.lock().unwrap();
-            g.0 += 1;
-            let tick = g.0;
-            match g.1.get_mut(&k) {
-                Some(e) => {
-                    e.0 = tick;
-                    Some(e.1.clone())
-                }
-                None => None,
-            }
-        };
-        let tile = match got {
-            Some(t) => t,
-            None => {
-                let t = self
-                    .raw
-                    .get(9, k.0, k.1)
-                    .ok()
-                    .and_then(|(b, _)| b)
-                    .and_then(|b| decode_terrain_png(&b).ok())
-                    .map(std::sync::Arc::new);
-                let mut g = self.kept.lock().unwrap();
-                g.0 += 1;
-                let tick = g.0;
-                if g.1.len() >= 256 {
-                    if let Some(old) = g.1.iter().min_by_key(|(_, (t, _))| *t).map(|(k, _)| *k) {
-                        g.1.remove(&old);
-                    }
-                }
-                g.1.insert(k, (tick, t.clone()));
-                t
-            }
-        }?;
-        Some(roadcore::grid::upsampled(&tile, dz, x, y))
-    }
-}
-
 /// A tile made but for its water (`prepare`): its elevations (AWS's, the pixels above changed
-/// ones made again from them, repaired, GLO-30 blended in), AWS's as decoded, its water, and the
-/// PNG it came as.
+/// ones made again from them, its voids at sea level, GLO-30 blended in), AWS's as decoded, its
+/// water, and the PNG it came as.
 pub struct Prepared {
     pub png: Vec<u8>,
     pub e: Vec<f32>,
     pub before: Vec<f32>,
     pub water: Option<std::sync::Arc<crate::terrain_water::WaterTile>>,
-    /// AWS's z9 tile over it (the walled patches' rule), for the repair after the water, and
-    /// whether GLO-30 was blended in (then AWS's z9 tile, on another datum, isn't its coarser view).
-    coarse: Option<Vec<f32>>,
-    north: bool,
     decoded: bool,
     z: u8,
-    y: u32,
 }
 
 impl Prepared {
@@ -257,9 +189,8 @@ impl Prepared {
 /// changed ones below made again from them (`below`, the four children's changes: their 2×2
 /// means); from REBUILD_Z down, each quarter whose child tile exists made again whole from it
 /// (`quads`: AWS's coarse levels come from coarser sources, and lost peaks: Fuji's summit pixel
-/// 3,106 m at z6, 2,368 m at z5, 2,134 m at z4; from z9, 3,378, 2,715 and 2,337 m); repaired
-/// (`repair`, on AWS's values, bathymetry and all, so a pit reads as deep as AWS made it, with AWS's
-/// z9 tile over it when `src` has them); GLO-30 blended in north of 59.5°N at z9 and finer, but for
+/// 3,106 m at z6, 2,368 m at z5, 2,134 m at z4; from z9, 3,378, 2,715 and 2,337 m); its voids
+/// (pixels not `roadcore::grid::defined`) at sea level; GLO-30 blended in north of 59.5°N at z9 and finer, but for
 /// the pixels made from the children (blended there already; z8 and coarser are made from them). Then `finish` flattens its water.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare(
@@ -267,23 +198,12 @@ pub fn prepare(
     z: u8,
     x: u32,
     y: u32,
-    below: &HashMap<(u32, u32), Repaired>,
+    below: &HashMap<(u32, u32), Moved>,
     quads: &HashMap<(u32, u32), Vec<f32>>,
     src: &Sources,
-    repair: &dyn Fn(&mut [f32], u8, f64, Option<&[f32]>),
 ) -> Prepared {
     let Ok(mut e) = decode_terrain_png(&png) else {
-        return Prepared {
-            png,
-            e: Vec::new(),
-            before: Vec::new(),
-            water: None,
-            coarse: None,
-            north: false,
-            decoded: false,
-            z,
-            y,
-        };
+        return Prepared { png, e: Vec::new(), before: Vec::new(), water: None, decoded: false, z };
     };
     let before = e.clone();
     let mut kept = vec![false; e.len()];
@@ -312,8 +232,11 @@ pub fn prepare(
             }
         }
     }
-    let coarse = src.coarse.and_then(|c| c.over(z, x, y));
-    repair(&mut e, z, tile_lat(z, y), coarse.as_deref());
+    for v in e.iter_mut() {
+        if !roadcore::grid::defined(*v) {
+            *v = 0.0;
+        }
+    }
     // (From z9 up: coarser tiles are made from their children in the coverage, and GLO-30 is only
     // in the store there, so a z3 tile's would decode hundreds of its 1° tiles for nothing.)
     if let Some(n) = src.north.filter(|_| z > REBUILD_Z).and_then(|c| crate::terrain_north::north_tile(c, z, x, y)) {
@@ -326,37 +249,15 @@ pub fn prepare(
             None
         }
     });
-    let north = blends_north(src, z, y);
-    Prepared { png, e, before, water, coarse, north, decoded: true, z, y }
-}
-
-/// Whether GLO-30 is blended into tile z/·/y (`prepare`): z9 and finer, north of SOUTH.
-pub fn blends_north(src: &Sources, z: u8, y: u32) -> bool {
-    let n = (1u64 << z) as f64;
-    let top = (std::f64::consts::PI * (1.0 - 2.0 * y as f64 / n)).dsinh().datan().to_degrees();
-    src.north.is_some() && z > REBUILD_Z && top > crate::terrain_north::SOUTH
-}
-
-/// The repair of a tile as stored (`finish`'s last step, and what `terrain --scan` checks it
-/// against): repair_terrain_with, AWS's z9 tile for the walled patches only where GLO-30 isn't
-/// blended in, then bathymetry to sea level.
-pub fn repair_stored(e: &mut [f32], z: u8, y: u32, coarse: Option<&[f32]>, north: bool) -> roadcore::grid::Repair {
-    let (r, _) = repair_terrain_with(e, z, tile_lat(z, y), if north { None } else { coarse });
-    for v in e.iter_mut() {
-        if *v < 0.0 {
-            *v = 0.0;
-        }
-    }
-    r
+    Prepared { png, e, before, water, decoded: true, z }
 }
 
 /// A prepared tile finished: its water flattened (`levels`: the lakes' levels,
-/// crate::terrain_water), bathymetry to sea level, and repaired once more as stored
-/// (`repair_stored`). Returns the PNG to store (the original
+/// crate::terrain_water) and bathymetry to sea level. Returns the PNG to store (the original
 /// bytes when nothing changes), its elevations and the pixels that moved if it changed, and from
 /// REBUILD_Z + 1 down its 2×2 means for the level above.
-pub fn finish(p: Prepared, levels: &HashMap<u64, f32>) -> (Vec<u8>, Option<Repaired>, Option<Vec<f32>>) {
-    let Prepared { png, mut e, before, water, coarse, north, decoded, z, y } = p;
+pub fn finish(p: Prepared, levels: &HashMap<u64, f32>) -> (Vec<u8>, Option<Moved>, Option<Vec<f32>>) {
+    let Prepared { png, mut e, before, water, decoded, z } = p;
     if !decoded {
         return (png, None, None);
     }
@@ -368,10 +269,6 @@ pub fn finish(p: Prepared, levels: &HashMap<u64, f32>) -> (Vec<u8>, Option<Repai
             *v = 0.0;
         }
     }
-    // The repair once more, on the tile as stored: what it left on a shore stands on a flat sea now
-    // (a stub on Casco Bay's), GLO-30's fills and AWS's moved into them can stand broken among the
-    // St. Elias's ice (walls of 26 m a metre), and the tile stored must be one it changes nothing in.
-    repair_stored(&mut e, z, y, coarse.as_deref(), north);
     let quad = (z >= 1 && z <= REBUILD_Z + 1).then(|| {
         let mut q = vec![0f32; 128 * 128];
         for j in 0..128 {
@@ -395,7 +292,7 @@ pub fn finish(p: Prepared, levels: &HashMap<u64, f32>) -> (Vec<u8>, Option<Repai
         return (png, None, quad);
     }
     let out = encode_terrain_png(&e, 256, 256).unwrap_or(png);
-    (out, Some(Repaired { e, moved }), quad)
+    (out, Some(Moved { e, moved }), quad)
 }
 
 /// A tile made whole (`prepare`, then `finish` with its lakes' levels from it alone, or `levels`
@@ -405,31 +302,12 @@ pub fn process(
     z: u8,
     x: u32,
     y: u32,
-    below: &HashMap<(u32, u32), Repaired>,
+    below: &HashMap<(u32, u32), Moved>,
     quads: &HashMap<(u32, u32), Vec<f32>>,
     src: &Sources,
-) -> (Vec<u8>, Option<Repaired>, Option<Vec<f32>>) {
-    process_with(png, z, x, y, below, quads, src, &HashMap::new(), &|e, z, lat, c| {
-        repair_terrain_with(e, z, lat, c);
-    })
-}
-
-/// `process` with another repair in its place (the scan's comparisons: `terrain --scan`), and the
-/// lakes' levels known (`known`: those it has are kept).
-#[allow(clippy::too_many_arguments)]
-pub fn process_with(
-    png: Vec<u8>,
-    z: u8,
-    x: u32,
-    y: u32,
-    below: &HashMap<(u32, u32), Repaired>,
-    quads: &HashMap<(u32, u32), Vec<f32>>,
-    src: &Sources,
-    known: &HashMap<u64, f32>,
-    repair: &dyn Fn(&mut [f32], u8, f64, Option<&[f32]>),
-) -> (Vec<u8>, Option<Repaired>, Option<Vec<f32>>) {
-    let p = prepare(png, z, x, y, below, quads, src, repair);
-    let mut levels = known.clone();
+) -> (Vec<u8>, Option<Moved>, Option<Vec<f32>>) {
+    let p = prepare(png, z, x, y, below, quads, src);
+    let mut levels = HashMap::new();
     crate::terrain_water::add_levels(&mut levels, &p.lake_samples());
     finish(p, &levels)
 }
@@ -441,7 +319,7 @@ pub const REBUILD_Z: u8 = 8;
 
 /// A tile changed by process: its elevations and the pixels that moved by more than half a metre
 /// (a pixel of 256 × 256 in a u16: a coastal tile has tens of thousands).
-pub struct Repaired {
+pub struct Moved {
     pub e: Vec<f32>,
     pub moved: Vec<u16>,
 }
@@ -1300,7 +1178,7 @@ pub struct PackReport {
     pub lo_tiles: usize,
     pub fetched: usize,
     pub missing: usize,
-    pub repaired: usize,
+    pub changed: usize,
 }
 
 /// Makes the terrain of the z6 tiles `ts` (all in z3 tile `q`) near the coverage: their hi packs
@@ -1418,8 +1296,8 @@ pub fn read_mid(path: &std::path::Path) -> anyhow::Result<((u32, u32), Mid)> {
 
 /// A tile as made: zoom, column, row, its bytes.
 pub type Made = (u8, u32, u32, Vec<u8>);
-/// A level as made: its tiles, the ones repaired (for the pixels above them), the 2×2 means.
-type Level = (Vec<(u32, u32, Vec<u8>)>, HashMap<(u32, u32), Repaired>, HashMap<(u32, u32), Vec<f32>>);
+/// A level as made: its tiles, the ones changed (for the pixels above them), the 2×2 means.
+type Level = (Vec<(u32, u32, Vec<u8>)>, HashMap<(u32, u32), Moved>, HashMap<(u32, u32), Vec<f32>>);
 
 /// What makes the terrain's levels: the raw tiles, the sources, and the counts of what it did (each
 /// tile counts once here and once shaded: `done`).
@@ -1430,7 +1308,7 @@ struct Maker<'a> {
     processed: std::sync::atomic::AtomicU64,
     fetched: std::sync::atomic::AtomicUsize,
     missing: std::sync::atomic::AtomicUsize,
-    repaired: std::sync::atomic::AtomicUsize,
+    changed: std::sync::atomic::AtomicUsize,
     /// A block's levels up (`blocks`): BLOCK_UP, fewer in tests to have more blocks.
     block_up: u8,
 }
@@ -1444,7 +1322,7 @@ impl<'a> Maker<'a> {
             processed: Default::default(),
             fetched: Default::default(),
             missing: Default::default(),
-            repaired: Default::default(),
+            changed: Default::default(),
             block_up: BLOCK_UP,
         }
     }
@@ -1482,7 +1360,7 @@ impl<'a> Maker<'a> {
         &self,
         z: u8,
         tiles: Vec<(u32, u32)>,
-        below: &HashMap<(u32, u32), Repaired>,
+        below: &HashMap<(u32, u32), Moved>,
         quads: &HashMap<(u32, u32), Vec<f32>>,
         levels: &mut HashMap<u64, f32>,
         by_block: bool,
@@ -1510,7 +1388,7 @@ impl<'a> Maker<'a> {
         // ask for them: a block at a time would read a few at a time, each a whole 1° tile from the
         // NAS, and 6/8/18 took 2.7 times as long.)
         if let Some(n) = src.north.filter(|_| blocks.len() > 1 && z > REBUILD_Z) {
-            let _p = sub("tiles prepared (repaired; GLO-30 and the water read)", Class::Compute);
+            let _p = sub("tiles prepared (GLO-30 and the water read)", Class::Compute);
             let cells: std::collections::BTreeSet<(i32, i32)> = blocks
                 .iter()
                 .flatten()
@@ -1532,18 +1410,12 @@ impl<'a> Maker<'a> {
                         self.processed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         return Ok(None);
                     };
-                    Ok(Some((
-                        x,
-                        y,
-                        prepare(b, z, x, y, below, quads, src, &|e, z, lat, c| {
-                            repair_terrain_with(e, z, lat, c);
-                        }),
-                    )))
+                    Ok(Some((x, y, prepare(b, z, x, y, below, quads, src))))
                 })
                 .collect();
             prepared.into_iter().filter_map(|r| r.transpose()).collect()
         };
-        let p = sub("tiles prepared (repaired; GLO-30 and the water read)", Class::Compute);
+        let p = sub("tiles prepared (GLO-30 and the water read)", Class::Compute);
         let mut next = blocks.first().map(|b| prep(b)).transpose()?.unwrap_or_default();
         drop(p);
         for bi in 0..blocks.len() {
@@ -1579,13 +1451,13 @@ impl<'a> Maker<'a> {
         Ok((outs, nb, nq))
     }
 
-    /// Prepared tiles finished (`finish`): each its PNG, its elevations if repaired, its 2×2 means.
+    /// Prepared tiles finished (`finish`): each its PNG, its elevations if changed, its 2×2 means.
     #[allow(clippy::type_complexity)]
     fn finish_all(
         &self,
         mut prepared: Vec<(u32, u32, Prepared)>,
         levels: &HashMap<u64, f32>,
-    ) -> Vec<(u32, u32, Vec<u8>, Option<Repaired>, Option<Vec<f32>>)> {
+    ) -> Vec<(u32, u32, Vec<u8>, Option<Moved>, Option<Vec<f32>>)> {
         prepared
             .par_drain(..)
             .map(|(x, y, p)| {
@@ -1596,18 +1468,18 @@ impl<'a> Maker<'a> {
             .collect()
     }
 
-    /// Finished tiles (`finish_all`) into a level's tiles, repaired ones and 2×2 means.
+    /// Finished tiles (`finish_all`) into a level's tiles, changed ones and 2×2 means.
     #[allow(clippy::type_complexity)]
     fn finished_into(
         &self,
-        done: Vec<(u32, u32, Vec<u8>, Option<Repaired>, Option<Vec<f32>>)>,
+        done: Vec<(u32, u32, Vec<u8>, Option<Moved>, Option<Vec<f32>>)>,
         outs: &mut Vec<(u32, u32, Vec<u8>)>,
-        nb: &mut HashMap<(u32, u32), Repaired>,
+        nb: &mut HashMap<(u32, u32), Moved>,
         nq: &mut HashMap<(u32, u32), Vec<f32>>,
     ) {
         for (x, y, b, r, q) in done {
             if let Some(r) = r {
-                self.repaired.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.changed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 nb.insert((x, y), r);
             }
             if let Some(q) = q {
@@ -1663,7 +1535,7 @@ impl<'a> Maker<'a> {
     fn report(&self, rep: &mut PackReport) {
         rep.fetched = self.fetched.load(std::sync::atomic::Ordering::Relaxed);
         rep.missing = self.missing.load(std::sync::atomic::Ordering::Relaxed);
-        rep.repaired = self.repaired.load(std::sync::atomic::Ordering::Relaxed);
+        rep.changed = self.changed.load(std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -2135,7 +2007,7 @@ pub fn build_root(out: &mut Out, raw: &RawTiles, src: &Sources) -> anyhow::Resul
     drop(p);
     let p = crate::timings::phase("the root's tiles made (AWS's z0–2 read)", crate::timings::Class::Compute);
     let mut tiles: Vec<(u8, u32, u32, Vec<u8>, u32)> = Vec::new();
-    let below: HashMap<(u32, u32), Repaired> = HashMap::new();
+    let below: HashMap<(u32, u32), Moved> = HashMap::new();
     for z in (0..=2u8).rev() {
         let n = 1u32 << z;
         let mut next = HashMap::new();
@@ -2778,7 +2650,7 @@ pub(crate) mod tests {
         };
         let fetched = std::sync::atomic::AtomicUsize::new(0);
         let missing = std::sync::atomic::AtomicUsize::new(0);
-        let repaired = std::sync::atomic::AtomicUsize::new(0);
+        let changed = std::sync::atomic::AtomicUsize::new(0);
         let get = |z: u8, x: u32, y: u32| -> anyhow::Result<Option<Vec<u8>>> {
             let (b, new) = raw.get(z, x, y)?;
             if new {
@@ -2794,12 +2666,12 @@ pub(crate) mod tests {
         // known from finer levels kept: `levels`), then their water (`finish`).
         let level = |z: u8,
                      tiles: Vec<(u32, u32)>,
-                     below: &HashMap<(u32, u32), Repaired>,
+                     below: &HashMap<(u32, u32), Moved>,
                      quads: &HashMap<(u32, u32), Vec<f32>>,
                      levels: &mut HashMap<u64, f32>|
          -> anyhow::Result<(
             Vec<(u32, u32, Vec<u8>)>,
-            HashMap<(u32, u32), Repaired>,
+            HashMap<(u32, u32), Moved>,
             HashMap<(u32, u32), Vec<f32>>,
         )> {
             fetched.fetch_add(
@@ -2813,13 +2685,7 @@ pub(crate) mod tests {
                         processed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         return Ok(None);
                     };
-                    Ok(Some((
-                        x,
-                        y,
-                        prepare(b, z, x, y, below, quads, src, &|e, z, lat, c| {
-                            repair_terrain_with(e, z, lat, c);
-                        }),
-                    )))
+                    Ok(Some((x, y, prepare(b, z, x, y, below, quads, src))))
                 })
                 .collect();
             let mut prepared: Vec<(u32, u32, Prepared)> =
@@ -2830,7 +2696,7 @@ pub(crate) mod tests {
             }
             crate::terrain_water::add_levels(levels, &lakes);
             let levels: &HashMap<u64, f32> = levels;
-            let done: Vec<(u32, u32, Vec<u8>, Option<Repaired>, Option<Vec<f32>>)> = prepared
+            let done: Vec<(u32, u32, Vec<u8>, Option<Moved>, Option<Vec<f32>>)> = prepared
                 .par_drain(..)
                 .map(|(x, y, p)| {
                     let (b, r, q) = finish(p, levels);
@@ -2841,7 +2707,7 @@ pub(crate) mod tests {
             let (mut outs, mut nb, mut nq) = (Vec::new(), HashMap::new(), HashMap::new());
             for (x, y, b, r, q) in done {
                 if let Some(r) = r {
-                    repaired.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    changed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     nb.insert((x, y), r);
                 }
                 if let Some(q) = q {
@@ -2875,7 +2741,7 @@ pub(crate) mod tests {
             });
             let _finished = Finished(&finished);
             let r = (|| -> anyhow::Result<()> {
-                let (mut below9, mut quads9): (HashMap<(u32, u32), Repaired>, HashMap<(u32, u32), Vec<f32>>) =
+                let (mut below9, mut quads9): (HashMap<(u32, u32), Moved>, HashMap<(u32, u32), Vec<f32>>) =
                     (HashMap::new(), HashMap::new());
                 // (The lakes' levels: each z6 tile's, finest first, then all of them for q's levels.)
                 let mut lakes_q: HashMap<u64, f32> = HashMap::new();
@@ -2916,7 +2782,7 @@ pub(crate) mod tests {
         progress("tiles", total, total);
         rep.fetched = fetched.into_inner();
         rep.missing = missing.into_inner();
-        rep.repaired = repaired.into_inner();
+        rep.changed = changed.into_inner();
         // Then q's lo pack.
         progress("packs", 0, 1);
         lo.sort_by_key(|t| (t.0, t.1, t.2));
@@ -3011,8 +2877,7 @@ pub(crate) mod tests {
         let raw = RawTiles::with_store(&local, &d.path().join("store"), crate::terrain_sources::TEST_BASE);
         let cells = FnCells::new(|lat, lon| (200.0 + (lat - 70.0) * 100.0 + (lon - 10.0) * 50.0) as f32);
         let water = crate::terrain_water::tests::Fixed(lake_across);
-        let coarse = Coarse::new(&raw);
-        let src = Sources { north: Some(&cells), water: Some(&water), coarse: Some(&coarse) };
+        let src = Sources { north: Some(&cells), water: Some(&water) };
         let open = |root: &str| Out::unbound(&d.path().join(root), &d.path().join(format!("{root}-scratch"))).unwrap();
         let terrain = |o: &Out| {
             o.manifest
@@ -3023,7 +2888,7 @@ pub(crate) mod tests {
         };
         let mut v3 = open("v3");
         let r = z3_v3(&mut v3, &raw, q, ts, &cov, &src, &|_, _, _| {}).unwrap();
-        assert!(r.repaired > 0, "{r:?}");
+        assert!(r.changed > 0, "{r:?}");
         let mut z3run = open("z3run");
         build_q(&mut z3run, &raw, q, ts, &cov, &src).unwrap();
         let mut parts = open("parts");
@@ -3099,8 +2964,7 @@ pub(crate) mod tests {
         synthetic_raw(&local, &cov, q, ts);
         let water = crate::terrain_water::tests::Fixed(lake_across);
         let make = |name: &str, raw: &RawTiles, north: &dyn crate::terrain_north::Cells| -> Vec<(String, String)> {
-            let coarse = Coarse::new(raw);
-            let src = Sources { north: Some(north), water: Some(&water), coarse: Some(&coarse) };
+            let src = Sources { north: Some(north), water: Some(&water) };
             let mut out = Out::unbound(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
             for &t in ts {
                 build_piece(&mut out, raw, t, &cov, &src, false, &|_, _, _| {}).unwrap();
@@ -3288,7 +3152,7 @@ pub(crate) mod tests {
         let d = tempfile::tempdir().unwrap();
         let cov = near_without_hi(d.path());
         let raw = RawTiles::new(&d.path().join("raw"), crate::terrain_sources::TEST_BASE);
-        let src = Sources { north: None, water: None, coarse: None };
+        let src = Sources { north: None, water: None };
         let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
         // (Files an earlier run left: their bytes don't matter here.)
         let fake = |out: &mut Out, l: &str| {
@@ -3394,7 +3258,7 @@ pub(crate) mod tests {
             v
         }
         let water = Fixed(polys);
-        let src = Sources { north: Some(&cells), water: Some(&water), coarse: None };
+        let src = Sources { north: Some(&cells), water: Some(&water) };
         let raw = |x: u32| {
             let g = crate::terrain_north::north_tile(&cells, Z, x, y).unwrap().g;
             let mut e: Vec<f32> = g.iter().map(|v| v + 47.0).collect();
@@ -3413,12 +3277,7 @@ pub(crate) mod tests {
             .iter()
             .map(|&x| {
                 let (png, g) = raw(x);
-                (
-                    prepare(png, Z, x, y, &none, &HashMap::new(), &src, &|e, z, lat, c| {
-                        repair_terrain_with(e, z, lat, c);
-                    }),
-                    g,
-                )
+                (prepare(png, Z, x, y, &none, &HashMap::new(), &src), g)
             })
             .collect();
         let mut lakes = HashMap::new();

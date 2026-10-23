@@ -74,7 +74,7 @@ The lead Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the ma
 | Road & rail elevation, North America | NRCan **HRDEM**, USGS **3DEP** 10 m, NRCan **MRDEM** 30 m | OGL–Canada / public domain |
 | Road & rail elevation, Japan | GSI elevation tiles (地理院タイル 標高タイル) | GSI terms of use (Public Data License 1.0): "Created by editing GSI Tiles (elevation tiles (Fundamental Geospatial Data Digital Elevation Model))" |
 | Road & rail elevation elsewhere | **FABDEM** v1-2 30 m (University of Bristol / Fathom; Hawker et al. 2022) | CC BY-NC-SA 4.0 (non-commercial; attribution in © Credits) |
-| 3D terrain, hill-shading, contours, analysis grid | Terrain Tiles (Terrarium) on AWS Open Data, repaired; north of 60°N Copernicus DEM GLO-30 | Mapzen / various open sources; produced using Copernicus WorldDEM-30 © DLR e.V. 2010–2014 and © Airbus Defence and Space GmbH 2014–2018 provided under COPERNICUS by the European Union and ESA |
+| 3D terrain, hill-shading, contours, analysis grid | Terrain Tiles (Terrarium) on AWS Open Data; north of 60°N Copernicus DEM GLO-30 | Mapzen / various open sources; produced using Copernicus WorldDEM-30 © DLR e.V. 2010–2014 and © Airbus Defence and Space GmbH 2014–2018 provided under COPERNICUS by the European Union and ESA |
 | Tree canopy height & cover | Meta & WRI global canopy height | CC BY 4.0 |
 | Forest leaf type, Europe | Copernicus HRL Dominant Leaf Type 2018 | Copernicus free and open data policy |
 | Forest leaf type, North America | NALCMS 2020 Land Cover of North America (CEC; NRCan/CCRS, USGS, INEGI, CONAFOR) | CEC terms of use (attribution) |
@@ -105,7 +105,7 @@ The lead Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the ma
 | Heritage descriptions | English Wikipedia short descriptions; descriptions written by Claude from Wikipedia articles or register entries | CC BY-SA 4.0 (sources credited) |
 | Peak prominence & isolation | Computed from the terrain; OSM and Wikidata values preferred | Derived |
 
-**Terrain repair** (`roadcore::grid::repair_terrain`, in the `terrain` job). AWS's Terrain Tiles have voids and spurious towers and pits, mostly over water. One pass repairs only what is broken or undefined: voids (above 8,900 m or below −11,500 m); blobs standing over 100 m out of their ground, steeper than real terrain can be and far rougher than their surroundings; small steep spikes; ringing and walled patches where AWS's sources meet (`seam_spikes`, `walled_patches`). Each is filled with a harmonic surface from the ground around it. Summits, ridges, cliffs, islands, sea stacks, mesas and buttes stay; coarser zooms are rebuilt from the repaired finer tiles. North of 60°N the terrain is GLO-30's; everywhere the sea goes to 0 m and each lake to its shore's level, from the basemap's water (`terrain_north`, `terrain_water`, `docs/steps.md`).
+**Terrain.** AWS's Terrain Tiles are taken as they are, but for their voids (above 8,900 m or below −11,500 m), which go to sea level; coarser zooms are rebuilt from the finer tiles. North of 60°N the terrain is GLO-30's; everywhere the sea goes to 0 m and each lake to its shore's level, from the basemap's water (`terrain_north`, `terrain_water`, `docs/steps.md`).
 
 The map's © Credits dialog lists each source as its catalog serves it (`CREDITS` in `crates/pipeline/src/rules.rs`, plus the inputs' own descriptions).
 

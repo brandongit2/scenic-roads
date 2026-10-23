@@ -935,8 +935,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             );
             let raw = raw_tiles(&out, &raw_dir)?;
             let opened = pipeline::terrain_pack::SourceFiles::open(&out, false)?;
-            let coarse = pipeline::terrain_pack::Coarse::new(&raw);
-            let src = opened.sources(Some(&coarse));
+            let src = opened.sources();
             let levels = pipeline::terrain_pack::piece_levels(&cov, (t.x, t.y));
             let t0 = std::time::Instant::now();
             let groups = pipeline::terrain_task::groups(&levels, src.water)?;
@@ -977,8 +976,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             );
             let raw = raw_tiles(&out, &raw_dir)?;
             let opened = pipeline::terrain_pack::SourceFiles::open(&out, false)?;
-            let coarse = pipeline::terrain_pack::Coarse::new(&raw);
-            let src = opened.sources(Some(&coarse));
+            let src = opened.sources();
             let levels = pipeline::terrain_pack::piece_levels(&cov, (t.x, t.y));
             let whole = flag(&args, "--whole");
             let t0 = std::time::Instant::now();
@@ -1044,7 +1042,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let raw = raw_tiles(&out, &raw_dir)?;
             let opened = pipeline::terrain_pack::SourceFiles::open(&out, true)?;
             drop(p);
-            let n = pipeline::terrain_pack::build_root(&mut out, &raw, &opened.sources(None))?;
+            let n = pipeline::terrain_pack::build_root(&mut out, &raw, &opened.sources())?;
             eprintln!("terrain root: {n} tiles");
             pack_raw(&out, &raw_dir);
         }
@@ -5509,8 +5507,7 @@ fn terrain_pieces(
     );
     let raw = raw_tiles(out, &raw_dir)?;
     let opened = pipeline::terrain_pack::SourceFiles::open(out, true)?;
-    let coarse = pipeline::terrain_pack::Coarse::new(&raw);
-    let src = opened.sources(Some(&coarse));
+    let src = opened.sources();
     let n = ts.len();
     let mut names: Vec<String> =
         ts.iter().map(|t| format!("Fetching, shading and writing {}'s terrain tiles", t.slash())).collect();
@@ -5643,7 +5640,7 @@ fn terrain_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
     );
     let raw = raw_tiles(out, &raw_dir)?;
     let opened = pipeline::terrain_pack::SourceFiles::open(out, true)?;
-    let src = opened.sources(None);
+    let src = opened.sources();
     let mut names: Vec<String> =
         qs.iter().map(|(q, _)| format!("Assembling {}'s zoomed-out terrain", q.slash())).collect();
     names.push("Packing the new raw tiles onto the NAS".into());
@@ -5820,8 +5817,7 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
     // GLO-30 north of 60°N and the pass's basemap's water (docs/steps.md §2, Terrain), and AWS's z9
     // tiles for the walled patches.
     let opened = pipeline::terrain_pack::SourceFiles::open(out, true)?;
-    let coarse = pipeline::terrain_pack::Coarse::new(&raw);
-    let src = opened.sources(Some(&coarse));
+    let src = opened.sources();
     // Its parts, for the status (agent::jobs::part): each z3 tile's tiles fetched and shaded, then its
     // terrain written; then the raw tiles AWS gave packed onto the NAS. Each says how far it is.
     let n = by_q.len();

@@ -18,11 +18,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// Step versions: bumping one rebuilds that step everywhere (oldest first, when idle).
-/// Terrain 2: the one-pass repair (roadcore::grid::repair_terrain), on AWS's values before
-/// bathymetry goes to sea level. 3: GLO-30 north of 60°N, the water flattened from the pass's
-/// basemap (the digest of what each target reads of it in the key: `water_key`), the seam spikes
-/// and walled patches (docs/steps.md §2, Terrain).
-pub const TERRAIN_V: u32 = 3;
+/// Terrain 4: AWS's tiles but for their voids, GLO-30 north of 60°N, the water flattened from the
+/// pass's basemap (the digest of what each target reads of it in the key: `water_key`; docs/steps.md
+/// §2, Terrain).
+pub const TERRAIN_V: u32 = 4;
 pub const SLOPE_V: u32 = 1;
 /// 2: elevations up to 6,053 m (`final.u16`, base packs' `elevu`; were clamped at ±3,200 m).
 /// 3: heritage sites and area flags from the pass's heritage-sites job (crate::heritage), the

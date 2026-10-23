@@ -773,8 +773,8 @@ class, id) within a tile. The client sends the id with the clicked point.
   tiers}`); `global/roaden/<u>` (`{OSM way id: English}` where `name:en` differs); `global/spoken`
   (`names::spoken::Spoken::to_bytes`); `global/heritage/*`.
 - **Grid layers:** `grid-{class,canopy,cover}` hi packs of z11 tiles, encoding `u8-zstd`, not served.
-- **Worldwide z8 terrain:** `sources/terrain-z8-v3` (one RDPACK of every z8 tile, no scope or root)
-  and `sources/terrain-z8-v3-max` (each tile's maximum, f32).
+- **Worldwide z8 terrain:** `sources/terrain-z8-v4` (one RDPACK of every z8 tile, no scope or root)
+  and `sources/terrain-z8-v4-max` (each tile's maximum, f32).
 - **Work files** (zstd JSON lines unless said): `work/pois/<u>`, `work/peaks/<u>`,
   `work/summits/<date>`, `work/trailends/<date>`; `work/heritage/<date>/{base/<stem>, pos/6-x-y.json,
   parts/6-x-y.json, areas/6-x-y.jsonl, <stem>}` (`parts`: World Heritage components among `pos`;
