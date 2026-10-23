@@ -166,7 +166,7 @@ same tab; an alert links to the tab that says more.
 - **Overview:** how far: the whole build's work done, every stage's (`sums.js` wholeProgress:
   each step's targets done at the forecast's time for a target of it, `each_s`, measured or
   estimated, of that plus the forecast's work left; 100% only when every stage is done), how long
-  (the same work left), the stages as a coloured strip; two numbers that aren't a step's
+  (the same work left), the stages as a coloured strip (each segment with the Jobs tab's stage card on hover, pinned on click or tap); two numbers that aren't a step's
   (the map's last update with its catalogue's number and kind (with the low
   zooms or map tiles only), the next ≈ and the map tiles to draw; machines working).
 - **World map** (`worldmap.js`, a canvas in Web Mercator, the world 0–1000 each way): the z3 grid

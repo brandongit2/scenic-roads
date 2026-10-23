@@ -304,10 +304,10 @@ function overview(m) {
     fc?.done_at ? h("div", "small dim", `${Math.round((fc.measured || 0) * 100)}% of that time measured, the rest estimated · forecast ${ago(now, fc.at)}`) : null,
     fc?.done_at ? h("div", "small dim", liveError(fc)) : null,
   );
-  // The stages as a strip, each its colour, the one under way outlined.
+  // The stages as a strip, each its colour, the one under way outlined; each with the Jobs tab's stage card (hover, pin).
   const strip = h("div", "strip", lines.map((l) => {
     const done = finished(l), running = (l.steps || []).some((s) => m.running.has(s));
-    const i = h("i", { class: `${done ? "done" : ""} ${running ? "now" : ""}`, title: `${l.what}: ${countsOf(l)}` });
+    const i = withCard(h("i", { class: `${done ? "done" : ""} ${running ? "now" : ""}` }), `s ${l.id || l.what}`, () => stageCard(m, l));
     i.style.background = done ? S.colour(l.steps?.[0]) : "";
     if (!done && l.total) { const b = h("b"); b.style.width = `${Math.round((l.done / l.total) * 100)}%`; b.style.background = S.colour(l.steps?.[0]); i.append(b); }
     return i;

@@ -147,6 +147,16 @@ async function run() {
       await js(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
     }
 
+    // The Overview's stage bar: a tap on a segment pins the stage card.
+    await show("overview");
+    const seg = await at(".strip > i[data-card]");
+    if (!seg) check("overview: a stage-bar segment pins its card on a tap", false, "no segment with a card");
+    else {
+      await tap(seg[0], seg[1]);
+      check("overview: a stage-bar segment pins its card on a tap", await js(`!!document.querySelector(".card-tip.pinned")`));
+      await js(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
+    }
+
     // The world maps (every tab showing one): a pinch zooms, then a one-finger sideways drag pans
     // (fitted, the map has no room to pan sideways); the canvas's pixels change, the page stays put.
     let maps = 0;
