@@ -916,13 +916,13 @@ mod tests {
         };
         bad("role = \"pageviews\"\nformat = \"pageviews-dump\"\nurl = \"https://d.org/{y}\"\n");
         bad("role = \"pageviews\"\nformat = \"pageviews-dump\"\nkind = \"crawl\"\nurl = \"https://d.org/{y}\"\n");
-        bad("role = \"weather\"\nformat = \"geotiff\"\nurl = \"https://a.org/x.tif\"\n");
-        bad("role = \"pageviews\"\nformat = \"geotiff\"\nurl = \"https://a.org/{y}\"\n");
-        bad("role = \"pageviews\"\nformat = \"pageviews-dump\"\nurl = \"https://a.org/{z}\"\n");
-        bad("role = \"canopy\"\nformat = \"geotiff\"\nurl = \"https://a.org/x\"\nindex = \"i.geojson\"\n");
-        bad("role = \"canopy\"\nformat = \"geotiff\"\n");
-        bad("role = \"canopy\"\nformat = \"geotiff\"\nindex = \"i.geojson\"\nrefresh = \"daily\"\n");
-        bad("role = \"canopy\"\nformat = \"geotiff\"\nindex = \"i.geojson\"\nmirror = \"x\"\n");
+        bad("role = \"weather\"\nformat = \"geotiff\"\nkind = \"data\"\nurl = \"https://a.org/x.tif\"\n");
+        bad("role = \"pageviews\"\nformat = \"geotiff\"\nkind = \"data\"\nurl = \"https://a.org/{y}\"\n");
+        bad("role = \"pageviews\"\nformat = \"pageviews-dump\"\nkind = \"data\"\nurl = \"https://a.org/{z}\"\n");
+        bad("role = \"canopy\"\nformat = \"geotiff\"\nkind = \"data\"\nurl = \"https://a.org/x\"\nindex = \"i.geojson\"\n");
+        bad("role = \"canopy\"\nformat = \"geotiff\"\nkind = \"data\"\n");
+        bad("role = \"canopy\"\nformat = \"geotiff\"\nkind = \"data\"\nindex = \"i.geojson\"\nrefresh = \"daily\"\n");
+        bad("role = \"canopy\"\nformat = \"geotiff\"\nkind = \"data\"\nindex = \"i.geojson\"\nmirror = \"x\"\n");
         // (The description's own shape: its credit.)
         let c = SourcesCheck::default()
             .file("x.toml", b"[data]\nrole = \"canopy\"\nformat = \"geotiff\"\nindex = \"i.geojson\"\n");
@@ -1093,9 +1093,9 @@ mod tests {
         assert_eq!(packed(r#""pack":"p.tar","at":{"file":[512,100],"low_file":[0,1]}"#).len(), 1);
         assert_eq!(packed(r#""pack":"../p.tar","at":{"file":[512,0]}"#).len(), 2);
         assert_eq!(packed(r#""at":{"file":[512,100]}"#).len(), 1);
-        let wrong = decl("role = \"depth\"\nformat = \"depth-grid\"\nindex = \"i.geojson\"\n[data.params]\ncode = 16\nwater = \"river\"\n");
+        let wrong = decl("role = \"depth\"\nformat = \"depth-grid\"\nkind = \"data\"\nindex = \"i.geojson\"\n[data.params]\ncode = 16\nwater = \"river\"\n");
         assert!(SourcesCheck::default().file("w.toml", wrong.as_bytes()).findings.iter().any(|f| f.check() == DECL));
-        let flags = decl("role = \"depth\"\nformat = \"depth-grid\"\nindex = \"i.geojson\"\n[data.params]\ncode = 15\nwater = \"lake\"\nlabel = \"L\"\ndatum = \"D\"\nrivers = \"yes\"\nestimated = true\n");
+        let flags = decl("role = \"depth\"\nformat = \"depth-grid\"\nkind = \"data\"\nindex = \"i.geojson\"\n[data.params]\ncode = 15\nwater = \"lake\"\nlabel = \"L\"\ndatum = \"D\"\nrivers = \"yes\"\nestimated = true\n");
         let f = SourcesCheck::default().file("f.toml", flags.as_bytes()).findings;
         assert!(f.len() == 1 && f[0].message.contains("params.rivers"), "{f:?}");
     }
@@ -1105,7 +1105,7 @@ mod tests {
         let s = Source {
             id: "x".into(),
             data: parse(
-                decl("role = \"pageviews\"\nformat = \"pageviews-dump\"\nurl = \"https://d.org/{y}-{m}\"\n").as_bytes(),
+                decl("role = \"pageviews\"\nformat = \"pageviews-dump\"\nkind = \"data\"\nurl = \"https://d.org/{y}-{m}\"\n").as_bytes(),
             )
             .unwrap()
             .data,

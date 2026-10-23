@@ -42,6 +42,9 @@ import numpy as np
 from datums import OpenSea, from_table, water_of
 from grid import Writer, fetch, log
 
+# What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): its callers' published files, through grid.fetch.
+FETCHES = "data"
+
 # NONNA-10's blocks: the service's own index cells.
 N10_ORIGIN, N10_BLOCK = (-142.0, 41.0), (0.5, 0.3)
 

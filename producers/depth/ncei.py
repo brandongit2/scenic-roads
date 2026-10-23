@@ -26,6 +26,9 @@ from datums import Surface
 from grid import Writer, fetch, log
 from raster import Spec, produce
 
+# What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): NCEI's and GLERL's published files and CO-OPS's datum API.
+FETCHES = "api, data"
+
 URL = {"crm": "https://www.ncei.noaa.gov/products/coastal-relief-model",
        "greatlakes": "https://www.ncei.noaa.gov/products/great-lakes-bathymetry"}
 # Each lake (its grid file's first word): GLERL's lake-wide series, and a CO-OPS gauge on it.

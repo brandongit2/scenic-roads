@@ -17,6 +17,9 @@ from pathlib import Path
 from grid import Writer, fetch, log
 from raster import Spec, produce
 
+# What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): EMODnet's published DTM tiles.
+FETCHES = "data"
+
 WGS84 = 'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]'
 
 
