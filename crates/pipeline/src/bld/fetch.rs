@@ -58,8 +58,6 @@ const PIECE_S: u64 = 180;
 /// Part sizes S3 uploaders use, for a multipart ETag ("<md5 of the parts' md5s>-<parts>").
 const PART_SIZES: [u64; 9] =
     [5 << 20, 8 << 20, 16 << 20, 32 << 20, 64 << 20, 128 << 20, 256 << 20, 512 << 20, 100_000_000];
-/// The NAS keeps this much free beyond what's fetched.
-const SPARE: u64 = 100 << 30;
 
 fn gb(n: f64) -> String {
     format!("{:.2} GB", n / 1e9)
@@ -1115,13 +1113,14 @@ pub fn run(a: Args<'_>) -> Result<()> {
         gb(left as f64)
     );
     drop(p);
-    let free = crate::agent::room::disk_free(root)?;
+    // (What's to fetch must fit in the NAS's free space past the owner's room target, as the OSM
+    // pass's writes do: agent::room::job_target, task #421; no reserve of its own.)
+    let room = crate::agent::room::free_past(root, crate::agent::room::job_target());
     ensure!(
-        free >= left + SPARE,
-        "the NAS has {} free: too little for {} and {} to spare",
-        gb(free as f64),
-        gb(left as f64),
-        gb(SPARE as f64)
+        left <= room,
+        "the NAS has {} free past the room target: too little for {}",
+        gb(room as f64),
+        gb(left as f64)
     );
     let prog = Progress {
         files: jobs.len(),
