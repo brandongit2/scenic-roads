@@ -114,7 +114,10 @@ def parse(toks):
         i += 1
     return crates, targets, filters, flags
 
-wt = cwd if "/.claude/worktrees/" in cwd else None
+# (The tree the tests run in: the session's folder, else a worktree the command goes into, `cd` or
+# `--manifest-path`, as a reviewer in the main checkout runs a worktree's tests: its modules, not main's.)
+into = re.search(r"(/\S*?/\.claude/worktrees/[^/\s'\";&|)]+)", cmd)
+wt = cwd if "/.claude/worktrees/" in cwd else (into.group(1) if into else None)
 root = (wt.split("/.claude/worktrees/")[0] + "/.claude/worktrees/" + wt.split("/.claude/worktrees/")[1].split("/")[0]) if wt else repo
 def crate_dirs(): return sorted(os.listdir(os.path.join(root, "crates")))
 def is_module(c, seg):

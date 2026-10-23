@@ -410,9 +410,12 @@ pub const TABLE: [Step; 52] = [
     },
     // (Tree cover's program holds a band of a block's rows on each thread and the blocks made but
     // not yet written: 1.05 GB on 14 threads for 3/2/2's 792 blocks, 2026-10-05; a z6 tile has 16
-    // blocks at most. Its assembly its z3 tile's blocks' zoom-8 values, compressed.)
+    // blocks at most. Its assembly its z3 tile's blocks' zoom-8 values, compressed. A job that makes
+    // a leaf-type square holds it whole and four chunks' source windows: 2.3 GB at most for six
+    // NALCMS squares, 0.8 GB for two of the EEA's, task #580, 2026-10-23. A first guess only: each
+    // target's measured peak replaces it.)
     Step {
-        mem_mb: 1000,
+        mem_mb: 2500,
         shared: Some(2),
         ..step("trees", Pack, Z6, "trees", "Tree cover", "Maps a tile's tree cover, height and leaf type.", w_trees)
     },
@@ -1499,7 +1502,7 @@ mod tests {
             ("overlays", 4096),
             ("unit", 8600),
             ("pois", 2048),
-            ("trees", 1000),
+            ("trees", 2500),
             ("trees-lo", 500),
             ("terrain-lo", 1200),
             ("slope", 1500),

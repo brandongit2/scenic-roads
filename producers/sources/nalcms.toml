@@ -4,7 +4,7 @@ credit = "2020 Land Cover of North America (NALCMS): Commission for Environmenta
 licence = "CEC terms of use (attribution)"
 source = "http://www.cec.org/north-american-environmental-atlas/land-cover-30m-2020/"
 territory = ["CA", "US", "MX"]
-notes = "One GeoTIFF in CEC's 3.9 GB zip, streamed out by range once (its size and CRC checked against the zip's) and kept as sources/trees/nalcms-2020.tif; its forest classes are leaf types (dem/leaftype.py)."
+notes = "One GeoTIFF in CEC's 3.9 GB zip, streamed out by range once (its size and CRC checked against the zip's) and kept as sources/trees/nalcms-2020.tif; its forest classes are leaf types (pipeline::leaftype)."
 
 [data]
 role = "leaf-type-north-america"

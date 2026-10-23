@@ -774,7 +774,9 @@ class, id) within a tile. The client sends the id with the clicked point.
   - `sources/trees/leaf/lat<top>_lon<left>.tif` (a 10° square's dominant leaf type at 0.0005°: u8,
     0 not forest, 1 broadleaf, 2 conifer, 3 mixed, 255 no data; `pipeline::leaftype`, GDAL's GeoTIFF
     bytes; tag `complete=1` when whole; chunks kept in `parts/lat<top>_lon<left>/<row>-<col>.npy`
-    (numpy's format) or `.none` while made);
+    (numpy's format) or `.none` while made; a NALCMS square's pixels rest on this Mac's libm (`sin`,
+    `cos`, `atanh`), as GDAL's did, so a square made anew on another macOS may differ: made squares
+    are kept, so no key changes);
     `sources/trees/nalcms-2020.tif` (size and CRC-32 checked).
   - Downloads kept so each is made once (temporary names end `.<host>.<pid>.tmp`):
     `sources/canopy/meta_chm_lat=<top>.0_lon=<left>.0_{median,p95,cover5m}.tif` (empty: Meta lacks

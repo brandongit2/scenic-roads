@@ -4,7 +4,7 @@ credit = "© European Union, Copernicus Land Monitoring Service 2018, European E
 licence = "Copernicus free and open data policy (attribution)"
 source = "https://land.copernicus.eu/en/products/high-resolution-layer-forest-type"
 territory = ["AL", "AT", "BA", "BE", "BG", "CH", "CY", "CZ", "DE", "DK", "EE", "ES", "FI", "FR", "GB", "GR", "HR", "HU", "IE", "IS", "IT", "LI", "LT", "LU", "LV", "ME", "MK", "MT", "NL", "NO", "PL", "PT", "RO", "RS", "SE", "SI", "SK", "TR"]
-notes = "Read at 0.0005° from the EEA's image service (exportImage, nearest neighbour) by dem/leaftype.py into the leaf-type squares (sources/trees/leaf/)."
+notes = "Read at 0.0005° from the EEA's image service (exportImage, nearest neighbour) by pipeline::leaftype into the leaf-type squares (sources/trees/leaf/)."
 
 [data]
 role = "leaf-type-europe"
