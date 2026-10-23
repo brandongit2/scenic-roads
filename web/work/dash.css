@@ -32,9 +32,10 @@ button:disabled { opacity: .5; }
 
 /* The overview: how far, how long, the steps as a strip, the numbers that matter. */
 .overview { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); align-items: start; }
-@media (min-width: 720px) { .overview { grid-template-columns: minmax(220px, 1fr) minmax(0, 2fr); } }
+/* (Wide: the how-far box, the numbers stacked beside it.) */
+@media (min-width: 720px) { .overview { grid-template-columns: minmax(0, 2fr) minmax(200px, 1fr); } .overview .kpis { grid-template-columns: minmax(0, 1fr); } }
 .big { font-size: 34px; font-weight: 600; letter-spacing: -.02em; line-height: 1.1; }
-.big small { font-size: 13px; color: var(--dim); font-weight: 400; letter-spacing: 0; }
+.big small { display: block; margin: 2px 0 4px; font-size: 13px; color: var(--dim); font-weight: 400; letter-spacing: 0; }
 .strip { display: flex; gap: 2px; height: 12px; margin: 8px 0 4px; }
 .strip > i { flex: 1; border-radius: 2px; background: var(--line); position: relative; overflow: hidden; }
 .strip > i > b { position: absolute; inset: 0 auto 0 0; background: var(--accent); }
@@ -49,7 +50,7 @@ button:disabled { opacity: .5; }
 /* The world map (worldmap.js): its canvas, its zoom buttons over it, the legend under it. */
 .wmap-box { padding: 6px; }
 .wmap-wrap { position: relative; }
-.wmap { display: block; width: 100%; height: clamp(240px, 52vh, 560px); border-radius: 5px; cursor: grab; touch-action: pan-y; outline: none; }
+.wmap { display: block; width: 100%; aspect-ratio: 2 / 1.15; max-height: 78vh; border-radius: 5px; cursor: grab; touch-action: pan-y; outline: none; }
 .wmap:active { cursor: grabbing; }
 .wmap:focus-visible { box-shadow: 0 0 0 1px var(--accent); }
 .wmap-ctl { position: absolute; top: 6px; right: 6px; display: flex; flex-direction: column; gap: 2px; }

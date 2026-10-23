@@ -75,7 +75,8 @@ export function createMap() {
   };
 
   // ---- The view ----------------------------------------------------------------------------------
-  const minK = () => Math.min(size.w / 1000, size.h / 700) * 0.9;
+  // (Zoomed out at most to the world filling the box: no empty bands beside or under it.)
+  const minK = () => Math.max(size.w, size.h) / 1000;
   function fit() {
     // (The regions' extent, with room around; the inhabited world before there are any.)
     let b = [0, 120, 1000, 760];
@@ -88,11 +89,13 @@ export function createMap() {
     view.cy = (b[1] + b[3]) / 2;
     view.k = Math.max(minK(), Math.min(MAX_K, size.w / (b[2] - b[0] + 2 * pad), size.h / (b[3] - b[1] + 2 * pad)));
     view.fitted = true;
+    clampView();
   }
   const clampView = () => {
     view.k = Math.max(minK(), Math.min(MAX_K, view.k));
-    view.cx = Math.max(0, Math.min(1000, view.cx));
-    view.cy = Math.max(0, Math.min(1000, view.cy));
+    const hw = size.w / 2 / view.k, hh = size.h / 2 / view.k;
+    view.cx = Math.max(hw, Math.min(1000 - hw, view.cx));
+    view.cy = Math.max(hh, Math.min(1000 - hh, view.cy));
   };
   const toWorld = (px, py) => [view.cx + (px - size.w / 2) / view.k, view.cy + (py - size.h / 2) / view.k];
   function zoomAt(f, px = size.w / 2, py = size.h / 2) {
@@ -131,7 +134,7 @@ export function createMap() {
       c.lineWidth = px;
       c.stroke(paths.countries);
     }
-    // The grid: z3, and z6 once its cells are 12 px or more.
+    // The grid: z3, and z6 once its cells are 24 px or more (zoomed in from the whole world).
     const grid = (n, colour, alpha) => {
       const s = 1000 / n;
       c.globalAlpha = alpha;
@@ -143,7 +146,7 @@ export function createMap() {
       c.stroke();
       c.globalAlpha = 1;
     };
-    if (Z6 * k >= 12) grid(64, tokens.rule, 0.35);
+    if (Z6 * k >= 24) grid(64, tokens.rule, 0.35);
     grid(8, tokens.rule, 0.7);
     // Regions, by state.
     const regionColour = { on: tokens.ok, done: tokens.ok, building: tokens.accent, queued: tokens.dim };
@@ -227,7 +230,11 @@ export function createMap() {
     touchAction();
     draw();
   }).observe(canvas);
-  matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", draw);
+  // (A theme change: the map and the minimaps shown in cards drawn again in its colours.)
+  matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", () => {
+    draw();
+    for (const cv of document.querySelectorAll("canvas.wmap-mini")) if (cv.dataset.key) paintMini(cv, cv.dataset.key);
+  });
 
   // ---- What's at a point -----------------------------------------------------------------------
   function keyAt(px, py) {
@@ -256,7 +263,7 @@ export function createMap() {
     point(e);
     ptrs.set(e.pointerId, local(e));
     moved = false;
-    if (ptrs.size === 1) drag = { x: e.clientX, y: e.clientY, cx: view.cx, cy: view.cy };
+    if (ptrs.size === 1) drag = { x: ptrs.get(e.pointerId)[0], y: ptrs.get(e.pointerId)[1], cx: view.cx, cy: view.cy };
     else if (ptrs.size === 2) {
       const [a, b] = [...ptrs.values()];
       pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), k: view.k };
@@ -271,7 +278,7 @@ export function createMap() {
       moved = true;
       zoomAt((pinch.k * Math.hypot(a[0] - b[0], a[1] - b[1])) / Math.max(1, pinch.d) / view.k, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2);
     } else if (drag) {
-      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      const [lx, ly] = local(e), dx = lx - drag.x, dy = ly - drag.y;
       if (!moved && Math.hypot(dx, dy) < 4) return point(e);
       moved = true;
       view.cx = drag.cx - dx / view.k;
@@ -284,7 +291,9 @@ export function createMap() {
   const up = (e) => {
     ptrs.delete(e.pointerId);
     if (ptrs.size < 2) pinch = null;
-    if (!ptrs.size) drag = null;
+    // (A pinch's one finger left: it drags on from where it is.)
+    const [rest] = [...ptrs.values()];
+    drag = rest && ptrs.size === 1 ? { x: rest[0], y: rest[1], cx: view.cx, cy: view.cy } : null;
   };
   canvas.addEventListener("pointerup", up);
   canvas.addEventListener("pointercancel", up);
@@ -319,14 +328,24 @@ export function createMap() {
     draw();
   });
 
+  // (What the map shows, as a string: a refresh that changes none of it draws nothing.)
+  let lastSig = "";
+  const signature = (d) => [
+    d.regions.map((r) => `${r.id}:${r.state}`).join(","),
+    [...d.running].map(([k, r]) => `${k}:${r.step}:${r.frac.toFixed(3)}:${r.current ? 1 : 0}`).join(","),
+    [...d.finished].map(([k, f]) => `${k}:${f.step}:${Math.round((d.now - f.t) / Math.max(1, d.now - d.from) * 50)}`).join(","),
+  ].join("|");
+
   // ---- Data --------------------------------------------------------------------------------------
   function update(next) {
-    if (next.countries !== data.countries) paths.countries = ringsPath(next.countries, true);
+    let outlines = next.countries !== data.countries;
+    if (outlines) paths.countries = ringsPath(next.countries, true);
     if (next.regions !== data.regions) {
       const had = paths.regions;
       paths.regions = new Map();
       for (const r of next.regions) {
         const old = had.get(r.id);
+        if (!(old && old.src === r.fill)) outlines = true;
         paths.regions.set(r.id, old && old.src === r.fill ? old : { src: r.fill, rings: r.fill, fill: ringsPath(r.fill, true), edge: ringsPath(r.edge, false), bbox: bboxOf(r.fill) });
       }
     }
@@ -338,26 +357,31 @@ export function createMap() {
     if (fresh.length || next.finished.size) firstFinished = false;
     for (const k of appeared.keys()) if (!next.finished.has(k)) appeared.delete(k);
     const regionsCame = !data.regions.length && next.regions.length;
+    const sig = signature(next);
+    const same = sig === lastSig && !fresh.length && !outlines;
+    lastSig = sig;
     data = next;
     if (regionsCame && size.w) { fit(); touchAction(); }
-    draw();
+    if (!same) draw();
   }
 
   // A tile's minimap for its card: the tile and half a tile around it, as the map draws them.
   function minimap(key) {
-    const tile = tileOf(key);
     const cv = document.createElement("canvas");
     cv.className = "wmap-mini";
-    if (!tile) return cv;
-    const [bx, by, s] = tileBox(tile);
+    if (tileOf(key)) paintMini(cv, key);
+    return cv;
+  }
+  function paintMini(cv, key) {
+    const [bx, by, s] = tileBox(tileOf(key));
     const w = 132, hgt = 132, dpr = window.devicePixelRatio || 1;
+    cv.dataset.key = key;
     cv.width = w * dpr;
     cv.height = hgt * dpr;
     cv.style.width = `${w}px`;
     cv.style.height = `${hgt}px`;
     readTokens();
     scene(cv.getContext("2d"), { cx: bx + s / 2, cy: by + s / 2, k: w / (s * 2) }, w, hgt, dpr, `mt ${key}`);
-    return cv;
   }
 
   return { el, update, minimap };

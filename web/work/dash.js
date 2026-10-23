@@ -15,7 +15,7 @@
 // what happened), and the details.
 
 import { poolSection, termText } from "./pool.js";
-import { busyLanes, finished, finishedTiles, isSlotOf, laneGroups, notRead, packRuns, pastFrom, pastRuns, runningTiles, slotName, slotNo, targetsOf, wholeProgress } from "./sums.js";
+import { busyLanes, finished, finishedTiles, isSlotOf, laneGroups, notRead, packRuns, pastFrom, pastRuns, runningTiles, slotName, slotNo, targetsOf, tileOf, wholeProgress } from "./sums.js";
 import { fmt, timeTicks } from "./chartmath.js";
 import { liveBlock, startLive } from "./live.js";
 import { createMap } from "./worldmap.js";
@@ -362,7 +362,10 @@ function mapSection(m) {
   loadCountries();
   worldMap ||= createMap();
   const from = m.now - (ui.past || 6 * 3600);
-  const running = runningTiles(mapRuns(m), m.fc?.each_s, m.now);
+  const runs = mapRuns(m);
+  const running = runningTiles(runs, m.fc?.each_s, m.now);
+  // (Jobs with no tile to show, a worldwide step's: named under the map, as the mockup does.)
+  const world = runs.filter((r) => !r.targets.some((t) => tileOf(t)));
   const done = finishedTiles(endsHeld(), from);
   const fcRegs = Object.fromEntries((m.fc?.regions || []).map((r) => [r.id, r]));
   const regs = Object.values(drawn.byId).map((r) => ({ ...r, state: regionState(fcRegs[r.id]) }));
@@ -407,6 +410,7 @@ function mapSection(m) {
     regs.length ? [key("rg on", `${count("on") + count("done")} on the map`), key("rg building", `${count("building")} building`), key("rg queued", `${count("queued")} to come`)] : h("span", null, "No regions' outlines from this Mac yet"),
     key("tl run", `${plural(running.size, "tile")} running`),
     key("tl fin", `${plural(finishedN, "tile")} finished in the last ${span}`),
+    world.length ? h("span", null, `whole world: ${world.map((r) => `${S.title(r.step)} (${r.mac})`).join(", ")}`) : null,
     h("span", "hint", "drag to move · pinch, double-click or +/− to zoom"));
   return section("d-map", "Map", `${regs.length ? plural(regs.length, "region") : "no regions"} · the z3 grid · tiles in their stage's colour`, h("div", "box wmap-box", worldMap.el, legend));
 }

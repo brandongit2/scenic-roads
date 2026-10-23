@@ -170,7 +170,7 @@ same tab; an alert links to the tab that says more.
   (the map's last update with its catalogue's number and kind (with the low
   zooms or map tiles only), the next ≈ and the map tiles to draw; machines working).
 - **World map** (`worldmap.js`, a canvas in Web Mercator, the world 0–1000 each way): the z3 grid
-  (z6's too once its cells are 12 px), the countries (`countries.json`), the regions' outlines
+  (z6's too once its cells are 24 px), zoomed out at most to the world filling the box's width, the countries (`countries.json`), the regions' outlines
   (`/work/regions`) coloured by state (on the map or done, building, to come; counted in the
   legend), the tiles finished in the Jobs tab's past window (the history's ends, `sums.js`
   finishedTiles; each fades in as it comes, the window's history played back on the first look,
@@ -184,7 +184,7 @@ same tab; an alert links to the tab that says more.
   minimap of it and half a tile around) and a region (its folders, state, tiles, what's left,
   download size). Moved by a drag, zoomed by a pinch (ctrl+wheel in Chrome, gesture events in
   Safari, two fingers on a touch screen), a double click, its +/− and whole-map buttons or the
-  keyboard; a two-finger scroll moves it only once zoomed in. Drawn only when something changes.
+  keyboard; a two-finger scroll moves it only once zoomed in. Jobs with no tile (a worldwide step's) are named under it. Drawn only when something it shows changes; a theme change redraws it and the minimaps shown.
 - **Jobs tab, the schedule:** lanes grouped by Mac (its short name over a lane per slot, the lead
   first, a Mac gone after), each segment in its stage's colour (a `--st-<stage>` token in
   index.html, a hue each in either theme): the jobs that ran (the history's job ends: a lead's
