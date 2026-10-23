@@ -172,6 +172,14 @@ export function latest(points, now, fresh = 30) {
   return p && now - p[0] <= fresh ? p[2] : null;
 }
 
+// The mean of a series' means over the `span` seconds back from `now` (a rate that comes in bursts,
+// said as its last minute's: its newest second is mostly zero); null with no point there.
+export function recentMean(points, now, span = 60) {
+  let sum = 0, k = 0;
+  for (let i = (points?.length || 0) - 1; i >= 0 && now - points[i][0] < span; i--) { sum += points[i][2]; k++; }
+  return k ? sum / k : null;
+}
+
 // The memory pressure's level (kern.memorystatus: 1 normal, 2 warning, 4 critical) as a class.
 export const pressureClass = (v) => (v == null ? "" : v >= 4 ? "bad" : v >= 2 ? "warn" : "ok");
 export const pressureWord = (v) => (v == null ? "pressure not measured" : v >= 4 ? "pressure critical" : v >= 2 ? "pressure raised" : "pressure normal");

@@ -201,3 +201,5 @@ table.t td.num, table.t th.num { text-align: right; }
 .pool-ctl.warnline > span { color: var(--warn); }
 .mc .hand { color: var(--accent); }
 button[disabled] { opacity: .5; }
+.mc .fit summary { cursor: pointer; }
+.mc .fit > div { padding-left: 12px; }

@@ -9,9 +9,11 @@
 // the battery, the NAS's answer time), and a footer saying the range, its resolution and how long
 // the Mac was silent in it (the charts' gaps). A measure missing is said so, never zero.
 import { draw } from "./chart.js";
-import { commonGaps, fmt, footer, latest, merge, pressureClass, pressureWord } from "./chartmath.js";
+import { commonGaps, fmt, footer, latest, merge, pressureClass, pressureWord, recentMean } from "./chartmath.js";
 
 const EVERY_MS = 1500;
+// How old the power's last reading may be and still be said (the agent's loop reads it).
+const POWER_FRESH_S = 900;
 const SERIES = ["nas_read_mbs", "nas_write_mbs", "net_in_mbs", "net_out_mbs", "build_cores", "others_cores", "cores_busy", "cores_busy_e", "cores_busy_p", "load1",
   "mem_free_pct", "mem_pressure", "swap_mb", "build_mem_gb", "disk_free_gb", "disk_write_mbs", "battery_pct", "ac", "nas_ms", "nas_calls", "jobs"];
 
@@ -161,10 +163,11 @@ function paint(host) {
   draw(b.io.c, { ...base, axis: true, unit: "MB/s", series: [
     { points: s.nas_read_mbs, colour: nr, label: "NAS ↓" }, { points: s.nas_write_mbs, colour: nw, label: "NAS ↑" },
     { points: s.net_in_mbs, colour: nd, label: "net ↓" }, { points: s.net_out_mbs, colour: nu, label: "net ↑" }] });
-  b.io.v.replaceChildren(...[["NAS ↓", "nas_read_mbs", nr], ["NAS ↑", "nas_write_mbs", nw], ["net ↓", "net_in_mbs", nd], ["net ↑", "net_out_mbs", nu]].map(([t, k, col]) => {
+  // (Their last minute's mean: a transfer comes in bursts, its newest second mostly none.)
+  b.io.v.replaceChildren(el("div", "dim", "last min"), ...[["NAS ↓", "nas_read_mbs", nr], ["NAS ↑", "nas_write_mbs", nw], ["net ↓", "net_in_mbs", nd], ["net ↑", "net_out_mbs", nu]].map(([t, k, col]) => {
     const d = el("div", null);
     const i = el("i", "sw"); i.style.background = col;
-    d.append(i, `${t} ${fmt(at(k), "MB/s")}`);
+    d.append(i, `${t} ${fmt(recentMean(s[k], now), "MB/s")}`);
     return d;
   }));
   b.io.v.className = "v legend";
@@ -181,7 +184,10 @@ function paint(host) {
   // CPU: the cores busy (of all), and the load.
   const busy = at("cores_busy");
   draw(b.cpu.c, { ...base, unit: "cores", max: n || undefined, series: [{ points: s.cores_busy, colour: acc, fill: true, label: "busy" }] });
-  words(b.cpu.v, busy == null ? "not measured" : `${n ? fmt((busy / n) * 100, "%") : fmt(busy, "cores")} · load ${fmt(at("load1"))}`);
+  // (The load counts the threads running and those waiting, on the CPU or on a read: past twice the
+  // cores, the Mac is swamped, as a memory-starved Mac paging is.)
+  const load = at("load1");
+  words(b.cpu.v, busy == null ? "not measured" : `${n ? fmt((busy / n) * 100, "%") : fmt(busy, "cores")} · load ${fmt(load)}`, n && load > 2 * n ? "warn" : "", "Cores busy; the load: threads running or waiting (on the CPU or the disk), over the last minute");
 
   // Memory: in use (of all), the line coloured by its pressure then; the build's and the swap as words.
   const used = (s.mem_free_pct || []).map((p) => [p[0], 100 - p[3], 100 - p[2], 100 - p[1]]);
@@ -197,9 +203,10 @@ function paint(host) {
   draw(b.disk.c, { ...base, unit: "MB/s", series: [{ points: s.disk_write_mbs, colour: nw, fill: true, label: "write" }] });
   words(b.disk.v, `${fmt(df, "GB")} free · writing ${fmt(at("disk_write_mbs"), "MB/s")}`, df != null && df < 10 ? "bad" : df != null && df < 20 ? "warn" : "");
 
-  // Battery: its charge; on mains or not.
-  const bat = latest(s.battery_pct, now, 120), ac = latest(s.ac, now, 120);
-  draw(b.power.c, { ...base, unit: "%", max: 100, series: [{ points: s.battery_pct, colour: ac === 0 ? css("--warn") : css("--ok"), fill: true, label: "battery", unit: "%" }] });
+  // Battery: its charge; on mains or not. (Read by the agent's loop, not the sampler: a point a
+  // loop, minutes apart when a step's long or the Mac's starved; its line joined over them.)
+  const bat = latest(s.battery_pct, now, POWER_FRESH_S), ac = latest(s.ac, now, POWER_FRESH_S);
+  draw(b.power.c, { ...base, step: Math.max(step, POWER_FRESH_S / 2), unit: "%", max: 100, series: [{ points: s.battery_pct, colour: ac === 0 ? css("--warn") : css("--ok"), fill: true, label: "battery", unit: "%" }] });
   words(b.power.v, bat == null ? (ac === 1 ? "on mains, no battery" : "not measured") : `${ac === 0 ? "on battery" : "on mains"} · ${fmt(bat, "%")}`, ac === 0 && bat != null && bat < 40 ? "warn" : "");
 
   // NAS: how long a listing took (measured only while a build runs here); the calls in flight.

@@ -14,7 +14,7 @@
 //!   and the rest of the Mac's (the cores busy and the memory in use, less the build's); the bytes
 //!   written to the Mac's disks (IOKit's block storage drivers' statistics) and by each job, as
 //!   rates; the sampler's own CPU time. Every 10 s the disk's free space. The battery, mains power and the
-//!   owner's idleness as the agent's loop reads them (each round, ~20 s). The NAS's latency every 5 s (`NAS_EVERY`), while a build runs (`set_nas`):
+//!   owner's idleness as the agent's loop reads them (each round, ~20 s; minutes apart when a round is slow). The NAS's latency every 5 s (`NAS_EVERY`), while a build runs (`set_nas`):
 //!   a listing of the project's folder through the records' readers (crate::agent::nasread::probe;
 //!   a stat would be answered from the SMB client's cache), never two at once.
 //! - **The jobs' NAS traffic** every second (`NasRates`): each job's processes' counts summed from
@@ -40,6 +40,10 @@ use std::time::Duration;
 /// The rings: (seconds a point, points kept): an hour by the second, a day by 10 s, three days by
 /// the minute.
 pub const TIERS: [(u64, usize); 3] = [(1, 3600), (10, 8640), (60, 4320)];
+
+/// The most points a series in one answer (the ring's buckets grouped past it): an hour by the
+/// second is 6 s a point, a page's first ask ~100 kB a Mac rather than ~1.5 MB.
+pub const POINTS_MAX: u64 = 600;
 
 /// The store's file in the agent's folder.
 pub const FILE: &str = "live.bin";
@@ -130,8 +134,10 @@ impl Series {
         }
     }
 
-    /// Ring `k`'s points from `from` to `to` (unix s, bucket times), oldest first.
-    fn points(&self, k: usize, from: u64, to: u64) -> Vec<[f64; 4]> {
+    /// Ring `k`'s points from `from` to `to` (unix s, bucket times), oldest first, `g` of its
+    /// buckets a point (a group's from its time a multiple of `g` steps: the least, the mean of the
+    /// samples, the most).
+    fn points(&self, k: usize, g: u64, from: u64, to: u64) -> Vec<[f64; 4]> {
         let (step, len) = TIERS[k];
         let ring = &self.rings[k];
         if ring.is_empty() {
@@ -139,18 +145,39 @@ impl Series {
         }
         // (No older than the ring holds.)
         let first = (from / step).max((to / step).saturating_sub(len as u64 - 1));
-        (first..=to / step)
-            .filter_map(|slot| {
-                let b = ring[(slot % len as u64) as usize];
-                (b.n > 0 && b.slot == slot)
-                    .then(|| [(slot * step) as f64, round(b.lo as f64), round(b.sum / b.n as f64), round(b.hi as f64)])
-            })
-            .collect()
+        let mut out: Vec<[f64; 4]> = Vec::new();
+        let mut at: Option<(u64, Bucket)> = None;
+        let mut put = |a: Option<(u64, Bucket)>| {
+            if let Some((slot, b)) = a {
+                out.push([(slot * step) as f64, round(b.lo as f64), round(b.sum / b.n as f64), round(b.hi as f64)]);
+            }
+        };
+        for slot in first..=to / step {
+            let b = ring[(slot % len as u64) as usize];
+            if b.n == 0 || b.slot != slot {
+                continue;
+            }
+            let start = slot / g * g;
+            match &mut at {
+                Some((s0, a)) if *s0 == start => {
+                    a.n += b.n;
+                    a.lo = a.lo.min(b.lo);
+                    a.hi = a.hi.max(b.hi);
+                    a.sum += b.sum;
+                }
+                _ => {
+                    put(at.take());
+                    at = Some((start, b));
+                }
+            }
+        }
+        put(at);
+        out
     }
 
     /// The newest point of the finest ring at or after `since` (unix s): its mean.
     fn latest(&self, since: u64, now: u64) -> Option<f64> {
-        self.points(0, since, now).last().map(|p| p[2])
+        self.points(0, 1, since, now).last().map(|p| p[2])
     }
 }
 
@@ -296,20 +323,23 @@ impl Store {
         let max = TIERS[TIERS.len() - 1].0 * TIERS[TIERS.len() - 1].1 as u64;
         let range = a.range.unwrap_or_else(|| a.since.map_or(3600, |s| now.saturating_sub(s).max(1))).min(max);
         let k = tier_for(range);
-        let step = TIERS[k].0;
-        let from = a.since.unwrap_or(0).max(now.saturating_sub(range));
+        // (At most POINTS_MAX points a series: a ring's buckets grouped, the groups on multiples of
+        // their span, so an ask `since` one gets the same points as the window had.)
+        let g = (range / TIERS[k].0).div_ceil(POINTS_MAX).max(1);
+        let step = TIERS[k].0 * g;
+        let from = a.since.unwrap_or(0).max(now.saturating_sub(range)) / step * step;
         let out: serde_json::Map<String, serde_json::Value> = match self.series.lock() {
             Ok(s) => s
                 .iter()
                 .filter(|(n, _)| a.series.as_ref().is_none_or(|w| w.iter().any(|x| x == *n)))
                 .filter_map(|(n, ser)| {
-                    let p = ser.points(k, from, now);
+                    let p = ser.points(k, g, from, now);
                     (!p.is_empty()).then(|| (n.clone(), serde_json::json!(p)))
                 })
                 .collect(),
             Err(_) => Default::default(),
         };
-        let mut v = serde_json::json!({ "host": self.host, "now": now, "step": step, "from": from / step * step, "mac": mac(), "series": out });
+        let mut v = serde_json::json!({ "host": self.host, "now": now, "step": step, "from": from, "mac": mac(), "series": out });
         if let Some(n) = self.net().filter(|_| a.net != Some(false)) {
             v["net"] = n.view();
         }
@@ -650,13 +680,37 @@ mod tests {
             by_s["series"][LOAD],
             serde_json::json!([[1e9, 3.0, 3.0, 3.0], [1e9 + 1.0, 1.0, 1.0, 1.0], [1e9 + 2.0, 5.0, 5.0, 5.0]])
         );
+        // (A day: the 10 s ring, 15 buckets a point, POINTS_MAX; three days and past: the minutes', 8.)
         let by_10 = s.answer(&Ask { range: Some(86_400), ..Default::default() }, t0 + 2);
-        assert_eq!(by_10["step"], 10);
-        assert_eq!(by_10["series"][LOAD], serde_json::json!([[1e9, 1.0, 3.0, 5.0]]));
+        assert_eq!(by_10["step"], 150);
+        assert_eq!(by_10["series"][LOAD], serde_json::json!([[(t0 / 150 * 150) as f64, 1.0, 3.0, 5.0]]));
         let by_min = s.answer(&Ask { range: Some(3 * 86_400), ..Default::default() }, t0 + 2);
-        assert_eq!(by_min["step"], 60);
-        // (Past three days: the minutes' ring, three days.)
-        assert_eq!(s.answer(&Ask { range: Some(30 * 86_400), ..Default::default() }, t0 + 2)["step"], 60);
+        assert_eq!(by_min["step"], 480);
+        assert_eq!(s.answer(&Ask { range: Some(30 * 86_400), ..Default::default() }, t0 + 2)["step"], 480);
+    }
+
+    /// An hour by the second answered as POINTS_MAX points, 6 s each (the least, the samples' mean,
+    /// the most), on multiples of 6 s; asked `since` the newest, the same group again, grown.
+    #[test]
+    fn an_answer_groups_its_buckets_to_points_max() {
+        let s = Store::new(None, "m4");
+        let t0 = 1_800_000_000; // (A multiple of 6.)
+        for i in 0..3600 {
+            s.record(LOAD, t0 + i, (i % 6) as f64);
+        }
+        let now = t0 + 3599;
+        let a = s.answer(&Ask { range: Some(3600), ..Default::default() }, now);
+        assert_eq!(a["step"], 6);
+        let p = a["series"][LOAD].as_array().unwrap();
+        assert_eq!(p.len() as u64, POINTS_MAX);
+        assert_eq!(p[0], serde_json::json!([t0 as f64, 0.0, 2.5, 5.0]));
+        s.record(LOAD, now + 1, 9.0);
+        let since = p[p.len() - 1][0].as_f64().unwrap() as u64;
+        let b = s.answer(&Ask { range: Some(3600), since: Some(since), ..Default::default() }, now + 1);
+        assert_eq!(
+            b["series"][LOAD],
+            serde_json::json!([[since as f64, 0.0, 2.5, 5.0], [(now + 1) as f64, 9.0, 9.0, 9.0]])
+        );
     }
 
     #[test]

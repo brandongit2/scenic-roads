@@ -445,16 +445,23 @@ function jobBlock(j, now, fc) {
   return box;
 }
 
-function fitText(w) {
-  if (!w?.fit?.length) return null;
-  const parts = w.fit.filter((f) => f.offered).map((f) => {
+// What the lead offered this Mac, per step, folded to a line (its steps and how many of their
+// pieces it can take); the steps on a click, kept open across renders.
+const fitOpen = new Set();
+function fitText(w, host) {
+  const offered = (w?.fit || []).filter((f) => f.offered);
+  if (!offered.length) return null;
+  const all = offered.reduce((s, f) => s + f.offered, 0), fits = offered.reduce((s, f) => s + f.fits, 0);
+  const rows = offered.map((f) => {
     const bits = [`${S.title(f.step)}: ${n(f.fits)} of ${n(f.offered)} ${S.noun(f.step)}s it can take`];
     if (f.held) bits.push(`${n(f.held)} with others`);
     if (f.too_big) bits.push(`${n(f.too_big)} too big for its ${n(Math.round(w.mem_mb / 102.4) / 10)} GB`);
     if (f.kept_from) bits.push(`${n(f.kept_from)} kept from it after failing`);
-    return bits.join(", ");
+    return h("div", null, bits.join(", "));
   });
-  return parts.length ? h("div", "sub", `Offered: ${parts.join("; ")}`) : null;
+  const d = h("details", { class: "sub fit", open: fitOpen.has(host), ontoggle: () => (d.open ? fitOpen.add(host) : fitOpen.delete(host)) },
+    h("summary", null, `Offered ${plural(offered.length, "step")}: it can take ${n(fits)} of ${n(all)} pieces`), ...rows);
+  return d;
 }
 
 // A capacity bar: its label, the bar (a part `used` of `whole`, and a second part `also` after
@@ -519,7 +526,7 @@ function machineCard(m, x) {
     card.append(h("div", "job", h("div", "what dim", st.held ? `This Mac is paused (from ${st.held.by}); the rest of the pool goes on` : m.sw.pause ? "Paused with the build" : why.length ? "Waiting" : "Nothing to build now")));
     for (const w of why) card.append(h("div", "sub", x.role === "lead" ? `${w.what}: ${w.why}` : w.why));
   }
-  card.append(...[x.role === "helper" ? fitText(x.worker) : null, liveBlock(x.name)].filter(Boolean));
+  card.append(...[x.role === "helper" ? fitText(x.worker, x.name) : null, liveBlock(x.name)].filter(Boolean));
   return card;
 }
 

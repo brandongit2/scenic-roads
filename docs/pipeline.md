@@ -180,11 +180,13 @@ same tab; an alert links to the tab that says more.
   then **Live** (`live.js`): the Mac's own `/work/live`, asked every 1.5 s while the tab is shown
   (the footer's range, then the points since), drawn by `chart.js` (its sums in `chartmath.js`,
   tested by web/test/chartmath.test.mjs): Transfers (the jobs' NAS reads and writes, the internet
-  in and out) and Cores (the build's and the rest's, stacked, against the Mac's cores and its
+  in and out, each said as its last minute's mean) and Cores (the build's and the rest's, stacked, against the Mac's cores and its
   P cores) with axes; compact rows for CPU and load, memory in use coloured by its pressure with
-  the build's and the swap, the disk's free space and writes, the battery, the NAS's answer time;
+  the build's and the swap, the disk's free space and writes, the battery (read by the agent's
+  loop, said while under 15 min old), the NAS's answer time;
   gaps where the Mac was silent shaded, and a footer with the range, the resolution and how long
-  it was silent. Pages one card.
+  it was silent. What the lead offered a member is one line (its steps and the pieces it can
+  take), the steps on a click. Pages one card.
 - **The pool:** `pool.js`, under the machines (the Machines tab).
 - **Regions:** a row per region: its folders and name, state, when it's done and all on the map,
   its download's size, its tiles built (on the map as they come), what's left by step; found by

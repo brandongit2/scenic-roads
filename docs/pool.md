@@ -1104,7 +1104,9 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   answers `POST /work/live` with no key: `{range}` (seconds back from now, an hour by default,
   three days at most) or `{since}` (unix seconds: the points from then on, the last again as it
   may have grown), `series` to pick names; the answer `{host, now, step, from, series: {name:
-  [[t, lo, mean, hi], …]}, net}` from the finest ring covering the window; `net`, the internet's
+  [[t, lo, mean, hi], …]}, net}` from the finest ring covering the window, its buckets grouped
+  to at most 600 points a series (`POINTS_MAX`; an hour is a point every 6 s, a `since` ask grouped
+  the same, by its `range`); `net`, the internet's
   counts (`{hosts: {host: {in, out, requests, conns, retries, holds}}, events}`) once the proxy runs. A series missing has no
   measure yet (or none in the window): readers say so, never zero. 503 until the agent gives its
   port the store. Another Mac's page reads it directly: `/work/swarm`'s `macs` lists each member's

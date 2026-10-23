@@ -1,7 +1,7 @@
 // node web/test/chartmath.test.mjs (tools/dev/check.sh's web part): the build page's charts' sums
 // (web/work/chartmath.js).
 import assert from "node:assert/strict";
-import { commonGaps, fmt, footer, gaps, hhmm, latest, merge, niceMax, pressureClass, runs, spanText, ticks, timeTicks, topOf } from "../work/chartmath.js";
+import { commonGaps, fmt, footer, gaps, hhmm, latest, merge, niceMax, pressureClass, recentMean, runs, spanText, ticks, timeTicks, topOf } from "../work/chartmath.js";
 
 // Scales.
 assert.equal(niceMax(0), 1);
@@ -74,6 +74,8 @@ assert.deepEqual(b.y, [[12, 0, 1, 1]]);
 assert.deepEqual(merge(b, { series: {} }, 13), {}, "a window past every point: none (never zero)");
 assert.equal(latest(b.x, 20), 2);
 assert.equal(latest(b.x, 100), null, "an old point isn't now's");
+assert.equal(recentMean([[0, 0, 4, 4], [50, 0, 0, 0], [60, 0, 2, 2]], 60), 1, "the last minute's means");
+assert.equal(recentMean([[0, 0, 4, 4]], 100), null, "none in the last minute: none");
 assert.equal(pressureClass(1), "ok");
 assert.equal(pressureClass(2), "warn");
 assert.equal(pressureClass(4), "bad");
