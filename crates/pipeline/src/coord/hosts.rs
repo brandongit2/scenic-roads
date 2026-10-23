@@ -1,9 +1,7 @@
 //! The data servers whose files a task may read through the coordinator (`/work/net/…/web/…`),
 //! derived from the accepted declarations (docs/inputs.md §5.2), never named in code: the hosts of
-//! the files the roads' elevation datasets read over the web (crate::dem::declared: their `urls`,
-//! their index's URLs, their tile template; a dataset kept in the store, `store = true`, is read
-//! from the store, never fetched) and of the land-cover
-//! source's (crate::landcover). Nothing else is fetched for a worker.
+//! the land-cover source's files (crate::landcover). Nothing else is fetched for a worker: the
+//! roads' heights read the terrain staged in the unit's folder (crate::road_terrain).
 
 use anyhow::Result;
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,34 +16,12 @@ pub fn host(url: &str) -> Option<&str> {
 
 /// The hosts the accepted versions the records `manifest` name allow (none before they're accepted).
 pub fn of(root: &Path, manifest: &BTreeMap<String, String>) -> Result<BTreeSet<String>> {
-    use crate::dem::declared::{self, Data, Where};
     let mut out = BTreeSet::new();
     let mut add = |u: &str| {
         if let Some(h) = host(u) {
             out.insert(h.to_string());
         }
     };
-    if let Some(a) = crate::inputs::open(root, manifest, crate::inputs::elevation::UNIT)? {
-        // (A version the app doesn't read, from before the one pool, names no host: the elevations
-        // wait for the pool's, and the other sources' hosts stand.)
-        for d in declared::accepted(&a).unwrap_or_default() {
-            match &d.declaration.data {
-                Data::Tiles { url, .. } => add(url),
-                Data::Geotiff { store: true, .. } => {}
-                Data::Geotiff { urls, index, .. } => {
-                    urls.iter().for_each(|u| add(u));
-                    if let Some(i) = index {
-                        let ix = declared::parse_index(&a.read(i)?).map_err(|e| anyhow::anyhow!("{i}: {e}"))?;
-                        for (w, _) in &ix.files {
-                            if let Where::Url(u) = w {
-                                add(u);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
     if let Some(s) = crate::inputs::sources::open(root, manifest)? {
         if let Ok(lc) = s.role(crate::inputs::sources::LAND_COVER) {
             lc.data.url.iter().chain(&lc.data.urls).for_each(|u| add(u));
@@ -59,8 +35,8 @@ pub fn of(root: &Path, manifest: &BTreeMap<String, String>) -> Result<BTreeSet<S
 /// block at a time: not a NAS read per block).
 pub const RECHECK: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// The versions a set was derived from: the elevations' and the sources' index names.
-type Key = (Option<String>, Option<String>);
+/// The version a set was derived from: the sources' index name.
+type Key = Option<String>;
 
 /// The last derived set (its versions, the set, when the records were last read for it), and
 /// whether a request is reading them again now.
@@ -106,10 +82,7 @@ impl Cache {
         let fresh =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(Key, Option<BTreeSet<String>>)> {
                 let m = read()?;
-                let key = (
-                    m.get(&crate::inputs::logical(crate::inputs::elevation::UNIT)).cloned(),
-                    m.get(&crate::inputs::logical(crate::inputs::sources::UNIT)).cloned(),
-                );
+                let key = m.get(&crate::inputs::logical(crate::inputs::sources::UNIT)).cloned();
                 let same = had.as_ref() == Some(&key);
                 Ok((key, if same { None } else { Some(derive(&m)?) }))
             }))
@@ -156,9 +129,7 @@ mod tests {
         assert_eq!(host("sources/x.tif"), None);
     }
 
-    /// The staged land cover and the fixture's elevations: the land cover's host and the tile
-    /// pyramids' hosts (the world dataset's, the Terrarium tiles'); GLO-30's, kept in the store, left
-    /// out.
+    /// The staged land cover and the fixture's elevations: the land cover's host alone.
     #[test]
     fn derived() {
         let d = tempfile::tempdir().unwrap();
@@ -169,7 +140,7 @@ mod tests {
         let h = of(d.path(), &m).unwrap();
         assert_eq!(
             h.into_iter().collect::<Vec<_>>(),
-            ["e.org", "esa-worldcover.s3.eu-central-1.amazonaws.com", "s3.amazonaws.com"]
+            ["esa-worldcover.s3.eu-central-1.amazonaws.com"]
         );
     }
 
@@ -208,7 +179,7 @@ mod tests {
     fn same_versions_not_derived() {
         let c = Cache::default();
         let t0 = std::time::Instant::now();
-        let m = BTreeMap::from([(crate::inputs::logical(crate::inputs::elevation::UNIT), "v1".to_string())]);
+        let m = BTreeMap::from([(crate::inputs::logical(crate::inputs::sources::UNIT), "v1".to_string())]);
         let n = std::cell::Cell::new(0);
         let derive = |_: &BTreeMap<String, String>| {
             n.set(n.get() + 1);
@@ -238,7 +209,7 @@ mod tests {
                     || {
                         began.send(()).unwrap();
                         hold.recv().unwrap();
-                        Ok(BTreeMap::from([(crate::inputs::logical(crate::inputs::elevation::UNIT), h.to_string())]))
+                        Ok(BTreeMap::from([(crate::inputs::logical(crate::inputs::sources::UNIT), h.to_string())]))
                     },
                     |m| Ok(BTreeSet::from([m.values().next().unwrap().clone()])),
                 )
