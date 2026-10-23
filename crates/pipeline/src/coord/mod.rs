@@ -3253,6 +3253,11 @@ fn route(
                 b.worker = n;
             }
             b.progress = b.progress.map(|p| p.chars().take(WHAT_MAX).collect());
+            if let Some(l) = &mut b.live {
+                for s in [&mut l.phase, &mut l.class, &mut l.target].into_iter().flatten() {
+                    *s = s.chars().take(WHAT_MAX).collect();
+                }
+            }
             let mut s = shared.lock().unwrap();
             let alive = s.leases.renew_frac(b.lease, &b.worker, b.progress.clone(), b.frac, b.live.take(), now);
             s.seen(&b.worker, b.progress.unwrap_or_else(|| "working".into()), None, now);
@@ -5294,6 +5299,10 @@ mod tests {
         assert!(w.beat_told(g.lease, None, Some(live)).unwrap().0);
         let v = c.view();
         assert_eq!(v["leases"][0]["live"]["phase"], "z6 tiles", "{v}");
+        let long = crate::agent::jobs::Live { target: Some("x".repeat(WHAT_MAX + 50)), ..Default::default() };
+        assert!(w.beat_told(g.lease, None, Some(long)).unwrap().0);
+        let v = c.view();
+        assert_eq!(v["leases"][0]["live"]["target"].as_str().unwrap().len(), WHAT_MAX, "capped at the lead");
         assert!(c.cancel(&Cancel::new("6/1/1", None, true, "scenic job cancel on m4")).is_empty());
         assert!(c.cancel(&Cancel::new("6/55/25", Some("pack"), true, "x")).is_empty(), "another step's");
         let told = c.cancel(&Cancel::new("6/55/25", None, true, "scenic job cancel on m4"));

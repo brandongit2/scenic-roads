@@ -1078,7 +1078,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   main thread has open (pipeline::timings: its name and class, since when, unix s), said in the
   job's counts file after its counts (`store::nasio::set_phase`: a sequence number, odd while it's
   written, its time and 48 bytes of text, a few stores in the mapped page, ~40 ns a call measured; never
-  summed), read from the newest set among the folder's running processes' files. The target is
+  summed), read from the newest set among the folder's running processes' files, each read twice and taken only when both reads give the same even sequence number (so a text torn by a write mid-copy is never taken). The target is
   the one its costs file says is under way (`started`, not yet ended) and since when; of its
   targets (the lease's), how many ended; the page weighs `now - target_since` against the step's
   `each_s` (the forecast's). Each field missing: not said (a step that times no phases, notes no

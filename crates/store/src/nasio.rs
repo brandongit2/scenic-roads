@@ -120,9 +120,11 @@ fn cut(text: &str) -> [u8; PHASE_MAX] {
     b
 }
 
-/// A counts file's phase (`set_phase`): its text and when it was set (unix ms); None when none was
-/// ever set, or it was being written (odd sequence) or the file is an older one's (counts alone).
-fn phase_of(b: &[u8]) -> Option<(String, u64)> {
+/// A counts file's phase (`set_phase`): its sequence number, its text and when it was set (unix
+/// ms); None when none was ever set, or it was being written (odd sequence) or the file is an older
+/// one's (counts alone). (One copy alone may hold a text torn by a write begun after its sequence
+/// was copied: `settled`.)
+fn phase_of(b: &[u8]) -> Option<(u64, String, u64)> {
     if b.len() < FILE_LEN {
         return None;
     }
@@ -133,12 +135,25 @@ fn phase_of(b: &[u8]) -> Option<(String, u64)> {
     }
     let text = &b[(SLOTS + 2) * 8..FILE_LEN];
     let text = String::from_utf8_lossy(&text[..text.iter().position(|&c| c == 0).unwrap_or(text.len())]).into_owned();
-    Some((text, word(SLOTS + 1)))
+    Some((seq, text, word(SLOTS + 1)))
+}
+
+/// A file's phase from `read` (its bytes, read whole), taken only when the next read's sequence is
+/// the same even one (no write began after the first copy's sequence, so its text is whole); tried
+/// three times.
+fn settled(read: impl Fn() -> Option<Vec<u8>>) -> Option<(String, u64)> {
+    for _ in 0..3 {
+        let Some((seq, text, ms)) = read().and_then(|b| phase_of(&b)) else { continue };
+        if read().and_then(|b| phase_of(&b)).is_some_and(|again| again.0 == seq) {
+            return Some((text, ms));
+        }
+    }
+    None
 }
 
 /// What folder `dir`'s job is doing now: the phase of the newest set among its running processes'
 /// files at its top (a job's own processes; its programs' folders not), with when it was set (unix
-/// ms). A file caught mid-write is read again once. None: none says.
+/// ms). Each read twice (`settled`), so a text caught mid-write is never taken. None: none says.
 pub fn phase_in(dir: &Path) -> Option<(String, u64)> {
     let rd = std::fs::read_dir(dir).ok()?;
     let mut best: Option<(String, u64)> = None;
@@ -148,8 +163,7 @@ pub fn phase_in(dir: &Path) -> Option<(String, u64)> {
         if !running(pid) {
             continue;
         }
-        let read = || std::fs::read(e.path()).ok().and_then(|b| phase_of(&b));
-        if let Some(p) = read().or_else(read) {
+        if let Some(p) = settled(|| std::fs::read(e.path()).ok()) {
             if best.as_ref().is_none_or(|b| p.1 > b.1) {
                 best = Some(p);
             }
@@ -432,7 +446,7 @@ mod tests {
         std::fs::write(d.path().join("2147483646-1"), &ended).unwrap();
         std::fs::write(d.path().join("2147483646-2"), [0u8; SLOTS * 8]).unwrap();
         assert_eq!(phase_in(d.path()).unwrap().1, 1000);
-        assert_eq!(phase_of(&ended), Some(("x".into(), 0xffff)));
+        assert_eq!(phase_of(&ended), Some((2, "x".into(), 0xffff)));
         // (Mid-write: not taken.)
         set(f, &t, 3, 2000);
         assert_eq!(phase_in(d.path()), None);
@@ -440,6 +454,30 @@ mod tests {
         // (Cut at a character's end.)
         set(f, &cut(&"é".repeat(30)), 4, 3000);
         assert_eq!(phase_in(d.path()), Some(("é".repeat(24), 3000)));
+    }
+
+    /// A copy whose sequence the next read doesn't repeat (a write begun after it was copied: its
+    /// text may be torn) isn't taken; one the next read repeats is.
+    #[test]
+    fn a_phase_is_taken_only_when_two_reads_agree() {
+        let file = |seq: u64, text: &[u8]| {
+            let mut b = vec![0u8; FILE_LEN];
+            b[SLOTS * 8..SLOTS * 8 + 8].copy_from_slice(&seq.to_le_bytes());
+            b[(SLOTS + 2) * 8..(SLOTS + 2) * 8 + text.len()].copy_from_slice(text);
+            b
+        };
+        let reads = |v: Vec<Vec<u8>>| {
+            let v = std::cell::RefCell::new(v.into_iter());
+            settled(move || v.borrow_mut().next())
+        };
+        // (Torn at seq 2, the writer then at 4 each later read: the torn copy never taken, the
+        // whole one is.)
+        assert_eq!(
+            reads(vec![file(2, b"torn\0\0"), file(4, b"whole"), file(4, b"whole"), file(4, b"whole")]),
+            Some(("whole".into(), 0))
+        );
+        assert_eq!(reads(vec![file(2, b"a"), file(3, b"b"), file(4, b"c"), file(6, b"d")]), None);
+        assert_eq!(reads(vec![file(2, b"same"), file(2, b"same")]), Some(("same".into(), 0)));
     }
 
     /// What `set_phase` costs (the timings' every top-level phase opened and ended calls it).
