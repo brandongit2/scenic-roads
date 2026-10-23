@@ -1506,6 +1506,8 @@ export function dashboard(opts) {
   });
   window.addEventListener("pagehide", keep);
   setInterval(() => document.visibilityState === "visible" && poll(), POLL_MS);
+  // (The Machines tab's settings asked as it opens, not at the next poll.)
+  window.addEventListener("hashchange", () => last && location.hash === "#machines" && loadSettings(ctx.call, last.macs || [], render));
   poll();
   startLive({ call: ctx.call, store: ctx.store, macs: () => last?.macs || [], active: () => location.hash === "#machines" });
   startActivity({ call: ctx.call, macs: () => last?.macs || [], machines: () => shownMacs, active: () => location.hash === "#activity" });

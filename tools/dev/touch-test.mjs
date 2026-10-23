@@ -149,7 +149,9 @@ async function run() {
 
     // The Overview's stage bar: a tap on a segment pins the stage card.
     await show("overview");
-    const seg = await at(".strip > i[data-card]");
+    // (The strip comes with the lead's steps: waited for, up to 10 s.)
+    let seg = null;
+    for (let t = 0; t < 40 && !seg; t++) { seg = await at(".strip > i[data-card]"); if (!seg) await sleep(250); }
     if (!seg) check("overview: a stage-bar segment pins its card on a tap", false, "no segment with a card");
     else {
       await tap(seg[0], seg[1]);
@@ -212,9 +214,11 @@ async function run() {
     }
 
     // Settings fields (Machines): a tap focuses each without the page jumping. Never pressed Set.
+    // (The fields come with the Macs' /work/settings answers, asked when the tab shows: waited
+    // for, up to 10 s, rather than a fixed pause a slow answer outlasts.)
     await show("machines");
-    await sleep(1500);
-    const n = await js(`document.querySelectorAll('.panel[data-tab="machines"] input:not([type=checkbox]):not([type=radio])').length`);
+    let n = 0;
+    for (let t = 0; t < 40 && !n; t++) { n = await js(`document.querySelectorAll('.panel[data-tab="machines"] input:not([type=checkbox]):not([type=radio])').length`); if (!n) await sleep(250); }
     let bad = [];
     for (let i = 0; i < Math.min(n, 4); i++) {
       const r = await js(`(() => { const el = document.querySelectorAll('.panel[data-tab="machines"] input:not([type=checkbox]):not([type=radio])')[${i}]; el.scrollIntoView({ block: "center" }); const b = el.getBoundingClientRect(); return [b.left + Math.min(20, b.width / 2), b.top + b.height / 2]; })()`);
