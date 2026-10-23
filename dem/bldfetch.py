@@ -76,6 +76,8 @@ from near import Near
 from timings import phase
 
 UA = "scenic-roads/0.1 (personal offline map)"
+# What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): the buckets' listings (S3's API) and their published files.
+FETCHES = "api, data"
 # Where the sources are: the declared `buildings` source (its bucket, `url`, and `params.types`)
 # and `building-heights` source (its tiles by its index, its `version` naming its folder here),
 # docs/inputs.md §6.9.

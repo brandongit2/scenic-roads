@@ -10,6 +10,7 @@ notes = "Each square's cover5m (share over 5 m), p95 and median heights; kept in
 [data]
 role = "canopy"
 format = "geotiff"
+kind = "data"
 index = "canopy-squares.geojson"
 version = "v1, alsgedi_global_v6_float"
 refresh = "pinned"

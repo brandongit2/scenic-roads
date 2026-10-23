@@ -5,7 +5,7 @@ use crate::inputs::sources::{parse, Source};
 /// A geoid source from its `[data]` lines.
 fn src(id: &str, data: &str) -> Source {
     let text = format!(
-        "name = \"N\"\ncredit = \"C\"\nlicence = \"CC0-1.0\"\nterritory = \"world\"\n[data]\nrole = \"geoid\"\n{data}"
+        "name = \"N\"\ncredit = \"C\"\nlicence = \"CC0-1.0\"\nterritory = \"world\"\n[data]\nrole = \"geoid\"\nkind = \"data\"\n{data}"
     );
     let d = parse(text.as_bytes()).unwrap_or_else(|w| panic!("{id}: {w:?}"));
     Source { id: id.into(), data: d.data, keyed: format!("k-{id}"), index: Vec::new() }
@@ -26,7 +26,7 @@ fn the_declarations_check() {
     let ok = grid("g", "https://e.org/g.tif", "NAVD88", "ellipsoid-NAD83");
     assert_eq!(ok.data.params["from"], "NAVD88");
     let bad = |data: &str| {
-        crate::inputs::sources::parse(format!("name = \"N\"\ncredit = \"C\"\nlicence = \"CC0-1.0\"\nterritory = \"world\"\n[data]\nrole = \"geoid\"\n{data}").as_bytes()).unwrap_err().join("\n")
+        crate::inputs::sources::parse(format!("name = \"N\"\ncredit = \"C\"\nlicence = \"CC0-1.0\"\nterritory = \"world\"\n[data]\nrole = \"geoid\"\nkind = \"data\"\n{data}").as_bytes()).unwrap_err().join("\n")
     };
     assert!(bad("format = \"geoid-grid\"\nurl = \"https://e.org/g.tif\"\n[data.params]\nfrom = \"A\"\nto = \"A\"")
         .contains("the same"));

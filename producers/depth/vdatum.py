@@ -26,9 +26,11 @@ import sqlite3
 import time
 import urllib.parse
 
-from grid import log, robots_allow, urlopen
+from grid import log, urlopen
 
 API = "https://vdatum.noaa.gov/vdatumweb/api/convert"
+# What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): NOAA's VDatum API.
+FETCHES = "api"
 
 
 def region(lon, lat):
@@ -67,8 +69,6 @@ def parse(d):
 def convert(lon, lat, src, dst):
     """(z, None) or (None, why)."""
     url = API + "?" + urllib.parse.urlencode(query(lon, lat, src, dst))
-    if not robots_allow(url):
-        raise SystemExit(f"robots.txt disallows {url}")
     why = None
     for attempt in range(3):
         try:

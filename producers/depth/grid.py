@@ -33,9 +33,7 @@ import subprocess
 import sys
 import time
 import urllib.request
-import urllib.robotparser
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import numpy as np
 
@@ -43,6 +41,8 @@ EARTH = 40075016.685578488
 HALF = EARTH / 2
 TILE = 256
 UA = "scenic-roads/0.1 (personal offline map)"
+# What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): its callers' APIs and data downloads, through `urlopen` and `fetch`.
+FETCHES = "api, data"
 os.environ.setdefault("GDAL_HTTP_USERAGENT", UA)
 os.environ.setdefault("GDAL_CACHEMAX", "512")
 
@@ -253,7 +253,6 @@ def tiles_of(win: Window, piece_z: int):
 
 # ---- polite fetching ------------------------------------------------------------------------------
 
-_robots: dict[str, urllib.robotparser.RobotFileParser] = {}
 _tls: ssl.SSLContext | None = None
 
 
@@ -274,33 +273,11 @@ def urlopen(url: str, timeout: float):
     return urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=timeout, context=_tls)
 
 
-def robots_allow(url: str) -> bool:
-    """Whether the host's robots.txt (read first, once, as a request of its own) lets us fetch `url`.
-    Only a robots.txt that was read can disallow: one that's missing, refused (401, 403) or can't be
-    read at all allows everything (the owner's rule)."""
-    p = urlsplit(url)
-    host = f"{p.scheme}://{p.netloc}"
-    if host not in _robots:
-        rp = urllib.robotparser.RobotFileParser()
-        try:
-            with urlopen(host + "/robots.txt", 60) as r:
-                rp.parse(r.read().decode("utf-8", "replace").splitlines())
-            how = "read"
-        except (urllib.error.HTTPError, OSError) as e:
-            rp.parse([])
-            how = f"not readable ({e}): allows everything"
-        _robots[host] = rp
-        log(f"robots.txt of {host}: {how}")
-    return _robots[host].can_fetch(UA, url)
-
-
 def fetch(url: str, dest: Path, pause: float = 1.0) -> Path:
-    """`url` into `dest` (kept if there), after its host's robots.txt; refuses a disallowed path."""
+    """`url` into `dest` (kept if there)."""
     dest = Path(dest)
     if dest.exists():
         return dest
-    if not robots_allow(url):
-        raise SystemExit(f"robots.txt disallows {url}: download it by hand (a 'You / waiting' task), then pass --from")
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
     with urlopen(url, 300) as r, open(tmp, "wb") as f:

@@ -10,29 +10,8 @@ set -eu
 root=${1:?usage: fetch.sh <root>}
 here=$(cd "$(dirname "$0")" && pwd)
 ua="scenic-roads/0.1 (personal offline map)"
-# First, alone: each host's robots.txt, judged by robots.py (RFC 9309: groups, our token's group
-# over `*`'s, Allow/Disallow longest match, `*` and `$`). A grid's path it disallows, or an error running it,
-# stops here; a
-# robots.txt that can't be read (404, 401, 403, unreachable) counts as allow.
-robots=$(mktemp)
-trap 'rm -f "$robots"' EXIT
-for decl in "$here"/declarations/*.toml; do
-	grep -q '^format = "geoid-grid"' "$decl" || continue
-	url=$(sed -n 's/^url = "\(.*\)"$/\1/p' "$decl" | head -n 1)
-	host=$(echo "$url" | sed 's|^\(https*://[^/]*\).*|\1|')
-	# (The path robots.txt judges: "/" for a URL with none.)
-	path=${url#"$host"}
-	path=${path:-/}
-	if ! curl -sS -f -L --max-redirs 5 -m 30 -A "$ua" -o "$robots" "$host/robots.txt" 2>/dev/null; then
-		echo "$host/robots.txt: unreadable, counted as allow"
-		continue
-	fi
-	if ! python3 "$here/robots.py" "$robots" "$path"; then
-		echo "$host/robots.txt disallows $path: stopped" >&2
-		exit 1
-	fi
-	echo "$host/robots.txt allows $path"
-done
+# What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): PROJ-data's published grids.
+# FETCHES: data
 for decl in "$here"/declarations/*.toml; do
 	grep -q '^format = "geoid-grid"' "$decl" || continue
 	id=$(basename "$decl" .toml)

@@ -11,6 +11,7 @@ notes = "PROJ-data's jp_gsi_gsigeo2011.tif (428,043 bytes), kept in sources/fetc
 [data]
 role = "geoid"
 format = "geoid-grid"
+kind = "data"
 url = "https://cdn.proj.org/jp_gsi_gsigeo2011.tif"
 
 [data.params]

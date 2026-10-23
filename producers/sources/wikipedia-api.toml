@@ -10,5 +10,6 @@ notes = "The short descriptions of the articles the heritage sites link (pipelin
 [data]
 role = "wikipedia"
 format = "mediawiki-api"
+kind = "api"
 url = "https://en.wikipedia.org/w/api.php"
 refresh = "live"

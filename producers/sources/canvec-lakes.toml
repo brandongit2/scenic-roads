@@ -5,11 +5,12 @@ licence = "OGL-Canada-2.0"
 licence_url = "https://open.canada.ca/en/open-government-licence-canada"
 source = "https://open.canada.ca/data/en/dataset/8ba2aa2a-7bb9-4448-b4d7-f164409fe056"
 territory = ["CA"]
-notes = "Downloaded by hand (the server's robots.txt bars /pub to programs) from the CanVec series' shapefiles, the 50K Hydro zips, and kept in sources/fetched/canvec-lakes/; the lake fill reads them where they lie (crate::lakefill)."
+notes = "Downloaded by hand from the CanVec series' shapefiles, the 50K Hydro zips, and kept in sources/fetched/canvec-lakes/; the lake fill reads them where they lie (crate::lakefill)."
 
 [data]
 role = "lake-fill"
 format = "zip-shapefile"
+kind = "data"
 url = "https://ftp.maps.canada.ca/pub/nrcan_rncan/vector/canvec/shp/"
 version = "2018"
 refresh = "pinned"

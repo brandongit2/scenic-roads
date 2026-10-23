@@ -10,6 +10,7 @@ notes = "As the façade DEMs, at 20 m. Not for navigation."
 [data]
 role = "depth"
 format = "depth-grid"
+kind = "data"
 index = "shom-homonim-20-grids.geojson"
 version = "2020"
 refresh = "pinned"

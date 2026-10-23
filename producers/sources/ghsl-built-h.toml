@@ -10,6 +10,7 @@ notes = "Its 10° tile zips meeting the coverage, fetched by dem/bldfetch.py int
 [data]
 role = "building-heights"
 format = "zip-geotiff"
+kind = "data"
 index = "ghsl-tiles.geojson"
 version = "R2023A"
 refresh = "pinned"

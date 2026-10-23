@@ -75,7 +75,26 @@ H = Path()
 def phase(*_):
     return nullcontext()
 UA = {"User-Agent": "scenic-roads/0.1 (personal offline map)"}
+# What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): registers' published downloads, ArcGIS REST services, Wikidata's query service and API.
+FETCHES = "api, data"
 csv.field_size_limit(1 << 26)
+
+
+def get(url: str) -> bytes:
+    """`url`'s body, with our User-Agent; a 429 backed off from (its Retry-After, or 30 s, times the
+    attempt), six times at most."""
+    import time
+    for attempt in range(1, 7):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=600) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            if e.code != 429 or attempt == 6:
+                raise
+            wait = float(e.headers.get("Retry-After") or 30) * attempt
+            print(f"  429 from {url[:80]}: waiting {wait:.0f} s", file=sys.stderr)
+            time.sleep(wait)
+    raise RuntimeError
 
 
 def fetch(url: str, path: Path, params: dict | None = None) -> Path:
@@ -89,8 +108,7 @@ def fetch(url: str, path: Path, params: dict | None = None) -> Path:
         print(f"  downloading {url[:110]}", file=sys.stderr)
         tmp = path.with_suffix(path.suffix + ".part")
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=600) as r:
-                tmp.write_bytes(r.read())
+            tmp.write_bytes(get(url))
         except urllib.error.URLError as e:
             # Servers that send an incomplete certificate chain: curl verifies them against the
             # system trust store (which fetches the missing intermediate); verification stays on.

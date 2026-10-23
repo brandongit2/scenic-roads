@@ -9,6 +9,7 @@ notes = "Read at 0.0005° from the EEA's image service (exportImage, nearest nei
 [data]
 role = "leaf-type-europe"
 format = "image-service"
+kind = "api"
 url = "https://image.discomap.eea.europa.eu/arcgis/rest/services/GioLandPublic/HRL_DominantLeafType2018/ImageServer/exportImage"
 version = "2018"
 refresh = "pinned"

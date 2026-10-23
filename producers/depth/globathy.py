@@ -4,8 +4,8 @@ more) with GLOBathy's suggested maximum depth (`Dmax_use_m`), drawn as a bowl on
 depth below the lake's surface. Estimates throughout (the declaration's `estimated`): the build
 classes them so and draws them only where no survey has a value (`datum_exact = false`).
 
-- GLOBathy's maximum depths: its basic-parameters zip (CC0, figshare), fetched into `--cache` after
-  the host's robots.txt (or `--params <zip>`); its `(ALL_LAKES).csv`, rows by `Hylak_id`.
+- GLOBathy's maximum depths: its basic-parameters zip (CC0, figshare), fetched into `--cache` (or
+  `--params <zip>`); its `(ALL_LAKES).csv`, rows by `Hylak_id`.
 - The outlines: HydroLAKES v1.0's polygons (`HydroLAKES_polys_v10_shp.zip`, the owner's download,
   `--hydrolakes`), read from the zip record by record, lakes meeting `--box`.
 - The bowl (the depth lab's fit against 436 surveyed lakes, nRMSE 0.21): D = Dmax · (l / L)^0.75,
@@ -36,6 +36,8 @@ import numpy as np
 from grid import TILE, Window, Writer, fetch, lonlat_to_merc, log, px_size
 
 PARAMS_URL = "https://ndownloader.figshare.com/files/28919991"
+# What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): figshare's published zip.
+FETCHES = "data"
 SOURCE_URL = "https://doi.org/10.6084/m9.figshare.c.5243309.v1"
 ZOOM = 11
 PIECE_ZOOM = 8

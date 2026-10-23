@@ -10,6 +10,7 @@ notes = "producers/depth/bluetopo.py's steps over every tile in the tile scheme 
 [data]
 role = "depth"
 format = "depth-grid"
+kind = "data"
 index = "bluetopo-grids.geojson"
 version = "2026-10"
 refresh = "pinned"

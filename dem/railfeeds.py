@@ -77,6 +77,8 @@ from near import EvenOdd
 from timings import phase
 
 UA = "scenic-roads/0.1 (personal offline map)"
+# What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): the operators' published feeds, some through their keyed APIs.
+FETCHES = "api, data"
 # A stale cached zip is fetched again when this runs this many days or more after its day, unless its
 # declaration says.
 REFRESH_DAYS = 7

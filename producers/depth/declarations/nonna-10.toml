@@ -11,6 +11,7 @@ notes = "As NONNA-100 (nonna.py 10's steps in the service's 0.5° by 0.3° block
 [data]
 role = "depth"
 format = "depth-grid"
+kind = "api"
 index = "nonna-10-grids.geojson"
 version = "2026-10"
 refresh = "pinned"

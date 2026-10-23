@@ -10,5 +10,6 @@ notes = "The heritage chain's and the items job's queries (pipeline::heritagewd,
 [data]
 role = "wikidata"
 format = "sparql"
+kind = "api"
 url = "https://qlever.dev/api/wikidata"
 refresh = "live"

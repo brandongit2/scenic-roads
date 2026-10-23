@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """The worldwide coarse depth source's grids (docs/inputs.md §6.10): GEBCO's yearly global grid
 (15 arc-seconds, heights above mean sea level, negative below) and its type identifier grid (TID:
-how each cell was got), from the two zips the owner downloads by hand (the CEDA host's robots.txt
-bars programs), read where they lie on the NAS.
+how each cell was got), from the two zips the owner downloads by hand, read where they lie on the NAS.
 
 Each zip's netCDF is copied out once to `--tmp` (GDAL can't read netCDF-4 inside a zip on macOS);
 then each z3 tile with sea is warped onto the zoom-8 Web Mercator grid (averaged), with a zoom per

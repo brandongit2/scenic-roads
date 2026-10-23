@@ -10,6 +10,7 @@ notes = "A month's dump streamed once into an index kept in sources/pageviews/ (
 [data]
 role = "pageviews"
 format = "pageviews-dump"
+kind = "data"
 # A month's dump: `{y}` its year, `{m}` its month (two digits).
 url = "https://dumps.wikimedia.org/other/pageview_complete/monthly/{y}/{y}-{m}/pageviews-{y}{m}-user.bz2"
 refresh = "pinned"

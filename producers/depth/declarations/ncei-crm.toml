@@ -10,6 +10,7 @@ notes = "The owner's hand download, kept in sources/ncei-crm/ (volume 6 absent).
 [data]
 role = "depth"
 format = "depth-grid"
+kind = "data"
 index = "ncei-crm-grids.geojson"
 version = "2023-2025"
 refresh = "pinned"

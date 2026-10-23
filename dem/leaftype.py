@@ -49,6 +49,8 @@ from rasterio.warp import Resampling, reproject
 from timings import phase
 
 UA = "scenic-roads/0.1 (personal offline map)"
+# What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): the EEA's image service and the NALCMS zip.
+FETCHES = "api, data"
 RES = 0.0005
 N = int(round(10 / RES))
 

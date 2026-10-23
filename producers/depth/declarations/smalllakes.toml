@@ -10,6 +10,7 @@ notes = "producers/depth/smalllakes.py: every lake or pond of the basemap (OpenS
 [data]
 role = "depth"
 format = "depth-grid"
+kind = "data"
 index = "smalllakes-grids.geojson"
 version = "2026-10"
 refresh = "pinned"

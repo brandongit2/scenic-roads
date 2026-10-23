@@ -11,6 +11,7 @@ notes = "PROJ-data's ca_nrc_CGG2013an83.tif (11,031,336 bytes; CGG2013a on NAD83
 [data]
 role = "geoid"
 format = "geoid-grid"
+kind = "data"
 url = "https://cdn.proj.org/ca_nrc_CGG2013an83.tif"
 
 [data.params]

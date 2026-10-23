@@ -6,11 +6,12 @@ licence_url = "https://creativecommons.org/licenses/by/4.0/"
 source = "https://www.marineregions.org/downloads.php"
 retrieved = "2026-10-18"
 territory = "world"
-notes = "The whole layer MarineRegions:eez (titled EEZ v12, world, 2023) from the institute's WFS (geo.vliz.be/geoserver), as GeoJSON in degrees, kept in sources/fetched/marineregions-eez-v12/; the download page's form isn't needed for the WFS. Read by the regions' check (crate::inputs::regions::data), a zone by its mrgid. robots.txt read first (2026-10-18): geo.vliz.be's answered 404, which counts as allowing; www.marineregions.org's disallows /files and /structure, not the WFS."
+notes = "The whole layer MarineRegions:eez (titled EEZ v12, world, 2023) from the institute's WFS (geo.vliz.be/geoserver), as GeoJSON in degrees, kept in sources/fetched/marineregions-eez-v12/; the download page's form isn't needed for the WFS. Read by the regions' check (crate::inputs::regions::data), a zone by its mrgid."
 
 [data]
 role = "regions-sea"
 format = "geojson"
+kind = "api"
 url = "https://geo.vliz.be/geoserver/MarineRegions/wfs?service=WFS&version=1.0.0&request=GetFeature&outputFormat=application/json&typeName=MarineRegions:eez"
 version = "12"
 refresh = "pinned"

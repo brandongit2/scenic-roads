@@ -11,6 +11,7 @@ notes = "ITRF2008 to NAD83(2011) at reference epoch 1997.0 with its rates, appli
 [data]
 role = "geoid"
 format = "helmert"
+kind = "data"
 url = "https://geodesy.noaa.gov/TOOLS/Htdp/Htdp.shtml"
 
 [data.params]

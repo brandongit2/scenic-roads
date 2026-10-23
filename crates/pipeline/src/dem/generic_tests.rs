@@ -511,7 +511,7 @@ fn heights_are_converted_before_the_blend() {
         |v: f32| crate::geotiff::write_f32(4, 4, &[v; 16], 16, [-2.0, 1.0, 0.0, 2.0, 0.0, -1.0], 4326, None).unwrap();
     let decl = |id: &str, from: &str| {
         let t = format!(
-            "name = \"N\"\ncredit = \"C\"\nlicence = \"CC0-1.0\"\nterritory = \"world\"\n[data]\nrole = \"geoid\"\n\
+            "name = \"N\"\ncredit = \"C\"\nlicence = \"CC0-1.0\"\nterritory = \"world\"\n[data]\nrole = \"geoid\"\nkind = \"data\"\n\
              format = \"geoid-grid\"\nurl = \"https://g.org/{id}.tif\"\n[data.params]\nfrom = \"{from}\"\nto = \"EGM2008\""
         );
         let d = crate::inputs::sources::parse(t.as_bytes()).unwrap();

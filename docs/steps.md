@@ -325,7 +325,7 @@ drawn as a raster.
     tenth of its neighbours' (75th percentile within 3 sheets), under 2, or its size curve is cut
     off.
   - **The source:** CanVec 1:50,000 Hydro `waterbody_2`, the provinces' zips, downloaded by hand
-    (the FTP's robots.txt disallows `/pub`) and kept in the declared source's folder,
+    and kept in the declared source's folder,
     `sources/fetched/canvec-lakes/` (`lakefill::run::source_dir`, docs/inputs.md §6.9), read from
     there (`lakefill::zip`). Taken: lakes, reservoirs, ponds and unidentified water bodies; intermittent
     ones drawn as water but not flattened. Licence: OGL–Canada, credited.

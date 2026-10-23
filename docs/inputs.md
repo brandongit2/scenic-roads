@@ -1188,10 +1188,7 @@ territory.
   apart from the waits: an info line on the build page and "note: elevation heights — not
   converted to EGM2008: …" in scenic status) and by the z6 tile job (`elevation: <id>: its heights …
   left as they are`); a unit job given no accepted sources says it converts nothing.
-  `producers/geoid/fetch.sh` reads each host's robots.txt first, alone, judged by
-  `producers/geoid/robots.py` (RFC 9309 groups, our token's group over `*`'s, Allow and Disallow by
-  longest match with `*` and `$`, percent-encoding normalised; `scenic-roads/…` counts as ours; an
-  error running it stops); unreadable counts as allow (redirects followed, up to 5). Only
+  `producers/geoid/fetch.sh` downloads the grids (published data: no robots.txt, §6.9). Only
   EGM2008 is named in code. `scenic-build geoid-offsets --sources <folder>
   --from <reference> --at <lon,lat>[;…]` prints a chain's offsets, hop by hop.
   - **The grids** (staged in `producers/geoid/declarations/`, fetched by `producers/geoid/fetch.sh
@@ -1314,18 +1311,28 @@ their indexes.
 |---|---|
 | `role` | the slot the app reads it in, one source a role: `land-cover`, `canopy`, `leaf-type-europe`, `leaf-type-north-america`, `wikidata`, `wikipedia`, `pageviews`, `lake-fill`, `buildings`, `building-heights`, `regions-sea`, `regions-internal-waters`, `regions-territorial-seas`, `regions-lakes`, `regions-land` (§6.1.7); and `depth` (§6.10) and `geoid` (§6.8, step 3), which any number of sources take |
 | `format` | one of its role's: `geotiff`, `geojson`, `image-service`, `zip-geotiff`, `zip-shapefile`, `sparql`, `mediawiki-api`, `pageviews-dump`, `geoparquet`, `depth-grid`, `geoid-grid`, `helmert` |
+| `kind` | required: what fetching it is (`fetch::Kind`): `api` (a documented API: a query service, a WFS or WCS, MediaWiki's API, an ArcGIS REST service), `data` (a published download: a dump, an extract, a dataset's files) or `page` (a web page, an undocumented URL, links followed or scraped). Kept out of keys and the accepted index |
 | `url` / `urls` / `index` | exactly one; a template's placeholders only its role's (`{tile}` for land cover, `{y}` `{m}` for the pageviews); an index is a GeoJSON beside it, a feature per file with its `url` and footprint |
 | `version` | the pinned release |
 | `refresh` | `pinned` (default: a new release is the owner's edit) or `live` (a query service asked each run) |
 | `[data.params]` | the format's own fields (a legend, a box, a layer and the values kept) |
 
 **Checks.** Errors: a file not of the shape (`src-shape`); a description field wrong (`src-desc`);
-a declaration's fields wrong: an unknown role, a format not its role's, not exactly one way of
+a declaration's fields wrong: an unknown role, a format not its role's, no `kind` or an unknown one, not exactly one way of
 naming where it is, a placeholder its role doesn't fill, an unknown `refresh` (`src-decl`); an
 unparsable index (`src-index`); an index named that isn't there (`src-missing`); two declarations
 of one role (`src-role`; for `depth`, two of one `code`). Warning: an index no declaration names (`src-orphan`). Derived: each
 description's extent for the credits (§4.8), the world or its territory's polygons' boxes in the
 newest pass's outlines.
+
+**robots.txt is for crawlers.** Only a `page` source's host's robots.txt is read first, in a
+request of its own, and obeyed (one that's missing, refused or unreadable allows everything). An
+`api` or `data` source follows its provider's usage policy instead: the User-Agent
+"scenic-roads/0.1 (personal offline map)" (`fetch::USER_AGENT`), the pool's rate limits (the
+budget's proxy, `crate::budget`), a back-off on 429, and its credit. Every producer script that
+fetches says what it fetches (`FETCHES = "api, data"`; a shell script's `# FETCHES: data`), and
+one fetching pages reads robots.txt: `fetch::tests::every_fetching_script_declares_its_kinds`.
+The Rust fetchers (`crate::fetch`'s `Fetcher`, `crate::wikiask`) fetch only APIs and data.
 
 **How the steps read them.** Rust steps through `inputs::sources::open`/`read` (one read per
 accepted version); a unit's programs from `sources.json` in its folder (`unit::UnitSources`: the
@@ -1461,7 +1468,7 @@ range in `at` for each file it names (`src-index`); two of one `code` (`src-role
 
 | id | what | code | water | producer | detail |
 |---|---|---|---|---|---|
-| `gebco-2026` | the yearly global 15″ grid and its type identifiers | 1 | sea | `gebco.py`, from the owner's two zips in `sources/gebco/2026/` (CEDA's robots.txt bars programs) | z8; cells the TID calls interpolated or estimated (40–48, 71, 72) at z7 |
+| `gebco-2026` | the yearly global 15″ grid and its type identifiers | 1 | sea | `gebco.py`, from the owner's two zips in `sources/gebco/2026/` | z8; cells the TID calls interpolated or estimated (40–48, 71, 72) at z7 |
 | `bluetopo` | NOAA's US coastal grids, 4–16 m | 2 | sea | `bluetopo.py`'s steps, from the public bucket by its tile scheme (checksums checked), a chunk of tiles at a time (`chunked.py bluetopo`); NAVD88 → MSL and MLLW by NOAA VDatum (`vdatum.py`, a point per 0.25° cell; `stations.py noaa` gives the same table from the tide stations) | z15 (4 m) to z13 (16 m); interpolated contributors at z12 |
 | `nonna-100`, `nonna-10` | CHS's 100 m and 10 m grids (licence accepted; never redistributed; its notice names the owner as the maker) | 3, 4 | sea | `nonna.py`, the keyless coverage service (NONNA-10 a chunk of blocks at a time, where NONNA-100 has water: `chunked.py nonna10`); chart datum → mean water level by CHS's stations (`stations.py chs`) | z10, z13 |
 | `emodnet-dtm` | EMODnet's DTM 2024, MSL version | 5 | sea | `emodnet.py`: its MSL ASCII tiles one at a time (a WGS 84 `.prj` given each), `raster.py`'s produce; its interpolation flag not applied (task #466) | gaps only (`datum_exact = false`) |
@@ -1501,13 +1508,11 @@ On macOS the producers trust the system's root certificates as well as OpenSSL's
 read from its keychain): uv's Python lacks some roots the hosts use (CHS's station service's chain ends at Sectigo's
 Public Server Authentication Root R46). `SSL_CERT_FILE`, when set, is used alone.
 
-Every request carries the User-Agent "scenic-roads/0.1 (personal offline map)" and asks the host's
-robots.txt first, in a request of its own (`grid.robots_allow`); a path it bars stops the producer,
-which says to download the file by hand.
+Every request carries the User-Agent "scenic-roads/0.1 (personal offline map)"; what they fetch
+is APIs and published data, so no robots.txt is read (§6.9).
 
 `globathy.py` (`test_globathy.py`) reads GLOBathy's basic-parameters zip (fetched into `--cache`, or
-`--params`) and the owner's HydroLAKES v1.0 polygons zip (`--hydrolakes`; data.hydrosheds.org's
-robots.txt bars programs, so it's never fetched), and makes a z11 grid a z8 tile: each lake a bowl
+`--params`) and the owner's HydroLAKES v1.0 polygons zip (`--hydrolakes`, downloaded by hand), and makes a z11 grid a z8 tile: each lake a bowl
 D = Dmax · (l / L)^0.75 on its outline (l the distance to shore smoothed by L/8, the depth lab's
 fit), several `--box`es a run, each owning the tiles whose north-west corner is in it.
 

@@ -502,8 +502,7 @@ fn other_article(arts: &Py) -> Option<(String, String)> {
 
 /// English Wikipedia's short descriptions, 50 titles a request: every title asked for is in the
 /// answer ("" when it has none), and the titles they were normalized or redirected from. A batch
-/// that can't be fetched fails the run; the API is exempt from its robots.txt
-/// (`Asker::exempt_api`), so none is left out.
+/// that can't be fetched fails the run.
 fn shortdescs(ask: &Asker, api: &str, titles: &[String]) -> Result<Ordered<String>> {
     let _p = phase("short descriptions fetched from Wikipedia", Class::Net);
     let mut out = Ordered::new();
@@ -521,13 +520,7 @@ fn shortdescs(ask: &Asker, api: &str, titles: &[String]) -> Result<Ordered<Strin
                 ("titles", &joined),
             ])
         );
-        let Some(d) = ask.get_json(&url)? else {
-            eprintln!(
-                "  short descriptions: {api} is disallowed by its robots.txt; {} titles not fetched",
-                titles.len()
-            );
-            break;
-        };
+        let d = ask.get_json(&url)?;
         let q = d.get("query");
         if d.get("error").is_some() || q.is_none() {
             bail!(
@@ -586,9 +579,7 @@ fn str_at<'a>(r: &'a Py, k: &str) -> Result<&'a str> {
 pub fn run(root: &Path, ends: &Endpoints) -> Result<()> {
     let b = root.join("data/build");
     let w = root.join("data/heritage/wd");
-    let mut ask = Asker::new();
-    // (Wikipedia's API asked whatever its robots.txt says: the owner's decision, crate::wikiask.)
-    ask.exempt_api(&ends.wikipedia)?;
+    let ask = Asker::new();
     let p = phase("the sites and their registers read", Class::Disk);
     std::fs::create_dir_all(&w)?;
     let fc = loads(&std::fs::read_to_string(b.join("heritage.json"))?).context("parse heritage.json")?;

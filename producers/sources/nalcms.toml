@@ -9,6 +9,7 @@ notes = "One GeoTIFF in CEC's 3.9 GB zip, streamed out by range once (its size a
 [data]
 role = "leaf-type-north-america"
 format = "zip-geotiff"
+kind = "data"
 url = "https://www.cec.org/files/atlas_layers/1_terrestrial_ecosystems/1_01_0_land_cover_2020_30m/land_cover_2020v2_30m_tif.zip"
 version = "2020 v2"
 refresh = "pinned"

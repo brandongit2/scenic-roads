@@ -6,11 +6,12 @@ licence_url = "https://creativecommons.org/licenses/by/4.0/"
 source = "https://www.marineregions.org/downloads.php"
 retrieved = "2026-10-18"
 territory = "world"
-notes = "The layer MarineRegions:eez_internal_waters (Internal Waters v4, world, 2023) from the institute's WFS, as GeoJSON, kept in sources/fetched/marineregions-internal-waters-v4/. Each is added to the zone its mrgid_eez names. robots.txt read first (2026-10-18): geo.vliz.be's answered 404, which counts as allowing."
+notes = "The layer MarineRegions:eez_internal_waters (Internal Waters v4, world, 2023) from the institute's WFS, as GeoJSON, kept in sources/fetched/marineregions-internal-waters-v4/. Each is added to the zone its mrgid_eez names."
 
 [data]
 role = "regions-internal-waters"
 format = "geojson"
+kind = "api"
 url = "https://geo.vliz.be/geoserver/MarineRegions/wfs?service=WFS&version=1.0.0&request=GetFeature&outputFormat=application/json&typeName=MarineRegions:eez_internal_waters"
 version = "4"
 refresh = "pinned"

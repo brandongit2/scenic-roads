@@ -11,6 +11,7 @@ notes = "PROJ-data's us_noaa_g2018u0.tif (16,742,155 bytes), kept in sources/fet
 [data]
 role = "geoid"
 format = "geoid-grid"
+kind = "data"
 url = "https://cdn.proj.org/us_noaa_g2018u0.tif"
 
 [data.params]

@@ -10,6 +10,7 @@ notes = "The NM archives' .asc taken out of their 7z (by hand today), raster.py;
 [data]
 role = "depth"
 format = "depth-grid"
+kind = "data"
 index = "shom-homonim-100-grids.geojson"
 version = "2015"
 refresh = "pinned"

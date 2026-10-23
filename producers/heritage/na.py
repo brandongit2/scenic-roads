@@ -42,6 +42,8 @@ from tqdm import tqdm
 import eu
 
 UA = {"User-Agent": "scenic-roads/0.1 (personal offline map)"}
+# What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): ArcGIS REST services and published downloads.
+FETCHES = "api, data"
 # The data folder (registers.py --data).
 H = Path()
 NRHP = "https://mapservices.nps.gov/arcgis/rest/services/cultural_resources/nrhp_locations/MapServer/0/query"

@@ -10,6 +10,7 @@ notes = "Each lake's DEM (metres, positive down), raster.py at z16. Not for navi
 [data]
 role = "depth"
 format = "depth-grid"
+kind = "data"
 index = "gblq-grids.geojson"
 version = "2025"
 refresh = "pinned"

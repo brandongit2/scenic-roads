@@ -11,6 +11,7 @@ notes = "PROJ-data's us_nga_egm08_25.tif (80,585,622 bytes), kept in sources/fet
 [data]
 role = "geoid"
 format = "geoid-grid"
+kind = "data"
 url = "https://cdn.proj.org/us_nga_egm08_25.tif"
 
 [data.params]

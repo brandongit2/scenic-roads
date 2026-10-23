@@ -5,7 +5,7 @@ tile's raster attribute table), from its public bucket by its tile scheme.
 
 - The scheme (a GeoPackage: each tile's footprint, links, delivered date and SHA-256) is fetched
   (`--scheme <url>`) or read (`--scheme <file>`); the tiles meeting `--box` are fetched into
-  `--cache` (after the host's robots.txt, at most one request at a time) and checked against their
+  `--cache` (at most one request at a time) and checked against their
   checksums. `--from <dir>` reads tiles already downloaded (their names as the bucket has them).
 - Heights → MSL by the tide stations' MSL − NAVD88 (`--offset`, a harmonic surface over the water);
   the chart's low water (MLLW) below MSL beside it (`--low`).
@@ -30,6 +30,8 @@ from grid import Writer, fetch, log
 from datums import from_table
 from raster import Spec, parse_table, produce
 
+# What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): BlueTopo's published scheme and tiles.
+FETCHES = "data"
 INTERPOLATED_ZOOM = 12
 
 

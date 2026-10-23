@@ -7,6 +7,7 @@
 //! have), then the network: natively HTTP, with the build's User-Agent, retries and a block cache;
 //! WebAssembly has none (docs/workers.md), so there a task's caller supplies what it reads. It can
 //! record what it fetched into a mirror folder, for a later run, or a worker, to read instead.
+//! What it fetches is published data (`Kind::Data`): no robots.txt is read.
 //!
 //!   SCENIC_FETCH_MIRROR=<dir>   read from this mirror first
 //!   SCENIC_FETCH_RECORD=<dir>   record what's fetched over the network into this mirror
@@ -225,6 +226,21 @@ pub fn go_offline() {
 
 /// Every request names the map, as the steps' own do.
 pub const USER_AGENT: &str = "scenic-roads/0.1 (personal offline map)";
+
+/// What a fetched source is (docs/inputs.md §6.9), which decides whether its host's robots.txt is
+/// read first: robots.txt is for crawlers, so only a page's is. An API or a data download follows
+/// its provider's usage policy instead: `USER_AGENT`, the pool's rate limits (crate::budget), a
+/// back-off on 429, the credit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    /// A documented API: a query service, a WFS or WCS, MediaWiki's API, an ArcGIS REST service.
+    Api,
+    /// A published data download: a dump, an extract, a dataset's files.
+    Data,
+    /// A web page, an undocumented URL, links followed or scraped: its robots.txt read first.
+    Page,
+}
 
 /// Outside data by URL.
 pub trait Fetch: Send + Sync {
@@ -1180,6 +1196,68 @@ mod net {
 mod tests {
     use super::net::{content_range, Recorder};
     use super::*;
+
+    /// Every producer script that fetches (producers/, dem/: urllib, curl, producers/depth/grid.py's
+    /// helpers) declares what it fetches, kinds of `Kind` (`FETCHES = "api, data"`; a shell
+    /// script's `# FETCHES: data`), and one that fetches pages reads robots.txt. (The declarations'
+    /// `kind` is crate::inputs::sources::parse's.)
+    #[test]
+    fn every_fetching_script_declares_its_kinds() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        // (Asking only this Mac: the map's server.)
+        const LOCAL: [&str; 2] = ["producers/depth/smalllakes.py", "producers/depth/smalllakes-run.sh"];
+        fn walk(d: &Path, out: &mut Vec<PathBuf>) {
+            for e in std::fs::read_dir(d).unwrap().flatten() {
+                let p = e.path();
+                let name = e.file_name().to_string_lossy().to_string();
+                if p.is_dir() && !name.starts_with('.') {
+                    walk(&p, out);
+                } else if (name.ends_with(".py") || name.ends_with(".sh")) && !name.starts_with("test_") {
+                    out.push(p);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(&root.join("producers"), &mut files);
+        walk(&root.join("dem"), &mut files);
+        let mut checked = 0;
+        for p in files {
+            let rel = p.strip_prefix(&root).unwrap().to_string_lossy().to_string();
+            let text = std::fs::read_to_string(&p).unwrap();
+            let fetches = text.contains("urllib.request")
+                || text.contains("urlretrieve")
+                || text.lines().any(|l| {
+                    let l = l.trim_start();
+                    !l.starts_with('#')
+                        && (l.contains("\"curl\"")
+                            || l.starts_with("curl ")
+                            || l.contains("$(curl ")
+                            || (l.starts_with("from grid import") && (l.contains("fetch") || l.contains("urlopen"))))
+                });
+            if !fetches || LOCAL.contains(&rel.as_str()) {
+                continue;
+            }
+            let decl = text.lines().find_map(|l| {
+                l.strip_prefix("FETCHES = \"")
+                    .and_then(|r| r.strip_suffix('"'))
+                    .or_else(|| l.strip_prefix("# FETCHES: "))
+            });
+            let decl = decl.unwrap_or_else(|| panic!("{rel} fetches but declares no FETCHES (api, data, page)"));
+            let kinds: Vec<Kind> = decl
+                .split(',')
+                .map(|k| {
+                    serde_json::from_value(serde_json::Value::String(k.trim().into()))
+                        .unwrap_or_else(|_| panic!("{rel}: FETCHES names {k:?}: api, data or page"))
+                })
+                .collect();
+            assert!(!kinds.is_empty(), "{rel}: FETCHES names nothing");
+            if kinds.contains(&Kind::Page) {
+                assert!(text.contains("robots.txt"), "{rel} fetches pages but reads no robots.txt");
+            }
+            checked += 1;
+        }
+        assert!(checked >= 10, "only {checked} fetching scripts found");
+    }
 
     /// A server on this Mac answering every request 503, and its URL.
     #[cfg(not(target_os = "wasi"))]

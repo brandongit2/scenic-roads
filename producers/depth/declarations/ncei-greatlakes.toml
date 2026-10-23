@@ -10,6 +10,7 @@ notes = "The owner's hand download, kept in sources/ncei-greatlakes/ (<lake>_lld
 [data]
 role = "depth"
 format = "depth-grid"
+kind = "data"
 index = "ncei-greatlakes-grids.geojson"
 version = "2012"
 refresh = "pinned"

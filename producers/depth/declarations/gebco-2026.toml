@@ -5,11 +5,12 @@ licence = "GEBCO terms of use (public domain)"
 licence_url = "https://www.gebco.net/data-products/gridded-bathymetry-data/gebco2026-grid"
 source = "https://www.gebco.net/data-products/gridded-bathymetry-data"
 territory = "world"
-notes = "The owner's hand download (the CEDA host's robots.txt bars programs), kept in sources/gebco/2026/; producers/depth/gebco.py makes the grids (z8, cut by z3 tile; cells its TID calls interpolated or estimated capped at z7). Not for navigation."
+notes = "The owner's hand download, kept in sources/gebco/2026/; producers/depth/gebco.py makes the grids (z8, cut by z3 tile; cells its TID calls interpolated or estimated capped at z7). Not for navigation."
 
 [data]
 role = "depth"
 format = "depth-grid"
+kind = "data"
 index = "gebco-2026-grids.geojson"
 version = "2026"
 refresh = "pinned"

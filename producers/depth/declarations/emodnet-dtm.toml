@@ -10,6 +10,7 @@ notes = "Whole tiles from the downloads host: its MSL ASCII grids (producers/dep
 [data]
 role = "depth"
 format = "depth-grid"
+kind = "data"
 index = "emodnet-dtm-grids.geojson"
 version = "2024"
 refresh = "pinned"

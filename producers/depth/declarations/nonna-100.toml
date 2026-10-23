@@ -11,6 +11,7 @@ notes = "The owner accepted the licence on 2026-10-06. producers/depth/nonna.py 
 [data]
 role = "depth"
 format = "depth-grid"
+kind = "api"
 index = "nonna-100-grids.geojson"
 version = "2026-10"
 refresh = "pinned"

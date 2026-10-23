@@ -20,15 +20,15 @@ import csv
 import json
 import time
 
-from grid import log, robots_allow, urlopen
+from grid import log, urlopen
 
 NOAA = "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi"
 CHS = "https://api-iwls.dfo-mpo.gc.ca/api/v1"
+# What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): NOAA's and CHS's station APIs.
+FETCHES = "api"
 
 
 def get(url: str):
-    if not robots_allow(url):
-        raise SystemExit(f"robots.txt disallows {url}")
     with urlopen(url, 120) as r:
         data = json.loads(r.read())
     time.sleep(0.5)

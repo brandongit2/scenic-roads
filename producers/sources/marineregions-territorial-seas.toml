@@ -6,11 +6,12 @@ licence_url = "https://creativecommons.org/licenses/by/4.0/"
 source = "https://www.marineregions.org/downloads.php"
 retrieved = "2026-10-18"
 territory = "world"
-notes = "The layer MarineRegions:eez_12nm (Territorial Seas v4, world, 2023) from the institute's WFS, as GeoJSON, kept in sources/fetched/marineregions-territorial-seas-v4/. Regions may name a territorial sea (ts12:<mrgid>); it divides nothing by itself. robots.txt read first (2026-10-18): geo.vliz.be's answered 404, which counts as allowing."
+notes = "The layer MarineRegions:eez_12nm (Territorial Seas v4, world, 2023) from the institute's WFS, as GeoJSON, kept in sources/fetched/marineregions-territorial-seas-v4/. Regions may name a territorial sea (ts12:<mrgid>); it divides nothing by itself."
 
 [data]
 role = "regions-territorial-seas"
 format = "geojson"
+kind = "api"
 url = "https://geo.vliz.be/geoserver/MarineRegions/wfs?service=WFS&version=1.0.0&request=GetFeature&outputFormat=application/json&typeName=MarineRegions:eez_12nm"
 version = "4"
 refresh = "pinned"

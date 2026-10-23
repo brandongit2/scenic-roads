@@ -1472,7 +1472,7 @@ pub(crate) mod tests {
     /// same as loose (a repack builds nothing again).
     #[test]
     fn a_packed_index_is_read_and_keeps_its_pin() {
-        let decl = "name = \"N\"\ncredit = \"C\"\nlicence = \"CC0-1.0\"\nterritory = \"world\"\n[data]\nrole = \"depth\"\n\
+        let decl = "name = \"N\"\ncredit = \"C\"\nlicence = \"CC0-1.0\"\nterritory = \"world\"\n[data]\nrole = \"depth\"\nkind = \"data\"\n\
                     format = \"depth-grid\"\nindex = \"i.geojson\"\n[data.params]\ncode = 3\nwater = \"sea\"\nlabel = \"L\"\ndatum = \"MSL\"\n";
         let idx = |extra: &str| {
             format!(

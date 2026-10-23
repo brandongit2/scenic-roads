@@ -9,6 +9,7 @@ notes = "Its depth rasters (raster.py, feet or metres as each pond says), at z16
 [data]
 role = "depth"
 format = "depth-grid"
+kind = "data"
 index = "masswildlife-ponds-grids.geojson"
 version = "2024-11"
 refresh = "pinned"

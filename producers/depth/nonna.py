@@ -5,7 +5,7 @@ datum (negative below it; drying heights positive). Its licence (accepted by the
 product made from it to carry its notice; the declaration carries it, never redistributed.
 
 - `--box` is fetched in blocks (`--block` degrees, 0.5 × 0.3 for NONNA-10 as the service's own
-  index cells are) into `--cache`, after the host's robots.txt, one request at a time; a block with
+  index cells are) into `--cache`, one request at a time; a block with
   no data (the service sends it as nodata) makes no grid, and a failed request stops the run. `--from <tif>…` reads blocks already fetched.
 - Chart datum → MSL: the stations' mean water level above chart datum (stations.py chs), a harmonic
   surface over the water, subtracted; the same is the chart's low water below MSL (`low_file`).
@@ -24,6 +24,8 @@ from datums import from_table
 from raster import Spec, produce
 
 WCS = "https://nonna-geoserver.data.chs-shc.ca/geoserver/wcs"
+# What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): CHS's coverage service.
+FETCHES = "api"
 # (The coverages' ids hold spaces, sent encoded.)
 COVERAGE = {"10": "nonna__NONNA%2010%20Coverage", "100": "nonna__NONNA%20100%20Coverage"}
 ZOOM = {"10": 13, "100": 10}

@@ -10,6 +10,7 @@ notes = "Windows of its HDF5 grid (raster.py: depths positive down; T.P. to MSL 
 [data]
 role = "depth"
 format = "depth-grid"
+kind = "data"
 index = "gttm-grids.geojson"
 version = "2020"
 refresh = "pinned"

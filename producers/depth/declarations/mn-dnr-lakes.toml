@@ -10,6 +10,7 @@ notes = "The statewide zip's DEM (feet below the lake's surface at survey), rast
 [data]
 role = "depth"
 format = "depth-grid"
+kind = "data"
 index = "mn-dnr-lakes-grids.geojson"
 version = "2025"
 refresh = "pinned"

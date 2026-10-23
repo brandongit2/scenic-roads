@@ -38,7 +38,9 @@ USGS = "https://prd-tnm.s3.amazonaws.com"
 USGS_PREFIX = "StagedProducts/Elevation/13/TIFF/current/"
 BRISTOL = "https://data.bris.ac.uk/datasets/s5hqmjcdj8yo2ibzi9b4ew3sn"
 GLO30 = "https://copernicus-dem-30m.s3.amazonaws.com"
-UA = {"User-Agent": "scenic-roads producers (elevation indexes)"}
+UA = {"User-Agent": "scenic-roads/0.1 (personal offline map)"}
+# What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): the buckets' listings and published files.
+FETCHES = "api, data"
 
 
 def get(url, rng=None):

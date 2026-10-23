@@ -236,10 +236,9 @@ docs/inputs.md §6.5.2), split into two jobs so the z6 tiles never wait on Wikid
   whsshapes reads of the filtered planet's clip (task #496: the same export and relations on a
   sample z6 tile), from about a fifth of the bytes: copied here first when there's room, read
   three times by osmium. pipeline::heritagewd indexes named objects with a Wikidata item on a 0.01°
-  grid and asks what the answers lack through crate::wikiask (the job's proxy, each host's
-  robots.txt read first and obeyed, but for the declared Wikipedia API, which the owner exempted
-  (22 Oct 2026: English Wikipedia's robots.txt disallows `/w/` to crawlers; Wikimedia's API
-  etiquette, a User-Agent and a polite rate, is kept by the budget's proxy)); pipeline::areadetails asks Wikidata for parks the answers lack; pipeline::pageviews takes the
+  grid and asks what the answers lack through crate::wikiask (declared APIs, so no robots.txt is
+  read: their usage policy, a User-Agent and a polite rate, kept by the job's proxy, docs/inputs.md
+  §6.9); pipeline::areadetails asks Wikidata for parks the answers lack; pipeline::pageviews takes the
   pass's months. The map's layers are written last, in Rust (`pipeline::heritage_layers`: the lean
   layer files, the sites' popup records, the areas simplified by a port of GEOS's topology-preserving
   simplifier, `pipeline::tpsimplify`). The layers' `en` is the things' own; the server adds

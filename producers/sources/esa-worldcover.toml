@@ -10,6 +10,7 @@ notes = "Read at its 1/4 overview (~40 m) where the land-cover packs lack a grid
 [data]
 role = "land-cover"
 format = "geotiff"
+kind = "data"
 # 3° tiles, `{tile}` their south-west corner (N45W069).
 url = "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_{tile}_Map.tif"
 version = "v200 (2021)"

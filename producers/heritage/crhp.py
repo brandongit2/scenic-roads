@@ -26,6 +26,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+import urllib.robotparser
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -35,6 +36,8 @@ H = Path()
 CACHE = Path()
 BASE = "https://www.historicplaces.ca/en/"
 UA = {"User-Agent": "scenic-roads/0.1 (personal offline map)"}
+# What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): the register's web pages, scraped: its robots.txt read first.
+FETCHES = "page"
 PROVINCES = {
     "New Brunswick": ("CA-NB", (-69.1, 44.5, -63.7, 48.1)),
     "Prince Edward Island": ("CA-PE", (-64.5, 45.9, -61.9, 47.1)),
@@ -50,7 +53,28 @@ PROVINCES = {
 CREDIT = "Canadian Register of Historic Places (historicplaces.ca)"
 
 
+_robots: urllib.robotparser.RobotFileParser | None = None
+
+
+def allowed(url: str) -> bool:
+    """Whether the site's robots.txt (read first, once, as a request of its own) lets us fetch `url`:
+    one that's missing, refused or can't be read allows everything."""
+    global _robots
+    if _robots is None:
+        _robots = urllib.robotparser.RobotFileParser()
+        robots = urllib.parse.urljoin(BASE, "/robots.txt")
+        try:
+            with urllib.request.urlopen(urllib.request.Request(robots, headers=UA), timeout=60) as r:
+                _robots.parse(r.read().decode("utf-8", "replace").splitlines())
+        except OSError as e:
+            print(f"  {robots}: not readable ({e}), allows everything", file=sys.stderr)
+            _robots.parse([])
+    return _robots.can_fetch(UA["User-Agent"], url)
+
+
 def fetch(url: str, data: dict | None = None) -> str:
+    if not allowed(url):
+        raise SystemExit(f"{url}: the site's robots.txt disallows it")
     body = urllib.parse.urlencode(data).encode() if data else None
     for attempt in range(6):
         try:

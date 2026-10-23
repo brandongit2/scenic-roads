@@ -100,6 +100,11 @@ pub struct Data {
     pub role: String,
     /// Its format (one of its role's).
     pub format: String,
+    /// What fetching it is (crate::fetch::Kind: `api`, `data` or `page`), required: only a page's
+    /// host's robots.txt is read first. Kept out of the digests and the accepted index (what's
+    /// fetched is the same whatever it's called), so the steps read None.
+    #[serde(default, skip_serializing)]
+    pub kind: Option<crate::fetch::Kind>,
     /// Where it is: a URL, or a template of the role's placeholders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
@@ -206,6 +211,9 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
                 why.extend(crate::dem::geoid::params_problems(&data));
             }
         }
+    }
+    if data.kind.is_none() {
+        why.push("no `kind`: api, data or page (docs/inputs.md §6.9)".into());
     }
     if !["pinned", "live"].contains(&data.refresh.as_str()) {
         why.push(format!("`refresh` is \"{}\": pinned or live", data.refresh));
@@ -899,13 +907,15 @@ mod tests {
 
     #[test]
     fn a_declarations_shape() {
-        let ok = decl("role = \"pageviews\"\nformat = \"pageviews-dump\"\nurl = \"https://d.org/{y}/{y}-{m}.bz2\"\n");
+        let ok = decl("role = \"pageviews\"\nformat = \"pageviews-dump\"\nkind = \"data\"\nurl = \"https://d.org/{y}/{y}-{m}.bz2\"\n");
         let c = SourcesCheck::default().file("pv.toml", ok.as_bytes());
         assert!(c.findings.is_empty() && c.keyed.is_some(), "{:?}", c.findings);
         let bad = |data: &str| {
             let c = SourcesCheck::default().file("x.toml", decl(data).as_bytes());
             assert!(c.findings.iter().any(|f| f.check() == DECL), "{data}: {:?}", c.findings);
         };
+        bad("role = \"pageviews\"\nformat = \"pageviews-dump\"\nurl = \"https://d.org/{y}\"\n");
+        bad("role = \"pageviews\"\nformat = \"pageviews-dump\"\nkind = \"crawl\"\nurl = \"https://d.org/{y}\"\n");
         bad("role = \"weather\"\nformat = \"geotiff\"\nurl = \"https://a.org/x.tif\"\n");
         bad("role = \"pageviews\"\nformat = \"geotiff\"\nurl = \"https://a.org/{y}\"\n");
         bad("role = \"pageviews\"\nformat = \"pageviews-dump\"\nurl = \"https://a.org/{z}\"\n");
@@ -927,8 +937,8 @@ mod tests {
         assert_eq!(f[0].bbox, [0.0, 0.0, 10.0, 10.0]);
         assert_eq!(f[0].props["kind"], "p95");
         assert!(parse_index(br#"{"type":"FeatureCollection","features":[{"properties":{},"geometry":null}]}"#).is_err());
-        let a = decl("role = \"canopy\"\nformat = \"geotiff\"\nindex = \"sq.geojson\"\n");
-        let b = decl("role = \"canopy\"\nformat = \"geotiff\"\nindex = \"other.geojson\"\n");
+        let a = decl("role = \"canopy\"\nformat = \"geotiff\"\nkind = \"data\"\nindex = \"sq.geojson\"\n");
+        let b = decl("role = \"canopy\"\nformat = \"geotiff\"\nkind = \"data\"\nindex = \"other.geojson\"\n");
         let files: BTreeMap<&str, Vec<u8>> = BTreeMap::from([
             ("a.toml", a.into_bytes()),
             ("b.toml", b.into_bytes()),

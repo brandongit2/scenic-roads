@@ -20,6 +20,8 @@ FOLDER = "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/GHS_BUILT_H_GLOB
 PRODUCT = "GHS_BUILT_H_ANBH_E2018_GLOBE_R2023A_4326_3ss_V1_0"
 GRID_TOP, GRID_LEFT, GRID_DEG = 89.09958317764332, -180.00791620856731, 10.0
 UA = {"User-Agent": "scenic-roads/0.1 (personal offline map)"}
+# What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): the release's published tile folder.
+FETCHES = "data"
 
 
 def main():

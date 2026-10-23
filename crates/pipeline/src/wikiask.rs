@@ -1,18 +1,14 @@
-//! Asking Wikidata's query service and Wikipedia's API, for the heritage chain's Rust steps
-//! (crate::heritagewd): the build's User-Agent (crate::fetch::USER_AGENT), every request refused
-//! offline first (crate::fetch::online), through the job's proxy (`HTTPS_PROXY`, which takes each
-//! from the pool's budget by its rate class: crate::budget), a 429 or a `Retry-After` told to it
-//! (crate::budget::seen), and a host's robots.txt read before its first request: a path it
-//! disallows to us is never asked (an unreadable robots.txt, or none, allows everything), but a
-//! MediaWiki API exempted by `exempt_api` (the owner's decision, 22 Oct 2026: Wikimedia's API
-//! etiquette asks a User-Agent and a polite rate, which the budget's proxy keeps; English
-//! Wikipedia's robots.txt disallows `/w/`, its API's folder, to crawlers). Answers
-//! are read as Python's `json` reads them (crate::pyjson), for caches whose bytes stay the Python's.
+//! Asking Wikidata's query service and Wikipedia's API, and Wikimedia's dumps, for the heritage
+//! chain's and the items job's Rust steps (crate::heritagewd, crate::items, crate::pageviews): the
+//! build's User-Agent (crate::fetch::USER_AGENT), every request refused offline first
+//! (crate::fetch::online), through the job's proxy (`HTTPS_PROXY`, which takes each from the pool's
+//! budget by its rate class: crate::budget), a 429 or a `Retry-After` told to it
+//! (crate::budget::seen) and backed off from. What it asks is declared APIs and data downloads
+//! (crate::fetch::Kind's `api` and `data`), never pages, so no robots.txt is read. Answers are read
+//! as Python's `json` reads them (crate::pyjson), for caches whose bytes stay the Python's.
 
 use crate::pyjson::{loads, Py};
-use anyhow::{bail, Context, Result};
-use std::collections::HashMap;
-use std::sync::Mutex;
+use anyhow::{bail, Result};
 use std::time::Duration;
 
 /// The prefixes every query is sent with.
@@ -26,12 +22,9 @@ pub fn val<'a>(b: &'a Py, k: &str) -> Option<&'a str> {
     b.get(k).and_then(|v| v.at("value").as_str()).filter(|s| !s.is_empty())
 }
 
-/// What asks: one agent (its connections kept), each host's robots.txt rules once read.
+/// What asks: one agent (its connections kept).
 pub struct Asker {
     agent: ureq::Agent,
-    robots: Mutex<HashMap<String, Robots>>,
-    /// MediaWiki APIs asked whatever robots.txt says: (origin, path).
-    exempt: Vec<(String, String)>,
 }
 
 impl Default for Asker {
@@ -48,51 +41,17 @@ impl Asker {
             .user_agent(crate::fetch::USER_AGENT)
             .http_status_as_error(false)
             .proxy(ureq::Proxy::try_from_env())
-            // (No redirect followed: its target's robots.txt would go unread. MediaWiki resolves
-            // redirects in its answer.)
+            // (No redirect followed: MediaWiki resolves redirects in its answer.)
             .max_redirects(0)
             .build()
             .into();
-        Asker { agent, robots: Mutex::new(HashMap::new()), exempt: vec![] }
-    }
-
-    /// Asks the MediaWiki API at `api` (a declared source's URL, `…/w/api.php`) whatever its
-    /// host's robots.txt says (the owner's decision: see above); robots.txt still rules the rest.
-    pub fn exempt_api(&mut self, api: &str) -> Result<()> {
-        let (origin, path) = split_url(api).with_context(|| format!("not an http(s) URL: {api}"))?;
-        let path = path.split('?').next().unwrap_or("").to_string();
-        anyhow::ensure!(path.ends_with("/api.php"), "{api}: not a MediaWiki API");
-        self.exempt.push((origin, path));
-        Ok(())
-    }
-
-    /// Whether `origin` and `path` are an exempted API's (its path, with a query or none).
-    fn exempted(&self, origin: &str, path: &str) -> bool {
-        self.exempt.iter().any(|(o, p)| {
-            o == origin && (path == p || path.strip_prefix(p.as_str()).is_some_and(|r| r.starts_with('?')))
-        })
-    }
-
-    /// Whether `url` may be asked: offline refused (an error), a path its host's robots.txt
-    /// disallows to us false.
-    pub fn may(&self, url: &str) -> Result<bool> {
-        crate::fetch::online(url)?;
-        let (origin, path) = split_url(url).with_context(|| format!("not an http(s) URL: {url}"))?;
-        if self.exempted(&origin, &path) {
-            return Ok(true);
-        }
-        let mut m = self.robots.lock().unwrap();
-        if !m.contains_key(&origin) {
-            let r = self.get_text(&format!("{origin}/robots.txt"), 60).ok().filter(|(s, _, _)| *s == 200);
-            m.insert(origin.clone(), r.map(|(_, t, _)| Robots::parse(&t, "scenic-roads")).unwrap_or_default());
-        }
-        Ok(m[&origin].allows(&path))
+        Asker { agent }
     }
 
     /// The size `url`'s server says it has (a HEAD's Content-Length): 0 when it doesn't say, or
-    /// can't be asked (offline, its robots.txt, no answer).
+    /// can't be asked (offline, no answer).
     pub fn content_length(&self, url: &str) -> u64 {
-        if crate::fetch::online(url).is_err() || !self.may(url).unwrap_or(false) {
+        if crate::fetch::online(url).is_err() {
             return 0;
         }
         let r = self.agent.head(url).config().timeout_global(Some(Duration::from_secs(30))).build().call();
@@ -118,7 +77,7 @@ impl Asker {
 
     /// `sparql`'s answer with its body as it came (a cache of it keeps the service's bytes).
     pub fn sparql_answer(&self, endpoint: &str, q: &str) -> Result<(String, Vec<Py>)> {
-        anyhow::ensure!(self.may(endpoint)?, "{endpoint}: its robots.txt disallows us");
+        crate::fetch::online(endpoint)?;
         let body = format!("{PREFIXES}{q}");
         let mut last = String::new();
         for attempt in 1..=10u64 {
@@ -143,17 +102,14 @@ impl Asker {
         bail!("the query service failed ten times ({last})")
     }
 
-    /// A JSON answer to a GET of `url` (None when its host's robots.txt disallows it): an HTTP
-    /// error or what isn't JSON tried again, five times with growing pauses, then an error.
-    pub fn get_json(&self, url: &str) -> Result<Option<Py>> {
-        if !self.may(url)? {
-            return Ok(None);
-        }
+    /// A JSON answer to a GET of `url`: an HTTP error or what isn't JSON tried again, five times
+    /// with growing pauses, then an error.
+    pub fn get_json(&self, url: &str) -> Result<Py> {
         let mut last = String::new();
         for attempt in 1..=5u64 {
             match self.get_text(url, 60) {
                 Ok((200, t, _)) => match loads(&t) {
-                    Ok(v) => return Ok(Some(v)),
+                    Ok(v) => return Ok(v),
                     Err(e) => last = format!("{e:#}"),
                 },
                 Ok((s, t, retry)) => {
@@ -175,18 +131,6 @@ fn answer(r: Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> Result<(u
     Ok((r.status().as_u16(), text, retry))
 }
 
-/// `scheme://host[:port]` and the path with its query (`/` when none).
-fn split_url(url: &str) -> Option<(String, String)> {
-    let (scheme, rest) = url.split_once("://")?;
-    if scheme != "http" && scheme != "https" {
-        return None;
-    }
-    let cut = rest.find(['/', '?']).unwrap_or(rest.len());
-    let path = &rest[cut..];
-    let path = if path.starts_with('/') { path.to_string() } else { format!("/{path}") };
-    Some((format!("{scheme}://{}", &rest[..cut]), path))
-}
-
 /// `application/x-www-form-urlencoded`, as Python's `urllib.parse.urlencode`.
 pub fn urlencode(kv: &[(&str, &str)]) -> String {
     let enc = |s: &str| {
@@ -203,136 +147,12 @@ pub fn urlencode(kv: &[(&str, &str)]) -> String {
     kv.iter().map(|(k, v)| format!("{}={}", enc(k), enc(v))).collect::<Vec<_>>().join("&")
 }
 
-/// A robots.txt's rules for one agent: its own group's (by its product token), else `*`'s.
-#[derive(Clone, Debug, Default)]
-struct Robots {
-    /// (allow, pattern).
-    rules: Vec<(bool, String)>,
-}
-
-impl Robots {
-    fn parse(text: &str, token: &str) -> Robots {
-        let token = token.to_ascii_lowercase();
-        // Groups: their agents, their rules.
-        let mut groups: Vec<(Vec<String>, Vec<(bool, String)>)> = Vec::new();
-        let mut in_agents = false;
-        for line in text.lines() {
-            let line = line.split('#').next().unwrap_or("").trim();
-            let Some((k, v)) = line.split_once(':') else { continue };
-            let (k, v) = (k.trim().to_ascii_lowercase(), v.trim().to_string());
-            match k.as_str() {
-                "user-agent" => {
-                    if !in_agents {
-                        groups.push((vec![], vec![]));
-                        in_agents = true;
-                    }
-                    if !v.is_empty() {
-                        groups.last_mut().unwrap().0.push(v.to_ascii_lowercase());
-                    }
-                }
-                "allow" | "disallow" => {
-                    in_agents = false;
-                    if let Some(g) = groups.last_mut() {
-                        if !v.is_empty() {
-                            g.1.push((k == "allow", v));
-                        }
-                    }
-                }
-                _ => in_agents = false,
-            }
-        }
-        let pick = |want: &dyn Fn(&str) -> bool| -> Option<Vec<(bool, String)>> {
-            let rules: Vec<_> =
-                groups.iter().filter(|g| g.0.iter().any(|a| want(a))).flat_map(|g| g.1.clone()).collect();
-            groups.iter().any(|g| g.0.iter().any(|a| want(a))).then_some(rules)
-        };
-        let rules = pick(&|a| a != "*" && token.contains(a)).or_else(|| pick(&|a| a == "*")).unwrap_or_default();
-        Robots { rules }
-    }
-
-    /// Whether `path` may be asked: the longest matching rule decides, an allow winning a tie.
-    fn allows(&self, path: &str) -> bool {
-        let mut best: Option<(usize, bool)> = None;
-        for (allow, pat) in &self.rules {
-            if matches(pat, path) {
-                let n = pat.len();
-                if best.is_none_or(|(bn, ba)| n > bn || (n == bn && *allow && !ba)) {
-                    best = Some((n, *allow));
-                }
-            }
-        }
-        best.is_none_or(|(_, a)| a)
-    }
-}
-
-/// A robots.txt pattern against a path: a prefix, `*` any run, `$` its end.
-fn matches(pat: &str, path: &str) -> bool {
-    let (pat, end) = match pat.strip_suffix('$') {
-        Some(p) => (p, true),
-        None => (pat, false),
-    };
-    let parts: Vec<&str> = pat.split('*').collect();
-    let mut at = 0;
-    for (i, part) in parts.iter().enumerate() {
-        if i == 0 {
-            if !path.starts_with(part) {
-                return false;
-            }
-            at = part.len();
-        } else if i == parts.len() - 1 && end {
-            return path.len() >= at + part.len() && path.ends_with(part);
-        } else {
-            match path[at..].find(part) {
-                Some(k) => at += k + part.len(),
-                None => return false,
-            }
-        }
-    }
-    !end || at == path.len()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn robots_rules() {
-        let r = Robots::parse(
-            "User-agent: Googlebot\nDisallow: /\n\nUser-agent: *\nAllow: /w/load.php?\nDisallow: /w/\nDisallow: /x$\n",
-            "scenic-roads",
-        );
-        assert!(r.allows("/wiki/A"));
-        assert!(!r.allows("/w/api.php?action=query"));
-        assert!(r.allows("/w/load.php?x=1"));
-        assert!(!r.allows("/x"));
-        assert!(r.allows("/xy"));
-        let own =
-            Robots::parse("User-agent: *\nDisallow: /\n\nUser-agent: scenic-roads\nDisallow: /p*q\n", "scenic-roads");
-        assert!(own.allows("/a"));
-        assert!(!own.allows("/p1q"));
-        assert!(Robots::parse("", "scenic-roads").allows("/"));
-        // (An empty agent names no one: `*`'s rules apply.)
-        let empty = Robots::parse("User-agent:\nAllow: /\n\nUser-agent: *\nDisallow: /w/\n", "scenic-roads");
-        assert!(!empty.allows("/w/api.php"));
-    }
-
-    #[test]
-    fn the_api_is_exempt() {
-        let mut a = Asker::new();
-        a.exempt_api("https://en.wikipedia.org/w/api.php").unwrap();
-        let r = Robots::parse("User-agent: *\nDisallow: /w/\n", "scenic-roads");
-        let may = |path: &str| a.exempted("https://en.wikipedia.org", path) || r.allows(path);
-        assert!(may("/w/api.php?action=query"));
-        assert!(!may("/w/index.php?title=X"));
-        assert!(!may("/w/api.php.bak"));
-        assert!(!a.exempted("https://fr.wikipedia.org", "/w/api.php"));
-        assert!(a.exempt_api("https://en.wikipedia.org/wiki/").is_err());
-    }
-
-    #[test]
     fn urls() {
-        assert_eq!(split_url("https://a.org/w/api.php?x=1"), Some(("https://a.org".into(), "/w/api.php?x=1".into())));
-        assert_eq!(split_url("https://a.org"), Some(("https://a.org".into(), "/".into())));
         assert_eq!(urlencode(&[("t", "A b|é")]), "t=A+b%7C%C3%A9");
     }
 }

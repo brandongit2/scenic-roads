@@ -24,6 +24,8 @@ BUCKET = "https://dataforgood-fb-data.s3.amazonaws.com"
 PREFIX = "forests/v1/alsgedi_global_v6_float_epsg4326_v3_10deg/"
 KINDS = ("cover5m", "p95", "median")
 UA = {"User-Agent": "scenic-roads/0.1 (personal offline map)"}
+# What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): the bucket's listing (S3's API) and its published files.
+FETCHES = "api, data"
 NAME = re.compile(r"meta_chm_lat=(-?\d+(?:\.\d+)?)_lon=(-?\d+(?:\.\d+)?)_([a-z0-9]+)\.tif$")
 NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
 

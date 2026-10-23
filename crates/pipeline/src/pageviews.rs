@@ -14,7 +14,7 @@
 //! `lang|Title<TAB>views` lines; zstd) and in this Mac's cache (`<cache>/items/months/`, through
 //! store::cachefile: held while read, so the agent's room-making leaves it); any article of those
 //! languages, of either job, any run, is then looked up there (a language added later streams the
-//! month again). A dump's host's robots.txt is read first (crate::wikiask); the download goes
+//! month again). The download (a published dump: no robots.txt read, crate::wikiask) goes
 //! through the job's proxy (curl honours `HTTPS_PROXY`: the pool's budget), two months at once.
 //!
 //! Outputs: `heritage` writes data/pageviews/items.json, `items` the job's views.json and meta.json
@@ -489,7 +489,7 @@ impl Months {
             cachefile::make_dir(&self.dir)?;
             eprintln!("  {month}: streaming its dump, every article of the map's languages counted");
             let url = self.dump_url(month);
-            anyhow::ensure!(self.ask.may(&url)?, "{url}: its robots.txt disallows us");
+            crate::fetch::online(&url)?;
             // (A held scratch file of store::cachefile: room-making leaves it while it's written.)
             let (tmp, held) = cachefile::scratch(&local)?;
             let r = self.stream_into(month, &url, &tmp);

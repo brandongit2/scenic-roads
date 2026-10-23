@@ -898,7 +898,7 @@ encoding = "terrarium"
         };
         let g = |id: &str, from: &str| {
             let t = format!(
-                "name = \"N\"\ncredit = \"C\"\nlicence = \"CC0-1.0\"\nterritory = \"world\"\n[data]\nrole = \"geoid\"\n\
+                "name = \"N\"\ncredit = \"C\"\nlicence = \"CC0-1.0\"\nterritory = \"world\"\n[data]\nrole = \"geoid\"\nkind = \"data\"\n\
                  format = \"geoid-grid\"\nurl = \"https://g.org/{id}.tif\"\n[data.params]\nfrom = \"{from}\"\nto = \"EGM2008\""
             );
             let d = crate::inputs::sources::parse(t.as_bytes()).unwrap();
