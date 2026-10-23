@@ -17,6 +17,12 @@
 //!   owner's idleness as the agent's loop reads them (each round, ~20 s; minutes apart when a round is slow). The NAS's latency every 5 s (`NAS_EVERY`), while a build runs (`set_nas`):
 //!   a listing of the project's folder through the records' readers (crate::agent::nasread::probe;
 //!   a stat would be answered from the SMB client's cache), never two at once.
+//! - **The build's limits** as the agent's loop reads them (each round, as the battery): the cores
+//!   the build may use now (all; while the owner uses the Mac, less those kept for them), the
+//!   memory its jobs may hold together, the owner's disk room target and the jobs' disk
+//!   reservations (`record_limits`).
+//! - **Each core's share busy** over the last second, kept apart (not a series) and answered as
+//!   `cores_now`, efficiency cores first.
 //! - **The jobs' NAS traffic** every second (`NasRates`): each job's processes' counts summed from
 //!   their files (store::nasio; the agent's folder per slot; the files of processes that ended
 //!   folded into one first), as rates over the second: bytes read
@@ -90,6 +96,12 @@ pub const DISK: &str = "disk_free_gb";
 pub const BATTERY: &str = "battery_pct";
 pub const AC: &str = "ac";
 pub const IDLE: &str = "idle_s";
+/// The build's limits (`record_limits`): cores, memory (GB), the disk's room target and the jobs'
+/// reservations (GB).
+pub const BUILD_CORES_MAX: &str = "build_cores_max";
+pub const BUILD_MEM_MAX: &str = "build_mem_max_gb";
+pub const DISK_ROOM: &str = "disk_room_gb";
+pub const DISK_RESERVED: &str = "disk_reserved_gb";
 /// The jobs' NAS traffic (store::nasio::Count's order), per second.
 pub const NAS_TRAFFIC: [&str; 7] =
     ["nas_read_mbs", "nas_files_s", "nas_write_mbs", "nas_creates_s", "nas_listed_s", "nas_stats_s", "nas_deletes_s"];
@@ -222,7 +234,8 @@ pub struct Ask {
 }
 
 /// This Mac's size, the charts' scales (`mac` in an answer): its cores, its efficiency cores, its
-/// memory (GB), its NAS call threads. Read once.
+/// memory (GB), its NAS call threads, the battery floor for leading (%) and the owner's idleness
+/// counted away (s). Read once.
 fn mac() -> &'static serde_json::Value {
     static MAC: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
     MAC.get_or_init(|| {
@@ -232,6 +245,9 @@ fn mac() -> &'static serde_json::Value {
             "mem_gb": crate::sys::memsize().map(|b| round(b as f64 / GB)),
             // (Its NAS call threads, crate::agent::nasread: the most calls in flight at once.)
             "nas_threads": crate::agent::nasread::SWITCH_READERS + crate::agent::nasread::READERS + crate::agent::nasread::WRITERS,
+            // (The lead's battery floor on battery, and how long without a touch makes the owner away.)
+            "battery_min": super::cond::BATTERY_MIN,
+            "away_s": super::cond::AWAY_S,
         })
     })
 }
@@ -253,6 +269,8 @@ pub struct Store {
     /// The file stream (module doc), oldest first.
     files: Mutex<std::collections::VecDeque<FileNote>>,
     sampling: AtomicBool,
+    /// Each core's share busy over the last second (`cores_now` in an answer).
+    cores_now: Mutex<Vec<f64>>,
 }
 
 impl std::fmt::Debug for Store {
@@ -284,6 +302,7 @@ impl Store {
             net: Mutex::new(None),
             files: Mutex::default(),
             sampling: AtomicBool::new(false),
+            cores_now: Mutex::new(Vec::new()),
         })
     }
 
@@ -317,6 +336,16 @@ impl Store {
     /// Series `name`'s newest mean by the second, when one is within `fresh_s` of `now`.
     pub fn latest(&self, name: &str, now: u64, fresh_s: u64) -> Option<f64> {
         self.series.lock().ok()?.get(name)?.latest(now.saturating_sub(fresh_s), now)
+    }
+
+    /// The build's limits at `t`, as the agent's loop read them: the cores it may use, the memory
+    /// its jobs may hold together (MB), the owner's disk room target and the jobs' reservations
+    /// (bytes).
+    pub fn record_limits(&self, t: u64, cores: u32, mem_mb: u64, room: u64, reserved: u64) {
+        self.record(BUILD_CORES_MAX, t, f64::from(cores));
+        self.record(BUILD_MEM_MAX, t, mem_mb as f64 / 1024.0);
+        self.record(DISK_ROOM, t, room as f64 / GB);
+        self.record(DISK_RESERVED, t, reserved as f64 / GB);
     }
 
     /// The NAS's latency sampled at `root` while a build runs (None: not sampled).
@@ -364,7 +393,8 @@ impl Store {
 
     /// `/work/live`'s answer at `now` (unix s): `{host, now, step, from, mac, series: {name: [[t,
     /// lo, mean, hi], …]}, net, files}`, each series with a point in the window alone; `mac`, its
-    /// size (`mac()`); unless asked without (`net: false`): `net`, the proxy's counts
+    /// size (`mac()`); `cores_now`, each core's share busy over the last second (none before the
+    /// sampler's second read); unless asked without (`net: false`): `net`, the proxy's counts
     /// (crate::budget::net::Net::view) once it has them, and `files`, the file stream (`FileNote`s,
     /// oldest first).
     pub fn answer(&self, a: &Ask, now: u64) -> serde_json::Value {
@@ -387,7 +417,9 @@ impl Store {
                 .collect(),
             Err(_) => Default::default(),
         };
-        let mut v = serde_json::json!({ "host": self.host, "now": now, "step": step, "from": from, "mac": mac(), "series": out });
+        let cores_now: Vec<f64> =
+            self.cores_now.lock().map(|c| c.iter().map(|f| round(*f)).collect()).unwrap_or_default();
+        let mut v = serde_json::json!({ "host": self.host, "now": now, "step": step, "from": from, "mac": mac(), "series": out, "cores_now": cores_now });
         if a.net != Some(false) {
             if let Some(n) = self.net() {
                 v["net"] = n.view();
@@ -567,6 +599,12 @@ impl Rates {
             _ => None,
         };
         self.cores = now;
+        let busy = busy.map(|(groups, each)| {
+            if let Ok(mut c) = s.cores_now.lock() {
+                *c = each;
+            }
+            groups
+        });
         if let Some([all, e, p]) = busy {
             put(CORES, Some(all));
             put(CORES_E, Some(e));
@@ -679,19 +717,22 @@ const GB: f64 = (1u64 << 30) as f64;
 const MB: f64 = (1u64 << 20) as f64;
 
 /// The cores busy between two reads of their ticks (`crate::sys::core_ticks`), in cores' worth:
-/// all, the first `e` (the efficiency cores), the rest; None when the cores changed.
-fn cores_busy(was: &[(u64, u64)], now: &[(u64, u64)], e: usize) -> Option<[f64; 3]> {
+/// all, the first `e` (the efficiency cores), the rest; and each core's share; None when the
+/// cores changed.
+fn cores_busy(was: &[(u64, u64)], now: &[(u64, u64)], e: usize) -> Option<([f64; 3], Vec<f64>)> {
     if was.len() != now.len() || now.is_empty() {
         return None;
     }
     let mut out = [0.0; 3];
+    let mut each = Vec::with_capacity(now.len());
     for (i, (a, b)) in was.iter().zip(now).enumerate() {
         let all = b.1.saturating_sub(a.1);
         let f = if all == 0 { 0.0 } else { b.0.saturating_sub(a.0) as f64 / all as f64 };
         out[0] += f;
         out[if i < e { 1 } else { 2 }] += f;
+        each.push(f);
     }
-    Some(out)
+    Some((out, each))
 }
 
 /// The jobs' NAS counts, the most yet read, for their rates (module doc).
@@ -876,9 +917,9 @@ mod tests {
         // (Two efficiency cores, then two performance ones: half, idle, all, a quarter.)
         let was = [(0, 0), (10, 100), (0, 0), (5, 5)];
         let now = [(50, 100), (10, 200), (100, 100), (30, 105)];
-        assert_eq!(cores_busy(&was, &now, 2), Some([1.75, 0.5, 1.25]));
+        assert_eq!(cores_busy(&was, &now, 2), Some(([1.75, 0.5, 1.25], vec![0.5, 0.0, 1.0, 0.25])));
         // (No ticks between: idle; the cores changed: none.)
-        assert_eq!(cores_busy(&now, &now, 2), Some([0.0; 3]));
+        assert_eq!(cores_busy(&now, &now, 2), Some(([0.0; 3], vec![0.0; 4])));
         assert_eq!(cores_busy(&was[..3], &now, 2), None);
         assert_eq!(cores_busy(&[], &[], 0), None);
     }
@@ -1037,5 +1078,20 @@ mod tests {
         let mut r = Rates::default();
         let d = tempfile::tempdir().unwrap();
         assert!(r.notes(&[(0, 1, d.path().to_path_buf())]).is_empty());
+    }
+
+    /// Task #609: the build's limits as series; each core's share answered apart.
+    #[test]
+    fn an_answer_says_the_limits_and_each_core() {
+        let s = Store::new(None, "m1");
+        let t = 1_000_000_000;
+        s.record_limits(t, 8, 12 * 1024, 20 << 30, 5 << 29);
+        *s.cores_now.lock().unwrap() = vec![0.5, 0.123456];
+        let v = s.answer(&Ask { range: Some(60), net: Some(false), ..Default::default() }, t + 1);
+        assert_eq!(v["series"][BUILD_CORES_MAX][0][2], 8.0);
+        assert_eq!(v["series"][BUILD_MEM_MAX][0][2], 12.0);
+        assert_eq!(v["series"][DISK_ROOM][0][2], 20.0);
+        assert_eq!(v["series"][DISK_RESERVED][0][2], 2.5);
+        assert_eq!(v["cores_now"], serde_json::json!([0.5, round(0.123456)]));
     }
 }

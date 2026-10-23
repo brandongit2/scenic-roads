@@ -3,7 +3,7 @@
 // band faint when asked, filled or stacked when asked), the scale's lines and its top in the unit,
 // reference lines (a Mac's cores), the gaps where its Mac was silent shaded, the time below when
 // asked; under the pointer, the time and each series' value there.
-import { fmt, hhmm, runs, ticks, timeTicks, topOf } from "./chartmath.js";
+import { fmt, gapOver, hhmm, runs, ticks, timeTicks, topOf } from "./chartmath.js";
 
 const opts = new WeakMap();
 const hover = new WeakMap();
@@ -28,8 +28,9 @@ function fit(c) {
 
 /** Draws chart `o` on canvas `c` (again on each call, and as the pointer moves over it):
  * `{from, to, step, series: [{points, colour, label, fill, band, unit}], stacked, unit, least, max,
- *   refs: [{v, label}], gaps: [{from, to}], axis, colourOf(point)}` — `colourOf` colours a line by
- * its points (memory by its pressure); `axis` draws the time and the scale's labels. */
+ *   refs: [{v, label}], gaps: [{from, to}], axis, colourOf(point), shade: {points, colour}}` —
+ * `colourOf` colours a line by its points (memory pressure by its level); `shade` shades the
+ * spans a state was on (mains power, the owner present); `axis` draws the time and the scale's labels (`times: false`: the scale's alone). */
 export function draw(c, o) {
   opts.set(c, o);
   if (!c.dataset.hover) {
@@ -48,7 +49,7 @@ function paint(c) {
   const [g, W, H] = fit(c);
   const k = tokens(c);
   g.clearRect(0, 0, W, H);
-  const bottom = o.axis ? 13 : 0;
+  const bottom = o.axis && o.times !== false ? 13 : 0;
   const top = o.axis ? 2 : 1;
   const ph = Math.max(1, H - bottom - top);
   const span = Math.max(1, o.to - o.from);
@@ -66,6 +67,18 @@ function paint(c) {
     if (x1 - x0 < 0.5) continue;
     g.globalAlpha = 0.35;
     g.fillRect(x0, top, x1 - x0, ph);
+    g.globalAlpha = 1;
+  }
+  // A state's spans shaded behind (`shade`: a point's mean at least half on; on till the next
+  // point, a gap's width at most).
+  if (o.shade) {
+    const p = o.shade.points || [];
+    g.fillStyle = o.shade.colour; g.globalAlpha = 0.16;
+    p.forEach((q, i) => {
+      if (q[2] < 0.5) return;
+      const end = Math.min(p[i + 1] ? p[i + 1][0] : o.to, q[0] + gapOver(o.step));
+      g.fillRect(X(q[0]), top, Math.max(1, X(end) - X(q[0])), ph);
+    });
     g.globalAlpha = 1;
   }
   // The scale's lines.
@@ -121,7 +134,7 @@ function paint(c) {
     g.textAlign = "left";
     g.fillText(fmt(max, o.unit), 2, top + 1);
     g.textBaseline = "bottom";
-    for (const tk of timeTicks(o.from, o.to, Math.max(2, Math.floor(W / 70)))) {
+    if (o.times !== false) for (const tk of timeTicks(o.from, o.to, Math.max(2, Math.floor(W / 70)))) {
       const x = X(tk.t);
       g.textAlign = x < 20 ? "left" : x > W - 20 ? "right" : "center";
       g.fillText(tk.label, x, H);

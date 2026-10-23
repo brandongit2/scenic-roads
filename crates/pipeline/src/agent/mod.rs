@@ -9090,6 +9090,10 @@ impl Agent {
         if c.idle_s != u64::MAX {
             l.record(live::IDLE, t, c.idle_s as f64);
         }
+        // (The cores the build may use now: all, less those kept for the owner while they use the Mac.)
+        let cores = std::thread::available_parallelism().map_or(4, |n| n.get() as u32);
+        let kept = if c.user_active() { share::cores(self.in_use_share.as_ref(), cores) } else { 0 };
+        l.record_limits(t, cores - kept, self.build_room(), self.floor(), self.reserved(None));
         if !l.has_net() {
             if let Some(n) = self.proxy.as_ref().and_then(|p| p.net()) {
                 l.set_net(n);

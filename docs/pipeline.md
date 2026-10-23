@@ -213,12 +213,21 @@ same tab; an alert links to the tab that says more.
   target under way against the step's `each_s`, its targets done, its NAS and internet bytes);
   then **Live** (`live.js`): the Mac's own `/work/live`, asked every 1.5 s while the tab is shown
   (the footer's range, then the points since), drawn by `chart.js` (its sums in `chartmath.js`,
-  tested by web/test/chartmath.test.mjs): Transfers (the jobs' NAS reads and writes, the internet
-  in and out, each said as its last minute's mean) and Cores (the build's and the rest's, stacked, against the Mac's cores and its
-  P cores) with axes; compact rows for CPU and load, memory in use coloured by its pressure with
-  the build's and the swap, the disk's free space and writes, the battery (read by the agent's
-  loop, said while under 15 min old), the NAS's answer time;
-  gaps where the Mac was silent shaded, and a footer with the range, the resolution and how long
+  tested by web/test/chartmath.test.mjs), as docs/mockups/build-live.html's vitals: each core's
+  share busy now (bars, efficiency cores first: `cores_now`); Transfers (the jobs' NAS reads and
+  writes, the internet in and out, each said as its last minute's mean; the time below it); then a
+  chart a measure, its scale's top and its figures beside it: CPU use (the build's and the rest's,
+  stacked, against the Mac's cores and the cores the build may use now; P and E said), the load
+  (against the cores; what waits for a core said), memory (the build's and the rest's, stacked, in
+  GB, against the build's memory), its pressure (100 % less memory free, the line coloured by
+  macOS's level, 50 % and 80 % dashed), the swap (GB), the disk's free space (against the room
+  target; the jobs' reservations said), its writes, the battery (shaded while on mains, against
+  the lead's floor on battery), the NAS's answer time with the calls in flight and missed, and
+  whether the owner is using the Mac (shaded while so; how long since a touch). What the agent's
+  loop reads (power, idleness, the limits) is said while under 15 min old. Of the mockup, not
+  drawn: the heat (macOS gives no thermal reading without private interfaces or root), compressed
+  memory and the disk's size (not read), and setting a limit from its dashed line (the Settings
+  rows below set them). Gaps where the Mac was silent shaded, and a footer with the range, the resolution and how long
   it was silent. What the lead offered a member is one line (its steps and the pieces it can
   take), the steps on a click. Pages one card.
 - **The pool:** `pool.js`, under the machines (the Machines tab).

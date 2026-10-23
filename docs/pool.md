@@ -1051,7 +1051,9 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   `cores_busy_e`, `cores_busy_p`: `host_processor_info`'s ticks over the second, the efficiency
   cores the first processors, as many as the last perf level's `logicalcpu` (named Efficiency;
   checked on the M1 and the Mac mini by ioreg's cluster types); "P" is every other core, Super
-  and Performance together on a three-level chip such as the Mac mini's; no per-core series); the build against
+  and Performance together on a three-level chip such as the Mac mini's; no per-core series: each
+  core's share over the last second is kept apart and answered as `cores_now`, efficiency cores
+  first, task #609); the build against
   the rest of the Mac (task #515): its jobs' CPU in cores' worth (`build_cores`, their processes'
   `proc_pid_rusage` over the second) and the rest's (`others_cores`: the cores busy less the
   build's), their memory (`build_mem_gb`, the jobs' physical footprints; `others_mem_gb`: the
@@ -1061,7 +1063,11 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   a job's first second sets its baseline, and a process's last moment before it ends isn't counted.
   The sampler's own CPU time (`sampler_cpu_ms`, its CPU time a second, the overhead's own measure; each job adds a `proc_pid_rusage` a process). No
   thermal series: macOS gives none without private interfaces or root. Every 10 s the disk's free space (`disk_free_gb`); the power (`ac`, `battery_pct`) and
-  the owner's idleness (`idle_s`) as each loop reads them. The NAS's latency (`nas_ms`) every 5 s
+  the owner's idleness (`idle_s`) as each loop reads them, and with them the build's limits (task
+  #609): the cores it may use now (`build_cores_max`: all, less those kept for the owner while
+  they use the Mac), the memory its jobs may hold together (`build_mem_max_gb`), the owner's room
+  target (`disk_room_gb`) and the jobs' disk reservations (`disk_reserved_gb`). An answer's `mac`
+  also says the lead's battery floor (`battery_min`) and the idleness counted away (`away_s`). The NAS's latency (`nas_ms`) every 5 s
   only while a build runs here (a job of this Mac's, or its coordinator's leases out): a listing
   of the project's folder on the records' readers, timed inside the reader (`nasread::probe`; a
   stat would come from macOS's SMB attribute cache; never two at once, one past 20 s dropped);
