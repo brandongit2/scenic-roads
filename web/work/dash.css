@@ -151,25 +151,30 @@ button.reftag:hover, button.reftag:focus-visible { border-style: solid; outline:
 .pages .pg:first-of-type { border-top: 0; }
 
 /* The Jobs tab's schedule: each Mac's name over its slots' lanes; segments in the stages' colours
-   (ran: solid; failed: outlined red; running: bright, to the now line; to come: faint); the now
-   line; a dense time axis. */
-.sched { position: relative; }
+   (ran: solid; failed: outlined red; running: bright, to the now line; to come: faint, square-cornered);
+   the now line; a dense time axis. */
+.sched { position: relative; --lw: 96px; }
 .schedtop { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; margin-bottom: 6px; }
 .schedtop span:last-child { margin-left: auto; }
 select.past { margin-left: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; font: inherit; font-size: 11.5px; padding: 1px 4px; }
-.sched .lanes { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 2px 8px; align-items: center; }
-@media (max-width: 719px) { .sched .lanes { grid-template-columns: 56px minmax(0, 1fr); } }
+.sched .lanes { display: grid; grid-template-columns: var(--lw) minmax(0, 1fr); gap: 2px 8px; align-items: center; }
+@media (max-width: 719px) { .sched { --lw: 56px; } }
 .sched .gh { font-size: 11px; font-weight: 600; padding-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sched .ghr { border-bottom: 1px solid var(--row-line); align-self: end; }
 .sched .ln { font-size: 10.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
 .sched .track { position: relative; height: 13px; background: var(--bg); border-radius: 2px; overflow: hidden; }
-.sched .track > i { position: absolute; top: 1px; bottom: 1px; border-radius: 1.5px; min-width: 2px; cursor: pointer; }
+.sched .track > i { position: absolute; top: 1px; bottom: 1px; min-width: 2px; cursor: pointer; }
 .sched .track > i.past { opacity: .8; }
 .sched .track > i.failed { box-shadow: inset 0 0 0 1px var(--bad); }
 .sched .track > i.running { top: 0; bottom: 0; box-shadow: inset 0 0 0 1px var(--mark); }
 .sched .track > i.next { opacity: .4; }
 .sched .track > i:hover { opacity: 1; filter: brightness(1.15); }
-.sched .track > .nowl { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--mark); opacity: .7; pointer-events: none; }
+/* The now line: red, through every lane down to the axis, capped by a dot with "now" to its right. */
+.sched .lanewrap { position: relative; padding-top: 14px; }
+.sched .nowcap { position: absolute; top: 3px; bottom: 18px; z-index: 1; left: calc(var(--lw) + 8px + (100% - var(--lw) - 8px) * var(--f)); pointer-events: none; }
+.sched .nowcap::before { content: ""; position: absolute; left: -3.5px; top: 0; width: 7px; height: 7px; border-radius: 50%; background: var(--bad); }
+.sched .nowcap > span { position: absolute; left: 7px; top: -4px; font-size: 10px; color: var(--bad); white-space: nowrap; }
+.sched .nowcap::after { content: ""; position: absolute; left: -0.5px; top: 6px; bottom: 0; width: 1px; background: var(--bad); }
 .sched .track.outs { background: none; overflow: visible; }
 .sched .track.outs > b { position: absolute; top: 1px; bottom: 1px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--mark); opacity: .75; cursor: pointer; }
 .sched .track.outs > b:hover { opacity: 1; }
@@ -179,7 +184,6 @@ select.past { margin-left: 4px; background: var(--bg); color: var(--text); borde
 .sched .axis > span { position: absolute; top: 3px; transform: translateX(-50%); white-space: nowrap; }
 .sched .axis > span::before { content: ""; position: absolute; left: 50%; top: -3px; width: 1px; height: 5px; background: var(--dim); }
 .sched .axis > span.day { color: var(--text); font-weight: 600; }
-.sched .axis > span.now { color: var(--text); }
 .legend .keys { display: inline-flex; gap: 4px; align-items: center; }
 .legend .keys i { width: 14px; height: 8px; margin: 0 0 0 6px; background: var(--dim); }
 .legend .keys i:first-child { margin-left: 0; }
@@ -270,11 +274,11 @@ select.past { margin-left: 4px; background: var(--bg); color: var(--text); borde
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .seg button { border: 0; border-radius: 0; background: transparent; color: var(--dim); padding: 3px 9px; }
 .seg button.on { background: var(--primary-bg); color: var(--primary-fg); }
-/* Regions: the list and the map, split by a bar to drag; the list virtual (rows placed by their
-   index, ROW_H = 40 px in dash.js). Stacked, the map first, below 720 px. */
-.rpane { display: grid; grid-template-columns: minmax(0, var(--split, 42%)) 9px minmax(0, 1fr); height: clamp(420px, calc(100vh - 150px), 900px); }
-.rleft, .rright { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.rleft .regbar { margin-bottom: 4px; }
+/* Regions: the map over the list, split by a bar to drag; the list virtual (rows placed by their
+   index, ROW_H = 40 px in dash.js). On a phone the bar is gone: a fixed map, the list below. */
+.rpane { display: grid; grid-template-rows: minmax(0, var(--split, 50%)) 9px minmax(0, 1fr); height: clamp(480px, calc(100vh - 150px), 1200px); }
+.rlistp, .rmapp { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.rlistp .regbar { margin-bottom: 4px; }
 .rtotals { margin: 0 2px 4px; line-height: 1.35; }
 .rlist { position: relative; flex: 1 1 auto; min-height: 0; overflow: auto; border-top: 1px solid var(--line); overscroll-behavior: contain; }
 .rrows { position: relative; }
@@ -289,16 +293,16 @@ select.past { margin-left: 4px; background: var(--bg); color: var(--text); borde
 .sbar { flex: 0 0 96px; display: flex; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
 .sbar > i { display: block; height: 100%; }
 .rstages { display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 5px 2px 0; }
-.rsplit { cursor: col-resize; position: relative; touch-action: none; outline: none; }
-.rsplit::after { content: ""; position: absolute; top: 0; bottom: 0; left: 4px; width: 1px; background: var(--line); }
-.rsplit:hover::after, .rsplit.on::after, .rsplit:focus-visible::after { left: 3px; width: 3px; border-radius: 2px; background: var(--accent); }
-.rright .wmap-wrap { flex: 1 1 auto; min-height: 0; }
-.rright .wmap { height: 100%; aspect-ratio: auto; max-height: none; }
+.rsplit { cursor: row-resize; position: relative; touch-action: none; outline: none; }
+.rsplit::after { content: ""; position: absolute; left: 0; right: 0; top: 4px; height: 1px; background: var(--line); }
+.rsplit:hover::after, .rsplit.on::after, .rsplit:focus-visible::after { top: 3px; height: 3px; border-radius: 2px; background: var(--accent); }
+.rmapp .wmap-wrap { flex: 1 1 auto; min-height: 0; }
+.rmapp .wmap { height: 100%; aspect-ratio: auto; max-height: none; }
 @media (max-width: 719px) {
-  .rpane { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; height: auto; }
+  .rpane { grid-template-rows: auto auto; height: auto; }
   .rsplit { display: none; }
-  .rright { order: -1; margin-bottom: 8px; }
-  .rright .wmap-wrap { height: 260px; flex: none; }
+  .rmapp { margin-bottom: 8px; }
+  .rmapp .wmap-wrap { height: 260px; flex: none; }
   .rlist { height: 62vh; flex: none; }
 }
 

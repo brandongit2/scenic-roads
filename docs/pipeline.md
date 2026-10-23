@@ -159,7 +159,7 @@ same tab; an alert links to the tab that says more.
 - **Header's verdict:** one sentence (state, done ≈, next on the map), the alerts as chips, the
   pause controls: Pause (each job stops at its next safe point), Freeze (each job frozen where it
   is, after a confirm), Resume.
-- **Footer:** the range the Machines tab's live charts show (1 min to 72 h, this browser's own,
+- **Footer:** the range the Machines tab's live charts show (1, 5, 10 or 30 min, 1, 2, 6, 24 or 72 h; this browser's own,
   kept); the Live dot, green and blinking while the
   build's state answered in the last 30 s, else Stale with the time of the last answer.
 - **Overview tab:** the gate's banners (held inputs), the overview, then the world map.
@@ -167,8 +167,9 @@ same tab; an alert links to the tab that says more.
   each step's targets done at the forecast's time for a target of it, `each_s`, measured or
   estimated, of that plus the forecast's work left; 100% only when every stage is done), how long
   (the same work left), the stages as a coloured strip (each segment with the Jobs tab's stage card on hover, pinned on click or tap); two numbers that aren't a step's
-  (the map's last update with its catalogue's number and kind (with the low
-  zooms or map tiles only), the next ≈ and the map tiles to draw; machines working).
+  (the last catalogue: its time, how long ago, its number and kind (with the low
+  zooms or map tiles only); the next catalogue ≈ and the map tiles to draw; each Mac by name,
+  a line each, with its jobs, idle or out of touch).
 - **World map** (`worldmap.js`, a canvas in Web Mercator, the world 0–1000 each way): the z3 grid
   (z6's too once its cells are 24 px), opening on the whole world (about 82° N to 66° S) and zoomed out at most to the world filling the box's width, a crosshair over it, the countries (`countries.json`), the regions' outlines
   (`/work/regions`) coloured by state (on the map or done, building, to come; counted in the
@@ -209,15 +210,15 @@ same tab; an alert links to the tab that says more.
   first, a Mac gone after), each segment in its stage's colour (a `--st-<stage>` token in
   index.html, a hue each in either theme): the jobs that ran (the history's job ends: a lead's
   `end` on its slot's lane, a worker's leased `done` or `fail`, which names no slot, on its Mac's
-  first lane free by then; back as far as the Past jobs choice: none, 1 h, 6 h, 24 h, 3 days or
-  7 days, this browser's own; read back from `/work/history` 5 000 events at a time, about 3.4 MB
+  first lane free by then; back as far as the Show past jobs choice: none, the past 1, 2, 6, 24,
+  48 or 72 hours or 7 days, this browser's own; read back from `/work/history` 5 000 events at a time, about 3.4 MB
   of JSON in four asks for a week's ~18 000 events, measured 23 Oct; runs of one step closer than
   a pixel packed into one segment: `sums.js` pastRuns, packRuns, laneGroups, pastFrom, tested by
   tools/check/worksums.test.mjs). A Mac's lanes are one group whatever names its slots had: an
   older agent's "(second job)" is slot 2, and a name that starts a Mac's current one up to a "-"
   is that Mac (`sums.js` macSlot: macOS renamed "Mac-mini" to "Mac-mini-de-Brandon"; the history
   names no Mac otherwise). Failed ones outlined red, those running now (to the now line)
-  and the forecast's to come, faint; a now line; each region's mark where it's all on the map; a
+  and the forecast's to come, faint; a red now line capped by a dot labelled "now"; each region's mark where it's all on the map; a
   dense time axis (`chartmath.js` timeTicks, midnight a day's name); the pages' lane when a page
   helps.
 - **Jobs tab, the stages:** a list: a stage's line (mark, title, counts, bar), then a row per step

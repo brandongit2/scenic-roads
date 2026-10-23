@@ -317,10 +317,12 @@ function overview(m) {
   const stagesLine = h("div", "small dim", lines.length ? `${fin} of ${lines.length} stages done${nowLines.length ? ` · now: ${nowLines.join(", ")}` : ""}` : "");
   const cat = lastCatalogue(m);
   const nextUpdate = nextOnMap(m);
-  const busy = m.macs.filter((x) => x.fresh && jobsOf(x.status).length).length;
+  // Each Mac by name, a line each, with what it's doing.
+  const doing = (x) => { const k = jobsOf(x.status).length; return !x.fresh ? "out of touch" : k ? plural(k, "job") : "idle"; };
   const kpis = h("div", "kpis",
-    kpi("Map last updated", cat ? ago(now, cat.at) : "–", [cat?.n != null ? `catalogue ${cat.n}${cat.kind ? `, ${cat.kind}` : ""}` : "", nextUpdate ? `next ≈ ${clock(nextUpdate.at)}` : "", m.a.publishing?.tiles ? `${plural(m.a.publishing.tiles, "map tile")} to draw` : ""].filter(Boolean).join(" · ") || null),
-    kpi("Machines", `${busy} of ${m.macs.length} Macs working`, m.pages.length ? `and ${plural(m.pages.length, "page")}` : null),
+    kpi("Last catalogue", cat ? `${clock(cat.at)} (${ago(now, cat.at)})` : "–", cat?.n != null ? `catalogue ${cat.n}${cat.kind ? `, ${cat.kind}` : ""}` : null),
+    kpi("Next catalogue", nextUpdate ? `≈ ${clock(nextUpdate.at)}` : "–", m.a.publishing?.tiles ? `${plural(m.a.publishing.tiles, "map tile")} to draw` : null),
+    kpi("Machines", h("div", null, m.macs.map((x) => h("div", null, x.name, h("span", "small dim", ` · ${doing(x)}`)))), m.pages.length ? `and ${plural(m.pages.length, "page")}` : null),
   );
   return h("div", "overview", h("div", "box", left, strip, stagesLine), kpis);
 }
@@ -423,11 +425,11 @@ function mapLegend(m, md) {
   const { regs, running, done, world } = md;
   const count = (st) => regs.filter((r) => r.state === st).length;
   const key = (cls, text) => h("span", "lg", h("i", cls), text);
-  const span = PAST.find(([s]) => s === ui.past)?.[1] || "6 h";
+  const span = (PAST.find(([s]) => s === ui.past)?.[1] || "Past 6 hours").toLowerCase();
   return [h("div", "wmap-legend small dim",
     regs.length ? [key("rg on", `${count("on") + count("done")} on the map`), key("rg building", `${count("building")} building`), key("rg queued", `${count("queued")} to come`)] : h("span", null, "No regions' outlines from this Mac yet"),
     key("tl run", `${plural(running.size, "tile")} running`),
-    key("tl fin", `${plural(done.size, "tile")} finished in the last ${span}`),
+    ui.past ? key("tl fin", `${plural(done.size, "tile")} finished in the ${span}`) : null,
     world.length ? h("span", null, `whole world: ${world.map((r) => `${S.title(r.step)} (${r.mac})`).join(", ")}`) : null,
     h("span", "hint", "drag to move · pinch, double-click or +/− to zoom")),
   h("div", "wmap-legend wmap-stages small dim", table.stages.map((g) => h("span", "lg", h("i", { style: { background: stageColour(g.id), borderColor: "transparent" } }), g.title)),
@@ -766,7 +768,7 @@ function shortNames(m) {
 
 // ---- Jobs: the schedule ------------------------------------------------------------------------------
 // The past jobs the schedule may show: how far back (this browser's own, kept).
-const PAST = [[0, "none"], [3600, "1 h"], [6 * 3600, "6 h"], [86400, "24 h"], [3 * 86400, "3 days"], [7 * 86400, "7 days"]];
+const PAST = [[0, "None"], [3600, "Past hour"], [2 * 3600, "Past 2 hours"], [6 * 3600, "Past 6 hours"], [86400, "Past 24 hours"], [2 * 86400, "Past 48 hours"], [3 * 86400, "Past 72 hours"], [7 * 86400, "Past 7 days"]];
 // The jobs' ends from the history further back than the page's own events (`/work/history`, a
 // chunk at a time back to the past chosen: sums.js pastFrom), in the numbering they were read in.
 const past = { ends: [], epoch: undefined, first: null, asking: false };
@@ -846,7 +848,6 @@ function schedule(m) {
   };
   const stagesSeen = new Set();
   const lanes = h("div", "lanes");
-  const nowLine = () => h("b", { class: "nowl", style: { left: x(now) } });
   const segment = (track, r, kind, key) => {
     const seg = withCard(h("i", { class: `${kind}${kind === "past" && !r.ok ? " failed" : ""}` }), key, () => runCard(m, r, kind, laneName));
     Object.assign(seg.style, { left: x(r.from), width: `max(2px, calc(${x(r.until)} - ${x(r.from)}))`, background: S.colour(r.step) });
@@ -861,7 +862,6 @@ function schedule(m) {
       for (const r of packRuns(pastAll.filter((r) => r.lane === nm), gap)) segment(track, r, "past", `p ${nm} ${r.seq}`);
       for (const r of running.filter((r) => r.lane === nm)) segment(track, r, "running", `r ${nm} ${r.job.id}`);
       for (const l of fcLanes[nm] || []) if (l.until > now && l.from < t1) segment(track, { ...l, from: Math.max(l.from, now), lane: nm }, "next", `f ${nm} ${l.from} ${l.step}`);
-      track.append(nowLine());
       lanes.append(h("div", { class: "ln", title: nm }, `${slotNo(nm, g.host) ?? nm}`), track);
     }
   }
@@ -875,7 +875,6 @@ function schedule(m) {
     const who = m.pages.length > 1 ? `Pages (${m.pages.length})` : m.pages[0].label;
     const track = h("div", "track");
     for (const t of helps) for (const l of own.filter((l) => l.step === t.of && l.until > now)) segment(track, { ...l, from: Math.max(l.from, now), step: t.id, lane: who, what: `${t.title} as the lead runs ${S.said(t.of, l.n)}` }, "next", `g ${t.id} ${l.from}`);
-    track.append(nowLine());
     lanes.append(h("div", "gh", "Pages"), h("div", "ghr"), h("div", { class: "ln", title: m.pages.map((p) => p.label).join(", ") }, who), track);
   }
   // Each region all on the map as it's built now: a mark at its `map_at` (several at one time, one).
@@ -902,13 +901,15 @@ function schedule(m) {
   const reaching = ui.past && past.first && past.first.t > t0 && past.asking ? h("span", "dim", " · reading further back…") : null;
   const pick = h("select", { class: "past", title: "How far back the schedule shows the jobs that ran (the history keeps 7 days)", onchange: (e) => { e.target.blur(); ui.past = +e.target.value; ctx.store.set("past", ui.past); render(); loadPast(last); } },
     PAST.map(([s, t]) => h("option", { value: s, selected: s === ui.past }, t)));
-  const top = h("div", "schedtop", h("label", "small dim", "Past jobs ", pick), reaching, h("span", "small dim", fc?.done_at ? `done ≈ ${clock(fc.done_at)}` : fc ? "" : "no forecast yet (it comes with the lead's next plan)"));
+  const top = h("div", "schedtop", h("label", "small dim", "Show past jobs ", pick), reaching, h("span", "small dim", fc?.done_at ? `done ≈ ${clock(fc.done_at)}` : fc ? "" : "no forecast yet (it comes with the lead's next plan)"));
   if (!groups.length && !helps.length) return h("div", "sched", top, h("div", "small dim", "Nothing ran or is planned in this window."));
-  return h("div", "sched", top, cut || null, h("div", "lanewrap", lanes), legend);
+  const cap = h("div", "nowcap", h("span", null, "now"));
+  cap.style.setProperty("--f", ((Math.max(t0, Math.min(t1, now)) - t0) / span).toFixed(5));
+  return h("div", "sched", top, cut || null, h("div", "lanewrap", lanes, cap), legend);
 }
 
 // A dense time axis under the lanes: a tick at each round time (chartmath.js timeTicks, by local
-// time, midnight a day's name), smaller ones between, "now" at the now line.
+// time, midnight a day's name), smaller ones between, none crowding the now line (its cap says "now").
 function timeAxis(t0, t1, now, x) {
   const most = Math.max(4, Math.round((Math.min(window.innerWidth, 1400) - 160) / 70));
   const major = timeTicks(t0, t1, most);
@@ -919,7 +920,6 @@ function timeAxis(t0, t1, now, x) {
     const label = t.label === "00:00" ? DAYS[d.getDay()] : t.label;
     if (Math.abs(t.t - now) > (t1 - t0) / most / 2) axis.append(h("span", { class: label === t.label ? "" : "day", style: { left: x(t.t) } }, label));
   }
-  axis.append(h("span", { class: "now", style: { left: x(now) } }, "now"));
   return axis;
 }
 
@@ -998,7 +998,7 @@ function stepCard(m, it, { fin, now, next, since }) {
 }
 
 // ---- Regions --------------------------------------------------------------------------------------
-// The Regions tab: the regions in a list beside the world map, split by a bar to drag. The list
+// The Regions tab: the world map over the regions' list, split by a bar to drag. The list
 // (virtual: only the rows in view are made) orders them as they reach the map, by name or by
 // work left, found by any folder's name; each row its folders, state, when it's done and on the
 // map, its tiles built and a bar of its work left by stage (its targets left at each step's
@@ -1006,7 +1006,7 @@ function stepCard(m, it, { fin, now, next, since }) {
 // on the map and its card. Kept across the page's renders (its scroll, search and split with it).
 const ui = { order: "map", filter: "", feed: "all", past: 6 * 3600 };
 const ROW_H = 40;
-const rp = { section: null, el: null, map: null, list: null, rowsEl: null, rows: [], shown: [], maxS: 0, win: null, lit: null, split: 0.42 };
+const rp = { section: null, el: null, map: null, list: null, rowsEl: null, rows: [], shown: [], maxS: 0, win: null, lit: null, split: 0.5 };
 
 // A download's size in words: "640 MB", "9.0 GB".
 const size = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1e6))} MB`);
@@ -1121,24 +1121,24 @@ function light(id) {
   for (const el of rp.rowsEl.children) el.classList.toggle("lit", el.dataset.id === id);
 }
 
-// The split: the list's share of the width, dragged (pointer), stepped (arrow keys) or reset
+// The split: the map's share of the height, dragged (pointer), stepped (arrow keys) or reset
 // (double click); kept in this browser.
 const SPLIT = [0.25, 0.7];
 function setSplit(f, keep) {
   rp.split = Math.max(SPLIT[0], Math.min(SPLIT[1], f));
   rp.el.style.setProperty("--split", `${(rp.split * 100).toFixed(1)}%`);
-  if (keep) ctx.store.set("regionsSplit", rp.split);
+  if (keep) ctx.store.set("regionsMapSplit", rp.split);
 }
 function splitter() {
-  const bar = h("div", { class: "rsplit", role: "separator", "aria-orientation": "vertical", "aria-label": "The list's share of the width", tabindex: "0", title: "Drag to share the width · double-click to reset" });
+  const bar = h("div", { class: "rsplit", role: "separator", "aria-orientation": "horizontal", "aria-label": "The map's share of the height", tabindex: "0", title: "Drag to share the height · double-click to reset" });
   let drag = false;
   bar.addEventListener("pointerdown", (e) => { drag = true; bar.setPointerCapture(e.pointerId); bar.classList.add("on"); e.preventDefault(); });
-  bar.addEventListener("pointermove", (e) => { if (!drag) return; const r = rp.el.getBoundingClientRect(); setSplit((e.clientX - r.left) / r.width, false); });
+  bar.addEventListener("pointermove", (e) => { if (!drag) return; const r = rp.el.getBoundingClientRect(); setSplit((e.clientY - r.top) / r.height, false); });
   const end = () => { if (!drag) return; drag = false; bar.classList.remove("on"); setSplit(rp.split, true); };
   bar.addEventListener("pointerup", end);
   bar.addEventListener("pointercancel", end);
-  bar.addEventListener("dblclick", () => setSplit(0.42, true));
-  bar.addEventListener("keydown", (e) => { const d = { ArrowLeft: -0.02, ArrowRight: 0.02 }[e.key]; if (d) { e.preventDefault(); setSplit(rp.split + d, true); } });
+  bar.addEventListener("dblclick", () => setSplit(0.5, true));
+  bar.addEventListener("keydown", (e) => { const d = { ArrowUp: -0.02, ArrowDown: 0.02 }[e.key]; if (d) { e.preventDefault(); setSplit(rp.split + d, true); } });
   return bar;
 }
 
@@ -1166,10 +1166,10 @@ function regionsPane(m, md) {
     rp.list.addEventListener("pointerleave", () => light(null));
     rp.legend = h("div");
     rp.el = h("div", "rpane",
-      h("div", "rleft", h("div", "regbar", find, rp.seg, rp.count), rp.totals, rp.list, rp.stages),
+      h("div", "rmapp", rp.map.el, rp.legend),
       splitter(),
-      h("div", "rright", rp.map.el, rp.legend));
-    setSplit(Number(ctx.store.get("regionsSplit", 0.42)) || 0.42, false);
+      h("div", "rlistp", h("div", "regbar", find, rp.seg, rp.count), rp.totals, rp.list, rp.stages));
+    setSplit(Number(ctx.store.get("regionsMapSplit", 0.5)) || 0.5, false);
     rp.section = section("d-regions", null, null, h("div", "box", rp.el));
   }
   rp.rows = md.rows;

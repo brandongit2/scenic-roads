@@ -216,7 +216,7 @@ async function run() {
     if (!s) check("regions: the split pane drags (900 px)", false, "no split bar shown");
     else {
       const f0 = await split();
-      await drag(s[0], s[1], -80, 0);
+      await drag(s[0], s[1], 0, -80);
       const f1 = await split();
       check("regions: the split pane drags (900 px)", f0 !== f1, `${f0 || "unset"} → ${f1 || "unset"}`);
     }

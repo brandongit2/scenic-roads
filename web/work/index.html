@@ -65,6 +65,7 @@
   #live i { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
   #live.on i { background: var(--ok); animation: blink 2s ease-in-out infinite; }
   #live.stale i { background: var(--warn); }
+  #live.on b { color: var(--ok); } #live.stale b { color: var(--warn); }
   #live b { font-weight: 600; color: var(--text); }
   @keyframes blink { 50% { opacity: .35; } }
   @media (prefers-reduced-motion: reduce) { #live.on i { animation: none; } }
@@ -652,7 +653,7 @@ showTab();
 
 // ---- The footer: the charts' range (this browser's own, kept), and the Live dot ---------------------
 // (The range is the Machines tab's live charts', from each Mac's /work/live: live.js, docs/pipeline.md §5.)
-const RANGES = [[60, "1 min"], [300, "5 min"], [900, "15 min"], [3600, "1 h"], [21600, "6 h"], [86400, "24 h"], [259200, "72 h"]];
+const RANGES = [[60, "1 min"], [300, "5 min"], [600, "10 min"], [1800, "30 min"], [3600, "1 h"], [7200, "2 h"], [21600, "6 h"], [86400, "24 h"], [259200, "72 h"]];
 {
   const kept = store.get("range", 3600);
   $("range").replaceChildren(...RANGES.map(([v, t]) => { const o = document.createElement("option"); o.value = String(v); o.textContent = t; o.selected = v === kept; return o; }));
