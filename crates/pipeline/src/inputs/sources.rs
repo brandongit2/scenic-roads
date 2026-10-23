@@ -38,7 +38,7 @@ const ORPHAN: &str = "src-orphan";
 
 /// The roles a source is read in, each with the formats it may be in and the placeholders its URL
 /// template may hold: the app's slots, each read by one step's generic code.
-pub const ROLES: [(&str, &[&str], &[&str]); 18] = [
+pub const ROLES: [(&str, &[&str], &[&str]); 17] = [
     // (Land cover on the analysis grid: crate::landcover. 3° tiles by their south-west corner.)
     (LAND_COVER, &["geotiff"], &["{tile}"]),
     // (Canopy height and cover: crate::trees, scenic-metrics' canopy step. By an index of 10° squares.)
@@ -54,8 +54,6 @@ pub const ROLES: [(&str, &[&str], &[&str]); 18] = [
     // (Wikidata's facts: crate::heritagewd, crate::areadetails, crate::whsshapes, crate::items,
     // crate::pageviews.)
     (WIKIDATA, &["sparql"], &[]),
-    // (Wikidata's Query Service: asked by no step, its robots.txt disallowing /sparql.)
-    (WIKIDATA_LIVE, &["sparql"], &[]),
     // (Wikipedia's short descriptions: crate::heritagewd.)
     (WIKIPEDIA, &["mediawiki-api"], &[]),
     // (Wikipedia's monthly pageviews: crate::pageviews, which picks the months.)
@@ -88,7 +86,6 @@ pub const LEAF_NORTH_AMERICA: &str = "leaf-type-north-america";
 pub const BUILDINGS: &str = "buildings";
 pub const BUILDING_HEIGHTS: &str = "building-heights";
 pub const WIKIDATA: &str = "wikidata";
-pub const WIKIDATA_LIVE: &str = "wikidata-live";
 pub const WIKIPEDIA: &str = "wikipedia";
 pub const PAGEVIEWS: &str = "pageviews";
 pub const LAKE_FILL: &str = "lake-fill";
@@ -827,13 +824,12 @@ pub fn accepted(manifest: &BTreeMap<String, String>) -> bool {
 
 /// The staged declarations (producers/sources/), as the drop box takes them: path and bytes.
 #[cfg(test)]
-pub const STAGED: [(&str, &[u8]); 18] = [
+pub const STAGED: [(&str, &[u8]); 17] = [
     ("overture-buildings.toml", include_bytes!("../../../../producers/sources/overture-buildings.toml")),
     ("ghsl-built-h.toml", include_bytes!("../../../../producers/sources/ghsl-built-h.toml")),
     ("ghsl-tiles.geojson", include_bytes!("../../../../producers/sources/ghsl-tiles.geojson")),
     ("canvec-lakes.toml", include_bytes!("../../../../producers/sources/canvec-lakes.toml")),
     ("wikidata-qlever.toml", include_bytes!("../../../../producers/sources/wikidata-qlever.toml")),
-    ("wikidata-query-service.toml", include_bytes!("../../../../producers/sources/wikidata-query-service.toml")),
     ("wikipedia-api.toml", include_bytes!("../../../../producers/sources/wikipedia-api.toml")),
     ("wikipedia-pageviews.toml", include_bytes!("../../../../producers/sources/wikipedia-pageviews.toml")),
     ("esa-worldcover.toml", include_bytes!("../../../../producers/sources/esa-worldcover.toml")),
@@ -979,7 +975,6 @@ mod tests {
         // (crate::heritagewd's query service and its Wikipedia API, crate::pageviews's dumps.)
         assert_eq!(v[WIKIDATA]["url"], "https://qlever.dev/api/wikidata");
         assert_eq!(v[WIKIPEDIA]["url"], "https://en.wikipedia.org/w/api.php");
-        assert_eq!(v[WIKIDATA_LIVE]["url"], "https://query.wikidata.org/sparql");
         assert_eq!(
             v[PAGEVIEWS]["url"],
             "https://dumps.wikimedia.org/other/pageview_complete/monthly/{y}/{y}-{m}/pageviews-{y}{m}-user.bz2"

@@ -72,7 +72,6 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("dem/bldfetch.py", "overture_jobs", "Overture's release", "the lister of Overture's release folders on S3, its layout: its message names what it reads"),
     ("dem/leaftype.py", "europe_square","\"Copernicus HRL Dominant Leaf Type 2018 (EEA), 10 m", "a made square's tag (its GeoTIFF's `source`), as every square already made says it: a square's tag is how it's known (crate::trees::squares::complete), so it doesn't change with the declaration's wording"),
     // Allowlists by host.
-    ("crates/pipeline/src/budget/mod.rs", "QUERY_HOSTS", "\"query.wikidata.org\"", "the polite-use budget is by host (docs/pool.md §7.7): the query services' own limits, which hold for any request to them"),
     ("crates/pipeline/src/budget/mod.rs", "QUERY_DOMAINS", "\"qlever.dev\"", "the polite-use budget is by host (docs/pool.md §7.7): the query services' own limits, which hold for any request to them"),
     // Protocols.
     ("dem/bldfetch.py", "s3_list", "\"http://s3.amazonaws.com/doc/2006-03-01/\"", "S3's listing namespace, the protocol's"),

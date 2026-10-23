@@ -280,7 +280,25 @@ fn site_items(sites: &Sites, p757: &[HashMap<String, String>]) -> HashMap<String
             }
         }
     }
+    // (By number: the same list whatever order the service answered in.)
+    for l in items.values_mut() {
+        l.sort_by(|a, b| by_number(a, b));
+    }
     items
+}
+
+/// Ids ordered by their number ("Q9" before "Q10", "85" before "120"), then as text.
+fn by_number(a: &str, b: &str) -> std::cmp::Ordering {
+    let digits = |s: &str| s.trim_start_matches(|c: char| !c.is_ascii_digit()).len();
+    digits(a).cmp(&digits(b)).then_with(|| a.cmp(b))
+}
+
+/// A query's rows sorted by the values of `keys` in turn: the same order whatever order the
+/// service answered in.
+fn sorted(mut rows: Vec<HashMap<String, String>>, keys: [&str; 2]) -> Vec<HashMap<String, String>> {
+    let at = |r: &HashMap<String, String>, k: &str| r.get(k).cloned().unwrap_or_default();
+    rows.sort_by(|a, b| at(a, keys[0]).cmp(&at(b, keys[0])).then_with(|| at(a, keys[1]).cmp(&at(b, keys[1]))));
+    rows
 }
 
 /// A simplified outline: GeoJSON's type and coordinates.
@@ -744,23 +762,38 @@ pub fn run(root: &Path, wikidata: &str) -> Result<()> {
 
     // Its Wikidata items: the site and its components (P757), and items part of one (P361).
     let p = phase("the Wikidata items read", Class::Disk);
-    let p757 = wd_sparql(&ask, wikidata, P757, &w.join("wd-p757.json"))?;
+    // (An item of several of our sites, or part of several, is the lowest-numbered site's; an
+    // item's own P757 before what it is part of.)
+    let p757 = sorted(wd_sparql(&ask, wikidata, P757, &w.join("wd-p757.json"))?, ["item", "id"]);
     let mut site_of: HashMap<String, String> = HashMap::new();
+    let lower = |site_of: &mut HashMap<String, String>, item: &str, s: &str| match site_of.get_mut(item) {
+        Some(cur) if by_number(s, cur).is_lt() => *cur = s.to_string(),
+        Some(_) => {}
+        None => {
+            site_of.insert(item.to_string(), s.to_string());
+        }
+    };
     for r in &p757 {
         if let Some(base) = leading_digits(&r["id"]).filter(|b| sites.names.contains_key(*b)) {
-            site_of.insert(last(&r["item"]).to_string(), base.to_string());
+            lower(&mut site_of, last(&r["item"]), base);
         }
     }
-    let parts = wd_sparql(
-        &ask,
-        wikidata,
-        "SELECT ?part ?whole WHERE { ?whole wdt:P757 ?id . ?part wdt:P361 ?whole }",
-        &w.join("wd-parts.json"),
-    )?;
+    let own: HashSet<String> = site_of.keys().cloned().collect();
+    let parts = sorted(
+        wd_sparql(
+            &ask,
+            wikidata,
+            "SELECT ?part ?whole WHERE { ?whole wdt:P757 ?id . ?part wdt:P361 ?whole }",
+            &w.join("wd-parts.json"),
+        )?,
+        ["whole", "part"],
+    );
     for r in &parts {
         let (whole, part) = (last(&r["whole"]), last(&r["part"]));
         if let Some(s) = site_of.get(whole).cloned() {
-            site_of.entry(part.to_string()).or_insert(s);
+            if !own.contains(part) {
+                lower(&mut site_of, part, &s);
+            }
         }
     }
     drop(p);
@@ -878,6 +911,10 @@ mod tests {
         assert_eq!(plain("ter12"), "ter12");
         assert_eq!(leading_digits("1221-001"), Some("1221"));
         assert_eq!(leading_digits("x1"), None);
+        let mut q = vec!["Q10", "Q9", "Q100", "Q11"];
+        q.sort_by(|a, b| by_number(a, b));
+        assert_eq!(q, ["Q9", "Q10", "Q11", "Q100"]);
+        assert!(by_number("85", "120").is_lt());
     }
 
     #[test]

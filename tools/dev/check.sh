@@ -13,8 +13,8 @@
 #   swift     swiftc of tools/status/main.swift (publish's line) and its --test (arguments, reopen, launchd), when tools/status changed
 #   tests     each command tools/dev/affected-tests.sh prints, run on the test Mac (tools/app/remote-tests.sh;
 #             here when it can't be reached or SCENIC_CHECK_LOCAL=1)
-#   python    pyflakes on the changed .py files and unittest in their folders' test_*.py, when
-#             producers/ or dem/ changed
+#   python    pyflakes on the changed .py files (a deleted one's: the rest of its folder's) and
+#             unittest in their folders' test_*.py, when producers/ or dem/ changed
 # Prints PASS/FAIL/skip per part; each part's whole output is kept in
 # ~/Library/Logs/scenic/check-<time>/. When every part passes on a clean tree it records HEAD in
 # $(git rev-parse --git-common-dir)/check-passed, which the SubagentStop hook
@@ -64,7 +64,11 @@ if (( ${#tests} )) && [[ -x $rt ]]; then
   part tests $rt $key $root "set -e; ${(j:; :)tests}"
 elif (( ${#tests} )); then part tests zsh -c "set -e; ${(j:; :)tests}"
 else skip tests "no affected Rust tests"; fi
-py=( ${(M)changed:#(producers|dem)/*.py} ); py=( ${py:#*/.venv/*} ); py=( ${^py}(N) )
+py=( ${(M)changed:#(producers|dem)/*.py} ); py=( ${py:#*/.venv/*} )
+# (A deleted file's folder: its remaining .py files, which may have imported it.)
+kept=( ${^py}(N) ); gone=( ${py:|kept} ); py=( $kept )
+for d in ${(u)gone:h}; do py+=( $d/*.py(N) ); done
+py=( ${(u)py} )
 if (( ${#py} )); then
   pycheck() {
     uvx --quiet --from 'pyflakes==4.0.2' pyflakes $py || return 1
