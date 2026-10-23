@@ -1,0 +1,1092 @@
+<meta charset="utf-8">
+<title>Build Live Widgets</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: the build page's own grid of boxes (web/work/dash.css), dark-first; every widget a .box with an uppercase h2,
+   a "source" footer saying what feeds it today and what would have to change. Mock data ticks once a second. */
+:root {
+  color-scheme: dark;
+  --bg: #0e1013; --panel: #161a1f; --line: #262c33; --text: #d7dce2; --dim: #8a939c; --ok: #6cc28a; --warn: #e0b45a; --bad: #e0716a; --accent: #7aa7e0;
+  --ok-line: #2a5038; --warn-line: #5a4a26; --bad-line: #5a2d2a; --info-line: #2c4566; --tip: #20262d; --row-line: #1d2228; --grid: #1c2127; --primary-bg: #1d2a3a; --primary-fg: #cfe0f5; --spark: #2c4566; --spark-p: #5a4a26; --mark: #e6e6e6; --dimbar: #3f5f86; --shadow: #0008; --rule: #3a434d; --new-bg: #1d2a3a; --paused: #5a4a2655; --country: #5a636d; --plugged: #e0b45a1f; --active: #7aa7e01f; --region: #7aa7e02e; --region-edge: #7aa7e066; --tile: #d9b84a26; --tile3: #d9b84a55;
+  --s-terrain: #d95926; --s-slope: #c98500; --s-trees: #199e70; --s-depth: #3987e5; --s-roads: #9085e9; --s-tiles: #d55181; --s-world: #8a939c;
+  --nas-r: #3987e5; --nas-w: #d95926; --net-d: #199e70; --net-u: #d55181;
+  --font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  --mono: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {
+  color-scheme: light;
+  --bg: #f4f6f8; --panel: #ffffff; --line: #d8dee5; --text: #1c232b; --dim: #5d6873; --ok: #2c8a51; --warn: #9a6a12; --bad: #c0433a; --accent: #2d6bb4;
+  --ok-line: #b5dbc2; --warn-line: #e6d2a4; --bad-line: #eebfba; --info-line: #b8cee9; --tip: #ffffff; --row-line: #e6e9ee; --grid: #e9edf1; --primary-bg: #e2ecf8; --primary-fg: #1d4e89; --spark: #b8cee9; --spark-p: #e6d2a4; --mark: #6a7480; --dimbar: #9db6d5; --shadow: #0003; --rule: #c8d0d9; --new-bg: #e2ecf8; --paused: #e6d2a488; --country: #a9b2bc; --plugged: #f2d16b40; --active: #2d6bb41a; --region: #2d6bb426; --region-edge: #2d6bb455; --tile: #c49a1a2e; --tile3: #c49a1a66;
+  --s-terrain: #eb6834; --s-slope: #eda100; --s-trees: #1baf7a; --s-depth: #2a78d6; --s-roads: #6250d6; --s-tiles: #e87ba4; --s-world: #5d6873;
+  --nas-r: #2a78d6; --nas-w: #eb6834; --net-d: #1baf7a; --net-u: #e87ba4;
+} }
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f6f8; --panel: #ffffff; --line: #d8dee5; --text: #1c232b; --dim: #5d6873; --ok: #2c8a51; --warn: #9a6a12; --bad: #c0433a; --accent: #2d6bb4;
+  --ok-line: #b5dbc2; --warn-line: #e6d2a4; --bad-line: #eebfba; --info-line: #b8cee9; --tip: #ffffff; --row-line: #e6e9ee; --grid: #e9edf1; --primary-bg: #e2ecf8; --primary-fg: #1d4e89; --spark: #b8cee9; --spark-p: #e6d2a4; --mark: #6a7480; --dimbar: #9db6d5; --shadow: #0003; --rule: #c8d0d9; --new-bg: #e2ecf8; --paused: #e6d2a488; --country: #a9b2bc; --plugged: #f2d16b40; --active: #2d6bb41a; --region: #2d6bb426; --region-edge: #2d6bb455; --tile: #c49a1a2e; --tile3: #c49a1a66;
+  --s-terrain: #eb6834; --s-slope: #eda100; --s-trees: #1baf7a; --s-depth: #2a78d6; --s-roads: #6250d6; --s-tiles: #e87ba4; --s-world: #5d6873;
+  --nas-r: #2a78d6; --nas-w: #eb6834; --net-d: #1baf7a; --net-u: #e87ba4;
+}
+/* The new widgets: every rule scoped to .lw, so the build page's own elements keep their look. */
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: var(--font); font-variant-numeric: tabular-nums; padding-block: 10px 56px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.lw header { display: flex; gap: 10px 16px; align-items: baseline; flex-wrap: wrap; margin-bottom: 12px; }
+.lw header h1 { font-size: 15px; font-weight: 600; margin: 0; }
+.lw header .note { color: var(--dim); font-size: 12px; flex: 1 1 320px; }
+.lw.bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; display: flex; gap: 8px 24px; align-items: center; flex-wrap: wrap; justify-content: space-between; background: var(--panel); border-top: 1px solid var(--line); padding: 8px max(16px, env(safe-area-inset-right, 0px)) calc(8px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px)); }
+.lw header .range, .lw .bar .range { font-size: 12px; color: var(--dim); display: flex; gap: 6px; align-items: center; }
+.lw .bar .range select { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: 2px 6px; }
+.lw .bar .live { font-size: 11.5px; color: var(--dim); display: flex; gap: 8px; align-items: center; }
+.lw .bar .live b { color: var(--ok); font-weight: 600; letter-spacing: .06em; text-transform: uppercase; font-size: 11px; }
+.lw .bar .live i { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); display: inline-block; animation: pulse 1s steps(2) infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) {
+.lw .bar .live i { animation: none; }
+.lw .fill { transition: none !important; }
+}
+.lw nav.toc { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+.lw nav.toc a { font-size: 11.5px; color: var(--dim); border: 1px solid var(--line); border-radius: 10px; padding: 1px 8px; text-decoration: none; background: var(--panel); }
+.lw nav.toc a:hover, .lw nav.toc a:focus-visible { color: var(--text); border-color: var(--accent); outline: none; }
+.lw #grid { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 1000px) {
+.lw #grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.lw .wide { grid-column: 1 / -1; }
+}
+.lw section.box { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.lw h2 { font-size: 11px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; margin: 0; display: flex; gap: 10px; justify-content: space-between; align-items: baseline; flex-wrap: wrap; }
+.lw h2 span { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.lw h3 { font-size: 12px; font-weight: 600; margin: 4px 0 0; display: flex; gap: 10px; justify-content: space-between; align-items: baseline; }
+.lw h3 span { color: var(--dim); font-weight: 400; font-size: 11.5px; }
+.lw .src { border-top: 1px solid var(--row-line); padding-top: 6px; margin-top: auto; font-size: 11px; color: var(--dim); display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; }
+.lw .src b { font-weight: 600; color: var(--text); }
+.lw .src .have { color: var(--ok); }
+.lw .src .need { color: var(--warn); }
+.lw .dim { color: var(--dim); }
+.lw .small { font-size: 11.5px; }
+.lw .num { white-space: nowrap; }
+.lw .ok { color: var(--ok); }
+.lw .warn { color: var(--warn); }
+.lw .bad { color: var(--bad); }
+.lw .run { color: var(--accent); }
+.lw .chips { display: flex; gap: 5px; flex-wrap: wrap; }
+.lw .chip { font-size: 11px; border: 1px solid var(--line); border-radius: 10px; padding: 0 7px; color: var(--dim); background: var(--bg); white-space: nowrap; }
+.lw .chip.warn { color: var(--warn); border-color: var(--warn-line); }
+.lw .chip.bad { color: var(--bad); border-color: var(--bad-line); }
+.lw .chip.ok { color: var(--ok); border-color: var(--ok-line); }
+.lw .chip.info { color: var(--accent); border-color: var(--info-line); }
+.lw canvas { display: block; width: 100%; max-width: 100%; }
+.lw .rates { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; }
+@media (max-width: 640px) {
+.lw .rates { grid-template-columns: 1fr; }
+}
+.lw .mac { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.lw .mac .name { font-weight: 600; display: flex; gap: 8px; align-items: baseline; }
+.lw .mac .name.stacked { flex-direction: column; align-items: flex-start; gap: 1px; }
+.lw .mac .name span { color: var(--dim); font-weight: 400; font-size: 11px; }
+.lw .rate { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 8px; align-items: center; font-size: 11.5px; }
+.lw .rate .lab { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.lw .rate .k { color: var(--dim); white-space: nowrap; display: flex; gap: 5px; align-items: center; }
+.lw .rate .k i { width: 8px; height: 3px; border-radius: 2px; display: inline-block; }
+.lw .rate .v { font-size: 12.5px; color: var(--text); white-space: nowrap; }
+.lw .rate .v small { color: var(--dim); font-size: 10.5px; display: block; line-height: 1.3; white-space: nowrap; }
+.lw .rate canvas { height: 66px; }
+.lw .vitals { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; }
+@media (max-width: 640px) {
+.lw .vitals { grid-template-columns: 1fr; }
+}
+.lw .vrow canvas { height: 62px; }
+.lw .vrow { grid-template-columns: 150px minmax(0, 1fr); }
+.lw .vrow .v small { white-space: normal; }
+.lw .loadc { display: flex; flex-direction: column; gap: 2px; }
+.lw .loadc canvas { height: 64px; }
+.lw .cores { display: flex; gap: 10px; align-items: stretch; }
+.lw .cgrp { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.lw .cbars { display: flex; gap: 2px; height: 30px; }
+.lw .cname { display: flex; align-items: center; gap: 6px; font-size: 9.5px; color: var(--dim); white-space: nowrap; }
+.lw .cores .cname i { flex: 1; height: 0; min-width: 8px; background: none; border-radius: 0; overflow: visible; border-top: 1px solid var(--rule, var(--line)); }
+.lw .cores i { flex: 1; height: 100%; background: var(--line); border-radius: 2px 2px 0 0; position: relative; overflow: hidden; min-width: 4px; }
+.lw .cores i b { position: absolute; left: 0; right: 0; bottom: 0; background: var(--accent); }
+.lw .cores i b.o { background: var(--dim); }
+.lw .cores i.kept b { background: var(--dim); }
+.lw .kv { display: grid; grid-template-columns: 70px minmax(50px, 1fr) minmax(0, 1.6fr); gap: 3px 8px; font-size: 11.5px; align-items: center; }
+.lw .kv .k { color: var(--dim); }
+.lw .kv.vk { grid-template-columns: 76px minmax(150px, 1.1fr) minmax(0, 1fr); row-gap: 5px; }
+.lw .kv.vk .v { text-align: left; }
+.lw .kv.vk .k { line-height: 1.2; }
+.lw .memline { display: flex; gap: 5px; align-items: center; white-space: nowrap; line-height: 1.3; }
+.lw .cw { position: relative; min-width: 0; }
+.lw .refbtn { position: absolute; font: 10px/14px -apple-system, system-ui, sans-serif; color: var(--warn); background: var(--panel); border: 1px dashed var(--warn-line); border-radius: 4px; padding: 0 5px; cursor: pointer; white-space: nowrap; }
+.lw .refbtn:hover, .lw .refbtn:focus-visible { border-style: solid; outline: none; color: var(--text); }
+.lw .cfg { position: absolute; right: 4px; top: 4px; z-index: 6; width: 270px; max-width: calc(100% - 8px); background: var(--tip); border: 1px solid var(--line); border-radius: 6px; padding: 9px 10px; box-shadow: 0 6px 20px #0006; display: flex; flex-direction: column; gap: 6px; font-size: 11.5px; }
+.lw .cfg p { margin: 0; line-height: 1.4; }
+.lw .cfg label { color: var(--text); }
+.lw .cfgrow { display: flex; gap: 6px; align-items: center; }
+.lw .cfg input { width: 80px; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; }
+.lw .cfg button { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 2px 10px; cursor: pointer; }
+.lw .cfg button.primary { background: var(--primary-bg, var(--panel)); border-color: var(--info-line); }
+.lw .memline i { width: 8px; height: 8px; border-radius: 2px; flex: none; border: 1px solid var(--line); }
+.lw .rate .v small.memline { display: flex; }
+.lw .kv.vk .v small { display: block; color: var(--dim); font-size: 10.5px; line-height: 1.2; }
+.lw .barcell { display: flex; flex-direction: column; gap: 1px; min-width: 0; position: relative; }
+.lw .barcell.hasmark { padding-top: 13px; }
+.lw .barcell .mark { position: absolute; top: 2px; height: 20px; width: 0; border-left: 1.5px solid var(--warn); }
+.lw .barcell .mark span { position: absolute; top: -2px; right: 3px; font-size: 9.5px; line-height: 1.1; color: var(--warn); white-space: nowrap; }
+.lw .scale { display: flex; justify-content: space-between; font-size: 9.5px; color: var(--dim); line-height: 1.1; opacity: .85; }
+.lw .kv .v { text-align: right; overflow-wrap: anywhere; }
+.lw .stack { display: flex; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+.lw .stack i { display: block; height: 100%; }
+.lw .pbar { height: 5px; background: var(--line); border-radius: 3px; overflow: hidden; }
+.lw .pbar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width .6s linear; }
+.lw .pbar.warn i { background: var(--warn); }
+.lw .pbar.bad i { background: var(--bad); }
+.lw .pbar.ok i { background: var(--ok); }
+.lw .nas { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 10px 16px; }
+@media (max-width: 640px) {
+.lw .nas { grid-template-columns: 1fr; }
+}
+.lw #nas h3 { flex-direction: column; align-items: flex-start; gap: 1px; }
+.lw .gauge { display: grid; grid-template-columns: 86px minmax(0, 1fr) 64px; gap: 8px; align-items: center; font-size: 11.5px; }
+.lw .gauge .k { white-space: nowrap; }
+.lw .gauge .k { color: var(--dim); }
+.lw .gauge .v { text-align: right; }
+.lw .shares { display: flex; flex-direction: column; gap: 3px; font-size: 11px; }
+.lw .shares .row { display: grid; grid-template-columns: 120px 1fr 48px; gap: 8px; align-items: center; }
+.lw .shares .row .v { text-align: right; color: var(--dim); }
+.lw .lat canvas { height: 110px; }
+.lw .mapwrap { position: relative; }
+.lw .mapwrap canvas { height: auto; aspect-ratio: 2 / 1.15; border-radius: 6px; background: var(--bg); border: 1px solid var(--line); cursor: crosshair; }
+.lw .legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--dim); }
+.lw .legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; vertical-align: -1px; margin-right: 4px; }
+.lw .mapwrap .tip { position: absolute; pointer-events: none; background: var(--tip); border: 1px solid var(--line); border-radius: 8px; padding: 0; font-size: 11.5px; box-shadow: 0 8px 24px var(--shadow); width: 270px; overflow: hidden; z-index: 4; }
+.lw .tc-head { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px 7px; border-bottom: 1px solid var(--line); }
+.lw .tc-sw { width: 10px; height: 10px; border-radius: 3px; margin-top: 3px; flex: none; }
+.lw .tc-kick { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; line-height: 1.3; }
+.lw .tc-title { font-size: 13.5px; font-weight: 600; line-height: 1.25; }
+.lw .tc-body { padding: 7px 10px 8px; display: flex; flex-direction: column; gap: 6px; }
+.lw .tc-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.lw .tc-stat { background: var(--bg); border: 1px solid var(--row-line); border-radius: 5px; padding: 4px 7px; }
+.lw .tc-stat .n { font-size: 14px; font-weight: 600; }
+.lw .tc-stat .l { font-size: 10px; color: var(--dim); }
+.lw .tc-bar { display: flex; flex-direction: column; gap: 3px; }
+.lw .tc-bar .track { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+.lw .tc-bar .track i { display: block; height: 100%; border-radius: 3px; }
+.lw .tc-bar .cap { font-size: 10.5px; color: var(--dim); }
+.lw .tc-kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; }
+.lw .tc-kv .k { color: var(--dim); white-space: nowrap; }
+.lw .tc-kv .v { min-width: 0; overflow-wrap: anywhere; }
+.lw .tc-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.lw .tc-chips span { font-size: 10.5px; border: 1px solid var(--line); border-radius: 9px; padding: 0 6px; background: var(--bg); }
+.lw .tc-foot { font-size: 10px; color: var(--dim); padding: 5px 10px; border-top: 1px solid var(--row-line); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.lw .jobs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px 16px; }
+@media (max-width: 760px) {
+.lw .jobs { grid-template-columns: 1fr; }
+}
+.lw .job { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.lw .job .head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.lw .job .head .slot { font-size: 10.5px; border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; color: var(--dim); }
+.lw .job .head b { font-weight: 600; }
+.lw .targets { display: flex; gap: 2px; flex-wrap: wrap; }
+.lw .targets i { width: 14px; height: 8px; border-radius: 2px; background: var(--line); display: inline-block; position: relative; overflow: hidden; }
+.lw .targets i.done { background: var(--ok); }
+.lw .targets i.now { outline: 1px solid var(--accent); outline-offset: 1px; }
+.lw .targets i.now b { position: absolute; inset: 0 auto 0 0; background: var(--accent); }
+.lw .phases { display: flex; height: 8px; border-radius: 3px; overflow: hidden; background: var(--line); }
+.lw .phases i { height: 100%; display: block; min-width: 1px; }
+.lw .ph-nas-read { background: var(--nas-r); }
+.lw .ph-nas-write { background: var(--nas-w); }
+.lw .ph-net { background: var(--net-d); }
+.lw .ph-compute { background: var(--accent); }
+.lw .ph-wait { background: var(--dim); }
+.lw .ph-disk { background: var(--s-slope); }
+.lw .phlegend { display: flex; gap: 8px; flex-wrap: wrap; font-size: 10.5px; color: var(--dim); }
+.lw .phlegend i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 3px; vertical-align: -1px; }
+.lw .tail { font: var(--mono); color: var(--dim); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 72px; overflow: hidden; }
+.lw .tail b { color: var(--text); font-weight: 500; }
+.lw .mem canvas { height: 72px; }
+.lw .log { font: var(--mono); color: var(--dim); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; height: 190px; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; }
+.lw .log div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lw .log b { color: var(--text); font-weight: 500; }
+.lw .log .t { color: var(--dim); opacity: .7; }
+.lw .log .put { color: var(--nas-w); }
+.lw .log .get { color: var(--nas-r); }
+.lw .log .fetch { color: var(--net-d); }
+.lw .log .bad { color: var(--bad); }
+.lw table { border-collapse: collapse; width: 100%; font-size: 11.5px; }
+.lw th { text-align: left; color: var(--dim); font-weight: 500; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; padding: 2px 6px 4px 0; border-bottom: 1px solid var(--line); }
+.lw td { padding: 3px 6px 3px 0; border-bottom: 1px solid var(--row-line); vertical-align: top; }
+.lw td.r, .lw th.r { text-align: right; white-space: nowrap; }
+.lw .tablewrap { overflow-x: auto; min-width: 0; }
+.lw .hosts td:first-child { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+.lw .mini { display: inline-block; width: 60px; height: 10px; vertical-align: middle; }
+.lw .findings td { font-size: 12px; }
+.lw .findings td:first-child { font-weight: 600; white-space: nowrap; }
+.lw .findings code { font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--bg); border: 1px solid var(--row-line); border-radius: 3px; padding: 0 3px; }
+.lw .findings .have { color: var(--ok); white-space: nowrap; }
+.lw .findings .part { color: var(--warn); white-space: nowrap; }
+.lw .findings .none { color: var(--bad); white-space: nowrap; }
+.lw .plan { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.lw .plan div { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font-size: 12px; }
+.lw .plan div b { display: block; font-weight: 600; margin-bottom: 2px; }
+.lw .plan div p { margin: 0; color: var(--dim); }
+
+.lw .mclive { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 10px; display: flex; flex-direction: column; gap: 12px; }
+.lw .mclive-h { font-size: 11px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
+.lw .mclive .mac > .name { display: none; }
+.lw.jobwrap { margin: 2px 0 10px 22px; padding: 8px 10px; border-left: 2px solid var(--line); background: var(--bg); border-radius: 0 6px 6px 0; }
+.lw.jobwrap .job .head .slot, .lw.jobwrap .job .head > b { display: none; }
+.lw.lwpart { margin-top: 14px; }
+.lw.lwpart:first-child { margin-top: 0; margin-bottom: 14px; }
+/* Today's build page: web/work/dash.css and index.html's base rules, scoped to #today and kept off the new widgets (.lw). */
+#today .card:not(.lw, .lw *) { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+#today .k:not(.lw, .lw *) { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+#today .v:not(.lw, .lw *) { font-size: 15px; margin-top: 2px; }
+#today .dot:not(.lw, .lw *) { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+#today .dot.run:not(.lw, .lw *) { background: var(--accent); }
+#today .dot.ok:not(.lw, .lw *) { background: var(--ok); }
+#today .dot.bad:not(.lw, .lw *) { background: var(--bad); }
+#today .bar:not(.lw, .lw *) { height: 3px; background: var(--line); border-radius: 2px; margin-top: 4px; overflow: hidden; }
+#today .bar > i:not(.lw, .lw *) { display: block; height: 100%; background: var(--accent); width: 0; transition: width .4s; }
+#today .note:not(.lw, .lw *) { color: var(--warn); margin: 0 0 12px; }
+#today button:not(.lw, .lw *) { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 4px 10px; font: inherit; }
+#today input:not(.lw, .lw *) { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 4px 8px; font: inherit; width: 100%; margin: 6px 0; }
+#today .hint:not(.lw, .lw *) { color: var(--dim); margin: 0 0 12px; }
+#today h2:not(.lw, .lw *) { font-size: 11px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; margin: 18px 0 6px; display: flex; justify-content: space-between; align-items: baseline; }
+#today h2 span:not(.lw, .lw *) { text-transform: none; letter-spacing: 0; font-weight: 400; }
+#today #dash:not(.lw, .lw *) { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); grid-template-areas: "verdict" "overview" "road" "stages" "machines" "pool" "regions" "activity" "details"; }
+#today #dash.gated:not(.lw, .lw *) { grid-template-areas: "verdict" "inputs" "overview" "road" "stages" "machines" "pool" "regions" "activity" "details"; }
+@media (min-width: 1100px) {
+#today #dash:not(.lw, .lw *) { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); grid-template-areas: "verdict verdict" "overview overview" "road road" "stages stages" "machines regions" "pool regions" "activity regions" "details details"; align-items: start; }
+#today #dash.gated:not(.lw, .lw *) { grid-template-areas: "verdict verdict" "inputs inputs" "overview overview" "road road" "stages stages" "machines regions" "pool regions" "activity regions" "details details"; }
+}
+#today #dash > section:not(.lw, .lw *) { min-width: 0; }
+#today .d-verdict:not(.lw, .lw *) { grid-area: verdict; }
+#today .d-inputs:not(.lw, .lw *) { grid-area: inputs; }
+#today .d-inputs:empty:not(.lw, .lw *) { display: none; }
+#today .d-overview:not(.lw, .lw *) { grid-area: overview; }
+#today .d-stages:not(.lw, .lw *) { grid-area: stages; }
+#today .d-machines:not(.lw, .lw *) { grid-area: machines; }
+#today .d-pool:not(.lw, .lw *) { grid-area: pool; }
+#today .d-road:not(.lw, .lw *) { grid-area: road; }
+#today .d-regions:not(.lw, .lw *) { grid-area: regions; }
+#today .d-activity:not(.lw, .lw *) { grid-area: activity; }
+#today .d-details:not(.lw, .lw *) { grid-area: details; }
+#today #dash h2:not(.lw, .lw *) { font-size: 11px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; margin: 0 0 6px; display: flex; gap: 10px; justify-content: space-between; align-items: baseline; }
+#today #dash h2 span:not(.lw, .lw *) { text-transform: none; letter-spacing: 0; font-weight: 400; }
+#today #dash h3:not(.lw, .lw *) { font-size: 12px; font-weight: 600; margin: 12px 0 6px; color: var(--text); display: flex; gap: 10px; align-items: baseline; justify-content: space-between; }
+#today #dash h3 span:not(.lw, .lw *) { color: var(--dim); font-weight: 400; font-size: 11.5px; }
+#today .box:not(.lw, .lw *) { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+#today .dim:not(.lw, .lw *) { color: var(--dim); }
+#today .small:not(.lw, .lw *) { font-size: 11.5px; }
+#today .warn:not(.lw, .lw *) { color: var(--warn); }
+#today .bad:not(.lw, .lw *) { color: var(--bad); }
+#today .ok:not(.lw, .lw *) { color: var(--ok); }
+#today .run:not(.lw, .lw *) { color: var(--accent); }
+#today .num:not(.lw, .lw *) { font-variant-numeric: tabular-nums; white-space: nowrap; }
+@media (max-width: 719px) {
+#today .d-verdict:not(.lw, .lw *) { position: static !important; }
+}
+#today .d-verdict:not(.lw, .lw *) { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); padding: 8px 0 6px; margin: -8px 0 -6px; }
+#today .verdict:not(.lw, .lw *) { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+#today .verdict .say:not(.lw, .lw *) { flex: 1 1 320px; font-size: 14px; line-height: 1.4; }
+#today .verdict .say b:not(.lw, .lw *) { font-weight: 600; }
+#today .verdict .ctl:not(.lw, .lw *) { display: flex; gap: 6px; }
+#today .alerts:not(.lw, .lw *) { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+#today .alerts:empty:not(.lw, .lw *) { display: none; }
+#today .alert:not(.lw, .lw *) { font-size: 11.5px; border-radius: 10px; padding: 1px 8px; border: 1px solid var(--line); background: var(--panel); color: var(--dim); cursor: pointer; }
+#today .alert.warn:not(.lw, .lw *) { color: var(--warn); border-color: var(--warn-line); }
+#today .alert.bad:not(.lw, .lw *) { color: var(--bad); border-color: var(--bad-line); }
+#today .alert.info:not(.lw, .lw *) { color: var(--accent); border-color: var(--info-line); }
+#today button.primary:not(.lw, .lw *) { background: var(--primary-bg); border-color: var(--info-line); color: var(--primary-fg); }
+#today button.quiet:not(.lw, .lw *) { color: var(--dim); }
+#today button:disabled:not(.lw, .lw *) { opacity: .5; }
+#today .overview:not(.lw, .lw *) { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); align-items: start; }
+@media (min-width: 720px) {
+#today .overview:not(.lw, .lw *) { grid-template-columns: minmax(220px, 1fr) minmax(0, 2fr); }
+}
+#today .big:not(.lw, .lw *) { font-size: 34px; font-weight: 600; letter-spacing: -.02em; line-height: 1.1; }
+#today .big small:not(.lw, .lw *) { font-size: 13px; color: var(--dim); font-weight: 400; letter-spacing: 0; }
+#today .strip:not(.lw, .lw *) { display: flex; gap: 2px; height: 12px; margin: 8px 0 4px; }
+#today .strip > i:not(.lw, .lw *) { flex: 1; border-radius: 2px; background: var(--line); position: relative; overflow: hidden; }
+#today .strip > i > b:not(.lw, .lw *) { position: absolute; inset: 0 auto 0 0; background: var(--accent); }
+#today .strip > i.done:not(.lw, .lw *) { background: var(--ok); }
+#today .strip > i.now:not(.lw, .lw *) { outline: 1px solid var(--accent); outline-offset: 1px; }
+#today .kpis:not(.lw, .lw *) { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+#today .kpi:not(.lw, .lw *) { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; }
+#today .kpi .k:not(.lw, .lw *) { color: var(--dim); font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; }
+#today .kpi .v:not(.lw, .lw *) { font-size: 15px; margin-top: 1px; }
+#today .kpi .s:not(.lw, .lw *) { color: var(--dim); font-size: 11px; margin-top: 1px; }
+#today .pbar:not(.lw, .lw *) { height: 5px; background: var(--line); border-radius: 3px; overflow: hidden; margin: 5px 0 3px; }
+#today .pbar > i:not(.lw, .lw *) { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width .4s; }
+#today .pbar.ok > i:not(.lw, .lw *) { background: var(--ok); }
+#today .pbar.warn > i:not(.lw, .lw *) { background: var(--warn); }
+#today .stack:not(.lw, .lw *) { display: flex; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+#today .stack > i:not(.lw, .lw *) { display: block; height: 100%; }
+#today .machines:not(.lw, .lw *) { display: grid; gap: 8px; }
+#today .mc:not(.lw, .lw *) { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; }
+#today .mc.off:not(.lw, .lw *) { opacity: .7; }
+#today .mc .top:not(.lw, .lw *) { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+#today .mc .name:not(.lw, .lw *) { font-weight: 600; }
+#today .mc .role:not(.lw, .lw *) { color: var(--dim); font-size: 11px; }
+#today .mc .right:not(.lw, .lw *) { margin-left: auto; color: var(--dim); font-size: 11px; }
+#today .chip:not(.lw, .lw *) { display: inline-block; padding: 0 7px; border-radius: 9px; font-size: 10.5px; border: 1px solid var(--line); color: var(--dim); white-space: nowrap; }
+#today .chip.run:not(.lw, .lw *) { color: var(--accent); border-color: var(--info-line); }
+#today .chip.ok:not(.lw, .lw *) { color: var(--ok); border-color: var(--ok-line); }
+#today .chip.warn:not(.lw, .lw *) { color: var(--warn); border-color: var(--warn-line); }
+#today .chip.bad:not(.lw, .lw *) { color: var(--bad); border-color: var(--bad-line); }
+#today .mc .job:not(.lw, .lw *) { margin-top: 5px; }
+#today .mc .what:not(.lw, .lw *) { font-size: 13px; }
+#today .mc .sub:not(.lw, .lw *) { color: var(--dim); font-size: 11.5px; margin-top: 1px; }
+#today .mc .parts:not(.lw, .lw *) { display: flex; gap: 3px; margin: 5px 0 2px; }
+#today .mc .parts > i:not(.lw, .lw *) { flex: 1; height: 3px; border-radius: 2px; background: var(--line); }
+#today .mc .parts > i.done:not(.lw, .lw *) { background: var(--ok); }
+#today .mc .parts > i.now:not(.lw, .lw *) { background: var(--accent); }
+#today .mc .next:not(.lw, .lw *) { margin-top: 6px; font-size: 11.5px; color: var(--dim); }
+#today .mc .caps:not(.lw, .lw *) { display: grid; grid-template-columns: auto minmax(60px, 1fr) auto; gap: 2px 8px; align-items: center; margin: 6px 0 2px; font-size: 11px; }
+#today .mc .cap:not(.lw, .lw *) { display: contents; }
+#today .mc .cap .k:not(.lw, .lw *) { color: var(--dim); }
+#today .mc .cap .v:not(.lw, .lw *) { color: var(--dim); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 32ch; }
+#today .mc .cbar:not(.lw, .lw *) { position: relative; display: flex; height: 5px; background: var(--line); border-radius: 3px; overflow: hidden; }
+#today .mc .cbar > i:not(.lw, .lw *) { display: block; height: 100%; background: var(--accent); }
+#today .mc .cbar > b:not(.lw, .lw *) { display: block; height: 100%; background: var(--accent); opacity: .4; }
+#today .mc .cbar.warn > i:not(.lw, .lw *) { background: var(--warn); }
+#today .mc .job .slot:not(.lw, .lw *) { display: inline-block; min-width: 14px; margin-right: 6px; padding: 0 4px; border-radius: 3px; border: 1px solid var(--line); color: var(--dim); font-size: 10px; text-align: center; }
+#today .mc .job + .job:not(.lw, .lw *), #today .mc .next + .job:not(.lw, .lw *) { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--line); }
+#today .mc .ramp.held:not(.lw, .lw *) { color: var(--warn); }
+#today .mc .ramp.notclean:not(.lw, .lw *) { color: var(--text); }
+#today .mc .fits:not(.lw, .lw *) { margin-top: 6px; font-size: 11.5px; color: var(--dim); }
+#today .mc .fits b:not(.lw, .lw *) { color: var(--text); font-weight: 500; }
+#today .mc .next b:not(.lw, .lw *) { color: var(--text); font-weight: 500; }
+#today .mc .facts:not(.lw, .lw *) { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 7px; }
+#today .mc .spark:not(.lw, .lw *) { display: flex; gap: 1px; align-items: flex-end; height: 18px; margin-top: 7px; }
+#today .mc .spark > i:not(.lw, .lw *) { flex: 1; background: var(--spark); border-radius: 1px 1px 0 0; min-height: 1px; }
+#today .mc .spark > i.p:not(.lw, .lw *) { background: var(--spark-p); }
+#today .mc .why:not(.lw, .lw *) { margin-top: 5px; font-size: 12px; color: var(--warn); }
+#today .pages .pg:not(.lw, .lw *) { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; padding: 5px 0; border-top: 1px solid var(--line); }
+#today .pages .pg:first-of-type:not(.lw, .lw *) { border-top: 0; }
+#today .road:not(.lw, .lw *) { display: grid; gap: 12px; }
+#today .sched:not(.lw, .lw *) { position: relative; }
+#today .sched .lanes:not(.lw, .lw *) { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 6px 8px; align-items: center; }
+@media (max-width: 719px) {
+#today .sched .lanes:not(.lw, .lw *) { grid-template-columns: 64px minmax(0, 1fr); }
+}
+#today .sched .ln:not(.lw, .lw *) { font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#today .sched .track:not(.lw, .lw *) { position: relative; height: 16px; background: var(--bg); border-radius: 3px; overflow: hidden; }
+#today .sched .track > i:not(.lw, .lw *) { position: absolute; top: 2px; bottom: 2px; border-radius: 2px; min-width: 2px; }
+#today .sched .track.outs:not(.lw, .lw *) { background: none; overflow: visible; }
+#today .sched .track.outs > b:not(.lw, .lw *) { position: absolute; top: 2px; bottom: 2px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--mark); opacity: .75; cursor: help; }
+#today .sched .track.outs > b:hover:not(.lw, .lw *) { opacity: 1; }
+#today .legend i.rmark:not(.lw, .lw *) { width: 2px; height: 11px; background: var(--mark); opacity: .75; border-radius: 1px; }
+#today .sched .axis:not(.lw, .lw *) { position: relative; height: 16px; font-size: 10px; color: var(--dim); }
+#today .sched .axis > span:not(.lw, .lw *) { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+#today .pub .pubwhy:not(.lw, .lw *) { font-size: 12.5px; margin-bottom: 6px; }
+#today .pub .pubrow:not(.lw, .lw *) { display: grid; grid-template-columns: 136px 1fr; gap: 8px; padding: 4px 0; border-top: 1px solid var(--line); font-size: 12.5px; }
+#today .pub .pubrow .k:not(.lw, .lw *) { color: var(--dim); }
+#today .pub .pubrow .v:not(.lw, .lw *) { font-size: 12.5px; margin-top: 0; }
+#today .pub .by:not(.lw, .lw *) { white-space: nowrap; margin-right: 10px; }
+#today .pub .by.behind:not(.lw, .lw *) { color: var(--warn); }
+#today .pbar.dimbar > i:not(.lw, .lw *) { background: var(--dimbar); }
+#today .legend:not(.lw, .lw *) { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; font-size: 11px; color: var(--dim); }
+#today .legend i:not(.lw, .lw *) { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+body > .tip { position: fixed; z-index: 20; pointer-events: none; background: var(--tip); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font-size: 11.5px; max-width: 280px; box-shadow: 0 4px 14px var(--shadow); }
+#today .stages:not(.lw, .lw *) { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+#today .stage:not(.lw, .lw *) { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px 7px 9px; }
+#today .stage.done:not(.lw, .lw *) { opacity: .6; }
+#today .stage .row:not(.lw, .lw *) { display: grid; grid-template-columns: 14px minmax(0, 1fr) max-content; gap: 1px 7px; align-items: baseline; }
+#today .stage .row.head:not(.lw, .lw *) { font-weight: 600; }
+#today .stage .row.head .n:not(.lw, .lw *) { font-weight: 400; }
+#today .stage .row.item:not(.lw, .lw *) { padding-left: 12px; font-size: 12px; }
+#today .stage .row.item.done:not(.lw, .lw *) { color: var(--dim); }
+#today .stage .row .title:not(.lw, .lw *) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#today .stage .row .n:not(.lw, .lw *) { color: var(--dim); font-size: 11.5px; text-align: right; white-space: nowrap; }
+#today .stage .when:not(.lw, .lw *) { color: var(--dim); font-size: 11px; margin: -1px 0 2px 33px; }
+#today .stage .pbar:not(.lw, .lw *) { margin: 2px 0 3px 21px; }
+#today .stage .row.item + .pbar:not(.lw, .lw *) { margin-left: 33px; height: 3px; }
+#today .stage .note:not(.lw, .lw *) { color: var(--dim); font-size: 11px; margin: 3px 0 0 21px; }
+#today .mark:not(.lw, .lw *) { color: var(--dim); text-align: center; }
+#today .mark.ok:not(.lw, .lw *) { color: var(--ok); }
+#today .mark.run:not(.lw, .lw *) { color: var(--accent); }
+#today .sw:not(.lw, .lw *) { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
+#today .regbar:not(.lw, .lw *) { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+#today .regbar input:not(.lw, .lw *) { flex: 1 1 160px; width: auto; margin: 0; }
+#today .seg:not(.lw, .lw *) { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+#today .seg button:not(.lw, .lw *) { border: 0; border-radius: 0; background: transparent; color: var(--dim); padding: 3px 9px; }
+#today .seg button.on:not(.lw, .lw *) { background: var(--primary-bg); color: var(--primary-fg); }
+#today .regs:not(.lw, .lw *) { display: grid; gap: 1px; }
+#today .rg:not(.lw, .lw *) { display: grid; grid-template-columns: minmax(0, 1fr) max-content; gap: 1px 10px; padding: 5px 2px; border-bottom: 1px solid var(--line); }
+#today .rg .nm:not(.lw, .lw *) { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#today .rg .when:not(.lw, .lw *) { color: var(--dim); font-size: 11.5px; text-align: right; }
+#today .rg .left:not(.lw, .lw *) { grid-column: 1 / 3; display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--dim); }
+#today .rg .left .stack:not(.lw, .lw *) { flex: 0 0 90px; }
+#today .rg.done .nm:not(.lw, .lw *) { color: var(--dim); }
+#today .update:not(.lw, .lw *) { margin: 8px 0 2px; font-size: 11px; color: var(--dim); display: flex; gap: 8px; align-items: center; }
+#today .update:not(.lw, .lw *)::after { content: ""; flex: 1; border-top: 1px dashed var(--rule); }
+#today .more:not(.lw, .lw *) { margin-top: 6px; }
+#today .hours:not(.lw, .lw *) { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 2px; align-items: end; height: 70px; }
+#today .hours > div:not(.lw, .lw *) { display: flex; flex-direction: column-reverse; height: 100%; justify-content: flex-start; gap: 1px; position: relative; }
+#today .hours > div > i:not(.lw, .lw *) { display: block; border-radius: 1px; min-height: 0; }
+#today .hours > div.paused:not(.lw, .lw *)::before { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(135deg, var(--paused) 0 3px, transparent 3px 6px); }
+#today .hoursx:not(.lw, .lw *) { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 2px; font-size: 9.5px; color: var(--dim); margin-top: 2px; }
+#today .feedbar:not(.lw, .lw *) { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 10px 0 6px; }
+#today .feed:not(.lw, .lw *) { max-height: 420px; overflow: auto; font-size: 12px; }
+#today .feed > div:not(.lw, .lw *) { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 8px; padding: 3px 0; border-bottom: 1px solid var(--row-line); }
+#today .feed > div.new:not(.lw, .lw *) { background: linear-gradient(90deg, var(--new-bg), transparent 70%); }
+#today .feed .t:not(.lw, .lw *) { color: var(--dim); font-size: 11px; }
+#today .feed .day:not(.lw, .lw *) { grid-column: 1 / 3; color: var(--dim); font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; padding-top: 8px; border: 0; }
+#today .since:not(.lw, .lw *) { font-size: 12px; margin: 6px 0; }
+#today details.more-box > summary:not(.lw, .lw *) { cursor: pointer; color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; list-style: none; }
+#today details.more-box > summary:not(.lw, .lw *)::before { content: "▸ "; }
+#today details.more-box[open] > summary:not(.lw, .lw *)::before { content: "▾ "; }
+#today .twrap:not(.lw, .lw *) { overflow-x: auto; }
+#today table.t:not(.lw, .lw *) { width: 100%; border-collapse: collapse; font-size: 11.5px; margin: 6px 0 10px; }
+#today table.t th:not(.lw, .lw *) { text-align: left; color: var(--dim); font-weight: 500; padding: 3px 6px; border-bottom: 1px solid var(--line); }
+#today table.t td:not(.lw, .lw *) { padding: 3px 6px; border-bottom: 1px solid var(--row-line); vertical-align: top; }
+#today table.t td.num:not(.lw, .lw *), #today table.t th.num:not(.lw, .lw *) { text-align: right; }
+#today .fresh:not(.lw, .lw *) { color: var(--dim); font-size: 11px; margin-top: 8px; }
+#today .gate:not(.lw, .lw *) { background: var(--panel); border: 1px solid var(--warn-line); border-left: 3px solid var(--warn); border-radius: 8px; padding: 7px 11px; margin-bottom: 6px; }
+#today .gate.has-error:not(.lw, .lw *) { border-color: var(--bad-line); border-left-color: var(--bad); }
+#today .gate.checking:not(.lw, .lw *) { border: 0; background: none; padding: 0 2px; color: var(--dim); font-size: 11.5px; }
+#today .gate .gh:not(.lw, .lw *) { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+#today .gate .gh .files:not(.lw, .lw *) { color: var(--dim); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; }
+#today .gate .gh button:not(.lw, .lw *) { margin-left: auto; }
+#today .gate .together:not(.lw, .lw *) { color: var(--warn); font-size: 11.5px; margin-top: 3px; }
+#today .gate .gf:not(.lw, .lw *) { display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; gap: 2px 8px; align-items: baseline; padding: 4px 0 2px; border-top: 1px solid var(--row-line); margin-top: 4px; }
+#today .gate .gf .msg:not(.lw, .lw *) { font-size: 12px; }
+#today .gate .gf .sub:not(.lw, .lw *) { grid-column: 2 / 4; color: var(--dim); font-size: 11px; }
+#today .gate .gf pre:not(.lw, .lw *) { grid-column: 2 / 4; margin: 2px 0 0; font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dim); max-height: 9em; overflow: auto; white-space: pre-wrap; }
+#today .gate .gf button:not(.lw, .lw *) { padding: 1px 8px; font-size: 11.5px; }
+#today .d-pool .pool-top:not(.lw, .lw *) { display: grid; gap: 4px; margin-bottom: 8px; }
+#today .pool-ctl:not(.lw, .lw *) { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+#today .pool-ctl .sub:not(.lw, .lw *) { margin: 0; }
+#today .pool-ctl.warnline > span:not(.lw, .lw *) { color: var(--warn); }
+#today .mc .hand:not(.lw, .lw *) { color: var(--accent); }
+#today button[disabled]:not(.lw, .lw *) { opacity: .5; }
+</style>
+
+<div class="lw"><header>
+  <h1>Scenic build</h1>
+</header></div>
+<footer class="lw bar">
+  <label class="range" for="range">Charts show the last <select id="range"></select></label>
+  <div class="live" title="Green dot blinking: the charts and numbers on this page are refreshing every second"><i></i><b>Live</b><span>charts update every second · last update <span id="clock">—</span></span></div>
+</footer>
+<div id="today"><div id="dash"></div></div>
+
+<div class="lw"><div id="grid">
+
+
+
+<section class="box wide" id="io">
+  <h2>Transfers <span>bytes per second, each Mac</span></h2>
+  <div class="rates" id="rates"></div>
+  <div class="src">
+    <b class="need">today</b><span>nothing: the page shows one "NAS 5 ms" chip per heartbeat (20 s to 2 min). No byte counter wraps any NAS read or write; <code>fetch::net::FETCHED</code> counts some download bytes process-wide, never per host or per second.</span>
+    <b class="have">change</b><span>count bytes and calls in the three choke points every transfer already passes (<code>Out::put_file</code>/<code>store::range</code> for the NAS, <code>fetch::net</code> and the budget proxy's <code>relay</code> for the internet); each Mac serves them from memory at <code>/work/live</code>; the page asks every Mac directly every 1–2 s. Nothing new is written to the NAS.</span>
+  </div>
+</section>
+
+<section class="box wide" id="vitals">
+  <h2>Machine vitals <span>every second, from each Mac</span></h2>
+  <div class="vitals" id="vitals-grid"></div>
+  <div class="src">
+    <b class="part">today</b><span><code>Resources</code> in the heartbeat: load1, memory free %, disk free, cache GB (every 10 min), battery and mains. The memory guard samples each job's footprint 4× a second but only its peak leaves the Mac. Pressure level and swap are read in <code>sys.rs</code> and not exposed.</span>
+    <b class="part">today</b><span>the live store's 1 s sampler (#514, #515): cores busy (all, E, P from <code>host_processor_info</code>), memory free, pressure, swap, the build's cores and memory against the other apps', the disks' write rate (IOKit) and each job's, served by <code>/work/live</code>. No thermal series (no public, rootless source).</span>
+  </div>
+</section>
+
+<section class="box" id="nas">
+  <h2>The NAS <span>how fast it answers, how close to its limits, and who is using it</span></h2>
+  <div class="nas">
+    <div class="mac">
+      <h3>How fast the NAS responds <span id="nas-say"></span></h3>
+      <div class="lat"><canvas id="nas-lat"></canvas></div>
+      <div class="gauge"><span class="k">response time</span><div class="barcell"><div class="pbar" id="nas-lat-bar"><i></i></div><div class="scale"><span>0</span><span>200 ms</span><span>400 ms</span></div></div><span class="v" id="nas-lat-v"></span></div>
+      <div class="gauge"><span class="k">requests waiting</span><div class="barcell"><div class="pbar" id="nas-q-bar"><i></i></div><div class="scale"><span>0</span><span>6</span><span>12 threads</span></div></div><span class="v" id="nas-q-v"></span></div>
+      <div class="gauge"><span class="k">timed out</span><div class="barcell"><div class="pbar bad" id="nas-to-bar"><i></i></div><div class="scale"><span>0</span><span>5</span><span>10 a day</span></div></div><span class="v" id="nas-to-v"></span></div>
+      <div class="gauge"><span class="k">NAS disks busy</span><div class="barcell"><div class="pbar warn" id="nas-io-bar"><i></i></div><div class="scale"><span>0</span><span>50 %</span><span>100 %</span></div></div><span class="v" id="nas-io-v"></span></div>
+      <div class="chips" id="nas-chips"></div>
+    </div>
+    <div class="mac">
+      <h3>Use against its capacity <span>capacity measured every 30 min; the best of the last day</span></h3>
+      <div class="kv">
+        <span class="k">data moved</span><div class="barcell"><div class="pbar ok" id="lim-bytes"><i></i></div><div class="scale"><span>0</span><span>118 MB/s limit</span></div></div><span class="v" id="lim-bytes-v"></span>
+        <span class="k">files created</span><div class="barcell"><div class="pbar ok" id="lim-creates"><i></i></div><div class="scale"><span>0</span><span>41/s limit</span></div></div><span class="v" id="lim-creates-v"></span>
+        <span class="k">folders listed</span><div class="barcell"><div class="pbar ok" id="lim-list"><i></i></div><div class="scale"><span>0</span><span>210/s limit</span></div></div><span class="v" id="lim-list-v"></span>
+        <span class="k">files looked up</span><div class="barcell"><div class="pbar ok" id="lim-stat"><i></i></div><div class="scale"><span>0</span><span>640/s limit</span></div></div><span class="v" id="lim-stat-v"></span>
+      </div>
+      <h3>Who is using the NAS <span>the share each Mac's running jobs are allowed, set by the lead from each job's measured use</span></h3>
+      <div class="shares" id="shares"></div>
+    </div>
+  </div>
+  <div class="src">
+    <b class="part">today</b><span>latency: a listing of the project's folder every 5 s while a build runs, in the live store (<code>/work/live</code>, #514); the chip its last. The budget shares are on the page (the NAS bar). The probe's MB/s and creates/s live only in the coordinator's memory and one log line; calls in flight (<code>Calls::busy</code>) and deadline misses never leave the process. Volume busy needs the Synology (SNMP or DSM's API), not in the code at all.</span>
+    <b class="have">change</b><span>stat every second instead of per loop; put <code>Probe</code> and <code>Limits</code> in the status; count calls and deadline misses in <code>Deadlined::run</code>; optionally read DSM's resource monitor from the lead for the volume's utilisation.</span>
+  </div>
+</section>
+
+<section class="box" id="map">
+  <h2>Where the jobs are <span>each running job's targets on the map · hover a tile</span></h2>
+  <div class="mapwrap"><canvas id="mapc"></canvas><div class="tip" id="tip" hidden></div></div>
+  <div class="legend" id="legend"></div>
+  <div class="src">
+    <b class="have">today</b><span>a job's targets are already on the wire: <code>leases[].what</code> is "terrain 6/2/31 6/3/27 …", and a target is a z6 tile ("6/x/y", about 5.6°), a z3 area ("3/x/y", 8×8 of those) or a world step. The region outlines are served at <code>/api/coverage</code>. The tile the job is on now is in its <code>parts[]</code> text and lease progress.</span>
+    <b class="part">change</b><span>say the current target and its fraction in the beat as fields (<code>coord::Beat</code> has only a progress string and <code>frac</code>); the finished tiles of the last hour come from <code>/work/history</code> done events as is.</span>
+  </div>
+</section>
+
+<section class="box wide" id="jobs">
+  <h2>Inside each job <span>what a running job is doing right now · two examples: the M4's slot 1 and the M1's slot 2</span></h2>
+  <div class="jobs" id="jobs-grid"></div>
+  <div class="src">
+    <b class="part">today</b><span>per job: progress "589/3436 tiles" with a linear ETA, parts, the log's last 3 lines, memory now, threads. Per target: measured seconds, peak MB and bytes read and written land in <code>costs.jsonl</code> and <code>timings.jsonl</code> (phases classed nas-read / nas-write / net / compute / wait, with bytes) only when the job ends.</span>
+    <b class="have">change</b><span>open the timings phases live: the job's current phase and its running bytes written to its progress line (or a sidecar the agent reads), so the phase strip and the per-target table fill as the job runs instead of after it.</span>
+  </div>
+</section>
+
+<section class="box" id="stream">
+  <h2>File stream <span>what each Mac is moving right now</span></h2>
+  <div class="log" id="log"></div>
+  <div class="src">
+    <b class="need">today</b><span>nothing on the page. The OSM pass logs "copy: X/Y GB (N MB/s)" every 2 GB; <code>Out::put_file_with</code> has a progress callback; the mirror's <code>Copying {name, size, have}</code> exists for the map server's downloads panel.</span>
+    <b class="have">change</b><span>a ring of the last 200 transfer events per Mac (kind, path, bytes, ms, job) in memory, in <code>/work/live</code>.</span>
+  </div>
+</section>
+
+<section class="box" id="hosts">
+  <h2>Internet by website <span>every job's downloads and requests, per website</span></h2>
+  <div class="tablewrap"><table class="hosts"><thead><tr><th>website</th><th class="r">requests/s</th><th class="r">MB/s</th><th class="r">connections</th><th class="r">retries</th><th>rate limit</th><th>robots.txt</th></tr></thead><tbody id="hosts-body"></tbody></table></div>
+  <div class="src">
+    <b class="part">today</b><span>every job's connections go through the agent's proxy (<code>crate::budget::proxy</code>), which counts connections per class (wiki, query, other) and 429 holds, and is in <code>Status.budgets</code> but not drawn. Bytes are relayed with <code>io::copy</code>, uncounted. Retries are inside <code>fetch::retrying</code>, invisible. Robots are checked by the Python producers only.</span>
+    <b class="have">change</b><span>count bytes per host in the proxy's <code>relay</code> (the CONNECT host is known); a retry counter in <code>fetch</code>; the proxy serves the table.</span>
+  </div>
+</section>
+
+<section class="box wide" id="findings">
+  <h2>What is there to show <span>signal by signal: what exists, where, how often, what would change</span></h2>
+  <div class="tablewrap"><table class="findings"><thead><tr><th>Signal</th><th>Today</th><th>Where it lives</th><th>Cadence</th><th>To show it live</th></tr></thead><tbody>
+    <tr><td>Jobs, slots, progress, ETA, log tail</td><td class="have">shown</td><td><code>Status.jobs[]</code> (JobView) in status.json on the NAS; <code>leases[]</code> in view.json</td><td>agent loop 20 s → NAS ≤ 2 min; view.json ≤ 15 s; page polls 10 s; each Mac rereads the NAS every 12 s</td><td>serve the same JobView from each Mac's memory at 1 s; the page already knows every Mac's address (<code>broker</code>)</td></tr>
+    <tr><td>What a job builds, geographically</td><td class="have">on the wire, not drawn</td><td>target strings in <code>leases[].what</code>, <code>parts[]</code>; z6/z3 tiles → bounds by the slippy formula; outlines at <code>/api/coverage</code></td><td>with the lease</td><td>a map widget; a <code>target</code> field in the beat for the tile under way</td></tr>
+    <tr><td>Which region a tile is for</td><td class="part">derivable</td><td>jobs carry no region (builds depend on coverage); <code>forecast-input.json</code> has <code>RegionLeft</code> per region with its tiles; <code>DrawnRegion::meets_rect</code></td><td>per forecast, ≤ 1 min</td><td>look each tile up in the regions' boxes on the page (overlaps allowed)</td></tr>
+    <tr><td>NAS bytes read / written per Mac</td><td class="none">not counted</td><td>job-level totals only at the end: <code>costin</code> bytes, wrote, creates; timings phases' bytes</td><td>per job end</td><td>atomics in <code>Out</code>, <code>store::range</code>, <code>pool::nas::Share</code>, <code>Deadlined</code>; a rate from a 1 s sampler</td></tr>
+    <tr><td>NAS latency</td><td class="have">measured</td><td><code>nas_ms</code> in the live store: a listing of the project's folder every 5 s while a build runs (<code>nasread::probe</code>), <code>/work/live</code></td><td>5 s</td><td>the chart above</td></tr>
+    <tr><td>NAS calls in flight, deadline misses</td><td class="none">internal</td><td><code>nasread::Calls::busy()</code>, one log line per timeout streak</td><td>live, in memory</td><td>expose the counts; add a timeouts counter</td></tr>
+    <tr><td>NAS limits (MB/s, creates/s, listings/s, stats/s)</td><td class="none">log only</td><td>the lead's <code>Probes</code>, best of 24 h, lost on restart; one log line</td><td>every 30 min</td><td>put the last probe and <code>Limits</code> in the status; persist probes.jsonl</td></tr>
+    <tr><td>NAS budget shares per Mac</td><td class="have">shown</td><td><code>Status.nas_share</code> from leased jobs' weights</td><td>per status write</td><td>as is; add the per-target weight to the job card</td></tr>
+    <tr><td>NAS-side load (volume busy, IO wait, SMB sessions)</td><td class="none">not in the code</td><td>the Synology: SNMP (UCD-DISKIO-MIB) or DSM's resource monitor API</td><td>—</td><td>the lead polls DSM every 5 s with a read-only account; shown as "volume busy"; optional</td></tr>
+    <tr><td>Internet bytes by host</td><td class="none">not counted</td><td><code>fetch::net::FETCHED</code> (partial, process-wide); the proxy counts connections per class</td><td>live, in memory</td><td>count in the proxy's relay per CONNECT host (every job's traffic passes it); a per-host table</td></tr>
+    <tr><td>Retries, host down, 429 holds</td><td class="part">partly</td><td>holds in <code>budget::View</code> (status, not drawn); retries only in the final error; <code>SCENIC_FETCH_DOWN</code> files in scratch</td><td>live</td><td>a retry counter per host; read the down notes</td></tr>
+    <tr><td>Downloads in progress (planet, feeds, canopy)</td><td class="part">log lines</td><td>"copy: X/Y GB (N MB/s)" in the OSM pass; the planet fetch is a Synology task with its own log</td><td>per 2 GB / per 1 %</td><td>a progress callback already exists on <code>put_file_with</code>; make copies report through the same ring</td></tr>
+    <tr><td>Uploads pending, unacked hand-offs</td><td class="part">one count</td><td><code>PoolView.unacked</code>; <code>Out.later</code> (sent, landed, failed) in process</td><td>per status</td><td>expose <code>Out.later</code> counts and bytes per job</td></tr>
+    <tr><td>CPU per core, load</td><td class="part">load1 only</td><td><code>Resources.load1</code>; cores busy from <code>Capacity.cores_free</code> at ask time</td><td>per loop / per ask</td><td><code>host_processor_info</code> every second</td></tr>
+    <tr><td>Memory: held, limit, pressure, swap</td><td class="part">held and limit</td><td>memguard view; pressure level and swap read in <code>sys.rs</code>, not exposed; per-job footprint sampled 4×/s</td><td>per loop</td><td>add pressure and swap to the sampler; a per-job memory sparkline</td></tr>
+    <tr><td>Disk free, growth, scratch size</td><td class="part">free only</td><td><code>disk_free_gb</code>; <code>SCENIC_WRITTEN</code> per job; largest scratch files looked at each minute</td><td>per loop / per minute</td><td>a write rate per job from <code>SCENIC_WRITTEN</code>; scratch bytes per slot</td></tr>
+    <tr><td>Per-target measured time vs forecast</td><td class="part">forecast only</td><td><code>costs.json</code> secs per target; <code>each_s</code> per step; the lane's <code>until</code></td><td>per job end / per minute</td><td>show each target's predicted seconds beside its elapsed as it runs</td></tr>
+    <tr><td>Phase of the job now (nas-read, net, compute, nas-write)</td><td class="none">after the fact</td><td><code>timings.jsonl</code> RunRec phases with class, wall, cpu, bytes, files, peak</td><td>per job end</td><td>write the open phase's name and bytes to the progress line; a phase strip per job</td></tr>
+    <tr><td>Publishing: catalog, adoption, mirror copies</td><td class="have">shown (coarse)</td><td><code>Published</code>, <code>PublishLine</code>; <code>pubtimes</code> events in state/publish/&lt;host&gt;.jsonl; mirror <code>SyncStats</code> and <code>Copying</code> in the map server</td><td>per status; per catalog</td><td>a catalog-to-adopted timeline from pubtimes; live mirror copy progress from the server</td></tr>
+  </tbody></table></div>
+  <h3>How it would get to the page <span>one transport for everything live</span></h3>
+  <div class="plan">
+    <div><b>Nothing live goes through the NAS</b><p>The NAS takes 20–55 small-file creates a second and listings take seconds under load. Live data stays in each agent's memory and is read over HTTP, like the worker page already reads its own Mac.</p></div>
+    <div><b><code>/work/live</code> on every Mac</b><p>One JSON answer for a chosen range (or an event stream for what follows): rates, vitals, transfer events, the jobs' current target and phase. The page asks each Mac in the pool directly; the heartbeat already lists their addresses.</p></div>
+    <div><b>The coarse feeds stay as they are</b><p>status.json, view.json, forecast-input and the history keep their cadence and remain the truth; the live charts read the history store below, which is for the eye: losing it loses no build work.</p></div>
+    <div><b>History that outlives the page</b><p>Each agent writes its samples to a small file on its own Mac's disk (never the NAS): every second for the last hour, a 10 s summary for a day, a 1 min summary for 72 h, each summary keeping the low, mean and high so spikes survive. About 4 MB a Mac, flushed once a minute, so a page opened later, or an agent restarted, still has the history. A Mac asleep or off shows as a gap.</p></div>
+    <div><b>Cheapest first</b><p>1. the map and per-target table from fields already on the wire. 2. byte counters at the three choke points plus the 1 s sampler. 3. the probe and the proxy's counters into the status. 4. live phases. 5. the Synology's own view, if an account is made for it.</p></div>
+  </div>
+</section>
+
+</div></div>
+
+<script src="today/snap.js"></script>
+<script type="module">
+import { dashboard } from "./today/dash.js";
+const { swarm: sw, steps, hist } = SNAP;
+const shift = (o) => { const d = Math.round(Date.now() / 1000 - sw.now); return JSON.parse(JSON.stringify(o), (k, v) => (typeof v === "number" && v > 1.78e9 && v < 1.81e9 ? v + d : v)); };
+const call = async (path, body) => {
+  if (path === "/work/swarm") return [200, shift(sw)];
+  if (path === "/work/steps") return [200, steps];
+  if (path === "/work/history") { const h2 = shift(hist); return [200, { ...h2, events: h2.events.filter((e) => e.seq > (body?.since ?? 0)).slice(0, body?.max ?? 1000) }]; }
+  return [200, {}];
+};
+const store = { get(k, d) { try { const v = localStorage.getItem("today-" + k); return v === null ? d : JSON.parse(v); } catch { return d; } }, set(k, v) { try { localStorage.setItem("today-" + k, JSON.stringify(v)); } catch {} } };
+dashboard({ root: document.getElementById("dash"), call, label: "mockup", store, onState: () => window.placeLive?.(), onError: (m) => console.warn(m) });
+</script>
+<script src="countries.js"></script>
+<script src="regions.js"></script>
+<script>
+"use strict";
+// ---------- helpers ----------
+// (Also finds the new parts while they wait, out of the page, for the build page to render.)
+const $ = (s) => document.querySelector(s) ?? Object.values(window.PARTS ?? {}).map((p) => p.querySelector(s)).find(Boolean) ?? null;
+const h = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const rnd = (a, b) => a + Math.random() * (b - a);
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+const mb = (bps) => bps >= 1e9 ? (bps / 1e9).toFixed(2) + " GB/s" : bps >= 1e6 ? (bps / 1e6).toFixed(1) + " MB/s" : bps >= 1e3 ? (bps / 1e3).toFixed(0) + " kB/s" : bps.toFixed(0) + " B/s";
+const bytes = (b) => b >= 1e9 ? (b / 1e9).toFixed(2) + " GB" : b >= 1e6 ? (b / 1e6).toFixed(1) + " MB" : b >= 1e3 ? (b / 1e3).toFixed(0) + " kB" : b + " B";
+const clock = (t) => new Date(t * 1000).toTimeString().slice(0, 8);
+const dur = (s) => s >= 3600 ? (s / 3600).toFixed(1) + " h" : s >= 60 ? Math.round(s / 60) + " min" : Math.round(s) + " s";
+const RING = 90; // seconds sampled before the page starts
+const LIVE_KEEP = 3600;
+class Ring { constructor(n = LIVE_KEEP) { this.n = n; this.a = []; } push(v) { this.a.push(v); if (this.a.length > this.n) this.a.shift(); } last() { return this.a[this.a.length - 1] ?? 0; } max() { return Math.max(1e-9, ...this.a); } }
+// A smooth random walk between bounds, with occasional bursts.
+class Walk { constructor(v, lo, hi, step) { Object.assign(this, { v, lo, hi, step }); } next(burst = 0) { this.v = clamp(this.v + rnd(-this.step, this.step) + burst, this.lo, this.hi); return this.v; } }
+
+function sizeCanvas(c) { const r = c.getBoundingClientRect(); const dpr = devicePixelRatio || 1; const w = Math.max(1, Math.round(r.width * dpr)), hh = Math.max(1, Math.round(r.height * dpr)); if (c.width !== w || c.height !== hh) { c.width = w; c.height = hh; } return [c.getContext("2d"), r.width, r.height, dpr]; }
+// A small chart: a nice-rounded y scale with labelled ticks at 0, half and top; an x axis in seconds ago.
+function niceMax(v) { if (v <= 0) return 1; const p = 10 ** Math.floor(Math.log10(v)); const f = v / p; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p; }
+const RANGES = [[60, "1 minute"], [300, "5 minutes"], [600, "10 minutes"], [1800, "30 minutes"], [3600, "1 hour"], [7200, "2 hours"], [21600, "6 hours"], [86400, "24 hours"], [259200, "72 hours"]];
+let RANGE = 60; try { const v = +localStorage.getItem("build-live-range"); if (RANGES.some(([s2]) => s2 === v)) RANGE = v; } catch (e) {}
+const POINTS = 180;
+// Every chart's y labels get the same room, so every plot starts and ends at the same x.
+const AXIS_W = 58;
+// The stored history a Mac's agent would serve (mocked): one point a minute for 72 h, kept per series.
+function past(r, minute) {
+  if (!r.pastArr) { const live = r.a.filter((v) => v != null).map(Number); const mean = live.length ? live.reduce((x, y2) => x + y2, 0) / live.length : 0; const arr = []; let v = mean; const amp = Math.max(Math.abs(mean) * .25, 1e-6);
+    for (let k = 0; k < 4320; k++) { const day = Math.sin((k / 1440) * Math.PI * 2 + (r.seed ??= Math.random() * 6)); v = v + (Math.random() - .5) * amp * .3 + (mean + day * amp * .8 - v) * .05; arr.push(r.bool ? ((k + Math.floor((r.seed % 1) * 300)) % 300) < (mean * 300) : Math.max(0, v)); }
+    r.pastArr = arr; }
+  return r.pastArr[clamp(minute, 0, 4319)];
+}
+function V(r) {
+  const step = Math.max(1, Math.round(RANGE / POINTS)), n = Math.round(RANGE / step), live = r.a, Ln = live.length, a = [];
+  for (let k = n - 1; k >= 0; k--) { const ago0 = k * step, ago1 = ago0 + step;
+    if (ago1 <= Ln) { let sum = 0, c = 0; for (let q = ago0; q < ago1; q++) { const v = live[Ln - 1 - q]; if (v != null) { sum += +v; c++; } } a.push(r.bool ? sum / Math.max(1, c) >= .5 : c ? sum / c : 0); }
+    else a.push(past(r, Math.max(0, Math.floor((ago0 - Ln) / 60)))); }
+  return { a, n, secs: step, max() { return Math.max(1e-9, ...a.map(Number)); }, last() { return a[a.length - 1] ?? 0; } };
+}
+function agoLabel(s2) { return s2 === 0 ? "now" : s2 < 60 ? `−${s2} s` : s2 < 3600 ? `−${s2 / 60} min` : `−${+(s2 / 3600).toFixed(1)} h`; }
+// Gridlines at every tick; labels drawn ends first, and any that would sit within 12 px of one already drawn left off.
+function yLabels(g, ticks, labels, y, L, right) {
+  ticks.forEach((t, k) => { const yy = Math.round(y(t)) + .5; g.strokeStyle = css(k ? "--grid" : "--line"); g.lineWidth = 1; g.beginPath(); g.moveTo(L, yy); g.lineTo(right, yy); g.stroke(); });
+  const order = ticks.map((_, k) => k).sort((a2, b2) => (a2 === 0 || a2 === ticks.length - 1 ? 0 : 1) - (b2 === 0 || b2 === ticks.length - 1 ? 0 : 1));
+  const drawn = []; g.fillStyle = css("--dim"); g.textAlign = "right"; g.textBaseline = "middle";
+  for (const k of order) { const yy = y(ticks[k]); if (drawn.some((d) => Math.abs(d - yy) < 12)) continue; drawn.push(yy); g.fillText(labels[k], L - 4, yy); }
+}
+// A limit's label as a button on its line; clicking opens a small editor in place.
+function refButton(c, r, ry, R) {
+  const wrap = c.parentNode; wrap._btns ??= {};
+  let b = wrap._btns[r.edit.key];
+  if (!b) { b = h("button", "refbtn"); b.type = "button"; b.addEventListener("click", () => openCfg(wrap, b._edit)); wrap.append(b); wrap._btns[r.edit.key] = b; }
+  b._edit = r.edit; b.textContent = r.label + " ✎"; b.style.right = (R + 2) + "px"; b.style.top = Math.max(0, ry - 17) + "px";
+}
+function openCfg(wrap, e) {
+  wrap.querySelector(".cfg")?.remove();
+  const pnl = h("div", "cfg"); const id = "cfg-" + e.key;
+  const inp = document.createElement("input"); inp.type = "number"; inp.id = id; inp.min = e.min; inp.max = e.max; inp.step = e.step ?? 1; inp.value = e.value;
+  const lab = h("label", null, e.ask); lab.htmlFor = id;
+  const field = h("div", "cfgrow"); field.append(inp, h("span", "dim", e.unit));
+  const save = h("button", "primary", "Save"), cancel = h("button", null, "Cancel"); save.type = cancel.type = "button";
+  const btns = h("div", "cfgrow"); btns.append(save, cancel);
+  pnl.append(h("b", null, e.title), h("p", "dim", e.note), lab, field, btns);
+  const close = () => pnl.remove();
+  cancel.addEventListener("click", close); pnl.addEventListener("keydown", (ev) => { if (ev.key === "Escape") close(); if (ev.key === "Enter") save.click(); });
+  save.addEventListener("click", () => { const v = clamp(+inp.value, e.min, e.max); if (!Number.isFinite(v)) return; e.apply(v); pnl.replaceChildren(h("b", "ok", `Set to ${v} ${e.unit}`), h("p", "dim", e.done(v))); setTimeout(close, 6000); render(now0()); });
+  wrap.append(pnl); inp.focus(); inp.select();
+}
+let BATT_MIN = 30;
+function timeAxis(g, L, T, pw, ph, span) {
+  const NICE = [15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
+  const most = Math.max(2, Math.floor(pw / 80)); const step = NICE.find((x2) => span / x2 <= most) ?? 86400;
+  g.textBaseline = "top";
+  for (let s2 = 0; s2 <= span + 1e-6; s2 += step) { const xx = L + (1 - s2 / span) * pw; g.textAlign = s2 === 0 ? "right" : Math.abs(s2 - span) < 1e-6 ? "left" : "center"; g.fillStyle = css("--dim"); g.fillText(agoLabel(s2), xx, T + ph + 3); g.strokeStyle = css("--grid"); g.lineWidth = 1; g.beginPath(); g.moveTo(Math.round(xx) + .5, T); g.lineTo(Math.round(xx) + .5, T + ph); g.stroke(); }
+}
+function spark(c, ring, color, { fill = true, max = null, stepped = false, fmt = (v) => String(Math.round(v)), secs = 1, ref = null, refLabel = "", ticksAt = null } = {}) {
+  ring = V(ring); secs = ring.secs;
+  const [g, w, hh, dpr] = sizeCanvas(c); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, hh);
+  const a = ring.a, n = ring.n, m = max ?? niceMax(ring.max() * 1.05);
+  g.font = "10px -apple-system, system-ui, sans-serif";
+  const ticks = ticksAt ?? [0, m / 2, m]; const labels = ticks.map(fmt);
+  const L = AXIS_W, B = 14, T = 6, R = 4;
+  const pw = w - L - R, ph = hh - T - B;
+  const x = (i) => L + (1 - (a.length - 1 - i) * secs / (n * secs)) * pw, y = (v) => T + ph - clamp(v / m, 0, 1) * ph;
+  // y grid and labels
+  g.textAlign = "right"; g.textBaseline = "middle";
+  yLabels(g, ticks, labels, y, L, w - R);
+  // x labels: seconds ago
+  const span = n * secs; timeAxis(g, L, T, pw, ph, span);
+  if (!a.length) return;
+  const path = () => { g.beginPath(); a.forEach((v, i) => { const xx = x(i), yy = y(v); if (i === 0) g.moveTo(xx, yy); else if (stepped) { g.lineTo(xx, y(a[i - 1])); g.lineTo(xx, yy); } else g.lineTo(xx, yy); }); };
+  if (fill) { path(); g.lineTo(x(a.length - 1), T + ph); g.lineTo(x(0), T + ph); g.closePath(); g.save(); g.globalAlpha = .18; g.fillStyle = color; g.fill(); g.restore(); }
+  if (ref != null) { const ry = Math.round(y(ref)) + .5; g.save(); g.setLineDash([4, 3]); g.strokeStyle = css("--warn"); g.lineWidth = 1; g.beginPath(); g.moveTo(L, ry); g.lineTo(w - R, ry); g.stroke(); g.restore(); g.fillStyle = css("--warn"); g.textAlign = "right"; g.textBaseline = "bottom"; g.fillText(refLabel, w - R - 4, ry - 2); }
+  path(); g.strokeStyle = color; g.lineWidth = 1.5; g.lineJoin = "round"; g.stroke();
+  const lx = x(a.length - 1), ly = y(a[a.length - 1]); g.fillStyle = color; g.beginPath(); g.arc(lx, ly, 2.5, 0, Math.PI * 2); g.fill();
+}
+const fmtRate = (v) => v === 0 ? "0" : v >= 1e9 ? (v / 1e9).toFixed(v % 1e9 ? 1 : 0) + " GB/s" : v >= 1e6 ? +(v / 1e6).toFixed(1) + " MB/s" : v >= 1e3 ? +(v / 1e3).toFixed(1) + " kB/s" : Math.round(v) + " B/s";
+
+// ---------- the world (mocked, in the real feeds' shapes) ----------
+const STAGE = { inputs: "world", terrain: "terrain", "terrain-lo": "terrain", slope: "slope", "slope-lo": "slope", trees: "trees", "trees-lo": "trees", depth: "depth", "depth-lo": "depth", unit: "roads", pois: "roads", peaks: "roads", pack: "tiles", lo: "tiles", "rail-feeds": "world", catalog: "world", gc: "world" };
+const STAGE_NAME = { terrain: "Terrain", slope: "Slope", trees: "Tree cover", depth: "Water depth", roads: "Roads", tiles: "Map tiles", world: "World steps (no tiles: named under the map)" };
+const PHASE_NAME = { "nas-read": "reading the NAS", net: "downloading", compute: "computing", disk: "local disk", "nas-write": "writing the NAS", wait: "waiting" };
+const PHASES = ["nas-read", "net", "compute", "disk", "nas-write", "wait"];
+
+const macs = [
+  { host: "Brandons-MacBook-Pro", chip: "M4 Pro", role: "lead", cores: 14, kept: 2, memGb: 48, limitMb: 43008, disk: { freeGb: 88.2, targetGb: 20 }, nasR: new Ring(), nasW: new Ring(), netD: new Ring(), netU: new Ring(), lat: new Ring(), wNasR: new Walk(18e6, 0, 120e6, 6e6), wNasW: new Walk(9e6, 0, 90e6, 5e6), wNetD: new Walk(2.4e6, 0, 40e6, 1.2e6), wNetU: new Walk(40e3, 0, 2e6, 30e3), coreLoad: Array.from({ length: 14 }, () => new Walk(.6, 0, 1, .15)), pressure: "normal", swapGb: 0.4, battery: 80, ac: true, files: { nasR: 0, nasW: 0, creates: 0 }, memJobs: new Ring(), load: new Ring() },
+  { host: "MacBook-Pro-de-Brandon", chip: "M1 Pro", role: "member", cores: 10, kept: 2, memGb: 16, limitMb: 12288, disk: { freeGb: 105.2, targetGb: 20 }, nasR: new Ring(), nasW: new Ring(), netD: new Ring(), netU: new Ring(), lat: new Ring(), wNasR: new Walk(1.2e6, 0, 30e6, 1.5e6), wNasW: new Walk(.3e6, 0, 20e6, 1e6), wNetD: new Walk(6e6, 0, 30e6, 2e6), wNetU: new Walk(10e3, 0, 1e6, 10e3), coreLoad: Array.from({ length: 10 }, () => new Walk(.35, 0, 1, .12)), pressure: "warn", swapGb: 2.1, battery: 80, ac: true, files: { nasR: 0, nasW: 0, creates: 0 }, memJobs: new Ring(), load: new Ring() },
+];
+
+// The jobs each Mac runs in the snapshot, with their real targets (from the leases); their progress then simulated.
+const SNAP_D = Math.round(Date.now() / 1000 - SNAP.swarm.now);
+const isTile = (t) => /^\d+\/\d+\/\d+$/.test(t);
+const jobs = [];
+macs.forEach((m, mi) => {
+  const st = mi === 0 ? SNAP.swarm.agent : (SNAP.swarm.agent.helpers || []).find((x) => x.host === m.host); if (!st) return;
+  (st.jobs || []).forEach((sj) => {
+    const step = sj.id.split(" ")[0];
+    const lease = SNAP.swarm.leases.find((l) => l.worker === m.host && l.step === step);
+    const names = lease ? lease.what.split(" ").slice(1) : [sj.id.split(" ").slice(1).join(" ") || step];
+    const per = Math.max(5, Math.round(SNAP.swarm.agent.forecast?.each_s?.[step] ?? 60));
+    const p = sj.progress, frac = p && p.total ? p.done / p.total : sj.parts?.length ? (sj.part + .5) / sj.parts.length : .3;
+    const pos = frac * names.length, cur = Math.min(names.length - 1, Math.floor(pos));
+    jobs.push({ mac: mi, slot: sj.slot + 1, slotIdx: sj.slot, step, what: sj.what, targets: names.map((t, k) => ({ t, pred: per, secs: k < cur ? Math.round(per * rnd(.7, 1.3)) : 0 })), cur, curFrac: pos - cur, started: sj.started + SNAP_D, threads: sj.threads || 1, memMb: sj.mem_mb || 500, mem: new Ring(), phase: step === "terrain" || step === "rail-feeds" ? "net" : "compute", phaseAge: 0, phases: [], bytes: { r: 0, w: 0, d: 0 }, realTail: (sj.tail || "").split("\n").filter(Boolean).slice(-2), parts: sj.parts, part: sj.part, tiles: p && p.unit === "tiles" ? { done: p.done, total: p.total } : null });
+  });
+});
+const recent = []; // finished tiles fading on the map: {t, step, at}
+"6/2/30 6/2/29 6/3/26 6/4/26 6/14/27 6/14/26 6/13/27 6/17/23 6/17/22 6/16/23 6/24/22 6/24/23 6/25/22".split(" ").forEach((t, i) => recent.push({ t, step: i < 4 ? "terrain" : i < 7 ? "pack" : "slope", at: now0() - rnd(60, 3000) }));
+function now0() { return Math.floor(Date.now() / 1000); }
+
+const hosts = [
+  { host: "s3.amazonaws.com (copernicus-dem-30m)", req: new Walk(6, 0, 20, 2), mbs: new Walk(2.2, 0, 12, .8), open: 4, retries: 0, budget: "—", robots: "allowed", mac: 0 },
+  { host: "query.wikidata.org", req: new Walk(.4, 0, .6, .1), mbs: new Walk(.05, 0, .3, .02), open: 1, retries: 0, budget: "Wikidata queries: 1 per 2 s of query time", robots: "allowed", mac: 1 },
+  { host: "www.wikidata.org", req: new Walk(2.5, 0, 4, .6), mbs: new Walk(.2, 0, 1, .1), open: 2, retries: 0, budget: "Wikimedia: 4 requests/s · 29 left this 10 s", robots: "allowed", mac: 1 },
+  { host: "transitfeeds.com", req: new Walk(1, 0, 3, .4), mbs: new Walk(4.1, 0, 12, 1.5), open: 2, retries: 2, budget: "big downloads: 1 of 2 at once", robots: "allowed (checked 17:40)", mac: 1 },
+  { host: "planet.openstreetmap.org", req: new Walk(0, 0, 0, 0), mbs: new Walk(0, 0, 0, 0), open: 0, retries: 0, budget: "—", robots: "allowed", mac: 0 },
+  { host: "data.chs-shc.ca (NONNA)", req: new Walk(0, 0, 0, 0), mbs: new Walk(0, 0, 0, 0), open: 0, retries: 0, budget: "—", robots: "allowed · credit required", mac: 0 },
+];
+
+const nas = { lat: new Ring(), wLat: new Walk(6, 2, 400, 3), busy: new Walk(3, 0, 12, 1.5), timeouts: 0, volBusy: new Walk(.38, 0, 1, .06), freeTb: 6.71, limits: { bytes: 118e6, creates: 41, listed: 210, stats: 640 }, lastProbe: now0() - 1140, shares: () => [["Brandons-MacBook-Pro", 227], ["MacBook-Pro-de-Brandon", 60]] };
+
+const log = [];
+function pushLog(kind, mac, text, bytesN, ms) { log.push({ t: now0(), kind, mac, text, bytesN, ms }); if (log.length > 14) log.shift(); }
+const files = ["terrain/6-4-36.z", "terrain/6-5-33.z", "base/6-16-26", "base/6-17-27", "sources/osm/2026-09-28/reach", "state/build/term/280/records.json", "cache/dem-units/6-15-27", "markdata/all", "layers/slope/6-19-22", "state/pool/members/m-025abbe3e0b82df3.json", "sources/items/2026-10-20/answers.jsonl", "state/coord/term/280/view.json"];
+
+// ---------- tick ----------
+let tick = 0;
+function step() {
+  tick++;
+  const t = now0();
+  $("#clock").textContent = clock(t);
+  // rates
+  macs.forEach((m, i) => {
+    const burst = Math.random() < .06 ? rnd(10e6, 50e6) : 0;
+    m.nasR.push(m.wNasR.next(burst * (i === 0 ? 1 : .3))); m.nasW.push(m.wNasW.next(Math.random() < .05 ? rnd(8e6, 40e6) : 0));
+    m.netD.push(m.wNetD.next(Math.random() < .04 ? rnd(5e6, 15e6) : 0)); m.netU.push(m.wNetU.next());
+    m.lat.push(nas.wLat.v * rnd(.8, 1.3) + (i === 1 ? 110 : 0));
+    m.files.nasR = Math.round(m.nasR.last() / 2.5e6 + rnd(0, 3)); m.files.nasW = Math.round(m.nasW.last() / 4e6 + rnd(0, 2)); m.files.creates = Math.round(m.nasW.last() / 6e6 + rnd(0, 1));
+    m.coreLoad.forEach((c) => c.next());
+    m.load.push(Math.max(0, m.coreLoad.reduce((a, c) => a + c.v, 0) * (i === 0 ? 1.45 : 1.05) + Math.sin(tick / 13) * 1.5 + rnd(-.4, .4)));
+    m.memJobs.push(jobs.filter((j) => j.mac === i).reduce((s, j) => s + j.memMb, 0));
+    if (m.cpu) sampleVitals(m, i);
+  });
+  // nas
+  nas.lat.push(nas.wLat.next(Math.random() < .03 ? rnd(60, 300) : -2)); nas.busy.next(); nas.volBusy.next(); if (nas.lat.last() > 250 && Math.random() < .3) nas.timeouts++;
+  // jobs
+  jobs.forEach((j) => {
+    j.mem.push(j.memMb = clamp(j.memMb + rnd(-80, 90), 300, 42000));
+    j.phaseAge++;
+    const rates = { "nas-read": [rnd(4e6, 30e6), 0, 0], net: [0, 0, rnd(1e6, 8e6)], compute: [0, 0, 0], disk: [0, 0, 0], "nas-write": [0, rnd(3e6, 25e6), 0], wait: [0, 0, 0] }[j.phase];
+    j.bytes.r += rates[0]; j.bytes.w += rates[1]; j.bytes.d += rates[2];
+    const last = j.phases[j.phases.length - 1]; if (last && last.phase === j.phase) last.s++; else j.phases.push({ phase: j.phase, s: 1 }); if (j.phases.length > 40) j.phases.shift();
+    if (Math.random() < .12) { const order = j.step === "terrain" ? ["net", "compute", "nas-write", "nas-read"] : j.step === "rail-feeds" ? ["net", "net", "compute", "nas-write"] : ["nas-read", "compute", "compute", "nas-write"]; j.phase = order[Math.floor(Math.random() * order.length)]; j.phaseAge = 0; }
+    const cur = j.targets[j.cur]; if (cur) { cur.secs++; j.curFrac = clamp(j.curFrac + 1 / cur.pred * rnd(.6, 1.4), 0, 1); if (j.curFrac >= 1 && j.cur < j.targets.length - 1) { recent.push({ t: cur.t, step: j.step, at: t }); if (recent.length > 60) recent.shift(); pushLog("put", j.mac, `${j.step} ${cur.t} done in ${cur.secs} s (forecast ${cur.pred} s)`, 0, 0); j.cur++; j.curFrac = 0; } }
+    if (j.tiles) { j.tiles.done = clamp(j.tiles.done + Math.round(rnd(0, 4)), 0, j.tiles.total); }
+  });
+  // stream
+  if (Math.random() < .7) { const mac = Math.random() < .7 ? 0 : 1; const kind = ["put", "get", "get", "fetch"][Math.floor(Math.random() * 4)]; const f = kind === "fetch" ? hosts[Math.floor(rnd(0, 4))].host.split(" ")[0] + "/…" : files[Math.floor(Math.random() * files.length)]; const b = kind === "fetch" ? rnd(2e5, 9e6) : f.includes("records") || f.includes("view") || f.includes("members") ? rnd(2e3, 9e5) : rnd(5e5, 6e7); pushLog(kind, mac, f, b, Math.round(b / rnd(4e6, 40e6) * 1000 + rnd(3, 40))); }
+  if (Math.random() < .02) pushLog("bad", 1, "state/coord/term/280/view.json: 20 s deadline passed, taken as failed for now", 0, 20000);
+  hosts.forEach((hh) => { hh.req.next(); hh.mbs.next(); if (Math.random() < .01 && hh.mbs.hi > 0) hh.retries++; });
+  render(t);
+}
+
+// ---------- render ----------
+const ratesEl = $("#rates"), vitalsEl = $("#vitals-grid"), jobsEl = $("#jobs-grid"), logEl = $("#log"), hostsEl = $("#hosts-body"), sharesEl = $("#shares");
+const rateRows = [];
+function buildRates() {
+  macs.forEach((m, i) => {
+    const box = h("div", "mac"); const name = h("div", "name"); name.append(h("b", null, m.host.replace("MacBook-Pro-de-Brandon", "MacBook-Pro-de-Brandon").replace("Brandons-MacBook-Pro", "Brandons-MacBook-Pro")), h("span", null, `${m.chip} · ${m.role}`)); box.append(name);
+    [["NAS read", "nasR", "--nas-r"], ["NAS write", "nasW", "--nas-w"], ["From internet", "netD", "--net-d"], ["To internet", "netU", "--net-u"]].forEach(([k, key, col]) => {
+      const row = h("div", "rate"); const kk = h("span", "k"); const sw = h("i"); sw.style.background = `var(${col})`; kk.append(sw, k); const v = h("span", "v"); const lab = h("div", "lab"); lab.append(kk, v); const c = document.createElement("canvas"); row.append(lab, c); box.append(row); rateRows.push({ m, key, col, v, c });
+    });
+    ratesEl.append(box);
+  });
+}
+function renderRates() {
+  rateRows.forEach(({ m, key, col, v, c }) => {
+    const r = m[key]; const reqs = hosts.filter((x) => x.mac === macs.indexOf(m)).reduce((s, x) => s + x.req.v, 0).toFixed(1);
+    const sub = key === "nasR" ? [`${m.files.nasR} files read a second`] : key === "nasW" ? [`${m.files.nasW} files written a second`, `${m.files.creates} of them new files`] : key === "netD" ? [`${reqs} requests a second`] : ["requests and queries sent", "(small next to downloads)"];
+    const tip = { nasR: "Bytes this Mac read from the NAS each second, and how many files they came from.", nasW: "Bytes this Mac wrote to the NAS each second. Writing a new file costs the NAS more than adding to one, so new files are counted apart.", netD: "Bytes this Mac downloaded from the internet each second, and how many requests it made.", netU: "Bytes this Mac sent to the internet each second: the requests it made, such as Wikidata queries and download requests. Heartbeats and results go to the NAS and the other Macs on the local network, not here." }[key];
+    v.parentNode.title = tip;
+    v.innerHTML = ""; v.append(document.createTextNode(mb(r.last()))); sub.forEach((line) => v.append(h("small", null, line)));
+    spark(c, r, css(col), { fmt: fmtRate });
+  });
+}
+
+// Vitals: every measure a chart over the last 90 s, its figures beside it.
+function plot(c, { series, max, fmt = (v) => String(Math.round(v)), ticksAt = null, refs = [], stack = false, secs = 1, n = RING, band = null }) {
+  series = series.map((sr) => ({ ...sr, ring: V(sr.ring) })); if (band) band = { ...band, ring: V(band.ring) }; secs = series[0].ring.secs; n = series[0].ring.n;
+  const [g, w, hh, dpr] = sizeCanvas(c); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, hh);
+  g.font = "10px -apple-system, system-ui, sans-serif";
+  const ticks = ticksAt ?? [0, max / 2, max]; const labels = ticks.map(fmt);
+  const L = AXIS_W, B = 14, T = 6, R = 4, pw = w - L - R, ph = hh - T - B;
+  const y = (v) => T + ph - clamp(v / max, 0, 1) * ph;
+  g.textAlign = "right"; g.textBaseline = "middle";
+  yLabels(g, ticks, labels, y, L, w - R);
+  const span = n * secs; timeAxis(g, L, T, pw, ph, span);
+  const len = series[0].ring.a.length; if (!len) return;
+  if (band) { const ba = band.ring.a, bx = (i) => L + (1 - (ba.length - 1 - i) * secs / span) * pw, step1 = pw * secs / span; g.fillStyle = css(band.color); for (let i = 0; i < ba.length; i++) if (ba[i]) { const x0 = Math.max(L, bx(i) - step1 / 2); g.fillRect(x0, T, Math.min(w - R, bx(i) + step1 / 2) - x0, ph); } }
+  const x = (i) => L + (1 - (len - 1 - i) * secs / span) * pw;
+  let base = new Array(len).fill(0);
+  for (const sr of series) {
+    const a = sr.ring.a; const top = a.map((v, i) => (stack ? base[i] : 0) + v);
+    const trace = () => { a.forEach((_, i) => { const xx = x(i), yy = y(top[i]); if (i === 0) g.moveTo(xx, yy); else if (sr.stepped) { g.lineTo(xx, y(top[i - 1])); g.lineTo(xx, yy); } else g.lineTo(xx, yy); }); };
+    const col = css(sr.color);
+    if (sr.fill !== false) { g.beginPath(); trace(); for (let i = len - 1; i >= 0; i--) g.lineTo(x(i), y(stack ? base[i] : 0)); g.closePath(); g.save(); g.globalAlpha = stack ? .35 : .18; g.fillStyle = col; g.fill(); g.restore(); }
+    g.beginPath(); trace(); g.strokeStyle = col; g.lineWidth = 1.5; g.lineJoin = "round"; g.stroke();
+    g.fillStyle = col; g.beginPath(); g.arc(x(len - 1), y(top[len - 1]), 2.5, 0, Math.PI * 2); g.fill();
+    if (stack) base = top;
+  }
+  for (const r of refs) { const ry = Math.round(y(r.v)) + .5; g.save(); g.setLineDash([4, 3]); g.strokeStyle = css(r.color ?? "--warn"); g.lineWidth = 1; g.beginPath(); g.moveTo(L, ry); g.lineTo(w - R, ry); g.stroke(); g.restore();
+    if (r.edit) { refButton(c, r, ry, R); continue; }
+    g.fillStyle = css(r.color ?? "--warn"); g.textAlign = "right"; g.textBaseline = "bottom"; g.fillText(r.label, w - R - 4, ry - 2); }
+}
+const THERM = ["nominal", "fair", "serious", "critical"];
+function sampleVitals(m, i) {
+  const busy = m.coreLoad.reduce((a, c) => a + c.v, 0); m.cpu.push(busy); const oth = busy * (i === 0 ? .55 : .25); m.cpuOther.push(oth); m.cpuBuild.push(busy - oth);
+  const other = (i === 0 ? 9000 + Math.sin(tick / 9) * 400 : 5200 + Math.sin(tick / 7) * 300) / 1024; m.build.push(m.memJobs.last() / 1024); m.other.push(other);
+  m.press.push(clamp(100 - ((i === 0 ? 78 : 31) + Math.sin(tick / 11) * 4) + rnd(-1, 1), 0, 100));
+  m.swap.push(m.swapGb + Math.sin(tick / 20) * .1);
+  m.diskFree.push(m.disk.freeGb - tick * .002);
+  m.diskW.push(Math.max(0, m.nasR.last() * .6 + rnd(0, 3e6)));
+  m.therm.push(i === 0 ? (Math.sin(tick / 25) > .6 ? 2 : 1) : 0);
+  const ac = i === 0 ? true : (tick % 240) < 170; m.acRing.push(ac); m.batt = clamp((m.batt ?? 80) + (ac ? .02 : -.05), 5, 100); m.battRing.push(m.batt);
+  m.nasMs.push(m.lat.last());
+  m.idleS = i === 0 ? (Math.random() < .3 ? 0 : (m.idleS ?? 0) + 1) : (m.idleS ?? 900) + 1; m.idleRing.push(Math.min(m.idleS, 300)); m.useRing.push(m.idleS < 300);
+}
+const vitalEls = [];
+function buildVitals() {
+  macs.forEach((m, i) => {
+    m.buildMb ??= m.limitMb; Object.assign(m, { battRing: new Ring(), acRing: Object.assign(new Ring(), { bool: true }), nasMs: new Ring(), idleRing: new Ring(), useRing: Object.assign(new Ring(), { bool: true }), cpuBuild: new Ring(), cpuOther: new Ring(), cpu: new Ring(), build: new Ring(), other: new Ring(), press: new Ring(), swap: new Ring(), diskFree: new Ring(), diskW: new Ring(), therm: new Ring() });
+    const box = h("div", "mac"); const name = h("div", "name stacked"); name.append(h("b", null, m.host), h("span", null, `${m.chip} · ${m.cores} cores · ${m.memGb} GB · app version 20261020-2235`)); box.append(name);
+    { const lg = h("div", "phlegend"); [["var(--accent)", "busy"], ["var(--line)", "idle"]].forEach(([c, t]) => { const sp = h("span"); const sw = h("i"); sw.style.background = c; sp.append(sw, t); lg.append(sp); }); box.append(lg); }
+    const ecount = m.chip === "M4 Pro" ? 4 : 2; const cores = h("div", "cores"); const coreEls = [];
+    [["efficiency", ecount], ["performance", m.cores - ecount]].forEach(([kind, cnt]) => { const grp = h("div", "cgrp"); const bars = h("div", "cbars"); for (let k = 0; k < cnt; k++) { const i2 = h("i"); i2.title = `${kind} core ${k + 1}`; const ob = h("b", "o"), bb = h("b"); i2.append(ob, bb); bars.append(i2); coreEls.push({ ob, bb }); } grp.style.flex = String(cnt); const cn = h("div", "cname"); cn.append(h("span", null, `${cnt} ${kind} cores`), h("i")); grp.append(bars, cn); cores.append(grp); });
+    box.append(cores);
+    const rows = {};
+    const row = (key, label, tip) => { const r = h("div", "rate vrow"); const lab = h("div", "lab"); lab.title = tip; const k = h("span", "k", label); const v = h("span", "v"); lab.append(k, v); const c = document.createElement("canvas"); const cw = h("div", "cw"); cw.append(c); r.append(lab, cw); box.append(r); rows[key] = { v, c }; };
+    row("cpu", "cpu use", "Cores busy, summed over every core, stacked: the build's job processes (blue) and everything else (grey). No core is reserved: macOS spreads every thread over every core, and jobs run at utility priority so the owner's apps go first. The dashed line is how many threads the lead grants this Mac's jobs; while the owner uses the Mac it grants two fewer.");
+    row("load", "load", "Threads ready to run, averaged over a minute. Above the dashed line (the core count), work waits for a core.");
+    row("mem", "memory", "RAM in use, stacked: the build's jobs (blue) and every other process (grey); the top of the grey is all memory in use. The dashed line is the memory guard's limit for the build's jobs.");
+    row("press", "memory pressure", "100 % less macOS's memory-free percentage (sysctl kern.memorystatus_level, what memory_pressure prints). macOS calls it warn past 50 % and critical past 80 %.");
+    row("swap", "swap used", "Memory macOS has written out to disk. Rising swap means jobs slow down.");
+    row("disk", "disk free", "Free space on the Mac's disk. The dashed line is the owner's room target: below it the disk guard freezes the fastest-growing job.");
+    row("dw", "disk write", "Bytes written to this Mac's disk each second: jobs' scratch and caches.");
+    row("batt", "battery", "Battery charge. The light yellow background marks when the Mac was plugged in; the lead won't stay on a Mac on battery under 30 %.");
+    row("nas", "NAS response", "How long this Mac waits for the NAS to answer one file lookup. Over a few hundred ms, every job that reads the NAS slows down.");
+    row("idle", "someone using this Mac?", "Whether the Mac's owner is using it: in use if the keyboard or trackpad was touched in the last 5 minutes. While it is in use, the build leaves cores free for the owner (the cpu chart's dashed line); while they are away, the build may use every core.");
+    row("therm", "heat", "macOS's own thermal state (ProcessInfo.thermalState), in Apple's four levels: nominal, fair (slightly raised), serious (high; macOS reduces performance), critical. The build doesn't read it today.");
+    vitalsEl.append(box);
+    vitalEls.push({ m, coreEls, rows });
+  });
+}
+function renderVitals() {
+  vitalEls.forEach((e) => {
+    const m = e.m, i = macs.indexOf(m), R = e.rows; const gb = (v) => v.toFixed(1) + " GB";
+    m.coreLoad.forEach((c, k) => { const el = e.coreEls[k]; if (!el) return; el.ob.style.height = "0"; el.bb.style.height = Math.round(c.v * 100) + "%"; });
+    const say = (r, main, ...subs) => r.v.replaceChildren(document.createTextNode(main), ...subs.map((t) => Array.isArray(t) ? keyed(t[0], t[1]) : h("small", null, t)));
+    const keyed = (col, txt) => { const d = h("small", "memline"); const sw = h("i"); sw.style.background = `var(${col})`; d.append(sw, txt); return d; };
+    const pool = m.cores - m.kept;
+    const cpuOther = m.cpu.last() * (i === 0 ? .55 : .25); say(R.cpu, `${m.cpu.last().toFixed(1)} of ${m.cores} cores busy`, ["--accent", `build's jobs ${(m.cpu.last() - cpuOther).toFixed(1)}`], ["--dim", `other apps ${cpuOther.toFixed(1)}`], `dashed: most the build may use (${pool})`);
+    plot(R.cpu.c, { series: [{ ring: m.cpuBuild, color: "--accent" }, { ring: m.cpuOther, color: "--dim" }], stack: true, max: m.cores, ticksAt: [0, pool, m.cores], refs: [{ v: pool, label: `build's limit: ${pool} cores`, edit: { key: "cores", title: `Cores for the build on ${m.host}`, note: "While the owner is using this Mac, the lead grants its jobs at most this many threads; the rest are left for the owner's apps. When the owner is away, the build may use every core.", ask: "Most cores the build may use while the owner is active", unit: "cores", value: pool, min: 1, max: m.cores, apply: (v) => { m.kept = m.cores - v; }, done: (v) => `In the real build this runs \"scenic in-use ${m.cores - v}\" on ${m.host}, keeping ${m.cores - v} cores for the owner. The agent reads it on its next loop.` } }] });
+    const ld = m.load.last(); say(R.load, `load ${ld.toFixed(1)}`, ld > m.cores ? `${(ld - m.cores).toFixed(1)} waiting for a core` : "no queue");
+    plot(R.load.c, { series: [{ ring: m.load, color: ld > m.cores ? "--warn" : "--accent" }], max: m.cores * 2, ticksAt: [0, m.cores, m.cores * 2], refs: [{ v: m.cores, label: `${m.cores} cores` }] });
+    const bl = m.build.last(), ot = m.other.last(), fr = m.memGb - bl - ot;
+    say(R.mem, `${gb(bl + ot)} of ${m.memGb} GB used`, ["--accent", `build's jobs ${gb(bl)}`], ["--dim", `other apps ${gb(ot)}`], `free ${gb(fr)}`);
+    plot(R.mem.c, { series: [{ ring: m.build, color: "--accent" }, { ring: m.other, color: "--dim" }], stack: true, max: m.memGb, ticksAt: [0, m.memGb / 2, m.memGb], fmt: (v) => Math.round(v) + " GB", refs: [{ v: m.buildMb / 1024, label: `build's memory: ${(m.buildMb / 1024).toFixed(0)} GB`, edit: { key: "mem", title: `Memory for the build on ${m.host}`, note: `The memory this Mac gives the build's jobs together. The lead packs jobs to fit within it. It can't go past the memory guard's hard limit of ${(m.limitMb / 1024).toFixed(0)} GB, which freezes a job that runs over.`, ask: "Memory the build's jobs may use together", unit: "GB", value: Math.round(m.buildMb / 1024), min: 2, max: Math.floor(m.limitMb / 1024), apply: (v) => { m.buildMb = v * 1024; }, done: (v) => `In the real build this runs \"scenic memory ${v}\" on ${m.host} (also in the menu bar's Memory submenu).` } }] });
+    const pr = m.press.last(), lvl = pr < 50 ? "normal" : pr < 80 ? "warn" : "critical";
+    say(R.press, `${Math.round(pr)} % · ${lvl}`, `memory free ${Math.round(100 - pr)} %`, i === 1 ? "the guard froze slot 2 at 17:58" : `${i === 0 ? 1.8 : 3.9} GB compressed`);
+    plot(R.press.c, { series: [{ ring: m.press, color: pr < 50 ? "--ok" : pr < 80 ? "--warn" : "--bad" }], max: 100, ticksAt: [0, 50, 100], fmt: (v) => v + " %", refs: [{ v: 50, label: "warn" }, { v: 80, label: "critical", color: "--bad" }] });
+    say(R.swap, gb(m.swap.last()), "written out to disk");
+    plot(R.swap.c, { series: [{ ring: m.swap, color: "--warn" }], max: 8, ticksAt: [0, 4, 8], fmt: (v) => v + " GB" });
+    const total = i === 0 ? 1000 : 500, reserved = i === 0 ? 32.4 : 0;
+    say(R.disk, `${m.diskFree.last().toFixed(1)} GB`, `of ${total} GB`, `${reserved} GB reserved by jobs`);
+    plot(R.disk.c, { series: [{ ring: m.diskFree, color: "--accent" }], max: niceMax(m.disk.freeGb * 1.2), fmt: (v) => Math.round(v) + " GB", refs: [{ v: m.disk.targetGb, label: `room target: ${m.disk.targetGb} GB`, edit: { key: "room", title: `Disk room on ${m.host}`, note: "Free space the build leaves for the owner. Below it, the disk guard freezes the fastest-growing job and clears caches no job holds.", ask: "Free space to keep for the owner", unit: "GB", value: m.disk.targetGb, min: 0, max: 400, apply: (v) => { m.disk.targetGb = v; }, done: (v) => `In the real build this runs \"scenic room ${v}\" on ${m.host} (also the menu bar's Disk Room).` } }] });
+    say(R.dw, mb(m.diskW.last()), "to scratch and caches");
+    plot(R.dw.c, { series: [{ ring: m.diskW, color: "--accent" }], max: niceMax(m.diskW.max() * 1.05), fmt: fmtRate });
+    const th = m.therm.last(); say(R.therm, THERM[th], ["within normal limits", "slightly raised", "high: macOS is slowing the Mac", "critical: macOS is slowing the Mac hard"][th]);
+    plot(R.therm.c, { series: [{ ring: m.therm, color: th > 1 ? "--bad" : th ? "--warn" : "--ok", stepped: true, fill: false }], max: 3, ticksAt: [0, 1, 2, 3], fmt: (v) => THERM[v] });
+    const ac = m.acRing.last(); say(R.batt, `${Math.round(m.batt)} %`, ac ? "now plugged in" : "now on battery", ["--plugged", "plugged in"]);
+    plot(R.batt.c, { series: [{ ring: m.battRing, color: m.batt < BATT_MIN ? "--bad" : "--ok" }], max: 100, ticksAt: [0, 50, 100], fmt: (v) => v + " %", refs: [{ v: BATT_MIN, label: `can't lead below ${BATT_MIN} % on battery`, edit: { key: "batt", title: "Battery floor for leading", note: "On battery, a Mac below this charge can't take or keep the lead. No job waits on the charge. This applies to every Mac.", ask: "Lowest charge a Mac on battery may lead at", unit: "%", value: BATT_MIN, min: 0, max: 100, apply: (v) => { BATT_MIN = v; }, done: (v) => `Not a setting today: the build fixes it at 30 % in code (cond::BATTERY_MIN). This button needs it made a pool-wide setting first.` } }], band: { ring: m.acRing, color: "--plugged" } });
+    const nm = m.nasMs.last(); say(R.nas, `${Math.round(nm)} ms`, nm > 200 ? "slow" : "normal");
+    plot(R.nas.c, { series: [{ ring: m.nasMs, color: nm > 200 ? "--warn" : "--accent" }], max: niceMax(Math.max(100, m.nasMs.max() * 1.05)), fmt: (v) => Math.round(v) + " ms" });
+    const act = m.useRing.last(); say(R.idle, act ? "in use" : `away for ${dur(m.idleS)}`, act ? `touched ${dur(m.idleS)} ago` : "no keyboard or trackpad use", act ? `the build leaves ${m.kept} cores free` : "the build may use every core");
+    plot(R.idle.c, { series: [{ ring: m.useRing, color: "--accent", stepped: true }], max: 1, ticksAt: [0, 1], fmt: (v) => (v ? "in use" : "away") });
+  });
+}
+
+function renderNas() {
+  const l = nas.lat.last();
+  spark($("#nas-lat"), nas.lat, css(l > 200 ? "--warn" : "--accent"), { max: 400, fmt: (v) => Math.round(v) + " ms" });
+  $("#nas-say").textContent = `fishandchips · SMB 3 · ${nas.freeTb} TB free · ${Math.round(l)} ms`;
+  $("#nas-lat-bar").className = "pbar " + (l > 200 ? "warn" : ""); $("#nas-lat-bar").firstChild.style.width = clamp(l / 400 * 100, 0, 100) + "%"; $("#nas-lat-v").textContent = Math.round(l) + " ms";
+  const b = Math.round(nas.busy.v); $("#nas-q-bar").firstChild.style.width = b / 12 * 100 + "%"; $("#nas-q-v").textContent = `${b} of 12`;
+  $("#nas-to-bar").firstChild.style.width = clamp(nas.timeouts / 10 * 100, 0, 100) + "%"; $("#nas-to-v").textContent = `${nas.timeouts} today`;
+  $("#nas-io-bar").firstChild.style.width = Math.round(nas.volBusy.v * 100) + "%"; $("#nas-io-v").textContent = Math.round(nas.volBusy.v * 100) + " %";
+  const used = macs.reduce((s, m) => s + m.nasR.last() + m.nasW.last(), 0), creates = macs.reduce((s, m) => s + m.files.creates, 0);
+  const lim = (id, v, max, txt) => { $("#" + id).className = "pbar " + (v / max > .85 ? "warn" : "ok"); $("#" + id).firstChild.style.width = clamp(v / max * 100, 0, 100) + "%"; $("#" + id + "-v").textContent = txt; };
+  lim("lim-bytes", used, nas.limits.bytes, mb(used)); lim("lim-creates", creates, nas.limits.creates, `${creates}/s`); const listed = 2 + Math.round(rnd(0, 6)), statted = 40 + Math.round(rnd(0, 90)); lim("lim-list", listed, nas.limits.listed, `${listed}/s`); lim("lim-stat", statted, nas.limits.stats, `${statted}/s`);
+  $("#nas-chips").innerHTML = ""; [[`capacity measured ${dur(now0() - nas.lastProbe)} ago`, ""], ["sharing limits on", "ok"], ["2 Macs connected", ""], [nas.timeouts ? `${nas.timeouts} requests timed out today` : "no requests timed out today", nas.timeouts ? "warn" : "ok"]].forEach(([t, c]) => $("#nas-chips").append(h("span", "chip " + c, t)));
+  sharesEl.innerHTML = "";
+  const rows = [...nas.shares(), ["free", 1000 - nas.shares().reduce((s, x) => s + x[1], 0)]];
+  rows.forEach(([k, v]) => { const r = h("div", "row"); const bar = h("div", "pbar " + (k === "free" ? "" : "")); const i2 = h("i"); i2.style.width = v / 10 + "%"; if (k === "free") i2.style.background = "var(--line)"; bar.append(i2); r.append(h("span", k === "free" ? "dim" : "", k), bar, h("span", "v num", `${(v / 10).toFixed(0)} %`)); sharesEl.append(r); });
+  const w = h("div", "small dim", "A terrain job is allowed 12 % (9 % for data, 3 % for new files), a roads job 8.5 %, rail timetables none. The clean-up waits until the NAS is quiet."); sharesEl.append(w);
+}
+
+// ---------- the map ----------
+const mapC = $("#mapc"), tipEl = $("#tip"); let mapView = { x0: 0, y0: .12, w: 1, h: .6 };
+function fitMap() { let x0 = 1, y0 = 1, x1 = 0, y1 = 0; const all = [...jobs.flatMap((j) => j.targets.map((t) => t.t)), ...recent.map((r) => r.t)].filter((t) => isTile(t)); all.forEach((t) => { const b = tileBox(t); x0 = Math.min(x0, b.x0); y0 = Math.min(y0, b.y0); x1 = Math.max(x1, b.x1); y1 = Math.max(y1, b.y1); }); const pad = .03; x0 -= pad; y0 -= pad; x1 += pad; y1 += pad; let w = x1 - x0, hh = y1 - y0; const asp = 2 / 1.15; if (w / hh < asp) { const nw = hh * asp; x0 -= (nw - w) / 2; w = nw; } else { const nh = w / asp; y0 -= (nh - hh) / 2; hh = nh; } mapView = { x0: clamp(x0, 0, 1 - w), y0: clamp(y0, 0, 1 - hh), w, h: hh }; } let hoverTile = null, hoverRegion = null;
+function tileBox(t) { const [z, x, y] = t.split("/").map(Number); const n = 2 ** z; return { x0: x / n, y0: y / n, x1: (x + 1) / n, y1: (y + 1) / n, z, x, y }; }
+function tileLatLon(b) { const lon = (x) => x * 360 - 180, lat = (y) => Math.atan(Math.sinh(Math.PI * (1 - 2 * y))) * 180 / Math.PI; return `${lat(b.y1).toFixed(1)}°–${lat(b.y0).toFixed(1)}° N, ${lon(b.x0).toFixed(1)}°–${lon(b.x1).toFixed(1)}° E`; }
+function regionsAt(mx, my) { const cx = mx * 1000, cy = my * 1000; const out = []; for (const r of REGIONS) for (const ring of r.fill) { let inside = false; for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) { const xi = ring[i], yi = ring[i + 1], xj = ring[j], yj = ring[j + 1]; if ((yi > cy) !== (yj > cy) && cx < (xj - xi) * (cy - yi) / (yj - yi) + xi) inside = !inside; } if (inside) { out.push(r); break; } } return out; }
+function regionsOf(b) { return regionsAt((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2).map((r) => r.crumbs.join(" › ")); }
+function renderMap(t) {
+  const [g, w, hh, dpr] = sizeCanvas(mapC); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, hh);
+  const sx = (x) => (x - mapView.x0) / mapView.w * w, sy = (y) => (y - mapView.y0) / mapView.h * hh;
+  // graticule of z3 areas
+  // countries (Natural Earth 1:50m), faint
+  g.strokeStyle = css("--country"); g.lineWidth = .6; g.lineJoin = "round";
+  for (const r of COUNTRIES) { g.beginPath(); for (let k = 0; k < r.length; k += 2) { const px = sx(r[k] / 1000), py = sy(r[k + 1] / 1000); if (k === 0) g.moveTo(px, py); else g.lineTo(px, py); } g.closePath(); g.stroke(); }
+  // slippy tiles: z6 faint, z3 a little stronger, in faint yellow
+  for (let i = 0; i <= 64; i++) { const x = Math.round(sx(i / 64)) + .5, y = Math.round(sy(i / 64)) + .5; g.strokeStyle = css(i % 8 ? "--tile" : "--tile3"); g.lineWidth = 1; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, hh); g.stroke(); g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
+  // regions
+  g.fillStyle = css("--region"); g.beginPath();
+  for (const r of REGIONS) for (const ring of r.fill) { for (let k = 0; k < ring.length; k += 2) { const px = sx(ring[k] / 1000), py = sy(ring[k + 1] / 1000); if (k === 0) g.moveTo(px, py); else g.lineTo(px, py); } g.closePath(); }
+  g.fill("nonzero");
+  const edges = (r) => { g.beginPath(); for (const ln of r.edge) { for (let k = 0; k < ln.length; k += 2) { const px = sx(ln[k] / 1000), py = sy(ln[k + 1] / 1000); if (k === 0) g.moveTo(px, py); else g.lineTo(px, py); } } g.stroke(); };
+  g.strokeStyle = css("--region-edge"); g.lineWidth = .8; g.lineJoin = "round"; for (const r of REGIONS) edges(r);
+  if (hoverRegion) { g.fillStyle = css("--region"); g.beginPath(); for (const ring of hoverRegion.fill) { for (let k = 0; k < ring.length; k += 2) { const px = sx(ring[k] / 1000), py = sy(ring[k + 1] / 1000); if (k === 0) g.moveTo(px, py); else g.lineTo(px, py); } g.closePath(); } g.fill(); g.strokeStyle = css("--accent"); g.lineWidth = 1.6; edges(hoverRegion); }
+  g.globalAlpha = 1;
+  // recent (fading)
+  for (const r of recent) { const b = tileBox(r.t); const age = (t - r.at) / 3600; if (age > 1) continue; g.fillStyle = css("--s-" + STAGE[r.step]); g.globalAlpha = .45 * (1 - age); g.fillRect(sx(b.x0) + 1, sy(b.y0) + 1, sx(b.x1) - sx(b.x0) - 2, sy(b.y1) - sy(b.y0) - 2); }
+  g.globalAlpha = 1;
+  // jobs
+  for (const j of jobs) { if (!isTile(j.targets[0].t)) continue; const col = css("--s-" + STAGE[j.step]); j.targets.forEach((tg, i) => { const b = tileBox(tg.t); const x = sx(b.x0) + 1, y = sy(b.y0) + 1, bw = sx(b.x1) - sx(b.x0) - 2, bh = sy(b.y1) - sy(b.y0) - 2; g.fillStyle = col; g.globalAlpha = i < j.cur ? .85 : i === j.cur ? .25 : .12; g.fillRect(x, y, bw, bh); if (i === j.cur) { g.globalAlpha = .85; g.fillRect(x, y + bh * (1 - j.curFrac), bw, bh * j.curFrac); g.globalAlpha = 1; g.strokeStyle = css("--text"); g.lineWidth = 1.2; g.strokeRect(x + .5, y + .5, bw - 1, bh - 1); } else { g.globalAlpha = 1; g.strokeStyle = col; g.lineWidth = .6; g.strokeRect(x + .5, y + .5, bw - 1, bh - 1); } }); }
+  g.globalAlpha = 1;
+  // labels for the jobs
+  g.font = "600 11px -apple-system, system-ui, sans-serif"; g.textBaseline = "top";
+  for (const [k, j] of jobs.entries()) { if (!isTile(j.targets[0].t)) continue; const b = tileBox(j.targets[j.cur].t); const x = sx(b.x1) + 4, y = sy(b.y0) + (k % 3) * 16; const txt = `${macs[j.mac].chip} ${j.slot} · ${j.what}`; const tw = g.measureText(txt).width; g.fillStyle = css("--tip"); g.globalAlpha = .85; g.fillRect(x - 3, y - 2, tw + 6, 15); g.globalAlpha = 1; g.fillStyle = css("--text"); g.fillText(txt, x, y); }
+  // world steps badge
+  const world = jobs.filter((j) => !isTile(j.targets[0].t)); if (world.length) { g.font = "11px -apple-system, system-ui, sans-serif"; g.fillStyle = css("--dim"); g.fillText("whole world: " + world.map((j) => `${j.what} (${macs[j.mac].chip} ${j.slot})`).join(", "), 8, hh - 16); }
+}
+mapC.addEventListener("mousemove", (ev) => {
+  const r = mapC.getBoundingClientRect(); const mx = (ev.clientX - r.left) / r.width * mapView.w + mapView.x0, my = (ev.clientY - r.top) / r.height * mapView.h + mapView.y0;
+  const x = Math.floor(mx * 64), y = Math.floor(my * 64); const t = `6/${x}/${y}`; let hit = null;
+  for (const j of jobs) { const i = j.targets.findIndex((tg) => tg.t === t); if (i >= 0) { hit = { j, i, tg: j.targets[i] }; break; } }
+  const rec = recent.find((q) => q.t === t);
+  const under = regionsAt(mx, my); const nextHover = !hit && !rec ? under[0] ?? null : null; if (nextHover !== hoverRegion) { hoverRegion = nextHover; renderMap(now0()); }
+  if (!hit && !rec && !under.length) { tipEl.hidden = true; return; }
+  if (!hit && !rec) { tipEl.hidden = false; tipEl.style.left = Math.min(ev.clientX - r.left + 12, r.width - 278) + "px"; tipEl.style.top = (ev.clientY - r.top + 12) + "px"; tipEl.replaceChildren(...regionTip(under)); return; }
+  const b = tileBox(t); tipEl.hidden = false; tipEl.style.left = Math.min(ev.clientX - r.left + 12, r.width - 278) + "px"; tipEl.style.top = (ev.clientY - r.top + 12) + "px";
+  const regs = regionsOf(b); const forTxt = regs.length ? regs.join("; ") : "within 20 km of the coverage";
+  if (hit) { const { j, i, tg } = hit; const col = `var(--s-${STAGE[j.step]})`; const state = i < j.cur ? "done" : i === j.cur ? "under way" : "queued";
+    tipEl.replaceChildren(...tipCard({ color: col, kicker: `${j.what.split(":")[0]} · ${macs[j.mac].chip} slot ${j.slot} · ${state}`, title: `Tile ${t}`,
+      bar: i === j.cur ? { frac: j.curFrac, label: `${Math.round(j.curFrac * 100)} % · ${tg.secs} s of ${tg.pred} s forecast` } : i < j.cur ? { frac: 1, label: `took ${tg.secs} s (forecast ${tg.pred} s)` } : null,
+      kv: [...(i === j.cur ? [["Doing", PHASE_NAME[j.phase]]] : i > j.cur ? [["Forecast", `${tg.pred} s`]] : []), ["In this job", `tile ${i + 1} of ${j.targets.length}`], ["Covers", tileLatLon(b)], ["For", forTxt]], foot: `${macs[j.mac].host} · ${j.step} ${t}` })); }
+  else tipEl.replaceChildren(...tipCard({ color: `var(--s-${STAGE[rec.step]})`, kicker: `${STAGE_NAME[STAGE[rec.step]]} · finished`, title: `Tile ${t}`, kv: [["Done", `${dur(now0() - rec.at)} ago`], ["Covers", tileLatLon(b)], ["For", forTxt]] }));
+});
+mapC.addEventListener("mouseleave", () => { tipEl.hidden = true; if (hoverRegion) { hoverRegion = null; renderMap(now0()); } });
+const STEP_NAME = { unit: "roads", pack: "map tiles", terrain: "terrain", "terrain-lo": "terrain, zoomed out", slope: "slope", "slope-lo": "slope, zoomed out", trees: "tree cover", "trees-lo": "tree cover, zoomed out", depth: "water depth", "depth-lo": "water depth, zoomed out" };
+const when = (t) => { const d = new Date(t * 1000); return d.toLocaleDateString(undefined, { weekday: "short" }) + " " + d.toTimeString().slice(0, 5); };
+function tipCard({ color, kicker, title, stats = [], bar = null, kv = [], chips = [], chipsLabel = "", foot = "" }) {
+  const out = [];
+  const head = h("div", "tc-head"); const sw = h("i", "tc-sw"); sw.style.background = color; const ht = h("div"); ht.append(h("div", "tc-kick", kicker), h("div", "tc-title", title)); head.append(sw, ht); out.push(head);
+  const body = h("div", "tc-body");
+  if (stats.length) { const g2 = h("div", "tc-stats"); stats.forEach(([n2, l]) => { const c2 = h("div", "tc-stat"); c2.append(h("div", "n", n2), h("div", "l", l)); g2.append(c2); }); body.append(g2); }
+  if (bar) { const b2 = h("div", "tc-bar"); const tr = h("div", "track"); const fi = h("i"); fi.style.width = clamp(bar.frac, 0, 1) * 100 + "%"; fi.style.background = bar.color ?? color; tr.append(fi); b2.append(tr, h("div", "cap", bar.label)); body.append(b2); }
+  if (kv.length) { const g3 = h("div", "tc-kv"); kv.forEach(([k, v]) => g3.append(h("span", "k", k), h("span", "v", v))); body.append(g3); }
+  if (chips.length) { if (chipsLabel) body.append(h("div", "tc-kick", chipsLabel)); const c3 = h("div", "tc-chips"); chips.forEach((t2) => c3.append(h("span", null, t2))); body.append(c3); }
+  out.push(body);
+  if (foot) out.push(h("div", "tc-foot", foot));
+  return out;
+}
+function regionTip(list) {
+  const r = list[0], [b, tot] = r.tiles;
+  const parent = r.crumbs.slice(0, -1).join(" › ") || "Region";
+  const left = r.left ? Object.entries(r.left).sort((a, b2) => b2[1] - a[1]).map(([k, n2]) => `${n2} ${STEP_NAME[k] ?? k}`) : [];
+  const kv = [["On the map", r.on_map ? "yes" : r.map_at ? `≈ ${when(r.map_at)}` : "not yet"]];
+  if (r.ready_at) kv.push(["All built", `≈ ${when(r.ready_at)}`]);
+  if (r.rank != null) kv.push(["Build order", `${r.rank + 1} of ${REGIONS.length}`]);
+  if (list.length > 1) kv.push(["Also here", list.slice(1).map((q) => q.name).join(", ")]);
+  return tipCard({ color: "var(--accent)", kicker: parent, title: r.name,
+    stats: [[r.bytes != null ? bytes(r.bytes) : "–", "to download"], [`${b ?? 0} / ${tot ?? "?"}`, "road units built"]],
+    bar: tot ? { frac: (b ?? 0) / tot, label: `${Math.round(((b ?? 0) / tot) * 100)} % of its road units built`, color: "var(--ok)" } : null,
+    kv, chips: left, chipsLabel: left.length ? "Work left" : "", foot: `outline: ${r.outline.join(" + ")} · as of ${clock(SNAPSHOT_AT)}` });
+}
+function buildLegend() { const L = $("#legend"); { const sp = h("span"); const i2 = h("i"); i2.style.background = "var(--region)"; sp.append(i2, "the build's regions (its coverage)"); L.append(sp); } Object.entries(STAGE_NAME).forEach(([k, n]) => { const s = h("span"); const i2 = h("i"); i2.style.background = `var(--s-${k})`; s.append(i2, n); L.append(s); }); const s = h("span", "dim", "solid: done · outlined: queued · filling: under way · fading: finished within the hour"); L.append(s); }
+
+// ---------- jobs ----------
+const jobEls = [];
+function buildJobs() {
+  jobs.forEach((j) => {
+    const box = h("div", "job"); const head = h("div", "head"); head.append(h("span", "slot", `${macs[j.mac].chip} · slot ${j.slot}`), h("b", null, j.what), h("span", "dim small")); box.append(head);
+    const tg = h("div", "targets"); j.targets.forEach(() => { const i2 = h("i"); i2.append(h("b")); tg.append(i2); }); box.append(tg);
+    const ph = h("div", "phases"); box.append(ph);
+    const phl = h("div", "phlegend"); PHASES.forEach((p) => { const s = h("span"); const i2 = h("i", "ph-" + p); s.append(i2, PHASE_NAME[p]); phl.append(s); }); phl.append(h("span", null, "· what the job spent the last 40 s doing")); box.append(phl);
+    const kv = h("div", "kv"); box.append(kv);
+    const memW = h("div", "mem"); const memC = document.createElement("canvas"); memW.append(memC); box.append(memW);
+    const tail = h("div", "tail"); box.append(tail);
+    jobsEl.append(box); jobEls.push({ j, box, head, tg, ph, kv, memC, tail });
+  });
+}
+function renderJobs(t) {
+  jobEls.forEach(({ j, head, tg, ph, kv, memC, tail }) => {
+    const done = j.cur, total = j.targets.length, el = t - j.started;
+    const noun = isTile(j.targets[0].t) ? "tile" : "step"; head.lastChild.textContent = `${noun} ${done + 1} of ${total} · running ${dur(el)} · ${j.threads} thread${j.threads > 1 ? "s" : ""} · ${(j.memMb / 1024).toFixed(1)} GB memory · ${PHASE_NAME[j.phase]} for ${j.phaseAge} s`;
+    [...tg.children].forEach((i2, k) => { i2.className = k < done ? "done" : k === done ? "now" : ""; i2.firstChild.style.width = k === done ? Math.round(j.curFrac * 100) + "%" : "0"; i2.title = `${j.targets[k].t} · forecast ${j.targets[k].pred} s` + (k < done ? ` · took ${j.targets[k].secs} s` : ""); });
+    ph.innerHTML = ""; const sum = j.phases.reduce((s, p) => s + p.s, 0); j.phases.forEach((p) => { const i2 = h("i", "ph-" + p.phase); i2.style.width = p.s / sum * 100 + "%"; i2.title = `${PHASE_NAME[p.phase]} for ${p.s} s`; ph.append(i2); });
+    const cur = j.targets[j.cur]; const left = j.targets.slice(j.cur).reduce((s, x) => s + x.pred, 0) - cur.secs; const taken = j.targets.slice(0, j.cur); const ratio = taken.length ? taken.reduce((s, x) => s + x.secs, 0) / taken.reduce((s, x) => s + x.pred, 0) : 1;
+    kv.innerHTML = ""; const row = (k, v) => { kv.append(h("span", "k", k), h("div"), h("span", "v", v)); };
+    row("working on", `${isTile(cur.t) ? "tile " : ""}${cur.t} · ${Math.round(j.curFrac * 100)} % · ${cur.secs} s of ${cur.pred} s forecast`);
+    row("speed", `${taken.length ? "taking " + (ratio * 100).toFixed(0) + " % of the forecast time" : "no tile done yet"} · left ≈ ${dur(Math.max(60, left * ratio))}`);
+    row("data moved", `NAS read ${bytes(j.bytes.r)} · NAS wrote ${bytes(j.bytes.w)} · fetched ${bytes(j.bytes.d)} · ${Math.round(j.bytes.w / 4e6)} files made`);
+    if (j.tiles) row("elevation data", `${j.tiles.done} of ${j.tiles.total} source tiles downloaded (${Math.round(j.tiles.done / j.tiles.total * 100)} %)`);
+    if (j.parts) row("stage", `${j.part + 1} of ${j.parts.length}: ${j.parts[j.part]}`);
+    row("NAS share", j.step === "terrain" ? "allowed 12 % of the NAS · 71 % still free" : "none · it is 1 of the 2 downloads allowed at once");
+    spark(memC, j.mem, css("--accent"), { max: macs[j.mac].limitMb, fmt: (v) => +(v / 1024).toFixed(1) + " GB" });
+    tail.innerHTML = ""; const lines = [...j.realTail, `phase: ${PHASE_NAME[j.phase]} · ${isTile(cur.t) ? "tile " : ""}${cur.t} · ${bytes(j.bytes.r + j.bytes.w + j.bytes.d)} moved so far`]; lines.forEach((l, i) => { const d = h("div"); if (i === lines.length - 1) d.append(h("b", null, l)); else d.textContent = l; tail.append(d); });
+  });
+}
+
+function renderLog() { logEl.innerHTML = ""; log.forEach((e) => { const d = h("div"); d.append(h("span", "t", clock(e.t) + " "), h("span", "", macs[e.mac].chip + " "), h("span", e.kind, e.kind === "put" ? "wrote to NAS " : e.kind === "get" ? "read from NAS " : e.kind === "fetch" ? "downloaded " : "timed out: ")); const b = h("b", null, e.text); d.append(b); if (e.bytesN) d.append(document.createTextNode(` ${bytes(e.bytesN)} in ${e.ms} ms (${mb(e.bytesN / e.ms * 1000)})`)); logEl.append(d); }); }
+function renderHosts() { hostsEl.innerHTML = ""; hosts.forEach((hh) => { const tr = h("tr"); const open = hh.mbs.v > 0 ? hh.open + Math.round(rnd(-1, 1)) : 0; tr.append(h("td", null, hh.host), h("td", "r", hh.req.v.toFixed(1)), h("td", "r", hh.mbs.v.toFixed(1)), h("td", "r", String(Math.max(0, open))), h("td", "r " + (hh.retries ? "warn" : ""), String(hh.retries)), h("td", "small", hh.budget), h("td", "small " + (hh.robots.startsWith("allowed") ? "ok" : "warn"), hh.robots)); hostsEl.append(tr); }); }
+
+function render(t) { renderRates(); renderVitals(); renderNas(); renderMap(t); renderJobs(t); renderLog(); renderHosts(); }
+
+// ---------- boot ----------
+buildRates(); buildVitals(); buildLegend(); buildJobs(); fitMap();
+const RATE_MACS = [...$("#rates").children], VITAL_MACS = [...$("#vitals-grid").children];
+window.PARTS = {}; const PARTS = window.PARTS; ["map", "nas", "stream", "hosts"].forEach((id) => { const d = h("div", "lw lwpart"); d.append(document.getElementById(id)); PARTS[id] = d; });
+["io", "vitals", "jobs"].forEach((id) => { document.getElementById(id).hidden = true; });
+const LIVE = [];
+// After each render of the build page: each Mac's live charts into its card, each job's detail under its job, the NAS, the map, the stream and the websites into their sections.
+function placeLive() {
+  const dash = document.getElementById("dash"); if (!dash.children.length) return;
+  const cards = [...dash.querySelectorAll(".mc")];
+  macs.forEach((m, i) => {
+    const card = cards.find((c) => c.querySelector(".top .name")?.textContent.trim() === m.host); if (!card) return;
+    jobEls.filter((e) => e.j.mac === i).forEach((e) => {
+      e.wrap ??= (() => { const d = h("div", "lw jobwrap"); d.append(e.box); return d; })();
+      const blk = [...card.querySelectorAll(".job")].find((b) => b.querySelector(".slot")?.textContent.trim() === String(e.j.slotIdx + 1));
+      if (blk && blk.nextSibling !== e.wrap) blk.after(e.wrap);
+    });
+    if (!LIVE[i]) { const w = h("div", "lw"); const inner = h("div", "mclive"); inner.append(h("div", "mclive-h", "Live on this Mac"), RATE_MACS[i], VITAL_MACS[i]); w.append(inner); LIVE[i] = w; }
+    if (LIVE[i].parentNode !== card) card.append(LIVE[i]);
+  });
+  const put = (sel, id, top) => { const sec = dash.querySelector(sel); if (sec && PARTS[id].parentNode !== sec) top ? sec.prepend(PARTS[id]) : sec.append(PARTS[id]); };
+  put(".d-regions", "map", true); put(".d-pool", "nas"); put(".d-activity", "stream"); put(".d-activity", "hosts");
+}
+window.placeLive = placeLive;
+{ const sel = $("#range"); RANGES.forEach(([v, t]) => { const o = document.createElement("option"); o.value = v; o.textContent = t; if (v === RANGE) o.selected = true; sel.append(o); }); sel.addEventListener("change", () => { RANGE = +sel.value; try { localStorage.setItem("build-live-range", String(RANGE)); } catch (e) {} render(now0()); }); }
+for (let k = 0; k < RING; k++) macs.forEach((m, i) => { m.coreLoad.forEach((c) => c.next()); m.memJobs.push(jobs.filter((j) => j.mac === i).reduce((s2, j) => s2 + j.memMb, 0)); m.load.push(Math.max(0, m.coreLoad.reduce((a2, c) => a2 + c.v, 0) * (i === 0 ? 1.45 : 1.05) + rnd(-.4, .4))); sampleVitals(m, i); });
+for (let i = 0; i < RING; i++) { macs.forEach((m) => { m.nasR.push(m.wNasR.next()); m.nasW.push(m.wNasW.next()); m.netD.push(m.wNetD.next()); m.netU.push(m.wNetU.next()); m.lat.push(5); }); nas.lat.push(nas.wLat.next(-1)); jobs.forEach((j) => j.mem.push(j.memMb)); }
+for (let i = 0; i < 30; i++) step();
+setInterval(step, 1000);
+addEventListener("resize", () => render(now0()));
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => render(now0()));
+</script>
