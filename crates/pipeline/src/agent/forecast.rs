@@ -3297,15 +3297,18 @@ mod tests {
         let inp = live_scale_input(400, 1500);
         let n = items(&inp).0.len();
         assert!(n > 30_000, "{n} targets");
-        // (Whole, its time bounded well past what it takes (12.5 s in a release build on the M4,
-        // its three runs side by side; 21 Oct's code took over 200 s at a tenth of the scale) and
-        // short of the regression's.)
-        let t = Instant::now();
-        let f = forecast_by(&inp, Duration::from_secs(600));
-        let took = t.elapsed();
-        eprintln!("live scale, {n} targets: {} ms", took.as_millis());
-        assert!(!f.partial && f.done_at.is_some(), "{:?}", f.why);
-        assert!(took < Duration::from_secs(90), "{took:?}");
+        // (Whole, its CPU time bounded well past what it takes (73 s for the three runs in the test build under load; about 12.5 s a run in a release
+        // build on the M4; 21 Oct's code took over 200 s at a tenth of the scale) and short of the
+        // regression's. CPU time, not wall: a loaded machine stretches the wall, not this. The
+        // three runs `forecast_by` makes, one after another on this thread.)
+        let cpu0 = thread_cpu();
+        let runs = [(0.95, 0.75), (1.0, 1.0), (1.15, 1.6)].map(|(known, guess)| {
+            run(&inp, &|c| c.secs * if c.known { known } else { guess }, Duration::from_secs(600))
+        });
+        let took = thread_cpu() - cpu0;
+        eprintln!("live scale, {n} targets: {} ms of CPU", took.as_millis());
+        assert!(runs.iter().all(|r| r.done && !r.cut), "a run was cut or unfinished");
+        assert!(took < Duration::from_secs(180), "{took:?}");
         // Past its budget: cut there, partial and said so.
         let f = forecast_by(&inp, Duration::from_millis(50));
         assert!(f.partial && f.done_at.is_none(), "{:?}", f.why);
