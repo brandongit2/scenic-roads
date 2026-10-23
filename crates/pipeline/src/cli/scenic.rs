@@ -166,6 +166,15 @@ pub enum Cmd {
         #[command(flatten)]
         root: Root,
     },
+    /// The NAS reserve: the free space the NAS keeps past what bld-fetch fetches there, pool-wide,
+    /// kept on the NAS; off: none; with none, how it stands
+    NasRoom {
+        /// The reserve in GB, or off
+        #[arg(value_name = "GB|off")]
+        what: Option<String>,
+        #[command(flatten)]
+        root: Root,
+    },
     /// Remove replaced files from the NAS (the agent runs it daily)
     Gc {
         /// Says what it would remove

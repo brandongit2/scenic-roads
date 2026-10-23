@@ -484,7 +484,11 @@ pub const TARGET: &str = "room-target.json";
 
 /// Sets this Mac's disk room target (its agent's folder `home`) to `bytes`, or clears it (None).
 pub fn set_target(home: &Path, bytes: Option<u64>, by: &str) -> Result<Option<Target>> {
-    let p = home.join(TARGET);
+    write_target(&home.join(TARGET), bytes, by)
+}
+
+/// A target's file at `p` written (`bytes`), or removed (None).
+fn write_target(p: &Path, bytes: Option<u64>, by: &str) -> Result<Option<Target>> {
     let Some(bytes) = bytes else {
         match std::fs::remove_file(&p) {
             Ok(()) => {}
@@ -493,20 +497,47 @@ pub fn set_target(home: &Path, bytes: Option<u64>, by: &str) -> Result<Option<Ta
         }
         return Ok(None);
     };
-    std::fs::create_dir_all(home)?;
+    if let Some(d) = p.parent() {
+        std::fs::create_dir_all(d)?;
+    }
     let t = Target { bytes, by: by.to_string(), at: super::jobs::now_s() };
-    crate::whole::write(&p, &serde_json::to_vec(&t)?)?;
+    crate::whole::write(p, &serde_json::to_vec(&t)?)?;
     Ok(Some(t))
 }
 
 /// This Mac's disk room target, when one is set (one that doesn't parse, or of 0 bytes, is none;
 /// one past `MAX_TARGET` is that).
 pub fn target(home: &Path) -> Option<Target> {
-    std::fs::read(home.join(TARGET))
+    read_target(&home.join(TARGET))
+}
+
+/// A target's file at `p` (none: missing, unreadable, or 0 bytes; at most `MAX_TARGET`).
+fn read_target(p: &Path) -> Option<Target> {
+    std::fs::read(p)
         .ok()
         .and_then(|b| serde_json::from_slice::<Target>(&b).ok())
         .filter(|t| t.bytes > 0)
         .map(|t| Target { bytes: t.bytes.min(MAX_TARGET), ..t })
+}
+
+/// The owner's NAS reserve, pool-wide (`scenic nas-room`): the free space the NAS keeps past what the
+/// steps that check before writing there would write (bld-fetch). One file on the NAS, written by
+/// whichever Mac sets it, read by every job; none (the default): the NAS's free space alone.
+pub const NAS_RESERVE: &str = "state/pool/nas-room.json";
+
+/// Sets the NAS reserve under the project folder `root` to `bytes`, or clears it (None).
+pub fn set_nas_reserve(root: &Path, bytes: Option<u64>, by: &str) -> Result<Option<Target>> {
+    write_target(&root.join(NAS_RESERVE), bytes, by)
+}
+
+/// The NAS reserve as set under `root`, when one is.
+pub fn nas_reserve(root: &Path) -> Option<Target> {
+    read_target(&root.join(NAS_RESERVE))
+}
+
+/// The NAS's free space a step may fill (bytes): what's free under `root` less the reserve.
+pub fn nas_room(root: &Path) -> std::io::Result<u64> {
+    Ok(free_past_of(disk_free(root)?, nas_reserve(root).map_or(0, |t| t.bytes)))
 }
 
 /// The variable a job is told the owner's room target in (MB; the agent sets it on every job it
@@ -1282,6 +1313,24 @@ mod tests {
         // And read from the disk: none past a target beyond any disk.
         let d = tempfile::tempdir().unwrap();
         assert_eq!(free_past(d.path(), MAX_TARGET), 0);
+    }
+
+    /// The NAS reserve: kept on the NAS, read back, its room the free space past it; off, none.
+    #[test]
+    fn the_nas_reserve_is_kept_on_the_nas() {
+        let d = tempfile::tempdir().unwrap();
+        TEST_FREE.with(|c| c.set(Some(100 << 30)));
+        assert_eq!(nas_reserve(d.path()), None);
+        assert_eq!(nas_room(d.path()).unwrap(), 100 << 30);
+        let t = set_nas_reserve(d.path(), Some(30 << 30), "a test").unwrap().unwrap();
+        assert!(d.path().join(NAS_RESERVE).is_file());
+        assert_eq!(nas_reserve(d.path()), Some(t));
+        assert_eq!(nas_room(d.path()).unwrap(), 70 << 30);
+        set_nas_reserve(d.path(), Some(200 << 30), "a test").unwrap();
+        assert_eq!(nas_room(d.path()).unwrap(), 0);
+        assert_eq!(set_nas_reserve(d.path(), None, "a test").unwrap(), None);
+        assert_eq!((nas_reserve(d.path()), nas_room(d.path()).unwrap()), (None, 100 << 30));
+        TEST_FREE.with(|c| c.set(None));
     }
 
     /// Frees the cheap caches toward `goal` free, as room-making does, and says what stays short of it.

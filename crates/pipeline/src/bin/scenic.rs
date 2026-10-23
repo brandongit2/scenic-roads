@@ -1093,6 +1093,38 @@ fn nas_target(what: Option<&str>, root_: &Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+/// `scenic nas-room [<GB> | off]`: the NAS reserve (agent::room::NAS_RESERVE), set in the project
+/// folder on the NAS, which every job reads; off: none; with none, how it stands.
+fn nas_room(what: Option<&str>, root_: &Option<PathBuf>) -> Result<()> {
+    use agent::room::{disk_free, nas_reserve, set_nas_reserve, size};
+    let r = root(root_, true)?;
+    let by = format!("scenic nas-room on {}", agent::cond::host_name());
+    match what {
+        Some("off") => {
+            set_nas_reserve(&r, None, &by)?;
+        }
+        Some(gb) => {
+            let gb: f64 = gb
+                .trim_end_matches("GB")
+                .trim_end_matches("gb")
+                .parse()
+                .ok()
+                .filter(|g: &f64| g.is_finite() && *g >= 1.0)
+                .with_context(|| format!("scenic nas-room <GB> | off, not {gb}: a reserve of 1 GB or more"))?;
+            set_nas_reserve(&r, Some((gb * (1u64 << 30) as f64) as u64), &by)?;
+        }
+        None => {}
+    }
+    match nas_reserve(&r) {
+        Some(t) => println!("NAS reserve: {} (set {} by {})", size(t.bytes), ago(t.at), t.by),
+        None => println!("NAS reserve: off (`scenic nas-room <GB>` sets one)"),
+    }
+    if let Ok(f) = disk_free(&r) {
+        println!("Free on the NAS now: {}", size(f));
+    }
+    Ok(())
+}
+
 /// `scenic memory [<GB> | off]`: the memory this Mac gives the build's jobs together
 /// (agent::buildmem), set in its agent's folder, which the agent reads each loop; within the memory
 /// guard's limit; off: the limit alone; with none, how it stands.
@@ -1492,6 +1524,7 @@ fn main() -> Result<()> {
         Some(Cmd::Room { what, places }) => room(what.as_deref(), &places.home),
         Some(Cmd::InUse { cores, off, places }) => in_use(cores, off.is_some(), &places.home),
         Some(Cmd::NasTarget { what, root }) => nas_target(what.as_deref(), &root.root),
+        Some(Cmd::NasRoom { what, root }) => nas_room(what.as_deref(), &root.root),
         Some(Cmd::Memory { what, places }) => memory(what.as_deref(), &places.home),
         Some(Cmd::Gc { dry_run, days, root: r }) => {
             let r = pipeline::timings::job("gc", || gc::run(&root(&r.root, true)?, days, dry_run))?;

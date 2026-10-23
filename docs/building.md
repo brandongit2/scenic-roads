@@ -138,6 +138,12 @@ from the first (`edit_held`).
     the target, the agent frees its caches toward it on a thread of its own, the cheapest to refill
     first (copies, base packs, the DEM seed, the heritage clip last), measuring as it goes; short with
     nothing more to free, it says so (`caches.room.short`). It never deletes what a job holds.
+  - **The NAS reserve** (`room::NAS_RESERVE`, `room::nas_room`): `scenic nas-room <GB>` / `scenic
+    nas-room off` on any Mac, one pool-wide value on the NAS (`state/pool/nas-room.json`), off by
+    default; with no argument, how it stands. Apart from the Macs' targets (another disk). `bld-fetch`
+    fails when what it still has to fetch is more than the NAS's free space past it; the other steps
+    writing to the NAS check no space before writing (depth, terrain and fine packs, the OSM pass's
+    upload, `fabdem-fetch`), so it doesn't bind them yet.
   - **With the mirror's reserve** (docs/macs.md, Mirror): the two floors are apart; the mirror never frees for
     the agent's target and the agent never touches the mirror (task #460).
   - A clear or freeing runs on its own thread; jobs run meanwhile. Nothing goes through a link.
@@ -420,7 +426,7 @@ available. Until work is done, the map serves the last catalog.
 **Status.**
 - `scenic status` (the lead, its jobs, what waits, the checklist by stage and step, the regions),
   `scenic steps` (the steps table: docs/pipeline.md), `scenic clean`, `scenic room` (Room on the
-  disk, above), `scenic memory` (the build's memory: docs/pool.md §7.1).
+  disk, above), `scenic nas-room` (the NAS reserve, above), `scenic memory` (the build's memory: docs/pool.md §7.1).
 - The app's status bar: the NAS or map server out of reach, new data or a new app.
 - **The menu bar item** asks the local server (`/api/build`): this Mac's agent's status, else the
   NAS's copy. An agent not heard from for six minutes shows as out of touch.
