@@ -10,7 +10,7 @@
 
 use super::tiles::{Reader, TerrainTiles, Tile, Unread};
 use crate::coverage::Coverage;
-use crate::dem::spacing::{Fine, Spacing};
+use crate::dem::spacing::Fine;
 use crate::legacy::TileId;
 use crate::reach::{Reach, Reaches};
 use serde::{Deserialize, Serialize};
@@ -29,7 +29,8 @@ pub const SLOPE_V: u32 = 1;
 /// 4: the roads' own English (`global/roaden/<u>`); a z6 tile left with no ways drops its outputs.
 /// 5: one elevation pool (GLO-30 and the Terrarium tiles among the roads' datasets, FABDEM and MRDEM
 /// gone), so no record from before is re-keyed as current (agent::rekey's older schemes).
-pub const UNIT_V: u32 = 5;
+/// 6: the roads' heights from the finished terrain (crate::road_terrain), spaced at its pixel.
+pub const UNIT_V: u32 = 6;
 /// 3: keyed on the tile's owners alone; hidata of the tile's own ways (here, query parts, rail
 /// lines, zoomed-out summaries).
 pub const PACK_V: u32 = 3;
@@ -562,7 +563,8 @@ pub fn unit_keys(
 /// coverage as its ways meet it (`Reach::coverage_key`), the location rules where they go
 /// (`crate::rules`), the `keyed` digests of the declared elevation datasets meeting its ways
 /// (`elevation`: crate::inputs::elevation), which of the cells its ways start in a fine dataset
-/// covers (`fine`, `Fine::of` the same datasets: its spacing, crate::dem::spacing), the roadside buildings' index (of the declared release
+/// covers (`fine`, `Fine::of` the same datasets: its spacing, crate::dem::spacing), the terrain packs
+/// its roads' heights read (`terrain_packs`), the roadside buildings' index (of the declared release
 /// `buildings`: crate::buildtiles), the land-cover and canopy declarations where they aren't as
 /// staged (`sources`: crate::inputs::sources::unit_extra), the terrain tiles it reads by their contents (`terrain`: `unit_terrain`'s
 /// digest), and the heritage sites' and areas' slices near it, as the manifest has them, which is
@@ -581,67 +583,22 @@ pub fn unit_key(
     buildings: &str,
     sources: Option<&str>,
 ) -> String {
-    unit_key_spaced(cov, date, m, u, piece, r, terrain, elevation, fine, Some(fine.key(&r.cells)), buildings, sources)
-}
-
-/// `unit_key` with its ways' long ways tested at spacing `sp` and the spacing's line `spacing` (None:
-/// before densification by the declared datasets, agent::rekey).
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn unit_key_spaced(
-    cov: &Coverage,
-    date: &str,
-    m: &BTreeMap<String, String>,
-    u: TileId,
-    piece: &str,
-    r: &Reach,
-    terrain: &str,
-    elevation: &[(crate::dem::declared::Accepted, crate::dem::declared::Cover)],
-    sp: &dyn Spacing,
-    spacing: Option<String>,
-    buildings: &str,
-    sources: Option<&str>,
-) -> String {
     let ext = r.extent(u);
     let deg = |v: i32| v as f64 * 1e-7;
     let e = format!(
         "elevation {}",
         crate::dem::declared::meeting(elevation, [deg(ext[0]), deg(ext[1]), deg(ext[2]), deg(ext[3])]).join(",")
     );
-    let rules = crate::rules::versions_meeting(ext);
-    unit_key_with(cov, date, m, u, piece, r, terrain, sp, rules, Some(e), spacing, buildings, sources)
-}
-
-/// `unit_key` of the long ways tested at spacing `sp`, the location rules' versions `rules`, the
-/// elevations' line `elevation` (None: before the declared datasets, when the DEM rules were among
-/// the rules: agent::rekey), the spacing's line `spacing` (None: before it), the roadside buildings
-/// of release `buildings`, and the declared sources' line `sources` (None: as staged, or before
-/// them).
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn unit_key_with(
-    cov: &Coverage,
-    date: &str,
-    m: &BTreeMap<String, String>,
-    u: TileId,
-    piece: &str,
-    r: &Reach,
-    terrain: &str,
-    sp: &dyn Spacing,
-    rules: String,
-    elevation: Option<String>,
-    spacing: Option<String>,
-    buildings: &str,
-    sources: Option<&str>,
-) -> String {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     let mut inputs = vec![
         format!("unit {UNIT_V}"),
         piece.to_string(),
         get(&format!("sources/osm/{date}/roads/{}", u.dash())).to_string(),
-        r.coverage_key(cov, u, sp),
-        rules,
+        r.coverage_key(cov, u, fine),
+        crate::rules::versions_meeting(ext),
+        e,
+        fine.key(&r.cells),
     ];
-    inputs.extend(elevation);
-    inputs.extend(spacing);
     // The roadside buildings it reads (crate::buildtiles: the release's tiles near its roads).
     inputs.push(format!("buildings {}", get(&crate::buildtiles::index_logical(buildings))));
     // (The land cover and canopy it reads, once their declarations aren't as staged.)
@@ -652,12 +609,34 @@ pub(crate) fn unit_key_with(
     // same, from fixed datasets (WorldCover, Meta's canopy squares).
     inputs.push(format!("terrain-tiles {terrain}"));
     let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
+    // (And the packs its roads' heights read, whole: the hi packs and fine packs over its box,
+    // crate::road_terrain.)
+    inputs.push(format!("terrain-packs {}", terrain_packs(m, b).join(" ")));
     for (x, y) in crate::stage::tiles_in(6, b) {
         inputs.push(get(&crate::heritage::pos_logical(date, x, y)).to_string());
         inputs.push(get(&crate::heritage::areas_logical(date, x, y)).to_string());
     }
     let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
     h(&refs)
+}
+
+/// The terrain packs over box `b` (degrees) the roads' heights read (crate::road_terrain): the hi
+/// packs of the z6 tiles it meets and the fine packs of its z10 tiles, each `logical=content`
+/// ("-" for one not made).
+pub fn terrain_packs(m: &BTreeMap<String, String>, b: [f64; 4]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (x, y) in crate::stage::tiles_in(6, b) {
+        let l = format!("layers/terrain/hi/6-{x}-{y}");
+        out.push(format!("{l}={}", m.get(&l).map_or("-", String::as_str)));
+    }
+    let z = crate::terrain_fine::PACK_Z;
+    for (x, y) in crate::stage::tiles_in(z, b) {
+        let l = crate::terrain_fine::pack_logical(x, y);
+        if let Some(c) = m.get(&l) {
+            out.push(format!("{l}={c}"));
+        }
+    }
+    out
 }
 
 /// `unit_terrain_tiles` as one digest, kept by `tiles` with what it reads (the z6 tile's reach and the
@@ -2294,7 +2273,20 @@ pub fn plan(
                 .collect()
         })
         .collect();
-    let buildable = |i: usize| units[i].1.is_some() && reads[i].is_disjoint(&terrain_left);
+    // (And for the fine terrain under them: their roads' heights read it, crate::road_terrain.)
+    let fine_left: BTreeSet<String> = fine_targets(cov, m, done, tiles)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(t, k, _)| done.terrain_fine.get(t) != Some(k))
+        .map(|(t, _, _)| t)
+        .collect();
+    let fine_waits = |u: TileId| {
+        let z = crate::terrain_fine::TARGET_Z;
+        crate::stage::tiles_in(z, crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM))
+            .into_iter()
+            .any(|(x, y)| fine_left.contains(&format!("{z}/{x}/{y}")))
+    };
+    let buildable = |i: usize| units[i].1.is_some() && reads[i].is_disjoint(&terrain_left) && !fine_waits(units[i].0);
     let unknown: Vec<String> = units.iter().filter(|(_, k)| k.is_none()).map(|(u, _)| u.slash()).collect();
     let target = |i: usize| -> Option<(String, String)> { Some((units[i].0.slash(), units[i].1.clone()?)) };
     struct Region<'a> {
@@ -4567,6 +4559,8 @@ pub(crate) mod tests {
             let (z0, z1) = match l.split('/').nth(2) {
                 Some("hi") => (9, 12),
                 Some("lo") => (3, 8),
+                // (The fine packs: no base tiles.)
+                Some("fine") => continue,
                 _ => (0, 2),
             };
             let mut tiles = Vec::new();
@@ -6089,6 +6083,14 @@ pub(crate) mod tests {
             "work/heritage/d/areas/6-28-16.9090909090909090.jsonl".into(),
         );
         assert_ne!(key(&m), k0, "its own tile's areas");
+        // And the terrain packs its roads' heights read: a fine pack over it, not one far away.
+        let k1 = key(&m);
+        m.insert(crate::terrain_fine::pack_logical(0, 0), "layers/terrain/fine/10-0-0.aa".into());
+        assert_eq!(key(&m), k1, "a fine pack far away");
+        let b = crate::stage::tile_box_grown(6, 28, 16, crate::stage::MARGIN_KM);
+        let (x, y) = crate::stage::tiles_in(crate::terrain_fine::PACK_Z, b)[0];
+        m.insert(crate::terrain_fine::pack_logical(x, y), "layers/terrain/fine/x.bb".into());
+        assert_ne!(key(&m), k1, "a fine pack over it");
     }
 
     /// A terrain target's key names the elevation pool's datasets meeting it, and only those: a
