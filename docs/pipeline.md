@@ -175,7 +175,8 @@ same tab; an alert links to the tab that says more.
   Mac may take it, count, bar, its forecast (work, done ≈); the stage's jobs to come and note.
 - **Machines:** a card per Mac: name, role, state, heard from; its capacity; a block per running
   job by its slot (name, parts, progress, running since, memory; frozen or stuck) with that slot's
-  next work; why nothing more fits; facts as chips; its day as a spark line. Pages one card.
+  next work (each job's phase, target and bytes are in the status's `jobs[].live`, docs/pool.md
+  §10, Live; not drawn yet: planned, #507's later parts); why nothing more fits; facts as chips; its day as a spark line. Pages one card.
 - **The pool:** `pool.js`, under the machines (the Machines tab).
 - **Regions:** a row per region: its folders and name, state, when it's done and all on the map,
   its download's size, its tiles built (on the map as they come), what's left by step; found by

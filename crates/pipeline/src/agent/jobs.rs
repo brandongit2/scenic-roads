@@ -28,6 +28,74 @@ pub struct Needs {
     pub nas: bool,
 }
 
+/// What a running job is doing now (docs/pool.md §10, Live; task #518), as the agent reads it for
+/// its status and its lease's beat: the phase its main thread has open (crate::timings, said in its
+/// counts file: store::nasio::set_phase) with its class and since when; the target under way (its
+/// costs file: crate::agent::memguard::targets) and since when, and how many of its targets ended;
+/// its NAS bytes read and written (its processes' counts, store::nasio) and its internet bytes in
+/// and out (the proxy's count of its tag, crate::budget::net), since it began. Each None: not said
+/// (a step that times no phases or notes no costs, a job its agent gave no folder or tag).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Live {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
+    /// Unix s.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_since: Option<u64>,
+    /// Its cost key (crate::coord::cost_key).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// Unix s.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_since: Option<u64>,
+    #[serde(default)]
+    pub targets_done: usize,
+    /// Its targets (0: a job of none of its own).
+    #[serde(default)]
+    pub targets: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nas_read: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nas_wrote: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub net_in: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub net_out: Option<u64>,
+}
+
+impl Live {
+    /// A job's `Live` from its counts folder (store::nasio::ENV), its costs file, its targets' count
+    /// and its internet bytes (in, out).
+    pub fn read(counts: &Path, costs: &Path, targets: usize, net: Option<(u64, u64)>) -> Live {
+        let phase = store::nasio::phase_in(counts).filter(|p| !p.0.is_empty());
+        let (name, class) = match &phase {
+            Some((t, _)) => match t.split_once('\t') {
+                Some((n, c)) => (Some(n.to_string()), Some(c.to_string())),
+                None => (Some(t.clone()), None),
+            },
+            None => (None, None),
+        };
+        let t = super::memguard::targets(costs);
+        let nas = store::nasio::sum_dir(counts);
+        let at = |c: store::nasio::Count| nas.map(|n| n[c as usize]);
+        Live {
+            phase: name,
+            class,
+            phase_since: phase.map(|p| p.1 / 1000),
+            target_since: t.on.as_ref().map(|o| o.1),
+            target: t.on.map(|o| o.0),
+            targets_done: t.ended,
+            targets,
+            nas_read: at(store::nasio::Count::ReadBytes),
+            nas_wrote: at(store::nasio::Count::WroteBytes),
+            net_in: net.map(|n| n.0),
+            net_out: net.map(|n| n.1),
+        }
+    }
+}
+
 /// A job: one step for one unit or pack, or one worldwide step.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JobSpec {
@@ -986,7 +1054,7 @@ mod tests {
             Budget::new(&d.path().join("nas"), "m-test", Arc::new(StepClock::at(1_800_000_000_000))).with_ledger(),
         );
         let proxy = Proxy::start(budget.clone(), Some(Arc::new(move |_: &str, _: u16| Some(up_addr)))).unwrap();
-        let env: Vec<(String, String)> = proxy.env();
+        let env: Vec<(String, String)> = proxy.env_for("job1");
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let script = format!(
             "/usr/bin/nc -v -z -G 5 192.0.2.1 9; echo \"out=$?\"; /usr/bin/nc -z -G 5 127.0.0.1 {port}; echo \"here=$?\"; /usr/bin/curl -sS -m 20 http://en.wikipedia.org/w/api.php; echo \"curl=$?\""
@@ -1009,7 +1077,46 @@ mod tests {
         assert!(text.contains("here=0"), "{text}");
         assert!(text.contains("upstream saw: GET /w/api.php HTTP/1.1") && text.contains("curl=0"), "{text}");
         assert_eq!(budget.ledger().len(), 1, "the Wikimedia request metered");
+        // (curl sent its tag: its bytes counted as the job's, crate::budget::net.)
+        let (got, sent) = proxy.net().unwrap().job("job1").unwrap();
+        assert!(got > 0 && sent > 0, "{got} {sent}");
         drop(here);
+    }
+
+    /// A job's live view: the phase its counts file says (name and class), the target under way
+    /// and the ended ones its costs file says, its NAS and internet bytes; each None when not said.
+    #[test]
+    fn a_jobs_live_view_reads_its_phase_target_and_bytes() {
+        let d = tempfile::tempdir().unwrap();
+        let (counts, costs) = (d.path().join("nascounts"), d.path().join("costs.jsonl"));
+        assert_eq!(Live::read(&counts, &costs, 0, None), Live::default());
+        std::fs::create_dir(&counts).unwrap();
+        // (A running process's file, this one's pid: its counts, then its phase.)
+        let mut b = vec![0u8; 18 * 8];
+        b[0] = 9;
+        b[2 * 8] = 4;
+        b[10 * 8] = 2;
+        b[11 * 8..11 * 8 + 8].copy_from_slice(&5_000u64.to_le_bytes());
+        b[12 * 8..12 * 8 + 18].copy_from_slice(b"records saved\tdisk");
+        std::fs::write(counts.join(format!("{}-1", std::process::id())), &b).unwrap();
+        std::fs::write(&costs, "{\"unit\":\"unit 6/1/1\",\"started\":1}\n{\"unit\":\"unit 6/1/1\",\"peak_mb\":1}\n{\"unit\":\"unit 6/1/2\",\"started\":7}\n").unwrap();
+        let l = Live::read(&counts, &costs, 3, Some((10, 2)));
+        assert_eq!(
+            l,
+            Live {
+                phase: Some("records saved".into()),
+                class: Some("disk".into()),
+                phase_since: Some(5),
+                target: Some("unit 6/1/2".into()),
+                target_since: Some(7),
+                targets_done: 1,
+                targets: 3,
+                nas_read: Some(9),
+                nas_wrote: Some(4),
+                net_in: Some(10),
+                net_out: Some(2),
+            }
+        );
     }
 
     #[test]

@@ -4,6 +4,10 @@
 //! requests asked (a tunnel is one: what's inside is the client's TLS), the connections opened,
 //! the retries and the holds told. And the last `EVENTS` transfers, each as it ended.
 //!
+//! And each job's bytes in and out (`Job`), by the tag its agent gave it in its proxy's address
+//! (`http://<tag>:x@127.0.0.1:<port>`, which its clients send as `Proxy-Authorization`; a client that
+//! sends none is counted to its host alone): counted afresh as each job begins (`job_began`).
+//!
 //! A transfer's bytes are added as each chunk is relayed (one atomic add a read), so a long
 //! download's rate shows as it goes, not as it ends.
 
@@ -23,6 +27,29 @@ pub struct Host {
     pub conns: AtomicU64,
     pub retries: AtomicU64,
     pub holds: AtomicU64,
+}
+
+/// A job's bytes since it began (`Net::job_began`).
+#[derive(Default, Debug)]
+pub struct Job {
+    pub bytes_in: AtomicU64,
+    pub bytes_out: AtomicU64,
+}
+
+/// The credential a job's clients send for tag `tag` (`Proxy-Authorization: Basic <it>`): base64 of
+/// `<tag>:x`.
+pub fn credential(tag: &str) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let b = format!("{tag}:x").into_bytes();
+    let mut out = String::new();
+    for c in b.chunks(3) {
+        let n =
+            (u32::from(c[0]) << 16) | (u32::from(*c.get(1).unwrap_or(&0)) << 8) | u32::from(*c.get(2).unwrap_or(&0));
+        for i in 0..4 {
+            out.push(if i <= c.len() { A[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
 }
 
 /// How a transfer ended.
@@ -58,6 +85,8 @@ pub struct Event {
 pub struct Net {
     hosts: Mutex<BTreeMap<String, Arc<Host>>>,
     events: Mutex<VecDeque<Event>>,
+    /// The jobs' bytes, by their clients' credential (`credential`).
+    jobs: Mutex<BTreeMap<String, Arc<Job>>>,
 }
 
 fn unix_ms() -> u64 {
@@ -68,6 +97,24 @@ impl Net {
     /// `host`'s counts (made with its first use, by its name in lower case; a lock taken once a connection, not a chunk).
     pub fn host(&self, host: &str) -> Arc<Host> {
         self.hosts.lock().unwrap_or_else(|e| e.into_inner()).entry(host.to_ascii_lowercase()).or_default().clone()
+    }
+
+    /// The job tagged `tag` begins: its bytes counted from none (connections of the tag's job
+    /// before still count to theirs).
+    pub fn job_began(&self, tag: &str) {
+        self.jobs.lock().unwrap_or_else(|e| e.into_inner()).insert(credential(tag), Arc::default());
+    }
+
+    /// The bytes in and out of the job tagged `tag` since it began; None: none began so.
+    pub fn job(&self, tag: &str) -> Option<(u64, u64)> {
+        let j = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
+        j.get(&credential(tag)).map(|c| (c.bytes_in.load(Ordering::Relaxed), c.bytes_out.load(Ordering::Relaxed)))
+    }
+
+    /// The job whose clients send `cred` (a `Proxy-Authorization`'s Basic credential); None: no
+    /// job began with it.
+    pub fn job_of(&self, cred: &str) -> Option<Arc<Job>> {
+        self.jobs.lock().unwrap_or_else(|e| e.into_inner()).get(cred).cloned()
     }
 
     /// A transfer of `host` that took `ms` ended as `outcome` (its bytes are already counted).
@@ -139,6 +186,20 @@ mod tests {
         assert_eq!(ev[0]["in"], 50);
         assert_eq!(ev[EVENTS - 1]["in"], EVENTS as u64 + 49);
         assert_eq!(ev[0]["outcome"], "ok");
+    }
+
+    #[test]
+    fn a_jobs_credential_is_its_tags_base64() {
+        assert_eq!(credential("job1"), "am9iMTp4");
+        assert_eq!(credential("job12"), "am9iMTI6eA==");
+        assert_eq!(credential("job123"), "am9iMTIzOng=");
+        let n = Net::default();
+        assert!(n.job("job1").is_none() && n.job_of(&credential("job1")).is_none());
+        n.job_began("job1");
+        n.job_of(&credential("job1")).unwrap().bytes_in.fetch_add(5, Ordering::Relaxed);
+        assert_eq!(n.job("job1"), Some((5, 0)));
+        n.job_began("job1");
+        assert_eq!(n.job("job1"), Some((0, 0)));
     }
 
     #[test]

@@ -137,18 +137,32 @@ pub fn trouble(pressure: Option<u32>, swap: Option<u64>, swap_low: Option<u64>) 
 /// (crate::coord::cost_key); None when the file says none (a step that notes no costs, or between
 /// targets).
 pub fn current(costs: &Path) -> Option<String> {
-    let s = std::fs::read_to_string(costs).ok()?;
-    let mut on: Option<String> = None;
+    targets(costs).on.map(|o| o.0)
+}
+
+/// A job's targets as its costs file says (`current`): the one under way and when it began (unix
+/// s), and how many ended (each a `peak_mb` line after its `started`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Targets {
+    pub on: Option<(String, u64)>,
+    pub ended: usize,
+}
+
+/// Costs file `costs`'s `Targets` (none when it can't be read).
+pub fn targets(costs: &Path) -> Targets {
+    let mut t = Targets::default();
+    let Ok(s) = std::fs::read_to_string(costs) else { return t };
     for l in s.lines() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(l) else { continue };
         let Some(key) = v["unit"].as_str() else { continue };
-        if v.get("started").is_some() {
-            on = Some(key.to_string());
-        } else if v.get("peak_mb").is_some() && on.as_deref() == Some(key) {
-            on = None;
+        if let Some(at) = v.get("started") {
+            t.on = Some((key.to_string(), at.as_u64().unwrap_or(0)));
+        } else if v.get("peak_mb").is_some() && t.on.as_ref().is_some_and(|o| o.0 == key) {
+            t.on = None;
+            t.ended += 1;
         }
     }
-    on
+    t
 }
 
 /// What a target takes at least (crate::coord's floors): the most a job held while it was under way
@@ -982,6 +996,7 @@ mod tests {
         assert_eq!(current(&p), None);
         std::fs::write(&p, "{\"unit\":\"terrain 6/1/1\",\"started\":1}\n{\"unit\":\"terrain 6/1/1\",\"peak_mb\":900,\"secs\":3}\n{\"unit\":\"terrain 6/1/2\",\"started\":4}\nnot json\n").unwrap();
         assert_eq!(current(&p).as_deref(), Some("terrain 6/1/2"));
+        assert_eq!(targets(&p), Targets { on: Some(("terrain 6/1/2".into(), 4)), ended: 1 });
         // Its fallbacks: between targets, or a step that notes no costs, the first target not
         // noted done; a job of no targets, its own key; else none.
         let done = d.path().join("done.txt");

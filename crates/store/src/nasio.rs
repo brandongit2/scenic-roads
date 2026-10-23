@@ -16,6 +16,11 @@
 //! process's memory alone. A program a step runs gets a folder of its own inside its runner's
 //! (`program_dir`: summed one level down, so it shows as it runs), whose sums its runner takes into
 //! its own as it ends (`take_program`; pipeline::unit's `run`).
+//!
+//! After the counts, the same file says what the process is doing now (`set_phase`: the phase
+//! pipeline::timings has open on a job's main thread, and since when), written under a sequence
+//! number (odd while it's written) so a reader never takes half of one; never summed or folded.
+//! The agent reads it from the newest running process's file at the folder's top (`phase_in`).
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -58,16 +63,104 @@ pub type Counts = [u64; SLOTS];
 
 type Cells = [AtomicU64; SLOTS];
 
-static OWN: Cells = [const { AtomicU64::new(0) }; SLOTS];
+/// The phase's text's room (bytes; longer is cut at a character's end).
+pub const PHASE_MAX: usize = 48;
+
+/// A counts file's layout: the counts, then the phase (`set_phase`): its sequence number, when it
+/// was set (unix ms), its text (zero-padded).
+#[repr(C)]
+struct File {
+    counts: Cells,
+    seq: AtomicU64,
+    since_ms: AtomicU64,
+    text: [AtomicU64; PHASE_MAX / 8],
+}
+
+/// A counts file's length.
+const FILE_LEN: usize = std::mem::size_of::<File>();
+
+static OWN: File = File {
+    counts: [const { AtomicU64::new(0) }; SLOTS],
+    seq: AtomicU64::new(0),
+    since_ms: AtomicU64::new(0),
+    text: [const { AtomicU64::new(0) }; PHASE_MAX / 8],
+};
+
+fn file() -> &'static File {
+    static FILE: OnceLock<&'static File> = OnceLock::new();
+    FILE.get_or_init(|| std::env::var_os(ENV).and_then(|d| mapped(Path::new(&d))).unwrap_or(&OWN))
+}
 
 fn cells() -> &'static Cells {
-    static CELLS: OnceLock<&'static Cells> = OnceLock::new();
-    CELLS.get_or_init(|| std::env::var_os(ENV).and_then(|d| mapped(Path::new(&d))).unwrap_or(&OWN))
+    &file().counts
+}
+
+/// Says what this process is doing now (`""`: nothing named), from now: one sequence of relaxed
+/// stores in its counts file (no write call), cut to `PHASE_MAX` bytes.
+pub fn set_phase(text: &str) {
+    let f = file();
+    let b = cut(text);
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    f.seq.fetch_add(1, Ordering::AcqRel);
+    for (cell, w) in f.text.iter().zip(b.chunks_exact(8)) {
+        cell.store(u64::from_le_bytes(w.try_into().unwrap_or_default()), Ordering::Relaxed);
+    }
+    f.since_ms.store(ms, Ordering::Relaxed);
+    f.seq.fetch_add(1, Ordering::Release);
+}
+
+/// `text` cut to `PHASE_MAX` bytes at a character's end, zero-padded.
+fn cut(text: &str) -> [u8; PHASE_MAX] {
+    let mut end = text.len().min(PHASE_MAX);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut b = [0u8; PHASE_MAX];
+    b[..end].copy_from_slice(&text.as_bytes()[..end]);
+    b
+}
+
+/// A counts file's phase (`set_phase`): its text and when it was set (unix ms); None when none was
+/// ever set, or it was being written (odd sequence) or the file is an older one's (counts alone).
+fn phase_of(b: &[u8]) -> Option<(String, u64)> {
+    if b.len() < FILE_LEN {
+        return None;
+    }
+    let word = |i: usize| u64::from_le_bytes(b[i * 8..i * 8 + 8].try_into().unwrap_or_default());
+    let seq = word(SLOTS);
+    if seq == 0 || seq % 2 == 1 {
+        return None;
+    }
+    let text = &b[(SLOTS + 2) * 8..FILE_LEN];
+    let text = String::from_utf8_lossy(&text[..text.iter().position(|&c| c == 0).unwrap_or(text.len())]).into_owned();
+    Some((text, word(SLOTS + 1)))
+}
+
+/// What folder `dir`'s job is doing now: the phase of the newest set among its running processes'
+/// files at its top (a job's own processes; its programs' folders not), with when it was set (unix
+/// ms). A file caught mid-write is read again once. None: none says.
+pub fn phase_in(dir: &Path) -> Option<(String, u64)> {
+    let rd = std::fs::read_dir(dir).ok()?;
+    let mut best: Option<(String, u64)> = None;
+    for e in rd.flatten() {
+        let Ok(name) = e.file_name().into_string() else { continue };
+        let Some(pid) = name.split_once('-').and_then(|(p, _)| p.parse::<i32>().ok()) else { continue };
+        if !running(pid) {
+            continue;
+        }
+        let read = || std::fs::read(e.path()).ok().and_then(|b| phase_of(&b));
+        if let Some(p) = read().or_else(read) {
+            if best.as_ref().is_none_or(|b| p.1 > b.1) {
+                best = Some(p);
+            }
+        }
+    }
+    best
 }
 
 /// This process's counts file in folder `dir`, made new and mapped shared (kept for the process's
 /// life); None when it can't be (the counts kept in memory then).
-fn mapped(dir: &Path) -> Option<&'static Cells> {
+fn mapped(dir: &Path) -> Option<&'static File> {
     let pid = std::process::id();
     let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     let f = (0..100u32).find_map(|i| {
@@ -78,14 +171,14 @@ fn mapped(dir: &Path) -> Option<&'static Cells> {
             .open(dir.join(format!("{pid}-{}", nonce + u128::from(i))))
             .ok()
     })?;
-    f.set_len((SLOTS * 8) as u64).ok()?;
+    f.set_len(FILE_LEN as u64).ok()?;
     // SAFETY: the file is this process's alone to write (made new), the agent only reads it (and
     // removes it once the process ended); the mapping is kept for the process's life (leaked).
     let m = unsafe { memmap2::MmapMut::map_mut(&f) }.ok()?;
     let m: &'static mut memmap2::MmapMut = Box::leak(Box::new(m));
-    // SAFETY: the mapping is page-aligned, SLOTS * 8 bytes long, zeroed by set_len, and u64's
-    // atomics have u64's layout.
-    Some(unsafe { &*(m.as_mut_ptr() as *const Cells) })
+    // SAFETY: the mapping is page-aligned, FILE_LEN bytes long, zeroed by set_len, and `File` is
+    // repr(C) of u64 atomics, which have u64's layout.
+    Some(unsafe { &*(m.as_mut_ptr() as *const File) })
 }
 
 /// Adds `n` to count `c`.
@@ -132,6 +225,7 @@ pub fn get(c: Count) -> u64 {
 
 fn parse(b: &[u8]) -> Counts {
     let mut out = [0u64; SLOTS];
+    // (The counts alone: the phase after them is never summed.)
     for (o, c) in out.iter_mut().zip(b.chunks_exact(8)) {
         *o = u64::from_le_bytes(c.try_into().unwrap_or_default());
     }
@@ -262,8 +356,8 @@ mod tests {
     fn a_folders_files_are_summed_and_folded() {
         let d = tempfile::tempdir().unwrap();
         let a = mapped(d.path()).unwrap();
-        a[Count::ReadBytes as usize].fetch_add(100, Ordering::Relaxed);
-        a[Count::Creates as usize].fetch_add(2, Ordering::Relaxed);
+        a.counts[Count::ReadBytes as usize].fetch_add(100, Ordering::Relaxed);
+        a.counts[Count::Creates as usize].fetch_add(2, Ordering::Relaxed);
         // (Another process's, ended: no process has pid 2^31 - 2.)
         let mut other = [0u64; SLOTS];
         other[0] = 5;
@@ -306,10 +400,57 @@ mod tests {
     fn a_pid_taken_again_keeps_the_ended_ones_counts() {
         let d = tempfile::tempdir().unwrap();
         let first = mapped(d.path()).unwrap();
-        first[0].fetch_add(7, Ordering::Relaxed);
+        first.counts[0].fetch_add(7, Ordering::Relaxed);
         let again = mapped(d.path()).unwrap();
-        again[0].fetch_add(1, Ordering::Relaxed);
+        again.counts[0].fetch_add(1, Ordering::Relaxed);
         assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 2);
         assert_eq!(sum_dir(d.path()).unwrap()[0], 8);
+    }
+
+    /// A process's phase is read from its file whole, the newest of the folder's running
+    /// processes', cut at a character's end; an ended process's, an older file's (counts alone) and
+    /// one mid-write aren't taken; the counts' sums never include it.
+    #[test]
+    fn the_newest_running_processs_phase_is_read() {
+        let d = tempfile::tempdir().unwrap();
+        let f = mapped(d.path()).unwrap();
+        let set = |f: &File, text: &[u8; PHASE_MAX], seq: u64, ms: u64| {
+            f.seq.store(seq, Ordering::Relaxed);
+            f.since_ms.store(ms, Ordering::Relaxed);
+            for (c, w) in f.text.iter().zip(text.chunks_exact(8)) {
+                c.store(u64::from_le_bytes(w.try_into().unwrap()), Ordering::Relaxed);
+            }
+        };
+        let mut t = [0u8; PHASE_MAX];
+        t[..12].copy_from_slice(b"z6 tiles\tcpu");
+        set(f, &t, 2, 1000);
+        assert_eq!(phase_in(d.path()), Some(("z6 tiles\tcpu".into(), 1000)));
+        // (An ended process's newer one isn't taken; nor an older file's.)
+        let mut ended = vec![0u8; FILE_LEN];
+        ended[SLOTS * 8..SLOTS * 8 + 16].copy_from_slice(&[2, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0, 0, 0, 0, 0, 0]);
+        ended[(SLOTS + 2) * 8] = b'x';
+        std::fs::write(d.path().join("2147483646-1"), &ended).unwrap();
+        std::fs::write(d.path().join("2147483646-2"), [0u8; SLOTS * 8]).unwrap();
+        assert_eq!(phase_in(d.path()).unwrap().1, 1000);
+        assert_eq!(phase_of(&ended), Some(("x".into(), 0xffff)));
+        // (Mid-write: not taken.)
+        set(f, &t, 3, 2000);
+        assert_eq!(phase_in(d.path()), None);
+        assert_eq!(sum_dir(d.path()).unwrap(), [0; SLOTS]);
+        // (Cut at a character's end.)
+        set(f, &cut(&"é".repeat(30)), 4, 3000);
+        assert_eq!(phase_in(d.path()), Some(("é".repeat(24), 3000)));
+    }
+
+    /// What `set_phase` costs (the timings' every top-level phase opened and ended calls it).
+    #[test]
+    fn setting_the_phase_is_cheap() {
+        let t = std::time::Instant::now();
+        for i in 0..100_000 {
+            set_phase(if i % 2 == 0 { "records saved\tnas-write" } else { "" });
+        }
+        let ns = t.elapsed().as_nanos() / 100_000;
+        eprintln!("set_phase: {ns} ns a call");
+        assert!(ns < 20_000, "{ns} ns a call");
     }
 }

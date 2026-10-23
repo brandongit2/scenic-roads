@@ -955,6 +955,9 @@ pub struct JobView {
     /// None from an older agent: its place in the list (`Status::jobs`' order) stands for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot: Option<usize>,
+    /// What it's doing now: its phase, its target, its bytes (jobs::Live).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<jobs::Live>,
 }
 
 impl Status {
@@ -3043,12 +3046,13 @@ impl Agent {
             .as_ref()
             .and_then(|r| r.said.clone().or_else(|| jobs::progress(&r.log).map(|(d, t, u)| (d, t, u, None))))
             .map(|(d, t, u, _)| format!("{}/{t:.0} {u}", (d * 10.0).floor() / 10.0));
+        let live = self.job_live(k);
         match self.slots[k].lease.clone() {
             // (Its lease through the lead wherever it is now: this process's coordinator while it
             // leads, the lead's by HTTP while it's a member, whoever granted it: docs/pool.md §7.6.)
             Some(Held::Own(id) | Held::Pooled { id, .. }) if self.coord.is_some() => {
                 let Some(c) = &self.coord else { return true };
-                if c.renew(id, progress) {
+                if c.renew_live(id, progress, live) {
                     return true;
                 }
                 let work = self.slots[k].running.as_ref().and_then(|r| r.spec.record.clone());
@@ -3072,7 +3076,7 @@ impl Agent {
                     Some(r) => self.client(r, &mut Vec::new()),
                     None => self.client.as_ref(),
                 };
-                match client.map(|c| c.beat_told(lease, progress.as_deref())) {
+                match client.map(|c| c.beat_told(lease, progress.as_deref(), live)) {
                     // (The build's pause as the lead says: this job stops with it, or goes on;
                     // unless this Mac's own ask isn't with it yet. The owner's cancel: it stops at
                     // the next loop, `tend_cancels`.)
@@ -5866,6 +5870,7 @@ impl Agent {
     /// the time it has left (kept for the forecast).
     fn job_view(&mut self, k: usize) -> Option<JobView> {
         let waiting = self.waiting_words(k);
+        let live = self.job_live(k);
         let slot = &mut self.slots[k];
         let r = slot.running.as_mut()?;
         if let Some(p) = jobs::parts(&r.log) {
@@ -5911,7 +5916,21 @@ impl Agent {
             threads: Some(r.threads),
             waiting,
             slot: Some(k),
+            live,
         })
+    }
+
+    /// The proxy's tag for slot `k`'s job (crate::budget::net: its internet bytes).
+    fn net_tag(k: usize) -> String {
+        format!("slot{k}")
+    }
+
+    /// What slot `k`'s job is doing now (jobs::Live), while one runs.
+    fn job_live(&self, k: usize) -> Option<jobs::Live> {
+        let r = self.slots[k].running.as_ref()?;
+        let targets = r.spec.record.as_ref().map_or(0, |w| w.targets.len());
+        let net = self.proxy.as_ref().and_then(|p| p.net()).and_then(|n| n.job(&Self::net_tag(k)));
+        Some(jobs::Live::read(&self.nas_counts_path(k), &self.slot_costs(k), targets, net))
     }
 
     /// This Mac's resources for the status (cond::Resources); its caches counted again on a thread
@@ -6462,7 +6481,7 @@ impl Agent {
         // Mac's own direct, and no other way out (the sandbox).
         let sandbox = match &self.proxy {
             Some(p) => {
-                env.extend(p.env());
+                env.extend(p.env_for(&Self::net_tag(k)));
                 Some(crate::budget::SANDBOX)
             }
             None => None,
@@ -12686,12 +12705,12 @@ mod tests {
         for k in 0..SLOTS {
             assert!(a.slots[k].running.as_mut().unwrap().wait().unwrap().success());
         }
-        for step in ["items", "heritage"] {
+        for (k, step) in ["items", "heritage"].into_iter().enumerate() {
             let out = seen.join(format!("{step}.out"));
             assert!(std::fs::read_to_string(&out).unwrap().contains("done"));
             let env = std::fs::read_to_string(seen.join(format!("{step}.env"))).unwrap();
             assert!(
-                env.contains(&format!("HTTPS_PROXY={url}\n"))
+                env.contains(&format!("HTTPS_PROXY={}\n", url.replace("http://", &format!("http://slot{k}:x@"))))
                     && env.contains(&format!("{}={url}\n", crate::budget::PROXY_ENV))
                     && env.contains("NO_PROXY=localhost,127.0.0.1,::1\n"),
                 "{env}"
@@ -13603,6 +13622,7 @@ mod tests {
                 threads: None,
                 waiting: None,
                 slot: Some(0),
+                live: None,
             });
             let st = Status {
                 host: "the-lead".into(),
@@ -15181,6 +15201,7 @@ mod tests {
             threads: None,
             waiting: None,
             slot: Some(0),
+            live: None,
         }];
         annotate(&mut l, &[], &[helper], &[]);
         assert_eq!((l[0].items[0].done, l[0].items[0].left), (3, Some(1)));
@@ -15237,6 +15258,7 @@ mod tests {
                 threads: None,
                 waiting: None,
                 slot: Some(0),
+                live: None,
             }),
             ..Default::default()
         };

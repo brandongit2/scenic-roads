@@ -1066,7 +1066,23 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   each `{t, host, in, out, ms, outcome}` as it ended (`ok`, `broken`, `unreached`: answered 502,
   `refused`: 503). The counts are since the proxy started, in memory alone; their totals sampled
   each second as `net_in_mbs`, `net_out_mbs` (MB/s). The status's budget counts (`wiki`, `query`,
-  `other`, `holds`) are summed from them. The counted relay copies in 64 KB
+  `other`, `holds`) are summed from them. Each job's own bytes in and out are counted too (task
+  #518): its agent gives it the proxy's address tagged with its slot (`HTTPS_PROXY` and the others
+  as `http://slot<k>:x@127.0.0.1:<port>`, which ureq, curl and Python send as
+  `Proxy-Authorization`; `SCENIC_BUDGETS`, where 429s are told, untagged), counted from none as
+  each job begins; a client that sends no tag is counted to its host alone. **Each running job,
+  live** (task #518): the status's `jobs[].live` and its lease's beat to the lead (`/work/beat`'s
+  `live`, kept on the lease in memory and shown in the coordinator's leases), read as the status
+  is: `{phase, class, phase_since, target, target_since, targets_done, targets, nas_read,
+  nas_wrote, net_in, net_out}` (bytes since the job began). The phase is the top-level phase its
+  main thread has open (pipeline::timings: its name and class, since when, unix s), said in the
+  job's counts file after its counts (`store::nasio::set_phase`: a sequence number, odd while it's
+  written, its time and 48 bytes of text, a few stores in the mapped page, ~40 ns a call measured; never
+  summed), read from the newest set among the folder's running processes' files. The target is
+  the one its costs file says is under way (`started`, not yet ended) and since when; of its
+  targets (the lease's), how many ended; the page weighs `now - target_since` against the step's
+  `each_s` (the forecast's). Each field missing: not said (a step that times no phases, notes no
+  costs, was given no tag or folder; a job taken over from an earlier agent counts no internet bytes, its tag begun by that agent's proxy). The counted relay copies in 64 KB
   chunks: 4 GiB over loopback in ~1.0 s on the M1, against ~2.6 s with `io::copy`'s 8 KB it
   replaced (task #516), so the counting costs nothing measurable. Every Mac's port
   answers `POST /work/live` with no key: `{range}` (seconds back from now, an hour by default,

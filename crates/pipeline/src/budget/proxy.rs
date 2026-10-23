@@ -7,7 +7,8 @@
 //! it. It listens on this Mac alone (127.0.0.1). A process that sees a 429 or a `Retry-After`
 //! tells it (`POST /hold?s=<seconds>&host=<host>`: crate::budget::seen), and the budget holds every
 //! process and Mac; one that asks again tells it too (`POST /retry?host=<host>`: crate::budget::retried).
-//! What goes through is counted per host as it's relayed (crate::budget::net).
+//! What goes through is counted per host as it's relayed, and per job by the credential its
+//! clients send (`env_for`; crate::budget::net).
 
 use super::net::{Host, Net, Outcome};
 use super::{Budget, Class};
@@ -183,13 +184,17 @@ impl Proxy {
         format!("http://{}", self.addr)
     }
 
-    /// The environment a job is given: its connections through the proxy (each name a client may
-    /// read), but this Mac's own (the coordinator's, on 127.0.0.1), and where to tell a 429.
-    pub fn env(&self) -> Vec<(String, String)> {
+    /// The environment job `tag` is given: its connections through the proxy (each name a client
+    /// may read), tagged (`http://<tag>:x@…`: its bytes counted as its, crate::budget::net::Net::job,
+    /// from now on), but this Mac's own (the coordinator's, on 127.0.0.1), and where to tell a 429
+    /// (untagged).
+    pub fn env_for(&self, tag: &str) -> Vec<(String, String)> {
         let u = self.url();
+        self.net.job_began(tag);
+        let tagged = format!("http://{tag}:x@{}", self.addr);
         let mut v = Vec::new();
         for k in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"] {
-            v.push((k.to_string(), u.clone()));
+            v.push((k.to_string(), tagged.clone()));
         }
         for k in ["NO_PROXY", "no_proxy"] {
             v.push((k.to_string(), "localhost,127.0.0.1,::1".to_string()));
@@ -372,6 +377,20 @@ fn read_head(s: &mut TcpStream) -> io::Result<Head> {
     Ok(Head { method, target, version, headers: lines.map(str::to_string).collect(), rest: buf[end + 4..].to_vec() })
 }
 
+/// The job a request's head names by its credential (`Proxy-Authorization: Basic …`), if one
+/// began with it.
+fn job_of(head: &Head, net: &Net) -> Option<Arc<super::net::Job>> {
+    head.headers.iter().find_map(|h| {
+        let (name, v) = h.split_once(':')?;
+        if !name.trim().eq_ignore_ascii_case("proxy-authorization") {
+            return None;
+        }
+        let v = v.trim();
+        v.get(..6).filter(|b| b.eq_ignore_ascii_case("basic "))?;
+        net.job_of(v[6..].trim())
+    })
+}
+
 fn answer(s: &mut TcpStream, status: &str, body: &str) -> io::Result<()> {
     write!(
         s,
@@ -476,7 +495,11 @@ fn handle(mut s: TcpStream, ctx: &Arc<Ctx>) -> io::Result<()> {
         }
         let sent = head.rest.len() as u64;
         h.bytes_out.fetch_add(sent, Ordering::Relaxed);
-        return relay(s, up, &h, || charge(budget, class, began), |b, ok| ended(net, &host, b, sent, t0, ok));
+        let job = job_of(&head, net);
+        if let Some(j) = &job {
+            j.bytes_out.fetch_add(sent, Ordering::Relaxed);
+        }
+        return relay(s, up, &h, job, || charge(budget, class, began), |b, ok| ended(net, &host, b, sent, t0, ok));
     }
     // (The proxy's own: a 429 told, a retry told.)
     if head.target.starts_with('/') {
@@ -534,7 +557,11 @@ fn handle(mut s: TcpStream, ctx: &Arc<Ctx>) -> io::Result<()> {
     up.write_all(&head.rest)?;
     let sent = (out.len() + head.rest.len()) as u64;
     h.bytes_out.fetch_add(sent, Ordering::Relaxed);
-    relay(s, up, &h, || charge(budget, class, began), |b, ok| ended(net, &host, b, sent, t0, ok))
+    let job = job_of(&head, net);
+    if let Some(j) = &job {
+        j.bytes_out.fetch_add(sent, Ordering::Relaxed);
+    }
+    relay(s, up, &h, job, || charge(budget, class, began), |b, ok| ended(net, &host, b, sent, t0, ok))
 }
 
 /// A metered connection begun at `began` (the budget's clock) has ended: its time charged.
@@ -544,9 +571,9 @@ fn charge(budget: &Budget, class: Option<Class>, began: u64) {
     }
 }
 
-/// Copies `r` to `w` until `r` ends, each chunk's bytes added to `n` as it's written: the bytes
-/// copied, and whether it ended with no error.
-fn copy_counted(r: &mut TcpStream, w: &mut TcpStream, n: &AtomicU64) -> (u64, bool) {
+/// Copies `r` to `w` until `r` ends, each chunk's bytes added to `n` (and its job's `j`) as it's
+/// written: the bytes copied, and whether it ended with no error.
+fn copy_counted(r: &mut TcpStream, w: &mut TcpStream, n: &AtomicU64, j: Option<&AtomicU64>) -> (u64, bool) {
     let mut buf = vec![0u8; 64 << 10];
     let mut all = 0u64;
     loop {
@@ -561,31 +588,35 @@ fn copy_counted(r: &mut TcpStream, w: &mut TcpStream, n: &AtomicU64) -> (u64, bo
         }
         all += k as u64;
         n.fetch_add(k as u64, Ordering::Relaxed);
+        if let Some(j) = j {
+            j.fetch_add(k as u64, Ordering::Relaxed);
+        }
     }
 }
 
 /// Copies each way until both have ended (a way idle its read timeout ends: the client's told to
-/// the host as its end; the host's shuts the whole connection), each way's bytes counted to `h` as
-/// they go; `done` run before the client's side is closed (what it does is done before the client
+/// the host as its end; the host's shuts the whole connection), each way's bytes counted to `h` (and
+/// its `job`'s) as they go; `done` run before the client's side is closed (what it does is done before the client
 /// sees its answer end), then `end` told the bytes (in, out) and whether neither way broke.
 fn relay(
     client: TcpStream,
     up: TcpStream,
     h: &Arc<Host>,
+    job: Option<Arc<super::net::Job>>,
     done: impl FnOnce(),
     end: impl FnOnce((u64, u64), bool),
 ) -> io::Result<()> {
     let (mut c_r, mut u_w) = (client.try_clone()?, up.try_clone()?);
-    let hu = h.clone();
+    let (hu, ju) = (h.clone(), job.clone());
     let t = std::thread::Builder::new().name("budgets-relay".into()).spawn(move || {
         // (The client's side ended, idle or broken: told to the host as its end, whose answer still
         // comes back; a host that then stays idle too is ended by its own read's timeout.)
-        let r = copy_counted(&mut c_r, &mut u_w, &hu.bytes_out);
+        let r = copy_counted(&mut c_r, &mut u_w, &hu.bytes_out, ju.as_ref().map(|j| &j.bytes_out));
         let _ = u_w.shutdown(Shutdown::Write);
         r
     })?;
     let (mut u_r, mut c_w) = (up, client);
-    let (got, ok) = copy_counted(&mut u_r, &mut c_w, &h.bytes_in);
+    let (got, ok) = copy_counted(&mut u_r, &mut c_w, &h.bytes_in, job.as_ref().map(|j| &j.bytes_in));
     if !ok {
         let _ = u_r.shutdown(Shutdown::Both);
         let _ = c_w.shutdown(Shutdown::Read);
@@ -844,6 +875,32 @@ mod tests {
         assert_eq!(a.view().wiki, 4);
         assert_eq!(a.view().other, 4);
         assert_eq!(a.budget.ledger().len(), 4);
+    }
+
+    /// Task #518: a job's tagged requests (`env_for`'s credential) counted as its, beside its host's;
+    /// an untagged one, and one tagged for no job begun, to its host alone.
+    #[test]
+    fn a_jobs_tagged_traffic_is_counted_as_its() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = Arc::new(StepClock::at(T0));
+        let up = upstream(Arc::new(|| {}));
+        let a = up.addr;
+        let b = Arc::new(Budget::new(dir.path(), "m-a", clock.clone()).with_ledger());
+        let p = Proxy::start(b, Some(Arc::new(move |_: &str, _: u16| Some(a)))).unwrap();
+        let env = p.env_for("job2");
+        assert!(env.contains(&("HTTPS_PROXY".into(), format!("http://job2:x@{}", p.addr))));
+        assert!(env.contains(&(super::super::PROXY_ENV.into(), p.url())));
+        let req = |auth: &str| {
+            request(&p.addr, &format!("GET http://s3.amazonaws.com/x HTTP/1.1\r\nHost: s3.amazonaws.com\r\n{auth}\r\n"))
+        };
+        let tagged = req(&format!("Proxy-Authorization: Basic {}\r\n", super::super::net::credential("job2")));
+        req("");
+        req(&format!("proxy-authorization: basic {}\r\n", super::super::net::credential("job9")));
+        let (got, sent) = p.net.job("job2").unwrap();
+        assert_eq!(got, tagged.len() as u64);
+        assert!(sent > 0 && sent < 200, "{sent}");
+        assert!(p.net.view()["hosts"]["s3.amazonaws.com"]["in"].as_u64().unwrap() > got * 2);
+        assert!(p.net.job("job9").is_none());
     }
 
     /// Task #516: each host's bytes, requests and connections as they're relayed (a tunnel's, a

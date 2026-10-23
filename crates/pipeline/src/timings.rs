@@ -21,6 +21,9 @@
 //!   memory guard measures a job), and each phase keeps the most it saw while open (`peak_mb`): a
 //!   phase that runs a program (a unit's steps, the heritage chain's scripts, osmium) is that
 //!   program's peak, with the job's own memory beside it. A child's own phases carry its samples.
+//! - Live: the top-level phase open on the main thread, its class and since when, is said in the
+//!   job's counts file (store::nasio::set_phase, a few stores in mapped memory) as it opens, and
+//!   cleared as it ends; the agent shows it under the job (crate::agent::jobs::Live).
 //! - `finish(ok)` ends the run: the readable table in the log (stderr), and the record, where
 //!   `SCENIC_TIMINGS` says (the agent collects it), or as a child's phases where `SCENIC_PHASES_TO`
 //!   says. A run never `start`ed (a program run by hand, a test) keeps nothing and prints nothing.
@@ -395,6 +398,8 @@ fn open(name: &str, class: Class) -> Phase {
     let parent = inner;
     // (The main thread's time since its last top-level phase ended: a gap, named by its ends.)
     if parent.is_none() && me == r.main {
+        // (Said in the job's counts file for the agent to show live: store::nasio::set_phase.)
+        store::nasio::set_phase(&format!("{name}\t{}", class.name()));
         let ns = r.mark.0.elapsed().as_nanos() as u64;
         let after = std::mem::take(&mut r.mark.1);
         add_gap(&mut r.gaps, &after, name, ns);
@@ -475,6 +480,7 @@ impl Drop for Phase {
         }
         let parent = r.accs[o.idx].parent;
         if parent.is_none() && o.thread == r.main {
+            store::nasio::set_phase("");
             r.mark = (Instant::now(), r.accs[o.idx].name.clone());
         }
         let a = &mut r.accs[o.idx];

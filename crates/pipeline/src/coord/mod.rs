@@ -955,6 +955,9 @@ pub struct Beat {
     /// How far it is (0–1), when it says (a page's slot).
     #[serde(default)]
     pub frac: Option<f64>,
+    /// What its job is doing now (crate::agent::jobs::Live), when it says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<crate::agent::jobs::Live>,
 }
 
 /// Work done: a job's one hand-off (its saves and done record) and what its z6 tiles cost, or a task's
@@ -1387,9 +1390,14 @@ impl Coordinator {
     /// Keeps this Mac's job's lease alive; false when it lapsed (the job paused too long, or the
     /// agent was stuck) and another may be building its targets.
     pub fn renew(&self, id: u64, progress: Option<String>) -> bool {
+        self.renew_live(id, progress, None)
+    }
+
+    /// `renew`, with what its job is doing now (crate::agent::jobs::Live).
+    pub fn renew_live(&self, id: u64, progress: Option<String>, live: Option<crate::agent::jobs::Live>) -> bool {
         let mut s = self.shared.lock().unwrap();
         let now = s.now();
-        s.leases.renew(id, &self.me, progress, now)
+        s.leases.renew_frac(id, &self.me, progress, None, live, now)
     }
 
     /// Ends this Mac's job's lease; `done`: the targets it recorded (not offered again until the plan
@@ -2903,7 +2911,7 @@ fn view_of(s: &Shared) -> serde_json::Value {
                 Work::Task { id } => (s.tasks.kind_of(*id), 1),
             };
             let lapses = unix_of(l.deadline());
-            serde_json::json!({ "id": l.id, "worker": l.worker, "what": l.what(), "step": step, "n": n, "granted": unix_of(l.granted), "progress": l.progress, "frac": l.frac, "beat": lapses.saturating_sub(TTL.as_secs()), "lapses": lapses })
+            serde_json::json!({ "id": l.id, "worker": l.worker, "what": l.what(), "step": step, "n": n, "granted": unix_of(l.granted), "progress": l.progress, "frac": l.frac, "live": l.live, "beat": lapses.saturating_sub(TTL.as_secs()), "lapses": lapses })
         })
         .collect();
     let workers: Vec<serde_json::Value> = s
@@ -3246,7 +3254,7 @@ fn route(
             }
             b.progress = b.progress.map(|p| p.chars().take(WHAT_MAX).collect());
             let mut s = shared.lock().unwrap();
-            let alive = s.leases.renew_frac(b.lease, &b.worker, b.progress.clone(), b.frac, now);
+            let alive = s.leases.renew_frac(b.lease, &b.worker, b.progress.clone(), b.frac, b.live.take(), now);
             s.seen(&b.worker, b.progress.unwrap_or_else(|| "working".into()), None, now);
             // (The build paused: its job pauses too, its lease kept meanwhile. The owner cancelled
             // it, `scenic job cancel`: it stops and gives the lease back.)
@@ -5280,12 +5288,17 @@ mod tests {
         c.offer_units("2026-09-28", vec![("6/55/25".into(), "k".into(), 100 << 20)]);
         let g = w.ask(&on(old)).unwrap().unwrap();
         // Nothing told before a cancel; a cancel of another target tells nothing.
-        assert!(w.beat_told(g.lease, None).unwrap().2.is_none());
+        assert!(w.beat_told(g.lease, None, None).unwrap().2.is_none());
+        // (Task #518: what its job is doing now, as its beat says, kept on the lease and shown.)
+        let live = crate::agent::jobs::Live { phase: Some("z6 tiles".into()), targets: 1, ..Default::default() };
+        assert!(w.beat_told(g.lease, None, Some(live)).unwrap().0);
+        let v = c.view();
+        assert_eq!(v["leases"][0]["live"]["phase"], "z6 tiles", "{v}");
         assert!(c.cancel(&Cancel::new("6/1/1", None, true, "scenic job cancel on m4")).is_empty());
         assert!(c.cancel(&Cancel::new("6/55/25", Some("pack"), true, "x")).is_empty(), "another step's");
         let told = c.cancel(&Cancel::new("6/55/25", None, true, "scenic job cancel on m4"));
         assert_eq!(told, vec![(g.lease, "m1".to_string(), "unit 6/55/25".to_string())]);
-        let (alive, _, cancel) = w.beat_told(g.lease, None).unwrap();
+        let (alive, _, cancel) = w.beat_told(g.lease, None, None).unwrap();
         assert!(alive && cancel.is_some_and(|x| x.rerun_after_update && x.by == "scenic job cancel on m4"));
         // Given back, not failed: nothing kept from m1, no failure counted.
         w.end_with(g.lease, "cancelled by scenic job cancel on m4", true, &[], &[], 0).unwrap();
@@ -5317,7 +5330,7 @@ mod tests {
         let m2 = client::Client::at(w.urls(), c.contact.token.clone(), "m2");
         let told = m2.cancel(&Cancel::new("6/55/25", None, false, "scenic job cancel on m2")).unwrap();
         assert_eq!(told, vec![(g.lease, "m1".to_string(), "unit 6/55/25".to_string())]);
-        assert!(w.beat_told(g.lease, None).unwrap().2.is_some_and(|x| !x.rerun_after_update));
+        assert!(w.beat_told(g.lease, None, None).unwrap().2.is_some_and(|x| !x.rerun_after_update));
         w.end_with(g.lease, "cancelled", true, &[], &[], 0).unwrap();
         assert!(c.held("unit").is_empty());
         assert!(w.ask(&on(new)).unwrap().is_some(), "it reruns at once");

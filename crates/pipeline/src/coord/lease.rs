@@ -43,6 +43,10 @@ pub struct Lease {
     pub progress: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frac: Option<f64>,
+    /// What its job is doing now, as its worker's last beat said (crate::agent::jobs::Live; in
+    /// memory alone).
+    #[serde(skip)]
+    pub live: Option<crate::agent::jobs::Live>,
     /// The threads its job was granted (0: not said): the cores the pool's own work takes on its
     /// Mac, apart from load outside the pool (crate::coord::outside_cores).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
@@ -308,6 +312,7 @@ impl Leases {
                 deadline: now + self.ttl,
                 progress: None,
                 frac: None,
+                live: None,
                 threads: 0,
             },
         );
@@ -334,16 +339,17 @@ impl Leases {
     /// Renews `worker`'s lease `id`; false when it isn't that worker's live lease (lapsed, finished,
     /// or never granted: the worker should stop that work).
     pub fn renew(&mut self, id: u64, worker: &str, progress: Option<String>, now: Instant) -> bool {
-        self.renew_frac(id, worker, progress, None, now)
+        self.renew_frac(id, worker, progress, None, None, now)
     }
 
-    /// `renew`, with how far the work is (0–1), when the worker says.
+    /// `renew`, with how far the work is (0–1) and what its job is doing now, when the worker says.
     pub fn renew_frac(
         &mut self,
         id: u64,
         worker: &str,
         progress: Option<String>,
         frac: Option<f64>,
+        live: Option<crate::agent::jobs::Live>,
         now: Instant,
     ) -> bool {
         match self.by_id.get_mut(&id) {
@@ -354,6 +360,9 @@ impl Leases {
                 }
                 if let Some(f) = frac.filter(|f| f.is_finite()) {
                     l.frac = Some(f.clamp(0.0, 1.0));
+                }
+                if live.is_some() {
+                    l.live = live;
                 }
                 true
             }
