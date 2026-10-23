@@ -44,6 +44,8 @@ export function settingsSection(call, done, onError) {
       if (code !== 200) throw new Error(v?.error || `answered ${code}`);
       said = v; at = Date.now();
     } catch (e) { onError?.(`couldn't set ${what}: ${e.message}`); }
+    // (A focused field keeps its section as it was, dash.js render: let go, so the new value shows.)
+    document.activeElement?.blur();
     done();
   };
   const row = (key, what, now, note, input) => {
