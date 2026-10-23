@@ -380,7 +380,7 @@ export class LayersCard {
     ];
     const noShade = () => !TS().hillshade;
     const exRow = sl({
-      label: 'Height ×', min: 1, max: 6, step: 0.25, reset: defaults.terrain.exaggeration, title: 'Vertical exaggeration of the 3D terrain', cls: 'sub',
+      label: 'Height ×', min: 1, max: 15, step: 0.25, reset: defaults.terrain.exaggeration, title: 'Vertical exaggeration of the 3D terrain', cls: 'sub',
       get: () => TS().exaggeration, set: (exaggeration) => T({ exaggeration }), fmt: (v) => `${v.toFixed(2).replace(/\.?0+$/, '')}×`, disabled: () => !TS().on,
     });
     const lightRow = sl({

@@ -1214,7 +1214,7 @@ export function fromHash(hash: string, buildings = true): AppState {
   if (t3 && t3.length >= 9 && t3.every(Number.isFinite)) {
     s.terrain = {
       ...s.terrain,
-      on: t3[0] === 1, exaggeration: Math.min(6, Math.max(1, t3[1])), hillshade: t3[2] === 1, method: HM[t3[3]] ?? 'combined',
+      on: t3[0] === 1, exaggeration: Math.min(15, Math.max(1, t3[1])), hillshade: t3[2] === 1, method: HM[t3[3]] ?? 'combined',
       light: t3[4], shade: Math.min(1, Math.max(0, t3[5])), tint: t3[6] === 1, contours: t3[7] === 1, sky: t3[8] === 1,
     };
   }
