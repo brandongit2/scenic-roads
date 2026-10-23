@@ -1200,13 +1200,7 @@ impl Coordinator {
         };
         let urls = http::serve(listener, port, ctx, stopped.clone(), wake.clone(), closed_tx)?;
         if !viewer {
-            nas_prober(
-                shared.clone(),
-                root.clone(),
-                stopped.clone(),
-                me.to_string(),
-                dir.join(crate::budget::nas::PROBES_FILE),
-            );
+            nas_prober(shared.clone(), root.clone(), stopped.clone(), me.to_string());
         }
         let c = Coordinator {
             shared,
@@ -2347,18 +2341,18 @@ fn app_when(v: &str) -> String {
 /// is probed every `EVERY_S` (in a folder of this process's, removed after) and the limits set to
 /// the best of the last day's probes, held shut while the NAS's own disk load read each round is
 /// over the owner's target (nas::Loop); off, the limits are let go. A probe that fails leaves them.
-/// The probes are kept at `kept` and read again on start (the day's best outlive a restart).
+/// The probes are kept on the NAS (`nas::PROBES_FILE`) and read once it's known (the day's best
+/// outlive a restart and a change of lead).
 #[cfg(not(target_os = "wasi"))]
 fn nas_prober(
     shared: Arc<Mutex<Shared>>,
     root: Arc<Mutex<Option<PathBuf>>>,
     stopped: Arc<std::sync::atomic::AtomicBool>,
     me: String,
-    kept: PathBuf,
 ) {
     use crate::budget::nas;
     let run = move || {
-        let mut probes = nas::Probes::load(&kept, unix_now());
+        let mut probes = nas::Probes::default();
         let mut nas_loop = nas::Loop::default();
         // (Its config file removed when this thread ends: the lead stood down or stopped.)
         let mut session: Option<crate::budget::snmp::Session> = None;
@@ -2371,6 +2365,7 @@ fn nas_prober(
                 // (Once the NAS is known: this host's folders a crashed probe left.)
                 if !cleaned {
                     cleaned = true;
+                    probes = nas::Probes::load(&r.join(nas::PROBES_FILE), unix_now());
                     let n = nas::clean_stale(&r, &me);
                     if n > 0 {
                         eprintln!("coordinator: removed {n} probe folders of this host's a stopped process left");
@@ -2393,7 +2388,7 @@ fn nas_prober(
                                         p.creates_s
                                     );
                                     probes.add(p);
-                                    if let Err(e) = probes.save(&kept) {
+                                    if let Err(e) = probes.save(&r.join(nas::PROBES_FILE)) {
                                         eprintln!("coordinator: keeping the NAS probes: {e:#}");
                                     }
                                     failed = Some(false);

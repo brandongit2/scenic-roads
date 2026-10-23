@@ -20,9 +20,10 @@
 //!   says, and takes the best of the last `KEEP_S`'s probes (`Probes`): a probe run while the build
 //!   loads the NAS measures what's left, so the best is the nearest to the whole. Probes taken
 //!   under load are kept too (they only ever read low, and the best of the day passes over them;
-//!   dropped, a lead started on a busy NAS would have no limits at all). The probes are kept in
-//!   the coordinator's folder (`PROBES_FILE`) and read again on start: a restart keeps the day's
-//!   best (task #603: a restart under load had cut the limits from 86 MB/s to 66.5).
+//!   dropped, a lead started on a busy NAS would have no limits at all). The probes are kept on
+//!   the NAS (`PROBES_FILE`, under the project folder, written by the lead's prober alone) and read
+//!   once the NAS is known: a restart, or a new lead on another Mac, keeps the day's best (task
+//!   #603: a restart under load had cut the limits from 86 MB/s to 66.5).
 //! - **The gate on the NAS's own load** (`Loop`, task #534): every 10 s the coordinator reads the
 //!   NAS's own disks' busy shares (crate::budget::snmp); while the busiest, smoothed, is over the
 //!   owner's target (`Target`, `scenic nas-target`, by default `DEFAULT_TARGET_PCT`), whatever
@@ -288,15 +289,21 @@ impl Limits {
         w == 0 || running == 0 || running.saturating_add(w) <= WHOLE
     }
 
-    /// `fits_own` for the lead's own planned job, which members' small jobs would otherwise hold
-    /// back for good (each lease's weight keeps `running` above zero): it goes too while no leased
-    /// job weighs the whole (`heaviest`, the most one weighs), when it weighs the whole itself, or
-    /// has waited `OWN_AGE` for the budget alone (`waited`) and the lead's own leased jobs (`own`,
-    /// their weight together) leave it room within the whole: aged ones go past the members' jobs
-    /// alone, one at a time, never piling up, and a whole one isn't held back by the lead's own
-    /// stream of smaller jobs.
+    /// `fits_own` for a target of the lead's own every-step asks (crate::coord's `pick_every`),
+    /// which members' small jobs would otherwise hold back for good (each lease's weight keeps
+    /// `running` above zero): it goes too once it has waited `OWN_AGE` for the budget alone
+    /// (`waited`), no leased job weighs the whole (`heaviest`, the most one weighs) and the lead's
+    /// own leased jobs (`own`, their weight together) leave it room within the whole: aged ones go
+    /// past the members' jobs alone, one at a time, never piling up (task #603).
+    pub fn fits_own_target(running: u32, own: u32, heaviest: u32, w: u32, waited: bool) -> bool {
+        Self::fits_own(running, w) || (waited && heaviest < WHOLE && own.saturating_add(w) <= WHOLE)
+    }
+
+    /// `fits_own_target` for the lead's own planned job (crate::coord's `own_nas_fits`): also, not
+    /// waiting, once it weighs the whole itself while no leased job weighs the whole, so a whole
+    /// one isn't held back by the lead's own stream of smaller jobs.
     pub fn fits_own_job(running: u32, own: u32, heaviest: u32, w: u32, waited: bool) -> bool {
-        Self::fits_own(running, w) || (heaviest < WHOLE && (w >= WHOLE || (waited && own.saturating_add(w) <= WHOLE)))
+        Self::fits_own_target(running, own, heaviest, w, waited) || (heaviest < WHOLE && w >= WHOLE)
     }
 }
 
@@ -323,8 +330,9 @@ impl Limits {
 /// leased jobs none of which weighs the whole (`Limits::fits_own_job`).
 pub const OWN_AGE: std::time::Duration = std::time::Duration::from_secs(600);
 
-/// Where the coordinator keeps its probes, in its folder (`Probes::load`, `Probes::save`).
-pub const PROBES_FILE: &str = "nas-probes.json";
+/// Where the lead keeps its probes, under the project folder (`Probes::load`, `Probes::save`):
+/// one small file written whole every `EVERY_S`, by the lead alone.
+pub const PROBES_FILE: &str = "state/pool/nas-probes.json";
 
 /// The probes kept (the last `KEEP_S`'s), and the limits they give: the best of each.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -551,6 +559,9 @@ mod tests {
         // whole one.
         assert!(!Limits::fits_own(30, 1000) && Limits::fits_own_job(30, 0, 20, 1000, false));
         assert!(!Limits::fits_own_job(30, 0, 1000, 1000, true), "beside a whole one: never");
+        // (Task #603: an every-step target of the lead's goes past the members' jobs only once aged.)
+        assert!(!Limits::fits_own_target(30, 0, 20, 1000, false) && Limits::fits_own_target(103, 0, 103, 946, true));
+        assert!(!Limits::fits_own_target(103, 0, 1000, 946, true), "beside a whole one: never");
         assert!(!Limits::fits_own_job(300, 0, 200, 800, false) && Limits::fits_own_job(300, 0, 200, 800, true));
         // (Beside an aged one of the lead's own already past the budget: within the whole with it.)
         assert!(!Limits::fits_own_job(1100, 800, 800, 800, true), "aged ones don't pile up");
@@ -673,6 +684,7 @@ mod tests {
     #[test]
     fn the_probes_survive_a_restart() {
         let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("state/pool")).unwrap();
         let f = d.path().join(PROBES_FILE);
         assert_eq!(Probes::load(&f, 5000), Probes::default(), "none kept: none");
         let mut p = Probes::default();

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 const RULES: &[&str] = &[
     "Limits::fits(",
     "fits_job(",
-    "fits_own(",
+    "fits_own_target(",
     "fits_own_job(",
     "fits_quiet(",
     "provisional_mb(",
@@ -38,6 +38,11 @@ const EXEMPT: &[(&str, &str, &str)] = &[
         "a page's or worker's task (not a job): its threads, the Mac's cores",
     ),
     ("src/coord/mod.rs", "threads: ask_cores(&a),", "a task's grant (not a job): its threads, the Mac's cores"),
+    (
+        "src/pool/sim/place.rs",
+        "if !crate::budget::nas::Limits::fits_job(members, all, heaviest, job.nas, true) {",
+        "the simulator's outcome check of a start the scheduler made (task #539), not a grant",
+    ),
 ];
 
 fn sources(dir: &Path, out: &mut Vec<PathBuf>) {

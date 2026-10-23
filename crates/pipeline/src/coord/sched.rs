@@ -1027,8 +1027,8 @@ impl Sched {
                 if !Self::nas_reserve_ok(self.nas_reserved(nw, now).as_ref(), &o.step, &[t.to_string()], *running, w) {
                     return false;
                 }
-                // (One aged `OWN_AGE` goes beside jobs none of which weighs the whole, the lead's as
-                // its own planned jobs do (`own_nas_fits`): the room held for it is always let go.)
+                // (One aged `OWN_AGE` goes beside jobs none of which weighs the whole, the lead's
+                // only once aged (`fits_own_target`): the room held for it is always let go.)
                 let waited = {
                     let g = self.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
                     g.get(&(o.step.clone(), t.to_string()))
@@ -1036,7 +1036,7 @@ impl Sched {
                 };
                 if lead {
                     let own = running.saturating_sub(*members);
-                    crate::budget::nas::Limits::fits_own_job(*running, own, most[0], w, waited)
+                    crate::budget::nas::Limits::fits_own_target(*running, own, most[0], w, waited)
                 } else {
                     crate::budget::nas::Limits::fits_job(*members, *running, most[0], w, waited)
                 }
