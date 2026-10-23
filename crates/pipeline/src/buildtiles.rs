@@ -26,8 +26,8 @@ pub const ZOOM: u8 = 8;
 /// How far past a unit's roads its buildings are read (km): a building counts within 80 m of the
 /// road, and is kept by its centre's cell (`buildings`, ~165 m), a cell or so from a sample's.
 const MARGIN_KM: f64 = 1.0;
-/// The release's files scanned at once: ~350 MB each in flight (8 peaked at 2.8 GB on the Mac
-/// mini, 23 Oct, task #579), 512 files in ~30 min.
+/// The release's files scanned at once, a request each in flight: ~250 MB each (8 peaked at 2.1 GB on
+/// the Mac mini, 23 Oct, task #579), 512 files in ~1 h.
 pub const WORKERS: usize = 8;
 /// The free space the scan's local parts need (the release's boxes, ~40 GB).
 #[cfg(not(target_os = "wasi"))]
@@ -216,7 +216,6 @@ fn tile_xy(lon: f64, lat: f64, z: u8) -> (u64, u64) {
 /// each tile's in the file's order), `.done` once all are written. Its buildings.
 #[cfg(not(target_os = "wasi"))]
 pub fn scan_file(http: &crate::bld::fetch::Http, url: &str, size: u64, out: &Path, z: u8) -> Result<usize> {
-    use rayon::prelude::*;
     if out.exists() {
         std::fs::remove_dir_all(out)?;
     }
@@ -229,7 +228,7 @@ pub fn scan_file(http: &crate::bld::fetch::Http, url: &str, size: u64, out: &Pat
         std::sync::Arc::new(crate::bld::overture::footer_meta(&tail).with_context(|| format!("{url}: its footer"))?);
     let (_, spans) = crate::bld::overture::bbox_spans(&md)?;
     let got: Vec<Result<(u64, Vec<u8>)>> =
-        spans.par_iter().map(|&(s, e)| Ok((s, http.get_bytes(url, Some((s, e - 1)))?))).collect();
+        spans.iter().map(|&(s, e)| Ok((s, http.get_bytes(url, Some((s, e - 1)))?))).collect();
     let mut chunks = crate::bld::overture::Spans::new(size);
     for g in got {
         let (s, b) = g?;
@@ -291,8 +290,8 @@ pub fn scan(parts: &Path, z: u8, workers: usize, release: &str, bucket: &str, s3
     let n = std::sync::atomic::AtomicU64::new(0);
     let t0 = std::time::Instant::now();
     let _p = phase("the files' boxes scanned from S3", Class::Net);
-    // (Four threads a file: a file's chunks are fetched side by side too.)
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(workers.max(1) * 4).build()?;
+    // (`workers` files at once, each file's chunks fetched in turn: `workers` requests in flight.)
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(workers.max(1)).build()?;
     pool.install(|| {
         todo.par_iter().with_max_len(1).try_for_each(|&i| -> Result<()> {
             let k =

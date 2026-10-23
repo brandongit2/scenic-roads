@@ -250,10 +250,10 @@ pub const TABLE: [Step; 52] = [
             w_terrain_z8,
         )
     },
-    // (`buildtiles::WORKERS` files read at once: 2.8 GB at the peak on the Mac mini, 23 Oct, task
+    // (`buildtiles::WORKERS` files read at once: 2.1 GB at the peak on the Mac mini, 23 Oct, task
     // #579.)
     Step {
-        mem_mb: 3584,
+        mem_mb: 2600,
         alone: true,
         ..step(
             "pass",
@@ -1505,7 +1505,7 @@ mod tests {
             ("rail", 6144),
             ("items", 3072),
             ("rail-feeds", 5632),
-            ("buildings", 3584),
+            ("buildings", 2600),
             ("bld-fetch", 5632),
             ("marks", 4096),
             ("overlays", 4096),
