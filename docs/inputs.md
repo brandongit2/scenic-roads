@@ -1277,7 +1277,8 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   is in one CRS; `indexes.py 3dep-1m --bbox -79.8,40.4,-66.8,47.5`), each with `regions` the ten
   eastern regions. The roads read them at their 8 m overviews (`read_resolution`), the terrain at
   1 m; ranked before the 2 m and 10 m datasets (HRDEM 1 m −1, the 3DEP zones −2 to −4), since HRDEM
-  1 m and 2 m both read at 8 m. HRDEM 1 m shares HRDEM 2 m's code and label (the same lidar, read
+  1 m and 2 m both read at 8 m. Where zones overlap, their ranks decide (zone 19 before 18 before
+  17): an index's files are newest first within its zone alone, not across zones. HRDEM 1 m shares HRDEM 2 m's code and label (the same lidar, read
   alike); 3DEP 1 m takes code 8, the last free one. Their heights reach EGM2008 by the existing
   chains (CGVD2013 by CGG2013a, NAVD88 by GEOID18).
 

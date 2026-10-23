@@ -11,7 +11,7 @@ heights = "NAVD88"
 rank = -3
 code = 8
 regions = ["ontario", "quebec", "new-brunswick", "nova-scotia", "prince-edward-island", "newfoundland-and-labrador", "maine", "new-hampshire", "vermont", "new-york"]
-notes = "USGS's 10 km lidar tiles in NAD83 / UTM zone 18N (EPSG:26918), a declaration a zone (a dataset is in one CRS); the zones ranked apart (17, 18, 19: -2, -3, -4), all before HRDEM 1 m (-1), as each reads at 8 m. The roads read it at its 8 m overview, the terrain at 1 m. The index lists every tile The National Map's products API has in the regions' box, newest first, as several projects can cover a tile (producers/elevation/indexes.py 3dep-1m)."
+notes = "USGS's 10 km lidar tiles in NAD83 / UTM zone 18N (EPSG:26918), a declaration a zone (a dataset is in one CRS); the zones ranked apart (17, 18, 19: -2, -3, -4), all before HRDEM 1 m (-1), as each reads at 8 m: where zones overlap, the rank decides (19 before 18 before 17), so newest first holds only within one zone's index. The roads read it at its 8 m overview, the terrain at 1 m. The index lists every tile The National Map's products API has in the regions' box, newest first, as several projects can cover a tile (producers/elevation/indexes.py 3dep-1m)."
 
 [data]
 format = "geotiff"
