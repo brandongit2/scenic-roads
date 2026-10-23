@@ -149,6 +149,8 @@ pub fn cost_version(step: &str) -> u32 {
         // (A grid lined up with no overview sampled from one askew, task #433: the assemblies
         // that read tens of GB read a hundredth of it.)
         "depth" | "depth-lo" => 1,
+        // (1: a target's blocks read ahead and kept in memory, task #599: 0's peaks, ~4.1 GB, under its 7.1 GB.)
+        "terrain-fine" => 1,
         _ => 0,
     }
 }

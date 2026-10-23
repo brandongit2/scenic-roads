@@ -406,6 +406,11 @@ struct Kept {
 }
 
 impl Kept {
+    /// What a read ahead of `n` bytes at `off` keeps: a header window's worth at least (`fetch`).
+    fn span(&self, off: u64, n: u64) -> usize {
+        n.max((crate::geotiff::HEADER_WINDOW as u64).min(self.len.saturating_sub(off))) as usize
+    }
+
     fn kept(&self, off: u64, len: usize) -> Option<Vec<u8>> {
         let s = self.spans.lock().unwrap();
         let (at, b) = s.range(..=off).next_back()?;
@@ -416,7 +421,7 @@ impl Kept {
     /// Bytes `off..off + n` read and kept: a header window's worth at least (a small block is read
     /// by a window's read: crate::geotiff's `Windowed`).
     fn fetch(&self, off: u64, n: u64) -> Result<(), store::IoError> {
-        let n = n.max((crate::geotiff::HEADER_WINDOW as u64).min(self.len.saturating_sub(off))) as usize;
+        let n = self.span(off, n);
         if self.spans.lock().unwrap().get(&off).is_some_and(|b| b.len() >= n) {
             return Ok(());
         }
@@ -457,6 +462,13 @@ struct Item {
     n: u64,
     first: usize,
     last: usize,
+}
+
+impl Item {
+    /// The bytes it keeps once read (`Kept::span`), as `KEPT_BYTES` counts them.
+    fn size(&self) -> usize {
+        self.file.span(self.off, self.n)
+    }
 }
 
 /// A GeoTIFF file of a plan's datasets near a target, open to plan its reads: its CRS, the level
@@ -677,7 +689,7 @@ fn read_ahead(items: &[Item], n: usize, release: bool, mut work: impl FnMut(usiz
                         return;
                     }
                     g.next += 1;
-                    g.held += items[g.next - 1].n as usize;
+                    g.held += items[g.next - 1].size();
                     g.next - 1
                 };
                 let it = &items[i];
@@ -705,7 +717,7 @@ fn read_ahead(items: &[Item], n: usize, release: bool, mut work: impl FnMut(usiz
                 for &i in &lasts[k] {
                     let it = &items[i];
                     it.file.spans.lock().unwrap().remove(&it.off);
-                    g.held = g.held.saturating_sub(it.n as usize);
+                    g.held = g.held.saturating_sub(it.size());
                 }
                 cv.notify_all();
             }
