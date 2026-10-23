@@ -139,7 +139,7 @@ The jobs form a chain without cycles; the landmark chain runs beside the roads c
 | `marks` (worldwide) | the z6 tiles' `work/pois` and `work/peaks`, the items' facts and views, the heritage job's outputs | a `marks-*` bundle per kind, the `markdata` bundle, `global/marks/summary`, `work/marks/heritage-dots` |
 | `overlays` | the heritage job's outputs, `work/marks/heritage-dots` | an `ov-*` bundle per layer, `ovdata`, `global/heritage/…` |
 | `stations` (roads chain) | the `rail` set, the z6 tiles within 20 km of a built z6 tile | `stations` packs |
-| `ferries` (roads chain) | the `ferries` set, the ferry feeds (`dem/ferrygtfs.py`), the static timetables (docs/inputs.md §6.7.2) | `ferries` packs |
+| `ferries` (roads chain) | the `ferries` set, the ferry feeds (crate::gtfs::ferrycount), the static timetables (docs/inputs.md §6.7.2) | `ferries` packs |
 
 **Keys** are the step version plus the content names of what a job reads. heritage-sites, heritage
 and items include the pass's date; the coverage enters as a hash of its shapes; stations name

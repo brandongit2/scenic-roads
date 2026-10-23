@@ -530,9 +530,9 @@ pub const TABLE: [Step; 52] = [
         )
     },
     Step {
-        // (railfeeds.py reads the coverage's outlines whole: 2.0 GB at its peak on the 244 MB of 126
-        // regions, task #498.)
-        mem_mb: 2560,
+        // (The coverage read from the regions, the pass's outlines for its countries, then the
+        // feeds' checks, in one process: 4.46 GB at its peak on the Mac mini, 23 Oct, task #578.)
+        mem_mb: 4500,
         ..step(
             "trains",
             Fetch,

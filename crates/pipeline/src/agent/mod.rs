@@ -2082,16 +2082,17 @@ impl Agent {
         match step {
             "terrain" | "terrain-lo" | "terrain-root" => vec!["--raw".into(), s(&cache.join("aws-terrarium"))],
             "pois" | "marks" | "stations" | "overlays" => vec!["--pass".into(), date.to_string()],
-            "ferries" | "rail-feeds" => vec!["--pass".into(), date.to_string(), "--dem".into(), dem()],
+            "ferries" | "rail-feeds" => vec!["--pass".into(), date.to_string()],
             // (bld-fetch's coverage, and bldtiles' countries, from the pass's outlines.)
             "bld-fetch" => vec!["--pass".into(), date.to_string(), "--dem".into(), dem()],
             "bldprep" => vec!["--dem".into(), dem()],
             "bldtiles" => vec!["--pass".into(), date.to_string()],
             "terrain-water" => vec!["--pass".into(), date.to_string()],
             "items" => vec!["--pass".into(), date.to_string(), "--cache".into(), s(&cache)],
-            "heritage-sites" | "heritage" | "rail" => {
+            "heritage-sites" | "heritage" => {
                 vec!["--pass".into(), date.to_string(), "--dem".into(), dem(), "--cache".into(), s(&cache)]
             }
+            "rail" => vec!["--pass".into(), date.to_string(), "--cache".into(), s(&cache)],
             "peaks" => vec![
                 "--pass".into(),
                 date.to_string(),

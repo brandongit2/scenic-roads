@@ -2,7 +2,7 @@
 //! `inputs/timetables/gtfs/`, of `<name>.zip` files, each a GTFS feed compiled from timetables found
 //! anywhere, with a `<name>.toml` description (§5.1) beside it when its sources need a credit line
 //! beyond each route's page. The `rail` and `ferries` jobs count the accepted zips (`zips`) with
-//! their counters (dem/railgtfs.py, dem/ferrygtfs.py, dem/staticgtfs.py).
+//! their counters (crate::gtfs: `railcount`, `ferrycount`, `statics`).
 //!
 //! The shape beyond GTFS: `frequencies.txt` allowed; `calendar.txt`'s dates read as month and day
 //! (no expiry, seasons kept); each route's source page in `routes.txt`'s `route_url`, with the
@@ -240,12 +240,12 @@ fn valid_route_type(s: &str) -> bool {
     s.parse::<u32>().is_ok_and(|t| matches!(t, 0..=7 | 11 | 12 | 100..=117 | 200..=209 | 400..=405 | 700..=716 | 800 | 900..=906 | 1000 | 1100 | 1200 | 1300..=1307 | 1400 | 1500..=1507 | 1700..=1702))
 }
 
-/// A ferry route by its type (dem/ferrygtfs.py's `is_ferry`).
+/// A ferry route by its type (crate::gtfs::ferrycount's `is_ferry`).
 fn is_ferry(t: &str) -> bool {
     t.parse::<u32>().is_ok_and(|t| t == 4 || (1000..=1099).contains(&t) || (1200..=1299).contains(&t))
 }
 
-/// A rail route by its type (dem/railgtfs.py's `mode_of`).
+/// A rail route by its type (crate::gtfs::railcount's `mode_of`).
 fn is_rail(t: &str) -> bool {
     t.parse::<u32>().is_ok_and(|t| matches!(t, 0 | 1 | 2 | 5 | 7 | 12 | 100..=199 | 400..=499 | 900..=999 | 1400))
 }
@@ -568,12 +568,6 @@ impl Checks for Gtfs {
 /// The accepted zips, in their drop-box paths' order: (path, checked copy) — what the counters read.
 pub fn zips(a: &super::Accepted) -> Vec<(String, std::path::PathBuf)> {
     a.files().filter(|(p, _)| p.ends_with(".zip")).map(|(p, c)| (p.clone(), c)).collect()
-}
-
-/// The counters' list of the accepted zips (`{"zips": [{name, path}]}`, dem/railgtfs.py's and
-/// dem/ferries.py's `--static`).
-pub fn zips_json(a: &super::Accepted) -> serde_json::Value {
-    serde_json::json!({"zips": zips(a).into_iter().map(|(p, c)| serde_json::json!({"name": p, "path": c})).collect::<Vec<_>>()})
 }
 
 #[cfg(test)]

@@ -1014,8 +1014,8 @@ pub const HERITAGE_V: u32 = 3;
 /// (Overlays 2: each area layer's tiles written as a bundle, docs/formats.md "Bundles", task #449.)
 pub const OVERLAYS_V: u32 = 2;
 
-/// The rail service (crate::rail): the feeds for the coverage, fetched once (dem/railfeeds.py), and
-/// trains a day on its rail ways (dem/railgtfs.py, railfreq: global/railfreq). (Rail 2: the static
+/// The rail service (crate::rail): the feeds for the coverage, fetched once (crate::railfeeds), and
+/// trains a day on its rail ways (crate::gtfs::railcount, railfreq: global/railfreq). (Rail 2: the static
 /// files counted with the feeds, the MTR's among them, docs/inputs.md §6.7.2. 3: the lines in the
 /// coverage and the routes matching nothing, `work/rail/lines`, §6.7.3. 4: its ways spaced by the
 /// declared datasets, docs/inputs.md §6.8.)

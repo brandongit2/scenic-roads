@@ -41,7 +41,7 @@ GROUPS = [
          'docs/inputs.md §6.7.2; each route’s page and the month it was checked; the prompt, batches and not-found lists in its how/; not the model; routes pinned to OSM ids that may drift',
          'agents with that prompt over the lines with no feed'),
         ('doc', None, 'net', 'Ferry operators’ GTFS feeds',
-         'the ferries job: sailings a day, counted by dem/ferrygtfs.py',
+         'the ferries job: sailings a day, counted by pipeline::gtfs::ferrycount',
          'a feed list an agent picked (2026-09-28), now declarations; the input check',
          'NAS inputs/timetables/feeds/*.toml (modes = ["ferry"])',
          'docs/inputs.md §6.7.1; how they were found in its how/; each declaration’s URL, licence and credit',

@@ -801,9 +801,9 @@ class, id) within a tile. The client sends the id with the clicked point.
   - `gtfs/<feed id>.zip`: each feed as fetched;
   - `fetched.json`: `{zip content name: "YYYY-MM-DD"}`, the day its timetable counts from;
   - `feeds.json`: `{fmt: 1, feeds: [{id, provider, name?, country, url, licence, replaces?,
-    rail_routes?, zip, fetched} or {…, status}]}`, the coverage's feeds in railgtfs.py's order;
+    rail_routes?, zip, fetched} or {…, status}]}`, the coverage's feeds in the rail counter's order;
   - `ferry-feeds.json`: likewise, `{id, name, url, source, ferry_routes, zip, fetched}` or `status`.
-- **Stop pairs** (railgtfs.py's, docs/inputs.md §6.7.2): 21-byte records, f32 lon_a, lat_a, lon_b,
+- **Stop pairs** (`pipeline::gtfs::railcount`'s, docs/inputs.md §6.7.2): 21-byte records, f32 lon_a, lat_a, lon_b,
   lat_b, u8 mode (0 tram, 1 metro, 2 rail, 3 funicular; +0x80 a lower bound; +0x20 / +0x40 stop A /
   B beyond the coverage), f32 trains A → B on a typical weekday.
 - **Kept for z6 tiles' later runs** (`cache/`, not swept): `cache/dem-units/<u>.<box>.dem` (`<box>` 32

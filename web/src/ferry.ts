@@ -1,5 +1,5 @@
 // Passenger ferries: service groups, colourings and how a line's sailings are described. The data
-// (dem/ferries.py) has one feature per OSM way: g = primary group, gs = every group on the way
+// (pipeline::ferries) has one feature per OSM way: g = primary group, gs = every group on the way
 // (digits), f = sailings a day each way over all lines on the way (-1 unknown), fp = some lines on
 // the way unknown, s = season (0 unknown, 1 year-round daily, 2 year-round some days, 3 seasonal),
 // m = months a year (-1 unknown), col = official line colour, op = operator, n = name, lines =

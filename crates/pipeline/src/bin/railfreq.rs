@@ -2,7 +2,7 @@
 //!
 //! Its command line: pipeline::cli::progs::Railfreq (`railfreq <build_dir> <pairs.bin>...`).
 //!
-//! Input pairs (dem/railgtfs.py: the feeds' and static files' trains, and the static files' count rows): little-endian records
+//! Input pairs (pipeline::gtfs::railcount: the feeds' and static files' trains, and the static files' count rows): little-endian records
 //! f32 lon_a, lat_a, lon_b, lat_b, u8 mode (0 tram, 1 metro, 2 rail, 3 funicular; bit 0x80: the
 //! count is a lower bound; 0x20 / 0x40: stop A / B is beyond the map), f32 trains — the trains from stop A to stop B on a typical weekday. Each pair is matched onto the rail ways
 //! of ways.bin: each stop snaps to its nearest few tracks within 300 m, or 1 km when there are none
@@ -24,7 +24,7 @@
 //! and last only in part, so every point of the track has its trains (a way is often longer than
 //! the gap between stations: a metro line's track can be one 15 km way, and adding up the pairs on
 //! it would count each train once per station). When one stop is beyond the map's regions (flagged
-//! by railgtfs; a cross-border service, at most 300 km on) and no track is near it, the path runs
+//! by railcount; a cross-border service, at most 300 km on) and no track is near it, the path runs
 //! from the other to the dead-end track nearest it, when that end is at most 0.8× the pair's
 //! distance from it.
 //!

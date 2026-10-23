@@ -93,14 +93,6 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/server/src/names_live.rs", "sync", "\"translations: {e:#}\"", "the map server's translations: its log's words, not a path"),
 ];
 
-/// The same of the Python steps.
-const PY_EXEMPT: &[(&str, &str, &str, &str)] = &[(
-    "dem/railfeeds.py",
-    "keys",
-    "\"inputs/keys.env's keys (KEY=value lines; # comments).\"",
-    "inputs/keys.env, not an input (§2): named in its docstring",
-)];
-
 /// Each gate unit's name as code would write it in a path. (The regions', the heritage
 /// registers' and matches', the elevation datasets' and the source declarations' aside: "regions",
 /// "heritage", "elevation" and "sources" are words every reader of the coverage, the catalog, the
@@ -160,7 +152,6 @@ fn scan() -> (Vec<String>, Vec<String>) {
     }
     let mut py = Vec::new();
     files(&root.join("dem"), "py", &mut py);
-    let mut py_used = std::collections::BTreeSet::<usize>::new();
     for f in py {
         let rel = f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
         if rel == "dem/inputs.py" {
@@ -178,12 +169,6 @@ fn scan() -> (Vec<String>, Vec<String>) {
             if PY_ACCESSOR.iter().any(|a| body.contains(a)) {
                 continue;
             }
-            if let Some(k) =
-                PY_EXEMPT.iter().position(|(ef, en, anchor, _)| *ef == rel && *en == name && l.contains(anchor))
-            {
-                py_used.insert(k);
-                continue;
-            }
             bad.push(format!("{rel}:{} in {name}: {}", i + 1, l.trim()));
         }
     }
@@ -191,7 +176,6 @@ fn scan() -> (Vec<String>, Vec<String>) {
         .iter()
         .enumerate()
         .filter(|(k, _)| !used.contains(k))
-        .chain(PY_EXEMPT.iter().enumerate().filter(|(k, _)| !py_used.contains(k)))
         .map(|(_, (f, n, a, _))| format!("{f}: {n}: {a}"))
         .collect();
     (bad, unused)

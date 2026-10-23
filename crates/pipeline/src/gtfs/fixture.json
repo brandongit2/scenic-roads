@@ -1,0 +1,47 @@
+{
+ "zips": {
+  "rail_a": {
+   "agency.txt": "﻿agency_id,agency_name\r\nA1,\"Rail, Co\"\r\n",
+   "routes.txt": "route_id,agency_id,route_short_name,route_long_name,route_type\nR1,A1,S1,,2\nR2,A1,,Tram Line,0\nB1,A1,Bus,,3\nF1,A1,Fun,,116\n",
+   "trips.txt": " route_id , service_id , trip_id \nR1,WK,T1\nR1,WK,T2\nR2,DAILY,T3\nR1,SAT,T4\nB1,WK,TB\nF1,WK,TF\n",
+   "calendar.txt": "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\nWK,1,1,1,1,1,0,0,20260101,20261231\nDAILY,1,1,1,1,1,1,1,20260101,20261231\nSAT,0,0,0,0,0,1,0,20260101,20261231\nBAD,1,1,1,1,1,1,1,2026x101,20261231\n",
+   "calendar_dates.txt": "service_id,date,exception_type\nWK,20261006,2\nWK,20261010,1\n",
+   "frequencies.txt": "trip_id,start_time,end_time,headway_secs\nT3,06:00:00,08:00:00,1800\n",
+   "stops.txt": "stop_id,stop_name,stop_lat,stop_lon\nS1,A,45.0,7.0\nS2,\"B \"\"quoted\"\"\",45.1,7.1\nS3,C,45.123456789,7.2\nS4,Z,0,0\nS5,X,bad,1\n",
+   "stop_times.txt": "trip_id,arrival_time,departure_time,stop_id,stop_sequence\nT1,08:00:00,08:00:00,S1,1\nT1,08:10:00,08:10:00,S2,2\nT1,08:20:00,08:20:00,S3,3\nT2,09:00:00,09:00:00,S1,1\nT2,09:30:00,,S3,2\nT2,09:40:00,09:40:00,S9,3\nT3,06:00:00,06:00:00,S2,1\nT3,06:05:00,06:05:00,S3,2\nT4,10:00:00,10:00:00,S3,1\nT4,10:15:00,10:15:00,S1,2\nT4,10:20:00,10:20:00,S4,3\nTF,12:00:00,12:00:00,S1,x\nTF,12:00:00,12:00:00,S1,1\nTF,12:05:00,12:05:00,S2,2\n\nTB,07:00:00,07:00:00,S1,1\n"
+  },
+  "rail_b": {
+   "agency.txt": "agency_name\nOther\n",
+   "routes.txt": "route_id,route_short_name,route_type\nR9,IC,102\n",
+   "trips.txt": "route_id,service_id,trip_id\nR9,ALL,X1\nR9,ALL,X2\n",
+   "calendar.txt": "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\nALL,1,1,1,1,1,1,1,20250101,20271231\n",
+   "stops.txt": "stop_id,stop_lat,stop_lon\nP1,45.0,7.0\nP3,45.123456789,7.2\nP4,46.0,8.0\n",
+   "stop_times.txt": "trip_id,departure_time,stop_id,stop_sequence\nX1,08:00:00,P1,1\nX1,08:20:30,P3,2\nX2,23:59:00,P3,1\nX2,25:10:00,P4,2\n"
+  },
+  "ferry": {
+   "agency.txt": "agency_id,agency_name\nFA,Boats\nFB,Ships\n",
+   "routes.txt": "route_id,agency_id,route_short_name,route_long_name,route_type\nM1,FA,M1,Main,4\nM2,FB,,Second,1200\nM3,FA,Far,,4\nR1,FA,Rail,,2\n",
+   "trips.txt": "route_id,service_id,trip_id\nM1,D,A1\nM1,D,A2\nM1,D,B1\nM2,W,C1\nM3,D,Z1\n",
+   "calendar.txt": "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\nD,1,1,1,1,1,1,1,20260101,20270630\nW,0,0,0,0,0,1,0,20260601,20260930\n",
+   "calendar_dates.txt": "service_id,date,exception_type\nD,20261225,2\n",
+   "frequencies.txt": "trip_id,start_time,end_time,headway_secs\nA2,10:00:00,14:00:00,1200\n",
+   "stops.txt": "stop_id,stop_lat,stop_lon\nQ1,45.0,7.0\nQ2,45.05,7.05\nQ3,10.0,10.0\nQ4,10.1,10.1\n",
+   "stop_times.txt": "trip_id,departure_time,stop_id,stop_sequence\nA1,07:30:00,Q1,1\nA1,08:00:00,Q2,2\nA2,10:00:00,Q1,1\nA2,10:30:00,Q2,2\nB1,09:00:00,Q2,1\nB1,09:30:00,Q1,2\nC1,11:00:00,Q2,1\nC1,11:45:00,Q1,2\nZ1,06:00:00,Q3,1\nZ1,07:00:00,Q4,2\n"
+  },
+  "static": {
+   "agency.txt": "agency_id,agency_name\nSA,Static\n",
+   "feed_info.txt": "feed_publisher_name\nme\n",
+   "routes.txt": "route_id,agency_id,route_short_name,route_long_name,route_type,route_url,checked,months,osm\nK1,SA,K,Kline,2,http://k,2026-01-01,,\nP1,SA,,Pinned ferry,4,http://p,2026-02-02,,w100\nP2,SA,,Other pin,4,http://q,2026-03-03,,w999\nT1,SA,Tt,Timed,2,http://t,,,\n",
+   "trips.txt": "route_id,service_id,trip_id\nP1,SUMMER,PT1\nP1,SUMMER,PT2\nT1,YEAR,TT1\n",
+   "calendar.txt": "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\nSUMMER,1,1,1,1,1,1,1,20000501,20000929\nYEAR,1,1,1,1,1,0,0,19991101,20000229\n",
+   "stops.txt": "stop_id,stop_lat,stop_lon\nk1,45.0,7.0\nk2,45.3,7.3\nq1,45.0,7.0\nq2,45.05,7.05\n",
+   "stop_times.txt": "trip_id,departure_time,stop_id,stop_sequence\nPT1,08:00:00,q1,1\nPT1,08:30:00,q2,2\nPT2,09:00:00,q2,1\nPT2,09:30:00,q1,2\nTT1,07:00:00,k1,1\nTT1,08:00:00,k2,2\n",
+   "counts.txt": "route_id,from_stop_id,to_stop_id,at_least,per_day,per_week,per_day_low,headway,days,months,season,overnight,note\nK1,k1,k2,1,10,,null,about every 20 minutes,daily,,,0, as given \nK1,k2,k1,,,5.5,,,,,,,\nP1,,,,3,,,30,Mo-Fr,May-Sep,seasonal,1,\nP2,,,,2,,,,,,,,\nK1,k1,k1,,4,,,,,,,,\n"
+  }
+ },
+ "lines": {
+  "w100": [[7.0001, 45.0001], [7.0499, 45.0499]],
+  "w200": [[7.0, 45.0], [7.05, 45.05]],
+  "w300": [[7.5, 45.5], [7.5, 45.5]]
+ }
+}

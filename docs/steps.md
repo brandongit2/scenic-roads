@@ -444,7 +444,7 @@ index, so a new release rebuilds every z6 tile.
 - **Water** (per pass): above.
 - **Spoken languages** (per pass, the `spoken` job): `global/spoken` (docs/names.md).
 - **Rail stops:** from the rail set, for the built z6 tiles + 20 km.
-- **Ferries:** worldwide, from the ferries set, the ferry feeds (`dem/ferrygtfs.py`, docs/inputs.md
+- **Ferries:** worldwide, from the ferries set, the ferry feeds (`pipeline::gtfs::ferrycount`, docs/inputs.md
   §6.7.0) and the static timetables (docs/inputs.md §6.7.2).
 - **Rail service** (below).
 - **Landmarks:** `docs/phase5.md`.
@@ -460,14 +460,14 @@ index, so a new release rebuilds every z6 tile.
 Trains a day on each rail way of the coverage (`global/railfreq`), from operators' GTFS timetables
 and static timetables compiled by hand (`pipeline::rail`; docs/inputs.md §6.7). Two jobs, in a chain
 of their own (docs/building.md §2):
-- **`rail-feeds`** (`dem/railfeeds.py`) finds the feeds from the accepted declarations of
+- **`rail-feeds`** (`pipeline::railfeeds`) finds the feeds from the accepted declarations of
   `inputs/timetables/feeds/` (docs/inputs.md §6.7.1):
   - The Mobility Database catalogue's active, keyless GTFS feeds of the countries the coverage is in
     (`pipeline::rail::countries`: a country holding 5 % of one of the coverage's outlines, or half of
     whose area the coverage holds; a territory with an ISO 3166-2 code brings its country too) whose
     box meets it (as `pipeline::coverage` answers: an outline's edge meeting the box grown by its
-    buffer as a rectangle, else the box inside it under the even–odd rule; asked of the rings through an STR tree, never of
-    the outlines merged, `dem/near.py`). The declaration's `own_code` and `country` correct the catalogue's codes.
+    buffer as a rectangle, else the box inside it under the even–odd rule; never of the outlines
+    merged). The declaration's `own_code` and `country` correct the catalogue's codes.
   - Of those, the ones running rail, checked once by reading `routes.txt` with range requests (only
     a whole answer counts).
   - The declared feeds first, in their `order`, where a territory matches and their stops meet the
@@ -478,7 +478,7 @@ of their own (docs/building.md §2):
     without an answer is tried three times; a feed still without one fails the job, and after 3 days
     is left out until rail-feeds next runs. A definite refusal leaves it out.
   - It also lists the ferry feeds (all of them: ferries are worldwide).
-- **`rail`** counts the trains (`dem/railgtfs.py`: each feed's median-busy Tuesday to Thursday from
+- **`rail`** counts the trains (`pipeline::gtfs::railcount`: each feed's median-busy Tuesday to Thursday from
   30 days before to 90 after its zip's day, a train in two feeds counted once; the static
   timetables likewise, or their count rows as given), marks stops beyond the coverage, and
   `railfreq` matches the pairs onto the pass's rail ways touching the coverage (`extract` at 8 m).

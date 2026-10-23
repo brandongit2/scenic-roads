@@ -137,7 +137,12 @@ pub fn float_repr(f: f64) -> String {
         return if f > 0.0 { "Infinity" } else { "-Infinity" }.into();
     }
     // "d.ddde<exp>", the shortest round-trip digits.
-    let e = format!("{:e}", f);
+    // "d.ddde<exp>", the shortest round-trip digits; of the strings that short, the one nearest the
+    // exact value, a tie to even (Python's dtoa: `{:e}` takes a tie up, 3.2678298950195313 for
+    // 3.26782989501953125), which the exact formatting at that many digits gives.
+    let shortest = format!("{:e}", f);
+    let n = shortest.split_once('e').unwrap().0.chars().filter(|c| c.is_ascii_digit()).count();
+    let e = format!("{:.*e}", n - 1, f);
     let (mant, exp) = e.split_once('e').unwrap();
     let exp: i32 = exp.parse().unwrap();
     let neg = mant.starts_with('-');
@@ -372,6 +377,64 @@ pub fn dumps_spaced(v: &Py) -> String {
     s
 }
 
+/// `json.dumps(v, ensure_ascii=False, indent=n)`: each item on its own line, `n` spaces a level.
+pub fn dumps_indent(v: &Py, n: usize) -> String {
+    let mut s = String::new();
+    dump_indent(v, &mut s, n, 0);
+    s
+}
+
+fn dump_indent(v: &Py, out: &mut String, n: usize, level: usize) {
+    let pad = |out: &mut String, l: usize| {
+        out.push('\n');
+        out.extend(std::iter::repeat_n(' ', n * l));
+    };
+    match v {
+        Py::List(l) if !l.is_empty() => {
+            out.push('[');
+            for (k, x) in l.iter().enumerate() {
+                if k > 0 {
+                    out.push(',');
+                }
+                pad(out, level + 1);
+                dump_indent(x, out, n, level + 1);
+            }
+            pad(out, level);
+            out.push(']');
+        }
+        Py::Dict(d) if !d.is_empty() => {
+            out.push('{');
+            for (k, (key, x)) in d.iter().enumerate() {
+                if k > 0 {
+                    out.push(',');
+                }
+                pad(out, level + 1);
+                dump_str(key, out);
+                out.push_str(": ");
+                dump_indent(x, out, n, level + 1);
+            }
+            pad(out, level);
+            out.push('}');
+        }
+        other => dump(other, out, (",", ":")),
+    }
+}
+
+/// A serde_json value as Python's `json` would have read its text (its objects' keys in the order
+/// serde_json keeps them).
+pub fn from_serde(v: &serde_json::Value) -> Py {
+    use serde_json::Value as V;
+    match v {
+        V::Null => Py::Null,
+        V::Bool(b) => Py::Bool(*b),
+        V::Number(x) if x.is_f64() => Py::Float(x.as_f64().unwrap_or(f64::NAN)),
+        V::Number(x) => Py::Int(x.to_string()),
+        V::String(s) => Py::Str(s.clone()),
+        V::Array(a) => Py::List(a.iter().map(from_serde).collect()),
+        V::Object(o) => Py::Dict(o.iter().map(|(k, x)| (k.clone(), from_serde(x))).collect()),
+    }
+}
+
 fn dump(v: &Py, out: &mut String, sep: (&str, &str)) {
     match v {
         Py::Null => out.push_str("null"),
@@ -440,6 +503,7 @@ mod tests {
             (0.00001, "1e-05"),
             (-2.5e-7, "-2.5e-07"),
             (1e100, "1e+100"),
+            (3.26782989501953125, "3.2678298950195312"),
         ] {
             assert_eq!(float_repr(f), s);
         }
@@ -456,5 +520,15 @@ mod tests {
         let v = loads(r#"{"i":3,"a":[1,2.5,{"x":null}],"s":"é"}"#).unwrap();
         assert_eq!(dumps_spaced(&v), r#"{"i": 3, "a": [1, 2.5, {"x": null}], "s": "é"}"#);
         assert_eq!(dumps_spaced(&loads("[]").unwrap()), "[]");
+    }
+
+    #[test]
+    fn indented_as_python() {
+        // json.dumps(v, ensure_ascii=False, indent=1)
+        let v = loads(r#"[{"a":1,"b":[],"c":{},"d":[1.5,"é"]},null]"#).unwrap();
+        assert_eq!(
+            dumps_indent(&v, 1),
+            "[\n {\n  \"a\": 1,\n  \"b\": [],\n  \"c\": {},\n  \"d\": [\n   1.5,\n   \"é\"\n  ]\n },\n null\n]"
+        );
     }
 }

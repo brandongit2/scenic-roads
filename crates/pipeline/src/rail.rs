@@ -3,22 +3,22 @@
 //! (crate::inputs::gtfs, docs/inputs.md §6.7.2: the MTR's lines among them), as `global/railfreq`;
 //! and the timetable feeds the ferries are counted from.
 //!
-//! Two jobs. `rail-feeds` finds the feeds (`dem/railfeeds.py`) from the accepted declarations of
+//! Two jobs. `rail-feeds` finds the feeds (crate::railfeeds) from the accepted declarations of
 //! `inputs/timetables/feeds/` (crate::inputs::feeds, docs/inputs.md §6.7.1): the Mobility Database
 //! catalogue's feeds of the countries the coverage is in, by their boxes, the ones that run rail,
 //! and the declared feeds (operators' own, feeds behind an API key, the ferries'), and fetches
 //! each once into the rail sources. `rail` counts their trains and the accepted static files'
-//! (`dem/railgtfs.py`: the static files' count rows as given, apart from the timed trains), marks
+//! (crate::gtfs::railcount: the static files' count rows as given, apart from the timed trains), marks
 //! the stops beyond the coverage, and matches the stop pairs onto the rail ways of the pass's rail
 //! set that touch the coverage (`extract`, then `railfreq`). The `ferries` job counts the ferry
-//! list's sailings and the static files' (crate::ovconv).
+//! list's sailings and the static files' (crate::ferries, run by crate::ovconv).
 //!
 //! The rail sources (`sources/rail/`, content-named, in the build manifest; docs/formats.md):
 //!
 //! | logical | what |
 //! |---|---|
 //! | `catalogue` | the Mobility Database catalogue (`feeds_v2.csv`), as fetched once |
-//! | `checked` | every catalogue feed checked for rail routes so far (railfeeds.py's answers) |
+//! | `checked` | every catalogue feed checked for rail routes so far (crate::railfeeds' answers) |
 //! | `gtfs/<feed id>` | each feed's zip, as fetched (the ferry feeds' too) |
 //! | `fetched` | the day each zip's timetable counts from, by its content name |
 //! | `feeds` | the coverage's rail feeds, in reading order, each with its zip and day |
@@ -29,7 +29,7 @@
 //! service is never fetched again. Only one already out of date when fetched is: the next time
 //! rail-feeds runs (when its key changes: a new pass's outlines, the coverage, the declarations,
 //! the catalogue or the keys) at least its declaration's `refresh` days after its day, and the same
-//! file then counts from that run's day (railfeeds.py). The catalogue is fetched from its
+//! file then counts from that run's day (crate::railfeeds). The catalogue is fetched from its
 //! declaration's URL when there's no copy.
 
 use crate::coverage::{Coverage, Shape};
@@ -54,7 +54,7 @@ pub fn zip_logical(id: &str) -> String {
     format!("sources/rail/gtfs/{id}")
 }
 
-/// A stop-pair record (railgtfs.py): f32 lon_a, lat_a, lon_b, lat_b, u8 mode, f32 trains.
+/// A stop-pair record (crate::gtfs::railcount): f32 lon_a, lat_a, lon_b, lat_b, u8 mode, f32 trains.
 pub const PAIR: usize = 21;
 /// Mode bits: stop A, stop B beyond the coverage.
 pub const BEYOND_A: u8 = 0x20;
@@ -98,7 +98,7 @@ pub fn by_way_id(ways: &[roadcore::WayRec], freq: &[u8]) -> Vec<u8> {
     recs.iter().flat_map(|(w, f)| w.to_le_bytes().into_iter().chain(f.to_le_bytes())).collect()
 }
 
-/// The coverage for railfeeds.py: a feature per outline, its rings in degrees (under the even–odd
+/// The coverage for bldfetch.py: a feature per outline, its rings in degrees (under the even–odd
 /// rule) and its buffer in metres.
 pub fn coverage_geojson(cov: &Coverage) -> Value {
     let deg = |p: &[i32; 2]| [p[0] as f64 * 1e-7, p[1] as f64 * 1e-7];
@@ -247,7 +247,7 @@ pub fn day_of(t: std::time::SystemTime) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
-/// The NAS's zips for railfeeds.py's `--cache`: `{feed id: {path, fetched}}`, every
+/// The NAS's zips for crate::railfeeds: `{feed id: {path, fetched}}`, every
 /// `sources/rail/gtfs/<id>` with its day (else its file's).
 pub fn cache_index(out: &Out, fetched: &Fetched) -> Value {
     let mut idx = serde_json::Map::new();
@@ -282,9 +282,9 @@ fn record_days(out: &mut Out, days: &Fetched) -> Result<()> {
     Ok(())
 }
 
-/// A list railfeeds.py wrote (`found`: its rail feeds, or its ferry feeds) as `logical` (`FEEDS`,
+/// A list crate::railfeeds wrote (`found`: its rail feeds, or its ferry feeds) as `logical` (`FEEDS`,
 /// `FERRY_FEEDS`): each feed with a zip given its zip's content name
-/// (`zip`) and day (`fetched`), `new` ones uploaded first from `gtfs` (railfeeds.py's `--out/gtfs`;
+/// (`zip`) and day (`fetched`), `new` ones uploaded first from `gtfs` (its out folder's `gtfs/`;
 /// one the same as a zip already there is kept once, counting from its new day). The manifest is
 /// saved after each upload, since put_file removes the local copy: a failure later keeps them all,
 /// with their days, and a run cut short keeps all but the last, counting from their files' days.
@@ -325,7 +325,7 @@ fn name_zips(
             Some(_) => out.get(&zip_logical(&id)).with_context(|| format!("{id}: no zip in the sources"))?.to_string(),
             None => continue,
         };
-        // (A zip put there another way counts from the day railfeeds.py was given: its file's.)
+        // (A zip put there another way counts from the day crate::railfeeds was given: its file's.)
         let day = match fetched.get(&zip) {
             Some(d) => d.clone(),
             None => {
@@ -341,7 +341,7 @@ fn name_zips(
     Ok(new)
 }
 
-/// What railfeeds.py downloaded before failing (`gtfs`, its `--out/gtfs`): kept in the sources, each
+/// What crate::railfeeds downloaded before failing (`gtfs`, its out folder's `gtfs/`): kept in the sources, each
 /// counting from the day it was downloaded, so the next run has them; saved as put_feeds does.
 pub fn keep_downloads(out: &mut Out, gtfs: &Path) -> Result<usize> {
     put_zips(out, gtfs, None)
@@ -405,7 +405,7 @@ fn put_zips(out: &mut Out, gtfs: &Path, day: Option<&str>) -> Result<usize> {
     Ok(n)
 }
 
-/// A feeds list (`FEEDS` for railgtfs.py, `FERRY_FEEDS` for ferries.py): each zip's content name as
+/// A feeds list (`FEEDS` for crate::gtfs::railcount, `FERRY_FEEDS` for crate::ferries): each zip's content name as
 /// its path on the NAS.
 pub fn feeds_for_counting(out: &Out, logical: &str) -> Result<Value> {
     let c = out.get(logical).with_context(|| format!("no {logical} yet (the rail-feeds step)"))?;

@@ -940,25 +940,25 @@ counter, whichever unit its timetables come from.
 
 #### 6.7.0 The counters, per mode
 
-- **Rail** (`dem/railgtfs.py`): trains per stop pair on the typical day, as the PAIR records the
+- **Rail** (`pipeline::gtfs::railcount`): trains per stop pair on the typical day, as the PAIR records the
   `rail` job matches onto the tracks (`rail::PAIR`: two stops' positions, a mode byte, trains a
   day). A feed's typical day is its median-busy Tuesday–Thursday from 30 days before its zip's fetch
   day to 90 after; a train in two feeds counts once (keyed by first and last stops and times, the
   operator's feed first).
-- **Ferries** (`dem/ferrygtfs.py`, run by the `ferries` job's `dem/ferries.py`): per OSM ferry line,
+- **Ferries** (`pipeline::gtfs::ferrycount`, run by the `ferries` job's `pipeline::ferries`): per OSM ferry line,
   the record the map shows (`info["freq"]`): `per_day` (each way, on days it runs; under four days
   a week, weekly ÷ 7), `per_day_low` (the quietest month's), `headway` (median gap 07:00–19:00),
   `days`, `months`, `season` (`year`, `some-days`, `seasonal`), `overnight`, `source`, `url`,
   `checked`. A GTFS route matches a line when its trips call within 400 m (at most 30 % of the
   line's length) of both its ends. Feeds count from their fetch day, in id order, the first feed's
   count winning.
-- **Precedence** for a ferry line (`ferries.py`'s `rank`): a feed's count, then a static file's (in
+- **Precedence** for a ferry line (`pipeline::ferries`' `rank`): a feed's count, then a static file's (in
   the zips' order), then OSM's `interval` tag.
 
 #### 6.7.1 Feeds
 
 **Kind:** source declarations. **Drop box:** `inputs/timetables/feeds/`, unit `timetables/feeds`.
-Code: crate::inputs::feeds; `dem/railfeeds.py`; crate::rail.
+Code: crate::inputs::feeds; crate::railfeeds; crate::rail.
 
 **A feed:** `<id>.toml` (letters, digits, `-`, `_`), a description (§5.1) and:
 
@@ -1023,7 +1023,7 @@ first time it runs with no zip for that feed, so a pinned feed is never fetched 
 **Kind:** declare (the fulfil half of §6.7.3's to-do). **Drop box:** `inputs/timetables/gtfs/`,
 unit `timetables/gtfs`: `<name>.zip` (letters, digits, `-`, `_`), each a GTFS feed compiled by hand,
 with an optional `<name>.toml` description (held together). The researchers' brief is in `how/`.
-Code: crate::inputs::gtfs; `dem/staticgtfs.py`; `producers/timetables/` (`gtfszip.py` and others).
+Code: crate::inputs::gtfs; crate::gtfs::statics; `producers/timetables/` (`gtfszip.py` and others).
 
 **Shape:** GTFS with the required files (`agency.txt`, `stops.txt`, `routes.txt`, `trips.txt`,
 `stop_times.txt`, `calendar.txt`; `feed_info.txt` naming the publisher) and the columns the counters
@@ -1085,7 +1085,7 @@ finding, and nothing waits on them.
   `rail-miss.bin`), static rail routes whose `osm` pin names no service relation or rail way; ferry
   routes no line took, and static ferry routes whose pin names no ferry line of this pass.
 
-`rail` hands off `work/rail/lines` (railgtfs.py's `--routes`, railfreq's misses, the service
+`rail` hands off `work/rail/lines` (the rail counter's routes, railfreq's misses, the service
 relations); `ferries` hands off `work/ferries/lines`. `timetables-todo` (keyed on both, the coverage
 and its version) merges them, writes the to-do into `todo/` outside the records (as `names-todo`
 does), and hands off the report, which the lead reads for its status (`Status::timetables`).

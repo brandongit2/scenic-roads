@@ -391,17 +391,12 @@ fn simplify_m(c: &[[f64; 2]], tol_m: f64) -> Vec<[f64; 2]> {
     c.iter().zip(keep).filter(|(_, k)| *k).map(|(p, _)| *p).collect()
 }
 
-/// The `ferries` job (docs/phase5.md "Build"): the pass's `ferries` set exported as ferries.py
-/// reads it, ferries.py with the ferry feeds the rail-feeds job fetched (`rail::FERRY_FEEDS`, each
-/// zip's path on the NAS and its day: ferries.py counts them, dem/ferrygtfs.py) and the static
+/// The `ferries` job (docs/phase5.md "Build"): the pass's `ferries` set exported as crate::ferries
+/// reads it, crate::ferries with the ferry feeds the rail-feeds job fetched (`rail::FERRY_FEEDS`,
+/// each zip's path on the NAS and its day: crate::gtfs::ferrycount counts them) and the static
 /// timetables' accepted zips (`statics`, crate::inputs::gtfs: the timetables looked up by hand,
-/// dem/staticgtfs.py), and the blocks from what it writes.
-pub fn ferries_job(
-    out: &mut Out,
-    date: &str,
-    dem: &std::path::Path,
-    statics: &crate::inputs::Accepted,
-) -> Result<usize> {
+/// crate::gtfs::statics), and the blocks from what it writes.
+pub fn ferries_job(out: &mut Out, date: &str, statics: &crate::inputs::Accepted) -> Result<usize> {
     use std::process::Command;
     let logical = crate::osmpass::set_name(date, "ferries");
     let set = out.path(out.get(&logical).with_context(|| format!("{logical} isn't in the build manifest"))?);
@@ -467,28 +462,16 @@ pub fn ferries_job(
     )?;
     drop(p);
     let p = crate::timings::phase("the feeds and static files listed", crate::timings::Class::NasRead);
-    let feeds = work.join("ferry-feeds.json");
-    std::fs::write(&feeds, serde_json::to_vec(&crate::rail::feeds_for_counting(out, crate::rail::FERRY_FEEDS)?)?)?;
-    let static_list = work.join("static.json");
-    let n_static = crate::inputs::gtfs::zips(statics).len();
-    std::fs::write(&static_list, serde_json::to_vec(&crate::inputs::gtfs::zips_json(statics))?)?;
+    let feeds = crate::rail::feeds_for_counting(out, crate::rail::FERRY_FEEDS)?;
+    let zips = crate::inputs::gtfs::zips(statics);
+    let n_static = zips.len();
     drop(p);
-    let p = crate::timings::phase("ferries.py", crate::timings::Class::Mixed);
-    let mut py = store::spawn::command("uv");
-    py.current_dir(dem)
-        .args(["run", "python", "ferries.py", "--src"])
-        .arg(&work)
-        .arg("--out")
-        .arg(&work)
-        .arg("--feeds")
-        .arg(&feeds)
-        .arg("--static")
-        .arg(&static_list);
-    crate::timings::child(&mut py);
-    run(py, "ferries.py")?;
+    let p = crate::timings::phase("the ferry lines and their sailings found", crate::timings::Class::Mixed);
+    let w = crate::ferries::run(&work, feeds["feeds"].as_array().context("the ferry feeds' list")?, &zips)?;
+    std::fs::write(work.join("timetables.json"), &w.timetables)?;
     drop(p);
-    let fc: Value = serde_json::from_slice(&std::fs::read(work.join("ferries.json"))?)?;
-    let lines: serde_json::Map<String, Value> = serde_json::from_slice(&std::fs::read(work.join("ferry-lines.json"))?)?;
+    let fc: Value = serde_json::from_str(&w.ferries)?;
+    let lines: serde_json::Map<String, Value> = serde_json::from_str(&w.lines)?;
     eprintln!(
         "ferries: {} features, {} lines ({n_static} static files)",
         fc["features"].as_array().map_or(0, Vec::len),
