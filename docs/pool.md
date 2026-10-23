@@ -1005,8 +1005,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
 - **Each Mac's jobs** (the build page's machines, `scenic status`, task #246): a block per Mac,
   the lead's first, marked coordinator (`scenic status` with its ramp, §7.1); its capacity as the coordinator last
   heard it (memory held of the guard's limit and free for more, cores busy, disk reserved and
-  free, on the page as bars), its jobs' share of the NAS budget (`Coordinator::nas_shares`, the
-  status's `nas_share`: their leased jobs' NAS weights in thousandths of the whole); a block per
+  free, on the page as bars); a block per
   running job numbered by its real slot (`JobView::slot`: slots may be sparse, so a Mac running
   only its fourth slot shows slot 4), (`scenic status`: with that slot's lane's next work); and (`scenic status` alone) why nothing more
   fits: the packing's refusal as its last ask was packed (`Coordinator::refusals`, the status's
@@ -1138,7 +1137,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   cores_e, mem_gb}` (read once), the charts' scales. Its NAS section (`web/work/nas.js`) asks
   the same answers for `nas_read_mbs`, `nas_write_mbs`, `nas_ms`, `nas_calls`, `nas_missed` of
   each Mac, and of the lead the `pool_nas_*` and `nas_disk_busy_pct` series (missing from a
-  member's answer), beside the status's `nas` (`NasView`) and `nas_share`; nothing server-side
+  member's answer), beside the status's `nas` (`NasView`) and `nas_share` (their leased jobs' NAS weights in thousandths of the whole, `Coordinator::nas_shares`, shown as "who is using the NAS"); nothing server-side
   was added for it.
 - **Views** (menu bar, worker page, `scenic lead`, `scenic status`) read the
   agent's `pool.lead` (`crate::agent::lead::View`) or the fresher `agent/pool/view.json`

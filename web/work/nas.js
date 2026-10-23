@@ -6,7 +6,7 @@
 // those that missed their deadline, from its own /work/live). The answers are live.js's, asked
 // while the tab shows; every chart is chart.js's. A measure missing is said so, never zero.
 import { draw } from "./chart.js";
-import { commonGaps, fmt, footer, latest, recentMean } from "./chartmath.js";
+import { commonGaps, fmt, footer, latest, recentMean, spanText } from "./chartmath.js";
 import { liveOf, onLive } from "./live.js";
 import { isSlotOf } from "./sums.js";
 
@@ -66,8 +66,8 @@ function build() {
   const shares = agent?.nas_share || {};
   const haveShares = Object.keys(shares).length > 0;
   const lead = agent?.host;
-  const cards = [nasCard(view, lead)];
-  for (const m of macs) cards.push(macCard(m, haveShares ? Object.entries(shares).filter(([nm]) => isSlotOf(nm, m.name)).reduce((t, [, w]) => t + w, 0) : null));
+  const cards = [nasCard(view, lead, macs, haveShares ? shares : null)];
+  for (const m of macs) cards.push(macCard(m));
   const head = el("h2", null, "NAS");
   head.append(el("span", null, view ? nasSub(view) : "the lead hasn't measured it yet"));
   const grid = el("div", "machines");
@@ -84,22 +84,77 @@ function nasSub(v) {
   return bits.join(" · ");
 }
 
-function nasCard(v, lead) {
+// A gauge row kept across renders: its bar and words (set by `gauge`).
+function gauge(key, label, title) {
+  let g = rows.get(key);
+  if (!g) {
+    const b = el("div", "cbar"); const i = el("i"); b.append(i);
+    const d = el("div", "cap");
+    const v = el("span", "v");
+    d.append(el("span", "k", label), b, v);
+    if (title) d.title = title;
+    g = { row: d, bar: b, i, v };
+    rows.set(key, g);
+  }
+  return g;
+}
+const set = (g, used, whole, text, cls = "") => {
+  g.i.style.width = `${Math.round(Math.max(0, Math.min(1, whole ? used / whole : 0)) * 100)}%`;
+  g.bar.className = `cbar ${cls}`;
+  g.v.textContent = text;
+};
+
+function nasCard(v, lead, macs, shares) {
   const card = el("div", "mc");
   const top = el("div", "top");
   const chip = el("span", `chip ${v?.held ? "warn" : "ok"}`, v ? (v.held ? "gate shut" : "gate open") : "not known");
-  top.append(el("span", "name", "The NAS"), el("span", "role", lead ? `measured by ${lead}` : ""), chip);
+  top.append(el("span", "name", "The NAS"), el("span", "role", lead ? `measured by ${lead}` : ""), chip, el("span", "right", ""));
   card.append(top);
+  // Use against its capacity: what the pool moves now against the limits its probes give.
+  const l = v?.limits, t = v?.traffic;
   const caps = el("div", "caps");
-  if (v?.load_pct != null) caps.append(bar("disks", v.load_pct, 100, `${Math.round(v.load_pct)}% busy (smoothed) · target ${v.target_pct}%`, v.held ? "warn" : "", v.target_pct));
-  if (v?.traffic) caps.append(bar("pool now", v.traffic[0] + v.traffic[2], Math.max(1, (v.limits?.bytes_s || 0) / MB), `${fmt(v.traffic[0], "MB/s")} read · ${fmt(v.traffic[2], "MB/s")} written`, "", null));
-  if (caps.children.length) card.append(caps);
+  const lim = (key, label, used, limit, fmtUsed, fmtLimit) => {
+    const g = gauge(key, label);
+    if (!l || limit == null) set(g, 0, 0, "not probed");
+    else if (!limit) set(g, 0, 0, "not probed (no limit weighed)");
+    else if (used == null) set(g, 0, limit, `– of ${fmtLimit(limit)}`);
+    else set(g, used, limit, `${fmtUsed(used)} of ${fmtLimit(limit)}`, used / limit > 0.85 ? "warn" : "");
+    return g.row;
+  };
+  const num = (x) => `${fmt(x, "")}/s`;
+  caps.append(
+    lim("lim.bytes", "data moved", t ? t[0] + t[2] : null, l?.bytes_s / MB, (x) => fmt(x, "MB/s"), (x) => fmt(x, "MB/s")),
+    lim("lim.creates", "files created", t ? t[3] : null, l?.creates_s, num, num),
+    lim("lim.listed", "entries listed", t ? t[4] : null, l?.listed_s, num, num),
+    lim("lim.stats", "files looked up", t ? t[5] : null, l?.stats_s, num, num));
+  const g = (k, label, title) => caps.append(gauge(k, label, title).row);
+  g("resp", "response time", "How long the lead's listing of the project's folder took (every 5 s while a build runs)");
+  g("wait", "requests waiting", "The agents' NAS calls in flight, every Mac's together");
+  g("missed", "timed out", "NAS calls past their deadline or refused (every thread busy), every Mac's, over the chart's range");
+  g("disks", "NAS disks busy", "The busiest disk's busy share, smoothed, against the owner's target");
+  card.append(caps);
+  // Who is using the NAS: the share each Mac's running jobs are allowed, set by the lead from each job's measured use.
+  const h3 = el("div", "small dim", "Who is using the NAS: each Mac's running jobs' share of the budget");
+  h3.style.marginTop = "6px";
+  const sc = el("div", "caps");
+  let used = 0;
+  for (const m of macs) {
+    const w = shares ? Object.entries(shares).filter(([nm]) => isSlotOf(nm, m.name)).reduce((x, [, y]) => x + y, 0) : null;
+    if (w == null) continue;
+    used += w;
+    const d = bar(m.name, w, 1000, `${Math.round(w / 10)}%`, w > 1000 ? "warn" : "");
+    sc.append(d);
+  }
+  if (sc.children.length) { sc.append(bar("free", Math.max(0, 1000 - used), 1000, `${Math.round(Math.max(0, 1000 - used) / 10)}%`, "")); card.append(h3, sc); }
+  card.append(el("div", "chips", ""));
+  card.lastChild.id = "nas-chips";
+  card.lastChild.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;margin-top:6px";
   const live = el("div", "live");
   const head = el("div", "lhead");
   const said = el("span", "dim");
-  head.append(el("b", null, "Pool"), said);
+  head.append(el("b", null, "NAS over time"), said);
   const body = el("div", "lbody");
-  body.append(...["io", "files", "disks"].map((k) => row(`pool.${k}`, { io: "Traffic", files: "Files", disks: "Disks" }[k], k === "io").row));
+  body.append(...["lat", "io", "files", "disks"].map((k) => row(`pool.${k}`, { lat: "Answer", io: "Traffic", files: "Files", disks: "Disks" }[k], k === "io").row));
   live.append(head, body);
   live.dataset.lead = lead || "";
   live.dataset.kind = "pool";
@@ -107,17 +162,12 @@ function nasCard(v, lead) {
   return card;
 }
 
-function macCard(m, share) {
+function macCard(m) {
   const card = el("div", `mc ${m.fresh ? "" : "off"}`);
   card.style.borderLeft = `3px solid ${m.colour}`;
   const top = el("div", "top");
-  top.append(el("span", "name", m.name), share != null ? el("span", `chip ${share > 1000 ? "warn" : ""}`, `${Math.round(share / 10)}% of the budget`) : el("span", "role", "no share known"));
+  top.append(el("span", "name", m.name));
   card.append(top);
-  if (share != null) {
-    const caps = el("div", "caps");
-    caps.append(bar("share", share, 1000, `its jobs' weights, of the whole ${share > 1000 ? "(over it)" : ""}`.trim(), share > 1000 ? "warn" : ""));
-    card.append(caps);
-  }
   const live = el("div", "live");
   const head = el("div", "lhead");
   head.append(el("b", null, "Live"), el("span", "dim"));
@@ -137,8 +187,43 @@ function note(head, st, gapList) {
   return true;
 }
 
+// The live-driven gauges and the chips under them: the lead's answer time, every Mac's calls in flight
+// and those missed over the chart's range, the disks' busy share.
+function gauges() {
+  const { agent, macs } = seen;
+  const v = agent?.nas;
+  const lead = liveOf(agent?.host);
+  const now = lead?.now;
+  const ms = lead?.series ? latest(lead.series.nas_ms, now, 30) : null;
+  set(gauge("resp"), ms ?? 0, 400, ms == null ? "not measured (no build on the lead now)" : fmt(ms, "ms"), ms != null && ms > 200 ? "warn" : "");
+  let wait = null, missed = null, range = 0;
+  for (const m of macs) {
+    const st = liveOf(m.name);
+    if (!st?.series) continue;
+    const w = latest(st.series.nas_calls, st.now, 30);
+    if (w != null) wait = (wait || 0) + w;
+    if (st.series.nas_missed) { missed = (missed || 0) + st.series.nas_missed.reduce((t, p) => t + p[2] * st.step, 0); range = Math.max(range, st.range); }
+  }
+  set(gauge("wait"), wait ?? 0, Math.max(12, wait ?? 0), wait == null ? "not measured" : `${fmt(wait)} in flight`);
+  const mc = missed == null ? null : Math.round(missed);
+  set(gauge("missed"), mc ?? 0, 10, mc == null ? "not measured" : `${mc} in the last ${spanText(range)}`, mc ? "warn" : "");
+  const d = v?.load_pct;
+  set(gauge("disks"), d ?? 0, 100, d == null ? "not read" : `${Math.round(d)}% (target ${v.target_pct}%)`, v?.held ? "warn" : "");
+  const chips = root.querySelector("#nas-chips");
+  if (!chips) return;
+  const probe = v?.probes?.length ? Math.max(...v.probes.map((p) => p.at)) : null;
+  const nowS = Math.floor(Date.now() / 1000);
+  const fresh = macs.filter((m) => m.fresh).length;
+  const list = [[probe ? `capacity measured ${spanText(Math.max(60, nowS - probe))} ago` : "capacity not measured", ""],
+    [v?.held ? "sharing limits on: the gate is shut" : v?.limits ? "sharing limits on" : "no limits yet", v?.held ? "warn" : v?.limits ? "ok" : ""],
+    [`${fresh} ${fresh === 1 ? "Mac" : "Macs"} connected`, ""],
+    [mc == null ? "timeouts not measured" : mc ? `${mc} requests timed out` : "no requests timed out", mc ? "warn" : mc === 0 ? "ok" : ""]];
+  chips.replaceChildren(...list.map(([t, c]) => el("span", `chip ${c}`, t)));
+}
+
 function paint() {
   if (!seen || !root.isConnected) return;
+  gauges();
   const nr = css("--nas-r"), nw = css("--nas-w"), nd = css("--net-d"), warn = css("--warn"), acc = css("--accent");
   const gapsOf = (st) => commonGaps(["load1", "cores_busy", "mem_free_pct"].map((k) => ({ points: st.series[k], step: st.step })), st.now);
   for (const live of root.querySelectorAll(".live")) {
@@ -157,6 +242,9 @@ function paint() {
     const at = (k, fresh) => latest(s[k], now, fresh);
     if (pool) {
       const r = (k) => rows.get(`pool.${k}`);
+      draw(r("lat").c, { ...base, unit: "ms", series: [{ points: s.nas_ms, colour: nr, label: "answer", band: true }] });
+      const lm = at("nas_ms", 30);
+      words(r("lat").v, lm == null ? "not measured (no build here now)" : `${fmt(lm, "ms")} a listing`, lm != null && lm > 1000 ? "bad" : lm != null && lm > 200 ? "warn" : "");
       draw(r("io").c, { ...base, axis: true, unit: "MB/s", series: [
         { points: s.pool_nas_read_mbs, colour: nr, label: "read" }, { points: s.pool_nas_write_mbs, colour: nw, label: "written" }] });
       legend(r("io").v, [["↓", fmt(recentMean(s.pool_nas_read_mbs, now), "MB/s"), nr], ["↑", fmt(recentMean(s.pool_nas_write_mbs, now), "MB/s"), nw]]);
