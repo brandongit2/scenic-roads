@@ -24,7 +24,7 @@ const ASKS: &[(&str, &str)] = &[
     ("crates/pipeline/src/budget/mod.rs", "the budget itself: its lists of the metered hosts"),
     ("crates/pipeline/src/budget/proxy.rs", "the proxy's tests, a metered host answered here"),
     ("crates/pipeline/src/budget/tests.rs", "the budget's tests"),
-    ("crates/pipeline/src/budget/net.rs", "the proxy's counts: a host's budget said in words for the page (limit_of) and its test, asked of no one"),
+    ("crates/pipeline/src/budget/net.rs", "the page's limit words (limit_of), asking no one"),
     ("crates/pipeline/src/agent/jobs.rs", "a test: a sandboxed job's request through the proxy"),
     ("crates/pipeline/src/inputs/sources.rs", "its tests: the staged declarations' URLs, compared, asked of no one"),
     ("crates/pipeline/src/wikiask.rs", "ureq (honours HTTPS_PROXY: Proxy::try_from_env); a 429 told (budget::seen)"),
