@@ -78,17 +78,15 @@ pub struct Proxy {
     ctx: Arc<Ctx>,
 }
 
-/// A listener for a proxy on 127.0.0.1:`port` (0: a port of its own) that the next agent's may
-/// bind beside (`SO_REUSEPORT`, as this one may be bound beside the agent before's): on macOS the
-/// last one bound takes every new connection, so from the moment the next agent binds, the jobs
-/// it takes over connect to it (queued until it serves), never refused while the one before ends.
-/// An error when `port` is held by a socket that allows none beside it.
+/// A listener for a proxy on 127.0.0.1:`port` (0: a port of its own): an error while another
+/// socket listens there. No other socket may bind beside it (no `SO_REUSEPORT`: a job or another
+/// process could take the jobs' connections), so the agent before stops its proxy before it lets
+/// go of its lock, and the next binds the port its jobs were told as soon as it holds the lock.
 pub fn listen(port: u16) -> io::Result<TcpListener> {
     use socket2::{Domain, Socket, Type};
     store::spawn::sockets(|| {
         let s = Socket::new(Domain::IPV4, Type::STREAM, None)?;
         s.set_reuse_address(true)?;
-        s.set_reuse_port(true)?;
         s.bind(&SocketAddr::from(([127, 0, 0, 1], port)).into())?;
         s.listen(1024)?;
         Ok(s.into())
@@ -596,26 +594,16 @@ mod tests {
         assert!(request(&a.addr, "GET /other HTTP/1.1\r\n\r\n").starts_with("HTTP/1.1 404"));
     }
 
-    /// Tasks #393, #588: a proxy for jobs an agent took over listens on the port they were told,
-    /// beside the agent before's still listening there: every new connection is its own, and so
-    /// they are once the one before has stopped. A port held by a socket that allows none beside
-    /// it can't be had.
+    /// Tasks #393, #588: a proxy's port can't be bound while a proxy or any other socket listens
+    /// there (none beside it), and can be again once it has stopped.
     #[test]
-    fn a_proxy_listens_on_the_port_its_jobs_were_told_beside_the_one_before() {
+    fn a_proxys_port_is_bound_by_none_beside_it() {
         let dir = tempfile::tempdir().unwrap();
-        let clock = Arc::new(StepClock::at(T0));
-        let b = || Arc::new(Budget::new(dir.path(), "m-a", clock.clone()));
-        let first = Proxy::start(b(), None).unwrap();
-        let port = first.addr.port();
-        let next = Proxy::start_listening(b(), None, listen(port).unwrap()).unwrap();
-        assert_eq!(next.addr.port(), port);
-        let asked = |p: &Proxy| p.counts.holds.load(Ordering::Relaxed);
-        assert!(request(&first.addr, "POST /hold?s=1 HTTP/1.1\r\n\r\n").starts_with("HTTP/1.1 2"));
-        assert_eq!((asked(&first), asked(&next)), (0, 1), "the next one's");
+        let first = Proxy::start(Arc::new(Budget::new(dir.path(), "m-a", Arc::new(StepClock::at(T0)))), None).unwrap();
+        let port = first.port();
+        assert!(listen(port).is_err());
         first.stop();
-        assert!(request(&next.addr, "POST /hold?s=1 HTTP/1.1\r\n\r\n").starts_with("HTTP/1.1 2"));
-        assert_eq!(asked(&next), 2);
-        next.stop();
+        assert!(listen(port).is_ok());
         let plain = store::spawn::listen("127.0.0.1:0").unwrap();
         assert!(listen(plain.local_addr().unwrap().port()).is_err());
     }

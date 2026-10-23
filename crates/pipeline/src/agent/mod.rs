@@ -1245,8 +1245,6 @@ fn edit_held(
 
 pub struct Agent {
     o: Options,
-    /// Held unless another agent runs (then this one only plans and reports: a dry run).
-    _lock: Option<AgentLock>,
     host: String,
     app: String,
     started: u64,
@@ -1300,8 +1298,11 @@ pub struct Agent {
     /// each Wikimedia request taken from the pool's one budget on the NAS, the job sandboxed so it
     /// has no other way out; the answers' lease. (And the Mac shared by measure: a job starts beside
     /// another only if both jobs' measured memory and disk fit what the Mac has left, a cold start
-    /// alone; the disk guard on.)
+    /// alone; the disk guard on.) (Declared before `_lock`, so dropped first: the proxy's port is
+    /// free before the next agent can take the lock and bind it.)
     proxy: Option<crate::budget::Proxy>,
+    /// Held unless another agent runs (then this one only plans and reports: a dry run).
+    _lock: Option<AgentLock>,
     /// The port the proxy listened on for the jobs this agent took over (`adopt_jobs`): its own
     /// listens there again, so they reach it (their sandbox lets them out only through it).
     proxy_port: Option<u16>,
@@ -1664,9 +1665,10 @@ impl Agent {
         }
         let me = format!("{} {}", cond::host_name(), std::process::id());
         // The budgets' proxy for the jobs the agent before left running, at once (not once this
-        // one has joined the pool, which may take minutes): on the port they were told, beside the
-        // agent before's proxy while it ends (proxy::listen), so their connections are served here
-        // from now on, never refused. (That port not to be had: started later, `tend_proxy`.)
+        // one has joined the pool, which may take minutes): on the port they were told, which the
+        // agent before freed before its lock (its `proxy` dropped first), so their connections are
+        // refused for moments at most, within their retries. (That port not to be had: tried
+        // again by `tend_proxy`.)
         let early_proxy = match (&lock, told_proxy_port(&o.home), o.root.clone().or_else(|| find_root(false))) {
             (Some(_), Some(port), Some(root)) if !o.dry_run => crate::budget::listen(port)
                 .ok()
@@ -14479,10 +14481,9 @@ mod tests {
         assert!(!crate::sys::signal_group(pgid, crate::sys::Signal::Probe), "no process of it left");
     }
 
-    /// Task #588: a fetching job taken over keeps its way out. The next agent starts its proxy on
-    /// the port the job was told before the agent before's has stopped (as at a takeover, its
-    /// lock let go first), and the job's next request, sandboxed, goes through it and is metered
-    /// by it, after the agent before's proxy is gone.
+    /// Task #588: a fetching job taken over keeps its way out. The agent before stops its proxy as
+    /// it lets go of its lock; the next starts its own on the port the job was told as it's made
+    /// (before its loop), and the job's next request, sandboxed, goes through it, metered there.
     #[test]
     fn a_job_taken_over_reaches_out_through_the_next_agents_proxy() {
         use std::io::{Read, Write};
@@ -14547,18 +14548,17 @@ mod tests {
         }
         let wiki = |p: &crate::budget::Proxy| p.counts.wiki.load(Ordering::Relaxed);
         assert_eq!(wiki(a.proxy.as_ref().unwrap()), 1);
-        // The agent ends, its job left running; its lock let go, its proxy still listening as the
-        // next agent starts.
+        // The agent ends, its job left running: its proxy stopped, then its lock let go (dropped
+        // in that order).
         a.hand_over_jobs();
-        a._lock = None;
-        // (Its proxy started as it's made, before its loop's first `tend_proxy`.)
+        drop(a);
+        // (The next agent's proxy started as it's made, before its loop's first `tend_proxy`.)
         let mut b = Agent::new_with(opts(), |r| r.join("catalog").is_dir()).unwrap();
         b.mac = cond::Mac::TEST;
         assert!(b.slots[0].running.as_ref().is_some_and(|r| r.adopted && r.pgid == pgid));
         let p = b.proxy.as_ref().expect("the next agent's proxy, at once");
         assert_eq!(p.addr.port(), port, "on the port its job was told");
         assert_eq!(wiki(p), 0);
-        drop(a);
         // Its next request: answered through the next agent's proxy, metered there.
         std::fs::write(&go, "").unwrap();
         let r = b.slots[0].running.as_mut().unwrap();
