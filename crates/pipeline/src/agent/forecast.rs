@@ -1452,6 +1452,13 @@ pub fn low_priority() {
     }
 }
 
+/// How the three runs scale a cost's seconds, (known, guessed) each: expected, soon, late.
+const SCALINGS: [(f64, f64); 3] = [(1.0, 1.0), (0.95, 0.75), (1.15, 1.6)];
+
+fn scaled((known, guess): (f64, f64)) -> impl Fn(&Cost) -> f64 {
+    move |c| c.secs * if c.known { known } else { guess }
+}
+
 /// The forecast for `inp`, within `BUDGET`.
 pub fn forecast(inp: &Input) -> Forecast {
     forecast_by(inp, BUDGET)
@@ -1464,13 +1471,13 @@ pub fn forecast_by(inp: &Input, budget: Duration) -> Forecast {
     let (expected, soon, late) = std::thread::scope(|s| {
         let soon = s.spawn(|| {
             low_priority();
-            run(inp, &|c| c.secs * if c.known { 0.95 } else { 0.75 }, budget)
+            run(inp, &scaled(SCALINGS[1]), budget)
         });
         let late = s.spawn(|| {
             low_priority();
-            run(inp, &|c| c.secs * if c.known { 1.15 } else { 1.6 }, budget)
+            run(inp, &scaled(SCALINGS[2]), budget)
         });
-        let expected = run(inp, &|c| c.secs, budget);
+        let expected = run(inp, &scaled(SCALINGS[0]), budget);
         let join =
             |h: std::thread::ScopedJoinHandle<'_, Sim>| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
         (expected, join(soon), join(late))
@@ -3297,14 +3304,12 @@ mod tests {
         let inp = live_scale_input(400, 1500);
         let n = items(&inp).0.len();
         assert!(n > 30_000, "{n} targets");
-        // (Whole, its CPU time bounded well past what it takes (73 s for the three runs in the test build under load; about 12.5 s a run in a release
-        // build on the M4; 21 Oct's code took over 200 s at a tenth of the scale) and short of the
-        // regression's. CPU time, not wall: a loaded machine stretches the wall, not this. The
-        // three runs `forecast_by` makes, one after another on this thread.)
+        // (Whole, its CPU time bounded well past what it takes (50 to 73 s for the three runs in
+        // the test build under load; 21 Oct's code took over 200 s in one run at a tenth of the
+        // scale). CPU time, not wall: a loaded machine stretches the wall, not this. The three
+        // runs `forecast_by` makes, one after another on this thread.)
         let cpu0 = thread_cpu();
-        let runs = [(0.95, 0.75), (1.0, 1.0), (1.15, 1.6)].map(|(known, guess)| {
-            run(&inp, &|c| c.secs * if c.known { known } else { guess }, Duration::from_secs(600))
-        });
+        let runs = SCALINGS.map(|k| run(&inp, &scaled(k), Duration::from_secs(600)));
         let took = thread_cpu() - cpu0;
         eprintln!("live scale, {n} targets: {} ms of CPU", took.as_millis());
         assert!(runs.iter().all(|r| r.done && !r.cut), "a run was cut or unfinished");
