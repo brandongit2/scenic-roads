@@ -1145,7 +1145,8 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   [[t, lo, mean, hi], …]}, net, files}` from the finest ring covering the window, its buckets grouped
   to at most 600 points a series (`POINTS_MAX`; an hour is a point every 6 s, a `since` ask grouped
   the same, by its `range`); `net`, the internet's
-  counts (`{hosts: {host: {in, out, requests, conns, retries, holds, limit}}, events}`) once the
+  counts (`{hosts: {host: {in, out, requests, conns, open, retries, holds, limit}}, events}`; `conns`
+  opened, `open` open now) once the
   proxy runs; `files`, the file stream, oldest first (`[{t, kind: read|wrote, path, bytes, ms,
   slot}]`; both left out when asked with `net: false`). A series missing has no
   measure yet (or none in the window): readers say so, never zero. 503 until the agent gives its

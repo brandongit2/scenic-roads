@@ -263,10 +263,13 @@ same tab; an alert links to the tab that says more.
   out, from every Mac's `/work/live` (`activity.js`, asked every 2 s while the tab shows; docs/pool.md
   §10, Live): the **file stream**, what each Mac is moving now, newest first (the NAS files its
   jobs opened to read or made, with their size and the open's or copy's time, and the internet
-  transfers that ended, downloads and breaks), and **internet by website**, a row per host: requests
-  and MB a second over the last 30 s, the connections opened, retries and 429 holds since each
-  Mac's agent started, and the budget it is metered by. Not shown: connections open now (the proxy
-  counts those opened) and robots.txt (no result is recorded).
+  transfers that ended, downloads and breaks), each Mac a chip in its colour on the page, and
+  **internet by website**, a row per host: requests and MB a second over the last 30 s, the
+  connections open now (those opened since each Mac's agent started on hover), retries and 429
+  holds since then, and the budget it is metered by. Not shown: robots.txt (no result is
+  recorded), a NAS read's MB/s (a read file's bytes aren't counted per file, so its line says its
+  size and the open's time), and the tokens left in a budget's window (pool-wide, on the NAS; a
+  Mac holds only its batch). Below 640 px a line's time is left out (it shows on hover).
 - **Details:** tables, unfolded, among them the steps table itself, each step with where its runs'
   time goes: its three largest phases by their mean share of a run's wall time, each with its share
   of the bytes read and written (local disk, NAS and internet: "I/O"), over its last 10 runs that ended well (the lead's status's `phase_shares`,

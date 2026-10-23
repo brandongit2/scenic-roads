@@ -1267,6 +1267,8 @@ function details(m) {
 // ---- The page -----------------------------------------------------------------------------------
 let ctx = null;
 let last = null;
+// The last render's Macs (each with its colour), for activity.js's chips.
+let shownMacs = [];
 // The regions' outlines, folders and sizes (`/work/regions`: crate::agent::regionsview), by id; the
 // catalogue they were sized by, and when they were asked.
 const drawn = { byId: {}, catalog: undefined, at: 0, asking: false };
@@ -1367,6 +1369,7 @@ function render() {
     ctx.head.replaceChildren(part("d-head", () => { throw e; }));
     return;
   }
+  shownMacs = m.macs;
   // (A part where the user is typing or has text selected stays as it was until they're done: a
   // refresh would take their keyboard or selection away.)
   const sel = window.getSelection();
@@ -1505,5 +1508,5 @@ export function dashboard(opts) {
   setInterval(() => document.visibilityState === "visible" && poll(), POLL_MS);
   poll();
   startLive({ call: ctx.call, store: ctx.store, macs: () => last?.macs || [], active: () => location.hash === "#machines" });
-  startActivity({ call: ctx.call, macs: () => last?.macs || [], active: () => location.hash === "#activity" });
+  startActivity({ call: ctx.call, macs: () => last?.macs || [], machines: () => shownMacs, active: () => location.hash === "#activity" });
 }

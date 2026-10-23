@@ -1,8 +1,8 @@
 //! The internet as this Mac's jobs use it (docs/pool.md §10, Live; task #516): counted by the
 //! agent's proxy, which every job's connection out goes through, so nothing is told by the jobs
 //! but their retries and 429s (`/retry`, `/hold`). Per host: the bytes in (to the job) and out, the
-//! requests asked (a tunnel is one: what's inside is the client's TLS), the connections opened,
-//! the retries and the holds told. And the last `EVENTS` transfers, each as it ended.
+//! requests asked (a tunnel is one: what's inside is the client's TLS), the connections opened and
+//! those open now, the retries and the holds told. And the last `EVENTS` transfers, each as it ended.
 //!
 //! And each job's bytes in and out (`Job`), by the tag its agent gave it in its proxy's address
 //! (`http://<tag>:x@127.0.0.1:<port>`, which its clients send as `Proxy-Authorization`; a client that
@@ -25,6 +25,8 @@ pub struct Host {
     pub bytes_out: AtomicU64,
     pub requests: AtomicU64,
     pub conns: AtomicU64,
+    /// The connections out open now (the proxy's `Open`).
+    pub open: AtomicU64,
     pub retries: AtomicU64,
     pub holds: AtomicU64,
 }
@@ -146,7 +148,7 @@ impl Net {
         h.iter().filter(|(n, _)| pick(n)).map(|(_, c)| field(c).load(Ordering::Relaxed)).sum()
     }
 
-    /// `/work/live`'s `net`: `{hosts: {host: {in, out, requests, conns, retries, holds, limit}},
+    /// `/work/live`'s `net`: `{hosts: {host: {in, out, requests, conns, open, retries, holds, limit}},
     /// events: [{t, host, in, out, ms, outcome}, …]}`, the events oldest first; `limit`, the budget
     /// its connections are metered by (`limit_of`), null when none.
     pub fn view(&self) -> serde_json::Value {
@@ -161,7 +163,7 @@ impl Net {
                     n.clone(),
                     serde_json::json!({
                         "in": l(&c.bytes_in), "out": l(&c.bytes_out), "requests": l(&c.requests),
-                        "conns": l(&c.conns), "retries": l(&c.retries), "holds": l(&c.holds),
+                        "conns": l(&c.conns), "open": l(&c.open), "retries": l(&c.retries), "holds": l(&c.holds),
                         "limit": limit_of(n),
                     }),
                 )

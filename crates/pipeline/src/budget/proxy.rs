@@ -440,18 +440,37 @@ fn meter(host: &str, budget: &Budget, net: &Net) -> (Option<Class>, Arc<Host>) {
     (class, h)
 }
 
-/// A connection out to `host` for its client `s`: opened (counted), else answered 502 (an event).
-fn open_out(s: &mut TcpStream, ctx: &Ctx, host: &str, port: u16, h: &Host, t0: Instant) -> Option<TcpStream> {
+/// A connection out to `host` for its client `s`: opened (counted, and open until its `Open` is
+/// dropped), else answered 502 (an event).
+fn open_out(
+    s: &mut TcpStream,
+    ctx: &Ctx,
+    host: &str,
+    port: u16,
+    h: &Arc<Host>,
+    t0: Instant,
+) -> Option<(TcpStream, Open)> {
     match open(host, port, ctx.resolve.as_ref()).and_then(|u| u.set_read_timeout(Some(ctx.limits.idle)).map(|()| u)) {
         Ok(u) => {
             h.conns.fetch_add(1, Ordering::Relaxed);
-            Some(u)
+            h.open.fetch_add(1, Ordering::Relaxed);
+            Some((u, Open(h.clone())))
         }
         Err(e) => {
             ctx.net.ended(host, (0, 0), t0.elapsed().as_millis() as u64, Outcome::Unreached);
             let _ = answer(s, "502 Bad Gateway", &format!("{host}:{port}: {e}\n"));
             None
         }
+    }
+}
+
+/// A host's connection out open: its count of those open taken back as it's dropped (however the
+/// connection ends).
+struct Open(Arc<Host>);
+
+impl Drop for Open {
+    fn drop(&mut self) {
+        self.0.open.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -486,7 +505,7 @@ fn handle(mut s: TcpStream, ctx: &Arc<Ctx>) -> io::Result<()> {
         let Some(_slot) = slot(ctx) else { return refuse_for(&mut s, ctx, &host) };
         let (class, h) = meter(&host, budget, net);
         let (began, t0) = (budget.now_ms(), Instant::now());
-        let Some(up) = open_out(&mut s, ctx, &host, port, &h, t0) else { return Ok(()) };
+        let Some((up, _open)) = open_out(&mut s, ctx, &host, port, &h, t0) else { return Ok(()) };
         // (HTTP/1.0: macOS's nc, the ssh tunnel's ProxyCommand (osmpass::streamed), takes no other.)
         s.write_all(b"HTTP/1.0 200 Connection established\r\n\r\n")?;
         let mut up_w = up.try_clone()?;
@@ -542,7 +561,7 @@ fn handle(mut s: TcpStream, ctx: &Arc<Ctx>) -> io::Result<()> {
     let Some(_slot) = slot(ctx) else { return refuse_for(&mut s, ctx, &host) };
     let (class, h) = meter(&host, budget, net);
     let (began, t0) = (budget.now_ms(), Instant::now());
-    let Some(mut up) = open_out(&mut s, ctx, &host, port, &h, t0) else { return Ok(()) };
+    let Some((mut up, _open)) = open_out(&mut s, ctx, &host, port, &h, t0) else { return Ok(()) };
     let mut out = format!("{} {path} {}\r\n", head.method, head.version);
     for h in &head.headers {
         let name = h.split(':').next().unwrap_or_default().trim().to_ascii_lowercase();
@@ -931,7 +950,7 @@ mod tests {
         let v = p.net.view();
         let s3 = &v["hosts"]["s3.amazonaws.com"];
         assert_eq!((s3["in"].as_u64(), s3["out"].as_u64()), (Some(300_000), Some(300_000)), "{v}");
-        assert_eq!((s3["requests"].as_u64(), s3["conns"].as_u64()), (Some(1), Some(1)));
+        assert_eq!((s3["requests"].as_u64(), s3["conns"].as_u64(), s3["open"].as_u64()), (Some(1), Some(1), Some(0)));
         let d = &v["hosts"]["dumps.wikimedia.org"];
         // (Its head as passed on, echoed back.)
         assert_eq!(d["in"].as_u64(), Some(echoed.len() as u64), "{v}");

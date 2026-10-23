@@ -2,8 +2,8 @@
 // lays them out (docs/mockups/build-live.html, "File stream" and "Internet by website"): what each
 // Mac's jobs are moving now (the NAS files they opened or made and the internet transfers that
 // ended, newest first) and the internet by website (each host's requests and MB a second over the
-// last `RATE_S`, the connections opened, retries and 429 holds since each Mac's agent started, the
-// budget it is metered by). From each Mac's /work/live (`files` and `net`), asked every `EVERY_MS`
+// last `RATE_S`, the connections open now, retries and 429 holds since each Mac's agent started,
+// the budget it is metered by). Each Mac a chip in its colour on the page. From each Mac's /work/live (`files` and `net`), asked every `EVERY_MS`
 // while the tab shows: this page's own Mac through its own calls, the others at their addresses
 // (live.js's `remote`). No robots.txt column: no robots result is recorded anywhere to show.
 import { remote } from "./live.js";
@@ -34,7 +34,7 @@ const parts = {};
   parts.hostsSay = el("span");
   const table = el("table", "t xhosts");
   const head = el("tr");
-  for (const [t, c] of [["website"], ["requests/s", "num"], ["MB/s", "num"], ["connections", "num"], ["retries", "num"], ["rate limit"]]) head.append(el("th", c, t));
+  for (const [t, c] of [["website"], ["requests/s", "num"], ["MB/s", "num"], ["open", "num"], ["retries", "num"], ["rate limit"]]) head.append(el("th", c, t));
   table.append(el("thead", null), (parts.body = el("tbody")));
   table.tHead.append(head);
   const wrap = el("div", "tablewrap");
@@ -54,7 +54,8 @@ export function transfersPart() {
 }
 
 /** Starts asking: `call(path, body)` this page's own Mac; `macs()` the swarm's members' addresses;
- * `active()` whether the Activity tab is shown. */
+ * `machines()` the page's Macs (dash.js's model: name, colour, status); `active()` whether the
+ * Activity tab is shown. */
 export function startActivity(c) {
   cfg = c;
   setInterval(tick, EVERY_MS);
@@ -105,6 +106,15 @@ let queued = false;
 const bytes = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : b >= 1e3 ? `${Math.round(b / 1e3)} kB` : `${b} B`);
 const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 const short = (host) => host.replace(/\.local$/, "");
+// A Mac's chip: in its colour on the build page (dash.js's MACHINE_COLOURS), its name its chip's
+// (M4 Pro), else its host's.
+function macChip(host) {
+  const m = cfg?.machines?.().find((x) => x.name === host);
+  const c = el("span", "mac", m?.status?.resources?.chip || short(host));
+  if (m?.colour) c.style.color = m.colour;
+  c.title = short(host);
+  return c;
+}
 const num = (v, d = 1) => (v ? v.toFixed(d) : "0");
 
 // The answers' rows: the NAS files and the internet transfers, each with its Mac, newest first.
@@ -128,7 +138,7 @@ function paint() {
   const rs = rows();
   parts.log.replaceChildren(...rs.map((r) => {
     const d = el("div");
-    d.append(el("span", "t", `${clock(r.t)} `), el("span", "m", `${short(r.host)} `), el("span", r.kind, r.kind === "bad" ? `${BROKE[r.outcome] || r.outcome}: ` : `${VERB[r.kind]} `), el("b", null, r.what));
+    d.append(el("span", "t", `${clock(r.t)} `), macChip(r.host), " ", el("span", r.kind, r.kind === "bad" ? `${BROKE[r.outcome] || r.outcome}: ` : `${VERB[r.kind]} `), el("b", null, r.what));
     // (A file's bytes are its length; an open's time is the open's, a copy's the copy's.)
     if (r.b || r.ms) d.append(` ${bytes(r.b)}${r.ms ? ` in ${r.ms} ms${r.kind !== "get" && r.b ? ` (${(r.b / MB / (r.ms / 1000)).toFixed(1)} MB/s)` : ""}` : ""}`);
     d.title = `${new Date(r.t).toLocaleString()} · ${short(r.host)} · ${r.what}`;
@@ -147,21 +157,21 @@ function paint() {
     const dt = (t1 - t0) / 1000;
     for (const [name, c] of Object.entries(now)) {
       const w = was[name] || { in: 0, out: 0, requests: 0 };
-      const r = by.get(name) || { req: 0, mbs: 0, conns: 0, retries: 0, holds: 0, limit: c.limit, rated: false };
+      const r = by.get(name) || { req: 0, mbs: 0, conns: 0, open: 0, retries: 0, holds: 0, limit: c.limit, rated: false };
       // (An agent restarted between: its counts began again, its rate from them alone.)
       const from = c.requests < w.requests || c.in + c.out < w.in + w.out ? { in: 0, out: 0, requests: 0 } : w;
       if (dt > 0) { r.req += (c.requests - from.requests) / dt; r.mbs += (c.in + c.out - from.in - from.out) / MB / dt; r.rated = true; }
-      r.conns += c.conns; r.retries += c.retries; r.holds += c.holds;
+      r.conns += c.conns; r.open += c.open ?? 0; r.retries += c.retries; r.holds += c.holds;
       by.set(name, r);
     }
   }
-  const list = [...by].sort((a, b) => b[1].mbs - a[1].mbs || b[1].req - a[1].req || b[1].conns - a[1].conns);
+  const list = [...by].sort((a, b) => b[1].mbs - a[1].mbs || b[1].req - a[1].req || b[1].open - a[1].open || b[1].conns - a[1].conns);
   parts.body.replaceChildren(...list.map(([name, r]) => {
     const tr = el("tr");
-    tr.append(el("td", "mono", name), el("td", "num", r.rated ? num(r.req) : "…"), el("td", "num", r.rated ? num(r.mbs, 2) : "…"), el("td", "num", String(r.conns)),
+    tr.append(el("td", "mono", name), el("td", "num", r.rated ? num(r.req) : "…"), el("td", "num", r.rated ? num(r.mbs, 2) : "…"), Object.assign(el("td", "num", String(r.open)), { title: `${r.conns} opened since each Mac's agent started` }),
       el("td", `num ${r.retries ? "warn" : ""}`, String(r.retries)), el("td", `small ${r.holds ? "warn" : "dim"}`, [r.limit || "—", r.holds ? `${r.holds} held back (429)` : ""].filter(Boolean).join(" · ")));
     return tr;
   }));
-  parts.none.textContent = list.length ? `Rates over the last ${RATE_S} s; connections, retries and holds since each Mac's agent started.`
+  parts.none.textContent = list.length ? `Rates over the last ${RATE_S} s; connections open now; retries and holds since each Mac's agent started.`
     : !kept.size ? "asking the Macs…" : answering ? "No internet traffic since the Macs' agents started." : "No Mac answers.";
 }
