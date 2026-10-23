@@ -151,13 +151,15 @@ Common rules:
   horizontal scroll on any tab; checked 2026-10-23), its height the page's up to 900 pt, scrolling
   inside beyond that.
 - **The settings** (task #521; `web/work/settings.js`, the Machines tab; `crate::agent::settings`):
-  the serving Mac's in-use share (cores kept free while it's used), build memory (GB for the
+  each Mac's in-use share (cores kept free while it's used), build memory (GB for the
   build's jobs together) and disk room target (GB kept free), and the pool's NAS reserve (GB kept
-  free on the NAS; not shown while the NAS is away). `POST /work/settings` with `{}` reads them; with
+  free on the NAS; not shown while no Mac on the page reaches the NAS). Each Mac's `POST /work/settings`
+  (its coordinator, broker or viewer; a member's page reaches the others' through CORS) with `{}` reads them; with
   `in_use` (cores), `memory`, `room` or `nas_room` (GB), each a number or `"off"`, sets them through
   the same functions as `scenic in-use`, `scenic memory`, `scenic room` and `scenic nas-room`
   (the same checks and files; `by` "the build page (<device>)"), and answers with them as they
-  stand. A bad value is refused (400) with the check's words. They change only when a person
+  stand (`mac`: its host). One ask carrying several is set in order, so a bad one after a good one
+  leaves the good one set; the page sends one at a time. A bad value is refused (400) with the check's words. They change only when a person
   presses Set or Off. The menu bar's settings are unchanged. There's no battery floor to set: the
   lead's battery floor is fixed (`cond::BATTERY_MIN`). Each slot (a Web Worker per core, less one) runs a
   task's programs over an in-memory filesystem (`web/work/runtime.js`, over browser_wasi_shim).

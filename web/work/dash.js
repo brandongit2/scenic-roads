@@ -1226,7 +1226,7 @@ function tabs(m) {
       section("d-machines", "Machines", `${m.macs.filter((x) => x.fresh).length} Macs${m.pages.length ? `, ${plural(m.pages.length, "page")}` : ""}`,
         h("div", "machines", m.macs.map((x) => machineCard(m, x)), m.gone.map(goneCard), pagesCard(m))),
       pool,
-      settingsSection(ctx.call, render, ctx.onError),
+      settingsSection(ctx.call, last?.macs || [], render, ctx.onError),
     ],
     // (Their own part: while their search has the keyboard, only it waits to be refreshed.)
     regions: [section("d-regions", null, null,
@@ -1342,7 +1342,7 @@ async function pollOnce() {
       if (seenAt === undefined) seenAt = ctx.store.get(SEEN_KEY, null);
     }
     render();
-    loadSettings(ctx.call, render);
+    if (location.hash === "#machines") loadSettings(ctx.call, last?.macs || [], render);
     // (Not waited for: the schedule shows the jobs further back as they come.)
     loadPast(sw);
   } catch (e) {
