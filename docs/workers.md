@@ -142,12 +142,26 @@ Common rules:
   `scenic status`'s "Build page") shows the build to anyone the Mac answers, with no key: in the
   pool every Mac's agent serves it, the same, from its own read of the build's state (docs/pool.md
   §10; a Mac with neither a coordinator nor a broker from a viewer that answers nothing else). A
-  device helps only when its owner turns on "Help with this tab"; a page may also pause the build
-  and ask about the lead (`/work/lead`, docs/pool.md §11): on a Mac not leading, from that Mac's
-  own page alone, its agent passing them on. This Mac's own page may also cancel a job and try a
-  failed target again (`/work/act`). `/work/?view` only watches: the same tabbed page minus "This device", in the popover's fixed 780 pt width (no horizontal scroll on any tab; checked 2026-10-23), its height the page's up to 900 pt, scrolling inside beyond that. Each slot (a Web Worker per core, less one) runs a
+  device helps only when its owner turns on "Help with this tab". A page on any device the Mac
+  answers may also pause the build, ask about the lead (`/work/lead`, docs/pool.md §11), accept a
+  held unit's warnings (`/work/inputs`), cancel a job and try a failed target again (`/work/act`),
+  and change the owner's settings (`/work/settings`, below); on a Mac not leading, its agent passes
+  them on. None needs a key or a page of the Mac's own first (the owner, 21 Oct). `/work/?view`
+  only watches: the same tabbed page minus "This device", in the popover's fixed 780 pt width (no
+  horizontal scroll on any tab; checked 2026-10-23), its height the page's up to 900 pt, scrolling
+  inside beyond that.
+- **The settings** (task #521; `web/work/settings.js`, the Machines tab; `crate::agent::settings`):
+  the serving Mac's in-use share (cores kept free while it's used), build memory (GB for the
+  build's jobs together) and disk room target (GB kept free), and the pool's NAS reserve (GB kept
+  free on the NAS; not shown while the NAS is away). `POST /work/settings` with `{}` reads them; with
+  `in_use` (cores), `memory`, `room` or `nas_room` (GB), each a number or `"off"`, sets them through
+  the same functions as `scenic in-use`, `scenic memory`, `scenic room` and `scenic nas-room`
+  (the same checks and files; `by` "the build page (<device>)"), and answers with them as they
+  stand. A bad value is refused (400) with the check's words. They change only when a person
+  presses Set or Off. The menu bar's settings are unchanged. There's no battery floor to set: the
+  lead's battery floor is fixed (`cond::BATTERY_MIN`). Each slot (a Web Worker per core, less one) runs a
   task's programs over an in-memory filesystem (`web/work/runtime.js`, over browser_wasi_shim).
-- **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`, `sums.js`, `live.js`, `chart.js`, `chartmath.js`, `worldmap.js`; docs/pipeline.md §5): a
+- **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`, `settings.js`, `sums.js`, `live.js`, `chart.js`, `chartmath.js`, `worldmap.js`; docs/pipeline.md §5): a
   sticky header (the verdict: going, done when, what needs a look; Pause, Freeze, Resume; the
   tabs), a tab per part by the address's `#hash`, and a fixed footer (the charts' range, the Live
   dot). Overview: the overview (its map figure from the last catalogue) and the world map

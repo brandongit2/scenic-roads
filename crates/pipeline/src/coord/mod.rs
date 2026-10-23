@@ -349,6 +349,9 @@ pub struct Shared {
     /// Not the lead's (a member's broker, a viewer): a page's pause is this Mac's agent's to pass
     /// on (crate::control::request in its folder, `set_forward`), not this one's to set.
     pub forward: Option<PathBuf>,
+    /// This Mac's agent's folder and the NAS's project folder (None: away), where the owner's
+    /// settings lie (`/work/settings`, crate::agent::settings; `set_settings`). None: not said yet.
+    pub settings: Option<(PathBuf, Option<PathBuf>)>,
     /// The build pages' asks to cancel a job or try a target again (`/work/act`), for this Mac's
     /// agent to act on, leading, or to pass on to the lead (crate::pool::driver::Act).
     pub page_acts: Vec<crate::pool::driver::Act>,
@@ -1229,6 +1232,7 @@ impl Coordinator {
             regions: None,
             viewer,
             forward: None,
+            settings: None,
             page_acts: Vec::new(),
             retry_blocked: None,
             own_cap: None,
@@ -2096,6 +2100,12 @@ impl Coordinator {
     /// Not the lead's: a page's pause goes to this Mac's agent (its folder `home`) to pass on.
     pub fn set_forward(&self, home: Option<PathBuf>) {
         self.shared.lock().unwrap().forward = home;
+    }
+
+    /// Where the owner's settings lie (`Shared::settings`): this Mac's agent's folder `home`, the
+    /// NAS's project folder `root`.
+    pub fn set_settings(&self, home: &Path, root: Option<&Path>) {
+        self.shared.lock().unwrap().settings = Some((home.to_path_buf(), root.map(Path::to_path_buf)));
     }
 
     pub fn take_lead_asks(&self) -> Vec<crate::control::LeadRequest> {
@@ -3355,15 +3365,59 @@ fn route(
             }
             // (Not the lead's: this Mac's agent passes it on, as its menu's.)
             let forward = shared.lock().unwrap().forward.clone();
-            if let (Some(home), true) = (forward, caller.page && caller.local) {
+            if let (Some(home), true) = (forward, caller.page) {
                 crate::control::request(&home, pause)?;
                 return Ok((200, ok));
             }
             set_pause(&mut shared.lock().unwrap(), pause, at);
             Ok((200, ok))
         }
+        "/work/settings" => {
+            // The owner's settings from the build page (docs/workers.md §7): `{}` reads them;
+            // `{"in_use": <cores> | "off"}`, `{"memory": <GB> | "off"}`, `{"room": <GB> | "off"}` set
+            // this Mac's, `{"nas_room": <GB> | "off"}` the pool's, each through the same function as
+            // its `scenic` command (crate::agent::settings). Answered with them as they stand.
+            use crate::agent::settings;
+            let b: serde_json::Value = serde_json::from_slice(body)?;
+            let Some((home, root)) = shared.lock().unwrap().settings.clone() else {
+                return Ok((
+                    503,
+                    serde_json::json!({ "error": "this Mac's agent hasn't said where its settings lie yet" }),
+                ));
+            };
+            let by = format!("the build page ({})", caller.from);
+            let said = |k: &str| -> Result<Option<String>> {
+                Ok(match &b[k] {
+                    serde_json::Value::Null => None,
+                    serde_json::Value::String(s) => Some(plain(s, 20)),
+                    serde_json::Value::Number(n) => Some(n.to_string()),
+                    _ => anyhow::bail!("{k}: a number or \"off\""),
+                })
+            };
+            if let Some(v) = said("in_use")? {
+                let n = match v.as_str() {
+                    "off" => None,
+                    v => Some(v.parse::<u32>().map_err(|_| anyhow::anyhow!("in_use: cores or \"off\", not {v}"))?),
+                };
+                settings::set_in_use(&home, n, &by)?;
+            }
+            if let Some(v) = said("memory")? {
+                settings::set_memory(&home, &v, &by)?;
+            }
+            if let Some(v) = said("room")? {
+                settings::set_room(&home, &v, &by)?;
+            }
+            if let Some(v) = said("nas_room")? {
+                let root =
+                    root.as_deref().ok_or_else(|| anyhow::anyhow!("the NAS is away: its reserve can't be set now"))?;
+                settings::set_nas_room(root, &v, &by)?;
+            }
+            let mut v = settings::view(&home, root.as_deref());
+            v["mac"] = crate::agent::cond::host().into();
+            Ok((200, v))
+        }
         "/work/act" => {
-            // This Mac's own build page's ask (docs/pool.md §11): cancel a job
+            // A build page's ask (docs/pool.md §11): cancel a job
             // (`{"cancel": {"target": …, "step": …}}`) or try a failed target again now
             // (`{"retry": {…}}`), for its agent: acted on leading, else passed on to the lead.
             let b: serde_json::Value = serde_json::from_slice(body)?;
@@ -3995,6 +4049,7 @@ mod http {
         ("dash.js", "text/javascript", include_bytes!("../../../../web/work/dash.js")),
         ("pool.js", "text/javascript", include_bytes!("../../../../web/work/pool.js")),
         ("sums.js", "text/javascript", include_bytes!("../../../../web/work/sums.js")),
+        ("settings.js", "text/javascript", include_bytes!("../../../../web/work/settings.js")),
         // Live on each Mac (the Machines tab), its charts and their sums.
         ("live.js", "text/javascript", include_bytes!("../../../../web/work/live.js")),
         ("chart.js", "text/javascript", include_bytes!("../../../../web/work/chart.js")),
@@ -4177,6 +4232,7 @@ mod http {
             .route("/work/fail", any(json))
             .route("/work/cancel", any(json))
             .route("/work/act", any(json))
+            .route("/work/settings", any(json))
             .route("/work/status", any(json))
             .route("/work/swarm", any(json))
             .route("/work/history", any(json))
@@ -4408,27 +4464,13 @@ mod http {
         if is_page || is_view {
             return next.run(req).await;
         }
-        // (A page's acts: this Mac's own page's alone, never a key's: crate::net::own.)
-        let own_page = key.is_none() && local && req.method() == Method::POST;
-        if path == "/work/act" {
-            return if own_page {
-                next.run(req).await
-            } else {
-                error(StatusCode::FORBIDDEN, "that's for this Mac's own build page")
-            };
-        }
-        // (Not the lead's, a member's broker: a page's pause, lead ask and acceptances its own
-        // page's alone, as a viewer's; its agent passes them on.)
-        let (viewer, forwards) = {
-            let s = c.shared.lock().unwrap();
-            (s.viewer, s.forward.is_some())
-        };
-        let owners_asks = matches!(path.as_str(), "/work/pause" | "/work/lead" | "/work/inputs");
-        if forwards && !viewer && key.is_none() && owners_asks && !own_page {
-            return error(StatusCode::FORBIDDEN, "that's for this Mac's own build page (it doesn't lead)");
-        }
+        // (The owner's asks from a build page, on any device that reaches it (the owner, 21 Oct:
+        // no page of this Mac's own first); a viewer's and a member's broker's passed to its agent.)
+        let viewer = c.shared.lock().unwrap().viewer;
+        let owners_asks =
+            matches!(path.as_str(), "/work/pause" | "/work/lead" | "/work/inputs" | "/work/act" | "/work/settings");
         if viewer {
-            return if own_page && owners_asks {
+            return if key.is_none() && owners_asks && req.method() == Method::POST {
                 next.run(req).await
             } else {
                 error(StatusCode::FORBIDDEN, "this Mac shows the build; it coordinates nothing")
@@ -4461,6 +4503,8 @@ mod http {
                     | "/work/pause"
                     | "/work/lead"
                     | "/work/inputs"
+                    | "/work/act"
+                    | "/work/settings"
             ),
             Method::GET => (files && !path.starts_with("/work/out/")) || path.starts_with("/work/prog/"),
             Method::PUT => path.starts_with("/work/out/"),
@@ -8422,33 +8466,66 @@ mod tests {
     }
 
     #[test]
-    fn a_members_broker_takes_the_owners_asks_from_its_own_page_alone() {
-        // (Task #409 review) a broker (not the lead's: its agent passes them on) refuses a page
-        // elsewhere's pause, lead ask and acceptance; its own page's pause goes to its agent; a
-        // retry that can't reach the lead is answered so.
+    fn a_members_broker_passes_the_owners_asks_from_any_device_to_its_agent() {
+        // (Task #409 review; #521: from any device) a broker (not the lead's: its agent passes them
+        // on): a page's pause goes to its agent, from this Mac or another device; a retry that
+        // can't reach the lead is answered so.
         let (_d, c, w) = start();
         let home = tempfile::tempdir().unwrap();
         c.set_forward(Some(home.path().to_path_buf()));
         let addr = w.urls()[0].trim_start_matches("http://").to_string();
         let far = [("X-Forwarded-For", "100.101.1.2")];
         let pause = serde_json::json!({ "pause": { "mode": "drain", "by": "x", "at": 0 } });
-        for (p, b) in [
-            ("/work/pause", pause.clone()),
-            ("/work/lead", serde_json::json!({ "take": true })),
-            ("/work/inputs", serde_json::json!({ "unit": "6/1/1", "all": true })),
-            ("/work/act", serde_json::json!({ "retry": { "target": "6/1/1" } })),
-        ] {
-            assert_eq!(send(&addr, "POST", p, None, &far, &b).0, 403, "{p} from elsewhere");
+        for h in [&far[..], &[]] {
+            assert_eq!(send(&addr, "POST", "/work/pause", None, h, &pause).0, 200);
+            assert!(crate::control::take_request(home.path()).is_some() && c.pause().is_none(), "passed to its agent");
         }
-        assert!(crate::control::take_request(home.path()).is_none() && c.pause().is_none());
-        assert_eq!(send(&addr, "POST", "/work/pause", None, &[], &pause).0, 200);
-        assert!(crate::control::take_request(home.path()).is_some() && c.pause().is_none(), "passed to its agent");
+        assert_eq!(send(&addr, "POST", "/work/lead", None, &far, &serde_json::json!({ "take": true })).0, 200);
         c.set_retry_blocked(Some("no lead now".into()));
         let (code, _, b) =
-            send(&addr, "POST", "/work/act", None, &[], &serde_json::json!({ "retry": { "target": "6/1/1" } }));
+            send(&addr, "POST", "/work/act", None, &far, &serde_json::json!({ "retry": { "target": "6/1/1" } }));
         assert_eq!(code, 409);
         assert!(b["error"].as_str().is_some_and(|e| e.contains("no lead now")), "{b}");
         assert!(c.take_page_acts().is_empty());
+    }
+
+    #[test]
+    fn the_build_pages_settings_go_through_the_commands_own_functions() {
+        // (Task #521) `/work/settings` from any device: read, set and cleared in this Mac's agent's
+        // folder and on the NAS, as `scenic in-use|memory|room|nas-room` would; a bad ask changes
+        // nothing.
+        let (_d, c, w) = start();
+        let addr = w.urls()[0].trim_start_matches("http://").to_string();
+        let far = [("X-Forwarded-For", "100.101.1.2")];
+        let post = |b: serde_json::Value| send(&addr, "POST", "/work/settings", None, &far, &b);
+        assert_eq!(post(serde_json::json!({})).0, 503, "no folder said yet");
+        let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        c.set_settings(home.path(), Some(nas.path()));
+        let (code, _, v) = post(serde_json::json!({}));
+        assert_eq!(code, 200, "{v}");
+        assert_eq!(v["memory"]["set"], false);
+        let (code, _, v) = post(serde_json::json!({ "in_use": 0, "memory": "2", "room": 1, "nas_room": "3 GB" }));
+        assert_eq!(code, 200, "{v}");
+        assert_eq!(crate::agent::share::read(home.path()).unwrap().cores, Some(0));
+        let m = crate::agent::buildmem::read(home.path()).unwrap();
+        assert!(m.mb == 2048 && m.by == "the build page (100.101.1.2)", "{m:?}");
+        assert_eq!(crate::agent::room::target(home.path()).unwrap().bytes, 1 << 30);
+        assert_eq!(crate::agent::room::nas_reserve(nas.path()).unwrap().bytes, 3 << 30);
+        assert_eq!(v["nas_room"]["bytes"], 3u64 << 30);
+        assert_eq!(post(serde_json::json!({ "memory": "0.1" })).0, 400);
+        assert_eq!(post(serde_json::json!({ "in_use": [1] })).0, 400);
+        assert_eq!(crate::agent::buildmem::read(home.path()).unwrap().mb, 2048);
+        let (code, _, v) =
+            post(serde_json::json!({ "in_use": "off", "memory": "off", "room": "off", "nas_room": "off" }));
+        assert_eq!(code, 200, "{v}");
+        assert!(
+            crate::agent::share::read(home.path()).is_none() && crate::agent::buildmem::read(home.path()).is_none()
+        );
+        assert!(
+            crate::agent::room::target(home.path()).is_none() && crate::agent::room::nas_reserve(nas.path()).is_none()
+        );
+        c.set_settings(home.path(), None);
+        assert_eq!(post(serde_json::json!({ "nas_room": "3" })).0, 400, "the NAS away");
     }
 
     #[test]
@@ -8494,8 +8571,13 @@ mod tests {
         };
         for p in ["/work/pause", "/work/ask", "/work/beat", "/work/lead", "/work/status", "/work/act", "/work/inputs"] {
             assert_eq!(ask(p, Some(&v.contact.token)), 403, "{p} with its key");
+        }
+        for p in ["/work/ask", "/work/beat", "/work/status"] {
             assert_eq!(far(p), 403, "{p} from another device");
         }
+        // (#521) the owner's asks from any device: a cancel from another device queued for its agent.
+        assert_eq!(far("/work/act"), 200);
+        assert!(v.take_page_acts().len() == 1);
         for p in ["/work/ask", "/work/beat", "/work/status"] {
             assert_eq!(ask(p, None), 403, "{p}");
         }

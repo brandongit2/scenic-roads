@@ -1028,7 +1028,7 @@ fn caches_line(c: &agent::room::Caches) -> String {
 fn in_use(cores_asked: Option<u32>, off: bool, home: &Option<PathBuf>) -> Result<()> {
     use agent::share;
     let home = home_or_default(home);
-    let cores = std::thread::available_parallelism().map_or(4, |n| n.get() as u32);
+    let cores = agent::settings::cores();
     let say = |s: Option<&share::Share>| {
         println!(
             "In-use share: {} of {cores} cores kept free of this Mac's jobs while its owner uses it ({})",
@@ -1040,14 +1040,10 @@ fn in_use(cores_asked: Option<u32>, off: bool, home: &Option<PathBuf>) -> Result
         )
     };
     if off {
-        share::set(&home, None, "")?;
-        say(None);
+        say(agent::settings::set_in_use(&home, None, "")?.as_ref());
         return Ok(());
     }
-    let n: Option<u32> = cores_asked
-        .map(|c| (c < cores).then_some(c).with_context(|| format!("--cores: 0 to {}, not {c}", cores - 1)))
-        .transpose()?;
-    let Some(n) = n else {
+    let Some(n) = cores_asked else {
         match share::read_checked(&home) {
             Ok(s) => say(s.as_ref()),
             Err(e) => {
@@ -1057,9 +1053,8 @@ fn in_use(cores_asked: Option<u32>, off: bool, home: &Option<PathBuf>) -> Result
         }
         return Ok(());
     };
-    anyhow::ensure!(home.is_dir(), "no agent here ({} isn't there)", home.display());
     let by = format!("scenic in-use on {}", agent::cond::host_name());
-    let s = share::set(&home, Some(n), &by)?;
+    let s = agent::settings::set_in_use(&home, Some(n), &by)?;
     say(s.as_ref());
     Ok(())
 }
@@ -1096,24 +1091,11 @@ fn nas_target(what: Option<&str>, root_: &Option<PathBuf>) -> Result<()> {
 /// `scenic nas-room [<GB> | off]`: the NAS reserve (agent::room::NAS_RESERVE), set in the project
 /// folder on the NAS, which every job reads; off: none; with none, how it stands.
 fn nas_room(what: Option<&str>, root_: &Option<PathBuf>) -> Result<()> {
-    use agent::room::{disk_free, nas_reserve, set_nas_reserve, size};
+    use agent::room::{disk_free, nas_reserve, size};
     let r = root(root_, true)?;
     let by = format!("scenic nas-room on {}", agent::cond::host_name());
-    match what {
-        Some("off") => {
-            set_nas_reserve(&r, None, &by)?;
-        }
-        Some(gb) => {
-            let gb: f64 = gb
-                .trim_end_matches("GB")
-                .trim_end_matches("gb")
-                .parse()
-                .ok()
-                .filter(|g: &f64| g.is_finite() && *g >= 1.0)
-                .with_context(|| format!("scenic nas-room <GB> | off, not {gb}: a reserve of 1 GB or more"))?;
-            set_nas_reserve(&r, Some((gb * (1u64 << 30) as f64) as u64), &by)?;
-        }
-        None => {}
+    if let Some(what) = what {
+        agent::settings::set_nas_room(&r, what, &by)?;
     }
     match nas_reserve(&r) {
         Some(t) => println!("NAS reserve: {} (set {} by {})", size(t.bytes), ago(t.at), t.by),
@@ -1135,27 +1117,7 @@ fn memory(what: Option<&str>, home: &Option<PathBuf>) -> Result<()> {
     let total_mb = pipeline::sys::memsize().map_or(0, |b| b >> 20);
     let limit = agent::memguard::limit_mb(total_mb);
     let set = match what {
-        Some("off") => {
-            buildmem::set(&home, None, &by)?;
-            None
-        }
-        Some(gb) => {
-            let gb: f64 = gb
-                .trim_end_matches("GB")
-                .trim_end_matches("gb")
-                .parse()
-                .ok()
-                .filter(|g: &f64| g.is_finite() && *g >= 1.0)
-                .with_context(|| format!("scenic memory <GB> | off, not {gb}: 1 GB or more"))?;
-            let mb = (gb * 1024.0) as u64;
-            anyhow::ensure!(
-                total_mb == 0 || mb <= total_mb,
-                "{gb} GB is more than this Mac has ({:.0} GB)",
-                total_mb as f64 / 1024.0
-            );
-            anyhow::ensure!(home.is_dir(), "no agent here ({} isn't there)", home.display());
-            buildmem::set(&home, Some(mb), &by)?
-        }
+        Some(what) => agent::settings::set_memory(&home, what, &by)?,
         None => buildmem::read(&home),
     };
     println!("{}", memory_line(set.as_ref(), limit, |t| ago(t)));
@@ -1190,29 +1152,17 @@ fn memory_line(set: Option<&agent::buildmem::Memory>, limit_mb: u64, ago: impl F
 /// `scenic room [<GB> | off]`: this Mac's disk room target (agent::room::Target), set in its agent's
 /// folder, which the agent reads each loop; and how it stands, as the agent's status says.
 fn room(what: Option<&str>, home: &Option<PathBuf>) -> Result<()> {
-    use agent::room::{set_target, size, target};
+    use agent::room::{size, target};
     let home = home_or_default(home);
     let by = format!("scenic room on {}", agent::cond::host_name());
     match what {
         Some("off") => {
-            set_target(&home, None, &by)?;
+            agent::settings::set_room(&home, "off", &by)?;
             println!("the disk room target is off: this Mac's agent fills its caches again as its jobs need");
         }
         Some(gb) => {
-            let gb: f64 = gb
-                .trim_end_matches("GB")
-                .trim_end_matches("gb")
-                .parse()
-                .ok()
-                .filter(|g: &f64| g.is_finite() && *g >= 1.0)
-                .with_context(|| format!("scenic room <GB> | off, not {gb}: a target of 1 GB or more"))?;
-            let bytes = (gb * (1u64 << 30) as f64) as u64;
-            anyhow::ensure!(home.is_dir(), "no agent here ({} isn't there)", home.display());
-            if let Some(n) = disk_size(&home) {
-                anyhow::ensure!(bytes < n, "a target of {} is more than this disk holds ({})", size(bytes), size(n));
-            }
             let free = agent::room::disk_free(&home).ok();
-            set_target(&home, Some(bytes), &by)?;
+            let bytes = agent::settings::set_room(&home, gb, &by)?.map_or(0, |t| t.bytes);
             let short = free.map(|f| bytes.saturating_sub(f)).unwrap_or(0);
             if short > 0 {
                 println!("the disk room target is {}: this Mac's agent frees {} of its caches as far as needed, now, jobs running or not (what they use stays), and starts no job that would cross it (`scenic room` says how it stands)", size(bytes), size(short));
@@ -1261,13 +1211,6 @@ fn room(what: Option<&str>, home: &Option<PathBuf>) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// The size of the disk holding `p` (bytes).
-fn disk_size(p: &Path) -> Option<u64> {
-    let c = std::ffi::CString::new(p.as_os_str().as_encoded_bytes()).ok()?;
-    let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
-    (unsafe { libc::statvfs(c.as_ptr(), &mut s) } == 0).then(|| s.f_blocks as u64 * s.f_frsize as u64)
 }
 
 /// This Mac's own agent's status, as it writes it in its folder `home`: the lead's `status.json`

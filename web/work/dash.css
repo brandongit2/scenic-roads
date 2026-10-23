@@ -267,3 +267,9 @@ table.t td.num, table.t th.num { text-align: right; }
 button[disabled] { opacity: .5; }
 .mc .fit summary { cursor: pointer; }
 .mc .fit > div { padding-left: 12px; }
+/* The owner's settings (settings.js): a row each, its field and Set/Off at the end; wrapped on a phone. */
+.settings .setting { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 5px 0; border-top: 1px solid var(--line); }
+.settings .setting:first-child { border-top: 0; }
+.settings .setting .k { color: var(--dim); min-width: 112px; }
+.settings .setting .ctl { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+.settings .setting input { width: 76px; margin: 0; }

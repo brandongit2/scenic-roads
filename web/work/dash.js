@@ -19,6 +19,7 @@ import { busyLanes, finished, finishedTiles, isSlotOf, laneGroups, notRead, pack
 import { fmt, timeTicks } from "./chartmath.js";
 import { liveBlock, startLive } from "./live.js";
 import { createMap } from "./worldmap.js";
+import { loadSettings, settingsSection } from "./settings.js";
 
 const POLL_MS = 10000;
 const STALE_S = 360;
@@ -428,9 +429,8 @@ function progressText(p, j, now) {
 
 // A job, as every machine's is shown: its name (its step's title and targets), its parts, its
 // progress, how long it's run and what it holds, and why it's stopped or stuck.
-// This Mac's own page (the app's panel, a browser on this Mac): it may cancel a job or try a failed
-// target again, through this Mac's agent (/work/act: refused from elsewhere).
-const OWN = ["127.0.0.1", "localhost", "[::1]", "::1"].includes(location.hostname);
+// A page on any device may cancel a job or try a failed target again, through its Mac's agent
+// (/work/act).
 async function act(body, what) {
   try {
     const [code, r] = await ctx.call("/work/act", body);
@@ -491,7 +491,7 @@ function jobBlock(j, now, fc) {
   box.append(...[inside(j, now, fc)].filter(Boolean));
   if (j.paused) box.append(h("div", "why", `Frozen: ${j.paused}`));
   else if (j.pausing) box.append(h("div", "why", "Stopping at its next safe point (what it's on is kept)"));
-  const t = OWN && jobTarget(j);
+  const t = jobTarget(j);
   if (t) box.append(h("div", "ctl", h("button", { class: "quiet", title: "Stopped now and given back to the build (not a failure); it runs again from the start", onclick: () => confirm(`Cancel ${j.what}?`) && act({ cancel: t }, `cancel ${j.what}`) }, "Cancel")));
   return box;
 }
@@ -1086,8 +1086,8 @@ function feed(m, events, seen) {
     const d = new Date(r.e.t * 1000).toDateString();
     if (d !== day) { out.append(h("div", "day", d === new Date().toDateString() ? "Today" : d)); day = d; }
     const [text, cls] = eventText(m, r.e, r.k);
-    // (A failure: tried again now from this Mac's own page, its back-off forgotten.)
-    const again = OWN && r.e.kind === "fail" && r.e.step && r.e.targets?.length && !/^stopped/.test(r.e.note || "")
+    // (A failure: tried again now, its back-off forgotten.)
+    const again = r.e.kind === "fail" && r.e.step && r.e.targets?.length && !/^stopped/.test(r.e.note || "")
       ? h("button", { class: "quiet", title: "Forget its failures and back-off: it's offered and run again now", onclick: () => act({ retry: { step: r.e.step, target: r.e.targets[0] } }, `try ${r.e.targets[0]} again`) }, "Try again") : null;
     out.append(h("div", { class: isNew(r.e, seen) ? "new" : "" }, h("span", "t", new Date(r.e.t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })), h("span", cls, r.e.step ? [swatch(S.colour(r.e.step)), text] : text), again));
   }
@@ -1226,6 +1226,7 @@ function tabs(m) {
       section("d-machines", "Machines", `${m.macs.filter((x) => x.fresh).length} Macs${m.pages.length ? `, ${plural(m.pages.length, "page")}` : ""}`,
         h("div", "machines", m.macs.map((x) => machineCard(m, x)), m.gone.map(goneCard), pagesCard(m))),
       pool,
+      settingsSection(ctx.call, render, ctx.onError),
     ],
     // (Their own part: while their search has the keyboard, only it waits to be refreshed.)
     regions: [section("d-regions", null, null,
@@ -1341,6 +1342,7 @@ async function pollOnce() {
       if (seenAt === undefined) seenAt = ctx.store.get(SEEN_KEY, null);
     }
     render();
+    loadSettings(ctx.call, render);
     // (Not waited for: the schedule shows the jobs further back as they come.)
     loadPast(sw);
   } catch (e) {

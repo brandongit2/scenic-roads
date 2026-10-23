@@ -44,6 +44,7 @@ pub mod regionsview;
 pub mod rekey;
 pub mod resume;
 pub mod room;
+pub mod settings;
 pub mod share;
 pub mod steps;
 pub mod takeover;
@@ -4207,6 +4208,10 @@ impl Agent {
         // and leases whose workers went quiet dropped.
         if let Some(c) = &self.coord {
             c.set_root(root.as_deref());
+        }
+        // (Where the owner's settings lie, for the build page's `/work/settings`, whichever serves it.)
+        for c in [&self.coord, &self.broker, &self.viewer].into_iter().flatten() {
+            c.set_settings(&self.o.home, root.as_deref());
         }
         // (In the pool, only while this Mac leads: a lead that stepped down takes its contact off,
         // so members find the new lead's.)

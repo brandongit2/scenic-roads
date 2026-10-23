@@ -979,7 +979,8 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   an app from before these records (no `view.json`, no `forecast-input.json`), the answer has no
   leases, workers nor tasks, and the forecast is the one in the lead's status. A Mac with neither
   a coordinator nor a broker serves the page from a viewer (`Coordinator::viewer`): the page and
-  its views, and this Mac's own page's asks (§11), every other call refused (its key's too); no
+  its views, and the pages' asks (§11, and the settings: docs/workers.md §7), passed to its
+  agent, every other call refused (its key's too); no
   state folder of the agent's (its token alone, in a scratch folder removed as it stops, a dead
   process's as the next starts), no history, no background loop. The usual Origin rules hold. A
   history file written again in its place (its inode or first line changed) is read from its
@@ -1153,12 +1154,12 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
 - **Menu bar:** on the lead, "Hand the Build To ▸" with each member's state (greyed with why); on a
   member, "Make This Mac Lead", or "Take Over the Build…" with no lead in touch (says what it forces
   or downgrades); Pause/Resume.
-- **Worker page:** "Make lead" per member, a handover's progress, "Take it" (unforced). On a Mac not
-  leading these, and Pause, are this Mac's own page's alone (its viewer or broker answers none from
-  elsewhere): its agent passes them on (the pause as its menu's, `crate::control::request`; the
+- **Worker page:** "Make lead" per member, a handover's progress, "Take it" (unforced), from a page
+  on any device (task #521: no page of the Mac's own first). On a Mac not leading, these and Pause
+  go to its agent, which passes them on (the pause as its menu's, `crate::control::request`; the
   lead asks and the inputs' acceptances from their queues, as on the lead).
-- **Cancel and try again from the page** (task #409): this Mac's own page (the menu bar's panel, a
-  browser on this Mac: `/work/act`, refused from elsewhere and with a key) cancels a running job
+- **Cancel and try again from the page** (task #409): a page on any device (`/work/act`)
+  cancels a running job
   and tries a failed target again. A cancel goes the way `scenic job cancel` does: on the lead to
   its agent; on a member, an ask in its agent's folder (`crate::control::request_cancel`), passed
   on to the lead whatever app it runs. A retry: this Mac's own back-off for the target forgotten at
