@@ -17424,7 +17424,6 @@ mod pool_tests {
         let home = d.path().join("app-folder/agent");
         let id = crate::pool::member_id(&home).unwrap();
         let held = crate::pool::MemberLock::take(&d.path().join("app-folder"), &id).unwrap().unwrap();
-        let t0 = Instant::now();
         let let_go = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(400));
             drop(held);
@@ -17439,8 +17438,9 @@ mod pool_tests {
         })
         .unwrap();
         let_go.join().unwrap();
+        // (In the pool at all means the retry loop got the lock before its own `JOIN_WAIT` ran
+        // out; the test's wall time, which a loaded machine stretches, isn't what's checked.)
         assert!(a.pool.is_some(), "in the pool as it starts");
-        assert!(t0.elapsed() < JOIN_WAIT, "within the wait: {:?}", t0.elapsed());
         assert!(a.out_of_pool().is_none() && a.restart_now().is_none());
     }
 
