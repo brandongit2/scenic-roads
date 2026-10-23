@@ -1278,10 +1278,11 @@ pub fn fetch_checked(agent: &ureq::Agent, url: &str, z: u8, x: u32, y: u32) -> a
                 }
                 last = Some(anyhow::anyhow!("{url}: {c}"));
             }
-            // (The budgets' proxy busy past its wait: no attempt spent, a minute's more waits.)
-            Err(e @ ureq::Error::ConnectProxyFailed(_)) if busy < 30 => {
+            // (The budgets' proxy busy past its wait (its 503; a 502 or a 400 is an attempt): no
+            // attempt spent, a minute's more waits.)
+            Err(ureq::Error::ConnectProxyFailed(m)) if m.contains(" 503/") && busy < 30 => {
                 busy += 1;
-                last = Some(anyhow::anyhow!("{url}: {e}"));
+                last = Some(anyhow::anyhow!("{url}: CONNECT proxy failed: {m}"));
                 std::thread::sleep(Duration::from_secs(2));
                 continue;
             }

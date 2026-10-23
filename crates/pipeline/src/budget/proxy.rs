@@ -25,11 +25,12 @@ const HEAD_MAX: usize = 64 << 10;
 const CONNECT_WAIT: Duration = Duration::from_secs(30);
 
 /// The proxy's bounds: a client's head within `head`, a connection idle (nothing either way) for
-/// `idle` ended (a query's tunnel charged as it ends), and at most `conns` connections served at
-/// once. One more waits, unread, for one of them to end, up to `wait` (its client sees only a slow
-/// answer); as many more as `conns` may wait, and one past those, or one whose wait ran out, is
-/// answered 503 and closed. (A terrain job keeps 64 tiles in flight, each its own tunnel: 512
-/// serve eight such jobs at once.)
+/// `idle` ended (a query's tunnel charged as it ends), and at most `conns` connections out served at
+/// once. One more waits its turn (first come, first served) for one of them to end, up to `wait`
+/// (its client sees only a slow answer), and is answered 503 when it runs out; a hold told never
+/// waits. At most twice `conns` clients at once in all: one more is answered 503 as it's taken.
+/// (A terrain job keeps 64 tiles in flight, each its own tunnel: 512 serve eight such jobs at
+/// once, and the turns share the Mac's connections out fairly among however many there are.)
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub head: Duration,
@@ -59,9 +60,9 @@ pub struct Counts {
     pub other: AtomicU64,
     /// Holds told.
     pub holds: AtomicU64,
-    /// Connections that waited for one under way to end (`Limits::conns` under way).
+    /// Connections that waited their turn (`Limits::conns` under way).
     pub waited: AtomicU64,
-    /// Connections refused: too many waiting, or waited `Limits::wait` in vain.
+    /// Connections refused: too many clients, or a turn waited `Limits::wait` in vain.
     pub refused: AtomicU64,
 }
 
@@ -71,10 +72,8 @@ struct Ctx {
     counts: Arc<Counts>,
     resolve: Option<Resolve>,
     limits: Limits,
-    /// Connections served and waiting.
+    /// Clients, connections out, and the turns waiting.
     slots: std::sync::Mutex<Slots>,
-    /// Told as one served ends.
-    freed: std::sync::Condvar,
     /// A hold being taken on the NAS (one at a time; a hold told meanwhile is held here at once).
     holding: AtomicBool,
     /// The thread taking it.
@@ -133,7 +132,6 @@ impl Proxy {
             resolve,
             limits,
             slots: Default::default(),
-            freed: Default::default(),
             holding: AtomicBool::new(false),
             hold_thread: Default::default(),
         });
@@ -236,69 +234,99 @@ fn serve(listener: TcpListener, ctx: Arc<Ctx>, stop: Arc<AtomicBool>) {
     }
 }
 
-/// Connections served and waiting (`Limits::conns` at most of each).
+/// The clients being served (twice `Limits::conns` at most), the connections out among them
+/// (`Limits::conns` at most), and the turns waiting for one, in order.
 #[derive(Default)]
 struct Slots {
+    clients: usize,
     live: usize,
-    waiting: usize,
+    turns: std::collections::VecDeque<Arc<Turn>>,
+}
+
+/// A connection out waited for: given (`given`, under `Slots`' lock) the slot of one ending.
+#[derive(Default)]
+struct Turn {
+    given: AtomicBool,
+    told: std::sync::Condvar,
 }
 
 fn slots(ctx: &Ctx) -> std::sync::MutexGuard<'_, Slots> {
     ctx.slots.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Answered 503 and closed at once (no thread waits on the client).
-fn refuse(mut s: TcpStream, ctx: &Ctx) {
-    ctx.counts.refused.fetch_add(1, Ordering::Relaxed);
-    let _ = s.set_nonblocking(true);
-    let _ = answer(&mut s, "503 Service Unavailable", "too many connections through the proxy at once\n");
-    let _ = s.shutdown(Shutdown::Write);
+/// A client's thread: let go of as it ends, however it ends.
+struct Client(Arc<Ctx>);
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        slots(&self.0).clients -= 1;
+    }
 }
 
-/// A connection taken: served on a thread of its own, at once while fewer than `conns` are, else
-/// once one ends (fewer than `conns` waiting, each `wait` at most).
-fn admit(s: TcpStream, ctx: &Arc<Ctx>) {
-    let queued = {
-        let mut sl = slots(ctx);
-        if sl.live < ctx.limits.conns {
-            sl.live += 1;
-            false
-        } else if sl.waiting < ctx.limits.conns {
-            sl.waiting += 1;
-            true
-        } else {
-            drop(sl);
-            return refuse(s, ctx);
-        }
-    };
-    let c = ctx.clone();
-    let spawned = std::thread::Builder::new().name("budgets-conn".into()).spawn(move || {
-        if queued {
-            c.counts.waited.fetch_add(1, Ordering::Relaxed);
-            let (mut sl, _) = c
-                .freed
-                .wait_timeout_while(slots(&c), c.limits.wait, |sl| sl.live >= c.limits.conns)
-                .unwrap_or_else(|e| e.into_inner());
-            sl.waiting -= 1;
-            if sl.live >= c.limits.conns {
-                drop(sl);
-                return refuse(s, &c);
+/// One of the `Limits::conns` connections out: as it ends, however it ends (a panic too), given to
+/// the turn first in line, else freed.
+struct Slot<'a>(&'a Ctx);
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        let mut sl = slots(self.0);
+        match sl.turns.pop_front() {
+            Some(t) => {
+                t.given.store(true, Ordering::SeqCst);
+                t.told.notify_one();
             }
-            sl.live += 1;
-        }
-        // (A client gone, a host that didn't answer: the client sees it.)
-        let _ = handle(s, &c);
-        slots(&c).live -= 1;
-        c.freed.notify_all();
-    });
-    if spawned.is_err() {
-        let mut sl = slots(ctx);
-        if queued {
-            sl.waiting -= 1;
-        } else {
-            sl.live -= 1;
+            None => sl.live -= 1,
         }
     }
+}
+
+/// A connection out: at once while fewer than `conns` are open and none waits, else in turn, up
+/// to `wait`; None when the wait runs out.
+fn slot(ctx: &Ctx) -> Option<Slot<'_>> {
+    let mut sl = slots(ctx);
+    if sl.live < ctx.limits.conns && sl.turns.is_empty() {
+        sl.live += 1;
+        return Some(Slot(ctx));
+    }
+    ctx.counts.waited.fetch_add(1, Ordering::Relaxed);
+    let t = Arc::new(Turn::default());
+    sl.turns.push_back(t.clone());
+    let (mut sl, _) = t
+        .told
+        .wait_timeout_while(sl, ctx.limits.wait, |_| !t.given.load(Ordering::SeqCst))
+        .unwrap_or_else(|e| e.into_inner());
+    if t.given.load(Ordering::SeqCst) {
+        return Some(Slot(ctx));
+    }
+    sl.turns.retain(|x| !Arc::ptr_eq(x, &t));
+    None
+}
+
+/// Answered 503 and closed (never waiting on the client).
+fn refuse(s: &mut TcpStream, ctx: &Ctx) -> io::Result<()> {
+    ctx.counts.refused.fetch_add(1, Ordering::Relaxed);
+    s.set_nonblocking(true)?;
+    answer(s, "503 Service Unavailable", "too many connections through the proxy at once\n")?;
+    s.shutdown(Shutdown::Write)
+}
+
+/// A client taken: served on a thread of its own while fewer than twice `conns` are.
+fn admit(mut s: TcpStream, ctx: &Arc<Ctx>) {
+    {
+        let mut sl = slots(ctx);
+        if sl.clients >= 2 * ctx.limits.conns {
+            drop(sl);
+            let _ = refuse(&mut s, ctx);
+            return;
+        }
+        sl.clients += 1;
+    }
+    let client = Client(ctx.clone());
+    // (Not spawned: the client dropped, and with it its count.)
+    let _ = std::thread::Builder::new().name("budgets-conn".into()).spawn(move || {
+        // (A client gone, a host that didn't answer: the client sees it.)
+        let _ = handle(s, &client.0);
+    });
 }
 
 /// A request's head: its first line's three parts, its header lines, and what came after it.
@@ -405,6 +433,7 @@ fn handle(mut s: TcpStream, ctx: &Arc<Ctx>) -> io::Result<()> {
         let Some((host, port)) = host_port(&head.target, 443) else {
             return answer(&mut s, "400 Bad Request", "CONNECT host:port\n");
         };
+        let Some(_slot) = slot(ctx) else { return refuse(&mut s, ctx) };
         let class = meter(&host, budget, counts);
         let began = budget.now_ms();
         let up = match open(&host, port, resolve).and_then(|u| u.set_read_timeout(Some(ctx.limits.idle)).map(|()| u)) {
@@ -456,6 +485,7 @@ fn handle(mut s: TcpStream, ctx: &Arc<Ctx>) -> io::Result<()> {
         None => (after, "/"),
     };
     let Some((host, port)) = host_port(hp, 80) else { return answer(&mut s, "400 Bad Request", "bad host\n") };
+    let Some(_slot) = slot(ctx) else { return refuse(&mut s, ctx) };
     let class = meter(&host, budget, counts);
     let began = budget.now_ms();
     let mut up = match open(&host, port, resolve).and_then(|u| u.set_read_timeout(Some(ctx.limits.idle)).map(|()| u)) {
@@ -707,8 +737,8 @@ mod tests {
         let next = a.budget.ledger()[1].window;
         let leased = (0..5).filter(|s| a.budget.dir(Class::Query).join(format!("{w}-{s}")).is_file()).count();
         assert!(next > w || leased == 5, "charged: {leased} slots of window {w}");
-        // (One connection at most, none waiting for long: while one is open, the next is answered 503; it
-        // sends nothing, so no unread request resets the answer.)
+        // (One connection out at most, no wait: while one is open, the next is answered 503; a
+        // hold told meanwhile isn't kept waiting.)
         let b = proxy_within(
             &dir.path().join("b"),
             &clock,
@@ -719,10 +749,12 @@ mod tests {
         write!(open, "CONNECT s3.amazonaws.com:443 HTTP/1.1\r\n\r\n").unwrap();
         let mut head = [0u8; 39];
         open.read_exact(&mut head).unwrap();
-        let mut r = String::new();
-        TcpStream::connect(b.addr).unwrap().read_to_string(&mut r).unwrap();
+        let r = request(&b.addr, "CONNECT s3.amazonaws.com:443 HTTP/1.1\r\n\r\n");
         assert!(r.starts_with("HTTP/1.1 503"), "{r}");
         assert_eq!(b.counts.refused.load(Ordering::Relaxed), 1);
+        let r = request(&b.addr, "POST /hold?s=5 HTTP/1.1\r\n\r\n");
+        assert!(r.ends_with("held\n"), "{r}");
+        b.settle_hold();
         drop(open);
     }
 
