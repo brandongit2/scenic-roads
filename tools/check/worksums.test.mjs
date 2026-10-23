@@ -3,7 +3,7 @@
 // slots and Macs, and the wait while this Mac hasn't read the build's state.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { busyLanes, finishedTiles, inRings, isSlotOf, laneGroups, macSlot, notRead, packRuns, pastFrom, pastRuns, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, targetsOf, tileBox, tileOf, wholeProgress } from '../../web/work/sums.js';
+import { busyLanes, finishedTiles, inRings, regionWork, regionsShown, rowsWindow, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, pastFrom, pastRuns, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, targetsOf, tileBox, tileOf, wholeProgress } from '../../web/work/sums.js';
 
 test('map: tiles from targets, their squares', () => {
   assert.deepEqual(tileOf('6/10/15'), { z: 6, x: 10, y: 15 });
@@ -171,4 +171,38 @@ test('past history: asked back a chunk at a time until it reaches the time', () 
   assert.equal(pastFrom({ seq: 300, t: 400 }, 500), null);
   assert.equal(pastFrom({ seq: 1, t: 1000 }, 500), null);
   assert.equal(pastFrom(null, 500), null);
+});
+
+test('regions: work left by step in the table\'s order, timed, by stage', () => {
+  const w = regionWork({ unit: 2, pack: 3, zz: 1, slope: 0 }, { unit: 100, pack: 2 }, ['pack', 'unit']);
+  assert.deepEqual(w, [{ step: 'pack', k: 3, s: 6 }, { step: 'unit', k: 2, s: 200 }, { step: 'zz', k: 1, s: 0 }]);
+  const stage = { pack: 'tiles', unit: 'roads', zz: 'roads' };
+  assert.deepEqual(stageSegments(w, (s) => stage[s], ['roads', 'tiles']), [{ stage: 'roads', k: 3, s: 200 }, { stage: 'tiles', k: 3, s: 6 }]);
+  assert.deepEqual(regionWork(null, {}, []), []);
+});
+
+test('regions: totals by step over regions', () => {
+  assert.deepEqual(stepTotals([{ left: { pack: 2, unit: 1 } }, { left: { pack: 5, slope: 0 } }, {}]), { pack: 7, unit: 1 });
+});
+
+test('regions: found by folder, ordered to the map, by name, by time left', () => {
+  const regs = [
+    { id: 'b', name: 'Bravo', crumbs: ['Norway', 'Bravo'], rank: 1, map_at: 50, work: [{ step: 'pack', k: 1, s: 10 }] },
+    { id: 'a', name: 'Alpha', crumbs: ['Canada', 'Alpha'], rank: 0, map_at: 90, work: [{ step: 'unit', k: 1, s: 500 }] },
+    { id: 'c', name: 'Charlie', on_map: true, rank: 2, work: [] },
+    { id: 'd', name: 'Delta', rank: 3, work: [{ step: 'pack', k: 2, s: 10 }] },
+  ];
+  const ids = (l) => l.map((r) => r.id);
+  assert.deepEqual(ids(regionsShown([...regs], 'map', '')), ['b', 'a', 'd', 'c']);
+  assert.deepEqual(ids(regionsShown([...regs], 'name', '')), ['a', 'b', 'c', 'd']);
+  assert.deepEqual(ids(regionsShown([...regs], 'left', '')), ['a', 'd', 'b', 'c']);
+  assert.deepEqual(ids(regionsShown([...regs], 'map', 'NORW')), ['b']);
+  assert.deepEqual(ids(regionsShown([...regs], 'map', 'char')), ['c']);
+});
+
+test('regions: a virtual list\'s window', () => {
+  assert.deepEqual(rowsWindow(0, 100, 20, 1000, 2), [0, 7]);
+  assert.deepEqual(rowsWindow(400, 100, 20, 1000, 2), [18, 27]);
+  assert.deepEqual(rowsWindow(400, 100, 20, 22, 2), [18, 22]);
+  assert.deepEqual(rowsWindow(0, 100, 20, 0), [0, 0]);
 });

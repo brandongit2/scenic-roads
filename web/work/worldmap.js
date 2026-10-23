@@ -17,7 +17,7 @@ const FADE_MS = 900;
 const MAX_K = 48; // pixels a world unit, most zoomed in (a z6 tile ≈ 750 px)
 const Z6 = 1000 / 64;
 
-/** A map: `el` to place, `update(data)` with {countries (rings), regions [{id, fill, edge, state}],
+/** A map: `el` to place, `highlight(id)` to light a region, `update(data)` with {countries (rings), regions [{id, fill, edge, state}],
  * running (Map key → {step, frac, current}), finished (Map key → {t}), from, now, colour(step)
  * (a CSS colour, var() allowed)}, `minimap(key)` a canvas of a tile and around it. */
 export function createMap() {
@@ -39,6 +39,7 @@ export function createMap() {
   const view = { cx: 500, cy: 420, k: 0, fitted: false };
   let size = { w: 0, h: 0 };
   let hover = null;
+  let held = null; // a region the page points at (the Regions tab's list under the pointer)
   const appeared = new Map(); // finished tile → when it began fading in (performance.now())
   let firstFinished = true;
   let raf = 0;
@@ -163,6 +164,17 @@ export function createMap() {
       c.stroke(p.edge);
       c.globalAlpha = 1;
     }
+    // (The region the page points at: filled and outlined in the accent, over the rest.)
+    const lit = focus?.startsWith("mr ") && paths.regions.get(focus.slice(3));
+    if (lit) {
+      c.globalAlpha = 0.3;
+      c.fillStyle = tokens.accent;
+      c.fill(lit.fill);
+      c.globalAlpha = 1;
+      c.strokeStyle = tokens.accent;
+      c.lineWidth = px * 1.8;
+      c.stroke(lit.edge);
+    }
     // Finished tiles: faded in as they came, paler as they age over the window.
     const t = performance.now();
     const span = Math.max(1, data.now - data.from);
@@ -208,7 +220,7 @@ export function createMap() {
     readTokens();
     const dpr = window.devicePixelRatio || 1;
     const c = canvas.getContext("2d");
-    scene(c, view, size.w, size.h, dpr, hover);
+    scene(c, view, size.w, size.h, dpr, hover || held);
     // (Still fading in: drawn again next frame.)
     const t = performance.now();
     let fading = false;
@@ -384,5 +396,13 @@ export function createMap() {
     scene(cv.getContext("2d"), { cx: bx + s / 2, cy: by + s / 2, k: w / (s * 2) }, w, hgt, dpr, `mt ${key}`);
   }
 
-  return { el, update, minimap };
+  // The region `id` lit as if pointed at (null: none), the map's own pointer first.
+  function highlight(id) {
+    const key = id ? `mr ${id}` : null;
+    if (key === held) return;
+    held = key;
+    draw();
+  }
+
+  return { el, update, minimap, highlight };
 }

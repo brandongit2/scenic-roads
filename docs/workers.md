@@ -170,7 +170,7 @@ Common rules:
   (`worldmap.js`: regions, running and finished tiles, docs/pipeline.md §5); Jobs (the schedule: each
   Mac's lanes with the jobs that ran, running and to come; the stages: a row per step with a cell
   per job; a card on hover, pinned on a click or tap); Machines (a card per
-  machine, the pool: who leads, "Make lead", "Take it"; the NAS, `nas.js`: how fast it responds, use against its limits, who is using it, its use over time); Regions; Activity (last day by the hour,
+  machine, the pool: who leads, "Make lead", "Take it"; the NAS, `nas.js`: how fast it responds, use against its limits, who is using it, its use over time); Regions (a virtual list beside a second world map, split by a bar to drag; a row under the pointer lights its region on the map and shows its card); Activity (last day by the hour,
   events); Details (leases, waits, each Mac's capacity, workers, the steps table with each step's measured
   phase shares: the lead's status's `phase_shares`, docs/pool.md §10); This device. It reads
   `/work/steps` once (the steps table: every word about a step), `/work/swarm` every 10 s and

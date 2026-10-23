@@ -248,9 +248,16 @@ same tab; an alert links to the tab that says more.
   block's NAS row (`live.js`). A measure missing, or a Mac that doesn't answer, is said so, never
   drawn as zero. The Machines cards' own NAS bar is gone (the shares are the list above); the
   capacity table's NAS column and the alerts about reaching the NAS stay.
-- **Regions:** a row per region: its folders and name, state, when it's done and all on the map,
-  its download's size, its tiles built (on the map as they come), what's left by step; found by
-  name, id or folder (`/work/regions`, docs/pool.md §10, Regions).
+- **Regions:** the list beside the world map (worldmap.js), split by a bar to drag (kept in the
+  browser; stacked, the map first, below 720 px). The list is virtual (only the rows in view are
+  made) and ordered as the regions reach the map, A–Z or by most work left; found by name, id or
+  any folder. A row per region: its folders and name, state, when it's done and all on the map,
+  its tiles built, what's left by step, its work in time and download size, and a bar of its work
+  left by stage (the forecast's `left` per step at each step's measured seconds a target, the
+  region with the most full width). Above, what's left in all regions by step, summed in the page
+  (sums.js `stepTotals`). A row under the pointer lights its region on the map; its card (the
+  Jobs tab's, also on the map's regions) says its folders, state, tiles, times, build order,
+  download, work left and outline recipe (`/work/regions`, docs/pool.md §10, Regions).
 - **Activity:** the hours, and a sentence per event.
 - **Details:** tables, unfolded, among them the steps table itself, each step with where its runs'
   time goes: its three largest phases by their mean share of a run's wall time, each with its share

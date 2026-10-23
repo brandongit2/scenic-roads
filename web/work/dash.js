@@ -15,7 +15,7 @@
 // what happened), and the details.
 
 import { poolSection, termText } from "./pool.js";
-import { busyLanes, finished, finishedTiles, isSlotOf, laneGroups, notRead, packRuns, pastFrom, pastRuns, runningTiles, slotName, slotNo, targetsOf, tileOf, wholeProgress } from "./sums.js";
+import { busyLanes, finished, finishedTiles, isSlotOf, laneGroups, notRead, packRuns, pastFrom, pastRuns, regionWork, regionsShown, rowsWindow, runningTiles, slotName, slotNo, stageSegments, stepTotals, targetsOf, tileOf, wholeProgress } from "./sums.js";
 import { fmt, timeTicks } from "./chartmath.js";
 import { liveBlock, startLive } from "./live.js";
 import { createMap } from "./worldmap.js";
@@ -353,10 +353,10 @@ function mapRuns(m) {
   for (const r of runs) r.targets = targetsOf(r, events);
   return runs;
 }
-const REGION_WORDS = { on: ["on the map", "ok"], done: ["done; on the map with the next catalogue", "ok"], building: ["building now", "run"], queued: ["to come", ""] };
-function mapSection(m) {
+// The world map's data for this render, the Overview's and the Regions tab's (one each:
+// worldmap.js), with its tiles' cards; the regions' cards are regionCards'.
+function mapData(m) {
   loadCountries();
-  worldMap ||= createMap();
   const from = m.now - (ui.past || 6 * 3600);
   const runs = mapRuns(m);
   const running = runningTiles(runs, m.fc?.each_s, m.now);
@@ -365,8 +365,6 @@ function mapSection(m) {
   const done = finishedTiles(endsHeld(), from);
   const fcRegs = Object.fromEntries((m.fc?.regions || []).map((r) => [r.id, r]));
   const regs = Object.values(drawn.byId).map((r) => ({ ...r, state: regionState(fcRegs[r.id]) }));
-  worldMap.update({ countries, regions: regs, running, finished: done, now: m.now, from, colour: S.colour });
-  // Its cards (the map names the one under the pointer: worldmap.js): each tile shown, each region.
   for (const [key, r] of running) {
     cards.set(`mt ${key}`, () => cardBody([swatch(S.colour(r.step)), ` Tile ${key}`], [
       ["step", S.title(r.step)],
@@ -375,7 +373,7 @@ function mapSection(m) {
       ["phase", r.current ? r.run.live?.phase : null],
       ["job", r.run.what],
       ["on", r.run.mac],
-    ], worldMap.minimap(key)));
+    ], mapsShown().minimap(key)));
   }
   for (const [key, f] of done) {
     if (running.has(key)) continue;
@@ -383,32 +381,31 @@ function mapSection(m) {
       ["step", S.title(f.step)],
       ["finished", `${ago(m.now, f.t)} (${clock(f.t)})`],
       ["on", f.worker],
-    ], worldMap.minimap(key)));
+    ], mapsShown().minimap(key)));
   }
-  for (const r of regs) {
-    const fr = fcRegs[r.id], b = m.a.built?.[r.id];
-    const [st, cls] = REGION_WORDS[r.state] || ["", ""];
-    cards.set(`mr ${r.id}`, () => cardBody(r.name || m.regionName[r.id] || r.id, [
-      ["in", r.crumbs?.slice(0, -1).join(" › ")],
-      ["state", st ? h("span", cls, st) : null],
-      ["tiles", b?.total ? `${n(b.built)} of ${n(b.total)} built` : null],
-      ["left", fr ? Object.entries(fr.left || {}).filter(([, k]) => k).map(([s, k]) => S.said(s, k)).join(" · ") : null],
-      ["done", fr && (r.state === "building" || r.state === "queued") && fr.ready_at ? `≈ ${clock(fr.ready_at)}` : null],
-      ["download", r.bytes != null ? size(r.bytes) : null],
-    ]));
-  }
-  // The legend: what's drawn, counted.
+  return { regs, running, done, world, data: { countries, regions: regs, running, finished: done, now: m.now, from, colour: S.colour } };
+}
+// (A tile's minimap is drawn by either map: the Overview's unless only the Regions tab's exists.)
+const mapsShown = () => worldMap || rp.map;
+// The map's legend: what's drawn, counted.
+function mapLegend(md) {
+  const { regs, running, done, world } = md;
   const count = (st) => regs.filter((r) => r.state === st).length;
   const key = (cls, text) => h("span", "lg", h("i", cls), text);
   const span = PAST.find(([s]) => s === ui.past)?.[1] || "6 h";
   const finishedN = [...done.keys()].filter((k) => !running.has(k)).length;
-  const legend = h("div", "wmap-legend small dim",
+  return h("div", "wmap-legend small dim",
     regs.length ? [key("rg on", `${count("on") + count("done")} on the map`), key("rg building", `${count("building")} building`), key("rg queued", `${count("queued")} to come`)] : h("span", null, "No regions' outlines from this Mac yet"),
     key("tl run", `${plural(running.size, "tile")} running`),
     key("tl fin", `${plural(finishedN, "tile")} finished in the last ${span}`),
     world.length ? h("span", null, `whole world: ${world.map((r) => `${S.title(r.step)} (${r.mac})`).join(", ")}`) : null,
     h("span", "hint", "drag to move · pinch, double-click or +/− to zoom"));
-  return section("d-map", "Map", `${regs.length ? plural(regs.length, "region") : "no regions"} · the z3 grid · tiles in their stage's colour`, h("div", "box wmap-box", worldMap.el, legend));
+}
+function mapSection(md) {
+  worldMap ||= createMap();
+  worldMap.update(md.data);
+  const k = md.regs.length;
+  return section("d-map", "Map", `${k ? plural(k, "region") : "no regions"} · the z3 grid · tiles in their stage's colour`, h("div", "box wmap-box", worldMap.el, mapLegend(md)));
 }
 
 // ---- Machines -----------------------------------------------------------------------------------
@@ -911,75 +908,180 @@ function stepCard(m, it, { fin, now, next, since }) {
   ], ...phaseRows(m, it.step));
 }
 
-// The regions: their order to the map, or by name, or by what's left; each its state, what it has
-// left, when it's done and when all of it is on the map (its tiles go on as they're built).
-const ui = { order: "map", filter: "", all: false, feed: "all", past: 6 * 3600 };
-function regionsList(m, rerender) {
-  // (Typing redraws the rows alone: the box keeps its keyboard.)
-  const host = h("div");
-  const draw = () => host.replaceChildren(...regionRows(m, rerender));
-  const bar = h("div", "regbar",
-    h("input", { placeholder: `Find one of ${(m.fc?.regions || []).length || Object.keys(m.a.built || {}).length} regions…`, value: ui.filter, oninput: (e) => { ui.filter = e.target.value; draw(); }, autocapitalize: "off", spellcheck: "false" }),
-    h("div", "seg", [["map", "To the map"], ["name", "A–Z"], ["left", "Most left"]].map(([k, t]) => h("button", { class: ui.order === k ? "on" : "", onclick: () => { ui.order = k; rerender(); } }, t))));
-  draw();
-  return h("div", null, bar, host);
-}
+// ---- Regions --------------------------------------------------------------------------------------
+// The Regions tab: the regions in a list beside the world map, split by a bar to drag. The list
+// (virtual: only the rows in view are made) orders them as they reach the map, by name or by
+// work left, found by any folder's name; each row its folders, state, when it's done and on the
+// map, its tiles built and a bar of its work left by stage (its targets left at each step's
+// measured seconds a target, the longest region's full width); under the pointer, its region lit
+// on the map and its card. Kept across the page's renders (its scroll, search and split with it).
+const ui = { order: "map", filter: "", feed: "all", past: 6 * 3600 };
+const ROW_H = 40;
+const rp = { section: null, el: null, map: null, list: null, rowsEl: null, rows: [], shown: [], maxS: 0, win: null, lit: null, split: 0.42 };
 
 // A download's size in words: "640 MB", "9.0 GB".
 const size = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1e6))} MB`);
 
-function regionRows(m, rerender) {
+// Each region as the tab shows it: the forecast's (its `left` by step, rank, times) with its
+// folders, size and outline (/work/regions), its tiles built (the lead's `built`), its recipe
+// (the lead's `regions`); without a forecast, the lead's regions alone.
+function regionRows(m) {
   const fc = m.fc, built = m.a.built || {};
-  const regs = (fc?.regions || []).map((r) => ({ ...r, name: m.regionName[r.id] || r.id, built: built[r.id], drawn: drawn.byId[r.id] }));
-  if (!regs.length) {
-    // (An older lead: its roads' tiles built alone.)
-    const ids = Object.keys(built);
-    if (!ids.length) return [h("div", "small dim", "No regions yet.")];
-    return [h("div", "regs", ids.map((id) => h("div", "rg", h("span", "nm", m.regionName[id] || id), h("span", "when", `${built[id].built} of ${built[id].total} tiles built`))))];
+  const order = Object.keys(table.steps), stages = table.stages.map((g) => g.id);
+  const recipe = Object.fromEntries((m.a.regions || []).map((r) => [r.id, r]));
+  const fcBy = Object.fromEntries((fc?.regions || []).map((r) => [r.id, r]));
+  const ids = fc?.regions?.length ? fc.regions.map((r) => r.id) : [...new Set([...(m.a.regions || []).map((r) => r.id), ...Object.keys(built)])];
+  return ids.map((id) => {
+    const f = fcBy[id], d = drawn.byId[id];
+    const work = regionWork(f?.left, fc?.each_s, order);
+    return { ...f, id, f, name: m.regionName[id] || d?.name || id, crumbs: d?.crumbs, bytes: d?.bytes, built: built[id], outline: recipe[id]?.outline, work,
+      segs: stageSegments(work, S.stage, stages), secs: work.reduce((t, w) => t + w.s, 0), count: work.reduce((t, w) => t + w.k, 0) };
+  });
+}
+
+// A region's state in words and its chip's class: on the map, done (with the next catalogue),
+// building now, its place in line; as the map had it before, said.
+function rowState(r) {
+  if (!r.f) return ["", ""];
+  let [st, cls] = !r.count ? (r.on_map === true ? ["on the map", "ok"] : ["done; on the map with the next catalogue", "ok"]) : r.rank === 0 ? ["building now", "run"] : [`#${r.rank + 1} in line`, ""];
+  if (r.on_map === false && r.count) st += " · on the map as it was";
+  return [st, cls];
+}
+
+// Each region's card (the list's rows and both maps' regions): its folders, state, tiles, when
+// it's built and on the map, its place in the build's order, its download, its work left by step,
+// its outline's recipe.
+function regionCards(rows) {
+  for (const r of rows) cards.set(`mr ${r.id}`, () => {
+    const [st, cls] = rowState(r);
+    const b = r.built;
+    return cardBody(r.name, [
+      ["in", r.crumbs?.slice(0, -1).join(" › ")],
+      ["state", st ? h("span", cls, st) : null],
+      ["tiles", b?.total ? `${n(b.built)} of ${n(b.total)} built` : null],
+      ["on the map", r.f ? (r.on_map === true && !r.count ? "yes" : r.map_at ? `all ≈ ${clock(r.map_at)}` : r.on_map === false ? "as it was" : "not yet") : null],
+      ["all built", r.count && r.ready_at ? `≈ ${clock(r.ready_at)}` : null],
+      ["build order", r.rank != null ? `${n(r.rank + 1)} of ${n(rows.length)}` : null],
+      ["download", r.bytes != null ? size(r.bytes) : null],
+      ["work left", r.count ? h("span", null, r.work.map((w) => h("div", null, swatch(S.colour(w.step)), S.said(w.step, w.k), w.s ? h("span", "dim", ` · ${dur(w.s)}`) : null))) : null],
+      ["outline", r.outline?.join(" + ")],
+    ], b?.total ? pbar(b.built / b.total, "ok") : null);
+  });
+}
+
+// One row: its folders and name, state chip, when; its stage bar, tiles and work left, its work
+// in time and download.
+function regionRow(r, i) {
+  const [st, cls] = rowState(r);
+  const above = r.crumbs?.slice(0, -1).join(" › ");
+  const when = r.count ? `done ≈ ${clock(r.ready_at)}${r.map_at ? ` · on the map ≈ ${clock(r.map_at)}` : ""}` : "";
+  const bar = h("span", "sbar");
+  for (const g of r.segs) bar.append(h("i", { style: { width: `${Math.max(rp.maxS ? (g.s / rp.maxS) * 100 : 0, 2)}%`, background: stageColour(g.stage) } }));
+  const b = r.built;
+  const tiles = b?.total ? (b.built < b.total ? `${n(b.built)} of ${n(b.total)} tiles` : `${n(b.total)} tiles built`) : "";
+  const left = r.work.map((w) => S.said(w.step, w.k)).join(" · ");
+  const row = h("div", { class: `rrow${r.f && !r.count && r.on_map === true ? " done" : ""}${rp.lit === r.id ? " lit" : ""}`, role: "listitem", style: { top: `${i * ROW_H}px` } },
+    h("span", "nm", above ? h("span", "dim", `${above} › `) : null, r.name, st ? [" ", chip(st, cls)] : null),
+    h("span", "when", when),
+    h("span", "lw", bar, h("span", "lt", [tiles, left ? `left: ${left}` : ""].filter(Boolean).join(" · "))),
+    h("span", "when", [r.secs ? `≈ ${dur(r.secs)} of work` : "", r.bytes != null ? size(r.bytes) : ""].filter(Boolean).join(" · ")));
+  row.dataset.id = r.id;
+  row.dataset.card = `mr ${r.id}`;
+  return row;
+}
+
+// The rows in view (again only when they change, unless `force`).
+function paintRows(force) {
+  const L = rp.list;
+  const win = rowsWindow(L.scrollTop, L.clientHeight || 600, ROW_H, rp.shown.length);
+  if (!force && rp.win && win[0] === rp.win[0] && win[1] === rp.win[1]) return;
+  rp.win = win;
+  const kids = [];
+  for (let i = win[0]; i < win[1]; i++) kids.push(regionRow(rp.shown[i], i));
+  rp.rowsEl.replaceChildren(...kids);
+}
+
+// The list again, as searched and ordered now.
+function relist() {
+  rp.shown = regionsShown([...rp.rows], ui.order, ui.filter);
+  rp.maxS = Math.max(0, ...rp.rows.map((r) => r.secs));
+  rp.rowsEl.style.height = `${rp.shown.length * ROW_H}px`;
+  rp.count.textContent = ui.filter.trim() ? `${n(rp.shown.length)} of ${n(rp.rows.length)}` : "";
+  for (const b of rp.seg.children) b.classList.toggle("on", b.dataset.order === ui.order);
+  if (!rp.shown.length) rp.rowsEl.replaceChildren(h("div", "small dim rnone", rp.rows.length ? "None found." : "No regions yet."));
+  else paintRows(true);
+}
+
+// The region under the pointer in the list, lit on the map.
+function light(id) {
+  if (rp.lit === id) return;
+  rp.lit = id;
+  rp.map.highlight(id);
+  for (const el of rp.rowsEl.children) el.classList.toggle("lit", el.dataset.id === id);
+}
+
+// The split: the list's share of the width, dragged (pointer), stepped (arrow keys) or reset
+// (double click); kept in this browser.
+const SPLIT = [0.25, 0.7];
+function setSplit(f, keep) {
+  rp.split = Math.max(SPLIT[0], Math.min(SPLIT[1], f));
+  rp.el.style.setProperty("--split", `${(rp.split * 100).toFixed(1)}%`);
+  if (keep) ctx.store.set("regionsSplit", rp.split);
+}
+function splitter() {
+  const bar = h("div", { class: "rsplit", role: "separator", "aria-orientation": "vertical", "aria-label": "The list's share of the width", tabindex: "0", title: "Drag to share the width · double-click to reset" });
+  let drag = false;
+  bar.addEventListener("pointerdown", (e) => { drag = true; bar.setPointerCapture(e.pointerId); bar.classList.add("on"); e.preventDefault(); });
+  bar.addEventListener("pointermove", (e) => { if (!drag) return; const r = rp.el.getBoundingClientRect(); setSplit((e.clientX - r.left) / r.width, false); });
+  const end = () => { if (!drag) return; drag = false; bar.classList.remove("on"); setSplit(rp.split, true); };
+  bar.addEventListener("pointerup", end);
+  bar.addEventListener("pointercancel", end);
+  bar.addEventListener("dblclick", () => setSplit(0.42, true));
+  bar.addEventListener("keydown", (e) => { const d = { ArrowLeft: -0.02, ArrowRight: 0.02 }[e.key]; if (d) { e.preventDefault(); setSplit(rp.split + d, true); } });
+  return bar;
+}
+
+function regionsPane(m, md) {
+  if (!rp.el) {
+    rp.map = createMap();
+    const find = h("input", { type: "search", placeholder: "Find a region or a folder…", value: ui.filter, autocapitalize: "off", spellcheck: "false", "aria-label": "Find a region" });
+    find.addEventListener("input", () => { ui.filter = find.value; rp.list.scrollTop = 0; relist(); });
+    rp.seg = h("div", "seg", [["map", "To the map"], ["name", "A–Z"], ["left", "Most work left"]].map(([k, t]) => {
+      const b = h("button", { onclick: () => { ui.order = k; rp.list.scrollTop = 0; relist(); } }, t);
+      b.dataset.order = k;
+      return b;
+    }));
+    rp.count = h("span", "small dim");
+    rp.totals = h("div", "rtotals small dim");
+    rp.stages = h("div", "rstages small dim");
+    rp.rowsEl = h("div", "rrows");
+    rp.list = h("div", { class: "rlist", role: "list", "aria-label": "Regions" }, rp.rowsEl);
+    let ticking = false;
+    rp.list.addEventListener("scroll", () => { if (!ticking) { ticking = true; requestAnimationFrame(() => { ticking = false; paintRows(false); }); } }, { passive: true });
+    rp.list.addEventListener("pointerover", (e) => { if (e.pointerType !== "touch") light(e.target.closest?.(".rrow")?.dataset.id || null); });
+    rp.list.addEventListener("pointerleave", () => light(null));
+    rp.legend = h("div");
+    rp.el = h("div", "rpane",
+      h("div", "rleft", h("div", "regbar", find, rp.seg, rp.count), rp.totals, rp.list, rp.stages),
+      splitter(),
+      h("div", "rright", rp.map.el, rp.legend));
+    setSplit(Number(ctx.store.get("regionsSplit", 0.42)) || 0.42, false);
+    rp.section = section("d-regions", null, null, h("div", "box", rp.el));
   }
-  const q = ui.filter.trim().toLowerCase();
-  const leftOf = (r) => Object.values(r.left).reduce((t, k) => t + k, 0);
-  // (Found by its folders' names too: "united states" finds every state.)
-  let list = regs.filter((r) => !q || r.id.includes(q) || (r.drawn?.crumbs || [r.name]).some((c) => c.toLowerCase().includes(q)));
-  const mapOrder = (r) => (r.on_map === true && !leftOf(r) ? 2e12 : r.map_at || 1e12) + r.rank;
-  if (ui.order === "map") list.sort((x, y) => mapOrder(x) - mapOrder(y));
-  else if (ui.order === "name") list.sort((x, y) => x.name.localeCompare(y.name));
-  else list.sort((x, y) => leftOf(y) - leftOf(x) || x.name.localeCompare(y.name));
-  const total = list.length;
-  if (!ui.all && !q) list = list.slice(0, 30);
-  const out = h("div", "regs");
-  let heading = null;
-  for (const r of list) {
-    const lft = leftOf(r);
-    if (ui.order === "map" && heading !== (r.map_at ? "to" : "on")) {
-      heading = r.map_at ? "to" : "on";
-      out.append(h("div", "update", r.map_at ? "On the map as their tiles are drawn" : "On the map"));
-    }
-    let state, cls = "";
-    if (!lft && r.on_map === true) [state, cls] = ["on the map", "ok"];
-    else if (!lft) [state, cls] = ["done; recorded built by the next catalogue", "ok"];
-    else if (r.rank === 0) [state, cls] = ["building now", "run"];
-    else [state, cls] = [`#${r.rank + 1} in line`, ""];
-    if (r.on_map === false) state += " · on the map as it was";
-    const when = lft ? `done ≈ ${clock(r.ready_at)}${r.map_at ? ` · all on the map ≈ ${clock(r.map_at)}` : ""}` : "";
-    // What's left, a step at a time in the table's order, each counted in its noun.
-    const order = Object.keys(table.steps);
-    const leftWords = Object.entries(r.left).filter(([, k]) => k).sort(([p], [q]) => order.indexOf(p) - order.indexOf(q)).map(([s, k]) => S.said(s, k)).join(" · ");
-    const tot = r.built?.total || 0;
-    const stack = h("div", "stack");
-    if (tot) {
-      const seg = (k, c) => { const i = h("i"); Object.assign(i.style, { width: `${(k / tot) * 100}%`, background: c }); return i; };
-      stack.append(seg(r.built.built, "var(--ok)"), seg(r.left.unit || 0, "var(--spark)"));
-    }
-    // (Where it sits in the regions' tree, and what downloading it copies of the catalogue's files.)
-    const above = r.drawn?.crumbs?.slice(0, -1).join(" › ");
-    const dl = r.drawn?.bytes != null ? `${size(r.drawn.bytes)} to download` : "";
-    out.append(h("div", { class: `rg ${!lft && r.on_map === true ? "done" : ""}` },
-      h("span", "nm", above ? h("span", "dim", `${above} › `) : null, r.name, " ", chip(state, cls)), h("span", "when", [when, dl].filter(Boolean).join(" · ")),
-      h("div", "left", tot ? stack : null, [tot ? (r.built.built < tot ? `${r.built.built} of ${tot} tiles, on the map as they come` : `${tot} tiles built`) : "", leftWords ? `left: ${leftWords}` : ""].filter(Boolean).join(" · "))));
-  }
-  const more = !q && total > list.length ? h("button", { class: "quiet more", onclick: () => { ui.all = true; rerender(); } }, `Show all ${total}`) : null;
-  return [out, more].filter(Boolean);
+  rp.rows = regionRows(m);
+  regionCards(rp.rows);
+  rp.map.update(md.data);
+  rp.legend.replaceChildren(mapLegend(md));
+  // What's left in all of them, a step at a time (the forecast's regions summed in the page).
+  const order = Object.keys(table.steps);
+  const words = Object.entries(stepTotals(m.fc?.regions)).sort(([p], [q]) => order.indexOf(p) - order.indexOf(q)).map(([s, k]) => S.said(s, k));
+  const secs = rp.rows.reduce((t, r) => t + r.secs, 0);
+  rp.totals.replaceChildren(!m.fc ? "No forecast yet (the lead makes one with each plan): the regions alone."
+    : words.length ? `Left in ${plural(rp.rows.filter((r) => r.count).length, "region")}${secs ? ` (≈ ${dur(secs)} of work)` : ""}: ${words.join(" · ")}` : "Nothing left to build in any region.");
+  const seen = [...new Set(rp.rows.flatMap((r) => r.segs.map((g) => g.stage)))];
+  rp.stages.replaceChildren(...(seen.length ? [h("span", null, "Bars: work left by stage, the most a region has full width"), ...seen.map((g) => h("span", null, swatch(stageColour(g)), S.stageTitle(g)))] : []));
+  relist();
+  return rp.section;
 }
 
 // The map's last catalogue (agent::Published's `last`, else the last the lead read, else its last
@@ -1199,12 +1301,13 @@ function head(m) {
 function tabs(m) {
   const fin = m.lines.filter(finished).length;
   const banners = gateBanners(m, (body) => ctx.call("/work/inputs", body).then(poll, (e) => ctx.onError?.(`couldn't accept: ${e.message}`)));
+  const md = mapData(m);
   const pool = poolSection(last.agent, m.now, (body) => ctx.call("/work/lead", body).then(poll, (e) => ctx.onError?.(`couldn't ask about the lead: ${e.message}`))) || section("d-pool");
   return {
     overview: [
       h("section", "d-inputs", banners),
       section("d-overview", null, null, overview(m)),
-      mapSection(m),
+      mapSection(md),
     ],
     jobs: [
       section("d-sched", "Schedule", "each Mac's jobs: those that ran, running, to come",
@@ -1220,9 +1323,7 @@ function tabs(m) {
       settingsSection(ctx.call, last?.macs || [], render, ctx.onError),
       nasSection(last.agent, m.macs),
     ],
-    // (Their own part: while their search has the keyboard, only it waits to be refreshed.)
-    regions: [section("d-regions", null, null,
-      h("div", "box", h("h3", null, "Regions", h("span", null, m.fc ? "built one at a time: those the map lacks first, then those with the fewest tiles left" : "")), regionsList(m, render)))],
+    regions: [regionsPane(m, md)],
     activity: [section("d-activity", "Activity", "the last day",
       h("div", "box", hours(m),
         h("div", "feedbar", h("div", "seg", [["all", "All"], ["problems", "Problems"], ["publishing", "Publishing"], ["pauses", "Pauses & conditions"]].map(([k, t]) => h("button", { class: ui.feed === k ? "on" : "", onclick: () => { ui.feed = k; render(); } }, t)))),
@@ -1239,7 +1340,8 @@ function render() {
   const sel = window.getSelection();
   const busy = (el) => el && ((el.contains(document.activeElement) && ["INPUT", "SELECT"].includes(document.activeElement.tagName)) || (sel && !sel.isCollapsed && el.contains(sel.anchorNode)));
   const put = (root, next) => {
-    if (root.children.length === next.length) next.forEach((el, i) => { if (!busy(root.children[i])) root.children[i].replaceWith(el); });
+    // (A part kept across renders, the Regions tab's, stays where it is.)
+    if (root.children.length === next.length) next.forEach((el, i) => { if (root.children[i] !== el && !busy(root.children[i])) root.children[i].replaceWith(el); });
     else root.replaceChildren(...next);
   };
   const scrollY = window.scrollY;

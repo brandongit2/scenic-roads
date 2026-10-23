@@ -214,3 +214,60 @@ export function inRings(rings, x, y) {
   }
   return wind !== 0;
 }
+
+// ---- The Regions tab ------------------------------------------------------------------------------
+// A region's work left, from the forecast's `left` (its targets left by step: agent::build::RegionLeft
+// as the lead counts its forecast input): a step at a time in `order` (the steps table's; others
+// after, by name), none for a step with nothing left, each with its time at the step's measured
+// seconds a target (`eachS`, 0 where unmeasured): [{step, k, s}].
+export function regionWork(left, eachS, order = []) {
+  const at = (s) => { const i = order.indexOf(s); return i < 0 ? order.length : i; };
+  return Object.entries(left || {}).filter(([, k]) => k > 0)
+    .sort(([p], [q]) => at(p) - at(q) || p.localeCompare(q))
+    .map(([step, k]) => ({ step, k, s: k * (eachS?.[step] || 0) }));
+}
+
+// A region's work by stage (`stageOf(step)`), in `stages`' order (others after): [{stage, k, s}],
+// its stage bar's segments.
+export function stageSegments(work, stageOf, stages = []) {
+  const by = new Map();
+  for (const w of work) {
+    const g = stageOf(w.step) || "";
+    const had = by.get(g) || { stage: g, k: 0, s: 0 };
+    had.k += w.k;
+    had.s += w.s;
+    by.set(g, had);
+  }
+  const at = (g) => { const i = stages.indexOf(g); return i < 0 ? stages.length : i; };
+  return [...by.values()].sort((a, b) => at(a.stage) - at(b.stage));
+}
+
+// Every region's targets left, summed by step: {step: k}.
+export function stepTotals(regions) {
+  const out = {};
+  for (const r of regions || []) for (const [s, k] of Object.entries(r.left || {})) if (k > 0) out[s] = (out[s] || 0) + k;
+  return out;
+}
+
+// The regions the list shows: those whose id or any of their folders' names (`crumbs`, else
+// `name`) has `q` (any case), ordered by `order`: "map" (as they reach the map: its time, then
+// those with nothing left on the map, each by rank), "name" (A–Z) or "left" (most time left
+// first: its `work`'s seconds, then its targets). Each: {id, name, crumbs?, rank?, map_at?, on_map?, work?}.
+export function regionsShown(regs, order, q) {
+  const f = String(q || "").trim().toLowerCase();
+  const list = regs.filter((r) => !f || r.id.toLowerCase().includes(f) || (r.crumbs?.length ? r.crumbs : [r.name]).some((c) => String(c).toLowerCase().includes(f)));
+  const secs = (r) => (r.work || []).reduce((t, w) => t + w.s, 0);
+  const count = (r) => (r.work || []).reduce((t, w) => t + w.k, 0);
+  const toMap = (r) => (count(r) || r.on_map !== true ? r.map_at || 1e12 : 2e12) + (r.rank ?? 1e6);
+  const byName = (x, y) => x.name.localeCompare(y.name);
+  if (order === "name") return list.sort(byName);
+  if (order === "left") return list.sort((x, y) => secs(y) - secs(x) || count(y) - count(x) || byName(x, y));
+  return list.sort((x, y) => toMap(x) - toMap(y) || byName(x, y));
+}
+
+// A virtual list's rows to draw: those in the box scrolled to `top` (`height` tall, rows `rowH`
+// each, `n` of them), `over` more each side: [from, to).
+export function rowsWindow(top, height, rowH, n, over = 6) {
+  const from = Math.max(0, Math.floor(top / rowH) - over);
+  return [Math.min(n, from), Math.min(n, Math.ceil((top + height) / rowH) + over)];
+}
