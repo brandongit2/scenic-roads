@@ -728,7 +728,8 @@ impl Packer {
 }
 
 /// The archives a helper's jobs put on the NAS (crate::handoff::Handoff::raw), named in `store`'s
-/// index, each that's there whole (one that isn't goes as an unnamed one does); how many were new
+/// index, each that's there whole (one that isn't goes as an unnamed one does; one the NAS can't
+/// answer for now is in `Named::again`, kept on the lead's records); how many were new
 /// to it. One its shard names already, or that the index lists as merged away, is passed over
 /// unread, and the index saved only when it changed: a restarted lead names again those its records
 /// still hold (named, not yet taken off them: crate::pool::driver::Heard::named_raw). The caller
@@ -745,9 +746,19 @@ pub fn name_handed(store: &Path, handed: &[(String, Pack)], _held: &crate::out::
         if (ix.of(shard).contains(p) && !ix.gone.contains_key(&p.name)) || ix.merged.contains(&p.name) {
             continue;
         }
-        if !there(store, p) {
-            eprintln!("rawpack: {} was handed over, but isn't on the NAS whole: not named", p.name);
-            continue;
+        // (Only a definite answer drops it: the lead's records let it go once this returns. The NAS
+        // slow or away, it's named later.)
+        match std::fs::metadata(store.join("packs").join(&p.name)) {
+            Ok(m) if m.len() == p.bytes => {}
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                eprintln!("rawpack: {} was handed over, but can't be looked at now ({e}): named later", p.name);
+                n.again.push((shard.clone(), p.clone()));
+                continue;
+            }
+            _ => {
+                eprintln!("rawpack: {} was handed over, but isn't on the NAS whole: not named", p.name);
+                continue;
+            }
         }
         // (Its tiles its shard's, all of them: one misfiled, or not an archive, would stop every job
         // that reads the shard. Its entries alone are read.)

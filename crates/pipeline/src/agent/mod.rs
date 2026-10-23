@@ -15610,6 +15610,69 @@ mod pool_tests {
         stop_jobs(&mut a);
     }
 
+    /// Task #607: a raw archive handed off reaches the lead's records, is named in the raw store's
+    /// index (pool_lead_files: one named already passed over unread, one not on the NAS passed over),
+    /// then comes off the records, saved so on the NAS.
+    #[test]
+    fn the_leads_raw_archives_named_come_off_its_saved_records() {
+        TEST_PORT.with(|p| p.set(Some(free_port())));
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        let bin = app(d.path());
+        let store = r.join("sources/aws-terrarium");
+        let named = crate::rawpack::Pack { name: "6-1-1.00000000000000aa.tiles".into(), bytes: 9 };
+        let absent = crate::rawpack::Pack { name: "6-1-1.00000000000000bb.tiles".into(), bytes: 9 };
+        let mut ix = crate::rawpack::Index::default();
+        ix.shards.insert("6-1-1".into(), vec![named.clone()]);
+        ix.save(&store).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("app-folder/agent"),
+            bin,
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
+        a.mem.last_ok.insert("backup".into(), now_s());
+        a.mem.last_ok.insert("gc".into(), now_s());
+        let raw = serde_json::to_string(&vec![("6-1-1", &named), ("6-1-1", &absent)]).unwrap();
+        let job = JobSpec {
+            id: "backup".into(),
+            what: "a hand-off of raw archives".into(),
+            cmd: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                format!(
+                    "mkdir -p \"$SCENIC_HANDOFF\" && printf '%s' '{{\"changes\":{{}},\"pending\":{{\"work/backup.0123456789abcdef.json\":\"aa\"}},\"raw\":{raw}}}' > \"$SCENIC_HANDOFF/00000000000000000001-1.json\""
+                ),
+            ],
+            needs: Needs { nas: true },
+            restart_after_sleep: false,
+            record: None,
+        };
+        let c = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 9999 };
+        until(&mut a, |a| a.pooled().unwrap().gates.leads.is_some());
+        assert!(a.try_start(0, job, &c, Some(&r), &mut Vec::new()));
+        until(&mut a, |a| {
+            a.pooled()
+                .unwrap()
+                .side
+                .driver()
+                .records()
+                .is_some_and(|r| r.pending.contains_key("work/backup.0123456789abcdef.json") && r.raw.is_empty())
+        });
+        assert!(a.pooled().unwrap().named_raw.is_empty());
+        let term = a.pooled().unwrap().side.driver().records().unwrap().term;
+        until(&mut a, |_| {
+            let s = std::fs::read_to_string(r.join(crate::pool::records::path(term))).unwrap_or_default();
+            s.contains("work/backup.0123456789abcdef.json") && !s.contains("00000000000000aa")
+        });
+        // (The index as it was: nothing read or named.)
+        assert_eq!(crate::rawpack::Index::load(&store).unwrap(), ix);
+        stop_jobs(&mut a);
+    }
+
     #[test]
     fn a_member_asks_the_lead_and_its_job_reaches_the_records_through_the_journal() {
         room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
