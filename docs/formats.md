@@ -896,7 +896,8 @@ class, id) within a tile. The client sends the id with the clicked point.
     `{"HandTo": member}`.
   - `state/coord/term/<E>/state.json`: `{leases, costs, floors, disks, job_disks (the 90th percentiles), job_peaks, failed: [[worker,
     cost key, unix seconds, times]], pause, pause_at}`; `state/coord/token`;
-    `state/coord/history/<day>/<member>.jsonl` (history events, terms' as `kind: term`).
+    `state/coord/history/<day>/<member>.jsonl` (history events, terms' as `kind: term`; days older than 7 are
+    `state/coord/history-archive/<day>.tar`, a ustar of `<day>/<member>.jsonl`).
   - `state/publish/<host>.jsonl` (pipeline::pubtimes): each Mac's map server's lines, appended,
     `{t, host, kind, n, secs?}`, `kind` one of `adopt` (catalog n served), `mirror-start` and
     `mirror-end` (its mirror's sync of catalog n begun, and through everything wanted, `secs` from

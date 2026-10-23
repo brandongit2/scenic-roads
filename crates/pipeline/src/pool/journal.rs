@@ -105,7 +105,7 @@ pub fn path(key: &str) -> String {
 }
 
 /// Whether `name` is a day folder's (`YYYY-MM-DD`).
-fn is_day(name: &str) -> bool {
+pub fn is_day(name: &str) -> bool {
     let b = name.as_bytes();
     b.len() == 10
         && b[4] == b'-'

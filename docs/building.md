@@ -296,7 +296,7 @@ devices away use the M6's (always on; https://map.brandontsang.net, docs/macs.md
   doubling.
 - **The coordinator's state** (leases, costs, failures, the pause) is the term's, on the NAS
   (`state/coord/term/<E>/state.json`); the workers' token and accepted devices are the pool's
-  (`state/coord/`); the history is each lead's own file per day (`state/coord/history/`).
+  (`state/coord/`); the history is each writer's own file per day (`state/coord/history/`; days older than a week one tar each in `state/coord/history-archive/`, docs/pool.md §7.5).
 - **Every job hands off:** under a lease `<term>-<id>` it saves into `agent/pool/jobs/<term>-<id>/`
   (`SCENIC_HANDOFF`, `pipeline::handoff`), then as an entry to the journal
   (`state/journal/<day>/<term>-<id>.json`) with its done record and costs. The lead merges entries

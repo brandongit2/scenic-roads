@@ -11,8 +11,11 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+/// The days of history the page reads (today's and the six before), kept in the day folders
+/// `state/coord/history/<day>/`; older days are packed one tar a day (crate::agent::histarchive).
+pub const DAYS: u64 = 7;
 /// How long events are kept (seconds), and the most kept (a week of a busy build is a few thousand).
-pub const KEEP_S: u64 = 7 * 86400;
+pub const KEEP_S: u64 = DAYS * 86400;
 pub const KEEP_MAX: usize = 50_000;
 
 /// One thing that happened.

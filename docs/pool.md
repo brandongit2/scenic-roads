@@ -740,7 +740,18 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
   deadline).
 - Workers are a member id and an agent instance; a new lead drops only instances that no longer
   exist.
-- **The history** is one file per writer, `state/coord/history/<day>/<member>.jsonl`.
+- **The history** is one file per writer, `state/coord/history/<day>/<member>.jsonl`, for the last
+  `history::DAYS` (7) days, the days the page view reads (`pageview` takes the same constant). A
+  day before them is packed as one tar, `state/coord/history-archive/<day>.tar` (members
+  `<day>/<member>.jsonl`), by the daily `gc` job, so the lead alone, outside its loop and the
+  pool's lock (`agent::histarchive`, task #531). Per day: its files read whole, the tar built in
+  memory and written in one stream to a temporary name (one fsync), read back and its listing
+  and bytes checked against what was read, renamed into place; only then the folder's files and
+  folder removed, and only if the folder still lists what was packed. A late write to an
+  archived day is packed again over the tar by the next run; a complete tar left by a stopped
+  run is kept and the folder removed; a stopped run's temporary file is removed once an hour
+  old. A day that fails (a folder holding anything but files, over 512 MB, a deadline) is left
+  as it is and said as a warning in the job's note. Every call goes through `nasread`'s deadlines.
 - **The contact** `state/coordinator.json`: a stopping lead removes it only if it still names its
   own addresses.
 - **Its port is free for the next:** children are started (`store::spawn`) only while no listener

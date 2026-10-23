@@ -29,6 +29,7 @@ pub mod every;
 pub mod forecast;
 pub mod gc;
 pub mod heal;
+pub mod histarchive;
 pub mod jobs;
 pub mod lead;
 pub mod live;

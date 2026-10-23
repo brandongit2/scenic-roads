@@ -46,6 +46,8 @@ pub struct Report {
     pub unmerged: usize,
     /// Tombstones found and put back (or, their name taken again, removed).
     pub tombs: usize,
+    /// Days of the history packed into `state/coord/history-archive/<day>.tar` this run.
+    pub history_days_archived: usize,
     /// The files put back this run: left alone by its sweeps (the next run decides).
     #[serde(skip)]
     pub restored: BTreeSet<PathBuf>,
@@ -311,7 +313,18 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
         COUNTING.set(true);
         crate::costin::begin();
     }
-    let r = run_once(root, keep_days, dry_run);
+    let r = run_once(root, keep_days, dry_run).map(|mut rep| {
+        // The history's old days, one tar a day (task #531); a failure is said, never fails GC.
+        match super::histarchive::run(root, crate::agent::jobs::now_s(), dry_run, &yield_point) {
+            Ok(h) => {
+                meta(h.listed, h.stats, h.files_removed as u64 + h.tmp_removed as u64 + h.days_archived as u64);
+                rep.history_days_archived = h.days_archived;
+                rep.warnings.extend(h.warnings);
+            }
+            Err(e) => rep.warnings.push(format!("history not archived: {e:#}")),
+        }
+        rep
+    });
     note_cost();
     r
 }

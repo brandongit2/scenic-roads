@@ -22,7 +22,7 @@
 //! `FORECAST_EVERY` passed: the snapshot carries the last one done, never waiting on it.
 
 use super::forecast::{Forecast, Record, SlotJob};
-use crate::coord::history::{self, Event, History};
+use crate::coord::history::{self, Event, History, DAYS};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -38,8 +38,6 @@ pub const EVERY: Duration = Duration::from_secs(12);
 const FORECAST_EVERY: Duration = Duration::from_secs(60);
 /// A member's status older than this (s) isn't shown (as the lead's own `helpers` takes them).
 const HELPER_FRESH_S: u64 = 600;
-/// The days of history read (today's and the six before it: "Show past tasks").
-pub const DAYS: u64 = 7;
 /// The most of a history file taken in a read (bytes); the rest is read the next time.
 pub const CHUNK_MAX: u64 = 4 << 20;
 
