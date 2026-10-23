@@ -16,7 +16,6 @@ use anyhow::{Context, Result};
 use det::Det;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// The release the tests' records name (the staged declaration's).
@@ -31,6 +30,7 @@ const MARGIN_KM: f64 = 1.0;
 /// mini, 23 Oct, task #579), 512 files in ~30 min.
 pub const WORKERS: usize = 8;
 /// The free space the scan's local parts need (the release's boxes, ~40 GB).
+#[cfg(not(target_os = "wasi"))]
 const PARTS_ROOM: u64 = 45 << 30;
 
 /// Release `release` as the NAS's names have it ("2026-09-23-1").
@@ -175,7 +175,9 @@ fn row_edges() -> &'static [i32] {
 }
 
 /// Calls `f` with each box of a file of them, read in blocks.
+#[cfg(not(target_os = "wasi"))]
 fn each_box(path: &Path, mut f: impl FnMut([f32; 4])) -> Result<()> {
+    use std::io::Read;
     let file = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
     anyhow::ensure!(file.metadata()?.len() % 16 == 0, "{}: not whole boxes", path.display());
     let mut r = std::io::BufReader::with_capacity(16 << 20, file);
@@ -200,6 +202,7 @@ fn each_box(path: &Path, mut f: impl FnMut([f32; 4])) -> Result<()> {
 
 /// The z-`z` tile holding a point (Web Mercator, as the agent's tiles), as numpy computed it for
 /// the scan before: the latitude clipped to Mercator's, `ln(tan φ + sec φ)`.
+#[cfg(not(target_os = "wasi"))]
 fn tile_xy(lon: f64, lat: f64, z: u8) -> (u64, u64) {
     let n = (1u64 << z) as f64;
     let x = ((lon + 180.0) / 360.0 * n).floor().clamp(0.0, n - 1.0);
@@ -211,6 +214,7 @@ fn tile_xy(lon: f64, lat: f64, z: u8) -> (u64, u64) {
 /// One file of the release (`url`, `size` bytes) into `out`: its buildings' boxes (f32
 /// `[xmin, ymin, xmax, ymax]`, degrees) by the zoom-`z` tile holding their centre (`<z>-<x>-<y>.f32`,
 /// each tile's in the file's order), `.done` once all are written. Its buildings.
+#[cfg(not(target_os = "wasi"))]
 pub fn scan_file(http: &crate::bld::fetch::Http, url: &str, size: u64, out: &Path, z: u8) -> Result<usize> {
     use rayon::prelude::*;
     if out.exists() {
@@ -255,6 +259,7 @@ pub fn scan_file(http: &crate::bld::fetch::Http, url: &str, size: u64, out: &Pat
 /// files at once: a folder per file of the release (in name order), marked `.done` once written
 /// (folders done are skipped), and the release's files in `parts/files.json`. An empty listing is a
 /// release Overture no longer serves, or a failed listing: never an empty world.
+#[cfg(not(target_os = "wasi"))]
 pub fn scan(parts: &Path, z: u8, workers: usize, release: &str, bucket: &str, s3: &str) -> Result<()> {
     use crate::pyjson::Py;
     use crate::timings::{phase, Class};
@@ -306,6 +311,7 @@ pub fn scan(parts: &Path, z: u8, workers: usize, release: &str, bucket: &str, s3
 /// marked done when written (a run cut short goes on from there); then each tile's parts are
 /// merged onto the NAS (a tile already there whole from a run cut short is left), and the index
 /// written last.
+#[cfg(not(target_os = "wasi"))]
 pub fn build(out: &mut Out, scratch: &Path, workers: usize) -> Result<()> {
     let sources = crate::inputs::sources::read(out.root(), &out.manifest)?;
     let b = sources.role(crate::inputs::sources::BUILDINGS)?;
@@ -396,6 +402,7 @@ pub fn build(out: &mut Out, scratch: &Path, workers: usize) -> Result<()> {
 
 /// A tile's buildings in a fixed order, and boxes that are bit for bit the same once (Overture
 /// holds a few such), so the same buildings make the same file.
+#[cfg(not(target_os = "wasi"))]
 fn canonical(mut v: Vec<[f32; 4]>) -> Vec<[f32; 4]> {
     let key = |b: &[f32; 4]| b.map(f32::to_bits);
     v.sort_unstable_by(|a, b| {

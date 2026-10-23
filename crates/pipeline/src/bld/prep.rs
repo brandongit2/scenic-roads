@@ -14,7 +14,6 @@
 use super::work::{self, flag, osm, Block, Meta};
 use super::{e7, z14_key, DEG_M};
 use crate::legacy::TileId;
-use crate::out::Out;
 use anyhow::{bail, ensure, Context, Result};
 use det::Det;
 use rayon::prelude::*;
@@ -812,7 +811,7 @@ pub fn read(root: &Path, release: &str, ghsl: &str, t: TileId) -> Result<Prepped
 /// folder, crate::inputs::sources), the normalized file written and uploaded as `work/bld/6-x-y`
 /// (or, when T has no building, the one it had dropped). Its counts.
 #[cfg(not(target_os = "wasi"))]
-pub fn run(out: &mut Out, t: TileId) -> Result<Stats> {
+pub fn run(out: &mut crate::out::Out, t: TileId) -> Result<Stats> {
     use crate::timings::{phase, Class};
     let (release, ghsl, _) = super::sources::declared(&crate::inputs::sources::read(out.root(), &out.manifest)?)?;
     let t0 = std::time::Instant::now();
