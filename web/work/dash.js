@@ -1314,10 +1314,12 @@ function head(m) {
 }
 
 // One section, built alone: a failure (an answer missing a field, say) shows in that section, and
-// the others and the tab still render.
+// the others and the tab still render. (Logged once a section and message, not on every render.)
+const partErrors = new Set();
 function part(cls, build) {
   try { return build(); } catch (e) {
-    console.error(`the ${cls} section:`, e);
+    const key = `${cls}\n${e.message}`;
+    if (!partErrors.has(key)) { partErrors.add(key); console.error(`the ${cls} section:`, e); }
     return section(cls, null, null, h("div", "box dim small", `This part couldn't be shown: ${e.message}`));
   }
 }
@@ -1326,7 +1328,7 @@ function part(cls, build) {
 function tabs(m) {
   const fin = m.lines.filter(finished).length;
   let md = null;
-  try { md = mapData(m); } catch (e) { console.error("the map's data:", e); }
+  try { md = mapData(m); } catch (e) { part("map data", () => { throw e; }); }
   return {
     overview: [
       part("d-inputs", () => h("section", "d-inputs", gateBanners(m, (body) => ctx.call("/work/inputs", body).then(poll, (e) => ctx.onError?.(`couldn't accept: ${e.message}`))))),
@@ -1358,7 +1360,12 @@ function tabs(m) {
 
 function render() {
   if (!last || !ctx) return;
-  const m = model(last);
+  let m;
+  try { m = model(last); } catch (e) {
+    // (An answer the page can't read at all: said in the heading, the tabs left as they were.)
+    ctx.head.replaceChildren(part("d-head", () => { throw e; }));
+    return;
+  }
   // (A part where the user is typing or has text selected stays as it was until they're done: a
   // refresh would take their keyboard or selection away.)
   const sel = window.getSelection();
@@ -1371,7 +1378,7 @@ function render() {
   const scrollY = window.scrollY;
   cards.clear();
   const feedTop = document.querySelector(".feed")?.scrollTop || 0;
-  put(ctx.head, head(m));
+  put(ctx.head, [].concat(part("d-head", () => head(m))));
   for (const [name, next] of Object.entries(tabs(m))) if (ctx.panels[name]) put(ctx.panels[name], next);
   const feedEl = document.querySelector(".feed");
   if (feedEl) feedEl.scrollTop = feedTop;
