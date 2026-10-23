@@ -145,7 +145,7 @@ Common rules:
   device helps only when its owner turns on "Help with this tab"; a page may also pause the build
   and ask about the lead (`/work/lead`, docs/pool.md §11): on a Mac not leading, from that Mac's
   own page alone, its agent passing them on. This Mac's own page may also cancel a job and try a
-  failed target again (`/work/act`). `/work/?view` only watches. Each slot (a Web Worker per core, less one) runs a
+  failed target again (`/work/act`). `/work/?view` only watches: the same tabbed page minus "This device", in the popover's fixed 780 pt width (no horizontal scroll on any tab; checked 2026-10-23), its height the page's up to 900 pt, scrolling inside beyond that. Each slot (a Web Worker per core, less one) runs a
   task's programs over an in-memory filesystem (`web/work/runtime.js`, over browser_wasi_shim).
 - **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`, `sums.js`, `live.js`, `chart.js`, `chartmath.js`; docs/pipeline.md §5): a
   sticky header (the verdict: going, done when, what needs a look; Pause, Freeze, Resume; the
