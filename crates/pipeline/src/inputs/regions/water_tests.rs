@@ -453,6 +453,23 @@ fn rings_are_cut_into_cells() {
     let _ = CELL;
 }
 
+/// What is drawn of an area kept by cell has no cell edges inside it: a ring over several cells
+/// with a hole across a cell line is one polygon with its hole, no vertex on a cell line but its
+/// own corners.
+#[test]
+fn the_drawing_has_no_cell_edges_inside() {
+    use super::tiles::{dissolved, TArea};
+    let t = TArea::from_rings(&[bx(-1.3, 0.7, 3.9, 3.6)[0].clone(), bx(0.5, 1.5, 2.5, 2.5)[0].clone()]);
+    assert!(t.cells.len() > 4);
+    let d = dissolved(&t);
+    assert_eq!(d.polys.len(), 1);
+    assert_eq!(d.polys[0].len(), 2);
+    assert!((geom::area_km2(&d) - t.km2()).abs() < 0.01);
+    let on_cell_line =
+        |p: &geom::Pt| p[0].rem_euclid(super::tiles::CELL) == 0 || p[1].rem_euclid(super::tiles::CELL) == 0;
+    assert!(!d.polys[0][0].iter().any(on_cell_line), "{:?}", d.polys[0][0]);
+}
+
 /// A zone's internal waters overlapping it are unioned with it, never cancelled; and features of
 /// one id are unioned as they're read.
 #[test]

@@ -586,7 +586,9 @@ and may record other datasets a shape came from (`gadm = "4.1"`, checked only as
   tolerance, else 0; `country` is the relation's ISO code (a computed shape's first `osm:` part's).
 - `sources/inputs/regions/@drawn/<id>.<hash16>.json`, what the catalog and the region layer draw:
   each shape simplified for drawing (an `osm:` part as the pass simplified it, else by
-  `draw_tolerance_m`), degrees to 5 decimals, keyed by `from`.
+  `draw_tolerance_m`), degrees to 5 decimals, keyed by `from`. A region resolved by cell
+  (§6.1.3) is drawn with its cells' pieces dissolved into one area first, so no 2° cell edge is
+  drawn inside it.
 
 A region of only `osm:` and `shape:` parts in `outline` with no operation is stored as **one shape
 per part, unchanged**; any operation gives one shape (two across the antimeridian); a region with

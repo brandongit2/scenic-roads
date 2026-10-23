@@ -1616,6 +1616,12 @@ fn nearest_member(comp: &BTreeMap<Cell, Area>, theirs: &[(&String, &TArea)]) -> 
     best.map(|b| b.1.clone())
 }
 
+/// The cells' pieces as one area: drawn apart, each would be outlined along the cell edges it
+/// shares with its neighbours.
+pub(super) fn dissolved(t: &TArea) -> Area {
+    geom::union_all(&t.cells.values().cloned().collect::<Vec<_>>())
+}
+
 /// A region's stored geometry and drawing: its cells' rings, one shape, its `from` its parts.
 fn store(r: &Region, res: &mut Resolved, t: &TArea, water_only: bool) {
     let mut from = r.outline_text().join(", ");
@@ -1628,10 +1634,9 @@ fn store(r: &Region, res: &mut Resolved, t: &TArea, water_only: bool) {
     let country = res.geometry.shapes.first().map(|s| s.country.clone()).unwrap_or_default();
     let rings32: Vec<Vec<[i32; 2]>> = t.rings().iter().map(|r| super::shapes::to_i32(r)).collect();
     let tol = crate::coverage::draw_tolerance_m(&rings32);
-    let polys: Vec<Vec<Vec<[f64; 2]>>> = t
-        .cells
-        .values()
-        .flat_map(|a| a.polys.iter())
+    let polys: Vec<Vec<Vec<[f64; 2]>>> = dissolved(t)
+        .polys
+        .iter()
         .map(|p| {
             p.iter()
                 .map(|r| crate::coverage::ring_degrees(&crate::outlines::simplify(&super::shapes::to_i32(r), tol)))
