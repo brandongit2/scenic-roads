@@ -210,7 +210,10 @@ same tab; an alert links to the tab that says more.
   its download's size, its tiles built (on the map as they come), what's left by step; found by
   name, id or folder (`/work/regions`, docs/pool.md §10, Regions).
 - **Activity:** the hours, and a sentence per event.
-- **Details:** tables, unfolded, among them the steps table itself.
+- **Details:** tables, unfolded, among them the steps table itself, each step with where its runs'
+  time goes: its three largest phases by their mean share of a run's wall time, each with its share
+  of the bytes moved, over its last 10 runs that ended well (the lead's status's `phase_shares`,
+  docs/pool.md §10; measured, none typed by hand; blank before a step's first run).
 - **This device:** helping with this tab (index.html; not in `?view`).
 
 Each Mac's measures over time (NAS latency, load, cores busy, memory, the build against the other apps, disk space and writes, power, jobs, its NAS calls in flight and missed, the internet by host and its last transfers; on the lead the NAS's disks' busy share and the pool's NAS traffic) come from its own

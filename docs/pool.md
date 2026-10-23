@@ -985,6 +985,14 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   history file written again in its place (its inode or first line changed) is read from its
   start, the events taken in already passed over. The menu bar's panel loads this Mac's own page
   alone (docs/building.md §2, Status).
+- **Phase shares** (task #511): for each step, its top-level phases' mean share of a run's wall
+  time and of the bytes its phases moved, over its last 10 runs that ended well
+  (`timings::SHARES_RUNS`; the bytes' mean over the runs that moved any), largest by time first:
+  the lead's status's `phase_shares` (`timings::PhaseShares`, by step), so every Mac's page shows
+  the same. Only the lead holds the build's `coord/timings.jsonl`; its coordinator reads it on a
+  thread of its own every minute (`coord::phase_sharer`), never on the agent's loop or under the
+  pool's lock: the file's size taken first, then only the lines added since (`timings::LogTail`;
+  a log cut to its newer half, or replaced, is read whole again). A member's status carries none.
 - **Each Mac's jobs** (the build page's machines, `scenic status`, task #246): a block per Mac,
   the lead's first, marked coordinator (`scenic status` with its ramp, §7.1); its capacity as the coordinator last
   heard it (memory held of the guard's limit and free for more, cores busy, disk reserved and

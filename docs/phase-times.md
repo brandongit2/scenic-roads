@@ -1,11 +1,14 @@
 # Where a build's time goes (task #492, 20 Oct 2026)
 
+**A snapshot, as measured on 20 Oct 2026; not kept up to date.** Each step's live split of time and
+bytes by phase is measured by the lead and shown on the build page (docs/pool.md §10, Phase shares).
+
 Measured from the records the pipeline keeps, not new benchmarks: the coordinator's costs (the
 latest measured run of each of 4,238 targets, term 280's `state.json`) and the lead's
 `coord/timings.jsonl` through `scenic timings --last 200 --json` (each kind's last 200 runs, the
 M4 and the M1, the NAS over Wi-Fi). CPU/wall is the run's CPU time over its wall time. The NAS,
 net and compute columns are the shares of the run's wall time in phases of that class (a mixed
-phase by its sub-phases); "untimed" is in no phase. Updated by whoever changes a step's shape.
+phase by its sub-phases); "untimed" is in no phase.
 
 ## 1. A full build, by step (the per-target steps, summed)
 

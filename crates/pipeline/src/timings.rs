@@ -1084,6 +1084,125 @@ pub fn summary(runs: &[RunRec], kind: Option<&str>, last: usize, host: Option<&s
         .collect()
 }
 
+/// How many of a step's last runs its phase shares are the mean of (`PhaseShares`).
+pub const SHARES_RUNS: usize = 10;
+
+/// A step's phases as shares of its runs, the mean over its last `SHARES_RUNS` runs that ended
+/// well (docs/pool.md §10, the steps): the lead's, published in its status, so every page shows the
+/// same measured split.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PhaseShares {
+    /// The runs it's the mean of.
+    pub runs: usize,
+    /// Each top-level phase of its main thread, by its mean share of wall time, largest first.
+    pub phases: Vec<PhaseShare>,
+}
+
+/// A phase's mean shares of its step's runs (`PhaseShares`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PhaseShare {
+    pub name: String,
+    pub class: Class,
+    /// Its mean share of a run's wall time (a run without it: 0; the rest of a run is in no phase).
+    pub wall: f64,
+    /// Its mean share of the bytes a run's phases moved (over the runs that moved any; 0 if none).
+    pub bytes: f64,
+}
+
+/// The phase shares of each kind's runs in `runs` (oldest first): its last `SHARES_RUNS` that
+/// ended well.
+pub fn phase_shares<'a>(runs: impl IntoIterator<Item = &'a RunRec>) -> std::collections::BTreeMap<String, PhaseShares> {
+    let mut by: std::collections::BTreeMap<&str, Vec<&RunRec>> = Default::default();
+    for r in runs.into_iter().filter(|r| r.ok && r.wall_s > 0.0) {
+        by.entry(r.kind.as_str()).or_default().push(r);
+    }
+    by.into_iter()
+        .map(|(k, mut rs)| {
+            rs.drain(..rs.len().saturating_sub(SHARES_RUNS));
+            let mut out: Vec<PhaseShare> = Vec::new();
+            let mut moved = 0usize;
+            for r in &rs {
+                let top: Vec<&PhaseRec> = r.phases.iter().filter(|p| !p.background).collect();
+                let bytes: u64 = top.iter().map(|p| p.bytes).sum();
+                moved += (bytes > 0) as usize;
+                for p in top {
+                    let i = match out.iter().position(|q| q.name == p.name) {
+                        Some(i) => i,
+                        None => {
+                            out.push(PhaseShare { name: p.name.clone(), class: p.class, ..Default::default() });
+                            out.len() - 1
+                        }
+                    };
+                    out[i].wall += p.wall_s / r.wall_s;
+                    if bytes > 0 {
+                        out[i].bytes += p.bytes as f64 / bytes as f64;
+                    }
+                }
+            }
+            for q in &mut out {
+                q.wall /= rs.len() as f64;
+                q.bytes = if moved > 0 { q.bytes / moved as f64 } else { 0.0 };
+            }
+            out.sort_by(|a, b| b.wall.total_cmp(&a.wall));
+            (k.to_string(), PhaseShares { runs: rs.len(), phases: out })
+        })
+        .collect()
+}
+
+/// A timings log read as it grows (`PhaseShares` on the lead): only what was appended since the
+/// last read, each kind's last `SHARES_RUNS` runs that ended well kept; read whole again when the
+/// log is cut (`append`) or replaced.
+#[derive(Default)]
+pub struct LogTail {
+    at: u64,
+    runs: std::collections::BTreeMap<String, std::collections::VecDeque<RunRec>>,
+}
+
+impl LogTail {
+    /// Reads what the log at `p` gained since the last read (its size taken first, read-only; a
+    /// partly written last line left for the next read). True when anything new was read.
+    pub fn read(&mut self, p: &Path) -> bool {
+        use std::io::{Read, Seek};
+        let Ok(len) = std::fs::metadata(p).map(|m| m.len()) else {
+            return false;
+        };
+        if len < self.at {
+            *self = Self::default();
+        }
+        if len == self.at {
+            return false;
+        }
+        let Ok(mut f) = std::fs::File::open(p) else {
+            return false;
+        };
+        let mut b = Vec::new();
+        if f.seek(std::io::SeekFrom::Start(self.at)).is_err() || f.take(len - self.at).read_to_end(&mut b).is_err() {
+            return false;
+        }
+        let Some(end) = b.iter().rposition(|&c| c == b'\n') else {
+            return false;
+        };
+        self.at += end as u64 + 1;
+        for l in b[..end].split(|&c| c == b'\n') {
+            let Ok(r) = serde_json::from_slice::<RunRec>(l) else { continue };
+            if !r.ok || r.wall_s <= 0.0 {
+                continue;
+            }
+            let q = self.runs.entry(r.kind.clone()).or_default();
+            q.push_back(r);
+            if q.len() > SHARES_RUNS {
+                q.pop_front();
+            }
+        }
+        true
+    }
+
+    /// Each kind's phase shares over the runs kept.
+    pub fn shares(&self) -> std::collections::BTreeMap<String, PhaseShares> {
+        phase_shares(self.runs.values().flatten())
+    }
+}
+
 /// The last `last` runs of each kind (or of `kind`), oldest first.
 pub fn last_runs(runs: &[RunRec], kind: Option<&str>, last: usize) -> Vec<RunRec> {
     let mut seen: std::collections::BTreeMap<&str, usize> = Default::default();
@@ -1201,6 +1320,67 @@ pub(crate) fn reset() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn share_run(kind: &str, ok: bool, wall: f64, phases: &[(&str, f64, u64)]) -> RunRec {
+        RunRec {
+            v: 1,
+            kind: kind.into(),
+            ok,
+            wall_s: wall,
+            phases: phases
+                .iter()
+                .map(|&(n, w, b)| PhaseRec { name: n.into(), wall_s: w, bytes: b, ..Default::default() })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn phase_shares_mean_of_last_runs() {
+        let mut runs = vec![share_run("t", true, 10.0, &[("read", 10.0, 100)])];
+        // (Older than the last SHARES_RUNS: left out; a failed run too.)
+        for _ in 0..SHARES_RUNS - 1 {
+            runs.push(share_run("t", true, 10.0, &[("read", 2.0, 300), ("write", 6.0, 100)]));
+        }
+        runs.push(share_run("t", false, 10.0, &[("read", 10.0, 1)]));
+        runs.push(share_run("t", true, 10.0, &[("write", 5.0, 0)]));
+        let s = &phase_shares(&runs)["t"];
+        assert_eq!(s.runs, SHARES_RUNS);
+        assert_eq!(s.phases[0].name, "write");
+        assert!((s.phases[0].wall - (0.6 * 9.0 + 0.5) / 10.0).abs() < 1e-9);
+        assert!((s.phases[1].wall - 0.2 * 0.9).abs() < 1e-9);
+        // (Bytes over the 9 runs that moved any: 3/4 read, 1/4 write.)
+        assert!((s.phases[1].bytes - 0.75).abs() < 1e-9);
+        assert!((s.phases[0].bytes - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn log_tail_reads_what_was_added() {
+        let d = tempfile::tempdir().unwrap();
+        let log = d.path().join("timings.jsonl");
+        let mut t = LogTail::default();
+        assert!(!t.read(&log), "no log");
+        for i in 0..12 {
+            append(&log, &share_run("a", true, 4.0, &[("x", i as f64 * 0.1, 0)])).unwrap();
+        }
+        assert!(t.read(&log));
+        assert!(!t.read(&log), "nothing new");
+        assert_eq!(t.shares()["a"].runs, SHARES_RUNS);
+        // (A partly written line waits for its end.)
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        let line = serde_json::to_string(&share_run("b", true, 2.0, &[("y", 1.0, 5)])).unwrap();
+        f.write_all(line[..10].as_bytes()).unwrap();
+        t.read(&log);
+        assert!(!t.shares().contains_key("b"));
+        f.write_all(format!("{}\n", &line[10..]).as_bytes()).unwrap();
+        assert!(t.read(&log));
+        assert_eq!(t.shares()["b"].phases[0].wall, 0.5);
+        // (Cut shorter: read whole again.)
+        std::fs::write(&log, format!("{line}\n")).unwrap();
+        assert!(t.read(&log));
+        assert!(!t.shares().contains_key("a"));
+    }
 
     // (One test: the run is the process's.)
     #[test]

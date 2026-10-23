@@ -154,7 +154,8 @@ Common rules:
   Mac's lanes with the jobs that ran, running and to come; the stages: a row per step with a cell
   per job; a card on hover, pinned on a click or tap); Machines (a card per
   machine, the pool: who leads, "Make lead", "Take it"); Regions; Activity (last day by the hour,
-  events); Details (leases, waits, each Mac's capacity, workers, the steps table); This device. It reads
+  events); Details (leases, waits, each Mac's capacity, workers, the steps table with each step's measured
+  phase shares: the lead's status's `phase_shares`, docs/pool.md §10); This device. It reads
   `/work/steps` once (the steps table: every word about a step), `/work/swarm` every 10 s and
   `/work/history` incrementally (and further back, a chunk at a time, for the schedule's past jobs); `/work/regions` (each region's folders, download size and
   outline: docs/pool.md §10, Regions) when the last catalogue changes, else every ten minutes;

@@ -119,6 +119,13 @@ function h(tag, attrs, ...kids) {
 const pbar = (frac, cls = "", colour) => { const i = h("i"); i.style.width = `${Math.round(Math.max(0, Math.min(1, frac)) * 100)}%`; if (colour) i.style.background = colour; return h("div", `pbar ${cls}`, i); };
 const chip = (text, cls = "", title) => h("span", { class: `chip ${cls}`, title }, text);
 const swatch = (colour) => h("i", { class: "sw", style: { background: colour } });
+// A step's phase shares (crate::timings::PhaseShares) in a line: its three largest phases by
+// their mean share of a run's time, each with its share of the bytes moved; "" before any run.
+const phaseShares = (ps) => {
+  if (!ps?.phases?.length) return "";
+  const pc = (f) => `${Math.round(f * 100)}%`;
+  return `${ps.phases.slice(0, 3).map((p) => `${p.name} ${pc(p.wall)}${p.bytes ? ` (${pc(p.bytes)} of bytes)` : ""}`).join(" · ")} · ${ps.runs} run${ps.runs === 1 ? "" : "s"}`;
+};
 // A step's mark: done, under way, to come.
 const mark = (done, running) => h("span", `mark ${done ? "ok" : running ? "run" : ""}`, done ? "✓" : running ? "▸" : "○");
 // A key, a value and a line under it: the overview's numbers, each the same.
@@ -1055,9 +1062,10 @@ function details(m) {
   if (caps.length) box.append(h("h3", null, "Capacity per Mac"), tbl(["Mac", "Memory free", "Cores free", "Disk free", "Power", "Use", "NAS", "Leases", "Said"], caps.map(([name, c]) => [name, `${gb(c.mem_mb)} of ${gb(c.limit_mb)} (${gb(c.held_mb)} held)`, `${n(c.cores_free)} of ${n(c.cores)}`, gb(c.disk_mb), c.ac ? "mains" : `battery${c.battery != null ? ` ${c.battery} %` : ""}`, c.in_use ? "in use" : "idle", !c.nas ? "not reachable" : c.home ? "reachable" : "Tailscale", (c.leases || []).join(", "), ago(now, c.at)])));
   const workers = (sw.workers || []).filter((w) => w.seen_s < 3600);
   if (workers.length) box.append(h("h3", null, "Workers heard from"), tbl(["Name", "Kind", "Doing", "Spares", "Done", "Failed", "Seen"], workers.map((w) => [w.label || w.name, w.kind, (w.what || "").slice(0, 80), w.mem_mb ? `${n(w.mem_mb)} MB` : "", n(w.done), n(w.failed), `${dur(w.seen_s)} ago`])));
-  // The steps table itself: every step the same row (docs/pipeline.md).
+  // The steps table itself: every step the same row (docs/pipeline.md), with where its runs' time
+  // goes (the lead's measured phase shares, `a.phase_shares`: the mean over its last runs).
   const rows = Object.values(table.steps);
-  if (rows.length) box.append(h("h3", null, "The steps", h("span", null, "every step's row of the table: what it makes, of what, where it runs")), tbl(["Stage", "Step", "Does", "Kind", "Each target", "Runs on", "A job"], rows.map((s) => [S.stageTitle(s.stage), s.title, s.does, s.kind, s.of ? `a task of ${S.title(s.of)}` : s.scope === "world" ? "the world" : `${/^[aeiou]/.test(s.noun) ? "an" : "a"} ${s.noun}`, s.place === "any" ? "any Mac" : "the lead", s.of ? "" : s.place === "any" ? "a quarter hour's" : "all"])));
+  if (rows.length) box.append(h("h3", null, "The steps", h("span", null, "every step's row of the table: what it makes, of what, where it runs, and where its last runs' time and bytes went")), tbl(["Stage", "Step", "Does", "Kind", "Each target", "Runs on", "A job", "Time by phase"], rows.map((s) => [S.stageTitle(s.stage), s.title, s.does, s.kind, s.of ? `a task of ${S.title(s.of)}` : s.scope === "world" ? "the world" : `${/^[aeiou]/.test(s.noun) ? "an" : "a"} ${s.noun}`, s.place === "any" ? "any Mac" : "the lead", s.of ? "" : s.place === "any" ? "a quarter hour's" : "all", phaseShares(a.phase_shares?.[s.id])])));
   box.append(h("div", "fresh", `Updated ${clock(now)} · the lead's heartbeat ${a.beat ? ago(now, a.beat) : "–"}${a.started ? `, its agent running since ${clock(a.started)} (app ${a.app})` : ""}${m.fc ? ` · forecast ${ago(now, m.fc.at)}` : ""} · history #${sw.seq ?? "–"}`));
   return box;
 }

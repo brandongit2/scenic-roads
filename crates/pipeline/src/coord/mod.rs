@@ -730,6 +730,9 @@ pub struct Coordinator {
     /// The origins whose pages may call it from elsewhere (CORS: the members' addresses, while
     /// tasks are brokered by every member; None: none, as before).
     cors: Arc<std::sync::RwLock<Option<BTreeSet<String>>>>,
+    /// Each step's phase shares over its last runs (crate::timings::PhaseShares), kept by their
+    /// own thread (`phase_sharer`), apart from the pool's lock.
+    phase_shares: Arc<Mutex<BTreeMap<String, crate::timings::PhaseShares>>>,
 }
 
 impl Drop for Coordinator {
@@ -1256,8 +1259,10 @@ impl Coordinator {
             cors: cors.clone(),
         };
         let urls = http::serve(listener, port, ctx, stopped.clone(), wake.clone(), closed_tx)?;
+        let phase_shares: Arc<Mutex<BTreeMap<String, crate::timings::PhaseShares>>> = Default::default();
         if !viewer {
             nas_prober(shared.clone(), root.clone(), stopped.clone(), me.to_string());
+            phase_sharer(dir.join("timings.jsonl"), phase_shares.clone(), stopped.clone());
         }
         let c = Coordinator {
             shared,
@@ -1271,6 +1276,7 @@ impl Coordinator {
             closed: Mutex::new(Some(closed)),
             routes,
             cors,
+            phase_shares,
         };
         if !viewer {
             c.write_page();
@@ -1618,6 +1624,12 @@ impl Coordinator {
             .filter(|(_, (at, _))| unix_now().saturating_sub(*at) < CAP_FRESH_S)
             .map(|(w, (_, why))| (w.clone(), why.clone()))
             .collect()
+    }
+
+    /// Each step's phase shares over its last runs, as its thread last read the build's timings
+    /// (`phase_sharer`; empty till then).
+    pub fn phase_shares(&self) -> BTreeMap<String, crate::timings::PhaseShares> {
+        self.phase_shares.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Each worker's share of the NAS budget now: its leased jobs' NAS weights summed, in
@@ -2556,6 +2568,38 @@ fn nas_prober(
     };
     if let Err(e) = std::thread::Builder::new().name("nas-probe".into()).spawn(run) {
         eprintln!("coordinator: no NAS probes: {e}");
+    }
+}
+
+/// How often the lead reads what its timings log gained (`phase_sharer`).
+#[cfg(not(target_os = "wasi"))]
+const SHARES_EVERY_S: u64 = 60;
+
+/// Keeps `into` to each step's phase shares over its last runs in the timings log at `log`, read
+/// on its own thread every `SHARES_EVERY_S` as it grows (crate::timings::LogTail: its size first,
+/// then only what was added), never under the pool's lock; till the coordinator stops.
+#[cfg(not(target_os = "wasi"))]
+fn phase_sharer(
+    log: PathBuf,
+    into: Arc<Mutex<BTreeMap<String, crate::timings::PhaseShares>>>,
+    stopped: Arc<std::sync::atomic::AtomicBool>,
+) {
+    let run = move || {
+        let mut tail = crate::timings::LogTail::default();
+        while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
+            if tail.read(&log) {
+                *into.lock().unwrap_or_else(|e| e.into_inner()) = tail.shares();
+            }
+            for _ in 0..SHARES_EVERY_S {
+                if stopped.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        }
+    };
+    if let Err(e) = std::thread::Builder::new().name("phase-shares".into()).spawn(run) {
+        eprintln!("coordinator: no phase shares: {e}");
     }
 }
 
