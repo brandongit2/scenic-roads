@@ -60,7 +60,7 @@ const BYPASS: &[(&str, &str, &str)] = &[
     (
         "crates/pipeline/src/budget/mod.rs",
         ".proxy(None)",
-        "the hold told to the proxy itself, on this Mac (budget::seen)",
+        "the hold and the retries told to the proxy itself, on this Mac (budget::seen, budget::retried)",
     ),
     (
         "crates/pipeline/src/budget/proxy.rs",

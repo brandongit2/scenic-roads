@@ -1037,11 +1037,23 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   `nas_creates_s`, `nas_listed_s` (entries), `nas_stats_s`, `nas_deletes_s`. A job's first second
   sets its baseline; a job given no folder (an older agent's) leaves the second unmeasured. Not
   yet counted: the build's own copies to the NAS outside `Out` (scenic-build's direct copies), and
-  the agent's own NAS work. Every Mac's port
+  the agent's own NAS work. **The internet** (task #516), counted by the agent's proxy (§7.7), which
+  every job's connection out goes through (`budget::net`): per host, the bytes in (to the jobs)
+  and out, added as each chunk is relayed (one atomic add a read, so a long download shows as it
+  goes), the requests asked (a tunnel is one: what's inside is the client's TLS), the connections
+  opened, the retries (crate::fetch's: each wait before asking again tells the proxy, `POST
+  /retry?host=`) and the 429 holds told (`/hold?s=&host=`); and a ring of the last 200 transfers,
+  each `{t, host, in, out, ms, outcome}` as it ended (`ok`, `broken`, `unreached`: answered 502,
+  `refused`: 503). The counts are since the proxy started, in memory alone; their totals sampled
+  each second as `net_in_mbs`, `net_out_mbs` (MB/s). The status's budget counts (`wiki`, `query`,
+  `other`, `holds`) are summed from them. The counted relay copies in 64 KB
+  chunks: 4 GiB over loopback in ~1.0 s on the M1, against ~2.6 s with `io::copy`'s 8 KB it
+  replaced (task #516), so the counting costs nothing measurable. Every Mac's port
   answers `POST /work/live` with no key: `{range}` (seconds back from now, an hour by default,
   three days at most) or `{since}` (unix seconds: the points from then on, the last again as it
   may have grown), `series` to pick names; the answer `{host, now, step, from, series: {name:
-  [[t, lo, mean, hi], …]}}` from the finest ring covering the window. A series missing has no
+  [[t, lo, mean, hi], …]}, net}` from the finest ring covering the window; `net`, the internet's
+  counts (`{hosts: {host: {in, out, requests, conns, retries, holds}}, events}`) once the proxy runs. A series missing has no
   measure yet (or none in the window): readers say so, never zero. 503 until the agent gives its
   port the store. Another Mac's page reads it directly: `/work/swarm`'s `macs` lists each member's
   host and addresses (`{host, urls, https}`, its heartbeat's broker; none with the brokers'

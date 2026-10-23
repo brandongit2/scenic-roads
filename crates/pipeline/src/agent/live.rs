@@ -70,6 +70,9 @@ pub const DISK_WRITE: &str = "disk_write_mbs";
 pub const JOB_WRITE: &str = "job_write_mbs.";
 /// The sampler's own CPU time a second (ms).
 pub const SAMPLER: &str = "sampler_cpu_ms";
+/// The bytes through the proxy, in (to the jobs) and out (MB/s; crate::budget::net).
+pub const NET_IN: &str = "net_in_mbs";
+pub const NET_OUT: &str = "net_out_mbs";
 pub const DISK: &str = "disk_free_gb";
 pub const BATTERY: &str = "battery_pct";
 pub const AC: &str = "ac";
@@ -165,6 +168,8 @@ pub struct Store {
     host: String,
     /// The NAS's root while a build runs (`set_nas`): its latency sampled meanwhile alone.
     nas: Mutex<Option<PathBuf>>,
+    /// The proxy's counts (`set_net`): answered as `net`, their rates sampled.
+    net: Mutex<Option<Arc<crate::budget::net::Net>>>,
     sampling: AtomicBool,
 }
 
@@ -194,6 +199,7 @@ impl Store {
             file,
             host: host.to_string(),
             nas: Mutex::new(None),
+            net: Mutex::new(None),
             sampling: AtomicBool::new(false),
         })
     }
@@ -220,8 +226,25 @@ impl Store {
         }
     }
 
+    /// The proxy's counts, answered and sampled from here on.
+    pub fn set_net(&self, net: Arc<crate::budget::net::Net>) {
+        if let Ok(mut n) = self.net.lock() {
+            *n = Some(net);
+        }
+    }
+
+    /// Whether it has the proxy's counts.
+    pub fn has_net(&self) -> bool {
+        self.net.lock().is_ok_and(|n| n.is_some())
+    }
+
+    fn net(&self) -> Option<Arc<crate::budget::net::Net>> {
+        self.net.lock().ok()?.clone()
+    }
+
     /// `/work/live`'s answer at `now` (unix s): `{host, now, step, from, series: {name: [[t, lo,
-    /// mean, hi], …]}}`, each series with a point in the window alone.
+    /// mean, hi], …]}, net}`, each series with a point in the window alone; `net`, the proxy's counts
+    /// (crate::budget::net::Net::view) once it has them.
     pub fn answer(&self, a: &Ask, now: u64) -> serde_json::Value {
         let max = TIERS[TIERS.len() - 1].0 * TIERS[TIERS.len() - 1].1 as u64;
         let range = a.range.unwrap_or_else(|| a.since.map_or(3600, |s| now.saturating_sub(s).max(1))).min(max);
@@ -239,7 +262,11 @@ impl Store {
                 .collect(),
             Err(_) => Default::default(),
         };
-        serde_json::json!({ "host": self.host, "now": now, "step": step, "from": from / step * step, "series": out })
+        let mut v = serde_json::json!({ "host": self.host, "now": now, "step": step, "from": from / step * step, "series": out });
+        if let Some(n) = self.net() {
+            v["net"] = n.view();
+        }
+        v
     }
 
     /// Writes the store to its file (create and rename): none, nothing.
@@ -379,6 +406,8 @@ struct Rates {
     /// Per job (process group): the most of each count yet read, and when.
     jobs: BTreeMap<i32, (crate::sys::Usage, u64)>,
     disk: Option<(u64, u64)>,
+    /// The proxy's bytes in and out, and when.
+    net: Option<(u64, u64, u64)>,
 }
 
 impl Rates {
@@ -430,12 +459,25 @@ impl Rates {
             }
             self.disk = Some((w, t));
         }
+        self.net(s, t);
         let counts: Vec<(i32, PathBuf)> = jobs.into_iter().map(|(_, g, d)| (g, d)).collect();
         if let Some(r) = self.nas.rates(&counts, t) {
             for (name, v) in NAS_TRAFFIC.iter().zip(r) {
                 s.record(name, t, v);
             }
         }
+    }
+
+    /// The proxy's bytes in and out over the second at `t`, once the store has its counts (the
+    /// first read their baseline).
+    fn net(&mut self, s: &Store, t: u64) {
+        let Some((i, o)) = s.net().map(|n| n.totals()) else { return };
+        if let Some((wi, wo, at)) = self.net {
+            let dt = t.saturating_sub(at).max(1) as f64;
+            s.record(NET_IN, t, i.saturating_sub(wi) as f64 / MB / dt);
+            s.record(NET_OUT, t, o.saturating_sub(wo) as f64 / MB / dt);
+        }
+        self.net = Some((i, o, t));
     }
 
     /// The jobs' use at `t`, from each one's (slot, process group, usage now): what they hold
@@ -713,5 +755,27 @@ mod tests {
         assert_eq!(tier_for(86_400), 1);
         assert_eq!(tier_for(86_401), 2);
         assert_eq!(tier_for(u64::MAX), 2);
+    }
+
+    /// Task #516: the proxy's counts answered as `net`, and its bytes as rates by the second.
+    #[test]
+    fn the_proxys_traffic_is_answered_and_sampled_as_rates() {
+        use crate::budget::net::{Net, Outcome};
+        let s = Store::new(None, "m4");
+        let t0 = 1_000_000_000;
+        assert!(s.answer(&Ask::default(), t0).get("net").is_none());
+        let n = Arc::new(Net::default());
+        s.set_net(n.clone());
+        let mut r = Rates::default();
+        r.net(&s, t0);
+        n.host("a.example").bytes_in.fetch_add(3 << 20, Ordering::Relaxed);
+        n.host("b.example").bytes_out.fetch_add(1 << 20, Ordering::Relaxed);
+        n.ended("a.example", (3 << 20, 0), 900, Outcome::Ok);
+        r.net(&s, t0 + 2);
+        let v = s.answer(&Ask { range: Some(60), ..Default::default() }, t0 + 2);
+        assert_eq!(v["series"][NET_IN][0][2], 1.5);
+        assert_eq!(v["series"][NET_OUT][0][2], 0.5);
+        assert_eq!(v["net"]["hosts"]["a.example"]["in"], 3 << 20);
+        assert_eq!(v["net"]["events"][0]["ms"], 900);
     }
 }

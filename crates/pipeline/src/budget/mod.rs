@@ -32,6 +32,7 @@
 //! as it was. A clock of its own (`Clock`), so the tests decide everything without the real one.
 
 pub mod nas;
+pub mod net;
 #[cfg(not(target_os = "wasi"))]
 pub mod proxy;
 #[cfg(not(target_os = "wasi"))]
@@ -74,6 +75,9 @@ impl Proxy {
         0
     }
     pub fn set_members(&self, _n: usize) {}
+    pub fn net(&self) -> Option<Arc<net::Net>> {
+        None
+    }
 }
 
 /// The two-Mac test's (tools/check/pool-two-macs.sh): every host the proxy opens a connection to is
@@ -152,16 +156,36 @@ pub fn seen(url: &str, status: u16, retry_after: Option<&str>) -> bool {
     if class_of(host).is_none() || (status != 429 && retry_after.is_none_or(|r| r.trim().is_empty())) {
         return false;
     }
-    let Ok(proxy) = std::env::var(PROXY_ENV) else { return false };
     let s = retry_after.and_then(|r| r.trim().parse::<f64>().ok()).unwrap_or(HOLD_DEFAULT_S as f64);
-    // (Straight to the proxy, on this Mac: not through itself.)
+    let secs = (s.max(1.0).ceil() as u64).max(1);
+    tell(&format!("/hold?s={secs}&host={host}"))
+}
+
+/// A process's request to `url` is asked again (crate::fetch's retries): told to its proxy, which
+/// counts it for the host (crate::budget::net); false when there's none (not a job).
+pub fn retried(url: &str) -> bool {
+    #[cfg(not(target_os = "wasi"))]
+    {
+        let host = url.split("://").nth(1).unwrap_or(url).split(['/', '?', ':']).next().unwrap_or("");
+        tell(&format!("/retry?host={host}"))
+    }
+    #[cfg(target_os = "wasi")]
+    {
+        let _ = url;
+        false
+    }
+}
+
+/// `path` posted to this process's proxy (`PROXY_ENV`), straight (not through itself).
+#[cfg(not(target_os = "wasi"))]
+fn tell(path: &str) -> bool {
+    let Ok(proxy) = std::env::var(PROXY_ENV) else { return false };
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .proxy(None)
         .timeout_global(Some(std::time::Duration::from_secs(30)))
         .build()
         .into();
-    let secs = (s.max(1.0).ceil() as u64).max(1);
-    agent.post(&format!("{}/hold?s={secs}", proxy.trim_end_matches('/'))).send_empty().is_ok()
+    agent.post(&format!("{}{path}", proxy.trim_end_matches('/'))).send_empty().is_ok()
 }
 /// The sandbox profile every job runs under with the budgets on (`sandbox-exec -p`): every outbound
 /// connection denied but to the Mac itself (its proxy, its coordinator) and its local sockets (the

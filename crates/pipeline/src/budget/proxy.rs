@@ -5,15 +5,18 @@
 //! client's TLS, end to end, never read (its certificate checks are the client's, unchanged). A
 //! plain HTTP request (`GET http://…`) is passed on as one request, its connection closed after
 //! it. It listens on this Mac alone (127.0.0.1). A process that sees a 429 or a `Retry-After`
-//! tells it (`POST /hold?s=<seconds>`: crate::budget::seen), and the budget holds every process and Mac.
+//! tells it (`POST /hold?s=<seconds>&host=<host>`: crate::budget::seen), and the budget holds every
+//! process and Mac; one that asks again tells it too (`POST /retry?host=<host>`: crate::budget::retried).
+//! What goes through is counted per host as it's relayed (crate::budget::net).
 
+use super::net::{Host, Net, Outcome};
 use super::{Budget, Class};
 use anyhow::{Context, Result};
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Where a host's connections go (the tests': a metered host answered by a server here); None:
 /// looked up by name.
@@ -50,16 +53,9 @@ impl Default for Limits {
     }
 }
 
-/// What the proxy has done, for the status and the tests.
+/// The proxy's bounds' counts, for the tests (each host's: `Net`).
 #[derive(Default)]
 pub struct Counts {
-    /// Connections opened to a metered host, each class's.
-    pub wiki: AtomicU64,
-    pub query: AtomicU64,
-    /// Connections opened to any other host.
-    pub other: AtomicU64,
-    /// Holds told.
-    pub holds: AtomicU64,
     /// Connections that waited their turn (`Limits::conns` under way).
     pub waited: AtomicU64,
     /// Connections refused: too many clients, or a turn waited `Limits::wait` in vain.
@@ -70,6 +66,7 @@ pub struct Counts {
 struct Ctx {
     budget: Arc<Budget>,
     counts: Arc<Counts>,
+    net: Arc<Net>,
     resolve: Option<Resolve>,
     limits: Limits,
     /// Clients, connections out, and the turns waiting.
@@ -85,6 +82,7 @@ pub struct Proxy {
     pub addr: SocketAddr,
     pub budget: Arc<Budget>,
     pub counts: Arc<Counts>,
+    pub net: Arc<Net>,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
     ctx: Arc<Ctx>,
@@ -126,9 +124,11 @@ impl Proxy {
         let addr = listener.local_addr()?;
         let stop = Arc::new(AtomicBool::new(false));
         let counts = Arc::new(Counts::default());
+        let net = Arc::new(Net::default());
         let ctx = Arc::new(Ctx {
             budget: budget.clone(),
             counts: counts.clone(),
+            net: net.clone(),
             resolve,
             limits,
             slots: Default::default(),
@@ -137,7 +137,7 @@ impl Proxy {
         });
         let (s, c) = (stop.clone(), ctx.clone());
         let thread = std::thread::Builder::new().name("budgets-proxy".into()).spawn(move || serve(listener, c, s))?;
-        Ok(Proxy { addr, budget, counts, stop, thread: Some(thread), ctx })
+        Ok(Proxy { addr, budget, counts, net, stop, thread: Some(thread), ctx })
     }
 
     /// Waits for the hold last told to be taken on the NAS (the tests'; the agent never waits).
@@ -153,18 +153,24 @@ impl Proxy {
         self.budget.members.store(n.max(1), Ordering::Relaxed);
     }
 
-    /// What it has done, for the status.
+    /// What it has done, for the status: the requests to each class's hosts, and the holds told.
     pub fn view(&self) -> super::View {
         let held = self.budget.held_until();
+        let asked = |c: Option<Class>| self.net.sum(|h| super::class_of(h) == c, |x| &x.requests);
         super::View {
             proxy: self.url(),
-            wiki: self.counts.wiki.load(Ordering::Relaxed),
-            query: self.counts.query.load(Ordering::Relaxed),
-            other: self.counts.other.load(Ordering::Relaxed),
-            holds: self.counts.holds.load(Ordering::Relaxed),
+            wiki: asked(Some(Class::Wiki)),
+            query: asked(Some(Class::Query)),
+            other: asked(None),
+            holds: self.net.sum(|_| true, |x| &x.holds),
             held_until_ms: (held > self.budget.now_ms()).then_some(held),
             away: self.budget.away(),
         }
+    }
+
+    /// Its counts of each host's traffic (the live store's).
+    pub fn net(&self) -> Option<Arc<Net>> {
+        Some(self.net.clone())
     }
 
     /// The port it listens on.
@@ -404,26 +410,51 @@ fn open(host: &str, port: u16, resolve: Option<&Resolve>) -> io::Result<TcpStrea
     Err(last)
 }
 
-/// A token for `host`'s connection, when it's metered; its class.
-fn meter(host: &str, budget: &Budget, counts: &Counts) -> Option<Class> {
+/// A token for `host`'s connection, when it's metered (its class), and its request counted.
+fn meter(host: &str, budget: &Budget, net: &Net) -> (Option<Class>, Arc<Host>) {
     let class = super::class_of(host);
-    match class {
-        Some(c) => {
-            budget.take(c);
-            match c {
-                Class::Wiki => counts.wiki.fetch_add(1, Ordering::Relaxed),
-                Class::Query => counts.query.fetch_add(1, Ordering::Relaxed),
-            };
+    if let Some(c) = class {
+        budget.take(c);
+    }
+    let h = net.host(host);
+    h.requests.fetch_add(1, Ordering::Relaxed);
+    (class, h)
+}
+
+/// A connection out to `host` for its client `s`: opened (counted), else answered 502 (an event).
+fn open_out(s: &mut TcpStream, ctx: &Ctx, host: &str, port: u16, h: &Host, t0: Instant) -> Option<TcpStream> {
+    match open(host, port, ctx.resolve.as_ref()).and_then(|u| u.set_read_timeout(Some(ctx.limits.idle)).map(|()| u)) {
+        Ok(u) => {
+            h.conns.fetch_add(1, Ordering::Relaxed);
+            Some(u)
         }
-        None => {
-            counts.other.fetch_add(1, Ordering::Relaxed);
+        Err(e) => {
+            ctx.net.ended(host, (0, 0), t0.elapsed().as_millis() as u64, Outcome::Unreached);
+            let _ = answer(s, "502 Bad Gateway", &format!("{host}:{port}: {e}\n"));
+            None
         }
     }
-    class
+}
+
+/// No connection out for `host`'s client: answered 503, an event.
+fn refuse_for(s: &mut TcpStream, ctx: &Ctx, host: &str) -> io::Result<()> {
+    ctx.net.ended(host, (0, 0), 0, Outcome::Refused);
+    refuse(s, ctx)
+}
+
+/// A query string's value of `key`.
+fn param<'a>(q: &'a str, key: &str) -> Option<&'a str> {
+    q.trim_start_matches('?').split('&').find_map(|kv| kv.strip_prefix(key)?.strip_prefix('='))
+}
+
+/// A transfer relayed: its event, of its bytes `b` (in, out) and the `sent` with its head.
+fn ended(net: &Net, host: &str, b: (u64, u64), sent: u64, t0: Instant, ok: bool) {
+    let outcome = if ok { Outcome::Ok } else { Outcome::Broken };
+    net.ended(host, (b.0, b.1 + sent), t0.elapsed().as_millis() as u64, outcome);
 }
 
 fn handle(mut s: TcpStream, ctx: &Arc<Ctx>) -> io::Result<()> {
-    let (budget, counts, resolve) = (&*ctx.budget, &*ctx.counts, ctx.resolve.as_ref());
+    let (budget, net) = (&*ctx.budget, &*ctx.net);
     s.set_nonblocking(false)?;
     s.set_read_timeout(Some(ctx.limits.head))?;
     let head = read_head(&mut s)?;
@@ -433,31 +464,31 @@ fn handle(mut s: TcpStream, ctx: &Arc<Ctx>) -> io::Result<()> {
         let Some((host, port)) = host_port(&head.target, 443) else {
             return answer(&mut s, "400 Bad Request", "CONNECT host:port\n");
         };
-        let Some(_slot) = slot(ctx) else { return refuse(&mut s, ctx) };
-        let class = meter(&host, budget, counts);
-        let began = budget.now_ms();
-        let up = match open(&host, port, resolve).and_then(|u| u.set_read_timeout(Some(ctx.limits.idle)).map(|()| u)) {
-            Ok(u) => u,
-            Err(e) => return answer(&mut s, "502 Bad Gateway", &format!("{host}:{port}: {e}\n")),
-        };
+        let Some(_slot) = slot(ctx) else { return refuse_for(&mut s, ctx, &host) };
+        let (class, h) = meter(&host, budget, net);
+        let (began, t0) = (budget.now_ms(), Instant::now());
+        let Some(up) = open_out(&mut s, ctx, &host, port, &h, t0) else { return Ok(()) };
         // (HTTP/1.0: macOS's nc, the ssh tunnel's ProxyCommand (osmpass::streamed), takes no other.)
         s.write_all(b"HTTP/1.0 200 Connection established\r\n\r\n")?;
         let mut up_w = up.try_clone()?;
         if !head.rest.is_empty() {
             up_w.write_all(&head.rest)?;
         }
-        return relay(s, up, || charge(budget, class, began));
+        let sent = head.rest.len() as u64;
+        h.bytes_out.fetch_add(sent, Ordering::Relaxed);
+        return relay(s, up, &h, || charge(budget, class, began), |b, ok| ended(net, &host, b, sent, t0, ok));
     }
-    // (The proxy's own: a 429 told.)
+    // (The proxy's own: a 429 told, a retry told.)
     if head.target.starts_with('/') {
+        if let Some(q) = head.target.strip_prefix("/retry") {
+            net.host(param(q, "host").unwrap_or("?")).retries.fetch_add(1, Ordering::Relaxed);
+            return answer(&mut s, "200 OK", "counted\n");
+        }
         if let Some(q) = head.target.strip_prefix("/hold") {
-            let secs = q
-                .trim_start_matches('?')
-                .split('&')
-                .find_map(|kv| kv.strip_prefix("s="))
+            let secs = param(q, "s")
                 .and_then(|v| v.parse::<f64>().ok())
                 .map_or(super::HOLD_DEFAULT_S, |v| v.ceil().max(1.0) as u64);
-            counts.holds.fetch_add(1, Ordering::Relaxed);
+            net.host(param(q, "host").unwrap_or("?")).holds.fetch_add(1, Ordering::Relaxed);
             // (Held here at once; on the NAS on a thread of its own, one at a time, so the teller
             // isn't kept waiting on the share: told is told.)
             let (now, until) = budget.hold_here(secs);
@@ -474,7 +505,7 @@ fn handle(mut s: TcpStream, ctx: &Arc<Ctx>) -> io::Result<()> {
             }
             return answer(&mut s, "200 OK", "held\n");
         }
-        return answer(&mut s, "404 Not Found", "a proxy: CONNECT, an absolute URL, or /hold\n");
+        return answer(&mut s, "404 Not Found", "a proxy: CONNECT, an absolute URL, /hold or /retry\n");
     }
     // A plain HTTP request by its absolute URL: passed on, its connection closed after it.
     let Some(after) = head.target.strip_prefix("http://") else {
@@ -485,13 +516,10 @@ fn handle(mut s: TcpStream, ctx: &Arc<Ctx>) -> io::Result<()> {
         None => (after, "/"),
     };
     let Some((host, port)) = host_port(hp, 80) else { return answer(&mut s, "400 Bad Request", "bad host\n") };
-    let Some(_slot) = slot(ctx) else { return refuse(&mut s, ctx) };
-    let class = meter(&host, budget, counts);
-    let began = budget.now_ms();
-    let mut up = match open(&host, port, resolve).and_then(|u| u.set_read_timeout(Some(ctx.limits.idle)).map(|()| u)) {
-        Ok(u) => u,
-        Err(e) => return answer(&mut s, "502 Bad Gateway", &format!("{host}:{port}: {e}\n")),
-    };
+    let Some(_slot) = slot(ctx) else { return refuse_for(&mut s, ctx, &host) };
+    let (class, h) = meter(&host, budget, net);
+    let (began, t0) = (budget.now_ms(), Instant::now());
+    let Some(mut up) = open_out(&mut s, ctx, &host, port, &h, t0) else { return Ok(()) };
     let mut out = format!("{} {path} {}\r\n", head.method, head.version);
     for h in &head.headers {
         let name = h.split(':').next().unwrap_or_default().trim().to_ascii_lowercase();
@@ -504,7 +532,9 @@ fn handle(mut s: TcpStream, ctx: &Arc<Ctx>) -> io::Result<()> {
     out.push_str("Connection: close\r\n\r\n");
     up.write_all(out.as_bytes())?;
     up.write_all(&head.rest)?;
-    relay(s, up, || charge(budget, class, began))
+    let sent = (out.len() + head.rest.len()) as u64;
+    h.bytes_out.fetch_add(sent, Ordering::Relaxed);
+    relay(s, up, &h, || charge(budget, class, began), |b, ok| ended(net, &host, b, sent, t0, ok))
 }
 
 /// A metered connection begun at `began` (the budget's clock) has ended: its time charged.
@@ -514,25 +544,56 @@ fn charge(budget: &Budget, class: Option<Class>, began: u64) {
     }
 }
 
+/// Copies `r` to `w` until `r` ends, each chunk's bytes added to `n` as it's written: the bytes
+/// copied, and whether it ended with no error.
+fn copy_counted(r: &mut TcpStream, w: &mut TcpStream, n: &AtomicU64) -> (u64, bool) {
+    let mut buf = vec![0u8; 64 << 10];
+    let mut all = 0u64;
+    loop {
+        let k = match r.read(&mut buf) {
+            Ok(0) => return (all, true),
+            Ok(k) => k,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return (all, false),
+        };
+        if w.write_all(&buf[..k]).is_err() {
+            return (all, false);
+        }
+        all += k as u64;
+        n.fetch_add(k as u64, Ordering::Relaxed);
+    }
+}
+
 /// Copies each way until both have ended (a way idle its read timeout ends: the client's told to
-/// the host as its end; the host's shuts the whole connection), `done` run before the client's side is closed (what it
-/// does is done before the client sees its answer end).
-fn relay(client: TcpStream, up: TcpStream, done: impl FnOnce()) -> io::Result<()> {
+/// the host as its end; the host's shuts the whole connection), each way's bytes counted to `h` as
+/// they go; `done` run before the client's side is closed (what it does is done before the client
+/// sees its answer end), then `end` told the bytes (in, out) and whether neither way broke.
+fn relay(
+    client: TcpStream,
+    up: TcpStream,
+    h: &Arc<Host>,
+    done: impl FnOnce(),
+    end: impl FnOnce((u64, u64), bool),
+) -> io::Result<()> {
     let (mut c_r, mut u_w) = (client.try_clone()?, up.try_clone()?);
+    let hu = h.clone();
     let t = std::thread::Builder::new().name("budgets-relay".into()).spawn(move || {
         // (The client's side ended, idle or broken: told to the host as its end, whose answer still
         // comes back; a host that then stays idle too is ended by its own read's timeout.)
-        let _ = io::copy(&mut c_r, &mut u_w);
+        let r = copy_counted(&mut c_r, &mut u_w, &hu.bytes_out);
         let _ = u_w.shutdown(Shutdown::Write);
+        r
     })?;
     let (mut u_r, mut c_w) = (up, client);
-    if io::copy(&mut u_r, &mut c_w).is_err() {
+    let (got, ok) = copy_counted(&mut u_r, &mut c_w, &h.bytes_in);
+    if !ok {
         let _ = u_r.shutdown(Shutdown::Both);
         let _ = c_w.shutdown(Shutdown::Read);
     }
     done();
     let _ = c_w.shutdown(Shutdown::Write);
-    t.join().ok();
+    let (sent, sent_ok) = t.join().unwrap_or((0, false));
+    end((got, sent), ok && sent_ok);
     Ok(())
 }
 
@@ -659,9 +720,9 @@ mod tests {
         for ((class, win), n) in &w {
             assert!(*n <= class.rate().tokens, "{class:?} window {win}: {n}");
         }
-        let n = |p: &Proxy| p.counts.wiki.load(Ordering::Relaxed) + p.counts.query.load(Ordering::Relaxed);
+        let n = |p: &Proxy| p.view().wiki + p.view().query;
         assert_eq!(n(&a) + n(&b), 120);
-        assert_eq!(a.counts.other.load(Ordering::Relaxed) + b.counts.other.load(Ordering::Relaxed), 0);
+        assert_eq!(a.view().other + b.view().other, 0);
     }
 
     /// A 429 told to one agent's proxy holds the other's connections till its wait ends.
@@ -780,9 +841,57 @@ mod tests {
         ts.into_iter().for_each(|t| t.join().unwrap());
         assert_eq!(a.counts.refused.load(Ordering::Relaxed), 0);
         assert!(a.counts.waited.load(Ordering::Relaxed) > 0, "the cap was never reached");
-        assert_eq!(a.counts.wiki.load(Ordering::Relaxed), 4);
-        assert_eq!(a.counts.other.load(Ordering::Relaxed), 4);
+        assert_eq!(a.view().wiki, 4);
+        assert_eq!(a.view().other, 4);
         assert_eq!(a.budget.ledger().len(), 4);
+    }
+
+    /// Task #516: each host's bytes, requests and connections as they're relayed (a tunnel's, a
+    /// plain request's), a retry and a 429 told counted for their host, and each transfer an event:
+    /// one to a host that can't be reached among them.
+    #[test]
+    fn each_hosts_traffic_retries_and_holds_are_counted() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = Arc::new(StepClock::at(T0));
+        let up = upstream(Arc::new(|| {}));
+        let a = up.addr;
+        let b = Arc::new(Budget::new(dir.path(), "m-a", clock.clone()).with_ledger());
+        // (gone.example: a port nothing listens on.)
+        let gone = store::spawn::listen("127.0.0.1:0").unwrap().local_addr().unwrap();
+        let p =
+            Proxy::start(b, Some(Arc::new(move |h: &str, _: u16| Some(if h == "gone.example" { gone } else { a }))))
+                .unwrap();
+        let msg = vec![7u8; 300_000];
+        assert_eq!(tunnel(&p.addr, "S3.amazonaws.com", &msg), msg);
+        let req = "GET http://dumps.wikimedia.org/x HTTP/1.1\r\nHost: dumps.wikimedia.org\r\n\r\n";
+        let echoed = request(&p.addr, req);
+        assert!(request(&p.addr, "POST /retry?host=dumps.wikimedia.org HTTP/1.1\r\n\r\n").ends_with("counted\n"));
+        let r = request(&p.addr, "POST /hold?s=5&host=dumps.wikimedia.org HTTP/1.1\r\n\r\n");
+        assert!(r.ends_with("held\n"), "{r}");
+        p.settle_hold();
+        let r = request(&p.addr, "CONNECT gone.example:443 HTTP/1.1\r\n\r\n");
+        assert!(r.starts_with("HTTP/1.1 502"), "{r}");
+        let v = p.net.view();
+        let s3 = &v["hosts"]["s3.amazonaws.com"];
+        assert_eq!((s3["in"].as_u64(), s3["out"].as_u64()), (Some(300_000), Some(300_000)), "{v}");
+        assert_eq!((s3["requests"].as_u64(), s3["conns"].as_u64()), (Some(1), Some(1)));
+        let d = &v["hosts"]["dumps.wikimedia.org"];
+        // (Its head as passed on, echoed back.)
+        assert_eq!(d["in"].as_u64(), Some(echoed.len() as u64), "{v}");
+        assert_eq!(d["out"], d["in"]);
+        assert_eq!((d["retries"].as_u64(), d["holds"].as_u64()), (Some(1), Some(1)));
+        let g = &v["hosts"]["gone.example"];
+        assert_eq!((g["requests"].as_u64(), g["conns"].as_u64()), (Some(1), Some(0)));
+        let ev: Vec<_> =
+            v["events"].as_array().unwrap().iter().map(|e| (e["host"].clone(), e["outcome"].clone())).collect();
+        assert_eq!(
+            ev,
+            [("s3.amazonaws.com", "ok"), ("dumps.wikimedia.org", "ok"), ("gone.example", "unreached")]
+                .map(|(h, o)| (serde_json::json!(h), serde_json::json!(o)))
+        );
+        assert_eq!(v["events"][0]["in"], 300_000);
+        let s = p.view();
+        assert_eq!((s.wiki, s.other, s.holds), (1, 2, 1));
     }
 
     /// A hold told to a proxy whose NAS is away is held there at once all the same (told is told).
@@ -828,7 +937,7 @@ mod tests {
         let r = request(&a.addr, "GET http://example.test:8080/a/b?c=1 HTTP/1.1\r\nHost: example.test:8080\r\nProxy-Connection: keep-alive\r\n\r\n");
         assert!(r.starts_with("GET /a/b?c=1 HTTP/1.1\r\n"), "{r}");
         assert!(r.contains("Connection: close\r\n") && !r.contains("Proxy-Connection"), "{r}");
-        assert_eq!(a.counts.other.load(Ordering::Relaxed), 1);
+        assert_eq!(a.view().other, 1);
         assert!(a.budget.ledger().is_empty());
         let r = request(&a.addr, "GET http://dumps.wikimedia.org/x HTTP/1.1\r\nHost: dumps.wikimedia.org\r\n\r\n");
         assert!(r.starts_with("GET /x HTTP/1.1"), "{r}");
@@ -836,6 +945,6 @@ mod tests {
         assert_eq!(up.heads.lock().unwrap().len(), 2);
         assert_eq!(tunnel(&a.addr, "s3.amazonaws.com", b"z"), b"z");
         assert_eq!(a.budget.ledger().len(), 1);
-        assert_eq!(a.counts.other.load(Ordering::Relaxed), 2);
+        assert_eq!(a.view().other, 2);
     }
 }

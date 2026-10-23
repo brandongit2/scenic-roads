@@ -151,6 +151,8 @@ fn cancelled(url: &str) -> Result<()> {
 /// (`down_check`: another request may have found it down).
 #[cfg_attr(target_os = "wasi", allow(dead_code))]
 fn retry_wait(dir: Option<&Path>, url: &str, secs: u64, second: std::time::Duration) -> Result<()> {
+    // (Counted by the job's proxy, for its host: crate::budget::net.)
+    crate::budget::retried(url);
     let end = std::time::Instant::now() + second * secs as u32;
     loop {
         cancelled(url)?;

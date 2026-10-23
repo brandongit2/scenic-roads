@@ -9010,6 +9010,11 @@ impl Agent {
         if c.idle_s != u64::MAX {
             l.record(live::IDLE, t, c.idle_s as f64);
         }
+        if !l.has_net() {
+            if let Some(n) = self.proxy.as_ref().and_then(|p| p.net()) {
+                l.set_net(n);
+            }
+        }
         for c in [&self.coord, &self.broker, &self.viewer].into_iter().flatten() {
             if !c.has_live() {
                 c.set_live(l.clone());
@@ -14547,7 +14552,7 @@ mod tests {
             assert!(t.elapsed() < store::clock::WATCHDOG, "its first request answered");
             std::thread::sleep(Duration::from_millis(20));
         }
-        let wiki = |p: &crate::budget::Proxy| p.counts.wiki.load(Ordering::Relaxed);
+        let wiki = |p: &crate::budget::Proxy| p.view().wiki;
         assert_eq!(wiki(a.proxy.as_ref().unwrap()), 1);
         // The agent ends, its job left running: its proxy stopped, then its lock let go (dropped
         // in that order).

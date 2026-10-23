@@ -157,7 +157,7 @@ Common rules:
   `/work/steps` once (the steps table: every word about a step), `/work/swarm` every 10 s and
   `/work/history` incrementally; `/work/regions` (each region's folders, download size and
   outline: docs/pool.md §10, Regions) when the last catalogue changes, else every ten minutes;
-  each Mac's measures over time from its own port's `/work/live` (docs/pool.md §10, Live). The
+  each Mac's measures over time, and its internet's counts by host and last transfers, from its own port's `/work/live` (docs/pool.md §10, Live). The
   regions' outlines and the countries' (`countries.json`, one of the page's files) are for the
   overview's map (task #513), not drawn yet. A 503 (the Mac hasn't read the build's state yet) says so quietly and asks
   again every 2 s, what's shown said to be stale if it had an answer before, an error only after a
