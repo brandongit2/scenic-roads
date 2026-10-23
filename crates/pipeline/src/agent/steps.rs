@@ -531,8 +531,9 @@ pub const TABLE: [Step; 52] = [
     },
     Step {
         // (The coverage read from the regions, the pass's outlines for its countries, then the
-        // feeds' checks, in one process: 4.46 GB at its peak on the Mac mini, 23 Oct, task #578.)
-        mem_mb: 4500,
+        // feeds' checks, in one process: 4.46 GB at its peak on the Mac mini, 23 Oct, task #578;
+        // the coverage itself, shared with every step, is most of it.)
+        mem_mb: 5632,
         ..step(
             "trains",
             Fetch,
@@ -1500,7 +1501,7 @@ mod tests {
             ("heritage", 6144),
             ("rail", 6144),
             ("items", 3072),
-            ("rail-feeds", 4500),
+            ("rail-feeds", 5632),
             ("bld-fetch", 2560),
             ("marks", 4096),
             ("overlays", 4096),

@@ -136,7 +136,6 @@ pub fn float_repr(f: f64) -> String {
     if f.is_infinite() {
         return if f > 0.0 { "Infinity" } else { "-Infinity" }.into();
     }
-    // "d.ddde<exp>", the shortest round-trip digits.
     // "d.ddde<exp>", the shortest round-trip digits; of the strings that short, the one nearest the
     // exact value, a tie to even (Python's dtoa: `{:e}` takes a tie up, 3.2678298950195313 for
     // 3.26782989501953125), which the exact formatting at that many digits gives.
