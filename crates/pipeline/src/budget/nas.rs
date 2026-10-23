@@ -344,11 +344,17 @@ impl Probes {
         self.0.push(p);
     }
 
-    /// The probes kept at `path` within `KEEP_S` of `now` (unix s); none when missing or unreadable.
-    pub fn load(path: &Path, now: u64) -> Probes {
-        let mut p: Probes = std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    /// The probes kept at `path` within `KEEP_S` of `now` (unix s): none when missing or not
+    /// parsed; an error when it can't be read now (a stale SMB handle, busy: try again later, and
+    /// never save over what may be there).
+    pub fn load(path: &Path, now: u64) -> std::io::Result<Probes> {
+        let mut p: Probes = match std::fs::read(path) {
+            Ok(b) => serde_json::from_slice(&b).unwrap_or_default(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Probes::default(),
+            Err(e) => return Err(e),
+        };
         p.0.retain(|q| q.at + KEEP_S > now);
-        p
+        Ok(p)
     }
 
     /// Keeps the probes at `path`, whole or not at all.
@@ -686,16 +692,21 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(d.path().join("state/pool")).unwrap();
         let f = d.path().join(PROBES_FILE);
-        assert_eq!(Probes::load(&f, 5000), Probes::default(), "none kept: none");
+        assert_eq!(Probes::load(&f, 5000).unwrap(), Probes::default(), "none kept: none");
         let mut p = Probes::default();
         p.add(Probe { at: 1000, bytes_s: 86e6, creates_s: 30.0, ..Default::default() });
         p.add(Probe { at: 4000, bytes_s: 66.5e6, creates_s: 42.3, ..Default::default() });
         p.save(&f).unwrap();
-        assert_eq!(Probes::load(&f, 5000), p);
-        assert_eq!(Probes::load(&f, 5000).limits(None).unwrap().bytes_s, 86e6, "the day's best kept");
-        assert_eq!(Probes::load(&f, 1000 + KEEP_S).0, [p.0[1]], "a day old: let go");
+        assert_eq!(Probes::load(&f, 5000).unwrap(), p);
+        assert_eq!(Probes::load(&f, 5000).unwrap().limits(None).unwrap().bytes_s, 86e6, "the day's best kept");
+        assert_eq!(Probes::load(&f, 1000 + KEEP_S).unwrap().0, [p.0[1]], "a day old: let go");
         std::fs::write(&f, "not json").unwrap();
-        assert_eq!(Probes::load(&f, 5000), Probes::default(), "unreadable: none");
+        assert_eq!(Probes::load(&f, 5000).unwrap(), Probes::default(), "not parsed: none");
+        // (Task #603 review: a read that fails otherwise (here a folder in its place) is an error,
+        // not "none": the prober tries again and saves nothing until a load succeeds.)
+        std::fs::remove_file(&f).unwrap();
+        std::fs::create_dir(&f).unwrap();
+        assert!(Probes::load(&f, 5000).is_err(), "can't be read now: an error");
     }
 
     /// A probe measures and leaves nothing behind.

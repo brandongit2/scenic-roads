@@ -2353,6 +2353,8 @@ fn nas_prober(
     use crate::budget::nas;
     let run = move || {
         let mut probes = nas::Probes::default();
+        // (The kept probes read: till then, read again each round and never saved over.)
+        let mut loaded = false;
         let mut nas_loop = nas::Loop::default();
         // (Its config file removed when this thread ends: the lead stood down or stopped.)
         let mut session: Option<crate::budget::snmp::Session> = None;
@@ -2365,10 +2367,21 @@ fn nas_prober(
                 // (Once the NAS is known: this host's folders a crashed probe left.)
                 if !cleaned {
                     cleaned = true;
-                    probes = nas::Probes::load(&r.join(nas::PROBES_FILE), unix_now());
                     let n = nas::clean_stale(&r, &me);
                     if n > 0 {
                         eprintln!("coordinator: removed {n} probe folders of this host's a stopped process left");
+                    }
+                }
+                if !loaded {
+                    match nas::Probes::load(&r.join(nas::PROBES_FILE), unix_now()) {
+                        Ok(kept) => {
+                            loaded = true;
+                            for p in kept.0 {
+                                probes.add(p);
+                            }
+                            probes.0.sort_by_key(|p| p.at);
+                        }
+                        Err(e) => eprintln!("coordinator: the kept NAS probes can't be read now ({e}): trying again"),
                     }
                 }
                 // (Probed whatever the switch says: the lead's own jobs are always held to the
@@ -2388,7 +2401,9 @@ fn nas_prober(
                                         p.creates_s
                                     );
                                     probes.add(p);
-                                    if let Err(e) = probes.save(&r.join(nas::PROBES_FILE)) {
+                                    // (Not before the kept ones are read: never over them.)
+                                    let saved = if loaded { probes.save(&r.join(nas::PROBES_FILE)) } else { Ok(()) };
+                                    if let Err(e) = saved {
                                         eprintln!("coordinator: keeping the NAS probes: {e:#}");
                                     }
                                     failed = Some(false);
