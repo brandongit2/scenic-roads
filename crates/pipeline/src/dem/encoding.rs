@@ -1,7 +1,7 @@
 //! Elevation tile encodings (docs/inputs.md §6.8, `[data] encoding`): formats, decoded by generic
 //! code. Each tile is a PNG; a pixel's height in metres from its red, green and blue:
 //! - `gsi-png`: x = R·2¹⁶ + G·2⁸ + B, h = 0.01·x below 2²³, 0.01·(x − 2²⁴) above, 2²³ no data;
-//! - `terrarium`: h = R·256 + G + B/256 − 32768;
+//! - `terrarium`: h = R·256 + G + B/256 − 32768, no data above 8,900 m (`roadcore::grid::MAX_ELEV`);
 //! - `terrain-rgb`: h = −10000 + 0.1·(R·2¹⁶ + G·2⁸ + B).
 
 use anyhow::{bail, Context, Result};
@@ -28,7 +28,11 @@ pub fn decode(encoding: &str, png: &[u8]) -> Result<(usize, usize, Vec<f32>)> {
                     (if x < 1 << 23 { x } else { x - (1 << 24) }) as f32 * 0.01f32
                 }
             }
-            "terrarium" => (r as f32 * 256.0 + g as f32 + b as f32 / 256.0) - 32768.0,
+            // (AWS fills some voids with 32767 m: none, as an empty pixel's −32768 m is.)
+            "terrarium" => match (r as f32 * 256.0 + g as f32 + b as f32 / 256.0) - 32768.0 {
+                v if v > roadcore::grid::MAX_ELEV => -1e9,
+                v => v,
+            },
             "terrain-rgb" => -10000.0 + (((r as u32) << 16 | (g as u32) << 8 | b as u32) as f32) * 0.1,
             e => bail!("the tile encoding {e} isn't one the app knows"),
         };
@@ -58,6 +62,7 @@ mod tests {
             .unwrap();
         assert_eq!(g.2, vec![1234.0f32 * 0.01, -550.0f32 * 0.01, -1e9]);
         assert_eq!(decode("terrarium", &png(&[[128, 100, 128]])).unwrap().2, vec![100.5]);
+        assert_eq!(decode("terrarium", &png(&[[255, 255, 0]])).unwrap().2, vec![-1e9], "AWS's 32767 m: a void");
         assert_eq!(decode("terrain-rgb", &png(&[[1, 134, 160]])).unwrap().2, vec![-10000.0 + 100000.0 * 0.1]);
         assert!(decode("lerc", &png(&[[0, 0, 0]])).is_err());
     }

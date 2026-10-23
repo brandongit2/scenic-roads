@@ -72,7 +72,7 @@ What each step does, in detail. The steps as one table (names, chains, the check
   - Together they make the same packs, byte for byte, as the z3 tile's whole run (`build_q_with`,
     `scenic-build terrain 3/x/y`; `terrain_pack` tests).
   - **The root (z0–2)** is made from the lo packs once no terrain work is left.
-  - **Sources:** declared in `inputs/elevation/` (`terrain = true`, docs/inputs.md §6.8,
+  - **Sources:** the elevation pool's worldwide datasets (`inputs/elevation/`, docs/inputs.md §6.8,
     crate::terrain_sources): the base's raw tiles (AWS's Terrarium tiles, fetched once by the
     declared template, packed onto the NAS: docs/macs.md); north of 60°N, Copernicus GLO-30 by its declared
     index (kept in `sources/fetched/glo30/`); and the water of the latest pass's basemap. Each is
@@ -85,8 +85,7 @@ What each step does, in detail. The steps as one table (names, chains, the check
   - **North of 60°N, GLO-30** (crate::terrain_north): AWS mixes an ellipsoidal source with sea-level
     ones there (lakes 10–50 m off). Tiles of z9 and finer are resampled from GLO-30 (EGM2008, its
     water flattened) and blended in by a smoothstep from 59.5°N to 60°N. Where GLO-30 was filled
-    (filling mask ≥ 3), AWS's tile is taken, shifted by the median difference. GLO-30 over FABDEM:
-    FABDEM draws stair-steps and stops at 80°N. Credited.
+    (filling mask ≥ 3), AWS's tile is taken, shifted by the median difference. Credited.
   - **Water flattened** (crate::terrain_water): from the basemap's `water` layer at the tile's zoom,
     4 × 4 samples a pixel. The sea goes to 0; each lake, pond, reservoir or dock to its level (the
     10th percentile of its shore's dry pixels, or its source's own lower level); rivers,

@@ -1,6 +1,6 @@
 //! The coordinate conversions the DEMs need, computed as PROJ 9.8
 //! computes them, with the deterministic maths (`det`): WGS 84 to Canada Atlas Lambert (EPSG:3979,
-//! NRCan's HRDEM and MRDEM) through NAD83(CSRS), by EPSG's 7-parameter "NAD83(CSRS) to WGS 84 (2)"
+//! NRCan's HRDEM) through NAD83(CSRS), by EPSG's 7-parameter "NAD83(CSRS) to WGS 84 (2)"
 //! (the transformation PROJ picks, everywhere: it needs no grid); and to NAD83 / UTM (EPSG:26901–
 //! 26923, USGS 3DEP's 1 m tiles) through the same Helmert, by PROJ's Poder/Engsager transverse
 //! Mercator (`Utm`).

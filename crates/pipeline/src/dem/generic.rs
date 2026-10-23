@@ -209,8 +209,8 @@ pub fn stored_name(url: &str) -> String {
 
 /// File `url` of dataset `id`, kept in store `dir` (`[data] store = true`): its stored copy, read
 /// where it lies; None for one the store notes the source doesn't have (`<name>.none`). Never
-/// fetched here: a file the store lacks, or holds cut short, is an error naming it (FABDEM's are
-/// fetched once, by `scenic-build fabdem-fetch`: crate::dem::fabdem_fetch).
+/// fetched here: a file the store lacks, or holds cut short, is an error naming it (a stored
+/// dataset is fetched once, by `scenic-build store-fetch <id> --index <its index>`: crate::dem::store_fetch).
 pub fn stored(id: &str, dir: &std::path::Path, url: &str) -> Result<Option<Arc<dyn RangeRead>>> {
     let name = stored_name(url);
     let f = dir.join(&name);
@@ -218,11 +218,11 @@ pub fn stored(id: &str, dir: &std::path::Path, url: &str) -> Result<Option<Arc<d
         if dir.join(format!("{name}.none")).exists() {
             return Ok(None);
         }
-        bail!("{id}: tile {name} isn't in the store ({}): z6 tile builds don't download it; fetch it into the store first (scenic-build fabdem-fetch, docs/inputs.md §6.8)", dir.display());
+        bail!("{id}: tile {name} isn't in the store ({}): z6 tile builds don't download it; fetch it into the store first (scenic-build store-fetch {id} --index <its index>, docs/inputs.md §6.8)", dir.display());
     }
     ensure!(
         crate::whole::tiff_file_whole(&f),
-        "{id}: tile {name} in the store ({}) isn't whole: remove it and fetch it again (scenic-build fabdem-fetch)",
+        "{id}: tile {name} in the store ({}) isn't whole: remove it and fetch it again (scenic-build store-fetch {id} --index <its index>)",
         dir.display()
     );
     Ok(Some(Arc::new(PlainFile::open(&f)?)))
@@ -233,11 +233,15 @@ struct GeoSet<'a> {
     id: &'a str,
     crs: u16,
     files: &'a [(String, Option<[f64; 4]>)],
+    /// By file, its fill mask's URL (empty: none has one; `Source::Geotiff::masks`).
+    masks: &'a [Option<String>],
     read_resolution: Option<f64>,
     store: Option<PathBuf>,
     o: &'a Opts<'a>,
     /// By file: the open file and the level read (None: the server has none).
     opened: Mutex<HashMap<usize, Option<(Arc<Tiff>, usize)>>>,
+    /// By file: its open fill mask (None: it has none).
+    opened_masks: Mutex<HashMap<usize, Option<Arc<Tiff>>>>,
     /// By file: which of its blocks are known to hold data in every pixel.
     clean: Vec<Clean>,
     /// The decoded blocks of every file, under one budget.
@@ -250,15 +254,51 @@ fn in_box(b: &[f64; 4], x: f64, y: f64) -> bool {
 }
 
 impl GeoSet<'_> {
+    /// A file by URL, from the store where the dataset is kept there.
+    fn source(&self, url: &str) -> Result<Option<Arc<dyn RangeRead>>> {
+        match &self.store {
+            Some(dir) if !url.starts_with('/') => stored(self.id, dir, url),
+            _ => open_url(self.o.fetch, url),
+        }
+    }
+
+    /// Whether file `k` has a fill mask.
+    fn has_mask(&self, k: usize) -> bool {
+        self.masks.get(k).is_some_and(Option::is_some)
+    }
+
+    /// File `k`'s fill mask, open (None: it has none).
+    fn mask(&self, k: usize) -> Result<Option<Arc<Tiff>>> {
+        let Some(Some(url)) = self.masks.get(k) else { return Ok(None) };
+        if let Some(t) = self.opened_masks.lock().unwrap().get(&k) {
+            return Ok(t.clone());
+        }
+        let src = self.source(url)?.with_context(|| format!("{}: its fill mask {url} isn't on the server", self.id))?;
+        let id = FILE_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let t = Some(Arc::new(Tiff::open(src).with_context(|| url.clone())?.with_shared_cache(id, self.cache.clone())));
+        self.opened_masks.lock().unwrap().insert(k, t.clone());
+        Ok(t)
+    }
+
+    /// Whether native point (x, y) is a void by file `k`'s fill mask (its nearest pixel there
+    /// `MASK_FILLED` or more); false without a mask, or outside it.
+    fn masked(&self, k: usize, x: f64, y: f64) -> Result<bool> {
+        let Some(m) = self.mask(k)? else { return Ok(false) };
+        let gt = m.transform(0)?;
+        let img = m.level(0)?;
+        let (c, r) = (((x - gt[0]) / gt[1]).floor(), ((y - gt[3]) / gt[5]).floor());
+        if !(c >= 0.0 && r >= 0.0 && c < img.width as f64 && r < img.height as f64) {
+            return Ok(false);
+        }
+        Ok(m.pixel(0, c as u32, r as u32)? >= super::declared::MASK_FILLED)
+    }
+
     fn open(&self, k: usize) -> Result<Option<(Arc<Tiff>, usize)>> {
         if let Some(t) = self.opened.lock().unwrap().get(&k) {
             return Ok(t.clone());
         }
         let url = &self.files[k].0;
-        let src: Option<Arc<dyn RangeRead>> = match &self.store {
-            Some(dir) if !url.starts_with('/') => stored(self.id, dir, url)?,
-            _ => open_url(self.o.fetch, url)?,
-        };
+        let src = self.source(url)?;
         let t = match src {
             None => bail!("{}: {url}, which its index lists, isn't on the server (the index is out of date?)", self.id),
             Some(s) => {
@@ -294,10 +334,13 @@ impl GeoSet<'_> {
             }
             let (xs, ys): (Vec<f64>, Vec<f64>) = mine.iter().map(|&j| (x[sel[j] as usize], y[sel[j] as usize])).unzip();
             let Some((t, level)) = self.open(k)? else { continue };
-            let v = sample_raster_noting(&t, level, &xs, &ys, self.o.pool, Some(&self.clean[k]))
+            // (A file with a fill mask: no block of it is known to hold data in every pixel.)
+            let has_mask = self.has_mask(k);
+            let clean = (!has_mask).then(|| &self.clean[k]);
+            let v = sample_raster_noting(&t, level, &xs, &ys, self.o.pool, clean)
                 .with_context(|| self.files[k].0.clone())?;
-            for (&j, v) in mine.iter().zip(v) {
-                if v.is_finite() {
+            for (n, (&j, v)) in mine.iter().zip(v).enumerate() {
+                if v.is_finite() && !(has_mask && self.masked(k, xs[n], ys[n])?) {
                     out[j] = (v, k as u32);
                 } else {
                     let i = sel[j] as usize;
@@ -350,7 +393,7 @@ impl GeoSet<'_> {
             let (c, r) = (((x - gt[0]) / gt[1]).floor(), ((y - gt[3]) / gt[5]).floor());
             if c >= 0.0 && r >= 0.0 && c < img.width as f64 && r < img.height as f64 {
                 let v = t.pixel(level, c as u32, r as u32)?;
-                return Ok(Some(if valid(v, t.nodata()) { v } else { f32::NAN }));
+                return Ok(Some(if valid(v, t.nodata()) && !self.masked(k, x, y)? { v } else { f32::NAN }));
             }
         }
         Ok(None)
@@ -389,7 +432,13 @@ impl GeoSet<'_> {
             let (c0, r0) = (cf.floor() as i64, rf.floor() as i64);
             let win = [c0 - rx, c0 + 1 + rx, r0 - ry, r0 + 1 + ry];
             let [cs, ce, rs, re] = win;
-            if cs >= 0 && rs >= 0 && ce < w && re < h && window_clean(&t, level, &self.clean[k], cs, ce, rs, re)? {
+            if !self.has_mask(k)
+                && cs >= 0
+                && rs >= 0
+                && ce < w
+                && re < h
+                && window_clean(&t, level, &self.clean[k], cs, ce, rs, re)?
+            {
                 out[j] = radius[j];
                 continue;
             }
@@ -443,7 +492,10 @@ impl GeoSet<'_> {
         for r in y0..=y1 {
             for c in x0..=x1 {
                 ok[(r - y0) as usize * mw + (c - x0) as usize] = if c >= ics && c <= ice && r >= irs && r <= ire {
-                    valid(inside.as_ref().unwrap()[(r - irs) as usize * iw + (c - ics) as usize], nodata)
+                    valid(inside.as_ref().unwrap()[(r - irs) as usize * iw + (c - ics) as usize], nodata) && {
+                        let (wx, wy) = (gt[0] + (c as f64 + 0.5) * gt[1], gt[3] + (r as f64 + 0.5) * gt[5]);
+                        !self.masked(k, wx, wy)?
+                    }
                 } else {
                     let (wx, wy) = (gt[0] + (c as f64 + 0.5) * gt[1], gt[3] + (r as f64 + 0.5) * gt[5]);
                     self.value_at(wx, wy, k)?.is_some_and(|v| v.is_finite())
@@ -1072,7 +1124,7 @@ impl<'a> Set<'a> {
                 clean: Mutex::new(HashMap::new()),
                 memo: memo.clone(),
             }),
-            Source::Geotiff { crs, read_resolution, store, files } => {
+            Source::Geotiff { crs, read_resolution, store, files, masks } => {
                 ensure!(super::declared::known_crs(*crs), "{}: EPSG:{crs} isn't a CRS the app knows", ds.id);
                 let store = match (*store, &o.store) {
                     (false, _) => None,
@@ -1085,10 +1137,12 @@ impl<'a> Set<'a> {
                     id: &ds.id,
                     crs: *crs,
                     files,
+                    masks,
                     read_resolution: *read_resolution,
                     store,
                     o,
                     opened: Mutex::new(HashMap::new()),
+                    opened_masks: Mutex::new(HashMap::new()),
                     clean: (0..files.len()).map(|_| Clean::default()).collect(),
                     cache: cache.clone(),
                 })

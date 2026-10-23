@@ -1,7 +1,7 @@
 //! The elevation step end to end, over synthetic datasets held in memory and declared as today's
 //! are (docs/inputs.md §6.8): each dataset where it serves, sampled at the right pixel of the right
-//! image, the fall-through to the next, the blends at the edges, a store (a tile downloaded once),
-//! the cache reused, and an interrupted run done again.
+//! image, the fall-through to the next (a fill mask's voids too), the blends at the edges, a store (a
+//! tile downloaded once), the cache reused, and an interrupted run done again.
 
 use super::*;
 use crate::fetch::{Fetch, MapFetch};
@@ -27,8 +27,7 @@ impl Field {
 enum DemSource {
     Hrdem = 1,
     Usgs3dep = 2,
-    Mrdem = 3,
-    Fabdem = 4,
+    Glo30 = 3,
     Gsi5a = 5,
     Gsi5 = 6,
     Gsi10 = 7,
@@ -86,18 +85,18 @@ const NB: (f64, f64) = (-66.5, 46.0);
 
 /// The fixture's servers (as the declarations name them).
 const HRDEM_URL: &str = "https://canelevation-dem.s3.ca-central-1.amazonaws.com/hrdem-mosaic-2m/10_3-mosaic-2m-dtm.tif";
-const MRDEM_URL: &str = "https://canelevation-dem.s3.ca-central-1.amazonaws.com/mrdem-30/mrdem-30-dtm.tif";
 const USGS_URL: &str =
     "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/13/TIFF/current/n41w077/USGS_13_n41w077.tif";
 const GSI: &str = "https://cyberjapandata.gsi.go.jp/xyz";
-const BRISTOL: &str = "https://data.bris.ac.uk/datasets/s5hqmjcdj8yo2ibzi9b4ew3sn";
+const GLO30: &str = "https://copernicus-dem-30m.s3.amazonaws.com";
 
 fn gsi_url(layer: &str, z: u32, x: i64, y: i64) -> String {
     format!("{GSI}/{layer}/{z}/{x}/{y}.png")
 }
 
-fn fabdem_url(zip: &str, tile: &str) -> String {
-    format!("{BRISTOL}/{zip}_FABDEM_V1-2.zip#{tile}_FABDEM_V1-2.tif")
+/// A GLO-30 tile's URL (`DEM`) or its fill mask's (`FLM`), by the tile's name.
+fn glo_url(tile: &str, kind: &str) -> String {
+    format!("{GLO30}/{tile}/{tile}_{kind}.tif")
 }
 const PA: (f64, f64) = (-76.6, 40.6);
 const TOKYO: (f64, f64) = (139.7, 35.7);
@@ -112,7 +111,7 @@ impl Fixture {
         let mut want: Vec<Want> = Vec::new();
         let ll = |v: [i32; 2]| (v[0] as f64 * 1e-7, v[1] as f64 * 1e-7);
 
-        // New Brunswick: HRDEM's 8 m overview, nodata in its western strip, where MRDEM serves.
+        // New Brunswick: HRDEM's 8 m overview, nodata in its western strip, where GLO-30 serves.
         let (x0, y0) = atlas.project(NB.0, NB.1);
         let hgt = [((x0 - 560.0) / 8.0).floor() * 8.0, 2.0, 0.0, ((y0 + 560.0) / 8.0).ceil() * 8.0, 0.0, -2.0];
         let hf = Field(100.0, 0.5, 0.25);
@@ -132,16 +131,15 @@ impl Fixture {
             },
         );
         let h2 = [hgt[0], 8.0, 0.0, hgt[3], 0.0, -8.0];
-        let mgt = [x0 - 1500.0, 30.0, 0.0, y0 + 1500.0, 0.0, -30.0];
+        // (GLO-30 kept in the store, as the declaration has it: one file over New Brunswick's points.)
+        let store = dir.path().join("fetched/glo30");
+        std::fs::create_dir_all(&store).unwrap();
+        let mgt = [NB.0 - 0.1, 1.0 / 1200.0, 0.0, NB.1 + 0.1, 0.0, -1.0 / 1200.0];
         let mf = Field(50.0, 0.1, 0.2);
-        let (mrdem, _) = make_images(
-            &[(100, 100)],
-            Opts { tile: Some(64), compression: 5, ..Opts::default() },
-            mgt,
-            Some("-32767"),
-            &|_, x, y, _| mf.at(x as f64, y as f64),
-        );
-        fetch.0.insert(MRDEM_URL.into(), Some(mrdem));
+        let nb: Vec<f32> =
+            (0..240u32).flat_map(|y| (0..240u32).map(move |x| mf.at(x as f64, y as f64) as f32)).collect();
+        std::fs::write(store.join("NB_DEM.tif"), write_f32(240, 240, &nb, 256, mgt, 4326, Some(-32767.0)).unwrap())
+            .unwrap();
         for v in grid(NB.0, NB.1, 2, (0.0015, 0.0012)) {
             let (lon, lat) = ll(v);
             let (x, y) = atlas.project(lon, lat);
@@ -152,8 +150,8 @@ impl Fixture {
             } else if cf.round_ties_even() >= 30.0 {
                 (DemSource::Hrdem as u8, Some(hf.at(cf.round_ties_even(), rf.round_ties_even())))
             } else {
-                let (mc, mr) = pixel(mgt, x, y);
-                (DemSource::Mrdem as u8, Some(mf.at(mc, mr)))
+                let (mc, mr) = pixel(mgt, lon, lat);
+                (DemSource::Glo30 as u8, Some(mf.at(mc, mr)))
             };
             verts.push(v);
             want.push(w);
@@ -203,26 +201,30 @@ impl Fixture {
             want.push((if lidar { DemSource::Gsi5a } else { DemSource::Gsi10 } as u8, value));
         }
 
-        // FABDEM, read from the store alone: Taiwan; Paris, stored from a tile as Bristol's are
-        // (crate::dem::kept::store, as scenic-build fabdem-fetch stores it); the open sea, whose
-        // tiles the index doesn't list.
-        let store = dir.path().join("fetched/fabdem");
-        std::fs::create_dir_all(&store).unwrap();
+        // GLO-30, read from the store alone: Taiwan, whose fill mask makes its pixels there voids
+        // (filled from another source: none here, so none); Paris; the open sea, whose tiles the
+        // index doesn't list.
         let fgt = [121.48, PX, 0.0, 24.22, 0.0, -PX];
         let ff = Field(5.0, 0.01, 0.02);
         let data: Vec<f32> =
             (0..864u32).flat_map(|y| (0..504u32).map(move |x| ff.at(x as f64, y as f64) as f32)).collect();
         std::fs::write(
-            store.join("N24E121_FABDEM_V1-2.tif"),
+            store.join("N24E121_DEM.tif"),
             write_f32(504, 864, &data, 512, fgt, 4326, Some(-9999.0)).unwrap(),
         )
         .unwrap();
-        let v = e7(121.6, 24.2);
-        let (lon, lat) = ll(v);
-        let (cf, rf) = pixel(fgt, lon, lat);
-        verts.push(v);
-        want.push((DemSource::Fabdem as u8, Some(ff.at(cf, rf))));
-        // Paris, as Bristol's tiles are: PixelIsPoint, Deflate, horizontal predictor.
+        let mask: Vec<f32> = (0..864u32).flat_map(|_| (0..504u32).map(|x| if x < 300 { 3.0 } else { 1.0 })).collect();
+        std::fs::write(store.join("N24E121_FLM.tif"), write_f32(504, 864, &mask, 512, fgt, 4326, None).unwrap())
+            .unwrap();
+        // (Column 432 of 504: unmasked; column 72: masked, a void.)
+        for (lon, w) in [(121.6, true), (121.5, false)] {
+            let v = e7(lon, 24.2);
+            let (lon, lat) = ll(v);
+            let (cf, rf) = pixel(fgt, lon, lat);
+            verts.push(v);
+            want.push(if w { (DemSource::Glo30 as u8, Some(ff.at(cf, rf))) } else { (0, None) });
+        }
+        // Paris, as GLO-30's tiles are: PixelIsPoint, Deflate, horizontal predictor.
         const POINT_4326: &[u16] =
             &[1, 1, 0, 3, key::MODEL_TYPE, 0, 1, 2, key::RASTER_TYPE, 0, 1, 2, key::GEOGRAPHIC_TYPE, 0, 1, 4326];
         let pf = Field(35.0, 0.02, -0.03);
@@ -235,14 +237,12 @@ impl Fixture {
             &|_, x, y, _| pf.at(x as f64, y as f64),
         );
         let pgt = crate::geotiff::Tiff::open(Arc::new(paris.clone())).unwrap().transform(0).unwrap();
-        let dl = dir.path().join("downloaded.tif");
-        std::fs::write(&dl, &paris).unwrap();
-        crate::dem::kept::store(&store, "N48E002_FABDEM_V1-2.tif", &dl).unwrap();
+        std::fs::write(store.join("N48E002_DEM.tif"), &paris).unwrap();
         for v in grid(PARIS.0, PARIS.1, 1, (0.01, 0.01)) {
             let (lon, lat) = ll(v);
             let (cf, rf) = pixel(pgt, lon, lat);
             verts.push(v);
-            want.push((DemSource::Fabdem as u8, Some(pf.at(cf, rf))));
+            want.push((DemSource::Glo30 as u8, Some(pf.at(cf, rf))));
         }
         for v in [e7(5.4, 43.3), e7(-8.5, 53.3), e7(-30.0, 40.0)] {
             verts.push(v);
@@ -337,8 +337,10 @@ fn declared_plan() -> declared::Plan {
         code,
         resolution,
         cover: cover.map(|c| vec![c]),
-        source: Source::Geotiff { crs, read_resolution, store, files },
+        source: Source::Geotiff { crs, read_resolution, store, files, masks: Vec::new() },
     };
+    let glo =
+        |tile: &str, b: [f64; 4], mask: bool| ((glo_url(tile, "DEM"), Some(b)), mask.then(|| glo_url(tile, "FLM")));
     let tiles = |id: &str, layer: &str, zoom: u32, code: u8| Dataset {
         convert: None,
         id: id.into(),
@@ -369,20 +371,23 @@ fn declared_plan() -> declared::Plan {
                 false,
                 vec![(USGS_URL.into(), Some([-77.0, 40.0, -76.0, 41.0]))],
             ),
-            geo("mrdem", DemSource::Mrdem as u8, 30.0, canada, 3979, None, false, vec![(MRDEM_URL.into(), None)]),
-            geo(
-                "fabdem",
-                DemSource::Fabdem as u8,
-                30.9,
-                None,
-                4326,
-                None,
-                true,
-                vec![
-                    (fabdem_url("N20E120-N30E130", "N24E121"), Some([121.0, 24.0, 122.0, 25.0])),
-                    (fabdem_url("N40E000-N50E010", "N48E002"), Some([2.0, 48.0, 3.0, 49.0])),
-                ],
-            ),
+            {
+                let (files, masks): (Vec<_>, Vec<_>) = [
+                    glo("NB", [-67.0, 45.0, -66.0, 47.0], false),
+                    glo("N24E121", [121.0, 24.0, 122.0, 25.0], true),
+                    glo("N48E002", [2.0, 48.0, 3.0, 49.0], false),
+                ]
+                .into_iter()
+                .unzip();
+                Dataset {
+                    convert: None,
+                    id: "glo30".into(),
+                    code: DemSource::Glo30 as u8,
+                    resolution: 30.9,
+                    cover: None,
+                    source: Source::Geotiff { crs: 4326, read_resolution: None, store: true, files, masks },
+                }
+            },
         ],
     }
 }
@@ -419,7 +424,7 @@ fn every_dataset_where_it_serves_and_the_blends_at_their_edges() {
         }
     }
     assert_eq!(stats.blended, blends);
-    // The seams: New Brunswick's lidar beside its no-data strip, over MRDEM. Pennsylvania's 3DEP
+    // The seams: New Brunswick's lidar beside its no-data strip, over GLO-30. Pennsylvania's 3DEP
     // has nothing beneath it there. (Tokyo's points lie farther from its lidar columns' edges than
     // a band: tiles_blend_across_their_edges.)
     let near = |c: DemSource| (0..f.verts.len()).filter(|&i| blended[i] && src[i] == c as u8).count();
@@ -427,24 +432,18 @@ fn every_dataset_where_it_serves_and_the_blends_at_their_edges() {
     let count = |c: DemSource| f.want.iter().filter(|w| w.0 == c as u8).count();
     assert!(
         count(DemSource::Hrdem) > 10
-            && count(DemSource::Mrdem) > 0
+            && count(DemSource::Glo30) > 10
             && count(DemSource::Gsi5a) > 0
             && count(DemSource::Gsi10) > 0,
         "the fixture exercises each fall-through"
     );
     assert_eq!(
-        (
-            stats.datasets["hrdem"],
-            stats.datasets["mrdem"],
-            stats.datasets["usgs-3dep"],
-            stats.datasets["fabdem"],
-            stats.missing
-        ),
-        (count(DemSource::Hrdem), count(DemSource::Mrdem), 25, 10, 3)
+        (stats.datasets["hrdem"], stats.datasets["glo30"], stats.datasets["usgs-3dep"], stats.missing),
+        (count(DemSource::Hrdem), count(DemSource::Glo30), 25, 4)
     );
-    // The store: only read (its two tiles, nothing written or left).
-    let store = f.dir.path().join("fetched/fabdem");
-    assert_eq!(std::fs::read_dir(&store).unwrap().count(), 2);
+    // The store: only read (its four files, nothing written or left).
+    let store = f.dir.path().join("fetched/glo30");
+    assert_eq!(std::fs::read_dir(&store).unwrap().count(), 4);
     // The cache: every vertex by key.
     let keys: Vec<u64> =
         bytemuck::pod_collect_to_vec(&std::fs::read(f.dir.path().join("cache/dem-cache.keys.u64")).unwrap());
@@ -455,40 +454,40 @@ fn every_dataset_where_it_serves_and_the_blends_at_their_edges() {
         serde_json::from_str(&std::fs::read_to_string(f.build().join("dem-stats.json")).unwrap()).unwrap();
     assert_eq!(stats_file["vertices"], f.verts.len());
 
-    // Again: every vertex from the cache but the open sea's, sampled again (no file holds them:
-    // asking nothing).
+    // Again: every vertex from the cache but the missing ones, sampled again (the open sea's: no
+    // file holds them; Taiwan's void: the store's: asking nothing).
     let first = std::fs::read(f.build().join("elev.f32")).unwrap();
     let counting = Counting { inner: &f.fetch, asked: Mutex::default(), fail: None };
     let again = generic::run(&f.config(), &declared_plan(), &counting).unwrap();
-    assert_eq!(again.sampled_this_run, 3);
+    assert_eq!(again.sampled_this_run, 4);
     assert_eq!(std::fs::read(f.build().join("elev.f32")).unwrap(), first);
     assert!(counting.asked.lock().unwrap().is_empty());
 }
 
-/// Area builds never download FABDEM: a tile the index names and the store lacks is an error
-/// naming it, nothing asked of any server for it (the index's Bristol URLs only name the tiles).
+/// Area builds never download a stored dataset: a tile the index names and the store lacks is an
+/// error naming it, nothing asked of any server for it (the index's URLs only name the tiles).
 #[test]
 fn a_tile_the_store_lacks_is_an_error_naming_it_and_never_fetched() {
     let f = Fixture::new();
-    std::fs::remove_file(f.dir.path().join("fetched/fabdem/N48E002_FABDEM_V1-2.tif")).unwrap();
+    std::fs::remove_file(f.dir.path().join("fetched/glo30/N48E002_DEM.tif")).unwrap();
     let counting = Counting { inner: &f.fetch, asked: Mutex::default(), fail: None };
     let e = format!("{:#}", generic::run(&f.config(), &declared_plan(), &Lenient(&counting)).unwrap_err());
     assert!(
-        e.contains("fabdem: tile N48E002_FABDEM_V1-2.tif isn't in the store")
-            && e.contains("scenic-build fabdem-fetch"),
+        e.contains("glo30: tile N48E002_DEM.tif isn't in the store")
+            && e.contains("scenic-build store-fetch glo30 --index"),
         "{e}"
     );
-    assert!(counting.asked.lock().unwrap().iter().all(|u| !u.contains("FABDEM")), "nothing of FABDEM asked for");
+    assert!(counting.asked.lock().unwrap().iter().all(|u| !u.starts_with(GLO30)), "nothing of GLO-30 asked for");
     // (One cut short is an error too, not a download.)
-    std::fs::write(f.dir.path().join("fetched/fabdem/N48E002_FABDEM_V1-2.tif"), b"II*\0short").unwrap();
+    std::fs::write(f.dir.path().join("fetched/glo30/N48E002_DEM.tif"), b"II*\0short").unwrap();
     let e = format!("{:#}", generic::run(&f.config(), &declared_plan(), &Lenient(&counting)).unwrap_err());
-    assert!(e.contains("tile N48E002_FABDEM_V1-2.tif in the store") && e.contains("isn't whole"), "{e}");
+    assert!(e.contains("tile N48E002_DEM.tif in the store") && e.contains("isn't whole"), "{e}");
     // A store-kept dataset with no store given is refused, not read from its index's URLs.
     let e = format!(
         "{:#}",
         generic::run(&Config { store: None, ..f.config() }, &declared_plan(), &Lenient(&f.fetch)).unwrap_err()
     );
-    assert!(e.contains("fabdem: its files are read from the store, and no store is given"), "{e}");
+    assert!(e.contains("glo30: its files are read from the store, and no store is given"), "{e}");
 }
 
 #[test]

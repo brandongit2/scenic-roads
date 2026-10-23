@@ -1114,26 +1114,26 @@ reported).
 **Kind:** source declarations, one per dataset; a small dataset's files may lie beside it. **Drop
 box:** `inputs/elevation/`: `<dataset>.toml`, tile indexes (`<name>.geojson`) and `<dataset>/` for
 local files. Code: crate::inputs::elevation (the check), crate::dem::generic and crate::dem::declared
-(the sampler and blend), crate::dem::encoding, crate::dem::kept and crate::dem::fabdem_fetch (the store), crate::terrain_sources
-(the terrain's), crate::dem::spacing (the densification), crate::dem::geoid (the heights brought
+(the sampler and blend), crate::dem::encoding, crate::dem::store_fetch (the store), crate::terrain_sources
+(the terrain's base), crate::dem::spacing (the densification), crate::dem::geoid (the heights brought
 to EGM2008). Built for the roads' elevations (#143 step 1), the densification (step 2), the
-heights' conversion (step 3) and the 3D terrain (#144).
+heights' conversion (step 3) and the 3D terrain (#144). One pool: the roads and the terrain read
+the same declarations.
 
 **Shape:** a description (§5.1) and:
 
 | Field | Type | Meaning |
 |---|---|---|
 | `surface` | `ground` or `surface` | a DTM, or a DSM with trees and buildings |
-| `heights` | `EGM2008`, `EGM96`, `CGVD2013`, `NAVD88`, `JGD2011`, `TWVD2001`, `ellipsoid-WGS84` | the height reference, brought to EGM2008 before the blend (below); `mixed` allowed for the terrain's alone |
+| `heights` | `EGM2008`, `EGM96`, `CGVD2013`, `NAVD88`, `JGD2011`, `TWVD2001`, `ellipsoid-WGS84` | the height reference, brought to EGM2008 before the blend (below) |
 | `rank` | integer, default 0 | overrides the order by resolution (lower first), where datasets of one resolution differ in quality |
-| `code` | 1–8 | the source byte (at most `roadcore::NDEM` − 1, where the server counts a way's sources) in the z6 tiles' outputs (`src.u8`), named on the map by `label`; none for the terrain's |
+| `code` | 1–8 | the source byte (at most `roadcore::NDEM` − 1, where the server counts a way's sources) in the z6 tiles' outputs (`src.u8`), named on the map by `label` |
 | `label` | string | the short name a road's details give its elevation source (`"GSI lidar (5 m)"`), else `name`; one label per `code` (an `el-decl` error otherwise); not keyed: it reaches the map through the catalog's `dem_labels` (formats.md, Catalog), as a credit edit does (§4.8) |
-| `terrain` | bool, default false | read by the 3D terrain, never by the roads' elevations (below) |
-| `regions` | region ids (§6.1) | optional: the map regions the dataset is used in at all, by the roads and the terrain alike; elsewhere the next dataset in the order serves both. Its coverage (`facts.measured.cover`) is cut at check time to the 1° cells meeting one of them (`declared::scope_cover`; the check's key names the accepted regions, so a regions change measures again); an id no accepted region has is an `el-data` error. Not in its `keyed` digest (`Declaration::keyed_part`): a key names the cut only where it changed the cells the key's box reads (`cut_note`), so the z6 tiles inside keep their keys and those whose datasets change are built again; the DEM cache's tag notes the cut the same way, so a plan's kept samples stop counting only where the cut reaches its box. Not for the base terrain's (`terrain = true`). Planned: cut to the regions' outlines inside those cells too |
-| `territory` | ISO codes or `"world"` | required for a tile pyramid (its coverage is its territory's outlines' boxes); `"world"` makes any dataset's coverage the world (FABDEM) |
+| `regions` | region ids (§6.1) | optional: the map regions the dataset is used in at all, by the roads and the terrain alike; elsewhere the next dataset in the order serves both. Its coverage (`facts.measured.cover`) is cut at check time to the 1° cells meeting one of them (`declared::scope_cover`; the check's key names the accepted regions, so a regions change measures again); an id no accepted region has is an `el-data` error. Not in its `keyed` digest (`Declaration::keyed_part`): a key names the cut only where it changed the cells the key's box reads (`cut_note`), so the z6 tiles inside keep their keys and those whose datasets change are built again; the DEM cache's tag notes the cut the same way, so a plan's kept samples stop counting only where the cut reaches its box. Planned: cut to the regions' outlines inside those cells too |
+| `territory` | ISO codes or `"world"` | required for a tile pyramid (its coverage is its territory's outlines' boxes); `"world"` makes any dataset's coverage the world |
 | `[data] format` | `geotiff` or `tiles` | |
 | `[data] url` / `urls` / `index` / `files` | | exactly one: GeoTIFFs by URL, a tile index (GeoJSON footprints with each file's `url` or `file`, and optionally its fill mask's URL, `mask`; made by `producers/elevation/indexes.py`), or dropped files by glob |
-| `[data] store` | bool | the files read from `sources/fetched/<dataset>/` alone, by their URLs' last part (after a `#`, the member's name); never fetched by a build: a file the store lacks is an error naming it, one noted `<name>.none` has no data |
+| `[data] store` | bool | the files (and fill masks) read from `sources/fetched/<dataset>/` alone, by their URLs' last part (after a `#`, the member's name); never fetched by a build: a file the store lacks is an error naming it, one noted `<name>.none` has no data. Filled once by `scenic-build store-fetch <id> --index <its index>` (crate::dem::store_fetch: every file of the index and its mask the store lacks, as published, by the build's fetcher: its User-Agent, 429 and 5xx answers waited out; each checked a whole GeoTIFF under a temporary name, then renamed; restartable) |
 | `[data] encoding`, `url`, `zoom` | | for `tiles`: `terrarium`, `terrain-rgb`, `gsi-png`; the URL template; the zoom |
 | `[data] read_resolution` | metres | the roads read a finer dataset at its nearest overview (HRDEM's 2 m at 8 m); the map's terrain reads it at its full resolution (steps.md §2, Terrain, finer than the base) |
 
@@ -1171,7 +1171,7 @@ datasets of one rank, resolution and surface meeting (`el-tie`). A declaration i
 index it names. Planned: files not meeting the declared territory.
 
 **Projections** (crate::dem::proj, as PROJ 9.8 computes them, tested against pyproj): WGS 84 to
-NAD83(CSRS) by EPSG:1946's Helmert, then Canada Atlas Lambert (EPSG:3979: HRDEM, MRDEM) or a NAD83 /
+NAD83(CSRS) by EPSG:1946's Helmert, then Canada Atlas Lambert (EPSG:3979: HRDEM) or a NAD83 /
 UTM north zone (EPSG:26901–26923: USGS's 1 m tiles; NAD83(2011) taken as NAD83(CSRS), so through
 the same Helmert, not PROJ's null pick for EPSG:269zz, a metre off in the north-east), for the
 input check, the plan (`declared::projected_cells`, `plan_converted`) and the sampler
@@ -1181,7 +1181,9 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
 - **Order at a point:** the datasets covering it by `rank`, then resolution (finest first), then
   ground over surface, then id; the first with valid data gives the height and its `code`. A
   dataset's files are tried in index order, a point in those whose footprint holds it (min x ≤ x <
-  max x, min y < y ≤ max y), sampled by crate::dem::sample.
+  max x, min y < y ≤ max y), sampled by crate::dem::sample. A file with a fill mask (the index's
+  `mask`) has no data where its mask's nearest pixel is 3 or more (`declared::MASK_FILLED`:
+  GLO-30's FLM, filled from another DEM): the next dataset serves there, as at any void.
 - **Blended at edges:** where the next dataset with valid data (B) lies beneath the first (A), within
   a band of four of the coarser dataset's pixels of A's invalid area, h = B + (A − B)·s(d / band),
   s(t) = t²(3 − 2t). Past the band, A's height to the bit; the source byte is A's either way. The
@@ -1238,23 +1240,14 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
     `<id> <keyed> to EGM2008 <digest>`, so declaring or editing a grid rebuilds just the z6 tiles
     meeting a dataset it converts. A sample made under the DEM rules (the seed's) is never valid
     for a converted dataset (`DemValidity`: those weren't converted). With the six declarations
-    accepted, the z6 tiles meeting 3DEP, HRDEM, MRDEM or GSI's datasets are built again: 241 of the 285
-    keyed z6 tiles (as of 18 Oct); FABDEM's alone keep their keys.
-- **FABDEM** is declared with `territory = "world"` and the coarsest rank: the worldwide fallback.
-  It's `store = true`: all of FABDEM V1-2 (19,011 tiles, about 297 GiB) is kept once in
-  `sources/fetched/fabdem/`, and z6 tile builds only read it. Its index still names each tile by its
-  Bristol zip member (`<zip URL>#<tile>.tif`): the URL names the tile and its stored file, and the
-  index is unchanged so no z6 tile's key changes. The store is filled by `scenic-build fabdem-fetch
-  --root <nas> --mirror https://huggingface.co/datasets/pavelzaitsau/fabdem-v12 --work <local dir>
-  [--first <square>,…]` (crate::dem::fabdem_fetch), from that Hugging Face mirror (the same pixels,
-  two tiles compared; Bristol's server resets our requests):
-  every tile of the mirror's listing the store lacks, one at a time, the 10° squares named first;
-  each downloaded into the local work folder (resumed by range with `If-Range` and the ETag compared,
-  so a changed file starts again; retried with backoff; one fetcher a folder, by a lock), its size
-  and SHA-256 checked against the listing's (its LFS oid; a mismatch is fetched once more), decoded and written as every stored tile is (`dem::kept::store`:
-  rewritten, read back and compared under a temporary name, then renamed). It skips stored tiles,
-  so a stopped run is started again as it is. The input check measures a stored dataset's sampled
-  files from the store too, so fetch the tiles first, then change FABDEM's declaration.
+    accepted, the z6 tiles meeting a converted dataset are built again.
+- **The worldwide datasets**, ranked last (staged in `producers/elevation/`: `glo30.toml`,
+  `terrarium.toml`): Copernicus GLO-30 (`rank = 1`, `code = 3`, a surface model, EGM2008; its index
+  from the bucket's tile list with each tile's fill mask, `indexes.py glo30`: 26,450 1° tiles;
+  `store = true`, kept in `sources/fetched/glo30/`, filled by `scenic-build store-fetch glo30 --index glo30-tiles.geojson`), then
+  AWS's Terrarium tiles (`rank = 2`, `code = 4`, z12) where GLO-30 has none or a void. Terrarium is
+  declared EGM2008, which most of its sources are; north of 60°N some are ellipsoidal (10–50 m off),
+  but GLO-30 covers that land, so the tiles serve there only in its voids.
 - **Keys:** a z6 tile names the `keyed` digests of the datasets whose coverage meets its ways
   (`agent::build::unit_key`); a dataset's `keyed` includes its index's content and dropped files, so
   adding a tile reruns the z6 tiles it meets. `agent::rekey` keeps what keys made before the
@@ -1280,7 +1273,7 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   fine cells into the z6 tile's folder (`spacing.json`), which `extract` reads; the reach tests the
   z6 tiles' long ways at the same spacing (`reach::LongWay::touches`). The other steps' `extract` runs
   (the links, rail and candidates) read the same file (`Fine::of_records`); the rail and candidates keys name its whole digest, read by the planner from the accepted index (`spacing::digest_read`, cached by version; unreadable, they wait), the links are the pass's (made once a pass). Today's datasets make HRDEM,
-  3DEP (10.3 m, 1/3″) and GSI's fine, MRDEM and FABDEM (30 m) not.
+  3DEP (10.3 m, 1/3″) and GSI's fine, GLO-30 and the Terrarium tiles (30 m and coarser) not.
   - **Keys:** each z6 tile's reach records the cells its ways start in (`Reach::cells`); its key
     names those of them that are fine (`Fine::key`), so a dataset added, dropped or measured
     again rebuilds just the z6 tiles with a way starting where the spacing changes.
@@ -1293,7 +1286,7 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
     Aleutians, which go to 8 m; and any unit with a way starting in a cell the rule split, at 122.5° E or
     46.5° N) are built again.
 - NRCan's tile squares, the HRDEM index producer's input, are `producers/elevation/hrdem-squares.geojson`.
-- **The 1 m datasets** (#594), staged in `producers/elevation/1m/`, not yet in the drop box: NRCan's
+- **The 1 m datasets** (#594), staged in `producers/elevation/1m/` and in the drop box: NRCan's
   HRDEM 1 m mosaic (`hrdem-1m`: EPSG:3979, the 2 m mosaic's 56 squares, `indexes.py hrdem --res 1`)
   and USGS 3DEP's 1 m tiles (`usgs-3dep-1m-17`, `-18`, `-19`: one declaration a UTM zone, as a dataset
   is in one CRS; `indexes.py 3dep-1m --bbox -79.8,40.4,-66.8,47.5`), each with `regions` the ten
@@ -1304,38 +1297,23 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   alike); 3DEP 1 m takes code 8, the last free one. Their heights reach EGM2008 by the existing
   chains (CGVD2013 by CGG2013a, NAVD88 by GEOID18).
 
-**The 3D terrain's datasets** (`terrain = true`; crate::terrain_sources): left out of the roads'
-order, keys, plan, cache and ties. Two are read: a tile pyramid in the `terrarium` encoding, the
-terrain's base (AWS's Terrarium tiles, `heights = "mixed"`: its sources mix references), fetched
-raw by its template and packed onto the NAS (`sources/aws-terrarium/`, docs/macs.md); and at most one
-GeoTIFF dataset of 1° tiles by an index in EPSG:4326, each tile with its fill mask (`mask`),
-blended in north of 60°N (Copernicus GLO-30: the index from the bucket's tile list,
-`indexes.py glo30`), its files kept in `sources/fetched/<id>/` by their URLs' names. The voids,
-the water's flattening, the blend by latitude and the mask's reading (3 and up: filled from another
-source) are the terrain's code. The declarations themselves are kept in
-`producers/elevation/terrain/` (`terrarium.toml`, `glo30.toml`).
-- **Keys:** a terrain z6 tile names the terrain's declarations by their ids and `keyed` digests
+**The 3D terrain's base** (crate::terrain_sources) is read from the same pool: the last tile
+pyramid in the `terrarium` encoding with no `regions` (the Terrarium tiles), fetched raw by its
+template and packed onto the NAS (`sources/aws-terrarium/`, docs/macs.md), and the last GeoTIFF
+dataset with no `regions` by an index of 1° tiles in EPSG:4326 with their fill masks (GLO-30),
+blended in north of 60°N, its files read from its store. The voids, the water's flattening, the
+blend by latitude and the mask's reading are the terrain's code (docs/steps.md §2, Terrain).
+- **Keys:** a terrain z6 tile names those two declarations by their ids and `keyed` digests
   (`terrain_sources::pin`, in `agent::build::terrain_piece_key`); with none accepted (or one that
-  can't be read) its key is unknown and the terrain waits. The roads' keys and plan don't change
-  when a terrain declaration does.
-- **Re-keyed** (`agent::rekey::derive_sources`): a z6 tile recorded under the key that named its
-  sources as code had them (`rekey::SOURCES_BEFORE`) is read under its key now when the declarations
-  name the same: the base's template, the northern tiles' and masks' origin and the set of 1° cells
-  match what the code read (`rekey::named_before`, by digests; the cells' is `rekey::cells_digest`
-  of the tile list it read, `NORTH_CELLS_BEFORE`). The packs are then the same bytes
-  (`terrain_pack::tests::the_declared_sources_make_the_same_terrain_and_slope_packs`), and slope,
-  keyed on the terrain packs' contents, is unchanged with them. Other sources: every z6 tile made again.
-- **The rollout:** first both Macs run the app that reads the declarations; then the northern
-  dataset's files are copied (not moved) from `sources/copernicus-dem/` to `sources/fetched/glo30/`
-  (the same names), so an older app mid-build still reads the old folder, which is deleted later;
-  then the two declarations and `glo30-tiles.geojson` are dropped into `inputs/elevation/`. Until
-  they're accepted the terrain waits.
-
-**Planned:**
-- **A finer cache validity:** each cached height recording the datasets at or above its rank that
-  meet the vertex, so a finer dataset added restales only those vertices; the source byte becoming
-  the dataset's position in that list.
-- `[data] valid` (a GeoJSON of where a dataset is trusted) and ETag pins for `range` sources (§5.2).
+  can't be read) its key is unknown and the terrain waits.
+- **The rollout:** first `scenic-build store-fetch glo30 --index <the drop box's glo30-tiles.geojson>`
+  fills GLO-30's store (`sources/fetched/glo30/` holds the tiles north of 60°N already); then, together,
+  the app that reads one pool is published and `glo30.toml` and `terrarium.toml` replace the drop
+  box's (no `terrain` field, their ranks and codes), with `fabdem.toml`, `fabdem-tiles.geojson` and
+  `mrdem.toml` taken out of it. The app reads no version accepted from before (the terrain's
+  declarations then had no `code`: `declared::accepted` refuses it), so the elevations and the
+  terrain wait until the pool's version is accepted; then every z6 tile's elevations and the
+  terrain are built again. FABDEM's store (`sources/fetched/fabdem/`) is deleted after.
 
 ### 6.9 The remaining sources
 

@@ -1,0 +1,18 @@
+name = "Terrain Tiles (Terrarium)"
+label = "Terrain Tiles (Terrarium)"
+what = "Road elevation and the 3D terrain where Copernicus GLO-30 has no data"
+credit = "Terrain Tiles (Terrarium) on AWS Open Data: Mapzen and its open sources"
+licence = "Mapzen terrain tiles' attribution terms (various open sources)"
+source = "https://registry.opendata.aws/terrain-tiles/"
+territory = "world"
+surface = "surface"
+heights = "EGM2008"
+rank = 2
+code = 4
+notes = "The fallback, ranked last. Declared EGM2008, which most of its sources are; north of 60°N some are ellipsoidal (ArcticDEM's, likely), 10–50 m off, but GLO-30 covers all of that land, so the tiles serve there only in its voids. The terrain reads them from the raw tiles packed onto the NAS (sources/aws-terrarium/)."
+
+[data]
+format = "tiles"
+url = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
+zoom = 12
+encoding = "terrarium"

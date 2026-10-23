@@ -63,7 +63,6 @@ export interface Meta {
   elev_min: number;
   elev_max: number;
   elev_hist_10m_km: number[];
-  dem: { hrdem: number; usgs3dep: number; mrdem: number; fabdem?: number; vertices: number };
   built: number;
   /** Version token of each data file, by its file name (the catalog's, under the files' old names). */
   versions?: Record<string, string | number>;

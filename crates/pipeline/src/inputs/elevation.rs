@@ -521,8 +521,7 @@ impl Checks for Elevation {
             for (b, db, mb) in &measured[i + 1..] {
                 let same = da.rank.unwrap_or(0) == db.rank.unwrap_or(0)
                     && (ma.resolution - mb.resolution).abs() < 0.5
-                    && da.surface == db.surface
-                    && da.terrain == db.terrain;
+                    && da.surface == db.surface;
                 let (ca, cb) = (declared::Cover::of(ma.cover.as_deref()), declared::Cover::of(mb.cover.as_deref()));
                 let meet = ca.world || cb.world || ca.cells.iter().any(|c| cb.cells.contains(c));
                 if same && meet {
@@ -745,7 +744,6 @@ pub fn accept_fixture(root: &Path, m: &mut BTreeMap<String, String>) {
         heights: "EGM2008".into(),
         rank: None,
         code: 4,
-        terrain: false,
         regions: None,
         data: Data::Tiles { url: "https://e.org/{z}/{x}/{y}.png".into(), zoom: 10, encoding: "terrarium".into() },
     };
@@ -765,14 +763,13 @@ pub fn accept_fixture(root: &Path, m: &mut BTreeMap<String, String>) {
         )
     };
     let mut files = BTreeMap::from([entry("world", &d, measured, "w")]);
-    // (The terrain's: its base and its northern dataset, by an index of two 1° tiles, both where the
-    // code fetched them before they were declared, so its records from then are re-keyed.)
+    // (The worldwide datasets ranked last: GLO-30, by an index of two 1° tiles, then the Terrarium
+    // tiles where it has none.)
     let base = Declaration {
         surface: "surface".into(),
-        heights: "mixed".into(),
-        rank: None,
-        code: 0,
-        terrain: true,
+        heights: "EGM2008".into(),
+        rank: Some(2),
+        code: 6,
         regions: None,
         data: Data::Tiles {
             url: "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png".into(),
@@ -789,22 +786,27 @@ pub fn accept_fixture(root: &Path, m: &mut BTreeMap<String, String>) {
     let north = Declaration {
         surface: "surface".into(),
         heights: "EGM2008".into(),
-        rank: None,
-        code: 0,
-        terrain: true,
+        rank: Some(1),
+        code: 3,
         regions: None,
         data: Data::Geotiff {
             urls: vec![],
             index: Some("glo30.geojson".into()),
             files: vec![],
             read_resolution: None,
-            store: false,
+            store: true,
         },
     };
     files.extend([entry(
         "glo30",
         &north,
-        Measured { crs: Some(4326), resolution: 30.0, full: None, cover: None, uncut: None },
+        Measured {
+            crs: Some(4326),
+            resolution: 30.0,
+            full: None,
+            cover: Some(vec![[-148.0, 64.0, -147.0, 66.0]]),
+            uncut: None,
+        },
         "g",
     )]);
     let feature = |la: i32, lo: i32| serde_json::json!({ "type": "Feature", "properties": { "url": format!("https://copernicus-dem-30m.s3.amazonaws.com/N{la}_W{}_DEM.tif", -lo), "mask": format!("https://copernicus-dem-30m.s3.amazonaws.com/N{la}_W{}_FLM.tif", -lo) }, "geometry": { "type": "Polygon", "coordinates": [[[lo, la], [lo + 1, la], [lo + 1, la + 1], [lo, la + 1], [lo, la]]] } });

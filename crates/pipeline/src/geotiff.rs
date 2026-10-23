@@ -1,11 +1,11 @@
 //! GeoTIFF and Cloud Optimized GeoTIFF reading over byte ranges (`store::range::RangeRead`), as
-//! GDAL reads them, for the elevation and land cover steps: NRCan's HRDEM and MRDEM (LZW), USGS
-//! 3DEP (LZW, floating-point predictor), FABDEM (Deflate, horizontal predictor)
+//! GDAL reads them, for the elevation and land cover steps: NRCan's HRDEM (LZW), USGS 3DEP (LZW,
+//! floating-point predictor), Copernicus GLO-30 (Deflate, horizontal predictor)
 //! and ESA WorldCover (Deflate). Classic TIFF and BigTIFF in either byte order; tiles or strips;
 //! overviews; no compression, LZW, Deflate or Zstandard; predictor 1, 2 or 3; 8- to 64-bit integer
 //! and floating-point samples, of which band 1 is read. The georeferencing as GDAL computes it
 //! (pixel scale and tie point, or the transformation matrix; a PixelIsPoint raster moved half a
-//! pixel), the GeoKeys, and GDAL's nodata tag. And `write_f32` for FABDEM's store: one band,
+//! pixel), the GeoKeys, and GDAL's nodata tag. And `write_f32` for the tests' rasters: one band,
 //! tiled, Deflate, predictor 3. An open reads the header in windows (`Windowed`: one read a
 //! cluster of directories) and keeps the tile arrays, so over a network each open is a read or
 //! two and each block's read is one.
@@ -1140,6 +1140,7 @@ fn fp_acc(row: &mut [u8], bps: usize, stride: usize, tmp: &mut Vec<u8>) {
 }
 
 /// The floating-point predictor's encoding of a row of little-endian samples (`fp_acc` undoes it).
+#[cfg(test)]
 fn fp_diff(row: &mut [u8], bps: usize, stride: usize, tmp: &mut Vec<u8>) {
     let wc = row.len() / bps;
     tmp.clear();
@@ -1156,6 +1157,7 @@ fn fp_diff(row: &mut [u8], bps: usize, stride: usize, tmp: &mut Vec<u8>) {
 }
 
 /// GeoKeys for a geographic CRS by its EPSG code (as GDAL writes them for WGS 84).
+#[cfg(test)]
 fn geographic_keys(epsg: u16) -> (Vec<u16>, Vec<f64>, String) {
     let mut keys: Vec<[u16; 4]> =
         vec![[key::MODEL_TYPE, 0, 1, 2], [key::RASTER_TYPE, 0, 1, 1], [key::GEOGRAPHIC_TYPE, 0, 1, epsg]];
@@ -1179,6 +1181,7 @@ fn geographic_keys(epsg: u16) -> (Vec<u16>, Vec<f64>, String) {
 }
 
 /// GDAL's nodata tag text for `v`.
+#[cfg(test)]
 fn nodata_text(v: f64) -> String {
     if v.is_nan() {
         "nan".into()
@@ -1196,7 +1199,8 @@ fn nodata_text(v: f64) -> String {
 /// A one-band 32-bit float GeoTIFF of `width` by `height` (`data`, row by row): little-endian,
 /// `tile`-pixel square tiles (edges filled with the nodata value, or 0), Deflate with the
 /// floating-point predictor; north-up geotransform `gt` in geographic CRS `epsg`, and GDAL's
-/// nodata tag.
+/// nodata tag. (The tests' rasters.)
+#[cfg(test)]
 pub fn write_f32(
     width: u32,
     height: u32,

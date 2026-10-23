@@ -154,7 +154,13 @@ fn the_distance_to_the_invalid_area_is_the_scans_whatever_the_shortcut() {
         code,
         resolution: res,
         cover: None,
-        source: Source::Geotiff { crs: 4326, read_resolution: None, store: false, files: vec![(url.into(), Some(b))] },
+        source: Source::Geotiff {
+            crs: 4326,
+            read_resolution: None,
+            store: false,
+            files: vec![(url.into(), Some(b))],
+            masks: Vec::new(),
+        },
     };
     let (rf, rc) = (PX * M_PER_DEG, 3.0 * PX * M_PER_DEG);
     let ds_fine = geo("fine", 1, rf, "https://a.org/fine.tif", fine_box);
@@ -627,7 +633,13 @@ fn a_geotiffs_blocks_are_read_ahead_once_and_the_heights_are_the_same() {
         code,
         resolution: res,
         cover: None,
-        source: Source::Geotiff { crs: 4326, read_resolution: None, store: false, files: vec![(url.into(), Some(b))] },
+        source: Source::Geotiff {
+            crs: 4326,
+            read_resolution: None,
+            store: false,
+            files: vec![(url.into(), Some(b))],
+            masks: Vec::new(),
+        },
     };
     let fine_box = [10.0, 50.0 - h as f64 * PX, 10.0 + w as f64 * PX, 50.0];
     let plan = Plan {
@@ -703,7 +715,7 @@ fn a_geotiff_dataset_in_degrees_keeps_no_copy_of_the_points() {
         code: 1,
         resolution: 30.0,
         cover: None,
-        source: Source::Geotiff { crs, read_resolution: None, store: false, files: Vec::new() },
+        source: Source::Geotiff { crs, read_resolution: None, store: false, files: Vec::new(), masks: Vec::new() },
     };
     let (lon, lat) = (vec![-80.0, -79.5], vec![43.0, 44.0]);
     let cache = Arc::new(Mutex::new(BlockCache::new(1 << 20)));

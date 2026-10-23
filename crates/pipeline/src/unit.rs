@@ -699,7 +699,7 @@ pub struct Tools {
     /// `buildtiles::stage`), when there are any.
     pub buildings: Option<PathBuf>,
     /// The NAS's `sources/`, where downloads are kept, each downloaded once: Meta's canopy squares
-    /// (`canopy/`) and the declared elevation datasets' kept files (`fetched/<dataset>/`: FABDEM's tiles); the local caches fill from it. None: local
+    /// (`canopy/`) and the declared elevation datasets' kept files (`fetched/<dataset>/`: GLO-30's tiles); the local caches fill from it. None: local
     /// caches alone.
     pub sources: Option<PathBuf>,
     /// The NAS's `cache/`, where what a z6 tile keeps for its later runs is shared by every Mac: its DEM

@@ -51,10 +51,10 @@ pub struct Fine {
 }
 
 impl Fine {
-    /// From the roads' declared datasets with their coverages (agent::tiles::Elevation).
+    /// From the declared datasets with their coverages (agent::tiles::Elevation).
     pub fn of(ds: &[(Accepted, Cover)]) -> Fine {
         let mut f = Fine::default();
-        for (_, c) in ds.iter().filter(|(d, _)| !d.declaration.terrain && d.measured.resolution < COARSE_M) {
+        for (_, c) in ds.iter().filter(|(d, _)| d.measured.resolution < COARSE_M) {
             f.world |= c.world;
             f.cells.extend(c.cells.iter().map(|&(x, y)| [x, y]));
         }
@@ -64,7 +64,7 @@ impl Fine {
         f
     }
 
-    /// From the roads' declared datasets (`declared::accepted`).
+    /// From the declared datasets (`declared::accepted`).
     pub fn of_accepted(ds: &[Accepted]) -> Fine {
         let with: Vec<(Accepted, Cover)> =
             ds.iter().map(|d| (d.clone(), Cover::of(d.measured.cover.as_deref()))).collect();
@@ -159,7 +159,7 @@ mod tests {
     use super::*;
     use crate::dem::declared::{Data, Declaration, Measured};
 
-    fn ds(id: &str, resolution: f64, cover: Option<Vec<[f64; 4]>>, terrain: bool) -> (Accepted, Cover) {
+    fn ds(id: &str, resolution: f64, cover: Option<Vec<[f64; 4]>>) -> (Accepted, Cover) {
         let d = Accepted {
             convert: None,
             id: id.into(),
@@ -169,7 +169,6 @@ mod tests {
                 heights: "EGM2008".into(),
                 rank: None,
                 code: 1,
-                terrain,
                 regions: None,
                 data: Data::Geotiff {
                     urls: vec!["https://example.org/a.tif".into()],
@@ -188,10 +187,9 @@ mod tests {
     #[test]
     fn fine_where_a_dataset_finer_than_the_coarse_spacing_has_data() {
         let f = Fine::of(&[
-            ds("lidar", 8.0, Some(vec![[-124.0, 48.0, -122.0, 49.0]]), false),
-            ds("ned", 10.3, Some(vec![[-100.0, 40.0, -99.0, 41.0]]), false),
-            ds("world", 30.0, None, false),
-            ds("terrain", 5.0, Some(vec![[10.0, 45.0, 11.0, 46.0]]), true),
+            ds("lidar", 8.0, Some(vec![[-124.0, 48.0, -122.0, 49.0]])),
+            ds("ned", 10.3, Some(vec![[-100.0, 40.0, -99.0, 41.0]])),
+            ds("world", 30.0, None),
         ]);
         assert!(!f.world);
         assert_eq!(f.cells.iter().copied().collect::<Vec<_>>(), vec![[-124, 48], [-123, 48], [-100, 40]]);
@@ -205,14 +203,14 @@ mod tests {
         assert_eq!(f.at(e7(2.0, 48.0)), COARSE_M);
         assert_eq!(cell(e7(-0.5, -0.5)), [-1, -1]);
         // A fine dataset everywhere: fine everywhere.
-        let w = Fine::of(&[ds("all", 5.0, None, false), ds("lidar", 8.0, Some(vec![[0.0, 0.0, 1.0, 1.0]]), false)]);
+        let w = Fine::of(&[ds("all", 5.0, None), ds("lidar", 8.0, Some(vec![[0.0, 0.0, 1.0, 1.0]]))]);
         assert!(w.world && w.cells.is_empty() && w.at(e7(50.0, 50.0)) == FINE_M);
     }
 
     #[test]
     fn the_key_names_only_the_cells_given_that_are_fine() {
-        let a = Fine::of(&[ds("lidar", 8.0, Some(vec![[0.0, 0.0, 2.0, 1.0]]), false)]);
-        let b = Fine::of(&[ds("lidar", 8.0, Some(vec![[0.0, 0.0, 1.0, 1.0], [5.0, 5.0, 6.0, 6.0]]), false)]);
+        let a = Fine::of(&[ds("lidar", 8.0, Some(vec![[0.0, 0.0, 2.0, 1.0]]))]);
+        let b = Fine::of(&[ds("lidar", 8.0, Some(vec![[0.0, 0.0, 1.0, 1.0], [5.0, 5.0, 6.0, 6.0]]))]);
         // (Cell (1, 0) differs: a unit with a way starting there keys apart, one without doesn't.)
         assert_eq!(a.key(&[[0, 0], [3, 3]]), b.key(&[[0, 0], [3, 3]]));
         assert_ne!(a.key(&[[0, 0], [1, 0]]), b.key(&[[0, 0], [1, 0]]));

@@ -829,13 +829,13 @@ fn elevation_labels_come_from_the_declarations() {
     let ds = [
         el("gsi-1a.toml", "GSI 1A", "GSI lidar (5 m)", Some(5)),
         el("gsi-5a.toml", "GSI 5A", "GSI lidar (5 m)", Some(5)),
-        el("mrdem.toml", "NRCan MRDEM, 30 m", "", Some(3)),
+        el("glo30.toml", "Copernicus GLO-30", "", Some(3)),
         el("terrarium.toml", "Terrain", "", None),
     ];
     let l = credits::dem_labels(&ds);
     assert_eq!(l.len(), 2);
     assert_eq!(l[&5], "GSI lidar (5 m)");
-    assert_eq!(l[&3], "NRCan MRDEM, 30 m");
+    assert_eq!(l[&3], "Copernicus GLO-30");
     let mut edited = ds.clone();
     edited[0].description.label = "GSI (lidar)".into();
     assert_ne!(credits::digest(&ds), credits::digest(&edited));

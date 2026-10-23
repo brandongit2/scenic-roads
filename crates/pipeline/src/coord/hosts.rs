@@ -2,7 +2,7 @@
 //! derived from the accepted declarations (docs/inputs.md §5.2), never named in code: the hosts of
 //! the files the roads' elevation datasets read over the web (crate::dem::declared: their `urls`,
 //! their index's URLs, their tile template; a dataset kept in the store, `store = true`, is read
-//! from the store, never fetched, and the terrain's are read by its own step) and of the land-cover
+//! from the store, never fetched) and of the land-cover
 //! source's (crate::landcover). Nothing else is fetched for a worker.
 
 use anyhow::Result;
@@ -154,8 +154,9 @@ mod tests {
         assert_eq!(host("sources/x.tif"), None);
     }
 
-    /// The staged land cover and the fixture's elevations: the land cover's host and the world
-    /// dataset's tile host; the terrain's left out.
+    /// The staged land cover and the fixture's elevations: the land cover's host and the tile
+    /// pyramids' hosts (the world dataset's, the Terrarium tiles'); GLO-30's, kept in the store, left
+    /// out.
     #[test]
     fn derived() {
         let d = tempfile::tempdir().unwrap();
@@ -164,7 +165,10 @@ mod tests {
         crate::inputs::sources::accept_fixture(d.path(), &mut m);
         crate::inputs::elevation::accept_fixture(d.path(), &mut m);
         let h = of(d.path(), &m).unwrap();
-        assert_eq!(h.into_iter().collect::<Vec<_>>(), ["e.org", "esa-worldcover.s3.eu-central-1.amazonaws.com"]);
+        assert_eq!(
+            h.into_iter().collect::<Vec<_>>(),
+            ["e.org", "esa-worldcover.s3.eu-central-1.amazonaws.com", "s3.amazonaws.com"]
+        );
     }
 
     /// The cache: the records read at most every RECHECK; a failed read keeps the last set; with

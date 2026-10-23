@@ -279,39 +279,6 @@ fn a_stored_dataset_is_measured_from_the_store_alone() {
     assert!(why.iter().any(|w| w.contains("tile N49E002.tif isn't in the store")), "{why:?}");
 }
 
-/// FABDEM's declaration as accepted (inputs/elevation/fabdem.toml, its bytes) with its index's
-/// content (fabdem-tiles.geojson, content name 2b71fb6f44a2ccff): the keyed digest the units' keys
-/// name is the one the accepted index records (9cd774557ca47aa0), so no unit with stored tiles is
-/// re-keyed or rebuilt by #229 (the store only read, the declaration and index untouched).
-#[test]
-fn fabdems_keyed_digest_is_the_accepted_ones() {
-    const FABDEM_TOML: &str = r#"name = "FABDEM v1-2, 30 m"
-what = "Road elevation, Europe, Hong Kong, Singapore, Taiwan"
-credit = "FABDEM v1-2 30 m (University of Bristol / Fathom; Hawker et al. 2022). FABDEM is produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved."
-licence = "CC-BY-NC-SA-4.0"
-licence_url = "https://creativecommons.org/licenses/by-nc-sa/4.0/"
-source = "https://data.bris.ac.uk/data/dataset/s5hqmjcdj8yo2ibzi9b4ew3sn"
-retrieved = "2026-10-16"
-territory = "world"
-surface = "ground"
-heights = "EGM2008"
-rank = 1
-code = 4
-notes = "The worldwide fallback: the coarsest rank. Copernicus DEM with forests and buildings removed. The index lists every tile inside Bristol's 10° zips (producers/elevation/indexes.py fabdem); each downloaded once into the store."
-
-[data]
-format = "geotiff"
-index = "fabdem-tiles.geojson"
-store = true
-"#;
-    let (Some(_), _, dk) = super::super::credits::parse_description("fabdem.toml", FABDEM_TOML.as_bytes()) else {
-        panic!("its description")
-    };
-    let d = declared::parse(FABDEM_TOML.as_bytes()).unwrap();
-    let data = store::naming::hash16(b"index 2b71fb6f44a2ccff");
-    assert_eq!(keyed_with_data(&keyed(&dk, &d), &data), "9cd774557ca47aa0");
-}
-
 #[test]
 fn a_datasets_keyed_digest_names_its_index_and_dropped_files() {
     let ix = |files: &[(&str, [f64; 4])]| index(files);

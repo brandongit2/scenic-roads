@@ -17,7 +17,7 @@ lead's coordinator. Below, the M4 (48 GB) unless said.
   when the Keychain has its password; every job runs, slowly. Home again, with no job running, it
   remounts by the LAN name.
 - **Downloads are kept on the NAS, each made once** (`sources/`): Meta's canopy squares, AWS's raw
-  terrain tiles, FABDEM's tiles (all of them, fetched once by `scenic-build fabdem-fetch`; builds
+  terrain tiles, GLO-30's tiles (all of them, fetched once by `scenic-build store-fetch`; builds
   only read them: docs/inputs.md §6.8), the leaf-type sources, Overture's buildings, Wikipedia's monthly
   pageviews (`sources/pageviews/<month>.tsv.zst`, every article of the map's languages counted, so a
   dump is streamed once). A Mac's copy is a cache filled from the NAS; one the NAS lacks is uploaded

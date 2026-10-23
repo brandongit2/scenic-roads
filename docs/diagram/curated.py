@@ -85,7 +85,7 @@ GROUPS = [
          'docs/steps.md §4; docs/inputs.md §6.9',
          'the zips downloaded again by hand'),
         ('part', None, 'terr', 'Which DEM where',
-         'roads’ elevations (elev): HRDEM, 3DEP, MRDEM in North America, GSI in Japan, FABDEM elsewhere',
+         'roads’ elevations (elev): HRDEM, 3DEP in North America, GSI in Japan, GLO-30 elsewhere',
          'declared in inputs/elevation/ (one .toml per dataset; the order by rank and resolution read from the data), checked by the input check',
          'the declarations; indexes by producers/elevation/indexes.py from the sources’ listings',
          'docs/inputs.md §6.8; its how/ (the indexes’ commands)',

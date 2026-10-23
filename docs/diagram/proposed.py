@@ -230,8 +230,8 @@ def build(check=False):
                     [(['layers/roads/ · rails/'], 'packs · RT v7 z4–14'), (['hidata/<z6>'], 'query parts · summaries')], scope='z6', shared=True,
                     fig='median 0 s a tile, p90 20 s; 0.4 GB p90')
     s_osm4 = d.src('osm', cy, 'OSM extracts', ['roads · rail lines'])
-    s_dem = d.src('terr', s_osm4.b + 8, 'Road DEMs', ['HRDEM · 3DEP · MRDEM (N. Am.) ·', 'GSI (Japan) · FABDEM 30 m;', 'read by range, road blocks only'],
-                  kept=['sources/fabdem/', 'sources/dem-cache/'])
+    s_dem = d.src('terr', s_osm4.b + 8, 'Road DEMs', ['HRDEM · 3DEP (N. Am.) ·', 'GSI (Japan) · GLO-30 30 m;', 'read by range, road blocks only'],
+                  kept=['sources/fetched/glo30/', 'sources/dem-cache/'])
     c_dem = d.cur('terr', s_dem.b + 10, 'Which DEM where', ['the sources and their order by', 'area; HRDEM’s tile lists'], 'chosen by hand', 'part')
     p_road = d.pill('net', n_tile.y + 30, ['/tiles/roads · rails', '/api/road · profile'], note=['the pack for the tile;', 'APIs by OSM id'])
     b_road = d.layer('net', 0, 'Roads & rail lines', ['WebGL, coloured per point:', 'elevation, grade, scenic score'], cy=p_road.my)

@@ -1519,7 +1519,7 @@ mod tests {
     #[test]
     fn at_the_elevation_switch_the_units_one_dataset_meets_are_re_keyed_and_the_others_built() {
         let (c, reach, m, mut done) = iceland(&|_| {});
-        // The switch: FABDEM-like everywhere, and a finer dataset over Reykjavik alone.
+        // The switch: a dataset everywhere, and a finer one over Reykjavik alone.
         let mut tiles = tiles_for(&m);
         let index = &m[&crate::inputs::logical(crate::inputs::elevation::UNIT)];
         tiles.hold_elevation(
@@ -2207,7 +2207,7 @@ mod tests {
                 })
                 .collect(),
         });
-        crate::terrain_sources::Declared { base: base.into(), north, pin: "p".into() }
+        crate::terrain_sources::Declared { base: base.into(), north, pin: "p".into(), resolution: 30.0 }
     }
 
     #[test]

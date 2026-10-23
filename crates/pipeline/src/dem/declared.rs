@@ -30,6 +30,10 @@ pub fn known_crs(crs: u16) -> bool {
     matches!(crs, 4326 | 4269) || super::proj::projected(crs)
 }
 
+/// A fill mask's value from which its pixel was filled from another source (Copernicus GLO-30's
+/// FLM: 3 ASTER, 4 SRTM90, … up to 10): a void, which the next dataset fills.
+pub const MASK_FILLED: f32 = 3.0;
+
 /// A dataset's id: its declaration's file stem, lower-case letters, digits and `-`.
 pub fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
@@ -46,11 +50,8 @@ pub struct Declaration {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rank: Option<i64>,
     /// The source byte its heights carry in the units' outputs (`src.u8`, which the map's server
-    /// names by its description's `label`, through the catalog's `dem_labels`), 1–8 (roadcore::NDEM − 1); 0 for the terrain's (`terrain`).
+    /// names by its description's `label`, through the catalog's `dem_labels`), 1–8 (roadcore::NDEM − 1).
     pub code: u8,
-    /// Read by the 3D terrain (crate::terrain_sources), never by the roads' elevations.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub terrain: bool,
     /// The map regions it's used in at all (by id, crate::inputs::regions), by the roads and the
     /// terrain alike; None: wherever it has data. Its coverage is cut to them as it's read
     /// (`scope`); not in its `keyed` digest (`keyed_part`), so the z6 tiles in its regions keep
@@ -120,19 +121,12 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
     ];
     for k in v.keys() {
         if !DESCRIPTION.contains(&k.as_str())
-            && !["surface", "heights", "rank", "code", "terrain", "regions", "data"].contains(&k.as_str())
+            && !["surface", "heights", "rank", "code", "regions", "data"].contains(&k.as_str())
         {
             why.push(format!("`{k}` isn't a field of an elevation declaration (docs/inputs.md §6.8)"));
         }
     }
     let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
-    let terrain = match v.get("terrain") {
-        None => false,
-        Some(x) => x.as_bool().unwrap_or_else(|| {
-            why.push("`terrain` isn't true or false".into());
-            false
-        }),
-    };
     let regions = match v.get("regions") {
         None => None,
         Some(x) => {
@@ -145,20 +139,12 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
             }
         }
     };
-    if terrain && regions.is_some() {
-        why.push("`regions` is for the roads' datasets; the base terrain's (`terrain = true`) is everywhere".into());
-    }
     let surface = s("surface").unwrap_or_default();
     if surface != "ground" && surface != "surface" {
         why.push(format!("`surface` is \"{surface}\": ground (bare earth) or surface (with trees and buildings)"));
     }
     let heights = s("heights").unwrap_or_default();
-    if heights == "mixed" && !terrain {
-        why.push(
-            "`heights` is \"mixed\": allowed for the terrain alone (`terrain = true`), never for the roads' elevations"
-                .into(),
-        );
-    } else if heights != "mixed" && !HEIGHTS.contains(&heights.as_str()) {
+    if !HEIGHTS.contains(&heights.as_str()) {
         why.push(format!(
             "`heights` is \"{heights}\", a height reference the app doesn't know ({})",
             HEIGHTS.join(", ")
@@ -175,12 +161,6 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
         },
     };
     let code = match v.get("code").and_then(|x| x.as_integer()) {
-        _ if terrain => {
-            if v.contains_key("code") {
-                why.push("`code` is the roads' source byte: a terrain dataset has none".into());
-            }
-            0
-        }
         // (Capped where the map's server counts a way's sources: roadcore::NDEM.)
         Some(c) if (1..=(roadcore::NDEM as i64 - 1)).contains(&c) => c as u8,
         _ => {
@@ -287,7 +267,7 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
     if !why.is_empty() {
         return Err(why);
     }
-    Ok(Declaration { surface, heights, rank, code, terrain, regions, data })
+    Ok(Declaration { surface, heights, rank, code, regions, data })
 }
 
 // ---- What's measured from the data ---------------------------------------------------------------
@@ -491,7 +471,7 @@ pub fn geographic_cells(boxes: &[[f64; 4]]) -> BTreeSet<(i32, i32)> {
 /// A tile index (GeoJSON, docs/inputs.md §6.8): a feature per file, its `url` (or `file`, in
 /// `<dataset>/`) and its footprint (its geometry's box) in the index's CRS (`crs`, as GDAL writes
 /// it: `urn:ogc:def:crs:EPSG::3979`; WGS 84 when there's none). A feature may name its file's fill
-/// mask (`mask`, a URL: which pixels the source filled from another, the terrain's to read).
+/// mask (`mask`, a URL: which pixels the source filled from another; `MASK_FILLED` and up are voids).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TileIndex {
     pub crs: u16,
@@ -638,6 +618,10 @@ pub enum Source {
         /// The files near the unit, in the index's order: a URL (or a path for a dropped file) and
         /// its footprint in `crs` (None: the raster's own bounds).
         files: Vec<(String, Option<[f64; 4]>)>,
+        /// Each file's fill mask (its index's `mask`), in the same order: a pixel whose mask is
+        /// `MASK_FILLED` or more is a void, filled by the next dataset. Empty: none has one.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        masks: Vec<Option<String>>,
     },
     Tiles {
         url: String,
@@ -664,19 +648,9 @@ pub struct Accepted {
     pub convert: Option<super::geoid::Conversion>,
 }
 
-/// The roads' declarations of an accepted version (`<id>.toml` entries with their facts, the
-/// terrain's left out), in their order.
+/// The declarations of an accepted version (`<id>.toml` entries with their facts), in their order:
+/// the one pool the roads and the 3D terrain read alike.
 pub fn accepted(a: &crate::inputs::Accepted) -> Result<Vec<Accepted>> {
-    Ok(accepted_all(a)?.into_iter().filter(|d| !d.declaration.terrain).collect())
-}
-
-/// The terrain's declarations of an accepted version (`terrain = true`), in their order.
-pub fn accepted_terrain(a: &crate::inputs::Accepted) -> Result<Vec<Accepted>> {
-    Ok(accepted_all(a)?.into_iter().filter(|d| d.declaration.terrain).collect())
-}
-
-/// Every declaration of an accepted version, in their order.
-fn accepted_all(a: &crate::inputs::Accepted) -> Result<Vec<Accepted>> {
     let mut out = Vec::new();
     for (p, f) in &a.index.files {
         let Some(id) = p.strip_suffix(".toml").filter(|s| !s.contains('/')) else { continue };
@@ -688,6 +662,12 @@ fn accepted_all(a: &crate::inputs::Accepted) -> Result<Vec<Accepted>> {
             f.facts.get("measured").cloned().with_context(|| format!("{p}: nothing measured in the index"))?,
         )
         .with_context(|| format!("{p}: what was measured"))?;
+        // (A declaration accepted with no code is one of the terrain's from before the one pool,
+        // `terrain = true`: the version is waited past until one of the pool's is accepted.)
+        anyhow::ensure!(
+            declaration.code != 0,
+            "{p}: accepted from before the one pool (no `code`): the elevation datasets wait for a version of the pool's declarations (docs/inputs.md §6.8)"
+        );
         out.push(Accepted {
             id: id.to_string(),
             path: p.clone(),
@@ -860,16 +840,19 @@ pub fn plan_converted(
                 let crs = d.measured.crs.context("a GeoTIFF dataset without its CRS measured")?;
                 let nb = if super::proj::projected(crs) { native_box(crs, near, 1000.0)? } else { near };
                 let mut list: Vec<(String, Option<[f64; 4]>)> = Vec::new();
+                let mut masks: Vec<Option<String>> = Vec::new();
                 for u in urls {
                     list.push((u.clone(), None));
+                    masks.push(None);
                 }
                 if let Some(i) = index {
                     let ix = parse_index(&a.read(i)?).map_err(|e| anyhow::anyhow!("{i}: {e}"))?;
-                    for (w, b) in ix.files {
+                    for ((w, b), m) in ix.files.into_iter().zip(ix.masks) {
                         if b[0] > nb[2] || b[2] < nb[0] || b[1] > nb[3] || b[3] < nb[1] {
                             continue;
                         }
                         list.push((locate(a, &d.id, &w)?, Some(b)));
+                        masks.push(m);
                     }
                 }
                 if !files.is_empty() {
@@ -877,11 +860,15 @@ pub fn plan_converted(
                         if let Some(rest) = p.strip_prefix(&format!("{}/", d.id)) {
                             if files.iter().any(|g| glob(g, rest)) {
                                 list.push((locate(a, &d.id, &Where::File(rest.to_string()))?, None));
+                                masks.push(None);
                             }
                         }
                     }
                 }
-                Source::Geotiff { crs, read_resolution: *read_resolution, store: *store, files: list }
+                if masks.iter().all(Option::is_none) {
+                    masks.clear();
+                }
+                Source::Geotiff { crs, read_resolution: *read_resolution, store: *store, files: list, masks }
             }
         };
         out.push(Dataset {
@@ -964,7 +951,7 @@ mod tests {
         assert!(cut_note(&m, &c, [10.5, 45.2, 11.0, 45.3]).is_some(), "a box on 11°E touches 11,45");
         assert_eq!(cut_note(&m, &c, [30.2, 45.2, 30.3, 45.3]), None);
         assert_eq!(cut_note(&Measured { uncut: None, ..m.clone() }, &c, [10.2, 45.2, 10.3, 45.3]), None);
-        // (Declared as region ids; not in the digest the keys name; not for the base terrain.)
+        // (Declared as region ids; not in the digest the keys name.)
         let d = |extra: &str| {
             parse(
                 format!("surface = \"ground\"\nheights = \"EGM2008\"\ncode = 1\n{extra}\n[data]\nformat = \"geotiff\"\nurl = \"https://e.org/a.tif\"\n")
@@ -1009,27 +996,10 @@ encoding = "lerc"
             assert!(why.contains(w), "{w}: {why}");
         }
         let mixed = String::from_utf8(ok.to_vec()).unwrap().replace("CGVD2013", "mixed");
-        assert!(parse(mixed.as_bytes()).unwrap_err()[0].contains("terrain alone"));
-        // The terrain's: "mixed" heights allowed, no code (the roads' source byte).
-        let terrain = br#"
-name = "t"
-credit = "c"
-licence = "CC0-1.0"
-surface = "surface"
-heights = "mixed"
-terrain = true
-[data]
-format = "tiles"
-url = "https://example.org/{z}/{x}/{y}.png"
-zoom = 12
-encoding = "terrarium"
-"#;
-        let d = parse(terrain).unwrap();
-        assert!(d.terrain && d.code == 0 && d.heights == "mixed");
-        let coded = String::from_utf8(terrain.to_vec()).unwrap().replace("terrain = true", "terrain = true\ncode = 3");
-        assert!(parse(coded.as_bytes()).unwrap_err()[0].contains("source byte"));
-        // A roads' declaration's `keyed` fields are what they were (no `terrain` among them).
-        assert!(!serde_json::to_string(&parse(ok).unwrap()).unwrap().contains("terrain"));
+        assert!(parse(mixed.as_bytes()).unwrap_err()[0].contains("a height reference the app doesn't know"));
+        // (The 3D terrain reads the same pool: no field of its own.)
+        let terrain = "terrain = true\n".to_string() + std::str::from_utf8(ok).unwrap();
+        assert!(parse(terrain.as_bytes()).unwrap_err()[0].contains("`terrain` isn't a field"));
     }
 
     #[test]

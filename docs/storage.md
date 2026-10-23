@@ -10,7 +10,7 @@ inputs/        the drop boxes (docs/inputs.md): regions/, languages/, translatio
                _gate-test/ (the input check's test unit)
 sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, reach, pass),
                basemap/ (Planetiler's jar and data), items/<date>/ (facts, pageviews, answers),
-               pageviews/, dem-cache/ (per-vertex DEM seed), fetched/fabdem/, buildings/<release>/,
+               pageviews/, dem-cache/ (per-vertex DEM seed), buildings/<release>/,
                trees/, canopy/, aws-terrarium/, rail/, canvec/, fetched/glo30/, terrain-z8-v4,
                inputs/<unit>/ (the input check's checked copies and accepted indexes: inputs.md §4.6)
 base/          base packs, one per z6 tile

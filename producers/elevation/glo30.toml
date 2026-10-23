@@ -1,0 +1,17 @@
+name = "Copernicus DEM GLO-30"
+label = "Copernicus GLO-30 (30 m)"
+what = "Road elevation and the 3D terrain worldwide, where no finer dataset is declared"
+credit = "produced using Copernicus WorldDEM-30 © DLR e.V. 2010–2014 and © Airbus Defence and Space GmbH 2014–2018 provided under COPERNICUS by the European Union and ESA"
+licence = "Copernicus DEM licence (GLO-30 public)"
+source = "https://registry.opendata.aws/copernicus-dem/"
+territory = "world"
+surface = "surface"
+heights = "EGM2008"
+rank = 1
+code = 3
+notes = "The primary worldwide dataset, after the regional ones. Each tile's fill mask (FLM) names the pixels filled from other DEMs: 3 and up are voids, which the next dataset (the Terrarium tiles) fills. Kept whole in the store (sources/fetched/glo30/, `scenic-build store-fetch glo30 --index glo30-tiles.geojson`). Index: producers/elevation/indexes.py glo30 (each tile's DEM and its FLM)."
+
+[data]
+format = "geotiff"
+index = "glo30-tiles.geojson"
+store = true

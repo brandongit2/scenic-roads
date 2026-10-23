@@ -6,7 +6,7 @@
 //!
 //! - **Which datasets:** those whose full resolution (`Measured::full`, else `resolution`) is finer
 //!   than the terrain's own finest declared dataset by over a tenth (`FINER`): HRDEM, USGS 3DEP and
-//!   GSI's, not MRDEM or FABDEM (30 m, as the base). None is named in code: one dropped into
+//!   GSI's, not GLO-30 (30 m: the base's own). None is named in code: one dropped into
 //!   `inputs/elevation/` later is taken the same way.
 //! - **How fine:** a dataset's zoom at a latitude is the finest whose pixels are no finer than half
 //!   its cell (`zoom_for`): 2 m data to z16 in most of Canada, 3DEP's 10 m to z14 (z13 north of
@@ -138,10 +138,9 @@ pub fn full_resolution(d: &Accepted) -> f64 {
     d.measured.full.unwrap_or(d.measured.resolution)
 }
 
-/// The roads' datasets `ds` (their conversions set: declared::convert) finer than the terrain's
-/// datasets `terrain` (`FINER`), in their order.
-pub fn sets(ds: &[Accepted], terrain: &[Accepted]) -> Vec<FineSet> {
-    let base = terrain.iter().map(full_resolution).fold(f64::INFINITY, f64::min);
+/// The datasets `ds` (their conversions set: declared::convert) finer than the terrain's base, of
+/// resolution `base` (m: crate::terrain_sources::Declared::resolution), by `FINER`, in their order.
+pub fn sets(ds: &[Accepted], base: f64) -> Vec<FineSet> {
     ds.iter()
         .filter(|d| full_resolution(d) < base * FINER)
         .map(|d| FineSet {
@@ -221,7 +220,7 @@ impl Fine {
         let mut ds = declared::accepted(&a)?;
         // (Said by the roads' own plans: crate::dem::declared::plan_converted.)
         let _ = declared::convert(&mut ds, &geoid);
-        let sets = sets(&ds, &declared::accepted_terrain(&a)?);
+        let sets = sets(&ds, crate::terrain_sources::of(&a)?.resolution);
         Ok(Fine { elevation: a, geoid, sets })
     }
 
@@ -532,7 +531,7 @@ fn plan_files(plan: &Plan, b: [f64; 4], bf: &BaseFetch) -> Result<Vec<PlanFile>>
     let pts = grid(b);
     let mut todo = Vec::new();
     for d in &here {
-        let Source::Geotiff { crs, read_resolution, store: false, files } = &d.source else { continue };
+        let Source::Geotiff { crs, read_resolution, store: false, files, .. } = &d.source else { continue };
         // (The box in the files' CRS, grown by the bands' reach.)
         let p = Projection::of(*crs);
         let np: Vec<(f64, f64)> = pts.iter().map(|&(lo, la)| native(p.as_ref(), lo, la)).collect();
@@ -1173,9 +1172,9 @@ mod tests {
         let mut m = std::collections::BTreeMap::new();
         crate::inputs::elevation::accept_fixture(d.path(), &mut m);
         let a = crate::inputs::open(d.path(), &m, crate::inputs::elevation::UNIT).unwrap().unwrap();
-        let terrain = declared::accepted_terrain(&a).unwrap();
+        let terrain = crate::terrain_sources::of(&a).unwrap().resolution;
         let mut ds = declared::accepted(&a).unwrap();
-        assert!(sets(&ds, &terrain).is_empty(), "the fixture's roads dataset is coarser than the terrain's");
+        assert!(sets(&ds, terrain).is_empty(), "the fixture's datasets are no finer than the terrain's base");
         assert!(Fine::of(a.clone(), Vec::new()).unwrap().sets.is_empty());
         // (A job reads them again only when the records name other versions.)
         let mut c = Current::read(d.path(), &m).unwrap();
@@ -1187,7 +1186,7 @@ mod tests {
         assert!(c.fine.is_some() && c.read_at == Current::versions(&m), "an unreadable new version too");
         // (Its full resolution counts, not the one it's read at.)
         ds[0].measured.full = Some(2.0);
-        let s = sets(&ds, &terrain);
+        let s = sets(&ds, terrain);
         assert_eq!(s.len(), 1);
         let Data::Tiles { zoom, .. } = &ds[0].declaration.data else { panic!("the fixture's is a pyramid") };
         assert_eq!(s[0].detail, Detail::Pyramid(*zoom as u8));
@@ -1381,7 +1380,13 @@ mod tests {
             code,
             resolution: res,
             cover: None,
-            source: Source::Geotiff { crs, read_resolution: None, store: false, files: vec![(url.into(), None)] },
+            source: Source::Geotiff {
+                crs,
+                read_resolution: None,
+                store: false,
+                files: vec![(url.into(), None)],
+                masks: Vec::new(),
+            },
         };
         let plan = Plan {
             fmt: 1,

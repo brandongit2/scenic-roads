@@ -771,7 +771,7 @@ impl Drop for Coordinator {
 // derived from the accepted declarations.)
 
 /// What of the NAS a task may read through the coordinator (`/work/net/…/nas/…`): the sources the
-/// steps read (canopy squares, FABDEM, the tree cover's rasters, raw terrain).
+/// steps read (canopy squares, GLO-30, the tree cover's rasters, raw terrain).
 pub const NAS_PATHS: [&str; 1] = ["sources/"];
 
 /// A request for work.
@@ -4952,7 +4952,7 @@ mod http {
             };
             let p = root.join(rel);
             // (Not there, or the NAS not answering: a task fails rather than take the second for
-            // the first, as Taiwan's elevations would, from FABDEM.)
+            // the first, as Taiwan's elevations would, from GLO-30.)
             let meta = match tokio::fs::metadata(&p).await {
                 Ok(m) => m,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -4969,7 +4969,7 @@ mod http {
                 .into_response(),
                 "list" => {
                     // (A listing read in part, the NAS not answering, is an error, never fewer
-                    // entries: Taiwan's MOI DTM files listed as none would be FABDEM's elevations.
+                    // entries: Taiwan's MOI DTM files listed as none would be GLO-30's elevations.
                     // An entry gone since it was listed is just gone.)
                     let listed = (|| -> std::io::Result<Vec<(String, &str, u64)>> {
                         let mut entries = Vec::new();

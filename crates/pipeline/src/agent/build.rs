@@ -6065,7 +6065,6 @@ pub(crate) mod tests {
             heights: "EGM2008".into(),
             rank: None,
             code: 1,
-            terrain: false,
             regions: None,
             data: crate::dem::declared::Data::Tiles {
                 url: "https://e.org/{z}/{x}/{y}.png".into(),

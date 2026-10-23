@@ -16,13 +16,7 @@ the index's CRS), which the app reads as the file's box (min x <= x < max x, min
           (USGS_1M_<zone>_…), else from its GeoTIFF's header (the older USGS_one_meter_…, USGS_1m_…:
           their project names' zones aren't always theirs). Newest first (`publicationDate`), as
           several projects can cover a tile and a point takes the first file with data there.
-  fabdem  FABDEM v1-2: every tile inside Bristol's 10° zips (each zip's central directory read by
-          range requests), as <zip URL>#<member>, its footprint the 1° square it's named by (its
-          south-west corner). The URL only names the tile: FABDEM is read from the store
-          (sources/fetched/fabdem/), which `scenic-build fabdem-fetch` fills from Hugging Face's
-          mirror (docs/inputs.md §6.8); builds never download it. Bristol's server now resets
-          requests, so this listing may not run again; the accepted index stands.
-  glo30   Copernicus DEM GLO-30 (the 3D terrain's north of 60°N): every tile in the bucket's
+  glo30   Copernicus DEM GLO-30 (the worldwide dataset): every tile in the bucket's
           tileList.txt (or --tiles, a copy of it), its DEM by `url` and its fill mask (FLM, in its
           AUXFILES/) by `mask`, its footprint the 1° square it's named by (its south-west corner).
 
@@ -31,7 +25,6 @@ Drop the index beside its declaration in inputs/elevation/; the input check read
 usage: indexes.py hrdem [--res 1|2] [--tiles <listing.txt>] --squares <index.geojson> --out <file>
        indexes.py 3dep --out <file>
        indexes.py 3dep-1m --bbox <w,s,e,n> --out <file with {zone}>
-       indexes.py fabdem --out <file>
        indexes.py glo30 [--tiles <tileList.txt>] --out <file>
 """
 import argparse
@@ -47,7 +40,6 @@ import urllib.request
 NRCAN = "https://canelevation-dem.s3.ca-central-1.amazonaws.com"
 USGS = "https://prd-tnm.s3.amazonaws.com"
 USGS_PREFIX = "StagedProducts/Elevation/13/TIFF/current/"
-BRISTOL = "https://data.bris.ac.uk/datasets/s5hqmjcdj8yo2ibzi9b4ew3sn"
 GLO30 = "https://copernicus-dem-30m.s3.amazonaws.com"
 UA = {"User-Agent": "scenic-roads/0.1 (personal offline map)"}
 # What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): the buckets' listings and published files.
@@ -206,44 +198,6 @@ def usgs_1m(a):
     }
 
 
-def zip_members(url):
-    head = urllib.request.urlopen(urllib.request.Request(url, method="HEAD", headers=UA), timeout=120)
-    size = int(head.headers["Content-Length"])
-    tail = get(url, (max(0, size - 65558), size - 1))
-    i = tail.rfind(b"PK\x05\x06")
-    if i < 0:
-        raise SystemExit(f"{url}: no end of central directory")
-    n, cd_size, cd_off = struct.unpack("<HII", tail[i + 10:i + 20])
-    if cd_off == 0xFFFFFFFF or n == 0xFFFF:
-        j = tail.rfind(b"PK\x06\x06")
-        n, cd_size, cd_off = struct.unpack("<QQQ", tail[j + 32:j + 56])
-    cd = get(url, (cd_off, cd_off + cd_size - 1))
-    p, out = 0, []
-    while p + 46 <= len(cd) and cd[p:p + 4] == b"PK\x01\x02":
-        ln, le, lc = struct.unpack("<HHH", cd[p + 28:p + 34])
-        out.append(cd[p + 46:p + 46 + ln].decode())
-        p += 46 + ln + le + lc
-    return out
-
-
-def fabdem(a):
-    page = get(BRISTOL + "/").decode()
-    zips = sorted(set(re.findall(r'href="([^"]*_FABDEM_V1-2\.zip)"', page)))
-    feats = []
-    for i, z in enumerate(zips):
-        url = urllib.parse.urljoin(BRISTOL + "/", z)
-        for mem in zip_members(url):
-            m = re.fullmatch(r"([NS])(\d\d)([EW])(\d\d\d)_FABDEM_V1-2\.tif", mem.rsplit("/", 1)[-1])
-            if not m:
-                continue
-            s = int(m.group(2)) * (1 if m.group(1) == "N" else -1)
-            w = int(m.group(4)) * (1 if m.group(3) == "E" else -1)
-            feats.append(feature(f"{url}#{mem}", square(w, s, w + 1, s + 1)))
-        print(f"{i + 1}/{len(zips)} zips, {len(feats)} tiles", file=sys.stderr)
-    feats.sort(key=lambda f: f["properties"]["url"])
-    return {"type": "FeatureCollection", "features": feats}
-
-
 def glo30(a):
     text = open(a.tiles).read() if a.tiles else get(GLO30 + "/tileList.txt").decode()
     feats = []
@@ -263,7 +217,7 @@ def glo30(a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("source", choices=["hrdem", "3dep", "3dep-1m", "fabdem", "glo30"])
+    ap.add_argument("source", choices=["hrdem", "3dep", "3dep-1m", "glo30"])
     ap.add_argument("--tiles")
     ap.add_argument("--squares")
     ap.add_argument("--res", type=int, choices=[1, 2], default=2)
@@ -275,7 +229,7 @@ def main():
             ap.error("3dep-1m needs --bbox and an --out naming {zone}")
         docs = {a.out.format(zone=c - 26900): d for c, d in usgs_1m(a).items()}
     else:
-        docs = {a.out: {"hrdem": hrdem, "3dep": usgs, "fabdem": fabdem, "glo30": glo30}[a.source](a)}
+        docs = {a.out: {"hrdem": hrdem, "3dep": usgs, "glo30": glo30}[a.source](a)}
     for out, doc in docs.items():
         with open(out, "w") as f:
             json.dump(doc, f, separators=(",", ":"))

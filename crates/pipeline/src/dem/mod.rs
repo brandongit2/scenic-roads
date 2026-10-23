@@ -11,13 +11,12 @@
 
 pub mod declared;
 pub mod encoding;
-pub mod fabdem_fetch;
 pub mod generic;
 pub mod geoid;
-pub mod kept;
 pub mod proj;
 pub mod sample;
 pub mod spacing;
+pub mod store_fetch;
 
 use anyhow::{ensure, Result};
 use rayon::prelude::*;
