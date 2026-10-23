@@ -1,7 +1,9 @@
 //! The coordinate conversions the DEMs need, computed as PROJ 9.8
 //! computes them, with the deterministic maths (`det`): WGS 84 to Canada Atlas Lambert (EPSG:3979,
 //! NRCan's HRDEM and MRDEM) through NAD83(CSRS), by EPSG's 7-parameter "NAD83(CSRS) to WGS 84 (2)"
-//! (the transformation PROJ picks, everywhere: it needs no grid).
+//! (the transformation PROJ picks, everywhere: it needs no grid); and to NAD83 / UTM (EPSG:26901–
+//! 26923, USGS 3DEP's 1 m tiles) through the same Helmert, by PROJ's Poder/Engsager transverse
+//! Mercator (`Utm`).
 //!
 //! PROJ's build fuses a multiply and an add in one expression into a multiply-add (clang's
 //! contraction: the left operand's product if it's one, else the right's), so those are fused here
@@ -94,15 +96,50 @@ fn adjlon(l: f64) -> f64 {
     l - PI
 }
 
-/// WGS 84 longitude, latitude (degrees) to Canada Atlas Lambert (EPSG:3979) x, y (metres), as
-/// pyproj's `Transformer.from_crs("EPSG:4326", "EPSG:3979", always_xy=True)` does.
+/// WGS 84 to NAD83(CSRS) by EPSG's "NAD83(CSRS) to WGS 84 (2)" (EPSG:1946), inverted: geocentric,
+/// the Helmert, back to geodetic on GRS 80.
 #[derive(Clone, Debug)]
-pub struct Atlas {
+struct Csrs {
     wgs: Ellipsoid,
     grs: Ellipsoid,
     /// The Helmert translation (m) and rotations (radians; coordinate frame, small angles).
     t: [f64; 3],
     r: [f64; 3],
+}
+
+impl Csrs {
+    fn new() -> Csrs {
+        let arc = DEG_TO_RAD / 3600.0;
+        Csrs {
+            wgs: Ellipsoid::new(Ellipsoid::WGS84.0, Ellipsoid::WGS84.1),
+            grs: Ellipsoid::new(Ellipsoid::GRS80.0, Ellipsoid::GRS80.1),
+            // EPSG:1946's parameters, as PROJ writes them.
+            t: [-0.991, 1.9072, 0.5129],
+            r: [-0.0257899075194932 * arc, -0.0096500989602704 * arc, -0.0116599432323421 * arc],
+        }
+    }
+
+    /// NAD83(CSRS) longitude, latitude (radians) of WGS 84 `lon`, `lat` (degrees).
+    fn of(&self, lon: f64, lat: f64) -> (f64, f64) {
+        let c = self.wgs.cartesian(lon * DEG_TO_RAD, lat * DEG_TO_RAD);
+        let (x, y, z) = (c[0] - self.t[0], c[1] - self.t[1], c[2] - self.t[2]);
+        let [f, t, p] = self.r;
+        // The rotation matrix transposed: R00 = R11 = R22 = 1, R01 = p, R02 = -t, R10 = -p,
+        // R12 = f, R20 = t, R21 = -f.
+        let local = [
+            t.mul_add(z, 1.0f64.mul_add(x, -p * y)),
+            (-f).mul_add(z, p.mul_add(x, 1.0 * y)),
+            1.0f64.mul_add(z, (-t).mul_add(x, f * y)),
+        ];
+        self.grs.geodetic(local)
+    }
+}
+
+/// WGS 84 longitude, latitude (degrees) to Canada Atlas Lambert (EPSG:3979) x, y (metres), as
+/// pyproj's `Transformer.from_crs("EPSG:4326", "EPSG:3979", always_xy=True)` does.
+#[derive(Clone, Debug)]
+pub struct Atlas {
+    csrs: Csrs,
     n: f64,
     c: f64,
     rho0: f64,
@@ -117,12 +154,8 @@ impl Default for Atlas {
 
 impl Atlas {
     pub fn new() -> Atlas {
-        let wgs = Ellipsoid::new(Ellipsoid::WGS84.0, Ellipsoid::WGS84.1);
-        let grs = Ellipsoid::new(Ellipsoid::GRS80.0, Ellipsoid::GRS80.1);
-        let arc = DEG_TO_RAD / 3600.0;
-        // EPSG:1946's parameters, as PROJ writes them.
-        let t = [-0.991, 1.9072, 0.5129];
-        let r = [-0.0257899075194932 * arc, -0.0096500989602704 * arc, -0.0116599432323421 * arc];
+        let csrs = Csrs::new();
+        let grs = csrs.grs;
         // Lambert conformal conic: standard parallels 49° and 77° N, origin 49° N 95° W, GRS 80.
         let (phi1, phi2, phi0, lam0) = (49.0 * DEG_TO_RAD, 77.0 * DEG_TO_RAD, 49.0 * DEG_TO_RAD, -(95.0 * DEG_TO_RAD));
         let (sinphi, cosphi) = (phi1.dsin(), phi1.dcos());
@@ -134,30 +167,188 @@ impl Atlas {
         n /= (ml1 / ml2).dln();
         let c = m1 * ml1.dpowf(-n) / n;
         let rho0 = c * tsfn(phi0, phi0.dsin(), grs.e).dpowf(n);
-        Atlas { wgs, grs, t, r, n, c, rho0, lam0 }
+        Atlas { csrs, n, c, rho0, lam0 }
     }
 
     /// EPSG:3979 x, y (m) of WGS 84 `lon`, `lat` (degrees).
     pub fn project(&self, lon: f64, lat: f64) -> (f64, f64) {
-        // WGS 84 to NAD83(CSRS): geocentric, the inverse Helmert, back to geodetic on GRS 80.
-        let c = self.wgs.cartesian(lon * DEG_TO_RAD, lat * DEG_TO_RAD);
-        let (x, y, z) = (c[0] - self.t[0], c[1] - self.t[1], c[2] - self.t[2]);
-        let [f, t, p] = self.r;
-        // The rotation matrix transposed: R00 = R11 = R22 = 1, R01 = p, R02 = -t, R10 = -p,
-        // R12 = f, R20 = t, R21 = -f.
-        let local = [
-            t.mul_add(z, 1.0f64.mul_add(x, -p * y)),
-            (-f).mul_add(z, p.mul_add(x, 1.0 * y)),
-            1.0f64.mul_add(z, (-t).mul_add(x, f * y)),
-        ];
-        let (lam, phi) = self.grs.geodetic(local);
+        let (lam, phi) = self.csrs.of(lon, lat);
+        let grs = &self.csrs.grs;
         // Lambert conformal conic.
         let lam = adjlon(adjlon(lam) - self.lam0);
-        let rho = self.c * tsfn(phi, phi.dsin(), self.grs.e).dpowf(self.n);
+        let rho = self.c * tsfn(phi, phi.dsin(), grs.e).dpowf(self.n);
         let l = lam * self.n;
         let x = rho * l.dsin();
         let y = (-rho).mul_add(l.dcos(), self.rho0);
-        (x * self.grs.a, y * self.grs.a)
+        (x * grs.a, y * grs.a)
+    }
+}
+
+/// The projected CRSs the DEMs are read in: Canada Atlas Lambert, or a NAD83 / UTM zone.
+#[derive(Clone, Debug)]
+pub enum Projection {
+    Atlas(Box<Atlas>),
+    Utm(Utm),
+}
+
+impl Projection {
+    /// The projection of EPSG code `crs`; None for a geographic CRS (4326, 4269: lon, lat as given)
+    /// or one the app doesn't know.
+    pub fn of(crs: u16) -> Option<Projection> {
+        match crs {
+            3979 => Some(Projection::Atlas(Box::new(Atlas::new()))),
+            26901..=26923 => Some(Projection::Utm(Utm::new(u32::from(crs - 26900)))),
+            _ => None,
+        }
+    }
+
+    /// x, y (m) of WGS 84 `lon`, `lat` (degrees).
+    pub fn project(&self, lon: f64, lat: f64) -> (f64, f64) {
+        match self {
+            Projection::Atlas(a) => a.project(lon, lat),
+            Projection::Utm(u) => u.project(lon, lat),
+        }
+    }
+}
+
+/// Whether EPSG code `crs` is one the app projects to (metres), not a geographic one.
+pub fn projected(crs: u16) -> bool {
+    matches!(crs, 3979 | 26901..=26923)
+}
+
+/// PROJ's Clenshaw sum of `p` at `b` (`gatg`).
+fn gatg(p: &[f64; 6], b: f64, cos_2b: f64, sin_2b: f64) -> f64 {
+    let two_cos_2b = 2.0 * cos_2b;
+    let (mut h, mut h2) = (0.0, 0.0);
+    let mut h1 = p[5];
+    for &c in p[..5].iter().rev() {
+        h = -h2 + two_cos_2b * h1 + c;
+        h2 = h1;
+        h1 = h;
+    }
+    b + h * sin_2b
+}
+
+/// PROJ's complex Clenshaw sum (`clenS`): (real, imaginary).
+fn clen_s(a: &[f64; 6], sin_r: f64, cos_r: f64, sinh_i: f64, cosh_i: f64) -> (f64, f64) {
+    let r = 2.0 * cos_r * cosh_i;
+    let i = -2.0 * sin_r * sinh_i;
+    let (mut hi1, mut hr1, mut hi) = (0.0, 0.0, 0.0);
+    let mut hr = a[5];
+    for &c in a[..5].iter().rev() {
+        let (hr2, hi2) = (hr1, hi1);
+        hr1 = hr;
+        hi1 = hi;
+        hr = -hr2 + r * hr1 - i * hi1 + c;
+        hi = -hi2 + i * hr1 + r * hi1;
+    }
+    let r = sin_r * cosh_i;
+    let i = cos_r * sinh_i;
+    (r * hr - i * hi, r * hi + i * hr)
+}
+
+/// PROJ's real Clenshaw sum (`clens`).
+fn clens(a: &[f64; 6], arg: f64) -> f64 {
+    let r = 2.0 * arg.dcos();
+    let mut hr1 = 0.0;
+    let mut hr = a[5];
+    for &c in a[..5].iter().rev() {
+        let hr2 = hr1;
+        hr1 = hr;
+        hr = -hr2 + r * hr1 + c;
+    }
+    arg.dsin() * hr
+}
+
+/// WGS 84 longitude, latitude (degrees) to NAD83 / UTM zone `zone` north (EPSG:269zz) x, y (metres),
+/// NAD83 taken as NAD83(CSRS) (USGS's NAD83(2011) and it one frame, as crate::dem::geoid takes
+/// them), so through the Atlas's Helmert: as pyproj's `Transformer.from_crs("EPSG:4326",
+/// "EPSG:<NAD83(CSRS) / UTM zone>", always_xy=True)` does. PROJ's `tmerc` by Poder/Engsager (its
+/// default algorithm), on GRS 80, k0 0.9996, false easting 500 km. (PROJ's own pick for EPSG:269zz,
+/// "NAD83 to WGS 84 (1)", is a null transformation: about a metre off in the north-east, where
+/// HRDEM, read through the Helmert, meets the 1 m tiles.)
+#[derive(Clone, Debug)]
+pub struct Utm {
+    csrs: Csrs,
+    lam0: f64,
+    qn: f64,
+    zb: f64,
+    cbg: [f64; 6],
+    gtu: [f64; 6],
+}
+
+impl Utm {
+    pub fn new(zone: u32) -> Utm {
+        let grs = Ellipsoid::new(Ellipsoid::GRS80.0, Ellipsoid::GRS80.1);
+        let n = grs.f / (2.0 - grs.f);
+        let mut np = n;
+        let mut cbg = [0.0; 6];
+        let mut gtu = [0.0; 6];
+        cbg[0] = n
+            * (-2.0
+                + n * (2.0 / 3.0 + n * (4.0 / 3.0 + n * (-82.0 / 45.0 + n * (32.0 / 45.0 + n * (4642.0 / 4725.0))))));
+        np *= n;
+        cbg[1] =
+            np * (5.0 / 3.0 + n * (-16.0 / 15.0 + n * (-13.0 / 9.0 + n * (904.0 / 315.0 + n * (-1522.0 / 945.0)))));
+        np *= n;
+        cbg[2] = np * (-26.0 / 15.0 + n * (34.0 / 21.0 + n * (8.0 / 5.0 + n * (-12686.0 / 2835.0))));
+        np *= n;
+        cbg[3] = np * (1237.0 / 630.0 + n * (-12.0 / 5.0 + n * (-24832.0 / 14175.0)));
+        np *= n;
+        cbg[4] = np * (-734.0 / 315.0 + n * (109598.0 / 31185.0));
+        np *= n;
+        cbg[5] = np * (444337.0 / 155925.0);
+        let k0 = 0.9996;
+        np = n * n;
+        let qn = k0 / (1.0 + n) * (1.0 + np * (1.0 / 4.0 + np * (1.0 / 64.0 + np / 256.0)));
+        gtu[0] = n
+            * (0.5
+                + n * (-2.0 / 3.0
+                    + n * (5.0 / 16.0 + n * (41.0 / 180.0 + n * (-127.0 / 288.0 + n * (7891.0 / 37800.0))))));
+        gtu[1] = np
+            * (13.0 / 48.0
+                + n * (-3.0 / 5.0 + n * (557.0 / 1440.0 + n * (281.0 / 630.0 + n * (-1983433.0 / 1935360.0)))));
+        np *= n;
+        gtu[2] = np * (61.0 / 240.0 + n * (-103.0 / 140.0 + n * (15061.0 / 26880.0 + n * (167603.0 / 181440.0))));
+        np *= n;
+        gtu[3] = np * (49561.0 / 161280.0 + n * (-179.0 / 168.0 + n * (6601661.0 / 7257600.0)));
+        np *= n;
+        gtu[4] = np * (34729.0 / 80640.0 + n * (-3418889.0 / 1995840.0));
+        np *= n;
+        gtu[5] = np * (212378941.0 / 319334400.0);
+        // (The origin's latitude is 0: its Gaussian latitude 0, so Zb = -Qn·(0 + clens(gtu, 0)).)
+        let zb = -qn * clens(&gtu, 0.0);
+        let lam0 = (f64::from(zone - 1) + 0.5) * PI / 30.0 - PI;
+        Utm { csrs: Csrs::new(), lam0, qn, zb, cbg, gtu }
+    }
+
+    /// NAD83 / UTM x, y (m) of WGS 84 `lon`, `lat` (degrees).
+    pub fn project(&self, lon: f64, lat: f64) -> (f64, f64) {
+        let (lam, phi) = self.csrs.of(lon, lat);
+        let lam = adjlon(adjlon(lam) - self.lam0);
+        let cn = gatg(&self.cbg, phi, (2.0 * phi).dcos(), (2.0 * phi).dsin());
+        let (sin_cn, cos_cn) = (cn.dsin(), cn.dcos());
+        let (sin_ce, cos_ce) = (lam.dsin(), lam.dcos());
+        let cos_cn_cos_ce = cos_cn * cos_ce;
+        let cn = sin_cn.datan2(cos_cn_cos_ce);
+        let inv_denom = 1.0 / sin_cn.dhypot(cos_cn_cos_ce);
+        let tan_ce = sin_ce * cos_cn * inv_denom;
+        let ce = tan_ce.dasinh();
+        let two_inv = 2.0 * inv_denom;
+        let two_inv_sq = two_inv * inv_denom;
+        let tmp_r = cos_cn_cos_ce * two_inv_sq;
+        let sin_r = sin_cn * tmp_r;
+        let cos_r = cos_cn_cos_ce * tmp_r - 1.0;
+        let sinh_i = tan_ce * two_inv;
+        let cosh_i = two_inv_sq - 1.0;
+        let (dcn, dce) = clen_s(&self.gtu, sin_r, cos_r, sinh_i, cosh_i);
+        let (cn, ce) = (cn + dcn, ce + dce);
+        if ce.abs() > 2.623395162778 {
+            // (Outside the projection's domain, as PROJ says.)
+            return (f64::INFINITY, f64::INFINITY);
+        }
+        let a = Ellipsoid::GRS80.0;
+        (a * (self.qn * ce) + 500000.0, a * (self.qn * cn + self.zb))
     }
 }
 
@@ -180,6 +371,26 @@ mod tests {
         // pyproj 3.8 / PROJ 9.8.1: Transformer.from_crs("EPSG:4326", "EPSG:3979", always_xy=True).
         let (x, y) = Atlas::new().project(-66.5, 46.0);
         assert!((x - 2161705.2913344926).abs() < 1e-8 && (y - 156964.1917673155).abs() < 1e-8, "{x} {y}");
+    }
+
+    #[test]
+    fn as_pyproj_projects_utm() {
+        // pyproj 3.8 / PROJ 9.8.1: Transformer.from_crs("EPSG:4326", c, always_xy=True), c the
+        // NAD83(CSRS) / UTM zone (17N: EPSG:2958, 18N: 2959, 19N: 2960), whose pick is EPSG:1946.
+        for (crs, lon, lat, ex, ey) in [
+            (26918, -73.5, 44.0, 620261.7942057655, 4872965.530432259),
+            (26919, -68.9, 46.7, 507645.00434363197, 5171830.875142959),
+            (26917, -79.9, 42.1, 590957.4701680548, 4661463.696590829),
+            // (Far from their central meridians: 3.5°, 4.4° and 2°.)
+            (26918, -78.5, 43.0, 214708.34357307118, 4766760.453064816),
+            (26917, -76.6, 43.4, 856321.7143546145, 4814644.859389579),
+            (26919, -67.0, 47.4, 650910.0966837071, 5251554.312166896),
+        ] {
+            let (x, y) = Projection::of(crs).unwrap().project(lon, lat);
+            assert!((x - ex).abs() < 1e-6 && (y - ey).abs() < 1e-6, "{crs}: {x} {y}");
+        }
+        assert!(Projection::of(4326).is_none() && Projection::of(26924).is_none());
+        assert!(projected(3979) && projected(26901) && projected(26923) && !projected(4269) && !projected(26900));
     }
 
     #[test]

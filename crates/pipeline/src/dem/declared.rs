@@ -23,9 +23,12 @@ pub const HEIGHTS: [&str; 7] = ["EGM2008", "EGM96", "CGVD2013", "NAVD88", "JGD20
 /// The tile encodings (formats, decoded by generic code).
 pub const ENCODINGS: [&str; 3] = ["gsi-png", "terrarium", "terrain-rgb"];
 
-/// The CRSs a GeoTIFF dataset may be in: geographic WGS 84 and NAD83 (read as longitude, latitude,
-/// as the national datasets always were), and Canada Atlas Lambert (crate::dem::proj::Atlas).
-pub const CRSS: [u16; 3] = [4326, 4269, 3979];
+/// Whether a GeoTIFF dataset may be in CRS `crs`: geographic WGS 84 and NAD83 (read as longitude,
+/// latitude, as the national datasets always were), or one crate::dem::proj projects to (Canada
+/// Atlas Lambert, NAD83 / UTM).
+pub fn known_crs(crs: u16) -> bool {
+    matches!(crs, 4326 | 4269) || super::proj::projected(crs)
+}
 
 /// A dataset's id: its declaration's file stem, lower-case letters, digits and `-`.
 pub fn valid_id(id: &str) -> bool {
@@ -416,15 +419,27 @@ impl Cover {
 /// 5 × 5 grid, its corners included, and projected; a cell any sample of which falls in a box,
 /// with its neighbours (a box's corner may cut a cell between samples).
 pub fn projected_cells(crs: u16, boxes: &[[f64; 4]]) -> Result<BTreeSet<(i32, i32)>> {
-    projected_cells_where(crs, &|px, py| boxes.iter().any(|b| px >= b[0] && px <= b[2] && py >= b[1] && py <= b[3]))
+    projected_cells_where(crs, &in_boxes(boxes))
+}
+
+/// Whether a point is in one of `boxes` (edges included): tried against their envelope first, as
+/// `projected_cells_where` asks of every cell of the world and an index has thousands of boxes.
+pub fn in_boxes(boxes: &[[f64; 4]]) -> impl Fn(f64, f64) -> bool + '_ {
+    let env = boxes.iter().fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |e, b| {
+        [e[0].min(b[0]), e[1].min(b[1]), e[2].max(b[2]), e[3].max(b[3])]
+    });
+    move |x, y| {
+        x >= env[0]
+            && x <= env[2]
+            && y >= env[1]
+            && y <= env[3]
+            && boxes.iter().any(|b| x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3])
+    }
 }
 
 /// `projected_cells`, a point (in CRS `crs`) held where `holds` says.
 pub fn projected_cells_where(crs: u16, holds: &dyn Fn(f64, f64) -> bool) -> Result<BTreeSet<(i32, i32)>> {
-    let atlas = match crs {
-        3979 => super::proj::Atlas::new(),
-        c => bail!("EPSG:{c} isn't a projected CRS the app knows"),
-    };
+    let Some(atlas) = super::proj::Projection::of(crs) else { bail!("EPSG:{crs} isn't a projected CRS the app knows") };
     let mut hit = BTreeSet::new();
     for y in -89..89 {
         for x in -180..180 {
@@ -798,10 +813,7 @@ pub fn cut_note(measured: &Measured, cover: &Cover, b: [f64; 4]) -> Option<Strin
 /// A box (w, s, e, n, degrees) in projected CRS `crs`: its edges sampled and projected, grown by
 /// `grow_m`.
 fn native_box(crs: u16, b: [f64; 4], grow_m: f64) -> Result<[f64; 4]> {
-    let atlas = match crs {
-        3979 => super::proj::Atlas::new(),
-        c => bail!("EPSG:{c} isn't a projected CRS the app knows"),
-    };
+    let Some(atlas) = super::proj::Projection::of(crs) else { bail!("EPSG:{crs} isn't a projected CRS the app knows") };
     let mut nb = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
     for i in 0..=16 {
         for j in 0..=16 {
@@ -846,7 +858,7 @@ pub fn plan_converted(
             }
             Data::Geotiff { urls, index, files, read_resolution, store } => {
                 let crs = d.measured.crs.context("a GeoTIFF dataset without its CRS measured")?;
-                let nb = if crs == 3979 { native_box(crs, near, 1000.0)? } else { near };
+                let nb = if super::proj::projected(crs) { native_box(crs, near, 1000.0)? } else { near };
                 let mut list: Vec<(String, Option<[f64; 4]>)> = Vec::new();
                 for u in urls {
                     list.push((u.clone(), None));
@@ -1092,5 +1104,17 @@ encoding = "terrarium"
             .unwrap_err()
             .contains("names no file"));
         assert!(glob("*.tif", "a.tif") && !glob("*.tif", "x/a.tif") && glob("x/?.tif", "x/a.tif"));
+    }
+
+    #[test]
+    fn utm_footprints_meet_their_cells_alone() {
+        // USGS's 1 m tile x62y488 in zone 18 (EPSG:26918): around 73.4° W, 44.0° N; its cells and
+        // their neighbours, none across the world (a far point projects out of the zone's domain).
+        let cells = projected_cells(26918, &[[620000.0, 4870000.0, 630000.0, 4880000.0]]).unwrap();
+        assert!(cells.contains(&(-74, 43)) && cells.contains(&(-74, 44)), "{cells:?}");
+        assert!(cells.iter().all(|&(x, y)| (-76..=-72).contains(&x) && (42..=45).contains(&y)), "{cells:?}");
+        assert!(known_crs(26918) && known_crs(3979) && known_crs(4269) && !known_crs(32618) && !known_crs(2959));
+        let held = in_boxes(&[[0.0, 0.0, 1.0, 1.0], [5.0, 5.0, 6.0, 6.0]]);
+        assert!(held(1.0, 0.5) && held(5.5, 6.0) && !held(3.0, 3.0) && !held(7.0, 0.5));
     }
 }

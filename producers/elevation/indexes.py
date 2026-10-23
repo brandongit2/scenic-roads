@@ -3,11 +3,19 @@
 listing: a GeoJSON FeatureCollection, a feature per file, its `url` and its footprint (a polygon in
 the index's CRS), which the app reads as the file's box (min x <= x < max x, min y < y <= max y).
 
-  hrdem   NRCan's HRDEM 2 m mosaic: the tiles the bucket has at 2 m (its hrdem-mosaic-2m/ keys,
-          listed; or --tiles, a listing of them) and their 500 km squares from NRCan's tile index
-          (--squares, EPSG:3979, as NRCan publishes it: hrdem-squares.geojson here).
+  hrdem   NRCan's HRDEM mosaic at --res metres (2, the default, or 1): the tiles the bucket has at
+          that resolution (its hrdem-mosaic-<res>m/ keys, listed; or --tiles, a listing of them) and
+          their 500 km squares from NRCan's tile index (--squares, EPSG:3979, as NRCan publishes it:
+          hrdem-squares.geojson here).
   3dep    USGS 3DEP 1/3 arc-second: every USGS_13_<tile>.tif under the bucket's current/ folder
           (listed), its footprint the 1° square it's named by (its upper-left corner).
+  3dep-1m USGS 3DEP 1 m: every tile The National Map's products API lists meeting --bbox (w,s,e,n,
+          degrees), an index a UTM zone (--out names the files, `{zone}` in it: each zone's in
+          NAD83 / UTM, EPSG:269<zone>); its footprint the 10 km square it's named by (x<e>y<n>: e,
+          its west edge, and n, its north edge, in 10 km); its zone from its name
+          (USGS_1M_<zone>_…), else from its GeoTIFF's header (the older USGS_one_meter_…, USGS_1m_…:
+          their project names' zones aren't always theirs). Newest first (`publicationDate`), as
+          several projects can cover a tile and a point takes the first file with data there.
   fabdem  FABDEM v1-2: every tile inside Bristol's 10° zips (each zip's central directory read by
           range requests), as <zip URL>#<member>, its footprint the 1° square it's named by (its
           south-west corner). The URL only names the tile: FABDEM is read from the store
@@ -20,8 +28,9 @@ the index's CRS), which the app reads as the file's box (min x <= x < max x, min
 
 Drop the index beside its declaration in inputs/elevation/; the input check reads it.
 
-usage: indexes.py hrdem [--tiles <listing.txt>] --squares <index.geojson> --out <file>
+usage: indexes.py hrdem [--res 1|2] [--tiles <listing.txt>] --squares <index.geojson> --out <file>
        indexes.py 3dep --out <file>
+       indexes.py 3dep-1m --bbox <w,s,e,n> --out <file with {zone}>
        indexes.py fabdem --out <file>
        indexes.py glo30 [--tiles <tileList.txt>] --out <file>
 """
@@ -30,6 +39,8 @@ import json
 import re
 import struct
 import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -64,9 +75,9 @@ def hrdem(a):
     if a.tiles:
         lines = [l.strip() for l in open(a.tiles)]
     else:
-        lines = list(s3_keys(NRCAN, "hrdem-mosaic-2m/"))
+        lines = list(s3_keys(NRCAN, f"hrdem-mosaic-{a.res}m/"))
     for line in lines:
-        m = re.fullmatch(r"(?:.*/)?(\d+_\d+)-mosaic-2m-dtm\.tif", line)
+        m = re.fullmatch(r"(?:.*/)?(\d+_\d+)-mosaic-%dm-dtm\.tif" % a.res, line)
         if m:
             have.add(m.group(1))
     src = json.load(open(a.squares))
@@ -77,7 +88,7 @@ def hrdem(a):
             continue
         ring = f["geometry"]["coordinates"][0]
         xs, ys = [p[0] for p in ring], [p[1] for p in ring]
-        feats.append(feature(f"{NRCAN}/hrdem-mosaic-2m/{tid}-mosaic-2m-dtm.tif", square(min(xs), min(ys), max(xs), max(ys))))
+        feats.append(feature(f"{NRCAN}/hrdem-mosaic-{a.res}m/{tid}-mosaic-{a.res}m-dtm.tif", square(min(xs), min(ys), max(xs), max(ys))))
     return {"type": "FeatureCollection", "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:EPSG::3979"}}, "features": feats}
 
 
@@ -105,6 +116,94 @@ def usgs(a):
         w = int(m.group(4)) * (-1 if m.group(3) == "w" else 1)
         feats.append(feature(f"{USGS}/{k}", square(w, n - 1, w + 1, n)))
     return {"type": "FeatureCollection", "features": feats}
+
+
+TNM_PRODUCTS = "https://tnmaccess.nationalmap.gov/api/v1/products"
+TNM_1M = "Digital Elevation Model (DEM) 1 meter"
+
+
+def get_patiently(url, rng=None, tries=7):
+    """`get`, retried with back-off (a 429's `Retry-After` honoured): the products API has its bad
+    moments."""
+    for k in range(tries):
+        try:
+            return get(url, rng)
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            http = e.code if isinstance(e, urllib.error.HTTPError) else None
+            if k == tries - 1 or http not in (None, 429, 500, 502, 503, 504):
+                raise
+            wait = 5 * 2 ** k
+            after = e.headers.get("Retry-After", "") if http else ""
+            if after.isdigit():
+                wait = max(wait, int(after))
+            print(f"{url}: {e}; again in {wait} s", file=sys.stderr)
+            time.sleep(wait)
+
+
+def tnm_items(dataset, bbox):
+    """Every GeoTIFF product of `dataset` the products API lists meeting `bbox` (w, s, e, n)."""
+    out, off = [], 0
+    while True:
+        q = {"datasets": dataset, "bbox": ",".join(map(str, bbox)), "prodFormats": "GeoTIFF",
+             "max": "1000", "offset": str(off), "outputFormat": "JSON"}
+        d = json.loads(get_patiently(TNM_PRODUCTS + "?" + urllib.parse.urlencode(q)))
+        got = d.get("items") or []
+        out += got
+        off += len(got)
+        print(f"products: {off} of {d.get('total')}", file=sys.stderr)
+        if not got or off >= d.get("total", 0):
+            return out
+        time.sleep(1)
+
+
+def tiff_projected_crs(url):
+    """The ProjectedCSType GeoKey of a GeoTIFF's first image (its header read by range requests: its
+    first 16 KB, and whatever of its first IFD and GeoKeys lies past them)."""
+    head = get_patiently(url, (0, 16383))
+
+    def read(off, n):
+        return head[off:off + n] if off + n <= len(head) else get_patiently(url, (off, off + n - 1))
+
+    e = "<" if head[:2] == b"II" else ">"
+    big = struct.unpack(e + "H", head[2:4])[0] == 43
+    word, w = ("Q", 8) if big else ("I", 4)
+    ifd = struct.unpack(e + word, head[8:16] if big else head[4:8])[0]
+    count = struct.unpack(e + ("Q" if big else "H"), read(ifd, 8 if big else 2))[0]
+    entry = 12 + 2 * (w - 4)
+    entries = read(ifd + (8 if big else 2), count * entry)
+    for i in range(count):
+        q = entries[i * entry:(i + 1) * entry]
+        if struct.unpack(e + "H", q[:2])[0] != 34735:
+            continue
+        n = struct.unpack(e + word, q[4:4 + w])[0]
+        raw = q[4 + w:4 + 2 * w][:2 * n] if 2 * n <= w else read(struct.unpack(e + word, q[4 + w:4 + 2 * w])[0], 2 * n)
+        keys = struct.unpack(e + "H" * n, raw)
+        for k in range(4, len(keys), 4):
+            if keys[k] == 3072:
+                return keys[k + 3]
+    raise SystemExit(f"{url}: no ProjectedCSType")
+
+
+def usgs_1m(a):
+    items = {i["downloadURL"]: i for i in tnm_items(TNM_1M, [float(v) for v in a.bbox.split(",")])}
+    zones = {}
+    for url, i in sorted(items.items(), key=lambda kv: (kv[1]["publicationDate"], kv[0]), reverse=True):
+        name = url.rsplit("/", 1)[-1]
+        m = re.search(r"_x(\d+)y(\d+)_", name)
+        if not url.endswith(".tif") or not m:
+            print(f"{url}: not a named tile, left out", file=sys.stderr)
+            continue
+        z = re.match(r"USGS_1M_(\d+)_", name)
+        crs = 26900 + int(z.group(1)) if z else tiff_projected_crs(url)
+        if not 26901 <= crs <= 26923:
+            raise SystemExit(f"{url}: EPSG:{crs} isn't a NAD83 / UTM zone")
+        x, y = int(m.group(1)), int(m.group(2))
+        zones.setdefault(crs, []).append(feature(url, square(x * 10000, (y - 1) * 10000, (x + 1) * 10000, y * 10000)))
+    return {
+        c: {"type": "FeatureCollection", "crs": {"type": "name", "properties": {"name": f"urn:ogc:def:crs:EPSG::{c}"}},
+            "features": f}
+        for c, f in sorted(zones.items())
+    }
 
 
 def zip_members(url):
@@ -164,16 +263,24 @@ def glo30(a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("source", choices=["hrdem", "3dep", "fabdem", "glo30"])
+    ap.add_argument("source", choices=["hrdem", "3dep", "3dep-1m", "fabdem", "glo30"])
     ap.add_argument("--tiles")
     ap.add_argument("--squares")
+    ap.add_argument("--res", type=int, choices=[1, 2], default=2)
+    ap.add_argument("--bbox")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
-    doc = {"hrdem": hrdem, "3dep": usgs, "fabdem": fabdem, "glo30": glo30}[a.source](a)
-    with open(a.out, "w") as f:
-        json.dump(doc, f, separators=(",", ":"))
-        f.write("\n")
-    print(f"{a.out}: {len(doc['features'])} files", file=sys.stderr)
+    if a.source == "3dep-1m":
+        if not a.bbox or "{zone}" not in a.out:
+            ap.error("3dep-1m needs --bbox and an --out naming {zone}")
+        docs = {a.out.format(zone=c - 26900): d for c, d in usgs_1m(a).items()}
+    else:
+        docs = {a.out: {"hrdem": hrdem, "3dep": usgs, "fabdem": fabdem, "glo30": glo30}[a.source](a)}
+    for out, doc in docs.items():
+        with open(out, "w") as f:
+            json.dump(doc, f, separators=(",", ":"))
+            f.write("\n")
+        print(f"{out}: {len(doc['features'])} files", file=sys.stderr)
 
 
 if __name__ == "__main__":

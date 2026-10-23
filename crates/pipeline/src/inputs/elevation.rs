@@ -277,7 +277,7 @@ impl Elevation {
                         .short(crate::geotiff::key::PROJECTED_CS_TYPE)
                         .or_else(|| keys.short(crate::geotiff::key::GEOGRAPHIC_TYPE))
                         .ok_or_else(|| format!("{w}: names no EPSG CRS"))?;
-                    if !declared::CRSS.contains(&c) {
+                    if !declared::known_crs(c) {
                         return Err(format!("{w}: EPSG:{c} isn't a CRS the app can project"));
                     }
                     if index_crs.is_some_and(|ic| ic != c && !(ic == 4326 && c == 4269)) {
@@ -305,12 +305,10 @@ impl Elevation {
                 let cover = if world {
                     None
                 } else {
-                    let cells = if crs == 3979 {
-                        declared::projected_cells_where(crs, &|x, y| {
-                            boxes.iter().any(|b| x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3])
-                                || masks.iter().any(|m| m.holds(x, y))
-                        })
-                        .map_err(|e| format!("{e:#}"))?
+                    let cells = if crate::dem::proj::projected(crs) {
+                        let held = declared::in_boxes(&boxes);
+                        declared::projected_cells_where(crs, &|x, y| held(x, y) || masks.iter().any(|m| m.holds(x, y)))
+                            .map_err(|e| format!("{e:#}"))?
                     } else {
                         let mut c = declared::geographic_cells(&boxes);
                         for m in &masks {
