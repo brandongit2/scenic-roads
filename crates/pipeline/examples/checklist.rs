@@ -30,7 +30,7 @@ fn main() -> anyhow::Result<()> {
     tiles.load(&root, &m);
     let inputs = pipeline::agent::input_digests(&root);
     let times = FileTimes::new(&root);
-    as_read(&mut keys, &cov, &date, &m, reach.as_ref(), &inputs, &tiles, &times);
+    as_read(&mut keys, &cov, &m, &tiles, &times);
     let (items, next) = checklist(
         &cov,
         &date,

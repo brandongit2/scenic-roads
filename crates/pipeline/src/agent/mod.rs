@@ -7154,7 +7154,9 @@ impl Agent {
                     }),
                 }
             }
-            if !manifest.contains_key(&crate::terrain_z8::logical(&manifest)) {
+            // (Once the pool's declarations are accepted: before, the job could only fail.)
+            let pool = crate::terrain_z8::pool_digest(root, &manifest);
+            if pool.as_ref().is_some_and(|p| !manifest.contains_key(&crate::terrain_z8::logical(p))) {
                 jobs.push(job(
                     "terrain-z8".into(),
                     "terrain-z8",
@@ -7174,7 +7176,7 @@ impl Agent {
                     std::fs::remove_dir_all(e.path()).ok();
                 }
             }
-            if let Some(w) = build::summits_work(date, &manifest, &keys) {
+            if let Some(w) = build::summits_work(date, &manifest, &keys, pool.as_deref()) {
                 jobs.push(job(
                     format!("summits {date}"),
                     "summits",
@@ -7446,7 +7448,7 @@ impl Agent {
             // (The records as re-keyed: what they are once the loop has re-keyed them, as a dry run,
             // or a loop that couldn't take the build lock, plans too.)
             let times = rekey::FileTimes::new(root);
-            rekey::as_read(&mut done, cov, date, &manifest, reach.as_deref(), &inputs, &tiles, &times);
+            rekey::as_read(&mut done, cov, &manifest, &tiles, &times);
             build::plan(
                 &cov,
                 date,
@@ -8358,6 +8360,7 @@ impl Agent {
             }
         }
         // The pass's worldwide steps, each one run left or none.
+        let pool = crate::terrain_z8::pool_digest(root, &manifest);
         let left = [
             !crate::osmpass::SETS.iter().all(|st| manifest.contains_key(&crate::osmpass::set_name(&date, st.0))),
             build::outlines_work(&date, &manifest, &keys).is_some()
@@ -8365,10 +8368,10 @@ impl Agent {
             build::trailends_work(&date, &manifest, &keys).is_some()
                 || !manifest.contains_key(&crate::osmpass::set_name(&date, "hikes")),
             build::reach_work(&date, &manifest, &keys).is_some(),
-            !manifest.contains_key(&crate::terrain_z8::logical(&manifest)),
+            pool.as_ref().is_none_or(|p| !manifest.contains_key(&crate::terrain_z8::logical(p))),
             crate::buildtiles::release_of(root, &manifest)
                 .map_or(true, |r| !manifest.contains_key(&crate::buildtiles::index_logical(&r))),
-            build::summits_work(&date, &manifest, &keys).is_some()
+            build::summits_work(&date, &manifest, &keys, pool.as_deref()).is_some()
                 || !manifest.contains_key(&format!("work/summits/{date}")),
             build::labels_work(&date, &manifest, &keys).is_some(),
             // (A source folder that can't be read: held, left, as the jobs see it.)
@@ -8398,7 +8401,7 @@ impl Agent {
         // (As re-keyed: agent::rekey.)
         let mut keys = keys;
         let times = rekey::FileTimes::new(root);
-        rekey::as_read(&mut keys, cov, &date, &manifest, reach.as_deref(), &inputs, &tiles, &times);
+        rekey::as_read(&mut keys, cov, &manifest, &tiles, &times);
         let (more, more_next) = build::checklist(
             cov,
             &date,
@@ -8441,7 +8444,7 @@ impl Agent {
         let run = move || {
             let t = Instant::now();
             let mut keys = keys;
-            as_built_keys(&root, &covs.all, &date, &manifest, &mut keys, reach.as_deref(), &tiles);
+            as_built_keys(&root, &covs.all, &manifest, &mut keys, &tiles);
             (f(&covs.all, &covs.each, &date, &manifest, &keys, reach.as_deref(), &tiles), t.elapsed())
         };
         std::thread::Builder::new()
@@ -8475,10 +8478,11 @@ impl Agent {
         Some((date, manifest, covs, keys, reach))
     }
 
-    /// `keys` as every reader reads them (agent::rekey::as_read: re-keyed, terrain's and slope's
-    /// derived), for a job's `--expect-same`; as they are when what that reads can't be told now.
+    /// `keys` as every reader reads them (agent::rekey::as_read), for a job's `--expect-same`; as they are when what that reads can't be told now.
     fn as_read(&self, root: &Path, mut keys: build::Keys) -> build::Keys {
-        let Some(date) = self.latest_pass(root) else { return keys };
+        if self.latest_pass(root).is_none() {
+            return keys;
+        }
         let (recipes, unread) = load_regions(root);
         if recipes.is_empty() || !unread.is_empty() {
             return keys;
@@ -8488,10 +8492,9 @@ impl Agent {
             return keys;
         };
         let Ok(covs) = self.coverage(root, &manifest, false) else { return keys };
-        let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
         let tiles = self.terrain_tiles(root, &manifest);
         let times = rekey::FileTimes::new(root);
-        rekey::as_read(&mut keys, &covs.all, &date, &manifest, reach.as_deref(), &input_digests(root), &tiles, &times);
+        rekey::as_read(&mut keys, &covs.all, &manifest, &tiles, &times);
         keys
     }
 
@@ -10745,19 +10748,17 @@ fn clear_target_scratch(dir: &Path, target: &str) -> Vec<PathBuf> {
 /// What jobs read from inputs/ beside the manifest, by digest: which keys inputs/keys.env holds
 /// ("keys", `key_names`), and the 3D buildings' downloaded sources ("bld-release", "bld-key", "bldprep 6/x/y",
 /// "bldprep-rows 6/x/y": crate::bld::sources::digests).
-/// `keys` as every reader reads them (agent::rekey::as_read: re-keyed, terrain's and slope's derived),
-/// for `Agent::start_as_built`'s counts off the loop.
+/// `keys` as every reader reads them (agent::rekey::as_read), for `Agent::start_as_built`'s counts
+/// off the loop.
 fn as_built_keys(
     root: &Path,
     cov: &crate::coverage::Coverage,
-    date: &str,
     manifest: &BTreeMap<String, String>,
     keys: &mut build::Keys,
-    reach: Option<&crate::reach::Reaches>,
     tiles: &tiles::TerrainTiles,
 ) {
     let times = rekey::FileTimes::new(root);
-    rekey::as_read(keys, cov, date, manifest, reach, &input_digests(root), tiles, &times);
+    rekey::as_read(keys, cov, manifest, tiles, &times);
 }
 
 pub fn input_digests(root: &Path) -> BTreeMap<String, String> {
@@ -10780,6 +10781,14 @@ pub fn input_digests(root: &Path) -> BTreeMap<String, String> {
         crate::inputs::regions::read::source_now(root).map(|a| a.version).unwrap_or_else(|_| "?".into()),
     );
     inputs.insert("keys".into(), key_names(&root.join("inputs/keys.env")).unwrap_or_else(|| "?".into()));
+    // The elevation pool's digest, as the worldwide z8's name and the summits' and peaks' keys name
+    // it (crate::terrain_z8::pool_digest); none while it can't be read.
+    if let Some(p) = crate::terrain_z8::pool_digest(
+        root,
+        &crate::out::read_record(&root.join("state/build/manifest.json")).unwrap_or_default(),
+    ) {
+        inputs.insert(crate::terrain_z8::INPUT.into(), p);
+    }
     // The 3D buildings' sources, of the declared releases (crate::inputs::sources): what each z6
     // tile's bldprep reads, and its rows, and what the keys name of the declarations ("bld-key");
     // none before they're accepted (no 3D buildings' work), "?" while they can't be read now.
@@ -14055,15 +14064,15 @@ mod tests {
         assert_eq!(noted, [(Some("m1"), "cleared its build caches: 3.0 GB freed (canopy squares 3.0 GB)")]);
     }
 
-    /// A root as the build has it before the z6 tiles' keys changed: a pass whose reaches build
-    /// Reykjavik's z6 tile (6/28/17) for region a, the heritage sites and the terrain made (the z3 tile's
-    /// lo pack a real pack), and the z6 tile built under the old keys, with its outputs. Its old key.
-    fn rekey_root(root: &Path) -> String {
+    /// A root as the build has it: a pass whose reaches build Reykjavik's z6 tile (6/28/17) for
+    /// region a, the heritage sites and the terrain made (the z3 tile's lo pack a real pack), and the
+    /// z6 tile to build.
+    fn rekey_root(root: &Path) {
         rekey_root_with(root, [-220_000_000, 640_000_000, -217_000_000, 641_600_000])
     }
 
     /// `rekey_root`, the z6 tile's ways where `owned` says (E7).
-    fn rekey_root_with(root: &Path, owned: [i32; 4]) -> String {
+    fn rekey_root_with(root: &Path, owned: [i32; 4]) {
         let date = "2026-09-28";
         std::fs::create_dir_all(root.join("catalog")).unwrap();
         put(&root.join(format!("sources/osm/{date}/pass.1111111111111111.json")), b"{}");
@@ -14123,28 +14132,21 @@ mod tests {
             "heritage-sites",
             &build::heritage_sites_work(&cov, date, &m, &keys, &input_digests(root)).unwrap().targets,
         );
-        keys.record("terrain", &rekey::v1::terrain_slope_targets(&cov, &m).0);
         keys.record("trees", &rekey::v1::trees_targets(&cov, &m));
-        let old =
-            rekey::v1::unit_keys(&cov, date, &m, Some(&reaches), &input_digests(root), crate::buildtiles::TEST_RELEASE)
-                .pop()
-                .unwrap();
-        assert_eq!(old.0.slash(), "6/28/17");
-        keys.record("unit", &[("6/28/17".into(), old.1.clone())]);
-        // (Under the new keys as recorded, it would be built again.)
         let tiles = {
             let mut t = tiles::TerrainTiles::new(None);
             t.load(root, &m);
             t
         };
-        // (Terrain's z3 record read as its z6 tiles and assembly, as every reader reads it.)
-        let mut read = keys.clone();
-        rekey::derive(&mut read, &cov, &m, &tiles);
+        // (The terrain made under its keys now.)
+        let tt = build::terrain_slope_targets(&cov, &m, &tiles);
+        keys.record("terrain", &tt.terrain);
+        keys.record("terrain-lo", &tt.terrain_lo);
         let plan = build::plan(
             &cov,
             date,
             &m,
-            &read,
+            &keys,
             &input_digests(root),
             Some(&reaches),
             &tiles,
@@ -14160,7 +14162,6 @@ mod tests {
         );
         assert!(plan.work.iter().any(|w| w.step == "unit" && w.targets[0].0 == "6/28/17"), "{:?}", plan.work);
         keys.save(root).unwrap();
-        old.1
     }
 
     /// Not a test: seeds the scratch folder `SCENIC_SCRATCH_PUBLISH` names (never the project's) with
@@ -14186,13 +14187,11 @@ mod tests {
             t.load(&root, &m);
             t
         };
-        let mut read = keys.clone();
-        rekey::derive(&mut read, &cov, &m, &tiles);
         let plan = build::plan(
             &cov,
             date,
             &m,
-            &read,
+            &keys,
             &input_digests(&root),
             Some(&reaches),
             &tiles,

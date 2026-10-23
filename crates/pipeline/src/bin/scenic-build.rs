@@ -109,12 +109,6 @@
 //!                                what each terrain z6 tile and assembly near the coverage reads of
 //!                                the latest basemap's water, as work/water-idx/<hash16 of its
 //!                                pin>; those made before for the same reads kept
-//!   water-key-check [--pass d] [--compute [--save f] | --digests f] [--fill n]  what keying
-//!                                terrain on its water's digests does with the records now
-//!                                (pipeline::agent::rekey::derive): the terrain left to make, then
-//!                                as if a new basemap came with the same water, and with n z6 tiles'
-//!                                water changed; without the manifest's digests, --compute works
-//!                                them out here, in memory, timed. Reads only
 //!   inputs <unit> [--full] [--listing f]  a gate unit's drop box checked (pipeline::inputs::gate): its clean
 //!                                changes taken in as its next accepted version, the held ones
 //!                                reported (`--full`: every file hashed, not only those whose size
@@ -124,15 +118,6 @@
 //!   catalog                      publish a catalog of the build manifest
 //!   regions-check --dir d [--declarations d] [--report f]   the regions' check on a scratch
 //!                                folder, in memory: findings and sizes. Reads only
-//!   rekey-check [--pass d]       what re-keying the records for the z6 tiles' new keys
-//!                                (pipeline::agent::rekey) would do now: the z6 tiles re-keyed, and
-//!                                those left to build again, each with why; and the times that show
-//!                                its one assumption holds. Reads only: writes nothing, keeps no index
-//!   p5-check terrain [--pass d] [--costs f]  what switching terrain and slope to z6 tiles and
-//!                                assemblies (pipeline::agent::rekey::derive) does now: each z3
-//!                                tile read as its z6 tiles and assembly or not, slope's z6 tiles left
-//!                                to make and why, the work after it and its time, what deriving
-//!                                costs a plan. Reads only (the terrain packs' indexes into memory)
 //!   p5-check trees [--pass d] [--costs f]  what switching tree cover to z6 tiles and assemblies
 //!                                (pipeline::agent::rekey) would do now: each z3 tile re-keyed, or
 //!                                made again as z6 tiles and why, the work left and its time by the
@@ -319,9 +304,6 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
     }
     let root = PathBuf::from(opt(&args, "--root").context("--root <nas project folder>")?);
     // (Before the scratch folder: it writes nothing.)
-    if step == "rekey-check" {
-        return rekey_check(&root, &args);
-    }
     if step == "regions-check" {
         // regions-check --root <nas project folder> --dir <folder of region files>
         // [--declarations <folder of source declarations>] [--report <file.json>]: the regions'
@@ -400,9 +382,6 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
     }
     if step == "p5-check" {
         return p5_check(&root, &args);
-    }
-    if step == "water-key-check" {
-        return water_key_check(&root, &args);
     }
     if step == "names-todo" {
         // names-todo --translations-index <index> --descriptions-index <index> [--out <dir>]: the
@@ -591,7 +570,9 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         "terrain-z8" => {
             // terrain-z8 [--raw dir]: the elevation pool's z8 worldwide (pipeline::terrain_z8), once for
             // the accepted elevation and sources versions.
-            let l = pipeline::terrain_z8::logical(&out.manifest);
+            let pool = pipeline::terrain_z8::pool_digest(out.root(), &out.manifest)
+                .context("the elevation pool can't be read (docs/inputs.md §6.8)")?;
+            let l = pipeline::terrain_z8::logical(&pool);
             if out.get(&l).is_some() {
                 eprintln!("terrain-z8: already made ({l})");
             } else {
@@ -2267,7 +2248,9 @@ fn utc(s: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem / 60 % 60, rem % 60)
 }
 
-/// RFC 3339 UTC as `utc` writes it (a catalog's `created`), as seconds since the epoch.
+/// RFC 3339 UTC as `utc` writes it (a catalog's `created`), as seconds since the epoch (tests: `utc`'s
+/// round trip).
+#[cfg(test)]
 fn epoch_of(t: &str) -> Option<i64> {
     let b = t.as_bytes();
     if b.len() != 20 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':' || b[19] != b'Z'
@@ -2285,230 +2268,6 @@ fn epoch_of(t: &str) -> Option<i64> {
     Some((era * 146_097 + doe - 719_468) * 86400 + hh * 3600 + mm * 60 + ss)
 }
 
-// ---- rekey-check -------------------------------------------------------------------------------
-
-/// `rekey-check`: what re-keying the records for the z6 tiles' new keys (pipeline::agent::rekey) would
-/// do now, read from the NAS with nothing written (no scratch folder, no index kept): the z6 tiles
-/// re-keyed, and those left to build again, each with why. And the times that show its one
-/// assumption: a z6 tile re-keyed that reads a z3 tile's zoomed-out terrain (z8–z4) was built after the
-/// build first made that z3 tile's (before, it may have staged the converted legacy tiles, which its
-/// old key couldn't tell from the build's; docs/building.md §2, A new key scheme): its base pack written
-/// over an hour after that z3 tile's first lo pack after the conversion's (the first catalog's), by
-/// that file's time or, if earlier, the catalog's that first listed it.
-fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
-    use pipeline::agent::{build, rekey, tiles::TerrainTiles};
-    let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(root)).context("no complete OSM pass")?;
-    let m: BTreeMap<String, String> = pipeline::out::read_record(&root.join("state/build/manifest.json"))?;
-    let keys = build::Keys::load_strict(root)?;
-    let src = pipeline::inputs::regions::read::source(root, &m)?;
-    let (recipes, bad): (Vec<_>, Vec<(String, String)>) = (pipeline::inputs::regions::read::recipes(&src)?, Vec::new());
-    anyhow::ensure!(bad.is_empty(), "regions that can't be read now (the agent re-keys nothing meanwhile): {bad:?}");
-    let cov = pipeline::coverage::Coverage::accepted(root, &src, None)?;
-    if build::reach_work(&date, &m, &keys).is_some() {
-        println!("(the pass's reaches are to be made again: the agent re-keys nothing until they are)");
-    }
-    let reach = match pipeline::reach::Reaches::load(root, &m, &date) {
-        Ok(Some(r)) => r,
-        Ok(None) => bail!("the pass {date} has no reaches"),
-        Err(e) => bail!("the pass's reaches: {e:?}"),
-    };
-    let digests = pipeline::agent::input_digests(root);
-    let t0 = std::time::Instant::now();
-    let mut tiles = TerrainTiles::new(None);
-    let n = tiles.load(root, &m);
-    println!(
-        "pass {date}, {} regions; the terrain packs' indexes: {n} read in {:.1} s, {} not",
-        recipes.len(),
-        t0.elapsed().as_secs_f64(),
-        tiles.unread().count()
-    );
-    for (c, why) in tiles.unread() {
-        println!("  {c}: {why}");
-    }
-    let t1 = std::time::Instant::now();
-    let old = rekey::v1::unit_keys(
-        &cov,
-        &date,
-        &m,
-        Some(&reach),
-        &digests,
-        tiles.buildings_release(&m).context("the declared buildings source can't be read")?,
-    );
-    let t_old = t1.elapsed().as_secs_f64();
-    let new: BTreeMap<String, Option<String>> =
-        build::unit_keys(&cov, &date, &m, Some(&reach), &tiles).into_iter().map(|(u, k)| (u.slash(), k)).collect();
-    let t_new = t1.elapsed().as_secs_f64() - t_old;
-    let times = rekey::FileTimes::new(root);
-    let older = |x: u32, y: u32| times.hi_older(&m, x, y);
-    let mut after = keys.clone();
-    let r = rekey::rekey(&mut after, &cov, &date, &m, Some(&reach), &digests, &tiles, &times);
-    println!(
-        "(the old keys took {t_old:.1} s, the new {t_new:.1} s, the re-keying {:.1} s)",
-        t1.elapsed().as_secs_f64() - t_old - t_new
-    );
-    // (Again on what it made: nothing to do, as each plan's re-keying finds once it's done.)
-    let t2 = std::time::Instant::now();
-    let mut twice = after.clone();
-    let again = rekey::rekey(&mut twice, &cov, &date, &m, Some(&reach), &digests, &tiles, &times);
-    println!(
-        "a second pass: {} (in {:.1} s)",
-        if again.changed() || twice != after { "it changed the records again" } else { "nothing to do" },
-        t2.elapsed().as_secs_f64()
-    );
-    let rec = |u: TileId| keys.unit.get(&u.slash());
-    let new_of = |u: TileId| new.get(&u.slash()).and_then(Option::as_ref);
-    let current: Vec<TileId> = old.iter().filter(|(u, k)| rec(*u) == Some(k)).map(|(u, _)| *u).collect();
-    let already = old.iter().filter(|(u, _)| rec(*u).is_some() && rec(*u) == new_of(*u)).count();
-    let stale = old.iter().filter(|(u, k)| rec(*u).is_some_and(|x| x != k && Some(x) != new_of(*u))).count();
-    let never = old.iter().filter(|(u, _)| rec(*u).is_none()).count();
-    let built: BTreeSet<String> = old.iter().map(|(u, _)| u.slash()).collect();
-    let words = |v: &[String]| if v.is_empty() { String::new() } else { format!(": {}", v.join(", ")) };
-    println!(
-        "units (worked out in {:.1} s): {} recorded, {} the coverage builds",
-        t1.elapsed().as_secs_f64(),
-        keys.unit.len(),
-        old.len()
-    );
-    println!("  current under the old keys: {}", current.len());
-    println!("    re-keyed: {} ({} of them without outputs{})", r.moved.len(), r.empty.len(), words(&r.empty));
-    println!("    left to build again: {}", r.left.len());
-    println!("    unknown now (an index unread): {}", r.unknown.len());
-    println!("  under the new keys already: {already}");
-    println!("  stale under the old keys (built again either way): {stale}");
-    println!("  never built: {never}");
-    println!(
-        "  re-keyed to the declared datasets: {} (elevations), {} (spacing: their ways spaced as before)",
-        r.elevation_moved.len(),
-        r.spacing_moved.len()
-    );
-    println!(
-        "  recorded, but not built by the coverage now (pruned in time): {}",
-        keys.unit.keys().filter(|u| !built.contains(*u)).count()
-    );
-    let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
-    for (_, why) in &r.left {
-        for w in why {
-            *kinds.entry(w.split(':').next().unwrap_or_default().to_string()).or_default() += 1;
-        }
-    }
-    println!("left to build again ({} units), by why:", r.left.len());
-    for (k, n) in &kinds {
-        println!("  {k}: {n}");
-    }
-    for (u, why) in &r.left {
-        println!("  {u}  {}", why.join("; "));
-    }
-    for (u, why) in &r.unknown {
-        println!("  {u}  unknown now: {why}");
-    }
-
-    // The build's first zoomed-out terrain of each z3 tile it makes terrain for.
-    let targets: BTreeSet<String> = build::coverage_tiles(&cov).keys().map(|q| format!("3/{}/{}", q.0, q.1)).collect();
-    // The stale terrain hi packs: their z6 tile no longer near the coverage, or left by an earlier
-    // run (older than the z3 tile's lo pack: its last run made no hi tiles for the z6 tile).
-    let pieces: BTreeSet<(u32, u32)> = build::coverage_tiles(&cov).into_values().flatten().collect();
-    let hi: Vec<(u32, u32)> = m
-        .keys()
-        .filter_map(|l| l.strip_prefix("layers/terrain/hi/"))
-        .filter_map(TileId::parse)
-        .map(|t| (t.x, t.y))
-        .collect();
-    let left: Vec<String> = hi
-        .iter()
-        .filter(|t| pieces.contains(*t) && older(t.0, t.1) != Some(false))
-        .map(|t| {
-            format!("6/{}/{}{}", t.0, t.1, if older(t.0, t.1).is_none() { " (its files' times unread)" } else { "" })
-        })
-        .collect();
-    let gone = hi.iter().filter(|t| !pieces.contains(*t)).count();
-    println!("terrain hi packs: {}, {} of them stale: {gone} of z6 tiles the coverage left, {} an earlier run left (older than their z3 tile's lo pack){}", hi.len(), gone + left.len(), left.len(), words(&left));
-    // (The served catalogs and those held for review, as they were made.)
-    let mut cats: Vec<(i64, String, store::catalog::Catalog)> = Vec::new();
-    for dir in ["catalog", "catalog-held"] {
-        for n in store::catalog::list(&root.join(dir))? {
-            match store::catalog::read_n(&root.join(dir), n) {
-                Ok(c) => cats.push((epoch_of(&c.created).unwrap_or(i64::MAX), format!("{dir} {n}"), c)),
-                Err(e) => println!("  ({dir}/{n} not read: {e:#})"),
-            }
-        }
-    }
-    cats.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
-    let first = store::catalog::list(&root.join("catalog"))?
-        .into_iter()
-        .min()
-        .map(|n| store::catalog::read_n(&root.join("catalog"), n))
-        .transpose()?
-        .context("no catalog")?;
-    let lo_of = |c: &store::catalog::Catalog, q: &str| -> Option<String> {
-        Some(c.files.get(c.layers.get("terrain")?.lo.get(q)?)?.file.clone())
-    };
-    let mtime = |content: &str| {
-        std::fs::metadata(root.join(content))
-            .and_then(|md| md.modified())
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
-    };
-    let mut first_new: BTreeMap<String, (i64, String)> = BTreeMap::new();
-    for (at, name, c) in &cats {
-        for q in c.layers.get("terrain").map(|l| l.lo.keys().cloned().collect::<Vec<_>>()).unwrap_or_default() {
-            let Some(content) = lo_of(c, &q).filter(|x| lo_of(&first, &q).as_ref() != Some(x)) else { continue };
-            let t = mtime(&content).map_or(*at, |f| f.min(*at));
-            if first_new.get(&q).is_none_or(|(x, _)| t < *x) {
-                first_new.insert(q, (t, name.clone()));
-            }
-        }
-    }
-    println!("the build's first zoomed-out terrain of each z3 tile it makes terrain for (after catalog {}'s, the conversion's), written:", first.n);
-    for q in &targets {
-        match first_new.get(q) {
-            Some((t, name)) => println!("  {q}  {} (first listed by {name})", utc(*t)),
-            None => println!("  {q}  none yet"),
-        }
-    }
-    let (mut reading, mut shown, mut moved) = (0, 0, 0);
-    let mut not: Vec<String> = Vec::new();
-    for &u in &current {
-        let (Some(base), Some(ru)) = (m.get(&format!("base/{}", u.dash())), reach.get(u)) else { continue };
-        let Ok(read) = build::unit_terrain_tiles(u, ru, &m, &tiles) else { continue };
-        let z3s: BTreeSet<String> = read
-            .iter()
-            .filter(|t| (4..=8).contains(&t.0))
-            .map(|&(z, x, y, _)| format!("3/{}/{}", x >> (z - 3), y >> (z - 3)))
-            .filter(|q| targets.contains(q))
-            .collect();
-        if z3s.is_empty() {
-            continue;
-        }
-        reading += 1;
-        let is_moved = r.moved.contains(&u.slash());
-        moved += is_moved as usize;
-        let at = mtime(base);
-        if at.is_some_and(|b| z3s.iter().all(|q| first_new.get(q).is_some_and(|(t, _)| b - 3600 > *t))) {
-            shown += 1;
-        } else {
-            let each: Vec<String> = z3s
-                .iter()
-                .map(|q| format!("{q} {}", first_new.get(q).map_or("none".to_string(), |(t, _)| utc(*t))))
-                .collect();
-            not.push(format!(
-                "  {} ({}), built {}; first of {}",
-                u.slash(),
-                if is_moved { "re-keyed" } else { "left to build" },
-                at.map_or("?".to_string(), utc),
-                each.join(", ")
-            ));
-        }
-    }
-    println!("units current under the old keys, with outputs, that read zoomed-out terrain (z8–z4) of those z3 tiles: {reading} ({moved} of them re-keyed)");
-    println!("  built over an hour after the build first made each such z3 tile's: {shown}");
-    println!("  not shown so: {}", not.len());
-    for l in &not {
-        println!("{l}");
-    }
-    Ok(())
-}
-
 // ---- p5-check ----------------------------------------------------------------------------------
 
 /// `p5-check trees`: what switching tree cover from a z3 tile's whole run to z6 tiles and assemblies
@@ -2519,374 +2278,11 @@ fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
 /// z6 tiles; then the work the plan has (agent::build::tree_work), and its time by the z3 tiles' last
 /// runs (`--costs`: the coordinator's costs.json; at this Mac's pace, another Mac's time
 /// halved) and the packs made again (their size now).
-/// `p5-check terrain`: what switching terrain and slope from a z3 tile's whole run to z6 tiles and
-/// assemblies (pipeline::agent::rekey::derive) does now: each z3 tile's records read as its z6 tiles
-/// and assembly, or not and why; slope's z6 tiles left to make (reading another z3 tile's terrain); the
-/// work after the switch, and its time by the z3 tiles' last runs (`--costs`: the coordinator's
-/// costs.json); and what deriving costs a plan. Reads only: the terrain packs' indexes into memory.
-fn p5_check_terrain(root: &Path, args: &[String]) -> Result<()> {
-    use pipeline::agent::{build, rekey, tiles::TerrainTiles};
-    let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(root)).context("no complete OSM pass")?;
-    let m: BTreeMap<String, String> = pipeline::out::read_record(&root.join("state/build/manifest.json"))?;
-    let keys = build::Keys::load_strict(root)?;
-    let src = pipeline::inputs::regions::read::source(root, &m)?;
-    let (recipes, bad): (Vec<_>, Vec<(String, String)>) = (pipeline::inputs::regions::read::recipes(&src)?, Vec::new());
-    anyhow::ensure!(bad.is_empty(), "regions that can't be read now: {bad:?}");
-    let cov = pipeline::coverage::Coverage::accepted(root, &src, None)?;
-    let costs: BTreeMap<String, pipeline::coord::Cost> = match opt(args, "--costs") {
-        Some(p) => pipeline::out::read_record(Path::new(&p))?,
-        None => BTreeMap::new(),
-    };
-    let me = pipeline::agent::cond::host();
-    // (A z3 tile's last whole run of `step`, at this Mac's pace.)
-    let last_run = |step: &str, q: &str| {
-        costs.get(&pipeline::coord::cost_key(step, q)).map(|c| {
-            if c.worker.as_deref().is_none_or(|w| w == me) {
-                c.secs as f64
-            } else {
-                c.secs as f64 / 2.0
-            }
-        })
-    };
-    let t0 = std::time::Instant::now();
-    let mut tiles = TerrainTiles::new(None);
-    let n = tiles.load(root, &m);
-    anyhow::ensure!(
-        tiles.unread().next().is_none(),
-        "terrain packs' indexes unread: {:?}",
-        tiles.unread().collect::<Vec<_>>()
-    );
-    println!(
-        "pass {date}, {} regions; the terrain packs' {n} indexes read into memory ({:.1} s)",
-        recipes.len(),
-        t0.elapsed().as_secs_f64()
-    );
-    let z3 = |map: &BTreeMap<String, String>| map.keys().filter(|t| TileId::parse(t).is_some_and(|u| u.z == 3)).count();
-    println!(
-        "records: terrain {} z3 tiles' whole runs (the old scheme), {} pieces, {} assemblies; slope {} z3, {} pieces, {} assemblies",
-        z3(&keys.terrain),
-        keys.terrain.len() - z3(&keys.terrain),
-        keys.terrain_lo.len(),
-        z3(&keys.slope),
-        keys.slope.len() - z3(&keys.slope),
-        keys.slope_lo.len()
-    );
-    // Deriving, as a plan does: the first time (the slope z6 tiles' reads worked out), then again (as
-    // each plan after: kept with the packs they read).
-    let t1 = std::time::Instant::now();
-    let mut read = keys.clone();
-    let d = rekey::derive(&mut read, &cov, &m, &tiles);
-    let first = t1.elapsed();
-    let t2 = std::time::Instant::now();
-    let mut again = keys.clone();
-    let d2 = rekey::derive(&mut again, &cov, &m, &tiles);
-    let next = t2.elapsed();
-    let mut twice = read.clone();
-    let d3 = rekey::derive(&mut twice, &cov, &m, &tiles);
-    // (What a plan works out anyway: the z6 tiles' and assemblies' keys.)
-    let t3 = std::time::Instant::now();
-    let _ = build::terrain_slope_targets(&cov, &m, &tiles);
-    let targets = t3.elapsed();
-    println!(
-        "derived: terrain {} z3 tiles as their pieces and assembly, slope {}; {} slope pieces left to make; passed over (stale under the old scheme): {}; unknown now: {}",
-        d.terrain.len(),
-        d.slope.len(),
-        d.slope_left.len(),
-        d.stale.len(),
-        d.unknown.len()
-    );
-    println!(
-        "deriving took {:.0} ms the first time, {:.0} ms again (a plan's; of which the targets' keys, which the plan works out anyway, {:.0} ms); again from the records: {}; on what it read: {}",
-        first.as_secs_f64() * 1e3,
-        next.as_secs_f64() * 1e3,
-        targets.as_secs_f64() * 1e3,
-        if d2 == d && again == read { "the same" } else { "DIFFERENT" },
-        if d3 == rekey::Derived::default() && twice == read { "nothing to do" } else { "IT CHANGED THEM AGAIN" }
-    );
-    for (t, why) in &d.stale {
-        println!("  {t}: {why}");
-    }
-    for (q, why) in &d.unknown {
-        println!("  slope {q}: kept for the next pass: {why}");
-    }
-    // Each z3 tile.
-    let by_q = build::coverage_tiles(&cov);
-    let (mut piece_s, mut slope_left_s, mut backfill_t, mut backfill_s, mut mids_needed) =
-        (0.0f64, 0.0f64, 0.0f64, 0.0f64, Vec::new());
-    for (q, ts) in &by_q {
-        let qs = format!("3/{}/{}", q.0, q.1);
-        let left: Vec<&(String, String)> =
-            d.slope_left.iter().filter(|(t, _)| build::z3_of(t).as_deref() == Some(qs.as_str())).collect();
-        let (tr, sr) = (last_run("terrain", &qs), last_run("slope", &qs));
-        let n = ts.len() as f64;
-        if let Some(s) = tr {
-            piece_s += s / n;
-            backfill_t += s;
-        }
-        if let Some(s) = sr {
-            slope_left_s += s / n * left.len() as f64;
-            backfill_s += s / n * (n - left.len() as f64);
-        }
-        mids_needed.push(ts.len() - 1);
-        println!(
-            "  {qs}: {} pieces; terrain {}; slope {}{}; last runs: terrain {}, slope {}",
-            ts.len(),
-            if d.terrain.contains(&qs) { "derived" } else { "not derived" },
-            if d.slope.contains(&qs) {
-                format!("derived, {} of its pieces left to make", left.len())
-            } else {
-                "not derived".into()
-            },
-            left.first().map_or(String::new(), |(t, why)| format!(" (first: {t}, {why})")),
-            tr.map_or("unknown".into(), |s| format!("{s:.0} s")),
-            sr.map_or("unknown".into(), |s| format!("{s:.0} s"))
-        );
-    }
-    // The work the plan has after the switch.
-    let tt = build::terrain_slope_targets(&cov, &m, &tiles);
-    let w = build::terrain_work(&tt, &m, &read);
-    let idle = |step: &str| w.backfill.iter().filter(|b| b.step == step).map(|b| b.targets.len()).sum::<usize>();
-    println!(
-        "after the switch: terrain {} pieces and {} assemblies to make now; slope {} pieces runnable now ({} stale), {} assemblies runnable ({} stale); mids to make in idle time: terrain {}, slope {}",
-        w.terrain.len(),
-        w.terrain_lo.len(),
-        w.slope.len(),
-        w.slope_pieces_left.len(),
-        w.slope_lo.len(),
-        w.slope_lo_left.len(),
-        idle("terrain"),
-        idle("slope")
-    );
-    let mean = mids_needed.iter().sum::<usize>() as f64 / mids_needed.len().max(1) as f64;
-    println!(
-        "a stale terrain piece before its z3 tile's mids are made: its z3 tile's other pieces made again for their mids, {mean:.1} on average (at most {}); after the backfill, none",
-        mids_needed.iter().max().unwrap_or(&0)
-    );
-    println!(
-        "its time by the z3 tiles' last runs (at this Mac's pace, a piece its z3 tile's share): slope's pieces left {:.2} h; the backfill: terrain {:.1} h, slope {:.1} h; a terrain piece {:.0} s on average; the assemblies a minute each",
-        slope_left_s / 3600.0,
-        backfill_t / 3600.0,
-        backfill_s / 3600.0,
-        piece_s / by_q.len().max(1) as f64
-    );
-    Ok(())
-}
-
-// ---- water-key-check -----------------------------------------------------------------------------
-
-/// `water-key-check [--pass d] [--compute [--save f] | --digests f] [--fill n]`: what keying the
-/// terrain on its water's digests (agent::build::water_key) does with the records as they are,
-/// reading only: the records read as every reader reads them (agent::rekey::derive) and the
-/// terrain left to make; then, as if a new basemap came whose water is the same, and again with
-/// `n` z6 tiles' water changed (a lake fill's), what's left to make. The digests are the manifest's;
-/// without them, `--compute` works them out here, in memory, timed (`--save f` keeps them in a
-/// file, which `--digests f` reads instead).
-fn water_key_check(root: &Path, args: &[String]) -> Result<()> {
-    use pipeline::agent::{build, rekey, tiles::TerrainTiles};
-    use pipeline::terrain_water::{idx_logical, WaterIdx};
-    let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(root)).context("no complete OSM pass")?;
-    let mut m: BTreeMap<String, String> = pipeline::out::read_record(&root.join("state/build/manifest.json"))?;
-    let keys = build::Keys::load_strict(root)?;
-    let src = pipeline::inputs::regions::read::source(root, &m)?;
-    let (recipes, bad): (Vec<_>, Vec<(String, String)>) = (pipeline::inputs::regions::read::recipes(&src)?, Vec::new());
-    anyhow::ensure!(bad.is_empty(), "regions that can't be read now: {bad:?}");
-    let cov = pipeline::coverage::Coverage::accepted(root, &src, None)?;
-    let t0 = std::time::Instant::now();
-    let mut tiles = TerrainTiles::new(None);
-    let n = tiles.load(root, &m);
-    anyhow::ensure!(
-        tiles.unread().next().is_none(),
-        "terrain packs' indexes or water digests unread: {:?}",
-        tiles.unread().collect::<Vec<_>>()
-    );
-    println!(
-        "pass {date}, {} regions; the terrain packs' {n} indexes read into memory ({:.1} s)",
-        recipes.len(),
-        t0.elapsed().as_secs_f64()
-    );
-    let z3 = |map: &BTreeMap<String, String>| map.keys().filter(|t| TileId::parse(t).is_some_and(|u| u.z == 3)).count();
-    println!(
-        "records: terrain {} z3 tiles' whole runs, {} pieces, {} assemblies",
-        z3(&keys.terrain),
-        keys.terrain.len() - z3(&keys.terrain),
-        keys.terrain_lo.len()
-    );
-    let pin = pipeline::terrain_pack::water_source_pin(&m).context("no basemap")?;
-    println!("the water's source: {pin}");
-    // The digests: the manifest's, or worked out here.
-    let held = |m: &mut BTreeMap<String, String>, tiles: &mut TerrainTiles, idx: WaterIdx| {
-        let content = format!("{}.check.json", idx_logical(&idx.pin));
-        m.insert(idx_logical(&idx.pin), content.clone());
-        tiles.hold_water(&content, idx);
-    };
-    let idx: WaterIdx = match (tiles.water_idx(&m, &pin).cloned(), opt(args, "--digests")) {
-        (Some(w), _) => {
-            println!("its digests: the manifest's ({} targets)", w.digests.len());
-            w
-        }
-        (None, Some(f)) => {
-            let w = WaterIdx::from_bytes(&std::fs::read(&f)?)?;
-            anyhow::ensure!(w.pin == pin, "{f} is {}'s digests", w.pin);
-            println!("its digests: {f}'s ({} targets)", w.digests.len());
-            held(&mut m, &mut tiles, w.clone());
-            w
-        }
-        (None, None) => {
-            anyhow::ensure!(
-                flag(&args, "--compute"),
-                "the manifest has no water digests for {pin}: --compute works them out here, in memory"
-            );
-            let src = pipeline::terrain_water::BasemapWater::open(&root.join(&pin), &pin)?;
-            let t = std::time::Instant::now();
-            let reads = build::water_reads(&cov);
-            let wanted = t.elapsed();
-            let ntiles: usize = reads.iter().map(|r| r.2.len()).sum();
-            let pieces = reads.iter().filter(|r| r.0.starts_with("6/")).count();
-            println!(
-                "what the targets read worked out: {} pieces, {} assemblies, {ntiles} tiles ({:.1} s)",
-                pieces,
-                reads.len() - pieces,
-                wanted.as_secs_f64()
-            );
-            let t = std::time::Instant::now();
-            let w = pipeline::terrain_water::make_idx(&src, None, &reads, &|d, n| {
-                if d % 50 == 0 || d == n {
-                    eprintln!("  {d} of {n} targets ({:.0} s)", t.elapsed().as_secs_f64());
-                }
-            })?;
-            let secs = t.elapsed().as_secs_f64();
-            let none = w.digests.values().filter(|(_, d)| d == "-").count();
-            println!(
-                "its digests worked out here: {} targets ({none} without water) in {secs:.1} s, {:.0} tiles/s",
-                w.digests.len(),
-                ntiles as f64 / secs
-            );
-            // (A second time: the basemap's directory and this Mac's file cache warm.)
-            let t = std::time::Instant::now();
-            let again = pipeline::terrain_water::make_idx(&src, None, &reads, &|_, _| {})?;
-            println!(
-                "again: {:.1} s, {}",
-                t.elapsed().as_secs_f64(),
-                if again == w { "the same digests" } else { "DIFFERENT DIGESTS" }
-            );
-            if let Some(f) = opt(args, "--save") {
-                std::fs::write(&f, serde_json::to_vec(&w)?)?;
-                println!("kept in {f}");
-            }
-            held(&mut m, &mut tiles, w.clone());
-            w
-        }
-    };
-    // What's left to make, the records read as every reader reads them.
-    let left = |m: &BTreeMap<String, String>,
-                tiles: &TerrainTiles,
-                what: &str|
-     -> Result<(rekey::Derived, build::TerrainWork)> {
-        let t = std::time::Instant::now();
-        let mut read = keys.clone();
-        let d = rekey::derive(&mut read, &cov, m, tiles);
-        let first = t.elapsed();
-        // (Again, as each plan after the first: kept with what it's worked out from.)
-        let t = std::time::Instant::now();
-        let mut again = keys.clone();
-        let d2 = rekey::derive(&mut again, &cov, m, tiles);
-        let next = t.elapsed();
-        anyhow::ensure!(d2 == d && again == read, "deriving again gave other records");
-        let tt = build::terrain_slope_targets(&cov, m, tiles);
-        let w = build::terrain_work(&tt, m, &read);
-        let unknown = tt.terrain.iter().chain(&tt.terrain_lo).filter(|(_, k)| k == build::UNKNOWN).count();
-        println!("{what}:");
-        println!(
-            "  derived: {} z3 tiles as their pieces and assembly ({} from an earlier basemap), {} pieces and assemblies of the keys that named the basemap; stale under the old scheme: {}; kept, their water unknown: {}; deriving {:.0} ms the first time, {:.0} ms again",
-            d.terrain.len(),
-            d.older.len(),
-            d.water.len(),
-            d.stale.len(),
-            d.unknown.len(),
-            first.as_secs_f64() * 1e3,
-            next.as_secs_f64() * 1e3
-        );
-        for (t, why) in d.stale.iter().chain(&d.unknown) {
-            println!("    {t}: {why}");
-        }
-        println!(
-            "  terrain left to make: {} of {} pieces, {} of {} assemblies ({} keys unknown); z3 tiles whose terrain is to be made: {}",
-            w.terrain_pieces_left.len(),
-            tt.terrain.len(),
-            w.terrain_lo_left.len(),
-            tt.terrain_lo.len(),
-            unknown,
-            w.terrain_left.len()
-        );
-        if !w.terrain_pieces_left.is_empty() {
-            println!("    pieces: {}", w.terrain_pieces_left.iter().cloned().collect::<Vec<_>>().join(" "));
-        }
-        if !w.terrain_lo_left.is_empty() {
-            println!("    assemblies: {}", w.terrain_lo_left.iter().cloned().collect::<Vec<_>>().join(" "));
-        }
-        Ok((d, w))
-    };
-    let (_, now) = left(&m, &tiles, "now, the terrain keyed on its water's digests")?;
-    // A new basemap, its water the same as this one's under every target: nothing to make.
-    let mut m2 = m.clone();
-    let next = "layers/basemap/world-2099-01-01";
-    m2.insert(next.into(), format!("{next}.0123456789abcdef.pmtiles"));
-    let pin2 = pipeline::terrain_pack::water_source_pin(&m2).unwrap();
-    let mut tiles2 = TerrainTiles::new(None);
-    tiles2.load(root, &m);
-    held(&mut m2, &mut tiles2, idx.clone());
-    held(&mut m2, &mut tiles2, WaterIdx { pin: pin2.clone(), ..idx.clone() });
-    let (_, same) = left(&m2, &tiles2, "a new basemap whose water is the same")?;
-    // And with some z6 tiles' water changed (a lake fill's): those z6 tiles, their z3 tiles' assemblies.
-    let k: usize = opt(args, "--fill").map(|v| v.parse()).transpose()?.unwrap_or(10);
-    let mut changed = WaterIdx { pin: pin2, ..idx.clone() };
-    let touched: Vec<String> = changed
-        .digests
-        .keys()
-        .filter(|t| t.starts_with("6/"))
-        .step_by((idx.digests.len() / k.max(1)).max(1))
-        .take(k)
-        .cloned()
-        .collect();
-    for t in &touched {
-        let e = changed.digests.get_mut(t).unwrap();
-        e.1 = format!("{}+fill", e.1);
-    }
-    let mut tiles3 = TerrainTiles::new(None);
-    tiles3.load(root, &m);
-    let mut m3 = m2.clone();
-    held(&mut m3, &mut tiles3, idx.clone());
-    held(&mut m3, &mut tiles3, changed);
-    let (_, fill) = left(
-        &m3,
-        &tiles3,
-        &format!("a new basemap with {} pieces' water changed ({})", touched.len(), touched.join(" ")),
-    )?;
-    let want: BTreeSet<String> = touched.iter().cloned().chain(now.terrain_pieces_left.iter().cloned()).collect();
-    println!(
-        "the switch: {}; a new basemap with the same water: {}; with {} pieces' water changed: {}",
-        if now.terrain_pieces_left.is_empty() && now.terrain_lo_left.is_empty() {
-            "nothing to make".to_string()
-        } else {
-            format!("{} pieces and {} assemblies to make", now.terrain_pieces_left.len(), now.terrain_lo_left.len())
-        },
-        if same.terrain_pieces_left == now.terrain_pieces_left && same.terrain_lo_left == now.terrain_lo_left {
-            "the same, nothing more"
-        } else {
-            "MORE TO MAKE"
-        },
-        touched.len(),
-        if fill.terrain_pieces_left == want { "those pieces alone" } else { "OTHER PIECES TOO" }
-    );
-    Ok(())
-}
-
 fn p5_check(root: &Path, args: &[String]) -> Result<()> {
     use pipeline::agent::{build, rekey, tiles::TerrainTiles};
     match positional(args).first().map(String::as_str) {
         Some("trees") => {}
-        Some("terrain") => return p5_check_terrain(root, args),
-        _ => anyhow::bail!("p5-check <trees | terrain>"),
+        _ => anyhow::bail!("p5-check trees"),
     }
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(root)).context("no complete OSM pass")?;
     let m: BTreeMap<String, String> = pipeline::out::read_record(&root.join("state/build/manifest.json"))?;
@@ -2919,11 +2315,11 @@ fn p5_check(root: &Path, args: &[String]) -> Result<()> {
         .map(|(t, k)| (t.clone(), k.clone()))
         .collect();
     println!("pass {date}, {} regions; tree cover's records: {} z3 tiles' whole runs (the old scheme), {} pieces, {} assemblies", recipes.len(), z3.len(), keys.trees.len() - z3.len(), keys.trees_lo.len());
-    // The re-keying, its tree cover rules alone (no reaches: the z6 tiles' are rekey-check's).
+    // The re-keying.
     let mut after = keys.clone();
-    let r = rekey::rekey(&mut after, &cov, &date, &m, None, &BTreeMap::new(), &TerrainTiles::new(None), &times);
+    let r = rekey::rekey(&mut after, &cov, &m, &TerrainTiles::new(None), &times);
     let mut twice = after.clone();
-    let again = rekey::rekey(&mut twice, &cov, &date, &m, None, &BTreeMap::new(), &TerrainTiles::new(None), &times);
+    let again = rekey::rekey(&mut twice, &cov, &m, &TerrainTiles::new(None), &times);
     println!("re-keyed: {} z3 tiles as their pieces and assemblies; dropped: {}; unknown now: {}; a second pass: {} ({:.1} s)", r.trees_moved.len(), r.trees_dropped.len(), r.trees_unknown.len(), if again.changed() || twice != after { "it changed the records again" } else { "nothing to do" }, t0.elapsed().as_secs_f64());
     // Each z3 tile recorded: what it was, whose its packs are, what the switch does.
     let old: BTreeMap<String, String> = rekey::v1::trees_targets(&cov, &m).into_iter().collect();
@@ -3141,8 +2537,10 @@ fn local_copy(out: &Out, logical: &str, cache: &Path) -> Result<PathBuf> {
 
 /// The z8 artifact, from local copies under `cache`.
 fn open_z8(out: &Out, cache: &Path) -> Result<pipeline::terrain_z8::Z8> {
-    let pack = local_copy(out, &pipeline::terrain_z8::logical(&out.manifest), cache)?;
-    let maxes = local_copy(out, &pipeline::terrain_z8::max_logical(&out.manifest), cache)?;
+    let pool = pipeline::terrain_z8::pool_digest(out.root(), &out.manifest)
+        .context("the elevation pool can't be read (docs/inputs.md §6.8)")?;
+    let pack = local_copy(out, &pipeline::terrain_z8::logical(&pool), cache)?;
+    let maxes = local_copy(out, &pipeline::terrain_z8::max_logical(&pool), cache)?;
     pipeline::terrain_z8::Z8::open(&pack, &maxes, 4096)
 }
 

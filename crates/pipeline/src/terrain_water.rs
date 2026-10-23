@@ -571,7 +571,7 @@ pub fn tiles_digest_with(src: &dyn WaterSource, tiles: &[(u8, u32, u32)], rivers
 
 /// The water digests of a water source (`WaterSource::pin`: the basemap's content name) in the build
 /// manifest: `work/water-idx/<hash16 of the pin>` (`WaterIdx`), one a source, kept when the source
-/// is replaced (a record of terrain made from it is read by them: agent::rekey::derive).
+/// is replaced.
 pub fn idx_logical(pin: &str) -> String {
     format!("{IDX_PREFIX}{}", store::naming::hash16(pin.as_bytes()))
 }

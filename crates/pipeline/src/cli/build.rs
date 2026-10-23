@@ -86,7 +86,6 @@ const STEPS: &[Step] = &[
     s("lakefill", "[--pass d]", "Canada's lakes missing from OpenStreetMap filled in", &[], PASS, 0),
     s("water", "[--pass d] [--basemap f] [--only x/y,…] [--archive f] [--lakefill f]", "the water layer, z0–9 (--archive: into that local file, the NAS untouched)", &[], &["--pass", "--basemap", "--only", "--archive", "--lakefill"], 0),
     s("terrain-water", "[--pass d] [--regions dir]", "the terrain's water digests", &[], PASS_REGIONS, 0),
-    s("water-key-check", "[--pass d] [--compute [--save f] | --digests f] [--fill n]", "what keying terrain on its water's digests does with the records now. Reads only", &["--compute"], &["--pass", "--save", "--digests", "--fill"], 0),
     s("stations", "--pass d [--geojson f]", "the rail stops of the pass's rail set within the coverage, as the stations' tiles", &[], &["--pass", "--geojson"], 0),
     s("ferries", "--pass d [--gtfs-index i]", "the pass's ferries set (with the ferry feeds and the static timetables of index i, else the accepted one), as the ferries' blocks", &[], &["--pass", "--gtfs-index"], 0),
     s("rail-feeds", "[--pass d] [--regions dir] [--feeds-index i]", "the timetable feeds (the declarations of index i, else the accepted one): the coverage's rail feeds and the ferry feeds, each fetched once into the rail sources", &[], &["--pass", "--regions", "--feeds-index"], 0),
@@ -100,11 +99,10 @@ const STEPS: &[Step] = &[
     s("put", "<logical> <ext> <file>", "upload a file under a logical name", &[], &[], 3),
     s("verify", "", "check every unverified upload on the NAS (SHA-256 over SSH)", &[], &[], 0),
     s("catalog", "[--held] [--ready <ids>] [--building <id>=<built>/<total>,…] [--delta] [--whole]", "publish a catalog of the build manifest (--held: into catalog-held/)", &["--held", "--delta", "--whole"], &["--ready", "--building"], 0),
-    s("rekey-check", "[--pass d]", "what re-keying the records for the units' new keys would do now. Reads only", &[], PASS, 0),
     s("store-fetch", "<id> --index <file.geojson>", "every file and fill mask of a dataset's tile index its store (sources/fetched/<id>/) lacks, as published; restartable", &[], &["--index"], 1),
     s("pyenv", "[--dem dir]", "the Python environment of dem/'s lock file (beside the app's versions, shared by those with the same lock), made if it's missing; its folder printed", &[], &["--dem"], 0),
     s("geoid-offsets", "--sources <dir> --from <reference> --at <lon,lat>[;…] [--store <dir>]", "the offsets the elevation step adds to heights in a reference to bring them to EGM2008, by the geoid declarations in a folder. Reads only", &[], &["--sources", "--from", "--at", "--store"], 0),
-    s("p5-check", "terrain|trees [--pass d] [--costs f]", "what switching terrain and slope, or tree cover, to z6 tiles and assemblies does now. Reads only", &[], &["--pass", "--costs"], 1),
+    s("p5-check", "trees [--pass d] [--costs f]", "what switching tree cover to z6 tiles and assemblies does now. Reads only", &[], &["--pass", "--costs"], 1),
 ];
 
 /// Values that may start with `-`: a west or south coordinate (`--at -73.5,45.5`, regions-fixture's

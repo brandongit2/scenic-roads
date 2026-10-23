@@ -55,6 +55,14 @@ pub fn run(
 ) -> Result<Done> {
     std::fs::create_dir_all(dir).with_context(|| dir.display().to_string())?;
     let host = store::sys::hostname().unwrap_or_else(|| "unknown".into());
+    // (This Mac's temporary files from a run stopped part way go first: never taken for a file.)
+    let mine = format!(".{host}.");
+    for e in std::fs::read_dir(dir)?.flatten() {
+        let n = e.file_name().to_string_lossy().into_owned();
+        if n.ends_with(".tmp") && n.contains(&mine) {
+            std::fs::remove_file(e.path()).ok();
+        }
+    }
     let (stored, bytes, skipped, none, seen) =
         (AtomicUsize::new(0), AtomicU64::new(0), AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0));
     let pool = rayon::ThreadPoolBuilder::new().num_threads(at_once.max(1)).build()?;
@@ -128,6 +136,8 @@ mod tests {
         );
         std::fs::create_dir_all(&store).unwrap();
         std::fs::write(store.join("K_DEM.tif"), b"kept").unwrap();
+        let host = store::sys::hostname().unwrap_or_else(|| "unknown".into());
+        std::fs::write(store.join(format!("A_DEM.tif.{host}.1.tmp")), b"half").unwrap();
         let urls: Vec<String> = ["a/A_DEM.tif", "a/A_FLM.tif", "b/B_DEM.tif", "c/C_DEM.tif", "k/K_DEM.tif"]
             .map(|p| format!("https://e.org/{p}"))
             .into();

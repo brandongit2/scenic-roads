@@ -933,9 +933,12 @@ pub fn heritage_sites_work(
 /// read.
 pub const SUMMITS_V: u32 = 1;
 
-pub fn summits_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
+/// `pool`: the elevation pool's digest (crate::terrain_z8::pool_digest; None: no summits while it
+/// can't be read).
+pub fn summits_work(date: &str, m: &BTreeMap<String, String>, done: &Keys, pool: Option<&str>) -> Option<Work> {
     let set = m.get(&crate::osmpass::set_name(date, "summits"))?;
-    let (z8, z8m) = (m.get(&crate::terrain_z8::logical(m))?, m.get(&crate::terrain_z8::max_logical(m))?);
+    let pool = pool?;
+    let (z8, z8m) = (m.get(&crate::terrain_z8::logical(pool))?, m.get(&crate::terrain_z8::max_logical(pool))?);
     let k = h(&[&format!("summits {SUMMITS_V}"), set, z8, z8m]);
     (done.lo.get("summits").map(String::as_str) != Some(k.as_str()))
         .then(|| Work { step: "summits".into(), targets: vec![("summits".into(), k)] })
@@ -964,17 +967,23 @@ fn tiles_in_wrapped(z: u8, b: [f64; 4]) -> Vec<(u32, u32)> {
 /// (its peaks' z12: the packs', else the pool's base tiles, crate::terrain_base, of those versions,
 /// processed by the terrain's code as it is now: `terrain_pack::process`, which `TERRAIN_V`
 /// versions).
-pub fn peaks_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Vec<(TileId, String)> {
-    peaks_keys_at(cov, date, m, TERRAIN_V)
+pub fn peaks_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, pool: &str) -> Vec<(TileId, String)> {
+    peaks_keys_at(cov, date, m, pool, TERRAIN_V)
 }
 
 /// `peaks_keys` with the terrain's version given (tests).
-fn peaks_keys_at(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, terrain_v: u32) -> Vec<(TileId, String)> {
+fn peaks_keys_at(
+    cov: &Coverage,
+    date: &str,
+    m: &BTreeMap<String, String>,
+    pool: &str,
+    terrain_v: u32,
+) -> Vec<(TileId, String)> {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     let common = [
         get(&format!("work/summits/{date}")),
-        get(&crate::terrain_z8::logical(m)),
-        get(&crate::terrain_z8::max_logical(m)),
+        get(&crate::terrain_z8::logical(pool)),
+        get(&crate::terrain_z8::max_logical(pool)),
     ]
     .join(",");
     let mut out = Vec::new();
@@ -3257,11 +3266,12 @@ fn landmarks_chain(
     if !m.contains_key(&format!("work/summits/{date}")) {
         return None;
     }
-    let stale_peaks: Vec<(String, String)> = peaks_keys(cov, date, m)
-        .into_iter()
-        .filter(|(u, k)| stale(&done.peaks, &u.slash(), k))
-        .map(|(u, k)| (u.slash(), k))
-        .collect();
+    let stale_peaks: Vec<(String, String)> =
+        peaks_keys(cov, date, m, inputs.get(crate::terrain_z8::INPUT).map_or("-", String::as_str))
+            .into_iter()
+            .filter(|(u, k)| stale(&done.peaks, &u.slash(), k))
+            .map(|(u, k)| (u.slash(), k))
+            .collect();
     if !stale_peaks.is_empty() {
         return Some(Work { step: "peaks".into(), targets: stale_peaks });
     }
@@ -3330,9 +3340,15 @@ fn landmarks_work(
     if !stale_pois.is_empty() {
         out.push(Work { step: "pois".into(), targets: stale_pois });
     }
-    if pois_built && m.contains_key(&format!("work/summits/{date}")) && summits_work(date, m, done).is_none() {
+    if pois_built
+        && m.contains_key(&format!("work/summits/{date}"))
+        && summits_work(date, m, done, inputs.get(crate::terrain_z8::INPUT).map(String::as_str)).is_none()
+    {
         let stale_peaks: Vec<(TileId, String)> =
-            peaks_keys(cov, date, m).into_iter().filter(|(u, k)| stale(&done.peaks, &u.slash(), k)).collect();
+            peaks_keys(cov, date, m, inputs.get(crate::terrain_z8::INPUT).map_or("-", String::as_str))
+                .into_iter()
+                .filter(|(u, k)| stale(&done.peaks, &u.slash(), k))
+                .collect();
         let ready: Vec<(String, String)> = stale_peaks
             .into_iter()
             .filter(|(u, _)| peaks_terrain(*u).is_disjoint(terrain_left))
@@ -3394,8 +3410,10 @@ fn marks_ready(
         && units.iter().all(|(u, k)| !stale(&done.pois, &u.slash(), k));
     let peaks_built = pois_built
         && m.contains_key(&format!("work/summits/{date}"))
-        && summits_work(date, m, done).is_none()
-        && peaks_keys(cov, date, m).iter().all(|(u, k)| !stale(&done.peaks, &u.slash(), k));
+        && summits_work(date, m, done, inputs.get(crate::terrain_z8::INPUT).map(String::as_str)).is_none()
+        && peaks_keys(cov, date, m, inputs.get(crate::terrain_z8::INPUT).map_or("-", String::as_str))
+            .iter()
+            .all(|(u, k)| !stale(&done.peaks, &u.slash(), k));
     let pois_now = if peaks_built { current_pois(cov, date, m) } else { Vec::new() };
     let items_built =
         !pois_now.is_empty() && done.lo.get("items").map(String::as_str) == Some(items_key(date, &pois_now).as_str());
@@ -4953,8 +4971,8 @@ pub(crate) mod tests {
         for l in [
             "work/trailends/d".to_string(),
             "work/summits/d".to_string(),
-            crate::terrain_z8::logical(&m),
-            crate::terrain_z8::max_logical(&m),
+            crate::terrain_z8::logical("p"),
+            crate::terrain_z8::max_logical("p"),
         ] {
             m.insert(l.clone(), format!("{l}.6161616161616161.bin"));
         }
@@ -4975,7 +4993,7 @@ pub(crate) mod tests {
         for layer in ["terrain", "slope"] {
             done.record(&format!("{layer}-root"), &[(format!("{layer}-root"), root_key(layer, &m).unwrap())]);
         }
-        let (uk, pk) = (ukeys(&c, "d", &m, Some(&reach)), peaks_keys(&c, "d", &m));
+        let (uk, pk) = (ukeys(&c, "d", &m, Some(&reach)), peaks_keys(&c, "d", &m, "p"));
         assert!(uk[0].1 != done.unit["6/28/16"] && pk[0].1 != done.peaks["6/28/16"], "their keys see the packs");
         done.record("unit", &[("6/28/16".to_string(), uk[0].1.clone())]);
         done.record("peaks", &[("6/28/16".to_string(), pk[0].1.clone())]);
@@ -6034,6 +6052,18 @@ pub(crate) mod tests {
         unit_inputs(&mut m, "d");
         let w = plan(&c, "d", &m, &done, &BTreeMap::new());
         heritage_done(&mut m, &mut done, "d", &w[0]);
+        // (The elevation datasets declared with them: the terrain made again first, as it reads them.)
+        loop {
+            let w = plan(&c, "d", &m, &done, &BTreeMap::new());
+            let t: Vec<&Work> =
+                w.iter().filter(|x| x.step.starts_with("terrain") || x.step.starts_with("slope")).collect();
+            if t.is_empty() {
+                break;
+            }
+            for x in t {
+                terrain_did(&mut m, &mut done, x);
+            }
+        }
         // Without the release's buildings (the worldwide job), the z6 tiles wait for them.
         let index = m.remove(&crate::buildtiles::index_logical(crate::buildtiles::TEST_RELEASE)).unwrap();
         assert!(!plan(&c, "d", &m, &done, &BTreeMap::new()).iter().any(|w| w.step == "unit"));
@@ -6070,7 +6100,6 @@ pub(crate) mod tests {
         let index = m[&crate::inputs::logical(crate::inputs::elevation::UNIT)].clone();
         let at = |lidar: &str| {
             let mut t = TerrainTiles::new(None);
-            t.terrain_names_datasets = true;
             t.hold_elevation(
                 &index,
                 vec![dataset("lidar", lidar, Some(vec![[-22.0, 64.0, -21.0, 65.0]])), dataset("world", "w1", None)],
@@ -6086,7 +6115,6 @@ pub(crate) mod tests {
         assert_ne!(r(&a, 3, 3, 2), r(&b, 3, 3, 2), "the assembly over both");
         // (None read: the terrain waits.)
         let mut none = TerrainTiles::new(None);
-        none.terrain_names_datasets = true;
         none.hold_elevation("another", Vec::new());
         assert_eq!(none.terrain_datasets(&m, [0.0, 0.0, 1.0, 1.0]), None);
     }
@@ -7268,15 +7296,25 @@ pub(crate) mod tests {
         m.insert("work/pois/6-28-16".into(), "work/pois/6-28-16.9999999999999999.json".into());
         m.insert("work/summits/d".into(), "work/summits/d.aaaaaaaaaaaaaaaa.bin".into());
         m.insert("layers/terrain/hi/6-28-16".into(), "layers/terrain/hi/6-28-16.bbbbbbbbbbbbbbbb.pack".into());
-        let now = peaks_keys(&c, "d", &m);
+        for p in ["p", "q"] {
+            for l in [crate::terrain_z8::logical(p), crate::terrain_z8::max_logical(p)] {
+                m.insert(
+                    l.clone(),
+                    format!("{l}.{}.bin", if p == "p" { "1111111111111111" } else { "2222222222222222" }),
+                );
+            }
+        }
+        let now = peaks_keys(&c, "d", &m, "p");
         assert_eq!(now.len(), 1);
-        assert_eq!(now, peaks_keys_at(&c, "d", &m, TERRAIN_V));
-        let next = peaks_keys_at(&c, "d", &m, TERRAIN_V + 1);
+        assert_eq!(now, peaks_keys_at(&c, "d", &m, "p", TERRAIN_V));
+        let next = peaks_keys_at(&c, "d", &m, "p", TERRAIN_V + 1);
         assert_eq!(next[0].0, now[0].0);
         assert_ne!(next[0].1, now[0].1);
         // A hi pack within 30 km changing changes it too.
         m.insert("layers/terrain/hi/6-28-16".into(), "layers/terrain/hi/6-28-16.cccccccccccccccc.pack".into());
-        assert_ne!(peaks_keys(&c, "d", &m)[0].1, now[0].1);
+        assert_ne!(peaks_keys(&c, "d", &m, "p")[0].1, now[0].1);
+        // So does another pool (its z8 another).
+        assert_ne!(peaks_keys(&c, "d", &m, "q")[0].1, peaks_keys(&c, "d", &m, "p")[0].1);
     }
 
     #[test]
@@ -8266,7 +8304,7 @@ pub(crate) mod tests {
         for round in 1..=2 {
             let times = crate::agent::rekey::FileTimes::new(&root);
             let mut k = keys.clone();
-            crate::agent::rekey::as_read(&mut k, &cov, &date, &m, reach.as_ref(), &inputs, &tiles, &times);
+            crate::agent::rekey::as_read(&mut k, &cov, &m, &tiles, &times);
             lap(&format!("[{round}] rekey::as_read"), &mut t);
             let dg = |v: String| store::naming::hash16(v.as_bytes());
             let n = dg(format!("{:?}", pois_units(&cov, &date, &m)));

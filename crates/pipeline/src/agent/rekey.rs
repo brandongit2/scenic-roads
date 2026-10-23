@@ -1,37 +1,9 @@
 //! The build's records re-keyed when a step's key scheme changes (docs/building.md §2, A new key
 //! scheme), so that the change itself rebuilds only what it would make differently. A target whose
 //! recorded key is what the old scheme computes now is current; it's recorded under the new scheme's
-//! key when every input the new key names is pinned by the old key's (the same input, or a function
-//! of what the old key named, of immutable sources, or of what's never been rewritten since), and
-//! its record goes otherwise (it's built again). Safe because a target's outputs are a function of
-//! the inputs its new key names (§8, Determinism), and those are what they were when it was built.
-//! Any other record is left as it is: one stale under the old scheme is stale under the new too (its
-//! key can't be either scheme's now). Idempotent: a new key never equals an old one, so a second
-//! pass finds nothing. Applied in memory by every reader of the records (`as_read`), never saved:
-//! a record changes only by a job's save; `scenic-build rekey-check` shows what it would do. An old
-//! scheme (`v1`) stays one release after its switch, for the records of jobs an older app ran.
-//!
-//! Z6 tiles (2026-10-06): their keys named the terrain hi packs of the z6 tiles within 30 km
-//! (`v1::unit_keys`); they name the terrain tiles a z6 tile reads, by their contents
-//! (build::unit_terrain). Of those, pinned:
-//! - z9–12 tiles: by their hi pack, which the old key named;
-//! - z8–z6 tiles of a z6 tile with a hi pack the old key named, that's a terrain z6 tile now (near the
-//!   coverage) in a z3 tile whose terrain is current: by that hi pack (a z8 tile is made from its raw
-//!   tile and its z9 children alone, the z7 and z6 from those), the z3 tile's last run having had it as
-//!   a z6 tile;
-//! - z8–z6 tiles of a z6 tile without a hi pack: by the raw tiles alone, never rewritten otherwise
-//!   (the z3 tile's lo pack the new system's when the z6 tile was built, or never rewritten:
-//!   `rekey-check` shows the times).
-//!
-//! Not pinned: z5 and z4 tiles (each made from z6 tiles the old key mostly didn't name: the far
-//! reaches of a long way), and z8–z6 tiles of a z6 tile whose hi pack is stale or whose z3 tile's
-//! terrain is to be made again. A hi pack is stale when the coverage left its z6 tile, or when an
-//! earlier run left it: the z3 tile runs the old keys were made with kept a z6 tile's earlier pack when
-//! they made it no hi tiles, and made its z8–z6 from the raw tiles alone, which the old key couldn't
-//! see; such a pack is older than its z3 tile's lo pack by the files' times (`FileTimes::hi_older`).
-//! (The z6 tiles' runs drop both: crate::terrain_pack::build_piece,
-//! agent::build::TerrainTargets::terrain_none.) A z6 tile without outputs (none of its ways in the
-//! coverage) is re-keyed whatever it reads: the terrain doesn't decide which ways it keeps.
+//! key when every input the new key names is pinned by the old key's, and its record goes otherwise
+//! (it's built again). Applied in memory by every reader of the records (`as_read`), never saved: a
+//! record changes only by a job's save; `scenic-build p5-check trees` shows what it would do.
 //!
 //! Tree cover (2026-10-06): a z3 tile's whole run ("3/x/y", `v1::trees_targets`, keyed on the
 //! coverage in the z3 tile) became a z6 tile per z6 tile (keyed on the coverage in it) and an
@@ -53,21 +25,18 @@
 //! this coverage, so its record goes and it's made again. Otherwise it goes with the records of the
 //! z3 tile's z6 tiles and assembly, which are all made again.
 
-use super::build::{self, Keys};
-use super::tiles::{TerrainTiles, Tile};
+use super::build::Keys;
+use super::tiles::TerrainTiles;
 use crate::coverage::Coverage;
 use crate::legacy::TileId;
-use crate::reach::{Reach, Reaches};
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
-/// The key schemes before 2026-10-06: the z6 tiles', and tree cover's before its z6 tiles.
+/// Tree cover's key scheme before 2026-10-06, before its z6 tiles.
 pub mod v1 {
-    use super::super::build::{h, UNIT_V};
     use crate::coverage::Coverage;
     use crate::legacy::TileId;
-    use crate::reach::{Reach, Reaches};
     use crate::treepacks::{LAYERS, TREES_V};
     use std::collections::BTreeMap;
 
@@ -104,142 +73,15 @@ pub mod v1 {
         out
     }
 
-    /// Terrain's and slope's targets as they were, a z3 tile's whole run: each z3 tile with z6 tiles
-    /// near the coverage, terrain keyed on its version, those z6 tiles, the coverage within 20 km,
-    /// GLO-30 and the basemap; slope on its version, the z3 tile's terrain lo pack and its z6 tiles'
-    /// hi packs.
-    pub fn terrain_slope_targets(cov: &Coverage, m: &BTreeMap<String, String>) -> Targets {
-        terrain_slope_targets_with(cov, m, crate::terrain_pack::water_pin(m).map_or("-", |(_, c)| c))
-    }
-
-    /// `terrain_slope_targets` with the basemap `water` (its content name, "-" for none) in the
-    /// terrain's keys: one the terrain may have been made from before the latest.
-    pub fn terrain_slope_targets_with(cov: &Coverage, m: &BTreeMap<String, String>, water: &str) -> Targets {
-        use super::super::build::{coverage_tiles, grown_e7, SLOPE_V, TERRAIN_V};
-        let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
-        let (mut terrain, mut slope) = (Vec::new(), Vec::new());
-        for (q, ts) in &coverage_tiles(cov) {
-            let qs = format!("3/{}/{}", q.0, q.1);
-            let tlist: Vec<String> = ts.iter().map(|t| format!("6/{}/{}", t.0, t.1)).collect();
-            terrain.push((
-                qs.clone(),
-                h(&[
-                    &format!("terrain {TERRAIN_V}"),
-                    &tlist.join(" "),
-                    &cov.fingerprint(grown_e7(3, q.0, q.1, 20.0)),
-                    super::SOURCES_BEFORE,
-                    water,
-                ]),
-            ));
-            let mut inputs =
-                vec![format!("slope {SLOPE_V}"), get(&format!("layers/terrain/lo/3-{}-{}", q.0, q.1)).to_string()];
-            inputs.extend(ts.iter().map(|t| get(&format!("layers/terrain/hi/6-{}-{}", t.0, t.1)).to_string()));
-            let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
-            slope.push((qs, h(&refs)));
-        }
-        (terrain, slope)
-    }
-
-    /// Terrain's and slope's targets with their keys.
-    pub type Targets = (Vec<(String, String)>, Vec<(String, String)>);
-
     /// A z3 tile's "none" key under the old scheme (the coverage gone from it).
     pub fn trees_none(t: &str) -> String {
         store::naming::hash16(format!("trees {TREES_V}|{t}|none").as_bytes())
     }
-
-    /// The z6 tiles the coverage builds, each with its key as it was (`unit_key`; the roadside
-    /// buildings of release `buildings`).
-    pub fn unit_keys(
-        cov: &Coverage,
-        date: &str,
-        m: &BTreeMap<String, String>,
-        reach: Option<&Reaches>,
-        digests: &BTreeMap<String, String>,
-        buildings: &str,
-    ) -> Vec<(TileId, String)> {
-        let mut units: Vec<(TileId, String)> = Vec::new();
-        let Some(reach) = reach else { return units };
-        for (l, c) in m.range(format!("sources/osm/{date}/pieces/")..) {
-            let Some(u) = l.strip_prefix(&format!("sources/osm/{date}/pieces/")).and_then(TileId::parse) else { break };
-            let Some(r) = reach.get(u).filter(|r| r.builds(cov, &super::Before)) else { continue };
-            units.push((u, unit_key(cov, date, m, u, c, r, digests, buildings)));
-        }
-        units
-    }
-
-    /// Z6 tile `u`'s key as it was: its extract and road values, the coverage as its ways meet it, the
-    /// location rules where they go, Taiwan's MOI DTM, the roadside buildings' index, and per z6
-    /// tile within 30 km the terrain hi pack and the heritage slices.
-    pub fn unit_key(
-        cov: &Coverage,
-        date: &str,
-        m: &BTreeMap<String, String>,
-        u: TileId,
-        piece: &str,
-        r: &Reach,
-        digests: &BTreeMap<String, String>,
-        buildings: &str,
-    ) -> String {
-        let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
-        let mut inputs = vec![
-            format!("unit {UNIT_V}"),
-            piece.to_string(),
-            get(&format!("sources/osm/{date}/roads/{}", u.dash())).to_string(),
-            r.coverage_key(cov, u, &super::Before),
-            super::dem_rules_meeting(r.extent(u)),
-        ];
-        if super::meets_taiwan(r.extent(u)) {
-            inputs.push(format!("moi-dtm {}", digests.get("moi-dtm").map(String::as_str).unwrap_or("-")));
-        }
-        inputs.push(format!("buildings {}", get(&crate::buildtiles::index_logical(buildings))));
-        let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
-        for (x, y) in crate::stage::tiles_in(6, b) {
-            inputs.push(get(&format!("layers/terrain/hi/6-{x}-{y}")).to_string());
-            inputs.push(get(&crate::heritage::pos_logical(date, x, y)).to_string());
-            inputs.push(get(&crate::heritage::areas_logical(date, x, y)).to_string());
-        }
-        let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
-        h(&refs)
-    }
 }
 
-/// Terrain's keys from its z6 tiles (2026-10-08) to their water's digests (2026-10-09): a z6 tile and an
-/// assembly named the basemap their water comes from, by content name.
-pub mod v2 {
-    use super::super::build::{h, TERRAIN_LO_V, TERRAIN_V};
-
-    /// Terrain z6 tile `t`'s key as it was: `fp` the coverage within 20 km, `basemap` its content name,
-    /// its sources `SOURCES_BEFORE`.
-    pub fn terrain_piece_key(t: (u32, u32), fp: &str, basemap: &str) -> String {
-        h(&[&format!("terrain {TERRAIN_V}"), &format!("6/{}/{}", t.0, t.1), fp, super::SOURCES_BEFORE, basemap])
-    }
-
-    /// Terrain's assembly of z3 tile `q`'s key as it was.
-    pub fn terrain_lo_key(q: (u32, u32), basemap: &str, mids: &[String]) -> String {
-        h(&[
-            &format!("terrain-lo {TERRAIN_LO_V}"),
-            &format!("terrain {TERRAIN_V}"),
-            &format!("3/{}/{}", q.0, q.1),
-            basemap,
-            &mids.join(","),
-        ])
-    }
-}
-
-/// What `rekey` did to the z6 tiles' records (each by "6/x/y") and tree cover's (by z3 tile, "3/x/y").
+/// What `rekey` did to tree cover's records (by z3 tile, "3/x/y").
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Rekeyed {
-    /// Current under the old scheme, recorded under the new one now.
-    pub moved: Vec<String>,
-    /// Those of `moved` without outputs.
-    pub empty: Vec<String>,
-    /// Current under the old scheme, but naming tiles its old key didn't pin: their records gone
-    /// (built again), each with why (a line a kind of tile).
-    pub left: Vec<(String, Vec<String>)>,
-    /// Current under the old scheme, but what they read can't be told now (a terrain pack's index
-    /// unread): kept as they are, for the next pass.
-    pub unknown: Vec<(String, String)>,
     /// Tree cover's z3 tiles current under the old scheme, recorded as their z6 tiles and assembly.
     pub trees_moved: Vec<String>,
     /// Those whose records went, each with why: their packs trees.py's, stale under the old scheme
@@ -249,24 +91,12 @@ pub struct Rekeyed {
     pub trees_dropped: Vec<(String, String)>,
     /// Those whose packs' times can't be read now: kept as they are, for the next pass.
     pub trees_unknown: Vec<(String, String)>,
-    /// Z6 tiles current under their keys from before the build read the declared elevation datasets,
-    /// recorded under their keys now: those a single dataset meets (crate::inputs::elevation).
-    pub elevation_moved: Vec<String>,
-    /// Z6 tiles current under their keys from before their spacing came from the declared elevation
-    /// datasets, recorded under their keys now: those whose ways are spaced as before
-    /// (`rekey_spacing`).
-    pub spacing_moved: Vec<String>,
 }
 
 impl Rekeyed {
     /// Whether it changed the records.
     pub fn changed(&self) -> bool {
-        !self.moved.is_empty()
-            || !self.left.is_empty()
-            || !self.trees_moved.is_empty()
-            || !self.trees_dropped.is_empty()
-            || !self.elevation_moved.is_empty()
-            || !self.spacing_moved.is_empty()
+        !self.trees_moved.is_empty() || !self.trees_dropped.is_empty()
     }
 }
 
@@ -278,27 +108,16 @@ pub const TREES_PROGRAM_SINCE: i64 = 1_791_270_660;
 /// What the re-keying reads of the NAS beyond the records and the manifest: its files' times
 /// (`FileTimes`).
 pub trait Times {
-    /// Whether z6 tile (x, y)'s terrain hi pack was left by an earlier run (`FileTimes::hi_older`).
-    fn hi_older(&self, m: &BTreeMap<String, String>, x: u32, y: u32) -> Option<bool>;
     /// Whether z3 tile (x, y)'s tree packs were made by the trees program
     /// (`FileTimes::trees_by_program`).
     fn trees_by_program(&self, m: &BTreeMap<String, String>, x: u32, y: u32) -> Option<bool>;
 }
 
 impl Times for FileTimes<'_> {
-    fn hi_older(&self, m: &BTreeMap<String, String>, x: u32, y: u32) -> Option<bool> {
-        FileTimes::hi_older(self, m, x, y)
-    }
     fn trees_by_program(&self, m: &BTreeMap<String, String>, x: u32, y: u32) -> Option<bool> {
         FileTimes::trees_by_program(self, m, x, y)
     }
 }
-
-/// How much earlier than its z3 tile's lo pack a run can write a z6 tile's hi pack: a run writes (or
-/// touches: the same bytes) each z6 tile's hi pack as it's done, then the z3 tile's lo pack; the largest
-/// z3 tile's took 14 minutes on 2026-10-06, and a hi pack an earlier run left was 90 minutes older or
-/// more.
-pub const SAME_RUN_S: i64 = 3600;
 
 /// The NAS's files' times, each read once.
 pub struct FileTimes<'a> {
@@ -325,19 +144,6 @@ impl<'a> FileTimes<'a> {
         t
     }
 
-    /// Whether z6 tile (x, y)'s terrain hi pack, as `m` names it, was written over `SAME_RUN_S`
-    /// before its z3 tile's lo pack: an earlier run left it. Not when either isn't named; None when
-    /// a file's time can't be read now.
-    pub fn hi_older(&self, m: &BTreeMap<String, String>, x: u32, y: u32) -> Option<bool> {
-        let (Some(hi), Some(lo)) = (
-            m.get(&format!("layers/terrain/hi/6-{x}-{y}")),
-            m.get(&format!("layers/terrain/lo/3-{}-{}", x >> 3, y >> 3)),
-        ) else {
-            return Some(false);
-        };
-        Some(self.time(lo)? - self.time(hi)? > SAME_RUN_S)
-    }
-
     /// Whether z3 tile (x, y)'s tree packs, as `m` names them, were made by the trees program: its
     /// whole run's, all written together, by the time of its lo pack (its first layer's that has
     /// one, else its first hi pack) against `TREES_PROGRAM_SINCE`. With none, true: none to differ.
@@ -358,346 +164,21 @@ impl<'a> FileTimes<'a> {
     }
 }
 
-/// Re-keys the records in `keys`, for the coverage `cov`, the pass `date`, the manifest `m`, the
-/// reaches, `digests` (agent::input_digests) and the terrain packs' indexes: tree cover's from a z3
-/// tile's whole run to z6 tiles and assemblies (`rekey_trees`), and the z6 tiles' from the old scheme
-/// (`v1::unit_keys`) to the new (`build::unit_keys`). `times`: the NAS's files' times (`FileTimes`;
-/// None where they can't be told now).
-#[allow(clippy::too_many_arguments)]
+/// Re-keys the records in `keys`, for the coverage `cov`, the manifest `m` and the declared sources
+/// the keys name (`tiles`): tree cover's from a z3 tile's whole run to z6 tiles and assemblies
+/// (`rekey_trees`). `times`: the NAS's files' times (`FileTimes`; None where they can't be told now).
 pub fn rekey(
     keys: &mut Keys,
     cov: &Coverage,
-    date: &str,
     m: &BTreeMap<String, String>,
-    reach: Option<&Reaches>,
-    digests: &BTreeMap<String, String>,
     tiles: &TerrainTiles,
     times: &dyn Times,
 ) -> Rekeyed {
     let mut out = Rekeyed::default();
-    // (What the keys name of the declared sources: none, and the z6 tiles and tree cover wait.)
+    // (What the keys name of the declared sources: none, and tree cover waits.)
     let Some(keyed) = tiles.keyed(m) else { return out };
-    let (buildings, sources) = (keyed.release.as_str(), keyed.unit.as_deref());
     rekey_trees(keys, cov, m, times, keyed.trees.as_deref(), &mut out);
-    let older = |x: u32, y: u32| times.hi_older(m, x, y);
-    let Some(reach) = reach else { return out };
-    rekey_elevation(keys, cov, date, m, reach, tiles, buildings, sources, &mut out);
-    rekey_v1(keys, cov, date, m, reach, digests, tiles, &older, buildings, sources, &mut out);
-    rekey_spacing(keys, cov, date, m, reach, tiles, buildings, sources, &mut out);
     out
-}
-
-/// The z6 tiles' records from the old scheme (`v1::unit_keys`) to the scheme before the spacing
-/// (`unspaced_unit_key`), into `out`.
-#[allow(clippy::too_many_arguments)]
-fn rekey_v1(
-    keys: &mut Keys,
-    cov: &Coverage,
-    date: &str,
-    m: &BTreeMap<String, String>,
-    reach: &Reaches,
-    digests: &BTreeMap<String, String>,
-    tiles: &TerrainTiles,
-    older: &dyn Fn(u32, u32) -> Option<bool>,
-    buildings: &str,
-    sources: Option<&str>,
-    out: &mut Rekeyed,
-) {
-    // (The z6 tiles recorded, not all the pass's: whether the coverage builds a z6 tile is a test of its
-    // ways, seconds for all a pass's reaches.)
-    let mut current: Vec<TileId> = Vec::new();
-    for (t, k) in &keys.unit {
-        let Some(u) = TileId::parse(t) else { continue };
-        let (Some(r), Some(piece)) = (
-            reach.get(u).filter(|r| r.builds(cov, &Before)),
-            m.get(&format!("sources/osm/{date}/pieces/{}", u.dash())),
-        ) else {
-            continue;
-        };
-        if v1::unit_key(cov, date, m, u, piece, r, digests, buildings) == *k {
-            current.push(u);
-        }
-    }
-    if current.is_empty() {
-        return;
-    }
-    let pieces: BTreeSet<(u32, u32)> = build::coverage_tiles(cov).into_values().flatten().collect();
-    // (A z3 tile's terrain is current by its whole run's record, or by its z6 tiles' and assembly's.)
-    let (terrain, _) = v1::terrain_slope_targets(cov, m);
-    let mut terrain_now: BTreeSet<String> =
-        terrain.into_iter().filter(|(q, k)| keys.terrain.get(q) == Some(k)).map(|(q, _)| q).collect();
-    let tw = build::terrain_work(&build::terrain_slope_targets(cov, m, tiles), m, keys);
-    terrain_now.extend(
-        build::coverage_tiles(cov)
-            .into_keys()
-            .map(|q| format!("3/{}/{}", q.0, q.1))
-            .filter(|q| !tw.terrain_left.contains(q) && keys.terrain_lo.contains_key(q)),
-    );
-    for u in current {
-        let t = u.slash();
-        let (Some(r), Some(piece)) = (reach.get(u), m.get(&format!("sources/osm/{date}/pieces/{}", u.dash()))) else {
-            continue;
-        };
-        let read = match build::unit_terrain_tiles(u, r, m, tiles) {
-            Ok(read) => read,
-            Err(e) => {
-                out.unknown.push((t, e.0));
-                continue;
-            }
-        };
-        let outputs = crate::out::UNIT_OUTPUTS.iter().any(|p| m.contains_key(&format!("{p}{}", u.dash())));
-        let why = match if outputs { unpinned(u, &read, m, &pieces, &terrain_now, older) } else { Ok(Vec::new()) } {
-            Ok(why) => why,
-            Err(e) => {
-                out.unknown.push((t, e));
-                continue;
-            }
-        };
-        let Ok(Some(elevation)) = tiles.elevation(m) else {
-            out.unknown.push((t, "the declared elevation datasets aren't switched to, or can't be read now".into()));
-            continue;
-        };
-        if why.is_empty() {
-            keys.unit.insert(
-                t.clone(),
-                unspaced_unit_key(
-                    cov,
-                    date,
-                    m,
-                    u,
-                    piece,
-                    r,
-                    &build::terrain_digest(&read),
-                    &elevation,
-                    buildings,
-                    sources,
-                ),
-            );
-            if !outputs {
-                out.empty.push(t.clone());
-            }
-            out.moved.push(t);
-        } else {
-            keys.unit.remove(&t);
-            out.left.push((t, why));
-        }
-    }
-}
-
-/// The spacing before it was decided by the declared elevation datasets (crate::dem::spacing): 8 m
-/// west of 40° W and in Japan's box (122.5–154° E, 20–46.5° N), 15 m elsewhere, by a way's first
-/// node. The scheme the z6 tiles' keys before the spacing's line were made under (`unspaced_unit_key`).
-pub struct Before;
-
-impl Before {
-    fn fine(lon: f64, lat: f64) -> bool {
-        lon < -40.0 || ((122.5..154.0).contains(&lon) && (20.0..46.5).contains(&lat))
-    }
-
-    /// Whether every point of 1° cell `c` (half-open: crate::dem::spacing::cell) is fine; None when
-    /// the cell is split.
-    pub fn cell_fine(c: [i32; 2]) -> Option<bool> {
-        let (x, y) = (c[0] as f64, c[1] as f64);
-        // (The rule's edges inside a cell: 122.5° E, 46.5° N; the others are on cells' edges.)
-        let split_x = x < 122.5 && 122.5 < x + 1.0 && y < 46.5 && y + 1.0 > 20.0;
-        let split_y = y < 46.5 && 46.5 < y + 1.0 && x + 1.0 > 122.5 && x < 154.0;
-        (!split_x && !split_y).then(|| Before::fine(x + 0.5, y + 0.5))
-    }
-}
-
-impl crate::dem::spacing::Spacing for Before {
-    fn at(&self, p: [i32; 2]) -> f64 {
-        use crate::dem::spacing::{COARSE_M, FINE_M};
-        if Before::fine(p[0] as f64 * roadcore::E7, p[1] as f64 * roadcore::E7) {
-            FINE_M
-        } else {
-            COARSE_M
-        }
-    }
-}
-
-/// Z6 tile `u`'s key as it was before its spacing came from the declared elevation datasets
-/// (`Before`): no spacing line, its long ways tested at the spacing before.
-#[allow(clippy::too_many_arguments)]
-pub fn unspaced_unit_key(
-    cov: &Coverage,
-    date: &str,
-    m: &BTreeMap<String, String>,
-    u: TileId,
-    piece: &str,
-    r: &Reach,
-    terrain: &str,
-    elevation: &[(crate::dem::declared::Accepted, crate::dem::declared::Cover)],
-    buildings: &str,
-    sources: Option<&str>,
-) -> String {
-    build::unit_key_spaced(cov, date, m, u, piece, r, terrain, elevation, &Before, None, buildings, sources)
-}
-
-/// Whether every way of a z6 tile (its reach `r`) is spaced now (`fine`) as it was (`Before`): each
-/// cell its ways start in is wholly fine or wholly coarse before, and the same now.
-pub fn spaced_as_before(r: &Reach, fine: &crate::dem::spacing::Fine) -> bool {
-    r.cells.iter().all(|&c| Before::cell_fine(c) == Some(fine.fine(c)))
-}
-
-/// Re-keys the z6 tiles' records once their spacing comes from the declared elevation datasets
-/// (crate::dem::spacing): a z6 tile current under its key from before (`unspaced_unit_key`) whose ways
-/// are all spaced as they were (`spaced_as_before`) is recorded under its key now: `extract` puts
-/// the same points along them, and the coverage builds and touches what it did. The others are
-/// built again.
-#[allow(clippy::too_many_arguments)]
-fn rekey_spacing(
-    keys: &mut Keys,
-    cov: &Coverage,
-    date: &str,
-    m: &BTreeMap<String, String>,
-    reach: &Reaches,
-    tiles: &TerrainTiles,
-    buildings: &str,
-    sources: Option<&str>,
-    out: &mut Rekeyed,
-) {
-    let Ok(Some(ds)) = tiles.elevation(m) else { return };
-    let fine = crate::dem::spacing::Fine::of(&ds);
-    // (What every z6 tile's key before reads beyond its own: for the memo below.)
-    let ctx = {
-        let mut d = blake3::Hasher::new();
-        for (l, c) in m {
-            d.update(l.as_bytes());
-            d.update(b"=");
-            d.update(c.as_bytes());
-            d.update(b"\n");
-        }
-        let world = [-1_800_000_000, -900_000_000, 1_800_000_000, 900_000_000];
-        let tags: Vec<String> = ds.iter().map(|(d, _)| format!("{} {}", d.id, d.keyed)).collect();
-        store::naming::hash16(
-            format!(
-                "{}|{}|{date}|{buildings}|{}|{}",
-                d.finalize().to_hex(),
-                cov.fingerprint(world),
-                sources.unwrap_or("-"),
-                tags.join(",")
-            )
-            .as_bytes(),
-        )
-    };
-    let units: Vec<(String, String)> = keys.unit.iter().map(|(t, k)| (t.clone(), k.clone())).collect();
-    for (t, k) in units {
-        let Some(u) = TileId::parse(&t) else { continue };
-        let (Some(r), Some(piece)) = (
-            reach.get(u).filter(|r| r.builds(cov, &Before)),
-            m.get(&format!("sources/osm/{date}/pieces/{}", u.dash())),
-        ) else {
-            continue;
-        };
-        if !spaced_as_before(r, &fine) {
-            continue;
-        }
-        let Ok(terrain) = build::unit_terrain(u, r, m, tiles) else { continue };
-        // (Its key under the scheme before, kept by everything that key reads: the whole manifest,
-        // the coverage, the pass, the declared datasets and sources, its extract, reach and terrain.
-        // Made again when any of them changes; compared with its record here, so a record already
-        // under its key now costs a lookup on later reads.)
-        let from = [ctx.as_str(), piece, &terrain, &serde_json::to_string(r).unwrap_or_default()].join("|");
-        let Ok(before) = tiles.memo(&format!("unspaced {t}"), &from, || {
-            Ok(unspaced_unit_key(cov, date, m, u, piece, r, &terrain, &ds, buildings, sources))
-        }) else {
-            continue;
-        };
-        if before != k {
-            continue;
-        }
-        keys.unit
-            .insert(t.clone(), build::unit_key(cov, date, m, u, piece, r, &terrain, &ds, &fine, buildings, sources));
-        out.spacing_moved.push(t);
-    }
-}
-
-/// The location rules' versions as the z6 tiles' keys named them while the DEM rules were among them
-/// (before the declared elevation datasets, #143): those four rules', each at version 1, as they were
-/// (`rules::RULES`' first), then today's rules'.
-pub fn dem_rules_meeting(b: [i32; 4]) -> String {
-    const NORTH_AMERICA: [f64; 4] = [-180.0, -90.0, -40.0, 90.0];
-    const JAPAN: [f64; 4] = [122.5, 20.0, 154.0, 46.5];
-    const TAIWAN: [f64; 4] = [118.0, 21.5, 122.5, 26.6];
-    const WORLD: [f64; 4] = [-180.0, -90.0, 180.0, 90.0];
-    let (w, s, e, n) = (b[0] as f64 * 1e-7, b[1] as f64 * 1e-7, b[2] as f64 * 1e-7, b[3] as f64 * 1e-7);
-    let mut parts: Vec<String> =
-        [("dem-north-america", NORTH_AMERICA), ("dem-japan", JAPAN), ("dem-taiwan", TAIWAN), ("dem-fabdem", WORLD)]
-            .iter()
-            .filter(|(_, a)| a[0] <= e && a[2] >= w && a[1] <= n && a[3] >= s)
-            .map(|(r, _)| format!("{r}=1"))
-            .collect();
-    let now = crate::rules::versions_meeting(b);
-    if !now.is_empty() {
-        parts.push(now);
-    }
-    parts.join(",")
-}
-
-/// Whether the box w, s, e, n (E7) meets Taiwan (the z6 tiles' keys of the scheme before P8 had its DEM
-/// files' digest there: `v1`).
-fn meets_taiwan(b: [i32; 4]) -> bool {
-    let (w, s, e, n) = (b[0] as f64 * 1e-7, b[1] as f64 * 1e-7, b[2] as f64 * 1e-7, b[3] as f64 * 1e-7);
-    118.0 <= e && 122.5 >= w && 21.5 <= n && 26.6 >= s
-}
-
-/// Z6 tile `u`'s key as it was before the declared elevation datasets (#143's switch): the DEM rules'
-/// versions where the datasets' digests are now.
-#[allow(clippy::too_many_arguments)]
-pub fn pre_elevation_unit_key(
-    cov: &Coverage,
-    date: &str,
-    m: &BTreeMap<String, String>,
-    u: TileId,
-    piece: &str,
-    r: &Reach,
-    terrain: &str,
-    buildings: &str,
-) -> String {
-    let rules = dem_rules_meeting(r.extent(u));
-    build::unit_key_with(cov, date, m, u, piece, r, terrain, &Before, rules, None, None, buildings, None)
-}
-
-/// Re-keys the z6 tiles' records once the build reads the declared elevation datasets
-/// (crate::inputs::elevation's switch): a z6 tile current under its key from before (the DEM rules'
-/// versions) whose ways a single dataset meets is recorded under its key now. Its heights are what
-/// they were: where one dataset alone has data there's nothing to blend, and that dataset is the
-/// one the DEM rules fell through to (the declared coverages hold every file's footprint). The others are built again.
-#[allow(clippy::too_many_arguments)]
-fn rekey_elevation(
-    keys: &mut Keys,
-    cov: &Coverage,
-    date: &str,
-    m: &BTreeMap<String, String>,
-    reach: &Reaches,
-    tiles: &TerrainTiles,
-    buildings: &str,
-    sources: Option<&str>,
-    out: &mut Rekeyed,
-) {
-    let Ok(Some(ds)) = tiles.elevation(m) else { return };
-    let units: Vec<(String, String)> = keys.unit.iter().map(|(t, k)| (t.clone(), k.clone())).collect();
-    for (t, k) in units {
-        let Some(u) = TileId::parse(&t) else { continue };
-        let (Some(r), Some(piece)) = (
-            reach.get(u).filter(|r| r.builds(cov, &Before)),
-            m.get(&format!("sources/osm/{date}/pieces/{}", u.dash())),
-        ) else {
-            continue;
-        };
-        let Ok(terrain) = build::unit_terrain(u, r, m, tiles) else { continue };
-        if pre_elevation_unit_key(cov, date, m, u, piece, r, &terrain, buildings) != k {
-            continue;
-        }
-        let e = r.extent(u);
-        let deg = |v: i32| v as f64 * 1e-7;
-        if crate::dem::declared::meeting(&ds, [deg(e[0]), deg(e[1]), deg(e[2]), deg(e[3])]).len() == 1 {
-            keys.unit
-                .insert(t.clone(), unspaced_unit_key(cov, date, m, u, piece, r, &terrain, &ds, buildings, sources));
-            out.elevation_moved.push(t);
-        }
-    }
 }
 
 /// Re-keys tree cover's records of a z3 tile's whole run ("3/x/y", `v1::trees_targets`) as its
@@ -775,80 +256,6 @@ fn rekey_trees(
     }
 }
 
-/// Why the tiles `read` that z6 tile `u`'s new key names aren't all pinned by its old key: a line a
-/// kind of tile that isn't, with how many and the first; none when they all are; an error when
-/// that can't be told now. `pieces`: the z6 tiles near the coverage; `terrain_now`: the z3 tiles whose
-/// terrain is current; `older`: as `rekey`'s.
-fn unpinned(
-    u: TileId,
-    read: &[Tile],
-    m: &BTreeMap<String, String>,
-    pieces: &BTreeSet<(u32, u32)>,
-    terrain_now: &BTreeSet<String>,
-    older: &dyn Fn(u32, u32) -> Option<bool>,
-) -> Result<Vec<String>, String> {
-    let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
-    // The z6 tiles whose hi packs its old key named.
-    let [x0, x1, y0, y1] = crate::stage::tile_range(6, b);
-    let named = |x: u32, y: u32| (x0..=x1).contains(&x) && (y0..=y1).contains(&y);
-    let mut kinds: BTreeMap<&str, (usize, (u8, u32, u32))> = BTreeMap::new();
-    for &(z, x, y, _) in read {
-        let kind = if z <= 5 {
-            Some("zoomed-out tiles (z5–z4), made from z6 tiles its old key didn't name")
-        } else {
-            let (x6, y6) = (x >> (z - 6), y >> (z - 6));
-            if !named(x6, y6) {
-                Some("tiles of z6 tiles whose hi packs its old key didn't name")
-            } else if z <= 8 && m.contains_key(&format!("layers/terrain/hi/6-{x6}-{y6}")) {
-                if !pieces.contains(&(x6, y6)) {
-                    Some("z8–z6 tiles of a z6 tile whose hi pack is stale (the coverage left it)")
-                } else if !terrain_now.contains(&format!("3/{}/{}", x6 >> 3, y6 >> 3)) {
-                    Some("z8–z6 tiles of a z3 tile whose terrain is to be made again")
-                } else {
-                    match older(x6, y6) {
-                        Some(true) => Some("z8–z6 tiles of a z6 tile whose hi pack is stale (an earlier run left it: older than its z3 tile's lo pack)"),
-                        Some(false) => None,
-                        None => return Err(format!("the times of 6/{x6}/{y6}'s terrain packs can't be read now")),
-                    }
-                }
-            } else {
-                None
-            }
-        };
-        if let Some(k) = kind {
-            kinds.entry(k).or_insert((0, (z, x, y))).0 += 1;
-        }
-    }
-    Ok(kinds.into_iter().map(|(k, (n, (z, x, y)))| format!("{k}: {n}, {z}/{x}/{y} first")).collect())
-}
-
-/// What `derive` made of terrain's and slope's records of a z3 tile's whole run.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Derived {
-    /// Terrain's z3 tiles current under the old scheme: read as their z6 tiles and assembly.
-    pub terrain: Vec<String>,
-    /// Slope's z3 tiles current under the old scheme: read as their z6 tiles (those that read their
-    /// z3 tile's terrain alone) and, with no other z6 tile, their assembly.
-    pub slope: Vec<String>,
-    /// Slope's z6 tiles in those that read terrain in another z3 tile's packs or the root, or none:
-    /// left to make, each with the first such tile.
-    pub slope_left: Vec<(String, String)>,
-    /// The old records stale under the old scheme (or "none"): passed over, each with why.
-    pub stale: Vec<(String, String)>,
-    /// Slope's z3 tiles whose z6 tiles' reads can't be told now (a terrain pack's index unread), and
-    /// terrain's whose water's digests aren't there (yet): their records kept, for the next read.
-    pub unknown: Vec<(String, String)>,
-    /// Terrain's z3 tiles of `terrain` made from a basemap before the latest: each with it.
-    pub older: Vec<(String, String)>,
-    /// Terrain's z6 tiles and assemblies recorded under the keys that named the basemap (`v2`): read
-    /// under their keys now, each with the basemap.
-    pub water: Vec<(String, String)>,
-}
-
-/// What the terrain's keys named its sources by before they were declared (#144): AWS's Terrarium
-/// tiles and GLO-30's tiles of May 2022 (`NORTH_PIN`, as the code had it).
-pub const SOURCES_BEFORE: &str = "glo30 2022-05";
-
 /// What the steps' keys named of the sources declared in `inputs/sources/` (#145) while they were in
 /// code: the digest (`Source::digest`) of each source's declaration as staged for the switch
 /// (producers/sources/), whose fields are what the code had (each consumer's tests). While the
@@ -874,328 +281,39 @@ pub mod declared_before {
 }
 
 /// The records as every reader reads them (the plan, the checklist, the regions' state, the jobs'
-/// `--expect-same`, `scenic-build p5-check`): re-keyed (`rekey`), then terrain's and slope's
-/// derived (`derive`). The one way to read them.
-#[allow(clippy::too_many_arguments)]
+/// `--expect-same`): re-keyed (`rekey`). The one way to read them.
 pub fn as_read(
     keys: &mut Keys,
     cov: &Coverage,
-    date: &str,
     m: &BTreeMap<String, String>,
-    reach: Option<&Reaches>,
-    digests: &BTreeMap<String, String>,
     tiles: &TerrainTiles,
     times: &dyn Times,
-) -> (Rekeyed, Derived) {
-    let r = rekey(keys, cov, date, m, reach, digests, tiles, times);
-    let d = derive(keys, cov, m, tiles);
-    (r, d)
-}
-
-/// Terrain's and slope's records of a z3 tile's whole run ("3/x/y", `v1::terrain_slope_targets`)
-/// read as its z6 tiles and assemblies (build::terrain_slope_targets), in memory only: never saved
-/// (the records, `jobs.json` or the pool's terms', change only by a job's save), so applied again
-/// by every reader (`as_read`), the same each time. A record of the new scheme is never written
-/// over: what a job recorded wins over what's derived. The z3 record itself is dropped from the
-/// keys read.
-///
-/// A z3 tile's terrain record current under the old scheme (its key: the version, its z6 tiles near
-/// the coverage, the coverage within 20 km of it, GLO-30 and the basemap) pins its z6 tiles' inputs
-/// (the coverage within 20 km of a z6 tile in it is a function of that), and its packs are what its
-/// z6 tiles and assembly make from them, byte for byte (terrain_pack::build_q_with is made of them):
-/// each z6 tile without a record of its own is read as current under its key, and the assembly, with
-/// none, under its key with every mid "-" (as when no z6 tile had one): a mid made since (a z6 tile made
-/// again, or backfilled) makes it stale, and it's made again, from all its z6 tiles' mids (the mids
-/// needed: build::terrain_work).
-///
-/// A z3 tile's slope record current under the old scheme (its key: the version, the z3 tile's terrain
-/// lo pack and its z6 tiles' hi packs) pins the reads of its z6 tiles whose every terrain tile read
-/// (build::slope_piece_reads) is in its z3 tile's packs: each without a record of its own is read as
-/// current. Those reading another z3 tile's terrain, or the root's, or none, which the old key didn't
-/// name (and a slope z3 tile's run could read a neighbour's terrain before it was made again), are
-/// left to make; the assembly is read as current (every mid "-") only when none is.
-///
-/// The terrain's keys name the digest of the water each target reads (build::water_key; they
-/// named the basemap before 2026-10-09, `v2`). A z3 tile's terrain record is read by the digests
-/// of the basemap it was made from: the latest's, else an earlier one's whose digests the manifest
-/// names (its v1 key names that basemap), so its z6 tiles made from an earlier basemap are current
-/// where the water they read is the latest's; one whose basemap's digests aren't there yet is kept
-/// as it is (`Derived::unknown`). A z6 tile's or an assembly's record under its `v2` key (an older
-/// app's job), of the latest basemap or an earlier one with digests, is read under its key now by
-/// that basemap's digests (its mids those of the manifest, or all "-").
-pub fn derive(keys: &mut Keys, cov: &Coverage, m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> Derived {
-    derive_runs(keys, cov, m, tiles)
-}
-
-/// `derive`'s older schemes: a z3 tile's whole run (`v1`), and the z6 tiles' and assemblies' keys
-/// that named the basemap (`v2`), each read under the keys that came after them, naming the sources
-/// as they were in code (`SOURCES_BEFORE`).
-fn derive_runs(keys: &mut Keys, cov: &Coverage, m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> Derived {
-    let mut out = Derived::default();
-    let z3 = |map: &BTreeMap<String, String>| -> Vec<(String, String)> {
-        map.iter()
-            .filter(|(t, _)| TileId::parse(t).is_some_and(|u| u.z == 3))
-            .map(|(t, k)| (t.clone(), k.clone()))
-            .collect()
-    };
-    let (tz3, sz3) = (z3(&keys.terrain), z3(&keys.slope));
-    let v2 =
-        keys.terrain.iter().any(|(t, _)| TileId::parse(t).is_some_and(|u| u.z == 6)) || !keys.terrain_lo.is_empty();
-    if tz3.is_empty() && sz3.is_empty() && !v2 {
-        return out;
-    }
-    let by_q = build::coverage_tiles(cov);
-    let tt = build::terrain_slope_targets(cov, m, tiles);
-    let pieces = |q: &str| -> Vec<(u32, u32)> {
-        TileId::parse(q).and_then(|u| by_q.get(&(u.x, u.y)).cloned()).unwrap_or_default()
-    };
-    let none_mids = |q: &str| -> Vec<String> { pieces(q).iter().map(|(x, y)| format!("6/{x}/{y}=-")).collect() };
-    // The basemaps the terrain may have been made from: the latest's, then each earlier one whose
-    // water's digests the manifest names (crate::terrain_water::WaterIdx). A record made from an
-    // earlier one is read under the key its water's digests there give: current when the latest's
-    // are the same.
-    let latest = crate::terrain_pack::water_source_pin(m);
-    let mut basemaps: Vec<Option<String>> = vec![latest.clone()];
-    basemaps.extend(tiles.water_pins(m).into_iter().filter(|p| Some(p) != latest.as_ref()).map(Some));
-    let water = |b: &Option<String>, t: &str, from: &str| {
-        build::water_key(b.as_deref(), b.as_deref().and_then(|p| tiles.water_idx(m, p)), t, from)
-    };
-    let fp = |x: u32, y: u32| cov.fingerprint(build::grown_e7(6, x, y, 20.0));
-    // Z6 tiles and assemblies recorded under the keys that named the basemap (`v2`: an older app's).
-    if v2 {
-        let current: BTreeMap<&String, &String> =
-            tt.terrain.iter().chain(&tt.terrain_lo).map(|(t, k)| (t, k)).collect();
-        let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
-        let mids = |q: &str| -> Vec<String> {
-            pieces(q)
-                .iter()
-                .map(|(x, y)| format!("6/{x}/{y}={}", get(&crate::terrain_pack::mid_logical(*x, *y))))
-                .collect()
-        };
-        let moved: Vec<(String, String, String)> = keys
-            .terrain
-            .iter()
-            .filter(|(t, k)| current.get(t) != Some(k))
-            .filter_map(|(t, k)| {
-                let u = TileId::parse(t).filter(|u| u.z == 6)?;
-                let f = fp(u.x, u.y);
-                basemaps
-                    .iter()
-                    .find(|b| v2::terrain_piece_key((u.x, u.y), &f, b.as_deref().unwrap_or("-")) == *k)
-                    .and_then(|b| {
-                        Some((
-                            t.clone(),
-                            build::terrain_piece_key((u.x, u.y), &f, SOURCES_BEFORE, &water(b, t, &f)?),
-                            b.clone().unwrap_or_default(),
-                        ))
-                    })
-            })
-            .collect();
-        for (t, k, b) in moved {
-            keys.terrain.insert(t.clone(), k);
-            out.water.push((t, b));
-        }
-        let moved: Vec<(String, String, String)> = keys
-            .terrain_lo
-            .iter()
-            .filter(|(q, k)| current.get(q) != Some(k))
-            .filter_map(|(q, k)| {
-                let u = TileId::parse(q).filter(|u| u.z == 3)?;
-                let lists = [mids(q), none_mids(q)];
-                basemaps
-                    .iter()
-                    .find_map(|b| {
-                        lists
-                            .iter()
-                            .find(|l| v2::terrain_lo_key((u.x, u.y), b.as_deref().unwrap_or("-"), l) == *k)
-                            .map(|l| (b, l))
-                    })
-                    .and_then(|(b, l)| {
-                        Some((
-                            q.clone(),
-                            build::terrain_lo_key(
-                                (u.x, u.y),
-                                &water(b, q, crate::terrain_water::AREA_FROM)?,
-                                SOURCES_BEFORE,
-                                l,
-                            ),
-                            b.clone().unwrap_or_default(),
-                        ))
-                    })
-            })
-            .collect();
-        for (q, k, b) in moved {
-            keys.terrain_lo.insert(q.clone(), k);
-            out.water.push((q, b));
-        }
-    }
-    if tz3.is_empty() && sz3.is_empty() {
-        return out;
-    }
-    // (The old scheme's keys, kept by `tiles` with what they're worked out from, as the new: the
-    // latest basemap's, an earlier one's when a record isn't current with it.)
-    let named = |prefix: &str| {
-        m.range(prefix.to_string()..)
-            .take_while(|(l, _)| l.starts_with(prefix))
-            .map(|(l, c)| format!("{l}={c}"))
-            .collect::<Vec<_>>()
-            .join(",")
-    };
-    let old_with = |b: &str| -> (BTreeMap<String, String>, BTreeMap<String, String>) {
-        let from = store::naming::hash16(
-            [build::coverage_all(cov), named("layers/terrain/"), b.to_string()].join("\n").as_bytes(),
-        );
-        let key = if latest.as_deref().unwrap_or("-") == b {
-            "terrain-targets v1".to_string()
-        } else {
-            format!("terrain-targets v1 {b}")
-        };
-        let old = tiles.memo(&key, &from, || {
-            Ok(serde_json::to_string(&v1::terrain_slope_targets_with(cov, m, b)).unwrap_or_default())
-        });
-        let (t, s): v1::Targets = old
-            .ok()
-            .and_then(|j| serde_json::from_str(&j).ok())
-            .unwrap_or_else(|| v1::terrain_slope_targets_with(cov, m, b));
-        (t.into_iter().collect(), s.into_iter().collect())
-    };
-    let (old_t, old_s) = old_with(latest.as_deref().unwrap_or("-"));
-    let mut earlier: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
-    for (q, k) in tz3 {
-        let Some(u) = TileId::parse(&q) else { continue };
-        let b = if old_t.get(&q) == Some(&k) {
-            Some(latest.clone())
-        } else {
-            basemaps
-                .iter()
-                .skip(1)
-                .find(|b| {
-                    let b = b.as_deref().unwrap_or("-");
-                    earlier.entry(b.to_string()).or_insert_with(|| old_with(b).0).get(&q) == Some(&k)
-                })
-                .cloned()
-        };
-        let Some(b) = b else {
-            keys.terrain.remove(&q);
-            out.stale.push((format!("terrain {q}"), "stale under the old scheme: its pieces made".into()));
-            continue;
-        };
-        // Its z6 tiles' and assembly's keys, by the water's digests of the basemap it was made from.
-        let made: Option<Vec<(String, String)>> = pieces(&q)
-            .iter()
-            .map(|&(x, y)| {
-                let t = format!("6/{x}/{y}");
-                let f = fp(x, y);
-                Some((t.clone(), build::terrain_piece_key((x, y), &f, SOURCES_BEFORE, &water(&b, &t, &f)?)))
-            })
-            .collect();
-        let lo = water(&b, &q, crate::terrain_water::AREA_FROM)
-            .map(|w| build::terrain_lo_key((u.x, u.y), &w, SOURCES_BEFORE, &none_mids(&q)));
-        let (Some(made), Some(lo)) = (made, lo) else {
-            out.unknown.push((
-                q,
-                format!(
-                    "the water's digests of {} aren't there yet (the terrain-water job): its record kept",
-                    b.as_deref().unwrap_or("-")
-                ),
-            ));
-            continue;
-        };
-        keys.terrain.remove(&q);
-        for (t, kt) in made {
-            keys.terrain.entry(t).or_insert(kt);
-        }
-        keys.terrain_lo.entry(q.clone()).or_insert(lo);
-        if b != latest {
-            out.older.push((q.clone(), b.unwrap_or_default()));
-        }
-        out.terrain.push(q);
-    }
-    let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
-    for (q, k) in sz3 {
-        if old_s.get(&q) != Some(&k) {
-            keys.slope.remove(&q);
-            out.stale.push((format!("slope {q}"), "stale under the old scheme: its pieces made".into()));
-            continue;
-        }
-        let Some(u) = TileId::parse(&q) else { continue };
-        // (A tile in the z3 tile's packs: its lo pack, or the hi pack of one of its z6 tiles.)
-        let ours = |z: u8, x: u32, y: u32| z >= 3 && (x >> (z - 3), y >> (z - 3)) == (u.x, u.y);
-        // (Every z6 tile's reads told first: one that can't be leaves the record for the next pass.
-        // Whether a z6 tile reads outside its z3 tile, and the first such tile, kept with the packs it
-        // read: a plan works it out again only when they change.)
-        let mut reads: Vec<(String, Option<String>, String)> = Vec::new();
-        let mut unread = None;
-        for (t, kt) in tt.slope.iter().filter(|(t, _)| build::z3_of(t).as_deref() == Some(q.as_str())) {
-            let p = TileId::parse(t).unwrap();
-            let outside = tiles.memo(&format!("slope-outside {t}"), &build::slope_piece_from((p.x, p.y), m), || {
-                let r = build::slope_piece_reads((p.x, p.y), m, tiles)?;
-                Ok(match r.iter().find(|x| !x.is_some_and(|(z, x, y, _)| ours(z, x, y))) {
-                    None => String::new(),
-                    Some(Some((z, x, y, _))) if *z <= 2 => format!("reads the terrain's root ({z}/{x}/{y})"),
-                    Some(Some((z, x, y, _))) => format!("reads another z3 tile's terrain ({z}/{x}/{y})"),
-                    Some(None) => "reads where there's no terrain tile".to_string(),
-                })
-            });
-            match outside {
-                Ok(why) => reads.push((t.clone(), kt.clone(), why)),
-                Err(e) => {
-                    unread = Some(e.0);
-                    break;
-                }
-            }
-        }
-        if let Some(e) = unread {
-            out.unknown.push((q, e));
-            continue;
-        }
-        keys.slope.remove(&q);
-        let mut left = 0;
-        for (t, kt, why) in reads {
-            if why.is_empty() {
-                if let Some(kt) = kt {
-                    keys.slope.entry(t).or_insert(kt);
-                }
-            } else {
-                left += 1;
-                out.slope_left.push((t, why));
-            }
-        }
-        if left == 0 {
-            keys.slope_lo.entry(q.clone()).or_insert_with(|| {
-                build::slope_lo_key((u.x, u.y), &none_mids(&q), get(&format!("layers/terrain/lo/3-{}-{}", u.x, u.y)))
-            });
-        }
-        out.slope.push(q);
-    }
-    out
+) -> Rekeyed {
+    rekey(keys, cov, m, tiles, times)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::build::tests::{did, e7box, heritage_chain_done, heritage_done, tiles_for, unit_inputs};
-    use crate::agent::build::{Publish, Work};
-    use crate::agent::recipes::Recipe;
-    use crate::reach::{LongWay, Reach};
 
-    /// The files' times as a test has them: whether a z6 tile's terrain hi pack is older than its
-    /// z3 tile's lo pack, whether a z3 tile's tree packs are the trees program's.
-    struct Stub<F, G>(F, G);
+    /// The files' times as a test has them: whether a z3 tile's tree packs are the trees program's.
+    struct Stub<G>(G);
 
-    impl<F: Fn(u32, u32) -> Option<bool>, G: Fn(u32, u32) -> Option<bool>> Times for Stub<F, G> {
-        fn hi_older(&self, _: &BTreeMap<String, String>, x: u32, y: u32) -> Option<bool> {
-            (self.0)(x, y)
-        }
+    impl<G: Fn(u32, u32) -> Option<bool>> Times for Stub<G> {
         fn trees_by_program(&self, _: &BTreeMap<String, String>, x: u32, y: u32) -> Option<bool> {
-            (self.1)(x, y)
+            (self.0)(x, y)
         }
     }
 
     type At = fn(u32, u32) -> Option<bool>;
 
-    /// No hi pack older than its z3 tile's lo pack; every z3 tile's tree packs the program's.
-    const NONE_OLDER: Stub<At, At> = Stub(|_, _| Some(false), |_, _| Some(true));
+    /// Every z3 tile's tree packs the program's.
+    const NONE_OLDER: Stub<At> = Stub(|_, _| Some(true));
+    use crate::agent::build;
+    use crate::agent::build::tests::{did, e7box, heritage_chain_done, heritage_done, tiles_for, unit_inputs};
+    use crate::agent::build::{Publish, Work};
+    use crate::agent::recipes::Recipe;
+    use crate::reach::{Reach, Reaches};
 
     /// Iceland: regions a (Reykjavik, z6 tile 6/28/17) and b (Akureyri and Egilsstaðir: 6/28/16,
     /// 6/29/16), all in z3 tile 3/3/2; the heritage sites and the terrain done (its lo pack, and the hi
@@ -1233,7 +351,9 @@ mod tests {
                 format!("layers/terrain/hi/6-{x}-{y}.2222222222222222.pack"),
             );
         }
-        done.record("terrain", &v1::terrain_slope_targets(&c, &m).0);
+        let tt = build::terrain_slope_targets(&c, &m, &tiles_for(&m));
+        done.record("terrain", &tt.terrain);
+        done.record("terrain-lo", &tt.terrain_lo);
         loop {
             let w = plan(&c, &reach, &m, &done, &tiles_for(&m)).work;
             match w[0].step.as_str() {
@@ -1242,14 +362,14 @@ mod tests {
             }
         }
         heritage_chain_done(&c, &m, &mut done, "d");
-        for (u, k) in v1::unit_keys(&c, "d", &m, Some(&reach), &BTreeMap::new(), crate::buildtiles::TEST_RELEASE) {
+        for (u, k) in build::tests::ukeys(&c, "d", &m, Some(&reach)) {
             done.record("unit", &[(u.slash(), k)]);
             m.insert(format!("base/{}", u.dash()), format!("base/{}.6666666666666666.base", u.dash()));
         }
         (c, reach, m, done)
     }
 
-    /// The plan, with the records as read (terrain's and slope's derived: `derive`).
+    /// The plan.
     fn plan(
         c: &Coverage,
         reach: &Reaches,
@@ -1257,13 +377,11 @@ mod tests {
         done: &Keys,
         tiles: &TerrainTiles,
     ) -> build::Plan {
-        let mut done = done.clone();
-        derive(&mut done, c, m, tiles);
         build::plan(
             c,
             "d",
             m,
-            &done,
+            done,
             &BTreeMap::new(),
             Some(reach),
             tiles,
@@ -1277,374 +395,6 @@ mod tests {
                 way: Default::default(),
             },
         )
-    }
-
-    /// The z6 tiles the plan builds.
-    fn units(p: &build::Plan) -> Vec<String> {
-        p.work.iter().filter(|w| w.step == "unit").flat_map(|w: &Work| w.targets.iter().map(|t| t.0.clone())).collect()
-    }
-
-    /// Terrain's and slope's work (build::terrain_work) for the records as read.
-    fn tw(c: &Coverage, m: &BTreeMap<String, String>, done: &Keys) -> build::TerrainWork {
-        let tiles = tiles_for(m);
-        let mut read = done.clone();
-        derive(&mut read, c, m, &tiles);
-        build::terrain_work(&build::terrain_slope_targets(c, m, &tiles), m, &read)
-    }
-
-    fn names(v: &[(String, String)]) -> Vec<String> {
-        v.iter().map(|t| t.0.clone()).collect()
-    }
-
-    #[test]
-    fn terrain_current_under_the_old_scheme_is_read_as_its_pieces_and_assembly() {
-        let (c, _, m, done) = iceland(&|_| {});
-        let tiles = tiles_for(&m);
-        let tt = build::terrain_slope_targets(&c, &m, &tiles);
-        let pieces = names(&tt.terrain);
-        assert!(pieces.len() >= 3, "{pieces:?}");
-        let mut read = done.clone();
-        let d = derive(&mut read, &c, &m, &tiles);
-        assert_eq!(d.terrain, ["3/3/2"]);
-        assert!(!read.terrain.contains_key("3/3/2"));
-        assert!(tt.terrain.iter().all(|(t, k)| read.terrain.get(t) == Some(k)));
-        // Nothing to make: the assembly current with its mids "-", its z6 tiles' mids made in idle
-        // time.
-        let w = tw(&c, &m, &done);
-        assert!(w.terrain.is_empty() && w.terrain_lo.is_empty() && w.terrain_left.is_empty(), "{w:?}");
-        assert_eq!(w.backfill.iter().find(|b| b.step == "terrain").map(|b| names(&b.targets)), Some(pieces.clone()));
-        // Twice is once.
-        let mut twice = read.clone();
-        assert_eq!(derive(&mut twice, &c, &m, &tiles), Derived::default());
-        assert_eq!(twice, read);
-        // A record of the new scheme wins over what's derived: a z6 tile recorded under another key
-        // is stale, and every other z6 tile of its z3 tile is made again for its mid, the assembly then.
-        let mut rec = done.clone();
-        rec.terrain.insert(pieces[0].clone(), "0000000000000000".into());
-        let mut r2 = rec.clone();
-        derive(&mut r2, &c, &m, &tiles);
-        assert_eq!(r2.terrain[&pieces[0]], "0000000000000000");
-        let w = tw(&c, &m, &rec);
-        assert_eq!(names(&w.terrain), pieces);
-        assert!(w.terrain_left.contains("3/3/2") && w.terrain_lo.is_empty());
-        // A mid backfilled: the assembly's key names it, so it's stale, and the other z6 tiles' mids
-        // are made for it (not idle work now).
-        let mut m2 = m.clone();
-        let l = crate::terrain_pack::mid_logical(28, 16);
-        m2.insert(l.clone(), format!("{l}.5555555555555555.sect"));
-        let w = tw(&c, &m2, &done);
-        assert_eq!(names(&w.terrain), pieces.iter().filter(|t| *t != "6/28/16").cloned().collect::<Vec<_>>());
-        assert!(w.backfill.iter().all(|b| b.step != "terrain") && w.terrain_lo.is_empty());
-        // Every mid made: the assembly runs.
-        for (x, y) in build::coverage_tiles(&c).into_values().flatten() {
-            let l = crate::terrain_pack::mid_logical(x, y);
-            m2.insert(l.clone(), format!("{l}.5555555555555555.sect"));
-        }
-        let w = tw(&c, &m2, &done);
-        assert!(w.terrain.is_empty() && names(&w.terrain_lo) == ["3/3/2"], "{w:?}");
-        // Stale under the old scheme: passed over, its z6 tiles made.
-        let mut stale = done.clone();
-        stale.terrain.insert("3/3/2".into(), "0000000000000000".into());
-        let mut s2 = stale.clone();
-        let d = derive(&mut s2, &c, &m, &tiles);
-        assert_eq!(d.stale.len(), 1);
-        assert!(s2.terrain.is_empty() && s2.terrain_lo.is_empty());
-        assert_eq!(names(&tw(&c, &m, &stale).terrain), pieces);
-    }
-
-    #[test]
-    fn slope_current_under_the_old_scheme_keeps_its_pieces_that_read_their_area_alone() {
-        let (c, reach, mut m, mut done) = iceland(&|_| {});
-        m.insert("layers/slope/lo/3-3-2".into(), "layers/slope/lo/3-3-2.9999999999999999.pack".into());
-        done.record("slope", &v1::terrain_slope_targets(&c, &m).1);
-        let tiles = tiles_for(&m);
-        let mut read = done.clone();
-        let d = derive(&mut read, &c, &m, &tiles);
-        assert_eq!(d.slope, ["3/3/2"]);
-        // Those on the z3 tile's top row read 3/3/1's terrain (none: no pack there): made again.
-        let left: Vec<&str> = d.slope_left.iter().map(|(t, _)| t.as_str()).collect();
-        let pieces: Vec<(u32, u32)> = build::coverage_tiles(&c).into_values().flatten().collect();
-        let top: Vec<String> = pieces.iter().filter(|p| p.1 == 16).map(|(x, y)| format!("6/{x}/{y}")).collect();
-        assert_eq!(left, top.iter().map(String::as_str).collect::<Vec<_>>(), "{:?}", d.slope_left);
-        assert!(pieces.iter().filter(|p| p.1 != 16).all(|(x, y)| read.slope.contains_key(&format!("6/{x}/{y}"))));
-        assert!(!read.slope_lo.contains_key("3/3/2"), "its assembly after them");
-        let p = plan(&c, &reach, &m, &done, &tiles);
-        let slope: Vec<String> = p.work[..p.work.len() - p.backfill.len()]
-            .iter()
-            .filter(|w| w.step == "slope")
-            .flat_map(|w| names(&w.targets))
-            .collect();
-        assert_eq!(slope, top);
-        // The others' mids made in idle time, expected the same.
-        let idle: Vec<String> =
-            p.backfill.iter().filter(|w| w.step == "slope").flat_map(|w| names(&w.targets)).collect();
-        assert_eq!(idle, pieces.iter().filter(|p| p.1 != 16).map(|(x, y)| format!("6/{x}/{y}")).collect::<Vec<_>>());
-        // Twice is once; a record of the new scheme wins.
-        let mut twice = read.clone();
-        assert_eq!(derive(&mut twice, &c, &m, &tiles), Derived::default());
-        assert_eq!(twice, read);
-        let (x, y) = *pieces.iter().find(|p| p.1 != 16).unwrap();
-        let mut rec = done.clone();
-        rec.slope.insert(format!("6/{x}/{y}"), "0000000000000000".into());
-        derive(&mut rec, &c, &m, &tiles);
-        assert_eq!(rec.slope[&format!("6/{x}/{y}")], "0000000000000000");
-    }
-
-    #[test]
-    fn units_current_under_the_old_keys_are_re_keyed_once_and_not_built_again() {
-        let (c, reach, m, mut done) = iceland(&|_| {});
-        let tiles = tiles_for(&m);
-        // Under the new keys as recorded: every z6 tile would be built again.
-        assert_eq!(units(&plan(&c, &reach, &m, &done, &tiles)).len(), 3);
-        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
-        assert_eq!((r.moved.len(), r.left.len(), r.unknown.len(), r.empty.len()), (3, 0, 0, 0), "{r:?}");
-        assert!(r.changed());
-        assert!(units(&plan(&c, &reach, &m, &done, &tiles)).is_empty());
-        // Again: nothing to do, nothing changed.
-        let before = done.clone();
-        let again = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
-        assert_eq!(again, Rekeyed::default());
-        assert!(!again.changed() && done == before);
-        // A late record under the old key (a job an older app ran, merged since): re-keyed.
-        let old = v1::unit_keys(&c, "d", &m, Some(&reach), &BTreeMap::new(), crate::buildtiles::TEST_RELEASE)
-            .into_iter()
-            .find(|(u, _)| u.slash() == "6/28/16")
-            .unwrap()
-            .1;
-        done.record("unit", &[("6/28/16".into(), old)]);
-        assert_eq!(units(&plan(&c, &reach, &m, &done, &tiles)), ["6/28/16"]);
-        assert_eq!(
-            rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER).moved,
-            ["6/28/16"]
-        );
-        assert!(units(&plan(&c, &reach, &m, &done, &tiles)).is_empty());
-        // One stale under the old keys (its key isn't the old scheme's now): left as it is, built.
-        done.record("unit", &[("6/29/16".into(), "0000000000000000".into())]);
-        let before = done.clone();
-        assert!(!rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER).changed());
-        assert_eq!(done, before);
-        assert_eq!(units(&plan(&c, &reach, &m, &done, &tiles)), ["6/29/16"]);
-    }
-
-    #[test]
-    fn at_the_elevation_switch_the_units_one_dataset_meets_are_re_keyed_and_the_others_built() {
-        let (c, reach, m, mut done) = iceland(&|_| {});
-        // The switch: a dataset everywhere, and a finer one over Reykjavik alone.
-        let mut tiles = tiles_for(&m);
-        let index = &m[&crate::inputs::logical(crate::inputs::elevation::UNIT)];
-        tiles.hold_elevation(
-            index,
-            vec![
-                build::tests::dataset("lidar", "l1", Some(vec![[-23.0, 63.0, -21.0, 65.0]])),
-                build::tests::dataset("world", "w1", None),
-            ],
-        );
-        // Each z6 tile built before it (its key the DEM rules' versions'): every key names the datasets now.
-        for u in ["6/28/16", "6/28/17", "6/29/16"] {
-            let unit = TileId::parse(u).unwrap();
-            let (r, piece) = (reach.get(unit).unwrap(), &m[&format!("sources/osm/d/pieces/{}", unit.dash())]);
-            let terrain = build::unit_terrain(unit, r, &m, &tiles).unwrap();
-            done.record(
-                "unit",
-                &[(
-                    u.to_string(),
-                    pre_elevation_unit_key(&c, "d", &m, unit, piece, r, &terrain, crate::buildtiles::TEST_RELEASE),
-                )],
-            );
-        }
-        assert_eq!(units(&plan(&c, &reach, &m, &done, &tiles)).len(), 3);
-        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
-        // (A z6 tile's extent is its tile's and its ways': Reykjavik's and Akureyri's tile, 6/28, meets
-        // the finer dataset's cells.)
-        assert_eq!(r.elevation_moved, ["6/29/16"]);
-        assert_eq!(
-            units(&plan(&c, &reach, &m, &done, &tiles)),
-            ["6/28/16", "6/28/17"],
-            "those the finer dataset meets, built again"
-        );
-        // Again: nothing.
-        assert!(!rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER).changed());
-    }
-
-    #[test]
-    fn at_the_spacings_switch_the_units_spaced_as_before_are_re_keyed_and_the_others_built() {
-        // Reykjavik's tile with a way starting in cell (-22, 64), Akureyri's in (-19, 65), the
-        // east's in (-15, 65): all coarse before (east of 40° W, outside Japan's box).
-        let (c, reach, m, mut done) = iceland(&|r| {
-            for (u, cell) in [("6/28/16", [-22, 64]), ("6/28/17", [-19, 65]), ("6/29/16", [-15, 65])] {
-                r.units.get_mut(u).unwrap().cells = vec![cell];
-            }
-        });
-        // A lidar dataset of 8 m over Reykjavik's cells: fine there now; the world's 30 m.
-        let mut tiles = tiles_for(&m);
-        let index = &m[&crate::inputs::logical(crate::inputs::elevation::UNIT)];
-        let mut lidar = build::tests::dataset("lidar", "l1", Some(vec![[-23.0, 63.0, -21.0, 65.0]]));
-        lidar.0.measured.resolution = 8.0;
-        let ds = vec![lidar, build::tests::dataset("world", "w1", None)];
-        tiles.hold_elevation(index, ds.clone());
-        let release = crate::buildtiles::TEST_RELEASE;
-        let sources = tiles.keyed(&m).unwrap().unit.clone();
-        // Each z6 tile built before it (its key without the spacing's line).
-        for u in ["6/28/16", "6/28/17", "6/29/16"] {
-            let unit = TileId::parse(u).unwrap();
-            let (r, piece) = (reach.get(unit).unwrap(), &m[&format!("sources/osm/d/pieces/{}", unit.dash())]);
-            let terrain = build::unit_terrain(unit, r, &m, &tiles).unwrap();
-            let k = unspaced_unit_key(&c, "d", &m, unit, piece, r, &terrain, &ds, release, sources.as_deref());
-            done.record("unit", &[(u.to_string(), k)]);
-        }
-        assert_eq!(units(&plan(&c, &reach, &m, &done, &tiles)).len(), 3);
-        let saved = done.clone();
-        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
-        assert_eq!(r.spacing_moved, ["6/28/17", "6/29/16"]);
-        // The records as saved (a read's re-keying is never saved), read again once the roadside
-        // buildings' index changed since that comparison: stale, not re-keyed.
-        let mut m2 = m.clone();
-        m2.insert(crate::buildtiles::index_logical(release), "buildings/index.9898989898989898.json".into());
-        let mut again = saved.clone();
-        let r2 = rekey(&mut again, &c, "d", &m2, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
-        assert!(r2.spacing_moved.is_empty(), "{r2:?}");
-        assert_eq!(again.unit, saved.unit);
-        assert_eq!(units(&plan(&c, &reach, &m, &done, &tiles)), ["6/28/16"], "the one respaced, built again");
-        // Again: nothing.
-        assert!(!rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER).changed());
-    }
-
-    #[test]
-    fn the_spacing_before_is_whole_in_a_cell_or_split() {
-        assert_eq!(Before::cell_fine([-41, 50]), Some(true));
-        assert_eq!(Before::cell_fine([-40, 50]), Some(false));
-        assert_eq!(Before::cell_fine([139, 35]), Some(true));
-        assert_eq!(Before::cell_fine([153, 35]), Some(true));
-        assert_eq!(Before::cell_fine([154, 35]), Some(false));
-        assert_eq!(Before::cell_fine([139, 19]), Some(false));
-        assert_eq!(Before::cell_fine([122, 35]), None);
-        assert_eq!(Before::cell_fine([140, 46]), None);
-        assert_eq!(Before::cell_fine([122, 50]), Some(false));
-    }
-
-    #[test]
-    fn a_unit_reading_tiles_its_old_key_didnt_pin_is_built_again() {
-        // Reykjavik's z6 tile owns a road east along 64.1° N to 10° W, past its tile + 30 km, whose far
-        // end reads the z4 tile; and its owned box reaches into 6/27/18, which has a stale hi pack
-        // (no z6 tile: the coverage is far) holding none of the tiles there, so it reads z8–z6 tiles.
-        let road = |r: &mut Reaches| {
-            r.units.get_mut("6/28/17").unwrap().long = vec![LongWay {
-                owned: true,
-                ferry: false,
-                verts: vec![[-218_000_000, 641_000_000], [-100_000_000, 641_000_000]],
-            }]
-        };
-        let (c, reach, m, mut done) = iceland(&road);
-        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles_for(&m), &NONE_OLDER);
-        assert_eq!(r.left.iter().map(|(u, _)| u.as_str()).collect::<Vec<_>>(), ["6/28/17"]);
-        assert!(r.left[0].1.len() == 1 && r.left[0].1[0].starts_with("zoomed-out tiles (z5–z4)"), "{:?}", r.left);
-        assert!(!done.unit.contains_key("6/28/17"));
-        assert_eq!(r.moved.len(), 2);
-        assert_eq!(units(&plan(&c, &reach, &m, &done, &tiles_for(&m))), ["6/28/17"]);
-        // Without outputs (none of its ways kept), whatever it reads: re-keyed.
-        let (c, reach, mut m, mut done) = iceland(&road);
-        m.remove("base/6-28-17");
-        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles_for(&m), &NONE_OLDER);
-        assert_eq!((r.moved.len(), r.empty.clone(), r.left.len()), (3, vec!["6/28/17".to_string()], 0));
-        // The stale hi pack.
-        let into = |r: &mut Reaches| r.units.get_mut("6/28/17").unwrap().owned = Some(e7box(-22.6, 61.5, -21.7, 64.16));
-        let (c, reach, mut m, mut done) = iceland(&into);
-        assert!(!build::coverage_tiles(&c).into_values().flatten().any(|t| t == (27, 18)));
-        m.insert("layers/terrain/hi/6-27-18".into(), "layers/terrain/hi/6-27-18.3333333333333333.pack".into());
-        let mut tiles = tiles_for(&m);
-        tiles.hold("layers/terrain/hi/6-27-18.3333333333333333.pack", [(12, 1760, 1180, 1)]);
-        // (Its old key names the stale hi pack: recorded so, as it was built.)
-        let old = v1::unit_keys(&c, "d", &m, Some(&reach), &BTreeMap::new(), crate::buildtiles::TEST_RELEASE)
-            .into_iter()
-            .find(|(u, _)| u.slash() == "6/28/17")
-            .unwrap()
-            .1;
-        done.record("unit", &[("6/28/17".into(), old)]);
-        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
-        assert_eq!(r.left.iter().map(|(u, _)| u.as_str()).collect::<Vec<_>>(), ["6/28/17"]);
-        assert!(r.left[0].1[0].starts_with("z8–z6 tiles of a z6 tile whose hi pack is stale"), "{:?}", r.left);
-    }
-
-    #[test]
-    fn a_piece_whose_area_is_to_be_made_again_doesnt_pin_its_zoomed_out_tiles() {
-        let (c, reach, m, mut done) = iceland(&|_| {});
-        // Akureyri's z6 tile's hi pack without the tiles under its owned box: it reads z8–z6 there.
-        let mut tiles = tiles_for(&m);
-        tiles.hold("layers/terrain/hi/6-28-16.2222222222222222.pack", []);
-        let mut stale = done.clone();
-        stale.terrain.insert("3/3/2".into(), "0000000000000000".into());
-        let r = rekey(&mut stale, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
-        assert!(
-            r.left.iter().any(|(u, why)| u == "6/28/16"
-                && why[0].starts_with("z8–z6 tiles of a z3 tile whose terrain is to be made again")),
-            "{r:?}"
-        );
-        // Its terrain current: pinned by the hi pack.
-        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
-        assert!(r.left.is_empty() && r.moved.len() == 3, "{r:?}");
-    }
-
-    #[test]
-    fn a_piece_whose_hi_pack_an_earlier_run_left_doesnt_pin_its_zoomed_out_tiles() {
-        // Akureyri's z6 tile, its terrain current, its hi pack without the tiles under its owned box
-        // (it reads z8–z6 there), and older than its z3 tile's lo pack: its z3 tile's last run made no hi
-        // tiles for it, and its z8–z6 from the raw tiles alone.
-        let (c, reach, m, done) = iceland(&|_| {});
-        let mut tiles = tiles_for(&m);
-        tiles.hold("layers/terrain/hi/6-28-16.2222222222222222.pack", []);
-        let akureyri = |x: u32, y: u32| Some((x, y) == (28, 16));
-        let r = rekey(
-            &mut done.clone(),
-            &c,
-            "d",
-            &m,
-            Some(&reach),
-            &BTreeMap::new(),
-            &tiles,
-            &Stub(akureyri, NONE_OLDER.1),
-        );
-        assert_eq!(r.left.iter().map(|(u, _)| u.as_str()).collect::<Vec<_>>(), ["6/28/16"]);
-        assert!(
-            r.left[0].1[0].starts_with("z8–z6 tiles of a z6 tile whose hi pack is stale (an earlier run left it"),
-            "{:?}",
-            r.left
-        );
-        // Its files' times not readable now: left as it is, for the next pass.
-        let unknown = |x: u32, y: u32| if (x, y) == (28, 16) { None } else { Some(false) };
-        let mut kept = done.clone();
-        let r = rekey(&mut kept, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &Stub(unknown, NONE_OLDER.1));
-        assert_eq!(r.unknown.iter().map(|(u, _)| u.as_str()).collect::<Vec<_>>(), ["6/28/16"]);
-        assert_eq!(kept.unit.get("6/28/16"), done.unit.get("6/28/16"));
-    }
-
-    #[test]
-    fn a_hi_pack_older_than_its_areas_lo_pack_by_the_files_times() {
-        let d = tempfile::tempdir().unwrap();
-        let m: BTreeMap<String, String> = [
-            ("layers/terrain/hi/6-28-16", "a"),
-            ("layers/terrain/hi/6-29-16", "b"),
-            ("layers/terrain/lo/3-3-2", "c"),
-            ("layers/terrain/hi/6-30-16", "missing"),
-        ]
-        .into_iter()
-        .map(|(l, n)| (l.to_string(), format!("{l}.{n}.pack")))
-        .collect();
-        let now = std::time::SystemTime::now();
-        let at = |l: &str, secs_ago: u64| {
-            let p = d.path().join(&m[l]);
-            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-            let f = std::fs::File::create(&p).unwrap();
-            f.set_modified(now - std::time::Duration::from_secs(secs_ago)).unwrap();
-        };
-        // The lo pack written last; 6/28/16's hi pack 20 minutes before it (the same run), 6/29/16's
-        // three hours before (an earlier run's).
-        at("layers/terrain/lo/3-3-2", 0);
-        at("layers/terrain/hi/6-28-16", 20 * 60);
-        at("layers/terrain/hi/6-29-16", 3 * 3600);
-        let t = FileTimes::new(d.path());
-        assert_eq!((t.hi_older(&m, 28, 16), t.hi_older(&m, 29, 16)), (Some(false), Some(true)));
-        // One not on the NAS: can't be told; none named: not older.
-        assert_eq!((t.hi_older(&m, 30, 16), t.hi_older(&m, 31, 16)), (None, Some(false)));
     }
 
     #[test]
@@ -1671,7 +421,7 @@ mod tests {
 
     #[test]
     fn tree_cover_current_under_the_old_scheme_is_re_keyed_as_its_pieces_once() {
-        let (c, reach, mut m, mut done) = iceland(&|_| {});
+        let (c, _, mut m, mut done) = iceland(&|_| {});
         let tiles = tiles_for(&m);
         // Iceland's z3 tile's whole run recorded under the old scheme, its packs in the manifest.
         m.insert("layers/trees-cover/lo/3-3-2".into(), "layers/trees-cover/lo/3-3-2.5555555555555555.pack".into());
@@ -1685,7 +435,7 @@ mod tests {
         // Its packs the trees program's: each z6 tile the coverage meets and the assembly recorded
         // under their keys now, its z3 record gone; nothing stale, the z6 tiles' mids made in idle
         // time.
-        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
+        let r = rekey(&mut done, &c, &m, &tiles, &NONE_OLDER);
         assert_eq!(
             (r.trees_moved.clone(), r.trees_dropped.len(), r.trees_unknown.len()),
             (vec!["3/3/2".to_string()], 0, 0)
@@ -1697,14 +447,11 @@ mod tests {
         assert_eq!(w.backfill.len(), 3);
         // Again: nothing to do, nothing changed.
         let before = done.clone();
-        let again = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
+        let again = rekey(&mut done, &c, &m, &tiles, &NONE_OLDER);
         assert!(!again.changed() && done == before);
         // A late record under the old scheme (a lease of an older app's, merged since): re-keyed.
         done.record("trees", &old);
-        assert_eq!(
-            rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER).trees_moved,
-            ["3/3/2"]
-        );
+        assert_eq!(rekey(&mut done, &c, &m, &tiles, &NONE_OLDER).trees_moved, ["3/3/2"]);
         assert_eq!(done, before);
         // Its packs trees.py's: its record goes, the z6 tiles and assembly made again.
         let only = |k: &[(String, String)]| {
@@ -1713,16 +460,7 @@ mod tests {
             keys
         };
         let mut py = only(&old);
-        let r = rekey(
-            &mut py,
-            &c,
-            "d",
-            &m,
-            Some(&reach),
-            &BTreeMap::new(),
-            &tiles,
-            &Stub(NONE_OLDER.0, |_, _| Some(false)),
-        );
+        let r = rekey(&mut py, &c, &m, &tiles, &Stub(|_, _| Some(false)));
         assert!(
             r.trees_dropped.len() == 1
                 && r.trees_dropped[0].1.contains("are trees.py's")
@@ -1732,24 +470,23 @@ mod tests {
         );
         // Their times not readable now: kept, for the next pass.
         let mut unknown = only(&old);
-        let r =
-            rekey(&mut unknown, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &Stub(NONE_OLDER.0, |_, _| None));
+        let r = rekey(&mut unknown, &c, &m, &tiles, &Stub(|_, _| None));
         assert!(r.trees_unknown.len() == 1 && !r.changed() && unknown == only(&old), "{r:?}");
         // Stale under the old scheme: its record goes (its extracts made again either way).
         let mut stale = only(&[("3/3/2".to_string(), "0000000000000000".to_string())]);
-        let r = rekey(&mut stale, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
+        let r = rekey(&mut stale, &c, &m, &tiles, &NONE_OLDER);
         assert!(r.trees_dropped[0].1.starts_with("stale") && stale.trees.is_empty(), "{r:?}");
         // "none", current (the coverage gone, the packs not yet dropped): nothing left to build.
         let none = [("3/4/2".to_string(), v1::trees_none("3/4/2"))];
         m.insert("layers/trees-cover/hi/6-33-23".into(), "x".into());
         let mut gone = only(&none);
-        let r = rekey(&mut gone, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
+        let r = rekey(&mut gone, &c, &m, &tiles, &NONE_OLDER);
         assert!(r.trees_dropped[0].1.contains("nothing left to build") && gone.trees.is_empty(), "{r:?}");
     }
 
     #[test]
     fn a_late_whole_runs_record_goes_with_those_of_the_pieces_and_assembly_made_since() {
-        let (c, reach, mut m, mut done) = iceland(&|_| {});
+        let (c, _, mut m, mut done) = iceland(&|_| {});
         let tiles = tiles_for(&m);
         // Since the switch: 3/3/2's z6 tiles made (their mids in the manifest), then its assembly; and
         // a z6 tile of another z3 tile.
@@ -1771,7 +508,7 @@ mod tests {
         // z6 tiles and assembly made since (it wrote over their packs), which are made again; the other
         // z3 tile's z6 tile stays.
         done.record("trees", &[("3/3/2".to_string(), "0000000000000000".to_string())]);
-        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
+        let r = rekey(&mut done, &c, &m, &tiles, &NONE_OLDER);
         assert!(r.trees_dropped.len() == 1 && r.trees_dropped[0].1.contains("its 3 pieces and its assembly"), "{r:?}");
         assert_eq!(
             (done.trees.keys().map(String::as_str).collect::<Vec<_>>(), done.trees_lo.len()),
@@ -1783,10 +520,7 @@ mod tests {
         );
         // Again: nothing to do.
         let before = done.clone();
-        assert!(
-            !rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER).changed()
-                && done == before
-        );
+        assert!(!rekey(&mut done, &c, &m, &tiles, &NONE_OLDER).changed() && done == before);
         // One current under the old scheme, the program's: re-keyed over what was made since, but a
         // z6 tile recorded since under another key (the coverage there otherwise then), or with a mid
         // and no record, is made again: its mid isn't of this coverage.
@@ -1794,7 +528,7 @@ mod tests {
         late.trees.insert("6/28/17".into(), "2222222222222222".into());
         late.trees.remove("6/29/16");
         late.record("trees", &v1::trees_targets(&c, &m));
-        let r = rekey(&mut late, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
+        let r = rekey(&mut late, &c, &m, &tiles, &NONE_OLDER);
         assert_eq!(r.trees_moved, ["3/3/2"]);
         assert_eq!(late.trees.keys().collect::<Vec<_>>(), ["6/28/16", "6/33/22"]);
         assert_eq!(
@@ -1834,15 +568,6 @@ mod tests {
         );
         // None at all: none to differ. One not on the NAS: can't be told.
         assert_eq!((t.trees_by_program(&m, 0, 0), t.trees_by_program(&m, 1, 2)), (Some(true), None));
-    }
-
-    #[test]
-    fn a_unit_whose_terrain_cant_be_read_now_keeps_its_record() {
-        let (c, reach, m, mut done) = iceland(&|_| {});
-        let before = done.clone();
-        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &TerrainTiles::new(None), &NONE_OLDER);
-        assert_eq!(r.unknown.len(), 3);
-        assert!(!r.changed() && done == before);
     }
 
     // ---- the terrain keyed on its water (2026-10-09) ----------------------------------------------
@@ -1992,76 +717,6 @@ mod tests {
     }
 
     #[test]
-    fn the_switch_reads_the_records_under_their_waters_keys_and_a_new_basemap_makes_where_its_water_changed() {
-        let (c, _, m, mut done) = iceland(&|_| {});
-        let pieces: Vec<(u32, u32)> = build::coverage_tiles(&c).into_values().flatten().collect();
-        let p = pieces[0];
-        let ps = format!("6/{}/{}", p.0, p.1);
-        // The terrain made by its z3 tile's whole run from basemap A (its record: `v1`).
-        let (ma, _) = with_water(&m, Some(A), &[]);
-        done.terrain.clear();
-        done.record("terrain", &v1::terrain_slope_targets(&c, &ma).0);
-        let wa = digests(&c, &Basemap { pin: A.into(), lakes: vec![] });
-        let tw = |m: &BTreeMap<String, String>, tiles: &TerrainTiles, done: &Keys| {
-            let mut read = done.clone();
-            let d = derive(&mut read, &c, m, tiles);
-            (d, build::terrain_work(&build::terrain_slope_targets(&c, m, tiles), m, &read), read)
-        };
-        // Its digests not made yet: the record kept, nothing made, the z3 tile waits.
-        let (m0, t0) = with_water(&m, Some(A), &[]);
-        let (d, w, read) = tw(&m0, &t0, &done);
-        assert_eq!((d.terrain.len(), d.unknown.len()), (0, 1), "{d:?}");
-        assert!(read.terrain.contains_key("3/3/2") && w.terrain.is_empty() && w.terrain_left.contains("3/3/2"));
-        // Made: nothing to make (the switch).
-        let (m1, t1) = with_water(&m, Some(A), &[&wa]);
-        let (d, w, read) = tw(&m1, &t1, &done);
-        assert_eq!(d.terrain, ["3/3/2"]);
-        assert!(
-            d.older.is_empty()
-                && w.terrain_pieces_left.is_empty()
-                && w.terrain_lo_left.is_empty()
-                && w.terrain_left.is_empty(),
-            "{w:?}"
-        );
-        assert!(!read.terrain.contains_key("3/3/2"));
-        // A new basemap B, its water the same: still nothing (the record read by A's digests).
-        let wb = WaterIdx { pin: B.into(), ..wa.clone() };
-        let (m2, t2) = with_water(&m1, Some(B), &[&wa, &wb]);
-        let (d, w, _) = tw(&m2, &t2, &done);
-        assert_eq!(d.older, [("3/3/2".to_string(), A.to_string())]);
-        assert!(w.terrain_pieces_left.is_empty() && w.terrain_lo_left.is_empty(), "{w:?}");
-        // B with a lake in a tile p reads: p alone (and its z3 tile's other z6 tiles for their mids).
-        let pz9 = z9_of(&c, p);
-        let wb = digests(&c, &Basemap { pin: B.into(), lakes: vec![(9, pz9.0, pz9.1, 5)] });
-        let (m3, t3) = with_water(&m1, Some(B), &[&wa, &wb]);
-        let (_, w, _) = tw(&m3, &t3, &done);
-        assert_eq!(w.terrain_pieces_left.iter().cloned().collect::<Vec<_>>(), std::slice::from_ref(&ps));
-        assert!(w.terrain_lo_left.is_empty());
-        // Without A's digests (not kept): every z6 tile made again.
-        let (m4, t4) = with_water(&m, Some(B), &[&wb]);
-        let (d, w, _) = tw(&m4, &t4, &done);
-        assert_eq!(d.stale.len(), 1);
-        assert_eq!(w.terrain_pieces_left.len(), pieces.len());
-        // A z6 tile and an assembly recorded under the keys that named the basemap (an older app's
-        // job, 2026-10-08): read under their keys now, by the digests of the basemap they name.
-        let mut v2rec = Keys::default();
-        let fp = c.fingerprint(build::grown_e7(6, p.0, p.1, 20.0));
-        v2rec.terrain.insert(ps.clone(), v2::terrain_piece_key(p, &fp, A));
-        let mids: Vec<String> =
-            build::coverage_tiles(&c)[&(3, 2)].iter().map(|(x, y)| format!("6/{x}/{y}=-")).collect();
-        v2rec.terrain_lo.insert("3/2/2".into(), "x".into());
-        v2rec.terrain_lo.insert("3/3/2".into(), v2::terrain_lo_key((3, 2), A, &mids));
-        let (d, w, read) = tw(&m2, &t2, &v2rec);
-        assert_eq!(d.water.iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), [ps.as_str(), "3/3/2"]);
-        assert!(!w.terrain_pieces_left.contains(&ps) && !w.terrain_lo_left.contains("3/3/2"), "{w:?}");
-        assert_eq!(read.terrain_lo["3/2/2"], "x");
-        // Twice is once.
-        let mut twice = read.clone();
-        let again = derive(&mut twice, &c, &m2, &t2);
-        assert!(again.water.is_empty() && twice == read);
-    }
-
-    #[test]
     fn a_lake_fill_changes_the_keys_of_the_pieces_it_touches_alone() {
         let (c, _, m, _) = iceland(&|_| {});
         let pieces: Vec<(u32, u32)> = build::coverage_tiles(&c).into_values().flatten().collect();
@@ -2086,14 +741,15 @@ mod tests {
                 let u = TileId::parse(t).unwrap();
                 let k = if u.z == 6 {
                     let fp = c.fingerprint(build::grown_e7(6, u.x, u.y, 20.0));
-                    build::terrain_piece_key((u.x, u.y), &fp, super::super::tiles::TEST_SOURCES, &key(t, &fp))
+                    let ds = tf.terrain_datasets(&mf, crate::stage::tile_box_grown(6, u.x, u.y, 0.0)).unwrap();
+                    build::terrain_piece_key((u.x, u.y), &fp, &ds, &key(t, &fp))
                 } else {
                     let mids: Vec<String> =
                         build::coverage_tiles(&c)[&(u.x, u.y)].iter().map(|(x, y)| format!("6/{x}/{y}=-")).collect();
                     build::terrain_lo_key(
                         (u.x, u.y),
                         &key(t, crate::terrain_water::AREA_FROM),
-                        crate::agent::tiles::TEST_SOURCES,
+                        &tf.terrain_datasets(&mf, crate::stage::tile_box_grown(3, u.x, u.y, 0.0)).unwrap(),
                         &mids,
                     )
                 };

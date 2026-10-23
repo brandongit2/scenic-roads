@@ -44,12 +44,10 @@ from the first (`edit_held`).
   re-keyed rather than built again: a record current under the old scheme gets its new key when
   every input the new key names is pinned by the old key's; else it's built again. Every reader
   re-keys records as it reads them (`agent::rekey::as_read`: the plan, the status, the checklist,
-  the regions' state, `--expect-same`, `scenic-build p5-check`), deriving in memory
-  (`rekey::derive`), a record a job saved always winning. The old schemes (`rekey::v1`, `v2`, and
-  the terrain z6 tiles' keys naming their sources as code had them, `rekey::SOURCES_BEFORE`) are
-  kept for late records. `scenic-build rekey-check`, `scenic-build p5-check terrain`, `scenic-build p5-check trees` and `scenic-build water-key-check`
-  say what they'd do, reading only. Z6 tiles current only by derivation have no mid: it's made in idle
-  time, expected the same (Order).
+  the regions' state, `--expect-same`, `scenic-build p5-check`), a record a job saved always
+  winning. The one old scheme kept is tree cover's before its z6 tiles (`rekey::v1`);
+  `scenic-build p5-check trees` says what it would do, reading only. Z6 tiles re-keyed so have no
+  mid: it's made in idle time, expected the same (Order).
 - **A job** is one step over a run of stale targets: as many as fit a quarter of an hour by their
   measured times (`coord::JOB_S`), a step kept to the lead in one job, so a failure or a new app
   costs one run.

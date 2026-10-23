@@ -240,14 +240,66 @@ struct GeoSet<'a> {
     o: &'a Opts<'a>,
     /// By file: the open file and the level read (None: the server has none).
     opened: Mutex<HashMap<usize, Option<(Arc<Tiff>, usize)>>>,
-    /// By file: its open fill mask (None: it has none).
-    opened_masks: Mutex<HashMap<usize, Option<Arc<Tiff>>>>,
+    /// By file: its fill mask, open and summed up (`Mask`; None: it has none), once.
+    opened_masks: Vec<std::sync::OnceLock<Result<Option<Arc<Mask>>, String>>>,
     /// The files by where their footprints lie, for a plan of many (`FileGrid`).
     grid: Option<FileGrid>,
     /// By file: which of its blocks are known to hold data in every pixel.
     clean: Vec<Clean>,
     /// The decoded blocks of every file, under one budget.
     cache: Arc<Mutex<BlockCache>>,
+}
+
+/// A file's fill mask, open, with which of its blocks hold a void (a value `MASK_FILLED` or more):
+/// a point in a block with none is no void, its pixel not read.
+struct Mask {
+    tiff: Tiff,
+    gt: [f64; 6],
+    width: u32,
+    height: u32,
+    block_w: u32,
+    block_h: u32,
+    across: u32,
+    dirty: Vec<bool>,
+}
+
+impl Mask {
+    /// The mask of `t`, its blocks read once to sum them up.
+    fn of(t: Tiff) -> Result<Mask> {
+        let gt = t.transform(0)?;
+        let img = t.level(0)?.clone();
+        let (across, down) = (img.width.div_ceil(img.block_w), img.height.div_ceil(img.block_h));
+        let mut dirty = Vec::with_capacity((across * down) as usize);
+        for by in 0..down {
+            for bx in 0..across {
+                let b = t.block(0, bx, by)?;
+                let any = (0..b.height).any(|y| (0..b.width).any(|x| b.f32_at(x, y) >= super::declared::MASK_FILLED));
+                dirty.push(any);
+            }
+        }
+        Ok(Mask {
+            tiff: t,
+            gt,
+            width: img.width,
+            height: img.height,
+            block_w: img.block_w,
+            block_h: img.block_h,
+            across,
+            dirty,
+        })
+    }
+
+    fn masked(&self, x: f64, y: f64) -> Result<bool> {
+        let (c, r) = (((x - self.gt[0]) / self.gt[1]).floor(), ((y - self.gt[3]) / self.gt[5]).floor());
+        if !(c >= 0.0 && r >= 0.0 && c < self.width as f64 && r < self.height as f64) {
+            return Ok(false);
+        }
+        let (c, r) = (c as u32, r as u32);
+        if !self.dirty[((r / self.block_h) * self.across + c / self.block_w) as usize] {
+            return Ok(false);
+        }
+        Ok(self.tiff.pixel(0, c, r)? >= super::declared::MASK_FILLED)
+    }
 }
 
 /// A plan's files by where their footprints lie, for a plan of many (a terrain's base over a z3
@@ -288,6 +340,13 @@ impl FileGrid {
                 }
             }
         }
+        // (Each square's list with the files everywhere merged in, in the plan's order, once.)
+        let every = g.everywhere.clone();
+        for v in g.squares.values_mut() {
+            v.extend(&every);
+            v.sort_unstable();
+            v.dedup();
+        }
         g
     }
 
@@ -296,15 +355,11 @@ impl FileGrid {
     }
 
     /// The files whose footprint may hold (x, y), in the plan's order.
-    fn near(&self, x: f64, y: f64) -> Vec<usize> {
+    fn near(&self, x: f64, y: f64) -> &[usize] {
         if !(x.is_finite() && y.is_finite()) {
-            return Vec::new();
+            return &[];
         }
-        let mut v: Vec<usize> = self.squares.get(&self.square(x, y)).cloned().unwrap_or_default();
-        v.extend(&self.everywhere);
-        v.sort_unstable();
-        v.dedup();
-        v
+        self.squares.get(&self.square(x, y)).map_or(&self.everywhere, Vec::as_slice)
     }
 }
 
@@ -322,35 +377,35 @@ impl GeoSet<'_> {
         }
     }
 
-    /// Whether file `k` has a fill mask.
-    fn has_mask(&self, k: usize) -> bool {
-        self.masks.get(k).is_some_and(Option::is_some)
+    /// File `k`'s fill mask, open and summed up once (None: it has none).
+    fn mask(&self, k: usize) -> Result<Option<Arc<Mask>>> {
+        let Some(Some(url)) = self.masks.get(k) else { return Ok(None) };
+        self.opened_masks[k]
+            .get_or_init(|| {
+                (|| -> Result<Option<Arc<Mask>>> {
+                    let src = self
+                        .source(url)?
+                        .with_context(|| format!("{}: its fill mask {url} isn't on the server", self.id))?;
+                    let id = FILE_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let t = Tiff::open(src).with_context(|| url.clone())?.with_shared_cache(id, self.cache.clone());
+                    Ok(Some(Arc::new(Mask::of(t).with_context(|| url.clone())?)))
+                })()
+                .map_err(|e| format!("{e:#}"))
+            })
+            .clone()
+            .map_err(anyhow::Error::msg)
     }
 
-    /// File `k`'s fill mask, open (None: it has none).
-    fn mask(&self, k: usize) -> Result<Option<Arc<Tiff>>> {
-        let Some(Some(url)) = self.masks.get(k) else { return Ok(None) };
-        if let Some(t) = self.opened_masks.lock().unwrap().get(&k) {
-            return Ok(t.clone());
-        }
-        let src = self.source(url)?.with_context(|| format!("{}: its fill mask {url} isn't on the server", self.id))?;
-        let id = FILE_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let t = Some(Arc::new(Tiff::open(src).with_context(|| url.clone())?.with_shared_cache(id, self.cache.clone())));
-        self.opened_masks.lock().unwrap().insert(k, t.clone());
-        Ok(t)
+    /// Whether file `k` has voids by its fill mask anywhere (a mask with none counts as none).
+    fn has_voids(&self, k: usize) -> Result<bool> {
+        Ok(self.mask(k)?.is_some_and(|m| m.dirty.iter().any(|&d| d)))
     }
 
     /// Whether native point (x, y) is a void by file `k`'s fill mask (its nearest pixel there
-    /// `MASK_FILLED` or more); false without a mask, or outside it.
+    /// `MASK_FILLED` or more); false without a mask, outside it, or in a block of it with none.
     fn masked(&self, k: usize, x: f64, y: f64) -> Result<bool> {
         let Some(m) = self.mask(k)? else { return Ok(false) };
-        let gt = m.transform(0)?;
-        let img = m.level(0)?;
-        let (c, r) = (((x - gt[0]) / gt[1]).floor(), ((y - gt[3]) / gt[5]).floor());
-        if !(c >= 0.0 && r >= 0.0 && c < img.width as f64 && r < img.height as f64) {
-            return Ok(false);
-        }
-        Ok(m.pixel(0, c as u32, r as u32)? >= super::declared::MASK_FILLED)
+        m.masked(x, y)
     }
 
     fn open(&self, k: usize) -> Result<Option<(Arc<Tiff>, usize)>> {
@@ -376,7 +431,7 @@ impl GeoSet<'_> {
     fn holding(&self, x: f64, y: f64) -> impl Iterator<Item = usize> + '_ {
         // (Among the grid's few where it has one, else every file.)
         let (near, all) = match &self.grid {
-            Some(g) => (Some(g.near(x, y).into_iter()), None),
+            Some(g) => (Some(g.near(x, y).iter().copied()), None),
             None => (None, Some(0..self.files.len())),
         };
         near.into_iter()
@@ -402,8 +457,8 @@ impl GeoSet<'_> {
             }
             let (xs, ys): (Vec<f64>, Vec<f64>) = mine.iter().map(|&j| (x[sel[j] as usize], y[sel[j] as usize])).unzip();
             let Some((t, level)) = self.open(k)? else { continue };
-            // (A file with a fill mask: no block of it is known to hold data in every pixel.)
-            let has_mask = self.has_mask(k);
+            // (A file whose fill mask has voids: no block of it is known to hold data in every pixel.)
+            let has_mask = self.has_voids(k)?;
             let clean = (!has_mask).then(|| &self.clean[k]);
             let v = sample_raster_noting(&t, level, &xs, &ys, self.o.pool, clean)
                 .with_context(|| self.files[k].0.clone())?;
@@ -500,7 +555,7 @@ impl GeoSet<'_> {
             let (c0, r0) = (cf.floor() as i64, rf.floor() as i64);
             let win = [c0 - rx, c0 + 1 + rx, r0 - ry, r0 + 1 + ry];
             let [cs, ce, rs, re] = win;
-            if !self.has_mask(k)
+            if !self.has_voids(k)?
                 && cs >= 0
                 && rs >= 0
                 && ce < w
@@ -1210,7 +1265,7 @@ impl<'a> Set<'a> {
                     store,
                     o,
                     opened: Mutex::new(HashMap::new()),
-                    opened_masks: Mutex::new(HashMap::new()),
+                    opened_masks: (0..files.len()).map(|_| std::sync::OnceLock::new()).collect(),
                     grid: (files.len() > FileGrid::FROM).then(|| FileGrid::of(files)),
                     clean: (0..files.len()).map(|_| Clean::default()).collect(),
                     cache: cache.clone(),
@@ -1407,20 +1462,31 @@ pub struct Sampler<'a> {
     sets: Vec<Set<'a>>,
     grids: super::geoid::Grids<'a>,
     memo: Arc<TileMemo>,
+    cache: Arc<Mutex<BlockCache>>,
 }
 
 impl<'a> Sampler<'a> {
     pub fn new(plan: &'a Plan, o: &'a Opts<'a>) -> Result<Sampler<'a>> {
-        Self::with_memo(plan, o, Arc::new(TileMemo::new(TILE_MEMO_BYTES)))
+        Self::with_memo(
+            plan,
+            o,
+            Arc::new(TileMemo::new(TILE_MEMO_BYTES)),
+            Arc::new(Mutex::new(BlockCache::new(CACHE_BYTES))),
+        )
     }
 
-    /// `new`, sharing `other`'s fetched tiles: a pyramid both read is fetched once.
+    /// `new`, sharing `other`'s fetched tiles and decoded blocks: a pyramid both read is fetched
+    /// once, and both hold one cache's worth of blocks, not two.
     pub fn sharing(plan: &'a Plan, o: &'a Opts<'a>, other: &Sampler) -> Result<Sampler<'a>> {
-        Self::with_memo(plan, o, other.memo.clone())
+        Self::with_memo(plan, o, other.memo.clone(), other.cache.clone())
     }
 
-    fn with_memo(plan: &'a Plan, o: &'a Opts<'a>, memo: Arc<TileMemo>) -> Result<Sampler<'a>> {
-        let cache = Arc::new(Mutex::new(BlockCache::new(CACHE_BYTES)));
+    fn with_memo(
+        plan: &'a Plan,
+        o: &'a Opts<'a>,
+        memo: Arc<TileMemo>,
+        cache: Arc<Mutex<BlockCache>>,
+    ) -> Result<Sampler<'a>> {
         Ok(Sampler {
             plan,
             o,
@@ -1428,6 +1494,7 @@ impl<'a> Sampler<'a> {
             sets: plan.datasets.iter().map(|d| Set::new(d, o, &cache, &memo)).collect::<Result<_>>()?,
             grids: super::geoid::Grids::new(o),
             memo,
+            cache,
         })
     }
 

@@ -1277,14 +1277,6 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   - **Keys:** each z6 tile's reach records the cells its ways start in (`Reach::cells`); its key
     names those of them that are fine (`Fine::key`), so a dataset added, dropped or measured
     again rebuilds just the z6 tiles with a way starting where the spacing changes.
-  - **Re-keyed** (`agent::rekey::rekey_spacing`): the spacing was 8 m west of 40° W and in a box
-    over Japan, 15 m elsewhere (`rekey::Before`). A z6 tile current under its key from before whose
-    every cell is wholly fine or wholly coarse under that rule and the same now is recorded under
-    its key now: `extract` puts the same points. The others (the z6 tiles of Mexico, Central and
-    South America, the Caribbean, Greenland, French Guiana, the Northwestern Hawaiian Islands and
-    the parts of Canada and Alaska without fine data, which go to 15 m; Guam and the western
-    Aleutians, which go to 8 m; and any unit with a way starting in a cell the rule split, at 122.5° E or
-    46.5° N) are built again.
 - NRCan's tile squares, the HRDEM index producer's input, are `producers/elevation/hrdem-squares.geojson`.
 - **The 1 m datasets** (#594), staged in `producers/elevation/1m/` and in the drop box: NRCan's
   HRDEM 1 m mosaic (`hrdem-1m`: EPSG:3979, the 2 m mosaic's 56 squares, `indexes.py hrdem --res 1`)
@@ -1306,14 +1298,6 @@ for the lidar), the terrain at its full resolution past z12: the same dataset, r
 - **Keys:** a terrain target names the datasets meeting it by their lines, as the roads' keys do
   (`agent::tiles::TerrainTiles::terrain_datasets`); while they can't be read its key is unknown
   and the terrain waits.
-- **The rollout:** first `scenic-build store-fetch glo30 --index <the drop box's glo30-tiles.geojson>`
-  fills GLO-30's store (`sources/fetched/glo30/` holds the tiles north of 60°N already); then, together,
-  the app that reads one pool is published and `glo30.toml` and `terrarium.toml` replace the drop
-  box's (no `terrain` field, their ranks and codes), with `fabdem.toml`, `fabdem-tiles.geojson` and
-  `mrdem.toml` taken out of it. The app reads no version accepted from before (the terrain's
-  declarations then had no `code`: `declared::accepted` refuses it), so the elevations and the
-  terrain wait until the pool's version is accepted; then every z6 tile's elevations and the
-  terrain are built again. FABDEM's store (`sources/fetched/fabdem/`) is deleted after.
 
 ### 6.9 The remaining sources
 

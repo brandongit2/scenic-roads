@@ -958,7 +958,7 @@ fn many_files_are_found_by_their_grid_as_by_a_scan() {
         (0..files.len()).filter(|&k| files[k].1.is_none_or(|b| in_box(&b, x, y))).collect()
     };
     let grid = |x: f64, y: f64| -> Vec<usize> {
-        g.near(x, y).into_iter().filter(|&k| files[k].1.is_none_or(|b| in_box(&b, x, y))).collect()
+        g.near(x, y).iter().copied().filter(|&k| files[k].1.is_none_or(|b| in_box(&b, x, y))).collect()
     };
     for (x, y) in [(0.5, 45.5), (0.0, 46.0), (1.0, 45.0), (-10.0, 40.5), (9.99, 49.99), (50.0, 0.0), (-0.0, 40.0)] {
         assert_eq!(grid(x, y), scan(x, y), "({x}, {y})");

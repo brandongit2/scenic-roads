@@ -43,8 +43,7 @@ pub struct TerrainTiles {
     held: HashMap<String, Held>,
     /// The packs the last load couldn't read, by content name: why.
     unread: BTreeMap<String, String>,
-    /// Where the indexes are kept (None: read into memory only, as by `scenic-build rekey-check`,
-    /// which writes nothing).
+    /// Where the indexes are kept (None: read into memory only).
     dir: Option<PathBuf>,
     /// Values worked out from the tiles, each kept with what it was worked out from (`memo`): a
     /// z6 tile's terrain digest (build::unit_terrain), by z6 tile. Shared by the copies, so a count
@@ -73,10 +72,6 @@ pub struct TerrainTiles {
     /// conversions as the roads': the accepted elevation and sources indexes' content names, and
     /// the sets (None: they can't be read now; the fine terrain's work waits).
     fine: Option<(String, Option<std::sync::Arc<Vec<crate::terrain_fine::FineSet>>>)>,
-    /// (Tests: whether the terrain's keys name the held datasets, `terrain_datasets`; else
-    /// `TEST_SOURCES`, the older schemes' tests' sources.)
-    #[cfg(test)]
-    pub terrain_names_datasets: bool,
 }
 
 /// What the z6 tiles' and tree cover's keys name of the declared sources: the buildings source's
@@ -89,11 +84,10 @@ pub struct KeyedSources {
     pub trees: Option<String>,
 }
 
-/// What a terrain target's key names of the elevation pool in tests holding no datasets, or not
-/// naming them (`terrain_datasets`): the sources as the older schemes' keys named them, so the
-/// tests' records of those schemes read as current (agent::rekey::derive).
+/// What a terrain target's key names of the elevation pool in tests holding no datasets
+/// (`terrain_datasets`).
 #[cfg(test)]
-pub const TEST_SOURCES: &str = super::rekey::SOURCES_BEFORE;
+pub const TEST_SOURCES: &str = "elevation test";
 
 /// The declared elevation datasets as the z6 tiles' keys name them: each with its coverage.
 pub type Elevation = Vec<(crate::dem::declared::Accepted, crate::dem::declared::Cover)>;
@@ -332,9 +326,9 @@ impl TerrainTiles {
     /// north): the held datasets meeting it (crate::dem::declared::meeting), as the roads' keys
     /// name them; None while they can't be told (the terrain's keys wait).
     pub fn terrain_datasets(&self, m: &BTreeMap<String, String>, b: [f64; 4]) -> Option<String> {
-        // (Tests holding none, or not naming them: `TEST_SOURCES`.)
+        // (Tests holding none: `TEST_SOURCES`.)
         #[cfg(test)]
-        if self.elevation.is_none() || !self.terrain_names_datasets {
+        if self.elevation.is_none() {
             return Some(TEST_SOURCES.into());
         }
         let e = self.elevation(m).ok()??;
@@ -424,8 +418,7 @@ impl TerrainTiles {
         v
     }
 
-    /// Holds a water source's digests as given, under content name `content` (tests and
-    /// `scenic-build water-key-check`: no file).
+    /// Holds a water source's digests as given, under content name `content` (tests: no file).
     /// Holds the declared elevation datasets of accepted index `content` (as `load` reads them).
     pub fn hold_elevation(&mut self, content: &str, e: Elevation) {
         self.elevation = Some((content.to_string(), std::sync::Arc::new(e)));

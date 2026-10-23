@@ -26,7 +26,9 @@ pub fn of(root: &Path, manifest: &BTreeMap<String, String>) -> Result<BTreeSet<S
         }
     };
     if let Some(a) = crate::inputs::open(root, manifest, crate::inputs::elevation::UNIT)? {
-        for d in declared::accepted(&a)? {
+        // (A version the app doesn't read, from before the one pool, names no host: the elevations
+        // wait for the pool's, and the other sources' hosts stand.)
+        for d in declared::accepted(&a).unwrap_or_default() {
             match &d.declaration.data {
                 Data::Tiles { url, .. } => add(url),
                 Data::Geotiff { store: true, .. } => {}

@@ -167,23 +167,72 @@ pub struct Tiles<'a> {
     o: &'a Opts<'a>,
     samplers: Vec<OnceLock<Result<Sampler<'a>, String>>>,
     held: Mutex<HashMap<(u8, u32, u32), Option<Vec<u8>>>>,
+    /// The tiles sampled with data: a tile whose four children all are one is made from them alone
+    /// (crate::terrain_pack::prepare's quarters), so it isn't sampled (`FLAT` stands for it).
+    with_data: Mutex<std::collections::HashSet<(u8, u32, u32)>>,
 }
+
+/// A tile at sea level: what stands for a tile made from its four children alone.
+static FLAT: OnceLock<Vec<u8>> = OnceLock::new();
 
 impl<'a> Tiles<'a> {
     fn new(plans: &'a [Plan], o: &'a Opts<'a>) -> Tiles<'a> {
-        Tiles { plans, o, samplers: plans.iter().map(|_| OnceLock::new()).collect(), held: Mutex::new(HashMap::new()) }
+        Tiles {
+            plans,
+            o,
+            samplers: plans.iter().map(|_| OnceLock::new()).collect(),
+            held: Mutex::new(HashMap::new()),
+            with_data: Mutex::new(Default::default()),
+        }
     }
 
     fn sampler(&self, z: u8) -> Result<&Sampler<'a>> {
         let z = (z as usize).min(self.plans.len() - 1);
         self.samplers[z]
-            .get_or_init(|| Sampler::new(&self.plans[z], self.o).map_err(|e| format!("{e:#}")))
+            .get_or_init(|| {
+                // (Every level's sampler shares one cache of decoded blocks and fetched tiles.)
+                let other = self.samplers.iter().find_map(|s| s.get().and_then(|r| r.as_ref().ok()));
+                match other {
+                    Some(o) => Sampler::sharing(&self.plans[z], self.o, o),
+                    None => Sampler::new(&self.plans[z], self.o),
+                }
+                .map_err(|e| format!("{e:#}"))
+            })
             .as_ref()
             .map_err(|e| anyhow::anyhow!("the terrain's datasets at z{z}: {e}"))
     }
 
-    /// Tiles `ts` of zoom `z` sampled: each its Terrarium PNG, None where no dataset has data.
+    /// Tiles `ts` of zoom `z` sampled: each its Terrarium PNG, None where no dataset has data; one
+    /// whose four children were sampled with data, `FLAT` (made from them alone).
     pub fn sample(&self, z: u8, ts: &[(u32, u32)]) -> Result<Vec<Option<Vec<u8>>>> {
+        let covered = |&(x, y): &(u32, u32)| {
+            let w = self.with_data.lock().unwrap();
+            (0..4u32).all(|k| w.contains(&(z + 1, 2 * x + (k & 1), 2 * y + (k >> 1))))
+        };
+        let (skip, todo): (Vec<(u32, u32)>, Vec<(u32, u32)>) = ts.iter().partition(|t| covered(t));
+        let mut made: HashMap<(u32, u32), Option<Vec<u8>>> = HashMap::new();
+        if !skip.is_empty() {
+            let flat = FLAT.get_or_init(|| roadcore::grid::encode_terrain_png(&vec![0f32; 65536], 256, 256).unwrap());
+            made.extend(skip.iter().map(|&t| (t, Some(flat.clone()))));
+        }
+        if !todo.is_empty() {
+            made.extend(todo.iter().copied().zip(self.sample_all(z, &todo)?));
+        }
+        let mut w = self.with_data.lock().unwrap();
+        Ok(ts
+            .iter()
+            .map(|t| {
+                let m = made.remove(t).flatten();
+                if m.is_some() {
+                    w.insert((z, t.0, t.1));
+                }
+                m
+            })
+            .collect())
+    }
+
+    /// Tiles `ts` of zoom `z` sampled, every one.
+    fn sample_all(&self, z: u8, ts: &[(u32, u32)]) -> Result<Vec<Option<Vec<u8>>>> {
         let s = self.sampler(z)?;
         let (lon, lat) = points(z, ts);
         let got = s.sample(&lon, &lat, &|_| {})?;
@@ -353,6 +402,25 @@ mod tests {
             }
         }
         assert!(east > 10 && west > 10, "{east} {west}");
+    }
+
+    /// A tile whose four children were sampled with data isn't sampled: they make it.
+    #[test]
+    fn a_tile_over_four_children_with_data_isnt_sampled() {
+        // (A plan no sampler can open: sampling would fail.)
+        let plans = vec![Plan { fmt: 1, version: "t".into(), tag: "t".into(), datasets: Vec::new() }; 13];
+        let net = crate::fetch::MapFetch::default();
+        let o = Opts { fetch: &net, store: None, pool: None };
+        let t = Tiles::new(&plans, &o);
+        for k in 0..4u32 {
+            t.with_data.lock().unwrap().insert((10, 2 * 5 + (k & 1), 2 * 7 + (k >> 1)));
+        }
+        let got = t.sample(9, &[(5, 7)]).unwrap();
+        assert_eq!(got[0].as_deref(), FLAT.get().map(Vec::as_slice));
+        assert!(t.with_data.lock().unwrap().contains(&(9, 5, 7)), "itself with data, for the level above");
+        // Three of four: sampled (here, nothing: no dataset).
+        t.with_data.lock().unwrap().remove(&(10, 10, 14));
+        assert_eq!(t.sample(9, &[(5, 7)]).unwrap()[0], None);
     }
 
     #[test]

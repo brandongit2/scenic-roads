@@ -1878,8 +1878,7 @@ mod tests {
         for (step, ch) in ok {
             assert_eq!(outside(&entry(step, ch)), None, "{step}");
         }
-        let m = std::collections::BTreeMap::new();
-        let z8 = [crate::terrain_z8::logical(&m), crate::terrain_z8::max_logical(&m)];
+        let z8 = [crate::terrain_z8::logical("0123456789abcdef"), crate::terrain_z8::max_logical("0123456789abcdef")];
         assert_eq!(outside(&entry("terrain-z8", &[(&z8[0], false), (&z8[1], false)])), None);
         assert!(outside(&entry("terrain-z8", &[("sources/terrain-z8-v0", false)])).is_some());
         // Outside: another step's files, a name of the wrong zoom, another layer, a pass's files

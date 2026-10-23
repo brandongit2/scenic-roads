@@ -23,23 +23,32 @@ pub const V: u32 = 5;
 /// The prefix of its logical names.
 const PREFIX: &str = "sources/terrain-z8-v";
 
-/// What its logical names name of manifest `m`: the accepted elevation and sources versions the
-/// pool is read from (their content names' digest), so a new version is a new z8.
-fn pool_of(m: &BTreeMap<String, String>) -> String {
-    let get = |u: &str| m.get(&crate::inputs::logical(u)).map_or("-", String::as_str);
-    store::naming::hash16(
-        format!("{} {}", get(crate::inputs::elevation::UNIT), get(crate::inputs::sources::UNIT)).as_bytes(),
-    )
+/// The key `agent::input_digests` names the pool's digest by (`pool_digest`).
+pub const INPUT: &str = "terrain-pool";
+
+/// What its logical names name of the pool, of the accepted versions manifest `m` names under
+/// `root`: the digest of its datasets' `keyed` digests and their heights' conversions (the geoid
+/// sources they read: crate::dem::declared::tag), so a dataset or a conversion changed is a new
+/// z8, and nothing else is. None while the pool can't be read (none accepted, or one from before it).
+pub fn pool_digest(root: &Path, m: &BTreeMap<String, String>) -> Option<String> {
+    let a = crate::inputs::open(root, m, crate::inputs::elevation::UNIT).ok()??;
+    let mut ds = crate::dem::declared::accepted(&a).ok()?;
+    let geoid = match crate::inputs::sources::open(root, m).ok()? {
+        Some(s) => s.many(crate::inputs::sources::GEOID).to_vec(),
+        None => Vec::new(),
+    };
+    let _ = crate::dem::declared::convert(&mut ds, &geoid);
+    Some(crate::dem::declared::tag(&ds))
 }
 
-/// Its pack's logical name for manifest `m`.
-pub fn logical(m: &BTreeMap<String, String>) -> String {
-    format!("{PREFIX}{V}-{}", pool_of(m))
+/// Its pack's logical name for pool digest `pool` (`pool_digest`).
+pub fn logical(pool: &str) -> String {
+    format!("{PREFIX}{V}-{pool}")
 }
 
-/// Its maxima's logical name for manifest `m`.
-pub fn max_logical(m: &BTreeMap<String, String>) -> String {
-    format!("{}-max", logical(m))
+/// Its maxima's logical name for pool digest `pool`.
+pub fn max_logical(pool: &str) -> String {
+    format!("{}-max", logical(pool))
 }
 
 /// Whether `l` is one of its logical names (of this version, any pool).
@@ -106,7 +115,8 @@ pub fn build(out: &mut Out, raw: &dyn RawSource) -> Result<(usize, usize)> {
     std::fs::write(&mfile, bytemuck::cast_slice(&maxes))?;
     drop(p);
     let p = phase("uploaded", Class::NasWrite);
-    let (l, ml) = (logical(&out.manifest), max_logical(&out.manifest));
+    let pool = pool_digest(out.root(), &out.manifest).context("the elevation pool can't be read")?;
+    let (l, ml) = (logical(&pool), max_logical(&pool));
     out.put_file(&l, "pack", &local)?;
     out.put_file(&ml, "f32", &mfile)?;
     drop(p);
@@ -258,21 +268,18 @@ mod tests {
             .collect()
     }
 
-    /// Its names name the pool's versions: a new elevation or sources version, a new z8.
+    /// Its names name the pool's digest.
     #[test]
     fn its_names_are_the_pools() {
+        let d = tempfile::tempdir().unwrap();
         let mut m = BTreeMap::new();
-        let none = logical(&m);
-        m.insert(
-            crate::inputs::logical(crate::inputs::elevation::UNIT),
-            "sources/inputs/elevation/@index.1.json".into(),
-        );
-        let a = logical(&m);
-        m.insert(crate::inputs::logical(crate::inputs::sources::UNIT), "sources/inputs/sources/@index.2.json".into());
-        let b = logical(&m);
-        assert!(none != a && a != b && b.starts_with("sources/terrain-z8-v5-"));
-        assert_eq!(max_logical(&m), format!("{b}-max"));
-        assert!(is_logical(&a) && is_logical(&max_logical(&m)));
+        assert_eq!(pool_digest(d.path(), &m), None);
+        crate::inputs::elevation::accept_fixture(d.path(), &mut m);
+        let pool = pool_digest(d.path(), &m).unwrap();
+        let (a, b) = (logical(&pool), logical("0123456789abcdef"));
+        assert!(a != b && b.starts_with("sources/terrain-z8-v5-"));
+        assert_eq!(max_logical(&pool), format!("{a}-max"));
+        assert!(is_logical(&a) && is_logical(&max_logical(&pool)));
         assert!(
             !is_logical("sources/terrain-z8-v4")
                 && !is_logical("sources/terrain-z8-v5-x")
