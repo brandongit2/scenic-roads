@@ -133,9 +133,9 @@ pub struct FineSet {
     pub cut: Option<declared::Measured>,
 }
 
-/// A dataset's full resolution (m): `full` where it's read coarser, else as read.
+/// A dataset's resolution (m), as the input check measured it.
 pub fn full_resolution(d: &Accepted) -> f64 {
-    d.measured.full.unwrap_or(d.measured.resolution)
+    d.measured.resolution
 }
 
 /// The base's resolution among datasets `ds` (m): the finest full resolution of the worldwide
@@ -253,11 +253,6 @@ impl Fine {
             return Ok(None);
         }
         let mut full = presence.clone();
-        for d in &mut full.datasets {
-            if let Source::Geotiff { read_resolution, .. } = &mut d.source {
-                *read_resolution = None;
-            }
-        }
         // (The base, by the band of latitude its finest zoom holds: crate::terrain_pack::max_zoom_at;
         // its resolution the base's at the box's middle, so its edge's blend is four of its pixels
         // there.)
@@ -1191,8 +1186,8 @@ mod tests {
         other.insert(crate::inputs::logical(crate::inputs::elevation::UNIT), "gone".into());
         c.refresh(d.path(), &other);
         assert!(c.fine.is_some() && c.read_at == Current::versions(&m), "an unreadable new version too");
-        // (Its full resolution counts, not the one it's read at.)
-        ds[0].measured.full = Some(2.0);
+        // (A resolution finer than the base's makes it fine.)
+        ds[0].measured.resolution = 2.0;
         let s = sets(&ds);
         assert_eq!(s.len(), 1);
         let Data::Tiles { zoom, .. } = &ds[0].declaration.data else { panic!("the fixture's is a pyramid") };

@@ -189,7 +189,6 @@ impl Elevation {
                     return Ok(Measured {
                         crs: None,
                         resolution: crate::dem::generic::tile_resolution(*zoom, 0.0),
-                        full: None,
                         cover: None,
                         uncut: None,
                     });
@@ -210,12 +209,11 @@ impl Elevation {
                 Ok(Measured {
                     crs: None,
                     resolution: crate::dem::generic::tile_resolution(*zoom, mid),
-                    full: None,
                     cover: Some(declared::cells_to_boxes(&cells)),
                     uncut: None,
                 })
             }
-            Data::Geotiff { urls, index, files, read_resolution, store } => {
+            Data::Geotiff { urls, index, files, store } => {
                 let fetch = self.fetch.as_ref().ok_or("nothing reads the data here")?;
                 // (Where each file is, and its footprint when the index gives one.)
                 let mut list: Vec<(String, Option<[f64; 4]>)> = urls.iter().map(|u| (u.clone(), None)).collect();
@@ -246,7 +244,6 @@ impl Elevation {
                 }
                 let mut crs = None;
                 let mut resolution: f64 = 0.0;
-                let mut full: f64 = f64::INFINITY;
                 // (The index's files sampled; every other file read, its coverage its own.)
                 let mut picks: BTreeSet<usize> =
                     sample_of(list.len()).into_iter().filter(|&k| list[k].1.is_some()).collect();
@@ -290,11 +287,8 @@ impl Elevation {
                         return Err(format!("{w} is in EPSG:{c}, the dataset's other files in EPSG:{}", crs.unwrap()));
                     }
                     crs = Some(c);
-                    let level =
-                        crate::dem::generic::level_for(&t, c, *read_resolution).map_err(|e| format!("{w}: {e:#}"))?;
-                    resolution = resolution
-                        .max(crate::dem::generic::resolution(&t, c, level).map_err(|e| format!("{w}: {e:#}"))?);
-                    full = full.min(crate::dem::generic::resolution(&t, c, 0).map_err(|e| format!("{w}: {e:#}"))?);
+                    resolution =
+                        resolution.max(crate::dem::generic::resolution(&t, c, 0).map_err(|e| format!("{w}: {e:#}"))?);
                     if footprint.is_none() {
                         masks.push(valid_data(&t).map_err(|e| format!("{w}: {e:#}"))?);
                     }
@@ -321,9 +315,7 @@ impl Elevation {
                     }
                     Some(declared::cells_to_boxes(&cells))
                 };
-                // (Its full resolution, where it's read coarser: the map's terrain's.)
-                let full = (read_resolution.is_some() && full < resolution - 1e-9).then_some(full);
-                Ok(Measured { crs: Some(crs), resolution, full, cover, uncut: None })
+                Ok(Measured { crs: Some(crs), resolution, cover, uncut: None })
             }
         }
     }
@@ -747,7 +739,7 @@ pub fn accept_fixture(root: &Path, m: &mut BTreeMap<String, String>) {
         regions: None,
         data: Data::Tiles { url: "https://e.org/{z}/{x}/{y}.png".into(), zoom: 10, encoding: "terrarium".into() },
     };
-    let measured = Measured { crs: None, resolution: 150.0, full: None, cover: None, uncut: None };
+    let measured = Measured { crs: None, resolution: 150.0, cover: None, uncut: None };
     let entry = |id: &str, d: &Declaration, measured: Measured, keyed: &str| {
         let mut facts = serde_json::Map::new();
         facts.insert("declaration".into(), serde_json::to_value(d).unwrap());
@@ -777,36 +769,19 @@ pub fn accept_fixture(root: &Path, m: &mut BTreeMap<String, String>) {
             encoding: "terrarium".into(),
         },
     };
-    files.extend([entry(
-        "terrarium",
-        &base,
-        Measured { crs: None, resolution: 38.0, full: None, cover: None, uncut: None },
-        "t",
-    )]);
+    files.extend([entry("terrarium", &base, Measured { crs: None, resolution: 38.0, cover: None, uncut: None }, "t")]);
     let north = Declaration {
         surface: "surface".into(),
         heights: "EGM2008".into(),
         rank: Some(1),
         code: 3,
         regions: None,
-        data: Data::Geotiff {
-            urls: vec![],
-            index: Some("glo30.geojson".into()),
-            files: vec![],
-            read_resolution: None,
-            store: true,
-        },
+        data: Data::Geotiff { urls: vec![], index: Some("glo30.geojson".into()), files: vec![], store: true },
     };
     files.extend([entry(
         "glo30",
         &north,
-        Measured {
-            crs: Some(4326),
-            resolution: 30.0,
-            full: None,
-            cover: Some(vec![[-148.0, 64.0, -147.0, 66.0]]),
-            uncut: None,
-        },
+        Measured { crs: Some(4326), resolution: 30.0, cover: Some(vec![[-148.0, 64.0, -147.0, 66.0]]), uncut: None },
         "g",
     )]);
     let feature = |la: i32, lo: i32| serde_json::json!({ "type": "Feature", "properties": { "url": format!("https://copernicus-dem-30m.s3.amazonaws.com/N{la}_W{}_DEM.tif", -lo), "mask": format!("https://copernicus-dem-30m.s3.amazonaws.com/N{la}_W{}_FLM.tif", -lo) }, "geometry": { "type": "Polygon", "coordinates": [[[lo, la], [lo + 1, la], [lo + 1, la + 1], [lo, la + 1], [lo, la]]] } });

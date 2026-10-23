@@ -83,9 +83,6 @@ pub enum Data {
         /// Files dropped in `<dataset>/`, by glob.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         files: Vec<String>,
-        /// Read at the overview nearest this (metres) rather than the full resolution.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        read_resolution: Option<f64>,
         /// Each file downloaded whole once, kept in `sources/fetched/<dataset>/` (read in place
         /// where that can't be written).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -193,7 +190,7 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
     };
     let format = ds("format").unwrap_or_default();
     let allowed: &[&str] = match format.as_str() {
-        "geotiff" => &["format", "url", "urls", "index", "files", "read_resolution", "store"],
+        "geotiff" => &["format", "url", "urls", "index", "files", "store"],
         "tiles" => &["format", "url", "zoom", "encoding"],
         f => {
             why.push(format!("`data.format` is \"{f}\": geotiff or tiles"));
@@ -212,16 +209,6 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
         }
         let index = ds("index");
         let files = strings("files", &mut why);
-        let read_resolution = match d.get("read_resolution") {
-            None => None,
-            Some(x) => match x.as_float().or_else(|| x.as_integer().map(|i| i as f64)) {
-                Some(r) if r > 0.0 => Some(r),
-                _ => {
-                    why.push("`data.read_resolution` isn't a positive number of metres".into());
-                    None
-                }
-            },
-        };
         let store = d.get("store").map(|x| x.as_bool()).unwrap_or(Some(false));
         if store.is_none() {
             why.push("`data.store` isn't true or false".into());
@@ -240,7 +227,7 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
                 why.push(format!("`data.index` is \"{i}\": a .geojson file beside the declaration"));
             }
         }
-        Data::Geotiff { urls, index, files, read_resolution, store: store.unwrap_or(false) }
+        Data::Geotiff { urls, index, files, store: store.unwrap_or(false) }
     } else {
         let url = ds("url").unwrap_or_default();
         for p in ["{z}", "{x}", "{y}"] {
@@ -278,14 +265,9 @@ pub struct Measured {
     /// The GeoTIFFs' CRS (EPSG); None for a tile pyramid (Web Mercator).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crs: Option<u16>,
-    /// Metres, as read (the overview `read_resolution` picks; a tile pyramid's at its coverage's
-    /// mid-latitude).
+    /// Metres, its full resolution (the coarsest of its sampled files'; a tile pyramid's at its
+    /// coverage's mid-latitude).
     pub resolution: f64,
-    /// Metres, its full resolution, where `read_resolution` reads it coarser (the finest of its
-    /// sampled files' full images): the map's terrain reads it so (crate::terrain_fine). None:
-    /// read at its full resolution already.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub full: Option<f64>,
     /// Where it has data: 1° cells merged into boxes (w, s, e, n); None: the world.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover: Option<Vec<[f64; 4]>>,
@@ -836,7 +818,7 @@ pub fn plan_converted(
             Data::Tiles { url, zoom, encoding } => {
                 Source::Tiles { url: url.clone(), zoom: *zoom, encoding: encoding.clone() }
             }
-            Data::Geotiff { urls, index, files, read_resolution, store } => {
+            Data::Geotiff { urls, index, files, store } => {
                 let crs = d.measured.crs.context("a GeoTIFF dataset without its CRS measured")?;
                 let nb = if super::proj::projected(crs) { native_box(crs, near, 1000.0)? } else { near };
                 let mut list: Vec<(String, Option<[f64; 4]>)> = Vec::new();
@@ -868,7 +850,7 @@ pub fn plan_converted(
                 if masks.iter().all(Option::is_none) {
                     masks.clear();
                 }
-                Source::Geotiff { crs, read_resolution: *read_resolution, store: *store, files: list, masks }
+                Source::Geotiff { crs, read_resolution: None, store: *store, files: list, masks }
             }
         };
         out.push(Dataset {
@@ -1015,7 +997,7 @@ encoding = "lerc"
             id: id.into(),
             path: format!("{id}.toml"),
             declaration: decl(heights),
-            measured: Measured { crs: Some(4326), resolution: 10.0, full: None, cover: None, uncut: None },
+            measured: Measured { crs: Some(4326), resolution: 10.0, cover: None, uncut: None },
             keyed: "k".into(),
             convert: None,
         };

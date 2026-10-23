@@ -193,11 +193,10 @@ mod tests {
                     urls: vec!["https://example.org/a.tif".into()],
                     index: None,
                     files: vec![],
-                    read_resolution: None,
                     store: false,
                 },
             },
-            measured: Measured { crs: Some(4326), resolution, full: None, cover: cover.clone(), uncut: None },
+            measured: Measured { crs: Some(4326), resolution, cover: cover.clone(), uncut: None },
             keyed: "k".into(),
         };
         (d, Cover::of(cover.as_deref()))
