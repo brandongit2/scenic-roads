@@ -8,9 +8,10 @@
 //!    tunnels, whose DEM samples are meaningless.
 //! 3. Junction continuity: every endpoint is pulled to the mean of the ordinary roads
 //!    meeting there, blended over 60 m.
-//! 4. Bridges, tunnels, ferries: interior node elevations of structure networks are solved
-//!    harmonically (weights 1/length) between fixed ends; each structure way is then
-//!    interpolated linearly, so decks and tunnel floors are straight.
+//! 4. Bridges, tunnels, ferries, causeways and embankments (`CAUSEWAYS`) and ways across water
+//!    (`raised`): interior node elevations of structure networks are solved harmonically (weights
+//!    1/length) between fixed ends; each structure way is then interpolated linearly, so decks,
+//!    fills and tunnel floors are straight, not the terrain beside them.
 //! 5. |grade| over ±25 m, again continuing across junctions (using final elevations).
 
 use crate::count_bar;
@@ -26,6 +27,40 @@ const MAX_HOPS: usize = 6;
 
 pub fn is_structure(w: &WayRec) -> bool {
     w.class == class::FERRY || w.flags & (flag::BRIDGE | flag::TUNNEL) != 0
+}
+
+/// A unit folder's causeways and embankments: their way ids, sorted (extract writes it).
+pub const CAUSEWAYS: &str = "causeways.i64";
+
+/// Which ways of a unit folder `dir` are raised like structures beyond `is_structure`: those
+/// `CAUSEWAYS` names, and those of two vertices or more all on water (the staged land cover's
+/// `grid.class.u8`, roadcore::grid::class::WATER), whose terrain is the water's surface.
+pub fn raised(dir: &std::path::Path, ways: &[WayRec], verts: &[[i32; 2]]) -> anyhow::Result<Vec<bool>> {
+    use roadcore::grid;
+    let ids: Vec<i64> = match std::fs::read(dir.join(CAUSEWAYS)) {
+        Ok(b) => bytemuck::pod_collect_to_vec(&b),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(e.into()),
+    };
+    let water = match grid::GridIndex::load(dir) {
+        Ok(idx) if dir.join("grid.class.u8").exists() => {
+            Some((idx, grid::Layer::<u8>::open(&dir.join("grid.class.u8"))?))
+        }
+        _ => None,
+    };
+    let on_water = |p: [i32; 2]| {
+        water.as_ref().is_some_and(|(idx, c)| {
+            let (gx, gy) = grid::cell_of(p[0] as f64 * E7, p[1] as f64 * E7);
+            idx.cell(gx as i64, gy as i64).is_some_and(|i| c.data()[i] == grid::class::WATER)
+        })
+    };
+    Ok(ways
+        .iter()
+        .map(|w| {
+            let vs = &verts[w.vstart as usize..w.vstart as usize + w.vcount as usize];
+            ids.binary_search(&w.id).is_ok() || (vs.len() >= 2 && vs.iter().all(|&p| on_water(p)))
+        })
+        .collect())
 }
 
 pub struct Processed {
@@ -62,6 +97,8 @@ pub struct Net<'a> {
     pub cont: Vec<[Option<(u32, bool)>; 2]>,
     /// Ways at each node: (way, true if the way *starts* there).
     pub inc: Vec<Vec<(u32, bool)>>,
+    /// Whether each way is a structure (`is_structure`, and those `raise` adds).
+    pub structure: Vec<bool>,
 }
 
 impl<'a> Net<'a> {
@@ -125,7 +162,15 @@ impl<'a> Net<'a> {
                 [pick(ends[i][0], s + 1, s), pick(ends[i][1], e - 1, e)]
             })
             .collect();
-        Net { ways, verts, ends, cont, inc }
+        let structure = ways.iter().map(is_structure).collect();
+        Net { ways, verts, ends, cont, inc, structure }
+    }
+
+    /// Ways `extra` names made structures too (`raised`).
+    pub fn raise(&mut self, extra: &[bool]) {
+        for (s, &e) in self.structure.iter_mut().zip(extra) {
+            *s |= e;
+        }
     }
 
     /// Samples (distance from the endpoint, vertex index) walking outward from way `w`'s
@@ -143,7 +188,7 @@ impl<'a> Net<'a> {
         for _ in 0..MAX_HOPS {
             let Some((c, starts)) = self.cont[cur][side] else { break };
             let c = c as usize;
-            if c == w || (!into_structures && is_structure(&self.ways[c])) {
+            if c == w || (!into_structures && self.structure[c]) {
                 break;
             }
             let cw = &self.ways[c];
@@ -380,7 +425,7 @@ pub fn process(net: &Net, raw: &[f32]) -> Processed {
             let n = w.vcount as usize;
             let s = w.vstart as usize;
             pb.inc(1);
-            if !ok[i] || is_structure(w) {
+            if !ok[i] || net.structure[i] {
                 return filled[s..s + n].to_vec();
             }
             let (xd, xv, off) = extended(&net, i, &dists[i], &filled, 3.0 * SMOOTH_SIGMA_M + 50.0, false);
@@ -398,9 +443,9 @@ pub fn process(net: &Net, raw: &[f32]) -> Processed {
     let mut sum = vec![0f64; n_nodes];
     let mut cnt = vec![0u32; n_nodes];
     let mut sdeg = vec![0u32; n_nodes];
-    for (i, w) in ways.iter().enumerate() {
+    for i in 0..ways.len() {
         let [a, b] = net.ends[i];
-        if is_structure(w) {
+        if net.structure[i] {
             sdeg[a as usize] += 1;
             sdeg[b as usize] += 1;
         } else if ok[i] {
@@ -413,8 +458,8 @@ pub fn process(net: &Net, raw: &[f32]) -> Processed {
     }
     let mut val: Vec<f64> = (0..n_nodes).map(|k| if cnt[k] > 0 { sum[k] / cnt[k] as f64 } else { f64::NAN }).collect();
     let mut unknown = vec![false; n_nodes];
-    for (i, w) in ways.iter().enumerate() {
-        if !is_structure(w) {
+    for i in 0..ways.len() {
+        if !net.structure[i] {
             continue;
         }
         let e = &smoothed[i];
@@ -430,8 +475,8 @@ pub fn process(net: &Net, raw: &[f32]) -> Processed {
     }
     // 4. harmonic solve for structure-interior nodes
     let mut adj: Vec<Vec<(u32, f64)>> = vec![Vec::new(); n_nodes];
-    for (i, w) in ways.iter().enumerate() {
-        if !is_structure(w) {
+    for i in 0..ways.len() {
+        if !net.structure[i] {
             continue;
         }
         let len = dists[i].last().copied().unwrap_or(0.0).max(1.0);
@@ -475,11 +520,10 @@ pub fn process(net: &Net, raw: &[f32]) -> Processed {
         .into_par_iter()
         .enumerate()
         .map(|(i, mut e)| {
-            let w = &ways[i];
             let dist = &dists[i];
             let total = *dist.last().unwrap();
             let (va, vb) = (val[net.ends[i][0] as usize], val[net.ends[i][1] as usize]);
-            if is_structure(w) {
+            if net.structure[i] {
                 let a = if va.is_finite() {
                     va
                 } else if ok[i] {
@@ -542,4 +586,45 @@ pub fn process(net: &Net, raw: &[f32]) -> Processed {
         t0.elapsed()
     );
     Processed { elev, grade }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A causeway across a lake (named in `CAUSEWAYS`, or on water in the staged land cover) is
+    /// straight between its shores, not down at the water's surface; the roads beside it keep the
+    /// terrain.
+    #[test]
+    fn a_causeway_is_straight_between_its_ends() {
+        // Three ways west to east along the equator, ~10 m between vertices: land, causeway, land.
+        let verts: Vec<[i32; 2]> = (0..28).map(|i| [i * 900, 0]).collect();
+        let way = |id: i64, s: u64| {
+            let mut w: WayRec = bytemuck::Zeroable::zeroed();
+            (w.id, w.vstart, w.vcount, w.class) = (id, s, 10, class::PRIMARY);
+            w
+        };
+        // (Shared nodes: each way's last vertex is the next one's first.)
+        let mut v = Vec::new();
+        for k in 0..3 {
+            v.extend_from_slice(&verts[k * 9..k * 9 + 10]);
+        }
+        let ways = [way(1, 0), way(2, 10), way(3, 20)];
+        // The shores at 20 m, the lake's surface at 5 m under the middle way's inner vertices.
+        let raw: Vec<f32> = (0..30).map(|i| if (11..19).contains(&i) { 5.0 } else { 20.0 }).collect();
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join(CAUSEWAYS), bytemuck::cast_slice(&[2i64])).unwrap();
+        let extra = raised(d.path(), &ways, &v).unwrap();
+        assert_eq!(extra, [false, true, false]);
+        let mut net = Net::build(&ways, &v);
+        let dipped = process(&net, &raw).elev;
+        net.raise(&extra);
+        let p = process(&net, &raw).elev;
+        assert!(dipped[15] < 15.0, "without it, down at the water: {}", dipped[15]);
+        for (i, e) in p.iter().enumerate().take(20).skip(10) {
+            assert!((e - 20.0).abs() < 0.5, "vertex {i}: {e}");
+        }
+        // (No file: none raised.)
+        assert_eq!(raised(tempfile::tempdir().unwrap().path(), &ways, &v).unwrap(), [false; 3]);
+    }
 }

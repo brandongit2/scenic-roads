@@ -77,6 +77,8 @@ struct Pass1 {
     rail_uses: Vec<RailUse>,
     /// Covered bridges' kept tags, by way id.
     bridge_tags: Vec<(i64, Vec<(String, String)>)>,
+    /// The causeways' and embankments' way ids (`is_causeway`).
+    causeways: Vec<i64>,
 }
 
 impl Pass1 {
@@ -89,6 +91,7 @@ impl Pass1 {
         a.poi_ways.append(&mut b.poi_ways);
         a.hikes.append(&mut b.hikes);
         a.bridge_tags.append(&mut b.bridge_tags);
+        a.causeways.append(&mut b.causeways);
         a.rail_uses.append(&mut b.rail_uses);
         a
     }
@@ -744,6 +747,12 @@ fn network_code(lon: f64, lat: f64, ref_: &str, c: u8) -> u8 {
     n::NONE
 }
 
+/// A way raised on fill across water or low ground: its heights are a structure's, straight between
+/// its ends (pipeline::elev), not the terrain's beside it.
+fn is_causeway(t: &Tags) -> bool {
+    t.is("embankment", "yes") || t.is("causeway", "yes") || t.is("man_made", "causeway")
+}
+
 fn classify(t: &Tags) -> Option<(u8, u8)> {
     if t.is("route", "ferry") {
         let carries_cars = ["motorcar", "motor_vehicle", "vehicle", "hgv"]
@@ -865,6 +874,7 @@ fn main() -> Result<()> {
     let mut poi_ways: Vec<(&'static str, String, Vec<i64>, i64, Vec<(String, String)>)> = Vec::new();
     let mut hikes: Vec<(String, Vec<i64>, i64)> = Vec::new();
     let mut bridge_tags: Vec<(i64, Vec<(String, String)>)> = Vec::new();
+    let mut causeways: Vec<i64> = Vec::new();
     let mut rail_uses: Vec<RailUse> = Vec::new();
     for p in &inputs {
         let name = p.file_name().unwrap().to_string_lossy().replace(".osm.pbf", "");
@@ -886,6 +896,9 @@ fn main() -> Result<()> {
                         }
                         if t.is("covered", "yes") || t.is("bridge", "covered") {
                             out.bridge_tags.push((w.id(), kept_tags(&t, "covered_bridge")));
+                        }
+                        if is_causeway(&t) {
+                            out.causeways.push(w.id());
                         }
                         if let Some((c, f)) = classify(&t) {
                             out.ways.push(RawWay {
@@ -986,7 +999,10 @@ fn main() -> Result<()> {
         hikes.append(&mut got.hikes);
         rail_uses.append(&mut got.rail_uses);
         bridge_tags.append(&mut got.bridge_tags);
+        causeways.append(&mut got.causeways);
     }
+    causeways.sort_unstable();
+    causeways.dedup();
     bridge_tags.par_sort_unstable_by_key(|b| b.0);
     bridge_tags.dedup_by_key(|b| b.0);
     ways.par_sort_unstable_by_key(|w| w.id);
@@ -1525,6 +1541,9 @@ fn main() -> Result<()> {
     ww.write_all(bytemuck::cast_slice(&recs))?;
     ww.flush()?;
     std::fs::write(roadcore::tmp(&out, "strings.txt"), strings.join("\n"))?;
+    // The causeways and embankments among the ways kept (pipeline::elev::CAUSEWAYS).
+    let kept: Vec<i64> = recs.iter().map(|r| r.id).filter(|id| causeways.binary_search(id).is_ok()).collect();
+    std::fs::write(roadcore::tmp(&out, pipeline::elev::CAUSEWAYS), bytemuck::cast_slice(&kept))?;
     std::fs::write(roadcore::tmp(&out, "name-en.json"), serde_json::to_vec(&name_en)?)?;
     // Points of interest for the map and the scenic metrics, in their one order.
     pois.sort_by(|a, b| a.order().cmp(&b.order()));
@@ -1551,7 +1570,18 @@ fn main() -> Result<()> {
         roadcore::tmp(&out, "pois.json"),
         serde_json::to_vec(&serde_json::json!({ "type": "FeatureCollection", "features": features }))?,
     )?;
-    roadcore::commit(&out, &["verts.bin", "ways.bin", "strings.txt", "name-en.json", "pois.json", "rail-rels.bin"])?;
+    roadcore::commit(
+        &out,
+        &[
+            "verts.bin",
+            "ways.bin",
+            "strings.txt",
+            "name-en.json",
+            "pois.json",
+            "rail-rels.bin",
+            pipeline::elev::CAUSEWAYS,
+        ],
+    )?;
 
     eprintln!(
         "\nwrote {} ways, {} vertices ({} original nodes), {} strings",
@@ -1571,6 +1601,18 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::{is_causeway, Tags};
+    /// Causeways and embankments by their three tags, nothing else.
+    #[test]
+    fn causeways_by_their_tags() {
+        fn t<'a>(k: &'a str, v: &'a str) -> Tags<'a> {
+            Tags(vec![("highway", "primary"), (k, v)])
+        }
+        assert!(is_causeway(&t("embankment", "yes")) && is_causeway(&t("causeway", "yes")));
+        assert!(is_causeway(&t("man_made", "causeway")));
+        assert!(!is_causeway(&t("embankment", "no")) && !is_causeway(&t("bridge", "yes")));
+    }
+
     /// A way on two routes whose names are as long: the same one wins whatever order the read
     /// gave them in; the shorter name wins over both.
     #[test]

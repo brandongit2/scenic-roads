@@ -833,7 +833,15 @@ pub fn tail(u: TileId, buildings: bool, store: bool) -> Vec<Run> {
         prog: "tile".into(),
         args: vec!["{dir}".into(), "elev".into()],
         env: Vec::new(),
-        reads: mine(&["ways.bin", "verts.bin", "elev.f32", "strings.txt"]),
+        reads: mine(&[
+            "ways.bin",
+            "verts.bin",
+            "elev.f32",
+            "strings.txt",
+            "causeways.i64",
+            "grid.idx",
+            "grid.class.u8",
+        ]),
     };
     let mut runs = vec![elev, grade];
     for step in ["prep", "canopy", "view"] {

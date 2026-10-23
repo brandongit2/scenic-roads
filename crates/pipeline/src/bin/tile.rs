@@ -12,7 +12,8 @@ fn main() -> Result<()> {
     let wv = Ways::open(&dir)?;
     let raw = Array::<f32>::open(&dir.join("elev.f32"))?;
     eprintln!("{} ways, {} vertices", wv.ways().len(), wv.verts().len());
-    let net = pipeline::elev::Net::build(wv.ways(), wv.verts());
+    let mut net = pipeline::elev::Net::build(wv.ways(), wv.verts());
+    net.raise(&pipeline::elev::raised(&dir, wv.ways(), wv.verts())?);
     let p = pipeline::elev::process(&net, raw.get());
     let du: Vec<u16> = p.elev.iter().map(|&e| elev::to_u16((e * 10.0).round() as i32)).collect();
     std::fs::write(roadcore::tmp(&dir, "final.u16"), bytemuck::cast_slice(&du))?;
