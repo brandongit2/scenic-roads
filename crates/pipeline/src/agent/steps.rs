@@ -1439,23 +1439,24 @@ mod tests {
     /// back to upkeep's grey: every stage has a colour there, and no two stages share one.
     #[test]
     fn every_stage_has_a_colour_of_its_own_on_the_worker_page() {
-        let js = include_str!("../../../../web/work/dash.js");
-        let line = js.lines().find(|l| l.starts_with("const STAGE_COLOURS = {")).expect("STAGE_COLOURS in dash.js");
-        let body = &line[line.find('{').unwrap() + 1..line.rfind('}').unwrap()];
-        let colours: std::collections::BTreeMap<&str, &str> = body
-            .split(',')
-            .map(|kv| {
-                let (k, v) = kv.split_once(':').expect("key: colour");
-                (k.trim(), v.trim().trim_matches('"'))
-            })
-            .collect();
-        for s in &STAGES {
-            assert!(colours.contains_key(s.id), "stage {} has no colour in dash.js's STAGE_COLOURS", s.id);
+        // index.html sets each stage's --st-<id> once per theme: the first of each is the dark theme's, the second the light's.
+        let html = include_str!("../../../../web/work/index.html");
+        let mut themes: [std::collections::BTreeMap<&str, String>; 2] = Default::default();
+        for decl in html.split(';') {
+            let Some(at) = decl.find("--st-") else { continue };
+            let (k, v) = decl[at + 5..].split_once(':').expect("--st-<id>: colour");
+            let theme = if themes[0].contains_key(k.trim()) { 1 } else { 0 };
+            themes[theme].insert(k.trim(), v.trim().to_ascii_lowercase());
         }
-        let mut seen = std::collections::BTreeMap::new();
-        for (k, v) in &colours {
-            if let Some(other) = seen.insert(v.to_ascii_lowercase(), k) {
-                panic!("stages {other} and {k} share the colour {v} in dash.js's STAGE_COLOURS");
+        for colours in &themes {
+            for s in &STAGES {
+                assert!(colours.contains_key(s.id), "stage {} has no --st-{} in index.html", s.id, s.id);
+            }
+            let mut seen = std::collections::BTreeMap::new();
+            for (k, v) in colours {
+                if let Some(other) = seen.insert(v, k) {
+                    panic!("stages {other} and {k} share the colour {v} in index.html");
+                }
             }
         }
     }
