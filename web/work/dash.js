@@ -51,7 +51,8 @@ const plural = (k, one, many = `${one}s`) => `${n(k)} ${k === 1 ? one : many}`;
 // Every word about a step comes from its row: its title, the noun its targets are counted in, its
 // stage (its colour) and where it runs. Before the table has loaded (or from a lead without it) a
 // step goes by its id.
-const STAGE_COLOURS = { pass: "#8fa2b5", sites: "#c47fb5", terrain: "#c98b4a", slope: "#d9c35a", trees: "#5fae6b", roads: "#5b8fd8", depth: "#2f5d9e", fine: "#a8703a", tiles: "#4fb3c6", finish: "#7fb3a8", trains: "#a9a0d6", landmarks: "#9b7be0", buildings: "#a39a8c", publish: "#d9667a", upkeep: "#7b8590" };
+// A stage's colour: its token in index.html (--st-<stage>, a hue each in either theme).
+const stageColour = (g) => `var(--st-${g || "upkeep"}, var(--st-upkeep))`;
 const table = { steps: {}, stages: [] };
 const S = {
   row: (id) => table.steps[id],
@@ -60,7 +61,7 @@ const S = {
   world: (id) => table.steps[id]?.scope === "world",
   stage: (id) => table.steps[id]?.stage || "",
   stageTitle: (id) => table.stages.find((g) => g.id === id)?.title || id,
-  colour: (id) => STAGE_COLOURS[S.stage(id)] || "#7b8590",
+  colour: (id) => stageColour(S.stage(id)),
   any: (id) => table.steps[id]?.place === "any",
   // "8 tiles"; a worldwide step's runs: "1 run".
   counted: (id, k) => plural(k, S.noun(id)),
@@ -601,8 +602,10 @@ const PAST = [[0, "none"], [3600, "1 h"], [6 * 3600, "6 h"], [86400, "24 h"], [3
 // The jobs' ends from the history further back than the page's own events (`/work/history`, a
 // chunk at a time back to the past chosen: sums.js pastFrom), in the numbering they were read in.
 const past = { ends: [], epoch: undefined, first: null, asking: false };
-// Every job's end held: those read back, then the page's own events.
-const endsHeld = () => past.ends.concat(events.filter((e) => e.kind === "end"));
+// Every job's end held (a lead's job's "end", a worker's "done" or "fail"): those read back, then
+// the page's own events.
+const isEnd = (e) => e.kind === "end" || e.kind === "done" || e.kind === "fail";
+const endsHeld = () => past.ends.concat(events.filter(isEnd));
 async function loadPast(sw) {
   if (past.epoch !== sw.epoch) Object.assign(past, { ends: [], epoch: sw.epoch, first: null });
   if (!ui.past || past.asking || !events.length) return;
@@ -615,7 +618,7 @@ async function loadPast(sw) {
       if (code !== 200 || !hist?.events?.length || hist.epoch !== past.epoch) break;
       const got = hist.events.filter((e) => e.seq < first.seq);
       if (!got.length) break;
-      past.ends = got.filter((e) => e.kind === "end").concat(past.ends);
+      past.ends = got.filter(isEnd).concat(past.ends);
       first = past.first = { seq: got[0].seq, t: got[0].t };
       render();
     }
@@ -663,7 +666,7 @@ function schedule(m) {
   const span = t1 - t0;
   const x = (t) => `${(((Math.max(t0, Math.min(t1, t)) - t0) / span) * 100).toFixed(3)}%`;
   const gap = span / 1200;
-  const pastAll = ui.past ? pastRuns(endsHeld(), t0) : [];
+  const pastAll = ui.past ? pastRuns(endsHeld(), t0, m.macs.map((mm) => mm.name)) : [];
   const running = runningRuns(m);
   const short = shortNames(m);
   const hosts = m.macs.map((mm) => mm.name);
@@ -723,7 +726,7 @@ function schedule(m) {
   const order = table.stages.map((g) => g.id);
   const titles = new Set();
   const stages = [...stagesSeen].sort((p, q) => order.indexOf(p) - order.indexOf(q)).filter((g) => !titles.has(S.stageTitle(g)) && titles.add(S.stageTitle(g)));
-  const legend = h("div", "legend", stages.map((g) => h("span", null, h("i", { style: { background: STAGE_COLOURS[g] || "#7b8590" } }), S.stageTitle(g))),
+  const legend = h("div", "legend", stages.map((g) => h("span", null, h("i", { style: { background: stageColour(g) } }), S.stageTitle(g))),
     h("span", "keys", h("i", "k-past"), "ran", h("i", "k-failed"), "failed", h("i", "k-run"), "running", h("i", "k-next"), "to come"),
     Object.keys(outs).length ? h("span", null, h("i", { class: "rmark" }), "a region all on the map") : null);
   // (A forecast cut at its time budget (forecast::BUDGET): the lanes end where its run stopped.)
@@ -760,7 +763,7 @@ function timeAxis(t0, t1, now, x) {
 const CELLS_DONE = 24, CELLS_NEXT = 40;
 function stagesList(m) {
   if (!m.lines.length) return h("div", "small dim", "No word from the lead yet.");
-  const ended = pastRuns(endsHeld(), 0);
+  const ended = pastRuns(endsHeld(), 0, m.macs.map((mm) => mm.name));
   const since = ended.length ? ended[0].until : null;
   const running = runningRuns(m);
   const fcLanes = m.fc?.lanes || {};

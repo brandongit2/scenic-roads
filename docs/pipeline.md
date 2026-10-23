@@ -170,11 +170,17 @@ same tab; an alert links to the tab that says more.
   (regions on the map; the map's last update with its catalogue's number and kind (with the low
   zooms or map tiles only), the next ≈ and the map tiles to draw; machines working).
 - **Jobs tab, the schedule:** lanes grouped by Mac (its short name over a lane per slot, the lead
-  first, a Mac gone after), each segment in its stage's colour: the jobs that ran (the history's
-  job ends, back as far as the Past jobs choice: none, 1 h, 6 h, 24 h, 3 days or 7 days, this
-  browser's own; read back from `/work/history` 5 000 events at a time; runs of one step closer
-  than a pixel packed into one segment: `sums.js` pastRuns, packRuns, laneGroups, pastFrom, tested
-  by tools/check/worksums.test.mjs), failed ones outlined red, those running now (to the now line)
+  first, a Mac gone after), each segment in its stage's colour (a `--st-<stage>` token in
+  index.html, a hue each in either theme): the jobs that ran (the history's job ends: a lead's
+  `end` on its slot's lane, a worker's leased `done` or `fail`, which names no slot, on its Mac's
+  first lane free by then; back as far as the Past jobs choice: none, 1 h, 6 h, 24 h, 3 days or
+  7 days, this browser's own; read back from `/work/history` 5 000 events at a time, about 3.4 MB
+  of JSON in four asks for a week's ~18 000 events, measured 23 Oct; runs of one step closer than
+  a pixel packed into one segment: `sums.js` pastRuns, packRuns, laneGroups, pastFrom, tested by
+  tools/check/worksums.test.mjs). A Mac's lanes are one group whatever names its slots had: an
+  older agent's "(second job)" is slot 2, and a name that starts a Mac's current one up to a "-"
+  is that Mac (`sums.js` macSlot: macOS renamed "Mac-mini" to "Mac-mini-de-Brandon"; the history
+  names no Mac otherwise). Failed ones outlined red, those running now (to the now line)
   and the forecast's to come, faint; a now line; each region's mark where it's all on the map; a
   dense time axis (`chartmath.js` timeTicks, midnight a day's name); the pages' lane when a page
   helps.

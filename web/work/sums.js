@@ -57,16 +57,41 @@ export function slotNo(name, host) {
 export const isSlotOf = (name, host) => slotNo(name, host) != null;
 export const slotName = (host, k) => (k ? `${host} #${k + 1}` : host);
 
-// The jobs that ended at or after `from`, as the history has them: each job's end (kind "end": its
-// worker the slot, `t` its end, `secs` how long it ran) as a run {lane, step, from, until, n, ok,
-// what, targets, seq}, by start. An end without its time or step is passed over; an event given
-// twice (by its seq), once.
-export function pastRuns(events, from) {
-  const seen = new Set(), out = [];
+// The Mac a worker's name is and its slot (1, N for "<host> #N", 2 for an older agent's
+// "<host> (second job)"), whatever name the Mac went by: one of `hosts` when the name's host is it,
+// or is the start of it up to a "-" (macOS renamed "Mac-mini" to "Mac-mini-de-Brandon" when its
+// owner's name was set: the history keeps the old one), else the name's host (a Mac gone).
+export function macSlot(name, hosts = []) {
+  const m = /^(.*?)(?: #(\d+)| \(second job\))$/.exec(name);
+  const base = m ? m[1] : name, slot = m ? (m[2] ? +m[2] : 2) : 1;
+  const host = hosts.find((h) => h === base) || hosts.find((h) => h.startsWith(`${base}-`)) || base;
+  return { host, slot };
+}
+
+// The jobs that ended at or after `from`, as the history has them, as runs {lane, step, from, until,
+// n, ok, what, targets, seq}, by start: a lead's job's end (kind "end": its worker the slot) and a
+// worker's leased job's ("done", "fail": its worker the Mac, no slot; put on the first of its Mac's
+// lanes free by then). `t` is the end, `secs` how long it ran. Lanes are named by `hosts` (macSlot).
+// An event without its time or step is passed over; one given twice (by its seq), once.
+export function pastRuns(events, from, hosts = []) {
+  const seen = new Set(), out = [], leased = [];
   for (const e of events || []) {
-    if (e.kind !== "end" || !e.step || e.secs == null || !e.worker || e.t < from || seen.has(e.seq)) continue;
+    if (!["end", "done", "fail"].includes(e.kind) || !e.step || e.secs == null || !e.worker || e.t < from || seen.has(e.seq)) continue;
     seen.add(e.seq);
-    out.push({ lane: e.worker, step: e.step, from: e.t - e.secs, until: e.t, n: (e.targets || []).length, ok: e.ok !== false, what: e.what || "", targets: e.targets || [], seq: e.seq });
+    const { host, slot } = macSlot(e.worker, hosts);
+    const r = { lane: slotName(host, slot - 1), step: e.step, from: e.t - e.secs, until: e.t, n: (e.targets || []).length, ok: e.ok !== false, what: e.what || "", targets: e.targets || [], seq: e.seq };
+    (e.kind === "end" ? out : leased).push(r);
+    if (e.kind !== "end") r.host = host;
+  }
+  const free = {};
+  for (const r of leased.sort((p, q) => p.from - q.from)) {
+    const ends = (free[r.host] ||= []);
+    let k = ends.findIndex((u) => u <= r.from);
+    if (k < 0) k = ends.length;
+    ends[k] = r.until;
+    r.lane = slotName(r.host, k);
+    delete r.host;
+    out.push(r);
   }
   return out.sort((p, q) => p.from - q.from);
 }

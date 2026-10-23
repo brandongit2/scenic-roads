@@ -3,7 +3,7 @@
 // slots and Macs, and the wait while this Mac hasn't read the build's state.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { busyLanes, isSlotOf, laneGroups, notRead, packRuns, pastFrom, pastRuns, READ_RETRY_MS, READ_WAIT_MS, slotName, slotNo, wholeProgress } from '../../web/work/sums.js';
+import { busyLanes, isSlotOf, laneGroups, macSlot, notRead, packRuns, pastFrom, pastRuns, READ_RETRY_MS, READ_WAIT_MS, slotName, slotNo, wholeProgress } from '../../web/work/sums.js';
 
 const line = (step, done, total) => ({ steps: [step], done, total, left: total - done, items: [{ step, done, total, left: total - done }] });
 
@@ -85,6 +85,31 @@ test("past jobs: each job's end since `from`, by start, once each", () => {
   ];
   const r = pastRuns(ev, 100);
   assert.deepEqual(r.map((x) => [x.lane, x.step, x.from, x.until, x.n, x.ok]), [['m1', 'depth', 50, 300, 1, false], ['m4 #2', 'unit', 400, 500, 2, true]]);
+});
+
+test("past jobs: a worker's leased jobs too (done, fail), each on its Mac's first lane free", () => {
+  const ev = [
+    { kind: 'done', seq: 1, t: 200, secs: 100, step: 'pois', worker: 'm4', targets: ['a'], ok: true },
+    { kind: 'fail', seq: 2, t: 250, secs: 100, step: 'unit', worker: 'm4', targets: ['b'], ok: false },
+    { kind: 'done', seq: 3, t: 400, secs: 150, step: 'pois', worker: 'm4', targets: ['c'], ok: true },
+    { kind: 'lapse', seq: 4, t: 400, step: 'pois', worker: 'm4', targets: ['d'] }, // no time: not a run
+  ];
+  const r = pastRuns(ev, 0, ['m4']);
+  assert.deepEqual(r.map((x) => [x.lane, x.from, x.ok]), [['m4', 100, true], ['m4 #2', 150, false], ['m4', 250, true]]);
+});
+
+test("a Mac's lanes one group whatever names it went by", () => {
+  const hosts = ['Mac-mini-de-Brandon', 'Brandons-MacBook-Pro'];
+  assert.deepEqual(macSlot('Mac-mini #3', hosts), { host: 'Mac-mini-de-Brandon', slot: 3 });
+  assert.deepEqual(macSlot('Mac-mini-de-Brandon', hosts), { host: 'Mac-mini-de-Brandon', slot: 1 });
+  assert.deepEqual(macSlot('Brandons-MacBook-Pro (second job)', hosts), { host: 'Brandons-MacBook-Pro', slot: 2 });
+  assert.deepEqual(macSlot('MacBook-Pro-de-Brandon #2', hosts), { host: 'MacBook-Pro-de-Brandon', slot: 2 }); // gone
+  const ev = [
+    { kind: 'end', seq: 1, t: 100, secs: 10, step: 'unit', worker: 'Mac-mini #2' },
+    { kind: 'end', seq: 2, t: 200, secs: 10, step: 'unit', worker: 'Mac-mini-de-Brandon #2' },
+  ];
+  const names = [...new Set(pastRuns(ev, 0, hosts).map((x) => x.lane))];
+  assert.deepEqual(laneGroups(names, hosts), [{ host: 'Mac-mini-de-Brandon', lanes: ['Mac-mini-de-Brandon #2'] }]);
 });
 
 test('past jobs: runs of one step closer than a pixel packed into one segment', () => {
