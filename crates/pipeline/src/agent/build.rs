@@ -3373,7 +3373,7 @@ fn bld_tiles(cov: &Coverage) -> BldTiles {
         id.extend_from_slice(s.buffer_m.to_le_bytes().as_slice());
         id.extend_from_slice(s.country.as_bytes());
         id.push(0);
-        for r in &s.rings {
+        for r in s.rings.iter() {
             id.extend_from_slice(bytemuck::cast_slice(r));
             id.push(1);
         }

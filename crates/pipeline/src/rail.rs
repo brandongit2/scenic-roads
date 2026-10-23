@@ -174,7 +174,7 @@ pub fn countries(cov: &Coverage, outlines: &Outlines, own_code: &OwnCode) -> Res
         .shapes
         .iter()
         .map(|s| {
-            let bare = Shape::new(s.source.clone(), s.rings.clone(), 0.0);
+            let bare = Shape::new(s.source.clone(), s.rings.to_vec(), 0.0);
             lattice(bare.bbox).filter(|p| bare.contains(*p)).collect()
         })
         .collect();

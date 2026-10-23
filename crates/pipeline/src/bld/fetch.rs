@@ -221,7 +221,7 @@ impl Near {
         use geos::{Geom, SpatialIndex};
         let mut geoms = Vec::new();
         for s in &cov.shapes {
-            for r in &s.rings {
+            for r in s.rings.iter() {
                 let mut pts: Vec<[f64; 2]> = r.iter().map(|p| [p[0] as f64 * 1e-7, p[1] as f64 * 1e-7]).collect();
                 if pts.first() != pts.last() {
                     pts.push(pts[0]);

@@ -31,14 +31,16 @@ const M_PER_E7: f64 = 111_320.0 * 1e-7;
 pub struct Shape {
     /// The region and outline entry it came from ("borders: osm:1877178").
     pub source: String,
-    pub rings: Vec<Vec<[i32; 2]>>,
+    /// Shared by its clones, as `grid` and `memo` are: a region's coverage holds the whole
+    /// coverage's shapes, so the outlines (GBs for the world's) aren't held twice (#619).
+    pub rings: std::sync::Arc<Vec<Vec<[i32; 2]>>>,
     pub buffer_m: f64,
     /// Bounding box grown by the buffer (E7).
     pub bbox: [i32; 4],
     /// The ISO 3166-1 code of the country or territory it's of ("" when unknown: an outline that
     /// isn't the pass's), as `Outlines::country_code` has it: what the 3D buildings' fill fits by.
     pub country: String,
-    grid: Grid,
+    grid: std::sync::Arc<Grid>,
     /// What's been worked out of it (`Memo`), shared by its clones (a region's coverage holds the
     /// whole coverage's shapes): its geometry is fixed once made.
     memo: std::sync::Arc<std::sync::Mutex<Memo>>,
@@ -161,7 +163,15 @@ impl Shape {
         let bbox =
             [bb[0].saturating_sub(bx), bb[1].saturating_sub(by), bb[2].saturating_add(bx), bb[3].saturating_add(by)];
         let grid = Grid::build(&rings, bbox, bx.max(by) as f64);
-        Shape { source, rings, buffer_m, bbox, country: String::new(), grid, memo: Default::default() }
+        Shape {
+            source,
+            rings: std::sync::Arc::new(rings),
+            buffer_m,
+            bbox,
+            country: String::new(),
+            grid: std::sync::Arc::new(grid),
+            memo: Default::default(),
+        }
     }
 
     /// The grid cell of `p`, which must be inside the box.
@@ -564,7 +574,7 @@ pub(crate) fn kept_bytes(c: &Coverage) -> Vec<u8> {
             s(&mut b, &sh.country);
             b.extend_from_slice(&sh.buffer_m.to_le_bytes());
             b.extend_from_slice(&(sh.rings.len() as u64).to_le_bytes());
-            for r in &sh.rings {
+            for r in sh.rings.iter() {
                 b.extend_from_slice(&(r.len() as u64).to_le_bytes());
                 b.extend_from_slice(bytemuck::cast_slice(r));
             }
@@ -944,6 +954,15 @@ mod tests {
         let all = Coverage::fixture(&rs, None, d.path()).unwrap();
         let each = all.by_region();
         assert_eq!(each.iter().map(|(id, c)| (id.as_str(), c.shapes.len())).collect::<Vec<_>>(), [("a", 2), ("b", 1)]);
+        // Its shapes' outlines and grids are the whole coverage's, not copies (#619: the agent held the
+        // world's twice, 8 GB).
+        let shared = |c: &Coverage| {
+            c.shapes
+                .iter()
+                .map(|s| (std::sync::Arc::as_ptr(&s.rings), std::sync::Arc::as_ptr(&s.grid)))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(each.iter().flat_map(|(_, c)| shared(c)).collect::<Vec<_>>(), shared(&all));
         // The same as made from each recipe alone.
         for (r, (_, c)) in rs.iter().zip(&each) {
             let alone = Coverage::fixture(std::slice::from_ref(r), None, d.path()).unwrap();
