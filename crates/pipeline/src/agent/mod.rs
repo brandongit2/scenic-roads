@@ -1131,16 +1131,11 @@ fn job_run(c: &crate::coord::Coordinator, step: &str, outcome: Outcome, done: &[
 }
 
 /// What this Mac's cache folder `cache` holds of each shared cache (crate::needs::CACHES; task
-/// #392), read off the disk: the DEM cache's files (`dem-cache.*`), and the whole local
-/// copies (crate::localread::held). Read as it asks, so whatever emptied them (room-making, the OSM
-/// pass's clear, a hand) counts.
+/// #392), read off the disk: the whole local copies (crate::localread::held). Read as it asks, so
+/// whatever emptied them (room-making, the OSM pass's clear, a hand) counts.
 fn caches_here(cache: &Path) -> BTreeMap<String, crate::coord::CacheHere> {
-    // (Through the caches' accessor: sizes alone, a copy not yet in place (`.tmp`) left out.)
-    let dem = store::cachefile::bytes_of(cache, "dem-cache.");
-    [("DEM", dem), (crate::localread::CACHE, crate::localread::held(cache))]
-        .into_iter()
-        .map(|(n, b)| (n.to_string(), crate::coord::CacheHere { have_mb: b >> 20 }))
-        .collect()
+    let have_mb = crate::localread::held(cache) >> 20;
+    BTreeMap::from([(crate::localread::CACHE.to_string(), crate::coord::CacheHere { have_mb })])
 }
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -11448,21 +11443,18 @@ mod tests {
     use super::*;
 
     /// Task #392 review: what a capacity says this Mac holds of the shared caches is read off its
-    /// disk: the DEM cache's files; emptied by whatever, nothing. (The base packs' folder holds the
-    /// pack jobs' way indexes alone since task #396: no shared cache.)
+    /// disk: the whole local copies; emptied by whatever, nothing. (The base packs' folder holds
+    /// the pack jobs' way indexes alone since task #396, and the old DEM cache's files are unused
+    /// since task #595: no shared cache.)
     #[test]
     fn the_caches_here_are_read_off_the_disk() {
         let d = tempfile::tempdir().unwrap();
         let have = |n: &str| caches_here(d.path())[n].have_mb;
-        assert_eq!(have("DEM"), 0);
         std::fs::create_dir_all(d.path().join("base/base")).unwrap();
         std::fs::write(d.path().join("base/base/a.sect.idx"), vec![0u8; 3 << 20]).unwrap();
         std::fs::write(d.path().join("dem-cache.elev.f32"), vec![0u8; 2 << 20]).unwrap();
         std::fs::write(d.path().join("other"), vec![0u8; 5 << 20]).unwrap();
-        // (A copy not yet in place counts for nothing.)
-        std::fs::write(d.path().join("dem-cache.elev.f32.1.2.tmp"), vec![0u8; 4 << 20]).unwrap();
-        assert_eq!(have("DEM"), 2);
-        assert_eq!(caches_here(d.path()).len(), 2, "the DEM cache and the depth's copies");
+        assert_eq!(caches_here(d.path()).len(), 1, "the depth's copies alone");
         assert_eq!(have(crate::localread::CACHE), 0);
         std::fs::create_dir_all(d.path().join("blobs/layers/basemap")).unwrap();
         std::fs::write(d.path().join("blobs/layers/basemap/world-d.0123456789abcdef.pmtiles"), vec![0u8; 3 << 20])
@@ -11471,8 +11463,8 @@ mod tests {
         std::fs::create_dir_all(d.path().join("blobs/layers/lo")).unwrap();
         std::fs::write(d.path().join("blobs/layers/lo/6-1-2.0123456789abcdef.pack"), vec![0u8; 1 << 20]).unwrap();
         assert_eq!(have(crate::localread::CACHE), 3);
-        std::fs::remove_file(d.path().join("dem-cache.elev.f32")).unwrap();
-        assert_eq!(have("DEM"), 0, "cleared: missing again");
+        std::fs::remove_file(d.path().join("blobs/layers/basemap/world-d.0123456789abcdef.pmtiles")).unwrap();
+        assert_eq!(have(crate::localread::CACHE), 0, "cleared: missing again");
     }
 
     /// A costs file's done lines read with their inputs' measures (task #235); a line before them

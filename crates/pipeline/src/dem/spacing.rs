@@ -1,24 +1,26 @@
-//! How densely `extract` puts points along a way, from the declared elevation datasets
-//! (docs/inputs.md §6.8, Densification): `FINE_M` apart where a dataset finer than `COARSE_M` has
-//! data in the 1° cell of the way's first node, `COARSE_M` elsewhere. The datasets' resolutions and
-//! coverages are those the input check measured (`facts.measured`); no source or area is named here.
+//! How densely `extract` puts points along a way (docs/inputs.md §6.8, Densification): as far
+//! apart as the finished terrain's pixels where the way starts (the roads take their heights from
+//! it: crate::road_terrain), never closer than `FLOOR_M`. The terrain's finest zoom at a point is
+//! the finest a dataset finer than the base takes it to there (crate::terrain_fine: its `zoom_for`
+//! of the dataset's full resolution, at most `MAX_Z`), else the base's (z12, coarser at high
+//! latitudes: crate::terrain_pack::max_zoom_at); its pixel there is the spacing: 20–38 m where
+//! GLO-30 alone is, ~7 m over USGS 3DEP's 10 m, `FLOOR_M` over the lidar. The datasets'
+//! resolutions and coverages are those the input check measured (`facts.measured`); no source or
+//! area is named here.
 //!
 //! A cell is the point's degrees floored (west, south corner), half-open: a point on a cell's west
 //! or south edge is in that cell alone. A unit's key names, of the cells holding its ways' first
-//! nodes (`crate::reach::Reach::cells`), those that are fine (`Fine::key`): a dataset added or
+//! nodes (`crate::reach::Reach::cells`), the finer zoom each has (`Fine::key`): a dataset added or
 //! measured again rebuilds only the units whose spacing it changes.
 
 use super::declared::{Accepted, Cover};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::path::Path;
 
-/// The spacing (m) where a fine dataset covers the way.
-pub const FINE_M: f64 = 8.0;
-/// The spacing (m) elsewhere; a dataset is fine when its resolution is finer than this (it holds
-/// detail points this far apart would skip).
-pub const COARSE_M: f64 = 15.0;
+/// The closest two points of a way are ever put (m): the owner's floor, however fine the terrain.
+pub const FLOOR_M: f64 = 4.0;
 
 /// The file a unit's folder holds for `extract` (a `Fine`, as JSON).
 pub const FILE: &str = "spacing.json";
@@ -42,26 +44,44 @@ pub fn cell(p: [i32; 2]) -> [i32; 2] {
     [p[0].div_euclid(10_000_000), p[1].div_euclid(10_000_000)]
 }
 
-/// Where a fine dataset has data: 1° cells, or the world.
+/// The terrain's pixel (m) at latitude `lat` at zoom `z`, never under `FLOOR_M`: the spacing there.
+pub fn spacing_at(z: u8, lat: f64) -> f64 {
+    super::generic::tile_resolution(z as u32, lat).max(FLOOR_M)
+}
+
+/// Where the terrain goes past its base: each 1° cell a dataset finer than the base has data in,
+/// with the finest zoom one takes the terrain to there (at the cell's poleward edge, as
+/// crate::terrain_fine reckons a tile's).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Fine {
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub world: bool,
-    pub cells: BTreeSet<[i32; 2]>,
+    pub cells: Vec<([i32; 2], u8)>,
 }
 
 impl Fine {
     /// From the declared datasets with their coverages (agent::tiles::Elevation).
     pub fn of(ds: &[(Accepted, Cover)]) -> Fine {
-        let mut f = Fine::default();
-        for (_, c) in ds.iter().filter(|(d, _)| d.measured.resolution < COARSE_M) {
-            f.world |= c.world;
-            f.cells.extend(c.cells.iter().map(|&(x, y)| [x, y]));
+        let accepted: Vec<Accepted> = ds.iter().map(|(d, _)| d.clone()).collect();
+        let base = crate::terrain_fine::base_resolution(&accepted);
+        let mut cells: BTreeMap<[i32; 2], u8> = BTreeMap::new();
+        for (d, c) in ds {
+            let full = crate::terrain_fine::full_resolution(d);
+            if !(full < base * crate::terrain_fine::FINER) || c.world {
+                continue;
+            }
+            let pyramid = match &d.declaration.data {
+                super::declared::Data::Tiles { zoom, .. } => Some((*zoom).min(crate::terrain_fine::MAX_Z as u32) as u8),
+                super::declared::Data::Geotiff { .. } => None,
+            };
+            for &(x, y) in &c.cells {
+                let poleward = (y as f64).abs().max((y as f64 + 1.0).abs());
+                let z = pyramid.unwrap_or_else(|| crate::terrain_fine::zoom_for(full, poleward));
+                if z > crate::terrain_pack::max_zoom_at(poleward) {
+                    let e = cells.entry([x, y]).or_insert(z);
+                    *e = (*e).max(z);
+                }
+            }
         }
-        if f.world {
-            f.cells.clear();
-        }
-        f
+        Fine { cells: cells.into_iter().collect() }
     }
 
     /// From the declared datasets (`declared::accepted`).
@@ -71,16 +91,17 @@ impl Fine {
         Fine::of(&with)
     }
 
-    /// Whether 1° cell `c` is fine.
-    pub fn fine(&self, c: [i32; 2]) -> bool {
-        self.world || self.cells.contains(&c)
+    /// The terrain's finer zoom in 1° cell `c`, where it has one.
+    pub fn zoom(&self, c: [i32; 2]) -> Option<u8> {
+        self.cells.binary_search_by(|e| e.0.cmp(&c)).ok().map(|i| self.cells[i].1)
     }
 
-    /// What decides the spacing of ways whose first nodes are in `cells`, for a key: those of them
-    /// that are fine.
+    /// What decides the spacing of ways whose first nodes are in `cells`, for a key: the finer
+    /// zoom each of them has.
     pub fn key(&self, cells: &[[i32; 2]]) -> String {
-        let fine: Vec<String> = cells.iter().filter(|&&c| self.fine(c)).map(|c| format!("{},{}", c[0], c[1])).collect();
-        format!("spacing {}", store::naming::hash16(fine.join(" ").as_bytes()))
+        let fine: Vec<String> =
+            cells.iter().filter_map(|&c| self.zoom(c).map(|z| format!("{},{} {z}", c[0], c[1]))).collect();
+        format!("spacing {} floor {FLOOR_M}", store::naming::hash16(fine.join(" ").as_bytes()))
     }
 
     /// From the declared datasets' accepted version the records name (`m`): an error before the
@@ -99,8 +120,8 @@ impl Fine {
     /// The whole of it as one digest: what the steps that read a spacing file over tiles they
     /// don't divide by cells (the links, rail and candidates) name in their keys.
     pub fn digest(&self) -> String {
-        let cells: Vec<String> = self.cells.iter().map(|c| format!("{},{}", c[0], c[1])).collect();
-        store::naming::hash16(format!("{}|{}", self.world, cells.join(" ")).as_bytes())
+        let cells: Vec<String> = self.cells.iter().map(|(c, z)| format!("{},{} {z}", c[0], c[1])).collect();
+        store::naming::hash16(format!("floor {FLOOR_M}|{}", cells.join(" ")).as_bytes())
     }
 
     pub fn write(&self, path: &Path) -> Result<()> {
@@ -146,11 +167,9 @@ pub fn key_line(inputs: &std::collections::BTreeMap<String, String>) -> Option<S
 
 impl Spacing for Fine {
     fn at(&self, p: [i32; 2]) -> f64 {
-        if self.fine(cell(p)) {
-            FINE_M
-        } else {
-            COARSE_M
-        }
+        let lat = p[1] as f64 * 1e-7;
+        let z = self.zoom(cell(p)).unwrap_or_else(|| crate::terrain_pack::max_zoom_at(lat));
+        spacing_at(z, lat)
     }
 }
 
@@ -159,7 +178,7 @@ mod tests {
     use super::*;
     use crate::dem::declared::{Data, Declaration, Measured};
 
-    fn ds(id: &str, resolution: f64, cover: Option<Vec<[f64; 4]>>) -> (Accepted, Cover) {
+    fn ds(id: &str, resolution: f64, rank: Option<i64>, cover: Option<Vec<[f64; 4]>>) -> (Accepted, Cover) {
         let d = Accepted {
             convert: None,
             id: id.into(),
@@ -167,7 +186,7 @@ mod tests {
             declaration: Declaration {
                 surface: "ground".into(),
                 heights: "EGM2008".into(),
-                rank: None,
+                rank,
                 code: 1,
                 regions: None,
                 data: Data::Geotiff {
@@ -185,32 +204,36 @@ mod tests {
     }
 
     #[test]
-    fn fine_where_a_dataset_finer_than_the_coarse_spacing_has_data() {
+    fn the_spacing_is_the_terrains_pixel_there_never_under_the_floor() {
         let f = Fine::of(&[
-            ds("lidar", 8.0, Some(vec![[-124.0, 48.0, -122.0, 49.0]])),
-            ds("ned", 10.3, Some(vec![[-100.0, 40.0, -99.0, 41.0]])),
-            ds("world", 30.0, None),
+            ds("lidar", 2.0, None, Some(vec![[-124.0, 48.0, -122.0, 49.0]])),
+            ds("ned", 10.3, None, Some(vec![[-100.0, 40.0, -99.0, 41.0]])),
+            ds("glo30", 30.9, Some(1), None),
         ]);
-        assert!(!f.world);
-        assert_eq!(f.cells.iter().copied().collect::<Vec<_>>(), vec![[-124, 48], [-123, 48], [-100, 40]]);
+        assert_eq!(f.cells, vec![([-124, 48], 16), ([-123, 48], 16), ([-100, 40], 14)]);
         let e7 = |x: f64, y: f64| [(x * 1e7).round() as i32, (y * 1e7).round() as i32];
-        assert_eq!(f.at(e7(-123.5, 48.5)), FINE_M);
-        assert_eq!(f.at(e7(-99.5, 40.5)), FINE_M);
+        // (The lidar's z16 pixels are finer than the floor; 3DEP's z14 ~7 m; elsewhere z12's.)
+        assert_eq!(f.at(e7(-123.5, 48.5)), FLOOR_M);
+        assert!((f.at(e7(-99.5, 40.5)) - spacing_at(14, 40.5)).abs() < 1e-9 && f.at(e7(-99.5, 40.5)) > 7.0);
+        let base = f.at(e7(10.5, 45.5));
+        assert!((base - spacing_at(12, 45.5)).abs() < 1e-9 && base > 26.0 && base < 28.0, "{base}");
         // (A cell's west and south edges are its own; its east edge the next cell's.)
-        assert_eq!(f.at(e7(-122.0, 48.5)), COARSE_M);
-        assert_eq!(f.at(e7(-124.0, 48.0)), FINE_M);
-        assert_eq!(f.at(e7(10.5, 45.5)), COARSE_M);
-        assert_eq!(f.at(e7(2.0, 48.0)), COARSE_M);
+        assert!(f.at(e7(-122.0, 48.5)) > 20.0);
+        assert_eq!(f.at(e7(-124.0, 48.0)), FLOOR_M);
+        // At high latitudes the base's zoom is coarser: z11's pixel past 67°.
+        assert!((f.at(e7(10.0, 70.5)) - spacing_at(11, 70.5)).abs() < 1e-9);
         assert_eq!(cell(e7(-0.5, -0.5)), [-1, -1]);
-        // A fine dataset everywhere: fine everywhere.
-        let w = Fine::of(&[ds("all", 5.0, None), ds("lidar", 8.0, Some(vec![[0.0, 0.0, 1.0, 1.0]]))]);
-        assert!(w.world && w.cells.is_empty() && w.at(e7(50.0, 50.0)) == FINE_M);
+        // No dataset finer than the base: the base everywhere.
+        assert!(Fine::of(&[ds("glo30", 30.9, Some(1), None)]).cells.is_empty());
     }
 
     #[test]
-    fn the_key_names_only_the_cells_given_that_are_fine() {
-        let a = Fine::of(&[ds("lidar", 8.0, Some(vec![[0.0, 0.0, 2.0, 1.0]]))]);
-        let b = Fine::of(&[ds("lidar", 8.0, Some(vec![[0.0, 0.0, 1.0, 1.0], [5.0, 5.0, 6.0, 6.0]]))]);
+    fn the_key_names_only_the_cells_given_and_their_zooms() {
+        let a = Fine::of(&[ds("lidar", 2.0, None, Some(vec![[0.0, 0.0, 2.0, 1.0]])), ds("glo30", 30.9, Some(1), None)]);
+        let b = Fine::of(&[
+            ds("lidar", 2.0, None, Some(vec![[0.0, 0.0, 1.0, 1.0], [5.0, 5.0, 6.0, 6.0]])),
+            ds("glo30", 30.9, Some(1), None),
+        ]);
         // (Cell (1, 0) differs: a unit with a way starting there keys apart, one without doesn't.)
         assert_eq!(a.key(&[[0, 0], [3, 3]]), b.key(&[[0, 0], [3, 3]]));
         assert_ne!(a.key(&[[0, 0], [1, 0]]), b.key(&[[0, 0], [1, 0]]));

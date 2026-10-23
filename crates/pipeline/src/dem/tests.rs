@@ -1,7 +1,8 @@
-//! The elevation step end to end, over synthetic datasets held in memory and declared as today's
-//! are (docs/inputs.md §6.8): each dataset where it serves, sampled at the right pixel of the right
-//! image, the fall-through to the next (a fill mask's voids too), the blends at the edges, a store (a
-//! tile downloaded once), the cache reused, and an interrupted run done again.
+//! The pool's sampler end to end (crate::dem::generic, what the terrain's base reads), over
+//! synthetic datasets held in memory and declared as today's are (docs/inputs.md §6.8): each
+//! dataset where it serves, sampled at the right pixel of the right image, the fall-through to the
+//! next (a fill mask's voids too), the blends at the edges, and a stored dataset read from its store
+//! alone.
 
 use super::*;
 use crate::fetch::{Fetch, MapFetch};
@@ -9,6 +10,8 @@ use crate::geotiff::key;
 use crate::geotiff::testtiff::{make_images, Opts};
 use crate::geotiff::write_f32;
 use anyhow::bail;
+use anyhow::Result;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -253,31 +256,11 @@ impl Fixture {
         order.sort_by_key(|&i| (i * 7919) % verts.len());
         let verts: Vec<[i32; 2]> = order.iter().map(|&i| verts[i]).collect();
         let want: Vec<Want> = order.iter().map(|&i| want[i]).collect();
-        let build = dir.path().join("build");
-        std::fs::create_dir_all(&build).unwrap();
-        std::fs::write(build.join("verts.bin"), bytemuck::cast_slice(&verts)).unwrap();
         Fixture { dir, verts, want, fetch }
     }
 
-    fn build(&self) -> PathBuf {
-        self.dir.path().join("build")
-    }
-
-    fn config(&self) -> Config {
-        Config {
-            build: self.build(),
-            workers: 4,
-            cache: self.dir.path().join("cache"),
-            no_cache: false,
-            store: Some(self.dir.path().join("fetched")),
-        }
-    }
-
-    fn outputs(&self) -> (Vec<f32>, Vec<u8>) {
-        (
-            bytemuck::pod_collect_to_vec(&std::fs::read(self.build().join("elev.f32")).unwrap()),
-            std::fs::read(self.build().join("src.u8")).unwrap(),
-        )
+    fn store(&self) -> PathBuf {
+        self.dir.path().join("fetched")
     }
 }
 
@@ -393,37 +376,32 @@ fn declared_plan() -> declared::Plan {
 }
 
 /// The run's outputs, and whether each vertex's height is a blend (the sampler's own word).
-fn run_fixture(f: &Fixture, cfg: &Config, fetch: &dyn Fetch) -> Result<(generic::Stats, Vec<bool>)> {
+fn sample_fixture(f: &Fixture, store: Option<std::path::PathBuf>, fetch: &dyn Fetch) -> Result<generic::Sampled> {
     let plan = declared_plan();
-    let stats = generic::run(cfg, &plan, &Lenient(fetch))?;
     let lon: Vec<f64> = f.verts.iter().map(|v| v[0] as f64 * 1e-7).collect();
     let lat: Vec<f64> = f.verts.iter().map(|v| v[1] as f64 * 1e-7).collect();
-    let o = generic::Opts { fetch: &Lenient(fetch), store: cfg.store.clone(), pool: None };
-    let s = generic::sample(&plan, &lon, &lat, &o, &|_| {})?;
-    Ok((stats, s.blended))
+    let o = generic::Opts { fetch: &Lenient(fetch), store, pool: None };
+    generic::sample(&plan, &lon, &lat, &o, &|_| {})
 }
 
 #[test]
 fn every_dataset_where_it_serves_and_the_blends_at_their_edges() {
     let f = Fixture::new();
-    let (stats, blended) = run_fixture(&f, &f.config(), &f.fetch).unwrap();
-    let (elev, src) = f.outputs();
-    let mut blends = 0;
-    for (i, (&(s, v), (&e, &got))) in f.want.iter().zip(elev.iter().zip(&src)).enumerate() {
-        assert_eq!(got, s, "vertex {i} at {:?}", f.verts[i]);
+    let s = sample_fixture(&f, Some(f.store()), &f.fetch).unwrap();
+    let (elev, src, blended) = (&s.elev, &s.src, &s.blended);
+    for (i, (&(c, v), (&e, &got))) in f.want.iter().zip(elev.iter().zip(src)).enumerate() {
+        assert_eq!(got, c, "vertex {i} at {:?}", f.verts[i]);
         if blended[i] {
             // (Between the dataset's own height and the one beneath it: finite.)
-            blends += 1;
             assert!(e.is_finite(), "vertex {i}");
             continue;
         }
         match v {
-            Some(v) => assert!((e as f64 - v).abs() < 2e-3, "vertex {i} (source {s}): {e} for {v}"),
-            None if s == 0 => assert!(e.is_nan()),
+            Some(v) => assert!((e as f64 - v).abs() < 2e-3, "vertex {i} (source {c}): {e} for {v}"),
+            None if c == 0 => assert!(e.is_nan()),
             None => assert!(e.is_finite()),
         }
     }
-    assert_eq!(stats.blended, blends);
     // The seams: New Brunswick's lidar beside its no-data strip, over GLO-30. Pennsylvania's 3DEP
     // has nothing beneath it there. (Tokyo's points lie farther from its lidar columns' edges than
     // a band: tiles_blend_across_their_edges.)
@@ -437,41 +415,19 @@ fn every_dataset_where_it_serves_and_the_blends_at_their_edges() {
             && count(DemSource::Gsi10) > 0,
         "the fixture exercises each fall-through"
     );
-    assert_eq!(
-        (stats.datasets["hrdem"], stats.datasets["glo30"], stats.datasets["usgs-3dep"], stats.missing),
-        (count(DemSource::Hrdem), count(DemSource::Glo30), 25, 4)
-    );
+    assert_eq!(src.iter().filter(|&&c| c == 0).count(), 4, "the open sea's three and Taiwan's void");
     // The store: only read (its four files, nothing written or left).
-    let store = f.dir.path().join("fetched/glo30");
-    assert_eq!(std::fs::read_dir(&store).unwrap().count(), 4);
-    // The cache: every vertex by key.
-    let keys: Vec<u64> =
-        bytemuck::pod_collect_to_vec(&std::fs::read(f.dir.path().join("cache/dem-cache.keys.u64")).unwrap());
-    assert_eq!(keys.len(), f.verts.len());
-    assert!(keys.windows(2).all(|w| w[0] <= w[1]));
-    assert!(!f.build().join("dem-progress.json").exists() && !f.build().join("elev.f32.tmp").exists());
-    let stats_file: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(f.build().join("dem-stats.json")).unwrap()).unwrap();
-    assert_eq!(stats_file["vertices"], f.verts.len());
-
-    // Again: every vertex from the cache but the missing ones, sampled again (the open sea's: no
-    // file holds them; Taiwan's void: the store's: asking nothing).
-    let first = std::fs::read(f.build().join("elev.f32")).unwrap();
-    let counting = Counting { inner: &f.fetch, asked: Mutex::default(), fail: None };
-    let again = generic::run(&f.config(), &declared_plan(), &counting).unwrap();
-    assert_eq!(again.sampled_this_run, 4);
-    assert_eq!(std::fs::read(f.build().join("elev.f32")).unwrap(), first);
-    assert!(counting.asked.lock().unwrap().is_empty());
+    assert_eq!(std::fs::read_dir(f.store().join("glo30")).unwrap().count(), 4);
 }
 
-/// Area builds never download a stored dataset: a tile the index names and the store lacks is an
-/// error naming it, nothing asked of any server for it (the index's URLs only name the tiles).
+/// A stored dataset is never downloaded: a tile the index names and the store lacks is an error
+/// naming it, nothing asked of any server for it (the index's URLs only name the tiles).
 #[test]
 fn a_tile_the_store_lacks_is_an_error_naming_it_and_never_fetched() {
     let f = Fixture::new();
-    std::fs::remove_file(f.dir.path().join("fetched/glo30/N48E002_DEM.tif")).unwrap();
+    std::fs::remove_file(f.store().join("glo30/N48E002_DEM.tif")).unwrap();
     let counting = Counting { inner: &f.fetch, asked: Mutex::default(), fail: None };
-    let e = format!("{:#}", generic::run(&f.config(), &declared_plan(), &Lenient(&counting)).unwrap_err());
+    let e = format!("{:#}", sample_fixture(&f, Some(f.store()), &counting).unwrap_err());
     assert!(
         e.contains("glo30: tile N48E002_DEM.tif isn't in the store")
             && e.contains("scenic-build store-fetch glo30 --index"),
@@ -479,55 +435,10 @@ fn a_tile_the_store_lacks_is_an_error_naming_it_and_never_fetched() {
     );
     assert!(counting.asked.lock().unwrap().iter().all(|u| !u.starts_with(GLO30)), "nothing of GLO-30 asked for");
     // (One cut short is an error too, not a download.)
-    std::fs::write(f.dir.path().join("fetched/glo30/N48E002_DEM.tif"), b"II*\0short").unwrap();
-    let e = format!("{:#}", generic::run(&f.config(), &declared_plan(), &Lenient(&counting)).unwrap_err());
+    std::fs::write(f.store().join("glo30/N48E002_DEM.tif"), b"II*\0short").unwrap();
+    let e = format!("{:#}", sample_fixture(&f, Some(f.store()), &counting).unwrap_err());
     assert!(e.contains("tile N48E002_DEM.tif in the store") && e.contains("isn't whole"), "{e}");
     // A store-kept dataset with no store given is refused, not read from its index's URLs.
-    let e = format!(
-        "{:#}",
-        generic::run(&Config { store: None, ..f.config() }, &declared_plan(), &Lenient(&f.fetch)).unwrap_err()
-    );
+    let e = format!("{:#}", sample_fixture(&f, None, &f.fetch).unwrap_err());
     assert!(e.contains("glo30: its files are read from the store, and no store is given"), "{e}");
-}
-
-#[test]
-fn an_interrupted_run_is_done_again() {
-    let f = Fixture::new();
-    let failing = Counting { inner: &f.fetch, asked: Mutex::default(), fail: Some(USGS_URL.into()) };
-    assert!(generic::run(&f.config(), &declared_plan(), &Lenient(&failing)).is_err());
-    let progress: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(f.build().join("dem-progress.json")).unwrap()).unwrap();
-    assert_eq!(progress["done"], serde_json::json!(["cache"]));
-    // Again: the outputs are a whole run's.
-    generic::run(&f.config(), &declared_plan(), &Lenient(&f.fetch)).unwrap();
-    let whole = Fixture::new();
-    run_fixture(&whole, &whole.config(), &whole.fetch).unwrap();
-    assert_eq!(f.outputs().1, whole.outputs().1);
-    assert!(f.outputs().0.iter().zip(&whole.outputs().0).all(|(a, b)| a.to_bits() == b.to_bits()));
-}
-
-/// Task #496: a run sampled in batches (a few vertices each, along the Z-order curve) writes the
-/// heights and sources of one batch to the bit, counts the same, and asks for no file or tile the
-/// one batch didn't (the files, blocks and tiles kept across the batches).
-#[test]
-fn a_run_in_batches_is_a_run_in_one() {
-    let (one, many) = (Fixture::new(), Fixture::new());
-    let ask = |f: &Fixture, batch: usize| {
-        let c = Counting { inner: &f.fetch, asked: Mutex::default(), fail: None };
-        let s = generic::run_in_batches(&f.config(), &declared_plan(), &Lenient(&c), batch).unwrap();
-        let mut asked = c.asked.into_inner().unwrap();
-        asked.sort();
-        asked.dedup();
-        (serde_json::to_value(&s).unwrap(), asked)
-    };
-    let (mut s1, a1) = ask(&one, usize::MAX);
-    let (mut s7, a7) = ask(&many, 7);
-    assert!(one.verts.len() > 7 * 4, "several batches");
-    for s in [&mut s1, &mut s7] {
-        s.as_object_mut().unwrap().remove("seconds");
-    }
-    assert_eq!(s1, s7);
-    assert_eq!(a1, a7);
-    assert_eq!(one.outputs().1, many.outputs().1);
-    assert!(one.outputs().0.iter().zip(&many.outputs().0).all(|(a, b)| a.to_bits() == b.to_bits()));
 }

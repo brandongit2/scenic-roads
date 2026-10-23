@@ -50,13 +50,13 @@
 //! On the owner's ask (`clear`: the menu bar's Clear the Build's Caches, `scenic clean`, a
 //! `ClearRequest`), once the build is done, jobs running here or not: those caches, the canopy squares
 //! too, and the others a later job fills again from the NAS or makes again from what's there
-//! (`kind`): the pack cache, the DEM seed (only while the NAS has it whole), the local copies of the
-//! NAS's files and the heritage jobs' clip of the planet. Kept: the Wikidata and Wikipedia answers
-//! the items and heritage jobs keep (crate::answers: the NAS has them too, but they free little, and
+//! (`kind`): the pack cache, the local copies of the NAS's files and the heritage jobs' clip of the
+//! planet; and the old DEM cache's leftovers (`dem-cache.*`, unused since task #595). Kept: the
+//! Wikidata and Wikipedia answers the items and heritage jobs keep (crate::answers: the NAS has them too, but they free little, and
 //! the heritage chain's working copy, `heritage-<date>/`, is whole or nothing), the heritage
 //! scripts' old Python environment (`heritage-venv/`: their next run removes it), what frees next to
 //! nothing (the trains' stop pairs, under a MB), the agent's own timings (`unit-stages.json`) and
-//! what z6 tiles kept that isn't on the NAS yet (`dem-units/`, `scenic-units/`).
+//! what z6 tiles kept that isn't on the NAS yet (`scenic-units/`).
 //!
 //! The owner's room target (`Target`: `scenic room <GB>`, the menu bar's Disk Room; `toward`): the
 //! free space this Mac's agent keeps, set at any moment, in its folder (each Mac's disk is its own).
@@ -66,15 +66,15 @@
 //! the agent frees its caches toward that on a thread of its own, jobs running or not,
 //! whether or not the build has work left: the cheap caches by room-making's rules and order (the
 //! canopy squares too), then a clear's others, the cheapest to fill again first (`TOWARD_ORDER`:
-//! copies of the NAS's files, the base packs a file at a time, the least recently used first, the
-//! DEM seed whole, the heritage clip last, and only while it can be made again:
+//! the old DEM cache's leftovers, copies of the NAS's files, the base packs a file at a time, the
+//! least recently used first, the heritage clip last, and only while it can be made again:
 //! `heritage_remade`), each only as far as needed, the goal read again as it goes (lowered or
 //! off: it stops).
 //!
 //! Mid-job (docs/building.md §2): room-making, a clear and a freeing toward the target act
 //! while jobs run. They never delete what a job uses: a job holds each cache file it uses
 //! (store::cachefile's shared flock), and a file goes only under an exclusive one taken without
-//! waiting (`store::cachefile::try_remove`; the DEM seed's three files together), so one in use is
+//! waiting (`store::cachefile::try_remove`), so one in use is
 //! passed over, counted as kept. A wrongly deleted file costs a fetch: every read of the caches
 //! fills what's missing. What the queued jobs read goes last (`Hints`). Not while a job an earlier
 //! agent left runs (the agent's to see to: its programs may not hold what they use).
@@ -215,7 +215,7 @@ pub fn words(kind: &str) -> &str {
         "blobs" => "copies of the records' files",
         "months" => "pageview months",
         "base" => "base packs",
-        "dem" => "the DEM seed",
+        "dem" => "the old DEM cache (unused since #595)",
         "copies" => "copies of the NAS's files",
         "heritage" => "the heritage jobs' planet clip",
         k => k,
@@ -246,7 +246,7 @@ pub struct Freed {
     pub freed: BTreeMap<String, u64>,
     /// What stays of what it went through: files the NAS hasn't (a helper's loose raw tiles, which
     /// only its own jobs pack; a canopy square it couldn't take now; a pageview month's index, which
-    /// crate::pageviews puts there when it next reads it; the DEM seed, for a clear).
+    /// crate::pageviews puts there when it next reads it).
     #[serde(default)]
     pub left: u64,
     /// Why it wasn't done, when it wasn't (a clear asked for while a job ran here, or while the
@@ -341,7 +341,7 @@ pub fn gone(clear: &BTreeMap<String, u64>, mb_s: f64) -> Vec<Gone> {
                 "blobs" => format!("copied back from the NAS as the z3 tiles are built again ({} in all)", time(b)),
                 "months" => format!("copied back from the NAS when the items and heritage jobs next run ({})", time(b)),
                 "base" => format!("copied back by the next map tiles' job, from the mirror where it has them, else the NAS ({})", time(b)),
-                "dem" => format!("copied back from the NAS by the next unit job ({})", time(b)),
+                "dem" => "never: nothing reads it".to_string(),
                 "copies" => format!("copied back from the NAS when the summits and peaks next run ({})", time(b)),
                 "heritage" => "made again from the NAS's filtered planet when the heritage chain next runs (about an hour of osmium)".to_string(),
                 _ => "filled again from the NAS".to_string(),
@@ -399,16 +399,13 @@ pub fn clear_answered(home: &Path) {
 
 /// Clears this Mac's build caches at `cache` on the owner's ask (the module's doc, On the owner's
 /// ask): the cheap caches as room-making empties them, the canopy squares too, then the others whole
-/// (nothing through a link, nor in the NAS's folder: `ours`), the DEM seed only while the NAS's
-/// `sources` has it whole (else every z6 tile would sample its vertices anew). What it freed, and
-/// what stays of them.
+/// (nothing through a link, nor in the NAS's folder: `ours`). What it freed, and what stays of them.
 pub fn clear(cache: &Path, sources: &Path) -> Result<Freed> {
     if !cache.is_dir() {
         return Ok(Freed::default());
     }
     let mut freed = free_cheap(cache, sources, u64::MAX, u64::MAX, &disk_free, &|_| false, None)?;
     let mut left = cheap_left(cache, sources.parent());
-    let seed_whole = seed_whole(sources);
     let mut others: Vec<(PathBuf, &str)> = std::fs::read_dir(cache)
         .into_iter()
         .flatten()
@@ -424,47 +421,17 @@ pub fn clear(cache: &Path, sources: &Path) -> Result<Freed> {
             continue;
         }
         let bytes = bytes_under(&p);
-        if (k == "dem" && !seed_whole && !crate::whole::is_tmp(&p))
-            || (k == "heritage" && !heritage_remade(sources.parent(), &p))
-        {
+        if k == "heritage" && !heritage_remade(sources.parent(), &p) {
             left += bytes;
             continue;
         }
-        // (File by file, none a job holds: store::cachefile. The DEM seed's files together.)
-        let t = if k == "dem" && !crate::whole::is_tmp(&p) {
-            seed_gone(cache, &p)
-        } else {
-            store::cachefile::remove_tree(&p)
-        };
+        // (File by file, none a job holds: store::cachefile.)
+        let t = store::cachefile::remove_tree(&p);
         *freed.entry(k.to_string()).or_default() += t.freed;
         left += t.left;
     }
     freed.retain(|_, b| *b > 0);
     Ok(Freed { freed, left, ..Default::default() })
-}
-
-/// Whether the NAS's `sources` has the DEM seed whole, as unit::dem_seed takes it: its three files,
-/// of one count. (Then every local file of it may go, whole or cut short; else only a temporary one.)
-fn seed_whole(sources: &Path) -> bool {
-    let len =
-        |n: &str| std::fs::metadata(sources.join("dem-cache").join(n)).ok().filter(|m| m.is_file()).map(|m| m.len());
-    matches!((len("dem-cache.keys.u64"), len("dem-cache.elev.f32"), len("dem-cache.src.u8")), (Some(k), Some(e), Some(s)) if k == 8 * s && e == 4 * s)
-}
-
-/// The DEM seed here deleted together (`p` one of its files: its three, each once), none of them
-/// while a job holds one (store::cachefile::try_remove_all). Once the first of the three is seen,
-/// the others are gone too: what they freed counts there.
-fn seed_gone(cache: &Path, p: &Path) -> store::cachefile::Tree {
-    let all: Vec<PathBuf> =
-        ["keys.u64", "elev.f32", "src.u8"].iter().map(|n| cache.join(format!("dem-cache.{n}"))).collect();
-    if !all.iter().any(|a| a == p) {
-        return store::cachefile::remove_tree(p);
-    }
-    let bytes: u64 = all.iter().map(|a| bytes_under(a)).sum();
-    match store::cachefile::try_remove_all(&all) {
-        Some(n) => store::cachefile::Tree { freed: n, left: 0 },
-        None => store::cachefile::Tree { freed: 0, left: bytes_under(p).min(bytes) },
-    }
 }
 
 /// The owner's disk room target on this Mac (`scenic room <GB>`, the menu bar's Disk Room): the
@@ -591,9 +558,10 @@ pub struct RoomView {
 }
 
 /// The caches a freeing toward the target empties after the cheap ones, in this order: the
-/// cheapest to fill again first (copies of the NAS's files and the base packs, minutes from the
-/// NAS; the DEM seed, 9 GB; the heritage jobs' planet clip, an hour of osmium, last).
-const TOWARD_ORDER: [&str; 4] = ["copies", "base", "dem", "heritage"];
+/// cheapest to fill again first (the old DEM cache's leftovers, which nothing reads; copies of the
+/// NAS's files and the base packs, minutes from the NAS; the heritage jobs' planet clip, an hour of
+/// osmium, last).
+const TOWARD_ORDER: [&str; 4] = ["dem", "copies", "base", "heritage"];
 
 /// Whether the heritage jobs' clip of the planet at `p` (`heritage-merged-<date>-<cover>.osm.pbf`)
 /// can be made again: the NAS's build manifest (under `root`) names the pass's filtered planet of
@@ -618,8 +586,8 @@ fn heritage_remade(root: Option<&Path>, p: &Path) -> bool {
 /// cleared midway (0) stops it): the cheap caches first, by room-making's rules and in its order
 /// (each file once the NAS's `sources` has it; the canopy squares too), then the others a clear
 /// empties (`TOWARD_ORDER`), only as far as needed: the base packs a file at a time, the least
-/// recently used first; the others whole (the DEM seed only while the NAS has it whole, its files
-/// together; the heritage clip only while the pass's filtered planet it's clipped from is there).
+/// recently used first; the others whole (the heritage clip only while the pass's filtered planet
+/// it's clipped from is there).
 /// Jobs running or not: what they hold stays (store::cachefile); what the queued ones read goes
 /// last (`hint`). What it freed, and when it falls short, what stays of what it may free.
 pub fn toward(
@@ -647,7 +615,6 @@ fn toward_with(
     let mut freed = free_cheap(cache, sources, first, first, free_space, hint, Some(goal))?;
     let root = sources.parent();
     let enough = || free_space(cache).map(|f| f >= goal());
-    let whole_seed = seed_whole(sources);
     let mut left = 0;
     let mut short = !enough()?;
     for k in TOWARD_ORDER {
@@ -703,24 +670,8 @@ fn toward_with(
             short = short && !enough()?;
             continue;
         }
-        // (The DEM seed's files together, whole or none: one of them alone is no seed.)
-        if k == "dem" && !whole_seed {
-            for p in entries {
-                let b = bytes_under(&p);
-                if crate::whole::is_tmp(&p) {
-                    let t = store::cachefile::remove_tree(&p);
-                    *freed.entry(k.to_string()).or_default() += t.freed;
-                    left += t.left;
-                } else {
-                    left += b;
-                }
-            }
-            short = !enough()?;
-            continue;
-        }
-        let together = k == "dem";
         for p in entries {
-            if super::stopping() || (!together && enough()?) {
+            if super::stopping() || enough()? {
                 short = short && !enough()?;
                 break;
             }
@@ -730,12 +681,8 @@ fn toward_with(
                 left += bytes;
                 continue;
             }
-            // (File by file, none a job holds: store::cachefile. The DEM seed's files together.)
-            let t = if together && !crate::whole::is_tmp(&p) {
-                seed_gone(cache, &p)
-            } else {
-                store::cachefile::remove_tree(&p)
-            };
+            // (File by file, none a job holds: store::cachefile.)
+            let t = store::cachefile::remove_tree(&p);
             *freed.entry(k.to_string()).or_default() += t.freed;
             left += t.left;
         }
@@ -824,8 +771,7 @@ pub struct Sizes {
 
 /// What this Mac's caches hold, for the status: what room-making can free (`cheap_bytes`; a
 /// helper's, `helper_cheap_bytes`, its loose raw tiles left out; the pageview months the NAS has, only
-/// when `root` is given), and what a clear would, by cache (those, and the others: the DEM seed
-/// counted, as the NAS has it, whichever Mac copied it from there). Nothing through a link, nor in
+/// when `root` is given), and what a clear would, by cache (those, and the others). Nothing through a link, nor in
 /// the NAS's project folder `root` (`ours`).
 pub fn sizes(cache: &Path, helper: bool, root: Option<&Path>) -> Sizes {
     let mut clear: BTreeMap<String, u64> = BTreeMap::new();
@@ -1525,7 +1471,7 @@ mod tests {
         let all = used(c);
         let disk = |base: u64| move |p: &Path| Ok(base + all - used(p));
         // Short of the archive and all but a byte of the idle square: both go, the archive (idle
-        // longer, and the NAS has it: nothing asked) first; the marker and the DEM seed stay.
+        // longer, and the NAS has it: nothing asked) first; the marker and the old DEM cache stay.
         assert_eq!(
             make_room_spared(c, nas, 850 + arch + idle - 1, 850 + arch + idle - 1, &disk(850)).unwrap(),
             arch + idle
@@ -1538,7 +1484,7 @@ mod tests {
         assert!(nas.join("canopy/idle.tif").exists());
         // Room enough: nothing goes.
         assert_eq!(make_room_spared(c, nas, 1000, 1000, &|_| Ok(1 << 20)).unwrap(), 0);
-        // Far short: every cheap file; never the DEM seed.
+        // Far short: every cheap file; never the old DEM cache (a clear's, not room-making's).
         make_room_spared(c, nas, 1 << 40, 1 << 40, &disk(0)).unwrap();
         assert!(!c.join("chm10/read.tif").exists() && c.join("dem-cache.keys.u64").exists());
         assert!(disk_free(c).unwrap() > 0);
@@ -1857,7 +1803,7 @@ mod tests {
         let nas = &d.path().join("nas/sources");
         std::fs::create_dir_all(d.path().join("nas/state/build")).unwrap();
         // The cheap caches; the others a later job fills again from the NAS, or makes again from
-        // what's there (the NAS has the DEM seed at its sizes here).
+        // what's there; the old DEM cache's leftovers, which nothing fills again.
         let square = whole(&c.join("chm10/a.tif"), 60);
         file(&c.join("blobs/layers/terrain/hi/6-1-2.0000000000000001.pack"), 1000, 60);
         let others = [
@@ -1872,7 +1818,6 @@ mod tests {
         }
         for (n, len) in [("keys.u64", 80), ("elev.f32", 40), ("src.u8", 10)] {
             file(&c.join(format!("dem-cache.{n}")), len, 60);
-            file(&nas.join(format!("dem-cache/dem-cache.{n}")), len, 60);
         }
         // What stays: the answers the NAS keeps too (they free little), a pageview month the NAS
         // lacks (said as kept: crate::pageviews puts it there when it next reads it), what frees next to
@@ -1885,7 +1830,6 @@ mod tests {
             "heritage-2026-09-28/.done",
             "rail/pairs-0123456789abcdef.bin",
             "unit-stages.json",
-            "dem-units/6-1-1.dem",
             "scenic-units/6-1-1/canopy.keys",
         ];
         for f in kept {
@@ -1931,25 +1875,12 @@ mod tests {
         for p in &outside {
             assert!(p.exists(), "{} untouched", p.display());
         }
-        // A seed here of another count than the NAS's (the review's case), or cut short (a copy that
-        // stopped), the NAS's whole: it goes too.
-        for (n, len) in [("keys.u64", 160), ("elev.f32", 80), ("src.u8", 20)] {
-            file(&c.join(format!("dem-cache.{n}")), len, 60);
-        }
-        assert_eq!(clear(c, nas).unwrap().freed.get("dem"), Some(&260));
+        // Leftovers of any count, a part or a temporary file: they go too, the NAS asked nothing.
         file(&c.join("dem-cache.keys.u64"), 80, 60);
-        file(&c.join("dem-cache.elev.f32"), 12, 60);
-        assert_eq!(clear(c, nas).unwrap().freed.get("dem"), Some(&92));
-        // The NAS's not whole (its files not of one count): the seed here stays, but a temporary
-        // file of it.
-        for (n, len) in [("keys.u64", 80), ("elev.f32", 40), ("src.u8", 10)] {
-            file(&c.join(format!("dem-cache.{n}")), len, 60);
-        }
         file(&c.join("dem-cache.keys.u64.m1.123.tmp"), 30, 60);
-        std::fs::write(nas.join("dem-cache/dem-cache.src.u8"), b"x").unwrap();
         let f = clear(c, nas).unwrap();
-        assert_eq!((f.bytes(), f.left), (30, 130 + 100));
-        assert!(c.join("dem-cache.keys.u64").exists() && !c.join("dem-cache.keys.u64.m1.123.tmp").exists());
+        assert_eq!((f.freed.get("dem"), f.left), (Some(&110), 100));
+        assert!(!c.join("dem-cache.keys.u64").exists() && !c.join("dem-cache.keys.u64.m1.123.tmp").exists());
     }
 
     #[test]
@@ -1959,8 +1890,8 @@ mod tests {
         let nas = &d.path().join("nas/sources");
         std::fs::create_dir_all(d.path().join("nas/state/build")).unwrap();
         // The cheap caches (copies of the records' files), then the others: the copies of the
-        // NAS's files, three base packs (the oldest used longest ago), the DEM seed (the NAS has it
-        // whole) and the heritage clip.
+        // NAS's files, three base packs (the oldest used longest ago), the old DEM cache's leftovers
+        // and the heritage clip.
         file(&c.join("blobs/layers/terrain/hi/6-1-2.0000000000000001.pack"), 1000, 60);
         file(&c.join("sources-terrain-z8-v1/terrain-z8-v1.0000000000000001.pack"), 500, 60);
         for (i, age) in [(1, 300), (2, 200), (3, 100)] {
@@ -1968,7 +1899,6 @@ mod tests {
         }
         for (n, len) in [("keys.u64", 80), ("elev.f32", 40), ("src.u8", 10)] {
             file(&c.join(format!("dem-cache.{n}")), len, 60);
-            file(&nas.join(format!("dem-cache/dem-cache.{n}")), len, 60);
         }
         file(&c.join("heritage-merged-2026-09-28-0123456789ab.osm.pbf"), 700, 60);
         // (The pass's filtered planet it's clipped from, on the NAS.)
@@ -1980,13 +1910,18 @@ mod tests {
         };
         let held = all(c);
         // A disk of `held` bytes, with what's deleted free: a target of 3500 takes the blobs (1000),
-        // the copies (500), then base packs a file at a time, the oldest first, as far as needed:
-        // one.
+        // the old DEM cache (130), the copies (500), then base packs a file at a time, the oldest
+        // first, as far as needed: one.
         let disk = move |p: &Path| Ok(held - all(p));
         let f = toward_with(c, nas, &|| 3500, &disk, &|_| false).unwrap();
         assert_eq!(
             f.freed,
-            BTreeMap::from([("base".to_string(), 2000), ("blobs".to_string(), 1000), ("copies".to_string(), 500)])
+            BTreeMap::from([
+                ("base".to_string(), 2000),
+                ("blobs".to_string(), 1000),
+                ("copies".to_string(), 500),
+                ("dem".to_string(), 130)
+            ])
         );
         assert_eq!((f.target, f.left), (Some(3500), 0));
         assert!(
@@ -1994,7 +1929,7 @@ mod tests {
                 && c.join("base/base/6-1-2.0000000000000001.base").exists()
         );
         assert!(
-            c.join("dem-cache.keys.u64").exists() && c.join("heritage-merged-2026-09-28-0123456789ab.osm.pbf").exists()
+            !c.join("dem-cache.src.u8").exists() && c.join("heritage-merged-2026-09-28-0123456789ab.osm.pbf").exists()
         );
         // A little more: the next base pack.
         assert_eq!(
@@ -2003,22 +1938,11 @@ mod tests {
         );
         // Already there: nothing goes.
         assert_eq!(toward_with(c, nas, &|| 3500, &disk, &|_| false).unwrap(), Freed::default());
-        // A target past everything: the DEM seed whole, then the heritage clip; short, and what
+        // A target past everything: the last base pack, then the heritage clip; short, and what
         // stays said (nothing here).
         let f = toward_with(c, nas, &|| u64::MAX, &disk, &|_| false).unwrap();
-        assert_eq!(
-            f.freed,
-            BTreeMap::from([("base".to_string(), 2000), ("dem".to_string(), 130), ("heritage".to_string(), 700)])
-        );
+        assert_eq!(f.freed, BTreeMap::from([("base".to_string(), 2000), ("heritage".to_string(), 700)]));
         assert_eq!(f.left, 0);
-        assert!(!c.join("dem-cache.src.u8").exists());
-        // A seed the NAS hasn't whole stays, counted as left.
-        for (n, len) in [("keys.u64", 80), ("elev.f32", 40), ("src.u8", 10)] {
-            file(&c.join(format!("dem-cache.{n}")), len, 60);
-        }
-        std::fs::write(nas.join("dem-cache/dem-cache.src.u8"), b"x").unwrap();
-        let f = toward_with(c, nas, &|| u64::MAX, &disk, &|_| false).unwrap();
-        assert_eq!((f.bytes(), f.left), (0, 130));
     }
 
     /// The pass's filtered planet of 2026-09-28 in the NAS's manifest under `root`, and there.

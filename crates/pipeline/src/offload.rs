@@ -615,7 +615,6 @@ pub fn run_task(
     };
     let tools = crate::unit::Tools {
         bin: bin.to_path_buf(),
-        dem: PathBuf::new(),
         cache: dir.join("cache"),
         buildings: Some(dir.join("b")),
         sources: nas("{sources}")?,
@@ -875,7 +874,6 @@ mod tests {
                 &dir,
                 &crate::unit::Tools {
                     bin: bin.clone(),
-                    dem: PathBuf::new(),
                     cache: d.path().join("cache"),
                     buildings: None,
                     sources: None,
@@ -1075,7 +1073,6 @@ mod tests {
                 dir,
                 &crate::unit::Tools {
                     bin: bin.clone(),
-                    dem: PathBuf::new(),
                     cache: d.path().join("cache"),
                     buildings: None,
                     sources: None,

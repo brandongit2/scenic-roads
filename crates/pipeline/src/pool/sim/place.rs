@@ -20,8 +20,8 @@
 //!   step's job (crate::needs::HALO_STEPS: `pack`, task #260; `lo`, task #381) takes one halo's targets (`Cfg::halo`
 //!   a halo, offered a halo an offer as the agent offers them), its disk its halo's output once
 //!   whatever its targets, its `bytes` its halo's base packs' files (not its NAS traffic), its NAS
-//!   what it reads of them (`nas_read` over `nas_secs`) and what it writes. A job of a step reading a shared cache (crate::needs::CACHES: the DEM
-//!   cache) on a Mac without it fills it (`Step::cache_mb`, measured with its targets and its
+//!   what it reads of them (`nas_read` over `nas_secs`) and what it writes. A job of a step reading a shared cache (crate::needs::CACHES: the local
+//!   copies) on a Mac without it fills it (`Step::cache_mb`, measured with its targets and its
 //!   job), the cache kept on that Mac's disk after (`Cfg::warm`: those every Mac has from the
 //!   start), its capacity saying the caches it has (crate::coord::Capacity::caches); the
 //!   coordinator reserves what a Mac lacks of a cache once (`Run::cache_twice` counts otherwise). A job
@@ -993,19 +993,19 @@ mod tests {
     }
 
     /// Task #392, the M4 as measured on 18 Oct (48 GB, 14 cores, 85 GB free; its caches on its
-    /// disk): units of 6.6 GB (the densest measured, coord::unit_peak)
+    /// disk): jobs of a step reading a shared cache (the local copies, crate::localread), 6.6 GB
     /// writing 6 GB each (their disks' 90th percentile, 5.9 GB), `pack` 0.3 GB and `lo` 0.5 GB
-    /// each; the DEM cache's fill measured before, but there: none reserved.
+    /// each; the cache's fill measured before, but there: none reserved.
     /// Where one job at a time ran before, bound by reservations of the most a job ever took,
-    /// three or four units run at once within its memory and disk (checked at every start), the
+    /// three or four of them run at once within its memory and disk (checked at every start), the
     /// map tiles and low zooms beside them.
     #[test]
-    fn the_m4_runs_several_units_at_once_by_todays_measures() {
-        // (85 GB free with its DEM cache's 12.6 GB there.)
+    fn the_m4_runs_several_cache_jobs_at_once() {
+        // (85 GB free with its cache's 12.6 GB there.)
         let m4 = Mac { name: "m4", total_mb: 49_152, cores: 14, disk_mb: 85_000 + 12_600 };
-        let unit = Step {
+        let depth = Step {
             cache_mb: 12_600,
-            name: "unit",
+            name: "depth",
             targets: 24,
             mem_mb: 6_600,
             disk_mb: 6_000,
@@ -1037,30 +1037,30 @@ mod tests {
             creates: 5,
         };
         let c = Cfg {
-            steps: vec![unit, pack, lo],
+            steps: vec![depth, pack, lo],
             halo: 20,
-            known: vec!["unit", "pack", "lo"],
-            warm: vec!["DEM"],
+            known: vec!["depth", "pack", "lo"],
+            warm: vec![crate::localread::CACHE],
             ..cfg(vec![m4], 0)
         };
         let r = run(&c).unwrap();
-        let units = r.most_of[&("m4", "unit".to_string())];
-        assert!((3..=4).contains(&units), "units at once: {r:?}");
+        let at_once = r.most_of[&("m4", "depth".to_string())];
+        assert!((3..=4).contains(&at_once), "at once: {r:?}");
         assert!(r.beside.contains(&("m4", "lo".to_string(), "pack".to_string())), "{r:?}");
         assert_eq!((r.cache_twice, r.rest_unreserved), (0, 0), "{r:?}");
-        assert_eq!(r.granted_disk["unit"], 6_000, "its output, its cache there: {r:?}");
+        assert_eq!(r.granted_disk["depth"], 6_000, "its output, its cache there: {r:?}");
     }
 
-    /// Task #392 review: the M4 with its DEM cache gone (its fill free again) beside map tiles and
+    /// Task #392 review: the M4 with its cache gone (its fill free again) beside map tiles and
     /// low zooms. The cache's fill (measured before, a cold run's) is reserved whole with the first
-    /// unit's job and never again beside it, so no start over-commits the disk (checked at each: no
-    /// disk guard to thrash), the units still several at once, and the plan finishes.
+    /// job and never again beside it, so no start over-commits the disk (checked at each: no
+    /// disk guard to thrash), still several at once, and the plan finishes.
     #[test]
-    fn a_cold_fill_beside_units_doesnt_over_commit() {
+    fn a_cold_fill_beside_its_jobs_doesnt_over_commit() {
         let m4 = Mac { name: "m4", total_mb: 49_152, cores: 14, disk_mb: 85_000 + 12_600 };
-        let unit = Step {
+        let depth = Step {
             cache_mb: 12_600,
-            name: "unit",
+            name: "depth",
             targets: 24,
             mem_mb: 6_600,
             disk_mb: 6_000,
@@ -1091,22 +1091,22 @@ mod tests {
             nas_mb: 80,
             creates: 5,
         };
-        let c = Cfg { steps: vec![unit, pack, lo], halo: 20, known: vec!["unit", "pack", "lo"], ..cfg(vec![m4], 0) };
+        let c = Cfg { steps: vec![depth, pack, lo], halo: 20, known: vec!["depth", "pack", "lo"], ..cfg(vec![m4], 0) };
         let r = run(&c).unwrap();
-        assert!(r.granted_disk["unit"] >= 12_600 + 6_000, "the fill reserved: {r:?}");
+        assert!(r.granted_disk["depth"] >= 12_600 + 6_000, "the fill reserved: {r:?}");
         assert_eq!((r.cache_twice, r.rest_unreserved), (0, 0), "{r:?}");
-        assert!(r.most_of[&("m4", "unit".to_string())] >= 3, "{r:?}");
+        assert!(r.most_of[&("m4", "depth".to_string())] >= 3, "{r:?}");
     }
 
-    /// Task #392 re-review: a member whose units each copy a part of the DEM cache, a quarter of a
+    /// Task #392 re-review: a member whose jobs each copy a part of a shared cache, a quarter of a
     /// 40 GB fill: each job that's the first there reading it is still reserved what the Mac truly
     /// lacks (checked at each start), several such grants, no start over-committing its disk; and
     /// its cache emptied midway, the pass the same, the next job is reserved the fill again.
     #[test]
     fn a_cache_filled_in_parts_or_emptied_is_reserved_what_it_lacks() {
-        let unit = Step {
+        let depth = Step {
             cache_mb: 40_000,
-            name: "unit",
+            name: "depth",
             targets: 200,
             mem_mb: 1_000,
             disk_mb: 300,
@@ -1116,13 +1116,13 @@ mod tests {
             creates: 30,
         };
         let mut macs = m4_m1();
-        // (The lead too small for a unit's memory: the member runs them.)
+        // (The lead too small for a job's memory: the member runs them.)
         (macs[0].total_mb, macs[1].disk_mb) = (1_024, 100_000);
-        let base = Cfg { steps: vec![unit], known: vec!["unit"], fill_parts: 4, ..cfg(macs, 1) };
+        let base = Cfg { steps: vec![depth], known: vec!["depth"], fill_parts: 4, ..cfg(macs, 1) };
         let r = run(&base).unwrap();
         assert!(r.fills_granted.get("m1").is_some_and(|&n| n >= 2), "{r:?}");
         assert_eq!((r.cache_twice, r.rest_unreserved), (0, 0), "{r:?}");
-        let r = run(&Cfg { fill_parts: 1, clear: Some((1, 1_200, "DEM")), ..base }).unwrap();
+        let r = run(&Cfg { fill_parts: 1, clear: Some((1, 1_200, crate::localread::CACHE)), ..base }).unwrap();
         assert!(r.fills_granted.get("m1").is_some_and(|&n| n >= 2), "filled, emptied, filled again: {r:?}");
         assert_eq!((r.cache_twice, r.rest_unreserved), (0, 0), "{r:?}");
     }

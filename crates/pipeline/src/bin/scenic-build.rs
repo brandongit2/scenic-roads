@@ -3490,10 +3490,10 @@ fn canopy_files(b: [f64; 4]) -> Vec<String> {
 }
 
 /// unit-snap U --out <dir> --cache <dir> [--carry]: z6 tile U's folder built as the `unit` step builds
-/// it, from the build's records, writing nothing to the NAS: its kept samples go under <dir>/shared
-/// (seeded with its and its neighbours' from the NAS), and the folder is copied before and after
+/// it, from the build's records, writing nothing to the NAS: what it keeps goes under <dir>/shared,
+/// and the folder is copied before and after
 /// each of its steps' programs into <dir>/snap (pipeline::unit::Tools::snap) for
-/// tools/check/same.py and tail.mjs. `--cache` holds the DEM seed (`dem-cache.*`) and the canopy
+/// tools/check/same.py and tail.mjs. `--cache` holds the canopy
 /// files (`chm10/`), as the agent's cache does; the step programs are this binary's neighbours.
 /// `--carry`: its scenic results from its last run restored first (a copy of the NAS's), as a
 /// rebuild's are.
@@ -3508,15 +3508,6 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
     let index = pipeline::buildtiles::Index::load(out, &pipeline::buildtiles::release_of(out.root(), &out.manifest)?)?
         .context("the roadside buildings aren't made")?;
     let shared = dir.join("shared");
-    let kept = shared.join(pipeline::unit::DEM_UNITS);
-    std::fs::create_dir_all(&kept)?;
-    for e in std::fs::read_dir(out.root().join("cache").join(pipeline::unit::DEM_UNITS))?.flatten() {
-        let name = e.file_name().to_string_lossy().into_owned();
-        let Some(n) = name.split('.').next().and_then(|s| TileId::parse(&s.replace('-', "/"))) else { continue };
-        if n.x.abs_diff(u.x) <= 1 && n.y.abs_diff(u.y) <= 1 && !kept.join(&name).exists() {
-            store::sys::copy_data(e.path(), kept.join(&name))?;
-        }
-    }
     let carry = flag(args, "--carry")
         .then(|| -> Result<pipeline::scache::Carry> {
             let (from, to) =
@@ -3536,7 +3527,6 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
     eprintln!("unit-snap {}: buildings from {n} tiles", u.slash());
     let tools = Tools {
         bin: own_bin()?,
-        dem: PathBuf::from(opt(args, "--dem").unwrap_or_else(|| "dem".into())),
         cache: PathBuf::from(opt(args, "--cache").context("--cache <dir>")?),
         buildings: Some(bdir),
         sources: Some(out.root().join("sources")),
@@ -3617,7 +3607,6 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let bin = own_bin()?;
     let tools = Tools {
         bin,
-        dem: PathBuf::from(opt(args, "--dem").unwrap_or_else(|| "dem".into())),
         cache: PathBuf::from(opt(args, "--cache-dir").unwrap_or_else(|| "data/cache".into())),
         buildings: opt(args, "--buildings").map(PathBuf::from),
         sources: Some(out.root().join("sources")),
@@ -3635,8 +3624,6 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     if std::env::var_os(pipeline::fetch::DOWN_ENV).is_none() {
         std::env::set_var(pipeline::fetch::DOWN_ENV, std::path::absolute(tools.cache.join("fetch-down"))?);
     }
-    // (The DEM cache's seed, where the z6 tiles' elevations start from, is copied here once a Mac by
-    // the first z6 tile that it can serve: unit::prepare_folder.)
     // What z6 tiles kept in this Mac's own cache: moved to the shared one (each Mac's z6 tiles read it).
     let _p = phase("kept results moved to the shared cache", Class::NasWrite);
     if let Some(shared) = &tools.shared {
@@ -3932,7 +3919,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             ("ways".into(), rep.kept_ways as u64),
             ("vertices".into(), rep.kept_verts as u64),
             ("piece_ways".into(), rep.piece_ways as u64),
-            ("dem_tiles".into(), rep.dem_cache as u64),
+            ("fine_tiles".into(), rep.fine_tiles as u64),
         ]);
         let b = Built {
             u,
@@ -4139,16 +4126,10 @@ fn settle_tails(
 /// removed, and what it cost noted. `how`: where its tail's last steps ran. (What it saves is
 /// `pipeline::unit::saved_files`, all a helper's hand-off may change: keep the two together.)
 fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
-    let Built { u, dir, bdir, rep, tools, carry, piece, t, peak, group, disk, mut sizes, .. } = b;
+    let Built { u, dir, bdir, rep, carry, piece, t, peak, group, disk, mut sizes, .. } = b;
     use pipeline::timings::Class;
     use pipeline::unit::{owns, stage as unit_stage};
     tile_progress(|a| a.on(&u.slash()));
-    // The DEM samples its elevations made (its last steps' first, here or by a worker), kept.
-    if rep.kept_ways > 0 {
-        let s = unit_stage("DEM samples kept", Class::NasWrite);
-        pipeline::unit::keep_dem_samples(u, &dir, &tools);
-        s.end();
-    }
     let clean = || {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&bdir).ok();

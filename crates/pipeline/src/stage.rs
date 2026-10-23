@@ -340,6 +340,38 @@ pub fn stage(src: &Source, b: [f64; 4], dir: &Path) -> Result<Staged> {
     Ok(st)
 }
 
+/// The fine terrain tiles `tiles` (z13–16, crate::road_terrain::fine_tiles) from the fine packs
+/// (crate::terrain_fine: a z10 tile's each), read where they lie (a pack holds a z10 tile's every
+/// fine tile; a unit reads a few of them), staged in `dir` as an archive
+/// (crate::road_terrain::FINE_FILE). The tiles staged: those the packs have (none past the data).
+pub fn stage_fine(src: &Source, tiles: &std::collections::BTreeSet<(u8, u32, u32)>, dir: &Path) -> Result<usize> {
+    let mut by_pack: std::collections::BTreeMap<String, Vec<(u8, u32, u32)>> = Default::default();
+    for &(z, x, y) in tiles {
+        let s = z - crate::terrain_fine::PACK_Z;
+        by_pack.entry(crate::terrain_fine::pack_logical(x >> s, y >> s)).or_default().push((z, x, y));
+    }
+    let mut got: Vec<(u8, u32, u32, Vec<u8>)> = Vec::new();
+    for (logical, ts) in by_pack {
+        let Some(p) = src.file_here(&logical) else { continue };
+        let pf = PlainFile::open(&p).with_context(|| format!("open {}", p.display()))?;
+        let idx = PackIndex::read_from(&pf).with_context(|| format!("index of {}", p.display()))?;
+        for (z, x, y) in ts {
+            if let Some((_, b)) = idx.get(&pf, z, x, y)? {
+                got.push((z, x, y, b));
+            }
+        }
+    }
+    got.sort_by_key(|t| roadcore::archive::tile_key(t.0, t.1, t.2));
+    let tmp = dir.join(format!("{}.tmp", crate::road_terrain::FINE_FILE));
+    let mut w = ArchiveWriter::create(&tmp, r#"{"format":"jxl","encoding":"terrarium"}"#)?;
+    for (z, x, y, b) in &got {
+        w.add(*z, *x, *y, b, b.len())?;
+    }
+    w.finish()?;
+    std::fs::rename(&tmp, dir.join(crate::road_terrain::FINE_FILE))?;
+    Ok(got.len())
+}
+
 fn write_file(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf> {
     let p = dir.join(name);
     let tmp = dir.join(format!("{name}.tmp"));

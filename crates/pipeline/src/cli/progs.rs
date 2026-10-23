@@ -30,23 +30,13 @@ pub struct Extract {
     pub trailends: Option<PathBuf>,
 }
 
-/// Elevations at every road vertex from the declared elevation datasets (pipeline::dem), by the
-/// plan the unit job wrote in the build folder (elevation.json). SCENIC_STORE: the stores' folder;
-/// SCENIC_FETCH_*: mirror folders, recording, no network (pipeline::fetch)
+/// Elevations at every road vertex from the finished terrain staged in the build folder
+/// (pipeline::road_terrain): terrain.tiles, fine.tiles, codes.json
 #[derive(Parser, Debug)]
 #[command(name = "elev")]
 pub struct Elev {
     /// The unit's build folder
     pub build_dir: PathBuf,
-    /// Threads
-    #[arg(long, value_name = "N", default_value_t = 48)]
-    pub workers: usize,
-    /// The DEM cache (default: <build_dir>/../cache)
-    #[arg(long, value_name = "DIR")]
-    pub cache: Option<PathBuf>,
-    /// No cache
-    #[arg(long)]
-    pub no_cache: bool,
 }
 
 /// A unit folder's sampled elevations post-processed (pipeline::elev): final.u16 and grade.u8

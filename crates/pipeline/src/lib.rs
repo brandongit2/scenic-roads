@@ -71,6 +71,7 @@ pub mod rail;
 pub mod railfeeds;
 pub mod rawpack;
 pub mod reach;
+pub mod road_terrain;
 pub mod rules;
 pub mod scache;
 pub mod slope_pack;

@@ -5,210 +5,22 @@
 //!
 //! Before the expensive steps the folder is cut down to the ways that touch the coverage (whoever
 //! owns them: a way just outside still gives the clean-up its junction context at shared nodes).
-//! The global-source layers come from the catalog's packs (`stage`). Each z6 tile reads a slice of the
-//! per-vertex DEM cache: the seed (copied once from the NAS's `sources/dem-cache/`)
-//! and the samples every z6 tile kept from its last run (`dem_samples_keep`), so a vertex is sampled
-//! from the DEM servers once.
+//! The global-source layers come from the catalog's packs (`stage`), and the roads' heights from the
+//! finished terrain staged with them (crate::road_terrain).
 
 use crate::coverage::Coverage;
 use crate::legacy::TileId;
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{bail, Context, Result};
 use roadcore::WayRec;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// A DEM cache key: `(lon + 2³¹) << 32 | (lat + 2³¹)` (E7), so sorted keys keep a longitude range
-/// contiguous.
-fn dem_key(lon: i32, lat: i32) -> u64 {
-    (((lon as i64 + (1i64 << 31)) as u64) << 32) | ((lat as i64 + (1i64 << 31)) as u64)
-}
-
-fn dem_lon_lat(x: u64) -> (i32, i32) {
-    (((x >> 32) as i64 - (1i64 << 31)) as i32, ((x & 0xffff_ffff) as i64 - (1i64 << 31)) as i32)
-}
-
-/// The entries of sorted DEM cache arrays inside `b` (w, s, e, n, E7).
-fn dem_in_box(keys: &[u64], elev: &[f32], srcs: &[u8], b: [i32; 4], out: &mut Vec<(u64, f32, u8)>) {
-    let lo = keys.partition_point(|&x| x < dem_key(b[0], i32::MIN));
-    let hi = keys.partition_point(|&x| x <= dem_key(b[2], i32::MAX));
-    for i in lo..hi {
-        let lat = dem_lon_lat(keys[i]).1;
-        if lat >= b[1] && lat <= b[3] {
-            out.push((keys[i], elev[i], srcs[i]));
-        }
-    }
-}
-
-/// The per-z6 tile DEM samples (`dem-units/<unit>.<box>.dem`, in the NAS's `cache/` so each Mac's
-/// z6 tiles read them; `Tools::dem_units`): one file per z6 tile, replaced after each of its runs (written
-/// whole, then renamed; the old one deleted after): "RDDEM002", the count (u64), the box of its
-/// points (4 × i32, E7), what it was sampled under (4 × u32: `DemValidity`), then the
-/// sorted keys (u64), elevations (f32) and sources (u8). The box is in the name too (`box_tag`), so
-/// a z6 tile finds the files near it from one listing of the folder, without opening each.
-pub const DEM_UNITS: &str = "dem-units";
-const DEM_MAGIC: &[u8; 8] = b"RDDEM002";
-const DEM_HEAD: usize = 48;
-
-/// What the seed was sampled under: the DEM rules (their versions, all 1), before the declared
-/// datasets.
-const SEED_MADE: [u32; 4] = [1, 1, 1, 1];
-
-/// How kept DEM samples are judged still valid, by the declared elevation datasets
-/// (crate::inputs::elevation): a file made from them records their digest (`made`: `u32::MAX`, 0,
-/// then the digest's two halves, where the DEM rules' four versions were before them), and its
-/// samples are valid while it's the same; any other sample (made under the DEM rules, the seed's
-/// among them, or from other declarations) is valid only where a single dataset covers its vertex
-/// and it's that dataset's (no blend could apply, nothing finer covers it) and its heights aren't
-/// converted to EGM2008 (crate::dem::geoid: the rules' samples weren't), and those made from other
-/// declarations not at all.
-#[derive(Clone, Debug)]
-pub struct DemValidity {
-    made: [u32; 4],
-    /// Each dataset's code, coverage, and whether its heights are taken as sampled (no conversion).
-    codes: Vec<(u8, crate::dem::declared::Cover, bool)>,
-}
-
-impl DemValidity {
-    /// Of the plan a z6 tile samples from.
-    pub fn of(p: &crate::dem::declared::Plan) -> DemValidity {
-        let t = u64::from_str_radix(&p.tag, 16).unwrap_or(0);
-        let made = [u32::MAX, 0, t as u32, (t >> 32) as u32];
-        DemValidity {
-            made,
-            codes: p
-                .datasets
-                .iter()
-                .map(|d| (d.code, crate::dem::declared::Cover::of(d.cover.as_deref()), d.convert.is_none()))
-                .collect(),
-        }
-    }
-
-    /// What a file made now records.
-    fn made(&self) -> [u32; 4] {
-        self.made
-    }
-
-    /// Whether a sample made under the DEM rules (the seed's) could be valid anywhere in box `b`
-    /// (w, s, e, n, E7): only where a single dataset covers a point, its heights not converted. A dataset's cover is by 1°
-    /// cell, and a point on a cell's edge is covered by the datasets of every cell it touches, so
-    /// when every cell the box meets is covered by two datasets or more, no point of the box is
-    /// covered by one alone, and the seed has nothing for the z6 tile: neither copied nor read.
-    pub fn seed_serves(&self, b: [i32; 4]) -> bool {
-        let cell = |v: i32| (v as f64 * 1e-7).floor() as i32;
-        for x in cell(b[0])..=cell(b[2]) {
-            for y in cell(b[1])..=cell(b[3]) {
-                let (lon, lat) = (x as f64 + 0.5, y as f64 + 0.5);
-                let mut covering = self.codes.iter().filter(|(_, c, _)| c.contains(lon, lat));
-                match (covering.next(), covering.next()) {
-                    (None, _) => return true,
-                    (Some((_, _, as_sampled)), None) if *as_sampled => return true,
-                    _ => {}
-                }
-            }
-        }
-        false
-    }
-}
-
-/// Keeps a z6 tile's DEM samples (the `dem-cache.*` elev left in `from`: its vertices, cached or
-/// sampled anew, under `v`) for later runs of it and of its neighbours. Returns how many.
-pub fn dem_samples_keep(dir: &Path, u: TileId, from: &Path, v: &DemValidity) -> Result<usize> {
-    dem_samples_keep_with(dir, u, from, None, v)
-}
-
-/// `dem_samples_keep`, a copy of the file kept in `copies` too (`keep_dem_copy`), which its
-/// neighbours' slices on this Mac read instead of the NAS's.
-pub fn dem_samples_keep_with(
-    dir: &Path,
-    u: TileId,
-    from: &Path,
-    copies: Option<&Path>,
-    v: &DemValidity,
-) -> Result<usize> {
-    let read = |n: &str| std::fs::read(from.join(format!("dem-cache.{n}")));
-    let (Ok(kb), Ok(eb), Ok(sb)) = (read("keys.u64"), read("elev.f32"), read("src.u8")) else { return Ok(0) };
-    let keys: Vec<u64> = bytemuck::pod_collect_to_vec(&kb);
-    let n = keys.len();
-    ensure!(eb.len() == 4 * n && sb.len() == n, "{}: DEM cache files out of step", from.display());
-    let mut bb = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
-    for &k in &keys {
-        let (lon, lat) = dem_lon_lat(k);
-        bb = [bb[0].min(lon), bb[1].min(lat), bb[2].max(lon), bb[3].max(lat)];
-    }
-    std::fs::create_dir_all(dir)?;
-    let mut f = Vec::with_capacity(DEM_HEAD + 13 * n);
-    f.extend_from_slice(DEM_MAGIC);
-    f.extend_from_slice(&(n as u64).to_le_bytes());
-    for v in bb {
-        f.extend_from_slice(&v.to_le_bytes());
-    }
-    for x in v.made() {
-        f.extend_from_slice(&x.to_le_bytes());
-    }
-    f.extend_from_slice(&kb);
-    f.extend_from_slice(&eb);
-    f.extend_from_slice(&sb);
-    let name = format!("{}.{}.dem", u.dash(), box_tag(bb));
-    crate::whole::write(&dir.join(&name), &f)?;
-    if let Some(c) = copies {
-        keep_dem_copy(&dir.join(&name), c, &f);
-    }
-    // Its earlier file (another box), gone.
-    let prefix = format!("{}.", u.dash());
-    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        let other = e.file_name().to_string_lossy().into_owned();
-        if other.starts_with(&prefix) && other.ends_with(".dem") && other != name {
-            std::fs::remove_file(e.path()).ok();
-        }
-    }
-    Ok(n)
-}
-
-/// A box (w, s, e, n, E7) as it's named: 32 hex digits.
-fn box_tag(b: [i32; 4]) -> String {
-    b.iter().map(|v| format!("{:08x}", *v as u32)).collect()
-}
-
-/// A DEM samples file's z6 tile and box, from its name (`<unit>.<box>.dem`); the box None for a name
-/// without one.
-fn dem_file(name: &str) -> Option<(String, Option<[i32; 4]>)> {
-    let stem = name.strip_suffix(".dem")?;
-    match stem.split_once('.') {
-        Some((u, tag)) if tag.len() == 32 => {
-            let v = |i: usize| u32::from_str_radix(&tag[i * 8..i * 8 + 8], 16).ok().map(|x| x as i32);
-            Some((u.to_string(), Some([v(0)?, v(1)?, v(2)?, v(3)?])))
-        }
-        None => Some((stem.to_string(), None)),
-        _ => None,
-    }
-}
-
-/// Moves what z6 tiles kept in this Mac's own cache (`dem-units/`, `scenic-units/`) to the shared one
-/// (`Tools::shared`), once: each Mac's z6 tiles read them there. Two `unit` jobs on one Mac may do this
-/// at once (crate::agent: a Mac's jobs at once): what the other moved first is passed over.
+/// Moves the scenic results z6 tiles kept in this Mac's own cache (`scenic-units/`) to the shared one
+/// (each Mac's z6 tiles read it); how many were moved.
 pub fn move_kept_to_shared(cache: &Path, shared: &Path) -> Result<usize> {
     let gone = |e: &std::io::Error| e.kind() == std::io::ErrorKind::NotFound;
     let mut moved = 0;
-    let local = cache.join(DEM_UNITS);
-    for e in std::fs::read_dir(&local).into_iter().flatten().flatten() {
-        let p = e.path();
-        let Some((u, _)) = dem_file(&e.file_name().to_string_lossy()) else { continue };
-        let Ok(m) = roadcore::mmap(&p) else { continue };
-        let Some(bb) = dem_head(&m).map(|h| h.1) else { continue };
-        drop(m);
-        std::fs::create_dir_all(shared.join(DEM_UNITS))?;
-        match crate::whole::copy(&p, &shared.join(DEM_UNITS).join(format!("{u}.{}.dem", box_tag(bb)))) {
-            // (Moved by the other meanwhile.)
-            Err(_) if !p.exists() => continue,
-            r => r?,
-        };
-        match std::fs::remove_file(&p) {
-            Err(e) if gone(&e) => continue,
-            r => r?,
-        }
-        moved += 1;
-    }
     let local = cache.join("scenic-units");
     for e in std::fs::read_dir(&local).into_iter().flatten().flatten() {
         let (from, to) = (e.path(), shared.join("scenic-units").join(e.file_name()));
@@ -245,376 +57,6 @@ pub fn move_kept_to_shared(cache: &Path, shared: &Path) -> Result<usize> {
         moved += 1;
     }
     Ok(moved)
-}
-
-/// A DEM samples file's header, read from its bytes: (count, box, versions), when it's one of this
-/// version and whole.
-fn dem_head(m: &[u8]) -> Option<(usize, [i32; 4], [u32; 4])> {
-    if m.len() < DEM_HEAD || &m[..8] != DEM_MAGIC {
-        return None;
-    }
-    let n = u64::from_le_bytes(m[8..16].try_into().ok()?) as usize;
-    let i32_at = |i: usize| i32::from_le_bytes(m[i..i + 4].try_into().unwrap());
-    let u32_at = |i: usize| u32::from_le_bytes(m[i..i + 4].try_into().unwrap());
-    (m.len() == DEM_HEAD + 13 * n).then(|| {
-        (n, [i32_at(16), i32_at(20), i32_at(24), i32_at(28)], [u32_at(32), u32_at(36), u32_at(40), u32_at(44)])
-    })
-}
-
-/// The part of a z6 tiles' DEM samples file (`dem_samples_keep`) whose longitudes are within box `b`'s:
-/// its box and versions, and those entries (its keys sorted, lon first, so a run of them), with the
-/// bytes read for them.
-struct DemRange {
-    bx: [i32; 4],
-    made: [u32; 4],
-    keys: Vec<u64>,
-    elev: Vec<f32>,
-    srcs: Vec<u8>,
-    read: u64,
-    /// The file's entries (all of them read: `whole`).
-    n: u64,
-}
-
-impl DemRange {
-    /// Whether every entry of the file was read.
-    fn whole(&self) -> bool {
-        self.keys.len() as u64 == self.n
-    }
-
-    /// The file's bytes, when it was read whole (`dem_samples_keep`'s layout).
-    fn bytes(&self) -> Option<Vec<u8>> {
-        self.whole().then(|| {
-            let mut f = Vec::with_capacity(DEM_HEAD + 13 * self.keys.len());
-            f.extend_from_slice(DEM_MAGIC);
-            f.extend_from_slice(&self.n.to_le_bytes());
-            for v in self.bx {
-                f.extend_from_slice(&v.to_le_bytes());
-            }
-            for v in self.made {
-                f.extend_from_slice(&v.to_le_bytes());
-            }
-            f.extend_from_slice(bytemuck::cast_slice(&self.keys));
-            f.extend_from_slice(bytemuck::cast_slice(&self.elev));
-            f.extend_from_slice(&self.srcs);
-            f
-        })
-    }
-}
-
-/// This Mac's copy of z6 tiles' DEM samples file `p` (on the NAS: `<name>`, replaced whole by each of
-/// its z6 tile's runs) in `copies`, named by the file's name, length and modification time, so a copy
-/// is of that file as it is: `<name>.<length>.<mtime ns>`.
-fn dem_copy_name(p: &Path, copies: &Path) -> Option<PathBuf> {
-    let m = std::fs::metadata(p).ok()?;
-    let t = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
-    Some(copies.join(format!("{}.{}.{t}", p.file_name()?.to_string_lossy(), m.len())))
-}
-
-/// Keeps `bytes`, z6 tiles' DEM samples file `p` as written or read whole, as this Mac's copy of it in
-/// `copies` (`dem_copy_name`), and lets the z6 tile's earlier copies go: a cache, the copies of the
-/// NAS's files', so failing costs only reading it again.
-fn keep_dem_copy(p: &Path, copies: &Path, bytes: &[u8]) {
-    let Some(at) = dem_copy_name(p, copies) else { return };
-    if store::cachefile::create_bytes(&at, bytes).is_ok() {
-        store::cachefile::release(&at);
-    }
-    let Some(unit) = p.file_name().map(|n| n.to_string_lossy().split('.').next().unwrap_or("").to_string()) else {
-        return;
-    };
-    for e in std::fs::read_dir(copies).into_iter().flatten().flatten() {
-        let n = e.file_name().to_string_lossy().into_owned();
-        if n.split('.').next() == Some(unit.as_str()) && e.path() != at {
-            store::cachefile::try_remove(&e.path());
-        }
-    }
-}
-
-/// A z6 tiles' DEM samples file read for box `b`: its header, the bounds of the entries within `b`'s
-/// longitudes found by a binary search over its keys (read a page at a time), then those entries
-/// alone, from each of its three arrays. None when it isn't whole (its length not its header's).
-/// On the NAS a file is read in a few large reads where reading it whole moved hundreds of MB that
-/// the box doesn't need (a z6 tile's neighbours to the east and west).
-fn dem_range(p: &Path, b: [i32; 4]) -> std::io::Result<Option<DemRange>> {
-    use store::sys::PosIo;
-    let f = std::fs::File::open(p)?;
-    let len = f.metadata()?.len();
-    let mut head = [0u8; DEM_HEAD];
-    if len < DEM_HEAD as u64 {
-        return Ok(None);
-    }
-    f.read_exact_at(&mut head, 0)?;
-    if &head[..8] != DEM_MAGIC {
-        return Ok(None);
-    }
-    let n = u64::from_le_bytes(head[8..16].try_into().unwrap());
-    if len != DEM_HEAD as u64 + 13 * n {
-        return Ok(None);
-    }
-    let i32_at = |i: usize| i32::from_le_bytes(head[i..i + 4].try_into().unwrap());
-    let u32_at = |i: usize| u32::from_le_bytes(head[i..i + 4].try_into().unwrap());
-    let bx = [i32_at(16), i32_at(20), i32_at(24), i32_at(28)];
-    let made = [u32_at(32), u32_at(36), u32_at(40), u32_at(44)];
-    let mut read = DEM_HEAD as u64;
-    // (Pages of keys, 64 KB: a search's last steps fall in one.)
-    const PAGE: u64 = 8192;
-    let mut pages: std::collections::HashMap<u64, Vec<u64>> = Default::default();
-    let mut key = |i: u64| -> std::io::Result<u64> {
-        let pg = i / PAGE;
-        if !pages.contains_key(&pg) {
-            let (from, to) = (pg * PAGE, ((pg + 1) * PAGE).min(n));
-            let mut buf = vec![0u8; 8 * (to - from) as usize];
-            f.read_exact_at(&mut buf, DEM_HEAD as u64 + 8 * from)?;
-            read += buf.len() as u64;
-            pages.insert(pg, bytemuck::pod_collect_to_vec(&buf));
-        }
-        Ok(pages[&pg][(i % PAGE) as usize])
-    };
-    // The first entry whose key isn't below `k`.
-    let mut first = |k: u64| -> std::io::Result<u64> {
-        let (mut lo, mut hi) = (0u64, n);
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            if key(mid)? < k {
-                lo = mid + 1;
-            } else {
-                hi = mid;
-            }
-        }
-        Ok(lo)
-    };
-    let lo = first(dem_key(b[0], i32::MIN))?;
-    let hi = match dem_key(b[2], i32::MAX).checked_add(1) {
-        Some(k) => first(k)?,
-        None => n,
-    };
-    drop(first);
-    drop(key);
-    let m = hi.saturating_sub(lo);
-    let mut take = |at: u64, size: u64| -> std::io::Result<Vec<u8>> {
-        let mut buf = vec![0u8; (size * m) as usize];
-        f.read_exact_at(&mut buf, at + size * lo)?;
-        read += buf.len() as u64;
-        Ok(buf)
-    };
-    let keys = bytemuck::pod_collect_to_vec(&take(DEM_HEAD as u64, 8)?);
-    let elev = bytemuck::pod_collect_to_vec(&take(DEM_HEAD as u64 + 8 * n, 4)?);
-    let srcs = take(DEM_HEAD as u64 + 12 * n, 1)?;
-    Ok(Some(DemRange { bx, made, keys, elev, srcs, read, n }))
-}
-
-/// The z6 tiles' kept DEM samples files in `dir`, the newest of each z6 tile's: (z6 tile, its box, the file).
-pub fn dem_samples_files(dir: &Path) -> Vec<(String, Option<[i32; 4]>, PathBuf)> {
-    let mut files: BTreeMap<String, (PathBuf, Option<[i32; 4]>)> = BTreeMap::new();
-    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        let Some((u, bx)) = dem_file(&e.file_name().to_string_lossy()) else { continue };
-        let p = e.path();
-        if let Some((q, _)) = files.get(&u) {
-            let t = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
-            if t(q) >= t(&p) {
-                continue;
-            }
-        }
-        files.insert(u, (p, bx));
-    }
-    files.into_iter().map(|(u, (p, b))| (u, b, p)).collect()
-}
-
-/// The entries of sorted DEM cache arrays inside `b` still valid, judged by `v`, of a file made
-/// under `made`; the rest are left out, so elev samples them again.
-fn dem_valid_in_box(
-    keys: &[u64],
-    elev: &[f32],
-    srcs: &[u8],
-    b: [i32; 4],
-    made: [u32; 4],
-    out: &mut Vec<(u64, f32, u8)>,
-    v: &DemValidity,
-) {
-    if made == v.made {
-        dem_in_box(keys, elev, srcs, b, out);
-        return;
-    }
-    // (Made from other declarations: none valid.)
-    if made[0] == u32::MAX {
-        return;
-    }
-    let mut all = Vec::new();
-    dem_in_box(keys, elev, srcs, b, &mut all);
-    out.extend(all.into_iter().filter(|&(k, _, src)| {
-        let (lon, lat) = dem_lon_lat(k);
-        let (x, y) = (lon as f64 * 1e-7, lat as f64 * 1e-7);
-        let mut covering = v.codes.iter().filter(|(_, c, _)| c.contains(x, y));
-        matches!((covering.next(), covering.next()), (Some((code, _, true)), None) if *code == src)
-    }));
-}
-
-/// Copies the DEM cache entries inside `b` (w, s, e, n, E7) into `dst` (`dem-cache.*` files, for
-/// elev): the seed's (`cache`'s `dem-cache.*`), then every z6 tile's kept samples
-/// in `units` whose box meets `b` (`dem_samples_keep`), which win over the seed's (they're newer); entries
-/// no longer valid (`v`) are left out. With none, nothing is written (elev
-/// samples every vertex). The files near `b` are found by the boxes in their names (one listing);
-/// a z6 tile's newest file counts, and one that isn't whole is passed over (it's only a cache).
-pub fn dem_cache_slice(cache: &Path, units_dir: &Path, b: [i32; 4], dst: &Path, v: &DemValidity) -> Result<usize> {
-    dem_cache_slice_with(cache, units_dir, b, dst, None, v)
-}
-
-/// `dem_cache_slice`, the files read whole kept in `copies` and read from there while they're as
-/// they are on the NAS (`keep_dem_copy`): a z6 tile's own file and its neighbours' above and below it
-/// are read whole by each of them.
-pub fn dem_cache_slice_with(
-    cache: &Path,
-    units_dir: &Path,
-    b: [i32; 4],
-    dst: &Path,
-    copies: Option<&Path>,
-    v: &DemValidity,
-) -> Result<usize> {
-    std::fs::create_dir_all(dst)?;
-    for n in ["keys.u64", "elev.f32", "src.u8"] {
-        std::fs::remove_file(dst.join(format!("dem-cache.{n}"))).ok();
-    }
-    use crate::timings::{sub, Class};
-    let p = sub("the seed's samples", Class::Disk);
-    let mut all: Vec<(u64, f32, u8)> = Vec::new();
-    let open = |n: &str| roadcore::mmap(&cache.join(format!("dem-cache.{n}")));
-    // (The seed only where one of its samples could be valid: `DemValidity::seed_serves`.)
-    if let (true, Ok(km), Ok(em), Ok(sm)) = (v.seed_serves(b), open("keys.u64"), open("elev.f32"), open("src.u8")) {
-        let (keys, elev): (&[u64], &[f32]) = (bytemuck::cast_slice(&km[..]), bytemuck::cast_slice(&em[..]));
-        ensure!(keys.len() == elev.len() && keys.len() == sm.len(), "DEM cache files out of step");
-        dem_valid_in_box(keys, elev, &sm[..], b, SEED_MADE, &mut all, v);
-    }
-    let seed = all.len();
-    drop(p);
-    let reading = sub("units' kept samples read", Class::NasRead);
-    // Each z6 tile's file, by its name: the newest when there are two (one being replaced).
-    let mut files: std::collections::BTreeMap<String, (PathBuf, Option<[i32; 4]>)> = Default::default();
-    for e in std::fs::read_dir(units_dir).into_iter().flatten().flatten() {
-        let Some((u, bx)) = dem_file(&e.file_name().to_string_lossy()) else { continue };
-        let p = e.path();
-        if let Some((q, _)) = files.get(&u) {
-            let t = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
-            if t(q) >= t(&p) {
-                continue;
-            }
-        }
-        files.insert(u, (p, bx));
-    }
-    let meets = |ub: [i32; 4]| !(ub[0] > b[2] || ub[2] < b[0] || ub[1] > b[3] || ub[3] < b[1]);
-    let mut newer: Vec<(u64, f32, u8)> = Vec::new();
-    for (p, bx) in files.values() {
-        if bx.is_some_and(|ub| !meets(ub)) {
-            continue;
-        }
-        // (Read, not mapped: they're on the NAS, where a mapped page lost with the share would end
-        // the job. Only the box's longitudes: `dem_range`.)
-        // (This Mac's copy of it as it is, when there's one: `keep_dem_copy`.)
-        let copy =
-            copies.and_then(|c| dem_copy_name(p, c)).and_then(|c| store::cachefile::hold_existing(&c).ok().flatten());
-        let got = match &copy {
-            Some(c) => dem_range(c, b),
-            None => dem_range(p, b),
-        };
-        match got {
-            Ok(Some(r)) => {
-                if copy.is_none() {
-                    reading.count(r.read, 1);
-                    if let (Some(c), Some(bytes)) = (copies, r.bytes()) {
-                        keep_dem_copy(p, c, &bytes);
-                    }
-                }
-                if !meets(r.bx) {
-                    continue;
-                }
-                dem_valid_in_box(&r.keys, &r.elev, &r.srcs, b, r.made, &mut newer, v);
-            }
-            Ok(None) => eprintln!("  DEM cache: {} isn't whole; passed over", p.display()),
-            Err(_) => eprintln!("  DEM cache: {} can't be read now; passed over", p.display()),
-        }
-    }
-    drop(reading);
-    let _p = sub("merged and written", Class::Disk);
-    // The z6 tiles' samples first, so a stable dedup keeps theirs (by file name order among them).
-    newer.extend(all);
-    newer.sort_by_key(|e| e.0);
-    newer.dedup_by_key(|e| e.0);
-    if newer.is_empty() {
-        return Ok(0);
-    }
-    let (ok, oe, os): (Vec<u64>, Vec<f32>, Vec<u8>) =
-        (newer.iter().map(|e| e.0).collect(), newer.iter().map(|e| e.1).collect(), newer.iter().map(|e| e.2).collect());
-    for (n, bytes) in [
-        ("keys.u64", bytemuck::cast_slice::<u64, u8>(&ok)),
-        ("elev.f32", bytemuck::cast_slice(&oe)),
-        ("src.u8", &os[..]),
-    ] {
-        let tmp = dst.join(format!("dem-cache.{n}.tmp"));
-        std::fs::write(&tmp, bytes)?;
-        std::fs::rename(&tmp, dst.join(format!("dem-cache.{n}")))?;
-    }
-    if ok.len() > seed {
-        eprintln!("  DEM cache: {} of the slice's {} entries from units' kept samples", ok.len() - seed, ok.len());
-    }
-    Ok(ok.len())
-}
-
-/// Puts the DEM cache's seed in `cache` when it isn't there whole, from the NAS's copy
-/// (`sources/dem-cache/`), and holds it (store::cachefile: room-making may delete it while no job
-/// holds it, the NAS having it whole; it's copied again then). Without one the z6 tiles sample every
-/// vertex anew.
-pub fn dem_seed(root: &Path, cache: &Path) -> Result<()> {
-    let names = ["keys.u64", "elev.f32", "src.u8"];
-    let len = |p: PathBuf| std::fs::metadata(p).map(|m| m.len()).ok();
-    let whole = |l: &[Option<u64>]| matches!(l, [Some(k), Some(e), Some(s)] if *k == 8 * *s && *e == 4 * *s);
-    let local = |n: &str| cache.join(format!("dem-cache.{n}"));
-    // (This Mac's, whole: held as it is.)
-    let held: Vec<Option<PathBuf>> =
-        names.iter().map(|n| store::cachefile::hold_existing(&local(n)).ok().flatten()).collect();
-    if whole(&names.map(|n| len(local(n)))) && held.iter().all(Option::is_some) {
-        return Ok(());
-    }
-    let src = root.join("sources/dem-cache");
-    let there: Vec<Option<u64>> = names.iter().map(|n| len(src.join(format!("dem-cache.{n}")))).collect();
-    if !whole(&there) {
-        eprintln!("unit: no DEM cache to start from on the NAS ({}); sampling every vertex anew", src.display());
-        return Ok(());
-    }
-    let t = std::time::Instant::now();
-    // (Some 9 GB: its progress said, MB by MB.)
-    let total: u64 = there.iter().flatten().sum();
-    let mut before = 0u64;
-    let mut copied = false;
-    // Each file whole before the next (one here of another length, from an older seed, goes first:
-    // its fellows are copied again too). Made under this process's own temporary name: two z6 tile
-    // jobs on a Mac without the seed copy it at once, the first named wins.
-    for attempt in 0..2 {
-        for (n, want) in names.iter().zip(&there) {
-            let (from, to) = (src.join(format!("dem-cache.{n}")), local(n));
-            store::cachefile::hold(&to, &mut |tmp| {
-                copied = true;
-                crate::osmpass::copy_resume_with(&from, tmp, &mut |d, _| {
-                    crate::agent::jobs::report(
-                        (before + d) >> 20,
-                        total >> 20,
-                        "MB of the DEM cache copied here (once a Mac)",
-                    )
-                })
-                .map_err(std::io::Error::other)
-            })
-            .with_context(|| format!("copy {}", from.display()))?;
-            before += want.unwrap_or(0);
-        }
-        if names.iter().map(|n| len(local(n))).collect::<Vec<_>>() == there {
-            break;
-        }
-        anyhow::ensure!(attempt == 0, "the DEM cache here isn't the NAS's after it was copied again");
-        for n in names {
-            store::cachefile::discard(&local(n));
-        }
-    }
-    if copied {
-        eprintln!("unit: DEM cache copied from the NAS ({:.0?})", t.elapsed());
-    }
-    Ok(())
 }
 
 /// Rewrites a build folder's `ways.bin` and `verts.bin` keeping the ways `keep` says (in order);
@@ -690,20 +132,17 @@ impl UnitSources {
 pub struct Tools {
     /// `extract`, `tile`, `scenic-metrics`.
     pub bin: PathBuf,
-    /// The repository's `dem/` folder (run with `uv run python`).
-    pub dem: PathBuf,
-    /// This Mac's caches: `chm10/` (canopy 10° files) and `dem-cache.*` (the seed's per-vertex
-    /// elevations); and the z6 tiles' kept results when there's no `shared`.
+    /// This Mac's caches: `chm10/` (canopy 10° files); and the z6 tiles' kept results when there's
+    /// no `shared`.
     pub cache: PathBuf,
     /// Overture building boxes: a folder of `.f32` files (the z6 tile's tiles staged by
     /// `buildtiles::stage`), when there are any.
     pub buildings: Option<PathBuf>,
     /// The NAS's `sources/`, where downloads are kept, each downloaded once: Meta's canopy squares
-    /// (`canopy/`) and the declared elevation datasets' kept files (`fetched/<dataset>/`: GLO-30's tiles); the local caches fill from it. None: local
-    /// caches alone.
+    /// (`canopy/`); the local caches fill from it. None: local caches alone.
     pub sources: Option<PathBuf>,
-    /// The NAS's `cache/`, where what a z6 tile keeps for its later runs is shared by every Mac: its DEM
-    /// samples (`dem-units/`) and scenic results (`scenic-units/`). None: the local cache.
+    /// The NAS's `cache/`, where what a z6 tile keeps for its later runs is shared by every Mac: its
+    /// scenic results (`scenic-units/`). None: the local cache.
     pub shared: Option<PathBuf>,
     /// The canopy squares read where they lie (the NAS's `sources/canopy/`), for a worker that
     /// keeps no copies of them (a task's); None: this Mac's copies (`cache/chm10/`), from the NAS.
@@ -727,18 +166,6 @@ pub struct Tools {
 }
 
 impl Tools {
-    /// The z6 tiles' kept DEM samples (`Tools::shared`, else the local cache).
-    pub fn dem_units(&self) -> PathBuf {
-        self.shared.as_ref().unwrap_or(&self.cache).join(DEM_UNITS)
-    }
-
-    /// Where this Mac keeps copies of the shared z6 tiles' DEM samples it read or wrote whole (among the
-    /// copies of the NAS's files, which room-making may take: `blobs/dem-units/`); none when they're
-    /// this Mac's own (no shared cache).
-    pub fn dem_copies(&self) -> Option<PathBuf> {
-        self.shared.as_ref().map(|_| self.cache.join("blobs").join(DEM_UNITS))
-    }
-
     /// Where z6 tile `u`'s scenic results are kept between its runs (crate::scache::Carry).
     pub fn scenic_kept(&self, u: TileId) -> PathBuf {
         self.shared.as_ref().unwrap_or(&self.cache).join("scenic-units").join(u.dash())
@@ -1093,7 +520,7 @@ pub struct Report {
     pub kept_ways: usize,
     pub kept_verts: usize,
     pub owned: usize,
-    pub dem_cache: usize,
+    pub fine_tiles: usize,
     pub staged: crate::stage::Staged,
     /// Heritage sites and designated-area polygons around the z6 tile.
     pub heritage: usize,
@@ -1121,38 +548,15 @@ pub fn build_folder(
     let rep = prepare_folder(u, piece, dir, cov, src, tools, heritage, carry)?;
     if rep.kept_ways > 0 {
         run_tail(&tail(u, tools.buildings.is_some(), tools.sources.is_some()), dir, tools)?;
-        keep_dem_samples(u, dir, tools);
     }
     Ok(rep)
 }
 
-/// The DEM samples a z6 tile's elevations made (its tail's first step), kept for its later runs and
-/// its neighbours' (new ones aren't sampled twice). A cache: not keeping them (the NAS away) only
-/// costs sampling them again.
-pub fn keep_dem_samples(u: TileId, dir: &Path, tools: &Tools) {
-    let v = match crate::dem::declared::read_plan(dir) {
-        Ok(Some(p)) => DemValidity::of(&p),
-        Ok(None) => {
-            eprintln!("unit {}: its DEM samples not kept: its folder has no elevation plan", u.slash());
-            return;
-        }
-        Err(e) => {
-            eprintln!("unit {}: its DEM samples not kept: {e:#}", u.slash());
-            return;
-        }
-    };
-    if let Err(e) =
-        dem_samples_keep_with(&tools.dem_units(), u, &dir.join("dem-cache"), tools.dem_copies().as_deref(), &v)
-    {
-        eprintln!("unit {}: its DEM samples not kept: {e:#}", u.slash());
-    }
-}
-
 /// A z6 tile's build up to its tail (docs/workers.md: what needs the NAS): its ways from the extract,
-/// those touching the coverage, the DEM cache's slice over them, the global-source layers staged
-/// from the packs, the heritage inputs, area flags and land cover; then its scenic results from its
-/// last run restored (`carry`), as the tail's canopy and view steps read them. (Its elevations are
-/// the tail's first step: they read the DEM servers' files where they lie, so any worker may.)
+/// those touching the coverage, the global-source layers staged from the packs with the fine terrain
+/// under its vertices and the datasets' codes (what its elevations read: crate::road_terrain), the
+/// heritage inputs, area flags and land cover; then its scenic results from its last run restored
+/// (`carry`), as the tail's canopy and view steps read them.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_folder(
     u: TileId,
@@ -1170,7 +574,9 @@ pub fn prepare_folder(
     // 1. Every way of the extract, densified by the declared elevation datasets (crate::dem::spacing).
     let a = tools.elevation.as_ref().context("the unit's elevations: the declared elevation datasets' accepted version isn't given (the build reads them once their switch is recorded: docs/inputs.md §6.8)")?;
     let spacing = dir.join(crate::dem::spacing::FILE);
-    crate::dem::spacing::Fine::of_accepted(&crate::dem::declared::accepted(a)?).write(&spacing)?;
+    let accepted = crate::dem::declared::accepted(a)?;
+    let fine = crate::dem::spacing::Fine::of_accepted(&accepted);
+    fine.write(&spacing)?;
     let mut c = store::spawn::command(tools.bin.join("extract"));
     c.arg(dir).arg(&spacing).arg(piece);
     run_in(c, "extract", &log, dir, tools)?;
@@ -1190,62 +596,22 @@ pub fn prepare_folder(
         let verts = w.verts();
         rep.owned = w.ways().iter().filter(|r| owns(tb, verts[r.vstart as usize])).count();
     }
-    // 3. Elevations: the DEM cache's slice over every vertex the folder kept (its long ways too).
-    let slice = {
-        let w = roadcore::Ways::open(dir)?;
-        w.verts().iter().fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |b, p| {
-            [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
-        })
-    };
     s.end();
-    let s = stage("DEM cache slice", Class::NasRead);
-    // (From the declared elevation datasets: their plan for this z6 tile, which elev reads, and by which
-    // the kept samples are judged.)
-    let e7 = |v: i32| v as f64 * 1e-7;
-    // (Each dataset's heights brought to EGM2008 by the declared geoid sources: crate::dem::geoid.)
-    if tools.declared.is_none() {
-        eprintln!(
-            "unit {}: no accepted version of the declared sources is given: heights not converted to EGM2008",
-            u.slash()
-        );
-    }
-    let geoid = tools.declared.as_ref().map_or(&[][..], |s| s.many(crate::inputs::sources::GEOID));
-    let plan =
-        crate::dem::declared::plan_converted(a, [e7(slice[0]), e7(slice[1]), e7(slice[2]), e7(slice[3])], geoid)?;
-    let validity = DemValidity::of(&plan);
-    // (The seed held for this z6 tile, copied again if room-making took it: store::cachefile. Not
-    // where two datasets cover every point of the z6 tile: no sample of it is valid there.)
-    if let Some(root) = tools.sources.as_deref().and_then(Path::parent) {
-        if validity.seed_serves(slice) {
-            let _p = crate::timings::sub("DEM cache seeded here (once a Mac)", Class::NasRead);
-            dem_seed(root, &tools.cache)?;
-        } else {
-            eprintln!(
-                "unit {}: the DEM cache's seed has nothing for it (two datasets or more cover every point); not copied",
-                u.slash()
-            );
-        }
-    }
-    // (And what its programs read of the other declared sources.)
     let declared = tools
         .declared
         .as_ref()
         .context("the unit's sources: the declared sources' accepted version isn't given (docs/inputs.md §6.9)")?;
     std::fs::write(dir.join(UnitSources::FILE), serde_json::to_vec(&UnitSources::of(declared)?)?)?;
-    std::fs::write(dir.join(crate::dem::declared::PLAN_FILE), serde_json::to_vec_pretty(&plan)?)?;
-    rep.dem_cache = dem_cache_slice_with(
-        &tools.cache,
-        &tools.dem_units(),
-        slice,
-        &dir.join("dem-cache"),
-        tools.dem_copies().as_deref(),
-        &validity,
-    )?;
-    s.end();
     // 4. The global-source layers the steps read, from the packs.
     let s = stage("layers staged from the packs", Class::NasRead);
     let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
     rep.staged = crate::stage::stage(src, b, dir)?;
+    // (The terrain the roads' heights read: the fine tiles under the vertices, the datasets' codes.)
+    {
+        let w = roadcore::Ways::open(dir)?;
+        rep.fine_tiles = crate::stage::stage_fine(src, &crate::road_terrain::fine_tiles(w.verts(), &fine), dir)?;
+    }
+    crate::road_terrain::Codes::of(&accepted).write(&dir.join(crate::road_terrain::CODES_FILE))?;
     s.end();
     // The heritage sites around the z6 tile (the flags step's `heritage.json`), and the designated
     // areas rasterised onto its grid (`grid.areas.u8`), from the heritage-sites job's slices.
@@ -1455,13 +821,12 @@ pub fn tail(u: TileId, buildings: bool, store: bool) -> Vec<Run> {
         };
         Run { what: format!("scenic {step}"), prog: "scenic-metrics".into(), args, env: e, reads }
     };
-    let env = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
     let elev = Run {
         what: "elevations (elev)".into(),
         prog: "elev".into(),
-        args: vec!["{dir}".into(), "--cache".into(), "{dir}/dem-cache".into()],
-        env: env(&[("SCENIC_STORE", "{sources}/fetched"), ("SCENIC_FETCH_MIRROR", "{net}")]),
-        reads: mine(&["verts.bin", "dem-cache/*", "elevation.json"]),
+        args: vec!["{dir}".into()],
+        env: Vec::new(),
+        reads: mine(&["verts.bin", "terrain.tiles", "fine.tiles", "codes.json"]),
     };
     let grade = Run {
         what: "clean-up and grade (tile elev)".into(),
@@ -1567,74 +932,6 @@ mod tests {
         c[store::nasio::Count::Tiffs as usize] = tiffs;
         let esc: String = c.iter().flat_map(|v| v.to_le_bytes()).map(|b| format!("\\{b:03o}")).collect();
         format!("printf '{esc}' > \"$SCENIC_NAS_COUNTS/$$-1\"")
-    }
-
-    /// Kept samples judged as the seed's: every one made so is valid.
-    fn rules() -> DemValidity {
-        DemValidity { made: SEED_MADE, codes: Vec::new() }
-    }
-
-    #[test]
-    fn the_seed_serves_only_where_one_dataset_covers_alone() {
-        use crate::dem::declared::{Dataset, Plan, Source};
-        let plan = |covers: &[Option<[f64; 4]>]| {
-            let ds = covers
-                .iter()
-                .enumerate()
-                .map(|(k, c)| Dataset {
-                    convert: None,
-                    id: format!("d{k}"),
-                    code: k as u8 + 1,
-                    resolution: 10.0,
-                    cover: c.map(|b| vec![b]),
-                    source: Source::Tiles {
-                        url: "https://e.org/{z}/{x}/{y}.png".into(),
-                        zoom: 10,
-                        encoding: "terrarium".into(),
-                    },
-                })
-                .collect();
-            Plan { fmt: 1, version: "t".into(), tag: "0000000000000001".into(), datasets: ds }
-        };
-        let e7 = |lon: f64, lat: f64| [(lon * 1e7).round() as i32, (lat * 1e7).round() as i32];
-        let b = |w: f64, s: f64, e: f64, n: f64| {
-            let (a, c) = (e7(w, s), e7(e, n));
-            [a[0], a[1], c[0], c[1]]
-        };
-        // A worldwide dataset under a regional one: a box inside the region has two covers
-        // everywhere; one reaching past it has cells the worldwide one covers alone.
-        let v = DemValidity::of(&plan(&[Some([-80.0, 40.0, -70.0, 45.0]), None]));
-        assert!(!v.seed_serves(b(-75.5, 41.2, -72.1, 43.9)));
-        assert!(v.seed_serves(b(-75.5, 41.2, -69.9, 43.9)));
-        // A box's edge on a cell's edge: the cell past it counts (a point there is on that cell's
-        // edge too), so a box ending exactly at the region's east edge still serves.
-        assert!(v.seed_serves(b(-75.5, 41.2, -70.0, 43.9)));
-        assert!(!v.seed_serves(b(-75.5, 41.2, -70.0 - 1e-7, 43.9)));
-        // One dataset only, or none: the seed may serve.
-        assert!(DemValidity::of(&plan(&[None])).seed_serves(b(0.1, 0.1, 0.2, 0.2)));
-        assert!(DemValidity::of(&plan(&[])).seed_serves(b(0.1, 0.1, 0.2, 0.2)));
-        assert!(rules().seed_serves(b(0.1, 0.1, 0.2, 0.2)));
-        // One dataset whose heights are converted (crate::dem::geoid): the rules' samples weren't,
-        // so the seed serves nothing there, and no old sample of it is valid.
-        let mut p = plan(&[None]);
-        p.datasets[0].convert =
-            Some(crate::dem::geoid::Conversion { hops: Vec::new(), digest: "0000000000000002".into() });
-        let v = DemValidity::of(&p);
-        assert!(!v.seed_serves(b(0.1, 0.1, 0.2, 0.2)));
-        let key = dem_key(e7(0.15, 0.15)[0], e7(0.15, 0.15)[1]);
-        let mut out = Vec::new();
-        dem_valid_in_box(&[key], &[5.0], &[1], b(0.1, 0.1, 0.2, 0.2), SEED_MADE, &mut out, &v);
-        assert!(out.is_empty());
-        dem_valid_in_box(
-            &[key],
-            &[5.0],
-            &[1],
-            b(0.1, 0.1, 0.2, 0.2),
-            SEED_MADE,
-            &mut out,
-            &DemValidity::of(&plan(&[None])),
-        );
-        assert_eq!(out.len(), 1);
     }
 
     #[test]
@@ -1777,333 +1074,15 @@ mod tests {
     }
 
     #[test]
-    fn kept_dem_samples_named_by_their_box() {
+    fn kept_scenic_results_move_to_the_shared_cache() {
         let d = tempfile::tempdir().unwrap();
-        let k =
-            |lon: i32, lat: i32| (((lon as i64 + (1i64 << 31)) as u64) << 32) | ((lat as i64 + (1i64 << 31)) as u64);
-        let run = d.path().join("run");
-        let units = d.path().join("shared").join(DEM_UNITS);
-        let keep = |pts: &[(i32, i32)]| {
-            std::fs::create_dir_all(&run).unwrap();
-            let keys: Vec<u64> = pts.iter().map(|&(a, b)| k(a, b)).collect();
-            std::fs::write(run.join("dem-cache.keys.u64"), bytemuck::cast_slice(&keys)).unwrap();
-            std::fs::write(run.join("dem-cache.elev.f32"), bytemuck::cast_slice(&vec![7.0f32; pts.len()])).unwrap();
-            std::fs::write(run.join("dem-cache.src.u8"), vec![1u8; pts.len()]).unwrap();
-            dem_samples_keep(&units, TileId { z: 6, x: 1, y: 2 }, &run, &rules()).unwrap()
-        };
-        let names = || {
-            let mut v: Vec<String> = std::fs::read_dir(&units)
-                .unwrap()
-                .flatten()
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect();
-            v.sort();
-            v
-        };
-        keep(&[(-3, 1), (2, 4)]);
-        assert_eq!(names(), vec![format!("6-1-2.{}.dem", box_tag([-3, 1, 2, 4]))]);
-        assert_eq!(dem_file(&names()[0]), Some(("6-1-2".to_string(), Some([-3, 1, 2, 4]))));
-        // Kept again with another box: the earlier file goes.
-        keep(&[(5, 5), (6, 6)]);
-        assert_eq!(names(), vec![format!("6-1-2.{}.dem", box_tag([5, 5, 6, 6]))]);
-        let slice =
-            |b: [i32; 4]| dem_cache_slice(&d.path().join("no-seed"), &units, b, &d.path().join("s"), &rules()).unwrap();
-        assert_eq!(slice([0, 0, 10, 10]), 2);
-        assert_eq!(slice([-10, -10, 0, 0]), 0, "a box away from it");
-        // A file that isn't whole is passed over, not an error.
-        std::fs::write(units.join(format!("6-1-3.{}.dem", box_tag([0, 0, 9, 9]))), b"RDDEM002 cut").unwrap();
-        assert_eq!(slice([0, 0, 10, 10]), 2);
-        // What a Mac kept in its own cache (named without a box) moves to the shared one, named by its
-        // box; its scenic results too.
-        let local = d.path().join("local");
-        std::fs::create_dir_all(local.join(DEM_UNITS)).unwrap();
-        store::sys::copy_data(
-            units.join(format!("6-1-2.{}.dem", box_tag([5, 5, 6, 6]))),
-            local.join(DEM_UNITS).join("6-9-9.dem"),
-        )
-        .unwrap();
+        let (local, shared) = (d.path().join("local"), d.path().join("shared"));
         std::fs::create_dir_all(local.join("scenic-units/6-9-9")).unwrap();
-        std::fs::write(local.join("scenic-units/6-9-9/basis.json"), b"{}").unwrap();
-        assert_eq!(move_kept_to_shared(&local, &d.path().join("shared")).unwrap(), 2);
-        assert!(names().contains(&format!("6-9-9.{}.dem", box_tag([5, 5, 6, 6]))));
-        assert!(d.path().join("shared/scenic-units/6-9-9/basis.json").exists());
-        assert!(!local.join(DEM_UNITS).join("6-9-9.dem").exists() && !local.join("scenic-units/6-9-9").exists());
-    }
-
-    /// Room-making mid-job (docs/building.md §2, store::cachefile): the DEM seed, deleted as fast as it
-    /// can be while a `unit` job slices it, is copied again from the NAS and held for each z6 tile: every
-    /// slice is what it is left alone.
-    #[test]
-    fn a_seed_deleted_mid_job_is_copied_again_and_every_slice_is_alike() {
-        // (No network.)
-        crate::fetch::go_offline();
-        let d = tempfile::tempdir().unwrap();
-        let (root, cache) = (d.path().join("nas"), d.path().join("cache"));
-        let src = root.join("sources/dem-cache");
-        std::fs::create_dir_all(&src).unwrap();
-        let k =
-            |lon: i32, lat: i32| (((lon as i64 + (1i64 << 31)) as u64) << 32) | ((lat as i64 + (1i64 << 31)) as u64);
-        let mut keys: Vec<u64> = (-40..40).flat_map(|a| (-40..40).map(move |b| k(a * 3, b * 3))).collect();
-        keys.sort_unstable();
-        let elev: Vec<f32> = (0..keys.len()).map(|i| i as f32 * 0.5).collect();
-        std::fs::write(src.join("dem-cache.keys.u64"), bytemuck::cast_slice(&keys)).unwrap();
-        std::fs::write(src.join("dem-cache.elev.f32"), bytemuck::cast_slice(&elev)).unwrap();
-        std::fs::write(src.join("dem-cache.src.u8"), vec![4u8; keys.len()]).unwrap();
-        let seed: Vec<PathBuf> =
-            ["keys.u64", "elev.f32", "src.u8"].iter().map(|n| cache.join(format!("dem-cache.{n}"))).collect();
-        let boxes: Vec<[i32; 4]> = (0..60).map(|i| [-100 + i, -90 + i, 10 + i, 20 + i]).collect();
-        let job = |name: &str| -> Vec<Vec<u8>> {
-            let mut v = Vec::new();
-            for (i, b) in boxes.iter().enumerate() {
-                dem_seed(&root, &cache).unwrap();
-                let dst = d.path().join(format!("{name}/{i}"));
-                dem_cache_slice(&cache, &d.path().join(DEM_UNITS), *b, &dst, &rules()).unwrap();
-                v.push(
-                    ["keys.u64", "elev.f32", "src.u8"]
-                        .iter()
-                        .flat_map(|n| std::fs::read(dst.join(format!("dem-cache.{n}"))).unwrap())
-                        .collect(),
-                );
-                // (The z6 tile done: its hold let go, as the job's loop does.)
-                seed.iter().for_each(|p| store::cachefile::release(p));
-            }
-            v
-        };
-        let calm = job("calm");
-        let stop = std::sync::atomic::AtomicBool::new(false);
-        let (busy, freed) = std::thread::scope(|s| {
-            let deleter = s.spawn(|| {
-                let mut n = 0;
-                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    n += store::cachefile::try_remove_all(&seed).unwrap_or(0)
-                        + store::cachefile::remove_tree(&cache).freed;
-                }
-                n
-            });
-            // (A failure lets the deleter go too: the scope waits for it.)
-            let busy = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job("busy")));
-            stop.store(true, std::sync::atomic::Ordering::Relaxed);
-            (busy.unwrap_or_else(|e| std::panic::resume_unwind(e)), deleter.join().unwrap())
-        });
-        assert!(freed > 0, "the deleter took nothing");
-        assert_eq!(busy, calm);
-    }
-
-    #[test]
-    fn dem_slice_by_box() {
-        let d = tempfile::tempdir().unwrap();
-        let k =
-            |lon: i32, lat: i32| (((lon as i64 + (1i64 << 31)) as u64) << 32) | ((lat as i64 + (1i64 << 31)) as u64);
-        let mut pts = vec![(-10, -10), (-10, 5), (0, 0), (0, 20), (3, 3), (5, -1), (20, 0)];
-        pts.sort_by_key(|&(a, b)| k(a, b));
-        let keys: Vec<u64> = pts.iter().map(|&(a, b)| k(a, b)).collect();
-        let elev: Vec<f32> = (0..pts.len()).map(|i| i as f32).collect();
-        std::fs::write(d.path().join("dem-cache.keys.u64"), bytemuck::cast_slice(&keys)).unwrap();
-        std::fs::write(d.path().join("dem-cache.elev.f32"), bytemuck::cast_slice(&elev)).unwrap();
-        std::fs::write(d.path().join("dem-cache.src.u8"), vec![4u8; pts.len()]).unwrap();
-        let n = dem_cache_slice(d.path(), &d.path().join(DEM_UNITS), [-5, -5, 10, 10], &d.path().join("s"), &rules())
-            .unwrap();
-        // (0,0), (3,3), (5,-1)
-        assert_eq!(n, 3);
-        let got: Vec<u64> =
-            bytemuck::pod_collect_to_vec(&std::fs::read(d.path().join("s/dem-cache.keys.u64")).unwrap());
-        assert_eq!(got, vec![k(0, 0), k(3, 3), k(5, -1)]);
-        // No cache: an empty slice, and no files (elev can't map an empty one).
-        assert_eq!(
-            dem_cache_slice(
-                &d.path().join("none"),
-                &d.path().join("none").join(DEM_UNITS),
-                [0, 0, 1, 1],
-                &d.path().join("t"),
-                &rules()
-            )
-            .unwrap(),
-            0
-        );
-        assert!(!d.path().join("t/dem-cache.keys.u64").exists());
-        // A z6 tile's kept samples: in the slices of boxes meeting them, over the seed's.
-        let run = d.path().join("run");
-        std::fs::create_dir_all(&run).unwrap();
-        let mine = [k(3, 3), k(4, 4)];
-        std::fs::write(run.join("dem-cache.keys.u64"), bytemuck::cast_slice(&mine)).unwrap();
-        std::fs::write(run.join("dem-cache.elev.f32"), bytemuck::cast_slice(&[30.0f32, 40.0])).unwrap();
-        std::fs::write(run.join("dem-cache.src.u8"), [1u8, 1]).unwrap();
-        assert_eq!(
-            dem_samples_keep(&d.path().join(DEM_UNITS), TileId { z: 6, x: 1, y: 2 }, &run, &rules()).unwrap(),
-            2
-        );
-        assert_eq!(
-            dem_cache_slice(d.path(), &d.path().join(DEM_UNITS), [-5, -5, 10, 10], &d.path().join("u"), &rules())
-                .unwrap(),
-            4
-        );
-        let got: Vec<u64> =
-            bytemuck::pod_collect_to_vec(&std::fs::read(d.path().join("u/dem-cache.keys.u64")).unwrap());
-        let el: Vec<f32> = bytemuck::pod_collect_to_vec(&std::fs::read(d.path().join("u/dem-cache.elev.f32")).unwrap());
-        assert_eq!(got, vec![k(0, 0), k(3, 3), k(4, 4), k(5, -1)]);
-        assert_eq!(el[1], 30.0, "the unit's sample, not the seed's");
-        // A box away from them: the seed's only.
-        assert_eq!(
-            dem_cache_slice(d.path(), &d.path().join(DEM_UNITS), [-15, -15, -5, 10], &d.path().join("v"), &rules())
-                .unwrap(),
-            2
-        );
-    }
-
-    #[test]
-    fn a_kept_file_read_by_its_range_is_its_whole_read() {
-        let d = tempfile::tempdir().unwrap();
-        let run = d.path().join("run");
-        std::fs::create_dir_all(&run).unwrap();
-        // (Points in clumps, many on one longitude, over several pages of keys.)
-        let mut s = 1u64;
-        let mut r = |m: i64| {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            ((s >> 33) as i64 % m) as i32
-        };
-        for n in [0usize, 1, 5, 8191, 8192, 8193, 40_000] {
-            let mut keys: Vec<u64> =
-                (0..n).map(|_| dem_key(r(2000) - 1000 + if r(3) == 0 { 0 } else { r(50) }, r(2000) - 1000)).collect();
-            keys.sort_unstable();
-            keys.dedup();
-            let m = keys.len();
-            std::fs::write(run.join("dem-cache.keys.u64"), bytemuck::cast_slice(&keys)).unwrap();
-            std::fs::write(
-                run.join("dem-cache.elev.f32"),
-                bytemuck::cast_slice(&(0..m).map(|i| i as f32 * 0.5).collect::<Vec<_>>()),
-            )
-            .unwrap();
-            std::fs::write(run.join("dem-cache.src.u8"), (0..m).map(|i| (i % 7) as u8).collect::<Vec<_>>()).unwrap();
-            let units = d.path().join(format!("u{n}"));
-            dem_samples_keep(&units, TileId { z: 6, x: 1, y: 2 }, &run, &rules()).unwrap();
-            let file = std::fs::read_dir(&units).unwrap().flatten().next().map(|e| e.path());
-            let Some(file) = file else { continue };
-            let whole = std::fs::read(&file).unwrap();
-            let (wn, wbx, wmade) = dem_head(&whole).unwrap();
-            for _ in 0..50 {
-                let (w, e) = (r(2400) - 1200, r(2400) - 1200);
-                let (s, nn) = (r(2400) - 1200, r(2400) - 1200);
-                let b = [w.min(e), s.min(nn), w.max(e), s.max(nn)];
-                for b in [b, [i32::MIN, i32::MIN, i32::MAX, i32::MAX], [0, 0, 0, 0]] {
-                    let mut want = Vec::new();
-                    let kk: Vec<u64> = bytemuck::pod_collect_to_vec(&whole[DEM_HEAD..DEM_HEAD + 8 * wn]);
-                    let ee: Vec<f32> = bytemuck::pod_collect_to_vec(&whole[DEM_HEAD + 8 * wn..DEM_HEAD + 12 * wn]);
-                    dem_valid_in_box(&kk, &ee, &whole[DEM_HEAD + 12 * wn..], b, wmade, &mut want, &rules());
-                    let got = dem_range(&file, b).unwrap().unwrap();
-                    assert_eq!((got.bx, got.made), (wbx, wmade));
-                    let mut have = Vec::new();
-                    dem_valid_in_box(&got.keys, &got.elev, &got.srcs, b, got.made, &mut have, &rules());
-                    assert_eq!(have, want, "{n} points, box {b:?}");
-                    // (The search's pages of keys at most again.)
-                    assert!(got.read <= whole.len() as u64 + 8 * wn as u64);
-                }
-            }
-        }
-        // Not whole: None.
-        let p = d.path().join("cut.dem");
-        let f = std::fs::read_dir(d.path().join("u40000")).unwrap().flatten().next().unwrap().path();
-        let b = std::fs::read(&f).unwrap();
-        std::fs::write(&p, &b[..b.len() - 1]).unwrap();
-        assert!(dem_range(&p, [0, 0, 1, 1]).unwrap().is_none());
-    }
-
-    #[test]
-    fn kept_samples_read_whole_are_copied_here_and_read_from_the_copy_while_it_is_the_file() {
-        let d = tempfile::tempdir().unwrap();
-        let (run, units, copies) = (
-            d.path().join("run"),
-            d.path().join("shared").join(DEM_UNITS),
-            d.path().join("cache/blobs").join(DEM_UNITS),
-        );
-        std::fs::create_dir_all(&run).unwrap();
-        let keep = |pts: &[(i32, i32)], elev: f32, copies: Option<&Path>| {
-            let keys: Vec<u64> = pts.iter().map(|&(a, b)| dem_key(a, b)).collect();
-            std::fs::write(run.join("dem-cache.keys.u64"), bytemuck::cast_slice(&keys)).unwrap();
-            std::fs::write(run.join("dem-cache.elev.f32"), bytemuck::cast_slice(&vec![elev; pts.len()])).unwrap();
-            std::fs::write(run.join("dem-cache.src.u8"), vec![1u8; pts.len()]).unwrap();
-            dem_samples_keep_with(&units, TileId { z: 6, x: 1, y: 2 }, &run, copies, &rules()).unwrap()
-        };
-        let slice = |b: [i32; 4], to: &str, copies: Option<&Path>| {
-            let n = dem_cache_slice_with(&d.path().join("no-seed"), &units, b, &d.path().join(to), copies, &rules())
-                .unwrap();
-            let el: Vec<f32> = std::fs::read(d.path().join(to).join("dem-cache.elev.f32"))
-                .map(|b| bytemuck::pod_collect_to_vec(&b))
-                .unwrap_or_default();
-            (n, el)
-        };
-        let copied = || std::fs::read_dir(&copies).map(|r| r.count()).unwrap_or(0);
-        // Kept elsewhere: read whole from the NAS, then copied here; a slice of a few longitudes
-        // isn't.
-        keep(&[(1, 1), (5, 5), (9, 9)], 7.0, None);
-        assert_eq!(slice([4, 0, 6, 10], "a", Some(&copies)), (1, vec![7.0]));
-        assert_eq!(copied(), 0);
-        assert_eq!(slice([0, 0, 10, 10], "b", Some(&copies)), (3, vec![7.0; 3]));
-        assert_eq!(copied(), 1);
-        let copy = std::fs::read_dir(&copies).unwrap().next().unwrap().unwrap().path();
-        let nas = std::fs::read_dir(&units).unwrap().next().unwrap().unwrap().path();
-        assert_eq!(std::fs::read(&copy).unwrap(), std::fs::read(&nas).unwrap());
-        // Read from the copy while it's the file (a copy changed here shows it was read)...
-        let mut b = std::fs::read(&copy).unwrap();
-        b[DEM_HEAD + 8 * 3..DEM_HEAD + 12 * 3].copy_from_slice(bytemuck::cast_slice(&[8.0f32; 3]));
-        std::fs::write(&copy, &b).unwrap();
-        assert_eq!(slice([0, 0, 10, 10], "c", Some(&copies)), (3, vec![8.0; 3]));
-        assert_eq!(slice([0, 0, 10, 10], "d", None), (3, vec![7.0; 3]));
-        // ...not once the z6 tile kept other samples (a new file); kept here, the copy is it, and the
-        // earlier one goes (once no job holds it: the `unit` job lets its files go z6 tile by z6 tile).
-        store::cachefile::release(&copy);
-        // (sleep ok: the new file's time apart)
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        keep(&[(1, 1), (5, 5), (9, 9), (9, 10)], 9.0, Some(&copies));
-        assert_eq!(copied(), 1);
-        assert_eq!(slice([0, 0, 10, 10], "e", Some(&copies)), (4, vec![9.0; 4]));
-        let nas = std::fs::read_dir(&units).unwrap().next().unwrap().unwrap().path();
-        let copy = std::fs::read_dir(&copies).unwrap().next().unwrap().unwrap().path();
-        assert_eq!(std::fs::read(&copy).unwrap(), std::fs::read(&nas).unwrap());
-    }
-
-    #[test]
-    fn samples_from_the_declared_datasets_are_judged_by_them() {
-        use crate::dem::declared::{Dataset, Plan, Source};
-        let k = dem_key;
-        let e7 = |x: f64| (x * 1e7) as i32;
-        // Québec from a finer dataset (1), Québec from the world's (4, where the finer has none),
-        // Paris from the world's (4), Paris from another code (9).
-        let pts =
-            [(e7(-71.2), e7(46.8), 1u8), (e7(-71.3), e7(46.9), 4), (e7(2.35), e7(48.85), 4), (e7(2.36), e7(48.86), 9)];
-        let mut v: Vec<(u64, f32, u8)> = pts.iter().map(|&(x, y, s)| (k(x, y), 1.0, s)).collect();
-        v.sort_by_key(|e| e.0);
-        let (keys, elev, srcs): (Vec<u64>, Vec<f32>, Vec<u8>) =
-            (v.iter().map(|e| e.0).collect(), v.iter().map(|e| e.1).collect(), v.iter().map(|e| e.2).collect());
-        let ds = |code: u8, cover: Option<Vec<[f64; 4]>>| Dataset {
-            convert: None,
-            id: format!("d{code}"),
-            code,
-            resolution: 10.0,
-            cover,
-            source: Source::Tiles { url: String::new(), zoom: 1, encoding: "terrarium".into() },
-        };
-        let plan = Plan {
-            fmt: 1,
-            version: "v".into(),
-            tag: "00000000000000ab".into(),
-            datasets: vec![ds(1, Some(vec![[-75.0, 45.0, -70.0, 48.0]])), ds(4, None)],
-        };
-        let v = DemValidity::of(&plan);
-        let world = [i32::MIN, i32::MIN, i32::MAX, i32::MAX];
-        let kept = |made: [u32; 4]| {
-            let mut out = Vec::new();
-            dem_valid_in_box(&keys, &elev, &srcs, world, made, &mut out, &v);
-            let mut s: Vec<u8> = out.iter().map(|e| e.2).collect();
-            s.sort();
-            s
-        };
-        // Made from these declarations: every one.
-        assert_eq!(kept(v.made()), vec![1, 4, 4, 9]);
-        assert_eq!(v.made(), [u32::MAX, 0, 0xab, 0]);
-        // Made under the rules: only where one dataset covers the vertex, and it's that one's.
-        assert_eq!(kept([1, 1, 1, 1]), vec![4]);
-        // Made from other declarations: none.
-        assert_eq!(kept([u32::MAX, 0, 0xac, 0]), Vec::<u8>::new());
+        std::fs::write(local.join("scenic-units/6-9-9/a.bin"), b"x").unwrap();
+        assert_eq!(move_kept_to_shared(&local, &shared).unwrap(), 1);
+        assert_eq!(std::fs::read(shared.join("scenic-units/6-9-9/a.bin")).unwrap(), b"x");
+        assert!(!local.join("scenic-units/6-9-9").exists());
+        assert_eq!(move_kept_to_shared(&local, &shared).unwrap(), 0);
     }
 
     #[test]

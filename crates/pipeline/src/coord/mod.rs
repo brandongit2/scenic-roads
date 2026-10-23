@@ -2880,9 +2880,13 @@ pub const FILL_MIN: u64 = 512;
 /// each with the steps whose peaks in it are no measure of a job now: the halo steps'
 /// (crate::needs::HALO_STEPS) from when a job of them spanned many halos (`pack` before task #260's
 /// v2; `lo` before task #381's v3, its peak a whole pass's taken while its targets' disks were
-/// summed).
-const JOB_DISKS_BEFORE: [(&str, &[&str]); 3] =
-    [("job-disks-v3.json", &[]), ("job-disks-v2.json", &["lo"]), ("job-disks.json", &["pack", "lo"])];
+/// summed); and `unit`'s in each, the fill of a per-Mac DEM cache task #595 deleted, no measure of
+/// a job now.
+const JOB_DISKS_BEFORE: [(&str, &[&str]); 3] = [
+    ("job-disks-v3.json", &["unit"]),
+    ("job-disks-v2.json", &["lo", "unit"]),
+    ("job-disks.json", &["pack", "lo", "unit"]),
+];
 
 /// The 90th percentile of `step`'s targets' disk measures (MB; None: none).
 fn targets_p90(disks: &BTreeMap<String, u64>, step: &str) -> Option<u64> {
@@ -5887,17 +5891,18 @@ mod tests {
         assert_eq!(c.measured_batch("pack", &halo).map(|m| m.disk_mb), Some(1300));
         c.add_job_run("pack", &halo[..1], 1_500);
         assert_eq!((c.job_disk("pack"), c.fill_mb("base packs")), (1_500, 0));
-        // A step reading a shared cache (task #392: a z6 tile, the DEM cache): a run past its target's
-        // output that cache's fill (`fills`), not a floor of each job; a warm run's leaves it.
-        let u = ["6/1/1".to_string()];
-        c.add_job_run("unit", &u, 18_584);
-        assert_eq!((c.job_disk("unit"), c.fill_mb("DEM")), (0, 18_584));
+        // A step reading a shared cache (task #392; `depth`, the local copies, task #551): a run past
+        // its target's output that cache's fill (`fills`), not a floor of each job; a warm run's
+        // leaves it.
+        let (u, cache) = (["6/1/1".to_string()], crate::localread::CACHE);
+        c.add_job_run("depth", &u, 18_584);
+        assert_eq!((c.job_disk("depth"), c.fill_mb(cache)), (0, 18_584));
         for _ in 0..20 {
-            c.add_job_run("unit", &u, 5_900);
+            c.add_job_run("depth", &u, 5_900);
         }
-        assert_eq!(c.fill_mb("DEM"), 18_584, "warm runs leave the fill");
-        c.add_job_run("unit", &u, 5_900 + 3_000);
-        assert_eq!(c.fill_mb("DEM"), 18_584, "a part refilled after an eviction leaves it");
+        assert_eq!(c.fill_mb(cache), 18_584, "warm runs leave the fill");
+        c.add_job_run("depth", &u, 5_900 + 3_000);
+        assert_eq!(c.fill_mb(cache), 18_584, "a part refilled after an eviction leaves it");
         c.floors(true, Some("pack"), None);
         c.add_disks(&halo.iter().map(|t| (cost_key("pack", t), 1300)).collect::<Vec<_>>());
         assert_eq!(c.measured_batch("pack", &halo).map(|m| m.disk_mb), Some(1300));
@@ -5918,24 +5923,31 @@ mod tests {
         );
         std::fs::remove_file(old.path().join(JOB_DISKS)).unwrap();
         std::fs::remove_file(old.path().join(FILLS)).unwrap();
-        std::fs::write(old.path().join("job-disks-v3.json"), r#"{"pack":68279,"unit":18584,"peaks":5037}"#).unwrap();
+        std::fs::write(
+            old.path().join("job-disks-v3.json"),
+            r#"{"pack":68279,"unit":18584,"depth":30584,"peaks":5037}"#,
+        )
+        .unwrap();
         let mut measured: BTreeMap<String, u64> =
-            [(cost_key("pack", "6/1/1"), 300), ("6/1/1".to_string(), 5_900), (cost_key("peaks", "6/1/1"), 500)].into();
+            [(cost_key("pack", "6/1/1"), 300), (cost_key("depth", "6/1/1"), 584), (cost_key("peaks", "6/1/1"), 500)]
+                .into();
+        let fill = || -> BTreeMap<String, u64> { [(crate::localread::CACHE.to_string(), 30_000)].into() };
         assert_eq!(
             job_disks_load(old.path(), &mut measured, true),
-            (BTreeMap::new(), [("DEM".to_string(), 12_684)].into()),
-            "unit's 18.6 GB its cache's fill less its output, not a run; pack's gone; 5 GB against 0.5 GB dropped"
+            (BTreeMap::new(), fill()),
+            "depth's 30.6 GB its cache's fill less its output, not a run; unit's (the deleted DEM cache's \
+             fill) and pack's gone; 5 GB against 0.5 GB dropped"
         );
         assert!(!measured.contains_key(&cost_key("pack", "6/1/1")), "pack's targets' disks gone too");
         std::fs::write(old.path().join(JOB_DISKS), r#"{"peaks":[1300]}"#).unwrap();
         assert_eq!(
             job_disks_load(old.path(), &mut measured, true),
-            ([("peaks".to_string(), vec![1300])].into(), [("DEM".to_string(), 12_684)].into())
+            ([("peaks".to_string(), vec![1300])].into(), fill())
         );
         // Cleared with the floors.
         c.floors(true, Some("peaks"), None);
         c.floors(true, Some("pack"), None);
-        c.floors(true, Some("unit"), None);
+        c.floors(true, Some("depth"), None);
         assert!(c.disks().is_empty());
     }
 
@@ -5979,7 +5991,7 @@ mod tests {
         let dir = d.path().join("coord");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("job-disks-v4.json"), r#"{"lo":[42971,500],"pack":[66000],"slope":[65]}"#).unwrap();
-        std::fs::write(dir.join(FILLS), r#"{"base packs":42471,"DEM":12684}"#).unwrap();
+        std::fs::write(dir.join(FILLS), r#"{"base packs":42471,"DEM":12684,"whole copies":900}"#).unwrap();
         std::fs::write(
             dir.join("disks.json"),
             // (A map, not one raw string across lines: the guards' scanners read a line at a time.)
@@ -6006,7 +6018,11 @@ mod tests {
         )
         .unwrap();
         let (c, _port) = start_for_test(&dir, "m4", "");
-        assert_eq!((c.fill_mb("base packs"), c.fill_mb("DEM")), (0, 12_684));
+        assert_eq!(
+            (c.fill_mb("base packs"), c.fill_mb("DEM"), c.fill_mb(crate::localread::CACHE)),
+            (0, 0, 900),
+            "only the caches there are: the base packs' and the DEM cache's gone"
+        );
         assert_eq!((c.job_disk("lo"), c.job_disk("pack"), c.job_disk("slope")), (0, 0, 65));
         assert_eq!(c.measured("terrain", "6/9/9").map(|m| (m.mem_mb, m.disk_mb)), Some((3_000, 900)));
         assert!(!c.disks().contains_key("terrain 3/1/1"));
@@ -7584,29 +7600,29 @@ mod tests {
         assert!(why.contains("(6.0 GB memory; disk: 21 GB free · 0 GB for jobs (20 GB room target))"), "{why}");
     }
 
-    /// A shared cache reserved once per Mac (task #392, crate::needs::CACHES): z6 tiles read one DEM
-    /// cache, so of three jobs of them granted together only the first carries the cache (the fill
+    /// A shared cache reserved once per Mac (task #392, crate::needs::CACHES): `depth`'s z6 tiles
+    /// read one copy of the local copies (crate::localread), so of three jobs of them granted together only the first carries the cache (the fill
     /// measured) beside its own output; the others their output alone. A Mac whose disk can't hold
     /// the cache is granted none of them.
     #[test]
     fn a_shared_cache_is_reserved_once_per_mac() {
         let one = |i: usize| Offer {
-            step: "unit".into(),
+            step: "depth".into(),
             targets: vec![(format!("6/1/{i}"), format!("k 6/1/{i}"), 0)],
             job: None,
         };
         let filled = |c: &Coordinator| {
-            packable(c, "unit", 6, Some(1));
-            c.add_job_run("unit", &["6/1/1".to_string()], 10_100);
+            packable(c, "depth", 6, Some(1));
+            c.add_job_run("depth", &["6/1/1".to_string()], 10_100);
             c.offer("p", (1..=3).map(one).collect());
         };
         let (_d, c, w, _clock) = every((0, 0));
         filled(&c);
         let ask = |disk: u64| Ask {
             want: 3,
-            can: vec!["unit".into()],
+            can: vec!["depth".into()],
             cap: Some(Capacity { cores: 8, cores_free: 8, disk_mb: disk, ..Default::default() }),
-            ..every_ask("m1", "unit", 64_000, disk)
+            ..every_ask("m1", "depth", 64_000, disk)
         };
         let mut g = w.ask(&ask(20_000)).unwrap().unwrap();
         let all: Vec<Grant> = std::iter::once(g.clone()).chain(std::mem::take(&mut g.more)).collect();
@@ -7624,7 +7640,10 @@ mod tests {
                 cores: 8,
                 cores_free: 8,
                 disk_mb: 20_000,
-                caches: have.map(|h| ("DEM".to_string(), CacheHere { have_mb: h })).into_iter().collect(),
+                caches: have
+                    .map(|h| (crate::localread::CACHE.to_string(), CacheHere { have_mb: h }))
+                    .into_iter()
+                    .collect(),
                 ..Default::default()
             }),
             want: 1,

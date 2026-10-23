@@ -317,7 +317,7 @@ pub fn of_piece(piece: &Path, u: TileId) -> Result<Option<Reach>> {
 mod tests {
     use super::*;
     use crate::agent::recipes::Recipe;
-    use crate::dem::spacing::{Fine, Uniform, COARSE_M, FINE_M};
+    use crate::dem::spacing::{Fine, Uniform, FLOOR_M};
 
     fn e7(x: f64, y: f64) -> [i32; 2] {
         [(x * 1e7) as i32, (y * 1e7) as i32]
@@ -344,7 +344,7 @@ mod tests {
             long: vec![ferry],
             cells: vec![],
         };
-        let sp = &Uniform(COARSE_M);
+        let sp = &Uniform(15.0);
         // The sea between, a region with no land resolved as the regions are (cell by cell, its
         // land and the coastline's land none here): kept apart for the depth alone.
         use crate::inputs::regions::{data::Datasets, read, resolve};
@@ -408,7 +408,7 @@ mod tests {
             long: vec![ferry],
             cells: vec![],
         };
-        let sp = &Uniform(COARSE_M);
+        let sp = &Uniform(15.0);
         // Coverage around the ferry's far end: built for the ferry.
         assert!(r.builds(&cov("place:0,60,30"), sp));
         // Coverage near neither: not built.
@@ -433,21 +433,22 @@ mod tests {
         .unwrap();
         let road = LongWay { owned: true, ferry: false, verts: vec![e7(-0.35, 50.009), e7(0.35, 50.009)] };
         assert!(!cov.touches(&road.verts));
-        assert!(road.touches(&cov, &Uniform(COARSE_M)));
+        assert!(road.touches(&cov, &Uniform(15.0)));
         // A ferry isn't densified: its nodes only.
-        assert!(!LongWay { ferry: true, ..road.clone() }.touches(&cov, &Uniform(COARSE_M)));
-        // By the declared datasets' spacing at its first node: a 4 m circle on a 32 m way through
-        // its centre, met by a point 8 m apart, not 15 m apart (those 5.3 m off its centre).
+        assert!(!LongWay { ferry: true, ..road.clone() }.touches(&cov, &Uniform(15.0)));
+        // By the terrain's spacing at its first node: a 4 m circle on a 60 m way through its centre,
+        // met by points `FLOOR_M` apart (the lidar's: 2 m off it), not the base's (~24 m: 20 m
+        // apart, 10 m off it).
         let small = Coverage::fixture(
             &[Recipe { id: "s".into(), name: "S".into(), outline: vec!["place:0.5,50.5,0.004".into()] }],
             None,
             d.path(),
         )
         .unwrap();
-        let half = 16.0 / (111_195.0 * 50.5f64.to_radians().cos());
+        let half = 30.0 / (111_195.0 * 50.5f64.to_radians().cos());
         let road = LongWay { owned: true, ferry: false, verts: vec![e7(0.5 - half, 50.5), e7(0.5 + half, 50.5)] };
-        let fine = Fine { world: false, cells: [[0, 50]].into_iter().collect() };
-        assert_eq!(fine.at(road.verts[0]), FINE_M);
+        let fine = Fine { cells: vec![([0, 50], 16)] };
+        assert_eq!(fine.at(road.verts[0]), FLOOR_M);
         assert!(road.touches(&small, &fine));
         assert!(!road.touches(&small, &Fine::default()));
     }
