@@ -587,7 +587,6 @@ pub fn usage_of_group(pgid: i32) -> Option<Usage> {
         // (rusage_info's times are in mach absolute time units: ns on Intel, 125/3 ns on Apple
         // silicon.)
         let mut tb = libc::mach_timebase_info { numer: 0, denom: 0 };
-        #[allow(deprecated)]
         let ok = unsafe { libc::mach_timebase_info(&mut tb) } == 0 && tb.denom != 0;
         let (numer, denom) = if ok { (tb.numer as u128, tb.denom as u128) } else { (1, 1) };
         let mut total: Option<Usage> = None;
@@ -655,14 +654,27 @@ pub fn core_ticks() -> Option<Vec<(u64, u64)>> {
     None
 }
 
-/// The efficiency cores' count (`hw.perflevel1.logicalcpu`; 0 where there's no such level).
+/// The efficiency cores' count (the last perf level's `logicalcpu`, when it's named Efficiency;
+/// else 0).
 pub fn efficiency_cores() -> u32 {
     #[cfg(target_os = "macos")]
     {
-        if sysctl::<u32>("hw.nperflevels").unwrap_or(1) < 2 {
+        // (The last level is the slowest: perflevel0 the fastest, as Super, Performance,
+        // Efficiency on a three-level chip; its name checked.)
+        let n = sysctl::<u32>("hw.nperflevels").unwrap_or(1);
+        if n < 2 {
             return 0;
         }
-        sysctl::<u32>("hw.perflevel1.logicalcpu").unwrap_or(0)
+        let name = std::ffi::CString::new(format!("hw.perflevel{}.name", n - 1)).unwrap_or_default();
+        let mut buf = [0u8; 64];
+        let mut len = buf.len();
+        // SAFETY: the call writes at most `len` bytes of the buffer; the name is a C string.
+        let r =
+            unsafe { libc::sysctlbyname(name.as_ptr(), buf.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0) };
+        if r != 0 || !buf[..len.min(buf.len())].starts_with(b"Efficiency") {
+            return 0;
+        }
+        sysctl::<u32>(&format!("hw.perflevel{}.logicalcpu", n - 1)).unwrap_or(0)
     }
     #[cfg(not(target_os = "macos"))]
     0
@@ -707,8 +719,13 @@ pub fn disk_written() -> Option<u64> {
             let key = CFStringCreateWithCString(std::ptr::null(), c"Bytes (Write)".as_ptr(), UTF8);
             let mut it = 0u32;
             let mut total = None;
-            let m = IOServiceMatching(c"IOBlockStorageDriver".as_ptr());
-            if !stats.is_null() && !key.is_null() && !m.is_null() && IOServiceGetMatchingServices(0, m, &mut it) == 0 {
+            // (Made only when it will be consumed: IOServiceGetMatchingServices releases it.)
+            let m = if stats.is_null() || key.is_null() {
+                std::ptr::null_mut()
+            } else {
+                IOServiceMatching(c"IOBlockStorageDriver".as_ptr())
+            };
+            if !m.is_null() && IOServiceGetMatchingServices(0, m, &mut it) == 0 {
                 loop {
                     let e = IOIteratorNext(it);
                     if e == 0 {

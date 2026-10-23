@@ -10,7 +10,7 @@
 //! - **Sampled** on threads of the agent's own (`spawn`), never its loop: every second the load,
 //!   memory free, its pressure, the swap and the jobs running; the cores busy (all, the efficiency
 //!   cores, the performance ones: `host_processor_info`'s ticks, the efficiency cores the first
-//!   `hw.perflevel1.logicalcpu`); the build's CPU and memory (its jobs' processes' `proc_pid_rusage`)
+//!   processors, as many as the last perf level's; the performance ones every other); the build's CPU and memory (its jobs' processes' `proc_pid_rusage`)
 //!   and the rest of the Mac's (the cores busy and the memory in use, less the build's); the bytes
 //!   written to the Mac's disks (IOKit's block storage drivers' statistics) and by each job, as
 //!   rates; the sampler's own CPU time. Every 10 s the disk's free space. The battery, mains power and the

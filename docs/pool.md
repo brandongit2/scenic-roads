@@ -1006,7 +1006,9 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   `kern.memorystatus_level`), its pressure (`mem_pressure`: 1, 2, 4) and the swap (`swap_mb`),
   and the jobs running (`jobs`); the cores busy in cores' worth (`cores_busy`, and by group
   `cores_busy_e`, `cores_busy_p`: `host_processor_info`'s ticks over the second, the efficiency
-  cores the first `hw.perflevel1.logicalcpu` processors; no per-core series); the build against
+  cores the first processors, as many as the last perf level's `logicalcpu` (named Efficiency;
+  checked on the M1 and the Mac mini by ioreg's cluster types); "P" is every other core, Super
+  and Performance together on a three-level chip such as the Mac mini's; no per-core series); the build against
   the rest of the Mac (task #515): its jobs' CPU in cores' worth (`build_cores`, their processes'
   `proc_pid_rusage` over the second) and the rest's (`others_cores`: the cores busy less the
   build's), their memory (`build_mem_gb`, the jobs' physical footprints; `others_mem_gb`: the
@@ -1014,7 +1016,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   disks (`disk_write_mbs`, MB/s, its block storage drivers' statistics through IOKit, as `iostat`
   reads them) and by each job (`job_write_mbs.<slot>`, its processes' `ri_diskio_byteswritten`);
   a job's first second sets its baseline, and a process's last moment before it ends isn't counted.
-  The sampler's own CPU time (`sampler_cpu_ms`, a second; 0.14 ms a round measured on the M1 with no jobs, each job adding a `proc_pid_rusage` a process). No
+  The sampler's own CPU time (`sampler_cpu_ms`, its CPU time a second, the overhead's own measure; each job adds a `proc_pid_rusage` a process). No
   thermal series: macOS gives none without private interfaces or root. Every 10 s the disk's free space (`disk_free_gb`); the power (`ac`, `battery_pct`) and
   the owner's idleness (`idle_s`) as each loop reads them. The NAS's latency (`nas_ms`) every 5 s
   only while a build runs here (a job of this Mac's, or its coordinator's leases out): a listing
