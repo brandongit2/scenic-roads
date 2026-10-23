@@ -48,11 +48,10 @@ lead's coordinator. Below, the M4 (48 GB) unless said.
   copy of what the NAS keeps, or made from it, refilled from the NAS, never the internet.
   - **The cheap ones** (emptied for room, cleared; kept after a build while the disk has room): canopy squares
     (`chm10/`), raw terrain tiles and archive copies (`aws-terrarium/`),
-    copies of record files staging reads (`blobs/`: hi packs, roadside buildings' z8 tiles, z6 tiles'
-    kept DEM samples), pageview month indexes (`items/months/`).
+    copies of record files staging reads (`blobs/`: hi packs, roadside buildings' z8 tiles), pageview month indexes (`items/months/`).
   - **Cleared too, on the owner's ask:** the pack cache (`base/`, the base packs' way indexes for
     pack(T) and lo), the
-    per-vertex DEM seed (only while the NAS has it whole), local copies the summits and peaks jobs
+    old DEM cache's leftover files (`dem-cache.*`, read by nothing), local copies the summits and peaks jobs
     read, and the heritage job's clip of the pass's `whs` set (made again by osmium).
   - **Kept:** the answers (`items/`, `heritage-<date>/`), the trains' stop pairs (`rail/`), the z6 tile
     stages' timings (`unit-stages.json`), what a z6 tile kept that isn't on the NAS yet, and the
@@ -61,8 +60,8 @@ lead's coordinator. Below, the M4 (48 GB) unless said.
 - **Its own map** is served from the NAS and what it has downloaded (Mirror).
 - **An OSM pass** starts with 80 GB free (the pack cache counting as free) and copies the planet to
   the SSD when there's room, else reads it from the NAS.
-- **What a z6 tile keeps for its later runs** is on the NAS (`cache/`), shared by every Mac: its DEM
-  samples (`dem-units/`) and canopy and view results (`scenic-units/`, docs/steps.md §6). A z6 tile's build
+- **What a z6 tile keeps for its later runs** is on the NAS (`cache/`), shared by every Mac: its canopy
+  and view results (`scenic-units/`, docs/steps.md §6). A z6 tile's build
   folders go once it's built.
 
 **The M1 (16 GB)** leads when it holds the term; as a member it builds what the lead's coordinator

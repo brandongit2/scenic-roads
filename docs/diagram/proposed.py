@@ -222,16 +222,15 @@ def build(check=False):
     n_ext = d.card('net', 'd1', cy, 'extract', 'Rust', ['the ways each z6 tile owns,', 'inside the coverage; with', 'elev and scenic, one job'],
                    [(['base/<z6>'], 'sectioned · per road point')], scope='z6', shared=True,
                    fig='the job: median 140 s, p90 19 min; 6.3 GB p90, 8.4 GB at most')
-    n_samp = d.card('terr', 'd2', cy, 'elev · tile elev', 'Rust', ['DEMs chosen by location,', 'then clean-up and grade'],
-                    [(['elevations · grade'], 'in the base pack')], kept='cache/dem-units/', scope='z6', shared=True, task=True)
+    n_samp = d.card('terr', 'd2', cy, 'elev · tile elev', 'Rust', ['heights from the finished', 'terrain (no server); then', 'clean-up and grade'],
+                    [(['elevations · grade'], 'in the base pack')], scope='z6', shared=True, task=True)
     n_scen = d.card('scen', 'd3', cy, 'scenic', 'Rust', ['samples every 100 m: horizons', 'to 300 m past trees, views to', '15 km, buildings, designations'],
                     [(['13 channels a point'], 'in the base pack')], kept='cache/scenic-units/', scope='z6', shared=True, task=True)
     n_tile = d.card('net', 'd4', cy, 'map tiles', 'Rust', ['per z6 tile: the tiles whose', 'ways come in, their road values;', 'tiles, query parts'],
                     [(['layers/roads/ · rails/'], 'packs · RT v7 z4–14'), (['hidata/<z6>'], 'query parts · summaries')], scope='z6', shared=True,
                     fig='median 0 s a tile, p90 20 s; 0.4 GB p90')
     s_osm4 = d.src('osm', cy, 'OSM extracts', ['roads · rail lines'])
-    s_dem = d.src('terr', s_osm4.b + 8, 'Road DEMs', ['HRDEM · 3DEP (N. Am.) ·', 'GSI (Japan) · GLO-30 30 m;', 'read by range, road blocks only'],
-                  kept=['sources/fetched/glo30/', 'sources/dem-cache/'])
+    s_dem = d.src('terr', s_osm4.b + 8, 'The finished terrain', ['base tiles z0–12, fine tiles', 'z13–16 under the vertices;', 'staged into the folder'])
     c_dem = d.cur('terr', s_dem.b + 10, 'Which DEM where', ['the sources and their order by', 'area; HRDEM’s tile lists'], 'chosen by hand', 'part')
     p_road = d.pill('net', n_tile.y + 30, ['/tiles/roads · rails', '/api/road · profile'], note=['the pack for the tile;', 'APIs by OSM id'])
     b_road = d.layer('net', 0, 'Roads & rail lines', ['WebGL, coloured per point:', 'elevation, grade, scenic score'], cy=p_road.my)

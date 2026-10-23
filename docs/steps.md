@@ -79,7 +79,7 @@ What each step does, in detail. The steps as one table (names, chains, the check
     then AWS's Terrarium tiles where GLO-30 has nothing. Each raw tile (the finest level's, and a
     coarser one's quarters with no finer tile under them) is sampled from the pool at 2 × 2 points a
     pixel (their mean), each dataset read at the level's detail: a GeoTIFF at its overview nearest
-    half a pixel (never finer than its `read_resolution`: HRDEM's and 3DEP 1 m's 8 m), a Terrarium
+    half a pixel (at most its full resolution), a Terrarium
     pyramid at the level's zoom, another pyramid at its own; heights brought to EGM2008 as the
     roads' are; where no dataset has data, sea level. The Terrarium tiles are read through this
     Mac's cache and the NAS's archives (fetched once, packed onto the NAS: docs/macs.md), GLO-30
@@ -381,18 +381,24 @@ The `unit` job ("Roads"; its step name is kept as stored) runs the programs for 
 a scratch folder, wiped at each run:
 1. **extract:** U's ways that touch the coverage, on U's extract. Rail tracks without a route relation
    are kept by type.
-2. **Elevations:** `elev` (`pipeline::dem`), the declared elevation datasets (docs/inputs.md §6.8) by
-   their plan for U (`elevation.json`) through one sampler, blended at their edges, on U's slice of
-   the per-vertex DEM cache (the seed, where one of its samples could be valid, and the z6 tiles' kept
-   samples). U's samples are kept for later runs and its neighbours'. The vertices the cache lacks are
-   sampled in batches of 2 M along a Z-order curve (`dem::generic::BATCH`, task #496), the files,
-   blocks and tiles read kept across them: each vertex's height is its own, so the batches change
-   nothing but the memory (some 150 bytes a vertex sampled at once: the densest z6 tiles took 16 GB).
+2. **Elevations:** `elev` (crate::road_terrain), each vertex's height from the finished terrain
+   (docs/inputs.md §6.8, The roads' heights), bilinear between pixel centres at the finest zoom stored
+   there: the fine tiles (z13–16) where there are some, else the base's. It reads `verts.bin` and
+   what step 4 stages alone: `terrain.tiles`, `fine.tiles` (the fine packs' tiles under U's
+   vertices) and `codes.json` (the datasets' codes by coverage, giving `src.u8`); no NAS, no
+   server. It writes `elev.f32`, `src.u8` and `dem-stats.json` (vertices, missing, seconds). The
+   ways were densified by `extract` at the terrain's pixel there, never closer than 4 m
+   (crate::dem::spacing, `FLOOR_M`). U waits for the stale terrain targets under its box, the fine
+   ones (z8) as well, and its key names the terrain packs it reads.
 3. **Heritage:** the heritage-sites job's slices within U + 30 km; `areaflags` rasterises the heritage and designated areas
    onto U's grid.
-4. **Terrain and grids:** terrain z11 and the grids, staged from the packs the manifest names.
+4. **Terrain and grids:** terrain z11 and the grids, staged from the packs the manifest names,
+   with the terrain tiles step 2 reads.
    Missing grid tiles are made.
-5. **`tile elev`:** clean-up and grade, with junction context from the extract.
+5. **`tile elev`:** clean-up and grade, with junction context from the extract. Causeways and
+   embankments (the ways `extract` lists in `causeways.i64`: `embankment=yes`, `causeway=yes`,
+   `man_made=causeway`) and ways whose every vertex lies on the staged land cover's water class are
+   structures (crate::elev::raised): straight between their ends, as bridges are.
 6. **scenic:** `scenic-metrics` prep, canopy, view, buildings and flags for every sample of the ways
    U owns. Buildings come from the roadside buildings' z8 tiles within 1 km of U's tile + 20 km and
    its long roads. Canopy and view results are kept in `cache/scenic-units/` (`scache::Carry`), so a

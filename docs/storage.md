@@ -10,7 +10,7 @@ inputs/        the drop boxes (docs/inputs.md): regions/, languages/, translatio
                _gate-test/ (the input check's test unit)
 sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, reach, pass),
                basemap/ (Planetiler's jar and data), items/<date>/ (facts, pageviews, answers),
-               pageviews/, dem-cache/ (per-vertex DEM seed), buildings/<release>/,
+               pageviews/, buildings/<release>/,
                trees/, canopy/, aws-terrarium/, rail/, canvec/, fetched/glo30/, terrain-z8-v5-<pool>,
                inputs/<unit>/ (the input check's checked copies and accepted indexes: inputs.md §4.6)
 base/          base packs, one per z6 tile
@@ -21,7 +21,7 @@ global/        worldwide files: road values per z6 tile, road → z6 tiles, rail
                totals, heritage/, spoken
 layers/<layer>/  root, lo and hi packs, or one bundle (all); basemap/world-<date>.<hash>.pmtiles
 work/          build intermediates, not served
-cache/         what z6 tiles keep for later runs, shared by both Macs: dem-units/, scenic-units/
+cache/         what z6 tiles keep for later runs, shared by both Macs: scenic-units/
 catalog/       <n>.json.zst (or deltas): every file the map reads, by content name
 catalog-held/  a catalog kept back for review (while inputs/hold-catalog exists)
 app/           published app versions; current.json, previous.json

@@ -111,8 +111,7 @@ from the first (`edit_held`).
     `flock`; a file is deleted only under an exclusive lock taken without waiting; a file is made
     under a temporary name and named only if the name is free. A guard test fails on code naming a
     cache path outside the accessor (`tests/cache_accessor.rs`), and chaos tests delete cache files
-    under real steps and check the outputs are byte-identical. What can't be refilled (the DEM seed
-    while the NAS hasn't it whole, the heritage clip without its planet, raw tiles and pageview
+    under real steps and check the outputs are byte-identical. What can't be refilled (the heritage clip without its planet, raw tiles and pageview
     months the NAS lacks) stays. What queued and running jobs read goes last (`room::Hints`).
   - **Disk measured** (docs/pool.md §7.7): what each job writes is counted by the accessor and by
     the agent's sampler over the job's scratch folder; the most a target took is its **disk floor**
@@ -134,7 +133,7 @@ from the first (`edit_held`).
     off` or the menu's Disk Room, per Mac (`room-target.json`). A job starts only with the target free
     past its own room; one that can't waits, saying so in `waiting`. Whenever the disk is short of
     the target, the agent frees its caches toward it on a thread of its own, the cheapest to refill
-    first (copies, base packs, the DEM seed, the heritage clip last), measuring as it goes; short with
+    first (copies, base packs, the heritage clip last), measuring as it goes; short with
     nothing more to free, it says so (`caches.room.short`). It never deletes what a job holds.
   - **The NAS reserve** (`room::NAS_RESERVE`, `room::nas_room`): `scenic nas-room <GB>` / `scenic
     nas-room off` on any Mac, one pool-wide value on the NAS (`state/pool/nas-room.json`), off by

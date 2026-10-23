@@ -27,9 +27,9 @@ What is not built is marked planned.
   journal (docs/pool.md §7.3).
 - **Tasks** (`coord::task`) are pure work a running job offers to any worker: programs run over a
   folder of files, giving files back. A task's folder is served by the Mac whose job offers it;
-  what it reads of the NAS's stores and the DEM servers it reads where it lies (§3), never writing.
-- **Impure work stays at the hub:** downloads into the NAS's stores, staging from packs, keeping a
-  z6 tile's DEM samples, and every write to the records.
+  what it reads of the NAS's stores and the land cover's servers it reads where it lies (§3), never
+  writing.
+- **Impure work stays at the hub:** downloads into the NAS's stores, staging from packs, and every write to the records.
 - **Workers** hold nothing the build depends on: a lost worker costs only its work in hand.
 
 ## 3. Tasks
@@ -60,7 +60,8 @@ the page and by `scenic run-task` unchanged:
 Common rules:
 
 - **Read where they lie** (`/net`): places `{sources}` (the NAS's `sources/`; `{chm}` the canopy
-  squares) and `{net}` (DEM and land-cover servers' files, laid out as `crate::fetch`'s mirror,
+  squares) and `{net}` (the land cover's servers' files, the only hosts a
+  worker is allowed: `coord::hosts`; laid out as `crate::fetch`'s mirror,
   `<host>/<path>`). A browser reads them through the coordinator (`/work/net/<lease>/nas/<path>`,
   `…/web/<host>/<path>`; `?probe`, `?list`, byte ranges; read-only), 1 MB blocks at a time
   (`web/work/runtime.js`, synchronous). The coordinator fetches only over HTTPS, follows no

@@ -1129,13 +1129,12 @@ the same declarations.
 | `rank` | integer, default 0 | overrides the order by resolution (lower first), where datasets of one resolution differ in quality |
 | `code` | 1–8 | the source byte (at most `roadcore::NDEM` − 1, where the server counts a way's sources) in the z6 tiles' outputs (`src.u8`), named on the map by `label` |
 | `label` | string | the short name a road's details give its elevation source (`"GSI lidar (5 m)"`), else `name`; one label per `code` (an `el-decl` error otherwise); not keyed: it reaches the map through the catalog's `dem_labels` (formats.md, Catalog), as a credit edit does (§4.8) |
-| `regions` | region ids (§6.1) | optional: the map regions the dataset is used in at all, by the roads and the terrain alike; elsewhere the next dataset in the order serves both. Its coverage (`facts.measured.cover`) is cut at check time to the 1° cells meeting one of them (`declared::scope_cover`; the check's key names the accepted regions, so a regions change measures again); an id no accepted region has is an `el-data` error. Not in its `keyed` digest (`Declaration::keyed_part`): a key names the cut only where it changed the cells the key's box reads (`cut_note`), so the z6 tiles inside keep their keys and those whose datasets change are built again; the DEM cache's tag notes the cut the same way, so a plan's kept samples stop counting only where the cut reaches its box. Planned: cut to the regions' outlines inside those cells too |
+| `regions` | region ids (§6.1) | optional: the map regions the dataset is used in at all, by the roads and the terrain alike; elsewhere the next dataset in the order serves both. Its coverage (`facts.measured.cover`) is cut at check time to the 1° cells meeting one of them (`declared::scope_cover`; the check's key names the accepted regions, so a regions change measures again); an id no accepted region has is an `el-data` error. Not in its `keyed` digest (`Declaration::keyed_part`): a key names the cut only where it changed the cells the key's box reads (`cut_note`), so the z6 tiles inside keep their keys and those whose datasets change are built again. Planned: cut to the regions' outlines inside those cells too |
 | `territory` | ISO codes or `"world"` | required for a tile pyramid (its coverage is its territory's outlines' boxes); `"world"` makes any dataset's coverage the world |
 | `[data] format` | `geotiff` or `tiles` | |
 | `[data] url` / `urls` / `index` / `files` | | exactly one: GeoTIFFs by URL, a tile index (GeoJSON footprints with each file's `url` or `file`, and optionally its fill mask's URL, `mask`; made by `producers/elevation/indexes.py`), or dropped files by glob |
 | `[data] store` | bool | the files (and fill masks) read from `sources/fetched/<dataset>/` alone, by their URLs' last part (after a `#`, the member's name); never fetched by a build: a file the store lacks is an error naming it, one noted `<name>.none` has no data. Filled once by `scenic-build store-fetch <id> --index <its index>` (crate::dem::store_fetch: every file of the index and its mask the store lacks, as published, by the build's fetcher: its User-Agent, 429 and 5xx answers waited out; each checked a whole GeoTIFF under a temporary name, then renamed; restartable) |
 | `[data] encoding`, `url`, `zoom` | | for `tiles`: `terrarium`, `terrain-rgb`, `gsi-png`; the URL template; the zoom |
-| `[data] read_resolution` | metres | the roads read a finer dataset at its nearest overview (HRDEM's 2 m at 8 m); the map's terrain reads it at its full resolution (steps.md §2, Terrain, finer than the base) |
 
 ```toml
 name = "NRCan HRDEM, 2 m lidar mosaic"
@@ -1147,14 +1146,12 @@ heights = "CGVD2013"
 [data]
 format = "geotiff"
 index = "hrdem-tiles.geojson"
-read_resolution = 8
 ```
 
 **Read from the data at check time** (`facts.measured`, beside the parsed `facts.declaration`): a
 GeoTIFF dataset's CRS and resolution (headers by range request: an index's first, last and seven
-files between, or every file without an index; one CRS the app projects, the coarsest resolution at
-the overview read; where `read_resolution` reads it coarser, also its full resolution, `full`: the
-finest of those files' full images) and its coverage (`cover`): the 1° cells its data meets, merged into boxes. Index
+files between, or every file without an index; one CRS the app projects, the coarsest of those
+files' full resolutions, at which every dataset is read) and its coverage (`cover`): the 1° cells its data meets, merged into boxes. Index
 files meet by footprint; other files by where they have valid data at their coarsest overview, so a
 file's empty margins cover nothing. A tile pyramid's resolution comes from its zoom at its coverage's
 mid-latitude, and a tile is read to check it's 256 px (`generic::TILE_PX`). The coverage is also the
@@ -1214,12 +1211,11 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   to `from` subtracts; references by name where chains tie); a link declared by several sources (a
   grid a region) takes, at a point, the first by id with a value there. Grids are read bilinearly
   between pixel centres in f64 (no data where a neighbour has none). A point no source of a link
-  covers keeps its height as sampled, counted (`dem-stats.json`'s `unconverted`; a blended one whose
-  first dataset was converted and whose dataset beneath had no value, `unconverted_seam`: task
-  #467); a dataset no chain reaches is left as it is, said by the agent (the status's `notices`,
-  apart from the waits: an info line on the build page and "note: elevation heights — not
-  converted to EGM2008: …" in scenic status) and by the z6 tile job (`elevation: <id>: its heights …
-  left as they are`); a unit job given no accepted sources says it converts nothing.
+  covers keeps its height as sampled, counted (the sampler's `unconverted`; a blended one whose
+  first dataset was converted and whose dataset beneath had no value, `unconverted_seam`); a
+  dataset no chain reaches is left as it is, said by the agent (the status's `notices`, apart from
+  the waits: an info line on the build page and "note: elevation heights — not converted to
+  EGM2008: …" in scenic status).
   `producers/geoid/fetch.sh` downloads the grids (published data: no robots.txt, §6.9). Only
   EGM2008 is named in code. `scenic-build geoid-offsets --sources <folder>
   --from <reference> --at <lon,lat>[;…]` prints a chain's offsets, hop by hop.
@@ -1235,12 +1231,9 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
     JGD2011 → EGM2008 +0.13 m at Sapporo to +0.33 m at Fukuoka (+0.95 m on Okinawa). 3DEP's tiles
     off the conterminous US and Alaska (Hawaii, Puerto Rico, the islands) aren't on NAVD88 and no
     grid covers them: their heights stay as sampled, counted.
-  - **Keys:** a converted dataset's line in a z6 tile's key (and the plan's `tag`, by which kept DEM
-    samples are judged) names its chain's digest (the sources' ids and `keyed`, `Conversion::digest`):
+  - **Keys:** a converted dataset's line in a z6 tile's key names its chain's digest (the sources' ids and `keyed`, `Conversion::digest`):
     `<id> <keyed> to EGM2008 <digest>`, so declaring or editing a grid rebuilds just the z6 tiles
-    meeting a dataset it converts. A sample made under the DEM rules (the seed's) is never valid
-    for a converted dataset (`DemValidity`: those weren't converted). With the six declarations
-    accepted, the z6 tiles meeting a converted dataset are built again.
+    meeting a dataset it converts.
 - **The worldwide datasets**, ranked last (staged in `producers/elevation/`: `glo30.toml`,
   `terrarium.toml`): Copernicus GLO-30 (`rank = 1`, `code = 3`, a surface model, EGM2008; its index
   from the bucket's tile list with each tile's fill mask, `indexes.py glo30`: 26,450 1° tiles;
@@ -1249,7 +1242,8 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   declared EGM2008, which most of its sources are; north of 60°N some are ellipsoidal (10–50 m off),
   but GLO-30 covers that land, so the tiles serve there only in its voids.
 - **Keys:** a z6 tile names the `keyed` digests of the datasets whose coverage meets its ways
-  (`agent::build::unit_key`); a dataset's `keyed` includes its index's content and dropped files, so
+  (`agent::build::unit_key`), and the terrain packs its roads' heights read (`terrain_packs`: the
+  hi packs of the z6 tiles over its grown box and the fine packs of its z10 tiles); a dataset's `keyed` includes its index's content and dropped files, so
   adding a tile reruns the z6 tiles it meets. `agent::rekey` keeps what keys made before the
   declarations need (`dem_rules_meeting`, `pre_elevation_unit_key`).
 - **The switch:** the check records `sources/inputs/elevation/@switched` (the accepted index and the
@@ -1257,34 +1251,33 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   build records none. Until then `elev` and the z6 tile job don't run and the z6 tiles wait (the agent
   says why). From then on no older app leads, is handed the lead or is granted work
   (`regions::read::switch_app`, the coordinator's `min_app`).
-- **The z6 tile's plan:** the z6 tile job writes `elevation.json` into the z6 tile's folder (the datasets in
-  order, each with its files meeting the z6 tile's vertices: `dem::declared::plan`), which `elev` reads,
-  natively or as WebAssembly; without one `elev` refuses to run.
-- **The DEM cache** (`sources/dem-cache/`, `cache/dem-units/`, `unit::DemValidity`): a samples file
-  made from the declarations records their digest and is valid while it holds. Older samples are
-  valid only where a single dataset covers the vertex and the sample carries its code. The seed
-  (`sources/dem-cache/`, made under the DEM rules) is neither copied to a Mac nor read for a z6 tile
-  when two datasets or more cover every 1° cell its vertices meet (`DemValidity::seed_serves`):
-  none of its samples could be valid there. It's copied, once a Mac, by the first z6 tile it can serve.
-- **Densification** (crate::dem::spacing, `extract`): a way's points are put 8 m apart (`FINE_M`)
-  where a roads' dataset finer than 15 m (`COARSE_M`, its measured `resolution`) has data in the 1°
-  cell of the way's first node (its measured `cover`), 15 m elsewhere; ferries not at all. A cell
+- **The roads' heights** (crate::road_terrain, `elev`): a vertex's height is the finished
+  terrain's there, bilinear between pixel centres at the finest zoom stored there (a fine tile,
+  z13–16, where one is, else the base's), so a road and the ground under it come from one dataset,
+  already brought to EGM2008. The z6 tile job stages into the z6 tile's folder the base tiles
+  (`terrain.tiles`, crate::stage), the fine tiles under its vertices (`fine.tiles`, from the fine
+  packs `layers/terrain/fine/10-x-y`: `road_terrain::fine_tiles`, `stage::stage_fine`) and the
+  datasets' codes by coverage (`codes.json`, `road_terrain::Codes`: a vertex's `src.u8` is the
+  first dataset in the order whose coverage holds it). `elev` reads those and `verts.bin` alone (no
+  NAS, no server), natively or as WebAssembly. A z6 tile waits for the stale terrain targets under
+  its box, the fine ones (z8) as well.
+- **Densification** (crate::dem::spacing, `extract`): a way's points are put as far apart as the
+  terrain's pixel in the 1° cell of the way's first node (the finest zoom stored there: the fine
+  zoom where a dataset finer than the base has data, by its measured `resolution` and `cover`, else
+  the base's, `terrain_pack::max_zoom_at`), never closer than 4 m (`FLOOR_M`); ferries not at all. A cell
   is the point's degrees floored: its west and south edges are its own. The z6 tile job writes the
   fine cells into the z6 tile's folder (`spacing.json`), which `extract` reads; the reach tests the
   z6 tiles' long ways at the same spacing (`reach::LongWay::touches`). The other steps' `extract` runs
-  (the links, rail and candidates) read the same file (`Fine::of_records`); the rail and candidates keys name its whole digest, read by the planner from the accepted index (`spacing::digest_read`, cached by version; unreadable, they wait), the links are the pass's (made once a pass). Today's datasets make HRDEM,
-  3DEP (10.3 m, 1/3″) and GSI's fine, GLO-30 and the Terrarium tiles (30 m and coarser) not.
+  (the links, rail and candidates) read the same file (`Fine::of_records`); the rail and candidates keys name its whole digest, read by the planner from the accepted index (`spacing::digest_read`, cached by version; unreadable, they wait), the links are the pass's (made once a pass).
   - **Keys:** each z6 tile's reach records the cells its ways start in (`Reach::cells`); its key
-    names those of them that are fine (`Fine::key`), so a dataset added, dropped or measured
+    names those of them that are fine, with their zooms and the floor (`Fine::key`), so a dataset added, dropped or measured
     again rebuilds just the z6 tiles with a way starting where the spacing changes.
 - NRCan's tile squares, the HRDEM index producer's input, are `producers/elevation/hrdem-squares.geojson`.
 - **The 1 m datasets** (#594), staged in `producers/elevation/1m/` and in the drop box: NRCan's
   HRDEM 1 m mosaic (`hrdem-1m`: EPSG:3979, the 2 m mosaic's 56 squares, `indexes.py hrdem --res 1`)
   and USGS 3DEP's 1 m tiles (`usgs-3dep-1m-17`, `-18`, `-19`: one declaration a UTM zone, as a dataset
   is in one CRS; `indexes.py 3dep-1m --bbox -79.8,40.4,-66.8,47.5`), each with `regions` the ten
-  eastern regions. The roads read them at their 8 m overviews (`read_resolution`), the terrain at
-  1 m; ranked before the 2 m and 10 m datasets (HRDEM 1 m −1, the 3DEP zones −2 to −4), since HRDEM
-  1 m and 2 m both read at 8 m. Where zones overlap, their ranks decide (zone 19 before 18 before
+  eastern regions. Ranked before the 2 m and 10 m datasets (HRDEM 1 m −1, the 3DEP zones −2 to −4). Where zones overlap, their ranks decide (zone 19 before 18 before
   17): an index's files are newest first within its zone alone, not across zones. HRDEM 1 m shares HRDEM 2 m's code and label (the same lidar, read
   alike); 3DEP 1 m takes code 8, the last free one. Their heights reach EGM2008 by the existing
   chains (CGVD2013 by CGG2013a, NAVD88 by GEOID18).
@@ -1293,8 +1286,8 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
 tiles are sampled from these datasets in this order, blended as the roads' are, so the roads and
 the terrain use one dataset at every point; the Terrarium tiles through the NAS's archive of them
 (`sources/aws-terrarium/`, docs/macs.md). A dataset finer than the worldwide ones (rank above 0)
-takes the terrain past z12 (terrain-fine). The roads read a dataset at its `read_resolution` (8 m
-for the lidar), the terrain at its full resolution past z12: the same dataset, read finer.
+takes the terrain past z12 (terrain-fine), every dataset read at its full resolution; the roads'
+heights are read from the finished terrain (above).
 - **Keys:** a terrain target names the datasets meeting it by their lines, as the roads' keys do
   (`agent::tiles::TerrainTiles::terrain_datasets`); while they can't be read its key is unknown
   and the terrain waits.

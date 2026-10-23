@@ -31,7 +31,7 @@ Where state lives:
 | Records, built files, catalogs | NAS: `state/build/`, content-named files | caches (`agent/cache/…`) | reads them |
 | Downloads | NAS: `sources/` | cache copies | nothing |
 | A pass's Wikidata/Wikipedia answers | NAS: `sources/items/<date>/` (`pipeline::answers`) | `agent/cache/items/`, `agent/cache/heritage-<date>/` | its first run takes them |
-| Z6 tiles' kept state | NAS: `cache/dem-units/`, `cache/scenic-units/` | none | nothing |
+| Z6 tiles' kept state | NAS: `cache/scenic-units/` | none | nothing |
 | A job's progress (the OSM pass's stages, scratch) | the Mac running it | scratch folders | the OSM pass's resumed there (§7.2, Resuming); the rest redone |
 | The coordinator's state, token, history | NAS: `state/coord/` | `agent/coord/` | loads it (§6.2, §7.5) |
 | The lead's own (its catalogs' record, daily jobs' last runs) | the lead's disk | `agent/publishing.json`, `agent/state.json` | starts afresh |
@@ -409,8 +409,7 @@ jobs copied whole base packs into a cache of the Mac's are dropped once, as `job
 is first written (docs/formats.md). `depth-lo`'s (task #398, `coord::REMEASURED`): its job
 peaks and targets' measures past three times its targets' median and a GB (a 35 GB peak against
 65 MB targets, which kept it on the lead's Mac) are dropped each time the coordinator loads them,
-so it runs on any Mac by its measured use. **Shared caches** (task #392, `needs::CACHES`): a `unit`
-reads the DEM cache on a Mac; `depth`, `depth-lo`, `terrain-water`, `lakefill` and `water` read the whole copies (task
+so it runs on any Mac by its measured use. **Shared caches** (task #392, `needs::CACHES`): `depth`, `depth-lo`, `terrain-water`, `lakefill` and `water` read the whole copies (task
 #551, `localread`: whole local copies of the basemap and the depth sources' packs in the cache's
 `blobs/`, made where the disk has room for one past the room target, else the NAS read in place; one
 process copies a file at a time, the others waiting for its copy (a lock file in the cache's
@@ -424,12 +423,12 @@ step's 90th percentile, `needs::Book::disk`), and the cache is reserved apart. W
 and when:
 - *The fill* (`coord::Shared::fills`, `cache-fills.json`): a job that did all its targets (not
   a paused or stopped one) and whose disk passed its targets' output by 512 MB or more, and by
-  at least half the fill kept, filled the cache; that excess (its run less its own output, so a
-  z6 tile's output isn't counted in the DEM cache's) is the fill. Warm runs, and a part copied
+  at least half the fill kept, filled the cache; that excess (its run less its own output) is
+  the fill. Warm runs, and a part copied
   (a part refilled after an eviction), leave it.
 - *What a Mac holds* (`Capacity::caches`, `have_mb`): read off its disk as its agent asks
-  (`caches_here`: the bytes of its cache folder's `dem-cache.*` files; of `blobs/layers/basemap*`
-  and `blobs/sources/fetched*` for the whole copies), so
+  (`caches_here`: the bytes of its cache folder's `blobs/layers/basemap*` and
+  `blobs/sources/fetched*`, the whole copies), so
   whatever emptied them (room-making, the OSM pass's clear, a hand) counts.
 - *The reservation*: the first job granted on a Mac reading a cache (a cold start too) carries
   in its `Grant::disk_mb`, beside its output, the fill less what that Mac holds of it: nothing
@@ -636,8 +635,7 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
   (`placement::step_speeds`: the history's median time a target, three runs or more each, its
   slots' runs its Mac's, held to 0.33–3 (`STEP_SPEED`); worked out again only as the history
   grows), else its speed over the shared steps, else the lead's; times `CACHE_PREFER` (4) where its
-  ask's capacity says it holds the step's shared cache (`needs::CACHES`: the DEM cache, the whole
-  copies) whole. Trade-offs: weights only, so a Mac asking alone takes what it can and the
+  ask's capacity says it holds the step's shared cache (`needs::CACHES`: the whole copies) whole. Trade-offs: weights only, so a Mac asking alone takes what it can and the
   weights act only where Macs ask together (no Mac idles for a draw); medians of different
   targets' times read a Mac given a step's large targets as slower, which the clamp bounds; a
   minute's window keeps a target drawn to one Mac until the next window. The forecast runs the
@@ -1575,15 +1573,14 @@ tiles (`pack_raw_with`) stays inside that z6 tile's job.
   one halo's targets (offered a halo an offer, checked at every start), its disk the halo's output
   once; a job of a step reading a shared cache copies what its Mac lacks of it (a part of the
   fill at most, a setting), kept on its disk after, and no job is granted a cache's reservation
-  beside another reading it there (§7.1, Disk reservations): a member copying the DEM cache a
+  beside another reading it there (§7.1, Disk reservations): a member copying a shared cache a
   part at a time is reserved what it truly lacks at each first job, and again in full after its
   cache is emptied, the pass the same; with z6 tiles in the plan, a halo's map tiles are offered once its z6 tile is
   built, before the z6 tiles left: on the M4 and the M1, the NAS budget on and both steps measured
   before, each Mac runs map tiles beside z6 tiles, and the plan finishes. The M4 as measured on 18
   Oct (48 GB, 14 cores, 85 GB free, its caches on its disk so none of them reserved; z6 tiles of 6.6
   GB writing 6 GB, `pack` and `lo` 0.3 and 0.5 GB) runs four z6 tiles at once within its memory and
-  disk, map tiles and low zooms beside each other. With its DEM cache gone and its fill measured,
-  the first z6 tile is granted the fill, none beside it is, no start over-commits the disk, and z6 tiles
+  disk, map tiles and low zooms beside each other. No start over-commits the disk, and z6 tiles
   still run three or more at once. Not
   modelled: other step dependencies, failures; a job's time doesn't depend on its threads.
 - **The agent's tests** (`crate::agent::pool`, `crate::agent::lead`, the agent's `pool_tests`): two

@@ -92,7 +92,7 @@ A local file is mmapped and its sections cast in place. A NAS file is read throu
 
 The roads are made and stored per z6 tile. A way's owner is the z6 tile of its first vertex. (Stored
 names keep the word `unit` for a z6 tile, from before the grid's terms were fixed: the meta key
-`"unit"`, the `unit` step, `global/roadunits`, `cache/dem-units/`, `cache/scenic-units/`, the
+`"unit"`, the `unit` step, `global/roadunits`, `cache/scenic-units/`, the
 catalog's `units` list; the OSM pass's `pieces/` folder holds its z6 tile extracts.)
 
 ## Base pack (`base/<z>-<x>-<y>.<h>.sect`): what one z6 tile owns
@@ -595,7 +595,7 @@ pool/                   crate::agent::pool: saved.json (crate::pool::driver::Sav
 cache/                  build caches (below)
 ```
 
-`agent/cache/`: `dem-cache.*` (the seed), `chm10/` (canopy files), `aws-terrarium/` (raw tiles
+`agent/cache/`: `chm10/` (canopy files), `aws-terrarium/` (raw tiles
 until packed onto the NAS; `packs/`, archive copies), `blobs/`, `base/`, `sources-*/` and `work-*/`
 (local copies of NAS files by logical name), `heritage-merged-<date>-<set and cover>.osm.pbf` (the `whs` set within the cover), `items/`
 (the items job's answers, `kept-<date>.json`: {archive, files: {name: hash16}}; `months/`: pageview
@@ -820,8 +820,6 @@ class, id) within a tile. The client sends the id with the clicked point.
     `<lang>|<Title>\t<views>` lines; pipeline::pageviews); `sources/fetched/<dataset>/<file>` (a
     declared elevation dataset's `store` files, deflate GeoTIFF, `.none` where missing;
     docs/inputs.md §6.8).
-  - `sources/dem-cache/dem-cache.{keys.u64,elev.f32,src.u8}`: the DEM cache's seed (sorted keys
-    `(lon + 2³¹) << 32 | (lat + 2³¹)` E7, elevations, sources).
 - **Rail sources** (`sources/rail/`, content-named, in the manifest, never swept; `pipeline::rail`,
   docs/steps.md §10):
   - `catalogue.csv`: the Mobility Database catalogue as downloaded (docs/inputs.md §6.7.1);
@@ -837,10 +835,7 @@ class, id) within a tile. The client sends the id with the clicked point.
 - **Stop pairs** (`pipeline::gtfs::railcount`'s, docs/inputs.md §6.7.2): 21-byte records, f32 lon_a, lat_a, lon_b,
   lat_b, u8 mode (0 tram, 1 metro, 2 rail, 3 funicular; +0x80 a lower bound; +0x20 / +0x40 stop A /
   B beyond the coverage), f32 trains A → B on a typical weekday.
-- **Kept for z6 tiles' later runs** (`cache/`, not swept): `cache/dem-units/<u>.<box>.dem` (`<box>` 32
-  hex digits: "RDDEM002", u64 count, the points' box (4 × i32), what it was sampled under (4 × u32:
-  `u32::MAX`, 0, the declared elevation datasets' digest in two halves), then sorted keys,
-  elevations, sources) and `cache/scenic-units/<u>/` (canopy.keys, canopy.tiles, view.keys,
+- **Kept for z6 tiles' later runs** (`cache/`, not swept): `cache/scenic-units/<u>/` (canopy.keys, canopy.tiles, view.keys,
   view.tiles, near.i8, roadside.u8, samples.metrics.u8, grid.canopy.u8.zst, grid.cover.u8.zst,
   basis.json `{v: SCENIC_V, basis: [[[x, y], hash16], …]}`).
 - **Workers** (docs/workers.md):
