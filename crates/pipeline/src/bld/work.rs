@@ -246,7 +246,7 @@ pub struct Meta {
     pub subtypes: Vec<String>,
     pub roofs: Vec<String>,
     pub ghsl: String,
-    /// What bldprep.py read: the files, their row groups, the GHSL tiles.
+    /// What was read: the files, their row groups, the GHSL tiles.
     #[serde(default)]
     pub read: serde_json::Value,
 }

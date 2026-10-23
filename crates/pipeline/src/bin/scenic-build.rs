@@ -42,14 +42,14 @@
 //!                                candidates, peaks), "pack T" (hidata, road and rail hi packs),
 //!                                "lo Q" (road and rail lo packs), "bldprep T" (its normalized
 //!                                buildings), "bldtiles T" (its 3D buildings' hi pack)
-//!   buildings [--dem dir] [--workers n]  the world's roadside buildings (pipeline::buildtiles):
+//!   buildings [--workers n]      the world's roadside buildings (pipeline::buildtiles):
 //!                                the declared release, in z8 tiles, onto the NAS with their index
-//!   bld-fetch [--pass d] [--dem dir]  the 3D buildings' sources onto the NAS (dem/bldfetch.py):
-//!                                the pinned Overture release's files and GHSL's tiles meeting the
-//!                                coverage grown by 20 km; what's there already skipped
-//!   bldprep <T …> [--dem dir]    the 3D buildings' normalized files of z6 tiles T (pipeline::bld::prep:
-//!                                dem/bldprep.py reads the downloaded Overture row groups and the
-//!                                GHSL windows under T), as work/bld/6-x-y
+//!   bld-fetch [--pass d]         the 3D buildings' sources onto the NAS (pipeline::bld::fetch):
+//!                                the pinned Overture release's files and GHSL's tiles within 20 km
+//!                                of the coverage; what's there already skipped
+//!   bldprep <T …>                the 3D buildings' normalized files of z6 tiles T (pipeline::bld::prep:
+//!                                the downloaded Overture row groups and the GHSL windows under T),
+//!                                as work/bld/6-x-y
 //!   bldtiles <T …> [--pass d] [--regions dir]  the 3D buildings' tiles of z6 tiles T
 //!                                (pipeline::bld::job): the buildings touching the coverage, their
 //!                                heights filled, z14, as the hi pack layers/buildings/hi/6-x-y;
@@ -759,13 +759,11 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         }
         "reach" => reach_step(&mut out, &args, &scratch)?,
         "buildings" => {
-            let dem = std::fs::canonicalize(opt(&args, "--dem").unwrap_or_else(|| "dem".into()))?;
-            // Two scans a thread the agent allows (they mostly wait on S3), 4 to 32.
-            let threads: usize = std::env::var("RAYON_NUM_THREADS").ok().and_then(|t| t.parse().ok()).unwrap_or(12);
-            let workers = opt(&args, "--workers").map(|w| w.parse()).transpose()?.unwrap_or((threads * 2).clamp(4, 32));
-            pipeline::buildtiles::build(&mut out, &dem, &scratch, workers)?;
+            let workers =
+                opt(&args, "--workers").map(|w| w.parse()).transpose()?.unwrap_or(pipeline::buildtiles::WORKERS);
+            pipeline::buildtiles::build(&mut out, &scratch, workers)?;
         }
-        "bld-fetch" => bld_fetch_step(&mut out, &args, &scratch)?,
+        "bld-fetch" => bld_fetch_step(&mut out, &args)?,
         "bldprep" => bldprep_step(&mut out, &args)?,
         "bldtiles" => bldtiles_step(&mut out, &args)?,
         "bldfield-lo" => {
@@ -5060,48 +5058,30 @@ fn z6_tiles(args: &[String], step: &str) -> Result<Vec<TileId>> {
     Ok(ts)
 }
 
-/// bld-fetch [--pass d] [--dem dir]: the 3D buildings' sources onto the NAS (docs/buildings3d.md
-/// §2.6): dem/bldfetch.py with the coverage written here (its outlines, rail::coverage_geojson),
-/// the pinned release's files and GHSL's tiles that meet it grown by 20 km, each fetched once,
-/// checked and put in place whole; what's there already skipped. Not through the manifest: the
-/// sources are read where they are (`sources/overture/<release>/`, `sources/ghsl/R2023A/`), and
-/// their indexes key bldprep (crate::bld::sources).
-fn bld_fetch_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
+/// bld-fetch [--pass d]: the 3D buildings' sources onto the NAS (docs/buildings3d.md §2.6,
+/// pipeline::bld::fetch): the pinned release's files and GHSL's tiles that come within 20 km of the
+/// coverage (its outlines), each fetched once, checked and put in place whole; what's there
+/// already skipped. Not through the manifest: the sources are read where they are
+/// (`sources/overture/<release>/`, `sources/ghsl/R2023A/`), and their indexes key bldprep
+/// (crate::bld::sources).
+fn bld_fetch_step(out: &mut Out, args: &[String]) -> Result<()> {
     let cov = coverage_of(out, args)?;
-    let dem = std::fs::canonicalize(opt(args, "--dem").unwrap_or_else(|| "dem".into()))?;
-    std::fs::create_dir_all(scratch)?;
-    let cover = scratch.join("bld-coverage.geojson");
-    std::fs::write(&cover, serde_json::to_vec(&pipeline::rail::coverage_geojson(&cov))?)?;
-    let _p = phase("bldfetch.py", Class::Mixed);
-    let mut c = store::spawn::command("uv");
-    // (The declared sources: the release, Overture's bucket, GHSL's tiles by its index.)
-    let release = pipeline::buildtiles::release_of(out.root(), &out.manifest)?;
-    let declared = pipeline::inputs::sources::write_for_python(out.root(), &out.manifest, scratch)?;
-    c.current_dir(&dem)
-        .env(pipeline::inputs::sources::PYTHON_ENV, &declared)
-        .args(["run", "python", "bldfetch.py", "--root"])
-        .arg(out.root())
-        .args(["--release", &release, "--coverage"])
-        .arg(&cover);
-    pipeline::timings::child(&mut c);
-    let st = store::spawn::status(&mut c).context("run bldfetch.py")?;
-    anyhow::ensure!(st.success(), "bldfetch.py: {st}");
-    Ok(())
+    let sources = pipeline::inputs::sources::read(out.root(), &out.manifest)?;
+    pipeline::bld::fetch::run(pipeline::bld::fetch::Args { root: out.root(), sources: &sources, cov: &cov })
 }
 
-/// bldprep <T …> [--dem dir]: the 3D buildings' normalized files of z6 tiles T (docs/buildings3d.md
-/// §3.1), from the downloaded Overture files and GHSL tiles (`sources/overture/<release>/`,
-/// `sources/ghsl/R2023A/`) through dem/bldprep.py.
+/// bldprep <T …>: the 3D buildings' normalized files of z6 tiles T (docs/buildings3d.md §3.1,
+/// pipeline::bld::prep), from the downloaded Overture files and GHSL tiles
+/// (`sources/overture/<release>/`, `sources/ghsl/R2023A/`).
 fn bldprep_step(out: &mut Out, args: &[String]) -> Result<()> {
     let ts = z6_tiles(args, "bldprep")?;
-    let dem = std::fs::canonicalize(opt(args, "--dem").unwrap_or_else(|| "dem".into()))?;
     let names: Vec<String> = ts.iter().map(|t| format!("Reading the buildings of {}", t.slash())).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     for (k, &t) in ts.iter().enumerate() {
         pipeline::control::safe_point("bldprep");
         pipeline::agent::jobs::part(k, &names);
         let c = cost_start("bldprep", &t.slash());
-        let st = pipeline::bld::prep::run(out, t, &dem)?;
+        let st = pipeline::bld::prep::run(out, t)?;
         eprintln!("bldprep {}: {}", t.slash(), serde_json::to_string(&st)?);
         // (Its inputs' measures: the rows read, the buildings and parts among them.)
         pipeline::costin::set("rows", st.rows);

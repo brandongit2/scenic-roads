@@ -532,13 +532,13 @@ mod tests {
 
     /// Tile `t`'s work file in `dir`, from buildings and parts.
     fn work(dir: &Path, t: TileId, bs: &[B], parts: &[B]) -> WorkFile {
-        let mut s = prep::MAGIC.to_vec();
+        let mut s = Vec::new();
         frame(&mut s, false, bs);
         if !parts.is_empty() {
             frame(&mut s, true, parts);
         }
         end(&mut s);
-        let p = prep::read_stream(&mut &s[..], t).unwrap();
+        let p = prep::Prepped::from_frames(s, t).unwrap();
         let path = dir.join(format!("w-{}.sect", t.dash()));
         p.write(t, "2026-09-23.1", &path).unwrap();
         WorkFile::open(&path).unwrap()

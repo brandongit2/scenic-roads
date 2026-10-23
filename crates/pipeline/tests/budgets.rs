@@ -11,9 +11,6 @@
 //! - nothing turns the proxy off (`.proxy(None)`, `ProxyHandler({})`, curl's `--noproxy`, a
 //!   `no_proxy` of its own) but what `BYPASS` lists, with why.
 //!
-//! A step asking a declared source (docs/inputs.md §6.9) by role (`import declared`,
-//! `declared.url(`: dem/declared.py) names no host to scan, so it counts as asking one: it's listed
-//! too, whichever host its declaration names (the proxy holds a metered one at egress all the same).
 //! A new file naming a metered host, or a new way around the proxy, fails here until it's listed;
 //! an entry matching nothing fails too, so the lists can't go stale.
 
@@ -39,12 +36,6 @@ const ASKS: &[(&str, &str)] = &[
         "crates/pipeline/src/items.rs",
         "names Wikidata's entities and English Wikipedia's site in its queries, asked through crate::wikiask",
     ),
-    (
-        "dem/bldfetch.py",
-        "the declared buildings and building-heights sources (Overture's bucket, GHSL's tiles), not metered",
-    ),
-    ("dem/buildings.py", "the declared buildings source's bucket (DuckDB), not metered"),
-    ("dem/bldprep.py", "the declared building-heights source's version alone (its folder): asks nothing"),
 ];
 
 /// What turns the proxy off, in a line.
@@ -86,11 +77,6 @@ fn names_metered(text: &str) -> bool {
     })
 }
 
-/// Whether `text` asks a declared source by role (dem/declared.py): a host no scan can see.
-fn asks_declared(text: &str) -> bool {
-    text.contains("import declared") || text.contains("declared.url(")
-}
-
 fn jobs_code() -> Vec<(String, String)> {
     let root = root();
     let mut fs = Vec::new();
@@ -115,7 +101,7 @@ fn every_file_naming_wikimedia_is_listed_with_how_it_asks() {
     let mut used = std::collections::BTreeSet::new();
     for (rel, text) in jobs_code() {
         // (This lint's own file names them: it isn't in `files`' walk, which skips tests/.)
-        if !names_metered(&text) && !asks_declared(&text) {
+        if !names_metered(&text) {
             continue;
         }
         match ASKS.iter().position(|(f, _)| *f == rel) {

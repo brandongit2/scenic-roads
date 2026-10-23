@@ -1,15 +1,15 @@
 //! `bldprep T` (docs/buildings3d.md §3.1): z6 tile T's normalized buildings ([`super::work`]) from
 //! the downloaded Overture files and GHSL tiles.
 //!
-//! `dem/bldprep.py` reads the row groups meeting T (pyarrow) and the GHSL windows under T
-//! (rasterio), and writes their columns to stdout as frames ([`read_stream`]): Python only decodes
-//! (§3.7). Here, for each building and part: its WKB is read; its centroid (area-weighted, as GEOS
-//! has it, in degrees, in f64 in a fixed order) and footprint area (m²: degrees² × a degree's metres²
-//! × cos(lat)) computed; its vertices and centroid rounded to E7; underground ones left out, and
-//! those whose centroid isn't in T; GHSL sampled at the centroid. A building whose `has_parts` is set
-//! is marked [`flag::HAS_PARTS`] when one of its parts was read (an outline none of whose parts are in
-//! the files is drawn as a building). The records are sorted by (z14 tile, id), the strings coded
-//! (each list sorted), and written as a block per z14 tile.
+//! The row groups meeting T are read from the downloaded files ([`super::overture`]) and the GHSL
+//! windows under T ([`super::ghsl`]), as frames of columns ([`Frame`]). Then, for each building and
+//! part: its WKB is read; its centroid (area-weighted, as GEOS has it, in degrees, in f64 in a fixed
+//! order) and footprint area (m²: degrees² × a degree's metres² × cos(lat)) computed; its vertices
+//! and centroid rounded to E7; underground ones left out, and those whose centroid isn't in T; GHSL
+//! sampled at the centroid. A building whose `has_parts` is set is marked [`flag::HAS_PARTS`] when
+//! one of its parts was read (an outline none of whose parts are in the files is drawn as a
+//! building). The records are sorted by (z14 tile, id), the strings coded (each list sorted), and
+//! written as a block per z14 tile.
 
 use super::work::{self, flag, osm, Block, Meta};
 use super::{e7, z14_key, DEG_M};
@@ -19,11 +19,7 @@ use anyhow::{bail, ensure, Context, Result};
 use det::Det;
 use rayon::prelude::*;
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::Path;
-
-/// The stream's first bytes.
-pub const MAGIC: &[u8; 6] = b"BLDP1\n";
 
 /// The frames' kinds.
 pub mod kind {
@@ -37,51 +33,13 @@ pub mod kind {
     pub const END: u8 = 9;
 }
 
-/// A frame: its kind, its header (JSON) and its columns by name.
+/// A frame of what was read: its kind, its header (a row group's `n`, `src` and `dicts`, a GHSL
+/// window's place, the end's account of what was read) and its columns by name (little-endian).
+#[derive(Clone)]
 pub struct Frame {
     pub kind: u8,
     pub header: serde_json::Value,
     pub cols: HashMap<String, Vec<u8>>,
-}
-
-/// Reads a frame (`None` at a clean end of the stream): u8 kind, u32 header length, the header
-/// (JSON, with `cols`: [[name, bytes], …]), then each column's bytes in that order.
-pub fn read_frame(r: &mut dyn Read) -> Result<Option<Frame>> {
-    let mut k = [0u8; 1];
-    if r.read(&mut k)? == 0 {
-        return Ok(None);
-    }
-    let mut l = [0u8; 4];
-    r.read_exact(&mut l).context("a frame cut short")?;
-    let mut h = vec![0u8; u32::from_le_bytes(l) as usize];
-    r.read_exact(&mut h).context("a frame's header cut short")?;
-    let header: serde_json::Value = serde_json::from_slice(&h).context("a frame's header")?;
-    let mut cols = HashMap::new();
-    for c in header["cols"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
-        let (Some(name), Some(n)) = (c[0].as_str(), c[1].as_u64()) else { bail!("a frame's column {c}") };
-        let mut b = vec![0u8; n as usize];
-        r.read_exact(&mut b).with_context(|| format!("column {name} cut short"))?;
-        cols.insert(name.to_string(), b);
-    }
-    Ok(Some(Frame { kind: k[0], header, cols }))
-}
-
-/// Writes a frame (tests, and anything else that hands records to `read_stream`).
-pub fn write_frame(
-    w: &mut dyn std::io::Write,
-    kind: u8,
-    mut header: serde_json::Value,
-    cols: &[(&str, &[u8])],
-) -> Result<()> {
-    header["cols"] = serde_json::Value::Array(cols.iter().map(|(n, b)| serde_json::json!([n, b.len()])).collect());
-    let h = serde_json::to_vec(&header)?;
-    w.write_all(&[kind])?;
-    w.write_all(&(h.len() as u32).to_le_bytes())?;
-    w.write_all(&h)?;
-    for (_, b) in cols {
-        w.write_all(b)?;
-    }
-    Ok(())
 }
 
 // ---- WKB -----------------------------------------------------------------------------------------
@@ -232,7 +190,7 @@ struct Window {
     data: Vec<f32>,
 }
 
-/// GHSL's average building height at points, from the windows bldprep.py sent.
+/// GHSL's average building height at points, from the windows read.
 #[derive(Default)]
 pub struct Ghsl {
     wins: Vec<Window>,
@@ -376,7 +334,7 @@ pub struct Prepped {
     roofs: Strings,
     datasets: Strings,
     pub ghsl_wins: Ghsl,
-    /// What was read: bldprep.py's end frame.
+    /// What was read: the end frame's account.
     pub read: serde_json::Value,
     pub stats: Stats,
 }
@@ -728,27 +686,24 @@ impl Prepped {
     }
 }
 
-/// Reads bldprep.py's stream for tile `t` (its magic, then frames to the end frame).
-pub fn read_stream(r: &mut dyn Read, t: TileId) -> Result<Prepped> {
-    let mut m = [0u8; 6];
-    r.read_exact(&mut m).context("bldprep.py wrote nothing")?;
-    ensure!(&m == MAGIC, "not bldprep.py's stream");
-    let mut p = Prepped::default();
-    loop {
-        let f = read_frame(r)?.context("bldprep.py's stream ended before its end frame")?;
-        if p.take(&f, t)? {
-            return Ok(p);
-        }
-    }
-}
-
 impl Prepped {
-    /// Takes a frame of bldprep.py's stream: whether it was the end.
+    /// The records of frames read for tile `t`, to the end frame.
+    pub fn from_frames(frames: impl IntoIterator<Item = Frame>, t: TileId) -> Result<Prepped> {
+        let mut p = Prepped::default();
+        for f in frames {
+            if p.take(&f, t)? {
+                return Ok(p);
+            }
+        }
+        bail!("the frames ended before their end frame")
+    }
+
+    /// Takes a frame: whether it was the end.
     fn take(&mut self, f: &Frame, t: TileId) -> Result<bool> {
         match f.kind {
             kind::GHSL => {
                 // (The rows sample GHSL as they're read: none would have it.)
-                ensure!(self.stats.rows == 0, "bldprep.py sent a GHSL window after rows");
+                ensure!(self.stats.rows == 0, "a GHSL window after rows");
                 self.ghsl_wins.add(f)?;
             }
             kind::BUILDINGS => {
@@ -757,97 +712,112 @@ impl Prepped {
             kind::PARTS => self.add_rows(f, t, true).with_context(|| format!("parts of {}", f.header["src"]))?,
             kind::END => {
                 self.read = f.header.clone();
-                if let Some(o) = self.read.as_object_mut() {
-                    o.remove("cols");
-                }
                 return Ok(true);
             }
-            k => bail!("a frame of kind {k} from bldprep.py"),
+            k => bail!("a frame of kind {k}"),
         }
         Ok(false)
     }
 }
 
-/// Runs `bldprep T`: bldprep.py (in `dem`, through uv) for tile `t`, its stream read as it comes,
-/// the normalized file written and uploaded as `work/bld/6-x-y` (or, when T has no building, the
-/// one it had dropped). Its counts. The release and GHSL's folder are the declared sources'
-/// (crate::inputs::sources, given bldprep.py by `SCENIC_SOURCES`).
-pub fn run(out: &mut Out, t: TileId, dem: &Path) -> Result<Stats> {
-    let release = crate::buildtiles::release_of(out.root(), &out.manifest)?;
-    let declared =
-        crate::inputs::sources::write_for_python(out.root(), &out.manifest, &out.scratch_file("bldprep-sources"))?;
-    ensure!(t.z == 6, "bldprep takes z6 tiles ({} isn't one)", t.slash());
-    let t0 = std::time::Instant::now();
+/// Row groups read at once.
+#[cfg(not(target_os = "wasi"))]
+const JOBS: usize = 4;
+
+/// Tile `t`'s records from the release's downloaded files under `root` (`sources/overture/<release>/`:
+/// the row groups meeting T, file by file in name order; of parts files, those meeting T grown by
+/// `PART_MARGIN_DEG`, so an outline in T finds its parts) and GHSL's tiles in `ghsl`
+/// (crate::bld::sources::ghsl_dir: the windows under T, first). A listed file whose footer isn't
+/// the downloaded one's fails where it meets T.
+#[cfg(not(target_os = "wasi"))]
+pub fn read(root: &Path, release: &str, ghsl: &str, t: TileId) -> Result<Prepped> {
+    use super::sources::{release_dir, Sources, PART_MARGIN_DEG};
     use crate::timings::{phase, Class};
-    // (bldprep.py reading the sources as this reads its stream: one phase, its own under it.)
-    let streamed = phase("bldprep.py, its stream read", Class::Mixed);
-    let mut c = store::spawn::command("uv");
-    c.current_dir(dem)
-        .env(crate::inputs::sources::PYTHON_ENV, &declared)
-        .args(["run", "python", "bldprep.py", "--root"])
-        .arg(out.root())
-        .args(["--tile", &t.slash(), "--release", &release])
-        .stdout(std::process::Stdio::piped());
-    crate::timings::child(&mut c);
-    let mut child = store::spawn::spawn(&mut c).context("run bldprep.py")?;
-    // The stream read on its own thread, a few frames ahead, so Python reads on while records are
-    // made here.
-    let stdout = child.stdout.take().context("bldprep.py's stdout")?;
-    let (tx, rx) = std::sync::mpsc::sync_channel::<Result<Option<Frame>>>(8);
-    let reader = std::thread::spawn(move || {
-        let mut r = std::io::BufReader::with_capacity(8 << 20, stdout);
-        let mut m = [0u8; 6];
-        if let Err(e) = r.read_exact(&mut m).context("bldprep.py wrote nothing").and_then(|_| {
-            ensure!(&m == MAGIC, "not bldprep.py's stream");
-            Ok(())
-        }) {
-            tx.send(Err(e)).ok();
-            return;
+    ensure!(t.z == 6, "bldprep takes z6 tiles ({} isn't one)", t.slash());
+    let p = phase("the file list and footers read", Class::NasRead);
+    let src = Sources::read(root, release, ghsl)?
+        .with_context(|| format!("{}: nothing downloaded (no buildings.json)", release_dir(release)))?;
+    drop(p);
+    let b = super::tile_box_deg(6, t.x, t.y);
+    let d = PART_MARGIN_DEG;
+    let pb = [b[0] - d, b[1] - d, b[2] + d, b[3] + d];
+    let meets = |a: [f64; 4], b: [f64; 4]| a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
+    let part_of = |name: &str| name.contains("type=building_part/");
+    for (n, bb) in &src.stale {
+        // (Far from T, it isn't read: skipped, as the agent's keys skip it, crate::bld::sources.)
+        ensure!(
+            !meets(*bb, if part_of(n) { pb } else { b }),
+            "{n}: footers.json.gz doesn't list it as downloaded (etag)"
+        );
+    }
+    // The row groups meeting T, file by file in name order.
+    let base = root.join(release_dir(release));
+    let (mut jobs, mut files) = (Vec::new(), Vec::new());
+    for (fi, f) in src.files.iter().enumerate() {
+        let bx = if f.part { pb } else { b };
+        let rgs: Vec<usize> = (0..f.rgs.len()).filter(|&k| meets(f.rgs[k].0, bx)).collect();
+        if rgs.is_empty() {
+            continue;
         }
-        loop {
-            let f = read_frame(&mut r);
-            let end = !matches!(f, Ok(Some(ref x)) if x.kind != kind::END);
-            if tx.send(f).is_err() || end {
-                return;
-            }
+        let short: String = f.name.rsplit('/').next().unwrap_or("").chars().take(10).collect();
+        jobs.extend(rgs.iter().map(|&k| (fi, k, f.part, bx, format!("{short}#{k}"))));
+        files.push(serde_json::json!([f.name, f.etag, rgs]));
+    }
+    eprintln!("bldprep: {}: {} row groups in {} files", t.slash(), jobs.len(), files.len());
+    let p = phase("the GHSL windows read", Class::NasRead);
+    let (ghsl_frames, used) = super::ghsl::windows(&root.join(ghsl), &src.ghsl, b)?;
+    drop(p);
+    let mut prepped = Prepped::default();
+    for f in &ghsl_frames {
+        prepped.take(f, t)?;
+    }
+    drop(ghsl_frames);
+    let _p = phase("the row groups read", Class::Mixed);
+    // Each file's footer, once.
+    let mut opened: HashMap<usize, (std::path::PathBuf, parquet::arrow::arrow_reader::ArrowReaderMetadata)> =
+        HashMap::new();
+    for &(fi, ..) in &jobs {
+        if let std::collections::hash_map::Entry::Vacant(e) = opened.entry(fi) {
+            let path = base.join(&src.files[fi].name);
+            let file = std::fs::File::open(&path).with_context(|| format!("open {}", path.display()))?;
+            let meta = super::overture::open(&file).with_context(|| format!("{}: its footer", path.display()))?;
+            e.insert((path, meta));
         }
-    });
-    let mut p = Prepped::default();
-    let mut frames = 0u64;
-    let read = (|| -> Result<u64> {
-        loop {
-            let f = rx.recv().context("bldprep.py's stream")??;
-            let f = f.context("bldprep.py's stream ended before its end frame")?;
-            frames += 1;
-            if p.take(&f, t)? {
-                return Ok(frames);
-            }
-            if let (kind::BUILDINGS | kind::PARTS, Some(k), Some(n)) =
-                (f.kind, f.header["k"].as_u64(), f.header["of"].as_u64())
-            {
-                if k % 25 == 0 || k + 1 == n {
-                    crate::agent::jobs::report(k + 1, n, "row groups read");
-                }
-            }
+    }
+    let mut rows = 0u64;
+    for (c, chunk) in jobs.chunks(JOBS).enumerate() {
+        let frames: Vec<Result<Option<Frame>>> = chunk
+            .par_iter()
+            .map(|(fi, k, part, bx, name)| {
+                let (path, meta) = &opened[fi];
+                super::overture::row_group(path, meta, *k, *part, *bx, name)
+            })
+            .collect();
+        for f in frames {
+            let Some(f) = f? else { continue };
+            rows += f.header["n"].as_u64().unwrap_or(0);
+            prepped.take(&f, t)?;
         }
-    })();
-    let total = match read {
-        Ok(n) => n,
-        Err(e) => {
-            // bldprep.py stopped, not left to find out at its next write: uv and the Python it
-            // started, killed as a tree (`uv` alone left Python running). The reader thread ends at
-            // the next frame it reads (nothing takes it).
-            drop(rx);
-            crate::sys::kill_tree(child.id() as i32);
-            child.wait().ok();
-            return Err(e.context(format!("bldprep {}", t.slash())));
+        let done = (c * JOBS + chunk.len()) as u64;
+        if c % 6 == 0 || done == jobs.len() as u64 {
+            crate::agent::jobs::report(done, jobs.len() as u64, "row groups read");
         }
-    };
-    reader.join().ok();
-    let st = child.wait().context("bldprep.py")?;
-    ensure!(st.success(), "bldprep.py for {}: {st}", t.slash());
-    drop(streamed);
-    eprintln!("bldprep {}: {} frames read in {:.0?}: {:?}", t.slash(), total, t0.elapsed(), p.stats);
+    }
+    let end = serde_json::json!({ "release": release, "tile": t.slash(), "files": files, "ghsl": used, "rows": rows });
+    prepped.take(&Frame { kind: kind::END, header: end, cols: HashMap::new() }, t)?;
+    Ok(prepped)
+}
+
+/// Runs `bldprep T`: tile `t`'s records read (`read`: the declared sources' release and GHSL's
+/// folder, crate::inputs::sources), the normalized file written and uploaded as `work/bld/6-x-y`
+/// (or, when T has no building, the one it had dropped). Its counts.
+#[cfg(not(target_os = "wasi"))]
+pub fn run(out: &mut Out, t: TileId) -> Result<Stats> {
+    use crate::timings::{phase, Class};
+    let (release, ghsl, _) = super::sources::declared(&crate::inputs::sources::read(out.root(), &out.manifest)?)?;
+    let t0 = std::time::Instant::now();
+    let p = read(out.root(), &release, &ghsl, t).with_context(|| format!("bldprep {}", t.slash()))?;
+    eprintln!("bldprep {}: read in {:.0?}: {:?}", t.slash(), t0.elapsed(), p.stats);
     let logical = super::work_logical(t.x, t.y);
     if p.is_empty() {
         if out.get(&logical).is_some() {
@@ -928,8 +898,8 @@ pub(crate) mod tests {
         format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..]).into_bytes()
     }
 
-    /// A frame of buildings (or parts) as bldprep.py writes it.
-    pub(crate) fn frame(w: &mut Vec<u8>, part: bool, bs: &[B]) {
+    /// A frame of buildings (or parts) as a row group's reading makes it.
+    pub(crate) fn frame(w: &mut Vec<Frame>, part: bool, bs: &[B]) {
         let n = bs.len();
         let mut ids = Vec::new();
         let mut parents = Vec::new();
@@ -992,11 +962,15 @@ pub(crate) mod tests {
         } else {
             cols.extend([("class", &cls[..]), ("subtype", &sub[..]), ("has_parts", &hp[..])]);
         }
-        write_frame(w, if part { kind::PARTS } else { kind::BUILDINGS }, header, &cols).unwrap();
+        w.push(Frame {
+            kind: if part { kind::PARTS } else { kind::BUILDINGS },
+            header,
+            cols: cols.into_iter().map(|(k, v)| (k.to_string(), v.to_vec())).collect(),
+        });
     }
 
-    pub(crate) fn end(w: &mut Vec<u8>) {
-        write_frame(w, kind::END, serde_json::json!({ "files": [] }), &[]).unwrap();
+    pub(crate) fn end(w: &mut Vec<Frame>) {
+        w.push(Frame { kind: kind::END, header: serde_json::json!({ "files": [] }), cols: HashMap::new() });
     }
 
     #[test]
@@ -1054,7 +1028,7 @@ pub(crate) mod tests {
         // Tile 6/32/22 (Paris); buildings near Châtelet, one in the next tile, one underground, a
         // part and its outline, and an outline whose parts aren't there.
         let t = TileId { z: 6, x: 32, y: 22 };
-        let mut s = MAGIC.to_vec();
+        let mut s = Vec::new();
         let b = |id: u128, lon: f64, lat: f64| B { id, rings: vec![square(lon, lat, 0.0002)], ..Default::default() };
         frame(
             &mut s,
@@ -1070,7 +1044,7 @@ pub(crate) mod tests {
         );
         frame(&mut s, true, &[B { parent: 5, height: 30.0, ..b(7, 2.34905, 48.86005) }]);
         end(&mut s);
-        let p = read_stream(&mut &s[..], t).unwrap();
+        let p = Prepped::from_frames(s.clone(), t).unwrap();
         assert_eq!((p.stats.buildings, p.stats.parts, p.stats.underground, p.stats.outside), (4, 1, 1, 1));
         let d = tempfile::tempdir().unwrap();
         let path = d.path().join("w.sect");
@@ -1098,7 +1072,7 @@ pub(crate) mod tests {
         assert!(k.area.iter().all(|&a| (a - 325.0).abs() < 10.0), "{:?}", k.area);
         // Sorted by (z14 tile, id), and the same bytes again.
         assert!(w.index.windows(2).all(|x| x[0].key < x[1].key));
-        let p2 = read_stream(&mut &s[..], t).unwrap();
+        let p2 = Prepped::from_frames(s.clone(), t).unwrap();
         let path2 = d.path().join("w2.sect");
         p2.write(t, "2026-09-23.1", &path2).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), std::fs::read(&path2).unwrap());
@@ -1109,24 +1083,23 @@ pub(crate) mod tests {
         let t = TileId { z: 6, x: 32, y: 22 };
         let b = |id: u128, lon: f64, lat: f64| B { id, rings: vec![square(lon, lat, 0.0002)], ..Default::default() };
         // An outline whose only part is underground: drawn itself, not as an outline with parts.
-        let mut s = MAGIC.to_vec();
+        let mut s = Vec::new();
         frame(&mut s, false, &[B { has_parts: true, ..b(5, 2.3490, 48.8600) }]);
         frame(&mut s, true, &[B { parent: 5, underground: true, ..b(7, 2.34905, 48.86005) }]);
         end(&mut s);
         let d = tempfile::tempdir().unwrap();
         let path = d.path().join("w.sect");
-        read_stream(&mut &s[..], t).unwrap().write(t, "2026-09-23.1", &path).unwrap();
+        Prepped::from_frames(std::mem::take(&mut s), t).unwrap().write(t, "2026-09-23.1", &path).unwrap();
         let w = work::WorkFile::open(&path).unwrap();
         let k = w.block(&w.index[0]).unwrap();
         assert_eq!((k.len(), k.flags[0]), (1, 0));
         // A GHSL window after rows: refused (the rows sample GHSL as they're read).
-        let mut s = MAGIC.to_vec();
+        let mut s = Vec::new();
         frame(&mut s, false, &[b(1, 2.3470, 48.8580)]);
-        let data = vec![0u8; 4];
         let h = serde_json::json!({ "name": "g", "transform": [2.0, 0.001, 0.0, 49.0, 0.0, -0.001], "col_off": 0, "row_off": 0, "width": 1, "height": 1 });
-        write_frame(&mut s, kind::GHSL, h, &[("data", &data)]).unwrap();
+        s.push(Frame { kind: kind::GHSL, header: h, cols: [("data".to_string(), vec![0u8; 4])].into() });
         end(&mut s);
-        let e = read_stream(&mut &s[..], t).err().expect("refused");
-        assert!(format!("{e:#}").contains("GHSL window after rows"), "{e:#}");
+        let e = Prepped::from_frames(std::mem::take(&mut s), t).err().expect("refused");
+        assert!(format!("{e:#}").contains("a GHSL window after rows"), "{e:#}");
     }
 }

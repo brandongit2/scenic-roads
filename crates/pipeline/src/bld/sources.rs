@@ -1,11 +1,12 @@
 //! The 3D buildings' downloaded sources as the agent keys them (docs/buildings3d.md §3.2): which
 //! Overture files and row groups, and which GHSL tiles, `bldprep T` reads for a z6 tile T, from the
-//! indexes `dem/bldfetch.py` writes beside them on the NAS (`sources/overture/<release>/`
-//! `buildings.json` and `footers.json.gz`, `sources/ghsl/<version>/index.json`: the declared
-//! sources' releases, crate::inputs::sources). Chosen as `dem/bldprep.py` chooses them: a file listed as downloaded whose footer has the same ETag; its row
-//! groups whose box meets T (a parts file's: T grown by `PART_MARGIN_DEG`); the GHSL tiles whose box
+//! indexes `bld-fetch` (crate::bld::fetch) writes beside them on the NAS
+//! (`sources/overture/<release>/` `buildings.json` and `footers.json.gz`,
+//! `sources/ghsl/<version>/index.json`: the declared sources' releases, crate::inputs::sources).
+//! Chosen as `bldprep` reads them (crate::bld::prep::read): a file listed as downloaded whose footer
+//! has the same ETag; its row groups whose box meets T (a parts file's: T grown by `PART_MARGIN_DEG`); the GHSL tiles whose box
 //! meets T (none without an index). A listed file whose footer is missing or another object's is
-//! skipped where its listed box is far from T, and fails bldprep.py where it meets T: there it's
+//! skipped where its listed box is far from T, and fails `bldprep` where it meets T: there it's
 //! named in T's reads (`stale`), so the tile's key changes once it's fetched again.
 
 use anyhow::{Context, Result};
@@ -13,10 +14,9 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// How far around T a parts file's row groups are read (degrees: dem/bldprep.py's PART_MARGIN_DEG).
+/// How far around T a parts file's row groups are read (degrees).
 pub const PART_MARGIN_DEG: f64 = 0.02;
-/// The declared building-heights source's folder on the NAS, by its `version` (dem/bldfetch.py's
-/// and dem/bldprep.py's).
+/// The declared building-heights source's folder on the NAS, by its `version`.
 pub fn ghsl_dir(version: &str) -> String {
     format!("sources/ghsl/{version}")
 }
@@ -59,7 +59,7 @@ pub struct File {
 pub struct Sources {
     pub release: String,
     pub files: Vec<File>,
-    /// Listed files whose footer is missing or of another ETag (bldprep.py refuses them where they
+    /// Listed files whose footer is missing or of another ETag (`bldprep` refuses them where they
     /// meet the tile): their names and listed boxes.
     pub stale: Vec<(String, [f64; 4])>,
     pub ghsl: Vec<(String, u64, [f64; 4])>,
@@ -97,7 +97,7 @@ fn meets(a: [f64; 4], b: [f64; 4]) -> bool {
 impl Sources {
     /// Reads the indexes under `root` of release `release` and GHSL's folder `ghsl` (`ghsl_dir`): None when the release has no `buildings.json` (nothing
     /// downloaded yet); an error when one is there and can't be read. A listed file whose footer is
-    /// missing or of another ETag is `stale` (bldprep.py refuses it where it meets a tile).
+    /// missing or of another ETag is `stale` (`bldprep` refuses it where it meets a tile).
     pub fn read(root: &Path, release: &str, ghsl: &str) -> Result<Option<Sources>> {
         let base = root.join(release_dir(release));
         let listed = match std::fs::read(base.join("buildings.json")) {
@@ -113,7 +113,7 @@ impl Sources {
         let (mut files, mut stale) = (Vec::new(), Vec::new());
         for (name, f) in listed.files {
             let Some(ft) = footers.get(&format!("release/{release}/{name}")).filter(|ft| ft.etag == f.etag) else {
-                // (No box listed: taken as meeting every tile, as bldprep.py takes it.)
+                // (No box listed: taken as meeting every tile, as `bldprep` takes it.)
                 stale.push((name, f.bbox.unwrap_or([-180.0, -90.0, 180.0, 90.0])));
                 continue;
             };
@@ -297,7 +297,7 @@ pub(crate) mod tests {
 
     /// The declared buildings and building-heights sources (producers/sources/) name what the code
     /// had before they were declared: Overture's bucket, its types and release 2026-09-23.1, and
-    /// GHSL's tiles (each URL and footprint as dem/bldfetch.py made them from the folder's listing
+    /// GHSL's tiles (each URL and footprint as the code made them from the folder's listing
     /// by its grid), in its folder `sources/ghsl/R2023A`; so the keys name the release alone, as
     /// they did (nothing fetched or prepared again).
     #[test]
@@ -347,7 +347,7 @@ pub(crate) mod tests {
         write(d.path(), "2026-09-23.1");
         let s = Sources::read(d.path(), "2026-09-23.1", &ghsl_dir("R2023A")).unwrap().unwrap();
         // (The stale files left out of what's read; the one meeting the tile named in its reads,
-        // bldprep.py failing on it there; the far one not.)
+        // `bldprep` failing on it there; the far one not.)
         assert_eq!((s.files.len(), s.stale.len()), (2, 2));
         assert_eq!(
             s.read_for(56, 25),

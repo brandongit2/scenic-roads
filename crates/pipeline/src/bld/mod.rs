@@ -2,13 +2,13 @@
 //! release, extruded to its height (measured, from its floors, or estimated: §2.3), as vector tiles
 //! of zooms 12–14 per z6 tile.
 //!
-//! Two steps per z6 tile T (§3.1):
-//! - **`bldprep T`** ([`prep`]): `dem/bldprep.py` reads the downloaded Overture row groups meeting T
-//!   and the GHSL windows under T, and hands their columns over a pipe; here each building's and
-//!   part's WKB is read, its centroid, footprint area and z14 tile computed, GHSL sampled at the
-//!   centroid, and those whose centroid is in T are written, sorted by (z14 tile, id), as T's
-//!   normalized file `work/bld/6-x-y` ([`work`], docs/formats.md). Every number in it is computed
-//!   here, in Rust (§3.7): Python only decodes.
+//! Their sources come onto the NAS whole by `bld-fetch` ([`fetch`]), once per release and coverage.
+//! Then two steps per z6 tile T (§3.1):
+//! - **`bldprep T`** ([`prep`]): the downloaded Overture row groups meeting T ([`overture`]) and
+//!   the GHSL windows under T ([`ghsl`]) are read as columns; each building's and part's WKB is
+//!   read, its centroid, footprint area and z14 tile computed, GHSL sampled at the centroid, and
+//!   those whose centroid is in T are written, sorted by (z14 tile, id), as T's normalized file
+//!   `work/bld/6-x-y` ([`work`], docs/formats.md).
 //! - **`bldtiles T`** ([`job`]): the buildings of T that touch the coverage, their heights filled
 //!   ([`fill`]: the neighbours' rule reads the buildings within 300 m beyond T's edges from its 8
 //!   neighbours' files), the z14 tiles encoded ([`tiles`]), written as the hi pack
@@ -18,9 +18,15 @@
 //! (The design's `buildings T` step is `bldtiles` here: `buildings` is the roadside buildings' job,
 //! crate::buildtiles, in scenic-build and the agent.)
 
+#[cfg(not(target_os = "wasi"))]
+pub mod fetch;
 pub mod field;
 pub mod fill;
+#[cfg(not(target_os = "wasi"))]
+pub mod ghsl;
 pub mod job;
+#[cfg(not(target_os = "wasi"))]
+pub mod overture;
 pub mod prep;
 pub mod sources;
 pub mod task;

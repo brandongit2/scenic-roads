@@ -6,7 +6,7 @@ then from GHSL's 100 m heights in high-rise cores, then from the footprint's siz
 z6 tile in a chain of its own (shared with helper Macs and pages), drawn near by MapLibre's
 fill-extrusion (meshes, z14 tiles) and far by a ray-marched density field (§4.8).
 
-Code: `dem/bldfetch.py`, `dem/bldprep.py`, `pipeline::bld` (prep, fill, tiles, field, job, task),
+Code: `pipeline::bld` (fetch, overture, ghsl, prep, fill, tiles, field, job, task),
 `agent::build` (`bld_targets`, `bld_work`), `web/src/buildings.ts`, `web/src/bldfield.ts`.
 Companions: `docs/steps.md` (pipeline, keys), `docs/building.md` (order), `docs/formats.md` (bytes), `docs/workers.md` and
 `docs/pool.md` (sharing the work).
@@ -99,14 +99,13 @@ else. Building heights don't enter the roadside factor, the horizons or the view
 
 ### 2.6 Downloads
 
-`dem/bldfetch.py` (run by `bld-fetch`, §3.1) fetches whole files onto the NAS:
+`bld-fetch` (`pipeline::bld::fetch`, §3.1) fetches whole files onto the NAS:
 - Overture's files with a row group within 20 km of the coverage (buildings and parts), into
   `sources/overture/<release>/theme=buildings/type=<type>/`, with `buildings.json` and
   `footers.json.gz` (every row group's box, from the footers);
 - GHSL's 10° tiles meeting it, into `sources/ghsl/R2023A/`, with `index.json`.
 
-The coverage comes from the server (`/api/regions`, `/api/areas/<id>`), so a new region fetches only
-new files. Each file is written to a temporary name, resumed by range requests (S3 only while its
+The coverage is the regions' accepted outlines, so a new region fetches only new files. Each file is written to a temporary name, resumed by range requests (S3 only while its
 ETag holds), checked (Overture's multipart ETag, GHSL's zip CRCs) and renamed; files in place at
 their listed size are skipped. Three transfers at once, no speed cap. S3 keeps a release ~60 days (this one
 until 2026-11-25); after that a region whose files aren't on the NAS waits for the next pinned
@@ -125,15 +124,14 @@ release (§5).
 
 (`buildings` is the roadside buildings' step, `pipeline::buildtiles`; hence `bldtiles`.)
 
-- **`bld-fetch`** runs `dem/bldfetch.py` with the coverage as GeoJSON (`--coverage`). A network
-  job; it skips what's there. Once the release has left S3 it checks against the footers: a file
+- **`bld-fetch`** (`pipeline::bld::fetch`), with the coverage's outlines. A network job; it skips
+  what's there. Once the release has left S3 it checks against the footers: a file
   the coverage needs and lacks fails the job.
 - **`bldprep T`**, per z6 tile within 1 km of the coverage with a downloaded row group or GHSL tile
-  meeting it: `dem/bldprep.py` reads the row groups meeting T (parts: T grown by 0.02°, so an outline
-  finds its parts) and the GHSL windows, and streams their columns (geometry as WKB) to
-  `scenic-build bldprep` (`pipeline::bld::prep`), which computes centroids (area-weighted) and areas
-  in f64, rounds to E7, keeps what's centred in T, samples GHSL and writes the normalized file.
-  Python only decodes; every number in a file is computed in Rust. Checks the columns' names and
+  meeting it (`pipeline::bld::prep`): the row groups meeting T are read (`bld::overture`, parts: T
+  grown by 0.02°, so an outline finds its parts) with the GHSL windows (`bld::ghsl`), as columns
+  (geometry as WKB); centroids (area-weighted) and areas computed in f64, rounded to E7, what's
+  centred in T kept, GHSL sampled, the normalized file written. Checks the columns' names and
   types, failing on a schema change.
 - **`bldtiles T`**, per z6 tile meeting the coverage, a z8 tile at a time (`pipeline::bld::job`):
   the buildings of T touching the coverage, heights filled (reading the buildings within 620 m
@@ -243,7 +241,7 @@ docs/formats.md has the bytes. In brief:
 ### 3.7 Determinism
 
 Same inputs, same bytes, on any machine and in WebAssembly (docs/building.md §2): parquet decoded by the
-pinned pyarrow and shapely of `dem/`, every derived number computed in Rust (E7 by
+pinned parquet crate, every derived number computed in Rust (E7 by
 `(v * 1e7).round()`, Mercator by `det`, f64 in a fixed order); heights as integer decimetres; a
 median of an even count takes the lower middle; ties by id; records by (z14 tile, id), features by
 (Morton, id); field sums in i64 fixed point (order-independent); gzip by `flate2`, zstd, at fixed

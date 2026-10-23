@@ -59,6 +59,14 @@ geos-src = "=0.2.4"
 # zlib's own deflate (1.3, built from source and linked statically), for the leaf-type squares'
 # tiles as GDAL wrote them (crate::leaftype: zlib-rs's deflate makes other bytes).
 libz-sys = { version = "=1.1.30", features = ["static"] }
+# Overture's GeoParquet (crate::bld::overture: the 3D buildings' row groups and footers, the
+# roadside buildings' boxes), through arrow's arrays; Overture's files are zstd.
+parquet = { version = "60", default-features = false, features = ["arrow", "zstd"] }
+arrow-array = "60"
+# S3's ETags (an Overture file's MD5, or its multipart upload's MD5 of MD5s: crate::bld::fetch).
+md-5 = "0.10"
+# (parquet's byte buffers, for a reader of the fetched spans of a file: crate::bld::overture::Spans.)
+bytes = "1"
 
 [target.'cfg(target_os = "wasi")'.dependencies]
 # Pinned: coord::client's idle transport uses ureq's unversioned::transport API (no semver promise).

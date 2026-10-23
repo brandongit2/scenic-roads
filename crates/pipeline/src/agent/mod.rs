@@ -576,13 +576,20 @@ fn first_peak(step: &str) -> u64 {
 }
 
 /// The memory a 3D buildings job of a z6 tile is expected to take (MB), before one has said, by the
-/// rows of the row groups its normalized file is read from (`rows`: crate::bld::sources): B1's six
-/// tiles took 0.3 GB and 160 B a row read for `bldprep`; `bldtiles`, `bldtiles_peak`.
+/// rows of the row groups its normalized file is read from (`rows`: crate::bld::sources):
+/// `bldprep_peak`, `bldtiles_peak`.
 fn bld_peak(step: &str, rows: u64) -> u64 {
     match step {
-        "bldprep" => 300 + rows * 160 / (1 << 20),
+        "bldprep" => bldprep_peak(rows),
         _ => bldtiles_peak(rows),
     }
+}
+
+/// `bldprep`'s, read in Rust (task #579, the Mac mini, 23 Oct): peak footprints of 0.85 GB for
+/// 6/53/21's 55 k rows kept, 1.9 GB for 6/10/24's 5.8 M, 3.1 GB for Paris's 15.3 M and 5.6 GB for
+/// Kantō's 30.3 M: about 1.0 GB and 150 B a row, given a quarter more.
+pub const fn bldprep_peak(rows: u64) -> u64 {
+    1300 + rows * 190 / (1 << 20)
 }
 
 /// `bldtiles`' (B5's pilot with the field and its centroids' offsets, 2026-10-15, on the
@@ -2088,9 +2095,7 @@ impl Agent {
             "pois" | "marks" | "stations" | "overlays" => vec!["--pass".into(), date.to_string()],
             "ferries" | "rail-feeds" => vec!["--pass".into(), date.to_string()],
             // (bld-fetch's coverage, and bldtiles' countries, from the pass's outlines.)
-            "bld-fetch" => vec!["--pass".into(), date.to_string(), "--dem".into(), dem()],
-            "bldprep" => vec!["--dem".into(), dem()],
-            "bldtiles" => vec!["--pass".into(), date.to_string()],
+            "bld-fetch" | "bldtiles" => vec!["--pass".into(), date.to_string()],
             "terrain-water" => vec!["--pass".into(), date.to_string()],
             "items" => vec!["--pass".into(), date.to_string(), "--cache".into(), s(&cache)],
             "heritage-sites" | "heritage" => {
@@ -7013,12 +7018,7 @@ impl Agent {
             if let Some(release) =
                 release.as_deref().filter(|r| !manifest.contains_key(&crate::buildtiles::index_logical(r)))
             {
-                jobs.push(job(
-                    format!("buildings {release}"),
-                    "buildings",
-                    vec!["--dem".into(), s(&self.o.bin.join("dem"))],
-                    None,
-                ));
+                jobs.push(job(format!("buildings {release}"), "buildings", Vec::new(), None));
             } else if let Ok(rd) = std::fs::read_dir(self.o.home.join("scratch/buildings")) {
                 // Made: the scan's parts (~40 GB) go, even from a run stopped before it removed them.
                 for e in rd.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("parts-")) {
@@ -12227,18 +12227,20 @@ mod tests {
 
     #[test]
     fn a_3d_buildings_job_is_offered_by_the_rows_it_reads() {
-        // B2's runs on the M1: Paris's 6/32/22 (16.5 M rows in its row groups) took 2.4 GB to read;
-        // Vermont's 6/19/23 (6.8 M) 1.2 GB. B5's pilot raised New York's 14.6 M records with the
-        // field in 7.9 GB, Toronto's 9.5 M in 3.8 GB, Kantō's 30.3 M in 10.2 GB. Offered above each.
-        assert_eq!((bld_peak("bldprep", 16_505_246), bld_peak("bldtiles", 16_505_246)), (2818, 8725));
+        // Task #579's reads on the Mac mini: Paris's 6/32/22 (15.3 M rows kept of its row groups'
+        // 16.5 M) peaked at 3.1 GB, Kantō's 6/56/25 (30.3 M) at 5.6 GB. B5's pilot raised New
+        // York's 14.6 M records with the field in 7.9 GB, Toronto's 9.5 M in 3.8 GB, Kantō's 30.3 M
+        // in 10.2 GB. Offered above each.
+        assert_eq!((bld_peak("bldprep", 16_505_246), bld_peak("bldtiles", 16_505_246)), (4290, 8725));
         assert!(
-            bld_peak("bldprep", 6_771_191) > 1243
+            bld_peak("bldprep", 15_288_533) > 2965
+                && bld_peak("bldprep", 30_321_333) > 5308
                 && bld_peak("bldtiles", 14_611_533) > 7889
                 && bld_peak("bldtiles", 9_496_532) > 3843
                 && bld_peak("bldtiles", 30_320_309) > 10200
         );
         // A tile reading nothing (a GHSL tile alone): its fixed part.
-        assert_eq!((bld_peak("bldprep", 0), bld_peak("bldtiles", 0)), (300, 1800));
+        assert_eq!((bld_peak("bldprep", 0), bld_peak("bldtiles", 0)), (1300, 1800));
     }
 
     /// A job of the lead's own that fails ends its lease as failed (`finish_failed`): its target

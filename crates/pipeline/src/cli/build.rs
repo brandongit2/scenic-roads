@@ -66,7 +66,7 @@ const STEPS: &[Step] = &[
     s("raw-pack", "[--from-tar - [--expect n]] [--cache dir] | --order | --check [--every n]", "AWS's raw tiles packed into the NAS's archives: a tar of them on stdin, else those waiting in the cache", &["--order", "--check"], &["--from-tar", "--expect", "--cache", "--every"], 0),
     s("prune", "<target …>", "drops from the manifest what the coverage no longer builds (\"unit U\", \"pois U\", \"pack T\", \"lo Q\", \"bldprep T\", \"bldtiles T\")", &[], &[], ANY),
     s("buildings", "[--dem dir] [--workers n]", "the world's roadside buildings: the declared release, in z8 tiles, onto the NAS with their index", &[], &["--dem", "--workers"], 0),
-    s("bld-fetch", "[--pass d] [--regions dir] [--dem dir]", "the 3D buildings' sources onto the NAS (dem/bldfetch.py)", &[], &["--pass", "--regions", "--dem"], 0),
+    s("bld-fetch", "[--pass d] [--regions dir]", "the 3D buildings' sources onto the NAS (pipeline::bld::fetch)", &[], &["--pass", "--regions"], 0),
     s("bldprep", "<T …> [--dem dir]", "the 3D buildings' normalized files of z6 tiles T", &[], &["--dem"], ANY),
     s("bldtiles", "<T …> [--pass d] [--regions dir]", "the 3D buildings' tiles of z6 tiles T", &[], PASS_REGIONS, ANY),
     s("bldfield-lo", "<Q …>", "z3 tiles Q's zoomed-out buildings field", &[], &[], ANY),

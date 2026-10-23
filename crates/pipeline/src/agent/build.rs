@@ -3264,7 +3264,7 @@ fn marks_ready(
         && heritage_key(cov, date, m).is_some_and(|k| done.lo.get("heritage") == Some(&k))
 }
 
-/// The 3D buildings' sources fetched onto the NAS (dem/bldfetch.py, `scenic-build bld-fetch`): the
+/// The 3D buildings' sources fetched onto the NAS (crate::bld::fetch, `scenic-build bld-fetch`): the
 /// pinned release's files and GHSL's tiles meeting the coverage grown by 20 km.
 pub const BLD_FETCH_V: u32 = 1;
 

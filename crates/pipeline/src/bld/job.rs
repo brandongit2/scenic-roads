@@ -720,10 +720,10 @@ mod tests {
 
     /// A work file of tile `t` from buildings, in `dir`.
     fn work(dir: &std::path::Path, t: TileId, bs: &[B]) -> WorkFile {
-        let mut s = prep::MAGIC.to_vec();
+        let mut s = Vec::new();
         frame(&mut s, false, bs);
         end(&mut s);
-        let p = prep::read_stream(&mut &s[..], t).unwrap();
+        let p = prep::Prepped::from_frames(s, t).unwrap();
         let path = dir.join(format!("{}.sect", t.dash()));
         p.write(t, "2026-09-23.1", &path).unwrap();
         WorkFile::open(&path).unwrap()

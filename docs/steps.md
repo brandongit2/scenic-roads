@@ -177,7 +177,7 @@ What each step does, in detail. The steps as one table (names, chains, the check
 - **Area overlays** (the heritage and designated areas' outlines): `docs/phase5.md`. The `overlays` job runs after marks (it needs the World
   Heritage dots' ids).
 - **3D buildings:** `docs/buildings3d.md`. Every building in the coverage from the Overture release,
-  tiles z12–14 per z6 tile (`bldprep`, `bldtiles`; `pipeline::bld`, dem/bldprep.py), a z6 tile's
+  tiles z12–14 per z6 tile (`bldprep`, `bldtiles`; `pipeline::bld`), a z6 tile's
   z8 tiles offered as tasks (`bldtile`); below zoom 14 the far buildings' field (buildings3d.md
   §4.8; `?bldfield=off` leaves it out). Planned: national heights (PLATEAU, BD TOPO).
 
@@ -403,8 +403,8 @@ Landmark candidates and peaks have their own per-z6-tile jobs (`docs/phase5.md`)
 ## 7. Roadside buildings: the world, once per release
 
 The buildings job (`pipeline::buildtiles`) makes Overture's building boxes for the world from one
-pinned release, before any `unit` job runs: `dem/buildings.py --world` reads the release's bbox columns,
-24 files at a time, into local parts by z8 tile (each file marked done once written, so a run cut
+pinned release, before any `unit` job runs: `buildtiles::scan` reads the release's bbox columns from
+Overture's bucket (each file's footer, then its row groups' bbox chunks alone), 8 files at a time, into local parts by z8 tile (each file marked done once written, so a run cut
 short resumes); each tile's parts are merged onto the NAS, then the index. A z6 tile's key names the
 index, so a new release rebuilds every z6 tile.
 

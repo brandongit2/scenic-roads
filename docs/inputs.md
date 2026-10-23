@@ -1361,9 +1361,7 @@ The Rust fetchers (`crate::fetch`'s `Fetcher`, `crate::wikiask`) fetch only APIs
 accepted version); a unit's programs from `sources.json` in its folder (`unit::UnitSources`: the
 land cover, the canopy files' URLs); a tree cover run from `sources.json` beside its coverage
 (`trees::RunSources`, passed to the trees program as `--sources`, which makes its leaf-type
-squares from them: `leaftype`);
-Python steps by role from the file `SCENIC_SOURCES` names (`dem/declared.py`, written by
-`inputs::sources::write_for_python`). The jobs that read them (the z6 tiles, tree cover, items, the
+squares from them: `leaftype`). The jobs that read them (the z6 tiles, tree cover, items, the
 heritage chain) wait until a version is accepted (the agent's `hold_for_sources`); the lake fill,
 and the water, terrain and catalog that read it, wait too (`lakefill::run::planned_source`); so do
 the roadside buildings' job and the z6 tiles' keys (the release, `buildtiles::release_of`, held by
@@ -1396,7 +1394,7 @@ URL one the code asked for; the leaf sources, boxes and zip member the same),
 | ESA WorldCover | built: `esa-worldcover.toml`, the `land-cover` role | `geotiff`, URL template (`{tile}`), version; its class table is its legend (`params.legend`) |
 | Meta & WRI canopy height | built: `meta-canopy.toml`, the `canopy` role, its index `canopy-squares.geojson` (`producers/sources/canopy.py`, from the bucket's listing: the equator row's `lat=-0.0` read there); a file the index doesn't list is none there | `geotiff` with an index: a file's `url`, `kind` and 10° square |
 | Leaf type (EEA HRL, NALCMS) | built: `eea-leaf-type.toml`, `nalcms.toml`, the `leaf-type-europe` and `leaf-type-north-america` roles; the build still makes the squares where a run needs them (`pipeline::leaftype`, given the sources), since the coverage decides which | `image-service` and `zip-geotiff`: URL, the box each covers, NALCMS's zip member |
-| Overture buildings | built: `overture-buildings.toml`, the `buildings` role (the release its `version`; `dem/buildings.py`, `dem/bldfetch.py` read the bucket by role); `bld/fill.rs`'s `ESTIMATES` stays in code, the fill's rule 2 (its tables were fitted with it) | `geoparquet`: the bucket, release, its DuckDB path and region, the types read |
+| Overture buildings | built: `overture-buildings.toml`, the `buildings` role (the release its `version`; `buildtiles` and `bld::fetch` read the bucket by role); `bld/fill.rs`'s `ESTIMATES` stays in code, the fill's rule 2 (its tables were fitted with it) | `geoparquet`: the bucket, release, its `s3://` name (the roadside scan's parts list names files by it) and region, the types read |
 | GHSL building heights | built: `ghsl-built-h.toml`, the `building-heights` role, its index `ghsl-tiles.geojson` (`producers/sources/ghsl.py`, from the tiles folder's listing: the tiles' grid read there) | `zip-geotiff` by an index of its tiles, its version naming its folder |
 | Wikidata, Wikipedia's API | built: `wikidata-qlever.toml`, `wikipedia-api.toml`, the `wikidata` and `wikipedia` roles | endpoints (`sparql`, `mediawiki-api`, `refresh = "live"`) |
 | Wikipedia pageviews | built: `wikipedia-pageviews.toml`, the `pageviews` role | URL template (`{y}`, `{m}`); the months stay the items job's rule |
@@ -1629,10 +1627,9 @@ declarations are made and staged there.
 | `leaftype`'s square tags, and `trees::squares::complete` | a made square's GeoTIFF `source`, as every square already made says it (`trees::squares::complete` reads the tags) |
 | `trees::META` | the tree tiles' metadata, part of their content: changed, every tree tile would be made again for nothing |
 | `leaftype`'s `fetch_nalcms` and `nalcms_centre` | the reader of NALCMS's zip and its GeoTIFF's projection, made for their layout; their messages name what they read |
-| `dem/bldprep.py`'s `read_rg`, `dem/bldfetch.py`'s `overture_jobs` | readers of Overture's schema and release folders, made for their layout; their messages name what they read |
+| `bld::overture`'s `row_group`, `bbox_spans` and `boxes`, `bld::fetch`'s `overture_jobs` | readers of Overture's schema and release folders, made for their layout; their messages name what they read |
 | timing phases (`scenic-build`'s lake fill, `leaftype`'s NALCMS download and squares) | a phase's name is its key in the timings kept |
 | `budget::QUERY_HOSTS`, `QUERY_DOMAINS` | the polite-use budget is by host (docs/pool.md §7.7): the query services' limits hold for any request to them |
-| `dem/bldfetch.py`'s S3 listing namespace | the protocol's |
 | `web/src/main.ts`'s Google Maps link | opens the place elsewhere |
 | `tools/check/pool-two-macs.sh`'s budget test | a request the budgets' proxy must meter, not a read |
 | `tools/nas/fetch-planet.sh`'s mirrors | kept in code (§6.9, OSM planet): the test checks the row says so (`KEPT`) |

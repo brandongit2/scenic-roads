@@ -250,7 +250,10 @@ pub const TABLE: [Step; 52] = [
             w_terrain_z8,
         )
     },
+    // (`buildtiles::WORKERS` files read at once: 2.8 GB at the peak on the Mac mini, 23 Oct, task
+    // #579.)
     Step {
+        mem_mb: 3584,
         alone: true,
         ..step(
             "pass",
@@ -600,10 +603,11 @@ pub const TABLE: [Step; 52] = [
         mem_mb: 4096,
         ..step("landmarks", Pack, World, "overlays", "Area overlays", "Draws the area overlays.", w_overlays)
     },
-    // (Its peak is reading the coverage: 2.0 GB for the regions' 244 MB outlines on 20 Oct, task
-    // #493; the downloads stay under 100 MB.)
+    // (The coverage read, its outlines indexed (GEOS), the release's footers read, in one process:
+    // 4.7 GB at its peak on the Mac mini, 23 Oct, task #579, the coverage most of it; the downloads
+    // stream.)
     Step {
-        mem_mb: 2560,
+        mem_mb: 5632,
         ..step(
             "buildings",
             Fetch,
@@ -614,11 +618,10 @@ pub const TABLE: [Step; 52] = [
             w_none,
         )
     },
-    // (The 3D buildings, until a target's own run says: the densest tile's, B1's Kantō 6/56/25:
-    // 5.1 GB to read its 30.3 M rows; to raise its tiles and field, the model of B5's pilot for those
-    // rows. Offered by the rows they read.)
+    // (The 3D buildings, until a target's own run says: the densest tile's, Kantō's 6/56/25 and its
+    // 30.3 M rows, by the models of task #579's reads and B5's pilot. Offered by the rows they read.)
     Step {
-        mem_mb: 5200,
+        mem_mb: super::bldprep_peak(30_300_000),
         shared: Some(6),
         ..step(
             "buildings",
@@ -1495,14 +1498,15 @@ mod tests {
         // The memory first guessed (what the agent's first_peak and second_peak gave, the latter's
         // where they differed: the network steps', a z6 tile's and candidates', which nothing offered
         // by the former).
-        let mem: [(&str, u64); 21] = [
+        let mem: [(&str, u64); 22] = [
             ("lakefill", 12288),
             ("outlines", 9216),
             ("heritage", 6144),
             ("rail", 6144),
             ("items", 3072),
             ("rail-feeds", 5632),
-            ("bld-fetch", 2560),
+            ("buildings", 3584),
+            ("bld-fetch", 5632),
             ("marks", 4096),
             ("overlays", 4096),
             ("unit", 8600),
@@ -1514,7 +1518,7 @@ mod tests {
             ("slope-lo", 1000),
             ("peaks", 2500),
             ("water", 8192),
-            ("bldprep", 5200),
+            ("bldprep", super::super::bldprep_peak(30_300_000)),
             ("bldtiles", super::super::bldtiles_peak(30_300_000)),
             ("terrain", 1500),
         ];

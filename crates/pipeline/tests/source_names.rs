@@ -68,13 +68,13 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/leaftype/mod.rs", "nalcms_centre", "NALCMS", "the reader of NALCMS's GeoTIFF's projection, made for it (the warp is PROJ's Lambert azimuthal equal-area, as GDAL warped it): its messages name what they read"),
     ("crates/pipeline/src/leaftype/mod.rs", "north_america_squares", "\"the NALCMS squares resampled\"", "a timing phase's name, its key in the timings kept (the same phase over time)"),
     ("crates/pipeline/src/bin/scenic-build.rs", "lakefill_step", "\"the lakes filled from CanVec's zips\"", "a timing phase's name, its key in the timings kept (the same phase over time)"),
-    ("dem/bldprep.py", "read_rg", "Overture's columns changed", "the reader of Overture's GeoParquet schema (the `geoparquet` format is its layout): its messages name what they read"),
-    ("dem/bldfetch.py", "overture_jobs", "Overture's release", "the lister of Overture's release folders on S3, its layout: its message names what it reads"),
+    ("crates/pipeline/src/bld/overture.rs", "row_group", "Overture's columns changed", "the reader of Overture's GeoParquet schema (the `geoparquet` format is its layout): its messages name what they read"),
+    ("crates/pipeline/src/bld/overture.rs", "bbox_spans", "Overture's columns changed", "the reader of Overture's GeoParquet schema, as above"),
+    ("crates/pipeline/src/bld/overture.rs", "boxes", "Overture's columns changed", "the reader of Overture's GeoParquet schema, as above"),
+    ("crates/pipeline/src/bld/fetch.rs", "overture_jobs", "Overture's release", "the lister of Overture's release folders on S3, its layout: its message names what it reads"),
     ("crates/pipeline/src/leaftype/mod.rs", "EEA_SOURCE", "\"Copernicus HRL Dominant Leaf Type 2018 (EEA), 10 m", "a made square's tag (its GeoTIFF's `source`), as every square already made says it: a square's tag is how it's known (crate::trees::squares::complete), so it doesn't change with the declaration's wording"),
     // Allowlists by host.
     ("crates/pipeline/src/budget/mod.rs", "QUERY_DOMAINS", "\"qlever.dev\"", "the polite-use budget is by host (docs/pool.md §7.7): the query services' own limits, which hold for any request to them"),
-    // Protocols.
-    ("dem/bldfetch.py", "s3_list", "\"http://s3.amazonaws.com/doc/2006-03-01/\"", "S3's listing namespace, the protocol's"),
     // Links that open a place elsewhere.
     ("web/src/main.ts", "-", "https://www.google.com/maps/", "opens the place in Google Maps"),
     // Tools that check the app.

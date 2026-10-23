@@ -5,7 +5,7 @@ licence = "CC-BY-4.0"
 licence_url = "https://creativecommons.org/licenses/by/4.0/"
 source = "https://human-settlement.emergency.copernicus.eu/ghs_buildH2023.php"
 territory = "world"
-notes = "Its 10° tile zips meeting the coverage, fetched by dem/bldfetch.py into sources/ghsl/<version>/ (with their index.json); the fill's rule 4 (crate::bld). The index is producers/sources/ghsl.py's, from the tiles folder's listing."
+notes = "Its 10° tile zips meeting the coverage, fetched by bld-fetch (crate::bld::fetch) into sources/ghsl/<version>/ (with their index.json); the fill's rule 4 (crate::bld). The index is producers/sources/ghsl.py's, from the tiles folder's listing."
 
 [data]
 role = "building-heights"

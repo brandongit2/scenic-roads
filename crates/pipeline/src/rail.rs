@@ -98,21 +98,6 @@ pub fn by_way_id(ways: &[roadcore::WayRec], freq: &[u8]) -> Vec<u8> {
     recs.iter().flat_map(|(w, f)| w.to_le_bytes().into_iter().chain(f.to_le_bytes())).collect()
 }
 
-/// The coverage for bldfetch.py: a feature per outline, its rings in degrees (under the even–odd
-/// rule) and its buffer in metres.
-pub fn coverage_geojson(cov: &Coverage) -> Value {
-    let deg = |p: &[i32; 2]| [p[0] as f64 * 1e-7, p[1] as f64 * 1e-7];
-    let feats: Vec<Value> = cov
-        .shapes
-        .iter()
-        .map(|s| {
-            let polys: Vec<Value> = s.rings.iter().map(|r| serde_json::json!([r.iter().map(deg).collect::<Vec<_>>()])).collect();
-            serde_json::json!({"type": "Feature", "properties": {"buffer_m": s.buffer_m}, "geometry": {"type": "MultiPolygon", "coordinates": polys}})
-        })
-        .collect();
-    serde_json::json!({"type": "FeatureCollection", "features": feats})
-}
-
 /// Of an outline's points, the share a country must hold for the coverage to be in it; of a
 /// country's own points, the share the coverage must hold.
 const OF_OUTLINE: f64 = 0.05;

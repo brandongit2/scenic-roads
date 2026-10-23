@@ -4,9 +4,10 @@
 //! degrees, sorted, each once (no file for a tile without any), with their index
 //! `sources/buildings/<release>/index`, written last.
 //!
-//! One worldwide job makes them, once per release (`build`): `dem/buildings.py --world` scans the
-//! release's bbox columns, its files in parallel, into local parts by tile, which are then merged
-//! per tile onto the NAS. A unit reads the tiles near its roads (`tiles_for`, `stage`).
+//! One worldwide job makes them, once per release (`build`): `scan` reads the release's bbox
+//! columns from Overture's bucket (each file's footer, then its row groups' bbox chunks alone), its
+//! files in parallel, into local parts by tile, which are then merged per tile onto the NAS. A unit
+//! reads the tiles near its roads (`tiles_for`, `stage`).
 
 use crate::legacy::TileId;
 use crate::out::Out;
@@ -26,6 +27,9 @@ pub const ZOOM: u8 = 8;
 /// How far past a unit's roads its buildings are read (km): a building counts within 80 m of the
 /// road, and is kept by its centre's cell (`buildings`, ~165 m), a cell or so from a sample's.
 const MARGIN_KM: f64 = 1.0;
+/// The release's files scanned at once: ~350 MB each in flight (8 peaked at 2.8 GB on the Mac
+/// mini, 23 Oct, task #579), 512 files in ~30 min.
+pub const WORKERS: usize = 8;
 /// The free space the scan's local parts need (the release's boxes, ~40 GB).
 const PARTS_ROOM: u64 = 45 << 30;
 
@@ -194,14 +198,118 @@ fn each_box(path: &Path, mut f: impl FnMut([f32; 4])) -> Result<()> {
     }
 }
 
-/// Makes the release's tiles: `dem/buildings.py --world` (run with uv in `dem`) scans the release
-/// into `scratch/parts-<release>/<file>/<z>-<x>-<y>.f32`, a file of the release at a time, each
+/// The z-`z` tile holding a point (Web Mercator, as the agent's tiles), as numpy computed it for
+/// the scan before: the latitude clipped to Mercator's, `ln(tan φ + sec φ)`.
+fn tile_xy(lon: f64, lat: f64, z: u8) -> (u64, u64) {
+    let n = (1u64 << z) as f64;
+    let x = ((lon + 180.0) / 360.0 * n).floor().clamp(0.0, n - 1.0);
+    let r = lat.clamp(-85.05112878, 85.05112878).to_radians();
+    let y = ((1.0 - (r.dtan() + 1.0 / r.dcos()).dln() / std::f64::consts::PI) / 2.0 * n).floor().clamp(0.0, n - 1.0);
+    (x as u64, y as u64)
+}
+
+/// One file of the release (`url`, `size` bytes) into `out`: its buildings' boxes (f32
+/// `[xmin, ymin, xmax, ymax]`, degrees) by the zoom-`z` tile holding their centre (`<z>-<x>-<y>.f32`,
+/// each tile's in the file's order), `.done` once all are written. Its buildings.
+pub fn scan_file(http: &crate::bld::fetch::Http, url: &str, size: u64, out: &Path, z: u8) -> Result<usize> {
+    use rayon::prelude::*;
+    if out.exists() {
+        std::fs::remove_dir_all(out)?;
+    }
+    std::fs::create_dir_all(out)?;
+    let mut tail = http.get_bytes(url, Some((size.saturating_sub(65536), size - 1)))?;
+    if let Some(need) = crate::bld::overture::footer_need(&tail).with_context(|| url.to_string())? {
+        tail = http.get_bytes(url, Some((size - need, size - 1)))?;
+    }
+    let md =
+        std::sync::Arc::new(crate::bld::overture::footer_meta(&tail).with_context(|| format!("{url}: its footer"))?);
+    let (_, spans) = crate::bld::overture::bbox_spans(&md)?;
+    let got: Vec<Result<(u64, Vec<u8>)>> =
+        spans.par_iter().map(|&(s, e)| Ok((s, http.get_bytes(url, Some((s, e - 1)))?))).collect();
+    let mut chunks = crate::bld::overture::Spans::new(size);
+    for g in got {
+        let (s, b) = g?;
+        chunks.add(s, b);
+    }
+    let boxes = crate::bld::overture::boxes(chunks, md).with_context(|| url.to_string())?;
+    let (n, count) = (1u64 << z, boxes.len());
+    let mut keyed: Vec<(u64, [f32; 4])> = boxes
+        .into_iter()
+        .map(|b| {
+            let (x, y) = tile_xy(((b[0] + b[2]) * 0.5) as f64, ((b[1] + b[3]) * 0.5) as f64, z);
+            (x * n + y, b)
+        })
+        .collect();
+    keyed.sort_by_key(|k| k.0);
+    for run in keyed.chunk_by(|a, b| a.0 == b.0) {
+        let (tx, ty) = (run[0].0 / n, run[0].0 % n);
+        let bytes: Vec<u8> = run.iter().flat_map(|(_, b)| b.iter().flat_map(|v| v.to_le_bytes())).collect();
+        std::fs::write(out.join(format!("{z}-{tx}-{ty}.f32")), bytes)?;
+    }
+    std::fs::write(out.join(".done"), b"")?;
+    Ok(count)
+}
+
+/// Scans release `release`'s building files (the declared buildings source: `bucket`, its URL,
+/// and `s3`, its name as the parts' list keeps it) into `parts/<file>/<z>-<x>-<y>.f32`, `workers`
+/// files at once: a folder per file of the release (in name order), marked `.done` once written
+/// (folders done are skipped), and the release's files in `parts/files.json`. An empty listing is a
+/// release Overture no longer serves, or a failed listing: never an empty world.
+pub fn scan(parts: &Path, z: u8, workers: usize, release: &str, bucket: &str, s3: &str) -> Result<()> {
+    use crate::pyjson::Py;
+    use crate::timings::{phase, Class};
+    use rayon::prelude::*;
+    std::fs::create_dir_all(parts)?;
+    let http = crate::bld::fetch::Http::new();
+    let prefix = format!("release/{release}/theme=buildings/type=building/");
+    let p = phase("the release's files listed on S3", Class::Net);
+    let objs = crate::bld::fetch::s3_list(&http, bucket, &prefix)?;
+    drop(p);
+    let files: Vec<String> = objs.iter().map(|o| format!("{s3}/{}", o.key)).collect();
+    anyhow::ensure!(!files.is_empty(), "buildings: no files for release {release} ({s3}/{prefix})");
+    let p = phase("the file list checked and written", Class::Disk);
+    let listed = parts.join("files.json");
+    if let Ok(b) = std::fs::read(&listed) {
+        let was: Vec<String> = serde_json::from_slice(&b).with_context(|| listed.display().to_string())?;
+        anyhow::ensure!(
+            was == files,
+            "buildings: release {release}'s files aren't those its parts were made from ({})",
+            listed.display()
+        );
+    }
+    let list = Py::List(files.iter().map(|f| Py::Str(f.clone())).collect());
+    std::fs::write(&listed, crate::pyjson::dumps_spaced(&list))?;
+    let todo: Vec<usize> = (0..files.len()).filter(|i| !parts.join(format!("{i:04}/.done")).exists()).collect();
+    drop(p);
+    eprintln!("buildings: {} files in release {release}, {} to scan", files.len(), todo.len());
+    let done = std::sync::atomic::AtomicU64::new((files.len() - todo.len()) as u64);
+    let n = std::sync::atomic::AtomicU64::new(0);
+    let t0 = std::time::Instant::now();
+    let _p = phase("the files' boxes scanned from S3", Class::Net);
+    // (Four threads a file: a file's chunks are fetched side by side too.)
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(workers.max(1) * 4).build()?;
+    pool.install(|| {
+        todo.par_iter().with_max_len(1).try_for_each(|&i| -> Result<()> {
+            let k =
+                scan_file(&http, &format!("{bucket}{}", objs[i].key), objs[i].size, &parts.join(format!("{i:04}")), z)?;
+            let total = n.fetch_add(k as u64, std::sync::atomic::Ordering::Relaxed) + k as u64;
+            let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            eprintln!("buildings: {total} so far ({:.0} s)", t0.elapsed().as_secs_f64());
+            crate::agent::jobs::report(d, files.len() as u64, "files");
+            Ok(())
+        })
+    })
+}
+
+/// Makes the release's tiles: `scan` reads the release into
+/// `scratch/parts-<release>/<file>/<z>-<x>-<y>.f32`, a file of the release at a time, each
 /// marked done when written (a run cut short goes on from there); then each tile's parts are
 /// merged onto the NAS (a tile already there whole from a run cut short is left), and the index
 /// written last.
-pub fn build(out: &mut Out, dem: &Path, scratch: &Path, workers: usize) -> Result<()> {
-    let release = release_of(out.root(), &out.manifest)?;
-    let declared = crate::inputs::sources::write_for_python(out.root(), &out.manifest, scratch)?;
+pub fn build(out: &mut Out, scratch: &Path, workers: usize) -> Result<()> {
+    let sources = crate::inputs::sources::read(out.root(), &out.manifest)?;
+    let b = sources.role(crate::inputs::sources::BUILDINGS)?;
+    let release = b.version()?.to_string();
     let parts = scratch.join(format!("parts-{release}"));
     std::fs::create_dir_all(&parts)?;
     let free = crate::agent::room::disk_free(&parts)?;
@@ -214,17 +322,7 @@ pub fn build(out: &mut Out, dem: &Path, scratch: &Path, workers: usize) -> Resul
     );
     use crate::timings::{phase, Class};
     let t0 = std::time::Instant::now();
-    let p = phase("buildings.py", Class::Mixed);
-    let mut c = store::spawn::command("uv");
-    c.current_dir(dem)
-        .env(crate::inputs::sources::PYTHON_ENV, &declared)
-        .args(["run", "python", "buildings.py", "--world"])
-        .arg(&parts)
-        .args(["--zoom", &ZOOM.to_string(), "--workers", &workers.to_string(), "--release", &release]);
-    crate::timings::child(&mut c);
-    let st = store::spawn::status(&mut c).context("run buildings.py")?;
-    anyhow::ensure!(st.success(), "buildings.py: {st}");
-    drop(p);
+    scan(&parts, ZOOM, workers, &release, b.url()?, b.param_str("s3")?)?;
     eprintln!("buildings: the release scanned ({:.0?})", t0.elapsed());
     // Every file of the release scanned whole.
     let files: Vec<String> =

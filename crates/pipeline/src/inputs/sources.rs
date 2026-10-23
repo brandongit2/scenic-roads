@@ -47,9 +47,9 @@ pub const ROLES: [(&str, &[&str], &[&str]); 17] = [
     (LEAF_EUROPE, &["image-service"], &[]),
     // (Forest leaf type, North America: crate::leaftype, one GeoTIFF in a zip read by range.)
     (LEAF_NORTH_AMERICA, &["zip-geotiff"], &[]),
-    // (Building footprints, a release: crate::buildtiles, crate::bld, dem/buildings.py, dem/bldfetch.py.)
+    // (Building footprints, a release: crate::buildtiles, crate::bld.)
     (BUILDINGS, &["geoparquet"], &[]),
-    // (Building heights on a grid: crate::bld, dem/bldfetch.py, dem/bldprep.py.)
+    // (Building heights on a grid: crate::bld.)
     (BUILDING_HEIGHTS, &["zip-geotiff"], &[]),
     // (Wikidata's facts: crate::heritagewd, crate::areadetails, crate::whsshapes, crate::items,
     // crate::pageviews.)
@@ -808,22 +808,6 @@ fn extras(s: &Sources, roles: &[(&str, &str)]) -> Result<Option<String>> {
     Ok((!v.is_empty()).then(|| v.join(" ")))
 }
 
-/// The environment variable naming the file a Python step reads the sources from (dem/declared.py).
-pub const PYTHON_ENV: &str = "SCENIC_SOURCES";
-
-/// The accepted sources as a Python step reads them (dem/declared.py): each by its role, its `id`,
-/// `url`, `urls`, `version`, `params` and `index` (its features' `url` and `bbox`), written as `sources.json` in `dir`; the file's path, for
-/// `PYTHON_ENV`.
-pub fn write_for_python(root: &Path, manifest: &BTreeMap<String, String>, dir: &Path) -> Result<std::path::PathBuf> {
-    let s = read(root, manifest)?;
-    // (The roles any number take aren't read by a Python step: crate::depth reads the depth's.)
-    let v: BTreeMap<&str, serde_json::Value> = s.by_role.values().map(|x| (x.data.role.as_str(), serde_json::json!({ "id": x.id, "url": x.data.url, "urls": x.data.urls, "version": x.data.version, "params": x.data.params, "index": x.index.iter().map(|f| serde_json::json!({ "url": f.url, "bbox": f.bbox })).collect::<Vec<_>>() }))).collect();
-    std::fs::create_dir_all(dir)?;
-    let p = std::path::absolute(dir.join("sources.json"))?;
-    std::fs::write(&p, serde_json::to_vec_pretty(&v)?)?;
-    Ok(p)
-}
-
 /// Whether the records name an accepted version of the declarations: the steps that read them wait
 /// until they do.
 pub fn accepted(manifest: &BTreeMap<String, String>) -> bool {
@@ -973,20 +957,18 @@ mod tests {
         assert_eq!(s.all().count(), files.keys().filter(|p| p.ends_with(".toml")).count());
     }
 
-    /// What a Python step reads (dem/declared.py): each source by its role, the URLs the scripts
-    /// had in code before they were declared.
+    /// The accepted sources by role: the URLs the steps had in code before they were declared.
     #[test]
-    fn the_python_steps_sources() {
+    fn the_steps_sources() {
         let d = tempfile::tempdir().unwrap();
         let mut m = BTreeMap::new();
         accept_fixture(d.path(), &mut m);
-        let p = write_for_python(d.path(), &m, &d.path().join("job")).unwrap();
-        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap();
+        let s = read(d.path(), &m).unwrap();
         // (crate::heritagewd's query service and its Wikipedia API, crate::pageviews's dumps.)
-        assert_eq!(v[WIKIDATA]["url"], "https://qlever.dev/api/wikidata");
-        assert_eq!(v[WIKIPEDIA]["url"], "https://en.wikipedia.org/w/api.php");
+        assert_eq!(s.role(WIKIDATA).unwrap().url().unwrap(), "https://qlever.dev/api/wikidata");
+        assert_eq!(s.role(WIKIPEDIA).unwrap().url().unwrap(), "https://en.wikipedia.org/w/api.php");
         assert_eq!(
-            v[PAGEVIEWS]["url"],
+            s.role(PAGEVIEWS).unwrap().url().unwrap(),
             "https://dumps.wikimedia.org/other/pageview_complete/monthly/{y}/{y}-{m}/pageviews-{y}{m}-user.bz2"
         );
     }

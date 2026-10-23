@@ -295,7 +295,7 @@ building and part of the pinned Overture release whose centroid is in the z6 til
 left out (`bldprep`). Meta: `{"fmt": 1, "tile": "6/x/y", "release", "buildings", "parts", "srcs",
 "classes", "subtypes", "roofs", "ghsl": "R2023A", "read"}`: the counts; the sorted string lists the
 codes index (0 none, k the k-th: height source datasets, classes, subtypes, roof shapes); `read`,
-what bldprep.py read (`files`: [name, ETag, [row groups]], `ghsl`, `rows`).
+what was read (`files`: [name, ETag, [row groups]], `ghsl`, `rows`).
 
 | Section | Record | Notes |
 |---|---|---|
@@ -314,19 +314,14 @@ non-underground part naming it read in the tile or 0.02° around), the height's 
 centroid (`u16` dm, 0 none), the OSM id where OSM gave the footprint (`u64`: 1 << 62 a way, 2 << 62
 a relation, or'ed with the id; 0 none).
 
-**The sources' indexes** (written by dem/bldfetch.py beside the downloads, outside the manifest;
+**The sources' indexes** (written by `bld-fetch`, `pipeline::bld::fetch`, beside the downloads,
+outside the manifest, as Python's `json` wrote them;
 read by `pipeline::bld::sources`): `sources/overture/<release>/buildings.json` (`{"fmt": 1,
 "release", "source", "terms", "coverage": {"regions", "margin_km", "at"}, "files": {<name>: {"size",
 "etag", "rows", "row_groups", "rows_near", "bbox", "checked"}}}`); `footers.json.gz` (every file of
 the release: `{"release/<release>/<name>": {"etag", "size", "rows", "rgs": [[w, s, e, n, rows],
 …]}}`); `sources/ghsl/R2023A/index.json` (`{"fmt": 1, "product", "source", "terms", "tiles": {<zip>:
-{"size", "bbox", "checked"}}}`). `bld-fetch` passes the coverage as GeoJSON (`--coverage`: a
-feature per outline, `buffer_m` its buffer).
-
-**bldprep.py's stream** (stdout to `scenic-build bldprep`): `BLDP1\n`, then frames, each `u8 kind,
-u32 header length, header JSON` (with `cols`: [[name, bytes], …]) and the columns' bytes: GHSL
-windows (3; all before any row group), each row group's buildings (1) and parts (2), the end (9).
-dem/bldprep.py's docstring lists the columns.
+{"size", "bbox", "checked"}}}`). `coverage.regions`: the regions' ids.
 
 **Tiles** `layers/buildings/hi/6-<x>-<y>` (RDPACK, encoding `mvt`, blobs gzip level 6, z14 only):
 MVT 2.1, extent 4096, layer `b`, a feature per building or part touching the coverage (centroid or
