@@ -489,7 +489,7 @@ body > .tip { position: fixed; z-index: 20; pointer-events: none; background: va
   <div class="vitals" id="vitals-grid"></div>
   <div class="src">
     <b class="part">today</b><span><code>Resources</code> in the heartbeat: load1, memory free %, disk free, cache GB (every 10 min), battery and mains. The memory guard samples each job's footprint 4× a second but only its peak leaves the Mac. Pressure level and swap are read in <code>sys.rs</code> and not exposed.</span>
-    <b class="part">today</b><span>the live store's 1 s sampler (#514, #515): cores busy (all, E, P from <code>host_processor_info</code>), memory free, pressure, swap, the build's cores and memory against the other apps', the disks' write rate (IOKit) and each job's, served by <code>/work/live</code>. No thermal series (no public, rootless source).</span>
+    <b class="part">today</b><span>the live store's 1 s sampler (#514, #515): cores busy (all, E, P from <code>host_processor_info</code>), memory free, pressure, swap, the build's cores and memory against the other apps', the disks' write rate (IOKit) and each job's, served by <code>/work/live</code>. The thermal state (#609, the public thermal-pressure notification) and compressed memory too.</span>
   </div>
 </section>
 
@@ -880,7 +880,7 @@ function buildVitals() {
     row("batt", "battery", "Battery charge. The light yellow background marks when the Mac was plugged in; the lead won't stay on a Mac on battery under 30 %.");
     row("nas", "NAS response", "How long this Mac waits for the NAS to answer one file lookup. Over a few hundred ms, every job that reads the NAS slows down.");
     row("idle", "someone using this Mac?", "Whether the Mac's owner is using it: in use if the keyboard or trackpad was touched in the last 5 minutes. While it is in use, the build leaves cores free for the owner (the cpu chart's dashed line); while they are away, the build may use every core.");
-    row("therm", "heat", "macOS's own thermal state (ProcessInfo.thermalState), in Apple's four levels: nominal, fair (slightly raised), serious (high; macOS reduces performance), critical. The build doesn't read it today.");
+    row("therm", "heat", "macOS's own thermal state (ProcessInfo.thermalState), in Apple's four levels: nominal, fair (slightly raised), serious (high; macOS reduces performance), critical.");
     vitalsEl.append(box);
     vitalEls.push({ m, coreEls, rows });
   });

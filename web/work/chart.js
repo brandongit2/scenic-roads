@@ -12,7 +12,7 @@ const hover = new WeakMap();
 function tokens(el) {
   const cs = getComputedStyle(el);
   const v = (k, d) => cs.getPropertyValue(k).trim() || d;
-  return { line: v("--line", "#262c33"), dim: v("--dim", "#8a939c"), text: v("--text", "#d7dce2"), panel: v("--panel", "#161a1f") };
+  return { line: v("--line", "#262c33"), dim: v("--dim", "#8a939c"), text: v("--text", "#d7dce2"), panel: v("--panel", "#161a1f"), bad: v("--bad", "#e5534b") };
 }
 
 // The canvas sized to its box at the screen's pixels: [context, width, height] in CSS pixels.
@@ -28,9 +28,9 @@ function fit(c) {
 
 /** Draws chart `o` on canvas `c` (again on each call, and as the pointer moves over it):
  * `{from, to, step, series: [{points, colour, label, fill, band, unit}], stacked, unit, least, max,
- *   refs: [{v, label}], gaps: [{from, to}], axis, colourOf(point), shade: {points, colour}}` —
+ *   refs: [{v, label}], gaps: [{from, to}], axis, colourOf(point), shade: {points, colour}, marks: [t]}` —
  * `colourOf` colours a line by its points (memory pressure by its level); `shade` shades the
- * spans a state was on (mains power, the owner present); `axis` draws the time and the scale's labels (`times: false`: the scale's alone). */
+ * spans a state was on (mains power, the owner present); `marks`, events' times (a vertical line each); `axis` draws the time and the scale's labels (`times: false`: the scale's alone). */
 export function draw(c, o) {
   opts.set(c, o);
   if (!c.dataset.hover) {
@@ -80,6 +80,11 @@ function paint(c) {
       g.fillRect(X(q[0]), top, Math.max(1, X(end) - X(q[0])), ph);
     });
     g.globalAlpha = 1;
+  }
+  // Events' marks (`marks`: what the memory guard last did).
+  if (o.marks?.length) {
+    g.fillStyle = k.bad;
+    for (const t of o.marks) if (t >= o.from && t <= o.to) g.fillRect(Math.round(X(t)), top, 1, ph);
   }
   // The scale's lines.
   if (o.axis) {

@@ -566,7 +566,7 @@ function machineCard(m, x) {
     card.append(h("div", "job", h("div", "what dim", st.held ? `This Mac is paused (from ${st.held.by}); the rest of the pool goes on` : m.sw.pause ? "Paused with the build" : why.length ? "Waiting" : "Nothing to build now")));
     for (const w of why) card.append(h("div", "sub", x.role === "lead" ? `${w.what}: ${w.why}` : w.why));
   }
-  card.append(...[x.role === "helper" ? fitText(x.worker, x.name) : null, liveBlock(x.name)].filter(Boolean));
+  card.append(...[x.role === "helper" ? fitText(x.worker, x.name) : null, liveBlock(x.name, st.memory?.last)].filter(Boolean));
   return card;
 }
 

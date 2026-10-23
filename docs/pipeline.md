@@ -220,14 +220,14 @@ same tab; an alert links to the tab that says more.
   stacked, against the Mac's cores and the cores the build may use now; P and E said), the load
   (against the cores; what waits for a core said), memory (the build's and the rest's, stacked, in
   GB, against the build's memory), its pressure (100 % less memory free, the line coloured by
-  macOS's level, 50 % and 80 % dashed), the swap (GB), the disk's free space (against the room
-  target; the jobs' reservations said), its writes, the battery (shaded while on mains, against
-  the lead's floor on battery), the NAS's answer time with the calls in flight and missed, and
+  macOS's level, 50 % and 80 % dashed; the memory compressed said; what the memory guard last did,
+  its status's `memory.last`, marked and said while in the range), the swap (GB), the disk's free space (against the room
+  target; the disk's size and the jobs' reservations said), its writes, the battery (shaded while on mains, against
+  the lead's floor on battery), the NAS's answer time with the calls in flight and missed, the
+  heat (macOS's thermal state, nominal to critical), and
   whether the owner is using the Mac (shaded while so; how long since a touch). What the agent's
   loop reads (power, idleness, the limits) is said while under 15 min old. Of the mockup, not
-  drawn: the heat (macOS gives no thermal reading without private interfaces or root), compressed
-  memory and the disk's size (not read), and setting a limit from its dashed line (the Settings
-  rows below set them). Gaps where the Mac was silent shaded, and a footer with the range, the resolution and how long
+  drawn: setting a limit from its dashed line (task #612; the Settings rows below set them). Gaps where the Mac was silent shaded, and a footer with the range, the resolution and how long
   it was silent. What the lead offered a member is one line (its steps and the pieces it can
   take), the steps on a click. Pages one card.
 - **The pool:** `pool.js`, under the machines (the Machines tab).

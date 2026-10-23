@@ -542,6 +542,58 @@ pub fn swap_used() -> Option<u64> {
     None
 }
 
+/// The memory macOS holds compressed now (bytes: `host_statistics64`'s compressor pages, what
+/// Activity Monitor calls Compressed); None where it can't be read.
+pub fn memory_compressed() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: the call fills `v`, `count` its size in ints.
+        let mut v: libc::vm_statistics64 = unsafe { std::mem::zeroed() };
+        let mut count = libc::HOST_VM_INFO64_COUNT;
+        #[allow(deprecated)]
+        let r = unsafe {
+            libc::host_statistics64(
+                libc::mach_host_self(),
+                libc::HOST_VM_INFO64,
+                (&mut v as *mut libc::vm_statistics64).cast(),
+                &mut count,
+            )
+        };
+        // SAFETY: sysconf has no failure that matters here (-1 is caught).
+        let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).ok()?;
+        (r == libc::KERN_SUCCESS).then(|| u64::from(v.compressor_page_count) * page)
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
+}
+
+/// macOS's thermal state now, ProcessInfo.thermalState's four levels: 0 nominal, 1 fair, 2
+/// serious, 3 critical. Read from the public notification its value comes from
+/// (OSThermalNotification.h's `com.apple.system.thermalpressurelevel`: nominal, moderate, heavy,
+/// trapping, sleeping; the last two critical), a shared-memory read once registered; None where it
+/// can't be read.
+pub fn thermal_state() -> Option<u32> {
+    #[cfg(target_os = "macos")]
+    {
+        unsafe extern "C" {
+            fn notify_register_check(name: *const libc::c_char, token: *mut libc::c_int) -> u32;
+            fn notify_get_state(token: libc::c_int, state: *mut u64) -> u32;
+        }
+        static TOKEN: std::sync::OnceLock<Option<libc::c_int>> = std::sync::OnceLock::new();
+        let token = (*TOKEN.get_or_init(|| {
+            let mut t = 0;
+            // SAFETY: a C string; the call fills `t`.
+            (unsafe { notify_register_check(c"com.apple.system.thermalpressurelevel".as_ptr(), &mut t) } == 0)
+                .then_some(t)
+        }))?;
+        let mut s = 0u64;
+        // SAFETY: a registered token; the call fills `s`.
+        (unsafe { notify_get_state(token, &mut s) } == 0).then(|| s.min(3) as u32)
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
+}
+
 /// The memory this process's group holds now (bytes): a job's (the agent starts each in a group of
 /// its own: scenic-build and every program it runs, a pool's workers too), its processes' physical
 /// footprints (each one's memory as Activity Monitor shows it) summed; None where it can't be read.
@@ -831,6 +883,9 @@ mod tests {
         assert!(mem >= 4 << 30, "{mem}");
         assert!(memory_pressure().is_some_and(|p| [1, 2, 4].contains(&p)), "{:?}", memory_pressure());
         assert!(swap_used().is_some());
+        // (Task #609: the compressed memory, under the Mac's; the thermal state, one of four.)
+        assert!(memory_compressed().is_some_and(|c| c < mem), "{:?}", memory_compressed());
+        assert!(thermal_state().is_some_and(|t| t <= 3), "{:?}", thermal_state());
     }
 
     #[test]

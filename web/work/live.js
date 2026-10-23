@@ -8,10 +8,10 @@
 // build's and the rest's, stacked, against its cores and the build's limit), the load, memory (the
 // build's and the rest's against the build's limit), its pressure, the swap, the disk's free space
 // (against the room target) and writes, the battery (shaded on mains), the NAS's answer time and
-// calls, and whether the owner is using it; and a footer saying the range, its resolution and how
+// calls, its heat (macOS's thermal state), and whether the owner is using it; and a footer saying the range, its resolution and how
 // long the Mac was silent in it (the charts' gaps). A measure missing is said so, never zero.
 import { draw } from "./chart.js";
-import { commonGaps, fmt, footer, latest, merge, pressureClass, pressureWord, recentMean } from "./chartmath.js";
+import { commonGaps, fmt, footer, hhmm, latest, merge, pressureClass, pressureWord, recentMean } from "./chartmath.js";
 
 const EVERY_MS = 1500;
 // How often a Mac's day of missed NAS calls is asked (nas.js's "timed out").
@@ -19,7 +19,7 @@ const DAY_EVERY_MS = 60000;
 // How old a reading of the agent's loop (power, idleness, limits) may be and still be said.
 const LOOP_FRESH_S = 900;
 const SERIES = ["nas_read_mbs", "nas_write_mbs", "net_in_mbs", "net_out_mbs", "build_cores", "others_cores", "cores_busy", "cores_busy_e", "cores_busy_p", "load1",
-  "mem_free_pct", "mem_pressure", "swap_mb", "build_mem_gb", "others_mem_gb", "disk_free_gb", "disk_write_mbs", "battery_pct", "ac", "idle_s",
+  "mem_free_pct", "mem_pressure", "mem_compressed_gb", "thermal", "swap_mb", "build_mem_gb", "others_mem_gb", "disk_free_gb", "disk_size_gb", "disk_write_mbs", "battery_pct", "ac", "idle_s",
   "build_cores_max", "build_mem_max_gb", "disk_room_gb", "disk_reserved_gb", "nas_ms", "nas_calls", "nas_missed", "jobs",
   // (The lead's alone, summed over the pool; missing from the others' answers: nas.js.)
   "pool_nas_read_mbs", "pool_nas_write_mbs", "pool_nas_files_s", "pool_nas_creates_s", "pool_nas_listed_s", "nas_disk_busy_pct"];
@@ -117,13 +117,15 @@ export async function remote(m, st, body) {
   throw last.message === "Failed to fetch" || last.message === "Load failed" ? new Error("doesn't answer") : last;
 }
 
-/** A Mac's live block (kept: moved into each new card), drawn as its answers come. */
-export function liveBlock(host) {
+/** A Mac's live block (kept: moved into each new card), drawn as its answers come; `guard`, what
+ * its memory guard last did ([unix s, words]: its status's `memory.last`), said on the pressure row. */
+export function liveBlock(host, guard) {
   let b = blocks.get(host);
   if (!b) {
     b = build();
     blocks.set(host, b);
   }
+  b.guard = guard || null;
   queueMicrotask(() => paint(host));
   return b.root;
 }
@@ -167,6 +169,7 @@ function build() {
     dw: row(body, "Disk write", "Bytes written to this Mac's disks each second: the jobs' scratch and caches, and every other app's."),
     power: row(body, "Battery", "Battery charge; shaded while on mains. Dashed: on battery, a Mac below it can't lead."),
     nas: row(body, "NAS", "How long this Mac's listing of the NAS took (measured while a build runs here); its NAS calls in flight; those past their deadline or refused (every thread busy)"),
+    heat: row(body, "Heat", "macOS's own thermal state (ProcessInfo.thermalState's four levels): nominal, fair (slightly raised), serious (macOS slows the Mac), critical (it slows it hard)."),
     use: row(body, "In use", "Whether the owner is using this Mac (a keyboard or trackpad touch lately), shaded while so. While in use, the build leaves cores free for them."),
   };
 }
@@ -265,9 +268,13 @@ function paint(host) {
   const used = (s.mem_free_pct || []).map((p) => [p[0], 100 - p[3], 100 - p[2], 100 - p[1]]);
   const level = new Map((s.mem_pressure || []).map((p) => [p[0], p[3]]));
   const colourOf = (p) => { const c = pressureClass(level.get(p[0])); return c === "bad" ? bad : c === "warn" ? warn : null; };
-  draw(b.press.c, { ...base, unit: "%", max: 100, colourOf, refs: [{ v: 50, label: "warn" }, { v: 80, label: "critical" }], series: [{ points: used, colour: ok, fill: true, label: "pressure", unit: "%" }] });
+  // (What the memory guard last did, when in the range: a mark on the chart, and its words.)
+  const g = b.guard && b.guard[0] >= from ? b.guard : null;
+  draw(b.press.c, { ...base, unit: "%", max: 100, colourOf, marks: g ? [g[0]] : [], refs: [{ v: 50, label: "warn" }, { v: 80, label: "critical" }], series: [{ points: used, colour: ok, fill: true, label: "pressure", unit: "%" }] });
   const pr = at("mem_pressure");
-  words(b.press.v, free == null ? ["not measured"] : [`${fmt(100 - free, "%")} · ${pressureWord(pr).replace("pressure ", "")}`, `memory free ${fmt(free, "%")}`], pressureClass(pr), pressureWord(pr));
+  const comp = at("mem_compressed_gb");
+  words(b.press.v, free == null ? ["not measured"] : [`${fmt(100 - free, "%")} · ${pressureWord(pr).replace("pressure ", "")}`, `memory free ${fmt(free, "%")}`,
+    comp != null ? `${fmt(comp, "GB")} compressed` : "", g ? `the guard at ${hhmm(g[0])}: ${g[1]}` : ""], pressureClass(pr), pressureWord(pr));
 
   // Swap (GB).
   const swapGb = (s.swap_mb || []).map((p) => [p[0], p[1] / 1024, p[2] / 1024, p[3] / 1024]);
@@ -276,9 +283,9 @@ function paint(host) {
   words(b.swap.v, sw == null ? ["not measured"] : [fmt(sw / 1024, "GB"), "written out to disk"]);
 
   // Disk free, against the owner's room target; the jobs' reservations as words.
-  const df = latest(s.disk_free_gb, now, 60), room = loop("disk_room_gb"), resv = loop("disk_reserved_gb");
+  const df = latest(s.disk_free_gb, now, 60), size = latest(s.disk_size_gb, now, 60), room = loop("disk_room_gb"), resv = loop("disk_reserved_gb");
   draw(b.disk.c, { ...base, unit: "GB", refs: room ? [{ v: room, label: `room target ${fmt(room, "GB")}` }] : [], series: [{ points: s.disk_free_gb, colour: acc, fill: true, label: "free", unit: "GB" }] });
-  words(b.disk.v, df == null ? ["not measured"] : [`${fmt(df, "GB")} free`, resv != null ? `${fmt(resv, "GB")} reserved by jobs` : ""], room && df != null && df < room ? "bad" : "");
+  words(b.disk.v, df == null ? ["not measured"] : [`${fmt(df, "GB")} free`, size ? `of ${fmt(size, "GB")}` : "", resv != null ? `${fmt(resv, "GB")} reserved by jobs` : ""], room && df != null && df < room ? "bad" : "");
 
   // Disk write (MB/s).
   draw(b.dw.c, { ...base, unit: "MB/s", series: [{ points: s.disk_write_mbs, colour: nw, fill: true, label: "write" }] });
@@ -287,7 +294,7 @@ function paint(host) {
 
   // Battery: its charge, shaded while on mains, against the lead's floor on battery.
   const bat = loop("battery_pct"), ac = loop("ac"), floor = mac.battery_min;
-  draw(b.power.c, { ...loopBase, unit: "%", max: 100, shade: { points: s.ac, colour: ok }, refs: floor ? [{ v: floor, label: `can't lead below ${floor} % on battery` }] : [],
+  draw(b.power.c, { ...loopBase, unit: "%", max: 100, shade: { points: s.ac, colour: ok }, refs: floor ? [{ v: floor, label: `lead floor ${floor} %` }] : [],
     series: [{ points: s.battery_pct, colour: ac === 0 && floor && bat < floor ? bad : ok, label: "battery", unit: "%" }] });
   words(b.power.v, bat == null ? [ac === 1 ? "on mains, no battery" : "not measured"] : [fmt(bat, "%"), ac === 0 ? "on battery" : "on mains"], ac === 0 && floor && bat < floor ? "warn" : "");
 
@@ -298,6 +305,12 @@ function paint(host) {
   const missed = Math.round((recentMean(s.nas_missed, now) || 0) * 60);
   words(b.nas.v, [...(ms == null ? ["not measured", "no build here now"] : [`${fmt(ms, "ms")} to answer`]), `${fmt(at("nas_calls"))} calls in flight`, missed ? `${missed} missed in the last min` : ""],
     missed || (ms != null && ms > 1000) ? "bad" : ms != null && ms > 200 ? "warn" : "");
+
+  // Heat: macOS's thermal state, 0 nominal to 3 critical.
+  const HEAT = ["nominal", "fair", "serious", "critical"];
+  const th = at("thermal");
+  draw(b.heat.c, { ...base, unit: "", max: 3, series: [{ points: s.thermal, colour: th > 1 ? bad : th ? warn : ok, label: "heat", unit: "" }], refs: [{ v: 2, label: "macOS slows the Mac" }] });
+  words(b.heat.v, th == null ? ["not measured"] : [HEAT[Math.round(th)], ["within normal limits", "slightly raised", "macOS is slowing the Mac", "macOS is slowing the Mac hard"][Math.round(th)]], th >= 2 ? "bad" : th >= 1 ? "warn" : "");
 
   // In use: the owner's last touch within `away_s`, as the agent's loop read it.
   const away = mac.away_s || 300;

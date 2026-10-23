@@ -1061,8 +1061,11 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   disks (`disk_write_mbs`, MB/s, its block storage drivers' statistics through IOKit, as `iostat`
   reads them) and by each job (`job_write_mbs.<slot>`, its processes' `ri_diskio_byteswritten`);
   a job's first second sets its baseline, and a process's last moment before it ends isn't counted.
-  The sampler's own CPU time (`sampler_cpu_ms`, its CPU time a second, the overhead's own measure; each job adds a `proc_pid_rusage` a process). No
-  thermal series: macOS gives none without private interfaces or root. Every 10 s the disk's free space (`disk_free_gb`); the power (`ac`, `battery_pct`) and
+  The sampler's own CPU time (`sampler_cpu_ms`, its CPU time a second, the overhead's own measure; each job adds a `proc_pid_rusage` a process). The
+  memory compressed (`mem_compressed_gb`, `host_statistics64`'s compressor pages) and macOS's
+  thermal state (`thermal`: 0 nominal, 1 fair, 2 serious, 3 critical, ProcessInfo.thermalState's
+  levels, read from the public `com.apple.system.thermalpressurelevel` notification's state, a
+  shared-memory read). Every 10 s the disk's free space (`disk_free_gb`) and size (`disk_size_gb`); the power (`ac`, `battery_pct`) and
   the owner's idleness (`idle_s`) as each loop reads them, and with them the build's limits (task
   #609): the cores it may use now (`build_cores_max`: all, less those kept for the owner while
   they use the Mac), the memory its jobs may hold together (`build_mem_max_gb`), the owner's room

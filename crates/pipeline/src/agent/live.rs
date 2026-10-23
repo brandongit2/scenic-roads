@@ -8,12 +8,13 @@
 //!   (`FILE`) every `SAVE_EVERY` and as the agent stops, read back as it starts. A bucket older than
 //!   its ring's span is never answered.
 //! - **Sampled** on threads of the agent's own (`spawn`), never its loop: every second the load,
-//!   memory free, its pressure, the swap and the jobs running; the cores busy (all, the efficiency
+//!   memory free, its pressure, the swap, the memory compressed (`host_statistics64`), macOS's
+//!   thermal state (crate::sys::thermal_state) and the jobs running; the cores busy (all, the efficiency
 //!   cores, the performance ones: `host_processor_info`'s ticks, the efficiency cores the first
 //!   processors, as many as the last perf level's; the performance ones every other); the build's CPU and memory (its jobs' processes' `proc_pid_rusage`)
 //!   and the rest of the Mac's (the cores busy and the memory in use, less the build's); the bytes
 //!   written to the Mac's disks (IOKit's block storage drivers' statistics) and by each job, as
-//!   rates; the sampler's own CPU time. Every 10 s the disk's free space. The battery, mains power and the
+//!   rates; the sampler's own CPU time. Every 10 s the disk's free space and size. The battery, mains power and the
 //!   owner's idleness as the agent's loop reads them (each round, ~20 s; minutes apart when a round is slow). The NAS's latency every 5 s (`NAS_EVERY`), while a build runs (`set_nas`):
 //!   a listing of the project's folder through the records' readers (crate::agent::nasread::probe;
 //!   a stat would be answered from the SMB client's cache), never two at once.
@@ -74,6 +75,9 @@ pub const LOAD: &str = "load1";
 pub const MEM_FREE: &str = "mem_free_pct";
 pub const PRESSURE: &str = "mem_pressure";
 pub const SWAP: &str = "swap_mb";
+/// The memory macOS holds compressed (GB), and its thermal state (0 nominal to 3 critical).
+pub const COMPRESSED: &str = "mem_compressed_gb";
+pub const THERMAL: &str = "thermal";
 pub const JOBS: &str = "jobs";
 /// The cores busy (cores' worth, over the second): all, the efficiency cores, the performance ones.
 pub const CORES: &str = "cores_busy";
@@ -93,6 +97,7 @@ pub const SAMPLER: &str = "sampler_cpu_ms";
 pub const NET_IN: &str = "net_in_mbs";
 pub const NET_OUT: &str = "net_out_mbs";
 pub const DISK: &str = "disk_free_gb";
+pub const DISK_SIZE: &str = "disk_size_gb";
 pub const BATTERY: &str = "battery_pct";
 pub const AC: &str = "ac";
 pub const IDLE: &str = "idle_s";
@@ -588,10 +593,13 @@ impl Rates {
         put(MEM_FREE, free.map(f64::from));
         put(PRESSURE, crate::sys::memory_pressure().map(f64::from));
         put(SWAP, crate::sys::swap_used().map(|b| (b >> 20) as f64));
+        put(COMPRESSED, crate::sys::memory_compressed().map(|b| b as f64 / GB));
+        put(THERMAL, crate::sys::thermal_state().map(f64::from));
         let jobs = guard.jobs();
         put(JOBS, Some(jobs.len() as f64));
         if t % 10 == 0 {
             put(DISK, super::room::disk_free(home).ok().map(|b| b as f64 / GB));
+            put(DISK_SIZE, store::sys::disk_size(home).ok().map(|b| b as f64 / GB));
         }
         let now = crate::sys::core_ticks();
         let busy = match (&self.cores, &now) {
