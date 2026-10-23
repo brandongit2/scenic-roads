@@ -40,6 +40,7 @@
 
 use crate::dem::declared::{self, Accepted, Cover, Data, Dataset, Plan, Source};
 use crate::dem::generic::{tile_resolution, Opts, Sampler};
+use crate::dem::proj::Projection;
 use crate::out::Out;
 use anyhow::{Context, Result};
 use det::Det;
@@ -497,13 +498,10 @@ fn at_once<T: Sync, R: Send>(items: &[T], threads: usize, f: impl Fn(&T) -> R + 
     out.into_iter().map(|m| m.into_inner().unwrap().expect("each item run")).collect()
 }
 
-/// Lon, lat in a CRS (EPSG:3979 projected; 4326 and 4269 as they are).
-fn native(atlas: &crate::dem::proj::Atlas, crs: u16, lon: f64, lat: f64) -> (f64, f64) {
-    if crs == 3979 {
-        atlas.project(lon, lat)
-    } else {
-        (lon, lat)
-    }
+/// Lon, lat in a CRS: projected by `p` (crate::dem::proj::Projection::of the CRS); geographic (4326,
+/// 4269: no projection) as they are.
+fn native(p: Option<&Projection>, lon: f64, lat: f64) -> (f64, f64) {
+    p.map_or((lon, lat), |p| p.project(lon, lat))
 }
 
 /// The side of the grid of points a base tile's reads are planned by (`grid`).
@@ -528,7 +526,6 @@ fn grid(b: [f64; 4]) -> Vec<(f64, f64)> {
 /// dropped files) whose footprints come within their bands' reach of it, open (`FETCHES` at once).
 fn plan_files(plan: &Plan, b: [f64; 4], bf: &BaseFetch) -> Result<Vec<PlanFile>> {
     use crate::dem::generic::M_PER_DEG;
-    let atlas = crate::dem::proj::Atlas::new();
     let lat = poleward(b);
     let here: Vec<&Dataset> = plan.datasets.iter().filter(|d| Cover::of(d.cover.as_deref()).meets(b)).collect();
     let reach = 4.0 * here.iter().map(|d| d.resolution).fold(0.0, f64::max);
@@ -537,8 +534,9 @@ fn plan_files(plan: &Plan, b: [f64; 4], bf: &BaseFetch) -> Result<Vec<PlanFile>>
     for d in &here {
         let Source::Geotiff { crs, read_resolution, store: false, files } = &d.source else { continue };
         // (The box in the files' CRS, grown by the bands' reach.)
-        let np: Vec<(f64, f64)> = pts.iter().map(|&(lo, la)| native(&atlas, *crs, lo, la)).collect();
-        let grow = if *crs == 3979 {
+        let p = Projection::of(*crs);
+        let np: Vec<(f64, f64)> = pts.iter().map(|&(lo, la)| native(p.as_ref(), lo, la)).collect();
+        let grow = if p.is_some() {
             (reach, reach)
         } else {
             (reach / (M_PER_DEG * lat.to_radians().cos()), reach / M_PER_DEG)
@@ -569,7 +567,6 @@ fn plan_files(plan: &Plan, b: [f64; 4], bf: &BaseFetch) -> Result<Vec<PlanFile>>
 /// bands' reach past it, by a grid of its points: `grid`), in the groups' order, each once, with
 /// the first and last group reading it.
 fn plan_items(files: &[PlanFile], groups: &[Vec<(u8, u32, u32)>]) -> Result<Vec<Item>> {
-    let atlas = crate::dem::proj::Atlas::new();
     let mut at: HashMap<(usize, u32, u32), usize> = HashMap::new();
     let mut items: Vec<Item> = Vec::new();
     for (g, tiles) in groups.iter().enumerate() {
@@ -579,9 +576,10 @@ fn plan_items(files: &[PlanFile], groups: &[Vec<(u8, u32, u32)>]) -> Result<Vec<
             let pts = grid(tb);
             let mut by_crs: HashMap<u16, Vec<(f64, f64)>> = HashMap::new();
             for (k, f) in files.iter().enumerate() {
-                let np = by_crs
-                    .entry(f.crs)
-                    .or_insert_with(|| pts.iter().map(|&(lo, la)| native(&atlas, f.crs, lo, la)).collect());
+                let np = by_crs.entry(f.crs).or_insert_with(|| {
+                    let p = Projection::of(f.crs);
+                    pts.iter().map(|&(lo, la)| native(p.as_ref(), lo, la)).collect()
+                });
                 let gt = f.tiff.transform(f.level)?;
                 let img = f.tiff.level(f.level)?;
                 let px: Vec<(f64, f64)> =
@@ -1331,14 +1329,37 @@ mod tests {
 
     #[test]
     fn a_targets_blocks_are_read_once_ahead_of_its_sampling_and_the_heights_are_the_same() {
-        use crate::dem::generic::M_PER_DEG;
         const PX: f64 = 1.0 / 7200.0;
-        // A fine raster over base tile 12/2160/1400 and past it, with a hole of no data; a coarse
-        // one beneath (the blends read both).
+        // A fine raster over base tile 12/2160/1400 and past it, in degrees.
         let t = (12u8, 2160u32, 1400u32);
         let tb = crate::stage::tile_box_grown(t.0, t.1, t.2, 0.0);
-        let (w, h) = (1024usize, 1024usize);
         let gt = [tb[0] - 0.01, PX, 0.0, tb[3] + 0.01, 0.0, -PX];
+        read_ahead_samples_as_the_sampler(t, 4326, gt, PX * crate::dem::generic::M_PER_DEG);
+    }
+
+    #[test]
+    fn a_utm_datasets_blocks_are_planned_read_ahead_and_sampled_where_they_lie() {
+        // The same in NAD83 / UTM zone 18N (USGS's 1 m tiles' CRS), 10 m pixels, over base tile
+        // 12/1194/1474 (75° W, 44.6° N) and past it: a block planned in the wrong place would be
+        // read during the sampling, a point projected wrongly would sample other heights.
+        let t = (12u8, 1194u32, 1474u32);
+        let tb = crate::stage::tile_box_grown(t.0, t.1, t.2, 0.0);
+        let utm = crate::dem::proj::Projection::of(26918).unwrap();
+        let (cx, cy) = utm.project((tb[0] + tb[2]) / 2.0, (tb[1] + tb[3]) / 2.0);
+        let gt = [(cx - 5120.0).floor(), 10.0, 0.0, (cy + 5120.0).floor(), 0.0, -10.0];
+        read_ahead_samples_as_the_sampler(t, 26918, gt, 10.0);
+    }
+
+    /// Base tile `t`'s z13 points sampled after its target's blocks were read ahead (`plan_files`,
+    /// `plan_items`, `read_ahead`) give the plain sampler's heights bit for bit, every block read
+    /// once and none during the sampling: a fine raster (CRS `crs`, geotransform `gt`, `res` m
+    /// pixels, 1024 px a side) with a hole of no data, over a coarse one in degrees (the blends
+    /// read both).
+    fn read_ahead_samples_as_the_sampler(t: (u8, u32, u32), crs: u16, gt: [f64; 6], res: f64) {
+        use crate::dem::generic::M_PER_DEG;
+        const PX: f64 = 1.0 / 7200.0;
+        let tb = crate::stage::tile_box_grown(t.0, t.1, t.2, 0.0);
+        let (w, h) = (1024usize, 1024usize);
         let nd = -9999.0f32;
         let mut data: Vec<f32> =
             (0..h).flat_map(|y| (0..w).map(move |x| 100.0 + 0.013 * x as f32 + 0.021 * y as f32)).collect();
@@ -1347,28 +1368,28 @@ mod tests {
                 data[y * w + x] = nd;
             }
         }
-        let tif = |w: usize, h: usize, d: &[f32], block: u32, gt: [f64; 6]| {
-            crate::geotiff::write_f32(w as u32, h as u32, d, block, gt, 4326, Some(nd as f64)).unwrap()
+        let tif = |w: usize, h: usize, d: &[f32], block: u32, gt: [f64; 6], crs: u16| {
+            crate::geotiff::write_f32(w as u32, h as u32, d, block, gt, crs, Some(nd as f64)).unwrap()
         };
         let cgt = [tb[0] - 0.05, 3.0 * PX, 0.0, tb[3] + 0.05, 0.0, -3.0 * PX];
         let mut f = crate::fetch::MapFetch::default();
-        f.0.insert("https://a.org/fine.tif".into(), Some(tif(w, h, &data, 256, gt)));
-        f.0.insert("https://b.org/coarse.tif".into(), Some(tif(1024, 1024, &vec![50.0f32; 1 << 20], 512, cgt)));
-        let geo = |id: &str, code: u8, res: f64, url: &str| Dataset {
+        f.0.insert("https://a.org/fine.tif".into(), Some(tif(w, h, &data, 256, gt, crs)));
+        f.0.insert("https://b.org/coarse.tif".into(), Some(tif(1024, 1024, &vec![50.0f32; 1 << 20], 512, cgt, 4326)));
+        let geo = |id: &str, code: u8, res: f64, crs: u16, url: &str| Dataset {
             convert: None,
             id: id.into(),
             code,
             resolution: res,
             cover: None,
-            source: Source::Geotiff { crs: 4326, read_resolution: None, store: false, files: vec![(url.into(), None)] },
+            source: Source::Geotiff { crs, read_resolution: None, store: false, files: vec![(url.into(), None)] },
         };
         let plan = Plan {
             fmt: 1,
             version: "t".into(),
             tag: "1".into(),
             datasets: vec![
-                geo("fine", 1, PX * M_PER_DEG, "https://a.org/fine.tif"),
-                geo("coarse", 2, 3.0 * PX * M_PER_DEG, "https://b.org/coarse.tif"),
+                geo("fine", 1, res, crs, "https://a.org/fine.tif"),
+                geo("coarse", 2, 3.0 * PX * M_PER_DEG, 4326, "https://b.org/coarse.tif"),
             ],
         };
         let ts: Vec<(u32, u32)> = (0..2).flat_map(|j| (0..2).map(move |i| (t.1 * 2 + i, t.2 * 2 + j))).collect();

@@ -30,7 +30,7 @@
 //!   The files' decoded blocks share one cache (`CACHE_BYTES`), whatever their number.
 
 use super::declared::{Cover, Dataset, Plan, Source};
-use super::proj::{mercator_tile, Atlas};
+use super::proj::{mercator_tile, projected, Projection};
 use super::sample::{bilinear, blocks_read, sample_raster_noting, window_clean, within, Clean, Seen, NODATA_BELOW};
 use crate::fetch::Fetch;
 use crate::geotiff::{BlockCache, Tiff};
@@ -152,7 +152,7 @@ static FILE_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::ne
 
 /// Pixel size in metres of a geotransform in CRS `crs`, at latitude `lat`: (x, y).
 pub(crate) fn pixel_m(crs: u16, gt: &[f64; 6], lat: f64) -> (f64, f64) {
-    if crs == 3979 {
+    if projected(crs) {
         (gt[1].abs(), gt[5].abs())
     } else {
         (gt[1].abs() * M_PER_DEG * lat.to_radians().cos(), gt[5].abs() * M_PER_DEG)
@@ -162,7 +162,7 @@ pub(crate) fn pixel_m(crs: u16, gt: &[f64; 6], lat: f64) -> (f64, f64) {
 /// A file's resolution in metres (its pixels' height), at level `level`.
 pub fn resolution(t: &Tiff, crs: u16, level: usize) -> Result<f64> {
     let gt = t.transform(level)?;
-    Ok(if crs == 3979 { gt[1].abs().max(gt[5].abs()) } else { gt[5].abs() * M_PER_DEG })
+    Ok(if projected(crs) { gt[1].abs().max(gt[5].abs()) } else { gt[5].abs() * M_PER_DEG })
 }
 
 /// The level of `t` read for `read_resolution` (metres): the image whose resolution is nearest it
@@ -1073,7 +1073,7 @@ impl<'a> Set<'a> {
                 memo: memo.clone(),
             }),
             Source::Geotiff { crs, read_resolution, store, files } => {
-                ensure!(matches!(crs, 4326 | 4269 | 3979), "{}: EPSG:{crs} isn't a CRS the app knows", ds.id);
+                ensure!(super::declared::known_crs(*crs), "{}: EPSG:{crs} isn't a CRS the app knows", ds.id);
                 let store = match (*store, &o.store) {
                     (false, _) => None,
                     (true, Some(s)) => Some(s.join(&ds.id)),
@@ -1102,8 +1102,8 @@ impl<'a> Set<'a> {
     fn reader<'s>(&'s self, lon: &[f64], lat: &[f64], cover: &Cover) -> Reader<'s, 'a> {
         match self {
             Set::Tiles(t) => Reader::Tiles(t),
-            Set::Geo(g) if g.crs == 3979 => {
-                let atlas = Atlas::new();
+            Set::Geo(g) if projected(g.crs) => {
+                let atlas = Projection::of(g.crs).expect("a projected CRS");
                 let xy = within(g.o.pool, || {
                     lon.par_iter()
                         .zip(lat.par_iter())
