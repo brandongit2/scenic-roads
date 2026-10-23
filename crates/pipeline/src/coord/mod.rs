@@ -1200,7 +1200,7 @@ impl Coordinator {
         };
         let urls = http::serve(listener, port, ctx, stopped.clone(), wake.clone(), closed_tx)?;
         if !viewer {
-            nas_prober(shared.clone(), root.clone(), stopped.clone(), me.to_string());
+            nas_prober(shared.clone(), root.clone(), stopped.clone(), me.to_string(), dir.join(crate::budget::nas::PROBES_FILE));
         }
         let c = Coordinator {
             shared,
@@ -2341,16 +2341,18 @@ fn app_when(v: &str) -> String {
 /// is probed every `EVERY_S` (in a folder of this process's, removed after) and the limits set to
 /// the best of the last day's probes, held shut while the NAS's own disk load read each round is
 /// over the owner's target (nas::Loop); off, the limits are let go. A probe that fails leaves them.
+/// The probes are kept at `kept` and read again on start (the day's best outlive a restart).
 #[cfg(not(target_os = "wasi"))]
 fn nas_prober(
     shared: Arc<Mutex<Shared>>,
     root: Arc<Mutex<Option<PathBuf>>>,
     stopped: Arc<std::sync::atomic::AtomicBool>,
     me: String,
+    kept: PathBuf,
 ) {
     use crate::budget::nas;
     let run = move || {
-        let mut probes = nas::Probes::default();
+        let mut probes = nas::Probes::load(&kept, unix_now());
         let mut nas_loop = nas::Loop::default();
         // (Its config file removed when this thread ends: the lead stood down or stopped.)
         let mut session: Option<crate::budget::snmp::Session> = None;
@@ -2385,6 +2387,9 @@ fn nas_prober(
                                         p.creates_s
                                     );
                                     probes.add(p);
+                                    if let Err(e) = probes.save(&kept) {
+                                        eprintln!("coordinator: keeping the NAS probes: {e:#}");
+                                    }
                                     failed = Some(false);
                                 }
                                 Err(e) => {
@@ -6539,6 +6544,65 @@ mod tests {
         w2.give_back(lease_of("m2"), "done").unwrap();
         assert!(one("m2").is_empty(), "room held for the lead's aged rail");
         assert!(c.ask_own(&lead, &BTreeSet::new()).is_some(), "the lead's aged rail goes");
+    }
+
+    /// Task #603 (23 Oct, the lead: pack 6/20/23 weighing 946 aged beside the M4's terrain of 103,
+    /// 6,427 light targets held back 41-62 min, the pack never granted): the aged heavy target holds
+    /// room and is granted beside the member's light job (one aged job past the whole), to the
+    /// lead's ask and a member's alike; the light ones wait while it's past the whole. (A unit
+    /// target stands in for the pack: a halo step weighs by what it wrote.)
+    #[test]
+    fn an_aged_heavy_target_beside_a_light_job_goes() {
+        for asker in ["m1", "m4"] {
+            let (_d, c, w, clock) = every((0, 0));
+            let limits =
+                crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
+            {
+                let mut s = c.shared.lock().unwrap();
+                (s.nas, s.nas_own) = (Some(limits), Some(limits));
+            }
+            let cost = |step: &str, bytes: u64| Cost {
+                peak_mb: 500,
+                secs: 600,
+                worker: None,
+                v: cost_version(step),
+                sizes: [("threads".to_string(), 1), ("bytes".to_string(), bytes)].into(),
+                ..Default::default()
+            };
+            packable(&c, "terrain", 1, Some(1));
+            // (10.28 MB/s: 103 of the NAS.)
+            c.add_costs_by(&[(cost_key("terrain", "6/1/1"), cost("terrain", 6_170_000_000))], "m1");
+            let mut offers = c.shared.lock().unwrap().offers.clone();
+            packable(&c, "unit", 1, Some(1));
+            // (94.55 MB/s: 946.)
+            c.add_costs_by(&[(cost_key("unit", "6/1/1"), cost("unit", 56_730_000_000))], "m1");
+            offers.extend(c.shared.lock().unwrap().offers.clone());
+            packable(&c, "slope", 40, Some(1));
+            for i in 1..=40 {
+                // (5 MB/s: 50 each.)
+                c.add_costs_by(&[(cost_key("slope", &format!("6/1/{i}")), cost("slope", 3_000_000_000))], "m1");
+            }
+            offers.extend(c.shared.lock().unwrap().offers.clone());
+            c.offer("p", offers);
+            let w2 = client::Client::at(w.urls(), c.contact.token.clone(), "m2");
+            let by = client::Client::at(w.urls(), c.contact.token.clone(), asker);
+            let ask = |n: &str, step: &str| Ask { want: 1, ..every_ask(n, step, 64_000, 100_000) };
+            assert_eq!(granted(&w2, &ask("m2", "terrain")), ["6/1/1"]);
+            let terrain = {
+                let s = c.shared.lock().unwrap();
+                s.leases.all(s.now()).iter().map(|l| l.id).max().unwrap()
+            };
+            assert!(granted(&by, &ask(asker, "unit")).is_empty(), "{asker}: 103 + 946, past the whole");
+            for _ in 0..19 {
+                clock.advance(crate::budget::nas::OWN_AGE / 20);
+                assert!(w2.beat(terrain, None).unwrap());
+                assert!(granted(&by, &ask(asker, "unit")).is_empty(), "{asker}: not aged yet");
+            }
+            clock.advance(crate::budget::nas::OWN_AGE / 20);
+            assert!(granted(&w2, &ask("m2", "slope")).is_empty(), "{asker}: room held for the aged unit");
+            assert_eq!(granted(&by, &ask(asker, "unit")), ["6/1/1"], "{asker}: the aged unit goes beside the terrain");
+            assert!(granted(&w2, &ask("m2", "slope")).is_empty(), "{asker}: 1049 leased, past the whole");
+        }
     }
 
     /// Task #451 (20 Oct: GC beside two depth-lo jobs, the NAS at 34 % IO wait, all three stalled):

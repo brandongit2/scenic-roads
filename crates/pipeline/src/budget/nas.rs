@@ -18,7 +18,11 @@
 //!   the larger back past the cache, lists a kept folder, stats its files, deletes the small ones
 //!   one by one, and removes the rest. The coordinator probes every `EVERY_S`, whatever the switch
 //!   says, and takes the best of the last `KEEP_S`'s probes (`Probes`): a probe run while the build
-//!   loads the NAS measures what's left, so the best is the nearest to the whole.
+//!   loads the NAS measures what's left, so the best is the nearest to the whole. Probes taken
+//!   under load are kept too (they only ever read low, and the best of the day passes over them;
+//!   dropped, a lead started on a busy NAS would have no limits at all). The probes are kept in
+//!   the coordinator's folder (`PROBES_FILE`) and read again on start: a restart keeps the day's
+//!   best (task #603: a restart under load had cut the limits from 86 MB/s to 66.5).
 //! - **The gate on the NAS's own load** (`Loop`, task #534): every 10 s the coordinator reads the
 //!   NAS's own disks' busy shares (crate::budget::snmp); while the busiest, smoothed, is over the
 //!   owner's target (`Target`, `scenic nas-target`, by default `DEFAULT_TARGET_PCT`), whatever
@@ -267,17 +271,19 @@ impl Limits {
         w == 0 || members == 0 || running.saturating_add(w) <= WHOLE
     }
 
-    /// `fits` for a member's job, which would starve when it weighs the whole beside two members'
-    /// jobs or more: it goes too once it weighs the whole, has waited `OWN_AGE` for the budget
-    /// alone (`waited`), and no leased job weighs the whole (`heaviest`, the most one weighs).
+    /// `fits` for a member's job, which would starve beside the members' other jobs: once it has
+    /// waited `OWN_AGE` for the budget alone (`waited`) it goes too while no leased job weighs the
+    /// whole (`heaviest`, the most one weighs), if it weighs the whole itself or the leased jobs
+    /// are within the whole (one aged job past the whole at a time, never piling up; task #603: a
+    /// 946 one aged beside a 103 one could never go, and the room held for it stopped the pool).
     pub fn fits_job(members: u32, running: u32, heaviest: u32, w: u32, waited: bool) -> bool {
-        Self::fits(members, running, w) || (w >= WHOLE && waited && heaviest < WHOLE)
+        Self::fits(members, running, w) || (waited && heaviest < WHOLE && (w >= WHOLE || running <= WHOLE))
     }
 
     /// Whether a job of the lead's own of weight `w` may start beside leased jobs weighing
     /// `running` together: within the whole, or beside nothing that weighs anything (a job past
     /// the whole alone).
-    pub fn fits_own(running: u32, w: u32) -> bool {
+    fn fits_own(running: u32, w: u32) -> bool {
         w == 0 || running == 0 || running.saturating_add(w) <= WHOLE
     }
 
@@ -316,14 +322,30 @@ impl Limits {
 /// leased jobs none of which weighs the whole (`Limits::fits_own_job`).
 pub const OWN_AGE: std::time::Duration = std::time::Duration::from_secs(600);
 
+/// Where the coordinator keeps its probes, in its folder (`Probes::load`, `Probes::save`).
+pub const PROBES_FILE: &str = "nas-probes.json";
+
 /// The probes kept (the last `KEEP_S`'s), and the limits they give: the best of each.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Probes(pub Vec<Probe>);
 
 impl Probes {
     pub fn add(&mut self, p: Probe) {
         self.0.retain(|q| q.at + KEEP_S > p.at);
         self.0.push(p);
+    }
+
+    /// The probes kept at `path` within `KEEP_S` of `now` (unix s); none when missing or unreadable.
+    pub fn load(path: &Path, now: u64) -> Probes {
+        let mut p: Probes =
+            std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        p.0.retain(|q| q.at + KEEP_S > now);
+        p
+    }
+
+    /// Keeps the probes at `path`, whole or not at all.
+    pub fn save(&self, path: &Path) -> anyhow::Result<()> {
+        crate::whole::write(path, &serde_json::to_vec(self)?)
     }
 
     /// The limits (None: nothing probed yet).
@@ -645,6 +667,23 @@ mod tests {
         );
         p.add(Probe { at: 1000 + KEEP_S, bytes_s: 10e6, creates_s: 5.0, ..Default::default() });
         assert_eq!(p.limits(None).unwrap().bytes_s, 50e6, "a day old: let go");
+    }
+
+    /// Task #603: the probes survive a restart: kept, read again within the day, the day-old let go.
+    #[test]
+    fn the_probes_survive_a_restart() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join(PROBES_FILE);
+        assert_eq!(Probes::load(&f, 5000), Probes::default(), "none kept: none");
+        let mut p = Probes::default();
+        p.add(Probe { at: 1000, bytes_s: 86e6, creates_s: 30.0, ..Default::default() });
+        p.add(Probe { at: 4000, bytes_s: 66.5e6, creates_s: 42.3, ..Default::default() });
+        p.save(&f).unwrap();
+        assert_eq!(Probes::load(&f, 5000), p);
+        assert_eq!(Probes::load(&f, 5000).limits(None).unwrap().bytes_s, 86e6, "the day's best kept");
+        assert_eq!(Probes::load(&f, 1000 + KEEP_S).0, [p.0[1]], "a day old: let go");
+        std::fs::write(&f, "not json").unwrap();
+        assert_eq!(Probes::load(&f, 5000), Probes::default(), "unreadable: none");
     }
 
     /// A probe measures and leaves nothing behind.

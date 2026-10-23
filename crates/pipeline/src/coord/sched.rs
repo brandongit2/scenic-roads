@@ -371,7 +371,9 @@ impl Sched {
     /// The room the NAS budget holds for a target aged in it (task #444): of the targets held back
     /// for the budget alone for `OWN_AGE` or more and passed over in the last two minutes, the one
     /// first held back: (step, target, its weight). While it's held, no other job weighing anything
-    /// starts unless it leaves that room (`nas_reserve_ok`): the leased jobs end, and it fits.
+    /// starts unless it leaves that room (`nas_reserve_ok`): the leased jobs end, and it fits. An
+    /// aged target always has a way in once no leased job weighs the whole (`fits_job`,
+    /// `fits_own_job`), so the room is never held for one no grant would let start (task #603).
     pub(super) fn nas_reserved(&self, nw: &NasWeigher, now: Instant) -> Option<(String, String, u32)> {
         // (One lock at a time: never one inside the other.)
         let kept = self.nas_reserved_at.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -1025,15 +1027,17 @@ impl Sched {
                 if !Self::nas_reserve_ok(self.nas_reserved(nw, now).as_ref(), &o.step, &[t.to_string()], *running, w) {
                     return false;
                 }
+                // (One aged `OWN_AGE` goes beside jobs none of which weighs the whole, the lead's as
+                // its own planned jobs do (`own_nas_fits`): the room held for it is always let go.)
+                let waited = {
+                    let g = self.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
+                    g.get(&(o.step.clone(), t.to_string()))
+                        .is_some_and(|e| now.duration_since(e.0) >= crate::budget::nas::OWN_AGE)
+                };
                 if lead {
-                    crate::budget::nas::Limits::fits_own(*running, w)
+                    let own = running.saturating_sub(*members);
+                    crate::budget::nas::Limits::fits_own_job(*running, own, most[0], w, waited)
                 } else {
-                    // (A whole one aged `OWN_AGE` goes beside jobs none of which weighs the whole.)
-                    let waited = {
-                        let g = self.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
-                        g.get(&(o.step.clone(), t.to_string()))
-                            .is_some_and(|e| now.duration_since(e.0) >= crate::budget::nas::OWN_AGE)
-                    };
                     crate::budget::nas::Limits::fits_job(*members, *running, most[0], w, waited)
                 }
             })
