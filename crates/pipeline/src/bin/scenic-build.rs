@@ -5183,7 +5183,9 @@ fn depth_step(out: &mut Out, args: &[String], step: &str) -> Result<()> {
 /// terrain-fine <8/x/y …>: the terrain finer than its base under each z8 tile (its fine packs,
 /// pipeline::terrain_fine), from its z6 tile's hi pack as stored (its ring from its neighbours'
 /// too); a z8 tile with nothing fine (no fine dataset there, or no hi pack) has its fine packs
-/// dropped.
+/// dropped, where a fine dataset's coverage meets it; one no fine dataset reaches
+/// (`terrain_fine::in_reach`: a job planned before a dataset's `regions` changed) is passed over,
+/// its packs left as they are.
 fn terrain_fine_step(out: &mut Out, args: &[String]) -> Result<()> {
     use pipeline::terrain_fine as tf;
     let ts: Vec<TileId> = positional(args)
@@ -5201,6 +5203,10 @@ fn terrain_fine_step(out: &mut Out, args: &[String]) -> Result<()> {
     for (k, &t) in ts.iter().enumerate() {
         pipeline::control::safe_point(tf::STEP);
         pipeline::agent::jobs::part(k, &names);
+        if !tf::in_reach(fine.as_ref().map_or(&[][..], |f| &f.sets), t.x, t.y) {
+            eprintln!("terrain-fine {}: no fine dataset reaches it; passed over, its packs kept", t.slash());
+            continue;
+        }
         let c = cost_start(tf::STEP, &t.slash());
         // (Its z6 tile's hi pack, and its neighbours' its ring crosses into.)
         let his: Vec<Option<PathBuf>> = tf::ring_packs((t.x, t.y))

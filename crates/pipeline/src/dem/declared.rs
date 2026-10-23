@@ -48,7 +48,20 @@ pub struct Declaration {
     /// Read by the 3D terrain (crate::terrain_sources), never by the roads' elevations.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub terrain: bool,
+    /// The map regions it's used in at all (by id, crate::inputs::regions), by the roads and the
+    /// terrain alike; None: wherever it has data. Its coverage is cut to them as it's read
+    /// (`scope`); not in its `keyed` digest (`keyed_part`), so the z6 tiles in its regions keep
+    /// their keys and only those whose datasets change are built again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regions: Option<Vec<String>>,
     pub data: Data,
+}
+
+impl Declaration {
+    /// The declaration as its `keyed` digest names it: its `regions` left out.
+    pub fn keyed_part(&self) -> Declaration {
+        Declaration { regions: None, ..self.clone() }
+    }
 }
 
 /// Where a dataset's data is.
@@ -104,7 +117,7 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
     ];
     for k in v.keys() {
         if !DESCRIPTION.contains(&k.as_str())
-            && !["surface", "heights", "rank", "code", "terrain", "data"].contains(&k.as_str())
+            && !["surface", "heights", "rank", "code", "terrain", "regions", "data"].contains(&k.as_str())
         {
             why.push(format!("`{k}` isn't a field of an elevation declaration (docs/inputs.md §6.8)"));
         }
@@ -117,6 +130,21 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
             false
         }),
     };
+    let regions = match v.get("regions") {
+        None => None,
+        Some(x) => {
+            match x.as_array().map(|a| a.iter().map(|e| e.as_str().map(str::to_string)).collect::<Option<Vec<_>>>()) {
+                Some(Some(r)) if !r.is_empty() && r.iter().all(|r| valid_id(r)) => Some(r),
+                _ => {
+                    why.push("`regions` isn't a list of region ids".into());
+                    None
+                }
+            }
+        }
+    };
+    if terrain && regions.is_some() {
+        why.push("`regions` is for the roads' datasets; the base terrain's (`terrain = true`) is everywhere".into());
+    }
     let surface = s("surface").unwrap_or_default();
     if surface != "ground" && surface != "surface" {
         why.push(format!("`surface` is \"{surface}\": ground (bare earth) or surface (with trees and buildings)"));
@@ -256,13 +284,13 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
     if !why.is_empty() {
         return Err(why);
     }
-    Ok(Declaration { surface, heights, rank, code, terrain, data })
+    Ok(Declaration { surface, heights, rank, code, terrain, regions, data })
 }
 
 // ---- What's measured from the data ---------------------------------------------------------------
 
 /// What the input check reads from a dataset's data (`facts.measured`).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Measured {
     /// The GeoTIFFs' CRS (EPSG); None for a tile pyramid (Web Mercator).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -278,6 +306,9 @@ pub struct Measured {
     /// Where it has data: 1° cells merged into boxes (w, s, e, n); None: the world.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover: Option<Vec<[f64; 4]>>,
+    /// Its coverage before its `regions` cut it (the world: one box of it); None: not cut.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uncut: Option<Vec<[f64; 4]>>,
 }
 
 /// 1° cells (west, south corners) merged into boxes: runs along each row, then rows of the same runs
@@ -682,14 +713,80 @@ pub fn line(d: &Accepted) -> String {
 
 /// The digest of the datasets' `keyed` digests (and conversions), in their order.
 pub fn tag(ds: &[Accepted]) -> String {
-    let lines: Vec<String> = ds.iter().map(line).collect();
+    // (With each one's regions: a sample kept from before they were declared isn't valid.)
+    let lines: Vec<String> = ds
+        .iter()
+        .map(|d| match &d.declaration.regions {
+            None => line(d),
+            Some(r) => format!("{} in {}", line(d), r.join(",")),
+        })
+        .collect();
     store::naming::hash16(lines.join("\n").as_bytes())
 }
+
+/// Coverage `cover` (1° cells merged into boxes; None: the world) cut to the cells meeting one of
+/// map regions `regions` in coverage `cov` (its shapes' sources are "<region id>: <from>",
+/// crate::coverage::Coverage::accepted); the ids no region of `cov` has, beside.
+pub fn scope_cover(
+    cover: Option<&[[f64; 4]]>,
+    regions: &[String],
+    cov: &crate::coverage::Coverage,
+) -> (Vec<[f64; 4]>, Vec<String>) {
+    let had = Cover::of(cover);
+    let id_of =
+        |s: &crate::coverage::Shape| s.source.split_once(": ").map_or(s.source.clone(), |(id, _)| id.to_string());
+    let missing = regions.iter().filter(|g| !cov.shapes.iter().any(|s| id_of(s) == **g)).cloned().collect();
+    let mut cells = BTreeSet::new();
+    for s in cov.shapes.iter().filter(|s| regions.contains(&id_of(s))) {
+        let f = |v: i32| (v as f64 * 1e-7).floor() as i32;
+        for x in f(s.bbox[0])..=f(s.bbox[2]) {
+            for y in f(s.bbox[1])..=f(s.bbox[3]) {
+                let e7 = |v: i32| (v as i64 * 10_000_000).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+                let r = [e7(x), e7(y), e7(x + 1), e7(y + 1)];
+                // (The cell alone, not its neighbours: Cover::meets takes a box's edges in.)
+                let inner = [x as f64 + 1e-9, y as f64 + 1e-9, (x + 1) as f64 - 1e-9, (y + 1) as f64 - 1e-9];
+                if had.meets(inner) && s.meets_rect(r) {
+                    cells.insert((x, y));
+                }
+            }
+        }
+    }
+    (cells_to_boxes(&cells), missing)
+}
+
+/// The world as one box (a `Measured::uncut` of a dataset whose coverage was the world).
+pub const WORLD: [f64; 4] = [-180.0, -90.0, 180.0, 90.0];
 
 /// The datasets whose coverage meets box `b` (w, s, e, n, degrees), as a key names them: `id keyed`
 /// each (and its conversion's digest, where its heights are converted), in their order.
 pub fn meeting(ds: &[(Accepted, Cover)], b: [f64; 4]) -> Vec<String> {
-    ds.iter().filter(|(_, c)| c.meets(b)).map(|(d, _)| line(d)).collect()
+    ds.iter()
+        .filter(|(_, c)| c.meets(b))
+        .map(|(d, c)| match cut_note(&d.measured, c, b) {
+            None => line(d),
+            Some(n) => format!("{} {n}", line(d)),
+        })
+        .collect()
+}
+
+/// Where a dataset's `regions` cut its coverage (`measured`, `cover` its cells) inside box `b`
+/// (grown by a cell, as `Cover::meets` reads it), what a key adds to its line: the cells it keeps
+/// there; None where nothing was cut there, so a key there is as before its regions.
+pub fn cut_note(measured: &Measured, cover: &Cover, b: [f64; 4]) -> Option<String> {
+    let uncut = Cover::of(Some(measured.uncut.as_deref()?));
+    let (x0, x1, y0, y1) = (b[0].floor() as i32 - 1, b[2].floor() as i32, b[1].floor() as i32 - 1, b[3].floor() as i32);
+    let mut kept = Vec::new();
+    let mut cut = false;
+    for x in x0..=x1 {
+        for y in y0..=y1 {
+            match (uncut.cells.contains(&(x, y)), cover.cells.contains(&(x, y))) {
+                (_, true) => kept.push(format!("{x},{y}")),
+                (true, false) => cut = true,
+                (false, false) => {}
+            }
+        }
+    }
+    cut.then(|| format!("cut {}", store::naming::hash16(kept.join(" ").as_bytes())))
 }
 
 /// A box (w, s, e, n, degrees) in projected CRS `crs`: its edges sampled and projected, grown by
@@ -825,6 +922,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_coverage_is_cut_to_the_cells_meeting_its_regions() {
+        let d = tempfile::tempdir().unwrap();
+        let r = |id: &str, place: &str| crate::agent::recipes::Recipe {
+            id: id.into(),
+            name: id.into(),
+            outline: vec![format!("place:{place}")],
+        };
+        let cov = crate::coverage::Coverage::fixture(&[r("a", "10.5,45.5,20"), r("b", "20.5,45.5,20")], None, d.path())
+            .unwrap();
+        // (A circle of 20 km inside its cell: that cell alone, of the data's.)
+        let had = vec![[10.0, 45.0, 12.0, 46.0], [20.0, 45.0, 21.0, 46.0]];
+        let (cut, missing) = scope_cover(Some(&had), &["a".into(), "c".into()], &cov);
+        assert_eq!((cut, missing), (vec![[10.0, 45.0, 11.0, 46.0]], vec!["c".to_string()]));
+        // (The world's data: the regions' cells.)
+        assert_eq!(scope_cover(None, &["b".into()], &cov).0, vec![[20.0, 45.0, 21.0, 46.0]]);
+        // A key's line notes the cut only where it cut something near the box.
+        let m =
+            Measured { cover: Some(vec![[10.0, 45.0, 11.0, 46.0]]), uncut: Some(had.clone()), ..Default::default() };
+        let c = Cover::of(m.cover.as_deref());
+        assert!(cut_note(&m, &c, [11.2, 45.2, 11.3, 45.3]).is_some(), "11,45 was cut");
+        assert_eq!(cut_note(&m, &c, [10.2, 45.2, 10.3, 45.3]), None, "10,45 and its neighbours west and south kept");
+        assert_eq!(cut_note(&m, &c, [30.2, 45.2, 30.3, 45.3]), None);
+        assert_eq!(cut_note(&Measured { uncut: None, ..m.clone() }, &c, [10.2, 45.2, 10.3, 45.3]), None);
+        // (Declared as region ids; not in the digest the keys name; not for the base terrain.)
+        let d = |extra: &str| {
+            parse(
+                format!("surface = \"ground\"\nheights = \"EGM2008\"\ncode = 1\n{extra}\n[data]\nformat = \"geotiff\"\nurl = \"https://e.org/a.tif\"\n")
+                    .as_bytes(),
+            )
+        };
+        let scoped = d("regions = [\"ontario\", \"new-york\"]").unwrap();
+        assert_eq!(scoped.regions, Some(vec!["ontario".to_string(), "new-york".to_string()]));
+        assert_eq!(scoped.keyed_part(), d("").unwrap());
+        assert!(d("regions = [\"New York\"]").is_err() && d("regions = []").is_err());
+    }
+
+    #[test]
     fn declarations_parse_and_refuse() {
         let ok = br#"
 name = "x"
@@ -892,7 +1026,7 @@ encoding = "terrarium"
             id: id.into(),
             path: format!("{id}.toml"),
             declaration: decl(heights),
-            measured: Measured { crs: Some(4326), resolution: 10.0, full: None, cover: None },
+            measured: Measured { crs: Some(4326), resolution: 10.0, full: None, cover: None, uncut: None },
             keyed: "k".into(),
             convert: None,
         };

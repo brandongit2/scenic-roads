@@ -1494,6 +1494,10 @@ pub struct Agent {
     publishing: std::cell::Cell<publish::Switches>,
     /// The map tiles noted planned in the history (crate::pubtimes), since the last catalog.
     planned_tiles: std::cell::RefCell<crate::pubtimes::PlannedNotes>,
+    /// The fine terrain's targets as last planned (build::fine_targets, stale or not; None: not
+    /// known): a running terrain-fine job none of whose targets is among them stops at its next
+    /// safe point (`tend`), its regions no longer the fine terrain's.
+    fine_planned: std::cell::RefCell<Option<BTreeSet<String>>>,
     /// The pool (docs/pool.md, crate::agent::pool), always on: this Mac's part in it (None while this
     /// process isn't in it: the NAS not reached as it started, or its member's lock held by another
     /// process; it starts nothing then, and restarts into the pool once it can), and why this
@@ -1870,6 +1874,7 @@ impl Agent {
             catalog_low: Default::default(),
             publishing: Default::default(),
             planned_tiles: Default::default(),
+            fine_planned: Default::default(),
             member_id: run.as_ref().map(|r| r.side.member().id.clone()),
             ticking: run.as_ref().map(|r| r.ticking.clone()),
             publish_gen: Default::default(),
@@ -4727,6 +4732,17 @@ impl Agent {
             let ts: Vec<String> = own_targets(&r.spec).into_iter().map(|t| t.0).collect();
             self.coord.as_ref()?.nas_yield(&step, &ts)
         });
+        // (A terrain-fine job whose targets are no longer planned, outside the fine terrain's
+        // regions now: it stops at its next safe point, and isn't planned again.)
+        let unplanned = self.slots[k].running.as_ref().and_then(|r| {
+            (step_of(&r.spec.id)? == crate::terrain_fine::STEP).then_some(())?;
+            let planned = self.fine_planned.borrow();
+            let planned = planned.as_ref()?;
+            own_targets(&r.spec)
+                .iter()
+                .all(|t| !planned.contains(&t.0))
+                .then(|| "its targets are no longer planned (outside the fine terrain's regions)".to_string())
+        });
         let slot = &mut self.slots[k];
         let r = slot.running.as_mut().unwrap();
         // (The memory guard's drain holds whatever else stops it: asked through its channel, timed
@@ -4745,6 +4761,7 @@ impl Agent {
             .or_else(|| slot.mem_drain.clone().map(|why| (crate::control::Mode::Drain, why)))
             .or_else(|| update.clone().map(|why| (crate::control::Mode::Drain, why)))
             .or_else(|| nas_yield.map(|why| (crate::control::Mode::Drain, why)))
+            .or_else(|| unplanned.map(|why| (crate::control::Mode::Drain, why)))
         {
             Some((crate::control::Mode::Freeze, why)) => {
                 if r.paused.is_none() {
@@ -7257,6 +7274,8 @@ impl Agent {
             // or a loop that couldn't take the build lock, plans too.)
             let times = rekey::FileTimes::new(root);
             rekey::as_read(&mut done, cov, date, &manifest, reach.as_deref(), &inputs, &tiles, &times);
+            *self.fine_planned.borrow_mut() =
+                build::fine_targets(cov, &manifest, &done, &tiles).map(|v| v.into_iter().map(|t| t.0).collect());
             build::plan(
                 &cov,
                 date,

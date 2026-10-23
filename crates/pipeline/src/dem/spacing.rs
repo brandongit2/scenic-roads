@@ -170,6 +170,7 @@ mod tests {
                 rank: None,
                 code: 1,
                 terrain,
+                regions: None,
                 data: Data::Geotiff {
                     urls: vec!["https://example.org/a.tif".into()],
                     index: None,
@@ -178,7 +179,7 @@ mod tests {
                     store: false,
                 },
             },
-            measured: Measured { crs: Some(4326), resolution, full: None, cover: cover.clone() },
+            measured: Measured { crs: Some(4326), resolution, full: None, cover: cover.clone(), uncut: None },
             keyed: "k".into(),
         };
         (d, Cover::of(cover.as_deref()))

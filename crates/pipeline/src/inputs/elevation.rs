@@ -53,11 +53,14 @@ pub struct Elevation {
     /// The stores' folder (`sources/fetched/`): a dataset declared `store` is measured from its
     /// stored files there (crate::dem::generic::stored), never fetched.
     pub store: Option<std::path::PathBuf>,
+    /// The accepted regions' coverage, which a dataset's `regions` cut its coverage to (`scoped`);
+    /// None: none accepted, or none read here.
+    pub regions: Option<crate::coverage::Coverage>,
 }
 
 impl Elevation {
     pub fn new(fetch: Arc<dyn Fetch>, outlines: Option<Outlines>) -> Elevation {
-        Elevation { fetch: Some(fetch), outlines, memo: Mutex::default(), app: None, store: None }
+        Elevation { fetch: Some(fetch), outlines, memo: Mutex::default(), app: None, store: None, regions: None }
     }
 }
 
@@ -90,7 +93,7 @@ fn kind(path: &str) -> Kind<'_> {
 
 /// The digest of a declaration's fields that enter builds (its description's `keyed`, then its own).
 fn keyed(desc: &str, d: &Declaration) -> String {
-    store::naming::hash16(format!("{desc}\n{}", serde_json::to_string(d).unwrap_or_default()).as_bytes())
+    store::naming::hash16(format!("{desc}\n{}", serde_json::to_string(&d.keyed_part()).unwrap_or_default()).as_bytes())
 }
 
 /// The digest of what a declaration's data is beyond the declaration itself: its index's content and
@@ -157,6 +160,20 @@ impl Elevation {
         m
     }
 
+    /// What's measured `m` of declaration `d`, its coverage cut to its `regions` (docs/inputs.md
+    /// §6.8): where the roads and the terrain use it at all.
+    fn scoped(&self, d: &Declaration, mut m: Measured) -> std::result::Result<Measured, String> {
+        let Some(regions) = &d.regions else { return Ok(m) };
+        let cov = self.regions.as_ref().ok_or("it names regions, and no regions version is accepted")?;
+        let (cover, missing) = declared::scope_cover(m.cover.as_deref(), regions, cov);
+        if !missing.is_empty() {
+            return Err(format!("it names regions no accepted region is: {}", missing.join(", ")));
+        }
+        m.uncut = Some(m.cover.take().unwrap_or_else(|| vec![declared::WORLD]));
+        m.cover = Some(cover);
+        Ok(m)
+    }
+
     fn measure_now(
         &self,
         id: &str,
@@ -174,6 +191,7 @@ impl Elevation {
                         resolution: crate::dem::generic::tile_resolution(*zoom, 0.0),
                         full: None,
                         cover: None,
+                        uncut: None,
                     });
                 }
                 if territory.is_empty() {
@@ -194,6 +212,7 @@ impl Elevation {
                     resolution: crate::dem::generic::tile_resolution(*zoom, mid),
                     full: None,
                     cover: Some(declared::cells_to_boxes(&cells)),
+                    uncut: None,
                 })
             }
             Data::Geotiff { urls, index, files, read_resolution, store } => {
@@ -306,7 +325,7 @@ impl Elevation {
                 };
                 // (Its full resolution, where it's read coarser: the map's terrain's.)
                 let full = (read_resolution.is_some() && full < resolution - 1e-9).then_some(full);
-                Ok(Measured { crs: Some(crs), resolution, full, cover })
+                Ok(Measured { crs: Some(crs), resolution, full, cover, uncut: None })
             }
         }
     }
@@ -447,7 +466,7 @@ impl Checks for Elevation {
             if self.fetch.is_none() {
                 continue;
             }
-            match self.measure(id, d, territory, v, &Self::memo_key(v, id, dk, d)) {
+            match self.measure(id, d, territory, v, &Self::memo_key(v, id, dk, d)).and_then(|m| self.scoped(d, m)) {
                 Ok(m) => measured.push((id.clone(), d.clone(), m)),
                 Err(why) => {
                     let mut files = vec![path.clone()];
@@ -543,7 +562,12 @@ impl Checks for Elevation {
             if keep.contains(&path) {
                 continue;
             }
-            let Ok(m) = self.measure(&id, &decl, &territory, v, &Self::memo_key(v, &id, &dk, &decl)) else { continue };
+            let Ok(m) = self
+                .measure(&id, &decl, &territory, v, &Self::memo_key(v, &id, &dk, &decl))
+                .and_then(|m| self.scoped(&decl, m))
+            else {
+                continue;
+            };
             let mut facts = serde_json::Map::new();
             // (The credits' extent: where it has data.)
             let extent = match &m.cover {
@@ -559,8 +583,14 @@ impl Checks for Elevation {
     }
 
     fn context(&self, manifest: &BTreeMap<String, String>) -> Vec<String> {
-        // (The newest pass's outlines: a tile pyramid's coverage is its territory's.)
-        outlines_of(manifest).map(|o| format!("outlines {o}")).into_iter().collect()
+        // (The newest pass's outlines: a tile pyramid's coverage is its territory's. The accepted
+        // regions: a dataset's `regions` cut its coverage.)
+        let regions = manifest.get(&crate::inputs::logical(crate::inputs::regions::UNIT));
+        outlines_of(manifest)
+            .map(|o| format!("outlines {o}"))
+            .into_iter()
+            .chain(regions.map(|r| format!("regions {r}")))
+            .collect()
     }
 
     fn prepared(&self, root: &Path, manifest: &BTreeMap<String, String>) -> Result<Option<Box<dyn Checks>>> {
@@ -574,16 +604,32 @@ impl Checks for Elevation {
             },
             None => None,
         };
+        // (The accepted regions: a dataset's `regions` cut its coverage.)
+        let regions = match crate::inputs::open(root, manifest, crate::inputs::regions::UNIT) {
+            Ok(Some(a)) => {
+                let cache = std::env::var_os(crate::coverage::CACHE_ENV).map(std::path::PathBuf::from);
+                match crate::coverage::Coverage::accepted(root, &a, cache.as_deref()) {
+                    Ok(c) => Some(c),
+                    Err(e) => {
+                        eprintln!("inputs: {UNIT}: the accepted regions can't be read ({e:#})");
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
         #[cfg(test)]
         if let Some((fetch, app)) = TEST_PREPARED.with(|t| t.borrow().clone()) {
             return Ok(Some(Box::new(Elevation {
                 app: Some(app),
                 store: Some(root.join("sources/fetched")),
+                regions,
                 ..Elevation::new(fetch, outlines)
             })));
         }
         Ok(Some(Box::new(Elevation {
             store: Some(root.join("sources/fetched")),
+            regions,
             ..Elevation::new(Arc::new(crate::fetch::Fetcher::from_env()), outlines)
         })))
     }
@@ -702,9 +748,10 @@ pub fn accept_fixture(root: &Path, m: &mut BTreeMap<String, String>) {
         rank: None,
         code: 4,
         terrain: false,
+        regions: None,
         data: Data::Tiles { url: "https://e.org/{z}/{x}/{y}.png".into(), zoom: 10, encoding: "terrarium".into() },
     };
-    let measured = Measured { crs: None, resolution: 150.0, full: None, cover: None };
+    let measured = Measured { crs: None, resolution: 150.0, full: None, cover: None, uncut: None };
     let entry = |id: &str, d: &Declaration, measured: Measured, keyed: &str| {
         let mut facts = serde_json::Map::new();
         facts.insert("declaration".into(), serde_json::to_value(d).unwrap());
@@ -728,19 +775,26 @@ pub fn accept_fixture(root: &Path, m: &mut BTreeMap<String, String>) {
         rank: None,
         code: 0,
         terrain: true,
+        regions: None,
         data: Data::Tiles {
             url: "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png".into(),
             zoom: 12,
             encoding: "terrarium".into(),
         },
     };
-    files.extend([entry("terrarium", &base, Measured { crs: None, resolution: 38.0, full: None, cover: None }, "t")]);
+    files.extend([entry(
+        "terrarium",
+        &base,
+        Measured { crs: None, resolution: 38.0, full: None, cover: None, uncut: None },
+        "t",
+    )]);
     let north = Declaration {
         surface: "surface".into(),
         heights: "EGM2008".into(),
         rank: None,
         code: 0,
         terrain: true,
+        regions: None,
         data: Data::Geotiff {
             urls: vec![],
             index: Some("glo30.geojson".into()),
@@ -752,7 +806,7 @@ pub fn accept_fixture(root: &Path, m: &mut BTreeMap<String, String>) {
     files.extend([entry(
         "glo30",
         &north,
-        Measured { crs: Some(4326), resolution: 30.0, full: None, cover: None },
+        Measured { crs: Some(4326), resolution: 30.0, full: None, cover: None, uncut: None },
         "g",
     )]);
     let feature = |la: i32, lo: i32| serde_json::json!({ "type": "Feature", "properties": { "url": format!("https://copernicus-dem-30m.s3.amazonaws.com/N{la}_W{}_DEM.tif", -lo), "mask": format!("https://copernicus-dem-30m.s3.amazonaws.com/N{la}_W{}_FLM.tif", -lo) }, "geometry": { "type": "Polygon", "coordinates": [[[lo, la], [lo + 1, la], [lo + 1, la + 1], [lo, la + 1], [lo, la]]] } });

@@ -112,13 +112,16 @@ impl Detail {
 }
 
 /// A fine dataset as the keys and runs read it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FineSet {
     pub id: String,
     /// As the keys name it (crate::dem::declared::line: its `keyed` and its heights' conversion).
     pub line: String,
     pub cover: Cover,
     pub detail: Detail,
+    /// Where its `regions` cut its coverage: what was measured (`Measured::uncut`, for
+    /// declared::cut_note); None: not cut.
+    pub cut: Option<declared::Measured>,
 }
 
 /// A dataset's full resolution (m): `full` where it's read coarser, else as read.
@@ -140,6 +143,7 @@ pub fn sets(ds: &[Accepted], terrain: &[Accepted]) -> Vec<FineSet> {
                 Data::Tiles { zoom, .. } => Detail::Pyramid((*zoom).min(MAX_Z as u32) as u8),
                 Data::Geotiff { .. } => Detail::Raster((full_resolution(d) * 1000.0).round() as u64),
             },
+            cut: d.measured.uncut.is_some().then(|| d.measured.clone()),
         })
         .collect()
 }
@@ -148,6 +152,14 @@ pub fn sets(ds: &[Accepted], terrain: &[Accepted]) -> Vec<FineSet> {
 pub fn meeting(sets: &[FineSet], b: [f64; 4], lat: f64) -> Vec<&FineSet> {
     let base = crate::terrain_pack::max_zoom_at(lat);
     sets.iter().filter(|s| s.cover.meets(b) && s.detail.zoom_at(lat) > base).collect()
+}
+
+/// Whether a fine dataset of `sets` has coverage meeting z8 tile `x`/`y` (its `regions` cut it:
+/// crate::dem::declared::scope_cover): where its fine packs are made, or dropped; elsewhere they're
+/// left as they are.
+pub fn in_reach(sets: &[FineSet], x: u32, y: u32) -> bool {
+    let b = crate::stage::tile_box_grown(TARGET_Z, x, y, 0.0);
+    sets.iter().any(|s| s.cover.meets(b))
 }
 
 /// The poleward latitude of a box (where its datasets are finest).
@@ -161,7 +173,16 @@ fn poleward(b: [f64; 4]) -> f64 {
 pub fn key_lines(sets: &[FineSet], z: u8, x: u32, y: u32) -> Vec<String> {
     let b = crate::stage::tile_box_grown(z, x, y, 0.0);
     let lat = poleward(b);
-    meeting(sets, b, lat).into_iter().map(|s| format!("{} zoom {}", s.line, s.detail.zoom_at(lat))).collect()
+    meeting(sets, b, lat)
+        .into_iter()
+        .map(|s| match &s.cut {
+            Some(m) => match declared::cut_note(m, &s.cover, b) {
+                Some(n) => format!("{} {n} zoom {}", s.line, s.detail.zoom_at(lat)),
+                None => format!("{} zoom {}", s.line, s.detail.zoom_at(lat)),
+            },
+            None => format!("{} zoom {}", s.line, s.detail.zoom_at(lat)),
+        })
+        .collect()
 }
 
 /// The finest zoom the fine datasets `sets` reach in tile `z/x/y` (at its poleward edge), where
@@ -671,6 +692,7 @@ mod tests {
             line: format!("{id} k"),
             cover: Cover { world: false, cells: cells.iter().copied().collect() },
             detail,
+            cut: None,
         }
     }
 
@@ -841,6 +863,7 @@ mod tests {
             line: "world w".into(),
             cover: Cover::of(None),
             detail: Detail::Pyramid(13),
+            cut: None,
         }];
         let root = d.path().join("nas");
         std::fs::create_dir_all(root.join("state/build")).unwrap();
@@ -905,6 +928,7 @@ mod tests {
             line: "world w".into(),
             cover: Cover::of(None),
             detail: Detail::Pyramid(14),
+            cut: None,
         }];
         let root = d.path().join("nas");
         std::fs::create_dir_all(root.join("state/build")).unwrap();

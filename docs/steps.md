@@ -122,7 +122,11 @@ What each step does, in detail. The steps as one table (names, chains, the check
     every Mac, crates/jxl's golden hashes). Only base tiles
     whose datasets have data in a 128 × 128 grid of them make any, and only tiles with some of that
     data are stored, in fine packs by z10 tile (formats.md, Pack); elsewhere the server makes finer
-    tiles from their ancestors. A run drops its z8 tile's packs it no longer makes, all of them where
+    tiles from their ancestors. A dataset declared with `regions` (inputs.md §6.8) is fine only in
+    the 1° cells meeting them, as the roads read it; fine packs no fine dataset's coverage reaches
+    any more are left as they are (`terrain_fine::in_reach`: neither made again nor dropped). A
+    running terrain-fine job none of whose targets is planned any more stops at its next safe point
+    (the lead's agent, `Agent::tend`), and a job passes over a target no fine dataset reaches. A run drops its z8 tile's packs it no longer makes, all of them where
     no dataset is fine any more (a z8 tile with packs and no target runs for that alone). The base's
     levels (z9–12) and the terrain's keys don't depend on it, so the analysis grid (z11) and the
     roads don't change. Measured (M4, read over the network; JXL at 1 cm): a z12 tile's subtree to
