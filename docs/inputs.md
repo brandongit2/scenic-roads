@@ -1142,11 +1142,18 @@ credits' extent (§4.8).
 declaration's fields wrong: unknown `surface`, `heights` or encoding, no `code`, a template without
 placeholders, not exactly one way of naming files (`el-decl`); an unparsable index (`el-index`); an
 index or files missing (`el-missing`); unreadable or unmeasurable data: a header, a missing file, a
-CRS the app can't project (EPSG 4326, 4269, 3979: `pipeline::dem::proj`) or contradicting its index,
-a pyramid without a known territory or with non-256 tiles (`el-data`). Warnings: a folder or index
-no declaration names (`el-orphan`); two datasets of one rank, resolution and surface meeting
-(`el-tie`). A declaration is held with the index it names. Planned: files not meeting the declared
-territory.
+CRS the app can't project (EPSG 4326, 4269, 3979, NAD83 / UTM 26901–26923: `pipeline::dem::proj`,
+`declared::known_crs`) or contradicting its index, a pyramid without a known territory or with
+non-256 tiles (`el-data`). Warnings: a folder or index no declaration names (`el-orphan`); two
+datasets of one rank, resolution and surface meeting (`el-tie`). A declaration is held with the
+index it names. Planned: files not meeting the declared territory.
+
+**Projections** (crate::dem::proj, as PROJ 9.8 computes them, tested against pyproj): WGS 84 to
+NAD83(CSRS) by EPSG:1946's Helmert, then Canada Atlas Lambert (EPSG:3979: HRDEM, MRDEM) or a NAD83 /
+UTM north zone (EPSG:26901–26923: USGS's 1 m tiles; NAD83(2011) taken as NAD83(CSRS), so through
+the same Helmert, not PROJ's null pick for EPSG:269zz, a metre off in the north-east), for the
+input check, the plan (`declared::projected_cells`, `plan_converted`) and the sampler
+(`proj::Projection`, in crate::dem::generic).
 
 **Ingesting.**
 - **Order at a point:** the datasets covering it by `rank`, then resolution (finest first), then
@@ -1264,6 +1271,15 @@ territory.
     Aleutians, which go to 8 m; and any unit with a way starting in a cell the rule split, at 122.5° E or
     46.5° N) are built again.
 - NRCan's tile squares, the HRDEM index producer's input, are `producers/elevation/hrdem-squares.geojson`.
+- **The 1 m datasets** (#594), staged in `producers/elevation/1m/`, not yet in the drop box: NRCan's
+  HRDEM 1 m mosaic (`hrdem-1m`: EPSG:3979, the 2 m mosaic's 56 squares, `indexes.py hrdem --res 1`)
+  and USGS 3DEP's 1 m tiles (`usgs-3dep-1m-17`, `-18`, `-19`: one declaration a UTM zone, as a dataset
+  is in one CRS; `indexes.py 3dep-1m --bbox -79.8,40.4,-66.8,47.5`), each with `regions` the ten
+  eastern regions. The roads read them at their 8 m overviews (`read_resolution`), the terrain at
+  1 m; ranked before the 2 m and 10 m datasets (HRDEM 1 m −1, the 3DEP zones −2 to −4), since HRDEM
+  1 m and 2 m both read at 8 m. HRDEM 1 m shares HRDEM 2 m's code and label (the same lidar, read
+  alike); 3DEP 1 m takes code 8, the last free one. Their heights reach EGM2008 by the existing
+  chains (CGVD2013 by CGG2013a, NAVD88 by GEOID18).
 
 **The 3D terrain's datasets** (`terrain = true`; crate::terrain_sources): left out of the roads'
 order, keys, plan, cache and ties. Two are read: a tile pyramid in the `terrarium` encoding, the

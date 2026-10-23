@@ -1,0 +1,19 @@
+name = "NRCan HRDEM, 1 m lidar mosaic"
+label = "NRCan HRDEM lidar (8 m)"
+what = "Road elevation and the 3D terrain, eastern Canada"
+credit = "Natural Resources Canada: High Resolution Digital Elevation Model (HRDEM), lidar mosaic"
+licence = "OGL-Canada-2.0"
+licence_url = "https://open.canada.ca/en/open-government-licence-canada"
+source = "https://open.canada.ca/data/en/dataset/0fe65119-e96e-4a57-8bfe-9d9245fba06b"
+retrieved = "2026-10-23"
+surface = "ground"
+heights = "CGVD2013"
+rank = -1
+code = 1
+regions = ["ontario", "quebec", "new-brunswick", "nova-scotia", "prince-edward-island", "newfoundland-and-labrador", "maine", "new-hampshire", "vermont", "new-york"]
+notes = "The roads read it at its 8 m overview, as HRDEM 2 m (the same lidar, so its code and label); the terrain at 1 m. Ranked before HRDEM 2 m, which reads at 8 m too. The index lists the mosaic's 500 km squares NRCan has at 1 m (producers/elevation/indexes.py hrdem --res 1)."
+
+[data]
+format = "geotiff"
+index = "hrdem-1m-tiles.geojson"
+read_resolution = 8

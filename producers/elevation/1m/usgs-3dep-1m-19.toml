@@ -1,0 +1,19 @@
+name = "USGS 3DEP 1 m DEM, UTM zone 19N"
+label = "USGS 3DEP lidar (8 m)"
+what = "Road elevation and the 3D terrain, New York and northern New England"
+credit = "U.S. Geological Survey, 3D Elevation Program"
+licence = "public domain"
+licence_url = "https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits"
+source = "https://www.usgs.gov/3d-elevation-program"
+retrieved = "2026-10-23"
+surface = "ground"
+heights = "NAVD88"
+rank = -4
+code = 8
+regions = ["ontario", "quebec", "new-brunswick", "nova-scotia", "prince-edward-island", "newfoundland-and-labrador", "maine", "new-hampshire", "vermont", "new-york"]
+notes = "USGS's 10 km lidar tiles in NAD83 / UTM zone 19N (EPSG:26919), a declaration a zone (a dataset is in one CRS); the zones ranked apart (17, 18, 19: -2, -3, -4), all before HRDEM 1 m (-1), as each reads at 8 m. The roads read it at its 8 m overview, the terrain at 1 m. The index lists every tile The National Map's products API has in the regions' box, newest first, as several projects can cover a tile (producers/elevation/indexes.py 3dep-1m)."
+
+[data]
+format = "geotiff"
+index = "usgs-3dep-1m-19-tiles.geojson"
+read_resolution = 8
