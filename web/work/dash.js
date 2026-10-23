@@ -15,7 +15,7 @@
 // what happened, what each Mac moves now and the internet by website: activity.js), and the details.
 
 import { poolSection, termText } from "./pool.js";
-import { busyLanes, finished, finishedTiles, isSlotOf, laneGroups, notRead, packRuns, pastFrom, pastRuns, regionWork, regionsShown, rowsWindow, runningTiles, slotName, slotNo, stageSegments, stepTotals, targetsOf, tileOf, wholeProgress } from "./sums.js";
+import { busyLanes, finished, finishedTiles, isSlotOf, laneGroups, notRead, packRuns, pastFrom, pastRuns, regionWork, regionsShown, rowsWindow, runningTiles, slotName, slotNo, stageSegments, stepTotals, targetsOf, mapTilesKept, macSlot, tileCovers, tileOf, wholeProgress } from "./sums.js";
 import { fmt, timeTicks } from "./chartmath.js";
 import { liveBlock, startLive } from "./live.js";
 import { createMap } from "./worldmap.js";
@@ -354,59 +354,106 @@ function mapRuns(m) {
   for (const r of runs) r.targets = targetsOf(r, events);
   return runs;
 }
+// The world map's filters (#615), this browser's own (ctx.store): the tiles by kind, finished
+// ones faded by age or not, only those published, one pool member's, one stage's, one zoom's.
+const MAP_F = { unstarted: true, progress: true, done: true, fade: true, published: false, member: "", stage: "", zoom: "" };
+let mapF = null;
+const mapFilters = () => (mapF ||= { ...MAP_F, ...(ctx.store.get("mapFilters", {}) || {}) });
+function setMapFilter(k, v) { mapFilters()[k] = v; ctx.store.set("mapFilters", mapF); render(); }
+
 // The world map's data for this render, the Overview's and the Regions tab's (one each:
-// worldmap.js), with its tiles' cards; the regions' cards are regionCards'.
+// worldmap.js), as its filters keep it (sums.js mapTilesKept), with its tiles' cards, the
+// regions' (regionCards) and the stack's: everything under a point, one card after another.
 function mapData(m) {
   loadCountries();
+  const f = mapFilters();
   const from = m.now - (ui.past || 6 * 3600);
   const runs = mapRuns(m);
-  const running = runningTiles(runs, m.fc?.each_s, m.now);
   // (Jobs with no tile to show, a worldwide step's: named under the map, as the mockup does.)
   const world = runs.filter((r) => !r.targets.some((t) => tileOf(t)));
-  const done = finishedTiles(endsHeld(), from);
+  const hosts = m.macs.map((x) => x.name);
+  const pubAt = lastCatalogue(m)?.at ?? null;
+  const [running, done] = mapTilesKept(runningTiles(runs, m.fc?.each_s, m.now), finishedTiles(endsHeld(), from), f,
+    { pubAt, macOf: (w) => macSlot(w, hosts).host, stageOf: S.stage });
   const fcRegs = Object.fromEntries((m.fc?.regions || []).map((r) => [r.id, r]));
   const regs = Object.values(drawn.byId).map((r) => ({ ...r, state: regionState(fcRegs[r.id]) }));
+  const head = (key, step, state) => ({ kicker: `${S.stageTitle(S.stage(step)) || S.title(step)} · ${state}`, colour: S.colour(step), title: `Tile ${key}` });
   for (const [key, r] of running) {
-    cards.set(`mt ${key}`, () => cardBody([swatch(S.colour(r.step)), ` Tile ${key}`], [
+    const t = tileOf(key), pct = `${Math.round(r.frac * 100)}%`;
+    const state = r.frac >= 1 ? "done, its job running" : r.current || r.frac > 0 ? "under way" : "to come in its job";
+    cards.set(`mt ${key}`, () => cardBody({ ...head(key, r.step, state),
+      stats: [[pct, "of the tile done"], [r.current ? r.run.live?.phase || "running" : r.frac >= 1 ? "done" : r.frac > 0 ? "part done" : "queued", "phase"]],
+      bar: { frac: r.frac, label: r.frac >= 1 ? "done; its job runs on" : r.frac > 0 ? `≈ ${pct} of the tile` : "not begun" },
+      foot: `${r.run.mac} · ${r.step} ${key}` }, [
       ["step", S.title(r.step)],
-      ["state", h("span", "run", r.current ? "under way" : r.frac >= 1 ? "done, its job running" : r.frac > 0 ? "under way" : "to come in its job")],
-      ["done", r.frac > 0 && r.frac < 1 ? `≈ ${Math.round(r.frac * 100)}%` : null],
-      ["phase", r.current ? r.run.live?.phase : null],
       ["job", r.run.what],
       ["on", r.run.mac],
+      ["covers", tileCovers(t)],
     ], mapsShown().minimap(key)));
   }
-  for (const [key, f] of done) {
-    if (running.has(key)) continue;
-    cards.set(`mt ${key}`, () => cardBody([swatch(S.colour(f.step)), ` Tile ${key}`], [
-      ["step", S.title(f.step)],
-      ["finished", `${ago(m.now, f.t)} (${clock(f.t)})`],
-      ["on", f.worker],
+  for (const [key, d] of done) {
+    const out = pubAt != null && d.t <= pubAt;
+    cards.set(`mt ${key}`, () => cardBody({ ...head(key, d.step, "finished"),
+      stats: [[ago(m.now, d.t), "finished"], [out ? "yes" : "next catalogue", "on the map"]],
+      bar: { frac: 1, label: `done ${clock(d.t)}` },
+      foot: `${d.worker || "?"} · ${d.step} ${key}` }, [
+      ["step", S.title(d.step)],
+      ["on", d.worker],
+      ["covers", tileCovers(tileOf(key))],
     ], mapsShown().minimap(key)));
   }
-  return { regs, running, done, world, data: { countries, regions: regs, running, finished: done, now: m.now, from, colour: S.colour } };
+  const rows = regionRows(m);
+  regionCards(rows);
+  // (The stack: `also` its keys, "|" between, the deepest tile first; each card under a line.)
+  cards.set("mstack", (also) => {
+    const keys = (also || "").split("|").filter((k) => cards.has(k));
+    const most = 8;
+    return [...keys.slice(0, most).map((k) => h("div", "tc-sec", cards.get(k)())),
+      keys.length > most ? h("div", "tc-more dim small", `and ${n(keys.length - most)} more here`) : null].filter(Boolean);
+  });
+  return { regs, rows, running, done, world, data: { countries, regions: regs, running, finished: done, now: m.now, from, colour: S.colour, fade: f.fade } };
 }
 // (A tile's minimap is drawn by either map: the Overview's unless only the Regions tab's exists.)
 const mapsShown = () => worldMap || rp.map;
-// The map's legend: what's drawn, counted.
-function mapLegend(md) {
+// A map's click or tap: its stack pinned (nothing there: the pinned card let go).
+const mapPick = (keys, x, y) => (keys.length ? pinCard("mstack", x, y, keys.join("|")) : unpin());
+// The map's legend: what's drawn, counted; every stage's colour; then its filters.
+function mapLegend(m, md) {
   const { regs, running, done, world } = md;
   const count = (st) => regs.filter((r) => r.state === st).length;
   const key = (cls, text) => h("span", "lg", h("i", cls), text);
   const span = PAST.find(([s]) => s === ui.past)?.[1] || "6 h";
-  const finishedN = [...done.keys()].filter((k) => !running.has(k)).length;
-  return h("div", "wmap-legend small dim",
+  return [h("div", "wmap-legend small dim",
     regs.length ? [key("rg on", `${count("on") + count("done")} on the map`), key("rg building", `${count("building")} building`), key("rg queued", `${count("queued")} to come`)] : h("span", null, "No regions' outlines from this Mac yet"),
     key("tl run", `${plural(running.size, "tile")} running`),
-    key("tl fin", `${plural(finishedN, "tile")} finished in the last ${span}`),
+    key("tl fin", `${plural(done.size, "tile")} finished in the last ${span}`),
     world.length ? h("span", null, `whole world: ${world.map((r) => `${S.title(r.step)} (${r.mac})`).join(", ")}`) : null,
-    h("span", "hint", "drag to move · pinch, double-click or +/− to zoom"));
+    h("span", "hint", "drag to move · pinch, double-click or +/− to zoom")),
+  h("div", "wmap-legend wmap-stages small dim", table.stages.map((g) => h("span", "lg", h("i", { style: { background: stageColour(g.id), borderColor: "transparent" } }), g.title)),
+    h("span", null, "solid: done · outlined: running, filled as far as done · fading: finished longer ago")),
+  mapFilterBar(m)];
 }
-function mapSection(md) {
-  worldMap ||= createMap();
+// The filters under a map (each map its own controls over one state). A member: the tiles it
+// ran (the history's ends), runs or will run in its running jobs (theirs and its leases'); the
+// forecast's lanes name no tiles, so its later jobs' aren't known.
+let mapFiltersN = 0;
+function mapFilterBar(m) {
+  const f = mapFilters(), id = ++mapFiltersN;
+  const box = (k, text) => h("label", "mf", h("input", { type: "checkbox", checked: f[k] ? "" : null, onchange: (e) => setMapFilter(k, e.target.checked) }), text);
+  const radio = (v, text) => h("label", "mf", h("input", { type: "radio", name: `mf-member-${id}`, value: v, checked: f.member === v ? "" : null, onchange: () => setMapFilter("member", v) }), text);
+  const select = (k, label, opts) => h("label", "mf", label, h("select", { onchange: (e) => setMapFilter(k, e.target.value) }, opts.map(([v, t]) => h("option", { value: v, selected: f[k] === v ? "" : null }, t))));
+  const members = [...new Set([...m.macs.map((x) => x.name), ...(f.member ? [f.member] : [])])];
+  return h("div", "wmap-filters small",
+    h("div", "mfrow", box("unstarted", "Unstarted tiles"), box("progress", "In-progress tiles"), box("done", "Completed tiles")),
+    h("div", "mfrow", box("fade", "Fade completed tiles progressively"), box("published", "Only show published tiles")),
+    h("div", { class: "mfrow", role: "radiogroup", "aria-label": "Show only for" }, h("span", "dim", "Show only for:"), radio("", "All pool members"), members.map((nm) => radio(nm, nm))),
+    h("div", "mfrow", select("stage", "Stage", [["", "every stage"], ...table.stages.map((g) => [g.id, g.title])]), select("zoom", "Zoom", [["", "every zoom"], ["3", "z3"], ["6", "z6"]])));
+}
+function mapSection(m, md) {
+  worldMap ||= createMap({ pick: mapPick });
   worldMap.update(md.data);
   const k = md.regs.length;
-  return section("d-map", "Map", `${k ? plural(k, "region") : "no regions"} · the z3 grid · tiles in their stage's colour`, h("div", "box wmap-box", worldMap.el, mapLegend(md)));
+  return section("d-map", "Map", `${k ? plural(k, "region") : "no regions"} · the z3 grid · tiles in their stage's colour`, h("div", "box wmap-box", worldMap.el, ...mapLegend(m, md)));
 }
 
 // ---- Machines -----------------------------------------------------------------------------------
@@ -611,13 +658,25 @@ function withCard(el, key, build) {
   el.dataset.card = key;
   return el;
 }
-// A card's rows: its title, then [key, value] pairs (a value null: no row), then any lines; a
-// title given as {title, stats} has stat tiles under it ([number, label] pairs, none null).
+// A card's rows: its title, then [key, value] pairs (a value null: no row), then any lines. A
+// title given as an object ({title, …}: the map's cards, as docs/mockups/build-live.html draws
+// them) may have a head (`kicker` over it, a `colour` swatch), stat tiles (`stats`: [number,
+// label] pairs, none null), a bar (`bar`: {frac, label, colour}), a bar in parts (`segs`: {parts
+// [{w, colour, cls, title}], label}), chips (`chips` under `chipsLabel`) and a foot (`foot`).
 const cardBody = (title, pairs, ...more) => {
-  const stats = title?.stats?.filter(([v]) => v != null);
-  return [h("div", "ct", title?.stats ? title.title : title),
+  const o = title && typeof title === "object" && !(title instanceof Node) && !Array.isArray(title) ? title : { title };
+  const stats = o.stats?.filter(([v]) => v != null);
+  const head = o.kicker != null || o.colour
+    ? h("div", "tc-head", o.colour ? h("i", { class: "tc-sw", style: { background: o.colour } }) : null, h("div", null, o.kicker ? h("div", "tc-kick", o.kicker) : null, h("div", "tc-title", o.title)))
+    : h("div", "ct", o.title);
+  const bar = o.bar && h("div", "tc-bar", h("div", "track", h("i", { style: { width: `${Math.round(Math.max(0, Math.min(1, o.bar.frac)) * 100)}%`, background: o.bar.colour || o.colour || "var(--accent)" } })), o.bar.label ? h("div", "cap", o.bar.label) : null);
+  const segs = o.segs?.parts?.length && h("div", "tc-bar", h("div", "track segs", o.segs.parts.map((p) => h("i", { class: p.cls || null, title: p.title || null, style: { width: `${(p.w * 100).toFixed(2)}%`, background: p.colour } }))), o.segs.label ? h("div", "cap", o.segs.label) : null);
+  return [head,
     stats?.length ? h("div", "cstats", stats.map(([v, l]) => h("div", "cstat", h("div", "n", v), h("div", "l", l)))) : null,
-    h("div", "ckv", pairs.filter(([, v]) => v != null && v !== "").flatMap(([k, v]) => [h("span", "k", k), h("span", null, v)])), ...more].filter(Boolean);
+    bar, segs,
+    h("div", "ckv", pairs.filter(([, v]) => v != null && v !== "").flatMap(([k, v]) => [h("span", "k", k), h("span", null, v)])),
+    o.chips?.length ? h("div", "tc-chipsbox", o.chipsLabel ? h("div", "tc-kick", o.chipsLabel) : null, h("div", "tc-chips", o.chips.map((c) => h("span", null, c)))) : null,
+    ...more, o.foot ? h("div", { class: "tc-foot", title: o.foot }, o.foot) : null].filter(Boolean);
 };
 function placeCard(el, x, y) {
   const r = el.getBoundingClientRect();
@@ -626,7 +685,7 @@ function placeCard(el, x, y) {
 }
 function showHover(key, x, y, also = "") {
   const build = cards.get(key);
-  if (!build || pin.key === key) return hideHover();
+  if (!build || (pin.key === key && pin.also === also)) return hideHover();
   if (!hoverCard) { hoverCard = h("div", "card-tip"); document.body.append(hoverCard); }
   if (hoverCard.dataset.key !== `${key}|${also}`) { hoverCard.replaceChildren(...build(also)); hoverCard.dataset.key = `${key}|${also}`; }
   hoverCard.hidden = false;
@@ -663,12 +722,27 @@ function wireCards() {
     if (d.card) showHover(d.card, e.clientX, e.clientY, d.also);
     else hideHover();
   });
-  document.addEventListener("click", (e) => {
+  const act = (e) => {
     if (pin.el?.contains(e.target)) return;
     const d = at(e.target), key = d.card;
     if (key && cards.has(key)) pinCard(key, e.clientX, e.clientY, d.also);
     else unpin();
+  };
+  // (A tap is taken at its lift: Mobile Safari sends no click for a tap on what has no handler of
+  // its own, plain text, so a tap there never let a card go (#615). Its click, if one comes, is
+  // passed over. The world map takes its own.)
+  let down = null, tapped = 0;
+  document.addEventListener("pointerdown", (e) => { down = e.pointerType === "touch" && e.isPrimary ? { x: e.clientX, y: e.clientY, t: e.timeStamp } : null; });
+  document.addEventListener("pointerup", (e) => {
+    const d = down;
+    down = null;
+    if (!d || e.pointerType !== "touch" || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 10 || e.timeStamp - d.t > 800) return;
+    if (e.target instanceof Element && e.target.closest("canvas.wmap, a, button, input, select, label, summary")) return;
+    tapped = performance.now();
+    act(e);
   });
+  document.addEventListener("pointercancel", () => { down = null; });
+  document.addEventListener("click", (e) => { if (performance.now() - tapped > 1000) act(e); });
   document.addEventListener("keydown", (e) => e.key === "Escape" && unpin());
   window.addEventListener("scroll", hideHover, { passive: true });
 }
@@ -959,27 +1033,34 @@ function rowState(r) {
   return [st, cls];
 }
 
-// Each region's card (the list's rows and both maps' regions): its folders, its download and tiles
-// built (stat tiles), state, when it's built and on the map, its place in the build's order, the
-// other regions under the map's pointer (`also`: their ids), its work left by step, its outline's
-// recipe.
+// Each region's card (the list's rows and both maps' regions), as the mockup draws it: its
+// folders over its name, its download and tiles built (stat tiles), its tiles built (a bar), each
+// stage of the build (a bar in parts: built solid, the one under way striped, to come faint),
+// state, when it's built and on the map, its place in the build's order, its work left by step
+// (chips), its outline's recipe. (The other regions at a map's point have their own cards in its
+// stack.)
+const REGION_COLOUR = { on: "var(--ok)", done: "var(--ok)", building: "var(--accent)", queued: "var(--dim)" };
 function regionCards(rows) {
-  const nameOf = new Map(rows.map((r) => [r.id, r.name]));
   const ranked = rows.filter((r) => r.f).length;
-  for (const r of rows) cards.set(`mr ${r.id}`, (also) => {
+  for (const r of rows) cards.set(`mr ${r.id}`, () => {
     const [st, cls] = rowState(r);
     const b = r.built;
-    const others = (also || "").split(",").filter((id) => id && id !== r.id).map((id) => nameOf.get(id) || id);
-    return cardBody({ title: r.name, stats: [[r.bytes != null ? size(r.bytes) : null, "to download"], [b?.total ? `${n(b.built)} / ${n(b.total)}` : null, "tiles built"]] }, [
-      ["in", r.crumbs?.slice(0, -1).join(" › ")],
+    const left = new Set(r.segs.map((g) => g.stage));
+    const now = r.rank === 0 ? r.segs[0]?.stage : null;
+    const stages = r.f ? table.stages.map((g) => g.id) : [];
+    const parts = stages.map((g) => ({ w: 1 / stages.length, colour: stageColour(g), cls: g === now ? "run" : left.has(g) ? "next" : null, title: `${S.stageTitle(g)}: ${g === now ? "building" : left.has(g) ? "to come" : "built"}` }));
+    const builtN = stages.filter((g) => !left.has(g)).length;
+    return cardBody({ kicker: r.crumbs?.slice(0, -1).join(" › ") || "Region", colour: REGION_COLOUR[regionState(r.f)] || "var(--dim)", title: r.name,
+      stats: [[r.bytes != null ? size(r.bytes) : null, "to download"], [b?.total ? `${n(b.built)} / ${n(b.total)}` : null, "tiles built"]],
+      bar: b?.total ? { frac: b.built / b.total, label: `${Math.round((b.built / b.total) * 100)}% of its tiles built`, colour: "var(--ok)" } : null,
+      segs: parts.length ? { parts, label: `stages: ${builtN} built${now ? `, ${S.stageTitle(now)} building` : ""}, ${left.size - (now ? 1 : 0)} to come` } : null,
+      chips: r.count ? r.work.map((w) => `${S.said(w.step, w.k)}${w.s ? ` · ${dur(w.s)}` : ""}`) : [], chipsLabel: "Work left",
+      foot: r.outline?.length ? `outline: ${r.outline.join(" + ")}` : "" }, [
       ["state", st ? h("span", cls, st) : null],
       ["on the map", r.f ? (r.on_map === true && !r.count ? "yes" : r.map_at ? `all ≈ ${clock(r.map_at)}` : r.on_map === false ? "as it was" : "not yet") : null],
       ["all built", r.count && r.ready_at ? `≈ ${clock(r.ready_at)}` : null],
       ["build order", r.rank != null ? `${n(r.rank + 1)} of ${n(ranked)}` : null],
-      ["also here", others.length ? others.join(", ") : null],
-      ["work left", r.count ? h("span", null, r.work.map((w) => h("div", null, swatch(S.colour(w.step)), S.said(w.step, w.k), w.s ? h("span", "dim", ` · ${dur(w.s)}`) : null))) : null],
-      ["outline", r.outline?.join(" + ")],
-    ], b?.total ? pbar(b.built / b.total, "ok") : null);
+    ]);
   });
 }
 
@@ -1057,7 +1138,7 @@ function splitter() {
 
 function regionsPane(m, md) {
   if (!rp.el) {
-    rp.map = createMap();
+    rp.map = createMap({ pick: mapPick });
     const find = h("input", { type: "search", placeholder: "Find a region or a folder…", value: ui.filter, autocapitalize: "off", spellcheck: "false", "aria-label": "Find a region" });
     find.addEventListener("input", () => { ui.filter = find.value; rp.list.scrollTop = 0; relist(); });
     rp.seg = h("div", "seg", [["map", "To the map"], ["name", "A–Z"], ["left", "Most work left"]].map(([k, t]) => {
@@ -1085,10 +1166,9 @@ function regionsPane(m, md) {
     setSplit(Number(ctx.store.get("regionsSplit", 0.42)) || 0.42, false);
     rp.section = section("d-regions", null, null, h("div", "box", rp.el));
   }
-  rp.rows = regionRows(m);
-  regionCards(rp.rows);
+  rp.rows = md.rows;
   rp.map.update(md.data);
-  rp.legend.replaceChildren(mapLegend(md));
+  rp.legend.replaceChildren(...mapLegend(m, md));
   // What's left in all of them, a step at a time (the forecast's regions summed in the page).
   const order = Object.keys(table.steps);
   const words = Object.entries(stepTotals(m.fc?.regions)).sort(([p], [q]) => order.indexOf(p) - order.indexOf(q)).map(([s, k]) => S.said(s, k));
@@ -1336,7 +1416,7 @@ function tabs(m) {
     overview: [
       part("d-inputs", () => h("section", "d-inputs", gateBanners(m, (body) => ctx.call("/work/inputs", body).then(poll, (e) => ctx.onError?.(`couldn't accept: ${e.message}`))))),
       part("d-overview", () => section("d-overview", null, null, overview(m))),
-      part("d-map", () => mapSection(md)),
+      part("d-map", () => mapSection(m, md)),
     ],
     jobs: [
       part("d-sched", () => section("d-sched", "Schedule", "each Mac's jobs: those that ran, running, to come",

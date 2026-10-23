@@ -47,11 +47,11 @@ button:disabled { opacity: .5; }
 .kpi .v { font-size: 15px; margin-top: 1px; }
 .kpi .s { color: var(--dim); font-size: 11px; margin-top: 1px; }
 
-/* The world map (worldmap.js): its canvas, its zoom buttons over it, the legend under it. */
+/* The world map (worldmap.js): its canvas, its zoom buttons over it, the legend and filters under it
+   (docs/mockups/build-live.html's map: a bordered canvas, a crosshair over it). */
 .wmap-box { padding: 6px; }
 .wmap-wrap { position: relative; }
-.wmap { display: block; width: 100%; aspect-ratio: 2 / 1.15; max-height: 78vh; border-radius: 5px; cursor: grab; touch-action: pan-y; outline: none; }
-.wmap:active { cursor: grabbing; }
+.wmap { display: block; width: 100%; aspect-ratio: 2 / 1.15; max-height: 78vh; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); cursor: crosshair; touch-action: pan-y; outline: none; }
 .wmap:focus-visible { box-shadow: 0 0 0 1px var(--accent); }
 .wmap-ctl { position: absolute; top: 6px; right: 6px; display: flex; flex-direction: column; gap: 2px; }
 .wmap-ctl button { width: 26px; height: 26px; padding: 0; background: var(--panel); border: 1px solid var(--line); line-height: 1; }
@@ -64,6 +64,12 @@ button:disabled { opacity: .5; }
 .wmap-legend .tl.run { border-color: var(--st-roads); background: linear-gradient(to top, var(--st-roads) 55%, transparent 55%); }
 .wmap-legend .tl.fin { border-color: transparent; background: color-mix(in srgb, var(--st-tiles) 55%, transparent); }
 .wmap-legend .hint { margin-left: auto; }
+.wmap-stages { padding-top: 4px; }
+.wmap-filters { display: flex; flex-direction: column; gap: 4px; padding: 8px 4px 2px; margin-top: 6px; border-top: 1px solid var(--row-line); }
+.wmap-filters .mfrow { display: flex; flex-wrap: wrap; gap: 3px 14px; align-items: center; }
+.wmap-filters .mf { display: inline-flex; gap: 5px; align-items: center; cursor: pointer; white-space: nowrap; }
+.wmap-filters .mf input { width: auto; flex: none; margin: 0; padding: 0; accent-color: var(--accent); }
+.wmap-filters select { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; font: inherit; font-size: 11.5px; padding: 1px 4px; }
 .wmap-mini { display: block; margin-top: 5px; border-radius: 4px; border: 1px solid var(--line); }
 
 /* Bars. */
@@ -229,6 +235,35 @@ select.past { margin-left: 4px; background: var(--bg); color: var(--text); borde
 .card-tip .cstat { background: var(--bg); border: 1px solid var(--row-line); border-radius: 5px; padding: 3px 7px; }
 .card-tip .cstat .n { font-size: 13.5px; font-weight: 600; }
 .card-tip .cstat .l { font-size: 10px; color: var(--dim); }
+/* The map's cards, as the mockup's: a head (swatch, kicker, title) over a rule, a body, a foot; a
+   stack of them (everything under a point) one under the other, a line between. */
+.card-tip:has(.tc-head) { padding: 0; width: 280px; border-radius: 8px; box-shadow: 0 8px 24px var(--shadow); }
+.card-tip:has(.tc-head) { max-height: calc(100vh - 16px); overflow: hidden; }
+.card-tip.pinned:has(.tc-head) { overflow-y: auto; }
+.card-tip:has(.tc-head) .cb, .card-tip:has(.tc-head):not(.pinned), .tc-sec { display: flex; flex-direction: column; gap: 6px; }
+.tc-sec { padding-bottom: 8px; }
+.tc-sec + .tc-sec, .tc-more { border-top: 1px solid var(--rule); }
+.tc-more { padding: 5px 10px; }
+.tc-sec > :not(.tc-head, .tc-foot) { margin: 0 10px; }
+.tc-sec .cstats { margin: 0 10px; }
+.card-tip.pinned .tc-sec:first-child .tc-head { padding-right: 28px; }
+.card-tip:has(.tc-head) .x { top: 5px; right: 4px; }
+.tc-head { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px 7px; border-bottom: 1px solid var(--line); }
+.tc-sw { width: 10px; height: 10px; border-radius: 3px; margin-top: 3px; flex: none; }
+.tc-kick { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; line-height: 1.3; }
+.tc-title { font-size: 13.5px; font-weight: 600; line-height: 1.25; }
+.tc-bar { display: flex; flex-direction: column; gap: 3px; }
+.tc-bar .track { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+.tc-bar .track i { display: block; height: 100%; border-radius: 3px; }
+.tc-bar .track.segs { display: flex; gap: 1px; height: 8px; border-radius: 2px; }
+.tc-bar .track.segs i { border-radius: 0; }
+.tc-bar .track.segs i.next { opacity: .28; }
+.tc-bar .track.segs i.run { background-image: repeating-linear-gradient(135deg, #fff7 0 2px, transparent 2px 5px) !important; }
+.tc-bar .cap { font-size: 10.5px; color: var(--dim); }
+.tc-chipsbox { display: flex; flex-direction: column; gap: 3px; }
+.tc-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.tc-chips span { font-size: 10.5px; border: 1px solid var(--line); border-radius: 9px; padding: 0 6px; background: var(--bg); }
+.tc-foot { font-size: 10px; color: var(--dim); padding: 5px 10px 0; border-top: 1px solid var(--row-line); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
 
 .regbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
 .regbar input { flex: 1 1 160px; width: auto; margin: 0; }

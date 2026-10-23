@@ -2,13 +2,14 @@
 # The build page in Mobile Safari (#614): boots an iOS Simulator, opens each tab from
 # touch-test.mjs's read-only server and saves a screenshot a tab, then shuts the simulator and the
 # server down (by their own ids). Touch by hand or with the Simulator control tools meanwhile:
-# SCENIC_SIM_HOLD=<seconds> waits that long before shutting down.
+# SCENIC_SIM_HOLD=<seconds> waits that long before shutting down; SCENIC_SIM_PORT=<n> serves on another
+# port than 8097 (another agent's run holding it).
 #   tools/dev/safari-sim.sh [out-dir] [device name]     (default: iPhone 18 Pro)
 set -u
 here=${0:A:h}
 out=${1:-${TMPDIR:-/tmp}/scenic-safari}
 dev=${2:-iPhone 18 Pro}
-port=8097
+port=${SCENIC_SIM_PORT:-8097}
 mkdir -p "$out"
 udid=$(xcrun simctl list devices available | sed -n "s/^ *${dev} (\([0-9A-F-]*\)).*/\1/p" | head -1)
 [[ -n $udid ]] || { echo "FAIL no simulator named '$dev' (xcrun simctl list devices)"; exit 1; }
@@ -23,6 +24,8 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM
 node "$here/touch-test.mjs" --serve --port $port >"$out/server.log" 2>&1 &
 srv=$!
+# (A port already held, someone else's server: their page would be the one shown.)
+sleep 1; kill -0 $srv 2>/dev/null || { srv=; echo "FAIL the server didn't start on $port ($out/server.log); SCENIC_SIM_PORT=<n> for another"; exit 1; }
 xcrun simctl list devices | grep -q "$udid) (Booted)" || { booted=1; xcrun simctl boot "$udid" || exit 1; }
 xcrun simctl bootstatus "$udid" -b >/dev/null
 for tab in overview jobs machines regions activity details; do

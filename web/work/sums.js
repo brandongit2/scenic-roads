@@ -201,6 +201,31 @@ export function finishedTiles(ends, from) {
   return out;
 }
 
+// A tile's area in degrees: "45.1°–48.9° N, 5.6°–11.3° E" (south and west negative).
+export function tileCovers({ z, x, y }) {
+  const n = 2 ** z, lon = (v) => (v / n) * 360 - 180, lat = (v) => (Math.atan(Math.sinh(Math.PI * (1 - (2 * v) / n))) * 180) / Math.PI;
+  return `${lat(y + 1).toFixed(1)}°–${lat(y).toFixed(1)}° N, ${lon(x).toFixed(1)}°–${lon(x + 1).toFixed(1)}° E`;
+}
+
+// The world map's tiles as its filters keep them (#615): `running` and `finished` (runningTiles',
+// finishedTiles') cut to the kinds kept (`f.unstarted`: a running job's tiles not begun;
+// `f.progress`: under way; `f.done`: done, its job's or finished), to `f.published` (finished by
+// the last catalogue's time `pubAt`, none running), to the pool member `f.member` (the Mac that
+// ran, runs or holds it in its running job: `macOf(worker)` its host), the stage `f.stage`
+// (`stageOf(step)`) and the zoom `f.zoom`. Returns [running, finished], new Maps.
+export function mapTilesKept(running, done, f, { pubAt = null, macOf = (w) => w, stageOf = () => "" } = {}) {
+  const keep = (key, step, who) => (!f.stage || stageOf(step) === f.stage) && (!f.zoom || tileOf(key)?.z === +f.zoom) && (!f.member || (who != null && macOf(who) === f.member));
+  const run = new Map(), fin = new Map();
+  if (!f.published) {
+    for (const [k, r] of running) {
+      const kind = r.frac >= 1 ? "done" : r.frac > 0 || r.current ? "progress" : "unstarted";
+      if (f[kind] !== false && keep(k, r.step, r.run?.mac)) run.set(k, r);
+    }
+  }
+  if (f.done !== false) for (const [k, t] of done) if (!run.has(k) && !running.has(k) && (!f.published || (pubAt != null && t.t <= pubAt)) && keep(k, t.step, t.worker)) fin.set(k, t);
+  return [run, fin];
+}
+
 // Whether point (x, y) is inside rings (flat [x0, y0, x1, y1, …] each, closed), nonzero, as the
 // map fills them.
 export function inRings(rings, x, y) {

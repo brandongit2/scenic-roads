@@ -9,8 +9,12 @@
 // Moved by a drag (mouse, pen or one finger), zoomed by a pinch (a trackpad's: ctrl+wheel in
 // Chrome, gesture events in Safari; two fingers on a touch screen), a double click, the +/−
 // buttons or the keyboard (+, −, arrows, 0); a two-finger scroll moves it once zoomed in, else
-// scrolls the page. What's under the pointer is said by the page's cards: the map names it in its
-// `data-card` (dash.js wireCards), and draws a tile's minimap for its card (`minimap`).
+// scrolls the page. Opens on the whole world. What's under the pointer is said by the page's cards,
+// the whole stack there (every tile at every zoom, then every region): under a mouse the map names
+// it in its `data-card` ("mstack") and `data-also` (the keys, "|" between: dash.js wireCards); a
+// click or a tap the map takes itself, at the point lifted, and hands the stack to `pick` (a
+// tap's click isn't left to the page: Mobile Safari, #615). It draws a tile's minimap for its card
+// (`minimap`).
 import { inRings, tileBox, tileOf } from "./sums.js";
 
 const FADE_MS = 900;
@@ -21,8 +25,10 @@ const regionPaths = new WeakMap();
 
 /** A map: `el` to place, `highlight(id)` to light a region, `update(data)` with {countries (rings), regions [{id, fill, edge, state}],
  * running (Map key → {step, frac, current}), finished (Map key → {t}), from, now, colour(step)
- * (a CSS colour, var() allowed)}, `minimap(key)` a canvas of a tile and around it. */
-export function createMap() {
+ * (a CSS colour, var() allowed), fade (finished tiles paler as they age)}, `minimap(key)` a canvas
+ * of a tile and around it; `pick(keys, x, y)` called on a click or tap (keys: the stack there,
+ * none off everything). */
+export function createMap({ pick = () => {} } = {}) {
   const canvas = document.createElement("canvas");
   canvas.className = "wmap";
   canvas.tabIndex = 0;
@@ -81,16 +87,11 @@ export function createMap() {
   // (Zoomed out at most to the world filling the box: no empty bands beside or under it.)
   const minK = () => Math.max(size.w, size.h) / 1000;
   function fit() {
-    // (The regions' extent, with room around; the inhabited world before there are any.)
-    let b = [0, 120, 1000, 760];
-    const rb = data.regions.map((r) => paths.regions.get(r.id)?.bbox).filter((x) => x && isFinite(x[0]));
-    if (rb.length) b = [Math.min(...rb.map((x) => x[0])), Math.min(...rb.map((x) => x[1])), Math.max(...rb.map((x) => x[2])), Math.max(...rb.map((x) => x[3]))];
-    // (Not the poles' stretched rows: from about 82° N to 66° S.)
-    b = [b[0], Math.max(b[1], 60), b[2], Math.min(b[3], 790)];
-    const pad = 30;
+    // (The whole world, but not the poles' stretched rows: from about 82° N to 66° S.)
+    const b = [0, 60, 1000, 790];
     view.cx = (b[0] + b[2]) / 2;
     view.cy = (b[1] + b[3]) / 2;
-    view.k = Math.max(minK(), Math.min(MAX_K, size.w / (b[2] - b[0] + 2 * pad), size.h / (b[3] - b[1] + 2 * pad)));
+    view.k = Math.max(minK(), Math.min(MAX_K, size.w / (b[2] - b[0]), size.h / (b[3] - b[1])));
     view.fitted = true;
     clampView();
   }
@@ -187,7 +188,7 @@ export function createMap() {
       const fade = Math.max(0, Math.min(1, (t - (appeared.get(key) ?? 0)) / FADE_MS));
       const age = Math.max(0, Math.min(1, (data.now - f.t) / span));
       // (A low zoom's tile, one of thousands of square kilometres, is drawn paler: it would hide the rest.)
-      c.globalAlpha = fade * (0.18 + 0.5 * (1 - age)) * (s > Z6 * 1.5 ? 0.3 : 1);
+      c.globalAlpha = fade * (data.fade === false ? 0.6 : 0.18 + 0.5 * (1 - age)) * (s > Z6 * 1.5 ? 0.3 : 1);
       c.fillStyle = resolve(data.colour(f.step));
       c.fillRect(bx, by, s, s);
     }
@@ -252,42 +253,54 @@ export function createMap() {
   });
 
   // ---- What's at a point -----------------------------------------------------------------------
-  // [its card's key, the ids of every region there (regions overlap: the card names the others)].
-  function keyAt(px, py) {
+  // The stack there, as the cards' keys: every tile shown at every zoom (the deepest first), then
+  // every region (regions overlap); none outside the canvas.
+  let zooms = [];
+  function stackAt(px, py) {
+    if (px < 0 || py < 0 || px > size.w || py > size.h) return [];
     const [wx, wy] = toWorld(px, py);
-    for (const z of [6, 3]) {
+    const out = [];
+    for (const z of zooms) {
       const n = 2 ** z, key = `${z}/${Math.floor((wx / 1000) * n)}/${Math.floor((wy / 1000) * n)}`;
-      if (data.running.has(key) || data.finished.has(key)) return [`mt ${key}`, ""];
+      if (data.running.has(key) || data.finished.has(key)) out.push(`mt ${key}`);
     }
-    const ids = [];
     for (const r of data.regions) {
       const p = paths.regions.get(r.id);
-      if (p && wx >= p.bbox[0] && wx <= p.bbox[2] && wy >= p.bbox[1] && wy <= p.bbox[3] && inRings(p.rings, wx, wy)) ids.push(r.id);
+      if (p && wx >= p.bbox[0] && wx <= p.bbox[2] && wy >= p.bbox[1] && wy <= p.bbox[3] && inRings(p.rings, wx, wy)) out.push(`mr ${r.id}`);
     }
-    return [ids.length ? `mr ${ids[0]}` : "", ids.join(",")];
+    return out;
   }
   const local = (e) => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+  // (A mouse's or pen's hover: the stack named for the page's hover card, its top drawn lit. A
+  // touch names nothing: its tap is `pick`ed.)
   const point = (e) => {
-    const [key, also] = keyAt(...local(e));
-    canvas.dataset.card = key;
-    canvas.dataset.also = also;
-    if (key !== (hover || "")) { hover = key || null; draw(); }
+    if (e.pointerType === "touch") return;
+    const keys = stackAt(...local(e));
+    canvas.dataset.card = keys.length ? "mstack" : "";
+    canvas.dataset.also = keys.join("|");
+    const top = keys[0] || null;
+    if (top !== hover) { hover = top; draw(); }
   };
 
   // ---- Moving and zooming ----------------------------------------------------------------------
   const ptrs = new Map();
-  let drag = null, moved = false, pinch = null;
+  let drag = null, moved = false, pinch = null, tap = false;
   canvas.addEventListener("pointerdown", (e) => {
+    // (A first finger down: no other is. A finger whose end never came, a touch the browser
+    // took over to scroll the page (pan-y) without a pointercancel, would stay held and the next
+    // tap be taken for a pinch's second finger: no card, #615.)
+    if (e.isPrimary) { ptrs.clear(); pinch = null; }
     point(e);
     ptrs.set(e.pointerId, local(e));
     moved = false;
+    tap = ptrs.size === 1;
     if (ptrs.size === 1) drag = { x: ptrs.get(e.pointerId)[0], y: ptrs.get(e.pointerId)[1], cx: view.cx, cy: view.cy };
     else if (ptrs.size === 2) {
       const [a, b] = [...ptrs.values()];
       pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), k: view.k };
       drag = null;
+      tap = false;
     }
-    canvas.setPointerCapture?.(e.pointerId);
   });
   canvas.addEventListener("pointermove", (e) => {
     if (ptrs.has(e.pointerId)) ptrs.set(e.pointerId, local(e));
@@ -298,7 +311,10 @@ export function createMap() {
     } else if (drag) {
       const [lx, ly] = local(e), dx = lx - drag.x, dy = ly - drag.y;
       if (!moved && Math.hypot(dx, dy) < 4) return point(e);
+      // (A mouse's drag held past the canvas's edge; a touch is held by the browser itself.)
+      if (!moved && e.pointerType !== "touch") canvas.setPointerCapture?.(e.pointerId);
       moved = true;
+      tap = false;
       view.cx = drag.cx - dx / view.k;
       view.cy = drag.cy - dy / view.k;
       clampView();
@@ -307,6 +323,9 @@ export function createMap() {
     } else point(e);
   });
   const up = (e) => {
+    // (A tap or click: the stack where it lifted, to the page.)
+    if (e.type === "pointerup" && tap && !moved && ptrs.size === 1) pick(stackAt(...local(e)), e.clientX, e.clientY);
+    tap = false;
     ptrs.delete(e.pointerId);
     if (ptrs.size < 2) pinch = null;
     // (A pinch's one finger left: it drags on from where it is.)
@@ -315,9 +334,14 @@ export function createMap() {
   };
   canvas.addEventListener("pointerup", up);
   canvas.addEventListener("pointercancel", up);
-  canvas.addEventListener("pointerleave", (e) => { if (e.pointerType !== "touch" && hover) { hover = null; draw(); } });
-  // (A drag's or pinch's end isn't a click: no card pinned.)
-  canvas.addEventListener("click", (e) => { if (moved) { e.stopPropagation(); moved = false; } else point(e); });
+  canvas.addEventListener("pointerleave", (e) => {
+    if (e.pointerType === "touch") return;
+    canvas.dataset.card = canvas.dataset.also = "";
+    if (hover) { hover = null; draw(); }
+  });
+  // (The map's clicks are its own, picked at their pointerup: the page's own click handler
+  // never sees one.)
+  canvas.addEventListener("click", (e) => { e.stopPropagation(); moved = false; });
   canvas.addEventListener("dblclick", (e) => { e.preventDefault(); zoomAt(2, ...local(e)); });
   canvas.addEventListener("wheel", (e) => {
     const f = e.deltaMode === 1 ? 16 : 1;
@@ -352,6 +376,7 @@ export function createMap() {
     d.regions.map((r) => `${r.id}:${r.state}`).join(","),
     [...d.running].map(([k, r]) => `${k}:${r.step}:${r.frac.toFixed(3)}:${r.current ? 1 : 0}`).join(","),
     [...d.finished].map(([k, f]) => `${k}:${f.step}:${Math.round((d.now - f.t) / Math.max(1, d.now - d.from) * 50)}`).join(","),
+    d.fade,
   ].join("|");
 
   // ---- Data --------------------------------------------------------------------------------------
@@ -378,12 +403,11 @@ export function createMap() {
     fresh.forEach(([k], i) => appeared.set(k, firstFinished ? t + (i / Math.max(1, fresh.length)) * 1200 : t));
     if (fresh.length || next.finished.size) firstFinished = false;
     for (const k of appeared.keys()) if (!next.finished.has(k)) appeared.delete(k);
-    const regionsCame = !data.regions.length && next.regions.length;
+    zooms = [...new Set([...next.running.keys(), ...next.finished.keys()].map((k) => tileOf(k)?.z).filter((z) => z != null))].sort((a, b) => b - a);
     const sig = signature(next);
     const same = sig === lastSig && !fresh.length && !outlines;
     lastSig = sig;
     data = next;
-    if (regionsCame && size.w) { fit(); touchAction(); }
     if (!same) draw();
   }
 

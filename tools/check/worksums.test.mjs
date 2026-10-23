@@ -3,7 +3,7 @@
 // slots and Macs, and the wait while this Mac hasn't read the build's state.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { busyLanes, finishedTiles, inRings, regionWork, regionsShown, rowsWindow, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, pastFrom, pastRuns, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, targetsOf, tileBox, tileOf, wholeProgress } from '../../web/work/sums.js';
+import { busyLanes, finishedTiles, inRings, mapTilesKept, regionWork, regionsShown, rowsWindow, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, pastFrom, pastRuns, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, targetsOf, tileBox, tileCovers, tileOf, wholeProgress } from '../../web/work/sums.js';
 
 test('map: tiles from targets, their squares', () => {
   assert.deepEqual(tileOf('6/10/15'), { z: 6, x: 10, y: 15 });
@@ -37,6 +37,21 @@ test('map: finished tiles in the window, the last end each', () => {
     { kind: 'start', step: 'unit', t: 170, targets: ['6/3/3'] },
   ], 100);
   assert.deepEqual([...f].map(([k, v]) => [k, v.t]), [['6/1/1', 150]]);
+});
+
+test('map: the filters keep tiles by kind, published, member, stage and zoom (#615)', () => {
+  const running = new Map([['6/1/1', { step: 'unit', frac: 0, run: { mac: 'A' } }], ['6/1/2', { step: 'unit', frac: 0.4, current: true, run: { mac: 'A' } }], ['6/1/3', { step: 'slope', frac: 1, run: { mac: 'B #2' } }]]);
+  const done = new Map([['3/0/0', { t: 100, step: 'pack', worker: 'B' }], ['6/2/2', { t: 300, step: 'unit', worker: 'A' }], ['6/1/2', { t: 50, step: 'unit', worker: 'A' }]]);
+  const all = { unstarted: true, progress: true, done: true };
+  const keys = ([r, f]) => [[...r.keys()].sort(), [...f.keys()].sort()];
+  assert.deepEqual(keys(mapTilesKept(running, done, all)), [['6/1/1', '6/1/2', '6/1/3'], ['3/0/0', '6/2/2']]);
+  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, unstarted: false, done: false })), [['6/1/2'], []]);
+  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, published: true }, { pubAt: 200 })), [[], ['3/0/0']]);
+  const macOf = (w) => w.split(' #')[0];
+  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, member: 'B' }, { macOf })), [['6/1/3'], ['3/0/0']]);
+  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, stage: 'roads' }, { stageOf: (s) => (s === 'unit' ? 'roads' : 'x') })), [['6/1/1', '6/1/2'], ['6/2/2']]);
+  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, zoom: '3' })), [[], ['3/0/0']]);
+  assert.equal(tileCovers({ z: 1, x: 1, y: 0 }), '0.0°–85.1° N, 0.0°–180.0° E');
 });
 
 test('map: a point in rings, nonzero', () => {

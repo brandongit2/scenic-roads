@@ -159,6 +159,27 @@ async function run() {
       await js(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
     }
 
+    // The Overview's world map: a tap pins the card of the stack under it at once, the next tap
+    // the next spot's (#615: Mobile Safari pinned nothing, then the tap before's), and a tap off
+    // the map pins nothing. (The stacks found as a mouse names them in the canvas's data-also.)
+    await show("overview");
+    const spots = await js(`(() => { const c = [...document.querySelectorAll("canvas.wmap")].find((e) => e.getClientRects().length); c.scrollIntoView({ block: "center" }); const r = c.getBoundingClientRect(); const out = []; for (let i = 1; i < 20 && out.length < 2; i++) for (let j = 1; j < 12 && out.length < 2; j++) { const x = r.left + r.width * i / 20, y = r.top + r.height * j / 12; if (document.elementFromPoint(x, y) !== c) continue; c.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, pointerType: "mouse", bubbles: true })); const also = c.dataset.also; if (also && !out.some((o) => o[2] === also)) out.push([x, y, also]); } c.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" })); return out; })()`);
+    if (spots.length < 2) check("overview: a tap on the map pins its stack's card", false, "fewer than two spots with something under them");
+    else {
+      const pinned = () => js(`document.querySelector(".card-tip.pinned .tc-sec") ? [...document.querySelectorAll(".card-tip.pinned .tc-sec")].length + " " + document.querySelector(".card-tip.pinned .tc-title")?.textContent : null`);
+      const results = [];
+      // (Taps apart by more than a double tap's time: two quick ones zoom.)
+      for (const [x, y, also] of spots) { await tap(x, y); results.push([await pinned(), also]); await sleep(500); }
+      const ok = results.every(([p, also]) => p && +p.split(" ")[0] === Math.min(8, also.split("|").length) && (!also.startsWith("mt ") || p.endsWith(also.split("|")[0].slice(3))));
+      check("overview: a tap on the map pins its stack's card, each tap its own", ok, results.map(([p, a]) => `${p} for ${a.slice(0, 60)}`).join(" | "));
+      await shot("chrome-map-pinned");
+      const off = await js(`(() => { for (let y = 120; y < innerHeight - 40; y += 20) for (let x = 6; x < 40; x += 8) { const e = document.elementFromPoint(x, y); if (e && !e.closest("[data-card], a, button, input, select, label, .card-tip, canvas")) return [x, y]; } return null; })()`);
+      if (off) await tap(...off);
+      check("overview: a tap off the map pins nothing", off && !(await pinned()), off ? "" : "no empty spot found");
+      // (The whole map again, as the pinch below starts from it.)
+      await js(`[...document.querySelectorAll(".wmap-ctl")].find((e) => e.getClientRects().length).lastChild.click()`);
+    }
+
     // The world maps (every tab showing one): a pinch zooms, then a one-finger sideways drag pans
     // (fitted, the map has no room to pan sideways); the canvas's pixels change, the page stays put.
     let maps = 0;

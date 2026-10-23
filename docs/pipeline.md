@@ -170,19 +170,33 @@ same tab; an alert links to the tab that says more.
   (the map's last update with its catalogue's number and kind (with the low
   zooms or map tiles only), the next ≈ and the map tiles to draw; machines working).
 - **World map** (`worldmap.js`, a canvas in Web Mercator, the world 0–1000 each way): the z3 grid
-  (z6's too once its cells are 24 px), zoomed out at most to the world filling the box's width, the countries (`countries.json`), the regions' outlines
+  (z6's too once its cells are 24 px), opening on the whole world (about 82° N to 66° S) and zoomed out at most to the world filling the box's width, a crosshair over it, the countries (`countries.json`), the regions' outlines
   (`/work/regions`) coloured by state (on the map or done, building, to come; counted in the
   legend), the tiles finished in the Jobs tab's past window (the history's ends, `sums.js`
   finishedTiles; each fades in as it comes, the window's history played back on the first look,
-  paler as it ages; a low zoom's tile paler still), and each running job's target tiles (the
+  paler as it ages, or evenly with the fade filter off; a low zoom's tile paler still), and each running job's target tiles (the
   history's start or lease event, else the tiles its id or words name: `sums.js` targetsOf) in
   its stage's colour, filled as far as they're done (`sums.js` runningTiles: from the job's
   `live`, its targets done taken as the first of its list and the one under way at its time so
   far against the step's `each_s`, under 95%; where `live` is missing, the job's progress or the
-  lease's beat `frac` spread over its tiles). Hover cards (the Jobs tab's cards, pinned on a
-  click or tap) for a tile (its step, state, phase, job and Mac, or when it finished, and a
-  minimap of it and half a tile around) and a region (its folders, state, tiles, what's left,
-  download size). Moved by a drag, zoomed by a pinch (ctrl+wheel in Chrome, gesture events in
+  lease's beat `frac` spread over its tiles). Its cards (the Jobs tab's, drawn as
+  docs/mockups/build-live.html's: a head with the stage's or state's swatch, a kicker and the
+  title; stat tiles; bars; chips; a foot) show the whole stack under the point, one after
+  another under a line: every tile there at every zoom (the deepest first), then every region.
+  A tile's: its stage and state, its share done and phase (stat tiles), a bar of it done in its
+  stage's colour, step, job, Mac, the degrees it covers, a minimap of it and half a tile around;
+  a finished one's when and whether the last catalogue has it. A region's: its folders, its
+  download and tiles built (stat tiles), a bar of its tiles built, a bar of the build's stages
+  (built solid, the one under way striped, to come faint), state, times, build order, its work
+  left by step (chips), its outline's recipe (the foot). Under a mouse the stack follows the
+  pointer; a click or a tap pins it (the map takes its own clicks at their pointerup, the stack
+  where it lifted, and never leaves them to the page: Mobile Safari pinned the tap before's,
+  #615). Under it the legend (the regions by state and the tiles, counted; every stage's
+  colour) and the filters, this browser's own (localStorage): unstarted, in-progress and
+  completed tiles; completed tiles faded by age; only those published (finished by the last
+  catalogue's time); "Show only for" one pool member (the tiles it ran, the history's ends,
+  and runs or will run in its running jobs and leases; the forecast's lanes name no tiles, so
+  its later jobs' aren't shown); one stage; one zoom (`sums.js` mapTilesKept). Moved by a drag, zoomed by a pinch (ctrl+wheel in Chrome, gesture events in
   Safari, two fingers on a touch screen), a double click, its +/− and whole-map buttons or the
   keyboard; a two-finger scroll moves it only once zoomed in. Jobs with no tile (a worldwide step's) are named under it. Drawn only when something it shows changes; a theme change redraws it and the minimaps shown.
 - **Jobs tab, the schedule:** lanes grouped by Mac (its short name over a lane per slot, the lead
@@ -270,9 +284,8 @@ same tab; an alert links to the tab that says more.
   left by stage (the forecast's `left` per step at each step's measured seconds a target, the
   region with the most full width). Above, what's left in all regions by step, summed in the page
   (sums.js `stepTotals`). A row under the pointer lights its region on the map; its card (the
-  Jobs tab's, also on the map's regions) says its folders, its download and tiles built (stat
-  tiles), state, times, build order, the other regions under the map's pointer (regions overlap),
-  work left and outline recipe (`/work/regions`, docs/pool.md §10, Regions).
+  Jobs tab's, also in the map's stacks, as above) says its folders, its download and tiles
+  built, its stages, state, times, build order, work left and outline recipe (`/work/regions`, docs/pool.md §10, Regions).
 - **Activity:** the hours, and a sentence per event. Below them, as the owner's mockup lays them
   out, from every Mac's `/work/live` (`activity.js`, asked every 2 s while the tab shows; docs/pool.md
   §10, Live): the **file stream**, what each Mac is moving now, newest first (the NAS files its

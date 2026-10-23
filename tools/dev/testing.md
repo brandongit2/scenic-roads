@@ -120,7 +120,8 @@ settings with `{}`, history, live) to this Mac's agent on 127.0.0.1:8090, refusi
 - `node tools/dev/touch-test.mjs [--out DIR]` (35–55 s on the M1): headless Chrome as a 390×844 phone (DPR 3,
   mobile, 5 touch points, iPhone user agent), real touches through CDP. Each tab: no sideways
   scroll (else the elements past the edge), no console errors, a screenshot (`chrome-<tab>.png`,
-  1 px a CSS px). Then: a card pins on a tap and unpins on a tap elsewhere; every world map zooms
+  1 px a CSS px). Then: a card pins on a tap and unpins on a tap elsewhere; a tap on the
+  Overview's map pins the stack under it, each tap its own, and one off it pins nothing (#615); every world map zooms
   with a pinch (its touch-action turns `none`, its zoomed-in sign) and pans
   with a drag (pixels changed once it held still), the page staying put; the Regions split stacked at phone width
   and dragged at 900 px; the schedule's dropdown takes a tap and a choice; settings fields focus on a
@@ -132,4 +133,6 @@ settings with `{}`, history, live) to this Mac's agent on 127.0.0.1:8090, refusi
   `safari-<tab>.png` (`xcrun simctl io`), then shuts the server down and the simulator if it booted it (one already running, someone's, stays), on any exit. `simctl openurl` may say
   "Operation timed out" while Safari starts; the page opens anyway. For touch, set
   `SCENIC_SIM_HOLD=<s>` and drive it meanwhile with the Simulator control tools (tap, swipe,
-  touch2_path for a pinch, screenshot; the first input after a boot may need a few retries).
+  touch2_path for a pinch, screenshot; the first input after a boot may need a few retries). Port 8097 held
+  (another agent's run): `SCENIC_SIM_PORT=<n>`; a server that can't listen fails the run, not
+  showing someone else's page.

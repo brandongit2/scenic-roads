@@ -167,7 +167,8 @@ Common rules:
   sticky header (the verdict: going, done when, what needs a look; Pause, Freeze, Resume; the
   tabs), a tab per part by the address's `#hash`, and a fixed footer (the charts' range, the Live
   dot). Overview: the overview (its map figure from the last catalogue) and the world map
-  (`worldmap.js`: regions, running and finished tiles, docs/pipeline.md §5); Jobs (the schedule: each
+  (`worldmap.js`: regions, running and finished tiles; a card of the whole stack under a point,
+  hovered or pinned by a click or tap; its legend and filters, docs/pipeline.md §5); Jobs (the schedule: each
   Mac's lanes with the jobs that ran, running and to come; the stages: a row per step with a cell
   per job; a card on hover, pinned on a click or tap); Machines (a card per
   machine, the pool: who leads, "Make lead", "Take it"; the NAS, `nas.js`: how fast it responds, use against its limits, who is using it, its use over time); Regions (a virtual list beside a second world map, split by a bar to drag; a row under the pointer lights its region on the map and shows its card); Activity (last day by the hour,
