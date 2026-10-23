@@ -297,7 +297,7 @@ impl BlockCache {
 /// values and its tile arrays lie within a few KB of each other, in one or two clusters (the first
 /// image's at the file's start, the overviews' after its data: the depth sources' grids, 20 Oct
 /// 2026, their headers 24–38 reads each), so a window at each cluster serves the whole header.
-const HEADER_WINDOW: usize = 32 << 10;
+pub(crate) const HEADER_WINDOW: usize = 32 << 10;
 /// How many windows a header's read keeps (its clusters; one past that goes).
 const HEADER_WINDOWS: usize = 8;
 /// The most bytes of tile or strip arrays (offsets and counts) a file keeps: an array within it is
@@ -830,6 +830,15 @@ impl Tiff {
         let b = decode()?;
         c.lock().unwrap().put(k, b.clone());
         Ok(b)
+    }
+
+    /// Where block (`bx`, `by`) of image `level` lies in the file: its offset and length; None for
+    /// a sparse block (nothing to read).
+    pub fn block_span(&self, level: usize, bx: u32, by: u32) -> Result<Option<(u64, u64)>> {
+        let img = self.level(level)?;
+        let index = by as u64 * img.blocks_across() as u64 + bx as u64;
+        let (off, n) = (self.strile(&img.offsets, index)?, self.strile(&img.counts, index)?);
+        Ok((off != 0 && n != 0).then_some((off, n)))
     }
 
     fn decode(&self, img: &Image, index: u64, by: u32) -> Result<Block> {

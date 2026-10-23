@@ -28,27 +28,27 @@ fn sha(b: &[u8]) -> String {
 #[test]
 fn a_tile_encodes_to_the_same_jxl_codestream_each_time() {
     let rgb = pattern();
-    let a = jxl::lossless_rgb8(&rgb, 256, 256, 7).unwrap();
+    let a = jxl::lossless_rgb8(&rgb, 256, 256, 6).unwrap();
     assert_eq!(&a[..2], &[0xff, 0x0a], "a bare codestream");
-    assert_eq!(a, jxl::lossless_rgb8(&rgb, 256, 256, 7).unwrap());
-    assert!(jxl::lossless_rgb8(&rgb[1..], 256, 256, 7).is_err());
+    assert_eq!(a, jxl::lossless_rgb8(&rgb, 256, 256, 6).unwrap());
+    assert!(jxl::lossless_rgb8(&rgb[1..], 256, 256, 6).is_err());
     assert_eq!(jxl::version(), "0.12.0");
 }
 
 /// Every Mac makes the same bytes (a fine tile's content name and so its pack's follow them):
-/// golden hashes, the same on the M1, the M4 and the Mac mini (#543, 22 Oct). A libjxl change, or a
+/// golden hashes at the fine terrain's effort (6: terrain_fine::JXL_EFFORT), the same on the M1, the M4 and the Mac mini (#543, 22 Oct; #599, 23 Oct). A libjxl change, or a
 /// Mac whose CPU picks another SIMD target, shows here.
 #[test]
 fn every_mac_makes_the_same_bytes() {
     let got = [
-        sha(&jxl::lossless_rgb8(&pattern(), 256, 256, 7).unwrap()),
-        sha(&jxl::lossless_rgb8(&terrain(), 256, 256, 7).unwrap()),
+        sha(&jxl::lossless_rgb8(&pattern(), 256, 256, 6).unwrap()),
+        sha(&jxl::lossless_rgb8(&terrain(), 256, 256, 6).unwrap()),
     ];
     assert_eq!(
         got,
         [
-            "d29e149b4113679a20ed62e997012251bd78a4d6f4aedd67fd4294bf23b2b38a",
-            "cec15c415b2192dfd47af1ba7259a6d34e8f40306490015cdcf505636c20e214"
+            "738f0d73550dbb717326014708646d092464a499995358ac3c6a6bacd06d0eba",
+            "84543cafdb894469856c68cfdfc784d71ec0858d336ac974f38adb5edb79f706"
         ]
     );
 }

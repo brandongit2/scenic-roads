@@ -5191,10 +5191,11 @@ fn terrain_fine_step(out: &mut Out, args: &[String]) -> Result<()> {
         .map(|t| TileId::parse(t).filter(|u| u.z == tf::TARGET_Z).with_context(|| format!("not a z8 tile: {t}")))
         .collect::<Result<_>>()?;
     anyhow::ensure!(!ts.is_empty(), "terrain-fine <8/x/y …>");
-    let p = phase("the fine datasets' declarations read and the basemap's water opened", Class::NasRead);
+    let p = phase("the fine datasets' declarations read", Class::NasRead);
     let mut current = tf::Current::read(out.root(), &out.manifest)?;
-    let water = pipeline::terrain_pack::open_water(out)?;
     drop(p);
+    // (Opened for the first target a fine dataset meets: one none meets drops its packs alone.)
+    let mut water = None;
     let fetch = pipeline::fetch::Fetcher::from_env();
     let names: Vec<String> = ts.iter().map(|t| format!("Making the fine terrain of {}", t.slash())).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
@@ -5205,8 +5206,9 @@ fn terrain_fine_step(out: &mut Out, args: &[String]) -> Result<()> {
             Ok(m) => current.refresh(out.root(), &m),
             Err(e) => eprintln!("terrain-fine: the records can't be read now ({e:#}); the datasets as read before"),
         }
-        let fine = current.fine.as_ref().filter(|f| !f.sets.is_empty());
+        let fine = current.fine.as_ref().filter(|f| f.meets((t.x, t.y)));
         let c = cost_start(tf::STEP, &t.slash());
+        let fetched = pipeline::fetch::fetched_bytes();
         // (Its z6 tile's hi pack, and its neighbours' its ring crosses into.)
         let his: Vec<Option<PathBuf>> = tf::ring_packs((t.x, t.y))
             .iter()
@@ -5220,19 +5222,25 @@ fn terrain_fine_step(out: &mut Out, args: &[String]) -> Result<()> {
             _ => Default::default(),
         };
         drop(p);
+        if water.is_none() && !base.is_empty() {
+            let _p = phase("the basemap's water opened", Class::NasRead);
+            water = Some(pipeline::terrain_pack::open_water(out)?);
+        }
+        let w = water.as_ref().filter(|_| !base.is_empty()).map(|w| w as &dyn pipeline::terrain_water::WaterSource);
         let p = phase("its fine tiles made and uploaded", Class::Mixed);
-        let r = tf::make(out, (t.x, t.y), &base, Some(&water), fine, &fetch, &|_, _, _| {})?;
+        let r = tf::make(out, (t.x, t.y), &base, w, fine, &fetch, &|_, _, _| {})?;
         drop(p);
         out.save()?;
         eprintln!(
-            "terrain-fine {}: {} of {} base tiles with finer data, {} tiles in {} packs, {} MB; {} dropped",
+            "terrain-fine {}: {} of {} base tiles with finer data, {} tiles in {} packs, {} MB; {} dropped; {} MB fetched",
             t.slash(),
             r.with_data,
             r.base_tiles,
             r.tiles,
             r.packs,
             r.bytes >> 20,
-            r.dropped
+            r.dropped,
+            (pipeline::fetch::fetched_bytes() - fetched) >> 20
         );
         pipeline::control::done(tf::STEP, &t.slash());
         note_cost(tf::STEP, &t.slash(), c);

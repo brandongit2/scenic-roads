@@ -15,7 +15,8 @@
 //! - **What a fine tile is:** its pixels sampled from the datasets meeting its z8 tile (in their
 //!   order, blended at their edges: crate::dem::generic), at their full resolution and brought to
 //!   EGM2008 as the roads' are (crate::dem::geoid), with the stored base tile last (`BASE_URL`), so
-//!   the fine data blends into the base over four base pixels where it ends; where only the base
+//!   the fine data blends into the base over four base pixels (the base's at the z8 tile's middle
+//!   latitude) where it ends; where only the base
 //!   gives a height, the base read across its tiles' edges (`padded`: a ring of one tile past the z8
 //!   tile read with it, from its z6 tile's hi pack and its neighbours' where the ring crosses into
 //!   them, `base_tiles`, `ring_packs`; a neighbour of another zoom where the base's finest zoom
@@ -28,6 +29,11 @@
 //!   it (`PRESENCE`, read as their roads read them) makes none; a fine tile none of whose pixels
 //!   comes from a fine dataset isn't stored (the server makes it from its ancestor, as anywhere
 //!   finer than the data).
+//! - **Read once:** a target reads its datasets' GeoTIFF blocks ahead of their sampling, `FETCHES`
+//!   at once, each once (`read_ahead`, kept in memory by file: `Kept`): first those the presence
+//!   grids of all its base tiles read, then by z10 tile those its base tiles with data read (each
+//!   tile's area and its blends' reach past it: `plan_items`), each kept until its last z10 tile is
+//!   made, `KEPT_BYTES` at most. Each file is opened once a target, its header read once.
 //! - **Packs:** by z10 tile (`PACK_Z`): `layers/terrain/fine/10-x-y` (docs/formats.md, Pack), a few
 //!   hundred MB at most. A z8 tile's run drops those of its packs it no longer makes, all of them
 //!   where no dataset is fine any more.
@@ -39,20 +45,22 @@ use anyhow::{Context, Result};
 use det::Det;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 
 /// The step.
 pub const STEP: &str = "terrain-fine";
 /// A target's zoom: a z8 tile ("8/x/y").
 pub const TARGET_Z: u8 = 8;
-/// The finest zoom any dataset makes (1 m data in the far north).
-pub const MAX_Z: u8 = 18;
+/// The finest zoom any dataset makes, whatever its resolution (the owner's, 23 Oct): 1 m data stops
+/// at z16 as 2 m does. One cap for all, in `zoom_for` and a pyramid's zoom alike.
+pub const MAX_Z: u8 = 16;
 /// The zoom of a fine pack's root tile.
 pub const PACK_Z: u8 = 10;
 /// A fine tile's heights are rounded to this (m): 1 cm (owner, 21 Oct; .claude/notes/533/design.md).
 pub const QUANTUM_M: f32 = 0.01;
-/// libjxl's effort for the fine tiles (its default).
-pub const JXL_EFFORT: u8 = 7;
+/// libjxl's effort for the fine tiles (the owner's, 23 Oct: a step under its default, 7).
+pub const JXL_EFFORT: u8 = 6;
 /// A dataset is fine where its resolution is under this share of the terrain's finest dataset's.
 pub const FINER: f64 = 0.9;
 /// The presence grid's side (points) over a base tile.
@@ -60,7 +68,7 @@ pub const PRESENCE: usize = 128;
 /// The stored base tiles, as the sampler reads them (a tile pyramid served from the run's memory).
 pub const BASE_URL: &str = "scenic-terrain:{z}/{x}/{y}";
 /// Bumped with any change to the fine tiles' bytes from the same inputs.
-pub const FINE_V: u32 = 3;
+pub const FINE_V: u32 = 4;
 /// The fine packs' encoding (their header's `encoding`): Terrarium RGB as JPEG XL.
 pub const ENCODING: &str = "terrarium-jxl";
 
@@ -216,6 +224,13 @@ impl Fine {
         Ok(Fine { elevation: a, geoid, sets })
     }
 
+    /// Whether a fine dataset meets z8 tile `t` and is finer there than the base (`meeting`, by
+    /// the datasets' coverage as their `regions` cut it): a target none meets has nothing to read.
+    pub fn meets(&self, t: (u32, u32)) -> bool {
+        let b = crate::stage::tile_box_grown(TARGET_Z, t.0, t.1, 0.0);
+        !meeting(&self.sets, b, poleward(b)).is_empty()
+    }
+
     /// The plans over box `b` (its poleward latitude `lat`): the presence plan (the fine datasets
     /// meeting it, read as their roads read them) and the full one (read at full resolution, the
     /// base last); None where no dataset is fine there.
@@ -235,7 +250,10 @@ impl Fine {
                 *read_resolution = None;
             }
         }
-        // (The base, by the band of latitude its finest zoom holds: crate::terrain_pack::max_zoom_at.)
+        // (The base, by the band of latitude its finest zoom holds: crate::terrain_pack::max_zoom_at;
+        // its resolution the base's at the box's middle, so its edge's blend is four of its pixels
+        // there.)
+        let mid = (b[1] + b[3]) / 2.0;
         let bands: [(u32, Vec<[f64; 4]>); 3] = [
             (12, vec![[-180.0, -67.0, 180.0, 67.0]]),
             (11, vec![[-180.0, 67.0, 180.0, 79.0], [-180.0, -79.0, 180.0, -67.0]]),
@@ -245,7 +263,7 @@ impl Fine {
             full.datasets.push(Dataset {
                 id: format!("terrain-z{zb}"),
                 code: 0,
-                resolution: tile_resolution(zb, 0.0),
+                resolution: tile_resolution(zb, mid),
                 cover: Some(cover),
                 source: Source::Tiles { url: BASE_URL.into(), zoom: zb, encoding: "terrarium".into() },
                 convert: None,
@@ -297,24 +315,60 @@ impl Current {
     }
 }
 
-/// The base tiles served to the sampler from memory (`BASE_URL`), everything else fetched.
+/// The base tiles served to the sampler from memory (`BASE_URL`), everything else fetched; each
+/// file opened once a target (`Kept`), whichever sampler or plan opens it.
 struct BaseFetch<'a> {
     base: &'a HashMap<(u8, u32, u32), Vec<u8>>,
     inner: &'a dyn crate::fetch::Fetch,
+    opened: Mutex<HashMap<String, Option<Arc<Kept>>>>,
+    /// The bytes of the files' small reads kept (`SMALL_BYTES` at most).
+    small: Arc<AtomicUsize>,
 }
 
-impl BaseFetch<'_> {
+impl<'a> BaseFetch<'a> {
+    fn new(base: &'a HashMap<(u8, u32, u32), Vec<u8>>, inner: &'a dyn crate::fetch::Fetch) -> Self {
+        BaseFetch { base, inner, opened: Mutex::new(HashMap::new()), small: Default::default() }
+    }
+
     fn base(&self, url: &str) -> Option<Option<Vec<u8>>> {
         let rest = url.strip_prefix("scenic-terrain:")?;
         let mut p = rest.split('/').map(|s| s.parse::<u32>().ok());
         let (z, x, y) = (p.next()??, p.next()??, p.next()??);
         Some(self.base.get(&(z as u8, x, y)).cloned())
     }
+
+    /// `url`'s file, opened once.
+    fn kept(&self, url: &str) -> Result<Option<Arc<Kept>>> {
+        if let Some(k) = self.opened.lock().unwrap().get(url) {
+            return Ok(k.clone());
+        }
+        let k = match self.inner.open(url)? {
+            Some(f) => Some(Arc::new(Kept {
+                len: f.len()?,
+                inner: f,
+                spans: Default::default(),
+                small: Default::default(),
+                small_bytes: self.small.clone(),
+            })),
+            None => None,
+        };
+        Ok(self.opened.lock().unwrap().entry(url.to_string()).or_insert(k).clone())
+    }
+
+    /// The blocks read ahead and kept but those of `keep` let go.
+    fn keep_only(&self, keep: &[Item]) {
+        let mine: std::collections::HashSet<(usize, u64)> =
+            keep.iter().map(|i| (Arc::as_ptr(&i.file) as usize, i.off)).collect();
+        for k in self.opened.lock().unwrap().values().flatten() {
+            let p = Arc::as_ptr(k) as usize;
+            k.spans.lock().unwrap().retain(|off, _| mine.contains(&(p, *off)));
+        }
+    }
 }
 
 impl crate::fetch::Fetch for BaseFetch<'_> {
     fn open(&self, url: &str) -> Result<Option<Arc<dyn store::range::RangeRead>>> {
-        self.inner.open(url)
+        Ok(self.kept(url)?.map(|k| k as Arc<dyn store::range::RangeRead>))
     }
     fn get(&self, url: &str) -> Result<Option<Vec<u8>>> {
         match self.base(url) {
@@ -328,6 +382,336 @@ impl crate::fetch::Fetch for BaseFetch<'_> {
             None => self.inner.get_within(url, within),
         }
     }
+}
+
+/// How many of a target's blocks are fetched at once ahead of their sampling (`read_ahead`), and
+/// its files opened at once.
+pub const FETCHES: usize = 48;
+/// The most bytes (as fetched) of a target's blocks read ahead and kept at once: each block is
+/// fetched once a target and kept until the last z10 tile reading it is made (past this the
+/// reading ahead waits, but for the z10 tile being made).
+pub const KEPT_BYTES: usize = 2 << 30;
+/// The most bytes of its files' small reads (their headers' windows) a target keeps, so each
+/// sampler opening a file reads its header from memory.
+const SMALL_BYTES: usize = 64 << 20;
+
+/// A fine dataset's file as a target's run reads it: its blocks read ahead (`read_ahead`) kept by
+/// offset, its small reads kept as asked; anything else read from the file.
+struct Kept {
+    inner: Arc<dyn store::range::RangeRead>,
+    len: u64,
+    spans: Mutex<BTreeMap<u64, Arc<[u8]>>>,
+    small: Mutex<HashMap<(u64, usize), Arc<[u8]>>>,
+    small_bytes: Arc<AtomicUsize>,
+}
+
+impl Kept {
+    fn kept(&self, off: u64, len: usize) -> Option<Vec<u8>> {
+        let s = self.spans.lock().unwrap();
+        let (at, b) = s.range(..=off).next_back()?;
+        let o = (off - at) as usize;
+        (o + len <= b.len()).then(|| b[o..o + len].to_vec())
+    }
+
+    /// Bytes `off..off + n` read and kept: a header window's worth at least (a small block is read
+    /// by a window's read: crate::geotiff's `Windowed`).
+    fn fetch(&self, off: u64, n: u64) -> Result<(), store::IoError> {
+        let n = n.max((crate::geotiff::HEADER_WINDOW as u64).min(self.len.saturating_sub(off))) as usize;
+        if self.spans.lock().unwrap().get(&off).is_some_and(|b| b.len() >= n) {
+            return Ok(());
+        }
+        let b: Arc<[u8]> = self.inner.read_at(off, n)?.into();
+        self.spans.lock().unwrap().insert(off, b);
+        Ok(())
+    }
+}
+
+impl store::range::RangeRead for Kept {
+    fn len(&self) -> Result<u64, store::IoError> {
+        Ok(self.len)
+    }
+
+    fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, store::IoError> {
+        if let Some(b) = self.kept(off, len) {
+            return Ok(b);
+        }
+        let small = len <= crate::geotiff::HEADER_WINDOW;
+        if small {
+            if let Some(b) = self.small.lock().unwrap().get(&(off, len)) {
+                return Ok(b.to_vec());
+            }
+        }
+        let b = self.inner.read_at(off, len)?;
+        if small && self.small_bytes.fetch_add(len, Ordering::Relaxed) + len <= SMALL_BYTES {
+            self.small.lock().unwrap().insert((off, len), b.as_slice().into());
+        }
+        Ok(b)
+    }
+}
+
+/// A block a target reads: its file, its bytes' place, and the first and last groups (z10 tiles,
+/// by their place in the run's order) reading it.
+struct Item {
+    file: Arc<Kept>,
+    off: u64,
+    n: u64,
+    first: usize,
+    last: usize,
+}
+
+/// A GeoTIFF file of a plan's datasets near a target, open to plan its reads: its CRS, the level
+/// its plan reads and how far past a point its sampling reads (m: the blends' widest band).
+struct PlanFile {
+    file: Arc<Kept>,
+    tiff: crate::geotiff::Tiff,
+    crs: u16,
+    level: usize,
+    reach: f64,
+}
+
+/// `f` run on each of `items`, `threads` at once (network reads: their waits overlap).
+fn at_once<T: Sync, R: Send>(items: &[T], threads: usize, f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let next = AtomicUsize::new(0);
+    let out: Vec<Mutex<Option<R>>> = items.iter().map(|_| Mutex::new(None)).collect();
+    std::thread::scope(|s| {
+        for _ in 0..threads.clamp(1, items.len().max(1)) {
+            s.spawn(|| loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                let Some(t) = items.get(i) else { return };
+                *out[i].lock().unwrap() = Some(f(t));
+            });
+        }
+    });
+    out.into_iter().map(|m| m.into_inner().unwrap().expect("each item run")).collect()
+}
+
+/// Lon, lat in a CRS (EPSG:3979 projected; 4326 and 4269 as they are).
+fn native(atlas: &crate::dem::proj::Atlas, crs: u16, lon: f64, lat: f64) -> (f64, f64) {
+    if crs == 3979 {
+        atlas.project(lon, lat)
+    } else {
+        (lon, lat)
+    }
+}
+
+/// The side of the grid of points a base tile's reads are planned by (`grid`).
+const GRID: usize = 33;
+
+/// Box `b`'s grid of points (lon, lat), `GRID` a side, evenly in Web Mercator, its edges on them.
+fn grid(b: [f64; 4]) -> Vec<(f64, f64)> {
+    let merc = |lat: f64| {
+        let r = lat.to_radians();
+        (r.dtan() + 1.0 / r.dcos()).dln()
+    };
+    let (y0, y1, g) = (merc(b[1]), merc(b[3]), (GRID - 1) as f64);
+    (0..GRID)
+        .flat_map(|j| {
+            let lat = (y0 + (y1 - y0) * j as f64 / g).dsinh().datan().to_degrees();
+            (0..GRID).map(move |i| (b[0] + (b[2] - b[0]) * i as f64 / g, lat))
+        })
+        .collect()
+}
+
+/// The GeoTIFF files of `plan`'s datasets meeting box `b` (those fetched: not in a store, nor
+/// dropped files) whose footprints come within their bands' reach of it, open (`FETCHES` at once).
+fn plan_files(plan: &Plan, b: [f64; 4], bf: &BaseFetch) -> Result<Vec<PlanFile>> {
+    use crate::dem::generic::M_PER_DEG;
+    let atlas = crate::dem::proj::Atlas::new();
+    let lat = poleward(b);
+    let here: Vec<&Dataset> = plan.datasets.iter().filter(|d| Cover::of(d.cover.as_deref()).meets(b)).collect();
+    let reach = 4.0 * here.iter().map(|d| d.resolution).fold(0.0, f64::max);
+    let pts = grid(b);
+    let mut todo = Vec::new();
+    for d in &here {
+        let Source::Geotiff { crs, read_resolution, store: false, files } = &d.source else { continue };
+        // (The box in the files' CRS, grown by the bands' reach.)
+        let np: Vec<(f64, f64)> = pts.iter().map(|&(lo, la)| native(&atlas, *crs, lo, la)).collect();
+        let grow = if *crs == 3979 {
+            (reach, reach)
+        } else {
+            (reach / (M_PER_DEG * lat.to_radians().cos()), reach / M_PER_DEG)
+        };
+        let nb = [
+            np.iter().map(|p| p.0).fold(f64::INFINITY, f64::min) - grow.0,
+            np.iter().map(|p| p.1).fold(f64::INFINITY, f64::min) - grow.1,
+            np.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max) + grow.0,
+            np.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max) + grow.1,
+        ];
+        for (url, fp) in files {
+            let apart = fp.is_some_and(|f| f[0] > nb[2] || f[2] < nb[0] || f[1] > nb[3] || f[3] < nb[1]);
+            if !url.starts_with('/') && !apart {
+                todo.push((url.as_str(), *crs, *read_resolution));
+            }
+        }
+    }
+    let opened = at_once(&todo, FETCHES, |&(url, crs, rr)| -> Result<Option<PlanFile>> {
+        let Some(file) = bf.kept(url)? else { return Ok(None) };
+        let tiff = crate::geotiff::Tiff::open(file.clone()).with_context(|| url.to_string())?;
+        let level = crate::dem::generic::level_for(&tiff, crs, rr)?;
+        Ok(Some(PlanFile { file, tiff, crs, level, reach }))
+    });
+    Ok(opened.into_iter().collect::<Result<Vec<_>>>()?.into_iter().flatten().collect())
+}
+
+/// The blocks of `files` that sampling the base tiles of `groups` reads (each tile's area and its
+/// bands' reach past it, by a grid of its points: `grid`), in the groups' order, each once, with
+/// the first and last group reading it.
+fn plan_items(files: &[PlanFile], groups: &[Vec<(u8, u32, u32)>]) -> Result<Vec<Item>> {
+    let atlas = crate::dem::proj::Atlas::new();
+    let mut at: HashMap<(usize, u32, u32), usize> = HashMap::new();
+    let mut items: Vec<Item> = Vec::new();
+    for (g, tiles) in groups.iter().enumerate() {
+        for &(z, x, y) in tiles {
+            let tb = crate::stage::tile_box_grown(z, x, y, 0.0);
+            let lat = poleward(tb);
+            let pts = grid(tb);
+            let mut by_crs: HashMap<u16, Vec<(f64, f64)>> = HashMap::new();
+            for (k, f) in files.iter().enumerate() {
+                let np = by_crs
+                    .entry(f.crs)
+                    .or_insert_with(|| pts.iter().map(|&(lo, la)| native(&atlas, f.crs, lo, la)).collect());
+                let gt = f.tiff.transform(f.level)?;
+                let img = f.tiff.level(f.level)?;
+                let px: Vec<(f64, f64)> =
+                    np.iter().map(|&(nx, ny)| ((nx - gt[0]) / gt[1], (ny - gt[3]) / gt[5])).collect();
+                // (A point's reach in pixels: its bands', its sampling's neighbours, and half the
+                // grid's step.)
+                let (mx, my) = crate::dem::generic::pixel_m(f.crs, &gt, lat);
+                let mut step: f64 = 0.0;
+                for j in 0..GRID {
+                    for i in 0..GRID {
+                        let p = px[j * GRID + i];
+                        let next = [
+                            (i + 1 < GRID).then(|| px[j * GRID + i + 1]),
+                            (j + 1 < GRID).then(|| px[(j + 1) * GRID + i]),
+                        ];
+                        for q in next.into_iter().flatten() {
+                            step = step.max((p.0 - q.0).abs()).max((p.1 - q.1).abs());
+                        }
+                    }
+                }
+                let (pc, pr) = (f.reach / mx + 2.0 + step / 2.0, f.reach / my + 2.0 + step / 2.0);
+                let (w, h) = (img.width as f64, img.height as f64);
+                let (bw, bh) = (img.block_w, img.block_h);
+                let mut mine = std::collections::BTreeSet::new();
+                for &(c, r) in &px {
+                    let (c0, c1) = ((c - pc).max(0.0), (c + pc).min(w - 1.0));
+                    let (r0, r1) = ((r - pr).max(0.0), (r + pr).min(h - 1.0));
+                    if c0 > c1 || r0 > r1 {
+                        continue;
+                    }
+                    for by in r0 as u32 / bh..=r1 as u32 / bh {
+                        for bx in c0 as u32 / bw..=c1 as u32 / bw {
+                            mine.insert((bx, by));
+                        }
+                    }
+                }
+                for (bx, by) in mine {
+                    match at.get(&(k, bx, by)) {
+                        Some(&i) => items[i].last = g,
+                        None => {
+                            let Some((off, n)) = f.tiff.block_span(f.level, bx, by)? else { continue };
+                            at.insert((k, bx, by), items.len());
+                            items.push(Item { file: f.file.clone(), off, n, first: g, last: g });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(items)
+}
+
+/// `work` run on each group in turn (0 to `n - 1`) while `FETCHES` threads read `items`' blocks
+/// (in their order: by their first group) into their files' `Kept`; a group is worked once its
+/// blocks are in. The bytes read and not yet let go are held to `KEPT_BYTES`, past which only the
+/// group being worked's blocks are read; with `release`, a block is let go once its last group is
+/// worked. A failed read stops the reading ahead (the sampling's own read of that block says why);
+/// so does `work`'s end, however it ends, a read waiting to retry too (crate::fetch::cancellable).
+fn read_ahead(items: &[Item], n: usize, release: bool, mut work: impl FnMut(usize) -> Result<()>) -> Result<()> {
+    if items.is_empty() {
+        return (0..n).try_for_each(work);
+    }
+    // (By group: how many items are its first's, and those whose last it is.)
+    let mut firsts = vec![0usize; n];
+    let mut lasts: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (i, it) in items.iter().enumerate() {
+        firsts[it.first] += 1;
+        lasts[it.last].push(i);
+    }
+    /// The fetching's and the working's shared state.
+    struct St {
+        next: usize,
+        /// By group, its first's items read.
+        done: Vec<usize>,
+        held: usize,
+        /// The group being worked.
+        at: usize,
+        stop: bool,
+    }
+    let st = Mutex::new(St { next: 0, done: vec![0; n], held: 0, at: 0, stop: false });
+    let cv = Condvar::new();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let lock = || st.lock().unwrap_or_else(|e| e.into_inner());
+    let stop = || {
+        cancel.store(true, Ordering::Relaxed);
+        lock().stop = true;
+        cv.notify_all();
+    };
+    // (Stopped however the working ends, a panic too, so the threads end.)
+    struct Stop<F: Fn()>(F);
+    impl<F: Fn()> Drop for Stop<F> {
+        fn drop(&mut self) {
+            (self.0)()
+        }
+    }
+    std::thread::scope(|s| {
+        for _ in 0..FETCHES.min(items.len()) {
+            s.spawn(|| loop {
+                let i = {
+                    let mut g = lock();
+                    while !g.stop && g.next < items.len() && g.held >= KEPT_BYTES && items[g.next].first > g.at {
+                        g = cv.wait(g).unwrap_or_else(|e| e.into_inner());
+                    }
+                    if g.stop || g.next >= items.len() {
+                        return;
+                    }
+                    g.next += 1;
+                    g.held += items[g.next - 1].n as usize;
+                    g.next - 1
+                };
+                let it = &items[i];
+                if crate::fetch::cancellable(&cancel, || it.file.fetch(it.off, it.n)).is_err() {
+                    stop();
+                    return;
+                }
+                lock().done[it.first] += 1;
+                cv.notify_all();
+            });
+        }
+        let _stop = Stop(&stop);
+        for k in 0..n {
+            {
+                let mut g = lock();
+                g.at = k;
+                cv.notify_all();
+                while !g.stop && g.done[k] < firsts[k] {
+                    g = cv.wait(g).unwrap_or_else(|e| e.into_inner());
+                }
+            }
+            work(k)?;
+            if release {
+                let mut g = lock();
+                for &i in &lasts[k] {
+                    let it = &items[i];
+                    it.file.spans.lock().unwrap().remove(&it.off);
+                    g.held = g.held.saturating_sub(it.n as usize);
+                }
+                cv.notify_all();
+            }
+        }
+        Ok(())
+    })
 }
 
 /// Pixel `(i, j)`'s centre of tile `z/x/y`: (lon, lat).
@@ -567,37 +951,60 @@ pub fn make(
         rep.dropped = crate::terrain_pack::drop_named(out, &before);
         return Ok(rep);
     };
-    let mut groups: BTreeMap<(u32, u32), Vec<(u8, u32, u32)>> = BTreeMap::new();
-    for &(z, x, y) in &inside {
-        groups.entry((x >> (z - PACK_Z), y >> (z - PACK_Z))).or_default().push((z, x, y));
-    }
     rep.base_tiles = inside.len();
+    // (By z10 tile, its base tiles some fine dataset is finer than, with the zoom they reach.)
+    let here = meeting(&fine.sets, b, poleward(b));
+    let mut by_pack: BTreeMap<(u32, u32), Vec<((u8, u32, u32), u8)>> = BTreeMap::new();
+    for &(z, x, y) in &inside {
+        let bb = crate::stage::tile_box_grown(z, x, y, 0.0);
+        let lat = crate::terrain_pack::tile_lat(z, y);
+        let zf = here.iter().filter(|s| s.cover.meets(bb)).map(|s| s.detail.zoom_at(lat)).max();
+        let e = by_pack.entry((x >> (z - PACK_Z), y >> (z - PACK_Z))).or_default();
+        if let Some(zf) = zf.filter(|&f| f > z) {
+            e.push(((z, x, y), zf));
+        }
+    }
+    let mut groups: Vec<((u32, u32), Vec<((u8, u32, u32), u8)>)> = by_pack.into_iter().collect();
+    for g in &mut groups {
+        g.1.sort();
+    }
+    let n = groups.len();
     let decoded: HashMap<(u8, u32, u32), Vec<f32>> =
         base.par_iter().map(|(&k, png)| Ok((k, roadcore::grid::decode_terrain_png(png)?))).collect::<Result<_>>()?;
-    let bf = BaseFetch { base, inner: fetch };
+    let bf = BaseFetch::new(base, fetch);
     let o = Opts { fetch: &bf, store: Some(out.root().join("sources/fetched")), pool: None };
-    let presence = Sampler::new(&presence, &o)?;
-    let full = Sampler::new(&full, &o)?;
-    let here = meeting(&fine.sets, b, poleward(b));
+    let presence_s = Sampler::new(&presence, &o)?;
+    let full_s = Sampler::sharing(&full, &o, &presence_s)?;
+    // Which base tiles their datasets have data in, their blocks read ahead for the whole target;
+    // then the fine tiles of those, theirs read ahead by z10 tile, each block once.
+    let tiles_of = |keep: &dyn Fn(usize, usize) -> bool| -> Vec<Vec<(u8, u32, u32)>> {
+        groups
+            .iter()
+            .enumerate()
+            .map(|(g, (_, ts))| (0..ts.len()).filter(|&i| keep(g, i)).map(|i| ts[i].0).collect())
+            .collect()
+    };
+    let items = plan_items(&plan_files(&presence, b, &bf)?, &tiles_of(&|_, _| true))?;
+    let mut with: Vec<Vec<bool>> = vec![Vec::new(); n];
+    read_ahead(&items, n, false, |g| {
+        with[g] = groups[g].1.par_iter().map(|&(t, _)| has_data(&presence_s, t)).collect::<Result<_>>()?;
+        Ok(())
+    })?;
+    rep.with_data = with.iter().flatten().filter(|&&d| d).count();
+    let items = plan_items(&plan_files(&full, b, &bf)?, &tiles_of(&|g, i| with[g][i]))?;
+    bf.keep_only(&items);
     let mut written = Vec::new();
-    let n = groups.len() as u64;
-    for (k, (g, mut bs)) in groups.into_iter().enumerate() {
-        bs.sort();
-        let made: Vec<Result<(bool, Vec<(u8, u32, u32, Vec<u8>)>)>> = bs
+    read_ahead(&items, n, true, |k| {
+        let (g, bs) = &groups[k];
+        let made: Vec<Result<Vec<(u8, u32, u32, Vec<u8>)>>> = bs
             .par_iter()
-            .map(|&(zb, bx, by)| {
-                let lat = crate::terrain_pack::tile_lat(zb, by);
-                let bb = crate::stage::tile_box_grown(zb, bx, by, 0.0);
-                let zf = here.iter().filter(|s| s.cover.meets(bb)).map(|s| s.detail.zoom_at(lat)).max();
-                let Some(zf) = zf.filter(|&z| z > zb) else { return Ok((false, Vec::new())) };
-                base_tile(&presence, &full, water, &decoded, (zb, bx, by), zf)
-            })
+            .zip(&with[k])
+            .filter(|(_, &d)| d)
+            .map(|(&(t, zf), _)| fine_tiles(&full_s, water, &decoded, t, zf))
             .collect();
         let mut tiles = Vec::new();
         for r in made {
-            let (data, ts) = r?;
-            rep.with_data += data as usize;
-            tiles.extend(ts);
+            tiles.extend(r?);
         }
         if !tiles.is_empty() {
             tiles.sort_by_key(|t| (t.0, t.1, t.2));
@@ -614,8 +1021,9 @@ pub fn make(
                 written.push(l);
             }
         }
-        progress("fine packs", k as u64 + 1, n);
-    }
+        progress("fine packs", k as u64 + 1, n as u64);
+        Ok(())
+    })?;
     let gone: Vec<String> = before.into_iter().filter(|l| !written.contains(l)).collect();
     rep.dropped = crate::terrain_pack::drop_named(out, &gone);
     Ok(rep)
@@ -636,18 +1044,10 @@ fn points(z: u8, tiles: &[(u32, u32)]) -> (Vec<f64>, Vec<f64>) {
     (lon, lat)
 }
 
-/// Base tile `b`'s fine tiles to zoom `zf` (`tiles`: the base tiles decoded, its neighbours with
-/// it): whether its datasets have data in it, and the tiles with some.
-fn base_tile(
-    presence: &Sampler,
-    full: &Sampler,
-    water: Option<&dyn crate::terrain_water::WaterSource>,
-    tiles: &HashMap<(u8, u32, u32), Vec<f32>>,
-    b: (u8, u32, u32),
-    zf: u8,
-) -> Result<(bool, Vec<(u8, u32, u32, Vec<u8>)>)> {
+/// Whether base tile `b`'s datasets have data in it at all: a grid of it (`PRESENCE`), as they're
+/// read for the roads (`presence`).
+fn has_data(presence: &Sampler, b: (u8, u32, u32)) -> Result<bool> {
     let (zb, bx, by) = b;
-    // (Its datasets' data in it, at all: a grid of it, as they're read for the roads.)
     let n = PRESENCE as f64;
     let nn = (1u64 << zb) as f64;
     let (mut lon, mut lat) = (Vec::with_capacity(PRESENCE * PRESENCE), Vec::with_capacity(PRESENCE * PRESENCE));
@@ -659,9 +1059,19 @@ fn base_tile(
             lat.push((std::f64::consts::PI * (1.0 - 2.0 * fy)).dsinh().datan().to_degrees());
         }
     }
-    if !presence.sample(&lon, &lat, &|_| {})?.elev.iter().any(|v| v.is_finite()) {
-        return Ok((false, Vec::new()));
-    }
+    Ok(presence.sample(&lon, &lat, &|_| {})?.elev.iter().any(|v| v.is_finite()))
+}
+
+/// Base tile `b`'s fine tiles to zoom `zf` with data of a fine dataset (`full`; `tiles`: the base
+/// tiles decoded, its neighbours with it).
+fn fine_tiles(
+    full: &Sampler,
+    water: Option<&dyn crate::terrain_water::WaterSource>,
+    tiles: &HashMap<(u8, u32, u32), Vec<f32>>,
+    b: (u8, u32, u32),
+    zf: u8,
+) -> Result<Vec<(u8, u32, u32, Vec<u8>)>> {
+    let (zb, bx, by) = b;
     let base = padded(tiles, b);
     let share = water_share(water, b)?;
     let mut out = Vec::new();
@@ -686,7 +1096,7 @@ fn base_tile(
             }
         }
     }
-    Ok((true, out))
+    Ok(out)
 }
 
 /// Base tile `b`'s share of water at each pixel (0–1: sea and lakes), where it has any.
@@ -707,6 +1117,8 @@ mod tests {
         assert_eq!(zoom_for(2.0, 45.0), 16);
         assert_eq!(zoom_for(2.0, 60.0), 16);
         assert_eq!(zoom_for(2.0, 70.0), 15);
+        // 1 m: z16 too, the cap (z17 down to 65° N without it).
+        assert_eq!((zoom_for(1.0, 45.0), zoom_for(1.0, 70.0), Detail::Pyramid(18).zoom_at(45.0)), (16, 16, 16));
         // 3DEP's 10.3 m: z14 to ~55°, z13 north of it.
         assert_eq!(zoom_for(10.3, 40.0), 14);
         assert_eq!(zoom_for(10.3, 65.0), 13);
@@ -880,6 +1292,108 @@ mod tests {
         assert_eq!(ring_packs((255, 92)), vec![(63, 23), (63, 22), (0, 22), (0, 23)]);
         assert_eq!(ring_packs((10, 0)), vec![(2, 0)], "no row past the pole");
         assert!(near(12, 0, 255) && near(12, 4095, 0));
+    }
+
+    /// A file's reads, by offset and length.
+    type Reads = Arc<Mutex<Vec<(u64, usize)>>>;
+
+    struct Counted(crate::fetch::MapFetch, Reads);
+    struct CountedFile(Arc<dyn store::range::RangeRead>, Reads);
+    impl crate::fetch::Fetch for Counted {
+        fn open(&self, url: &str) -> Result<Option<Arc<dyn store::range::RangeRead>>> {
+            Ok(self.0.open(url)?.map(|f| Arc::new(CountedFile(f, self.1.clone())) as Arc<dyn store::range::RangeRead>))
+        }
+        fn get(&self, url: &str) -> Result<Option<Vec<u8>>> {
+            self.0.get(url)
+        }
+    }
+    impl store::range::RangeRead for CountedFile {
+        fn len(&self) -> Result<u64, store::IoError> {
+            self.0.len()
+        }
+        fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, store::IoError> {
+            self.1.lock().unwrap().push((off, len));
+            self.0.read_at(off, len)
+        }
+    }
+
+    #[test]
+    fn a_targets_blocks_are_read_once_ahead_of_its_sampling_and_the_heights_are_the_same() {
+        use crate::dem::generic::M_PER_DEG;
+        const PX: f64 = 1.0 / 7200.0;
+        // A fine raster over base tile 12/2160/1400 and past it, with a hole of no data; a coarse
+        // one beneath (the blends read both).
+        let t = (12u8, 2160u32, 1400u32);
+        let tb = crate::stage::tile_box_grown(t.0, t.1, t.2, 0.0);
+        let (w, h) = (1024usize, 1024usize);
+        let gt = [tb[0] - 0.01, PX, 0.0, tb[3] + 0.01, 0.0, -PX];
+        let nd = -9999.0f32;
+        let mut data: Vec<f32> =
+            (0..h).flat_map(|y| (0..w).map(move |x| 100.0 + 0.013 * x as f32 + 0.021 * y as f32)).collect();
+        for y in 400..520 {
+            for x in 300..450 {
+                data[y * w + x] = nd;
+            }
+        }
+        let tif = |w: usize, h: usize, d: &[f32], block: u32, gt: [f64; 6]| {
+            crate::geotiff::write_f32(w as u32, h as u32, d, block, gt, 4326, Some(nd as f64)).unwrap()
+        };
+        let cgt = [tb[0] - 0.05, 3.0 * PX, 0.0, tb[3] + 0.05, 0.0, -3.0 * PX];
+        let mut f = crate::fetch::MapFetch::default();
+        f.0.insert("https://a.org/fine.tif".into(), Some(tif(w, h, &data, 256, gt)));
+        f.0.insert("https://b.org/coarse.tif".into(), Some(tif(1024, 1024, &vec![50.0f32; 1 << 20], 512, cgt)));
+        let geo = |id: &str, code: u8, res: f64, url: &str| Dataset {
+            convert: None,
+            id: id.into(),
+            code,
+            resolution: res,
+            cover: None,
+            source: Source::Geotiff { crs: 4326, read_resolution: None, store: false, files: vec![(url.into(), None)] },
+        };
+        let plan = Plan {
+            fmt: 1,
+            version: "t".into(),
+            tag: "1".into(),
+            datasets: vec![
+                geo("fine", 1, PX * M_PER_DEG, "https://a.org/fine.tif"),
+                geo("coarse", 2, 3.0 * PX * M_PER_DEG, "https://b.org/coarse.tif"),
+            ],
+        };
+        let ts: Vec<(u32, u32)> = (0..2).flat_map(|j| (0..2).map(move |i| (t.1 * 2 + i, t.2 * 2 + j))).collect();
+        let (lon, lat) = points(13, &ts);
+        let want =
+            crate::dem::generic::sample(&plan, &lon, &lat, &Opts { fetch: &f, store: None, pool: None }, &|_| {})
+                .unwrap();
+        let reads: Reads = Default::default();
+        let counted = Counted(f, reads.clone());
+        let none = HashMap::new();
+        let bf = BaseFetch::new(&none, &counted);
+        let o = Opts { fetch: &bf, store: None, pool: None };
+        let s = Sampler::new(&plan, &o).unwrap();
+        let items = plan_items(&plan_files(&plan, tb, &bf).unwrap(), &[vec![t]]).unwrap();
+        assert!(items.len() > 4, "{} blocks planned", items.len());
+        let mut got = None;
+        let mut during = Vec::new();
+        read_ahead(&items, 1, true, |_| {
+            let before = reads.lock().unwrap().len();
+            got = Some(s.sample(&lon, &lat, &|_| {})?);
+            during = reads.lock().unwrap()[before..].to_vec();
+            Ok(())
+        })
+        .unwrap();
+        let got = got.unwrap();
+        let bits = |s: &crate::dem::generic::Sampled| s.elev.iter().map(|e| e.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&got), bits(&want));
+        assert_eq!((&got.src, &got.blended), (&want.src, &want.blended));
+        assert!(want.blended.iter().any(|b| *b) && want.src.contains(&2), "blends and the coarse file's heights");
+        let big = |r: &&(u64, usize)| r.1 > crate::geotiff::HEADER_WINDOW;
+        assert_eq!(during.iter().filter(big).count(), 0, "every block the sampling read was read ahead");
+        let mut offs: Vec<u64> = reads.lock().unwrap().iter().filter(big).map(|r| r.0).collect();
+        let n = offs.len();
+        offs.sort();
+        offs.dedup();
+        assert_eq!(offs.len(), n, "each block read once");
+        assert!(items.iter().all(|i| i.file.spans.lock().unwrap().is_empty()), "let go once worked");
     }
 
     /// The fixture's roads dataset's tiles, all 100 m (its z10 pyramid, read as if finer).

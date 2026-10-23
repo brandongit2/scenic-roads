@@ -246,7 +246,13 @@ pub fn helmert_dh(lon: f64, lat: f64, t: [f64; 3], r: [f64; 3], s: f64, frame: b
     h
 }
 
-/// The grids of a conversion as they're read, opened once a run.
+/// The decoded blocks a grid keeps (`Grids`): a run's batches read the same few blocks again and
+/// again (the fine terrain's millions of points a call, its thousands of calls a target), so each
+/// is read once, not once a call.
+pub const GRID_CACHE: usize = 64 << 20;
+
+/// The grids of a conversion as they're read, opened once a run, each keeping its blocks
+/// (`GRID_CACHE`).
 pub struct Grids<'a> {
     o: &'a Opts<'a>,
     open: std::sync::Mutex<BTreeMap<String, Option<Arc<Tiff>>>>,
@@ -270,7 +276,7 @@ impl<'a> Grids<'a> {
             open_url(self.o.fetch, url)?
         };
         let t = match src {
-            Some(s) => Some(Arc::new(Tiff::open(s).with_context(|| format!("{id}: {url}"))?)),
+            Some(s) => Some(Arc::new(Tiff::open(s).with_context(|| format!("{id}: {url}"))?.with_cache(GRID_CACHE))),
             None => bail!("{id}: its grid {url} isn't on the server"),
         };
         self.open.lock().unwrap().insert(url.to_string(), t.clone());
