@@ -1406,7 +1406,10 @@ mod tests {
     #[test]
     fn a_task_is_its_step() {
         // (`scenic task` times a leased task as "task <step>": its shares are its step's.)
-        let s = phase_shares(&[share_run("task treeblock", true, 2.0, &[("y", 1.0, 0)]), share_run("trees", true, 2.0, &[])]);
+        let s = phase_shares(&[
+            share_run("task treeblock", true, 2.0, &[("y", 1.0, 0)]),
+            share_run("trees", true, 2.0, &[]),
+        ]);
         assert_eq!(s.keys().collect::<Vec<_>>(), ["treeblock", "trees"]);
     }
 
