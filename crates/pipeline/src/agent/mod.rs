@@ -10811,7 +10811,7 @@ fn make_viewer(app: &str, host: &str) -> Option<crate::coord::Coordinator> {
     let held: Option<std::net::TcpListener> = None;
     let l = match held {
         Some(l) => Ok(l),
-        None => store::spawn::listen(("0.0.0.0", port)),
+        None => store::spawn::listen((crate::net::LISTEN, port)),
     };
     match l.map_err(anyhow::Error::from).and_then(|l| crate::coord::Coordinator::viewer(l, host, app)) {
         Ok(v) => Some(v),
@@ -16367,7 +16367,8 @@ mod pool_tests {
         m.step().unwrap();
         assert!(lead.broker.is_none() && lead.pooled().unwrap().side.broker.is_none());
         assert!(m.coord.as_ref().unwrap().shared.lock().unwrap().brokers.is_none());
-        assert_eq!(http_post(bport, "/work/where", &[("Origin", &page_origin)], "{}").0, 403);
+        // (Another Mac's page: this test's lead is on loopback, whose pages this Mac always answers.)
+        assert_eq!(http_post(bport, "/work/where", &[("Origin", "http://m4.local:8090")], "{}").0, 403);
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
         TEST_ABLE.with(|c| c.set(None));

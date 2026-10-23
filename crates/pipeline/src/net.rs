@@ -231,8 +231,17 @@ pub fn catalog_written() {
     });
 }
 
-/// This Mac's addresses for others: its Tailscale address (100.64.0.0/10), then its LAN name.
+/// The address a coordinator (or a member's broker, or viewer) listens on: every interface, for
+/// the other Macs; loopback alone in a unit test, whose members are in the same process: a freshly
+/// built test binary is no app the firewall lets other interfaces reach (#596).
+pub const LISTEN: &str = if cfg!(test) { "127.0.0.1" } else { "0.0.0.0" };
+
+/// This Mac's addresses for others: its Tailscale address (100.64.0.0/10), then its LAN name. In a
+/// unit test, loopback alone (`LISTEN`): never the Mac's network names, Tailscale or firewall.
 pub fn urls(port: u16) -> Vec<String> {
+    if cfg!(test) {
+        return vec![format!("http://127.0.0.1:{port}")];
+    }
     let mut out = Vec::new();
     if let Ok(o) = store::spawn::output(&mut store::spawn::command("/sbin/ifconfig")) {
         for w in String::from_utf8_lossy(&o.stdout).split_whitespace().collect::<Vec<_>>().windows(2) {

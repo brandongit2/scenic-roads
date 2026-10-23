@@ -1026,7 +1026,7 @@ impl Coordinator {
         // (Listening first: a port in use writes nothing of its state. A coordinator this process
         // stopped has let its port go as its `stop` returned; another process's is no reason to
         // wait, and isn't waited for.)
-        let listener = anyhow::Context::with_context(store::spawn::listen(("0.0.0.0", port)), || {
+        let listener = anyhow::Context::with_context(store::spawn::listen((crate::net::LISTEN, port)), || {
             format!("listen on port {port}")
         })?;
         Coordinator::start_on(dir, wasm, listener, me, app)
@@ -4718,7 +4718,7 @@ pub(crate) fn take_test_listener(port: u16) -> Option<std::net::TcpListener> {
 /// the listener.
 #[cfg(test)]
 pub(crate) fn port_free(port: u16) -> std::io::Result<()> {
-    store::spawn::listen(("0.0.0.0", port)).map(|l| store::spawn::sockets(|| drop(l)))
+    store::spawn::listen((crate::net::LISTEN, port)).map(|l| store::spawn::sockets(|| drop(l)))
 }
 
 /// A listener on a port no other test of this process has been given, and its port.
@@ -4728,7 +4728,7 @@ fn test_listener() -> (std::net::TcpListener, u16) {
     let mut g = GIVEN.lock().unwrap();
     // (Each turn a port given before: not time, but ports.)
     for _ in 0..1000 {
-        let l = store::spawn::listen(("0.0.0.0", 0)).unwrap();
+        let l = store::spawn::listen((crate::net::LISTEN, 0)).unwrap();
         let port = l.local_addr().unwrap().port();
         if g.insert(port) {
             return (l, port);
