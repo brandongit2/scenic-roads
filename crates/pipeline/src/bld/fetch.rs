@@ -1113,15 +1113,10 @@ pub fn run(a: Args<'_>) -> Result<()> {
         gb(left as f64)
     );
     drop(p);
-    // (What's to fetch must fit in the NAS's free space past the owner's room target, as the OSM
-    // pass's writes do: agent::room::job_target, task #421; no reserve of its own.)
-    let room = crate::agent::room::free_past(root, crate::agent::room::job_target());
-    ensure!(
-        left <= room,
-        "the NAS has {} free past the room target: too little for {}",
-        gb(room as f64),
-        gb(left as f64)
-    );
+    // (What's to fetch must fit in the NAS's free space: the owner keeps no margin on the NAS, and
+    // no reserve is kept here, task #421.)
+    let free = crate::agent::room::disk_free(root)?;
+    ensure!(left <= free, "the NAS has {} free: too little for {}", gb(free as f64), gb(left as f64));
     let prog = Progress {
         files: jobs.len(),
         total: known,
