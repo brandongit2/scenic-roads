@@ -983,12 +983,12 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   start, the events taken in already passed over. The menu bar's panel loads this Mac's own page
   alone (docs/building.md §2, Status).
 - **Each Mac's jobs** (the build page's machines, `scenic status`, task #246): a block per Mac,
-  the lead's first, marked coordinator with its ramp (§7.1); its capacity as the coordinator last
+  the lead's first, marked coordinator (`scenic status` with its ramp, §7.1); its capacity as the coordinator last
   heard it (memory held of the guard's limit and free for more, cores busy, disk reserved and
   free, on the page as bars), its jobs' share of the NAS budget (`Coordinator::nas_shares`, the
   status's `nas_share`: their leased jobs' NAS weights in thousandths of the whole); a block per
   running job numbered by its real slot (`JobView::slot`: slots may be sparse, so a Mac running
-  only its fourth slot shows slot 4), with that slot's lane's next work; and why nothing more
+  only its fourth slot shows slot 4), (`scenic status`: with that slot's lane's next work); and (`scenic status` alone) why nothing more
   fits: the packing's refusal as its last ask was packed (`Coordinator::refusals`, the status's
   `packing`: a cold job of the lead's own waiting for room, cores short for the next job open, or nothing
   offered fitting the room left), shown while the refusal itself is younger than two minutes
@@ -1111,8 +1111,9 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   host and addresses (`{host, urls, https}`, its heartbeat's broker; none with the brokers'
   switch off), and the answer is allowed to the members' origins (CORS as for tasks, §8; the
   M6's https://map.brandontsang.net among them), the page reading by the scheme it was served
-  over. The build page's footer keeps the range its charts are to show (planned: no chart reads
-  `/work/live` yet).
+  over. The build page's Machines tab draws it (docs/pipeline.md §5, Machines), asking with
+  `net: false` (the proxy's counts left out); an answer also says the Mac's size, `mac: {cores,
+  cores_e, mem_gb}` (read once), the charts' scales.
 - **Views** (menu bar, worker page, `scenic lead`, `scenic status`) read the
   agent's `pool.lead` (`crate::agent::lead::View`) or the fresher `agent/pool/view.json`
   (`lead::own_status`): each member's state and whether the lead can be handed to it

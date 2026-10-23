@@ -161,13 +161,28 @@ fn round(v: f64) -> f64 {
 
 /// A reader's ask (`POST /work/live`'s body): the window back from now (s; an hour by default,
 /// three days at most), or the points from `since` on (unix s, a bucket's time: the last one
-/// answered again, as it may have grown since); `series`, the names wanted (all when missing).
+/// answered again, as it may have grown since); `series`, the names wanted (all when missing);
+/// `net: false` leaves the proxy's counts out (a chart polling every second needs only the series).
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Ask {
     pub range: Option<u64>,
     pub since: Option<u64>,
     pub series: Option<Vec<String>>,
+    pub net: Option<bool>,
+}
+
+/// This Mac's size, the charts' scales (`mac` in an answer): its cores, its efficiency cores, its
+/// memory (GB). Read once.
+fn mac() -> &'static serde_json::Value {
+    static MAC: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+    MAC.get_or_init(|| {
+        serde_json::json!({
+            "cores": crate::inputs::pace::cores(),
+            "cores_e": crate::sys::efficiency_cores(),
+            "mem_gb": crate::sys::memsize().map(|b| round(b as f64 / GB)),
+        })
+    })
 }
 
 /// The finest ring whose span covers `range` seconds (the coarsest past three days).
@@ -273,9 +288,10 @@ impl Store {
         self.net.lock().ok()?.clone()
     }
 
-    /// `/work/live`'s answer at `now` (unix s): `{host, now, step, from, series: {name: [[t, lo,
-    /// mean, hi], …]}, net}`, each series with a point in the window alone; `net`, the proxy's counts
-    /// (crate::budget::net::Net::view) once it has them.
+    /// `/work/live`'s answer at `now` (unix s): `{host, now, step, from, mac, series: {name: [[t,
+    /// lo, mean, hi], …]}, net}`, each series with a point in the window alone; `mac`, its size
+    /// (`mac()`); `net`, the proxy's counts (crate::budget::net::Net::view) once it has them,
+    /// unless asked without.
     pub fn answer(&self, a: &Ask, now: u64) -> serde_json::Value {
         let max = TIERS[TIERS.len() - 1].0 * TIERS[TIERS.len() - 1].1 as u64;
         let range = a.range.unwrap_or_else(|| a.since.map_or(3600, |s| now.saturating_sub(s).max(1))).min(max);
@@ -293,8 +309,8 @@ impl Store {
                 .collect(),
             Err(_) => Default::default(),
         };
-        let mut v = serde_json::json!({ "host": self.host, "now": now, "step": step, "from": from / step * step, "series": out });
-        if let Some(n) = self.net() {
+        let mut v = serde_json::json!({ "host": self.host, "now": now, "step": step, "from": from / step * step, "mac": mac(), "series": out });
+        if let Some(n) = self.net().filter(|_| a.net != Some(false)) {
             v["net"] = n.view();
         }
         v
@@ -850,5 +866,17 @@ mod tests {
         assert_eq!(v["series"][NET_OUT][0][2], 0.5);
         assert_eq!(v["net"]["hosts"]["a.example"]["in"], 3 << 20);
         assert_eq!(v["net"]["events"][0]["ms"], 900);
+        // (Asked without: the series alone.)
+        let v = s.answer(&Ask { range: Some(60), net: Some(false), ..Default::default() }, t0 + 2);
+        assert!(v.get("net").is_none());
+        assert_eq!(v["series"][NET_IN][0][2], 1.5);
+    }
+
+    /// Task #519: an answer says the Mac's size, the charts' scales.
+    #[test]
+    fn an_answer_says_the_macs_size() {
+        let v = Store::new(None, "m1").answer(&Ask::default(), 1_000_000_000);
+        assert!(v["mac"]["cores"].as_u64().is_some_and(|c| c >= 1));
+        assert!(v["mac"]["cores_e"].as_u64().is_some_and(|e| e <= v["mac"]["cores"].as_u64().unwrap()));
     }
 }

@@ -23,14 +23,14 @@
   :root {
     --bg: #0e1013; --panel: #161a1f; --line: #262c33; --text: #d7dce2; --dim: #8a939c; --ok: #6cc28a; --warn: #e0b45a; --bad: #e0716a; --accent: #7aa7e0;
     --ok-line: #2a5038; --warn-line: #5a4a26; --bad-line: #5a2d2a; --info-line: #2c4566; --primary-bg: #1d2a3a; --primary-fg: #cfe0f5;
-    --spark: #2c4566; --spark-p: #5a4a26; --mark: #e6e6e6; --dimbar: #3f5f86; --tip: #20262d; --shadow: #0008; --rule: #3a434d; --row-line: #1d2228; --new-bg: #1d2a3a; --paused: #5a4a2655;
+    --spark: #2c4566; --nas-r: #3987e5; --nas-w: #d95926; --net-d: #199e70; --net-u: #d55181; --mark: #e6e6e6; --dimbar: #3f5f86; --tip: #20262d; --shadow: #0008; --rule: #3a434d; --row-line: #1d2228; --new-bg: #1d2a3a; --paused: #5a4a2655;
     color-scheme: dark;
   }
   @media (prefers-color-scheme: light) {
     :root {
       --bg: #f4f6f8; --panel: #ffffff; --line: #d8dee5; --text: #1c232b; --dim: #5d6873; --ok: #2c8a51; --warn: #9a6a12; --bad: #c0433a; --accent: #2d6bb4;
       --ok-line: #b5dbc2; --warn-line: #e6d2a4; --bad-line: #eebfba; --info-line: #b8cee9; --primary-bg: #e2ecf8; --primary-fg: #1d4e89;
-      --spark: #b8cee9; --spark-p: #e6d2a4; --mark: #6a7480; --dimbar: #9db6d5; --tip: #ffffff; --shadow: #0003; --rule: #c8d0d9; --row-line: #e6e9ee; --new-bg: #e2ecf8; --paused: #e6d2a488;
+      --spark: #b8cee9; --nas-r: #2a78d6; --nas-w: #eb6834; --net-d: #1baf7a; --net-u: #e87ba4; --mark: #6a7480; --dimbar: #9db6d5; --tip: #ffffff; --shadow: #0003; --rule: #c8d0d9; --row-line: #e6e9ee; --new-bg: #e2ecf8; --paused: #e6d2a488;
       color-scheme: light;
     }
   }
@@ -646,7 +646,7 @@ window.addEventListener("hashchange", () => { showTab(); window.scrollTo(0, 0); 
 showTab();
 
 // ---- The footer: the charts' range (this browser's own, kept), and the Live dot ---------------------
-// (The range is for the charts over time, from each Mac's /work/live: docs/pipeline.md §5.)
+// (The range is the Machines tab's live charts', from each Mac's /work/live: live.js, docs/pipeline.md §5.)
 const RANGES = [[60, "1 min"], [300, "5 min"], [900, "15 min"], [3600, "1 h"], [21600, "6 h"], [86400, "24 h"], [259200, "72 h"]];
 {
   const kept = store.get("range", 3600);

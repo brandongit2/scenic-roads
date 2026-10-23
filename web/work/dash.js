@@ -9,12 +9,14 @@
 // cells; a machine is a card of its jobs, each job the same lines; an event is one templated
 // sentence. The parts: the header's verdict (going or not, done when, next on the map, what needs
 // a look, the pause); by tab, the overview (how far, how long, the map's last catalogue) and the
-// road to done (each machine's schedule), the stages (each step to the end), the machines (what each does now and next,
-// why one waits, its power, disk, memory and pace), the regions, and the activity (the hours,
+// road to done (each machine's schedule), the stages (each step to the end), the machines (what each does now, inside
+// each job, why one waits, and live on each: live.js), the regions, and the activity (the hours,
 // what happened), and the details.
 
 import { poolSection, termText } from "./pool.js";
 import { busyLanes, finished, notRead, wholeProgress } from "./sums.js";
+import { fmt } from "./chartmath.js";
+import { liveBlock, startLive } from "./live.js";
 
 const POLL_MS = 10000;
 const STALE_S = 360;
@@ -154,16 +156,13 @@ const jobsOf = (st) => (st.jobs?.length ? st.jobs : [st.job, st.beside, ...(st.m
 // (A slot's number from its name: 1 for the bare host's, N for "<host> #N"; null for none.)
 const slotNo = (name, host) => (name === host ? 1 : name.startsWith(`${host} #`) && /^\d+$/.test(name.slice(host.length + 2)) && +name.slice(host.length + 2) >= 2 ? +name.slice(host.length + 2) : null);
 const isSlotOf = (name, host) => slotNo(name, host) != null;
-// Slot k's worker name (crate::agent::slot_worker).
-const slotName = (host, k) => (k ? `${host} #${k + 1}` : host);
-// What the lead's coordinator says of a Mac, by its slots' names: its capacity (coord::Capacity),
-// why nothing more fits it (the packing's refusal) and its share of the NAS budget (thousandths).
+// What the lead's coordinator says of a Mac, by its slots' names: its capacity (coord::Capacity)
+// and its share of the NAS budget (thousandths).
 function macSaid(a, host) {
   const cap = (a.capacity || []).find(([nm]) => isSlotOf(nm, host))?.[1];
-  const why = Object.entries(a.packing || {}).filter(([nm]) => isSlotOf(nm, host)).map(([, w]) => w);
   const shares = Object.entries(a.nas_share || {}).filter(([nm]) => isSlotOf(nm, host));
   const nas = a.nas_share && Object.keys(a.nas_share).length ? shares.reduce((t, [, w]) => t + w, 0) : null;
-  return { cap, why, nas };
+  return { cap, nas };
 }
 // The checklist's line (a stage's) that counts `step`, and its item for it.
 
@@ -397,7 +396,31 @@ function jobTarget(j) {
   return w.length === 2 ? { step: w[0], target: w[1] } : null;
 }
 
-function jobBlock(j, now) {
+// Inside a running job (its status's `live`, crate::agent::jobs::Live; docs/pool.md §10, Live): the
+// phase its main thread is in and since when, the target under way against the step's time a
+// target (the forecast's `each_s`), its targets ended, and the bytes it moved on the NAS and the
+// internet since it began. Each part missing isn't said (a step that times no phases, an older agent).
+function inside(j, now, fc) {
+  const l = j.live;
+  if (!l) return null;
+  const rows = [];
+  if (l.phase) rows.push(h("div", null, h("span", "k", "phase"), h("b", null, l.phase), l.class ? h("span", "dim", ` ${l.class}`) : null, l.phase_since ? h("span", "dim", ` · ${dur(now - l.phase_since)}`) : null));
+  if (l.target) {
+    const each = fc?.each_s?.[stepOf(j.id)];
+    const took = l.target_since ? now - l.target_since : null;
+    const over = each && took != null ? took / each : null;
+    rows.push(h("div", null, h("span", "k", "target"), h("b", null, l.target),
+      h("span", over != null && over > 2 ? "warn" : "dim", took != null ? ` · ${dur(took)}${each ? ` of ≈ ${dur(each)}` : ""}` : ""),
+      l.targets ? h("span", "dim", ` · ${n(l.targets_done)} of ${n(l.targets)} done`) : null));
+    if (over != null) rows.push(pbar(over, over > 2 ? "warn" : "", S.colour(stepOf(j.id))));
+  } else if (l.targets) rows.push(h("div", null, h("span", "k", "targets"), `${n(l.targets_done)} of ${n(l.targets)} done`));
+  const bytes = [l.nas_read != null ? `NAS ↓ ${fmt(l.nas_read, "B")}` : null, l.nas_wrote != null ? `NAS ↑ ${fmt(l.nas_wrote, "B")}` : null,
+    l.net_in != null ? `net ↓ ${fmt(l.net_in, "B")}` : null, l.net_out != null ? `net ↑ ${fmt(l.net_out, "B")}` : null].filter(Boolean);
+  if (bytes.length) rows.push(h("div", null, h("span", "k", "moved"), bytes.join(" · ")));
+  return rows.length ? h("div", { class: "inside", title: "Inside the job: its phase, its target under way (against the step's time a target), and the bytes it moved since it began" }, rows) : null;
+}
+
+function jobBlock(j, now, fc) {
   const p = j.progress;
   const step = stepOf(j.id);
   const box = h("div", "job", h("div", "what", swatch(S.colour(step)), j.what));
@@ -414,50 +437,12 @@ function jobBlock(j, now) {
   if (j.mem_mb) bits.push(`${n(Math.round(j.mem_mb / 102.4) / 10)} GB`);
   box.append(h("div", "sub", bits.join(" · ")));
   if (p?.moved_at && !j.paused && now - p.moved_at >= STUCK_S) box.append(h("div", "why", `No further for ${dur(now - p.moved_at)}: it may be stuck (its log's last lines are in the details)`));
+  box.append(...[inside(j, now, fc)].filter(Boolean));
   if (j.paused) box.append(h("div", "why", `Frozen: ${j.paused}`));
   else if (j.pausing) box.append(h("div", "why", "Stopping at its next safe point (what it's on is kept)"));
   const t = OWN && jobTarget(j);
   if (t) box.append(h("div", "ctl", h("button", { class: "quiet", title: "Stopped now and given back to the build (not a failure); it runs again from the start", onclick: () => confirm(`Cancel ${j.what}?`) && act({ cancel: t }, `cancel ${j.what}`) }, "Cancel")));
   return box;
-}
-
-function nextBlock(m, name) {
-  const next = (m.fc?.next?.[name] || []).filter((x) => x.until > m.now);
-  if (!next.length) return null;
-  const say = (x) => `${S.said(x.step, x.targets.length)} (${clock(x.from)}–${clock(x.until)})`;
-  return h("div", "next", h("b", null, "Next: "), next.slice(0, 3).map(say).join(" · then "), m.fc.partial ? h("span", "dim", " (a partial forecast: cut at its time budget)") : null);
-}
-
-function facts(st, x, m) {
-  const c = st.conditions || {}, r = st.resources || {};
-  const out = [];
-  out.push(c.ac === false ? chip(`battery ${c.battery ?? "?"}%`, c.battery != null && c.battery < 40 ? "warn" : "") : chip(c.battery != null ? `mains · ${c.battery}%` : "mains"));
-  out.push(c.nas === false ? chip("NAS unreachable", "bad") : chip(`NAS${r.nas_ms != null ? ` ${r.nas_ms} ms` : ""}${c.home === false ? " via Tailscale" : ""}${r.nas_free_tb != null && x.role === "lead" ? ` · ${r.nas_free_tb} TB free` : ""}`, c.home === false ? "warn" : "", "How long the NAS took to answer, and its free space"));
-  if (r.disk_free_gb != null) out.push(chip(`${r.disk_free_gb} GB free${r.cache_gb != null ? ` (+${r.cache_gb} GB cache)` : ""}`, r.disk_free_gb < 10 ? "bad" : r.disk_free_gb < 20 ? "warn" : "", "Free on its disk; the caches the agent may drop to make room"));
-  if (r.mem_gb) out.push(chip(`${r.mem_gb} GB memory${r.mem_free_pct != null ? `, ${r.mem_free_pct}% free` : ""}`, r.mem_free_pct != null && r.mem_free_pct < 10 ? "warn" : ""));
-  if (r.load1 != null) out.push(chip(`load ${r.load1} on ${r.cores} cores`));
-  out.push(chip(c.idle_s != null && c.idle_s < 300 ? "in use" : "not in use", "", "While someone uses the Mac, its in-use share's cores (scenic in-use) are kept free of its jobs"));
-  if (st.app) out.push(chip(`app ${st.app}`, x.role !== "lead" && m.a.app && st.app !== m.a.app ? "warn" : ""));
-  const sp = m.fc?.speed?.[x.name];
-  if (sp != null && x.role !== "lead") out.push(chip(`${Math.round(sp * 100)}% of the lead's pace${(m.fc.guessed || []).includes(x.name) ? " (a guess until measured)" : ""}`));
-  return h("div", "facts", out);
-}
-
-// The last day by the hour: how busy it was (a bar an hour; several, the pages, together, up to the
-// hour), paused hours shaded; and what it finished, each step counted in its noun.
-function spark(m, name) {
-  const rows = m.sw.rates?.rows;
-  if (!rows?.length) return null;
-  const names = Array.isArray(name) ? name : [name];
-  const bars = rows.map((r) => {
-    const busy = Math.min(3600, names.reduce((t, nm) => t + (r.busy_s?.[nm] || 0), 0));
-    const i = h("i", { class: r.paused_s > 1800 ? "p" : "", title: `${clock(r.t)}: busy ${Math.round(busy / 60)} min${r.paused_s ? `, paused ${Math.round(r.paused_s / 60)} min` : ""}` });
-    i.style.height = `${Math.round((busy / 3600) * 100)}%`;
-    return i;
-  });
-  const today = rows.reduce((t, r) => { for (const nm of names) for (const [s, k] of Object.entries(r.done?.[nm] || {})) t[s] = (t[s] || 0) + k; return t; }, {});
-  const said = Object.entries(today).sort((x, y) => y[1] - x[1]).map(([s, k]) => S.said(s, k)).join(" · ");
-  return [h("div", "spark", bars), h("div", "sub", `Last 24 h: ${said || "nothing finished"}`)];
 }
 
 function fitText(w) {
@@ -512,48 +497,29 @@ function diskWords(c) {
   return `${g(c.free_mb)} free · ${g(c.disk_mb)} for jobs${kept.length ? ` (${kept.join(", ")})` : ""}`;
 }
 
-// The lead's ramp (crate::agent::RampView): its slots now of the most; held (its slots kept at the
-// start) or not clean (growth stopped), else clean since when and when it grows.
-function rampText(r, now) {
-  const bits = [`${r.slots}${r.most ? ` of ${r.most}` : ""} slots (ramp reached ${r.reached})`];
-  if (r.held) bits.push(`held: ${r.held}`);
-  else if (r.not_clean) bits.push(`not clean: ${r.not_clean}`);
-  else if (r.clean_since) bits.push(`clean ${dur(now - r.clean_since)}${r.grows_at ? `, grows ≈ ${clock(r.grows_at)} if its slots keep busy` : ""}`);
-  return bits.join(" · ");
-}
-
-// A machine's card, each the same: who and how it is (the lead marked coordinator, its ramp); its
-// capacity; a block per running job, by slot, with what's next there; why nothing more fits (or
-// why none runs); its facts; its day.
+// A machine's card, each the same: who and how it is; its capacity; a block per running job, by
+// slot, with what's inside it (or why none runs); live on it (live.js).
 function machineCard(m, x) {
   const st = x.status, now = m.now;
   const [state, cls] = machineState(st, x.fresh, m.sw.pause);
   const jobs = jobsOf(st);
-  const said = macSaid(m.a, x.name);
   const role = x.role === "lead" ? "lead · coordinator" : "member";
   const card = h("div", { class: `mc ${x.fresh ? "" : "off"}`, style: { borderLeft: `3px solid ${x.colour}` } },
     h("div", "top", h("span", "name", x.name), h("span", "role", role), chip(state, cls), jobs.length ? chip(plural(jobs.length, "job")) : null, h("span", "right", `heard from ${ago(now, st.beat)}`)));
-  if (x.role === "lead" && st.ramp) card.append(h("div", `sub ramp ${st.ramp.held ? "held" : st.ramp.not_clean ? "notclean" : ""}`, rampText(st.ramp, now)));
-  card.append(...[capacityBlock(said)].filter(Boolean));
+  card.append(...[capacityBlock(macSaid(m.a, x.name))].filter(Boolean));
   jobs.forEach((j) => {
     // (Its real slot, slots may be sparse: jobsOf.)
-    const k = j.slot;
-    const b = jobBlock(j, now);
-    b.querySelector(".what").prepend(h("span", "slot", `${k + 1}`));
+    const b = jobBlock(j, now, m.fc);
+    b.querySelector(".what").prepend(h("span", "slot", `${j.slot + 1}`));
     card.append(b);
-    card.append(...[nextBlock(m, slotName(x.name, k))].filter(Boolean));
   });
   if (!jobs.length) {
     // Why it isn't building.
     const why = (st.waiting || []).filter((w) => !w.step || x.role !== "lead").slice(0, 2);
     card.append(h("div", "job", h("div", "what dim", st.held ? `This Mac is paused (from ${st.held.by}); the rest of the pool goes on` : m.sw.pause ? "Paused with the build" : why.length ? "Waiting" : "Nothing to build now")));
     for (const w of why) card.append(h("div", "sub", x.role === "lead" ? `${w.what}: ${w.why}` : w.why));
-    card.append(...[nextBlock(m, x.name)].filter(Boolean));
   }
-  for (const w of said.why) card.append(h("div", "fits", h("b", null, "Nothing more fits: "), w));
-  const names = Object.keys(m.fc?.lanes || {}).filter((nm) => isSlotOf(nm, x.name));
-  const more = [x.role === "helper" ? fitText(x.worker) : null, facts(st, x, m), ...(spark(m, names.length ? names : [x.name]) || [])];
-  card.append(...more.filter(Boolean));
+  card.append(...[x.role === "helper" ? fitText(x.worker) : null, liveBlock(x.name)].filter(Boolean));
   return card;
 }
 
@@ -580,7 +546,6 @@ function pagesCard(m) {
   }
   const t = m.tasks;
   if (t.offered != null) card.append(h("div", "sub", `Tasks now: ${t.offered || 0} offered, ${t.leased || 0} running, ${t.done || 0} done, ${t.failed || 0} failed${!t.offered && !t.leased ? " — a job offers them as it runs, a few at a time" : ""}`));
-  for (const e of spark(m, m.pages.map((p) => p.name)) || []) card.append(e);
   return card;
 }
 
@@ -1136,4 +1101,5 @@ export function dashboard(opts) {
   window.addEventListener("pagehide", keep);
   setInterval(() => document.visibilityState === "visible" && poll(), POLL_MS);
   poll();
+  startLive({ call: ctx.call, store: ctx.store, macs: () => last?.macs || [], active: () => location.hash === "#machines" });
 }

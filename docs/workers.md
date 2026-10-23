@@ -147,7 +147,7 @@ Common rules:
   own page alone, its agent passing them on. This Mac's own page may also cancel a job and try a
   failed target again (`/work/act`). `/work/?view` only watches. Each slot (a Web Worker per core, less one) runs a
   task's programs over an in-memory filesystem (`web/work/runtime.js`, over browser_wasi_shim).
-- **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`, `sums.js`; docs/pipeline.md §5): a
+- **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`, `sums.js`, `live.js`, `chart.js`, `chartmath.js`; docs/pipeline.md §5): a
   sticky header (the verdict: going, done when, what needs a look; Pause, Freeze, Resume; the
   tabs), a tab per part by the address's `#hash`, and a fixed footer (the charts' range, the Live
   dot). Overview: the overview (its map figure from the last catalogue) and the road to done
@@ -157,7 +157,7 @@ Common rules:
   `/work/steps` once (the steps table: every word about a step), `/work/swarm` every 10 s and
   `/work/history` incrementally; `/work/regions` (each region's folders, download size and
   outline: docs/pool.md §10, Regions) when the last catalogue changes, else every ten minutes;
-  each Mac's measures over time (on the lead also the NAS's disks and the pool's NAS traffic), and its internet's counts by host and last transfers, from its own port's `/work/live` (docs/pool.md §10, Live);
+  each Mac's measures over time (on the lead also the NAS's disks and the pool's NAS traffic), and its internet's counts by host and last transfers, from its own port's `/work/live` (docs/pool.md §10, Live; the Machines tab asks each Mac's every 1.5 s while shown);
   each running job's phase, target and NAS and internet bytes in the status (`jobs[].live`, and a
   member's on its lease, from its beat: the same section). The
   regions' outlines and the countries' (`countries.json`, one of the page's files) are for the

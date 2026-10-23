@@ -9,7 +9,7 @@
 #   guards    tools/app/guards.sh
 #   wasm      tools/app/wasm.sh, when a crate the wasm build compiles changed (det, roadcore,
 #             pipeline, store, names)
-#   web       web/test/rings.test.ts under node, pnpm typecheck and vite build (to a scratch folder), when web/ changed
+#   web       web/test/rings.test.ts and chartmath.test.mjs under node, pnpm typecheck and vite build (to a scratch folder), when web/ changed
 #   swift     swiftc of tools/status/main.swift (publish's line) and its --test (arguments, reopen, launchd), when tools/status changed
 #   tests     each command tools/dev/affected-tests.sh prints, run on the test Mac (tools/app/remote-tests.sh;
 #             here when it can't be reached or SCENIC_CHECK_LOCAL=1)
@@ -49,7 +49,7 @@ part guards tools/app/guards.sh
 if has 'crates/(det|roadcore|pipeline|store|names)/*' || has Cargo.lock; then part wasm tools/app/wasm.sh
 else skip wasm "no wasm crate changed"; fi
 if has 'web/*'; then
-  part web zsh -c "cd web && node test/rings.test.ts && pnpm run typecheck && pnpm exec vite build --outDir ${(q)logs}/web-dist --emptyOutDir"
+  part web zsh -c "cd web && node test/rings.test.ts && node test/chartmath.test.mjs && pnpm run typecheck && pnpm exec vite build --outDir ${(q)logs}/web-dist --emptyOutDir"
 else skip web "web/ unchanged"; fi
 if has 'tools/status/*'; then
   part swift zsh -c "swiftc -O -swift-version 5 -target arm64-apple-macos26.0 -o ${(q)logs}/scenic-status tools/status/*.swift && ${(q)logs}/scenic-status --test tools/status/test"

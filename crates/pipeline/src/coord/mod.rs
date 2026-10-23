@@ -3949,6 +3949,10 @@ mod http {
         ("dash.js", "text/javascript", include_bytes!("../../../../web/work/dash.js")),
         ("pool.js", "text/javascript", include_bytes!("../../../../web/work/pool.js")),
         ("sums.js", "text/javascript", include_bytes!("../../../../web/work/sums.js")),
+        // Live on each Mac (the Machines tab), its charts and their sums.
+        ("live.js", "text/javascript", include_bytes!("../../../../web/work/live.js")),
+        ("chart.js", "text/javascript", include_bytes!("../../../../web/work/chart.js")),
+        ("chartmath.js", "text/javascript", include_bytes!("../../../../web/work/chartmath.js")),
         ("dash.css", "text/css; charset=utf-8", include_bytes!("../../../../web/work/dash.css")),
         // The world's countries' outlines for the overview's map (Natural Earth 1:50m, public domain): rings
         // in Web Mercator, the world 0–1000 each way.

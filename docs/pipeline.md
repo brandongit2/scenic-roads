@@ -159,8 +159,8 @@ same tab; an alert links to the tab that says more.
 - **Header's verdict:** one sentence (state, done ≈, next on the map), the alerts as chips, the
   pause controls: Pause (each job stops at its next safe point), Freeze (each job frozen where it
   is, after a confirm), Resume.
-- **Footer:** the range the charts over time show (1 min to 72 h, this browser's own, kept; no
-  chart reads it yet: planned, #507's later parts); the Live dot, green and blinking while the
+- **Footer:** the range the Machines tab's live charts show (1 min to 72 h, this browser's own,
+  kept); the Live dot, green and blinking while the
   build's state answered in the last 30 s, else Stale with the time of the last answer.
 - **Overview tab:** the gate's banners (held inputs), then the overview and the road to done.
 - **Overview:** how far: the whole build's work done, every stage's (`sums.js` wholeProgress:
@@ -174,9 +174,17 @@ same tab; an alert links to the tab that says more.
 - **Stages:** a card per stage: mark, title, count, bar; a row per step: mark, title, ⇄ when any
   Mac may take it, count, bar, its forecast (work, done ≈); the stage's jobs to come and note.
 - **Machines:** a card per Mac: name, role, state, heard from; its capacity; a block per running
-  job by its slot (name, parts, progress, running since, memory; frozen or stuck) with that slot's
-  next work (each job's phase, target and bytes are in the status's `jobs[].live`, docs/pool.md
-  §10, Live; not drawn yet: planned, #507's later parts); why nothing more fits; facts as chips; its day as a spark line. Pages one card.
+  job by its slot (name, parts, progress, running since, memory; frozen or stuck) with what's
+  inside it (the status's `jobs[].live`, docs/pool.md §10, Live: its phase and since when, its
+  target under way against the step's `each_s`, its targets done, its NAS and internet bytes);
+  then **Live** (`live.js`): the Mac's own `/work/live`, asked every 1.5 s while the tab is shown
+  (the footer's range, then the points since), drawn by `chart.js` (its sums in `chartmath.js`,
+  tested by web/test/chartmath.test.mjs): Transfers (the jobs' NAS reads and writes, the internet
+  in and out) and Cores (the build's and the rest's, stacked, against the Mac's cores and its
+  P cores) with axes; compact rows for CPU and load, memory in use coloured by its pressure with
+  the build's and the swap, the disk's free space and writes, the battery, the NAS's answer time;
+  gaps where the Mac was silent shaded, and a footer with the range, the resolution and how long
+  it was silent. Pages one card.
 - **The pool:** `pool.js`, under the machines (the Machines tab).
 - **Regions:** a row per region: its folders and name, state, when it's done and all on the map,
   its download's size, its tiles built (on the map as they come), what's left by step; found by
@@ -186,6 +194,7 @@ same tab; an alert links to the tab that says more.
 - **This device:** helping with this tab (index.html; not in `?view`).
 
 Each Mac's measures over time (NAS latency, load, cores busy, memory, the build against the other apps, disk space and writes, power, jobs, its NAS calls in flight and missed, the internet by host and its last transfers; on the lead the NAS's disks' busy share and the pool's NAS traffic) come from its own
-`/work/live` (docs/pool.md §10, Live); a series missing is shown as no measure yet.
+`/work/live` (docs/pool.md §10, Live); a series missing is shown as no measure yet. The Machines
+tab draws the ones above; the rest (the NAS's disks, the pool's traffic, the internet by host) aren't drawn yet.
 
 Colours are the stage's (`STAGE_COLOURS` in `dash.js`), never a step's own.
