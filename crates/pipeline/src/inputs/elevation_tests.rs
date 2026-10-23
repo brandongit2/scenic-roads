@@ -123,6 +123,13 @@ impl Fixture {
 }
 
 #[test]
+fn the_checks_key_names_the_accepted_regions() {
+    let mut m = BTreeMap::new();
+    m.insert(crate::inputs::logical(crate::inputs::regions::UNIT), "regions-index".to_string());
+    assert!(Elevation::default().context(&m).contains(&"regions regions-index".to_string()));
+}
+
+#[test]
 fn good_declarations_are_measured_from_their_data() {
     let f = Fixture::new(vec![
         ("single.toml", decl("", "format = \"geotiff\"\nurl = \"https://e.org/a.tif\"")),

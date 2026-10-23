@@ -154,14 +154,6 @@ pub fn meeting(sets: &[FineSet], b: [f64; 4], lat: f64) -> Vec<&FineSet> {
     sets.iter().filter(|s| s.cover.meets(b) && s.detail.zoom_at(lat) > base).collect()
 }
 
-/// Whether a fine dataset of `sets` has coverage meeting z8 tile `x`/`y` (its `regions` cut it:
-/// crate::dem::declared::scope_cover): where its fine packs are made, or dropped; elsewhere they're
-/// left as they are.
-pub fn in_reach(sets: &[FineSet], x: u32, y: u32) -> bool {
-    let b = crate::stage::tile_box_grown(TARGET_Z, x, y, 0.0);
-    sets.iter().any(|s| s.cover.meets(b))
-}
-
 /// The poleward latitude of a box (where its datasets are finest).
 fn poleward(b: [f64; 4]) -> f64 {
     b[1].abs().max(b[3].abs())
@@ -260,6 +252,36 @@ impl Fine {
             });
         }
         Ok(Some((presence, full)))
+    }
+}
+
+/// The fine datasets a run reads, as the records' accepted elevation and sources versions are now:
+/// a job reads them again before each target (`refresh`), so one planned before a dataset's
+/// `regions` changed, on any Mac, makes each target as the plan now would (a target no fine
+/// dataset reaches any more has its packs dropped).
+pub struct Current {
+    read_at: [Option<String>; 2],
+    pub fine: Option<Fine>,
+}
+
+impl Current {
+    fn versions(m: &BTreeMap<String, String>) -> [Option<String>; 2] {
+        [crate::inputs::elevation::UNIT, crate::inputs::sources::UNIT]
+            .map(|u| m.get(&crate::inputs::logical(u)).cloned())
+    }
+
+    /// As the versions `m` names under `root` are.
+    pub fn read(root: &std::path::Path, m: &BTreeMap<String, String>) -> Result<Current> {
+        Ok(Current { read_at: Self::versions(m), fine: Fine::read(root, m)? })
+    }
+
+    /// Read again where `m` names other versions than were read; whether it was.
+    pub fn refresh(&mut self, root: &std::path::Path, m: &BTreeMap<String, String>) -> Result<bool> {
+        if Self::versions(m) == self.read_at {
+            return Ok(false);
+        }
+        *self = Current::read(root, m)?;
+        Ok(true)
     }
 }
 
@@ -721,6 +743,10 @@ mod tests {
         let mut ds = declared::accepted(&a).unwrap();
         assert!(sets(&ds, &terrain).is_empty(), "the fixture's roads dataset is coarser than the terrain's");
         assert!(Fine::of(a.clone(), Vec::new()).unwrap().sets.is_empty());
+        // (A job reads them again only when the records name other versions.)
+        let mut c = Current::read(d.path(), &m).unwrap();
+        assert!(c.fine.is_some() && !c.refresh(d.path(), &m).unwrap());
+        assert!(c.refresh(d.path(), &BTreeMap::new()).unwrap() && c.fine.is_none());
         // (Its full resolution counts, not the one it's read at.)
         ds[0].measured.full = Some(2.0);
         let s = sets(&ds, &terrain);

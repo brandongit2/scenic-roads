@@ -5183,9 +5183,9 @@ fn depth_step(out: &mut Out, args: &[String], step: &str) -> Result<()> {
 /// terrain-fine <8/x/y …>: the terrain finer than its base under each z8 tile (its fine packs,
 /// pipeline::terrain_fine), from its z6 tile's hi pack as stored (its ring from its neighbours'
 /// too); a z8 tile with nothing fine (no fine dataset there, or no hi pack) has its fine packs
-/// dropped, where a fine dataset's coverage meets it; one no fine dataset reaches
-/// (`terrain_fine::in_reach`: a job planned before a dataset's `regions` changed) is passed over,
-/// its packs left as they are.
+/// dropped. The records' accepted elevation and sources versions are read again before each target
+/// (`terrain_fine::Current`), so a job planned before a dataset's `regions` changed, on any Mac,
+/// makes each target as the plan now would.
 fn terrain_fine_step(out: &mut Out, args: &[String]) -> Result<()> {
     use pipeline::terrain_fine as tf;
     let ts: Vec<TileId> = positional(args)
@@ -5194,7 +5194,7 @@ fn terrain_fine_step(out: &mut Out, args: &[String]) -> Result<()> {
         .collect::<Result<_>>()?;
     anyhow::ensure!(!ts.is_empty(), "terrain-fine <8/x/y …>");
     let p = phase("the fine datasets' declarations read and the basemap's water opened", Class::NasRead);
-    let fine = tf::Fine::read(out.root(), &out.manifest)?.filter(|f| !f.sets.is_empty());
+    let mut current = tf::Current::read(out.root(), &out.manifest)?;
     let water = pipeline::terrain_pack::open_water(out)?;
     drop(p);
     let fetch = pipeline::fetch::Fetcher::from_env();
@@ -5203,10 +5203,15 @@ fn terrain_fine_step(out: &mut Out, args: &[String]) -> Result<()> {
     for (k, &t) in ts.iter().enumerate() {
         pipeline::control::safe_point(tf::STEP);
         pipeline::agent::jobs::part(k, &names);
-        if !tf::in_reach(fine.as_ref().map_or(&[][..], |f| &f.sets), t.x, t.y) {
-            eprintln!("terrain-fine {}: no fine dataset reaches it; passed over, its packs kept", t.slash());
-            continue;
+        match pipeline::out::read_manifest(out.root()) {
+            Ok(m) => {
+                if current.refresh(out.root(), &m)? {
+                    eprintln!("terrain-fine: the accepted elevation datasets changed; read again");
+                }
+            }
+            Err(e) => eprintln!("terrain-fine: the records can't be read now ({e:#}); the datasets as read before"),
         }
+        let fine = current.fine.as_ref().filter(|f| !f.sets.is_empty());
         let c = cost_start(tf::STEP, &t.slash());
         // (Its z6 tile's hi pack, and its neighbours' its ring crosses into.)
         let his: Vec<Option<PathBuf>> = tf::ring_packs((t.x, t.y))
@@ -5222,7 +5227,7 @@ fn terrain_fine_step(out: &mut Out, args: &[String]) -> Result<()> {
         };
         drop(p);
         let p = phase("its fine tiles made and uploaded", Class::Mixed);
-        let r = tf::make(out, (t.x, t.y), &base, Some(&water), fine.as_ref(), &fetch, &|_, _, _| {})?;
+        let r = tf::make(out, (t.x, t.y), &base, Some(&water), fine, &fetch, &|_, _, _| {})?;
         drop(p);
         out.save()?;
         eprintln!(

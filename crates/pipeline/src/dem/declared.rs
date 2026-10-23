@@ -713,12 +713,17 @@ pub fn line(d: &Accepted) -> String {
 
 /// The digest of the datasets' `keyed` digests (and conversions), in their order.
 pub fn tag(ds: &[Accepted]) -> String {
-    // (With each one's regions: a sample kept from before they were declared isn't valid.)
+    tag_at(ds, None)
+}
+
+/// `tag`, of a plan over box `b`: a dataset whose `regions` cut its coverage near `b` (`cut_note`)
+/// noted so, so samples kept from before the cut don't count there; elsewhere the tag is as before.
+fn tag_at(ds: &[Accepted], b: Option<[f64; 4]>) -> String {
     let lines: Vec<String> = ds
         .iter()
-        .map(|d| match &d.declaration.regions {
+        .map(|d| match b.and_then(|b| cut_note(&d.measured, &Cover::of(d.measured.cover.as_deref()), b)) {
             None => line(d),
-            Some(r) => format!("{} in {}", line(d), r.join(",")),
+            Some(n) => format!("{} {n}", line(d)),
         })
         .collect();
     store::naming::hash16(lines.join("\n").as_bytes())
@@ -774,7 +779,8 @@ pub fn meeting(ds: &[(Accepted, Cover)], b: [f64; 4]) -> Vec<String> {
 /// there; None where nothing was cut there, so a key there is as before its regions.
 pub fn cut_note(measured: &Measured, cover: &Cover, b: [f64; 4]) -> Option<String> {
     let uncut = Cover::of(Some(measured.uncut.as_deref()?));
-    let (x0, x1, y0, y1) = (b[0].floor() as i32 - 1, b[2].floor() as i32, b[1].floor() as i32 - 1, b[3].floor() as i32);
+    // (The cells `Cover::meets` reads for `b`: those the closed box touches.)
+    let (x0, x1, y0, y1) = (b[0].ceil() as i32 - 1, b[2].floor() as i32, b[1].ceil() as i32 - 1, b[3].floor() as i32);
     let mut kept = Vec::new();
     let mut cut = false;
     for x in x0..=x1 {
@@ -825,9 +831,9 @@ pub fn plan_converted(
     for w in convert(&mut ds, geoid) {
         eprintln!("elevation: {w}");
     }
-    let tagged = tag(&ds);
     let g = 0.05;
     let near = [near[0] - g, near[1] - g, near[2] + g, near[3] + g];
+    let tagged = tag_at(&ds, Some(near));
     let mut out = Vec::new();
     for d in &ds {
         let cover = Cover::of(d.measured.cover.as_deref());
@@ -942,7 +948,8 @@ mod tests {
             Measured { cover: Some(vec![[10.0, 45.0, 11.0, 46.0]]), uncut: Some(had.clone()), ..Default::default() };
         let c = Cover::of(m.cover.as_deref());
         assert!(cut_note(&m, &c, [11.2, 45.2, 11.3, 45.3]).is_some(), "11,45 was cut");
-        assert_eq!(cut_note(&m, &c, [10.2, 45.2, 10.3, 45.3]), None, "10,45 and its neighbours west and south kept");
+        assert_eq!(cut_note(&m, &c, [10.2, 45.2, 10.3, 45.3]), None, "10,45 kept");
+        assert!(cut_note(&m, &c, [10.5, 45.2, 11.0, 45.3]).is_some(), "a box on 11°E touches 11,45");
         assert_eq!(cut_note(&m, &c, [30.2, 45.2, 30.3, 45.3]), None);
         assert_eq!(cut_note(&Measured { uncut: None, ..m.clone() }, &c, [10.2, 45.2, 10.3, 45.3]), None);
         // (Declared as region ids; not in the digest the keys name; not for the base terrain.)

@@ -3709,9 +3709,7 @@ pub fn depth_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, til
 ///   hi pack (its base tiles) and terrain key (its water, its declared sources), and the hi packs
 ///   of the z6 tiles its ring crosses into (crate::terrain_fine::ring_packs); it runs once its own
 ///   z6 tile's terrain is done under that key (a neighbour's new hi pack runs it again);
-/// - a z8 tile with fine packs named and no target now ("none"), where a fine dataset's coverage
-///   (cut to its `regions`) meets it: its run drops them. Fine packs where none does are left as
-///   they are (`tf::in_reach`).
+/// - a z8 tile with fine packs named and no target now ("none"): its run drops them.
 pub fn fine_targets(
     cov: &Coverage,
     m: &BTreeMap<String, String>,
@@ -3751,9 +3749,7 @@ pub fn fine_targets(
         .range("layers/terrain/fine/".to_string()..)
         .take_while(|(l, _)| l.starts_with("layers/terrain/fine/"))
         .filter_map(|(l, _)| tf::pack_tile(l))
-        .map(|(x, y)| (x >> k, y >> k))
-        .filter(|&(x, y)| tf::in_reach(&sets, x, y))
-        .map(|(x, y)| format!("{}/{x}/{y}", tf::TARGET_Z))
+        .map(|(x, y)| format!("{}/{}/{}", tf::TARGET_Z, x >> k, y >> k))
         .filter(|t| !targets.contains(t))
         .collect();
     for t in left {
@@ -5095,12 +5091,9 @@ pub(crate) mod tests {
         // The dataset no longer fine: no targets but those with fine packs, which drop them.
         let (x, y) = TileId::parse(&ft[0].0).map(|u| (u.x, u.y)).unwrap();
         m.insert(tf::pack_logical(x << 2, y << 2), "fine-pack".into());
-        tiles.hold_fine(&m, vec![tf::FineSet { detail: tf::Detail::Pyramid(12), ..lidar.clone() }]);
+        tiles.hold_fine(&m, Vec::new());
         let gone = fine_work(&c, &m, &done, &tiles);
         assert_eq!(gone[0].targets, vec![(ft[0].0.clone(), h(&[&tf::versions(), &ft[0].0, "none"]))]);
-        // No fine dataset reaching it (its coverage cut to regions elsewhere): its packs kept.
-        tiles.hold_fine(&m, Vec::new());
-        assert_eq!(fine_targets(&c, &m, &done, &tiles), Some(Vec::new()));
         // (A finer measured resolution moves the keys.)
         tiles.hold_fine(&m, vec![tf::FineSet { detail: tf::Detail::Pyramid(15), ..lidar }]);
         assert!(fine_targets(&c, &m, &done, &tiles)
