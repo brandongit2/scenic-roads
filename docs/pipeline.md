@@ -184,7 +184,7 @@ same tab; an alert links to the tab that says more.
 - **Details:** tables, unfolded, among them the steps table itself.
 - **This device:** helping with this tab (index.html; not in `?view`).
 
-Each Mac's measures over time (NAS latency, load, cores busy, memory, the build against the other apps, disk space and writes, power, jobs, the internet by host and its last transfers) come from its own
+Each Mac's measures over time (NAS latency, load, cores busy, memory, the build against the other apps, disk space and writes, power, jobs, its NAS calls in flight and missed, the internet by host and its last transfers; on the lead the NAS's disks' busy share and the pool's NAS traffic) come from its own
 `/work/live` (docs/pool.md §10, Live); a series missing is shown as no measure yet.
 
 Colours are the stage's (`STAGE_COLOURS` in `dash.js`), never a step's own.

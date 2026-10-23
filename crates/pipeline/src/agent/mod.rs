@@ -772,6 +772,10 @@ pub struct Status {
     /// whole (crate::coord::Coordinator::nas_shares): by its worker's name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub nas_share: BTreeMap<String, u32>,
+    /// The NAS as the lead sees it: its probes, limits, disk load and the pool's traffic
+    /// (crate::coord::Coordinator::nas_view).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nas: Option<crate::coord::NasView>,
     /// Helpers on other Macs building now (`state/helpers/<host>.json`, fresh within ten minutes):
     /// their own status, with their job.
     #[serde(default)]
@@ -4454,6 +4458,7 @@ impl Agent {
             capacity: self.coord.as_ref().map(|c| c.capacities()).unwrap_or_default(),
             packing: self.coord.as_ref().map(|c| c.refusals()).unwrap_or_default(),
             nas_share: self.coord.as_ref().map(|c| c.nas_shares()).unwrap_or_default(),
+            nas: self.coord.as_ref().and_then(|c| c.nas_view()),
             workers: self
                 .coord
                 .as_ref()
@@ -5230,6 +5235,11 @@ impl Agent {
             guard: self.guard_stops(),
             leases,
             caches: caches_here(&self.o.home.join("cache")),
+            nas_traffic: self.live.as_ref().and_then(|l| {
+                let t = now_s();
+                let v: Option<Vec<f64>> = live::NAS_TRAFFIC.iter().map(|n| l.latest(n, t, 5)).collect();
+                v?.try_into().ok()
+            }),
         }
     }
 

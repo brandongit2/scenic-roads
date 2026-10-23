@@ -1037,7 +1037,20 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   `nas_creates_s`, `nas_listed_s` (entries), `nas_stats_s`, `nas_deletes_s`. A job's first second
   sets its baseline; a job given no folder (an older agent's) leaves the second unmeasured. Not
   yet counted: the build's own copies to the NAS outside `Out` (scenic-build's direct copies), and
-  the agent's own NAS work. **The internet** (task #516), counted by the agent's proxy (§7.7), which
+  the agent's own NAS work. **The NAS as a whole** (task #517): each member's ask carries its
+  jobs' NAS traffic now (`Capacity::nas_traffic`, its newest second of the seven series), and the
+  lead sums the fresh ones (its own among them) every 10 s into `pool_nas_read_mbs` and the other
+  six (`pool_` then the name); on the lead too, from the load gate's own SNMP reading every 10 s
+  (§7.7; no second poller), the disks' busy share, `nas_disk_busy_pct` (the busiest) and
+  `nas_disk_busy_pct.<n>` (each, from 1). Each Mac's agent's NAS calls under their deadlines
+  (`agent::nasread`, §7.8) every second: `nas_calls`, in flight now in its three pools (stuck
+  ones included), and `nas_missed`, those that passed their deadline or were refused, every
+  thread busy, over the second. The lead's status says the rest (`nas`, `coord::NasView`): the
+  day's probes as its prober keeps them (the ones in `state/pool/nas-probes.json`, read from there
+  and saved there, no other copy), the limits they give, the gate's smoothed load, target and
+  whether it holds, the disks' last reading, and the pool's traffic summed. All of this adds
+  three atomic reads to the sampler's second (a round measured 0.27 ms of CPU on the M1, 23 Oct)
+  and seven numbers to an ask. **The internet** (task #516), counted by the agent's proxy (§7.7), which
   every job's connection out goes through (`budget::net`): per host, the bytes in (to the jobs)
   and out, added as each chunk is relayed (one atomic add a read, so a long download shows as it
   goes), the requests asked (a tunnel is one: what's inside is the client's TLS), the connections

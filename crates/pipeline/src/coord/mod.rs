@@ -315,6 +315,10 @@ pub struct Shared {
     /// The gate on the NAS's own disk load (crate::budget::nas::Loop): held, `nas` and `nas_own`
     /// say so (`Limits::held`); read by the lead's waiting lines (`Coordinator::nas_held`).
     pub nas_loop: crate::budget::nas::Loop,
+    /// The probes the lead's prober keeps (`nas_prober`'s, as read from and written to
+    /// crate::budget::nas::PROBES_FILE), and the disks' busy shares it read last (%): the status's.
+    pub nas_probes: Vec<crate::budget::nas::Probe>,
+    pub nas_disks: Vec<f64>,
     /// Why each worker's last ask was granted fewer jobs than it wanted (`pack`: the packing's
     /// refusal, in words), and when (unix s); none once an ask got all it wanted. The status's
     /// (`Coordinator::refusals`): why nothing more fits a Mac.
@@ -356,6 +360,20 @@ pub const NAS_WAIT_SAY_S: u64 = 30 * 60;
 
 #[cfg_attr(target_os = "wasi", allow(dead_code))]
 impl Shared {
+    /// Each member's fresh capacity (`Coordinator::capacities`): `me`'s own first.
+    fn capacities(&self, me: &str) -> Vec<(String, Capacity)> {
+        let now = self.now();
+        // (A capacity is refreshed only by an ask: a busy member's, older than `CAP_FRESH_S`, left out.)
+        let fresh = |c: &Capacity| unix_now().saturating_sub(c.at) < CAP_FRESH_S;
+        let own = self.own_cap.clone().filter(fresh).map(|c| (me.to_string(), c));
+        let others = self
+            .workers
+            .iter()
+            .filter(|(_, w)| now.saturating_duration_since(w.seen) < AROUND)
+            .filter_map(|(n, w)| Some((n.clone(), w.cap.clone().filter(fresh)?)));
+        own.into_iter().chain(others).collect()
+    }
+
     pub fn now(&self) -> Instant {
         self.clock.now()
     }
@@ -799,7 +817,7 @@ pub const CAP_FRESH_S: u64 = 120;
 /// `mem_mb`, `cores` and `disk_mb` are one job's. Carried by each ask (a member's) and set each
 /// loop by the lead for its own Mac (`Coordinator::set_capacity`); the coordinator keeps the last
 /// per member (`capacities`). Every field defaults: an older or newer agent's capacity parses.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Capacity {
     /// When it was measured (unix s).
@@ -848,6 +866,30 @@ pub struct Capacity {
     /// its disk as it asks: the first job reading one is reserved its fill less that.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub caches: BTreeMap<String, CacheHere>,
+    /// Its jobs' NAS traffic a second now (crate::agent::live::NAS_TRAFFIC's order and units, its
+    /// live store's newest): the lead sums the members' (`Coordinator::nas_view`). None: not measured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nas_traffic: Option<[f64; 7]>,
+}
+
+/// The NAS as the lead sees it, for the status (`Coordinator::nas_view`): the day's probes kept
+/// (crate::budget::nas::PROBES_FILE's), the limits they give the lead's own jobs, the load gate's
+/// reading (the busiest disk smoothed, its target, held) and the disks' last busy shares, and the
+/// pool's NAS traffic, the fresh members' summed.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NasView {
+    pub probes: Vec<crate::budget::nas::Probe>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limits: Option<crate::budget::nas::Limits>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub load_pct: Option<f64>,
+    pub target_pct: u32,
+    pub held: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub disks_pct: Vec<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub traffic: Option<[f64; 7]>,
 }
 
 /// What a Mac holds of a shared cache (`Capacity::caches`): its files' bytes on its disk (MB).
@@ -855,6 +897,12 @@ pub struct Capacity {
 #[serde(default)]
 pub struct CacheHere {
     pub have_mb: u64,
+}
+
+/// The pool's NAS traffic (crate::agent::live::NAS_TRAFFIC's order): each member's with a
+/// measure, summed. None while none has one.
+pub fn pool_traffic(caps: &[(String, Capacity)]) -> Option<[f64; 7]> {
+    caps.iter().filter_map(|(_, c)| c.nas_traffic).reduce(|a, b| std::array::from_fn(|i| a[i] + b[i]))
 }
 
 /// The NAS probes failed in a row from which they count as failing (`Coordinator::nas_failing`).
@@ -1164,6 +1212,8 @@ impl Coordinator {
             inputs_asks: Vec::new(),
             nas_failures: 0,
             nas_loop: Default::default(),
+            nas_probes: Vec::new(),
+            nas_disks: Vec::new(),
             refused: BTreeMap::new(),
             brokers: None,
             pageview: None,
@@ -1527,17 +1577,23 @@ impl Coordinator {
     /// Each member's capacity as last said: this Mac's own first (`set_capacity`), then each worker
     /// around whose ask carried one.
     pub fn capacities(&self) -> Vec<(String, Capacity)> {
+        self.shared.lock().unwrap().capacities(&self.me)
+    }
+
+    /// The NAS as the lead sees it (`NasView`), for the status; None before its prober knows the
+    /// NAS (no probe kept, no disk read).
+    pub fn nas_view(&self) -> Option<NasView> {
         let s = self.shared.lock().unwrap();
-        let now = s.now();
-        // (A capacity is refreshed only by an ask: a busy member's, older than `CAP_FRESH_S`, left out.)
-        let fresh = |c: &Capacity| unix_now().saturating_sub(c.at) < CAP_FRESH_S;
-        let own = s.own_cap.clone().filter(fresh).map(|c| (self.me.clone(), c));
-        let others = s
-            .workers
-            .iter()
-            .filter(|(_, w)| now.saturating_duration_since(w.seen) < AROUND)
-            .filter_map(|(n, w)| Some((n.clone(), w.cap.clone().filter(fresh)?)));
-        own.into_iter().chain(others).collect()
+        let l = s.nas_loop;
+        (!s.nas_probes.is_empty() || l.load.is_some()).then(|| NasView {
+            probes: s.nas_probes.clone(),
+            limits: s.nas_own,
+            load_pct: l.load.map(|v| (v * 10.0).round() / 10.0),
+            target_pct: l.target,
+            held: l.held(),
+            disks_pct: s.nas_disks.clone(),
+            traffic: pool_traffic(&s.capacities(&self.me)),
+        })
     }
 
     /// Why nothing more fits each worker, as its last ask was packed (`Shared::refused`), the
@@ -2439,8 +2495,12 @@ fn nas_prober(
                                     .ok()
                             });
                         }
+                        let mut disks = Vec::new();
                         match session.as_ref().map(|s| s.disk_busy()) {
-                            Some(Ok(busy)) => nas_loop.read(&busy, nas::target_pct(nas::read_target(&r).as_ref())),
+                            Some(Ok(busy)) => {
+                                nas_loop.read(&busy, nas::target_pct(nas::read_target(&r).as_ref()));
+                                disks = busy;
+                            }
                             Some(Err(e)) => {
                                 if nas_loop.load.is_some() {
                                     eprintln!("coordinator: the NAS's disk load not read ({e}): the gate open");
@@ -2455,6 +2515,17 @@ fn nas_prober(
                         let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
                         s.nas_loop = nas_loop;
                         s.nas_own = own;
+                        s.nas_probes.clone_from(&probes.0);
+                        // (The live store's NAS series, task #517: this reading's disks, and the
+                        // pool's traffic.)
+                        if let Some(l) = &s.live {
+                            let t = unix_now();
+                            l.record_disks(t, &disks);
+                            if let Some(tr) = pool_traffic(&s.capacities(&me)) {
+                                l.record_pool(t, &tr);
+                            }
+                        }
+                        s.nas_disks = disks;
                         match failed {
                             Some(true) => s.nas_failures = s.nas_failures.saturating_add(1),
                             Some(false) => s.nas_failures = 0,
@@ -4978,6 +5049,40 @@ mod tests {
         let s = c.shared.lock().unwrap();
         assert_eq!(s.workers["m1"].cap.as_ref().map(|c| c.mem_mb), Some(9000), "kept, though stale");
         assert!(s.workers["old"].cap.is_none());
+    }
+
+    /// Task #517: the NAS as the lead sees it: the probes kept, the limits, the gate's reading and
+    /// the disks', and the pool's traffic, the members' with a measure summed.
+    #[test]
+    fn the_status_shows_the_nas_as_the_lead_sees_it() {
+        let (_d, c, w) = start();
+        assert_eq!(c.nas_view(), None, "nothing probed or read yet");
+        let mut tr = [0.0; 7];
+        tr[0] = 12.5;
+        tr[3] = 4.0;
+        c.set_capacity(Some(Capacity { at: unix_now(), nas_traffic: Some(tr), ..Default::default() }));
+        w.ask(&Ask {
+            cap: Some(Capacity { at: unix_now(), nas_traffic: Some(tr), ..Default::default() }),
+            ..ask(4096)
+        })
+        .unwrap();
+        let old = client::Client::at(w.urls(), c.contact.token.clone(), "old");
+        old.ask(&Ask { cap: Some(Capacity { at: unix_now(), ..Default::default() }), ..ask(4096) }).unwrap();
+        let p = crate::budget::nas::Probe { at: unix_now(), bytes_s: 80e6, creates_s: 40.0, ..Default::default() };
+        {
+            let mut s = c.shared.lock().unwrap();
+            s.nas_probes = vec![p];
+            s.nas_own = crate::budget::nas::Probes(vec![p]).limits(None);
+            s.nas_loop.read(&[60.0, 91.0], 85);
+            s.nas_disks = vec![60.0, 91.0];
+        }
+        let v = c.nas_view().unwrap();
+        assert_eq!(v.probes, vec![p]);
+        assert_eq!(v.limits.map(|l| l.bytes_s), Some(80e6));
+        assert_eq!((v.load_pct, v.target_pct, v.held), (Some(91.0), 85, true));
+        assert_eq!(v.disks_pct, vec![60.0, 91.0]);
+        let t = v.traffic.unwrap();
+        assert_eq!((t[0], t[3], t[2]), (25.0, 8.0, 0.0), "the lead's and m1's summed; the unmeasured left out");
     }
 
     fn handoff(units: &[(&str, &str)]) -> Handoff {

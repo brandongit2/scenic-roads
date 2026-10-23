@@ -23,6 +23,10 @@
 //!   and written (MB/s), files opened and made, entries listed, files statted and deleted (a
 //!   second). A job first seen sets its baseline (its first second not counted); one whose agent
 //!   gave it no folder (from an older app) leaves the second unmeasured.
+//! - **The NAS as a whole** (task #517): every second this process's NAS calls in flight and
+//!   missed (crate::agent::nasread::calls); on the lead, every 10 s from its coordinator's NAS
+//!   prober, the disks' busy shares (`record_disks`, the load gate's own reading) and the pool's NAS
+//!   traffic, the members' summed (`record_pool`).
 //! - **A series missing** from an answer has no measure yet (or none in the window): readers say
 //!   so, never zero.
 
@@ -80,6 +84,16 @@ pub const IDLE: &str = "idle_s";
 /// The jobs' NAS traffic (store::nasio::Count's order), per second.
 pub const NAS_TRAFFIC: [&str; 7] =
     ["nas_read_mbs", "nas_files_s", "nas_write_mbs", "nas_creates_s", "nas_listed_s", "nas_stats_s", "nas_deletes_s"];
+/// The pool's NAS traffic on the lead, each `NAS_TRAFFIC` series summed over the members'
+/// (`POOL` then its name; crate::coord::Capacity::nas_traffic), every 10 s.
+pub const POOL: &str = "pool_";
+/// This process's NAS calls under their deadlines (crate::agent::nasread::calls): in flight now,
+/// and missed over the second (past their deadline, or refused with every thread busy).
+pub const NAS_CALLS: &str = "nas_calls";
+pub const NAS_MISSED: &str = "nas_missed";
+/// The NAS's disks' busy share (%), as the lead's load gate reads them every 10 s (crate::budget::snmp):
+/// the busiest, and each disk's (`NAS_DISK_BUSY`, a dot, its number from 1).
+pub const NAS_DISK_BUSY: &str = "nas_disk_busy_pct";
 
 /// A point: the samples in its time.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -211,6 +225,23 @@ impl Store {
         }
         if let Ok(mut s) = self.series.lock() {
             s.entry(name.to_string()).or_default().add(t, v);
+        }
+    }
+
+    /// The NAS's disks' busy shares (%) read at `t` (`NAS_DISK_BUSY`): the busiest and each one's.
+    pub fn record_disks(&self, t: u64, busy: &[f64]) {
+        if let Some(m) = busy.iter().copied().filter(|b| b.is_finite()).reduce(f64::max) {
+            self.record(NAS_DISK_BUSY, t, m);
+        }
+        for (i, b) in busy.iter().enumerate() {
+            self.record(&format!("{NAS_DISK_BUSY}.{}", i + 1), t, *b);
+        }
+    }
+
+    /// The pool's NAS traffic at `t` (`POOL`, `NAS_TRAFFIC`'s order), the members' summed.
+    pub fn record_pool(&self, t: u64, traffic: &[f64; 7]) {
+        for (n, v) in NAS_TRAFFIC.iter().zip(traffic) {
+            self.record(&format!("{POOL}{n}"), t, *v);
         }
     }
 
@@ -408,6 +439,8 @@ struct Rates {
     disk: Option<(u64, u64)>,
     /// The proxy's bytes in and out, and when.
     net: Option<(u64, u64, u64)>,
+    /// The NAS calls missed so far, as last read.
+    missed: Option<u64>,
 }
 
 impl Rates {
@@ -460,6 +493,12 @@ impl Rates {
             self.disk = Some((w, t));
         }
         self.net(s, t);
+        let (calls, missed) = super::nasread::calls();
+        put(NAS_CALLS, Some(calls as f64));
+        if let Some(was) = self.missed {
+            put(NAS_MISSED, Some(missed.saturating_sub(was) as f64));
+        }
+        self.missed = Some(missed);
         let counts: Vec<(i32, PathBuf)> = jobs.into_iter().map(|(_, g, d)| (g, d)).collect();
         if let Some(r) = self.nas.rates(&counts, t) {
             for (name, v) in NAS_TRAFFIC.iter().zip(r) {
@@ -740,11 +779,45 @@ mod tests {
         let ms = crate::sys::thread_cpu_ns().saturating_sub(cpu) as f64 / 1e6 / 20.0;
         eprintln!("a round: {ms:.3} ms of CPU");
         assert!(ms < 20.0, "a round took {ms} ms of CPU");
-        for n in [CORES, CORES_E, CORES_P, BUILD_CORES, OTHERS_CORES, BUILD_MEM, OTHERS_MEM, DISK_WRITE] {
+        for n in [
+            NAS_CALLS,
+            NAS_MISSED,
+            CORES,
+            CORES_E,
+            CORES_P,
+            BUILD_CORES,
+            OTHERS_CORES,
+            BUILD_MEM,
+            OTHERS_MEM,
+            DISK_WRITE,
+        ] {
             assert!(s.latest(n, t0 + 19, 5).is_some(), "{n} not sampled");
         }
         let cores = crate::sys::core_ticks().unwrap().len() as f64;
         assert!(s.latest(CORES, t0 + 19, 5).unwrap() <= cores);
+    }
+
+    /// Task #517: the NAS's disks (the busiest and each) and the pool's traffic as series; the
+    /// process's NAS calls in flight and missed sampled each second.
+    #[test]
+    fn the_nas_figures_as_series() {
+        let s = Store::new(None, "m4");
+        let t = now_s();
+        s.record_disks(t, &[40.0, 72.0, f64::NAN]);
+        assert_eq!(s.latest(NAS_DISK_BUSY, t, 5), Some(72.0));
+        assert_eq!(s.latest(&format!("{NAS_DISK_BUSY}.2"), t, 5), Some(72.0));
+        assert_eq!(s.latest(&format!("{NAS_DISK_BUSY}.3"), t, 5), None, "a disk not read: no measure");
+        let mut tr = [0.0; 7];
+        tr[2] = 3.5;
+        s.record_pool(t, &tr);
+        assert_eq!(s.latest("pool_nas_write_mbs", t, 5), Some(3.5));
+        let mut r = Rates::default();
+        let home = tempfile::tempdir().unwrap();
+        let guard = super::super::memguard::Sampler::new(2);
+        r.sample(&s, home.path(), &guard, t);
+        r.sample(&s, home.path(), &guard, t + 1);
+        assert!(s.latest(NAS_CALLS, t + 1, 5).is_some());
+        assert!(s.latest(NAS_MISSED, t + 1, 5).is_some(), "missed over the second, from the second read");
     }
 
     #[test]
