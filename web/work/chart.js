@@ -33,9 +33,11 @@ function fit(c) {
 
 /** Draws chart `o` on canvas `c` (again on each call, and as the pointer moves over it):
  * `{from, to, step, series: [{points, colour, label, fill, band, unit}], stacked, unit, least, max,
- *   refs: [{v, label}], gaps: [{from, to}], axis, colourOf(point), shade: {points, colour}, marks: [t]}` —
+ *   refs: [{v, label, colour, edit}], ticks: [[v, label]], onEdit(key), gaps: [{from, to}], axis, colourOf(point), shade: {points, colour}, marks: [t]}` —
  * `colourOf` colours a line by its points (memory pressure by its level); `shade` shades the
- * spans a state was on (mains power, the owner present); `marks`, events' times (a vertical line each); `axis` draws the time and the scale's labels (`times: false`: the scale's alone). */
+ * spans a state was on (mains power, the owner present); `marks`, events' times (a vertical line each); `axis` draws the time and the scale's labels (`times: false`: the scale's alone);
+ * `ticks`, the scale's lines and words in place of 0, half and the top; a ref's label is a boxed tag
+ * over the canvas (the canvas's parent positioned), a button with ✎ calling `onEdit(edit)` when it has `edit`. */
 export function draw(c, o) {
   opts.set(c, o);
   if (!c.dataset.hover) {
@@ -69,12 +71,12 @@ function paint(c) {
   g.font = "10px -apple-system, BlinkMacSystemFont, system-ui, sans-serif";
   g.textBaseline = "top";
 
-  // Silent stretches: shaded, hatched lightly.
-  g.fillStyle = k.line;
+  // Silent stretches: shaded faintly (the mockup draws none; a gap's missing line says it).
+  g.fillStyle = k.grid;
   for (const gp of o.gaps || []) {
     const x0 = Math.max(L, X(gp.from)), x1 = Math.min(W - R, X(gp.to));
     if (x1 - x0 < 0.5) continue;
-    g.globalAlpha = 0.35;
+    g.globalAlpha = 0.6;
     g.fillRect(x0, top, x1 - x0, ph);
     g.globalAlpha = 1;
   }
@@ -99,7 +101,9 @@ function paint(c) {
   // time's lines at its ticks, labelled under (seconds ago, "now" at the right).
   if (o.axis) {
     g.lineWidth = 1;
-    const ys = [0, max / 2, max];
+    const ys = o.ticks ? o.ticks.map((t) => t[0]) : [0, max / 2, max];
+    // (The unit once for the axis, the owner's: "0, 100, 200" and "MB/s" beside, in the top's unit.)
+    const [said, unit] = o.ticks ? [o.ticks.map((t) => t[1]), ""] : axisWords(ys, max, o.unit);
     ys.forEach((v, i) => {
       const y = Math.round(Y(v)) + 0.5;
       g.strokeStyle = i ? k.grid : k.line;
@@ -107,14 +111,16 @@ function paint(c) {
     });
     g.fillStyle = k.dim; g.textAlign = "right"; g.textBaseline = "middle";
     const drawn = [];
-    for (const i of [0, 2, 1]) {
+    for (const i of ys.map((_, i) => i).sort((a, b) => +(a > 0 && a < ys.length - 1) - +(b > 0 && b < ys.length - 1))) {
       const y = Y(ys[i]);
       if (drawn.some((d) => Math.abs(d - y) < 12)) continue;
       drawn.push(y);
-      g.fillText(fmt(ys[i], o.unit), L - 4, y);
+      g.fillText(said[i], L - 4, y);
     }
+    if (unit) { g.textAlign = "left"; g.fillText(unit, 0, top + ph / 2); }
     if (o.times !== false) {
-      const step = AGO_STEPS.find((x) => span / x <= Math.max(2, Math.floor(pw / 80))) ?? 86400;
+      // (At most four steps, the mockup's: "−1 min, −45 s, −30 s, −15 s, now" at every range.)
+      const step = AGO_STEPS.find((x) => span / x <= Math.max(2, Math.min(4, Math.floor(pw / 80)))) ?? 86400;
       g.textBaseline = "top";
       for (let a = 0; a <= span + 1e-6; a += step) {
         const x = L + (1 - a / span) * pw;
@@ -160,15 +166,22 @@ function paint(c) {
       g.beginPath(); g.arc(X(last[0]), Y(o.stacked ? base.get(last[0]) || 0 : last[2]), 2.5, 0, Math.PI * 2); g.fill();
     }
   });
-  // Reference lines, dashed, in the warning's colour (or their own), labelled over their right end.
-  for (const r of o.refs || []) {
+  // Reference lines, dashed, in the warning's colour (or their own), each labelled by a boxed tag
+  // over its right end, the highest first (under its line when over it would cover one already placed).
+  const tags = [];
+  for (const r of [...(o.refs || [])].sort((a, b) => b.v - a.v)) {
     if (r.v > max) continue;
     const y = Math.round(Y(r.v)) + 0.5;
     const col = r.colour || k.warn;
     g.strokeStyle = col; g.setLineDash([4, 3]); g.lineWidth = 1;
     g.beginPath(); g.moveTo(L, y); g.lineTo(W - R, y); g.stroke(); g.setLineDash([]);
-    if (r.label && o.axis) { g.fillStyle = col; g.textAlign = "right"; g.textBaseline = "bottom"; g.fillText(r.label, W - R - 4, Math.max(top + 10, y - 2)); }
+    if (r.label && o.axis) {
+      const free = (ty) => !tags.some((t) => Math.abs(t.y - ty) < 16);
+      const ty = [Math.max(0, y - 17), Math.min(H - 16, y + 2)].find(free);
+      if (ty != null) tags.push({ r, y: ty, col });
+    }
   }
+  placeTags(c, o, tags, R);
   // Under the pointer: its time and each series' mean there.
   const hx = hover.get(c);
   if (hx != null) {
@@ -188,6 +201,39 @@ function paint(c) {
     g.fillStyle = k.text; g.textAlign = "left"; g.textBaseline = "top";
     g.fillText(text, bx + 4, top + 2);
   }
+}
+
+// The scale's numbers in the top's unit (`fmt`'s, kB/s to TB), and that unit: [labels, unit].
+function axisWords(ys, max, unit) {
+  const m = /^(-?[\d.,]+)\s*(.*)$/.exec(fmt(max, unit));
+  if (!m) return [ys.map((v) => fmt(v, unit)), ""];
+  const k = parseFloat(m[1].replace(/,/g, "")) / max;
+  return [ys.map((v) => (v === 0 ? "0" : String(+(v * k).toPrecision(3)))), m[2]];
+}
+
+// The refs' tags, kept over the canvas between draws (one element a ref, reused).
+function placeTags(c, o, tags, R) {
+  const host = c.parentNode;
+  if (!host) return;
+  const old = [...host.querySelectorAll(":scope > .reftag")];
+  tags.forEach((t, i) => {
+    const want = t.r.edit ? "BUTTON" : "SPAN";
+    let e = old[i];
+    if (!e || e.tagName !== want) {
+      const n = document.createElement(want.toLowerCase());
+      n.className = "reftag";
+      if (want === "BUTTON") { n.type = "button"; n.addEventListener("click", () => n._go?.()); }
+      if (e) e.replaceWith(n); else host.append(n);
+      old[i] = e = n;
+    }
+    const text = t.r.edit ? `${t.r.label} ✎` : t.r.label;
+    if (e.textContent !== text) e.textContent = text;
+    e._go = t.r.edit ? () => o.onEdit?.(t.r.edit) : null;
+    if (t.r.edit) e.title = "Change it in Settings";
+    e.style.right = `${R + 2}px`; e.style.top = `${Math.round(t.y)}px`;
+    e.style.color = t.col; e.style.borderColor = `color-mix(in srgb, ${t.col} 45%, transparent)`;
+  });
+  old.slice(tags.length).forEach((e) => e.remove());
 }
 
 // The point at `t`, within a step of it (none in a gap).

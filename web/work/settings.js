@@ -91,7 +91,7 @@ export function settingsSection(call, macs, done, onError) {
     const field = h("input", { type: "number", min: input.min, max: input.max, step: input.step, placeholder: input.placeholder, "aria-label": what });
     const go = () => field.value !== "" && put({ [key]: field.value }, what);
     field.addEventListener("keydown", (e) => e.key === "Enter" && go());
-    return h("div", "setting",
+    return h("div", { class: "setting", "data-key": key },
       h("span", "k", what), h("b", null, r.now), h("span", "dim small", r.note),
       h("span", "ctl", field, h("button", { onclick: go }, "Set"),
         h("button", { class: "quiet", title: input.offTitle, onclick: () => put({ [key]: "off" }, what) }, "Off")));
@@ -104,8 +104,8 @@ export function settingsSection(call, macs, done, onError) {
     const put = (body, what) => set(m, st, body, `${what} on ${s?.mac || host}`);
     const name = s?.mac || host || "this page's Mac";
     const head = h("h3", null, name, h("span", "dim small", m ? "" : " (this page's Mac)"));
-    if (!s) return h("div", "box settings", head, h("div", "setting dim small", st.error ? `can't be read: ${st.error}` : "reading…"));
-    return h("div", "box settings", head, macRows(s).map((r) => row(put, r)));
+    if (!s) return h("div", { class: "box settings", "data-host": name }, head, h("div", "setting dim small", st.error ? `can't be read: ${st.error}` : "reading…"));
+    return h("div", { class: "box settings", "data-host": name }, head, macRows(s).map((r) => row(put, r)));
   });
   // (The NAS reserve, the pool's: once, through the first Mac that reaches the NAS.)
   const nas = list.map(([m, host]) => [m, kept.get(host) || {}]).find(([, st]) => st.said?.nas_room);

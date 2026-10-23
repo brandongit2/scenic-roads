@@ -229,7 +229,15 @@ function paint(host) {
   // the Mac's starved; their lines joined over that.)
   const loop = (k) => latest(s[k], now, LOOP_FRESH_S);
   // (Every chart says the time under it, as the mockup's.)
-  const base = { from, to: now, step, gaps: gapList, axis: true, times: true };
+  // (A settable limit's ✎: its row in Settings, on this tab, scrolled to and its field focused; #612 sets it in place.)
+  const onEdit = (key) => {
+    const box = [...document.querySelectorAll(".d-settings .settings")].find((x) => x.dataset.host === host);
+    const at1 = box?.querySelector(`.setting[data-key="${key}"]`) || box;
+    if (!at1) return;
+    at1.scrollIntoView({ block: "center", behavior: "smooth" });
+    at1.querySelector("input")?.focus({ preventScroll: true });
+  };
+  const base = { from, to: now, step, gaps: gapList, axis: true, times: true, onEdit };
   const loopBase = { ...base, step: Math.max(step, LOOP_FRESH_S / 2) };
   const nr = css("--nas-r"), nw = css("--nas-w"), nd = css("--net-d"), nu = css("--net-u"), acc = css("--accent"), dim = css("--dim");
   const ok = css("--ok"), warn = css("--warn"), bad = css("--bad");
@@ -269,7 +277,7 @@ function paint(host) {
   const lim = loop("build_cores_max");
   draw(b.cpu.c, { ...base, unit: "", stacked: true, least: n || 0,
     // (The cores' line unlabelled when the build's limit is drawn: the two labels would meet.)
-    refs: [...(n ? [{ v: n, label: lim != null && lim !== n ? "" : `${n} cores` }] : []), ...(lim != null && lim !== n ? [{ v: lim, label: `build's limit ${fmt(lim)}` }] : [])],
+    refs: [...(n ? [{ v: n, label: lim != null && lim !== n ? "" : `${n} cores` }] : []), ...(lim != null && lim !== n ? [{ v: lim, label: `build's limit: ${fmt(lim)} cores`, edit: "in_use" }] : [])],
     series: [{ points: s.build_cores, colour: acc, label: "build", unit: "cores" }, { points: s.others_cores, colour: dim, label: "other", unit: "cores" }] });
   const busy = at("cores_busy"), ce = at("cores_busy_e"), cp = at("cores_busy_p");
   words(b.cpu.v, busy == null ? ["not measured"] : [`${fmt(busy)}${n ? ` of ${n}` : ""} cores busy`, [acc, `build's jobs ${fmt(at("build_cores"))}`], [dim, `other apps ${fmt(at("others_cores"))}`],
@@ -282,7 +290,7 @@ function paint(host) {
 
   // Memory: the build's and the rest's (GB), stacked, against the Mac's and the build's limit.
   const memGb = mac.mem_gb, memLim = loop("build_mem_max_gb");
-  draw(b.mem.c, { ...base, unit: "GB", stacked: true, max: memGb || undefined, refs: memLim != null ? [{ v: memLim, label: `build's memory ${fmt(memLim, "GB")}` }] : [],
+  draw(b.mem.c, { ...base, unit: "GB", stacked: true, max: memGb || undefined, refs: memLim != null ? [{ v: memLim, label: `build's memory: ${fmt(memLim, "GB")}`, edit: "memory" }] : [],
     series: [{ points: s.build_mem_gb, colour: acc, label: "build", unit: "GB" }, { points: s.others_mem_gb, colour: dim, label: "other", unit: "GB" }] });
   const free = at("mem_free_pct");
   words(b.mem.v, free == null ? ["not measured"] : [`${memGb ? fmt(memGb * (100 - free) / 100, "GB") : fmt(100 - free, "%")}${memGb ? ` of ${fmt(memGb, "GB")}` : ""} used`,
@@ -308,7 +316,7 @@ function paint(host) {
 
   // Disk free, against the owner's room target; the jobs' reservations as words.
   const df = latest(s.disk_free_gb, now, 60), size = latest(s.disk_size_gb, now, 60), room = loop("disk_room_gb"), resv = loop("disk_reserved_gb");
-  draw(b.disk.c, { ...base, unit: "GB", refs: room ? [{ v: room, label: `room target ${fmt(room, "GB")}` }] : [], series: [{ points: s.disk_free_gb, colour: acc, fill: true, label: "free", unit: "GB" }] });
+  draw(b.disk.c, { ...base, unit: "GB", refs: room ? [{ v: room, label: `room target: ${fmt(room, "GB")}`, edit: "room" }] : [], series: [{ points: s.disk_free_gb, colour: acc, fill: true, label: "free", unit: "GB" }] });
   words(b.disk.v, df == null ? ["not measured"] : [`${fmt(df, "GB")} free`, size ? `of ${fmt(size, "GB")}` : "", resv != null ? `${fmt(resv, "GB")} reserved by jobs` : ""], room && df != null && df < room ? "bad" : "");
 
   // Disk write (MB/s).
@@ -318,7 +326,7 @@ function paint(host) {
 
   // Battery: its charge, shaded while on mains, against the lead's floor on battery.
   const bat = loop("battery_pct"), ac = loop("ac"), floor = mac.battery_min;
-  draw(b.power.c, { ...loopBase, unit: "%", max: 100, shade: { points: s.ac, colour: ok }, refs: floor ? [{ v: floor, label: `lead floor ${floor} %` }] : [],
+  draw(b.power.c, { ...loopBase, unit: "%", max: 100, shade: { points: s.ac, colour: ok }, refs: floor ? [{ v: floor, label: `can't lead below ${floor} % on battery` }] : [],
     series: [{ points: s.battery_pct, colour: ac === 0 && floor && bat < floor ? bad : ok, label: "battery", unit: "%" }] });
   words(b.power.v, bat == null ? [ac === 1 ? "on mains, no battery" : "not measured"] : [fmt(bat, "%"), ac === 0 ? "on battery" : "on mains"], ac === 0 && floor && bat < floor ? "warn" : "");
 
@@ -333,13 +341,13 @@ function paint(host) {
   // Heat: macOS's thermal state, 0 nominal to 3 critical.
   const HEAT = ["nominal", "fair", "serious", "critical"];
   const th = at("thermal");
-  draw(b.heat.c, { ...base, unit: "", max: 3, series: [{ points: s.thermal, colour: th > 1 ? bad : th ? warn : ok, label: "heat", unit: "" }], refs: [{ v: 2, label: "macOS slows the Mac" }] });
+  draw(b.heat.c, { ...base, unit: "", max: 3, series: [{ points: s.thermal, colour: th > 1 ? bad : th ? warn : ok, label: "heat", unit: "" }], ticks: HEAT.map((w, i) => [i, w]) });
   words(b.heat.v, th == null ? ["not measured"] : [HEAT[Math.round(th)], ["within normal limits", "slightly raised", "macOS is slowing the Mac", "macOS is slowing the Mac hard"][Math.round(th)]], th >= 2 ? "bad" : th >= 1 ? "warn" : "");
 
   // In use: the owner's last touch within `away_s`, as the agent's loop read it.
   const away = mac.away_s || 300;
   const inUse = (s.idle_s || []).map((p) => { const u = +(p[1] < away); return [p[0], u, u, u]; });
   const idle = loop("idle_s");
-  draw(b.use.c, { ...loopBase, unit: "", max: 1, shade: { points: inUse, colour: acc }, series: [{ points: inUse, colour: acc, label: "in use", unit: "" }] });
+  draw(b.use.c, { ...loopBase, unit: "", max: 1, shade: { points: inUse, colour: acc }, series: [{ points: inUse, colour: acc, label: "in use", unit: "" }], ticks: [[0, "away"], [1, "in use"]] });
   words(b.use.v, idle == null ? ["not measured"] : idle < away ? ["in use", `touched ${dur(idle)} ago`] : [`away for ${dur(idle)}`, "the build may use every core"]);
 }

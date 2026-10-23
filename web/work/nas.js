@@ -93,7 +93,8 @@ function build() {
   box.append(grid, live);
   const h2 = el("h2", null, "The NAS");
   h2.append(parts.say);
-  root.append(h2, box);
+  box.prepend(h2);
+  root.append(box);
 }
 build();
 

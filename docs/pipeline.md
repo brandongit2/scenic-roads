@@ -228,8 +228,11 @@ same tab; an alert links to the tab that says more.
   the lead's floor on battery), the NAS's answer time with the calls in flight and missed, the
   heat (macOS's thermal state, nominal to critical), and
   whether the owner is using the Mac (shaded while so; how long since a touch). What the agent's
-  loop reads (power, idleness, the limits) is said while under 15 min old. Of the mockup, not
-  drawn: setting a limit from its dashed line (task #612; the Settings rows below set them). Gaps where the Mac was silent shaded, and a footer with the range, the resolution and how long
+  loop reads (power, idleness, the limits) is said while under 15 min old. Each chart (chart.js):
+  at most five times under it, its scale's numbers with the unit once beside them (words for the
+  heat and the owner's use), each limit a boxed tag on its dashed line. Of the mockup, not drawn:
+  setting a limit from its tag (task #612); a settable limit's tag (✎: the cores, the build's
+  memory, the room target) scrolls to its Settings row and focuses its field. Gaps where the Mac was silent shaded faintly, and a footer with the range, the resolution and how long
   it was silent. What the lead offered a member is one line (its steps and the pieces it can
   take), the steps on a click. Pages one card.
 - **The pool:** `pool.js`, under the machines (the Machines tab).
