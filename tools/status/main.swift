@@ -1479,7 +1479,7 @@ func memoryItem(_ own: Own?, set: Int?, totalMB: Int) -> (title: String, tip: St
     // (As the page says it: the limit named only where it holds the build's memory under it.)
     if let m = set, limit <= 0 { title = "Memory: \(g(m)) for the build" }
     else if let m = set, m < limit { title = "Memory: \(g(m)) for the build (limit \(g(limit)))" }
-    else if set != nil { title = "Memory: \(g(limit)) for the build (the memory guard's limit)" } else { title = "Memory: \(g(limit)) for the build (the memory guard's limit)" }
+    else { title = "Memory: \(g(limit)) for the build (the memory guard's limit)" }
     let tip = "The memory this Mac's jobs get together, whether you're using the Mac or not; the memory guard's limit (\(g(limit))) stays the ceiling."
     var choices = memoryPresets.filter { limit == 0 || $0 << 10 <= limit }.map { (title: "Give the Build \($0) GB", gb: $0, on: set == $0 << 10) }
     if let m = set, !choices.contains(where: \.on) { choices.append((title: "Give the Build \(g(m))", gb: -1, on: true)) }
