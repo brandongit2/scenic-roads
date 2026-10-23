@@ -550,20 +550,15 @@ impl Sampler {
         w.current()
     }
 
-    /// The jobs watched now, and what they hold together (MB, as last sampled; None while none
-    /// is measured): the live store's `jobs` and `held_mb` (crate::agent::live).
-    pub fn watched(&self) -> (usize, Option<u64>) {
-        let Ok(g) = self.inner.lock() else { return (0, None) };
-        let ws: Vec<&Watch> = g.watches.iter().flatten().collect();
-        let held: Vec<u64> = ws.iter().filter_map(|w| w.held).collect();
-        (ws.len(), (!held.is_empty()).then(|| held.iter().sum()))
-    }
-
-    /// The jobs watched now: each one's process group and the folder its NAS counts are in (the live
-    /// store's NAS traffic, crate::agent::live).
-    pub fn nas_counts(&self) -> Vec<(i32, PathBuf)> {
+    /// The jobs watched now: each one's slot, process group and the folder its NAS counts are in
+    /// (the live store's, crate::agent::live).
+    pub fn jobs(&self) -> Vec<(usize, i32, PathBuf)> {
         let Ok(g) = self.inner.lock() else { return Vec::new() };
-        g.watches.iter().flatten().map(|w| (w.pgid, w.nas_counts.clone())).collect()
+        g.watches
+            .iter()
+            .enumerate()
+            .filter_map(|(k, w)| w.as_ref().map(|w| (k, w.pgid, w.nas_counts.clone())))
+            .collect()
     }
 
     /// What slot `k`'s job holds now (MB), as last sampled.

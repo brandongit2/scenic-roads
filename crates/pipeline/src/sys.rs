@@ -558,9 +558,39 @@ pub fn group_footprint() -> Option<u64> {
 /// The memory process group `pgid` holds now (bytes), as `group_footprint`: a running job's, for
 /// the agent's status.
 pub fn footprint_of_group(pgid: i32) -> Option<u64> {
+    usage_of_group(pgid).map(|u| u.footprint)
+}
+
+/// The CPU time (user and system, ns) the live processes of group `pgid` have used, summed; None
+/// where it can't be read. (A process that ended takes its time with it: the sum may fall.)
+pub fn cpu_of_group(pgid: i32) -> Option<u64> {
+    usage_of_group(pgid).map(|u| u.cpu_ns)
+}
+
+/// What a process group's live processes have used, summed (`usage_of_group`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Usage {
+    /// CPU time, user and system (ns).
+    pub cpu_ns: u64,
+    /// Physical footprints now (bytes).
+    pub footprint: u64,
+    /// Bytes written to disks (`ri_diskio_byteswritten`).
+    pub written: u64,
+}
+
+/// What the live processes of group `pgid` have used (one `proc_pid_rusage` each); None where none
+/// can be read. (A process that ended takes its counts with it: the sums may fall.)
+#[allow(deprecated)]
+pub fn usage_of_group(pgid: i32) -> Option<Usage> {
     #[cfg(target_os = "macos")]
     {
-        let mut total = None;
+        // (rusage_info's times are in mach absolute time units: ns on Intel, 125/3 ns on Apple
+        // silicon.)
+        let mut tb = libc::mach_timebase_info { numer: 0, denom: 0 };
+        #[allow(deprecated)]
+        let ok = unsafe { libc::mach_timebase_info(&mut tb) } == 0 && tb.denom != 0;
+        let (numer, denom) = if ok { (tb.numer as u128, tb.denom as u128) } else { (1, 1) };
+        let mut total: Option<Usage> = None;
         for pid in group_members(pgid) {
             // SAFETY: rusage_info_v2 is plain old data; proc_pid_rusage fills it, the flavour asked.
             let mut ri: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
@@ -568,7 +598,10 @@ pub fn footprint_of_group(pgid: i32) -> Option<u64> {
                 libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V2, (&mut ri as *mut libc::rusage_info_v2).cast())
             } == 0
             {
-                total = Some(total.unwrap_or(0) + ri.ri_phys_footprint);
+                let u = total.get_or_insert_with(Usage::default);
+                u.cpu_ns += ((ri.ri_user_time as u128 + ri.ri_system_time as u128) * numer / denom) as u64;
+                u.footprint += ri.ri_phys_footprint;
+                u.written += ri.ri_diskio_byteswritten;
             }
         }
         total
@@ -580,36 +613,150 @@ pub fn footprint_of_group(pgid: i32) -> Option<u64> {
     }
 }
 
-/// The CPU time (user and system, ns) the live processes of group `pgid` have used, summed; None
-/// where it can't be read. (A process that ended takes its time with it: the sum may fall.)
-pub fn cpu_of_group(pgid: i32) -> Option<u64> {
+/// Each core's CPU ticks since the Mac started, (busy, all), in the processors' order (Apple
+/// silicon: the efficiency cores first); None where they can't be read (`host_processor_info`).
+pub fn core_ticks() -> Option<Vec<(u64, u64)>> {
     #[cfg(target_os = "macos")]
     {
-        // (rusage_info's times are in mach absolute time units: ns on Intel, 125/3 ns on Apple
-        // silicon.)
-        let mut tb = libc::mach_timebase_info { numer: 0, denom: 0 };
+        let mut n: libc::natural_t = 0;
+        let mut info: libc::processor_info_array_t = std::ptr::null_mut();
+        let mut count: libc::mach_msg_type_number_t = 0;
+        // SAFETY: the call allocates `info` (count ints) in this task, freed below.
         #[allow(deprecated)]
-        let ok = unsafe { libc::mach_timebase_info(&mut tb) } == 0 && tb.denom != 0;
-        let (numer, denom) = if ok { (tb.numer as u128, tb.denom as u128) } else { (1, 1) };
-        let mut total = None;
-        for pid in group_members(pgid) {
-            // SAFETY: rusage_info_v2 is plain old data; proc_pid_rusage fills it, the flavour asked.
-            let mut ri: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
-            if unsafe {
-                libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V2, (&mut ri as *mut libc::rusage_info_v2).cast())
-            } == 0
-            {
-                let t = (ri.ri_user_time as u128 + ri.ri_system_time as u128) * numer / denom;
-                total = Some(total.unwrap_or(0) + t as u64);
-            }
+        let r = unsafe {
+            libc::host_processor_info(
+                libc::mach_host_self(),
+                libc::PROCESSOR_CPU_LOAD_INFO,
+                &mut n,
+                &mut info,
+                &mut count,
+            )
+        };
+        if r != libc::KERN_SUCCESS || info.is_null() {
+            return None;
         }
-        total
+        // (Per core: user, system, idle, nice.)
+        let ticks = unsafe { std::slice::from_raw_parts(info as *const u32, count as usize) };
+        let out = ticks
+            .chunks_exact(libc::CPU_STATE_MAX as usize)
+            .take(n as usize)
+            .map(|c| {
+                let busy = u64::from(c[0]) + u64::from(c[1]) + u64::from(c[3]);
+                (busy, busy + u64::from(c[2]))
+            })
+            .collect();
+        #[allow(deprecated)]
+        unsafe {
+            libc::vm_deallocate(libc::mach_task_self(), info as libc::vm_address_t, count as usize * 4);
+        }
+        Some(out)
     }
     #[cfg(not(target_os = "macos"))]
+    None
+}
+
+/// The efficiency cores' count (`hw.perflevel1.logicalcpu`; 0 where there's no such level).
+pub fn efficiency_cores() -> u32 {
+    #[cfg(target_os = "macos")]
     {
-        let _ = pgid;
-        None
+        if sysctl::<u32>("hw.nperflevels").unwrap_or(1) < 2 {
+            return 0;
+        }
+        sysctl::<u32>("hw.perflevel1.logicalcpu").unwrap_or(0)
     }
+    #[cfg(not(target_os = "macos"))]
+    0
+}
+
+/// The bytes written to this Mac's disks since it started, summed over its block storage drivers'
+/// statistics (IOKit's `IOBlockStorageDriver`, as `iostat` reads them); None where they can't be
+/// read.
+pub fn disk_written() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::c_void;
+        #[link(name = "IOKit", kind = "framework")]
+        unsafe extern "C" {
+            fn IOServiceMatching(name: *const libc::c_char) -> *mut c_void;
+            fn IOServiceGetMatchingServices(main: u32, matching: *mut c_void, it: *mut u32) -> i32;
+            fn IOIteratorNext(it: u32) -> u32;
+            fn IORegistryEntryCreateCFProperty(
+                e: u32,
+                key: *const c_void,
+                alloc: *const c_void,
+                o: u32,
+            ) -> *const c_void;
+            fn IOObjectRelease(o: u32) -> i32;
+        }
+        #[link(name = "CoreFoundation", kind = "framework")]
+        unsafe extern "C" {
+            fn CFStringCreateWithCString(alloc: *const c_void, s: *const libc::c_char, enc: u32) -> *const c_void;
+            fn CFDictionaryGetValue(d: *const c_void, k: *const c_void) -> *const c_void;
+            fn CFNumberGetValue(n: *const c_void, kind: isize, out: *mut c_void) -> bool;
+            fn CFGetTypeID(p: *const c_void) -> usize;
+            fn CFDictionaryGetTypeID() -> usize;
+            fn CFNumberGetTypeID() -> usize;
+            fn CFRelease(p: *const c_void);
+        }
+        const UTF8: u32 = 0x0800_0100;
+        const SINT64: isize = 4;
+        // SAFETY: CoreFoundation and IOKit calls on objects made here, each released once; the
+        // matching dictionary is consumed by IOServiceGetMatchingServices.
+        unsafe {
+            let stats = CFStringCreateWithCString(std::ptr::null(), c"Statistics".as_ptr(), UTF8);
+            let key = CFStringCreateWithCString(std::ptr::null(), c"Bytes (Write)".as_ptr(), UTF8);
+            let mut it = 0u32;
+            let mut total = None;
+            let m = IOServiceMatching(c"IOBlockStorageDriver".as_ptr());
+            if !stats.is_null() && !key.is_null() && !m.is_null() && IOServiceGetMatchingServices(0, m, &mut it) == 0 {
+                loop {
+                    let e = IOIteratorNext(it);
+                    if e == 0 {
+                        break;
+                    }
+                    let d = IORegistryEntryCreateCFProperty(e, stats, std::ptr::null(), 0);
+                    if !d.is_null() {
+                        if CFGetTypeID(d) == CFDictionaryGetTypeID() {
+                            let v = CFDictionaryGetValue(d, key);
+                            let mut b: i64 = 0;
+                            if !v.is_null()
+                                && CFGetTypeID(v) == CFNumberGetTypeID()
+                                && CFNumberGetValue(v, SINT64, (&mut b as *mut i64).cast())
+                            {
+                                total = Some(total.unwrap_or(0) + b.max(0) as u64);
+                            }
+                        }
+                        CFRelease(d);
+                    }
+                    IOObjectRelease(e);
+                }
+                IOObjectRelease(it);
+            }
+            for s in [stats, key] {
+                if !s.is_null() {
+                    CFRelease(s);
+                }
+            }
+            total
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
+}
+
+/// The CPU time the calling thread has used (ns).
+pub fn thread_cpu_ns() -> u64 {
+    #[cfg(unix)]
+    {
+        let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: fills `t`.
+        if unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) } != 0 {
+            return 0;
+        }
+        t.tv_sec as u64 * 1_000_000_000 + t.tv_nsec as u64
+    }
+    #[cfg(not(unix))]
+    0
 }
 
 /// The most `group_footprint` since the last `reset_group_peak`, as a thread samples it four times

@@ -8,8 +8,12 @@
 //!   (`FILE`) every `SAVE_EVERY` and as the agent stops, read back as it starts. A bucket older than
 //!   its ring's span is never answered.
 //! - **Sampled** on threads of the agent's own (`spawn`), never its loop: every second the load,
-//!   memory free, its pressure, the swap and the jobs running; every 5 s what they hold (the memory
-//!   guard's last sample); every 10 s the disk's free space. The battery, mains power and the
+//!   memory free, its pressure, the swap and the jobs running; the cores busy (all, the efficiency
+//!   cores, the performance ones: `host_processor_info`'s ticks, the efficiency cores the first
+//!   `hw.perflevel1.logicalcpu`); the build's CPU and memory (its jobs' processes' `proc_pid_rusage`)
+//!   and the rest of the Mac's (the cores busy and the memory in use, less the build's); the bytes
+//!   written to the Mac's disks (IOKit's block storage drivers' statistics) and by each job, as
+//!   rates; the sampler's own CPU time. Every 10 s the disk's free space. The battery, mains power and the
 //!   owner's idleness as the agent's loop reads them (each round, ~20 s). The NAS's latency every 5 s (`NAS_EVERY`), while a build runs (`set_nas`):
 //!   a listing of the project's folder through the records' readers (crate::agent::nasread::probe;
 //!   a stat would be answered from the SMB client's cache), never two at once.
@@ -52,7 +56,20 @@ pub const MEM_FREE: &str = "mem_free_pct";
 pub const PRESSURE: &str = "mem_pressure";
 pub const SWAP: &str = "swap_mb";
 pub const JOBS: &str = "jobs";
-pub const HELD: &str = "held_mb";
+/// The cores busy (cores' worth, over the second): all, the efficiency cores, the performance ones.
+pub const CORES: &str = "cores_busy";
+pub const CORES_E: &str = "cores_busy_e";
+pub const CORES_P: &str = "cores_busy_p";
+/// The build's (its jobs') CPU and the rest of the Mac's (cores' worth), and their memory (GB).
+pub const BUILD_CORES: &str = "build_cores";
+pub const OTHERS_CORES: &str = "others_cores";
+pub const BUILD_MEM: &str = "build_mem_gb";
+pub const OTHERS_MEM: &str = "others_mem_gb";
+/// The bytes written to the Mac's disks, and each job's (MB/s; `JOB_WRITE` and its slot).
+pub const DISK_WRITE: &str = "disk_write_mbs";
+pub const JOB_WRITE: &str = "job_write_mbs.";
+/// The sampler's own CPU time a second (ms).
+pub const SAMPLER: &str = "sampler_cpu_ms";
 pub const DISK: &str = "disk_free_gb";
 pub const BATTERY: &str = "battery_pct";
 pub const AC: &str = "ac";
@@ -322,15 +339,12 @@ pub fn spawn(store: Arc<Store>, home: PathBuf, guard: super::memguard::Sampler) 
         .name("live-sampler".into())
         .spawn(move || {
             let mut saved = std::time::Instant::now();
-            let mut nas = NasRates::default();
+            let mut rates = Rates::default();
             loop {
                 let t = now_s();
-                sample(&s, &home, &guard, t);
-                if let Some(r) = nas.rates(&guard.nas_counts(), t) {
-                    for (name, v) in NAS_TRAFFIC.iter().zip(r) {
-                        s.record(name, t, v);
-                    }
-                }
+                let cpu = crate::sys::thread_cpu_ns();
+                rates.sample(&s, &home, &guard, t);
+                s.record(SAMPLER, t, crate::sys::thread_cpu_ns().saturating_sub(cpu) as f64 / 1e6);
                 if saved.elapsed() >= SAVE_EVERY {
                     s.save();
                     saved = std::time::Instant::now();
@@ -357,25 +371,125 @@ pub fn spawn(store: Arc<Store>, home: PathBuf, guard: super::memguard::Sampler) 
         .ok();
 }
 
-/// One second's samples at `t` (module doc: what, how often).
-fn sample(s: &Store, home: &Path, guard: &super::memguard::Sampler, t: u64) {
-    let put = |name: &str, v: Option<f64>| {
-        if let Some(v) = v {
-            s.record(name, t, v);
+/// The counts read last, for the rates over the second (module doc).
+#[derive(Default)]
+struct Rates {
+    nas: NasRates,
+    cores: Option<Vec<(u64, u64)>>,
+    /// Per job (process group): the most of each count yet read, and when.
+    jobs: BTreeMap<i32, (crate::sys::Usage, u64)>,
+    disk: Option<(u64, u64)>,
+}
+
+impl Rates {
+    /// One second's samples at `t` (module doc: what, how often).
+    fn sample(&mut self, s: &Store, home: &Path, guard: &super::memguard::Sampler, t: u64) {
+        let put = |name: &str, v: Option<f64>| {
+            if let Some(v) = v {
+                s.record(name, t, v);
+            }
+        };
+        put(LOAD, super::cond::load1());
+        let free = crate::sys::memory_free_pct();
+        put(MEM_FREE, free.map(f64::from));
+        put(PRESSURE, crate::sys::memory_pressure().map(f64::from));
+        put(SWAP, crate::sys::swap_used().map(|b| (b >> 20) as f64));
+        let jobs = guard.jobs();
+        put(JOBS, Some(jobs.len() as f64));
+        if t % 10 == 0 {
+            put(DISK, super::room::disk_free(home).ok().map(|b| b as f64 / GB));
         }
-    };
-    put(LOAD, super::cond::load1());
-    put(MEM_FREE, crate::sys::memory_free_pct().map(f64::from));
-    put(PRESSURE, crate::sys::memory_pressure().map(f64::from));
-    put(SWAP, crate::sys::swap_used().map(|b| (b >> 20) as f64));
-    let (jobs, held) = guard.watched();
-    put(JOBS, Some(jobs as f64));
-    if t % 5 == 0 {
-        put(HELD, if jobs == 0 { Some(0.0) } else { held.map(|h| h as f64) });
+        let now = crate::sys::core_ticks();
+        let busy = match (&self.cores, &now) {
+            (Some(was), Some(now)) => cores_busy(was, now, crate::sys::efficiency_cores() as usize),
+            _ => None,
+        };
+        self.cores = now;
+        if let Some([all, e, p]) = busy {
+            put(CORES, Some(all));
+            put(CORES_E, Some(e));
+            put(CORES_P, Some(p));
+        }
+        let used: Vec<_> = jobs.iter().map(|(k, pgid, _)| (*k, *pgid, crate::sys::usage_of_group(*pgid))).collect();
+        let b = self.jobs(&used, t);
+        put(BUILD_CORES, b.cores);
+        if let (Some(all), Some(c)) = (busy, b.cores) {
+            put(OTHERS_CORES, Some((all[0] - c).max(0.0)));
+        }
+        put(BUILD_MEM, b.mem.map(|m| m as f64 / GB));
+        if let (Some(m), Some(total), Some(free)) = (b.mem, crate::sys::memsize(), free) {
+            let used = total as f64 * f64::from(100 - free.min(100)) / 100.0;
+            put(OTHERS_MEM, Some((used - m as f64).max(0.0) / GB));
+        }
+        for (k, v) in b.writes {
+            s.record(&format!("{JOB_WRITE}{k}"), t, v);
+        }
+        if let Some(w) = crate::sys::disk_written() {
+            if let Some((was, at)) = self.disk {
+                put(DISK_WRITE, Some(w.saturating_sub(was) as f64 / MB / t.saturating_sub(at).max(1) as f64));
+            }
+            self.disk = Some((w, t));
+        }
+        let counts: Vec<(i32, PathBuf)> = jobs.into_iter().map(|(_, g, d)| (g, d)).collect();
+        if let Some(r) = self.nas.rates(&counts, t) {
+            for (name, v) in NAS_TRAFFIC.iter().zip(r) {
+                s.record(name, t, v);
+            }
+        }
     }
-    if t % 10 == 0 {
-        put(DISK, super::room::disk_free(home).ok().map(|b| b as f64 / (1u64 << 30) as f64));
+
+    /// The jobs' use at `t`, from each one's (slot, process group, usage now): what they hold
+    /// (bytes; None with jobs running and none read, zero with none), their CPU (cores' worth over
+    /// the second, of the jobs read a second time; None with none such) and each one's disk writes
+    /// (MB/s). A job first seen sets its baseline; each count kept at the most seen (a process that
+    /// ended takes its counts with it: its last moment isn't counted).
+    fn jobs(&mut self, jobs: &[(usize, i32, Option<crate::sys::Usage>)], t: u64) -> JobUse {
+        let none = jobs.is_empty();
+        let mut out = JobUse { mem: none.then_some(0), cores: none.then_some(0.0), writes: vec![] };
+        let mut seen = BTreeMap::new();
+        for (k, pgid, u) in jobs {
+            let Some(u) = u else { continue };
+            *out.mem.get_or_insert(0) += u.footprint;
+            let mut high = *u;
+            if let Some((was, at)) = self.jobs.get(pgid) {
+                let dt = t.saturating_sub(*at).max(1) as f64;
+                *out.cores.get_or_insert(0.0) += u.cpu_ns.saturating_sub(was.cpu_ns) as f64 / 1e9 / dt;
+                out.writes.push((*k, u.written.saturating_sub(was.written) as f64 / MB / dt));
+                high.cpu_ns = high.cpu_ns.max(was.cpu_ns);
+                high.written = high.written.max(was.written);
+            }
+            seen.insert(*pgid, (high, t));
+        }
+        self.jobs = seen;
+        out
     }
+}
+
+/// The jobs' use over a second (`Rates::jobs`).
+#[derive(Debug, PartialEq)]
+struct JobUse {
+    mem: Option<u64>,
+    cores: Option<f64>,
+    writes: Vec<(usize, f64)>,
+}
+
+const GB: f64 = (1u64 << 30) as f64;
+const MB: f64 = (1u64 << 20) as f64;
+
+/// The cores busy between two reads of their ticks (`crate::sys::core_ticks`), in cores' worth:
+/// all, the first `e` (the efficiency cores), the rest; None when the cores changed.
+fn cores_busy(was: &[(u64, u64)], now: &[(u64, u64)], e: usize) -> Option<[f64; 3]> {
+    if was.len() != now.len() || now.is_empty() {
+        return None;
+    }
+    let mut out = [0.0; 3];
+    for (i, (a, b)) in was.iter().zip(now).enumerate() {
+        let all = b.1.saturating_sub(a.1);
+        let f = if all == 0 { 0.0 } else { b.0.saturating_sub(a.0) as f64 / all as f64 };
+        out[0] += f;
+        out[if i < e { 1 } else { 2 }] += f;
+    }
+    Some(out)
 }
 
 /// The jobs' NAS counts, the most yet read, for their rates (module doc).
@@ -529,6 +643,66 @@ mod tests {
         put(&a, &format!("{}-2", std::process::id()), [2 << 20, 3]);
         assert_eq!(r.rates(&[(7, a.clone())], 14).unwrap()[0], 0.0);
         assert_eq!(r.rates(&[(7, a), (9, d.path().join("none"))], 15), None);
+    }
+
+    #[test]
+    fn the_cores_busy_in_cores_worth_by_group() {
+        // (Two efficiency cores, then two performance ones: half, idle, all, a quarter.)
+        let was = [(0, 0), (10, 100), (0, 0), (5, 5)];
+        let now = [(50, 100), (10, 200), (100, 100), (30, 105)];
+        assert_eq!(cores_busy(&was, &now, 2), Some([1.75, 0.5, 1.25]));
+        // (No ticks between: idle; the cores changed: none.)
+        assert_eq!(cores_busy(&now, &now, 2), Some([0.0; 3]));
+        assert_eq!(cores_busy(&was[..3], &now, 2), None);
+        assert_eq!(cores_busy(&[], &[], 0), None);
+    }
+
+    #[test]
+    fn the_jobs_cpu_memory_and_writes() {
+        use crate::sys::Usage;
+        let u = |cpu_s: u64, gb: u64, mb: u64| Usage {
+            cpu_ns: cpu_s * 1_000_000_000,
+            footprint: gb << 30,
+            written: mb << 20,
+        };
+        let mut r = Rates::default();
+        assert_eq!(r.jobs(&[], 10), JobUse { mem: Some(0), cores: Some(0.0), writes: vec![] });
+        // (First seen: held now, the rates its baseline.)
+        assert_eq!(
+            r.jobs(&[(0, 7, Some(u(10, 2, 100)))], 10),
+            JobUse { mem: Some(2 << 30), cores: None, writes: vec![] }
+        );
+        let j = r.jobs(&[(0, 7, Some(u(16, 3, 110))), (1, 8, Some(u(1, 1, 0)))], 12);
+        assert_eq!(j, JobUse { mem: Some(4 << 30), cores: Some(3.0), writes: vec![(0, 5.0)] });
+        // (A process ended, its counts gone: nothing negative, nothing counted twice.)
+        let j = r.jobs(&[(0, 7, Some(u(12, 3, 105)))], 13);
+        assert_eq!((j.cores, j.writes), (Some(0.0), vec![(0, 0.0)]));
+        assert_eq!(r.jobs(&[(0, 7, Some(u(17, 3, 111)))], 14).cores, Some(1.0));
+        // (A job unread: no measure of what it holds.)
+        assert_eq!(r.jobs(&[(0, 9, None)], 15).mem, None);
+    }
+
+    /// The sampler's round on this Mac: each new series read, and its own CPU time small.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_round_reads_the_mac_and_costs_little() {
+        let s = Store::new(None, "m4");
+        let home = tempfile::tempdir().unwrap();
+        let guard = super::super::memguard::Sampler::new(2);
+        let mut r = Rates::default();
+        let t0 = now_s();
+        let cpu = crate::sys::thread_cpu_ns();
+        for i in 0..20 {
+            r.sample(&s, home.path(), &guard, t0 + i);
+        }
+        let ms = crate::sys::thread_cpu_ns().saturating_sub(cpu) as f64 / 1e6 / 20.0;
+        eprintln!("a round: {ms:.3} ms of CPU");
+        assert!(ms < 20.0, "a round took {ms} ms of CPU");
+        for n in [CORES, CORES_E, CORES_P, BUILD_CORES, OTHERS_CORES, BUILD_MEM, OTHERS_MEM, DISK_WRITE] {
+            assert!(s.latest(n, t0 + 19, 5).is_some(), "{n} not sampled");
+        }
+        let cores = crate::sys::core_ticks().unwrap().len() as f64;
+        assert!(s.latest(CORES, t0 + 19, 5).unwrap() <= cores);
     }
 
     #[test]

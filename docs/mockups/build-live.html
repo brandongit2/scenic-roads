@@ -489,7 +489,7 @@ body > .tip { position: fixed; z-index: 20; pointer-events: none; background: va
   <div class="vitals" id="vitals-grid"></div>
   <div class="src">
     <b class="part">today</b><span><code>Resources</code> in the heartbeat: load1, memory free %, disk free, cache GB (every 10 min), battery and mains. The memory guard samples each job's footprint 4× a second but only its peak leaves the Mac. Pressure level and swap are read in <code>sys.rs</code> and not exposed.</span>
-    <b class="have">change</b><span>a 1 s sampler per Mac (per-core busy from <code>host_processor_info</code>, memory pressure, swap, disk write rate from <code>SCENIC_WRITTEN</code>, thermal pressure) kept in the history store below, served by <code>/work/live</code>.</span>
+    <b class="part">today</b><span>the live store's 1 s sampler (#514, #515): cores busy (all, E, P from <code>host_processor_info</code>), memory free, pressure, swap, the build's cores and memory against the other apps', the disks' write rate (IOKit) and each job's, served by <code>/work/live</code>. No thermal series (no public, rootless source).</span>
   </div>
 </section>
 

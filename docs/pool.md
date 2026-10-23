@@ -1004,8 +1004,18 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   for three days, each point the least, mean and most of its samples. Sampled on the agent's own
   threads, never its loop: every second the load (`load1`), memory available (`mem_free_pct`,
   `kern.memorystatus_level`), its pressure (`mem_pressure`: 1, 2, 4) and the swap (`swap_mb`),
-  and the jobs running (`jobs`); every 5 s what they hold (`held_mb`, the memory guard's last
-  sample); every 10 s the disk's free space (`disk_free_gb`); the power (`ac`, `battery_pct`) and
+  and the jobs running (`jobs`); the cores busy in cores' worth (`cores_busy`, and by group
+  `cores_busy_e`, `cores_busy_p`: `host_processor_info`'s ticks over the second, the efficiency
+  cores the first `hw.perflevel1.logicalcpu` processors; no per-core series); the build against
+  the rest of the Mac (task #515): its jobs' CPU in cores' worth (`build_cores`, their processes'
+  `proc_pid_rusage` over the second) and the rest's (`others_cores`: the cores busy less the
+  build's), their memory (`build_mem_gb`, the jobs' physical footprints; `others_mem_gb`: the
+  memory in use by `kern.memorystatus_level` less the build's); the bytes written to the Mac's
+  disks (`disk_write_mbs`, MB/s, its block storage drivers' statistics through IOKit, as `iostat`
+  reads them) and by each job (`job_write_mbs.<slot>`, its processes' `ri_diskio_byteswritten`);
+  a job's first second sets its baseline, and a process's last moment before it ends isn't counted.
+  The sampler's own CPU time (`sampler_cpu_ms`, a second; 0.14 ms a round measured on the M1 with no jobs, each job adding a `proc_pid_rusage` a process). No
+  thermal series: macOS gives none without private interfaces or root. Every 10 s the disk's free space (`disk_free_gb`); the power (`ac`, `battery_pct`) and
   the owner's idleness (`idle_s`) as each loop reads them. The NAS's latency (`nas_ms`) every 5 s
   only while a build runs here (a job of this Mac's, or its coordinator's leases out): a listing
   of the project's folder on the records' readers, timed inside the reader (`nasread::probe`; a
