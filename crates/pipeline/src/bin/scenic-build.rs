@@ -5204,11 +5204,7 @@ fn terrain_fine_step(out: &mut Out, args: &[String]) -> Result<()> {
         pipeline::control::safe_point(tf::STEP);
         pipeline::agent::jobs::part(k, &names);
         match pipeline::out::read_manifest(out.root()) {
-            Ok(m) => {
-                if current.refresh(out.root(), &m)? {
-                    eprintln!("terrain-fine: the accepted elevation datasets changed; read again");
-                }
-            }
+            Ok(m) => current.refresh(out.root(), &m),
             Err(e) => eprintln!("terrain-fine: the records can't be read now ({e:#}); the datasets as read before"),
         }
         let fine = current.fine.as_ref().filter(|f| !f.sets.is_empty());

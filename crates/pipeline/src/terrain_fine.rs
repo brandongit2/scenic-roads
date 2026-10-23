@@ -275,13 +275,25 @@ impl Current {
         Ok(Current { read_at: Self::versions(m), fine: Fine::read(root, m)? })
     }
 
-    /// Read again where `m` names other versions than were read; whether it was.
-    pub fn refresh(&mut self, root: &std::path::Path, m: &BTreeMap<String, String>) -> Result<bool> {
-        if Self::versions(m) == self.read_at {
-            return Ok(false);
+    /// Read again where `m` names other versions than were read, and said. Kept as read, and said,
+    /// where `m` names no elevation version (an empty record read mid-replace) or the new versions
+    /// can't be read now: a target is never made with no datasets by a hiccup, its packs dropped.
+    pub fn refresh(&mut self, root: &std::path::Path, m: &BTreeMap<String, String>) {
+        let v = Self::versions(m);
+        if v == self.read_at {
+            return;
         }
-        *self = Current::read(root, m)?;
-        Ok(true)
+        if v[0].is_none() {
+            eprintln!("terrain-fine: the records name no elevation version now; the datasets as read before");
+            return;
+        }
+        match Current::read(root, m) {
+            Ok(c) => {
+                eprintln!("terrain-fine: the accepted elevation datasets changed; read again");
+                *self = c;
+            }
+            Err(e) => eprintln!("terrain-fine: the new elevation datasets can't be read ({e:#}); the ones read before"),
+        }
     }
 }
 
@@ -745,8 +757,12 @@ mod tests {
         assert!(Fine::of(a.clone(), Vec::new()).unwrap().sets.is_empty());
         // (A job reads them again only when the records name other versions.)
         let mut c = Current::read(d.path(), &m).unwrap();
-        assert!(c.fine.is_some() && !c.refresh(d.path(), &m).unwrap());
-        assert!(c.refresh(d.path(), &BTreeMap::new()).unwrap() && c.fine.is_none());
+        c.refresh(d.path(), &BTreeMap::new());
+        assert!(c.fine.is_some(), "an empty record (read mid-replace) keeps what was read");
+        let mut other = m.clone();
+        other.insert(crate::inputs::logical(crate::inputs::elevation::UNIT), "gone".into());
+        c.refresh(d.path(), &other);
+        assert!(c.fine.is_some() && c.read_at == Current::versions(&m), "an unreadable new version too");
         // (Its full resolution counts, not the one it's read at.)
         ds[0].measured.full = Some(2.0);
         let s = sets(&ds, &terrain);
