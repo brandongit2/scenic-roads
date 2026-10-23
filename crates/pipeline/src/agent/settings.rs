@@ -62,7 +62,7 @@ pub fn set_room(home: &Path, what: &str, by: &str) -> Result<Option<room::Target
     }
     let bytes = (gb(what, "the disk room target")? * (1u64 << 30) as f64) as u64;
     anyhow::ensure!(home.is_dir(), "no agent here ({} isn't there)", home.display());
-    if let Some(n) = disk_size(home) {
+    if let Ok(n) = store::sys::disk_size(home) {
         anyhow::ensure!(
             bytes < n,
             "a target of {} is more than this disk holds ({})",
@@ -80,13 +80,6 @@ pub fn set_nas_room(root: &Path, what: &str, by: &str) -> Result<Option<room::Ta
     }
     let bytes = (gb(what, "the NAS reserve")? * (1u64 << 30) as f64) as u64;
     room::set_nas_reserve(root, Some(bytes), by)
-}
-
-/// The size of the disk holding `p` (bytes).
-pub fn disk_size(p: &Path) -> Option<u64> {
-    let c = std::ffi::CString::new(p.as_os_str().as_encoded_bytes()).ok()?;
-    let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
-    (unsafe { libc::statvfs(c.as_ptr(), &mut s) } == 0).then(|| s.f_blocks as u64 * s.f_frsize as u64)
 }
 
 /// The settings as they stand, for the build page: this Mac's (in its agent's folder `home`) and
@@ -114,7 +107,7 @@ pub fn view(home: &Path, root: Option<&Path>) -> serde_json::Value {
             "by": mem.as_ref().map(|m| m.by.clone()),
             "at": mem.as_ref().map(|m| m.at),
         },
-        "room": target_view(room::target(home), room::disk_free(home).ok(), disk_size(home)),
+        "room": target_view(room::target(home), room::disk_free(home).ok(), store::sys::disk_size(home).ok()),
         "nas_room": root.map(|r| target_view(room::nas_reserve(r), room::disk_free(r).ok(), None)),
     })
 }
