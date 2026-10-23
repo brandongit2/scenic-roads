@@ -1200,7 +1200,13 @@ impl Coordinator {
         };
         let urls = http::serve(listener, port, ctx, stopped.clone(), wake.clone(), closed_tx)?;
         if !viewer {
-            nas_prober(shared.clone(), root.clone(), stopped.clone(), me.to_string(), dir.join(crate::budget::nas::PROBES_FILE));
+            nas_prober(
+                shared.clone(),
+                root.clone(),
+                stopped.clone(),
+                me.to_string(),
+                dir.join(crate::budget::nas::PROBES_FILE),
+            );
         }
         let c = Coordinator {
             shared,
@@ -7469,7 +7475,7 @@ mod tests {
     /// Task #444: a member's job weighing less than the whole but more than the room the leased
     /// jobs leave (depth-lo's) isn't starved by a stream of smaller jobs refilling the budget: until
     /// `OWN_AGE` the smaller ones go; once aged, its room is held (no smaller job that would take it
-    /// starts, a member's or the lead's), and it goes as the leased jobs end, never past the whole.
+    /// starts, a member's or the lead's), and it goes once it outweighs the leased jobs together.
     #[test]
     fn a_members_heavy_job_reserves_room_after_waiting() {
         let (_d, c, _w, clock) = every((0, 0));
@@ -7537,15 +7543,19 @@ mod tests {
         }
         tick(&c, &[big, small]);
         assert!(take(&c, "m3", 5).is_empty(), "aged, but 500 + 200 + 600 > 1000");
-        end(&c, small);
-        assert!(take(&c, "m3", 5).is_empty(), "500 + 600 > 1000: waits for 6/1/1 to end");
         assert!(take(&c, "m4", 4).is_empty(), "aged: its room held, no smaller job takes it");
         assert!(take(&c, "m2", 1).is_empty(), "nor another member's");
         let lead = c.shared.lock().unwrap().lead_name.clone();
         assert!(take(&c, &lead, 4).is_empty(), "nor the lead's");
+        end(&c, small);
+        // (Task #603: aged, heavier than the leased jobs together, it goes past the whole: it
+        // waits for heavier work to end, never for lighter.)
+        assert_eq!(take(&c, "m3", 5).len(), 1, "aged, 600 outweighs the 500 leased: it goes");
+        let held = lease(&c, "m3", 5);
+        assert!(take(&c, "m4", 4).is_empty(), "1100 leased: nothing else goes");
         end(&c, big);
-        assert_eq!(take(&c, "m3", 5).len(), 1, "6/1/1 ended: it goes");
-        assert_eq!(take(&c, "m4", 4).len(), 1, "600 + 200 would fit beside it: the smaller one too");
+        end(&c, held);
+        assert_eq!(take(&c, "m4", 4).len(), 1, "they ended: the smaller one goes");
     }
 
     /// Task #444 review: a target over the budget that fits no asking member (its measured memory

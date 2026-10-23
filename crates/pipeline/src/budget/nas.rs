@@ -273,11 +273,12 @@ impl Limits {
 
     /// `fits` for a member's job, which would starve beside the members' other jobs: once it has
     /// waited `OWN_AGE` for the budget alone (`waited`) it goes too while no leased job weighs the
-    /// whole (`heaviest`, the most one weighs), if it weighs the whole itself or the leased jobs
-    /// are within the whole (one aged job past the whole at a time, never piling up; task #603: a
-    /// 946 one aged beside a 103 one could never go, and the room held for it stopped the pool).
+    /// whole (`heaviest`, the most one weighs), if it weighs the whole itself or more than the leased
+    /// jobs together: it waits for heavier work to end, never for a stream of lighter (task #603: a
+    /// 946 one aged beside a 103 one could never go, and the room held for it stopped the pool);
+    /// once it's in, the leased jobs outweigh any other, so aged ones never pile up.
     pub fn fits_job(members: u32, running: u32, heaviest: u32, w: u32, waited: bool) -> bool {
-        Self::fits(members, running, w) || (waited && heaviest < WHOLE && (w >= WHOLE || running <= WHOLE))
+        Self::fits(members, running, w) || (waited && heaviest < WHOLE && (w >= WHOLE || running < w))
     }
 
     /// Whether a job of the lead's own of weight `w` may start beside leased jobs weighing
@@ -337,8 +338,7 @@ impl Probes {
 
     /// The probes kept at `path` within `KEEP_S` of `now` (unix s); none when missing or unreadable.
     pub fn load(path: &Path, now: u64) -> Probes {
-        let mut p: Probes =
-            std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let mut p: Probes = std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         p.0.retain(|q| q.at + KEEP_S > now);
         p
     }
