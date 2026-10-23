@@ -8394,12 +8394,12 @@ impl Agent {
         }
         let mut making = self.coverage_making.borrow_mut();
         let fresh = if making.as_ref().is_none_or(|(v, h)| *v != a.version && h.is_finished()) {
-            let (root, cache, a) = (root.to_path_buf(), self.o.home.join("cache"), a.clone());
+            let (root, cache, a, v) = (root.to_path_buf(), self.o.home.join("cache"), a.clone(), a.version.clone());
             let run = std::thread::Builder::new().name("coverage".into()).spawn(move || {
                 let all = crate::coverage::Coverage::accepted(&root, &a, Some(&cache)).map_err(|e| format!("{e:#}"))?;
                 Ok(Coverages { each: all.by_region(), all })
             });
-            *making = Some((a.version.clone(), run.map_err(|e| format!("the coverage's thread: {e}"))?));
+            *making = Some((v, run.map_err(|e| format!("the coverage's thread: {e}"))?));
             true
         } else {
             false
