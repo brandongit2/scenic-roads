@@ -159,9 +159,14 @@ from the first (`edit_held`).
   the lead's, and is held in the member's own coordinator at once if it takes the lead in its
   process. Its channel is set to
   "run" (a drain the agent before asked for is this one's to ask again), or "drain" while this
-  Mac's build is paused (the pool's or its own), the memory guard watches it, the pool doesn't hand its folder off as left (`take_left`), the proxy listens again on the
-  port the job was told while it's free (taken, the jobs taken over are stopped as interrupted,
-  their targets given back), and the map server's updater keeps its app's folder
+  Mac's build is paused (the pool's or its own), the memory guard watches it, the pool doesn't hand its folder off as left (`take_left`), the budgets' proxy listens again on
+  the port the job was told (task #588): started as soon as the new agent holds its lock, before
+  it joins the pool, bound beside the old agent's proxy while that one ends (`SO_REUSEPORT`; on
+  macOS the socket bound last takes every new connection), so the job's connections are never
+  refused across the restart (only one an old agent's proxy had already accepted ends with it, and
+  the job's own retries make it again). A port that can't be had (held by a socket that allows none
+  beside it) is tried again by the agent's loop, and if it still can't be, the jobs taken over are
+  stopped as interrupted, their targets given back; and the map server's updater keeps its app's folder
   (`job_apps` in the status). (scenic-build runs its steps' programs from that folder, `app/current`
   followed as it starts, so an app installed while it runs changes none of them.) Its end is read from the status file: a pause's 75 counts as paused;
   a group gone with no status (killed while no agent tended it) is interrupted, not failed. A

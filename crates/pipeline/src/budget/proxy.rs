@@ -78,27 +78,40 @@ pub struct Proxy {
     ctx: Arc<Ctx>,
 }
 
+/// A listener for a proxy on 127.0.0.1:`port` (0: a port of its own) that the next agent's may
+/// bind beside (`SO_REUSEPORT`, as this one may be bound beside the agent before's): on macOS the
+/// last one bound takes every new connection, so from the moment the next agent binds, the jobs
+/// it takes over connect to it (queued until it serves), never refused while the one before ends.
+/// An error when `port` is held by a socket that allows none beside it.
+pub fn listen(port: u16) -> io::Result<TcpListener> {
+    use socket2::{Domain, Socket, Type};
+    store::spawn::sockets(|| {
+        let s = Socket::new(Domain::IPV4, Type::STREAM, None)?;
+        s.set_reuse_address(true)?;
+        s.set_reuse_port(true)?;
+        s.bind(&SocketAddr::from(([127, 0, 0, 1], port)).into())?;
+        s.listen(1024)?;
+        Ok(s.into())
+    })
+}
+
 impl Proxy {
     /// Starts one on a port of its own on 127.0.0.1, taking from `budget`.
     pub fn start(budget: Arc<Budget>, resolve: Option<Resolve>) -> Result<Proxy> {
         Self::start_with(budget, resolve, Limits::default())
     }
 
-    /// `start`, on `port` while it's free (0, or taken: a port of its own).
-    pub fn start_at(budget: Arc<Budget>, resolve: Option<Resolve>, port: u16) -> Result<Proxy> {
-        Self::start_on(budget, resolve, Limits::default(), port)
-    }
-
     /// `start`, within `limits`.
     pub fn start_with(budget: Arc<Budget>, resolve: Option<Resolve>, limits: Limits) -> Result<Proxy> {
-        Self::start_on(budget, resolve, limits, 0)
+        Self::start_on(budget, resolve, limits, listen(0).context("the budgets' proxy: listen")?)
     }
 
-    fn start_on(budget: Arc<Budget>, resolve: Option<Resolve>, limits: Limits, port: u16) -> Result<Proxy> {
-        let listener = match (port != 0).then(|| store::spawn::listen(("127.0.0.1", port))) {
-            Some(Ok(l)) => l,
-            _ => store::spawn::listen("127.0.0.1:0").context("the budgets' proxy: listen")?,
-        };
+    /// `start`, serving `listener` (`listen`'s).
+    pub fn start_listening(budget: Arc<Budget>, resolve: Option<Resolve>, listener: TcpListener) -> Result<Proxy> {
+        Self::start_on(budget, resolve, Limits::default(), listener)
+    }
+
+    fn start_on(budget: Arc<Budget>, resolve: Option<Resolve>, limits: Limits, listener: TcpListener) -> Result<Proxy> {
         listener.set_nonblocking(true)?;
         let addr = listener.local_addr()?;
         let stop = Arc::new(AtomicBool::new(false));
@@ -142,6 +155,11 @@ impl Proxy {
             held_until_ms: (held > self.budget.now_ms()).then_some(held),
             away: self.budget.away(),
         }
+    }
+
+    /// The port it listens on.
+    pub fn port(&self) -> u16 {
+        self.addr.port()
     }
 
     /// Its address as a job is told it (`http://127.0.0.1:<port>`).
@@ -578,23 +596,28 @@ mod tests {
         assert!(request(&a.addr, "GET /other HTTP/1.1\r\n\r\n").starts_with("HTTP/1.1 404"));
     }
 
-    /// Task #393: a proxy started for jobs an agent took over listens on the port they were told,
-    /// while it's free; taken, on one of its own.
+    /// Tasks #393, #588: a proxy for jobs an agent took over listens on the port they were told,
+    /// beside the agent before's still listening there: every new connection is its own, and so
+    /// they are once the one before has stopped. A port held by a socket that allows none beside
+    /// it can't be had.
     #[test]
-    fn a_proxy_listens_again_on_the_port_its_jobs_were_told() {
+    fn a_proxy_listens_on_the_port_its_jobs_were_told_beside_the_one_before() {
         let dir = tempfile::tempdir().unwrap();
         let clock = Arc::new(StepClock::at(T0));
         let b = || Arc::new(Budget::new(dir.path(), "m-a", clock.clone()));
-        let first = Proxy::start_at(b(), None, 0).unwrap();
+        let first = Proxy::start(b(), None).unwrap();
         let port = first.addr.port();
-        // (Taken by the first: one of its own.)
-        let beside = Proxy::start_at(b(), None, port).unwrap();
-        assert_ne!(beside.addr.port(), port);
+        let next = Proxy::start_listening(b(), None, listen(port).unwrap()).unwrap();
+        assert_eq!(next.addr.port(), port);
+        let asked = |p: &Proxy| p.counts.holds.load(Ordering::Relaxed);
+        assert!(request(&first.addr, "POST /hold?s=1 HTTP/1.1\r\n\r\n").starts_with("HTTP/1.1 2"));
+        assert_eq!((asked(&first), asked(&next)), (0, 1), "the next one's");
         first.stop();
-        let again = Proxy::start_at(b(), None, port).unwrap();
-        assert_eq!(again.addr.port(), port);
-        again.stop();
-        beside.stop();
+        assert!(request(&next.addr, "POST /hold?s=1 HTTP/1.1\r\n\r\n").starts_with("HTTP/1.1 2"));
+        assert_eq!(asked(&next), 2);
+        next.stop();
+        let plain = store::spawn::listen("127.0.0.1:0").unwrap();
+        assert!(listen(plain.local_addr().unwrap().port()).is_err());
     }
 
     fn proxy_within(root: &Path, clock: &Arc<StepClock>, up: &Upstream, limits: Limits) -> Proxy {

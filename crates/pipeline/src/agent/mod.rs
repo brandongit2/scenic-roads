@@ -635,9 +635,13 @@ struct Hand {
     proxy_port: Option<u16>,
 }
 
-/// The port of a proxy's address (`http://127.0.0.1:<port>`).
-fn proxy_port(url: &str) -> Option<u16> {
-    url.trim_end_matches('/').rsplit(':').next()?.parse().ok()
+/// The port the jobs the agent before left running in `home` were told their proxy is on
+/// (`Hand::proxy_port`, their records'), if any.
+fn told_proxy_port(home: &Path) -> Option<u16> {
+    (0..MAX_SLOTS).find_map(|k| {
+        let v = jobs::saved_hand(&home.join(format!("job{}.json", slot_suffix(k))))?;
+        serde_json::from_value::<Hand>(v).ok()?.proxy_port
+    })
 }
 
 /// The running job's lease.
@@ -1659,6 +1663,17 @@ impl Agent {
             mem.app = app.clone();
         }
         let me = format!("{} {}", cond::host_name(), std::process::id());
+        // The budgets' proxy for the jobs the agent before left running, at once (not once this
+        // one has joined the pool, which may take minutes): on the port they were told, beside the
+        // agent before's proxy while it ends (proxy::listen), so their connections are served here
+        // from now on, never refused. (That port not to be had: started later, `tend_proxy`.)
+        let early_proxy = match (&lock, told_proxy_port(&o.home), o.root.clone().or_else(|| find_root(false))) {
+            (Some(_), Some(port), Some(root)) if !o.dry_run => crate::budget::listen(port)
+                .ok()
+                .and_then(|l| crate::budget::start_proxy(&root, &me, l).ok())
+                .inspect(|p| eprintln!("agent: the budgets' proxy listens on {} (its jobs left running)", p.url())),
+            _ => None,
+        };
         // The pool, as this process starts (the NAS answering; else it starts nothing until it does,
         // then restarts into it): this Mac's member takes its first step, which says its part: it
         // leads or works as a member.
@@ -1784,7 +1799,7 @@ impl Agent {
             guard_backoff: BTreeMap::new(),
             ask_spare_mb: None,
             slots_on: false,
-            proxy: None,
+            proxy: early_proxy,
             proxy_port: None,
             resume: false,
             placement: false,
@@ -3601,7 +3616,7 @@ impl Agent {
             lease: s.lease.clone(),
             reserve_mb: s.reserve_mb,
             spare_mb: s.spare_mb,
-            proxy_port: self.proxy.as_ref().and_then(|p| proxy_port(&p.url())),
+            proxy_port: self.proxy.as_ref().map(|p| p.port()),
         }
     }
 
@@ -8834,19 +8849,23 @@ impl Agent {
     fn tend_proxy(&mut self, root: &Path) {
         if self.proxy.is_none() {
             let me = self.member_id.clone().unwrap_or_else(|| self.me.clone());
-            // (On the port the jobs taken over were told, while it's free: `proxy_port`.)
-            match crate::budget::start_proxy_at(root, &me, self.proxy_port.unwrap_or(0)) {
+            // (On the port the jobs taken over were told, while it can be bound: `proxy_port`.)
+            use crate::budget::listen;
+            let listener = self.proxy_port.and_then(|p| listen(p).ok()).map_or_else(|| listen(0), Ok);
+            match listener.map_err(anyhow::Error::from).and_then(|l| crate::budget::start_proxy(root, &me, l)) {
                 Ok(p) => {
                     eprintln!("agent: the budgets' proxy listens on {}", p.url());
-                    // (Not on the port the jobs taken over were told, it taken meanwhile: they can't
-                    // reach out, so they're stopped, interrupted, their targets given back.)
-                    let told = self.proxy_port.take();
-                    if told.is_some_and(|t| proxy_port(&p.url()) != Some(t)) {
-                        self.stop_adopted("its proxy's port was taken: its connections can't go out");
-                    }
                     self.proxy = Some(p);
                 }
                 Err(e) => eprintln!("agent: the budgets' proxy didn't start ({e:#}); no job starts until it has"),
+            }
+        }
+        // (Not on the port the jobs taken over were told, it taken meanwhile: they can't reach out,
+        // so they're stopped, interrupted, their targets given back.)
+        if let (Some(p), Some(t)) = (&self.proxy, self.proxy_port) {
+            self.proxy_port = None;
+            if p.port() != t {
+                self.stop_adopted("its proxy's port was taken: its connections can't go out");
             }
         }
         let n = match self.try_pooled() {
@@ -14458,6 +14477,96 @@ mod tests {
         // launchd would.)
         unsafe { libc::waitpid(pgid, std::ptr::null_mut(), 0) };
         assert!(!crate::sys::signal_group(pgid, crate::sys::Signal::Probe), "no process of it left");
+    }
+
+    /// Task #588: a fetching job taken over keeps its way out. The next agent starts its proxy on
+    /// the port the job was told before the agent before's has stopped (as at a takeover, its
+    /// lock let go first), and the job's next request, sandboxed, goes through it and is metered
+    /// by it, after the agent before's proxy is gone.
+    #[test]
+    fn a_job_taken_over_reaches_out_through_the_next_agents_proxy() {
+        use std::io::{Read, Write};
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(&root).unwrap();
+        // (Every host the proxies open a connection to: this server, answering each request.)
+        let up = store::spawn::listen("127.0.0.1:0").unwrap();
+        let up_addr = up.local_addr().unwrap();
+        up.set_nonblocking(false).unwrap();
+        std::thread::spawn(move || {
+            #[allow(clippy::disallowed_methods)]
+            while let Ok((mut s, _)) = up.accept() {
+                let mut b = [0u8; 4096];
+                let _ = s.read(&mut b);
+                let _ = write!(s, "HTTP/1.0 200 OK\r\n\r\nanswered\n");
+            }
+        });
+        crate::budget::TEST_RESOLVE.with(|r| {
+            *r.borrow_mut() = Some(std::sync::Arc::new(move |_: &str, _: u16| Some(up_addr)));
+        });
+        let opts = || Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: d.path().join("bin"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        };
+        let mut a = test_agent(opts()).unwrap();
+        a.free_set = Some(40 << 30);
+        let port = a.proxy.as_ref().expect("its proxy").addr.port();
+        let (first, go) = (d.path().join("first"), d.path().join("go"));
+        let get = format!("/usr/bin/curl -sS -m 20 http://en.{}/w/api.php", crate::budget::WIKIMEDIA[0]);
+        let script = format!(
+            "{get} > '{0}.tmp' && mv '{0}.tmp' '{0}'; while [ ! -e '{1}' ]; do sleep 0.05; done; {get}",
+            first.display(),
+            go.display()
+        );
+        let job = JobSpec {
+            id: "items items".into(),
+            what: "items".into(),
+            cmd: vec!["/bin/sh".into(), "-c".into(), script],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(build::Work { step: "items".into(), targets: vec![("items".into(), "k".into())] }),
+        };
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
+        assert!(a.try_start(0, job, &cond, Some(&root), &mut Vec::new()));
+        let pgid = a.slots[0].running.as_ref().unwrap().pgid;
+        struct Kill(i32);
+        impl Drop for Kill {
+            fn drop(&mut self) {
+                unsafe { libc::kill(-self.0, libc::SIGKILL) };
+            }
+        }
+        let _kill = Kill(pgid);
+        let t = Instant::now();
+        while !first.exists() {
+            assert!(t.elapsed() < store::clock::WATCHDOG, "its first request answered");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let wiki = |p: &crate::budget::Proxy| p.counts.wiki.load(Ordering::Relaxed);
+        assert_eq!(wiki(a.proxy.as_ref().unwrap()), 1);
+        // The agent ends, its job left running; its lock let go, its proxy still listening as the
+        // next agent starts.
+        a.hand_over_jobs();
+        a._lock = None;
+        // (Its proxy started as it's made, before its loop's first `tend_proxy`.)
+        let mut b = Agent::new_with(opts(), |r| r.join("catalog").is_dir()).unwrap();
+        b.mac = cond::Mac::TEST;
+        assert!(b.slots[0].running.as_ref().is_some_and(|r| r.adopted && r.pgid == pgid));
+        let p = b.proxy.as_ref().expect("the next agent's proxy, at once");
+        assert_eq!(p.addr.port(), port, "on the port its job was told");
+        assert_eq!(wiki(p), 0);
+        drop(a);
+        // Its next request: answered through the next agent's proxy, metered there.
+        std::fs::write(&go, "").unwrap();
+        let r = b.slots[0].running.as_mut().unwrap();
+        let st = r.wait().unwrap();
+        assert!(st.success(), "{}", std::fs::read_to_string(&r.log).unwrap_or_default());
+        assert_eq!(wiki(b.proxy.as_ref().unwrap()), 1, "metered by the next agent's proxy");
+        b.slots[0].running = None;
+        unsafe { libc::waitpid(pgid, std::ptr::null_mut(), 0) };
     }
 
     /// Task #393 review: a job taken over while this Mac's build is paused is told "drain" at once,

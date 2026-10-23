@@ -368,6 +368,11 @@ pub fn save_hand(record: &Path, r: &Running, hand: serde_json::Value) {
     }
 }
 
+/// The slot state saved with the record `record` (`save_hand`), if any.
+pub fn saved_hand(record: &Path) -> Option<serde_json::Value> {
+    serde_json::from_slice::<Record>(&std::fs::read(record).ok()?).ok()?.hand
+}
+
 /// A job an agent before this one left running, taken over from its record `record`: its group
 /// still the job's, or ended with its status written (its end then seen at the agent's next look);
 /// with the slot state that agent saved (`save_hand`). None when the record names no such job (none

@@ -70,6 +70,9 @@ impl Proxy {
     pub fn url(&self) -> String {
         String::new()
     }
+    pub fn port(&self) -> u16 {
+        0
+    }
     pub fn set_members(&self, _n: usize) {}
 }
 
@@ -78,10 +81,26 @@ impl Proxy {
 /// metered by the real budget and reach no one.
 pub const TEST_PROXY_TO: &str = "SCENIC_TEST_PROXY_TO";
 
-/// The agent's proxy, taking from the pool's budget on the NAS's project folder `root` as `me`: on
-/// `port` while it's free (the one the jobs an agent took over were told), else (or 0) one of its
-/// own.
-pub fn start_proxy_at(root: &Path, me: &str, port: u16) -> anyhow::Result<Proxy> {
+#[cfg(test)]
+thread_local! {
+    /// The unit tests' `TEST_PROXY_TO`: where the hosts of the proxies this thread starts are.
+    pub static TEST_RESOLVE: std::cell::RefCell<Option<proxy::Resolve>> = const { std::cell::RefCell::new(None) };
+}
+
+/// proxy::listen (none in WebAssembly).
+pub fn listen(port: u16) -> std::io::Result<std::net::TcpListener> {
+    #[cfg(not(target_os = "wasi"))]
+    return proxy::listen(port);
+    #[cfg(target_os = "wasi")]
+    {
+        let _ = port;
+        Err(std::io::Error::other("no proxy in WebAssembly"))
+    }
+}
+
+/// The agent's proxy, taking from the pool's budget on the NAS's project folder `root` as `me`,
+/// serving `listener` (proxy::listen's).
+pub fn start_proxy(root: &Path, me: &str, listener: std::net::TcpListener) -> anyhow::Result<Proxy> {
     #[cfg(not(target_os = "wasi"))]
     {
         let to: Option<std::net::SocketAddr> = std::env::var(TEST_PROXY_TO)
@@ -89,11 +108,13 @@ pub fn start_proxy_at(root: &Path, me: &str, port: u16) -> anyhow::Result<Proxy>
             .and_then(|a| a.parse().ok())
             .filter(|a: &std::net::SocketAddr| a.ip().is_loopback());
         let resolve: Option<proxy::Resolve> = to.map(|a| Arc::new(move |_: &str, _: u16| Some(a)) as proxy::Resolve);
-        Proxy::start_at(Arc::new(Budget::new(root, me, Arc::new(SysClock))), resolve, port)
+        #[cfg(test)]
+        let resolve = resolve.or_else(|| TEST_RESOLVE.with(|r| r.borrow().clone()));
+        Proxy::start_listening(Arc::new(Budget::new(root, me, Arc::new(SysClock))), resolve, listener)
     }
     #[cfg(target_os = "wasi")]
     {
-        let _ = (root, me, port);
+        let _ = (root, me, listener);
         anyhow::bail!("no proxy in WebAssembly")
     }
 }
