@@ -28,7 +28,7 @@ values' `byroad`, hidata's `railinfo` and meta `lsum`.
 24  u64      index entry count
 32  u32      meta length n
 36  [u8; n]  meta JSON: {"layer", "scope": "root"|"lo"|"hi"|"deep", "root": "z/x/y",
-             "encoding" (e.g. "rt7", "terrarium-webp", "slope4-png", "mvt"), …}
+             "encoding" (e.g. "rt7", "terrarium-webp", "shade-webp", "mvt"), …}
              (zoom ranges are the catalog's)
 …            blobs (identical blobs stored once; entries may share an offset)
 index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
@@ -45,16 +45,22 @@ index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
   under the layer's `deep`, each one's z10 tile's native zoom under `native_zoom`
   (`terrain_deep::native_zoom`; elsewhere the base's finest, z12 to 67°), and the terrain's
   `maxzoom` is the finest of those. The app's meta passes `native_zoom` on as `terrainAreas`
-  (`{"zoom": 10, "tiles": {"x/y": z}}`), and the map takes its terrain, hill-shading and slope
-  tiles to that zoom there (our MapLibre's `scenic:zoom-by-area`), z12 elsewhere. The meta's
+  (`{"zoom": 10, "tiles": {"x/y": z}}`), and the map takes its terrain and shading tiles to that
+  zoom there (our MapLibre's `scenic:zoom-by-area`), z12 elsewhere. The meta's
   `packs.terrain.deep` gives each deep pack's version by z10 tile (`"10/x/y"`), as `lo` and `hi` do
   theirs, so a tile past z12 there carries its deep pack's `?v=` and a new catalog asks again only
-  for the tiles of the deep packs it changed. **Offline:** a region's deep packs are on a Mac only
-  where its terrain detail is downloaded (an add-on to the region: crates/server/src/downloads.rs);
-  the server makes the slope, and the map the hill-shading and contours, from them as from any
-  terrain tile. Elsewhere, away from the NAS, a deep tile that can't be read is made from its
-  ancestor in the hi packs (the z12 terrain, overzoomed), as anywhere past the data; the server
-  never answers 503 for one. A tile lives in exactly one pack.
+  for the tiles of the deep packs it changed. **The terrain's shading** (the `slope` layer:
+  pipeline::slope_pack, steps.md §2) has the same packs, its deep packs `layers/slope/deep/10-<x>-<y>`
+  beside the terrain's; **the floor's** (`depth-shade`) the depth's (Depth below). Every shading tile
+  is encoding `shade-webp` (pipeline::shade_codec), RGB as lossless WebP, served as `image/webp`:
+  R = 255 × √(steepness ÷ 400 %) of the mean steepness beneath the pixel, G and B its mean unit
+  gradient direction (east, south) as 128 + 120 u in steps of 8 (8–248), (128, 128) where that
+  direction's length (the coherence) is under 0.25 or the ground is flat (roadcore::shade).
+  **Offline:** a region's deep packs, the terrain's and its shading's, are on a Mac only where its
+  terrain detail is downloaded (an add-on to the region: crates/server/src/downloads.rs). Elsewhere,
+  away from the NAS, a deep tile that can't be read is made from its ancestor in the hi packs (the
+  z12 terrain or shading, scaled up), as anywhere past the data; the server never answers 503 for
+  one. A tile lives in exactly one pack.
 - Readers fetch header and index once (two range reads) and keep the index locally
   (`idx/<file hash>.idx`), so serving a tile is one range read.
 - **Layer bundles** (`layers/<layer>/all`; meta `{"layer", "scope": "all", "encoding"}`): every tile
@@ -431,12 +437,12 @@ Each a folder on the job's Mac, its files sent to the worker as `u/…`, not in 
   (landmarks; `source` the heritage register's id, docs/inputs.md §6.5) and `{"qid", "id", "name",
   "kind", "bbox", "area_km2", "enwiki", "fame"}` (areas), by fame; with `README.md`.
 
-## Depth (`layers/depth/`, `layers/depth-class/`; pipeline::depth)
+## Depth (`layers/depth/`, `layers/depth-class/`, `layers/depth-shade/`; pipeline::depth)
 
-Two layers of 256-px PNG tiles in packs like the terrain's: `lo/3-x-y` (z3–8) and `hi/6-x-y` (z9–16,
+Three layers of 256-px tiles in packs like the terrain's: `lo/3-x-y` (z3–8) and `hi/6-x-y` (z9–16,
 only where a source is finer than z8). A tile is stored where one of its water pixels has data of
 its zoom (every water tile up to z8); a missing one is its nearest stored ancestor scaled up (bilinear
-for depth, with that ancestor's neighbours' edges; nearest for classes).
+for depth and its shading, with the depth ancestor's neighbours' edges; nearest for classes).
 
 - **`depth`** (encoding `terrarium-png`): metres below the water's surface (the sea's mean level, a
   lake's mean surface), negative; drying heights positive (at most 20 m); +12,000 m where there's
@@ -446,6 +452,8 @@ for depth, with that ancestor's neighbours' edges; nearest for classes).
 - **`depth-class`** (encoding `class-png`, 8-bit grey): bits 0–2 the class (0 none or land, 1
   measured, 2 interpolated, 3 estimated, 4 filled to the shore), bit 3 dries at low tide, bits 4–7 the
   source's `code` (docs/inputs.md §6.10).
+- **`depth-shade`** (encoding `shade-webp`, as the terrain's shading: Pack above): the floor's
+  steepness and mean direction, a tile for each depth tile (docs/steps.md §3).
 - **The catalog's meta** `depth`: `{"sources": [{"code", "id", "label", "datum", "water", "notice"}]}`,
   the accepted depth declarations (the credits' depth line and notices, and the readout).
 
@@ -686,14 +694,16 @@ batch of lines, a line a forecast, `fcarchive::Entry`:
 
 ## Server API
 
-- **Tiles:** `/tiles/{roads,rails,terrain,slope,labels,water,base,buildings,buildings-field,depth,depth-class}/{z}/{x}/{y}`,
+- **Tiles:** `/tiles/{roads,rails,terrain,slope,labels,water,base,buildings,buildings-field,depth,depth-class,depth-shade}/{z}/{x}/{y}`,
   `/tiles/trees/{var}/{z}/{x}/{y}`. Strong `ETag`: the stored blob's hash, plus for named tiles the
   versions of the languages spoken within them and of the spoken-languages raster (docs/names.md);
   `/tiles/base`'s a hash of the basemap archives' content names, the tile's z/x/y and the names
-  version; tiles the server makes (missing terrain and slope, slope z12 and the deep terrain's) carry none.
-  Terrain tiles are `image/webp`, stored or made (made ones encoded as the stored are). With `?v=` (the
-  app's URLs): `public, max-age=31536000, immutable` while that version is current, else
-  `no-cache`; the tiles the server makes (terrain and slope from ancestors or neighbours, flat
+  version; tiles the server makes (missing terrain and shading tiles, a deep one that can't be read)
+  carry none. Terrain and shading tiles (`slope`, `depth-shade`: stored as `shade-webp`, Pack) are
+  `image/webp`, stored or made (made ones encoded as the stored are, from the nearest stored
+  ancestor, scaled up; a stored shading tile in another encoding, a pack from before it, is read as
+  none). With `?v=` (the app's URLs): `public, max-age=31536000, immutable` while that version is
+  current, else `no-cache`; the tiles the server makes (terrain and shading from ancestors, flat
   tiles, the floor under the water, depth made from a coarser zoom) always `no-cache`, as their sources can lie in other packs. `/api/meta` versions each layer (`buildings.tiles`, `water`: the drawing's, its packs'
   and the basemap's) and, under `packs`, each pack of a tiled layer (`{layer: {root, lo: {"3/x/y"},
   hi: {"6/x/y"}}}`: its content name's hash, 12 hex digits, plus the names version for layers with
@@ -792,7 +802,7 @@ class, id) within a tile. The client sends the id with the clicked point.
   (u16 × 65,536 each)); `work/terrain-mid/6-x-y` (meta `{fmt: 1, step: "terrain", tile, v:
   TERRAIN_V}`; per z9 tile `quad-9-<x>-<y>`, its 2×2 means, f32 × 128 × 128; then `lake-ids` u64 and
   `lake-levels` f32); `work/slope-mid/6-x-y` (meta `{fmt: 1, step: "slope", tile, v: SLOPE_V}`;
-  `<z>-<x>-<y>`, each z6–8 tile's PNG); `work/water-idx/<hash16 of the pin>` (JSON `{fmt: 1, step:
+  `<z>-<x>-<y>`, each z6–8 tile as stored, `shade-webp`); `work/water-idx/<hash16 of the pin>` (JSON `{fmt: 1, step:
   "terrain-water", pin, digests: {target: [from, digest]}}`: per terrain target, what decides its
   tiles and a hash16 over its water tiles' polygons; `pipeline::terrain_water::WaterIdx`).
 - **Other sources:**

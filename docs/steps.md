@@ -136,19 +136,28 @@ What each step does, in detail. The steps as one table (names, chains, the check
     coarser levels (`Sources::quantum`), then to Terrarium's 1/256 m: at most 0.39 cm and 5.1 cm off.
     Chrome and Safari decode it natively, every value exact; a z12 tile is ~47 KB, 0.71× the PNG it
     replaced (.claude/notes/SHADING-PYRAMID.md, S1b).
-- **Slope** (`pipeline::slope_pack`): z11 and coarser stored, from transient z12 Horn slope
-  (`slope_pack::horn`); the server makes z12 the same way on demand, and where the terrain has
-  deep tiles, the slope at their zooms there from them (the catalog's `native_zoom` by z10 tile,
-  the map's zoom by area; elsewhere nothing past z12). Deep slope isn't stored; a deep pack's
-  change reaches it with the catalog (the server's made tiles are kept per catalog generation),
-  and at a deep area's edge the Horn window reads the overzoomed z12 terrain beside it, which the
-  slope beside reads too. The stored z11 and coarser stay from z12 terrain where deep levels exist
-  too. (Planned, task #632: one shading pyramid made from the terrain's levels, replacing this.)
-  **slope**, a run per z6 tile (its z9–11 hi pack and its mid,
-  `work/slope-mid/6-x-y`: its z6–8 tiles), reading the terrain packs (its own z6 tile's copied
-  whole first) and its neighbours' edge strips; **slope-lo**, an assembly per z3 tile from its
-  z6 tiles' mids (each read whole, eight at once, under a deadline and tried again while it fails
-  transiently). Together the z3 tile's whole run's packs, byte for byte.
+- **Slope: the shading pyramid** (`pipeline::slope_pack`; the owner's decisions of 24 Oct,
+  .claude/notes/SHADING-PYRAMID.md): one precomputed pyramid serves both the slope tint and the
+  hill-shading. Each pixel holds the mean steepness of the ground beneath it and the mean of its
+  unit gradient directions (`roadcore::shade`), whose length, the coherence, is 1 on a plain face
+  and about 0 where the faces beneath cancel (a ridge, broken ground). At each place's finest
+  terrain level (z12, z11 north of 67°, the deep levels' zoom where the terrain has them) a
+  pixel's are its own gradient's by Horn's method, with the neighbouring tiles' edges; each coarser
+  pixel is the plain mean of the four beneath it (or where no finer level covers it, its own
+  level's terrain's), so the low zooms keep the finest level's steepness everywhere and its
+  direction where it agrees. Every level is stored, as `shade-webp` (crate::shade_codec: RGB in
+  lossless WebP, the terrain's codec): R 255 × √(steepness ÷ 400 %), G and B the direction's east
+  and south parts, 128 + 120 u rounded to 5 bits, (128, 128) where the coherence is under 0.25.
+  A parent is made from its children as stored, so a z6 tile's run and its assembly give the same
+  tiles. **slope**, a run per z6 tile: its hi pack (z9–12), its deep packs (z13–16 by z10 tile,
+  `layers/slope/deep/10-x-y`, where the terrain has deep tiles; each z10 tile's made whole, one at a
+  time, its terrain deep pack copied here first; those it no longer makes dropped) and its mid
+  (`work/slope-mid/6-x-y`: its z6–8 tiles), reading the terrain packs (its own z6 tile's hi pack
+  copied whole first) and its neighbours' edge strips; **slope-lo**, an assembly per z3 tile from
+  its z6 tiles' mids (each read whole, eight at once, under a deadline and tried again while it
+  fails transiently); **slope-root**, z0–2 from the z3 tiles. Memory from the tiles a run holds
+  (`slope_pack::peak_mb`: a z6 tile's hi tiles and one deep pack's, each counted at its raw RGB,
+  and the decoded terrain kept; `lo_peak_mb` an assembly's).
 - **Worldwide z8 terrain** (`sources/terrain-z8-v6-<pool>`, once for the accepted elevation and
   sources versions, `<pool>` their content names' digest; not served): every z8 tile the elevation
   pool's base tile there (crate::terrain_base, as the terrain's), made as the packs' are, without
@@ -182,7 +191,7 @@ What each step does, in detail. The steps as one table (names, chains, the check
   z8 tiles offered as tasks (`bldtile`); below zoom 14 the far buildings' field (buildings3d.md
   §4.8; `?bldfield=off` leaves it out). Planned: national heights (PLATEAU, BD TOPO).
 
-The server builds missing deeper terrain and slope tiles from their ancestors.
+The server builds missing deeper terrain and shading tiles from their ancestors.
 
 ## 3. Depth (per z3 and z6 tile, from the depth sources)
 
@@ -233,6 +242,14 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   together, so a block is a few reads, not a hundred round trips), then decoded and rasterised on
   the job's threads (task #492). The same polygons and water as one by one.
 - **depth-lo (a z3 tile):** z6–8 composed (below), z3–5 each its children's mean.
+- **The floor's shading** (`depth-shade`, made by both steps from their tiles: `depth::build::
+  shading`): the terrain's shading pyramid (§2, Slope; the same codes and codec) over the depth: at
+  each place's finest stored level each pixel's steepness and direction by Horn's method on the
+  depth, a pixel without data taking its nearest's in the tile (no cliff at the shore, which the map
+  draws only in the water) and a neighbour tile the job didn't make read as the tile's own edge;
+  each coarser level the mean of the four beneath it where its children cover it, else its own
+  depth's. An assembly's z3–8 come from its own z8 and coarser, not from the z6 tiles' z9–16 (those
+  run after it, reading its lo packs).
 - **depth (a z6 tile):** z9–16, a block only where a source has a grid of that zoom or finer; its
   capped pixels scaled up from this job's coarser tiles and, at z8 and coarser, from the lo packs
   of its z3 tile and its neighbours (its neighbours' fine tiles are another job's: within a block's
@@ -269,13 +286,15 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   draped on the water kept at the surface) is planned (task #466).
 - **The map:** two layers, each switched on its own (Layers → Depth): the depth's colour with the
   floor's shading (nautical blues on a log scale to 300 m by default; the panel's ramp picker; linear,
-  log or fitted to the view), and contours with labels (on demand). The colour and shading are drawn
+  log or fitted to the view; the shading from the stored `depth-shade` tiles, as the terrain's
+  hill-shading), and contours with labels (on demand). The colour and shading are drawn
   as the water itself: our MapLibre draws them over the water tiles the map draws, as those tiles'
   alpha (`scenic:mask`, web/maplibre FORK.md), so they never leave the water nor leave it uncovered
   while tiles load or overzoom; the depth is interpolated bilinearly among pixels with data and
   reaches 8 pixels past its data (the nearest's value), so water a coarse tile's rule left out
   takes its neighbour's depth, and water with no depth near shows the water's own colour. Without
-  the water tiles, masked by the basemap's water at the display's resolution. Over the water fill
+  the water tiles, the colour masked by the basemap's water at the display's resolution, and no
+  floor shading (its tiles reach onto the shore). Over the water fill
   and under the coast shading, draped on the 3D terrain. The cursor's readout says the depth, its class and source; the map names the sources in
   view, "not for navigation", and the notices their licences ask for (CHS's, naming the owner as the
   maker), which the credits carry too.
@@ -533,10 +552,12 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   (`piece_key_made`). A "none" z6 tile is keyed on the version and the tile (`none_piece_key`).
 - **terrain-lo (an assembly):** its z6 tiles' mids by content ("-" for a z6 tile without one) and the
   digest of its z6–8 water; `TERRAIN_LO_V` and the codec. "none" likewise (`none_lo_key`).
-- **slope (a z6 tile):** every terrain tile it can read, by content, from the packs' indexes
-  (`agent::build::slope_piece_reads`), so a change along a neighbour's edge reruns it, one inside
-  doesn't.
-- **slope-lo:** its z6 tiles' mids and the z3 tile's terrain lo pack; `SLOPE_LO_V`.
+- **slope (a z6 tile):** `SLOPE_V` and the codec (`shade_codec::version`: the encoding, libwebp's
+  version and level, the codes' constants), and every terrain tile it can read, its deep ones too,
+  by content, from the packs' indexes (`agent::build::slope_piece_reads`), so a change along a
+  neighbour's edge reruns it, one inside doesn't.
+- **slope-lo:** its z6 tiles' mids and the z3 tile's terrain lo pack; `SLOPE_LO_V` and the codec.
+  **slope-root:** the lo packs and the codec.
 - **trees (a z6 tile):** the coverage inside the tile; `TREES_V` changes with any change to the bytes
   a z6 tile writes.
 - **trees-lo:** its z6 tiles' mids; `TREES_LO_V`.
@@ -558,7 +579,8 @@ A job's key is its step version plus what it reads, mostly by content name. The 
 - **bld-fetch** (network): its version, the release and the coverage.
 - **bldprep (per z6 tile):** `BLDPREP_V`, the release, and each downloaded file's row groups and GHSL
   tile meeting it (`crate::bld::sources`).
-- **depth-lo (a z3 tile):** `DEPTH_V`, `DEPTH_LO_V`, the tile, the depth sources meeting it (id and
+- **depth-lo (a z3 tile):** `DEPTH_V`, `DEPTH_LO_V` and the shading's codec (`shade_codec::version`),
+  the tile, the depth sources meeting it (id and
   digest of declaration and index), the digest of its z6–8 water as the depth reads it, rivers
   included ("depth 3/x/y", worked out by the terrain-water job).
 - **depth (a z6 tile):** the same versions, the tile, the sources meeting it (2 km round), the content

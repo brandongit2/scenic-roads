@@ -278,7 +278,8 @@ devices away use the M6's (always on; https://map.brandontsang.net, docs/macs.md
 - **What fits a member:** each target is offered with its expected memory: a `unit` job's from its extract;
   another's what its last run took (sampled four times a second, `SCENIC_COSTS`), else a related
   measure, else a first guess per step (terrain z6 tile 3.3 GB, its assembly 1.2, tree cover z6 tile 1,
-  slope z6 tile 1.5, peaks 2.5; the 3D buildings' by the rows they read, `agent::bld_peak`). Measures
+  peaks 2.5; slope's from the tiles it holds, `slope_pack::peak_mb` and `lo_peak_mb`; the 3D
+  buildings' by the rows they read, `agent::bld_peak`). Measures
   of older `coord::cost_version`s count for nothing. A member asks only for steps its disk has room
   for, never while a newer app waits, and takes the earliest step with a fitting target, from the
   front of the plan (the coordinator's `pick_every`; after its own last target of the step when

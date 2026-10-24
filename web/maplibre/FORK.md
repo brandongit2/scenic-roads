@@ -53,8 +53,18 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
 - **Circles and symbols behind the terrain** (`circle.vertex.glsl`, `symbol_*.vertex.glsl`): their
   visibility depth is computed as the terrain depth texture was drawn, so on the globe points and
   labels aren't all "behind the terrain" in tilted views.
-- **The slope tint** (`color_relief.fragment.glsl`): the slope source (base shift 32768.5) holds
-  four slopes a pixel; each is coloured and the four averaged in linear light.
+- **Hill-shading from stored shading tiles** (`draw_hillshade.ts`, `hillshade.fragment.glsl`,
+  `hillshade_program.ts`): a `hillshade` layer draws a source of precomputed shading tiles (the
+  app's `slope` and `depth-shade`: pipeline::shade_codec), each pixel's mean steepness s (R,
+  √-coded to 400 %) and mean unit gradient direction u (G, B: 128 + 120 u), its length c the
+  coherence. The colour is c × I(s û) + (1 − c) × I_rough(s), I the layer's method on that
+  gradient and I_rough its mean over 16 aspects: the shading of broken ground whose faces cancel
+  beneath a pixel. The tile's pixels are sampled as stored (with the border its neighbours
+  backfill), the gradient in metres per metre: no prepare pass deriving slopes from a DEM at render
+  time, no steepness boost by zoom, no latitude scale. Upstream's prepare pass and its shaders are
+  gone; a hillshade layer over a plain DEM isn't drawn as upstream's.
+- **The slope tint** (`color_relief.fragment.glsl`): a shading source (base shift 32768.5) is
+  coloured by its R, the mean steepness (s = 400 × R²).
 - **The globe without float32 noise** (`_projection_globe.vertex.glsl`): positions are the tile's
   flat projection plus an interpolated globe-minus-flat difference, so terrain and buildings don't
   shimmer.
@@ -97,8 +107,8 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
   can so appear a frame or two late the first time its shader is needed. The completion isn't asked
   in the frame a program was made, nor again in a frame after one link was found incomplete (each
   question waits for Safari's GPU process); a link still not complete after 120 frames
-  (`LINK_WAIT_FRAMES`) is waited for. A failed link throws at each draw, as upstream. The tiles' clipping masks, the depth pass, the
-  hill-shading's prepare pass and the terrain's depth are always waited for. On by default where
+  (`LINK_WAIT_FRAMES`) is waited for. A failed link throws at each draw, as upstream. The tiles' clipping masks, the depth pass
+  and the terrain's depth are always waited for. On by default where
   `navigator.vendor` is Apple's; elsewhere (Chrome showed no gain) as upstream. The app's custom
   layers do the same (`web/src/glprog.ts`); `?ashader=0|1` sets it in any browser.
 
@@ -111,7 +121,7 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
   finest zoom, overzoomed past it; elsewhere it is upstream's, so a source with finer data in some
   places asks for no extra tiles anywhere else, and the finer tiles sit beside the coarser cover
   with no gap (a cover is a partition). The terrain's elevations read the DEM at the same cap. The
-  app's terrain, hill-shading and slope go to each place's native zoom, z16 where the catalog has 2 m terrain
+  app's terrain and its shading go to each place's native zoom, z16 where the catalog has 2 m terrain
   (`covering_tiles_area.test.ts`; `test/scenic/zoom-by-area.html` shows an edge). Read when the
   source loads, and anew by `RasterTileSource.setZoomByArea` (a new catalog's areas, main.ts).
 - **DEM tiles decoded as data** (`raster_dem_tile_source.ts`, `util.ts`
@@ -123,15 +133,13 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
 - **DEM borders filled across zooms** (`tile_manager_raster_dem.ts` `backfillDEM`,
   `DEMData.backfillFrom`): a loaded DEM tile's 2 px border, and that of each renderable tile it
   touches, is filled from every renderable tile touching it, of any zoom, each border pixel from the
-  pixel holding its centre, as stored (exact between tiles of one zoom; the slope's and the trees'
+  pixel holding its centre, as stored (exact between tiles of one zoom; the shading's and the trees'
   packed pixels kept whole, so not interpolated), coarsest first so the finest data at a place is
   written last. Upstream filled it from its eight same-zoom neighbours only (their `neighboringTiles`
   and `backfillBorder`, gone), so beside a tile of another zoom (an area's edge, or a coarser tile
   standing in) the border clamped: a dark line in the hill-shading along the edge.
-- **No steepness correction for overzoomed DEM tiles:** DEM tiles are never prepared overscaled in
-  this fork (`covering_tiles.ts`), so a tile's drawn zoom is its own and the prepare shader sizes
-  pixels by `u_zoom` alone, as upstream does. (Rendering z13-18 at four places with and without a
-  separate DEM zoom gave byte-identical images.)
+- **No overscaled DEM tiles:** DEM tiles are never prepared overscaled in this fork
+  (`covering_tiles.ts`), so a tile's drawn zoom is its own.
 - **Known gap:** a border filled from a neighbour stays when that neighbour unloads (as upstream);
   it's filled again when a tile touching it loads.
 
