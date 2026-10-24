@@ -28,8 +28,7 @@
 //! can lease them (`Budget::hold`). With the NAS out of reach, each Mac takes the rate divided by
 //! the members it knows (`Budget::members`), in memory.
 //!
-//! Behind `state/pool/budgets` (crate::agent::pool::BUDGETS): off, no proxy, no sandbox, the agent
-//! as it was. A clock of its own (`Clock`), so the tests decide everything without the real one.
+//! A clock of its own (`Clock`), so the tests decide everything without the real one.
 
 pub mod nas;
 pub mod net;
