@@ -346,6 +346,15 @@ export class RenderToTexture {
                 const obj = tile.acquireRTT(painter, stack, tile.rttTargetSize ?? this.rttSize);
                 const pendingBefore = painter.context.pendingPrograms;
                 painter.bindRTT(obj);
+                // Scenic Roads: no texture unit left holding this texture (a sampler a draw leaves
+                // unused, e.g. an unmasked layer's u_mask on unit 2, still counts as a feedback loop
+                // and the draw fails: INVALID_OPERATION, the drape left black under its water).
+                for (const unit of [painter.context.gl.TEXTURE1, painter.context.gl.TEXTURE2, painter.context.gl.TEXTURE3]) {
+                    painter.context.activeTexture.set(unit);
+                    painter.context.gl.bindTexture(painter.context.gl.TEXTURE_2D, null);
+                }
+                painter.context.activeTexture.set(painter.context.gl.TEXTURE0);
+                painter.context.gl.bindTexture(painter.context.gl.TEXTURE_2D, null);
                 painter.context.clear({color: Color.transparent, stencil: 0});
                 painter.currentStencilSource = undefined;
                 painter.nextStencilID = 1;
