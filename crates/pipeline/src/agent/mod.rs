@@ -15954,7 +15954,9 @@ mod pool_tests {
         let caps = lead.coord.as_ref().unwrap().capacities();
         assert_eq!(caps.len(), 2, "{caps:?}");
         let mc = &caps[1].1;
-        assert_eq!(mc.limit_mb, memguard::limit_mb(16 << 10));
+        // (Its limit less the test process's own footprint, measured each loop: #619.)
+        let most = memguard::limit_mb(16 << 10);
+        assert!(mc.limit_mb < most && mc.limit_mb + (4 << 10) > most, "{} of {most}", mc.limit_mb);
         assert!(
             mc.mem_mb <= mc.limit_mb
                 && mc.cores_free == mc.cores
