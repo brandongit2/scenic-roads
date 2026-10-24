@@ -334,7 +334,9 @@ html.card-modal, html.card-modal body { overflow: hidden; }
 .rrow .lw { display: flex; gap: 8px; align-items: center; min-width: 0; font-size: var(--fs-s); color: var(--dim); }
 .rrow .lt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sbar { flex: 1 1 auto; display: flex; gap: 2px; min-width: 0; }
-.sbar > i { flex: 1 1 0; min-width: 0; font-style: normal; font-size: var(--fs-s); line-height: 14px; padding: 0 5px; color: var(--text); background: color-mix(in srgb, var(--c) 22%, var(--line)); border-left: 2px solid var(--c); border-radius: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sbar > i { flex: 1 1 0; min-width: 0; font-style: normal; font-size: var(--fs-s); line-height: 14px; padding: 0 5px; color: var(--text); background: color-mix(in srgb, var(--c) 55%, var(--line)); border-left: 2px solid var(--c); border-radius: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sbar > i.next { background: color-mix(in srgb, var(--c) 10%, var(--line)); color: var(--dim); }
+.sbar > i.run { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--c) 55%, var(--line)) 0 4px, color-mix(in srgb, var(--c) 20%, var(--line)) 4px 8px); }
 .rsplit { cursor: row-resize; position: relative; touch-action: none; outline: none; }
 .rsplit::after { content: ""; position: absolute; left: 0; right: 0; top: 3px; height: 3px; border-radius: 2px; background: var(--line); }
 .rsplit::before { content: ""; position: absolute; left: calc(50% - 18px); width: 36px; top: 2px; height: 5px; border-radius: 3px; background: var(--dim); z-index: 1; }
@@ -442,6 +444,8 @@ button[disabled] { opacity: .5; }
   .rrow { height: 104px; grid-template-rows: auto auto; align-content: center; }
   .rrow .nm { white-space: normal; overflow: visible; overflow-wrap: break-word; }
   .rrow .lw { flex-wrap: wrap; gap: 3px 8px; }
+  /* (Too narrow for a stage's name in each segment: its name is on hover and in the region's card.) */
+  .sbar > i { font-size: 0; height: 8px; padding: 0; }
   .rrow .lt { white-space: normal; overflow: visible; flex: 1 1 100%; }
   .reftag { white-space: normal; overflow: visible; text-overflow: clip; }
   .mc .cname { white-space: normal; align-items: flex-start; } .mc .cname span { overflow: visible; text-overflow: clip; }

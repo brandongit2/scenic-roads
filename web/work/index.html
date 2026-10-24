@@ -53,6 +53,8 @@
   h1 { font-size: var(--fs-l); font-weight: 600; margin: 0; }
   #state { color: var(--dim); font-size: var(--fs-s); }
   #status { flex: 1 1 auto; min-width: 0; }
+  /* (A phone: Install beside the title, not a row of its own under the wrapped status.) */
+  @media (max-width: 719px) { .top h1, #state { order: -2; } #install { order: -1; margin-left: auto; } #status { flex-basis: 100%; } }
   nav { display: flex; gap: 2px; margin-top: 6px; overflow-x: auto; scrollbar-width: none; }
   nav::-webkit-scrollbar { display: none; }
   nav a { color: var(--dim); text-decoration: none; padding: 5px 10px 6px; border-bottom: 2px solid transparent; white-space: nowrap; font-size: var(--fs-b); }

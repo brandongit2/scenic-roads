@@ -657,8 +657,8 @@ function machineCard(m, x) {
   });
   if (!jobs.length) {
     // Why it isn't building.
-    // (Paused alone: its own wait says the same again, left out.)
-    const why = st.held ? [] : (st.waiting || []).filter((w) => !w.step || x.role !== "lead").slice(0, 2);
+    // (Paused alone or with the build: its own waits say the same again, left out; the same words once.)
+    const why = st.held || m.sw.pause ? [] : [...new Map((st.waiting || []).filter((w) => !w.step || x.role !== "lead").map((w) => [x.role === "lead" ? `${w.what}: ${w.why}` : w.why, w])).values()].slice(0, 2);
     card.append(h("div", "job", h("div", "what dim", st.held ? `This Mac is paused (from ${st.held.by}); the rest of the pool goes on` : m.sw.pause ? "Paused with the build" : why.length ? "Waiting" : "Nothing to build now")));
     for (const w of why) card.append(h("div", "sub", x.role === "lead" ? `${w.what}: ${w.why}` : w.why));
   }
@@ -1135,6 +1135,9 @@ function regionRows(m) {
   });
 }
 
+// The stages that build regions (a step of theirs not worldwide), in the build's order.
+const regionStages = () => table.stages.map((g) => g.id).filter((g) => Object.values(table.steps).some((t) => t.stage === g && t.scope !== "world"));
+
 // A region's state in words and its chip's class: on the map, done (with the next catalogue),
 // building now, its place in line.
 function rowState(r) {
@@ -1184,11 +1187,15 @@ function regionRow(r, i) {
   const b = r.built;
   const tiles = b?.total ? (b.built < b.total ? `${n(b.built)} of ${n(b.total)} tiles` : `${n(b.total)} tiles built`) : "";
   const left = r.work.map((w) => S.said(w.step, w.k)).join(" · ");
-  const bar = h("span", { class: "sbar", title: [tiles, left ? `left: ${left}` : ""].filter(Boolean).join(" · ") }, r.segs.map((g) => h("i", { style: { "--c": stageColour(g.stage) } }, S.stageTitle(g.stage))));
+  // (Every stage that builds regions, in order, filled by how far it is here: built solid, the one
+  // under way striped, to come faint, the owner's 21 Oct 05:03; as the region's card's bar.)
+  const todo = new Set(r.segs.map((g) => g.stage)), now = r.rank === 0 ? r.segs[0]?.stage : null;
+  const bar = h("span", { class: "sbar", title: [tiles, left ? `left: ${left}` : ""].filter(Boolean).join(" · ") },
+    regionStages().map((g) => h("i", { class: g === now ? "run" : todo.has(g) ? "next" : "built", title: `${S.stageTitle(g)}: ${g === now ? "building" : todo.has(g) ? "to come" : "built"}`, style: { "--c": stageColour(g) } }, S.stageTitle(g))));
   const row = h("div", { class: `rrow${r.f && !r.count && r.on_map === true ? " done" : ""}${rp.lit === r.id ? " lit" : ""}`, role: "listitem", style: { top: `${i * ROW_H}px` } },
     h("span", "nm", above ? h("span", "dim", `${above} › `) : null, r.name, st ? [" ", chip(st, cls)] : null),
     h("span", "when", when),
-    h("span", "lw", r.segs.length ? bar : h("span", "lt", tiles)),
+    h("span", "lw", r.f ? bar : h("span", "lt", tiles)),
     h("span", "when", [r.secs ? `≈ ${dur(r.secs)} of work` : "", r.bytes != null ? size(r.bytes) : ""].filter(Boolean).join(" · ")));
   row.dataset.id = r.id;
   row.dataset.card = `mr ${r.id}`;
@@ -1527,6 +1534,7 @@ function part(cls, build) {
 }
 
 // Each tab's sections, in order (index.html's panels, by the tab's name).
+let stagesKept = null;
 function tabs(m) {
   const fin = m.lines.filter(finished).length;
   let md = null;
@@ -1542,7 +1550,10 @@ function tabs(m) {
         h("div", "box", schedule(m),
           // (What the coordinator's own scheduler decides, run ahead: docs/pool.md §7.2. What it can't see, said.)
           h("p", "note", "To come as the coordinator grants: by each Mac's room, cores and the NAS budget. Times and NAS weights are measured estimates, and no load from outside the build is assumed (optimistic while a Mac is in use); a pause, a repack, a Mac handing over on battery or a slow NAS moves the finish.")))),
-      part("d-stages", () => section("d-stages", "Stages", m.lines.length ? `${fin} of ${m.lines.length} done · ⇄ any Mac may take it` : "", h("div", "box", stagesList(m)))),
+      // (Every job a box of its targets' squares, thousands with a long past: built only while the
+      // Jobs tab shows, kept as it was behind the other tabs, and built again as the tab opens.)
+      stagesKept && location.hash !== "#jobs" ? stagesKept
+        : (stagesKept = part("d-stages", () => section("d-stages", "Stages", m.lines.length ? `${fin} of ${m.lines.length} done · ⇄ any Mac may take it` : "", h("div", "box", stagesList(m))))),
     ],
     machines: [
       part("d-machines", () => section("d-machines", "Machines", `${m.macs.filter((x) => x.fresh).length} Macs${m.pages.length ? `, ${plural(m.pages.length, "page")}` : ""}`,
@@ -1712,6 +1723,7 @@ export function dashboard(opts) {
   setInterval(() => document.visibilityState === "visible" && poll(), POLL_MS);
   // (The Machines tab's settings asked as it opens, not at the next poll.)
   window.addEventListener("hashchange", () => last && location.hash === "#machines" && loadSettings(ctx.call, last.macs || [], render));
+  window.addEventListener("hashchange", () => last && location.hash === "#jobs" && render());
   poll();
   startLive({ call: ctx.call, store: ctx.store, macs: () => last?.macs || [], active: () => location.hash === "#machines" || location.hash === "#nas" });
   startActivity({ call: ctx.call, macs: () => last?.macs || [], machines: () => shownMacs, active: () => location.hash === "#activity" });
