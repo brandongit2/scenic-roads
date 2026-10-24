@@ -665,7 +665,7 @@ not counted as a failure, no floor learned) when it resumes and the jobs no long
   setting, `store::spawn::NO_LARGE_CACHE`; their children inherit it; the agent and server, started
   by launchd, keep it): with it, freed blocks stay in a
   process's footprint, and a dense z6 tile's scenic-build held 6–7 GB of them while its programs ran.
-- **Limit:** the Mac's memory less an eighth, 4 GB at least. Over it, the largest fitting alone,
+- **Limit:** the Mac's memory less an eighth, 4 GB at least, less the agent's own footprint as measured each loop (`memguard::jobs_limit_mb`; the coordinator is told the same). Over it, the largest fitting alone,
   another job stops at its next safe point (`memguard::decide_by`): one that yields first, else the
   newest (by its start's minute), then the least progressed, never the largest; one at a time, and none more while the
   jobs not draining fit the limit. Nothing new starts beside the largest meanwhile (a member asks

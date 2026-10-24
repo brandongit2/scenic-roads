@@ -1314,6 +1314,9 @@ pub struct Agent {
     /// 0: unknown), and the jobs it stopped, kept from this Mac until when (unix seconds), and why.
     sampler: memguard::Sampler,
     total: u64,
+    /// The agent's own footprint as measured this loop (MB: crate::sys::footprint; 0 where a test
+    /// sets the memory, `mem_set`), off what its jobs may hold (`jobs_limit`, #619).
+    own_mb: u64,
     guard_backoff: BTreeMap<String, (u64, String)>,
     /// The memory this member spared its jobs in its last ask (MB: `Slot::spare_mb`).
     ask_spare_mb: Option<u64>,
@@ -1826,6 +1829,7 @@ impl Agent {
             guard_last: None,
             sampler: memguard::Sampler::new(SLOTS),
             total: 0,
+            own_mb: 0,
             guard_backoff: BTreeMap::new(),
             ask_spare_mb: None,
             slots_on: false,
@@ -2250,7 +2254,7 @@ impl Agent {
             mem_mb: self.build_room(),
             cores: std::thread::available_parallelism().map_or(4, |n| n.get() as u32),
             app: Some(self.app.clone()),
-            limit_mb: Some(memguard::limit_mb(self.total_mb())).filter(|&l| l > 0 && !all_new),
+            limit_mb: Some(self.jobs_limit(self.total_mb())).filter(|&l| l > 0 && !all_new),
             // (Its free space now, less the owner's target and its jobs' reservations.
             // What its caches could free isn't counted: nothing frees it first.)
             disk_mb: Some(self.disk_room() >> 20),
@@ -2572,7 +2576,7 @@ impl Agent {
             0 => self.mac_total_mb(),
             t => t,
         };
-        let limit = memguard::limit_mb(total);
+        let limit = self.jobs_limit(total);
         let alone = self.running_jobs() == 0;
         // (A job waiting on a worker holding its z6 tile's tail: counted as it holds now, none of its
         // cores, where its lease counts it by its measures: the room past them given back to the
@@ -4169,6 +4173,9 @@ impl Agent {
             self.guard_on = Some(on);
         }
         self.total = self.mac_total_mb();
+        if self.mem_set.is_none() {
+            self.own_mb = crate::sys::footprint().map_or(0, |b| b >> 20);
+        }
         // The owner's cancels (`scenic job cancel`, the menu bar, the lead's word): those jobs stopped
         // and given back first.
         ended |= self.tend_cancels(root.as_deref(), &mut waiting);
@@ -4906,7 +4913,7 @@ impl Agent {
         // (A job of no targets of its own, the OSM pass's: held by the memory guard when what it
         // held before passes this Mac's limit, the targets of a job with them dropped from the plan
         // already, `guard_holds`.)
-        let limit = memguard::limit_mb(self.total_mb());
+        let limit = self.jobs_limit(self.total_mb());
         if let (None, Some(co), true) = (spec.record.as_ref(), self.coord.as_ref(), self.guard_stops() && limit > 0) {
             let (step, rest) = spec.id.split_once(' ').unwrap_or((spec.id.as_str(), spec.id.as_str()));
             if let Some(f) = co.holding_floor(step, rest).filter(|f| f.mb > limit) {
@@ -5227,7 +5234,7 @@ impl Agent {
             0 => self.mac_total_mb(),
             t => t,
         };
-        let limit_mb = memguard::limit_mb(total);
+        let limit_mb = self.jobs_limit(total);
         let (mut held_mb, mut need, mut leases) = (0u64, 0u64, Vec::new());
         for (k, s) in self.slots.iter().enumerate() {
             if let Some(r) = &s.running {
@@ -5281,13 +5288,19 @@ impl Agent {
             0 => self.mac_total_mb(),
             t => t,
         };
-        buildmem::room_mb(self.build_memory.as_ref(), memguard::limit_mb(total))
+        buildmem::room_mb(self.build_memory.as_ref(), self.jobs_limit(total))
     }
 
     /// This Mac's memory (MB): as a test sets it, else as read once this loop (`step`); 0 when it
     /// can't be read (the memory guard then guards nothing).
     fn total_mb(&self) -> u64 {
         self.mem_set.map_or(self.total, |m| m.0)
+    }
+
+    /// What this Mac's jobs may hold together, of its `total` MB (memguard::jobs_limit_mb): the
+    /// guard's limit less this agent's own measured footprint.
+    fn jobs_limit(&self, total: u64) -> u64 {
+        memguard::jobs_limit_mb(total, self.own_mb)
     }
 
     /// This Mac's memory (MB) as the Mac says it now (0: unknown).
@@ -5333,7 +5346,7 @@ impl Agent {
     /// floor. With the switch off, or this Mac's memory unknown, nothing, and a job the sampler froze
     /// goes on. True when it stopped a job.
     fn guard(&mut self) -> bool {
-        let limit = memguard::limit_mb(self.total_mb());
+        let limit = self.jobs_limit(self.total_mb());
         let on = self.guard_stops() && limit > 0;
         self.sampler.set(on, limit);
         if let Some(last) = self.sampler.take_froze().pop() {
@@ -5796,7 +5809,7 @@ impl Agent {
 
     /// The memory guard for the status.
     fn guard_view(&self) -> memguard::View {
-        let limit = memguard::limit_mb(self.total_mb());
+        let limit = self.jobs_limit(self.total_mb());
         let why_off = match (self.guard_stops(), limit) {
             (false, _) => Some("switched off (state/pool/memory-guard)".to_string()),
             (true, 0) => Some("this Mac's memory can't be read: nothing is stopped".to_string()),
@@ -5818,7 +5831,7 @@ impl Agent {
     /// (`alone`: tried again in a job of their own before they're held).
     fn guard_holds(&self, works: &[build::Work]) -> GuardHolds {
         let mut h = GuardHolds::default();
-        let limit = memguard::limit_mb(self.total_mb());
+        let limit = self.jobs_limit(self.total_mb());
         let Some(c) = self.coord.as_ref().filter(|_| self.guard_stops() && limit > 0) else { return h };
         let largest = c.largest_limit().unwrap_or(0).max(limit);
         let gb = |mb: u64| mb as f64 / 1024.0;
@@ -14233,6 +14246,24 @@ mod tests {
         let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
         assert!(!m.keys().any(|l| crate::inputs::unit_of(l) == Some(unit)));
         assert!(!b.plan(&root, &c, &mut w).iter().any(|j| j.id.starts_with("inputs ")), "nothing left to forget");
+    }
+
+    #[test]
+    fn the_agents_own_footprint_comes_off_what_its_jobs_may_hold() {
+        // (#619: the Mac mini's agent held 9.5 GB beside jobs given 28 of its 32 GB.)
+        let d = tempfile::tempdir().unwrap();
+        let mut a = agent(&d.path().join("nas"), &d.path().join("home"));
+        a.mem_set = Some((32 << 10, 20 << 10));
+        a.own_mb = 9 << 10;
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        assert_eq!(a.guard_view().limit_mb, 19 << 10);
+        assert_eq!(a.build_room(), 19 << 10);
+        assert_eq!(a.capacity(&cond).limit_mb, 19 << 10, "the coordinator told the same");
+        // Measured each loop where the Mac's memory is read, not set by a test.
+        a.mem_set = None;
+        a.total = a.mac_total_mb();
+        a.own_mb = crate::sys::footprint().map_or(0, |b| b >> 20);
+        assert!(a.own_mb > 0 && a.jobs_limit(a.total) == memguard::limit_mb(a.total).saturating_sub(a.own_mb));
     }
 
     #[test]

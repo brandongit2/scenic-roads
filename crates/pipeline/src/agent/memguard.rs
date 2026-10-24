@@ -64,6 +64,13 @@ pub fn limit_mb(total_mb: u64) -> u64 {
     total_mb.saturating_sub((total_mb / 8).max(4096))
 }
 
+/// What the jobs may hold together beside the agent itself (MB): `limit_mb` less the agent's own
+/// measured footprint (`own_mb`, crate::sys::footprint), which the eighth doesn't cover (#619: the
+/// Mac mini's agent held 9.5 GB of its 32 the night it froze); 0 when its memory isn't known.
+pub fn jobs_limit_mb(total_mb: u64, own_mb: u64) -> u64 {
+    limit_mb(total_mb).saturating_sub(own_mb)
+}
+
 /// What the guard does about the jobs in a Mac's slots, by what each holds now (MB; None: no job in
 /// that slot, or its memory unknown).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -901,6 +908,14 @@ mod tests {
         assert_eq!(limit_mb(16 << 10), 12 << 10);
         assert_eq!(limit_mb(64 << 10), 56 << 10);
         assert_eq!(limit_mb(0), 0, "its memory unknown");
+    }
+
+    #[test]
+    fn the_agents_own_footprint_comes_off_the_jobs_limit() {
+        assert_eq!(jobs_limit_mb(32 << 10, 0), 28 << 10);
+        assert_eq!(jobs_limit_mb(32 << 10, 9 << 10), 19 << 10);
+        assert_eq!(jobs_limit_mb(16 << 10, 20 << 10), 0, "an agent past the limit leaves its jobs nothing");
+        assert_eq!(jobs_limit_mb(0, 1 << 10), 0, "its memory unknown");
     }
 
     #[test]

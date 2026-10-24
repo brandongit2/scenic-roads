@@ -775,7 +775,7 @@ pub struct Ask {
     /// A page: whether it's in front (an iPhone or iPad stops one that isn't).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visible: Option<bool>,
-    /// The most memory its Mac's jobs may hold together (MB: crate::agent::memguard::limit_mb), for
+    /// The most memory its Mac's jobs may hold together (MB: crate::agent::memguard::jobs_limit_mb), for
     /// the lead's reckoning of the most any Mac in the pool has (an older worker says none).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit_mb: Option<u64>,
@@ -832,7 +832,7 @@ pub const CAP_FRESH_S: u64 = 120;
 pub struct Capacity {
     /// When it was measured (unix s).
     pub at: u64,
-    /// The memory guard's limit: the most its jobs may hold together (MB: memguard::limit_mb).
+    /// The memory guard's limit: the most its jobs may hold together (MB: memguard::jobs_limit_mb, the agent's own footprint off).
     pub limit_mb: u64,
     /// What its running jobs hold now, as the guard's sampler last saw them (MB).
     pub held_mb: u64,
