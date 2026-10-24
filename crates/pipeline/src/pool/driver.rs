@@ -191,6 +191,14 @@ pub const OWN_BEAT_S: u64 = 360;
 /// removed). So is one whose reads fail while the share answers the step's others (a file the
 /// share errors on); a read that fails when none answered (the share away) starts the time again.
 pub const UNREADABLE_S: u64 = 3600;
+/// An entry a member told it of, not read whole over this long awake once an entry that member
+/// told it of later is read whole, is refused (s; §7.3): its writer has moved on. The member told
+/// of it only once its write returned (renamed into place whole: `Nas::write_whole`), and its later
+/// write reached the share and this Mac's reads, so no rename of this one is still to land; what's
+/// left is this Mac's SMB client answering from a stale name (task #630: the lead's own entry read
+/// as not there for 40 minutes, whole on the share) or the share's damage. Refusing loses only the
+/// job's work, done again; the hour held every catalog. Past a stale read's usual `STALE_S`.
+pub const MOVED_ON_S: u64 = STALE_S;
 /// How long an entry waits to be read whole before its lead says so, once (s).
 const WAIT_SAID_S: u64 = 600;
 
@@ -338,7 +346,7 @@ pub struct Out {
     /// Leading, its records reflect the journal: a listing of every day (its take-up's, or the
     /// daily one) asked for less than `RELIST_S` ago is merged and saved, every entry told or
     /// listed is read (on a share under load a loop leaves some to the next; one never read whole
-    /// is refused after `UNREADABLE_S`), and no re-assertion is owed. A re-assertion keeps it, but
+    /// is refused after `UNREADABLE_S`, or `MOVED_ON_S`), and no re-assertion is owed. A re-assertion keeps it, but
     /// after a sleep. A catalog waits for it (and `duties`); GC too (and `fresh`): an entry not
     /// merged yet may hold uploads the records don't name.
     pub caught_up: bool,
@@ -447,8 +455,12 @@ struct Lead {
     term: Term,
     records: Records,
     hand: Handover,
-    /// The entries members told it of and it hasn't acknowledged, by who told it.
-    told: BTreeMap<String, String>,
+    /// The entries members told it of and it hasn't acknowledged: who told it, and when it first
+    /// did (awake clock).
+    told: BTreeMap<String, (String, u64)>,
+    /// By member, the latest first telling (awake clock) of an entry of its read whole: its writer
+    /// has moved on past what it told before (`MOVED_ON_S`).
+    whole_told: BTreeMap<String, u64>,
     /// Entries told or listed not read whole yet (not readable yet, or past the step's time for
     /// reading): read again from the next step on.
     waiting: BTreeSet<String>,
@@ -986,8 +998,8 @@ impl Driver {
                 // merged too, so a sweep's step is caught up. Not after a sleep: what was written
                 // meanwhile, told to it and lost, a listing finds.)
                 if let Some(n) = self.lead.as_mut() {
-                    (n.told, n.waiting, n.unreadable, n.said, n.refused, n.held) =
-                        (l.told, l.waiting, l.unreadable, l.said, l.refused, l.held);
+                    (n.told, n.whole_told, n.waiting, n.unreadable, n.said, n.refused, n.held) =
+                        (l.told, l.whole_told, l.waiting, l.unreadable, l.said, l.refused, l.held);
                     if l.listed_at.is_some() && !slept {
                         n.listed_at = l.listed_at;
                         (self.due, self.asked) = (due, asked);
@@ -1120,6 +1132,7 @@ impl Driver {
             records: r,
             hand: Handover::Leading,
             told: BTreeMap::new(),
+            whole_told: BTreeMap::new(),
             waiting: BTreeSet::new(),
             unreadable: BTreeMap::new(),
             said: BTreeSet::new(),
@@ -1169,15 +1182,13 @@ impl Driver {
         });
         let own: Vec<String> = self.saved.mine.to_tell(self.cur.term);
         let now = io.now();
+        let told_at = io.awake();
         let l = self.lead.as_mut().expect("leading");
         let e = l.term.term;
-        for (from, keys) in tells {
+        for (from, keys) in tells.into_iter().chain([(me.clone(), own)]) {
             for k in keys {
-                l.told.insert(k, from.clone());
+                l.told.entry(k).or_insert_with(|| (from.clone(), told_at));
             }
-        }
-        for k in own {
-            l.told.insert(k, me.clone());
         }
         let mut keys: Vec<String> =
             l.told.keys().chain(&l.waiting).chain(l.held.keys()).filter(|k| !l.records.handles(k)).cloned().collect();
@@ -1223,6 +1234,13 @@ impl Driver {
         let n = again.len();
         let keys: Vec<String> = fresh.into_iter().chain(again).collect();
         let m = records::merge_while(io, &mut l.records, &keys, check, &|| io.awake() < busy);
+        // (Each member's entries read whole: how far its writer has moved on.)
+        for k in m.applied.iter().chain(&m.overtaken).chain(m.refused.iter().map(|(k, _)| k)) {
+            if let Some((from, at)) = l.told.get(k) {
+                let w = l.whole_told.entry(from.clone()).or_default();
+                *w = (*w).max(*at);
+            }
+        }
         l.turn = l.turn.wrapping_add(n - m.unread.iter().filter(|k| l.unreadable.contains_key(*k)).count().min(n));
         if !m.applied.is_empty() || !m.refused.is_empty() || !m.overtaken.is_empty() {
             l.dirty = true;
@@ -1290,14 +1308,27 @@ impl Driver {
             }
         }
         l.said.retain(|k| l.waiting.contains(k));
-        let never: Vec<String> = read
+        // (Refused after an hour; after `MOVED_ON_S` once its writer has moved on: an entry it
+        // told of later is read whole.)
+        let moved_on =
+            |k: &String| l.told.get(k).is_some_and(|(from, at)| l.whole_told.get(from).is_some_and(|w| w > at));
+        let never: Vec<(String, String)> = read
             .into_iter()
-            .filter(|k| l.unreadable.get(k).is_some_and(|&(at, _)| awake.saturating_sub(at) >= UNREADABLE_S))
+            .filter_map(|k| {
+                let since = awake.saturating_sub(l.unreadable.get(&k)?.0);
+                let why = if since >= UNREADABLE_S {
+                    format!("not read whole in {} minutes", UNREADABLE_S / 60)
+                } else if since >= MOVED_ON_S && moved_on(&k) {
+                    format!("not read whole in {} minutes, its writer's later entries read whole", since / 60)
+                } else {
+                    return None;
+                };
+                Some((k, why))
+            })
             .collect();
         if !never.is_empty() {
-            let why = format!("not read whole in {} minutes", UNREADABLE_S / 60);
-            for k in &never {
-                l.records.refuse(k, &why);
+            for (k, why) in &never {
+                l.records.refuse(k, why);
                 l.waiting.remove(k);
                 l.unreadable.remove(k);
                 l.refused.push((k.clone(), why.clone()));
@@ -1332,7 +1363,7 @@ impl Driver {
         // Acknowledged: what a saved snapshot names, and what's of days forgotten.
         if !l.dirty {
             let mut acks: BTreeMap<String, Vec<String>> = BTreeMap::new();
-            for (k, from) in &l.told {
+            for (k, (from, _)) in &l.told {
                 if l.records.handles(k) || m.forgotten.contains(k) {
                     acks.entry(from.clone()).or_default().push(k.clone());
                 }
@@ -2554,6 +2585,57 @@ mod tests {
             "{:?}",
             o.send
         );
+    }
+
+    /// Task #630: B tells the lead of its entry 3, which the lead's reads find short (`short`) or
+    /// not there, and of entry 4, whole: a step later (`later`), or with 3. Whether entry 3 is
+    /// refused 10 minutes on, and the steps' outcomes 5 and 10 minutes on.
+    fn told_not_whole(short: bool, later: bool) -> (bool, Out, Out) {
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let list = step(&mut a, &ia, able()).list.expect("its take-up's listing");
+        ia.pass(20);
+        assert!(step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: Vec::new() }), ..able() }).caught_up);
+        let key = entry(B, 1, 3, "6-1-1").key().unwrap();
+        if short {
+            mem.write_whole(&journal::path(&key), b"{\"member\":").unwrap();
+        }
+        let next = journal::write(&mem, &entry(B, 1, 4, "6-1-2")).unwrap();
+        let tell = |keys: Vec<String>| Heard { msgs: vec![(B.into(), Msg::Tell(keys))], ..able() };
+        ia.pass(20);
+        let first = if later { vec![key.clone()] } else { vec![key.clone(), next.clone()] };
+        assert!(!step(&mut a, &ia, tell(first)).caught_up, "told of it, not whole");
+        ia.pass(20);
+        step(&mut a, &ia, tell(vec![key.clone(), next.clone()]));
+        assert!(Records::load(&mem, 1).unwrap().unwrap().handles(&next), "the later one merged");
+        ia.pass(300);
+        let at_5 = step(&mut a, &ia, tell(vec![key.clone()]));
+        ia.pass(300);
+        let at_10 = step(&mut a, &ia, tell(vec![key.clone()]));
+        let refused = Records::load(&mem, 1).unwrap().unwrap().rejected.contains_key(&key);
+        (refused, at_5, at_10)
+    }
+
+    #[test]
+    fn an_entry_not_whole_is_refused_in_minutes_once_its_writer_moved_on() {
+        // On 24 Oct the lead's own entry read as not there for 40 minutes (its SMB client's stale
+        // name; whole on the share), and no catalog went out: one waits for every entry read.
+        for short in [true, false] {
+            let (refused, at_5, at_10) = told_not_whole(short, true);
+            assert!(!at_5.caught_up, "short {short}: 5 minutes: read again");
+            assert!(refused && at_10.caught_up, "short {short}: {:?}", at_10.events);
+        }
+    }
+
+    #[test]
+    fn an_entry_told_with_the_one_read_whole_waits_its_hour() {
+        // Entry 4 told with entry 3, not after: B's write of 3 may not have returned before 4's.
+        for short in [true, false] {
+            let (refused, _, at_10) = told_not_whole(short, false);
+            assert!(!refused && !at_10.caught_up, "short {short}: {:?}", at_10.events);
+        }
     }
 
     #[test]
