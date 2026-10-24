@@ -60,8 +60,8 @@
 #      inputs`, give the lead, and `kill -CONT <pid>` once the give returns.)
 # Then `scenic inputs test off --root <F>` and the scratch folder removed.
 #
-# What a run shows (2026-10-10, the M4 and the M1 over a NAS scratch folder, the pool on with
-# state/pool/slots, one release build, the same shasum on both; logs kept with the task #134 run):
+# What a run shows (2026-10-10, the M4 and the M1 over a NAS scratch folder, the pool on, its
+# parts changing in process, one release build, the same shasum on both; logs kept with the task #134 run):
 # 1. taken in at the first listing (2 min), then a check reading nothing ("0 files read of 1").
 # 2. the bad line held as `error gt-line`, the version of step 1 kept, on both Macs' `state`.
 # 3. `page-accept` wrote the acceptance (by "the build page (<address>)") and it was taken in 36 s

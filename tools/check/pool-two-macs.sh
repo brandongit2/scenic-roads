@@ -4,19 +4,17 @@
 # app's), its coordinator on a port of its own (never 8090, the real agent's), its jobs played by a
 # script that hands off one save within its step's outputs. Run on each Mac, from a build of the app:
 #
-#   pool-two-macs.sh root <folder> [slots]          the scratch folder, as the pool begins: today's
+#   pool-two-macs.sh root <folder>                  the scratch folder, as the pool begins: today's
 #                                                   records, no term yet (the first Mac in makes
-#                                                   term 1) (`slots`: state/pool/slots on, a part
-#                                                   changing in its process)
+#                                                   term 1)
 #   pool-two-macs.sh region <folder> [scenic-build]  a pass (its marker alone) and a region (a 20 km
 #                                                   circle) in the scratch folder: the lead plans
 #                                                   the pass's worldwide jobs for itself, and offers
 #                                                   the region's terrain and tree cover to members
-#   pool-two-macs.sh app <dir> <scenic> [helper]    <dir>/v/app/{20261008-0000-aaaaaaa,
+#   pool-two-macs.sh app <dir> <scenic>             <dir>/v/app/{20261008-0000-aaaaaaa,
 #                                                   20261009-0000-bbbbbbb}: the agent (<scenic>,
 #                                                   as scenic-real) and the fake jobs, `current` the
-#                                                   newer; <dir>/agent its folder (a helper's: with
-#                                                   an outbox job from before the pool to drain)
+#                                                   newer; <dir>/agent its folder
 #   pool-two-macs.sh run <dir> <folder>             the launcher: the agent of <dir>'s current app
 #                                                   until <dir>/v/app/stop, again whenever it exits
 #   pool-two-macs.sh older|newer <dir>              its current app the older or the newer: its
@@ -112,13 +110,14 @@
 # after a minute), and never takes over by itself.
 #
 # What a run shows (2026-10-08, the M4 the lead, the M1 a member): the lead makes term 1
-# and leads; both drain what they held from before the pool into the journal; the lead's jobs hand
+# and leads; the lead's jobs hand
 # off under its term's leases, its sweep after a re-assertion; the member's entry reaches the lead's
 # records through the journal and its mail, acknowledged; the lead restarted re-asserts; the lead
-# moved to the older app stands down, the member takes over after two minutes, restarts into the
-# lead, its coordinator up; the old lead, newer again, works as a member of it.
+# moved to the older app stands down, the member takes over after two minutes (then by a restart;
+# now in its process), its coordinator up; the old lead, newer again, works as a member of it.
 #
-# With state/pool/slots on (2026-10-10, `root … slots`, `region`, `jobs … 300`): the lead handed to
+# A part changing in its process (2026-10-10, then behind state/pool/slots, now always; `region`,
+# `jobs … 300`): the lead handed to
 # the member by `scenic lead give` mid-job, neither agent restarting (same pids), the member's
 # coordinator up in its process and the old lead's port free, the contact the new lead's, the lead's
 # idle-sleep assertion (`caffeinate -i -w <agent>`) moving with the lead; the member's job, granted in
@@ -153,7 +152,6 @@ case $cmd in
     print -n '{"base/6-1-1": "base/6-1-1.1111111111111111.base"}' > $r/state/build/manifest.json
     print -n '{"unit": {"6/1/1": "k1"}}' > $r/state/build/jobs.json
     print -n '{}' > $r/state/build/pending.json
-    [[ ${3:-} == slots ]] && : > $r/state/pool/slots
     ;;
   region)
     r=${2:?the scratch folder}
@@ -276,12 +274,6 @@ EOF
       chmod +x $d/v/app/$v/scenic $d/v/app/$v/scenic-build
     done
     ln -sfn 20261009-0000-bbbbbbb $d/v/app/current
-    [[ ${4:-} == helper ]] || exit 0
-    o=$d/agent/outbox/1791000000000
-    mkdir -p $o
-    print -n '{"step":"unit","targets":[["6/9/3","k93"]]}' > $o/work.json
-    print -n '{"changes":{"base/6-9-3":"base/6-9-3.9393939393939393.base"}}' > $o/00000000000000000001-1.json
-    print -n '{"ok":true,"done":["unit",[["6/9/3","k93"]]]}' > $o/result.json
     ;;
   run)
     d=${2:?its folder}; d=${d:a} r=${3:?the scratch folder}
