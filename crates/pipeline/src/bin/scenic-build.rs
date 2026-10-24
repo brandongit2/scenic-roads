@@ -368,13 +368,15 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         // that dataset <id>'s store (sources/fetched/<id>/) lacks, as published
         // (pipeline::dem::store_fetch). Restartable; writes nothing else.
         use pipeline::dem::store_fetch as sf;
-        let id = args.get(1).context("store-fetch <dataset id> --index <file.geojson>")?;
+        // (The dataset's id: the step's argument, not the line's second word, which is the step's
+        // name: the store went in sources/fetched/store-fetch/ before.)
+        let id = positional(&args).into_iter().next().context("store-fetch <dataset id> --index <file.geojson>")?;
         let index = opt(&args, "--index").context("--index <the dataset's tile index>")?;
         let urls = sf::urls(&std::fs::read(&index).with_context(|| index.clone())?)?;
         let done = sf::run(
             &pipeline::fetch::Fetcher::from_env(),
             &urls,
-            &root.join("sources/fetched").join(id),
+            &root.join("sources/fetched").join(&id),
             sf::AT_ONCE,
             &|l| eprintln!("{l}"),
         )?;
@@ -6043,6 +6045,15 @@ mod tests {
     /// the save naming them is made: after the next target's work (`then`), or at the end
     /// (`land`), or before a failure of the next one's work is returned (`after`); one whose
     /// upload failed isn't noted done, and the job fails.
+    /// store-fetch's dataset is its argument, not the line's second word (the step's name): the
+    /// store went in sources/fetched/store-fetch/ before.
+    #[test]
+    fn store_fetch_names_its_dataset() {
+        let line: Vec<String> =
+            ["scenic-build", "store-fetch", "glo30", "--index", "i.geojson"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(super::positional(&line), ["glo30"]);
+    }
+
     #[test]
     fn a_target_uploading_is_noted_done_once_its_uploads_have_landed() {
         use super::{Landing, Out};
