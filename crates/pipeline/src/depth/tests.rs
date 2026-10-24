@@ -752,8 +752,11 @@ fn measure_the_floors_shading() {
         idx.entries.iter().map(|e| (e.zxy(), idx.read_blob(&f, e).unwrap())).collect()
     };
     let made_of = |scope: &str, x: u32, y: u32| {
-        let (d, c) =
-            (read(&format!("layers/{LAYER}/{scope}/{x}-{y}")), read(&format!("layers/{CLASS_LAYER}/{scope}/{x}-{y}")));
+        let z = if scope == "lo" { 3 } else { 6 };
+        let (d, c) = (
+            read(&format!("layers/{LAYER}/{scope}/{z}-{x}-{y}")),
+            read(&format!("layers/{CLASS_LAYER}/{scope}/{z}-{x}-{y}")),
+        );
         d.into_iter()
             .map(|(k, b)| (k, (b, c.get(&k).cloned().unwrap_or_default())))
             .collect::<std::collections::BTreeMap<_, _>>()
