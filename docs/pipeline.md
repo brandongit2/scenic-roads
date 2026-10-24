@@ -248,7 +248,7 @@ boxes).
   only), out of touch, on battery), each segment in its stage's colour (a `--st-<stage>` token in
   index.html, a hue each in either theme): the jobs that ran (the history's job ends: a lead's
   `end` on its slot's lane, a worker's leased `done` or `fail`, which names no slot, on its Mac's
-  first lane free by then; back as far as the Show past jobs choice: none, the past 1, 2, 6, 24,
+  first lane free by then; back as far as the Show past tasks choice: none, the past 1, 2, 6, 24,
   48 or 72 hours or 7 days, this browser's own; read back from `/work/history` 5 000 events at a time, about 3.4 MB
   of JSON in four asks for a week's ~18 000 events, measured 23 Oct; runs of one step closer than
   a pixel packed into one segment: `sums.js` pastRuns, packRuns, laneGroups, pastFrom, tested by

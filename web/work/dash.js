@@ -993,7 +993,7 @@ function schedule(m) {
   const reaching = ui.past && past.first && past.first.t > t0 && past.asking ? h("span", "dim", " · reading further back…") : null;
   const pick = h("select", { class: "past", title: "How far back the schedule shows the jobs that ran (the history keeps 7 days)", onchange: (e) => { e.target.blur(); ui.past = +e.target.value; ctx.store.set("past", ui.past); render(); loadPast(last); } },
     PAST.map(([s, t]) => h("option", { value: s, selected: s === ui.past }, t)));
-  const top = h("div", "schedtop", h("label", "small dim", "Show past jobs ", pick), reaching, h("span", "small dim", fc?.done_at ? `done ≈ ${clock(fc.done_at)}` : fc ? "" : "no forecast yet (it comes with the lead's next plan)"));
+  const top = h("div", "schedtop", h("label", "small dim", "Show past tasks ", pick), reaching, h("span", "small dim", fc?.done_at ? `done ≈ ${clock(fc.done_at)}` : fc ? "" : "no forecast yet (it comes with the lead's next plan)"));
   if (!groups.length && !helps.length) return h("div", "sched", top, h("div", "small dim", "Nothing ran or is planned in this window."));
   const cap = h("div", "nowcap", h("span", null, "now"));
   cap.style.setProperty("--f", ((Math.max(t0, Math.min(t1, now)) - t0) / span).toFixed(5));
