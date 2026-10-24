@@ -1360,7 +1360,8 @@ request of its own, and obeyed (one that's missing, refused or unreadable allows
 "scenic-roads/0.1 (personal offline map)" (`fetch::USER_AGENT`), the pool's rate limits (the
 budget's proxy, `crate::budget`), a back-off on 429, and its credit. Every producer script that
 fetches says what it fetches (`FETCHES = "api, data"`; a shell script's `# FETCHES: data`), and
-one fetching pages reads robots.txt: `fetch::tests::every_fetching_script_declares_its_kinds`.
+one fetching pages reads robots.txt and tells its agent's proxy what it found (`/robots`, shown
+in the build page's Activity tab): `fetch::tests::every_fetching_script_declares_its_kinds`.
 The Rust fetchers (`crate::fetch`'s `Fetcher`, `crate::wikiask`) fetch only APIs and data.
 
 **How the steps read them.** Rust steps through `inputs::sources::open`/`read` (one read per

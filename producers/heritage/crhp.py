@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
 import sys
 import time
@@ -54,6 +55,23 @@ CREDIT = "Canadian Register of Historic Places (historicplaces.ca)"
 
 
 _robots: urllib.robotparser.RobotFileParser | None = None
+_told: str | None = None
+
+
+def tell(state: str) -> None:
+    """Tells the agent's proxy the site's robots.txt state (unchecked, allowed, disallowed), shown on
+    the build page's Activity tab (crate::budget::net::Robots), on each change; nothing outside a job."""
+    global _told
+    proxy = os.environ.get("SCENIC_BUDGETS")
+    if not proxy or state == _told:
+        return
+    _told = state
+    host = urllib.parse.urlsplit(BASE).hostname
+    url = f"{proxy.rstrip('/')}/robots?host={host}&state={state}"
+    try:
+        urllib.request.build_opener(urllib.request.ProxyHandler({})).open(urllib.request.Request(url, data=b""), timeout=30).close()
+    except OSError as e:
+        print(f"  the proxy wasn't told robots.txt is {state} ({e})", file=sys.stderr)
 
 
 def allowed(url: str) -> bool:
@@ -61,6 +79,7 @@ def allowed(url: str) -> bool:
     one that's missing, refused or can't be read allows everything."""
     global _robots
     if _robots is None:
+        tell("unchecked")
         _robots = urllib.robotparser.RobotFileParser()
         robots = urllib.parse.urljoin(BASE, "/robots.txt")
         try:
@@ -69,7 +88,9 @@ def allowed(url: str) -> bool:
         except OSError as e:
             print(f"  {robots}: not readable ({e}), allows everything", file=sys.stderr)
             _robots.parse([])
-    return _robots.can_fetch(UA["User-Agent"], url)
+    ok = _robots.can_fetch(UA["User-Agent"], url)
+    tell("allowed" if ok else "disallowed")
+    return ok
 
 
 def fetch(url: str, data: dict | None = None) -> str:

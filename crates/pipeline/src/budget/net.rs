@@ -2,7 +2,8 @@
 //! agent's proxy, which every job's connection out goes through, so nothing is told by the jobs
 //! but their retries and 429s (`/retry`, `/hold`). Per host: the bytes in (to the job) and out, the
 //! requests asked (a tunnel is one: what's inside is the client's TLS), the connections opened and
-//! those open now, the retries and the holds told. And the last `EVENTS` transfers, each as it ended.
+//! those open now, the retries and the holds told, and its robots.txt as a job that fetches its pages
+//! told it (`Robots`). And the last `EVENTS` transfers, each as it ended.
 //!
 //! And each job's bytes in and out (`Job`), by the tag its agent gave it in its proxy's address
 //! (`http://<tag>:x@127.0.0.1:<port>`, which its clients send as `Proxy-Authorization`; a client that
@@ -29,6 +30,43 @@ pub struct Host {
     pub open: AtomicU64,
     pub retries: AtomicU64,
     pub holds: AtomicU64,
+    /// Its robots.txt as last told (`Robots as u64`, 0: never told), and when (unix ms).
+    pub robots: AtomicU64,
+    pub robots_t: AtomicU64,
+}
+
+/// A host's robots.txt, as a job fetching its pages tells the proxy (`POST /robots?host=…&state=…`,
+/// docs/inputs.md §6.9). Only a page's host's robots.txt is read (crate::fetch::Kind::Page), and
+/// every script fetching pages tells (`fetch::tests::every_fetching_script_declares_its_kinds`), so
+/// a host never told is an API's or a data download's: no robots.txt applies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Robots {
+    /// Its pages are to be fetched; its robots.txt not read yet.
+    Unchecked = 1,
+    /// Read, and it allows the pages fetched.
+    Allowed = 2,
+    /// Read, and it disallows a page asked for.
+    Disallowed = 3,
+}
+
+impl Robots {
+    pub fn parse(s: &str) -> Option<Robots> {
+        match s {
+            "unchecked" => Some(Robots::Unchecked),
+            "allowed" => Some(Robots::Allowed),
+            "disallowed" => Some(Robots::Disallowed),
+            _ => None,
+        }
+    }
+
+    fn name(code: u64) -> Option<&'static str> {
+        match code {
+            1 => Some("unchecked"),
+            2 => Some("allowed"),
+            3 => Some("disallowed"),
+            _ => None,
+        }
+    }
 }
 
 /// A job's bytes since it began (`Net::job_began`).
@@ -135,6 +173,13 @@ impl Net {
         });
     }
 
+    /// `host`'s robots.txt is `state` now.
+    pub fn robots(&self, host: &str, state: Robots) {
+        let h = self.host(host);
+        h.robots_t.store(unix_ms(), Ordering::Relaxed);
+        h.robots.store(state as u64, Ordering::Relaxed);
+    }
+
     /// The bytes in and out of every host together, and the requests asked (the live store's rates).
     pub fn totals(&self) -> (u64, u64, u64) {
         let h = self.hosts.lock().unwrap_or_else(|e| e.into_inner());
@@ -148,9 +193,10 @@ impl Net {
         h.iter().filter(|(n, _)| pick(n)).map(|(_, c)| field(c).load(Ordering::Relaxed)).sum()
     }
 
-    /// `/work/live`'s `net`: `{hosts: {host: {in, out, requests, conns, open, retries, holds, limit}},
-    /// events: [{t, host, in, out, ms, outcome}, …]}`, the events oldest first; `limit`, the budget
-    /// its connections are metered by (`limit_of`), null when none.
+    /// `/work/live`'s `net`: `{hosts: {host: {in, out, requests, conns, open, retries, holds, limit,
+    /// robots}}, events: [{t, host, in, out, ms, outcome}, …]}`, the events oldest first; `limit`, the
+    /// budget its connections are metered by (`limit_of`), null when none; `robots`, `{state, t}` as
+    /// last told (`Robots`: unchecked, allowed, disallowed), null when never told (an API's or data's).
     pub fn view(&self) -> serde_json::Value {
         let hosts: serde_json::Map<String, serde_json::Value> = self
             .hosts
@@ -165,6 +211,7 @@ impl Net {
                         "in": l(&c.bytes_in), "out": l(&c.bytes_out), "requests": l(&c.requests),
                         "conns": l(&c.conns), "open": l(&c.open), "retries": l(&c.retries), "holds": l(&c.holds),
                         "limit": limit_of(n),
+                        "robots": Robots::name(l(&c.robots)).map(|st| serde_json::json!({ "state": st, "t": l(&c.robots_t) })),
                     }),
                 )
             })
@@ -241,6 +288,9 @@ mod tests {
         assert_eq!(n.totals(), (3, 4, 0));
         assert_eq!(n.view()["hosts"]["a.example"]["out"], 4);
         assert_eq!(n.view()["hosts"]["a.example"]["limit"], serde_json::Value::Null);
+        assert_eq!(n.view()["hosts"]["a.example"]["robots"], serde_json::Value::Null);
+        n.robots("A.example", Robots::Disallowed);
+        assert_eq!(n.view()["hosts"]["a.example"]["robots"]["state"], "disallowed");
     }
 
     #[test]

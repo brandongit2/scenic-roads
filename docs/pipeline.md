@@ -350,8 +350,10 @@ boxes).
   transfers that ended, downloads and breaks), each Mac a chip in its colour on the page, and
   **internet by website**, a row per host: requests and MB a second over the last 30 s, the
   connections open now (those opened since each Mac's agent started on hover), retries and 429
-  holds since then, and the budget it is metered by. Not shown: robots.txt (no result is
-  recorded), a NAS read's MB/s (a read file's bytes aren't counted per file, so its line says its
+  holds since then, the budget it is metered by, and its robots.txt: allowed or disallowed (with
+  when it was read), not checked yet (a page host whose robots.txt is still to be read), or n/a (an
+  API or a data download: no robots.txt applies), as the jobs told their Macs' proxies (the newest
+  told). Not shown: a NAS read's MB/s (a read file's bytes aren't counted per file, so its line says its
   size and the open's time), and the tokens left in a budget's window (pool-wide, on the NAS; a
   Mac holds only its batch). Below 640 px a line's time is left out (it shows on hover).
 - **Details:** tables, unfolded, among them the steps table itself, each step with where its runs'

@@ -1236,7 +1236,9 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   goes), the requests asked (a tunnel is one: what's inside is the client's TLS), the connections
   opened, the retries (crate::fetch's: each wait before asking again tells the proxy, `POST
   /retry?host=`) and the 429 holds told (`/hold?s=&host=`), and the budget its connections are
-  metered by (`limit`: `budget::net::limit_of`, in words from its class's rate; none unmetered);
+  metered by (`limit`: `budget::net::limit_of`, in words from its class's rate; none unmetered), and its
+  robots.txt as a job fetching its pages told it (`robots`: `{state, t}`, `POST
+  /robots?host=&state=`; null never told);
   and a ring of the last 200 transfers,
   each `{t, host, in, out, ms, outcome}` as it ended (`ok`, `broken`, `unreached`: answered 502,
   `refused`: 503). The counts are since the proxy started, in memory alone; their totals sampled
@@ -1283,8 +1285,11 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   the lead's `nas_ms`, `pool_nas_*` and `nas_disk_busy_pct` (missing from a member's answer); beside the
   status's `nas` (`NasView`). The
   Activity tab (`web/work/activity.js`) asks every Mac every 2 s while it shows, with no series:
-  their `files` and `net` for the file stream and the internet by website. No robots.txt result is
-  recorded anywhere (the producers that read one keep no result), so none is shown.
+  their `files` and `net` for the file stream and the internet by website, each host's `robots`
+  among them: a job fetching a host's pages (`FETCHES = "page"`) tells its proxy the robots.txt
+  state (`POST /robots?host=…&state=unchecked|allowed|disallowed`, crate::budget::net::Robots,
+  with when), null for a host never told: an API's or a data download's, read without robots.txt
+  (docs/inputs.md §6.9).
 - **Views** (menu bar, worker page, `scenic lead`, `scenic status`) read the
   agent's `pool.lead` (`crate::agent::lead::View`) or the fresher `agent/pool/view.json`
   (`lead::own_status`): each member's state and whether the lead can be handed to it

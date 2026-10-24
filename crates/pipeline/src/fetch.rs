@@ -1201,7 +1201,8 @@ mod tests {
 
     /// Every producer script that fetches (producers/, dem/: urllib, curl, producers/depth/grid.py's
     /// helpers) declares what it fetches, kinds of `Kind` (`FETCHES = "api, data"`; a shell
-    /// script's `# FETCHES: data`), and one that fetches pages reads robots.txt. (The declarations'
+    /// script's `# FETCHES: data`), and one that fetches pages reads robots.txt and tells its proxy
+    /// what it found (`/robots`: crate::budget::net::Robots, the Activity tab's column). (The declarations'
     /// `kind` is crate::inputs::sources::parse's.)
     #[test]
     fn every_fetching_script_declares_its_kinds() {
@@ -1255,6 +1256,7 @@ mod tests {
             assert!(!kinds.is_empty(), "{rel}: FETCHES names nothing");
             if kinds.contains(&Kind::Page) {
                 assert!(text.contains("robots.txt"), "{rel} fetches pages but reads no robots.txt");
+                assert!(text.contains("/robots?host="), "{rel} fetches pages but tells its proxy no robots.txt state");
             }
             checked += 1;
         }

@@ -11,6 +11,9 @@
 //                     #629 hasn't the call), `after` honoured; else forwarded as the other reads
 //   --tocome FILE     /work/tocome answered from FILE ({at, macs: {mac: {step: [[tile, s]…]}}}, the
 //                     lead's forecast::ToCome: an agent before #622 hasn't the call), `mac` honoured
+//   --live FILE       /work/live's `net.hosts` given FILE's hosts ({host: {in, out, requests, conns,
+//                     open, retries, holds, limit, robots}}) beside the agent's own (an agent before
+//                     #635 tells no robots.txt; a paused build moves nothing), the Activity tab's rows
 //   --member NAME     the Overview map's "Show only for" set to NAME: its tiles to come shown, a
 //                     card of one found, screenshots (chrome-member*), then set back
 //   --width W         the Chrome run at W px wide (default 390, a phone; 768 or more: a desktop, DPR 2)
@@ -46,6 +49,7 @@ const TABS = ["overview", "jobs", "machines", "regions", "nas", "dropboxes", "ac
 const READS = { swarm: [], steps: [], regions: [], settings: [], history: ["since", "max"], live: ["range", "series", "net", "since"], catalogs: ["after"], tocome: ["mac"] };
 const CATS = arg("--catalogs", null);
 const TOCOME = arg("--tocome", null);
+const LIVE = arg("--live", null);
 const MEMBER = arg("--member", null);
 const WIDTH = +arg("--width", 390);
 const PHONE = WIDTH < 768;
@@ -85,6 +89,12 @@ function serve() {
           return res.end(JSON.stringify({ at, mac: hit || mac, steps, macs: Object.keys(a.macs) }));
         }
         const out = JSON.stringify(v);
+        if (call === "live" && LIVE && v.net !== false) {
+          const a = await fetch(`http://${AGENT.host}:${AGENT.port}/work/live`, { method: "POST", headers: { "Content-Type": "application/json" }, body: out }).then((r) => r.json(), () => ({}));
+          a.net = { events: [], ...a.net, hosts: { ...a.net?.hosts, ...JSON.parse(readFileSync(LIVE, "utf8")) } };
+          res.writeHead(200, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify(a));
+        }
         const fw = request({ ...AGENT, method: "POST", path: url.pathname, headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(out) } }, (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); });
         fw.on("error", (e) => { console.error(`touch-test server: ${url.pathname}: ${e.message}`); res.writeHead(502); res.end("{}"); });
         fw.end(out);
@@ -296,6 +306,12 @@ async function run() {
         const n = await js(`[${charts}, document.querySelectorAll(".panel:not([hidden]) .d-nas .rate").length, document.querySelectorAll(".panel:not([hidden]) .d-nas .cbar, .panel:not([hidden]) .d-nas .chips").length, document.querySelector(".panel:not([hidden]) .d-nas .lhead")?.textContent || ""]`);
         check("nas: every measure a chart, no gauges", n[1] === 9 && !n[2], `${n[1]} rows, ${n[2]} gauges; ${n[3].slice(0, 80)}`);
         check("nas: its charts as wide as the Machines tab's (±2 px: the cards' borders)", !n[0].length ? /asking|no live/.test(n[3]) : machineW != null && n[0].every((w) => Math.abs(w - machineW) <= 2), `${n[0].join(", ") || "none shown"} against ${machineW}`);
+      }
+      // (Activity: the websites' table ends in the mockup's robots.txt column, each row's cell a
+      // state: n/a for an API's or data's host, else not checked yet, allowed or disallowed.)
+      if (tab === "activity") {
+        const r = await js(`(() => { const t = document.querySelector(".panel:not([hidden]) table.xhosts"); if (!t) return null; const rows = [...t.tBodies[0].rows]; return [[...t.tHead.rows[0].cells].at(-1).textContent, rows.length, rows.filter((tr) => !/^(n\\/a: API or data|not checked yet|(allowed|disallowed) \\(checked \\d\\d:\\d\\d\\))$/.test(tr.cells[tr.cells.length - 1].textContent)).length]; })()`);
+        check("activity: the websites' last column is robots.txt, each row a state", r && r[0] === "robots.txt" && !r[2], r ? `${r[1]} rows, ${r[2]} without a state` : "no table");
       }
       await shot(`chrome-${tab}`);
       check(`${tab}: no console errors`, !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));

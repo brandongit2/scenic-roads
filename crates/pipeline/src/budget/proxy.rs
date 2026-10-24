@@ -7,10 +7,12 @@
 //! it. It listens on this Mac alone (127.0.0.1). A process that sees a 429 or a `Retry-After`
 //! tells it (`POST /hold?s=<seconds>&host=<host>`: crate::budget::seen), and the budget holds every
 //! process and Mac; one that asks again tells it too (`POST /retry?host=<host>`: crate::budget::retried).
+//! One fetching a host's pages tells its robots.txt (`POST /robots?host=<host>&state=<unchecked,
+//! allowed or disallowed>`: crate::budget::net::Robots).
 //! What goes through is counted per host as it's relayed, and per job by the credential its
 //! clients send (`env_for`; crate::budget::net).
 
-use super::net::{Host, Net, Outcome};
+use super::net::{Host, Net, Outcome, Robots};
 use super::{Budget, Class};
 use anyhow::{Context, Result};
 use std::io::{self, Read, Write};
@@ -526,6 +528,17 @@ fn handle(mut s: TcpStream, ctx: &Arc<Ctx>) -> io::Result<()> {
             net.host(param(q, "host").unwrap_or("?")).retries.fetch_add(1, Ordering::Relaxed);
             return answer(&mut s, "200 OK", "counted\n");
         }
+        if let Some(q) = head.target.strip_prefix("/robots") {
+            let (Some(host), Some(state)) = (param(q, "host"), param(q, "state").and_then(Robots::parse)) else {
+                return answer(
+                    &mut s,
+                    "400 Bad Request",
+                    "/robots?host=<host>&state=<unchecked, allowed or disallowed>\n",
+                );
+            };
+            net.robots(host, state);
+            return answer(&mut s, "200 OK", "told\n");
+        }
         if let Some(q) = head.target.strip_prefix("/hold") {
             let secs = param(q, "s")
                 .and_then(|v| v.parse::<f64>().ok())
@@ -547,7 +560,7 @@ fn handle(mut s: TcpStream, ctx: &Arc<Ctx>) -> io::Result<()> {
             }
             return answer(&mut s, "200 OK", "held\n");
         }
-        return answer(&mut s, "404 Not Found", "a proxy: CONNECT, an absolute URL, /hold or /retry\n");
+        return answer(&mut s, "404 Not Found", "a proxy: CONNECT, an absolute URL, /hold, /retry or /robots\n");
     }
     // A plain HTTP request by its absolute URL: passed on, its connection closed after it.
     let Some(after) = head.target.strip_prefix("http://") else {
@@ -924,9 +937,9 @@ mod tests {
 
     /// Task #516: each host's bytes, requests and connections as they're relayed (a tunnel's, a
     /// plain request's), a retry and a 429 told counted for their host, and each transfer an event:
-    /// one to a host that can't be reached among them.
+    /// one to a host that can't be reached among them. A host's robots.txt told is kept (task #635).
     #[test]
-    fn each_hosts_traffic_retries_and_holds_are_counted() {
+    fn each_hosts_traffic_retries_holds_and_robots_are_counted() {
         let dir = tempfile::tempdir().unwrap();
         let clock = Arc::new(StepClock::at(T0));
         let up = upstream(Arc::new(|| {}));
@@ -942,6 +955,9 @@ mod tests {
         let req = "GET http://dumps.wikimedia.org/x HTTP/1.1\r\nHost: dumps.wikimedia.org\r\n\r\n";
         let echoed = request(&p.addr, req);
         assert!(request(&p.addr, "POST /retry?host=dumps.wikimedia.org HTTP/1.1\r\n\r\n").ends_with("counted\n"));
+        assert!(request(&p.addr, "POST /robots?host=www.historicplaces.ca&state=allowed HTTP/1.1\r\n\r\n")
+            .ends_with("told\n"));
+        assert!(request(&p.addr, "POST /robots?host=x&state=maybe HTTP/1.1\r\n\r\n").contains("400"));
         let r = request(&p.addr, "POST /hold?s=5&host=dumps.wikimedia.org HTTP/1.1\r\n\r\n");
         assert!(r.ends_with("held\n"), "{r}");
         p.settle_hold();
@@ -956,6 +972,8 @@ mod tests {
         assert_eq!(d["in"].as_u64(), Some(echoed.len() as u64), "{v}");
         assert_eq!(d["out"], d["in"]);
         assert_eq!((d["retries"].as_u64(), d["holds"].as_u64()), (Some(1), Some(1)));
+        assert_eq!(d["robots"], serde_json::Value::Null);
+        assert_eq!(v["hosts"]["www.historicplaces.ca"]["robots"]["state"], "allowed");
         let g = &v["hosts"]["gone.example"];
         assert_eq!((g["requests"].as_u64(), g["conns"].as_u64()), (Some(1), Some(0)));
         let ev: Vec<_> =

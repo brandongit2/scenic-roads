@@ -3,9 +3,11 @@
 // Mac's jobs are moving now (the NAS files they opened or made and the internet transfers that
 // ended, newest first) and the internet by website (each host's requests and MB a second over the
 // last `RATE_S`, the connections open now, retries and 429 holds since each Mac's agent started,
-// the budget it is metered by). Each Mac a chip in its colour on the page. From each Mac's /work/live (`files` and `net`), asked every `EVERY_MS`
+// the budget it is metered by, its robots.txt). Each Mac a chip in its colour on the page. From each Mac's /work/live (`files` and `net`), asked every `EVERY_MS`
 // while the tab shows: this page's own Mac through its own calls, the others at their addresses
-// (live.js's `remote`). No robots.txt column: no robots result is recorded anywhere to show.
+// (live.js's `remote`). A host's robots.txt is as a job fetching its pages told its Mac's proxy
+// (crate::budget::net::Robots), the newest told of any Mac; one never told is an API's or a data
+// download's, which follow their provider's policy: no robots.txt applies (docs/inputs.md §6.9).
 import { remote } from "./live.js";
 
 const EVERY_MS = 2000;
@@ -34,7 +36,7 @@ const parts = {};
   parts.hostsSay = el("span");
   const table = el("table", "t xhosts");
   const head = el("tr");
-  for (const [t, c] of [["website"], ["requests/s", "num"], ["MB/s", "num"], ["open", "num"], ["retries", "num"], ["rate limit"]]) head.append(el("th", c, t));
+  for (const [t, c] of [["website"], ["requests/s", "num"], ["MB/s", "num"], ["open", "num"], ["retries", "num"], ["rate limit"], ["robots.txt"]]) head.append(el("th", c, t));
   table.append(el("thead", null), (parts.body = el("tbody")));
   table.tHead.append(head);
   const wrap = el("div", "tablewrap");
@@ -115,6 +117,14 @@ function macChip(host) {
   c.title = short(host);
   return c;
 }
+// A host's robots.txt cell: its state as told (module doc), when it was read on hover.
+const ROBOTS = { unchecked: ["not checked yet", "warn"], allowed: ["allowed", "ok"], disallowed: ["disallowed", "bad"] };
+function robotsCell(r) {
+  if (!r) return Object.assign(el("td", "small dim", "n/a: API or data"), { title: "An API or a data download: it follows its provider's usage policy, no robots.txt read" });
+  const [say, cls] = ROBOTS[r.state] || [r.state, "warn"];
+  const hm = new Date(r.t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  return Object.assign(el("td", `small ${cls}`, r.state === "unchecked" ? say : `${say} (checked ${hm})`), { title: r.state === "unchecked" ? `Its pages are to be fetched; robots.txt not read yet (told ${clock(r.t)})` : `robots.txt read at ${clock(r.t)}` });
+}
 const num = (v, d = 1) => (v ? v.toFixed(d) : "0");
 
 // The answers' rows: the NAS files and the internet transfers, each with its Mac, newest first.
@@ -162,6 +172,7 @@ function paint() {
       const from = c.requests < w.requests || c.in + c.out < w.in + w.out ? { in: 0, out: 0, requests: 0 } : w;
       if (dt > 0) { r.req += (c.requests - from.requests) / dt; r.mbs += (c.in + c.out - from.in - from.out) / MB / dt; r.rated = true; }
       r.conns += c.conns; r.open += c.open ?? 0; r.retries += c.retries; r.holds += c.holds;
+      if (c.robots && !(r.robots?.t > c.robots.t)) r.robots = c.robots;
       by.set(name, r);
     }
   }
@@ -169,7 +180,7 @@ function paint() {
   parts.body.replaceChildren(...list.map(([name, r]) => {
     const tr = el("tr");
     tr.append(el("td", "mono", name), el("td", "num", r.rated ? num(r.req) : "…"), el("td", "num", r.rated ? num(r.mbs, 2) : "…"), Object.assign(el("td", "num", String(r.open)), { title: `${r.conns} opened since each Mac's agent started` }),
-      el("td", `num ${r.retries ? "warn" : ""}`, String(r.retries)), el("td", `small ${r.holds ? "warn" : "dim"}`, [r.limit || "—", r.holds ? `${r.holds} held back (429)` : ""].filter(Boolean).join(" · ")));
+      el("td", `num ${r.retries ? "warn" : ""}`, String(r.retries)), el("td", `small ${r.holds ? "warn" : "dim"}`, [r.limit || "—", r.holds ? `${r.holds} held back (429)` : ""].filter(Boolean).join(" · ")), robotsCell(r.robots));
     return tr;
   }));
   parts.none.textContent = list.length ? `Rates over the last ${RATE_S} s; connections open now; retries and holds since each Mac's agent started.`
