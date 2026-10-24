@@ -6,6 +6,11 @@
 # port than 8097 (another agent's run holding it).
 #   tools/dev/safari-sim.sh [out-dir] [device name]     (default: iPhone 18 Pro)
 set -u
+case ${1:-} in
+  -h|--help) print "usage: tools/dev/safari-sim.sh [out-dir] [device name]"; exit 0 ;;
+  -*) print -u2 "safari-sim.sh takes no options: $1 (--help)"; exit 2 ;;
+esac
+(( $# <= 2 )) || { print -u2 "safari-sim.sh takes at most two arguments (--help)"; exit 2 }
 here=${0:A:h}
 out=${1:-${TMPDIR:-/tmp}/scenic-safari}
 dev=${2:-iPhone 18 Pro}
