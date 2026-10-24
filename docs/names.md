@@ -35,10 +35,17 @@ punctuation or spacing, and not one of main's parts.
   official languages, most spoken first.
 - **Refined** per subdivision (the producer's `REFINED`): Quebec French then English, New Brunswick
   English then French, Catalonia, Valencia, Galicia, the Basque Country, Wales, Scotland, Brittany,
-  Hong Kong and Macau (Cantonese).
+  the Swiss cantons not German-first (Geneva, Vaud, Neuchâtel, Jura French; Fribourg, Valais French
+  then German; Bern German then French; Ticino Italian; Graubünden German, Romansh, Italian),
+  Belgium's regions, South Tyrol, the Aosta Valley, Hong Kong and Macau (Cantonese). Territories
+  with an ISO 3166-1 code of their own (Åland's AX, Swedish) take their own line. Elsewhere a
+  country's subdivisions read the country's languages in its order.
+  - The refinements reach the map once `inputs/languages/` holds the producer's output (`--base`)
+    and the `spoken` job has run again; the pass's outlines already hold every subdivision.
 - **Where:** the pass's outlines of ISO 3166-1 territories and of the subdivisions with a line,
   simplified (1 km, 250 m), as a raster of 1/128° cells, run-length coded, the smallest outline
-  winning. Beyond every territory no language is spoken.
+  winning. Beyond every territory no language is spoken. Within a cell of a border a thing may take
+  its neighbour's languages.
   - **Made once per pass** by the `spoken` job (keyed by the outlines, `spoken::RULES` and the
     languages' accepted version): `global/spoken`, in the World download.
   - A catalog without it: the server makes the raster from the catalog's outlines and keeps it in
@@ -62,12 +69,15 @@ punctuation or spacing, and not one of main's parts.
   raster's.
 
 The tables converted from the earlier translation work are `0-converted/<language>.jsonl`
-(converted once; the log is `inputs/translations/how/conversion-log.txt`); their
-lines hold for their source area's languages.
+(converted once; the log is `inputs/translations/how/conversion-log.txt`); their lines hold for
+their source area's languages, not each language spoken where their things are.
 
 **The build carries each thing's own English and language tags:** labels (`crates/pipeline/src/labels.rs`: `en`,
-`kana`, `l` the languages OSM gives its name, `o` its OSM object); the basemap (`name:en`, `name:fr`,
-and from the next pass `osmpass::BASEMAP_LANGUAGES`); roads (`global/roaden/<u>`, no language tags).
+`kana`, `l` the languages OSM gives its name, `o` its OSM object); the basemap (`name:en` and
+`name:fr` from the 2026-09-28 pass; `osmpass::BASEMAP_LANGUAGES` from the next); roads
+(`global/roaden/<u>`, their own English only: no language tags). Wikidata's English labels aren't
+carried (the landmark and area popups keep the English Wikipedia article's title, `wd.w_en`, as a
+link only).
 
 **To-do** (`pipeline::namestodo`, the `names-todo` job, after a catalog the map serves that changed
 what it reads (`inputs_key`): at most daily while z6 tiles build, after any such once none's left):
@@ -83,6 +93,9 @@ what it reads (`inputs_key`): at most daily while z6 tiles build, after any such
 - **`inputs/descriptions/todo/`:** `landmarks.jsonl` and `areas.jsonl`, things with an English
   Wikipedia article or register entry and no description, by fame; `README.md`
   (`tools/names/descriptions-todo.md`) is the writers' brief.
+- **Not read yet:** the basemap's names, stations, the ferry lines' names, and the area overlays'
+  names (heritage areas, Indigenous lands, special areas, World Heritage outlines); the
+  descriptions' list has parks and protected areas only among the areas.
 - Running the translators and writers is done on request.
 
 **Descriptions** are `inputs/descriptions/**/*.jsonl` (docs/inputs.md §6.4): `{"qid", "long",

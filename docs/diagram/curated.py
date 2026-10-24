@@ -13,7 +13,7 @@ GROUPS = [
         ('part', None, 'base', 'Place-name translations (today’s)',
          'English everywhere: labels, basemap names, roads, rail, popups (the servers, names::table)',
          'the earlier translation work (its own repository): word rules, romanisation, Claude agents (lines tagged agent:sonnet); converted once (log in translations/how/conversion-log.txt)',
-         'NAS inputs/translations/0-converted/; the area tables it came from beside it',
+         'NAS inputs/translations/0-converted/',
          'its how/: the conversion’s log, the first Haiku brief and launch prompt; the later session’s rules and brief only in the other repository',
          'that repository’s rules and brief, or translating again from the to-do lists'),
         ('doc', None, 'base', 'New translations',

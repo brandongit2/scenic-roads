@@ -41,6 +41,24 @@ REFINED = {
     "GB-SCT": ["en", "gd"],
     # France: Brittany Breton after French.
     "FR-BRE": ["fr", "br"],
+    # Switzerland: CLDR lists German first for every canton; the French- and Italian-speaking
+    # cantons read their own language first, the bilingual ones both.
+    "CH-GE": ["fr"],
+    "CH-VD": ["fr"],
+    "CH-NE": ["fr"],
+    "CH-JU": ["fr"],
+    "CH-FR": ["fr", "de"],
+    "CH-VS": ["fr", "de"],
+    "CH-BE": ["de", "fr"],
+    "CH-TI": ["it"],
+    "CH-GR": ["de", "rm", "it"],
+    # Belgium: each region its own language first.
+    "BE-VLG": ["nl"],
+    "BE-WAL": ["fr", "de"],
+    "BE-BRU": ["fr", "nl"],
+    # Italy: South Tyrol German, Aosta Valley French, beside Italian.
+    "IT-BZ": ["de", "it"],
+    "IT-23": ["it", "fr"],
     # Hong Kong's and Macau's names are read in Cantonese (the government's romanisation), not
     # Mandarin's Pinyin, which Chinese lines carry.
     "HK": ["yue", "en"],
