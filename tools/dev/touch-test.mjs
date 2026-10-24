@@ -561,6 +561,21 @@ async function limitChecks({ js, at, touch, tap, page, check, shot, PHONE }) {
   const key = /disk room/.test(pen[2]) ? "room" : "memory";
   check("machines: the editor's Set sends the number typed", (await posted()) === n1 + 1 && sent?.body?.[key] === 7, JSON.stringify(sent?.body));
   check("machines: the battery floor's tag says it's pool-wide", await js(`[...${own}.querySelectorAll(".reftag.set")].some((t) => t.title.includes("battery floor") && /pool-wide/.test(t.textContent))`) || !(await js(`[...${own}.querySelectorAll(".reftag")].some((t) => /battery/.test(t.textContent))`)), "");
+  // A limit at the chart's very top (every core) is still drawn, settable, its tag under the line.
+  const top = await js(`(async () => {
+    const { draw } = await import("/work/chart.js");
+    const box = document.createElement("div"); box.id = "toptest"; box.style.cssText = "position:relative;width:420px";
+    const c = document.createElement("canvas"); c.style.cssText = "display:block;width:100%;height:62px"; box.append(c);
+    ${own}.append(box); box.scrollIntoView({ block: "center" });
+    const now = Date.now() / 1000;
+    draw(c, { from: now - 600, to: now, step: 5, axis: true, times: true, unit: "", stacked: true, max: 8, series: [], refs: [{ v: 8, label: "build's limit: 8 cores (all)", edit: { key: "in_use", title: "Cores for the build", unit: "cores", min: 1, max: 8, step: 1, label: (v) => "build's limit: " + v, set: async () => true } }] });
+    const t = box.querySelector(".reftag.set");
+    const r = t && t.getBoundingClientRect(), b = box.getBoundingClientRect();
+    return t ? [r.top - b.top, r.bottom - b.top] : null;
+  })()`);
+  await shot("limit-at-top");
+  check("machines: a limit at every core is drawn settable, its tag under the line, inside the chart", !!top && top[0] > 6.5 && top[1] <= 62, JSON.stringify(top));
+  await js(`document.getElementById("toptest")?.remove()`);
   await js(`${own}.querySelector(".cfg")?.remove()`);
 }
 

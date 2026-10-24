@@ -295,8 +295,8 @@ function paint(host) {
   const n = mac.cores;
   const lim = held("in_use", loop("build_cores_max"), s.build_cores_max);
   draw(b.cpu.c, { ...base, unit: "", stacked: true, least: n || 0,
-    // (The cores' line unlabelled when the build's limit is drawn: the two labels would meet.)
-    refs: [...(n ? [{ v: n, label: lim != null && lim !== n ? "" : `${n} cores` }] : []), ...(lim != null && lim !== n ? [{ v: lim, label: `build's limit: ${fmt(lim)} cores`, edit: edit("in_use", { title: "Cores for the build", note: `Most cores the build's jobs may use while the owner is using ${host}; the rest are kept for the owner's apps. Off: the default share.`, unit: "cores", min: 1, max: n, step: 1, label: (v) => `build's limit: ${fmt(v)} cores`, body: (v) => (v === "off" ? v : n - v) }) }] : [])],
+    // (The Mac's cores are the limit's top, so its line is always the limit's, at the cores when the build may use every one.)
+    refs: n && lim != null ? [{ v: lim, label: `build's limit: ${fmt(lim)} cores${lim === n ? " (all)" : ""}`, edit: edit("in_use", { title: "Cores for the build", note: `Most cores the build's jobs may use while the owner is using ${host}; the rest are kept for the owner's apps. Off: the default share.`, unit: "cores", min: 1, max: n, step: 1, label: (v) => `build's limit: ${fmt(v)} cores${v === n ? " (all)" : ""}`, body: (v) => (v === "off" ? v : n - v) }) }] : n ? [{ v: n, label: `${n} cores` }] : [],
     series: [{ points: s.build_cores, colour: acc, label: "build", unit: "cores" }, { points: s.others_cores, colour: dim, label: "other", unit: "cores" }] });
   const busy = at("cores_busy"), ce = at("cores_busy_e"), cp = at("cores_busy_p");
   words(b.cpu.v, busy == null ? ["not measured"] : [`${fmt(busy)}${n ? ` of ${n}` : ""} cores busy`, [acc, `build's jobs ${fmt(at("build_cores"))}`], [dim, `other apps ${fmt(at("others_cores"))}`],
@@ -345,7 +345,7 @@ function paint(host) {
 
   // Battery: its charge, shaded while on mains, against the lead's floor on battery.
   const bat = loop("battery_pct"), ac = loop("ac"), floor = held("battery_floor", mac.battery_min);
-  draw(b.power.c, { ...loopBase, unit: "%", max: 100, shade: { points: s.ac, colour: ok }, refs: floor ? [{ v: floor, label: `pool-wide: can't lead below ${floor} % on battery`, edit: edit("battery_floor", { title: "Battery floor", note: "Pool-wide, every Mac's: on battery, a Mac below it can't lead and a lead below it hands over. Off: the default.", unit: "%", min: 0, max: 100, step: 5, label: (v) => `pool-wide: can't lead below ${fmt(v)} % on battery` }) }] : [],
+  draw(b.power.c, { ...loopBase, unit: "%", max: 100, shade: { points: s.ac, colour: ok }, refs: floor != null ? [{ v: floor, label: `pool-wide: can't lead below ${floor} % on battery`, edit: edit("battery_floor", { title: "Battery floor", note: "Pool-wide, every Mac's: on battery, a Mac below it can't lead and a lead below it hands over. Off: the default.", unit: "%", min: 0, max: 100, step: 5, label: (v) => `pool-wide: can't lead below ${fmt(v)} % on battery` }) }] : [],
     series: [{ points: s.battery_pct, colour: ac === 0 && floor && bat < floor ? bad : ok, label: "battery", unit: "%" }] });
   words(b.power.v, bat == null ? [ac === 1 ? "on mains, no battery" : "not measured"] : [fmt(bat, "%"), ac === 0 ? "on battery" : "on mains"], ac === 0 && floor && bat < floor ? "warn" : "");
 

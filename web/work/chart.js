@@ -199,7 +199,7 @@ function paint(c) {
     }
   });
   // Reference lines, dashed, in the warning's colour (or their own), each labelled by a boxed tag
-  // over its right end, the highest first (under its line when over it would cover one already placed).
+  // over its right end, the highest first (under its line when over it would leave the canvas or cover one already placed).
   const tags = [];
   // (A ref being dragged drawn at the drag's value, its tag saying it.)
   const d = dragging.get(c);
@@ -214,7 +214,7 @@ function paint(c) {
     if (r.edit) geom.get(c).refs.push({ y, r });
     if (r.label && o.axis) {
       const free = (ty) => !tags.some((t) => Math.abs(t.y - ty) < 16);
-      const ty = [Math.max(0, y - 17), Math.min(H - 16, y + 2)].find(free);
+      const ty = [y - 17, Math.min(H - 16, y + 2)].find((t) => t >= 0 && free(t));
       if (ty != null) tags.push({ r, y: ty, col });
     }
   }
