@@ -4252,15 +4252,16 @@ mod tests {
     fn gc_resumes_after_a_crash_and_keeps_a_folder_a_late_entry_reached() {
         // (Task #644 review) The remove phase stops midway (its process gone after one day): the
         // next run removes the rest, never a file twice, and writes the marker done only then. A
-        // late entry written into a marked day keeps that day's folder; the switch reads off unless
-        // it says on.
+        // late entry written into a marked day keeps that day's folder; the switch is on unless it
+        // says off.
         use super::super::journal_gc;
         let mem = Mem::default();
         setup(&mem);
         let ia = Mac::new(&mem);
+        assert!(journal_gc::enabled(&ia), "on by default");
+        mem.write_whole(journal_gc::SWITCH, b"off\n").unwrap();
         assert!(!journal_gc::enabled(&ia));
-        mem.write_whole(journal_gc::SWITCH, b"on\n").unwrap();
-        assert!(journal_gc::enabled(&ia));
+        mem.remove(journal_gc::SWITCH).unwrap();
         let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
         caught_up(&mut a, &ia, able());
         let first = entry(A, 1, 1, "6-1-1");

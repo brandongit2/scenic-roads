@@ -98,12 +98,17 @@ pub fn read(nas: &dyn Nas) -> Result<Option<Marker>> {
     }
 }
 
-/// The owner's switch (`SWITCH`): the journal's GC runs only while it says `on`; missing, off.
+/// The owner's kill switch (`SWITCH`): the journal's GC runs unless it says `off`; missing, on.
 pub const SWITCH: &str = "state/pool/journal-gc";
 
-/// Whether the owner switched the journal's GC on. Unreadable: off.
+/// Whether the journal's GC runs: on unless the switch says `off`. Unreadable (an error): off this
+/// run, as it deletes on the NAS.
 pub fn enabled(nas: &dyn Nas) -> bool {
-    matches!(nas.read(SWITCH), Ok(Some(b)) if String::from_utf8_lossy(&b).trim() == "on")
+    match nas.read(SWITCH) {
+        Ok(None) => true,
+        Ok(Some(b)) => String::from_utf8_lossy(&b).trim() != "off",
+        Err(_) => false,
+    }
 }
 
 /// Whether records `r` may be taken up from (the fence): an error saying why not.

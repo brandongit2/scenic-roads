@@ -736,10 +736,10 @@ holds the job's slot, so it names nothing: the lease counts by its measures unti
   never looks at them on the NAS. Entries from before carry none.
 - **Lease order holds:** an older lease's entry for targets a newer one set changes nothing.
 - **The journal is a log:** nothing is removed on merge. Its days over a week old are removed by
-  the lead's daily `gc` job (`crate::pool::journal_gc`, task #644) **only while the owner's switch
-  is on**: `state/pool/journal-gc` in the project folder saying `on` (`journal_gc::SWITCH`; missing,
-  unreadable or anything else: off, the default, nothing marked or removed; a marker already
-  written stays and still fences take-ups). Switched on, off its loop, once its records
+  the lead's daily `gc` job (`crate::pool::journal_gc`, task #644), on by default; the owner's kill
+  switch `state/pool/journal-gc` in the project folder saying `off` stops it (`journal_gc::SWITCH`;
+  missing or anything else: on; unreadable: that run skipped; a marker already written stays and
+  still fences take-ups). It runs off its loop, once its records
   are re-asserted and caught up, in two runs at least `WAIT_S` (12 h) apart:
   1. **Mark:** once the last GC's entries are forgotten, `state/journal/gc.json` is written whole,
      naming every entry of the days before `KEEP_DAYS` (7) ago, up to the first day holding one
