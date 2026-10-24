@@ -241,8 +241,8 @@ pub struct Ask {
 }
 
 /// This Mac's size, the charts' scales (`mac` in an answer): its cores, its efficiency cores, its
-/// memory (GB), its NAS call threads, the battery floor for leading (%) and the owner's idleness
-/// counted away (s). Read once.
+/// memory (GB), its NAS call threads and the owner's idleness counted away (s). Read once. (The
+/// battery floor, the owner's setting, is added by `answer`.)
 fn mac() -> &'static serde_json::Value {
     static MAC: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
     MAC.get_or_init(|| {
@@ -252,8 +252,7 @@ fn mac() -> &'static serde_json::Value {
             "mem_gb": crate::sys::memsize().map(|b| round(b as f64 / GB)),
             // (Its NAS call threads, crate::agent::nasread: the most calls in flight at once.)
             "nas_threads": crate::agent::nasread::SWITCH_READERS + crate::agent::nasread::READERS + crate::agent::nasread::WRITERS,
-            // (The lead's battery floor on battery, and how long without a touch makes the owner away.)
-            "battery_min": super::cond::BATTERY_MIN,
+            // (How long without a touch makes the owner away.)
             "away_s": super::cond::AWAY_S,
         })
     })
@@ -278,6 +277,8 @@ pub struct Store {
     sampling: AtomicBool,
     /// Each core's share busy over the last second (`cores_now` in an answer).
     cores_now: Mutex<Vec<f64>>,
+    /// The battery floor the agent last went by (%; `set_battery_min`): `mac.battery_min`.
+    battery_min: std::sync::atomic::AtomicU8,
 }
 
 impl std::fmt::Debug for Store {
@@ -310,7 +311,13 @@ impl Store {
             files: Mutex::default(),
             sampling: AtomicBool::new(false),
             cores_now: Mutex::new(Vec::new()),
+            battery_min: super::cond::DEFAULT_BATTERY_MIN.into(),
         })
+    }
+
+    /// The battery floor the agent goes by now (%; crate::agent::cond::battery_min).
+    pub fn set_battery_min(&self, pct: u8) {
+        self.battery_min.store(pct, Ordering::Relaxed);
     }
 
     /// A sample of series `name` at `t` (unix s).
@@ -400,7 +407,7 @@ impl Store {
 
     /// `/work/live`'s answer at `now` (unix s): `{host, now, step, from, mac, series: {name: [[t,
     /// lo, mean, hi], …]}, net, files}`, each series with a point in the window alone; `mac`, its
-    /// size (`mac()`); `cores_now`, each core's share busy over the last second (none before the
+    /// size (`mac()`) and the battery floor for leading (`battery_min`, %); `cores_now`, each core's share busy over the last second (none before the
     /// sampler's second read); unless asked without (`net: false`): `net`, the proxy's counts
     /// (crate::budget::net::Net::view) once it has them, and `files`, the file stream (`FileNote`s,
     /// oldest first).
@@ -426,7 +433,9 @@ impl Store {
         };
         let cores_now: Vec<f64> =
             self.cores_now.lock().map(|c| c.iter().map(|f| round(*f)).collect()).unwrap_or_default();
-        let mut v = serde_json::json!({ "host": self.host, "now": now, "step": step, "from": from, "mac": mac(), "series": out, "cores_now": cores_now });
+        let mut m = mac().clone();
+        m["battery_min"] = self.battery_min.load(Ordering::Relaxed).into();
+        let mut v = serde_json::json!({ "host": self.host, "now": now, "step": step, "from": from, "mac": m, "series": out, "cores_now": cores_now });
         if a.net != Some(false) {
             if let Some(n) = self.net() {
                 v["net"] = n.view();
@@ -803,6 +812,10 @@ mod tests {
         let by_s = s.answer(&Ask { range: Some(60), ..Default::default() }, t0 + 2);
         assert_eq!(by_s["step"], 1);
         assert_eq!(by_s["host"], "m4");
+        // (The battery floor: the default until the agent says the owner's.)
+        assert_eq!(by_s["mac"]["battery_min"], super::super::cond::DEFAULT_BATTERY_MIN);
+        s.set_battery_min(20);
+        assert_eq!(s.answer(&Ask { range: Some(60), ..Default::default() }, t0 + 2)["mac"]["battery_min"], 20);
         assert_eq!(
             by_s["series"][LOAD],
             serde_json::json!([[1e9, 3.0, 3.0, 3.0], [1e9 + 1.0, 1.0, 1.0, 1.0], [1e9 + 2.0, 5.0, 5.0, 5.0]])

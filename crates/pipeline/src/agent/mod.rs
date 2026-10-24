@@ -9781,8 +9781,12 @@ impl Agent {
                 run.settled = serde_json::to_value(co.pool_state()).ok();
             }
         }
-        let able =
-            c.home && (c.ac || c.battery.is_none_or(|b| b >= cond::BATTERY_MIN)) && self.disk_free() > self.floor();
+        // (The owner's battery floor, pool-wide on the NAS: read each step, so a change holds at once.)
+        let battery_min = cond::battery_min(Some(r));
+        if let Some(l) = &self.live {
+            l.set_battery_min(battery_min);
+        }
+        let able = c.home && (c.ac || c.battery.is_none_or(|b| b >= battery_min)) && self.disk_free() > self.floor();
         #[cfg(test)]
         let able = TEST_ABLE.with(|t| t.get()).unwrap_or(able);
         // (Paused alone: it neither takes the lead nor is offered it.)
@@ -9835,6 +9839,7 @@ impl Agent {
             able,
             held: self.hold.held.is_some(),
             target_mb: self.floor() >> 20,
+            battery_min: Some(battery_min),
         });
         if let Some(co) = &self.coord {
             run.controls.page.extend(co.take_lead_asks());

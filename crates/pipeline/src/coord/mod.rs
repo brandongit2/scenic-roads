@@ -3445,7 +3445,7 @@ fn route(
         "/work/settings" => {
             // The owner's settings from the build page (docs/workers.md §7): `{}` reads them;
             // `{"in_use": <cores> | "off"}`, `{"memory": <GB> | "off"}`, `{"room": <GB> | "off"}` set
-            // this Mac's, `{"nas_room": <GB> | "off"}` the pool's, each through the same function as
+            // this Mac's, `{"nas_room": <GB> | "off"}` and `{"battery_floor": <%> | "off"}` the pool's, each through the same function as
             // its `scenic` command (crate::agent::settings). Answered with them as they stand.
             use crate::agent::settings;
             let b: serde_json::Value = serde_json::from_slice(body)?;
@@ -3481,6 +3481,12 @@ fn route(
                 let root =
                     root.as_deref().ok_or_else(|| anyhow::anyhow!("the NAS is away: its reserve can't be set now"))?;
                 settings::set_nas_room(root, &v, &by)?;
+            }
+            if let Some(v) = said("battery_floor")? {
+                let root = root
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("the NAS is away: the battery floor can't be set now"))?;
+                settings::set_battery_floor(root, &v, &by)?;
             }
             let mut v = settings::view(&home, root.as_deref());
             v["mac"] = crate::agent::cond::host().into();
@@ -8588,7 +8594,8 @@ mod tests {
         let (code, _, v) = post(serde_json::json!({}));
         assert_eq!(code, 200, "{v}");
         assert_eq!(v["memory"]["set"], false);
-        let (code, _, v) = post(serde_json::json!({ "in_use": 0, "memory": "2", "room": 1, "nas_room": "3 GB" }));
+        let (code, _, v) =
+            post(serde_json::json!({ "in_use": 0, "memory": "2", "room": 1, "nas_room": "3 GB", "battery_floor": 20 }));
         assert_eq!(code, 200, "{v}");
         assert_eq!(crate::agent::share::read(home.path()).unwrap().cores, Some(0));
         let m = crate::agent::buildmem::read(home.path()).unwrap();
@@ -8596,11 +8603,14 @@ mod tests {
         assert_eq!(crate::agent::room::target(home.path()).unwrap().bytes, 1 << 30);
         assert_eq!(crate::agent::room::nas_reserve(nas.path()).unwrap().bytes, 3 << 30);
         assert_eq!(v["nas_room"]["bytes"], 3u64 << 30);
+        assert_eq!(crate::agent::cond::battery_min(Some(nas.path())), 20);
+        assert_eq!(v["battery_floor"]["pct"], 20);
         assert_eq!(post(serde_json::json!({ "memory": "0.1" })).0, 400);
         assert_eq!(post(serde_json::json!({ "in_use": [1] })).0, 400);
         assert_eq!(crate::agent::buildmem::read(home.path()).unwrap().mb, 2048);
-        let (code, _, v) =
-            post(serde_json::json!({ "in_use": "off", "memory": "off", "room": "off", "nas_room": "off" }));
+        let (code, _, v) = post(
+            serde_json::json!({ "in_use": "off", "memory": "off", "room": "off", "nas_room": "off", "battery_floor": "off" }),
+        );
         assert_eq!(code, 200, "{v}");
         assert!(
             crate::agent::share::read(home.path()).is_none() && crate::agent::buildmem::read(home.path()).is_none()
@@ -8609,7 +8619,9 @@ mod tests {
             crate::agent::room::target(home.path()).is_none() && crate::agent::room::nas_reserve(nas.path()).is_none()
         );
         c.set_settings(home.path(), None);
+        assert!(crate::agent::cond::battery_floor(nas.path()).is_none());
         assert_eq!(post(serde_json::json!({ "nas_room": "3" })).0, 400, "the NAS away");
+        assert_eq!(post(serde_json::json!({ "battery_floor": "20" })).0, 400, "the NAS away");
     }
 
     #[test]

@@ -426,7 +426,8 @@ available. Until work is done, the map serves the last catalog.
 **Status.**
 - `scenic status` (the lead, its jobs, what waits, the checklist by stage and step, the regions),
   `scenic steps` (the steps table: docs/pipeline.md), `scenic clean`, `scenic room` (Room on the
-  disk, above), `scenic nas-room` (the NAS reserve, above), `scenic memory` (the build's memory: docs/pool.md §7.1).
+  disk, above), `scenic nas-room` (the NAS reserve, above), `scenic battery-floor` (the pool's battery floor for
+  leading: docs/workers.md §7), `scenic memory` (the build's memory: docs/pool.md §7.1).
 - The app's status bar: the NAS or map server out of reach, new data or a new app.
 - **The menu bar item** asks the local server (`/api/build`): this Mac's agent's status, else the
   NAS's copy. An agent not heard from for six minutes shows as out of touch.

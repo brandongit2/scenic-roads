@@ -253,6 +253,10 @@ pub struct Conds {
     /// stays free past the free space it needs to lead.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub target_mb: u64,
+    /// The battery floor it went by (%; crate::agent::cond::battery_min; left out by apps before it:
+    /// `floor` says the default).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub battery_min: Option<u8>,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -260,19 +264,25 @@ fn is_zero(n: &u64) -> bool {
 }
 
 impl Conds {
+    /// The battery floor it went by (%).
+    pub fn floor(&self) -> u8 {
+        self.battery_min.unwrap_or(crate::agent::cond::DEFAULT_BATTERY_MIN)
+    }
+
+    /// On battery below its floor: it can't lead, and leading, hands the lead over.
+    pub fn low_battery(&self) -> bool {
+        !self.ac && self.battery.is_some_and(|b| b < self.floor())
+    }
+
     /// Why a member with these conditions can't lead now (`able` false), as the agent decides it
-    /// (crate::agent's `pool_step`: home, on power or charged past `BATTERY_MIN`, free space past its room target, or with none, a disk not full).
+    /// (crate::agent's `pool_step`: home, on power or charged past its battery floor, free space past its room target, or with none, a disk not full).
     pub fn why_unable(&self) -> String {
         if self.held {
             "paused: it can't lead until it's resumed (`scenic resume`)".into()
         } else if !self.home {
             "away from home: it can't lead until it's back".into()
-        } else if !self.ac && self.battery.is_some_and(|b| b < crate::agent::cond::BATTERY_MIN) {
-            format!(
-                "on battery at {}%: it can't lead below {}%",
-                self.battery.unwrap_or(0),
-                crate::agent::cond::BATTERY_MIN
-            )
+        } else if self.low_battery() {
+            format!("on battery at {}%: it can't lead below {}%", self.battery.unwrap_or(0), self.floor())
         } else {
             match self.target_mb {
                 0 => "its disk is full: it can't lead until some space is free".into(),
@@ -2442,7 +2452,15 @@ mod tests {
             pool: pool.clone(),
             members: vec!["m-000000000000000b".into()],
             shadow: false,
-            conds: Some(Conds { home: true, ac: false, battery: Some(54), able: false, held: false, target_mb: 0 }),
+            conds: Some(Conds {
+                home: true,
+                ac: false,
+                battery: Some(54),
+                able: false,
+                held: false,
+                target_mb: 0,
+                battery_min: None,
+            }),
             broker: None,
         };
         let b = serde_json::to_vec(&new).unwrap();

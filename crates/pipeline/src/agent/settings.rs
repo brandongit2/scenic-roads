@@ -1,10 +1,11 @@
 //! The owner's settings (docs/workers.md §7): this Mac's in-use share (crate::agent::share), build
 //! memory (crate::agent::buildmem) and disk room target (crate::agent::room::Target), and the pool's
-//! NAS reserve (crate::agent::room::NAS_RESERVE). Each is set through one function here, whoever
-//! asks: `scenic in-use`, `scenic memory`, `scenic room`, `scenic nas-room`, and the build page's
+//! NAS reserve (crate::agent::room::NAS_RESERVE) and battery floor (crate::agent::cond::BATTERY_FLOOR).
+//! Each is set through one function here, whoever asks: `scenic in-use`, `scenic memory`, `scenic
+//! room`, `scenic nas-room`, `scenic battery-floor`, and the build page's
 //! POST /work/settings (crate::coord), which reads them back with `view`.
 
-use super::{buildmem, room, share};
+use super::{buildmem, cond, room, share};
 use anyhow::{Context, Result};
 use std::path::Path;
 
@@ -82,8 +83,25 @@ pub fn set_nas_room(root: &Path, what: &str, by: &str) -> Result<Option<room::Ta
     room::set_nas_reserve(root, Some(bytes), by)
 }
 
+/// Sets the pool's battery floor under the project folder `root`: `what` in % ("25", "25 %"), 0 to
+/// 100, or "off": the default (`cond::DEFAULT_BATTERY_MIN`).
+pub fn set_battery_floor(root: &Path, what: &str, by: &str) -> Result<Option<cond::BatteryFloor>> {
+    if what == "off" {
+        return cond::set_battery_floor(root, None, by);
+    }
+    let pct = what
+        .trim()
+        .trim_end_matches('%')
+        .trim()
+        .parse::<u8>()
+        .ok()
+        .filter(|p| *p <= 100)
+        .with_context(|| format!("the battery floor: <percent> (0 to 100) or off, not {what}"))?;
+    cond::set_battery_floor(root, Some(pct), by)
+}
+
 /// The settings as they stand, for the build page: this Mac's (in its agent's folder `home`) and
-/// the NAS reserve (under `root`; null while the NAS is away). Sizes in bytes, memory in MB.
+/// the pool's NAS reserve and battery floor (under `root`; null while the NAS is away). Sizes in bytes, memory in MB.
 pub fn view(home: &Path, root: Option<&Path>) -> serde_json::Value {
     let total_mb = crate::sys::memsize().map_or(0, |b| b >> 20);
     let limit = super::memguard::limit_mb(total_mb);
@@ -109,6 +127,16 @@ pub fn view(home: &Path, root: Option<&Path>) -> serde_json::Value {
         },
         "room": target_view(room::target(home), room::disk_free(home).ok(), store::sys::disk_size(home).ok()),
         "nas_room": root.map(|r| target_view(room::nas_reserve(r), room::disk_free(r).ok(), None)),
+        "battery_floor": root.map(|r| {
+            let f = cond::battery_floor(r);
+            serde_json::json!({
+                "pct": cond::battery_min(Some(r)),
+                "set": f.is_some(),
+                "default": cond::DEFAULT_BATTERY_MIN,
+                "by": f.as_ref().map(|f| f.by.clone()),
+                "at": f.as_ref().map(|f| f.at),
+            })
+        }),
     })
 }
 
@@ -138,6 +166,16 @@ mod tests {
             assert!(set_room(h, bad, "t").is_err(), "{bad}");
             assert!(set_nas_room(h, bad, "t").is_err(), "{bad}");
         }
+        for bad in ["101", "x", "-3", "2.5", ""] {
+            assert!(set_battery_floor(h, bad, "t").is_err(), "{bad}");
+        }
+        assert_eq!(view(h, Some(h))["battery_floor"]["pct"], cond::DEFAULT_BATTERY_MIN);
+        assert_eq!(set_battery_floor(h, "20 %", "t").unwrap().unwrap().pct, 20);
+        assert_eq!(cond::battery_min(Some(h)), 20);
+        assert_eq!(view(h, Some(h))["battery_floor"]["set"], true);
+        assert!(set_battery_floor(h, "off", "t").unwrap().is_none());
+        assert_eq!(cond::battery_min(Some(h)), cond::DEFAULT_BATTERY_MIN);
+        assert!(view(h, None)["battery_floor"].is_null());
         assert!(set_memory(h, "1000000", "t").is_err(), "more than this Mac has");
         assert!(set_room(h, "1000000000", "t").is_err(), "more than the disk holds");
         assert_eq!(set_memory(h, "2 GB", "t").unwrap().unwrap().mb, 2048);

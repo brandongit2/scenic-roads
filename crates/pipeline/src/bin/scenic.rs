@@ -1107,6 +1107,25 @@ fn nas_room(what: Option<&str>, root_: &Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+/// `scenic battery-floor [<percent> | off]`: the pool's battery floor (agent::cond::BATTERY_FLOOR),
+/// set in the project folder on the NAS, which every agent reads; off: the default; with none, how it
+/// stands.
+fn battery_floor(what: Option<&str>, root_: &Option<PathBuf>) -> Result<()> {
+    use agent::cond::{battery_floor, DEFAULT_BATTERY_MIN};
+    let r = root(root_, true)?;
+    let by = format!("scenic battery-floor on {}", agent::cond::host_name());
+    if let Some(what) = what {
+        agent::settings::set_battery_floor(&r, what, &by)?;
+    }
+    match battery_floor(&r) {
+        Some(f) => println!("Battery floor: {} % (set {} by {})", f.pct, ago(f.at), f.by),
+        None => {
+            println!("Battery floor: {DEFAULT_BATTERY_MIN} %, the default (`scenic battery-floor <percent>` sets one)")
+        }
+    }
+    Ok(())
+}
+
 /// `scenic memory [<GB> | off]`: the memory this Mac gives the build's jobs together
 /// (agent::buildmem), set in its agent's folder, which the agent reads each loop; within the memory
 /// guard's limit; off: the limit alone; with none, how it stands.
@@ -1468,6 +1487,7 @@ fn main() -> Result<()> {
         Some(Cmd::InUse { cores, off, places }) => in_use(cores, off.is_some(), &places.home),
         Some(Cmd::NasTarget { what, root }) => nas_target(what.as_deref(), &root.root),
         Some(Cmd::NasRoom { what, root }) => nas_room(what.as_deref(), &root.root),
+        Some(Cmd::BatteryFloor { what, root }) => battery_floor(what.as_deref(), &root.root),
         Some(Cmd::Memory { what, places }) => memory(what.as_deref(), &places.home),
         Some(Cmd::Gc { dry_run, days, root: r }) => {
             let r = pipeline::timings::job("gc", || gc::run(&root(&r.root, true)?, days, dry_run))?;

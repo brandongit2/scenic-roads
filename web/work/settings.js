@@ -1,8 +1,8 @@
 // The owner's settings on the build page (the Machines tab; docs/workers.md §7): this page's Mac's
 // in-use share, build memory and disk room target, a block per Mac, each set on that Mac, and the
-// pool's NAS reserve. Read and set through
+// pool's NAS reserve and battery floor. Read and set through
 // `/work/settings`, which sets each through the same function as its `scenic` command
-// (`scenic in-use`, `memory`, `room`, `nas-room`). Changed only when a person presses Set or Off.
+// (`scenic in-use`, `memory`, `room`, `nas-room`, `battery-floor`). Changed only when a person presses Set or Off.
 
 function h(tag, attrs, ...kids) {
   const e = document.createElement(tag);
@@ -74,7 +74,7 @@ export function loadSettings(call, macs, done) {
 }
 
 /** The settings' section: a block per Mac (this page's first), each control setting that Mac's
- * own, and the pool's NAS reserve once; `call`, `macs` and `done` as loadSettings's;
+ * own, and the pool's NAS reserve and battery floor once; `call`, `macs` and `done` as loadSettings's;
  * `onError(text)` a refused ask. */
 export function settingsSection(call, macs, done, onError) {
   const set = async (m, st, body, what) => {
@@ -107,16 +107,15 @@ export function settingsSection(call, macs, done, onError) {
     if (!s) return h("div", { class: "box settings", "data-host": name }, head, h("div", "setting dim small", st.error ? `can't be read: ${st.error}` : "reading…"));
     return h("div", { class: "box settings", "data-host": name }, head, macRows(s).map((r) => row(put, r)));
   });
-  // (The NAS reserve, the pool's: once, through the first Mac that reaches the NAS.)
+  // (The pool's, kept on the NAS: once, through the first Mac that reaches the NAS.)
   const nas = list.map(([m, host]) => [m, kept.get(host) || {}]).find(([, st]) => st.said?.nas_room);
   const pool = nas
     ? (() => {
-      const [m, st] = nas, n = st.said.nas_room;
-      return h("div", "box settings", h("h3", null, "The pool"),
-        row((body, what) => set(m, st, body, what), nasRow(n)));
+      const [m, st] = nas, put = (body, what) => set(m, st, body, what);
+      return h("div", "box settings pool", h("h3", null, "The pool"), poolRows(st.said).map((r) => row(put, r)));
     })()
-    : h("div", "box settings", h("h3", null, "The pool"), h("div", "setting dim small", "NAS reserve: no Mac shown here reaches the NAS now"));
-  return h("section", "d-settings", h("h2", null, "Settings", h("span", null, "each Mac's own, set on that Mac; the NAS reserve, pool-wide")), blocks, pool);
+    : h("div", "box settings pool", h("h3", null, "The pool"), h("div", "setting dim small", "NAS reserve and battery floor: no Mac shown here reaches the NAS now"));
+  return h("section", "d-settings", h("h2", null, "Settings", h("span", null, "each Mac's own, set on that Mac; the NAS reserve and battery floor, pool-wide")), blocks, pool);
 }
 
 // A row's words and field, or, when the answer lacks the setting or it can't be read, "not set"
@@ -149,11 +148,19 @@ export function macRows(s) {
   ];
 }
 
-/** The pool's NAS reserve row, from an answer's `nas_room`. */
-export function nasRow(n) {
-  return guarded("nas_room", "NAS reserve", () => ({
-    now: n.bytes ? gb(n.bytes) : "off",
-    note: `kept free on the NAS past what the build writes there${n.free != null ? `, ${gb(n.free)} free now` : ""}${by(n)}`,
-    input: { min: 1, step: 1, placeholder: "GB", offTitle: "No reserve" },
-  }));
+/** The pool's rows from an answer `s` that reaches the NAS: its `nas_room` and `battery_floor`. */
+export function poolRows(s) {
+  const n = s.nas_room, f = s.battery_floor;
+  return [
+    guarded("nas_room", "NAS reserve", () => ({
+      now: n.bytes ? gb(n.bytes) : "off",
+      note: `kept free on the NAS past what the build writes there${n.free != null ? `, ${gb(n.free)} free now` : ""}${by(n)}`,
+      input: { min: 1, step: 1, placeholder: "GB", offTitle: "No reserve" },
+    })),
+    guarded("battery_floor", "Battery floor", () => ({
+      now: `${f.pct} %`,
+      note: `on battery, a Mac below it can't lead and a lead below it hands over${f.set ? by(f) : " (the default)"}`,
+      input: { min: 0, max: 100, step: 1, placeholder: "%", offTitle: `Back to the default, ${f.default} %` },
+    })),
+  ];
 }

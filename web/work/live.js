@@ -232,7 +232,8 @@ function paint(host) {
   // (Every chart says the time under it, as the mockup's.)
   // (A settable limit's ✎: its row in Settings, on this tab, scrolled to and its field focused; #612 sets it in place.)
   const onEdit = (key) => {
-    const box = [...document.querySelectorAll(".d-settings .settings")].find((x) => x.dataset.host === host);
+    // (The pool's settings, as the battery floor, are in the pool's box.)
+    const box = [...document.querySelectorAll(".d-settings .settings")].find((x) => (key === "battery_floor" ? x.classList.contains("pool") : x.dataset.host === host));
     const at1 = box?.querySelector(`.setting[data-key="${key}"]`) || box;
     if (!at1) return;
     at1.scrollIntoView({ block: "center", behavior: "smooth" });
@@ -329,7 +330,7 @@ function paint(host) {
 
   // Battery: its charge, shaded while on mains, against the lead's floor on battery.
   const bat = loop("battery_pct"), ac = loop("ac"), floor = mac.battery_min;
-  draw(b.power.c, { ...loopBase, unit: "%", max: 100, shade: { points: s.ac, colour: ok }, refs: floor ? [{ v: floor, label: `can't lead below ${floor} % on battery` }] : [],
+  draw(b.power.c, { ...loopBase, unit: "%", max: 100, shade: { points: s.ac, colour: ok }, refs: floor ? [{ v: floor, label: `can't lead below ${floor} % on battery`, edit: "battery_floor" }] : [],
     series: [{ points: s.battery_pct, colour: ac === 0 && floor && bat < floor ? bad : ok, label: "battery", unit: "%" }] });
   words(b.power.v, bat == null ? [ac === 1 ? "on mains, no battery" : "not measured"] : [fmt(bat, "%"), ac === 0 ? "on battery" : "on mains"], ac === 0 && floor && bat < floor ? "warn" : "");
 

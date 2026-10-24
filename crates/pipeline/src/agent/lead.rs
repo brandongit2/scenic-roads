@@ -16,7 +16,7 @@
 //!   `VIEW_S`, and at once after an ask or a change. A lead whose heartbeat is out of touch while its
 //!   coordinator answered this Mac lately (`ANSWERED_S`) is late, not gone (`View::quiet`): no "no
 //!   lead", and no takeover unforced.
-//! - **The lead's battery low** (§6.4): a lead on battery below `cond::BATTERY_MIN` asks to hand
+//! - **The lead's battery low** (§6.4): a lead on battery below its battery floor (`cond::battery_min`) asks to hand
 //!   the lead to a member that can lead (`low_battery`), as the owner's ask would; again every
 //!   `BATTERY_AGAIN_S` while it still leads so. The app is otherwise not smart about who leads: the
 //!   owner hands the lead over by hand.
@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 
 /// No handover away from an unreachable lead (`away`) within this of its last such ask (s).
 pub const CALM_S: u64 = 1800;
-/// A lead on battery below `cond::BATTERY_MIN` asks to hand the lead over again this often while it
+/// A lead on battery below its battery floor asks to hand the lead over again this often while it
 /// still leads so (s): its last ask came to nothing (none could take it, or the handover failed).
 pub const BATTERY_AGAIN_S: u64 = 300;
 /// No lead for this long (by this Mac's clock: since the lead was last heard from, or since this
@@ -105,7 +105,7 @@ pub struct Kept {
     pub asked: Option<Asked>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub change: Option<Change>,
-    /// The last time this Mac, leading on a battery below `cond::BATTERY_MIN`, asked to hand the
+    /// The last time this Mac, leading on a battery below its floor, asked to hand the
     /// lead over (`low_battery`).
     #[serde(skip_serializing_if = "is_zero")]
     pub battery_at: u64,
@@ -483,9 +483,9 @@ pub fn after(run: &mut Run, out: &Out, root: &Path, home: &Path, coord: Option<&
             || v.handing.is_some();
         if let Some(to) = low_battery(&v, &mut run.controls.kept, now, going) {
             let host = host_of(run, &to);
-            let pct = v.members.iter().find(|m| m.me).and_then(|m| m.conds).and_then(|c| c.battery);
-            let pct = pct.map_or("unknown".to_string(), |p| format!("{p} %"));
-            let why = format!("its battery at {pct}, below {} %", crate::agent::cond::BATTERY_MIN);
+            let me = v.members.iter().find(|m| m.me).and_then(|m| m.conds).unwrap_or_default();
+            let pct = me.battery.map_or("unknown".to_string(), |p| format!("{p} %"));
+            let why = format!("its battery at {pct}, below {} %", me.floor());
             run.controls.page.push(LeadRequest {
                 ask: LeadAsk::Give { to: to.clone() },
                 by: format!("the pool by itself ({why})"),
@@ -864,14 +864,14 @@ fn span(s: u64) -> String {
 pub const OWNER_STEPS: &str = "On the Mac named: check it is awake, on the network and its agent running; then allow Scenic in System Settings › Network › Firewall (Options…), or turn the firewall off. Until then the lead stays off it";
 
 /// The lead's battery low (docs/pool.md §6.4): this Mac leads on battery below
-/// `cond::BATTERY_MIN` (its heartbeat's conditions), nothing under way (`busy`: a handover, an
+/// its battery floor (its heartbeat's conditions, `Conds::low_battery`), nothing under way (`busy`: a handover, an
 /// ask), its last such ask `BATTERY_AGAIN_S` ago or more (`kept.battery_at`). To a member that
 /// can lead (`Member::can_lead`), in host order, round-robin: the one after the member last asked
 /// (`kept.battery_to`), so one that never answered isn't asked again while another could take it;
 /// none: nothing, and it keeps leading. The ask's time and target are kept.
 pub fn low_battery(v: &View, kept: &mut Kept, now: u64, busy: bool) -> Option<String> {
     let me = v.members.iter().find(|m| m.me)?.conds?;
-    let low = !me.ac && me.battery.is_some_and(|b| b < crate::agent::cond::BATTERY_MIN);
+    let low = me.low_battery();
     if !v.leading || !low || busy || now.saturating_sub(kept.battery_at) < BATTERY_AGAIN_S {
         return None;
     }
@@ -1098,7 +1098,8 @@ mod tests {
         }
     }
 
-    const HOME: Conds = Conds { home: true, ac: true, battery: Some(90), able: true, held: false, target_mb: 0 };
+    const HOME: Conds =
+        Conds { home: true, ac: true, battery: Some(90), able: true, held: false, target_mb: 0, battery_min: None };
 
     #[test]
     fn the_alert_counts_from_the_first_sight_of_no_lead_or_the_leads_last_beat() {
@@ -1195,11 +1196,14 @@ mod tests {
             ..Default::default()
         };
         let t0 = 1_000_000;
-        let low = Conds { ac: false, battery: Some(crate::agent::cond::BATTERY_MIN - 1), ..HOME };
+        let low = Conds { ac: false, battery: Some(crate::agent::cond::DEFAULT_BATTERY_MIN - 1), ..HOME };
+        // (The owner's floor, when set, in place of the default: 25 % is low under 30, not under 20.)
+        let set = |pct| Conds { ac: false, battery: Some(25), battery_min: Some(pct), ..HOME };
+        assert!(set(30).low_battery() && !set(20).low_battery() && !set(0).low_battery());
         // Home on power, on battery at or above the threshold, away from home with the NAS: nothing.
         for c in [
             HOME,
-            Conds { ac: false, battery: Some(crate::agent::cond::BATTERY_MIN), ..HOME },
+            Conds { ac: false, battery: Some(crate::agent::cond::DEFAULT_BATTERY_MIN), ..HOME },
             Conds { ac: false, battery: Some(54), ..HOME },
             Conds { home: false, ..HOME },
             Conds { home: false, ac: false, battery: Some(80), ..HOME },
@@ -1243,7 +1247,8 @@ mod tests {
             conds: Some(conds),
             ..Default::default()
         };
-        let home = Conds { home: true, ac: true, battery: None, able: true, held: false, target_mb: 0 };
+        let home =
+            Conds { home: true, ac: true, battery: None, able: true, held: false, target_mb: 0, battery_min: None };
         let batt = Conds { ac: false, battery: Some(80), ..home };
         let v = View {
             leading: true,
@@ -1307,7 +1312,8 @@ mod tests {
         use crate::pool::nas::Share;
         use std::sync::Arc;
 
-        const HOME: Conds = Conds { home: true, ac: true, battery: None, able: true, held: false, target_mb: 0 };
+        const HOME: Conds =
+            Conds { home: true, ac: true, battery: None, able: true, held: false, target_mb: 0, battery_min: None };
 
         pub(super) struct Mac {
             pub conds: Conds,
@@ -1640,7 +1646,15 @@ mod tests {
             let d = tempfile::tempdir().unwrap();
             let (mut a, mut b) = pool(d.path());
             let ib = b.id();
-            b.conds = Conds { home: false, ac: true, battery: None, able: false, held: false, target_mb: 0 };
+            b.conds = Conds {
+                home: false,
+                ac: true,
+                battery: None,
+                able: false,
+                held: false,
+                target_mb: 0,
+                battery_min: None,
+            };
             b.go();
             a.pass(31);
             a.go();
@@ -1658,7 +1672,15 @@ mod tests {
                 !o.events.iter().any(|e| matches!(e, Event::Handover { .. })) && a.run.side.driver().leads() == Some(1)
             );
             // On battery below the least a lead runs on, the same.
-            b.conds = Conds { home: true, ac: false, battery: Some(12), able: false, held: false, target_mb: 0 };
+            b.conds = Conds {
+                home: true,
+                ac: false,
+                battery: Some(12),
+                able: false,
+                held: false,
+                target_mb: 0,
+                battery_min: None,
+            };
             b.go();
             a.ask(LeadAsk::Give { to: ib.clone() });
             a.go();
@@ -1845,7 +1867,8 @@ mod tests {
                 assert_eq!(a.run.side.driver().leads(), Some(1), "{c:?}");
             }
             // Below it: handed to B by itself.
-            a.conds = Conds { ac: false, battery: Some(crate::agent::cond::BATTERY_MIN - 1), able: false, ..HOME };
+            a.conds =
+                Conds { ac: false, battery: Some(crate::agent::cond::DEFAULT_BATTERY_MIN - 1), able: false, ..HOME };
             pass_all(&mut [&mut a, &mut b], VIEW_S);
             until(&mut [&mut a, &mut b], |m| m[1].run.side.driver().leads() == Some(2));
             assert!(a.asked().by.starts_with("the pool by itself (its battery at 29 %"), "{:?}", a.asked());

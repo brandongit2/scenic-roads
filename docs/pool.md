@@ -172,7 +172,7 @@ ask their own Mac's agent (`lead-request.json`, `crate::control::LeadRequest`); 
 checks the ask as the driver would (`Driver::hand_to`, `Driver::takeover`) and either hands over (on
 the lead) or mails it to the lead (`Msg::HandTo`, §9). Asks naming a Mac that isn't a live member,
 is on too old an app, is unreachable (§6.8), or whose conditions say it can't lead (away, on
-battery under 30 %, short of disk: `Conds::able`) are refused with why. An ask's state is kept in
+battery under the battery floor, short of disk: `Conds::able`) are refused with why. An ask's state is kept in
 `agent/pool/lead.json` and shown by every control.
 
 ### 6.4 Handing over (the lead is there): a state machine
@@ -196,9 +196,11 @@ handover (to be asked again).
 **Who leads is the owner's call.** The app isn't smart about who leads: no capacity score, no
 offer of its own. The owner hands the lead over by hand (§6.3) when about to leave. The lead moves
 by itself only on these four triggers, each to a member that can lead (home, on power or charged
-past `cond::BATTERY_MIN`, not paused, room past its disk target, an app the rule allows, reachable):
+past the battery floor, not paused, room past its disk target, an app the rule allows, reachable):
 
-1. **Its battery below `cond::BATTERY_MIN`** (30 %): the lead, on battery under it by its own
+1. **Its battery below the battery floor** (`cond::battery_min`: the owner's, pool-wide, `scenic
+   battery-floor`, docs/workers.md §7; 30 % while none is set; the floor its heartbeat says it
+   went by, `Conds::battery_min`): the lead, on battery under it by its own
    heartbeat's conditions, asks to hand over to the first member that can lead, by host
    (`agent::lead::low_battery`), through the stages above; asked again every `BATTERY_AGAIN_S`
    (5 min) while it still leads so. None can: it keeps leading. On battery at or above it, or away
@@ -1121,7 +1123,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   #609): the cores it may use now (`build_cores_max`: all, less those kept for the owner while
   they use the Mac), the memory its jobs may hold together (`build_mem_max_gb`), the owner's room
   target (`disk_room_gb`) and the jobs' disk reservations (`disk_reserved_gb`). An answer's `mac`
-  also says the lead's battery floor (`battery_min`) and the idleness counted away (`away_s`). The NAS's latency (`nas_ms`) every 5 s
+  also says the battery floor the agent last went by (`battery_min`, the owner's setting) and the idleness counted away (`away_s`). The NAS's latency (`nas_ms`) every 5 s
   only while a build runs here (a job of this Mac's, or its coordinator's leases out): a listing
   of the project's folder on the records' readers, timed inside the reader (`nasread::probe`; a
   stat would come from macOS's SMB attribute cache; never two at once, one past 20 s dropped);

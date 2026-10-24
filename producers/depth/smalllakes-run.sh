@@ -16,7 +16,8 @@
 #   smalllakes-grids.geojson, copied beside the grids.
 # - Memory: ~0.7 GB a worker (measured on a Massachusetts box) and the server's, under ~4 GB for 3–4.
 # - caffeinate holds the Mac awake while it runs; a box starts only on mains power or with the
-#   battery at 30 % or more (the agent's BATTERY_MIN), else it waits.
+#   battery at the pool's battery floor or more (`scenic battery-floor`, kept on the NAS; 30 % while
+#   none is set: the agent's DEFAULT_BATTERY_MIN), else it waits.
 set -euo pipefail
 WORKERS=${1:-3}
 (( WORKERS >= 1 && WORKERS <= 4 )) || { echo "workers: 1–4" >&2; exit 2; }
@@ -64,18 +65,25 @@ for l in open(sys.argv[1]):
 ' $WORK/z6.txt) > $WORK/boxes.txt
 echo "$(wc -l < $WORK/boxes.txt | tr -d ' ') boxes, $WORKERS workers"
 
+# The pool's battery floor (%), read again each wait so a change holds.
+floor() {
+  local f
+  f=$(sed -n 's/.*"pct":\([0-9]*\).*/\1/p' $NASROOT/state/pool/battery-floor.json 2>/dev/null)
+  echo ${f:-30}
+}
+
 power_ok() {
   local b
   b=$(pmset -g batt)
   [[ $b == *"AC Power"* ]] && return 0
   local pct=${${b#*$'\t'}%%%*}
-  (( pct >= 30 ))
+  (( pct >= $(floor) ))
 }
 
 one_box() {
   local id=$1 box=$2
   [[ -e $WORK/index/$id.ok ]] && return 0
-  until power_ok; do echo "$id: battery under 30 %, waiting"; sleep 300; done
+  until power_ok; do echo "$id: battery under $(floor) %, waiting"; sleep 300; done
   (cd $REPO/producers/depth && uv run --project .. python smalllakes.py \
     --hydrolakes $WORK/HydroLAKES_polys_v10_shp.zip --server http://127.0.0.1:$PORT \
     --box=$box --out $WORK/grids --index $WORK/index/$id.geojson) >> $WORK/logs/$id.log 2>&1 \

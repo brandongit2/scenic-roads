@@ -262,22 +262,22 @@ boxes).
   macOS's level, 50 % and 80 % dashed; the memory compressed said; what the memory guard last did,
   its status's `memory.last`, marked and said while in the range), the swap (GB), the disk's free space (against the room
   target; the disk's size and the jobs' reservations said), its writes, the battery (shaded while on mains, against
-  the lead's floor on battery), the NAS's answer time with the calls in flight and missed, the
+  the battery floor, the owner's pool-wide setting), the NAS's answer time with the calls in flight and missed, the
   heat (macOS's thermal state, nominal to critical), and
   whether the owner is using the Mac (shaded while so; how long since a touch). What the agent's
   loop reads (power, idleness, the limits) is said while under 15 min old. Each chart (chart.js):
   at most five times under it, its scale's numbers with the unit once beside them (words for the
   heat and the owner's use), each limit a boxed tag on its dashed line. Of the mockup, not drawn:
   setting a limit from its tag (task #612); a settable limit's tag (✎: the cores, the build's
-  memory, the room target) scrolls to its Settings row and focuses its field. Gaps where the Mac was silent shaded faintly, and a footer with the range, the resolution and how long
+  memory, the room target, the battery floor) scrolls to its Settings row and focuses its field. Gaps where the Mac was silent shaded faintly, and a footer with the range, the resolution and how long
   it was silent. What the lead offered a member is one line (its steps and the pieces it can
   take), the steps on a click. Pages one card.
 - **The pool:** `pool.js`, under the machines (the Machines tab).
 - **Settings:** `settings.js`, under the pool (the Machines tab): a row per setting (its name, its
   value, who set it and when, a field with Set and Off) for the in-use share, build memory and disk
   room target, a block per Mac named by its host (this page's own first; each other Mac's asked at
-  its broker's address, as live.js asks `/work/live`), and the pool's NAS reserve once, through the
-  first Mac that reaches the NAS (`/work/settings`, workers.md §7); read every 30 s while the
+  its broker's address, as live.js asks `/work/live`), and the pool's NAS reserve and battery floor once,
+  through the first Mac that reaches the NAS (`/work/settings`, workers.md §7); read every 30 s while the
   Machines tab is shown, and after each Set or Off. Every control on the page (Pause, Freeze,
   Resume, the lead's, Accept, Cancel, Try again, the settings) works from any device.
 - **NAS tab:** `nas.js`, as the owner's mockup's NAS part lays it out (docs/mockups/build-live.html),

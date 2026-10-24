@@ -1,17 +1,65 @@
 //! A Mac's conditions (docs/building.md §2, Interruptions): the NAS (and whether it answers by its LAN
 //! name: at home), the user at the keyboard, sleep; and its power, which no job waits on, for the
-//! status and for whether it may lead (crate::agent::lead: a lead below `BATTERY_MIN` hands over).
+//! status and for whether it may lead (crate::agent::lead: a lead below the battery floor,
+//! `battery_min`, hands over).
 
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::time::{Instant, SystemTime};
 
 /// Seconds without keyboard or mouse input after which the user counts as away.
 pub const AWAY_S: u64 = 300;
 
-/// On battery, a Mac below this charge (%) isn't able to lead (crate::agent::pool's `able`: a
-/// handover to it, a takeover by itself), and a lead below it hands the lead over by itself
-/// (crate::agent::lead's `low_battery`). No job waits on the charge.
-pub const BATTERY_MIN: u8 = 30;
+/// The battery floor while the owner sets none (%; `battery_min`).
+pub const DEFAULT_BATTERY_MIN: u8 = 30;
+
+/// The owner's battery floor, pool-wide (`scenic battery-floor`, docs/workers.md §7): on battery, a
+/// Mac below this charge (%) isn't able to lead (crate::agent::pool's `able`: a handover to it, a
+/// takeover by itself), and a lead below it hands the lead over by itself (crate::agent::lead's
+/// `low_battery`). No job waits on the charge. One file on the NAS, written by whichever Mac sets
+/// it; none: `DEFAULT_BATTERY_MIN`.
+pub const BATTERY_FLOOR: &str = "state/pool/battery-floor.json";
+
+/// The battery floor as set, who set it and when (unix s).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatteryFloor {
+    pub pct: u8,
+    pub by: String,
+    pub at: u64,
+}
+
+/// The battery floor as set under the project folder `root`, when one is (one that doesn't parse,
+/// or past 100, is none).
+pub fn battery_floor(root: &Path) -> Option<BatteryFloor> {
+    std::fs::read(root.join(BATTERY_FLOOR))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<BatteryFloor>(&b).ok())
+        .filter(|f| f.pct <= 100)
+}
+
+/// The battery floor in force (%): the owner's under `root`, else (none set, or the NAS away)
+/// `DEFAULT_BATTERY_MIN`.
+pub fn battery_min(root: Option<&Path>) -> u8 {
+    root.and_then(battery_floor).map_or(DEFAULT_BATTERY_MIN, |f| f.pct)
+}
+
+/// Sets the battery floor under `root` to `pct` (0 to 100), or clears it (None: the default).
+pub fn set_battery_floor(root: &Path, pct: Option<u8>, by: &str) -> anyhow::Result<Option<BatteryFloor>> {
+    let p = root.join(BATTERY_FLOOR);
+    let Some(pct) = pct else {
+        match std::fs::remove_file(&p) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => return Ok(None),
+        }
+    };
+    anyhow::ensure!(pct <= 100, "the battery floor: 0 to 100 %, not {pct}");
+    if let Some(d) = p.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let f = BatteryFloor { pct, by: by.to_string(), at: super::jobs::now_s() };
+    crate::whole::write(&p, &serde_json::to_vec(&f)?)?;
+    Ok(Some(f))
+}
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Conditions {

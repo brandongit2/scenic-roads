@@ -175,6 +175,15 @@ pub enum Cmd {
         #[command(flatten)]
         root: Root,
     },
+    /// The battery floor: on battery, a Mac below it can't lead and a lead below it hands the lead
+    /// over (by default 30), pool-wide, kept on the NAS; off: the default; with none, how it stands
+    BatteryFloor {
+        /// The floor in percent (0 to 100), or off
+        #[arg(value_name = "PERCENT|off")]
+        what: Option<String>,
+        #[command(flatten)]
+        root: Root,
+    },
     /// Remove replaced files from the NAS (the agent runs it daily)
     Gc {
         /// Says what it would remove

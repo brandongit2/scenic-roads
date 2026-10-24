@@ -156,15 +156,23 @@ Common rules:
 - **The settings** (task #521; `web/work/settings.js`, the Machines tab; `crate::agent::settings`):
   each Mac's in-use share (cores kept free while it's used), build memory (GB for the
   build's jobs together) and disk room target (GB kept free), and the pool's NAS reserve (GB kept
-  free on the NAS; not shown while no Mac on the page reaches the NAS). Each Mac's `POST /work/settings`
+  free on the NAS) and battery floor (%: on battery, a Mac below it can't lead, and a lead below it
+  hands over; docs/pool.md §6.4), both not shown while no Mac on the page reaches the NAS). Each Mac's `POST /work/settings`
   (its coordinator, broker or viewer; a member's page reaches the others' through CORS) with `{}` reads them; with
-  `in_use` (cores), `memory`, `room` or `nas_room` (GB), each a number or `"off"`, sets them through
-  the same functions as `scenic in-use`, `scenic memory`, `scenic room` and `scenic nas-room`
+  `in_use` (cores), `memory`, `room` or `nas_room` (GB), or `battery_floor` (%, 0 to 100), each a
+  number or `"off"`, sets them through the same functions as `scenic in-use`, `scenic memory`,
+  `scenic room`, `scenic nas-room` and `scenic battery-floor`
   (the same checks and files; `by` "the build page (<device>)"), and answers with them as they
   stand (`mac`: its host). One ask carrying several is set in order, so a bad one after a good one
   leaves the good one set; the page sends one at a time. A bad value is refused (400) with the check's words. They change only when a person
-  presses Set or Off. The menu bar's settings are unchanged. There's no battery floor to set: the
-  lead's battery floor is fixed (`cond::BATTERY_MIN`). Each slot (a Web Worker per core, less one) runs a
+  presses Set or Off. The menu bar's settings are unchanged. **The battery floor**
+  (`cond::BATTERY_FLOOR`, `cond::battery_min`) is one pool-wide value on the NAS
+  (`state/pool/battery-floor.json`, `{"pct", "by", "at"}`), set by `scenic battery-floor [<percent> |
+  off]` on any Mac or the page (off: the file removed, the default, 30 %, `DEFAULT_BATTERY_MIN`;
+  with none, how it stands); each agent reads it every pool step (the NAS away: the default), says
+  it in its heartbeat's conditions (`Conds::battery_min`, so a member's why-not and the lead's
+  handover use the floor that Mac went by) and in `/work/live`'s `mac.battery_min`, the battery
+  chart's line, whose tag (✎) scrolls to its row. Each slot (a Web Worker per core, less one) runs a
   task's programs over an in-memory filesystem (`web/work/runtime.js`, over browser_wasi_shim).
 - **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`, `settings.js`, `sums.js`, `live.js`, `nas.js`, `activity.js`, `chart.js`, `chartmath.js`, `worldmap.js`; docs/pipeline.md §5): a
   sticky header (the verdict: going, done when, what needs a look; Pause, Freeze, Resume; the
