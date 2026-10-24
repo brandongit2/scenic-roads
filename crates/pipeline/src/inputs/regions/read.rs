@@ -246,15 +246,18 @@ fn read_all(root: &Path, names: &[String]) -> Result<Vec<Vec<u8>>> {
 
 /// The coverage of stored geometry, regions in the order given (id order), each region's shapes in
 /// stored order, as `Coverage::from_recipes` made them: "<id>: <from>", the tolerance as the
-/// buffer, the country.
+/// buffer, the country. A region's water is marked (`Shape::water`: held, no target but the depth's);
+/// a region of water alone (no land: a sea zone, the high seas) is the depth's alone (`depth_only`).
 pub fn coverage_of(geoms: &[Geometry]) -> Coverage {
     let mut shapes = Vec::new();
     let mut depth_only = Vec::new();
     for g in geoms {
+        let to = if g.shapes.iter().all(|s| s.water) { &mut depth_only } else { &mut shapes };
         for s in &g.shapes {
             let mut sh = Shape::new(format!("{}: {}", g.id, s.from), s.rings.clone(), s.tolerance_m as f64);
             sh.country = s.country.clone();
-            if s.water { &mut depth_only } else { &mut shapes }.push(sh);
+            sh.water = s.water;
+            to.push(sh);
         }
     }
     Coverage { shapes, depth_only }

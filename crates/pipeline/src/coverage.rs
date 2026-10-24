@@ -40,6 +40,10 @@ pub struct Shape {
     /// The ISO 3166-1 code of the country or territory it's of ("" when unknown: an outline that
     /// isn't the pass's), as `Outlines::country_code` has it: what the 3D buildings' fill fits by.
     pub country: String,
+    /// The water of a region of land and water (#468): held like any shape (`contains`, `touches`,
+    /// `shape_at`, `fingerprint`: a bridge, a pier, a ferry's ways at sea stay the region's), but
+    /// no target (`Coverage::meets_rect`, `meets_box`): only the depth's (`meets_rect_depth`).
+    pub water: bool,
     grid: std::sync::Arc<Grid>,
     /// What's been worked out of it (`Memo`), shared by its clones (a region's coverage holds the
     /// whole coverage's shapes): its geometry is fixed once made.
@@ -169,6 +173,7 @@ impl Shape {
             buffer_m,
             bbox,
             country: String::new(),
+            water: false,
             grid: std::sync::Arc::new(grid),
             memo: Default::default(),
         }
@@ -498,6 +503,7 @@ impl Grid {
 /// The coverage: every region's outlines.
 #[derive(Clone, Default)]
 pub struct Coverage {
+    /// Every region's shapes, the water of regions of land and water among them (`Shape::water`).
     pub shapes: Vec<Shape>,
     /// The regions with no land (sea zones, the high seas: docs/inputs.md §6.1.3): only the depth's
     /// targets read them (`meets_rect_depth`); every other step's coverage is `shapes` alone.
@@ -558,9 +564,10 @@ pub fn fixture_circle(lon: f64, lat: f64, km: f64) -> Vec<[i32; 2]> {
 /// `Coverage::accepted` keeps the coverage it reads.
 pub const CACHE_ENV: &str = "SCENIC_CACHE";
 
-const KEPT_MAGIC: &[u8; 8] = b"RDCOV003";
+const KEPT_MAGIC: &[u8; 8] = b"RDCOV004";
 
-/// The coverage's shapes as kept (`Coverage::accepted`): their source, country, buffer and rings.
+/// The coverage's shapes as kept (`Coverage::accepted`): their source, country, buffer, whether
+/// water, and rings.
 pub(crate) fn kept_bytes(c: &Coverage) -> Vec<u8> {
     let mut b = KEPT_MAGIC.to_vec();
     let s = |b: &mut Vec<u8>, t: &str| {
@@ -573,6 +580,7 @@ pub(crate) fn kept_bytes(c: &Coverage) -> Vec<u8> {
             s(&mut b, &sh.source);
             s(&mut b, &sh.country);
             b.extend_from_slice(&sh.buffer_m.to_le_bytes());
+            b.push(sh.water as u8);
             b.extend_from_slice(&(sh.rings.len() as u64).to_le_bytes());
             for r in sh.rings.iter() {
                 b.extend_from_slice(&(r.len() as u64).to_le_bytes());
@@ -614,6 +622,7 @@ pub(crate) fn from_kept(b: &[u8]) -> Option<Coverage> {
             let source = r.text()?;
             let country = r.text()?;
             let buffer_m = f64::from_le_bytes(r.take(8)?.try_into().ok()?);
+            let water = r.take(1)?[0] != 0;
             let mut rings = Vec::new();
             for _ in 0..r.n()? {
                 let n = r.n()?;
@@ -621,6 +630,7 @@ pub(crate) fn from_kept(b: &[u8]) -> Option<Coverage> {
             }
             let mut sh = Shape::new(source, rings, buffer_m);
             sh.country = country;
+            sh.water = water;
             shapes.push(sh);
         }
     }
@@ -711,24 +721,34 @@ impl Coverage {
     /// the order) and its country, where `fingerprint` (sorted, by geometry alone) misses a change
     /// of order. The 3D buildings' tiles are keyed by it (docs/buildings3d.md §3.2).
     pub fn shapes_key(&self, b: [i32; 4]) -> String {
-        let v: Vec<String> =
-            self.shapes.iter().filter_map(|s| s.fingerprint(b).map(|f| format!("{f}:{}", s.country))).collect();
+        let v: Vec<String> = self
+            .shapes
+            .iter()
+            .filter_map(|s| s.fingerprint(b).map(|f| format!("{}{f}:{}", if s.water { "w" } else { "" }, s.country)))
+            .collect();
         v.join(",")
     }
 
-    /// Whether any shape's (buffered) box meets the box w, s, e, n (E7): a quick filter.
+    /// Whether any shape's (buffered) box meets the box w, s, e, n (E7): a quick filter. (Its
+    /// water aside, as `meets_rect`.)
     pub fn meets_box(&self, b: [i32; 4]) -> bool {
-        self.shapes.iter().any(|s| s.bbox[0] <= b[2] && s.bbox[2] >= b[0] && s.bbox[1] <= b[3] && s.bbox[3] >= b[1])
+        self.shapes
+            .iter()
+            .filter(|s| !s.water)
+            .any(|s| s.bbox[0] <= b[2] && s.bbox[2] >= b[0] && s.bbox[1] <= b[3] && s.bbox[3] >= b[1])
     }
 
-    /// Whether the box w, s, e, n (E7) meets the coverage itself (`Shape::meets_rect`).
+    /// Whether the box w, s, e, n (E7) meets the coverage itself (`Shape::meets_rect`): its land,
+    /// the regions' water aside (`Shape::water`), so a tile only water meets is no step's target
+    /// but the depth's.
     pub fn meets_rect(&self, b: [i32; 4]) -> bool {
-        self.shapes.iter().any(|s| s.meets_rect(b))
+        self.shapes.iter().filter(|s| !s.water).any(|s| s.meets_rect(b))
     }
 
-    /// `meets_rect` with the regions with no land too: the depth's targets.
+    /// `meets_rect` with the water too, the regions' and the regions with no land: the depth's
+    /// targets.
     pub fn meets_rect_depth(&self, b: [i32; 4]) -> bool {
-        self.meets_rect(b) || self.depth_only.iter().any(|s| s.meets_rect(b))
+        self.shapes.iter().chain(&self.depth_only).any(|s| s.meets_rect(b))
     }
 
     /// The coverage as it is inside the box w, s, e, n (E7): its shapes' fingerprints there
@@ -736,7 +756,12 @@ impl Coverage {
     /// Equal fingerprints mean the same points of the box are covered, so a job keyed on the box it
     /// reads reruns only when the coverage changes there.
     pub fn fingerprint(&self, b: [i32; 4]) -> String {
-        let mut v: Vec<String> = self.shapes.iter().filter_map(|s| s.fingerprint(b)).collect();
+        // (A region's water marked: which of the covered points are targets is the key's too.)
+        let mut v: Vec<String> = self
+            .shapes
+            .iter()
+            .filter_map(|s| s.fingerprint(b).map(|f| if s.water { format!("w{f}") } else { f }))
+            .collect();
         v.sort();
         v.dedup();
         v.join(",")
@@ -1185,5 +1210,25 @@ mod tests {
             c3.shapes_key(near)
         });
         assert_eq!(c.shapes_key(b(3.0, 50.4, 3.2, 50.6)), "");
+    }
+
+    /// A region's water (#468): held (`contains`, `touches`, the fingerprint), no target
+    /// (`meets_rect`, `meets_box`) but the depth's; kept with its mark.
+    #[test]
+    fn a_regions_water_is_held_but_no_target() {
+        let sq = |x0: f64, x1: f64| vec![vec![e7(x0, 50.0), e7(x1, 50.0), e7(x1, 51.0), e7(x0, 51.0)]];
+        let land = Shape::new("r: x".into(), sq(0.0, 1.0), 0.0);
+        let mut sea = Shape::new("r: x (water)".into(), sq(1.0, 2.0), 0.0);
+        sea.water = true;
+        let c = Coverage { shapes: vec![land.clone(), sea], depth_only: Vec::new() };
+        let r = |x: f64| [e7(x, 50.5)[0], e7(x, 50.5)[1], e7(x + 0.1, 50.5)[0], e7(x, 50.6)[1]];
+        assert!(c.meets_rect(r(0.4)) && c.meets_rect_depth(r(0.4)));
+        assert!(!c.meets_rect(r(1.4)) && c.meets_rect_depth(r(1.4)) && c.contains(e7(1.5, 50.5)));
+        assert!(!c.meets_box(r(1.4)) && c.touches(&[e7(1.5, 50.5)]));
+        let alone = Coverage { shapes: vec![land], depth_only: Vec::new() };
+        assert_ne!(c.fingerprint(r(1.4)), alone.fingerprint(r(1.4)));
+        let back = from_kept(&kept_bytes(&c)).unwrap();
+        assert_eq!(back.shapes.iter().map(|s| s.water).collect::<Vec<_>>(), vec![false, true]);
+        assert!(!back.meets_rect(r(1.4)) && back.meets_rect_depth(r(1.4)));
     }
 }

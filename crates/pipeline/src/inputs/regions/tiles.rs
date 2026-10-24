@@ -931,7 +931,6 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
             out.resolved.remove(id);
             continue;
         }
-        let land_empty = land_empty.get(id).copied().unwrap_or(false) && r.has_water();
         if let Some(res) = out.resolved.get_mut(id) {
             if let Some(c) = countries.get(id).filter(|c| !c.is_empty()) {
                 res.geometry.shapes = vec![Shape {
@@ -942,13 +941,13 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
                     water: false,
                 }];
             }
-            store(r, res, t, (!land_empty).then_some(data));
+            store(r, res, t, data);
         }
     }
     if let Some(id) = rest_id {
         let (p, r) = &folder.regions[&id];
         match out.resolved.get_mut(&id) {
-            Some(res) if !rest.is_empty() => store(r, res, &rest, None),
+            Some(res) if !rest.is_empty() => store(r, res, &rest, data),
             _ => {
                 out.problems.push(problem(
                     "rg-empty",
@@ -1623,10 +1622,11 @@ pub(super) fn dissolved(t: &TArea) -> Area {
     geom::union_all(&t.cells.values().cloned().collect::<Vec<_>>())
 }
 
-/// A region's stored geometry and drawing: its cells' rings, its `from` its parts; one shape of
-/// land (the coastline's, less the big lakes) and one of water when `split_by` has the coastline,
-/// else one shape of water (a region with no land). Drawn as one.
-fn store(r: &Region, res: &mut Resolved, t: &TArea, split_by: Option<&super::data::Datasets>) {
+/// A region's stored geometry and drawing: its cells' rings, its `from` its parts; a shape of its
+/// land (the coastline's, less the lakes over 100 km²) and one of its water, worked out cell by cell
+/// from what it ends with (hand-outs, slivers and fills included: a region whose own parts had no
+/// land may be given some), either left out when empty. Drawn as one.
+fn store(r: &Region, res: &mut Resolved, t: &TArea, data: &super::data::Datasets) {
     let mut from = r.outline_text().join(", ");
     if !r.intersect.is_empty() {
         from += &format!(" ∩ {}", r.intersect.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "));
@@ -1636,8 +1636,7 @@ fn store(r: &Region, res: &mut Resolved, t: &TArea, split_by: Option<&super::dat
     }
     let country = res.geometry.shapes.first().map(|s| s.country.clone()).unwrap_or_default();
     let rings32 = |t: &TArea| -> Vec<Vec<[i32; 2]>> { t.rings().iter().map(|r| super::shapes::to_i32(r)).collect() };
-    let all = rings32(t);
-    let tol = crate::coverage::draw_tolerance_m(&all);
+    let tol = crate::coverage::draw_tolerance_m(&rings32(t));
     let polys: Vec<Vec<Vec<[f64; 2]>>> = dissolved(t)
         .polys
         .iter()
@@ -1648,25 +1647,20 @@ fn store(r: &Region, res: &mut Resolved, t: &TArea, split_by: Option<&super::dat
         })
         .collect();
     let shape = |from: String, rings, water| Shape { from, country: country.clone(), tolerance_m: 0, rings, water };
-    res.geometry.shapes = match split_by {
-        None => vec![shape(from.clone(), all, true)],
-        Some(data) => {
-            let cells: Vec<(Cell, Area)> = t.cells.iter().map(|(c, a)| (*c, a.clone())).collect();
-            let (mut land, mut water) = (TArea::default(), TArea::default());
-            for (c, a, l) in pace::par_map(cells, |(c, a)| {
-                let l = a.intersect(&land_and_lakes(data, c).0);
-                (c, a, l)
-            }) {
-                water.set(c, a.minus(&l));
-                land.set(c, l);
-            }
-            [(from.clone(), land, false), (format!("{from} (water)"), water, true)]
-                .into_iter()
-                .filter(|(_, t, _)| !t.is_empty())
-                .map(|(f, t, w)| shape(f, rings32(&t), w))
-                .collect()
-        }
-    };
+    let cells: Vec<(Cell, Area)> = t.cells.iter().map(|(c, a)| (*c, a.clone())).collect();
+    let (mut land, mut water) = (TArea::default(), TArea::default());
+    for (c, a, l) in pace::par_map(cells, |(c, a)| {
+        let l = a.intersect(&land_and_lakes(data, c).0);
+        (c, a, l)
+    }) {
+        water.set(c, a.minus(&l));
+        land.set(c, l);
+    }
+    res.geometry.shapes = [(from.clone(), land, false), (format!("{from} (water)"), water, true)]
+        .into_iter()
+        .filter(|(_, t, _)| !t.is_empty())
+        .map(|(f, t, w)| shape(f, rings32(&t), w))
+        .collect();
     res.drawn.shapes = BTreeMap::from([(from, polys)]);
     res.lakes = Area::default();
 }

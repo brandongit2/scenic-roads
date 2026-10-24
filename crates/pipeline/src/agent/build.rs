@@ -7832,7 +7832,7 @@ pub(crate) mod tests {
                     .all(|y| !c.meets_rect(crate::hipack::grow(crate::hipack::tile_bounds(6, x, y), 20.0))))
         );
         assert!(bld_tiles(&c).is_empty());
-        // Through the stored geometry: a region's water goes to `depth_only`.
+        // Through the stored geometry: a region of water alone goes to `depth_only`.
         let g = crate::inputs::regions::stored::Geometry {
             id: "zone".into(),
             osm: "2026-09-28".into(),
