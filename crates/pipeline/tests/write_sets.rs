@@ -49,7 +49,7 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/agent/mod.rs", "region_jobs", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the plan"),
     ("crates/pipeline/src/agent/mod.rs", "checklist", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the status's checklist"),
     ("crates/pipeline/examples/checklist.rs", "main", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the checklist worked out by hand, read only"),
-    ("crates/pipeline/src/agent/mod.rs", "region_progress", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the status's progress"),
+    ("crates/pipeline/src/agent/mod.rs", "as_built_parts", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the status's progress and the regions' steps"),
     ("crates/pipeline/src/agent/mod.rs", "as_read", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the plan's keys"),
     ("crates/pipeline/src/agent/mod.rs", "tend_gate", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the gate's plan"),
     ("crates/pipeline/src/agent/pool.rs", "regions_app", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the app the newer readers' switch (the regions', the elevation datasets') was recorded on, for the pool's views and handovers"),
