@@ -9,10 +9,10 @@ and other regions combined, each pinned to an OSM snapshot, checked by the input
 build uses them. A region may also have water (sea zones from Marine Regions' EEZ v12, lakes, the
 high seas as the rest: docs/inputs.md §6.1.3). Overlaps are harmless to the build; nothing checks for
 gaps unless `inputs/regions/_rules.toml` says the regions cover the Earth once (`cover = "earth"`),
-when the check fills and checks them. A region with no land (a sea zone, the high seas) is coverage
-for the depth alone (`Coverage::depth_only`, its stored geometry's `water_only`): no z6 tile, map tile,
-terrain, slope, tree cover or buildings' tile is built for it. A region of land and water is coverage
-like any other, its water included.
+when the check fills and checks them. A region's water (a sea zone, the high seas, the water of a
+region of land and water) is coverage for the depth alone (`Coverage::depth_only`, its stored
+shapes marked `water`): no z6 tile, map tile, terrain, slope, tree cover or buildings' tile is built
+for it. A region of land and water is coverage like any other for its land.
 
 A region marked `disabled = true` (docs/inputs.md §6.1.3) is checked and stored, and other regions
 may name it, but it is not part of the coverage. That way a list can cover the Earth, as the cover

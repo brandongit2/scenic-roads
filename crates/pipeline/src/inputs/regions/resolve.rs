@@ -839,17 +839,10 @@ pub(super) fn resolve_one(
                 }
             };
             drawn.insert(key.clone(), degrees(&polys));
-            shapes.push(Shape { from: key, country: country.clone(), tolerance_m: tol, rings: rings32 });
+            shapes.push(Shape { from: key, country: country.clone(), tolerance_m: tol, rings: rings32, water: false });
         }
         return Ok(Resolved {
-            geometry: Geometry {
-                id: r.id.clone(),
-                osm: pass.to_string(),
-                shapes,
-                relations: names.0,
-                ways: names.1,
-                water_only: false,
-            },
+            geometry: Geometry { id: r.id.clone(), osm: pass.to_string(), shapes, relations: names.0, ways: names.1 },
             drawn: Drawn { fmt: 1, id: r.id.clone(), name: r.name.clone(), outline: r.outline_text(), shapes: drawn },
             lakes: Area::default(),
         });
@@ -953,17 +946,10 @@ pub(super) fn resolve_one(
             .map(|p| p.iter().map(|r| crate::outlines::simplify(&super::shapes::to_i32(r), t)).collect())
             .collect();
         drawn.insert(f.clone(), degrees(&polys));
-        shapes.push(Shape { from: f, country: country.clone(), tolerance_m: 0, rings: rings32 });
+        shapes.push(Shape { from: f, country: country.clone(), tolerance_m: 0, rings: rings32, water: false });
     }
     Ok(Resolved {
-        geometry: Geometry {
-            id: r.id.clone(),
-            osm: pass.to_string(),
-            shapes,
-            relations: names.0,
-            ways: names.1,
-            water_only: false,
-        },
+        geometry: Geometry { id: r.id.clone(), osm: pass.to_string(), shapes, relations: names.0, ways: names.1 },
         drawn: Drawn { fmt: 1, id: r.id.clone(), name: r.name.clone(), outline: r.outline_text(), shapes: drawn },
         lakes: geom::union_all(&lakes_plain),
     })

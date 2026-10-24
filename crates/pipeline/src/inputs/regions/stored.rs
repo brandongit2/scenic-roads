@@ -21,6 +21,9 @@ pub struct Shape {
     pub tolerance_m: u32,
     /// E7, unclosed, even–odd.
     pub rings: Vec<Vec<[i32; 2]>>,
+    /// Water of a region with `water` (docs/inputs.md §6.1.3): the coverage keeps it for the
+    /// depth's targets alone (`Coverage::depth_only`).
+    pub water: bool,
 }
 
 /// A region's stored geometry.
@@ -33,9 +36,6 @@ pub struct Geometry {
     /// The relations and ways it names (sorted).
     pub relations: Vec<u64>,
     pub ways: Vec<u64>,
-    /// A region with water and no land (docs/inputs.md §6.1.3): the coverage keeps it for the
-    /// depth's targets alone (`Coverage::depth_only`).
-    pub water_only: bool,
 }
 
 fn no(b: &bool) -> bool {
@@ -51,7 +51,8 @@ struct Head {
     #[serde(rename = "box")]
     bbox: [i32; 4],
     names: Names,
-    #[serde(default, skip_serializing_if = "no")]
+    /// (Files from before #468: every shape water. Read, never written.)
+    #[serde(default, skip_serializing)]
     water_only: bool,
 }
 
@@ -62,6 +63,8 @@ struct ShapeHead {
     tolerance_m: u32,
     rings: u64,
     points: u64,
+    #[serde(default, skip_serializing_if = "no")]
+    water: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -111,11 +114,12 @@ impl Geometry {
                     tolerance_m: s.tolerance_m,
                     rings: s.rings.len() as u64,
                     points: s.rings.iter().map(|r| r.len() as u64).sum(),
+                    water: s.water,
                 })
                 .collect(),
             bbox: self.bbox(),
             names: Names { osm: self.relations.clone(), ways: self.ways.clone() },
-            water_only: self.water_only,
+            water_only: false,
         };
         let h = serde_json::to_vec(&head).expect("a head serialises");
         let mut out = MAGIC.to_vec();
@@ -172,17 +176,11 @@ impl Geometry {
                 }
                 rings.push(r);
             }
-            shapes.push(Shape { from: sh.from, country: sh.country, tolerance_m: sh.tolerance_m, rings });
+            let water = sh.water || head.water_only;
+            shapes.push(Shape { from: sh.from, country: sh.country, tolerance_m: sh.tolerance_m, rings, water });
         }
         ensure!(at == b.len(), "bytes after the rings");
-        Ok(Geometry {
-            id: head.id,
-            osm: head.osm,
-            shapes,
-            relations: head.names.osm,
-            ways: head.names.ways,
-            water_only: head.water_only,
-        })
+        Ok(Geometry { id: head.id, osm: head.osm, shapes, relations: head.names.osm, ways: head.names.ways })
     }
 }
 
@@ -230,17 +228,18 @@ mod tests {
                         [-311_000_000, 378_000_000],
                         [-310_000_000, 379_000_000],
                     ]],
+                    water: false,
                 },
                 Shape {
                     from: "shape:x.geojson".into(),
                     country: String::new(),
                     tolerance_m: 0,
                     rings: vec![vec![[1_799_999_999, -1], [-1_800_000_000, 0], [0, 900_000_000]], vec![]],
+                    water: true,
                 },
             ],
             relations: vec![1629146],
             ways: vec![],
-            water_only: false,
         };
         let b = g.encode();
         assert_eq!(Geometry::decode(&b).unwrap(), g);

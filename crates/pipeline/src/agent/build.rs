@@ -7832,7 +7832,7 @@ pub(crate) mod tests {
                     .all(|y| !c.meets_rect(crate::hipack::grow(crate::hipack::tile_bounds(6, x, y), 20.0))))
         );
         assert!(bld_tiles(&c).is_empty());
-        // Through the stored geometry: a region with water and no land goes to `depth_only`.
+        // Through the stored geometry: a region's water goes to `depth_only`.
         let g = crate::inputs::regions::stored::Geometry {
             id: "zone".into(),
             osm: "2026-09-28".into(),
@@ -7841,10 +7841,10 @@ pub(crate) mod tests {
                 country: String::new(),
                 tolerance_m: 0,
                 rings: vec![ring],
+                water: true,
             }],
             relations: vec![],
             ways: vec![],
-            water_only: true,
         };
         let back = crate::inputs::regions::stored::Geometry::decode(&g.encode()).unwrap();
         let cov = crate::inputs::regions::read::coverage_of(&[back]);

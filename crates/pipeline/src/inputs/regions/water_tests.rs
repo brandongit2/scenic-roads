@@ -289,6 +289,18 @@ fn a_small_world_resolves_and_covers_the_earth_once() {
     assert_eq!(owner(21.1, 20.5), vec!["far"]);
     assert_eq!(owner(50.0, 50.0), vec!["high-seas"]);
     assert_eq!(owner(4.5, 3.0), vec!["high-seas"]);
+    // Land and water apart (#468): only a region's land is the tile jobs' coverage; its water,
+    // like a region with no land, the depth's alone.
+    let cov = read::coverage_of(&out.resolved.values().map(|r| r.geometry.clone()).collect::<Vec<_>>());
+    let p = |x: f64, y: f64| [e7(x) as i32, e7(y) as i32];
+    let has = |l: &[crate::coverage::Shape], x: f64, y: f64| {
+        l.iter().any(|s| s.meets_rect([p(x, y)[0], p(x, y)[1], p(x, y)[0] + 1, p(x, y)[1] + 1]))
+    };
+    assert!(has(&cov.shapes, 0.9, 0.9) && !has(&cov.depth_only, 0.9, 0.9), "A's land");
+    assert!(!has(&cov.shapes, -0.5, -0.5) && has(&cov.depth_only, -0.5, -0.5), "A's sea");
+    assert!(!has(&cov.shapes, 0.3, 0.3) && has(&cov.depth_only, 0.3, 0.3), "A's big lake");
+    assert!(!has(&cov.shapes, 21.1, 20.5) && has(&cov.depth_only, 21.1, 20.5), "the far land's 12 nmi");
+    assert!(!has(&cov.shapes, 5.5, 5.5) && !has(&cov.shapes, 50.0, 50.0));
     // Once: the areas sum to the Earth's.
     let sum: f64 = out.resolved.values().map(|r| geom::area_km2(&area_of(&r.geometry))).sum();
     assert!((sum - geom::area_km2(&geom::earth())).abs() < 5.0, "{sum}");

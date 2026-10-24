@@ -152,8 +152,9 @@ impl Checks for Regions {
         // (2: `disabled`, #495: files an older app held as an unknown field are checked again.
         // 3: #600: a region resolved by cell is drawn with its cells dissolved. 4: #611: the drawn
         // shapes simplified at each point's own latitude (outlines::simplify), Antarctica's no
-        // longer five points.)
-        4
+        // longer five points. 5: #468: a region with water stores its land and its water as
+        // shapes apart.)
+        5
     }
 
     fn recursive(&self) -> bool {
@@ -393,17 +394,17 @@ pub fn accept_fixture(
                     .unwrap(),
                 },
             };
-            shapes.push(stored::Shape { from: entry.clone(), country: String::new(), tolerance_m: 0, rings });
+            shapes.push(stored::Shape {
+                from: entry.clone(),
+                country: String::new(),
+                tolerance_m: 0,
+                rings,
+                water: false,
+            });
         }
-        let g = stored::Geometry {
-            id: r.id.clone(),
-            osm: "2026-09-28".into(),
-            shapes,
-            relations: vec![],
-            ways: vec![],
-            water_only: false,
-        }
-        .encode();
+        let g =
+            stored::Geometry { id: r.id.clone(), osm: "2026-09-28".into(), shapes, relations: vec![], ways: vec![] }
+                .encode();
         let gname = format!("{}/@geometry/{}.{}.rgeo", super::store_dir(UNIT), r.id, store::naming::hash16(&g));
         put(&gname, &g);
         let d = serde_json::to_vec(&stored::Drawn {

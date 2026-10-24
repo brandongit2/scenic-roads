@@ -287,8 +287,6 @@ struct Env<'a> {
     leaves: HashMap<String, Src>,
     /// Its first `osm:` part's country.
     country: String,
-    /// The coastline's land and the big lakes, by cell (asked as needed).
-    data: &'a super::data::Datasets,
     made: &'a BTreeMap<String, Made>,
     others: &'a BTreeMap<String, TArea>,
     /// Each cell's piece of a buffered part, buffered (by the part and distance): made once,
@@ -644,7 +642,6 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
                     shapes: Vec::new(),
                     relations: r.relations(),
                     ways: r.ways(),
-                    water_only: false,
                 },
                 drawn: super::stored::Drawn {
                     fmt: 1,
@@ -937,16 +934,21 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         let land_empty = land_empty.get(id).copied().unwrap_or(false) && r.has_water();
         if let Some(res) = out.resolved.get_mut(id) {
             if let Some(c) = countries.get(id).filter(|c| !c.is_empty()) {
-                res.geometry.shapes =
-                    vec![Shape { from: String::new(), country: c.clone(), tolerance_m: 0, rings: Vec::new() }];
+                res.geometry.shapes = vec![Shape {
+                    from: String::new(),
+                    country: c.clone(),
+                    tolerance_m: 0,
+                    rings: Vec::new(),
+                    water: false,
+                }];
             }
-            store(r, res, t, land_empty);
+            store(r, res, t, (!land_empty).then_some(data));
         }
     }
     if let Some(id) = rest_id {
         let (p, r) = &folder.regions[&id];
         match out.resolved.get_mut(&id) {
-            Some(res) if !rest.is_empty() => store(r, res, &rest, true),
+            Some(res) if !rest.is_empty() => store(r, res, &rest, None),
             _ => {
                 out.problems.push(problem(
                     "rg-empty",
@@ -1029,7 +1031,6 @@ fn env_for<'a>(
     water: bool,
     folder: &Folder,
     ctx: &super::resolve::Context,
-    data: &'a super::data::Datasets,
     made: &'a BTreeMap<String, Made>,
     others: &'a BTreeMap<String, TArea>,
     out: &Outcome,
@@ -1053,7 +1054,7 @@ fn env_for<'a>(
             _ => None,
         })
         .unwrap_or_default();
-    let mut env = Env { leaves: HashMap::new(), country, data, made, others, buffered: Default::default() };
+    let mut env = Env { leaves: HashMap::new(), country, made, others, buffered: Default::default() };
     let (theirs, rest): (BTreeMap<String, Leaf>, BTreeMap<String, Leaf>) = leaves
         .into_iter()
         .partition(|(k, _)| k.starts_with("region:") || k.starts_with("land:") || k.starts_with("group:"));
@@ -1100,7 +1101,7 @@ fn make_land(
     if let Some(d) = folder.deps(r).into_iter().find(|d| held.contains(d)) {
         return Err(vec![problem("rg-ref", r, path, format!("{id}: region:{d} is held, and so this region with it"))]);
     }
-    let env = env_for(id, false, folder, ctx, data, made, others, out, needs)?;
+    let env = env_for(id, false, folder, ctx, made, others, out, needs)?;
     let mut cells: BTreeSet<Cell> = r.outline.iter().flat_map(|p| support(p, &env)).collect();
     if !r.intersect.is_empty() {
         let i: BTreeSet<Cell> = r.intersect.iter().flat_map(|p| support(p, &env)).collect();
@@ -1164,7 +1165,7 @@ fn make_water(
     if r.water.is_empty() {
         return Ok(TArea::default());
     }
-    let env = env_for(id, true, folder, ctx, data, made, others, out, needs)?;
+    let env = env_for(id, true, folder, ctx, made, others, out, needs)?;
     let _ = held;
     trace(&format!("water of {id}: its parts read"));
     let cells: BTreeSet<Cell> = r.water.iter().flat_map(|p| support(p, &env)).collect();
@@ -1622,8 +1623,10 @@ pub(super) fn dissolved(t: &TArea) -> Area {
     geom::union_all(&t.cells.values().cloned().collect::<Vec<_>>())
 }
 
-/// A region's stored geometry and drawing: its cells' rings, one shape, its `from` its parts.
-fn store(r: &Region, res: &mut Resolved, t: &TArea, water_only: bool) {
+/// A region's stored geometry and drawing: its cells' rings, its `from` its parts; one shape of
+/// land (the coastline's, less the big lakes) and one of water when `split_by` has the coastline,
+/// else one shape of water (a region with no land). Drawn as one.
+fn store(r: &Region, res: &mut Resolved, t: &TArea, split_by: Option<&super::data::Datasets>) {
     let mut from = r.outline_text().join(", ");
     if !r.intersect.is_empty() {
         from += &format!(" ∩ {}", r.intersect.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "));
@@ -1632,8 +1635,9 @@ fn store(r: &Region, res: &mut Resolved, t: &TArea, water_only: bool) {
         from += &format!(" − {}", r.minus.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "));
     }
     let country = res.geometry.shapes.first().map(|s| s.country.clone()).unwrap_or_default();
-    let rings32: Vec<Vec<[i32; 2]>> = t.rings().iter().map(|r| super::shapes::to_i32(r)).collect();
-    let tol = crate::coverage::draw_tolerance_m(&rings32);
+    let rings32 = |t: &TArea| -> Vec<Vec<[i32; 2]>> { t.rings().iter().map(|r| super::shapes::to_i32(r)).collect() };
+    let all = rings32(t);
+    let tol = crate::coverage::draw_tolerance_m(&all);
     let polys: Vec<Vec<Vec<[f64; 2]>>> = dissolved(t)
         .polys
         .iter()
@@ -1643,8 +1647,26 @@ fn store(r: &Region, res: &mut Resolved, t: &TArea, water_only: bool) {
                 .collect()
         })
         .collect();
-    res.geometry.shapes = vec![Shape { from: from.clone(), country, tolerance_m: 0, rings: rings32 }];
-    res.geometry.water_only = water_only;
+    let shape = |from: String, rings, water| Shape { from, country: country.clone(), tolerance_m: 0, rings, water };
+    res.geometry.shapes = match split_by {
+        None => vec![shape(from.clone(), all, true)],
+        Some(data) => {
+            let cells: Vec<(Cell, Area)> = t.cells.iter().map(|(c, a)| (*c, a.clone())).collect();
+            let (mut land, mut water) = (TArea::default(), TArea::default());
+            for (c, a, l) in pace::par_map(cells, |(c, a)| {
+                let l = a.intersect(&land_and_lakes(data, c).0);
+                (c, a, l)
+            }) {
+                water.set(c, a.minus(&l));
+                land.set(c, l);
+            }
+            [(from.clone(), land, false), (format!("{from} (water)"), water, true)]
+                .into_iter()
+                .filter(|(_, t, _)| !t.is_empty())
+                .map(|(f, t, w)| shape(f, rings32(&t), w))
+                .collect()
+        }
+    };
     res.drawn.shapes = BTreeMap::from([(from, polys)]);
     res.lakes = Area::default();
 }
