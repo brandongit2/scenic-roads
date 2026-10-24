@@ -15923,8 +15923,9 @@ mod pool_tests {
         // The writer isn't named any more (its file as it was), the coordinator's state of its term
         // and its history are on the NAS, its heartbeat names it.
         assert_eq!(std::fs::read_to_string(r.join("state/build/writer")).unwrap(), "another-mac");
-        // (The state's by the coordinator's own thread, within `keep::BATCH` of its first change.)
-        until(&mut a, |_| r.join(pool::state_path(1)).exists());
+        // (The state's by the coordinator's own thread, within `keep::BATCH` of a change, for the
+        // term it leads then: a re-assertion's may come first.)
+        until(&mut a, |a| a.pooled().and_then(|p| p.gates.leads).is_some_and(|t| r.join(pool::state_path(t)).exists()));
         assert!(std::fs::read_dir(r.join("state/coord/history"))
             .unwrap()
             .flatten()
@@ -17194,8 +17195,14 @@ mod pool_tests {
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         assert!(lead.try_start(0, job, &cond, Some(&r), &mut Vec::new()));
-        // (Its coordinator's state, its job's lease with it, saved for the term: the loop after the grant.)
+        // (Its coordinator's state, its job's lease with it, saved for the term: by the coordinator's
+        // own thread, crate::coord::keep, once the loop's step has named the term.)
         lead.step().unwrap();
+        let end = Instant::now() + crate::coord::keep::BATCH + Duration::from_secs(60);
+        while !std::fs::read_to_string(r.join(pool::state_path(1))).is_ok_and(|s| s.contains("6/4/4")) {
+            assert!(Instant::now() < end, "the lease not in term 1's state");
+            std::thread::sleep(Duration::from_millis(50));
+        }
         // The lead "frozen" (not stepped): the member takes over, forced, on a port of its own.
         TEST_PORT.with(|p| p.set(Some(free_port())));
         crate::control::request_lead(
