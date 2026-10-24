@@ -315,7 +315,7 @@ impl Store {
         })
     }
 
-    /// The battery floor the agent goes by now (%; crate::agent::cond::battery_min).
+    /// The battery floor the agent goes by now (%; crate::agent::cond::FloorCache).
     pub fn set_battery_min(&self, pct: u8) {
         self.battery_min.store(pct, Ordering::Relaxed);
     }

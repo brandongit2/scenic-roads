@@ -101,7 +101,8 @@ pub fn set_battery_floor(root: &Path, what: &str, by: &str) -> Result<Option<con
 }
 
 /// The settings as they stand, for the build page: this Mac's (in its agent's folder `home`) and
-/// the pool's NAS reserve and battery floor (under `root`; null while the NAS is away). Sizes in bytes, memory in MB.
+/// the pool's NAS reserve and battery floor (under `root`; null while the NAS is away, the floor
+/// too while it doesn't answer in time). Sizes in bytes, memory in MB.
 pub fn view(home: &Path, root: Option<&Path>) -> serde_json::Value {
     let total_mb = crate::sys::memsize().map_or(0, |b| b >> 20);
     let limit = super::memguard::limit_mb(total_mb);
@@ -127,10 +128,10 @@ pub fn view(home: &Path, root: Option<&Path>) -> serde_json::Value {
         },
         "room": target_view(room::target(home), room::disk_free(home).ok(), store::sys::disk_size(home).ok()),
         "nas_room": root.map(|r| target_view(room::nas_reserve(r), room::disk_free(r).ok(), None)),
-        "battery_floor": root.map(|r| {
-            let f = cond::battery_floor(r);
+        // (A NAS that doesn't answer in time: null, as when it's away.)
+        "battery_floor": root.and_then(|r| cond::read_battery_floor(r).ok()).map(|f| {
             serde_json::json!({
-                "pct": cond::battery_min(Some(r)),
+                "pct": f.as_ref().map_or(cond::DEFAULT_BATTERY_MIN, |f| f.pct),
                 "set": f.is_some(),
                 "default": cond::DEFAULT_BATTERY_MIN,
                 "by": f.as_ref().map(|f| f.by.clone()),
@@ -171,10 +172,10 @@ mod tests {
         }
         assert_eq!(view(h, Some(h))["battery_floor"]["pct"], cond::DEFAULT_BATTERY_MIN);
         assert_eq!(set_battery_floor(h, "20 %", "t").unwrap().unwrap().pct, 20);
-        assert_eq!(cond::battery_min(Some(h)), 20);
+        assert_eq!(cond::battery_floor(h).map_or(cond::DEFAULT_BATTERY_MIN, |f| f.pct), 20);
         assert_eq!(view(h, Some(h))["battery_floor"]["set"], true);
         assert!(set_battery_floor(h, "off", "t").unwrap().is_none());
-        assert_eq!(cond::battery_min(Some(h)), cond::DEFAULT_BATTERY_MIN);
+        assert_eq!(cond::battery_floor(h).map_or(cond::DEFAULT_BATTERY_MIN, |f| f.pct), cond::DEFAULT_BATTERY_MIN);
         assert!(view(h, None)["battery_floor"].is_null());
         assert!(set_memory(h, "1000000", "t").is_err(), "more than this Mac has");
         assert!(set_room(h, "1000000000", "t").is_err(), "more than the disk holds");

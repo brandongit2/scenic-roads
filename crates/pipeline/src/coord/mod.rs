@@ -8603,7 +8603,7 @@ mod tests {
         assert_eq!(crate::agent::room::target(home.path()).unwrap().bytes, 1 << 30);
         assert_eq!(crate::agent::room::nas_reserve(nas.path()).unwrap().bytes, 3 << 30);
         assert_eq!(v["nas_room"]["bytes"], 3u64 << 30);
-        assert_eq!(crate::agent::cond::battery_min(Some(nas.path())), 20);
+        assert_eq!(crate::agent::cond::battery_floor(nas.path()).unwrap().pct, 20);
         assert_eq!(v["battery_floor"]["pct"], 20);
         assert_eq!(post(serde_json::json!({ "memory": "0.1" })).0, 400);
         assert_eq!(post(serde_json::json!({ "in_use": [1] })).0, 400);

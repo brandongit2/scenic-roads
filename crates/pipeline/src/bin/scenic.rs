@@ -1111,13 +1111,13 @@ fn nas_room(what: Option<&str>, root_: &Option<PathBuf>) -> Result<()> {
 /// set in the project folder on the NAS, which every agent reads; off: the default; with none, how it
 /// stands.
 fn battery_floor(what: Option<&str>, root_: &Option<PathBuf>) -> Result<()> {
-    use agent::cond::{battery_floor, DEFAULT_BATTERY_MIN};
+    use agent::cond::{read_battery_floor, DEFAULT_BATTERY_MIN};
     let r = root(root_, true)?;
     let by = format!("scenic battery-floor on {}", agent::cond::host_name());
     if let Some(what) = what {
         agent::settings::set_battery_floor(&r, what, &by)?;
     }
-    match battery_floor(&r) {
+    match read_battery_floor(&r).context("the battery floor on the NAS")? {
         Some(f) => println!("Battery floor: {} % (set {} by {})", f.pct, ago(f.at), f.by),
         None => {
             println!("Battery floor: {DEFAULT_BATTERY_MIN} %, the default (`scenic battery-floor <percent>` sets one)")

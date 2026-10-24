@@ -1,16 +1,18 @@
 //! A Mac's conditions (docs/building.md §2, Interruptions): the NAS (and whether it answers by its LAN
 //! name: at home), the user at the keyboard, sleep; and its power, which no job waits on, for the
 //! status and for whether it may lead (crate::agent::lead: a lead below the battery floor,
-//! `battery_min`, hands over).
+//! `FloorCache`, hands over).
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::time::{Instant, SystemTime};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 
 /// Seconds without keyboard or mouse input after which the user counts as away.
 pub const AWAY_S: u64 = 300;
 
-/// The battery floor while the owner sets none (%; `battery_min`).
+/// The battery floor while the owner sets none (%; `FloorCache`).
 pub const DEFAULT_BATTERY_MIN: u8 = 30;
 
 /// The owner's battery floor, pool-wide (`scenic battery-floor`, docs/workers.md §7): on battery, a
@@ -28,19 +30,74 @@ pub struct BatteryFloor {
     pub at: u64,
 }
 
-/// The battery floor as set under the project folder `root`, when one is (one that doesn't parse,
-/// or past 100, is none).
-pub fn battery_floor(root: &Path) -> Option<BatteryFloor> {
-    std::fs::read(root.join(BATTERY_FLOOR))
-        .ok()
-        .and_then(|b| serde_json::from_slice::<BatteryFloor>(&b).ok())
-        .filter(|f| f.pct <= 100)
+/// The battery floor as set under the project folder `root`: None when none is (one that doesn't
+/// parse, or past 100, is none); an error when the NAS didn't answer (crate::agent::nasread's
+/// deadline).
+pub fn read_battery_floor(root: &Path) -> std::io::Result<Option<BatteryFloor>> {
+    match super::nasread::read(&root.join(BATTERY_FLOOR)) {
+        Ok(b) => Ok(serde_json::from_slice::<BatteryFloor>(&b).ok().filter(|f| f.pct <= 100)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
-/// The battery floor in force (%): the owner's under `root`, else (none set, or the NAS away)
-/// `DEFAULT_BATTERY_MIN`.
-pub fn battery_min(root: Option<&Path>) -> u8 {
-    root.and_then(battery_floor).map_or(DEFAULT_BATTERY_MIN, |f| f.pct)
+/// The battery floor as set under `root`, when one is and the NAS answers.
+pub fn battery_floor(root: &Path) -> Option<BatteryFloor> {
+    read_battery_floor(root).ok().flatten()
+}
+
+/// How often the agent reads the battery floor again (`FloorCache`).
+pub const FLOOR_EVERY: Duration = Duration::from_secs(60);
+
+/// How long the agent's first step waits on its first read of the battery floor (`FloorCache`).
+pub const FIRST_WAIT: Duration = Duration::from_secs(2);
+
+/// The battery floor in force (%) as the agent's loop goes by it: never read on the loop (the NAS
+/// can stall, #605), but at most once a `FLOOR_EVERY` on a thread of its own, one read at a time,
+/// within crate::agent::nasread's deadline; the NAS slow or away, the last floor read stands (the
+/// default, `DEFAULT_BATTERY_MIN`, until a first read lands).
+#[derive(Debug)]
+pub struct FloorCache {
+    pct: Arc<AtomicU8>,
+    asked: Mutex<Option<Instant>>,
+    reading: Arc<AtomicBool>,
+}
+
+impl Default for FloorCache {
+    fn default() -> FloorCache {
+        FloorCache {
+            pct: Arc::new(AtomicU8::new(DEFAULT_BATTERY_MIN)),
+            asked: Mutex::new(None),
+            reading: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+impl FloorCache {
+    /// The floor last read (%), and under `root`, a read begun when one is due.
+    pub fn get(&self, root: Option<&Path>) -> u8 {
+        if let Some(r) = root {
+            let mut asked = self.asked.lock().unwrap_or_else(|e| e.into_inner());
+            let first = asked.is_none();
+            if asked.is_none_or(|t| t.elapsed() >= FLOOR_EVERY) && !self.reading.swap(true, Ordering::AcqRel) {
+                *asked = Some(Instant::now());
+                let (r, pct, reading) = (r.to_path_buf(), self.pct.clone(), self.reading.clone());
+                std::thread::spawn(move || {
+                    if let Ok(f) = read_battery_floor(&r) {
+                        pct.store(f.map_or(DEFAULT_BATTERY_MIN, |f| f.pct), Ordering::Relaxed);
+                    }
+                    reading.store(false, Ordering::Release);
+                });
+                // (The first read waited on a moment, `FIRST_WAIT`, so a Mac just started doesn't
+                // go by the default for a step: a lead between the two floors would hand over.)
+                let t = Instant::now();
+                while first && self.reading.load(Ordering::Acquire) && t.elapsed() < FIRST_WAIT {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        }
+        self.pct.load(Ordering::Relaxed)
+    }
 }
 
 /// Sets the battery floor under `root` to `pct` (0 to 100), or clears it (None: the default).
@@ -393,6 +450,38 @@ pub fn host_name() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_battery_floor_is_read_off_the_loop_and_the_last_read_stands() {
+        use super::*;
+        let d = tempfile::tempdir().unwrap();
+        let wait = |c: &FloorCache, want: u8| {
+            store::clock::eventually(&format!("the floor read, {want}"), || {
+                !c.reading.load(Ordering::Acquire) && c.pct.load(Ordering::Relaxed) == want
+            })
+        };
+        let c = FloorCache::default();
+        assert_eq!(c.get(None), DEFAULT_BATTERY_MIN, "no NAS: the default, no read");
+        assert!(c.asked.lock().unwrap().is_none());
+        set_battery_floor(d.path(), Some(12), "t").unwrap();
+        c.get(Some(d.path()));
+        wait(&c, 12);
+        // (Not due again within a minute: a change waits for the next read.)
+        set_battery_floor(d.path(), Some(0), "t").unwrap();
+        assert_eq!(c.get(Some(d.path())), 12);
+        // (A read that fails, here a folder where the file goes: the last floor stands.)
+        set_battery_floor(d.path(), None, "t").unwrap();
+        std::fs::create_dir(d.path().join(BATTERY_FLOOR)).unwrap();
+        *c.asked.lock().unwrap() = None;
+        c.get(Some(d.path()));
+        wait(&c, 12);
+        assert_eq!(c.get(Some(d.path())), 12);
+        // (None set: the default.)
+        std::fs::remove_dir(d.path().join(BATTERY_FLOOR)).unwrap();
+        *c.asked.lock().unwrap() = None;
+        c.get(Some(d.path()));
+        wait(&c, DEFAULT_BATTERY_MIN);
+    }
+
     #[test]
     fn home_when_the_probe_fails_but_the_lan_mount_answers() {
         use super::home;

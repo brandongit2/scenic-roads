@@ -253,7 +253,7 @@ pub struct Conds {
     /// stays free past the free space it needs to lead.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub target_mb: u64,
-    /// The battery floor it went by (%; crate::agent::cond::battery_min; left out by apps before it:
+    /// The battery floor it went by (%; crate::agent::cond::FloorCache; left out by apps before it:
     /// `floor` says the default).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub battery_min: Option<u8>,

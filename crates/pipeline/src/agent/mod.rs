@@ -1557,6 +1557,8 @@ pub struct Agent {
     /// loop's pool steps passed over in a row for it, and since when it's taken for hung
     /// (`pool_skipped`).
     ticking: Option<pool::Ticking>,
+    /// The owner's battery floor, read off the loop (`pool_step_in`).
+    battery_floor: cond::FloorCache,
     /// The coordinator's contact's publications, counted (an unpublish begun before the last one
     /// doesn't take it off), and the unpublish on a thread of its own still under way, if one is.
     publish_gen: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -1930,6 +1932,7 @@ impl Agent {
             planned_tiles: Default::default(),
             member_id: run.as_ref().map(|r| r.side.member().id.clone()),
             ticking: run.as_ref().map(|r| r.ticking.clone()),
+            battery_floor: cond::FloorCache::default(),
             publish_gen: Default::default(),
             unpublishing: None,
             pool_skips: 0,
@@ -9781,8 +9784,9 @@ impl Agent {
                 run.settled = serde_json::to_value(co.pool_state()).ok();
             }
         }
-        // (The owner's battery floor, pool-wide on the NAS: read each step, so a change holds at once.)
-        let battery_min = cond::battery_min(Some(r));
+        // (The owner's battery floor, pool-wide on the NAS: read off this loop, at most once a
+        // minute, the last read standing while the NAS is slow, cond::FloorCache.)
+        let battery_min = self.battery_floor.get(Some(r));
         if let Some(l) = &self.live {
             l.set_battery_min(battery_min);
         }

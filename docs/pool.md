@@ -198,7 +198,7 @@ offer of its own. The owner hands the lead over by hand (§6.3) when about to le
 by itself only on these four triggers, each to a member that can lead (home, on power or charged
 past the battery floor, not paused, room past its disk target, an app the rule allows, reachable):
 
-1. **Its battery below the battery floor** (`cond::battery_min`: the owner's, pool-wide, `scenic
+1. **Its battery below the battery floor** (`cond::FloorCache`: the owner's, pool-wide, `scenic
    battery-floor`, docs/workers.md §7; 30 % while none is set; the floor its heartbeat says it
    went by, `Conds::battery_min`): the lead, on battery under it by its own
    heartbeat's conditions, asks to hand over to the first member that can lead, by host

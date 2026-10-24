@@ -16,8 +16,8 @@
 #   smalllakes-grids.geojson, copied beside the grids.
 # - Memory: ~0.7 GB a worker (measured on a Massachusetts box) and the server's, under ~4 GB for 3–4.
 # - caffeinate holds the Mac awake while it runs; a box starts only on mains power or with the
-#   battery at the pool's battery floor or more (`scenic battery-floor`, kept on the NAS; 30 % while
-#   none is set: the agent's DEFAULT_BATTERY_MIN), else it waits.
+#   battery at the pool's battery floor or more (as `scenic battery-floor` says it, its default too),
+#   else it waits.
 set -euo pipefail
 WORKERS=${1:-3}
 (( WORKERS >= 1 && WORKERS <= 4 )) || { echo "workers: 1–4" >&2; exit 2; }
@@ -40,7 +40,7 @@ ssh -o BatchMode=yes $NAS "mkdir -p $STORE" || { echo "no SSH to the NAS (1Passw
 # HydroLAKES read locally (each box scans the shapefile).
 [[ -s $WORK/HydroLAKES_polys_v10_shp.zip ]] || cp $HYDROLAKES_NAS $WORK/HydroLAKES_polys_v10_shp.zip
 
-(cd $REPO && PATH=/opt/homebrew/opt/rustup/bin:$PATH cargo build --release -p server)
+(cd $REPO && PATH=/opt/homebrew/opt/rustup/bin:$PATH cargo build --release -p server && cargo build --release -p pipeline --bin scenic)
 $REPO/target/release/server --port $PORT --home $WORK/home --root $NASROOT --no-mirror --web $REPO/web/dist --fonts $REPO/data/fonts > $WORK/logs/server.log 2>&1 &
 SERVER=$!
 pids=()
@@ -65,19 +65,20 @@ for l in open(sys.argv[1]):
 ' $WORK/z6.txt) > $WORK/boxes.txt
 echo "$(wc -l < $WORK/boxes.txt | tr -d ' ') boxes, $WORKERS workers"
 
-# The pool's battery floor (%), read again each wait so a change holds.
+# The pool's battery floor (%), as `scenic battery-floor` says it (the default with none set),
+# asked again each wait so a change holds.
 floor() {
-  local f
-  f=$(sed -n 's/.*"pct":\([0-9]*\).*/\1/p' $NASROOT/state/pool/battery-floor.json 2>/dev/null)
-  echo ${f:-30}
+  $REPO/target/release/scenic battery-floor --root $NASROOT | sed -n 's/^Battery floor: \([0-9]*\) %.*/\1/p'
 }
 
 power_ok() {
   local b
   b=$(pmset -g batt)
   [[ $b == *"AC Power"* ]] && return 0
-  local pct=${${b#*$'\t'}%%%*}
-  (( pct >= $(floor) ))
+  local pct=${${b#*$'\t'}%%%*} min
+  min=$(floor)
+  # (No answer from `scenic`, the NAS away: wait.)
+  [[ -n $min ]] && (( pct >= min ))
 }
 
 one_box() {

@@ -166,10 +166,11 @@ Common rules:
   stand (`mac`: its host). One ask carrying several is set in order, so a bad one after a good one
   leaves the good one set; the page sends one at a time. A bad value is refused (400) with the check's words. They change only when a person
   presses Set or Off. The menu bar's settings are unchanged. **The battery floor**
-  (`cond::BATTERY_FLOOR`, `cond::battery_min`) is one pool-wide value on the NAS
+  (`cond::BATTERY_FLOOR`, `cond::FloorCache`) is one pool-wide value on the NAS
   (`state/pool/battery-floor.json`, `{"pct", "by", "at"}`), set by `scenic battery-floor [<percent> |
   off]` on any Mac or the page (off: the file removed, the default, 30 %, `DEFAULT_BATTERY_MIN`;
-  with none, how it stands); each agent reads it every pool step (the NAS away: the default), says
+  with none, how it stands); each agent reads it off its loop at most once a minute, within the NAS calls' deadline (the NAS
+  slow or away: the last floor read stands; the default until a first read lands, waited on up to 2 s at the first step), says
   it in its heartbeat's conditions (`Conds::battery_min`, so a member's why-not and the lead's
   handover use the floor that Mac went by) and in `/work/live`'s `mac.battery_min`, the battery
   chart's line, whose tag (✎) scrolls to its row. Each slot (a Web Worker per core, less one) runs a

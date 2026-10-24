@@ -16,7 +16,7 @@
 //!   `VIEW_S`, and at once after an ask or a change. A lead whose heartbeat is out of touch while its
 //!   coordinator answered this Mac lately (`ANSWERED_S`) is late, not gone (`View::quiet`): no "no
 //!   lead", and no takeover unforced.
-//! - **The lead's battery low** (§6.4): a lead on battery below its battery floor (`cond::battery_min`) asks to hand
+//! - **The lead's battery low** (§6.4): a lead on battery below its battery floor (`cond::FloorCache`) asks to hand
 //!   the lead to a member that can lead (`low_battery`), as the owner's ask would; again every
 //!   `BATTERY_AGAIN_S` while it still leads so. The app is otherwise not smart about who leads: the
 //!   owner hands the lead over by hand.
