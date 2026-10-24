@@ -16554,17 +16554,11 @@ mod pool_tests {
                     .records()
                     .is_some_and(|r| r.keys.recorded("slope", "3/2/2") == Some("k"))
         });
-        // The statuses say so: the old lead's view, the history's terms.
-        let st = read_status(None, &lead.o.home).unwrap();
+        // The statuses say so: the new lead's view.
+        let st = read_status(None, &m.o.home).unwrap();
         let v = st.pool.and_then(|p| p.lead).expect("the controls' view");
         assert_eq!(v.lead.as_ref().map(|l| l.member.as_str()), Some(im.as_str()));
-        let events = lead.coord.as_ref().unwrap().history_since(0);
-        assert!(
-            events.iter().any(|e| e.kind == "term" && e.note.starts_with("term 2: handed over by")),
-            "{:?}",
-            events.iter().filter(|e| e.kind == "term").collect::<Vec<_>>()
-        );
-        // And on the NAS, in the old lead's own history file, once each, with its step down.
+        // The history's terms on the NAS, in the old lead's own history file, once each, with its step down.
         let il = lead.pooled().unwrap().side.member().id.clone();
         let day = crate::pool::journal::day(now_s()).unwrap();
         let mine =
