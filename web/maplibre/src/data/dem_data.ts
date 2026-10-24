@@ -12,7 +12,7 @@ export type DEMEncoding = 'mapbox' | 'terrarium' | 'custom';
  * data can be populated either from a png raw image tile or from serialized data sent back from a worker. When data is initially
  * loaded from a image tile, we decode the pixel values using the appropriate decoding formula, but we store the
  * elevation data as an Int32 value. we add 65536 (2^16) to eliminate negative values and enable the use of
- * integer overflow when creating the texture used in the hillshadePrepare step.
+ * integer overflow when creating the textures the shaders read.
  *
  * DEMData also handles the backfilling of data from a tile's neighboring tiles (`backfillFrom`). This is necessary because we use a pixel's 8
  * surrounding pixel values to compute the slope at that pixel, and we cannot accurately calculate the slope at pixels on a

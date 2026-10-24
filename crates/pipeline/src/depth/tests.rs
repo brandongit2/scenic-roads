@@ -692,3 +692,42 @@ fn measure_a_real_assembly() {
     }
     println!("  untimed {:.1} s of {:.1} s", r.untimed_s, r.wall_s);
 }
+
+/// The floor's shading (`build::shading`): a tile's own where it's the finest, by Horn's method on
+/// its depth (a pixel without data its nearest's: no cliff at the shore), and its parent's the mean
+/// of the four beneath; tiles past `top` only.
+#[test]
+fn the_floors_shading_is_the_depths_pyramid() {
+    use roadcore::shade::{code, decode, quadrant, Px};
+    let tile = |v: Vec<f32>| (fall::encode(&Grid::F(v)).unwrap(), fall::encode(&Grid::C(vec![1; 65536])).unwrap());
+    // Two z8 tiles side by side: the floor falls 1 m a pixel eastward (z8 pixels are ~430 m at 45°N:
+    // ~0.23 %, rising westward), the second's west half without data; their z7 parent; a z6 tile
+    // past `top`.
+    let ramp = |x0: f32| (0..65536).map(|i| -10.0 - (x0 + (i % 256) as f32)).collect::<Vec<f32>>();
+    let half: Vec<f32> =
+        ramp(256.0).into_iter().enumerate().map(|(i, v)| if i % 256 < 128 { NODATA } else { v }).collect();
+    let mut made = std::collections::BTreeMap::new();
+    made.insert((8, 74, 91), tile(ramp(0.0)));
+    made.insert((8, 75, 91), tile(half));
+    made.insert((7, 37, 45), tile(ramp(0.0)));
+    made.insert((6, 18, 22), tile(ramp(0.0)));
+    let shade = super::build::shading(&made, 7).unwrap();
+    assert_eq!(shade.keys().copied().collect::<Vec<_>>(), [(7, 37, 45), (8, 74, 91), (8, 75, 91)]);
+    let px = |k: (u8, u32, u32)| decode(&shade[&k]).unwrap();
+    let z8 = px((8, 74, 91));
+    let lat = 45.5f64.to_radians();
+    let d = 40_075_016.686 * lat.cos() / (256.0 * 256.0);
+    let want = 100.0 / d as f32;
+    let p = z8[128 * 256 + 100];
+    // (Its steepness within the gentlest codes' step, 0.07 % there.)
+    assert!((p.s - want).abs() < 0.07 && p.u[0] < -0.9, "{p:?}, {want} % rising westward");
+    // The west half without data takes its nearest (the column at 128): flat there, no cliff.
+    let h = px((8, 75, 91));
+    assert_eq!(code(h[128 * 256 + 20]), code(Px::default()));
+    assert!(code(h[128 * 256 + 200])[0] > 0);
+    // z7: its south half from the two z8 tiles beneath it, the rest its own depth's.
+    let z7 = px((7, 37, 45));
+    let (q0, q1) = (quadrant(&z8), quadrant(&h));
+    assert_eq!(code(z7[45 % 2 * 128 * 256 + 7]), code(q0[7]));
+    assert_eq!(code(z7[128 * 256 + 128 + 7]), code(q1[7]));
+}

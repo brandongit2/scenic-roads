@@ -1,14 +1,17 @@
 // Depth under the water, seas and lakes (docs/steps.md §3), as two layers, each with its
 // own switch (Layers → Depth):
 //
-// 1. Depth colour and floor shading: a colour-relief and a hillshade layer over raster-dem
-//    sources that depth.worker.ts makes from the server's depth tiles (crates/server/src/depth.rs:
-//    a tile the layer lacks comes from its nearest ancestor). Drawn as the water itself where the
-//    map has the water tiles: our MapLibre draws them over the water layer's own tiles, as those
-//    tiles' alpha (`scenic:mask`, maplibre/src/webgl/draw/water_mask.ts), the depth interpolated
-//    bilinearly and reaching a few pixels past its data so no water drawn lacks it; water with no
-//    depth near shows the water's own colour. Without the water tiles, masked by the basemap's
-//    own water at the display's resolution.
+// 1. Depth colour and floor shading: a colour-relief layer over a raster-dem source that
+//    depth.worker.ts makes from the server's depth tiles (crates/server/src/depth.rs: a tile the
+//    layer lacks comes from its nearest ancestor), and a hillshade layer over the floor's shading
+//    as the build stores it (the `depth-shade` layer: each pixel's steepness and mean direction,
+//    pipeline::depth's shading; served by crates/server/src/terrain.rs), shaded as the terrain's
+//    is. Drawn as the water itself where the map has the water tiles: our MapLibre draws them over
+//    the water layer's own tiles, as those tiles' alpha (`scenic:mask`, maplibre/src/webgl/draw/
+//    water_mask.ts), the depth interpolated bilinearly and reaching a few pixels past its data so no
+//    water drawn lacks it; water with no depth near shows the water's own colour. Without the water
+//    tiles, the colour masked by the basemap's own water at the display's resolution, and no floor
+//    shading (its tiles reach onto the shore).
 // 2. Depth contours with labels: vector tiles the same worker makes (maplibre-contour's, contour/:
 //    isolines), clipped to the water.
 // All go over the water fill and under the coast shading and everything else, draped on the 3D
@@ -19,7 +22,7 @@
 import * as maplibregl from 'maplibre-gl';
 import type { ExpressionSpecification, Map as MLMap } from 'maplibre-gl';
 import { onVersions, ver } from './api';
-import { waterTilesOn } from './basemap';
+import { SHADE_SHIFT, waterTilesOn } from './basemap';
 import { hostFor } from './hosts';
 import { depthColour, hdepth, hexRgb, HBINS, rgba, scaleFns, DEPTH_DEFAULTS, type DepthState } from './depthlook';
 import { h } from './ui/dom';
@@ -108,6 +111,12 @@ export class Depth {
       cls: `${hostFor('layers')}/tiles/depth-class/{z}/{x}/{y}${ver('depth-class.tiles')}`,
     };
     for (const w of this.workers) w.postMessage(msg);
+    (this.map.getSource('depth-shade') as maplibregl.RasterDEMTileSource | undefined)?.setTiles([this.shadeUrl()]);
+  }
+
+  /** The floor's shading tiles (the server's `depth-shade`). */
+  private shadeUrl() {
+    return `${hostFor('layers')}/tiles/depth-shade/{z}/{x}/{y}${ver('depth-shade.tiles')}`;
   }
 
   private setupProtocol() {
@@ -162,7 +171,6 @@ export class Depth {
     const q = this.masked() ? '?mask=1' : '';
     return {
       relief: `depth://relief/{z}/{x}/{y}${q}`,
-      shade: `depth://shade/{z}/{x}/{y}${q}`,
       contour: `depth://contour/{z}/{x}/{y}?m=${s.interval}&f=${s.fixed}&k=${s.index}`,
     };
   }
@@ -181,12 +189,16 @@ export class Depth {
     const m = this.map, u = this.urls(this.s);
     const dem = { type: 'raster-dem' as const, tileSize: 512, maxzoom: 16, encoding: 'terrarium' as const };
     m.addSource('depth-relief', { ...dem, tiles: [u.relief] });
-    m.addSource('depth-shade', { ...dem, tiles: [u.shade] });
+    // (The shading's encoding: its base shift marks it for our MapLibre's shaders, basemap.ts's slope.)
+    m.addSource('depth-shade', {
+      type: 'raster-dem', tileSize: 256, maxzoom: 16, encoding: 'custom', redFactor: 256, greenFactor: 1, blueFactor: 1 / 256, baseShift: SHADE_SHIFT,
+      tiles: [this.shadeUrl()],
+    });
     m.addSource('depth-contours', { type: 'vector', maxzoom: 16, tiles: [u.contour] });
     const b = this.before();
     const metadata = this.masked() ? { 'scenic:mask': 'water' } : undefined;
     m.addLayer({ id: 'depth-relief', type: 'color-relief', source: 'depth-relief', metadata, paint: { 'color-relief-opacity': this.s.opacity, resampling: 'linear' } as never }, b);
-    m.addLayer({ id: 'depth-shade', type: 'hillshade', source: 'depth-shade', metadata, paint: { 'hillshade-illumination-anchor': 'map' } as never }, b);
+    m.addLayer({ id: 'depth-shade', type: 'hillshade', source: 'depth-shade', metadata, paint: { 'hillshade-illumination-anchor': 'map', resampling: 'linear' } as never }, b);
     const lb = m.getLayer('boundary-county') ? 'boundary-county' : undefined;
     m.addLayer({ id: 'depth-contour', type: 'line', source: 'depth-contours', 'source-layer': 'c', filter: ['==', ['get', 'idx'], 0], layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: {} }, lb);
     m.addLayer({ id: 'depth-contour-index', type: 'line', source: 'depth-contours', 'source-layer': 'c', filter: ['==', ['get', 'idx'], 1], layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: {} }, lb);
@@ -215,7 +227,7 @@ export class Depth {
     if (u.contour !== ou.contour) (m.getSource('depth-contours') as maplibregl.VectorTileSource | undefined)?.setTiles([u.contour]);
     const vis = (id: string, v: boolean) => m.getLayer(id) && m.setLayoutProperty(id, 'visibility', v ? 'visible' : 'none');
     vis('depth-relief', this.has && s.on);
-    vis('depth-shade', this.has && s.on && s.shade > 0);
+    vis('depth-shade', this.has && s.on && s.shade > 0 && this.masked());
     vis('depth-contour', this.has && s.contours);
     vis('depth-contour-index', this.has && s.contours);
     vis('depth-contour-label', this.has && s.contours && s.labels);

@@ -4,12 +4,12 @@
 //! made from their nearest ancestor, encoded the same way, so the terrain surface never has holes;
 //! outside the data, a flat sea-level tile is returned.
 //!
-//! Slope tiles carry terrain slope in percent, Terrarium-encoded in place of elevation, so a
-//! MapLibre colour-relief layer can colour the terrain by slope with the same machinery. The slope
-//! layer stores z11 and coarser (four quarter slopes a pixel); z12, and any tile the layer lacks,
-//! is made here from the terrain (pipeline::slope_pack::horn with the neighbouring tiles), as the
-//! slope step makes its finest level: to z12, and where the terrain has deep tiles to their zoom
-//! there, from them (so the slope there is the deep data's; none stored).
+//!
+//! Shading tiles (the slope layer's, the terrain's shading, and `depth-shade`, the depth's:
+//! pipeline::shade_codec; each pixel's steepness and mean direction, which the map's slope tint and
+//! hill-shading read) are served as stored, every level down to each place's finest; a tile the
+//! layer lacks (past its finest there, or a deep tile that can't be read now) is made from its
+//! nearest stored ancestor, scaled up, as the terrain's are; outside the layer, a flat one.
 
 use crate::tiles::{etag_match, not_modified, versioned};
 use crate::S;
@@ -24,11 +24,13 @@ use std::sync::{Mutex, OnceLock};
 
 static SYNTH: OnceLock<Mutex<HashMap<(u8, u32, u32, u64), Vec<u8>>>> = OnceLock::new();
 static FLAT: OnceLock<Vec<u8>> = OnceLock::new();
-static FLAT_SLOPE: OnceLock<Vec<u8>> = OnceLock::new();
-static SLOPE: OnceLock<Mutex<HashMap<(u8, u32, u32, u64), Vec<u8>>>> = OnceLock::new();
+static FLAT_SHADE: OnceLock<Vec<u8>> = OnceLock::new();
+static SHADE: OnceLock<Mutex<HashMap<(u8, u32, u32, u64), Vec<u8>>>> = OnceLock::new();
+static DEPTH_SHADE: OnceLock<Mutex<HashMap<(u8, u32, u32, u64), Vec<u8>>>> = OnceLock::new();
 static FLOOR: OnceLock<Mutex<HashMap<(u8, u32, u32, u64), Vec<u8>>>> = OnceLock::new();
 
-/// A tile's response: a terrain tile's WebP (pipeline::terrain_codec), else a PNG (slope, depth).
+/// A tile's response: a terrain or shading tile's WebP (pipeline::terrain_codec,
+/// pipeline::shade_codec), else a PNG (depth).
 fn image(b: Vec<u8>, versioned: bool, etag: Option<String>) -> Response {
     let kind = if b.starts_with(b"RIFF") { "image/webp" } else { "image/png" };
     let mut r = (
@@ -207,36 +209,53 @@ pub async fn terrain_tile(
     respond(got, v)
 }
 
-/// Slope (percent) of a terrain tile, as the slope step makes z12 (pipeline::slope_pack::horn, with
-/// the edge neighbours): four equal quarters a pixel. None outside the data.
-pub fn slope_png(s: &crate::AppState, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
-    let failed = std::cell::RefCell::new(None);
-    let tile = |x: u32, y: u32| match terrain_f32(s, z, x, y) {
-        Ok(e) => e.map(std::sync::Arc::new),
-        Err(e) => {
-            failed.borrow_mut().get_or_insert(e);
-            None
-        }
-    };
-    let out = pipeline::slope_pack::horn(&tile, z, x, y);
-    if let Some(e) = failed.into_inner() {
-        return Err(e);
+/// A shading tile's pixels made from its nearest stored ancestor in `layer` (up to eight levels
+/// up: the terrain's reach, roadcore::grid::tile_with_fallback_by), scaled up
+/// (roadcore::shade::upsampled), encoded as stored; None with none. A deep tile's ancestor that
+/// can't be read is passed over, as the terrain's.
+pub fn shade_from_ancestor(s: &crate::AppState, layer: &str, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
+    for dz in 1..=z.min(8) {
+        let (pz, px, py) = (z - dz, x >> dz, y >> dz);
+        let b = match s.data.tile(layer, pz, px, py) {
+            Ok(Some((b, _))) => b,
+            Ok(None) => continue,
+            Err(_) if deep_zoom(pz, py) => continue,
+            Err(e) => return Err(e),
+        };
+        let p = roadcore::shade::decode(b.bytes())?;
+        return Ok(Some(pipeline::shade_codec::encode(&roadcore::shade::upsampled(&p, dz, x, y))?));
     }
-    let Some(out) = out else { return Ok(None) };
-    let q: Vec<[f32; 4]> = out.iter().map(|&v| [v; 4]).collect();
-    Ok(roadcore::slope::encode_slope4(&q, 256, 256).ok())
+    Ok(None)
 }
 
-/// The finest slope made at tile (z, x, y): z12 (the stored terrain's finest), or where the terrain
-/// has deep tiles (pipeline::terrain_deep), their zoom there (the catalog's `native_zoom` by z10
-/// tile, the map's zoom by area); finer, flat.
-fn slope_depth(cat: &store::catalog::Catalog, z: u8, x: u32, y: u32) -> u8 {
-    let native = (z > 10)
-        .then(|| {
-            cat.layers.get("terrain")?.native_zoom.get(&format!("10/{}/{}", x >> (z - 10), y >> (z - 10))).copied()
-        })
-        .flatten();
-    native.unwrap_or(0).max(pipeline::slope_pack::MAXZ)
+/// A shading tile of `layer` (the slope's or the depth's): as stored (a tile not in the shading's
+/// encoding read as none: a pack from before it), else made from its nearest stored ancestor, else
+/// flat. (A deep tile that can't be read now: from its ancestor too.)
+pub async fn shade_tile(
+    s: S,
+    layer: &'static str,
+    z: u8,
+    x: u32,
+    y: u32,
+    q: Option<String>,
+    headers: HeaderMap,
+) -> Response {
+    let v = versioned(q.as_deref());
+    let flat =
+        || FLAT_SHADE.get_or_init(|| pipeline::shade_codec::encode(&vec![Default::default(); 65536]).unwrap()).clone();
+    let cache = if layer == "slope" { &SHADE } else { &DEPTH_SHADE };
+    let got = tokio::task::spawn_blocking(move || {
+        match stored(&s, layer, z, x, y, &headers) {
+            Some(Got::Stored(b, _)) if !b.starts_with(b"RIFF") => {}
+            Some(Got::Failed) if deep_zoom(z, y) => {}
+            Some(g) => return g,
+            None => {}
+        }
+        made(cache, gen(&s), z, x, y, || Ok(shade_from_ancestor(&s, layer, z, x, y)?.unwrap_or_else(flat)))
+    })
+    .await
+    .unwrap_or(Got::Failed);
+    respond(got, v)
 }
 
 pub async fn slope_tile(
@@ -245,21 +264,16 @@ pub async fn slope_tile(
     RawQuery(q): RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    let v = versioned(q.as_deref());
-    let flat =
-        || FLAT_SLOPE.get_or_init(|| roadcore::slope::encode_slope4(&vec![[0.0; 4]; 65536], 256, 256).unwrap()).clone();
-    let got = tokio::task::spawn_blocking(move || {
-        if let Some(g) = stored(&s, "slope", z, x, y, &headers) {
-            return g;
-        }
-        if z > slope_depth(&s.data.catalog(), z, x, y) {
-            return Got::Made(flat());
-        }
-        made(&SLOPE, gen(&s), z, x, y, || Ok(slope_png(&s, z, x, y)?.unwrap_or_else(flat)))
-    })
-    .await
-    .unwrap_or(Got::Failed);
-    respond(got, v)
+    shade_tile(s, "slope", z, x, y, q, headers).await
+}
+
+pub async fn depth_shade_tile(
+    State(s): State<S>,
+    Path((z, x, y)): Path<(u8, u32, u32)>,
+    RawQuery(q): RawQuery,
+    headers: HeaderMap,
+) -> Response {
+    shade_tile(s, pipeline::depth::SHADE_LAYER, z, x, y, q, headers).await
 }
 
 #[cfg(test)]
@@ -326,34 +340,63 @@ mod tests {
         assert!(s.data.tile("terrain", 13, 296 * 8, 360 * 8).is_err());
     }
 
-    #[test]
-    fn slope_is_made_as_deep_as_the_terrain_goes_there() {
-        let mut cat = store::catalog::Catalog::new(1);
-        assert_eq!(slope_depth(&cat, 13, 296 * 8, 360 * 8), 12);
-        let mut l = store::catalog::Layer { maxzoom: 16, ..Default::default() };
-        l.native_zoom.insert("10/296/360".into(), 16);
-        cat.layers.insert("terrain".into(), l);
-        // Under the deep pack's z10 tile, to its zoom; beside it, z12.
-        assert_eq!(slope_depth(&cat, 16, 296 * 64 + 63, 360 * 64), 16);
-        assert_eq!(slope_depth(&cat, 13, 297 * 8, 360 * 8), 12);
-        assert_eq!(slope_depth(&cat, 9, 148, 180), 12);
+    /// A shading pack of `layer` at `path`, each tile `(z, x, y, steepness %)` facing east.
+    fn shade_pack(path: &std::path::Path, layer: &str, tiles: &[(u8, u32, u32, f32)]) -> u64 {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut w = store::pack::PackWriter::create(path, serde_json::json!({"layer": layer}), false).unwrap();
+        for &(z, x, y, sl) in tiles {
+            let b = pipeline::shade_codec::encode(&vec![roadcore::shade::Px { s: sl, u: [1.0, 0.0] }; 65536]).unwrap();
+            w.add(z, x, y, &b, b.len() as u32).unwrap();
+        }
+        w.finish().unwrap();
+        std::fs::metadata(path).unwrap().len()
     }
 
+    /// Shading tiles as stored, every level; a tile the layer lacks from its nearest stored
+    /// ancestor, scaled up (a deep one whose pack can't be read too); outside the layer, flat.
     #[test]
-    fn deep_slope_is_the_deep_terrains_and_meets_the_coarse_slope_without_a_seam() {
+    fn shading_is_served_as_stored_else_from_its_ancestor() {
         let (root, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        nas(root.path());
+        let (hi, deep) = ("layers/slope/hi/6-18-22", "layers/slope/deep/10-296-360");
+        let (hc, dc) = (format!("{hi}.0000000000000001.pack"), format!("{deep}.0000000000000002.pack"));
+        let hs = shade_pack(&root.path().join(&hc), "slope", &[(12, 296 * 4, 360 * 4, 30.0)]);
+        let ds = shade_pack(&root.path().join(&dc), "slope", &[(13, 296 * 8, 360 * 8, 80.0)]);
+        let mut cat = store::catalog::Catalog::new(1);
+        let mut l = store::catalog::Layer {
+            encoding: pipeline::shade_codec::ENCODING.into(),
+            maxzoom: 16,
+            ..Default::default()
+        };
+        l.hi.insert("6/18/22".into(), hi.into());
+        l.deep.insert("10/296/360".into(), deep.into());
+        cat.layers.insert("slope".into(), l);
+        for (lg, c, size) in [(hi, &hc, hs), (deep, &dc, ds)] {
+            cat.files.insert(lg.into(), store::catalog::FileRef { file: c.clone(), size, ..Default::default() });
+        }
+        store::catalog::write_copy(&root.path().join("catalog"), &cat).unwrap();
         let s = crate::test_state(home.path(), root.path());
-        let q =
-            |z: u8, x: u32, y: u32| roadcore::slope::decode_slope4(&slope_png(&s, z, x, y).unwrap().unwrap()).unwrap();
-        // The fixture's tiles are level: 50 m at z12, 100 m in its one deep z13 tile, so the deep
-        // tile's slope is its own (flat inside) and its east edge meets the 50 m overzoomed beside
-        // it, which the tile beside sees too.
-        let fine = q(13, 296 * 8, 360 * 8);
-        assert_eq!(fine[128 * 256 + 128][0], 0.0);
-        assert!(fine[128 * 256 + 255][0] > 0.0, "the step to the 50 m beside it");
-        let beside = q(13, 296 * 8 + 1, 360 * 8);
-        assert!(beside[128 * 256][0] > 0.0, "the same step, seen from beside it");
-        assert_eq!(beside[128 * 256 + 128][0], 0.0);
+        let steep = |z: u8, x: u32, y: u32| {
+            let b = match s.data.tile("slope", z, x, y) {
+                Ok(Some((b, _))) => b.bytes().to_vec(),
+                _ => shade_from_ancestor(&s, "slope", z, x, y).unwrap().unwrap_or_default(),
+            };
+            (!b.is_empty()).then(|| roadcore::shade::code(roadcore::shade::decode(&b).unwrap()[1000]))
+        };
+        let code = |sl: f32| Some(roadcore::shade::code(roadcore::shade::Px { s: sl, u: [1.0, 0.0] }));
+        assert_eq!(steep(12, 296 * 4, 360 * 4), code(30.0));
+        assert_eq!(steep(13, 296 * 8, 360 * 8), code(80.0));
+        assert_eq!(steep(15, 296 * 32 + 1, 360 * 32), code(80.0), "z15 from the deep z13");
+        assert_eq!(steep(13, 296 * 8 + 1, 360 * 8), code(30.0), "a z13 the deep pack lacks, from z12");
+        assert_eq!(steep(12, 0, 0), None, "outside it: none (served flat)");
+        // The deep pack unreadable (the NAS away, no mirror of it): from the hi pack's z12.
+        std::fs::remove_file(root.path().join(&dc)).unwrap();
+        let s = crate::test_state(home.path(), root.path());
+        assert!(s.data.tile("slope", 13, 296 * 8, 360 * 8).is_err());
+        assert_eq!(
+            shade_from_ancestor(&s, "slope", 14, 296 * 16, 360 * 16)
+                .unwrap()
+                .map(|b| roadcore::shade::code(roadcore::shade::decode(&b).unwrap()[0])),
+            code(30.0)
+        );
     }
 }

@@ -29,9 +29,10 @@
 //!                                --z6 tiles-of Q,…: every z6 tile of z3 tiles Q
 //!   terrain-lo <Q …> [--raw dir]  z3 tiles Q's zoomed-out terrain (lo packs, z3–8) from their
 //!                                z6 tiles' mids
-//!   slope [T …] [--regions dir] [--expect-same T,…]  the slope from the terrain packs: of z6 tiles
-//!                                T (z6 tiles: each one's hi pack, z9–11, and its mid), or of z3 tiles'
-//!                                whole (default: all of them)
+//!   slope [T …] [--regions dir] [--expect-same T,…]  the shading from the terrain packs: of z6
+//!                                tiles T (each one's hi pack, z9–12, its deep packs, z13–16 where
+//!                                the terrain has them, and its mid), or of z3 tiles' whole, their z6
+//!                                tiles then their assembly (default: all of them)
 //!   slope-lo <Q …>               z3 tiles Q's zoomed-out slope (lo packs, z3–8) from their z6 tiles'
 //!                                mids and the lo pack as it is
 //!   terrain-root, slope-root     their z0–2 root packs, from the lo packs' z3 tiles
@@ -1682,7 +1683,7 @@ fn layer_encoding(layer: &str) -> &'static str {
     match layer {
         "roads" | "rails" => "rt7",
         "terrain" => pipeline::terrain_codec::ENCODING,
-        "slope" => "slope4-png",
+        "slope" => pipeline::shade_codec::ENCODING,
         "labels" => "mvt",
         "water" => "water-png",
         l if l.starts_with("trees-") => "terrarium-webp",
@@ -1693,6 +1694,7 @@ fn layer_encoding(layer: &str) -> &'static str {
         "buildings-field" => pipeline::bld::field::ENCODING,
         pipeline::depth::LAYER => pipeline::depth::ENCODING,
         pipeline::depth::CLASS_LAYER => pipeline::depth::CLASS_ENCODING,
+        pipeline::depth::SHADE_LAYER => pipeline::shade_codec::ENCODING,
         _ => "unknown",
     }
 }
@@ -1704,8 +1706,8 @@ fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
         "terrain" | "labels" => (0, 12),
         // Stored to z9; the server makes deeper ones on demand (pipeline::water).
         "water" => (0, pipeline::water::STORED_MAXZ),
-        // Stored to z11; the server makes z12 on demand.
-        "slope" => (0, 11),
+        // To z12, and past it where the terrain has deep levels (their packs: its maxzoom below).
+        "slope" => (0, 12),
         l if l.starts_with("trees-") => (4, 12),
         // Analysis grids, not served.
         l if l.starts_with("grid-") => (11, 11),
@@ -1720,7 +1722,7 @@ fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
         "buildings-field" => (pipeline::bld::field::LEVEL_MIN, pipeline::bld::field::LEVEL_MAX),
         // Depth: z3–8 in the lo packs, z9–16 in the hi where a source has that detail; the server
         // makes the others from their ancestors (pipeline::depth).
-        pipeline::depth::LAYER | pipeline::depth::CLASS_LAYER => pipeline::depth::ZOOMS,
+        pipeline::depth::LAYER | pipeline::depth::CLASS_LAYER | pipeline::depth::SHADE_LAYER => pipeline::depth::ZOOMS,
         _ => return None,
     })
 }
@@ -1865,6 +1867,11 @@ fn catalog(
             })
             .collect();
         x.maxzoom = x.native_zoom.values().copied().fold(x.maxzoom, u8::max);
+    }
+    // (The terrain's shading goes as deep: pipeline::slope_pack.)
+    let deepest = layers.get("terrain").map(|x| x.maxzoom);
+    if let (Some(x), Some(z)) = (layers.get_mut("slope").filter(|x| !x.deep.is_empty()), deepest) {
+        x.maxzoom = x.maxzoom.max(z);
     }
     global.extend(worldwide_globals(&out.manifest));
     drop(p);
@@ -5058,7 +5065,7 @@ fn terrain_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
 }
 
 /// slope <6/x/y …> [--expect-same T,…]: slope's z6 tiles (pipeline::slope_pack::build_piece); of a z6
-/// tile the coverage has left, its hi pack and mid dropped (pipeline::slope_pack::drop_piece).
+/// tile the coverage has left, its hi pack, deep packs and mid dropped (pipeline::slope_pack::drop_piece).
 fn slope_pieces(
     out: &mut Out,
     cov: &pipeline::coverage::Coverage,
@@ -5256,32 +5263,14 @@ fn slope_step(out: &mut Out, args: &[String]) -> Result<()> {
     if let Some((ts, same)) = pieces_named(&cov, args)? {
         return slope_pieces(out, &cov, &ts, &same);
     }
+    // A z3 tile's whole run (by hand): its z6 tiles, then its assembly.
     let by_q = terrain_targets(&cov, args)?;
     eprintln!("slope: {} z6 tiles in {} z3 packs", by_q.values().map(Vec::len).sum::<usize>(), by_q.len());
-    // Its parts, for the status (as terrain's): each z3 tile's slope worked out, then written. Each
-    // says how far it is.
-    let n = by_q.len();
-    let of = |k: usize| if n > 1 { format!(" ({} of {n})", k + 1) } else { String::new() };
-    let mut names: Vec<String> = Vec::new();
-    for k in 0..n {
-        names.push(format!("Working out the z3 tile's slope{}", of(k)));
-        names.push(format!("Writing the z3 tile's slope to the NAS{}", of(k)));
-    }
-    let names: Vec<&str> = names.iter().map(String::as_str).collect();
-    for (k, (q, list)) in by_q.into_iter().enumerate() {
-        pipeline::control::safe_point("slope");
-        pipeline::agent::jobs::part(2 * k, &names);
-        let writing = std::sync::atomic::AtomicBool::new(false);
-        let t = cost_start("slope", &format!("3/{}/{}", q.0, q.1));
-        let r = pipeline::slope_pack::build_q_with(out, q, &list, &|what, done, total| {
-            if what == "packs written" && !writing.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                pipeline::agent::jobs::part(2 * k + 1, &names);
-            }
-            pipeline::agent::jobs::report(done, total, what);
-        })?;
-        pipeline::control::done("slope", &format!("3/{}/{}", q.0, q.1));
-        eprintln!("slope 3/{}/{}: {r:?} ({:.0?})", q.0, q.1, t.elapsed());
-        note_cost("slope", &format!("3/{}/{}", q.0, q.1), t);
+    for (q, list) in by_q {
+        let ts: Vec<TileId> = list.iter().map(|&(x, y)| TileId { z: 6, x, y }).collect();
+        slope_pieces(out, &cov, &ts, &BTreeSet::new())?;
+        let r = pipeline::slope_pack::build_lo(out, q, &list, &|_, _, _| {})?;
+        eprintln!("slope-lo 3/{}/{}: {r:?}", q.0, q.1);
     }
     Ok(())
 }

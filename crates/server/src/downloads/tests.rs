@@ -447,6 +447,10 @@ fn put_deep(root: &std::path::Path, cat: &mut Catalog, x: u32, y: u32, h: f32) {
     let t = cat.layers.get_mut("terrain").unwrap();
     t.deep.insert(format!("10/{x}/{y}"), logical);
     t.native_zoom.insert(format!("10/{x}/{y}"), 13);
+    // (Its shading's deep pack, the slope layer's: its bytes don't matter here.)
+    let shading = format!("layers/slope/deep/10-{x}-{y}");
+    put_bytes(root, cat, &shading, "pack", shading.as_bytes());
+    cat.layers.entry("slope".into()).or_default().deep.insert(format!("10/{x}/{y}"), shading);
 }
 
 #[test]
@@ -458,7 +462,7 @@ fn a_regions_terrain_detail_is_the_deep_packs_near_it_and_the_share_they_cover()
     put_deep(nas.path(), &mut cat, 511, 340, 100.0);
     put_deep(nas.path(), &mut cat, 600, 340, 1.0);
     let (f, cover) = detail_of(&cat, &[rect(-0.3, 51.2, -0.1, 51.6)]);
-    assert_eq!(logicals(&f), ["layers/terrain/deep/10-511-340"]);
+    assert_eq!(logicals(&f), ["layers/slope/deep/10-511-340", "layers/terrain/deep/10-511-340"]);
     // Its share: the part of the box north of row 341's edge (in Web Mercator).
     let (y0, y1) = (lat_y(51.6) * 16.0, lat_y(51.2) * 16.0);
     assert!(y0 < 341.0 && y1 > 341.0 && lon_x(-0.3) * 16.0 > 511.0 && lon_x(-0.1) * 16.0 < 512.0);

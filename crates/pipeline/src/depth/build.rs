@@ -5,6 +5,7 @@
 //! - **depth-lo** (a z3 tile Q): z6–8 composed from the sources on the basemap's water (the zooms
 //!   the basemap draws OSM's water at); z3–5 each the mean of its children's pixels (their class
 //!   the first of the four that has one), as the terrain's assembly makes its coarse levels.
+//! - **Both** make the floor's shading of their tiles too (`shading`: the `depth-shade` layer).
 //! - **depth** (a z6 tile T): z9–16, a block only where a source has a grid of that zoom or finer
 //!   (`Source::max_zoom_in`), its water the basemap's (z15–16: its z14 tile's polygons, finer). A
 //!   capped pixel takes the stored level of its zoom scaled up as the map's fallback does: from this
@@ -28,11 +29,12 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-/// The depth piece's version: bumped with any change to the bytes `build_hi` writes (3: a grid
-/// lined up with no overview sampled from one askew, `grids::level_for`, task #433).
-pub const DEPTH_V: u32 = 3;
-/// The depth assembly's (`build_lo`).
-pub const DEPTH_LO_V: u32 = 3;
+/// The depth piece's version: bumped with any change to the bytes `build_hi` writes (4: the
+/// floor's shading, `shading`, task #632; 3: a grid lined up with no overview sampled from one
+/// askew, `grids::level_for`, task #433). Its key names crate::shade_codec::version too.
+pub const DEPTH_V: u32 = 4;
+/// The depth assembly's (`build_lo`; 4: the floor's shading).
+pub const DEPTH_LO_V: u32 = 4;
 /// How far from the coverage depth is built (km): 200 nautical miles, a region's EEZ's reach.
 pub const REACH_KM: f64 = 370.4;
 /// The zooms a piece makes.
@@ -537,20 +539,29 @@ fn level_blocks(
     Ok(kept)
 }
 
-/// Writes the layers' packs of `scope` under `root` from the tiles made, replacing or dropping
-/// what the manifest named; how many tiles.
+/// Writes the layers' packs of `scope` under `root` from the tiles made and their shading
+/// (`shading`), replacing or dropping what the manifest named; how many tiles.
 fn put_packs(
     out: &mut Out,
     made: &BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>,
+    shade: &BTreeMap<(u8, u32, u32), Vec<u8>>,
     scope: &str,
     root: (u8, u32, u32),
 ) -> Result<usize> {
     let _p = crate::timings::phase("packs written", crate::timings::Class::NasWrite);
-    for (layer, enc, which) in [(LAYER, ENCODING, 0usize), (CLASS_LAYER, CLASS_ENCODING, 1)] {
-        let mut it = made.iter().map(|(&(z, x, y), p)| {
-            let b = if which == 0 { &p.0 } else { &p.1 };
-            (z, x, y, b.clone(), 0u32)
-        });
+    for (layer, enc, which) in [
+        (LAYER, ENCODING, 0usize),
+        (CLASS_LAYER, CLASS_ENCODING, 1),
+        (super::SHADE_LAYER, crate::shade_codec::ENCODING, 2),
+    ] {
+        let mut it: Box<dyn Iterator<Item = (u8, u32, u32, Vec<u8>, u32)>> = if which == 2 {
+            Box::new(shade.iter().map(|(&(z, x, y), b)| (z, x, y, b.clone(), 0u32)))
+        } else {
+            Box::new(made.iter().map(move |(&(z, x, y), p)| {
+                let b = if which == 0 { &p.0 } else { &p.1 };
+                (z, x, y, b.clone(), 0u32)
+            }))
+        };
         let logical = format!("layers/{layer}/{scope}/{}-{}-{}", root.0, root.1, root.2);
         match crate::layers::write_pack_local(out, layer, enc, false, scope, root, &mut it)? {
             Some(p) => {
@@ -622,7 +633,8 @@ pub fn build_lo(
     q: (u32, u32),
 ) -> Result<usize> {
     let made = compose_lo(out, sources, water, local, q, LO_COMPOSED.1)?;
-    put_packs(out, &made, "lo", (3, q.0, q.1))
+    let shade = shading(&made, 3)?;
+    put_packs(out, &made, &shade, "lo", (3, q.0, q.1))
 }
 
 /// The assembly of z3 tile `q`'s tiles, made, unwritten: z6 to `upto` (at most z8) composed, the
@@ -686,7 +698,111 @@ pub fn build_hi(
     t: (u32, u32),
 ) -> Result<usize> {
     let made = compose_hi(out, sources, water, local, t, HI.1)?;
-    put_packs(out, &made, "hi", (6, t.0, t.1))
+    let shade = shading(&made, HI.0)?;
+    put_packs(out, &made, &shade, "hi", (6, t.0, t.1))
+}
+
+/// The floor's shading (the `depth-shade` layer: crate::slope_pack's pyramid, as the terrain's)
+/// of a job's depth tiles `made`, from zoom `top` down: at each place's finest stored level each
+/// pixel's steepness and direction by Horn's method on the depth, a pixel without data taking its
+/// nearest's in the tile (`filled`: no cliff at the shore, which the map draws only in the water)
+/// and a neighbour tile the job didn't make read as the tile's own edge; each coarser level the mean
+/// of the four pixels beneath it where its children cover it, else its own depth's.
+pub fn shading(
+    made: &BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>,
+    top: u8,
+) -> Result<BTreeMap<(u8, u32, u32), Vec<u8>>> {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    let _p = crate::timings::phase("the floor's shading", crate::timings::Class::Compute);
+    let mut tiles: HashSet<(u8, u32, u32)> = HashSet::new();
+    for &(z, x, y) in made.keys().filter(|k| k.0 >= top) {
+        for dz in 0..=(z - top) {
+            tiles.insert((z - dz, x >> dz, y >> dz));
+        }
+    }
+    let cache: Mutex<HashMap<(u8, u32, u32), Option<Arc<Vec<f32>>>>> = Mutex::new(HashMap::new());
+    let at = |z: u8, x: u32, y: u32| -> Option<Arc<Vec<f32>>> {
+        if let Some(v) = cache.lock().unwrap().get(&(z, x, y)) {
+            return v.clone();
+        }
+        let v = made.get(&(z, x, y)).and_then(|(d, _)| match fall::decode(Kind::Terrarium, d) {
+            Ok(Grid::F(v)) => filled(v).map(Arc::new),
+            _ => None,
+        });
+        let mut c = cache.lock().unwrap();
+        if c.len() > 2048 {
+            c.clear();
+        }
+        c.insert((z, x, y), v.clone());
+        v
+    };
+    let own = |z: u8, x: u32, y: u32| crate::slope_pack::horn(&|x, y| at(z, x, y), z, x, y);
+    let out = Mutex::new(Vec::new());
+    let done = HashMap::new();
+    let mut roots: Vec<(u8, u32, u32)> = tiles.iter().copied().filter(|t| t.0 == top).collect();
+    roots.sort_unstable();
+    for (z, x, y) in roots {
+        crate::slope_pack::Pyramid { own: &own, tiles: &tiles, out: &out, tick: &|| {}, done: &done }.tile(z, x, y);
+    }
+    Ok(out.into_inner().unwrap().into_iter().map(|(z, x, y, b)| ((z, x, y), b)).collect())
+}
+
+/// A depth tile's values with each pixel without data (`NODATA_MIN` and over) given its nearest's
+/// with data (two passes of a chamfer distance, 1 and √2); None with none.
+fn filled(mut v: Vec<f32>) -> Option<Vec<f32>> {
+    const N: usize = 256;
+    let mut src: Vec<i32> = (0..N * N).map(|i| if v[i] < NODATA_MIN { i as i32 } else { -1 }).collect();
+    if src.iter().all(|&s| s < 0) {
+        return None;
+    }
+    let mut dist: Vec<f32> = src.iter().map(|&s| if s >= 0 { 0.0 } else { f32::MAX }).collect();
+    let mut relax = |i: usize, j: usize, cost: f32, src: &mut Vec<i32>| {
+        if src[j] >= 0 && dist[j] + cost < dist[i] {
+            dist[i] = dist[j] + cost;
+            src[i] = src[j];
+        }
+    };
+    for y in 0..N {
+        for x in 0..N {
+            let i = y * N + x;
+            if x > 0 {
+                relax(i, i - 1, 1.0, &mut src);
+            }
+            if y > 0 {
+                relax(i, i - N, 1.0, &mut src);
+                if x > 0 {
+                    relax(i, i - N - 1, std::f32::consts::SQRT_2, &mut src);
+                }
+                if x < N - 1 {
+                    relax(i, i - N + 1, std::f32::consts::SQRT_2, &mut src);
+                }
+            }
+        }
+    }
+    for y in (0..N).rev() {
+        for x in (0..N).rev() {
+            let i = y * N + x;
+            if x < N - 1 {
+                relax(i, i + 1, 1.0, &mut src);
+            }
+            if y < N - 1 {
+                relax(i, i + N, 1.0, &mut src);
+                if x < N - 1 {
+                    relax(i, i + N + 1, std::f32::consts::SQRT_2, &mut src);
+                }
+                if x > 0 {
+                    relax(i, i + N - 1, std::f32::consts::SQRT_2, &mut src);
+                }
+            }
+        }
+    }
+    for i in 0..N * N {
+        if v[i] >= NODATA_MIN {
+            v[i] = v[src[i] as usize];
+        }
+    }
+    Some(v)
 }
 
 /// The piece of z6 tile `t`'s tiles, made, unwritten: z9 to `upto` (at most z16) composed (`upto`

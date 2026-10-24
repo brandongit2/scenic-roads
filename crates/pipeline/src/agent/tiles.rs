@@ -547,10 +547,14 @@ pub struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
-    /// The tiles of the pack holding (z, x, y): root z0–2, lo z3–8 by z3 tile, hi z9 and finer by
-    /// z6 tile (crate::layers::pack_of).
+    /// The tiles of the pack holding (z, x, y): root z0–2, lo z3–8 by z3 tile, hi z9–12 by z6 tile
+    /// (crate::layers::pack_of), deep past z12 by z10 tile (crate::terrain_deep).
     fn pack(&mut self, z: u8, x: u32, y: u32) -> Found<'a> {
-        let (scope, pz, px, py) = crate::layers::pack_of(z, x, y);
+        let d = crate::terrain_deep::PACK_Z;
+        let (scope, pz, px, py) = match crate::layers::pack_of(z, x, y) {
+            _ if z > d + 2 => ("deep", d, x >> (z - d), y >> (z - d)),
+            p => p,
+        };
         let (tiles, m) = (self.tiles, self.m);
         self.packs
             .entry((pz, px, py))
@@ -575,6 +579,21 @@ impl<'a> Reader<'a> {
         let Some(t) = self.pack(z, x, y)? else { return Ok(None) };
         let k = store::pack::tile_key(z, x, y);
         Ok(t.binary_search_by_key(&k, |e| e.0).ok().map(|i| t[i].1))
+    }
+
+    /// The tiles of the deep packs under z6 tile `t` (crate::terrain_deep), from their indexes.
+    pub fn deep_under(&mut self, t: (u32, u32)) -> Result<Vec<(u8, u32, u32)>, Unread> {
+        let d = crate::terrain_deep::PACK_Z;
+        let k = d - 6;
+        let mut out = Vec::new();
+        for x in t.0 << k..(t.0 + 1) << k {
+            for y in t.1 << k..(t.1 + 1) << k {
+                if let Some(ts) = self.pack(d + 3, x << 3, y << 3)? {
+                    out.extend(ts.iter().map(|&(key, _)| store::pack::tile_zxy(key)));
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// `TerrainTiles::resolve`.

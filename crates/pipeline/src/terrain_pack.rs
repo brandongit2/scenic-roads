@@ -339,9 +339,10 @@ impl ManifestTiles {
         match z {
             0..=2 => format!("layers/{layer}/root/0-0-0"),
             3..=8 => format!("layers/{layer}/lo/3-{}-{}", x >> (z - 3), y >> (z - 3)),
-            // (The terrain's deep levels, by z10 tile: crate::terrain_deep.)
-            _ if layer == "terrain" && z > deep + 2 => {
-                crate::terrain_deep::pack_logical(x >> (z - deep), y >> (z - deep))
+            // (The terrain's deep levels and their shading, by z10 tile: crate::terrain_deep,
+            // crate::slope_pack.)
+            _ if (layer == "terrain" || layer == "slope") && z > deep + 2 => {
+                format!("layers/{layer}/deep/{deep}-{}-{}", x >> (z - deep), y >> (z - deep))
             }
             _ => format!("layers/{layer}/hi/6-{}-{}", x >> (z - 6), y >> (z - 6)),
         }
@@ -362,7 +363,18 @@ impl ManifestTiles {
 
     /// The open pack holding tile (z, x, y), if the manifest has it.
     fn pack(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Option<std::sync::Arc<OpenPack>>> {
-        let logical = Self::logical(&self.layer, z, x, y);
+        self.open_logical(Self::logical(&self.layer, z, x, y))
+    }
+
+    /// The tiles of pack `logical`, from its index (none when the manifest lacks it).
+    pub fn tiles_in(&self, logical: &str) -> anyhow::Result<Vec<(u8, u32, u32)>> {
+        Ok(self
+            .open_logical(logical.to_string())?
+            .map_or_else(Vec::new, |e| e.idx.entries.iter().map(|e| e.zxy()).collect()))
+    }
+
+    /// Pack `logical` open, if the manifest has it.
+    fn open_logical(&self, logical: String) -> anyhow::Result<Option<std::sync::Arc<OpenPack>>> {
         let mut open = self.open.lock().unwrap();
         if !open.contains_key(&logical) {
             let v = match self.files.get(&logical) {
@@ -3014,8 +3026,9 @@ pub(crate) mod tests {
                             if layer == "terrain" {
                                 decode_terrain(&b).ok().map(|v| v.iter().map(|f| f.to_bits()).collect())
                             } else {
-                                roadcore::slope::decode_slope4(&b)
-                                    .map(|v| v.iter().flat_map(|q| q.map(f32::to_bits)).collect())
+                                roadcore::shade::decode(&b)
+                                    .ok()
+                                    .map(|v| roadcore::shade::rgb(&v).into_iter().map(u32::from).collect())
                             }
                         };
                         let first = px(f0, ix0);

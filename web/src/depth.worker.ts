@@ -7,10 +7,10 @@
 //   relief   depth, reaching REACH px past its data (?mask=1: on land too, the map drawing it
 //            only in its water tiles' water; else in the basemap's water); elsewhere +12,000 m,
 //            which the colour ramp leaves transparent
-//   shade    ?mask=1: every pixel its depth or its nearest; else depth in the water, 0 on land,
-//            water without data its nearest depth, so neither casts a false cliff
-//   contour  a vector tile of depth contours (maplibre-contour's isolines, contour/, over the shade values of
-//            the tile and its eight neighbours, so lines meet across tiles)
+//   contour  a vector tile of depth contours (maplibre-contour's isolines, contour/, over the depth in
+//            the water, 0 on land and water without data its nearest depth, of the tile and its
+//            eight neighbours, so lines meet across tiles)
+// (The floor's shading is the build's: depth.ts.)
 // and, on request, the depth, class and source at a point (the readout), depth histograms of the
 // tiles in view (the colour scale fitted to the view) and the sources in them (the attribution).
 import { HeightTile } from './contour/height-tile';
@@ -20,7 +20,7 @@ import { encodeLines, readPolygons } from './mvt';
 
 export type DepthMsg =
   | { type: 'init'; base: string; depth: string; cls: string }
-  | { type: 'tile'; id: number; kind: 'relief' | 'shade' | 'contour'; z: number; x: number; y: number; q: Record<string, string> }
+  | { type: 'tile'; id: number; kind: 'relief' | 'contour'; z: number; x: number; y: number; q: Record<string, string> }
   | { type: 'probe'; id: number; z: number; x: number; y: number; px: number; py: number }
   | { type: 'hist'; id: number; tiles: [number, number, number][] }
   | { type: 'cancel'; id: number };
@@ -77,7 +77,7 @@ const post = (r: DepthReply, transfer: Transferable[] = []) => (self as unknown 
 async function handle(m: Exclude<DepthMsg, { type: 'init' } | { type: 'cancel' }>) {
   if (m.type === 'tile') {
     if (cancelled.delete(m.id)) return;
-    const data = m.kind === 'contour' ? await contourTile(m.z, m.x, m.y, m.q) : await rasterTile(m.kind, m.z, m.x, m.y, m.q.mask === '1');
+    const data = m.kind === 'contour' ? await contourTile(m.z, m.x, m.y, m.q) : await reliefTile(m.z, m.x, m.y, m.q.mask === '1');
     post({ id: m.id, data }, [data]);
   } else if (m.type === 'probe') {
     const c = await composite(m.z, m.x, m.y);
@@ -299,9 +299,9 @@ function nearest(c: Composite, water: boolean): { src: Int32Array; dist: Float32
   return { src, dist };
 }
 
-/** Shade values for the contours and the unmasked shading: water with data as it is, land 0, water
- * without data its nearest depth in the water. */
-function shadeValues(c: Composite): Float32Array {
+/** The contours' values: water with data as it is, land 0, water without data its nearest depth in
+ * the water. */
+function contourValues(c: Composite): Float32Array {
   const { src } = nearest(c, true);
   const v = new Float32Array(N * N);
   for (let i = 0; i < N * N; i++) v[i] = c.w[i] && src[i] >= 0 ? c.d[src[i]] : 0;
@@ -324,19 +324,8 @@ function reliefValues(c: Composite, masked: boolean): Float32Array {
   return v;
 }
 
-/** Masked shade values: every pixel its depth or its nearest (no cliff at the shore, which the map
- * draws only in its water). */
-function maskedShade(c: Composite): Float32Array {
-  const { src } = nearest(c, false);
-  const v = new Float32Array(N * N);
-  for (let i = 0; i < N * N; i++) v[i] = src[i] >= 0 ? c.d[src[i]] : 0;
-  return v;
-}
-
-async function rasterTile(kind: 'relief' | 'shade', z: number, x: number, y: number, masked: boolean): Promise<ArrayBuffer> {
-  const c = await composite(z, x, y);
-  if (kind === 'relief') return encode(terrarium(reliefValues(c, masked)));
-  return encode(terrarium(masked ? maskedShade(c) : shadeValues(c)));
+async function reliefTile(z: number, x: number, y: number, masked: boolean): Promise<ArrayBuffer> {
+  return encode(terrarium(reliefValues(await composite(z, x, y), masked)));
 }
 
 // ---- contours ---------------------------------------------------------------------------------
@@ -360,7 +349,7 @@ async function contourTile(z: number, x: number, y: number, q: Record<string, st
       if (ty < 0 || ty >= n2) return undefined;
       const c = await composite(z, (x + dx + n2) % n2, ty);
       if (c.empty) return undefined;
-      return HeightTile.fromRawDem({ width: N, height: N, data: shadeValues(c) });
+      return HeightTile.fromRawDem({ width: N, height: N, data: contourValues(c) });
     })),
   );
   if (!tiles[4]) return new ArrayBuffer(0);

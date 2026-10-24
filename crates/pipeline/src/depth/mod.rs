@@ -9,6 +9,9 @@
 //! - **`depth-class`** (8-bit grey PNG): a byte a pixel: the class (bits 0–2: `C_NONE`, measured,
 //!   interpolated, estimated, filled to the shore), dries at low tide (bit 3), the source's code
 //!   (bits 4–7, its declaration's `code`).
+//! - **`depth-shade`** (crate::shade_codec, as the terrain's shading: crate::slope_pack): the
+//!   floor's steepness and direction, which the map's depth shading reads, made with the depth
+//!   tiles (`build`'s `shading`).
 //!
 //! Stored only where a pixel has detail of the tile's zoom (every water tile up to z8): a tile the
 //! layer lacks is made from its nearest stored ancestor (`fall`) by the server, the same way the
@@ -26,6 +29,8 @@ pub mod grids;
 pub const LAYER: &str = "depth";
 /// The class layer's.
 pub const CLASS_LAYER: &str = "depth-class";
+/// The floor's shading's (`depth-shade`; encoding crate::shade_codec::ENCODING).
+pub const SHADE_LAYER: &str = "depth-shade";
 /// Their encodings in the packs' meta and the catalog.
 pub const ENCODING: &str = "terrarium-png";
 pub const CLASS_ENCODING: &str = "class-png";

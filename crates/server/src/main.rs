@@ -519,6 +519,7 @@ async fn main() -> Result<()> {
         .route("/tiles/slope/{z}/{x}/{y}", get(terrain::slope_tile))
         .route("/tiles/depth/{z}/{x}/{y}", get(depth::depth_tile))
         .route("/tiles/depth-class/{z}/{x}/{y}", get(depth::class_tile))
+        .route("/tiles/depth-shade/{z}/{x}/{y}", get(terrain::depth_shade_tile))
         .route("/api/railfreq", get(rail_freq_h))
         .route("/api/park", get(details::park))
         .route("/api/marks/view", axum::routing::post(marks::view))
@@ -765,6 +766,7 @@ fn meta_json(s: &AppState) -> serde_json::Value {
         ("buildings.tiles", "buildings"),
         ("depth.tiles", "depth"),
         ("depth-class.tiles", "depth-class"),
+        ("depth-shade.tiles", "depth-shade"),
     ] {
         if cat.layers.contains_key(layer) {
             let v = s.data.layer_version(layer);

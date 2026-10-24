@@ -26,7 +26,10 @@ use std::path::Path;
 /// finer, the water flattened from the pass's basemap (the digest of what each target reads of it in
 /// the key: `water_key`; docs/steps.md §2, Terrain).
 pub const TERRAIN_V: u32 = 6;
-pub const SLOPE_V: u32 = 1;
+/// Slope 2: the shading pyramid (task #632): each pixel's mean steepness and direction
+/// (roadcore::shade), every level stored, z12 and the deep levels too (crate::slope_pack), as
+/// lossless WebP (crate::shade_codec: its version in the key).
+pub const SLOPE_V: u32 = 2;
 /// 2: elevations up to 6,053 m (`final.u16`, base packs' `elevu`; were clamped at ±3,200 m).
 /// 3: heritage sites and area flags from the pass's heritage-sites job (crate::heritage), the
 /// flags rasterised per z6 tile.
@@ -1225,10 +1228,11 @@ pub fn region_steps(
 /// assembly makes from the same z6 tiles' mids. Terrain's 2: lossless WebP, to the decimetre
 /// (crate::terrain_codec, its version in the key).
 pub const TERRAIN_LO_V: u32 = 2;
-/// Slope's 2: an assembly's z6 tiles that aren't its z6 tiles' made from their terrain, never kept
+/// Slope's 3: the shading pyramid (`SLOPE_V` 2), lossless WebP (crate::shade_codec, its version in
+/// the key). 2: an assembly's z6 tiles that aren't its z6 tiles' made from their terrain, never kept
 /// from the lo pack as an earlier run stored them, and their z7–8 tiles not kept
 /// (crate::slope_pack::assemble).
-pub const SLOPE_LO_V: u32 = 2;
+pub const SLOPE_LO_V: u32 = 3;
 
 /// Terrain's and slope's targets, each with its key, done or not (docs/steps.md §2, Terrain): a
 /// z6 tile per z6 tile near the coverage (`coverage_tiles`), an assembly per z3 tile with z6 tiles.
@@ -1553,15 +1557,17 @@ pub fn slope_lo_key(q: (u32, u32), mids: &[String], terrain_lo: &str) -> String 
     h(&[
         &format!("slope-lo {SLOPE_LO_V}"),
         &format!("slope {SLOPE_V}"),
+        &crate::shade_codec::version(),
         &format!("3/{}/{}", q.0, q.1),
         &mids.join(","),
         terrain_lo,
     ])
 }
 
-/// Slope z6 tile `t`'s key (z6 tile (x, y)): the step's version, its terrain hi pack (which tiles of
-/// it there are: what it works out) and every terrain tile it can read, by content
-/// (`slope_piece_reads`). Kept by `tiles` with the packs those can be in.
+/// Slope z6 tile `t`'s key (z6 tile (x, y)): the step's version and the codec
+/// (crate::shade_codec::version), its terrain hi pack (which tiles of it there are: what it works
+/// out) and every terrain tile it can read, its deep ones too, by content (`slope_piece_reads`).
+/// Kept by `tiles` with the packs those can be in.
 pub fn slope_piece_key(t: (u32, u32), m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> Result<String, Unread> {
     let ts = format!("6/{}/{}", t.0, t.1);
     let hi = m.get(&format!("layers/terrain/hi/6-{}-{}", t.0, t.1)).map(String::as_str).unwrap_or("-").to_string();
@@ -1569,7 +1575,7 @@ pub fn slope_piece_key(t: (u32, u32), m: &BTreeMap<String, String>, tiles: &Terr
         let reads = slope_piece_reads(t, m, tiles)?;
         let lines: Vec<String> =
             reads.iter().map(|r| r.map_or("-".to_string(), |(z, x, y, h)| format!("{z}/{x}/{y} {h:016x}"))).collect();
-        let mut parts = vec![format!("slope {SLOPE_V}"), ts.clone(), hi.clone()];
+        let mut parts = vec![format!("slope {SLOPE_V}"), crate::shade_codec::version(), ts.clone(), hi.clone()];
         parts.extend(lines);
         let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
         Ok(h(&refs))
@@ -1578,13 +1584,14 @@ pub fn slope_piece_key(t: (u32, u32), m: &BTreeMap<String, String>, tiles: &Terr
 
 /// What slope z6 tile `t`'s reads (`slope_piece_reads`) are worked out from, as a digest, for
 /// `TerrainTiles::memo`: the content names of the packs they can be in (its own and its edge
-/// neighbours' hi packs, their z3 tiles' lo packs, the root).
+/// neighbours' hi packs and deep packs, their z3 tiles' lo packs, the root).
 pub fn slope_piece_from(t: (u32, u32), m: &BTreeMap<String, String>) -> String {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-").to_string();
     let mut packs: BTreeSet<String> = BTreeSet::new();
     for (x, y) in std::iter::once(t).chain(edge_neighbours(6, t.0, t.1)) {
         packs.insert(get(&format!("layers/terrain/hi/6-{x}-{y}")));
         packs.insert(get(&format!("layers/terrain/lo/3-{}-{}", x >> 3, y >> 3)));
+        packs.extend(crate::terrain_deep::named_under(m, 6, x, y).iter().map(|l| format!("{l}={}", get(l))));
     }
     packs.insert(get("layers/terrain/root/0-0-0"));
     let from = format!(
@@ -1611,12 +1618,13 @@ pub fn edge_neighbours(z: u8, x: u32, y: u32) -> Vec<(u32, u32)> {
 
 /// The terrain tiles slope z6 tile `t` (z6 tile (x, y)) can read, by content, sorted, without
 /// repeats (None: one reading no tile). It works out the tiles of its terrain hi pack (z9–12) and
-/// their ancestors down to z6, and its z6 tile (crate::slope_pack::z6 tile); of those, each z12 one and
-/// each its children don't all cover reads its own terrain and that of the tiles west, east, north
-/// and south of it, at its zoom (Horn's method's border), each resolved as crate::slope_pack::Terrain
-/// resolves it, the tile or its nearest ancestor up to eight levels up (`TerrainTiles::resolve`):
-/// the tiles along its edges in its neighbours' packs, others' z3 tiles' and the root too. (A stored
-/// tile that doesn't decode reads as its ancestor: named by its own content here.)
+/// of its deep packs (z13–16: crate::terrain_deep) and their ancestors down to z6, and its z6 tile
+/// (crate::slope_pack's piece_set); of those, each finest one and each its children don't all
+/// cover reads its own terrain and that of the tiles west, east, north and south of it, at its
+/// zoom (Horn's method's border), each resolved as crate::slope_pack::Terrain resolves it, the tile
+/// or its nearest ancestor up to eight levels up (`TerrainTiles::resolve`): the tiles along its
+/// edges in its neighbours' packs, others' z3 tiles' and the root too. (A stored tile that doesn't
+/// decode reads as its ancestor: named by its own content here.)
 pub fn slope_piece_reads(
     t: (u32, u32),
     m: &BTreeMap<String, String>,
@@ -1625,21 +1633,30 @@ pub fn slope_piece_reads(
     let mut r = tiles.reader(m);
     let mut set: BTreeSet<(u8, u32, u32)> = BTreeSet::new();
     set.insert((6, t.0, t.1));
-    for z in 9..=12u8 {
+    let mut with = |z: u8, x: u32, y: u32| {
+        for dz in 0..=(z - 6) {
+            set.insert((z - dz, x >> dz, y >> dz));
+        }
+    };
+    for z in 9..=crate::slope_pack::HI_MAX {
         let s = 1u32 << (z - 6);
         for x in t.0 * s..(t.0 + 1) * s {
             for y in t.1 * s..(t.1 + 1) * s {
                 if r.hash(z, x, y)?.is_some() {
-                    for dz in 0..=(z - 6) {
-                        set.insert((z - dz, x >> dz, y >> dz));
-                    }
+                    with(z, x, y);
                 }
             }
         }
     }
+    for (z, x, y) in r.deep_under(t)? {
+        if z > crate::slope_pack::HI_MAX && z <= crate::terrain_deep::MAX_Z {
+            with(z, x, y);
+        }
+    }
     let mut read: BTreeSet<(u8, u32, u32)> = BTreeSet::new();
     for &(z, x, y) in &set {
-        let full = z < 12 && (0..4u32).all(|k| set.contains(&(z + 1, 2 * x + (k & 1), 2 * y + (k >> 1))));
+        let full = z < crate::terrain_deep::MAX_Z
+            && (0..4u32).all(|k| set.contains(&(z + 1, 2 * x + (k & 1), 2 * y + (k >> 1))));
         if !full {
             read.insert((z, x, y));
             read.extend(edge_neighbours(z, x, y).into_iter().map(|(a, b)| (z, a, b)));
@@ -3136,12 +3153,12 @@ pub fn root_key(layer: &str, m: &BTreeMap<String, String>) -> Option<String> {
     let step = format!("{layer}-root");
     let p = format!("layers/{layer}/lo/");
     let mut ins = vec![format!("{step} 1")];
-    // (The terrain's raw z0–2 made as every terrain tile is: crate::terrain_codec.)
-    if layer == "terrain" {
-        ins.push(crate::terrain_codec::version());
-    }
+    // (The terrain's raw z0–2 made as every terrain tile is, crate::terrain_codec; the slope's as
+    // every shading tile, crate::shade_codec.)
+    ins.push(if layer == "terrain" { crate::terrain_codec::version() } else { crate::shade_codec::version() });
+    let n = ins.len();
     ins.extend(m.range(p.clone()..).take_while(|(l, _)| l.starts_with(&p)).map(|(_, c)| c.clone()));
-    if ins.len() == 1 {
+    if ins.len() == n {
         return None;
     }
     let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
@@ -3709,9 +3726,15 @@ pub struct DepthTargets {
     pub unknown: usize,
 }
 
-/// The depth's version line in its keys.
+/// The depth's version line in its keys: its steps' versions and its shading's codec
+/// (crate::shade_codec::version).
 fn depth_versions(step: &str) -> String {
-    format!("{step} {} {}", crate::depth::build::DEPTH_V, crate::depth::build::DEPTH_LO_V)
+    format!(
+        "{step} {} {}; {}",
+        crate::depth::build::DEPTH_V,
+        crate::depth::build::DEPTH_LO_V,
+        crate::shade_codec::version()
+    )
 }
 
 /// What a depth z6 tile's water digest is made from (`WaterIdx`'s from): its z6–12 tiles, as the depth

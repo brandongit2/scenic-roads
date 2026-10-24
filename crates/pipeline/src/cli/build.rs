@@ -60,7 +60,7 @@ const STEPS: &[Step] = &[
     s("terrain-lo", "<Q …> [--raw dir] [--regions dir] [--pass d]", "z3 tiles Q's zoomed-out terrain (lo packs, z3–8) from their z6 tiles' mids", &[], &["--raw", "--regions", "--pass"], ANY),
     s("terrain-z8", "[--raw dir]", "coarse terrain for the whole world", &[], &["--raw"], 0),
     s("terrain-root", "[--raw dir]", "the terrain's z0–2 root packs, from the lo packs' z3 tiles", &[], &["--raw"], 0),
-    s("slope", "[T …] [--regions dir] [--pass d] [--expect-same T,…] [--pieces-of Q,…]", "the slope from the terrain packs: of z6 tiles T, or of z3 tiles' whole (default: all of them)", &[], &["--regions", "--pass", "--expect-same", "--pieces-of"], ANY),
+    s("slope", "[T …] [--regions dir] [--pass d] [--expect-same T,…] [--pieces-of Q,…]", "the shading from the terrain packs: of z6 tiles T, or of z3 tiles' whole, their z6 tiles then their assembly (default: all of them)", &[], &["--regions", "--pass", "--expect-same", "--pieces-of"], ANY),
     s("slope-lo", "<Q …> [--regions dir] [--pass d]", "z3 tiles Q's zoomed-out slope (lo packs, z3–8)", &[], PASS_REGIONS, ANY),
     s("slope-root", "", "the slope's z0–2 root packs", &[], &[], 0),
     s("raw-pack", "[--from-tar - [--expect n]] [--cache dir] | --order | --check [--every n]", "AWS's raw tiles packed into the NAS's archives: a tar of them on stdin, else those waiting in the cache", &["--order", "--check"], &["--from-tar", "--expect", "--cache", "--every"], 0),

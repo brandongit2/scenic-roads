@@ -84,7 +84,7 @@ export type RTTObject = {
  * (Context.asyncPrograms): what they draw outlives the frame (the tiles' stencil masks, the
  * hill-shading prepared once per tile) or the frame's other draws depend on it (the depth pass).
  */
-const BLOCKING_PROGRAMS = new Set(['clippingMask', 'depth', 'hillshadePrepare', 'terrainDepth']);
+const BLOCKING_PROGRAMS = new Set(['clippingMask', 'depth', 'terrainDepth']);
 
 /**
  * @internal

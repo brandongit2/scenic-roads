@@ -74,6 +74,7 @@ pub mod reach;
 pub mod road_terrain;
 pub mod rules;
 pub mod scache;
+pub mod shade_codec;
 pub mod slope_pack;
 pub mod stage;
 pub mod stations;

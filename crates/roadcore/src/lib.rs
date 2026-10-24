@@ -18,7 +18,7 @@ pub mod grid;
 pub mod lsum;
 pub mod packs;
 pub mod scenic;
-pub mod slope;
+pub mod shade;
 pub mod tile;
 
 use anyhow::{bail, Context, Result};

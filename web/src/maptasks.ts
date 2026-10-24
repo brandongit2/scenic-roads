@@ -37,8 +37,8 @@ function labelOf(id: string): string | null {
   if (id.startsWith('depth-')) return 'Depth';
   if (id === 'lbl') return 'Labels';
   if (id === 'water') return 'Water';
-  if (id === 'dem' || id === 'dem-hs') return 'Terrain';
-  if (id === 'slope') return 'Slope';
+  if (id === 'dem' || id === 'dem-tint') return 'Terrain';
+  if (id === 'slope') return 'Shading';
   if (id === 'contours') return 'Contours';
   if (id.startsWith('trees-')) return 'Trees';
   if (id === 'stations') return 'Stations';

@@ -3,9 +3,9 @@
 // lists use), each sample weighted by the ground area it stands for. Tiles at several zooms (a
 // tilted view) each count by area, so a far coarse tile counts as much ground as it covers.
 // Water is left out: the sea (0 m) and lakes are perfectly flat in the elevation tiles, where
-// ground practically never is, so a sample equal to its four neighbours (or with no slope in any of
-// its four quarters) is water. With it, an island zoomed out to a speck in the sea had the sea's
-// 0 m take over the percentiles and the equalisation.
+// ground practically never is, so a sample equal to its four neighbours (or with no steepness at
+// all) is water. With it, an island zoomed out to a speck in the sea had the sea's 0 m take over the
+// percentiles and the equalisation.
 import type { Map as MLMap } from 'maplibre-gl';
 import { Dist } from './roads/stats';
 
@@ -38,9 +38,9 @@ function inside(poly: [number, number][]): (lng: number, lat: number) => boolean
 }
 
 /** The distribution of a raster-dem source's values over the ground in view, in `domain`; null
- * while no tile in view is loaded. `quarters`: the slope source's four slopes a pixel (roadcore::
- * slope, each 255 × √(slope ÷ max) on its own channel), each a quarter of the pixel's ground. */
-export function terrainDist(map: MLMap, source: string, domain: [number, number], outline: [number, number][], quarters: { max: number } | null = null): Dist | null {
+ * while no tile in view is loaded. `shade`: a shading source (pipeline::shade_codec), its value the
+ * mean steepness in R, 255 × √(steepness ÷ max). */
+export function terrainDist(map: MLMap, source: string, domain: [number, number], outline: [number, number][], shade: { max: number } | null = null): Dist | null {
   const tm = (map as unknown as { style?: { tileManagers?: Record<string, TileManagerLike> } }).style?.tileManagers?.[source];
   if (!tm) return null;
   const inView = inside(outline);
@@ -55,7 +55,7 @@ export function terrainDist(map: MLMap, source: string, domain: [number, number]
     const { z, x, y } = t.tileID.canonical;
     const n = 2 ** z;
     const step = dem.dim / SIDE;
-    const bytes = quarters ? new Uint8Array(dem.data.buffer, dem.data.byteOffset, dem.data.byteLength) : null;
+    const bytes = shade ? new Uint8Array(dem.data.buffer, dem.data.byteOffset, dem.data.byteLength) : null;
     for (let j = 0; j < SIDE; j++) {
       const py = (j + 0.5) * step;
       const lat = y2lat((y + py / dem.dim) / n);
@@ -67,12 +67,9 @@ export function terrainDist(map: MLMap, source: string, domain: [number, number]
         const lng = ((x + px / dem.dim) / n) * 360 - 180;
         if (!inView(lng, lat)) continue;
         if (bytes) {
-          const at = ((Math.floor(py) + 2) * dem.stride + Math.floor(px) + 2) * 4;
-          if ((bytes[at] | bytes[at + 1] | bytes[at + 2] | bytes[at + 3]) === 0) continue; // water
-          for (let ch = 0; ch < 4; ch++) {
-            const u = bytes[at + ch] / 255;
-            bins[Math.max(0, Math.min(BINS - 1, Math.floor((u * u * quarters!.max - lo) * k)))] += w / 4;
-          }
+          const u = bytes[((Math.floor(py) + 2) * dem.stride + Math.floor(px) + 2) * 4] / 255;
+          if (u === 0) continue; // water
+          bins[Math.max(0, Math.min(BINS - 1, Math.floor((u * u * shade!.max - lo) * k)))] += w;
           total += w;
           continue;
         }

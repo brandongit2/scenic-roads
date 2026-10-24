@@ -78,28 +78,14 @@ float elevationOf(vec2 coord) {
     return wsum > 0.0 ? sum / wsum : 12000.0;
 }
 
-// A premultiplied colour in linear light.
-vec3 linOf(vec4 c) {
-    return c.a > 0.0 ? pow(c.rgb / c.a, vec3(2.2)) * c.a : vec3(0.0);
-}
-
 void main() {
     vec4 col;
-    // Scenic Roads: the slope tint's tiles (known by their encoding's base shift, 32768.5: the app's
-    // basemap.ts SLOPE4_SHIFT) hold four slopes a pixel, the quarters of the ground beneath it
-    // (each channel sqrt(slope / 400)). Each is coloured through the ramp and the colours averaged
-    // in linear light, the way a screen's light adds up; zoomed out a white cliff band beside
-    // yellow slopes then reads as on screen, not as the colour of their mean slope.
+    // Scenic Roads: a shading tile (known by its encoding's base shift, 32768.5: the app's
+    // basemap.ts SHADE_SHIFT; pipeline::shade_codec) holds each pixel's mean steepness in R,
+    // sqrt-coded to 400 %, which the slope tint colours.
     if (abs(u_unpack.w - 32768.5) < 0.01) {
-        vec4 q = texture(u_image, v_pos);
-        vec4 s = q * q * 400.0;
-        vec4 c0 = rampAt(s.x);
-        vec4 c1 = rampAt(s.y);
-        vec4 c2 = rampAt(s.z);
-        vec4 c3 = rampAt(s.w);
-        float a = 0.25 * (c0.a + c1.a + c2.a + c3.a);
-        vec3 lin = 0.25 * (linOf(c0) + linOf(c1) + linOf(c2) + linOf(c3));
-        col = a > 0.0 ? vec4(pow(lin / a, vec3(1.0 / 2.2)) * a, a) : vec4(0.0);
+        float r = texture(u_image, v_pos).r;
+        col = rampAt(r * r * 400.0);
     } else if (u_masked > 0.5) {
         col = rampAt(elevationOf(v_pos)) * texture(u_mask, v_mask).a;
     } else {

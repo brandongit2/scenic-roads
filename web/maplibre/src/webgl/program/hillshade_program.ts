@@ -1,31 +1,20 @@
-import {mat4} from 'gl-matrix';
 import {
     Uniform1i,
     Uniform1f,
-    Uniform2f,
     Uniform3f,
     UniformColor,
     UniformFloatArray,
-    UniformColorArray,
-    UniformMatrix4f,
-    Uniform4f
+    UniformColorArray
 } from '../uniform_binding.ts';
-import {EXTENT} from '../../data/extent.ts';
-import {MercatorCoordinate} from '../../geo/mercator_coordinate.ts';
 
 import type {Context} from '../../webgl/context.ts';
 import type {UniformValues, UniformLocations} from '../uniform_binding.ts';
-import type {Tile} from '../../tile/tile.ts';
 import type {Painter} from '../../render/painter.ts';
 import type {HillshadeStyleLayer} from '../../style/style_layer/hillshade_style_layer.ts';
-import type {DEMData} from '../../data/dem_data.ts';
 import type {MaskCell} from '../draw/water_mask.ts';
-
-import type {OverscaledTileID} from '../../tile/tile_id.ts';
 
 export type HillshadeUniformsType = {
     'u_image': Uniform1i;
-    'u_latrange': Uniform2f;
     'u_exaggeration': Uniform1f;
     'u_altitudes': UniformFloatArray;
     'u_azimuths': UniformFloatArray;
@@ -39,17 +28,8 @@ export type HillshadeUniformsType = {
     'u_masked': Uniform1f;
 };
 
-export type HillshadePrepareUniformsType = {
-    'u_matrix': UniformMatrix4f;
-    'u_image': Uniform1i;
-    'u_dimension': Uniform2f;
-    'u_zoom': Uniform1f;
-    'u_unpack': Uniform4f;
-};
-
 const hillshadeUniforms = (context: Context, locations: UniformLocations): HillshadeUniformsType => ({
     'u_image': new Uniform1i(context, locations.u_image),
-    'u_latrange': new Uniform2f(context, locations.u_latrange),
     'u_exaggeration': new Uniform1f(context, locations.u_exaggeration),
     'u_altitudes': new UniformFloatArray(context, locations.u_altitudes),
     'u_azimuths': new UniformFloatArray(context, locations.u_azimuths),
@@ -63,17 +43,8 @@ const hillshadeUniforms = (context: Context, locations: UniformLocations): Hills
     'u_masked': new Uniform1f(context, locations.u_masked)
 });
 
-const hillshadePrepareUniforms = (context: Context, locations: UniformLocations): HillshadePrepareUniformsType => ({
-    'u_matrix': new UniformMatrix4f(context, locations.u_matrix),
-    'u_image': new Uniform1i(context, locations.u_image),
-    'u_dimension': new Uniform2f(context, locations.u_dimension),
-    'u_zoom': new Uniform1f(context, locations.u_zoom),
-    'u_unpack': new Uniform4f(context, locations.u_unpack)
-});
-
 const hillshadeUniformValues = (
     painter: Painter,
-    tile: Tile,
     layer: HillshadeStyleLayer,
     cell?: MaskCell
 ): UniformValues<HillshadeUniformsType> => {
@@ -108,7 +79,6 @@ const hillshadeUniformValues = (
     }
     return {
         'u_image': 0,
-        'u_latrange': getTileLatRange(painter, tile.tileID),
         'u_exaggeration': layer.paint.get('hillshade-exaggeration'),
         'u_altitudes': illumination.altitudeRadians,
         'u_azimuths': illumination.directionRadians,
@@ -123,35 +93,7 @@ const hillshadeUniformValues = (
     };
 };
 
-const hillshadeUniformPrepareValues = (tileID: OverscaledTileID, dem: DEMData): UniformValues<HillshadePrepareUniformsType> => {
-
-    const stride = dem.stride;
-    const matrix = mat4.create();
-    // Flip rendering at y axis.
-    mat4.ortho(matrix, 0, EXTENT, -EXTENT, 0, 0, 1);
-    mat4.translate(matrix, matrix, [0, -EXTENT, 0]);
-
-    return {
-        'u_matrix': matrix,
-        'u_image': 1,
-        'u_dimension': [stride, stride],
-        'u_zoom': tileID.overscaledZ,
-        'u_unpack': dem.getUnpackVector()
-    };
-};
-
-function getTileLatRange(painter: Painter, tileID: OverscaledTileID) {
-    // for scaling the magnitude of a points slope by its latitude
-    const tilesAtZoom = Math.pow(2, tileID.canonical.z);
-    const y = tileID.canonical.y;
-    return [
-        new MercatorCoordinate(0, y / tilesAtZoom).toLngLat().lat,
-        new MercatorCoordinate(0, (y + 1) / tilesAtZoom).toLngLat().lat];
-}
-
 export {
     hillshadeUniforms,
-    hillshadePrepareUniforms,
-    hillshadeUniformValues,
-    hillshadeUniformPrepareValues
+    hillshadeUniformValues
 };

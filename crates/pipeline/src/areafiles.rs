@@ -110,7 +110,8 @@ pub fn files_of(cat: &Catalog, rings: &[Vec<[f64; 2]>]) -> Files {
 }
 
 /// The terrain's deep packs (its detail, z13 and finer) an area (`rings`, each read as a filled
-/// area) needs: those whose z10 tile meets it grown by 2 km; and the share of the area the detail
+/// area) needs, with their shading's (the slope layer's deep packs of the same z10 tiles:
+/// crate::slope_pack): those whose z10 tile meets it grown by 2 km; and the share of the area the detail
 /// covers (per cent, in Web Mercator: the deep packs' z10 tiles clipped to it, over its area).
 pub fn detail_of(cat: &Catalog, rings: &[Vec<[f64; 2]>]) -> (Files, f64) {
     let Some(l) = cat.layers.get("terrain").filter(|l| !l.deep.is_empty()) else { return (Files::default(), 0.0) };
@@ -151,7 +152,8 @@ pub fn detail_of(cat: &Catalog, rings: &[Vec<[f64; 2]>]) -> (Files, f64) {
             }
         }
         if meets {
-            if let Some(f) = cat.files.get(logical) {
+            let shading = cat.layers.get("slope").and_then(|s| s.deep.get(key));
+            for f in std::iter::once(logical).chain(shading).filter_map(|l| cat.files.get(l)) {
                 out.insert(f.file.clone(), f.size);
             }
         }

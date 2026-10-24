@@ -31,10 +31,10 @@
 //!   of the z6 tiles within 50 km (what the lists of a view read around it); and what the map reads
 //!   zoomed in from the World's files (pipeline::areafiles::files_of), so only zoomed out needs it.
 //! - **A region's terrain detail** (`detail_of`), an add-on to its download: the terrain's deep
-//!   packs (pipeline::terrain_deep, z13 and finer, by z10 tile) within 2 km of it. They cover only
-//!   parts of a region; its terrain to z12 (the hi packs) is the rest and every zoom to z12, so it
-//!   needs the region: downloaded only while the region is. The server makes the slope, and the map the hill-shading and contours,
-//!   from them as from any terrain tile (crate::terrain). Copied after every other download.
+//!   packs (pipeline::terrain_deep, z13 and finer, by z10 tile) within 2 km of it, and their
+//!   shading's (the slope layer's deep packs: pipeline::slope_pack). They cover only parts of a
+//!   region; its terrain to z12 (the hi packs) is the rest and every zoom to z12, so it needs the
+//!   region: downloaded only while the region is. Copied after every other download.
 
 use crate::data::Data;
 use crate::S;

@@ -115,7 +115,7 @@ pub const STAGES: [Stage; 14] = [
     Stage { id: "pass", title: "OpenStreetMap pass", does: "The newest planet read once for the whole world: its sets, outlines, pieces and road values, the basemap, the water, and what the regions' steps read." },
     Stage { id: "sites", title: "Heritage sites", does: "The heritage sites and designated areas the regions' tiles read." },
     Stage { id: "terrain", title: "Terrain", does: "The terrain packs, a tile at a time down to each place's native zoom, assembled zoomed out by z3 tile." },
-    Stage { id: "slope", title: "Slope", does: "The slope packs from the terrain, a tile at a time, assembled zoomed out by z3 tile." },
+    Stage { id: "slope", title: "Slope", does: "The shading packs (steepness and direction) from the terrain, a tile at a time down to each place's native zoom, assembled zoomed out by z3 tile." },
     Stage { id: "trees", title: "Tree cover", does: "The tree cover, height and leaf type, a tile at a time, assembled zoomed out by z3 tile." },
     Stage { id: "depth", title: "Water depth", does: "The depth under the seas and lakes from the depth sources: zoomed out by z3 tile, then a tile at a time where a source has finer detail." },
     Stage { id: "roads", title: "Roads", does: "Each tile's roads, their elevations and scenery: the base packs the map's details and profiles read." },
@@ -379,13 +379,22 @@ pub const TABLE: [Step; 51] = [
         )
     },
     // (Slope holds a z6 tile's tiles at a time, under a GB; its assembly the z3 tile's lo tiles.)
+    // (Its memory from the tiles it holds: crate::slope_pack::peak_mb, lo_peak_mb.)
     Step {
-        mem_mb: 1500,
+        mem_mb: crate::slope_pack::peak_mb(),
         shared: Some(1),
-        ..step("slope", Pack, Z6, "slope", "Slope", "Works out a tile's slope from its terrain.", w_slope)
+        ..step(
+            "slope",
+            Pack,
+            Z6,
+            "slope",
+            "Slope",
+            "Works out a tile's shading from its terrain, to its finest zoom.",
+            w_slope,
+        )
     },
     Step {
-        mem_mb: 1000,
+        mem_mb: crate::slope_pack::lo_peak_mb(),
         ..step(
             "slope",
             Pack,
@@ -1046,16 +1055,10 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
         "bldfield-lo" => tile.is_some_and(|t| t.z == 3 && l == crate::bld::field::lo_logical(t.x, t.y)),
         // (A z6 tile's depth hi packs, a z3 tile's lo packs.)
         "depth" => tile.is_some_and(|t| {
-            t.z == 6
-                && [crate::depth::LAYER, crate::depth::CLASS_LAYER]
-                    .iter()
-                    .any(|ly| l == crate::depth::build::hi_logical(ly, t.x, t.y))
+            t.z == 6 && DEPTH_LAYERS.iter().any(|ly| l == crate::depth::build::hi_logical(ly, t.x, t.y))
         }),
         "depth-lo" => tile.is_some_and(|t| {
-            t.z == 3
-                && [crate::depth::LAYER, crate::depth::CLASS_LAYER]
-                    .iter()
-                    .any(|ly| l == crate::depth::build::lo_logical(ly, t.x, t.y))
+            t.z == 3 && DEPTH_LAYERS.iter().any(|ly| l == crate::depth::build::lo_logical(ly, t.x, t.y))
         }),
         "trees" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| {
             l == crate::treepacks::mid_logical(t.x, t.y)
@@ -1074,8 +1077,15 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
                     (f.0 >> k, f.1 >> k) == (t.x, t.y)
                 })
         }),
-        "slope" if tile.is_some_and(|u| u.z == 6) => tile
-            .is_some_and(|t| l == crate::slope_pack::mid_logical(t.x, t.y) || l == format!("layers/slope/hi/{dash}")),
+        // (And its deep packs, by their z10 tiles.)
+        "slope" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| {
+            l == crate::slope_pack::mid_logical(t.x, t.y)
+                || l == format!("layers/slope/hi/{dash}")
+                || crate::slope_pack::deep_tile(l).is_some_and(|f| {
+                    let k = crate::terrain_deep::PACK_Z - 6;
+                    (f.0 >> k, f.1 >> k) == (t.x, t.y)
+                })
+        }),
         "terrain-lo" | "slope-lo" => {
             tile.is_some_and(|u| u.z == 3) && l == format!("layers/{}/lo/{dash}", step.trim_end_matches("-lo"))
         }
@@ -1250,15 +1260,18 @@ fn w_terrain_lo(l: &str, _: bool) -> bool {
     pack(l, "terrain", &["lo"])
 }
 
-/// A z6 tile's depth and class hi packs (removed where it makes none).
+/// A z6 tile's depth, class and shading hi packs (removed where it makes none).
 fn w_depth(l: &str, _: bool) -> bool {
-    pack_of(l, &|ly| ly == crate::depth::LAYER || ly == crate::depth::CLASS_LAYER, &["hi"])
+    pack_of(l, &|ly| DEPTH_LAYERS.contains(&ly), &["hi"])
 }
 
-/// A z3 tile's depth and class lo packs.
+/// A z3 tile's depth, class and shading lo packs.
 fn w_depth_lo(l: &str, _: bool) -> bool {
-    pack_of(l, &|ly| ly == crate::depth::LAYER || ly == crate::depth::CLASS_LAYER, &["lo"])
+    pack_of(l, &|ly| DEPTH_LAYERS.contains(&ly), &["lo"])
 }
+
+/// The depth steps' layers: the depth, its classes and the floor's shading (crate::depth).
+const DEPTH_LAYERS: [&str; 3] = [crate::depth::LAYER, crate::depth::CLASS_LAYER, crate::depth::SHADE_LAYER];
 
 /// The water's index for the terrain's repairs, by the content it's made of.
 fn w_terrain_water(l: &str, _: bool) -> bool {
@@ -1270,7 +1283,9 @@ fn w_terrain_root(l: &str, _: bool) -> bool {
 }
 
 fn w_slope(l: &str, _: bool) -> bool {
-    pack(l, "slope", &["lo", "hi"]) || matches!(parts(l).as_slice(), ["work", "slope-mid", t] if tile(t, 6))
+    pack(l, "slope", &["lo", "hi"])
+        || crate::slope_pack::deep_tile(l).is_some()
+        || matches!(parts(l).as_slice(), ["work", "slope-mid", t] if tile(t, 6))
 }
 
 fn w_slope_lo(l: &str, _: bool) -> bool {
@@ -1489,8 +1504,8 @@ mod tests {
             ("trees", 2500),
             ("trees-lo", 500),
             ("terrain-lo", 1200),
-            ("slope", 1500),
-            ("slope-lo", 1000),
+            ("slope", crate::slope_pack::peak_mb()),
+            ("slope-lo", crate::slope_pack::lo_peak_mb()),
             ("peaks", 2500),
             ("water", 8192),
             ("bldprep", super::super::bldprep_peak(30_300_000)),

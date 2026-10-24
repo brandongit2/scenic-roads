@@ -22,7 +22,6 @@ import type {ImageAtlas} from '../render/image_atlas.ts';
 import type {ImageManager} from '../render/image_manager.ts';
 import type {Context} from '../webgl/context.ts';
 import type {OverscaledTileID} from './tile_id.ts';
-import type {Framebuffer} from '../webgl/framebuffer.ts';
 import type {IReadonlyTransform, GetElevation} from '../geo/transform_interface.ts';
 import type {LayerFeatureStates} from '../source/source_state.ts';
 import type Point from '@mapbox/point-geometry';
@@ -107,7 +106,6 @@ export class Tile {
     needsColorReliefPrepare: boolean;
     abortController: AbortController;
     texture: any;
-    fbo: Framebuffer;
     demTexture: Texture;
     refreshedUponExpiration: boolean;
     reloadPromise: {resolve: () => void; reject: () => void};

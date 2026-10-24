@@ -8,7 +8,7 @@ import './style.css';
 import { FIT_LEN_DEFAULT, fitByPct, fitByWidths, pairOf, screenWidthKm, spread, unitOf } from './autofit';
 import { getProfile, getRoadWays, getWay, keepable, onVersions, packChanged, packUrl, packVersion, peekWay, roadWays, setPacks, setVersions, ver, version, type Drive, type Meta, type Profile, type Ride } from './api';
 import { displayName, displayOf, lineName } from './names';
-import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, SLOPE4_MAX, LAYER_GROUPS, overlayLabelScale, POI_STYLE, coastInput, lakeColour, setLandColour, setWaterColours, labelTilesOn, waterTilesOn, versionedTiles } from './basemap';
+import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, SLOPE_MAX, LAYER_GROUPS, overlayLabelScale, POI_STYLE, coastInput, lakeColour, setLandColour, setWaterColours, labelTilesOn, waterTilesOn, versionedTiles } from './basemap';
 import { setHorizonThinning } from './horizon';
 import { LandmarkDots } from './dots';
 import { AREA_LAYERS, landmarkRef, Overlays, POINT_LAYERS, setRegisterCredits, summariseFeature, withDetails } from './overlays';
@@ -624,7 +624,7 @@ async function main() {
     terrainDirty = false;
     if (!t.tint || !styleReady) return;
     const slope = t.tintVar === 'slope';
-    const d = terrainDist(map, slope ? 'slope' : 'dem-hs', TINT_VARS[t.tintVar].domain, groundOutline().map((ll) => [ll.lng, ll.lat] as [number, number]), slope ? { max: SLOPE4_MAX } : null);
+    const d = terrainDist(map, slope ? 'slope' : 'dem-tint', TINT_VARS[t.tintVar].domain, groundOutline().map((ll) => [ll.lng, ll.lat] as [number, number]), slope ? { max: SLOPE_MAX } : null);
     if (d) terrainD = d;
   };
   const updateTintCdf = () => {
@@ -1367,7 +1367,7 @@ async function main() {
   };
   // New elevation or slope tiles: the terrain in view again.
   map.on('sourcedata', (e) => {
-    if ((e.sourceId === 'dem-hs' || e.sourceId === 'slope') && (e as { tile?: unknown }).tile && store.s.terrain.tint) {
+    if ((e.sourceId === 'dem-tint' || e.sourceId === 'slope') && (e as { tile?: unknown }).tile && store.s.terrain.tint) {
       terrainDirty = true;
       wake();
     }
@@ -2201,7 +2201,7 @@ async function main() {
     if (!!m.labelTiles !== labelTilesOn() || !!m.water !== waterTilesOn()) watch?.wantReload('New map data');
     // The areas of terrain finer than its base, as they grow: the terrain sources' covers and the
     // contours follow in place.
-    for (const id of ['dem', 'dem-hs', 'slope']) (map.getSource(id) as maplibregl.RasterTileSource | undefined)?.setZoomByArea(m.terrainAreas);
+    for (const id of ['dem', 'dem-tint', 'slope']) (map.getSource(id) as maplibregl.RasterTileSource | undefined)?.setZoomByArea(m.terrainAreas);
     setTerrainAreas(map, m.terrainAreas);
     markDirty();
   };

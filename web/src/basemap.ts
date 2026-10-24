@@ -144,10 +144,11 @@ const twoLine = (main: ExpressionSpecification, sub: ExpressionSpecification = S
 const inline = (main: ExpressionSpecification, sub: ExpressionSpecification = SUB): ExpressionSpecification =>
   ['case', ['==', sub, ''], main, ['concat', main, ' (', sub, ')']];
 export const HALO = '#0b0e13';
-/** The slope source's base shift (Terrarium's + ½): marks its four-slope pixels for the shader. */
-export const SLOPE4_SHIFT = 32768.5;
-/** Slope (percent) at a slope tile channel's top (roadcore::slope::SLOPE_MAX). */
-export const SLOPE4_MAX = 400;
+/** The shading sources' base shift (Terrarium's + ½): marks their tiles (each pixel's steepness and
+ * mean direction, pipeline::shade_codec) for our MapLibre's colour-relief and hillshade shaders. */
+export const SHADE_SHIFT = 32768.5;
+/** Steepness (percent) at a shading tile's R channel's top (roadcore::shade::SLOPE_MAX). */
+export const SLOPE_MAX = 400;
 /** All labels slightly transparent. */
 const TEXT_OPACITY = 0.8;
 /** Names appear once a place's interest isolation spans this many pixels (pipeline::interest's mz: the zoom
@@ -256,7 +257,7 @@ export function versionedTiles(): { source: string; file: string; url: string }[
     { source: 'base', file: 'base.pmtiles', url: basemapTiles() },
     { source: 'lbl', file: 'labels.tiles', url: `${hostFor('base')}/tiles/labels/{z}/{x}/{y}${ver('labels.tiles')}` },
     { source: 'dem', file: 'terrain.tiles', url: terrainTiles() },
-    { source: 'dem-hs', file: 'terrain.tiles', url: terrainTiles() },
+    { source: 'dem-tint', file: 'terrain.tiles', url: terrainTiles() },
     { source: 'slope', file: 'slope.tiles', url: `${hostFor('terrain')}/tiles/slope/{z}/{x}/{y}${ver('slope.tiles')}` },
     trees('cover'), trees('height'), trees('leaf'),
     ...Object.entries(OV_SOURCES).map(([source, name]) => ({ source, file: `ov-${name}.tiles`, url: `${hostFor('layers')}/tiles/ov/${name}/{z}/{x}/{y}${ver(`ov-${name}.tiles`)}` })),
@@ -440,7 +441,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
     tileSize: 256,
     maxzoom: 12,
     // Past z12 where the terrain has deep levels (its z10 tiles' native zooms): our MapLibre takes
-    // the terrain, hillshade and slope tiles there to that zoom, elsewhere to z12.
+    // the terrain and its shading tiles there to that zoom, elsewhere to z12.
     ...(terrainAreas ? { 'scenic:zoom-by-area': terrainAreas } : {}),
   };
   const empty = { type: 'geojson' as const, data: { type: 'FeatureCollection' as const, features: [] } };
@@ -477,13 +478,15 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
       },
       ...(labelTiles ? { lbl: { type: 'vector' as const, tiles: [tiles.lbl], maxzoom: 12, attribution: '' } } : {}),
       dem,
-      'dem-hs': { ...dem },
-      // Terrain slope: four slopes a pixel, the quarters of the ground beneath it (roadcore::slope),
-      // which the colour-relief shader colours and averages (web/maplibre's color_relief.fragment.glsl). The encoding is
-      // Terrarium's with a half-unit shift: the colour ramp's stops are packed with it as usual, and
-      // the shader knows the source by it.
+      // The elevation tint's: the screen's own tiles (the 3D mesh's source loads its own).
+      'dem-tint': { ...dem },
+      // The terrain's shading, as the build stores it to each place's finest zoom (the slope layer:
+      // pipeline::slope_pack): each pixel's mean steepness and direction, which the slope tint
+      // colours and the hill-shading shades (web/maplibre's color_relief and hillshade shaders). The
+      // encoding is Terrarium's with a half-unit shift: the colour ramp's stops are packed with it as
+      // usual, and the shaders know the source by it.
       slope: {
-        ...dem, encoding: 'custom' as const, redFactor: 256, greenFactor: 1, blueFactor: 1 / 256, baseShift: SLOPE4_SHIFT,
+        ...dem, encoding: 'custom' as const, redFactor: 256, greenFactor: 1, blueFactor: 1 / 256, baseShift: SHADE_SHIFT,
         tiles: [tiles.slope], attribution: '',
       },
       // Tree cover layer (crates/pipeline/src/trees): values Terrarium-encoded as if they were elevation.
@@ -510,7 +513,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
       {
         id: 'tint',
         type: 'color-relief',
-        source: 'dem-hs',
+        source: 'dem-tint',
         layout: { visibility: 'none' },
         paint: {
           'color-relief-color': ['interpolate', ['linear'], ['elevation'], ...HYPSO.flat()] as unknown as ExpressionSpecification,
@@ -525,7 +528,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
         paint: {
           'color-relief-color': ['interpolate', ['linear'], ['elevation'], 0, '#1f3b2c', 100, '#8a3aa0'] as unknown as ExpressionSpecification,
           'color-relief-opacity': 0.45,
-          // Every level is smooth to interpolate (each of a pixel's four slopes on its own channel).
+          // Every level is smooth to interpolate.
           resampling: 'linear',
         },
       } as LayerSpecification,
@@ -545,8 +548,9 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
       {
         id: 'hillshade',
         type: 'hillshade',
-        source: 'dem-hs',
+        source: 'slope',
         paint: {
+          resampling: 'linear',
           'hillshade-method': 'combined',
           'hillshade-exaggeration': 0.55,
           'hillshade-illumination-direction': 315,
