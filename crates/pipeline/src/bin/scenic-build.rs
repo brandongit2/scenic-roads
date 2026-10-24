@@ -517,7 +517,10 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         "unit-snap" => unit_snap(&out, &args)?,
         "pois" => pois_step(&mut out, &args, &scratch)?,
         "roadunits" => roadunits(&mut out)?,
-        "terrain" => terrain_step(&mut out, &args)?,
+        // (Named "terrain" before task #639: the name read as terrain-hi's, by hand and in jobs
+        // planned before it.)
+        "terrain-hi" | "terrain" => terrain_step(&mut out, &args)?,
+        "terrain-deep" => terrain_deep_step(&mut out, &args)?,
         "raw-pack" => {
             // raw-pack [--from-tar - [--expect n]] [--cache dir] | --order | --check [--every n]:
             // AWS's raw tiles packed into the NAS's archives (pipeline::rawpack): a tar stream of
@@ -4877,10 +4880,10 @@ fn terrain_pieces(
     let (ts, gone): (Vec<TileId>, Vec<TileId>) =
         ts.iter().partition(|t| pipeline::terrain_pack::near_coverage(cov, 6, t.x, t.y, 20.0));
     for t in &gone {
-        pipeline::control::safe_point("terrain");
+        pipeline::control::safe_point("terrain-hi");
         let n = pipeline::terrain_pack::drop_piece(out, (t.x, t.y))?;
-        eprintln!("terrain {}: the coverage has left it; {n} files dropped", t.slash());
-        pipeline::control::done("terrain", &t.slash());
+        eprintln!("terrain-hi {}: the coverage has left it; {n} files dropped", t.slash());
+        pipeline::control::done("terrain-hi", &t.slash());
     }
     if ts.is_empty() {
         return Ok(());
@@ -4955,9 +4958,9 @@ fn terrain_pieces_from(
     // (Each z6 tile's uploads go on beside the next z6 tile's work: it's noted done once they've landed.)
     let mut landing = Landing::default();
     for (k, t) in ts.iter().enumerate() {
-        landing.safe_point(out, "terrain")?;
+        landing.safe_point(out, "terrain-hi")?;
         pipeline::agent::jobs::part(k, &names);
-        let c = cost_start("terrain", &t.slash());
+        let c = cost_start("terrain-hi", &t.slash());
         let offers = match ahead.take() {
             Some(o) => o,
             None => offer(t),
@@ -4980,12 +4983,92 @@ fn terrain_pieces_from(
                 Some(deep),
             )
         })?;
-        let said = format!("terrain {} ({} of {n}): {r:?}", t.slash(), k + 1);
-        landing.then(out, "terrain", &t.slash(), said, c)?;
+        let said = format!("terrain-hi {} ({} of {n}): {r:?}", t.slash(), k + 1);
+        landing.then(out, "terrain-hi", &t.slash(), said, c)?;
     }
     landing.land(out)?;
-    pipeline::control::safe_point("terrain");
+    pipeline::control::safe_point("terrain-hi");
     pipeline::agent::jobs::part(names.len() - 1, &names);
+    Ok(())
+}
+
+/// terrain-deep <10/x/y …> [--regions dir] [--pass d] [--raw dir]: each z10 tile's deep levels
+/// (z13–16 where a fine dataset is finer than the base: its deep pack, pipeline::terrain_deep::make),
+/// from the base it blends into and fills from, made from the elevation pool and the water by the
+/// terrain-hi run's own code (pipeline::terrain_pack::Bases), never read from built tiles; a z10 tile
+/// with no deep level now has its deep pack (and a retired fine pack) dropped. Then the raw tiles AWS
+/// gave packed onto the NAS.
+fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
+    use pipeline::terrain_deep as td;
+    const STEP: &str = "terrain-deep";
+    let ts: Vec<TileId> = positional(args)
+        .iter()
+        .map(|t| {
+            TileId::parse(t).filter(|u| u.z == td::PACK_Z).with_context(|| format!("not a z{} tile: {t}", td::PACK_Z))
+        })
+        .collect::<Result<_>>()?;
+    anyhow::ensure!(!ts.is_empty(), "{STEP} <{}/x/y …>", td::PACK_Z);
+    let cov = coverage_of(out, args)?;
+    let p = phase("the fine datasets' declarations read", Class::NasRead);
+    let fine = td::Fine::read(out.root(), &out.manifest)?;
+    drop(p);
+    // (Those no target now first: their packs dropped, nothing read.)
+    let (ts, gone): (Vec<TileId>, Vec<TileId>) =
+        ts.into_iter().partition(|t| fine.as_ref().is_some_and(|f| td::is_target(&f.sets, &cov, (t.x, t.y))));
+    for t in &gone {
+        pipeline::control::safe_point(STEP);
+        let n = td::drop_target(out, (t.x, t.y));
+        out.save()?;
+        eprintln!("{STEP} {}: no deep level there; {n} packs dropped", t.slash());
+        pipeline::control::done(STEP, &t.slash());
+    }
+    let Some(fine) = fine.filter(|_| !ts.is_empty()) else { return Ok(()) };
+    let raw_dir = PathBuf::from(
+        opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
+    );
+    let raw = raw_tiles(out, &raw_dir)?;
+    let p = phase("the basemap's water opened", Class::NasRead);
+    let water = pipeline::terrain_pack::open_water(out)?;
+    drop(p);
+    // (The z6 tiles its base reads, their z10 tiles past the base's zoom as their runs have them.)
+    let pieces: BTreeSet<(u32, u32)> = ts
+        .iter()
+        .flat_map(|t| td::base_want((t.x, t.y)).into_iter().map(|(z, x, y)| (x >> (z - 6), y >> (z - 6))))
+        .collect();
+    let deeper: BTreeSet<(u32, u32)> = pieces.iter().flat_map(|&p| td::deeper(&fine.sets, p)).collect();
+    let src = pipeline::terrain_pack::Sources { water: Some(&water), deeper: Some(&deeper) };
+    let fetch = pipeline::fetch::Fetcher::from_env();
+    let pool = base_pool(out, 6, &pieces.iter().copied().collect::<Vec<_>>())?;
+    let mut names: Vec<String> = ts.iter().map(|t| format!("Making {}'s deep terrain", t.slash())).collect();
+    names.push("Packing the new raw tiles onto the NAS".into());
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    pool.with_tiles(&raw, |tiles| -> Result<()> {
+        let bases = pipeline::terrain_pack::Bases::new(tiles, &src, &cov);
+        for (k, t) in ts.iter().enumerate() {
+            pipeline::control::safe_point(STEP);
+            pipeline::agent::jobs::part(k, &names);
+            let c = cost_start(STEP, &t.slash());
+            let fetched = pipeline::fetch::fetched_bytes();
+            let r = td::build_target(out, (t.x, t.y), &bases, Some(&water), &fine, &fetch)?;
+            out.save()?;
+            eprintln!(
+                "{STEP} {}: {} of {} base tiles with finer data, {} tiles, {} MB; {} dropped; {} MB fetched",
+                t.slash(),
+                r.with_data,
+                r.base_tiles,
+                r.tiles,
+                r.bytes >> 20,
+                r.dropped,
+                (pipeline::fetch::fetched_bytes() - fetched) >> 20
+            );
+            pipeline::control::done(STEP, &t.slash());
+            note_cost(STEP, &t.slash(), c);
+        }
+        Ok(())
+    })??;
+    pipeline::control::safe_point(STEP);
+    pipeline::agent::jobs::part(names.len() - 1, &names);
+    pack_raw_with(out, &raw_dir, &|what: &str, done: u64, total: u64| pipeline::agent::jobs::report(done, total, what));
     Ok(())
 }
 
@@ -5230,7 +5313,7 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
         return terrain_pieces(out, args, &cov, &ts, &same);
     }
     let by_q = terrain_targets(&cov, args)?;
-    eprintln!("terrain: {} z6 tiles in {} z3 packs", by_q.values().map(Vec::len).sum::<usize>(), by_q.len());
+    eprintln!("terrain-hi: {} z6 tiles in {} z3 packs", by_q.values().map(Vec::len).sum::<usize>(), by_q.len());
     // AWS's raw tiles: this Mac's cache, filled from the NAS's store.
     let raw_dir = PathBuf::from(
         opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
@@ -5252,10 +5335,10 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     let say = |what: &str, done: u64, total: u64| pipeline::agent::jobs::report(done, total, what);
     for (k, (q, list)) in by_q.into_iter().enumerate() {
-        pipeline::control::safe_point("terrain");
+        pipeline::control::safe_point("terrain-hi");
         pipeline::agent::jobs::part(2 * k, &names);
         let writing = std::sync::atomic::AtomicBool::new(false);
-        let t = cost_start("terrain", &format!("3/{}/{}", q.0, q.1));
+        let t = cost_start("terrain-hi", &format!("3/{}/{}", q.0, q.1));
         let pool = base_pool(out, 3, &[q])?;
         let r = pool.with_tiles(&raw, |tiles| {
             pipeline::terrain_pack::build_q_with(out, tiles, q, &list, &cov, &src, &|what, done, total| {
@@ -5265,13 +5348,13 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
                 say(what, done, total);
             })
         })??;
-        eprintln!("terrain 3/{}/{}: {r:?} ({:.0?})", q.0, q.1, t.elapsed());
-        pipeline::control::done("terrain", &format!("3/{}/{}", q.0, q.1));
-        note_cost("terrain", &format!("3/{}/{}", q.0, q.1), t);
+        eprintln!("terrain-hi 3/{}/{}: {r:?} ({:.0?})", q.0, q.1, t.elapsed());
+        pipeline::control::done("terrain-hi", &format!("3/{}/{}", q.0, q.1));
+        note_cost("terrain-hi", &format!("3/{}/{}", q.0, q.1), t);
     }
     // (The z3 tiles are written: with the build pausing, the raw tiles wait in the cache for the next
     // job, which packs them.)
-    pipeline::control::safe_point("terrain");
+    pipeline::control::safe_point("terrain-hi");
     pipeline::agent::jobs::part(names.len() - 1, &names);
     pack_raw_with(out, &raw_dir, &say);
     Ok(())
@@ -6016,7 +6099,7 @@ mod tests {
     /// reads and what the step noted since its start, the threads, and as Cost reads them back.
     #[test]
     fn done_line_carries_sizes() {
-        let t = super::cost_start("terrain", "6/33/22");
+        let t = super::cost_start("terrain-hi", "6/33/22");
         store::nasio::read(4096);
         pipeline::costin::set("ways", 12);
         let l = super::done_line("terrain", "6/33/22", t);

@@ -3,10 +3,13 @@
 //! finest terrain level, every pixel's steepness and direction by Horn's method (with the
 //! neighbouring tiles); each coarser level the mean of the four pixels beneath it, or where no finer
 //! level covers a pixel, its own level's terrain's. Every level is stored: z0–2 in the root
-//! (`build_root`), z3–8 by z3 tile (lo: `build_lo`, from the z6 tiles' mids), z9–12 by z6 tile (hi)
-//! and the deep levels (z13–16, where the terrain has them: crate::terrain_deep) by z10 tile (deep:
-//! `deep_logical`), the last two made by a z6 tile's run (`build_piece`) from the build's terrain
-//! packs.
+//! (`build_root`), z3–8 by z3 tile (lo: `build_lo`, from the z6 tiles' mids), z9–12 by z6 tile (hi:
+//! the slope-hi step, `build_piece`) and the deep levels (z13–16, where the terrain has them:
+//! crate::terrain_deep) by z10 tile (deep: `deep_logical`, the slope-deep step, `build_deep`), from
+//! the build's terrain packs. A slope-deep z10 tile makes its part of its z6 tile's pyramid, z10 to
+//! z16, and hands its z10–12 tiles and its quadrant at full precision on in its deep mid
+//! (`DeepMid`), which its z6 tile's slope-hi run takes in as made: the same bytes as one run of the
+//! whole.
 
 use crate::out::Out;
 use crate::terrain_deep::{MAX_Z, PACK_Z};
@@ -16,7 +19,7 @@ use det::Det;
 use rayon::prelude::*;
 use roadcore::grid::{decode_terrain, upsampled};
 use roadcore::shade::{quadrant, Px};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
 const TS: usize = 256;
@@ -374,21 +377,11 @@ pub fn deep_tile(l: &str) -> Option<(u32, u32)> {
     (deep_logical(u.x, u.y) == l).then_some((u.x, u.y))
 }
 
-/// The deep packs the manifest names under z6 tile `t`.
-pub fn deep_under(m: &BTreeMap<String, String>, t: (u32, u32)) -> Vec<String> {
-    let k = PACK_Z - 6;
-    m.range(DEEP_PREFIX.to_string()..)
-        .take_while(|(l, _)| l.starts_with(DEEP_PREFIX))
-        .filter(|(l, _)| deep_tile(l).is_some_and(|f| (f.0 >> k, f.1 >> k) == t))
-        .map(|(l, _)| l.clone())
-        .collect()
-}
-
-/// Drops z6 tile `t`'s slope hi pack, deep packs and mid from the manifest (a z6 tile the coverage
-/// has left: docs/regions.md, Shrinking), saving it; how many it had.
+/// Drops z6 tile `t`'s slope hi pack and mid from the manifest (a z6 tile the coverage has left:
+/// docs/regions.md, Shrinking), saving it; how many it had. (Its deep packs and deep mids are its
+/// z10 tiles' slope-deep targets': `drop_deep`.)
 pub fn drop_piece(out: &mut Out, t: (u32, u32)) -> Result<usize> {
-    let mut gone = vec![hi_logical(t.0, t.1), mid_logical(t.0, t.1)];
-    gone.extend(deep_under(&out.manifest, t));
+    let gone = vec![hi_logical(t.0, t.1), mid_logical(t.0, t.1)];
     let n = crate::terrain_pack::drop_named(out, &gone);
     out.save()?;
     Ok(n)
@@ -509,17 +502,21 @@ const KEPT: u64 = KEEP as u64 * (TS * TS * 4) as u64;
 /// A quadrant's values kept for its parent (128 × 128 pixels).
 const QUADRANT: u64 = (128 * 128 * std::mem::size_of::<Px>()) as u64;
 
-/// The most memory (MB) a z6 tile's run takes, from its bounds: its hi tiles held until written
-/// (z9–12) and the tiles of one deep pack likewise (z13–16 under a z10 tile: the deep packs are
-/// made one at a time), each at most its raw codes; its z6–8 tiles; each z10 tile's quadrant kept
-/// from its deep pack's making for the z6 tile's; the pyramid's working memory, a deep pack's or
-/// the z6 tile's (`working_bytes`); the decoded terrain kept.
+/// The most memory (MB) a slope-hi z6 tile's run takes, from its bounds: its hi tiles held until
+/// written (z9–12, those of its z10 tiles' deep mids among them), each at most its raw codes; its
+/// z6–8 tiles; its z10 tiles' quadrants from their deep mids (`read_deep_mid`); the pyramid's working
+/// memory (`working_bytes`); the decoded terrain kept.
 pub const fn peak_mb() -> u64 {
-    let held = tiles_below(9 - 6, HI_MAX - 6) + tiles_below(3, MAX_Z - PACK_Z) + tiles_below(0, 2);
-    let a = working_bytes(PACK_Z, MAX_Z);
-    let b = working_bytes(6, HI_MAX);
-    let working = if a > b { a } else { b };
-    (held * RAW + (1 << (2 * (PACK_Z - 6))) * QUADRANT + working + KEPT) >> 20
+    let held = tiles_below(9 - 6, HI_MAX - 6) + tiles_below(0, 2);
+    (held * RAW + (1 << (2 * (PACK_Z - 6))) * QUADRANT + working_bytes(6, HI_MAX) + KEPT) >> 20
+}
+
+/// The most memory (MB) a slope-deep z10 tile's run takes, from its bounds: its deep pack's tiles
+/// (z13–16) and its z10–12 tiles held until written, each at most its raw codes; its quadrant; the
+/// pyramid's working memory (`working_bytes`); the decoded terrain kept.
+pub const fn deep_peak_mb() -> u64 {
+    let held = tiles_below(0, MAX_Z - PACK_Z);
+    (held * RAW + QUADRANT + working_bytes(PACK_Z, MAX_Z) + KEPT) >> 20
 }
 
 /// The most memory (MB) an assembly takes, from its bounds: its z6 tiles' mids (64 of z6–8) and
@@ -528,37 +525,28 @@ pub const fn lo_peak_mb() -> u64 {
     ((64 * tiles_below(0, 2) + tiles_below(0, 5)) * RAW + KEPT) >> 20
 }
 
-/// The terrain's deep tiles under z6 tile `t`, by z10 tile (their packs: crate::terrain_deep).
-fn deep_terrain(terr: &ManifestTiles, t: (u32, u32)) -> Result<BTreeMap<(u32, u32), Vec<(u8, u32, u32)>>> {
-    let k = PACK_Z - 6;
-    let mut by = BTreeMap::new();
-    for x in t.0 << k..(t.0 + 1) << k {
-        for y in t.1 << k..(t.1 + 1) << k {
-            let ts = terr.tiles_in(&crate::terrain_deep::pack_logical(x, y))?;
-            if !ts.is_empty() {
-                by.insert((x, y), ts);
-            }
-        }
-    }
-    Ok(by)
+/// The terrain's deep tiles under z10 tile `t` (its deep pack: crate::terrain_deep).
+fn deep_terrain(terr: &ManifestTiles, t: (u32, u32)) -> Result<Vec<(u8, u32, u32)>> {
+    terr.tiles_in(&crate::terrain_deep::pack_logical(t.0, t.1))
 }
 
-/// The tiles z6 tile `t` works out: the terrain tiles it has (z9–12, `has`, and its deep tiles
-/// `deep`) and their ancestors down to z6, and its z6 tile.
-fn piece_set(
+/// The tiles a pyramid of tile `top` (a z6 tile's, or a z10 tile's) works out: the terrain tiles
+/// under it it has (z9–12, `has`; past them, `deep`: a z10 tile's deep tiles) and their ancestors
+/// up to it, and itself.
+fn tiles_under(
     has: &(dyn Fn(u8, u32, u32) -> bool + Sync),
-    deep: &BTreeMap<(u32, u32), Vec<(u8, u32, u32)>>,
-    t: (u32, u32),
+    deep: &[(u8, u32, u32)],
+    top: (u8, u32, u32),
 ) -> HashSet<(u8, u32, u32)> {
-    let (tx, ty) = t;
+    let (tz, tx, ty) = top;
     let mut tiles: HashSet<(u8, u32, u32)> = HashSet::new();
     let mut with = |z: u8, x: u32, y: u32| {
-        for dz in 0..=(z - 6) {
+        for dz in 0..=(z - tz) {
             tiles.insert((z - dz, x >> dz, y >> dz));
         }
     };
-    for z in 9..=HI_MAX {
-        let s = 1u32 << (z - 6);
+    for z in 9.max(tz + 1)..=HI_MAX {
+        let s = 1u32 << (z - tz);
         for x in tx * s..(tx + 1) * s {
             for y in ty * s..(ty + 1) * s {
                 if has(z, x, y) {
@@ -567,61 +555,80 @@ fn piece_set(
             }
         }
     }
-    for &(z, x, y) in deep.values().flatten() {
-        if z > HI_MAX && z <= MAX_Z {
+    for &(z, x, y) in deep {
+        if z > HI_MAX && z <= MAX_Z && (x >> (z - tz), y >> (z - tz)) == (tx, ty) {
             with(z, x, y);
         }
     }
-    tiles.insert((6, tx, ty));
+    tiles.insert(top);
     tiles
 }
 
-/// A z6 tile's slope (z6 tile `t`): its deep packs (written here, not uploaded: each z10 tile with
-/// deep terrain made whole, one at a time, its terrain pack copied here first), then its hi tiles
-/// (z9–12), sorted, and its z6–8 tiles (its mid's).
-fn piece(
-    out: &Out,
-    terr: &ManifestTiles,
-    terrain: &Terrain,
-    tiles: &HashSet<(u8, u32, u32)>,
-    deep: &BTreeMap<(u32, u32), Vec<(u8, u32, u32)>>,
+/// A z10 tile's part of its z6 tile's pyramid, as a slope-deep run hands it on (`write_deep_mid`):
+/// its z10–12 tiles as made, for the z6 tile's hi pack, and its quadrant at full precision, which
+/// the z6 tile's z9 is made from (`stored`); none where it shades nothing.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DeepMid {
+    pub quadrant: Option<Vec<Px>>,
+    pub tiles: Vec<Made>,
+}
+
+/// The tiles z6 tile `t`'s pyramid works out (`tiles_under`, its hi terrain's), its z10 tiles with a
+/// deep mid (`mids`) among them, whatever its hi terrain has under them.
+fn piece_tiles(
+    has: &(dyn Fn(u8, u32, u32) -> bool + Sync),
+    mids: &BTreeMap<(u32, u32), DeepMid>,
     t: (u32, u32),
-    count: &Count,
-) -> Result<(Vec<Made>, Vec<Made>, Vec<crate::layers::LocalPack>)> {
-    let enc = crate::shade_codec::ENCODING;
-    let mut hi: Vec<Made> = Vec::new();
-    let mut packs = Vec::new();
-    let mut done: HashMap<(u8, u32, u32), Option<Vec<Px>>> = HashMap::new();
-    let none = HashMap::new();
-    let own = |z: u8, x: u32, y: u32| shade_tile(terrain, z, x, y);
-    let tick = || count.one();
-    for &(x, y) in deep.keys() {
-        let p = crate::timings::phase("a deep pack's terrain copied here", crate::timings::Class::NasRead);
-        if let Some(n) = terr.copy_here(crate::terrain_deep::FIRST_Z, x << 3, y << 3) {
-            p.count(n, 1);
-        }
-        drop(p);
-        let mine = Mutex::new(Vec::new());
-        let q = Pyramid { own: &own, tiles, out: &mine, tick: &tick, done: &none }.tile(PACK_Z, x, y);
-        done.insert((PACK_Z, x, y), q);
-        let (mut d, h): (Vec<Made>, Vec<Made>) = mine.into_inner().unwrap().into_iter().partition(|m| m.0 > HI_MAX);
-        hi.extend(h);
-        d.sort_by_key(|m| (m.0, m.1, m.2));
-        let mut it = d.into_iter().map(|(z, x, y, b)| {
-            let n = b.len() as u32;
-            (z, x, y, b, n)
-        });
-        if let Some(p) = crate::layers::write_pack_local(out, "slope", enc, false, "deep", (PACK_Z, x, y), &mut it)? {
-            packs.push(p);
+) -> HashSet<(u8, u32, u32)> {
+    let mut tiles = tiles_under(has, &[], (6, t.0, t.1));
+    for &(x, y) in mids.keys() {
+        for dz in 0..=(PACK_Z - 6) {
+            tiles.insert((PACK_Z - dz, x >> dz, y >> dz));
         }
     }
+    tiles
+}
+
+/// A z6 tile's slope (z6 tile `t`, its pyramid's tiles `tiles`), its z10 tiles with a deep mid
+/// (`mids`: their parts made by their slope-deep runs, not made here): its hi tiles (z9–12),
+/// sorted, and its z6–8 tiles (its mid's).
+fn piece(
+    terrain: &Terrain,
+    tiles: &HashSet<(u8, u32, u32)>,
+    mids: &BTreeMap<(u32, u32), DeepMid>,
+    t: (u32, u32),
+    count: &Count,
+) -> (Vec<Made>, Vec<Made>) {
+    let mut hi: Vec<Made> = Vec::new();
+    let mut done: HashMap<(u8, u32, u32), Option<Vec<Px>>> = HashMap::new();
+    for (&(x, y), m) in mids {
+        done.insert((PACK_Z, x, y), m.quadrant.clone());
+        hi.extend(m.tiles.iter().cloned());
+    }
+    let own = |z: u8, x: u32, y: u32| shade_tile(terrain, z, x, y);
+    let tick = || count.one();
     let mine = Mutex::new(Vec::new());
     Pyramid { own: &own, tiles, out: &mine, tick: &tick, done: &done }.tile(6, t.0, t.1);
     let (h, mut lo): (Vec<Made>, Vec<Made>) = mine.into_inner().unwrap().into_iter().partition(|m| m.0 >= 9);
     hi.extend(h);
     hi.sort_by_key(|m| (m.0, m.1, m.2));
     lo.sort_by_key(|m| (m.0, m.1, m.2));
-    Ok((hi, lo, packs))
+    (hi, lo)
+}
+
+/// A z10 tile's part of the pyramid (z10 tile `t`, its tiles `tiles`: `tiles_under`), as its z6
+/// tile's run would make it: its deep tiles (z13–16, for its deep pack) and its mid (`DeepMid`).
+fn deep_part(terrain: &Terrain, tiles: &HashSet<(u8, u32, u32)>, t: (u32, u32), count: &Count) -> (Vec<Made>, DeepMid) {
+    let own = |z: u8, x: u32, y: u32| shade_tile(terrain, z, x, y);
+    let tick = || count.one();
+    let none = HashMap::new();
+    let mine = Mutex::new(Vec::new());
+    let quadrant = Pyramid { own: &own, tiles, out: &mine, tick: &tick, done: &none }.tile(PACK_Z, t.0, t.1);
+    let (mut deep, mut tiles): (Vec<Made>, Vec<Made>) =
+        mine.into_inner().unwrap().into_iter().partition(|m| m.0 > HI_MAX);
+    deep.sort_by_key(|m| (m.0, m.1, m.2));
+    tiles.sort_by_key(|m| (m.0, m.1, m.2));
+    (deep, DeepMid { quadrant, tiles })
 }
 
 /// A z3 tile's assembly (z3 tile `q`, its z6 tiles `ts`): its lo tiles (z3–8), sorted. Each z6 tile's
@@ -719,13 +726,13 @@ fn terrain_reads(
     )
 }
 
-/// Makes z6 tile `t`'s slope (a z6 tile) from the build's terrain packs and uploads it: its hi pack
-/// (z9–12; none when it made no tile, its terrain having no hi tile: the manifest's then dropped),
-/// its deep packs (z13–16 where the terrain has deep tiles; those the manifest names under it and
-/// it no longer makes dropped) and its mid (`mid_logical`: its z6–8 tiles), which its z3 tile's
-/// assembly reads. `expect_same`: a z6 tile made again as it is (its mid made), whose packs must
-/// come out as the manifest has them (none where it has none), else an error and nothing uploaded.
-/// A z6 tile the coverage has left isn't made: its packs and mid are dropped (`drop_piece`).
+/// Makes z6 tile `t`'s slope (a slope-hi z6 tile) from the build's terrain packs and its z10 tiles'
+/// deep mids (their slope-deep runs': `build_deep`), and uploads it: its hi pack (z9–12; none when it
+/// made no tile, its terrain having no hi tile: the manifest's then dropped) and its mid
+/// (`mid_logical`: its z6–8 tiles), which its z3 tile's assembly reads. `expect_same`: a z6 tile
+/// made again as it is (its mid made), whose hi pack must come out as the manifest has it (none
+/// where it has none), else an error and nothing uploaded. A z6 tile the coverage has left isn't
+/// made: its hi pack and mid are dropped (`drop_piece`).
 pub fn build_piece(
     out: &mut Out,
     t: (u32, u32),
@@ -749,17 +756,17 @@ pub fn build_piece_later(
 ) -> Result<Report> {
     use crate::timings::{phase, Class};
     let mut rep = Report::default();
-    let p = phase("the terrain packs' indexes read", Class::NasRead);
+    let p = phase("the terrain packs' indexes and its z10 tiles' deep mids read", Class::NasRead);
     let terr = ManifestTiles::with_copies(out, "terrain", out.scratch_file("terrain-copies"));
     let (get, has) = terrain_reads(&terr);
     let terrain = Terrain::new(&get, &has);
-    let deep = deep_terrain(&terr, t)?;
-    let tiles = piece_set(&has, &deep, t);
+    let mids = read_deep_mids(out, t)?;
+    let tiles = piece_tiles(&has, &mids, t);
     let count = Count::new(tiles.len() as u64 + 1, on);
     drop(p);
     // Its own z6 tile's terrain pack, which it reads thousands of tiles of (each a round trip to
-    // the share), copied here whole, one sequential read (its deep packs likewise as it comes to
-    // them: `piece`); its neighbours' few edge tiles read where they are.
+    // the share), copied here whole, one sequential read; its neighbours' few edge tiles read where
+    // they are.
     let p = phase("its terrain pack copied here", Class::NasRead);
     if let Some(n) = terr.copy_here(9, t.0 << 3, t.1 << 3) {
         p.count(n, 1);
@@ -767,14 +774,12 @@ pub fn build_piece_later(
     drop(p);
     on("slope tiles worked out", 0, count.total);
     let p = phase("slope tiles worked out (the terrain read as needed)", Class::Compute);
-    let (hi, lo, deep_packs) = piece(out, &terr, &terrain, &tiles, &deep, t, &count)?;
+    let (hi, lo) = piece(&terrain, &tiles, &mids, t, &count);
     drop(terrain);
     drop(p);
     let p = phase("its hi pack and mid written", Class::Disk);
     rep.hi_tiles = hi.len();
     rep.lo_tiles = lo.len();
-    rep.deep_packs = deep_packs.len();
-    rep.deep_tiles = tiles.iter().filter(|u| u.0 > HI_MAX).count();
     let mut it = hi.into_iter().map(|(z, x, y, b)| {
         let n = b.len() as u32;
         (z, x, y, b, n)
@@ -785,32 +790,19 @@ pub fn build_piece_later(
     let mid = out.scratch_file(&format!("{ml}.sect"));
     write_mid(&mid, t, &lo)?;
     let hl = hi_logical(t.0, t.1);
-    let made: BTreeSet<&str> = deep_packs.iter().map(|p| p.logical.as_str()).collect();
-    let gone: Vec<String> = deep_under(&out.manifest, t).into_iter().filter(|l| !made.contains(l.as_str())).collect();
-    rep.deep_dropped = gone.len();
     if expect_same {
-        let mut differ: Vec<String> = Vec::new();
-        for (l, p) in std::iter::once((&hl, pack.as_ref())).chain(deep_packs.iter().map(|p| (&p.logical, Some(p)))) {
-            let made = p.map(|p| p.content_name()).transpose()?;
-            if out.get(l) != made.as_deref() {
-                differ.push(format!(
-                    "{l}: made {}, the manifest has {}",
-                    made.as_deref().unwrap_or("none"),
-                    out.get(l).unwrap_or("none")
-                ));
-            }
-        }
-        differ.extend(gone.iter().map(|l| format!("{l}: no longer made")));
-        if !differ.is_empty() {
-            for p in pack.iter().chain(&deep_packs) {
+        let made = pack.as_ref().map(|p| p.content_name()).transpose()?;
+        if out.get(&hl) != made.as_deref() {
+            for p in pack.iter() {
                 std::fs::remove_file(&p.local).ok();
             }
             std::fs::remove_file(&mid).ok();
             anyhow::bail!(
-                "piece 6/{}/{} was expected the same as the manifest has it, and isn't (nothing uploaded): {}",
+                "piece 6/{}/{} was expected the same as the manifest has it, and isn't (nothing uploaded): {hl}: made {}, the manifest has {}",
                 t.0,
                 t.1,
-                differ.join("; ")
+                made.as_deref().unwrap_or("none"),
+                out.get(&hl).unwrap_or("none")
             );
         }
     }
@@ -821,13 +813,187 @@ pub fn build_piece_later(
             crate::terrain_pack::drop_named(out, &[hl]);
         }
     }
-    for d in deep_packs {
-        out.put_file_later(&d.logical, "pack", &d.local)?;
-    }
-    crate::terrain_pack::drop_named(out, &gone);
     out.put_file_later(&ml, "sect", &mid)?;
     count.one();
     Ok(rep)
+}
+
+/// Makes z10 tile `t`'s slope deep levels (a slope-deep target: its part of its z6 tile's pyramid,
+/// `deep_part`, from the build's terrain packs, its terrain deep tiles among them) and uploads them:
+/// its deep pack (z13–16; none when it made no deep tile: the manifest's then dropped) and its deep
+/// mid (`deep_mid_logical`), which its z6 tile's slope-hi run takes in.
+pub fn build_deep(out: &mut Out, t: (u32, u32), on: &(dyn Fn(&str, u64, u64) + Sync)) -> Result<Report> {
+    use crate::timings::{phase, Class};
+    let mut rep = Report::default();
+    let p = phase("the terrain packs' indexes read", Class::NasRead);
+    let terr = ManifestTiles::with_copies(out, "terrain", out.scratch_file("terrain-copies"));
+    let (get, has) = terrain_reads(&terr);
+    let terrain = Terrain::new(&get, &has);
+    let deep = deep_terrain(&terr, t)?;
+    let tiles = tiles_under(&has, &deep, (PACK_Z, t.0, t.1));
+    let count = Count::new(tiles.len() as u64 + 1, on);
+    drop(p);
+    // (Its terrain deep pack and its z6 tile's hi pack, read thousands of tiles of, copied here whole.)
+    let p = phase("its terrain packs copied here", Class::NasRead);
+    for (z, x, y) in [(crate::terrain_deep::FIRST_Z, t.0 << 3, t.1 << 3), (9, t.0 >> 1, t.1 >> 1)] {
+        if let Some(n) = terr.copy_here(z, x, y) {
+            p.count(n, 1);
+        }
+    }
+    drop(p);
+    on("slope tiles worked out", 0, count.total);
+    let p = phase("slope tiles worked out (the terrain read as needed)", Class::Compute);
+    let (made, mid) = deep_part(&terrain, &tiles, t, &count);
+    drop(terrain);
+    drop(p);
+    let p = phase("its deep pack and deep mid written", Class::Disk);
+    rep.deep_tiles = made.len();
+    let mut it = made.into_iter().map(|(z, x, y, b)| {
+        let n = b.len() as u32;
+        (z, x, y, b, n)
+    });
+    let enc = crate::shade_codec::ENCODING;
+    let pack = crate::layers::write_pack_local(out, "slope", enc, false, "deep", (PACK_Z, t.0, t.1), &mut it)?;
+    let ml = deep_mid_logical(t.0, t.1);
+    let path = out.scratch_file(&format!("{ml}.sect"));
+    write_deep_mid(&path, t, &mid)?;
+    drop(p);
+    let up = phase("its deep pack and deep mid uploaded", Class::NasWrite);
+    match pack {
+        Some(p) => {
+            rep.deep_packs = 1;
+            out.put_file(&p.logical, "pack", &p.local)?;
+        }
+        None => rep.deep_dropped = crate::terrain_pack::drop_named(out, &[deep_logical(t.0, t.1)]),
+    }
+    out.put_file(&ml, "sect", &path)?;
+    drop(up);
+    count.one();
+    Ok(rep)
+}
+
+/// Z10 tile `t` no slope-deep target any more: its deep pack and deep mid dropped (not saved); how
+/// many.
+pub fn drop_deep(out: &mut Out, t: (u32, u32)) -> usize {
+    crate::terrain_pack::drop_named(out, &[deep_logical(t.0, t.1), deep_mid_logical(t.0, t.1)])
+}
+
+/// Z10 tile (`x`, `y`)'s slope deep mid in the manifest (`DeepMid`): what its z6 tile's slope-hi run
+/// takes in.
+pub fn deep_mid_logical(x: u32, y: u32) -> String {
+    format!("{DEEP_MID_PREFIX}{PACK_Z}-{x}-{y}")
+}
+
+/// The deep mids' logical names' prefix.
+pub const DEEP_MID_PREFIX: &str = "work/slope-deep-mid/";
+
+/// The z10 tile of a deep mid, from its logical name.
+pub fn deep_mid_tile(l: &str) -> Option<(u32, u32)> {
+    let u = crate::legacy::TileId::parse(l.strip_prefix(DEEP_MID_PREFIX)?).filter(|u| u.z == PACK_Z)?;
+    (deep_mid_logical(u.x, u.y) == l).then_some((u.x, u.y))
+}
+
+/// The deep mids the manifest names under z6 tile `t`, by z10 tile.
+pub fn deep_mids_under(m: &BTreeMap<String, String>, t: (u32, u32)) -> Vec<((u32, u32), String)> {
+    let k = PACK_Z - 6;
+    m.range(DEEP_MID_PREFIX.to_string()..)
+        .take_while(|(l, _)| l.starts_with(DEEP_MID_PREFIX))
+        .filter_map(|(l, c)| deep_mid_tile(l).filter(|f| (f.0 >> k, f.1 >> k) == t).map(|f| (f, c.clone())))
+        .collect()
+}
+
+/// The deep mids of z6 tile `t` (`deep_mids_under`), each read and checked (`read_deep_mid`).
+fn read_deep_mids(out: &Out, t: (u32, u32)) -> Result<BTreeMap<(u32, u32), DeepMid>> {
+    let mut got = BTreeMap::new();
+    for (f, c) in deep_mids_under(&out.manifest, t) {
+        let (of, mid) = read_deep_mid(&out.path(&c))?;
+        anyhow::ensure!(of == f, "{c} is 10/{}/{}'s deep mid", of.0, of.1);
+        got.insert(f, mid);
+    }
+    Ok(got)
+}
+
+/// Writes z10 tile `t`'s deep mid to `path`: a sectioned file (store::sect), meta `{"fmt": 1,
+/// "step": "slope-deep", "tile": "10/x/y", "v": SLOPE_V}`, a section `q` with its quadrant (where it
+/// has one: 128 × 128 pixels, each its steepness and direction's two values, f32 little-endian, row
+/// by row) and a section `<z>-<x>-<y>` for each of its z10–12 tiles (its bytes as stored).
+pub fn write_deep_mid(path: &std::path::Path, t: (u32, u32), mid: &DeepMid) -> Result<()> {
+    let meta = serde_json::json!({ "fmt": MID_FMT, "step": "slope-deep", "tile": format!("{PACK_Z}/{}/{}", t.0, t.1), "v": crate::agent::build::SLOPE_V });
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let mut w = store::sect::SectWriter::create(path, meta)?;
+    if let Some(q) = &mid.quadrant {
+        anyhow::ensure!(q.len() == 128 * 128, "a quadrant of {} pixels", q.len());
+        let mut b = Vec::with_capacity(q.len() * 12);
+        for p in q {
+            for v in [p.s, p.u[0], p.u[1]] {
+                b.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        w.add("q", &b)?;
+    }
+    for (z, x, y, b) in &mid.tiles {
+        anyhow::ensure!(
+            (PACK_Z..=HI_MAX).contains(z) && (x >> (z - PACK_Z), y >> (z - PACK_Z)) == t,
+            "{z}/{x}/{y} isn't one of 10/{}/{}'s z10–12 tiles",
+            t.0,
+            t.1
+        );
+        w.add(&format!("{z}-{x}-{y}"), b)?;
+    }
+    w.finish()?;
+    Ok(())
+}
+
+/// A deep mid (`write_deep_mid`), read and checked (its format, step and version, every section
+/// whole): its z10 tile and its part.
+pub fn read_deep_mid(path: &std::path::Path) -> Result<((u32, u32), DeepMid)> {
+    use anyhow::Context;
+    let what = || path.display().to_string();
+    let bytes = crate::depth::grids::open_retrying(
+        path,
+        &|p| crate::depth::grids::within(p, MID_DEADLINE, read_file),
+        MID_WAITS,
+    )
+    .with_context(what)?;
+    let r = store::sect::SectReader::open(bytes).with_context(what)?;
+    let m = r.meta();
+    anyhow::ensure!(
+        m["fmt"].as_u64() == Some(MID_FMT) && m["step"] == "slope-deep",
+        "{}: not a slope deep mid",
+        what()
+    );
+    anyhow::ensure!(
+        m["v"].as_u64() == Some(crate::agent::build::SLOPE_V as u64),
+        "{}: a deep mid of slope version {}, not {}",
+        what(),
+        m["v"],
+        crate::agent::build::SLOPE_V
+    );
+    let t = m["tile"]
+        .as_str()
+        .and_then(crate::legacy::TileId::parse)
+        .filter(|u| u.z == PACK_Z)
+        .with_context(|| format!("{}: no z10 tile", what()))?;
+    let mut mid = DeepMid::default();
+    for s in r.sections() {
+        if s.name == "q" {
+            let b = r.read("q").with_context(what)?;
+            anyhow::ensure!(b.len() == 128 * 128 * 12, "{}: a quadrant of {} bytes", what(), b.len());
+            let f = |i: usize| f32::from_le_bytes(b[i * 4..i * 4 + 4].try_into().unwrap());
+            mid.quadrant = Some((0..128 * 128).map(|k| Px { s: f(3 * k), u: [f(3 * k + 1), f(3 * k + 2)] }).collect());
+            continue;
+        }
+        let u = crate::legacy::TileId::parse(&s.name.replace('-', "/"))
+            .filter(|u| {
+                (PACK_Z..=HI_MAX).contains(&u.z) && (u.x >> (u.z - PACK_Z), u.y >> (u.z - PACK_Z)) == (t.x, t.y)
+            })
+            .with_context(|| format!("{}: a section {:?}", what(), s.name))?;
+        mid.tiles.push((u.z, u.x, u.y, r.read(&s.name).with_context(what)?));
+    }
+    mid.tiles.sort_by_key(|t| (t.0, t.1, t.2));
+    Ok(((t.x, t.y), mid))
 }
 
 /// The mids of z3 tile `q`'s z6 tiles `ts` that have one, each read whole and checked (`read_mid`),
@@ -1097,16 +1263,20 @@ mod tests {
     }
 
     /// Every level of a z6 tile is stored, the finest with deep terrain too: the deep tiles in a deep
-    /// pack by z10 tile, z9–12 in the hi pack, z6–8 in the mid; each pixel of a parent the mean of the
-    /// four stored beneath it where its children cover it (the deep detail reaching z6), else its own
-    /// terrain's shading. Made again, the same packs; the deep terrain gone, its deep pack dropped.
+    /// pack by z10 tile (its slope-deep run's, with its deep mid), z9–12 in the hi pack, z6–8 in the
+    /// mid; each pixel of a parent the mean of the four stored beneath it where its children cover it
+    /// (the deep detail reaching z6), else its own terrain's shading; the same bytes as one run of the
+    /// whole pyramid. Made again, the same packs; the deep terrain gone, its deep pack dropped.
     #[test]
     fn a_z6_tile_stores_every_level_down_to_its_deep_terrain() {
         let d = tempfile::tempdir().unwrap();
         let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
         terrain(&mut out, true);
-        let r = build_piece(&mut out, (28, 16), false, &|_, _, _| {}).unwrap();
+        let r = build_deep(&mut out, (448, 256), &|_, _, _| {}).unwrap();
         assert_eq!((r.deep_packs, r.deep_tiles, r.deep_dropped), (1, 6, 0), "{r:?}");
+        out.save().unwrap();
+        assert!(out.get(&deep_mid_logical(448, 256)).is_some());
+        build_piece(&mut out, (28, 16), false, &|_, _, _| {}).unwrap();
         assert!(out.get(&deep_logical(448, 256)).is_some() && out.get(&hi_logical(28, 16)).is_some());
         let s = ManifestTiles::new(&out, "slope");
         let at = |z: u8, x: u32, y: u32| s.get(z, x, y).unwrap().map(|b| roadcore::shade::decode(&b).unwrap());
@@ -1114,6 +1284,28 @@ mod tests {
             assert!(at(z, x, y).is_some(), "{z}/{x}/{y} stored");
         }
         assert!(at(14, 7170, 4096).is_none() && at(13, 3586, 2048).is_none(), "none past the terrain's");
+        // The same bytes as the whole pyramid made in one run (the z6 tile's before task #639).
+        {
+            let terr = ManifestTiles::new(&out, "terrain");
+            let (get, has) = terrain_reads(&terr);
+            let terrain = Terrain::new(&get, &has);
+            let deep = deep_terrain(&terr, (448, 256)).unwrap();
+            let mut tiles = tiles_under(&has, &deep, (6, 28, 16));
+            tiles.extend(tiles_under(&has, &deep, (PACK_Z, 448, 256)));
+            let own = |z: u8, x: u32, y: u32| shade_tile(&terrain, z, x, y);
+            let mine = Mutex::new(Vec::new());
+            let none = HashMap::new();
+            Pyramid { own: &own, tiles: &tiles, out: &mine, tick: &|| {}, done: &none }.tile(6, 28, 16);
+            let whole = mine.into_inner().unwrap();
+            assert!(whole.len() > 70);
+            for (z, x, y, b) in whole.iter().filter(|m| m.0 >= 9) {
+                assert_eq!(s.get(*z, *x, *y).unwrap().as_ref(), Some(b), "{z}/{x}/{y} as one run makes it");
+            }
+            let mid = read_mid(&out.path(out.get(&mid_logical(28, 16)).unwrap())).unwrap().1;
+            let lo: Vec<&Made> = whole.iter().filter(|m| m.0 < 9).collect();
+            assert_eq!(mid.iter().collect::<Vec<_>>().len(), lo.len());
+            assert!(mid.iter().all(|m| lo.contains(&m)), "its mid as one run makes it");
+        }
         // z14 → z13 → z12: each parent's pixels the mean of the four beneath at full precision (its
         // children's values as made, not as stored), coded once; its own terrain's beside them.
         let get = |z: u8, x: u32, y: u32| {
@@ -1159,23 +1351,34 @@ mod tests {
         // (The deep detail reaches the z12 level everywhere the deep tiles are: unlike z12's own.)
         assert_ne!(roadcore::shade::rgb(&at(12, 1792, 1024).unwrap()), roadcore::shade::rgb(&own(12, 1792, 1024)));
         drop(s);
+        // A deep mid as written reads back bit for bit.
+        let (tm, mid) = read_deep_mid(&out.path(out.get(&deep_mid_logical(448, 256)).unwrap())).unwrap();
+        let p = d.path().join("again.sect");
+        write_deep_mid(&p, tm, &mid).unwrap();
+        assert_eq!(read_deep_mid(&p).unwrap(), (tm, mid.clone()));
+        assert!(mid.quadrant.is_some() && mid.tiles.iter().all(|m| (10..=12).contains(&m.0)));
         // Made again expecting the same: nothing changes.
         let before = out.manifest.clone();
         out.remove(&mid_logical(28, 16));
         build_piece(&mut out, (28, 16), true, &|_, _, _| {}).unwrap();
         assert_eq!(out.manifest, before);
-        // The deep terrain gone: refused when expected the same, else its deep pack dropped.
+        // The deep terrain gone: its slope-deep run drops its deep pack; its z6 tile, expected the
+        // same, is refused (its z12 isn't); made, its z12 tile its own terrain's again.
         out.remove(&crate::terrain_deep::pack_logical(448, 256));
         out.save().unwrap();
-        let e = build_piece(&mut out, (28, 16), true, &|_, _, _| {}).unwrap_err().to_string();
-        assert!(e.contains(&deep_logical(448, 256)) && e.contains("nothing uploaded"), "{e}");
-        let r = build_piece(&mut out, (28, 16), false, &|_, _, _| {}).unwrap();
+        let r = build_deep(&mut out, (448, 256), &|_, _, _| {}).unwrap();
         assert_eq!((r.deep_packs, r.deep_dropped), (0, 1));
+        out.save().unwrap();
         assert!(out.get(&deep_logical(448, 256)).is_none());
-        // And its z12 tile its own terrain's again.
+        let e = build_piece(&mut out, (28, 16), true, &|_, _, _| {}).unwrap_err().to_string();
+        assert!(e.contains(&hi_logical(28, 16)) && e.contains("nothing uploaded"), "{e}");
+        build_piece(&mut out, (28, 16), false, &|_, _, _| {}).unwrap();
         let s = ManifestTiles::new(&out, "slope");
         let z12 = roadcore::shade::decode(&s.get(12, 1792, 1024).unwrap().unwrap()).unwrap();
         assert_eq!(rgb(&z12, 100, 100), rgb(&own(12, 1792, 1024), 100, 100));
+        // No slope-deep target any more: its deep mid goes too.
+        assert_eq!(drop_deep(&mut out, (448, 256)), 1);
+        assert!(out.get(&deep_mid_logical(448, 256)).is_none());
     }
 
     /// The memory bounds are those of the tiles a run holds.
@@ -1228,7 +1431,8 @@ mod tests {
         let working = 16 * (4 * 4 * 196_608 + making) + 21 * 4 * 196_608;
         assert_eq!(working_bytes(PACK_Z, MAX_Z), working);
         assert_eq!(working_bytes(6, HI_MAX), working);
-        assert_eq!(peak_mb(), ((5440 * 2 + 21) * 196_608 + 256 * 196_608 + working + 512 * 262_144) >> 20);
+        assert_eq!(peak_mb(), ((5440 + 21) * 196_608 + 256 * 196_608 + working + 512 * 262_144) >> 20);
+        assert_eq!(deep_peak_mb(), ((1 + 4 + 16 + 5440) * 196_608 + 196_608 + working + 512 * 262_144) >> 20);
         assert_eq!(lo_peak_mb(), ((64 * 21 + 1365) * 196_608 + 512 * 262_144) >> 20);
     }
 
@@ -1295,7 +1499,8 @@ mod tests {
 
     /// A z6 tile whose terrain has no hi tile makes no hi tile, and drops the hi pack an earlier run
     /// left (expected the same, it isn't: refused, nothing uploaded); a z6 tile the coverage has
-    /// left drops its hi pack, deep packs and mid (`drop_piece`); a "none" assembly its lo pack.
+    /// left drops its hi pack and mid (`drop_piece`), its z10 tiles' slope-deep targets their deep
+    /// packs (`drop_deep`); a "none" assembly its lo pack.
     #[test]
     fn a_piece_making_no_hi_tile_or_left_by_the_coverage_drops_its_packs() {
         let d = tempfile::tempdir().unwrap();
@@ -1324,9 +1529,10 @@ mod tests {
         for l in [&lhi, &lmid, &ldeep] {
             fake(&mut out, l);
         }
-        assert_eq!(deep_under(&out.manifest, (24, 23)), [ldeep.clone()]);
-        assert_eq!(drop_piece(&mut out, (24, 23)).unwrap(), 3);
-        assert!(out.get(&lhi).is_none() && out.get(&lmid).is_none() && out.get(&ldeep).is_none());
+        assert_eq!(drop_piece(&mut out, (24, 23)).unwrap(), 2);
+        assert!(out.get(&lhi).is_none() && out.get(&lmid).is_none() && out.get(&ldeep).is_some());
+        assert_eq!(drop_deep(&mut out, (24 * 16 + 3, 23 * 16 + 15)), 1);
+        assert!(out.get(&ldeep).is_none());
         assert_eq!(out.get(&other), Some(kept.as_str()), "another tile's hi pack stays");
         // A z3 tile the coverage has left: its "none" assembly drops its lo pack.
         fake(&mut out, "layers/slope/lo/3-5-2");
@@ -1423,28 +1629,29 @@ mod tests {
         let terr = ManifestTiles::with_copies(&out, "terrain", out.scratch_file("terrain-copies"));
         let (get, has) = terrain_reads(&terr);
         let terrain = Terrain::new(&get, &has);
-        // A z6 tile's tiles (its deep packs' too) put, its z6–8 tiles kept for the assembly.
-        let mut piece_of = |t: (u32, u32), put: &mut dyn FnMut(&[Made])| -> Vec<Made> {
+        // A z6 tile's tiles (its z10 tiles' deep parts first, as their slope-deep runs make them)
+        // put, its z6–8 tiles kept for the assembly.
+        let piece_of = |t: (u32, u32), put: &mut dyn FnMut(&[Made])| -> Vec<Made> {
             terr.copy_here(9, t.0 << 3, t.1 << 3);
-            let deep = deep_terrain(&terr, t).unwrap();
-            let tiles = piece_set(&has, &deep, t);
-            let (hi, lo, packs) = piece(&out, &terr, &terrain, &tiles, &deep, t, &Count::new(1, &none)).unwrap();
+            let k = PACK_Z - 6;
+            let mut mids = BTreeMap::new();
+            for x in t.0 << k..(t.0 + 1) << k {
+                for y in t.1 << k..(t.1 + 1) << k {
+                    let deep = deep_terrain(&terr, (x, y)).unwrap();
+                    if deep.is_empty() {
+                        continue;
+                    }
+                    terr.copy_here(crate::terrain_deep::FIRST_Z, x << 3, y << 3);
+                    let tiles = tiles_under(&has, &deep, (PACK_Z, x, y));
+                    let (d, mid) = deep_part(&terrain, &tiles, (x, y), &Count::new(1, &none));
+                    put(&d);
+                    mids.insert((x, y), mid);
+                }
+            }
+            let tiles = piece_tiles(&has, &mids, t);
+            let (hi, lo) = piece(&terrain, &tiles, &mids, t, &Count::new(1, &none));
             put(&hi);
             put(&lo);
-            for p in packs {
-                let f = store::range::PlainFile::open(&p.local).unwrap();
-                let idx = store::pack::PackIndex::read_from(&f).unwrap();
-                let d: Vec<Made> = idx
-                    .entries
-                    .iter()
-                    .map(|e| {
-                        let (z, x, y) = e.zxy();
-                        (z, x, y, idx.read_blob(&f, e).unwrap())
-                    })
-                    .collect();
-                put(&d);
-                std::fs::remove_file(&p.local).ok();
-            }
             lo
         };
         match a[1] {

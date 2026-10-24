@@ -2,8 +2,10 @@
 //! (docs/inputs.md §6.8, the roads' datasets) is finer than the worldwide ones, the terrain goes on
 //! past the base's finest zoom (`terrain_pack::max_zoom_at`) to the zoom that dataset supports
 //! there, its native zoom (`native_zoom`), from the dataset read at its full resolution. One
-//! terrain: the `terrain` step's run of a z6 tile makes them after its z9–12 (`make_piece`), z8
-//! tile by z8 tile (`SUB_Z`), from those tiles as just made; its key names what they read.
+//! terrain, its packs each a step's: the `terrain-deep` step makes them a z10 tile a target (`make`,
+//! `build_target`: its deep pack), from the base it blends into, made from the elevation pool and
+//! the water with the terrain-hi run's own code (crate::terrain_pack::Bases), never read from built
+//! tiles, so the deep targets wait for no other and run beside the terrain-hi z6 tiles.
 //!
 //! - **Which datasets:** those whose full resolution (`Measured::full`, else `resolution`) is finer
 //!   than the worldwide datasets' finest by over a tenth (`FINER`, `base_resolution`): HRDEM, USGS
@@ -14,31 +16,33 @@
 //!   ~55°); a tile pyramid, its own zoom. A base tile's native zoom is the finest of the datasets
 //!   meeting it there, and counts only past the base's.
 //! - **What a deep tile is:** its pixels sampled from the datasets meeting its z8 tile (in their
-//!   order, blended at their edges: crate::dem::generic), at their full resolution and brought to
-//!   EGM2008 as the roads' are (crate::dem::geoid), with the z6 tile's own base tile last
-//!   (`BASE_URL`), so the data blends into the base over four base pixels (the base's at the z8
-//!   tile's middle latitude) where it ends; where only the base gives a height, the base read
-//!   across its tiles' edges (`padded`: a ring of one tile past the z8 tile, where the z6 tile has
-//!   it; at the z6 tile's edge, its own edge pixels), as the map draws the base. The base's water
-//!   is kept: each pixel by its share of the base tile's sea and lakes (crate::terrain_water, at
-//!   the base's zoom) takes the base's flattened height. Below zero to 0, as the base. Stored as
-//!   every terrain tile is (crate::terrain_codec: lossless WebP), rounded to 1 cm (the native
-//!   zoom's rounding: every deep level is at or past the base's).
+//!   order, blended at their edges: crate::dem::generic; planned over that z8 tile's box, `SUB_Z`,
+//!   whatever part of it a target makes), at their full resolution and brought to EGM2008 as the
+//!   roads' are (crate::dem::geoid), with the base last (`BASE_URL`), so the data blends into the
+//!   base over four base pixels (the base's at the z8 tile's middle latitude) where it ends; where
+//!   only the base gives a height, the base read across its tiles' edges (`padded`: the z10 tile's
+//!   base tiles and the ring of one tile around them, `base_want`, the neighbours' true pixels
+//!   whichever z6 tile holds them), as the map draws the base. The base's water is kept: each pixel
+//!   by its share of the base tile's sea and lakes (crate::terrain_water, at the base's zoom) takes
+//!   the base's flattened height. Below zero to 0, as the base. Stored as every terrain tile is
+//!   (crate::terrain_codec: lossless WebP), rounded to 1 cm (the native zoom's rounding: every deep
+//!   level is at or past the base's).
 //! - **Only where there's data:** a base tile whose datasets have no data in a 128 × 128 grid of
 //!   it (`PRESENCE`, read as their roads read them) makes none; a deep tile none of whose pixels
 //!   comes from a fine dataset isn't stored (the server makes it from its ancestor, as anywhere
 //!   finer than the data).
-//! - **Read once:** a z8 tile reads its datasets' GeoTIFF blocks ahead of their sampling, `FETCHES`
+//! - **Read once:** a target reads its datasets' GeoTIFF blocks ahead of their sampling, `FETCHES`
 //!   at once, each once (`read_ahead`, kept in memory by file: `Kept`): first those the presence
-//!   grids of all its base tiles read, then by z10 tile those its base tiles with data read (each
-//!   tile's area and its blends' reach past it: `plan_items`), each kept until its last z10 tile is
-//!   made, `KEPT_BYTES` at most. Each file is opened once a z8 tile, its header read once.
+//!   grids of its base tiles read, then those its base tiles with data read (each tile's area and
+//!   its blends' reach past it: `plan_items`), `KEPT_BYTES` at most. Each file is opened once a
+//!   target, its header read once.
 //! - **Packs:** by z10 tile (`PACK_Z`): `layers/terrain/deep/10-x-y` (docs/formats.md, Pack), z13
 //!   to `MAX_Z` (`FIRST_Z`), a few hundred MB at most; optional in a region's download
 //!   (crate::areafiles: "Terrain detail"). A deep level of z12 or coarser (north of 67°, where the
-//!   base ends at z11) goes in the z6 tile's hi pack with its base tiles (`make_piece`), so every
-//!   reader finds z9–12 in the hi packs and only z13 on in the deep packs. A z6 tile's run drops
-//!   those of its packs it no longer makes, all of them where no dataset is fine any more.
+//!   base ends at z11) goes in the z6 tile's hi pack with its base tiles, made by its terrain-hi run
+//!   from its tiles as made (`hi_levels`), so every reader finds z9–12 in the hi packs and only z13
+//!   on in the deep packs. A z10 tile with a deep pack and no target any more has it dropped by its
+//!   run (`drop_target`), a retired fine pack too.
 
 use crate::dem::declared::{self, Accepted, Cover, Data, Dataset, Plan, Source};
 use crate::dem::generic::{tile_resolution, Opts, Sampler};
@@ -214,26 +218,28 @@ pub fn deeper(sets: &[FineSet], t: (u32, u32)) -> std::collections::BTreeSet<(u3
     out
 }
 
-/// What z6 tile `t`'s key names of its deep levels: their code (`versions`), then each z8 tile
-/// near the coverage (20 km) with a fine dataset meeting it, its datasets' lines and the zoom each
-/// reaches there (`key_lines`). Only the code where it has none.
+/// What terrain-hi z6 tile `t`'s key names of the fine datasets: its z10 tiles past the base's zoom
+/// (`deeper`: its base tiles there rounded as coarser than native), and where it makes deep levels
+/// coarser than `FIRST_Z` itself (`hi_levels`: its z8 tiles near the coverage, 20 km, whose base ends
+/// short of them), their code (`versions`) and each such z8 tile's fine datasets' lines with the zoom
+/// each reaches there (`key_lines`). Its deep levels from `FIRST_Z` on are its terrain-deep targets'
+/// (`target_key_lines`), never its key's.
 pub fn piece_key_lines(sets: &[FineSet], cov: &crate::coverage::Coverage, t: (u32, u32)) -> String {
+    let deeper: Vec<String> = deeper(sets, t).iter().map(|(x, y)| format!("{PACK_Z}/{x}/{y}")).collect();
+    let mut out = vec![format!("deeper {}", deeper.join(" "))];
     let k = SUB_Z - 6;
-    let mut out = vec![versions()];
+    let mut mine = Vec::new();
     for x in t.0 << k..(t.0 + 1) << k {
         for y in t.1 << k..(t.1 + 1) << k {
             let lines = key_lines(sets, SUB_Z, x, y);
-            if !lines.is_empty() && crate::terrain_pack::near_coverage(cov, SUB_Z, x, y, 20.0) {
-                // (Where the base ends before z12, its deep levels to z12 go in the hi pack, and
-                // those past a finer base tile are that one's: `make`.)
-                let rows = 1u32 << (12 - SUB_Z);
-                let short = [y * rows, (y + 1) * rows - 1]
-                    .iter()
-                    .any(|&r| crate::terrain_pack::max_zoom_at(crate::terrain_pack::tile_lat(12, r)) < FIRST_Z - 1);
-                let to_hi = if short { " (hi to z12)" } else { "" };
-                out.push(format!("{SUB_Z}/{x}/{y} {}{to_hi}", lines.join(" | ")));
+            if short((x, y)) && !lines.is_empty() && crate::terrain_pack::near_coverage(cov, SUB_Z, x, y, 20.0) {
+                mine.push(format!("{SUB_Z}/{x}/{y} {} (hi to z{})", lines.join(" | "), FIRST_Z - 1));
             }
         }
+    }
+    if !mine.is_empty() {
+        out.push(versions());
+        out.extend(mine);
     }
     out.join("\n")
 }
@@ -393,10 +399,12 @@ pub const KEPT_BYTES: usize = 2 << 30;
 /// sampler opening a file reads its header from memory.
 const SMALL_BYTES: usize = 64 << 20;
 
-/// The most memory (MB) a z6 tile's deep levels add to its terrain run, from their bounds: the
-/// blocks kept (`KEPT_BYTES`) and the files' small reads (`SMALL_BYTES`); a deep pack's tiles held
-/// until written (z13 to `MAX_Z` under a `PACK_Z` tile, each at most its raw RGB); a z8 tile's base
-/// tiles and their ring (at the base's z12) decoded and served as PNG (at most raw RGB).
+/// The most memory (MB) deep tiles take as they're made, from their bounds: the blocks kept
+/// (`KEPT_BYTES`) and the files' small reads (`SMALL_BYTES`); a deep pack's tiles held until written
+/// (z13 to `MAX_Z` under a `PACK_Z` tile, each at most its raw RGB); the base tiles read, decoded and
+/// served as PNG (at most raw RGB): a z10 tile's and their ring at the base's z12 (a terrain-deep
+/// target, `make`), or a z8 tile's (a terrain-hi run's deep levels coarser than `FIRST_Z`,
+/// `hi_levels`).
 pub const fn peak_mb() -> u64 {
     let mut pack_tiles = 0u64;
     let mut z = FIRST_Z;
@@ -405,9 +413,22 @@ pub const fn peak_mb() -> u64 {
         z += 1;
     }
     let rgb = 256 * 256 * 3;
-    let ring = ((1u64 << (12 - SUB_Z)) + 2) * ((1u64 << (12 - SUB_Z)) + 2);
-    let bytes = KEPT_BYTES as u64 + SMALL_BYTES as u64 + pack_tiles * rgb + ring * (256 * 256 * 4 + rgb);
+    let side = (1u64 << (12 - SUB_Z)) + 2;
+    let bytes = KEPT_BYTES as u64 + SMALL_BYTES as u64 + pack_tiles * rgb + side * side * (256 * 256 * 4 + rgb);
     bytes >> 20
+}
+
+/// The most memory (MB) a terrain-deep target's run takes, from the code's bounds: its base made
+/// first (crate::terrain_pack::Bases: at most a z6 tile's levels made whole, as its terrain-hi run,
+/// crate::terrain_pack::piece_peak_mb), then its deep tiles (`peak_mb`), the base kept for them
+/// counted there.
+pub const fn target_peak_mb() -> u64 {
+    let (a, b) = (crate::terrain_pack::piece_peak_mb(), peak_mb());
+    if a > b {
+        a
+    } else {
+        b
+    }
 }
 
 /// Whether tile `z/x/y` (z ≤ `SUB_Z`) has deep levels to make: a fine dataset meets one of its z8
@@ -891,10 +912,34 @@ pub fn named_under(m: &BTreeMap<String, String>, z: u8, x: u32, y: u32) -> Vec<S
         .collect()
 }
 
-/// The base tiles under z8 tile `t` (each place's finest base zoom: `terrain_pack::max_zoom_at`)
-/// of a z6 tile's tiles `hi` as just made, and the ring of one tile around them where `hi` has it (a
-/// deep tile at `t`'s edge reads the base across it: `padded`).
-pub fn base_tiles(hi: &[crate::terrain_pack::Made], t: (u32, u32)) -> HashMap<(u8, u32, u32), Vec<u8>> {
+/// The base tiles a deep target's tiles blend into and fill from (`make`): each place's finest base
+/// zoom (`terrain_pack::max_zoom_at`) under z10 tile `t` and in the ring of one tile around them
+/// (a deep tile at `t`'s edge reads the base across it: `padded`, the sampler's base), whichever z6
+/// tile holds them.
+pub fn base_want(t: (u32, u32)) -> std::collections::BTreeSet<(u8, u32, u32)> {
+    let mut out = std::collections::BTreeSet::new();
+    for z in PACK_Z..=crate::terrain_base::MAX_Z {
+        let s = z - PACK_Z;
+        let n = 1i64 << z;
+        let k = 1i64 << s;
+        for dy in -1..=k {
+            let y = ((t.1 as i64) << s) + dy;
+            if !(0..n).contains(&y) || crate::terrain_pack::max_zoom_at(crate::terrain_pack::tile_lat(z, y as u32)) != z
+            {
+                continue;
+            }
+            for dx in -1..=k {
+                let x = (((t.0 as i64) << s) + dx).rem_euclid(n);
+                out.insert((z, x as u32, y as u32));
+            }
+        }
+    }
+    out
+}
+
+/// The base tiles under z8 tile `t` of a z6 tile's tiles `hi` as just made, and the ring of one tile
+/// around them where `hi` has it: what its deep levels coarser than `FIRST_Z` read (`hi_levels`).
+fn hi_base(hi: &[crate::terrain_pack::Made], t: (u32, u32)) -> HashMap<(u8, u32, u32), Vec<u8>> {
     hi.iter()
         .filter(|&&(z, x, y, _)| {
             z >= SUB_Z
@@ -915,13 +960,13 @@ fn near(z: u8, v: u32, t: u32) -> bool {
     [c(v as i64 - 1), c(v as i64), c(v as i64 + 1)].contains(&(t as i64))
 }
 
-/// Whether tile `z/x/y` lies under z8 tile `t`.
-fn under(z: u8, x: u32, y: u32, t: (u32, u32)) -> bool {
-    z >= SUB_Z && (x >> (z - SUB_Z), y >> (z - SUB_Z)) == t
+/// Whether tile `z/x/y` lies under tile `t` of zoom `tz`.
+fn under(z: u8, x: u32, y: u32, tz: u8, t: (u32, u32)) -> bool {
+    z >= tz && (x >> (z - tz), y >> (z - tz)) == t
 }
 
-/// What a z6 tile's deep levels came to.
-#[derive(Clone, Copy, Debug, Default)]
+/// What a deep target's (or a z6 tile's deep levels for its hi pack) came to.
+#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
 pub struct Report {
     pub base_tiles: usize,
     pub with_data: usize,
@@ -931,60 +976,185 @@ pub struct Report {
     pub bytes: u64,
 }
 
-/// What the deep levels of a terrain run read besides the z6 tile's own tiles: the fine datasets
-/// (None: no elevation version accepted), the coverage (a z8 tile further than 20 km from it makes
-/// none), and the fetching of the datasets' files.
+/// What a z6 tile's deep levels coarser than `FIRST_Z` read besides its own tiles (north of 67°,
+/// where the base ends at z11: `hi_levels`): the fine datasets (None: no elevation version
+/// accepted), the coverage (a z8 tile further than 20 km from it makes none), and the fetching of
+/// the datasets' files.
 pub struct Deep<'a> {
     pub fine: Option<&'a Fine>,
     pub cov: &'a crate::coverage::Coverage,
     pub fetch: &'a dyn crate::fetch::Fetch,
 }
 
-/// Z6 tile `t`'s deep levels, from its tiles `hi` as just made and the water `water`: each z8 tile
-/// near the coverage that a fine dataset meets made (`make`), its deep packs written here (not
-/// uploaded: the caller puts them with the z6 tile's hi pack); the deep packs the manifest names
-/// under `t` and no longer made returned to drop.
-pub fn make_piece(
+/// Whether z8 tile `t`'s base ends before `FIRST_Z - 1` somewhere (north of 67°): its deep levels
+/// coarser than `FIRST_Z` go in its z6 tile's hi pack (`hi_levels`).
+fn short(t: (u32, u32)) -> bool {
+    let rows = 1u32 << (12 - SUB_Z);
+    [t.1 * rows, (t.1 + 1) * rows - 1]
+        .iter()
+        .any(|&r| crate::terrain_pack::max_zoom_at(crate::terrain_pack::tile_lat(12, r)) < FIRST_Z - 1)
+}
+
+/// Z6 tile `t`'s deep levels coarser than `FIRST_Z` (z12 north of 67°, where the base ends at
+/// z11), from its tiles `hi` as just made and the water `water`, for its hi pack, where every reader
+/// looks for z9–12 (crate::terrain_pack::ManifestTiles, agent::tiles, the server): each z8 tile near
+/// the coverage that a fine dataset meets and whose base ends short of them (`short`). Its deep
+/// levels from `FIRST_Z` on are its z10 tiles' terrain-deep targets' (`make`).
+pub fn hi_levels(
     out: &Out,
     t: (u32, u32),
     hi: &[crate::terrain_pack::Made],
     water: Option<&dyn crate::terrain_water::WaterSource>,
     deep: &Deep,
     progress: crate::rawpack::Progress,
-) -> Result<(Report, Vec<crate::layers::LocalPack>, Vec<String>, Vec<crate::terrain_pack::Made>)> {
+) -> Result<(Report, Vec<crate::terrain_pack::Made>)> {
     let mut rep = Report::default();
-    let mut packs = Vec::new();
-    let mut hi_more = Vec::new();
+    let mut more = Vec::new();
+    let Some(fine) = deep.fine else { return Ok((rep, more)) };
     let k = SUB_Z - 6;
     let subs: Vec<(u32, u32)> = (t.0 << k..(t.0 + 1) << k)
         .flat_map(|x| (t.1 << k..(t.1 + 1) << k).map(move |y| (x, y)))
-        .filter(|&s| crate::terrain_pack::near_coverage(deep.cov, SUB_Z, s.0, s.1, 20.0))
+        .filter(|&s| short(s) && fine.meets(s) && crate::terrain_pack::near_coverage(deep.cov, SUB_Z, s.0, s.1, 20.0))
         .collect();
-    let fine = deep.fine;
     for (i, &s) in subs.iter().enumerate() {
-        let Some(f) = fine.filter(|f| f.meets(s)) else { continue };
-        let base = base_tiles(hi, s);
-        let (r, mut p, mut h) = make(out, s, &base, water, f, deep.fetch, &|_, _, _| {})?;
-        hi_more.append(&mut h);
+        let base = hi_base(hi, s);
+        let inside: Vec<(u8, u32, u32)> = base.keys().copied().filter(|&(z, x, y)| under(z, x, y, SUB_Z, s)).collect();
+        let store = out.root().join("sources/fetched");
+        let r = make_tiles(s, &inside, &base, water, fine, deep.fetch, &store, 0..FIRST_Z, &mut |tiles| {
+            more.extend(tiles);
+            Ok(())
+        })?;
         rep.base_tiles += r.base_tiles;
         rep.with_data += r.with_data;
         rep.tiles += r.tiles;
         rep.bytes += r.bytes;
-        packs.append(&mut p);
         progress("deep z8 tiles", i as u64 + 1, subs.len() as u64);
     }
-    rep.packs = packs.len();
-    let made: std::collections::BTreeSet<&str> = packs.iter().map(|p| p.logical.as_str()).collect();
-    let gone: Vec<String> =
-        named_under(&out.manifest, 6, t.0, t.1).into_iter().filter(|l| !made.contains(l.as_str())).collect();
-    rep.dropped = gone.len();
-    Ok((rep, packs, gone, hi_more))
+    more.sort_by_key(|t| (t.0, t.1, t.2));
+    Ok((rep, more))
 }
 
-/// Z8 tile `t`'s deep tiles, from its base tiles and their ring (`base`: `base_tiles`; the ring
-/// read, not made), the water `water` and the fine datasets `fine`: its deep packs (`pack_logical`,
-/// its tiles from `FIRST_Z` on) written here, not uploaded, and its coarser deep tiles (z12 north
-/// of 67°), for its z6 tile's hi pack.
+/// Whether z10 tile `t` is a terrain-deep target: near the coverage (20 km, as its z8 tile), a fine
+/// dataset meets its z8 tile, and one of its base tiles reaches `FIRST_Z` (`zooms`).
+pub fn is_target(sets: &[FineSet], cov: &crate::coverage::Coverage, t: (u32, u32)) -> bool {
+    let s = (t.0 >> (PACK_Z - SUB_Z), t.1 >> (PACK_Z - SUB_Z));
+    crate::terrain_pack::near_coverage(cov, PACK_Z, t.0, t.1, 20.0)
+        && crate::terrain_pack::near_coverage(cov, SUB_Z, s.0, s.1, 20.0)
+        && zooms(sets, t).iter().any(|&(_, zf)| zf >= FIRST_Z)
+}
+
+/// The terrain-deep targets under z6 tile `t` (`is_target`).
+pub fn targets_in(sets: &[FineSet], cov: &crate::coverage::Coverage, t: (u32, u32)) -> Vec<(u32, u32)> {
+    let k = PACK_Z - 6;
+    if !reaches(sets, 6, t.0, t.1) {
+        return Vec::new();
+    }
+    (t.0 << k..(t.0 + 1) << k)
+        .flat_map(|x| (t.1 << k..(t.1 + 1) << k).map(move |y| (x, y)))
+        .filter(|&u| is_target(sets, cov, u))
+        .collect()
+}
+
+/// The base tiles under z10 tile `t` (each place's finest base zoom) a fine dataset meeting its z8
+/// tile is finer than, with the zoom it reaches there (`make`'s).
+fn zooms(sets: &[FineSet], t: (u32, u32)) -> Vec<((u8, u32, u32), u8)> {
+    let s = (t.0 >> (PACK_Z - SUB_Z), t.1 >> (PACK_Z - SUB_Z));
+    let b = crate::stage::tile_box_grown(SUB_Z, s.0, s.1, 0.0);
+    let here = meeting(sets, b, poleward(b));
+    if here.is_empty() {
+        return Vec::new();
+    }
+    base_want(t)
+        .into_iter()
+        .filter(|&(z, x, y)| under(z, x, y, PACK_Z, t))
+        .filter_map(|bt| zoom_here(&here, bt).map(|zf| (bt, zf)))
+        .collect()
+}
+
+/// The finest zoom datasets `here` reach in base tile `b` (at its middle latitude), where past its own.
+fn zoom_here(here: &[&FineSet], b: (u8, u32, u32)) -> Option<u8> {
+    let (z, x, y) = b;
+    let bb = crate::stage::tile_box_grown(z, x, y, 0.0);
+    let lat = crate::terrain_pack::tile_lat(z, y);
+    here.iter().filter(|s| s.cover.meets(bb)).map(|s| s.detail.zoom_at(lat)).max().filter(|&f| f > z)
+}
+
+/// What deep target `t`'s key names of the deep levels' code and the fine datasets: their code
+/// (`versions`), the datasets meeting its z8 tile (its plans are that box's) and its z10 tile with
+/// the zoom each reaches there (`key_lines`), and whether each z10 tile around it goes past the
+/// base's zoom (its ring's base tiles rounded as coarser than native there:
+/// crate::terrain_pack::Sources::deeper).
+pub fn target_key_lines(sets: &[FineSet], t: (u32, u32)) -> String {
+    let s = (t.0 >> (PACK_Z - SUB_Z), t.1 >> (PACK_Z - SUB_Z));
+    let mut out = vec![versions(), format!("first {FIRST_Z}")];
+    out.push(format!("{SUB_Z}/{}/{} {}", s.0, s.1, key_lines(sets, SUB_Z, s.0, s.1).join(" | ")));
+    out.push(format!("{PACK_Z}/{}/{} {}", t.0, t.1, key_lines(sets, PACK_Z, t.0, t.1).join(" | ")));
+    let n = 1i64 << PACK_Z;
+    let mut ring = String::new();
+    for dy in -1i64..=1 {
+        for dx in -1i64..=1 {
+            let (x, y) = ((t.0 as i64 + dx).rem_euclid(n) as u32, t.1 as i64 + dy);
+            let d = (0..n).contains(&y) && zoom_of(sets, PACK_Z, x, y as u32).is_some();
+            ring.push(if d { 'd' } else { '-' });
+        }
+    }
+    out.push(format!("deeper {ring}"));
+    out.join("\n")
+}
+
+/// The base deep target `t` reads (`base_want`), made as the terrain-hi runs of their z6 tiles make
+/// them (`bases`: crate::terrain_pack::Bases), by tile.
+pub fn target_base(bases: &crate::terrain_pack::Bases, t: (u32, u32)) -> Result<HashMap<(u8, u32, u32), Vec<u8>>> {
+    let mut by: BTreeMap<(u32, u32), std::collections::BTreeSet<(u8, u32, u32)>> = BTreeMap::new();
+    for (z, x, y) in base_want(t) {
+        by.entry((x >> (z - 6), y >> (z - 6))).or_default().insert((z, x, y));
+    }
+    let mut out = HashMap::new();
+    for (p, want) in by {
+        out.extend(bases.of(p, &want)?.into_iter().map(|(z, x, y, b)| ((z, x, y), b)));
+    }
+    Ok(out)
+}
+
+/// Deep target `t` made (`make`, from its base: `target_base`) and put: its deep pack, else (no
+/// tile made) the deep pack and a retired one there dropped (not saved).
+pub fn build_target(
+    out: &mut Out,
+    t: (u32, u32),
+    bases: &crate::terrain_pack::Bases,
+    water: Option<&dyn crate::terrain_water::WaterSource>,
+    fine: &Fine,
+    fetch: &dyn crate::fetch::Fetch,
+) -> Result<Report> {
+    let base = {
+        let _p =
+            crate::timings::phase("its base made (the pool sampled, its lakes levelled)", crate::timings::Class::Mixed);
+        target_base(bases, t)?
+    };
+    let p = crate::timings::phase("its deep tiles made (the fine datasets read)", crate::timings::Class::Mixed);
+    let (mut rep, pack) = make(out, t, &base, water, fine, fetch)?;
+    drop(p);
+    let mut gone = named_under(&out.manifest, PACK_Z, t.0, t.1);
+    if let Some(p) = pack {
+        gone.retain(|l| *l != p.logical);
+        let _p = crate::timings::phase("its deep pack uploaded", crate::timings::Class::NasWrite);
+        out.put_file(&p.logical, "pack", &p.local)?;
+    }
+    rep.dropped = crate::terrain_pack::drop_named(out, &gone);
+    Ok(rep)
+}
+
+/// Z10 tile `t` no deep target any more (no fine dataset there, or the coverage gone): its deep
+/// pack and a retired one there dropped (not saved); how many.
+pub fn drop_target(out: &mut Out, t: (u32, u32)) -> usize {
+    let gone = named_under(&out.manifest, PACK_Z, t.0, t.1);
+    crate::terrain_pack::drop_named(out, &gone)
+}
+
+/// Z10 tile `t`'s deep tiles (`FIRST_Z` to `MAX_Z`), from the base tiles `base` (`base_want`'s, as
+/// their terrain-hi runs store them: crate::terrain_pack::Bases), the water `water` and the fine
+/// datasets `fine`: its deep pack (`pack_logical`) written here, not uploaded; None where it makes
+/// no tile.
 pub fn make(
     out: &Out,
     t: (u32, u32),
@@ -992,31 +1162,78 @@ pub fn make(
     water: Option<&dyn crate::terrain_water::WaterSource>,
     fine: &Fine,
     fetch: &dyn crate::fetch::Fetch,
-    progress: crate::rawpack::Progress,
-) -> Result<(Report, Vec<crate::layers::LocalPack>, Vec<crate::terrain_pack::Made>)> {
-    let mut rep = Report::default();
-    let b = crate::stage::tile_box_grown(SUB_Z, t.0, t.1, 0.0);
-    let inside: Vec<(u8, u32, u32)> = base.keys().copied().filter(|&(z, x, y)| under(z, x, y, t)).collect();
+) -> Result<(Report, Option<crate::layers::LocalPack>)> {
+    let s = (t.0 >> (PACK_Z - SUB_Z), t.1 >> (PACK_Z - SUB_Z));
+    let inside: Vec<(u8, u32, u32)> = base.keys().copied().filter(|&(z, x, y)| under(z, x, y, PACK_Z, t)).collect();
+    let mut tiles = Vec::new();
+    let store = out.root().join("sources/fetched");
+    let mut rep = make_tiles(s, &inside, base, water, fine, fetch, &store, FIRST_Z..MAX_Z + 1, &mut |made| {
+        tiles.extend(made);
+        Ok(())
+    })?;
+    if tiles.is_empty() {
+        return Ok((rep, None));
+    }
+    tiles.sort_by_key(|t| (t.0, t.1, t.2));
+    let mut it = tiles.into_iter().map(|(z, x, y, b)| {
+        let n = b.len() as u32;
+        (z, x, y, b, n)
+    });
+    let p = crate::layers::write_pack_local(
+        out,
+        "terrain",
+        crate::terrain_codec::ENCODING,
+        false,
+        "deep",
+        (PACK_Z, t.0, t.1),
+        &mut it,
+    )?;
+    rep.packs = p.iter().count();
+    Ok((rep, p))
+}
+
+/// The deep tiles of zooms `zs` of base tiles `inside` (of z8 tile `s`, whose box the datasets are
+/// planned over, so each blend's band is the same whichever part of it is made), from the base
+/// tiles `base` (those and their ring), each z10 tile's given to `sink` as made: the datasets'
+/// blocks read ahead z10 tile by z10 tile, each once (`read_ahead`), its base tiles made at once.
+#[allow(clippy::too_many_arguments)]
+fn make_tiles(
+    s: (u32, u32),
+    inside: &[(u8, u32, u32)],
+    base: &HashMap<(u8, u32, u32), Vec<u8>>,
+    water: Option<&dyn crate::terrain_water::WaterSource>,
+    fine: &Fine,
+    fetch: &dyn crate::fetch::Fetch,
+    store: &std::path::Path,
+    zs: std::ops::Range<u8>,
+    sink: &mut dyn FnMut(Vec<(u8, u32, u32, Vec<u8>)>) -> Result<()>,
+) -> Result<Report> {
+    let mut rep = Report { base_tiles: inside.len(), ..Report::default() };
+    let b = crate::stage::tile_box_grown(SUB_Z, s.0, s.1, 0.0);
     let plans = if inside.is_empty() { None } else { fine.plans(b)? };
-    let Some((presence, full)) = plans else { return Ok((rep, Vec::new(), Vec::new())) };
-    rep.base_tiles = inside.len();
-    // (By z10 tile, its base tiles some fine dataset is finer than, with the zoom they reach.)
+    let Some((presence, full)) = plans else { return Ok(rep) };
+    // (By z10 tile, its base tiles some fine dataset is finer than, with the zoom they reach, those
+    // reaching `zs`.)
     let here = meeting(&fine.sets, b, poleward(b));
     let mut by_pack: BTreeMap<(u32, u32), Vec<((u8, u32, u32), u8)>> = BTreeMap::new();
-    for &(z, x, y) in &inside {
-        let bb = crate::stage::tile_box_grown(z, x, y, 0.0);
-        let lat = crate::terrain_pack::tile_lat(z, y);
-        let zf = here.iter().filter(|s| s.cover.meets(bb)).map(|s| s.detail.zoom_at(lat)).max();
-        let e = by_pack.entry((x >> (z - PACK_Z), y >> (z - PACK_Z))).or_default();
-        if let Some(zf) = zf.filter(|&f| f > z) {
-            e.push(((z, x, y), zf));
+    for &bt in inside {
+        let e = by_pack.entry((bt.1 >> (bt.0 - PACK_Z), bt.2 >> (bt.0 - PACK_Z))).or_default();
+        if let Some(zf) = zoom_here(&here, bt).filter(|&zf| zf >= zs.start && bt.0 + 1 < zs.end) {
+            e.push((bt, zf));
         }
     }
-    let mut groups: Vec<((u32, u32), Vec<((u8, u32, u32), u8)>)> = by_pack.into_iter().collect();
-    for g in &mut groups {
-        g.1.sort();
-    }
+    let groups: Vec<Vec<((u8, u32, u32), u8)>> = by_pack
+        .into_values()
+        .filter(|g| !g.is_empty())
+        .map(|mut g| {
+            g.sort();
+            g
+        })
+        .collect();
     let n = groups.len();
+    if n == 0 {
+        return Ok(rep);
+    }
     let decoded: HashMap<(u8, u32, u32), Vec<f32>> =
         base.par_iter().map(|(&k, b)| Ok((k, roadcore::grid::decode_terrain(b)?))).collect::<Result<_>>()?;
     // (The base served to the sampler as a Terrarium pyramid of PNGs: crate::dem::encoding.)
@@ -1025,36 +1242,35 @@ pub fn make(
         .map(|(&k, e)| Ok((k, roadcore::grid::encode_terrain_png(e, 256, 256)?)))
         .collect::<Result<_>>()?;
     let bf = BaseFetch::new(&served, fetch);
-    let o = Opts { fetch: &bf, store: Some(out.root().join("sources/fetched")), pool: None };
+    let o = Opts { fetch: &bf, store: Some(store.to_path_buf()), pool: None };
     let presence_s = Sampler::new(&presence, &o)?;
     let full_s = Sampler::sharing(&full, &o, &presence_s)?;
-    // Which base tiles their datasets have data in, their blocks read ahead for the whole z8 tile;
-    // then the deep tiles of those, theirs read ahead by z10 tile, each block once.
+    // (Its files' reads planned over its base tiles' box, not the z8 tile's.)
+    let area = boxes(groups.iter().flatten().map(|g| g.0));
+    // Which base tiles their datasets have data in, their blocks read ahead by z10 tile; then the
+    // deep tiles of those, theirs read ahead likewise, each block once.
     let tiles_of = |keep: &dyn Fn(usize, usize) -> bool| -> Vec<Vec<(u8, u32, u32)>> {
         groups
             .iter()
             .enumerate()
-            .map(|(g, (_, ts))| (0..ts.len()).filter(|&i| keep(g, i)).map(|i| ts[i].0).collect())
+            .map(|(g, ts)| (0..ts.len()).filter(|&i| keep(g, i)).map(|i| ts[i].0).collect())
             .collect()
     };
-    let items = plan_items(&plan_files(&presence, b, &bf)?, &tiles_of(&|_, _| true))?;
+    let items = plan_items(&plan_files(&presence, area, &bf)?, &tiles_of(&|_, _| true))?;
     let mut with: Vec<Vec<bool>> = vec![Vec::new(); n];
     read_ahead(&items, n, false, |g| {
-        with[g] = groups[g].1.par_iter().map(|&(t, _)| has_data(&presence_s, t)).collect::<Result<_>>()?;
+        with[g] = groups[g].par_iter().map(|&(t, _)| has_data(&presence_s, t)).collect::<Result<_>>()?;
         Ok(())
     })?;
     rep.with_data = with.iter().flatten().filter(|&&d| d).count();
-    let items = plan_items(&plan_files(&full, b, &bf)?, &tiles_of(&|g, i| with[g][i]))?;
+    let items = plan_items(&plan_files(&full, area, &bf)?, &tiles_of(&|g, i| with[g][i]))?;
     bf.keep_only(&items);
-    let mut written = Vec::new();
-    let mut hi_more = Vec::new();
     read_ahead(&items, n, true, |k| {
-        let (g, bs) = &groups[k];
-        let made: Vec<Result<Vec<(u8, u32, u32, Vec<u8>)>>> = bs
+        let made: Vec<Result<Vec<(u8, u32, u32, Vec<u8>)>>> = groups[k]
             .par_iter()
             .zip(&with[k])
             .filter(|(_, &d)| d)
-            .map(|(&(t, zf), _)| deep_tiles(&full_s, water, &decoded, t, zf))
+            .map(|(&(t, zf), _)| deep_tiles(&full_s, water, &decoded, t, zf, &zs))
             .collect();
         let mut tiles = Vec::new();
         for r in made {
@@ -1062,31 +1278,19 @@ pub fn make(
         }
         rep.tiles += tiles.len();
         rep.bytes += tiles.iter().map(|t| t.3.len() as u64).sum::<u64>();
-        let (h, mut tiles): (Vec<_>, Vec<_>) = tiles.into_iter().partition(|t| t.0 < FIRST_Z);
-        hi_more.extend(h);
-        if !tiles.is_empty() {
-            tiles.sort_by_key(|t| (t.0, t.1, t.2));
-            let mut it = tiles.into_iter().map(|(z, x, y, b)| {
-                let n = b.len() as u32;
-                (z, x, y, b, n)
-            });
-            if let Some(p) = crate::layers::write_pack_local(
-                out,
-                "terrain",
-                crate::terrain_codec::ENCODING,
-                false,
-                "deep",
-                (PACK_Z, g.0, g.1),
-                &mut it,
-            )? {
-                written.push(p);
-            }
-        }
-        progress("deep packs", k as u64 + 1, n as u64);
-        Ok(())
+        sink(tiles)
     })?;
-    rep.packs = written.len();
-    Ok((rep, written, hi_more))
+    Ok(rep)
+}
+
+/// The box (west, south, east, north) of tiles `ts`.
+fn boxes(ts: impl Iterator<Item = (u8, u32, u32)>) -> [f64; 4] {
+    let mut b = [180.0f64, 90.0f64, -180.0f64, -90.0f64];
+    for (z, x, y) in ts {
+        let t = crate::stage::tile_box_grown(z, x, y, 0.0);
+        b = [b[0].min(t[0]), b[1].min(t[1]), b[2].max(t[2]), b[3].max(t[3])];
+    }
+    b
 }
 
 /// A base tile's samples: the points of `tiles` (each 256 × 256 pixel centres) of zoom `z`.
@@ -1122,20 +1326,21 @@ fn has_data(presence: &Sampler, b: (u8, u32, u32)) -> Result<bool> {
     Ok(presence.sample(&lon, &lat, &|_| {})?.elev.iter().any(|v| v.is_finite()))
 }
 
-/// Base tile `b`'s deep tiles to zoom `zf` with data of a fine dataset (`full`; `tiles`: the base
-/// tiles decoded, its neighbours with it).
+/// Base tile `b`'s deep tiles to zoom `zf`, those of zooms `zs`, with data of a fine dataset (`full`;
+/// `tiles`: the base tiles decoded, its neighbours with it).
 fn deep_tiles(
     full: &Sampler,
     water: Option<&dyn crate::terrain_water::WaterSource>,
     tiles: &HashMap<(u8, u32, u32), Vec<f32>>,
     b: (u8, u32, u32),
     zf: u8,
+    zs: &std::ops::Range<u8>,
 ) -> Result<Vec<(u8, u32, u32, Vec<u8>)>> {
     let (zb, bx, by) = b;
     let base = padded(tiles, b);
     let share = water_share(water, b)?;
     let mut out = Vec::new();
-    for z in zb + 1..=zf {
+    for z in (zb + 1..=zf).filter(|z| zs.contains(z)) {
         let k = 1u32 << (z - zb);
         // (Not those under a finer base tile, where the base's finest zoom changes (79°): its own
         // deep levels make them.)
@@ -1519,47 +1724,64 @@ mod tests {
     }
 
     #[test]
-    fn a_z8_tile_is_made_from_its_z6_tiles_own_tiles_and_their_ring_within_it() {
+    fn a_z10_tile_is_made_from_its_base_tiles_and_their_ring() {
         let d = tempfile::tempdir().unwrap();
         let fine = world_to(d.path(), 13);
         let root = d.path().join("nas");
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         let out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
-        // Z8 tile 8/74/92 inside its z6 tile 6/18/23: its z6 tile's tiles as made, two of its base
-        // tiles (one at its east edge), the ring tile past that edge (8/75/92's, in the same z6
-        // tile), one further, and a z9; each z12 at 50 m.
-        let t = (74u32, 92u32);
+        // Z10 tile 10/299/369 (in z8 tile 8/74/92, z6 tile 6/18/23): two of its base tiles (one at
+        // its east edge), the ring tile past that edge (in z10 tile 10/300/369), one further, and a
+        // z9; each z12 at 50 m.
+        let t = (299u32, 369u32);
         let (edge, inside, ring, far) =
-            ((12u8, 1199u32, 1477u32), (12, 1194, 1477), (12, 1200, 1477), (12, 1202, 1477));
+            ((12u8, 1199u32, 1477u32), (12, 1197, 1477), (12, 1200, 1477), (12, 1202, 1477));
+        let want = base_want(t);
+        assert_eq!(want.len(), 36, "its 16 z12 tiles and their ring");
+        assert!([edge, inside, ring].iter().all(|b| want.contains(b)));
+        assert!(!want.contains(&far) && !want.contains(&(9, 148, 184)));
         let tile = |m: f32| crate::terrain_codec::encode(&mut vec![m; 65536], 0.1).unwrap();
-        let hi: Vec<crate::terrain_pack::Made> =
-            [(9u8, 148u32, 184u32), edge, inside, ring, far].iter().map(|&(z, x, y)| (z, x, y, tile(50.0))).collect();
-        let base = base_tiles(&hi, t);
-        let mut got: Vec<_> = base.keys().copied().collect();
-        got.sort();
-        assert_eq!(got, vec![inside, edge, ring], "its own base tiles and its ring, not its z9 nor past the ring");
+        let base: HashMap<(u8, u32, u32), Vec<u8>> = [edge, inside, ring].iter().map(|&b| (b, tile(50.0))).collect();
         let flat = Flat(roadcore::grid::encode_terrain_png(&vec![100.0; 65536], 256, 256).unwrap());
-        let (rep, packs, more) = make(&out, t, &base, None, &fine, &flat, &|_, _, _| {}).unwrap();
-        assert!(more.is_empty(), "z13 on, all in the deep packs");
-        assert_eq!((rep.base_tiles, rep.with_data, rep.tiles, rep.packs), (2, 2, 8, 2), "the ring's tiles not made");
-        assert!(packs.iter().all(|p| p.logical != pack_logical(ring.1 >> 2, ring.2 >> 2)));
-        let p = packs.iter().find(|p| p.logical == pack_logical(edge.1 >> 2, edge.2 >> 2)).unwrap();
-        let (idx, f) = read_pack(p);
+        let (rep, pack) = make(&out, t, &base, None, &fine, &flat).unwrap();
+        assert_eq!((rep.base_tiles, rep.with_data, rep.tiles, rep.packs), (2, 2, 8, 1), "the ring's tiles not made");
+        let p = pack.unwrap();
+        assert_eq!(p.logical, pack_logical(t.0, t.1));
+        let (idx, f) = read_pack(&p);
         assert_eq!(idx.meta["encoding"], crate::terrain_codec::ENCODING, "the deep packs say what their tiles are");
         assert_eq!(idx.meta["scope"], "deep");
+        assert!(idx.entries.iter().all(|e| under(e.zxy().0, e.zxy().1, e.zxy().2, PACK_Z, t)));
         let e = idx.find(13, edge.1 * 2 + 1, edge.2 * 2).unwrap();
         let v = roadcore::grid::decode_terrain(&idx.read_blob(&f, &e).unwrap()).unwrap();
         assert!(v.iter().all(|&h| (h - 100.0).abs() < 0.01), "the data's heights");
     }
 
+    /// Raw tiles all at `m` metres, every one there.
+    struct Level(f32);
+    impl crate::terrain_pack::RawSource for Level {
+        fn get(&self, _: u8, _: u32, _: u32) -> Result<(Option<Vec<u8>>, bool)> {
+            Ok((Some(roadcore::grid::encode_terrain_png(&vec![self.0; 65536], 256, 256)?), false))
+        }
+        fn prefetch_counted(
+            &self,
+            _: u8,
+            tiles: &[(u32, u32)],
+            _: usize,
+            done: &std::sync::atomic::AtomicU64,
+        ) -> Result<usize> {
+            done.fetch_add(tiles.len() as u64, Ordering::Relaxed);
+            Ok(0)
+        }
+    }
+
     #[test]
-    fn a_z6_tiles_deep_levels_are_its_z8_tiles_and_drop_what_it_no_longer_makes() {
+    fn a_deep_target_makes_its_pack_from_its_own_base_and_drops_it_once_no_target() {
         let d = tempfile::tempdir().unwrap();
         let fine = world_to(d.path(), 14);
         let root = d.path().join("nas");
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
-        // Z6 tile 6/18/23 (~45°N), the coverage over it: one base tile, 50 m, in z8 tile 8/74/92.
+        // Z6 tile 6/18/23 (~45°N), the coverage over a few of its base tiles.
         let cov = crate::coverage::Coverage::fixture(
             &[crate::agent::recipes::Recipe {
                 id: "r".into(),
@@ -1571,42 +1793,69 @@ mod tests {
         )
         .unwrap();
         let t6 = (18u32, 23u32);
-        let b = (12u8, 74 * 16 + 3, 92 * 16 + 5);
-        assert!(crate::terrain_pack::near_coverage(&cov, 8, 74, 92, 20.0));
-        let tile = |m: f32| crate::terrain_codec::encode(&mut vec![m; 65536], 0.1).unwrap();
-        let hi: Vec<crate::terrain_pack::Made> = vec![(b.0, b.1, b.2, tile(50.0))];
+        let targets = targets_in(&fine.sets, &cov, t6);
+        assert!(!targets.is_empty() && targets.iter().all(|&t| is_target(&fine.sets, &cov, t)));
+        assert!(targets_in(&[], &cov, t6).is_empty(), "no fine dataset: no target");
+        let t = targets[0];
+        // (Its base: the raw tiles at 50 m, as the terrain-hi run makes them; the data at 100 m.)
+        let src = crate::terrain_pack::Sources::default();
+        let raw = Level(50.0);
+        let bases = crate::terrain_pack::Bases::new(&raw, &src, &cov);
+        let base = target_base(&bases, t).unwrap();
+        assert!(!base.is_empty() && base.keys().all(|b| base_want(t).contains(b)));
         let flat = Flat(roadcore::grid::encode_terrain_png(&vec![100.0; 65536], 256, 256).unwrap());
-        let deep = Deep { fine: Some(&fine), cov: &cov, fetch: &flat };
-        let (rep, packs, gone, more) = make_piece(&out, t6, &hi, None, &deep, &|_, _, _| {}).unwrap();
-        assert!(more.is_empty());
-        assert_eq!((rep.base_tiles, rep.with_data, rep.tiles, rep.packs, gone.len()), (1, 1, 4 + 16, 1, 0));
-        let l = pack_logical(b.1 >> 2, b.2 >> 2);
-        assert_eq!(packs[0].logical, l);
-        let (idx, f) = read_pack(&packs[0]);
-        let zs: Vec<u8> = idx.entries.iter().map(|e| e.zxy().0).collect();
-        assert_eq!((zs.iter().filter(|&&z| z == 13).count(), zs.iter().filter(|&&z| z == 14).count()), (4, 16));
-        let e = idx.find(14, b.1 * 4 + 1, b.2 * 4 + 2).unwrap();
-        let v = roadcore::grid::decode_terrain(&idx.read_blob(&f, &e).unwrap()).unwrap();
+        let rep = build_target(&mut out, t, &bases, None, &fine, &flat).unwrap();
+        assert!(rep.tiles > 0 && rep.packs == 1 && rep.dropped == 0, "{rep:?}");
+        let l = pack_logical(t.0, t.1);
+        let (idx, f) = {
+            let p = out.path(out.get(&l).unwrap());
+            let f = store::range::PlainFile::open(&p).unwrap();
+            (store::pack::PackIndex::read_from(&f).unwrap(), f)
+        };
+        let zs: std::collections::BTreeSet<u8> = idx.entries.iter().map(|e| e.zxy().0).collect();
+        assert_eq!(zs, [13, 14].into(), "z13 on, to the data's zoom");
+        let e = idx.entries.iter().find(|e| e.zxy().0 == 14).unwrap();
+        let v = roadcore::grid::decode_terrain(&idx.read_blob(&f, e).unwrap()).unwrap();
         assert!(v.iter().all(|&h| (h - 100.0).abs() < 0.01), "the data's heights, not the base's");
-        out.put_file(&l, "pack", &packs[0].local).unwrap();
-        // Nothing fine any more: its packs go.
-        let none = Deep { fine: None, ..deep };
-        let (rep, packs, gone, _) = make_piece(&out, t6, &hi, None, &none, &|_, _, _| {}).unwrap();
-        assert_eq!((rep.packs, packs.len(), gone), (0, 0, vec![l]));
+        // (A retired pack there goes with its run.)
+        out.manifest.insert(format!("{RETIRED}10-{}-{}", t.0, t.1), "x".into());
+        build_target(&mut out, t, &bases, None, &fine, &flat).unwrap();
+        assert_eq!(named_under(&out.manifest, PACK_Z, t.0, t.1), vec![l.clone()]);
+        // No target any more: its pack goes.
+        assert_eq!(drop_target(&mut out, t), 1);
+        assert!(out.get(&l).is_none());
         // The z10 tiles past the base's zoom, and their native zoom.
         let deeper = deeper(&fine.sets, t6);
         assert_eq!(deeper.len(), 256, "the world dataset reaches past z12 everywhere");
-        assert_eq!(native_zoom(&fine.sets, (b.1 >> 2, b.2 >> 2)), 14);
-        assert_eq!(native_zoom(&[], (b.1 >> 2, b.2 >> 2)), 12);
-        // Its deep levels to make, for its run's memory (`peak_mb`, over the blocks kept).
+        assert_eq!(native_zoom(&fine.sets, t), 14);
+        assert_eq!(native_zoom(&[], t), 12);
         assert!(reaches(&fine.sets, 6, t6.0, t6.1) && !reaches(&[], 6, t6.0, t6.1));
+        // Its memory: its base made as a z6 tile's run at most, or its deep tiles' (`peak_mb`, over
+        // the blocks kept).
         assert!(peak_mb() > (KEPT_BYTES >> 20) as u64);
+        assert_eq!(target_peak_mb(), peak_mb().max(crate::terrain_pack::piece_peak_mb()));
+    }
+
+    /// A deep target's key: the fine datasets meeting its z8 tile and itself, and which z10 tiles
+    /// around it go past the base's zoom; not a dataset far from it.
+    #[test]
+    fn a_deep_targets_key_names_what_it_reads_of_the_fine_datasets() {
+        // (Z10 tile 10/384/369: its west edge on 45°W, a cell's.)
+        let t = (384u32, 369u32);
+        let around: Vec<(i32, i32)> = (-46..=-44).flat_map(|x| (43..=45).map(move |y| (x, y))).collect();
+        let lidar = |res: u64| set("lidar", Detail::Raster(res), &around);
+        let k = target_key_lines(&[lidar(2000)], t);
+        assert!(k.contains("10/384/369 lidar k zoom 16") && k.contains(&versions()), "{k}");
+        assert!(k.ends_with("deeper ddddddddd"), "{k}");
+        assert_eq!(k, target_key_lines(&[lidar(2000), set("far", Detail::Raster(2000), &[(100, -10)])], t));
+        assert_ne!(k, target_key_lines(&[lidar(10300)], t), "its zoom there moved");
     }
 
     /// North of 67° the base ends at z11 and the deep levels begin at z12 (70°N, z6 tile 6/36/14):
-    /// those of z12 go in the hi pack, z13 on in the deep pack, so the terrain's readers find each
-    /// where they look (crate::terrain_pack::ManifestTiles: z9–12 in the hi packs), and the slope
-    /// makes its z12 from them, its z13 in its deep pack.
+    /// those of z12 go in the hi pack (`hi_levels`, the terrain-hi run's), z13 on in the deep pack
+    /// (`make`, its terrain-deep target's), so the terrain's readers find each where they look
+    /// (crate::terrain_pack::ManifestTiles: z9–12 in the hi packs), and the slope makes its z12 from
+    /// them, its z13 in its deep pack.
     #[test]
     fn north_of_67_the_deep_z12_goes_in_the_hi_pack() {
         let d = tempfile::tempdir().unwrap();
@@ -1631,19 +1880,28 @@ mod tests {
         let mut hi: Vec<crate::terrain_pack::Made> = vec![(b.0, b.1, b.2, tile(50.0))];
         let flat = Flat(roadcore::grid::encode_terrain_png(&vec![100.0; 65536], 256, 256).unwrap());
         let deep = Deep { fine: Some(&fine), cov: &cov, fetch: &flat };
-        let (rep, packs, gone, more) = make_piece(&out, t6, &hi, None, &deep, &|_, _, _| {}).unwrap();
-        assert_eq!((rep.tiles, rep.packs, gone.len()), (4 + 16, 1, 0));
-        let mut zs: Vec<(u8, u32, u32)> = more.iter().map(|m| (m.0, m.1, m.2)).collect();
-        zs.sort();
+        let (rep, more) = hi_levels(&out, t6, &hi, None, &deep, &|_, _, _| {}).unwrap();
+        let zs: Vec<(u8, u32, u32)> = more.iter().map(|m| (m.0, m.1, m.2)).collect();
         let z12: Vec<(u8, u32, u32)> = (0..4)
             .map(|k| (12, b.1 * 2 + (k & 1), b.2 * 2 + (k >> 1)))
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
-        assert_eq!(zs, z12, "its four z12 tiles for the hi pack");
-        let (idx, _) = read_pack(&packs[0]);
+        assert_eq!((zs, rep.tiles), (z12, 4), "its four z12 tiles for the hi pack, nothing past them");
+        // Its z13 on: its z10 tile's deep target, from the same base.
+        let t = (b.1 >> 1, b.2 >> 1);
+        assert!(is_target(&fine.sets, &cov, t));
+        let base: HashMap<(u8, u32, u32), Vec<u8>> = hi
+            .iter()
+            .filter(|m| base_want(t).contains(&(m.0, m.1, m.2)))
+            .map(|m| ((m.0, m.1, m.2), m.3.clone()))
+            .collect();
+        let (rep, pack) = make(&out, t, &base, None, &fine, &flat).unwrap();
+        assert_eq!(rep.tiles, 16);
+        let pack = pack.unwrap();
+        let (idx, _) = read_pack(&pack);
         assert!(idx.entries.iter().all(|e| e.zxy().0 == 13) && idx.entries.len() == 16, "z13 alone in the deep pack");
-        // Stored as the terrain run stores them: read where the readers look.
+        // Stored as the terrain runs store them: read where the readers look.
         hi.extend(more);
         hi.sort_by_key(|t| (t.0, t.1, t.2));
         let mut it = hi.into_iter().map(|(z, x, y, b)| {
@@ -1660,15 +1918,19 @@ mod tests {
             &mut it,
         )
         .unwrap();
-        out.put_file(&packs[0].logical, "pack", &packs[0].local).unwrap();
+        out.put_file(&pack.logical, "pack", &pack.local).unwrap();
         out.save().unwrap();
         let terr = crate::terrain_pack::ManifestTiles::new(&out, "terrain");
         let v = roadcore::grid::decode_terrain(&terr.get(12, b.1 * 2 + 1, b.2 * 2).unwrap().unwrap()).unwrap();
         assert!(v.iter().all(|&h| (h - 100.0).abs() < 0.01), "the deep z12, the data's heights");
         assert!(terr.get(13, b.1 * 4 + 3, b.2 * 4 + 2).unwrap().is_some());
         drop(terr);
-        let r = crate::slope_pack::build_piece(&mut out, t6, false, &|_, _, _| {}).unwrap();
+        // The slope: its z10 tile's deep run (its deep pack, z13, and its deep mid), then the z6
+        // tile's (its z12 from the deep mid).
+        let r = crate::slope_pack::build_deep(&mut out, t, &|_, _, _| {}).unwrap();
         assert_eq!((r.deep_packs, r.deep_tiles), (1, 16), "{r:?}");
+        out.save().unwrap();
+        crate::slope_pack::build_piece(&mut out, t6, false, &|_, _, _| {}).unwrap();
         let slope = crate::terrain_pack::ManifestTiles::new(&out, "slope");
         assert!(
             slope.get(12, b.1 * 2, b.2 * 2 + 1).unwrap().is_some()
@@ -1683,18 +1945,19 @@ mod tests {
     fn where_the_bases_zoom_changes_no_deep_tile_is_made_twice() {
         let d = tempfile::tempdir().unwrap();
         let fine = world_to(d.path(), 12);
-        let root = d.path().join("nas");
-        std::fs::create_dir_all(root.join("state/build")).unwrap();
-        let out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
         let lat = |z, y| crate::terrain_pack::max_zoom_at(crate::terrain_pack::tile_lat(z, y));
         assert_eq!((lat(10, 130), lat(11, 261)), (10, 11));
         let tile = |m: f32| crate::terrain_codec::encode(&mut vec![m; 65536], 0.1).unwrap();
         let base: HashMap<(u8, u32, u32), Vec<u8>> =
             [((10, 298, 130), tile(50.0)), ((11, 597, 261), tile(50.0))].into();
         let flat = Flat(roadcore::grid::encode_terrain_png(&vec![100.0; 65536], 256, 256).unwrap());
-        let (rep, packs, more) = make(&out, (74, 32), &base, None, &fine, &flat, &|_, _, _| {}).unwrap();
-        assert!(packs.is_empty());
-        let mut zs: Vec<(u8, u32, u32)> = more.iter().map(|m| (m.0, m.1, m.2)).collect();
+        let inside: Vec<(u8, u32, u32)> = base.keys().copied().collect();
+        let mut zs: Vec<(u8, u32, u32)> = Vec::new();
+        let rep = make_tiles((74, 32), &inside, &base, None, &fine, &flat, d.path(), 0..MAX_Z + 1, &mut |m| {
+            zs.extend(m.into_iter().map(|t| (t.0, t.1, t.2)));
+            Ok(())
+        })
+        .unwrap();
         zs.sort();
         let n = zs.len();
         zs.dedup();

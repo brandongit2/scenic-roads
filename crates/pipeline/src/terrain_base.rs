@@ -117,9 +117,26 @@ impl Pool {
         let o = Opts { fetch: &fetch, store: Some(self.store.clone()), pool: None };
         let mid = (self.area[1] + self.area[3]) / 2.0;
         let plans: Vec<Plan> = (0..=MAX_Z).map(|z| self.at_zoom(z, mid)).collect();
-        let t = Tiles::new(&plans, &o);
+        let by_row: Vec<OnceLock<Plan>> = (0..BY_ROW).map(|_| OnceLock::new()).collect();
+        let row_plan = |z: u8, row: u32| self.at_zoom(z, row_mid(row));
+        let t = Tiles::new(&plans, &o).by_row(&by_row, &row_plan);
         Ok(f(&t))
     }
+}
+
+/// The first zoom whose tiles read the pool at their own z6 tile's middle latitude (`row_mid`), not
+/// the area's: the z6 tiles' levels (z9–12, crate::terrain_pack::piece_levels), so a base tile's
+/// bytes are its own whatever else a job makes (a z6 tile's run, its neighbours', a deep target's
+/// base: crate::terrain_pack::base_of).
+pub const ROW_Z: u8 = 9;
+/// The plans read by z6 row: one for each zoom from `ROW_Z` to `MAX_Z` and each of the 64 z6 rows.
+const BY_ROW: usize = (MAX_Z - ROW_Z + 1) as usize * 64;
+
+/// The middle latitude of z6 row `row` (its box's south and north edges averaged, as a z6 tile's
+/// own area's: `Pool::with_tiles`).
+pub fn row_mid(row: u32) -> f64 {
+    let b = crate::stage::tile_box_grown(6, 0, row, 0.0);
+    (b[1] + b[3]) / 2.0
 }
 
 /// The fetch the sampler reads through: a Terrarium pyramid's tiles from `raw`, the rest `inner`.
@@ -162,6 +179,10 @@ impl Fetch for RawFetch<'_> {
 /// of a level all at once (`prefetch_counted`), held until the level takes them.
 pub struct Tiles<'a> {
     plans: &'a [Plan],
+    /// The plans of the levels from `ROW_Z` on, by zoom and z6 row (`row_mid`), made as first read
+    /// (`row_plan`); none: the area's (tests).
+    by_row: &'a [OnceLock<Plan>],
+    row_plan: Option<&'a (dyn Fn(u8, u32) -> Plan + Sync)>,
     o: &'a Opts<'a>,
     samplers: Vec<OnceLock<Result<Sampler<'a>, String>>>,
     held: Mutex<HashMap<(u8, u32, u32), Option<Vec<u8>>>>,
@@ -177,6 +198,8 @@ impl<'a> Tiles<'a> {
     fn new(plans: &'a [Plan], o: &'a Opts<'a>) -> Tiles<'a> {
         Tiles {
             plans,
+            by_row: &[],
+            row_plan: None,
             o,
             samplers: plans.iter().map(|_| OnceLock::new()).collect(),
             held: Mutex::new(HashMap::new()),
@@ -184,20 +207,50 @@ impl<'a> Tiles<'a> {
         }
     }
 
-    fn sampler(&self, z: u8) -> Result<&Sampler<'a>> {
-        let z = (z as usize).min(self.plans.len() - 1);
-        self.samplers[z]
+    /// With the levels from `ROW_Z` on read by z6 row (`by_row`, `BY_ROW` slots, made by `row_plan`).
+    fn by_row(mut self, by_row: &'a [OnceLock<Plan>], row_plan: &'a (dyn Fn(u8, u32) -> Plan + Sync)) -> Tiles<'a> {
+        self.samplers.extend(by_row.iter().map(|_| OnceLock::new()));
+        (self.by_row, self.row_plan) = (by_row, Some(row_plan));
+        self
+    }
+
+    /// The slot of tile `z/x/y`'s plan and sampler: its zoom's, or from `ROW_Z` on its zoom's and
+    /// z6 row's.
+    fn slot(&self, z: u8, y: u32) -> usize {
+        match self.row_plan {
+            Some(_) if z >= ROW_Z && z <= MAX_Z => {
+                self.plans.len() + (z - ROW_Z) as usize * 64 + (y >> (z - 6)) as usize
+            }
+            _ => (z as usize).min(self.plans.len() - 1),
+        }
+    }
+
+    /// The plan of slot `k` (`slot`).
+    fn plan(&self, k: usize) -> &'a Plan {
+        match k.checked_sub(self.plans.len()) {
+            None => &self.plans[k],
+            Some(r) => {
+                let (z, row) = (ROW_Z + (r / 64) as u8, (r % 64) as u32);
+                let make = self.row_plan.expect("slots past the area's are by row");
+                self.by_row[r].get_or_init(|| make(z, row))
+            }
+        }
+    }
+
+    fn sampler(&self, k: usize) -> Result<&Sampler<'a>> {
+        self.samplers[k]
             .get_or_init(|| {
                 // (Every level's sampler shares one cache of decoded blocks and fetched tiles.)
                 let other = self.samplers.iter().find_map(|s| s.get().and_then(|r| r.as_ref().ok()));
+                let plan = self.plan(k);
                 match other {
-                    Some(o) => Sampler::sharing(&self.plans[z], self.o, o),
-                    None => Sampler::new(&self.plans[z], self.o),
+                    Some(o) => Sampler::sharing(plan, self.o, o),
+                    None => Sampler::new(plan, self.o),
                 }
                 .map_err(|e| format!("{e:#}"))
             })
             .as_ref()
-            .map_err(|e| anyhow::anyhow!("the terrain's datasets at z{z}: {e}"))
+            .map_err(|e| anyhow::anyhow!("the terrain's datasets (plan {k}): {e}"))
     }
 
     /// Tiles `ts` of zoom `z` sampled: each its Terrarium PNG, None where no dataset has data; one
@@ -229,9 +282,25 @@ impl<'a> Tiles<'a> {
             .collect())
     }
 
-    /// Tiles `ts` of zoom `z` sampled, every one.
+    /// Tiles `ts` of zoom `z` sampled, every one: by their plans (`slot`), in their order.
     fn sample_all(&self, z: u8, ts: &[(u32, u32)]) -> Result<Vec<Option<Vec<u8>>>> {
-        let s = self.sampler(z)?;
+        let mut by: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
+        for (i, t) in ts.iter().enumerate() {
+            by.entry(self.slot(z, t.1)).or_default().push(i);
+        }
+        let mut out: Vec<Option<Option<Vec<u8>>>> = vec![None; ts.len()];
+        for (k, is) in by {
+            let mine: Vec<(u32, u32)> = is.iter().map(|&i| ts[i]).collect();
+            for (i, t) in is.into_iter().zip(self.sample_with(k, z, &mine)?) {
+                out[i] = Some(t);
+            }
+        }
+        Ok(out.into_iter().map(|t| t.expect("each tile sampled")).collect())
+    }
+
+    /// Tiles `ts` of zoom `z` sampled with slot `k`'s plan.
+    fn sample_with(&self, k: usize, z: u8, ts: &[(u32, u32)]) -> Result<Vec<Option<Vec<u8>>>> {
+        let s = self.sampler(k)?;
         let (lon, lat) = points(z, ts);
         let got = s.sample(&lon, &lat, &|_| {})?;
         let per = 256 * 256;
@@ -400,6 +469,87 @@ mod tests {
             }
         }
         assert!(east > 10 && west > 10, "{east} {west}");
+    }
+
+    /// A z9–12 tile reads the pool at its own z6 row's middle latitude (`row_mid`), whatever area the
+    /// job's pool covers: the same bytes from a pool of its z6 tile alone and one of many rows (a job
+    /// of several z6 tiles, a deep target's base). Read at the area's middle, a dataset finer than
+    /// half its pixel blends over another band (its resolution: `at_zoom`), other bytes.
+    #[test]
+    fn a_hi_tile_reads_the_pool_at_its_z6_rows_latitude() {
+        let d = tempfile::tempdir().unwrap();
+        let store = d.path().join("fetched");
+        std::fs::create_dir_all(store.join("fine")).unwrap();
+        // (A 1/10000° raster over the tile, 100 m plus a slope; its mask 3 in its west half (filled
+        // from the next dataset, as fine, 500 m flat), so the two blend across the mask's edge, over
+        // four of their pixels as read at the level's detail: `at_zoom`.)
+        let (z, lon, lat) = (12u8, 10.5f64, 45.5f64);
+        let nn = (1u64 << z) as f64;
+        let x = ((lon + 180.0) / 360.0 * nn) as u32;
+        let y = ((1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * nn) as u32;
+        let n = 1200usize;
+        let gt = [10.44, 0.0001, 0.0, 45.56, 0.0, -0.0001];
+        let e: Vec<f32> = (0..n * n).map(|p| 100.0 + (p % n) as f32 * 0.01).collect();
+        let m: Vec<f32> = (0..n * n).map(|p| if p % n < 600 { 3.0 } else { 1.0 }).collect();
+        let tif = |v: &[f32]| crate::geotiff::write_f32(n as u32, n as u32, v, 256, gt, 4326, None).unwrap();
+        std::fs::write(store.join("fine/F_DEM.tif"), tif(&e)).unwrap();
+        std::fs::write(store.join("fine/F_FLM.tif"), tif(&m)).unwrap();
+        std::fs::create_dir_all(store.join("flat")).unwrap();
+        std::fs::write(store.join("flat/G.tif"), tif(&vec![500.0; n * n])).unwrap();
+        let plan = Plan {
+            fmt: 1,
+            version: "test".into(),
+            tag: "t".into(),
+            datasets: vec![
+                Dataset {
+                    id: "fine".into(),
+                    code: 1,
+                    resolution: 7.8,
+                    cover: Some(vec![[10.44, 45.44, 10.56, 45.56]]),
+                    source: Source::Geotiff {
+                        crs: 4326,
+                        read_resolution: None,
+                        store: true,
+                        files: vec![("https://e.org/F/F_DEM.tif".into(), Some([10.44, 45.44, 10.56, 45.56]))],
+                        masks: vec![Some("https://e.org/F/F_FLM.tif".into())],
+                    },
+                    convert: None,
+                },
+                Dataset {
+                    id: "flat".into(),
+                    code: 2,
+                    resolution: 7.8,
+                    cover: None,
+                    source: Source::Geotiff {
+                        crs: 4326,
+                        read_resolution: None,
+                        store: true,
+                        files: vec![("https://e.org/G/G.tif".into(), Some([10.44, 45.44, 10.56, 45.56]))],
+                        masks: vec![None],
+                    },
+                    convert: None,
+                },
+            ],
+        };
+        let raw = RawTiles::new(&d.path().join("local"), crate::terrain_pack::TEST_BASE);
+        crate::fetch::go_offline();
+        let tile_of = |area: [f64; 4]| {
+            Pool::of(plan.clone(), store.clone(), area)
+                .with_tiles(&raw, |t| t.sample(z, &[(x, y)]).unwrap().pop().unwrap().unwrap())
+                .unwrap()
+        };
+        let own = tile_of(crate::stage::tile_box_grown(6, x >> 6, y >> 6, 0.0));
+        let wide = tile_of([10.0, 20.0, 11.0, 60.0]);
+        assert_eq!(own, wide, "its own z6 row's latitude, whatever the area");
+        // (Read at the wide area's middle, 40°N: another blend.)
+        let pool = Pool::of(plan.clone(), store.clone(), [10.0, 20.0, 11.0, 60.0]);
+        let net = crate::fetch::MapFetch::default();
+        let fetch = RawFetch { raw: &raw, url: pool.terrarium.as_deref(), inner: &net };
+        let o = Opts { fetch: &fetch, store: Some(store.clone()), pool: None };
+        let plans: Vec<Plan> = (0..=MAX_Z).map(|z| pool.at_zoom(z, 40.0)).collect();
+        let at_area = Tiles::new(&plans, &o).sample(z, &[(x, y)]).unwrap().pop().unwrap().unwrap();
+        assert_ne!(at_area, own, "the area's middle blends otherwise");
+        assert!((45.0..49.0).contains(&row_mid(y >> 6)), "6/x/22: 45.1°N to 49.0°N");
     }
 
     /// A tile whose four children were sampled with data isn't sampled: they make it.

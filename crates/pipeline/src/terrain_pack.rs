@@ -1133,10 +1133,8 @@ pub fn fetch_checked(agent: &ureq::Agent, url: &str, z: u8, x: u32, y: u32) -> a
 #[derive(Debug, Default, serde::Serialize)]
 pub struct PackReport {
     pub hi_tiles: usize,
-    /// Its deep levels' (crate::terrain_deep), where made.
+    /// Its deep levels coarser than z13 (crate::terrain_deep::hi_levels: north of 67°), where made.
     pub deep_tiles: usize,
-    pub deep_packs: usize,
-    pub deep_dropped: usize,
     pub lo_tiles: usize,
     pub fetched: usize,
     pub missing: usize,
@@ -1503,6 +1501,14 @@ pub fn make_piece_whole(
     Maker::new(raw, src).piece(levels, false)
 }
 
+/// The most memory (MB) a z6 tile's levels take as one run makes them (`make_piece`), from its
+/// bounds: its hi tiles held until written (z9–12, up to 5,440, ~270 KB each made), a level's tiles
+/// while the next coarser is made (up to 4,096 at 256 KB), its quarters (~20 MB), and half a GB
+/// besides (the pool's samplers and their caches).
+pub const fn piece_peak_mb() -> u64 {
+    500 + 5440 * 270 / 1024 + 4096 / 4 + 20
+}
+
 /// How many levels up a block's tile is (`blocks`): a z8 subtree's tiles at z12, 256 at most.
 const BLOCK_UP: u8 = 4;
 
@@ -1589,11 +1595,161 @@ pub fn makes_hi(cov: &Coverage, t: (u32, u32)) -> bool {
     piece_levels(cov, t).iter().any(|(_, ts)| !ts.is_empty())
 }
 
-/// Drops z6 tile `t`'s terrain hi pack, deep packs and mid from the manifest (a z6 tile the coverage has left:
-/// docs/regions.md, Shrinking), saving it; how many it had.
+/// Base tiles as a terrain-hi run of their z6 tile makes them, the same bytes, made alone: what a
+/// terrain-deep target blends into and fills from (crate::terrain_deep), from the elevation pool
+/// (`raw`: crate::terrain_base) and the water (`src`) as that run reads them, never from built
+/// tiles.
+///
+/// A tile of a z6 tile's finest level (its first: `piece_levels`) reads only its own raw tile, the
+/// water at its place and the levels of its lakes, each lake's from all its shore in that level
+/// (crate::terrain_water::level, of its samples in any order). So a tile is made here from its raw
+/// tile and the levels of its lakes, those worked out from every tile of the level holding the lake
+/// (by the water's polygons), each lake once a z6 tile (`levels`, kept). A tile past its z6 tile's
+/// first level (where the base's finest zoom changes, 67° and 79°: `max_zoom_at`), which can also
+/// take quarters from finer children and lake levels from a finer level, is made with its z6
+/// tile's levels down to it, of the subtrees closed under their lakes
+/// (crate::terrain_task::groups, `make_piece`).
+pub struct Bases<'a> {
+    raw: &'a dyn RawSource,
+    src: &'a Sources<'a>,
+    cov: &'a Coverage,
+    /// By z6 tile: the lake keys of each tile of its first level (read once, as first wanted).
+    lakes: Mutex<HashMap<(u32, u32), std::sync::Arc<HashMap<(u32, u32), Vec<u64>>>>>,
+    /// By z6 tile: its lakes' levels worked out (None: no level, as `add_levels` leaves it).
+    levels: Mutex<HashMap<(u32, u32), HashMap<u64, Option<f32>>>>,
+}
+
+impl<'a> Bases<'a> {
+    pub fn new(raw: &'a dyn RawSource, src: &'a Sources<'a>, cov: &'a Coverage) -> Self {
+        Bases { raw, src, cov, lakes: Default::default(), levels: Default::default() }
+    }
+
+    /// Of `want` (tiles of z6 tile `t`), those its terrain-hi run stores, as it stores them.
+    pub fn of(&self, t: (u32, u32), want: &std::collections::BTreeSet<(u8, u32, u32)>) -> anyhow::Result<Vec<Made>> {
+        let levels = piece_levels(self.cov, t);
+        let Some((zf, first)) = levels.iter().find(|(_, ts)| !ts.is_empty()) else { return Ok(Vec::new()) };
+        if want.iter().any(|w| w.0 != *zf) {
+            return self.whole(&levels, want);
+        }
+        let zf = *zf;
+        let mine: Vec<(u32, u32)> = first.iter().copied().filter(|&(x, y)| want.contains(&(zf, x, y))).collect();
+        let prepared = self.prepare(zf, &mine)?;
+        // (The lakes of those not yet levelled: from every tile of the level holding them.)
+        let known: std::collections::HashSet<u64> =
+            self.levels.lock().unwrap().get(&t).map(|m| m.keys().copied().collect()).unwrap_or_default();
+        let need: std::collections::BTreeSet<u64> = prepared
+            .iter()
+            .filter_map(|(_, _, p)| p.water.as_ref())
+            .flat_map(|w| w.ids.iter().copied())
+            .filter(|id| !known.contains(id))
+            .collect();
+        if !need.is_empty() {
+            let lakes = self.lakes_of(t, zf, first)?;
+            let mates: Vec<(u32, u32)> = first
+                .iter()
+                .copied()
+                .filter(|&(x, y)| {
+                    !want.contains(&(zf, x, y))
+                        && lakes.get(&(x, y)).is_some_and(|ids| ids.iter().any(|i| need.contains(i)))
+                })
+                .collect();
+            let mut all: HashMap<u64, crate::terrain_water::LakeSamples> = HashMap::new();
+            let keep = |s: HashMap<u64, crate::terrain_water::LakeSamples>| {
+                s.into_iter().filter(|(id, _)| need.contains(id)).collect::<HashMap<_, _>>()
+            };
+            for (_, _, p) in &prepared {
+                crate::terrain_water::gather(&mut all, keep(p.lake_samples()));
+            }
+            for chunk in mates.chunks(256) {
+                for (_, _, p) in self.prepare(zf, chunk)? {
+                    crate::terrain_water::gather(&mut all, keep(p.lake_samples()));
+                }
+            }
+            let mut got = HashMap::new();
+            crate::terrain_water::add_levels(&mut got, &all);
+            let mut lv = self.levels.lock().unwrap();
+            let m = lv.entry(t).or_default();
+            for id in need {
+                m.insert(id, got.get(&id).copied());
+            }
+        }
+        let levels: HashMap<u64, f32> = self
+            .levels
+            .lock()
+            .unwrap()
+            .get(&t)
+            .map_or_else(HashMap::new, |m| m.iter().filter_map(|(k, v)| v.map(|v| (*k, v))).collect());
+        Ok(prepared.into_par_iter().filter_map(|(x, y, p)| finish(p, &levels).0.map(|b| (zf, x, y, b))).collect())
+    }
+
+    /// Tiles `ts` of zoom `z` prepared (`prepare`), those with a raw tile, in their order.
+    fn prepare(&self, z: u8, ts: &[(u32, u32)]) -> anyhow::Result<Vec<(u32, u32, Prepared)>> {
+        let done = std::sync::atomic::AtomicU64::new(0);
+        self.raw.prefetch_counted(z, ts, FETCH_THREADS, &done)?;
+        let none = HashMap::new();
+        let got: Vec<anyhow::Result<Option<(u32, u32, Prepared)>>> = ts
+            .par_iter()
+            .map(|&(x, y)| Ok(self.raw.get(z, x, y)?.0.map(|b| (x, y, prepare(b, z, x, y, &none, self.src)))))
+            .collect();
+        got.into_iter().filter_map(|r| r.transpose()).collect()
+    }
+
+    /// The lake keys of each tile `ts` (zoom `z`) of z6 tile `t`, read once.
+    fn lakes_of(
+        &self,
+        t: (u32, u32),
+        z: u8,
+        ts: &[(u32, u32)],
+    ) -> anyhow::Result<std::sync::Arc<HashMap<(u32, u32), Vec<u64>>>> {
+        if let Some(l) = self.lakes.lock().unwrap().get(&t) {
+            return Ok(l.clone());
+        }
+        let Some(w) = self.src.water else { return Ok(Default::default()) };
+        let got: Vec<anyhow::Result<((u32, u32), Vec<u64>)>> = ts
+            .par_iter()
+            .map(|&(x, y)| {
+                let ids = w
+                    .polys(z, x, y)?
+                    .into_iter()
+                    .filter(|p| p.kind == crate::terrain_water::Kind::Lake)
+                    .map(|p| p.id)
+                    .collect();
+                Ok(((x, y), ids))
+            })
+            .collect();
+        let l = std::sync::Arc::new(got.into_iter().collect::<anyhow::Result<HashMap<_, _>>>()?);
+        self.lakes.lock().unwrap().insert(t, l.clone());
+        Ok(l)
+    }
+
+    /// `of` for a z6 tile made whole: the subtrees of `want` and those sharing a lake with them
+    /// (crate::terrain_task::groups), their levels down to the coarsest of `want`.
+    fn whole(
+        &self,
+        levels: &[(u8, Vec<(u32, u32)>)],
+        want: &std::collections::BTreeSet<(u8, u32, u32)>,
+    ) -> anyhow::Result<Vec<Made>> {
+        let levels = levels.to_vec();
+        let subs: std::collections::BTreeSet<(u32, u32)> =
+            want.iter().map(|&(z, x, y)| crate::terrain_task::sub_of(z, x, y)).collect();
+        let keep: std::collections::BTreeSet<(u32, u32)> = crate::terrain_task::groups(&levels, self.src.water)?
+            .into_iter()
+            .filter(|g| g.iter().any(|s| subs.contains(s)))
+            .flatten()
+            .collect();
+        let coarsest = want.iter().map(|w| w.0).min().unwrap_or(12);
+        let lv: Vec<(u8, Vec<(u32, u32)>)> =
+            crate::terrain_task::levels_of(&levels, &keep, true).into_iter().filter(|(z, _)| *z >= coarsest).collect();
+        let (made, _) = make_piece(self.raw, self.src, lv)?;
+        Ok(made.into_iter().filter(|m| want.contains(&(m.0, m.1, m.2))).collect())
+    }
+}
+
+/// Drops z6 tile `t`'s terrain hi pack and mid from the manifest (a z6 tile the coverage has left:
+/// docs/regions.md, Shrinking), saving it; how many it had. (Its deep packs are their terrain-deep
+/// targets': crate::terrain_deep.)
 pub fn drop_piece(out: &mut Out, t: (u32, u32)) -> anyhow::Result<usize> {
-    let mut gone = vec![format!("layers/terrain/hi/6-{}-{}", t.0, t.1), mid_logical(t.0, t.1)];
-    gone.extend(crate::terrain_deep::named_under(&out.manifest, 6, t.0, t.1));
+    let gone = vec![format!("layers/terrain/hi/6-{}-{}", t.0, t.1), mid_logical(t.0, t.1)];
     let n = drop_named(out, &gone);
     out.save()?;
     Ok(n)
@@ -1806,9 +1962,8 @@ pub fn build_piece_offered(
 
 /// `build_piece_offered`, its uploads put off (crate::out::Out::put_file_later): they go on beside
 /// what the job does next, and the z6 tile is saved (and noted done) by a later save
-/// (`Out::save_upto` the mark after it). With `deep`, its deep levels too, from its tiles as made
-/// (crate::terrain_deep::make_piece): their packs uploaded with its hi pack, those it no longer
-/// makes dropped; `expect_same` holds them to the manifest's as well.
+/// (`Out::save_upto` the mark after it). With `deep`, its deep levels coarser than z13 too (north of
+/// 67°: crate::terrain_deep::hi_levels), from its tiles as made, in its hi pack.
 #[allow(clippy::too_many_arguments)]
 pub fn build_piece_later(
     out: &mut Out,
@@ -1853,20 +2008,17 @@ pub fn build_piece_later(
     })?;
     drop(p);
     mk.report(&mut rep);
-    let (deep_packs, deep_gone) = match deep {
-        Some(d) => {
-            let _p = crate::timings::phase("its deep levels made (z13–16)", crate::timings::Class::Mixed);
-            let (r, packs, gone, more) = crate::terrain_deep::make_piece(out, t, &hi, src.water, d, progress)?;
-            (rep.deep_tiles, rep.deep_packs, rep.deep_dropped) = (r.tiles, r.packs, r.dropped);
-            // (Its deep levels of z12, north of 67°: in its hi pack, as every reader looks for them.)
-            if !more.is_empty() {
-                hi.extend(more);
-                hi.sort_by_key(|t| (t.0, t.1, t.2));
-            }
-            (packs, gone)
+    if let Some(d) = deep {
+        let _p =
+            crate::timings::phase("its deep levels coarser than z13 made (north of 67°)", crate::timings::Class::Mixed);
+        let (r, more) = crate::terrain_deep::hi_levels(out, t, &hi, src.water, d, progress)?;
+        rep.deep_tiles = r.tiles;
+        // (Its deep levels of z12, north of 67°: in its hi pack, as every reader looks for them.)
+        if !more.is_empty() {
+            hi.extend(more);
+            hi.sort_by_key(|t| (t.0, t.1, t.2));
         }
-        None => (Vec::new(), Vec::new()),
-    };
+    }
     progress("packs", 0, 1);
     let p = crate::timings::phase("its hi pack and mid written", crate::timings::Class::Disk);
     rep.hi_tiles = hi.len();
@@ -1897,19 +2049,8 @@ pub fn build_piece_later(
                 out.get(&hl).unwrap_or("none")
             ));
         }
-        for d in &deep_packs {
-            let c = d.content_name()?;
-            if out.get(&d.logical) != Some(c.as_str()) {
-                differ.push(format!(
-                    "{}: made {c}, the manifest has {}",
-                    d.logical,
-                    out.get(&d.logical).unwrap_or("none")
-                ));
-            }
-        }
-        differ.extend(deep_gone.iter().map(|l| format!("{l}: no longer made")));
         if !differ.is_empty() {
-            for p in pack.iter().chain(&deep_packs) {
+            for p in pack.iter() {
                 std::fs::remove_file(&p.local).ok();
             }
             std::fs::remove_file(&mid_path).ok();
@@ -1928,10 +2069,6 @@ pub fn build_piece_later(
             drop_named(out, &[hl]);
         }
     }
-    for d in deep_packs {
-        out.put_file_later(&d.logical, "pack", &d.local)?;
-    }
-    drop_named(out, &deep_gone);
     out.put_file_later(&ml, "sect", &mid_path)?;
     Ok(rep)
 }
@@ -2969,6 +3106,188 @@ pub(crate) mod tests {
         assert!(parts.get(&ml).is_none(), "its mid wasn't uploaded");
         // An assembly without a z6 tile's mid: refused.
         assert!(build_lo(&mut parts, &raw, q, ts, &src, &|_, _, _| {}).unwrap_err().to_string().contains("no mid"));
+    }
+
+    /// World pixel (x, y) of lon, lat at zoom `z`.
+    fn world_px(z: u8, lon: f64, lat: f64) -> (f64, f64) {
+        let n = (1u64 << z) as f64 * 256.0;
+        ((lon + 180.0) / 360.0 * n, (1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * n)
+    }
+
+    /// The water of the bit-for-bit test (`a_deep_targets_base_is_the_hi_runs_bit_for_bit`), as the
+    /// basemap gives it: each tile the polygons meeting it, in its pixels. At 45°N: a lake across the
+    /// z6 tiles' edge (lon 78.75°W), a long lake in the west z6 tile reaching past a target's ring,
+    /// a lake in the east one, the sea in a band to the south; at 67°N, a lake across the base's change
+    /// of zoom.
+    fn real_water(z: u8, x: u32, y: u32) -> Vec<crate::terrain_water::Poly> {
+        use crate::terrain_water::{Kind, Poly};
+        let rects: [(Kind, u64, [f64; 4]); 6] = [
+            (Kind::Lake, 11, [-78.80, 45.28, -78.70, 45.32]),
+            (Kind::Lake, 12, [-79.21, 45.22, -78.98, 45.235]),
+            (Kind::Lake, 13, [-78.60, 45.36, -78.52, 45.40]),
+            (Kind::Sea, 0, [-79.40, 45.08, -78.40, 45.13]),
+            (Kind::Lake, 21, [19.95, 66.96, 20.06, 67.03]),
+            (Kind::Lake, 22, [19.80, 66.90, 19.86, 66.93]),
+        ];
+        let mut out = Vec::new();
+        for (kind, id, b) in rects {
+            let (x0, y1) = world_px(z, b[0], b[1]);
+            let (x1, y0) = world_px(z, b[2], b[3]);
+            let (ox, oy) = (x as f64 * 256.0, y as f64 * 256.0);
+            if x1 <= ox || x0 >= ox + 256.0 || y1 <= oy || y0 >= oy + 256.0 {
+                continue;
+            }
+            let (a, b, c, d) = (x0 - ox, y0 - oy, x1 - ox, y1 - oy);
+            out.push(Poly { kind, id, rings: vec![vec![[a, b], [c, b], [c, d], [a, d]]] });
+        }
+        out
+    }
+
+    /// Real-shaped raw tiles for every z9–12 tile near `cov` of z6 tiles `ts`: ridges and valleys
+    /// continuous across the tiles' edges, centimetre-scale noise (so each rounding shows), a lake
+    /// basin raised above its shore here and there, and the open sea (no tile) every so often.
+    fn real_raw(local: &std::path::Path, cov: &Coverage, ts: &[(u32, u32)]) {
+        for &(tx, ty) in ts {
+            for z in 9..=12u8 {
+                let s = 1u32 << (z - 6);
+                for x in tx * s..(tx + 1) * s {
+                    for y in ty * s..(ty + 1) * s {
+                        if !near_coverage(cov, z, x, y, 20.0) {
+                            continue;
+                        }
+                        std::fs::create_dir_all(local.join(format!("{z}/{x}"))).unwrap();
+                        if (x * 7 + y * 13 + z as u32) % 29 == 0 {
+                            std::fs::write(local.join(format!("{z}/{x}/{y}.none")), b"").unwrap();
+                            continue;
+                        }
+                        let k = 1u64 << (12 - z.min(12));
+                        let e: Vec<f32> = (0..65536usize)
+                            .map(|p| {
+                                let gx = ((x as u64 * 256 + (p % 256) as u64) * k) as f64;
+                                let gy = ((y as u64 * 256 + (p / 256) as u64) * k) as f64;
+                                let h = 320.0
+                                    + 90.0 * (gx * 0.0011).sin() * (gy * 0.0009).cos()
+                                    + 22.0 * (gx * 0.0071 + gy * 0.0043).sin()
+                                    + 4.0 * (gx * 0.031).cos() * (gy * 0.027).sin();
+                                let hash =
+                                    ((gx as u64).wrapping_mul(2_654_435_761) ^ (gy as u64).wrapping_mul(40_503)) % 997;
+                                (h + hash as f64 * 0.000_37) as f32
+                            })
+                            .collect();
+                        std::fs::write(
+                            local.join(format!("{z}/{x}/{y}.png")),
+                            roadcore::grid::encode_terrain_png(&e, 256, 256).unwrap(),
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+        }
+    }
+
+    /// A terrain-deep target's base (crate::terrain_deep::target_base: made alone from the raw tiles
+    /// and the water by `Bases`) is the hi tiles the terrain-hi runs store, bit for bit, rounding
+    /// included (1 cm at the native zoom, 10 cm where the deep levels go past it: `Sources::deeper`):
+    /// inside a z6 tile and across z6 tiles' edges, lakes levelled from tiles past the target's
+    /// ring, and where the base's finest zoom changes (67°: the z6 tile made whole).
+    #[test]
+    fn a_deep_targets_base_is_the_hi_runs_bit_for_bit() {
+        use crate::terrain_deep::{self as td, Detail, FineSet};
+        let d = tempfile::tempdir().unwrap();
+        let local = d.path().join("local");
+        let cov = Coverage::fixture(
+            &[
+                crate::agent::recipes::Recipe {
+                    id: "a".into(),
+                    name: "A".into(),
+                    outline: vec!["place:-78.95,45.3,3".into()],
+                },
+                crate::agent::recipes::Recipe {
+                    id: "b".into(),
+                    name: "B".into(),
+                    outline: vec!["place:20.0,66.97,2".into()],
+                },
+            ],
+            None,
+            d.path(),
+        )
+        .unwrap();
+        // (A dataset fine over 79°W–78°W, 45°N–46°N: the z10 tiles there past the base's zoom, those
+        // west of it not; and over the 67° line.)
+        let sets = vec![FineSet {
+            id: "lidar".into(),
+            line: "lidar k".into(),
+            cover: crate::dem::declared::Cover { world: false, cells: [(-79, 45), (19, 66), (20, 66)].into() },
+            detail: Detail::Raster(2000),
+            cut: None,
+        }];
+        let ts: Vec<(u32, u32)> = (0..64u32)
+            .flat_map(|x| (0..64u32).map(move |y| (x, y)))
+            .filter(|&(x, y)| near_coverage(&cov, 6, x, y, 20.0) && makes_hi(&cov, (x, y)))
+            .collect();
+        assert!(ts.contains(&(17, 22)) && ts.contains(&(18, 22)), "{ts:?}");
+        assert!(ts.contains(&(35, 15)), "{ts:?}");
+        real_raw(&local, &cov, &ts);
+        crate::fetch::go_offline();
+        let raw = RawTiles::with_store(&local, &d.path().join("store"), TEST_BASE);
+        let water = crate::terrain_water::tests::Fixed(real_water);
+        // The terrain-hi runs, each z6 tile its own job.
+        let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
+        for &t in &ts {
+            let deeper = td::deeper(&sets, t);
+            let src = Sources { water: Some(&water), deeper: Some(&deeper) };
+            build_piece(&mut out, &raw, t, &cov, &src, false, &|_, _, _| {}).unwrap();
+        }
+        let hi = ManifestTiles::new(&out, "terrain");
+        // The deep targets: at the z6 tiles' edge on either side, inside the east one, one where the
+        // dataset ends in its ring (west of 79°W), and at 67°N.
+        let targets: Vec<(u32, u32)> = ts.iter().flat_map(|&t| td::targets_in(&sets, &cov, t)).collect();
+        let lon = |t: (u32, u32)| t.0 as f64 / 1024.0 * 360.0 - 180.0;
+        let lat = |t: (u32, u32)| tile_lat(10, t.1);
+        // (Its rows those of the long lake, 45.22–45.235°N.)
+        let edge_w = targets
+            .iter()
+            .copied()
+            .find(|t| {
+                let b = crate::stage::tile_box_grown(10, t.0, t.1, 0.0);
+                t.0 == 287 && b[1] < 45.22 && b[3] > 45.235
+            })
+            .expect("10/287: west of the edge");
+        let edge_e = targets.iter().copied().find(|t| t.0 == 288 && t.1 == edge_w.1).expect("10/288: east of it");
+        let arctic = targets.iter().copied().find(|t| lat(*t) > 60.0).expect("one at 67°N");
+        assert!(lon(edge_w) < -78.75 && lon(edge_e) >= -78.75);
+        // (Its ring's west column not past the base's zoom, its east one is: rounded alike as the runs.)
+        let src_of = |want: &[(u32, u32)]| -> std::collections::BTreeSet<(u32, u32)> {
+            want.iter()
+                .flat_map(|&t| td::base_want(t))
+                .map(|(z, x, y)| (x >> (z - 6), y >> (z - 6)))
+                .flat_map(|p| td::deeper(&sets, p))
+                .collect()
+        };
+        let mine = [edge_w, edge_e, arctic];
+        let deeper = src_of(&mine);
+        assert!(!deeper.contains(&(edge_w.0 - 1, edge_w.1)) && deeper.contains(&edge_e));
+        let src = Sources { water: Some(&water), deeper: Some(&deeper) };
+        let bases = Bases::new(&raw, &src, &cov);
+        let (mut compared, mut across, mut zooms) = (0, 0, std::collections::BTreeSet::new());
+        for t in mine {
+            let base = td::target_base(&bases, t).unwrap();
+            for (z, x, y) in td::base_want(t) {
+                let stored = hi.get(z, x, y).unwrap();
+                assert_eq!(base.get(&(z, x, y)), stored.as_ref(), "{z}/{x}/{y} for 10/{}/{}", t.0, t.1);
+                if stored.is_some() {
+                    compared += 1;
+                    zooms.insert(z);
+                    across += ((x >> (z - 6), y >> (z - 6)) != (t.0 >> 4, t.1 >> 4)) as usize;
+                }
+            }
+            assert!(base.keys().all(|b| td::base_want(t).contains(b)));
+        }
+        assert!(compared > 40 && across > 5, "{compared} tiles, {across} across a z6 edge");
+        assert_eq!(zooms, [11, 12].into(), "both sides of the 67° change");
+        // (The lakes levelled were whole: the long lake's tiles past the ring read too.)
+        let lv = bases.levels.lock().unwrap();
+        assert!(lv.get(&(17, 22)).is_some_and(|m| m.get(&12).is_some_and(|l| l.is_some())), "{:?}", lv.keys());
     }
 
     #[test]
