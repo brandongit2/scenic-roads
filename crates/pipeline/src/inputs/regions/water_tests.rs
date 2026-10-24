@@ -675,6 +675,8 @@ fn km2_by_cell_is_the_whole_area() {
     let w = world();
     let out = run(&w, &all());
     assert!(out.resolved.len() > 3);
+    // (A region of land and water stores the two as shapes apart: read by cell too.)
+    assert!(out.resolved.values().any(|r| r.geometry.shapes.len() == 2 && r.geometry.shapes.iter().any(|s| s.water)));
     for (id, res) in &out.resolved {
         let by_cell = read::km2_of(&res.geometry.shapes, true);
         let whole = read::km2_of(&res.geometry.shapes, false);

@@ -669,7 +669,8 @@ as they're read. Their declarations are staged in `producers/sources/`
 `ne-lakes.toml`, `osm-land-polygons.toml`); Marine Regions' three are CC BY 4.0 and
 credited as their declarations say. `scenic-build regions-check --dir <folder> --declarations
 <folder>` runs the check on a scratch folder in memory with the datasets those declarations name,
-and reports each region's size.
+and reports each region's size (a region with water's land and water each read cell by cell and
+summed, never one overlay of the whole: the high seas' would be ~200,000 points).
 
 #### 6.1.8 Checks
 

@@ -445,6 +445,7 @@ pub fn check_folder(
     let mut regions = serde_json::Map::new();
     let (mut total, mut enabled_km2) = (0.0, 0.0);
     for (id, res) in &out.resolved {
+        super::geom::set_label(format!("the report's size of {id}"));
         let km2 = km2_of(&res.geometry.shapes, folder.regions[id].1.has_water());
         total += km2;
         let off = folder.regions[id].1.disabled;
@@ -471,14 +472,18 @@ pub fn check_folder(
     }))
 }
 
-/// A resolved region's area (km²). A region with water is stored as one shape of cell pieces
-/// (crate::inputs::regions::tiles), read back cell by cell as tiles keeps it (`TArea::from_rings`),
-/// never as one area, so the high seas without `_rules.toml` stays small; any other region's shapes
-/// are unioned.
+/// A resolved region's area (km²). A region with water is stored as its land and its water, two
+/// shapes apart, each of cell pieces (crate::inputs::regions::tiles): each read back cell by cell as
+/// tiles keeps it (`TArea::from_rings`) and summed, never unioned as one area (the high seas, one
+/// overlay of ~200,000 points across the Earth, ran past the operations' budget); any other
+/// region's shapes are unioned.
 pub(crate) fn km2_of(shapes: &[super::stored::Shape], by_cell: bool) -> f64 {
     let ring64 = |r: &Vec<[i32; 2]>| r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect::<Vec<_>>();
-    if by_cell && shapes.len() == 1 {
-        return super::tiles::TArea::from_rings(&shapes[0].rings.iter().map(ring64).collect::<Vec<_>>()).km2();
+    if by_cell {
+        return shapes
+            .iter()
+            .map(|s| super::tiles::TArea::from_rings(&s.rings.iter().map(ring64).collect::<Vec<_>>()).km2())
+            .sum();
     }
     let a = super::geom::union_all(
         &shapes
