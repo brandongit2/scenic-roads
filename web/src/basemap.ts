@@ -439,8 +439,8 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
     encoding: 'terrarium' as const,
     tileSize: 256,
     maxzoom: 12,
-    // Finer where the catalog has fine terrain (its z10 tiles' zooms): our MapLibre takes the
-    // terrain, hillshade and slope tiles there to that zoom, elsewhere z12 as before.
+    // Past z12 where the terrain has deep levels (its z10 tiles' native zooms): our MapLibre takes
+    // the terrain, hillshade and slope tiles there to that zoom, elsewhere to z12.
     ...(terrainAreas ? { 'scenic:zoom-by-area': terrainAreas } : {}),
   };
   const empty = { type: 'geojson' as const, data: { type: 'FeatureCollection' as const, features: [] } };

@@ -9,4 +9,5 @@ anyhow.workspace = true
 memmap2.workspace = true
 bytemuck.workspace = true
 png = "0.18"
-jxl-oxide = { version = "0.12.6", default-features = false }
+# The terrain's stored tiles: lossless WebP (grid::decode_terrain).
+image-webp = "0.2"

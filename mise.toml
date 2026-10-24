@@ -8,7 +8,7 @@
 # Python has no version here either: dem/.python-version declares it, which uv honours (the agent's
 # Python steps run `uv run` in the app's copy of dem/, wherever they run) and mise reads (below).
 # uv runs the Python steps and publish.sh's checks of them. cargo-nextest runs publish.sh's tests.
-# CMake builds libjxl (crates/jxl: the fine terrain's lossless JPEG XL tiles).
+# CMake builds GEOS (crates/geos-src).
 [tools]
 node = "24.20.0"
 pnpm = "11.21.0"

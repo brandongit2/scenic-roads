@@ -381,7 +381,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(png, again, "held, then sampled again: the same");
-        let h = roadcore::grid::decode_terrain_png(&png).unwrap();
+        let h = roadcore::grid::decode_terrain(&png).unwrap();
         // Each pixel's longitude: east of the mask's edge (10.5°E) past the blend (four of its 78 m
         // pixels), GLO-30's field;
         // west of it, the Terrarium tiles' 500 m.

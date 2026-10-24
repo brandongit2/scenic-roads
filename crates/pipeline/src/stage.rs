@@ -16,7 +16,7 @@ use crate::terrain_pack::ManifestTiles;
 use anyhow::{Context, Result};
 use det::Det;
 use roadcore::archive::ArchiveWriter;
-use roadcore::grid::{decode_terrain_png, CELLS};
+use roadcore::grid::{decode_terrain, CELLS};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use store::catalog::Catalog;
@@ -38,15 +38,17 @@ pub enum Source<'a> {
 
 impl Source<'_> {
     /// The pack (logical name) holding a tile of `layer`: root z0–2, lo z3–8 by z3 tile, hi z9–14
-    /// by z6 tile.
+    /// by z6 tile; the terrain's deep levels, z13–16, by z10 tile (crate::terrain_deep).
     fn pack_of(&self, layer: &str, z: u8, x: u32, y: u32) -> Option<String> {
         match self {
             Source::Manifest(..) => Some(ManifestTiles::logical(layer, z, x, y)),
             Source::Catalog(_, cat) => {
                 let l = cat.layers.get(layer)?;
+                let d = crate::terrain_deep::PACK_Z;
                 match z {
                     0..=2 => l.root.clone(),
                     3..=8 => l.lo.get(&format!("3/{}/{}", x >> (z - 3), y >> (z - 3))).cloned(),
+                    _ if z > d + 2 => l.deep.get(&format!("{d}/{}/{}", x >> (z - d), y >> (z - d))).cloned(),
                     _ => l.hi.get(&format!("6/{}/{}", x >> (z - 6), y >> (z - 6))).cloned(),
                 }
             }
@@ -187,10 +189,14 @@ pub struct Staged {
 
 /// Whether the terrain pack holding tile (z, x, y) is copied here whole for box `b` (`Blobs`): a lo
 /// or root pack, or a z6 tile's hi pack the box holds at least half of (its own z6 tile's), not a
-/// neighbour's the box's margin only clips, whose few tiles are read where they are (`read_tiles`).
+/// neighbour's the box's margin only clips, whose few tiles are read where they are (`read_tiles`),
+/// nor a deep pack (a z10 tile's every deep tile: a z6 tile's roads read a few of them).
 fn copied_whole(z: u8, x: u32, y: u32, b: [f64; 4]) -> bool {
     if z < 9 {
         return true;
+    }
+    if z > 12 {
+        return false;
     }
     let (x6, y6) = (x >> (z - 6), y >> (z - 6));
     let [x0, x1, y0, y1] = tile_range(12, b);
@@ -272,30 +278,39 @@ fn read_tiles(pf: &PlainFile, idx: &PackIndex, tiles: &[(u8, u32, u32)]) -> Resu
     Ok(out)
 }
 
-/// Writes `terrain.tiles` and the grids for the box `b` (degrees) into `dir`.
-pub fn stage(src: &Source, b: [f64; 4], dir: &Path) -> Result<Staged> {
+/// Writes `terrain.tiles` and the grids for the box `b` (degrees) into `dir`: the terrain's z0–12
+/// over the box, and its deep tiles `deep` (z13–16, those the roads' heights read:
+/// crate::road_terrain::deep_tiles) where it has them, as stored (lossless WebP,
+/// crate::terrain_codec) in one archive (crate::road_terrain::TERRAIN_FILE).
+pub fn stage(
+    src: &Source,
+    b: [f64; 4],
+    deep: &std::collections::BTreeSet<(u8, u32, u32)>,
+    dir: &Path,
+) -> Result<Staged> {
     std::fs::create_dir_all(dir)?;
     let mut st = Staged::default();
-    // Terrain z0–12 as a tile archive (PNG blobs as they are).
-    let want: Vec<(u8, u32, u32)> =
+    let mut want: Vec<(u8, u32, u32)> =
         (0..=12u8).flat_map(|z| tiles_in(z, b).into_iter().map(move |(x, y)| (z, x, y))).collect();
+    want.extend(deep.iter().copied().filter(|t| t.0 > 12));
     let mut got = terrain_tiles(src, b, &want)?;
-    let tmp = dir.join("terrain.tiles.tmp");
-    let mut w = ArchiveWriter::create(&tmp, r#"{"format":"png","encoding":"terrarium"}"#)?;
+    want.sort_unstable_by_key(|t| roadcore::archive::tile_key(t.0, t.1, t.2));
+    want.dedup();
+    let file = crate::road_terrain::TERRAIN_FILE;
+    let tmp = dir.join(format!("{file}.tmp"));
+    let mut w = ArchiveWriter::create(&tmp, r#"{"format":"webp","encoding":"terrarium"}"#)?;
     let mut z11: HashMap<(u32, u32), Vec<u8>> = HashMap::new();
-    for z in 0..=12u8 {
-        for (x, y) in tiles_in(z, b) {
-            if let Some(blob) = got.remove(&(z, x, y)) {
-                w.add(z, x, y, &blob, blob.len())?;
-                st.terrain_tiles += 1;
-                if z == 11 {
-                    z11.insert((x, y), blob);
-                }
+    for (z, x, y) in want {
+        if let Some(blob) = got.remove(&(z, x, y)) {
+            w.add(z, x, y, &blob, blob.len())?;
+            st.terrain_tiles += 1;
+            if z == 11 {
+                z11.insert((x, y), blob);
             }
         }
     }
     w.finish()?;
-    std::fs::rename(&tmp, dir.join("terrain.tiles"))?;
+    std::fs::rename(&tmp, dir.join(file))?;
 
     // The grids over the z11 tiles of the box.
     let mut tiles: Vec<[u32; 2]> = tiles_in(11, b).into_iter().map(|(x, y)| [x, y]).collect();
@@ -306,7 +321,7 @@ pub fn stage(src: &Source, b: [f64; 4], dir: &Path) -> Result<Staged> {
     let mut terr: Vec<i16> = vec![0; tiles.len() * CELLS];
     for (s, t) in tiles.iter().enumerate() {
         let Some(png) = z11.get(&(t[0], t[1])) else { continue };
-        let e = decode_terrain_png(png).with_context(|| format!("terrain 11/{}/{}", t[0], t[1]))?;
+        let e = decode_terrain(png).with_context(|| format!("terrain 11/{}/{}", t[0], t[1]))?;
         for (o, v) in terr[s * CELLS..(s + 1) * CELLS].iter_mut().zip(e) {
             *o = v.round().clamp(-500.0, 9000.0) as i16;
         }
@@ -338,38 +353,6 @@ pub fn stage(src: &Source, b: [f64; 4], dir: &Path) -> Result<Staged> {
     idx.save(&dir.join("grid.idx.tmp"))?;
     std::fs::rename(dir.join("grid.idx.tmp"), dir.join("grid.idx"))?;
     Ok(st)
-}
-
-/// The fine terrain tiles `tiles` (z13–16, crate::road_terrain::fine_tiles) from the fine packs
-/// (crate::terrain_fine: a z10 tile's each), read where they lie (a pack holds a z10 tile's every
-/// fine tile; a unit reads a few of them), staged in `dir` as an archive
-/// (crate::road_terrain::FINE_FILE). The tiles staged: those the packs have (none past the data).
-pub fn stage_fine(src: &Source, tiles: &std::collections::BTreeSet<(u8, u32, u32)>, dir: &Path) -> Result<usize> {
-    let mut by_pack: std::collections::BTreeMap<String, Vec<(u8, u32, u32)>> = Default::default();
-    for &(z, x, y) in tiles {
-        let s = z - crate::terrain_fine::PACK_Z;
-        by_pack.entry(crate::terrain_fine::pack_logical(x >> s, y >> s)).or_default().push((z, x, y));
-    }
-    let mut got: Vec<(u8, u32, u32, Vec<u8>)> = Vec::new();
-    for (logical, ts) in by_pack {
-        let Some(p) = src.file_here(&logical) else { continue };
-        let pf = PlainFile::open(&p).with_context(|| format!("open {}", p.display()))?;
-        let idx = PackIndex::read_from(&pf).with_context(|| format!("index of {}", p.display()))?;
-        for (z, x, y) in ts {
-            if let Some((_, b)) = idx.get(&pf, z, x, y)? {
-                got.push((z, x, y, b));
-            }
-        }
-    }
-    got.sort_by_key(|t| roadcore::archive::tile_key(t.0, t.1, t.2));
-    let tmp = dir.join(format!("{}.tmp", crate::road_terrain::FINE_FILE));
-    let mut w = ArchiveWriter::create(&tmp, r#"{"format":"jxl","encoding":"terrarium"}"#)?;
-    for (z, x, y, b) in &got {
-        w.add(*z, *x, *y, b, b.len())?;
-    }
-    w.finish()?;
-    std::fs::rename(&tmp, dir.join(crate::road_terrain::FINE_FILE))?;
-    Ok(got.len())
 }
 
 fn write_file(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf> {
@@ -406,8 +389,8 @@ mod tests {
             copied_whole(12, x6 << 6, y6 << 6, b) && copied_whole(9, x6 << 3, y6 << 3, b) && copied_whole(8, 0, 0, b)
         );
         assert!(!copied_whole(12, (x6 + 1) << 6, y6 << 6, b) && !copied_whole(10, (x6 - 1) << 4, (y6 + 1) << 4, b));
-        // One terrain PNG for every z11 tile (staging decodes them), other tiles' bytes their own.
-        let png = roadcore::grid::encode_terrain_png(&vec![123.0f32; 256 * 256], 256, 256).unwrap();
+        // One terrain tile for every z11 tile (staging decodes them), other tiles' bytes their own.
+        let png = crate::terrain_codec::encode(&mut vec![123.0f32; 256 * 256], 0.1).unwrap();
         for (px, py) in [(x6, y6), (x6 + 1, y6), (x6, y6 + 1)] {
             let mut tiles: Vec<(u8, u32, u32, Vec<u8>, u32)> = Vec::new();
             for z in 9..=12u8 {
@@ -422,7 +405,7 @@ mod tests {
             crate::layers::write_pack(
                 &mut out,
                 "terrain",
-                "terrarium-png",
+                crate::terrain_codec::ENCODING,
                 false,
                 "hi",
                 (6, px, py),
@@ -433,7 +416,7 @@ mod tests {
         let blobs = store::blobs::Blobs::new(d.path().join("blobs"));
         let staged = |src: &Source, to: &str| {
             let dir = d.path().join(to);
-            stage(src, b, &dir).unwrap();
+            stage(src, b, &Default::default(), &dir).unwrap();
             ["terrain.tiles", "grid.terrain.i16", "grid.idx"].map(|f| std::fs::read(dir.join(f)).unwrap())
         };
         let plain = staged(&Source::Manifest(&out, None), "plain");

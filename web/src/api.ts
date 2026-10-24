@@ -76,8 +76,8 @@ export interface Meta {
   catalog?: number;
   /** The catalog's tile layers and their zooms (the 3D buildings: `buildings`). */
   layers?: Record<string, [number, number]>;
-  /** Where the terrain goes past z12 (pipeline::terrain_fine): its z10 tiles with fine tiles,
-   * "x/y", and the finest zoom of each. */
+  /** Where the terrain goes past z12 (pipeline::terrain_deep): its z10 tiles with deep packs,
+   * "x/y", and the native zoom of each. */
   terrainAreas?: TerrainAreas;
 }
 

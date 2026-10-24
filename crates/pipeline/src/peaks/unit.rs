@@ -22,7 +22,7 @@ use crate::terrain_z8::Z8;
 use anyhow::{Context, Result};
 use det::Det;
 use rayon::prelude::*;
-use roadcore::grid::decode_terrain_png;
+use roadcore::grid::decode_terrain;
 use roadcore::{merc, EARTH_R};
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet};
@@ -150,14 +150,14 @@ impl UnitZ12 {
             .map(|(&(x, y), from_pack)| {
                 if let Some(b) = from_pack {
                     p.count(b.len() as u64, 1);
-                    anyhow::ensure!(decode_terrain_png(&b).is_ok(), "the terrain pack's z12 {x}/{y} doesn't decode");
+                    anyhow::ensure!(decode_terrain(&b).is_ok(), "the terrain pack's z12 {x}/{y} doesn't decode");
                     return Ok(((x, y), Some(Arc::new(b)), 0));
                 }
                 match raw.get(Z12, x, y)?.0 {
                     Some(b) => {
                         p.count(b.len() as u64, 1);
-                        anyhow::ensure!(decode_terrain_png(&b).is_ok(), "the pool's z12 {x}/{y} doesn't decode");
-                        let (png, _, _) = crate::terrain_pack::process(
+                        anyhow::ensure!(decode_terrain(&b).is_ok(), "the pool's z12 {x}/{y} doesn't decode");
+                        let (tile, _, _) = crate::terrain_pack::process(
                             b,
                             Z12,
                             x,
@@ -165,7 +165,7 @@ impl UnitZ12 {
                             &HashMap::new(),
                             &crate::terrain_pack::Sources::default(),
                         );
-                        Ok(((x, y), Some(Arc::new(png)), 1))
+                        Ok(((x, y), tile.map(Arc::new), 1))
                     }
                     None => Ok(((x, y), None, 2)),
                 }
@@ -198,7 +198,7 @@ impl UnitZ12 {
     /// decoding, which `load` rules out), counted.
     fn decoded(&self, x: u32, y: u32) -> Option<Vec<f32>> {
         match self.tiles.get(&(x, y)) {
-            Some(Some(png)) => match decode_terrain_png(png) {
+            Some(Some(png)) => match decode_terrain(png) {
                 Ok(mut e) => {
                     despike(&mut e, Z12, tile_lat(Z12, y));
                     Some(e)

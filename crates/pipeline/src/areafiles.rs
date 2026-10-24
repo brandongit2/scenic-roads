@@ -109,15 +109,15 @@ pub fn files_of(cat: &Catalog, rings: &[Vec<[f64; 2]>]) -> Files {
     Files::from_map(out)
 }
 
-/// The terrain's fine packs an area (`rings`, each read as a filled area) needs: those whose z10
-/// tile meets it grown by 2 km; and the share of the area the fine terrain covers (per cent, in
-/// Web Mercator: the fine packs' z10 tiles clipped to it, over its area).
-pub fn fine_of(cat: &Catalog, rings: &[Vec<[f64; 2]>]) -> (Files, f64) {
-    let Some(l) = cat.layers.get("terrain").filter(|l| !l.fine.is_empty()) else { return (Files::default(), 0.0) };
+/// The terrain's deep packs (its detail, z13 and finer) an area (`rings`, each read as a filled
+/// area) needs: those whose z10 tile meets it grown by 2 km; and the share of the area the detail
+/// covers (per cent, in Web Mercator: the deep packs' z10 tiles clipped to it, over its area).
+pub fn detail_of(cat: &Catalog, rings: &[Vec<[f64; 2]>]) -> (Files, f64) {
+    let Some(l) = cat.layers.get("terrain").filter(|l| !l.deep.is_empty()) else { return (Files::default(), 0.0) };
     let rings: Vec<&Vec<[f64; 2]>> =
         rings.iter().filter(|r| r.len() >= 3 && r.iter().all(|p| p[0].is_finite() && p[1].is_finite())).collect();
     // (Tiles of z10 per tile of z6, each way.) The rings in z10 tiles.
-    let k = f64::from(1u32 << (crate::terrain_fine::PACK_Z - 6));
+    let k = f64::from(1u32 << (crate::terrain_deep::PACK_Z - 6));
     let flat: Vec<Vec<[f64; 2]>> =
         rings.iter().map(|r| r.iter().map(|p| [lon_x(p[0]) * k, lat_y(p[1]) * k]).collect()).collect();
     let area: f64 = flat.iter().map(|r| ring_area(r)).sum();
@@ -131,7 +131,7 @@ pub fn fine_of(cat: &Catalog, rings: &[Vec<[f64; 2]>]) -> (Files, f64) {
         .collect();
     let dlat = NEAR_KM / 111.32;
     let (mut out, mut covered) = (BTreeMap::new(), 0.0);
-    for (key, logical) in &l.fine {
+    for (key, logical) in &l.deep {
         let mut it = key.split('/').skip(1).map(str::parse::<u32>);
         let (Some(Ok(x)), Some(Ok(y))) = (it.next(), it.next()) else { continue };
         let (bn, bs) = (y_lat(f64::from(y) / k), y_lat(f64::from(y + 1) / k));

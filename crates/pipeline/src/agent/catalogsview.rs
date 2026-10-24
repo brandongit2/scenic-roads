@@ -4,7 +4,7 @@
 //!
 //! A catalog publishes a tile when a file it names for that tile is new or other than the last
 //! catalog's: a z6 tile by its base pack, road values, hi data, landmark points, its layers' hi
-//! packs and the fine terrain under it (z10 keys, their z6 tile's); a z3 tile by its layers' lo
+//! packs and the terrain's deep packs under it (z10 keys, their z6 tile's); a z3 tile by its layers' lo
 //! packs and area overlays' details. Its entry: its number, time (`created`), whether it was written
 //! whole, and the z3 and z6 tiles it published (`y * 2^z + x`), and those it dropped. The oldest
 //! catalog kept (GC keeps 14 days') publishes every tile it names: `first`, what was there before it
@@ -79,7 +79,7 @@ fn unix_of(s: &str) -> Option<u64> {
 }
 
 /// A layer's packs keyed by tile.
-const PACKS: [&str; 3] = ["lo", "hi", "fine"];
+const PACKS: [&str; 3] = ["lo", "hi", "deep"];
 
 /// A whole catalog, only what's read of it (the rest skipped as it parses).
 #[derive(Default, Deserialize)]
@@ -107,7 +107,7 @@ struct SlimLayer {
     #[serde(default)]
     hi: BTreeMap<String, String>,
     #[serde(default)]
-    fine: BTreeMap<String, String>,
+    deep: BTreeMap<String, String>,
 }
 
 /// A delta catalog's header and patch (store::catalog::Delta), only what's read of it: the
@@ -229,7 +229,7 @@ impl Files {
     }
 
     fn whole_layer(&mut self, name: &str, l: &SlimLayer, ch: &mut Change) {
-        for (p, m) in [("lo", &l.lo), ("hi", &l.hi), ("fine", &l.fine)] {
+        for (p, m) in [("lo", &l.lo), ("hi", &l.hi), ("deep", &l.deep)] {
             self.set_all(&format!("{name}.{p}"), m.iter().map(|(k, v)| (k.as_str(), v.as_str())), ch);
         }
     }
@@ -569,17 +569,17 @@ mod tests {
         let mem = Arc::new(Mem::default());
         let c1 = serde_json::json!({"fmt": 2, "n": 1, "created": "2026-10-23T00:00:00Z",
             "base": {"6/1/1": "base/a", "6/2/2": "base/b"}, "units": ["6/1/1"], "coverage": {"regions": []},
-            "layers": {"terrain": {"lo": {"3/0/0": "t/lo/a"}, "hi": {"6/1/1": "t/hi/a"}, "fine": {"10/320/320": "t/f/a"}}}});
-        // 2: one base pack drawn again, a fine terrain tile added (its z6 tile's), one base gone.
+            "layers": {"terrain": {"lo": {"3/0/0": "t/lo/a"}, "hi": {"6/1/1": "t/hi/a"}, "deep": {"10/320/320": "t/f/a"}}}});
+        // 2: one base pack drawn again, a deep terrain pack added (its z6 tile's), one base gone.
         let p2 = serde_json::json!({"o": {"n": {"=": 2}, "created": {"=": "2026-10-23T01:00:00Z"},
             "base": {"o": {"6/1/1": {"=": "base/a2"}, "6/2/2": null}},
-            "layers": {"o": {"terrain": {"o": {"fine": {"o": {"10/48/48": {"=": "t/f/b"}}}}}}}}});
+            "layers": {"o": {"terrain": {"o": {"deep": {"o": {"10/48/48": {"=": "t/f/b"}}}}}}}}});
         // 3: written whole: the lo pack drawn again, nothing else.
         let mut c3 = c1.clone();
         c3["n"] = 3.into();
         c3["created"] = "2026-10-23T02:00:00Z".into();
         c3["base"] = serde_json::json!({"6/1/1": "base/a2"});
-        c3["layers"]["terrain"]["fine"]["10/48/48"] = "t/f/b".into();
+        c3["layers"]["terrain"]["deep"]["10/48/48"] = "t/f/b".into();
         c3["layers"]["terrain"]["lo"]["3/0/0"] = "t/lo/b".into();
         {
             let mut m = mem.0.lock().unwrap();

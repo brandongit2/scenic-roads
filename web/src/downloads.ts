@@ -1,5 +1,5 @@
 // Downloads (docs/macs.md, "Mirror, per Mac"): what this Mac has downloaded for when it's away
-// from the NAS (the World, zoomed out; regions, and their fine terrain), and the mirror's state (/api/downloads,
+// from the NAS (the World, zoomed out; regions, and their terrain detail), and the mirror's state (/api/downloads,
 // crates/server/src/downloads.rs). Nothing else is copied to this Mac, and nothing downloaded goes
 // until it's removed. The Regions panel (ui/regions.ts) shows them.
 import { RegionsError } from './regions';
@@ -21,14 +21,14 @@ export interface RegionDl extends Tally {
   name: string;
   on: boolean;
   state: DlState | null;
-  /** Its fine terrain (z13 and finer, where the terrain has finer data), an add-on to it: the share
-   * of the region it covers (per cent). Absent where it has none. */
-  fine?: FineDl;
+  /** Its terrain detail (z13 and finer, where the terrain goes past z12), an add-on to it: the
+   * share of the region it covers (per cent). Absent where it has none. */
+  detail?: DetailDl;
   /** Still building: its tiles built of total; its files grow with each catalog. */
   tiles?: { built: number; total: number };
 }
 
-export interface FineDl extends Tally {
+export interface DetailDl extends Tally {
   cover: number;
   on: boolean;
   state: DlState | null;
@@ -83,11 +83,11 @@ const json = (method: string, body: unknown): RequestInit => ({ method, headers:
 export const dlStatus = () => call<DlStatus>('/api/downloads');
 /** Downloads the World, zoomed out, or removes it (refused, with why, when it won't fit). */
 export const dlWorld = (on: boolean) => call<{ ok: boolean }>('/api/downloads/world', json('PUT', { on }));
-/** Downloads a region, or removes it (with its fine terrain). */
+/** Downloads a region, or removes it (with its terrain detail). */
 export const dlRegion = (id: string, on: boolean) => call<{ ok: boolean }>(`/api/downloads/regions/${encodeURIComponent(id)}`, json('PUT', { on }));
-/** Downloads a region's fine terrain (refused unless the region is downloaded), or removes it (the
+/** Downloads a region's terrain detail (refused unless the region is downloaded), or removes it (the
  * region stays). */
-export const dlFine = (id: string, on: boolean) => call<{ ok: boolean }>(`/api/downloads/regions/${encodeURIComponent(id)}/fine`, json('PUT', { on }));
+export const dlDetail = (id: string, on: boolean) => call<{ ok: boolean }>(`/api/downloads/regions/${encodeURIComponent(id)}/detail`, json('PUT', { on }));
 /** Sets the free space downloads leave on this Mac's disk (whole GB; refused, with why, out of
  * bounds). */
 export const setReserve = (gb: number) => call<{ ok: boolean; reserve: number; reserve_set: number }>('/api/downloads/reserve', json('PUT', { gb }));

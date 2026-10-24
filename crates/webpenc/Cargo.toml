@@ -1,0 +1,14 @@
+[package]
+name = "webpenc"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Lossless WebP encoding of 8-bit RGB images through libwebp (libwebp-sys's copy, built by cc, linked statically)."
+
+[dependencies]
+# libwebp 1.6.0 (the cwebp the codec was chosen with: .claude/notes/CODECS.md). Its `std` feature
+# off: no threads (the WebAssembly build has none; a tile is one thread's work anyway).
+libwebp-sys = { version = "=0.14.4", default-features = false }
+
+[dev-dependencies]
+sha2 = "0.10"

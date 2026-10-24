@@ -1,7 +1,7 @@
 //! How densely `extract` puts points along a way (docs/inputs.md §6.8, Densification): as far
 //! apart as the finished terrain's pixels where the way starts (the roads take their heights from
 //! it: crate::road_terrain), never closer than `FLOOR_M`. The terrain's finest zoom at a point is
-//! the finest a dataset finer than the base takes it to there (crate::terrain_fine: its `zoom_for`
+//! the finest a dataset finer than the base takes it to there (crate::terrain_deep: its `zoom_for`
 //! of the dataset's full resolution, at most `MAX_Z`), else the base's (z12, coarser at high
 //! latitudes: crate::terrain_pack::max_zoom_at); its pixel there is the spacing: 20–38 m where
 //! GLO-30 alone is, ~7 m over USGS 3DEP's 10 m, `FLOOR_M` over the lidar. The datasets'
@@ -51,7 +51,7 @@ pub fn spacing_at(z: u8, lat: f64) -> f64 {
 
 /// Where the terrain goes past its base: each 1° cell a dataset finer than the base has data in,
 /// with the finest zoom one takes the terrain to there (at the cell's poleward edge, as
-/// crate::terrain_fine reckons a tile's).
+/// crate::terrain_deep reckons a tile's).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Fine {
     pub cells: Vec<([i32; 2], u8)>,
@@ -61,20 +61,20 @@ impl Fine {
     /// From the declared datasets with their coverages (agent::tiles::Elevation).
     pub fn of(ds: &[(Accepted, Cover)]) -> Fine {
         let accepted: Vec<Accepted> = ds.iter().map(|(d, _)| d.clone()).collect();
-        let base = crate::terrain_fine::base_resolution(&accepted);
+        let base = crate::terrain_deep::base_resolution(&accepted);
         let mut cells: BTreeMap<[i32; 2], u8> = BTreeMap::new();
         for (d, c) in ds {
-            let full = crate::terrain_fine::full_resolution(d);
-            if !(full < base * crate::terrain_fine::FINER) || c.world {
+            let full = crate::terrain_deep::full_resolution(d);
+            if !(full < base * crate::terrain_deep::FINER) || c.world {
                 continue;
             }
             let pyramid = match &d.declaration.data {
-                super::declared::Data::Tiles { zoom, .. } => Some((*zoom).min(crate::terrain_fine::MAX_Z as u32) as u8),
+                super::declared::Data::Tiles { zoom, .. } => Some((*zoom).min(crate::terrain_deep::MAX_Z as u32) as u8),
                 super::declared::Data::Geotiff { .. } => None,
             };
             for &(x, y) in &c.cells {
                 let poleward = (y as f64).abs().max((y as f64 + 1.0).abs());
-                let z = pyramid.unwrap_or_else(|| crate::terrain_fine::zoom_for(full, poleward));
+                let z = pyramid.unwrap_or_else(|| crate::terrain_deep::zoom_for(full, poleward));
                 if z > crate::terrain_pack::max_zoom_at(poleward) {
                     let e = cells.entry([x, y]).or_insert(z);
                     *e = (*e).max(z);

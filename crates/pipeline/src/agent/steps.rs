@@ -72,9 +72,6 @@ pub enum Scope {
     /// A z6 tile ("6/x/y"). (Stored and sent as "tile".)
     #[serde(rename = "tile")]
     Z6,
-    /// A z8 tile ("8/x/y"): a quarter of a z6 tile's side. (Stored and sent as "subtile".)
-    #[serde(rename = "subtile")]
-    Z8,
     /// An input's drop box (docs/inputs.md §4.3).
     Input,
     /// A task's piece of a job (`TASKS`).
@@ -88,7 +85,6 @@ impl Scope {
             Scope::World => "run",
             Scope::Z3 => "z3 tile",
             Scope::Z6 => "z6 tile",
-            Scope::Z8 => "z8 tile",
             Scope::Input => "input",
             Scope::Task => "task",
         }
@@ -115,14 +111,13 @@ pub struct Stage {
 }
 
 /// The stages, in the build's order (docs/pipeline.md §2).
-pub const STAGES: [Stage; 15] = [
+pub const STAGES: [Stage; 14] = [
     Stage { id: "pass", title: "OpenStreetMap pass", does: "The newest planet read once for the whole world: its sets, outlines, pieces and road values, the basemap, the water, and what the regions' steps read." },
     Stage { id: "sites", title: "Heritage sites", does: "The heritage sites and designated areas the regions' tiles read." },
-    Stage { id: "terrain", title: "Terrain", does: "The terrain packs, a tile at a time, assembled zoomed out by z3 tile." },
+    Stage { id: "terrain", title: "Terrain", does: "The terrain packs, a tile at a time down to each place's native zoom, assembled zoomed out by z3 tile." },
     Stage { id: "slope", title: "Slope", does: "The slope packs from the terrain, a tile at a time, assembled zoomed out by z3 tile." },
     Stage { id: "trees", title: "Tree cover", does: "The tree cover, height and leaf type, a tile at a time, assembled zoomed out by z3 tile." },
     Stage { id: "depth", title: "Water depth", does: "The depth under the seas and lakes from the depth sources: zoomed out by z3 tile, then a tile at a time where a source has finer detail." },
-    Stage { id: "fine", title: "Terrain, finer", does: "The terrain past the base's zoom where a declared elevation dataset has the detail, a z8 tile at a time." },
     Stage { id: "roads", title: "Roads", does: "Each tile's roads, their elevations and scenery: the base packs the map's details and profiles read." },
     Stage { id: "tiles", title: "Map tiles", does: "The road and rail map tiles drawn from the base packs, by tile and zoomed out by z3 tile." },
     Stage { id: "finish", title: "Map finishing", does: "What publishing adds around the tiles: the road index, rail stops, ferries, the world levels, and a prune." },
@@ -178,10 +173,10 @@ const fn step(
 }
 
 use Kind::{Derive, Fetch, Keep, Pack, Publish};
-use Scope::{Input, World, Z3, Z6, Z8};
+use Scope::{Input, World, Z3, Z6};
 
 /// The table, by stage (the ranks order what's ranked).
-pub const TABLE: [Step; 52] = [
+pub const TABLE: [Step; 51] = [
     // The OSM pass: the planet filtered, its sets, extracts and road values; then its worldwide steps.
     Step {
         alone: true,
@@ -355,7 +350,11 @@ pub const TABLE: [Step; 52] = [
             w_terrain_water,
         )
     },
+    // (Its deep levels a z8 tile at a time, pipeline::terrain_deep: the blocks read ahead, 2 GB at
+    // most, a z10 tile's deep tiles, ~0.2 GB, a 1M-point batch a thread, ~30 MB, the sampler's block
+    // cache. Until a z6 tile's own run says.)
     Step {
+        mem_mb: 2500,
         shared: Some(0),
         ..step(
             "terrain",
@@ -363,7 +362,7 @@ pub const TABLE: [Step; 52] = [
             Z6,
             "terrain",
             "Terrain",
-            "Builds a tile's terrain packs, repaired and its water flattened.",
+            "Builds a tile's terrain packs down to its native zoom, its water flattened.",
             w_terrain,
         )
     },
@@ -379,22 +378,6 @@ pub const TABLE: [Step; 52] = [
             "Terrain, zoomed out",
             "Assembles a z3 tile's zoomed-out terrain from its tiles.",
             w_terrain_lo,
-        )
-    },
-    // (The terrain finer than its base, a z8 tile's at a time, pipeline::terrain_fine: its base tiles,
-    // a z10 tile's fine tiles made, as JPEG XL, ~0.2 GB; a 1M-point batch a thread, ~30 MB; the
-    // sampler's block cache. Until a target's own run says.)
-    Step {
-        mem_mb: 2500,
-        shared: Some(9),
-        ..step(
-            "fine",
-            Pack,
-            Z8,
-            "terrain-fine",
-            "Terrain, finer",
-            "Makes a tile's terrain finer than the base where a declared elevation dataset has the detail.",
-            w_terrain_fine,
         )
     },
     // (Slope holds a z6 tile's tiles at a time, under a GB; its assembly the z3 tile's lo tiles.)
@@ -988,7 +971,7 @@ const fn set_of<const N: usize>(set: Set) -> [&'static str; N] {
 
 /// The shared steps: other members take their jobs (crate::coord leases them), in this order of
 /// preference: what later steps wait on first.
-pub const SHARED: [&str; 10] = set_of(Set::Shared);
+pub const SHARED: [&str; 9] = set_of(Set::Shared);
 /// The steps that keep the pass's Wikidata and Wikipedia answers.
 pub const ANSWERED: [&str; 3] = set_of(Set::Answered);
 
@@ -1084,14 +1067,12 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
             tile.is_some_and(|u| u.z == 3)
                 && crate::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/lo/{dash}"))
         }
+        // (And its deep packs, by their z10 tiles.)
         "terrain" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| {
-            l == crate::terrain_pack::mid_logical(t.x, t.y) || l == format!("layers/terrain/hi/{dash}")
-        }),
-        // (A z8 tile's fine packs, by their z10 tiles.)
-        "terrain-fine" => tile.is_some_and(|t| {
-            t.z == crate::terrain_fine::TARGET_Z
-                && crate::terrain_fine::pack_tile(l).is_some_and(|f| {
-                    let k = crate::terrain_fine::PACK_Z - crate::terrain_fine::TARGET_Z;
+            l == crate::terrain_pack::mid_logical(t.x, t.y)
+                || l == format!("layers/terrain/hi/{dash}")
+                || crate::terrain_deep::pack_tile(l).is_some_and(|f| {
+                    let k = crate::terrain_deep::PACK_Z - 6;
                     (f.0 >> k, f.1 >> k) == (t.x, t.y)
                 })
         }),
@@ -1259,14 +1240,12 @@ fn w_spoken(l: &str, _: bool) -> bool {
     l == "global/spoken"
 }
 
-/// A z6 tile's hi pack and mid (a z6 tile); a z3 tile's whole run's lo pack and its z6 tiles' hi packs.
+/// A z6 tile's hi pack, deep packs and mid (a z6 tile); a z3 tile's whole run's lo pack and its z6
+/// tiles' hi packs.
 fn w_terrain(l: &str, _: bool) -> bool {
-    pack(l, "terrain", &["lo", "hi"]) || matches!(parts(l).as_slice(), ["work", "terrain-mid", t] if tile(t, 6))
-}
-
-/// The terrain's fine packs (crate::terrain_fine).
-fn w_terrain_fine(l: &str, _: bool) -> bool {
-    crate::terrain_fine::pack_tile(l).is_some()
+    pack(l, "terrain", &["lo", "hi"])
+        || crate::terrain_deep::pack_tile(l).is_some()
+        || matches!(parts(l).as_slice(), ["work", "terrain-mid", t] if tile(t, 6))
 }
 
 fn w_terrain_lo(l: &str, _: bool) -> bool {
@@ -1486,10 +1465,7 @@ mod tests {
     #[test]
     fn the_sets_are_todays() {
         // (As they were before the table: the agent's and the coordinator's rules unchanged.)
-        assert_eq!(
-            SHARED,
-            ["terrain", "slope", "trees", "unit", "pois", "peaks", "bldprep", "bldtiles", "depth", "terrain-fine"]
-        );
+        assert_eq!(SHARED, ["terrain", "slope", "trees", "unit", "pois", "peaks", "bldprep", "bldtiles", "depth"]);
         let set = |v: &[&'static str]| v.iter().copied().collect::<std::collections::BTreeSet<&str>>();
         assert_eq!(set(&ANSWERED), set(&["items", "heritage-sites", "heritage"]));
     }
@@ -1521,7 +1497,7 @@ mod tests {
             ("water", 8192),
             ("bldprep", super::super::bldprep_peak(30_300_000)),
             ("bldtiles", super::super::bldtiles_peak(30_300_000)),
-            ("terrain", 1500),
+            ("terrain", 2500),
         ];
         for (s, mb) in mem {
             assert_eq!(mem_mb(s), mb, "{s}");
@@ -1716,7 +1692,6 @@ mod tests {
                 "terrain-water",
                 "terrain",
                 "terrain-lo",
-                "terrain-fine",
                 "slope",
                 "slope-lo",
                 "trees",
@@ -1774,7 +1749,7 @@ mod tests {
 
     #[test]
     fn entries_within_their_write_sets() {
-        let ok: [(&str, &[(&str, bool)]); 29] = [
+        let ok: [(&str, &[(&str, bool)]); 28] = [
             ("lakefill", &[("work/lakefill/2026-09-28", false), ("work/lakefill/2026-03-01", true)]),
             (
                 "inputs",
@@ -1828,7 +1803,6 @@ mod tests {
                 ],
             ),
             ("terrain-lo", &[("layers/terrain/lo/3-1-2", false)]),
-            ("terrain-fine", &[("layers/terrain/fine/10-296-364", false), ("layers/terrain/fine/10-1-2", true)]),
             ("terrain-water", &[("work/water-idx/0f1a2b3c4d5e6f70", false)]),
             ("slope-root", &[("layers/slope/root/0-0-0", false)]),
             ("trees", &[("layers/trees-cover/hi/6-1-2", false), ("work/trees-mid/6-1-2", true)]),

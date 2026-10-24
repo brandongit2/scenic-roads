@@ -175,7 +175,7 @@ impl AppState {
         // The packs' tokens (tiles' `?v=`).
         for l in meta.get("packs").and_then(|v| v.as_object()).into_iter().flat_map(|m| m.values()) {
             t.extend(l.get("root").and_then(tok));
-            for scope in ["lo", "hi", "fine"] {
+            for scope in ["lo", "hi", "deep"] {
                 t.extend(l.get(scope).and_then(|v| v.as_object()).into_iter().flat_map(|m| m.values()).filter_map(tok));
             }
         }
@@ -547,7 +547,7 @@ async fn main() -> Result<()> {
         .route("/api/downloads", get(downloads::get_status))
         .route("/api/downloads/world", axum::routing::put(downloads::put_world))
         .route("/api/downloads/regions/{id}", axum::routing::put(downloads::put_region))
-        .route("/api/downloads/regions/{id}/fine", axum::routing::put(downloads::put_region_fine))
+        .route("/api/downloads/regions/{id}/detail", axum::routing::put(downloads::put_region_detail))
         .route("/api/downloads/reserve", axum::routing::put(downloads::put_reserve))
         .route("/api/ping", get(|| async { ([(header::CACHE_CONTROL, "no-store")], "ok") }))
         .route("/api/build", get(build_h))
@@ -798,7 +798,7 @@ fn meta_json(s: &AppState) -> serde_json::Value {
     versions.insert("water".into(), serde_json::Value::from(water::version(s)));
     // Each tiled layer's packs' versions (a tile's `?v=` is that of the pack holding it): a new
     // catalog changes only the tokens of the packs it changed, so a browser asks again only for
-    // their tiles. Root: z0–2; lo: z3–8, by z3 tile; hi: z9–14, by z6 tile; the terrain's fine
+    // their tiles. Root: z0–2; lo: z3–8, by z3 tile; hi: z9–14, by z6 tile; the terrain's deep
     // packs past z12, by z10 tile (Data::pack_of) ("z/x/y").
     let mut packs = serde_json::Map::new();
     for (k, l) in &cat.layers {
@@ -822,8 +822,8 @@ fn meta_json(s: &AppState) -> serde_json::Value {
         }
         o.insert("lo".into(), serde_json::Value::Object(by(&l.lo)));
         o.insert("hi".into(), serde_json::Value::Object(by(&l.hi)));
-        if !l.fine.is_empty() {
-            o.insert("fine".into(), serde_json::Value::Object(by(&l.fine)));
+        if !l.deep.is_empty() {
+            o.insert("deep".into(), serde_json::Value::Object(by(&l.deep)));
         }
         packs.insert(k.clone(), serde_json::Value::Object(o));
     }
@@ -833,17 +833,18 @@ fn meta_json(s: &AppState) -> serde_json::Value {
         m.insert("versions".into(), serde_json::Value::Object(versions));
         m.insert("packs".into(), serde_json::Value::Object(packs));
         m.insert("layers".into(), serde_json::Value::Object(zooms));
-        // Where the terrain goes past its base (pipeline::terrain_fine): its z10 tiles with fine
-        // packs and their finest zoom, "x/y" (the map's zoom by area: web/src/basemap.ts).
-        if let Some(l) = cat.layers.get("terrain").filter(|l| !l.fine_zoom.is_empty()) {
+        // Where the terrain goes past the base's finest zoom (pipeline::terrain_deep): its z10
+        // tiles with deep packs and their native zoom, "x/y" (the map's zoom by area:
+        // web/src/basemap.ts); elsewhere the base's.
+        if let Some(l) = cat.layers.get("terrain").filter(|l| !l.native_zoom.is_empty()) {
             let tiles: serde_json::Map<String, serde_json::Value> = l
-                .fine_zoom
+                .native_zoom
                 .iter()
                 .filter_map(|(k, z)| Some((k.split_once('/')?.1.to_string(), serde_json::json!(z))))
                 .collect();
             m.insert(
                 "terrainAreas".into(),
-                serde_json::json!({"zoom": pipeline::terrain_fine::PACK_Z, "tiles": tiles}),
+                serde_json::json!({"zoom": pipeline::terrain_deep::PACK_Z, "tiles": tiles}),
             );
         }
         m.insert("catalog".into(), serde_json::json!(cat.n));

@@ -541,7 +541,7 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 #layers .rg2[hidden] { display: none; }
 #layers .rg2s { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Downloads (ui/regions.ts, downloads.ts): the World, each region's size and its Download or Remove,
-   a region's fine terrain (its name kept whole, its line cut short), this Mac's room. */
+   a region's terrain detail (its name kept whole, its line cut short), this Mac's room. */
 #layers .rg-size { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 #layers .rg2s.rg-fine { flex: 1 0 auto; }
 #layers .rg-size.rg-fsize { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }

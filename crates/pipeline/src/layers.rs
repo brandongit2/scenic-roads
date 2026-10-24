@@ -1,6 +1,6 @@
 //! Layers as packs (docs/formats.md "Pack"): every tile in exactly one pack — the root pack
 //! (z0–2), a lo pack per z3 tile (z3–8) or a hi pack per z6 tile (z9–14; the terrain's z13 and finer
-//! in fine packs per z10 tile, crate::terrain_fine) — uploaded content-named
+//! in deep packs per z10 tile, crate::terrain_deep) — uploaded content-named
 //! under `layers/<layer>/`. A small layer made whole by one job may instead be one bundle
 //! (`layers/<layer>/all`, docs/formats.md "Bundles"): every tile in one pack, which the catalog
 //! names for each pack key its tiles fall in (`bundle_keys`).
@@ -28,12 +28,12 @@ pub struct LayerOut {
     pub root: Option<String>,
     pub lo: BTreeMap<String, String>,
     pub hi: BTreeMap<String, String>,
-    /// The terrain's fine packs by z10 tile (crate::terrain_fine).
+    /// The terrain's deep packs by z10 tile (crate::terrain_deep).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub fine: BTreeMap<String, String>,
-    /// The finest zoom of each fine pack's tiles (crate::terrain_fine::zoom_of), by its z10 tile.
+    pub deep: BTreeMap<String, String>,
+    /// The native zoom of each deep pack's z10 tile (crate::terrain_deep::native_zoom).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub fine_zoom: BTreeMap<String, u8>,
+    pub native_zoom: BTreeMap<String, u8>,
 }
 
 impl LayerOut {
@@ -48,8 +48,8 @@ impl LayerOut {
             "lo" => {
                 self.lo.insert(k, logical);
             }
-            "fine" => {
-                self.fine.insert(k, logical);
+            "deep" => {
+                self.deep.insert(k, logical);
             }
             _ => {
                 self.hi.insert(k, logical);

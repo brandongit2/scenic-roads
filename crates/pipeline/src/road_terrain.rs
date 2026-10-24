@@ -1,13 +1,14 @@
 //! The roads' heights from the finished terrain (docs/steps.md §6; docs/inputs.md §6.8): each
 //! vertex's height is the stored terrain's there, bilinearly between pixel centres (across tile
-//! edges, as the map draws it), at the finest zoom stored there: a fine tile (z13–16,
-//! crate::terrain_fine) where one is, else the base's (z12, coarser at high latitudes:
-//! crate::terrain_pack::max_zoom_at), else coarser. So a road and the ground under it come from one
-//! dataset, detail and blend, already brought to EGM2008, and a unit's elevations read no server.
+//! edges, as the map draws it), at the finest zoom stored there: its native zoom (a deep tile,
+//! z13–16, crate::terrain_deep, where one is; z12, coarser at high latitudes,
+//! crate::terrain_pack::max_zoom_at, elsewhere), else coarser. So a road and the ground under it
+//! come from one terrain: one dataset, detail and blend, already brought to EGM2008, and a unit's
+//! elevations read no server.
 //!
-//! The unit job stages what this reads into the unit's folder: the base tiles (`terrain.tiles`,
-//! crate::stage), the fine tiles under its vertices and their neighbours across a near edge
-//! (`fine.tiles`: `fine_tiles`, `stage_fine`), and the pool's datasets' codes by coverage
+//! The unit job stages what this reads into the unit's folder: the terrain's tiles over its box to
+//! z12 and its deep tiles under its vertices and their neighbours across a near edge (`deep_tiles`),
+//! in one archive (`TERRAIN_FILE`, crate::stage), and the pool's datasets' codes by coverage
 //! (`codes.json`: `Codes`), which name each vertex's source (`src.u8`): the first dataset in the
 //! order whose coverage (its measured 1° cells) holds it. That's a label, not the terrain's own
 //! record: in a cell a dataset covers only in part, it names that dataset where the terrain took the
@@ -22,10 +23,8 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::Arc;
 
-/// The staged fine tiles in a unit's folder.
-pub const FINE_FILE: &str = "fine.tiles";
-/// The staged base tiles (crate::stage).
-pub const BASE_FILE: &str = "terrain.tiles";
+/// The staged terrain tiles in a unit's folder (crate::stage).
+pub const TERRAIN_FILE: &str = "terrain.tiles";
 /// The datasets' codes by coverage (`Codes`).
 pub const CODES_FILE: &str = "codes.json";
 
@@ -42,9 +41,9 @@ fn pixel(z: u8, p: [i32; 2]) -> (f64, f64) {
     (x, y)
 }
 
-/// The fine tiles the heights at `verts` read: each vertex's at the finer zoom its cell has
+/// The deep tiles the heights at `verts` read: each vertex's at the finer zoom its cell has
 /// (`Fine::zoom`), and its neighbours' where the vertex is within a pixel of their edge.
-pub fn fine_tiles(verts: &[[i32; 2]], fine: &Fine) -> BTreeSet<(u8, u32, u32)> {
+pub fn deep_tiles(verts: &[[i32; 2]], fine: &Fine) -> BTreeSet<(u8, u32, u32)> {
     let mut out = BTreeSet::new();
     for &v in verts {
         let Some(z) = fine.zoom(cell(v)) else { continue };
@@ -86,14 +85,10 @@ impl Codes {
 /// The heights at `verts` from the tiles staged in `dir`, and each vertex's source code; NaN and 0
 /// where no tile is stored.
 pub fn heights(dir: &Path, verts: &[[i32; 2]]) -> Result<(Vec<f32>, Vec<u8>)> {
-    let base = Archive::open(&dir.join(BASE_FILE))?;
-    let fine = match dir.join(FINE_FILE) {
-        p if p.exists() => Some(Archive::open(&p)?),
-        _ => None,
-    };
+    let terrain = Archive::open(&dir.join(TERRAIN_FILE))?;
     let codes = Codes::read(&dir.join(CODES_FILE))?;
     let covers: Vec<(u8, Cover)> = codes.0.iter().map(|(c, b)| (*c, Cover::of(b.as_deref()))).collect();
-    let mut s = Sampler { base: &base, fine: fine.as_ref(), kept: HashMap::new(), tick: 0 };
+    let mut s = Sampler { terrain: &terrain, kept: HashMap::new(), tick: 0 };
     // (Vertices in tile order, so each tile is decoded once, the kept ones few.)
     let mut order: Vec<u32> = (0..verts.len() as u32).collect();
     order.sort_unstable_by_key(|&i| {
@@ -111,8 +106,7 @@ pub fn heights(dir: &Path, verts: &[[i32; 2]]) -> Result<(Vec<f32>, Vec<u8>)> {
 }
 
 struct Sampler<'a> {
-    base: &'a Archive,
-    fine: Option<&'a Archive>,
+    terrain: &'a Archive,
     kept: HashMap<(u8, u32, u32), (u64, Option<Arc<Vec<f32>>>)>,
     tick: u64,
 }
@@ -125,8 +119,7 @@ impl Sampler<'_> {
             e.0 = self.tick;
             return Ok(e.1.clone());
         }
-        let a = if z > 12 { self.fine } else { Some(self.base) };
-        let t = match a.and_then(|a| a.get(z, x, y)) {
+        let t = match self.terrain.get(z, x, y) {
             Some(b) => {
                 Some(Arc::new(roadcore::grid::decode_terrain(b).with_context(|| format!("terrain tile {z}/{x}/{y}"))?))
             }
@@ -162,15 +155,7 @@ impl Sampler<'_> {
 
     /// The height at the finest zoom stored there.
     fn height(&mut self, v: [i32; 2]) -> Result<f32> {
-        let lat = v[1] as f64 * 1e-7;
-        if self.fine.is_some() {
-            for z in (13..=crate::terrain_fine::MAX_Z).rev() {
-                if let Some(h) = self.at(z, v)? {
-                    return Ok(h);
-                }
-            }
-        }
-        for z in (0..=crate::terrain_pack::max_zoom_at(lat)).rev() {
+        for z in (0..=crate::terrain_deep::MAX_Z).rev() {
             if let Some(h) = self.at(z, v)? {
                 return Ok(h);
             }
@@ -189,14 +174,14 @@ mod tests {
         v.sort_by_key(|t| roadcore::archive::tile_key(t.0 .0, t.0 .1, t.0 .2));
         let mut w = ArchiveWriter::create(path, "{}").unwrap();
         for ((z, x, y), e) in v {
-            let b = roadcore::grid::encode_terrain_png(e, 256, 256).unwrap();
+            let b = crate::terrain_codec::encode(&mut e.clone(), crate::terrain_codec::NATIVE_M).unwrap();
             w.add(*z, *x, *y, &b, b.len()).unwrap();
         }
         w.finish().unwrap();
     }
 
     /// A vertex takes the finest stored tile's height there, bilinear between pixel centres and
-    /// across a tile edge; where no fine tile is, the base's; its source the first coverage holding it.
+    /// across a tile edge; where no deep tile is, z12's; its source the first coverage holding it.
     #[test]
     fn a_vertex_takes_the_finest_stored_terrain_there() {
         let d = tempfile::tempdir().unwrap();
@@ -206,11 +191,17 @@ mod tests {
         let (gx, gy) = pixel(12, p);
         let (bx, by) = ((gx / 256.0) as u32, (gy / 256.0) as u32);
         let slope = |off: f32| (0..65536).map(|i| off + (i % 256) as f32).collect::<Vec<f32>>();
-        archive(&d.path().join(BASE_FILE), &[((12, bx, by), slope(0.0)), ((12, bx + 1, by), slope(256.0))]);
-        // A fine tile at z16 over a second point, 500 m flat.
+        // A deep tile at z16 over a second point, 500 m flat: one archive.
         let q = e7(11.5, 45.5);
         let (fx, fy) = pixel(16, q);
-        archive(&d.path().join(FINE_FILE), &[((16, (fx / 256.0) as u32, (fy / 256.0) as u32), vec![500.0; 65536])]);
+        archive(
+            &d.path().join(TERRAIN_FILE),
+            &[
+                ((12, bx, by), slope(0.0)),
+                ((12, bx + 1, by), slope(256.0)),
+                ((16, (fx / 256.0) as u32, (fy / 256.0) as u32), vec![500.0; 65536]),
+            ],
+        );
         Codes(vec![(1, Some(vec![[11.0, 45.0, 12.0, 46.0]])), (3, None)]).write(&d.path().join(CODES_FILE)).unwrap();
         // (A vertex on the base's tile edge reads both tiles: continuous.)
         let edge = {
@@ -223,10 +214,10 @@ mod tests {
         assert_eq!(h[1], 500.0);
         assert!((h[2] - 255.5).abs() < 0.6, "{}", h[2]);
         assert_eq!(src, vec![3, 1, 3]);
-        // The fine tiles a vertex reads: its own at its cell's zoom, and a neighbour's near an edge.
+        // The deep tiles a vertex reads: its own at its cell's zoom, and a neighbour's near an edge.
         let fine = Fine { cells: vec![([11, 45], 16)] };
-        let t = fine_tiles(&[q], &fine);
+        let t = deep_tiles(&[q], &fine);
         assert!(t.contains(&(16, (fx / 256.0) as u32, (fy / 256.0) as u32)) && t.len() <= 4);
-        assert!(fine_tiles(&[e7(20.5, 45.5)], &fine).is_empty());
+        assert!(deep_tiles(&[e7(20.5, 45.5)], &fine).is_empty());
     }
 }

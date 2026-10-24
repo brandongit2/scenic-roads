@@ -186,7 +186,7 @@ export function contourInterval(z: number, density = 0): [number, number] {
 
 let contourDem = false;
 let contourDensity = 0;
-/** The catalog's areas of terrain finer than its base (the meta's terrainAreas). */
+/** The catalog's areas where the terrain goes past z12 (the meta's terrainAreas). */
 let terrainAreas: TerrainAreas | undefined;
 /** A contour tile's intervals: from z8 (none coarser). */
 const contourLevels = (z: number, density: number) => (z < 8 ? [] : contourInterval(Math.min(z, 16), density));

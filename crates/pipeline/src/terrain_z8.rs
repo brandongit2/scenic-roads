@@ -10,15 +10,16 @@ use crate::out::Out;
 use crate::terrain_pack::{process, RawSource};
 use anyhow::{Context, Result};
 use rayon::prelude::*;
-use roadcore::grid::decode_terrain_png;
+use roadcore::grid::decode_terrain;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 pub const Z: u8 = 8;
-/// Its version: a change to how it's made is a new logical name (5: the elevation pool's tiles,
+/// Its version: a change to how it's made is a new logical name (6: lossless WebP,
+/// crate::terrain_codec; 5: the elevation pool's tiles,
 /// not the water: task #465).
-pub const V: u32 = 5;
+pub const V: u32 = 6;
 
 /// The prefix of its logical names.
 const PREFIX: &str = "sources/terrain-z8-v";
@@ -77,11 +78,12 @@ pub fn build(out: &mut Out, raw: &dyn RawSource) -> Result<(usize, usize)> {
         made.par_extend(chunk.par_iter().map(|&(x, y)| -> Result<(u32, u32, Option<(Vec<u8>, f32)>)> {
             let (b, _) = raw.get(Z, x, y)?;
             let Some(b) = b else { return Ok((x, y, None)) };
-            let (png, _, _) = process(b, Z, x, y, &HashMap::new(), &crate::terrain_pack::Sources::default());
-            let mut e = decode_terrain_png(&png).with_context(|| format!("8/{x}/{y}"))?;
+            let (tile, _, _) = process(b, Z, x, y, &HashMap::new(), &crate::terrain_pack::Sources::default());
+            let Some(tile) = tile else { return Ok((x, y, None)) };
+            let mut e = decode_terrain(&tile).with_context(|| format!("8/{x}/{y}"))?;
             crate::peaks::despike(&mut e, Z, crate::peaks::tile_lat(Z, y));
             let mx = e.iter().cloned().fold(0f32, f32::max);
-            Ok((x, y, Some((png, mx))))
+            Ok((x, y, Some((tile, mx))))
         }));
     }
     let mut tiles: Vec<(u32, u32, Vec<u8>)> = Vec::new();
@@ -104,7 +106,7 @@ pub fn build(out: &mut Out, raw: &dyn RawSource) -> Result<(usize, usize)> {
     let local = out.scratch_file("terrain-z8.pack");
     let mut w = store::pack::PackWriter::create(
         &local,
-        serde_json::json!({"layer": "terrain-z8", "encoding": "terrarium-png", "version": V}),
+        serde_json::json!({"layer": "terrain-z8", "encoding": crate::terrain_codec::ENCODING, "version": V}),
         false,
     )?;
     for (x, y, png) in &tiles {
@@ -173,7 +175,7 @@ impl Z8 {
         let len = self.file.metadata()?.len();
         let t = match self.idx.get(&FileSource(&self.file, len), Z, x, y)? {
             Some((_, png)) => {
-                let mut e = decode_terrain_png(&png).with_context(|| format!("terrain-z8 8/{x}/{y}"))?;
+                let mut e = decode_terrain(&png).with_context(|| format!("terrain-z8 8/{x}/{y}"))?;
                 crate::peaks::despike(&mut e, Z, crate::peaks::tile_lat(Z, y));
                 Arc::new(e)
             }
@@ -253,13 +255,13 @@ mod tests {
     fn raw_path() -> Vec<u64> {
         let e = raw_tile();
         let png = roadcore::grid::encode_terrain_png(&e, 256, 256).unwrap();
-        let input = roadcore::grid::decode_terrain_png(&png).unwrap();
+        let input = roadcore::grid::decode_terrain(&png).unwrap();
         [(Z, 40, 90), (9, 145, 195), (12, 640, 1440)]
             .iter()
             .map(|&(z, x, y)| {
                 let (out, _, _) =
                     process(png.clone(), z, x, y, &HashMap::new(), &crate::terrain_pack::Sources::default());
-                let got = roadcore::grid::decode_terrain_png(&out).unwrap();
+                let got = roadcore::grid::decode_terrain(&out.unwrap()).unwrap();
                 // (Its voids and bathymetry change it: the values below see them.)
                 assert_ne!(got, input);
                 let bits: Vec<u8> = got.iter().flat_map(|v| v.to_bits().to_le_bytes()).collect();
@@ -277,12 +279,12 @@ mod tests {
         crate::inputs::elevation::accept_fixture(d.path(), &mut m);
         let pool = pool_digest(d.path(), &m).unwrap();
         let (a, b) = (logical(&pool), logical("0123456789abcdef"));
-        assert!(a != b && b.starts_with("sources/terrain-z8-v5-"));
+        assert!(a != b && b.starts_with("sources/terrain-z8-v6-"));
         assert_eq!(max_logical(&pool), format!("{a}-max"));
         assert!(is_logical(&a) && is_logical(&max_logical(&pool)));
         assert!(
-            !is_logical("sources/terrain-z8-v4")
-                && !is_logical("sources/terrain-z8-v5-x")
+            !is_logical("sources/terrain-z8-v5")
+                && !is_logical("sources/terrain-z8-v6-x")
                 && !is_logical(&format!("{b}-other"))
         );
     }
@@ -294,7 +296,7 @@ mod tests {
         // crate::agent::build::TERRAIN_V, which the peaks' key names); then update the values.
         assert_eq!(
             (V, crate::agent::build::TERRAIN_V),
-            (5, 5),
+            (6, 6),
             "the raw path's versions changed: update the values below"
         );
         assert_eq!(

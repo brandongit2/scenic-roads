@@ -520,7 +520,6 @@ pub struct Report {
     pub kept_ways: usize,
     pub kept_verts: usize,
     pub owned: usize,
-    pub fine_tiles: usize,
     pub staged: crate::stage::Staged,
     /// Heritage sites and designated-area polygons around the z6 tile.
     pub heritage: usize,
@@ -553,7 +552,7 @@ pub fn build_folder(
 }
 
 /// A z6 tile's build up to its tail (docs/workers.md: what needs the NAS): its ways from the extract,
-/// those touching the coverage, the global-source layers staged from the packs with the fine terrain
+/// those touching the coverage, the global-source layers staged from the packs with the deep terrain
 /// under its vertices and the datasets' codes (what its elevations read: crate::road_terrain), the
 /// heritage inputs, area flags and land cover; then its scenic results from its last run restored
 /// (`carry`), as the tail's canopy and view steps read them.
@@ -605,12 +604,10 @@ pub fn prepare_folder(
     // 4. The global-source layers the steps read, from the packs.
     let s = stage("layers staged from the packs", Class::NasRead);
     let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
-    rep.staged = crate::stage::stage(src, b, dir)?;
-    // (The terrain the roads' heights read: the fine tiles under the vertices, the datasets' codes.)
-    {
-        let w = roadcore::Ways::open(dir)?;
-        rep.fine_tiles = crate::stage::stage_fine(src, &crate::road_terrain::fine_tiles(w.verts(), &fine), dir)?;
-    }
+    // (With the terrain the roads' heights read: the deep tiles under the vertices; and the
+    // datasets' codes.)
+    let deep = crate::road_terrain::deep_tiles(roadcore::Ways::open(dir)?.verts(), &fine);
+    rep.staged = crate::stage::stage(src, b, &deep, dir)?;
     crate::road_terrain::Codes::of(&accepted).write(&dir.join(crate::road_terrain::CODES_FILE))?;
     s.end();
     // The heritage sites around the z6 tile (the flags step's `heritage.json`), and the designated

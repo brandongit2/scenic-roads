@@ -45,8 +45,9 @@ pub fn offer_ahead() -> bool {
 }
 /// A group of more subtrees than this isn't offered (its memory, and the z6 tile's run waiting on it).
 pub const MOST_SUBTREES: usize = 2;
-/// The files' format (2: no GLO-30 windows: the raw tiles are the pool's, crate::terrain_base).
-const FMT: u64 = 2;
+/// The files' format (2: no GLO-30 windows: the raw tiles are the pool's, crate::terrain_base; 3:
+/// the z10 tiles deeper than the base, `Meta::deeper`).
+const FMT: u64 = 3;
 
 /// A z6 tile's levels, or a part of them: (zoom, its tiles), z12 → z9.
 pub type Levels = Vec<(u8, Vec<(u32, u32)>)>;
@@ -216,6 +217,9 @@ pub struct Meta {
     pub levels: Levels,
     /// Whether the job's run has the water (crate::terrain_pack::Sources).
     pub water: bool,
+    /// The z10 tiles of its z6 tile whose native zoom is past the base's
+    /// (crate::terrain_pack::Sources::deeper: its tiles there rounded as coarser than native).
+    pub deeper: Vec<(u32, u32)>,
 }
 
 /// What `cut` wrote: the file's bytes, its tiles, the raw tiles in it, and the tiles a run of it
@@ -256,6 +260,10 @@ pub fn cut(
         subtrees: subtrees_arg(group),
         levels: levels.clone(),
         water: src.water.is_some(),
+        deeper: src
+            .deeper
+            .map(|d| d.iter().copied().filter(|&(x, y)| (x >> 4, y >> 4) == piece).collect())
+            .unwrap_or_default(),
     };
     let mut w = store::sect::SectWriter::create(path, serde_json::to_value(&meta)?)?;
     let mut n_raw = 0;
@@ -318,7 +326,8 @@ impl Inputs {
     /// The group's tiles made (crate::terrain_pack::make_piece over its levels, with the sources
     /// the job's run has): its tiles, sorted, and its mid's part.
     pub fn make(&self) -> Result<(Vec<Made>, Mid)> {
-        let src = Sources { water: self.meta.water.then_some(self as &dyn WaterSource) };
+        let deeper: std::collections::BTreeSet<(u32, u32)> = self.meta.deeper.iter().copied().collect();
+        let src = Sources { water: self.meta.water.then_some(self as &dyn WaterSource), deeper: Some(&deeper) };
         crate::terrain_pack::make_piece(self, &src, self.meta.levels.clone())
     }
 }
@@ -755,7 +764,7 @@ mod tests {
             .find(|(a, b)| (b.0 == a.0 + 1 && b.1 == a.1) || (b.0 == a.0 && b.1 == a.1 + 1))
             .unwrap();
         let water = Across { a, b };
-        let src = Sources { water: Some(&water) };
+        let src = Sources { water: Some(&water), deeper: None };
         let gs = groups(&levels, Some(&water)).unwrap();
         assert_eq!(gs.len(), subs.len() - 1, "the lake's two subtrees in one group");
         let joint = gs.iter().find(|g| g.contains(&a)).unwrap();
@@ -926,7 +935,7 @@ mod tests {
             .find(|(a, b)| (b.0 == a.0 + 1 && b.1 == a.1) || (b.0 == a.0 && b.1 == a.1 + 1))
             .unwrap();
         let water = Across { a, b };
-        let src = Sources { water: Some(&water) };
+        let src = Sources { water: Some(&water), deeper: None };
         let alone = piece(p, "alone", t, &cov, &raw, &src, None);
         assert!(alone.0.is_some() && alone.1.is_some());
         let (c, port) = crate::coord::start_for_test(&p.join("coord"), "m4", "");
@@ -1068,7 +1077,7 @@ mod tests {
             &crate::terrain_base::terrarium_template(&root, &out.manifest).unwrap(),
         );
         let water = crate::terrain_pack::open_water(&out).unwrap();
-        let src = Sources { water: Some(&water) };
+        let src = Sources { water: Some(&water), deeper: None };
         let c = crate::coord::Coordinator::start(
             &scratch.join("coord"),
             Some(PathBuf::from(env("TT_WASM"))),

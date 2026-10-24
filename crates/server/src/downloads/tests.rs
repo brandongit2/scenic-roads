@@ -416,63 +416,63 @@ async fn a_region_still_building_downloads_as_its_tiles_come() {
     assert_eq!(v["regions"]["se"]["here"], v["regions"]["se"]["bytes"]);
 }
 
-/// A fine terrain pack (pipeline::terrain_fine) of one z13 tile `h` metres high, under z10 tile
+/// A deep terrain pack (pipeline::terrain_deep) of one z13 tile `h` metres high, under z10 tile
 /// (x, y), put on the "NAS" and named in `cat`'s terrain.
-fn put_fine(root: &std::path::Path, cat: &mut Catalog, x: u32, y: u32, h: f32) {
+fn put_deep(root: &std::path::Path, cat: &mut Catalog, x: u32, y: u32, h: f32) {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("p.pack");
     let mut w = store::pack::PackWriter::create(&path, json!({"layer": "terrain"}), false).unwrap();
-    let b = pipeline::terrain_fine::encode(&vec![h; 65536]).unwrap();
+    let b = pipeline::terrain_deep::encode(&mut vec![h; 65536]).unwrap();
     w.add(13, x * 8, y * 8, &b, b.len() as u32).unwrap();
     w.finish().unwrap();
-    let logical = format!("layers/terrain/fine/10-{x}-{y}");
+    let logical = format!("layers/terrain/deep/10-{x}-{y}");
     put_bytes(root, cat, &logical, "pack", &std::fs::read(&path).unwrap());
     let t = cat.layers.get_mut("terrain").unwrap();
-    t.fine.insert(format!("10/{x}/{y}"), logical);
-    t.fine_zoom.insert(format!("10/{x}/{y}"), 13);
+    t.deep.insert(format!("10/{x}/{y}"), logical);
+    t.native_zoom.insert(format!("10/{x}/{y}"), 13);
 }
 
 #[test]
-fn a_regions_fine_terrain_is_the_fine_packs_near_it_and_the_share_they_cover() {
+fn a_regions_terrain_detail_is_the_deep_packs_near_it_and_the_share_they_cover() {
     let nas = tempfile::tempdir().unwrap();
     let mut cat = catalog(nas.path());
-    // A box from London to Sussex, in z10 tiles x 511, y 340 and 341. One fine pack under its
+    // A box from London to Sussex, in z10 tiles x 511, y 340 and 341. One deep pack under its
     // north (row 340), one an ocean away.
-    put_fine(nas.path(), &mut cat, 511, 340, 100.0);
-    put_fine(nas.path(), &mut cat, 600, 340, 1.0);
-    let (f, cover) = fine_of(&cat, &[rect(-0.3, 51.2, -0.1, 51.6)]);
-    assert_eq!(logicals(&f), ["layers/terrain/fine/10-511-340"]);
+    put_deep(nas.path(), &mut cat, 511, 340, 100.0);
+    put_deep(nas.path(), &mut cat, 600, 340, 1.0);
+    let (f, cover) = detail_of(&cat, &[rect(-0.3, 51.2, -0.1, 51.6)]);
+    assert_eq!(logicals(&f), ["layers/terrain/deep/10-511-340"]);
     // Its share: the part of the box north of row 341's edge (in Web Mercator).
     let (y0, y1) = (lat_y(51.6) * 16.0, lat_y(51.2) * 16.0);
     assert!(y0 < 341.0 && y1 > 341.0 && lon_x(-0.3) * 16.0 > 511.0 && lon_x(-0.1) * 16.0 < 512.0);
     let want = (341.0 - y0) / (y1 - y0) * 100.0;
     assert!((cover - want).abs() < 1e-6, "{cover} {want}");
-    // London, wholly in that fine tile: all of it; a region with none: nothing.
-    assert!((fine_of(&cat, &[rect(-0.3, 51.4, -0.1, 51.6)]).1 - 100.0).abs() < 1e-6);
-    assert_eq!(fine_of(&cat, &[rect(5.0, 45.0, 5.1, 45.1)]).0, Files::default());
+    // London, wholly in that deep tile: all of it; a region with none: nothing.
+    assert!((detail_of(&cat, &[rect(-0.3, 51.4, -0.1, 51.6)]).1 - 100.0).abs() < 1e-6);
+    assert_eq!(detail_of(&cat, &[rect(5.0, 45.0, 5.1, 45.1)]).0, Files::default());
     // Clipping keeps a ring's area within the box, a ring in it whole.
     assert!((ring_area(&clip(&rect(0.0, 0.0, 2.0, 2.0), [1.0, 1.0, 3.0, 3.0])) - 1.0).abs() < 1e-12);
     assert!((ring_area(&clip(&rect(0.2, 0.2, 0.4, 0.4), [0.0, 0.0, 1.0, 1.0])) - 0.04).abs() < 1e-12);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn fine_terrain_downloads_with_its_region_and_is_read_from_this_mac() {
+async fn terrain_detail_downloads_with_its_region_and_is_read_from_this_mac() {
     let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let mut cat = catalog(nas.path());
-    put_fine(nas.path(), &mut cat, 511, 340, 100.0);
+    put_deep(nas.path(), &mut cat, 511, 340, 100.0);
     cat.n = 2;
     cat.validate().unwrap();
     store::catalog::write(&nas.path().join("catalog"), &cat).unwrap();
     let s = crate::test_state_with(home.path(), nas.path(), true);
-    let fine = |s: &S, on: bool| {
+    let detail = |s: &S, on: bool| {
         let s = s.clone();
-        async move { call(put_region_fine(State(s), Path("london".into()), Json(On { on })).await).await }
+        async move { call(put_region_detail(State(s), Path("london".into()), Json(On { on })).await).await }
     };
-    let pack = cat.files["layers/terrain/fine/10-511-340"].clone();
+    let pack = cat.files["layers/terrain/deep/10-511-340"].clone();
 
     // Before: listed under London with its size and cover, not downloaded.
     let v = get(&s).await;
-    let f = &v["regions"]["london"]["fine"];
+    let f = &v["regions"]["london"]["detail"];
     assert_eq!(
         (f["bytes"].as_u64(), f["on"].as_bool(), f["state"].as_str()),
         (Some(pack.size), Some(false), None),
@@ -481,46 +481,46 @@ async fn fine_terrain_downloads_with_its_region_and_is_read_from_this_mac() {
     assert!(f["cover"].as_f64().unwrap() > 50.0, "{f}");
 
     // Refused until London is downloaded.
-    let (code, v) = fine(&s, true).await;
+    let (code, v) = detail(&s, true).await;
     assert_eq!(code, StatusCode::BAD_REQUEST, "{v}");
     assert!(v["error"].as_str().unwrap().contains("Download the region first"), "{v}");
     assert_eq!(s.downloads.asked(), Asked::default());
 
     // Downloaded, after London: copied after it; the server reads it here.
     assert_eq!(region(&s, "london", true).await.0, StatusCode::OK);
-    assert_eq!(fine(&s, true).await.0, StatusCode::OK);
+    assert_eq!(detail(&s, true).await.0, StatusCode::OK);
     let asked = s.downloads.asked();
-    assert!(asked.world.is_none() && asked.regions.len() == 1 && asked.regions[0].fine);
+    assert!(asked.world.is_none() && asked.regions.len() == 1 && asked.regions[0].detail);
     let plan = s.downloads.plan(&s.data);
     assert_eq!(plan.wanted.items.last(), Some(&Item::File { name: pack.file.clone(), size: pack.size }));
     tokio::task::block_in_place(|| settle(&s));
     let v = get(&s).await;
-    assert_eq!(v["regions"]["london"]["fine"]["state"].as_str(), Some("done"), "{v}");
+    assert_eq!(v["regions"]["london"]["detail"]["state"].as_str(), Some("done"), "{v}");
     assert_eq!(v["wanted"]["here"], v["wanted"]["bytes"], "counted with the rest");
     let (on_nas, aside) = (nas.path().join(&pack.file), nas.path().join("aside"));
     std::fs::rename(&on_nas, &aside).unwrap();
     let h = tokio::task::block_in_place(|| crate::terrain::terrain_f32(&s, 13, 511 * 8, 340 * 8)).unwrap();
-    assert_eq!(h.map(|e| e[0]), Some(100.0), "the fine tile, from this Mac");
+    assert_eq!(h.map(|e| e[0]), Some(100.0), "the deep tile, from this Mac");
     std::fs::rename(&aside, &on_nas).unwrap();
 
-    // London downloaded again keeps it; its fine terrain removed, London stays; London removed,
+    // London downloaded again keeps it; its terrain detail removed, London stays; London removed,
     // both go.
     assert_eq!(region(&s, "london", true).await.0, StatusCode::OK);
-    assert!(s.downloads.asked().regions[0].fine);
-    assert_eq!(fine(&s, false).await.0, StatusCode::OK);
+    assert!(s.downloads.asked().regions[0].detail);
+    assert_eq!(detail(&s, false).await.0, StatusCode::OK);
     let asked = s.downloads.asked();
-    assert!(asked.regions.len() == 1 && !asked.regions[0].fine);
+    assert!(asked.regions.len() == 1 && !asked.regions[0].detail);
     tokio::task::block_in_place(|| settle(&s));
     let m = s.data.mirror.clone().unwrap();
     assert!(!m.has(&pack.file) && m.has(cat.content("layers/terrain/hi/6-31-21").unwrap()));
-    assert_eq!(fine(&s, true).await.0, StatusCode::OK);
+    assert_eq!(detail(&s, true).await.0, StatusCode::OK);
     assert_eq!(region(&s, "london", false).await.0, StatusCode::OK);
     assert!(s.downloads.asked().regions.is_empty());
-    // A downloaded region with no fine terrain: refused.
+    // A downloaded region with no terrain detail: refused.
     region(&s, "kanto", true).await;
-    let (code, v) = call(put_region_fine(State(s.clone()), Path("kanto".into()), Json(On { on: true })).await).await;
+    let (code, v) = call(put_region_detail(State(s.clone()), Path("kanto".into()), Json(On { on: true })).await).await;
     assert_eq!(code, StatusCode::BAD_REQUEST, "{v}");
-    assert!(v["error"].as_str().unwrap().contains("no fine terrain"), "{v}");
+    assert!(v["error"].as_str().unwrap().contains("no terrain detail"), "{v}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

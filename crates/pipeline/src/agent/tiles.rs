@@ -68,10 +68,10 @@ pub struct TerrainTiles {
     /// The declared depth sources (crate::depth::grids): the accepted sources' index content name,
     /// and them (None: they can't be read now; the depth's work waits).
     depth: Option<(String, Option<std::sync::Arc<Vec<crate::depth::grids::Source>>>)>,
-    /// The elevation datasets finer than the terrain's base (crate::terrain_fine), their heights'
+    /// The elevation datasets finer than the worldwide ones (crate::terrain_deep), their heights'
     /// conversions as the roads': the accepted elevation and sources indexes' content names, and
-    /// the sets (None: they can't be read now; the fine terrain's work waits).
-    fine: Option<(String, Option<std::sync::Arc<Vec<crate::terrain_fine::FineSet>>>)>,
+    /// the sets (None: they can't be read now; the terrain's z6 tiles wait: their keys name them).
+    fine: Option<(String, Option<std::sync::Arc<Vec<crate::terrain_deep::FineSet>>>)>,
 }
 
 /// What the z6 tiles' and tree cover's keys name of the declared sources: the buildings source's
@@ -245,8 +245,8 @@ impl TerrainTiles {
         if self.fine.as_ref().is_some_and(|(c, r)| *c == want && r.is_some()) {
             return;
         }
-        let r = crate::terrain_fine::Fine::read(root, m)
-            .map_err(|e| eprintln!("agent: the fine terrain waits: its datasets in {want} can't be read ({e:#})"))
+        let r = crate::terrain_deep::Fine::read(root, m)
+            .map_err(|e| eprintln!("agent: the terrain waits: its fine datasets in {want} can't be read ({e:#})"))
             .ok()
             .map(|f| std::sync::Arc::new(f.map(|f| f.sets).unwrap_or_default()));
         self.fine = Some((want, r));
@@ -254,7 +254,7 @@ impl TerrainTiles {
 
     /// The elevation datasets finer than the terrain's base, of the accepted versions `m` names:
     /// none accepted, an empty list; None while they can't be read now.
-    pub fn fine(&self, m: &BTreeMap<String, String>) -> Option<std::sync::Arc<Vec<crate::terrain_fine::FineSet>>> {
+    pub fn fine(&self, m: &BTreeMap<String, String>) -> Option<std::sync::Arc<Vec<crate::terrain_deep::FineSet>>> {
         let Some(want) = Self::fine_from(m) else { return Some(Default::default()) };
         match &self.fine {
             Some((c, Some(f))) if *c == want => Some(f.clone()),
@@ -266,7 +266,7 @@ impl TerrainTiles {
 
     /// Holds `f` as the fine sets of the versions `m` names (tests).
     #[cfg(test)]
-    pub fn hold_fine(&mut self, m: &BTreeMap<String, String>, f: Vec<crate::terrain_fine::FineSet>) {
+    pub fn hold_fine(&mut self, m: &BTreeMap<String, String>, f: Vec<crate::terrain_deep::FineSet>) {
         self.fine = Some((Self::fine_from(m).unwrap_or_default(), Some(std::sync::Arc::new(f))));
     }
 

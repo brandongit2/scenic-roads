@@ -9,7 +9,7 @@
 //! Global cell coordinates are `tile * 256 + pixel` at zoom 11.
 
 use crate::Mmap;
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use det::Det;
 use std::path::Path;
 
@@ -144,8 +144,9 @@ pub fn terrarium_decode(rgb: &[u8], channels: usize, out: &mut [f32]) {
     }
 }
 
-/// Decode a PNG terrain tile to metres (256 × 256).
-pub fn decode_terrain_png(bytes: &[u8]) -> Result<Vec<f32>> {
+/// Decode a Terrarium PNG to metres (256 × 256): a raw tile's (AWS's, the elevation pool's as
+/// pipeline::terrain_base samples it), never a stored one's.
+fn decode_terrain_png(bytes: &[u8]) -> Result<Vec<f32>> {
     let mut dec = png::Decoder::new(std::io::Cursor::new(bytes));
     dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut r = dec.read_info()?;
@@ -161,26 +162,21 @@ pub fn decode_terrain_png(bytes: &[u8]) -> Result<Vec<f32>> {
     Ok(out)
 }
 
-/// Decode a terrain tile to metres: a Terrarium PNG (`decode_terrain_png`), or a lossless JPEG XL
-/// codestream of Terrarium RGB (the fine terrain's tiles: pipeline::terrain_fine).
+/// Decode a terrain tile to metres: a stored one, Terrarium RGB as lossless WebP
+/// (pipeline::terrain_codec; docs/formats.md, Pack), or a raw one, a Terrarium PNG (AWS's, the
+/// elevation pool's as pipeline::terrain_base samples it).
 pub fn decode_terrain(bytes: &[u8]) -> Result<Vec<f32>> {
-    if !bytes.starts_with(&[0xff, 0x0a]) {
+    if !bytes.starts_with(b"RIFF") {
         return decode_terrain_png(bytes);
     }
-    let img = jxl_oxide::JxlImage::builder()
-        .read(std::io::Cursor::new(bytes))
-        .map_err(|e| anyhow::anyhow!("JPEG XL: {e}"))?;
-    let render = img.render_frame(0).map_err(|e| anyhow::anyhow!("JPEG XL: {e}"))?;
-    let mut stream = render.stream();
-    let ch = stream.channels() as usize;
-    let n = (stream.width() * stream.height()) as usize;
-    if ch < 3 {
-        bail!("a JPEG XL terrain tile of {ch} channels");
-    }
-    let mut buf = vec![0u8; n * ch];
-    stream.write_to_buffer(&mut buf);
+    let mut d = image_webp::WebPDecoder::new(std::io::Cursor::new(bytes)).map_err(|e| anyhow::anyhow!("WebP: {e}"))?;
+    let (w, h) = d.dimensions();
+    let ch = if d.has_alpha() { 4 } else { 3 };
+    let n = (w * h) as usize;
+    let mut buf = vec![0u8; d.output_buffer_size().context("WebP: too large")?];
+    d.read_image(&mut buf).map_err(|e| anyhow::anyhow!("WebP: {e}"))?;
     let mut out = vec![0f32; n];
-    terrarium_decode(&buf, ch, &mut out);
+    terrarium_decode(&buf[..n * ch], ch, &mut out);
     Ok(out)
 }
 

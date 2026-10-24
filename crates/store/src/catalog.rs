@@ -124,13 +124,14 @@ pub struct Layer {
     /// Hi packs (z9–14) by z6 tile.
     #[serde(default)]
     pub hi: BTreeMap<String, String>,
-    /// Fine packs (z13 and finer) by z10 tile: the terrain's where a dataset is finer than its base
-    /// (pipeline::terrain_fine).
+    /// Deep packs (z13 and finer) by z10 tile: the terrain's where a dataset is finer than the
+    /// worldwide ones (pipeline::terrain_deep).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub fine: BTreeMap<String, String>,
-    /// The finest zoom of each fine pack's tiles, by its z10 tile (the map's zoom by area).
+    pub deep: BTreeMap<String, String>,
+    /// The native zoom of each deep pack's z10 tile, past the base's (pipeline::terrain_deep::
+    /// native_zoom; elsewhere the base's finest, z12 to 67°): the map's zoom by area.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub fine_zoom: BTreeMap<String, u8>,
+    pub native_zoom: BTreeMap<String, u8>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -157,7 +158,7 @@ impl Catalog {
             if let Some(r) = &l.root {
                 out.push((format!("layers.{name}.root"), r.as_str()));
             }
-            for (k, v) in l.lo.iter().chain(&l.hi).chain(&l.fine) {
+            for (k, v) in l.lo.iter().chain(&l.hi).chain(&l.deep) {
                 out.push((format!("layers.{name}[{k}]"), v.as_str()));
             }
         }
@@ -735,8 +736,8 @@ mod tests {
                 root: Some(root),
                 lo: [("3/4/2".to_string(), lo)].into(),
                 hi: [("6/32/21".to_string(), hi)].into(),
-                fine: BTreeMap::new(),
-                fine_zoom: BTreeMap::new(),
+                deep: BTreeMap::new(),
+                native_zoom: BTreeMap::new(),
                 extra: BTreeMap::new(),
             },
         );

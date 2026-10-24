@@ -5,9 +5,9 @@
 // The coverage drawn is the one the map's catalog was built for; a region it doesn't have (added
 // or redrawn since) is listed as pending.
 // Downloads (docs/macs.md, "Mirror, per Mac"): nothing is copied to this Mac unless it's
-// downloaded here: the World, zoomed out, each region, and a downloaded region's fine terrain, each
+// downloaded here: the World, zoomed out, each region, and a downloaded region's terrain detail, each
 // with its size, its state and a Download or Remove button; this Mac's room (downloads.ts).
-import { dlFine, dlRegion, dlStatus, dlWorld, setReserve, size, sizeOf, stateClass, stateText, type DlStatus, type FineDl, type RegionDl } from '../downloads';
+import { dlDetail, dlRegion, dlStatus, dlWorld, setReserve, size, sizeOf, stateClass, stateText, type DlStatus, type DetailDl, type RegionDl } from '../downloads';
 import * as prefs from '../prefs';
 import {
   RegionLayers, RegionsError, areaOutline, entryLabel, getCoverage, getRegionsLayer, listRegions, tilesText,
@@ -82,7 +82,7 @@ export class RegionsPanel {
   private dlTimer = 0;
   /** What each region row shows of its download, updated in place as the state comes (a row isn't
    * drawn again: a hover or a rename in it stays). */
-  private dlEls = new Map<string, { row: HTMLElement; slot: HTMLElement; btn: HTMLButtonElement | null; on: boolean; size: HTMLElement; fine: HTMLElement; fineSize: HTMLElement; fineBtn: HTMLButtonElement | null; fineOn: boolean }>();
+  private dlEls = new Map<string, { row: HTMLElement; slot: HTMLElement; btn: HTMLButtonElement | null; on: boolean; size: HTMLElement; detail: HTMLElement; detailSize: HTMLElement; detailBtn: HTMLButtonElement | null; detailOn: boolean }>();
 
   private regions: Region[] = [];
   /** The folders the list is grouped by (null: a server from before folders). */
@@ -309,15 +309,15 @@ export class RegionsPanel {
       });
       const slot = h('span', { class: 'rg-dlslot' });
       const sz = h('span', { class: 'rg-size' });
-      const fineSize = h('span', { class: 'rg-size rg-fsize' });
-      const fine = h('div', { class: 'rg2', hidden: true }, h('span', { class: 'rg2s rg-fine', title: 'The terrain finer than z12 (to z13–z16), where its data is finer: an add-on to the region, which gives the rest of it and every zoom to z12' }, 'Fine terrain'), fineSize);
-      this.dlEls.set(r.id, { row, slot, btn: null, on: false, size: sz, fine, fineSize, fineBtn: null, fineOn: false });
+      const detailSize = h('span', { class: 'rg-size rg-fsize' });
+      const detail = h('div', { class: 'rg2', hidden: true }, h('span', { class: 'rg2s rg-fine', title: 'The terrain past z12 (z13–z16), where its data has the detail: an add-on to the region, which gives the rest of it and every zoom to z12' }, 'Terrain detail (z13+)'), detailSize);
+      this.dlEls.set(r.id, { row, slot, btn: null, on: false, size: sz, detail, detailSize, detailBtn: null, detailOn: false });
       row.replaceChildren(
         h('div', { class: 'rg1' }, name, h('span', { class: 'rg-id faint', title: `Its file: inputs/regions/${r.path ?? `${r.id}.toml`}` }, r.id),
           ...(state ? [h('span', { class: `rg-state ${state.cls}`, title: state.title }, state.text)] : []),
           slot),
         h('div', { class: 'rg2' }, h('span', { class: 'rg2s', title: summary }, summary), sz),
-        this.dlEls.get(r.id)!.fine,
+        this.dlEls.get(r.id)!.detail,
       );
       this.showDl(r.id);
     };
@@ -401,7 +401,7 @@ export class RegionsPanel {
       els.btn = null;
       return;
     }
-    this.showFine(id, k?.mirror ? rk?.fine : undefined, r?.name ?? rk?.name ?? id, !!rk?.on);
+    this.showDetail(id, k?.mirror ? rk?.detail : undefined, r?.name ?? rk?.name ?? id, !!rk?.on);
     let text = '', cls = 'rg-size';
     if (!k || !k.mirror) text = '';
     else if (!rk) text = 'not built yet';
@@ -419,7 +419,7 @@ export class RegionsPanel {
     const on = !!rk?.on;
     if (els.on !== on || !els.btn) {
       const name = r?.name ?? rk?.name ?? id;
-      const btn = this.dlButton(on, `“${name}”`, () => (this.dl?.regions[id]?.bytes ?? 0) + (this.dl?.regions[id]?.fine?.on ? this.dl.regions[id].fine!.bytes : 0), (o) => dlRegion(id, o), (o) =>
+      const btn = this.dlButton(on, `“${name}”`, () => (this.dl?.regions[id]?.bytes ?? 0) + (this.dl?.regions[id]?.detail?.on ? this.dl.regions[id].detail!.bytes : 0), (o) => dlRegion(id, o), (o) =>
         o ? `Downloading “${name}” to this Mac.` : `“${name}” is removed from this Mac.`, (t, w) => this.sayRow(els.row, t, w));
       btn.hidden = !k?.mirror;
       if (els.btn) els.btn.replaceWith(btn);
@@ -430,30 +430,30 @@ export class RegionsPanel {
     els.btn.hidden = !k?.mirror;
   }
 
-  /** A region's fine terrain, where it has any: the share of it covered, its size and state, its
+  /** A region's terrain detail, where it has any: the share of it covered, its size and state, its
    * button: Download only once the region is downloaded (it needs it; removing the region removes
    * it). */
-  private showFine(id: string, f: FineDl | undefined, name: string, regionOn: boolean) {
+  private showDetail(id: string, f: DetailDl | undefined, name: string, regionOn: boolean) {
     const els = this.dlEls.get(id)!;
-    els.fine.hidden = !f;
+    els.detail.hidden = !f;
     if (!f) return;
     const cover = `${f.cover < 1 && f.cover > 0 ? '<1' : fmt.n(f.cover)} % of it`;
     const needs = !f.on && !regionOn;
-    els.fineSize.className = `rg-size rg-fsize${f.on ? ` ${stateClass(f.state)}` : ''}`;
-    els.fineSize.textContent = f.on ? `${cover} · ${sizeOf(f)} · ${stateText(f, f.state)}` : needs ? `${sizeOf(f)} · needs the region` : `${cover} · ${sizeOf(f)}`;
-    els.fineSize.title = `The fine packs over it: ${size(f.bytes)}, of which ${size(f.here)} on this Mac; they cover ${fmt.n(f.cover)} % of the region${needs ? '. Download the region first: they need it' : ''}`;
-    if (els.fineOn !== f.on || !els.fineBtn) {
-      const btn = this.dlButton(f.on, `the fine terrain of “${name}”`, () => this.dl?.regions[id]?.fine?.bytes ?? 0, (o) => dlFine(id, o), (o) =>
-        o ? `Downloading the fine terrain of “${name}”.` : `The fine terrain of “${name}” is removed from this Mac.`, (t, w) => this.sayRow(els.row, t, w));
-      if (els.fineBtn) els.fineBtn.replaceWith(btn);
-      else els.fine.append(btn);
-      els.fineBtn = btn;
-      els.fineOn = f.on;
+    els.detailSize.className = `rg-size rg-fsize${f.on ? ` ${stateClass(f.state)}` : ''}`;
+    els.detailSize.textContent = f.on ? `${cover} · ${sizeOf(f)} · ${stateText(f, f.state)}` : needs ? `${sizeOf(f)} · needs the region` : `${cover} · ${sizeOf(f)}`;
+    els.detailSize.title = `The deep packs over it: ${size(f.bytes)}, of which ${size(f.here)} on this Mac; they cover ${fmt.n(f.cover)} % of the region${needs ? '. Download the region first: they need it' : ''}`;
+    if (els.detailOn !== f.on || !els.detailBtn) {
+      const btn = this.dlButton(f.on, `the terrain detail of “${name}”`, () => this.dl?.regions[id]?.detail?.bytes ?? 0, (o) => dlDetail(id, o), (o) =>
+        o ? `Downloading the terrain detail of “${name}”.` : `The terrain detail of “${name}” is removed from this Mac.`, (t, w) => this.sayRow(els.row, t, w));
+      if (els.detailBtn) els.detailBtn.replaceWith(btn);
+      else els.detail.append(btn);
+      els.detailBtn = btn;
+      els.detailOn = f.on;
     }
     // (A click in flight keeps its own state until the answer redraws the row.)
-    if (!els.fineBtn.textContent?.endsWith('…')) {
-      els.fineBtn.disabled = needs;
-      els.fineBtn.title = needs ? `Download “${name}” first: its fine terrain is an add-on to it` : f.on ? `Remove the fine terrain of “${name}” from this Mac` : `Download the fine terrain of “${name}” to this Mac, for when it’s away from the NAS`;
+    if (!els.detailBtn.textContent?.endsWith('…')) {
+      els.detailBtn.disabled = needs;
+      els.detailBtn.title = needs ? `Download “${name}” first: its terrain detail is an add-on to it` : f.on ? `Remove the terrain detail of “${name}” from this Mac` : `Download the terrain detail of “${name}” to this Mac, for when it’s away from the NAS`;
     }
   }
 

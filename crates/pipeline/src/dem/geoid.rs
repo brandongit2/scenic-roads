@@ -247,7 +247,7 @@ pub fn helmert_dh(lon: f64, lat: f64, t: [f64; 3], r: [f64; 3], s: f64, frame: b
 }
 
 /// The decoded blocks a grid keeps (`Grids`): a run's batches read the same few blocks again and
-/// again (the fine terrain's millions of points a call, its thousands of calls a target), so each
+/// again (the deep terrain's millions of points a call, its thousands of calls a z8 tile), so each
 /// is read once, not once a call.
 pub const GRID_CACHE: usize = 64 << 20;
 

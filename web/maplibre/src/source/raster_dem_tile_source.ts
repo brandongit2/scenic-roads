@@ -56,7 +56,8 @@ export class RasterDEMTileSource extends RasterTileSource implements Source {
         const url = tile.tileID.canonical.url(this.tiles, this.map.getPixelRatio(), this.scheme);
         tile.abortController = new AbortController();
         try {
-            const response = await ImageRequest.transformAndGetImage(this.map._requestManager, url, ResourceType.Tile, tile.abortController, this.map._refreshExpiredTiles, {colorSpaceConversion: 'none'});
+            // Scenic Roads: decoded as data (no colour management, no premultiplying), every value exact.
+            const response = await ImageRequest.transformAndGetImage(this.map._requestManager, url, ResourceType.Tile, tile.abortController, this.map._refreshExpiredTiles, {colorSpaceConversion: 'none', premultiplyAlpha: 'none'});
             delete tile.abortController;
             if (tile.aborted) {
                 tile.state = 'unloaded';

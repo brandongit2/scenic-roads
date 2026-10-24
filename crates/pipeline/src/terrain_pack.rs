@@ -7,7 +7,7 @@
 //! made again from it. `scenic-build terrain` runs it per z6 pack.
 
 use det::Det;
-use roadcore::grid::{decode_terrain_png, encode_terrain_png};
+use roadcore::grid::decode_terrain;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -57,10 +57,28 @@ pub fn fetch(agent: &ureq::Agent, url: &str, z: u8, x: u32, y: u32) -> Option<Ve
 }
 
 /// What the terrain is made from besides its raw tiles (docs/steps.md §2, Terrain): OSM's water
-/// (crate::terrain_water). None: the raw tiles alone.
+/// (crate::terrain_water), and where the terrain goes past the base's finest zoom. Default: the raw
+/// tiles alone, nowhere deeper.
 #[derive(Clone, Copy, Default)]
 pub struct Sources<'a> {
     pub water: Option<&'a dyn crate::terrain_water::WaterSource>,
+    /// The z10 tiles whose native zoom is past the base's finest (`max_zoom_at`): those the deep
+    /// levels reach (crate::terrain_deep::native_zoom). A base tile there is coarser than native.
+    pub deeper: Option<&'a std::collections::BTreeSet<(u32, u32)>>,
+}
+
+impl Sources<'_> {
+    /// What base tile `z/x/y`'s heights are rounded to (crate::terrain_codec): to the centimetre at
+    /// its place's native zoom (the base's finest there, `max_zoom_at`, where no deep level goes
+    /// past it), else to the decimetre.
+    pub fn quantum(&self, z: u8, x: u32, y: u32) -> f64 {
+        let deeper = z >= 10 && self.deeper.is_some_and(|d| d.contains(&(x >> (z - 10), y >> (z - 10))));
+        if z >= max_zoom_at(tile_lat(z, y)) && !deeper {
+            crate::terrain_codec::NATIVE_M
+        } else {
+            crate::terrain_codec::COARSER_M
+        }
+    }
 }
 
 /// The basemap the terrain's water comes from: the latest pass's (`layers/basemap/world-<date>`),
@@ -142,14 +160,15 @@ impl RawSource for RawTiles {
 
 /// A tile made but for its water (`prepare`): its elevations (the raw tile's, the quarters over
 /// children and the pixels above changed ones made again from them), the raw tile's as decoded,
-/// its water, and the PNG it came as.
+/// its water, and what it's rounded to stored (`Sources::quantum`). None of it when the raw tile
+/// doesn't decode (no tile).
 pub struct Prepared {
-    pub png: Vec<u8>,
     pub e: Vec<f32>,
     pub before: Vec<f32>,
     pub water: Option<std::sync::Arc<crate::terrain_water::WaterTile>>,
     decoded: bool,
     z: u8,
+    quantum: f64,
 }
 
 impl Prepared {
@@ -166,9 +185,10 @@ impl Prepared {
 /// tile exists made again whole from it (`quads`, the children's 2×2 means, their water flattened:
 /// a coarser zoom's pixel is the mean of the finer ones under it); its voids (pixels not
 /// `roadcore::grid::defined`) at sea level. Then `finish` flattens its water.
-pub fn prepare(png: Vec<u8>, z: u8, x: u32, y: u32, quads: &HashMap<(u32, u32), Vec<f32>>, src: &Sources) -> Prepared {
-    let Ok(mut e) = decode_terrain_png(&png) else {
-        return Prepared { png, e: Vec::new(), before: Vec::new(), water: None, decoded: false, z };
+pub fn prepare(raw: Vec<u8>, z: u8, x: u32, y: u32, quads: &HashMap<(u32, u32), Vec<f32>>, src: &Sources) -> Prepared {
+    let quantum = src.quantum(z, x, y);
+    let Ok(mut e) = decode_terrain(&raw) else {
+        return Prepared { e: Vec::new(), before: Vec::new(), water: None, decoded: false, z, quantum };
     };
     let before = e.clone();
     for k in 0..4u32 {
@@ -191,17 +211,18 @@ pub fn prepare(png: Vec<u8>, z: u8, x: u32, y: u32, quads: &HashMap<(u32, u32), 
             None
         }
     });
-    Prepared { png, e, before, water, decoded: true, z }
+    Prepared { e, before, water, decoded: true, z, quantum }
 }
 
 /// A prepared tile finished: its water flattened (`levels`: the lakes' levels,
-/// crate::terrain_water) and bathymetry to sea level. Returns the PNG to store (the original
-/// bytes when nothing changes), its elevations and the pixels that moved if it changed, and from
-/// z1 on its 2×2 means for the level above.
-pub fn finish(p: Prepared, levels: &HashMap<u64, f32>) -> (Vec<u8>, Option<Moved>, Option<Vec<f32>>) {
-    let Prepared { png, mut e, before, water, decoded, z } = p;
+/// crate::terrain_water), bathymetry to sea level, rounded and encoded (crate::terrain_codec).
+/// Returns the tile to store (None: its raw tile didn't decode), whether its water or children
+/// moved a pixel by over half a metre from the raw tile's, and from z1 on its 2×2 means (of the
+/// heights as stored) for the level above.
+pub fn finish(p: Prepared, levels: &HashMap<u64, f32>) -> (Option<Vec<u8>>, bool, Option<Vec<f32>>) {
+    let Prepared { mut e, before, water, decoded, z, quantum } = p;
     if !decoded {
-        return (png, None, None);
+        return (None, false, None);
     }
     if let Some(w) = &water {
         crate::terrain_water::flatten(&mut e, w, levels);
@@ -211,6 +232,8 @@ pub fn finish(p: Prepared, levels: &HashMap<u64, f32>) -> (Vec<u8>, Option<Moved
             *v = 0.0;
         }
     }
+    let changed = e.iter().zip(&before).any(|(a, b)| !((*a - *b).abs() <= 0.5));
+    let out = crate::terrain_codec::encode(&mut e, quantum).ok();
     let quad = (z >= 1).then(|| {
         let mut q = vec![0f32; 128 * 128];
         for j in 0..128 {
@@ -223,41 +246,23 @@ pub fn finish(p: Prepared, levels: &HashMap<u64, f32>) -> (Vec<u8>, Option<Moved
         }
         q
     });
-    let moved: Vec<u16> = e
-        .iter()
-        .zip(&before)
-        .enumerate()
-        .filter(|(_, (a, b))| !((*a - *b).abs() <= 0.5))
-        .map(|(i, _)| i as u16)
-        .collect();
-    if moved.is_empty() {
-        return (png, None, quad);
-    }
-    let out = encode_terrain_png(&e, 256, 256).unwrap_or(png);
-    (out, Some(Moved { e, moved }), quad)
+    (out, changed, quad)
 }
 
-/// A tile made whole (`prepare`, then `finish` with its lakes' levels from it alone, or `levels`
-/// where it has them): what a tile made alone gets.
+/// A tile made whole (`prepare`, then `finish` with its lakes' levels from it alone): what a tile
+/// made alone gets.
 pub fn process(
-    png: Vec<u8>,
+    raw: Vec<u8>,
     z: u8,
     x: u32,
     y: u32,
     quads: &HashMap<(u32, u32), Vec<f32>>,
     src: &Sources,
-) -> (Vec<u8>, Option<Moved>, Option<Vec<f32>>) {
-    let p = prepare(png, z, x, y, quads, src);
+) -> (Option<Vec<u8>>, bool, Option<Vec<f32>>) {
+    let p = prepare(raw, z, x, y, quads, src);
     let mut levels = HashMap::new();
     crate::terrain_water::add_levels(&mut levels, &p.lake_samples());
     finish(p, &levels)
-}
-
-/// A tile changed by process: its elevations and the pixels that moved by more than half a metre
-/// (a pixel of 256 × 256 in a u16: a coastal tile has tens of thousands).
-pub struct Moved {
-    pub e: Vec<f32>,
-    pub moved: Vec<u16>,
 }
 
 /// Latitude of a tile's centre.
@@ -330,9 +335,14 @@ impl ManifestTiles {
     }
 
     pub fn logical(layer: &str, z: u8, x: u32, y: u32) -> String {
+        let deep = crate::terrain_deep::PACK_Z;
         match z {
             0..=2 => format!("layers/{layer}/root/0-0-0"),
             3..=8 => format!("layers/{layer}/lo/3-{}-{}", x >> (z - 3), y >> (z - 3)),
+            // (The terrain's deep levels, by z10 tile: crate::terrain_deep.)
+            _ if layer == "terrain" && z > deep + 2 => {
+                crate::terrain_deep::pack_logical(x >> (z - deep), y >> (z - deep))
+            }
             _ => format!("layers/{layer}/hi/6-{}-{}", x >> (z - 6), y >> (z - 6)),
         }
     }
@@ -1111,6 +1121,10 @@ pub fn fetch_checked(agent: &ureq::Agent, url: &str, z: u8, x: u32, y: u32) -> a
 #[derive(Debug, Default, serde::Serialize)]
 pub struct PackReport {
     pub hi_tiles: usize,
+    /// Its deep levels' (crate::terrain_deep), where made.
+    pub deep_tiles: usize,
+    pub deep_packs: usize,
+    pub deep_dropped: usize,
     pub lo_tiles: usize,
     pub fetched: usize,
     pub missing: usize,
@@ -1371,13 +1385,13 @@ impl<'a> Maker<'a> {
         Ok((outs, nq))
     }
 
-    /// Prepared tiles finished (`finish`): each its PNG, its elevations if changed, its 2×2 means.
+    /// Prepared tiles finished (`finish`): each its tile, whether it changed, its 2×2 means.
     #[allow(clippy::type_complexity)]
     fn finish_all(
         &self,
         mut prepared: Vec<(u32, u32, Prepared)>,
         levels: &HashMap<u64, f32>,
-    ) -> Vec<(u32, u32, Vec<u8>, Option<Moved>, Option<Vec<f32>>)> {
+    ) -> Vec<(u32, u32, Option<Vec<u8>>, bool, Option<Vec<f32>>)> {
         prepared
             .par_drain(..)
             .map(|(x, y, p)| {
@@ -1392,18 +1406,20 @@ impl<'a> Maker<'a> {
     #[allow(clippy::type_complexity)]
     fn finished_into(
         &self,
-        done: Vec<(u32, u32, Vec<u8>, Option<Moved>, Option<Vec<f32>>)>,
+        done: Vec<(u32, u32, Option<Vec<u8>>, bool, Option<Vec<f32>>)>,
         outs: &mut Vec<(u32, u32, Vec<u8>)>,
         nq: &mut HashMap<(u32, u32), Vec<f32>>,
     ) {
-        for (x, y, b, r, q) in done {
-            if r.is_some() {
+        for (x, y, b, changed, q) in done {
+            if changed {
                 self.changed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             if let Some(q) = q {
                 nq.insert((x, y), q);
             }
-            outs.push((x, y, b));
+            if let Some(b) = b {
+                outs.push((x, y, b));
+            }
         }
     }
 
@@ -1561,10 +1577,12 @@ pub fn makes_hi(cov: &Coverage, t: (u32, u32)) -> bool {
     piece_levels(cov, t).iter().any(|(_, ts)| !ts.is_empty())
 }
 
-/// Drops z6 tile `t`'s terrain hi pack and mid from the manifest (a z6 tile the coverage has left:
+/// Drops z6 tile `t`'s terrain hi pack, deep packs and mid from the manifest (a z6 tile the coverage has left:
 /// docs/regions.md, Shrinking), saving it; how many it had.
 pub fn drop_piece(out: &mut Out, t: (u32, u32)) -> anyhow::Result<usize> {
-    let n = drop_named(out, &[format!("layers/terrain/hi/6-{}-{}", t.0, t.1), mid_logical(t.0, t.1)]);
+    let mut gone = vec![format!("layers/terrain/hi/6-{}-{}", t.0, t.1), mid_logical(t.0, t.1)];
+    gone.extend(crate::terrain_deep::named_under(&out.manifest, 6, t.0, t.1));
+    let n = drop_named(out, &gone);
     out.save()?;
     Ok(n)
 }
@@ -1667,8 +1685,16 @@ pub fn build_q_with(
                 (z, x, y, b, n)
             });
             let _p = crate::timings::sub("hi packs uploaded", crate::timings::Class::NasWrite);
-            if crate::layers::write_pack(out, "terrain", "terrarium-png", false, "hi", (6, t.0, t.1), &mut it)?
-                .is_none()
+            if crate::layers::write_pack(
+                out,
+                "terrain",
+                crate::terrain_codec::ENCODING,
+                false,
+                "hi",
+                (6, t.0, t.1),
+                &mut it,
+            )?
+            .is_none()
             {
                 drop_named(out, &[format!("layers/terrain/hi/6-{}-{}", t.0, t.1)]);
             }
@@ -1697,7 +1723,9 @@ pub fn build_q_with(
         let n = b.len() as u32;
         (z, x, y, b, n)
     });
-    if crate::layers::write_pack(out, "terrain", "terrarium-png", false, "lo", (3, q.0, q.1), &mut it)?.is_none() {
+    if crate::layers::write_pack(out, "terrain", crate::terrain_codec::ENCODING, false, "lo", (3, q.0, q.1), &mut it)?
+        .is_none()
+    {
         drop_named(out, &[format!("layers/terrain/lo/3-{}-{}", q.0, q.1)]);
     }
     drop(up);
@@ -1757,7 +1785,7 @@ pub fn build_piece_offered(
     progress: crate::rawpack::Progress,
     offers: crate::terrain_task::Offers,
 ) -> anyhow::Result<PackReport> {
-    let rep = build_piece_later(out, raw, t, cov, src, expect_same, progress, offers)?;
+    let rep = build_piece_later(out, raw, t, cov, src, expect_same, progress, offers, None)?;
     out.save()?;
     out.claim_into_costin();
     progress("packs", 1, 1);
@@ -1766,7 +1794,9 @@ pub fn build_piece_offered(
 
 /// `build_piece_offered`, its uploads put off (crate::out::Out::put_file_later): they go on beside
 /// what the job does next, and the z6 tile is saved (and noted done) by a later save
-/// (`Out::save_upto` the mark after it).
+/// (`Out::save_upto` the mark after it). With `deep`, its deep levels too, from its tiles as made
+/// (crate::terrain_deep::make_piece): their packs uploaded with its hi pack, those it no longer
+/// makes dropped; `expect_same` holds them to the manifest's as well.
 #[allow(clippy::too_many_arguments)]
 pub fn build_piece_later(
     out: &mut Out,
@@ -1777,6 +1807,7 @@ pub fn build_piece_later(
     expect_same: bool,
     progress: crate::rawpack::Progress,
     offers: crate::terrain_task::Offers,
+    deep: Option<&crate::terrain_deep::Deep>,
 ) -> anyhow::Result<PackReport> {
     anyhow::ensure!(
         offers.piece() == t,
@@ -1810,6 +1841,15 @@ pub fn build_piece_later(
     })?;
     drop(p);
     mk.report(&mut rep);
+    let (deep_packs, deep_gone) = match deep {
+        Some(d) => {
+            let _p = crate::timings::phase("its deep levels made (z13–16)", crate::timings::Class::Mixed);
+            let (r, packs, gone) = crate::terrain_deep::make_piece(out, t, &hi, src.water, d, progress)?;
+            (rep.deep_tiles, rep.deep_packs, rep.deep_dropped) = (r.tiles, r.packs, r.dropped);
+            (packs, gone)
+        }
+        None => (Vec::new(), Vec::new()),
+    };
     progress("packs", 0, 1);
     let p = crate::timings::phase("its hi pack and mid written", crate::timings::Class::Disk);
     rep.hi_tiles = hi.len();
@@ -1817,19 +1857,51 @@ pub fn build_piece_later(
         let n = b.len() as u32;
         (z, x, y, b, n)
     });
-    let pack = crate::layers::write_pack_local(out, "terrain", "terrarium-png", false, "hi", (6, t.0, t.1), &mut it)?;
+    let pack = crate::layers::write_pack_local(
+        out,
+        "terrain",
+        crate::terrain_codec::ENCODING,
+        false,
+        "hi",
+        (6, t.0, t.1),
+        &mut it,
+    )?;
     let ml = mid_logical(t.0, t.1);
     let mid_path = out.scratch_file(&format!("{ml}.sect"));
     write_mid(&mid_path, t, &mid)?;
     let hl = format!("layers/terrain/hi/6-{}-{}", t.0, t.1);
     if expect_same {
         let made = pack.as_ref().map(|p| p.content_name()).transpose()?;
+        let mut differ: Vec<String> = Vec::new();
         if out.get(&hl) != made.as_deref() {
-            if let Some(p) = &pack {
+            differ.push(format!(
+                "{hl}: made {}, the manifest has {}",
+                made.as_deref().unwrap_or("none"),
+                out.get(&hl).unwrap_or("none")
+            ));
+        }
+        for d in &deep_packs {
+            let c = d.content_name()?;
+            if out.get(&d.logical) != Some(c.as_str()) {
+                differ.push(format!(
+                    "{}: made {c}, the manifest has {}",
+                    d.logical,
+                    out.get(&d.logical).unwrap_or("none")
+                ));
+            }
+        }
+        differ.extend(deep_gone.iter().map(|l| format!("{l}: no longer made")));
+        if !differ.is_empty() {
+            for p in pack.iter().chain(&deep_packs) {
                 std::fs::remove_file(&p.local).ok();
             }
             std::fs::remove_file(&mid_path).ok();
-            anyhow::bail!("piece 6/{}/{} was expected the same as the manifest has it, and isn't (nothing uploaded): {hl}: made {}, the manifest has {}", t.0, t.1, made.as_deref().unwrap_or("none"), out.get(&hl).unwrap_or("none"));
+            anyhow::bail!(
+                "piece 6/{}/{} was expected the same as the manifest has it, and isn't (nothing uploaded): {}",
+                t.0,
+                t.1,
+                differ.join("; ")
+            );
         }
     }
     drop(p);
@@ -1839,6 +1911,10 @@ pub fn build_piece_later(
             drop_named(out, &[hl]);
         }
     }
+    for d in deep_packs {
+        out.put_file_later(&d.logical, "pack", &d.local)?;
+    }
+    drop_named(out, &deep_gone);
     out.put_file_later(&ml, "sect", &mid_path)?;
     Ok(rep)
 }
@@ -1883,7 +1959,9 @@ pub fn build_lo(
         let n = b.len() as u32;
         (z, x, y, b, n)
     });
-    if crate::layers::write_pack(out, "terrain", "terrarium-png", false, "lo", (3, q.0, q.1), &mut it)?.is_none() {
+    if crate::layers::write_pack(out, "terrain", crate::terrain_codec::ENCODING, false, "lo", (3, q.0, q.1), &mut it)?
+        .is_none()
+    {
         drop_named(out, &[format!("layers/terrain/lo/3-{}-{}", q.0, q.1)]);
     }
     drop(up);
@@ -1905,7 +1983,7 @@ pub fn build_root(out: &mut Out, raw: &dyn RawSource, src: &Sources) -> anyhow::
                 None => raw.get(3, x, y)?.0,
             };
             let Some(b) = stored else { continue };
-            let Ok(e) = decode_terrain_png(&b) else { continue };
+            let Ok(e) = decode_terrain(&b) else { continue };
             let mut q = vec![0f32; 128 * 128];
             for j in 0..128 {
                 for i in 0..128 {
@@ -1931,6 +2009,7 @@ pub fn build_root(out: &mut Out, raw: &dyn RawSource, src: &Sources) -> anyhow::
                 if let Some(q) = q {
                     next.insert((x, y), q);
                 }
+                let Some(b) = b else { continue };
                 let l = b.len() as u32;
                 tiles.push((z, x, y, b, l));
             }
@@ -1943,7 +2022,7 @@ pub fn build_root(out: &mut Out, raw: &dyn RawSource, src: &Sources) -> anyhow::
     let up = crate::timings::phase("the root pack uploaded", crate::timings::Class::NasWrite);
     let n = tiles.len();
     let mut it = tiles.into_iter();
-    crate::layers::write_pack(out, "terrain", "terrarium-png", false, "root", (0, 0, 0), &mut it)?;
+    crate::layers::write_pack(out, "terrain", crate::terrain_codec::ENCODING, false, "root", (0, 0, 0), &mut it)?;
     drop(up);
     out.save()?;
     Ok(n)
@@ -1970,8 +2049,16 @@ pub(crate) mod tests {
             }
         }
         let want: Vec<(u8, u32, u32, Vec<u8>)> = tiles.iter().map(|t| (t.0, t.1, t.2, t.3.clone())).collect();
-        crate::layers::write_pack(&mut out, "terrain", "terrarium-png", false, "hi", (6, 5, 7), &mut tiles.into_iter())
-            .unwrap();
+        crate::layers::write_pack(
+            &mut out,
+            "terrain",
+            crate::terrain_codec::ENCODING,
+            false,
+            "hi",
+            (6, 5, 7),
+            &mut tiles.into_iter(),
+        )
+        .unwrap();
         let copies = d.path().join("copies");
         let plain = ManifestTiles::new(&out, "terrain");
         let here = ManifestTiles::with_copies(&out, "terrain", copies.clone());
@@ -2102,6 +2189,7 @@ pub(crate) mod tests {
                 if let Some(qd) = qd {
                     nq.insert((x, y), qd);
                 }
+                let Some(b) = b else { continue };
                 if z >= 9 {
                     hi.entry((x >> (z - 6), y >> (z - 6))).or_default().push((z, x, y, b));
                 } else {
@@ -2121,7 +2209,7 @@ pub(crate) mod tests {
             crate::layers::write_pack(
                 out,
                 "terrain",
-                "terrarium-png",
+                crate::terrain_codec::ENCODING,
                 false,
                 "hi",
                 (6, tx, ty),
@@ -2129,7 +2217,16 @@ pub(crate) mod tests {
             )
             .unwrap();
         }
-        crate::layers::write_pack(out, "terrain", "terrarium-png", false, "lo", (3, q.0, q.1), &mut pack(lo)).unwrap();
+        crate::layers::write_pack(
+            out,
+            "terrain",
+            crate::terrain_codec::ENCODING,
+            false,
+            "lo",
+            (3, q.0, q.1),
+            &mut pack(lo),
+        )
+        .unwrap();
         out.save().unwrap();
     }
 
@@ -2199,7 +2296,11 @@ pub(crate) mod tests {
                 e[128 * 256 + 128] += 900.0;
                 e[64 * 256 + 200] -= 700.0;
             }
-            std::fs::write(local.join(format!("{z}/{x}/{y}.png")), encode_terrain_png(&e, 256, 256).unwrap()).unwrap();
+            std::fs::write(
+                local.join(format!("{z}/{x}/{y}.png")),
+                roadcore::grid::encode_terrain_png(&e, 256, 256).unwrap(),
+            )
+            .unwrap();
         }
         (q, ts.clone(), cov)
     }
@@ -2601,7 +2702,7 @@ pub(crate) mod tests {
             }
             crate::terrain_water::add_levels(levels, &lakes);
             let levels: &HashMap<u64, f32> = levels;
-            let done: Vec<(u32, u32, Vec<u8>, Option<Moved>, Option<Vec<f32>>)> = prepared
+            let done: Vec<(u32, u32, Option<Vec<u8>>, bool, Option<Vec<f32>>)> = prepared
                 .par_drain(..)
                 .map(|(x, y, p)| {
                     let (b, r, q) = finish(p, levels);
@@ -2611,13 +2712,15 @@ pub(crate) mod tests {
                 .collect();
             let (mut outs, mut nq) = (Vec::new(), HashMap::new());
             for (x, y, b, r, q) in done {
-                if r.is_some() {
+                if r {
                     changed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
                 if let Some(q) = q {
                     nq.insert((x, y), q);
                 }
-                outs.push((x, y, b));
+                if let Some(b) = b {
+                    outs.push((x, y, b));
+                }
             }
             Ok((outs, nq))
         };
@@ -2668,7 +2771,15 @@ pub(crate) mod tests {
                         let n = b.len() as u32;
                         (z, x, y, b, n)
                     });
-                    crate::layers::write_pack(out, "terrain", "terrarium-png", false, "hi", (6, tx, ty), &mut it)?;
+                    crate::layers::write_pack(
+                        out,
+                        "terrain",
+                        crate::terrain_codec::ENCODING,
+                        false,
+                        "hi",
+                        (6, tx, ty),
+                        &mut it,
+                    )?;
                 }
                 let mut quads = quads9;
                 for (z, tiles) in upper {
@@ -2693,7 +2804,7 @@ pub(crate) mod tests {
             let n = b.len() as u32;
             (z, x, y, b, n)
         });
-        crate::layers::write_pack(out, "terrain", "terrarium-png", false, "lo", (3, q.0, q.1), &mut it)?;
+        crate::layers::write_pack(out, "terrain", crate::terrain_codec::ENCODING, false, "lo", (3, q.0, q.1), &mut it)?;
         out.save()?;
         progress("packs", 1, 1);
         Ok(rep)
@@ -2731,7 +2842,11 @@ pub(crate) mod tests {
                 e[128 * 256 + 128] += 900.0;
                 e[64 * 256 + 200] -= 700.0;
             }
-            std::fs::write(local.join(format!("{z}/{x}/{y}.png")), encode_terrain_png(&e, 256, 256).unwrap()).unwrap();
+            std::fs::write(
+                local.join(format!("{z}/{x}/{y}.png")),
+                roadcore::grid::encode_terrain_png(&e, 256, 256).unwrap(),
+            )
+            .unwrap();
         }
     }
 
@@ -2777,7 +2892,7 @@ pub(crate) mod tests {
         synthetic_raw(&local, &cov, q, ts);
         let raw = RawTiles::with_store(&local, &d.path().join("store"), crate::terrain_pack::TEST_BASE);
         let water = crate::terrain_water::tests::Fixed(lake_across);
-        let src = Sources { water: Some(&water) };
+        let src = Sources { water: Some(&water), deeper: None };
         let open = |root: &str| Out::unbound(&d.path().join(root), &d.path().join(format!("{root}-scratch"))).unwrap();
         let terrain = |o: &Out| {
             o.manifest
@@ -2897,7 +3012,7 @@ pub(crate) mod tests {
                             let e = ix.find(z, x, y)?;
                             let b = ix.read_blob(f, &e).ok()?;
                             if layer == "terrain" {
-                                decode_terrain_png(&b).ok().map(|v| v.iter().map(|f| f.to_bits()).collect())
+                                decode_terrain(&b).ok().map(|v| v.iter().map(|f| f.to_bits()).collect())
                             } else {
                                 roadcore::slope::decode_slope4(&b)
                                     .map(|v| v.iter().flat_map(|q| q.map(f32::to_bits)).collect())
@@ -2960,7 +3075,7 @@ pub(crate) mod tests {
         let d = tempfile::tempdir().unwrap();
         let cov = near_without_hi(d.path());
         let raw = RawTiles::new(&d.path().join("raw"), crate::terrain_pack::TEST_BASE);
-        let src = Sources { water: None };
+        let src = Sources { water: None, deeper: None };
         let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
         // (Files an earlier run left: their bytes don't matter here.)
         let fake = |out: &mut Out, l: &str| {
@@ -3064,7 +3179,7 @@ pub(crate) mod tests {
             v
         }
         let water = Fixed(polys);
-        let src = Sources { water: Some(&water) };
+        let src = Sources { water: Some(&water), deeper: None };
         let raw = |x: u32| {
             let g: Vec<f32> = (0..65536)
                 .map(|p| 200.0 + ((x - x0) as usize * 256 + p % 256) as f32 * 0.5 - (p / 256) as f32 * 0.25)
@@ -3078,7 +3193,7 @@ pub(crate) mod tests {
                     }
                 }
             }
-            (encode_terrain_png(&e, 256, 256).unwrap(), g)
+            (roadcore::grid::encode_terrain_png(&e, 256, 256).unwrap(), g)
         };
         let made: Vec<(Prepared, Vec<f32>)> = [x0, x0 + 1]
             .iter()
@@ -3097,7 +3212,7 @@ pub(crate) mod tests {
         let mut outs = Vec::new();
         for (p, g) in made {
             let (png, _, _) = finish(p, &levels);
-            outs.push((decode_terrain_png(&png).unwrap(), g));
+            outs.push((decode_terrain(&png.unwrap()).unwrap(), g));
         }
         for (k, (e, g)) in outs.iter().enumerate() {
             for r in 0..256 {

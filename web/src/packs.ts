@@ -2,30 +2,31 @@
 // by area: pure, for the main thread and the contours' worker (contour/dem.worker.ts).
 
 /** A tiled layer's packs' versions (meta.packs): the root's (z0–2), the lo packs' (z3–8) by z3
- * tile, the hi packs' (z9–14) by z6 tile and the terrain's fine packs (past z12, where it has
- * any: pipeline::terrain_fine) by z10 tile, "z/x/y". */
+ * tile, the hi packs' (z9–14) by z6 tile and the terrain's deep packs (past z12, where it has
+ * any: pipeline::terrain_deep) by z10 tile, "z/x/y". */
 export interface LayerPacks {
   root?: string;
   lo?: Record<string, string>;
   hi?: Record<string, string>;
-  fine?: Record<string, string>;
+  deep?: Record<string, string>;
 }
 
-/** The fine packs' tile zoom (pipeline::terrain_fine::PACK_Z); they hold the zooms past it + 2. */
-const FINE_Z = 10;
+/** The deep packs' tile zoom (pipeline::terrain_deep::PACK_Z); they hold the zooms past it + 2. */
+const DEEP_Z = 10;
 
 /** The version token of tile z/x/y of a layer with packs `l`: its pack's, or '' when no pack holds it. */
 export function packToken(l: LayerPacks, z: number, x: number, y: number): string {
   if (z <= 2) return l.root ?? '';
-  // ('' past z12 outside the fine packs: the server makes those tiles from their ancestor and
+  // ('' past z12 outside the deep packs: the server makes those tiles from their ancestor and
   // serves them uncached for good (no current token), so no stale copy outlives a catalog.)
-  if (z > FINE_Z + 2 && l.fine) return l.fine[`${FINE_Z}/${x >> (z - FINE_Z)}/${y >> (z - FINE_Z)}`] ?? '';
+  if (z > DEEP_Z + 2 && l.deep) return l.deep[`${DEEP_Z}/${x >> (z - DEEP_Z)}/${y >> (z - DEEP_Z)}`] ?? '';
   const pz = z <= 8 ? 3 : 6;
   return (z <= 8 ? l.lo : l.hi)?.[`${pz}/${x >> (z - pz)}/${y >> (z - pz)}`] ?? '';
 }
 
 /** A raster source's finest zoom by area (meta.terrainAreas; our MapLibre's `scenic:zoom-by-area`):
- * its tiles of zoom `zoom` that go finer, "x/y", and the finest zoom of each. */
+ * its tiles of zoom `zoom` that go past its maxzoom, "x/y", and the native zoom of each (the
+ * terrain's: pipeline::terrain_deep::native_zoom). */
 export interface TerrainAreas {
   zoom: number;
   tiles: Record<string, number>;

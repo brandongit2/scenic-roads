@@ -782,7 +782,11 @@ export function isImageBitmap(image: any): image is ImageBitmap {
  * @returns - A  promise resolved when the conversion is finished
  */
 export const arrayBufferToImageBitmap = async (data: ArrayBuffer, options?: ImageBitmapOptions): Promise<ImageBitmap> => {
-    const blob: Blob = new Blob([new Uint8Array(data)], {type: 'image/png'});
+    // Scenic Roads: typed by its signature, so a WebP tile (our terrain's) isn't left to the
+    // browser's sniffing.
+    const bytes = new Uint8Array(data);
+    const webp = bytes.length > 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50;
+    const blob: Blob = new Blob([bytes], {type: webp ? 'image/webp' : 'image/png'});
     try {
         return createImageBitmap(blob, options);
     } catch (e) {

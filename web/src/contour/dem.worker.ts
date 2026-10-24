@@ -3,7 +3,7 @@
 // are ./height-tile.ts, ./isolines.ts and ./vtpbf.ts as it has them), cut to what the map uses, and
 // reading the DEM by area: where the catalog has the terrain finer than its base (the meta's
 // terrainAreas, our MapLibre's `scenic:zoom-by-area`), a contour tile reads it to that zoom, so the
-// lines follow the fine terrain there; elsewhere to the DEM's maxzoom (z12).
+// lines follow the deep terrain there; elsewhere to the DEM's maxzoom (z12).
 //
 // A contour tile of zoom z reads the DEM a zoom up (z − 1, at most its area's zoom), the part of it
 // that the tile covers, and its eight neighbours' (one zoom for all nine, the tile's own), so lines
@@ -72,7 +72,7 @@ function demUrl(d: Dem, z: number, x: number, y: number): string {
   return u.replace('{z}', `${z}`).replace('{x}', `${x}`).replace('{y}', `${y}`);
 }
 
-/** A DEM tile for contour tile `id`, decoded (Terrarium; JPEG XL or PNG, decoded by the browser
+/** A DEM tile for contour tile `id`, decoded (Terrarium as lossless WebP, decoded by the browser
  * with no colour change). */
 function demTile(d: Dem, id: number, z: number, x: number, y: number): Promise<DemTile> {
   const u = demUrl(d, z, x, y);

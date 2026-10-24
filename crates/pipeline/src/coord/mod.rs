@@ -129,10 +129,11 @@ fn is_zero64(v: &u64) -> bool {
 /// before that trees.py's workers each held a block's every zoom-12 value, 12 to 36 GB together;
 /// its assemblies 1; terrain 3 and slope 3: a z6 tile a run (a z6 tile), their assemblies 1; terrain
 /// 4: a z6 tile's tiles made a group of z8 subtrees at a time, where 3 held all its z12 tiles' at once,
-/// 7 GB at its 90th percentile).
+/// 7 GB at its 90th percentile; 5: its deep levels too, z13–16 where a fine dataset is, a z8 tile's
+/// blocks read ahead and kept, task #633).
 pub fn cost_version(step: &str) -> u32 {
     match step {
-        "terrain" => 4,
+        "terrain" => 5,
         "slope" => 3,
         // (3: the canopy rows read where they lie and counted, its blocks paced, task #606: 2's
         // copied whole squares uncounted, so its NAS weight was its uploads alone.)
@@ -153,8 +154,6 @@ pub fn cost_version(step: &str) -> u32 {
         // (A grid lined up with no overview sampled from one askew, task #433: the assemblies
         // that read tens of GB read a hundredth of it.)
         "depth" | "depth-lo" => 1,
-        // (1: a target's blocks read ahead and kept in memory, task #599: 0's peaks, ~4.1 GB, under its 7.1 GB.)
-        "terrain-fine" => 1,
         _ => 0,
     }
 }

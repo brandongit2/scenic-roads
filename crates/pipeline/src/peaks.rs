@@ -33,7 +33,7 @@ pub mod unit;
 
 use rayon::prelude::*;
 use roadcore::archive::Archive;
-use roadcore::grid::decode_terrain_png;
+use roadcore::grid::decode_terrain;
 use roadcore::{dist_m, merc};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -345,7 +345,7 @@ pub fn coarse_tiles(arc: &Archive) -> HashMap<(u32, u32), Tile> {
             ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
         if z == COARSE_Z {
             if let Some(b) = arc.get(z, x, y) {
-                if let Ok(mut t) = decode_terrain_png(b) {
+                if let Ok(mut t) = decode_terrain(b) {
                     despike(&mut t, z, tile_lat(z, y));
                     z8.insert((x, y), Arc::new(t));
                 }

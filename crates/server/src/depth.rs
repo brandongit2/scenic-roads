@@ -4,11 +4,11 @@
 //! nearest stored ancestor as the build scales a level up (pipeline::depth::fall). Outside the
 //! layer: 404.
 //!
-//! And the terrain with the floor (`terrain_floor_png`): the terrain's heights minus the depth on the
+//! And the terrain with the floor (`terrain_floor`): the terrain's heights minus the depth on the
 //! water the depth lies on (the terrain flattened there to the water's surface), for the map's 3D
 //! floor; no second terrain is stored.
 
-use crate::terrain::{respond_png, Got};
+use crate::terrain::{respond, Got};
 use crate::S;
 use axum::{
     extract::{Path, RawQuery, State},
@@ -92,7 +92,7 @@ async fn tile(s: S, layer: &'static str, z: u8, x: u32, y: u32, q: Option<String
     .await
     .unwrap_or(Some(Got::Failed));
     match got {
-        Some(g) => respond_png(g, v),
+        Some(g) => respond(g, v),
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }
@@ -125,15 +125,16 @@ pub fn floor(e: &mut [f32], depth: &[f32], class: &[u8]) {
     }
 }
 
-/// The terrain tile z/x/y with the floor (`floor`), PNG; None outside the terrain.
-pub fn terrain_floor_png(s: &crate::AppState, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
+/// The terrain tile z/x/y with the floor (`floor`), encoded as the terrain's are
+/// (crate::terrain::encode); None outside the terrain.
+pub fn terrain_floor(s: &crate::AppState, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
     let Some(mut e) = crate::terrain::terrain_f32(s, z, x, y)? else { return Ok(None) };
     if let (Some(Grid::F(d)), Some(Grid::C(c))) =
         (served(s, pipeline::depth::LAYER, z, x, y)?, served(s, pipeline::depth::CLASS_LAYER, z, x, y)?)
     {
         floor(&mut e, &d, &c);
     }
-    Ok(roadcore::grid::encode_terrain_png(&e, 256, 256).ok())
+    Ok(crate::terrain::encode(e).ok())
 }
 
 #[cfg(test)]

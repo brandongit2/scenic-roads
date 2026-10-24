@@ -22,6 +22,9 @@ indicatif = "0.18"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 serde_json = { version = "1", features = ["raw_value", "float_roundtrip"] }
 png = "0.18"
+# The terrain's tiles (crate::terrain_codec): lossless WebP through libwebp (not crate::webp, the tree cover's own encoder), natively and in the
+# WebAssembly build alike (terrainsub makes terrain tiles).
+webpenc = { path = "../webpenc" }
 crc32fast = "1"
 weezl = "0.2"
 libc = "0.2"
@@ -47,8 +50,6 @@ hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 socket2 = { version = "0.6", features = ["all"] }
 futures-util = { version = "0.3", default-features = false }
-# The fine terrain's tiles (terrain_fine::encode): libjxl, C++ built by CMake.
-jxl = { path = "../jxl" }
 # GEOS for the World Heritage Sites' dots (crate::whsshapes, as shapely computed them): 3.13.1,
 # built from the workspace's crates/geos-src by CMake and linked statically (no GEOS needed on the
 # Macs). geos-src 0.2.4 is the one patched (the root Cargo.toml); geos-sys 2.0.10 and geos 11.1.2 on

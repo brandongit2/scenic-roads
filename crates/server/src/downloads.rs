@@ -7,10 +7,10 @@
 //!                                         built of total) with its size, how much of it is here
 //!                                         and whether it's downloaded, the copy under way
 //!   PUT    /api/downloads/world           {on}: download the World, zoomed out, or remove it
-//!   PUT    /api/downloads/regions/{id}    {on}: download a region, or remove it (with its fine
-//!                                         terrain)
-//!   PUT    /api/downloads/regions/{id}/fine {on}: download a downloaded region's fine terrain, or
-//!                                         remove it
+//!   PUT    /api/downloads/regions/{id}    {on}: download a region, or remove it (with its
+//!                                         terrain detail)
+//!   PUT    /api/downloads/regions/{id}/detail {on}: download a downloaded region's terrain detail,
+//!                                         or remove it
 //!   PUT    /api/downloads/reserve         {gb}: the free space downloads leave on the disk
 //!                                         (crate::reserve)
 //!
@@ -30,10 +30,10 @@
 //!   packs within 25 km (the viewshed's reach, so one from inside works offline); and the hi data
 //!   of the z6 tiles within 50 km (what the lists of a view read around it); and what the map reads
 //!   zoomed in from the World's files (pipeline::areafiles::files_of), so only zoomed out needs it.
-//! - **A region's fine terrain** (`fine_of`), an add-on to its download: the terrain's fine packs
-//!   (pipeline::terrain_fine, z13 and finer, by z10 tile) within 2 km of it. They cover only parts
-//!   of a region; its coarse terrain (the hi packs, to z12) is the rest and every zoom to z12, so
-//!   it needs the region: downloaded only while the region is. The server makes the slope, and the map the hill-shading and contours,
+//! - **A region's terrain detail** (`detail_of`), an add-on to its download: the terrain's deep
+//!   packs (pipeline::terrain_deep, z13 and finer, by z10 tile) within 2 km of it. They cover only
+//!   parts of a region; its terrain to z12 (the hi packs) is the rest and every zoom to z12, so it
+//!   needs the region: downloaded only while the region is. The server makes the slope, and the map the hill-shading and contours,
 //!   from them as from any terrain tile (crate::terrain). Copied after every other download.
 
 use crate::data::Data;
@@ -45,7 +45,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use pipeline::areafiles::{files_of, fine_of, outer_rings, tiles_meeting, Files, NEAR_KM};
+use pipeline::areafiles::{detail_of, files_of, outer_rings, tiles_meeting, Files, NEAR_KM};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -78,9 +78,10 @@ pub struct AskedRegion {
     pub name: String,
     /// When it was downloaded (seconds since 1970).
     pub at: u64,
-    /// Its fine terrain downloaded too (`fine_of`).
-    #[serde(default)]
-    pub fine: bool,
+    /// Its terrain detail downloaded too (`detail_of`). (`fine` in downloads.json files from before
+    /// one terrain, task #633.)
+    #[serde(default, alias = "fine")]
+    pub detail: bool,
 }
 
 /// What a download copies: files of the catalog and pieces of its basemap's archives, in copy order.
@@ -133,12 +134,12 @@ impl Part {
     }
 }
 
-/// What a region's downloads copy: the region, and its fine terrain (an add-on), with the share of
-/// the region the fine terrain covers (per cent).
+/// What a region's downloads copy: the region, and its terrain detail (an add-on), with the share
+/// of the region the detail covers (per cent).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RegionParts {
     pub coarse: Part,
-    pub fine: Part,
+    pub detail: Part,
     pub cover: f64,
 }
 
@@ -151,7 +152,7 @@ pub struct Plan {
     generation: u64,
     version: u64,
     /// What's downloaded, in copy order: the World, then the regions as they were asked, then their
-    /// fine terrain.
+    /// terrain detail.
     pub wanted: Wanted,
     pub world: Part,
     /// Every region the catalog records (for its size, downloaded or not).
@@ -303,7 +304,7 @@ fn make_plan(cat: &Catalog, generation: u64, version: u64, asked: Asked, regions
         .then_some(&world)
         .into_iter()
         .chain(asked.regions.iter().filter_map(|r| regions.get(&r.id).map(|p| &p.coarse)))
-        .chain(asked.regions.iter().filter(|r| r.fine).filter_map(|r| regions.get(&r.id).map(|p| &p.fine)));
+        .chain(asked.regions.iter().filter(|r| r.detail).filter_map(|r| regions.get(&r.id).map(|p| &p.detail)));
     for p in parts {
         for i in &p.items {
             wanted.push(i.clone(), &mut seen);
@@ -325,10 +326,10 @@ fn area_part(cat: &Catalog, rings: &[Vec<[f64; 2]>]) -> Part {
     Part::new(cat, files_of(cat, rings), &basemap_archives(cat), &pieces)
 }
 
-/// A region's downloads (`rings`, its outer rings): the region, and its fine terrain.
+/// A region's downloads (`rings`, its outer rings): the region, and its terrain detail.
 fn region_parts(cat: &Catalog, rings: &[Vec<[f64; 2]>]) -> RegionParts {
-    let (files, cover) = fine_of(cat, rings);
-    RegionParts { coarse: area_part(cat, rings), fine: Part::new(cat, files, &[], &[]), cover }
+    let (files, cover) = detail_of(cat, rings);
+    RegionParts { coarse: area_part(cat, rings), detail: Part::new(cat, files, &[], &[]), cover }
 }
 
 fn basemap_archives(cat: &Catalog) -> Vec<String> {
@@ -505,14 +506,14 @@ pub fn status(s: &crate::AppState) -> Result<Value> {
         let p = &rp.coarse;
         let mut v = tally(p);
         let downloaded = on.contains(id.as_str());
-        // (Its fine terrain, where it has any: its size, the share of the region it covers.)
-        let fine_on = plan.asked.regions.iter().any(|r| r.id == *id && r.fine);
-        if !rp.fine.items.is_empty() || fine_on {
-            let mut f = tally(&rp.fine);
+        // (Its terrain detail, where it has any: its size, the share of the region it covers.)
+        let detail_on = plan.asked.regions.iter().any(|r| r.id == *id && r.detail);
+        if !rp.detail.items.is_empty() || detail_on {
+            let mut f = tally(&rp.detail);
             f["cover"] = json!((rp.cover * 10.0).round() / 10.0);
-            f["on"] = json!(fine_on);
-            f["state"] = json!(fine_on.then(|| state(&rp.fine)));
-            v["fine"] = f;
+            f["on"] = json!(detail_on);
+            f["state"] = json!(detail_on.then(|| state(&rp.detail)));
+            v["detail"] = f;
         }
         let r = listed.get(id);
         v["name"] = json!(r.and_then(|r| r["name"].as_str()).unwrap_or_default());
@@ -715,7 +716,7 @@ pub async fn put_world(State(s): State<S>, Json(q): Json<On>) -> Response {
     .await
 }
 
-/// Downloads a region, or removes it (with its fine terrain). A region the catalog doesn't have yet
+/// Downloads a region, or removes it (with its terrain detail). A region the catalog doesn't have yet
 /// can be downloaded: its files come once a catalog has it. One still building (its `tiles`) is
 /// downloaded as its tiles come: its files are those of the catalog served, more with each catalog
 /// (what's here already never fetched again), copied at the slow rate while the build runs.
@@ -737,8 +738,8 @@ pub async fn put_region(State(s): State<S>, Path(id): Path<String>, Json(q): Jso
         let was = next.regions.iter().find(|r| r.id == id).cloned();
         next.regions.retain(|r| r.id != id);
         if q.on {
-            let fine = was.as_ref().is_some_and(|r| r.fine);
-            next.regions.push(AskedRegion { id: id.clone(), name: name.clone(), at: now(), fine });
+            let detail = was.as_ref().is_some_and(|r| r.detail);
+            next.regions.push(AskedRegion { id: id.clone(), name: name.clone(), at: now(), detail });
             if was.is_none() {
                 check_fits(s, &next, &format!("“{name}”"))?;
             }
@@ -752,25 +753,25 @@ pub async fn put_region(State(s): State<S>, Path(id): Path<String>, Json(q): Jso
     .await
 }
 
-/// Downloads a region's fine terrain (refused unless the region is downloaded: it needs it), or
+/// Downloads a region's terrain detail (refused unless the region is downloaded: it needs it), or
 /// removes it (the region stays).
-pub async fn put_region_fine(State(s): State<S>, Path(id): Path<String>, Json(q): Json<On>) -> Response {
+pub async fn put_region_detail(State(s): State<S>, Path(id): Path<String>, Json(q): Json<On>) -> Response {
     blocking(s, move |s| {
         ensure!(pipeline::agent::recipes::valid_id(&id), "{id:?} isn't a region id");
         ensure!(s.data.mirror.is_some(), "this server keeps no copy of the map (--no-mirror)");
         let mut next = s.downloads.asked();
         let at = next.regions.iter().position(|r| r.id == id);
         if q.on {
-            let Some(i) = at else { bail!("Download the region first: its fine terrain needs it") };
+            let Some(i) = at else { bail!("Download the region first: its terrain detail needs it") };
             let plan = s.downloads.plan(&s.data);
-            let has = plan.regions.get(&id).is_some_and(|p| !p.fine.items.is_empty());
-            ensure!(has, "{id:?} has no fine terrain on the map");
-            if !std::mem::replace(&mut next.regions[i].fine, true) {
+            let has = plan.regions.get(&id).is_some_and(|p| !p.detail.items.is_empty());
+            ensure!(has, "{id:?} has no terrain detail on the map");
+            if !std::mem::replace(&mut next.regions[i].detail, true) {
                 let name = next.regions[i].name.clone();
-                check_fits(s, &next, &format!("the fine terrain of “{name}”"))?;
+                check_fits(s, &next, &format!("the terrain detail of “{name}”"))?;
             }
         } else if let Some(i) = at {
-            next.regions[i].fine = false;
+            next.regions[i].detail = false;
         }
         s.downloads.edit(|a| {
             *a = next;
