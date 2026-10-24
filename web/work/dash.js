@@ -1065,9 +1065,20 @@ function stepCard(m, it, { fin, now, next, since }) {
 // measured seconds a target, the longest region's full width); under the pointer, its region lit
 // on the map and its card. Kept across the page's renders (its scroll, search and split with it).
 const ui = { order: "map", filter: "", feed: "all", past: 6 * 3600 };
-// (Taller on a phone, where a name and the line under it wrap: dash.css.)
-const ROW_H = matchMedia("(max-width: 719px)").matches ? 84 : 40;
+// (Taller on a phone, where a name and the line under it wrap: dash.css; 104 px holds the longest at 375 px, two lines each.)
+const phone = matchMedia("(max-width: 719px)");
+let ROW_H = phone.matches ? 104 : 40;
 const rp = { section: null, el: null, map: null, list: null, rowsEl: null, rows: [], shown: [], maxS: 0, win: null, lit: null, split: 0.65 };
+// (Across 719 px the rows change height: the same row stays at the top, the list drawn again.)
+phone.addEventListener("change", () => {
+  const h0 = ROW_H;
+  ROW_H = phone.matches ? 104 : 40;
+  if (!rp.list || !rp.rowsEl) return;
+  const top = rp.list.scrollTop * (ROW_H / h0);
+  relist();
+  rp.list.scrollTop = top;
+  paintRows(true);
+});
 
 // A download's size in words: "640 MB", "9.0 GB".
 const size = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1e6))} MB`);

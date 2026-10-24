@@ -128,6 +128,11 @@ async function run() {
       // (No text cut off: a text element wider inside than its box, whatever hides the rest.)
       const cut = await js(`(() => [...document.querySelectorAll(".panel:not([hidden]) *, header *")].filter((e) => e.scrollWidth > e.clientWidth + 1 && e.clientWidth && e.textContent.trim() && getComputedStyle(e).overflowX !== "visible" && getComputedStyle(e).overflowX !== "auto" && getComputedStyle(e).overflowX !== "scroll" && ![...e.childNodes].every((n) => n.nodeType === 1 && n.tagName !== "SPAN" && n.tagName !== "B" && n.tagName !== "I" && n.tagName !== "SMALL") && ![...e.childNodes].some((n) => n.nodeType === 1 && n.tagName === "CANVAS") ).slice(0, 6).map((e) => e.tagName.toLowerCase() + "." + String(e.className).split(" ").join(".") + " “" + e.textContent.trim().slice(0, 40) + "” " + e.scrollWidth + ">" + e.clientWidth))()`);
       check(`${tab}: no text cut off`, !cut.length, cut.join("; "));
+      // (Regions: the list's rows have one fixed height, so every row's text must fit it: walked through the whole list.)
+      if (tab === "regions") {
+        const tall = await js(`(async () => { const R = document.querySelector(".rrow")?.parentElement; if (!R) return []; const L = R.parentElement, out = new Set(); for (let t = 0; t <= R.offsetHeight; t += 400) { L.scrollTop = t; L.dispatchEvent(new Event("scroll")); await new Promise((r) => setTimeout(r, 20)); for (const e of R.children) if (e.scrollHeight > e.clientHeight + 1) out.add(e.querySelector(".nm")?.textContent + " " + e.scrollHeight + ">" + e.clientHeight); } L.scrollTop = 0; return [...out].slice(0, 4); })()`);
+        check("regions: every row's text fits its height", !tall.length, tall.join("; "));
+      }
       await shot(`chrome-${tab}`);
       check(`${tab}: no console errors`, !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
     }

@@ -28,7 +28,7 @@ srv=$!
 sleep 1; kill -0 $srv 2>/dev/null || { srv=; echo "FAIL the server didn't start on $port ($out/server.log); SCENIC_SIM_PORT=<n> for another"; exit 1; }
 xcrun simctl list devices | grep -q "$udid) (Booted)" || { booted=1; xcrun simctl boot "$udid" || exit 1; }
 xcrun simctl bootstatus "$udid" -b >/dev/null
-for tab in overview jobs machines regions activity details; do
+for tab in overview jobs machines regions nas dropboxes activity details; do
   xcrun simctl openurl "$udid" "http://localhost:$port/work/?view#$tab"
   sleep ${SCENIC_SIM_WAIT:-6}
   xcrun simctl io "$udid" screenshot "$out/safari-$tab.png" >/dev/null 2>&1 && echo "saved $out/safari-$tab.png"

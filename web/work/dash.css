@@ -131,7 +131,7 @@ button:disabled { opacity: .5; }
 .mc .rate .lab { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .mc .rate .k { color: var(--dim); white-space: nowrap; display: flex; gap: 5px; align-items: center; }
 .mc .rate .k i { width: 8px; height: 3px; border-radius: 2px; display: inline-block; }
-.mc .rate .v { font-size: 12.5px; color: var(--text); overflow-wrap: anywhere; }
+.mc .rate .v { font-size: 12.5px; color: var(--text); overflow-wrap: break-word; }
 .mc .rate .v small { color: var(--dim); font-size: 10.5px; display: block; line-height: 1.3; white-space: normal; }
 .mc .rate .v.warn { color: var(--warn); } .mc .rate .v.bad { color: var(--bad); }
 .mc .rate .v small.memline { display: flex; gap: 5px; align-items: center; white-space: nowrap; }
@@ -280,7 +280,7 @@ html.card-modal, html.card-modal body { overflow: hidden; }
 .tc-chipsbox { display: flex; flex-direction: column; gap: 3px; }
 .tc-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .tc-chips span { font-size: 10.5px; border: 1px solid var(--line); border-radius: 9px; padding: 0 6px; background: var(--bg); }
-.tc-foot { font-size: 10px; color: var(--dim); padding: 5px 10px 0; border-top: 1px solid var(--row-line); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.tc-foot { font-size: 10px; color: var(--dim); padding: 5px 10px 0; border-top: 1px solid var(--row-line); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: break-word; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
 
 .regbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
 .regbar input { flex: 1 1 160px; width: auto; margin: 0; }
@@ -410,12 +410,13 @@ button[disabled] { opacity: .5; }
 .d-nas .cbar.ok > i { background: var(--ok); } .d-nas .cbar.warn > i { background: var(--warn); } .d-nas .cbar.bad > i { background: var(--bad); } .d-nas .cbar.free > i { background: var(--dim); opacity: .45; }
 .settings .setting .k { font-size: 11.5px; text-transform: none; letter-spacing: 0; }
 
-/* A phone (#617): labels stay one line on a desktop; here, what would be cut off wraps instead. */
+/* A phone (#617): labels stay one line on a desktop; here, what would be cut off wraps instead, at
+   spaces and the " · " between parts (break-word splits a word only when it alone is too wide). */
 @media (max-width: 719px) {
-  .kpi .macs > div, .alert, .mc .inside > div, .stages .title, .stages .n, .d-xfer .xlog div, .d-nas .cap .v, .gate .gh .files { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
+  .kpi .macs > div, .alert, .mc .inside > div, .stages .title, .stages .n, .d-xfer .xlog div, .d-nas .cap .v, .gate .gh .files { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: break-word; }
   .mc .cap .v { grid-column: 1 / -1; text-align: left; white-space: normal; max-width: none; overflow: visible; }
-  .rrow { height: 84px; grid-template-rows: auto auto; align-content: center; }
-  .rrow .nm { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+  .rrow { height: 104px; grid-template-rows: auto auto; align-content: center; }
+  .rrow .nm { white-space: normal; overflow: visible; overflow-wrap: break-word; }
   .rrow .lw { flex-wrap: wrap; gap: 3px 8px; }
   .rrow .lt { white-space: normal; overflow: visible; flex: 1 1 100%; }
   .reftag { white-space: normal; overflow: visible; text-overflow: clip; }
