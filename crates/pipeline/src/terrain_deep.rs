@@ -59,7 +59,8 @@ pub const MAX_Z: u8 = 16;
 /// The zoom of a deep pack's root tile.
 pub const PACK_Z: u8 = 10;
 /// A deep pack's first zoom: coarser deep levels go in the hi packs (z9–12, by z6 tile), as every
-/// reader looks for them (crate::terrain_pack::ManifestTiles, agent::tiles, the server).
+/// reader looks for them (crate::terrain_pack::ManifestTiles, agent::tiles, the server). Repeated
+/// for the app in web/src/config.ts (DEEP_FIRST_Z; PACK_Z as DEEP_PACK_Z).
 pub const FIRST_Z: u8 = PACK_Z + 3;
 /// A dataset is fine where its resolution is under this share of the terrain's finest worldwide
 /// dataset's.
@@ -398,7 +399,7 @@ const SMALL_BYTES: usize = 64 << 20;
 /// tiles and their ring (at the base's z12) decoded and served as PNG (at most raw RGB).
 pub const fn peak_mb() -> u64 {
     let mut pack_tiles = 0u64;
-    let mut z = PACK_Z + 3;
+    let mut z = FIRST_Z;
     while z <= MAX_Z {
         pack_tiles += 1 << (2 * (z - PACK_Z));
         z += 1;

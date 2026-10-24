@@ -597,7 +597,7 @@ fn piece(
     let tick = || count.one();
     for &(x, y) in deep.keys() {
         let p = crate::timings::phase("a deep pack's terrain copied here", crate::timings::Class::NasRead);
-        if let Some(n) = terr.copy_here(PACK_Z + 3, x << 3, y << 3) {
+        if let Some(n) = terr.copy_here(crate::terrain_deep::FIRST_Z, x << 3, y << 3) {
             p.count(n, 1);
         }
         drop(p);

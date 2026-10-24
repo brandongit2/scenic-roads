@@ -63,6 +63,10 @@ export const CLASS_GROUP: number[] = (() => {
 })();
 
 // Tile pyramid served by the backend.
+/** The terrain's deep packs' tile zoom and their first zoom (pipeline::terrain_deep::PACK_Z and
+ * FIRST_Z): coarser zooms are in the hi packs (packs.ts). */
+export const DEEP_PACK_Z = 10;
+export const DEEP_FIRST_Z = DEEP_PACK_Z + 3;
 export const TILE_MINZOOM = 4;
 export const TILE_MAXZOOM = 14;
 /** Tiles up to this zoom have their pieces split to at most SPRITE_SEG_PX (of a 256 px tile), so

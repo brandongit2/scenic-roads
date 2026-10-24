@@ -1835,7 +1835,7 @@ fn catalog(
                 let zs = match *scope {
                     "root" => (0, 2),
                     "lo" => (3, 8),
-                    "deep" => (pipeline::terrain_deep::PACK_Z + 3, pipeline::terrain_deep::MAX_Z),
+                    "deep" => (pipeline::terrain_deep::FIRST_Z, pipeline::terrain_deep::MAX_Z),
                     _ => (9, 14),
                 };
                 layers.entry(layer.to_string()).or_insert_with(|| LayerOut::new(enc)).add(

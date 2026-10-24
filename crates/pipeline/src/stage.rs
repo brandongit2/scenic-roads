@@ -48,7 +48,9 @@ impl Source<'_> {
                 match z {
                     0..=2 => l.root.clone(),
                     3..=8 => l.lo.get(&format!("3/{}/{}", x >> (z - 3), y >> (z - 3))).cloned(),
-                    _ if z > d + 2 => l.deep.get(&format!("{d}/{}/{}", x >> (z - d), y >> (z - d))).cloned(),
+                    _ if z >= crate::terrain_deep::FIRST_Z => {
+                        l.deep.get(&format!("{d}/{}/{}", x >> (z - d), y >> (z - d))).cloned()
+                    }
                     _ => l.hi.get(&format!("6/{}/{}", x >> (z - 6), y >> (z - 6))).cloned(),
                 }
             }
