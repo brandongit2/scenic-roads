@@ -128,7 +128,7 @@ The jobs form a chain without cycles; the landmark chain runs beside the roads c
 |---|---|---|
 | OSM pass sets | the filtered planet | `summits` (`-v2`), `hikes`, `named` (the heritage chain's filter plus World Heritage tags), `whs` (pipeline::whsshapes' objects and every multipolygon, with their references), `marks` |
 | `trailends` (per pass) | `hikes` | `work/trailends/<d>`: every simple linear hiking route's two ends |
-| `terrain-z8` (once a pool) | the elevation pool's z8 base tiles | `sources/terrain-z8-v5-<pool>` and `-max` |
+| `terrain-z8` (once a pool) | the elevation pool's z8 base tiles | `sources/terrain-z8-v6-<pool>` and `-max` |
 | `summits` (per pass) | `summits` set, `terrain-z8` | `work/summits/<d>` |
 | `heritage-sites` (before the z6 tiles) | the registers meeting the cover, the matches (docs/inputs.md §6.5), the pass's `areas` set, the coverage | `work/heritage/<d>/base/…` and per z6 tile slices |
 | `unit` | as docs/steps.md, with the heritage slices within U + 30 km | the base pack |
@@ -185,7 +185,7 @@ after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sit
 - **`peaks`** (per z6 tile, `pipeline::peaks`):
   - z12 is the pack's tile when the manifest has it, else the elevation pool's base tile
     (crate::terrain_base over the job's z6 tiles and 30 km more; not the water: task #465), read
-    back from the PNG as stored. A peaks key names the z8 (`sources/terrain-z8-v5-<pool>`), so a
+    back from the PNG as stored. A peaks key names the z8 (`sources/terrain-z8-v6-<pool>`), so a
     new pool measures every z6 tile's peaks again. A z6 tile's pack tiles
     are read in spans (neighbours under 256 KB apart together, up to 32 MB a read, 8 reads at
     once, each under a 2-minute deadline and retried after 2, 5, 15, 30 s when it fails

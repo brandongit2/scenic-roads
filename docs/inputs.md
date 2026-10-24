@@ -1172,7 +1172,7 @@ NAD83(CSRS) by EPSG:1946's Helmert, then Canada Atlas Lambert (EPSG:3979: HRDEM)
 UTM north zone (EPSG:26901–26923: USGS's 1 m tiles; NAD83(2011) taken as NAD83(CSRS), so through
 the same Helmert, not PROJ's null pick for EPSG:269zz, a metre off in the north-east), for the
 input check, the plan (`declared::projected_cells`, `plan_converted`) and the sampler
-(`proj::Projection`, in crate::dem::generic) and the fine terrain's reading ahead (`terrain_fine::plan_files`, `plan_items`).
+(`proj::Projection`, in crate::dem::generic) and the deep terrain's reading ahead (`terrain_deep::plan_files`, `plan_items`).
 
 **Ingesting.**
 - **Order at a point:** the datasets covering it by `rank`, then resolution (finest first), then
@@ -1243,7 +1243,7 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   but GLO-30 covers that land, so the tiles serve there only in its voids.
 - **Keys:** a z6 tile names the `keyed` digests of the datasets whose coverage meets its ways
   (`agent::build::unit_key`), and the terrain packs its roads' heights read (`terrain_packs`: the
-  hi packs of the z6 tiles over its grown box and the fine packs of its z10 tiles); a dataset's `keyed` includes its index's content and dropped files, so
+  hi packs of the z6 tiles over its grown box and the deep packs of its z10 tiles); a dataset's `keyed` includes its index's content and dropped files, so
   adding a tile reruns the z6 tiles it meets. `agent::rekey` keeps what keys made before the
   declarations need (`dem_rules_meeting`, `pre_elevation_unit_key`).
 - **The switch:** the check records `sources/inputs/elevation/@switched` (the accepted index and the
@@ -1252,11 +1252,12 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   says why). From then on no older app leads, is handed the lead or is granted work
   (`regions::read::switch_app`, the coordinator's `min_app`).
 - **The roads' heights** (crate::road_terrain, `elev`): a vertex's height is the finished
-  terrain's there, bilinear between pixel centres at the finest zoom stored there (a fine tile,
-  z13–16, where one is, else the base's), so a road and the ground under it come from one dataset,
-  already brought to EGM2008. The z6 tile job stages into the z6 tile's folder the base tiles
-  (`terrain.tiles`, crate::stage), the fine tiles under its vertices (`fine.tiles`, from the fine
-  packs `layers/terrain/fine/10-x-y`: `road_terrain::fine_tiles`, `stage::stage_fine`) and the
+  terrain's there, bilinear between pixel centres at the finest zoom stored there, its native zoom
+  (a deep tile, z13–16, where one is; else z12, or the latitude's cap), so a road and the ground
+  under it come from one terrain and one dataset, already brought to EGM2008. The z6 tile job stages
+  into the z6 tile's folder the terrain's tiles in one archive (`terrain.tiles`, crate::stage: z0–12
+  over its box, and the deep tiles under its vertices, from the deep packs
+  `layers/terrain/deep/10-x-y`: `road_terrain::deep_tiles`) and the
   datasets' codes by coverage (`codes.json`, `road_terrain::Codes`: a vertex's `src.u8` is the
   first dataset in the order whose measured coverage, in 1° cells, holds it: a label, so in a cell
   a dataset covers only in part it names that dataset where the terrain may have taken the next one
@@ -1288,11 +1289,13 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
 tiles are sampled from these datasets in this order, blended as the roads' are, so the roads and
 the terrain use one dataset at every point; the Terrarium tiles through the NAS's archive of them
 (`sources/aws-terrarium/`, docs/macs.md). A dataset finer than the worldwide ones (rank above 0)
-takes the terrain past z12 (terrain-fine), every dataset read at its full resolution; the roads'
-heights are read from the finished terrain (above).
+takes the terrain past z12 to its native zoom there (the terrain step's deep levels,
+crate::terrain_deep), every dataset read at its full resolution; the roads' heights are read from
+the finished terrain (above).
 - **Keys:** a terrain target names the datasets meeting it by their lines, as the roads' keys do
-  (`agent::tiles::TerrainTiles::terrain_datasets`); while they can't be read its key is unknown
-  and the terrain waits.
+  (`agent::tiles::TerrainTiles::terrain_datasets`), and a z6 tile the fine ones its deep levels read
+  with the zoom each reaches (`terrain_deep::piece_key_lines`); while they can't be read its key is
+  unknown and the terrain waits.
 
 ### 6.9 The remaining sources
 

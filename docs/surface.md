@@ -96,8 +96,8 @@
     (its catalog's `tiles`; the menu bar and `scenic status` say the same, from the agent's
     status) and can be downloaded: its download grows with each catalog, what's here never fetched
     again, copied at the build's slow rate.
-  - **Fine terrain** (a region's second line, only where it has any): the share of the region the
-    terrain finer than z12 covers, its size, Download or Remove, its state. An add-on: its Download
+  - **Terrain detail (z13+)** (a region's second line, only where it has any): the share of the
+    region the terrain past z12 covers, its size, Download or Remove, its state. An add-on: its Download
     is disabled ("needs the region") until the region is downloaded, and the server refuses it
     before; removing the region removes it.
   - Remove confirms with the size. A download that wouldn't fit above the reserve is refused.

@@ -27,8 +27,8 @@ values' `byroad`, hidata's `railinfo` and meta `lsum`.
 16  u64      index offset
 24  u64      index entry count
 32  u32      meta length n
-36  [u8; n]  meta JSON: {"layer", "scope": "root"|"lo"|"hi", "root": "z/x/y",
-             "encoding" (e.g. "rt7", "terrarium-png", "slope4-png", "terrarium-webp", "mvt"), …}
+36  [u8; n]  meta JSON: {"layer", "scope": "root"|"lo"|"hi"|"deep", "root": "z/x/y",
+             "encoding" (e.g. "rt7", "terrarium-webp", "slope4-png", "mvt"), …}
              (zoom ranges are the catalog's)
 …            blobs (identical blobs stored once; entries may share an offset)
 index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
@@ -36,23 +36,25 @@ index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
 ```
 
 - Root pack: z0–2 (root "0/0/0"). Lo pack: z3–8 under one z3 tile. Hi pack: z9–14 under one z6
-  tile. The terrain's tiles finer than z12 (where a dataset is finer than its base,
-  pipeline::terrain_fine) are in fine packs, `layers/terrain/fine/10-<x>-<y>`: z13 and finer under
-  one z10 tile, only where they have the finer data (a z6 tile's would be up to 130 GB). Their
-  tiles are lossless JPEG XL codestreams of Terrarium RGB (`ff 0a`; the pack's encoding
-  `terrarium-jxl`), heights rounded to 1 cm, served as `image/jxl`; every other terrain tile is PNG. The catalog names them under the layer's
-  `fine`, the finest zoom of each under `fine_zoom` (the datasets' zoom there,
-  `terrain_fine::zoom_of`), and its terrain's `maxzoom` is the finest of those. The app's meta
-  passes `fine_zoom` on as `terrainAreas` (`{"zoom": 10, "tiles": {"x/y": z}}`), and the map takes
-  its terrain, hill-shading and slope tiles to that zoom there (our MapLibre's
-  `scenic:zoom-by-area`), z12 elsewhere. The meta's `packs.terrain.fine` gives each fine pack's
-  version by z10 tile (`"10/x/y"`), as `lo` and `hi` do theirs, so a tile past z12 there carries
-  its fine pack's `?v=` and a new catalog asks again only for the tiles of the fine packs it
-  changed. **Offline:** a region's fine packs are on a Mac only where its
-  fine terrain is downloaded (an add-on to the region: crates/server/src/downloads.rs); the server
-  makes the slope, and the map the hill-shading and contours, from them as from any terrain tile.
-  Elsewhere, away from the NAS, a fine tile that can't be read is made from its ancestor in the hi packs (the z12 terrain, overzoomed), as
-  anywhere past the data; the server never answers 503 for one. A tile lives in exactly one pack.
+  tile. **The terrain** (one terrain, z0 to each place's native zoom: steps.md §2) adds deep packs,
+  `layers/terrain/deep/10-<x>-<y>` (scope `deep`): z13–16 under one z10 tile, only where a dataset
+  has the detail (pipeline::terrain_deep; a z6 tile's would be up to 130 GB). Every terrain tile, in
+  every scope, is Terrarium RGB as lossless WebP (`RIFF…WEBPVP8L`, the packs' encoding
+  `terrarium-webp`: pipeline::terrain_codec; heights rounded to 1 cm at the place's native zoom and
+  in the deep levels, to 10 cm coarser), served as `image/webp`. The catalog names the deep packs
+  under the layer's `deep`, each one's z10 tile's native zoom under `native_zoom`
+  (`terrain_deep::native_zoom`; elsewhere the base's finest, z12 to 67°), and the terrain's
+  `maxzoom` is the finest of those. The app's meta passes `native_zoom` on as `terrainAreas`
+  (`{"zoom": 10, "tiles": {"x/y": z}}`), and the map takes its terrain, hill-shading and slope
+  tiles to that zoom there (our MapLibre's `scenic:zoom-by-area`), z12 elsewhere. The meta's
+  `packs.terrain.deep` gives each deep pack's version by z10 tile (`"10/x/y"`), as `lo` and `hi` do
+  theirs, so a tile past z12 there carries its deep pack's `?v=` and a new catalog asks again only
+  for the tiles of the deep packs it changed. **Offline:** a region's deep packs are on a Mac only
+  where its terrain detail is downloaded (an add-on to the region: crates/server/src/downloads.rs);
+  the server makes the slope, and the map the hill-shading and contours, from them as from any
+  terrain tile. Elsewhere, away from the NAS, a deep tile that can't be read is made from its
+  ancestor in the hi packs (the z12 terrain, overzoomed), as anywhere past the data; the server
+  never answers 503 for one. A tile lives in exactly one pack.
 - Readers fetch header and index once (two range reads) and keep the index locally
   (`idx/<file hash>.idx`), so serving a tile is one range read.
 - **Layer bundles** (`layers/<layer>/all`; meta `{"layer", "scope": "all", "encoding"}`): every tile
@@ -458,9 +460,9 @@ that decodes and parses, else the next.
   "files": {"<logical>": {"file": "<content name>", "size": 123, "fmt": 1}},
   "units": ["6/32/21"],
   "layers": {
-    "terrain": {"encoding": "terrarium-png", "minzoom": 0, "maxzoom": 12, "root": "<logical>",
+    "terrain": {"encoding": "terrarium-webp", "minzoom": 0, "maxzoom": 16, "root": "<logical>",
                 "lo": {"3/4/2": "<logical>"}, "hi": {"6/32/21": "<logical>"},
-                "fine": {"10/295/360": "<logical>"}, "fine_zoom": {"10/295/360": 16}},
+                "deep": {"10/295/360": "<logical>"}, "native_zoom": {"10/295/360": 16}},
     "roads": {"encoding": "rt7", "minzoom": 4, "maxzoom": 14, "lo": {…}, "hi": {…}}
   },
   "basemap": ["<logical of a .pmtiles>"],
@@ -563,7 +565,8 @@ names/spoken-<content>.bin   languages spoken where, for a catalog without `glob
                         count, 23,041 u32 row starts, runs of (u32 first column, u16 region))
 regions.json            the last regions read
 reserve.json            the mirror's reserve {gb} (crates/server/src/reserve.rs); default 30 GB
-downloads.json          {fmt: 3, world: at | null, regions: [{id, name, at, fine}]}
+downloads.json          {fmt: 3, world: at | null, regions: [{id, name, at, detail}]} (`detail`: its
+                        terrain detail too; read as `fine` too, its name before one terrain)
                         (crates/server/src/downloads.rs; `at` unix seconds); one that doesn't read is
                         set aside as downloads.json.bad; a fmt 2 file is written again without its
                         `views` (their files no region needs are deleted)
@@ -687,7 +690,8 @@ batch of lines, a line a forecast, `fcarchive::Entry`:
   `/tiles/trees/{var}/{z}/{x}/{y}`. Strong `ETag`: the stored blob's hash, plus for named tiles the
   versions of the languages spoken within them and of the spoken-languages raster (docs/names.md);
   `/tiles/base`'s a hash of the basemap archives' content names, the tile's z/x/y and the names
-  version; tiles the server makes (missing terrain and slope, slope z12 and the fine terrain's) carry none. With `?v=` (the
+  version; tiles the server makes (missing terrain and slope, slope z12 and the deep terrain's) carry none.
+  Terrain tiles are `image/webp`, stored or made (made ones encoded as the stored are). With `?v=` (the
   app's URLs): `public, max-age=31536000, immutable` while that version is current, else
   `no-cache`; the tiles the server makes (terrain and slope from ancestors or neighbours, flat
   tiles, the floor under the water, depth made from a coarser zoom) always `no-cache`, as their sources can lie in other packs. `/api/meta` versions each layer (`buildings.tiles`, `water`: the drawing's, its packs'
@@ -735,13 +739,13 @@ batch of lines, a line a forecast, `fcarchive::Entry`:
 - **Downloads** (`downloads.rs`): `GET /api/downloads` → `{mirror, online, slow, rate, free,
   reserve, reserve_min, disk, here, world: {bytes, here, unknown, on, at, state}, wanted: {bytes,
   here, more, unknown}, copying: {what, bytes, have, slow} | null, last: {…} | null, regions: {id:
-  {name, bytes, here, unknown, on, state, tiles?, fine?: {bytes, here, unknown, on, state, cover}}}}`
+  {name, bytes, here, unknown, on, state, tiles?, detail?: {bytes, here, unknown, on, state, cover}}}}`
   (`unknown`: basemap pieces not yet sized; `state`: done, copying, queued, room, away,
   missing; `tiles`: a region still building, as its catalog has it, its files those of the catalog
   served, more with each catalog). `PUT /api/downloads/world {on}` (each on its own: a region
   doesn't bring the World, and the World goes while regions stay); `PUT /api/downloads/regions/{id}
-  {on}` (off removes its fine terrain too); `PUT /api/downloads/regions/{id}/fine {on}` (its fine
-  terrain; on refused unless the region is downloaded); `PUT /api/downloads/reserve {gb}` (whole GB, 5 to under the
+  {on}` (off removes its terrain detail too); `PUT /api/downloads/regions/{id}/detail {on}` (its
+  terrain detail, the deep packs near it; on refused unless the region is downloaded); `PUT /api/downloads/reserve {gb}` (whole GB, 5 to under the
   disk size) → `{ok, reserve}`. A download that wouldn't fit is refused; refusals are 400 `{error}`.
 - **Regions** (read only): `GET /api/regions`, `/api/regions/layer`, `/api/areas/{id}`,
   `/api/coverage` (the catalog's coverage as GeoJSON, one feature per outline entry, with `regions`
@@ -770,9 +774,9 @@ class, id) within a tile. The client sends the id with the clicked point.
   tiers}`); `global/roaden/<u>` (`{OSM way id: English}` where `name:en` differs); `global/spoken`
   (`names::spoken::Spoken::to_bytes`); `global/heritage/*`.
 - **Grid layers:** `grid-{class,canopy,cover}` hi packs of z11 tiles, encoding `u8-zstd`, not served.
-- **Worldwide z8 terrain:** `sources/terrain-z8-v5-<pool>` (one RDPACK of every z8 tile, no scope
+- **Worldwide z8 terrain:** `sources/terrain-z8-v6-<pool>` (one RDPACK of every z8 tile, no scope
   or root; `<pool>`: the hash16 of the accepted elevation and sources indexes' content names) and
-  `sources/terrain-z8-v5-<pool>-max` (each tile's maximum, f32).
+  `sources/terrain-z8-v6-<pool>-max` (each tile's maximum, f32).
 - **Work files** (zstd JSON lines unless said): `work/pois/<u>`, `work/peaks/<u>`,
   `work/summits/<date>`, `work/trailends/<date>`; `work/heritage/<date>/{base/<stem>, pos/6-x-y.json,
   parts/6-x-y.json, areas/6-x-y.jsonl, <stem>}` (`parts`: World Heritage components among `pos`;

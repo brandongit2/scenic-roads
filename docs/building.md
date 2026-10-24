@@ -139,7 +139,7 @@ from the first (`edit_held`).
     nas-room off` on any Mac, one pool-wide value on the NAS (`state/pool/nas-room.json`), off by
     default; with no argument, how it stands. Apart from the Macs' targets (another disk). `bld-fetch`
     fails when what it still has to fetch is more than the NAS's free space past it; the other steps
-    writing to the NAS check no space before writing (depth, terrain and fine packs, the OSM pass's
+    writing to the NAS check no space before writing (depth, terrain and its deep packs, the OSM pass's
     upload, `fabdem-fetch`), so it doesn't bind them yet.
   - **With the mirror's reserve** (docs/macs.md, Mirror): the map server's mirror keeps the larger
     of its reserve and this target free (`settings::RoomTarget`, read again at most every 5 s), so a

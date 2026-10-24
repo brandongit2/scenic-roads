@@ -111,9 +111,15 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
   finest zoom, overzoomed past it; elsewhere it is upstream's, so a source with finer data in some
   places asks for no extra tiles anywhere else, and the finer tiles sit beside the coarser cover
   with no gap (a cover is a partition). The terrain's elevations read the DEM at the same cap. The
-  app's terrain, hill-shading and slope go to z16 where the catalog has 2 m terrain
+  app's terrain, hill-shading and slope go to each place's native zoom, z16 where the catalog has 2 m terrain
   (`covering_tiles_area.test.ts`; `test/scenic/zoom-by-area.html` shows an edge). Read when the
   source loads, and anew by `RasterTileSource.setZoomByArea` (a new catalog's areas, main.ts).
+- **DEM tiles decoded as data** (`raster_dem_tile_source.ts`, `util.ts`
+  `arrayBufferToImageBitmap`): a `raster-dem` tile is decoded by `createImageBitmap` with
+  `colorSpaceConversion: "none"` and `premultiplyAlpha: "none"`, its Blob typed by its signature
+  (`image/webp` for a WebP, else `image/png`), so the app's terrain, lossless WebP, comes back
+  with every Terrarium value exact in Chrome and Safari (bit-exact in both, measured in workers:
+  .claude/notes/SHADING-PYRAMID.md, S1b).
 - **DEM borders filled across zooms** (`tile_manager_raster_dem.ts` `backfillDEM`,
   `DEMData.backfillFrom`): a loaded DEM tile's 2 px border, and that of each renderable tile it
   touches, is filled from every renderable tile touching it, of any zoom, each border pixel from the

@@ -1237,7 +1237,7 @@ planned: `/pool/status` in place of reading heartbeats for the view.
 - **Regions** (`agent::regionsview`, task #512): each enabled region's `crumbs` (its folders'
   names in the regions' tree, a folder without a `_group.toml` name by its own in words, then its
   own), its `bytes` (the catalogue's files a download of it copies, `areafiles::files_of` as the map
-  server's downloads count them; not the basemap's pieces nor its fine terrain; null while the
+  server's downloads count them; not the basemap's pieces nor its terrain detail; null while the
   catalogue lacks it), and its outline for the world maps of the Overview and Regions tabs: its
   drawn shapes in Web Mercator, the world 0–1000 each way, simplified to about 7 km, `fill` the
   outer rings and `edge` the lines to stroke (a stretch two of its shapes share along a parallel

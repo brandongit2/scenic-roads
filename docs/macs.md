@@ -237,8 +237,8 @@ and codesign.
   (ovdata, by z3 tile) within 50 km; the worldwide `global/` files (those by z6 tile, such as the
   roads' English names and ids, only for its tiles); the Canadian lake fill when it meets Canada.
   So a region works zoomed in without the World; only zoomed out is missing (but task #457).
-- **A region's fine terrain** (an add-on to the region, which it needs): the terrain's fine packs
-  (z13 and finer, by z10 tile) within 2 km of it, where the terrain has finer data; the panel says
+- **A region's terrain detail** (an add-on to the region, which it needs): the terrain's deep packs
+  (z13 and finer, by z10 tile) within 2 km of it, where the terrain goes past z12; the panel says
   the share of the region they cover and their size first. Downloaded only while the region is;
   copied after everything else.
 - **The basemap's pieces** (`mirror/.basemap/<archive hash>/`): each a PMTiles archive of its own,
