@@ -152,6 +152,9 @@ pub(crate) struct Need {
     m: Measured,
     cores: Option<u32>,
     cold: bool,
+    /// Only waiting on a worker (its Mac's `Capacity::waiting`): counted at the memory it holds
+    /// now, within its measure, and none of its cores (docs/pool.md §7.2, A job waiting on a worker).
+    waits: bool,
 }
 
 /// The steps known to honour the threads they're granted (task #499 review): their cold starts
@@ -507,8 +510,8 @@ impl Sched {
     /// a cold start (`Need::cold`), its provisional need (`provisional`).
     pub(super) fn pack_need(&self, step: &str, targets: &[String]) -> Need {
         match self.job_need(step, targets) {
-            Some((m, cores)) => Need { m, cores, cold: false },
-            None => Need { m: self.provisional(step, targets), cores: None, cold: true },
+            Some((m, cores)) => Need { m, cores, cold: false, waits: false },
+            None => Need { m: self.provisional(step, targets), cores: None, cold: true, waits: false },
         }
     }
 
@@ -518,7 +521,9 @@ impl Sched {
     /// the whole Mac (task #499 review: one that runs as many threads as the Mac has would swamp
     /// the jobs beside it).
     pub(super) fn need_cores(&self, step: &str, targets: &[String], n: &Need, share: u32, total: u32) -> u32 {
-        if n.cold && !THREADS_HONOURED.contains(&step) {
+        if n.waits {
+            0
+        } else if n.cold && !THREADS_HONOURED.contains(&step) {
             total
         } else {
             self.cores_of(step, targets, n.cores, share)
@@ -584,10 +589,20 @@ impl Sched {
     pub fn pack(&mut self, a: &Ask, offers: &[Offer], lead: bool, clock: Clock) -> (Vec<Pick>, Option<String>) {
         let now = clock.now;
         let mine = self.job_leases(&a.worker, now);
-        // (A job held: its measure, else its provisional need, `pack_need`; a task, nothing.)
+        // (A job held: its measure, else its provisional need, `pack_need`; one its Mac says only
+        // waits on a worker (`Capacity::waiting`), at what it holds now within that, none of its
+        // cores: the room past it free for a job beside it, which yields to it when it goes on
+        // (crate::agent's `yielding`); a task, nothing.)
+        let waits =
+            |l: &Lease| a.cap.as_ref().and_then(|c| c.waiting.iter().find(|w| w.lease == l.id)).map(|w| w.held_mb);
         let need = |s: &Sched, l: &Lease| match &l.work {
             Work::Job { step, targets } => {
-                Some(s.pack_need(step, &targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>()))
+                let mut n = s.pack_need(step, &targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>());
+                if let Some(held) = waits(l) {
+                    n.m.mem_mb = n.m.mem_mb.min(held);
+                    n.waits = true;
+                }
+                Some(n)
             }
             Work::Task { .. } => None,
         };
@@ -633,7 +648,7 @@ impl Sched {
         // (granted since it asked, or an older agent's) are taken off here.)
         let reserved_by_agent = |l: &Lease| a.cap.as_ref().is_some_and(|c| c.leases.contains(&l.id));
         let mut room = a.clone();
-        for (l, n) in mine.iter().zip(needs.iter().flatten()) {
+        for (l, n) in mine.iter().zip(&needs).filter_map(|(l, n)| Some((l, n.as_ref()?))) {
             room.mem_mb = room.mem_mb.saturating_sub(n.m.mem_mb);
             if !reserved_by_agent(l) {
                 room.disk_mb = room.disk_mb.map(|d| d.saturating_sub(n.m.disk_mb));

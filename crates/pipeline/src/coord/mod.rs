@@ -878,6 +878,10 @@ pub struct Capacity {
     pub guard: bool,
     /// The leases of its running jobs.
     pub leases: Vec<u64>,
+    /// Those of its running jobs that only wait on a worker (crate::offload's WAITING_ENV), each
+    /// with the memory it holds now: packed at that and none of their cores (task #462).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting: Vec<WaitingJob>,
     /// What it holds of each shared cache (crate::needs::CACHES, by name; task #392), measured on
     /// its disk as it asks: the first job reading one is reserved its fill less that.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -886,6 +890,14 @@ pub struct Capacity {
     /// live store's newest): the lead sums the members' (`Coordinator::nas_view`). None: not measured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nas_traffic: Option<[f64; 7]>,
+}
+
+/// A job of a Mac's that only waits on a worker (`Capacity::waiting`): its lease, and what it holds
+/// now (MB, its memory guard's last sample).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitingJob {
+    pub lease: u64,
+    pub held_mb: u64,
 }
 
 /// The NAS as the lead sees it, for the status (`Coordinator::nas_view`): the day's probes kept
@@ -7378,6 +7390,52 @@ mod tests {
         assert_eq!(all_granted(&w, &a).len(), 1);
         assert_eq!(all_granted(&w, &a).len(), 1);
         assert!(all_granted(&w, &a).is_empty(), "a third would pass its disk");
+    }
+
+    /// A member's job only waiting on a worker (task #462, `Capacity::waiting`): packed at the
+    /// memory it holds now (never above its measure) and none of its cores, so a job goes beside
+    /// it in its slot's room; only its own Mac's lease counts so (another member naming it frees
+    /// nothing); its lease lapsed, it counts for nothing as ever. Two members, a virtual clock.
+    #[test]
+    fn a_members_job_waiting_on_a_worker_gives_its_room() {
+        let (_d, c, w, clock) = every((0, 0));
+        packable(&c, "slope", 6, Some(1));
+        let ask = |who: &str, mem: u64, want: usize, leases: Vec<u64>, waiting: Vec<WaitingJob>| Ask {
+            want,
+            cap: Some(Capacity {
+                at: unix_now(),
+                cores: 8,
+                cores_free: 8,
+                disk_mb: 64_000,
+                leases,
+                waiting,
+                ..Default::default()
+            }),
+            ..every_ask(who, "slope", mem, 64_000)
+        };
+        let wait = |lease: u64, held_mb: u64| vec![WaitingJob { lease, held_mb }];
+        // Memory: m1 spares 3000 MB, its job measured 2000: nothing beside it.
+        let g1 = w.ask(&ask("m1", 3000, 1, vec![], vec![])).unwrap().unwrap();
+        assert!(w.ask(&ask("m1", 3000, 1, vec![g1.lease], vec![])).unwrap().is_none());
+        // Waiting, holding 300 MB: a second goes beside it.
+        let g2 = w.ask(&ask("m1", 3000, 1, vec![g1.lease], wait(g1.lease, 300))).unwrap().unwrap();
+        // Holding past its measure: counted at its measure (2000 + 2000 of 5000), no third.
+        assert!(w.ask(&ask("m1", 5000, 1, vec![g1.lease, g2.lease], wait(g1.lease, 9000))).unwrap().is_none());
+        // Another member naming m1's lease frees nothing of its own room.
+        let g3 = w.ask(&ask("m2", 3000, 1, vec![], vec![])).unwrap().unwrap();
+        assert!(w.ask(&ask("m2", 3000, 1, vec![g3.lease], wait(g1.lease, 0))).unwrap().is_none());
+        // m1 gone while it waited, its leases lapsed: its room whole again when it's back.
+        clock.advance(TTL + Duration::from_secs(1));
+        assert_eq!(all_granted(&w, &ask("m1", 4000, 2, vec![], vec![])).len(), 2);
+        // Cores: 8, a packed share of 2: four jobs; one of them waiting, a fifth.
+        let (_d, c, w, _clock) = every((0, 0));
+        packable(&c, "slope", 6, Some(4));
+        let gs = w.ask(&ask("m1", 64_000, 8, vec![], vec![])).unwrap().unwrap();
+        let mut leases = vec![gs.lease];
+        leases.extend(gs.more.iter().map(|g| g.lease));
+        assert_eq!(leases.len(), 4);
+        assert!(w.ask(&ask("m1", 64_000, 1, leases.clone(), vec![])).unwrap().is_none(), "no core left");
+        assert!(w.ask(&ask("m1", 64_000, 1, leases.clone(), wait(leases[0], 300))).unwrap().is_some());
     }
 
     /// Disk reservations (task #242): a grant carries its job's measured disk, which its agent

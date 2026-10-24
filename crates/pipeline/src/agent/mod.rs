@@ -2606,30 +2606,18 @@ impl Agent {
         };
         let limit = self.jobs_limit(total);
         let alone = self.running_jobs() == 0;
-        // (A job waiting on a worker holding its z6 tile's tail: counted as it holds now, none of its
-        // cores, where its lease counts it by its measures: the room past them given back to the
-        // ask. A job started beside it yields to it, `start_granted`.)
-        let (mut mem_back, mut cores_back) = (0u64, 0u32);
-        for k in (0..self.slots.len()).filter(|&k| self.waiting_on(k).is_some()) {
-            if let Some(r) = self.slots[k].running.as_ref() {
-                let need = self.measured_job(&r.spec).map_or(0, |m| m.mem_mb);
-                mem_back += need.saturating_sub(self.held_mb(k).unwrap_or(need));
-                cores_back += r.threads as u32;
-            }
-        }
-        let mut cap = self.capacity(c);
-        cap.cores += cores_back;
+        // (A job waiting on a worker: said in its capacity, `Capacity::waiting`, as a member's is.)
         let ask = crate::coord::Ask {
             kind: "native".into(),
             label: Some(format!("{} (lead)", self.host)),
             can,
             // (The memory its owner gives the build here, within the guard's limit: `build_room`.)
-            mem_mb: if limit > 0 || self.build_memory.is_some() { self.build_room() + mem_back } else { u64::MAX >> 1 },
-            cores: mac_cores() + cores_back,
+            mem_mb: if limit > 0 || self.build_memory.is_some() { self.build_room() } else { u64::MAX >> 1 },
+            cores: mac_cores(),
             app: Some(self.app.clone()),
             limit_mb: Some(limit).filter(|&l| l > 0 && !co.all_new()),
             disk_mb: (!alone).then(|| self.disk_room() >> 20),
-            cap: Some(cap),
+            cap: Some(self.capacity(c)),
             want: if alone { 1 } else { want(self.job_slots(), self.running_jobs()) },
             ..Default::default()
         };
@@ -5259,7 +5247,7 @@ impl Agent {
             t => t,
         };
         let limit_mb = self.jobs_limit(total);
-        let (mut held_mb, mut need, mut leases) = (0u64, 0u64, Vec::new());
+        let (mut held_mb, mut need, mut leases, mut waiting) = (0u64, 0u64, Vec::new(), Vec::new());
         for (k, s) in self.slots.iter().enumerate() {
             if let Some(r) = &s.running {
                 let held = self.held_mb(k).unwrap_or(0);
@@ -5267,9 +5255,15 @@ impl Agent {
                 need += held.max(self.spec_peak(&r.spec));
             }
             if let Some(l) = &s.lease {
-                leases.push(match l {
+                let n = match l {
                     Held::Own(n) | Held::Leased { lease: n, .. } | Held::Pooled { id: n, .. } => *n,
-                });
+                };
+                leases.push(n);
+                // (Its job only waiting on a worker, sampled: the lead packs it at what it holds,
+                // none of its cores, task #462.)
+                if let Some(held_mb) = self.held_mb(k).filter(|_| self.waiting_on(k).is_some()) {
+                    waiting.push(crate::coord::WaitingJob { lease: n, held_mb });
+                }
             }
         }
         let cores = std::thread::available_parallelism().map_or(4, |n| n.get() as u32);
@@ -5295,6 +5289,7 @@ impl Agent {
             home: c.home,
             guard: self.guard_stops(),
             leases,
+            waiting,
             caches: caches_here(&self.o.home.join("cache")),
             nas_traffic: self.live.as_ref().and_then(|l| {
                 let t = now_s();
