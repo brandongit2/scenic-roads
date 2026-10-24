@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const [port, root, meshRoot] = process.argv.slice(2);
-// (A root's manifest as the build's readers have it: the current term's snapshot, else the newest of a
+// (A root's manifest as the build's readers have it: the current term's brief or snapshot, else the newest of a
 // term before it, else, before the pool, state/build/manifest.json; docs/pool.md §6.2.)
 const manifest = (r) => {
   const b = path.join(r, 'state/build');
@@ -19,7 +19,7 @@ const manifest = (r) => {
   try { e = json('lead.json').term; } catch { e = Math.max(0, ...(fs.existsSync(path.join(b, 'terms')) ? fs.readdirSync(path.join(b, 'terms')) : []).map((n) => parseInt(n, 10) || 0)); }
   while (fs.existsSync(path.join(b, `terms/${e + 1}.json`))) e++;
   for (let t = e; t >= 1; t--) {
-    for (const f of [`term/${t}/records.json`, ...(t === 1 ? ['term/1/first.json'] : [])]) {
+    for (const f of [`term/${t}/brief.json`, `term/${t}/records.json`, ...(t === 1 ? ['term/1/first.json'] : [])]) {
       if (fs.existsSync(path.join(b, f))) return json(f).manifest;
     }
   }

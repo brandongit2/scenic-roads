@@ -1641,8 +1641,15 @@ mod tests {
             std::fs::remove_file(&mf).unwrap();
             b.run.keep_today(true);
             assert!(!mf.exists(), "every member reads the snapshot: not written");
-            // A on an older app: its heartbeat without the field (A not stepped, so it stays so).
+            // A's heartbeat not there (lost, or A never beat): counted as an older app's.
             let hb = root.join(crate::pool::beat::path(&a.id()));
+            let kept = std::fs::read(&hb).unwrap();
+            std::fs::remove_file(&hb).unwrap();
+            b.pass(PROBE_S);
+            b.go();
+            assert!(!b.run.side.readers_ready, "a member without a heartbeat");
+            std::fs::write(&hb, &kept).unwrap();
+            // A on an older app: its heartbeat without the field (A not stepped, so it stays so).
             let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&hb).unwrap()).unwrap();
             assert_eq!(v.as_object_mut().unwrap().remove("reads_records"), Some(serde_json::Value::Bool(true)));
             std::fs::write(&hb, serde_json::to_vec(&v).unwrap()).unwrap();
@@ -2131,13 +2138,11 @@ mod tests {
             pass_all(&mut [&mut a, &mut b], 60);
             let ib = b.id();
             let root = a.root.clone();
-            // (The switch recorded in the term's snapshot, which readers read.)
+            // (The switch recorded in the term's snapshot and brief, which readers read.)
             let switch_to = |file: &str| {
                 let mut r = crate::out::records_now(&root).unwrap();
                 r.manifest.insert(crate::inputs::switched_logical(crate::inputs::regions::UNIT), file.to_string());
-                let p = root.join(crate::pool::records::path(r.term));
-                p.parent().unwrap().create_dir_all().unwrap();
-                p.write(serde_json::to_vec(&r).unwrap()).unwrap();
+                r.save(&root).unwrap();
             };
             // Proved on an app newer than theirs: B can't be handed the lead, and the view says why.
             a.root.join("sw.json").write(br#"{"same": true, "app": "29991231-0000-aaaaaaa"}"#).unwrap();

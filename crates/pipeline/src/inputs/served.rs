@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 /// Today's manifest file: the records before the pool (a test's NAS).
 pub const RECORDS: &str = "state/build/manifest.json";
 
-/// The records' manifest as a reader has it now (crate::pool::records::Records::now: the current
-/// term's snapshot), the NAS project folder's files read with `read` (an error whose cause is a
+/// The records' manifest as a reader has it now (crate::pool::records::Brief::now: the current
+/// term's brief), the NAS project folder's files read with `read` (an error whose cause is a
 /// file not found: not there).
 pub fn manifest(read: &dyn Fn(&str) -> Result<Vec<u8>>) -> Result<BTreeMap<String, String>> {
     let read = |p: &str| match read(p) {
@@ -26,7 +26,7 @@ pub fn manifest(read: &dyn Fn(&str) -> Result<Vec<u8>>) -> Result<BTreeMap<Strin
         Err(e) if not_found(&e) => Ok(None),
         Err(e) => Err(e),
     };
-    Ok(crate::pool::records::Records::now(&crate::pool::nas::ReadOnly(&read))?.manifest)
+    Ok(crate::pool::records::Brief::now(&crate::pool::nas::ReadOnly(&read))?.manifest)
 }
 
 /// Whether `e` is a file not found (through a pool's read, or the file system's).

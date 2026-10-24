@@ -2442,7 +2442,7 @@ fn p5_check(root: &store::nasfs::NasRoot, args: &[String]) -> Result<()> {
         _ => anyhow::bail!("p5-check trees"),
     }
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(root)).context("no complete OSM pass")?;
-    let pipeline::pool::records::Records { manifest: m, keys, .. } = pipeline::out::records_now(root)?;
+    let pipeline::pool::records::Brief { manifest: m, keys, .. } = pipeline::out::brief_now(root)?;
     let src = pipeline::inputs::regions::read::source(root, &m)?;
     let (recipes, bad): (Vec<_>, Vec<(String, String)>) = (pipeline::inputs::regions::read::recipes(&src)?, Vec::new());
     anyhow::ensure!(bad.is_empty(), "regions that can't be read now (the agent re-keys nothing meanwhile): {bad:?}");

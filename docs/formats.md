@@ -955,7 +955,9 @@ class, id) within a tile. The client sends the id with the clicked point.
   - `state/build/term/1/first.json` and `state/build/term/<E>/records.json` (`{term, seq, manifest,
     keys, pending, sizes, raw, reflected, rejected, last: {step: {target: lease}}, horizon,
     handed}`; `sizes`: content name → bytes of the files the manifest names, as their jobs wrote
-    them); readers read these (`Records::now`). The lead also writes `manifest.json`, `jobs.json`,
+    them); readers read these (`Records::now`). `state/build/term/<E>/brief.json` (E ≥ 2): `{term,
+    seq, manifest, keys}` of its term's last snapshot, written after it, read by readers of those
+    alone (`Brief::now`). The lead also writes `manifest.json`, `jobs.json`,
     `pending.json` and `sizes.json` after its saves while a member's app reads those
     (`Beat::reads_records` not in its heartbeat, docs/pool.md §6.2).
   - `state/journal/<day>/<term>-<n>.json`: a job's entry `{member, lease, step, handoff, at}`

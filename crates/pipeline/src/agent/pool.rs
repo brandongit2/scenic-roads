@@ -613,7 +613,7 @@ impl Side {
     pub fn regions_app(&self) -> std::result::Result<Option<String>, String> {
         let read =
             |n: &str| -> anyhow::Result<Vec<u8>> { self.nas.read(n)?.with_context(|| format!("{n} isn't there")) };
-        let m = Records::now(&*self.nas).map_err(|e| format!("the records: {e:#}"))?.manifest;
+        let m = crate::pool::records::Brief::now(&*self.nas).map_err(|e| format!("the records: {e:#}"))?.manifest;
         crate::inputs::regions::read::switch_app(&m, &read).map_err(|e| format!("{e:#}"))
     }
 

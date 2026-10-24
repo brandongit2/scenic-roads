@@ -154,13 +154,13 @@ for i in range(int(sys.argv[1])): w("{\"k\": \"k%d\", \"v\": %d}\n" % (i, i))' $
   state)
     d=${2:?its folder}; r=${3:?the scratch folder}
     $(scenic_of $d) inputs --root $r --home ${d:a}/agent
-    # (The records as the build's readers have them: the current term's snapshot, else the newest
+    # (The records as the build's readers have them: the current term's brief or snapshot, else the newest
     # of a term before it; docs/pool.md §6.2.)
     python3 -I -c 'import json, os, sys
 b = sys.argv[1] + "/state/build/"
 e = json.load(open(b + "lead.json"))["term"]
 while os.path.exists(f"{b}terms/{e + 1}.json"): e += 1
-f = next(p for t in range(e, 0, -1) for p in [f"term/{t}/records.json"] + (["term/1/first.json"] if t == 1 else []) if os.path.exists(b + p))
+f = next(p for t in range(e, 0, -1) for p in [f"term/{t}/brief.json", f"term/{t}/records.json"] + (["term/1/first.json"] if t == 1 else []) if os.path.exists(b + p))
 [print(f"records: {k} -> {v}") for k, v in sorted(json.load(open(b + f))["manifest"].items()) if k.startswith("sources/inputs/")]' $r
     ;;
   wait)

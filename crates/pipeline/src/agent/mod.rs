@@ -206,11 +206,11 @@ pub(crate) fn want(slots: usize, running: usize) -> usize {
     slots.saturating_sub(running)
 }
 
-/// The build's records as a reader has them now (crate::out::records_now), read within
-/// `nasread::DEADLINE`: none (empty ones) when they can't be read now, for showing.
-fn records_deadlined(root: &Path) -> crate::pool::records::Records {
+/// The build's records' manifest and keys as a reader has them now (crate::out::brief_now), read
+/// within `nasread::DEADLINE`: none (empty ones) when they can't be read now, for showing.
+fn records_deadlined(root: &Path) -> crate::pool::records::Brief {
     let r = root.to_path_buf();
-    nasread::with(root, move || crate::out::records_now(&r).map_err(std::io::Error::other)).unwrap_or_default()
+    nasread::with(root, move || crate::out::brief_now(&r).map_err(std::io::Error::other)).unwrap_or_default()
 }
 
 /// `SCENIC_TEST_WORKER` when set: the name the agent works and reports under in place of its Mac's
@@ -2026,7 +2026,7 @@ impl Agent {
 
     /// The records' manifest and the planning keys (`planning_keys`), from one read of the records.
     fn planning_records(&self, root: &Path) -> Result<(BTreeMap<String, String>, build::Keys)> {
-        let r = crate::out::records_now(root)?;
+        let r = crate::out::brief_now(root)?;
         Ok((r.manifest, r.keys.with_waiting(&self.handoff_bases(root))?))
     }
 
@@ -8629,7 +8629,7 @@ impl Agent {
             items.extend(build::checklist_to_come());
             return build::fold(&items, &next, &notes);
         };
-        let crate::pool::records::Records { manifest, keys, .. } = records_deadlined(root);
+        let crate::pool::records::Brief { manifest, keys, .. } = records_deadlined(root);
         // Countries the pass couldn't assemble, kept as the previous pass's outlines: said on the
         // pass's line until a pass has them whole (crate::outlines::assemble).
         if let Some(c) = manifest.get(&format!("sources/osm/{date}/outlines")) {
@@ -8753,7 +8753,7 @@ impl Agent {
         Option<std::sync::Arc<crate::reach::Reaches>>,
     )> {
         let date = self.latest_pass(root)?;
-        let crate::pool::records::Records { manifest, keys, .. } = records_deadlined(root);
+        let crate::pool::records::Brief { manifest, keys, .. } = records_deadlined(root);
         let covs = self.coverage(root, &manifest, false).ok()?;
         let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
         Some((date, manifest, covs, keys, reach))

@@ -144,7 +144,7 @@ impl Keys {
     /// The keys for planning and recording: none when there are none yet, an error when they can't
     /// be read now (so a job isn't started again, nor the keys written back, from empty ones).
     pub fn load_strict(root: &store::nasfs::NasRoot) -> anyhow::Result<Keys> {
-        Ok(crate::out::records_now(root)?.keys)
+        Ok(crate::out::brief_now(root)?.keys)
     }
 
     /// The keys with the done records of the hand-offs waiting under each of `bases` on top (the

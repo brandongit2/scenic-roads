@@ -96,6 +96,70 @@ pub fn path(term: u64) -> String {
     format!("state/build/term/{term}/records.json")
 }
 
+/// The path of term `term`'s brief (`Brief`): its snapshot's manifest and keys alone.
+pub fn brief_path(term: u64) -> String {
+    format!("state/build/term/{term}/brief.json")
+}
+
+/// A term's snapshot's manifest and keys alone (a quarter of its bytes: the unverified uploads,
+/// the sizes and the journal's names left out), written whole by its lead after each snapshot of a
+/// term after the first, for the readers that need no more (`Brief::now`): the map server's syncs,
+/// the hosts, the agent's planning, a catalog's checks. One read pairs keys and manifest of one
+/// version (invariant 4).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Brief {
+    /// The term it's of.
+    pub term: u64,
+    /// The snapshot it's of (`Records::seq`).
+    pub seq: u64,
+    /// Logical name → content name.
+    pub manifest: BTreeMap<String, String>,
+    /// The keys of the jobs that last succeeded.
+    pub keys: Keys,
+}
+
+impl Brief {
+    /// `Records::now`'s manifest and keys, reading a term's brief where it has one (its snapshot
+    /// where it has none: a lead on an app from before briefs, or one stopped between the two
+    /// writes); today's two files before the pool.
+    pub fn now(nas: &dyn Nas) -> Result<Brief> {
+        let cur = super::term::current(nas).context("the current term")?;
+        if cur.term == 0 {
+            no_pool(nas)?;
+            return Ok(Brief {
+                term: 1,
+                manifest: read_or_default(nas, TODAY[0])?,
+                keys: read_or_default(nas, TODAY[1])?,
+                ..Default::default()
+            });
+        }
+        for f in (2..=cur.term).rev() {
+            if let Some(b) = nas.read(&brief_path(f))? {
+                let b: Brief = serde_json::from_slice(&b).with_context(|| format!("parse {}", brief_path(f)))?;
+                ensure!(b.term == f, "{} holds term {}'s brief", brief_path(f), b.term);
+                return Ok(b);
+            }
+            if let Some(r) = Records::load(nas, f)? {
+                return Ok(Brief::of(r));
+            }
+        }
+        Ok(Brief::of(term_one(nas, true)?))
+    }
+
+    fn of(r: Records) -> Brief {
+        Brief { term: r.term, seq: r.seq, manifest: r.manifest, keys: r.keys }
+    }
+}
+
+/// Refuses to read today's files as the records when the pool has begun (term 1's first snapshot
+/// is there, never removed) but no term was found (crate::pool::term::current: the lead's hint,
+/// the terms' listing and term 1 itself not read, stale): today's files may be days old once the
+/// lead stops writing them, and GC's live set would be theirs.
+fn no_pool(nas: &dyn Nas) -> Result<()> {
+    ensure!(!nas.exists(FIRST)?, "the pool has begun and no term can be read now: the records aren't read");
+    Ok(())
+}
+
 /// The path of term 1's first snapshot (`first`), which only its maker writes.
 pub const FIRST: &str = "state/build/term/1/first.json";
 
@@ -170,13 +234,14 @@ impl Records {
     pub fn now(nas: &dyn Nas) -> Result<Records> {
         let cur = super::term::current(nas).context("the current term")?;
         if cur.term == 0 {
+            no_pool(nas)?;
             return Records::today(nas);
         }
         Ok(Records::newest(nas, cur.term, true)?.unwrap_or_default())
     }
 
-    /// Saves them as their term's next snapshot (`seq` one more), whole; term 1's also to today's
-    /// three files after. The number goes up even when the write fails, so no two versions that may
+    /// Saves them as their term's next snapshot (`seq` one more), whole, then a later term's brief
+    /// (`Brief`); term 1's to today's files after. The number goes up even when the write fails, so no two versions that may
     /// land share one.
     pub fn save(&mut self, nas: &dyn Nas) -> Result<()> {
         ensure!(self.term >= 1, "records of no term");
@@ -185,6 +250,18 @@ impl Records {
         let named: BTreeSet<&String> = self.manifest.values().collect();
         self.sizes.retain(|c, _| named.contains(c));
         nas.write_whole(&path(self.term), &serde_json::to_vec(self)?)?;
+        if self.term >= 2 {
+            // (Brief's fields, borrowed.)
+            #[derive(Serialize)]
+            struct B<'a> {
+                term: u64,
+                seq: u64,
+                manifest: &'a BTreeMap<String, String>,
+                keys: &'a Keys,
+            }
+            let b = B { term: self.term, seq: self.seq, manifest: &self.manifest, keys: &self.keys };
+            nas.write_whole(&brief_path(self.term), &serde_json::to_vec(&b)?)?;
+        }
         if self.term == 1 {
             nas.write_whole(TODAY[0], &serde_json::to_vec_pretty(&self.manifest)?)?;
             nas.write_whole(TODAY[2], &serde_json::to_vec_pretty(&self.pending)?)?;
@@ -907,6 +984,77 @@ mod tests {
         // Tried again after its save landed: from its own snapshot, its number going on.
         let again = up(&nas, &t4, None, &any).unwrap();
         assert_eq!((again.records.term, again.records.seq), (4, 2));
+    }
+
+    #[test]
+    fn readers_read_a_terms_brief_its_snapshot_without_one_and_todays_files_only_before_the_pool() {
+        let nas = Mem::default();
+        nas.write_whole(TODAY[0], br#"{"base/6-1-1": "base/6-1-1.k0.base"}"#).unwrap();
+        // Before the pool: today's files.
+        assert_eq!(Brief::now(&nas).unwrap().manifest.len(), 1);
+        assert_eq!(Records::now(&nas).unwrap().manifest.len(), 1);
+        let a = lead("20261005-2202-61eb22c");
+        let t1 = term::bootstrap(&nas, &a, DAY, false).unwrap().unwrap();
+        let mut r1 = up(&nas, &t1, None, &any).unwrap().records;
+        assert!(nas.read(&brief_path(1)).unwrap().is_none(), "term 1's: today's files");
+        let e1 = built(1, 1, "6-1-2", "k1");
+        r1.apply(&e1.key().unwrap(), &e1);
+        r1.save(&nas).unwrap();
+        let b1 = Brief::now(&nas).unwrap();
+        assert_eq!((b1.term, b1.seq, b1.keys.unit.get("6-1-2").map(String::as_str)), (1, r1.seq, Some("k1")));
+        // Term 2, its lead's snapshots each with its brief: one read, of a quarter the bytes.
+        let b = Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: a.app.clone() };
+        let t2 = term::claim(&nas, &Current { term: 1, lead: Some(t1.clone()) }, &b, "taken over", DAY + 60)
+            .unwrap()
+            .unwrap();
+        let mut r2 = up(&nas, &t2, None, &any).unwrap().records;
+        let e2 = built(2, 1, "6-1-3", "k2");
+        r2.apply(&e2.key().unwrap(), &e2);
+        r2.save(&nas).unwrap();
+        let brief = Brief::now(&nas).unwrap();
+        assert_eq!(
+            (brief.term, brief.seq, &brief.manifest, &brief.keys),
+            (2, r2.seq, &r2.manifest, &r2.keys),
+            "the term's brief, of its last snapshot"
+        );
+        assert!(nas.read(&brief_path(2)).unwrap().is_some());
+        assert_eq!(Records::now(&nas).unwrap(), r2);
+        // A lead on an app from before briefs (its snapshot alone): its snapshot.
+        nas.remove(&brief_path(2)).unwrap();
+        assert_eq!(Brief::now(&nas).unwrap(), Brief::of(r2.clone()));
+        // Term 3 made, no snapshot yet: term 2's.
+        term::claim(&nas, &Current { term: 2, lead: Some(t2) }, &a, "taken over", DAY + 120).unwrap().unwrap();
+        assert_eq!(Brief::now(&nas).unwrap().term, 2);
+        // No term found (the hint, the listing and the terms unreadable: stale) once the pool has
+        // begun: an error,
+        // never today's files (GC's live set from days-old records).
+        struct Lost<'a>(&'a Mem);
+        impl Nas for Lost<'_> {
+            fn create_new(&self, p: &str, b: &[u8]) -> Result<Created> {
+                self.0.create_new(p, b)
+            }
+            fn write_whole(&self, p: &str, b: &[u8]) -> Result<()> {
+                self.0.write_whole(p, b)
+            }
+            fn read(&self, p: &str) -> Result<Option<Vec<u8>>> {
+                if p == term::HINT {
+                    Ok(None)
+                } else {
+                    self.0.read(p)
+                }
+            }
+            fn exists(&self, p: &str) -> Result<bool> {
+                Ok(!p.starts_with(term::DIR) && self.0.exists(p)?)
+            }
+            fn list(&self, _: &str) -> Result<Vec<String>> {
+                Ok(Vec::new())
+            }
+            fn remove(&self, p: &str) -> Result<()> {
+                self.0.remove(p)
+            }
+        }
+        assert!(Brief::now(&Lost(&nas)).is_err());
+        assert!(Records::now(&Lost(&nas)).is_err());
     }
 
     #[test]

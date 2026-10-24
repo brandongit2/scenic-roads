@@ -141,10 +141,16 @@ pub fn records_now(root: &store::nasfs::NasRoot) -> Result<crate::pool::records:
     crate::pool::records::Records::now(root)
 }
 
-/// The records' manifest under `root` (`records_now`), read only: the accepted versions, for a
+/// The build's records' manifest and keys under `root` as a reader has them now
+/// (crate::pool::records::Brief::now: the current term's brief, a quarter of its snapshot's bytes).
+pub fn brief_now(root: &store::nasfs::NasRoot) -> Result<crate::pool::records::Brief> {
+    crate::pool::records::Brief::now(root)
+}
+
+/// The records' manifest under `root` (`brief_now`), read only: the accepted versions, for a
 /// reader that needs no `Out`.
 pub fn read_manifest(root: &store::nasfs::NasRoot) -> Result<BTreeMap<String, String>> {
-    Ok(records_now(root)?.manifest)
+    Ok(brief_now(root)?.manifest)
 }
 
 /// A JSON record (the manifest, the unverified uploads): empty when there's none yet, an error when

@@ -182,15 +182,23 @@ A term is `state/build/terms/<E>.json`, made once with create-new (`crate::pool:
 - **Readers** (the jobs' `Out`, the agent's plan and status, GC, the map server, the CLI and the
   checks) read the current term's snapshot (`Records::now`, `out::records_now`: `Records::newest`,
   falling back to an earlier term's; before any term, today's files `manifest.json`, `jobs.json`,
-  `pending.json` and `sizes.json`, which a Mac's own jobs write without a pool). An idle agent's
+  `pending.json` and `sizes.json`, which a Mac's own jobs write without a pool; no term found once
+  term 1's first snapshot is there, a stale read, is an error, never today's files). Readers of the
+  manifest or keys alone (the map server's syncs every minute, the hosts, the plan and status, job
+  starts, the CLI and checks) read the term's brief instead (`records::Brief`,
+  `term/<E>/brief.json`: the manifest and keys, ~4 MB against the snapshot's ~15 MB, which is
+  mostly the unverified uploads), written whole by a term after the first's lead after each
+  snapshot (`Records::save`); a term without one (a lead on an older app, or stopped between the
+  two writes) is read from its snapshot (`Brief::now`). An idle agent's
   plan digest stats the current term's snapshot. The map server reads it through its own pool
   (`pool::nas::ReadOnly`).
 - **Today's files, for older apps** (the rollout): apps before this one read today's files. A
   heartbeat says its app reads the snapshot (`Beat::reads_records`); a term after the first's lead
   writes today's files after its saves (`agent::pool::write_today`) only while some member's
   heartbeat, as last read whole, doesn't say so (`Side::readers_ready`, read every `PROBE_S`; a
-  member with no heartbeat, or a shadow run's, counts as not saying so), and then at its next save
-  (`Run::keep_today`). Once every member's says so the files are left as they were, stale, read by
+  member with no heartbeat, or a shadow run's, counts as not saying so), and then at its next step
+  that didn't fail a save (`Run::keep_today`): a Mac back on an older app reads them up to
+  `PROBE_S` and a step stale. Once every member's says so the files are left as they were, stale, read by
   no app that heartbeats. Term 1's own saves still write them (`Records::save`).
 - **The coordinator's state** is per term too: `state/coord/term/<E>/state.json`
   (`crate::coord::PoolState`: leases, costs, floors, disks, failures, pause), written by the lead's
