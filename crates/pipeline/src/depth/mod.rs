@@ -24,6 +24,7 @@ pub mod compose;
 pub mod edt;
 pub mod fall;
 pub mod grids;
+pub mod resume;
 
 /// The depth layer's name (`layers/depth/…`).
 pub const LAYER: &str = "depth";

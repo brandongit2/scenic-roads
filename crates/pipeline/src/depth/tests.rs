@@ -664,9 +664,9 @@ fn measure_a_real_assembly() {
     };
     let io0 = grids::io_counts();
     let made = if z == 3 {
-        super::build::compose_lo(&out, &srcs, &water, local.clone(), q, upto).unwrap()
+        super::build::compose_lo(&out, &srcs, &water, local.clone(), q, upto, false).unwrap()
     } else {
-        super::build::compose_hi(&out, &srcs, &water, local.clone(), q, upto).unwrap()
+        super::build::compose_hi(&out, &srcs, &water, local.clone(), q, upto, false).unwrap()
     };
     let wall = t0.elapsed().as_secs_f64();
     let r = crate::timings::snapshot(true).unwrap();
@@ -827,4 +827,45 @@ fn measure_the_floors_shading() {
     for (z, (n, b)) in by_z {
         println!("  z{z}: {n} tiles, {:.1} KB a tile", b as f64 / n as f64 / 1024.0);
     }
+}
+
+/// A depth run stopped after some blocks (crate::depth::resume) resumes at the next: those kept
+/// not composed again (the sources' grids not read for them), and the tiles the same bytes as a
+/// run never stopped, an assembly's and a z6 tile's alike.
+#[test]
+fn a_depth_run_stopped_after_some_blocks_resumes_there_and_makes_the_same_bytes() {
+    use super::build::{compose_hi, compose_lo};
+    use super::resume::STOP_AFTER;
+    let d = tempfile::tempdir().unwrap();
+    let srcs = sources(d.path());
+    let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
+    let q = (T.0 >> 3, T.1 >> 3);
+    // (The assembly stored first: the z6 tile reads its lo packs.)
+    build_lo(&mut out, &srcs, &Fixture, None, q).unwrap();
+    let fresh_lo = compose_lo(&out, &srcs, &Fixture, None, q, 8, false).unwrap();
+    let fresh_hi = compose_hi(&out, &srcs, &Fixture, None, T, 12, false).unwrap();
+    assert!(!super::resume::dir(&out.scratch, (6, T.0, T.1)).exists(), "nothing kept without resuming on");
+    for stop in [1, 5, 40] {
+        let scratch = d.path().join(format!("scratch-{stop}"));
+        let out = Out::unbound(&d.path().join("root"), &scratch).unwrap();
+        STOP_AFTER.set(Some(stop));
+        assert!(compose_hi(&out, &srcs, &Fixture, None, T, 12, true).is_err(), "stopped after {stop} blocks");
+        let log = std::fs::read(super::resume::dir(&scratch, (6, T.0, T.1)).join("blocks")).unwrap();
+        assert!(!log.is_empty());
+        let resumed = compose_hi(&out, &srcs, &Fixture, None, T, 12, true).unwrap();
+        assert!(resumed == fresh_hi, "the same tiles, stopped after {stop} blocks");
+        // (An assembly's blocks are few: z6 one, z7 one, z8 four.)
+        STOP_AFTER.set(Some(stop.min(4)));
+        assert!(compose_lo(&out, &srcs, &Fixture, None, q, 8, true).is_err());
+        assert!(compose_lo(&out, &srcs, &Fixture, None, q, 8, true).unwrap() == fresh_lo);
+    }
+    // A run again with every block kept composes none: the log alone, the sources' grids gone.
+    let scratch = d.path().join("scratch-5");
+    let out = Out::unbound(&d.path().join("root"), &scratch).unwrap();
+    for c in 1..=3 {
+        std::fs::remove_file(d.path().join(format!("{c}.tif"))).unwrap();
+    }
+    assert!(compose_hi(&out, &srcs, &Fixture, None, T, 12, true).unwrap() == fresh_hi);
+    let fresh = Out::unbound(&d.path().join("root"), &d.path().join("scratch-none")).unwrap();
+    assert!(compose_hi(&fresh, &srcs, &Fixture, None, T, 12, true).is_err(), "made afresh, it reads them");
 }

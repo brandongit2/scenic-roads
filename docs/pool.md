@@ -1523,6 +1523,10 @@ forecast. Gone: the pool's on/off switch and shadow
 run, claims, the named writer (`SCENIC_BUILD_MAC`), the NAS's hand-off folders, per-Mac record
 writes.
 
+A depth job resumes its target at the block after the last it finished, from a log in its
+scratch folder on its Mac (crate::depth::resume: one append a block, never the NAS; taken only
+for the same inputs, so its tiles are the same bytes), with `resume` on.
+
 Still behind switches under `state/pool/` (a file; off while missing unless noted):
 `resume` (§7.2, §7.4), `brokers` (§8), `placement` (§7.2),
 `memory-guard` (on while missing). A new switch is made only once every
@@ -1532,7 +1536,7 @@ switched: `state/pool/slots` isn't read, but stays `on` on the NAS while an olde
 `state/pool/budgets` are no longer read either.
 
 Planned: readers reading the term's snapshot and the lead no longer writing today's three files;
-retiring the mailbox (§9.1); resuming beyond the OSM pass. Packing a terrain z6 tile's fetched raw
+retiring the mailbox (§9.1); resuming the terrain's and the slope's z6 tiles (after #639). Packing a terrain z6 tile's fetched raw
 tiles (`pack_raw_with`) stays inside that z6 tile's job.
 
 ## 13. Testing
