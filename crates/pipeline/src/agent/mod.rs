@@ -10796,7 +10796,7 @@ fn missing_feed_keys(inputs: &BTreeMap<String, String>) -> Option<String> {
         inputs.get("feed-keys")?.split(',').filter(|k| !k.is_empty() && !held.contains(k)).collect();
     (!missing.is_empty()).then(|| {
         format!(
-            "inputs/keys.env has no {}: the feeds declared with {} are left out until it does",
+            "keys.env has no {}: the feeds declared with {} are left out until it does",
             missing.join(", "),
             if missing.len() == 1 { "it" } else { "them" }
         )
