@@ -199,24 +199,28 @@ fn ring_area_m2(r: &[[i32; 2]]) -> f64 {
     s / 2.0
 }
 
-/// Douglas–Peucker with a tolerance in metres (on a local projection at the middle of the ring's
-/// latitudes, so a ring starting at a pole keeps its width); keeps a closed ring's first and last
-/// points and at least four.
+/// Douglas–Peucker with a tolerance in metres; keeps a closed ring's first and last points and at
+/// least four. The ring stays straight lines in longitude and latitude (as it is drawn and tested),
+/// and each point's distance from a chord is measured at that point's own scale (x by the cosine of
+/// its latitude, clamped to the map's edge), so no one latitude stands for the ring: a ring from the equator to a pole, or
+/// starting at one, keeps its width everywhere.
 pub fn simplify(r: &[[i32; 2]], tol_m: f64) -> Vec<[i32; 2]> {
     if r.len() <= 4 {
         return r.to_vec();
     }
-    let (lo, hi) = r.iter().fold((i32::MAX, i32::MIN), |(lo, hi), p| (lo.min(p[1]), hi.max(p[1])));
-    let lat0 = (f64::from(lo) + f64::from(hi)) / 2.0 * 1e-7;
-    let kx = 111_320.0 * lat0.to_radians().dcos() * 1e-7;
     let ky = 110_574.0 * 1e-7;
-    let xy: Vec<(f64, f64)> = r.iter().map(|p| (p[0] as f64 * kx, p[1] as f64 * ky)).collect();
+    // x unscaled (metres at the equator), each point's own scale kept beside it.
+    let xy: Vec<(f64, f64)> = r.iter().map(|p| (f64::from(p[0]) * 111_320.0 * 1e-7, f64::from(p[1]) * ky)).collect();
+    // Clamped to the map's edge (Web Mercator's ±85.05°): past it nothing is drawn, and a point at a
+    // pole (cos 0, all its x one place) would let a pole-wide edge go, drawing a diagonal instead.
+    let kx: Vec<f64> =
+        r.iter().map(|p| (f64::from(p[1]) * 1e-7).clamp(-85.051_128_78, 85.051_128_78).to_radians().dcos()).collect();
     let mut keep = vec![false; r.len()];
     keep[0] = true;
     keep[r.len() - 1] = true;
     // A closed ring's chord from its first point to itself is a point: split at the farthest point.
     let far = (1..r.len() - 1).max_by(|&a, &b| {
-        let d = |i: usize| (xy[i].0 - xy[0].0).powi(2) + (xy[i].1 - xy[0].1).powi(2);
+        let d = |i: usize| ((xy[i].0 - xy[0].0) * kx[i]).powi(2) + (xy[i].1 - xy[0].1).powi(2);
         d(a).total_cmp(&d(b))
     });
     let mut stack: Vec<(usize, usize)> = match far {
@@ -232,10 +236,13 @@ pub fn simplify(r: &[[i32; 2]], tol_m: f64) -> Vec<[i32; 2]> {
         }
         let (ax, ay) = xy[a];
         let (bx, by) = xy[b];
-        let (dx, dy) = (bx - ax, by - ay);
-        let len2 = dx * dx + dy * dy;
         let mut best = (0.0f64, 0usize);
         for (i, &(px, py)) in xy.iter().enumerate().take(b).skip(a + 1) {
+            // At p's scale: p and the chord's ends, x by p's cosine.
+            let k = kx[i];
+            let (ax, bx, px) = (ax * k, bx * k, px * k);
+            let (dx, dy) = (bx - ax, by - ay);
+            let len2 = dx * dx + dy * dy;
             let d2 = if len2 == 0.0 {
                 (px - ax).powi(2) + (py - ay).powi(2)
             } else {
@@ -1439,6 +1446,51 @@ mod tests {
             assert!(s.contains(&c), "{c:?} kept: {s:?}");
         }
         assert!(s.len() <= 12, "{s:?}");
+    }
+
+    #[test]
+    fn simplify_measures_each_point_at_its_own_latitude() {
+        // A thin ring from the equator to 85°N, its east side bulging 0.012° at 1°N (1.34 km) and
+        // 0.02° at 80°N (0.39 km). One scale at the middle latitude (42.5°) would read 0.99 km and
+        // 1.64 km, dropping the first and keeping the second at a 1 km tolerance.
+        let e7 = |x: f64, y: f64| [(x * 1e7) as i32, (y * 1e7) as i32];
+        let mut ring = vec![e7(0.0, 0.0), e7(1.0, 0.0)];
+        ring.extend((1..=850).map(|i| f64::from(i) * 0.1).map(|y| {
+            let bump = if (y - 1.0).abs() < 1e-9 {
+                0.012
+            } else if (y - 80.0).abs() < 1e-9 {
+                0.02
+            } else {
+                0.0
+            };
+            e7(1.0 + bump, y)
+        }));
+        ring.extend([e7(0.0, 85.0), e7(0.0, 0.0)]);
+        let s = simplify(&ring, 1000.0);
+        assert!(s.contains(&e7(1.012, 1.0)), "{s:?}");
+        assert!(!s.contains(&e7(1.02, 80.0)), "{s:?}");
+    }
+
+    #[test]
+    fn simplify_keeps_a_ring_on_the_antimeridian() {
+        // Chukotka-like: a box from 170°E to 180° with a notch on its 180° side; the ring is
+        // straight lines in degrees, so the 180° edge stays where it is and the notch is kept.
+        let e7 = |x: f64, y: f64| [(x * 1e7) as i32, (y * 1e7) as i32];
+        let mut ring = vec![e7(170.0, 64.0)];
+        ring.extend((0..=100).map(|i| e7(170.0 + f64::from(i) * 0.1, 64.0)));
+        ring.extend([
+            e7(180.0, 66.0),
+            e7(179.9, 66.05),
+            e7(180.0, 66.1),
+            e7(180.0, 68.0),
+            e7(170.0, 68.0),
+            e7(170.0, 64.0),
+        ]);
+        let s = simplify(&ring, 1000.0);
+        for c in [e7(180.0, 64.0), e7(179.9, 66.05), e7(180.0, 68.0), e7(170.0, 68.0)] {
+            assert!(s.contains(&c), "{c:?} kept: {s:?}");
+        }
+        assert!(s.len() <= 9, "{s:?}");
     }
 
     /// A country whose outer ring has a 55 m gap (w1's first node n5 is 0.0005° from w2's n1, as
