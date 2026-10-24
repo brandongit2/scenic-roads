@@ -688,7 +688,7 @@ export const defaults: AppState = {
   stopFilters: {},
   stopUnknown: { waterfall: false },
   terrain: {
-    on: true, exaggeration: 3, hillshade: true, method: 'combined', light: 315, shade: 0.15,
+    on: true, exaggeration: 3, hillshade: true, method: 'combined', light: 315, shade: 0.45,
     tint: true, tintVar: 'slope', tintOpacity: 0.1, tintBands: 0, tintCurve: 1, tintMatch: false,
     tintScales: {
       elev: { palette: 'atlas', auto: true, range: [0, 1900], fit: [1, 99], equalize: false, lowFade: 0, lowSpan: 0.5, threshold: { on: false, dir: 'above', value: 1000 } },
