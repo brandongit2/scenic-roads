@@ -739,7 +739,7 @@ holds the job's slot, so it names nothing: the lease counts by its measures unti
   the lead's daily `gc` job (`crate::pool::journal_gc`, task #644), on by default; the owner's kill
   switch `state/pool/journal-gc` in the project folder saying `off` stops it (`journal_gc::SWITCH`;
   missing or anything else: on; unreadable: that run skipped; a marker already written stays and
-  still fences take-ups). It runs off its loop, once its records
+  still fences take-ups: lifting one is `scenic pool journal-gc`, below). It runs off its loop, once its records
   are re-asserted and caught up, in two runs at least `WAIT_S` (12 h) apart:
   1. **Mark:** once the last GC's entries are forgotten, `state/journal/gc.json` is written whole,
      naming every entry of the days before `KEEP_DAYS` (7) ago, up to the first day holding one
@@ -766,6 +766,29 @@ holds the job's slot, so it names nothing: the lease counts by its measures unti
   installed after a removal and forced to lead could, on a stale read, start from records older
   than the removal. Today's three files are written from the records after each save: GC doesn't
   touch them. The refusals' notes (`rejected/`) are kept.
+  **A marker that fences for good** (task #651): one that can't be parsed, or records that never
+  come to cover it (older records restored, say), refuses every take-up and the pool has no lead.
+  The lead's heartbeat says so (`Beat::fenced`: since when, why, from `journal_gc::Fenced`), and
+  after `ALERT_S` (an hour: a stale read passes sooner) every Mac's view raises it as the lead
+  alert (`agent::lead::alert`), on the build page above the Overview and on the menu bar; until
+  then `scenic lead` says it on a line. `scenic pool journal-gc` checks the marker against the
+  newest records (`journal_gc::plan`) and says what's safe; `--repair` writes what it proposes,
+  only while the kill switch says `off` (no GC run then changes the marker or removes a file):
+  - covered, or no marker: nothing to do (a refused take-up read stale);
+  - records haven't the floor, or name not a marked entry already removed: **not safe**, nothing
+    written: a take-up from them would lose those entries. Restore newer records
+    (`state/build/term/`) from a backup; removing the marker by hand instead accepts that loss
+    (the entries' targets look not done, and their work is redone or lost);
+  - marked entries the records don't name, all still in the journal: dropped from the marker (a
+    take-up replays them from the journal), the rest kept, so nothing it removed is unfenced;
+  - can't be parsed: made again from the newest records as a mark would be, a superset of what the
+    lost one can have named: every entry they name of the days before `KEEP_DAYS` ago (up to the
+    first day holding one on the share they don't name), removed or not, its floor their horizon,
+    not done. The lost marker named only entries its snapshot, read back from the share, named,
+    so records at least as new name them all or have forgotten them; the command reads the newest
+    there now. Its one risk is that read itself being stale (an SMB client's stale view, seen for
+    up to 40 minutes): `--repair` it from a second Mac only if the first's proposal matches.
+  Then the kill switch back to on (or removed).
 - **The lead lists the journal off its loop:** every day after take-up and daily, the last two days
   every ten minutes. Otherwise it reads the entries members tell it of. An entry unreadable for an
   hour while the share answers is refused. Merging reads for at most a minute a loop.

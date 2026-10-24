@@ -8,7 +8,8 @@
 //! records that name it. That's the fence: a marker, `state/journal/gc.json`, naming the entries to
 //! remove (`Marker::keys`), the horizon they're before, and the horizon the records must have
 //! forgotten up to already (`floor`, the last GC's). `records::start` refuses (for now: it's tried
-//! again) to take up from records that don't name or forget every key it lists, or haven't the floor.
+//! again) to take up from records that don't name or forget every key it lists, or haven't the floor
+//! (`Fenced`); one that fences for good is raised as an alert and lifted, where safe, by `plan`.
 //!
 //! Two runs of the daily `gc` job on the lead (off its loop and the pool's lock, its records
 //! re-asserted and caught up first: crate::agent's sweeps), at least `WAIT_S` apart:
@@ -111,18 +112,171 @@ pub fn enabled(nas: &dyn Nas) -> bool {
     }
 }
 
-/// Whether records `r` may be taken up from (the fence): an error saying why not.
-pub fn fence(nas: &dyn Nas, r: &Records) -> Result<()> {
-    match read(nas)? {
-        Some(m) if !m.covers(r) => anyhow::bail!(
-            "the journal's entries before {} are being removed and term {}'s records at {} don't name them all \
-             (a stale read): try again shortly",
-            m.horizon,
-            r.term,
-            r.seq
-        ),
-        _ => Ok(()),
+/// Why take-ups are refused by the marker (`fence`): its error, told apart from a failing read so
+/// the lead's heartbeat can say so (`Beat::fenced`) and every view alert the owner
+/// (crate::agent::lead::alert). Transient on a stale read; for good when the marker is corrupt or
+/// the records never come to cover it: `scenic pool journal-gc` says which and lifts it when safe
+/// (`plan`).
+#[derive(Debug)]
+pub struct Fenced(pub String);
+
+impl std::fmt::Display for Fenced {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
+}
+
+impl std::error::Error for Fenced {}
+
+/// Whether records `r` may be taken up from (the fence): an error saying why not, a `Fenced` when
+/// it's the marker's doing (a failing read stays a plain error).
+pub fn fence(nas: &dyn Nas, r: &Records) -> Result<()> {
+    let Some(b) = nas.read(PATH)? else { return Ok(()) };
+    let m: Marker = serde_json::from_slice(&b)
+        .map_err(|e| Fenced(format!("the journal GC's marker ({PATH}) can't be parsed ({e})")))?;
+    if m.covers(r) {
+        return Ok(());
+    }
+    Err(Fenced(format!(
+        "the journal's entries before {} are being removed and term {}'s records at {} don't name them all \
+         (a stale read, or records older than the marker's: `scenic pool journal-gc` says which)",
+        m.horizon, r.term, r.seq
+    ))
+    .into())
+}
+
+/// What `scenic pool journal-gc` finds (`plan`), and the marker that would lift the fence safely.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Plan {
+    /// How it stands, in words.
+    pub said: String,
+    /// The marker to write in its place: None when nothing is to be done or it isn't safe.
+    pub write: Option<Marker>,
+}
+
+/// The marker checked against records `r` (the newest a take-up would start from), at `now`, and
+/// the safe way out when they don't cover it (docs/pool.md §7.3):
+/// - **Covered, or none:** nothing to do (a take-up refused meanwhile read stale).
+/// - **Records short of the floor:** not safe: the last GC's entries are gone and these records
+///   haven't forgotten them; restore newer records.
+/// - **Entries the records don't name:** each still on the share is dropped from the marker (a
+///   take-up replays it from the journal, so the fence needn't hold it); one gone isn't safe: it
+///   was removed, and any take-up from these records loses it.
+/// - **Corrupt:** made again from `r` as `mark` makes one, a superset of what it can have named:
+///   every entry `r` names of the days before `KEEP_DAYS` ago (up to the first day holding one on
+///   the share it doesn't name), on the share or not, its floor `r`'s horizon. Safe as long as `r`
+///   is at least as new as the records the lost marker was made from (it was made from records
+///   read back from the share, and `r` is the newest there now).
+pub fn plan(nas: &dyn Nas, r: &Records, now: u64) -> Result<Plan> {
+    let b = match nas.read(PATH)? {
+        None => return Ok(Plan { said: format!("No marker ({PATH}): nothing fences take-ups."), write: None }),
+        Some(b) => b,
+    };
+    let m: Marker = match serde_json::from_slice(&b) {
+        Ok(m) => m,
+        Err(e) => {
+            let Some(mut horizon) = journal::day(now.saturating_sub(KEEP_DAYS * 86400)) else {
+                anyhow::bail!("the clock")
+            };
+            if let Some(k) =
+                journal::list(nas, None)?.into_iter().find(|k| k.as_str() < horizon.as_str() && !r.handles(k))
+            {
+                horizon = k.split('/').next().unwrap_or_default().to_string();
+            }
+            let keys: BTreeSet<String> = r
+                .reflected
+                .iter()
+                .chain(r.rejected.keys())
+                .filter(|k| k.as_str() < horizon.as_str())
+                .cloned()
+                .collect();
+            let fresh =
+                Marker { horizon, floor: r.horizon.clone(), term: r.term, seq: r.seq, at: now, keys, done: false };
+            return Ok(Plan {
+                said: format!(
+                    "The marker can't be parsed ({e}): made again from term {}'s records at {} ({} entries before {}, \
+                     floor {:?}), which name every entry it can have named.",
+                    r.term,
+                    r.seq,
+                    fresh.keys.len(),
+                    fresh.horizon,
+                    fresh.floor
+                ),
+                write: Some(fresh),
+            });
+        }
+    };
+    if m.covers(r) {
+        return Ok(Plan {
+            said: format!(
+                "The marker (entries before {}, {}) is covered by term {}'s records at {}: take-ups pass it.",
+                m.horizon,
+                if m.done { "removed" } else { "being removed" },
+                r.term,
+                r.seq
+            ),
+            write: None,
+        });
+    }
+    if r.horizon.as_str() < m.floor.as_str() {
+        return Ok(Plan {
+            said: format!(
+                "Not safe to lift: term {}'s records at {} haven't forgotten the entries before {} (the last GC's, \
+                 removed): they're older than that GC. Restore newer records (state/build/term/) from a backup.",
+                r.term, r.seq, m.floor
+            ),
+            write: None,
+        });
+    }
+    let missing: Vec<&String> = m.keys.iter().filter(|k| !(r.handles(k) || r.forgot(k))).collect();
+    let on: BTreeSet<String> = journal::list(nas, None)?.into_iter().collect();
+    let gone: Vec<&&String> = missing.iter().filter(|k| !on.contains(k.as_str())).collect();
+    if !gone.is_empty() {
+        return Ok(Plan {
+            said: format!(
+                "Not safe to lift: {} marked entries the records (term {} at {}) don't name are already removed \
+                 ({}{}): a take-up from these records would lose them. Restore newer records from a backup.",
+                gone.len(),
+                r.term,
+                r.seq,
+                gone.iter().take(3).map(|k| k.as_str()).collect::<Vec<_>>().join(", "),
+                if gone.len() > 3 { ", …" } else { "" }
+            ),
+            write: None,
+        });
+    }
+    let keys = m.keys.iter().filter(|k| !missing.contains(k)).cloned().collect();
+    Ok(Plan {
+        said: format!(
+            "Term {}'s records at {} don't name {} marked entries, all still in the journal: dropped from the \
+             marker (a take-up replays them), the rest kept.",
+            r.term,
+            r.seq,
+            missing.len()
+        ),
+        write: Some(Marker { keys, ..m }),
+    })
+}
+
+/// `scenic pool journal-gc [--repair]` on the share at `root`: `plan` against the newest records,
+/// and with `repair` its marker written, only while the kill switch says `off` (no GC run then
+/// changes the marker or removes a file meanwhile).
+pub fn check(nas: &dyn Nas, now: u64, repair: bool) -> Result<String> {
+    let cur = term::current(nas).context("the current term")?;
+    let r = Records::newest(nas, cur.term, true)?.context("no records to check the marker against")?;
+    let p = plan(nas, &r, now)?;
+    let m = match p.write {
+        Some(m) if repair => m,
+        Some(_) => return Ok(format!("{}\nRun `scenic pool journal-gc --repair` to write it.", p.said)),
+        None => return Ok(p.said),
+    };
+    anyhow::ensure!(
+        !enabled(nas),
+        "{}\nNot written: say `off` in {SWITCH} first (the GC mustn't run meanwhile), then again.",
+        p.said
+    );
+    nas.write_whole(PATH, &serde_json::to_vec(&m)?)?;
+    Ok(format!("{}\nWritten. Take-ups pass it now; {SWITCH} back to on (or removed) lets the GC run again.", p.said))
 }
 
 /// What a run did.
@@ -279,4 +433,91 @@ fn remove(
     nas.write_whole(PATH, &serde_json::to_vec(&done)?)?;
     rep.done = true;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! `plan` (task #651): a marker the records don't cover lifted only where no entry is lost.
+    use super::*;
+    use crate::pool::nas::Mem;
+
+    const NOW: u64 = 1_790_000_000;
+
+    fn on_share(nas: &Mem, keys: &[&str]) {
+        for k in keys {
+            nas.write_whole(&journal::path(k), b"{}").unwrap();
+        }
+    }
+
+    fn marker(nas: &Mem, keys: &[&str], floor: &str) -> Marker {
+        let m = Marker {
+            horizon: "2026-09-10".into(),
+            floor: floor.into(),
+            term: 4,
+            seq: 9,
+            at: NOW,
+            keys: keys.iter().map(|k| k.to_string()).collect(),
+            done: false,
+        };
+        nas.write_whole(PATH, &serde_json::to_vec(&m).unwrap()).unwrap();
+        m
+    }
+
+    fn records(named: &[&str], horizon: &str) -> Records {
+        Records {
+            term: 3,
+            seq: 2,
+            reflected: named.iter().map(|k| k.to_string()).collect(),
+            horizon: horizon.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn entries_the_records_dont_name_are_dropped_from_the_marker_only_while_still_in_the_journal() {
+        let nas = Mem::default();
+        let m = marker(&nas, &["2026-09-01/3-1", "2026-09-01/3-2", "2026-09-02/3-3"], "");
+        let r = records(&["2026-09-01/3-1"], "");
+        // Not named, still on the share: dropped (a take-up replays them), the rest kept.
+        on_share(&nas, &["2026-09-01/3-2", "2026-09-02/3-3"]);
+        let p = plan(&nas, &r, NOW).unwrap();
+        let w = p.write.expect(&p.said);
+        assert_eq!(w.keys, ["2026-09-01/3-1".to_string()].into(), "{}", p.said);
+        assert!(w.covers(&r) && Marker { keys: w.keys.clone(), ..m.clone() } == w);
+        // One of them already removed: not safe, nothing written.
+        nas.remove(&journal::path("2026-09-02/3-3")).unwrap();
+        let p = plan(&nas, &r, NOW).unwrap();
+        assert!(p.write.is_none() && p.said.starts_with("Not safe") && p.said.contains("2026-09-02/3-3"), "{}", p.said);
+    }
+
+    #[test]
+    fn records_short_of_the_floor_or_covering_it_change_nothing() {
+        let nas = Mem::default();
+        marker(&nas, &["2026-09-01/3-1"], "2026-08-20");
+        let p = plan(&nas, &records(&["2026-09-01/3-1"], "2026-08-01"), NOW).unwrap();
+        assert!(p.write.is_none() && p.said.starts_with("Not safe"), "{}", p.said);
+        let p = plan(&nas, &records(&["2026-09-01/3-1"], "2026-08-20"), NOW).unwrap();
+        assert!(p.write.is_none() && p.said.contains("covered"), "{}", p.said);
+    }
+
+    #[test]
+    fn a_corrupt_marker_is_made_again_naming_every_old_entry_the_records_name() {
+        let nas = Mem::default();
+        nas.write_whole(PATH, b"{\"hori").unwrap();
+        let e = fence(&nas, &Records::default()).unwrap_err();
+        assert!(e.is::<Fenced>(), "{e:#}");
+        // Named: one removed (not on the share), one there; an unnamed one stops the days there.
+        on_share(&nas, &["2026-09-02/3-2", "2026-09-05/3-4", "2026-09-06/3-5"]);
+        let r = records(&["2026-09-01/3-1", "2026-09-02/3-2", "2026-09-06/3-5"], "2026-08-20");
+        let w = plan(&nas, &r, NOW).unwrap().write.expect("made again");
+        assert_eq!(
+            (w.horizon.as_str(), w.floor.as_str(), w.done),
+            ("2026-09-05", "2026-08-20", false),
+            "up to the day of the entry it doesn't name"
+        );
+        assert_eq!(w.keys, ["2026-09-01/3-1".to_string(), "2026-09-02/3-2".to_string()].into());
+        assert!(w.covers(&r));
+        // Records missing the removed one are fenced, as by the marker lost.
+        assert!(!w.covers(&records(&["2026-09-02/3-2"], "2026-08-20")));
+    }
 }

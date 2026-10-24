@@ -52,6 +52,18 @@ pub struct Beat {
     /// Its app keeps the journal's GC fence (crate::pool::journal_gc::FENCE; 0: an app from before,
     /// which takes up from whatever records it reads): no entry is removed while one doesn't.
     pub journal: u32,
+    /// Its take-ups of the term naming it refused by the journal GC's marker (docs/pool.md §7.3):
+    /// since when, and why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fenced: Option<Fenced>,
+}
+
+/// Take-ups refused by the journal GC's marker (crate::pool::journal_gc::Fenced).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Fenced {
+    /// The first refused, by the member's clock.
+    pub since: u64,
+    pub why: String,
 }
 
 /// A handover under way, as its lead's heartbeat says it.

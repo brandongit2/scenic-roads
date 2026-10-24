@@ -1388,6 +1388,11 @@ fn main() -> Result<()> {
                         print!("{}", pipeline::timings::peak_text(&holders));
                     }
                 }
+                Some(PoolCmd::JournalGc { repair }) => {
+                    // The journal GC's marker against the newest records (crate::pool::journal_gc::check).
+                    let nas = pipeline::pool::nas::Share::new(&r);
+                    println!("{}", pipeline::pool::journal_gc::check(&nas, now_s(), repair)?);
+                }
                 Some(PoolCmd::NasProbe { dir }) => {
                     // The NAS budget's probe once (pipeline::budget::nas), in `--dir <folder>` (made,
                     // then removed with what it holds), else a folder of its own under the project
@@ -1751,7 +1756,7 @@ mod tests {
 /// jobs that ended then (agent::fccheck).
 fn forecast_check(from: Option<String>, to: Option<String>, json: bool, r: &Option<PathBuf>) -> Result<()> {
     use pipeline::agent::{fcarchive, fccheck};
-    let now = pipeline::agent::jobs::now_s();
+    let now = now_s();
     let at = |s: &Option<String>, or: u64| -> Result<u64> {
         match s {
             Some(s) => fccheck::parse_time(s, now)

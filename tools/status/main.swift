@@ -220,7 +220,8 @@ struct PoolView: Decodable {
     let members: [PoolMember]
     let takeover: TakeoverNeeds?
     let no_lead: String?
-    /// No lead for an hour or more: since when, why, and what to do (agents from #195 on).
+    /// No lead for an hour or more (or a lead its take-up refused by the journal GC's marker, #651):
+    /// since when, why, and what to do (agents from #195 on).
     let alert: String?
     let handing: Handing?
     /// Who can't reach whom, each with why (agents from #198 on: docs/pool.md §6.8).
@@ -334,6 +335,8 @@ func poolLines(_ v: PoolView, now: Int) -> [Line] {
         if let a = v.alert { out.append(Line(text: a, style: .plain)) }
     } else if let l = v.lead {
         out.append(Line(text: "The pool · \(l.host) leads term \(l.term)\(v.leading ? " (this Mac)" : "") since \(clock(l.since))", style: .header))
+        // (A lead its take-up refused by the journal GC's marker, #651: the alert, what to do.)
+        if let a = v.alert { out.append(Line(text: a, style: .plain)) }
     }
     if let h = v.handing {
         out.append(Line(text: "Handing over to \(h.host): \(h.stage) since \(clock(h.since))", style: .plain))

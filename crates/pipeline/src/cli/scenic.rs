@@ -281,6 +281,13 @@ pub enum PoolCmd {
         #[arg(long, value_name = "FOLDER")]
         dir: Option<PathBuf>,
     },
+    /// The journal GC's marker (docs/pool.md §7.3) checked against the newest records: whether it
+    /// refuses take-ups, why, and whether it's safe to lift. Reads only, unless --repair
+    JournalGc {
+        /// Write the safe marker it proposes (only while state/pool/journal-gc says off)
+        #[arg(long)]
+        repair: bool,
+    },
     /// Each step's model of what its jobs need (pipeline::needs): its fits' errors on held-out runs
     /// (memory, time, disk) and the steps that don't fit. Reads only
     Needs {

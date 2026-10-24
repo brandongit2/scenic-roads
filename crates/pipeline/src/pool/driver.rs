@@ -555,6 +555,9 @@ pub struct Driver {
     /// Since when (awake clock) a take-up has found term 1 with no snapshot that reads whole (its
     /// lead's, or its first).
     first_unread: Option<u64>,
+    /// Take-ups refused by the journal GC's marker since (this Mac's clock), and why
+    /// (journal_gc::Fenced): its heartbeat says so (`Beat::fenced`), for the views' alert.
+    fenced: Option<super::beat::Fenced>,
     /// The members' heartbeats its last step heard (`Heard::reports`): whether a member is
     /// reachable (`hand_to`).
     reports: Vec<Beat>,
@@ -627,6 +630,7 @@ impl Driver {
             silent: None,
             unread: None,
             first_unread: None,
+            fenced: None,
             reports: Vec::new(),
         }
     }
@@ -1099,11 +1103,16 @@ impl Driver {
         let mut r = match records::start(io, t, own.as_ref(), today) {
             Ok(r) => {
                 self.first_unread = None;
+                self.fenced = None;
                 r
             }
             Err(e) => {
                 if e.is::<records::FirstUnreadable>() {
                     self.first_unread.get_or_insert(io.awake());
+                }
+                if let Some(f) = e.chain().find_map(|c| c.downcast_ref::<super::journal_gc::Fenced>()) {
+                    let since = self.fenced.as_ref().map_or(io.now(), |f| f.since);
+                    self.fenced = Some(super::beat::Fenced { since, why: f.0.clone() });
                 }
                 return out.events.push(Event::Waits { what: "take up", why: format!("term {}: {e:#}", t.term) });
             }
@@ -2027,6 +2036,10 @@ impl Driver {
             addresses: Vec::new(),
             reach: Vec::new(),
             journal: super::journal_gc::FENCE,
+            fenced: self
+                .fenced
+                .clone()
+                .filter(|_| self.lead.is_none() && self.cur.lead.as_ref().is_some_and(|t| t.member == self.me.id)),
         }
     }
 }
@@ -4129,9 +4142,13 @@ mod tests {
             "{:?}",
             o.events
         );
+        // (Task #651) Its heartbeat says so, for every view's alert.
+        let f = Beat::read(&mem, B).unwrap().unwrap().fenced.expect("fenced in the heartbeat");
+        assert!(f.since == ib.now() && f.why.contains("being removed"), "{f:?}");
         *ib.gone.borrow_mut() = None;
         let o = caught_up(&mut b, &ib, able());
         assert!(o.leads.is_some(), "{:?}", o.events);
+        assert_eq!(Beat::read(&mem, B).unwrap().unwrap().fenced, None, "taken up: no more");
         let r = Records::load(&mem, o.leads.unwrap()).unwrap().unwrap();
         assert_eq!((&r.manifest, &r.keys, &r.horizon), (&was.manifest, &was.keys, &was.horizon), "nothing lost");
         // A told of a removed entry again (its job's member back): answered as merged.
@@ -4142,6 +4159,46 @@ mod tests {
             "{:?}",
             o.send
         );
+    }
+
+    #[test]
+    fn gc_a_corrupt_marker_fences_every_take_up_until_scenic_pool_journal_gc_repairs_it() {
+        // (Task #651) The marker turns unreadable after GC removed entries: every take-up is
+        // refused, its heartbeat saying why. The check proposes a marker made again from the
+        // newest records; written only once the kill switch says off; then B takes up, nothing lost.
+        use super::super::journal_gc;
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V1), Saved::default());
+        caught_up(&mut a, &ia, able());
+        step(&mut b, &ib, able());
+        collected(&mut a, &ia, &[1, 2, 3]);
+        let was = Records::load(&mem, a.leads().unwrap()).unwrap().unwrap();
+        mem.write_whole(journal_gc::PATH, b"{\"horizon\": \"2026-").unwrap();
+        ib.wall.set(ia.now());
+        step(&mut b, &ib, able());
+        for _ in 0..3 {
+            ib.pass(30);
+            let o = step(&mut b, &ib, asks(Ask::TakeOver { force: true, downgrade: false }));
+            assert_eq!(o.leads, None, "{:?}", o.events);
+        }
+        let f = Beat::read(&mem, B).unwrap().unwrap().fenced.expect("fenced");
+        assert!(f.why.contains("can't be parsed") && f.since < ib.now(), "{f:?}");
+        let said = journal_gc::check(&mem, ib.now(), false).unwrap();
+        assert!(said.contains("made again") && said.contains("--repair"), "{said}");
+        let e = journal_gc::check(&mem, ib.now(), true).unwrap_err();
+        assert!(format!("{e:#}").contains("off"), "the switch first: {e:#}");
+        mem.write_whole(journal_gc::SWITCH, b"off").unwrap();
+        assert!(journal_gc::check(&mem, ib.now(), true).unwrap().contains("Written"));
+        let m = journal_gc::read(&mem).unwrap().unwrap();
+        assert!(m.covers(&was) && m.floor == was.horizon, "{m:?}");
+        let o = caught_up(&mut b, &ib, able());
+        assert!(o.leads.is_some(), "{:?}", o.events);
+        let r = Records::load(&mem, o.leads.unwrap()).unwrap().unwrap();
+        assert_eq!((&r.manifest, &r.horizon), (&was.manifest, &was.horizon), "nothing lost");
+        assert_eq!(Beat::read(&mem, B).unwrap().unwrap().fenced, None);
     }
 
     #[test]
