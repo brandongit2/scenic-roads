@@ -1403,12 +1403,18 @@ pub struct Agent {
     /// The heartbeat last written to the NAS (without its time) and when: written again only when it
     /// changes or every five minutes, so an idle NAS can rest.
     last_beat: Option<(Vec<u8>, Instant)>,
-    /// How far each region is built, and when that was worked out.
-    progress: Option<(Instant, BTreeMap<String, build::RegionState>, Vec<build::Line>)>,
+    /// The checklist, and when it was worked out.
+    progress: Option<(Instant, Vec<build::Line>)>,
+    /// How far each region is built (build::region_states), when that count was last started, and
+    /// the count under way off the loop (`start_as_built`).
+    built: BTreeMap<String, build::RegionState>,
+    built_counted: Option<Instant>,
+    built_making: Option<std::thread::JoinHandle<(BTreeMap<String, build::RegionState>, Duration)>>,
     /// When the regions' steps were last counted for the page, and the count under way off the loop
-    /// (`start_region_steps`).
+    /// (`start_as_built`).
     steps_counted: Option<Instant>,
-    steps_making: Option<std::thread::JoinHandle<(serde_json::Value, Duration)>>,
+    #[allow(clippy::type_complexity)]
+    steps_making: Option<std::thread::JoinHandle<(BTreeMap<String, BTreeMap<&'static str, [usize; 2]>>, Duration)>>,
     /// The pass's reaches as last read, by content name (large: read again only when they change).
     reach: std::cell::RefCell<Option<(String, std::sync::Arc<crate::reach::Reaches>)>>,
     /// The terrain packs' indexes, which the z6 tiles' keys read (`tiles`, kept in `pack-idx/`): those
@@ -1877,6 +1883,9 @@ impl Agent {
             heal_seen: 0,
             last_beat: None,
             progress: None,
+            built: BTreeMap::new(),
+            built_counted: None,
+            built_making: None,
             steps_counted: None,
             steps_making: None,
             reach: Default::default(),
@@ -3581,7 +3590,22 @@ impl Agent {
                 if STOP.load(Ordering::SeqCst) || (!quitting && self.quit_ask().is_some()) || self.hold_asked_anew() {
                     break;
                 }
-                std::thread::sleep(Duration::from_secs(1));
+                // (The regions' states in: the loop takes them up at once, as it did when it
+                // counted them itself.)
+                let counting = self.built_making.is_some();
+                if counting && self.built_making.as_ref().is_some_and(|h| h.is_finished()) {
+                    break;
+                }
+                if counting {
+                    for _ in 0..10 {
+                        if self.built_making.as_ref().is_some_and(|h| h.is_finished()) {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                } else {
+                    std::thread::sleep(Duration::from_secs(1));
+                }
             }
         }
         nasread::WATCH_DONE.store(true, Ordering::SeqCst);
@@ -4463,9 +4487,32 @@ impl Agent {
             _ => Default::default(),
         };
         // (Recomputed after a job ends, or every five minutes: it reads the manifest and outlines.)
-        if ended || self.progress.as_ref().is_none_or(|(t, _, _)| t.elapsed() >= Duration::from_secs(300)) {
+        if ended || self.progress.as_ref().is_none_or(|(t, _)| t.elapsed() >= Duration::from_secs(300)) {
             if let Some(r) = root.as_ref() {
-                self.progress = Some((Instant::now(), self.region_progress(r), self.checklist(r, &regions)));
+                self.progress = Some((Instant::now(), self.checklist(r, &regions)));
+            }
+        }
+        // How far each region is built: as often, on a thread of its own (about a second on the
+        // whole build's records). The loop wakes for its result (`run`); a single loop waits for it.
+        if let Some(r) = root.as_ref() {
+            if ended && self.built_making.is_some() {
+                // (Counted again once the count under way is in: the job's targets weren't in it.)
+                self.built_counted = None;
+            }
+            if self.built_making.is_none()
+                && (ended || self.built_counted.is_none_or(|t| t.elapsed() >= Duration::from_secs(300)))
+            {
+                self.built_counted = Some(Instant::now());
+                self.built_making = self.start_as_built(r, "region-states", build::region_states);
+            }
+            if self.built_making.as_ref().is_some_and(|h| self.o.once || h.is_finished()) {
+                match self.built_making.take().map(|h| h.join()) {
+                    Some(Ok((b, took))) => {
+                        eprintln!("agent: the regions' states took {} ms", took.as_millis());
+                        self.built = b;
+                    }
+                    _ => eprintln!("agent: counting the regions' states failed"),
+                }
             }
         }
         // Each region's steps, built of all (the build page's Regions tab): counted only while a page
@@ -4474,9 +4521,9 @@ impl Agent {
         if let (Some(r), Some(c), false) = (root.as_ref(), self.coord.clone(), self.o.helper) {
             if self.steps_making.as_ref().is_some_and(|h| h.is_finished()) {
                 match self.steps_making.take().map(|h| h.join()) {
-                    Some(Ok((v, took))) => {
+                    Some(Ok((s, took))) => {
                         eprintln!("agent: the regions' steps took {} ms", took.as_millis());
-                        c.set_region_steps(std::sync::Arc::new(v));
+                        c.set_region_steps(std::sync::Arc::new(serde_json::json!({ "at": now_s(), "regions": s })));
                     }
                     _ => eprintln!("agent: counting the regions' steps failed"),
                 }
@@ -4490,11 +4537,11 @@ impl Agent {
                 && (ended || self.steps_counted.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)))
             {
                 self.steps_counted = Some(Instant::now());
-                self.steps_making = self.start_region_steps(r);
+                self.steps_making = self.start_as_built(r, "region-steps", build::region_steps);
             }
         }
-        let built = self.progress.as_ref().map(|(_, b, _)| b.clone()).unwrap_or_default();
-        let mut checklist = self.progress.as_ref().map(|(_, _, c)| c.clone()).unwrap_or_default();
+        let built = self.built.clone();
+        let mut checklist = self.progress.as_ref().map(|(_, c)| c.clone()).unwrap_or_default();
         // (Read each loop: a helper's status changes between plans. Not this Mac's own, from
         // while it was a member: it leads now, and that file goes stale by itself.)
         let helpers: Vec<Status> = match (&root, self.o.helper) {
@@ -8366,40 +8413,16 @@ impl Agent {
         build::fold(&items, &next, &notes)
     }
 
-    /// Per region, how many of its z6 tiles are built (none before the first pass makes the outlines).
-    fn region_progress(&self, root: &Path) -> BTreeMap<String, build::RegionState> {
-        self.as_built(root, build::region_states).unwrap_or_default()
-    }
-
-    /// Per region, each step's targets built of all (build::region_steps), for the build page, on a
-    /// thread of its own (the loop gives it the coverage, the reaches and a copy of the terrain packs'
-    /// indexes, all held already): `{at, regions}` and how long it took. None before the first pass
-    /// or while the coverage can't be read.
-    fn start_region_steps(&self, root: &Path) -> Option<std::thread::JoinHandle<(serde_json::Value, Duration)>> {
-        let (date, manifest, covs, keys, reach) = self.as_built_parts(root)?;
-        let tiles = self.terrain_tiles(root, &manifest).clone();
-        let root = root.to_path_buf();
-        let run = move || {
-            let t = Instant::now();
-            let mut keys = keys;
-            as_built_keys(&root, &covs.all, &date, &manifest, &mut keys, reach.as_deref(), &tiles);
-            let s = build::region_steps(&covs.all, &covs.each, &date, &manifest, &keys, reach.as_deref(), &tiles);
-            (serde_json::json!({ "at": now_s(), "regions": s }), t.elapsed())
-        };
-        std::thread::Builder::new()
-            .name("region-steps".into())
-            .spawn(run)
-            .inspect_err(|e| eprintln!("agent: the regions' steps' thread: {e}"))
-            .ok()
-    }
-
-    /// `f` over the coverage, the regions', the pass, the manifest, the records as every reader reads
-    /// them (`as_built_keys`), the reaches and the terrain packs' indexes; None before the first pass
-    /// or while the coverage can't be read.
+    /// `f` (build::region_states, build::region_steps) over the coverage, the regions', the pass,
+    /// the manifest, the records as every reader reads them (`as_built_keys`), the reaches and the
+    /// terrain packs' indexes, on a thread of its own named `name` (the loop gives it what it holds
+    /// already, and a copy of the indexes), with how long it took. None before the first pass or
+    /// while the coverage can't be read.
     #[allow(clippy::type_complexity)]
-    fn as_built<T>(
+    fn start_as_built<T: Send + 'static>(
         &self,
         root: &Path,
+        name: &str,
         f: fn(
             &crate::coverage::Coverage,
             &[(String, crate::coverage::Coverage)],
@@ -8409,14 +8432,24 @@ impl Agent {
             Option<&crate::reach::Reaches>,
             &tiles::TerrainTiles,
         ) -> T,
-    ) -> Option<T> {
-        let (date, manifest, covs, mut keys, reach) = self.as_built_parts(root)?;
-        let tiles = self.terrain_tiles(root, &manifest);
-        as_built_keys(root, &covs.all, &date, &manifest, &mut keys, reach.as_deref(), &tiles);
-        Some(f(&covs.all, &covs.each, &date, &manifest, &keys, reach.as_deref(), &tiles))
+    ) -> Option<std::thread::JoinHandle<(T, Duration)>> {
+        let (date, manifest, covs, keys, reach) = self.as_built_parts(root)?;
+        let tiles = self.terrain_tiles(root, &manifest).clone();
+        let root = root.to_path_buf();
+        let run = move || {
+            let t = Instant::now();
+            let mut keys = keys;
+            as_built_keys(&root, &covs.all, &date, &manifest, &mut keys, reach.as_deref(), &tiles);
+            (f(&covs.all, &covs.each, &date, &manifest, &keys, reach.as_deref(), &tiles), t.elapsed())
+        };
+        std::thread::Builder::new()
+            .name(name.into())
+            .spawn(run)
+            .inspect_err(|e| eprintln!("agent: the {name} thread: {e}"))
+            .ok()
     }
 
-    /// What `as_built` reads: the pass, the manifest, the coverages, the records as written and the
+    /// What `start_as_built` reads: the pass, the manifest, the coverages, the records as written and the
     /// reaches (the last two held: read again only when they change).
     #[allow(clippy::type_complexity)]
     fn as_built_parts(
@@ -10714,7 +10747,7 @@ fn clear_target_scratch(dir: &Path, target: &str) -> Vec<PathBuf> {
 /// ("keys", `key_names`), and the 3D buildings' downloaded sources ("bld-release", "bld-key", "bldprep 6/x/y",
 /// "bldprep-rows 6/x/y": crate::bld::sources::digests).
 /// `keys` as every reader reads them (agent::rekey::as_read: re-keyed, terrain's and slope's derived),
-/// for `Agent::as_built` and the regions' steps' count off the loop.
+/// for `Agent::start_as_built`'s counts off the loop.
 fn as_built_keys(
     root: &Path,
     cov: &crate::coverage::Coverage,

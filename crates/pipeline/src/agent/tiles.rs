@@ -37,7 +37,7 @@ type Held = Vec<(u64, u64)>;
 type Found<'a> = Result<Option<&'a [(u64, u64)]>, Unread>;
 
 /// The terrain packs' indexes the agent holds, by content name. (Cloned for a count off the agent's
-/// loop: the regions' steps, Agent::start_region_steps; ~45 MB of indexes.)
+/// loop: the regions' states and steps, Agent::start_as_built; ~45 MB of indexes.)
 #[derive(Clone, Default)]
 pub struct TerrainTiles {
     /// Each pack's tiles.
