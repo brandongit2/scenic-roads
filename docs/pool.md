@@ -570,7 +570,8 @@ pool (each ask's `cores_free` taken as its cores): while the owner uses a Mac it
 lead logs a departure only when a Mac's jobs of a step differ from the forecast's by 2 or more and
 by more than half, each Mac and step at most once an hour.
 
-Rows of note: `trees`/`terrain`/`slope` per z6 tile with `*-lo` assemblies per z3 tile (docs/steps.md);
+Rows of note: `trees`/`terrain-hi`/`slope-hi` per z6 tile with `*-lo` assemblies per z3 tile,
+`terrain-deep`/`slope-deep` per z10 tile (docs/steps.md);
 `bldprep`/`bldtiles` per z6 tile, `bld-fetch` the lead's (docs/buildings3d.md §3.6); `inputs`, a
 target per z6 tile, the lead's, planned before every other job (docs/inputs.md §4.3).
 
@@ -928,8 +929,9 @@ errors (memory, wall time, disk) beside the prior's, and lists the steps that do
 **A cold start** (no target of its step measured; task #499) is packed by its *provisional need*:
 the most its step declares (the steps table's `mem_mb`) or it was offered with, times 3/2
 (`coord::sched::provisional_mb`), its disk its step's measures' (else none); its cores the packed share
-when its step is known to honour the threads it's granted (`coord::THREADS_HONOURED`: `slope`, on
-the rayon pool the agent sizes; `bld-fetch`, its downloads bounded by `--jobs`), else the whole
+when its step is known to honour the threads it's granted (`coord::THREADS_HONOURED`: `slope-hi`,
+`slope-deep` and `terrain-deep`, on the rayon pool the agent sizes, the last's reads waiting on the
+network; `bld-fetch`, its downloads bounded by `--jobs`), else the whole
 Mac. It goes beside other jobs when that fits the room left, and other jobs go beside it by the
 same figures; one bigger than a Mac's whole room goes only to a Mac holding no job. At most one
 cold start runs on a Mac (two unknown needs never meet), and a step never measured in any way (no
@@ -1251,8 +1253,9 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   no key: in the pool from that read, out of it from this Mac's agent's; 503 until there is one.
   Steps (task #636): `POST /work/regions` with `{"steps": true}` answers each region's targets
   built of all by step, `{at, regions: {id: {step: [built, all]}}}` (`build::region_steps`: the
-  plan's targets of each step that builds regions, counted whole: "unit" its z6 tiles, "terrain"
-  and "terrain-lo" those of the z3 tiles it reads, "slope" and "slope-lo" its z3 tiles', "trees"
+  plan's targets of each step that builds regions, counted whole: "unit" its z6 tiles,
+  "terrain-hi", "terrain-deep" and "terrain-lo" those of the z3 tiles it reads, "slope-deep",
+  "slope-hi" and "slope-lo" its z3 tiles', "trees"
   and "trees-lo" those of the z3 tiles it meets, "pack" the map tiles its z6 tiles' ways reach that the
   plan draws; a step with none left out; a target shared by regions counted in each). In targets, not seconds: the records know which targets are built,
   not what each took, and a step's targets take about alike. Counted by the lead (or a Mac out of

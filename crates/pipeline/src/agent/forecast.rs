@@ -374,11 +374,13 @@ pub fn cost_table(regions: &[RegionLeft], cost: &dyn Fn(&str, &str) -> Cost) -> 
         }
     };
     for r in regions {
-        put("terrain", &mut r.own_terrain.iter());
+        put("terrain-hi", &mut r.own_terrain.iter());
+        put("terrain-deep", &mut r.own_terrain_deep.iter());
         put("terrain-lo", &mut r.own_terrain_lo.iter());
         put("unit", &mut r.own_units.iter().chain(&r.expected));
         put("pack", &mut r.packs.iter().map(|p| &p.0));
-        put("slope", &mut r.slope.iter());
+        put("slope-deep", &mut r.slope_deep.iter());
+        put("slope-hi", &mut r.slope.iter());
         put("slope-lo", &mut r.slope_lo.iter());
         put("trees", &mut r.trees.iter());
         put("trees-lo", &mut r.trees_lo.iter());
@@ -673,7 +675,7 @@ pub struct RegionFc {
     /// Its place in the build order (0: the one being built).
     pub rank: usize,
     pub on_map: Option<bool>,
-    /// Its targets left by step ("unit", "terrain", "slope", "trees", "trees-lo", "pack").
+    /// Its targets left by step ("unit", "terrain-hi", "slope-hi", "trees", "trees-lo", "pack", …).
     pub left: BTreeMap<String, usize>,
     /// When it'll be done, and when it'll be on the map as it's built now: its last z6 tile's end,
     /// then its map tiles drawn, then a catalog within the minute (None: no work left of its own).
@@ -854,14 +856,20 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
     };
     for r in inp.regions.iter() {
         for t in &r.own_terrain {
-            add(&mut out, &mut by_target, "terrain", t, inp.cost("terrain", t), Phase::Region, Vec::new());
+            add(&mut out, &mut by_target, "terrain-hi", t, inp.cost("terrain-hi", t), Phase::Region, Vec::new());
+        }
+        // (The deep levels wait for nothing: their base is made from the pool.)
+        for t in &r.own_terrain_deep {
+            add(&mut out, &mut by_target, "terrain-deep", t, inp.cost("terrain-deep", t), Phase::Region, Vec::new());
         }
         for q in &r.own_terrain_lo {
-            let deps = of_z3(&by_target, "terrain", q);
+            let deps = of_z3(&by_target, "terrain-hi", q);
             add(&mut out, &mut by_target, "terrain-lo", q, inp.cost("terrain-lo", q), Phase::Region, deps);
         }
-        // (Its terrain is its own or a region's before it: listed by now.)
-        let mut deps: Vec<usize> = r.terrain.iter().filter_map(|t| item_of(&by_target, "terrain", t)).collect();
+        // (Its terrain is its own or a region's before it: listed by now; its deep levels too, which
+        // its roads' heights read.)
+        let mut deps: Vec<usize> = r.terrain.iter().filter_map(|t| item_of(&by_target, "terrain-hi", t)).collect();
+        deps.extend(r.terrain_deep.iter().filter_map(|t| item_of(&by_target, "terrain-deep", t)));
         deps.extend(r.terrain_lo.iter().filter_map(|q| item_of(&by_target, "terrain-lo", q)));
         deps.extend(&units_need);
         for u in &r.own_units {
@@ -883,27 +891,49 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
         }
     }
     for r in inp.regions.iter() {
-        for t in &r.slope {
-            // (The terrain of its z3 tile and its edge neighbours' z3 tiles.)
+        // (A slope target waits for the terrain of its z6 tile's z3 tile and its edge neighbours' z3
+        // tiles, the deep levels' too; a slope-hi z6 tile for its z10 tiles' slope-deep too.)
+        let terrain_of = |by: &Index, t: &str| -> Vec<usize> {
             let mut deps: Vec<usize> = Vec::new();
             let z3s: Vec<String> = match crate::legacy::TileId::parse(t) {
-                Some(u) if u.z == 6 => std::iter::once((u.x, u.y))
-                    .chain(crate::agent::build::edge_neighbours(6, u.x, u.y))
-                    .map(|(x, y)| format!("3/{}/{}", x >> 3, y >> 3))
-                    .collect(),
-                _ => vec![t.clone()],
+                Some(u) if u.z >= 6 => {
+                    let k = u.z - 6;
+                    std::iter::once((u.x >> k, u.y >> k))
+                        .chain(crate::agent::build::edge_neighbours(6, u.x >> k, u.y >> k))
+                        .map(|(x, y)| format!("3/{}/{}", x >> 3, y >> 3))
+                        .collect()
+                }
+                _ => vec![t.to_string()],
             };
             for q in z3s {
-                deps.extend(of_z3(&by_target, "terrain", &q));
-                deps.extend(item_of(&by_target, "terrain-lo", &q));
+                deps.extend(of_z3(by, "terrain-hi", &q));
+                deps.extend(of_z3(by, "terrain-deep", &q));
+                deps.extend(item_of(by, "terrain-lo", &q));
+            }
+            deps
+        };
+        for t in &r.slope_deep {
+            let mut deps = terrain_of(&by_target, t);
+            deps.sort_unstable();
+            deps.dedup();
+            add(&mut out, &mut by_target, "slope-deep", t, inp.cost("slope-deep", t), Phase::Late, deps);
+        }
+        for t in &r.slope {
+            let mut deps = terrain_of(&by_target, t);
+            if let Some(q) = crate::agent::build::z3_of(t) {
+                let k = crate::terrain_deep::PACK_Z - 6;
+                deps.extend(of_z3(&by_target, "slope-deep", &q).into_iter().filter(|&i| {
+                    let (a, b) = (crate::legacy::TileId::parse(&out[i].target), crate::legacy::TileId::parse(t));
+                    a.zip(b).is_some_and(|(a, b)| (a.x >> k, a.y >> k) == (b.x, b.y))
+                }));
             }
             deps.sort_unstable();
             deps.dedup();
-            add(&mut out, &mut by_target, "slope", t, inp.cost("slope", t), Phase::Late, deps);
+            add(&mut out, &mut by_target, "slope-hi", t, inp.cost("slope-hi", t), Phase::Late, deps);
         }
         for q in &r.slope_lo {
-            let mut deps = of_z3(&by_target, "slope", q);
-            deps.extend(of_z3(&by_target, "terrain", q));
+            let mut deps = of_z3(&by_target, "slope-hi", q);
+            deps.extend(of_z3(&by_target, "terrain-hi", q));
             deps.extend(item_of(&by_target, "terrain-lo", q));
             add(&mut out, &mut by_target, "slope-lo", q, inp.cost("slope-lo", q), Phase::Late, deps);
         }
@@ -923,11 +953,13 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
     for (k, r) in inp.regions.iter().enumerate() {
         let mut mine: Vec<usize> = Vec::new();
         for (step, list) in [
-            ("terrain", &r.terrain),
+            ("terrain-hi", &r.terrain),
+            ("terrain-deep", &r.terrain_deep),
             ("terrain-lo", &r.terrain_lo),
             ("unit", &r.units),
             ("unit", &r.expected),
-            ("slope", &r.slope),
+            ("slope-deep", &r.slope_deep),
+            ("slope-hi", &r.slope),
             ("slope-lo", &r.slope_lo),
             ("trees", &r.trees),
             ("trees-lo", &r.trees_lo),
@@ -938,8 +970,9 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
         region_items[k] = mine;
     }
     // The chains: from the start, each step once what it reads is built.
-    let terrain: Vec<usize> =
-        (0..out.len()).filter(|&i| out[i].step == "terrain" || out[i].step == "terrain-lo").collect();
+    let terrain: Vec<usize> = (0..out.len())
+        .filter(|&i| matches!(out[i].step.as_str(), "terrain-hi" | "terrain-deep" | "terrain-lo"))
+        .collect();
     let mut chain: Vec<usize> = Vec::new();
     for (step, target, cost) in &inp.chains {
         let (pre, earlier, reads_terrain) = chain_deps(step);
@@ -1348,7 +1381,7 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64, budget: Duration) -> Sim {
             [Phase::Publish, Phase::Late, Phase::Chain, Phase::After].iter().flat_map(|&p| ready.steps(pi(p))).collect()
         };
         // What it takes: a job the scheduler grants its Mac (its targets one after another), or
-        // for the pages' lane the far end of the first shared step it can do (terrain's near end:
+        // for the pages' lane the far end of the first shared step it can do (terrain-hi's near end:
         // the lead's next z6 tiles wait on it, as crate::coord picks).
         let took: Vec<usize> = if mac.helper {
             SHARED
@@ -1356,7 +1389,7 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64, budget: Duration) -> Sim {
                 .find_map(|s| {
                     let set = ready.shared.get(*s)?;
                     let fits = |&i: &usize| items[i].cost.peak_mb <= mac.mem_mb;
-                    if *s == "terrain" {
+                    if *s == "terrain-hi" {
                         set.iter().copied().find(fits)
                     } else {
                         set.iter().rev().copied().find(fits)
@@ -1818,21 +1851,21 @@ mod tests {
             until: from + 60,
         };
         let placed = vec![
-            p(0, "terrain", "6/33/20", 1300),
-            p(1, "terrain", "6/33/20", 1100),
-            p(1, "terrain", "6/34/20", 1050),
-            p(2, "slope", "3/4/2", 1500),
+            p(0, "terrain-hi", "6/33/20", 1300),
+            p(1, "terrain-hi", "6/33/20", 1100),
+            p(1, "terrain-hi", "6/34/20", 1050),
+            p(2, "slope-hi", "3/4/2", 1500),
             p(2, "unit", "norway", 1000),
-            p(9, "terrain", "6/1/1", 1000),
-            p(2, "terrain", "6/99/1", 1000),
+            p(9, "terrain-hi", "6/1/1", 1000),
+            p(2, "terrain-hi", "6/99/1", 1000),
         ];
         let macs = ["m4".to_string(), "m4".to_string(), "m6".to_string()];
         let tc = ToCome::of(&placed, &macs, 1000);
-        assert_eq!(tc.macs["m4"]["terrain"], vec![("6/34/20".to_string(), 50), ("6/33/20".to_string(), 100)]);
-        assert_eq!(tc.macs["m6"].keys().collect::<Vec<_>>(), ["slope"]);
+        assert_eq!(tc.macs["m4"]["terrain-hi"], vec![("6/34/20".to_string(), 50), ("6/33/20".to_string(), 100)]);
+        assert_eq!(tc.macs["m6"].keys().collect::<Vec<_>>(), ["slope-hi"]);
         let a = tc.answer("m6-mini");
         assert_eq!(a["mac"], "m6");
-        assert_eq!(a["steps"]["slope"][0], serde_json::json!(["3/4/2", 500]));
+        assert_eq!(a["steps"]["slope-hi"][0], serde_json::json!(["3/4/2", 500]));
         assert_eq!(a["macs"], serde_json::json!(["m4", "m6"]));
         assert_eq!(tc.answer("m1")["steps"], serde_json::json!({}));
     }
@@ -1884,12 +1917,12 @@ mod tests {
 
     fn cost(step: &str, _t: &str) -> Cost {
         let secs = match step {
-            "terrain" => 600.0,
+            "terrain-hi" => 600.0,
             "unit" => 300.0,
-            "slope" => 200.0,
+            "slope-hi" => 200.0,
             _ => 100.0,
         };
-        Cost { secs, known: step != "slope", peak_mb: 1000 }
+        Cost { secs, known: step != "slope-hi", peak_mb: 1000 }
     }
 
     fn input<'a>(regions: &'a [RegionLeft], machines: Vec<Machine>, c: &'a dyn Fn(&str, &str) -> Cost) -> Input<'a> {
@@ -2081,7 +2114,7 @@ mod tests {
         let steps: Vec<(&str, usize, u64)> = f.steps.iter().map(|s| (s.step.as_str(), s.left, s.work_s)).collect();
         assert_eq!(
             steps,
-            [("terrain", 1, 600), ("unit", 2, 600), ("pack", 2, 200), ("slope", 1, 200), ("marks", 1, 300)]
+            [("terrain-hi", 1, 600), ("unit", 2, 600), ("pack", 2, 200), ("slope-hi", 1, 200), ("marks", 1, 300)]
         );
         assert_eq!(f.regions[0].left.get("pack"), Some(&2));
         // The slope was guessed: its share of the time isn't measured.
@@ -2090,7 +2123,7 @@ mod tests {
         assert!(r[0] < f.done_at.unwrap() && f.done_at.unwrap() < r[1]);
         assert_eq!(
             f.next["m4"].iter().map(|n| (n.step.as_str(), n.targets.len())).collect::<Vec<_>>(),
-            [("terrain", 1), ("unit", 1), ("pack", 1)]
+            [("terrain-hi", 1), ("unit", 1), ("pack", 1)]
         );
         // No lane of publishing's own: the map tiles are a step's run like any other.
         let lane: Vec<(&str, u64, u64, usize)> =
@@ -2098,12 +2131,12 @@ mod tests {
         assert_eq!(
             lane,
             [
-                ("terrain", 0, 600, 1),
+                ("terrain-hi", 0, 600, 1),
                 ("unit", 600, 900, 1),
                 ("pack", 900, 1000, 1),
                 ("unit", 1000, 1300, 1),
                 ("pack", 1300, 1400, 1),
-                ("slope", 1400, 1600, 1),
+                ("slope-hi", 1400, 1600, 1),
                 ("marks", 1600, 1900, 1)
             ]
         );
@@ -2139,7 +2172,7 @@ mod tests {
         // catalog's minute after its last z6 tile and map tiles.
         assert_eq!(
             f.next["m1"].iter().map(|n| (n.step.as_str(), n.targets[0].as_str())).collect::<Vec<_>>(),
-            [("terrain", "3/2/2"), ("unit", "6/16/16")]
+            [("terrain-hi", "3/2/2"), ("unit", "6/16/16")]
         );
         assert_eq!((f.regions[0].ready_at, f.regions[0].map_at), (Some(1_000_000 + 1300), Some(1_000_000 + 1160)));
         assert_eq!((f.regions[1].ready_at, f.regions[1].map_at), (Some(1_000_000 + 1800), Some(1_000_000 + 1860)));
@@ -2154,7 +2187,10 @@ mod tests {
         ];
         let f = forecast(&input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost));
         // The lead takes a's terrain; the M1 b's (whose z6 tiles the lead builds next), not c's.
-        assert_eq!(f.next["m1"].first().map(|n| (n.step.as_str(), n.targets[0].as_str())), Some(("terrain", "3/2/2")));
+        assert_eq!(
+            f.next["m1"].first().map(|n| (n.step.as_str(), n.targets[0].as_str())),
+            Some(("terrain-hi", "3/2/2"))
+        );
     }
 
     #[test]
@@ -2234,7 +2270,7 @@ mod tests {
         let regions = [region("a", &["3/1/1"], &["6/8/8"], &[])];
         let mut inp =
             input(&regions, vec![mac("m4", 1.0, false), Machine { busy_s: 900.0, ..mac("m1", 0.5, true) }], &cost);
-        inp.running.insert(("terrain".into(), "3/1/1".into()), 1);
+        inp.running.insert(("terrain-hi".into(), "3/1/1".into()), 1);
         let f = forecast(&inp);
         assert_eq!(f.regions[0].ready_at, Some(1_000_000 + 900 + 300));
     }
@@ -2249,11 +2285,11 @@ mod tests {
             input(&regions, vec![Machine { busy_s: 0.0, ..mac("m4", 1.0, false) }, mac("m1", 1.0, true)], &cost);
         inp.before = vec![("reach".into(), "reach".into(), Cost { secs: 3600.0, known: true, peak_mb: 0 })];
         let f = forecast(&inp);
-        assert_eq!(f.next["m1"][0].step, "terrain");
+        assert_eq!(f.next["m1"][0].step, "terrain-hi");
         assert_eq!(f.next["m1"][0].from, 1_000_000);
         // Both z6 tiles after the hour: one each.
         let lanes: Vec<&str> = f.lanes["m1"].iter().map(|l| l.step.as_str()).collect();
-        assert_eq!(lanes, ["terrain", "unit"]);
+        assert_eq!(lanes, ["terrain-hi", "unit"]);
         assert_eq!(f.regions[0].ready_at, Some(1_000_000 + 3600 + 300));
     }
 
@@ -2659,8 +2695,8 @@ mod tests {
     /// depth waits for it, `chain_deps`.)
     fn z3_reads(step: &str) -> &'static [&'static str] {
         match step {
-            "terrain-lo" => &["terrain"],
-            "slope-lo" => &["slope", "terrain"],
+            "terrain-lo" => &["terrain-hi"],
+            "slope-lo" => &["slope-hi", "terrain-hi"],
             "trees-lo" => &["trees"],
             "depth-shade" => &["depth", "depth-lo"],
             _ => &[],
@@ -3055,7 +3091,10 @@ mod tests {
                 start
                     .keys()
                     .chain(ran.iter())
-                    .filter(|k| k.0 == step && crate::agent::build::z3_of(&k.1).is_some_and(|q| qs.contains(&q)))
+                    .filter(|k| {
+                        crate::agent::steps::current(&k.0) == step
+                            && crate::agent::build::z3_of(&k.1).is_some_and(|q| qs.contains(&q))
+                    })
                     .cloned()
                     .collect()
             };
@@ -3067,14 +3106,15 @@ mod tests {
                         return (me, s0, Vec::new());
                     }
                     let q = || vec![t.clone()];
-                    let deps: Vec<(String, String)> = match step.as_str() {
+                    // (The history's names: a step renamed since read as its new one, steps::current.)
+                    let deps: Vec<(String, String)> = match crate::agent::steps::current(step) {
                         "pack" => {
                             pack_units.get(t).into_iter().flatten().map(|u| ("unit".to_string(), u.clone())).collect()
                         }
                         s if !z3_reads(s).is_empty() => z3_reads(s).iter().flat_map(|r| in_z3(r, &q())).collect(),
-                        "slope" => in_z3("terrain", &z3s(t)),
+                        "slope-hi" => in_z3("terrain-hi", &z3s(t)),
                         "unit" => {
-                            let mut d = in_z3("terrain", &z3s(t));
+                            let mut d = in_z3("terrain-hi", &z3s(t));
                             d.extend(
                                 start.keys().chain(ran.iter()).filter(|k| UNITS_NEED.contains(&k.0.as_str())).cloned(),
                             );
@@ -3337,9 +3377,9 @@ mod tests {
         // step's.)
         let mut costs: BTreeMap<String, crate::coord::Cost> = BTreeMap::new();
         for (k, r) in regions.iter().enumerate().filter(|(k, _)| k % 6 == 0) {
-            let each = r.terrain.iter().map(|t| ("terrain", t)).chain(r.units.iter().map(|t| ("unit", t)));
+            let each = r.terrain.iter().map(|t| ("terrain-hi", t)).chain(r.units.iter().map(|t| ("unit", t)));
             for (step, t) in
-                each.chain(r.slope.iter().map(|t| ("slope", t))).chain(r.trees.iter().map(|t| ("trees", t)))
+                each.chain(r.slope.iter().map(|t| ("slope-hi", t))).chain(r.trees.iter().map(|t| ("trees", t)))
             {
                 let sizes = [
                     ("threads".to_string(), 2),
@@ -3400,7 +3440,7 @@ mod tests {
             leases: vec![
                 leased("m4", "pack", &packs),
                 leased("m1", "trees", &regions[1].trees[..15]),
-                leased("m1", "terrain", &regions[1].terrain[..6]),
+                leased("m1", "terrain-hi", &regions[1].terrain[..6]),
             ],
             workers: vec![ask("m4", 36_000, 14), ask("m1", 10_240, 10)],
             costs: costs.clone(),

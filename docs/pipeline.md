@@ -12,9 +12,10 @@ tasks for any worker, `docs/workers.md`.
 |---|---|---|
 | **step** | one kind of work, described by one row of the steps table | `crate::agent::steps::TABLE` |
 | **target** | what one run of a step is for: a z6 tile, a z3 tile, an input, the world (`scope`) | the plan (`agent::build::Work`) |
-| **z6 tile** | the build's working grid: most per-tile steps (terrain, slope, trees, `unit`, …) make a z6 tile's files at a time; `6/x/y`, named `6-x-y` in files | `Scope::Z6` |
+| **z6 tile** | the build's working grid: most per-tile steps (terrain-hi, slope-hi, trees, `unit`, …) make a z6 tile's files at a time; `6/x/y`, named `6-x-y` in files | `Scope::Z6` |
+| **z10 tile** | 16 × 16 per z6 tile: a deep pack's (the terrain's and the slope's past z12: terrain-deep, slope-deep); `10/x/y`, `10-x-y` | `Scope::Z10` |
 | **z3 tile** | 8 × 8 z6 tiles: the zoomed-out levels (the `…-lo` steps) are assembled per z3 tile; `3/x/y`, `3-x-y` | `Scope::Z3` |
-| **z8 tile** | 4 × 4 per z6 tile: the 3D buildings' tasks (`bldtile`), tree cover's blocks, terrain's subtrees and its deep levels (within a z6 tile's run) are made per z8 tile | `bld::task`, docs/workers.md §3 |
+| **z8 tile** | 4 × 4 per z6 tile: the 3D buildings' tasks (`bldtile`), tree cover's blocks and terrain's subtrees are made per z8 tile; the terrain's deep levels are planned over theirs | `bld::task`, docs/workers.md §3 |
 | **area** | geography only: a polygon or map feature (a region's outline, protected and heritage areas, the area overlays, a rule's areas), never a grid tile; a number is a *size* (km²) | |
 | **key** | a target's version and inputs by content; a target is done when its record's key is the plan's | `state/build/jobs.json` (docs/steps.md §12) |
 | **job** | a step over a batch of its targets, run on one Mac | `agent::jobs::JobSpec` |
@@ -28,7 +29,7 @@ Every row has the same fields; nothing about a step is kept anywhere else.
 
 | Field | Meaning | Values |
 |---|---|---|
-| `id` (`name`) | the stored name: in the records, the journal, the leases, the timings, the floors, the `work/` paths; never shown as such, never changed (§3) | `unit`, `terrain-lo`, … |
+| `id` (`name`) | the stored name: in the records, the journal, the leases, the timings, the floors, the `work/` paths; never shown as such, renamed only with its old name read as the new (§3) | `unit`, `terrain-lo`, … |
 | `title` | the name people see | "Roads", "Terrain, zoomed out" |
 | `does` | one sentence: what it makes from what | |
 | `kind` | where its output goes | `fetch` (`sources/`, from outside), `derive` (`work/`, `global/`: what other steps read), `pack` (what the map serves), `publish` (a catalog), `keep` (checks, lists, removals, backups) |
@@ -58,8 +59,13 @@ steps` prints it.
 
 Ids are the stored names, kept as they are: a rename would call every record of the step stale
 (its records, journal entries, timings, floors and `work/` paths all carry it), for nothing people
-see. A test pins them (`steps::tests::the_ids_are_the_stored_names`). Place: any member (⇄) or
-the lead.
+see. A test pins them (`steps::tests::the_ids_are_the_stored_names`). The one rename, task #639's
+(the terrain's and the slope's steps by the pack each makes: `terrain` → `terrain-hi`, `slope` →
+`slope-hi`), keeps the old names readable: `steps::RENAMED`, `steps::current` (a row looked up by
+either name, a hand-off's or journal entry's done targets recorded under the new one), and the
+records' `terrain` and `slope` keys read as `terrain_hi` and `slope_hi` (`jobs.json`); the `work/`
+paths (`terrain-mid`, `slope-mid`) and a mid's `step` field keep the old names. Place: any member
+(⇄) or the lead.
 
 | Stage | Step (title) | id | kind | each target | place |
 |---|---|---|---|---|---|
@@ -78,10 +84,12 @@ the lead.
 | | Regions' extract | `regions-extract` | derive | the world | lead |
 | Heritage sites | Heritage sites | `heritage-sites` | derive | the world | lead |
 | Terrain | Terrain water | `terrain-water` | derive | the world | lead |
-| | Terrain | `terrain` | pack | a z6 tile | ⇄ |
+| | Terrain | `terrain-hi` | pack | a z6 tile | ⇄ |
+| | Terrain, deep levels | `terrain-deep` | pack | a z10 tile | ⇄ |
 | | Terrain, zoomed out | `terrain-lo` | pack | a z3 tile | ⇄ |
 | | Terrain's subtrees (task) | `terrainsub` | | a task of Terrain | ⇄ |
-| Slope | Slope | `slope` | pack | a z6 tile | ⇄ |
+| Slope | Slope, deep levels | `slope-deep` | pack | a z10 tile | ⇄ |
+| | Slope | `slope-hi` | pack | a z6 tile | ⇄ |
 | | Slope, zoomed out | `slope-lo` | pack | a z3 tile | ⇄ |
 | Tree cover | Tree cover | `trees` | pack | a z6 tile | ⇄ |
 | | Tree cover, zoomed out | `trees-lo` | pack | a z3 tile | ⇄ |

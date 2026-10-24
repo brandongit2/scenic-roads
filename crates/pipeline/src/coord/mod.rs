@@ -130,11 +130,12 @@ fn is_zero64(v: &u64) -> bool {
 /// its assemblies 1; terrain 3 and slope 3: a z6 tile a run (a z6 tile), their assemblies 1; terrain
 /// 4: a z6 tile's tiles made a group of z8 subtrees at a time, where 3 held all its z12 tiles' at once,
 /// 7 GB at its 90th percentile; 5: its deep levels too, z13–16 where a fine dataset is, a z8 tile's
-/// blocks read ahead and kept, task #633).
+/// blocks read ahead and kept, task #633; terrain-hi 6 and slope-hi 4: named so, their deep levels
+/// their own steps', terrain-deep and slope-deep, task #639).
 pub fn cost_version(step: &str) -> u32 {
-    match step {
-        "terrain" => 5,
-        "slope" => 3,
+    match crate::agent::steps::current(step) {
+        "terrain-hi" => 6,
+        "slope-hi" => 4,
         // (3: the canopy rows read where they lie and counted, its blocks paced, task #606: 2's
         // copied whole squares uncounted, so its NAS weight was its uploads alone.)
         "trees" => 3,
@@ -3015,9 +3016,10 @@ fn job_disks_load(
 }
 
 /// Whether cost key `k` is of a step's shape no plan makes now (task #392): a z3 tile's whole
-/// `terrain` or `trees` run, before their z6 z6 tiles; its measures would hold the z6 tiles' priors.
+/// `terrain-hi` (`terrain` before task #639) or `trees` run, before their z6 tiles; its measures
+/// would hold the z6 tiles' priors.
 fn old_shape(k: &str) -> bool {
-    ["terrain 3/", "trees 3/"].iter().any(|p| k.starts_with(p))
+    ["terrain 3/", "terrain-hi 3/", "trees 3/"].iter().any(|p| k.starts_with(p))
 }
 
 /// The floors `s` keeps, after clearing those of `step` (all, with no step), or of its `target`,
@@ -5475,21 +5477,21 @@ mod tests {
         // estimate instead; measured since: what it took.
         let mut costs = BTreeMap::new();
         costs.insert(
-            cost_key("terrain", "3/0/2"),
+            cost_key("terrain-hi", "3/0/2"),
             Cost { peak_mb: 32_900, secs: 3000, worker: None, v: 0, ..Default::default() },
         );
-        assert_eq!(job_peak(&costs, "terrain", "3/0/2", 2400), 2400);
+        assert_eq!(job_peak(&costs, "terrain-hi", "3/0/2", 2400), 2400);
         costs.insert(
-            cost_key("terrain", "3/0/2"),
-            Cost { peak_mb: 2100, secs: 3000, worker: None, v: cost_version("terrain"), ..Default::default() },
+            cost_key("terrain-hi", "3/0/2"),
+            Cost { peak_mb: 2100, secs: 3000, worker: None, v: cost_version("terrain-hi"), ..Default::default() },
         );
-        assert_eq!(job_peak(&costs, "terrain", "3/0/2", 2400), 2100);
+        assert_eq!(job_peak(&costs, "terrain-hi", "3/0/2", 2400), 2100);
         // Slope likewise (written a z6 tile at a time too); other steps' measures stand.
         costs.insert(
-            cost_key("slope", "3/0/2"),
+            cost_key("slope-hi", "3/0/2"),
             Cost { peak_mb: 20_000, secs: 300, worker: None, v: 0, ..Default::default() },
         );
-        assert_eq!(job_peak(&costs, "slope", "3/0/2", 2000), 2000);
+        assert_eq!(job_peak(&costs, "slope-hi", "3/0/2", 2000), 2000);
         costs.insert(
             cost_key("peaks", "6/1/1"),
             Cost { peak_mb: 5000, secs: 300, worker: None, v: 0, ..Default::default() },
@@ -5761,7 +5763,7 @@ mod tests {
         costs.insert("pois 6/1/1".to_string(), cost(1200));
         assert_eq!(job_peak(&costs, "pois", "6/1/1", 100 << 20), 1200);
         // Another step: its own, else its offer's guess.
-        assert_eq!(job_peak(&costs, "slope", "3/2/2", 3000), 3000);
+        assert_eq!(job_peak(&costs, "slope-hi", "3/2/2", 3000), 3000);
     }
 
     #[test]
@@ -5989,7 +5991,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let dir = d.path().join("coord");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("job-disks-v4.json"), r#"{"lo":[42971,500],"pack":[66000],"slope":[65]}"#).unwrap();
+        std::fs::write(dir.join("job-disks-v4.json"), r#"{"lo":[42971,500],"pack":[66000],"slope-hi":[65]}"#).unwrap();
         std::fs::write(dir.join(FILLS), r#"{"base packs":42471,"DEM":12684,"whole copies":900}"#).unwrap();
         std::fs::write(
             dir.join("disks.json"),
@@ -5998,20 +6000,20 @@ mod tests {
                 &[("lo 3/1/1".to_string(), 500), ("lo 3/0/1".into(), 43_008), ("lo 3/2/1".into(), 400)]
                     .into_iter()
                     .chain((3..=9).map(|i| (format!("lo 3/{i}/1"), 0)))
-                    .chain([("terrain 3/1/1".to_string(), 9000), ("terrain 6/1/1".into(), 900)])
+                    .chain([("terrain-hi 3/1/1".to_string(), 9000), ("terrain-hi 6/1/1".into(), 900)])
                     .collect::<BTreeMap<String, u64>>(),
             )
             .unwrap(),
         )
         .unwrap();
         let cost =
-            |mb: u64| Cost { peak_mb: mb, secs: 60, worker: None, v: cost_version("terrain"), ..Default::default() };
+            |mb: u64| Cost { peak_mb: mb, secs: 60, worker: None, v: cost_version("terrain-hi"), ..Default::default() };
         std::fs::write(
             dir.join("costs.json"),
             serde_json::to_vec(&BTreeMap::from([
-                ("terrain 3/1/1".to_string(), cost(30_000)),
+                ("terrain-hi 3/1/1".to_string(), cost(30_000)),
                 ("trees 3/1/1".to_string(), cost(30_000)),
-                ("terrain 6/1/1".to_string(), cost(3_000)),
+                ("terrain-hi 6/1/1".to_string(), cost(3_000)),
             ]))
             .unwrap(),
         )
@@ -6022,9 +6024,9 @@ mod tests {
             (0, 0, 900),
             "only the caches there are: the base packs' and the DEM cache's gone"
         );
-        assert_eq!((c.job_disk("lo"), c.job_disk("pack"), c.job_disk("slope")), (0, 0, 65));
-        assert_eq!(c.measured("terrain", "6/9/9").map(|m| (m.mem_mb, m.disk_mb)), Some((3_000, 900)));
-        assert!(!c.disks().contains_key("terrain 3/1/1"));
+        assert_eq!((c.job_disk("lo"), c.job_disk("pack"), c.job_disk("slope-hi")), (0, 0, 65));
+        assert_eq!(c.measured("terrain-hi", "6/9/9").map(|m| (m.mem_mb, m.disk_mb)), Some((3_000, 900)));
+        assert!(!c.disks().contains_key("terrain-hi 3/1/1"));
         assert!(!c.disks().keys().any(|k| k.starts_with("lo ")), "lo's targets' disks gone");
         // Each tile its own disk: the most of theirs, not their sum; a job's run a floor of the next.
         let tiles: Vec<String> = (0..=2).map(|i| format!("3/{i}/1")).collect();
@@ -6102,8 +6104,8 @@ mod tests {
         c.add_floors(&[(cost_key("peaks", "6/2/2"), f(20_000, false))]);
         c.add_floors(&[(cost_key("peaks", "6/2/2"), f(4000, true))]);
         assert_eq!(c.floor("peaks", "6/2/2"), Some(f(4000, true)));
-        c.add_floors(&[(cost_key("terrain", "6/3/3"), Floor { mb: 20_000, alone: true, v: 1 })]);
-        assert_eq!((c.holding_floor("terrain", "6/3/3"), c.peak("terrain", "6/3/3")), (None, None));
+        c.add_floors(&[(cost_key("terrain-hi", "6/3/3"), Floor { mb: 20_000, alone: true, v: 1 })]);
+        assert_eq!((c.holding_floor("terrain-hi", "6/3/3"), c.peak("terrain-hi", "6/3/3")), (None, None));
         // The OSM pass's floor puts an earlier pass's away.
         c.add_floors(&[(cost_key("osm-pass", "2026-08-01"), f(30_000, true))]);
         c.add_floors(&[(cost_key("osm-pass", "2026-09-28"), f(31_000, true))]);
@@ -6167,14 +6169,14 @@ mod tests {
         // another lead; the term taken up holds another.
         let old = c.hold("trees", &[("6/33/22".into(), "k".into())]).unwrap();
         let p = PoolState {
-            leases: serde_json::json!({ "next": old + 5, "leases": [{ "id": old + 3, "term": 3, "granted_at": 0, "worker": "m1", "work": { "Job": { "step": "terrain", "targets": [["6/33/22", "k2"]] } }, "progress": null }] }),
+            leases: serde_json::json!({ "next": old + 5, "leases": [{ "id": old + 3, "term": 3, "granted_at": 0, "worker": "m1", "work": { "Job": { "step": "terrain-hi", "targets": [["6/33/22", "k2"]] } }, "progress": null }] }),
             ..Default::default()
         };
         assert_eq!(c.load_pool_state(&p).unwrap(), 1);
         assert!(c.held("trees").is_empty(), "the old lease is gone");
-        assert!(c.held("terrain").contains("6/33/22"));
+        assert!(c.held("terrain-hi").contains("6/33/22"));
         // (Ids go on past both.)
-        assert!(c.hold("slope", &[("3/1/1".into(), "k".into())]).unwrap() >= old + 5);
+        assert!(c.hold("slope-hi", &[("3/1/1".into(), "k".into())]).unwrap() >= old + 5);
     }
 
     #[test]
@@ -6201,7 +6203,7 @@ mod tests {
         let p = PoolState {
             costs: [(cost_key("trees", "3/1/3"), old(37_450)), (cost_key("trees", "6/4/14"), old(1_360))].into(),
             floors: [(cost_key("trees", "3/2/3"), f(36_000))].into(),
-            disks: [(cost_key("terrain", "3/1/1"), 9_000)].into(),
+            disks: [(cost_key("terrain-hi", "3/1/1"), 9_000)].into(),
             leases: serde_json::json!({ "next": 1, "leases": [] }),
             ..Default::default()
         };
@@ -6209,7 +6211,7 @@ mod tests {
         let costs = c.shared.lock().unwrap().costs.clone();
         assert!(!costs.contains_key("trees 3/1/3") && costs.contains_key("trees 6/4/14"), "{costs:?}");
         assert_eq!(c.floor("trees", "3/2/3"), None);
-        assert!(!c.disks().contains_key("terrain 3/1/1"));
+        assert!(!c.disks().contains_key("terrain-hi 3/1/1"));
         assert_eq!(
             (c.floor("peaks", "6/1/2").map(|f| f.mb), c.floor("peaks", "6/1/3").map(|f| f.mb)),
             (Some(9000), Some(7000))
@@ -6226,7 +6228,7 @@ mod tests {
         let m2 = client::Client::at(vec![port], c.contact.token.clone(), "m2");
         c.offer(
             "2026-09-01",
-            vec![Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], job: None }],
+            vec![Offer { step: "slope-hi".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], job: None }],
         );
         c.offer_resume(Some((
             "m1".into(),
@@ -6240,9 +6242,9 @@ mod tests {
         // Another worker asking for it: not its (the plan's work instead, or nothing).
         assert!(w_step(&m2, &can(&["osm-pass"])).is_none());
         // Its own, not asking for it (its file no longer holds it): the plan's work.
-        assert_eq!(w_step(&m1, &can(&["slope"])).as_deref(), Some("slope 3/2/2"));
+        assert_eq!(w_step(&m1, &can(&["slope-hi"])).as_deref(), Some("slope-hi 3/2/2"));
         // Asking for it: granted whole, its pass the job's.
-        let g = m1.ask(&can(&["osm-pass", "slope"])).unwrap().unwrap();
+        let g = m1.ask(&can(&["osm-pass", "slope-hi"])).unwrap().unwrap();
         let Granted::Job { step, targets, pass } = g.work else { panic!("a job") };
         assert_eq!((step.as_str(), pass.as_str()), ("osm-pass", "2026-10-01"));
         assert_eq!(targets, vec![("2026-10-01".to_string(), "sources/osm/2026-10-01/planet.osm.pbf".to_string())]);
@@ -6478,9 +6480,9 @@ mod tests {
         };
         let limits =
             crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
-        let a = Ask { want: 6, ..every_ask("m1", "slope", 64_000, 100_000) };
+        let a = Ask { want: 6, ..every_ask("m1", "slope-hi", 64_000, 100_000) };
         let (_d, c, w, _clock) = every((0, 0));
-        heavy(&c, "slope");
+        heavy(&c, "slope-hi");
         assert_eq!(
             all_granted(&w, &a).len(),
             4,
@@ -6488,13 +6490,13 @@ mod tests {
         );
         let (_d, c, w, _clock) = every((0, 0));
         c.set_nas(Some(limits));
-        heavy(&c, "slope");
+        heavy(&c, "slope-hi");
         assert_eq!(all_granted(&w, &a), [["6/1/1"], ["6/1/2"]], "on: two halves of the NAS");
         assert!(all_granted(&w, &a).is_empty(), "the NAS full: queued");
         let (_d, c, w, _clock) = every((0, 0));
         c.set_nas(Some(limits));
-        heavy(&c, "slope");
-        assert!(c.hold("slope", &[("6/1/6".into(), "k 6/1/6".into())]).is_some());
+        heavy(&c, "slope-hi");
+        assert!(c.hold("slope-hi", &[("6/1/6".into(), "k 6/1/6".into())]).is_some());
         assert_eq!(all_granted(&w, &a).len(), 1, "the lead's own job counts");
         // Downloads: a fetching step's jobs under the cap (the lead's own: no fetching step is
         // offered to every member).
@@ -6525,18 +6527,18 @@ mod tests {
     fn a_job_past_the_whole_goes_beside_the_leads_own_and_a_long_wait_is_said() {
         let (_d, c, w, clock) = every((0, 0));
         // (Each target 200 MB/s of a 100 MB/s NAS: weighs the whole, capped.)
-        packable(&c, "slope", 4, Some(1));
+        packable(&c, "slope-hi", 4, Some(1));
         for i in 1..=4 {
             let sizes = [("threads".to_string(), 1), ("bytes".to_string(), 120_000_000_000)];
             let cost = Cost {
                 peak_mb: 2000,
                 secs: 600,
                 worker: None,
-                v: cost_version("slope"),
+                v: cost_version("slope-hi"),
                 sizes: sizes.into(),
                 ..Default::default()
             };
-            c.add_costs_by(&[(cost_key("slope", &format!("6/1/{i}")), cost)], "m1");
+            c.add_costs_by(&[(cost_key("slope-hi", &format!("6/1/{i}")), cost)], "m1");
         }
         c.set_nas(Some(crate::budget::nas::Limits {
             bytes_s: 100e6,
@@ -6544,8 +6546,8 @@ mod tests {
             downloads: None,
             ..Default::default()
         }));
-        let own = c.hold("slope", &[("6/1/4".into(), "k 6/1/4".into())]).expect("the lead's own: the whole");
-        let a = Ask { want: 3, ..every_ask("m1", "slope", 64_000, 100_000) };
+        let own = c.hold("slope-hi", &[("6/1/4".into(), "k 6/1/4".into())]).expect("the lead's own: the whole");
+        let a = Ask { want: 3, ..every_ask("m1", "slope-hi", 64_000, 100_000) };
         assert_eq!(all_granted(&w, &a), [["6/1/1"]], "beside the lead's own alone");
         assert!(all_granted(&w, &a).is_empty(), "beside a member's: waits");
         assert!(c.nas_waits().is_empty(), "not yet half an hour");
@@ -6565,7 +6567,7 @@ mod tests {
             assert!(all_granted(&w, &a).is_empty(), "still waiting");
         }
         let waits = c.nas_waits();
-        assert!(waits.iter().any(|(s, t, m)| s == "slope" && t == "6/1/2" && *m >= 30), "{waits:?}");
+        assert!(waits.iter().any(|(s, t, m)| s == "slope-hi" && t == "6/1/2" && *m >= 30), "{waits:?}");
     }
 
     /// Task #499: a cold job of the lead's own (bld-fetch, run before but not measured the way it
@@ -6580,7 +6582,7 @@ mod tests {
             [("bld-fetch", 64_000, true), ("bld-fetch", 2000 + provisional - 1, false), ("catalog", 64_000, false)]
         {
             let (_d, c, w, _clock) = every((0, 0));
-            packable(&c, "slope", 4, Some(1));
+            packable(&c, "slope-hi", 4, Some(1));
             ran_before(&c, "bld-fetch");
             let mut offers = c.shared.lock().unwrap().offers.clone();
             offers.insert(
@@ -6597,8 +6599,12 @@ mod tests {
                 .ask(&Ask { can: vec![step.into()], ..every_ask("m1", step, 1 << 20, 1 << 30) })
                 .unwrap()
                 .is_none());
-            let a = Ask { want: 4, can: vec!["slope".into(), step.into()], ..every_ask("m4", "slope", room, 100_000) };
-            let held = c.hold("slope", &[("6/1/1".into(), "k 6/1/1".into())]).unwrap();
+            let a = Ask {
+                want: 4,
+                can: vec!["slope-hi".into(), step.into()],
+                ..every_ask("m4", "slope-hi", room, 100_000)
+            };
+            let held = c.hold("slope-hi", &[("6/1/1".into(), "k 6/1/1".into())]).unwrap();
             let why = |c: &Coordinator| c.refusals().into_values().collect::<Vec<_>>().join("; ");
             let g = c.ask_own(&a, &BTreeSet::new());
             let job = format!("{step} {step}");
@@ -6629,17 +6635,17 @@ mod tests {
         let v = cost_version("inputs");
         for (mb, alone, beside) in [(340, true, true), (90_000, true, false), (340, false, true)] {
             let (_d, c, _w, _clock) = every((0, 0));
-            packable(&c, "slope", 4, Some(1));
+            packable(&c, "slope-hi", 4, Some(1));
             c.add_floors(&[(cost_key("inputs", "inputs/sources"), Floor { mb, alone, v })]);
             let mut offers = c.shared.lock().unwrap().offers.clone();
             offers.insert(0, own("sources"));
             c.offer("p", offers);
             let a = Ask {
                 want: 4,
-                can: vec!["slope".into(), "inputs".into()],
-                ..every_ask("m4", "slope", 64_000, 100_000)
+                can: vec!["slope-hi".into(), "inputs".into()],
+                ..every_ask("m4", "slope-hi", 64_000, 100_000)
             };
-            let _held = c.hold("slope", &[("6/1/1".into(), "k 6/1/1".into())]).unwrap();
+            let _held = c.hold("slope-hi", &[("6/1/1".into(), "k 6/1/1".into())]).unwrap();
             let g = c.ask_own(&a, &BTreeSet::new());
             let jobs: Vec<String> = g
                 .iter()
@@ -6683,14 +6689,14 @@ mod tests {
             (s.nas, s.nas_own) = (None, Some(limits));
         }
         // A member's two halves of the NAS, the switch `off`: granted past the whole.
-        let m = Ask { want: 3, ..every_ask("m1", "slope", 64_000, 100_000) };
+        let m = Ask { want: 3, ..every_ask("m1", "slope-hi", 64_000, 100_000) };
         assert_eq!(all_granted(&w, &m).len(), 3, "the members unbudgeted");
         assert_eq!(c.nas_shares().get("m1"), Some(&1500), "its share shown past the whole");
-        assert_eq!(c.nas_step_weights().get("slope"), Some(&500), "one slope job's weight");
+        assert_eq!(c.nas_step_weights().get("slope-hi"), Some(&500), "one slope job's weight");
         // The lead's own: held within the whole by its own jobs alone (task #440: the members'
         // unheld jobs no longer keep it idle).
         assert!(!c.nas_over(), "the lead's ramp counts its own");
-        let a = Ask { want: 3, ..every_ask("m4", "slope", 64_000, 100_000) };
+        let a = Ask { want: 3, ..every_ask("m4", "slope-hi", 64_000, 100_000) };
         assert_eq!(all_granted_own(&c, &a).len(), 2, "two halves of its own, no more");
     }
 
@@ -6723,10 +6729,10 @@ mod tests {
             let mut s = c.shared.lock().unwrap();
             (s.nas, s.nas_own) = (Some(limits), Some(limits));
         }
-        let m = Ask { want: 6, ..every_ask("m1", "slope", 64_000, 100_000) };
+        let m = Ask { want: 6, ..every_ask("m1", "slope-hi", 64_000, 100_000) };
         assert_eq!(all_granted(&w, &m).len(), 2, "the member within the whole");
         assert!(c.nas_shares().get("m1").is_some_and(|&s| s <= 1000));
-        let a = Ask { want: 3, ..every_ask("m4", "slope", 64_000, 100_000) };
+        let a = Ask { want: 3, ..every_ask("m4", "slope-hi", 64_000, 100_000) };
         assert!(all_granted_own(&c, &a).is_empty(), "the NAS full: the lead waits its turn");
     }
 
@@ -6736,11 +6742,11 @@ mod tests {
     #[test]
     fn a_mac_busy_outside_the_pool_gets_fewer_jobs() {
         let (_d, c, w, _clock) = every((0, 0));
-        packable(&c, "slope", 6, Some(2));
+        packable(&c, "slope-hi", 6, Some(2));
         let ask = |free: u32| Ask {
             want: 4,
             cap: Some(Capacity { at: unix_now(), cores: 8, cores_free: free, ..Default::default() }),
-            ..every_ask("m1", "slope", 64_000, 100_000)
+            ..every_ask("m1", "slope-hi", 64_000, 100_000)
         };
         assert_eq!(all_granted(&w, &ask(0)).len(), 1, "swamped: its first job only");
         let why = c.refusals().into_values().collect::<Vec<_>>().join("; ");
@@ -6748,7 +6754,7 @@ mod tests {
         // (Its one job's two threads busy, four more by others: two cores left, one job more.)
         assert_eq!(all_granted(&w, &ask(2)).len(), 1, "two cores free: one more");
         let (_d, c, w, _clock) = every((0, 0));
-        packable(&c, "slope", 6, Some(2));
+        packable(&c, "slope-hi", 6, Some(2));
         assert_eq!(all_granted(&w, &ask(8)).len(), 4, "idle: by its cores");
     }
 
@@ -6780,7 +6786,7 @@ mod tests {
         c.offer("p", offers);
         let m = Ask { want: 1, can: vec!["pack".into()], ..every_ask("m1", "pack", 64_000, 100_000) };
         assert_eq!(all_granted(&w, &m), [["6/2/2"]]);
-        let m = Ask { want: 3, ..every_ask("m1", "slope", 64_000, 100_000) };
+        let m = Ask { want: 3, ..every_ask("m1", "slope-hi", 64_000, 100_000) };
         assert_eq!(all_granted(&w, &m).len(), 1, "a slope (half the NAS) beside it, not two");
         // The lead's own planned job weighing the whole, beside a member's small job.
         let (_d, c, w, _clock) = every((0, 0));
@@ -6788,18 +6794,18 @@ mod tests {
             let mut s = c.shared.lock().unwrap();
             (s.nas, s.nas_own) = (Some(limits), Some(limits));
         }
-        packable(&c, "slope", 1, Some(1));
+        packable(&c, "slope-hi", 1, Some(1));
         let small = [("threads".to_string(), 1), ("bytes".to_string(), 600_000_000)];
         let cost = |sizes: [(String, u64); 2]| Cost {
             peak_mb: 500,
             secs: 600,
             worker: None,
-            v: cost_version("slope"),
+            v: cost_version("slope-hi"),
             sizes: sizes.into(),
             ..Default::default()
         };
-        c.add_costs_by(&[(cost_key("slope", "6/1/1"), cost(small))], "m1");
-        assert_eq!(all_granted(&w, &Ask { want: 1, ..every_ask("m1", "slope", 64_000, 100_000) }).len(), 1);
+        c.add_costs_by(&[(cost_key("slope-hi", "6/1/1"), cost(small))], "m1");
+        assert_eq!(all_granted(&w, &Ask { want: 1, ..every_ask("m1", "slope-hi", 64_000, 100_000) }).len(), 1);
         packable(&c, "rail", 1, Some(1));
         let whole = [("threads".to_string(), 1), ("bytes".to_string(), 600_000_000_000)];
         c.add_costs_by(&[(cost_key("rail", "6/1/1"), Cost { v: cost_version("rail"), ..cost(whole) })], "m4");
@@ -6832,14 +6838,14 @@ mod tests {
             peak_mb: 500,
             secs: 600,
             worker: None,
-            v: cost_version("slope"),
+            v: cost_version("slope-hi"),
             sizes: [("threads".to_string(), 1), ("bytes".to_string(), bytes)].into(),
             ..Default::default()
         };
-        packable(&c, "slope", 1, Some(1));
+        packable(&c, "slope-hi", 1, Some(1));
         // (30 MB/s: 300 of the NAS, short of the whole.)
-        c.add_costs_by(&[(cost_key("slope", "6/1/1"), cost(18_000_000_000))], "m1");
-        assert_eq!(all_granted(&w, &Ask { want: 1, ..every_ask("m1", "slope", 64_000, 100_000) }).len(), 1);
+        c.add_costs_by(&[(cost_key("slope-hi", "6/1/1"), cost(18_000_000_000))], "m1");
+        assert_eq!(all_granted(&w, &Ask { want: 1, ..every_ask("m1", "slope-hi", 64_000, 100_000) }).len(), 1);
         packable(&c, "rail", 2, Some(1));
         for t in ["6/1/1", "6/1/2"] {
             // (80 MB/s: 800 of the NAS.)
@@ -6891,10 +6897,10 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(s.draw_weight(&p, "depth", "mini", &holding(0)), 3.0, "its speed at the step");
-        assert_eq!(s.draw_weight(&p, "slope", "mini", &holding(0)), 1.0, "unmeasured: the lead's");
+        assert_eq!(s.draw_weight(&p, "slope-hi", "mini", &holding(0)), 1.0, "unmeasured: the lead's");
         assert_eq!(s.draw_weight(&p, "depth", "m1", &holding(20_000)), 0.5 * CACHE_PREFER, "holds it whole");
         assert_eq!(s.draw_weight(&p, "depth", "m1", &holding(19_000)), 0.5, "short of it");
-        assert_eq!(s.draw_weight(&p, "slope", "m1", &holding(20_000)), 0.5, "a step reading none");
+        assert_eq!(s.draw_weight(&p, "slope-hi", "m1", &holding(20_000)), 0.5, "a step reading none");
         s.fills.clear();
         assert_eq!(s.draw_weight(&p, "depth", "m1", &holding(20_000)), 0.5, "no fill measured");
     }
@@ -7009,10 +7015,10 @@ mod tests {
             sizes: [("threads".to_string(), 1), ("bytes".to_string(), bytes)].into(),
             ..Default::default()
         };
-        packable(&c, "slope", 6, Some(1));
+        packable(&c, "slope-hi", 6, Some(1));
         for i in 1..=6 {
             // (40 MB/s: 400 of the NAS each.)
-            c.add_costs_by(&[(cost_key("slope", &format!("6/1/{i}")), cost("slope", 24_000_000_000))], "m1");
+            c.add_costs_by(&[(cost_key("slope-hi", &format!("6/1/{i}")), cost("slope-hi", 24_000_000_000))], "m1");
         }
         let mut offers = c.shared.lock().unwrap().offers.clone();
         packable(&c, "rail", 1, Some(1));
@@ -7026,7 +7032,7 @@ mod tests {
         c.offer("p", offers);
         let w2 = client::Client::at(w.urls(), c.contact.token.clone(), "m2");
         let by = |n: &str| if n == "m1" { &w } else { &w2 };
-        let m = |n: &str| Ask { want: 1, ..every_ask(n, "slope", 64_000, 100_000) };
+        let m = |n: &str| Ask { want: 1, ..every_ask(n, "slope-hi", 64_000, 100_000) };
         let one = |n: &str| all_granted(by(n), &m(n)).into_iter().flatten().collect::<Vec<_>>();
         let lease_of = |n: &str| {
             let s = c.shared.lock().unwrap();
@@ -7081,25 +7087,25 @@ mod tests {
                 sizes: [("threads".to_string(), 1), ("bytes".to_string(), bytes)].into(),
                 ..Default::default()
             };
-            packable(&c, "terrain", 1, Some(1));
+            packable(&c, "terrain-hi", 1, Some(1));
             // (10.28 MB/s: 103 of the NAS.)
-            c.add_costs_by(&[(cost_key("terrain", "6/1/1"), cost("terrain", 6_170_000_000))], "m1");
+            c.add_costs_by(&[(cost_key("terrain-hi", "6/1/1"), cost("terrain-hi", 6_170_000_000))], "m1");
             let mut offers = c.shared.lock().unwrap().offers.clone();
             packable(&c, "unit", 1, Some(1));
             // (94.55 MB/s: 946.)
             c.add_costs_by(&[(cost_key("unit", "6/1/1"), cost("unit", 56_730_000_000))], "m1");
             offers.extend(c.shared.lock().unwrap().offers.clone());
-            packable(&c, "slope", 40, Some(1));
+            packable(&c, "slope-hi", 40, Some(1));
             for i in 1..=40 {
                 // (5 MB/s: 50 each.)
-                c.add_costs_by(&[(cost_key("slope", &format!("6/1/{i}")), cost("slope", 3_000_000_000))], "m1");
+                c.add_costs_by(&[(cost_key("slope-hi", &format!("6/1/{i}")), cost("slope-hi", 3_000_000_000))], "m1");
             }
             offers.extend(c.shared.lock().unwrap().offers.clone());
             c.offer("p", offers);
             let w2 = client::Client::at(w.urls(), c.contact.token.clone(), "m2");
             let by = client::Client::at(w.urls(), c.contact.token.clone(), asker);
             let ask = |n: &str, step: &str| Ask { want: 1, ..every_ask(n, step, 64_000, 100_000) };
-            assert_eq!(granted(&w2, &ask("m2", "terrain")), ["6/1/1"]);
+            assert_eq!(granted(&w2, &ask("m2", "terrain-hi")), ["6/1/1"]);
             let terrain = {
                 let s = c.shared.lock().unwrap();
                 s.leases.all(s.now()).iter().map(|l| l.id).max().unwrap()
@@ -7111,9 +7117,9 @@ mod tests {
                 assert!(granted(&by, &ask(asker, "unit")).is_empty(), "{asker}: not aged yet");
             }
             clock.advance(crate::budget::nas::OWN_AGE / 20);
-            assert!(granted(&w2, &ask("m2", "slope")).is_empty(), "{asker}: room held for the aged unit");
+            assert!(granted(&w2, &ask("m2", "slope-hi")).is_empty(), "{asker}: room held for the aged unit");
             assert_eq!(granted(&by, &ask(asker, "unit")), ["6/1/1"], "{asker}: the aged unit goes beside the terrain");
-            assert!(granted(&w2, &ask("m2", "slope")).is_empty(), "{asker}: 1049 leased, past the whole");
+            assert!(granted(&w2, &ask("m2", "slope-hi")).is_empty(), "{asker}: 1049 leased, past the whole");
         }
     }
 
@@ -7146,11 +7152,11 @@ mod tests {
             sizes: sizes.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
             ..Default::default()
         };
-        packable(&c, "slope", 3, Some(1));
+        packable(&c, "slope-hi", 3, Some(1));
         // (6/1/1: 30 MB/s, 300 of the NAS; 6/1/2: 50 MB/s, 500.)
-        let slope = |b: u64| cost("slope", &[("threads", 1), ("bytes", b)]);
-        c.add_costs_by(&[(cost_key("slope", "6/1/1"), slope(18_000_000_000))], "m1");
-        c.add_costs_by(&[(cost_key("slope", "6/1/2"), slope(30_000_000_000))], "m1");
+        let slope = |b: u64| cost("slope-hi", &[("threads", 1), ("bytes", b)]);
+        c.add_costs_by(&[(cost_key("slope-hi", "6/1/1"), slope(18_000_000_000))], "m1");
+        c.add_costs_by(&[(cost_key("slope-hi", "6/1/2"), slope(30_000_000_000))], "m1");
         let mut offers = c.shared.lock().unwrap().offers.clone();
         offers.push(Offer {
             step: "gc".into(),
@@ -7158,7 +7164,7 @@ mod tests {
             job: Some("gc".into()),
         });
         c.offer("p", offers);
-        let m = Ask { want: 1, ..every_ask("m1", "slope", 64_000, 100_000) };
+        let m = Ask { want: 1, ..every_ask("m1", "slope-hi", 64_000, 100_000) };
         let g1 = w.ask(&m).unwrap().expect("the member's 300");
         // (Time passes, the jobs' leases kept alive: the member's, and the clean-up's once held.)
         let own: std::cell::Cell<Option<u64>> = Default::default();
@@ -7196,13 +7202,13 @@ mod tests {
         assert_eq!(c.nas_yield("gc", &["gc".into()]), None, "nothing held back for it");
         // A member's 500 doesn't fit beside it (300 + 400); once held back `OWN_AGE`, the clean-up
         // yields (without it, 300 + 500 fit).
-        let m2 = Ask { want: 1, ..every_ask("m1", "slope", 64_000, 100_000) };
+        let m2 = Ask { want: 1, ..every_ask("m1", "slope-hi", 64_000, 100_000) };
         assert!(all_granted(&w, &m2).is_empty(), "the member's 500 held back");
         assert_eq!(c.nas_yield("gc", &["gc".into()]), None, "not held long yet");
         age(crate::budget::nas::OWN_AGE);
         assert!(all_granted(&w, &m2).is_empty());
         let why = c.nas_yield("gc", &["gc".into()]).expect("yields to the held job");
-        assert!(why.contains("slope 6/1/2"), "{why}");
+        assert!(why.contains("slope-hi 6/1/2"), "{why}");
         c.finish(g.lease, &[]);
         own.set(None);
         let g2 = w.ask(&m2).unwrap().expect("the clean-up gone: it goes");
@@ -7233,7 +7239,7 @@ mod tests {
             (s.nas, s.nas_own) = (Some(limits), Some(limits));
         }
         // (A slope job measured for memory but not its NAS: cold for the budget, weight 0.)
-        packable(&c, "slope", 1, Some(1));
+        packable(&c, "slope-hi", 1, Some(1));
         let mut offers = c.shared.lock().unwrap().offers.clone();
         offers.push(Offer {
             step: "gc".into(),
@@ -7241,7 +7247,7 @@ mod tests {
             job: Some("gc".into()),
         });
         c.offer("p", offers);
-        let g1 = w.ask(&Ask { want: 1, ..every_ask("m1", "slope", 64_000, 100_000) }).unwrap().expect("slope");
+        let g1 = w.ask(&Ask { want: 1, ..every_ask("m1", "slope-hi", 64_000, 100_000) }).unwrap().expect("slope-hi");
         assert_eq!(c.nas_shares().get("m1"), Some(&0));
         let a = Ask { want: 1, can: vec!["gc".into()], ..every_ask("m4", "gc", 64_000, 100_000) };
         assert!(c.ask_own(&a, &BTreeSet::new()).is_none(), "unmeasured beside a cold job: held");
@@ -7255,7 +7261,7 @@ mod tests {
             let mut s = c.shared.lock().unwrap();
             (s.nas, s.nas_own) = (Some(limits), Some(limits));
         }
-        packable(&c, "slope", 1, Some(1));
+        packable(&c, "slope-hi", 1, Some(1));
         let cost = |sizes: &[(&str, u64)]| Cost {
             peak_mb: 500,
             secs: 600,
@@ -7264,8 +7270,8 @@ mod tests {
             sizes: sizes.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
             ..Default::default()
         };
-        let slope = Cost { v: cost_version("slope"), ..cost(&[("threads", 1), ("bytes", 42_000_000_000)]) };
-        c.add_costs_by(&[(cost_key("slope", "6/1/1"), slope)], "m1");
+        let slope = Cost { v: cost_version("slope-hi"), ..cost(&[("threads", 1), ("bytes", 42_000_000_000)]) };
+        c.add_costs_by(&[(cost_key("slope-hi", "6/1/1"), slope)], "m1");
         c.add_costs_by(
             &[(cost_key("gc", "gc"), cost(&[("threads", 1), ("bytes", 0), ("listed", 120_000), ("deletes", 4_800)]))],
             "m4",
@@ -7278,7 +7284,7 @@ mod tests {
             job: Some("gc".into()),
         });
         c.offer("p", offers);
-        let g1 = w.ask(&Ask { want: 1, ..every_ask("m1", "slope", 64_000, 100_000) }).unwrap().expect("slope");
+        let g1 = w.ask(&Ask { want: 1, ..every_ask("m1", "slope-hi", 64_000, 100_000) }).unwrap().expect("slope-hi");
         assert_eq!(c.nas_shares().get("m1"), Some(&700));
         let age = |by: Duration| {
             for _ in 0..200 {
@@ -7309,13 +7315,13 @@ mod tests {
             peak_mb: 500,
             secs: 600,
             worker: None,
-            v: cost_version("slope"),
+            v: cost_version("slope-hi"),
             sizes: [("threads".to_string(), 1), ("bytes".to_string(), bytes)].into(),
             ..Default::default()
         };
-        packable(&c, "slope", 1, Some(1));
-        c.add_costs_by(&[(cost_key("slope", "6/1/1"), cost(6_000_000_000))], "m1");
-        assert_eq!(all_granted(&w, &Ask { want: 1, ..every_ask("m1", "slope", 64_000, 100_000) }).len(), 1);
+        packable(&c, "slope-hi", 1, Some(1));
+        c.add_costs_by(&[(cost_key("slope-hi", "6/1/1"), cost(6_000_000_000))], "m1");
+        assert_eq!(all_granted(&w, &Ask { want: 1, ..every_ask("m1", "slope-hi", 64_000, 100_000) }).len(), 1);
         // (A rail job of 30 MB/s: 300 of the NAS; a peaks job the whole.)
         for (step, b) in [("rail", 18_000_000_000), ("peaks", 600_000_000_000)] {
             packable(&c, step, 1, Some(1));
@@ -7336,7 +7342,7 @@ mod tests {
 
     /// Six slope targets each taking half a 100 MB/s NAS (50 MB/s), a thread each.
     fn heavy_slope(c: &Coordinator) {
-        packable(c, "slope", 6, Some(1));
+        packable(c, "slope-hi", 6, Some(1));
         for i in 1..=6 {
             let sizes = [
                 ("threads".to_string(), 1),
@@ -7347,11 +7353,11 @@ mod tests {
                 peak_mb: 2000,
                 secs: 600,
                 worker: None,
-                v: cost_version("slope"),
+                v: cost_version("slope-hi"),
                 sizes: sizes.into(),
                 ..Default::default()
             };
-            c.add_costs_by(&[(cost_key("slope", &format!("6/1/{i}")), cost)], "m1");
+            c.add_costs_by(&[(cost_key("slope-hi", &format!("6/1/{i}")), cost)], "m1");
         }
     }
 
@@ -7382,23 +7388,23 @@ mod tests {
     #[test]
     fn packing_grants_as_many_jobs_as_fit_the_asks_room() {
         let (_d, c, w, _clock) = every((0, 0));
-        packable(&c, "slope", 6, Some(2));
-        let a = Ask { want: 5, ..every_ask("m1", "slope", 7000, 100_000) };
+        packable(&c, "slope-hi", 6, Some(2));
+        let a = Ask { want: 5, ..every_ask("m1", "slope-hi", 7000, 100_000) };
         assert_eq!(all_granted(&w, &a), [["6/1/1"], ["6/1/2"], ["6/1/3"]], "three fit its memory");
         assert!(all_granted(&w, &a).is_empty(), "its room taken");
         // By cores: 2 of 8 each, four at once whatever the memory.
         let (_d, c, w, _clock) = every((0, 0));
-        packable(&c, "slope", 6, Some(2));
-        let a = Ask { want: 6, ..every_ask("m1", "slope", 64_000, 100_000) };
+        packable(&c, "slope-hi", 6, Some(2));
+        let a = Ask { want: 6, ..every_ask("m1", "slope-hi", 64_000, 100_000) };
         assert_eq!(all_granted(&w, &a).len(), 4);
         // One wanted, or none said: one.
         let (_d, c, w, _clock) = every((0, 0));
-        packable(&c, "slope", 6, Some(2));
+        packable(&c, "slope-hi", 6, Some(2));
         assert_eq!(all_granted(&w, &Ask { want: 1, ..a.clone() }).len(), 1);
         assert_eq!(all_granted(&w, &Ask { want: 0, ..a.clone() }).len(), 1);
         // Cores not said: each counted as the packed share (2 of 8), four at once.
         let (_d, c, w, _clock) = every((0, 0));
-        packable(&c, "slope", 6, None);
+        packable(&c, "slope-hi", 6, None);
         assert_eq!(all_granted(&w, &a).len(), 4);
     }
 
@@ -7409,15 +7415,15 @@ mod tests {
     #[test]
     fn a_mixed_version_pool_grants_one_job_each_until_every_member_runs_the_new_app() {
         let (_d, c, w, _clock) = every((0, 0));
-        packable(&c, "slope", 8, Some(2));
+        packable(&c, "slope-hi", 8, Some(2));
         // (The lead's own asks (m4, in process), on the new app; the member m1 over HTTP.)
         let own = |c: &Coordinator, want: usize| -> usize {
-            let a = Ask { want, ..every_ask("m4", "slope", 64_000, 100_000) };
+            let a = Ask { want, ..every_ask("m4", "slope-hi", 64_000, 100_000) };
             c.ask_own(&a, &BTreeSet::new()).map_or(0, |g| 1 + g.more.len())
         };
         assert!(c.all_new(), "nobody old around");
         // An older app's ask: no capacity, no want; one job, and it works.
-        let old = Ask { cap: None, want: 0, limit_mb: Some(12 << 10), ..every_ask("m1", "slope", 64_000, 100_000) };
+        let old = Ask { cap: None, want: 0, limit_mb: Some(12 << 10), ..every_ask("m1", "slope-hi", 64_000, 100_000) };
         assert_eq!(all_granted(&w, &old).len(), 1, "an older app's ask: one job");
         assert!(!c.all_new(), "an older app around");
         assert_eq!(c.largest_limit(), Some(12 << 10), "its old field's limit read");
@@ -7457,8 +7463,8 @@ mod tests {
             std::iter::once(g).chain(more).map(|g| g.threads).collect()
         };
         let (_d, c, w, _clock) = every((0, 0));
-        packable(&c, "slope", 6, Some(2));
-        let a = every_ask("m1", "slope", 64_000, 100_000);
+        packable(&c, "slope-hi", 6, Some(2));
+        let a = every_ask("m1", "slope-hi", 64_000, 100_000);
         assert_eq!(threads(&w, &a), [2], "its measured 2, the share");
         let cap = Capacity { cores: 8, in_use: true, kept_cores: 2, ..Default::default() };
         let used = Ask { cap: Some(cap), ..a.clone() };
@@ -7467,23 +7473,23 @@ mod tests {
         assert_eq!((packed_share(14), packed_share(2), packed_share(1)), (3, 2, 1));
         // A serial step's 1 each.
         let (_d, c, w, _clock) = every((0, 0));
-        packable(&c, "slope", 6, Some(1));
-        let a = Ask { want: 6, ..every_ask("m1", "slope", 64_000, 100_000) };
+        packable(&c, "slope-hi", 6, Some(1));
+        let a = Ask { want: 6, ..every_ask("m1", "slope-hi", 64_000, 100_000) };
         assert_eq!(threads(&w, &a), [1; 6]);
         // A step reading the NAS (30 MB/s), measured at 1: the share, never fewer.
         let (_d, c, w, _clock) = every((0, 0));
-        packable(&c, "slope", 6, Some(1));
+        packable(&c, "slope-hi", 6, Some(1));
         for i in 1..=6 {
             let sizes = [("threads".to_string(), 1), ("bytes".to_string(), 18_000_000_000)];
             let cost = Cost {
                 peak_mb: 2000,
                 secs: 600,
                 worker: None,
-                v: cost_version("slope"),
+                v: cost_version("slope-hi"),
                 sizes: sizes.into(),
                 ..Default::default()
             };
-            c.add_costs_by(&[(cost_key("slope", &format!("6/1/{i}")), cost)], "m1");
+            c.add_costs_by(&[(cost_key("slope-hi", &format!("6/1/{i}")), cost)], "m1");
         }
         assert_eq!(threads(&w, &a), [2; 4], "the share each, four in 8 cores");
         assert!(c.shared.lock().unwrap().reads_nas("unit", &[]));
@@ -7495,14 +7501,14 @@ mod tests {
     #[test]
     fn packing_counts_the_jobs_a_member_holds_against_its_ask() {
         let (_d, c, w, _clock) = every((0, 0));
-        packable(&c, "slope", 6, Some(1));
-        let a = every_ask("m1", "slope", 5000, 100_000);
+        packable(&c, "slope-hi", 6, Some(1));
+        let a = every_ask("m1", "slope-hi", 5000, 100_000);
         assert_eq!(all_granted(&w, &a).len(), 1);
         assert_eq!(all_granted(&w, &a).len(), 1);
         assert!(all_granted(&w, &a).is_empty(), "a third would pass its memory");
         let (_d, c, w, _clock) = every((0, 0));
-        packable(&c, "slope", 6, Some(1));
-        let a = every_ask("m1", "slope", 64_000, 250);
+        packable(&c, "slope-hi", 6, Some(1));
+        let a = every_ask("m1", "slope-hi", 64_000, 250);
         assert_eq!(all_granted(&w, &a).len(), 1);
         assert_eq!(all_granted(&w, &a).len(), 1);
         assert!(all_granted(&w, &a).is_empty(), "a third would pass its disk");
@@ -7515,7 +7521,7 @@ mod tests {
     #[test]
     fn a_members_job_waiting_on_a_worker_gives_its_room() {
         let (_d, c, w, clock) = every((0, 0));
-        packable(&c, "slope", 6, Some(1));
+        packable(&c, "slope-hi", 6, Some(1));
         let ask = |who: &str, mem: u64, want: usize, leases: Vec<u64>, waiting: Vec<WaitingJob>| Ask {
             want,
             cap: Some(Capacity {
@@ -7527,7 +7533,7 @@ mod tests {
                 waiting,
                 ..Default::default()
             }),
-            ..every_ask(who, "slope", mem, 64_000)
+            ..every_ask(who, "slope-hi", mem, 64_000)
         };
         let wait = |lease: u64, held_mb: u64| vec![WaitingJob { lease, held_mb }];
         // Memory: m1 spares 3000 MB, its job measured 2000: nothing beside it.
@@ -7544,7 +7550,7 @@ mod tests {
         assert_eq!(all_granted(&w, &ask("m1", 4000, 2, vec![], vec![])).len(), 2);
         // Cores: 8, a packed share of 2: four jobs; one of them waiting, a fifth.
         let (_d, c, w, _clock) = every((0, 0));
-        packable(&c, "slope", 6, Some(4));
+        packable(&c, "slope-hi", 6, Some(4));
         let gs = w.ask(&ask("m1", 64_000, 8, vec![], vec![])).unwrap().unwrap();
         let mut leases = vec![gs.lease];
         leases.extend(gs.more.iter().map(|g| g.lease));
@@ -7559,10 +7565,10 @@ mod tests {
     #[test]
     fn grants_carry_their_disk_and_a_members_reservations_count_once() {
         let (_d, c, w, _clock) = every((0, 0));
-        packable(&c, "slope", 6, Some(1));
+        packable(&c, "slope-hi", 6, Some(1));
         let ask = |disk: u64, leases: Vec<u64>| Ask {
             cap: Some(Capacity { cores: 8, cores_free: 8, disk_mb: disk, leases, ..Default::default() }),
-            ..every_ask("m1", "slope", 64_000, disk)
+            ..every_ask("m1", "slope-hi", 64_000, disk)
         };
         let g1 = w.ask(&ask(250, vec![])).unwrap().unwrap();
         assert_eq!(g1.disk_mb, 100);
@@ -7591,9 +7597,9 @@ mod tests {
         assert_eq!((old.free_mb, old.target_mb), (48 << 10, 20 << 10));
         assert!(!serde_json::to_string(&old).unwrap().contains("reserve_mb"));
         let (_d, c, w, _clock) = every((0, 0));
-        packable(&c, "slope", 6, Some(1));
+        packable(&c, "slope-hi", 6, Some(1));
         let cap = Capacity { cores: 8, free_mb: 21 << 10, target_mb: 20 << 10, ..Default::default() };
-        let a = Ask { cap: Some(cap), ..every_ask("m1", "slope", 6144, 0) };
+        let a = Ask { cap: Some(cap), ..every_ask("m1", "slope-hi", 6144, 0) };
         assert!(w.ask(&a).unwrap().is_none());
         let why = c.refusals().get("m1").cloned().unwrap_or_default();
         assert!(why.contains("(6.0 GB memory; disk: 21 GB free · 0 GB for jobs (20 GB room target))"), "{why}");
@@ -7692,9 +7698,9 @@ mod tests {
     /// A cold `slope` target offered after `step`'s measured ones (2 GB, two threads).
     fn with_cold_slope(c: &Coordinator, step: &str, n: usize) {
         packable(c, step, n, Some(2));
-        ran_before(c, "slope");
+        ran_before(c, "slope-hi");
         let mut offers = c.shared.lock().unwrap().offers.clone();
-        offers.push(Offer { step: "slope".into(), targets: vec![("6/2/2".into(), "k 6/2/2".into(), 0)], job: None });
+        offers.push(Offer { step: "slope-hi".into(), targets: vec![("6/2/2".into(), "k 6/2/2".into(), 0)], job: None });
         c.offer("p", offers);
     }
 
@@ -7703,10 +7709,10 @@ mod tests {
     /// room left, not beside (alone once its worker holds nothing, whatever its size).
     #[test]
     fn packing_takes_a_cold_start_by_its_provisional_need() {
-        let provisional = crate::agent::steps::mem_mb("slope") * 3 / 2;
+        let provisional = crate::agent::steps::mem_mb("slope-hi") * 3 / 2;
         let a = |mem: u64| Ask {
             want: 3,
-            can: vec!["trees".into(), "slope".into()],
+            can: vec!["trees".into(), "slope-hi".into()],
             ..every_ask("m1", "trees", mem, 100_000)
         };
         // Room for both measured (2 GB each) and the cold one: all three.
@@ -7720,10 +7726,10 @@ mod tests {
         assert_eq!(all_granted(&w, &a(4000 + provisional - 1)).len(), 2, "past the room left: two of the three");
         // Nothing held: a cold start bigger than its whole room goes, alone.
         let (_d, c, w, _clock) = every((0, 0));
-        ran_before(&c, "slope");
+        ran_before(&c, "slope-hi");
         c.offer(
             "p",
-            vec![Offer { step: "slope".into(), targets: vec![("6/2/2".into(), "k 6/2/2".into(), 0)], job: None }],
+            vec![Offer { step: "slope-hi".into(), targets: vec![("6/2/2".into(), "k 6/2/2".into(), 0)], job: None }],
         );
         assert_eq!(all_granted(&w, &a(provisional / 2)), [["6/2/2"]]);
         // Measured jobs beside a running cold start, by its provisional need.
@@ -7738,7 +7744,7 @@ mod tests {
         let lo = || Offer { step: "lo".into(), targets: vec![("3/1/1".into(), "k 3/1/1".into(), 0)], job: None };
         let a = Ask {
             want: 4,
-            can: vec!["trees".into(), "slope".into(), "terrain".into(), "lo".into()],
+            can: vec!["trees".into(), "slope-hi".into(), "terrain-hi".into(), "lo".into()],
             ..every_ask("m1", "trees", 64_000, 100_000)
         };
         // Never measured (lo): not beside measured jobs; alone on a Mac holding nothing, then
@@ -7758,10 +7764,10 @@ mod tests {
         assert!(why.contains("lo was never measured"), "{why}");
         // Two cold steps (both run before), one Mac: one of them.
         let (_d, c, w, _clock) = every((0, 0));
-        ran_before(&c, "slope");
-        ran_before(&c, "terrain");
+        ran_before(&c, "slope-hi");
+        ran_before(&c, "terrain-hi");
         let cold = |step: &str| Offer { step: step.into(), targets: vec![("6/2/2".into(), "k".into(), 0)], job: None };
-        c.offer("p", vec![cold("slope"), cold("terrain")]);
+        c.offer("p", vec![cold("slope-hi"), cold("terrain-hi")]);
         assert_eq!(all_granted(&w, &a).len(), 1, "one cold start a Mac");
         let why = c.refusals().into_values().collect::<Vec<_>>().join("; ");
         assert!(why.contains("one cold start on a Mac at a time"), "{why}");
@@ -7772,24 +7778,27 @@ mod tests {
     /// it, nor it beside a measured job; a cold slope job takes the packed share.
     #[test]
     fn a_cold_start_counts_the_whole_mac_unless_its_step_honours_its_threads() {
-        assert!(sched::THREADS_HONOURED.contains(&"slope") && !sched::THREADS_HONOURED.contains(&"terrain"));
-        let a =
-            Ask { want: 4, can: vec!["trees".into(), "terrain".into()], ..every_ask("m1", "trees", 64_000, 100_000) };
-        let cold = Offer { step: "terrain".into(), targets: vec![("6/2/2".into(), "k".into(), 0)], job: None };
+        assert!(sched::THREADS_HONOURED.contains(&"slope-hi") && !sched::THREADS_HONOURED.contains(&"terrain-hi"));
+        let a = Ask {
+            want: 4,
+            can: vec!["trees".into(), "terrain-hi".into()],
+            ..every_ask("m1", "trees", 64_000, 100_000)
+        };
+        let cold = Offer { step: "terrain-hi".into(), targets: vec![("6/2/2".into(), "k".into(), 0)], job: None };
         // Beside a measured job: not granted (cores).
         let (_d, c, w, _clock) = every((0, 0));
         packable(&c, "trees", 1, Some(2));
-        ran_before(&c, "terrain");
+        ran_before(&c, "terrain-hi");
         assert_eq!(all_granted(&w, &Ask { want: 1, can: vec!["trees".into()], ..a.clone() }), [["6/1/1"]]);
         let mut offers = c.shared.lock().unwrap().offers.clone();
         offers.push(cold.clone());
         c.offer("p", offers);
         assert!(all_granted(&w, &a).is_empty(), "the whole Mac's cores");
         let why = c.refusals().into_values().collect::<Vec<_>>().join("; ");
-        assert!(why.contains("a job of terrain takes 8"), "{why}");
+        assert!(why.contains("a job of terrain-hi takes 8"), "{why}");
         // Alone, all 8 threads; nothing beside it.
         let (_d, c, w, _clock) = every((0, 0));
-        ran_before(&c, "terrain");
+        ran_before(&c, "terrain-hi");
         c.offer("p", vec![cold]);
         let g = w.ask(&a).unwrap().unwrap();
         assert_eq!(g.threads, 8);
@@ -7806,15 +7815,15 @@ mod tests {
     fn packing_counts_what_a_cold_start_holds_now() {
         let a = |held_mb: u64| Ask {
             want: 3,
-            can: vec!["trees".into(), "slope".into()],
+            can: vec!["trees".into(), "slope-hi".into()],
             cap: Some(Capacity { at: unix_now(), cores: 8, cores_free: 8, held_mb, ..Default::default() }),
             ..every_ask("m1", "trees", 20_000, 100_000)
         };
         let (_d, c, w, _clock) = every((0, 0));
-        ran_before(&c, "slope");
+        ran_before(&c, "slope-hi");
         c.offer(
             "p",
-            vec![Offer { step: "slope".into(), targets: vec![("6/2/2".into(), "k 6/2/2".into(), 0)], job: None }],
+            vec![Offer { step: "slope-hi".into(), targets: vec![("6/2/2".into(), "k 6/2/2".into(), 0)], job: None }],
         );
         assert_eq!(all_granted(&w, &a(0)), [["6/2/2"]]);
         packable(&c, "trees", 4, Some(2));
@@ -7836,9 +7845,9 @@ mod tests {
     fn todays_two_cold_starts_no_longer_stall() {
         // (1) bld-fetch held, cold: measured slope jobs go beside it.
         let (_d, c, _w, _clock) = every((0, 0));
-        packable(&c, "slope", 4, Some(2));
+        packable(&c, "slope-hi", 4, Some(2));
         ran_before(&c, "bld-fetch");
-        let a = Ask { want: 11, can: vec!["slope".into()], ..every_ask("m4", "slope", 40_000, 400_000) };
+        let a = Ask { want: 11, can: vec!["slope-hi".into()], ..every_ask("m4", "slope-hi", 40_000, 400_000) };
         let _f = c.hold("bld-fetch", &[("6/9/0".into(), "k 6/9/0".into())]).unwrap();
         let g = c.ask_own(&a, &BTreeSet::new()).expect("beside the cold bld-fetch");
         assert!(1 + g.more.len() >= 2, "{}", 1 + g.more.len());
@@ -7846,15 +7855,15 @@ mod tests {
         // granted beside it.
         let (_d, c, _w, _clock) = every((0, 0));
         packable(&c, "inputs", 1, Some(1));
-        ran_before(&c, "slope");
+        ran_before(&c, "slope-hi");
         let _i = c.hold("inputs", &[("6/1/1".into(), "k 6/1/1".into())]).unwrap();
         c.offer(
             "p",
-            vec![Offer { step: "slope".into(), targets: vec![("6/2/2".into(), "k 6/2/2".into(), 0)], job: None }],
+            vec![Offer { step: "slope-hi".into(), targets: vec![("6/2/2".into(), "k 6/2/2".into(), 0)], job: None }],
         );
-        let a = Ask { want: 11, can: vec!["slope".into()], ..every_ask("m4", "slope", 40_000, 400_000) };
+        let a = Ask { want: 11, can: vec!["slope-hi".into()], ..every_ask("m4", "slope-hi", 40_000, 400_000) };
         let g = c.ask_own(&a, &BTreeSet::new()).expect("slope beside the input check");
-        assert!(matches!(&g.work, Granted::Job { step, .. } if step == "slope"));
+        assert!(matches!(&g.work, Granted::Job { step, .. } if step == "slope-hi"));
     }
 
     fn placement(slack: &[(&str, u64)], speed: &[(&str, f64)]) -> crate::agent::placement::Placement {
@@ -7872,7 +7881,7 @@ mod tests {
     fn placement_the_long_poles_first() {
         let (_d, c, w, _clock) = every((0, 0));
         for (step, ts) in
-            [("pack", vec![("6/1/1", 60)]), ("slope", vec![("3/1/1", 600), ("3/1/2", 900), ("3/1/3", 300)])]
+            [("pack", vec![("6/1/1", 60)]), ("slope-hi", vec![("3/1/1", 600), ("3/1/2", 900), ("3/1/3", 300)])]
         {
             for (t, secs) in ts {
                 let sizes = [("threads".to_string(), 1)].into();
@@ -7890,21 +7899,21 @@ mod tests {
             vec![
                 Offer { step: "pack".into(), targets: vec![("6/1/1".into(), "k".into(), 0)], job: None },
                 Offer {
-                    step: "slope".into(),
+                    step: "slope-hi".into(),
                     targets: ["3/1/1", "3/1/2", "3/1/3"].iter().map(|t| (t.to_string(), format!("k {t}"), 0)).collect(),
                     job: None,
                 },
             ]
         };
-        let a = Ask { can: vec!["pack".into(), "slope".into()], ..every_ask("m1", "pack", 4096, 10_000) };
+        let a = Ask { can: vec!["pack".into(), "slope-hi".into()], ..every_ask("m1", "pack", 4096, 10_000) };
         // Off: the shared step (slope) first, from its front.
         c.offer("p", offers());
         let g = w.ask(&a).unwrap().unwrap();
-        assert!(matches!(&g.work, Granted::Job { step, targets, .. } if step == "slope" && targets[0].0 == "3/1/1"));
+        assert!(matches!(&g.work, Granted::Job { step, targets, .. } if step == "slope-hi" && targets[0].0 == "3/1/1"));
         w.give_back(g.lease, "the test").unwrap();
         // On: slope has no slack (it ends with the build), pack ten minutes': slope first, from its
         // longest, then the next longest.
-        c.set_placement(Some(placement(&[("slope", 0), ("pack", 600)], &[])));
+        c.set_placement(Some(placement(&[("slope-hi", 0), ("pack", 600)], &[])));
         c.offer("p", offers());
         assert_eq!(granted(&w, &a), ["3/1/2"]);
         assert_eq!(granted(&w, &a), ["3/1/1"]);
@@ -7922,16 +7931,16 @@ mod tests {
     #[test]
     fn placement_leaves_out_only_a_member_swamped_outside_the_pool() {
         let (_d, c, _w, _clock) = every((0, 0));
-        packable(&c, "slope", 40, Some(1));
+        packable(&c, "slope-hi", 40, Some(1));
         c.set_placement(Some(placement(&[], &[("m1", 1.0), ("m2", 1.0)])));
         let offer = c.shared.lock().unwrap().offers[0].clone();
         let one = |i: usize| Offer { targets: vec![offer.targets[i].clone()], ..offer.clone() };
-        let a1 = every_ask("m1", "slope", 64_000, 100_000);
+        let a1 = every_ask("m1", "slope-hi", 64_000, 100_000);
         // (Its slots past the job it holds free: it would take another, task #552.)
         let a2 = Ask {
             want: 2,
             cap: Some(Capacity { at: unix_now(), cores: 8, cores_free: 0, ..Default::default() }),
-            ..every_ask("m2", "slope", 64_000, 100_000)
+            ..every_ask("m2", "slope-hi", 64_000, 100_000)
         };
         let m1_takes = |threads: u32| -> usize {
             let mut s = c.shared.lock().unwrap();
@@ -7942,7 +7951,7 @@ mod tests {
             let id = s.leases.grant(
                 "m2",
                 Work::Job {
-                    step: "slope".into(),
+                    step: "slope-hi".into(),
                     targets: vec![(offer.targets[39].0.clone(), offer.targets[39].1.clone())],
                 },
                 now,
@@ -7963,7 +7972,7 @@ mod tests {
     fn a_just_ended_job_isnt_load_outside_the_pool() {
         let ask = |free: u32| Ask {
             cap: Some(Capacity { at: unix_now(), cores: 8, cores_free: free, ..Default::default() }),
-            ..every_ask("m1", "slope", 64_000, 100_000)
+            ..every_ask("m1", "slope-hi", 64_000, 100_000)
         };
         assert_eq!(outside_cores(&ask(6), 0), 0, "two busy: a job of the share's just ended");
         assert_eq!(outside_cores(&ask(5), 0), 3);
@@ -7983,11 +7992,11 @@ mod tests {
             peak_mb: 2000,
             secs: 600,
             worker: None,
-            v: cost_version("slope"),
+            v: cost_version("slope-hi"),
             sizes: whole.into(),
             ..Default::default()
         };
-        c.add_costs_by(&[(cost_key("slope", "6/1/6"), cost)], "m1");
+        c.add_costs_by(&[(cost_key("slope-hi", "6/1/6"), cost)], "m1");
         let limits =
             crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         let offer = {
@@ -7996,13 +8005,13 @@ mod tests {
             s.offers[0].clone()
         };
         let six = Offer { targets: vec![offer.targets[5].clone()], ..offer.clone() };
-        let a3 = every_ask("m3", "slope", 64_000, 100_000);
+        let a3 = every_ask("m3", "slope-hi", 64_000, 100_000);
         let held = |c: &Coordinator| {
             let mut s = c.shared.lock().unwrap();
             let now = s.now();
             for (w, i) in [("m1", 0), ("m2", 1)] {
                 let ts = vec![offer.targets[i].0.clone()].into_iter().map(|t| (t, String::new())).collect();
-                s.leases.grant(w, Work::Job { step: "slope".into(), targets: ts }, now);
+                s.leases.grant(w, Work::Job { step: "slope-hi".into(), targets: ts }, now);
             }
         };
         held(&c);
@@ -8040,11 +8049,11 @@ mod tests {
                 peak_mb: 2000,
                 secs: 600,
                 worker: None,
-                v: cost_version("slope"),
+                v: cost_version("slope-hi"),
                 sizes: sizes.into(),
                 ..Default::default()
             };
-            c.add_costs_by(&[(cost_key("slope", t), cost)], "m1");
+            c.add_costs_by(&[(cost_key("slope-hi", t), cost)], "m1");
         };
         // (6/1/1 500; 6/1/2 to 6/1/5 200 each; 6/1/6 600.)
         weigh("6/1/6", 36_000_000_000);
@@ -8063,7 +8072,7 @@ mod tests {
             let mut s = c.shared.lock().unwrap();
             let now = s.now();
             let ts = vec![(offer.targets[i].0.clone(), String::new())];
-            s.leases.grant(w, Work::Job { step: "slope".into(), targets: ts }, now)
+            s.leases.grant(w, Work::Job { step: "slope-hi".into(), targets: ts }, now)
         };
         let end = |c: &Coordinator, id| {
             c.shared.lock().unwrap().leases.cancel(id);
@@ -8071,7 +8080,7 @@ mod tests {
         let take = |c: &Coordinator, w: &str, i: usize| {
             let s = c.shared.lock().unwrap();
             let now = s.now();
-            s.pick_every(&one(i), &every_ask(w, "slope", 64_000, 100_000), now)
+            s.pick_every(&one(i), &every_ask(w, "slope-hi", 64_000, 100_000), now)
         };
         // (A third of `OWN_AGE` passing, the leases `ids` beating every 10 s, as their workers do.)
         let tick = |c: &Coordinator, ids: &[u64]| {
@@ -8131,13 +8140,13 @@ mod tests {
             let now = s.now();
             for (w, i) in [("m1", 0), ("m2", 1)] {
                 let ts = vec![(offer.targets[i].0.clone(), String::new())];
-                s.leases.grant(w, Work::Job { step: "slope".into(), targets: ts }, now);
+                s.leases.grant(w, Work::Job { step: "slope-hi".into(), targets: ts }, now);
             }
         }
         let take = |c: &Coordinator, mem: u64| {
             let s = c.shared.lock().unwrap();
             let now = s.now();
-            s.pick_every(&one(5), &every_ask("m3", "slope", mem, 100_000), now)
+            s.pick_every(&one(5), &every_ask("m3", "slope-hi", mem, 100_000), now)
         };
         // (Its 2000 MB past the 1000 the member spares: not noted, whatever the budget.)
         assert!(take(&c, 1000).is_empty());
@@ -8343,28 +8352,33 @@ mod tests {
         };
         // A z3 tile's lo pack and its z6 tiles' hi packs; not another z3 tile's.
         assert!(check_handoff(
-            &h("slope", "3/2/2", &["layers/slope/lo/3-2-2", "layers/slope/hi/6-16-16", "layers/slope/hi/6-23-23"], &[]),
-            "slope",
+            &h(
+                "slope-hi",
+                "3/2/2",
+                &["layers/slope/lo/3-2-2", "layers/slope/hi/6-16-16", "layers/slope/hi/6-23-23"],
+                &[]
+            ),
+            "slope-hi",
             &ts("3/2/2")
         )
         .is_ok());
         // Part of a lease's targets (a job paused at a safe point, or stopped): those it did, and
         // only their files.
         let two = vec![("3/2/2".to_string(), "k".to_string()), ("3/3/2".to_string(), "k".to_string())];
-        assert!(check_handoff(&h("slope", "3/2/2", &["layers/slope/lo/3-2-2"], &[]), "slope", &two).is_ok());
+        assert!(check_handoff(&h("slope-hi", "3/2/2", &["layers/slope/lo/3-2-2"], &[]), "slope-hi", &two).is_ok());
         assert!(
             check_handoff(
-                &h("slope", "3/2/2", &["layers/slope/lo/3-2-2", "layers/slope/lo/3-3-2"], &[]),
-                "slope",
+                &h("slope-hi", "3/2/2", &["layers/slope/lo/3-2-2", "layers/slope/lo/3-3-2"], &[]),
+                "slope-hi",
                 &two
             )
             .is_err(),
             "a file of a target it didn't do"
         );
-        assert!(check_handoff(&h("slope", "3/2/2", &["layers/slope/hi/6-24-16"], &[]), "slope", &ts("3/2/2")).is_err());
-        assert!(
-            check_handoff(&h("slope", "3/2/2", &["layers/terrain/hi/6-16-16"], &[]), "slope", &ts("3/2/2")).is_err()
-        );
+        assert!(check_handoff(&h("slope-hi", "3/2/2", &["layers/slope/hi/6-24-16"], &[]), "slope-hi", &ts("3/2/2"))
+            .is_err());
+        assert!(check_handoff(&h("slope-hi", "3/2/2", &["layers/terrain/hi/6-16-16"], &[]), "slope-hi", &ts("3/2/2"))
+            .is_err());
         assert!(check_handoff(
             &h("trees", "3/2/2", &["layers/trees-leaf/hi/6-17-17", "layers/trees-cover/lo/3-2-2"], &[]),
             "trees",
@@ -8401,18 +8415,18 @@ mod tests {
         );
         // Terrain's and slope's z6 tiles: their hi pack and mid; their assemblies: their lo pack.
         assert!(
-            saves("terrain", "6/16/16", "layers/terrain/hi/6-16-16")
-                && saves("terrain", "6/16/16", "work/terrain-mid/6-16-16")
+            saves("terrain-hi", "6/16/16", "layers/terrain/hi/6-16-16")
+                && saves("terrain-hi", "6/16/16", "work/terrain-mid/6-16-16")
         );
         assert!(
-            !saves("terrain", "6/16/16", "layers/terrain/lo/3-2-2")
-                && !saves("terrain", "6/16/16", "layers/terrain/hi/6-16-17")
-                && !saves("terrain", "6/16/16", "work/slope-mid/6-16-16")
+            !saves("terrain-hi", "6/16/16", "layers/terrain/lo/3-2-2")
+                && !saves("terrain-hi", "6/16/16", "layers/terrain/hi/6-16-17")
+                && !saves("terrain-hi", "6/16/16", "work/slope-mid/6-16-16")
         );
         assert!(
-            saves("slope", "6/16/16", "layers/slope/hi/6-16-16")
-                && saves("slope", "6/16/16", "work/slope-mid/6-16-16")
-                && !saves("slope", "6/16/16", "layers/slope/lo/3-2-2")
+            saves("slope-hi", "6/16/16", "layers/slope/hi/6-16-16")
+                && saves("slope-hi", "6/16/16", "work/slope-mid/6-16-16")
+                && !saves("slope-hi", "6/16/16", "layers/slope/lo/3-2-2")
         );
         assert!(
             saves("terrain-lo", "3/2/2", "layers/terrain/lo/3-2-2")
@@ -8425,14 +8439,14 @@ mod tests {
         );
         // (A z3 tile's whole run, a lease of the scheme before: as it was.)
         assert!(
-            saves("terrain", "3/2/2", "layers/terrain/lo/3-2-2")
-                && saves("terrain", "3/2/2", "layers/terrain/hi/6-16-16")
+            saves("terrain-hi", "3/2/2", "layers/terrain/lo/3-2-2")
+                && saves("terrain-hi", "3/2/2", "layers/terrain/hi/6-16-16")
         );
         assert!(check_handoff(&h("pois", "6/1/3", &["work/pois/6-1-3"], &[]), "pois", &ts("6/1/3")).is_ok());
         assert!(check_handoff(&h("pois", "6/1/3", &["work/peaks/6-1-3"], &[]), "pois", &ts("6/1/3")).is_err());
         // Raw tiles' archives: its own shards, named by their content.
         let terrain = |raw: &[(&str, &str)]| {
-            check_handoff(&h("terrain", "3/2/2", &["layers/terrain/lo/3-2-2"], raw), "terrain", &ts("3/2/2"))
+            check_handoff(&h("terrain-hi", "3/2/2", &["layers/terrain/lo/3-2-2"], raw), "terrain-hi", &ts("3/2/2"))
         };
         assert!(terrain(&[("6-20-21", "6-20-21.0123456789abcdef.tiles"), ("3-2-2", "3-2-2.0123456789abcdef.tiles")])
             .is_ok());
@@ -8854,7 +8868,7 @@ mod tests {
         {
             let mut s = c.shared.lock().unwrap();
             let now = s.now();
-            for (w, k) in [("m1", "6/1/2"), ("m2", "6/1/2"), ("m1", "slope 6/1/2"), ("m1", "6/1/3")] {
+            for (w, k) in [("m1", "6/1/2"), ("m2", "6/1/2"), ("m1", "slope-hi 6/1/2"), ("m1", "6/1/3")] {
                 s.failed.insert((w.into(), k.into()), (now, 1));
             }
         }
@@ -9469,7 +9483,7 @@ mod tests {
         assert_eq!(status(&post()), 503);
         let placed = [crate::agent::forecast::Placed {
             lane: 0,
-            step: "terrain".into(),
+            step: "terrain-hi".into(),
             target: "6/33/20".into(),
             from: 160,
             until: 200,
@@ -9478,7 +9492,7 @@ mod tests {
         let r = post();
         assert_eq!(status(&r), 200, "{r}");
         let a: serde_json::Value = serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap();
-        assert_eq!(a["steps"]["terrain"], serde_json::json!([["6/33/20", 60]]));
+        assert_eq!(a["steps"]["terrain-hi"], serde_json::json!([["6/33/20", 60]]));
     }
 
     /// Tasks brokered by every member (docs/pool.md §8): a page from another member's address takes
@@ -9659,17 +9673,17 @@ mod tests {
                 let mut l = lease::Leases::new(TTL);
                 l.grant(
                     "m1",
-                    Work::Job { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into())] },
+                    Work::Job { step: "slope-hi".into(), targets: vec![("3/2/2".into(), "k".into())] },
                     Instant::now(),
                 );
                 PoolState { leases: l.snapshot(), ..Default::default() }
             };
             assert_eq!(c.load_pool_state(&other).unwrap(), 1);
             assert_eq!(page.beat(g.lease, None).unwrap(), on, "its task's lease kept only with the switch on");
-            assert_eq!(c.held("slope").len(), 1);
+            assert_eq!(c.held("slope-hi").len(), 1);
             // No longer leading: a broker, its job lease the new lead's.
             c.become_broker();
-            assert!(c.held("slope").is_empty());
+            assert!(c.held("slope-hi").is_empty());
             assert_eq!(c.leases_out(), usize::from(on));
         }
     }

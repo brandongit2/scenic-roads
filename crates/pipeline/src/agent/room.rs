@@ -700,8 +700,9 @@ fn toward_with(
 /// a running job uses it holds (store::cachefile), and a stale hint costs only a fetch.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Hints {
-    /// Terrain jobs' targets ("terrain 3/x/y", a z3 tile's whole run; "terrain 6/x/y", a z6 tile;
-    /// "terrain-lo 3/x/y", an assembly): the archive copies they read (`terrain_reads`).
+    /// Terrain jobs' targets ("terrain-hi 3/x/y", a z3 tile's whole run; "terrain-hi 6/x/y", a z6
+    /// tile; "terrain-deep 10/x/y", a z10 tile's deep levels; "terrain-lo 3/x/y", an assembly): the
+    /// archive copies they read (`terrain_reads`).
     pub terrain: Vec<String>,
     /// An items or heritage job: the pageview months.
     pub months: bool,
@@ -719,6 +720,7 @@ impl Hints {
     /// with staging's margin) and packs; a tree cover tile's squares; a terrain run's archives; an
     /// items or heritage job's pageview months.
     pub fn add(&mut self, step: &str, targets: &[String]) {
+        let step = super::steps::current(step);
         let tile = |t: &str| -> Option<(u8, u32, u32)> {
             let mut v = t.split(['/', '-']).map(|s| s.parse::<u32>().ok());
             Some((u8::try_from(v.next()??).ok()?, v.next()??, v.next()??))
@@ -742,8 +744,9 @@ impl Hints {
                     squares(crate::trees::tile_bounds(z, x, y));
                 }
             }
-            "terrain" => self.terrain.extend(targets.iter().map(|t| format!("terrain {t}"))),
-            "terrain-lo" => self.terrain.extend(targets.iter().map(|t| format!("terrain-lo {t}"))),
+            s @ ("terrain-hi" | "terrain-deep" | "terrain-lo") => {
+                self.terrain.extend(targets.iter().map(|t| format!("{s} {t}")))
+            }
             "items" | "heritage" => self.months = true,
             "pack" | "lo" => self.packs = true,
             _ => {}

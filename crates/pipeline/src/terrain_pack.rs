@@ -3476,7 +3476,7 @@ pub(crate) mod tests {
             before.keys().chain(z3run.manifest.keys()).filter(|l| before.get(*l) != z3run.manifest.get(*l)).collect();
         assert!(changed.iter().any(|l| l.as_str() == alhi), "{changed:?}");
         for l in &changed {
-            assert!(crate::agent::steps::saves("terrain", "3/2/2", l), "{l}: outside a z3 tile run's write-set");
+            assert!(crate::agent::steps::saves("terrain-hi", "3/2/2", l), "{l}: outside a z3 tile run's write-set");
         }
         assert!(z3run.get(&ahi).is_none() && z3run.get(&alhi).is_none() && z3run.get(&almid).is_some());
         assert!(z3run.get("layers/terrain/hi/6-22-18").is_some() && z3run.get("layers/terrain/lo/3-2-2").is_some());

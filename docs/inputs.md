@@ -1292,13 +1292,15 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
 tiles are sampled from these datasets in this order, blended as the roads' are, so the roads and
 the terrain use one dataset at every point; the Terrarium tiles through the NAS's archive of them
 (`sources/aws-terrarium/`, docs/macs.md). A dataset finer than the worldwide ones (rank above 0)
-takes the terrain past z12 to its native zoom there (the terrain step's deep levels,
-crate::terrain_deep), every dataset read at its full resolution; the roads' heights are read from
-the finished terrain (above).
+takes the terrain past z12 to its native zoom there (the terrain-deep step's deep levels, a z10
+tile a target: crate::terrain_deep), every dataset read at its full resolution; the roads' heights
+are read from the finished terrain (above).
 - **Keys:** a terrain target names the datasets meeting it by their lines, as the roads' keys do
-  (`agent::tiles::TerrainTiles::terrain_datasets`), and a z6 tile the fine ones its deep levels read
-  with the zoom each reaches (`terrain_deep::piece_key_lines`); while they can't be read its key is
-  unknown and the terrain waits.
+  (`agent::tiles::TerrainTiles::terrain_datasets`); a terrain-hi z6 tile its z10 tiles past the
+  base's zoom (and, north of 67°, the fine datasets its deep z12 reads: `terrain_deep::piece_key_lines`);
+  a terrain-deep z10 tile the fine datasets it reads with the zoom each reaches
+  (`terrain_deep::target_key_lines`) and what the z6 tiles of its base read; while they can't be read
+  its key is unknown and the terrain waits.
 
 ### 6.9 The remaining sources
 

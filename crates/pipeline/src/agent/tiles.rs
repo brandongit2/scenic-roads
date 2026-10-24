@@ -581,19 +581,14 @@ impl<'a> Reader<'a> {
         Ok(t.binary_search_by_key(&k, |e| e.0).ok().map(|i| t[i].1))
     }
 
-    /// The tiles of the deep packs under z6 tile `t` (crate::terrain_deep), from their indexes.
-    pub fn deep_under(&mut self, t: (u32, u32)) -> Result<Vec<(u8, u32, u32)>, Unread> {
-        let d = crate::terrain_deep::PACK_Z;
-        let k = d - 6;
-        let mut out = Vec::new();
-        for x in t.0 << k..(t.0 + 1) << k {
-            for y in t.1 << k..(t.1 + 1) << k {
-                if let Some(ts) = self.pack(d + 3, x << 3, y << 3)? {
-                    out.extend(ts.iter().map(|&(key, _)| store::pack::tile_zxy(key)));
-                }
-            }
-        }
-        Ok(out)
+    /// The tiles of z10 tile `t`'s deep pack (crate::terrain_deep), from its index.
+    pub fn deep_in(&mut self, t: (u32, u32)) -> Result<Vec<(u8, u32, u32)>, Unread> {
+        let d = crate::terrain_deep::FIRST_Z;
+        let k = d - crate::terrain_deep::PACK_Z;
+        Ok(match self.pack(d, t.0 << k, t.1 << k)? {
+            Some(ts) => ts.iter().map(|&(key, _)| store::pack::tile_zxy(key)).collect(),
+            None => Vec::new(),
+        })
     }
 
     /// `TerrainTiles::resolve`.

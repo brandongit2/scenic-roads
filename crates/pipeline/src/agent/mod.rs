@@ -549,10 +549,12 @@ fn helper_steps(free: u64, cheap: u64, floor: u64) -> Vec<String> {
         .collect()
 }
 
-/// Whether `p` is an archive copy a terrain job's target (`id`: "terrain 3/x/y", a z3 tile's whole
-/// run; "terrain 6/x/y", a z6 tile; "terrain-lo 3/x/y", an assembly) reads at once: a z3 tile's run its
-/// shard's own (`3-x-y.…`) and its z6 tiles' (`6-X-Y.…` within it), a z6 tile its z6 tile's, an
-/// assembly its z3 tile's (crate::rawpack's shards).
+/// Whether `p` is an archive copy a terrain job's target (`id`: "terrain-hi 3/x/y", a z3 tile's
+/// whole run; "terrain-hi 6/x/y", a z6 tile; "terrain-deep 10/x/y", a z10 tile's deep levels;
+/// "terrain-lo 3/x/y", an assembly; an older app's "terrain …" as terrain-hi's) reads at once: a z3
+/// tile's run its shard's own (`3-x-y.…`) and its z6 tiles' (`6-X-Y.…` within it), a z6 tile its z6
+/// tile's, a deep target those of the z6 tiles its base is made of
+/// (crate::terrain_deep::base_want), an assembly its z3 tile's (crate::rawpack's shards).
 fn terrain_reads(id: &str, p: &Path) -> bool {
     let tile = |s: &str| -> Option<(u32, u32, u32)> {
         let mut v = s.split(['/', '-']).map(|t| t.parse::<u32>().ok());
@@ -563,8 +565,14 @@ fn terrain_reads(id: &str, p: &Path) -> bool {
     if !in_packs {
         return false;
     }
-    match (id.split_once(' '), shard) {
-        (Some(("terrain", t)), Some(a)) => match tile(t) {
+    match (id.split_once(' ').map(|(s, t)| (steps::current(s), t)), shard) {
+        (Some(("terrain-deep", t)), Some((6, ax, ay))) => tile(t).is_some_and(|(z, x, y)| {
+            z == crate::terrain_deep::PACK_Z as u32
+                && crate::terrain_deep::base_want((x, y))
+                    .iter()
+                    .any(|&(bz, bx, by)| (bx >> (bz - 6), by >> (bz - 6)) == (ax, ay))
+        }),
+        (Some(("terrain-hi", t)), Some(a)) => match tile(t) {
             Some((3, x, y)) => {
                 matches!(a, (3, ax, ay) if (ax, ay) == (x, y))
                     || matches!(a, (6, ax, ay) if (ax >> 3, ay >> 3) == (x, y))
@@ -611,15 +619,15 @@ pub const fn bldtiles_peak(rows: u64) -> u64 {
     1800 + rows * 2 / 5 * 1100 / (1 << 20)
 }
 
-/// The memory a terrain run of a z3 tile of `z6` tiles near the coverage is expected to take (MB),
-/// before one has said: it holds a z6 tile's hi tiles at a time (z9–12, up to 5,440, ~270 KB each
-/// until written: crate::terrain_pack::build_q_with) with a level's tiles while the next coarser is
-/// made (up to 4,096 at 256 KB), each z6 tile's quarters (~20 MB) and the z3 tile's zoomed-out tiles
-/// (z3–8, 1,365), and half a GB besides; with `deep` (a fine dataset meets it), its deep levels'
-/// bound besides (crate::terrain_deep::peak_mb). (A z6 tile: one z6 tile, `terrain_peak(1, …)`.)
+/// The memory a terrain-hi run of a z3 tile of `z6` tiles near the coverage is expected to take
+/// (MB), before one has said: a z6 tile's levels at a time (crate::terrain_pack::piece_peak_mb), each
+/// further z6 tile's quarters (~20 MB) and the z3 tile's zoomed-out tiles (z3–8, 1,365 at ~270 KB);
+/// with `deep` (a fine dataset meets it north of 67°, where its deep z12 goes in its hi pack:
+/// crate::terrain_deep::reaches_hi), those levels' bound besides (crate::terrain_deep::peak_mb). (A
+/// z6 tile: one z6 tile, `terrain_peak(1, …)`.)
 fn terrain_peak(z6: usize, deep: bool) -> u64 {
     let deep = if deep { crate::terrain_deep::peak_mb() } else { 0 };
-    500 + 5440 * 270 / 1024 + 4096 / 4 + 1365 * 270 / 1024 + z6 as u64 * 20 + deep
+    crate::terrain_pack::piece_peak_mb() + 1365 * 270 / 1024 + (z6 as u64).saturating_sub(1) * 20 + deep
 }
 
 /// Past what memory (MB) a member's jobs are far over the `spare` it gave them (`Agent::over_grant`):
@@ -2139,7 +2147,9 @@ impl Agent {
         let cache = self.o.home.join("cache");
         let dem = || s(&self.o.bin.join("dem"));
         match step {
-            "terrain" | "terrain-lo" | "terrain-root" => vec!["--raw".into(), s(&cache.join("aws-terrarium"))],
+            "terrain-hi" | "terrain-deep" | "terrain-lo" | "terrain-root" => {
+                vec!["--raw".into(), s(&cache.join("aws-terrarium"))]
+            }
             "pois" | "marks" | "stations" | "overlays" => vec!["--pass".into(), date.to_string()],
             "ferries" | "rail-feeds" => vec!["--pass".into(), date.to_string()],
             // (bld-fetch's coverage, and bldtiles' countries, from the pass's outlines.)
@@ -2747,7 +2757,7 @@ impl Agent {
         ];
         cmd.extend(targets.iter().map(|t| t.0.clone()).filter(|t| every::names_target(t) && *t != step));
         cmd.extend(self.step_args(step, pass));
-        if matches!(step, "trees" | "terrain" | "slope") {
+        if matches!(step, "trees" | "terrain-hi" | "slope-hi") {
             let same = build::Keys::load_with(root, &[])
                 .map(|k| {
                     expect_same(
@@ -3472,8 +3482,8 @@ impl Agent {
             h.add(&w.step, &w.targets.into_iter().map(|t| t.0).collect::<Vec<_>>());
         }
         for r in self.slots.iter().filter_map(|s| s.running.as_ref()) {
-            if let Some(t) = r.spec.id.strip_prefix("terrain ") {
-                h.add("terrain", &[t.to_string()]);
+            if let Some((s, t)) = r.spec.id.split_once(' ').filter(|(s, _)| steps::current(s).starts_with("terrain-")) {
+                h.add(s, &[t.to_string()]);
             }
             if let Some(st) = step_of(&r.spec.id) {
                 h.add(&st, &[]);
@@ -5175,8 +5185,8 @@ impl Agent {
                     .map(|w| w.targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>())
                     .unwrap_or_default(),
             );
-            if let Some(t) = id.strip_prefix("terrain ") {
-                hints.add("terrain", &[t.to_string()]);
+            if let Some((s, t)) = id.split_once(' ').filter(|(s, _)| steps::current(s).starts_with("terrain-")) {
+                hints.add(s, &[t.to_string()]);
             }
             // (Its own scratch, kept from a give-back, its own again before room is made: never
             // room-making's, the OSM pass's above all.)
@@ -7629,16 +7639,16 @@ impl Agent {
         let mut offers: Vec<crate::coord::Offer> = Vec::new();
         // (A terrain z3 tile's z6 tiles near the coverage, for its run's expected memory: only when
         // there's terrain to offer.)
-        let z6: BTreeMap<String, usize> = if plan.iter().any(|w| w.step == "terrain") {
+        let z6: BTreeMap<String, usize> = if plan.iter().any(|w| w.step == "terrain-hi") {
             build::coverage_tiles(cov).into_iter().map(|(q, ts)| (format!("3/{}/{}", q.0, q.1), ts.len())).collect()
         } else {
             BTreeMap::new()
         };
-        // (And whether its deep levels are made, crate::terrain_deep::reaches: while the fine
-        // datasets can't be read, taken as made.)
+        // (And whether it makes deep levels for its hi pack, north of 67°,
+        // crate::terrain_deep::reaches_hi: while the fine datasets can't be read, taken as made.)
         let fine = self.tiles.borrow().fine(&manifest);
         let deep = |t: &str| match (&fine, crate::legacy::TileId::parse(t)) {
-            (Some(f), Some(u)) => crate::terrain_deep::reaches(f, u.z, u.x, u.y),
+            (Some(f), Some(u)) => crate::terrain_deep::reaches_hi(f, u.z, u.x, u.y),
             _ => true,
         };
         // (The memory guard's holds: a target past every Mac's limit offered to none, one past this
@@ -7684,7 +7694,7 @@ impl Agent {
             // each worker takes what fits its memory.
             let guess = |t: &str| match w.step.as_str() {
                 "unit" | "pois" => size(t),
-                "terrain" => {
+                "terrain-hi" => {
                     terrain_peak(if t.starts_with("6/") { 1 } else { z6.get(t).copied().unwrap_or(64) }, deep(t))
                 }
                 s @ ("bldprep" | "bldtiles") => bld_rows(t).map_or(first_peak(s), |n| bld_peak(s, n)),
@@ -7746,7 +7756,7 @@ impl Agent {
             };
             let peak = |step: &str, t: &str| match step {
                 "unit" | "pois" => crate::coord::unit_peak(&BTreeMap::new(), t, size(t)),
-                "terrain" => {
+                "terrain-hi" => {
                     terrain_peak(if t.starts_with("6/") { 1 } else { z6.get(t).copied().unwrap_or(64) }, deep(t))
                 }
                 s @ ("bldprep" | "bldtiles") => bld_rows(t).map_or(first_peak(s), |n| bld_peak(s, n)),
@@ -7849,7 +7859,7 @@ impl Agent {
             // "Terrain: 3 tiles" (the checklist names the steps alike: crate::agent::steps::said); the
             // z6 tiles made again for their mids say so.
             let mut what = steps::said(&w.step, n);
-            if same.len() == n && matches!(w.step.as_str(), "trees" | "terrain" | "slope") {
+            if same.len() == n && matches!(w.step.as_str(), "trees" | "terrain-hi" | "slope-hi") {
                 what += ", their mids made and checked the same";
             }
             let id = format!("{} {}", w.step, w.targets.first().map(|t| t.0.as_str()).unwrap_or(""));
@@ -11276,13 +11286,13 @@ pub fn read_status(root: Option<&Path>, home: &Path) -> Option<Status> {
         .and_then(|b| serde_json::from_slice(&b).ok())
 }
 
-/// The targets of `w` made again as they are, expected the same (scenic-build trees, terrain and
-/// slope `--expect-same`): tree cover's, terrain's and slope's z6 tiles the records as read (`done`:
-/// agent::rekey::as_read) have under the key they're built with, their mids made
+/// The targets of `w` made again as they are, expected the same (scenic-build trees, terrain-hi and
+/// slope-hi `--expect-same`): tree cover's, terrain-hi's and slope-hi's z6 tiles the records as read
+/// (`done`: agent::rekey::as_read) have under the key they're built with, their mids made
 /// (build::TreeWork::backfill, build::TerrainWork::backfill, and those an assembly needs). Any
 /// other step's: none.
 fn expect_same(w: &build::Work, done: &build::Keys) -> Vec<String> {
-    if !matches!(w.step.as_str(), "trees" | "terrain" | "slope") {
+    if !matches!(w.step.as_str(), "trees" | "terrain-hi" | "slope-hi") {
         return Vec::new();
     }
     w.targets
@@ -11367,9 +11377,12 @@ fn first_secs(step: &str) -> f64 {
         "heritage" => 5400.0,
         // (Terrain's and slope's z6 tiles a z6 tile, their assemblies a z3 tile's zoomed-out levels:
         // the z3 tiles' last runs, 9,707 s and ~4,100 s over ~400 z6 tiles, 2026-10.)
-        "terrain" => 25.0,
+        "terrain-hi" => 25.0,
         "terrain-lo" => 60.0,
-        "slope" => 10.0,
+        "slope-hi" => 10.0,
+        // (A z10 tile of dense lidar to z16, task #639's measure on the M4: see docs/phase-times.md.)
+        "terrain-deep" => 100.0,
+        "slope-deep" => 30.0,
         "slope-lo" => 15.0,
         "trees" => 25.0,
         "trees-lo" => 10.0,
@@ -11490,15 +11503,15 @@ mod tests {
         std::fs::write(
             &p,
             concat!(
-                "{\"unit\":\"terrain 6/1/2\",\"started\":1}\n",
-                "{\"unit\":\"terrain 6/1/2\",\"peak_mb\":900,\"secs\":40,\"v\":3,\"disk_mb\":2,\"sizes\":{\"bytes\":5000,\"km2\":380000,\"threads\":8,\"tiffs\":12}}\n",
+                "{\"unit\":\"terrain-hi 6/1/2\",\"started\":1}\n",
+                "{\"unit\":\"terrain-hi 6/1/2\",\"peak_mb\":900,\"secs\":40,\"v\":3,\"disk_mb\":2,\"sizes\":{\"bytes\":5000,\"km2\":380000,\"threads\":8,\"tiffs\":12}}\n",
                 "{\"unit\":\"8/1/2\",\"peak_mb\":3000,\"secs\":60,\"v\":1}\n",
             ),
         )
         .unwrap();
         let c = read_costs(&p);
         assert_eq!(c.len(), 2);
-        assert_eq!(c[0].0, "terrain 6/1/2");
+        assert_eq!(c[0].0, "terrain-hi 6/1/2");
         assert_eq!(
             c[0].1.sizes,
             [("bytes".to_string(), 5000), ("km2".into(), 380000), ("threads".into(), 8), ("tiffs".into(), 12)].into()
@@ -11716,7 +11729,7 @@ mod tests {
                 ];
                 cmd.extend([target.to_string()].into_iter().filter(|t| every::names_target(t) && *t != step));
                 cmd.extend(a.step_args(&step, "2026-10-01"));
-                if matches!(step.as_str(), "trees" | "terrain" | "slope") {
+                if matches!(step.as_str(), "trees" | "terrain-hi" | "slope-hi") {
                     cmd.extend(["--expect-same".to_string(), "6/1/1".into()]);
                 }
                 if let Some(Err(e)) = crate::cli::check_command(&cmd) {
@@ -11765,17 +11778,17 @@ mod tests {
             ("3-1-3.0123456789abcdef.tiles", false),
             ("root.0123456789abcdef.tiles", false),
         ] {
-            assert_eq!(terrain_reads("terrain 3/1/2", &packs.join(name)), ours, "{name}");
+            assert_eq!(terrain_reads("terrain-hi 3/1/2", &packs.join(name)), ours, "{name}");
         }
         // Not a terrain run's, or not an archive copy.
         assert!(!terrain_reads("unit 6/8/16", &packs.join("6-8-16.0123456789abcdef.tiles")));
         assert!(!terrain_reads("terrain-root terrain-root", &packs.join("root.0123456789abcdef.tiles")));
-        assert!(!terrain_reads("terrain 3/1/2", Path::new("/c/aws-terrarium/12/2048/1500.png")));
+        assert!(!terrain_reads("terrain-hi 3/1/2", Path::new("/c/aws-terrarium/12/2048/1500.png")));
         // A z6 tile its z6 tile's; an assembly its z3 tile's.
         assert!(
-            terrain_reads("terrain 6/8/16", &packs.join("6-8-16.0123456789abcdef.tiles"))
-                && !terrain_reads("terrain 6/8/16", &packs.join("6-8-17.0123456789abcdef.tiles"))
-                && !terrain_reads("terrain 6/8/16", &packs.join("3-1-2.0123456789abcdef.tiles"))
+            terrain_reads("terrain-hi 6/8/16", &packs.join("6-8-16.0123456789abcdef.tiles"))
+                && !terrain_reads("terrain-hi 6/8/16", &packs.join("6-8-17.0123456789abcdef.tiles"))
+                && !terrain_reads("terrain-hi 6/8/16", &packs.join("3-1-2.0123456789abcdef.tiles"))
         );
         assert!(
             terrain_reads("terrain-lo 3/1/2", &packs.join("3-1-2.0123456789abcdef.tiles"))
@@ -11934,8 +11947,8 @@ mod tests {
         room::set_target(&home, Some(50 << 30), "a test").unwrap();
         a.room_target = room::target(&home);
         let mut w = Vec::new();
-        assert!(!a.try_start(0, job("terrain 3/1/1"), &cond, Some(&root), &mut w));
-        assert_eq!(w.iter().map(|w| w.what.as_str()).collect::<Vec<_>>(), ["terrain 3/1/1"], "{w:?}");
+        assert!(!a.try_start(0, job("terrain-hi 3/1/1"), &cond, Some(&root), &mut w));
+        assert_eq!(w.iter().map(|w| w.what.as_str()).collect::<Vec<_>>(), ["terrain-hi 3/1/1"], "{w:?}");
         assert!(w.iter().all(|w| w.why.contains("disk room target")), "{w:?}");
         a.slots[0].lease = None;
         assert!(a.try_start(0, job("backup daily"), &cond, Some(&root), &mut w));
@@ -12218,7 +12231,7 @@ mod tests {
         c.offer(
             "2026-09-28",
             vec![crate::coord::Offer {
-                step: "slope".into(),
+                step: "slope-hi".into(),
                 targets: vec![("3/2/2".into(), "k".into(), 100)],
                 job: None,
             }],
@@ -12243,13 +12256,13 @@ mod tests {
         assert_eq!(jobs.len(), 1, "{w:?}");
         let j = &jobs[0];
         // The lead's own command for slope, its saves handed off to its lease's outbox.
-        assert_eq!(j.id, "slope 3/2/2");
+        assert_eq!(j.id, "slope-hi 3/2/2");
         assert!(j.cmd[1].starts_with("SCENIC_HANDOFF=") && j.cmd[2].starts_with("SCENIC_COSTS="));
         // (Its timings' record in its folder too, to go with its hand-off.)
         assert!(j.cmd[3].starts_with("SCENIC_TIMINGS=") && j.cmd[3].ends_with("/timings.json"));
-        assert_eq!(&j.cmd[4..7], ["/app/scenic-build", "slope", "--root"]);
+        assert_eq!(&j.cmd[4..7], ["/app/scenic-build", "slope-hi", "--root"]);
         assert!(j.cmd.contains(&"3/2/2".to_string()));
-        assert_eq!(j.record.as_ref().map(|r| r.step.as_str()), Some("slope"));
+        assert_eq!(j.record.as_ref().map(|r| r.step.as_str()), Some("slope-hi"));
         assert!(j.what.contains("for the lead"), "{}", j.what);
     }
 
@@ -12353,17 +12366,17 @@ mod tests {
             let cost = crate::coord::Cost {
                 peak_mb: 2000,
                 secs: 600,
-                v: crate::coord::cost_version("slope"),
+                v: crate::coord::cost_version("slope-hi"),
                 sizes: [("threads".to_string(), 2)].into(),
                 ..Default::default()
             };
-            c.add_costs_by(&[(crate::coord::cost_key("slope", t), cost)], "m1");
-            c.add_disks(&[(crate::coord::cost_key("slope", t), 100)]);
+            c.add_costs_by(&[(crate::coord::cost_key("slope-hi", t), cost)], "m1");
+            c.add_disks(&[(crate::coord::cost_key("slope-hi", t), 100)]);
         }
         c.offer(
             "2026-09-28",
             vec![crate::coord::Offer {
-                step: "slope".into(),
+                step: "slope-hi".into(),
                 targets: ts.iter().map(|t| (t.clone(), format!("k {t}"), 0)).collect(),
                 job: None,
             }],
@@ -12404,10 +12417,10 @@ mod tests {
         }
         let scratches: Vec<PathBuf> =
             a.slots.iter().map(|s| scratch_of(&s.running.as_ref().unwrap().spec).unwrap()).collect();
-        assert_eq!(scratches[0], home.join("scratch/slope"));
+        assert_eq!(scratches[0], home.join("scratch/slope-hi"));
         assert_eq!(
             (scratches[1].clone(), scratches[2].clone()),
-            (home.join("scratch-2/slope"), home.join("scratch-3/slope"))
+            (home.join("scratch-2/slope-hi"), home.join("scratch-3/slope-hi"))
         );
         assert_eq!(a.control_path(2), home.join("control-3"));
         assert!(matches!(a.slots[2].lease, Some(Held::Leased { .. })));
@@ -12523,7 +12536,7 @@ mod tests {
         // (sparing 6 GB) asking again isn't granted it.
         let floors: Vec<(String, memguard::Floor)> = serde_json::from_value(r["floors"].clone()).unwrap();
         c.add_floors(&floors);
-        let f = c.floor("slope", &target).unwrap();
+        let f = c.floor("slope-hi", &target).unwrap();
         assert!(f.alone && f.mb >= 11 << 10, "{f:?}");
         // (Its three leases ended at the lead, as handing them back would: room for jobs again.)
         for l in &leases {
@@ -13046,11 +13059,11 @@ mod tests {
         let g: u64 = 1 << 30;
         let job = |t: &str| JobSpec {
             id: format!("terrain {t}"),
-            what: "terrain".into(),
+            what: "terrain-hi".into(),
             cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: "terrain".into(), targets: vec![(t.into(), "k".into())] }),
+            record: Some(build::Work { step: "terrain-hi".into(), targets: vec![(t.into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         a.free_set = Some(100 * g);
@@ -13075,13 +13088,13 @@ mod tests {
         assert!(a.sampler.disk_frozen(0));
         assert!(!a.disk_guard(Some(&root)));
         assert!(a.disk_guard(Some(&root)) && a.slots[0].running.is_none(), "given back");
-        assert!(!a.mem.retry.contains_key("terrain 6/1/1"), "not held against it as a failure");
+        assert!(!a.mem.retry.contains_key("terrain-hi 6/1/1"), "not held against it as a failure");
         assert!(
             a.coord
                 .as_ref()
                 .unwrap()
                 .disks()
-                .get(&crate::coord::cost_key("terrain", "6/1/1"))
+                .get(&crate::coord::cost_key("terrain-hi", "6/1/1"))
                 .is_some_and(|mb| *mb >= 7 << 10),
             "{:?}",
             a.coord.as_ref().unwrap().disks()
@@ -13148,21 +13161,22 @@ mod tests {
             ..Default::default()
         };
         c.add_costs(&[
-            (crate::coord::cost_key("slope", "6/0/0"), cost("slope", 1000)),
+            (crate::coord::cost_key("slope-hi", "6/0/0"), cost("slope-hi", 1000)),
             (crate::coord::cost_key("unit", "6/9/9"), cost("unit", 4000)),
         ]);
-        let mut disks: Vec<(String, u64)> = tiles.iter().map(|t| (crate::coord::cost_key("slope", t), 1024)).collect();
+        let mut disks: Vec<(String, u64)> =
+            tiles.iter().map(|t| (crate::coord::cost_key("slope-hi", t), 1024)).collect();
         disks[39].1 = 3072;
         disks.push((crate::coord::cost_key("unit", "6/9/9"), 10 << 10));
         c.add_disks(&disks);
         let batch = JobSpec {
-            id: "slope 6/0/0".into(),
+            id: "slope-hi 6/0/0".into(),
             what: "slope pieces".into(),
             cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
             needs: Needs { nas: false },
             restart_after_sleep: false,
             record: Some(build::Work {
-                step: "slope".into(),
+                step: "slope-hi".into(),
                 targets: tiles.iter().map(|t| (t.clone(), "k".into())).collect(),
             }),
         };
@@ -13170,7 +13184,7 @@ mod tests {
         a.free_set = Some(100 * g);
         assert!(a.try_start(0, batch, &cond, Some(&root), &mut Vec::new()));
         // Five done, 5 GB taken so far: 34 of 1 GB and one of 3 GB still to come.
-        std::fs::write(a.done_path(0), (0..5).map(|i| format!("slope 6/{i}/0\n")).collect::<String>()).unwrap();
+        std::fs::write(a.done_path(0), (0..5).map(|i| format!("slope-hi 6/{i}/0\n")).collect::<String>()).unwrap();
         a.sampler.set_test(Some(vec![None, None]), Some(false));
         a.sampler.set_test_disk(Some(60 * g), Some(vec![Some(5 * g), None]));
         a.sampler.tick();
@@ -13289,7 +13303,7 @@ mod tests {
             }
             a.guard()
         };
-        assert!(a.try_start(0, job("terrain 6/1/1"), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(0, job("terrain-hi 6/1/1"), &cond, Some(&root), &mut Vec::new()));
         assert!(a.try_start(1, job("bldtiles 6/2/2"), &cond, Some(&root), &mut Vec::new()));
         // Frozen at once, not drained; the largest ending, it goes on.
         assert!(!tick(&mut a, vec![Some(9 << 10), Some(4 << 10)], true));
@@ -13300,7 +13314,7 @@ mod tests {
         assert!(!tick(&mut a, vec![None, Some(4 << 10)], true));
         assert!(!a.sampler.frozen(1) && a.slots[1].pressure_frozen.is_none() && a.slots[1].running.is_some());
         // Frozen again beside a new largest; within the minute it's held, then stopped.
-        assert!(a.try_start(0, job("terrain 6/1/2"), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(0, job("terrain-hi 6/1/2"), &cond, Some(&root), &mut Vec::new()));
         assert!(!tick(&mut a, vec![Some(9 << 10), Some(4 << 10)], true));
         assert!(a.sampler.frozen(1));
         assert!(!tick(&mut a, vec![Some(9 << 10), Some(4 << 10)], true) && a.slots[1].running.is_some());
@@ -13396,7 +13410,7 @@ mod tests {
         // starts, so it can't be blamed.)
         std::fs::create_dir_all(&home).unwrap();
         std::fs::write(a.costs_path(0), "{\"unit\":\"water water\",\"started\":1}\n").unwrap();
-        assert!(a.try_start(0, job("terrain 6/1/1", &["6/1/1", "6/1/2"]), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(0, job("terrain-hi 6/1/1", &["6/1/1", "6/1/2"]), &cond, Some(&root), &mut Vec::new()));
         assert!(!a.costs_path(0).exists());
         assert!(a.try_start(1, job("bldtiles 6/2/2", &["6/2/2"]), &cond, Some(&root), &mut Vec::new()));
         let tick = |a: &mut Agent, held: Vec<Option<u64>>, trouble: bool| {
@@ -13421,7 +13435,7 @@ mod tests {
         tick(&mut a, vec![Some(9 << 10), Some(4 << 10)], false);
         assert_eq!(std::fs::read_to_string(a.control_path(1)).unwrap(), "drain");
         // (Nothing asked for meanwhile.)
-        assert!(a.guard_held(0).is_some_and(|id| id == "terrain 6/1/1") && !a.may_pack());
+        assert!(a.guard_held(0).is_some_and(|id| id == "terrain-hi 6/1/1") && !a.may_pack());
         // The drained one reaching no safe point in the time a pause gives: stopped at once.
         a.grace = Duration::ZERO;
         tick(&mut a, vec![Some(9 << 10), Some(4 << 10)], false);
@@ -13442,39 +13456,39 @@ mod tests {
         assert!(a.guard() && a.slots[0].running.is_none());
         let c = a.coord.as_ref().unwrap();
         assert_eq!(
-            (c.floor("terrain", "6/1/1").map(|f| (f.mb, f.alone)), c.floor("terrain", "6/1/2")),
+            (c.floor("terrain-hi", "6/1/1").map(|f| (f.mb, f.alone)), c.floor("terrain-hi", "6/1/2")),
             (Some((13 << 10, false)), None)
         );
-        assert!(!a.mem.retry.contains_key("terrain 6/1/1"), "not held against it as a failure");
+        assert!(!a.mem.retry.contains_key("terrain-hi 6/1/1"), "not held against it as a failure");
         assert!(a
-            .wait_reason(&job("terrain 6/1/1", &["6/1/1"]), &cond)
+            .wait_reason(&job("terrain-hi 6/1/1", &["6/1/1"]), &cond)
             .is_some_and(|w| w.contains("tried here again in 60 min")));
         let v = a.guard_view();
         assert!(
             v.on && v.limit_mb == 12 << 10
                 && v.last
                     .as_ref()
-                    .is_some_and(|(_, w)| w.contains("terrain 6/1/1 stopped by the memory guard: it held 13.0 GB")),
+                    .is_some_and(|(_, w)| w.contains("terrain-hi 6/1/1 stopped by the memory guard: it held 13.0 GB")),
             "{v:?}"
         );
         // A batch's floor past the limit: the target tried again in a job of its own, not held.
         let works = vec![build::Work {
-            step: "terrain".into(),
+            step: "terrain-hi".into(),
             targets: vec![("6/1/1".into(), "k".into()), ("6/1/2".into(), "k".into())],
         }];
         let h = a.guard_holds(&works);
-        assert!(h.here.is_empty() && h.alone.contains(&("terrain".to_string(), "6/1/1".to_string())));
+        assert!(h.here.is_empty() && h.alone.contains(&("terrain-hi".to_string(), "6/1/1".to_string())));
         // Learned alone (a job of that one target): held here, and everywhere while no Mac has room,
         // the status saying why; with a Mac of more room in the pool, left to it.
         a.guard_backoff.clear();
-        assert!(a.try_start(0, job("terrain 6/1/1", &["6/1/1"]), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(0, job("terrain-hi 6/1/1", &["6/1/1"]), &cond, Some(&root), &mut Vec::new()));
         tick(&mut a, vec![Some(14 << 10), None], true);
         assert!(a.guard());
         let c = a.coord.as_ref().unwrap();
-        assert_eq!(c.floor("terrain", "6/1/1").map(|f| (f.mb, f.alone)), Some((14 << 10, true)));
+        assert_eq!(c.floor("terrain-hi", "6/1/1").map(|f| (f.mb, f.alone)), Some((14 << 10, true)));
         let h = a.guard_holds(&works);
         assert!(
-            h.here.contains(&("terrain".to_string(), "6/1/1".to_string()))
+            h.here.contains(&("terrain-hi".to_string(), "6/1/1".to_string()))
                 && h.here.len() == 1
                 && h.all.len() == 1
                 && h.alone.is_empty()
@@ -13488,7 +13502,7 @@ mod tests {
         let _ = w.ask(&crate::coord::Ask {
             kind: "native".into(),
             label: Some("big (helper)".into()),
-            can: vec!["terrain".into()],
+            can: vec!["terrain-hi".into()],
             mem_mb: 30 << 10,
             limit_mb: Some(42 << 10),
             ..Default::default()
@@ -14145,7 +14159,7 @@ mod tests {
         };
         // (The terrain made under its keys now.)
         let tt = build::terrain_slope_targets(&cov, &m, &tiles);
-        keys.record("terrain", &tt.terrain);
+        keys.record("terrain-hi", &tt.terrain);
         keys.record("terrain-lo", &tt.terrain_lo);
         let plan = build::plan(
             &cov,
@@ -14267,8 +14281,12 @@ mod tests {
     fn the_checklist_says_which_steps_helpers_take() {
         let steps = build::fold(&build::checklist_to_come(), &BTreeMap::new(), &BTreeMap::new());
         let shared = |id: &str| steps.iter().find(|s| s.id == id).and_then(|s| s.shared.clone());
-        assert_eq!(shared("terrain").as_deref(), Some("Terrain"), "the pieces, not the assemblies");
-        assert_eq!(shared("slope").as_deref(), Some("Slope"));
+        assert_eq!(
+            shared("terrain").as_deref(),
+            Some("Terrain and Terrain, deep levels"),
+            "the pieces, not the assemblies"
+        );
+        assert_eq!(shared("slope").as_deref(), Some("Slope, deep levels and Slope"));
         assert_eq!(shared("roads").as_deref(), Some("all"));
         assert_eq!(shared("landmarks").as_deref(), Some("Landmark candidates and Peaks"));
         assert_eq!(shared("trees").as_deref(), Some("Tree cover"), "the pieces, not the assemblies");
@@ -14792,8 +14810,8 @@ mod tests {
         a.coord = Some(co.clone());
         let go = d.path().join("go");
         let job = JobSpec {
-            id: "terrain 6/55/25".into(),
-            what: "terrain 6/55/25".into(),
+            id: "terrain-hi 6/55/25".into(),
+            what: "terrain-hi 6/55/25".into(),
             cmd: vec![
                 "/bin/sh".into(),
                 "-c".into(),
@@ -14801,7 +14819,7 @@ mod tests {
             ],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: "terrain".into(), targets: vec![("6/55/25".into(), "k".into())] }),
+            record: Some(build::Work { step: "terrain-hi".into(), targets: vec![("6/55/25".into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
         assert!(a.try_start(0, job.clone(), &cond, Some(&root), &mut Vec::new()));
@@ -14813,14 +14831,14 @@ mod tests {
             }
         }
         let _kill = Kill(pgid);
-        assert!(co.held("terrain").contains("6/55/25"));
+        assert!(co.held("terrain-hi").contains("6/55/25"));
         // The agent ends (a newer app, a SIGTERM): the job left running, its record kept with its
         // slot, its lease not ended.
         a.hand_over_jobs();
         assert!(a.slots[0].running.is_none() && a.slots[0].lease.is_none());
         assert!(crate::sys::signal_group(pgid, crate::sys::Signal::Probe), "the job runs on");
         assert!(a.record_path(0).exists());
-        assert!(co.held("terrain").contains("6/55/25"), "its lease kept for the next agent");
+        assert!(co.held("terrain-hi").contains("6/55/25"), "its lease kept for the next agent");
         let me = a.me.clone();
         drop(a);
         // The coordinator restarts with it, the own leases of the agent before ended with it.
@@ -14837,8 +14855,8 @@ mod tests {
         assert!(r.adopted && r.pgid == pgid && r.spec == job);
         assert!(matches!(b.slots[0].lease, Some(Held::Own(_))));
         assert!(b.beat(0, Some(&root)));
-        assert!(co.held("terrain").contains("6/55/25"));
-        assert_eq!(co.hold("terrain", &job.record.as_ref().unwrap().targets), None, "never held twice");
+        assert!(co.held("terrain-hi").contains("6/55/25"));
+        assert_eq!(co.hold("terrain-hi", &job.record.as_ref().unwrap().targets), None, "never held twice");
         // Its app's folder kept for it while it runs (the map server's updater reads it).
         assert_eq!(b.job_apps(), Vec::<String>::new(), "its programs aren't in an app's folder here");
         // Tended to its end: its status read from its file (not this process's child), its lease
@@ -14851,7 +14869,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(b.slots[0].running.is_none() && b.slots[0].lease.is_none());
-        assert!(!co.held("terrain").contains("6/55/25"));
+        assert!(!co.held("terrain-hi").contains("6/55/25"));
         assert!(!b.record_path(0).exists());
         // (Its head, still this test's child as it isn't once its agent has ended, reaped here as
         // launchd would.)
@@ -14965,12 +14983,12 @@ mod tests {
         let mut a = test_agent(opts()).unwrap();
         a.free_set = Some(40 << 30);
         let job = JobSpec {
-            id: "terrain 6/55/25".into(),
-            what: "terrain 6/55/25".into(),
+            id: "terrain-hi 6/55/25".into(),
+            what: "terrain-hi 6/55/25".into(),
             cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: "terrain".into(), targets: vec![("6/55/25".into(), "k".into())] }),
+            record: Some(build::Work { step: "terrain-hi".into(), targets: vec![("6/55/25".into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
         assert!(a.try_start(0, job, &cond, Some(&root), &mut Vec::new()));
@@ -15056,12 +15074,12 @@ mod tests {
         std::fs::write(scratch.join("x-6_55_25"), "x").unwrap();
         let s = |p: &Path| p.to_string_lossy().into_owned();
         let job = JobSpec {
-            id: "terrain 6/55/25".into(),
-            what: "terrain 6/55/25".into(),
+            id: "terrain-hi 6/55/25".into(),
+            what: "terrain-hi 6/55/25".into(),
             cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into(), "sh".into(), "--scratch".into(), s(&scratch)],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: "terrain".into(), targets: vec![("6/55/25".into(), "k".into())] }),
+            record: Some(build::Work { step: "terrain-hi".into(), targets: vec![("6/55/25".into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
         assert!(a.try_start(0, job.clone(), &cond, Some(&root), &mut Vec::new()));
@@ -15074,7 +15092,7 @@ mod tests {
         let pgid = a.slots[0].running.as_ref().unwrap().pgid;
         let _kill = Kill(pgid);
         // Its lease at the lead's coordinator (this Mac's own, a shared step's), taken as it started.
-        assert!(matches!(a.slots[0].lease, Some(Held::Own(_))) && co.held("terrain").contains("6/55/25"));
+        assert!(matches!(a.slots[0].lease, Some(Held::Own(_))) && co.held("terrain-hi").contains("6/55/25"));
         // A newer app installed: the update waits on the long job (task #266).
         std::fs::remove_file(apps.join("current")).unwrap();
         std::os::unix::fs::symlink(new, apps.join("current")).unwrap();
@@ -15092,7 +15110,7 @@ mod tests {
         let mut waiting = Vec::new();
         assert!(a.tend_cancels(Some(&root), &mut waiting));
         let ans = crate::control::cancel_answer(&home, &ask).unwrap();
-        assert!(ans.hit && ans.said.contains("terrain 6/55/25 on this Mac"), "{}", ans.said);
+        assert!(ans.hit && ans.said.contains("terrain-hi 6/55/25 on this Mac"), "{}", ans.said);
         assert!(crate::control::peek_cancels(&home).is_empty());
         // Stopped, its process group gone; given back cleanly: no retry delay, recorded as cancelled,
         // no failure in the history; its lease ended.
@@ -15110,7 +15128,7 @@ mod tests {
         // The update restarts at once.
         assert!(a.update_due());
         // Held on this app: it doesn't start here, said in the status.
-        assert!(waiting.iter().any(|w| w.what == "terrain 6/55/25" && w.why.contains(old)), "{waiting:?}");
+        assert!(waiting.iter().any(|w| w.what == "terrain-hi 6/55/25" && w.why.contains(old)), "{waiting:?}");
         let mut w = Vec::new();
         assert!(!a.try_start(0, job.clone(), &cond, Some(&root), &mut w));
         assert!(w.iter().any(|w| w.why.contains("held until the lead runs an app newer")), "{w:?}");
@@ -15357,10 +15375,10 @@ mod tests {
     #[test]
     fn none_pieces_are_never_expected_the_same() {
         let mut done = build::Keys::default();
-        done.terrain.insert("6/40/20".into(), "piece".into());
-        done.slope.insert("6/40/20".into(), "piece".into());
-        done.terrain.insert("6/41/20".into(), "earlier".into());
-        for step in ["terrain", "slope"] {
+        done.terrain_hi.insert("6/40/20".into(), "piece".into());
+        done.slope_hi.insert("6/40/20".into(), "piece".into());
+        done.terrain_hi.insert("6/41/20".into(), "earlier".into());
+        for step in ["terrain-hi", "slope-hi"] {
             let w = build::Work {
                 step: step.into(),
                 targets: vec![
@@ -15438,7 +15456,7 @@ mod tests {
                 "labels 2026-09-28",
                 "water 2026-09-28",
                 "terrain-water terrain-water",
-                "terrain 6/18/20",
+                "terrain-hi 6/18/20",
                 "catalog catalog",
                 "catalog-held catalog-held",
                 "unit 6/1/2",
@@ -15449,7 +15467,7 @@ mod tests {
         let ids = |v: &[JobSpec]| v.iter().map(|j| j.id.clone()).collect::<Vec<_>>();
         let mut waiting = Vec::new();
         let kept = hold_for_lakefill(jobs(), true, &mut waiting);
-        assert_eq!(ids(&kept), ["lakefill 2026-09-28", "labels 2026-09-28", "terrain 6/18/20", "unit 6/1/2"]);
+        assert_eq!(ids(&kept), ["lakefill 2026-09-28", "labels 2026-09-28", "terrain-hi 6/18/20", "unit 6/1/2"]);
         assert_eq!(
             waiting.iter().map(|w| w.step.clone().unwrap()).collect::<Vec<_>>(),
             ["water", "terrain-water", "catalog", "catalog-held"]
@@ -15482,7 +15500,7 @@ mod tests {
             [
                 "labels 2026-09-28",
                 "unit 6/1/2",
-                "terrain 6/18/20",
+                "terrain-hi 6/18/20",
                 "trees 6/3/4",
                 "items 2026-09-28",
                 "heritage 2026-09-28",
@@ -15495,7 +15513,7 @@ mod tests {
         let mut waiting = Vec::new();
         assert_eq!(
             ids(&hold_for_sources(jobs(), true, &mut waiting)),
-            ["labels 2026-09-28", "terrain 6/18/20", "heritage-sites 2026-09-28"]
+            ["labels 2026-09-28", "terrain-hi 6/18/20", "heritage-sites 2026-09-28"]
         );
         assert_eq!(
             waiting.iter().map(|w| w.step.clone().unwrap()).collect::<Vec<_>>(),
@@ -15706,7 +15724,7 @@ mod pool_tests {
         let bin = d.join("app");
         std::fs::create_dir_all(&bin).unwrap();
         let script = format!(
-            "#!/bin/sh\nstep=\"$1\"\nenv > \"{bin}/env-$step\"\nif [ -n \"$SCENIC_HANDOFF\" ]; then\n  mkdir -p \"$SCENIC_HANDOFF\"\n  case \"$step\" in\n    slope) printf '{{\"changes\":{{\"layers/slope/lo/3-2-2\":\"layers/slope/lo/3-2-2.0123456789abcdef.pack\"}}}}' > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n    pack) printf '{{\"changes\":{{\"layers/roads/hi/6-1-1\":\"layers/roads/hi/6-1-1.0123456789abcdef.pack\"}}}}' > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n    *) printf '{{\"changes\":{{}},\"pending\":{{\"work/%s.0123456789abcdef.json\":\"aa\"}}}}' \"$step\" > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n  esac\nfi\nexit 0\n",
+            "#!/bin/sh\nstep=\"$1\"\nenv > \"{bin}/env-$step\"\nif [ -n \"$SCENIC_HANDOFF\" ]; then\n  mkdir -p \"$SCENIC_HANDOFF\"\n  case \"$step\" in\n    slope-hi) printf '{{\"changes\":{{\"layers/slope/lo/3-2-2\":\"layers/slope/lo/3-2-2.0123456789abcdef.pack\"}}}}' > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n    pack) printf '{{\"changes\":{{\"layers/roads/hi/6-1-1\":\"layers/roads/hi/6-1-1.0123456789abcdef.pack\"}}}}' > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n    *) printf '{{\"changes\":{{}},\"pending\":{{\"work/%s.0123456789abcdef.json\":\"aa\"}}}}' \"$step\" > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n  esac\nfi\nexit 0\n",
             bin = bin.display()
         );
         for p in ["scenic", "scenic-build"] {
@@ -16064,16 +16082,16 @@ mod pool_tests {
         lead.coord.as_ref().unwrap().offer(
             "2026-09-28",
             vec![crate::coord::Offer {
-                step: "slope".into(),
+                step: "slope-hi".into(),
                 targets: vec![("3/2/2".into(), "k".into(), 100)],
                 job: None,
             }],
         );
         until(&mut m, |m| m.slots[0].running.is_some() || m.pooled().is_some_and(|p| !p.entries.is_empty()));
-        let env = std::fs::read_to_string(bin.join("env-slope")).unwrap_or_default();
+        let env = std::fs::read_to_string(bin.join("env-slope-hi")).unwrap_or_default();
         until(&mut m, |m| m.slots[0].running.is_none() && m.pooled().is_some_and(|p| p.entries.is_empty()));
         assert!(
-            std::fs::read_to_string(bin.join("env-slope"))
+            std::fs::read_to_string(bin.join("env-slope-hi"))
                 .unwrap()
                 .contains(&format!("{}", d.path().join("m/agent/pool/jobs/1-").display())),
             "{env}"
@@ -16081,7 +16099,12 @@ mod pool_tests {
         // Its entry in the journal, told to the lead by mail; the lead, knowing the member, merges it.
         lead.pooled().unwrap().side.know(&im);
         until(&mut lead, |l| {
-            l.pooled().unwrap().side.driver().records().is_some_and(|r| r.keys.recorded("slope", "3/2/2") == Some("k"))
+            l.pooled()
+                .unwrap()
+                .side
+                .driver()
+                .records()
+                .is_some_and(|r| r.keys.recorded("slope-hi", "3/2/2") == Some("k"))
         });
         let rec = lead.pooled().unwrap().side.driver().records().unwrap().clone();
         assert_eq!(
@@ -16094,7 +16117,7 @@ mod pool_tests {
         until(&mut m, |m| m.pooled().unwrap().side.driver().mine().to_tell(1).is_empty());
         // The lead's coordinator ended the lease, its target kept out of offers until the plan shows
         // it built; its own jobs hold none of it meanwhile.
-        assert!(lead.coord.as_ref().unwrap().held("slope").is_empty());
+        assert!(lead.coord.as_ref().unwrap().held("slope-hi").is_empty());
         let lid = LeaseId { term: 1, n: key.rsplit('-').next().unwrap().parse().unwrap() };
         assert_eq!(lid.term, 1);
         stop_jobs(&mut lead);
@@ -16252,31 +16275,31 @@ mod pool_tests {
         switch_on(&r, placement::SWITCH);
         *lead.forecast.borrow_mut() = Some(forecast::Forecast {
             done_at: Some(1000),
-            steps: vec![forecast::StepFc { step: "slope".into(), done_at: Some(1000), ..Default::default() }],
+            steps: vec![forecast::StepFc { step: "slope-hi".into(), done_at: Some(1000), ..Default::default() }],
             ..Default::default()
         });
         lead.pool_switch(Some(&r));
         m.pool_switch(Some(&r));
         assert_eq!(
-            lead.coord.as_ref().unwrap().shared.lock().unwrap().placement.as_ref().map(|p| p.0.slack_of("slope")),
+            lead.coord.as_ref().unwrap().shared.lock().unwrap().placement.as_ref().map(|p| p.0.slack_of("slope-hi")),
             Some(0)
         );
         // `slope` of 3/2/2 measured, offered: the member alone asking, drawn to it.
         let c = lead.coord.as_ref().unwrap();
         c.add_costs(&[(
-            crate::coord::cost_key("slope", "3/2/2"),
+            crate::coord::cost_key("slope-hi", "3/2/2"),
             crate::coord::Cost {
                 peak_mb: 100,
                 secs: 60,
                 worker: None,
-                v: crate::coord::cost_version("slope"),
+                v: crate::coord::cost_version("slope-hi"),
                 ..Default::default()
             },
         )]);
         c.offer(
             "2026-09-28",
             vec![crate::coord::Offer {
-                step: "slope".into(),
+                step: "slope-hi".into(),
                 targets: vec![("3/2/2".into(), "k".into(), 100)],
                 job: None,
             }],
@@ -16284,8 +16307,8 @@ mod pool_tests {
         // (Read once its job has ended: the fake job's `env >` makes the file before it writes it,
         // so the file's being there says nothing of its lines. Only the member's job runs slope:
         // the lead isn't stepped after it's offered.)
-        until(&mut m, |m| bin.join("env-slope").exists() && m.slots[0].running.is_none());
-        let env = std::fs::read_to_string(bin.join("env-slope")).unwrap();
+        until(&mut m, |m| bin.join("env-slope-hi").exists() && m.slots[0].running.is_none());
+        let env = std::fs::read_to_string(bin.join("env-slope-hi")).unwrap();
         assert!(env.lines().any(|l| l == format!("{}=1", placement::AHEAD_ENV)), "{env}");
         // Off again: as before.
         std::fs::write(r.join(placement::SWITCH), "off").unwrap();
@@ -16481,7 +16504,7 @@ mod pool_tests {
         lead.coord.as_ref().unwrap().offer(
             "2026-09-28",
             vec![crate::coord::Offer {
-                step: "slope".into(),
+                step: "slope-hi".into(),
                 targets: vec![("3/2/2".into(), "k".into(), 100)],
                 job: None,
             }],
@@ -16542,7 +16565,7 @@ mod pool_tests {
             lead.coord.as_ref().unwrap().offer(
                 "2026-09-28",
                 vec![crate::coord::Offer {
-                    step: "slope".into(),
+                    step: "slope-hi".into(),
                     targets: vec![("3/2/2".into(), "k".into(), 100)],
                     job: None,
                 }],
@@ -16591,7 +16614,7 @@ mod pool_tests {
                     .side
                     .driver()
                     .records()
-                    .is_some_and(|r| r.keys.recorded("slope", "3/2/2") == Some("k"))
+                    .is_some_and(|r| r.keys.recorded("slope-hi", "3/2/2") == Some("k"))
         });
         // The statuses say so: the new lead's view.
         let st = read_status(None, &m.o.home).unwrap();
@@ -16653,7 +16676,11 @@ mod pool_tests {
         let offer = |c: &crate::coord::Coordinator, t: &str, k: &str| {
             c.offer(
                 "2026-09-28",
-                vec![crate::coord::Offer { step: "slope".into(), targets: vec![(t.into(), k.into(), 100)], job: None }],
+                vec![crate::coord::Offer {
+                    step: "slope-hi".into(),
+                    targets: vec![(t.into(), k.into(), 100)],
+                    job: None,
+                }],
             )
         };
         until(&mut m, |m| {
@@ -16701,9 +16728,9 @@ mod pool_tests {
                     .side
                     .driver()
                     .records()
-                    .is_some_and(|r| r.keys.recorded("slope", "3/2/2") == Some("k"))
+                    .is_some_and(|r| r.keys.recorded("slope-hi", "3/2/2") == Some("k"))
         });
-        assert!(m.coord.as_ref().unwrap().held("slope").is_empty());
+        assert!(m.coord.as_ref().unwrap().held("slope-hi").is_empty());
         // The old lead, a member now, asks the new lead for work by HTTP and runs it, its entry
         // reaching the new lead's records; still no restart.
         m.pooled().unwrap().side.know(&il);
@@ -16712,7 +16739,12 @@ mod pool_tests {
             if l.slots.iter().all(|s| s.running.is_none()) {
                 offer(m.coord.as_ref().unwrap(), "3/3/2", "k2");
             }
-            m.pooled().unwrap().side.driver().records().is_some_and(|r| r.keys.recorded("slope", "3/3/2") == Some("k2"))
+            m.pooled()
+                .unwrap()
+                .side
+                .driver()
+                .records()
+                .is_some_and(|r| r.keys.recorded("slope-hi", "3/3/2") == Some("k2"))
         });
         assert_eq!((lead.pool_restart(), m.pool_restart()), (None, None));
         stop_jobs(&mut lead);
@@ -16777,7 +16809,7 @@ mod pool_tests {
             lead.coord.as_ref().unwrap().offer(
                 "2026-09-28",
                 vec![crate::coord::Offer {
-                    step: "slope".into(),
+                    step: "slope-hi".into(),
                     targets: vec![("3/2/2".into(), "k".into(), 100)],
                     job: None,
                 }],
@@ -16907,14 +16939,14 @@ mod pool_tests {
                 .side
                 .driver()
                 .records()
-                .is_some_and(|r| r.keys.recorded("slope", "3/2/2") == Some("k")))
+                .is_some_and(|r| r.keys.recorded("slope-hi", "3/2/2") == Some("k")))
         {
             lead.step().unwrap();
             m.step().unwrap();
             assert!(Instant::now() < end, "the job's end not merged");
             std::thread::sleep(Duration::from_millis(250));
         }
-        let env = std::fs::read_to_string(bin.join("env-slope")).unwrap();
+        let env = std::fs::read_to_string(bin.join("env-slope-hi")).unwrap();
         assert!(env.contains(&format!("SCENIC_COORD=http://127.0.0.1:{bport}")), "{env}");
         // Off: the old lead's broker stops, the new lead's coordinator told none, and the heartbeat
         // says none from the run's next step.
@@ -18094,7 +18126,7 @@ mod pool_tests {
         c.offer(
             "2026-09-28",
             vec![crate::coord::Offer {
-                step: "slope".into(),
+                step: "slope-hi".into(),
                 targets: vec![("3/2/2".into(), "k".into(), 100)],
                 job: None,
             }],
@@ -18103,7 +18135,7 @@ mod pool_tests {
             crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
         let ask = crate::coord::Ask {
             kind: "native".into(),
-            can: vec!["slope".into()],
+            can: vec!["slope-hi".into()],
             mem_mb: 64_000,
             ..Default::default()
         };
@@ -18114,7 +18146,7 @@ mod pool_tests {
                 Some("layers/slope/lo/3-2-2.0123456789abcdef.pack".to_string()),
             )]
             .into(),
-            done: Some(("slope".into(), vec![("3/2/2".into(), "k".into())])),
+            done: Some(("slope-hi".into(), vec![("3/2/2".into(), "k".into())])),
             ..Default::default()
         };
         cl.done(&crate::coord::Done { lease: g.lease, handoff: Some(h), journaled: true, ..Default::default() })

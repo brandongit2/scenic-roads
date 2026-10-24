@@ -72,6 +72,8 @@ pub enum Scope {
     /// A z6 tile ("6/x/y"). (Stored and sent as "tile".)
     #[serde(rename = "tile")]
     Z6,
+    /// A z10 tile ("10/x/y"): a deep pack's (crate::terrain_deep::PACK_Z).
+    Z10,
     /// An input's drop box (docs/inputs.md §4.3).
     Input,
     /// A task's piece of a job (`TASKS`).
@@ -85,6 +87,7 @@ impl Scope {
             Scope::World => "run",
             Scope::Z3 => "z3 tile",
             Scope::Z6 => "z6 tile",
+            Scope::Z10 => "z10 tile",
             Scope::Input => "input",
             Scope::Task => "task",
         }
@@ -173,10 +176,10 @@ const fn step(
 }
 
 use Kind::{Derive, Fetch, Keep, Pack, Publish};
-use Scope::{Input, World, Z3, Z6};
+use Scope::{Input, World, Z10, Z3, Z6};
 
 /// The table, by stage (the ranks order what's ranked).
-pub const TABLE: [Step; 52] = [
+pub const TABLE: [Step; 54] = [
     // The OSM pass: the planet filtered, its sets, extracts and road values; then its worldwide steps.
     Step {
         alone: true,
@@ -350,18 +353,34 @@ pub const TABLE: [Step; 52] = [
             w_terrain_water,
         )
     },
-    // (Its memory offered by target, the agent's terrain_peak: its deep levels' bound where a fine
-    // dataset meets it, crate::terrain_deep::peak_mb. Until a z6 tile's own run says.)
+    // (Its memory offered by target, the agent's terrain_peak: a z6 tile's levels' bound,
+    // crate::terrain_pack::piece_peak_mb, and its deep z12's north of 67° where a fine dataset meets
+    // it, crate::terrain_deep::peak_mb. Until a z6 tile's own run says.)
     Step {
         shared: Some(0),
         ..step(
             "terrain",
             Pack,
             Z6,
-            "terrain",
+            "terrain-hi",
             "Terrain",
-            "Builds a tile's terrain packs down to its native zoom, its water flattened.",
-            w_terrain,
+            "Builds a tile's terrain hi pack (z9–12), its water flattened.",
+            w_terrain_hi,
+        )
+    },
+    // (Its memory from the code's bounds: its base made as a z6 tile's run at most, then its deep
+    // tiles, crate::terrain_deep::target_peak_mb. Until a target's own run says.)
+    Step {
+        mem_mb: crate::terrain_deep::target_peak_mb(),
+        shared: Some(1),
+        ..step(
+            "terrain",
+            Pack,
+            Z10,
+            "terrain-deep",
+            "Terrain, deep levels",
+            "Builds a z10 tile's terrain past the base's zoom (z13–16) where a declared elevation dataset has the detail, from the base made as the tiles' terrain is.",
+            w_terrain_deep,
         )
     },
     // (Its z3 tile's 1,365 zoomed-out tiles, ~270 KB each made, its z6 tiles' z9 means, up to 4 MB a
@@ -378,19 +397,32 @@ pub const TABLE: [Step; 52] = [
             w_terrain_lo,
         )
     },
-    // (Slope holds a z6 tile's tiles at a time, under a GB; its assembly the z3 tile's lo tiles.)
-    // (Its memory from the tiles it holds: crate::slope_pack::peak_mb, lo_peak_mb.)
+    // (Slope's memory from the tiles each job holds: crate::slope_pack::deep_peak_mb, peak_mb,
+    // lo_peak_mb.)
+    Step {
+        mem_mb: crate::slope_pack::deep_peak_mb(),
+        shared: Some(2),
+        ..step(
+            "slope",
+            Pack,
+            Z10,
+            "slope-deep",
+            "Slope, deep levels",
+            "Works out a z10 tile's shading from its terrain down to its deep levels (z10–16), its z10–12 handed on to its tile's.",
+            w_slope_deep,
+        )
+    },
     Step {
         mem_mb: crate::slope_pack::peak_mb(),
-        shared: Some(1),
+        shared: Some(3),
         ..step(
             "slope",
             Pack,
             Z6,
-            "slope",
+            "slope-hi",
             "Slope",
-            "Works out a tile's shading from its terrain, to its finest zoom.",
-            w_slope,
+            "Works out a tile's shading from its terrain (z6–12), its z10 tiles' deep parts taken in.",
+            w_slope_hi,
         )
     },
     Step {
@@ -413,7 +445,7 @@ pub const TABLE: [Step; 52] = [
     // target's measured peak replaces it.)
     Step {
         mem_mb: 2500,
-        shared: Some(2),
+        shared: Some(4),
         ..step("trees", Pack, Z6, "trees", "Tree cover", "Maps a tile's tree cover, height and leaf type.", w_trees)
     },
     Step {
@@ -445,7 +477,7 @@ pub const TABLE: [Step; 52] = [
     },
     Step {
         mem_mb: 2500,
-        shared: Some(8),
+        shared: Some(10),
         ..step(
             "depth",
             Pack,
@@ -473,7 +505,7 @@ pub const TABLE: [Step; 52] = [
     // (A z6 tile's most its jobs took here, 8.4 GB, 2026-10-05; offered by its extract's size.)
     Step {
         mem_mb: 8600,
-        shared: Some(3),
+        shared: Some(5),
         ..step(
             "roads",
             Pack,
@@ -557,12 +589,12 @@ pub const TABLE: [Step; 52] = [
     },
     Step {
         mem_mb: 2048,
-        shared: Some(4),
+        shared: Some(6),
         ..step("landmarks", Derive, Z6, "pois", "Landmark candidates", "Finds a tile's landmark candidates.", w_pois)
     },
     Step {
         mem_mb: 2500,
-        shared: Some(5),
+        shared: Some(7),
         ..step("landmarks", Derive, Z6, "peaks", "Peaks", "Measures a tile's peaks' prominence and isolation.", w_peaks)
     },
     Step {
@@ -626,7 +658,7 @@ pub const TABLE: [Step; 52] = [
     // 30.3 M rows, by the models of task #579's reads and B5's pilot. Offered by the rows they read.)
     Step {
         mem_mb: super::bldprep_peak(30_300_000),
-        shared: Some(6),
+        shared: Some(8),
         ..step(
             "buildings",
             Derive,
@@ -639,7 +671,7 @@ pub const TABLE: [Step; 52] = [
     },
     Step {
         mem_mb: super::bldtiles_peak(30_300_000),
-        shared: Some(7),
+        shared: Some(9),
         ..step(
             "buildings",
             Pack,
@@ -759,7 +791,7 @@ pub const TASKS: [Task; 4] = [
         name: crate::terrain_task::KIND,
         title: "Terrain's subtrees",
         does: "A group of a terrain tile's z8 subtrees.",
-        step: "terrain",
+        step: "terrain-hi",
     },
     Task {
         name: crate::trees::task::KIND,
@@ -775,10 +807,21 @@ pub const TASKS: [Task; 4] = [
     },
 ];
 
-/// The row of `step`; None for one the table doesn't know (a task's kind, or a step of a newer
-/// app's).
+/// The row of `step` (by its name now: `current`); None for one the table doesn't know (a task's
+/// kind, or a step of a newer app's).
 pub fn row(step: &str) -> Option<&'static Step> {
+    let step = current(step);
     TABLE.iter().find(|s| s.name == step)
+}
+
+/// The steps renamed (task #639: by the pack each makes), old name to new. What an older app
+/// recorded under an old name (the records' keys, a hand-off's done targets, a journal entry) is
+/// the step's under its new one (`current`), so nothing is built again for the name alone.
+pub const RENAMED: [(&str, &str); 2] = [("terrain", "terrain-hi"), ("slope", "slope-hi")];
+
+/// `step`'s name now: its new name where it was renamed (`RENAMED`), else itself.
+pub fn current(step: &str) -> &str {
+    RENAMED.iter().find(|(old, _)| *old == step).map_or(step, |(_, new)| new)
 }
 
 /// The task of kind `kind`.
@@ -992,7 +1035,7 @@ const fn set_of<const N: usize>(set: Set) -> [&'static str; N] {
 
 /// The shared steps: other members take their jobs (crate::coord leases them), in this order of
 /// preference: what later steps wait on first.
-pub const SHARED: [&str; 9] = set_of(Set::Shared);
+pub const SHARED: [&str; 11] = set_of(Set::Shared);
 /// The steps that keep the pass's Wikidata and Wikipedia answers.
 pub const ANSWERED: [&str; 3] = set_of(Set::Answered);
 
@@ -1055,6 +1098,7 @@ pub fn outside_by(e: &crate::pool::journal::Entry, writes: &dyn Fn(&str, bool) -
 pub fn saves(step: &str, target: &str, l: &str) -> bool {
     let dash = target.replace('/', "-");
     let tile = TileId::parse(target);
+    let step = current(step);
     match step {
         "unit" => crate::unit::saved_files(&dash).iter().any(|f| f == l),
         "pois" | "peaks" => l == format!("work/{step}/{dash}"),
@@ -1085,32 +1129,28 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
             tile.is_some_and(|u| u.z == 3)
                 && crate::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/lo/{dash}"))
         }
-        // (And its deep packs, by their z10 tiles.)
-        "terrain" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| {
-            l == crate::terrain_pack::mid_logical(t.x, t.y)
-                || l == format!("layers/terrain/hi/{dash}")
-                || crate::terrain_deep::pack_tile(l).is_some_and(|f| {
-                    let k = crate::terrain_deep::PACK_Z - 6;
-                    (f.0 >> k, f.1 >> k) == (t.x, t.y)
-                })
+        "terrain-hi" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| {
+            l == crate::terrain_pack::mid_logical(t.x, t.y) || l == format!("layers/terrain/hi/{dash}")
         }),
-        // (And its deep packs, by their z10 tiles.)
-        "slope" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| {
-            l == crate::slope_pack::mid_logical(t.x, t.y)
-                || l == format!("layers/slope/hi/{dash}")
-                || crate::slope_pack::deep_tile(l).is_some_and(|f| {
-                    let k = crate::terrain_deep::PACK_Z - 6;
-                    (f.0 >> k, f.1 >> k) == (t.x, t.y)
-                })
+        "slope-hi" if tile.is_some_and(|u| u.z == 6) => tile
+            .is_some_and(|t| l == crate::slope_pack::mid_logical(t.x, t.y) || l == format!("layers/slope/hi/{dash}")),
+        // (A z10 tile's deep pack, a retired one too; slope's and its deep mid.)
+        "terrain-deep" => tile.is_some_and(|t| {
+            t.z == crate::terrain_deep::PACK_Z && crate::terrain_deep::pack_tile(l) == Some((t.x, t.y))
+        }),
+        "slope-deep" => tile.is_some_and(|t| {
+            t.z == crate::terrain_deep::PACK_Z
+                && (crate::slope_pack::deep_tile(l) == Some((t.x, t.y))
+                    || crate::slope_pack::deep_mid_tile(l) == Some((t.x, t.y)))
         }),
         "terrain-lo" | "slope-lo" => {
             tile.is_some_and(|u| u.z == 3) && l == format!("layers/{}/lo/{dash}", step.trim_end_matches("-lo"))
         }
-        "terrain" | "slope" | "trees" => {
+        "terrain-hi" | "slope-hi" | "trees" => {
             let Some(q) = tile.filter(|u| u.z == 3) else { return false };
             let layers: &[&str] = match step {
-                "terrain" => &["terrain"],
-                "slope" => &["slope"],
+                "terrain-hi" => &["terrain"],
+                "slope-hi" => &["slope"],
                 _ => &crate::treepacks::LAYERS,
             };
             layers.iter().any(|layer| {
@@ -1265,12 +1305,15 @@ fn w_spoken(l: &str, _: bool) -> bool {
     l == "global/spoken"
 }
 
-/// A z6 tile's hi pack, deep packs and mid (a z6 tile); a z3 tile's whole run's lo pack and its z6
-/// tiles' hi packs.
-fn w_terrain(l: &str, _: bool) -> bool {
-    pack(l, "terrain", &["lo", "hi"])
-        || crate::terrain_deep::pack_tile(l).is_some()
-        || matches!(parts(l).as_slice(), ["work", "terrain-mid", t] if tile(t, 6))
+/// A z6 tile's hi pack and mid (a z6 tile); a z3 tile's whole run's lo pack and its z6 tiles' hi
+/// packs.
+fn w_terrain_hi(l: &str, _: bool) -> bool {
+    pack(l, "terrain", &["lo", "hi"]) || matches!(parts(l).as_slice(), ["work", "terrain-mid", t] if tile(t, 6))
+}
+
+/// A z10 tile's deep pack (crate::terrain_deep), and the retired fine pack there it drops.
+fn w_terrain_deep(l: &str, _: bool) -> bool {
+    crate::terrain_deep::pack_tile(l).is_some()
 }
 
 fn w_terrain_lo(l: &str, _: bool) -> bool {
@@ -1306,10 +1349,15 @@ fn w_terrain_root(l: &str, _: bool) -> bool {
     pack(l, "terrain", &["root"])
 }
 
-fn w_slope(l: &str, _: bool) -> bool {
-    pack(l, "slope", &["lo", "hi"])
-        || crate::slope_pack::deep_tile(l).is_some()
-        || matches!(parts(l).as_slice(), ["work", "slope-mid", t] if tile(t, 6))
+/// A z6 tile's hi pack and mid (a z6 tile); a z3 tile's whole run's lo pack and its z6 tiles' hi
+/// packs.
+fn w_slope_hi(l: &str, _: bool) -> bool {
+    pack(l, "slope", &["lo", "hi"]) || matches!(parts(l).as_slice(), ["work", "slope-mid", t] if tile(t, 6))
+}
+
+/// A z10 tile's deep pack and deep mid (crate::slope_pack::build_deep).
+fn w_slope_deep(l: &str, _: bool) -> bool {
+    crate::slope_pack::deep_tile(l).is_some() || crate::slope_pack::deep_mid_tile(l).is_some()
 }
 
 fn w_slope_lo(l: &str, _: bool) -> bool {
@@ -1502,7 +1550,22 @@ mod tests {
     #[test]
     fn the_sets_are_todays() {
         // (As they were before the table: the agent's and the coordinator's rules unchanged.)
-        assert_eq!(SHARED, ["terrain", "slope", "trees", "unit", "pois", "peaks", "bldprep", "bldtiles", "depth"]);
+        assert_eq!(
+            SHARED,
+            [
+                "terrain-hi",
+                "terrain-deep",
+                "slope-deep",
+                "slope-hi",
+                "trees",
+                "unit",
+                "pois",
+                "peaks",
+                "bldprep",
+                "bldtiles",
+                "depth"
+            ]
+        );
         let set = |v: &[&'static str]| v.iter().copied().collect::<std::collections::BTreeSet<&str>>();
         assert_eq!(set(&ANSWERED), set(&["items", "heritage-sites", "heritage"]));
     }
@@ -1558,12 +1621,17 @@ mod tests {
             ("trees", "6/3/4"),
             ("trees", "3/1/1"),
             ("trees-lo", "3/1/1"),
-            ("terrain", "6/3/4"),
-            ("terrain", "3/1/1"),
-            ("slope", "6/3/4"),
-            ("slope", "3/1/1"),
+            ("terrain-hi", "6/3/4"),
+            ("terrain-hi", "3/1/1"),
+            ("slope-hi", "6/3/4"),
+            ("slope-hi", "3/1/1"),
             ("terrain-lo", "3/1/1"),
             ("slope-lo", "3/1/1"),
+            // (An older app's names, read as the new ones'.)
+            ("terrain", "6/3/4"),
+            ("slope", "3/1/1"),
+            ("terrain-deep", "10/3/4"),
+            ("slope-deep", "10/3/4"),
         ] {
             let dash = t.replace('/', "-");
             let mut names: Vec<String> = Vec::new();
@@ -1587,6 +1655,10 @@ mod tests {
                 "layers/slope/lo",
                 "layers/trees-cover/hi",
                 "layers/trees-leaf/lo",
+                "layers/terrain/deep",
+                "layers/terrain/fine",
+                "layers/slope/deep",
+                "work/slope-deep-mid",
             ] {
                 names.push(format!("{l}/{dash}"));
                 names.push(format!("{l}/6-8-9"));
@@ -1686,7 +1758,7 @@ mod tests {
         assert_eq!([stage_title("trains"), stage_title("x")], ["Trains", "x"]);
         // The place, from the pool's rules: the shared steps and the map tiles any member's, the
         // lead's own and the worldwide steps the lead's.
-        for s in ["terrain", "unit", "pack", "lo", "bldprep"] {
+        for s in ["terrain-hi", "terrain-deep", "slope-deep", "slope-hi", "unit", "pack", "lo", "bldprep"] {
             assert_eq!(place(s), Place::Any, "{s}");
         }
         for s in ["catalog", "osm-pass", "items", "marks", "rail", "terrain-root", "gc", "inputs"] {
@@ -1727,9 +1799,11 @@ mod tests {
                 "regions-extract",
                 "heritage-sites",
                 "terrain-water",
-                "terrain",
+                "terrain-hi",
+                "terrain-deep",
                 "terrain-lo",
-                "slope",
+                "slope-deep",
+                "slope-hi",
                 "slope-lo",
                 "trees",
                 "trees-lo",

@@ -804,7 +804,11 @@ class, id) within a tile. The client sends the id with the clicked point.
   (u16 × 65,536 each)); `work/terrain-mid/6-x-y` (meta `{fmt: 1, step: "terrain", tile, v:
   TERRAIN_V}`; per z9 tile `quad-9-<x>-<y>`, its 2×2 means, f32 × 128 × 128; then `lake-ids` u64 and
   `lake-levels` f32); `work/slope-mid/6-x-y` (meta `{fmt: 1, step: "slope", tile, v: SLOPE_V}`;
-  `<z>-<x>-<y>`, each z6–8 tile as stored, `shade-webp`); `work/water-idx/<hash16 of the pin>` (JSON `{fmt: 1, step:
+  `<z>-<x>-<y>`, each z6–8 tile as stored, `shade-webp`); `work/slope-deep-mid/10-x-y` (a slope-deep
+  z10 tile's part of its z6 tile's pyramid, which that z6 tile's slope-hi run takes in: meta `{fmt:
+  1, step: "slope-deep", tile, v: SLOPE_V}`; `q`, its quadrant at full precision where it has one,
+  128 × 128 pixels each its steepness and direction's two parts, f32 little-endian, row by row; then
+  `<z>-<x>-<y>`, each z10–12 tile as stored); `work/water-idx/<hash16 of the pin>` (JSON `{fmt: 1, step:
   "terrain-water", pin, digests: {target: [from, digest]}}`: per terrain target, what decides its
   tiles and a hash16 over its water tiles' polygons; `pipeline::terrain_water::WaterIdx`).
 - **Other sources:**
@@ -965,7 +969,9 @@ class, id) within a tile. The client sends the id with the clicked point.
   `pool`, `lead` (crate::agent::lead::View), `inputs`
   (pipeline::inputs::view::InputView: per unit `version`, `state` ok | checking | held, `checked`,
   `held`, `findings`, `accepted`, `stale`). `state/build/{manifest,jobs,pending,summaries,pause}.json`
-  (`jobs.json`: job keys by step, target → key: `terrain`, `slope`, `terrain_lo`, `slope_lo`, `unit`,
+  (`jobs.json`: job keys by step, target → key: `terrain_hi`, `slope_hi` (read from `terrain` and
+  `slope` too, their names before task #639), `terrain_deep`, `slope_deep` (z10 tiles, "10/x/y"),
+  `terrain_lo`, `slope_lo`, `unit`,
   `pois`, `peaks`, `pack`, `lo` (z3 tiles, worldwide steps by name, input check jobs as
   `inputs/<unit>`), `trees`, `trees_lo`, the 3D buildings', `catalog`, `catalog_held`).
 - **The input check** (docs/inputs.md §3, §4; a unit's name is `/`-separated components of

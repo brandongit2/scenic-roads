@@ -158,10 +158,12 @@ pub(crate) struct Need {
 }
 
 /// The steps known to honour the threads they're granted (task #499 review): their cold starts
-/// count as the packed share, the others' as the whole Mac. `slope`: a Rust step on the rayon pool
-/// the agent sizes (`RAYON_NUM_THREADS`, crate::agent::jobs); `bld-fetch`: its downloads bounded
-/// by its `--jobs` (3 by default, at most 4), waiting on the network.
-pub(super) const THREADS_HONOURED: &[&str] = &["slope", "bld-fetch"];
+/// count as the packed share, the others' as the whole Mac. `slope-hi` and `slope-deep`: Rust steps
+/// on the rayon pool the agent sizes (`RAYON_NUM_THREADS`, crate::agent::jobs); `terrain-deep`: its
+/// base and deep tiles made on that pool, its reads ahead waiting on the network
+/// (crate::terrain_deep); `bld-fetch`: its downloads bounded by its `--jobs` (3 by default, at most
+/// 4), waiting on the network.
+pub(super) const THREADS_HONOURED: &[&str] = &["slope-hi", "slope-deep", "terrain-deep", "bld-fetch"];
 
 /// A cold start's provisional memory (MB) from the most its step declares or it was offered with,
 /// `mb`: times 3/2 (task #499; `Shared::provisional`, the forecast's packing too).

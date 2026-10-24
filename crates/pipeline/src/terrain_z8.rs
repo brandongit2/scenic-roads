@@ -296,7 +296,7 @@ mod tests {
         // crate::agent::build::TERRAIN_V, which the peaks' key names); then update the values.
         assert_eq!(
             (V, crate::agent::build::TERRAIN_V),
-            (6, 6),
+            (6, 7),
             "the raw path's versions changed: update the values below"
         );
         assert_eq!(

@@ -443,6 +443,19 @@ pub fn reaches(sets: &[FineSet], z: u8, x: u32, y: u32) -> bool {
     })
 }
 
+/// Whether tile `z/x/y` (z ≤ `SUB_Z`) has deep levels its terrain-hi run makes (`hi_levels`): a fine
+/// dataset meets one of its z8 tiles whose base ends short of `FIRST_Z - 1` (north of 67°) and is
+/// finer there.
+pub fn reaches_hi(sets: &[FineSet], z: u8, x: u32, y: u32) -> bool {
+    let k = SUB_Z - z;
+    (x << k..(x + 1) << k).any(|a| {
+        (y << k..(y + 1) << k).any(|b| {
+            let bb = crate::stage::tile_box_grown(SUB_Z, a, b, 0.0);
+            short((a, b)) && !meeting(sets, bb, poleward(bb)).is_empty()
+        })
+    })
+}
+
 /// A fine dataset's file as a target's run reads it: its blocks read ahead (`read_ahead`) kept by
 /// offset, its small reads kept as asked; anything else read from the file.
 struct Kept {
@@ -892,7 +905,7 @@ pub const PREFIX: &str = "layers/terrain/deep/";
 
 /// The terrain's packs past the base from before one terrain (task #633: JPEG XL, by z10 tile
 /// alike), never made now: their z6 tile's next run drops them (`named_under`).
-const RETIRED: &str = "layers/terrain/fine/";
+pub const RETIRED: &str = "layers/terrain/fine/";
 
 /// A deep pack's z10 tile, from its logical name (or a retired pack's, `RETIRED`).
 pub fn pack_tile(l: &str) -> Option<(u32, u32)> {
@@ -1495,12 +1508,18 @@ mod tests {
         );
         assert_eq!(pack_tile("layers/terrain/deep/10-288-352"), Some((288, 352)));
         assert_eq!(pack_tile("layers/terrain/deep/9-1-1"), None);
-        // A z6 tile's terrain job saves its own z10 tiles' deep packs, not another's.
-        let saves = |t: &str, l: &str| crate::agent::steps::saves("terrain", t, l);
+        // A deep target saves its own deep pack (and drops a retired one there), not another's; a
+        // terrain-hi z6 tile none.
+        let saves = |s: &str, t: &str, l: &str| crate::agent::steps::saves(s, t, l);
         assert!(
-            saves("6/18/22", "layers/terrain/deep/10-288-352") && saves("6/18/22", "layers/terrain/deep/10-303-367")
+            saves("terrain-deep", "10/288/352", "layers/terrain/deep/10-288-352")
+                && saves("terrain-deep", "10/289/352", "layers/terrain/fine/10-289-352")
         );
-        assert!(!saves("6/18/23", "layers/terrain/deep/10-288-352") && saves("6/18/22", "layers/terrain/hi/6-18-22"));
+        assert!(!saves("terrain-deep", "10/288/353", "layers/terrain/deep/10-288-352"));
+        assert!(
+            !saves("terrain-hi", "6/18/22", "layers/terrain/deep/10-288-352")
+                && saves("terrain-hi", "6/18/22", "layers/terrain/hi/6-18-22")
+        );
     }
 
     #[test]
