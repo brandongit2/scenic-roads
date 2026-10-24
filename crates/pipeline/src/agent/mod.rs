@@ -1326,7 +1326,6 @@ pub struct Agent {
     guard_backoff: BTreeMap<String, (u64, String)>,
     /// The memory this member spared its jobs in its last ask (MB: `Slot::spare_mb`).
     ask_spare_mb: Option<u64>,
-    /// The idle-sleep assertion it holds while it leads with leases out.
     /// The budgets (docs/pool.md §7.7): every job's connections out through this agent's proxy,
     /// each Wikimedia request taken from the pool's one budget on the NAS, the job sandboxed so it
     /// has no other way out; the answers' lease. (And the Mac shared by measure: a job starts beside
@@ -1382,6 +1381,7 @@ pub struct Agent {
     /// Whether the NAS's folder answers now (`answers`: a stat on a thread, eight seconds at most); a
     /// test's own, deciding it without the clock or the Mac's load (`test_agent`).
     probe: fn(&Path) -> bool,
+    /// The idle-sleep assertion it holds while it leads with leases out (`lead_awake`).
     lead_awake: Option<std::process::Child>,
     /// The NAS's project folder as the loop last found it (a job ending between loops tells the
     /// lead through a client made from it).
@@ -2045,7 +2045,8 @@ impl Agent {
                 _ => None,
             })
             .collect();
-        // (A job's folder from before the pool, drained into the journal: tasks' alone here.)
+        // (A job's folder, run out of the pool, drained into the journal: pool::Run::drain_outbox;
+        // tasks' alone here.)
         let dirs: Vec<PathBuf> = rd
             .flatten()
             .map(|e| e.path())
@@ -9942,6 +9943,7 @@ impl Agent {
         if lead {
             run.drain(&home.join("coord/journal"));
         }
+        run.drain_outbox(&home.join("outbox"));
         // The owner's lead asks (crate::agent::lead): this Mac's, and the build page's.
         run.conds = Some(pool::Conds {
             home: c.home,

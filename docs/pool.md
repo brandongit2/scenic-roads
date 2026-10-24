@@ -800,7 +800,9 @@ answers nothing and the job runs the task itself. A member taking up a term star
 coordinator in process, and a lead losing it stops its coordinator and duties, keeping its jobs
 running; only a coordinator that fails to start leaves the part to a restart once its first slot is
 free. A lead drains the hand-offs its coordinator journaled on its disk (those a member out of the
-pool told it, `journaled: false`) into the pool's journal (`Run::drain`). A lead whose update waits on its jobs keeps the lead and restarts into the new app at a safe
+pool told it, `journaled: false`) into the pool's journal (`Run::drain`); every member drains,
+once a process, the jobs a process of its ran out of the pool and left in its outbox untold
+(`Run::drain_outbox`). A lead whose update waits on its jobs keeps the lead and restarts into the new app at a safe
 point like any member (docs/building.md §2, A newly installed app). The lead's own asks always carry its capacity, so the lead never
 holds packing off for the pool (§7.1, Mixed versions); its heartbeat says whether the pool is all on
 the new app (`all_new`) for its members' heartbeats.

@@ -1099,7 +1099,8 @@ pub const SWEEPS: [&str; 1] = ["gc"];
 /// The steps that publish (a catalog: the lead's, once caught up).
 pub const PUBLISHES: [&str; 2] = ["catalog", "catalog-held"];
 /// Lease numbers at and above this are hand-offs a lead's coordinator journaled on its disk, drained
-/// into the pool's journal by its member (`Run::drain`; term 0: before any term).
+/// into the pool's journal by its member (`Run::drain`; term 0: before any term). Below it, a job
+/// run out of the pool keeps the lease the lead's coordinator gave it (`Run::drain_outbox`).
 pub const DRAINED: u64 = 1 << 62;
 
 /// The agent's part in the pool while it's on, in this process.
@@ -1126,8 +1127,10 @@ pub struct Run {
     /// raw store's index and not yet off the records (`Give::named_raw`).
     pub today: Option<(u64, u64)>,
     pub named_raw: BTreeSet<String>,
-    /// The hand-off folders' last files drained, to mark merged (handoff.rs's `<folder>.merged`)
+    /// The outbox's jobs drained (once a process: `Run::drain_outbox`), and the hand-off folders'
+    /// last files drained, to mark merged (handoff.rs's `<folder>.merged`)
     /// once a saved state holds them.
+    outbox_drained: bool,
     marks: Vec<(PathBuf, String)>,
     /// The coordinator's state per term as last written, and the history's last event written.
     pub state_written: Option<(u64, Vec<u8>)>,
@@ -1406,6 +1409,7 @@ impl Run {
             left_taken: false,
             today: None,
             named_raw: BTreeSet::new(),
+            outbox_drained: false,
             marks: Vec::new(),
             state_written: None,
             view_written: None,
@@ -1817,6 +1821,25 @@ impl Run {
             ));
         }
     }
+
+    /// The jobs a process of this agent ran out of the pool (its member's lock held by another
+    /// process, or the NAS not reached as it started) and left in its outbox (`outbox/<lease>/`, a
+    /// `build::Work` kept with its saves): their hand-offs not told to the lead (the process ended
+    /// first, the lead refused it, or it was given back or failed), drained into this member's
+    /// journal entries, once a process. Each folder is removed once a saved state holding its entry
+    /// is on disk; until then send_outbox passes over it (it has `work.json`) and the member asks
+    /// for no task.
+    pub fn drain_outbox(&mut self, outbox: &Path) {
+        if std::mem::replace(&mut self.outbox_drained, true) {
+            return;
+        }
+        let me = self.side.member().id.clone();
+        for (e, dir) in outbox_entries(outbox, &me) {
+            if self.drained.insert(dir.clone()) {
+                self.entries.push((e, Some(dir)));
+            }
+        }
+    }
 }
 
 /// A term taken up (`Event::TookUp`), as the lead's coordinator takes it (§6.2, §7.5): the leases it
@@ -1941,6 +1964,47 @@ pub fn left_jobs(home: &Path, member: &str, running: &[PathBuf]) -> Vec<(Entry, 
             }
             Err(e) => {
                 eprintln!("pool: {}'s hand-off can't be read ({e:#}); its work is done again", d.display());
+                std::fs::remove_dir_all(&d).ok();
+            }
+        }
+    }
+    out
+}
+
+/// A job folder in this member's outbox, run out of the pool (`Run::drain_outbox`): its hand-off as
+/// its end would have told it (its saves and done record, or what it noted done when it stopped), as
+/// an entry of this member under its lease from the lead's coordinator (term 0). A task's folder (no
+/// `work.json`: its outputs went to its broker) is left to the outbox's own sending; a job that
+/// handed off nothing, or whose saves are damaged, is removed (its work is done again), or this
+/// member would never ask for a task again.
+fn outbox_entries(outbox: &Path, member: &str) -> Vec<(Entry, PathBuf)> {
+    let Ok(rd) = std::fs::read_dir(outbox) else { return Vec::new() };
+    let mut out = Vec::new();
+    for d in rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
+        let Some(lease) = d.file_name().and_then(|n| n.to_str()).and_then(|n| n.parse::<u64>().ok()) else { continue };
+        let Some(w) = std::fs::read(d.join("work.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<crate::agent::build::Work>(&b).ok())
+        else {
+            continue;
+        };
+        let result: Option<serde_json::Value> =
+            std::fs::read(d.join("result.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        let done: Vec<(String, String)> = match result.as_ref().filter(|r| r["ok"].as_bool() == Some(true)) {
+            Some(r) => serde_json::from_value::<Option<(String, Vec<(String, String)>)>>(r["done"].clone())
+                .ok()
+                .flatten()
+                .map(|d| d.1)
+                .unwrap_or_default(),
+            None => {
+                let names = crate::control::read_done(&d.join("done.txt"), &w.step);
+                w.targets.iter().filter(|(t, _)| names.contains(t)).cloned().collect()
+            }
+        };
+        match entry_of(&d, member, journal::LeaseId { term: 0, n: lease }, &w.step, &done, crate::agent::jobs::now_s())
+        {
+            Ok(Some(e)) => out.push((e, d)),
+            Ok(None) | Err(_) => {
                 std::fs::remove_dir_all(&d).ok();
             }
         }
@@ -2629,7 +2693,7 @@ mod tests {
     }
 
     #[test]
-    fn the_hand_offs_the_coordinator_journaled_are_drained_into_the_journal() {
+    fn the_hand_offs_journaled_and_left_out_of_the_pool_are_drained_into_the_journal() {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
         let home = d.path().join("a/agent");
@@ -2638,28 +2702,78 @@ mod tests {
             done: Some(("unit".into(), vec![(u.into(), k.into())])),
             ..Default::default()
         };
-        // The coordinator's journal here: a member out of the pool's hand-offs.
+        // The coordinator's journal here (a member out of the pool's hand-offs), and this member's
+        // outbox (a job it ran out of the pool, never told).
         let journal = home.join("coord/journal");
         crate::handoff::write(&journal.join("m1"), &done("6/2/1", "k21")).unwrap();
         crate::handoff::write(&journal.join("m1"), &done("6/2/2", "k22")).unwrap();
+        let ob = home.join("outbox/1791328399374");
+        std::fs::create_dir_all(&ob).unwrap();
+        std::fs::write(
+            ob.join("work.json"),
+            serde_json::to_vec(&crate::agent::build::Work {
+                step: "unit".into(),
+                targets: vec![("6/2/3".into(), "k23".into())],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        crate::handoff::write(
+            &ob,
+            &Handoff {
+                changes: [("base/6-2-3".to_string(), Some("base/6-2-3.3333333333333333.base".to_string()))].into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        std::fs::write(
+            ob.join("result.json"),
+            serde_json::json!({ "ok": true, "done": ["unit", [["6/2/3", "k23"]]] }).to_string(),
+        )
+        .unwrap();
+        // (A task's folder: left to its broker. A failed job's with nothing to hand off: gone, or
+        // the member would never ask for work again.)
+        std::fs::create_dir_all(home.join("outbox/1791328399375")).unwrap();
+        let failed = home.join("outbox/1791328399376");
+        std::fs::create_dir_all(&failed).unwrap();
+        std::fs::write(
+            failed.join("work.json"),
+            serde_json::to_vec(&crate::agent::build::Work {
+                step: "unit".into(),
+                targets: vec![("6/2/4".into(), "k24".into())],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(failed.join("result.json"), r#"{"ok": false, "done": null, "error": "it failed"}"#).unwrap();
         run.drain(&journal);
+        run.drain_outbox(&home.join("outbox"));
         let leases: Vec<LeaseId> = run.entries.iter().map(|(e, _)| e.lease).collect();
-        assert_eq!(leases.len(), 2, "{leases:?}");
-        assert!(leases.iter().all(|l| l.term == 0 && l.n >= DRAINED));
+        assert_eq!(leases.len(), 3, "{leases:?}");
+        assert!(leases.iter().all(|l| l.term == 0));
+        assert!(leases.contains(&LeaseId { term: 0, n: 1791328399374 }), "an outbox job keeps its lease");
+        assert_eq!(leases.iter().filter(|l| l.n >= DRAINED).count(), 2);
         // Drained once in this process, whatever the next look finds.
         run.drain(&journal);
-        assert_eq!(run.entries.len(), 2);
+        run.drain_outbox(&home.join("outbox"));
+        assert_eq!(run.entries.len(), 3);
         // Merged by the lead's step; their sources removed once its saved state holds them.
         let out = run.step(true);
         assert_eq!(out.leads, Some(1));
         let rec = run.side.driver().records().unwrap();
         assert_eq!(
-            (rec.keys.recorded("unit", "6/2/1"), rec.keys.recorded("unit", "6/2/2")),
-            (Some("k21"), Some("k22"))
+            (
+                rec.keys.recorded("unit", "6/2/1"),
+                rec.keys.recorded("unit", "6/2/2"),
+                rec.keys.recorded("unit", "6/2/3")
+            ),
+            (Some("k21"), Some("k22"), Some("k23"))
         );
-        assert!(crate::handoff::waiting_in(&journal).unwrap().is_empty());
+        assert_eq!(rec.manifest.get("base/6-2-3").map(String::as_str), Some("base/6-2-3.3333333333333333.base"));
+        assert!(crate::handoff::waiting_in(&journal).unwrap().is_empty() && !ob.exists());
         // (Marked merged: a file whose removal had failed isn't drained again.)
         assert!(journal.join("m1").with_extension("merged").exists());
+        assert!(home.join("outbox/1791328399375").exists() && !failed.exists());
         // Term 1's records written to today's files too, for their readers.
         assert_eq!(crate::agent::build::Keys::load(&r).recorded("unit", "6/2/2"), Some("k22"));
     }
