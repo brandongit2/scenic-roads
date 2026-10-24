@@ -890,6 +890,10 @@ pub struct Capacity {
     /// live store's newest): the lead sums the members' (`Coordinator::nas_view`). None: not measured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nas_traffic: Option<[f64; 7]>,
+    /// Its NAS calls now (crate::agent::live::Store::calls_now: in flight, missed a second, its
+    /// threads): the lead sums the members' into its live store (task #634). None: not measured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nas_calls: Option<[f64; 3]>,
 }
 
 /// A job of a Mac's that only waits on a worker (`Capacity::waiting`): its lease, and what it holds
@@ -969,6 +973,12 @@ pub struct CacheHere {
 /// measure, summed. None while none has one.
 pub fn pool_traffic(caps: &[(String, Capacity)]) -> Option<[f64; 7]> {
     caps.iter().filter_map(|(_, c)| c.nas_traffic).reduce(|a, b| std::array::from_fn(|i| a[i] + b[i]))
+}
+
+/// The pool's NAS calls (crate::agent::live::POOL_CALLS' order): each member's with a measure,
+/// summed. None while none has one.
+pub fn pool_calls(caps: &[(String, Capacity)]) -> Option<[f64; 3]> {
+    caps.iter().filter_map(|(_, c)| c.nas_calls).reduce(|a, b| std::array::from_fn(|i| a[i] + b[i]))
 }
 
 /// The NAS probes failed in a row from which they count as failing (`Coordinator::nas_failing`).
@@ -2656,8 +2666,12 @@ fn nas_prober(
                         if let Some(l) = &s.live {
                             let t = unix_now();
                             l.record_disks(t, &disks);
-                            if let Some(tr) = pool_traffic(&s.capacities(&me)) {
+                            let caps = s.capacities(&me);
+                            if let Some(tr) = pool_traffic(&caps) {
                                 l.record_pool(t, &tr);
+                            }
+                            if let Some(c) = pool_calls(&caps) {
+                                l.record_pool_calls(t, &c);
                             }
                         }
                         s.nas_disks = disks;
@@ -5307,6 +5321,17 @@ mod tests {
         assert_eq!(
             NasMount::of("/dev/disk3s1", "apfs", 0),
             NasMount { name: "dev".into(), proto: "apfs".into(), free: 0 }
+        );
+    }
+
+    /// Task #634: the pool's NAS calls, the members' with a measure summed.
+    #[test]
+    fn the_pool_calls_sum_the_members_saying_them() {
+        let cap = |c| ("m".to_string(), Capacity { nas_calls: c, ..Default::default() });
+        assert_eq!(pool_calls(&[cap(None)]), None);
+        assert_eq!(
+            pool_calls(&[cap(Some([2.0, 0.5, 12.0])), cap(None), cap(Some([1.0, 0.0, 12.0]))]),
+            Some([3.0, 0.5, 24.0])
         );
     }
 

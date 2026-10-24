@@ -5296,6 +5296,7 @@ impl Agent {
                 let v: Option<Vec<f64>> = live::NAS_TRAFFIC.iter().map(|n| l.latest(n, t, 5)).collect();
                 v?.try_into().ok()
             }),
+            nas_calls: self.live.as_ref().and_then(|l| l.calls_now(now_s())),
         }
     }
 

@@ -39,7 +39,8 @@
 //! - **The NAS as a whole** (task #517): every second this process's NAS calls in flight and
 //!   missed (crate::agent::nasread::calls); on the lead, every 10 s from its coordinator's NAS
 //!   prober, the disks' busy shares (`record_disks`, the load gate's own reading) and the pool's NAS
-//!   traffic, the members' summed (`record_pool`).
+//!   traffic and calls (in flight, missed a second, their threads), the members' summed
+//!   (`record_pool`, `record_pool_calls`; task #634).
 //! - **The file stream** (task #522): every second the NAS files each job's running processes
 //!   noted (store::nasio's rings: opened for reading or made, with their bytes and the open's or
 //!   copy's ms) taken into one ring of the newest `FILES` (`Store::files`), each with its job's
@@ -133,6 +134,13 @@ pub const POOL: &str = "pool_";
 /// and missed over the second (past their deadline, or refused with every thread busy).
 pub const NAS_CALLS: &str = "nas_calls";
 pub const NAS_MISSED: &str = "nas_missed";
+/// The pool's NAS calls on the lead, every 10 s (`record_pool_calls`; task #634): the members'
+/// calls in flight, those missed a second (each member's mean over its last `CALLS_SPAN`), and
+/// their NAS call threads, each summed over the members saying them (crate::coord::Capacity::nas_calls).
+pub const POOL_CALLS: [&str; 3] = ["pool_nas_calls", "pool_nas_missed", "pool_nas_threads"];
+/// The span a member's missed calls are averaged over for its lead (s): longer than the asks
+/// between its capacities, so no second's misses fall between two.
+pub const CALLS_SPAN: u64 = 30;
 /// The NAS's disks' busy share (%), as the lead's load gate reads them every 10 s (crate::budget::snmp):
 /// the busiest, and each disk's (`NAS_DISK_BUSY`, a dot, its number from 1).
 pub const NAS_DISK_BUSY: &str = "nas_disk_busy_pct";
@@ -379,6 +387,24 @@ impl Store {
         for (n, v) in NAS_TRAFFIC.iter().zip(traffic) {
             self.record(&format!("{POOL}{n}"), t, *v);
         }
+    }
+
+    /// The pool's NAS calls at `t` (`POOL_CALLS`' order), the members' summed.
+    pub fn record_pool_calls(&self, t: u64, calls: &[f64; 3]) {
+        for (n, v) in POOL_CALLS.iter().zip(calls) {
+            self.record(n, t, *v);
+        }
+    }
+
+    /// This Mac's NAS calls for its lead (crate::coord::Capacity::nas_calls) at `now`: in flight
+    /// (the newest second's), missed a second over the last `CALLS_SPAN`, and its NAS call threads.
+    /// None before the sampler's first second.
+    pub fn calls_now(&self, now: u64) -> Option<[f64; 3]> {
+        let s = self.series.lock().ok()?;
+        let calls = s.get(NAS_CALLS)?.latest(now.saturating_sub(5), now)?;
+        let p = s.get(NAS_MISSED).map(|m| m.points(0, 1, now.saturating_sub(CALLS_SPAN), now)).unwrap_or_default();
+        let missed = if p.is_empty() { 0.0 } else { p.iter().map(|x| x[2]).sum::<f64>() / p.len() as f64 };
+        Some([calls, missed, mac()["nas_threads"].as_f64().unwrap_or(0.0)])
     }
 
     /// Series `name`'s newest mean by the second, when one is within `fresh_s` of `now`.
@@ -1153,6 +1179,9 @@ mod tests {
         tr[2] = 3.5;
         s.record_pool(t, &tr);
         assert_eq!(s.latest("pool_nas_write_mbs", t, 5), Some(3.5));
+        s.record_pool_calls(t, &[3.0, 0.5, 24.0]);
+        assert_eq!(s.latest("pool_nas_missed", t, 5), Some(0.5));
+        assert_eq!(s.calls_now(t + 1), None, "no second sampled yet");
         let mut r = Rates::default();
         let home = tempfile::tempdir().unwrap();
         let guard = super::super::memguard::Sampler::new(2);
@@ -1160,6 +1189,8 @@ mod tests {
         r.sample(&s, home.path(), &guard, t + 1);
         assert!(s.latest(NAS_CALLS, t + 1, 5).is_some());
         assert!(s.latest(NAS_MISSED, t + 1, 5).is_some(), "missed over the second, from the second read");
+        let c = s.calls_now(t + 1).unwrap();
+        assert!(c[2] > 0.0, "its threads said");
     }
 
     #[test]
