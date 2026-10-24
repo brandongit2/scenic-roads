@@ -136,10 +136,15 @@ function paint(c) {
       // (At most four steps, the mockup's: "−1 min, −45 s, −30 s, −15 s, now" at every range.)
       const step = AGO_STEPS.find((x) => span / x <= Math.max(2, Math.min(4, Math.floor(pw / 80)))) ?? 86400;
       g.textBaseline = "top";
+      // (Right to left; a word that would meet the one beside it left out, the owner's: labels never overlap.)
+      let edge = Infinity;
       for (let a = 0; a <= span + 1e-6; a += step) {
         const x = L + (1 - a / span) * pw;
         g.strokeStyle = k.grid; g.beginPath(); g.moveTo(Math.round(x) + 0.5, top); g.lineTo(Math.round(x) + 0.5, top + ph); g.stroke();
         g.fillStyle = k.dim; g.textAlign = a === 0 ? "right" : Math.abs(a - span) < 1e-6 ? "left" : "center";
+        const tw = g.measureText(ago(a)).width, x0 = g.textAlign === "right" ? x - tw : g.textAlign === "left" ? x : x - tw / 2;
+        if (x0 + tw > edge - 6) continue;
+        edge = x0;
         g.fillText(ago(a), x, top + ph + 3);
       }
     }
