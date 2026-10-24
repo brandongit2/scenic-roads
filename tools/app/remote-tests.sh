@@ -35,8 +35,8 @@
 # Connecting never hangs (#637): a fresh connection asks ~/.ssh/config's agent (1Password) for the
 # key, and a locked 1Password waits for its approval for ever, BatchMode or not. So each ssh this
 # side makes runs under a watchdog: the first, a fresh-connection probe, within 20 s; the lock and
-# drop calls within 60 s; the run itself must print its first line within 120 s (slot waits print
-# one at once). Past a bound, the ssh is stopped and the command runs here, saying why.
+# drop calls within 60 s; the run itself must print its first line within 120 s (its first,
+# "connected", comes at once). Past a bound, the ssh is stopped and the command runs here, saying why.
 host=${SCENIC_TEST_HOST:-m6}  # the test Mac: the Mac mini by default; any ssh alias, or this Mac itself (then it runs here)
 self=${0:A}
 setopt extendedglob
@@ -79,6 +79,9 @@ remote_main() {  # on the test Mac: <key> <owner> <command>
   local key=$1 owner=$2 cmd=$3 base=~/scenic-check slots=3 cap_gb=60
   local dir=$base/$key slot= waited=0 s held pid start mine
   setopt nullglob
+  # (At once: the calling side's first-line bound (120 s) is for connecting, not the prune and
+  # disk sweep below.)
+  print "remote-tests: connected to the test Mac"
   none() { print -r -- "@@remote-tests-status none $*"; exit 0; }
   [[ $(cat $dir/.busy/owner 2>/dev/null) == "$owner" ]] || none "the key's lock isn't this run's"
   cd $dir/src 2>/dev/null || none "no tree in $dir"

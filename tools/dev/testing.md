@@ -80,7 +80,7 @@ check.sh's `tests` part and publish.sh's nextest suite run on the test Mac throu
   the result (publish.sh reads its Summary and FAIL lines only from there).
 - Connecting never hangs (#637): a fresh ssh asks the ssh agent (1Password), which, locked, waits
   for an approval for ever. The probe (a fresh connection) has 20 s, the lock calls 60 s, and the run
-  must print its first line within 120 s; past a bound it runs here, saying why.
+  must print its first line (`remote-tests: connected to the test Mac`, at once) within 120 s; past a bound it runs here, saying why.
 - Runs here instead: on the test Mac itself (the Mac mini, which also publishes, so publish's suite always runs
   there); when the test Mac is down or the copy fails; when the tree
   has `data/build` (ignored test data that tests skip without, which the copy wouldn't carry); with
