@@ -564,6 +564,24 @@ mod tests {
         assert!(peek_quit(d.path()).is_none());
     }
 
+    /// The menu bar's hold ask (tools/status/main.swift holdRequestJSON, task #628): the files its
+    /// --test checks it against are what request_hold writes, field for field, and read back as asked.
+    #[test]
+    fn the_menu_bars_hold_ask_is_scenics() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/status/test");
+        for (f, held) in [("hold-request-pause.json", true), ("hold-request-resume.json", false)] {
+            let menu: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join(f)).unwrap()).unwrap();
+            let d = tempfile::tempdir().unwrap();
+            let mut ours =
+                request_hold(d.path(), None, held.then(|| Hold { by: "the menu bar on m1".into(), at: 1700000000 }))
+                    .unwrap();
+            ours.at = 1700000000;
+            assert_eq!(serde_json::to_value(&ours).unwrap(), menu, "{f}");
+            std::fs::copy(dir.join(f), d.path().join(HOLD_REQUEST)).unwrap();
+            assert_eq!(take_hold_request(d.path()), Some(ours), "{f}");
+        }
+    }
+
     /// Hold asks (task #224): taken once, answered by the ask they answer.
     #[test]
     fn hold_asks_and_answers() {

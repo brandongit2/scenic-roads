@@ -747,6 +747,14 @@ func progressText(_ p: JobProgress, paused: Bool, now: Int) -> String {
     return t
 }
 
+/// The hold ask's file as `scenic pause --here` / `scenic resume --here` write it
+/// (crates/pipeline/src/control.rs request_hold, HoldRequest: no `member` for this Mac). Pinned on
+/// both sides by tools/status/test/hold-request-*.json (selfTest, control.rs's tests).
+func holdRequestJSON(_ held: Bool, by: String, at: Int) -> Data {
+    let h: Any = held ? ["by": by, "at": at] as [String: Any] : NSNull()
+    return (try? JSONSerialization.data(withJSONObject: ["held": h, "at": at], options: [.sortedKeys])) ?? Data()
+}
+
 /// The menu's items for this Mac paused alone (`scenic pause --here`, task #224): the ask while the
 /// agent hasn't taken it up, then who paused it and Resume This Mac, else Pause This Mac. `held`:
 /// what pressing it asks (pause: true, resume: false), nil for a line only.
@@ -2237,12 +2245,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func askHold(_ held: Bool) {
         let now = Int(Date().timeIntervalSince1970)
         let name = SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "this Mac"
-        let h: Any = held ? ["by": "the menu bar on \(name)", "at": now] as [String: Any] : NSNull()
         let dir = home.appendingPathComponent("agent")
         let (tmp, dst) = (dir.appendingPathComponent("hold-request.json.menu.tmp"), dir.appendingPathComponent("hold-request.json"))
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            try JSONSerialization.data(withJSONObject: ["held": h, "at": now]).write(to: tmp)
+            try holdRequestJSON(held, by: "the menu bar on \(name)", at: now).write(to: tmp)
             guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         } catch {
             post("Couldn't ask this Mac to \(held ? "pause" : "go on")", "\(error.localizedDescription)")

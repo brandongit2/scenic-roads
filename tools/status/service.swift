@@ -799,6 +799,12 @@ func selfTest(_ dir: String) -> Never {
         && argsProblem(["--test", "d", "--no-window"])?.contains("together") == true
         && argsProblem(["--show", "menu", "--show", "panel"])?.contains("twice") == true
         && argsProblem(["--menu-proof", "--show", "menu"]) == nil)
+    // The hold ask's file, as control.rs's request_hold writes it (its tests read the same files).
+    for (held, f) in [(true, "hold-request-pause.json"), (false, "hold-request-resume.json")] {
+        let want = (try? Data(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent(f))).flatMap { try? JSONSerialization.jsonObject(with: $0) } as? NSDictionary
+        let got = (try? JSONSerialization.jsonObject(with: holdRequestJSON(held, by: "the menu bar on m1", at: 1700000000))) as? NSDictionary
+        check("the hold ask's file as scenic writes it (\(f))", want != nil && want == got)
+    }
     // The reopen helper. A fake system: the old process ends after `exitAfter` polls; each open
     // succeeds from attempt `worksFrom` on (earlier ones go to the old process, as procNotFound did,
     // or to a stray copy until it's ended, `stray`); the app runs from the check after a

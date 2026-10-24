@@ -894,7 +894,14 @@ function schedule(m) {
   const short = shortNames(m);
   const hosts = m.macs.map((mm) => mm.name);
   const names = [...new Set([...busyLanes(Object.keys(fcLanes), fcLanes, now, t1), ...pastAll.map((r) => r.lane), ...running.map((r) => r.lane)])];
-  const groups = laneGroups(names, hosts);
+  // (A Mac with no lanes in view still gets its row when something keeps it from the work: a Mac
+  // paused alone has no forecast lanes, and no past ones once its last job is out of the past.)
+  const chipsOf = new Map(m.macs.map((mm) => [mm.name, laneChips(mm)]));
+  const grouped = laneGroups(names, hosts);
+  const groups = [
+    ...hosts.map((hh) => grouped.find((g) => g.host === hh) || (chipsOf.get(hh).length ? { host: hh, lanes: [] } : null)).filter(Boolean),
+    ...grouped.filter((g) => !hosts.includes(g.host)),
+  ];
   const laneName = (nm) => {
     const host = hosts.find((hh) => isSlotOf(nm, hh));
     return host ? `${short[host]} · slot ${slotNo(nm, host)}` : nm;
@@ -909,7 +916,7 @@ function schedule(m) {
   };
   for (const g of groups) {
     const mac = m.macs.find((mm) => mm.name === g.host);
-    lanes.append(h("div", { class: "gh", title: g.host }, mac ? short[g.host] : g.host, mac ? null : h("span", "dim", " (gone)")), h("div", "ghr", ...(mac ? laneChips(mac) : [])));
+    lanes.append(h("div", { class: "gh", title: g.host }, mac ? short[g.host] : g.host, mac ? null : h("span", "dim", " (gone)")), h("div", "ghr", ...(chipsOf.get(g.host) || [])));
     for (const nm of g.lanes) {
       const track = h("div", "track");
       for (const r of packRuns(pastAll.filter((r) => r.lane === nm), gap)) segment(track, r, "past", `p ${nm} ${r.seq}`);
