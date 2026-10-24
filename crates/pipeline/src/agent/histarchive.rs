@@ -87,7 +87,7 @@ fn list(dir: &Path) -> io::Result<Vec<String>> {
 
 /// The day folder's regular files (name, size), temporary ones left out, sorted; an error for
 /// anything that is not a file.
-fn files(dir: &Path) -> io::Result<Vec<(String, u64)>> {
+pub(crate) fn files(dir: &Path) -> io::Result<Vec<(String, u64)>> {
     let d = dir.to_path_buf();
     nasread::with(dir, move || {
         let mut v = Vec::new();
@@ -109,7 +109,7 @@ fn files(dir: &Path) -> io::Result<Vec<(String, u64)>> {
 }
 
 /// Removes the archive folder's temporary files a stopped run left (older than `TMP_OLD`).
-fn sweep_tmp(arch: &Path, rep: &mut Report) {
+pub(crate) fn sweep_tmp(arch: &Path, rep: &mut Report) {
     let Ok(names) = list(arch) else { return };
     rep.listed += 1;
     for n in names {
@@ -150,37 +150,7 @@ fn archive_day(folder: &Path, arch: &Path, day: &str, dry_run: bool, rep: &mut R
     if dry_run {
         return Ok(());
     }
-    // What a tar already there holds (an earlier run's, the folder since written to late, or a
-    // run stopped before the removals) is kept: the folder's files are merged into it, never
-    // over it. A tar that can't be read is never replaced: the day waits, said.
-    let old = match nasread::read(&tar_path) {
-        Ok(t) => list_tar(&t).with_context(|| format!("{} unreadable, left as it is", tar_path.display()))?,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(e) => return Err(e).with_context(|| format!("read {}", tar_path.display())),
-    };
-    let packed = merge(&old, members);
-    if packed != old {
-        let tar = build(&packed)?;
-        std::fs::create_dir_all(arch)?;
-        let tmp = crate::whole::tmp_name(&tar_path);
-        let (t, bytes) = (tmp.clone(), tar);
-        let written = nasread::write(&tmp, move || {
-            use std::io::Write;
-            let mut f = std::fs::File::create(&t)?;
-            f.write_all(&bytes)?;
-            f.sync_all()?;
-            Ok(())
-        });
-        let r = written.and_then(|()| {
-            let back = nasread::read(&tmp)?;
-            ensure!(list_tar(&back)? == packed, "the written tar does not match what was read");
-            crate::whole::rename_over(&tmp, &tar_path)?;
-            Ok(())
-        });
-        if let Err(e) = r {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(e);
-        }
+    if merge_into_tar(&tar_path, members)? {
         rep.days_archived += 1;
     }
     // The tar is whole: the folder goes, if it still lists what was packed.
@@ -193,6 +163,45 @@ fn archive_day(folder: &Path, arch: &Path, day: &str, dry_run: bool, rep: &mut R
     }
     std::fs::remove_dir(folder).with_context(|| format!("remove {}", folder.display()))?;
     Ok(())
+}
+
+/// `members` merged into the tar at `tar_path` (`merge`; made when there's none): what a tar
+/// already there holds (an earlier run's, the folder since written to late, or a run stopped before
+/// the removals) is kept, never written over. A tar that can't be read is never replaced: an error,
+/// the caller's files kept. Built in memory, written in one stream to a temporary name (one fsync),
+/// read back and checked, then renamed into place. Whether it was written (false: it held them all).
+pub(crate) fn merge_into_tar(tar_path: &Path, members: Vec<(String, Vec<u8>)>) -> Result<bool> {
+    let old = match nasread::read(tar_path) {
+        Ok(t) => list_tar(&t).with_context(|| format!("{} unreadable, left as it is", tar_path.display()))?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(e).with_context(|| format!("read {}", tar_path.display())),
+    };
+    let packed = merge(&old, members);
+    if packed == old {
+        return Ok(false);
+    }
+    let tar = build(&packed)?;
+    std::fs::create_dir_all(tar_path.parent().context("a tar's folder")?)?;
+    let tmp = crate::whole::tmp_name(tar_path);
+    let (t, bytes) = (tmp.clone(), tar);
+    let written = nasread::write(&tmp, move || {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&t)?;
+        f.write_all(&bytes)?;
+        f.sync_all()?;
+        Ok(())
+    });
+    let r = written.and_then(|()| {
+        let back = nasread::read(&tmp)?;
+        ensure!(list_tar(&back)? == packed, "the written tar does not match what was read");
+        crate::whole::rename_over(&tmp, tar_path)?;
+        Ok(())
+    });
+    if let Err(e) = r {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(true)
 }
 
 /// The tar's members with the folder's merged in, by name: a folder file that begins with the

@@ -551,7 +551,27 @@ pub struct Forecast {
     pub pace: Option<Pace>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub held: BTreeMap<String, Held>,
+    /// Every target the expected run placed: its lane (`Input::machines`' index), step, target and
+    /// from and until when (unix s). Not in the status (it's large): the forecasts' archive's
+    /// (crate::agent::fcarchive).
+    #[serde(skip)]
+    pub placed: Vec<Placed>,
 }
+
+/// A target placed by the forecast's run (`Forecast::placed`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Placed {
+    pub lane: usize,
+    pub step: String,
+    pub target: String,
+    pub from: u64,
+    pub until: u64,
+}
+
+/// The forecast's code version, archived with each forecast (crate::agent::fcarchive): raised
+/// whenever a change to the run (its order, its costs, its scheduler) would move its times, so the
+/// accuracy work (`scenic forecast-check`) can tell one model's error from another's.
+pub const VERSION: u32 = 1;
 
 impl Forecast {
     /// Whether the build is done: nothing left to build or publish, no machine busy.
@@ -1516,6 +1536,19 @@ pub fn forecast_by(inp: &Input, budget: Duration) -> Forecast {
             _ => None,
         };
     }
+    f.placed = expected
+        .items
+        .iter()
+        .filter_map(|i| {
+            Some(Placed {
+                lane: i.by?,
+                step: i.step.clone(),
+                target: i.target.clone(),
+                from: at(i.from),
+                until: at(i.end),
+            })
+        })
+        .collect();
     f.speed = inp.machines.iter().map(|m| (m.name.clone(), (m.speed * 100.0).round() / 100.0)).collect();
     f.guessed = inp.machines.iter().filter(|m| !m.measured).map(|m| m.name.clone()).collect();
     // (From 0, not the empty sum's -0.)

@@ -1484,6 +1484,7 @@ fn main() -> Result<()> {
         Some(Cmd::Timings(a)) => timings(&a),
         Some(Cmd::Steps { json }) => steps(json),
         Some(Cmd::Inputs(a)) => inputs(&a),
+        Some(Cmd::ForecastCheck { from, to, json, root: r }) => forecast_check(from, to, json, &r.root),
     }
 }
 
@@ -1717,4 +1718,31 @@ mod tests {
         );
         assert!(l.contains("disk 38 GB free · 18 GB for jobs (20 GB room target)"), "{l}");
     }
+}
+
+/// `scenic forecast-check`: the archived forecasts made from `from` to `to` held to the history's
+/// jobs that ended then (agent::fccheck).
+fn forecast_check(from: Option<String>, to: Option<String>, json: bool, r: &Option<PathBuf>) -> Result<()> {
+    use pipeline::agent::{fcarchive, fccheck};
+    let now = pipeline::agent::jobs::now_s();
+    let at = |s: &Option<String>, or: u64| -> Result<u64> {
+        match s {
+            Some(s) => fccheck::parse_time(s, now)
+                .with_context(|| format!("{s}: not a time (unix s, YYYY-MM-DD[THH:MM], or 12h, 3d back)")),
+            None => Ok(or),
+        }
+    };
+    let (from, to) = (at(&from, now.saturating_sub(7 * 86_400))?, at(&to, now)?);
+    anyhow::ensure!(from < to, "--from is not before --to");
+    let root = root(r, false)?;
+    let entries = fcarchive::read(&root, from, to);
+    let days = now.saturating_sub(from) / 86_400 + 1;
+    let events = pipeline::pubtimes::load_history(Some(&root), None, days);
+    let rep = fccheck::check(&entries, &events, from, to);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&rep)?);
+    } else {
+        print!("{}", fccheck::text(&rep));
+    }
+    Ok(())
 }

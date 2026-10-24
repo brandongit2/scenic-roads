@@ -48,6 +48,8 @@ pub struct Report {
     pub tombs: usize,
     /// Days of the history packed into `state/coord/history-archive/<day>.tar` this run.
     pub history_days_archived: usize,
+    /// Days of the forecasts' archive packed into `state/coord/forecasts-archive/<YYYY-MM>.tar`.
+    pub forecast_days_archived: usize,
     /// The files put back this run: left alone by its sweeps (the next run decides).
     #[serde(skip)]
     pub restored: BTreeSet<PathBuf>,
@@ -322,6 +324,15 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
                 rep.warnings.extend(h.warnings);
             }
             Err(e) => rep.warnings.push(format!("history not archived: {e:#}")),
+        }
+        // The forecasts' archive's old days, one tar a month, kept for good (task #621).
+        match super::fcarchive::pack(root, crate::agent::jobs::now_s(), dry_run, &yield_point) {
+            Ok(h) => {
+                meta(h.listed, h.stats, h.files_removed as u64 + h.tmp_removed as u64);
+                rep.forecast_days_archived = h.days_archived;
+                rep.warnings.extend(h.warnings);
+            }
+            Err(e) => rep.warnings.push(format!("forecasts not archived: {e:#}")),
         }
         rep
     });

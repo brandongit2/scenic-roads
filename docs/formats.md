@@ -647,6 +647,40 @@ Where they're kept:
   read by `/work/timings {kind?, last?}` (`{runs: [...]}`, each kind's last 20 by default).
 - Each log is cut to its newer half past 16 MB.
 
+## The forecasts' archive (`state/coord/forecasts/<day>.jsonl.zst`; pipeline::agent::fcarchive, docs/pool.md §7.9)
+
+A day's file (UTC) is zstd frames appended one after another (read back as one stream): each a
+batch of lines, a line a forecast, `fcarchive::Entry`:
+
+```
+{v: 1, code, app, at, done_at?, range?: [soon, late], why?, partial?, measured,
+ lanes: [{name, mac, speed, measured, busy_s, from_s?, running?: [step, n], jobs?: [[step, target, gap, secs], …]}, …],
+ macs: {<Mac>: {slots, room?: {mem_mb, cores}, held?: {lanes, util},
+        cond?: {limit_mb, build_mb, mem_mb, cores, cores_free, kept_cores, disk_mb, in_use, ac, battery, nas}}},
+ each_s: {<step>: s},
+ nas?: {bytes_s, creates_s, listed_s, stats_s, deletes_s, downloads, held},
+ steps: [<step>, …]}
+```
+
+- `v`: the record's format (1). `code`: the forecast's code version (`forecast::VERSION`). `app`:
+  the lead's app. `at`: when it was made (unix s); `done_at`, `range`, `why`, `partial`, `measured`
+  as the status's forecast says them (docs/building.md §2).
+- `lanes`: the run's lanes in its order (the lead's first slot first): `name` (a Mac, `<Mac> #2`
+  for its next slots: the history's `worker`), `mac` (its Mac), its speed against the lead's and whether
+  measured, `busy_s` (s until its job under way ends), `from_s` (s until its slot opens),
+  `running` (that job's step and targets, when no placed target is it). `macs`: by Mac, its
+  lanes, its room when it had no ask, what held it back over the last day
+  (`forecast::Held`), and its last ask's capacity's fields (crate::coord::Capacity). `each_s`: each
+  step's time a target at the lead's pace. `nas`: the NAS budget the scheduler held to
+  (crate::budget::nas::Limits).
+- A lane's `jobs`: every target the expected run placed on it, in time order: its step (an index
+  into `steps`), the target, its gap (s: its start less the end of the one before it on the lane,
+  `at` for the first; may be negative) and its time (s: its end less its start). Back-to-back work
+  makes the gaps mostly 0: a third of the size of unix times once compressed (`Entry::placed`
+  reads them back as unix times).
+- A forecast the same as the last written (docs/pool.md §7.9) isn't written. Days older than 7 go
+  into `state/coord/forecasts-archive/<YYYY-MM>.tar`, a ustar of `<day>.jsonl.zst`, kept for good.
+
 ## Server API
 
 - **Tiles:** `/tiles/{roads,rails,terrain,slope,labels,water,base,buildings,buildings-field,depth,depth-class}/{z}/{x}/{y}`,
@@ -898,7 +932,9 @@ class, id) within a tile. The client sends the id with the clicked point.
   - `state/coord/term/<E>/state.json`: `{leases, costs, floors, disks, job_disks (the 90th percentiles), job_peaks, failed: [[worker,
     cost key, unix seconds, times]], pause, pause_at}`; `state/coord/token`;
     `state/coord/history/<day>/<member>.jsonl` (history events, terms' as `kind: term`; days older than 7 are
-    `state/coord/history-archive/<day>.tar`, a ustar of `<day>/<member>.jsonl`).
+    `state/coord/history-archive/<day>.tar`, a ustar of `<day>/<member>.jsonl`);
+    `state/coord/forecasts/<day>.jsonl.zst` (the lead's forecasts, The forecasts' archive above;
+    days older than 7 in `state/coord/forecasts-archive/<YYYY-MM>.tar`).
   - `state/publish/<host>.jsonl` (pipeline::pubtimes): each Mac's map server's lines, appended,
     `{t, host, kind, n, secs?}`, `kind` one of `adopt` (catalog n served), `mirror-start` and
     `mirror-end` (its mirror's sync of catalog n begun, and through everything wanted, `secs` from

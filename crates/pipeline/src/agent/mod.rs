@@ -26,6 +26,8 @@ pub mod build;
 pub mod buildmem;
 pub mod cond;
 pub mod every;
+pub mod fcarchive;
+pub mod fccheck;
 pub mod forecast;
 pub mod gc;
 pub mod heal;
@@ -1500,6 +1502,10 @@ pub struct Agent {
     /// The last forecast's record (forecast::Record::bytes), until the lead's pool step writes it
     /// to the NAS (`pool_lead_files`).
     forecast_input: std::cell::RefCell<Option<Vec<u8>>>,
+    /// The last forecast's archive entry (fcarchive::Entry), until the lead's pool step hands it to
+    /// the archive's thread (`pool_lead_files`, `fc_archiver`: started there, the lead's alone).
+    fc_entry: std::cell::RefCell<Option<fcarchive::Entry>>,
+    fc_archiver: std::cell::OnceCell<Option<fcarchive::Archiver>>,
     /// The build page's regions as last made (crate::agent::regionsview), by what they were made of;
     /// what they were last tried for (each once, failed or not); the last catalogue's sizes, by its
     /// number; and the making under way, off the loop.
@@ -1906,6 +1912,8 @@ impl Agent {
             departed: Default::default(),
             curves: Default::default(),
             forecast_input: Default::default(),
+            fc_entry: Default::default(),
+            fc_archiver: Default::default(),
             regions_view: Default::default(),
             regions_tried: Default::default(),
             region_bytes: Default::default(),
@@ -8113,11 +8121,13 @@ impl Agent {
     /// status meanwhile, and takes it in once it's done (`take_forecast`). Its record's bytes are
     /// made there too (as data, for the NAS: written by the lead's pool step, `pool_lead_files`).
     fn start_forecast(&self, record: forecast::Record<'static>) {
+        let app = self.app.clone();
         let run = std::thread::Builder::new().name("forecast".into()).spawn(move || {
             forecast::low_priority();
             let took = std::time::Instant::now();
             let f = record.forecast();
-            Forecasted { forecast: f, bytes: record.bytes(), took: took.elapsed() }
+            let entry = fcarchive::Entry::of(&record, &f, &app);
+            Forecasted { forecast: f, bytes: record.bytes(), entry, took: took.elapsed() }
         });
         match run {
             Ok(h) => *self.forecasting.borrow_mut() = Some(h),
@@ -8145,6 +8155,7 @@ impl Agent {
                     Ok(b) => *self.forecast_input.borrow_mut() = Some(b),
                     Err(e) => eprintln!("agent: the forecast's input as data: {e:#}"),
                 }
+                *self.fc_entry.borrow_mut() = Some(done.entry);
                 let f = &done.forecast;
                 let mut curves = self.curves.borrow_mut();
                 curves.retain(|c| c.0 + forecast::PACE_MAX_S > f.at);
@@ -10095,6 +10106,17 @@ impl Agent {
                 eprintln!("agent: the forecast's input of term {term}: {e:#}");
             }
         }
+        // Into the forecasts' archive (fcarchive): handed to its thread, which writes in batches.
+        if let Some(e) = self.fc_entry.borrow_mut().take() {
+            let a = self.fc_archiver.get_or_init(|| {
+                fcarchive::Archiver::start(root.to_path_buf())
+                    .map_err(|e| eprintln!("agent: the forecasts' archive's thread: {e}"))
+                    .ok()
+            });
+            if let Some(a) = a {
+                a.send(e);
+            }
+        }
         let events = co.history_since(run.history_seq);
         if run.history_seq == 0 {
             // (From this process's start: what came before is in the coordinator's own history.)
@@ -11200,6 +11222,7 @@ fn test_agent(o: Options) -> Result<Agent> {
 struct Forecasted {
     forecast: forecast::Forecast,
     bytes: anyhow::Result<Vec<u8>>,
+    entry: fcarchive::Entry,
     took: std::time::Duration,
 }
 

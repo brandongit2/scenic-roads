@@ -249,7 +249,7 @@ fn day_before(day: &str, n: u64) -> String {
     format_day(UNIX_EPOCH + Duration::from_secs(secs))
 }
 
-fn parse_day(day: &str) -> Option<u64> {
+pub(crate) fn parse_day(day: &str) -> Option<u64> {
     let (y, m, d) = (
         day.get(0..4)?.parse::<i64>().ok()?,
         day.get(5..7)?.parse::<i64>().ok()?,

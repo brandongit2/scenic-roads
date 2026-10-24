@@ -877,6 +877,52 @@ held report (`inputs::read_report`); the helpers' listing (`state/helpers`); the
 contact published and removed; GC's reads of the journal and records;
 the caches' clears; and every NAS call of the coordinator's and the jobs' own.
 
+### 7.9 The forecasts' archive
+
+Every forecast the lead makes is kept, so its times can be held to what happened (task #621;
+`agent::fcarchive`, the record in docs/formats.md, The forecasts' archive):
+
+- **What:** a line per forecast: when it was made and its finish; every target its expected run
+  placed (lane, step, target, from and until); and what shaped it: each lane (its Mac, speed,
+  time left on its job under way), each Mac's slots, room, conditions (its last ask's memory and
+  cores free, limits, in use, on power, battery, NAS) and what held it back over the day, each
+  step's time a target, the NAS budget, `forecast::VERSION` (raised whenever a change moves the
+  run's times) and the app.
+- **Where:** `state/coord/forecasts/<day>.jsonl.zst`, one file a day (UTC), lines appended in
+  batches, each batch one zstd frame. Written only by the lead's archive thread: the forecast's
+  own thread makes the entry, the lead's pool step hands it over (a channel send, nothing on the
+  NAS under the pool's lock), and the thread appends a batch once 30 wait or the oldest has waited
+  10 minutes (a few appends an hour; one write each, under `nasread`'s write deadline). A batch
+  that fails is kept for the next (300 at most, the oldest dropped, said); one waiting when the
+  agent stops is lost (10 minutes at most).
+- **Not twice:** a forecast whose schedule, finish, lanes, Macs (but their passing conditions),
+  each step's time and code version are those of the last one written, its times to 2 minutes
+  (`fcarchive::GRAIN`), isn't written.
+- **Kept for good:** the daily `gc` job packs each day the history's window no longer holds
+  (§7.5's cutoff, 7 days) into its month's tar, `state/coord/forecasts-archive/<YYYY-MM>.tar`
+  (members `<day>.jsonl.zst`), as the history's days are packed (merged into the tar, never over
+  it; written to a temporary name, read back, renamed), then removes the day's file if its size is
+  still the one packed. Nothing removes the tars. Measured on the lead's forecasts of 23 Oct (5,800-6,150
+  targets placed each): a line ~120 KB, ~13 KB once compressed in a batch, so a day is ~4 MB at
+  the cadence the lead's forecast input changed then (about one forecast in 5 minutes) and ~19 MB
+  at most (one a minute): 1.5-7 GB a year, kept.
+- **Joined with the history** by step and target: a forecast's target is held to the first job of
+  that step and target (the history's `lease`→`done` by lease, or a lead's `end` less its `secs`)
+  that ended after the forecast was made. A lane's `name` is the history's `worker` (the lead's
+  slots past its first `<Mac> #k`), its `mac` the Mac. No key was missing on either side.
+
+**`scenic forecast-check [--from T] [--to T] [--json] [--root DIR]`** (`agent::fccheck`, reads
+only) holds the forecasts made in the span (default the last 7 days; T unix seconds,
+`YYYY-MM-DD[THH:MM]` UTC, or back from now: `12h`, `3d`) to the history's jobs that ended in it. A
+job's targets in one forecast are taken together (its forecast start the earliest of theirs, its
+end the latest), so each (forecast, job) is a sample: its end's error where the job ended after the
+forecast, its start's where it started after it, the error forecast less actual (+ the forecast was
+late). It reports, for the end and the start, n, bias (the mean), and the median and 90th
+percentile of the absolute error, overall and by horizon (the forecast's time until it: under
+15 min, to 1 h, 4 h, 12 h, more), by step, by the Mac that ran it and by code version; how many
+jobs some forecast placed, how often it had the right Mac, and the targets forecast to be done by
+the history's end that weren't, by step. As text, a table in minutes; `--json`, the same in seconds.
+
 ## 8. Tasks, and the pages as workers
 
 A job is a step's run over targets on a Mac with the NAS. A **task** is a pure piece a running job

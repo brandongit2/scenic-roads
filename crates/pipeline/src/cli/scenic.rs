@@ -198,6 +198,23 @@ pub enum Cmd {
     /// totals and shares; the build's (its coordinator's log, asked of it from another Mac), or
     /// with --here this Mac's own jobs' alone
     Timings(Timings),
+    /// The archived forecasts held to what happened (docs/pool.md §7.9): each job's forecast start
+    /// and end against the history's, by step, Mac, horizon and code version (bias, median and
+    /// 90th percentile of the absolute error). Reads only
+    ForecastCheck {
+        /// From (UTC): unix seconds, YYYY-MM-DD, YYYY-MM-DDTHH:MM, or back from now (12h, 3d);
+        /// default 7d
+        #[arg(long, value_name = "TIME")]
+        from: Option<String>,
+        /// To (the same forms; default now)
+        #[arg(long, value_name = "TIME")]
+        to: Option<String>,
+        /// As JSON
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        root: Root,
+    },
     /// The input gate (docs/inputs.md §4): every gate unit, its accepted version, its state, what
     /// holds it, its acceptances (those no check raises any more marked stale)
     Inputs(Inputs),
