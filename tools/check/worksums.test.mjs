@@ -22,11 +22,11 @@ test('map: a job\'s targets from its start or lease event, else its words', () =
 
 test('map: running tiles filled from live, else the beat\'s frac', () => {
   const live = runningTiles([{ step: 'unit', targets: ['6/1/1', '6/1/2', '6/1/3'], live: { targets: 3, targets_done: 1, target: '6/1/2', target_since: 940 } }], { unit: 120 }, 1000);
-  assert.deepEqual([...live].map(([k, v]) => [k, v.frac, v.current]), [['6/1/1', 1, false], ['6/1/2', 0.5, true], ['6/1/3', 0, false]]);
+  assert.deepEqual([...live].map(([k, v]) => [k, v.frac, v.current]), [['unit 6/1/1', 1, false], ['unit 6/1/2', 0.5, true], ['unit 6/1/3', 0, false]]);
   const capped = runningTiles([{ step: 'unit', targets: ['6/1/2'], live: { targets: 1, target: '6/1/2', target_since: 0 } }], { unit: 10 }, 1000);
-  assert.equal(capped.get('6/1/2').frac, 0.95);
+  assert.equal(capped.get('unit 6/1/2').frac, 0.95);
   const beat = runningTiles([{ step: 'unit', targets: ['6/1/1', '6/1/2', 'x'], frac: 0.75 }], {}, 0);
-  assert.deepEqual([...beat].map(([k, v]) => [k, v.frac]), [['6/1/1', 1], ['6/1/2', 0.5]]);
+  assert.deepEqual([...beat].map(([k, v]) => [k, v.frac]), [['unit 6/1/1', 1], ['unit 6/1/2', 0.5]]);
 });
 
 test('map: finished tiles in the window, the last end each', () => {
@@ -36,22 +36,36 @@ test('map: finished tiles in the window, the last end each', () => {
     { kind: 'done', step: 'unit', t: 160, ok: false, targets: ['6/2/2'] },
     { kind: 'start', step: 'unit', t: 170, targets: ['6/3/3'] },
   ], 100);
-  assert.deepEqual([...f].map(([k, v]) => [k, v.t]), [['6/1/1', 150]]);
+  assert.deepEqual([...f].map(([k, v]) => [k, v.t]), [['pack 6/1/1', 150]]);
 });
 
 test('map: the filters keep tiles by kind, published, member, stage and zoom (#615)', () => {
-  const running = new Map([['6/1/1', { step: 'unit', frac: 0, run: { mac: 'A' } }], ['6/1/2', { step: 'unit', frac: 0.4, current: true, run: { mac: 'A' } }], ['6/1/3', { step: 'slope', frac: 1, run: { mac: 'B #2' } }]]);
-  const done = new Map([['3/0/0', { t: 100, step: 'pack', worker: 'B' }], ['6/2/2', { t: 300, step: 'unit', worker: 'A' }], ['6/1/2', { t: 50, step: 'unit', worker: 'A' }]]);
+  const running = new Map([['unit 6/1/1', { step: 'unit', frac: 0, run: { mac: 'A' } }], ['unit 6/1/2', { step: 'unit', frac: 0.4, current: true, run: { mac: 'A' } }], ['slope 6/1/3', { step: 'slope', frac: 1, run: { mac: 'B #2' } }]]);
+  const done = new Map([['pack 3/0/0', { t: 100, step: 'pack', worker: 'B' }], ['unit 6/2/2', { t: 300, step: 'unit', worker: 'A' }], ['unit 6/1/2', { t: 50, step: 'unit', worker: 'A' }]]);
   const all = { unstarted: true, progress: true, done: true };
   const keys = ([r, f]) => [[...r.keys()].sort(), [...f.keys()].sort()];
-  assert.deepEqual(keys(mapTilesKept(running, done, all)), [['6/1/1', '6/1/2', '6/1/3'], ['3/0/0', '6/2/2']]);
-  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, unstarted: false, done: false })), [['6/1/2'], []]);
-  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, published: true }, { pubAt: 200 })), [[], ['3/0/0']]);
+  assert.deepEqual(keys(mapTilesKept(running, done, all)), [['slope 6/1/3', 'unit 6/1/1', 'unit 6/1/2'], ['pack 3/0/0', 'unit 6/2/2']]);
+  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, unstarted: false, done: false })), [['unit 6/1/2'], []]);
+  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, published: true }, { pubAt: 200 })), [[], ['pack 3/0/0']]);
   const macOf = (w) => w.split(' #')[0];
-  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, member: 'B' }, { macOf })), [['6/1/3'], ['3/0/0']]);
-  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, stage: 'roads' }, { stageOf: (s) => (s === 'unit' ? 'roads' : 'x') })), [['6/1/1', '6/1/2'], ['6/2/2']]);
-  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, zoom: '3' })), [[], ['3/0/0']]);
+  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, member: 'B' }, { macOf })), [['slope 6/1/3'], ['pack 3/0/0']]);
+  // (By stage: the unchecked stages' tiles go; none unchecked, all stay.)
+  const stageOf = (s) => (s === 'unit' ? 'roads' : s === 'slope' ? 'terrain' : 'out');
+  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, offStages: ['terrain', 'out'] }, { stageOf })), [['unit 6/1/1', 'unit 6/1/2'], ['unit 6/2/2']]);
+  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, offStages: [] }, { stageOf })), keys(mapTilesKept(running, done, all)));
+  // (Tile areas: z3 alone hides every z6 tile, and z6 every z3.)
+  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, zoom: '3' })), [[], ['pack 3/0/0']]);
+  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, zoom: '6' }))[1], ['unit 6/2/2']);
   assert.equal(tileCovers({ z: 1, x: 1, y: 0 }), '0.0°–85.1° N, 0.0°–180.0° E');
+});
+
+test('map: two steps on one tile are two entries, running and finished (#615)', () => {
+  const runs = [{ step: 'marks', targets: ['3/1/2'], frac: 0.5 }, { step: 'bldg', targets: ['3/1/2'], frac: 0 }];
+  assert.deepEqual([...runningTiles(runs, {}, 0).keys()].sort(), ['bldg 3/1/2', 'marks 3/1/2']);
+  const ends = [{ kind: 'end', t: 10, step: 'marks', targets: ['3/1/2'] }, { kind: 'done', t: 20, step: 'bldg', targets: ['3/1/2'] }];
+  const f = finishedTiles(ends, 0);
+  assert.deepEqual([...f].map(([k, v]) => [k, v.step]).sort(), [['bldg 3/1/2', 'bldg'], ['marks 3/1/2', 'marks']]);
+  assert.deepEqual(tileOf('marks 3/1/2'), { z: 3, x: 1, y: 2 });
 });
 
 test('map: a point in rings, nonzero', () => {

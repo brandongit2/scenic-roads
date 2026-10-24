@@ -183,6 +183,9 @@ same tab; an alert links to the tab that says more.
   docs/mockups/build-live.html's: a head with the stage's or state's swatch, a kicker and the
   title; stat tiles; bars; chips; a foot) show the whole stack under the point, one after
   another under a line: every tile there at every zoom (the deepest first), then every region.
+  A tile is keyed by its step and tile ("<step> z/x/y"): two steps' at one spot (a z3 tile's
+  landmarks and buildings) are two entries, each drawn as a band of the square in its own colour
+  and each its own card in the stack.
   A tile's: its stage and state, its share done and phase (stat tiles), a bar of it done in its
   stage's colour, step, job, Mac, the degrees it covers, a minimap of it and half a tile around;
   a finished one's when and whether the last catalogue has it. A region's: its folders, its
@@ -196,7 +199,10 @@ same tab; an alert links to the tab that says more.
   completed tiles; completed tiles faded by age; only those published (finished by the last
   catalogue's time); "Show only for" one pool member (the tiles it ran, the history's ends,
   and runs or will run in its running jobs and leases; the forecast's lanes name no tiles, so
-  its later jobs' aren't shown); one stage; one zoom (`sums.js` mapTilesKept). Moved by a drag, zoomed by a pinch (ctrl+wheel in Chrome, gesture events in
+  its later jobs' aren't shown); "Show tile areas" (all, z3 or z6); "By stage" (a box per stage
+  that builds per tile, all checked to start, with "Check all" and "Uncheck all"). Both maps and
+  their stacks share them (`sums.js` mapTilesKept). On a touch screen, zoomed out, a finger
+  moves the map sideways only: up and down is the page's scroll. Moved by a drag, zoomed by a pinch (ctrl+wheel in Chrome, gesture events in
   Safari, two fingers on a touch screen), a double click, its +/− and whole-map buttons or the
   keyboard; a two-finger scroll moves it only once zoomed in. Jobs with no tile (a worldwide step's) are named under it. Drawn only when something it shows changes; a theme change redraws it and the minimaps shown.
 - **Jobs tab, the schedule:** lanes grouped by Mac (its short name over a lane per slot, the lead

@@ -137,10 +137,11 @@ export function pastFrom(first, from, chunk = 5000) {
 }
 
 // ---- The overview's map -------------------------------------------------------------------------
-// A target's tile ("z/x/y", crate::coord's cost key for a tile step) as {z, x, y}; null for any
-// other target (a worldwide step's, an input's).
+// A target's tile ("z/x/y", crate::coord's cost key for a tile step; or the map's key for it,
+// "<step> z/x/y") as {z, x, y}; null for any other target (a worldwide step's, an input's).
+// (The map keys a tile by its step too: two steps' at one spot are two entries, #615.)
 export function tileOf(t) {
-  const m = /^(\d{1,2})\/(\d+)\/(\d+)$/.exec(String(t));
+  const m = /^(?:\S+ )?(\d{1,2})\/(\d+)\/(\d+)$/.exec(String(t));
   if (!m) return null;
   const [z, x, y] = [+m[1], +m[2], +m[3]];
   return x < 2 ** z && y < 2 ** z ? { z, x, y } : null;
@@ -158,7 +159,7 @@ export function targetsOf(run, events) {
   return last((v) => v.kind === "start" && v.step === run.step && Math.abs(v.t - run.started) <= 10)?.targets || tileWords(String(run.id || "").split(" ").slice(1).join(" "));
 }
 
-// Each running job's tiles, by key ("z/x/y"): {step, frac (0–1 of the tile done), current (the
+// Each running job's tiles, by key ("<step> z/x/y"): {step, frac (0–1 of the tile done), current (the
 // one under way), run}. From its live data (crate::agent::jobs::Live) where it has some: its
 // targets done (taken as the first of its list, its current one aside) whole, the one under way
 // at its time so far against the step's time a target (`each_s`, under 95% until it ends), the
@@ -183,20 +184,20 @@ export function runningTiles(runs, eachS, now) {
       tiles.forEach((t, i) => { fr[t] = Math.max(0, Math.min(1, k - i)); });
     }
     for (const t of tiles) {
-      const had = out.get(t);
-      if (!had || fr[t] > had.frac) out.set(t, { step: r.step, frac: fr[t], current: t === l?.target, run: r });
+      const k = `${r.step} ${t}`, had = out.get(k);
+      if (!had || fr[t] > had.frac) out.set(k, { step: r.step, frac: fr[t], current: t === l?.target, run: r });
     }
   }
   return out;
 }
 
-// The tiles jobs finished well at or after `from`, by key: the last one's {t, step, worker}, from
+// The tiles jobs finished well at or after `from`, by key ("<step> z/x/y"): the last one's {t, step, worker}, from
 // the history's ends (a lead's "end", a worker's "done").
 export function finishedTiles(ends, from) {
   const out = new Map();
   for (const e of ends || []) {
     if ((e.kind !== "end" && e.kind !== "done") || e.ok === false || e.t < from) continue;
-    for (const t of e.targets || []) if (tileOf(t) && !(out.get(t)?.t > e.t)) out.set(t, { t: e.t, step: e.step, worker: e.worker });
+    for (const t of e.targets || []) { const k = `${e.step} ${t}`; if (tileOf(t) && !(out.get(k)?.t > e.t)) out.set(k, { t: e.t, step: e.step, worker: e.worker }); }
   }
   return out;
 }
@@ -211,10 +212,11 @@ export function tileCovers({ z, x, y }) {
 // finishedTiles') cut to the kinds kept (`f.unstarted`: a running job's tiles not begun;
 // `f.progress`: under way; `f.done`: done, its job's or finished), to `f.published` (finished by
 // the last catalogue's time `pubAt`, none running), to the pool member `f.member` (the Mac that
-// ran, runs or holds it in its running job: `macOf(worker)` its host), the stage `f.stage`
-// (`stageOf(step)`) and the zoom `f.zoom`. Returns [running, finished], new Maps.
+// ran, runs or holds it in its running job: `macOf(worker)` its host), the stages not unchecked
+// (`f.offStages`, of `stageOf(step)`) and the tile areas `f.zoom` ("": all, else "3" or "6").
+// Returns [running, finished], new Maps.
 export function mapTilesKept(running, done, f, { pubAt = null, macOf = (w) => w, stageOf = () => "" } = {}) {
-  const keep = (key, step, who) => (!f.stage || stageOf(step) === f.stage) && (!f.zoom || tileOf(key)?.z === +f.zoom) && (!f.member || (who != null && macOf(who) === f.member));
+  const keep = (key, step, who) => !f.offStages?.includes(stageOf(step)) && (!f.zoom || tileOf(key)?.z === +f.zoom) && (!f.member || (who != null && macOf(who) === f.member));
   const run = new Map(), fin = new Map();
   if (!f.published) {
     for (const [k, r] of running) {

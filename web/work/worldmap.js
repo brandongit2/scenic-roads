@@ -183,37 +183,37 @@ export function createMap({ pick = () => {} } = {}) {
     const span = Math.max(1, data.now - data.from);
     for (const [key, f] of data.finished) {
       if (data.running.has(key)) continue;
-      const [bx, by, s] = tileBox(tileOf(key));
+      const [bx, by, s, w] = boxOf(key, bandF);
       if (bx > x1 || by > y1 || bx + s < x0 || by + s < y0) continue;
       const fade = Math.max(0, Math.min(1, (t - (appeared.get(key) ?? 0)) / FADE_MS));
       const age = Math.max(0, Math.min(1, (data.now - f.t) / span));
       // (A low zoom's tile, one of thousands of square kilometres, is drawn paler: it would hide the rest.)
       c.globalAlpha = fade * (data.fade === false ? 0.6 : 0.18 + 0.5 * (1 - age)) * (s > Z6 * 1.5 ? 0.3 : 1);
       c.fillStyle = resolve(data.colour(f.step));
-      c.fillRect(bx, by, s, s);
+      c.fillRect(bx, by, w, s);
     }
     c.globalAlpha = 1;
     // Running tiles: outlined in their stage's colour, filled from the bottom as far as they're done.
     for (const [key, r] of data.running) {
-      const [bx, by, s] = tileBox(tileOf(key));
+      const [bx, by, s, w] = boxOf(key, bandR);
       if (bx > x1 || by > y1 || bx + s < x0 || by + s < y0) continue;
       const col = resolve(data.colour(r.step));
       c.globalAlpha = 0.12;
       c.fillStyle = col;
-      c.fillRect(bx, by, s, s);
+      c.fillRect(bx, by, w, s);
       c.globalAlpha = 0.75;
-      c.fillRect(bx, by + s * (1 - r.frac), s, s * r.frac);
+      c.fillRect(bx, by + s * (1 - r.frac), w, s * r.frac);
       c.globalAlpha = 1;
       c.strokeStyle = col;
       c.lineWidth = px * (r.current ? 2 : 1.2);
-      c.strokeRect(bx, by, s, s);
+      c.strokeRect(bx, by, w, s);
     }
     // What's pointed at.
     if (focus?.startsWith("mt ")) {
-      const [bx, by, s] = tileBox(tileOf(focus.slice(3)));
+      const [bx, by, s, w] = boxOf(focus.slice(3), data.running.has(focus.slice(3)) ? bandR : bandF);
       c.strokeStyle = tokens.text;
       c.lineWidth = px * 1.5;
-      c.strokeRect(bx, by, s, s);
+      c.strokeRect(bx, by, w, s);
     }
     c.setTransform(1, 0, 0, 1, 0, 0);
   }
@@ -255,14 +255,16 @@ export function createMap({ pick = () => {} } = {}) {
   // ---- What's at a point -----------------------------------------------------------------------
   // The stack there, as the cards' keys: every tile shown at every zoom (the deepest first), then
   // every region (regions overlap); none outside the canvas.
-  let zooms = [];
+  let zooms = [], atTile = new Map(), bandR = new Map(), bandF = new Map();
+  // A tile entry's box: [x, y, side, width], its band of the square when steps share it.
+  const boxOf = (key, bands) => { const [bx, by, s] = tileBox(tileOf(key)); const [i, n] = bands.get(key) || [0, 1]; return [bx + (s * i) / n, by, s, s / n]; };
   function stackAt(px, py) {
     if (px < 0 || py < 0 || px > size.w || py > size.h) return [];
     const [wx, wy] = toWorld(px, py);
     const out = [];
     for (const z of zooms) {
       const n = 2 ** z, key = `${z}/${Math.floor((wx / 1000) * n)}/${Math.floor((wy / 1000) * n)}`;
-      if (data.running.has(key) || data.finished.has(key)) out.push(`mt ${key}`);
+      for (const k of atTile.get(key) || []) out.push(`mt ${k}`);
     }
     for (const r of data.regions) {
       const p = paths.regions.get(r.id);
@@ -294,7 +296,9 @@ export function createMap({ pick = () => {} } = {}) {
     ptrs.set(e.pointerId, local(e));
     moved = false;
     tap = ptrs.size === 1;
-    if (ptrs.size === 1) drag = { x: ptrs.get(e.pointerId)[0], y: ptrs.get(e.pointerId)[1], cx: view.cx, cy: view.cy };
+    // (A finger on the map zoomed out (touch-action pan-y) moves it sideways only: an up or down
+    // swipe is the page's to scroll, never the map's, #615.)
+    if (ptrs.size === 1) drag = { x: ptrs.get(e.pointerId)[0], y: ptrs.get(e.pointerId)[1], cx: view.cx, cy: view.cy, ys: e.pointerType !== "touch" || zoomed() };
     else if (ptrs.size === 2) {
       const [a, b] = [...ptrs.values()];
       pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), k: view.k };
@@ -316,7 +320,7 @@ export function createMap({ pick = () => {} } = {}) {
       moved = true;
       tap = false;
       view.cx = drag.cx - dx / view.k;
-      view.cy = drag.cy - dy / view.k;
+      if (drag.ys) view.cy = drag.cy - dy / view.k;
       clampView();
       canvas.dataset.card = "";
       draw();
@@ -330,7 +334,7 @@ export function createMap({ pick = () => {} } = {}) {
     if (ptrs.size < 2) pinch = null;
     // (A pinch's one finger left: it drags on from where it is.)
     const [rest] = [...ptrs.values()];
-    drag = rest && ptrs.size === 1 ? { x: rest[0], y: rest[1], cx: view.cx, cy: view.cy } : null;
+    drag = rest && ptrs.size === 1 ? { x: rest[0], y: rest[1], cx: view.cx, cy: view.cy, ys: e.pointerType !== "touch" || zoomed() } : null;
   };
   canvas.addEventListener("pointerup", up);
   canvas.addEventListener("pointercancel", up);
@@ -403,6 +407,17 @@ export function createMap({ pick = () => {} } = {}) {
     fresh.forEach(([k], i) => appeared.set(k, firstFinished ? t + (i / Math.max(1, fresh.length)) * 1200 : t));
     if (fresh.length || next.finished.size) firstFinished = false;
     for (const k of appeared.keys()) if (!next.finished.has(k)) appeared.delete(k);
+    // (Tiles keyed by step and tile, "<step> z/x/y": two steps' at one spot are each their own, drawn
+    // side by side in the square, each a band of it, and each its own card in the stack.)
+    atTile = new Map(); bandR = new Map(); bandF = new Map();
+    const bands = (m, into) => {
+      const by = new Map();
+      for (const k of m.keys()) { const t = k.slice(k.lastIndexOf(" ") + 1); (by.get(t) || by.set(t, []).get(t)).push(k); }
+      for (const ks of by.values()) ks.sort().forEach((k, i) => into.set(k, [i, ks.length]));
+      for (const [t, ks] of by) atTile.set(t, [...new Set([...(atTile.get(t) || []), ...ks])]);
+    };
+    bands(next.running, bandR);
+    bands(new Map([...next.finished].filter(([k]) => !next.running.has(k))), bandF);
     zooms = [...new Set([...next.running.keys(), ...next.finished.keys()].map((k) => tileOf(k)?.z).filter((z) => z != null))].sort((a, b) => b - a);
     const sig = signature(next);
     const same = sig === lastSig && !fresh.length && !outlines;

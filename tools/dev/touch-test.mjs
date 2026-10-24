@@ -170,7 +170,7 @@ async function run() {
       const results = [];
       // (Taps apart by more than a double tap's time: two quick ones zoom.)
       for (const [x, y, also] of spots) { await tap(x, y); results.push([await pinned(), also]); await sleep(500); }
-      const ok = results.every(([p, also]) => p && +p.split(" ")[0] === Math.min(8, also.split("|").length) && (!also.startsWith("mt ") || p.endsWith(also.split("|")[0].slice(3))));
+      const ok = results.every(([p, also]) => p && +p.split(" ")[0] === Math.min(8, also.split("|").length) && (!also.startsWith("mt ") || p.endsWith(also.split("|")[0].split(" ").pop())));
       check("overview: a tap on the map pins its stack's card, each tap its own", ok, results.map(([p, a]) => `${p} for ${a.slice(0, 60)}`).join(" | "));
       await shot("chrome-map-pinned");
       const off = await js(`(() => { for (let y = 120; y < innerHeight - 40; y += 20) for (let x = 6; x < 40; x += 8) { const e = document.elementFromPoint(x, y); if (e && !e.closest("[data-card], a, button, input, select, label, .card-tip, canvas")) return [x, y]; } return null; })()`);

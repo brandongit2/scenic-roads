@@ -355,8 +355,9 @@ function mapRuns(m) {
   return runs;
 }
 // The world map's filters (#615), this browser's own (ctx.store): the tiles by kind, finished
-// ones faded by age or not, only those published, one pool member's, one stage's, one zoom's.
-const MAP_F = { unstarted: true, progress: true, done: true, fade: true, published: false, member: "", stage: "", zoom: "" };
+// ones faded by age or not, only those published, one pool member's, the tile areas (all, z3,
+// z6), the stages shown (`offStages` those unchecked).
+const MAP_F = { unstarted: true, progress: true, done: true, fade: true, published: false, member: "", zoom: "", offStages: [] };
 let mapF = null;
 const mapFilters = () => (mapF ||= { ...MAP_F, ...(ctx.store.get("mapFilters", {}) || {}) });
 function setMapFilter(k, v) { mapFilters()[k] = v; ctx.store.set("mapFilters", mapF); render(); }
@@ -377,14 +378,14 @@ function mapData(m) {
     { pubAt, macOf: (w) => macSlot(w, hosts).host, stageOf: S.stage });
   const fcRegs = Object.fromEntries((m.fc?.regions || []).map((r) => [r.id, r]));
   const regs = Object.values(drawn.byId).map((r) => ({ ...r, state: regionState(fcRegs[r.id]) }));
-  const head = (key, step, state) => ({ kicker: `${S.stageTitle(S.stage(step)) || S.title(step)} · ${state}`, colour: S.colour(step), title: `Tile ${key}` });
+  const head = (key, step, state) => ({ kicker: `${S.stageTitle(S.stage(step)) || S.title(step)} · ${state}`, colour: S.colour(step), title: `Tile ${key.slice(key.lastIndexOf(" ") + 1)}` });
   for (const [key, r] of running) {
     const t = tileOf(key), pct = `${Math.round(r.frac * 100)}%`;
     const state = r.frac >= 1 ? "done, its job running" : r.current || r.frac > 0 ? "under way" : "to come in its job";
     cards.set(`mt ${key}`, () => cardBody({ ...head(key, r.step, state),
       stats: [[pct, "of the tile done"], [r.current ? r.run.live?.phase || "running" : r.frac >= 1 ? "done" : r.frac > 0 ? "part done" : "queued", "phase"]],
       bar: { frac: r.frac, label: r.frac >= 1 ? "done; its job runs on" : r.frac > 0 ? `≈ ${pct} of the tile` : "not begun" },
-      foot: `${r.run.mac} · ${r.step} ${key}` }, [
+      foot: `${r.run.mac} · ${key}` }, [
       ["step", S.title(r.step)],
       ["job", r.run.what],
       ["on", r.run.mac],
@@ -396,7 +397,7 @@ function mapData(m) {
     cards.set(`mt ${key}`, () => cardBody({ ...head(key, d.step, "finished"),
       stats: [[ago(m.now, d.t), "finished"], [out ? "yes" : "next catalogue", "on the map"]],
       bar: { frac: 1, label: `done ${clock(d.t)}` },
-      foot: `${d.worker || "?"} · ${d.step} ${key}` }, [
+      foot: `${d.worker || "?"} · ${key}` }, [
       ["step", S.title(d.step)],
       ["on", d.worker],
       ["covers", tileCovers(tileOf(key))],
@@ -440,14 +441,19 @@ let mapFiltersN = 0;
 function mapFilterBar(m) {
   const f = mapFilters(), id = ++mapFiltersN;
   const box = (k, text) => h("label", "mf", h("input", { type: "checkbox", checked: f[k] ? "" : null, onchange: (e) => setMapFilter(k, e.target.checked) }), text);
-  const radio = (v, text) => h("label", "mf", h("input", { type: "radio", name: `mf-member-${id}`, value: v, checked: f.member === v ? "" : null, onchange: () => setMapFilter("member", v) }), text);
-  const select = (k, label, opts) => h("label", "mf", label, h("select", { onchange: (e) => setMapFilter(k, e.target.value) }, opts.map(([v, t]) => h("option", { value: v, selected: f[k] === v ? "" : null }, t))));
+  const radio = (k, v, text) => h("label", "mf", h("input", { type: "radio", name: `mf-${k}-${id}`, value: v, checked: f[k] === v ? "" : null, onchange: () => setMapFilter(k, v) }), text);
   const members = [...new Set([...m.macs.map((x) => x.name), ...(f.member ? [f.member] : [])])];
+  // (The stages that build per tile: those with a step over tiles.)
+  const tiled = table.stages.filter((g) => Object.values(table.steps).some((st) => st.stage === g.id && ["area", "tile", "subtile"].includes(st.scope))).map((g) => g.id);
+  const off = new Set(f.offStages || []);
+  const stageBox = (g) => h("label", "mf", h("input", { type: "checkbox", checked: off.has(g) ? null : "", onchange: (e) => setMapFilter("offStages", e.target.checked ? [...off].filter((x) => x !== g) : [...off, g]) }), S.stageTitle(g));
+  const btn = (text, v) => h("button", { type: "button", class: "mfbtn", onclick: () => setMapFilter("offStages", v) }, text);
   return h("div", "wmap-filters small",
     h("div", "mfrow", box("unstarted", "Unstarted tiles"), box("progress", "In-progress tiles"), box("done", "Completed tiles")),
     h("div", "mfrow", box("fade", "Fade completed tiles progressively"), box("published", "Only show published tiles")),
-    h("div", { class: "mfrow", role: "radiogroup", "aria-label": "Show only for" }, h("span", "dim", "Show only for:"), radio("", "All pool members"), members.map((nm) => radio(nm, nm))),
-    h("div", "mfrow", select("stage", "Stage", [["", "every stage"], ...table.stages.map((g) => [g.id, g.title])]), select("zoom", "Zoom", [["", "every zoom"], ["3", "z3"], ["6", "z6"]])));
+    h("div", { class: "mfrow", role: "radiogroup", "aria-label": "Show only for" }, h("span", "dim", "Show only for:"), radio("member", "", "All pool members"), members.map((nm) => radio("member", nm, nm))),
+    h("div", { class: "mfrow", role: "radiogroup", "aria-label": "Show tile areas" }, h("span", "dim", "Show tile areas:"), radio("zoom", "", "All"), radio("zoom", "3", "z3"), radio("zoom", "6", "z6")),
+    tiled.length ? h("div", { class: "mfrow", role: "group", "aria-label": "By stage" }, h("span", "dim", "By stage:"), tiled.map(stageBox), btn("Check all", []), btn("Uncheck all", tiled)) : null);
 }
 function mapSection(m, md) {
   worldMap ||= createMap({ pick: mapPick });
