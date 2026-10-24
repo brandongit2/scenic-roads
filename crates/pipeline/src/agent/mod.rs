@@ -8125,8 +8125,10 @@ impl Agent {
         let run = std::thread::Builder::new().name("forecast".into()).spawn(move || {
             forecast::low_priority();
             let took = std::time::Instant::now();
-            let f = record.forecast();
+            let mut f = record.forecast();
             let entry = fcarchive::Entry::of(&record, &f, &app);
+            // (The archive's alone: not kept with the forecast the agent holds.)
+            f.placed = Vec::new();
             Forecasted { forecast: f, bytes: record.bytes(), entry, took: took.elapsed() }
         });
         match run {

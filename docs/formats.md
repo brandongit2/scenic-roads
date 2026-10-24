@@ -649,7 +649,8 @@ Where they're kept:
 
 ## The forecasts' archive (`state/coord/forecasts/<day>.jsonl.zst`; pipeline::agent::fcarchive, docs/pool.md §7.9)
 
-A day's file (UTC) is zstd frames appended one after another (read back as one stream): each a
+A day's file (UTC) is zstd frames appended one after another (read frame by frame, a damaged frame
+skipped to the next frame's magic number): each a
 batch of lines, a line a forecast, `fcarchive::Entry`:
 
 ```

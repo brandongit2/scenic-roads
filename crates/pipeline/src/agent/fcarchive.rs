@@ -6,12 +6,17 @@
 //!
 //! - One file a day, `state/coord/forecasts/<day>.jsonl.zst`: a forecast an `Entry` a line, the
 //!   lines appended in batches, each batch a zstd frame of its own (the frames read back as one
-//!   stream). Written by the lead alone, on a thread of its own (`Archiver`): the agent's loop and
-//!   the pool's lock only hand it the entry; its appends go through `nasread::write`'s deadline.
+//!   stream). Handed over by the lead's pool step alone, written on a thread of its own
+//!   (`Archiver`): the agent's loop and the pool's lock only hand it the entry (a bounded channel,
+//!   never waiting: full, the entry is dropped); its appends go through `nasread::write`'s deadline.
+//!   A lead that has just handed over may still append its last batch beside the new lead's, and an
+//!   append over SMB isn't atomic: a reader skips a damaged frame and resumes at the next frame's
+//!   magic number (`entries_of`).
 //!   A batch goes once `BATCH` entries wait or the oldest has waited `FLUSH`: a few appends an hour,
 //!   never a file a forecast. A batch not yet written when the agent stops is lost (`FLUSH` at most).
 //! - A forecast whose schedule and inputs are those of the last one written (`Entry::key`: its
-//!   times to `GRAIN`, the measured NAS rates and the Macs' passing conditions left out) is not
+//!   times in `GRAIN`-long buckets, so two times either side of a bucket's edge differ: a repeat is
+//!   sometimes written, never a changed forecast skipped; the measured NAS rates and the Macs' passing conditions left out) is not
 //!   written again.
 //! - The daily `gc` job (lead only) packs the days the history's window no longer holds
 //!   (histarchive::cutoff) into one tar a month, `state/coord/forecasts-archive/<YYYY-MM>.tar`
@@ -26,7 +31,7 @@ use crate::pool::journal;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::io::{self, BufRead};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -41,9 +46,12 @@ const BATCH: usize = 30;
 const FLUSH: Duration = Duration::from_secs(600);
 /// Entries kept while the NAS can't be written (the oldest dropped past it, said).
 const PENDING_MAX: usize = 300;
-/// The times' grain in `Entry::key`: a forecast whose every time is within it of the last one
-/// written is the same forecast.
+/// The times' grain in `Entry::key`: a forecast whose every time falls in the same `GRAIN`-long
+/// bucket as the last one written's is the same forecast.
 pub const GRAIN: u64 = 120;
+/// Entries the channel holds for the thread (a forecast a minute at most: one is plenty; full while
+/// the thread waits on the NAS, the entry is dropped rather than held).
+const CHANNEL: usize = 4;
 /// zstd's level for a batch.
 const LEVEL: i32 = 9;
 
@@ -323,20 +331,22 @@ pub fn append(root: &Path, day: &str, entries: &[Entry]) -> Result<()> {
 /// over those like the last written (`Entry::key`) and appends the rest in batches (`BATCH`,
 /// `FLUSH`).
 pub struct Archiver {
-    tx: mpsc::Sender<Entry>,
+    tx: mpsc::SyncSender<Entry>,
 }
 
 impl Archiver {
     /// Its thread started, writing under `root`.
     pub fn start(root: PathBuf) -> io::Result<Archiver> {
-        let (tx, rx) = mpsc::channel::<Entry>();
+        let (tx, rx) = mpsc::sync_channel::<Entry>(CHANNEL);
         std::thread::Builder::new().name("forecast-archive".into()).spawn(move || Batcher::new(root).run(rx))?;
         Ok(Archiver { tx })
     }
 
-    /// `e` handed to the thread.
+    /// `e` handed to the thread, never waiting: dropped (said) while the thread is behind.
     pub fn send(&self, e: Entry) {
-        let _ = self.tx.send(e);
+        if let Err(mpsc::TrySendError::Full(_)) = self.tx.try_send(e) {
+            eprintln!("agent: the forecasts' archive is behind (the NAS): a forecast not archived");
+        }
     }
 }
 
@@ -405,21 +415,44 @@ impl Batcher {
     }
 }
 
-/// The entries of a file's bytes (zstd frames of lines): as far as they read (a frame cut short by
-/// a stopped write ends it, said).
+/// zstd's frame magic number, little-endian on disk.
+const MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
+
+/// The entries of a file's bytes (zstd frames of lines), frame by frame: a frame that doesn't read
+/// (cut short by a stopped write, or two Macs' appends crossed over SMB) is skipped, said, and
+/// reading resumes at the next frame's magic number after its start.
 pub fn entries_of(b: &[u8], what: &str) -> Vec<Entry> {
     let mut out = Vec::new();
-    let Ok(d) = zstd::stream::read::Decoder::new(b) else { return out };
-    for l in io::BufReader::new(d).lines() {
-        match l {
-            Ok(l) if l.trim().is_empty() => {}
-            Ok(l) => match serde_json::from_str::<Entry>(&l) {
-                Ok(e) => out.push(e),
-                Err(e) => eprintln!("{what}: a line not read: {e}"),
-            },
-            Err(e) => {
-                eprintln!("{what}: read as far as {} forecast(s): {e}", out.len());
-                break;
+    let mut at = 0;
+    while at < b.len() {
+        let rest = &b[at..];
+        let frame = zstd::zstd_safe::find_frame_compressed_size(rest).ok().and_then(|n| {
+            let mut d = zstd::stream::read::Decoder::new(&rest[..n]).ok()?.single_frame();
+            d.window_log_max(WINDOW_LOG).ok()?;
+            let mut v = Vec::new();
+            io::Read::read_to_end(&mut d, &mut v).ok()?;
+            Some((n, v))
+        });
+        match frame {
+            Some((n, v)) => {
+                for l in v.split(|c| *c == b'\n').filter(|l| !l.iter().all(u8::is_ascii_whitespace)) {
+                    match serde_json::from_slice::<Entry>(l) {
+                        Ok(e) => out.push(e),
+                        Err(e) => eprintln!("{what}: a line not read: {e}"),
+                    }
+                }
+                at += n.max(1);
+            }
+            None => {
+                let next = b[at + 1..].windows(4).position(|w| w == MAGIC).map(|k| at + 1 + k);
+                eprintln!(
+                    "{what}: a damaged frame at byte {at} skipped{}",
+                    if next.is_some() { "" } else { " (the file's end)" }
+                );
+                match next {
+                    Some(k) => at = k,
+                    None => break,
+                }
             }
         }
     }
@@ -562,6 +595,27 @@ mod tests {
         let b = std::fs::read(&p).unwrap();
         std::fs::write(&p, &b[..b.len() - 5]).unwrap();
         assert_eq!(read(r.path(), NOW - 10, NOW + 3600).len(), 2);
+    }
+
+    #[test]
+    fn a_damaged_frame_is_skipped_and_the_frames_after_it_read() {
+        let r = tempfile::tempdir().unwrap();
+        let day = journal::day(NOW).unwrap();
+        append(r.path(), &day, &[entry(NOW, 600)]).unwrap();
+        let p = day_path(r.path(), &day);
+        let one = std::fs::read(&p).unwrap().len();
+        append(r.path(), &day, &[entry(NOW + 60, 900)]).unwrap();
+        append(r.path(), &day, &[entry(NOW + 120, 1200)]).unwrap();
+        let mut b = std::fs::read(&p).unwrap();
+        // The second frame's middle overwritten (two appends crossed): the first and third read.
+        let mid = one + (b.len() - one) / 4;
+        b[mid..mid + 8].copy_from_slice(&[0xAA; 8]);
+        // And junk before a frame's start.
+        let mut junk = vec![1, 2, 3];
+        junk.extend(&b);
+        std::fs::write(&p, &junk).unwrap();
+        let got: Vec<u64> = read(r.path(), NOW - 10, NOW + 3600).iter().map(|e| e.at).collect();
+        assert_eq!(got, [NOW, NOW + 120]);
     }
 
     #[test]

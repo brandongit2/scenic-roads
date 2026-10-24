@@ -889,15 +889,20 @@ Every forecast the lead makes is kept, so its times can be held to what happened
   step's time a target, the NAS budget, `forecast::VERSION` (raised whenever a change moves the
   run's times) and the app.
 - **Where:** `state/coord/forecasts/<day>.jsonl.zst`, one file a day (UTC), lines appended in
-  batches, each batch one zstd frame. Written only by the lead's archive thread: the forecast's
-  own thread makes the entry, the lead's pool step hands it over (a channel send, nothing on the
-  NAS under the pool's lock), and the thread appends a batch once 30 wait or the oldest has waited
+  batches, each batch one zstd frame. Handed over only by the lead's pool step: the forecast's
+  own thread makes the entry, the lead's pool step hands it to the archive's thread (a bounded
+  channel, never waiting: full while the thread waits on the NAS, the entry is dropped, said;
+  nothing on the NAS under the pool's lock), and the thread appends a batch once 30 wait or the oldest has waited
   10 minutes (a few appends an hour; one write each, under `nasread`'s write deadline). A batch
   that fails is kept for the next (300 at most, the oldest dropped, said); one waiting when the
-  agent stops is lost (10 minutes at most).
+  agent stops is lost (10 minutes at most). A lead that has just handed over may still append its
+  last batch beside the new lead's, and appends over SMB aren't atomic: a reader skips a frame that
+  doesn't read and resumes at the next frame's magic number, so a crossed append costs its frames,
+  never the day.
 - **Not twice:** a forecast whose schedule, finish, lanes, Macs (but their passing conditions),
-  each step's time and code version are those of the last one written, its times to 2 minutes
-  (`fcarchive::GRAIN`), isn't written.
+  each step's time and code version are those of the last one written, its times in the same
+  2-minute buckets (`fcarchive::GRAIN`), isn't written (a time either side of a bucket's edge
+  differs: a repeat is sometimes written, a changed forecast never skipped).
 - **Kept for good:** the daily `gc` job packs each day the history's window no longer holds
   (§7.5's cutoff, 7 days) into its month's tar, `state/coord/forecasts-archive/<YYYY-MM>.tar`
   (members `<day>.jsonl.zst`), as the history's days are packed (merged into the tar, never over
