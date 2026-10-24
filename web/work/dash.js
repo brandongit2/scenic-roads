@@ -539,12 +539,11 @@ function mapSection(m, md) {
   }
   // (Typing in the range's inputs: the part kept as it is, the inputs not moved out of it.)
   if (tab === "catalogues" && mapSec && catalogues.el.contains(document.activeElement) && document.activeElement.type === "text") return mapSec;
-  const k = md.regs.length;
   const pick = (t) => () => { ctx.store.set("mapTab", t); unpin(); render(); };
   const tabs = h("div", { class: "maptabs", role: "tablist" },
     [["progress", "Build progress"], ["catalogues", "Catalogues"]].map(([t, text]) => h("button", { type: "button", role: "tab", class: t === tab ? "on" : "", "aria-selected": t === tab ? "true" : "false", onclick: pick(t) }, text)));
-  const sub = tab === "catalogues" ? "the published tiles by when each was last published" : `${k ? plural(k, "region") : "no regions"} · the z3 grid · tiles in their stage's colour`;
-  mapSec = section("d-map", "Map", sub, tabs, tab === "catalogues" ? h("div", "box wmap-box", catalogues.el) : h("div", "box wmap-box", worldMap.el, ...mapLegend(m, md, worldMap)));
+  // (No heading of its own, the owner's 21 Oct 02:06: its tabs head it.)
+  mapSec = section("d-map", null, null, tabs, tab === "catalogues" ? h("div", "box wmap-box", catalogues.el) : h("div", "box wmap-box", worldMap.el, ...mapLegend(m, md, worldMap)));
   catalogues?.show(tab === "catalogues");
   return mapSec;
 }
