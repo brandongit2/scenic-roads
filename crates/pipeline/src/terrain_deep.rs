@@ -322,7 +322,9 @@ impl Fine {
 /// The base tiles served to the sampler from memory (`BASE_URL`), everything else fetched; each
 /// file opened once a target (`Kept`), whichever sampler or plan opens it.
 struct BaseFetch<'a> {
-    base: &'a HashMap<(u8, u32, u32), Vec<u8>>,
+    /// The base, set once it's made (`set_base`): read by the full plan alone, after the presence
+    /// grids (which read the fine datasets alone) have said which base tiles need it.
+    base: std::sync::OnceLock<HashMap<(u8, u32, u32), Vec<u8>>>,
     inner: &'a dyn crate::fetch::Fetch,
     opened: Mutex<HashMap<String, Option<Arc<Kept>>>>,
     /// The bytes of the files' small reads kept (`SMALL_BYTES` at most).
@@ -330,15 +332,20 @@ struct BaseFetch<'a> {
 }
 
 impl<'a> BaseFetch<'a> {
-    fn new(base: &'a HashMap<(u8, u32, u32), Vec<u8>>, inner: &'a dyn crate::fetch::Fetch) -> Self {
-        BaseFetch { base, inner, opened: Mutex::new(HashMap::new()), small: Default::default() }
+    fn new(inner: &'a dyn crate::fetch::Fetch) -> Self {
+        BaseFetch { base: Default::default(), inner, opened: Mutex::new(HashMap::new()), small: Default::default() }
+    }
+
+    /// The base served from now on (as PNGs: `make_tiles`).
+    fn set_base(&self, base: HashMap<(u8, u32, u32), Vec<u8>>) {
+        let _ = self.base.set(base);
     }
 
     fn base(&self, url: &str) -> Option<Option<Vec<u8>>> {
         let rest = url.strip_prefix("scenic-terrain:")?;
         let mut p = rest.split('/').map(|s| s.parse::<u32>().ok());
         let (z, x, y) = (p.next()??, p.next()??, p.next()??);
-        Some(self.base.get(&(z as u8, x, y)).cloned())
+        Some(self.base.get().and_then(|b| b.get(&(z as u8, x, y)).cloned()))
     }
 
     /// `url`'s file, opened once.
@@ -1033,10 +1040,20 @@ pub fn hi_levels(
         let base = hi_base(hi, s);
         let inside: Vec<(u8, u32, u32)> = base.keys().copied().filter(|&(z, x, y)| under(z, x, y, SUB_Z, s)).collect();
         let store = out.root().join("sources/fetched");
-        let r = make_tiles(s, &inside, &base, water, fine, deep.fetch, &store, 0..FIRST_Z, &mut |tiles| {
-            more.extend(tiles);
-            Ok(())
-        })?;
+        let r = make_tiles(
+            s,
+            &inside,
+            &mut |_| Ok(base.clone()),
+            water,
+            fine,
+            deep.fetch,
+            &store,
+            0..FIRST_Z,
+            &mut |tiles| {
+                more.extend(tiles);
+                Ok(())
+            },
+        )?;
         rep.base_tiles += r.base_tiles;
         rep.with_data += r.with_data;
         rep.tiles += r.tiles;
@@ -1115,11 +1132,19 @@ pub fn target_key_lines(sets: &[FineSet], t: (u32, u32)) -> String {
     out.join("\n")
 }
 
-/// The base deep target `t` reads (`base_want`), made as the terrain-hi runs of their z6 tiles make
+/// The base deep target `t` reads (`base_want`; with `near`, those near its base tiles with data
+/// alone, `near_tile`: all its deep tiles read), made as the terrain-hi runs of their z6 tiles make
 /// them (`bases`: crate::terrain_pack::Bases), by tile.
-pub fn target_base(bases: &crate::terrain_pack::Bases, t: (u32, u32)) -> Result<HashMap<(u8, u32, u32), Vec<u8>>> {
+pub fn target_base(
+    bases: &crate::terrain_pack::Bases,
+    t: (u32, u32),
+    near: Option<&[(u8, u32, u32)]>,
+) -> Result<HashMap<(u8, u32, u32), Vec<u8>>> {
     let mut by: BTreeMap<(u32, u32), std::collections::BTreeSet<(u8, u32, u32)>> = BTreeMap::new();
     for (z, x, y) in base_want(t) {
+        if near.is_some_and(|n| !n.iter().any(|&d| near_tile((z, x, y), d))) {
+            continue;
+        }
         by.entry((x >> (z - 6), y >> (z - 6))).or_default().insert((z, x, y));
     }
     let mut out = HashMap::new();
@@ -1139,13 +1164,13 @@ pub fn build_target(
     fine: &Fine,
     fetch: &dyn crate::fetch::Fetch,
 ) -> Result<Report> {
-    let base = {
+    let mut base_of = |data: &[(u8, u32, u32)]| {
         let _p =
-            crate::timings::phase("its base made (the pool sampled, its lakes levelled)", crate::timings::Class::Mixed);
-        target_base(bases, t)?
+            crate::timings::sub("its base made (the pool sampled, its lakes levelled)", crate::timings::Class::Mixed);
+        target_base(bases, t, Some(data))
     };
     let p = crate::timings::phase("its deep tiles made (the fine datasets read)", crate::timings::Class::Mixed);
-    let (mut rep, pack) = make(out, t, &base, water, fine, fetch)?;
+    let (mut rep, pack) = make(out, t, &mut base_of, water, fine, fetch)?;
     drop(p);
     let mut gone = named_under(&out.manifest, PACK_Z, t.0, t.1);
     if let Some(p) = pack {
@@ -1164,23 +1189,23 @@ pub fn drop_target(out: &mut Out, t: (u32, u32)) -> usize {
     crate::terrain_pack::drop_named(out, &gone)
 }
 
-/// Z10 tile `t`'s deep tiles (`FIRST_Z` to `MAX_Z`), from the base tiles `base` (`base_want`'s, as
-/// their terrain-hi runs store them: crate::terrain_pack::Bases), the water `water` and the fine
-/// datasets `fine`: its deep pack (`pack_logical`) written here, not uploaded; None where it makes
-/// no tile.
+/// Z10 tile `t`'s deep tiles (`FIRST_Z` to `MAX_Z`) of its base tiles (each place's finest base zoom
+/// under it) with data, from the base `base_of` gives for those (the base tiles near them, as their
+/// terrain-hi runs store them: `target_base`), the water `water` and the fine datasets `fine`: its
+/// deep pack (`pack_logical`) written here, not uploaded; None where it makes no tile.
 pub fn make(
     out: &Out,
     t: (u32, u32),
-    base: &HashMap<(u8, u32, u32), Vec<u8>>,
+    base_of: &mut dyn FnMut(&[(u8, u32, u32)]) -> Result<HashMap<(u8, u32, u32), Vec<u8>>>,
     water: Option<&dyn crate::terrain_water::WaterSource>,
     fine: &Fine,
     fetch: &dyn crate::fetch::Fetch,
 ) -> Result<(Report, Option<crate::layers::LocalPack>)> {
     let s = (t.0 >> (PACK_Z - SUB_Z), t.1 >> (PACK_Z - SUB_Z));
-    let inside: Vec<(u8, u32, u32)> = base.keys().copied().filter(|&(z, x, y)| under(z, x, y, PACK_Z, t)).collect();
+    let inside: Vec<(u8, u32, u32)> = base_want(t).into_iter().filter(|&(z, x, y)| under(z, x, y, PACK_Z, t)).collect();
     let mut tiles = Vec::new();
     let store = out.root().join("sources/fetched");
-    let mut rep = make_tiles(s, &inside, base, water, fine, fetch, &store, FIRST_Z..MAX_Z + 1, &mut |made| {
+    let mut rep = make_tiles(s, &inside, base_of, water, fine, fetch, &store, FIRST_Z..MAX_Z + 1, &mut |made| {
         tiles.extend(made);
         Ok(())
     })?;
@@ -1205,15 +1230,38 @@ pub fn make(
     Ok((rep, p))
 }
 
-/// The deep tiles of zooms `zs` of base tiles `inside` (of z8 tile `s`, whose box the datasets are
-/// planned over, so each blend's band is the same whichever part of it is made), from the base
-/// tiles `base` (those and their ring), each z10 tile's given to `sink` as made: the datasets'
-/// blocks read ahead z10 tile by z10 tile, each once (`read_ahead`), its base tiles made at once.
+/// The base tiles a deep tile reads, or a base tile's tiles in `make_tiles`: a base tile `t` and every
+/// tile within one of its own tiles of it, whatever zoom (its ring, its padding's other zooms, the
+/// sampler's reads of the base past its edge, a finer base tile under it), x across the
+/// antimeridian too.
+fn near_tile(a: (u8, u32, u32), t: (u8, u32, u32)) -> bool {
+    let zm = a.0.max(t.0);
+    let n = 1i64 << zm;
+    let span = |(z, x, y): (u8, u32, u32), grow: i64| {
+        let k = zm - z;
+        (
+            (((x as i64) - grow) << k, ((x as i64) + 1 + grow) << k),
+            (((y as i64) - grow) << k, ((y as i64) + 1 + grow) << k),
+        )
+    };
+    let ((ax0, ax1), (ay0, ay1)) = span(a, 0);
+    let ((tx0, tx1), (ty0, ty1)) = span(t, 1);
+    ay0 < ty1 && ty0 < ay1 && [-n, 0, n].iter().any(|d| ax0 < tx1 + d && tx0 + d < ax1)
+}
+
+/// The deep tiles of zooms `zs` of base tiles `inside` (each place's finest base zoom: of z8 tile
+/// `s`, whose box the datasets are planned over, so each blend's band is the same whichever part of
+/// it is made), each z10 tile's given to `sink` as made. First the presence grids, which read the
+/// fine datasets alone, say which of `inside` have data; then `base_of` gives the base those read
+/// (as their terrain-hi runs store it: each of those it has, and the tiles near them,
+/// `near_tile`), none asked for where no tile has data, and the deep tiles are made of those it
+/// has. The datasets' blocks read ahead z10 tile by z10 tile, each once (`read_ahead`), its base
+/// tiles made at once.
 #[allow(clippy::too_many_arguments)]
 fn make_tiles(
     s: (u32, u32),
     inside: &[(u8, u32, u32)],
-    base: &HashMap<(u8, u32, u32), Vec<u8>>,
+    base_of: &mut dyn FnMut(&[(u8, u32, u32)]) -> Result<HashMap<(u8, u32, u32), Vec<u8>>>,
     water: Option<&dyn crate::terrain_water::WaterSource>,
     fine: &Fine,
     fetch: &dyn crate::fetch::Fetch,
@@ -1247,14 +1295,7 @@ fn make_tiles(
     if n == 0 {
         return Ok(rep);
     }
-    let decoded: HashMap<(u8, u32, u32), Vec<f32>> =
-        base.par_iter().map(|(&k, b)| Ok((k, roadcore::grid::decode_terrain(b)?))).collect::<Result<_>>()?;
-    // (The base served to the sampler as a Terrarium pyramid of PNGs: crate::dem::encoding.)
-    let served: HashMap<(u8, u32, u32), Vec<u8>> = decoded
-        .par_iter()
-        .map(|(&k, e)| Ok((k, roadcore::grid::encode_terrain_png(e, 256, 256)?)))
-        .collect::<Result<_>>()?;
-    let bf = BaseFetch::new(&served, fetch);
+    let bf = BaseFetch::new(fetch);
     let o = Opts { fetch: &bf, store: Some(store.to_path_buf()), pool: None };
     let presence_s = Sampler::new(&presence, &o)?;
     let full_s = Sampler::sharing(&full, &o, &presence_s)?;
@@ -1275,7 +1316,27 @@ fn make_tiles(
         with[g] = groups[g].par_iter().map(|&(t, _)| has_data(&presence_s, t)).collect::<Result<_>>()?;
         Ok(())
     })?;
+    let data: Vec<(u8, u32, u32)> = tiles_of(&|g, i| with[g][i]).into_iter().flatten().collect();
+    if data.is_empty() {
+        return Ok(rep);
+    }
+    // The base, of the tiles with data and those near them; of those with data, those it has.
+    let base = base_of(&data)?;
+    for (g, ts) in groups.iter().enumerate() {
+        for (i, (t, _)) in ts.iter().enumerate() {
+            with[g][i] &= base.contains_key(t);
+        }
+    }
     rep.with_data = with.iter().flatten().filter(|&&d| d).count();
+    let decoded: HashMap<(u8, u32, u32), Vec<f32>> =
+        base.par_iter().map(|(&k, b)| Ok((k, roadcore::grid::decode_terrain(b)?))).collect::<Result<_>>()?;
+    // (The base served to the sampler as a Terrarium pyramid of PNGs: crate::dem::encoding.)
+    bf.set_base(
+        decoded
+            .par_iter()
+            .map(|(&k, e)| Ok((k, roadcore::grid::encode_terrain_png(e, 256, 256)?)))
+            .collect::<Result<_>>()?,
+    );
     let items = plan_items(&plan_files(&full, area, &bf)?, &tiles_of(&|g, i| with[g][i]))?;
     bf.keep_only(&items);
     read_ahead(&items, n, true, |k| {
@@ -1679,8 +1740,7 @@ mod tests {
                 .unwrap();
         let reads: Reads = Default::default();
         let counted = Counted(f, reads.clone());
-        let none = HashMap::new();
-        let bf = BaseFetch::new(&none, &counted);
+        let bf = BaseFetch::new(&counted);
         let o = Opts { fetch: &bf, store: None, pool: None };
         let s = Sampler::new(&plan, &o).unwrap();
         let items = plan_items(&plan_files(&plan, tb, &bf).unwrap(), &[vec![t]]).unwrap();
@@ -1762,8 +1822,12 @@ mod tests {
         let tile = |m: f32| crate::terrain_codec::encode(&mut vec![m; 65536], 0.1).unwrap();
         let base: HashMap<(u8, u32, u32), Vec<u8>> = [edge, inside, ring].iter().map(|&b| (b, tile(50.0))).collect();
         let flat = Flat(roadcore::grid::encode_terrain_png(&vec![100.0; 65536], 256, 256).unwrap());
-        let (rep, pack) = make(&out, t, &base, None, &fine, &flat).unwrap();
-        assert_eq!((rep.base_tiles, rep.with_data, rep.tiles, rep.packs), (2, 2, 8, 1), "the ring's tiles not made");
+        let (rep, pack) = make(&out, t, &mut |_| Ok(base.clone()), None, &fine, &flat).unwrap();
+        assert_eq!(
+            (rep.base_tiles, rep.with_data, rep.tiles, rep.packs),
+            (16, 2, 8, 1),
+            "its 16 base tiles with data, the two the base has made; the ring's tiles not made"
+        );
         let p = pack.unwrap();
         assert_eq!(p.logical, pack_logical(t.0, t.1));
         let (idx, f) = read_pack(&p);
@@ -1820,8 +1884,12 @@ mod tests {
         let src = crate::terrain_pack::Sources::default();
         let raw = Level(50.0);
         let bases = crate::terrain_pack::Bases::new(&raw, &src, &cov);
-        let base = target_base(&bases, t).unwrap();
+        let base = target_base(&bases, t, None).unwrap();
         assert!(!base.is_empty() && base.keys().all(|b| base_want(t).contains(b)));
+        // (Near one base tile with data: it and the tiles around it alone.)
+        let one = *base.keys().find(|k| under(k.0, k.1, k.2, PACK_Z, t)).unwrap();
+        let near = target_base(&bases, t, Some(&[one])).unwrap();
+        assert!(near.contains_key(&one) && near.len() <= 9 && near.keys().all(|&k| near_tile(k, one)));
         let flat = Flat(roadcore::grid::encode_terrain_png(&vec![100.0; 65536], 256, 256).unwrap());
         let rep = build_target(&mut out, t, &bases, None, &fine, &flat).unwrap();
         assert!(rep.tiles > 0 && rep.packs == 1 && rep.dropped == 0, "{rep:?}");
@@ -1915,7 +1983,7 @@ mod tests {
             .filter(|m| base_want(t).contains(&(m.0, m.1, m.2)))
             .map(|m| ((m.0, m.1, m.2), m.3.clone()))
             .collect();
-        let (rep, pack) = make(&out, t, &base, None, &fine, &flat).unwrap();
+        let (rep, pack) = make(&out, t, &mut |_| Ok(base.clone()), None, &fine, &flat).unwrap();
         assert_eq!(rep.tiles, 16);
         let pack = pack.unwrap();
         let (idx, _) = read_pack(&pack);
@@ -1972,10 +2040,20 @@ mod tests {
         let flat = Flat(roadcore::grid::encode_terrain_png(&vec![100.0; 65536], 256, 256).unwrap());
         let inside: Vec<(u8, u32, u32)> = base.keys().copied().collect();
         let mut zs: Vec<(u8, u32, u32)> = Vec::new();
-        let rep = make_tiles((74, 32), &inside, &base, None, &fine, &flat, d.path(), 0..MAX_Z + 1, &mut |m| {
-            zs.extend(m.into_iter().map(|t| (t.0, t.1, t.2)));
-            Ok(())
-        })
+        let rep = make_tiles(
+            (74, 32),
+            &inside,
+            &mut |_| Ok(base.clone()),
+            None,
+            &fine,
+            &flat,
+            d.path(),
+            0..MAX_Z + 1,
+            &mut |m| {
+                zs.extend(m.into_iter().map(|t| (t.0, t.1, t.2)));
+                Ok(())
+            },
+        )
         .unwrap();
         zs.sort();
         let n = zs.len();

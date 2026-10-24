@@ -3271,7 +3271,7 @@ pub(crate) mod tests {
         let bases = Bases::new(&raw, &src, &cov);
         let (mut compared, mut across, mut zooms) = (0, 0, std::collections::BTreeSet::new());
         for t in mine {
-            let base = td::target_base(&bases, t).unwrap();
+            let base = td::target_base(&bases, t, None).unwrap();
             for (z, x, y) in td::base_want(t) {
                 let stored = hi.get(z, x, y).unwrap();
                 assert_eq!(base.get(&(z, x, y)), stored.as_ref(), "{z}/{x}/{y} for 10/{}/{}", t.0, t.1);

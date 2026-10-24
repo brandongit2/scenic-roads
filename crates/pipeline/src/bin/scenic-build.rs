@@ -1079,9 +1079,14 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 let bases = pipeline::terrain_pack::Bases::new(tiles, &src, &cov);
                 for &t in &ts {
                     let t0 = std::time::Instant::now();
-                    let base = td::target_base(&bases, t)?;
-                    let base_secs = t0.elapsed().as_secs_f64();
-                    let (r, pack) = td::make(&out, t, &base, Some(&water), &fine, &fetch)?;
+                    let (mut base_secs, mut base_tiles) = (0.0, 0);
+                    let mut base_of = |data: &[(u8, u32, u32)]| {
+                        let b0 = std::time::Instant::now();
+                        let base = td::target_base(&bases, t, Some(data))?;
+                        (base_secs, base_tiles) = (b0.elapsed().as_secs_f64(), base.len());
+                        Ok(base)
+                    };
+                    let (r, pack) = td::make(&out, t, &mut base_of, Some(&water), &fine, &fetch)?;
                     let mut made = None;
                     if let Some(p) = pack {
                         made = Some(p.content_name()?);
@@ -1095,7 +1100,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                     }
                     println!(
                         "{}",
-                        serde_json::json!({ "target": format!("{}/{}/{}", td::PACK_Z, t.0, t.1), "base_tiles": base.len(), "base_secs": base_secs, "secs": t0.elapsed().as_secs_f64(), "tiles": r.tiles, "with_data": r.with_data, "pack": made, "pack_manifest": out.get(&td::pack_logical(t.0, t.1)) })
+                        serde_json::json!({ "target": format!("{}/{}/{}", td::PACK_Z, t.0, t.1), "base_tiles": base_tiles, "base_secs": base_secs, "secs": t0.elapsed().as_secs_f64(), "tiles": r.tiles, "with_data": r.with_data, "pack": made, "pack_manifest": out.get(&td::pack_logical(t.0, t.1)) })
                     );
                 }
                 Ok(())
