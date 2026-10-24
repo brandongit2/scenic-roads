@@ -154,8 +154,9 @@ impl Checks for Regions {
         // shapes simplified at each point's own latitude (outlines::simplify), Antarctica's no
         // longer five points. 5: #468: a region with water stores its land and its water as
         // shapes apart. 6: #648: the cover check's gaps joined across the cells' edges before the
-        // fill and the sizes.)
-        6
+        // fill and the sizes. 7: #649: a region with water's coast the coastline's land, where its
+        // outline's lay inland of it.)
+        7
     }
 
     fn recursive(&self) -> bool {

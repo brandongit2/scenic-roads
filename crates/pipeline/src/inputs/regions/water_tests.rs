@@ -408,6 +408,21 @@ fn land_in_no_region_across_a_cells_edge_is_sized_whole() {
     assert!(out.problems.is_empty(), "{:?}", out.problems);
 }
 
+/// One coastline (#649): land past a region's outline's coast, along it, is its own, with or
+/// without `cover`.
+#[test]
+fn the_coast_is_the_coastlines_land() {
+    let w = world();
+    let mut files = all();
+    files.retain(|f| f.0 != "_rules.toml");
+    let out = run(&w, &files);
+    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    let mut g = out.resolved["a"].geometry.clone();
+    g.shapes.retain(|s| !s.water);
+    let land = area_of(&g);
+    assert!(land.contains([e7(0.6), e7(1.001)]) && !land.contains([e7(0.6), e7(1.003)]));
+}
+
 /// The new rules leave regions without water as they resolve alone: the cover's fills and a
 /// hand-out never change them (a hand-out naming one says so).
 #[test]

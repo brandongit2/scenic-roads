@@ -10,7 +10,9 @@
 //!   split of the cell's piece against the coasts in the cells within 4° (the grid it decides on is
 //!   anchored at 0°, 0°, so neighbouring cells' splits meet); a cut by its line.
 //! - A region's land is its outline cut back to the coastline's land (the cell's), less the lakes
-//!   over 100 km²; its water the `water` parts less the coastline's land and every region without
+//!   over 100 km²; then the coastline's land in no outline (where an outline's coast lay inland of
+//!   the coastline's), joined across the cells' edges, each piece up to `sliver_km2` to the region
+//!   whose land shares its longest edge, if that one has water: one coastline; its water the `water` parts less the coastline's land and every region without
 //!   water, after those its water names whole; its lakes, those in its outline that no other region's
 //!   water names; the three together its area, kept by cell and stored as the cells' rings.
 //! - `hand_out`: a stretch (cells' pieces joined across the cells' edges they share) of a region's
@@ -244,7 +246,7 @@ pub fn clip(r: &[Pt], b: [i64; 4]) -> Option<Ring> {
 // ---- _rules.toml ---------------------------------------------------------------------------------
 
 /// `_rules.toml` (at the folder's top): the rules for the whole folder.
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rules {
     /// `"earth"`: the regions cover the Earth once.
@@ -258,6 +260,13 @@ pub struct Rules {
 
 fn sliver() -> f64 {
     50.0
+}
+
+/// A folder without `_rules.toml`: no cover, `sliver_km2` its default.
+impl Default for Rules {
+    fn default() -> Rules {
+        Rules { cover: None, sliver_km2: sliver() }
+    }
 }
 
 pub fn parse_rules(text: &str) -> Result<Rules, super::file::Fault> {
@@ -701,6 +710,9 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         }
         left = rest;
     }
+    trace("coast");
+    // 1b. One coastline: the coastline's land in no outline, along the regions' coasts, theirs.
+    coast(folder, data, &mut made, &others, rules.sliver_km2);
     trace("water");
     // 2. Water, in waves by what waters name whole.
     let wdeps = |id: &str| -> Vec<String> {
@@ -742,7 +754,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
             .iter()
             .map(|id| {
                 trace(&format!("water of {id} begins"));
-                let w = make_water(id, folder, ctx, data, &made, &others, out, &held, &mut needs);
+                let w = make_water(id, folder, ctx, data, &made, &others, out, &mut needs);
                 trace(&format!("water of {id} ends"));
                 (id.clone(), w)
             })
@@ -1148,6 +1160,97 @@ fn make_land(
     Ok(m)
 }
 
+/// One coastline for land and water: the coastline's land no region's outline takes (the outlines'
+/// coasts drawn inland of it), its cells' pieces joined across the cells' edges into stretches; one
+/// up to `km2` goes to the region sharing the longest edge with it, if that region has water. So
+/// a region's coast is the coastline's wherever its outline's lay inland of it.
+fn coast(
+    folder: &Folder,
+    data: &super::data::Datasets,
+    made: &mut BTreeMap<String, Made>,
+    others: &BTreeMap<String, TArea>,
+    km2: f64,
+) {
+    let cells: BTreeSet<Cell> = made.values().flat_map(|m| m.land.cells.keys().copied()).collect();
+    // (Per cell: each piece of land in no region, its sides on the cell's edges, size, and its edge
+    // (m) with each region's land there, read from an index of the segments.)
+    type Piece = (Cell, Sides, f64, Area, Vec<(String, f64)>);
+    let pieces: Vec<Piece> = pace::par_map(cells.into_iter().collect(), |c| {
+        geom::set_label(format!("the coast, the cell from {}°, {}°", c.0 * 2, c.1 * 2));
+        let mut owners: Vec<(&String, Area)> = made
+            .iter()
+            .map(|(id, m)| (id, m.land.get(c)))
+            .chain(others.iter().map(|(id, t)| (id, t.get(c))))
+            .filter(|(_, a)| !a.is_empty())
+            .collect();
+        owners.sort_by(|a, b| a.0.cmp(b.0));
+        let free =
+            land_and_lakes(data, c).0.minus(&geom::union_all(&owners.iter().map(|o| o.1.clone()).collect::<Vec<_>>()));
+        let idx = SegIndex::new(
+            owners.iter().enumerate().flat_map(|(k, (_, a))| a.polys.iter().flatten().map(move |r| (k, r))),
+        );
+        free.polys
+            .into_iter()
+            .map(|poly| {
+                let mut len = vec![0.0f64; owners.len()];
+                for r in &poly {
+                    for k in 0..r.len() {
+                        let (a, b) = (r[k], r[(k + 1) % r.len()]);
+                        if let Some(o) = idx.on([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]) {
+                            len[o] += seg_m(a, b);
+                        }
+                    }
+                }
+                let sides = sides(&poly, c);
+                let g = Area { polys: vec![poly] };
+                let len = (0..owners.len()).filter(|&k| len[k] > 0.0).map(|k| (owners[k].0.clone(), len[k])).collect();
+                (c, sides, geom::area_km2(&g), g, len)
+            })
+            .collect::<Vec<_>>()
+    })
+    .into_iter()
+    .flatten()
+    .collect();
+    let roots = joined(&pieces.iter().map(|p| (p.0, &p.1)).collect::<Vec<_>>());
+    let mut stretches: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (i, r) in roots.into_iter().enumerate() {
+        stretches.entry(r).or_default().push(i);
+    }
+    let mut fill: BTreeMap<(String, Cell), Vec<Area>> = BTreeMap::new();
+    let (mut n, mut sum) = (0, 0.0);
+    for idx in stretches.into_values() {
+        let size: f64 = idx.iter().map(|&i| pieces[i].2).sum();
+        if size > km2 {
+            continue;
+        }
+        let mut len: BTreeMap<&String, f64> = BTreeMap::new();
+        for &i in &idx {
+            for (id, l) in &pieces[i].4 {
+                *len.entry(id).or_default() += l;
+            }
+        }
+        // (Ties to the lesser id; a region without water keeps its outline: the stretch stays.)
+        let Some((best, _)) = len.into_iter().max_by(|x, y| x.1.total_cmp(&y.1).then(y.0.cmp(x.0))) else { continue };
+        if !made.contains_key(best) || !folder.regions[best].1.has_water() {
+            continue;
+        }
+        n += 1;
+        sum += size;
+        for &i in &idx {
+            fill.entry((best.clone(), pieces[i].0)).or_default().push(pieces[i].3.clone());
+        }
+    }
+    trace(&format!("the coast: {n} stretches, {sum:.1} km², to regions"));
+    let filled: Vec<(String, Cell, Area)> =
+        pace::par_map(fill.into_iter().collect(), |((id, c), mut v): ((String, Cell), Vec<Area>)| {
+            v.push(made[&id].land.get(c));
+            (id, c, geom::union_all(&v))
+        });
+    for (id, c, a) in filled {
+        made.get_mut(&id).unwrap().land.set(c, a);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn make_water(
     id: &str,
@@ -1157,7 +1260,6 @@ fn make_water(
     made: &BTreeMap<String, Made>,
     others: &BTreeMap<String, TArea>,
     out: &Outcome,
-    held: &BTreeSet<String>,
     needs: &mut BTreeSet<Id>,
 ) -> Result<TArea, Vec<Problem>> {
     let (path, r) = &folder.regions[id];
@@ -1165,7 +1267,6 @@ fn make_water(
         return Ok(TArea::default());
     }
     let env = env_for(id, true, folder, ctx, made, others, out, needs)?;
-    let _ = held;
     trace(&format!("water of {id}: its parts read"));
     let cells: BTreeSet<Cell> = r.water.iter().flat_map(|p| support(p, &env)).collect();
     trace(&format!("water of {id}: {} cells", cells.len()));

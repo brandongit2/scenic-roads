@@ -473,7 +473,12 @@ cross itself.
 **Land and water.** A region with a `water` key is resolved in two steps, cell by cell (crate::inputs::
 regions::tiles; §6.1.4). First its land: its outline exact (no coast tolerance), cut back to the coastline's land
 (the `regions-land` source) less the lakes over 100 km² (`regions-lakes`); those lakes inside its
-outline are its water, unless another region's water names them. Then its water: the `water` parts,
+outline are its water, unless another region's water names them. Then one coastline: where an
+outline's coast lies inland of the coastline's, the land between is in no outline; each piece of
+it (its cells' pieces joined across the cells' edges) up to `sliver_km2` goes to the region whose
+land shares the longest edge with it, if that region has `water` (with or without `cover`; a
+`land:` part names the land before this). So a region's coast is the coastline's, as its water's
+is. Then its water: the `water` parts,
 less the coastline's land and every region without `water` (the land dominates the sea), in an
 order where a region comes after those its water names whole (`region:`, `group:`). A region's
 `hand_out` folder then takes each stretch (a connected piece) of its water that one of its regions
