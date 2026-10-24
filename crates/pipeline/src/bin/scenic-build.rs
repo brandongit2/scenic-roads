@@ -1029,8 +1029,9 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             return Ok(());
         }
         "terrain-deep-same" => {
-            // terrain-deep-same [10/x/y …] [--of 6/x/y] [--raw dir] [--pass d] [--regions dir]
-            // [--hashes file]: terrain-deep targets (those named, and every one of z6 tile --of:
+            // terrain-deep-same [10/x/y …] [--of 6/x/y] [--list] [--raw dir] [--pass d] [--regions dir]
+            // [--hashes file]: terrain-deep targets (those named, and every one of z6 tile --of, or
+            // with `--list` only listed:
             // pipeline::terrain_deep::targets_in) made as their job makes them (their base from the
             // pool and the water, pipeline::terrain_pack::Bases; then their deep tiles), their deep
             // packs written in the scratch folder only and let go; each one's content name said
@@ -1054,6 +1055,12 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 ts.extend(td::targets_in(&fine.sets, &cov, (u.x, u.y)));
             }
             anyhow::ensure!(!ts.is_empty(), "terrain-deep-same <10/x/y …> | --of 6/x/y");
+            if flag(&args, "--list") {
+                for t in &ts {
+                    println!("{}/{}/{}", td::PACK_Z, t.0, t.1);
+                }
+                return Ok(());
+            }
             let raw_dir = PathBuf::from(
                 opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
             );
