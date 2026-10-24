@@ -778,14 +778,19 @@ const cardBody = (title, pairs, ...more) => {
     o.chips?.length ? h("div", "tc-chipsbox", o.chipsLabel ? h("div", "tc-kick", o.chipsLabel) : null, h("div", "tc-chips", o.chips.map((c) => h("span", null, c)))) : null,
     ...more, o.foot ? h("div", { class: "tc-foot", title: o.foot }, o.foot) : null].filter(Boolean);
 };
-// (Beside the point, right and below, else left or above where there's no room: never over the
-// pointer, as long as there's room on either side.)
+// (Beside the point, right else left where there's no room; wholly below it, else above where it
+// fits there better: never across the pointer's line. No taller than 50svh (dash.css) or the room
+// on its side; the rest scrolls inside it.)
 function placeCard(el, x, y) {
+  el.style.maxHeight = "";
   const r = el.getBoundingClientRect(), W = window.innerWidth, H = window.innerHeight;
   const left = x + 12 + r.width <= W - 8 ? x + 12 : x - 12 - r.width >= 8 ? x - 12 - r.width : Math.max(8, W - r.width - 8);
-  const top = y + 14 + r.height <= H - 8 ? y + 14 : y - 10 - r.height >= 8 ? y - 10 - r.height : Math.max(8, H - r.height - 8);
+  const below = H - 8 - (y + 14), above = y - 10 - 8;
+  const down = r.height <= below || below >= above;
+  const h = Math.min(r.height, Math.max(0, down ? below : above));
+  if (h < r.height) el.style.maxHeight = `${h}px`;
   el.style.left = `${left}px`;
-  el.style.top = `${top}px`;
+  el.style.top = `${down ? y + 14 : y - 10 - h}px`;
 }
 function showHover(key, x, y, also = "") {
   const build = cards.get(key);

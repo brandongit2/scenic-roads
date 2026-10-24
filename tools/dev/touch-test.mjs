@@ -379,6 +379,16 @@ async function run() {
         const off = seg && (await js(`(() => { for (let y = 20; y < innerHeight - 20; y += 10) for (let x = 6; x < innerWidth - 6; x += 10) { const e = document.elementFromPoint(x, y); if (e && !e.closest("[data-card], a, button, input, select, label, canvas, .card-tip")) return [x, y]; } return null; })()`));
         if (off) { await mouse(...seg); const on = await seen(); await mouse(...off); check("overview: a card goes on leaving its element", on && !(await seen()), on ? "" : "no card shown on it"); }
         else check("overview: a card goes on leaving its element", false, "no card element or empty spot found");
+        // (A tall card, the pointer near the window's bottom, then near its top: wholly above or
+        // below the pointer's line, never across it, and no taller than 50svh.)
+        for (const [where, frac] of [["bottom", 0.85], ["top", 0.15]]) {
+          const at = await js(`(() => { const c = ${c}; c.scrollIntoView({ block: "center" }); const ax = ${spot[0]}, ay = ${spot[1]} + scrollY; scrollTo(0, ay - innerHeight * ${frac}); const y = ay - scrollY; return y > c.getBoundingClientRect().top && y < c.getBoundingClientRect().bottom ? [ax, y] : null; })()`);
+          await sleep(300);
+          if (!at) { check(`overview: a card near the ${where} stays off the pointer's line, ≤ 50svh`, false, "the map's spot can't scroll there"); continue; }
+          await mouse(at[0] + 1, at[1]);
+          const t = await js(`(() => { const t = [...document.querySelectorAll(".card-tip:not(.pinned)")].find((t) => t.getClientRects().length); if (!t) return null; const r = t.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, h: r.height, max: innerHeight / 2 }; })()`);
+          check(`overview: a card near the ${where} stays off the pointer's line, ≤ 50svh`, t && (t.top >= at[1] || t.bottom <= at[1]) && t.h <= t.max + 1, t ? `card ${Math.round(t.top)}–${Math.round(t.bottom)}, pointer ${Math.round(at[1])}, max ${Math.round(t.max)}` : "no card shown");
+        }
       }
     }
 

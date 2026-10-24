@@ -274,7 +274,7 @@ select.past { margin-left: 4px; background: var(--bg); color: var(--text); borde
 
 /* A card (dash.js withCard): on hover under the pointer; pinned on a click, with its close button. */
 /* (A following card never catches the pointer; a pinned one takes its events, #627.) */
-.card-tip { position: fixed; z-index: 20; pointer-events: none; background: var(--tip); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; font-size: 11.5px; width: max-content; max-width: min(340px, calc(100vw - 16px)); box-shadow: 0 4px 14px var(--shadow); }
+.card-tip { position: fixed; z-index: 20; pointer-events: none; background: var(--tip); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; font-size: 11.5px; width: max-content; max-height: 50svh; overflow: hidden auto; box-sizing: border-box; max-width: min(340px, calc(100vw - 16px)); box-shadow: 0 4px 14px var(--shadow); }
 .card-tip[hidden] { display: none; }
 .card-tip.pinned { pointer-events: auto; z-index: 21; padding-right: 26px; border-color: var(--rule); overscroll-behavior: contain; }
 /* (Under a pinned card: clear, catching every click and scroll behind it, #627.) */
@@ -293,8 +293,6 @@ html.card-modal, html.card-modal body { overflow: hidden; }
 /* The map's cards, as the mockup's: a head (swatch, kicker, title) over a rule, a body, a foot; a
    stack of them (everything under a point) one under the other, a line between. */
 .card-tip:has(.tc-head) { padding: 0; width: 280px; border-radius: 8px; box-shadow: 0 8px 24px var(--shadow); }
-.card-tip:has(.tc-head) { max-height: calc(100vh - 16px); overflow: hidden; }
-.card-tip.pinned:has(.tc-head) { overflow-y: auto; }
 .card-tip:has(.tc-head) .cb, .card-tip:has(.tc-head):not(.pinned, [hidden]), .tc-sec { display: flex; flex-direction: column; gap: 6px; }
 .tc-sec { padding-bottom: 8px; }
 .tc-sec + .tc-sec, .tc-more { border-top: 1px solid var(--rule); }
