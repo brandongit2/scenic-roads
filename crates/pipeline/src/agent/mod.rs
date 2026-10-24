@@ -8410,6 +8410,9 @@ impl Agent {
                 return Ok(c.clone());
             }
         }
+        // (Another version's is never given again: let go of it before the new one is read, not
+        // held beside it, ~4 GB for the world's, #619.)
+        self.coverage.borrow_mut().take();
         let mut making = self.coverage_making.borrow_mut();
         let fresh = if making.as_ref().is_none_or(|(v, h)| *v != a.version && h.is_finished()) {
             let (root, cache, a, v) = (root.to_path_buf(), self.o.home.join("cache"), a.clone(), a.version.clone());
