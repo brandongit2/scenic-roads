@@ -16533,7 +16533,7 @@ mod pool_tests {
         // (Its slope job runs until the test opens its gate: the ask comes while it runs, however
         // slowly a busy Mac takes the handover.)
         let gate = d.path().join("gate");
-        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = slope ] && while [ ! -e '{}' ]; do kill -0 $PPID 2>/dev/null || exit 1; sleep 0.05; done\n", gate.display()));
+        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = slope-hi ] && while [ ! -e '{}' ]; do kill -0 $PPID 2>/dev/null || exit 1; sleep 0.05; done\n", gate.display()));
         std::fs::write(bin.join("scenic-build"), script).unwrap();
         let mut lead = test_agent(Options {
             root: Some(r.clone()),
@@ -16641,7 +16641,7 @@ mod pool_tests {
         let r = nas(d.path());
         let bin = app(d.path());
         let gate = d.path().join("gate");
-        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = slope ] && while [ ! -e '{}' ]; do kill -0 $PPID 2>/dev/null || exit 1; sleep 0.05; done\n", gate.display()));
+        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = slope-hi ] && while [ ! -e '{}' ]; do kill -0 $PPID 2>/dev/null || exit 1; sleep 0.05; done\n", gate.display()));
         std::fs::write(bin.join("scenic-build"), script).unwrap();
         let mut lead = test_agent(Options {
             root: Some(r.clone()),
@@ -16771,7 +16771,7 @@ mod pool_tests {
         switch_on(&r, brokers::SWITCH);
         let bin = app(d.path());
         let gate = d.path().join("gate");
-        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = slope ] && while [ ! -e '{}' ]; do kill -0 $PPID 2>/dev/null || exit 1; sleep 0.05; done\n", gate.display()));
+        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = slope-hi ] && while [ ! -e '{}' ]; do kill -0 $PPID 2>/dev/null || exit 1; sleep 0.05; done\n", gate.display()));
         std::fs::write(bin.join("scenic-build"), script).unwrap();
         let mut lead = test_agent(Options {
             root: Some(r.clone()),

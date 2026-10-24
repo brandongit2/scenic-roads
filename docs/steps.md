@@ -115,10 +115,12 @@ What each step does, in detail. The steps as one table (names, chains, the check
     there too); elsewhere the latitude's cap above. It is told by z10 tile
     (`terrain_deep::native_zoom`; the catalog's `native_zoom`, the map's zoom by area). A
     terrain-deep target is a z10 tile near the coverage (20 km) where a fine dataset meets its z8
-    tile and one of its base tiles reaches z13 (`terrain_deep::is_target`). Its run first makes the
-    base it blends into and fills from: its base tiles and the ring of one tile around them, at each
-    place's finest base zoom (`terrain_deep::base_want`), whichever z6 tile holds them, made from the
-    pool and the water by terrain-hi's code, the same bytes as the terrain-hi runs store, rounding
+    tile and one of its base tiles reaches z13 (`terrain_deep::is_target`). Its run first reads which
+    of its base tiles its datasets have data in (below: the presence grids, the fine datasets alone);
+    for those alone it then makes the base they blend into and fill from: those base tiles and the
+    tiles within one of them (their ring, at each place's finest base zoom: `terrain_deep::base_want`,
+    `near_tile`), whichever z6 tile holds them, none where no tile has data, made from the pool and
+    the water by terrain-hi's code, the same bytes as the terrain-hi runs store, rounding
     included (`terrain_pack::Bases`; tested bit for bit inside a z6 tile, across a z6 tile's edge,
     with lakes past the ring and at the 67° change: `terrain_pack`'s
     `a_deep_targets_base_is_the_hi_runs_bit_for_bit`). A tile of its z6 tile's first level reads only
