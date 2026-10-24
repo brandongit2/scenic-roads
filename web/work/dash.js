@@ -1456,10 +1456,14 @@ function render() {
     return;
   }
   shownMacs = m.macs;
-  // (A part where the user is typing or has text selected stays as it was until they're done: a
-  // refresh would take their keyboard or selection away.)
+  // (A part where the user is typing, choosing in a list or has text selected stays as it was
+  // until they're done: a refresh would take their keyboard or selection away. A checkbox or
+  // radio focused by its click isn't that: kept, the map's part kept its old filters while the new
+  // part had taken the map's element, and the map went (#627).)
   const sel = window.getSelection();
-  const busy = (el) => el && ((el.contains(document.activeElement) && ["INPUT", "SELECT"].includes(document.activeElement.tagName)) || (sel && !sel.isCollapsed && el.contains(sel.anchorNode)));
+  const ae = document.activeElement;
+  const typing = ae && (ae.tagName === "SELECT" || (ae.tagName === "INPUT" && !["checkbox", "radio", "button"].includes(ae.type)));
+  const busy = (el) => el && ((typing && el.contains(ae)) || (sel && !sel.isCollapsed && el.contains(sel.anchorNode)));
   const put = (root, next) => {
     // (A part kept across renders, the Regions tab's, stays where it is.)
     if (root.children.length === next.length) next.forEach((el, i) => { if (root.children[i] !== el && !busy(root.children[i])) root.children[i].replaceWith(el); });

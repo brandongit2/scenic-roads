@@ -206,6 +206,25 @@ async function run() {
     }
     check("world maps shown", maps > 0, `${maps}`);
 
+    // Every filter under each map toggled, focused as a click leaves it: the map still there,
+    // sized, drawn (#627: a focused checkbox kept the old part, the map's element gone with it).
+    for (const tab of ["overview", "regions"]) {
+      await show(tab);
+      const cv = `[...document.querySelectorAll("canvas.wmap")].find((e) => e.getClientRects().length && e.closest(".panel:not([hidden])"))`;
+      const inputs = `[...document.querySelectorAll(".panel:not([hidden]) .wmap-filters input, .panel:not([hidden]) .wmap-filters button")]`;
+      const count = await js(`${inputs}.length`);
+      const bad = [];
+      for (let i = 0; i < count; i++) {
+        const what = await js(`(() => { const el = ${inputs}[${i}]; if (!el) return null; const t = el.closest("label")?.textContent || el.textContent; el.focus(); el.click(); return t; })()`);
+        await sleep(350);
+        const state = await js(`(() => { const c = ${cv}; if (!c) return "gone"; const r = c.getBoundingClientRect(); if (r.width < 50 || r.height < 50 || !c.width) return "zero size"; const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data; for (let j = 4; j < d.length; j += 4 * 97) if (d[j] !== d[0] || d[j + 1] !== d[1] || d[j + 2] !== d[2]) return ""; return "blank"; })()`);
+        if (state) bad.push(`${what}: ${state}`);
+      }
+      // (Back as they were: the defaults.)
+      await js(`localStorage.clear()`);
+      check(`${tab}: the map stays drawn through every filter`, count > 0 && !bad.length, count ? bad.slice(0, 4).join("; ") || `${count} toggled` : "no filters shown");
+    }
+
     // The Regions split: stacked at phone width (no bar); dragged at a touch tablet's (900 px).
     await show("regions");
     check("regions: no split bar at phone width (stacked)", !(await at(".rsplit")));
