@@ -156,7 +156,8 @@ A term is `state/build/terms/<E>.json`, made once with create-new (`crate::pool:
 - **Term 1** started from today's layout (`manifest.json`, `jobs.json`, `pending.json`): its first
   snapshot is `term/1/first.json` (`records::first`, `term::bootstrap`).
 - **Taking up term E+1** (`records::start`): from the newest snapshot found walking down the terms
-  (a handover's only from its `seq` or later; a stale read fails and is retried). The new lead then
+  (a handover's only from its `seq` or later; a stale read fails and is retried; never from records
+  missing an entry the journal's GC removes or removed, §7.3). The new lead then
   replays every journal entry its records don't name, in (term, lease) order. It is **caught up**
   (`caught_up`) once a listing of every day, asked for under a day ago, is merged; catalogs and GC
   wait for that. It relists daily.
@@ -734,8 +735,32 @@ holds the job's slot, so it names nothing: the lease counts by its measures unti
   them (`Handoff::sizes`); the merge keeps those of the files the entry names, so a delta catalog
   never looks at them on the NAS. Entries from before carry none.
 - **Lease order holds:** an older lease's entry for targets a newer one set changes nothing.
-- **The journal is a log:** nothing is removed on merge. Planned (task #455): GC of day folders over
-  a week old once every snapshot names their entries; `forget_before` already handles it.
+- **The journal is a log:** nothing is removed on merge. Its days over a week old are removed by
+  the lead's daily `gc` job (`crate::pool::journal_gc`, task #644), off its loop, once its records
+  are re-asserted and caught up, in two runs at least `WAIT_S` (12 h) apart:
+  1. **Mark:** once the last GC's entries are forgotten, `state/journal/gc.json` is written whole,
+     naming every entry of the days before `KEEP_DAYS` (7) ago, up to the first day holding one
+     the current term's snapshot doesn't name (held, or not read whole yet); named by that
+     snapshot as read back from the share (a save that failed, or whose answer was lost, counts
+     for nothing), with the horizon they're before and the last GC's (`floor`). Nothing removed.
+  2. **Remove:** only when every member's heartbeat says its app keeps the fence (`Beat::journal`)
+     and the current term's snapshot, read back, still names or has forgotten every marked entry:
+     the marked files, a day at a time, the term and the marker checked unchanged before each, at
+     most `MAX_REMOVES` (3000) a run, the rest next run; a day emptied, its folder too. Then the
+     marker says done, and the lead's next listing of every day forgets those entries
+     (`Records::forget`), its horizon the marker's: told of one again, it answers it as merged.
+  **Why it's safe.** A take-up starts from the newest snapshot its reads find, which a stale read
+  can make an older one, and replays what the journal holds that its records don't name: an entry
+  removed is replayed no more. So `records::start` refuses (tried again shortly) records that
+  don't name or forget every entry the marker names, or haven't its floor; the wait lets every
+  Mac's reads see the marker before a file goes; `agent::gc::unmerged` refuses such records too,
+  removing nothing. An entry written into a removed day later (its member asleep with it unwritten)
+  isn't marked: it stays and is merged as any, and GC's file sweep lists every day for it. A lead
+  on an app from before the fence (only by the owner's `--downgrade`, §6.1) takes up from records
+  it reads unfenced; no entry is removed while any member's heartbeat is such an app's, but one
+  installed after a removal and forced to lead could, on a stale read, start from records older
+  than the removal. Today's three files are written from the records after each save: GC doesn't
+  touch them. The refusals' notes (`rejected/`) are kept.
 - **The lead lists the journal off its loop:** every day after take-up and daily, the last two days
   every ten minutes. Otherwise it reads the entries members tell it of. An entry unreadable for an
   hour while the share answers is refused. Merging reads for at most a minute a loop.
@@ -1421,7 +1446,7 @@ switched: `state/pool/slots` isn't read, but stays `on` on the NAS while an olde
 `state/pool/budgets` are no longer read either.
 
 Planned: readers reading the term's snapshot and the lead no longer writing today's three files;
-journal GC; the HTTP pool API; resuming beyond the OSM pass. Packing a terrain z6 tile's fetched raw
+the HTTP pool API; resuming beyond the OSM pass. Packing a terrain z6 tile's fetched raw
 tiles (`pack_raw_with`) stays inside that z6 tile's job.
 
 ## 13. Testing

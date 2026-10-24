@@ -80,7 +80,7 @@ pub struct Records {
     /// lease for one of them, merged later, changes nothing.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub last: BTreeMap<String, BTreeMap<String, LeaseId>>,
-    /// The day (YYYY-MM-DD) before which the journal's entries are forgotten (`forget_before`):
+    /// The day (YYYY-MM-DD) before which the journal's entries are forgotten (`forget`):
     /// GC removed them, every snapshot since naming them. Empty: none.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub horizon: String,
@@ -180,7 +180,7 @@ impl Records {
         self.reflected.contains(key) || self.rejected.contains_key(key)
     }
 
-    /// Whether journal entry `key` is of a day they've forgotten (`forget_before`).
+    /// Whether journal entry `key` is of a day they've forgotten (`forget`).
     pub fn forgot(&self, key: &str) -> bool {
         !self.horizon.is_empty() && key < self.horizon.as_str()
     }
@@ -232,12 +232,16 @@ impl Records {
         self.rejected.insert(key.to_string(), why.to_string());
     }
 
-    /// Forgets the journal entries of the days before `day` (YYYY-MM-DD), once GC has removed those
-    /// days from the journal (§7.3: every snapshot since names their entries): none is listed
-    /// again, and one told again is answered as merged (`Merged::forgotten`), the horizon kept.
-    pub fn forget_before(&mut self, day: &str) {
-        self.reflected.retain(|k| k.as_str() >= day);
-        self.rejected.retain(|k, _| k.as_str() >= day);
+    /// Forgets journal entries `keys`, of the days before `day` (YYYY-MM-DD), once GC has removed
+    /// them from the journal (crate::pool::journal_gc: every records a take-up may start from name
+    /// them): none is listed again, and one told again is answered as merged
+    /// (`Merged::forgotten`), the horizon kept. Entries of those days not among them (written
+    /// late, merged since) are kept named, for the next GC.
+    pub fn forget<'a>(&mut self, keys: impl IntoIterator<Item = &'a String>, day: &str) {
+        for k in keys {
+            self.reflected.remove(k);
+            self.rejected.remove(k);
+        }
         if day > self.horizon.as_str() {
             self.horizon = day.to_string();
         }
@@ -435,6 +439,8 @@ pub fn start(nas: &dyn Nas, t: &Term, own: Option<&Records>, today: bool) -> Res
         (Some(b), None) => b,
         (None, None) => bail!("no records to take term {} up from", t.term),
     };
+    // (Not from records missing an entry the journal's GC removes or removed: §7.3.)
+    super::journal_gc::fence(nas, &r)?;
     if r.term != t.term {
         r.term = t.term;
         r.seq = 0;
@@ -635,7 +641,7 @@ mod tests {
         assert_eq!(merge(&nas, &mut r, &keys, &check), Merged::default());
         // The days GC removed, forgotten.
         r.refuse("2026-10-05/2-1", "no such step");
-        r.forget_before("2026-10-06");
+        r.forget(&["2026-10-05/2-1".to_string()], "2026-10-06");
         assert!(!r.handles("2026-10-05/2-1") && r.handles(&a.key().unwrap()) && r.handles(&bad.key().unwrap()));
     }
 
@@ -748,14 +754,14 @@ mod tests {
         let x = journal::write(&nas, &built(4, 1, "6-1-1", "k1")).unwrap();
         merge(&nas, &mut r, std::slice::from_ref(&x), &any);
         nas.remove(&journal::path(&x)).unwrap();
-        r.forget_before("2026-10-14");
+        r.forget(std::slice::from_ref(&x), "2026-10-14");
         assert_eq!(r.horizon, "2026-10-14");
         let m = merge(&nas, &mut r, std::slice::from_ref(&x), &any);
         assert_eq!((m.forgotten.clone(), m.waiting.len()), (vec![x.clone()], 0));
         // One of a forgotten day that's in the journal (written late) is merged as any; an earlier
         // horizon doesn't move it back.
         let y = journal::write(&nas, &built(4, 2, "6-1-2", "k2")).unwrap();
-        r.forget_before("2026-10-01");
+        r.forget(&[], "2026-10-01");
         assert_eq!(
             (merge(&nas, &mut r, std::slice::from_ref(&y), &any).applied, r.horizon.as_str()),
             (vec![y], "2026-10-14")

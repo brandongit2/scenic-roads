@@ -49,6 +49,9 @@ pub struct Beat {
     /// the lead's coordinator and the other members' brokers. Written by the agent, not the driver.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub reach: Vec<super::reachable::Reach>,
+    /// Its app keeps the journal's GC fence (crate::pool::journal_gc::FENCE; 0: an app from before,
+    /// which takes up from whatever records it reads): no entry is removed while one doesn't.
+    pub journal: u32,
 }
 
 /// A handover under way, as its lead's heartbeat says it.

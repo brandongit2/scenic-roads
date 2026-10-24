@@ -35,6 +35,7 @@ pub mod beat;
 pub mod driver;
 pub mod handover;
 pub mod journal;
+pub mod journal_gc;
 pub mod nas;
 pub mod reachable;
 pub mod records;

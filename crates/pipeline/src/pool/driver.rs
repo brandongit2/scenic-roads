@@ -1205,6 +1205,17 @@ impl Driver {
             if let Some(a) = self.asked.remove(&listed.n) {
                 if a.full {
                     l.listed_at = Some(l.listed_at.map_or(a.at, |at| at.max(a.at)));
+                    // (The entries the journal's GC removed, forgotten: §7.3.)
+                    match super::journal_gc::read(io) {
+                        Ok(Some(g)) if g.done && g.horizon > l.records.horizon && g.covers(&l.records) => {
+                            l.records.forget(&g.keys, &g.horizon);
+                            l.dirty = true;
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            out.events.push(Event::Failed { what: "read the journal's GC", why: format!("{e:#}") })
+                        }
+                    }
                 }
             }
             keys.extend(listed.keys.into_iter().filter(|k| !l.records.handles(k)));
@@ -2015,6 +2026,7 @@ impl Driver {
             stood_down,
             addresses: Vec::new(),
             reach: Vec::new(),
+            journal: super::journal_gc::FENCE,
         }
     }
 }
@@ -2049,6 +2061,8 @@ mod tests {
         /// Its reads of paths holding any of these (`|` between) answer, but empty (a stale or
         /// cut-short read).
         short: std::cell::RefCell<Option<String>>,
+        /// Its reads of paths holding this answer that there's no such file (a stale read).
+        gone: std::cell::RefCell<Option<String>>,
     }
 
     impl<'a> Mac<'a> {
@@ -2061,6 +2075,7 @@ mod tests {
                 fail: Default::default(),
                 wfail: Default::default(),
                 short: Default::default(),
+                gone: Default::default(),
             }
         }
 
@@ -2087,6 +2102,9 @@ mod tests {
             }
             if self.short.borrow().as_deref().is_some_and(|f| f.split('|').any(|f| path.contains(f))) {
                 return Ok(self.mem.read(path)?.map(|_| Vec::new()));
+            }
+            if self.gone.borrow().as_deref().is_some_and(|f| path.contains(f)) {
+                return Ok(None);
             }
             self.mem.read(path)
         }
@@ -4034,5 +4052,199 @@ mod tests {
             .events
             .iter()
             .any(|e| matches!(e, Event::Made { how, .. } if how == "re-asserted after a long step")));
+    }
+
+    /// Steps `d` with `heard`, then on, answering the listings it asks for, until it's caught up.
+    fn caught_up(d: &mut Driver, io: &Mac, heard: Heard) -> Out {
+        let mut heard = heard;
+        let mut seen = Vec::new();
+        for _ in 0..30 {
+            io.pass(20);
+            let o = step(d, io, std::mem::replace(&mut heard, able()));
+            seen.push(format!("{:?} {:?} {} {:?}", o.leads, o.list, o.caught_up, o.events));
+            if let Some(l) = &o.list {
+                heard.listed = Some(Listed { n: l.n, keys: journal::list(io, l.since.as_deref()).unwrap() });
+            } else if o.caught_up {
+                return o;
+            }
+        }
+        panic!("never caught up: {seen:#?}");
+    }
+
+    /// A leads (term 1) and merges its jobs' entries `ns` (of T0's day); eight days on, the
+    /// journal's GC marks them, and `WAIT_S` later removes them; A's next listing of every day
+    /// forgets them. Their keys.
+    fn collected(a: &mut Driver, ia: &Mac, ns: &[u64]) -> Vec<String> {
+        use super::super::journal_gc;
+        let es: Vec<Entry> = ns.iter().map(|&n| entry(A, 1, n, &format!("6-1-{n}"))).collect();
+        let keys: Vec<String> = es.iter().map(|e| e.key().unwrap()).collect();
+        caught_up(a, ia, Heard { entries: es, ..able() });
+        caught_up(a, ia, able());
+        let e = a.leads().expect("A leads");
+        assert!(keys.iter().all(|k| Records::load(ia, e).unwrap().unwrap().handles(k)));
+        ia.pass(8 * 86400);
+        caught_up(a, ia, able());
+        let r = journal_gc::run(ia, ia.now(), &|| {}, &|_| {}).unwrap();
+        assert_eq!((r.marked, r.removed), (keys.len(), 0), "{r:?}");
+        ia.pass(journal_gc::WAIT_S);
+        caught_up(a, ia, able());
+        let r = journal_gc::run(ia, ia.now(), &|| {}, &|_| {}).unwrap();
+        assert_eq!((r.removed, r.done), (keys.len(), true), "{r:?}");
+        assert!(keys.iter().all(|k| !ia.exists(&journal::path(k)).unwrap()), "removed");
+        ia.pass(RELIST_S);
+        caught_up(a, ia, able());
+        let r = Records::load(ia, a.leads().unwrap()).unwrap().unwrap();
+        assert!(keys.iter().all(|k| r.forgot(k) && !r.reflected.contains(k)), "forgotten: {}", r.horizon);
+        keys
+    }
+
+    #[test]
+    fn gc_a_takeover_right_after_it_starts_from_records_that_name_what_it_removed() {
+        // (Task #644) B takes over the moment GC is done. A stale read that finds no records for
+        // A's terms would start it from term 1's first, which names none of the removed entries:
+        // the fence holds the take-up until a read finds A's.
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V1), Saved::default());
+        caught_up(&mut a, &ia, able());
+        step(&mut b, &ib, able());
+        let keys = collected(&mut a, &ia, &[1, 2, 3]);
+        let was = Records::load(&mem, a.leads().unwrap()).unwrap().unwrap();
+        ib.wall.set(ia.now());
+        *ib.gone.borrow_mut() = Some("/records.json".into());
+        mem.write_whole(
+            records::FIRST,
+            &serde_json::to_vec(&Records { term: 1, seq: 1, ..Default::default() }).unwrap(),
+        )
+        .unwrap();
+        step(&mut b, &ib, able());
+        let o = step(&mut b, &ib, asks(Ask::TakeOver { force: true, downgrade: false }));
+        assert_eq!(o.leads, None, "held by the fence: {:?}", o.events);
+        assert!(
+            o.events
+                .iter()
+                .any(|e| matches!(e, Event::Waits { what: "take up", why } if why.contains("being removed"))),
+            "{:?}",
+            o.events
+        );
+        *ib.gone.borrow_mut() = None;
+        let o = caught_up(&mut b, &ib, able());
+        assert!(o.leads.is_some(), "{:?}", o.events);
+        let r = Records::load(&mem, o.leads.unwrap()).unwrap().unwrap();
+        assert_eq!((&r.manifest, &r.keys, &r.horizon), (&was.manifest, &was.keys, &was.horizon), "nothing lost");
+        // A told of a removed entry again (its job's member back): answered as merged.
+        ib.pass(20);
+        let o = step(&mut b, &ib, Heard { msgs: vec![(C.into(), Msg::Tell(vec![keys[0].clone()]))], ..able() });
+        assert!(
+            o.send.iter().any(|(to, m)| to == C && matches!(m, Msg::Ack { keys: k, .. } if *k == [keys[0].clone()])),
+            "{:?}",
+            o.send
+        );
+    }
+
+    #[test]
+    fn gc_a_member_asleep_for_days_loses_nothing() {
+        // (Task #644) C ran a job on T0's day and slept for two weeks before writing its entry: it
+        // writes it late, into a day GC has emptied. It isn't among what GC marked: kept, merged.
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        caught_up(&mut a, &ia, able());
+        let keys = collected(&mut a, &ia, &[1, 2]);
+        let late = entry(C, 1, 9, "6-1-9");
+        let k = journal::write(&mem, &late).unwrap();
+        assert!(k.as_str() < Records::load(&mem, a.leads().unwrap()).unwrap().unwrap().horizon.as_str());
+        assert_eq!(k.split('/').next(), keys[0].split('/').next(), "a removed day");
+        ia.pass(20);
+        caught_up(&mut a, &ia, Heard { msgs: vec![(C.into(), Msg::Tell(vec![k.clone(), keys[1].clone()]))], ..able() });
+        let r = Records::load(&mem, a.leads().unwrap()).unwrap().unwrap();
+        assert!(r.reflected.contains(&k) && r.keys.unit.contains_key("6-1-9"), "the late entry merged");
+        // The next GC leaves it until its own run marks it, named.
+        let g = super::super::journal_gc::run(&ia, ia.now(), &|| {}, &|_| {}).unwrap();
+        assert!(g.marked == 1 && mem.exists(&journal::path(&k)).unwrap(), "{g:?}");
+    }
+
+    #[test]
+    fn gc_marks_only_what_a_snapshot_on_the_share_names() {
+        // (Task #644) A merges two more entries but its saves fail (the share refusing its
+        // records' writes): GC marks only what the snapshot on the share names, and removes
+        // nothing a later term's records don't name.
+        use super::super::journal_gc;
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        caught_up(&mut a, &ia, able());
+        let saved = entry(A, 1, 1, "6-1-1");
+        caught_up(&mut a, &ia, Heard { entries: vec![saved.clone()], ..able() });
+        *ia.wfail.borrow_mut() = Some("state/build/term/".into());
+        let unsaved = entry(A, 1, 2, "6-1-2");
+        ia.pass(20);
+        step(&mut a, &ia, Heard { entries: vec![unsaved.clone()], ..able() });
+        ia.pass(20);
+        step(&mut a, &ia, able());
+        assert!(!Records::load(&mem, 1).unwrap().unwrap().handles(&unsaved.key().unwrap()), "not on the share");
+        ia.pass(8 * 86400);
+        let g = journal_gc::run(&ia, ia.now(), &|| {}, &|_| {}).unwrap();
+        assert_eq!(g.marked, 0, "a day holding an entry not named is kept, and the days after: {g:?}");
+        // Its saves land again: all named, marked. Then a stale lead's records, a term on, don't
+        // name them (taken up from term 1's first, say): nothing removed.
+        *ia.wfail.borrow_mut() = None;
+        caught_up(&mut a, &ia, able());
+        let g = journal_gc::run(&ia, ia.now(), &|| {}, &|_| {}).unwrap();
+        assert_eq!(g.marked, 2, "{g:?}");
+        let e = a.leads().unwrap();
+        let stale = Records { term: e + 1, seq: 1, ..Default::default() };
+        mem.write_whole(&term::path(e + 1), &mem.read(&term::path(e)).unwrap().unwrap()).unwrap();
+        let mut t: Term = serde_json::from_slice(&mem.read(&term::path(e)).unwrap().unwrap()).unwrap();
+        t.term = e + 1;
+        mem.write_whole(&term::path(e + 1), &serde_json::to_vec(&t).unwrap()).unwrap();
+        mem.write_whole(&records::path(e + 1), &serde_json::to_vec(&stale).unwrap()).unwrap();
+        ia.pass(journal_gc::WAIT_S);
+        let g = journal_gc::run(&ia, ia.now(), &|| {}, &|_| {}).unwrap();
+        assert_eq!(g.removed, 0, "{g:?}");
+        assert!(g.waits.iter().any(|w| w.contains("don't name")), "{g:?}");
+        assert!(mem.exists(&journal::path(&saved.key().unwrap())).unwrap());
+    }
+
+    #[test]
+    fn gc_waits_for_every_member_on_an_app_that_keeps_the_fence() {
+        // (Task #644) B's heartbeat is an older app's (no `journal`): nothing is removed while it
+        // could take up from whatever records it reads. Once B's app keeps the fence, removed; an
+        // older app's take-up then, from the newest records as it reads them, loses nothing: what
+        // it's told of the removed days is of days they forgot.
+        use super::super::journal_gc;
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        caught_up(&mut a, &ia, able());
+        let es: Vec<Entry> = (1..=2).map(|n| entry(A, 1, n, &format!("6-1-{n}"))).collect();
+        caught_up(&mut a, &ia, Heard { entries: es.clone(), ..able() });
+        let old =
+            Beat { member: B.into(), host: "MacBook-Air".into(), app: V1.into(), beat: ia.now(), ..Default::default() };
+        let mut b: serde_json::Value = serde_json::to_value(&old).unwrap();
+        b.as_object_mut().unwrap().remove("journal");
+        mem.write_whole(&super::super::beat::path(B), &serde_json::to_vec(&b).unwrap()).unwrap();
+        ia.pass(8 * 86400);
+        caught_up(&mut a, &ia, able());
+        assert_eq!(journal_gc::run(&ia, ia.now(), &|| {}, &|_| {}).unwrap().marked, 2);
+        ia.pass(journal_gc::WAIT_S);
+        caught_up(&mut a, &ia, able());
+        let g = journal_gc::run(&ia, ia.now(), &|| {}, &|_| {}).unwrap();
+        assert_eq!(g.removed, 0);
+        assert!(g.waits.iter().any(|w| w.contains("from before")), "{g:?}");
+        Beat { journal: journal_gc::FENCE, ..old }.write(&mem).unwrap();
+        assert_eq!(journal_gc::run(&ia, ia.now(), &|| {}, &|_| {}).unwrap().removed, 2);
+        // An older app's take-up: the newest records, the journal replayed, no fence.
+        let e = a.leads().unwrap();
+        let mut r = Records::newest(&mem, e, false).unwrap().unwrap();
+        let keys: Vec<String> = es.iter().map(|e| e.key().unwrap()).collect();
+        let m = records::merge(&mem, &mut r, &[keys.clone(), journal::list(&mem, None).unwrap()].concat(), &any);
+        assert!(m.applied.is_empty() && m.waiting.is_empty(), "{m:?}");
+        assert_eq!(r.keys.unit.len(), 2, "both jobs' records kept");
     }
 }

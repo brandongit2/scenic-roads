@@ -48,6 +48,9 @@ pub struct Report {
     pub tombs: usize,
     /// Days of the history packed into `state/coord/history-archive/<day>.tar` this run.
     pub history_days_archived: usize,
+    /// The pool's journal entries removed this run (crate::pool::journal_gc), or marked to remove.
+    pub journal_removed: usize,
+    pub journal_marked: usize,
     /// Days of the forecasts' archive packed into `state/coord/forecasts-archive/<YYYY-MM>.tar`.
     pub forecast_days_archived: usize,
     /// The files put back this run: left alone by its sweeps (the next run decides).
@@ -118,9 +121,10 @@ pub fn unmerged(root: &Path, now: u64) -> Result<Unmerged> {
     u.files.extend(r.manifest.values().cloned());
     u.records = r.manifest.iter().map(|(l, c)| (l.clone(), c.clone())).collect();
     u.files.extend(r.pending.keys().cloned());
-    // (The days before the records' horizon are forgotten, every entry of them merged: not listed.)
-    let since = (!r.horizon.is_empty()).then_some(r.horizon.as_str());
-    for key in journal::list(&nas, since).context("the journal")? {
+    // (Not records missing an entry the journal's GC removed or removes: a stale read's.)
+    crate::pool::journal_gc::fence(&nas, &r)?;
+    // (Every day: one before the horizon holds only entries written late, not merged yet.)
+    for key in journal::list(&nas, None).context("the journal")? {
         if r.reflected.contains(&key) || r.rejected.contains_key(&key) {
             continue;
         }
@@ -324,6 +328,22 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
                 rep.warnings.extend(h.warnings);
             }
             Err(e) => rep.warnings.push(format!("history not archived: {e:#}")),
+        }
+        // The pool's journal's old days (task #644); a failure is said, never fails GC.
+        if !dry_run && root.join(crate::pool::journal::DIR).exists() {
+            let nas = crate::pool::nas::Share::new(root);
+            let rmdir = |d: &str| {
+                std::fs::remove_dir(root.join(d)).ok();
+            };
+            match crate::pool::journal_gc::run(&nas, crate::agent::jobs::now_s(), &yield_point, &rmdir) {
+                Ok(j) => {
+                    meta(j.listed, 0, j.removed as u64);
+                    rep.journal_removed = j.removed;
+                    rep.journal_marked = j.marked;
+                    rep.warnings.extend(j.waits.into_iter().map(|w| format!("journal: {w}")));
+                }
+                Err(e) => rep.warnings.push(format!("journal not collected: {e:#}")),
+            }
         }
         // The forecasts' archive's old days, one tar a month, kept for good (task #621).
         match super::fcarchive::pack(root, crate::agent::jobs::now_s(), dry_run, &yield_point) {
