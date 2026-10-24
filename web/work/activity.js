@@ -118,7 +118,7 @@ function macChip(host) {
   return c;
 }
 // A host's robots.txt cell: its state as told (module doc), when it was read on hover.
-const ROBOTS = { unchecked: ["not checked yet", "warn"], allowed: ["allowed", "ok"], disallowed: ["disallowed", "bad"] };
+const ROBOTS = { unchecked: ["not checked yet", "warn"], allowed: ["allowed", "ok"], disallowed: ["disallowed", "warn"] };
 function robotsCell(r) {
   if (!r) return Object.assign(el("td", "small dim", "n/a: API or data"), { title: "An API or a data download: it follows its provider's usage policy, no robots.txt read" });
   const [say, cls] = ROBOTS[r.state] || [r.state, "warn"];

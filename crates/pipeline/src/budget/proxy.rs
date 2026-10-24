@@ -8,7 +8,7 @@
 //! tells it (`POST /hold?s=<seconds>&host=<host>`: crate::budget::seen), and the budget holds every
 //! process and Mac; one that asks again tells it too (`POST /retry?host=<host>`: crate::budget::retried).
 //! One fetching a host's pages tells its robots.txt (`POST /robots?host=<host>&state=<unchecked,
-//! allowed or disallowed>`: crate::budget::net::Robots).
+//! allowed or disallowed>[&t=<unix ms read>]`: crate::budget::net::Robots).
 //! What goes through is counted per host as it's relayed, and per job by the credential its
 //! clients send (`env_for`; crate::budget::net).
 
@@ -536,7 +536,10 @@ fn handle(mut s: TcpStream, ctx: &Arc<Ctx>) -> io::Result<()> {
                     "/robots?host=<host>&state=<unchecked, allowed or disallowed>\n",
                 );
             };
-            net.robots(host, state);
+            let t = param(q, "t").and_then(|v| v.parse::<u64>().ok());
+            if !net.robots(host, state, t) {
+                return answer(&mut s, "400 Bad Request", "a host's name (and room for it)\n");
+            }
             return answer(&mut s, "200 OK", "told\n");
         }
         if let Some(q) = head.target.strip_prefix("/hold") {
@@ -958,6 +961,7 @@ mod tests {
         assert!(request(&p.addr, "POST /robots?host=www.historicplaces.ca&state=allowed HTTP/1.1\r\n\r\n")
             .ends_with("told\n"));
         assert!(request(&p.addr, "POST /robots?host=x&state=maybe HTTP/1.1\r\n\r\n").contains("400"));
+        assert!(request(&p.addr, "POST /robots?host=a%2Fb&state=allowed HTTP/1.1\r\n\r\n").contains("400"));
         let r = request(&p.addr, "POST /hold?s=5&host=dumps.wikimedia.org HTTP/1.1\r\n\r\n");
         assert!(r.ends_with("held\n"), "{r}");
         p.settle_hold();

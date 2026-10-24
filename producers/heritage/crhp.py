@@ -55,19 +55,23 @@ CREDIT = "Canadian Register of Historic Places (historicplaces.ca)"
 
 
 _robots: urllib.robotparser.RobotFileParser | None = None
-_told: str | None = None
+_told: tuple[str, float] | None = None
+_read_ms: int | None = None
+_disallowed = False
 
 
 def tell(state: str) -> None:
-    """Tells the agent's proxy the site's robots.txt state (unchecked, allowed, disallowed), shown on
-    the build page's Activity tab (crate::budget::net::Robots), on each change; nothing outside a job."""
+    """Tells the agent's proxy the site's robots.txt state (unchecked, allowed, disallowed) and when
+    it was read, shown on the build page's Activity tab (crate::budget::net::Robots): on each change
+    and again each minute (a proxy started again since keeps none); nothing outside a job."""
     global _told
     proxy = os.environ.get("SCENIC_BUDGETS")
-    if not proxy or state == _told:
+    now = time.monotonic()
+    if not proxy or (_told and _told[0] == state and now - _told[1] < 60):
         return
-    _told = state
+    _told = (state, now)
     host = urllib.parse.urlsplit(BASE).hostname
-    url = f"{proxy.rstrip('/')}/robots?host={host}&state={state}"
+    url = f"{proxy.rstrip('/')}/robots?host={host}&state={state}" + (f"&t={_read_ms}" if _read_ms else "")
     try:
         urllib.request.build_opener(urllib.request.ProxyHandler({})).open(urllib.request.Request(url, data=b""), timeout=30).close()
     except OSError as e:
@@ -76,8 +80,9 @@ def tell(state: str) -> None:
 
 def allowed(url: str) -> bool:
     """Whether the site's robots.txt (read first, once, as a request of its own) lets us fetch `url`:
-    one that's missing, refused or can't be read allows everything."""
-    global _robots
+    one that's missing, refused or can't be read allows everything. Once a page is disallowed the
+    state told stays disallowed."""
+    global _robots, _read_ms, _disallowed
     if _robots is None:
         tell("unchecked")
         _robots = urllib.robotparser.RobotFileParser()
@@ -88,8 +93,10 @@ def allowed(url: str) -> bool:
         except OSError as e:
             print(f"  {robots}: not readable ({e}), allows everything", file=sys.stderr)
             _robots.parse([])
+        _read_ms = int(time.time() * 1000)
     ok = _robots.can_fetch(UA["User-Agent"], url)
-    tell("allowed" if ok else "disallowed")
+    _disallowed = _disallowed or not ok
+    tell("disallowed" if _disallowed else "allowed")
     return ok
 
 

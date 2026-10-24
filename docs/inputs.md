@@ -1340,7 +1340,7 @@ their indexes.
 |---|---|
 | `role` | the slot the app reads it in, one source a role: `land-cover`, `canopy`, `leaf-type-europe`, `leaf-type-north-america`, `wikidata`, `wikipedia`, `pageviews`, `lake-fill`, `buildings`, `building-heights`, `regions-sea`, `regions-internal-waters`, `regions-territorial-seas`, `regions-lakes`, `regions-land` (§6.1.7); and `depth` (§6.10) and `geoid` (§6.8, step 3), which any number of sources take |
 | `format` | one of its role's: `geotiff`, `geojson`, `image-service`, `zip-geotiff`, `zip-shapefile`, `sparql`, `mediawiki-api`, `pageviews-dump`, `geoparquet`, `depth-grid`, `geoid-grid`, `helmert` |
-| `kind` | required: what fetching it is (`fetch::Kind`): `api` (a documented API: a query service, a WFS or WCS, MediaWiki's API, an ArcGIS REST service), `data` (a published download: a dump, an extract, a dataset's files) or `page` (a web page, an undocumented URL, links followed or scraped). Kept out of keys and the accepted index |
+| `kind` | required: what fetching it is (`fetch::Kind`): `api` (a documented API: a query service, a WFS or WCS, MediaWiki's API, an ArcGIS REST service), `data` (a published download: a dump, an extract, a dataset's files) or `page` (a web page, an undocumented URL, links followed or scraped), refused: no step's fetcher reads robots.txt, so pages are a producer script's (`FETCHES = "page"`). Kept out of keys and the accepted index |
 | `url` / `urls` / `index` | exactly one; a template's placeholders only its role's (`{tile}` for land cover, `{y}` `{m}` for the pageviews); an index is a GeoJSON beside it, a feature per file with its `url` and footprint |
 | `version` | the pinned release |
 | `refresh` | `pinned` (default: a new release is the owner's edit) or `live` (a query service asked each run) |
@@ -1354,7 +1354,7 @@ of one role (`src-role`; for `depth`, two of one `code`). Warning: an index no d
 description's extent for the credits (§4.8), the world or its territory's polygons' boxes in the
 newest pass's outlines.
 
-**robots.txt is for crawlers.** Only a `page` source's host's robots.txt is read first, in a
+**robots.txt is for crawlers.** Only a page's host's robots.txt is read first, in a
 request of its own, and obeyed (one that's missing, refused or unreadable allows everything). An
 `api` or `data` source follows its provider's usage policy instead: the User-Agent
 "scenic-roads/0.1 (personal offline map)" (`fetch::USER_AGENT`), the pool's rate limits (the

@@ -69,6 +69,9 @@ impl Robots {
     }
 }
 
+/// The hosts past which a robots.txt told for a host not yet counted is refused (`Net::robots`).
+pub const ROBOTS_HOSTS: usize = 4096;
+
 /// A job's bytes since it began (`Net::job_began`).
 #[derive(Default, Debug)]
 pub struct Job {
@@ -173,11 +176,28 @@ impl Net {
         });
     }
 
-    /// `host`'s robots.txt is `state` now.
-    pub fn robots(&self, host: &str, state: Robots) {
-        let h = self.host(host);
-        h.robots_t.store(unix_ms(), Ordering::Relaxed);
+    /// `host`'s robots.txt is `state`, read at `t` (unix ms; None or one ahead of now: now). False,
+    /// nothing kept, for a name that isn't a host's or a new host past `ROBOTS_HOSTS` (the hosts
+    /// counted are what's relayed; a told one costs its entry: bounded).
+    pub fn robots(&self, host: &str, state: Robots, t: Option<u64>) -> bool {
+        let valid = !host.is_empty()
+            && host.len() <= 253
+            && host.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+        if !valid {
+            return false;
+        }
+        let h = {
+            let mut hosts = self.hosts.lock().unwrap_or_else(|e| e.into_inner());
+            let name = host.to_ascii_lowercase();
+            if !hosts.contains_key(&name) && hosts.len() >= ROBOTS_HOSTS {
+                return false;
+            }
+            hosts.entry(name).or_default().clone()
+        };
+        let now = unix_ms();
+        h.robots_t.store(t.filter(|&t| t <= now).unwrap_or(now), Ordering::Relaxed);
         h.robots.store(state as u64, Ordering::Relaxed);
+        true
     }
 
     /// The bytes in and out of every host together, and the requests asked (the live store's rates).
@@ -289,8 +309,15 @@ mod tests {
         assert_eq!(n.view()["hosts"]["a.example"]["out"], 4);
         assert_eq!(n.view()["hosts"]["a.example"]["limit"], serde_json::Value::Null);
         assert_eq!(n.view()["hosts"]["a.example"]["robots"], serde_json::Value::Null);
-        n.robots("A.example", Robots::Disallowed);
+        assert!(n.robots("A.example", Robots::Disallowed, Some(5)));
         assert_eq!(n.view()["hosts"]["a.example"]["robots"]["state"], "disallowed");
+        assert_eq!(n.view()["hosts"]["a.example"]["robots"]["t"], 5);
+        assert!(!n.robots("a.example/x", Robots::Allowed, None) && !n.robots("", Robots::Allowed, None));
+        assert!(!n.robots(&"a".repeat(254), Robots::Allowed, None));
+        for i in 0..ROBOTS_HOSTS {
+            n.host(&format!("h{i}"));
+        }
+        assert!(!n.robots("new.example", Robots::Allowed, None) && n.robots("a.example", Robots::Allowed, None));
     }
 
     #[test]

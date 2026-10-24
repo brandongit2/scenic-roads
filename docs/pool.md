@@ -1287,7 +1287,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   Activity tab (`web/work/activity.js`) asks every Mac every 2 s while it shows, with no series:
   their `files` and `net` for the file stream and the internet by website, each host's `robots`
   among them: a job fetching a host's pages (`FETCHES = "page"`) tells its proxy the robots.txt
-  state (`POST /robots?host=…&state=unchecked|allowed|disallowed`, crate::budget::net::Robots,
+  state (`POST /robots?host=…&state=unchecked|allowed|disallowed[&t=<read, unix ms>]`, crate::budget::net::Robots: a host name, at most 4096 hosts,
   with when), null for a host never told: an API's or a data download's, read without robots.txt
   (docs/inputs.md §6.9).
 - **Views** (menu bar, worker page, `scenic lead`, `scenic status`) read the

@@ -212,8 +212,13 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
             }
         }
     }
-    if data.kind.is_none() {
-        why.push("no `kind`: api, data or page (docs/inputs.md §6.9)".into());
+    match data.kind {
+        None => why.push("no `kind`: api, data or page (docs/inputs.md §6.9)".into()),
+        // (No Rust fetcher reads robots.txt: a page is a producer script's, `FETCHES = "page"`.)
+        Some(crate::fetch::Kind::Page) => {
+            why.push("`kind` is page: no step's fetcher reads robots.txt; a page is fetched by a producer script (docs/inputs.md §6.9)".into())
+        }
+        Some(_) => {}
     }
     if !["pinned", "live"].contains(&data.refresh.as_str()) {
         why.push(format!("`refresh` is \"{}\": pinned or live", data.refresh));
@@ -899,6 +904,7 @@ mod tests {
             assert!(c.findings.iter().any(|f| f.check() == DECL), "{data}: {:?}", c.findings);
         };
         bad("role = \"pageviews\"\nformat = \"pageviews-dump\"\nurl = \"https://d.org/{y}\"\n");
+        bad("role = \"pageviews\"\nformat = \"pageviews-dump\"\nkind = \"page\"\nurl = \"https://d.org/{y}\"\n");
         bad("role = \"pageviews\"\nformat = \"pageviews-dump\"\nkind = \"crawl\"\nurl = \"https://d.org/{y}\"\n");
         bad("role = \"weather\"\nformat = \"geotiff\"\nkind = \"data\"\nurl = \"https://a.org/x.tif\"\n");
         bad("role = \"pageviews\"\nformat = \"geotiff\"\nkind = \"data\"\nurl = \"https://a.org/{y}\"\n");

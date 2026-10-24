@@ -294,7 +294,16 @@ async function run() {
       // folded into a "+N".)
       if (tab === "jobs") {
         const j = await js(`(() => { const s = document.querySelector(".panel:not([hidden]) .stages"); if (!s) return null; const rows = [...s.querySelectorAll(":scope > .cells")]; return [rows.length, s.querySelectorAll(".cells > .jb").length, s.querySelectorAll(".cells .more").length, rows.filter((r) => !r.previousElementSibling?.classList.contains("st")).length]; })()`);
-        check("jobs: each step's jobs a row under it, a box a job, none folded", j && j[1] > 0 && !j[2] && !j[3], j ? `${j[0]} rows, ${j[1]} jobs, ${j[2]} folded, ${j[3]} misplaced` : "no stages");
+        // (A paused build with no lease and no forecast has no job to draw: nothing to check then.)
+        const post = (call) => fetch(`http://${AGENT.host}:${AGENT.port}/work/${call}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json(), () => ({}));
+        const idle = j && !j[1] && (await (async () => {
+          const sw = await post("swarm");
+          const tc = TOCOME ? JSON.parse(readFileSync(TOCOME, "utf8")) : await post("tocome");
+          const toCome = Object.values(tc.macs || {}).reduce((n, steps) => n + Object.values(steps).reduce((k, l) => k + l.length, 0), 0);
+          return sw.pause && !sw.leases?.length && !toCome;
+        })());
+        if (idle) console.log("INFO jobs: each step's jobs a row under it: skipped, the build is paused with no job leased and no forecast (nothing to draw)");
+        else check("jobs: each step's jobs a row under it, a box a job, none folded", j && j[1] > 0 && !j[2] && !j[3], j ? `${j[0]} rows, ${j[1]} jobs, ${j[2]} folded, ${j[3]} misplaced` : "no stages");
       }
       // (Machines and NAS: every measure a chart over time, the same width (the owner's 04:33 ask,
       // #634): the NAS tab's rows are the Machines tab's, no gauge left. The lead answering is the
