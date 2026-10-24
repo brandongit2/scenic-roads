@@ -202,19 +202,20 @@ fn ring_area_m2(r: &[[i32; 2]]) -> f64 {
 /// Douglas–Peucker with a tolerance in metres; keeps a closed ring's first and last points and at
 /// least four. The ring stays straight lines in longitude and latitude (as it is drawn and tested),
 /// and each point's distance from a chord is measured at that point's own scale (x by the cosine of
-/// its latitude, clamped to the map's edge), so no one latitude stands for the ring: a ring from the equator to a pole, or
-/// starting at one, keeps its width everywhere.
+/// its latitude), so no one latitude stands for the ring: a ring from the equator to a pole, or
+/// starting at one, keeps its width everywhere. Past the map's edge (±85.05°) a latitude counts as
+/// the edge's.
 pub fn simplify(r: &[[i32; 2]], tol_m: f64) -> Vec<[i32; 2]> {
     if r.len() <= 4 {
         return r.to_vec();
     }
-    let ky = 110_574.0 * 1e-7;
-    // x unscaled (metres at the equator), each point's own scale kept beside it.
-    let xy: Vec<(f64, f64)> = r.iter().map(|p| (f64::from(p[0]) * 111_320.0 * 1e-7, f64::from(p[1]) * ky)).collect();
-    // Clamped to the map's edge (Web Mercator's ±85.05°): past it nothing is drawn, and a point at a
-    // pole (cos 0, all its x one place) would let a pole-wide edge go, drawing a diagonal instead.
-    let kx: Vec<f64> =
-        r.iter().map(|p| (f64::from(p[1]) * 1e-7).clamp(-85.051_128_78, 85.051_128_78).to_radians().dcos()).collect();
+    // Latitudes clamped to the map's edge (Web Mercator's ±85.05°): past it nothing is drawn, so
+    // detail there is nil (Antarctica's dissolved cells zigzag between 89.1°S and the pole), and a
+    // point at a pole (cos 0, all its x one place) would let a pole-wide edge go, drawing a
+    // diagonal instead. x unscaled (metres at the equator), each point's own scale beside it.
+    let lat = |p: &[i32; 2]| (f64::from(p[1]) * 1e-7).clamp(-85.051_128_78, 85.051_128_78);
+    let xy: Vec<(f64, f64)> = r.iter().map(|p| (f64::from(p[0]) * 1e-7 * 111_320.0, lat(p) * 110_574.0)).collect();
+    let kx: Vec<f64> = r.iter().map(|p| lat(p).to_radians().dcos()).collect();
     let mut keep = vec![false; r.len()];
     keep[0] = true;
     keep[r.len() - 1] = true;
@@ -1429,7 +1430,11 @@ mod tests {
         // the pole. Its scale taken at the first point's latitude (90°S: no width) left five points,
         // one of them inside the notch's side, and lines across the map.
         let e7 = |x: f64, y: f64| [(x * 1e7) as i32, (y * 1e7) as i32];
-        let mut ring = vec![e7(-180.0, -90.0), e7(180.0, -90.0)];
+        // Along the pole, the zigzag the dissolved cells give it (89.1°S and back, each degree):
+        // past the map's edge, dropped.
+        let mut ring = vec![e7(-180.0, -90.0)];
+        ring.extend((1..360).flat_map(|i| [e7(-180.0 + f64::from(i), -89.1), e7(-180.0 + f64::from(i), -90.0)]));
+        ring.push(e7(180.0, -90.0));
         ring.extend((0..=360).map(|i| e7(180.0 - f64::from(i) * 0.5, -60.0)).take_while(|p| p[0] > e7(-40.0, 0.0)[0]));
         ring.extend([e7(-40.0, -57.0), e7(-50.0, -57.0)]);
         ring.extend((0..=260).map(|i| e7(-50.0 - f64::from(i) * 0.5, -60.0)));
