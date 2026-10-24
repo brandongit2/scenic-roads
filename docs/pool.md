@@ -796,10 +796,11 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
 Jobs call the lead through one interface re-resolved each call (`crate::agent`'s `beat`,
 `end_lease`): in process while this Mac leads, over HTTP otherwise, so a job carries on across a
 handover. A job's tasks are offered through its own Mac's coordinator or broker; one that stopped
-answers nothing and the job runs the task itself. With `state/pool/slots`, a member taking up a
-term starts its coordinator in process, and a lead losing it stops its coordinator and duties,
-keeping its jobs running; without it, the agent restarts into its new part once its first slot is
-free. A lead whose update waits on its jobs keeps the lead and restarts into the new app at a safe
+answers nothing and the job runs the task itself. A member taking up a term starts its
+coordinator in process, and a lead losing it stops its coordinator and duties, keeping its jobs
+running; only a coordinator that fails to start leaves the part to a restart once its first slot is
+free. A lead drains the hand-offs its coordinator journaled on its disk (those a member out of the
+pool told it, `journaled: false`) into the pool's journal (`Run::drain`). A lead whose update waits on its jobs keeps the lead and restarts into the new app at a safe
 point like any member (docs/building.md §2, A newly installed app). The lead's own asks always carry its capacity, so the lead never
 holds packing off for the pool (§7.1, Mixed versions); its heartbeat says whether the pool is all on
 the new app (`all_new`) for its members' heartbeats.
@@ -1388,10 +1389,12 @@ run, claims, the named writer (`SCENIC_BUILD_MAC`), the NAS's hand-off folders, 
 writes.
 
 Still behind switches under `state/pool/` (a file; off while missing unless noted):
-`slots` (§7.6), `resume` (§7.2, §7.4), `brokers` (§8), `placement` (§7.2),
+`resume` (§7.2, §7.4), `brokers` (§8), `placement` (§7.2),
 `memory-guard` (on while missing). A new switch is made only once every
-member's heartbeat shows the app that has it. The old files `state/pool/enabled` and
-`state/pool/budgets` are no longer read; they stay on the NAS while an older app may read them.
+member's heartbeat shows the app that has it. A part changing in its process (§7.6) is no longer
+switched: `state/pool/slots` isn't read, but stays `on` on the NAS while an older app may read it
+(one reading it missing or `off` restarts to change part). The old files `state/pool/enabled` and
+`state/pool/budgets` are no longer read either.
 
 Planned: readers reading the term's snapshot and the lead no longer writing today's three files;
 journal GC; the HTTP pool API; resuming beyond the OSM pass. Packing a terrain z6 tile's fetched raw

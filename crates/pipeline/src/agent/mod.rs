@@ -1326,9 +1326,7 @@ pub struct Agent {
     guard_backoff: BTreeMap<String, (u64, String)>,
     /// The memory this member spared its jobs in its last ask (MB: `Slot::spare_mb`).
     ask_spare_mb: Option<u64>,
-    /// The pool's switch for a part changing in this process (`pool::SLOTS`), as last read; the
-    /// idle-sleep assertion it holds while it leads with leases out.
-    slots_on: bool,
+    /// The idle-sleep assertion it holds while it leads with leases out.
     /// The budgets (docs/pool.md §7.7): every job's connections out through this agent's proxy,
     /// each Wikimedia request taken from the pool's one budget on the NAS, the job sandboxed so it
     /// has no other way out; the answers' lease. (And the Mac shared by measure: a job starts beside
@@ -1560,10 +1558,8 @@ pub struct Agent {
     /// tick holds it across the share's operations, which may hang).
     member_id: Option<String>,
     pool_seen: Option<PoolView>,
-    /// Its jobs' hand-offs that ended while a tick held the run, for the next pool step; and the
-    /// switch's part change likewise (`pool::SLOTS`).
+    /// Its jobs' hand-offs that ended while a tick held the run, for the next pool step.
     held_entries: Vec<(crate::pool::journal::Entry, Option<PathBuf>)>,
-    in_process_owed: Option<bool>,
     /// Whether a tick holds the run, and since when (`pool::Ticking`, read without its lock); the
     /// loop's pool steps passed over in a row for it, and since when it's taken for hung
     /// (`pool_skipped`).
@@ -1851,7 +1847,6 @@ impl Agent {
             own_mb: 0,
             guard_backoff: BTreeMap::new(),
             ask_spare_mb: None,
-            slots_on: false,
             proxy: early_proxy,
             proxy_port: None,
             resume: false,
@@ -1955,7 +1950,6 @@ impl Agent {
             ramp_trouble: None,
             pool_seen: run.as_ref().map(|r| r.pool_view()),
             held_entries: Vec::new(),
-            in_process_owed: None,
             pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))),
             ticker: None,
             restart_for: None,
@@ -6809,7 +6803,7 @@ impl Agent {
         self.coord.as_ref().map(|c| c.lease_gen()).hash(&mut h);
         self.newer_app().hash(&mut h);
         // (The pool's switches as this agent holds them.)
-        (self.resume, self.placement, self.brokers, self.slots_on, self.guard_on).hash(&mut h);
+        (self.resume, self.placement, self.brokers, self.guard_on).hash(&mut h);
         // (Never 0: that's "not read".)
         h.finish() | 1
     }
@@ -9748,23 +9742,6 @@ impl Agent {
         if let Some(b) = &self.broker {
             b.set_placement(placed);
         }
-        if let Some(on) = pool::slots_on(r) {
-            if on != self.slots_on {
-                eprintln!("agent: a part changing in this process is {}", if on { "on" } else { "off" });
-            }
-            self.slots_on = on;
-            let busy = match self.try_pooled() {
-                Some(Some(mut run)) => {
-                    run.in_process = on;
-                    false
-                }
-                Some(None) => true,
-                None => false,
-            };
-            if busy {
-                self.in_process_owed = Some(on);
-            }
-        }
         // Not in the pool (the NAS not reached as this process started, or its member's lock held
         // by another process): once the lock can be taken with the NAS answering, this process
         // restarts into the pool (its part, its coordinator).
@@ -9818,9 +9795,6 @@ impl Agent {
             }
             self.pool_skips = 0;
             run.in_step = true;
-            if let Some(on) = self.in_process_owed.take() {
-                run.in_process = on;
-            }
             run.entries.append(&mut self.held_entries);
         }
         // (`in_step` cleared however this step ends, a panic too: else no tick ever again.)
@@ -9965,7 +9939,9 @@ impl Agent {
             })
             .collect();
         run.take_left(&home, &running);
-        run.drain(lead.then(|| home.join("coord/journal")).as_deref(), &home.join("outbox"));
+        if lead {
+            run.drain(&home.join("coord/journal"));
+        }
         // The owner's lead asks (crate::agent::lead): this Mac's, and the build page's.
         run.conds = Some(pool::Conds {
             home: c.home,
@@ -9991,7 +9967,7 @@ impl Agent {
         let checked = crate::coord::wall_now();
         // (Its part changed, in this process: its coordinator started or stopped, its jobs going on;
         // not tried again once a restart is asked for, its coordinator failing to start.)
-        let change = run.in_process && run.restart.is_none();
+        let change = run.restart.is_none();
         drop(run);
         if change {
             self.change_part(r, &out);
@@ -10051,7 +10027,7 @@ impl Agent {
         Some(g)
     }
 
-    /// This process's part changed with its step `out` (docs/pool.md §7.6, `pool::SLOTS` on): it took
+    /// This process's part changed with its step `out` (docs/pool.md §7.6): it took
     /// up a term (a member a moment ago), so it starts its coordinator and leads, the jobs it runs
     /// going on, their leases its own coordinator's from now (handed over with the term, or held
     /// again: `beat`); or it no longer leads one, so its coordinator stops (its contact taken off
@@ -10145,7 +10121,7 @@ impl Agent {
     fn lead_awake(&mut self) {
         let leading = self.pool_seen.as_ref().is_some_and(|p| p.role == pool::Role::Lead && p.gates.leads.is_some());
         let leases = self.coord.as_ref().is_some_and(|c| c.leases_out() > 0);
-        if !(leading && leases && self.slots_on) {
+        if !(leading && leases) {
             self.lead_awake_off();
             return;
         }
@@ -16558,15 +16534,14 @@ mod pool_tests {
             }
         }
         both(&mut lead, &mut m, &|_, m| m.pooled().unwrap().side.driver().leads() == Some(2));
-        // The member leads term 2 in this process (it restarts into its part once its slot is free);
-        // the lead's ask is done, its process restarting into a member's.
+        // The member leads term 2, its part changing in this process; the lead's ask is done, the
+        // old lead a member in its own.
         let asked = lead.pooled().unwrap().controls.kept.asked.clone().unwrap();
         assert_eq!(asked.ask, crate::control::LeadAsk::Give { to: im.clone() });
         both(&mut lead, &mut m, &|l, _| {
             l.pooled().unwrap().controls.kept.asked.as_ref().is_some_and(|a| a.state == lead::State::Done)
         });
-        assert!(lead.pool_restart().is_some_and(|w| w.contains("no longer leads")), "{:?}", lead.pool_restart());
-        assert!(m.pool_restart().is_some_and(|w| w.contains("leads term 2")));
+        assert!(lead.pool_restart().is_none() && m.pool_restart().is_none(), "{:?}", lead.pool_restart());
         assert!(m.slots[0].running.is_some(), "the job still runs");
         std::fs::write(&gate, b"").unwrap();
         // The job, granted in term 1, ran on: its entry reached the new lead's records.
@@ -16608,7 +16583,6 @@ mod pool_tests {
         TEST_ABLE.with(|c| c.set(Some(true)));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::SLOTS);
         let bin = app(d.path());
         let gate = d.path().join("gate");
         let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = slope ] && while [ ! -e '{}' ]; do kill -0 $PPID 2>/dev/null || exit 1; sleep 0.05; done\n", gate.display()));
@@ -16636,7 +16610,6 @@ mod pool_tests {
         .unwrap();
         m.mac = MEMBER_MAC;
         m.step().unwrap();
-        assert!(lead.slots_on && m.slots_on);
         let (il, im) = (lead.pooled().unwrap().side.member().id.clone(), m.pooled().unwrap().side.member().id.clone());
         lead.pooled().unwrap().side.know(&im);
         // The member's job, granted by the lead in term 1, runs while the owner hands the lead to it.
@@ -16730,7 +16703,6 @@ mod pool_tests {
         TEST_ABLE.with(|c| c.set(Some(true)));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::SLOTS);
         switch_on(&r, brokers::SWITCH);
         let bin = app(d.path());
         let gate = d.path().join("gate");
@@ -16958,7 +16930,6 @@ mod pool_tests {
         TEST_ABLE.with(|c| c.set(Some(true)));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::SLOTS);
         let bin = app(d.path());
         let gate = d.path().join("gate");
         let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = pack ] && while [ ! -e '{}' ]; do kill -0 $PPID 2>/dev/null || exit 1; sleep 0.05; done\n", gate.display()));
@@ -17068,7 +17039,6 @@ mod pool_tests {
         TEST_ABLE.with(|c| c.set(Some(true)));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::SLOTS);
         let bin = app(d.path());
         let gate = d.path().join("gate");
         let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = pass-sets ] && while [ ! -e '{}' ]; do kill -0 $PPID 2>/dev/null || exit 1; sleep 0.05; done\n", gate.display()));
@@ -17154,7 +17124,6 @@ mod pool_tests {
         TEST_ABLE.with(|c| c.set(Some(true)));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::SLOTS);
         let bin = app(d.path());
         let gate = d.path().join("gate");
         let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = pack ] && while [ ! -e '{}' ]; do kill -0 $PPID 2>/dev/null || exit 1; sleep 0.05; done\n", gate.display()));
@@ -17239,7 +17208,6 @@ mod pool_tests {
         TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::SLOTS);
         let bin = app(d.path());
         let mut lead = test_agent(Options {
             root: Some(r.clone()),
@@ -17310,7 +17278,6 @@ mod pool_tests {
         TEST_PORT.with(|p| p.set(Some(free_port())));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::SLOTS);
         let bin = app(d.path());
         let mut lead = test_agent(Options {
             root: Some(r.clone()),
@@ -17365,7 +17332,6 @@ mod pool_tests {
         TEST_ABLE.with(|c| c.set(Some(true)));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::SLOTS);
         // Two published apps; the member runs the newer, which this Mac has installed (`current`)
         // while its job holds it on the older.
         let apps = d.path().join("v/app");
@@ -17435,7 +17401,6 @@ mod pool_tests {
         TEST_ABLE.with(|c| c.set(Some(true)));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::SLOTS);
         let made = app(d.path());
         let v = d.path().join("v/app/20261010-0100-aaaaaaa");
         std::fs::create_dir_all(&v).unwrap();
@@ -17508,7 +17473,6 @@ mod pool_tests {
         TEST_ABLE.with(|c| c.set(Some(true)));
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        switch_on(&r, pool::SLOTS);
         let made = app(d.path());
         let v = d.path().join("v/app/20261010-0100-aaaaaaa");
         std::fs::create_dir_all(&v).unwrap();

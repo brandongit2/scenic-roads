@@ -6,7 +6,7 @@
 //!   (its broker, on the pool's port, crate::coord::PORT) and gives its jobs its address, so their
 //!   tasks are offered there (crate::offload: `SCENIC_COORD`), served from its disk and handed back
 //!   to it. The lead's coordinator brokers the lead's, as before.
-//! - **A handover drops no task**: a part changing in its process (`state/pool/slots`), the lead's
+//! - **A handover drops no task**: a part changes in its process (docs/pool.md §7.6), the lead's
 //!   coordinator stays on as its broker once it no longer leads (crate::coord::Coordinator::
 //!   become_broker: the jobs' leases left to the new lead), and a member's broker becomes its
 //!   coordinator as it takes the lead (its tasks' leases kept as it takes up the term's: crate::
