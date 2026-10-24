@@ -680,7 +680,7 @@ pub fn build_lo(
 ) -> Result<usize> {
     let made = compose_lo(out, sources, water, local, q, LO_COMPOSED.1, super::resume::on())?;
     let n = put_packs(out, &made, None, "lo", (3, q.0, q.1))?;
-    std::fs::remove_dir_all(super::resume::dir(&out.scratch, (3, q.0, q.1))).ok();
+    std::fs::remove_file(super::resume::path(&out.scratch, (3, q.0, q.1))).ok();
     Ok(n)
 }
 
@@ -803,18 +803,28 @@ fn resume_log(
         return None;
     }
     let pins: Vec<&str> = sources.iter().map(|s| s.pin.as_str()).collect();
+    // (`Tiles::png` reads only the depth lo packs, of the z3 tile over `t` and its neighbours:
+    // `Tiles::up` reaches one tile past a block at most, wrapping east–west. Not every lo pack: the
+    // others, and the class's and the shading's, are saved as the rebuild goes on, and would
+    // throw the log away for nothing.)
     let lo: Vec<String> = if tl.reads_lo {
-        tl.out
-            .manifest
-            .iter()
-            .filter(|(l, _)| l.contains("/lo/") && l.starts_with("layers/depth"))
-            .map(|(l, c)| format!("{l}={c}"))
-            .collect()
+        let (qx, qy) = (t.1 >> (t.0 - 3), t.2 >> (t.0 - 3));
+        let mut v = Vec::new();
+        for dy in -1i64..=1 {
+            for dx in -1i64..=1 {
+                let (x, y) = ((i64::from(qx) + dx).rem_euclid(8), i64::from(qy) + dy);
+                if (0..8).contains(&y) {
+                    let l = lo_logical(LAYER, x as u32, y as u32);
+                    v.push(format!("{l}={}", tl.out.get(&l).unwrap_or("-")));
+                }
+            }
+        }
+        v
     } else {
         Vec::new()
     };
     let id = super::resume::id(&[
-        &format!("depth {DEPTH_V} {DEPTH_LO_V} {LAYER} {CLASS_LAYER}"),
+        &format!("depth {DEPTH_V} {DEPTH_LO_V} {LAYER} {CLASS_LAYER} {} {}", super::ENCODING, super::CLASS_ENCODING),
         &format!("{}/{}/{} to z{upto}", t.0, t.1, t.2),
         &pins.join("\n"),
         &water.pin(),
@@ -840,10 +850,23 @@ pub fn build_hi(
     local: Local,
     t: (u32, u32),
 ) -> Result<usize> {
-    let made = compose_hi(out, sources, water, local, t, HI.1, super::resume::on())?;
+    build_hi_keeping(out, sources, water, local, t, super::resume::on())
+}
+
+/// `build_hi`, its blocks kept and taken (crate::depth::resume) with `keep`.
+pub(super) fn build_hi_keeping(
+    out: &mut Out,
+    sources: &[Source],
+    water: &dyn WaterSource,
+    local: Local,
+    t: (u32, u32),
+    keep: bool,
+) -> Result<usize> {
+    let made = compose_hi(out, sources, water, local, t, HI.1, keep)?;
+    // (The shading from the tiles made alone: a resumed run's the same bytes.)
     let shade = shading(&made, HI.0)?;
     let n = put_packs(out, &made, Some(&shade), "hi", (6, t.0, t.1))?;
-    std::fs::remove_dir_all(super::resume::dir(&out.scratch, (6, t.0, t.1))).ok();
+    std::fs::remove_file(super::resume::path(&out.scratch, (6, t.0, t.1))).ok();
     Ok(n)
 }
 

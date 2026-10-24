@@ -844,13 +844,13 @@ fn a_depth_run_stopped_after_some_blocks_resumes_there_and_makes_the_same_bytes(
     build_lo(&mut out, &srcs, &Fixture, None, q).unwrap();
     let fresh_lo = compose_lo(&out, &srcs, &Fixture, None, q, 8, false).unwrap();
     let fresh_hi = compose_hi(&out, &srcs, &Fixture, None, T, 12, false).unwrap();
-    assert!(!super::resume::dir(&out.scratch, (6, T.0, T.1)).exists(), "nothing kept without resuming on");
+    assert!(!super::resume::path(&out.scratch, (6, T.0, T.1)).exists(), "nothing kept without resuming on");
     for stop in [1, 5, 40] {
         let scratch = d.path().join(format!("scratch-{stop}"));
         let out = Out::unbound(&d.path().join("root"), &scratch).unwrap();
         STOP_AFTER.set(Some(stop));
         assert!(compose_hi(&out, &srcs, &Fixture, None, T, 12, true).is_err(), "stopped after {stop} blocks");
-        let log = std::fs::read(super::resume::dir(&scratch, (6, T.0, T.1)).join("blocks")).unwrap();
+        let log = std::fs::read(super::resume::path(&scratch, (6, T.0, T.1))).unwrap();
         assert!(!log.is_empty());
         let resumed = compose_hi(&out, &srcs, &Fixture, None, T, 12, true).unwrap();
         assert!(resumed == fresh_hi, "the same tiles, stopped after {stop} blocks");
@@ -859,13 +859,60 @@ fn a_depth_run_stopped_after_some_blocks_resumes_there_and_makes_the_same_bytes(
         assert!(compose_lo(&out, &srcs, &Fixture, None, q, 8, true).is_err());
         assert!(compose_lo(&out, &srcs, &Fixture, None, q, 8, true).unwrap() == fresh_lo);
     }
-    // A run again with every block kept composes none: the log alone, the sources' grids gone.
+    // A run again with every block kept composes none: the log alone, the sources' grids gone;
+    // though lo packs it never reads were saved since (a far z3 tile's depth, its own z3 tile's
+    // shading and class: the rebuild goes on beside it).
     let scratch = d.path().join("scratch-5");
-    let out = Out::unbound(&d.path().join("root"), &scratch).unwrap();
+    let lo_pack = |out: &mut Out, layer: &str, enc: &str, at: (u32, u32), v: f32| {
+        let b = fall::encode(&Grid::F(vec![v; 65536])).unwrap();
+        let mut it = vec![(3u8, at.0, at.1, b, 0u32)].into_iter();
+        crate::layers::write_pack(out, layer, enc, false, "lo", (3, at.0, at.1), &mut it).unwrap();
+        out.save().unwrap();
+    };
+    let mut out = Out::unbound(&d.path().join("root"), &scratch).unwrap();
+    lo_pack(&mut out, LAYER, ENCODING, (6, 6), -5.0);
+    lo_pack(&mut out, SHADE_LAYER, crate::shade_codec::ENCODING, q, -5.0);
+    lo_pack(&mut out, CLASS_LAYER, CLASS_ENCODING, q, -5.0);
     for c in 1..=3 {
         std::fs::remove_file(d.path().join(format!("{c}.tif"))).unwrap();
     }
     assert!(compose_hi(&out, &srcs, &Fixture, None, T, 12, true).unwrap() == fresh_hi);
+    // A neighbour's depth lo pack, which it may read, changed: its log not taken.
+    lo_pack(&mut out, LAYER, ENCODING, (q.0 + 1, q.1), -5.0);
+    let out = Out::unbound(&d.path().join("root"), &scratch).unwrap();
+    assert!(compose_hi(&out, &srcs, &Fixture, None, T, 12, true).is_err(), "afresh, it reads the sources");
     let fresh = Out::unbound(&d.path().join("root"), &d.path().join("scratch-none")).unwrap();
     assert!(compose_hi(&fresh, &srcs, &Fixture, None, T, 12, true).is_err(), "made afresh, it reads them");
+}
+
+/// A z6 tile's whole job (`build_hi`) stopped and resumed stores the same packs as one never
+/// stopped: its depth, class and floor's shading (`depth-shade`, made from the tiles once all are,
+/// not logged), the same bytes; its log gone once they're saved.
+#[test]
+fn a_resumed_z6_tiles_packs_and_shading_are_the_same_bytes() {
+    use super::build::build_hi_keeping;
+    use super::resume::STOP_AFTER;
+    let d = tempfile::tempdir().unwrap();
+    let srcs = sources(d.path());
+    let q = (T.0 >> 3, T.1 >> 3);
+    let packs = |name: &str, stop: Option<usize>| {
+        let mut out = Out::unbound(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
+        build_lo(&mut out, &srcs, &Fixture, None, q).unwrap();
+        if let Some(n) = stop {
+            STOP_AFTER.set(Some(n));
+            assert!(build_hi_keeping(&mut out, &srcs, &Fixture, None, T, true).is_err());
+            assert!(super::resume::path(&out.scratch, (6, T.0, T.1)).exists());
+        }
+        build_hi_keeping(&mut out, &srcs, &Fixture, None, T, stop.is_some()).unwrap();
+        assert!(!super::resume::path(&out.scratch, (6, T.0, T.1)).exists(), "the log gone once saved");
+        [LAYER, CLASS_LAYER, SHADE_LAYER].map(|l| {
+            let c = out.get(&hi_logical(l, T.0, T.1)).unwrap_or_else(|| panic!("{l}'s hi pack")).to_string();
+            std::fs::read(out.path(&c)).unwrap()
+        })
+    };
+    let fresh = packs("fresh", None);
+    assert!(fresh.iter().all(|b| !b.is_empty()));
+    for stop in [1, 7, 30] {
+        assert!(packs(&format!("stop-{stop}"), Some(stop)) == fresh, "stopped after {stop} blocks");
+    }
 }
