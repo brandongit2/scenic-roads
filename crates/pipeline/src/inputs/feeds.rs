@@ -310,7 +310,7 @@ impl Checks for Feeds {
         c.findings = findings;
         if let Some(feed) = feed {
             let (d, _, _) = super::credits::parse_description(path, bytes);
-            // (Its extent isn't known until its stops are read: listed in no catalog's credits yet.)
+            // (No extent: a catalog credits it while the trains or ferries count it: `credited`.)
             c.facts.insert("description".into(), serde_json::to_value(d).unwrap_or_default());
             c.keyed = Some(store::naming::hash16(feed.to_string().as_bytes()));
             // (One that replaces another is held with it when that one is held.)
@@ -453,20 +453,74 @@ pub fn of_accepted(a: &super::Accepted) -> Result<Vec<Value>> {
     Ok(out)
 }
 
-/// Indexes' key names as read, by the index's content name.
-static KEYS_READ: std::sync::Mutex<Option<BTreeMap<String, Vec<String>>>> = std::sync::Mutex::new(None);
+/// What the agent reads of an accepted index: the key names its declarations fetch with, sorted,
+/// and the digest of their `keyed` digests (what rail-feeds reads of them: `facts.feed`, so an
+/// edited description or note changes neither).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Declared {
+    pub key_names: Vec<String>,
+    pub keyed: String,
+}
 
-/// The key names the declarations of accepted index `index` (its content name) fetch with, sorted:
-/// read once per index.
-pub fn index_key_names(root: &Path, index: &str) -> Result<Vec<String>> {
-    if let Some(k) = KEYS_READ.lock().unwrap().get_or_insert_with(BTreeMap::new).get(index) {
-        return Ok(k.clone());
+/// Indexes as read, by the index's content name.
+static DECLARED: std::sync::Mutex<Option<BTreeMap<String, Declared>>> = std::sync::Mutex::new(None);
+
+/// The declarations of accepted index `index` (its content name), as `Declared`: read once per
+/// index.
+pub fn declared(root: &Path, index: &str) -> Result<Declared> {
+    if let Some(d) = DECLARED.lock().unwrap().get_or_insert_with(BTreeMap::new).get(index) {
+        return Ok(d.clone());
+    }
+    let d = declared_of(&super::read_index(root, index)?);
+    DECLARED.lock().unwrap().get_or_insert_with(BTreeMap::new).insert(index.to_string(), d.clone());
+    Ok(d)
+}
+
+/// `declared` of an index read.
+pub fn declared_of(i: &super::Index) -> Declared {
+    let feeds: Vec<Value> = i.files.values().filter_map(|f| f.facts.get("feed").cloned()).collect();
+    let lines: Vec<String> = i.files.iter().map(|(p, f)| format!("{p} {}", f.keyed)).collect();
+    Declared { key_names: key_names(&feeds), keyed: store::naming::hash16(lines.join("\n").as_bytes()) }
+}
+
+/// The credited feeds as read, by the content names they were read from.
+static CREDITED: std::sync::Mutex<Option<(String, Vec<String>)>> = std::sync::Mutex::new(None);
+
+/// The declared feeds the map's trains and ferries count (in the rail or ferry feeds' list with a
+/// zip), sorted: the declarations a catalog credits (docs/inputs.md §6.7.1). None before the
+/// declarations are accepted; read again only when the lists or the index change.
+pub fn credited(root: &Path, manifest: &BTreeMap<String, String>) -> Result<Option<Vec<String>>> {
+    let Some(index) = manifest.get(&super::logical(UNIT)) else { return Ok(None) };
+    let lists: Vec<&String> =
+        [crate::rail::FEEDS, crate::rail::FERRY_FEEDS].iter().filter_map(|l| manifest.get(*l)).collect();
+    let read_as = format!("{index} {}", lists.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" "));
+    if let Some((k, v)) = CREDITED.lock().unwrap().as_ref() {
+        if *k == read_as {
+            return Ok(Some(v.clone()));
+        }
     }
     let i = super::read_index(root, index)?;
-    let feeds: Vec<Value> = i.files.values().filter_map(|f| f.facts.get("feed").cloned()).collect();
-    let k = key_names(&feeds);
-    KEYS_READ.lock().unwrap().get_or_insert_with(BTreeMap::new).insert(index.to_string(), k.clone());
-    Ok(k)
+    let declared: BTreeSet<&str> = i
+        .files
+        .values()
+        .filter_map(|f| f.facts.get("feed"))
+        .filter(|f| f["format"] == GTFS)
+        .filter_map(|f| f["id"].as_str())
+        .collect();
+    let mut ids = BTreeSet::new();
+    for l in lists {
+        let v: Value = serde_json::from_slice(&std::fs::read(root.join(l))?)?;
+        for f in v["feeds"].as_array().into_iter().flatten() {
+            if let Some(id) = f["id"].as_str().filter(|id| declared.contains(id)) {
+                if f.get("zip").is_some_and(|z| !z.is_null()) {
+                    ids.insert(id.to_string());
+                }
+            }
+        }
+    }
+    let ids: Vec<String> = ids.into_iter().collect();
+    *CREDITED.lock().unwrap() = Some((read_as, ids.clone()));
+    Ok(Some(ids))
 }
 
 /// The key names the accepted declarations fetch with (their `[data.fetch] key`), sorted.
@@ -598,6 +652,36 @@ url = "https://files.mobilitydatabase.org/feeds_v2.csv"
         // Held with a declaration it replaces, were that one held.
         assert_eq!(c.refers, vec!["mdb-1076.toml", "mdb-3051.toml"]);
         assert_eq!(key_names(std::slice::from_ref(f)), vec!["LTA_ACCOUNT_KEY"]);
+    }
+
+    #[test]
+    fn declared_names_what_rail_feeds_reads() {
+        let index = |text: &str| {
+            let c = checks(&Feeds::default(), "sg-lta-train.toml", text);
+            let e = super::super::FileEntry {
+                file: format!(
+                    "sources/inputs/timetables/feeds/sg-lta-train.{}.toml",
+                    store::naming::hash16(text.as_bytes())
+                ),
+                size: text.len() as u64,
+                keyed: c.keyed.unwrap(),
+                facts: c.facts,
+            };
+            super::super::Index {
+                fmt: 1,
+                unit: UNIT.into(),
+                checks: format!("{UNIT} 1"),
+                files: [("sg-lta-train.toml".to_string(), e)].into(),
+                accepted: BTreeMap::new(),
+            }
+        };
+        let d = declared_of(&index(LTA));
+        assert_eq!(d.key_names, vec!["LTA_ACCOUNT_KEY"]);
+        // A note or a credit edited: the same; a field rail-feeds reads: another.
+        let noted = LTA.replacen("credit = ", "notes = \"checked\"\ncredit = ", 1);
+        assert_ne!(noted, LTA);
+        assert_eq!(declared_of(&index(&noted)).keyed, d.keyed);
+        assert_ne!(declared_of(&index(&LTA.replace("value[0].link", "value[1].link"))).keyed, d.keyed);
     }
 
     #[test]

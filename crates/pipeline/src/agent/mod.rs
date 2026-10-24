@@ -7275,13 +7275,24 @@ impl Agent {
         if let Some(Some(c)) = self.inputs.credits.borrow().clone() {
             inputs.insert("credits".into(), c);
         }
-        // (The key names the timetable feeds' declarations fetch with, for rail-feeds' key: "?" while
-        // their index can't be read, and rail-feeds waits.)
+        // (The timetable feeds' declarations as rail-feeds' key names them: the key names they fetch
+        // with and the digest of what of them it reads; "?" while their index can't be read, and
+        // rail-feeds waits.)
         if let Some(ix) = manifest.get(&crate::inputs::logical(crate::inputs::feeds::UNIT)) {
-            inputs.insert(
-                "feed-keys".into(),
-                crate::inputs::feeds::index_key_names(root, ix).map(|k| k.join(",")).unwrap_or_else(|_| "?".into()),
-            );
+            let d = crate::inputs::feeds::declared(root, ix);
+            inputs.insert("feed-keys".into(), d.as_ref().map(|d| d.key_names.join(",")).unwrap_or_else(|_| "?".into()));
+            inputs.insert("feeds".into(), d.map(|d| d.keyed).unwrap_or_else(|_| "?".into()));
+        }
+        // (The declared feeds the catalog credits, for its key: "?" while they can't be read, and
+        // the catalog waits.)
+        match crate::inputs::feeds::credited(root, &manifest) {
+            Ok(Some(ids)) => {
+                inputs.insert("feeds-credited".into(), ids.join(","));
+            }
+            Ok(None) => {}
+            Err(_) => {
+                inputs.insert("feeds-credited".into(), "?".into());
+            }
         }
         // (The declared elevation datasets' spacing, which the rail and candidates keys name: "?"
         // while it can't be read, and they wait: crate::dem::spacing.)
@@ -7319,6 +7330,8 @@ impl Agent {
                 what: steps::stage_title("trains").into(),
                 why: "the timetable feeds' accepted declarations can't be read now".into(),
             });
+        } else if let Some(why) = missing_feed_keys(&inputs) {
+            waiting.push(Waiting { step: None, what: steps::stage_title("trains").into(), why });
         }
         // (The ferries count the ferry feeds: without their list, rail-feeds' to make, they wait.)
         if manifest.contains_key(&crate::osmpass::set_name(date, "ferries"))
@@ -10772,6 +10785,22 @@ pub fn input_digests(root: &Path) -> BTreeMap<String, String> {
         }
     }
     inputs
+}
+
+/// The waiting line for the keys the timetable feeds' declarations fetch with that inputs/keys.env
+/// doesn't hold (`inputs` "feed-keys" less "keys"): those feeds are left out until it does (not a
+/// finding: keys.env isn't an input, and the declaration is right).
+fn missing_feed_keys(inputs: &BTreeMap<String, String>) -> Option<String> {
+    let held: Vec<&str> = inputs.get("keys")?.split(',').collect();
+    let missing: Vec<&str> =
+        inputs.get("feed-keys")?.split(',').filter(|k| !k.is_empty() && !held.contains(k)).collect();
+    (!missing.is_empty()).then(|| {
+        format!(
+            "inputs/keys.env has no {}: the feeds declared with {} are left out until it does",
+            missing.join(", "),
+            if missing.len() == 1 { "it" } else { "them" }
+        )
+    })
 }
 
 /// The names of the keys a `KEY=value` file holds a value for, sorted and comma-separated ("" when
@@ -15354,6 +15383,16 @@ mod tests {
         assert!(expect_same(&w("unit", &[("6/28/16", "a")]), &done).is_empty());
         // The times kept here go by the way a step runs now: a z3 tile's tree cover isn't a z6 tile's.
         assert_eq!([secs_key("trees"), secs_key("trees-lo"), secs_key("unit")], ["trees v3", "trees-lo v1", "unit v3"]);
+    }
+
+    #[test]
+    fn feed_keys_missing_said() {
+        let m = |keys: &str, used: &str| -> BTreeMap<String, String> {
+            [("keys".to_string(), keys.to_string()), ("feed-keys".to_string(), used.to_string())].into()
+        };
+        assert_eq!(missing_feed_keys(&m("LTA_ACCOUNT_KEY", "LTA_ACCOUNT_KEY")), None);
+        assert_eq!(missing_feed_keys(&m("", "")), None);
+        assert!(missing_feed_keys(&m("ODPT_KEY", "LTA_ACCOUNT_KEY")).is_some_and(|w| w.contains("no LTA_ACCOUNT_KEY:")));
     }
 
     #[test]

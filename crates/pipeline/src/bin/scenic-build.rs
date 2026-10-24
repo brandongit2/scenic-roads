@@ -1923,12 +1923,17 @@ fn catalog(
     } else {
         Vec::new()
     };
-    let credits = pipeline::inputs::credits::catalog_credits_with(
-        &regions,
-        &unit_extents(out, &base),
-        &described,
-        &depth_credited,
+    // (And the declared timetable feeds the trains and ferries count, wherever they are: their
+    // descriptions have no extent.)
+    let mut credited = depth_credited;
+    credited.extend(
+        pipeline::inputs::feeds::credited(out.root(), &out.manifest)?
+            .unwrap_or_default()
+            .into_iter()
+            .map(|id| (pipeline::inputs::feeds::UNIT.to_string(), format!("{id}.toml"))),
     );
+    let credits =
+        pipeline::inputs::credits::catalog_credits_with(&regions, &unit_extents(out, &base), &described, &credited);
     eprintln!(
         "catalog: {} regions, {} credits (of the table's {} and {} description{})",
         regions.len(),

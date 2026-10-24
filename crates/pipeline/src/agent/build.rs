@@ -2799,10 +2799,12 @@ fn rail_chain(
 
 /// The rail service's chain (crate::rail): Some(its first stale step, or None when it's done), or
 /// None while it can't go on: before the timetable feeds' declarations have an accepted version
-/// (crate::inputs::feeds), while inputs/keys.env can't be read (`inputs` "keys" "?"), and,
+/// (crate::inputs::feeds), while inputs/keys.env or the declarations can't be read (`inputs` "keys",
+/// "feeds" or "feed-keys" "?"), and,
 /// rail-feeds done, without the feeds' list, the static files' accepted version
 /// (crate::inputs::gtfs: rail waits for it rather than count without them) or the pass's rail set.
-/// - rail-feeds reads what decides which feeds there are: the declarations (their accepted index),
+/// - rail-feeds reads what decides which feeds there are: the declarations (`inputs` "feeds": the
+///   digest of their `keyed` digests, so an edited description or note doesn't rerun it),
 ///   the catalogue's copy (none: it's fetched), the coverage, the pass's outlines (the countries
 ///   it's in) and which keys inputs/keys.env holds (`inputs` "keys": their names, never their
 ///   values). Not what it writes (the feeds' lists, checks and zips), so it doesn't run again for
@@ -2817,10 +2819,11 @@ fn rail_next(
     inputs: &BTreeMap<String, String>,
 ) -> Option<Option<Work>> {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
-    let declared = m.get(&crate::inputs::logical(crate::inputs::feeds::UNIT))?;
+    m.get(&crate::inputs::logical(crate::inputs::feeds::UNIT))?;
+    let declared = inputs.get("feeds").map(String::as_str).unwrap_or("-");
     let keys = inputs.get("keys").map(String::as_str).unwrap_or("");
     let used = inputs.get("feed-keys").map(String::as_str).unwrap_or("");
-    if keys == "?" || used == "?" {
+    if keys == "?" || used == "?" || declared == "?" {
         return None;
     }
     // (Of the keys inputs/keys.env holds, those the declarations fetch with.)
@@ -4393,7 +4396,7 @@ fn catalog_work(
     ready: &[String],
     held: bool,
 ) -> Option<Work> {
-    if inputs.get("regions").map(String::as_str) == Some("?") {
+    if ["regions", "feeds-credited"].iter().any(|i| inputs.get(*i).map(String::as_str) == Some("?")) {
         return None;
     }
     let k = catalog_key(m, inputs, ready);
@@ -4406,7 +4409,8 @@ fn catalog_work(
 /// inside another, gets a catalog that records it, which of them it records as built (`ready`),
 /// and, once any input has a description, the descriptions' credits (`inputs` "credits":
 /// crate::inputs::credits::digest), so an edited credit gets a new catalog without rebuilding
-/// anything.
+/// anything, and the declared timetable feeds it credits (`inputs` "feeds-credited":
+/// crate::inputs::feeds::credited).
 pub fn catalog_key(m: &BTreeMap<String, String>, inputs: &BTreeMap<String, String>, ready: &[String]) -> String {
     let mut served: Vec<String> = m
         .iter()
@@ -4421,6 +4425,9 @@ pub fn catalog_key(m: &BTreeMap<String, String>, inputs: &BTreeMap<String, Strin
     served.push(format!("ready {}", ready.join(",")));
     if let Some(c) = inputs.get("credits") {
         served.push(format!("credits {c}"));
+    }
+    if let Some(f) = inputs.get("feeds-credited") {
+        served.push(format!("feeds credited {f}"));
     }
     let refs: Vec<&str> = served.iter().map(String::as_str).collect();
     h(&refs)
@@ -6505,6 +6512,13 @@ pub(crate) mod tests {
         // The descriptions' credits in it once there are any: an edit gets a new catalog.
         let with = |d: &str| catalog_key(&m, &[("credits".to_string(), d.to_string())].into(), &["r".to_string()]);
         assert!(with("a") != k && with("a") != with("b"));
+        // The declared feeds it credits too; unreadable: no catalog.
+        let fed =
+            |f: &str| catalog_key(&m, &[("feeds-credited".to_string(), f.to_string())].into(), &["r".to_string()]);
+        assert!(fed("sncf") != fed("sncf,renfe") && fed("") != with("a"));
+        assert!(
+            catalog_work(&m, &done, &[("feeds-credited".to_string(), "?".to_string())].into(), &ready, false).is_none()
+        );
         done.catalog_held = Some(k);
         assert!(line(&checklist(&c, "d", &m, &done, &BTreeMap::new(), true), "publish").finished());
         assert!(!line(&checklist(&c, "d", &m, &done, &BTreeMap::new(), false), "publish").finished());
@@ -7031,16 +7045,21 @@ pub(crate) mod tests {
             &[("keys".to_string(), "LTA_ACCOUNT_KEY".to_string()), ("feed-keys".to_string(), "?".to_string())].into()
         )
         .is_none());
-        for (l, f) in [
-            (
-                crate::inputs::logical(crate::inputs::feeds::UNIT),
-                "sources/inputs/timetables/feeds/@index.9999999999999999.json",
-            ),
-            (crate::rail::CATALOGUE.to_string(), "sources/rail/catalogue.9999999999999999.csv"),
-        ] {
-            let mut m2 = m.clone();
-            m2.insert(l, f.into());
-            assert_eq!(rail_chain(&c, "d", &m2, &done, &lta).unwrap().step, "rail-feeds");
+        let mut m2 = m.clone();
+        m2.insert(crate::rail::CATALOGUE.to_string(), "sources/rail/catalogue.9999999999999999.csv".into());
+        assert_eq!(rail_chain(&c, "d", &m2, &done, &lta).unwrap().step, "rail-feeds");
+        // A new accepted index whose declarations read alike (a note or a credit edited): no rerun;
+        // other declarations: the feeds again; unread: nothing.
+        let mut m2 = m.clone();
+        m2.insert(
+            crate::inputs::logical(crate::inputs::feeds::UNIT),
+            "sources/inputs/timetables/feeds/@index.9999999999999999.json".into(),
+        );
+        assert!(rail_chain(&c, "d", &m2, &done, &lta).is_none());
+        for (v, step) in [("cccc", Some("rail-feeds")), ("?", None)] {
+            let mut other = lta.clone();
+            other.insert("feeds".into(), v.into());
+            assert_eq!(rail_chain(&c, "d", &m, &done, &other).map(|w| w.step), step.map(String::from));
         }
         let bigger = Coverage::fixture(
             &[Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:-21.9,64.13,25".into()] }],

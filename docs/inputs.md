@@ -251,7 +251,9 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   (descriptions win for a source both name), with one rule for which to list: those whose extent
   meets the coverage, 20 km around it, or a built z6 tile's ways (`rules::listed`). A description's
   extent is `facts.extent` in the index (a box, or `"world"`), derived from the data, never typed;
-  one whose extent isn't known is listed nowhere.
+  one whose extent isn't known is listed nowhere, except the depth sources whose grids meet the
+  depth's packs and the timetable feeds the trains and ferries count (§6.7.1), listed wherever they
+  are.
 - **Credit edits reach the catalog without rebuilding:** credits enter no step's key, but the
   catalog's key (`catalog_key`) has the digest of every accepted description's credit fields
   (`credits::digest`). When descriptions can't be read now, the last digest read stands; with none
@@ -1013,16 +1015,25 @@ in (`rail::countries`) and the feeds' boxes.
 `replaces`, `exclude`, `country`; a `country` or `own_code` value not ISO syntax; two catalogues.
 Warnings: `replaces` or `exclude` naming a feed neither declared nor in the catalogue's copy; an
 `own_code` key no outline has; two declarations with one URL. A declaration is held with those it
-`replaces`. A `key` missing from `inputs/keys.env` isn't a finding: the feed waits. What a fetch
-brings back is the fetching job's status, not a finding.
+`replaces`. A `key` missing from `inputs/keys.env` isn't a finding (keys.env isn't an input): the
+feed is left out until keys.env holds it, and the build page says so under Trains (the agent's
+waiting line naming the key). What a fetch brings back is the fetching job's status, not a finding.
 
 **Fetching.** `rail-feeds` (docs/steps.md) reads the accepted declarations (`--feeds-index`) and the
 catalogue's copy and writes `sources/rail/feeds` and `sources/rail/ferry-feeds`, each zip pinned by
-content in `sources/rail/gtfs/<id>` with its day (`sources/rail/fetched`). Its key names the index,
-the catalogue's copy, the coverage, the outlines and which keys `keys.env` holds. `rail` keys on the
+content in `sources/rail/gtfs/<id>` with its day (`sources/rail/fetched`). Its key names the
+declarations' `keyed` digests (`inputs::feeds::declared`, not the index, so an edited note or credit
+doesn't rerun it), the catalogue's copy, the coverage, the outlines and which of the keys the
+declarations fetch with `keys.env` holds. `rail` keys on the
 rail list, `ferries` on the ferry list. With a catalogue copy but no accepted catalogue declaration,
 rail-feeds fails rather than read it uncorrected. A declaration's `pin` is put in by rail-feeds the
 first time it runs with no zip for that feed, so a pinned feed is never fetched before its pin.
+
+**Credits.** A declared feed in the rail or ferry feeds' list with a zip is credited in the catalog
+from its description, wherever it is (`inputs::feeds::credited`; the catalog's key names those ids,
+and the catalog waits while they can't be read). The catalogue's own feeds are credited by the
+table's line (`rules::CREDITS`). The catalogue's copy is fetched only when there is none: it isn't
+refreshed yet (task #367).
 
 #### 6.7.2 Static GTFS
 

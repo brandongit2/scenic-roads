@@ -287,7 +287,8 @@ pub fn catalog_credits(
 
 /// `catalog_credits`, the descriptions `also` names (unit, path) listed wherever they are: the depth
 /// sources whose data the catalog's depth holds, which reaches 200 nautical miles past the coverage
-/// (crate::depth), so a source's territory beside the coverage isn't enough to tell.
+/// (crate::depth), so a source's territory beside the coverage isn't enough to tell; and the
+/// declared timetable feeds the trains and ferries count (crate::inputs::feeds::credited).
 pub fn catalog_credits_with(
     regions: &[crate::coverage::DrawnRegion],
     extents: &[[i32; 4]],
