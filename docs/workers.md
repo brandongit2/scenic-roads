@@ -203,7 +203,9 @@ Common rules:
   and PWA need; plain HTTP on the tailnet still works. The page's files and requests are relative
   to where it was served (the path before `/work/`), so it works under a proxy's path.
 - **The page as an app** (`manifest.webmanifest`, `sw.js`, `icons/`): installable; its service
-  worker caches the page's files and the programs' WebAssembly by version (`?v=`), takes a new
+  worker caches the page's files (one version's set, as it installs: a fresher answer is used, never
+  kept over it, so the page while the Mac is away is never a mix of versions) and the programs'
+  WebAssembly by version (`?v=`), takes a new
   page when the coordinator's hash changes, reloading once no task runs. It works only while open
   on screen.
 - **Planned:** task files in OPFS so a worker holds less in memory.

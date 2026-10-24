@@ -54,14 +54,17 @@ let awayUntil = 0;
 // nothing kept, the Mac's answer, however late.
 async function page(e, key) {
   const cache = await caches.open(SHELL);
+  // (Kept is this version's set as it installed: a fresher answer, maybe a newer version's file,
+  // is never written over it, so the files used while the Mac is away are one version's, never a
+  // mix; a file missing from the install is kept as it first comes.)
+  const kept = await cache.match(key);
   const net = fetch(e.request).then(async (r) => {
     if (r.ok) {
       awayUntil = 0;
-      await put(cache, key, r.clone());
+      if (!kept) await put(cache, key, r.clone());
     }
     return r;
   });
-  const kept = await cache.match(key);
   if (!kept) return net;
   e.waitUntil(net.catch(() => {}));
   if (Date.now() < awayUntil) return kept;

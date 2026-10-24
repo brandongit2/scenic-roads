@@ -660,6 +660,8 @@ const RANGES = [[60, "1 min"], [300, "5 min"], [600, "10 min"], [1800, "30 min"]
   const kept = store.get("range", 3600);
   $("range").replaceChildren(...RANGES.map(([v, t]) => { const o = document.createElement("option"); o.value = String(v); o.textContent = t; o.selected = v === kept; return o; }));
   $("range").onchange = (e) => store.set("range", Number(e.target.value));
+  // (Another tab's pick, which this one's charts follow at their next ask: the menu says it too.)
+  addEventListener("storage", (e) => { if (e.key === "range") $("range").value = String(store.get("range", 3600)); });
 }
 // Live while the build's state answered in the last 30 s (three polls); else stale, since when.
 let answeredAt = 0;
