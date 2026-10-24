@@ -380,6 +380,35 @@ pub const KEPT_BYTES: usize = 2 << 30;
 /// sampler opening a file reads its header from memory.
 const SMALL_BYTES: usize = 64 << 20;
 
+/// The most memory (MB) a z6 tile's deep levels add to its terrain run, from their bounds: the
+/// blocks kept (`KEPT_BYTES`) and the files' small reads (`SMALL_BYTES`); a deep pack's tiles held
+/// until written (z13 to `MAX_Z` under a `PACK_Z` tile, each at most its raw RGB); a z8 tile's base
+/// tiles and their ring (at the base's z12) decoded and served as PNG (at most raw RGB).
+pub const fn peak_mb() -> u64 {
+    let mut pack_tiles = 0u64;
+    let mut z = PACK_Z + 3;
+    while z <= MAX_Z {
+        pack_tiles += 1 << (2 * (z - PACK_Z));
+        z += 1;
+    }
+    let rgb = 256 * 256 * 3;
+    let ring = ((1u64 << (12 - SUB_Z)) + 2) * ((1u64 << (12 - SUB_Z)) + 2);
+    let bytes = KEPT_BYTES as u64 + SMALL_BYTES as u64 + pack_tiles * rgb + ring * (256 * 256 * 4 + rgb);
+    bytes >> 20
+}
+
+/// Whether tile `z/x/y` (z ≤ `SUB_Z`) has deep levels to make: a fine dataset meets one of its z8
+/// tiles and is finer there (as `Fine::meets`).
+pub fn reaches(sets: &[FineSet], z: u8, x: u32, y: u32) -> bool {
+    let k = SUB_Z - z;
+    (x << k..(x + 1) << k).any(|a| {
+        (y << k..(y + 1) << k).any(|b| {
+            let bb = crate::stage::tile_box_grown(SUB_Z, a, b, 0.0);
+            !meeting(sets, bb, poleward(bb)).is_empty()
+        })
+    })
+}
+
 /// A fine dataset's file as a target's run reads it: its blocks read ahead (`read_ahead`) kept by
 /// offset, its small reads kept as asked; anything else read from the file.
 struct Kept {
@@ -827,17 +856,23 @@ pub fn pack_logical(x: u32, y: u32) -> String {
 /// The deep packs' logical names' prefix.
 pub const PREFIX: &str = "layers/terrain/deep/";
 
-/// A deep pack's z10 tile, from its logical name.
+/// The terrain's packs past the base from before one terrain (task #633: JPEG XL, by z10 tile
+/// alike), never made now: their z6 tile's next run drops them (`named_under`).
+const RETIRED: &str = "layers/terrain/fine/";
+
+/// A deep pack's z10 tile, from its logical name (or a retired pack's, `RETIRED`).
 pub fn pack_tile(l: &str) -> Option<(u32, u32)> {
-    let t = l.strip_prefix(PREFIX)?;
-    let u = crate::legacy::TileId::parse(t).filter(|u| u.z == PACK_Z)?;
-    (pack_logical(u.x, u.y) == l).then_some((u.x, u.y))
+    let p = [PREFIX, RETIRED].into_iter().find(|p| l.starts_with(p))?;
+    let u = crate::legacy::TileId::parse(&l[p.len()..]).filter(|u| u.z == PACK_Z)?;
+    (format!("{p}{PACK_Z}-{}-{}", u.x, u.y) == l).then_some((u.x, u.y))
 }
 
-/// The deep packs the manifest names under tile `z/x/y` (z at most `PACK_Z`).
+/// The deep packs the manifest names under tile `z/x/y` (z at most `PACK_Z`), and the retired
+/// ones there (`RETIRED`).
 pub fn named_under(m: &BTreeMap<String, String>, z: u8, x: u32, y: u32) -> Vec<String> {
-    m.range(PREFIX.to_string()..)
-        .take_while(|(l, _)| l.starts_with(PREFIX))
+    [PREFIX, RETIRED]
+        .into_iter()
+        .flat_map(|p| m.range(p.to_string()..).take_while(move |(l, _)| l.starts_with(p)))
         .filter(|(l, _)| pack_tile(l).is_some_and(|f| (f.0 >> (PACK_Z - z), f.1 >> (PACK_Z - z)) == (x, y)))
         .map(|(l, _)| l.clone())
         .collect()
@@ -1215,15 +1250,20 @@ mod tests {
             ("layers/terrain/deep/10-304-352", "c"),
             ("layers/terrain/deep/10-0288-352", "d"),
             ("layers/terrain/hi/6-18-22", "e"),
+            // (A retired pack: dropped with them.)
+            ("layers/terrain/fine/10-289-352", "f"),
         ]
         .iter()
         .map(|(a, b)| (a.to_string(), b.to_string()))
         .collect();
         assert_eq!(
             named_under(&m, 6, 18, 22),
-            vec!["layers/terrain/deep/10-288-352", "layers/terrain/deep/10-303-367"]
+            vec!["layers/terrain/deep/10-288-352", "layers/terrain/deep/10-303-367", "layers/terrain/fine/10-289-352"]
         );
-        assert_eq!(named_under(&m, 8, 72, 88), vec!["layers/terrain/deep/10-288-352"]);
+        assert_eq!(
+            named_under(&m, 8, 72, 88),
+            vec!["layers/terrain/deep/10-288-352", "layers/terrain/fine/10-289-352"]
+        );
         assert_eq!(pack_tile("layers/terrain/deep/10-288-352"), Some((288, 352)));
         assert_eq!(pack_tile("layers/terrain/deep/9-1-1"), None);
         // A z6 tile's terrain job saves its own z10 tiles' deep packs, not another's.
@@ -1532,5 +1572,8 @@ mod tests {
         assert_eq!(deeper.len(), 256, "the world dataset reaches past z12 everywhere");
         assert_eq!(native_zoom(&fine.sets, (b.1 >> 2, b.2 >> 2)), 14);
         assert_eq!(native_zoom(&[], (b.1 >> 2, b.2 >> 2)), 12);
+        // Its deep levels to make, for its run's memory (`peak_mb`, over the blocks kept).
+        assert!(reaches(&fine.sets, 6, t6.0, t6.1) && !reaches(&[], 6, t6.0, t6.1));
+        assert!(peak_mb() > (KEPT_BYTES >> 20) as u64);
     }
 }

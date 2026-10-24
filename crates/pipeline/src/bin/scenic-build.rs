@@ -1807,7 +1807,8 @@ fn catalog(
             ["layers", layer, "all"] => {
                 layer_bundles.push((layer.to_string(), logical.clone()));
             }
-            ["layers", layer, scope, key] => {
+            // (A layer's packs by their scopes; any other folder isn't served.)
+            ["layers", layer, scope @ ("root" | "lo" | "hi" | "deep"), key] => {
                 let u = TileId::parse(key).context("pack key")?;
                 let enc = layer_encoding(layer);
                 let zs = match *scope {
