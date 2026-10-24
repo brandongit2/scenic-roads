@@ -7,7 +7,6 @@
 //! and half a minute's reading over SMB. A kept index whose pack the manifest no longer names goes
 //! once it's been untouched for `KEEP_GONE`.
 
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -48,8 +47,9 @@ pub struct TerrainTiles {
     /// which writes nothing).
     dir: Option<PathBuf>,
     /// Values worked out from the tiles, each kept with what it was worked out from (`memo`): a
-    /// z6 tile's terrain digest (build::unit_terrain), by z6 tile.
-    memo: RefCell<HashMap<String, (String, String)>>,
+    /// z6 tile's terrain digest (build::unit_terrain), by z6 tile. Shared by the copies, so a count
+    /// off the loop (Agent::start_as_built) and the loop fill and read one.
+    memo: std::sync::Arc<std::sync::Mutex<HashMap<String, (String, String)>>>,
     /// The terrain's water digests the manifest names (crate::terrain_water::WaterIdx), by content
     /// name: read as the indexes are (kept beside them as `<hash16>.water`), a few KB each.
     water: HashMap<String, crate::terrain_water::WaterIdx>,
@@ -524,13 +524,13 @@ impl TerrainTiles {
     /// `make`'s value for `key`, kept with what it was made from (`from`): made again only when that
     /// changes. A value that can't be made now isn't kept.
     pub fn memo(&self, key: &str, from: &str, make: impl FnOnce() -> Result<String, Unread>) -> Result<String, Unread> {
-        if let Some((f, v)) = self.memo.borrow().get(key) {
+        if let Some((f, v)) = self.memo.lock().unwrap_or_else(|e| e.into_inner()).get(key) {
             if f == from {
                 return Ok(v.clone());
             }
         }
         let v = make()?;
-        self.memo.borrow_mut().insert(key.to_string(), (from.to_string(), v.clone()));
+        self.memo.lock().unwrap_or_else(|e| e.into_inner()).insert(key.to_string(), (from.to_string(), v.clone()));
         Ok(v)
     }
 
