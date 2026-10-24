@@ -84,8 +84,9 @@ export function createMap({ pick = () => {} } = {}) {
   };
 
   // ---- The view ----------------------------------------------------------------------------------
-  // (Zoomed out at most to the world filling the box: no empty bands beside or under it.)
-  const minK = () => Math.max(size.w, size.h) / 1000;
+  // (Zoomed out at most to the whole world (82° N to 66° S) fitting the box, both ways: in a box
+  // wider or taller than that, bands beside or under it, the world centred.)
+  const minK = () => Math.min(size.w / 1000, size.h / 730);
   function fit() {
     // (The whole world, but not the poles' stretched rows: from about 82° N to 66° S.)
     const b = [0, 60, 1000, 790];
@@ -98,8 +99,8 @@ export function createMap({ pick = () => {} } = {}) {
   const clampView = () => {
     view.k = Math.max(minK(), Math.min(MAX_K, view.k));
     const hw = size.w / 2 / view.k, hh = size.h / 2 / view.k;
-    view.cx = Math.max(hw, Math.min(1000 - hw, view.cx));
-    view.cy = Math.max(hh, Math.min(1000 - hh, view.cy));
+    view.cx = hw >= 500 ? 500 : Math.max(hw, Math.min(1000 - hw, view.cx));
+    view.cy = hh >= 500 ? 425 : Math.max(hh, Math.min(1000 - hh, view.cy));
   };
   const toWorld = (px, py) => [view.cx + (px - size.w / 2) / view.k, view.cy + (py - size.h / 2) / view.k];
   function zoomAt(f, px = size.w / 2, py = size.h / 2) {
@@ -238,10 +239,12 @@ export function createMap({ pick = () => {} } = {}) {
     const r = canvas.getBoundingClientRect();
     if (!r.width) return;
     const dpr = window.devicePixelRatio || 1;
+    // (Not zoomed in: the whole world again at the new size, a pane dragged or the window resized.)
+    const whole = !view.fitted || !zoomed();
     size = { w: r.width, h: r.height };
     canvas.width = Math.round(r.width * dpr);
     canvas.height = Math.round(r.height * dpr);
-    if (!view.fitted) fit();
+    if (whole) fit();
     clampView();
     touchAction();
     draw();

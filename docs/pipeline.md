@@ -171,7 +171,7 @@ same tab; an alert links to the tab that says more.
   zooms or map tiles only); the next catalogue ≈ and the map tiles to draw; each Mac by name,
   a line each, with its jobs, idle or out of touch).
 - **World map** (`worldmap.js`, a canvas in Web Mercator, the world 0–1000 each way): the z3 grid
-  (z6's too once its cells are 24 px), opening on the whole world (about 82° N to 66° S) and zoomed out at most to the world filling the box's width, a crosshair over it, the countries (`countries.json`), the regions' outlines
+  (z6's too once its cells are 24 px), opening on the whole world (about 82° N to 66° S) and zoomed out at most to that whole world fitting the box both ways (bands beside it in a wide box), a crosshair over it, the countries (`countries.json`), the regions' outlines
   (`/work/regions`) coloured by state (on the map or done, building, to come; counted in the
   legend), the tiles finished in the Jobs tab's past window (the history's ends, `sums.js`
   finishedTiles; each fades in as it comes, the window's history played back on the first look,

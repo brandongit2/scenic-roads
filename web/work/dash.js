@@ -1002,7 +1002,7 @@ function stepCard(m, it, { fin, now, next, since }) {
 // on the map and its card. Kept across the page's renders (its scroll, search and split with it).
 const ui = { order: "map", filter: "", feed: "all", past: 6 * 3600 };
 const ROW_H = 40;
-const rp = { section: null, el: null, map: null, list: null, rowsEl: null, rows: [], shown: [], maxS: 0, win: null, lit: null, split: 0.5 };
+const rp = { section: null, el: null, map: null, list: null, rowsEl: null, rows: [], shown: [], maxS: 0, win: null, lit: null, split: 0.65 };
 
 // A download's size in words: "640 MB", "9.0 GB".
 const size = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1e6))} MB`);
@@ -1119,7 +1119,7 @@ function light(id) {
 
 // The split: the map's share of the height, dragged (pointer), stepped (arrow keys) or reset
 // (double click); kept in this browser.
-const SPLIT = [0.25, 0.7];
+const SPLIT = [0.25, 0.85];
 function setSplit(f, keep) {
   rp.split = Math.max(SPLIT[0], Math.min(SPLIT[1], f));
   rp.el.style.setProperty("--split", `${(rp.split * 100).toFixed(1)}%`);
@@ -1133,7 +1133,7 @@ function splitter() {
   const end = () => { if (!drag) return; drag = false; bar.classList.remove("on"); setSplit(rp.split, true); };
   bar.addEventListener("pointerup", end);
   bar.addEventListener("pointercancel", end);
-  bar.addEventListener("dblclick", () => setSplit(0.5, true));
+  bar.addEventListener("dblclick", () => setSplit(0.65, true));
   bar.addEventListener("keydown", (e) => { const d = { ArrowUp: -0.02, ArrowDown: 0.02 }[e.key]; if (d) { e.preventDefault(); setSplit(rp.split + d, true); } });
   return bar;
 }
@@ -1165,7 +1165,7 @@ function regionsPane(m, md) {
       h("div", "rmapp", rp.map.el, rp.legend),
       splitter(),
       h("div", "rlistp", h("div", "regbar", find, rp.seg, rp.count), rp.totals, rp.list, rp.stages));
-    setSplit(Number(ctx.store.get("regionsMapSplit", 0.5)) || 0.5, false);
+    setSplit(Number(ctx.store.get("regionsMapSplit", 0.65)) || 0.65, false);
     rp.section = section("d-regions", null, null, h("div", "box", rp.el));
   }
   rp.rows = md.rows;
