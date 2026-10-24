@@ -256,8 +256,8 @@ and codesign.
   it's moved into place.
 - **Room:** a per-Mac reserve ("Keep free", 30 GB unless set; `reserve.json`, `PUT
   /api/downloads/reserve`), applied at once. When this Mac's build agent's room target (`scenic
-  room`, docs/building.md §2) is higher, the mirror keeps that instead (seen within 5 s). A download that wouldn't fit is refused; when the disk
-  fills later, what doesn't fit waits, and nothing downloaded goes for it.
+  room`, docs/building.md §2) is higher, the mirror keeps that instead (seen within 5 s). A
+  download that wouldn't fit is refused; when the disk fills later, what doesn't fit waits, and nothing downloaded goes for it.
 - **The agent's jobs** don't need the mirror, but read some files from it where present: pack and
   lo their owners' base packs and road values (whole, mapped, in place of their part reads), the marks and overlay conversions the heritage
   job's files. Each is read under a shared lock (`store::cachefile`). The mirror deletes a file
