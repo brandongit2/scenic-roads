@@ -132,17 +132,6 @@ impl GridChange {
                 }
             }
         }
-        // Terrain tiles repaired in place since this step's last run (terrain.rs): their grid
-        // tiles count as new (z11 as itself, z12 as its parent).
-        let steps = cache_dir.parent().unwrap_or(Path::new(".")).join("steps");
-        for k in roadcore::archive::terrain_repaired_since(&steps, &own) {
-            let (z, x, y) = ((k >> 58) as u8, ((k >> 29) & 0x1fff_ffff) as u32, (k & 0x1fff_ffff) as u32);
-            match z {
-                11 => c.new.insert([x, y]),
-                12 => c.new.insert([x >> 1, y >> 1]),
-                _ => false,
-            };
-        }
         c
     }
 
