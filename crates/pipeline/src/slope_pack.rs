@@ -1248,18 +1248,23 @@ mod tests {
     }
 
     /// A measure (run by hand, read-only: nothing written to the root): a real slope z6 tile (`piece
-    /// 6/x/y`: its terrain packs copied here, its tiles worked out) or assembly (`lo 3/x/y`: its z6
-    /// tiles' mids and the terrain read, its tiles worked out), timed, with the CPU it took, the bytes
-    /// of the tiles by zoom and a digest of them (the same before and after a change). With a third
-    /// word, a folder, its tiles are written there as `<z>/<x>/<y>.webp` too.
-    /// SCENIC_SLOPE_MEASURE="<root> piece|lo <x>/<y> [<folder>]"; unset, nothing.
+    /// 6/x/y`: its terrain packs copied here, its tiles worked out), assembly (`lo 3/x/y`: its z6
+    /// tiles' mids and the terrain read, its tiles worked out) or z3 tile whole (`z3 3/x/y`: the z6
+    /// tiles given, else each with a terrain hi pack, then the assembly from their tiles as made),
+    /// timed, with the CPU it took, the bytes of the tiles by zoom and a digest of them (the same
+    /// before and after a change). With a folder, its tiles are written there as
+    /// `<z>/<x>/<y>.webp` too.
+    /// SCENIC_SLOPE_MEASURE="<root> piece|lo|z3 <x>/<y> [<folder>] [<z6 tiles: x/y,…>]"; unset, nothing.
     #[test]
     fn measure_a_real_target() {
         let Ok(m) = std::env::var("SCENIC_SLOPE_MEASURE") else { return };
         let a: Vec<&str> = m.split_whitespace().collect();
         let root = std::path::Path::new(a[0]);
-        let (x, y) = a[2].split_once('/').unwrap();
-        let t: (u32, u32) = (x.parse().unwrap(), y.parse().unwrap());
+        let xy = |s: &str| {
+            let (x, y) = s.split_once('/').unwrap();
+            (x.parse::<u32>().unwrap(), y.parse::<u32>().unwrap())
+        };
+        let t = xy(a[2]);
         let scratch = tempfile::tempdir().unwrap();
         let out = Out::unbound(root, scratch.path()).unwrap();
         let cpu = || {
@@ -1271,57 +1276,88 @@ mod tests {
         crate::timings::start(if a[1] == "lo" { "slope-lo" } else { "slope" });
         let (t0, c0) = (std::time::Instant::now(), cpu());
         let none = |_: &str, _: u64, _: u64| {};
-        let made: Vec<Made> = if a[1] == "lo" {
-            let ts: Vec<(u32, u32)> = (0..64)
-                .map(|k| (t.0 * 8 + k % 8, t.1 * 8 + k / 8))
-                .filter(|&(x, y)| out.get(&hi_logical(x, y)).is_some() || out.get(&mid_logical(x, y)).is_some())
-                .collect();
-            let mids = read_mids(&out, t, &ts).unwrap();
-            let terr = ManifestTiles::new(&out, "terrain");
-            let (get, has) = terrain_reads(&terr);
-            let terrain = Terrain::new(&get, &has);
-            let _p = crate::timings::phase("assembled", crate::timings::Class::Compute);
-            assemble(&out, &terrain, t, &ts, &mids, &Count::new(85, &none)).unwrap()
-        } else {
-            let terr = ManifestTiles::with_copies(&out, "terrain", out.scratch_file("terrain-copies"));
-            let (get, has) = terrain_reads(&terr);
+        let mut h = <sha2::Sha256 as sha2::Digest>::new();
+        let mut by_z: BTreeMap<u8, (usize, usize)> = BTreeMap::new();
+        let mut n = 0;
+        let mut put = |made: &[Made]| {
+            for (z, x, y, b) in made {
+                sha2::Digest::update(&mut h, format!("{z}/{x}/{y} {}\n", b.len()));
+                sha2::Digest::update(&mut h, b);
+                let e = by_z.entry(*z).or_default();
+                *e = (e.0 + 1, e.1 + b.len());
+                n += 1;
+                if let Some(dir) = a.get(3) {
+                    let p = std::path::Path::new(dir).join(format!("{z}/{x}"));
+                    std::fs::create_dir_all(&p).unwrap();
+                    std::fs::write(p.join(format!("{y}.webp")), b).unwrap();
+                }
+            }
+        };
+        let terr = ManifestTiles::with_copies(&out, "terrain", out.scratch_file("terrain-copies"));
+        let (get, has) = terrain_reads(&terr);
+        let terrain = Terrain::new(&get, &has);
+        // A z6 tile's tiles (its deep packs' too) put, its z6–8 tiles kept for the assembly.
+        let mut piece_of = |t: (u32, u32), put: &mut dyn FnMut(&[Made])| -> Vec<Made> {
             terr.copy_here(9, t.0 << 3, t.1 << 3);
-            let terrain = Terrain::new(&get, &has);
             let deep = deep_terrain(&terr, t).unwrap();
             let tiles = piece_set(&has, &deep, t);
-            let _p = crate::timings::phase("worked out", crate::timings::Class::Compute);
             let (hi, lo, packs) = piece(&out, &terr, &terrain, &tiles, &deep, t, &Count::new(1, &none)).unwrap();
-            let mut all: Vec<Made> = hi.into_iter().chain(lo).collect();
+            put(&hi);
+            put(&lo);
             for p in packs {
                 let f = store::range::PlainFile::open(&p.local).unwrap();
                 let idx = store::pack::PackIndex::read_from(&f).unwrap();
-                for e in &idx.entries {
-                    let (z, x, y) = e.zxy();
-                    all.push((z, x, y, idx.read_blob(&f, e).unwrap()));
-                }
+                let d: Vec<Made> = idx
+                    .entries
+                    .iter()
+                    .map(|e| {
+                        let (z, x, y) = e.zxy();
+                        (z, x, y, idx.read_blob(&f, e).unwrap())
+                    })
+                    .collect();
+                put(&d);
+                std::fs::remove_file(&p.local).ok();
             }
-            all
+            lo
         };
-        let (wall, cpu) = (t0.elapsed().as_secs_f64(), cpu() - c0);
-        let mut h = <sha2::Sha256 as sha2::Digest>::new();
-        let mut by_z: BTreeMap<u8, (usize, usize)> = BTreeMap::new();
-        for (z, x, y, b) in &made {
-            sha2::Digest::update(&mut h, format!("{z}/{x}/{y} {}\n", b.len()));
-            sha2::Digest::update(&mut h, b);
-            let e = by_z.entry(*z).or_default();
-            *e = (e.0 + 1, e.1 + b.len());
-            if let Some(dir) = a.get(3) {
-                let p = std::path::Path::new(dir).join(format!("{z}/{x}"));
-                std::fs::create_dir_all(&p).unwrap();
-                std::fs::write(p.join(format!("{y}.webp")), b).unwrap();
+        match a[1] {
+            "lo" => {
+                let ts: Vec<(u32, u32)> = (0..64)
+                    .map(|k| (t.0 * 8 + k % 8, t.1 * 8 + k / 8))
+                    .filter(|&(x, y)| out.get(&hi_logical(x, y)).is_some() || out.get(&mid_logical(x, y)).is_some())
+                    .collect();
+                let mids = read_mids(&out, t, &ts).unwrap();
+                put(&assemble(&out, &terrain, t, &ts, &mids, &Count::new(85, &none)).unwrap());
+            }
+            "z3" => {
+                let ts: Vec<(u32, u32)> = match a.get(4) {
+                    Some(l) => l.split(',').map(xy).collect(),
+                    None => (0..64)
+                        .map(|k| (t.0 * 8 + k % 8, t.1 * 8 + k / 8))
+                        .filter(|&(x, y)| out.get(&format!("layers/terrain/hi/6-{x}-{y}")).is_some())
+                        .collect(),
+                };
+                let mut mids = BTreeMap::new();
+                for &p in &ts {
+                    mids.insert(p, piece_of(p, &mut put));
+                    eprintln!("6/{}/{} made ({:.0} s)", p.0, p.1, t0.elapsed().as_secs_f64());
+                }
+                let lo = assemble(&out, &terrain, t, &ts, &mids, &Count::new(85, &none)).unwrap();
+                put(&lo
+                    .into_iter()
+                    .filter(|m| m.0 < 6 || !ts.contains(&(m.1 >> (m.0 - 6), m.2 >> (m.0 - 6))))
+                    .collect::<Vec<_>>());
+            }
+            _ => {
+                piece_of(t, &mut put);
             }
         }
+        let (wall, cpu) = (t0.elapsed().as_secs_f64(), cpu() - c0);
         let r = crate::timings::snapshot(true).unwrap();
         println!(
-            "{} {}: {} tiles in {wall:.1} s, CPU {cpu:.1} s ({:.2} cores); digest {:x}",
+            "{} {}: {n} tiles in {wall:.1} s, CPU {cpu:.1} s ({:.2} cores); digest {:x}",
             a[1],
             a[2],
-            made.len(),
             cpu / wall,
             sha2::Digest::finalize(h)
         );

@@ -731,3 +731,54 @@ fn the_floors_shading_is_the_depths_pyramid() {
     assert_eq!(code(z7[45 % 2 * 128 * 256 + 7]), code(q0[7]));
     assert_eq!(code(z7[128 * 256 + 128 + 7]), code(q1[7]));
 }
+
+/// A measure (run by hand, read-only): the floor's shading (`build::shading`) of a real z3 tile's
+/// depth as stored (its depth and class lo packs, and the hi packs of its z6 tiles), timed, with
+/// the bytes of its tiles by zoom; with a folder, its tiles written there as `<z>/<x>/<y>.webp`.
+/// SCENIC_DEPTH_SHADE_MEASURE="<root> <x>/<y> [<folder>]"; unset, nothing.
+#[test]
+fn measure_the_floors_shading() {
+    let Ok(m) = std::env::var("SCENIC_DEPTH_SHADE_MEASURE") else { return };
+    let a: Vec<&str> = m.split_whitespace().collect();
+    let (x, y) = a[1].split_once('/').unwrap();
+    let q: (u32, u32) = (x.parse().unwrap(), y.parse().unwrap());
+    let scratch = tempfile::tempdir().unwrap();
+    let out = Out::unbound(Path::new(a[0]), scratch.path()).unwrap();
+    let t0 = std::time::Instant::now();
+    let read = |l: &str| -> std::collections::BTreeMap<(u8, u32, u32), Vec<u8>> {
+        let Some(c) = out.get(l) else { return Default::default() };
+        let f = store::range::PlainFile::open(&out.path(c)).unwrap();
+        let idx = store::pack::PackIndex::read_from(&f).unwrap();
+        idx.entries.iter().map(|e| (e.zxy(), idx.read_blob(&f, e).unwrap())).collect()
+    };
+    let made_of = |scope: &str, x: u32, y: u32| {
+        let (d, c) =
+            (read(&format!("layers/{LAYER}/{scope}/{x}-{y}")), read(&format!("layers/{CLASS_LAYER}/{scope}/{x}-{y}")));
+        d.into_iter()
+            .map(|(k, b)| (k, (b, c.get(&k).cloned().unwrap_or_default())))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let lo = made_of("lo", q.0, q.1);
+    let mut all = super::build::shading(&lo, 3).unwrap();
+    for k in 0..64u32 {
+        let t = (q.0 * 8 + k % 8, q.1 * 8 + k / 8);
+        let hi: std::collections::BTreeMap<_, _> = made_of("hi", t.0, t.1);
+        if !hi.is_empty() {
+            all.extend(super::build::shading(&hi, super::build::HI.0).unwrap());
+        }
+    }
+    let mut by_z: std::collections::BTreeMap<u8, (usize, usize)> = Default::default();
+    for (&(z, x, y), b) in &all {
+        let e = by_z.entry(z).or_default();
+        *e = (e.0 + 1, e.1 + b.len());
+        if let Some(dir) = a.get(2) {
+            let p = Path::new(dir).join(format!("{z}/{x}"));
+            std::fs::create_dir_all(&p).unwrap();
+            std::fs::write(p.join(format!("{y}.webp")), b).unwrap();
+        }
+    }
+    println!("3/{}/{}: {} shading tiles in {:.1} s", q.0, q.1, all.len(), t0.elapsed().as_secs_f64());
+    for (z, (n, b)) in by_z {
+        println!("  z{z}: {n} tiles, {:.1} KB a tile", b as f64 / n as f64 / 1024.0);
+    }
+}

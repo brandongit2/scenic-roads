@@ -490,13 +490,15 @@ async fn terrain_detail_downloads_with_its_region_and_is_read_from_this_mac() {
         async move { call(put_region_detail(State(s), Path("london".into()), Json(On { on })).await).await }
     };
     let pack = cat.files["layers/terrain/deep/10-511-340"].clone();
+    let shading = cat.files["layers/slope/deep/10-511-340"].clone();
 
-    // Before: listed under London with its size and cover, not downloaded.
+    // Before: listed under London with its size (the terrain's deep pack and its shading's) and
+    // cover, not downloaded.
     let v = get(&s).await;
     let f = &v["regions"]["london"]["detail"];
     assert_eq!(
         (f["bytes"].as_u64(), f["on"].as_bool(), f["state"].as_str()),
-        (Some(pack.size), Some(false), None),
+        (Some(pack.size + shading.size), Some(false), None),
         "{v}"
     );
     assert!(f["cover"].as_f64().unwrap() > 50.0, "{f}");
@@ -513,7 +515,15 @@ async fn terrain_detail_downloads_with_its_region_and_is_read_from_this_mac() {
     let asked = s.downloads.asked();
     assert!(asked.world.is_none() && asked.regions.len() == 1 && asked.regions[0].detail);
     let plan = s.downloads.plan(&s.data);
-    assert_eq!(plan.wanted.items.last(), Some(&Item::File { name: pack.file.clone(), size: pack.size }));
+    let n = plan.wanted.items.len();
+    let mut last = plan.wanted.items[n - 2..].to_vec();
+    last.sort_by_key(|i| format!("{i:?}"));
+    let mut want = vec![
+        Item::File { name: pack.file.clone(), size: pack.size },
+        Item::File { name: shading.file.clone(), size: shading.size },
+    ];
+    want.sort_by_key(|i| format!("{i:?}"));
+    assert_eq!(last, want);
     tokio::task::block_in_place(|| settle(&s));
     let v = get(&s).await;
     assert_eq!(v["regions"]["london"]["detail"]["state"].as_str(), Some("done"), "{v}");
