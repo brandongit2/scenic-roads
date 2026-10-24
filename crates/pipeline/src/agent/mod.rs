@@ -308,6 +308,9 @@ fn own_cost_key(id: &str) -> String {
     crate::coord::cost_key(s, t)
 }
 
+/// Why the lead's catalog waits while its pool's records don't reflect the journal (`Gates::publish`).
+const UNPUBLISHED: &str = "waits for the pool's records to reflect the journal (a listing of every day merged)";
+
 /// Whether `spec` is an offered step's work in the plan (crate::agent::every::offered): it marks the
 /// step's place in the plan's order, its targets granted to any member (this Mac's own agent among
 /// them) as many as fit a quarter of an hour, never started as planned (`Agent::offer_plan`).
@@ -2579,8 +2582,17 @@ impl Agent {
             waiting.push(Waiting { step: None, what: "Building".into(), why });
             return Vec::new();
         }
-        let skip: BTreeSet<String> =
+        let mut skip: BTreeSet<String> =
             jobs.iter().filter(|j| !offered_job(j) && self.wait_reason(j, c).is_some()).map(|j| j.id.clone()).collect();
+        // (A catalog while the pool's records don't reflect the journal (`Gates::publish`): not asked
+        // for, said waiting here. Granted, it would only wait in `try_start_said`, and be granted,
+        // logged and leased again every loop: 41 times in the 40 minutes of task #630.)
+        if self.try_pooled().flatten().is_some_and(|r| !r.gates.publish()) {
+            for j in jobs.iter().filter(|j| step_of(&j.id).is_some_and(|s| pool::PUBLISHES.contains(&s.as_str()))) {
+                skip.insert(j.id.clone());
+                waiting.push(Waiting { step: step_of(&j.id), what: j.what.clone(), why: UNPUBLISHED.into() });
+            }
+        }
         let mut can: Vec<String> = steps::TABLE.iter().map(|r| r.name.to_string()).collect();
         for j in jobs {
             let step = j.record.as_ref().map(|w| w.step.clone()).or_else(|| step_of(&j.id)).unwrap_or_default();
@@ -5021,11 +5033,7 @@ impl Agent {
                 return false;
             }
             if pool::PUBLISHES.contains(&st.as_str()) && !run.gates.publish() {
-                waiting.push(Waiting {
-                    step: Some(st),
-                    what: spec.what.clone(),
-                    why: "waits for the pool's records to reflect the journal (a listing of every day merged)".into(),
-                });
+                waiting.push(Waiting { step: Some(st), what: spec.what.clone(), why: UNPUBLISHED.into() });
                 return false;
             }
             if pool::SWEEPS.contains(&st.as_str()) && !run.gates.sweep() {
@@ -17634,6 +17642,55 @@ mod pool_tests {
         crate::control::request_hold(&home, None, None).unwrap();
         a.sync_hold(Some(&root));
         assert!(a.hold.held.is_none() && a.hold_why().is_none() && crate::control::read_hold(&home).held.is_none());
+    }
+
+    /// Task #630: a catalog the pool's records hold back (not caught up) isn't asked of the lead's
+    /// coordinator, so not granted, leased and logged again every loop only to wait; said waiting.
+    #[test]
+    fn a_catalog_the_records_hold_back_is_not_asked_for() {
+        room::TEST_FREE.with(|c| c.set(Some(100 << 30)));
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
+        let (co, _port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
+        a.coord = Some(std::sync::Arc::new(co));
+        a.free_set = Some(100 << 30);
+        a.mem_set = Some((16 << 10, 12 << 10));
+        let nas_: pool::SharedNas = std::sync::Arc::new(crate::pool::nas::Share::new(&root));
+        let side = pool::Side::open(&home, &home.join("pool"), d.path(), "development", nas_).unwrap().unwrap();
+        a.pool = Some(std::sync::Arc::new(std::sync::Mutex::new(pool::Run::new(
+            side,
+            pool::Role::Lead,
+            pool::Gates { term: 1, leads: Some(1), duties: true, ..Default::default() },
+        ))));
+        let job = JobSpec {
+            id: "catalog catalog".into(),
+            what: "catalog".into(),
+            cmd: vec!["/usr/bin/true".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(build::Work { step: "catalog".into(), targets: vec![("catalog".into(), "k".into())] }),
+        };
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        let jobs = std::slice::from_ref(&job);
+        a.offer_plan(jobs);
+        for _ in 0..2 {
+            let mut w = Vec::new();
+            assert!(a.lead_grants(jobs, &cond, &root, &mut w).is_empty(), "held: not granted");
+            assert!(w.iter().any(|w| w.why == UNPUBLISHED), "{w:?}");
+        }
+        a.pooled().unwrap().gates.caught_up = true;
+        let mut w = Vec::new();
+        assert_eq!(a.lead_grants(jobs, &cond, &root, &mut w).len(), 1, "caught up: granted {w:?}");
     }
 
     #[test]
