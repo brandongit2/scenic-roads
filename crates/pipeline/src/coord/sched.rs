@@ -592,47 +592,42 @@ impl Sched {
         // (A job held: its measure, else its provisional need, `pack_need`; one its Mac says only
         // waits on a worker (`Capacity::waiting`), at what it holds now within that, none of its
         // cores: the room past it free for a job beside it, which yields to it when it goes on
-        // (crate::agent's `yielding`); a task, nothing.)
+        // (crate::agent's `yielding`).)
         let waits =
             |l: &Lease| a.cap.as_ref().and_then(|c| c.waiting.iter().find(|w| w.lease == l.id)).map(|w| w.held_mb);
-        let need = |s: &Sched, l: &Lease| match &l.work {
-            Work::Job { step, targets } => {
-                let mut n = s.pack_need(step, &targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>());
+        let jobs: Vec<(&Lease, String, Vec<String>)> = mine
+            .iter()
+            .filter_map(|l| match &l.work {
+                Work::Job { step, targets } => Some((l, step.clone(), targets.iter().map(|t| t.0.clone()).collect())),
+                Work::Task { .. } => None,
+            })
+            .collect();
+        let needs: Vec<Need> = jobs
+            .iter()
+            .map(|(l, step, targets)| {
+                let mut n = self.pack_need(step, targets);
                 if let Some(held) = waits(l) {
                     n.m.mem_mb = n.m.mem_mb.min(held);
                     n.waits = true;
                 }
-                Some(n)
-            }
-            Work::Task { .. } => None,
-        };
-        let needs: Vec<Option<Need>> = mine.iter().map(|l| need(self, l)).collect();
-        let held_steps: Vec<(String, Vec<String>)> = mine
-            .iter()
-            .filter_map(|l| match &l.work {
-                Work::Job { step, targets } => Some((step.clone(), targets.iter().map(|t| t.0.clone()).collect())),
-                Work::Task { .. } => None,
+                n
             })
             .collect();
+        let held_steps: Vec<(String, Vec<String>)> = jobs.iter().map(|(_, st, ts)| (st.clone(), ts.clone())).collect();
         // (A cold start of a step never measured in any way: nothing beside it, as before task
         // #499.)
-        if let Some((st, _)) = needs
-            .iter()
-            .flatten()
-            .zip(&held_steps)
-            .find(|(n, (st, _))| n.cold && self.never_measured(st))
-            .map(|(_, s)| s.clone())
+        if let Some((st, _)) =
+            needs.iter().zip(&held_steps).find(|(n, (st, _))| n.cold && self.never_measured(st)).map(|(_, s)| s.clone())
         {
             return (Vec::new(), Some(format!("{st} was never measured: nothing goes beside its first job")));
         }
         // (At most one cold start on a Mac (task #499 review): two unknown needs never meet.)
-        let mut cold_here = needs.iter().flatten().any(|n| n.cold);
+        let mut cold_here = needs.iter().any(|n| n.cold);
         let total = ask_cores(a);
         let share = packed_share(total);
         // (Cores left: each job's, `need_cores`.)
         let mut cores = needs
             .iter()
-            .flatten()
             .zip(&held_steps)
             .fold(total, |left, (n, (st, ts))| left.saturating_sub(self.need_cores(st, ts, n, share, total)));
         // (Its Mac's load from outside the pool (other processes: builds, tests): the cores its
@@ -648,7 +643,7 @@ impl Sched {
         // (granted since it asked, or an older agent's) are taken off here.)
         let reserved_by_agent = |l: &Lease| a.cap.as_ref().is_some_and(|c| c.leases.contains(&l.id));
         let mut room = a.clone();
-        for (l, n) in mine.iter().zip(&needs).filter_map(|(l, n)| Some((l, n.as_ref()?))) {
+        for ((l, _, _), n) in jobs.iter().zip(&needs) {
             room.mem_mb = room.mem_mb.saturating_sub(n.m.mem_mb);
             if !reserved_by_agent(l) {
                 room.disk_mb = room.disk_mb.map(|d| d.saturating_sub(n.m.disk_mb));
