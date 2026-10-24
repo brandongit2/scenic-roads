@@ -1680,13 +1680,19 @@ fn cells_pass(
     // Applied cell by cell: each region's fill, and the rest's.
     let mut fill: BTreeMap<(String, Cell), Vec<Area>> = BTreeMap::new();
     let mut sea: BTreeMap<Cell, Vec<Area>> = BTreeMap::new();
+    let (mut n, mut km2) = (0, 0.0);
     for (g, t) in gaps.into_iter().zip(to) {
         let Some(a) = g.area else { continue };
         match t {
-            Some(id) => fill.entry((id, g.c)).or_default().push(a),
+            Some(id) => {
+                n += 1;
+                km2 += g.km2;
+                fill.entry((id, g.c)).or_default().push(a)
+            }
             None => sea.entry(g.c).or_default().push(a),
         }
     }
+    trace(&format!("the fill: {n} gaps' pieces, {km2:.1} km², to regions"));
     let filled: Vec<(String, Cell, Area)> =
         pace::par_map(fill.into_iter().collect(), |((id, c), mut v): ((String, Cell), Vec<Area>)| {
             v.push(all[&id].get(c));
