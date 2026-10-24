@@ -150,8 +150,9 @@ impl Nas for Mem {
 }
 
 /// The share read only, through a reader's own read of a path (the map server's, through its pool):
-/// `read` answers None for a file that isn't there. Writes and listings are refused (a reader of
-/// the records lists nothing while the lead's hint is there: crate::pool::term::current).
+/// `read` answers None for a file that isn't there. Writes are refused; a listing is empty (never
+/// made: a reader of the records finds the term by the lead's hint, which every lead writes,
+/// crate::pool::term::current; without one, no pool: today's files).
 pub struct ReadOnly<'a>(pub &'a dyn Fn(&str) -> Result<Option<Vec<u8>>>);
 
 impl Nas for ReadOnly<'_> {
@@ -167,8 +168,8 @@ impl Nas for ReadOnly<'_> {
     fn exists(&self, path: &str) -> Result<bool> {
         Ok((self.0)(path)?.is_some())
     }
-    fn list(&self, dir: &str) -> Result<Vec<String>> {
-        anyhow::bail!("{dir}: no listing through this read")
+    fn list(&self, _: &str) -> Result<Vec<String>> {
+        Ok(Vec::new())
     }
     fn remove(&self, path: &str) -> Result<()> {
         anyhow::bail!("{path}: read only")

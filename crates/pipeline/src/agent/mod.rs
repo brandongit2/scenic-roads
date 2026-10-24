@@ -10354,16 +10354,7 @@ impl Agent {
             // coordinator's state written now holds a retry's forgotten failures.)
             self.act_on(&out.acts);
             self.pool_lead_files(r, saved);
-            // (A catalogue and GC read today's files: caught up only once they hold these records.)
-            let mut run = self.pooled()?;
-            if run.behind() {
-                waiting.push(Waiting {
-                    step: None,
-                    what: "The pool".into(),
-                    why: "today's records files aren't written from the lead's yet".into(),
-                });
-            }
-            return Some(run.gates.clone());
+            return Some(self.pooled()?.gates.clone());
         }
         Some(g)
     }
@@ -16824,13 +16815,11 @@ mod pool_tests {
         let pv = st.pool.expect("the pool in its status");
         assert_eq!((pv.role, pv.member.as_str()), (pool::Role::Lead, me.as_str()));
         // The daily sweep waits for a re-assertion, then runs on the step that made it, caught up:
-        // term 2, whose records are written to today's files too.
+        // term 2, whose records its readers read (today's files no more: its one member reads these).
         until(&mut a, |a| a.mem.last_ok.contains_key("gc"));
         assert!(a.pooled().unwrap().gates.term >= 2);
         assert!(r.join("state/build/terms/2.json").exists());
-        let m: BTreeMap<String, String> =
-            crate::out::read_record(&store::nasfs::NasPath::local_for_test(&r.join("state/build/pending.json")))
-                .unwrap();
+        let m = crate::out::records_now(&store::nasfs::NasRoot::local_for_test(&r)).unwrap().pending;
         assert!(m.contains_key("work/gc.0123456789abcdef.json"), "{m:?}");
         stop_jobs(&mut a);
     }

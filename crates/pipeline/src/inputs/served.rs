@@ -185,8 +185,8 @@ mod tests {
         let (_, f2) = files(&local).unwrap();
         assert_eq!(f2.keys().collect::<Vec<_>>(), ["a.jsonl"]);
         assert!(!f["a.jsonl"].0.exists() && !f["x/b.jsonl"].0.exists());
-        // The NAS away: an error, the copy as it was.
-        std::fs::remove_file(nas.join(RECORDS)).unwrap();
+        // The records unreadable now: an error, the copy as it was.
+        put(RECORDS, b"{");
         assert!(sync(&read, "translations", &local).is_err());
         assert_eq!(std::fs::read(&files(&local).unwrap().1["a.jsonl"].0).unwrap(), b"one, edited\n");
         // A copy whose bytes aren't its name's: refused.

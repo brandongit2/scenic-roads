@@ -1635,7 +1635,6 @@ impl Run {
             c.set_term(e);
         }
         super::lead::after(self, &out, &root, &home, coord.as_deref());
-        self.behind();
         if let Some(co) = &coord {
             co.set_moving_as_of(moving(&self.gates, !self.pending_took_up.is_empty()), checked);
         }
@@ -1808,20 +1807,6 @@ impl Run {
         if let Some(b) = self.side.beats.iter_mut().find(|b| b.member == me) {
             b.reach = own;
         }
-    }
-
-    /// Leading term 2 or later, today's records files not yet written from its records: not caught
-    /// up (a catalogue and GC read them). True when so.
-    pub fn behind(&mut self) -> bool {
-        if self.gates.leads.is_none() {
-            return false;
-        }
-        let behind =
-            self.side.driver().records().is_some_and(|rec| rec.term >= 2 && self.today != Some((rec.term, rec.seq)));
-        if behind {
-            (self.gates.caught_up, self.gates.fresh) = (false, false);
-        }
-        behind
     }
 
     /// This member as the status shows it (crate::agent::PoolView).
