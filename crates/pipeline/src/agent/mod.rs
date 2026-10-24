@@ -612,14 +612,14 @@ pub const fn bldtiles_peak(rows: u64) -> u64 {
 }
 
 /// The memory a terrain run of a z3 tile of `z6` tiles near the coverage is expected to take (MB),
-/// before one has said: it holds a z6 tile's shaded hi tiles at a time (z9–12, up to 5,440, ~270 KB
-/// each until written: crate::terrain_pack::build_q_with) with its z12 repairs while its z11 is made
-/// (up to 4,096 at 256 KB), each z6 tile's z9 repairs and quarters (~20 MB) and the z3 tile's zoomed-out
-/// tiles (z3–8, 1,365), and half a GB besides: 3.3 to 4.6 GB, what a helper spares. (Measured
-/// before it wrote a z6 tile at a time: 32.9 GB for 3/0/2's whole z3 tile at once.)
-/// (A z6 tile: one z6 tile, `terrain_peak(1)`.)
-fn terrain_peak(z6: usize) -> u64 {
-    500 + 5440 * 270 / 1024 + 4096 / 4 + 1365 * 270 / 1024 + z6 as u64 * 20
+/// before one has said: it holds a z6 tile's hi tiles at a time (z9–12, up to 5,440, ~270 KB each
+/// until written: crate::terrain_pack::build_q_with) with a level's tiles while the next coarser is
+/// made (up to 4,096 at 256 KB), each z6 tile's quarters (~20 MB) and the z3 tile's zoomed-out tiles
+/// (z3–8, 1,365), and half a GB besides; with `deep` (a fine dataset meets it), its deep levels'
+/// bound besides (crate::terrain_deep::peak_mb). (A z6 tile: one z6 tile, `terrain_peak(1, …)`.)
+fn terrain_peak(z6: usize, deep: bool) -> u64 {
+    let deep = if deep { crate::terrain_deep::peak_mb() } else { 0 };
+    500 + 5440 * 270 / 1024 + 4096 / 4 + 1365 * 270 / 1024 + z6 as u64 * 20 + deep
 }
 
 /// Past what memory (MB) a member's jobs are far over the `spare` it gave them (`Agent::over_grant`):
@@ -7634,6 +7634,13 @@ impl Agent {
         } else {
             BTreeMap::new()
         };
+        // (And whether its deep levels are made, crate::terrain_deep::reaches: while the fine
+        // datasets can't be read, taken as made.)
+        let fine = self.tiles.borrow().fine(&manifest);
+        let deep = |t: &str| match (&fine, crate::legacy::TileId::parse(t)) {
+            (Some(f), Some(u)) => crate::terrain_deep::reaches(f, u.z, u.x, u.y),
+            _ => true,
+        };
         // (The memory guard's holds: a target past every Mac's limit offered to none, one past this
         // Mac's built only by a Mac with room.)
         let holds = self.guard_holds(&plan);
@@ -7677,7 +7684,9 @@ impl Agent {
             // each worker takes what fits its memory.
             let guess = |t: &str| match w.step.as_str() {
                 "unit" | "pois" => size(t),
-                "terrain" => terrain_peak(if t.starts_with("6/") { 1 } else { z6.get(t).copied().unwrap_or(64) }),
+                "terrain" => {
+                    terrain_peak(if t.starts_with("6/") { 1 } else { z6.get(t).copied().unwrap_or(64) }, deep(t))
+                }
                 s @ ("bldprep" | "bldtiles") => bld_rows(t).map_or(first_peak(s), |n| bld_peak(s, n)),
                 s => first_peak(s),
             };
@@ -7730,9 +7739,16 @@ impl Agent {
                 .into_iter()
                 .map(|(q, ts)| (format!("3/{}/{}", q.0, q.1), ts.len()))
                 .collect();
+            let fine = self.tiles.borrow().fine(&manifest);
+            let deep = |t: &str| match (&fine, crate::legacy::TileId::parse(t)) {
+                (Some(f), Some(u)) => crate::terrain_deep::reaches(f, u.z, u.x, u.y),
+                _ => true,
+            };
             let peak = |step: &str, t: &str| match step {
                 "unit" | "pois" => crate::coord::unit_peak(&BTreeMap::new(), t, size(t)),
-                "terrain" => terrain_peak(if t.starts_with("6/") { 1 } else { z6.get(t).copied().unwrap_or(64) }),
+                "terrain" => {
+                    terrain_peak(if t.starts_with("6/") { 1 } else { z6.get(t).copied().unwrap_or(64) }, deep(t))
+                }
                 s @ ("bldprep" | "bldtiles") => bld_rows(t).map_or(first_peak(s), |n| bld_peak(s, n)),
                 s => first_peak(s),
             };

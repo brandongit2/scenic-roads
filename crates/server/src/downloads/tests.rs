@@ -298,6 +298,23 @@ fn a_damaged_downloads_file_is_set_aside() {
     assert!(home.path().join("downloads.json.bad").exists() && !home.path().join(FILE).exists());
 }
 
+/// A downloads file from before one terrain (task #633) keeps its regions' add-on: `fine` read as
+/// `detail`, written back as `detail`.
+#[test]
+fn a_downloads_file_from_before_one_terrain_keeps_its_terrain_detail() {
+    let home = tempfile::tempdir().unwrap();
+    let old = format!(
+        r#"{{"fmt":{FMT},"regions":[{{"id":"a","name":"A","at":1,"fine":true}},{{"id":"b","name":"B","at":2}}]}}"#
+    );
+    std::fs::write(home.path().join(FILE), old).unwrap();
+    let d = Downloads::load(home.path());
+    let detail: Vec<bool> = d.asked().regions.iter().map(|r| r.detail).collect();
+    assert_eq!(detail, [true, false]);
+    let back = serde_json::to_value(d.asked()).unwrap();
+    assert_eq!(back["regions"][0]["detail"], true);
+    assert!(back["regions"][0].get("fine").is_none());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_reserve_is_set_kept_and_bounded_and_the_mirror_takes_it_at_once() {
     let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());

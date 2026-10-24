@@ -241,7 +241,7 @@ pub const TABLE: [Step; 51] = [
             World,
             "terrain-z8",
             "World terrain, z8",
-            "Repairs every z8 terrain tile of the world, once.",
+            "Makes every z8 terrain tile of the world from the elevation pool, once.",
             w_terrain_z8,
         )
     },
@@ -350,11 +350,9 @@ pub const TABLE: [Step; 51] = [
             w_terrain_water,
         )
     },
-    // (Its deep levels a z8 tile at a time, pipeline::terrain_deep: the blocks read ahead, 2 GB at
-    // most, a z10 tile's deep tiles, ~0.2 GB, a 1M-point batch a thread, ~30 MB, the sampler's block
-    // cache. Until a z6 tile's own run says.)
+    // (Its memory offered by target, the agent's terrain_peak: its deep levels' bound where a fine
+    // dataset meets it, crate::terrain_deep::peak_mb. Until a z6 tile's own run says.)
     Step {
-        mem_mb: 2500,
         shared: Some(0),
         ..step(
             "terrain",
@@ -1475,7 +1473,7 @@ mod tests {
         // The memory first guessed (what the agent's first_peak and second_peak gave, the latter's
         // where they differed: the network steps', a z6 tile's and candidates', which nothing offered
         // by the former).
-        let mem: [(&str, u64); 22] = [
+        let mem: [(&str, u64); 21] = [
             ("lakefill", 12288),
             ("outlines", 9216),
             ("heritage", 6144),
@@ -1497,7 +1495,6 @@ mod tests {
             ("water", 8192),
             ("bldprep", super::super::bldprep_peak(30_300_000)),
             ("bldtiles", super::super::bldtiles_peak(30_300_000)),
-            ("terrain", 2500),
         ];
         for (s, mb) in mem {
             assert_eq!(mem_mb(s), mb, "{s}");
