@@ -276,6 +276,12 @@ async function run() {
         const tall = await js(`(async () => { const R = document.querySelector(".rrow")?.parentElement; if (!R) return []; const L = R.parentElement, out = new Set(); for (let t = 0; t <= R.offsetHeight; t += 400) { L.scrollTop = t; L.dispatchEvent(new Event("scroll")); await new Promise((r) => setTimeout(r, 20)); for (const e of R.children) if (e.scrollHeight > e.clientHeight + 1) out.add(e.querySelector(".nm")?.textContent + " " + e.scrollHeight + ">" + e.clientHeight); } L.scrollTop = 0; return [...out].slice(0, 4); })()`);
         check("regions: every row's text fits its height", !tall.length, tall.join("; "));
       }
+      // (Jobs: each step's jobs on a row of their own under it, every one a box of its targets, none
+      // folded into a "+N".)
+      if (tab === "jobs") {
+        const j = await js(`(() => { const s = document.querySelector(".panel:not([hidden]) .stages"); if (!s) return null; const rows = [...s.querySelectorAll(":scope > .cells")]; return [rows.length, s.querySelectorAll(".cells > .jb").length, s.querySelectorAll(".cells .more").length, rows.filter((r) => !r.previousElementSibling?.classList.contains("st")).length]; })()`);
+        check("jobs: each step's jobs a row under it, a box a job, none folded", j && j[1] > 0 && !j[2] && !j[3], j ? `${j[0]} rows, ${j[1]} jobs, ${j[2]} folded, ${j[3]} misplaced` : "no stages");
+      }
       await shot(`chrome-${tab}`);
       check(`${tab}: no console errors`, !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
     }

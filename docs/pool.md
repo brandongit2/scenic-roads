@@ -537,8 +537,8 @@ Mac-mini-led days' 6 h progress error 32 % against 8 % (median). Placement's sla
 against the finish) comes from this held-back forecast. The forecast says these
 (`Forecast::held`) and the **live error** (`forecast::pace`, `Forecast::pace`): the oldest
 forecast of the last 1–6 h (the lead keeps their runs' progress, `Forecast::curve`, a point each
-10 min) against the planned targets the history shows done since, the build page beside the
-finish, marked rough ("live error (rough, ±50 %): the forecast of 14:05 did the 40 targets done
+10 min) against the planned targets the history shows done since, the build page's Details tab
+(its Forecast), marked rough ("live error (rough, ±50 %): the forecast of 14:05 did the 40 targets done
 since in 1 h, not 3 h"): over the backtest it was off by about half. It is said, not applied: as a stretch it made the finish worse (the backtest: 74 % from 65 %).
 
 The backtest (`backtest_against_the_history`, run by hand on a copy of the NAS's `state/coord`

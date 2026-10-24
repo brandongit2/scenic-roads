@@ -285,10 +285,10 @@ export function createCatalogues({ call, store, map, card, countries }) {
     // marks thinned on the plain widths, those day-firsts then widened and kept, the rest around them; none past the timeline's edge.)
     const day = (c) => new Date(c.t * 1000).toDateString();
     const plain = shownCats.map((c) => `${c.n} · ${hhmm(c.t)}`);
-    const base = labelled(xs, plain.map((t) => t.length * 5.8));
+    const base = labelled(xs, plain.map((t) => t.length * 6.4));
     const dated = new Set(base.filter((v, n) => n === 0 || day(shownCats[base[n - 1]]) !== day(shownCats[v])));
     const text = plain.map((t, i) => (dated.has(i) ? `${shownCats[i].n} · ${new Date(shownCats[i].t * 1000).getDate()} ${MON[new Date(shownCats[i].t * 1000).getMonth()]} ${hhmm(shownCats[i].t)}` : t));
-    const lab = new Set(labelled(base.map((i) => xs[i]), base.map((i) => text[i].length * 5.8), 6, [...dated].map((i) => base.indexOf(i))).map((n) => base[n]).filter((i) => xs[i] - text[i].length * 2.9 >= 0 && xs[i] + text[i].length * 2.9 <= W));
+    const lab = new Set(labelled(base.map((i) => xs[i]), base.map((i) => text[i].length * 6.4), 6, [...dated].map((i) => base.indexOf(i))).map((n) => base[n]).filter((i) => xs[i] - text[i].length * 3.2 >= 0 && xs[i] + text[i].length * 3.2 <= W));
     // (Empty catalogues' marks go under the rest, so their hit boxes never cover a real one's.)
     const empties = [], under = kids.length;
     shownCats.forEach((c, i) => {

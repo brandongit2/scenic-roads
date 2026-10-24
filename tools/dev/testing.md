@@ -123,7 +123,7 @@ settings with `{}`, history, live) to this Mac's agent on 127.0.0.1:8090, refusi
   1 px a CSS px). Then: a card pins on a tap and unpins on a tap elsewhere; a tap on the
   Overview's map pins the stack under it, each tap its own, and one off it pins nothing (#615); every world map zooms
   with a pinch (its touch-action turns `none`, its zoomed-in sign) and pans
-  with a drag (pixels changed once it held still), the page staying put; the Regions split stacked at phone width
+  with a drag (pixels changed once it held still), the page staying put; the Jobs tab's steps each with their jobs on a row under them, every job a box, none folded into a "+N"; the Regions split stacked at phone width
   and dragged at 900 px; the schedule's dropdown takes a tap and a choice; settings fields focus on a
   tap without a jump (never Set); the Overview map's Catalogues tab (#629: its timeline, mark labels never overlapping, a mark hovered lighting its tiles, the range inputs' swap and one-span rule; `--catalogs FILE` answers `/work/catalogs` from `scenic catalogs > FILE`, `--width W --scheme dark|light --only-catalogues` for its screenshots). At 720 px or wider (`--width`) the "no text cut off" and "no split bar at phone width" checks are skipped: a desktop keeps labels on one line, ellipsis and all (#617). `--member NAME --tocome FILE` checks a member's tiles to come (#622). One PASS/FAIL line a check, exit 1 on a FAIL. The other Macs'
   live/settings calls fail from this test origin (CORS) or when away: counted on an INFO line.

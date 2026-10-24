@@ -20,6 +20,9 @@
 <title>Scenic build</title>
 <style>
   /* The device's light or dark appearance: the dark palette, the light one where it's light. */
+  /* Three text sizes, small, base and large (the owner, 21 Oct 04:03); the overview's figure and a
+     phone's 16 px fields (no zoom on focus) the only others. */
+  :root { --fs-s: 11px; --fs-b: 13px; --fs-l: 15px; }
   :root {
     --bg: #0e1013; --panel: #161a1f; --line: #262c33; --text: #d7dce2; --dim: #8a939c; --ok: #6cc28a; --warn: #e0b45a; --bad: #e0716a; --accent: #7aa7e0;
     --ok-line: #2a5038; --warn-line: #5a4a26; --bad-line: #5a2d2a; --info-line: #2c4566; --primary-bg: #1d2a3a; --primary-fg: #cfe0f5;
@@ -40,27 +43,26 @@
     }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: var(--fs-b)/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; font-variant-numeric: tabular-nums; }
   main { max-width: 1400px; margin: 0 auto; padding: 14px 16px 56px; }
   #device { max-width: 760px; }
   /* The header, kept at the top: the title, the build's status and controls, the tabs. */
   body > header { position: sticky; top: 0; z-index: 10; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
   body > header > div { max-width: 1400px; margin: 0 auto; padding: 8px 16px 0; }
-  .top { display: flex; align-items: baseline; gap: 12px; }
-  h1 { font-size: 15px; font-weight: 600; margin: 0; }
-  #state { color: var(--dim); font-size: 11.5px; }
-  #status { margin-top: 4px; }
-  #status:empty { display: none; }
+  .top { display: flex; align-items: center; gap: 4px 12px; flex-wrap: wrap; }
+  h1 { font-size: var(--fs-l); font-weight: 600; margin: 0; }
+  #state { color: var(--dim); font-size: var(--fs-s); }
+  #status { flex: 1 1 auto; min-width: 0; }
   nav { display: flex; gap: 2px; margin-top: 6px; overflow-x: auto; scrollbar-width: none; }
   nav::-webkit-scrollbar { display: none; }
-  nav a { color: var(--dim); text-decoration: none; padding: 5px 10px 6px; border-bottom: 2px solid transparent; white-space: nowrap; font-size: 12.5px; }
+  nav a { color: var(--dim); text-decoration: none; padding: 5px 10px 6px; border-bottom: 2px solid transparent; white-space: nowrap; font-size: var(--fs-b); }
   nav a:hover { color: var(--text); }
   nav a.on { color: var(--text); border-bottom-color: var(--accent); }
   .panel[hidden] { display: none; }
   /* The footer, fixed at the bottom: the charts' range, and whether the page is live. */
-  body > footer { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border-top: 1px solid var(--line); font-size: 11.5px; color: var(--dim); }
+  body > footer { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border-top: 1px solid var(--line); font-size: var(--fs-s); color: var(--dim); }
   body > footer > div { max-width: 1400px; margin: 0 auto; padding: 6px 16px calc(6px + env(safe-area-inset-bottom)); display: flex; gap: 12px; align-items: center; justify-content: space-between; }
-  #range { margin: 0 0 0 4px; width: auto; padding: 1px 4px; font-size: 11.5px; background: var(--panel); }
+  #range { margin: 0 0 0 4px; width: auto; padding: 1px 4px; font-size: var(--fs-s); background: var(--panel); }
   #live { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
   #live i { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
   #live.on i { background: var(--ok); animation: blink 2s ease-in-out infinite; }
@@ -69,35 +71,34 @@
   #live b { font-weight: 600; color: var(--text); }
   @keyframes blink { 50% { opacity: .35; } }
   @media (prefers-reduced-motion: reduce) { #live.on i { animation: none; } }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 12px; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
-  .k { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
-  .v { font-size: 15px; margin-top: 2px; }
-  .slots { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
-  .slot { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; display: grid; grid-template-columns: 22px 1fr auto; gap: 8px; align-items: center; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
-  .dot.run { background: var(--accent); } .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
-  .bar { height: 3px; background: var(--line); border-radius: 2px; margin-top: 4px; overflow: hidden; }
-  .bar > i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .4s; }
-  #log { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; max-height: 40vh; overflow: auto; font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dim); white-space: pre-wrap; }
+  #device .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 12px; }
+  #device .card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+  #device .k { color: var(--dim); font-size: var(--fs-s); text-transform: uppercase; letter-spacing: .04em; }
+  #device .v { font-size: var(--fs-l); margin-top: 2px; }
+  #device .slots { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+  #device .slot { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; display: grid; grid-template-columns: 22px 1fr auto; gap: 8px; align-items: center; }
+  #device .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+  #device .dot.run { background: var(--accent); } #device .dot.ok { background: var(--ok); } #device .dot.bad { background: var(--bad); }
+  #device .bar { height: 3px; background: var(--line); border-radius: 2px; margin-top: 4px; overflow: hidden; }
+  #device .bar > i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .4s; }
+  #log { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; max-height: 40vh; overflow: auto; font: var(--fs-s)/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dim); white-space: pre-wrap; }
   #log b { color: var(--text); font-weight: 500; } #log .bad { color: var(--bad); }
   .note { color: var(--warn); margin: 0 0 12px; }
   button { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 4px 10px; font: inherit; }
   input { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 4px 8px; font: inherit; width: 100%; margin: 6px 0; }
   .hint { color: var(--dim); margin: 0 0 12px; }
-  h2 { font-size: 11px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; margin: 18px 0 6px; display: flex; justify-content: space-between; align-items: baseline; }
+  h2 { font-size: var(--fs-s); font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; margin: 18px 0 6px; display: flex; justify-content: space-between; align-items: baseline; }
   h2 span { text-transform: none; letter-spacing: 0; font-weight: 400; }
-  #device[hidden], .slot[hidden] { display: none; }
-  #cap { margin-top: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; font: inherit; font-size: 11.5px; }
+  #device[hidden], #device .slot[hidden] { display: none; }
+  #cap { margin-top: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; font: inherit; font-size: var(--fs-s); }
 </style>
 </head>
 <body>
 <header><div>
-  <div class="top"><h1 id="title">Scenic build</h1><span id="state">starting…</span><span style="flex:1"></span><button id="install" hidden>Install</button></div>
-  <!-- The build's status (dash.js): the verdict, the pause controls, the alerts. -->
-  <div id="status"></div>
+  <!-- Row one: the title, the build's status and its pause controls (dash.js), Install; row two, the tabs. -->
+  <div class="top"><h1 id="title">Scenic build</h1><span id="state">starting…</span><div id="status"></div><button id="install" hidden>Install</button></div>
   <nav id="tabs">
-    <a href="#overview">Overview</a><a href="#jobs">Jobs</a><a href="#machines">Machines</a><a href="#regions">Regions</a><a href="#nas">NAS</a><a href="#dropboxes">Drop boxes</a><a href="#activity">Activity</a><a href="#details">Details</a><a href="#device" id="tab-device">This device</a>
+    <a href="#overview">Overview</a><a href="#jobs">Jobs</a><a href="#machines">Machines</a><a href="#nas">NAS</a><a href="#regions">Regions</a><a href="#dropboxes">Drop boxes</a><a href="#activity">Activity</a><a href="#details">Details</a><a href="#device" id="tab-device">This device</a>
   </nav>
 </div></header>
 <main>

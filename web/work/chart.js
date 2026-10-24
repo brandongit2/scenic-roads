@@ -83,7 +83,7 @@ function paint(c) {
   const rmax = right.length ? topOf(right.map((s) => s.points || []), {}) : 1;
   const Y = (v) => top + ph - (Math.max(0, Math.min(max, v)) / max) * ph;
   const YR = (v) => top + ph - (Math.max(0, Math.min(rmax, v)) / rmax) * ph;
-  g.font = "10px -apple-system, BlinkMacSystemFont, system-ui, sans-serif";
+  g.font = "11px -apple-system, BlinkMacSystemFont, system-ui, sans-serif";
   g.textBaseline = "top";
 
   // Silent stretches: shaded faintly (the mockup draws none; a gap's missing line says it).
@@ -231,7 +231,7 @@ function paint(c) {
       return `${s.label ? `${s.label} ` : ""}${p ? fmt(p[2], s.unit || (s.right ? o.rightUnit : o.unit)) : "–"}`;
     });
     const text = `${hhmm(t, span <= 600)}  ${said.join(" · ")}`;
-    g.font = "10.5px -apple-system, BlinkMacSystemFont, system-ui, sans-serif";
+    g.font = "11px -apple-system, BlinkMacSystemFont, system-ui, sans-serif";
     const w = g.measureText(text).width + 8;
     const bx = Math.max(0, Math.min(W - w, x + 6 + w > W ? x - 6 - w : x + 6));
     g.fillStyle = k.panel; g.globalAlpha = 0.92; g.fillRect(bx, top, w, 14); g.globalAlpha = 1;

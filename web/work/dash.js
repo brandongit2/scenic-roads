@@ -114,7 +114,7 @@ function h(tag, attrs, ...kids) {
   else if (attrs) for (const [k, v] of Object.entries(attrs)) {
     if (v == null || v === false) continue;
     if (k === "class") e.className = v;
-    else if (k === "style") Object.assign(e.style, v);
+    else if (k === "style") for (const [p, x] of Object.entries(v)) p.startsWith("--") ? e.style.setProperty(p, x) : (e.style[p] = x);
     else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
     else e.setAttribute(k, v === true ? "" : v);
   }
@@ -168,7 +168,6 @@ const stepOf = (id) => String(id || "").split(" ")[0];
 // agent's job, beside, more), each with its slot (an older agent's says none: its place).
 const jobsOf = (st) => (st.jobs?.length ? st.jobs : [st.job, st.beside, ...(st.more || [])].filter(Boolean)).map((j, i) => ({ ...j, slot: j.slot ?? i }));
 // What the lead's coordinator says of a Mac, by its slots' names: its capacity (coord::Capacity).
-const capOf = (a, host) => (a.capacity || []).find(([nm]) => isSlotOf(nm, host))?.[1];
 
 // ---- The verdict --------------------------------------------------------------------------------
 function machineState(st, fresh, paused) {
@@ -298,12 +297,9 @@ function liveError(fc) {
 function overview(m) {
   const { a, fc, now, lines } = m;
   const whole = wholeProgress(lines, fc);
-  const workLeft = fc ? fc.steps.reduce((t, s) => t + s.work_s, 0) : 0;
+  // (Only how far and the finish, the owner's 21 Oct 01:51; the forecast's own words are in Details.)
   const left = h("div", null,
-    h("div", "big", whole ? `${whole.pct}%` : "–", h("small", null, whole ? ` of the whole build's work done (${dur(whole.done_s)} of ${dur(whole.done_s + whole.left_s)}, every stage's)` : "")),
-    h("div", "small dim", !fc ? "No forecast yet (the lead makes one with each plan)" : fc.done_at ? `${dur(workLeft)} of work left at the lead's pace; with every machine, done ≈ ${clock(fc.done_at)}, if the Macs keep going (awake, on mains or above 30%, reaching the NAS)` : `No finish to forecast: ${fc.why || "unknown"}`),
-    fc?.done_at ? h("div", "small dim", `${Math.round((fc.measured || 0) * 100)}% of that time measured, the rest estimated · forecast ${ago(now, fc.at)}`) : null,
-    fc?.done_at ? h("div", "small dim", liveError(fc)) : null,
+    h("div", "big", whole ? `${whole.pct}%` : "–", h("small", null, !fc ? "no forecast yet" : fc.done_at ? `done ≈ ${clock(fc.done_at)}` : `no finish to forecast: ${fc.why || "unknown"}`)),
   );
   // The stages as a strip, each its colour, the one under way outlined; each with the Jobs tab's stage card (hover, pin).
   const strip = h("div", "strip", lines.map((l) => {
@@ -592,40 +588,33 @@ function inside(j, now, fc) {
   const l = j.live;
   if (!l) return null;
   const rows = [];
-  if (l.phase) rows.push(h("div", null, h("span", "k", "phase"), h("b", null, l.phase), l.class ? h("span", "dim", ` ${l.class}`) : null, l.phase_since ? h("span", "dim", ` · ${dur(now - l.phase_since)}`) : null));
+  if (l.phase) rows.push(h("div", null, h("span", "k", "phase"), h("span", null, h("b", null, l.phase), l.class ? h("span", "dim", ` ${l.class}`) : null, l.phase_since ? h("span", "dim", ` · ${dur(now - l.phase_since)}`) : null)));
   if (l.target) {
     const each = fc?.each_s?.[stepOf(j.id)];
     const took = l.target_since ? now - l.target_since : null;
     const over = each && took != null ? took / each : null;
-    rows.push(h("div", null, h("span", "k", "target"), h("b", null, l.target),
+    rows.push(h("div", null, h("span", "k", "target"), h("span", null, h("b", null, l.target),
       h("span", over != null && over > 2 ? "warn" : "dim", took != null ? ` · ${dur(took)}${each ? ` of ≈ ${dur(each)}` : ""}` : ""),
-      l.targets ? h("span", "dim", ` · ${n(l.targets_done)} of ${n(l.targets)} done`) : null));
+      l.targets ? h("span", "dim", ` · ${n(l.targets_done)} of ${n(l.targets)} done`) : null)));
     if (over != null) rows.push(pbar(over, over > 2 ? "warn" : "", S.colour(stepOf(j.id))));
-  } else if (l.targets) rows.push(h("div", null, h("span", "k", "targets"), `${n(l.targets_done)} of ${n(l.targets)} done`));
+  } else if (l.targets) rows.push(h("div", null, h("span", "k", "targets"), h("span", null, `${n(l.targets_done)} of ${n(l.targets)} done`)));
   const bytes = [l.nas_read != null ? `NAS ↓ ${fmt(l.nas_read, "B")}` : null, l.nas_wrote != null ? `NAS ↑ ${fmt(l.nas_wrote, "B")}` : null,
     l.net_in != null ? `net ↓ ${fmt(l.net_in, "B")}` : null, l.net_out != null ? `net ↑ ${fmt(l.net_out, "B")}` : null].filter(Boolean);
-  if (bytes.length) rows.push(h("div", null, h("span", "k", "moved"), bytes.join(" · ")));
+  if (bytes.length) rows.push(h("div", null, h("span", "k", "moved"), h("span", null, bytes.join(" · "))));
   return rows.length ? h("div", { class: "inside", title: "Inside the job: its phase, its target under way (against the step's time a target), and the bytes it moved since it began" }, rows) : null;
 }
 
-function jobBlock(j, now, fc) {
+function jobBlock(j, now) {
   const p = j.progress;
   const step = stepOf(j.id);
   const box = h("div", "job", h("div", "what", swatch(S.colour(step)), j.what));
-  if (j.parts?.length && j.part != null) {
-    box.append(h("div", "parts", j.parts.map((_, i) => h("i", { class: i < j.part ? "done" : i === j.part ? "now" : "", title: j.parts[i] }))));
-    box.append(h("div", "sub", `Part ${j.part + 1} of ${j.parts.length}: ${j.parts[j.part]}`));
-  }
-  if (p && p.total > 0) {
-    box.append(pbar(p.done / p.total, j.paused ? "warn" : "", S.colour(step)));
-    box.append(h("div", "sub", progressText(p, j, now)));
-  }
+  // (Only this job: no bars of its step's parts, the owner's 21 Oct 02:46 and 03:11; its words.)
+  if (p && p.total > 0) box.append(h("div", "sub", progressText(p, j, now)));
   const bits = [`running ${dur(now - j.started)} (since ${clock(j.started)})`];
   if (j.threads) bits.push(`${j.threads} threads`);
   if (j.mem_mb) bits.push(`${n(Math.round(j.mem_mb / 102.4) / 10)} GB`);
   box.append(h("div", "sub", bits.join(" · ")));
   if (p?.moved_at && !j.paused && now - p.moved_at >= STUCK_S) box.append(h("div", "why", `No further for ${dur(now - p.moved_at)}: it may be stuck (its log's last lines are in the details)`));
-  box.append(...[inside(j, now, fc)].filter(Boolean));
   if (j.paused) box.append(h("div", "why", `Frozen: ${j.paused}`));
   else if (j.pausing) box.append(h("div", "why", "Stopping at its next safe point (what it's on is kept)"));
   const t = jobTarget(j);
@@ -652,42 +641,6 @@ function fitText(w, host) {
   return d;
 }
 
-// A capacity bar: its label, the bar (a part `used` of `whole`, and a second part `also` after
-// it, lighter), its words.
-function capBar(label, used, whole, words, also = 0, cls = "") {
-  const pc = (v) => `${Math.round(Math.max(0, Math.min(1, whole ? v / whole : 0)) * 100)}%`;
-  const bar = h("div", `cbar ${cls}`, h("i", { style: { width: pc(used) } }), also ? h("b", { style: { width: pc(also) } }) : null);
-  return h("div", "cap", h("span", "k", label), bar, h("span", "v", words));
-}
-const gb = (mb) => `${(mb / 1024).toFixed(1)} GB`;
-
-// A Mac's capacity as the lead's coordinator last heard it (coord::Capacity): memory held of the
-// build's (scenic memory, within the guard's limit), cores busy, the disk free and what's left of it
-// for jobs (diskWords).
-function capacityBlock(c) {
-  if (!c) return null;
-  const rows = [];
-  const build = c.build_mb || c.limit_mb;
-  const limit = c.build_mb && c.build_mb < c.limit_mb ? ` (limit ${gb(c.limit_mb)})` : "";
-  rows.push(capBar("memory", c.held_mb, build, `${gb(c.held_mb)} of the build's ${gb(build)}${limit} · ${gb(c.mem_mb)} free${c.guard ? "" : " · unguarded"}`, 0, build && c.held_mb / build > 0.9 ? "warn" : ""));
-  const busy = Math.max(0, c.cores - c.cores_free);
-  rows.push(capBar("cores", busy, c.cores, `${busy} of ${c.cores} busy${c.in_use && c.kept_cores ? ` · ${c.kept_cores} kept for its owner` : ""}`));
-  const disk = c.disk_mb + c.reserved_mb;
-  rows.push(capBar("disk", c.reserved_mb, disk, c.free_mb ? diskWords(c) : `${gb(c.reserved_mb)} reserved · ${gb(c.disk_mb)} free`, 0, c.disk_mb < 10240 ? "warn" : ""));
-  return h("div", { class: "caps", title: "As the lead's coordinator last heard it: memory its jobs hold of what the build gets on this Mac (scenic memory, within the memory guard's limit; and free for more, less what they're predicted to need); cores busy by the last minute's load; the disk's free space, and what's left of it for jobs past the owner's room target and its jobs' reservations" }, rows);
-}
-
-// A Mac's disk in words (coord::disk_words, task #391): "38 GB free · 18 GB for jobs (20 GB room
-// target)"; nothing kept, no parentheses. (No fixed reserve, task #421: an older agent's
-// `reserve_mb` is passed over, its `disk_mb` having it taken off already.)
-function diskWords(c) {
-  const g = (mb) => `${Math.round(mb / 1024)} GB`;
-  const kept = [];
-  if (c.target_mb) kept.push(`${g(c.target_mb)} room target`);
-  if (c.reserved_mb) kept.push(`${g(c.reserved_mb)} reserved by its jobs`);
-  return `${g(c.free_mb)} free · ${g(c.disk_mb)} for jobs${kept.length ? ` (${kept.join(", ")})` : ""}`;
-}
-
 // A machine's card, each the same: who and how it is; its capacity; a block per running job, by
 // slot, with what's inside it (or why none runs); live on it (live.js).
 function machineCard(m, x) {
@@ -696,17 +649,17 @@ function machineCard(m, x) {
   const jobs = jobsOf(st);
   const role = x.role === "lead" ? "lead · coordinator" : "member";
   const card = h("div", { class: `mc ${x.fresh ? "" : "off"}`, style: { borderLeft: `3px solid ${x.colour}` } },
-    h("div", "top", h("span", "name", x.name), h("span", "role", role), chip(state, cls), jobs.length ? chip(plural(jobs.length, "job")) : null, h("span", "right", `heard from ${ago(now, st.beat)}`)));
-  card.append(...[capacityBlock(capOf(m.a, x.name))].filter(Boolean));
+    h("div", "top", h("span", "name", x.name), h("span", "role", role), st.app ? chip(`app ${st.app}`) : null, chip(state, cls), jobs.length ? chip(plural(jobs.length, "job")) : null, h("span", "right", `heard from ${ago(now, st.beat)}`)));
   jobs.forEach((j) => {
     // (Its real slot, slots may be sparse: jobsOf.)
-    const b = jobBlock(j, now, m.fc);
+    const b = jobBlock(j, now);
     b.querySelector(".what").prepend(h("span", "slot", `${j.slot + 1}`));
     card.append(b);
   });
   if (!jobs.length) {
     // Why it isn't building.
-    const why = (st.waiting || []).filter((w) => !w.step || x.role !== "lead").slice(0, 2);
+    // (Paused alone: its own wait says the same again, left out.)
+    const why = st.held ? [] : (st.waiting || []).filter((w) => !w.step || x.role !== "lead").slice(0, 2);
     card.append(h("div", "job", h("div", "what dim", st.held ? `This Mac is paused (from ${st.held.by}); the rest of the pool goes on` : m.sw.pause ? "Paused with the build" : why.length ? "Waiting" : "Nothing to build now")));
     for (const w of why) card.append(h("div", "sub", x.role === "lead" ? `${w.what}: ${w.why}` : w.why));
   }
@@ -927,7 +880,7 @@ async function loadPast(sw) {
 const runningRuns = (m) => m.macs.flatMap((x) => jobsOf(x.status).map((j) => ({ lane: slotName(x.name, j.slot), step: stepOf(j.id), from: j.started, until: m.now, n: jobTarget(j) ? 1 : 0, what: j.what, job: j, mac: x.name })));
 
 // A run's card: what, where, when, how long, how it went; its targets (a past job's); the step's
-// phases once the lead measures them (phaseRows).
+// phases once the lead measures them.
 function runCard(m, r, kind, laneName) {
   const several = r.parts?.length > 1;
   const said = kind === "running" ? r.what : several ? `${S.said(r.step, r.n)} (${r.parts.length} jobs)` : r.what || S.said(r.step, r.n);
@@ -941,13 +894,8 @@ function runCard(m, r, kind, laneName) {
     ["state", h("span", kind === "past" && !r.ok ? "bad" : kind === "running" ? "run" : null, state)],
     ["progress", p?.total > 0 ? progressText(p, r.job, m.now) : null],
     ["targets", kind === "past" && !several && r.targets.length ? `${r.targets.slice(0, 8).join(", ")}${r.targets.length > 8 ? ` and ${r.targets.length - 8} more` : ""}` : null],
-  ], ...phaseRows(m, r.step));
+  ], kind === "running" ? inside(r.job, m.now, m.fc) : null);
 }
-
-// The step's phases, each a share of a job's time: none yet. (Seam for the lead's measured phase
-// shares, task #511, once status.json carries them: the rows go here and in stepCard, drawn from
-// what the lead publishes, never typed in.)
-const phaseRows = () => [];
 
 // What keeps a Mac's lanes from the work, beside its name over them (task #628), as the Machines
 // tab's chips: paused alone (task #224; the forecast gives it no lanes, its past jobs still show),
@@ -1071,9 +1019,8 @@ function timeAxis(t0, t1, now, x) {
 // ---- Jobs: the stages ---------------------------------------------------------------------------------
 // A list, a stage under another (the checklist's lines, build::Line): its mark, title and counts, its
 // bar; under it a row per step (build::Item): its mark, id, title (⇄ when any Mac may take it),
-// count, and a cell per job: those finished (the history held: the past chosen, at least the
+// count; under it, its own row, a box per job (its targets' squares): those finished (the history held: the past chosen, at least the
 // page's own events), running and to come (the forecast's), each with its card.
-const CELLS_DONE = 24, CELLS_NEXT = 40;
 function stagesList(m) {
   if (!m.lines.length) return h("div", "small dim", "No word from the lead yet.");
   const ended = pastRuns(endsHeld(), 0, m.macs.map((mm) => mm.name));
@@ -1097,16 +1044,18 @@ function stagesList(m) {
       const step = it.step, itDone = finished(it), itRun = m.running.has(step);
       const mine = (xs) => xs.filter((r) => r.step === step);
       const fin = mine(ended), now = mine(running), next = mine(toCome);
+      // (Every job shown, none folded into a count: a box of its targets, filled as they're done.)
+      const box = (cls, n, done, colour) => h("i", { class: `jb ${cls}`, style: { "--c": colour, "--w": Math.min(Math.max(n, 1), 12) } },
+        Array.from({ length: Math.max(n, 1) }, (_, k) => h("b", { class: k < done ? "d" : "" })));
       const cells = h("div", "cells");
-      if (fin.length > CELLS_DONE) cells.append(h("span", "more", `+${n(fin.length - CELLS_DONE)}`));
-      for (const r of fin.slice(-CELLS_DONE)) cells.append(withCard(h("i", { class: r.ok ? "c-done" : "c-failed", style: { background: r.ok ? S.colour(step) : null } }), `c ${r.seq}`, () => runCard(m, r, "past", laneName)));
-      for (const r of now) cells.append(withCard(h("i", { class: "c-run", style: { borderColor: S.colour(step) } }), `cr ${r.job.id} ${r.lane}`, () => runCard(m, r, "running", laneName)));
-      for (const r of next.slice(0, CELLS_NEXT)) cells.append(withCard(h("i", { class: "c-next", style: { borderColor: S.colour(step) } }), `cn ${r.lane} ${r.from} ${step}`, () => runCard(m, { ...r, from: Math.max(r.from, m.now) }, "next", laneName)));
-      if (next.length > CELLS_NEXT) cells.append(h("span", "more", `+${n(next.length - CELLS_NEXT)}`));
+      for (const r of fin) cells.append(withCard(box(r.ok ? "c-done" : "c-failed", r.n, r.ok ? r.n : 0, S.colour(step)), `c ${r.seq}`, () => runCard(m, r, "past", laneName)));
+      for (const r of now) cells.append(withCard(box("c-run", r.job.live?.targets || 1, r.job.live?.targets_done || 0, S.colour(step)), `cr ${r.job.id} ${r.lane}`, () => runCard(m, r, "running", laneName)));
+      for (const r of next) cells.append(withCard(box("c-next", r.n || 1, 0, S.colour(step)), `cn ${r.lane} ${r.from} ${step}`, () => runCard(m, { ...r, from: Math.max(r.from, m.now) }, "next", laneName)));
       list.append(h("div", { class: `st ${itDone ? "done" : ""}` },
         mark(itDone, itRun), h("span", "mono id", step),
         withCard(h("span", "title", S.title(step), S.any(step) ? h("span", { class: "dim" }, " ⇄") : null), `t ${step}`, () => stepCard(m, it, { fin, now, next, since })),
-        h("span", "n", countOf(it, `${S.noun(step)}s`)), cells));
+        h("span", "n", countOf(it, `${S.noun(step)}s`))));
+      if (cells.children.length) list.append(cells);
     }
   }
   return list;
@@ -1124,7 +1073,7 @@ function stageCard(m, l) {
 }
 
 // A step's card: what it does, where it runs, its count, its jobs (finished in the history held,
-// running, to come), its forecast (work left, done ≈, time a target); its phases (phaseRows).
+// running, to come), its forecast (work left, done ≈, time a target).
 function stepCard(m, it, { fin, now, next, since }) {
   const row = S.row(it.step);
   const f = m.fc?.steps.find((s) => s.step === it.step);
@@ -1139,7 +1088,7 @@ function stepCard(m, it, { fin, now, next, since }) {
     ["work left", f?.work_s ? dur(f.work_s) : null],
     ["done ≈", f?.done_at && !finished(it) ? clock(f.done_at) : null],
     ["a target", each ? `≈ ${dur(each)}` : null],
-  ], ...phaseRows(m, it.step));
+  ]);
 }
 
 // ---- Regions --------------------------------------------------------------------------------------
@@ -1153,7 +1102,7 @@ const ui = { order: "map", filter: "", feed: "all", past: 6 * 3600 };
 // (Taller on a phone, where a name and the line under it wrap: dash.css; 104 px holds the longest at 375 px, two lines each.)
 const phone = matchMedia("(max-width: 719px)");
 let ROW_H = phone.matches ? 104 : 40;
-const rp = { section: null, el: null, map: null, list: null, rowsEl: null, rows: [], shown: [], maxS: 0, win: null, lit: null, split: 0.65 };
+const rp = { section: null, el: null, map: null, list: null, rowsEl: null, rows: [], shown: [], win: null, lit: null, split: 0.65 };
 // (Across 719 px the rows change height: the same row stays at the top, the list drawn again.)
 phone.addEventListener("change", () => {
   const h0 = ROW_H;
@@ -1188,11 +1137,10 @@ function regionRows(m) {
 }
 
 // A region's state in words and its chip's class: on the map, done (with the next catalogue),
-// building now, its place in line; as the map had it before, said.
+// building now, its place in line.
 function rowState(r) {
   if (!r.f) return ["", ""];
   let [st, cls] = !r.count ? (r.on_map === true ? ["on the map", "ok"] : ["done; on the map with the next catalogue", "ok"]) : r.rank === 0 ? ["building now", "run"] : [`#${r.rank + 1} in line`, ""];
-  if (r.on_map === false && r.count) st += " · on the map as it was";
   return [st, cls];
 }
 
@@ -1233,15 +1181,15 @@ function regionRow(r, i) {
   const [st, cls] = rowState(r);
   const above = r.crumbs?.slice(0, -1).join(" › ");
   const when = r.count ? `done ≈ ${clock(r.ready_at)}${r.map_at ? ` · on the map ≈ ${clock(r.map_at)}` : ""}` : "";
-  const bar = h("span", "sbar");
-  for (const g of r.segs) bar.append(h("i", { style: { width: `${Math.max(rp.maxS ? (g.s / rp.maxS) * 100 : 0, 2)}%`, background: stageColour(g.stage) } }));
+  // (As the mockup's: a segment a stage with work left here, named in it; its tiles and the words left on hover.)
   const b = r.built;
   const tiles = b?.total ? (b.built < b.total ? `${n(b.built)} of ${n(b.total)} tiles` : `${n(b.total)} tiles built`) : "";
   const left = r.work.map((w) => S.said(w.step, w.k)).join(" · ");
+  const bar = h("span", { class: "sbar", title: [tiles, left ? `left: ${left}` : ""].filter(Boolean).join(" · ") }, r.segs.map((g) => h("i", { style: { "--c": stageColour(g.stage) } }, S.stageTitle(g.stage))));
   const row = h("div", { class: `rrow${r.f && !r.count && r.on_map === true ? " done" : ""}${rp.lit === r.id ? " lit" : ""}`, role: "listitem", style: { top: `${i * ROW_H}px` } },
     h("span", "nm", above ? h("span", "dim", `${above} › `) : null, r.name, st ? [" ", chip(st, cls)] : null),
     h("span", "when", when),
-    h("span", "lw", bar, h("span", "lt", [tiles, left ? `left: ${left}` : ""].filter(Boolean).join(" · "))),
+    h("span", "lw", r.segs.length ? bar : h("span", "lt", tiles)),
     h("span", "when", [r.secs ? `≈ ${dur(r.secs)} of work` : "", r.bytes != null ? size(r.bytes) : ""].filter(Boolean).join(" · ")));
   row.dataset.id = r.id;
   row.dataset.card = `mr ${r.id}`;
@@ -1262,7 +1210,6 @@ function paintRows(force) {
 // The list again, as searched and ordered now.
 function relist() {
   rp.shown = regionsShown([...rp.rows], ui.order, ui.filter);
-  rp.maxS = Math.max(0, ...rp.rows.map((r) => r.secs));
   rp.rowsEl.style.height = `${rp.shown.length * ROW_H}px`;
   rp.count.textContent = ui.filter.trim() ? `${n(rp.shown.length)} of ${n(rp.rows.length)}` : "";
   for (const b of rp.seg.children) b.classList.toggle("on", b.dataset.order === ui.order);
@@ -1311,7 +1258,6 @@ function regionsPane(m, md) {
     }));
     rp.count = h("span", "small dim");
     rp.totals = h("div", "rtotals small dim");
-    rp.stages = h("div", "rstages small dim");
     rp.rowsEl = h("div", "rrows");
     rp.list = h("div", { class: "rlist", role: "list", "aria-label": "Regions" }, rp.rowsEl);
     let ticking = false;
@@ -1325,9 +1271,9 @@ function regionsPane(m, md) {
     rp.el = h("div", "rpane",
       h("div", "rmapp", rp.map.el, rp.legend),
       splitter(),
-      h("div", "rlistp", h("div", "regbar", find, rp.seg, rp.count), rp.totals, rp.list, rp.stages));
+      h("div", "rlistp box", h("h3", null, "Regions"), h("div", "regbar", find, rp.seg, rp.count), rp.totals, rp.list));
     setSplit(Number(ctx.store.get("regionsMapSplit", 0.65)) || 0.65, false);
-    rp.section = section("d-regions", null, null, h("div", "box", rp.el));
+    rp.section = section("d-regions", null, null, rp.el);
   }
   rp.rows = md.rows;
   rp.map.update(md.data);
@@ -1338,8 +1284,6 @@ function regionsPane(m, md) {
   const secs = rp.rows.reduce((t, r) => t + r.secs, 0);
   rp.totals.replaceChildren(!m.fc ? "No forecast yet (the lead makes one with each plan): the regions alone."
     : words.length ? `Left in ${plural(rp.rows.filter((r) => r.count).length, "region")}${secs ? ` (≈ ${dur(secs)} of work)` : ""}: ${words.join(" · ")}` : "Nothing left to build in any region.");
-  const seen = [...new Set(rp.rows.flatMap((r) => r.segs.map((g) => g.stage)))];
-  rp.stages.replaceChildren(...(seen.length ? [h("span", null, "Bars: work left by stage, the most a region has full width"), ...seen.map((g) => h("span", null, swatch(stageColour(g)), S.stageTitle(g)))] : []));
   relist();
   return rp.section;
 }
@@ -1476,6 +1420,14 @@ function details(m) {
   const box = h("div", "box");
   // (Each in a box that scrolls sideways on a phone.)
   const tbl = (head, rows) => h("div", "twrap", h("table", "t", h("tr", null, head.map((c) => h("th", null, c))), rows.map((r) => h("tr", null, r.map((c) => h("td", null, c))))));
+  const fc = m.fc;
+  if (fc?.done_at) {
+    const workLeft = fc.steps.reduce((t, s) => t + s.work_s, 0);
+    box.append(h("h3", null, "Forecast", h("span", null, `made ${ago(now, fc.at)}`)),
+      h("div", "small", `${dur(workLeft)} of work left at the lead's pace; with every machine, done ≈ ${clock(fc.done_at)}, if the Macs keep going (awake, on mains or above 30%, reaching the NAS)`),
+      h("div", "small dim", `${Math.round((fc.measured || 0) * 100)}% of that time measured, the rest estimated`),
+      h("div", "small dim", liveError(fc)));
+  }
   const leases = sw.leases || [];
   box.append(h("h3", null, "Leases", h("span", null, "who holds what; a worker that stops beating gives its work back")),
     leases.length ? tbl(["Worker", "Work", "For", "Last beat", "Lapses in", "Says"], leases.map((l) => [l.worker, S.said(l.step, l.n), dur(l.for_s), l.beat_s != null ? `${dur(l.beat_s)} ago` : "–", l.lapses_in_s != null ? dur(l.lapses_in_s) : "–", l.progress || ""])) : h("div", "small dim", "None."));
@@ -1547,16 +1499,21 @@ function section(cls, title, sub, ...body) {
   return h("section", { class: cls }, title ? h("h2", null, title, sub ? h("span", null, sub) : null) : null, ...body);
 }
 
-// The header's status: the verdict's sentence, the pause controls, the alerts (each a link to the
-// tab that says more).
+// The header's status: the verdict's sentence and the pause controls.
 function head(m) {
   const pausing = !!m.sw.pause;
   const ctl = h("div", "ctl",
     pausing ? h("button", { class: "primary", onclick: () => ctx.ask(null) }, "Resume")
-      : [h("button", { onclick: () => ctx.ask({ mode: "drain" }), title: "Every Mac's job stops at its next safe point; nothing new starts" }, "Pause"),
-        h("button", { class: "quiet", onclick: () => confirm("Freeze every Mac's job where it is now? (It goes on from there when resumed.)") && ctx.ask({ mode: "freeze" }), title: "Freeze every Mac's job where it is, at once" }, "Freeze")]);
-  return [h("div", "verdict", h("div", "say", verdictText(m)), ctl),
-    h("div", "alerts", alerts(m).map((x) => h("a", { class: `alert ${x.cls}`, href: `#${x.to}` }, x.text)))];
+      : [h("button", { onclick: () => ctx.ask({ mode: "drain" }), title: "Every Mac's job stops at its next safe point; nothing new starts" }, "Pause at a safe point"),
+        h("button", { class: "quiet", onclick: () => confirm("Freeze every Mac's job where it is now? (It goes on from there when resumed.)") && ctx.ask({ mode: "freeze" }), title: "Freeze every Mac's job where it is, at once" }, "Freeze now")]);
+  return [h("div", "verdict", h("div", "say", verdictText(m)), ctl)];
+}
+
+// The alerts, full width above the Overview's map (the owner, 21 Oct 04:00), not in the sticky
+// header: each says what and links to the tab that says more.
+function alertList(m) {
+  const xs = alerts(m);
+  return xs.length ? h("div", "alerts", xs.map((x) => h("a", { class: `alert ${x.cls}`, href: `#${x.to}` }, h("i", null, x.cls === "info" ? "i" : "!"), h("span", null, x.text), h("span", "go", `Open ${x.to}`)))) : null;
 }
 
 // One section, built alone: a failure (an answer missing a field, say) shows in that section, and
@@ -1577,6 +1534,7 @@ function tabs(m) {
   try { md = mapData(m); } catch (e) { part("map data", () => { throw e; }); }
   return {
     overview: [
+      part("d-alerts", () => alertList(m)),
       part("d-overview", () => section("d-overview", null, null, overview(m))),
       part("d-map", () => mapSection(m, md)),
     ],
@@ -1630,7 +1588,7 @@ function render() {
   cards.clear();
   const feedTop = document.querySelector(".feed")?.scrollTop || 0;
   put(ctx.head, [].concat(part("d-head", () => head(m))));
-  for (const [name, next] of Object.entries(tabs(m))) if (ctx.panels[name]) put(ctx.panels[name], next);
+  for (const [name, next] of Object.entries(tabs(m))) if (ctx.panels[name]) put(ctx.panels[name], next.filter(Boolean));
   const feedEl = document.querySelector(".feed");
   if (feedEl) feedEl.scrollTop = feedTop;
   window.scrollTo(0, scrollY);

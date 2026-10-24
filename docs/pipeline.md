@@ -150,24 +150,25 @@ per step with its count, then its jobs to come; its panel is the page itself), a
 `web/work/` (workers.md §7). One rule: an element is a card or a row of the same cells as its
 kind's others, with templated words.
 
-The shell: a header kept at the top (the title; the verdict; Pause, Freeze or Resume; the
-alerts; the tabs) and a footer fixed at the bottom (the charts' range, the Live dot). A tab per
-part, in the owner's order, chosen by the address's `#hash` (`#overview`, `#jobs`, `#machines`,
-`#regions`, `#nas`, `#dropboxes`, `#activity`, `#details`, `#device`; none or another: Overview), so a
+The shell: a header kept at the top, two rows (the title, the verdict, Pause, Freeze or Resume;
+then the tabs) and a footer fixed at the bottom (the charts' range, the Live dot). A tab per
+part, in the mockup's order, chosen by the address's `#hash` (`#overview`, `#jobs`, `#machines`,
+`#nas`, `#regions`, `#dropboxes`, `#activity`, `#details`, `#device`; none or another: Overview), so a
 link or a reload opens the same tab; an alert links to the tab that says more (a held change: Drop
 boxes).
 
-- **Header's verdict:** one sentence (paused, out of touch or idle; percent done; done ≈), the alerts as chips, the
-  pause controls: Pause (each job stops at its next safe point), Freeze (each job frozen where it
+- **Header's verdict:** one sentence (paused, out of touch or idle; percent done; done ≈), the
+  pause controls: Pause at a safe point (each job stops at its next safe point), Freeze now (each job frozen where it
   is, after a confirm), Resume.
 - **Footer:** the range the Machines tab's live charts show (1, 5, 10 or 30 min, 1, 2, 6, 24 or 72 h, or 7 days, its time words then every two days; this browser's own,
   kept); the Live dot, green and blinking while the
   build's state answered in the last 30 s, else Stale with the time of the last answer.
-- **Overview tab:** the overview, then the world map.
+- **Overview tab:** the alerts (full width, each linking to the tab that says more), the overview, then the world map.
 - **Overview:** how far: the whole build's work done, every stage's (`sums.js` wholeProgress:
   each step's targets done at the forecast's time for a target of it, `each_s`, measured or
-  estimated, of that plus the forecast's work left; 100% only when every stage is done), how long
-  (the same work left), the stages as a coloured strip (each segment with the Jobs tab's stage card on hover, pinned on click or tap); two numbers that aren't a step's
+  estimated, of that plus the forecast's work left; 100% only when every stage is done), and the
+  finish (done ≈), nothing else (the work left, its measured share and the live error are in
+  Details' Forecast), the stages as a coloured strip (each segment with the Jobs tab's stage card on hover, pinned on click or tap); two numbers that aren't a step's
   (the last catalogue: its time, how long ago, its number and kind (with the low
   zooms or map tiles only); the next catalogue ≈ and the map tiles to draw; each Mac by name,
   a line each, with its jobs, idle or out of touch).
@@ -259,8 +260,9 @@ boxes).
   dense time axis (`chartmath.js` timeTicks, midnight a day's name); the pages' lane when a page
   helps.
 - **Jobs tab, the stages:** a list: a stage's line (mark, title, counts, bar), then a row per step
-  (mark, id, title, ⇄ when any Mac may take it, count) with a cell per job: finished (the history
-  held), running, to come (the forecast's).
+  (mark, id, title, ⇄ when any Mac may take it, count), under it a row of its jobs, every one (none
+  folded into a count): a box a job, a square a target (filled once done), finished (the history
+  held: the targets its end names), running (its live targets done), to come (the forecast's lane `n`).
 - **Cards:** everything in the Jobs tab has a card (what, where, when, how long, how it went; a
   step's forecast and jobs; a stage's note and next jobs), shown on hover with a mouse or trackpad
   and pinned on a click or tap, refreshed with each render. A following card never catches the
@@ -268,11 +270,11 @@ boxes).
   leaves what it's about (into anything else, off the map, out of the window). A pinned card is
   modal (#627): a clear veil under it, not dimmed, takes every click and scroll behind it (the
   page doesn't scroll), a click on it only closing the card; the card itself scrolls and stays
-  live. Escape or × close it too. No phase bars yet: they wait for the lead's measured phase shares (task #511).
-- **Machines:** a card per Mac, one under the other at every width (the pool's cards too): name, role, state, heard from; its capacity; a block per running
-  job by its slot (name, parts, progress, running since, memory; frozen or stuck) with what's
-  inside it (the status's `jobs[].live`, docs/pool.md §10, Live: its phase and since when, its
-  target under way against the step's `each_s`, its targets done, its NAS and internet bytes);
+  live. Escape or × close it too. A running job's card says what's inside it (the status's `jobs[].live`, docs/pool.md §10,
+  Live: its phase and since when, its target under way against the step's `each_s`, its targets done, its NAS and internet
+  bytes). No phase bars yet: they wait for the lead's measured phase shares (task #511).
+- **Machines:** a card per Mac, one under the other at every width (the pool's cards too): name, role, app, state, heard from; a block per running
+  job by its slot, about that job alone (name, progress in words, running since, memory; frozen or stuck; Cancel);
   then **Live** (`live.js`): the Mac's own `/work/live`, asked every 1.5 s while the tab is shown
   (the footer's range, then the points since), drawn by `chart.js` (its sums in `chartmath.js`,
   tested by web/test/chartmath.test.mjs), as docs/mockups/build-live.html's vitals: each core's
@@ -332,13 +334,12 @@ boxes).
   block's NAS row (`live.js`). A measure missing, or a Mac that doesn't answer, is said so, never
   drawn as zero. The Machines cards' own NAS bar is gone (the shares are the list above); the
   capacity table's NAS column and the alerts about reaching the NAS stay.
-- **Regions:** the list beside the world map (worldmap.js), split by a bar to drag (kept in the
-  browser; stacked, the map first, below 720 px). The list is virtual (only the rows in view are
+- **Regions:** the world map (worldmap.js) over the list, in its own box headed Regions, split by
+  a bar to drag (a handle on it; kept in the browser; stacked, the map first, below 720 px). The list is virtual (only the rows in view are
   made) and ordered as the regions reach the map, A–Z or by most work left; found by name, id or
   any folder. A row per region: its folders and name, state, when it's done and all on the map,
-  its tiles built, what's left by step, its work in time and download size, and a bar of its work
-  left by stage (the forecast's `left` per step at each step's measured seconds a target, the
-  region with the most full width). Above, what's left in all regions by step, summed in the page
+  its work in time and download size, and a segmented bar, a segment named in it per stage
+  with work left there (the forecast's `left`; its tiles built and what's left by step on hover). Above, what's left in all regions by step, summed in the page
   (sums.js `stepTotals`). A row under the pointer lights its region on the map; its card (the
   Jobs tab's, also in the map's stacks, as above) says its folders, its download and tiles
   built, its stages, state, times, build order, work left and outline recipe (`/work/regions`, docs/pool.md §10, Regions).
@@ -360,7 +361,7 @@ boxes).
 - **Drop boxes tab:** the gate (docs/inputs.md §4.7), from the status's `inputs`: a banner per held
   unit (its held files, each finding, Accept per warning, Accept all; errors say what to fix, the
   only actions here: the inputs are otherwise read-only through the page), a quiet line per unit
-  being checked, else a line naming the drop boxes, all taken in. The header's alerts still say a
+  being checked, else a line naming the drop boxes, all taken in. The Overview's alerts still say a
   change is held.
 - **This device:** helping with this tab (index.html; not in `?view`).
 

@@ -180,7 +180,7 @@ function build() {
   return {
     root, said, body, bars, nowV, ioRows,
     cpu: row(vit, "cpu use", "Cores busy, summed over every core, stacked: the build's jobs (blue) and everything else (grey). Dashed: the Mac's cores, and the cores the build may use now (fewer while the owner uses the Mac)."),
-    load: row(vit, "load", "Threads ready to run, averaged over a minute. Above the dashed line (the core count), work waits for a core."),
+    load: row(vit, "CPU load", "Threads ready to run, averaged over a minute. Above the dashed line (the core count), work waits for a core."),
     mem: row(vit, "memory", "RAM in use, stacked: the build's jobs (blue) and every other process (grey). Dashed: the memory the build's jobs may hold together."),
     press: row(vit, "memory pressure", "100 % less macOS's memory-free percentage (kern.memorystatus_level); the line's colour is macOS's pressure level. Dashed: 50 % and 80 %."),
     swap: row(vit, "swap used", "Memory macOS has written out to disk. Rising swap means jobs slow down."),
