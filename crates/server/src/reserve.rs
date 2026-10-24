@@ -3,7 +3,8 @@
 //! (`{"gb": 30}`, GB of 10⁹ bytes; written through a temporary file), read at start; 30 GB while
 //! unset. Changed live: the mirror checks against it from its next round, and the mirror thread is
 //! woken so downloads waiting for room may start. Raising it past what's free deletes nothing:
-//! downloads just wait.
+//! downloads just wait. The mirror keeps the larger of this and the build agent's room target
+//! (`Mirror::set_floor`, set in crate::data).
 //!
 //!   PUT /api/downloads/reserve   {gb}: set it (whole GB, from 5 to less than the disk's size)
 

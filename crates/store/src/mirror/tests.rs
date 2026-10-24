@@ -635,6 +635,36 @@ fn a_changed_reserve_counts_from_the_next_sync_and_raising_it_deletes_nothing() 
 }
 
 #[test]
+fn the_floor_holds_when_its_above_the_setting_and_is_asked_each_time() {
+    let nas = nas();
+    let home = tempfile::tempdir().unwrap();
+    let cat = two_areas(&nas, 1, 0, 1);
+    let cap = Arc::new(AtomicU64::new(1 << 40));
+    let m = mirror_on(home.path(), &cap, 0);
+    let floor = Arc::new(AtomicU64::new(0));
+    let f = floor.clone();
+    m.set_floor(move || f.load(SeqCst));
+    let w1 = wanted(&[world(&cat)]);
+    sync(&m, &cat, &w1, &nas);
+    cap.store(used(&home.path().join("mirror")) + 1_000_000, SeqCst);
+    m.set_reserve(10);
+    // The agent's target above the setting: the z6 tile waits, nothing downloaded goes.
+    floor.store(1_000_000, SeqCst);
+    assert_eq!((m.reserve(), m.reserve_set()), (1_000_000, 10));
+    let w2 = wanted(&[world(&cat), z6_files(&cat, "6-33-21")]);
+    let s = sync(&m, &cat, &w2, &nas);
+    assert_eq!((s.copied, s.removed), (0, 0), "{s:?}");
+    assert!(s.waiting > 0);
+    assert_eq!(m.room(&w2).unwrap().reserve, 1_000_000);
+    assert!(w1.items.iter().all(|i| m.is_here(i)));
+    // Under the setting: the setting holds. Lowered: what waited comes.
+    floor.store(5, SeqCst);
+    assert_eq!(m.reserve(), 10);
+    let s = sync(&m, &cat, &w2, &nas);
+    assert_eq!((s.waiting, s.pending), (0, 0), "{s:?}");
+}
+
+#[test]
 fn the_buildings_and_their_field_are_copied_after_the_other_hi_packs_their_lo_in_the_world() {
     let mut c = Catalog::new(1);
     for (name, enc) in [("roads", "rt7"), ("buildings", "mvt"), ("buildings-field", "field5-webp")] {

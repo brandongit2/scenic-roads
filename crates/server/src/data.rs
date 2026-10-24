@@ -120,8 +120,15 @@ pub struct Options {
 impl Data {
     pub fn open(o: Options) -> Result<Arc<Data>> {
         std::fs::create_dir_all(o.home.join("catalog"))?;
-        let mirror =
-            if o.mirror { Some(Arc::new(store::mirror::Mirror::open(o.home.clone(), o.reserve)?)) } else { None };
+        let mirror = if o.mirror {
+            let m = store::mirror::Mirror::open(o.home.clone(), o.reserve)?;
+            // This Mac's build agent's room target, when above the reserve (docs/macs.md, Mirror).
+            let target = pipeline::agent::settings::RoomTarget::new(&o.home.join("agent"));
+            m.set_floor(move || target.bytes());
+            Some(Arc::new(m))
+        } else {
+            None
+        };
         let d = Arc::new(Data {
             home: o.home.clone(),
             nas: RwLock::new(None),

@@ -49,8 +49,10 @@ export interface DlStatus {
   slow?: boolean;
   rate?: number;
   free?: number;
-  /** The free space downloads leave on the disk: the owner's setting (bytes). */
+  /** The free space downloads leave on the disk (bytes): the larger of the owner's setting
+   * (`reserve_set`) and this Mac's build agent's room target. */
   reserve?: number;
+  reserve_set?: number;
   /** The least the reserve can be set to, and the disk's size (bytes; null when unknown). */
   reserve_min?: number;
   disk?: number | null;
@@ -88,7 +90,7 @@ export const dlRegion = (id: string, on: boolean) => call<{ ok: boolean }>(`/api
 export const dlFine = (id: string, on: boolean) => call<{ ok: boolean }>(`/api/downloads/regions/${encodeURIComponent(id)}/fine`, json('PUT', { on }));
 /** Sets the free space downloads leave on this Mac's disk (whole GB; refused, with why, out of
  * bounds). */
-export const setReserve = (gb: number) => call<{ ok: boolean; reserve: number }>('/api/downloads/reserve', json('PUT', { gb }));
+export const setReserve = (gb: number) => call<{ ok: boolean; reserve: number; reserve_set: number }>('/api/downloads/reserve', json('PUT', { gb }));
 /** Bytes in metric units: 840 MB, 2.4 GB, 251 GB. */
 export function size(b: number): string {
   if (b < 1e9) return `${fmt.n(Math.max(0, b) / 1e6)} MB`;

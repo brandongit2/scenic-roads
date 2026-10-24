@@ -562,6 +562,7 @@ pub fn status(s: &crate::AppState) -> Result<Value> {
         "rate": store::mirror::SLOW_RATE,
         "free": room.free,
         "reserve": room.reserve,
+        "reserve_set": m.reserve_set(),
         "reserve_min": crate::reserve::MIN_GB * 1_000_000_000,
         "disk": store::sys::disk_size(m.root()).ok(),
         "here": m.usage().1,
@@ -674,7 +675,7 @@ fn set_reserve(s: &crate::AppState, gb: u64, disk_bytes: u64) -> Result<Value> {
     let Some(m) = s.data.mirror.as_ref() else { bail!("this server keeps no copy of the map (--no-mirror)") };
     s.reserve.set(gb, disk_bytes, m)?;
     s.downloads.poke();
-    Ok(json!({ "ok": true, "reserve": m.reserve() }))
+    Ok(json!({ "ok": true, "reserve": m.reserve(), "reserve_set": m.reserve_set() }))
 }
 
 /// Sets the reserve (crate::reserve), bounded by the size of the mirror's disk.

@@ -121,7 +121,7 @@ export class RegionsPanel {
     this.resIn.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') void this.saveReserve();
       if (e.key === 'Escape') {
-        this.resIn.value = String(Math.round((this.dl?.reserve ?? 0) / 1e9));
+        this.resIn.value = String(Math.round((this.dl?.reserve_set ?? 0) / 1e9));
         this.resRefused = false;
         this.resEdited();
       }
@@ -554,10 +554,12 @@ export class RegionsPanel {
 
   /** The reserve's control from the status: its value unless it's being edited, its bounds. */
   private renderReserve(k: DlStatus) {
-    const gb = Math.round((k.reserve ?? 0) / 1e9);
+    const gb = Math.round((k.reserve_set ?? 0) / 1e9);
     const max = k.disk ? Math.floor(k.disk / 1e9) - 1 : null;
     this.resIn.min = String(Math.round((k.reserve_min ?? 5e9) / 1e9));
     if (max != null) this.resIn.max = String(max);
+    const kept = k.reserve ?? 0;
+    this.resIn.title = kept > (k.reserve_set ?? 0) ? `This Mac’s build keeps ${size(kept)} free (its room target), so downloads leave that` : '';
     if (document.activeElement !== this.resIn && !this.resBusy && this.resIn.value !== String(gb) && this.resBtn.hidden) this.resIn.value = String(gb);
     this.resEdited();
   }
@@ -575,7 +577,7 @@ export class RegionsPanel {
 
   private resEdited() {
     if (this.resBusy) return;
-    const cur = Math.round((this.dl?.reserve ?? 0) / 1e9);
+    const cur = Math.round((this.dl?.reserve_set ?? 0) / 1e9);
     const c = this.resCheck();
     const changed = this.resIn.value.trim() !== String(cur);
     this.resBtn.hidden = !changed;
@@ -595,13 +597,13 @@ export class RegionsPanel {
   private async saveReserve() {
     const c = this.resCheck();
     if (typeof c === 'string') return this.sayRes(c, true);
-    if (this.resBusy || c === Math.round((this.dl?.reserve ?? 0) / 1e9)) return;
+    if (this.resBusy || c === Math.round((this.dl?.reserve_set ?? 0) / 1e9)) return;
     this.resBusy = true;
     this.resBtn.disabled = true;
     this.sayRes('saving…');
     try {
       const r = await setReserve(c);
-      if (this.dl) this.dl.reserve = r.reserve;
+      if (this.dl) { this.dl.reserve = r.reserve; this.dl.reserve_set = r.reserve_set; }
       this.resBusy = false;
       this.resRefused = false;
       this.resBtn.hidden = true;

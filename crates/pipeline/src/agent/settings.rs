@@ -3,7 +3,8 @@
 //! NAS reserve (crate::agent::room::NAS_RESERVE) and battery floor (crate::agent::cond::BATTERY_FLOOR).
 //! Each is set through one function here, whoever asks: `scenic in-use`, `scenic memory`, `scenic
 //! room`, `scenic nas-room`, `scenic battery-floor`, and the build page's
-//! POST /work/settings (crate::coord), which reads them back with `view`.
+//! POST /work/settings (crate::coord), which reads them back with `view`. The map server's mirror
+//! reads the room target through `RoomTarget` (its reserve is the larger of the two).
 
 use super::{buildmem, cond, room, share};
 use anyhow::{Context, Result};
@@ -141,6 +142,36 @@ pub fn view(home: &Path, root: Option<&Path>) -> serde_json::Value {
     })
 }
 
+/// This Mac's disk room target as another process reads it (bytes, 0 when none): the target's file
+/// in the agent's folder, read again at most every `RoomTarget::EVERY`, so asking is cheap. The map
+/// server's mirror keeps at least this free (docs/macs.md, Mirror).
+pub struct RoomTarget {
+    home: std::path::PathBuf,
+    last: std::sync::Mutex<Option<(std::time::Instant, u64)>>,
+}
+
+impl RoomTarget {
+    /// How long a read holds: a target set with `scenic room` counts within this.
+    pub const EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// The target of the agent whose folder is `home`.
+    pub fn new(home: &Path) -> RoomTarget {
+        RoomTarget { home: home.to_owned(), last: std::sync::Mutex::new(None) }
+    }
+
+    pub fn bytes(&self) -> u64 {
+        let mut g = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        match *g {
+            Some((at, b)) if at.elapsed() < Self::EVERY => b,
+            _ => {
+                let b = room::target(&self.home).map_or(0, |t| t.bytes);
+                *g = Some((std::time::Instant::now(), b));
+                b
+            }
+        }
+    }
+}
+
 fn target_view(t: Option<room::Target>, free: Option<u64>, disk: Option<u64>) -> serde_json::Value {
     serde_json::json!({
         "bytes": t.as_ref().map(|t| t.bytes),
@@ -154,6 +185,18 @@ fn target_view(t: Option<room::Target>, free: Option<u64>, disk: Option<u64>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_room_target_is_read_once_then_held() {
+        let home = tempfile::tempdir().unwrap();
+        let t = RoomTarget::new(home.path());
+        assert_eq!(t.bytes(), 0, "none set");
+        set_room(home.path(), "1", "t").unwrap();
+        assert_eq!(t.bytes(), 0, "held");
+        assert_eq!(RoomTarget::new(home.path()).bytes(), 1 << 30);
+        *t.last.lock().unwrap() = None;
+        assert_eq!(t.bytes(), 1 << 30, "read again");
+    }
 
     #[test]
     fn each_setting_checks_what_it_is_asked_and_off_clears_it() {

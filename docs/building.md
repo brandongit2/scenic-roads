@@ -144,8 +144,10 @@ from the first (`edit_held`).
     fails when what it still has to fetch is more than the NAS's free space past it; the other steps
     writing to the NAS check no space before writing (depth, terrain and fine packs, the OSM pass's
     upload, `fabdem-fetch`), so it doesn't bind them yet.
-  - **With the mirror's reserve** (docs/macs.md, Mirror): the two floors are apart; the mirror never frees for
-    the agent's target and the agent never touches the mirror (task #460).
+  - **With the mirror's reserve** (docs/macs.md, Mirror): the map server's mirror keeps the larger
+    of its reserve and this target free (`settings::RoomTarget`, read again at most every 5 s), so a
+    download never fills room the agent freed. The mirror deletes nothing for the target, and the
+    agent never touches the mirror.
   - A clear or freeing runs on its own thread; jobs run meanwhile. Nothing goes through a link.
     Each ends early when the agent is asked to stop.
 - **Z6 tiles run in map order** (by 10° square, then tile), so what one fetches serves the next.

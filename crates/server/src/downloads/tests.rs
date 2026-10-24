@@ -329,6 +329,29 @@ async fn the_reserve_is_set_kept_and_bounded_and_the_mirror_takes_it_at_once() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_agents_room_target_above_the_reserve_is_the_mirrors_reserve() {
+    let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    catalog(nas.path());
+    // This Mac's agent keeps 40 GiB free (`scenic room 40`), above the 30 GB reserve.
+    pipeline::agent::settings::set_room(&home.path().join("agent"), "40", "t").unwrap();
+    let data = Data::open(crate::data::Options {
+        home: home.path().to_owned(),
+        nas_root: Some(nas.path().to_owned()),
+        mirror: true,
+        reserve: 30_000_000_000,
+    })
+    .unwrap();
+    let s = crate::test_state_from(home.path(), data);
+    let m = s.data.mirror.clone().unwrap();
+    assert_eq!(m.reserve(), 40 << 30);
+    let v = get(&s).await;
+    assert_eq!((v["reserve"].as_u64(), v["reserve_set"].as_u64()), (Some(40 << 30), Some(30_000_000_000)));
+    // Set above the target: the setting.
+    tokio::task::block_in_place(|| set_reserve(&s, 100, 500_000_000_000)).unwrap();
+    assert_eq!(m.reserve(), 100_000_000_000);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_region_still_building_downloads_as_its_tiles_come() {
     let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     // A region over 31/21 and 32/21 (London to Kent), still building: catalog 1 has 31/21's files

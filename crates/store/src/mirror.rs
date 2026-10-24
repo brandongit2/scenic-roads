@@ -211,6 +211,8 @@ pub struct Mirror {
     root: PathBuf,
     /// The free space it leaves on the disk (bytes): the owner's setting, changed live.
     reserve: std::sync::atomic::AtomicU64,
+    /// Another floor it keeps when that's higher (`set_floor`: this Mac's build agent's room target).
+    floor: std::sync::OnceLock<Box<dyn Fn() -> u64 + Send + Sync>>,
     state: Mutex<State>,
     free_space: Box<FreeSpace>,
     on_remove: Mutex<Option<Arc<OnRemove>>>,
@@ -288,6 +290,7 @@ impl Mirror {
         Ok(Mirror {
             root,
             reserve: std::sync::atomic::AtomicU64::new(reserve_bytes),
+            floor: std::sync::OnceLock::new(),
             state: Mutex::new(State { files, pieces, sizes, copying: None, last: None }),
             free_space: Box::new(disk_free),
             on_remove: Mutex::new(None),
@@ -298,9 +301,21 @@ impl Mirror {
         &self.root
     }
 
-    /// The free space the disk keeps (bytes).
+    /// The free space the disk keeps (bytes): the larger of the owner's setting (`reserve_set`)
+    /// and the floor (`set_floor`), asked at each check.
     pub fn reserve(&self) -> u64 {
+        self.reserve_set().max(self.floor.get().map_or(0, |f| f()))
+    }
+
+    /// The owner's setting for the free space the disk keeps (bytes).
+    pub fn reserve_set(&self) -> u64 {
         self.reserve.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Keeps at least `floor()` bytes free as well (asked at each check, so it must be cheap): the
+    /// build agent's room target, so a download never fills room the agent freed. Set once.
+    pub fn set_floor(&self, floor: impl Fn() -> u64 + Send + Sync + 'static) {
+        let _ = self.floor.set(Box::new(floor));
     }
 
     /// Sets the free space the disk keeps, from the next check on: a copy waiting for room may go
