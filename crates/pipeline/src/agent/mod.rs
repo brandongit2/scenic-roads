@@ -1407,6 +1407,8 @@ pub struct Agent {
     last_beat: Option<(Vec<u8>, Instant)>,
     /// How far each region is built, and when that was worked out.
     progress: Option<(Instant, BTreeMap<String, build::RegionState>, Vec<build::Line>)>,
+    /// When the regions' steps were last counted for the page (`region_steps`).
+    steps_counted: Option<Instant>,
     /// The pass's reaches as last read, by content name (large: read again only when they change).
     reach: std::cell::RefCell<Option<(String, std::rc::Rc<crate::reach::Reaches>)>>,
     /// The terrain packs' indexes, which the z6 tiles' keys read (`tiles`, kept in `pack-idx/`): those
@@ -1878,6 +1880,7 @@ impl Agent {
             heal_seen: 0,
             last_beat: None,
             progress: None,
+            steps_counted: None,
             reach: Default::default(),
             tiles,
             coverage: Default::default(),
@@ -4465,6 +4468,19 @@ impl Agent {
         if ended || self.progress.as_ref().is_none_or(|(t, _, _)| t.elapsed() >= Duration::from_secs(300)) {
             if let Some(r) = root.as_ref() {
                 self.progress = Some((Instant::now(), self.region_progress(r), self.checklist(r, &regions)));
+            }
+        }
+        // Each region's steps, built of all (the build page's Regions tab): counted only while a page
+        // asks this Mac (the lead, or out of the pool), after a job ends or each minute.
+        if let (Some(r), Some(c), false) = (root.as_ref(), self.coord.as_ref(), self.o.helper) {
+            if c.region_steps_asked()
+                && (ended || self.steps_counted.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)))
+            {
+                self.steps_counted = Some(Instant::now());
+                let t = Instant::now();
+                let steps = self.region_steps(r);
+                c.set_region_steps(std::sync::Arc::new(serde_json::json!({ "at": now_s(), "regions": steps })));
+                eprintln!("agent: the regions' steps took {} ms", t.elapsed().as_millis());
             }
         }
         let built = self.progress.as_ref().map(|(_, b, _)| b.clone()).unwrap_or_default();
@@ -8329,12 +8345,37 @@ impl Agent {
 
     /// Per region, how many of its z6 tiles are built (none before the first pass makes the outlines).
     fn region_progress(&self, root: &Path) -> BTreeMap<String, build::RegionState> {
-        let Some(date) = self.latest_pass(root) else { return BTreeMap::new() };
+        self.as_built(root, build::region_states).unwrap_or_default()
+    }
+
+    /// Per region, each step's targets built of all (build::region_steps), for the build page.
+    fn region_steps(&self, root: &Path) -> BTreeMap<String, BTreeMap<&'static str, [usize; 2]>> {
+        self.as_built(root, build::region_steps).unwrap_or_default()
+    }
+
+    /// `f` over the coverage, the regions', the pass, the manifest, the records as every reader reads
+    /// them (agent::rekey), the reaches and the terrain packs' indexes; None before the first pass
+    /// or while the coverage can't be read.
+    #[allow(clippy::type_complexity)]
+    fn as_built<T>(
+        &self,
+        root: &Path,
+        f: fn(
+            &crate::coverage::Coverage,
+            &[(String, crate::coverage::Coverage)],
+            &str,
+            &BTreeMap<String, String>,
+            &build::Keys,
+            Option<&crate::reach::Reaches>,
+            &tiles::TerrainTiles,
+        ) -> T,
+    ) -> Option<T> {
+        let date = self.latest_pass(root)?;
         let manifest: BTreeMap<String, String> = nasread::read(&root.join("state/build/manifest.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
-        let Ok(covs) = self.coverage(root, &manifest, false) else { return BTreeMap::new() };
+        let covs = self.coverage(root, &manifest, false).ok()?;
         let (cov, each) = (&covs.all, &covs.each);
         let mut keys = build::Keys::load(root);
         let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
@@ -8343,7 +8384,7 @@ impl Agent {
         // (As re-keyed: agent::rekey.)
         let times = rekey::FileTimes::new(root);
         rekey::as_read(&mut keys, cov, &date, &manifest, reach.as_deref(), &inputs, &tiles, &times);
-        build::region_states(cov, each, &date, &manifest, &keys, reach.as_deref(), &tiles)
+        Some(f(cov, each, &date, &manifest, &keys, reach.as_deref(), &tiles))
     }
 
     /// `keys` as every reader reads them (agent::rekey::as_read: re-keyed, terrain's and slope's

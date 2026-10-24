@@ -3,7 +3,7 @@
 // slots and Macs, and the wait while this Mac hasn't read the build's state.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { busyLanes, finishedTiles, inRings, mapTilesKept, regionWork, regionsShown, rowsWindow, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, pastFrom, pastRuns, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, targetsOf, tileBox, tileCovers, tileOf, wholeProgress } from '../../web/work/sums.js';
+import { busyLanes, finishedTiles, inRings, mapTilesKept, regionWork, regionsShown, rowsWindow, stageFill, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, pastFrom, pastRuns, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, targetsOf, tileBox, tileCovers, tileOf, wholeProgress } from '../../web/work/sums.js';
 
 test('map: tiles from targets, their squares', () => {
   assert.deepEqual(tileOf('6/10/15'), { z: 6, x: 10, y: 15 });
@@ -214,6 +214,12 @@ test('regions: work left by step in the table\'s order, timed, by stage', () => 
   const stage = { pack: 'tiles', unit: 'roads', zz: 'roads' };
   assert.deepEqual(stageSegments(w, (s) => stage[s], ['roads', 'tiles']), [{ stage: 'roads', k: 3, s: 200 }, { stage: 'tiles', k: 3, s: 6 }]);
   assert.deepEqual(regionWork(null, {}, []), []);
+});
+
+test('regions: targets built of all by stage', () => {
+  const stage = { terrain: 'terrain', 'terrain-lo': 'terrain', unit: 'roads' };
+  assert.deepEqual(stageFill({ terrain: [3, 10], 'terrain-lo': [1, 2], unit: [0, 4] }, (s) => stage[s]), { terrain: [4, 12], roads: [0, 4] });
+  assert.deepEqual(stageFill(undefined, (s) => stage[s]), {});
 });
 
 test('regions: totals by step over regions', () => {

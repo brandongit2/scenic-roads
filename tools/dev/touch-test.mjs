@@ -14,6 +14,9 @@
 //   --live FILE       /work/live's `net.hosts` given FILE's hosts ({host: {in, out, requests, conns,
 //                     open, retries, holds, limit, robots}}) beside the agent's own (an agent before
 //                     #635 tells no robots.txt; a paused build moves nothing), the Activity tab's rows
+//   --steps FILE      /work/regions with `steps` answered from FILE ({at, regions: {id: {step:
+//                     [built, all]}}}, the lead's build::region_steps: an agent before #636 hasn't
+//                     them); the Regions tab's stage bars then checked filled by them
 //   --member NAME     the Overview map's "Show only for" set to NAME: its tiles to come shown, a
 //                     card of one found, screenshots (chrome-member*), then set back
 //   --width W         the Chrome run at W px wide (default 390, a phone; 768 or more: a desktop, DPR 2)
@@ -46,10 +49,11 @@ const TABS = ["overview", "jobs", "machines", "regions", "nas", "dropboxes", "ac
 
 // ---- The read-only server ------------------------------------------------------------------------
 // A call forwarded only when its body has no other keys than these (an empty body: {}).
-const READS = { swarm: [], steps: [], regions: [], settings: [], history: ["since", "max"], live: ["range", "series", "net", "since"], catalogs: ["after"], tocome: ["mac"] };
+const READS = { swarm: [], steps: [], regions: ["steps"], settings: [], history: ["since", "max"], live: ["range", "series", "net", "since"], catalogs: ["after"], tocome: ["mac"] };
 const CATS = arg("--catalogs", null);
 const TOCOME = arg("--tocome", null);
 const LIVE = arg("--live", null);
+const STEPS = arg("--steps", null);
 const MEMBER = arg("--member", null);
 const WIDTH = +arg("--width", 390);
 const PHONE = WIDTH < 768;
@@ -76,6 +80,10 @@ function serve() {
           a.catalogs = a.catalogs.filter((c) => v.after == null || c.n > v.after);
           res.writeHead(200, { "Content-Type": "application/json" });
           return res.end(JSON.stringify(a));
+        }
+        if (call === "regions" && v.steps && STEPS) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          return res.end(readFileSync(STEPS));
         }
         if (call === "tocome" && TOCOME) {
           // (As forecast::ToCome::answer: the Mac named, or the one its name starts with before a "-";
@@ -289,6 +297,13 @@ async function run() {
       if (tab === "regions") {
         const tall = await js(`(async () => { const R = document.querySelector(".rrow")?.parentElement; if (!R) return []; const L = R.parentElement, out = new Set(); for (let t = 0; t <= R.offsetHeight; t += 400) { L.scrollTop = t; L.dispatchEvent(new Event("scroll")); await new Promise((r) => setTimeout(r, 20)); for (const e of R.children) if (e.scrollHeight > e.clientHeight + 1) out.add(e.querySelector(".nm")?.textContent + " " + e.scrollHeight + ">" + e.clientHeight); } L.scrollTop = 0; return [...out].slice(0, 4); })()`);
         check("regions: every row's text fits its height", !tall.length, tall.join("; "));
+        // (With --steps: each stage the lead counts filled by its share built, its numbers on hover;
+        // the one under way striped past it, #636.)
+        if (STEPS) {
+          await js(`new Promise((r) => setTimeout(r, 300))`);
+          const f = await js(`(() => { const s = [...document.querySelectorAll(".rrow .sbar > i.fill")]; const p = s.map((e) => parseFloat(e.style.getPropertyValue("--f"))); return [s.length, s.filter((e) => / of .+ built \\(\\d+%\\)/.test(e.title)).length, p.filter((x) => x > 0 && x < 100).length, p.filter((x) => !(x >= 0 && x <= 100)).length, document.querySelectorAll(".rrow .sbar > i.fill.run").length]; })()`);
+          check("regions: the stage bars filled by the share built, numbers on hover", f[0] > 0 && f[1] === f[0] && f[2] > 0 && !f[3], `${f[0]} filled, ${f[1]} with numbers, ${f[2]} part-built, ${f[3]} out of range, ${f[4]} under way`);
+        }
       }
       // (Jobs: each step's jobs on a row of their own under it, every one a box of its targets, none
       // folded into a "+N".)

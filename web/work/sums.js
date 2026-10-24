@@ -277,6 +277,18 @@ export function stageSegments(work, stageOf, stages = []) {
   return [...by.values()].sort((a, b) => at(a.stage) - at(b.stage));
 }
 
+// A region's targets built of all by stage (`stageOf(step)`), from its steps' counts as the lead
+// gives them (`/work/regions` with `steps`: {step: [built, all]}): {stage: [built, all]}.
+export function stageFill(steps, stageOf) {
+  const out = {};
+  for (const [s, [b, a]] of Object.entries(steps || {})) {
+    const g = stageOf(s) || "";
+    const had = out[g] || [0, 0];
+    out[g] = [had[0] + b, had[1] + a];
+  }
+  return out;
+}
+
 // Every region's targets left, summed by step: {step: k}.
 export function stepTotals(regions) {
   const out = {};

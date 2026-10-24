@@ -305,6 +305,8 @@ html.card-modal, html.card-modal body { overflow: hidden; }
 .tc-bar .track.segs i { border-radius: 0; }
 .tc-bar .track.segs i.next { opacity: .28; }
 .tc-bar .track.segs i.run { background-image: repeating-linear-gradient(135deg, #fff7 0 2px, transparent 2px 5px) !important; }
+.tc-bar .track.segs i.fill { background: linear-gradient(to right, var(--c) 0 var(--f), color-mix(in srgb, var(--c) 28%, transparent) var(--f)); }
+.tc-bar .track.segs i.fill.run { background: linear-gradient(to right, var(--c) 0 var(--f), transparent var(--f)), repeating-linear-gradient(135deg, color-mix(in srgb, var(--c) 60%, transparent) 0 2px, color-mix(in srgb, var(--c) 20%, transparent) 2px 5px) !important; }
 .tc-bar .cap { font-size: var(--fs-s); color: var(--dim); }
 .tc-chipsbox { display: flex; flex-direction: column; gap: 3px; }
 .tc-chips { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -337,6 +339,9 @@ html.card-modal, html.card-modal body { overflow: hidden; }
 .sbar > i { flex: 1 1 0; min-width: 0; font-style: normal; font-size: var(--fs-s); line-height: 14px; padding: 0 5px; color: var(--text); background: color-mix(in srgb, var(--c) 55%, var(--line)); border-left: 2px solid var(--c); border-radius: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sbar > i.next { background: color-mix(in srgb, var(--c) 10%, var(--line)); color: var(--dim); }
 .sbar > i.run { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--c) 55%, var(--line)) 0 4px, color-mix(in srgb, var(--c) 20%, var(--line)) 4px 8px); }
+/* (Filled by the share built, `--f`: the rest faint, or striped while it's being built.) */
+.sbar > i.fill { background: linear-gradient(to right, color-mix(in srgb, var(--c) 55%, var(--line)) 0 var(--f), transparent var(--f)), color-mix(in srgb, var(--c) 10%, var(--line)); }
+.sbar > i.fill.run { background: linear-gradient(to right, color-mix(in srgb, var(--c) 55%, var(--line)) 0 var(--f), transparent var(--f)), repeating-linear-gradient(135deg, color-mix(in srgb, var(--c) 30%, var(--line)) 0 4px, color-mix(in srgb, var(--c) 8%, var(--line)) 4px 8px); }
 .rsplit { cursor: row-resize; position: relative; touch-action: none; outline: none; }
 .rsplit::after { content: ""; position: absolute; left: 0; right: 0; top: 3px; height: 3px; border-radius: 2px; background: var(--line); }
 .rsplit::before { content: ""; position: absolute; left: calc(50% - 18px); width: 36px; top: 2px; height: 5px; border-radius: 3px; background: var(--dim); z-index: 1; }

@@ -348,6 +348,12 @@ pub struct Shared {
     /// The build page's regions as this Mac's agent last made them (crate::agent::regionsview):
     /// `/work/regions` out of the pool. None: not made yet (503).
     pub regions: Option<Arc<serde_json::Value>>,
+    /// Each region's targets built of all by step (crate::agent::build::region_steps), as this
+    /// Mac's agent last counted them (`{at, regions: {id: {step: [built, all]}}}`), and when a page
+    /// last asked: the lead (or a Mac out of the pool) counts them only while asked
+    /// (`REGION_STEPS_ASKING`). `/work/regions` with `steps`.
+    pub region_steps: Option<Arc<serde_json::Value>>,
+    pub region_steps_asked: Option<Instant>,
     /// Each Mac's tiles to come in the lead's last forecast (crate::agent::forecast::ToCome):
     /// `/work/tocome`. None: this Mac made none (a member's: the page asks the lead).
     pub tocome: Option<Arc<crate::agent::forecast::ToCome>>,
@@ -1300,6 +1306,8 @@ impl Coordinator {
             live: None,
             catalogs: None,
             regions: None,
+            region_steps: None,
+            region_steps_asked: None,
             tocome: None,
             viewer,
             forward: None,
@@ -2156,6 +2164,16 @@ impl Coordinator {
     /// The build page's regions as this Mac's agent made them (`Shared::regions`).
     pub fn set_regions(&self, v: Arc<serde_json::Value>) {
         self.shared.lock().unwrap().regions = Some(v);
+    }
+
+    /// Each region's targets built by step as this Mac's agent counted them (`Shared::region_steps`).
+    pub fn set_region_steps(&self, v: Arc<serde_json::Value>) {
+        self.shared.lock().unwrap().region_steps = Some(v);
+    }
+
+    /// Whether a page asked for the regions' steps within `REGION_STEPS_ASKING`.
+    pub fn region_steps_asked(&self) -> bool {
+        self.shared.lock().unwrap().region_steps_asked.is_some_and(|t| t.elapsed() < REGION_STEPS_ASKING)
     }
 
     /// Each Mac's tiles to come in this Mac's last forecast (`Shared::tocome`).
@@ -3068,6 +3086,10 @@ fn raw_again(journal: &Path, h: Option<&Handoff>) {
 }
 
 /// The page's views before this Mac's first read of the NAS (crate::agent::pageview): not ready.
+/// How long a page's ask keeps the regions' steps counted (crate::agent's heartbeat counts them
+/// again after a job ends, or each minute, while asked).
+pub const REGION_STEPS_ASKING: Duration = Duration::from_secs(120);
+
 fn not_ready() -> (u16, serde_json::Value) {
     (503, serde_json::json!({ "error": "this Mac hasn't read the build's state yet; ask again in a few seconds" }))
 }
@@ -4001,6 +4023,14 @@ fn route(
             Ok(tc.map_or_else(not_ready, |t| (200, t.answer(b["mac"].as_str().unwrap_or_default()))))
         }
         "/work/regions" => {
+            // With `steps`: each region's targets built of all by step, as this Mac's agent last
+            // counted them (the lead's, or out of the pool; asked again: counted while asked).
+            let b: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+            if b["steps"].as_bool() == Some(true) {
+                let mut sh = shared.lock().unwrap();
+                sh.region_steps_asked = Some(Instant::now());
+                return Ok(sh.region_steps.clone().map_or_else(not_ready, |v| (200, (*v).clone())));
+            }
             // The build page's regions (crate::agent::regionsview): in the pool, the lead's as this
             // Mac read them; out of it, this Mac's agent's.
             let pv = shared.lock().unwrap().pageview.clone().filter(|p| p.active());
@@ -9353,6 +9383,16 @@ mod tests {
         assert_eq!(status(&r), 200, "{r}");
         let a: serde_json::Value = serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap();
         assert_eq!((a["catalog"].as_u64(), a["regions"][0]["id"].as_str()), (Some(4), Some("a")));
+        // The steps: asked (so counted from now), 503 until counted, then theirs alone.
+        let steps =
+            || raw(&addr, "POST", "/work/regions", &[("Content-Type", "application/json")], br#"{"steps":true}"#);
+        assert!(!c.region_steps_asked());
+        assert_eq!(status(&steps()), 503);
+        assert!(c.region_steps_asked());
+        c.set_region_steps(Arc::new(serde_json::json!({ "at": 5, "regions": { "a": { "unit": [1, 3] } } })));
+        let r = steps();
+        let a: serde_json::Value = serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(a["regions"]["a"]["unit"], serde_json::json!([1, 3]));
     }
 
     /// `/work/tocome` (docs/pool.md §10, To come), with no key: 503 until this Mac's forecast made

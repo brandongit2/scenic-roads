@@ -15,7 +15,7 @@
 // what happened, what each Mac moves now and the internet by website: activity.js), and the details.
 
 import { poolSection, termText } from "./pool.js";
-import { TILE_STATES, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, notRead, packRuns, pastFrom, pastRuns, regionWork, regionsShown, rowsWindow, runningTiles, slotName, slotNo, stageSegments, stepTotals, targetsOf, mapTilesKept, macSlot, tileCovers, tileOf, wholeProgress } from "./sums.js";
+import { TILE_STATES, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, notRead, packRuns, pastFrom, pastRuns, regionWork, regionsShown, rowsWindow, runningTiles, stageFill, slotName, slotNo, stageSegments, stepTotals, targetsOf, mapTilesKept, macSlot, tileCovers, tileOf, wholeProgress } from "./sums.js";
 import { fmt, timeTicks } from "./chartmath.js";
 import { liveBlock, remote, startLive } from "./live.js";
 import { createMap } from "./worldmap.js";
@@ -714,7 +714,8 @@ function withCard(el, key, build) {
 // title given as an object ({title, …}: the map's cards, as docs/mockups/build-live.html draws
 // them) may have a head (`kicker` over it, a `colour` swatch), stat tiles (`stats`: [number,
 // label] pairs, none null), a bar (`bar`: {frac, label, colour}), a bar in parts (`segs`: {parts
-// [{w, colour, cls, title}], label}), chips (`chips` under `chipsLabel`) and a foot (`foot`).
+// [{w, colour, cls, f, title}], label: a part with `f` filled that far, the rest faint, or striped when
+// it's `run`), chips (`chips` under `chipsLabel`) and a foot (`foot`).
 const cardBody = (title, pairs, ...more) => {
   const o = title && typeof title === "object" && !(title instanceof Node) && !Array.isArray(title) ? title : { title };
   const stats = o.stats?.filter(([v]) => v != null);
@@ -722,7 +723,7 @@ const cardBody = (title, pairs, ...more) => {
     ? h("div", "tc-head", o.colour ? h("i", { class: "tc-sw", style: { background: o.colour } }) : null, h("div", null, o.kicker ? h("div", "tc-kick", o.kicker) : null, h("div", "tc-title", o.title)))
     : h("div", "ct", o.title);
   const bar = o.bar && h("div", "tc-bar", h("div", "track", h("i", { style: { width: `${Math.round(Math.max(0, Math.min(1, o.bar.frac)) * 100)}%`, background: o.bar.colour || o.colour || "var(--accent)" } })), o.bar.label ? h("div", "cap", o.bar.label) : null);
-  const segs = o.segs?.parts?.length && h("div", "tc-bar", h("div", "track segs", o.segs.parts.map((p) => h("i", { class: p.cls || null, title: p.title || null, style: { width: `${(p.w * 100).toFixed(2)}%`, background: p.colour } }))), o.segs.label ? h("div", "cap", o.segs.label) : null);
+  const segs = o.segs?.parts?.length && h("div", "tc-bar", h("div", "track segs", o.segs.parts.map((p) => h("i", { class: [p.cls, p.f != null ? "fill" : null].filter(Boolean).join(" ") || null, title: p.title || null, style: { width: `${(p.w * 100).toFixed(2)}%`, ...(p.f != null ? { "--c": p.colour, "--f": `${(p.f * 100).toFixed(1)}%` } : { background: p.colour }) } }))), o.segs.label ? h("div", "cap", o.segs.label) : null);
   return [head,
     stats?.length ? h("div", "cstats", stats.map(([v, l]) => h("div", "cstat", h("div", "n", v), h("div", "l", l)))) : null,
     bar, segs,
@@ -1117,7 +1118,8 @@ phone.addEventListener("change", () => {
 const size = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1e6))} MB`);
 
 // Each region as the tab shows it: the forecast's (its `left` by step, rank, times) with its
-// folders, size and outline (/work/regions), its tiles built (the lead's `built`), its recipe
+// folders, size and outline (/work/regions), its tiles built (the lead's `built`), its targets built
+// of all by stage (`fill`: the lead's steps, `steps`), its recipe
 // (the lead's `regions`); those the forecast lacks (or every one without a forecast) without its words.
 function regionRows(m) {
   const fc = m.fc, built = m.a.built || {};
@@ -1131,6 +1133,7 @@ function regionRows(m) {
     const f = fcBy[id], d = drawn.byId[id];
     const work = regionWork(f?.left, fc?.each_s, order);
     return { ...f, id, f, name: m.regionName[id] || d?.name || id, crumbs: d?.crumbs, bytes: d?.bytes, built: built[id], outline: recipe[id]?.outline, work,
+      fill: regionSteps.regions[id] ? stageFill(regionSteps.regions[id], S.stage) : null,
       segs: stageSegments(work, S.stage, stages), secs: work.reduce((t, w) => t + w.s, 0), count: work.reduce((t, w) => t + w.k, 0) };
   });
 }
@@ -1146,9 +1149,24 @@ function rowState(r) {
   return [st, cls];
 }
 
+// A region's stage bar, as its row and card draw it: every stage that builds regions, in order, each
+// filled by the share of its targets built here (`f`: the lead's counts, the owner's 21 Oct 05:03
+// and 24 Oct, task #636), the one under way striped past that; a stage the lead doesn't count by
+// region (or every one before it answers) by its state in the forecast alone: built solid, to come
+// faint (without a forecast, faint: not known).
+function stageParts(r) {
+  const todo = new Set(r.segs.map((g) => g.stage)), now = r.rank === 0 ? r.segs[0]?.stage : null;
+  return regionStages().map((g) => {
+    const c = r.fill?.[g], state = !r.f ? "not counted by region" : g === now ? "building" : todo.has(g) ? "to come" : "built";
+    const f = c ? (c[1] ? c[0] / c[1] : 1) : null;
+    return { g, now: g === now, todo: todo.has(g), f, cls: g === now ? "run" : (todo.has(g) || !r.f) && f == null ? "next" : null,
+      title: `${S.stageTitle(g)}: ${c ? `${n(c[0])} of ${n(c[1])} built (${Math.floor(f * 100)}%)${g === now ? ", building" : ""}` : state}` };
+  });
+}
+
 // Each region's card (the list's rows and both maps' regions), as the mockup draws it: its
 // folders over its name, its download and tiles built (stat tiles), its tiles built (a bar), each
-// stage of the build (a bar in parts: built solid, the one under way striped, to come faint),
+// stage that builds regions (a bar in parts: `stageParts`),
 // state, when it's built and on the map, its place in the build's order, its work left by step
 // (chips), its outline's recipe. (The other regions at a map's point have their own cards in its
 // stack.)
@@ -1158,15 +1176,14 @@ function regionCards(rows) {
   for (const r of rows) cards.set(`mr ${r.id}`, () => {
     const [st, cls] = rowState(r);
     const b = r.built;
-    const left = new Set(r.segs.map((g) => g.stage));
-    const now = r.rank === 0 ? r.segs[0]?.stage : null;
-    const stages = r.f ? table.stages.map((g) => g.id) : [];
-    const parts = stages.map((g) => ({ w: 1 / stages.length, colour: stageColour(g), cls: g === now ? "run" : left.has(g) ? "next" : null, title: `${S.stageTitle(g)}: ${g === now ? "building" : left.has(g) ? "to come" : "built"}` }));
-    const builtN = stages.filter((g) => !left.has(g)).length;
+    const sp = r.f || r.fill ? stageParts(r) : [];
+    const parts = sp.map((p) => ({ w: 1 / sp.length, colour: stageColour(p.g), cls: p.cls, f: p.f, title: p.title }));
+    const now = sp.find((p) => p.now)?.g, left = sp.filter((p) => p.todo).length;
+    const builtN = sp.length - left;
     return cardBody({ kicker: r.crumbs?.slice(0, -1).join(" › ") || "Region", colour: REGION_COLOUR[regionState(r.f)] || "var(--dim)", title: r.name,
       stats: [[r.bytes != null ? size(r.bytes) : null, "to download"], [b?.total ? `${n(b.built)} / ${n(b.total)}` : null, "tiles built"]],
       bar: b?.total ? { frac: b.built / b.total, label: `${Math.round((b.built / b.total) * 100)}% of its tiles built`, colour: "var(--ok)" } : null,
-      segs: parts.length ? { parts, label: `stages: ${builtN} built${now ? `, ${S.stageTitle(now)} building` : ""}, ${left.size - (now ? 1 : 0)} to come` } : null,
+      segs: parts.length ? { parts, label: `stages: ${builtN} built${now ? `, ${S.stageTitle(now)} building` : ""}, ${left - (now ? 1 : 0)} to come` } : null,
       chips: r.count ? r.work.map((w) => `${S.said(w.step, w.k)}${w.s ? ` · ${dur(w.s)}` : ""}`) : [], chipsLabel: "Work left",
       foot: r.outline?.length ? `outline: ${r.outline.join(" + ")}` : "" }, [
       ["state", st ? h("span", cls, st) : null],
@@ -1187,15 +1204,13 @@ function regionRow(r, i) {
   const b = r.built;
   const tiles = b?.total ? (b.built < b.total ? `${n(b.built)} of ${n(b.total)} tiles` : `${n(b.total)} tiles built`) : "";
   const left = r.work.map((w) => S.said(w.step, w.k)).join(" · ");
-  // (Every stage that builds regions, in order, filled by how far it is here: built solid, the one
-  // under way striped, to come faint, the owner's 21 Oct 05:03; as the region's card's bar.)
-  const todo = new Set(r.segs.map((g) => g.stage)), now = r.rank === 0 ? r.segs[0]?.stage : null;
+  // (`stageParts`, as the region's card's bar.)
   const bar = h("span", { class: "sbar", title: [tiles, left ? `left: ${left}` : ""].filter(Boolean).join(" · ") },
-    regionStages().map((g) => h("i", { class: g === now ? "run" : todo.has(g) ? "next" : "built", title: `${S.stageTitle(g)}: ${g === now ? "building" : todo.has(g) ? "to come" : "built"}`, style: { "--c": stageColour(g) } }, S.stageTitle(g))));
+    stageParts(r).map((p) => h("i", { class: [p.cls, p.f != null ? "fill" : null].filter(Boolean).join(" ") || null, title: p.title, style: { "--c": stageColour(p.g), ...(p.f != null ? { "--f": `${(p.f * 100).toFixed(1)}%` } : {}) } }, S.stageTitle(p.g))));
   const row = h("div", { class: `rrow${r.f && !r.count && r.on_map === true ? " done" : ""}${rp.lit === r.id ? " lit" : ""}`, role: "listitem", style: { top: `${i * ROW_H}px` } },
     h("span", "nm", above ? h("span", "dim", `${above} › `) : null, r.name, st ? [" ", chip(st, cls)] : null),
     h("span", "when", when),
-    h("span", "lw", r.f ? bar : h("span", "lt", tiles)),
+    h("span", "lw", r.f || r.fill ? bar : h("span", "lt", tiles)),
     h("span", "when", [r.secs ? `≈ ${dur(r.secs)} of work` : "", r.bytes != null ? size(r.bytes) : ""].filter(Boolean).join(" · ")));
   row.dataset.id = r.id;
   row.dataset.card = `mr ${r.id}`;
@@ -1281,6 +1296,7 @@ function regionsPane(m, md) {
     setSplit(Number(ctx.store.get("regionsMapSplit", 0.65)) || 0.65, false);
     rp.section = section("d-regions", null, null, rp.el);
   }
+  askSteps(m);
   rp.rows = md.rows;
   rp.map.update(md.data);
   rp.legend.replaceChildren(...mapLegend(m, md, rp.map));
@@ -1474,6 +1490,23 @@ let shownMacs = [];
 // catalogue they were sized by, and when they were asked.
 const drawn = { byId: {}, catalog: undefined, at: 0, asking: false };
 const REGIONS_EVERY_MS = 600000;
+// Each region's targets built of all by step (`/work/regions` with `steps`: the lead counts them
+// while asked, crate::agent::build::region_steps), asked each `STEPS_EVERY_MS` while the Regions tab
+// is drawn: this Mac's agent's when it counts them (the lead, or out of the pool), else the lead's.
+const regionSteps = { regions: {}, at: 0, asked: 0, asking: false, st: {} };
+const STEPS_EVERY_MS = 30000;
+function askSteps(m) {
+  if (regionSteps.asking || Date.now() - regionSteps.asked < STEPS_EVERY_MS) return;
+  regionSteps.asking = true;
+  regionSteps.asked = Date.now();
+  const body = { steps: true };
+  const lead = (last?.macs || []).find((x) => x.host === m.a.host);
+  // (An agent before #636 answers the outlines, `regions` a list: none counted there.)
+  const counted = (v) => v?.regions && !Array.isArray(v.regions);
+  ctx.call("/work/regions", body).then(([code, v]) => (code === 200 && counted(v) ? v : lead ? remote(lead, regionSteps.st, body, "/work/regions") : null))
+    .catch(() => null)
+    .then((v) => { regionSteps.asking = false; if (counted(v) && v.at !== regionSteps.at) { regionSteps.regions = v.regions; regionSteps.at = v.at; render(); } });
+}
 let events = [];
 // What this browser last showed: its last event's time (unix s; null: a first visit). By time, not
 // by number: an event's number is the answering Mac's (`epoch`), new when its agent restarts.

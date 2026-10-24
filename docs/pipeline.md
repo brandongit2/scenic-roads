@@ -338,8 +338,12 @@ boxes).
   a bar to drag (a handle on it; kept in the browser; stacked, the map first, below 720 px). The list is virtual (only the rows in view are
   made) and ordered as the regions reach the map, A–Z or by most work left; found by name, id or
   any folder. A row per region: its folders and name, state, when it's done and all on the map,
-  its work in time and download size, and a segmented bar, a segment named in it per stage
-  with work left there (the forecast's `left`; its tiles built and what's left by step on hover). Above, what's left in all regions by step, summed in the page
+  its work in time and download size, and a segmented bar, a segment named in it per stage that
+  builds regions, each filled by the share of that stage's targets built in the region (the lead's
+  counts, `/work/regions` with `steps`, docs/pool.md §10, Regions; "N of M built (P%)" on hover;
+  task #636), the one under way striped past its fill; a stage the lead doesn't count by region
+  by its state in the forecast alone (built solid, to come faint; its tiles built and what's left
+  by step on the bar's hover). Above, what's left in all regions by step, summed in the page
   (sums.js `stepTotals`). A row under the pointer lights its region on the map; its card (the
   Jobs tab's, also in the map's stacks, as above) says its folders, its download and tiles
   built, its stages, state, times, build order, work left and outline recipe (`/work/regions`, docs/pool.md §10, Regions).

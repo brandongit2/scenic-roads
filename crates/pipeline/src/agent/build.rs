@@ -1096,6 +1096,136 @@ pub fn region_states(
         .collect()
 }
 
+/// How far each region is built, step by step (the build page's Regions tab, task #636): of its
+/// targets of each step that builds regions, [built as the coverage now wants them, all]. A region's
+/// targets are the plan's (`plan`'s `Region`, counted whole, not only those left): "unit" its z6
+/// tiles; "terrain" and "terrain-lo" the terrain z6 tiles and assemblies of the z3 tiles it reads
+/// (its z3 tiles within 20 km and those near its z6 tiles); "slope" and "slope-lo" its z3 tiles';
+/// "trees" and "trees-lo" those of the z3 tiles it meets; "pack" the map tiles its z6 tiles' ways
+/// reach. A target counts as built when the plan wouldn't make it again (one whose key can't be
+/// worked out now isn't). Counted in targets, not seconds: a step's targets take about alike, and
+/// the records know which are built, not how long each took. Empty before the pass's reaches.
+#[allow(clippy::too_many_arguments)]
+pub fn region_steps(
+    cov: &Coverage,
+    regions: &[(String, Coverage)],
+    date: &str,
+    m: &BTreeMap<String, String>,
+    done: &Keys,
+    reach: Option<&Reaches>,
+    tiles: &TerrainTiles,
+) -> BTreeMap<String, BTreeMap<&'static str, [usize; 2]>> {
+    let Some(reach) = reach else { return BTreeMap::new() };
+    let units = unit_keys(cov, date, m, Some(reach), tiles);
+    let unit_built: Vec<bool> =
+        units.iter().map(|(u, k)| k.as_ref().is_some_and(|k| done.unit.get(&u.slash()) == Some(k))).collect();
+    let tt = terrain_slope_targets(cov, m, tiles);
+    let tw = terrain_work(&tt, m, done);
+    let trees = crate::treepacks::targets_with(cov, m, tiles.keyed(m).and_then(|k| k.trees.as_deref()));
+    let trw = tree_work(&trees, m, done);
+    let packs = pack_lo_targets(m, Some(reach)).0;
+    let packs: BTreeMap<&str, bool> = packs.iter().map(|(t, k)| (t.as_str(), done.pack.get(t) == Some(k))).collect();
+    let fine = spacing_now(m, tiles);
+    let deg = |b: [i32; 4]| [b[0] as f64 * 1e-7, b[1] as f64 * 1e-7, b[2] as f64 * 1e-7, b[3] as f64 * 1e-7];
+    // (Each z6 tile's map tiles and terrain z3 tiles, worked out once, as asked for.)
+    let unit_tiles: Vec<std::cell::OnceCell<Vec<String>>> = units.iter().map(|_| Default::default()).collect();
+    let tiles_of = |i: usize| -> &Vec<String> {
+        unit_tiles[i].get_or_init(|| {
+            let ext = unit_reach(Some(reach), m, units[i].0);
+            crate::stage::tiles_in(6, deg(ext))
+                .into_iter()
+                .filter(|&(x, y)| owns(ext, crate::hipack::tile_bounds(6, x, y)))
+                .map(|(x, y)| format!("6/{x}/{y}"))
+                .collect()
+        })
+    };
+    let reads = |i: usize| -> BTreeSet<String> {
+        let u = units[i].0;
+        crate::stage::tiles_in(6, crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM))
+            .into_iter()
+            .map(|(x, y)| format!("3/{}/{}", x >> 3, y >> 3))
+            .collect()
+    };
+    let count = |it: &mut dyn Iterator<Item = bool>| it.fold([0, 0], |[b, a], d| [b + d as usize, a + 1]);
+    let z3 = |t: &str| z3_of(t).unwrap_or_else(|| t.to_string());
+    regions
+        .iter()
+        .map(|(id, rc)| {
+            let all: Vec<usize> = (0..units.len()).filter(|&i| builds(rc, reach, units[i].0, &fine)).collect();
+            let z3s: BTreeSet<String> = (0..8u32)
+                .flat_map(|x| (0..8u32).map(move |y| (x, y)))
+                .filter(|&(x, y)| rc.meets_rect(grown_e7(3, x, y, 20.0)))
+                .map(|(x, y)| format!("3/{x}/{y}"))
+                .collect();
+            let tree_z3s: BTreeSet<&String> = z3s
+                .iter()
+                .filter(|a| TileId::parse(a).is_some_and(|q| rc.meets_rect(crate::hipack::tile_bounds(3, q.x, q.y))))
+                .collect();
+            let read: BTreeSet<String> = z3s.iter().cloned().chain(all.iter().flat_map(|&i| reads(i))).collect();
+            let mine: BTreeSet<&String> = all.iter().flat_map(|&i| tiles_of(i)).collect();
+            let mut s: BTreeMap<&'static str, [usize; 2]> = BTreeMap::new();
+            s.insert("unit", count(&mut all.iter().map(|&i| unit_built[i])));
+            s.insert(
+                "terrain",
+                count(
+                    &mut tt
+                        .terrain
+                        .iter()
+                        .filter(|t| read.contains(&z3(&t.0)))
+                        .map(|t| !tw.terrain_pieces_left.contains(&t.0)),
+                ),
+            );
+            s.insert(
+                "terrain-lo",
+                count(
+                    &mut tt
+                        .terrain_lo
+                        .iter()
+                        .filter(|t| read.contains(&t.0))
+                        .map(|t| !tw.terrain_lo_left.contains(&t.0)),
+                ),
+            );
+            s.insert(
+                "slope",
+                count(
+                    &mut tt
+                        .slope
+                        .iter()
+                        .filter(|t| z3s.contains(&z3(&t.0)))
+                        .map(|t| !tw.slope_pieces_left.contains(&t.0)),
+                ),
+            );
+            s.insert(
+                "slope-lo",
+                count(&mut tt.slope_lo.iter().filter(|t| z3s.contains(&t.0)).map(|t| !tw.slope_lo_left.contains(&t.0))),
+            );
+            s.insert(
+                "trees",
+                count(
+                    &mut trees
+                        .pieces
+                        .iter()
+                        .filter(|p| !p.2 && crate::treepacks::z3_of(&p.0).is_some_and(|q| tree_z3s.contains(&q)))
+                        .map(|p| !trw.stale_pieces.contains(&p.0)),
+                ),
+            );
+            s.insert(
+                "trees-lo",
+                count(
+                    &mut trees
+                        .lo
+                        .iter()
+                        .filter(|p| !p.2 && tree_z3s.contains(&p.0))
+                        .map(|p| !trw.stale_lo.contains(&p.0)),
+                ),
+            );
+            s.insert("pack", count(&mut mine.iter().map(|t| packs.get(t.as_str()).copied().unwrap_or(false))));
+            s.retain(|_, c| c[1] > 0);
+            (id.clone(), s)
+        })
+        .collect()
+}
+
 /// The assemblies' versions (their keys): bumped on any change to the bytes of the lo packs an
 /// assembly makes from the same z6 tiles' mids.
 pub const TERRAIN_LO_V: u32 = 1;
@@ -6192,6 +6322,27 @@ pub(crate) mod tests {
         assert_eq!(p.work.iter().filter(|w| w.step == "unit").map(|w| w.targets.len()).sum::<usize>(), 4);
         let states = region_states(&c, &each, "d", &m, &done, Some(&reach), &TerrainTiles::new(None));
         assert_eq!(states["a"], RegionState { built: 0, total: 1 });
+    }
+
+    /// Each region's targets by step, built of all (task #636): its z6 tiles counted as the plan
+    /// lists them, one built counted once its record matches; none past its total.
+    #[test]
+    fn a_regions_steps_count_its_targets_built_of_all() {
+        let (c, reach, mut m, mut done) = three();
+        let each = c.by_region();
+        let steps = |m: &BTreeMap<String, String>, done: &Keys| {
+            region_steps(&c, &each, "d", m, done, Some(&reach), &tiles_for(m))
+        };
+        let s = steps(&m, &done);
+        assert_eq!(s.keys().collect::<Vec<_>>(), ["a", "b", "c"]);
+        let units: usize =
+            hplan(&c, &reach, &m, &done, None, None).regions.iter().find(|r| r.id == "a").unwrap().units.len();
+        assert_eq!(s["a"]["unit"], [0, units], "{s:?}");
+        assert!(s.values().flat_map(|r| r.values()).all(|[b, a]| b <= a && *a > 0), "{s:?}");
+        assert!(s["a"].contains_key("terrain") && s["a"].contains_key("slope"), "{s:?}");
+        rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
+        let s = steps(&m, &done);
+        assert_eq!(s["a"]["unit"][0], 1, "{s:?}");
     }
 
     #[test]
