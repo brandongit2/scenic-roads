@@ -1065,7 +1065,8 @@ function stepCard(m, it, { fin, now, next, since }) {
 // measured seconds a target, the longest region's full width); under the pointer, its region lit
 // on the map and its card. Kept across the page's renders (its scroll, search and split with it).
 const ui = { order: "map", filter: "", feed: "all", past: 6 * 3600 };
-const ROW_H = 40;
+// (Taller on a phone, where a name and the line under it wrap: dash.css.)
+const ROW_H = matchMedia("(max-width: 719px)").matches ? 84 : 40;
 const rp = { section: null, el: null, map: null, list: null, rowsEl: null, rows: [], shown: [], maxS: 0, win: null, lit: null, split: 0.65 };
 
 // A download's size in words: "640 MB", "9.0 GB".

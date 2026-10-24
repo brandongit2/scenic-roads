@@ -125,6 +125,9 @@ async function run() {
       await show(tab);
       const wide = await js(`(() => { const w = document.documentElement.clientWidth; const over = [...document.querySelectorAll(".panel:not([hidden]) *, header *")].filter((e) => { const r = e.getBoundingClientRect(); return r.width && r.right > w + 1 && !e.closest(".twrap, [style*='overflow']"); }).slice(0, 4).map((e) => e.tagName.toLowerCase() + (e.className && typeof e.className === "string" ? "." + e.className.split(" ").join(".") : "") + " →" + Math.round(e.getBoundingClientRect().right)); return [document.scrollingElement.scrollWidth, w, over]; })()`);
       check(`${tab}: no horizontal scroll`, wide[0] <= wide[1], wide[0] > wide[1] ? `page ${wide[0]} px wide in ${wide[1]}; past the edge: ${wide[2].join(", ")}` : "");
+      // (No text cut off: a text element wider inside than its box, whatever hides the rest.)
+      const cut = await js(`(() => [...document.querySelectorAll(".panel:not([hidden]) *, header *")].filter((e) => e.scrollWidth > e.clientWidth + 1 && e.clientWidth && e.textContent.trim() && getComputedStyle(e).overflowX !== "visible" && getComputedStyle(e).overflowX !== "auto" && getComputedStyle(e).overflowX !== "scroll" && ![...e.childNodes].every((n) => n.nodeType === 1 && n.tagName !== "SPAN" && n.tagName !== "B" && n.tagName !== "I" && n.tagName !== "SMALL") && ![...e.childNodes].some((n) => n.nodeType === 1 && n.tagName === "CANVAS") ).slice(0, 6).map((e) => e.tagName.toLowerCase() + "." + String(e.className).split(" ").join(".") + " “" + e.textContent.trim().slice(0, 40) + "” " + e.scrollWidth + ">" + e.clientWidth))()`);
+      check(`${tab}: no text cut off`, !cut.length, cut.join("; "));
       await shot(`chrome-${tab}`);
       check(`${tab}: no console errors`, !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
     }
