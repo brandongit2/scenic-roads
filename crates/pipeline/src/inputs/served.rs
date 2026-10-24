@@ -14,8 +14,28 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-/// The records the map's server reads (the lead's, rewritten with every save: pool.md §6.2).
+/// Today's manifest file: the records before the pool (a test's NAS).
 pub const RECORDS: &str = "state/build/manifest.json";
+
+/// The records' manifest as a reader has it now (crate::pool::records::Records::now: the current
+/// term's snapshot), the NAS project folder's files read with `read` (an error whose cause is a
+/// file not found: not there).
+pub fn manifest(read: &dyn Fn(&str) -> Result<Vec<u8>>) -> Result<BTreeMap<String, String>> {
+    let read = |p: &str| match read(p) {
+        Ok(b) => Ok(Some(b)),
+        Err(e) if not_found(&e) => Ok(None),
+        Err(e) => Err(e),
+    };
+    Ok(crate::pool::records::Records::now(&crate::pool::nas::ReadOnly(&read))?.manifest)
+}
+
+/// Whether `e` is a file not found (through a pool's read, or the file system's).
+fn not_found(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+            || matches!(c.downcast_ref::<store::iopool::IoError>(), Some(store::iopool::IoError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound)
+    })
+}
 
 /// The local copy's index.
 const LOCAL: &str = "@index.json";
@@ -57,8 +77,7 @@ pub fn sync(read: &dyn Fn(&str) -> Result<Vec<u8>>, unit: &str, local: &Path) ->
 /// `sync`, copying besides each accepted file the stored files its facts `facts` name (the regions'
 /// drawn files, `facts.drawn`: what the map's region layer draws).
 pub fn sync_with(read: &dyn Fn(&str) -> Result<Vec<u8>>, unit: &str, local: &Path, facts: &[&str]) -> Result<Synced> {
-    let records: BTreeMap<String, String> =
-        serde_json::from_slice(&read(RECORDS)?).with_context(|| format!("parse {RECORDS}"))?;
+    let records = manifest(read)?;
     let Some(version) = records.get(&logical(unit)) else { return Ok(Synced::None) };
     if files(local).is_some_and(|(v, _)| &v == version) {
         return Ok(Synced::Kept(false));

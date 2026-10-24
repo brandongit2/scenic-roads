@@ -21,7 +21,7 @@ fn main() -> anyhow::Result<()> {
     };
     let root = PathBuf::from(root);
     let nr = store::nasfs::NasRoot::from_arg(&root);
-    let m: BTreeMap<String, String> = pipeline::out::read_record(&nr.join("state/build/manifest.json"))?;
+    let m = pipeline::out::read_manifest(&nr)?;
     let date = pipeline::osmpass::latest_pass_by(&nr, false).ok_or_else(|| anyhow::anyhow!("no complete pass"))?;
     let mut keys = Keys::load(&nr);
     let a = pipeline::inputs::regions::read::source(&nr, &m)?;

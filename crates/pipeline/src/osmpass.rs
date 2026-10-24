@@ -1295,11 +1295,11 @@ pub fn latest_pass(root: &store::nasfs::NasRoot) -> Option<String> {
 }
 
 /// The date of the newest complete pass: with `records`, the newest whose `sources/osm/<date>/pass`
-/// the merged records name (today's manifest, which the lead writes from them: docs/pool.md §7.4),
+/// the merged records name (the term's snapshot: docs/pool.md §6.2, §7.4),
 /// none when they can't be read now; else the newest with a `pass.*.json` file on the NAS.
 pub fn latest_pass_by(root: &store::nasfs::NasRoot, records: bool) -> Option<String> {
     if records {
-        let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).ok()?;
+        let m = crate::out::read_manifest(root).ok()?;
         return latest_pass_in(&m);
     }
     latest_pass_on_nas(root)

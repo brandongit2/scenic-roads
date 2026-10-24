@@ -81,7 +81,7 @@ pub fn parse_registers(s: &str) -> Vec<(String, String, Option<[f64; 4]>)> {
 /// The accepted registers as the records now name them (`registers_line`), for the agent's plan
 /// (crate::agent::input_digests): None without an accepted version.
 pub fn registers_now(root: &store::nasfs::NasRoot) -> Result<Option<String>> {
-    let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json"))?;
+    let m = crate::out::read_manifest(root)?;
     Ok(crate::inputs::open(root, &m, crate::inputs::heritage::UNIT)?
         .map(|a| registers_line(&crate::inputs::heritage::registers(&a))))
 }

@@ -1614,6 +1614,54 @@ mod tests {
             }
         }
 
+        /// The rollout of the records' readers (docs/pool.md §6.2): the lead of a later term writes
+        /// today's files while any member's heartbeat says its app reads them (an older app's,
+        /// without `reads_records`), and no more once every member's reads the term's snapshot;
+        /// this app's readers read the snapshot either way.
+        #[test]
+        fn todays_files_kept_while_a_members_app_reads_them() {
+            use crate::pool::reachable::PROBE_S;
+            let d = tempfile::tempdir().unwrap();
+            let (mut a, mut b) = pool(d.path());
+            let ib = b.id();
+            b.ask(LeadAsk::Give { to: ib.clone() });
+            b.go();
+            until(&mut [&mut a, &mut b], |m| {
+                m[1].run.side.driver().records().is_some_and(|r| r.term == 2 && r.seq > 0)
+            });
+            let root = b.root.clone();
+            let mf = root.join("state/build/manifest.json");
+            let read = |b: &Mac| crate::out::records_now(&b.root).unwrap();
+            let rec = b.run.side.driver().records().unwrap().clone();
+            assert_eq!((read(&b).term, read(&b).seq), (rec.term, rec.seq), "this app's readers: the term's snapshot");
+            // Both Macs on this app: today's files written no more.
+            b.pass(PROBE_S);
+            b.go();
+            assert!(b.run.side.readers_ready, "both heartbeats say so: {:?}", b.run.side.beats);
+            std::fs::remove_file(&mf).unwrap();
+            b.run.keep_today(true);
+            assert!(!mf.exists(), "every member reads the snapshot: not written");
+            // A on an older app: its heartbeat without the field (A not stepped, so it stays so).
+            let hb = root.join(crate::pool::beat::path(&a.id()));
+            let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&hb).unwrap()).unwrap();
+            assert_eq!(v.as_object_mut().unwrap().remove("reads_records"), Some(serde_json::Value::Bool(true)));
+            std::fs::write(&hb, serde_json::to_vec(&v).unwrap()).unwrap();
+            b.pass(PROBE_S);
+            b.go();
+            assert!(!b.run.side.readers_ready, "A's app reads today's files");
+            b.run.keep_today(true);
+            let m: BTreeMap<String, String> = crate::out::read_record(&mf).unwrap();
+            assert_eq!(m, b.run.side.driver().records().unwrap().manifest, "written for A's readers");
+            assert_eq!(b.run.today.map(|t| t.0), Some(2));
+            // A back on this app: written no more.
+            pass_all(&mut [&mut a, &mut b], crate::pool::beat::BEAT_EVERY_S + PROBE_S);
+            b.go();
+            assert!(b.run.side.readers_ready);
+            std::fs::remove_file(&mf).unwrap();
+            b.run.keep_today(true);
+            assert!(!mf.exists() && b.run.today.is_none());
+        }
+
         #[test]
         fn the_lead_handed_over_each_way_from_either_mac() {
             let d = tempfile::tempdir().unwrap();
@@ -2083,13 +2131,13 @@ mod tests {
             pass_all(&mut [&mut a, &mut b], 60);
             let ib = b.id();
             let root = a.root.clone();
+            // (The switch recorded in the term's snapshot, which readers read.)
             let switch_to = |file: &str| {
-                let p = root.join("state/build/manifest.json");
-                let mut m: std::collections::BTreeMap<String, String> =
-                    p.read().ok().and_then(|x| serde_json::from_slice(&x).ok()).unwrap_or_default();
-                m.insert(crate::inputs::switched_logical(crate::inputs::regions::UNIT), file.to_string());
+                let mut r = crate::out::records_now(&root).unwrap();
+                r.manifest.insert(crate::inputs::switched_logical(crate::inputs::regions::UNIT), file.to_string());
+                let p = root.join(crate::pool::records::path(r.term));
                 p.parent().unwrap().create_dir_all().unwrap();
-                p.write(serde_json::to_vec(&m).unwrap()).unwrap();
+                p.write(serde_json::to_vec(&r).unwrap()).unwrap();
             };
             // Proved on an app newer than theirs: B can't be handed the lead, and the view says why.
             a.root.join("sw.json").write(br#"{"same": true, "app": "29991231-0000-aaaaaaa"}"#).unwrap();

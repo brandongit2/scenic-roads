@@ -7,8 +7,8 @@ is taken over when the lead is gone. Browser pages are workers too (§8, workers
 code is `crate::pool` (terms, records, journal, the driver) and `crate::agent::pool` (the agent's
 side of it). It is always on.
 
-Planned: the records' readers reading the term's snapshot directly; until then the lead keeps
-writing today's three files (§6.2).
+The records' readers read the term's snapshot; the lead writes today's files too only while a
+member's app still reads them (§6.2).
 
 ## 2. Principles
 
@@ -179,9 +179,19 @@ A term is `state/build/terms/<E>.json`, made once with create-new (`crate::pool:
 - **Acknowledgements are per term** (`journal::Mine`): each loop a member tells the current lead of
   its entries that lead hasn't acknowledged. A lead acknowledges an entry once a saved snapshot
   names it.
-- **Readers** read today's three files, which the lead writes after each save
-  (`agent::pool::write_today`). Planned: reading the current term's snapshot (`Records::newest`,
-  falling back to an earlier term's).
+- **Readers** (the jobs' `Out`, the agent's plan and status, GC, the map server, the CLI and the
+  checks) read the current term's snapshot (`Records::now`, `out::records_now`: `Records::newest`,
+  falling back to an earlier term's; before any term, today's files `manifest.json`, `jobs.json`,
+  `pending.json` and `sizes.json`, which a Mac's own jobs write without a pool). An idle agent's
+  plan digest stats the current term's snapshot. The map server reads it through its own pool
+  (`pool::nas::ReadOnly`).
+- **Today's files, for older apps** (the rollout): apps before this one read today's files. A
+  heartbeat says its app reads the snapshot (`Beat::reads_records`); a term after the first's lead
+  writes today's files after its saves (`agent::pool::write_today`) only while some member's
+  heartbeat, as last read whole, doesn't say so (`Side::readers_ready`, read every `PROBE_S`; a
+  member with no heartbeat, or a shadow run's, counts as not saying so), and then at its next save
+  (`Run::keep_today`). Once every member's says so the files are left as they were, stale, read by
+  no app that heartbeats. Term 1's own saves still write them (`Records::save`).
 - **The coordinator's state** is per term too: `state/coord/term/<E>/state.json`
   (`crate::coord::PoolState`: leases, costs, floors, disks, failures, pause), written by the lead's
   coordinator's own thread as it changes (§7.5). A take-up loads the handed-over state, else the
@@ -283,8 +293,8 @@ limit fits it, for the owner to hand the lead over by hand if wanted (§7.2, Flo
   own journal entry keyed by its lease, and a merge applies an entry only if no later lease set its
   targets (`Records::apply`; the old term's lease ids sort before the new term's), else counts it
   overtaken; the files it alone named go to GC. A stale lead's step already under way when the new
-  term was made may write today's three files from its older records on one or more steps, until the new
-  lead's next save. So: rarely, some work is built twice; nothing is corrupted.
+  term was made may write today's files from its older records on one or more steps (while a
+  member's app reads them, §6.2), until the new lead's next save. So: rarely, some work is built twice; nothing is corrupted.
 - **A lead that stood down** (§6.6) is taken over automatically after `STOOD_DOWN_S` (2 min) by a
   member that can lead and whose app the rule allows; candidates try in turn (newest app, then
   lowest id), the create-new deciding.
@@ -1718,8 +1728,7 @@ switched: `state/pool/slots` isn't read, but stays `on` on the NAS while an olde
 (one reading it missing or `off` restarts to change part). The old files `state/pool/enabled` and
 `state/pool/budgets` are no longer read either.
 
-Planned: readers reading the term's snapshot and the lead no longer writing today's three files;
-retiring the mailbox (§9.1); resuming the terrain's and the slope's z6 tiles (after #639). Packing a terrain z6 tile's fetched raw
+Planned: retiring the mailbox (§9.1); resuming the terrain's and the slope's z6 tiles (after #639). Packing a terrain z6 tile's fetched raw
 tiles (`pack_raw_with`) stays inside that z6 tile's job.
 
 ## 13. Testing

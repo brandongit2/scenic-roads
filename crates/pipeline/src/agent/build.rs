@@ -144,17 +144,22 @@ impl Keys {
     /// The keys for planning and recording: none when there are none yet, an error when they can't
     /// be read now (so a job isn't started again, nor the keys written back, from empty ones).
     pub fn load_strict(root: &store::nasfs::NasRoot) -> anyhow::Result<Keys> {
-        crate::out::read_record(&root.join("state/build/jobs.json"))
+        Ok(crate::out::records_now(root)?.keys)
     }
 
     /// The keys with the done records of the hand-offs waiting under each of `bases` on top (the
     /// coordinator's journal on this Mac: crate::handoff), and the files they save (`handed`).
     pub fn load_with(root: &store::nasfs::NasRoot, bases: &[std::path::PathBuf]) -> anyhow::Result<Keys> {
+        Keys::load_strict(root)?.with_waiting(bases)
+    }
+
+    /// `load_with`, on keys read already (with the manifest, from one read of the records).
+    pub fn with_waiting(mut self, bases: &[std::path::PathBuf]) -> anyhow::Result<Keys> {
         let mut hs = Vec::new();
         for b in bases {
             hs.extend(crate::handoff::waiting_in(b)?);
         }
-        let mut k = Keys::load_strict(root)?;
+        let k = &mut self;
         for (_, h) in hs {
             for (l, c) in &h.changes {
                 if c.is_some() {
@@ -167,7 +172,7 @@ impl Keys {
                 k.record(step, targets);
             }
         }
-        Ok(k)
+        Ok(self)
     }
 
     pub fn save(&self, root: &store::nasfs::NasRoot) -> anyhow::Result<()> {

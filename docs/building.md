@@ -38,7 +38,7 @@ z6 tiles and the packs of the tiles their ways come into.
 from the first (`edit_held`).
 
 **Scheduler.**
-- **The plan:** every step's targets come with their keys (`state/build/jobs.json`); a target is
+- **The plan:** every step's targets come with their keys (the records' `keys`, pool.md §6.2); a target is
   stale when its key changed.
 - **A new key scheme** (`agent::rekey`): when a step's keys change what they name, its records are
   re-keyed rather than built again: a record current under the old scheme gets its new key when
@@ -311,8 +311,9 @@ devices away use the M6's (always on; https://map.brandontsang.net, docs/macs.md
   (`SCENIC_HANDOFF`, `pipeline::handoff`), then as an entry to the journal
   (`state/journal/<day>/<term>-<id>.json`) with its done record and costs. The lead merges entries
   into its term's records all or nothing, checking each against its step's write-set
-  (`agent::steps::writes`) and, for a shared step, the files it saved. It writes the three files
-  readers read (`manifest.json`, `jobs.json`, `pending.json`) from them. Until merged, the agent
+  (`agent::steps::writes`) and, for a shared step, the files it saved. Readers read its
+  term's snapshot (docs/pool.md §6.2); it writes today's files (`manifest.json`, `jobs.json`,
+  `pending.json`, `sizes.json`) from them only while a member's older app reads those. Until merged, the agent
   plans with its done records on top.
 - **Raw terrain tiles a job fetches:** it packs them and puts the archives on the NAS itself, handing
   the lead only their names (`Handoff::raw`); the lead names them in the raw store's index, which

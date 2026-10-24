@@ -776,7 +776,7 @@ fn run_once(root: &store::nasfs::NasRoot, keep_days: u64, dry_run: bool) -> Resu
     drop(read);
     let m: std::collections::BTreeMap<String, String> = {
         let _p = phase("build manifest read", Class::NasRead);
-        crate::out::read_record(&root.join("state/build/manifest.json")).context("the build manifest")?
+        crate::out::read_manifest(root).context("the build manifest")?
     };
     // The pool's newest records and its journal's entries not merged yet: unreadable, nothing
     // removed, the job failed (said in the status, tried again as failures are); entries passed

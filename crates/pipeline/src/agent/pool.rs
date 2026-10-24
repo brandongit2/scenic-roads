@@ -388,6 +388,10 @@ pub struct Side {
     pub beats: Vec<Beat>,
     /// When (unix s) `beats` were last read whole: a round with a read failing keeps the last.
     pub beats_at: Option<u64>,
+    /// Whether every member's heartbeat, as `beats` were last read whole (shadow runs' too: an
+    /// older app on that Mac), says its app reads the term's snapshot (`Beat::reads_records`); a
+    /// member with none read counts as one that doesn't. False until read.
+    pub readers_ready: bool,
     /// Both its clocks moved on this far (s): tests let time pass so.
     pub ahead: u64,
     /// Its clocks (a test's virtual one: `set_clock`).
@@ -484,6 +488,7 @@ impl Side {
             reach: Vec::new(),
             beats: Vec::new(),
             beats_at: None,
+            readers_ready: false,
             ahead: 0,
             clock: store::clock::real(),
         }))
@@ -608,9 +613,7 @@ impl Side {
     pub fn regions_app(&self) -> std::result::Result<Option<String>, String> {
         let read =
             |n: &str| -> anyhow::Result<Vec<u8>> { self.nas.read(n)?.with_context(|| format!("{n} isn't there")) };
-        let m: BTreeMap<String, String> =
-            serde_json::from_slice(&read("state/build/manifest.json").map_err(|e| format!("{e:#}"))?)
-                .map_err(|e| format!("the records: {e}"))?;
+        let m = Records::now(&*self.nas).map_err(|e| format!("the records: {e:#}"))?.manifest;
         crate::inputs::regions::read::switch_app(&m, &read).map_err(|e| format!("{e:#}"))
     }
 
@@ -1688,6 +1691,25 @@ impl Run {
         }
     }
 
+    /// Today's files written from the lead's records after a save (`saved`: this step's are on the
+    /// NAS), while any member's app still reads them (`Side::readers_ready`, §6.2's rollout): once
+    /// every member's reads the term's snapshot they're written no more, and left as they were
+    /// (stale: read by no app that heartbeats), written again at the next save should an older app
+    /// beat again. Term 1's own saves write them (crate::pool::records::Records::save).
+    pub fn keep_today(&mut self, saved: bool) {
+        let Some(rec) = self.side.driver().records() else { return };
+        if self.side.readers_ready {
+            self.today = None;
+            return;
+        }
+        if saved && rec.term >= 2 && rec.seq > 0 && self.today != Some((rec.term, rec.seq)) {
+            match write_today(self.side.nas(), rec) {
+                Ok(()) => self.today = Some((rec.term, rec.seq)),
+                Err(e) => eprintln!("agent: today's records from term {}'s: {e:#}", rec.term),
+            }
+        }
+    }
+
     /// Whom this Mac reaches (docs/pool.md §6.8, crate::pool::reachable), in each of its steps,
     /// before its heartbeat is written: the outcome of its client's requests to the lead's
     /// coordinator counted (an answer from it, as the current term's: `Cx::lead_answered`; a
@@ -1731,6 +1753,7 @@ impl Run {
             // (A read failing, the NAS away: the last round's kept whole, for the budgets.)
             let read: Result<Vec<Option<Heartbeat>>> = ids.iter().map(|id| self.side.read_heartbeat(id)).collect();
             if let Ok(read) = read {
+                self.side.readers_ready = read.iter().all(|h| h.as_ref().is_some_and(|h| h.pool.reads_records));
                 self.side.beats = read.into_iter().flatten().filter(|h| !h.shadow).map(|h| h.pool).collect();
                 self.side.beats_at = Some(now);
             }
@@ -2220,9 +2243,9 @@ pub fn seed(nas: &dyn Nas, coord: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Today's three files written from `r` (the records of a term after the first: term 1's own saves
-/// write them), for the readers that read them: the jobs, the map's server, the catalogues, and the
-/// lead's own planning (§6.2's readers of the snapshot itself: planned).
+/// Today's files (the manifest, the unverified uploads, the sizes, the job keys) written from `r`
+/// (the records of a term after the first: term 1's own saves write them), for older apps' readers:
+/// this app's read the term's snapshot (§6.2, crate::pool::records::Records::now).
 pub fn write_today(nas: &dyn Nas, r: &Records) -> Result<()> {
     nas.write_whole("state/build/manifest.json", &serde_json::to_vec_pretty(&r.manifest)?)?;
     nas.write_whole("state/build/pending.json", &serde_json::to_vec_pretty(&r.pending)?)?;

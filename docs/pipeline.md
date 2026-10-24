@@ -17,7 +17,7 @@ tasks for any worker, `docs/workers.md`.
 | **z3 tile** | 8 × 8 z6 tiles: the zoomed-out levels (the `…-lo` steps) are assembled per z3 tile; `3/x/y`, `3-x-y` | `Scope::Z3` |
 | **z8 tile** | 4 × 4 per z6 tile: the 3D buildings' tasks (`bldtile`), tree cover's blocks and terrain's subtrees are made per z8 tile; the terrain's deep levels are planned over theirs | `bld::task`, docs/workers.md §3 |
 | **area** | geography only: a polygon or map feature (a region's outline, protected and heritage areas, the area overlays, a rule's areas), never a grid tile; a number is a *size* (km²) | |
-| **key** | a target's version and inputs by content; a target is done when its record's key is the plan's | `state/build/jobs.json` (docs/steps.md §12) |
+| **key** | a target's version and inputs by content; a target is done when its record's key is the plan's | the records' `keys` (`Records::keys`, docs/steps.md §12) |
 | **job** | a step over a batch of its targets, run on one Mac | `agent::jobs::JobSpec` |
 | **task** | a pure piece a running job offers any worker, described as a step is | `steps::TASKS`, workers.md §3 |
 | **record** | what a job's hand-off puts in the records, within its step's write-set | the manifest and jobs (pool.md §7.3) |

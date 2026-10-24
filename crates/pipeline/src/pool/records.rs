@@ -162,6 +162,19 @@ impl Records {
         })
     }
 
+    /// The build's records as a reader has them now (§6.2): the current term's snapshot, or while
+    /// it has none the newest of a term before it (`newest`); before the pool's first term, today's
+    /// files (a Mac's own records, its jobs saving them: crate::out::Out::save_held). A reader
+    /// never reads today's files beside a term's snapshot: they're the lead's, for older apps'
+    /// readers, and stop once every member reads these (crate::agent::pool::Run::keep_today).
+    pub fn now(nas: &dyn Nas) -> Result<Records> {
+        let cur = super::term::current(nas).context("the current term")?;
+        if cur.term == 0 {
+            return Records::today(nas);
+        }
+        Ok(Records::newest(nas, cur.term, true)?.unwrap_or_default())
+    }
+
     /// Saves them as their term's next snapshot (`seq` one more), whole; term 1's also to today's
     /// three files after. The number goes up even when the write fails, so no two versions that may
     /// land share one.

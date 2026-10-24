@@ -49,11 +49,13 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
   and a second per 2 MB fails the job, the target not noted done, and every later save with it.
 - **Catalogues** list every file the map reads, with the coverage they were built for and the credits
   of their sources. Readers take the highest that decodes.
-- **The build manifest** (`state/build/manifest.json`) lists everything built; **job keys**
-  (`state/build/jobs.json`) say what each output was made from. These and the unverified uploads
-  (`pending.json`) and the files' sizes (`sizes.json`) are written by the lead from its term's records
-  (`state/build/term/<E>/records.json`, the truth: docs/building.md §2, The pool).
-- **Unverified uploads** (`pending.json`: content name → SHA-256): a file a job copied to the NAS
+- **The build manifest** lists everything built; **job keys** say what each output was made from.
+  These, the unverified uploads and the files' sizes are the term's records
+  (`state/build/term/<E>/records.json`, the truth, read by every reader: docs/building.md §2, The
+  pool). Before the pool they were `state/build/manifest.json`, `jobs.json`, `pending.json` and
+  `sizes.json`, which the lead still writes while a member's older app reads them (docs/pool.md
+  §6.2).
+- **Unverified uploads** (content name → SHA-256): a file a job copied to the NAS
   (one reused isn't) is read back past the client's cache as it lands, and stays pending until
   checked on the NAS itself. GC counts pending files as referenced. GC's daily job drains them
   (`agent::gc`): first every pending upload the build doesn't read (neither a manifest name nor a

@@ -343,9 +343,8 @@ fn records(
     pool: &IoPool,
 ) -> Option<(Option<pipeline::inputs::Index>, Option<pipeline::inputs::Report>)> {
     let root = s.data.nas_root()?;
+    let m = pipeline::inputs::served::manifest(&|p: &str| Ok(pool.read_all(&root.join(p))?)).ok()?;
     let read = |p: &str| pool.read_all(&root.join(p)).ok();
-    let m: std::collections::BTreeMap<String, String> =
-        serde_json::from_slice(&read(pipeline::inputs::served::RECORDS)?).ok()?;
     let unit = pipeline::inputs::regions::UNIT;
     let index =
         m.get(&pipeline::inputs::logical(unit)).and_then(|n| read(n)).and_then(|b| serde_json::from_slice(&b).ok());

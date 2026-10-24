@@ -782,10 +782,10 @@ pub fn open(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -
     Ok(Some(s))
 }
 
-/// The accepted sources as the build's records name them now (`state/build/manifest.json` under
-/// the NAS project folder `root`).
+/// The accepted sources as the build's records name them now (crate::out::records_now, under the
+/// NAS project folder `root`).
 pub fn open_now(root: &store::nasfs::NasRoot) -> Result<Option<Sources>> {
-    let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json"))?;
+    let m = crate::out::read_manifest(root)?;
     open(root, &m)
 }
 

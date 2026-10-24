@@ -253,8 +253,7 @@ fn inputs(a: &cli::Inputs) -> Result<()> {
     use pipeline::inputs::{self as gi, view};
     let home = home_or_default(&a.home);
     let r = root(&a.root, false)?;
-    let manifest: std::collections::BTreeMap<String, String> =
-        pipeline::out::read_record(&r.join("state/build/manifest.json"))?;
+    let manifest = pipeline::out::read_manifest(&r)?;
     let units = gi::units(&r);
     // (Checking, as the lead's status says.)
     let status = agent::read_status(Some(&r), &home);

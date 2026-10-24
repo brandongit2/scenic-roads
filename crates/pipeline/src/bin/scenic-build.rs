@@ -322,7 +322,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             pipeline::sys::footprint_guard("regions-check", max);
         }
         let decl = opt(&args, "--declarations").map(PathBuf::from);
-        let m: BTreeMap<String, String> = pipeline::out::read_record(&root.join("state/build/manifest.json"))?;
+        let m = pipeline::out::read_manifest(&root)?;
         let rep = pipeline::inputs::regions::read::check_folder(&root, &m, &dir, decl.as_deref())?;
         let n = rep["findings"].as_array().map_or(0, Vec::len);
         println!(
@@ -2442,8 +2442,7 @@ fn p5_check(root: &store::nasfs::NasRoot, args: &[String]) -> Result<()> {
         _ => anyhow::bail!("p5-check trees"),
     }
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(root)).context("no complete OSM pass")?;
-    let m: BTreeMap<String, String> = pipeline::out::read_record(&root.join("state/build/manifest.json"))?;
-    let keys = build::Keys::load_strict(root)?;
+    let pipeline::pool::records::Records { manifest: m, keys, .. } = pipeline::out::records_now(root)?;
     let src = pipeline::inputs::regions::read::source(root, &m)?;
     let (recipes, bad): (Vec<_>, Vec<(String, String)>) = (pipeline::inputs::regions::read::recipes(&src)?, Vec::new());
     anyhow::ensure!(bad.is_empty(), "regions that can't be read now (the agent re-keys nothing meanwhile): {bad:?}");

@@ -10,7 +10,22 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const [port, root, meshRoot] = process.argv.slice(2);
-const read = (r) => Object.entries(JSON.parse(fs.readFileSync(path.join(r, 'state/build/manifest.json'), 'utf8'))).map(([l, c]) => [l, path.join(r, c)]);
+// (A root's manifest as the build's readers have it: the current term's snapshot, else the newest of a
+// term before it, else, before the pool, state/build/manifest.json; docs/pool.md §6.2.)
+const manifest = (r) => {
+  const b = path.join(r, 'state/build');
+  const json = (p) => JSON.parse(fs.readFileSync(path.join(b, p), 'utf8'));
+  let e = 0;
+  try { e = json('lead.json').term; } catch { e = Math.max(0, ...(fs.existsSync(path.join(b, 'terms')) ? fs.readdirSync(path.join(b, 'terms')) : []).map((n) => parseInt(n, 10) || 0)); }
+  while (fs.existsSync(path.join(b, `terms/${e + 1}.json`))) e++;
+  for (let t = e; t >= 1; t--) {
+    for (const f of [`term/${t}/records.json`, ...(t === 1 ? ['term/1/first.json'] : [])]) {
+      if (fs.existsSync(path.join(b, f))) return json(f).manifest;
+    }
+  }
+  return json('manifest.json');
+};
+const read = (r) => Object.entries(manifest(r)).map(([l, c]) => [l, path.join(r, c)]);
 const entries = meshRoot ? [...read(root).filter(([l]) => !l.startsWith('layers/buildings/')), ...read(meshRoot).filter(([l]) => l.startsWith('layers/buildings/'))] : read(root);
 /** layer → "scope z/x/y" → { fd, entries, gzip } */
 const packs = new Map();

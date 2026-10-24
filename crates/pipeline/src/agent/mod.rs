@@ -206,6 +206,13 @@ pub(crate) fn want(slots: usize, running: usize) -> usize {
     slots.saturating_sub(running)
 }
 
+/// The build's records as a reader has them now (crate::out::records_now), read within
+/// `nasread::DEADLINE`: none (empty ones) when they can't be read now, for showing.
+fn records_deadlined(root: &Path) -> crate::pool::records::Records {
+    let r = root.to_path_buf();
+    nasread::with(root, move || crate::out::records_now(&r).map_err(std::io::Error::other)).unwrap_or_default()
+}
+
 /// `SCENIC_TEST_WORKER` when set: the name the agent works and reports under in place of its Mac's
 /// (the two-Mac test's alone, tools/check/pool-two-macs.sh: a member beside the lead on one Mac,
 /// asking under a name of its own). Never a real agent's.
@@ -2015,6 +2022,12 @@ impl Agent {
     /// on top (a worker's job built and handed back, not yet merged: not built again).
     fn planning_keys(&self, root: &store::nasfs::NasRoot) -> Result<build::Keys> {
         build::Keys::load_with(root, &self.handoff_bases(root))
+    }
+
+    /// The records' manifest and the planning keys (`planning_keys`), from one read of the records.
+    fn planning_records(&self, root: &Path) -> Result<(BTreeMap<String, String>, build::Keys)> {
+        let r = crate::out::records_now(root)?;
+        Ok((r.manifest, r.keys.with_waiting(&self.handoff_bases(root))?))
     }
 
     /// Where hand-offs wait to be drained into the journal: the coordinator's journal on this Mac.
@@ -6989,6 +7002,12 @@ impl Agent {
             let m = p.metadata().ok();
             m.as_ref().map(|m| (m.len(), m.modified().ok())).hash(h);
         };
+        // (The records: the current term's snapshot, which its lead rewrites whole with each save;
+        // today's files before the pool.)
+        let term = self.pool_seen.as_ref().map_or(0, |p| p.gates.term);
+        if term > 0 {
+            stat(&mut h, &root.join(crate::pool::records::path(term)));
+        }
         for f in ["state/build/manifest.json", "state/build/jobs.json"] {
             stat(&mut h, (&root.join(f)).into());
         }
@@ -7282,20 +7301,17 @@ impl Agent {
         // (The depth's targets for GC: none until this plan finds them.)
         self.depth_keep.borrow_mut().take();
         // (The records unreadable now: nothing planned until they are, rather than everything again.)
-        let (manifest, keys): (BTreeMap<String, String>, build::Keys) =
-            match crate::out::read_record(&root.join("state/build/manifest.json"))
-                .and_then(|m| Ok((m, self.planning_keys(root)?)))
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    waiting.push(Waiting {
-                        step: None,
-                        what: "Building".into(),
-                        why: format!("the build's records can't be read now: {e:#}"),
-                    });
-                    return Vec::new();
-                }
-            };
+        let (manifest, keys): (BTreeMap<String, String>, build::Keys) = match self.planning_records(root) {
+            Ok(r) => r,
+            Err(e) => {
+                waiting.push(Waiting {
+                    step: None,
+                    what: "Building".into(),
+                    why: format!("the build's records can't be read now: {e:#}"),
+                });
+                return Vec::new();
+            }
+        };
         // (Once a readers' switch is recorded, an app older than the one it was recorded on reads
         // the wrong regions: it builds nothing, and says so.)
         let regions_app = crate::inputs::regions::read::switch_app(&manifest, &|n| {
@@ -8613,11 +8629,7 @@ impl Agent {
             items.extend(build::checklist_to_come());
             return build::fold(&items, &next, &notes);
         };
-        let manifest: BTreeMap<String, String> = nasread::read(&root.join("state/build/manifest.json"))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
-        let keys = build::Keys::load(root);
+        let crate::pool::records::Records { manifest, keys, .. } = records_deadlined(root);
         // Countries the pass couldn't assemble, kept as the previous pass's outlines: said on the
         // pass's line until a pass has them whole (crate::outlines::assemble).
         if let Some(c) = manifest.get(&format!("sources/osm/{date}/outlines")) {
@@ -8741,12 +8753,8 @@ impl Agent {
         Option<std::sync::Arc<crate::reach::Reaches>>,
     )> {
         let date = self.latest_pass(root)?;
-        let manifest: BTreeMap<String, String> = nasread::read(&root.join("state/build/manifest.json"))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
+        let crate::pool::records::Records { manifest, keys, .. } = records_deadlined(root);
         let covs = self.coverage(root, &manifest, false).ok()?;
-        let keys = build::Keys::load(root);
         let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
         Some((date, manifest, covs, keys, reach))
     }
@@ -8760,10 +8768,7 @@ impl Agent {
         if recipes.is_empty() || !unread.is_empty() {
             return keys;
         }
-        let Ok(manifest) = crate::out::read_record::<BTreeMap<String, String>>(&root.join("state/build/manifest.json"))
-        else {
-            return keys;
-        };
+        let Ok(manifest) = crate::out::read_manifest(root) else { return keys };
         let Ok(covs) = self.coverage(root, &manifest, false) else { return keys };
         let tiles = self.terrain_tiles(root, &manifest);
         let times = rekey::FileTimes::new(root);
@@ -10486,21 +10491,16 @@ impl Agent {
         }
     }
 
-    /// What the lead keeps written besides its records (docs/pool.md §12): today's three files from
-    /// a term's records after the first (term 1's own saves write them; `saved`: this step's
-    /// records are on the NAS), the raw tiles' archives its records hold named in the raw store's
+    /// What the lead keeps written besides its records (docs/pool.md §12): today's files while a
+    /// member's app still reads them (`pool::Run::keep_today`; `saved`: this step's records are on
+    /// the NAS), the raw tiles' archives its records hold named in the raw store's
     /// index, its term named to the coordinator's state's writer (crate::coord::keep), its history's
     /// new events.
     fn pool_lead_files(&mut self, root: &store::nasfs::NasRoot, saved: bool) {
         let Some(mut guard) = self.pooled() else { return };
         let run = &mut *guard;
+        run.keep_today(saved);
         if let Some(rec) = run.side.driver().records() {
-            if saved && rec.term >= 2 && rec.seq > 0 && run.today != Some((rec.term, rec.seq)) {
-                match pool::write_today(run.side.nas(), rec) {
-                    Ok(()) => run.today = Some((rec.term, rec.seq)),
-                    Err(e) => eprintln!("agent: today's records from term {}'s: {e:#}", rec.term),
-                }
-            }
             let new: Vec<(String, crate::rawpack::Pack)> =
                 rec.raw.iter().filter(|(_, p)| !run.named_raw.contains(&p.name)).cloned().collect();
             if !new.is_empty() {
@@ -10662,8 +10662,7 @@ impl Agent {
                         ..Default::default()
                     });
                 let held = shown.or_else(|| {
-                    let m: BTreeMap<String, String> =
-                        crate::out::read_record(&root.join("state/build/manifest.json")).ok()?;
+                    let m = crate::out::read_manifest(root).ok()?;
                     crate::inputs::read_report(root, m.get(&crate::inputs::held_logical(&a.unit))?).ok()
                 });
                 match crate::inputs::apply_ask(root, &a, held.as_ref(), &member) {

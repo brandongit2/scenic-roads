@@ -75,7 +75,7 @@ pub fn needed_app(term: Option<&str>, regions: Option<&str>) -> Option<String> {
 
 /// `source`, the records read from the NAS.
 pub fn source_now(root: &store::nasfs::NasRoot) -> Result<Accepted> {
-    let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json"))?;
+    let m = crate::out::read_manifest(root)?;
     source(root, &m)
 }
 

@@ -2040,6 +2040,7 @@ impl Driver {
                 .fenced
                 .clone()
                 .filter(|_| self.lead.is_none() && self.cur.lead.as_ref().is_some_and(|t| t.member == self.me.id)),
+            reads_records: true,
         }
     }
 }

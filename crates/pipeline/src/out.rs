@@ -135,14 +135,20 @@ pub fn lay_over(m: &mut BTreeMap<String, String>, h: &crate::handoff::Handoff) {
     }
 }
 
-/// A JSON record (the manifest, the unverified uploads): empty when there's none yet, an error when
-/// it can't be read now (an SMB hiccup), so nothing is ever written from an empty one by mistake.
-/// The records' manifest under `root` (`state/build/manifest.json`), read only: the accepted
-/// versions, for a reader that needs no `Out` (coord::hosts).
-pub fn read_manifest(root: &store::nasfs::NasRoot) -> Result<BTreeMap<String, String>> {
-    read_record(&root.join("state/build/manifest.json"))
+/// The build's records under `root` as a reader has them now (crate::pool::records::Records::now):
+/// the current term's snapshot; before the pool, today's files.
+pub fn records_now(root: &store::nasfs::NasRoot) -> Result<crate::pool::records::Records> {
+    crate::pool::records::Records::now(root)
 }
 
+/// The records' manifest under `root` (`records_now`), read only: the accepted versions, for a
+/// reader that needs no `Out`.
+pub fn read_manifest(root: &store::nasfs::NasRoot) -> Result<BTreeMap<String, String>> {
+    Ok(records_now(root)?.manifest)
+}
+
+/// A JSON record (the manifest, the unverified uploads): empty when there's none yet, an error when
+/// it can't be read now (an SMB hiccup), so nothing is ever written from an empty one by mistake.
 pub fn read_record<T: Default + serde::de::DeserializeOwned>(p: &NasPath) -> Result<T> {
     match p.read_replaced() {
         Ok(b) => serde_json::from_slice(&b).with_context(|| format!("parse {}", p.display())),
@@ -217,9 +223,9 @@ impl Out {
         let _p = crate::timings::phase("records read", crate::timings::Class::NasRead);
         std::fs::create_dir_all(scratch)?;
         let manifest_path = root.join("state/build/manifest.json");
-        let manifest: BTreeMap<String, String> = read_record(&manifest_path)?;
+        let records = records_now(root)?;
         let handoff = std::env::var_os("SCENIC_HANDOFF").map(PathBuf::from);
-        let mut manifest = manifest;
+        let mut manifest = records.manifest;
         if let Some(p) = unmerged {
             let b = std::fs::read(p).with_context(|| format!("read this Mac's unmerged hand-offs, {}", p.display()))?;
             let h: crate::handoff::Handoff =
@@ -227,8 +233,7 @@ impl Out {
             lay_over(&mut manifest, &h);
         }
         // (A helper's job hands off only its own uploads.)
-        let pending =
-            if handoff.is_some() { BTreeMap::new() } else { read_record(&root.join("state/build/pending.json"))? };
+        let pending = if handoff.is_some() { BTreeMap::new() } else { records.pending };
         Ok(Out {
             root: root.clone(),
             manifest,
@@ -717,11 +722,11 @@ impl Out {
         self.sizes.iter().filter(|(c, _)| named.contains(c)).map(|(c, n)| (c.clone(), *n)).collect()
     }
 
-    /// The sizes the records hold of the files the manifest names (`SIZES`), with this run's own:
-    /// what a catalogue lists them as, never looking at the NAS for them. An error when the record
+    /// The sizes the records hold of the files the manifest names (`records_now`), with this run's own:
+    /// what a catalogue lists them as, never looking at the NAS for them. An error when the records
     /// can't be read now; a file it lacks (written before sizes were recorded) isn't in it.
     pub fn recorded_sizes(&self) -> Result<BTreeMap<String, u64>> {
-        let mut s: BTreeMap<String, u64> = read_record(&self.root.join(SIZES))?;
+        let mut s = records_now(&self.root)?.sizes;
         s.extend(self.sizes.iter().map(|(c, n)| (c.clone(), *n)));
         Ok(s)
     }

@@ -51,7 +51,7 @@ pub struct Cache(std::sync::Mutex<State>);
 
 impl Cache {
     /// The hosts as the records under `root` name the accepted versions (`at`: now):
-    /// Cache::get_with reading `state/build/manifest.json` and deriving with `of`.
+    /// Cache::get_with reading the records' manifest (crate::out::read_manifest) and deriving with `of`.
     pub fn get(&self, root: &store::nasfs::NasRoot, at: std::time::Instant) -> Result<BTreeSet<String>> {
         self.get_with(at, || crate::out::read_manifest(root), |m| of(root, m))
     }
@@ -110,7 +110,7 @@ impl Cache {
 
 static CACHE: std::sync::LazyLock<Cache> = std::sync::LazyLock::new(Cache::default);
 
-/// The hosts as the build's records name the accepted versions now (`state/build/manifest.json`
+/// The hosts as the build's records name the accepted versions now (crate::out::read_manifest,
 /// under the NAS project folder `root`): Cache::get, process-wide.
 pub fn now(root: &store::nasfs::NasRoot) -> Result<BTreeSet<String>> {
     CACHE.get(root, std::time::Instant::now())

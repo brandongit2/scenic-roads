@@ -654,12 +654,7 @@ fn heritage_remade(root: Option<&store::nasfs::NasRoot>, p: &Path) -> bool {
     }
     let Some(date) = name.strip_prefix("heritage-merged-").and_then(|r| r.get(..10)) else { return false };
     let Some(root) = root else { return false };
-    let m: BTreeMap<String, String> = root
-        .join("state/build/manifest.json")
-        .read()
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default();
+    let m = crate::out::read_manifest(root).unwrap_or_default();
     m.get(&format!("sources/osm/{date}/filtered")).is_some_and(|c| root.join(c).is_file())
 }
 

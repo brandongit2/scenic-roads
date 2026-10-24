@@ -56,6 +56,12 @@ pub struct Beat {
     /// since when, and why.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fenced: Option<Fenced>,
+    /// Its app's readers read the build's records from the term's snapshot (§6.2:
+    /// crate::pool::records::Records::now), not today's files: the lead stops writing those once
+    /// every member's heartbeat says so (crate::agent::pool::Run::keep_today). Left out by apps
+    /// before it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub reads_records: bool,
 }
 
 /// Take-ups refused by the journal GC's marker (crate::pool::journal_gc::Fenced).
