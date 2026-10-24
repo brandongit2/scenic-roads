@@ -651,6 +651,27 @@ pub fn build_lo(
     put_packs(out, &made, None, "lo", (3, q.0, q.1))
 }
 
+/// The depth tiles in metres the floor's shading keeps decoded (`shading_over`), at most.
+const SHADE_CACHED: usize = 2048;
+
+/// The most memory (MB) the floor's shading's assembly of a z3 tile takes (`build_shade_lo`), from
+/// its bounds: its z6 tiles' z9 quadrants (64 × 64); its depth lo tiles (z3–8) as stored, each at
+/// most a PNG of its raw RGBA (its rows' filter bytes and zlib's block headers besides); its depth
+/// tiles kept decoded (`SHADE_CACHED`, and one more); the shading's tiles made, each at most its raw
+/// codes; the pyramid's working memory (crate::slope_pack::working_bytes, z3 to z8).
+pub const fn shade_lo_peak_mb() -> u64 {
+    const TS: u64 = 256;
+    let px = std::mem::size_of::<roadcore::shade::Px>() as u64;
+    let quadrant = 128 * 128 * px;
+    let lo_tiles = 1 + 4 + 16 + 64 + 256 + 1024;
+    let png = TS * (TS * 4 + 1) + (TS * TS * 4 / 16_384 + 1) * 5 + 1024;
+    let decoded = (SHADE_CACHED as u64 + 1) * TS * TS * 4;
+    let made = lo_tiles * TS * TS * 3;
+    let bytes =
+        64 * 64 * quadrant + lo_tiles * png + decoded + made + crate::slope_pack::working_bytes(3, LO_COMPOSED.1);
+    bytes >> 20
+}
+
 /// The floor's shading's assembly of z3 tile `q` (the `depth-shade` step, after its z6 tiles'
 /// depth): its `depth-shade` lo pack (z3–8), the pyramid of `shading` over q's depth as its lo pack
 /// stores it, each z8 tile's pixels the mean of the four beneath from its z6 tiles' z9 shading as
@@ -680,7 +701,7 @@ pub fn build_shade_lo(out: &mut Out, q: (u32, u32)) -> Result<usize> {
     }
     p.count(0, below.len() as u64);
     drop(p);
-    let tiles = shading_over(&made, 3, &below)?;
+    let tiles = shading_over(&made, 3, below)?;
     let n = tiles.len();
     let mut it = tiles.into_iter().map(|((z, x, y), b)| (z, x, y, b, 0u32));
     put_pack(out, super::SHADE_LAYER, crate::shade_codec::ENCODING, "lo", (3, q.0, q.1), &mut it)?;
@@ -763,7 +784,7 @@ pub fn shading(
     made: &BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>,
     top: u8,
 ) -> Result<BTreeMap<(u8, u32, u32), Vec<u8>>> {
-    shading_over(made, top, &HashMap::new())
+    shading_over(made, top, HashMap::new())
 }
 
 /// `shading`, over the quadrants of finer tiles another job made (`below`, by tile: as their packs
@@ -771,7 +792,7 @@ pub fn shading(
 fn shading_over(
     made: &BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>,
     top: u8,
-    below: &HashMap<(u8, u32, u32), Vec<roadcore::shade::Px>>,
+    below: HashMap<(u8, u32, u32), Vec<roadcore::shade::Px>>,
 ) -> Result<BTreeMap<(u8, u32, u32), Vec<u8>>> {
     use std::collections::HashSet;
     use std::sync::Mutex;
@@ -792,7 +813,7 @@ fn shading_over(
             _ => None,
         });
         let mut c = cache.lock().unwrap();
-        if c.len() > 2048 {
+        if c.len() >= SHADE_CACHED {
             c.clear();
         }
         c.insert((z, x, y), v.clone());
@@ -801,7 +822,7 @@ fn shading_over(
     let own = |z: u8, x: u32, y: u32| crate::slope_pack::horn(&|x, y| at(z, x, y), z, x, y);
     let out = Mutex::new(Vec::new());
     let done: HashMap<(u8, u32, u32), Option<Vec<roadcore::shade::Px>>> =
-        below.iter().map(|(&k, q)| (k, Some(q.clone()))).collect();
+        below.into_iter().map(|(k, q)| (k, Some(q))).collect();
     let mut roots: Vec<(u8, u32, u32)> = tiles.iter().copied().filter(|t| t.0 == top).collect();
     roots.sort_unstable();
     for (z, x, y) in roots {

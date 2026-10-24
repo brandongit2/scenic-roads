@@ -456,10 +456,10 @@ pub const TABLE: [Step; 52] = [
             w_depth,
         )
     },
-    // (The floor's shading of a z3 tile: its depth lo tiles decoded and their shading, its z6
-    // tiles' z9 quadrants, under a GB.)
+    // (The floor's shading of a z3 tile: its memory from what it holds, its z6 tiles' z9
+    // quadrants, its depth lo tiles and their shading: crate::depth::build::shade_lo_peak_mb.)
     Step {
-        mem_mb: 1000,
+        mem_mb: crate::depth::build::shade_lo_peak_mb(),
         ..step(
             "depth",
             Pack,
@@ -1512,7 +1512,7 @@ mod tests {
         // The memory first guessed (what the agent's first_peak and second_peak gave, the latter's
         // where they differed: the network steps', a z6 tile's and candidates', which nothing offered
         // by the former).
-        let mem: [(&str, u64); 21] = [
+        let mem: [(&str, u64); 22] = [
             ("lakefill", 12288),
             ("outlines", 9216),
             ("heritage", 6144),
@@ -1530,6 +1530,7 @@ mod tests {
             ("terrain-lo", 1200),
             ("slope", crate::slope_pack::peak_mb()),
             ("slope-lo", crate::slope_pack::lo_peak_mb()),
+            ("depth-shade", crate::depth::build::shade_lo_peak_mb()),
             ("peaks", 2500),
             ("water", 8192),
             ("bldprep", super::super::bldprep_peak(30_300_000)),

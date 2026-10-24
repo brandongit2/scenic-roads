@@ -162,7 +162,12 @@ What each step does, in detail. The steps as one table (names, chains, the check
   its z6 tiles' mids (each read whole, eight at once, under a deadline and tried again while it
   fails transiently); **slope-root**, z0–2 from the z3 tiles. Memory from the tiles a run holds
   (`slope_pack::peak_mb`: a z6 tile's hi tiles and one deep pack's, each counted at its raw RGB,
-  and the decoded terrain kept; `lo_peak_mb` an assembly's).
+  the pyramid's working memory and the decoded terrain kept; `lo_peak_mb` an assembly's). The
+  pyramid (`slope_pack::Pyramid`, the depth's shading's too) makes the children of the tiles within
+  three levels of its top in parallel and each subtree below them on one thread, on at most 16 of
+  the job's threads, so its working memory has a bound (`working_bytes`: per thread a chain of
+  tiles' children's quadrants and one tile's making); its tiles don't depend on the threads (each
+  pixel the mean of its four children's in a fixed order, nothing summed across tiles).
 - **Worldwide z8 terrain** (`sources/terrain-z8-v6-<pool>`, once for the accepted elevation and
   sources versions, `<pool>` their content names' digest; not served): every z8 tile the elevation
   pool's base tile there (crate::terrain_base, as the terrain's), made as the packs' are, without

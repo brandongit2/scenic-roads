@@ -3912,14 +3912,26 @@ pub fn depth_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, til
     let hi: Vec<(String, String)> =
         dt.hi.iter().filter(|(t, k)| done.depth.get(t) != Some(k) && ready(t)).cloned().collect();
     // (The floor's shading's assembly once its z3 tile's depth is done as it'll stay: its lo pack
-    // and every z6 tile of it.)
-    let stale_hi: BTreeSet<(u32, u32)> = dt
+    // and every z6 tile of it, each merged: a pack in a hand-off waiting to be merged isn't in the
+    // manifest its key reads yet, so it would run again once it is.)
+    let mut stale_hi: BTreeSet<(u32, u32)> = dt
         .hi
         .iter()
         .filter(|(t, k)| done.depth.get(t) != Some(k))
         .filter_map(|(t, _)| TileId::parse(t))
         .map(|u| (u.x >> 3, u.y >> 3))
         .collect();
+    let (lo_pre, hi_pre) =
+        (format!("layers/{}/lo/3-", crate::depth::LAYER), format!("layers/{}/hi/6-", crate::depth::SHADE_LAYER));
+    for l in &done.handed {
+        let tile =
+            |p: &str, z: u8| l.strip_prefix(p).and_then(|r| TileId::parse(&format!("{z}/{}", r.replace('-', "/"))));
+        if let Some(u) = tile(&lo_pre, 3) {
+            stale_hi.insert((u.x, u.y));
+        } else if let Some(u) = tile(&hi_pre, 6) {
+            stale_hi.insert((u.x >> 3, u.y >> 3));
+        }
+    }
     let shade: Vec<(String, String)> = dt
         .shade
         .iter()
@@ -7909,6 +7921,12 @@ pub(crate) mod tests {
             (u.x, u.y) != waiting
         }));
         d2.record("depth", &w[0].targets);
+        // (A z6 tile's shading hi pack in a hand-off waiting to be merged: its z3 tile's waits.)
+        let mut handed = d2.clone();
+        let h6 = TileId::parse(&w[0].targets[0].0).unwrap();
+        handed.handed.insert(crate::depth::build::hi_logical(crate::depth::SHADE_LAYER, h6.x, h6.y));
+        let wh = depth_work(&c, &m, &handed, &tiles);
+        assert!(wh.iter().flat_map(|x| &x.targets).all(|(t, _)| *t != format!("3/{}/{}", h6.x >> 3, h6.y >> 3)));
         let w = depth_work(&c, &m, &d2, &tiles);
         assert_eq!(w.iter().map(|x| x.step.as_str()).collect::<Vec<_>>(), ["depth-shade"]);
         assert_eq!(w[0].targets.len(), dt.shade.len());

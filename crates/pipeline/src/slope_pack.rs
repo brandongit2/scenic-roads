@@ -248,9 +248,16 @@ impl Count<'_> {
 pub type Made = (u8, u32, u32, Vec<u8>);
 
 /// A shading pyramid's build (the slope's and the depth's: crate::depth::build): each tile after
-/// its children among `tiles` (depth first, the children in parallel), its pixels their quadrants
-/// where they cover it (`compose`), else its own level's (`own`), stored in `out`; its quadrant
-/// for its parent. A tile in `done` isn't made: its quadrant as made before.
+/// its children among `tiles` (depth first), its pixels their quadrants where they cover it
+/// (`compose`), else its own level's (`own`), stored in `out`; its quadrant for its parent. A tile
+/// in `done` isn't made: its quadrant as made before.
+///
+/// Its parallelism, which its memory bound counts (`working_bytes`): the children of the tiles
+/// within `PAR_LEVELS` of the call's tile are made in parallel (on `pool`'s threads), each tile
+/// below those levels' subtree on one thread alone, depth first, with no parallel call inside it,
+/// so a thread works on one subtree's chain at a time. Its values don't depend on the threads: a
+/// pixel is `mean4` of its four children's in a fixed order, each child's quadrant placed by its
+/// column and row (`compose`), and nothing is summed across tiles.
 pub struct Pyramid<'a> {
     pub own: &'a (dyn Fn(u8, u32, u32) -> Option<Vec<Px>> + Sync),
     pub tiles: &'a HashSet<(u8, u32, u32)>,
@@ -259,30 +266,77 @@ pub struct Pyramid<'a> {
     pub done: &'a HashMap<(u8, u32, u32), Option<Vec<Px>>>,
 }
 
+/// The levels under a pyramid's tile whose children are made in parallel: 64 subtrees below them.
+pub const PAR_LEVELS: u8 = 3;
+
+/// The most threads a pyramid's build uses (`pool`): the job's (RAYON_NUM_THREADS) up to this.
+pub const THREADS: usize = 16;
+
+/// The pool a pyramid's build runs on: the job's threads, at most `THREADS`.
+fn pool() -> &'static rayon::ThreadPool {
+    static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(rayon::current_num_threads().clamp(1, THREADS))
+            .build()
+            .expect("a pyramid's thread pool")
+    })
+}
+
 impl Pyramid<'_> {
     /// Tile (z, x, y) and those under it among `tiles` (none past `MAX_Z`); its quadrant.
     pub fn tile(&self, z: u8, x: u32, y: u32) -> Option<Vec<Px>> {
+        pool().install(|| self.node(z, x, y, z + PAR_LEVELS))
+    }
+
+    /// `tile`: its children in parallel above zoom `par_until`, one after another from it.
+    fn node(&self, z: u8, x: u32, y: u32, par_until: u8) -> Option<Vec<Px>> {
         if let Some(q) = self.done.get(&(z, x, y)) {
             return q.clone();
         }
-        let kids: Vec<((u32, u32), Vec<Px>)> = if z < MAX_Z {
+        let kids: Vec<(u32, u32)> = if z < MAX_Z {
             (0..4u32)
                 .map(|k| (2 * x + (k & 1), 2 * y + (k >> 1)))
                 .filter(|&(cx, cy)| self.tiles.contains(&(z + 1, cx, cy)))
-                .collect::<Vec<_>>()
-                .into_par_iter()
-                .filter_map(|(cx, cy)| self.tile(z + 1, cx, cy).map(|q| ((cx, cy), q)))
                 .collect()
         } else {
             Vec::new()
         };
+        let one = |&(cx, cy): &(u32, u32)| self.node(z + 1, cx, cy, par_until).map(|q| ((cx, cy), q));
+        let kids: Vec<((u32, u32), Vec<Px>)> = if z < par_until {
+            kids.par_iter().filter_map(one).collect()
+        } else {
+            kids.iter().filter_map(one).collect()
+        };
         (self.tick)();
         let v = compose(&kids, || (self.own)(z, x, y))?;
+        drop(kids);
         let (blob, q) = stored(&v);
         self.out.lock().unwrap().push((z, x, y, blob));
         (z > 0).then_some(q)
     }
 }
+
+/// The most memory (bytes) a pyramid's build holds working, beyond the tiles it stores (`out`) and
+/// what `own` keeps, from its bounds: a call's tile `top`, its tiles to `bottom`. Each thread of
+/// `pool` (at most `THREADS`; the calling thread waits) works on one chain at a time below the parallel
+/// levels (`PAR_LEVELS`), each tile of it holding its children's quadrants (4), and one tile's
+/// making (`MAKING`); the tiles of the parallel levels are each made once, each holding its
+/// children's quadrants while it waits.
+pub const fn working_bytes(top: u8, bottom: u8) -> u64 {
+    let chain = if bottom + 1 > top + PAR_LEVELS { (bottom + 1 - top - PAR_LEVELS) as u64 } else { 0 };
+    let upper = tiles_below(0, PAR_LEVELS - 1);
+    THREADS as u64 * (chain * 4 * QUADRANT + MAKING) + upper * 4 * QUADRANT
+}
+
+/// A tile's making at most (bytes): `compose`'s values, coverage and own level's pixels and the
+/// pixels it returns; `own`'s Horn border (`horn`) and the five terrain tiles it reads (its own
+/// and its edge neighbours', in metres); the codes `encode` takes. (libwebp's own working memory
+/// isn't counted.)
+const MAKING: u64 = 3 * PX_TILE + (TS * TS) as u64 + ((TS + 2) * (TS + 2) * 4) as u64 + 5 * (TS * TS * 4) as u64 + RAW;
+
+/// A tile's pixels (256 × 256), in bytes.
+const PX_TILE: u64 = (TS * TS * std::mem::size_of::<Px>()) as u64;
 
 /// A tile as stored and its quadrant for its parent, from its pixels at full precision: inside a
 /// job a parent is the mean of its children's values, coded once, as itself; only where a job hands
@@ -458,10 +512,14 @@ const QUADRANT: u64 = (128 * 128 * std::mem::size_of::<Px>()) as u64;
 /// The most memory (MB) a z6 tile's run takes, from its bounds: its hi tiles held until written
 /// (z9–12) and the tiles of one deep pack likewise (z13–16 under a z10 tile: the deep packs are
 /// made one at a time), each at most its raw codes; its z6–8 tiles; each z10 tile's quadrant kept
-/// from its deep pack's making for the z6 tile's; the decoded terrain kept.
+/// from its deep pack's making for the z6 tile's; the pyramid's working memory, a deep pack's or
+/// the z6 tile's (`working_bytes`); the decoded terrain kept.
 pub const fn peak_mb() -> u64 {
     let held = tiles_below(9 - 6, HI_MAX - 6) + tiles_below(3, MAX_Z - PACK_Z) + tiles_below(0, 2);
-    (held * RAW + (1 << (2 * (PACK_Z - 6))) * QUADRANT + KEPT) >> 20
+    let a = working_bytes(PACK_Z, MAX_Z);
+    let b = working_bytes(6, HI_MAX);
+    let working = if a > b { a } else { b };
+    (held * RAW + (1 << (2 * (PACK_Z - 6))) * QUADRANT + working + KEPT) >> 20
 }
 
 /// The most memory (MB) an assembly takes, from its bounds: its z6 tiles' mids (64 of z6–8) and
@@ -1121,10 +1179,56 @@ mod tests {
     }
 
     /// The memory bounds are those of the tiles a run holds.
+    /// A pyramid's tiles don't depend on its threads' order: made again and again, the same bytes,
+    /// and each parent the mean of its children as made, coded once.
+    #[test]
+    fn a_pyramid_is_the_same_whatever_its_threads_do() {
+        let own = |z: u8, x: u32, y: u32| -> Option<Vec<Px>> {
+            (z >= 4 || (x + y) % 3 != 0).then(|| {
+                (0..TS * TS)
+                    .map(|i| {
+                        let t = (i as f32 * 0.37 + x as f32 * 1.3 + y as f32 * 0.7 + z as f32).sin();
+                        Px::of_gradient(t * 0.9, (t * 2.1).cos() * 0.6)
+                    })
+                    .collect()
+            })
+        };
+        let mut tiles = HashSet::new();
+        for z in 0..=5u8 {
+            for x in 0..1u32 << z {
+                for y in 0..1u32 << z {
+                    if z < 4 || (x + 2 * y) % 5 != 0 {
+                        tiles.insert((z, x, y));
+                    }
+                }
+            }
+        }
+        let done = HashMap::new();
+        let run = || {
+            let out = Mutex::new(Vec::new());
+            Pyramid { own: &own, tiles: &tiles, out: &out, tick: &|| {}, done: &done }.tile(0, 0, 0);
+            let mut v = out.into_inner().unwrap();
+            v.sort_by_key(|m| (m.0, m.1, m.2));
+            v
+        };
+        let first = run();
+        assert!(first.len() > 500);
+        for _ in 0..2 {
+            assert!(run() == first);
+        }
+    }
+
     #[test]
     fn the_memory_bounds_count_the_tiles_held() {
         assert_eq!(tiles_below(3, 6), 64 + 256 + 1024 + 4096);
-        assert_eq!(peak_mb(), ((5440 * 2 + 21) * 196_608 + 256 * 196_608 + 512 * 262_144) >> 20);
+        // (The pyramid's working memory: 16 threads, each a chain of four tiles' children's
+        // quadrants and one tile's making (3 tiles' pixels, the coverage, Horn's border, five terrain
+        // tiles, the codes); the 21 tiles of the parallel levels' children's quadrants.)
+        let making = 3 * 786_432 + 65_536 + 258 * 258 * 4 + 5 * 262_144 + 196_608;
+        let working = 16 * (4 * 4 * 196_608 + making) + 21 * 4 * 196_608;
+        assert_eq!(working_bytes(PACK_Z, MAX_Z), working);
+        assert_eq!(working_bytes(6, HI_MAX), working);
+        assert_eq!(peak_mb(), ((5440 * 2 + 21) * 196_608 + 256 * 196_608 + working + 512 * 262_144) >> 20);
         assert_eq!(lo_peak_mb(), ((64 * 21 + 1365) * 196_608 + 512 * 262_144) >> 20);
     }
 
