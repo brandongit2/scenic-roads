@@ -2,15 +2,12 @@
 // owner's mockup lays it out (docs/mockups/build-live.html, "The NAS"): how fast it responds (the
 // lead's listing time over the chart's range, then gauges: response time, requests waiting, those
 // timed out over the last day, the disks' busy share; chips), its use against its capacity (what the
-// pool moves now against the limits its probes give), who is using it (each Mac's running jobs'
-// share of the budget, the rest free; what one job of each step running weighs), and the pool's NAS
-// traffic, file work and disks over time. From the lead's status (`agent.nas`, `nas_share`,
-// `nas_step`) and the Macs' /work/live answers, which live.js asks while the tab shows; each Mac's
+// pool moves now against the limits its probes give), and the pool's NAS traffic, file work and
+// disks over time. From the lead's status (`agent.nas`) and the Macs' /work/live answers, which live.js asks while the tab shows; each Mac's
 // own NAS response stays in its Live block (live.js). A measure missing is said so, never zero.
 import { draw } from "./chart.js";
 import { commonGaps, fmt, footer, latest, recentMean, spanText } from "./chartmath.js";
 import { liveOf, onLive } from "./live.js";
-import { isSlotOf } from "./sums.js";
 
 const MB = 1048576;
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
@@ -75,10 +72,7 @@ function build() {
   parts.lims = [["bytes", "data moved"], ["creates", "files created"], ["listed", "entries listed"], ["stats", "files looked up"]].map(([k, label]) => {
     const g = gauge(label); lims.append(g.row); return [k, g];
   });
-  parts.shares = el("div", "caps shares");
-  parts.weights = el("div", "small dim");
-  right.append(h3("Use against its capacity", parts.capSub), lims,
-    h3("Who is using the NAS", el("span", null, "the share each Mac's running jobs are allowed, set by the lead from each job's measured use")), parts.shares, parts.weights);
+  right.append(h3("Use against its capacity", parts.capSub), lims);
   grid.append(left, right);
   // Over time: the pool's traffic, its file work, the disks.
   const live = el("div", "live");
@@ -104,7 +98,7 @@ export function nasSection(agent, macs) {
 
 const tb = (b) => (b >= 1e12 ? `${fmt(b / 1e12)} TB` : `${fmt(b / 1e9)} GB`);
 
-// What the status says: the heading, the limits, the shares and the steps' weights.
+// What the status says: the heading, the limits.
 function fill() {
   const { agent, macs } = seen;
   const v = agent?.nas;
@@ -124,36 +118,7 @@ function fill() {
   lim(gs, t?.[5], l?.stats_s);
   const n = v?.probes?.length || 0;
   parts.capSub.textContent = l ? `the best of the probes kept: ${n} over the last day` : "the lead hasn't probed the NAS yet";
-  // Who is using it: each Mac's jobs' weights (thousandths of the whole), then what's free.
-  const shares = agent?.nas_share || {};
-  const rows = [];
-  if (Object.keys(shares).length) {
-    let used = 0;
-    for (const m of macs) {
-      const w = Object.entries(shares).filter(([nm]) => isSlotOf(nm, m.name)).reduce((x, [, y]) => x + y, 0);
-      used += w;
-      rows.push(shareRow(m.name, w, w > 1000 ? "warn" : ""));
-    }
-    rows.push(shareRow("free", Math.max(0, 1000 - used), "free"));
-  }
-  parts.shares.replaceChildren(...rows);
-  parts.shares.hidden = !rows.length;
-  // What one job of each step running weighs.
-  const st = Object.entries(agent?.nas_step || {}).sort((a, b) => b[1] - a[1]);
-  parts.weights.textContent = !rows.length ? "No shares: the NAS isn't probed yet, or no job runs." : st.length
-    ? `One job allowed: ${st.map(([s, w]) => `${s} ${pct(w)}`).join(", ")}.`
-    : "No job is running.";
   paint();
-}
-
-const pct = (w) => `${fmt(w / 10)} %`;
-function shareRow(name, w, cls) {
-  const row = el("div", "cap");
-  const bar = el("div", `cbar ${cls}`), i = el("i");
-  i.style.width = `${Math.round(clamp01(w / 1000) * 100)}%`;
-  bar.append(i);
-  row.append(el("span", `k${cls === "free" ? " dim" : ""}`, name), bar, el("span", "v", pct(w)));
-  return row;
 }
 
 // What the live answers say: the heading's words, the gauges, the chips, the charts.

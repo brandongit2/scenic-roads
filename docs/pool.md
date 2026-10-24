@@ -1169,8 +1169,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   flight at once), the charts' scales. Its NAS section (`web/work/nas.js`) reads the same answers:
   each Mac's `nas_calls` and, asked once a minute over the last day, `nas_missed`; the lead's
   `nas_ms`, `pool_nas_*` and `nas_disk_busy_pct` (missing from a member's answer); beside the
-  status's `nas` (`NasView`), `nas_share` (their leased jobs' NAS weights in thousandths of the
-  whole, `Coordinator::nas_shares`, shown as "who is using the NAS") and `nas_step`. The
+  status's `nas` (`NasView`). The
   Activity tab (`web/work/activity.js`) asks every Mac every 2 s while it shows, with no series:
   their `files` and `net` for the file stream and the internet by website. No robots.txt result is
   recorded anywhere (the producers that read one keep no result), so none is shown.

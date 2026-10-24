@@ -276,9 +276,7 @@ boxes).
   disk's busy share (`nas.load_pct`); chips (when the capacity was measured, the sharing limits, how
   many Macs are connected, timeouts). **Use against its capacity:** bars of what the pool moves now
   (`nas.traffic`, summed over the Macs) against the limits its probes give (`nas.limits`: data
-  moved MB/s, files created, entries listed, files looked up a second). **Who is using the NAS:** a
-  bar a Mac of its running jobs' share of the budget (`nas_share`, warn over the whole), a grey bar
-  of what's free, and what one job of each step running weighs (`nas_step`). Under them, the pool's
+  moved MB/s, files created, entries listed, files looked up a second). Under them, the pool's
   NAS use over time from the lead's `/work/live`: its reads and writes (`pool_nas_*`, MB/s), files
   opened, made and listed a second, the disks' busy share (`nas_disk_busy_pct`) against the target.
   Each Mac's own NAS response, calls in flight and calls missed in the last minute are its Live
