@@ -8,7 +8,8 @@
 //!
 //! `build` reads every water area the basemap draws from the pass's filtered planet (osmium
 //! tags-filter by `watercov::SET_FILTER` into the store folder, then osmium export, its areas
-//! assembled; the ~6 GB filtered file deleted after) and every ring of the sea's water polygons into a store (pipeline::watercov).
+//! assembled; the ~6 GB filtered file deleted after, on failure too, and as much free as the planet asked
+//! first) and every ring of the sea's water polygons into a store (pipeline::watercov).
 //! `serve` answers `/cov/{z}/{x}/{y}?s=<size>&k=<all|sea|inland>` (size 1–2048, 512 by default)
 //! with a grey PNG, each pixel 255 × (1 − its water coverage): white land, black water, exact
 //! anti-aliasing between; with `&raw=1`, the shares as the server's water tiles give them raw (red
@@ -172,6 +173,25 @@ fn build(osm: &Path, zip: &Path, out: &Path, index: &str) -> Result<()> {
     let mut w = GeomWriter::create(out)?;
     // The areas the basemap draws as water, from the pass's filtered planet.
     let set = out.join("water.osm.pbf");
+    // Deleted however build ends (an osmium failure included), never left in the store folder.
+    struct Gone<'a>(&'a Path);
+    impl Drop for Gone<'_> {
+        fn drop(&mut self) {
+            std::fs::remove_file(self.0).ok();
+        }
+    }
+    let _gone = Gone(&set);
+    // A filter of the planet is never larger than it: that much free beside the store first.
+    let need = std::fs::metadata(osm).with_context(|| format!("read {}", osm.display()))?.len();
+    let free = store::sys::disk_free(out).context("free disk")?;
+    anyhow::ensure!(
+        free >= need,
+        "{} MB free by {}, the filter of {} may take up to {} MB",
+        free >> 20,
+        out.display(),
+        osm.display(),
+        need >> 20
+    );
     let t = std::time::Instant::now();
     let st = store::spawn::spawn(
         pipeline::osmpass::osmium()
@@ -231,7 +251,6 @@ fn build(osm: &Path, zip: &Path, out: &Path, index: &str) -> Result<()> {
     });
     anyhow::ensure!(child.wait()?.success(), "osmium export failed");
     std::fs::remove_file(&cfg).ok();
-    std::fs::remove_file(&set).ok();
     eprintln!("coastcheck: {} areas in {:.0} s", n?, t.elapsed().as_secs_f64());
     let skipped = w.skipped;
     let (rings, points) = w.finish()?;
