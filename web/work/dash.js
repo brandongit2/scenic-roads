@@ -15,7 +15,7 @@
 // what happened, what each Mac moves now and the internet by website: activity.js), and the details.
 
 import { poolSection, termText } from "./pool.js";
-import { busyLanes, finished, finishedTiles, isSlotOf, laneGroups, notRead, packRuns, pastFrom, pastRuns, regionWork, regionsShown, rowsWindow, runningTiles, slotName, slotNo, stageSegments, stepTotals, targetsOf, mapTilesKept, macSlot, tileCovers, tileOf, wholeProgress } from "./sums.js";
+import { TILE_STATES, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, notRead, packRuns, pastFrom, pastRuns, regionWork, regionsShown, rowsWindow, runningTiles, slotName, slotNo, stageSegments, stepTotals, targetsOf, mapTilesKept, macSlot, tileCovers, tileOf, wholeProgress } from "./sums.js";
 import { fmt, timeTicks } from "./chartmath.js";
 import { liveBlock, startLive } from "./live.js";
 import { createMap } from "./worldmap.js";
@@ -356,10 +356,11 @@ function mapRuns(m) {
   for (const r of runs) r.targets = targetsOf(r, events);
   return runs;
 }
-// The world map's filters (#615), this browser's own (ctx.store): the tiles by kind, finished
-// ones faded by age or not, only those published, one pool member's, the tile areas (all, z3,
-// z6), the stages shown (`offStages` those unchecked).
-const MAP_F = { unstarted: true, progress: true, done: true, fade: true, published: false, member: "", zoom: "", offStages: [] };
+// The world map's filters (#615, #627), this browser's own (ctx.store): the tiles by state and
+// the regions by state (`tiles`, `regions`: those toggled off in the legend, false), finished
+// tiles faded by age or not, one pool member's, the tile areas (all, z3, z6), the stages shown
+// (`offStages`: those toggled off in the legend).
+const MAP_F = { tiles: {}, regions: {}, fade: true, member: "", zoom: "", offStages: [] };
 let mapF = null;
 const mapFilters = () => (mapF ||= { ...MAP_F, ...(ctx.store.get("mapFilters", {}) || {}) });
 function setMapFilter(k, v) { mapFilters()[k] = v; ctx.store.set("mapFilters", mapF); render(); }
@@ -376,14 +377,19 @@ function mapData(m) {
   const world = runs.filter((r) => !r.targets.some((t) => tileOf(t)));
   const hosts = m.macs.map((x) => x.name);
   const pubAt = lastCatalogue(m)?.at ?? null;
-  const [running, done] = mapTilesKept(runningTiles(runs, m.fc?.each_s, m.now), finishedTiles(endsHeld(), from), f,
+  // (The legend counts every state, those toggled off too; the map gets the kept.)
+  const [allRun, allDone] = mapTilesKept(runningTiles(runs, m.fc?.each_s, m.now), finishedTiles(endsHeld(), from), { ...f, tiles: {} },
     { pubAt, macOf: (w) => macSlot(w, hosts).host, stageOf: S.stage });
+  const tileCount = Object.fromEntries(TILE_STATES.map((st) => [st, 0]));
+  for (const v of [...allRun.values(), ...allDone.values()]) tileCount[v.state]++;
+  const kept = (mp) => new Map([...mp].filter(([, v]) => f.tiles?.[v.state] !== false));
+  const running = kept(allRun), done = kept(allDone);
   const fcRegs = Object.fromEntries((m.fc?.regions || []).map((r) => [r.id, r]));
   const regs = Object.values(drawn.byId).map((r) => ({ ...r, state: regionState(fcRegs[r.id]) }));
   const head = (key, step, state) => ({ kicker: `${S.stageTitle(S.stage(step)) || S.title(step)} · ${state}`, colour: S.colour(step), title: `Tile ${key.slice(key.lastIndexOf(" ") + 1)}` });
   for (const [key, r] of running) {
     const t = tileOf(key), pct = `${Math.round(r.frac * 100)}%`;
-    const state = r.frac >= 1 ? "done, its job running" : r.current || r.frac > 0 ? "under way" : "to come in its job";
+    const state = r.frac >= 1 ? "completed, its job running" : r.current || r.frac > 0 ? "in progress" : "unstarted, to come in its job";
     cards.set(`mt ${key}`, () => cardBody({ ...head(key, r.step, state),
       stats: [[pct, "of the tile done"], [r.current ? r.run.live?.phase || "running" : r.frac >= 1 ? "done" : r.frac > 0 ? "part done" : "queued", "phase"]],
       bar: { frac: r.frac, label: r.frac >= 1 ? "done; its job runs on" : r.frac > 0 ? `≈ ${pct} of the tile` : "not begun" },
@@ -395,9 +401,9 @@ function mapData(m) {
     ], mapsShown().minimap(key)));
   }
   for (const [key, d] of done) {
-    const out = pubAt != null && d.t <= pubAt;
-    cards.set(`mt ${key}`, () => cardBody({ ...head(key, d.step, "finished"),
-      stats: [[ago(m.now, d.t), "finished"], [out ? "yes" : "next catalogue", "on the map"]],
+    const out = d.state === "published";
+    cards.set(`mt ${key}`, () => cardBody({ ...head(key, d.step, out ? "published" : "completed, not yet published"),
+      stats: [[ago(m.now, d.t), "finished"], [out ? "yes" : "next catalogue", "in the app"]],
       bar: { frac: 1, label: `done ${clock(d.t)}` },
       foot: `${d.worker || "?"} · ${key}` }, [
       ["step", S.title(d.step)],
@@ -414,26 +420,36 @@ function mapData(m) {
     return [...keys.slice(0, most).map((k) => h("div", "tc-sec", cards.get(k)())),
       keys.length > most ? h("div", "tc-more dim small", `and ${n(keys.length - most)} more here`) : null].filter(Boolean);
   });
-  return { regs, rows, running, done, world, data: { countries, regions: regs, running, finished: done, now: m.now, from, colour: S.colour, fade: f.fade } };
+  const regionKind = (st) => (st === "done" ? "on" : st);
+  return { regs, rows, tileCount, world, data: { countries, regions: regs.filter((r) => f.regions?.[regionKind(r.state)] !== false), running, finished: done, now: m.now, from, colour: S.colour, stageOf: S.stage, fade: f.fade } };
 }
 // (A tile's minimap is drawn by either map: the Overview's unless only the Regions tab's exists.)
 const mapsShown = () => worldMap || rp.map;
 // A map's click or tap: its stack pinned (nothing there: the pinned card let go).
 const mapPick = (keys, x, y) => (keys.length ? pinCard("mstack", x, y, keys.join("|")) : unpin());
-// The map's legend: what's drawn, counted; every stage's colour; then its filters.
-function mapLegend(m, md) {
-  const { regs, running, done, world } = md;
-  const count = (st) => regs.filter((r) => r.state === st).length;
-  const key = (cls, text) => h("span", "lg", h("i", cls), text);
+// The map's legend (#627): what's drawn, counted, and every stage's colour, each item a toggle
+// showing or hiding its kind on the map (off: struck and dimmed; kept as the filters are),
+// hovered: the rest of the map faint; then the other filters.
+const TILE_WORDS = { unstarted: "unstarted", progress: "in progress", completed: "completed, not yet published", published: "published" };
+function mapLegend(m, md, map) {
+  const { regs, tileCount, world } = md;
+  const f = mapFilters();
+  const count = (st) => regs.filter((r) => r.state === st || (st === "on" && r.state === "done")).length;
+  const toggle = (on, flip, emph, swatch, text, title) => h("button", { type: "button", class: `lg${on ? "" : " off"}`, "aria-pressed": on ? "true" : "false", title,
+    onclick: () => { map.emphasize(null); flip(); }, onpointerenter: (e) => e.pointerType !== "touch" && map.emphasize(emph), onpointerleave: () => map.emphasize(null) }, swatch, text);
+  const byState = (k, st, cls, text) => toggle(f[k][st] !== false, () => setMapFilter(k, { ...f[k], [st]: f[k][st] === false }), { [k === "tiles" ? "tile" : "region"]: st }, h("i", cls), text, "Show or hide these on the map");
   const span = (PAST.find(([s]) => s === ui.past)?.[1] || "Past 6 hours").toLowerCase();
+  const off = new Set(f.offStages || []);
+  const btn = (text, v) => h("button", { type: "button", class: "mfbtn", onclick: () => setMapFilter("offStages", v) }, text);
   return [h("div", "wmap-legend small dim",
-    regs.length ? [key("rg on", `${count("on") + count("done")} on the map`), key("rg building", `${count("building")} building`), key("rg queued", `${count("queued")} to come`)] : h("span", null, "No regions' outlines from this Mac yet"),
-    key("tl run", `${plural(running.size, "tile")} running`),
-    ui.past ? key("tl fin", `${plural(done.size, "tile")} finished in the ${span}`) : null,
+    regs.length ? [byState("regions", "on", "rg on", `${plural(count("on"), "region")} on the map`), byState("regions", "building", "rg building", `${plural(count("building"), "region")} building`), byState("regions", "queued", "rg queued", `${plural(count("queued"), "region")} to come`)] : h("span", null, "No regions' outlines from this Mac yet"),
+    TILE_STATES.map((st) => byState("tiles", st, `tl ${st}`, `${plural(tileCount[st], "tile")} ${TILE_WORDS[st]}`)),
     world.length ? h("span", null, `whole world: ${world.map((r) => `${S.title(r.step)} (${r.mac})`).join(", ")}`) : null,
     h("span", "hint", "drag to move · pinch, double-click or +/− to zoom")),
-  h("div", "wmap-legend wmap-stages small dim", table.stages.map((g) => h("span", "lg", h("i", { style: { background: stageColour(g.id), borderColor: "transparent" } }), g.title)),
-    h("span", null, "solid: done · outlined: running, filled as far as done · fading: finished longer ago")),
+  h("div", "wmap-legend wmap-stages small dim", table.stages.map((g) => toggle(!off.has(g.id), () => setMapFilter("offStages", off.has(g.id) ? [...off].filter((x) => x !== g.id) : [...off, g.id]), { stage: g.id },
+    h("i", { style: { background: stageColour(g.id), borderColor: "transparent" } }), g.title, "Show or hide this stage's tiles on the map")),
+    btn("Check all", []), btn("Uncheck all", table.stages.map((g) => g.id)),
+    h("span", null, `finished in the ${span}: published solid, completed paler under a dashed outline · running: outlined, filled as far as done · steps at one spot: stripes`)),
   mapFilterBar(m)];
 }
 // The filters under a map (each map its own controls over one state). A member: the tiles it
@@ -442,26 +458,18 @@ function mapLegend(m, md) {
 let mapFiltersN = 0;
 function mapFilterBar(m) {
   const f = mapFilters(), id = ++mapFiltersN;
-  const box = (k, text) => h("label", "mf", h("input", { type: "checkbox", checked: f[k] ? "" : null, onchange: (e) => setMapFilter(k, e.target.checked) }), text);
   const radio = (k, v, text) => h("label", "mf", h("input", { type: "radio", name: `mf-${k}-${id}`, value: v, checked: f[k] === v ? "" : null, onchange: () => setMapFilter(k, v) }), text);
   const members = [...new Set([...m.macs.map((x) => x.name), ...(f.member ? [f.member] : [])])];
-  // (The stages that build per tile: those with a step over tiles.)
-  const tiled = table.stages.filter((g) => Object.values(table.steps).some((st) => st.stage === g.id && ["area", "tile", "subtile"].includes(st.scope))).map((g) => g.id);
-  const off = new Set(f.offStages || []);
-  const stageBox = (g) => h("label", "mf", h("input", { type: "checkbox", checked: off.has(g) ? null : "", onchange: (e) => setMapFilter("offStages", e.target.checked ? [...off].filter((x) => x !== g) : [...off, g]) }), S.stageTitle(g));
-  const btn = (text, v) => h("button", { type: "button", class: "mfbtn", onclick: () => setMapFilter("offStages", v) }, text);
   return h("div", "wmap-filters small",
-    h("div", "mfrow", box("unstarted", "Unstarted tiles"), box("progress", "In-progress tiles"), box("done", "Completed tiles")),
-    h("div", "mfrow", box("fade", "Fade completed tiles progressively"), box("published", "Only show published tiles")),
+    h("div", "mfrow", h("label", "mf", h("input", { type: "checkbox", checked: f.fade ? "" : null, onchange: (e) => setMapFilter("fade", e.target.checked) }), "Fade completed tiles progressively")),
     h("div", { class: "mfrow", role: "radiogroup", "aria-label": "Show only for" }, h("span", "dim", "Show only for:"), radio("member", "", "All pool members"), members.map((nm) => radio("member", nm, nm))),
-    h("div", { class: "mfrow", role: "radiogroup", "aria-label": "Show tile areas" }, h("span", "dim", "Show tile areas:"), radio("zoom", "", "All"), radio("zoom", "3", "z3"), radio("zoom", "6", "z6")),
-    tiled.length ? h("div", { class: "mfrow", role: "group", "aria-label": "By stage" }, h("span", "dim", "By stage:"), tiled.map(stageBox), btn("Check all", []), btn("Uncheck all", tiled)) : null);
+    h("div", { class: "mfrow", role: "radiogroup", "aria-label": "Show tile areas" }, h("span", "dim", "Show tile areas:"), radio("zoom", "", "All"), radio("zoom", "3", "z3"), radio("zoom", "6", "z6")));
 }
 function mapSection(m, md) {
   worldMap ||= createMap({ pick: mapPick });
   worldMap.update(md.data);
   const k = md.regs.length;
-  return section("d-map", "Map", `${k ? plural(k, "region") : "no regions"} · the z3 grid · tiles in their stage's colour`, h("div", "box wmap-box", worldMap.el, ...mapLegend(m, md)));
+  return section("d-map", "Map", `${k ? plural(k, "region") : "no regions"} · the z3 grid · tiles in their stage's colour`, h("div", "box wmap-box", worldMap.el, ...mapLegend(m, md, worldMap)));
 }
 
 // ---- Machines -----------------------------------------------------------------------------------
@@ -653,11 +661,14 @@ function pagesCard(m) {
 
 // ---- Cards: on hover, pinned on a click ------------------------------------------------------------
 // One card for everything the Jobs tab shows: under a mouse's or trackpad's pointer, a card follows
-// it over anything that has one; a click or a tap pins it where it is, with a close button, its
-// words made again at each render while what it's about is still shown (by its key); Escape, the
-// close button or a click outside it lets it go.
+// it over anything that has one, never catching the pointer itself (pointer-events none), and goes
+// as the pointer leaves what it's about (into anything else, off the map, out of the window); a
+// click or a tap pins it where it is, with a close button, its words made again at each render
+// while what it's about is still shown (by its key). A pinned card is modal (#627, owner 21 Oct):
+// a clear veil under it takes every click and scroll behind it, a click on it only letting the
+// card go; the card itself scrolls and stays live. Escape or the close button let it go too.
 const cards = new Map();
-const pin = { key: null, el: null, also: "" };
+const pin = { key: null, el: null, also: "", veil: null };
 let hoverCard = null;
 // `el`'s card: `build(also)` its rows (made when shown; `also`: what else is under the point, the
 // element's `data-also`, as the world map says it), `key` naming it across renders.
@@ -686,10 +697,14 @@ const cardBody = (title, pairs, ...more) => {
     o.chips?.length ? h("div", "tc-chipsbox", o.chipsLabel ? h("div", "tc-kick", o.chipsLabel) : null, h("div", "tc-chips", o.chips.map((c) => h("span", null, c)))) : null,
     ...more, o.foot ? h("div", { class: "tc-foot", title: o.foot }, o.foot) : null].filter(Boolean);
 };
+// (Beside the point, right and below, else left or above where there's no room: never over the
+// pointer, as long as there's room on either side.)
 function placeCard(el, x, y) {
-  const r = el.getBoundingClientRect();
-  el.style.left = `${Math.max(8, Math.min(window.innerWidth - r.width - 8, x + 12))}px`;
-  el.style.top = `${y + 14 + r.height > window.innerHeight - 40 ? Math.max(8, y - r.height - 10) : y + 14}px`;
+  const r = el.getBoundingClientRect(), W = window.innerWidth, H = window.innerHeight;
+  const left = x + 12 + r.width <= W - 8 ? x + 12 : x - 12 - r.width >= 8 ? x - 12 - r.width : Math.max(8, W - r.width - 8);
+  const top = y + 14 + r.height <= H - 8 ? y + 14 : y - 10 - r.height >= 8 ? y - 10 - r.height : Math.max(8, H - r.height - 8);
+  el.style.left = `${left}px`;
+  el.style.top = `${top}px`;
 }
 function showHover(key, x, y, also = "") {
   const build = cards.get(key);
@@ -706,11 +721,28 @@ function pinCard(key, x, y, also = "") {
   const close = h("button", { class: "quiet x", title: "Close (Esc)", "aria-label": "Close", onclick: unpin }, "×");
   pin.key = key;
   pin.also = also;
-  pin.el = h("div", { class: "card-tip pinned", role: "dialog" }, close, h("div", "cb", cards.get(key)(also)));
-  document.body.append(pin.el);
+  pin.el = h("div", { class: "card-tip pinned", role: "dialog", "aria-modal": "true" }, close, h("div", "cb", cards.get(key)(also)));
+  // (The veil: a click on it lets the card go and nothing else; a wheel or a touch's drag there
+  // moves nothing. The page under it can't scroll while the card is up.)
+  pin.veil = h("div", { class: "card-veil" });
+  const still = (e) => e.preventDefault();
+  pin.veil.addEventListener("wheel", still, { passive: false });
+  pin.veil.addEventListener("touchmove", still, { passive: false });
+  pin.veil.addEventListener("pointerdown", (e) => e.stopPropagation());
+  // (A tap pinned it at its lift, the page's or the map's: that tap's own click, coming after
+  // onto the veil, is passed over.)
+  const t0 = performance.now();
+  pin.veil.addEventListener("click", (e) => { e.stopPropagation(); if (performance.now() - t0 > 800 || Math.hypot(e.clientX - x, e.clientY - y) > 12) unpin(); });
+  document.body.append(pin.veil, pin.el);
+  document.documentElement.classList.add("card-modal");
   placeCard(pin.el, x, y);
 }
-function unpin() { pin.el?.remove(); pin.key = pin.el = null; }
+function unpin() {
+  pin.el?.remove();
+  pin.veil?.remove();
+  document.documentElement.classList.remove("card-modal");
+  pin.key = pin.el = pin.veil = null;
+}
 // (After a render: the pinned card's words again, from what's shown now; kept as they were, said
 // to be over, when it's gone.)
 function refreshPin() {
@@ -730,8 +762,13 @@ function wireCards() {
     if (d.card) showHover(d.card, e.clientX, e.clientY, d.also);
     else hideHover();
   });
+  // (Leaving what has a card: into what has another or none, or out of the window (no element
+  // to go to); the map's canvas says nothing once left (worldmap.js). A pinned card stays.)
+  document.addEventListener("pointerout", (e) => { if (!e.relatedTarget || at(e.relatedTarget).card !== at(e.target).card) hideHover(); });
+  document.documentElement.addEventListener("mouseleave", hideHover);
+  window.addEventListener("blur", hideHover);
   const act = (e) => {
-    if (pin.el?.contains(e.target)) return;
+    if (pin.el?.contains(e.target) || pin.veil?.contains(e.target)) return;
     const d = at(e.target), key = d.card;
     if (key && cards.has(key)) pinCard(key, e.clientX, e.clientY, d.also);
     else unpin();
@@ -745,7 +782,7 @@ function wireCards() {
     const d = down;
     down = null;
     if (!d || e.pointerType !== "touch" || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 10 || e.timeStamp - d.t > 800) return;
-    if (e.target instanceof Element && e.target.closest("canvas.wmap, a, button, input, select, label, summary")) return;
+    if (e.target instanceof Element && e.target.closest("canvas.wmap, a, button, input, select, label, summary, .card-veil")) return;
     tapped = performance.now();
     act(e);
   });
@@ -1174,7 +1211,7 @@ function regionsPane(m, md) {
   }
   rp.rows = md.rows;
   rp.map.update(md.data);
-  rp.legend.replaceChildren(...mapLegend(m, md));
+  rp.legend.replaceChildren(...mapLegend(m, md, rp.map));
   // What's left in all of them, a step at a time (the forecast's regions summed in the page).
   const order = Object.keys(table.steps);
   const words = Object.entries(stepTotals(m.fc?.regions)).sort(([p], [q]) => order.indexOf(p) - order.indexOf(q)).map(([s, k]) => S.said(s, k));

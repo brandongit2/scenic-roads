@@ -176,7 +176,9 @@ boxes).
   (`/work/regions`) coloured by state (on the map or done, building, to come; counted in the
   legend), the tiles finished in the Jobs tab's past window (the history's ends, `sums.js`
   finishedTiles; each fades in as it comes, the window's history played back on the first look,
-  paler as it ages, or evenly with the fade filter off; a low zoom's tile paler still), and each running job's target tiles (the
+  paler as it ages, or evenly with the fade filter off; a low zoom's tile paler still; published,
+  finished by the last catalogue's time, solid; completed but not in a catalogue yet half as
+  strong under a dashed outline), and each running job's target tiles (the
   history's start or lease event, else the tiles its id or words name: `sums.js` targetsOf) in
   its stage's colour, filled as far as they're done (`sums.js` runningTiles: from the job's
   `live`, its targets done taken as the first of its list and the one under way at its time so
@@ -185,24 +187,28 @@ boxes).
   docs/mockups/build-live.html's: a head with the stage's or state's swatch, a kicker and the
   title; stat tiles; bars; chips; a foot) show the whole stack under the point, one after
   another under a line: every tile there at every zoom (the deepest first), then every region.
-  A tile is keyed by its step and tile ("<step> z/x/y"): two steps' at one spot (a z3 tile's
-  landmarks and buildings) are two entries, each drawn as a band of the square in its own colour
-  and each its own card in the stack.
-  A tile's: its stage and state, its share done and phase (stat tiles), a bar of it done in its
+  A tile is keyed by its step and tile ("<step> z/x/y"): steps' at one spot (slope and roads on
+  6/57/16) are entries of their own, drawn across the whole square as diagonal stripes in each
+  step's colour in turn, repeating, and each its own card in the stack; the minimaps the same.
+  A tile's state (`sums.js` runningState, finishedState): unstarted, in progress, completed (its
+  job's work on it done, or finished, not in a catalogue yet) or published (in the app).
+  A tile's card: its stage and state, its share done and phase (stat tiles), a bar of it done in its
   stage's colour, step, job, Mac, the degrees it covers, a minimap of it and half a tile around;
-  a finished one's when and whether the last catalogue has it. A region's: its folders, its
+  a finished one's when and whether it's in the app. A region's: its folders, its
   download and tiles built (stat tiles), a bar of its tiles built, a bar of the build's stages
   (built solid, the one under way striped, to come faint), state, times, build order, its work
   left by step (chips), its outline's recipe (the foot). Under a mouse the stack follows the
-  pointer; a click or a tap pins it (the map takes its own clicks at their pointerup, the stack
+  pointer, every item in it outlined on the map (each tile's whole square, each region by its
+  outline; the canvas's `data-outlined` counts them); a click or a tap pins it (the map takes its own clicks at their pointerup, the stack
   where it lifted, and never leaves them to the page: Mobile Safari pinned the tap before's,
-  #615). Under it the legend (the regions by state and the tiles, counted; every stage's
-  colour) and the filters, this browser's own (localStorage): unstarted, in-progress and
-  completed tiles; completed tiles faded by age; only those published (finished by the last
-  catalogue's time); "Show only for" one pool member (the tiles it ran, the history's ends,
+  #615). Under it the legend (#627): the regions by state ("64 regions on the map", building, to
+  come), the tiles by state (unstarted, in progress, completed not yet published, published),
+  counted, and every stage's colour, each item a toggle showing or hiding its kind (off: struck
+  and dimmed), hovered: the rest of the map faint; "Check all" and "Uncheck all" by the stages.
+  Then the filters. Toggles and filters are this browser's own (localStorage): completed tiles
+  faded by age; "Show only for" one pool member (the tiles it ran, the history's ends,
   and runs or will run in its running jobs and leases; the forecast's lanes name no tiles, so
-  its later jobs' aren't shown); "Show tile areas" (all, z3 or z6); "By stage" (a box per stage
-  that builds per tile, all checked to start, with "Check all" and "Uncheck all"). Both maps and
+  its later jobs' aren't shown); "Show tile areas" (all, z3 or z6). Both maps and
   their stacks share them (`sums.js` mapTilesKept). On a touch screen, zoomed out, a finger
   moves the map sideways only: up and down is the page's scroll. Moved by a drag, zoomed by a pinch (ctrl+wheel in Chrome, gesture events in
   Safari, two fingers on a touch screen), a double click, its +/− and whole-map buttons or the
@@ -227,8 +233,12 @@ boxes).
   held), running, to come (the forecast's).
 - **Cards:** everything in the Jobs tab has a card (what, where, when, how long, how it went; a
   step's forecast and jobs; a stage's note and next jobs), shown on hover with a mouse or trackpad
-  and pinned on a click or tap, refreshed with each render; Escape, × or a click elsewhere closes
-  it. No phase bars yet: they wait for the lead's measured phase shares (task #511).
+  and pinned on a click or tap, refreshed with each render. A following card never catches the
+  pointer (pointer-events none; placed beside the point, never over it) and goes as the pointer
+  leaves what it's about (into anything else, off the map, out of the window). A pinned card is
+  modal (#627): a clear veil under it, not dimmed, takes every click and scroll behind it (the
+  page doesn't scroll), a click on it only closing the card; the card itself scrolls and stays
+  live. Escape or × close it too. No phase bars yet: they wait for the lead's measured phase shares (task #511).
 - **Machines:** a card per Mac, one under the other at every width (the pool's cards too): name, role, state, heard from; its capacity; a block per running
   job by its slot (name, parts, progress, running since, memory; frozen or stuck) with what's
   inside it (the status's `jobs[].live`, docs/pool.md §10, Live: its phase and since when, its

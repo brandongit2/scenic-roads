@@ -58,19 +58,26 @@ button:disabled { opacity: .5; }
 .wmap-ctl button { width: 26px; height: 26px; padding: 0; background: var(--panel); border: 1px solid var(--line); line-height: 1; }
 .wmap-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; padding: 6px 4px 0; }
 .wmap-legend .lg { display: inline-flex; gap: 5px; align-items: center; }
+/* (Legend items are toggles, #627: plain text until hovered; off, struck and faint.) */
+.wmap-legend button.lg { background: none; border: 0; padding: 1px 3px; margin: 0 -3px; border-radius: 4px; font: inherit; color: inherit; cursor: pointer; }
+.wmap-legend button.lg:hover { background: var(--row-line); color: var(--text); }
+.wmap-legend button.lg.off { opacity: .45; text-decoration: line-through; }
+.wmap-legend button.lg.off i { background: none !important; }
 .wmap-legend .lg i { width: 10px; height: 10px; border-radius: 2px; border: 1px solid; }
 .wmap-legend .rg.on { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 25%, transparent); }
 .wmap-legend .rg.building { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 25%, transparent); }
 .wmap-legend .rg.queued { border-color: var(--dim); }
-.wmap-legend .tl.run { border-color: var(--st-roads); background: linear-gradient(to top, var(--st-roads) 55%, transparent 55%); }
-.wmap-legend .tl.fin { border-color: transparent; background: color-mix(in srgb, var(--st-tiles) 55%, transparent); }
+.wmap-legend .tl.unstarted { border-color: var(--st-roads); background: color-mix(in srgb, var(--st-roads) 12%, transparent); }
+.wmap-legend .tl.progress { border-color: var(--st-roads); background: linear-gradient(to top, var(--st-roads) 55%, transparent 55%); }
+.wmap-legend .tl.completed { border: 1px dashed var(--st-roads); background: color-mix(in srgb, var(--st-roads) 30%, transparent); }
+.wmap-legend .tl.published { border-color: transparent; background: color-mix(in srgb, var(--st-roads) 70%, transparent); }
 .wmap-legend .hint { margin-left: auto; }
 .wmap-stages { padding-top: 4px; }
+.wmap-legend .mfbtn { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; font: inherit; font-size: 11.5px; padding: 1px 7px; cursor: pointer; }
 .wmap-filters { display: flex; flex-direction: column; gap: 4px; padding: 8px 4px 2px; margin-top: 6px; border-top: 1px solid var(--row-line); }
 .wmap-filters .mfrow { display: flex; flex-wrap: wrap; gap: 3px 14px; align-items: center; }
 .wmap-filters .mf { display: inline-flex; gap: 5px; align-items: center; cursor: pointer; white-space: nowrap; }
 .wmap-filters .mf input { width: auto; flex: none; margin: 0; padding: 0; accent-color: var(--accent); }
-.wmap-filters .mfbtn { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; font: inherit; font-size: 11.5px; padding: 1px 7px; cursor: pointer; }
 .wmap-mini { display: block; margin-top: 5px; border-radius: 4px; border: 1px solid var(--line); }
 
 /* Bars. */
@@ -228,9 +235,14 @@ select.past { margin-left: 4px; background: var(--bg); color: var(--text); borde
 .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
 
 /* A card (dash.js withCard): on hover under the pointer; pinned on a click, with its close button. */
+/* (A following card never catches the pointer; a pinned one takes its events, #627.) */
 .card-tip { position: fixed; z-index: 20; pointer-events: none; background: var(--tip); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; font-size: 11.5px; width: max-content; max-width: min(340px, calc(100vw - 16px)); box-shadow: 0 4px 14px var(--shadow); }
 .card-tip[hidden] { display: none; }
-.card-tip.pinned { pointer-events: auto; z-index: 21; padding-right: 26px; border-color: var(--rule); }
+.card-tip.pinned { pointer-events: auto; z-index: 21; padding-right: 26px; border-color: var(--rule); overscroll-behavior: contain; }
+/* (Under a pinned card: clear, catching every click and scroll behind it, #627.) */
+.card-veil { position: fixed; inset: 0; z-index: 21; background: transparent; touch-action: none; }
+.card-tip.pinned { z-index: 22; }
+html.card-modal, html.card-modal body { overflow: hidden; }
 .card-tip.pinned.gone { opacity: .75; }
 .card-tip .x { position: absolute; top: 2px; right: 2px; padding: 0 6px; border: 0; background: none; font-size: 14px; line-height: 1.2; }
 .card-tip .ct { font-weight: 600; margin-bottom: 3px; }

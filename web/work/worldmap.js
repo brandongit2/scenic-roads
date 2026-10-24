@@ -2,7 +2,9 @@
 // Mercator (the world 0–1000 each way, y down: countries.json's and /work/regions' outlines), with
 // the z3 grid (and z6's when zoomed in enough to see it), the countries, the regions coloured by
 // how far they are, the tiles finished in the past window (each fading in as it comes, paler as it
-// ages), and each running job's target tiles in its stage's colour, filled as far as they're done.
+// ages; published solid, completed but not in a catalogue yet paler under a dashed outline), and
+// each running job's target tiles in its stage's colour, filled as far as they're done. Steps at
+// one spot share its square as diagonal stripes, each step's colour in turn.
 // Kept across the page's renders (its element moved into each new section), drawn again when its
 // data changes, as it's moved or zoomed, and while tiles fade in; nothing runs otherwise.
 //
@@ -23,9 +25,11 @@ const Z6 = 1000 / 64;
 // The regions' paths, made once for every map (the Overview's and the Regions tab's), by outline.
 const regionPaths = new WeakMap();
 
-/** A map: `el` to place, `highlight(id)` to light a region, `update(data)` with {countries (rings), regions [{id, fill, edge, state}],
- * running (Map key → {step, frac, current}), finished (Map key → {t}), from, now, colour(step)
- * (a CSS colour, var() allowed), fade (finished tiles paler as they age)}, `minimap(key)` a canvas
+/** A map: `el` to place, `highlight(id)` to light a region, `emphasize(e)` a legend item's kind,
+ * `update(data)` with {countries (rings), regions [{id, fill, edge, state}], running (Map key →
+ * {step, frac, current, state}), finished (Map key → {t, step, state}: sums.js mapTilesKept), from,
+ * now, colour(step) (a CSS colour, var() allowed), stageOf(step), fade (finished tiles paler as
+ * they age)}, `minimap(key)` a canvas
  * of a tile and around it; `pick(keys, x, y)` called on a click or tap (keys: the stack there,
  * none off everything). */
 export function createMap({ pick = () => {} } = {}) {
@@ -42,11 +46,12 @@ export function createMap({ pick = () => {} } = {}) {
   el.className = "wmap-wrap";
   el.append(canvas, ctl);
 
-  let data = { countries: [], regions: [], running: new Map(), finished: new Map(), now: 0, from: 0, colour: () => "#888" };
+  let data = { countries: [], regions: [], running: new Map(), finished: new Map(), now: 0, from: 0, colour: () => "#888", stageOf: () => "" };
   let paths = { countries: null, regions: new Map() };
   const view = { cx: 500, cy: 420, k: 0, fitted: false };
   let size = { w: 0, h: 0 };
-  let hover = null;
+  let hover = []; // the stack under the mouse, every key outlined
+  let emph = null; // a legend item hovered: {region | tile | stage} (emphasize)
   let held = null; // a region the page points at (the Regions tab's list under the pointer)
   const appeared = new Map(); // finished tile → when it began fading in (performance.now())
   let firstFinished = true;
@@ -153,70 +158,109 @@ export function createMap({ pick = () => {} } = {}) {
     };
     if (Z6 * k >= 24) grid(64, tokens.rule, 0.35);
     grid(8, tokens.rule, 0.7);
+    // (What's pointed at: every key in `focus`, tiles and regions. A legend item hovered
+    // (`emph`): what it isn't drawn faint.)
+    const lit = new Set(Array.isArray(focus) ? focus : focus ? [focus] : []);
+    const faint = (yes) => (yes ? 1 : 0.15);
+    const regionKind = (st) => (st === "done" ? "on" : st);
+    const regionRel = (r) => !emph || emph.region === regionKind(r.state);
+    const tileRel = (v) => !emph || emph.tile === v.state || (emph.stage != null && data.stageOf(v.step) === emph.stage);
     // Regions, by state.
     const regionColour = { on: tokens.ok, done: tokens.ok, building: tokens.accent, queued: tokens.dim };
     for (const r of data.regions) {
       const p = paths.regions.get(r.id);
       if (!p || !seen(p.bbox)) continue;
-      const col = regionColour[r.state] || tokens.dim;
-      c.globalAlpha = r.state === "on" ? 0.16 : r.state === "building" ? 0.14 : 0.07;
+      const col = regionColour[r.state] || tokens.dim, f = faint(regionRel(r));
+      c.globalAlpha = (r.state === "on" ? 0.16 : r.state === "building" ? 0.14 : 0.07) * f;
       c.fillStyle = col;
       c.fill(p.fill);
-      c.globalAlpha = r.state === "queued" ? 0.55 : 0.85;
+      c.globalAlpha = (r.state === "queued" ? 0.55 : 0.85) * f;
       c.strokeStyle = col;
-      c.lineWidth = px * (focus === `mr ${r.id}` ? 2.2 : 0.8);
+      c.lineWidth = px * 0.8;
       c.stroke(p.edge);
-      c.globalAlpha = 1;
-    }
-    // (The region the page points at: filled and outlined in the accent, over the rest.)
-    const lit = focus?.startsWith("mr ") && paths.regions.get(focus.slice(3));
-    if (lit) {
-      c.globalAlpha = 0.3;
-      c.fillStyle = tokens.accent;
-      c.fill(lit.fill);
-      c.globalAlpha = 1;
-      c.strokeStyle = tokens.accent;
-      c.lineWidth = px * 1.8;
-      c.stroke(lit.edge);
-    }
-    // Finished tiles: faded in as they came, paler as they age over the window.
-    const t = performance.now();
-    const span = Math.max(1, data.now - data.from);
-    for (const [key, f] of data.finished) {
-      if (data.running.has(key)) continue;
-      const [bx, by, s, w] = boxOf(key, bandF);
-      if (bx > x1 || by > y1 || bx + s < x0 || by + s < y0) continue;
-      const fade = Math.max(0, Math.min(1, (t - (appeared.get(key) ?? 0)) / FADE_MS));
-      const age = Math.max(0, Math.min(1, (data.now - f.t) / span));
-      // (A low zoom's tile, one of thousands of square kilometres, is drawn paler: it would hide the rest.)
-      c.globalAlpha = fade * (data.fade === false ? 0.6 : 0.18 + 0.5 * (1 - age)) * (s > Z6 * 1.5 ? 0.3 : 1);
-      c.fillStyle = resolve(data.colour(f.step));
-      c.fillRect(bx, by, w, s);
     }
     c.globalAlpha = 1;
-    // Running tiles: outlined in their stage's colour, filled from the bottom as far as they're done.
-    for (const [key, r] of data.running) {
-      const [bx, by, s, w] = boxOf(key, bandR);
+    // Tiles. Steps sharing a spot: each its diagonal stripes, in turn, across the whole square.
+    const t = performance.now();
+    const span = Math.max(1, data.now - data.from);
+    const stripes = (bx, by, s, i, n) => {
+      c.save();
+      c.beginPath();
+      c.rect(bx, by, s, s);
+      c.clip();
+      if (n > 1) {
+        const w = s / Math.max(8, n * 2);
+        c.beginPath();
+        for (let j = i, d = i * w; d < 2 * s; j += n, d = j * w) { c.moveTo(bx + d, by); c.lineTo(bx + d + w, by); c.lineTo(bx + d + w - 2 * s, by + 2 * s); c.lineTo(bx + d - 2 * s, by + 2 * s); c.closePath(); }
+        c.clip();
+      }
+    };
+    const outlines = [];
+    for (const [key, v] of [...data.finished, ...data.running]) {
+      const run = data.running.has(key) && data.running.get(key) === v;
+      const [bx, by, s] = tileBox(tileOf(key.slice(key.lastIndexOf(" ") + 1)));
       if (bx > x1 || by > y1 || bx + s < x0 || by + s < y0) continue;
-      const col = resolve(data.colour(r.step));
-      c.globalAlpha = 0.12;
+      const [i, n] = stripe.get(key) || [0, 1];
+      const col = resolve(data.colour(v.step)), f = faint(tileRel(v));
+      // (A low zoom's tile, one of thousands of square kilometres, is drawn paler: it would hide the rest.)
+      const low = s > Z6 * 1.5 ? 0.3 : 1;
+      stripes(bx, by, s, i, n);
       c.fillStyle = col;
-      c.fillRect(bx, by, w, s);
-      c.globalAlpha = 0.75;
-      c.fillRect(bx, by + s * (1 - r.frac), w, s * r.frac);
-      c.globalAlpha = 1;
-      c.strokeStyle = col;
-      c.lineWidth = px * (r.current ? 2 : 1.2);
-      c.strokeRect(bx, by, w, s);
+      if (run) {
+        // Running: faint, filled from the bottom as far as done, outlined.
+        c.globalAlpha = 0.12 * f;
+        c.fillRect(bx, by, s, s);
+        c.globalAlpha = 0.75 * f;
+        c.fillRect(bx, by + s * (1 - v.frac), s, s * v.frac);
+        outlines.push([bx, by, s, col, f, px * (v.current ? 2 : 1.2), null]);
+      } else {
+        // Finished: faded in as it came, paler as it ages over the window; completed (not in a
+        // catalogue yet) half as strong as published, under a dashed outline.
+        const fade = Math.max(0, Math.min(1, (t - (appeared.get(key) ?? 0)) / FADE_MS));
+        const age = Math.max(0, Math.min(1, (data.now - v.t) / span));
+        const pub = v.state === "published";
+        c.globalAlpha = fade * f * low * (data.fade === false ? 0.6 : 0.18 + 0.5 * (1 - age)) * (pub ? 1 : 0.5);
+        c.fillRect(bx, by, s, s);
+        if (!pub) outlines.push([bx, by, s, col, f * fade * low, px * 1.1, [4 * px, 3 * px]]);
+      }
+      c.restore();
     }
-    // What's pointed at.
-    if (focus?.startsWith("mt ")) {
-      const [bx, by, s, w] = boxOf(focus.slice(3), data.running.has(focus.slice(3)) ? bandR : bandF);
-      c.strokeStyle = tokens.text;
-      c.lineWidth = px * 1.5;
-      c.strokeRect(bx, by, w, s);
+    for (const [bx, by, s, col, f, lw, dash] of outlines) {
+      c.globalAlpha = f;
+      c.strokeStyle = col;
+      c.lineWidth = lw;
+      c.setLineDash(dash || []);
+      c.strokeRect(bx, by, s, s);
+    }
+    c.setLineDash([]);
+    c.globalAlpha = 1;
+    // What's pointed at: each region by its outline, each tile's whole square (counted: the
+    // scene's answer, the canvas's `data-outlined` for the touch test).
+    let outlined = 0;
+    for (const k of lit) {
+      if (k.startsWith("mr ")) {
+        const p = paths.regions.get(k.slice(3));
+        if (!p) continue;
+        c.globalAlpha = 0.18;
+        c.fillStyle = tokens.accent;
+        c.fill(p.fill);
+        c.globalAlpha = 1;
+        c.strokeStyle = tokens.accent;
+        c.lineWidth = px * 1.8;
+        c.stroke(p.edge);
+        outlined++;
+      } else if (k.startsWith("mt ")) {
+        const tile = tileOf(k.slice(k.lastIndexOf(" ") + 1));
+        if (!tile) continue;
+        const [bx, by, s] = tileBox(tile);
+        c.strokeStyle = tokens.text;
+        c.lineWidth = px * 1.5;
+        c.strokeRect(bx, by, s, s);
+        outlined++;
+      }
     }
     c.setTransform(1, 0, 0, 1, 0, 0);
+    return outlined;
   }
 
   function draw() {
@@ -225,7 +269,7 @@ export function createMap({ pick = () => {} } = {}) {
     readTokens();
     const dpr = window.devicePixelRatio || 1;
     const c = canvas.getContext("2d");
-    scene(c, view, size.w, size.h, dpr, hover || held);
+    canvas.dataset.outlined = scene(c, view, size.w, size.h, dpr, held ? [...hover, held] : hover);
     // (Still fading in: drawn again next frame.)
     const t = performance.now();
     let fading = false;
@@ -258,9 +302,7 @@ export function createMap({ pick = () => {} } = {}) {
   // ---- What's at a point -----------------------------------------------------------------------
   // The stack there, as the cards' keys: every tile shown at every zoom (the deepest first), then
   // every region (regions overlap); none outside the canvas.
-  let zooms = [], atTile = new Map(), bandR = new Map(), bandF = new Map();
-  // A tile entry's box: [x, y, side, width], its band of the square when steps share it.
-  const boxOf = (key, bands) => { const [bx, by, s] = tileBox(tileOf(key)); const [i, n] = bands.get(key) || [0, 1]; return [bx + (s * i) / n, by, s, s / n]; };
+  let zooms = [], atTile = new Map(), stripe = new Map();
   function stackAt(px, py) {
     if (px < 0 || py < 0 || px > size.w || py > size.h) return [];
     const [wx, wy] = toWorld(px, py);
@@ -276,15 +318,14 @@ export function createMap({ pick = () => {} } = {}) {
     return out;
   }
   const local = (e) => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
-  // (A mouse's or pen's hover: the stack named for the page's hover card, its top drawn lit. A
+  // (A mouse's or pen's hover: the stack named for the page's hover card, each of it drawn lit. A
   // touch names nothing: its tap is `pick`ed.)
   const point = (e) => {
     if (e.pointerType === "touch") return;
     const keys = stackAt(...local(e));
     canvas.dataset.card = keys.length ? "mstack" : "";
     canvas.dataset.also = keys.join("|");
-    const top = keys[0] || null;
-    if (top !== hover) { hover = top; draw(); }
+    if (keys.join("|") !== hover.join("|")) { hover = keys; draw(); }
   };
 
   // ---- Moving and zooming ----------------------------------------------------------------------
@@ -344,7 +385,7 @@ export function createMap({ pick = () => {} } = {}) {
   canvas.addEventListener("pointerleave", (e) => {
     if (e.pointerType === "touch") return;
     canvas.dataset.card = canvas.dataset.also = "";
-    if (hover) { hover = null; draw(); }
+    if (hover.length) { hover = []; draw(); }
   });
   // (The map's clicks are its own, picked at their pointerup: the page's own click handler
   // never sees one.)
@@ -382,7 +423,7 @@ export function createMap({ pick = () => {} } = {}) {
   const signature = (d) => [
     d.regions.map((r) => `${r.id}:${r.state}`).join(","),
     [...d.running].map(([k, r]) => `${k}:${r.step}:${r.frac.toFixed(3)}:${r.current ? 1 : 0}`).join(","),
-    [...d.finished].map(([k, f]) => `${k}:${f.step}:${Math.round((d.now - f.t) / Math.max(1, d.now - d.from) * 50)}`).join(","),
+    [...d.finished].map(([k, f]) => `${k}:${f.step}:${f.state}:${Math.round((d.now - f.t) / Math.max(1, d.now - d.from) * 50)}`).join(","),
     d.fade,
   ].join("|");
 
@@ -410,17 +451,11 @@ export function createMap({ pick = () => {} } = {}) {
     fresh.forEach(([k], i) => appeared.set(k, firstFinished ? t + (i / Math.max(1, fresh.length)) * 1200 : t));
     if (fresh.length || next.finished.size) firstFinished = false;
     for (const k of appeared.keys()) if (!next.finished.has(k)) appeared.delete(k);
-    // (Tiles keyed by step and tile, "<step> z/x/y": two steps' at one spot are each their own, drawn
-    // side by side in the square, each a band of it, and each its own card in the stack.)
-    atTile = new Map(); bandR = new Map(); bandF = new Map();
-    const bands = (m, into) => {
-      const by = new Map();
-      for (const k of m.keys()) { const t = k.slice(k.lastIndexOf(" ") + 1); (by.get(t) || by.set(t, []).get(t)).push(k); }
-      for (const ks of by.values()) ks.sort().forEach((k, i) => into.set(k, [i, ks.length]));
-      for (const [t, ks] of by) atTile.set(t, [...new Set([...(atTile.get(t) || []), ...ks])]);
-    };
-    bands(next.running, bandR);
-    bands(new Map([...next.finished].filter(([k]) => !next.running.has(k))), bandF);
+    // (Tiles keyed by step and tile, "<step> z/x/y": two steps' at one spot are each their own,
+    // drawn as diagonal stripes across the square in turn (`stripe`: [i, n]), each its own card.)
+    atTile = new Map(); stripe = new Map();
+    for (const k of [...next.running.keys(), ...next.finished.keys()]) { const t = k.slice(k.lastIndexOf(" ") + 1); (atTile.get(t) || atTile.set(t, []).get(t)).push(k); }
+    for (const ks of atTile.values()) { ks.sort(); ks.forEach((k, i) => stripe.set(k, [i, ks.length])); }
     zooms = [...new Set([...next.running.keys(), ...next.finished.keys()].map((k) => tileOf(k)?.z).filter((z) => z != null))].sort((a, b) => b - a);
     const sig = signature(next);
     const same = sig === lastSig && !fresh.length && !outlines;
@@ -448,6 +483,14 @@ export function createMap({ pick = () => {} } = {}) {
     scene(cv.getContext("2d"), { cx: bx + s / 2, cy: by + s / 2, k: w / (s * 2) }, w, hgt, dpr, `mt ${key}`);
   }
 
+  // A legend item hovered (#627): {region: "on" | "building" | "queued"}, {tile: state} or
+  // {stage: id}, what it isn't drawn faint; null: all as they are.
+  function emphasize(e) {
+    if (JSON.stringify(e) === JSON.stringify(emph)) return;
+    emph = e;
+    draw();
+  }
+
   // The region `id` lit as if pointed at (null: none), the map's own pointer first.
   function highlight(id) {
     const key = id ? `mr ${id}` : null;
@@ -456,5 +499,5 @@ export function createMap({ pick = () => {} } = {}) {
     draw();
   }
 
-  return { el, update, minimap, highlight };
+  return { el, update, minimap, highlight, emphasize };
 }

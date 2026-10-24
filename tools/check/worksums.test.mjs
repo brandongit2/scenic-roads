@@ -39,14 +39,20 @@ test('map: finished tiles in the window, the last end each', () => {
   assert.deepEqual([...f].map(([k, v]) => [k, v.t]), [['pack 6/1/1', 150]]);
 });
 
-test('map: the filters keep tiles by kind, published, member, stage and zoom (#615)', () => {
+test('map: the filters keep tiles by state, member, stage and zoom (#615, #627)', () => {
   const running = new Map([['unit 6/1/1', { step: 'unit', frac: 0, run: { mac: 'A' } }], ['unit 6/1/2', { step: 'unit', frac: 0.4, current: true, run: { mac: 'A' } }], ['slope 6/1/3', { step: 'slope', frac: 1, run: { mac: 'B #2' } }]]);
   const done = new Map([['pack 3/0/0', { t: 100, step: 'pack', worker: 'B' }], ['unit 6/2/2', { t: 300, step: 'unit', worker: 'A' }], ['unit 6/1/2', { t: 50, step: 'unit', worker: 'A' }]]);
-  const all = { unstarted: true, progress: true, done: true };
+  const all = {};
   const keys = ([r, f]) => [[...r.keys()].sort(), [...f.keys()].sort()];
   assert.deepEqual(keys(mapTilesKept(running, done, all)), [['slope 6/1/3', 'unit 6/1/1', 'unit 6/1/2'], ['pack 3/0/0', 'unit 6/2/2']]);
-  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, unstarted: false, done: false })), [['unit 6/1/2'], []]);
-  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, published: true }, { pubAt: 200 })), [[], ['pack 3/0/0']]);
+  // (Each state its own: unstarted, in progress, completed (a running job's done tile, or finished
+  // after the last catalogue), published (finished by it).)
+  const states = ([r, f]) => [...r, ...f].map(([k, v]) => `${k}:${v.state}`).sort();
+  assert.deepEqual(states(mapTilesKept(running, done, all, { pubAt: 200 })), ['pack 3/0/0:published', 'slope 6/1/3:completed', 'unit 6/1/1:unstarted', 'unit 6/1/2:progress', 'unit 6/2/2:completed']);
+  assert.deepEqual(keys(mapTilesKept(running, done, { tiles: { unstarted: false, completed: false } }, { pubAt: 200 })), [['unit 6/1/2'], ['pack 3/0/0']]);
+  assert.deepEqual(keys(mapTilesKept(running, done, { tiles: { published: false } }, { pubAt: 200 })), [['slope 6/1/3', 'unit 6/1/1', 'unit 6/1/2'], ['unit 6/2/2']]);
+  // (No catalogue yet: nothing published, every finish completed.)
+  assert.deepEqual(keys(mapTilesKept(running, done, { tiles: { completed: false } })), [['unit 6/1/1', 'unit 6/1/2'], []]);
   const macOf = (w) => w.split(' #')[0];
   assert.deepEqual(keys(mapTilesKept(running, done, { ...all, member: 'B' }, { macOf })), [['slope 6/1/3'], ['pack 3/0/0']]);
   // (By stage: the unchecked stages' tiles go; none unchecked, all stay.)

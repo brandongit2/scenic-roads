@@ -208,23 +208,31 @@ export function tileCovers({ z, x, y }) {
   return `${lat(y + 1).toFixed(1)}°–${lat(y).toFixed(1)}° N, ${lon(x).toFixed(1)}°–${lon(x + 1).toFixed(1)}° E`;
 }
 
-// The world map's tiles as its filters keep them (#615): `running` and `finished` (runningTiles',
-// finishedTiles') cut to the kinds kept (`f.unstarted`: a running job's tiles not begun;
-// `f.progress`: under way; `f.done`: done, its job's or finished), to `f.published` (finished by
-// the last catalogue's time `pubAt`, none running), to the pool member `f.member` (the Mac that
-// ran, runs or holds it in its running job: `macOf(worker)` its host), the stages not unchecked
-// (`f.offStages`, of `stageOf(step)`) and the tile areas `f.zoom` ("": all, else "3" or "6").
-// Returns [running, finished], new Maps.
+// A map tile's state (#627): "unstarted" (a running job's tile not begun), "progress" (under
+// way), "completed" (its job's work on it done, or finished, and not in a catalogue yet: a finish
+// after the last catalogue's time `pubAt`) or "published" (finished by `pubAt`: in the app).
+export const TILE_STATES = ["unstarted", "progress", "completed", "published"];
+export const runningState = (r) => (r.frac >= 1 ? "completed" : r.frac > 0 || r.current ? "progress" : "unstarted");
+export const finishedState = (d, pubAt) => (pubAt != null && d.t <= pubAt ? "published" : "completed");
+
+// The world map's tiles as its filters keep them (#615, #627): `running` and `finished`
+// (runningTiles', finishedTiles') cut to the states kept (`f.tiles[state] === false`: hidden), to
+// the pool member `f.member` (the Mac that ran, runs or holds it in its running job: `macOf(worker)`
+// its host), the stages not unchecked (`f.offStages`, of `stageOf(step)`) and the tile areas
+// `f.zoom` ("": all, else "3" or "6"). A tile running again is the running one. Returns [running,
+// finished], new Maps, each value given its `state`.
 export function mapTilesKept(running, done, f, { pubAt = null, macOf = (w) => w, stageOf = () => "" } = {}) {
+  const shown = (st) => f.tiles?.[st] !== false;
   const keep = (key, step, who) => !f.offStages?.includes(stageOf(step)) && (!f.zoom || tileOf(key)?.z === +f.zoom) && (!f.member || (who != null && macOf(who) === f.member));
   const run = new Map(), fin = new Map();
-  if (!f.published) {
-    for (const [k, r] of running) {
-      const kind = r.frac >= 1 ? "done" : r.frac > 0 || r.current ? "progress" : "unstarted";
-      if (f[kind] !== false && keep(k, r.step, r.run?.mac)) run.set(k, r);
-    }
+  for (const [k, r] of running) {
+    const state = runningState(r);
+    if (shown(state) && keep(k, r.step, r.run?.mac)) run.set(k, { ...r, state });
   }
-  if (f.done !== false) for (const [k, t] of done) if (!run.has(k) && !running.has(k) && (!f.published || (pubAt != null && t.t <= pubAt)) && keep(k, t.step, t.worker)) fin.set(k, t);
+  for (const [k, t] of done) {
+    const state = finishedState(t, pubAt);
+    if (!running.has(k) && shown(state) && keep(k, t.step, t.worker)) fin.set(k, { ...t, state });
+  }
   return [run, fin];
 }
 

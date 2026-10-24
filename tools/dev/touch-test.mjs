@@ -160,8 +160,9 @@ async function run() {
     }
 
     // The Overview's world map: a tap pins the card of the stack under it at once, the next tap
-    // the next spot's (#615: Mobile Safari pinned nothing, then the tap before's), and a tap off
-    // the map pins nothing. (The stacks found as a mouse names them in the canvas's data-also.)
+    // (the card let go between: a pinned card is modal, #627) the next spot's (#615: Mobile Safari
+    // pinned nothing, then the tap before's), and a tap off the map pins nothing. (The stacks
+    // found as a mouse names them in the canvas's data-also.)
     await show("overview");
     const spots = await js(`(() => { const c = [...document.querySelectorAll("canvas.wmap")].find((e) => e.getClientRects().length); c.scrollIntoView({ block: "center" }); const r = c.getBoundingClientRect(); const out = []; for (let i = 1; i < 20 && out.length < 2; i++) for (let j = 1; j < 12 && out.length < 2; j++) { const x = r.left + r.width * i / 20, y = r.top + r.height * j / 12; if (document.elementFromPoint(x, y) !== c) continue; c.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, pointerType: "mouse", bubbles: true })); const also = c.dataset.also; if (also && !out.some((o) => o[2] === also)) out.push([x, y, also]); } c.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" })); return out; })()`);
     if (spots.length < 2) check("overview: a tap on the map pins its stack's card", false, "fewer than two spots with something under them");
@@ -169,15 +170,51 @@ async function run() {
       const pinned = () => js(`document.querySelector(".card-tip.pinned .tc-sec") ? [...document.querySelectorAll(".card-tip.pinned .tc-sec")].length + " " + document.querySelector(".card-tip.pinned .tc-title")?.textContent : null`);
       const results = [];
       // (Taps apart by more than a double tap's time: two quick ones zoom.)
-      for (const [x, y, also] of spots) { await tap(x, y); results.push([await pinned(), also]); await sleep(500); }
+      for (const [x, y, also] of spots) { await tap(x, y); results.push([await pinned(), also]); await js(`document.querySelector(".card-tip.pinned .x")?.click()`); await sleep(500); }
       const ok = results.every(([p, also]) => p && +p.split(" ")[0] === Math.min(8, also.split("|").length) && (!also.startsWith("mt ") || p.endsWith(also.split("|")[0].split(" ").pop())));
       check("overview: a tap on the map pins its stack's card, each tap its own", ok, results.map(([p, a]) => `${p} for ${a.slice(0, 60)}`).join(" | "));
+      await tap(spots[0][0], spots[0][1]);
       await shot("chrome-map-pinned");
+      // (Modal: under the pinned card a veil; a swipe on it scrolls nothing behind, a tap on it only
+      // lets the card go.)
+      const veiled = await js(`(() => { const v = document.querySelector(".card-veil"), c = document.querySelector(".card-tip.pinned"); if (!v || !c) return null; const r = c.getBoundingClientRect(); const x = r.left > 60 ? 20 : innerWidth - 20, y = innerHeight - 60; return [x, y, document.elementFromPoint(x, y) === v]; })()`);
+      if (!veiled) check("overview: a pinned card's veil blocks a scroll behind it", false, "no veil under the pinned card");
+      else {
+        const y0 = await js("scrollY");
+        await drag(veiled[0], veiled[1], 0, -200);
+        await page.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: veiled[0], y: veiled[1], deltaX: 0, deltaY: 400 });
+        await sleep(300);
+        const y1 = await js("scrollY"), still = !!(await pinned());
+        check("overview: a pinned card's veil blocks a scroll behind it", veiled[2] && y1 === y0 && still, `veil on top ${veiled[2]}, scrolled ${y0} → ${y1}, card ${still ? "kept" : "gone"}`);
+        await tap(veiled[0], veiled[1]);
+        check("overview: a tap on the veil only lets the card go", !(await pinned()) && !(await js(`!!document.querySelector(".card-veil")`)) && (await js("scrollY")) === y0);
+      }
       const off = await js(`(() => { for (let y = 120; y < innerHeight - 40; y += 20) for (let x = 6; x < 40; x += 8) { const e = document.elementFromPoint(x, y); if (e && !e.closest("[data-card], a, button, input, select, label, .card-tip, canvas")) return [x, y]; } return null; })()`);
       if (off) await tap(...off);
       check("overview: a tap off the map pins nothing", off && !(await pinned()), off ? "" : "no empty spot found");
       // (The whole map again, as the pinch below starts from it.)
       await js(`[...document.querySelectorAll(".wmap-ctl")].find((e) => e.getClientRects().length).lastChild.click()`);
+    }
+
+    // A mouse over the Overview's map: the following card never catches the pointer, every item
+    // in the stack is outlined, and leaving the map (out of the window too) lets the card go (#627).
+    {
+      const c = `[...document.querySelectorAll("canvas.wmap")].find((e) => e.getClientRects().length)`;
+      const spot = await js(`(() => { const c = ${c}; c.scrollIntoView({ block: "center" }); const r = c.getBoundingClientRect(); for (let i = 1; i < 20; i++) for (let j = 1; j < 12; j++) { const x = r.left + r.width * i / 20, y = r.top + r.height * j / 12; if (document.elementFromPoint(x, y) !== c) continue; c.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, pointerType: "mouse", bubbles: true })); const also = c.dataset.also || ""; if (also.split("|").length > 1) return [x, y]; } return null; })()`);
+      if (!spot) check("overview: a mouse's card and outlines on the map", false, "no spot with two or more under it");
+      else {
+        // (After the scroll to it has landed: a scroll lets a following card go.)
+        await js('document.querySelector(".card-tip.pinned .x")?.click()');
+        await sleep(400);
+        await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: spot[0] + 1, y: spot[1] });
+        await sleep(300);
+        const st = await js(`(() => { const c = ${c}, t = document.querySelector(".card-tip:not(.pinned):not([hidden])"); if (!t) return null; const r = t.getBoundingClientRect(); const x = r.left + Math.min(20, r.width / 2), y = r.top + Math.min(20, r.height / 2); return { stack: c.dataset.also.split("|").length, outlined: +c.dataset.outlined, pe: getComputedStyle(t).pointerEvents, through: !t.contains(document.elementFromPoint(x, y)), x, y }; })()`);
+        check("overview: a following card never catches the pointer", st && st.pe === "none" && st.through, st ? `pointer-events ${st.pe}, under it ${st.through ? "what's behind" : "the card"}` : "no card shown");
+        check("overview: every item in the stack is outlined", st && st.outlined === st.stack, st ? `${st.outlined} outlined of ${st.stack}` : "no card shown");
+        // (Out of the window: a pointerout to nowhere, as the browser sends one.)
+        await js(`(() => { const c = ${c}; c.dispatchEvent(new PointerEvent("pointerout", { pointerType: "mouse", bubbles: true, relatedTarget: null })); c.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" })); })()`);
+        check("overview: the card goes on leaving the map", !(await js(`!!document.querySelector(".card-tip:not(.pinned):not([hidden])")`)) && (await js(`+${c}.dataset.outlined`)) === 0);
+      }
     }
 
     // The world maps (every tab showing one): a pinch zooms, then a one-finger sideways drag pans
@@ -206,12 +243,12 @@ async function run() {
     }
     check("world maps shown", maps > 0, `${maps}`);
 
-    // Every filter under each map toggled, focused as a click leaves it: the map still there,
+    // Every filter and legend toggle under each map toggled, focused as a click leaves it: the map still there,
     // sized, drawn (#627: a focused checkbox kept the old part, the map's element gone with it).
     for (const tab of ["overview", "regions"]) {
       await show(tab);
       const cv = `[...document.querySelectorAll("canvas.wmap")].find((e) => e.getClientRects().length && e.closest(".panel:not([hidden])"))`;
-      const inputs = `[...document.querySelectorAll(".panel:not([hidden]) .wmap-filters input, .panel:not([hidden]) .wmap-filters button")]`;
+      const inputs = `[...document.querySelectorAll(".panel:not([hidden]) .wmap-filters input, .panel:not([hidden]) .wmap-legend button")]`;
       const count = await js(`${inputs}.length`);
       const bad = [];
       for (let i = 0; i < count; i++) {
