@@ -231,8 +231,11 @@ boxes).
   and dimmed), hovered: the rest of the map faint; "Check all" and "Uncheck all" by the stages.
   Then the filters. Toggles and filters are this browser's own (localStorage): completed tiles
   faded by age; "Show only for" one pool member (the tiles it ran, the history's ends,
-  and runs or will run in its running jobs and leases; the forecast's lanes name no tiles, so
-  its later jobs' aren't shown); "Show tile areas" (all, z3 or z6). Both maps and
+  and runs or will run in its running jobs and leases, and, task #622, the tiles the lead's last
+  forecast places on it later: a "to come" layer, faint under a dotted outline in each stage's
+  colour, a legend toggle of its own, kept by the stages and tile areas, its card saying "to come
+  at ≈ HH:MM on <Mac>"; asked of `/work/tocome` only while a member is chosen, pool.md §10);
+  "Show tile areas" (all, z3 or z6). Both maps and
   their stacks share them (`sums.js` mapTilesKept). On a touch screen, zoomed out, a finger
   moves the map sideways only: up and down is the page's scroll. Moved by a drag, zoomed by a pinch (ctrl+wheel in Chrome, gesture events in
   Safari, two fingers on a touch screen), a double click, its +/− and whole-map buttons or the

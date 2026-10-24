@@ -70,6 +70,7 @@ button:disabled { opacity: .5; }
 .wmap-legend .tl.unstarted { border-color: var(--st-roads); background: color-mix(in srgb, var(--st-roads) 12%, transparent); }
 .wmap-legend .tl.progress { border-color: var(--st-roads); background: linear-gradient(to top, var(--st-roads) 55%, transparent 55%); }
 .wmap-legend .tl.completed { border: 1px dashed var(--st-roads); background: color-mix(in srgb, var(--st-roads) 30%, transparent); }
+.wmap-legend .tl.tocome { border: 1px dotted var(--st-roads); background: color-mix(in srgb, var(--st-roads) 7%, transparent); }
 .wmap-legend .tl.published { border-color: transparent; background: color-mix(in srgb, var(--st-roads) 70%, transparent); }
 .wmap-legend .hint { margin-left: auto; }
 .wmap-stages { padding-top: 4px; }

@@ -17,7 +17,7 @@
 import { poolSection, termText } from "./pool.js";
 import { TILE_STATES, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, notRead, packRuns, pastFrom, pastRuns, regionWork, regionsShown, rowsWindow, runningTiles, slotName, slotNo, stageSegments, stepTotals, targetsOf, mapTilesKept, macSlot, tileCovers, tileOf, wholeProgress } from "./sums.js";
 import { fmt, timeTicks } from "./chartmath.js";
-import { liveBlock, startLive } from "./live.js";
+import { liveBlock, remote, startLive } from "./live.js";
 import { createMap } from "./worldmap.js";
 import { createCatalogues, whenText } from "./catalogs.js";
 import { loadSettings, settingsSection } from "./settings.js";
@@ -366,6 +366,37 @@ let mapF = null;
 const mapFilters = () => (mapF ||= { ...MAP_F, ...(ctx.store.get("mapFilters", {}) || {}) });
 function setMapFilter(k, v) { mapFilters()[k] = v; ctx.store.set("mapFilters", mapF); render(); }
 
+// The tiles the lead's last forecast places on a pool member later (#622: `/work/tocome`, the
+// forecast's lanes name none), asked only while a member is chosen in the map's filter: once a
+// member, again as the forecast is made anew (the status's `fc.at`). This Mac's agent answers when
+// it made the forecast (the lead's); else the lead's own, at its addresses.
+let toCome = { key: "", member: "", ans: null, asking: false, st: {} };
+function askToCome(m, member) {
+  const key = `${member}@${m.fc?.at ?? ""}`;
+  if (!member || toCome.key === key || toCome.asking) return;
+  toCome.asking = true;
+  const body = { mac: member };
+  const lead = (last?.macs || []).find((x) => x.host === m.a.host);
+  ctx.call("/work/tocome", body).then(([code, v]) => (code === 200 && v ? v : lead ? remote(lead, toCome.st, body, "/work/tocome") : null))
+    .catch(() => null)
+    .then((v) => { toCome = { ...toCome, key, member, ans: v, asking: false }; render(); });
+}
+// A member's tiles to come as the map draws them ("<step> z/x/y" → {step, at, mac, state}), kept
+// as the other tiles are (the stages unchecked, the tile areas) and none already running or done.
+function toComeTiles(m, f, shown) {
+  if (!f.member || !toCome.ans || toCome.member !== f.member) return new Map();
+  const out = new Map(), a = toCome.ans;
+  for (const [step, tiles] of Object.entries(a.steps || {})) {
+    if (f.offStages?.includes(S.stage(step))) continue;
+    for (const [t, off] of tiles) {
+      const key = `${step} ${t}`;
+      if (shown.has(key) || (f.zoom && tileOf(t)?.z !== +f.zoom)) continue;
+      out.set(key, { step, at: a.at + off, mac: a.mac, state: "tocome" });
+    }
+  }
+  return out;
+}
+
 // The world map's data for this render, the Overview's and the Regions tab's (one each:
 // worldmap.js), as its filters keep it (sums.js mapTilesKept), with its tiles' cards, the
 // regions' (regionCards) and the stack's: everything under a point, one card after another.
@@ -389,6 +420,10 @@ function mapData(m) {
   for (const v of [...allRun.values(), ...allDone.values()]) tileCount[v.state]++;
   const kept = (mp) => new Map([...mp].filter(([, v]) => f.tiles?.[v.state] !== false));
   const running = kept(allRun), done = kept(allDone);
+  askToCome(m, f.member);
+  const allLater = toComeTiles(m, f, new Set([...allRun.keys(), ...allDone.keys()]));
+  tileCount.tocome = allLater.size;
+  const later = f.tiles?.tocome === false ? new Map() : allLater;
   const fcRegs = Object.fromEntries((m.fc?.regions || []).map((r) => [r.id, r]));
   const regs = Object.values(drawn.byId).map((r) => ({ ...r, state: regionState(fcRegs[r.id]) }));
   const head = (key, step, state) => ({ kicker: `${S.stageTitle(S.stage(step)) || S.title(step)} · ${state}`, colour: S.colour(step), title: `Tile ${key.slice(key.lastIndexOf(" ") + 1)}` });
@@ -416,6 +451,16 @@ function mapData(m) {
       ["covers", tileCovers(tileOf(key))],
     ], mapsShown().minimap(key)));
   }
+  for (const [key, d] of later) {
+    cards.set(`mt ${key}`, () => cardBody({ ...head(key, d.step, "to come"),
+      stats: [[`≈ ${clock(d.at)}`, "to begin"], [d.mac, "on"]],
+      bar: { frac: 0, label: `to come at ≈ ${clock(d.at)} on ${d.mac}` },
+      foot: `the forecast's · ${key}` }, [
+      ["step", S.title(d.step)],
+      ["on", d.mac],
+      ["covers", tileCovers(tileOf(key))],
+    ], mapsShown().minimap(key)));
+  }
   const rows = regionRows(m);
   regionCards(rows);
   // (The stack: `also` its keys, "|" between, the deepest tile first; each card under a line.)
@@ -426,7 +471,7 @@ function mapData(m) {
       keys.length > most ? h("div", "tc-more dim small", `and ${n(keys.length - most)} more here`) : null].filter(Boolean);
   });
   const regionKind = (st) => (st === "done" ? "on" : st);
-  return { regs, rows, tileCount, world, data: { countries, regions: regs.filter((r) => f.regions?.[regionKind(r.state)] !== false), running, finished: done, now: m.now, from, colour: S.colour, stageOf: S.stage, fade: f.fade } };
+  return { regs, rows, tileCount, world, data: { countries, regions: regs.filter((r) => f.regions?.[regionKind(r.state)] !== false), running, finished: done, toCome: later, now: m.now, from, colour: S.colour, stageOf: S.stage, fade: f.fade } };
 }
 // (A tile's minimap is drawn by either map: the Overview's unless only the Regions tab's exists.)
 const mapsShown = () => worldMap || rp.map;
@@ -449,17 +494,18 @@ function mapLegend(m, md, map) {
   return [h("div", "wmap-legend small dim",
     regs.length ? [byState("regions", "on", "rg on", `${plural(count("on"), "region")} on the map`), byState("regions", "building", "rg building", `${plural(count("building"), "region")} building`), byState("regions", "queued", "rg queued", `${plural(count("queued"), "region")} to come`)] : h("span", null, "No regions' outlines from this Mac yet"),
     TILE_STATES.map((st) => byState("tiles", st, `tl ${st}`, `${plural(tileCount[st], "tile")} ${TILE_WORDS[st]}`)),
+    f.member ? byState("tiles", "tocome", "tl tocome", toCome.member === f.member ? `${plural(tileCount.tocome || 0, "tile")} to come on ${f.member}` : "tiles to come: asking the forecast") : null,
     world.length ? h("span", null, `whole world: ${world.map((r) => `${S.title(r.step)} (${r.mac})`).join(", ")}`) : null,
     h("span", "hint", "drag to move · pinch, double-click or +/− to zoom")),
   h("div", "wmap-legend wmap-stages small dim", table.stages.map((g) => toggle(!off.has(g.id), () => setMapFilter("offStages", off.has(g.id) ? [...off].filter((x) => x !== g.id) : [...off, g.id]), { stage: g.id },
     h("i", { style: { background: stageColour(g.id), borderColor: "transparent" } }), g.title, "Show or hide this stage's tiles on the map")),
     btn("Check all", []), btn("Uncheck all", table.stages.map((g) => g.id)),
-    h("span", null, `finished in the ${span}: published solid, completed paler under a dashed outline · running: outlined, filled as far as done · steps at one spot: stripes`)),
+    h("span", null, `finished in the ${span}: published solid, completed paler under a dashed outline · running: outlined, filled as far as done${f.member ? " · to come: faint, dotted" : ""} · steps at one spot: stripes`)),
   mapFilterBar(m)];
 }
 // The filters under a map (each map its own controls over one state). A member: the tiles it
-// ran (the history's ends), runs or will run in its running jobs (theirs and its leases'); the
-// forecast's lanes name no tiles, so its later jobs' aren't known.
+// ran (the history's ends), runs or will run in its running jobs (theirs and its leases'), and
+// those the forecast places on it later (`toCome`).
 let mapFiltersN = 0;
 function mapFilterBar(m) {
   const f = mapFilters(), id = ++mapFiltersN;

@@ -568,6 +568,69 @@ pub struct Placed {
     pub until: u64,
 }
 
+/// The tiles each Mac will work on, from a forecast's `placed` (task #622): for the build page's
+/// world map with a pool member chosen (`/work/tocome`, asked only then; never in the status).
+/// Each Mac's (its lanes' `Machine::mac`, else name), by step, each tile once (a target that names
+/// no z/x/y tile, a region's or the world's, left out) at its first placing's start, in time order:
+/// [tile, seconds from `at`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ToCome {
+    pub at: u64,
+    pub macs: BTreeMap<String, BTreeMap<String, Vec<(String, u32)>>>,
+}
+
+/// Whether `t` names a tile ("z/x/y", z under 32, x and y in its grid), as the page's `tileOf`.
+fn is_tile(t: &str) -> bool {
+    let mut it = t.split('/').map(|p| p.parse::<u64>().ok());
+    match (it.next(), it.next(), it.next(), it.next()) {
+        (Some(Some(z)), Some(Some(x)), Some(Some(y)), None) => z < 32 && x < 1 << z && y < 1 << z,
+        _ => false,
+    }
+}
+
+impl ToCome {
+    /// `placed`'s tiles by Mac: `macs[lane]` each lane's Mac.
+    pub fn of(placed: &[Placed], macs: &[String], at: u64) -> ToCome {
+        let mut first: BTreeMap<(&str, &str, &str), u64> = BTreeMap::new();
+        for p in placed {
+            let (Some(mac), true) = (macs.get(p.lane), is_tile(&p.target)) else { continue };
+            let e = first.entry((mac.as_str(), p.step.as_str(), p.target.as_str())).or_insert(p.from);
+            *e = (*e).min(p.from);
+        }
+        let mut out = ToCome { at, macs: BTreeMap::new() };
+        for ((mac, step, tile), from) in first {
+            let off = u32::try_from(from.saturating_sub(at)).unwrap_or(u32::MAX);
+            out.macs
+                .entry(mac.to_string())
+                .or_default()
+                .entry(step.to_string())
+                .or_default()
+                .push((tile.to_string(), off));
+        }
+        for steps in out.macs.values_mut() {
+            for tiles in steps.values_mut() {
+                tiles.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+            }
+        }
+        out
+    }
+
+    /// `/work/tocome`'s answer for Mac `mac` (a page's host name: a forecast's Mac named by it, or
+    /// by its first part before a "-"): {at, mac, steps: {step: [[tile, s from at]…]}, macs (every
+    /// Mac with tiles to come)}; `steps` empty when it has none.
+    pub fn answer(&self, mac: &str) -> serde_json::Value {
+        let hit = self.macs.get_key_value(mac).or_else(|| {
+            self.macs.iter().find(|(k, _)| mac.strip_prefix(k.as_str()).is_some_and(|r| r.starts_with('-')))
+        });
+        serde_json::json!({
+            "at": self.at,
+            "mac": hit.map_or(mac, |h| h.0.as_str()),
+            "steps": hit.map(|h| h.1.clone()).unwrap_or_default(),
+            "macs": self.macs.keys().collect::<Vec<_>>(),
+        })
+    }
+}
+
 /// The forecast's code version, archived with each forecast (crate::agent::fcarchive): raised
 /// whenever a change to the run (its order, its costs, its scheduler) would move its times, so the
 /// accuracy work (`scenic forecast-check`) can tell one model's error from another's.
@@ -1745,6 +1808,35 @@ pub fn speeds(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn to_come_by_mac_and_step_each_tile_once_at_its_first_start() {
+        let p = |lane, step: &str, target: &str, from| Placed {
+            lane,
+            step: step.into(),
+            target: target.into(),
+            from,
+            until: from + 60,
+        };
+        let placed = vec![
+            p(0, "terrain", "6/33/20", 1300),
+            p(1, "terrain", "6/33/20", 1100),
+            p(1, "terrain", "6/34/20", 1050),
+            p(2, "slope", "3/4/2", 1500),
+            p(2, "unit", "norway", 1000),
+            p(9, "terrain", "6/1/1", 1000),
+            p(2, "terrain", "6/99/1", 1000),
+        ];
+        let macs = ["m4".to_string(), "m4".to_string(), "m6".to_string()];
+        let tc = ToCome::of(&placed, &macs, 1000);
+        assert_eq!(tc.macs["m4"]["terrain"], vec![("6/34/20".to_string(), 50), ("6/33/20".to_string(), 100)]);
+        assert_eq!(tc.macs["m6"].keys().collect::<Vec<_>>(), ["slope"]);
+        let a = tc.answer("m6-mini");
+        assert_eq!(a["mac"], "m6");
+        assert_eq!(a["steps"]["slope"][0], serde_json::json!(["3/4/2", 500]));
+        assert_eq!(a["macs"], serde_json::json!(["m4", "m6"]));
+        assert_eq!(tc.answer("m1")["steps"], serde_json::json!({}));
+    }
+
     /// The CPU time (ms) a timing test's forecast may take (a debug build: well under a second
     /// in a release one); every job of its runs the coordinator's scheduler's decision.
     const CPU_BOUND_MS: u128 = 8000;

@@ -8148,9 +8148,13 @@ impl Agent {
             let took = std::time::Instant::now();
             let mut f = record.forecast();
             let entry = fcarchive::Entry::of(&record, &f, &app);
-            // (The archive's alone: not kept with the forecast the agent holds.)
+            // (Each Mac's tiles to come, for the page's map (`/work/tocome`); the rest of `placed`
+            // the archive's alone: not kept with the forecast the agent holds.)
+            let macs: Vec<String> =
+                record.input.machines.iter().map(|m| m.mac.clone().unwrap_or_else(|| m.name.clone())).collect();
+            let tocome = forecast::ToCome::of(&f.placed, &macs, f.at);
             f.placed = Vec::new();
-            Forecasted { forecast: f, bytes: record.bytes(), entry, took: took.elapsed() }
+            Forecasted { forecast: f, bytes: record.bytes(), entry, tocome, took: took.elapsed() }
         });
         match run {
             Ok(h) => *self.forecasting.borrow_mut() = Some(h),
@@ -8179,6 +8183,9 @@ impl Agent {
                     Err(e) => eprintln!("agent: the forecast's input as data: {e:#}"),
                 }
                 *self.fc_entry.borrow_mut() = Some(done.entry);
+                if let Some(c) = &self.coord {
+                    c.set_tocome(std::sync::Arc::new(done.tocome));
+                }
                 let f = &done.forecast;
                 let mut curves = self.curves.borrow_mut();
                 curves.retain(|c| c.0 + forecast::PACE_MAX_S > f.at);
@@ -11268,6 +11275,7 @@ struct Forecasted {
     forecast: forecast::Forecast,
     bytes: anyhow::Result<Vec<u8>>,
     entry: fcarchive::Entry,
+    tocome: forecast::ToCome,
     took: std::time::Duration,
 }
 

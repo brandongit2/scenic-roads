@@ -3,7 +3,8 @@
 // the z3 grid (and z6's when zoomed in enough to see it), the countries, the regions coloured by
 // how far they are, the tiles finished in the past window (each fading in as it comes, paler as it
 // ages; published solid, completed but not in a catalogue yet paler under a dashed outline), and
-// each running job's target tiles in its stage's colour, filled as far as they're done. Steps at
+// each running job's target tiles in its stage's colour, filled as far as they're done, and with a
+// pool member chosen the tiles the forecast places on it later ("to come": faint, dotted). Steps at
 // one spot share its square as diagonal stripes, each step's colour in turn.
 // Kept across the page's renders (its element moved into each new section), drawn again when its
 // data changes, as it's moved or zoomed, and while tiles fade in; nothing runs otherwise.
@@ -27,7 +28,8 @@ const regionPaths = new WeakMap();
 
 /** A map: `el` to place, `highlight(id)` to light a region, `emphasize(e)` a legend item's kind,
  * `update(data)` with {countries (rings), regions [{id, fill, edge, state}], running (Map key →
- * {step, frac, current, state}), finished (Map key → {t, step, state}: sums.js mapTilesKept), from,
+ * {step, frac, current, state}), finished (Map key → {t, step, state}: sums.js mapTilesKept), toCome
+ * (Map key → {step, at, mac, state "tocome"}: a member's later tiles, dash.js), from,
  * now, colour(step) (a CSS colour, var() allowed), stageOf(step), fade (finished tiles paler as
  * they age), and for the Catalogues tab paint (Map "z/x/y" → colour, in the stack as "cat z/x/y"),
  * lit (keys in litColour, zoom litZoom filled)}, `minimap(key)` a canvas
@@ -47,7 +49,7 @@ export function createMap({ pick = () => {} } = {}) {
   el.className = "wmap-wrap";
   el.append(canvas, ctl);
 
-  let data = { countries: [], regions: [], running: new Map(), finished: new Map(), now: 0, from: 0, colour: () => "#888", stageOf: () => "" };
+  let data = { countries: [], regions: [], running: new Map(), finished: new Map(), toCome: new Map(), now: 0, from: 0, colour: () => "#888", stageOf: () => "" };
   let paths = { countries: null, regions: new Map() };
   const view = { cx: 500, cy: 420, k: 0, fitted: false };
   let size = { w: 0, h: 0 };
@@ -225,8 +227,9 @@ export function createMap({ pick = () => {} } = {}) {
       }
     }
     const outlines = [];
-    for (const [key, v] of [...data.finished, ...data.running]) {
+    for (const [key, v] of [...(data.toCome || []), ...data.finished, ...data.running]) {
       const run = data.running.has(key) && data.running.get(key) === v;
+      const later = v.state === "tocome";
       const [bx, by, s] = tileBox(tileOf(key.slice(key.lastIndexOf(" ") + 1)));
       if (bx > x1 || by > y1 || bx + s < x0 || by + s < y0) continue;
       const [i, n] = stripe.get(key) || [0, 1];
@@ -235,7 +238,12 @@ export function createMap({ pick = () => {} } = {}) {
       const low = s > Z6 * 1.5 ? 0.3 : 1;
       stripes(bx, by, s, i, n);
       c.fillStyle = col;
-      if (run) {
+      if (later) {
+        // To come: barely filled under a dotted outline, behind what's running or done.
+        c.globalAlpha = 0.07 * f * low;
+        c.fillRect(bx, by, s, s);
+        outlines.push([bx, by, s, col, 0.5 * f * low, px * 0.9, [1.5 * px, 2 * px]]);
+      } else if (run) {
         // Running: faint, filled from the bottom as far as done, outlined.
         c.globalAlpha = 0.12 * f;
         c.fillRect(bx, by, s, s);
@@ -453,6 +461,7 @@ export function createMap({ pick = () => {} } = {}) {
     d.regions.map((r) => `${r.id}:${r.state}`).join(","),
     [...d.running].map(([k, r]) => `${k}:${r.step}:${r.frac.toFixed(3)}:${r.current ? 1 : 0}`).join(","),
     [...d.finished].map(([k, f]) => `${k}:${f.step}:${f.state}:${Math.round((d.now - f.t) / Math.max(1, d.now - d.from) * 50)}`).join(","),
+    [...(d.toCome?.keys() || [])].join(","),
     d.fade,
     d.paint ? [...d.paint].join(",") : "",
     d.lit ? [...d.lit].join(",") : "",
@@ -486,9 +495,10 @@ export function createMap({ pick = () => {} } = {}) {
     // drawn as diagonal stripes across the square in turn (`stripe`: [i, n]), each its own card.)
     atTile = new Map(); stripe = new Map();
     const catKeys = next.paint ? [...next.paint.keys()].map((k) => `cat ${k}`) : [];
-    for (const k of [...next.running.keys(), ...next.finished.keys(), ...catKeys]) { const t = k.slice(k.lastIndexOf(" ") + 1); (atTile.get(t) || atTile.set(t, []).get(t)).push(k); }
+    const later = [...(next.toCome?.keys() || [])];
+    for (const k of [...next.running.keys(), ...next.finished.keys(), ...later, ...catKeys]) { const t = k.slice(k.lastIndexOf(" ") + 1); (atTile.get(t) || atTile.set(t, []).get(t)).push(k); }
     for (const ks of atTile.values()) { ks.sort(); ks.forEach((k, i) => stripe.set(k, [i, ks.length])); }
-    zooms = [...new Set([...next.running.keys(), ...next.finished.keys(), ...catKeys].map((k) => tileOf(k)?.z).filter((z) => z != null))].sort((a, b) => b - a);
+    zooms = [...new Set([...next.running.keys(), ...next.finished.keys(), ...later, ...catKeys].map((k) => tileOf(k)?.z).filter((z) => z != null))].sort((a, b) => b - a);
     const sig = signature(next);
     const same = sig === lastSig && !fresh.length && !outlines;
     lastSig = sig;

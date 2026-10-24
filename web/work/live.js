@@ -100,8 +100,9 @@ async function ask(m) {
 }
 
 // Another Mac's answer, at its addresses (HTTPS over an HTTPS page: a browser refuses plain HTTP
-// there), the last one that answered first. (activity.js asks with it too.)
-export async function remote(m, st, body) {
+// there), the last one that answered first; `path` the call (activity.js asks with it too, and the
+// world map its member's tiles to come: dash.js).
+export async function remote(m, st, body, path = "/work/live") {
   const https = location.protocol === "https:";
   const urls = https ? [m.https].filter(Boolean) : [...(m.urls || [])];
   if (!urls.length) throw new Error(https ? "no HTTPS address (this page came over HTTPS)" : "no address");
@@ -109,7 +110,7 @@ export async function remote(m, st, body) {
   let last;
   for (const u of urls) {
     try {
-      const r = await fetch(`${u.replace(/\/$/, "")}/work/live`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined });
+      const r = await fetch(`${u.replace(/\/$/, "")}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined });
       if (!r.ok) throw new Error(r.status === 503 ? "not measuring yet" : r.status === 404 ? "its app is older (no live measures)" : `answered ${r.status}`);
       st.url = u;
       return await r.json();

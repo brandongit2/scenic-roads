@@ -9,6 +9,10 @@
 //   node tools/dev/touch-test.mjs --serve [--port N]       only the server (for Mobile Safari)
 //   --catalogs FILE   /work/catalogs answered from FILE (`scenic catalogs > FILE`: an agent before
 //                     #629 hasn't the call), `after` honoured; else forwarded as the other reads
+//   --tocome FILE     /work/tocome answered from FILE ({at, macs: {mac: {step: [[tile, s]…]}}}, the
+//                     lead's forecast::ToCome: an agent before #622 hasn't the call), `mac` honoured
+//   --member NAME     the Overview map's "Show only for" set to NAME: its tiles to come shown, a
+//                     card of one found, screenshots (chrome-member*), then set back
 //   --width W         the Chrome run at W px wide (default 390, a phone; 768 or more: a desktop, DPR 2)
 //   --scheme S        dark or light (prefers-color-scheme; default the system's)
 //   --only-catalogues only the Overview map's Catalogues tab's checks and screenshots
@@ -33,8 +37,10 @@ const TABS = ["overview", "jobs", "machines", "regions", "nas", "dropboxes", "ac
 
 // ---- The read-only server ------------------------------------------------------------------------
 // A call forwarded only when its body has no other keys than these (an empty body: {}).
-const READS = { swarm: [], steps: [], regions: [], settings: [], history: ["since", "max"], live: ["range", "series", "net", "since"], catalogs: ["after"] };
+const READS = { swarm: [], steps: [], regions: [], settings: [], history: ["since", "max"], live: ["range", "series", "net", "since"], catalogs: ["after"], tocome: ["mac"] };
 const CATS = arg("--catalogs", null);
+const TOCOME = arg("--tocome", null);
+const MEMBER = arg("--member", null);
 const WIDTH = +arg("--width", 390);
 const PHONE = WIDTH < 768;
 const SCHEME = arg("--scheme", null);
@@ -59,6 +65,13 @@ function serve() {
           a.catalogs = a.catalogs.filter((c) => v.after == null || c.n > v.after);
           res.writeHead(200, { "Content-Type": "application/json" });
           return res.end(JSON.stringify(a));
+        }
+        if (call === "tocome" && TOCOME) {
+          // (As forecast::ToCome::answer: the Mac named, or the one its name starts with before a "-".)
+          const a = JSON.parse(readFileSync(TOCOME, "utf8"));
+          const mac = String(v.mac || ""), hit = Object.keys(a.macs).find((k) => k === mac) || Object.keys(a.macs).find((k) => mac.startsWith(`${k}-`));
+          res.writeHead(200, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify({ at: a.at, mac: hit || mac, steps: hit ? a.macs[hit] : {}, macs: Object.keys(a.macs) }));
         }
         const out = JSON.stringify(v);
         const fw = request({ ...AGENT, method: "POST", path: url.pathname, headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(out) } }, (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); });
@@ -203,6 +216,39 @@ async function run() {
       await js(`localStorage.removeItem("mapTab")`);
     }
     if (ONLY_CATS) throw Object.assign(new Error("only the Catalogues tab"), { done: true });
+
+    // A pool member chosen (#622): its tiles to come in the legend and on the map, a card of one
+    // saying when and where; then all members again.
+    if (MEMBER) {
+      errors.length = 0;
+      await show("overview");
+      const pick = (v) => js(`(() => { const e = [...document.querySelectorAll('.panel:not([hidden]) .wmap-filters input[type=radio][value=' + ${JSON.stringify(JSON.stringify(v))} + ']')].find((x) => x.name.startsWith("mf-member")); if (!e) return false; e.click(); return true; })()`);
+      check("member: its radio chosen", await pick(MEMBER));
+      let lg = null;
+      for (let i = 0; i < 40 && !(lg = await js(`[...document.querySelectorAll(".panel:not([hidden]) .wmap-legend .lg")].map((e) => e.textContent).find((t) => / to come on /.test(t)) || null`)); i++) await sleep(250);
+      check("member: the legend counts its tiles to come", !!lg && /^[1-9]/.test(lg), lg || "none");
+      await shot("chrome-member");
+      // (A spot whose stack has a tile to come, tapped (a click on a desktop): its pinned card says
+      // when and on which Mac. The spots found as a mouse names their stacks in data-also.)
+      const spots = await js(`(() => { const c = [...document.querySelectorAll("canvas.wmap")].find((e) => e.getClientRects().length); c.scrollIntoView({ block: "center" }); const r = c.getBoundingClientRect(); const out = [], seen = new Set(); for (let i = 1; i < 60 && out.length < 40; i++) for (let j = 1; j < 40 && out.length < 40; j++) { const x = r.left + r.width * i / 60, y = r.top + r.height * j / 40; if (document.elementFromPoint(x, y) !== c) continue; c.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, pointerType: "mouse", bubbles: true })); const also = c.dataset.also; if (also && also.includes("mt ") && !seen.has(also)) { seen.add(also); out.push([x, y]); } } c.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" })); return out; })()`);
+      let said = null;
+      for (const [x, y] of spots) {
+        if (PHONE) await tap(x, y);
+        else { for (const type of ["mousePressed", "mouseReleased"]) await page.send("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1, pointerType: "mouse" }); await sleep(250); }
+        said = await js(`(document.querySelector(".card-tip.pinned")?.textContent || "").match(/to come at ≈ \\d\\d:\\d\\d on \\S+/)?.[0] || null`);
+        if (said) break;
+        await js(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
+      }
+      check("member: a tile to come's card says when and where", !!said, said || `none in ${spots.length} spots`);
+      if (said) {
+        const { data } = await page.send("Page.captureScreenshot", { format: "png" });
+        writeFileSync(join(OUT, "chrome-member-card.png"), Buffer.from(data, "base64"));
+        await js(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
+      }
+      check("member: no console errors", !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
+      await pick("");
+      await sleep(300);
+    }
 
     // Each tab: no sideways scroll, no console errors, screenshots.
     for (const tab of TABS) {

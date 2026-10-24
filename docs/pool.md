@@ -1112,6 +1112,15 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   the lead's pool step as `state/build/term/<E>/regions.json` (again in each new term), read by
   each Mac's page data when its time changes. Every Mac's port answers `POST /work/regions` with
   no key: in the pool from that read, out of it from this Mac's agent's; 503 until there is one.
+  To come (task #622): the lead's port answers `POST /work/tocome` (`{"mac": host}`; no key) with
+  that Mac's tiles in its last forecast (`forecast::ToCome`, made of `Forecast::placed` on the
+  forecast's thread before `placed` is dropped): `{at, mac, steps: {step: [[z/x/y, s from at]…]},
+  macs}`, each tile once a step at its first start, targets naming no tile left out; a Mac named
+  by its host or the host's part before a "-". Another Mac's port answers 503 (it made no
+  forecast) and the page asks the lead's addresses. Asked only while the map's "Show only for"
+  names a member, once a forecast; never in the 10-second poll. Measured on the 24 Oct forecast
+  (3,618 targets placed, 3,615 tiles): the Mac mini's answer 52 KB (14 KB gzipped, 3,053 tiles),
+  the M4's 10 KB; held by the agent: ~150 KB.
   Every Mac's port also answers `POST /work/catalogs` (`{"after": n}` optional; no key) for the
   map's Catalogues tab (task #629, `agent::catalogsview`; the page asks the lead's): every
   catalogue on the NAS as `{n, t, whole, first?, z3, z6, z3_gone?, z6_gone?}`, the tiles as

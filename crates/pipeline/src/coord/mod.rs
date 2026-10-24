@@ -348,6 +348,9 @@ pub struct Shared {
     /// The build page's regions as this Mac's agent last made them (crate::agent::regionsview):
     /// `/work/regions` out of the pool. None: not made yet (503).
     pub regions: Option<Arc<serde_json::Value>>,
+    /// Each Mac's tiles to come in the lead's last forecast (crate::agent::forecast::ToCome):
+    /// `/work/tocome`. None: this Mac made none (a member's: the page asks the lead).
+    pub tocome: Option<Arc<crate::agent::forecast::ToCome>>,
     /// A viewer alone (`Coordinator::viewer`): the page and its views, nothing else (but this
     /// Mac's own page's asks, passed to its agent).
     pub viewer: bool,
@@ -1275,6 +1278,7 @@ impl Coordinator {
             live: None,
             catalogs: None,
             regions: None,
+            tocome: None,
             viewer,
             forward: None,
             settings: None,
@@ -2130,6 +2134,11 @@ impl Coordinator {
     /// The build page's regions as this Mac's agent made them (`Shared::regions`).
     pub fn set_regions(&self, v: Arc<serde_json::Value>) {
         self.shared.lock().unwrap().regions = Some(v);
+    }
+
+    /// Each Mac's tiles to come in this Mac's last forecast (`Shared::tocome`).
+    pub fn set_tocome(&self, t: Arc<crate::agent::forecast::ToCome>) {
+        self.shared.lock().unwrap().tocome = Some(t);
     }
 
     /// The app the newer readers' switch was recorded on (`Shared::min_app`; None: none recorded).
@@ -3958,6 +3967,13 @@ fn route(
             let cv = shared.lock().unwrap().catalogs.clone();
             Ok(cv.map_or_else(not_ready, |cv| (200, cv.ask(b["after"].as_u64()))))
         }
+        "/work/tocome" => {
+            // A Mac's tiles to come in the lead's last forecast (crate::agent::forecast::ToCome),
+            // asked by the build page's map only while a pool member is chosen.
+            let b: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+            let tc = shared.lock().unwrap().tocome.clone();
+            Ok(tc.map_or_else(not_ready, |t| (200, t.answer(b["mac"].as_str().unwrap_or_default()))))
+        }
         "/work/regions" => {
             // The build page's regions (crate::agent::regionsview): in the pool, the lead's as this
             // Mac read them; out of it, this Mac's agent's.
@@ -4341,6 +4357,7 @@ mod http {
             .route("/work/live", any(json))
             .route("/work/regions", any(json))
             .route("/work/catalogs", any(json))
+            .route("/work/tocome", any(json))
             .route("/work/timings", any(json))
             .route("/work/floors", any(json))
             .route("/work/in/{lease}/{*path}", get(input))
@@ -4561,7 +4578,13 @@ mod http {
         let is_view = req.method() == Method::POST
             && matches!(
                 path.as_str(),
-                "/work/swarm" | "/work/history" | "/work/steps" | "/work/live" | "/work/regions" | "/work/catalogs"
+                "/work/swarm"
+                    | "/work/history"
+                    | "/work/steps"
+                    | "/work/live"
+                    | "/work/regions"
+                    | "/work/catalogs"
+                    | "/work/tocome"
             );
         if is_page || is_view {
             return next.run(req).await;
@@ -9248,6 +9271,28 @@ mod tests {
         assert_eq!(status(&r), 200, "{r}");
         let a: serde_json::Value = serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap();
         assert_eq!((a["catalog"].as_u64(), a["regions"][0]["id"].as_str()), (Some(4), Some("a")));
+    }
+
+    /// `/work/tocome` (docs/pool.md §10, To come), with no key: 503 until this Mac's forecast made
+    /// them, then the asked Mac's tiles by step.
+    #[test]
+    fn the_tiles_to_come_answer_the_page_once_a_forecast_made_them() {
+        let (_d, c, w) = start();
+        let addr = w.urls()[0].trim_start_matches("http://").to_string();
+        let post = || raw(&addr, "POST", "/work/tocome", &[("Content-Type", "application/json")], br#"{"mac":"m4"}"#);
+        assert_eq!(status(&post()), 503);
+        let placed = [crate::agent::forecast::Placed {
+            lane: 0,
+            step: "terrain".into(),
+            target: "6/33/20".into(),
+            from: 160,
+            until: 200,
+        }];
+        c.set_tocome(Arc::new(crate::agent::forecast::ToCome::of(&placed, &["m4".to_string()], 100)));
+        let r = post();
+        assert_eq!(status(&r), 200, "{r}");
+        let a: serde_json::Value = serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(a["steps"]["terrain"], serde_json::json!([["6/33/20", 60]]));
     }
 
     /// Tasks brokered by every member (docs/pool.md §8): a page from another member's address takes
