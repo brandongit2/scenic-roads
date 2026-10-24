@@ -777,6 +777,25 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         }
         "bldtile-task" => bldtile_task_step(&mut out, &args)?,
         "depth-lo" | "depth" => depth_step(&mut out, &args, step.as_str())?,
+        "depth-shade" => {
+            // depth-shade <Q …>: z3 tiles Q's zoomed-out shading of the sea floor (their
+            // depth-shade lo packs, z3–8: pipeline::depth::build::build_shade_lo).
+            let qs: Vec<TileId> = positional(&args)
+                .iter()
+                .map(|t| TileId::parse(t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}")))
+                .collect::<Result<_>>()?;
+            anyhow::ensure!(!qs.is_empty(), "depth-shade <3/x/y …>");
+            for (k, q) in qs.iter().enumerate() {
+                pipeline::control::safe_point("depth-shade");
+                pipeline::agent::jobs::report(k as u64, qs.len() as u64, "z3 tiles");
+                let c = cost_start("depth-shade", &q.slash());
+                let n = pipeline::depth::build::build_shade_lo(&mut out, (q.x, q.y))?;
+                eprintln!("depth-shade {}: {n} tiles", q.slash());
+                pipeline::control::done("depth-shade", &q.slash());
+                note_cost("depth-shade", &q.slash(), c);
+            }
+            pipeline::agent::jobs::report(qs.len() as u64, qs.len() as u64, "z3 tiles");
+        }
         "trees" => {
             // trees <tile …> [--pass d] [--chm dir] [--expect-same T,…]: the tree cover
             // of z6 tiles (z6 tiles: their hi packs and mids; pipeline::treepacks::build_piece), or a

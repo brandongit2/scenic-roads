@@ -95,6 +95,9 @@ pub struct Keys {
     pub depth: BTreeMap<String, String>,
     #[serde(default)]
     pub depth_lo: BTreeMap<String, String>,
+    /// The floor's shading's assemblies, per z3 tile ("3/x/y": `depth_targets`).
+    #[serde(default)]
+    pub depth_shade: BTreeMap<String, String>,
     /// The served files the last catalog was made from.
     #[serde(default)]
     pub catalog: Option<String>,
@@ -170,6 +173,7 @@ impl Keys {
             "bldfield-lo" => &mut self.bldfield_lo,
             "depth" => &mut self.depth,
             "depth-lo" => &mut self.depth_lo,
+            "depth-shade" => &mut self.depth_shade,
             _ => &mut self.lo,
         }
     }
@@ -193,6 +197,7 @@ impl Keys {
             "bldfield-lo" => &self.bldfield_lo,
             "depth" => &self.depth,
             "depth-lo" => &self.depth_lo,
+            "depth-shade" => &self.depth_shade,
             _ => return None,
         };
         m.get(target).map(String::as_str)
@@ -1360,7 +1365,14 @@ fn terrain_slope_targets_made(cov: &Coverage, m: &BTreeMap<String, String>, tile
                 .zip(datasets(3, q.0, q.1))
                 .map_or_else(|| UNKNOWN.to_string(), |(w, s)| terrain_lo_key(*q, &w, &s, &tmids)),
         ));
-        out.slope_lo.push((qs.clone(), slope_lo_key(*q, &smids, get(&format!("layers/terrain/lo/3-{}-{}", q.0, q.1)))));
+        // (Its terrain: its own lo pack, its edge neighbours' (Horn's border of the tiles it shades
+        // itself) and the root (a missing tile's ancestor).)
+        let terrain: Vec<String> = std::iter::once(*q)
+            .chain(edge_neighbours(3, q.0, q.1))
+            .map(|(x, y)| get(&format!("layers/terrain/lo/3-{x}-{y}")).to_string())
+            .chain(std::iter::once(get("layers/terrain/root/0-0-0").to_string()))
+            .collect();
+        out.slope_lo.push((qs.clone(), slope_lo_key(*q, &smids, &terrain.join(","))));
     }
     // The z6 tiles the coverage has left with a hi pack or a mid still named: "none" z6 tiles.
     let pieces: BTreeSet<(u32, u32)> = near.values().flatten().copied().collect();
@@ -1551,8 +1563,8 @@ pub fn terrain_lo_key(q: (u32, u32), water: &str, sources: &str, mids: &[String]
     ])
 }
 
-/// Slope's assembly of z3 tile `q`'s key: `mids` as `terrain_lo_key`'s; `terrain_lo`, the z3 tile's
-/// terrain lo pack's content name.
+/// Slope's assembly of z3 tile `q`'s key: `mids` as `terrain_lo_key`'s; `terrain_lo`, the content
+/// names of the terrain it reads: the z3 tile's lo pack, its edge neighbours' and the root.
 pub fn slope_lo_key(q: (u32, u32), mids: &[String], terrain_lo: &str) -> String {
     h(&[
         &format!("slope-lo {SLOPE_LO_V}"),
@@ -3148,7 +3160,8 @@ pub fn roadunits_reads(m: &BTreeMap<String, String>) -> Vec<(TileId, String, Str
 }
 
 /// The terrain's or slope's root key (`layer`): its lo packs by content name (a lo pack dropped,
-/// the coverage gone from its z3 tile, makes it again); None without one.
+/// the coverage gone from its z3 tile, makes it again), and the slope's the terrain's root; None
+/// without one.
 pub fn root_key(layer: &str, m: &BTreeMap<String, String>) -> Option<String> {
     let step = format!("{layer}-root");
     let p = format!("layers/{layer}/lo/");
@@ -3160,6 +3173,11 @@ pub fn root_key(layer: &str, m: &BTreeMap<String, String>) -> Option<String> {
     ins.extend(m.range(p.clone()..).take_while(|(l, _)| l.starts_with(&p)).map(|(_, c)| c.clone()));
     if ins.len() == n {
         return None;
+    }
+    // (The slope's z0–2 tiles its z3 tiles don't cover are its terrain's own shading: the terrain's
+    // root.)
+    if layer == "slope" {
+        ins.push(format!("terrain root {}", m.get("layers/terrain/root/0-0-0").map_or("-", String::as_str)));
     }
     let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
     Some(h(&refs))
@@ -3716,13 +3734,15 @@ fn bld_rank<'a>(regions: &'a [&'a Coverage]) -> impl Fn(&str) -> BldRank + 'a {
 }
 
 /// The depth chain's targets (docs/steps.md §3): every z3 tile within `REACH_KM` of the
-/// coverage that a depth source meets (`depth-lo`: zooms 3–8), and every z6 tile within it that a
-/// source with a grid finer than z8 meets (`depth`: zooms 9–16), each with its key; the targets
-/// whose water digests aren't worked out yet (`unknown`) wait.
+/// coverage that a depth source meets (`depth-lo`: zooms 3–8), every z6 tile within it that a
+/// source with a grid finer than z8 meets (`depth`: zooms 9–16), and the floor's shading's
+/// assembly of each z3 tile (`depth-shade`: zooms 3–8, after its z6 tiles), each with its key; the
+/// targets whose water digests aren't worked out yet (`unknown`) wait.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DepthTargets {
     pub lo: Vec<(String, String)>,
     pub hi: Vec<(String, String)>,
+    pub shade: Vec<(String, String)>,
     pub unknown: usize,
 }
 
@@ -3829,6 +3849,23 @@ pub fn depth_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles: &Terra
             t.clone(),
             h(&[&depth_versions("depth-lo"), &t, &pins(deg(crate::hipack::tile_bounds(3, q.0, q.1))), &w]),
         ));
+        // (The floor's shading's assembly: what it reads, its depth lo pack and its z6 tiles'
+        // shading hi packs, by content.)
+        let get = |l: String| m.get(&l).map_or("-", String::as_str).to_string();
+        let mut ins = vec![
+            depth_versions("depth-shade"),
+            format!("depth-shade {}", crate::depth::build::DEPTH_SHADE_V),
+            t.clone(),
+            get(crate::depth::build::lo_logical(crate::depth::LAYER, q.0, q.1)),
+        ];
+        for k in 0..64u32 {
+            let l = crate::depth::build::hi_logical(crate::depth::SHADE_LAYER, q.0 * 8 + k % 8, q.1 * 8 + k / 8);
+            if let Some(c) = m.get(&l) {
+                ins.push(format!("{l}={c}"));
+            }
+        }
+        let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
+        out.shade.push((t.clone(), h(&refs)));
     }
     for (x, y) in hi {
         let t = format!("6/{x}/{y}");
@@ -3874,8 +3911,26 @@ pub fn depth_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, til
     };
     let hi: Vec<(String, String)> =
         dt.hi.iter().filter(|(t, k)| done.depth.get(t) != Some(k) && ready(t)).cloned().collect();
+    // (The floor's shading's assembly once its z3 tile's depth is done as it'll stay: its lo pack
+    // and every z6 tile of it.)
+    let stale_hi: BTreeSet<(u32, u32)> = dt
+        .hi
+        .iter()
+        .filter(|(t, k)| done.depth.get(t) != Some(k))
+        .filter_map(|(t, _)| TileId::parse(t))
+        .map(|u| (u.x >> 3, u.y >> 3))
+        .collect();
+    let shade: Vec<(String, String)> = dt
+        .shade
+        .iter()
+        .filter(|(t, k)| {
+            done.depth_shade.get(t) != Some(k)
+                && TileId::parse(t).is_some_and(|u| !stale_q.contains(&(u.x, u.y)) && !stale_hi.contains(&(u.x, u.y)))
+        })
+        .cloned()
+        .collect();
     let mut out = Vec::new();
-    for (step, targets) in [("depth-lo", lo), ("depth", hi)] {
+    for (step, targets) in [("depth-lo", lo), ("depth", hi), ("depth-shade", shade)] {
         if !targets.is_empty() {
             out.push(Work { step: step.into(), targets });
         }
@@ -3891,7 +3946,12 @@ fn depth_next(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, tiles: 
         return Some(Work { step: "depth-lo".into(), targets: lo });
     }
     let hi: Vec<(String, String)> = dt.hi.into_iter().filter(|(t, k)| done.depth.get(t) != Some(k)).collect();
-    (!hi.is_empty()).then(|| Work { step: "depth".into(), targets: hi })
+    if !hi.is_empty() {
+        return Some(Work { step: "depth".into(), targets: hi });
+    }
+    let shade: Vec<(String, String)> =
+        dt.shade.into_iter().filter(|(t, k)| done.depth_shade.get(t) != Some(k)).collect();
+    (!shade.is_empty()).then(|| Work { step: "depth-shade".into(), targets: shade })
 }
 
 /// One step's line of the build's checklist: its targets done of all (`total` None until an earlier
@@ -4113,7 +4173,7 @@ pub fn mark_shared(lines: &mut [Line]) {
 
 /// The steps the checklist counts, in order: the regions' build to the end (the pass's own are the
 /// agent's, before them).
-pub const COUNTED: [&str; 32] = [
+pub const COUNTED: [&str; 33] = [
     "heritage-sites",
     "terrain",
     "terrain-lo",
@@ -4123,6 +4183,7 @@ pub const COUNTED: [&str; 32] = [
     "trees-lo",
     "depth-lo",
     "depth",
+    "depth-shade",
     "unit",
     "pack",
     "lo",
@@ -4253,6 +4314,7 @@ pub fn checklist(
     let d = dt.as_ref().unwrap_or(&empty);
     out.push(sized("depth-lo", &d.lo, &done.depth_lo, dk));
     out.push(sized("depth", &d.hi, &done.depth, dk));
+    out.push(sized("depth-shade", &d.shade, &done.depth_shade, dk));
     next.insert("depth", next_of(&remaining(done, |k| depth_next(cov, m, k, tiles))));
     let pieces = m.keys().any(|l| l.starts_with(&format!("sources/osm/{date}/pieces/")));
     let units = unit_keys(cov, date, m, reach, tiles);
@@ -7836,7 +7898,21 @@ pub(crate) mod tests {
         d2.record("depth-lo", &w[0].targets);
         let w = depth_work(&c, &m, &d2, &tiles);
         assert_eq!(w.iter().map(|x| x.step.as_str()).collect::<Vec<_>>(), ["depth"]);
+        // The floor's shading's assembly of a z3 tile once its z6 tiles are done, not before.
+        let mut d3 = d2.clone();
+        d3.record("depth", &w[0].targets[1..]);
+        let w3 = depth_work(&c, &m, &d3, &tiles);
+        let q_of = |t: &str| TileId::parse(t).map(|u| (u.x >> 3, u.y >> 3)).unwrap();
+        let waiting = q_of(&w[0].targets[0].0);
+        assert!(w3.iter().filter(|x| x.step == "depth-shade").flat_map(|x| &x.targets).all(|(t, _)| {
+            let u = TileId::parse(t).unwrap();
+            (u.x, u.y) != waiting
+        }));
         d2.record("depth", &w[0].targets);
+        let w = depth_work(&c, &m, &d2, &tiles);
+        assert_eq!(w.iter().map(|x| x.step.as_str()).collect::<Vec<_>>(), ["depth-shade"]);
+        assert_eq!(w[0].targets.len(), dt.shade.len());
+        d2.record("depth-shade", &w[0].targets);
         assert!(depth_work(&c, &m, &d2, &tiles).is_empty());
         assert!(remaining(&d2, |d| depth_next(&c, &m, d, &tiles)).is_empty());
         // An assembly's lo pack made new changes its z6 tiles' keys; a fine source changed, its
@@ -7848,6 +7924,18 @@ pub(crate) mod tests {
         );
         let after = depth_targets(&c, &m2, &tiles).unwrap();
         assert!(after.hi.iter().zip(&dt.hi).all(|(a, b)| a.1 != b.1) && after.lo == dt.lo);
+        let k = |d: &DepthTargets| d.shade.iter().find(|t| t.0 == "3/3/2").unwrap().1.clone();
+        assert_ne!(k(&after), k(&dt), "its shading reads its lo pack");
+        // A z6 tile's shading hi pack made new changes its z3 tile's shading key alone.
+        let t6 = TileId::parse(&dt.hi[0].0).unwrap();
+        let mut m3 = m.clone();
+        m3.insert(crate::depth::build::hi_logical(crate::depth::SHADE_LAYER, t6.x, t6.y), "x.pack".into());
+        let after = depth_targets(&c, &m3, &tiles).unwrap();
+        let q = format!("3/{}/{}", t6.x >> 3, t6.y >> 3);
+        for (a, b) in after.shade.iter().zip(&dt.shade) {
+            assert_eq!(a.1 != b.1, a.0 == q, "{}", a.0);
+        }
+        assert_eq!((after.lo, after.hi), (dt.lo.clone(), dt.hi.clone()));
         let mut moved = depth_sources();
         moved[1].pin = "s2 changed".into();
         tiles.hold_depth("x", moved);

@@ -731,6 +731,7 @@ fn chain_deps(step: &str) -> (&'static [&'static str], &'static [&'static str], 
         "bldtiles" => (&[], &["bldprep"], false),
         "bldfield-lo" => (&[], &["bldtiles"], false),
         "depth" => (&[], &["depth-lo"], false),
+        "depth-shade" => (&[], &["depth"], false),
         _ => (&[], &[], false),
     }
 }
@@ -3047,6 +3048,7 @@ mod tests {
                         "slope-lo" => [in_z3("slope", &q()), in_z3("terrain", &q())].concat(),
                         "trees-lo" => in_z3("trees", &q()),
                         "depth-lo" => in_z3("depth", &q()),
+                        "depth-shade" => [in_z3("depth", &q()), in_z3("depth-lo", &q())].concat(),
                         "slope" => in_z3("terrain", &z3s(t)),
                         "unit" => {
                             let mut d = in_z3("terrain", &z3s(t));

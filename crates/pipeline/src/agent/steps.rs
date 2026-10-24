@@ -176,7 +176,7 @@ use Kind::{Derive, Fetch, Keep, Pack, Publish};
 use Scope::{Input, World, Z3, Z6};
 
 /// The table, by stage (the ranks order what's ranked).
-pub const TABLE: [Step; 51] = [
+pub const TABLE: [Step; 52] = [
     // The OSM pass: the planet filtered, its sets, extracts and road values; then its worldwide steps.
     Step {
         alone: true,
@@ -454,6 +454,20 @@ pub const TABLE: [Step; 51] = [
             "Depth",
             "Composes a tile's depth where a source has detail finer than the zoomed-out levels.",
             w_depth,
+        )
+    },
+    // (The floor's shading of a z3 tile: its depth lo tiles decoded and their shading, its z6
+    // tiles' z9 quadrants, under a GB.)
+    Step {
+        mem_mb: 1000,
+        ..step(
+            "depth",
+            Pack,
+            Z3,
+            "depth-shade",
+            "Depth shading, zoomed out",
+            "Assembles a z3 tile's zoomed-out shading of the sea floor from its depth and its tiles' finer shading.",
+            w_depth_shade,
         )
     },
     // (A z6 tile's most its jobs took here, 8.4 GB, 2026-10-05; offered by its extract's size.)
@@ -1058,8 +1072,11 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
             t.z == 6 && DEPTH_LAYERS.iter().any(|ly| l == crate::depth::build::hi_logical(ly, t.x, t.y))
         }),
         "depth-lo" => tile.is_some_and(|t| {
-            t.z == 3 && DEPTH_LAYERS.iter().any(|ly| l == crate::depth::build::lo_logical(ly, t.x, t.y))
+            t.z == 3 && DEPTH_LO_LAYERS.iter().any(|ly| l == crate::depth::build::lo_logical(ly, t.x, t.y))
         }),
+        "depth-shade" => {
+            tile.is_some_and(|t| t.z == 3 && l == crate::depth::build::lo_logical(crate::depth::SHADE_LAYER, t.x, t.y))
+        }
         "trees" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| {
             l == crate::treepacks::mid_logical(t.x, t.y)
                 || crate::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/hi/{dash}"))
@@ -1265,13 +1282,20 @@ fn w_depth(l: &str, _: bool) -> bool {
     pack_of(l, &|ly| DEPTH_LAYERS.contains(&ly), &["hi"])
 }
 
-/// A z3 tile's depth, class and shading lo packs.
+/// A z3 tile's depth and class lo packs.
 fn w_depth_lo(l: &str, _: bool) -> bool {
-    pack_of(l, &|ly| DEPTH_LAYERS.contains(&ly), &["lo"])
+    pack_of(l, &|ly| DEPTH_LO_LAYERS.contains(&ly), &["lo"])
+}
+
+/// A z3 tile's shading lo pack.
+fn w_depth_shade(l: &str, _: bool) -> bool {
+    pack_of(l, &|ly| ly == crate::depth::SHADE_LAYER, &["lo"])
 }
 
 /// The depth steps' layers: the depth, its classes and the floor's shading (crate::depth).
 const DEPTH_LAYERS: [&str; 3] = [crate::depth::LAYER, crate::depth::CLASS_LAYER, crate::depth::SHADE_LAYER];
+/// Those an assembly of the depth writes (the shading's is `depth-shade`'s).
+const DEPTH_LO_LAYERS: [&str; 2] = [crate::depth::LAYER, crate::depth::CLASS_LAYER];
 
 /// The water's index for the terrain's repairs, by the content it's made of.
 fn w_terrain_water(l: &str, _: bool) -> bool {
@@ -1710,6 +1734,7 @@ mod tests {
                 "trees-lo",
                 "depth-lo",
                 "depth",
+                "depth-shade",
                 "unit",
                 "pack",
                 "lo",

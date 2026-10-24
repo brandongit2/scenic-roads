@@ -732,6 +732,49 @@ fn the_floors_shading_is_the_depths_pyramid() {
     assert_eq!(code(z7[128 * 256 + 128 + 7]), code(q1[7]));
 }
 
+/// The floor's shading's assembly (`build::build_shade_lo`): a z8 tile's quadrant under a z6 tile's
+/// z9 shading tile (as its hi pack stores it) is that tile's mean, the rest its own depth's; its
+/// coarser levels to z3 from it; the depth lo pack's other tiles their own.
+#[test]
+fn the_floors_shading_assembly_takes_the_z6_tiles_finer_shading() {
+    use roadcore::shade::{code, decode, quadrant, Px};
+    let d = tempfile::tempdir().unwrap();
+    let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
+    let ramp: Vec<f32> = (0..65536).map(|i| -10.0 - (i % 256) as f32).collect();
+    let enc = |v: &[f32]| fall::encode(&Grid::F(v.to_vec())).unwrap();
+    let mut lo = vec![(8u8, 74u32, 91u32, enc(&ramp), 0u32), (8, 80, 91, enc(&ramp), 0)].into_iter();
+    crate::layers::write_pack(&mut out, LAYER, super::ENCODING, false, "lo", (3, 2, 2), &mut lo).unwrap();
+    let steep = vec![Px::of_gradient(0.0, 0.5); 65536];
+    let mut hi = vec![(9u8, 149u32, 183u32, crate::shade_codec::encode(&steep).unwrap(), 0u32)].into_iter();
+    crate::layers::write_pack(
+        &mut out,
+        super::SHADE_LAYER,
+        crate::shade_codec::ENCODING,
+        false,
+        "hi",
+        (6, 18, 22),
+        &mut hi,
+    )
+    .unwrap();
+    out.save().unwrap();
+    let n = super::build::build_shade_lo(&mut out, (2, 2)).unwrap();
+    let s = crate::terrain_pack::ManifestTiles::new(&out, super::SHADE_LAYER);
+    let px = |z: u8, x: u32, y: u32| decode(&s.get(z, x, y).unwrap().unwrap()).unwrap();
+    let z8 = px(8, 74, 91);
+    let want = quadrant(&decode(&crate::shade_codec::encode(&steep).unwrap()).unwrap());
+    assert_eq!(code(z8[200 * 256 + 200]), code(want[72 * 128 + 72]), "its south-east quadrant from the z9 tile");
+    assert_eq!(code(z8[200 * 256 + 200])[2], 248, "steep, facing south");
+    let own = super::build::shading(&[((8, 80, 91), (enc(&ramp), Vec::new()))].into(), 8).unwrap();
+    assert_eq!(
+        code(z8[20 * 256 + 20]),
+        code(decode(&own[&(8, 80, 91)]).unwrap()[20 * 256 + 20]),
+        "the rest its own depth's"
+    );
+    assert_eq!(s.get(8, 80, 91).unwrap(), Some(own[&(8, 80, 91)].clone()));
+    assert!(s.get(3, 2, 2).unwrap().is_some() && s.get(9, 149, 183).unwrap().is_some());
+    assert_eq!(n, 2 * 5 + 1, "two z8 tiles and their parents to z4 apart, one z3");
+}
+
 /// A measure (run by hand, read-only): the floor's shading (`build::shading`) of a real z3 tile's
 /// depth as stored (its depth and class lo packs, and the hi packs of its z6 tiles), timed, with
 /// the bytes of its tiles by zoom; with a folder, its tiles written there as `<z>/<x>/<y>.webp`.

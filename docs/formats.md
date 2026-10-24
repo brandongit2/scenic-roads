@@ -453,7 +453,9 @@ for depth and its shading, with the depth ancestor's neighbours' edges; nearest 
   measured, 2 interpolated, 3 estimated, 4 filled to the shore), bit 3 dries at low tide, bits 4–7 the
   source's `code` (docs/inputs.md §6.10).
 - **`depth-shade`** (encoding `shade-webp`, as the terrain's shading: Pack above): the floor's
-  steepness and mean direction, a tile for each depth tile (docs/steps.md §3).
+  steepness and mean direction, a tile for each depth tile (docs/steps.md §3): the hi packs made
+  with the depth's, the lo packs by the `depth-shade` step from the depth's lo packs and the hi
+  packs' z9 tiles.
 - **The catalog's meta** `depth`: `{"sources": [{"code", "id", "label", "datum", "water", "notice"}]}`,
   the accepted depth declarations (the credits' depth line and notices, and the readout).
 

@@ -5,7 +5,10 @@
 //! - **depth-lo** (a z3 tile Q): z6–8 composed from the sources on the basemap's water (the zooms
 //!   the basemap draws OSM's water at); z3–5 each the mean of its children's pixels (their class
 //!   the first of the four that has one), as the terrain's assembly makes its coarse levels.
-//! - **Both** make the floor's shading of their tiles too (`shading`: the `depth-shade` layer).
+//! - **depth-shade** (a z3 tile Q, after its z6 tiles' depth): the floor's shading's zoomed-out
+//!   levels (`build_shade_lo`: the `depth-shade` lo pack, z3–8), from Q's z6 tiles' z9 shading as
+//!   stored and, where they don't cover it, its own depth's; the z6 tiles' depth makes their own
+//!   (`shading`: the hi packs, z9–16), so the fine sources' detail reaches the low zooms.
 //! - **depth** (a z6 tile T): z9–16, a block only where a source has a grid of that zoom or finer
 //!   (`Source::max_zoom_in`), its water the basemap's (z15–16: its z14 tile's polygons, finer). A
 //!   capped pixel takes the stored level of its zoom scaled up as the map's fallback does: from this
@@ -33,8 +36,11 @@ use std::sync::Arc;
 /// floor's shading, `shading`, task #632; 3: a grid lined up with no overview sampled from one
 /// askew, `grids::level_for`, task #433). Its key names crate::shade_codec::version too.
 pub const DEPTH_V: u32 = 4;
-/// The depth assembly's (`build_lo`; 4: the floor's shading).
-pub const DEPTH_LO_V: u32 = 4;
+/// The depth assembly's (`build_lo`; 5: the floor's shading no longer made here, `depth-shade`
+/// makes it; 4: the floor's shading).
+pub const DEPTH_LO_V: u32 = 5;
+/// The floor's shading's assembly's (`build_shade_lo`).
+pub const DEPTH_SHADE_V: u32 = 1;
 /// How far from the coverage depth is built (km): 200 nautical miles, a region's EEZ's reach.
 pub const REACH_KM: f64 = 370.4;
 /// The zooms a piece makes.
@@ -539,41 +545,50 @@ fn level_blocks(
     Ok(kept)
 }
 
-/// Writes the layers' packs of `scope` under `root` from the tiles made and their shading
-/// (`shading`), replacing or dropping what the manifest named; how many tiles.
+/// Writes the layers' packs of `scope` under `root` from the tiles made and, with `shade`, their
+/// shading (`shading`), replacing or dropping what the manifest named; how many tiles.
 fn put_packs(
     out: &mut Out,
     made: &BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>,
-    shade: &BTreeMap<(u8, u32, u32), Vec<u8>>,
+    shade: Option<&BTreeMap<(u8, u32, u32), Vec<u8>>>,
     scope: &str,
     root: (u8, u32, u32),
 ) -> Result<usize> {
     let _p = crate::timings::phase("packs written", crate::timings::Class::NasWrite);
-    for (layer, enc, which) in [
-        (LAYER, ENCODING, 0usize),
-        (CLASS_LAYER, CLASS_ENCODING, 1),
-        (super::SHADE_LAYER, crate::shade_codec::ENCODING, 2),
-    ] {
-        let mut it: Box<dyn Iterator<Item = (u8, u32, u32, Vec<u8>, u32)>> = if which == 2 {
-            Box::new(shade.iter().map(|(&(z, x, y), b)| (z, x, y, b.clone(), 0u32)))
-        } else {
-            Box::new(made.iter().map(move |(&(z, x, y), p)| {
-                let b = if which == 0 { &p.0 } else { &p.1 };
-                (z, x, y, b.clone(), 0u32)
-            }))
-        };
-        let logical = format!("layers/{layer}/{scope}/{}-{}-{}", root.0, root.1, root.2);
-        match crate::layers::write_pack_local(out, layer, enc, false, scope, root, &mut it)? {
-            Some(p) => {
-                out.put_file(&p.logical, "pack", &p.local)?;
-                std::fs::remove_file(&p.local).ok();
-            }
-            None if out.get(&logical).is_some() => out.remove(&logical),
-            None => {}
-        }
+    for (layer, enc, which) in [(LAYER, ENCODING, 0usize), (CLASS_LAYER, CLASS_ENCODING, 1)] {
+        let mut it = made.iter().map(move |(&(z, x, y), p)| {
+            let b = if which == 0 { &p.0 } else { &p.1 };
+            (z, x, y, b.clone(), 0u32)
+        });
+        put_pack(out, layer, enc, scope, root, &mut it)?;
+    }
+    if let Some(shade) = shade {
+        let mut it = shade.iter().map(|(&(z, x, y), b)| (z, x, y, b.clone(), 0u32));
+        put_pack(out, super::SHADE_LAYER, crate::shade_codec::ENCODING, scope, root, &mut it)?;
     }
     out.save()?;
     Ok(made.len())
+}
+
+/// Writes one layer's pack of `scope` under `root`, replacing or dropping what the manifest named.
+fn put_pack(
+    out: &mut Out,
+    layer: &str,
+    enc: &str,
+    scope: &str,
+    root: (u8, u32, u32),
+    it: &mut dyn Iterator<Item = (u8, u32, u32, Vec<u8>, u32)>,
+) -> Result<()> {
+    let logical = format!("layers/{layer}/{scope}/{}-{}-{}", root.0, root.1, root.2);
+    match crate::layers::write_pack_local(out, layer, enc, false, scope, root, it)? {
+        Some(p) => {
+            out.put_file(&p.logical, "pack", &p.local)?;
+            std::fs::remove_file(&p.local).ok();
+        }
+        None if out.get(&logical).is_some() => out.remove(&logical),
+        None => {}
+    }
+    Ok(())
 }
 
 /// The mean of a tile's four children (each pixel the mean of the 2 × 2 it covers that have data;
@@ -633,8 +648,44 @@ pub fn build_lo(
     q: (u32, u32),
 ) -> Result<usize> {
     let made = compose_lo(out, sources, water, local, q, LO_COMPOSED.1)?;
-    let shade = shading(&made, 3)?;
-    put_packs(out, &made, &shade, "lo", (3, q.0, q.1))
+    put_packs(out, &made, None, "lo", (3, q.0, q.1))
+}
+
+/// The floor's shading's assembly of z3 tile `q` (the `depth-shade` step, after its z6 tiles'
+/// depth): its `depth-shade` lo pack (z3–8), the pyramid of `shading` over q's depth as its lo pack
+/// stores it, each z8 tile's pixels the mean of the four beneath from its z6 tiles' z9 shading as
+/// their hi packs store it where they cover it (the fine sources' detail), else its own depth's;
+/// how many tiles.
+pub fn build_shade_lo(out: &mut Out, q: (u32, u32)) -> Result<usize> {
+    let p = crate::timings::phase("the depth's lo pack and the z9 shading read", crate::timings::Class::NasRead);
+    let depth = crate::terrain_pack::ManifestTiles::new(out, LAYER);
+    let mut made = BTreeMap::new();
+    for (z, x, y) in depth.tiles_in(&lo_logical(LAYER, q.0, q.1))? {
+        if let Some(b) = depth.get(z, x, y)? {
+            made.insert((z, x, y), (b, Vec::new()));
+        }
+    }
+    let shade = crate::terrain_pack::ManifestTiles::new(out, super::SHADE_LAYER);
+    let mut below = HashMap::new();
+    for k in 0..64u32 {
+        let t = (q.0 * 8 + k % 8, q.1 * 8 + k / 8);
+        for (z, x, y) in shade.tiles_in(&hi_logical(super::SHADE_LAYER, t.0, t.1))? {
+            if z != HI.0 {
+                continue;
+            }
+            let b = shade.get(z, x, y)?.with_context(|| format!("{z}/{x}/{y} of its pack"))?;
+            let v = roadcore::shade::decode(&b).with_context(|| format!("depth-shade {z}/{x}/{y}"))?;
+            below.insert((z, x, y), roadcore::shade::quadrant(&v));
+        }
+    }
+    p.count(0, below.len() as u64);
+    drop(p);
+    let tiles = shading_over(&made, 3, &below)?;
+    let n = tiles.len();
+    let mut it = tiles.into_iter().map(|((z, x, y), b)| (z, x, y, b, 0u32));
+    put_pack(out, super::SHADE_LAYER, crate::shade_codec::ENCODING, "lo", (3, q.0, q.1), &mut it)?;
+    out.save()?;
+    Ok(n)
 }
 
 /// The assembly of z3 tile `q`'s tiles, made, unwritten: z6 to `upto` (at most z8) composed, the
@@ -699,7 +750,7 @@ pub fn build_hi(
 ) -> Result<usize> {
     let made = compose_hi(out, sources, water, local, t, HI.1)?;
     let shade = shading(&made, HI.0)?;
-    put_packs(out, &made, &shade, "hi", (6, t.0, t.1))
+    put_packs(out, &made, Some(&shade), "hi", (6, t.0, t.1))
 }
 
 /// The floor's shading (the `depth-shade` layer: crate::slope_pack's pyramid, as the terrain's)
@@ -712,11 +763,21 @@ pub fn shading(
     made: &BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>,
     top: u8,
 ) -> Result<BTreeMap<(u8, u32, u32), Vec<u8>>> {
+    shading_over(made, top, &HashMap::new())
+}
+
+/// `shading`, over the quadrants of finer tiles another job made (`below`, by tile: as their packs
+/// store them), which their parents take where they cover them (not made again).
+fn shading_over(
+    made: &BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>,
+    top: u8,
+    below: &HashMap<(u8, u32, u32), Vec<roadcore::shade::Px>>,
+) -> Result<BTreeMap<(u8, u32, u32), Vec<u8>>> {
     use std::collections::HashSet;
     use std::sync::Mutex;
     let _p = crate::timings::phase("the floor's shading", crate::timings::Class::Compute);
     let mut tiles: HashSet<(u8, u32, u32)> = HashSet::new();
-    for &(z, x, y) in made.keys().filter(|k| k.0 >= top) {
+    for &(z, x, y) in made.keys().chain(below.keys()).filter(|k| k.0 >= top) {
         for dz in 0..=(z - top) {
             tiles.insert((z - dz, x >> dz, y >> dz));
         }
@@ -739,7 +800,8 @@ pub fn shading(
     };
     let own = |z: u8, x: u32, y: u32| crate::slope_pack::horn(&|x, y| at(z, x, y), z, x, y);
     let out = Mutex::new(Vec::new());
-    let done = HashMap::new();
+    let done: HashMap<(u8, u32, u32), Option<Vec<roadcore::shade::Px>>> =
+        below.iter().map(|(&k, q)| (k, Some(q.clone()))).collect();
     let mut roots: Vec<(u8, u32, u32)> = tiles.iter().copied().filter(|t| t.0 == top).collect();
     roots.sort_unstable();
     for (z, x, y) in roots {
