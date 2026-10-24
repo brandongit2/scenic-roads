@@ -376,7 +376,11 @@ function mapData(m) {
   // (Jobs with no tile to show, a worldwide step's: named under the map, as the mockup does.)
   const world = runs.filter((r) => !r.targets.some((t) => tileOf(t)));
   const hosts = m.macs.map((x) => x.name);
-  const pubAt = lastCatalogue(m)?.at ?? null;
+  // (In the last catalogue: what finished by its job's start, when it took what was done; the
+  // record's time is its end.)
+  const catAt = lastCatalogue(m)?.at ?? null;
+  const catJob = catAt == null ? null : (m.a.recent || []).find((d) => /^catalog/.test(stepOf(d.id)) && d.ok && Math.abs(d.ended - catAt) <= 5);
+  const pubAt = catJob?.secs != null ? catAt - catJob.secs : catAt;
   // (The legend counts every state, those toggled off too; the map gets the kept.)
   const [allRun, allDone] = mapTilesKept(runningTiles(runs, m.fc?.each_s, m.now), finishedTiles(endsHeld(), from), { ...f, tiles: {} },
     { pubAt, macOf: (w) => macSlot(w, hosts).host, stageOf: S.stage });
