@@ -4,8 +4,10 @@
 //! `<home>/app/`; a checkout's `dem/` (run by hand) keeps its own in the checkout's `target/pyenv/`.
 //!
 //! An environment is made by `uv sync` into `.tmp-<key>-<pid>/` and renamed into place, so a
-//! folder named by its key is always whole; two Macs' or processes' makings at once each make their
-//! own, the first rename wins and the other's copy is dropped. The steps run its `bin/python`
+//! folder named by its key is always whole. Makings of one key take turns on `.lock-<key>` (a
+//! flock) and the later ones find it made; two at once raced on the same folders and broke (a
+//! process's threads share a `.tmp-` name; uv clones into a folder another making removes).
+//! Different keys' makings run at once: uv locks its own cache. The steps run its `bin/python`
 //! directly (no `uv run`: nothing re-syncs or changes it once made).
 
 use anyhow::{ensure, Context, Result};
@@ -52,44 +54,51 @@ pub fn ensure_in(root: &Path, dem: &Path) -> Result<PathBuf> {
     let env = root.join(&k);
     if !env.join("bin/python").exists() {
         std::fs::create_dir_all(root)?;
-        let tmp = root.join(format!(".tmp-{k}-{}", std::process::id()));
-        std::fs::remove_dir_all(&tmp).ok();
-        let st = store::spawn::status(
-            store::spawn::command("uv").current_dir(dem).env("UV_PROJECT_ENVIRONMENT", &tmp).args([
-                "sync",
-                "--frozen",
-                "--no-install-project",
-                "--quiet",
-            ]),
-        )
-        .context("uv sync (uv on the PATH?)");
-        let st = match st {
-            Ok(s) => s,
-            Err(e) => {
-                std::fs::remove_dir_all(&tmp).ok();
-                return Err(e);
-            }
-        };
-        if !st.success() {
-            std::fs::remove_dir_all(&tmp).ok();
-            anyhow::bail!("uv sync for {} failed: {st}", dem.display());
-        }
-        // (Another making's rename got there first: its copy is the same lock's, ours dropped. A
-        // folder there without bin/python is a removal stopped partway: ours replaces it.)
-        if env.exists() && !env.join("bin/python").exists() {
-            std::fs::remove_dir_all(&env).ok();
-        }
-        if std::fs::rename(&tmp, &env).is_ok() {
+        let lp = root.join(format!(".lock-{k}"));
+        let lock = std::fs::File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lp)
+            .with_context(|| format!("open {}", lp.display()))?;
+        lock.lock().with_context(|| format!("lock {}", lp.display()))?;
+        // (Made by the making this one waited for.)
+        if !env.join("bin/python").exists() {
+            make(dem, &env, &root.join(format!(".tmp-{k}-{}", std::process::id())))?;
             eprintln!("python environment {k} made for {}", dem.display());
-        } else {
-            std::fs::remove_dir_all(&tmp).ok();
         }
-        ensure!(env.join("bin/python").exists(), "{}: no bin/python after uv sync", env.display());
     }
     std::fs::File::create(env.join(USED))
         .and_then(|f| f.set_modified(SystemTime::now()))
         .with_context(|| format!("{}/{USED}", env.display()))?;
     Ok(env)
+}
+
+/// Makes `dem`'s environment `env` by `uv sync` into `tmp`, then renamed; the caller holds the
+/// key's lock. A folder at `env` without bin/python (a removal stopped partway) is replaced.
+fn make(dem: &Path, env: &Path, tmp: &Path) -> Result<()> {
+    std::fs::remove_dir_all(tmp).ok();
+    let st =
+        store::spawn::status(store::spawn::command("uv").current_dir(dem).env("UV_PROJECT_ENVIRONMENT", tmp).args([
+            "sync",
+            "--frozen",
+            "--no-install-project",
+            "--quiet",
+        ]))
+        .context("uv sync (uv on the PATH?)")
+        .and_then(|st| {
+            ensure!(st.success(), "uv sync for {} failed: {st}", dem.display());
+            if env.exists() {
+                std::fs::remove_dir_all(env).with_context(|| format!("remove {}", env.display()))?;
+            }
+            std::fs::rename(tmp, env).with_context(|| format!("rename into {}", env.display()))
+        });
+    if st.is_err() {
+        std::fs::remove_dir_all(tmp).ok();
+    }
+    st?;
+    ensure!(env.join("bin/python").exists(), "{}: no bin/python after uv sync", env.display());
+    Ok(())
 }
 
 /// Removes from `<home>/pyenv` the environments no version in `<home>/app` uses and none has used
@@ -111,6 +120,10 @@ pub fn prune(home: &Path, keep: Duration) -> Vec<String> {
     let mut gone = Vec::new();
     for e in rd.flatten() {
         let n = e.file_name().to_string_lossy().into_owned();
+        // (A key's lock stays: removed while held, the next making would lock a new file.)
+        if n.starts_with(".lock-") {
+            continue;
+        }
         let old = if n.starts_with(".tmp-") {
             idle(&e.path()).is_some_and(|d| d >= STALE_MAKING)
         } else {
@@ -199,6 +212,8 @@ mod tests {
             for f in ["pyproject.toml", "uv.lock", ".python-version"] {
                 std::fs::copy(repo.join(f), dd.join(f)).unwrap();
             }
+            // (A cold uv cache of the test's own, not ~/.cache/uv: uv reads the project's uv.toml.)
+            std::fs::write(dd.join("uv.toml"), format!("cache-dir = {:?}\n", home.join("uv-cache"))).unwrap();
             dems.push(dd);
         }
         let pys: Vec<PathBuf> = std::thread::scope(|s| {
@@ -211,11 +226,13 @@ mod tests {
             hs.into_iter().map(|h| h.join().unwrap().unwrap()).collect()
         });
         assert!(pys.windows(2).all(|w| w[0] == w[1]));
-        let names: Vec<String> = std::fs::read_dir(home.join("pyenv"))
+        let k = key(&dems[0]).unwrap();
+        let mut names: Vec<String> = std::fs::read_dir(home.join("pyenv"))
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(names, vec![key(&dems[0]).unwrap()]);
+        names.sort();
+        assert_eq!(names, vec![format!(".lock-{k}"), k]);
         for dd in &dems {
             assert!(!dd.join(".venv").exists());
         }

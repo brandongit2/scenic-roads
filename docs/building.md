@@ -515,7 +515,7 @@ steps), Scenic.app, `web/` and `fonts/`. The Python steps run in one environment
 beside the versions, never inside one, and shared by every version with that lock
 (`pipeline::pyenv`): `install.sh` makes it (`scenic-build pyenv`), and a Python step makes it when
 it's missing (an update with a new lock). It's made by `uv sync` into a `.tmp-` folder and renamed
-into place, so concurrent makings are safe. The updater removes an environment no installed
+into place, one making per lock file at a time (a flock on `pyenv/.lock-<key>`). The updater removes an environment no installed
 version uses a day after its last use. `tools/app/install.sh` gives the agent a PATH with uv, osmium, zstd
 and Java 21.
 
