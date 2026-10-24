@@ -199,13 +199,15 @@ fn ring_area_m2(r: &[[i32; 2]]) -> f64 {
     s / 2.0
 }
 
-/// Douglas–Peucker with a tolerance in metres (on a local projection); keeps a closed ring's
-/// first and last points and at least four.
+/// Douglas–Peucker with a tolerance in metres (on a local projection at the middle of the ring's
+/// latitudes, so a ring starting at a pole keeps its width); keeps a closed ring's first and last
+/// points and at least four.
 pub fn simplify(r: &[[i32; 2]], tol_m: f64) -> Vec<[i32; 2]> {
     if r.len() <= 4 {
         return r.to_vec();
     }
-    let lat0 = r[0][1] as f64 * 1e-7;
+    let (lo, hi) = r.iter().fold((i32::MAX, i32::MIN), |(lo, hi), p| (lo.min(p[1]), hi.max(p[1])));
+    let lat0 = (f64::from(lo) + f64::from(hi)) / 2.0 * 1e-7;
     let kx = 111_320.0 * lat0.to_radians().dcos() * 1e-7;
     let ky = 110_574.0 * 1e-7;
     let xy: Vec<(f64, f64)> = r.iter().map(|p| (p[0] as f64 * kx, p[1] as f64 * ky)).collect();
@@ -1412,6 +1414,31 @@ mod tests {
         assert!(s.len() > 8 && s.len() < 200, "{}", s.len());
         assert_eq!(s.first(), ring.first());
         assert_eq!(s.last(), ring.last());
+    }
+
+    #[test]
+    fn simplify_keeps_a_polar_box_minus_a_notch() {
+        // Antarctica's drawn ring (#611): the box south of 60°S with a notch up to 57°S, starting at
+        // the pole. Its scale taken at the first point's latitude (90°S: no width) left five points,
+        // one of them inside the notch's side, and lines across the map.
+        let e7 = |x: f64, y: f64| [(x * 1e7) as i32, (y * 1e7) as i32];
+        let mut ring = vec![e7(-180.0, -90.0), e7(180.0, -90.0)];
+        ring.extend((0..=360).map(|i| e7(180.0 - f64::from(i) * 0.5, -60.0)).take_while(|p| p[0] > e7(-40.0, 0.0)[0]));
+        ring.extend([e7(-40.0, -57.0), e7(-50.0, -57.0)]);
+        ring.extend((0..=260).map(|i| e7(-50.0 - f64::from(i) * 0.5, -60.0)));
+        ring.push(e7(-180.0, -90.0));
+        let s = simplify(&ring, 1000.0);
+        for c in [
+            e7(-180.0, -90.0),
+            e7(180.0, -90.0),
+            e7(180.0, -60.0),
+            e7(-40.0, -57.0),
+            e7(-50.0, -57.0),
+            e7(-180.0, -60.0),
+        ] {
+            assert!(s.contains(&c), "{c:?} kept: {s:?}");
+        }
+        assert!(s.len() <= 12, "{s:?}");
     }
 
     /// A country whose outer ring has a 55 m gap (w1's first node n5 is 0.0005° from w2's n1, as
