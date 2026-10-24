@@ -47,6 +47,10 @@ pub const PACE: Pace = Pace { batch: BATCH, gap: GAP, sweep: SWEEP };
 pub struct Keep {
     m: Mutex<Marks>,
     cv: Condvar,
+    /// Held by the writer from its last look at the term through its write: `off` takes it, so a
+    /// write already under way has landed before `off` returns and none starts after (never `m`
+    /// across the write: `changed` is called under the coordinator's lock).
+    w: Mutex<()>,
 }
 
 #[derive(Debug, Default)]
@@ -74,11 +78,14 @@ impl Keep {
     pub fn off(&self) {
         self.m.lock().unwrap_or_else(|e| e.into_inner()).term = None;
         self.cv.notify_all();
+        // (A write under way lands first; the next one sees no term.)
+        drop(self.w.lock().unwrap_or_else(|e| e.into_inner()));
     }
 
     pub fn stop(&self) {
         self.m.lock().unwrap_or_else(|e| e.into_inner()).stop = true;
         self.cv.notify_all();
+        drop(self.w.lock().unwrap_or_else(|e| e.into_inner()));
     }
 
     /// Files written so far.
@@ -156,7 +163,9 @@ fn run(shared: Weak<Mutex<Shared>>, k: Arc<Keep>, nas: Arc<dyn Nas + Send + Sync
         if written.as_ref().is_some_and(|(t, w)| *t == term && *w == b) {
             continue;
         }
-        // (Not a term's any more since the snapshot: a broker now, or stopped.)
+        // (Not a term's any more since the snapshot: a broker now, or stopped. Held through the
+        // write: `off` waits for it, so no write of this term starts or lands after `off`.)
+        let _w = k.w.lock().unwrap_or_else(|e| e.into_inner());
         {
             let m = k.m.lock().unwrap_or_else(|e| e.into_inner());
             if m.stop || m.term != Some(term) {
@@ -281,8 +290,10 @@ mod tests {
         until("the lease on the NAS", || {
             state(&root, 4).is_some_and(|s| s.leases.to_string().contains(&id.to_string()))
         });
-        let (n, before) = (k.writes(), std::fs::read(root.join(crate::agent::pool::state_path(4))).unwrap());
+        // (Counted once `off` has returned: the file can be on the NAS before its write is counted.)
         c.become_broker();
+        let (n, before) = (k.writes(), std::fs::read(root.join(crate::agent::pool::state_path(4))).unwrap());
+        assert!(n >= 1);
         c.hold("unit", &[("6/4/2".into(), "k".into())]).unwrap();
         std::thread::sleep(QUICK.gap * 3);
         assert_eq!(k.writes(), n, "a broker: no more writes");
