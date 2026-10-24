@@ -125,8 +125,12 @@ pub const GAP_S: u64 = 60;
 /// A step running longer than this, awake, or this long awake between two steps: the NAS stalled,
 /// or the process stepping it was held up, and its lead re-asserts (s).
 pub const STALL_S: u64 = 300;
-/// The longest a read is taken to stay stale (s; how long the share keeps reads stale is unchecked:
-/// task #455): term 1 with no snapshot a take-up can read whole for this long awake (its lead's, or
+/// The longest a read is taken to stay stale (s). Measured (task #645, tools/check/nas-probe.py, two
+/// Macs, 24 Oct, idle share, 570 trials): another Mac's rename over a file was read within 1.1 s,
+/// a new file opened within 0.12 s; a stat or listing kept a removed file, and a listing missed a
+/// new one, up to 33.5 s (macOS's SMB attribute and folder caches, ~30 s). 600 s is 18 times that
+/// tail, with room for a share under load (task #630 saw one name stale for 40 minutes: past any
+/// such bound, which `MOVED_ON_S` refuses as damage): term 1 with no snapshot a take-up can read whole for this long awake (its lead's, or
 /// its first) has a first snapshot that won't be, and the take-up starts from today's files.
 pub const STALE_S: u64 = 600;
 /// The time a step spends writing its jobs' entries, and reading entries to merge, before it leaves

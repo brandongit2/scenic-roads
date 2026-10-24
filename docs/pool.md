@@ -40,10 +40,16 @@ Where state lives:
 
 The share is SMB 3 on a Synology. The design assumes:
 
-- **Create-new is atomic** (checked for one client; between two Macs unchecked). Terms and leases
-  rely on it.
+- **Create-new is atomic**, between two Macs too: 350 trials of both Macs creating one name at
+  once (O_CREAT|O_EXCL, within ±30 ms) each had exactly one winner, its bytes the file's (task #645,
+  `tools/check/nas-probe.py`). Terms and leases rely on it.
 - **A rename can be delayed indefinitely** (a Mac sleeping between write and rename).
-- **Reads can be stale** for minutes (macOS's SMB caches).
+- **Reads can be stale** (macOS's SMB caches). Measured between two Macs on an idle share (task
+  #645, 570 trials): a file renamed over was read new within 1.1 s (median 0.02 s), a new file
+  opened within 0.12 s; a stat or a folder listing still showed a removed file for up to 33.5 s
+  (median 2.4 s; about one in five near 30 s) and a listing missed a new one for up to 3.1 s.
+  `driver::STALE_S` takes 10 minutes, for a share under load; one name stale for 40 minutes
+  (task #630) is past any such bound.
 - **Renaming over a file another SMB session has open fails** (EBUSY) for as long as it's held:
   `crate::whole::rename_over` retries for 5 s. The server can hold a file for hours with no process
   on either Mac having it open;
@@ -1475,8 +1481,10 @@ tiles (`pack_raw_with`) stays inside that z6 tile's job.
   every switch on and off.
 - **Two Macs on the real NAS** (`tools/check/pool-two-macs.sh`): the real agents on a scratch
   folder of the NAS, jobs played by a script; each switched batch is run so before its switch is
-  made on the real build. Planned: the unchecked items of §3 (contended create-new, stale-read
-  duration) and load.
+  made on the real build. Planned: load.
+- **The share itself** (`tools/check/nas-probe.py <peer> <scratch folder>`, run on one Mac, which
+  times everything on its own clock): contended create-new and stale reads, stats and listings
+  (§3's figures).
 
 ## 14. Decisions
 
