@@ -6,8 +6,10 @@
 import { fmt, gapOver, hhmm, runs, topOf } from "./chartmath.js";
 
 const opts = new WeakMap();
-// The scale's gutter (px): the same in every chart, so their plots start and end at the same x.
+// The scales' gutters (px), left and right: the same in every chart, so their plots start and end at
+// the same x (the right's holds a second scale's words when a chart has one).
 const AXIS_W = 58;
+const AXIS_R = 40;
 // The time's tick steps (s), and a time ago in words: "now", "-45 s", "-10 min", "-6 h".
 const AGO_STEPS = [15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
 const ago = (a) => (a === 0 ? "now" : a < 60 ? `−${a} s` : a < 3600 ? `−${a / 60} min` : `−${+(a / 3600).toFixed(1)} h`);
@@ -32,8 +34,9 @@ function fit(c) {
 }
 
 /** Draws chart `o` on canvas `c` (again on each call, and as the pointer moves over it):
- * `{from, to, step, series: [{points, colour, label, fill, band, unit}], stacked, unit, least, max,
+ * `{from, to, step, series: [{points, colour, label, fill, band, unit, right}], rightUnit, stacked, unit, least, max,
  *   refs: [{v, label, colour, edit}], ticks: [[v, label]], onEdit(key), gaps: [{from, to}], axis, colourOf(point), shade: {points, colour}, marks: [t]}` —
+ * a series `right` is drawn thin and dashed on a second scale of its own (`rightUnit`), its words in the right gutter;
  * `colourOf` colours a line by its points (memory pressure by its level); `shade` shades the
  * spans a state was on (mains power, the owner present); `marks`, events' times (a vertical line each); `axis` draws the time and the scale's labels (`times: false`: the scale's alone);
  * `ticks`, the scale's lines and words in place of 0, half and the top; a ref's label is a boxed tag
@@ -58,16 +61,18 @@ function paint(c) {
   g.clearRect(0, 0, W, H);
   // (The mockup's frame: the scale's labels in a gutter at the left, every chart's the same width so
   // their plots line up; the time under it.)
-  const L = o.axis ? AXIS_W : 0, R = o.axis ? 4 : 0;
+  const L = o.axis ? AXIS_W : 0, R = o.axis ? AXIS_R : 0;
   const bottom = o.axis && o.times !== false ? 14 : 0;
   const top = o.axis ? 6 : 1;
   const ph = Math.max(1, H - bottom - top);
   const pw = Math.max(1, W - L - R);
   const span = Math.max(1, o.to - o.from);
   const X = (t) => L + ((t - o.from) / span) * pw;
-  const lists = o.series.map((s) => s.points || []);
-  const max = o.max ?? topOf(lists, { band: o.series.some((s) => s.band), least: Math.max(o.least || 0, ...(o.refs || []).map((r) => r.v)), stacked: o.stacked });
+  const left = o.series.filter((s) => !s.right), right = o.series.filter((s) => s.right);
+  const max = o.max ?? topOf(left.map((s) => s.points || []), { band: left.some((s) => s.band), least: Math.max(o.least || 0, ...(o.refs || []).map((r) => r.v)), stacked: o.stacked });
+  const rmax = right.length ? topOf(right.map((s) => s.points || []), {}) : 1;
   const Y = (v) => top + ph - (Math.max(0, Math.min(max, v)) / max) * ph;
+  const YR = (v) => top + ph - (Math.max(0, Math.min(rmax, v)) / rmax) * ph;
   g.font = "10px -apple-system, BlinkMacSystemFont, system-ui, sans-serif";
   g.textBaseline = "top";
 
@@ -118,6 +123,15 @@ function paint(c) {
       g.fillText(said[i], L - 4, y);
     }
     if (unit) { g.textAlign = "left"; g.fillText(unit, 0, top + ph / 2); }
+    // (The second scale on the right, in its series' colour, on the same lines: its 0 and top, its
+    // unit once where its half would be, so its words never meet.)
+    if (right.length && !o.ticks) {
+      const [rs, ru] = axisWords([0, rmax], rmax, o.rightUnit);
+      g.fillStyle = right[0].colour; g.textAlign = "left";
+      g.fillText(rs[0], W - R + 4, Y(0));
+      g.fillText(rs[1], W - R + 4, Y(max));
+      if (ru) g.fillText(ru, W - R + 4, top + ph / 2);
+    }
     if (o.times !== false) {
       // (At most four steps, the mockup's: "−1 min, −45 s, −30 s, −15 s, now" at every range.)
       const step = AGO_STEPS.find((x) => span / x <= Math.max(2, Math.min(4, Math.floor(pw / 80)))) ?? 86400;
@@ -131,8 +145,9 @@ function paint(c) {
     }
   }
   // The series: stacked fills in order, or each its line (and band, fill).
-  const base = new Map();
+  const base = new Map(), Y0 = Y;
   o.series.forEach((s) => {
+    const Y = s.right ? YR : Y0;
     for (const run of runs(s.points || [], o.step)) {
       const lo = run.map((p) => (o.stacked ? base.get(p[0]) || 0 : 0));
       const hi = run.map((p, i) => lo[i] + p[2]);
@@ -143,20 +158,22 @@ function paint(c) {
         for (let i = run.length - 1; i >= 0; i--) g.lineTo(X(run[i][0]), Y(run[i][1]));
         g.closePath(); g.fill(); g.globalAlpha = 1;
       }
-      if (s.fill || o.stacked) {
+      if ((s.fill || o.stacked) && !s.right) {
         g.fillStyle = s.colour; g.globalAlpha = o.stacked ? 0.35 : 0.18;
         g.beginPath();
         run.forEach((p, i) => (i ? g.lineTo(X(p[0]), Y(hi[i])) : g.moveTo(X(p[0]), Y(hi[i]))));
         for (let i = run.length - 1; i >= 0; i--) g.lineTo(X(run[i][0]), Y(lo[i]));
         g.closePath(); g.fill(); g.globalAlpha = 1;
       }
-      g.lineWidth = 1.5;
+      g.lineWidth = s.right ? 1.25 : 1.5;
       g.lineJoin = "round";
+      g.setLineDash(s.right ? [3, 2] : []);
       if (run.length === 1) { g.fillStyle = s.colour; g.fillRect(X(run[0][0]) - 1, Y(hi[0]) - 1, 2, 2); }
       for (let i = 1; i < run.length; i++) {
         g.strokeStyle = o.colourOf?.(run[i]) || s.colour;
         g.beginPath(); g.moveTo(X(run[i - 1][0]), Y(hi[i - 1])); g.lineTo(X(run[i][0]), Y(hi[i])); g.stroke();
       }
+      g.setLineDash([]);
       if (o.stacked) run.forEach((p, i) => base.set(p[0], hi[i]));
     }
     // (The newest point, a dot.)
@@ -191,7 +208,7 @@ function paint(c) {
     g.beginPath(); g.moveTo(Math.round(x) + 0.5, top); g.lineTo(Math.round(x) + 0.5, top + ph); g.stroke();
     const said = o.series.map((s) => {
       const p = nearest(s.points || [], t, o.step);
-      return `${s.label ? `${s.label} ` : ""}${p ? fmt(p[2], s.unit || o.unit) : "–"}`;
+      return `${s.label ? `${s.label} ` : ""}${p ? fmt(p[2], s.unit || (s.right ? o.rightUnit : o.unit)) : "–"}`;
     });
     const text = `${hhmm(t, span <= 600)}  ${said.join(" · ")}`;
     g.font = "10.5px -apple-system, BlinkMacSystemFont, system-ui, sans-serif";

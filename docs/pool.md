@@ -1179,7 +1179,8 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   and a ring of the last 200 transfers,
   each `{t, host, in, out, ms, outcome}` as it ended (`ok`, `broken`, `unreached`: answered 502,
   `refused`: 503). The counts are since the proxy started, in memory alone; their totals sampled
-  each second as `net_in_mbs`, `net_out_mbs` (MB/s). The status's budget counts (`wiki`, `query`,
+  each second as `net_in_mbs`, `net_out_mbs` (MB/s) and the requests asked as `net_req_s` (a
+  second; task #620). The status's budget counts (`wiki`, `query`,
   `other`, `holds`) are summed from them. Each job's own bytes in and out are counted too (task
   #518): its agent gives it the proxy's address tagged with its slot (`HTTPS_PROXY` and the others
   as `http://slot<k>:x@127.0.0.1:<port>`, which ureq, curl and Python send as

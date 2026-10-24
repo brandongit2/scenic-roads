@@ -14,7 +14,7 @@
 //!   processors, as many as the last perf level's; the performance ones every other); the build's CPU and memory (its jobs' processes' `proc_pid_rusage`)
 //!   and the rest of the Mac's (the cores busy and the memory in use, less the build's); the bytes
 //!   written to the Mac's disks (IOKit's block storage drivers' statistics) and by each job, as
-//!   rates; the sampler's own CPU time. Every 10 s the disk's free space and size. The battery, mains power and the
+//!   rates; the proxy's bytes in and out and its requests asked, as rates; the sampler's own CPU time. Every 10 s the disk's free space and size. The battery, mains power and the
 //!   owner's idleness as the agent's loop reads them (each round, ~20 s; minutes apart when a round is slow). The NAS's latency every 5 s (`NAS_EVERY`), while a build runs (`set_nas`):
 //!   a listing of the project's folder through the records' readers (crate::agent::nasread::probe;
 //!   a stat would be answered from the SMB client's cache), never two at once.
@@ -96,6 +96,8 @@ pub const SAMPLER: &str = "sampler_cpu_ms";
 /// The bytes through the proxy, in (to the jobs) and out (MB/s; crate::budget::net).
 pub const NET_IN: &str = "net_in_mbs";
 pub const NET_OUT: &str = "net_out_mbs";
+/// The requests the proxy was asked, a second (a tunnel one; crate::budget::net::Host::requests).
+pub const NET_REQ: &str = "net_req_s";
 pub const DISK: &str = "disk_free_gb";
 pub const DISK_SIZE: &str = "disk_size_gb";
 pub const BATTERY: &str = "battery_pct";
@@ -572,8 +574,8 @@ struct Rates {
     /// Per job (process group): the most of each count yet read, and when.
     jobs: BTreeMap<i32, (crate::sys::Usage, u64)>,
     disk: Option<(u64, u64)>,
-    /// The proxy's bytes in and out, and when.
-    net: Option<(u64, u64, u64)>,
+    /// The proxy's bytes in and out, its requests, and when.
+    net: Option<(u64, u64, u64, u64)>,
     /// The NAS calls missed so far, as last read.
     missed: Option<u64>,
     /// Per counts file (its folder and name): the newest of its notes taken into the file stream.
@@ -674,16 +676,17 @@ impl Rates {
         out
     }
 
-    /// The proxy's bytes in and out over the second at `t`, once the store has its counts (the
-    /// first read their baseline).
+    /// The proxy's bytes in and out and its requests over the second at `t`, once the store has
+    /// its counts (the first read their baseline).
     fn net(&mut self, s: &Store, t: u64) {
-        let Some((i, o)) = s.net().map(|n| n.totals()) else { return };
-        if let Some((wi, wo, at)) = self.net {
+        let Some((i, o, q)) = s.net().map(|n| n.totals()) else { return };
+        if let Some((wi, wo, wq, at)) = self.net {
             let dt = t.saturating_sub(at).max(1) as f64;
             s.record(NET_IN, t, i.saturating_sub(wi) as f64 / MB / dt);
             s.record(NET_OUT, t, o.saturating_sub(wo) as f64 / MB / dt);
+            s.record(NET_REQ, t, q.saturating_sub(wq) as f64 / dt);
         }
-        self.net = Some((i, o, t));
+        self.net = Some((i, o, q, t));
     }
 
     /// The jobs' use at `t`, from each one's (slot, process group, usage now): what they hold
@@ -1037,11 +1040,13 @@ mod tests {
         r.net(&s, t0);
         n.host("a.example").bytes_in.fetch_add(3 << 20, Ordering::Relaxed);
         n.host("b.example").bytes_out.fetch_add(1 << 20, Ordering::Relaxed);
+        n.host("a.example").requests.fetch_add(3, Ordering::Relaxed);
         n.ended("a.example", (3 << 20, 0), 900, Outcome::Ok);
         r.net(&s, t0 + 2);
         let v = s.answer(&Ask { range: Some(60), ..Default::default() }, t0 + 2);
         assert_eq!(v["series"][NET_IN][0][2], 1.5);
         assert_eq!(v["series"][NET_OUT][0][2], 0.5);
+        assert_eq!(v["series"][NET_REQ][0][2], 1.5);
         assert_eq!(v["net"]["hosts"]["a.example"]["in"], 3 << 20);
         assert_eq!(v["net"]["events"][0]["ms"], 900);
         // (Asked without: the series alone.)

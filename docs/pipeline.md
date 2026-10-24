@@ -251,8 +251,10 @@ boxes).
   tested by web/test/chartmath.test.mjs), as docs/mockups/build-live.html's vitals: each core's
   share busy now (bars, the efficiency and performance groups named: `cores_now`); four transfer
   charts (the jobs' NAS reads and writes, the internet in and out, each its last minute's mean
-  said); then a chart a measure. As in the mockup, each row is its name over its figures in a
-  150 px column, its chart beside (the scale's 0, half and top in a 58 px gutter, the time under it
+  said; each with a second line, thin and dashed, on its own scale in a 40 px gutter at the right,
+  its 0 and top and its unit once between them, in its colour: `nas_files_s` and `nas_creates_s` as
+  files/s, `net_req_s` on both internet charts as req/s; task #620); then a chart a measure. As in the mockup, each row is its name over its figures in a
+  150 px column, its chart beside (the scale's 0, half and top in a 58 px gutter, a 40 px one at the right in every chart, the time under it
   as time ago, limits dashed in the warning's colour, the newest point a dot): CPU use (the build's and the rest's,
   stacked, against the Mac's cores and the cores the build may use now; P and E said), the load
   (against the cores; what waits for a core said), memory (the build's and the rest's, stacked, in

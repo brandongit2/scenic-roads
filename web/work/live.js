@@ -4,7 +4,8 @@
 // the newest it has (the same ring, so one resolution). This page's own Mac through its own calls;
 // the others at their addresses in /work/swarm's `macs` (by the scheme the page came over).
 // Drawn per Mac as docs/mockups/build-live.html draws it (a row a measure: its name over its words, its chart beside): each core's share busy now, its transfers
-// (the jobs' NAS reads and writes, the internet in and out), then a chart a measure: CPU use (the
+// (the jobs' NAS reads and writes, the internet in and out, each with a second line on its own scale:
+// files opened, files made, the proxy's requests a second), then a chart a measure: CPU use (the
 // build's and the rest's, stacked, against its cores and the build's limit), the load, memory (the
 // build's and the rest's against the build's limit), its pressure, the swap, the disk's free space
 // (against the room target) and writes, the battery (shaded on mains), the NAS's answer time and
@@ -18,7 +19,7 @@ const EVERY_MS = 1500;
 const DAY_EVERY_MS = 60000;
 // How old a reading of the agent's loop (power, idleness, limits) may be and still be said.
 const LOOP_FRESH_S = 900;
-const SERIES = ["nas_read_mbs", "nas_write_mbs", "net_in_mbs", "net_out_mbs", "build_cores", "others_cores", "cores_busy", "cores_busy_e", "cores_busy_p", "load1",
+const SERIES = ["nas_read_mbs", "nas_write_mbs", "net_in_mbs", "net_out_mbs", "nas_files_s", "nas_creates_s", "net_req_s", "build_cores", "others_cores", "cores_busy", "cores_busy_e", "cores_busy_p", "load1",
   "mem_free_pct", "mem_pressure", "mem_compressed_gb", "thermal", "swap_mb", "build_mem_gb", "others_mem_gb", "disk_free_gb", "disk_size_gb", "disk_write_mbs", "battery_pct", "ac", "idle_s",
   "build_cores_max", "build_mem_max_gb", "disk_room_gb", "disk_reserved_gb", "nas_ms", "nas_calls", "nas_missed", "jobs",
   // (The lead's alone, summed over the pool; missing from the others' answers: nas.js.)
@@ -159,10 +160,10 @@ function build() {
   const io = el("div", "mac");
   const xfer = (name, col, tip) => row(io, name, tip, col, "");
   const ioRows = {
-    nr: xfer("NAS read", "--nas-r", "Bytes this Mac's jobs read from the NAS each second."),
-    nw: xfer("NAS write", "--nas-w", "Bytes this Mac's jobs wrote to the NAS each second."),
-    nd: xfer("From internet", "--net-d", "Bytes this Mac's jobs downloaded from the internet each second."),
-    nu: xfer("To internet", "--net-u", "Bytes this Mac's jobs sent to the internet each second: requests and queries."),
+    nr: xfer("NAS read", "--nas-r", "Bytes this Mac's jobs read from the NAS each second. Dashed, on the right's scale: files they opened each second."),
+    nw: xfer("NAS write", "--nas-w", "Bytes this Mac's jobs wrote to the NAS each second. Dashed, on the right's scale: files they made each second."),
+    nd: xfer("From internet", "--net-d", "Bytes this Mac's jobs downloaded from the internet each second. Dashed, on the right's scale: requests they made each second."),
+    nu: xfer("To internet", "--net-u", "Bytes this Mac's jobs sent to the internet each second: requests and queries. Dashed, on the right's scale: requests they made each second."),
   };
   const vit = el("div", "mac");
   const legend = el("div", "phlegend");
@@ -264,12 +265,14 @@ function paint(host) {
   b.bars.hidden = !each.length;
   b.nowV.textContent = each.length ? "" : "cores now: not measured";
 
-  // Transfers: the jobs' NAS reads and writes, the internet in and out (MB/s).
-  for (const [key, k, col] of [["nr", "nas_read_mbs", nr], ["nw", "nas_write_mbs", nw], ["nd", "net_in_mbs", nd], ["nu", "net_out_mbs", nu]]) {
+  // Transfers: the jobs' NAS reads and writes, the internet in and out (MB/s), each with its count
+  // a second on the right's scale (files opened, files made, requests).
+  for (const [key, k, col, k2, u2, w2] of [["nr", "nas_read_mbs", nr, "nas_files_s", "files/s", "opened"], ["nw", "nas_write_mbs", nw, "nas_creates_s", "files/s", "made"],
+    ["nd", "net_in_mbs", nd, "net_req_s", "req/s", "requests"], ["nu", "net_out_mbs", nu, "net_req_s", "req/s", "requests"]]) {
     const r = b.ioRows[key];
-    draw(r.c, { ...base, unit: "MB/s", series: [{ points: s[k], colour: col, fill: true, label: "" }] });
-    const now1 = at(k);
-    words(r.v, [now1 == null ? "not measured" : fmt(now1, "MB/s"), `last min ${fmt(recentMean(s[k], now), "MB/s")}`]);
+    draw(r.c, { ...base, unit: "MB/s", rightUnit: u2, series: [{ points: s[k], colour: col, fill: true, label: "" }, { points: s[k2], colour: col, right: true, label: w2 }] });
+    const now1 = at(k), now2 = at(k2);
+    words(r.v, [now1 == null ? "not measured" : fmt(now1, "MB/s"), `${w2} ${now2 == null ? "not measured" : fmt(now2, u2)}`, `last min ${fmt(recentMean(s[k], now), "MB/s")}`]);
   }
 
   // CPU use: the build's and the rest's, stacked, against the Mac's cores and the build's limit.

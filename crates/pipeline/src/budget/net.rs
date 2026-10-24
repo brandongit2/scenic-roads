@@ -135,11 +135,11 @@ impl Net {
         });
     }
 
-    /// The bytes in and out of every host together (the live store's rates).
-    pub fn totals(&self) -> (u64, u64) {
+    /// The bytes in and out of every host together, and the requests asked (the live store's rates).
+    pub fn totals(&self) -> (u64, u64, u64) {
         let h = self.hosts.lock().unwrap_or_else(|e| e.into_inner());
-        h.values()
-            .fold((0, 0), |(i, o), c| (i + c.bytes_in.load(Ordering::Relaxed), o + c.bytes_out.load(Ordering::Relaxed)))
+        let l = |a: &AtomicU64| a.load(Ordering::Relaxed);
+        h.values().fold((0, 0, 0), |(i, o, r), c| (i + l(&c.bytes_in), o + l(&c.bytes_out), r + l(&c.requests)))
     }
 
     /// Each host's `field` summed by `pick` of its name (the status's counts by class).
@@ -238,7 +238,7 @@ mod tests {
         let n = Net::default();
         n.host("A.example").bytes_in.fetch_add(3, Ordering::Relaxed);
         n.host("a.example").bytes_out.fetch_add(4, Ordering::Relaxed);
-        assert_eq!(n.totals(), (3, 4));
+        assert_eq!(n.totals(), (3, 4, 0));
         assert_eq!(n.view()["hosts"]["a.example"]["out"], 4);
         assert_eq!(n.view()["hosts"]["a.example"]["limit"], serde_json::Value::Null);
     }
