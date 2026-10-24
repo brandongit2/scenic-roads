@@ -140,13 +140,16 @@ export function timelineSpan(from, to) {
   return [from - pad, to + pad];
 }
 
-/** Which marks (their x, sorted) get their label of width `w` (px) without two overlapping
- * (`gap` px between), the latest first: the indexes labelled. */
-export function labelled(xs, w, gap = 6) {
+/** Which marks (their x, sorted) get their label of width `w` (px; one width, or each label's)
+ * without two overlapping (`gap` px between): the `pin` indexes first (the latest first), then
+ * the rest the latest first. The indexes labelled, in order. */
+export function labelled(xs, w, gap = 6, pin = []) {
+  const wd = (i) => (Array.isArray(w) ? w[i] : w) / 2;
+  const pinned = new Set(pin);
+  const order = [...[...pinned].sort((a, b) => b - a), ...xs.map((_, i) => i).reverse().filter((i) => !pinned.has(i))];
   const out = [];
-  let left = Infinity;
-  for (let i = xs.length - 1; i >= 0; i--) if (xs[i] + w / 2 + gap <= left) { out.push(i); left = xs[i] - w / 2; }
-  return out.reverse();
+  for (const i of order) if (out.every((k) => xs[i] + wd(i) + gap <= xs[k] - wd(k) || xs[k] + wd(k) + gap <= xs[i] - wd(i))) out.push(i);
+  return out.sort((a, b) => a - b);
 }
 
 const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -278,13 +281,20 @@ export function createCatalogues({ call, store, map, card, countries }) {
     }
     const shownCats = cats.filter((c) => c.t >= a && c.t <= b);
     const xs = shownCats.map((c) => x(c.t));
-    const lab = new Set(labelled(xs, 34));
+    // (A label is "386 · 22:17"; the first labelled of a day has its date too, "23 Oct": the
+    // marks thinned on the plain widths, those day-firsts then widened and kept, the rest around them; none past the timeline's edge.)
+    const day = (c) => new Date(c.t * 1000).toDateString();
+    const plain = shownCats.map((c) => `${c.n} · ${hhmm(c.t)}`);
+    const base = labelled(xs, plain.map((t) => t.length * 5.8));
+    const dated = new Set(base.filter((v, n) => n === 0 || day(shownCats[base[n - 1]]) !== day(shownCats[v])));
+    const text = plain.map((t, i) => (dated.has(i) ? `${shownCats[i].n} · ${new Date(shownCats[i].t * 1000).getDate()} ${MON[new Date(shownCats[i].t * 1000).getMonth()]} ${hhmm(shownCats[i].t)}` : t));
+    const lab = new Set(labelled(base.map((i) => xs[i]), base.map((i) => text[i].length * 5.8), 6, [...dated].map((i) => base.indexOf(i))).map((n) => base[n]).filter((i) => xs[i] - text[i].length * 2.9 >= 0 && xs[i] + text[i].length * 2.9 <= W));
     shownCats.forEach((c, i) => {
       const out = c.t < from || c.t > to;
       const on = c.n === (hovered ?? pinnedN);
-      const g = svg("g", { class: `mk${out ? " out" : ""}${on ? " on" : ""}`, "data-n": c.n });
+      const g = svg("g", { class: `mk${out ? " out" : ""}${on ? " on" : ""}`, "data-n": c.n, "data-k": (c.z3 || []).length + (c.z6 || []).length });
       g.append(svg("line", { x1: xs[i], x2: xs[i], y1: c.whole ? 10 : 18, y2: axisY }));
-      if (lab.has(i)) { const t = svg("text", { x: xs[i], y: 8, class: "lbl" }); t.textContent = c.n; g.append(t); }
+      if (lab.has(i)) { const t = svg("text", { x: xs[i], y: 8, class: "lbl" }); t.textContent = text[i]; g.append(t); }
       g.append(svg("rect", { x: xs[i] - 5, y: 0, width: 10, height: axisY, class: "hit" }));
       kids.push(g);
     });

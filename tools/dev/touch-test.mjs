@@ -151,6 +151,8 @@ async function run() {
       let marks = 0;
       for (let i = 0; i < 120 && !marks; i++) { await sleep(500); marks = await js(`document.querySelectorAll(".panel:not([hidden]) .cat-tl g.mk").length`); }
       check("catalogues: the timeline marks the catalogues in its span", marks > 0, `${marks} marks; ${await js(`document.querySelector(".cat-status")?.textContent`)}`);
+      const lbls = await js(`(() => { const r = [...document.querySelectorAll(".panel:not([hidden]) .cat-tl .lbl")].map((e) => { const b = e.getBoundingClientRect(); return [b.left, b.right, e.textContent]; }).sort((p, q) => p[0] - q[0]); const bad = r.filter((v, i) => i && v[0] < r[i - 1][1]).map((v) => v[2]); return [r.length, bad, r.filter((v) => !/^\\d+ · /.test(v[2])).length]; })()`);
+      check("catalogues: mark labels name number and time, never overlap", lbls[0] > 0 && !lbls[1].length && !lbls[2], `${lbls[0]} labels; overlapping ${lbls[1].join(", ")}; number alone ${lbls[2]}`);
       const cv = `[...document.querySelectorAll(".panel:not([hidden]) .cat canvas.wmap")][0]`;
       const pix = () => js(`(() => { const c = ${cv}; if (!c || !c.width) return null; const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data; let h = 0; for (let j = 0; j < d.length; j += 4 * 13) h = (h * 31 + d[j] + d[j + 1] * 3 + d[j + 2] * 7) | 0; return h; })()`);
       const p0 = await pix();
@@ -161,7 +163,7 @@ async function run() {
       await sleep(300);
       await shot(`chrome-catalogues`);
       // (The mark with the most tiles in the range, hovered by a mouse.)
-      const mk = await js(`(() => { const g = [...document.querySelectorAll(".panel:not([hidden]) .cat-tl g.mk:not(.out)")].pop() || document.querySelector(".panel:not([hidden]) .cat-tl g.mk"); if (!g) return null; g.scrollIntoView({ block: "center" }); const r = g.querySelector(".hit").getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, g.dataset.n]; })()`);
+      const mk = await js(`(() => { const all = [...document.querySelectorAll(".panel:not([hidden]) .cat-tl g.mk")]; const top = (g) => { const q = g.querySelector(".hit").getBoundingClientRect(); return document.elementFromPoint(q.left + q.width / 2, q.top + q.height / 2)?.closest("g.mk") === g; }; const g = all.reverse().find((e) => !e.classList.contains("out") && e.dataset.k !== "0" && top(e)) || all[0]; if (!g) return null; g.scrollIntoView({ block: "center" }); const r = g.querySelector(".hit").getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, g.dataset.n]; })()`);
       if (!mk) check("catalogues: a mark hovered lights its tiles", false, "no mark");
       else {
         await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: mk[0], y: mk[1], pointerType: "mouse" });

@@ -89,6 +89,8 @@ assert.equal(1000 - a, b - 1800);
 // Labels never overlap; the latest kept first.
 assert.deepEqual(labelled([0, 10, 20, 100], 30), [2, 3]);
 assert.deepEqual(labelled([0, 50, 100], 30), [0, 1, 2]);
+assert.deepEqual(labelled([0, 40, 80], [30, 80, 30]), [0, 2]);
+assert.deepEqual(labelled([0, 40, 80], 50, 6, [0]), [0, 2]);
 // The axis: times of day up to two days, days past them.
 assert.ok(axisTicks(NOW - 6 * H, NOW).every((t) => /^\d\d:\d\d$/.test(t.label)));
 const days = axisTicks(NOW - 10 * D, NOW, 6);

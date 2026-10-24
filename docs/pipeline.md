@@ -184,7 +184,7 @@ boxes).
   "now", moving on with the clock, until another time is committed there). "Hide tiles outside the
   date range": unticked, those take the nearer end's colour; ticked, they aren't drawn. Under
   the map a timeline across the box's width: every catalogue a mark (a tall one written whole),
-  labelled with its number where the label fits (none overlapping, the latest first), the range
+  labelled "number · time" (with the date on the first labelled of a day) where the label fits (none overlapping, the latest first, the dated ones kept first), the range
   in its middle 80% and the tenth beyond it each side dimmed, a time axis under it (times of day
   up to two days, then days; local time, said once). Hovering a mark (a tap holds it, again lets
   it go) names the catalogue (number, time, whole or delta, its tiles) and lights its tiles in
