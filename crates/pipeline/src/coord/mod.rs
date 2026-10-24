@@ -7421,9 +7421,8 @@ mod tests {
         let g2 = w.ask(&ask("m1", 3000, 1, vec![g1.lease], wait(g1.lease, 300))).unwrap().unwrap();
         // Holding past its measure: counted at its measure (2000 + 2000 of 5000), no third.
         assert!(w.ask(&ask("m1", 5000, 1, vec![g1.lease, g2.lease], wait(g1.lease, 9000))).unwrap().is_none());
-        // Another member naming m1's lease frees nothing of its own room.
-        let g3 = w.ask(&ask("m2", 3000, 1, vec![], vec![])).unwrap().unwrap();
-        assert!(w.ask(&ask("m2", 3000, 1, vec![g3.lease], wait(g1.lease, 0))).unwrap().is_none());
+        // Another member naming m1's lease gains nothing by it: m2's 1500 MB fits no job.
+        assert!(w.ask(&ask("m2", 1500, 1, vec![g1.lease], wait(g1.lease, 0))).unwrap().is_none());
         // m1 gone while it waited, its leases lapsed: its room whole again when it's back.
         clock.advance(TTL + Duration::from_secs(1));
         assert_eq!(all_granted(&w, &ask("m1", 4000, 2, vec![], vec![])).len(), 2);
