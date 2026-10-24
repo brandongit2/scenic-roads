@@ -552,7 +552,7 @@ impl<'a> Reader<'a> {
     fn pack(&mut self, z: u8, x: u32, y: u32) -> Found<'a> {
         let d = crate::terrain_deep::PACK_Z;
         let (scope, pz, px, py) = match crate::layers::pack_of(z, x, y) {
-            _ if z > d + 2 => ("deep", d, x >> (z - d), y >> (z - d)),
+            _ if z >= crate::terrain_deep::FIRST_Z => ("deep", d, x >> (z - d), y >> (z - d)),
             p => p,
         };
         let (tiles, m) = (self.tiles, self.m);

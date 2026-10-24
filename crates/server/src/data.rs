@@ -447,7 +447,7 @@ impl Data {
             0..=2 => l.root.clone(),
             3..=8 => l.lo.get(&format!("3/{}/{}", x >> (z - 3), y >> (z - 3))).cloned(),
             // (The terrain's deep levels: its deep packs by z10 tile, pipeline::terrain_deep.)
-            _ if z > f + 2 && !l.deep.is_empty() => {
+            _ if z >= pipeline::terrain_deep::FIRST_Z && !l.deep.is_empty() => {
                 l.deep.get(&format!("{f}/{}/{}", x >> (z - f), y >> (z - f))).cloned()
             }
             _ => l.hi.get(&format!("6/{}/{}", x >> (z - 6), y >> (z - 6))).cloned(),

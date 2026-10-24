@@ -341,7 +341,7 @@ impl ManifestTiles {
             3..=8 => format!("layers/{layer}/lo/3-{}-{}", x >> (z - 3), y >> (z - 3)),
             // (The terrain's deep levels and their shading, by z10 tile: crate::terrain_deep,
             // crate::slope_pack.)
-            _ if (layer == "terrain" || layer == "slope") && z > deep + 2 => {
+            _ if (layer == "terrain" || layer == "slope") && z >= crate::terrain_deep::FIRST_Z => {
                 format!("layers/{layer}/deep/{deep}-{}-{}", x >> (z - deep), y >> (z - deep))
             }
             _ => format!("layers/{layer}/hi/6-{}-{}", x >> (z - 6), y >> (z - 6)),
@@ -1840,7 +1840,7 @@ pub fn build_piece_later(
     let total: u64 = levels.iter().map(|(_, t)| t.len() as u64).sum();
     let mk = Maker::new(raw, src);
     let p = crate::timings::phase("the piece's tiles made (z12 → z9)", crate::timings::Class::Mixed);
-    let (hi, mid) = saying(&mk, total, progress, || {
+    let (mut hi, mid) = saying(&mk, total, progress, || {
         let mine = offers.rest(&levels);
         let n = mine.iter().map(|(_, t)| t.len()).sum();
         let began = std::time::Instant::now();
@@ -1856,8 +1856,13 @@ pub fn build_piece_later(
     let (deep_packs, deep_gone) = match deep {
         Some(d) => {
             let _p = crate::timings::phase("its deep levels made (z13–16)", crate::timings::Class::Mixed);
-            let (r, packs, gone) = crate::terrain_deep::make_piece(out, t, &hi, src.water, d, progress)?;
+            let (r, packs, gone, more) = crate::terrain_deep::make_piece(out, t, &hi, src.water, d, progress)?;
             (rep.deep_tiles, rep.deep_packs, rep.deep_dropped) = (r.tiles, r.packs, r.dropped);
+            // (Its deep levels of z12, north of 67°: in its hi pack, as every reader looks for them.)
+            if !more.is_empty() {
+                hi.extend(more);
+                hi.sort_by_key(|t| (t.0, t.1, t.2));
+            }
             (packs, gone)
         }
         None => (Vec::new(), Vec::new()),

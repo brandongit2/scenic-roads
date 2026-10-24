@@ -38,7 +38,7 @@ index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
 - Root pack: z0–2 (root "0/0/0"). Lo pack: z3–8 under one z3 tile. Hi pack: z9–14 under one z6
   tile. **The terrain** (one terrain, z0 to each place's native zoom: steps.md §2) adds deep packs,
   `layers/terrain/deep/10-<x>-<y>` (scope `deep`): z13–16 under one z10 tile, only where a dataset
-  has the detail (pipeline::terrain_deep; a z6 tile's would be up to 130 GB). Every terrain tile, in
+  has the detail (a deep z12, north of 67°, is in its z6 tile's hi pack) (pipeline::terrain_deep; a z6 tile's would be up to 130 GB). Every terrain tile, in
   every scope, is Terrarium RGB as lossless WebP (`RIFF…WEBPVP8L`, the packs' encoding
   `terrarium-webp`: pipeline::terrain_codec; heights rounded to 1 cm at the place's native zoom and
   in the deep levels, to 10 cm coarser), served as `image/webp`. The catalog names the deep packs

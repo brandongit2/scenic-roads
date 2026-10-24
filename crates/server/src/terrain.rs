@@ -67,11 +67,12 @@ pub fn terrain_stored(s: &crate::AppState, z: u8, x: u32, y: u32) -> anyhow::Res
     Ok(s.data.tile("terrain", z, x, y)?.map(|(b, _)| b.bytes().to_vec()))
 }
 
-/// The terrain's deep zooms (pipeline::terrain_deep's deep packs, past the base's finest): read from
-/// this Mac where a region's terrain detail is downloaded (crate::downloads), else from the NAS;
-/// away from it, a tile there that can't be read is made from its ancestor in the hi packs.
-fn deep_zoom(z: u8, y: u32) -> bool {
-    z > pipeline::terrain_pack::max_zoom_at(pipeline::terrain_pack::tile_lat(z, y))
+/// The terrain's deep zooms (pipeline::terrain_deep's deep packs, z13 on; a deep z12, north of 67°,
+/// is in the hi packs): read from this Mac where a region's terrain detail is downloaded
+/// (crate::downloads), else from the NAS; away from it, a tile there that can't be read is made from
+/// its ancestor in the hi packs.
+fn deep_zoom(z: u8) -> bool {
+    z >= pipeline::terrain_deep::FIRST_Z
 }
 
 /// Terrain heights (m) of a tile, from its nearest stored ancestor when it isn't stored, or is a
@@ -82,7 +83,7 @@ pub fn terrain_f32(s: &crate::AppState, z: u8, x: u32, y: u32) -> anyhow::Result
     let got = tile_with_fallback_by(
         &|z, x, y| match terrain_stored(s, z, x, y) {
             Ok(b) => b,
-            Err(_) if deep_zoom(z, y) => None,
+            Err(_) if deep_zoom(z) => None,
             Err(e) => {
                 failed.borrow_mut().get_or_insert(e);
                 None
@@ -196,7 +197,7 @@ pub async fn terrain_tile(
         }
         match stored(&s, "terrain", z, x, y, &headers) {
             // (A deep tile that can't be read now: made from its ancestor, `terrain_f32`.)
-            Some(Got::Failed) if deep_zoom(z, y) => {}
+            Some(Got::Failed) if deep_zoom(z) => {}
             Some(g) => return g,
             None => {}
         }
@@ -219,7 +220,7 @@ pub fn shade_from_ancestor(s: &crate::AppState, layer: &str, z: u8, x: u32, y: u
         let b = match s.data.tile(layer, pz, px, py) {
             Ok(Some((b, _))) => b,
             Ok(None) => continue,
-            Err(_) if deep_zoom(pz, py) => continue,
+            Err(_) if deep_zoom(pz) => continue,
             Err(e) => return Err(e),
         };
         let p = roadcore::shade::decode(b.bytes())?;
@@ -247,7 +248,7 @@ pub async fn shade_tile(
     let got = tokio::task::spawn_blocking(move || {
         match stored(&s, layer, z, x, y, &headers) {
             Some(Got::Stored(b, _)) if !b.starts_with(b"RIFF") => {}
-            Some(Got::Failed) if deep_zoom(z, y) => {}
+            Some(Got::Failed) if deep_zoom(z) => {}
             Some(g) => return g,
             None => {}
         }
