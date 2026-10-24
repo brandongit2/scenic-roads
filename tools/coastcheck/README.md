@@ -10,7 +10,7 @@ pixel.
   (`crates/pipeline/src/bin/coastcheck.rs`, `pipeline::watercov`), as raster tiles drawn in the same
   page and camera at 4 × the pixel ratio (2 × with 3D terrain) and box-filtered back, so the
   projection, globe and terrain are MapLibre's own. The full detail is the basemap's water polygons
-  plus the pass's `water` set (`coastcheck build`, once a pass); each edge adds its exact area to the
+  plus the water areas of the pass's filtered planet (`coastcheck build`, once a pass); each edge adds its exact area to the
   pixels it crosses. `--vector` checks it against MapLibre's own vector drawing.
 - Each capture waits until everything is loaded, the camera has settled and draped textures are
   redrawn; GL errors are reported.
@@ -48,7 +48,7 @@ The reference store lives on the lead (the M4).
 # the app: a server of this checkout on a test root
 target/release/server --root <test root> --home <scratch home> --port 18094 --listen 127.0.0.1 --no-mirror
 # the reference, on the lead, through a tunnel
-ssh m4 'coastcheck build --set <water set .osm.pbf> --water-polygons <zip> --out geom'   # once a pass
+ssh m4 'coastcheck build --osm <the pass's filtered .osm.pbf> --water-polygons <zip> --out geom'   # once a pass
 ssh m4 'coastcheck serve --store geom --port 18095' & ssh -N -L 18095:127.0.0.1:18095 m4 &
 # a Chrome of its own, 800 × 600 at 2×
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \

@@ -417,12 +417,12 @@ pub struct Coastcheck {
 
 #[derive(Subcommand, Debug)]
 pub enum CoastcheckCmd {
-    /// The water at full detail into a store: the pass's water set's areas and the sea's water
+    /// The water at full detail into a store: the water areas of the pass's filtered planet and the sea's water
     /// polygons
     Build {
-        /// The pass's water set
-        #[arg(long, value_name = "WATER SET .OSM.PBF")]
-        set: PathBuf,
+        /// The pass's filtered planet (sources/osm/<date>/filtered)
+        #[arg(long, value_name = "FILTERED .OSM.PBF")]
+        osm: PathBuf,
         #[arg(long, value_name = "ZIP")]
         water_polygons: PathBuf,
         /// The store folder

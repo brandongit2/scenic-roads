@@ -75,10 +75,6 @@ pub const SETS: &[(&str, u32, &[&str])] = &[
     ("summits", 2, &["nw/natural=peak,volcano"]),
     // Hiking and foot routes with their member ways, for the routes' ends (pipeline::trailends).
     ("hikes", 1, &["r/route=hiking,foot"]),
-    // What the basemap draws as water: the shoreline check's full-detail reference
-    // (pipeline::watercov, tools/coastcheck), read from the pass's set rather than the basemap so the
-    // check doesn't take the basemap's word for the water.
-    ("water", 1, crate::watercov::SET_FILTER),
     // The heritage chain's named objects (heritage, museums, lighthouses, stations, protected areas
     // and parks), and World Heritage objects, for locating register records.
     (

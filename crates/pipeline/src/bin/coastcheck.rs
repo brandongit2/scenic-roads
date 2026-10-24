@@ -1,13 +1,14 @@
 //! The shoreline check's reference (tools/coastcheck/README.md): the water at full detail, and its
 //! exact coverage served as raster tiles for the map to draw from the same camera as the app.
 //!
-//!   coastcheck build --set <water set .osm.pbf> --water-polygons <zip> --out <store folder>
+//!   coastcheck build --osm <the pass's filtered .osm.pbf> --water-polygons <zip> --out <store folder>
 //!                    [--index sparse_mem_array|sparse_file_array,<file>]
 //!   coastcheck serve --store <store folder> [--port 18095]
 //!   coastcheck tile --store <store folder> <z> <x> <y> [--size 512] > tile.png
 //!
-//! `build` reads every water area the basemap draws from the pass's `water` set (osmium export, its
-//! areas assembled) and every ring of the sea's water polygons into a store (pipeline::watercov).
+//! `build` reads every water area the basemap draws from the pass's filtered planet (osmium
+//! tags-filter by `watercov::SET_FILTER` into the store folder, then osmium export, its areas
+//! assembled; the ~6 GB filtered file deleted after) and every ring of the sea's water polygons into a store (pipeline::watercov).
 //! `serve` answers `/cov/{z}/{x}/{y}?s=<size>&k=<all|sea|inland>` (size 1–2048, 512 by default)
 //! with a grey PNG, each pixel 255 × (1 − its water coverage): white land, black water, exact
 //! anti-aliasing between; with `&raw=1`, the shares as the server's water tiles give them raw (red
@@ -23,7 +24,7 @@ use std::sync::Arc;
 
 fn main() -> Result<()> {
     match Coastcheck::parse().cmd {
-        C::Build { set, water_polygons, out, index } => build(&set, &water_polygons, &out, &index),
+        C::Build { osm, water_polygons, out, index } => build(&osm, &water_polygons, &out, &index),
         C::Serve { store, port } => serve(&store, port),
         C::Stats { store, z, sample, size } => stats(&store, z, sample, size),
         C::WaterPacks { tiles, catalog, root } => {
@@ -167,8 +168,26 @@ fn main() -> Result<()> {
     }
 }
 
-fn build(set: &Path, zip: &Path, out: &Path, index: &str) -> Result<()> {
+fn build(osm: &Path, zip: &Path, out: &Path, index: &str) -> Result<()> {
     let mut w = GeomWriter::create(out)?;
+    // The areas the basemap draws as water, from the pass's filtered planet.
+    let set = out.join("water.osm.pbf");
+    let t = std::time::Instant::now();
+    let st = store::spawn::spawn(
+        pipeline::osmpass::osmium()
+            .args(["tags-filter", "--overwrite", "-F", "pbf", "-o"])
+            .arg(&set)
+            .arg(osm)
+            .args(wc::SET_FILTER),
+    )
+    .context("run osmium tags-filter")?
+    .wait()?;
+    anyhow::ensure!(st.success(), "osmium tags-filter failed");
+    eprintln!(
+        "coastcheck: water areas filtered ({} MB) in {:.0} s",
+        std::fs::metadata(&set)?.len() >> 20,
+        t.elapsed().as_secs_f64()
+    );
     let t = std::time::Instant::now();
     // The sea's water polygons.
     let mut unzip = store::spawn::spawn(
@@ -212,6 +231,7 @@ fn build(set: &Path, zip: &Path, out: &Path, index: &str) -> Result<()> {
     });
     anyhow::ensure!(child.wait()?.success(), "osmium export failed");
     std::fs::remove_file(&cfg).ok();
+    std::fs::remove_file(&set).ok();
     eprintln!("coastcheck: {} areas in {:.0} s", n?, t.elapsed().as_secs_f64());
     let skipped = w.skipped;
     let (rings, points) = w.finish()?;

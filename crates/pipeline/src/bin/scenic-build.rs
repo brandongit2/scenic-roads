@@ -695,7 +695,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             // pass-sets [--pass <date>]: the sets the pass lacks in their current filters
             // (osmpass::SETS versions), from its kept filtered planet: copied here first when
             // there's room, since osmium reads it two or three times a set (from the NAS over
-            // Wi-Fi that took hours a set; over the LAN, 65 min for the water set).
+            // Wi-Fi that took hours a set; over the LAN, 65 min for one set).
             let date = opt(&args, "--pass")
                 .or_else(|| pipeline::osmpass::latest_pass(out.root()))
                 .context("no complete OSM pass")?;

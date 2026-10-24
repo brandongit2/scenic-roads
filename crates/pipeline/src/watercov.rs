@@ -2,7 +2,7 @@
 //!
 //! The water is what the basemap draws as water at its deepest zoom, before any simplification or
 //! dropping: the sea from the pinned water polygons (`sources/basemap/water-polygons-split-3857.zip`,
-//! what Planetiler reads for the ocean) and the inland water from the pass's `water` set (lakes,
+//! what Planetiler reads for the ocean) and the inland water from the pass's filtered planet (lakes,
 //! reservoirs, rivers' and canals' areas, as osmium assembles them; their holes are islands).
 //!
 //! **The store** (a folder, `Geom`): every ring, its points as Web Mercator world units × 2³²
@@ -486,7 +486,7 @@ pub fn tile_coverage_of(g: &Geom, z: u8, x: u32, y: u32, size: usize, which: Whi
 
 // ---- reading the sources --------------------------------------------------------------------------
 
-/// The pass's `water` set's filter (pipeline::osmpass::SETS): the areas below.
+/// What `coastcheck build` takes from the pass's filtered planet (osmium tags-filter): the areas below.
 pub const SET_FILTER: &[&str] = &[
     "wr/natural=water",
     "wr/landuse=reservoir,basin,salt_pond",
