@@ -46,6 +46,7 @@ button:disabled { opacity: .5; }
 .kpi .k { color: var(--dim); font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; }
 .kpi .v { font-size: 15px; margin-top: 1px; }
 .kpi .s { color: var(--dim); font-size: 11px; margin-top: 1px; }
+.kpi .macs > div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* The world map (worldmap.js): its canvas, its zoom buttons over it, the legend and filters under it
    (docs/mockups/build-live.html's map: a bordered canvas, a crosshair over it). */

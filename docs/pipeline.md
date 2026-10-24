@@ -156,7 +156,7 @@ part, chosen by the address's `#hash` (`#overview`, `#jobs`, `#machines`, `#regi
 `#activity`, `#details`, `#device`; none or another: Overview), so a link or a reload opens the
 same tab; an alert links to the tab that says more.
 
-- **Header's verdict:** one sentence (state, done ≈, next on the map), the alerts as chips, the
+- **Header's verdict:** one sentence (paused, out of touch or idle; percent done; done ≈), the alerts as chips, the
   pause controls: Pause (each job stops at its next safe point), Freeze (each job frozen where it
   is, after a confirm), Resume.
 - **Footer:** the range the Machines tab's live charts show (1, 5, 10 or 30 min, 1, 2, 6, 24 or 72 h; this browser's own,

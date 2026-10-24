@@ -8,7 +8,7 @@
 // One shape for everything: a step is named by its title, its targets counted in its noun ("8 of
 // 480 tiles"), coloured by its stage; a stage is a line over its steps' rows, each row the same
 // cells; a machine is a card of its jobs, each job the same lines; an event is one templated
-// sentence. The parts: the header's verdict (going or not, done when, next on the map, what needs
+// sentence. The parts: the header's verdict (paused, out of touch or idle; percent done, done when; what needs
 // a look, the pause); by tab, the overview (how far, how long, the map's last catalogue, the world map: worldmap.js), the
 // jobs (each Mac's schedule, past and to come; the stages, each step's jobs), the machines (what each does now, inside
 // each job, why one waits, and live on each: live.js), the regions, and the activity (the hours,
@@ -259,17 +259,13 @@ function verdictText(m) {
     parts.push(h("b", null, "Out of touch"), ` · the lead last said something ${ago(now, a.beat)} (asleep, off, or its agent stopped)`);
   } else {
     const working = m.macs.filter((x) => x.fresh && jobsOf(x.status).length).length + m.pages.filter((p) => (sw.leases || []).some((l) => l.worker === p.name)).length;
-    parts.push(h("b", null, working ? "Building" : "Idle"), working ? ` on ${plural(working, "machine")}` : "");
+    if (!working) parts.push(h("b", null, "Idle"));
   }
-  if (fc?.done_at) {
-    const r = fc.range;
-    parts.push(" · done ≈ ", h("b", null, clock(fc.done_at)), r ? ` (${clock(r[0])}–${clock(r[1])})` : "");
-  } else if (fc?.why) parts.push(` · ${fc.why}`);
-  const next = nextOnMap(m);
-  if (next) {
-    const names = next.regions.slice(0, 2).map((r) => m.regionName[r.id] || r.id).join(", ");
-    parts.push(" · next on the map ≈ ", h("b", null, clock(next.at)), `: ${names}${next.regions.length > 2 ? ` +${next.regions.length - 2}` : ""}`);
-  }
+  // (The owner's line: the build's progress in percent and its finish, nothing more.)
+  const whole = wholeProgress(m.lines, fc);
+  if (whole) parts.push(parts.length ? " · " : "", h("b", null, `${whole.pct}%`));
+  if (fc?.done_at) parts.push(" · done ≈ ", h("b", null, clock(fc.done_at)));
+  else if (fc?.why) parts.push(` · ${fc.why}`);
   return parts;
 }
 
@@ -322,7 +318,7 @@ function overview(m) {
   const kpis = h("div", "kpis",
     kpi("Last catalogue", cat ? `${clock(cat.at)} (${ago(now, cat.at)})` : "–", cat?.n != null ? `catalogue ${cat.n}${cat.kind ? `, ${cat.kind}` : ""}` : null),
     kpi("Next catalogue", nextUpdate ? `≈ ${clock(nextUpdate.at)}` : "–", m.a.publishing?.tiles ? `${plural(m.a.publishing.tiles, "map tile")} to draw` : null),
-    kpi("Machines", h("div", null, m.macs.map((x) => h("div", null, x.name, h("span", "small dim", ` · ${doing(x)}`)))), m.pages.length ? `and ${plural(m.pages.length, "page")}` : null),
+    kpi("Machines", h("div", "macs", m.macs.map((x) => h("div", null, x.name, h("span", "small dim", ` · ${doing(x)}`)))), m.pages.length ? `and ${plural(m.pages.length, "page")}` : null),
   );
   return h("div", "overview", h("div", "box", left, strip, stagesLine), kpis);
 }
