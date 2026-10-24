@@ -76,5 +76,5 @@ export function poolSection(agent, now, ask) {
 
 /** A term's event in the history, in words. */
 export function termText(e) {
-  return [`${e.worker || ""}: ${e.note || ""}`, /stepped down|taken back|given up|dropped/.test(e.note || "") ? "warn" : "run"];
+  return [`${e.worker || ""}: ${e.note || ""}`, /stepped down|taken back|given up|dropped|out of touch/.test(e.note || "") ? "warn" : "run"];
 }

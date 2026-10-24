@@ -33,7 +33,8 @@ pub struct Event {
     /// "merged" (journal entries merged: their keys), "planned" (map tiles first
     /// planned: crate::pubtimes::planned_event), "pause" and "resume", "worker" (first heard from), "device" (a device's ask to
     /// help accepted or declined, a device forgotten: its asks aren't), "agent" (one started),
-    /// "conditions" (the lead's changed), "caches" (a Mac's build caches cleared on its
+    /// "conditions" (the lead's changed), "member" (a member coming into touch or going out of it,
+    /// as the lead sees it: crate::agent::lead::membership), "caches" (a Mac's build caches cleared on its
     /// owner's ask, or freed toward its room target: what was freed, in the note).
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

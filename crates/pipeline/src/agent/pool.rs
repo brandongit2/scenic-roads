@@ -1141,7 +1141,7 @@ pub struct Run {
     /// last number.
     drained: BTreeSet<PathBuf>,
     drain_n: u64,
-    /// When the NAS's folder of hand-offs was last drained, and whether it was found empty.
+    /// Whether the jobs an earlier process left were taken (`take_left`: once a process).
     left_taken: bool,
     /// The records (term, seq) last written to today's files; the raw tiles' archives named in the
     /// raw store's index and not yet off the records (`Give::named_raw`).
@@ -1158,6 +1158,9 @@ pub struct Run {
     /// The build page's regions as last written: the term and what they were made of.
     pub regions_written: Option<(u64, super::RegionsKey)>,
     pub history_seq: u64,
+    /// The members in touch at the lead's last read of their heartbeats (its time; their ids and
+    /// hosts), for the history's joins and leaves (crate::agent::lead::membership).
+    pub in_touch: Option<(u64, BTreeMap<String, String>)>,
     /// The terms this process led (a take-up of the next one after them keeps its coordinator's
     /// state; one after another lead's loads that lead's).
     pub led: BTreeSet<u64>,
@@ -1434,6 +1437,7 @@ impl Run {
             view_written: None,
             regions_written: None,
             history_seq: 0,
+            in_touch: None,
             led: BTreeSet::new(),
             asks: Vec::new(),
             conds: None,
@@ -1821,8 +1825,8 @@ impl Run {
         journal::LeaseId { term: 0, n: DRAINED + self.drain_n }
     }
 
-    /// The hand-offs from before the pool this member holds, drained into its journal entries
-    /// (§12, seeding and draining): a lead's coordinator's journal on its disk (`journal`: the
+    /// The hand-offs from before the pool this member holds, drained into its journal entries: a
+    /// lead's coordinator's journal on its disk (`journal`: the
     /// helpers' hand-offs it took and didn't merge), and any member's outbox (`outbox`: a helper's
     /// jobs not handed back). Each is removed once a saved state holding its entry is on disk.
     pub fn drain(&mut self, journal: Option<&Path>, outbox: &Path) {

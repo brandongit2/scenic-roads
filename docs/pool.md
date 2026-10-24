@@ -1299,7 +1299,10 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   (none could lead, or the app rule refused) and names the command to take over; the menu bar
   notifies once.
 - **History:** term changes, step-downs and handover events are `term` events in the member's
-  history file (`crate::agent::lead::notes`).
+  history file (`crate::agent::lead::notes`). Members joining and leaving are the lead's `member`
+  events (`lead::membership`): at each read of the heartbeats, a member whose beat came into
+  touch ("joined the pool") or went out of it (`OUT_OF_TOUCH_S`, "left the pool (out of touch)");
+  a lead's first read only sets what it compares with, so a new lead or a restart notes none.
 
 ## 11. Controls
 
@@ -1375,7 +1378,7 @@ Still behind switches under `state/pool/` (a file; off while missing unless note
 `slots` (§7.6), `resume` (§7.2, §7.4), `brokers` (§8), `placement` (§7.2),
 `memory-guard` (on while missing). A new switch is made only once every
 member's heartbeat shows the app that has it. The old files `state/pool/enabled` and
-`state/pool/shadow` stay on the NAS while an older app may read them.
+`state/pool/budgets` are no longer read; they stay on the NAS while an older app may read them.
 
 Planned: readers reading the term's snapshot and the lead no longer writing today's three files;
 journal GC; the HTTP pool API; resuming beyond the OSM pass. Packing a terrain z6 tile's fetched raw

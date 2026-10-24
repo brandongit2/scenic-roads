@@ -1362,7 +1362,7 @@ function eventText(m, e, k = 1) {
     case "conditions": return [`${who}: ${e.note}`, /doesn't answer|battery|away/.test(e.note) ? "warn" : ""];
     // (A Mac's build caches cleared on its owner's ask (older history: trimmed after the build): what was freed.)
     case "caches": return [`${who} ${e.note}`, /^didn't/.test(e.note || "") ? "warn" : ""];
-    case "term": return termText(e);
+    case "term": case "member": return termText(e);
     default: return [`${e.kind} ${who} ${what}`, ""];
   }
 }

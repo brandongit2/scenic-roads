@@ -33,6 +33,7 @@ use crate::pool::beat::Stage;
 use crate::pool::driver::{Ask, Event, Out};
 use crate::pool::{reachable, term};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// No handover away from an unreachable lead (`away`) within this of its last such ask (s).
@@ -381,6 +382,13 @@ pub fn after(run: &mut Run, out: &Out, root: &Path, home: &Path, coord: Option<&
     let notes = notes(&out.events, &run.side.member().host, |id| host_of(run, id), now);
     if !notes.is_empty() {
         note(&notes, coord, root, &me, &dir);
+        run.controls.stale = true;
+    }
+    let leading = run.side.driver().current().lead.as_ref().is_some_and(|t| t.member == me);
+    let host = run.side.member().host.clone();
+    let joins = membership(&mut run.in_touch, &run.side.beats, run.side.beats_at, &me, &host, leading);
+    if !joins.is_empty() {
+        note(&joins, coord, root, &me, &dir);
         run.controls.stale = true;
     }
     // The last change of lead, in words.
@@ -911,6 +919,42 @@ pub fn notes(events: &[Event], me: &str, host: impl Fn(&str) -> String, now: u64
     out
 }
 
+/// The members coming into touch and going out of it, as the lead sees them (docs/pool.md §10,
+/// History; kind `member`, `worker` this Mac's host): its members' heartbeats as last read whole
+/// (`beats`, read at `at`), each in touch while its beat is under `OUT_OF_TOUCH_S` old, compared
+/// with the last read's (`kept`: their ids and hosts). Only while this Mac leads (`leading`), and
+/// once a read: a lead's first read only sets what it compares with, so a new lead or a restart
+/// notes nothing for the members already there.
+pub fn membership(
+    kept: &mut Option<(u64, BTreeMap<String, String>)>,
+    beats: &[crate::pool::beat::Beat],
+    at: Option<u64>,
+    me: &str,
+    host: &str,
+    leading: bool,
+) -> Vec<history::Event> {
+    let (Some(at), true) = (at, leading) else {
+        if !leading {
+            *kept = None;
+        }
+        return Vec::new();
+    };
+    if kept.as_ref().is_some_and(|(t, _)| *t == at) {
+        return Vec::new();
+    }
+    let now: BTreeMap<String, String> = beats
+        .iter()
+        .filter(|b| b.member != me && b.beat > 0 && !b.out_of_touch(at))
+        .map(|b| (b.member.clone(), if b.host.is_empty() { b.member.clone() } else { b.host.clone() }))
+        .collect();
+    let Some((_, was)) = kept.replace((at, now.clone())) else { return Vec::new() };
+    let ev = |note: String| history::Event { t: at, kind: "member".into(), worker: Some(host.to_string()), note, ..Default::default() };
+    let mut out: Vec<history::Event> =
+        now.iter().filter(|(id, _)| !was.contains_key(*id)).map(|(_, h)| ev(format!("{h} joined the pool"))).collect();
+    out.extend(was.iter().filter(|(id, _)| !now.contains_key(*id)).map(|(_, h)| ev(format!("{h} left the pool (out of touch)"))));
+    out
+}
+
 /// The terms' events noted: appended to this member's history on the NAS (`root`) at once (a lead
 /// stepping down appends its coordinator's history no more: crate::agent's `pool_lead_files`
 /// leaves them out); and into this process's coordinator's history, when it has one, else kept in
@@ -1302,6 +1346,34 @@ mod tests {
             ]
         );
         assert!(n.iter().all(|e| e.kind == "term" && e.worker.as_deref() == Some("mini") && e.t == 5));
+    }
+
+    #[test]
+    fn members_joining_and_leaving_in_the_history() {
+        let beat = |m: &str, h: &str, at: u64| crate::pool::beat::Beat {
+            member: m.into(),
+            host: h.into(),
+            beat: at,
+            ..serde_json::from_str(r#"{"member": "x", "beat": 1}"#).unwrap()
+        };
+        let notes = |e: Vec<history::Event>| e.into_iter().map(|e| (e.kind, e.note)).collect::<Vec<_>>();
+        let mut k = None;
+        let t0 = 10_000;
+        let two = [beat("m-me", "mini", t0), beat("m-a", "air", t0)];
+        // A lead's first read sets what it compares with; reading it again, or not leading, notes nothing.
+        assert!(membership(&mut k, &two, Some(t0), "m-me", "mini", true).is_empty());
+        assert!(membership(&mut k, &two, Some(t0), "m-me", "mini", true).is_empty());
+        let three = [beat("m-me", "mini", t0 + 60), beat("m-a", "air", t0 + 60), beat("m-b", "", t0 + 60)];
+        let n = notes(membership(&mut k, &three, Some(t0 + 60), "m-me", "mini", true));
+        assert_eq!(n, [("member".to_string(), "m-b joined the pool".to_string())]);
+        // Air's beat grows old: it left.
+        let t1 = t0 + 60 + crate::pool::beat::OUT_OF_TOUCH_S + 1;
+        let late = [beat("m-me", "mini", t1), beat("m-a", "air", t0 + 60), beat("m-b", "", t1)];
+        assert_eq!(notes(membership(&mut k, &late, Some(t1), "m-me", "mini", true)), [("member".to_string(), "air left the pool (out of touch)".to_string())]);
+        // Not leading: forgotten, and the next lead's first read notes nothing.
+        assert!(membership(&mut k, &two, Some(t1 + 60), "m-me", "mini", false).is_empty());
+        assert!(k.is_none());
+        assert!(membership(&mut k, &two, Some(t1 + 120), "m-me", "mini", true).is_empty());
     }
 
     /// Two members of a pool in one process, A (this Mac, the writer: term 1 is its) and B, each
