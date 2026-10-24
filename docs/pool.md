@@ -1120,12 +1120,14 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   built of all by step, `{at, regions: {id: {step: [built, all]}}}` (`build::region_steps`: the
   plan's targets of each step that builds regions, counted whole: "unit" its z6 tiles, "terrain"
   and "terrain-lo" those of the z3 tiles it reads, "slope" and "slope-lo" its z3 tiles', "trees"
-  and "trees-lo" those of the z3 tiles it meets, "pack" the map tiles its z6 tiles' ways reach; a
-  step with none left out). In targets, not seconds: the records know which targets are built,
+  and "trees-lo" those of the z3 tiles it meets, "pack" the map tiles its z6 tiles' ways reach that the
+  plan draws; a step with none left out; a target shared by regions counted in each). In targets, not seconds: the records know which targets are built,
   not what each took, and a step's targets take about alike. Counted by the lead (or a Mac out of
-  the pool) on its agent's loop, beside the status's `built`, only while a page asked within two
-  minutes (`coord::REGION_STEPS_ASKING`): again after a job ends or each minute; held in memory (a
-  few numbers a region), nothing written to the NAS. A member's port answers 503: the page then
+  the pool) on a thread of its agent's (about a second on the whole build's records, the loop's
+  part ~40 ms: the coverage and reaches it holds, a copy of the terrain packs' indexes), only while
+  a page asked within two minutes (`coord::REGION_STEPS_ASKING`; the page asks only while its
+  Regions tab shows): again after a job ends or each minute; held in memory (a few numbers a
+  region), nothing written to the NAS. A member's port answers 503: the page then
   asks the lead's addresses.
   To come (task #622): the lead's port answers `POST /work/tocome` (`{"mac": host}`; no key) with
   that Mac's tiles in its last forecast (`forecast::ToCome`, made of `Forecast::placed` on the

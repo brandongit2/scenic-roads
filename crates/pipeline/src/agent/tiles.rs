@@ -36,8 +36,9 @@ type Held = Vec<(u64, u64)>;
 /// The tiles of the pack a manifest names for a tile: none when it names none.
 type Found<'a> = Result<Option<&'a [(u64, u64)]>, Unread>;
 
-/// The terrain packs' indexes the agent holds, by content name.
-#[derive(Default)]
+/// The terrain packs' indexes the agent holds, by content name. (Cloned for a count off the agent's
+/// loop: the regions' steps, Agent::start_region_steps; ~45 MB of indexes.)
+#[derive(Clone, Default)]
 pub struct TerrainTiles {
     /// Each pack's tiles.
     held: HashMap<String, Held>,

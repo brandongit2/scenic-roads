@@ -1296,7 +1296,8 @@ function regionsPane(m, md) {
     setSplit(Number(ctx.store.get("regionsMapSplit", 0.65)) || 0.65, false);
     rp.section = section("d-regions", null, null, rp.el);
   }
-  askSteps(m);
+  // (Asked only while the Regions tab shows: the lead counts them only while a page asks.)
+  if (location.hash === "#regions") askSteps(m);
   rp.rows = md.rows;
   rp.map.update(md.data);
   rp.legend.replaceChildren(...mapLegend(m, md, rp.map));
@@ -1757,6 +1758,8 @@ export function dashboard(opts) {
   // (The Machines tab's settings asked as it opens, not at the next poll.)
   window.addEventListener("hashchange", () => last && location.hash === "#machines" && loadSettings(ctx.call, last.macs || [], render));
   window.addEventListener("hashchange", () => last && location.hash === "#jobs" && render());
+  // (The Regions tab's stage counts asked as it opens: asked only while it shows, askSteps.)
+  window.addEventListener("hashchange", () => last && location.hash === "#regions" && render());
   poll();
   startLive({ call: ctx.call, store: ctx.store, macs: () => last?.macs || [], active: () => location.hash === "#machines" || location.hash === "#nas", only: () => (location.hash === "#nas" ? last?.agent?.host || null : null) });
   startActivity({ call: ctx.call, macs: () => last?.macs || [], machines: () => shownMacs, active: () => location.hash === "#activity" });

@@ -1407,15 +1407,17 @@ pub struct Agent {
     last_beat: Option<(Vec<u8>, Instant)>,
     /// How far each region is built, and when that was worked out.
     progress: Option<(Instant, BTreeMap<String, build::RegionState>, Vec<build::Line>)>,
-    /// When the regions' steps were last counted for the page (`region_steps`).
+    /// When the regions' steps were last counted for the page, and the count under way off the loop
+    /// (`start_region_steps`).
     steps_counted: Option<Instant>,
+    steps_making: Option<std::thread::JoinHandle<(serde_json::Value, Duration)>>,
     /// The pass's reaches as last read, by content name (large: read again only when they change).
-    reach: std::cell::RefCell<Option<(String, std::rc::Rc<crate::reach::Reaches>)>>,
+    reach: std::cell::RefCell<Option<(String, std::sync::Arc<crate::reach::Reaches>)>>,
     /// The terrain packs' indexes, which the z6 tiles' keys read (`tiles`, kept in `pack-idx/`): those
     /// the manifest names, each read once.
     tiles: std::cell::RefCell<tiles::TerrainTiles>,
     /// The coverage and each region's as last made, with what they were made from (`coverage`).
-    coverage: std::cell::RefCell<Option<(String, std::rc::Rc<Coverages>)>>,
+    coverage: std::cell::RefCell<Option<(String, std::sync::Arc<Coverages>)>>,
     /// The coverage being read off the loop (`coverage`), by the accepted version it's of.
     coverage_making: std::cell::RefCell<Option<(String, std::thread::JoinHandle<Result<Coverages, String>>)>>,
     /// The regions' accepted version as last seen, and when it changed while this agent ran
@@ -1881,6 +1883,7 @@ impl Agent {
             last_beat: None,
             progress: None,
             steps_counted: None,
+            steps_making: None,
             reach: Default::default(),
             tiles,
             coverage: Default::default(),
@@ -4471,16 +4474,28 @@ impl Agent {
             }
         }
         // Each region's steps, built of all (the build page's Regions tab): counted only while a page
-        // asks this Mac (the lead, or out of the pool), after a job ends or each minute.
-        if let (Some(r), Some(c), false) = (root.as_ref(), self.coord.as_ref(), self.o.helper) {
-            if c.region_steps_asked()
+        // asks this Mac (the lead, or out of the pool), after a job ends or each minute, on a thread
+        // of its own (about a second on the whole build's records: re-keying them as read).
+        if let (Some(r), Some(c), false) = (root.as_ref(), self.coord.clone(), self.o.helper) {
+            if self.steps_making.as_ref().is_some_and(|h| h.is_finished()) {
+                match self.steps_making.take().map(|h| h.join()) {
+                    Some(Ok((v, took))) => {
+                        eprintln!("agent: the regions' steps took {} ms", took.as_millis());
+                        c.set_region_steps(std::sync::Arc::new(v));
+                    }
+                    _ => eprintln!("agent: counting the regions' steps failed"),
+                }
+            }
+            if ended && self.steps_making.is_some() {
+                // (Counted again once the count under way is in: the job's targets weren't in it.)
+                self.steps_counted = None;
+            }
+            if self.steps_making.is_none()
+                && c.region_steps_asked()
                 && (ended || self.steps_counted.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)))
             {
                 self.steps_counted = Some(Instant::now());
-                let t = Instant::now();
-                let steps = self.region_steps(r);
-                c.set_region_steps(std::sync::Arc::new(serde_json::json!({ "at": now_s(), "regions": steps })));
-                eprintln!("agent: the regions' steps took {} ms", t.elapsed().as_millis());
+                self.steps_making = self.start_region_steps(r);
             }
         }
         let built = self.progress.as_ref().map(|(_, b, _)| b.clone()).unwrap_or_default();
@@ -8348,13 +8363,30 @@ impl Agent {
         self.as_built(root, build::region_states).unwrap_or_default()
     }
 
-    /// Per region, each step's targets built of all (build::region_steps), for the build page.
-    fn region_steps(&self, root: &Path) -> BTreeMap<String, BTreeMap<&'static str, [usize; 2]>> {
-        self.as_built(root, build::region_steps).unwrap_or_default()
+    /// Per region, each step's targets built of all (build::region_steps), for the build page, on a
+    /// thread of its own (the loop gives it the coverage, the reaches and a copy of the terrain packs'
+    /// indexes, all held already): `{at, regions}` and how long it took. None before the first pass
+    /// or while the coverage can't be read.
+    fn start_region_steps(&self, root: &Path) -> Option<std::thread::JoinHandle<(serde_json::Value, Duration)>> {
+        let (date, manifest, covs, keys, reach) = self.as_built_parts(root)?;
+        let tiles = self.terrain_tiles(root, &manifest).clone();
+        let root = root.to_path_buf();
+        let run = move || {
+            let t = Instant::now();
+            let mut keys = keys;
+            as_built_keys(&root, &covs.all, &date, &manifest, &mut keys, reach.as_deref(), &tiles);
+            let s = build::region_steps(&covs.all, &covs.each, &date, &manifest, &keys, reach.as_deref(), &tiles);
+            (serde_json::json!({ "at": now_s(), "regions": s }), t.elapsed())
+        };
+        std::thread::Builder::new()
+            .name("region-steps".into())
+            .spawn(run)
+            .inspect_err(|e| eprintln!("agent: the regions' steps' thread: {e}"))
+            .ok()
     }
 
     /// `f` over the coverage, the regions', the pass, the manifest, the records as every reader reads
-    /// them (agent::rekey), the reaches and the terrain packs' indexes; None before the first pass
+    /// them (`as_built_keys`), the reaches and the terrain packs' indexes; None before the first pass
     /// or while the coverage can't be read.
     #[allow(clippy::type_complexity)]
     fn as_built<T>(
@@ -8370,21 +8402,34 @@ impl Agent {
             &tiles::TerrainTiles,
         ) -> T,
     ) -> Option<T> {
+        let (date, manifest, covs, mut keys, reach) = self.as_built_parts(root)?;
+        let tiles = self.terrain_tiles(root, &manifest);
+        as_built_keys(root, &covs.all, &date, &manifest, &mut keys, reach.as_deref(), &tiles);
+        Some(f(&covs.all, &covs.each, &date, &manifest, &keys, reach.as_deref(), &tiles))
+    }
+
+    /// What `as_built` reads: the pass, the manifest, the coverages, the records as written and the
+    /// reaches (the last two held: read again only when they change).
+    #[allow(clippy::type_complexity)]
+    fn as_built_parts(
+        &self,
+        root: &Path,
+    ) -> Option<(
+        String,
+        BTreeMap<String, String>,
+        std::sync::Arc<Coverages>,
+        build::Keys,
+        Option<std::sync::Arc<crate::reach::Reaches>>,
+    )> {
         let date = self.latest_pass(root)?;
         let manifest: BTreeMap<String, String> = nasread::read(&root.join("state/build/manifest.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
         let covs = self.coverage(root, &manifest, false).ok()?;
-        let (cov, each) = (&covs.all, &covs.each);
-        let mut keys = build::Keys::load(root);
+        let keys = build::Keys::load(root);
         let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
-        let tiles = self.terrain_tiles(root, &manifest);
-        let inputs = input_digests(root);
-        // (As re-keyed: agent::rekey.)
-        let times = rekey::FileTimes::new(root);
-        rekey::as_read(&mut keys, cov, &date, &manifest, reach.as_deref(), &inputs, &tiles, &times);
-        Some(f(cov, each, &date, &manifest, &keys, reach.as_deref(), &tiles))
+        Some((date, manifest, covs, keys, reach))
     }
 
     /// `keys` as every reader reads them (agent::rekey::as_read: re-keyed, terrain's and slope's
@@ -8435,7 +8480,7 @@ impl Agent {
         manifest: &BTreeMap<String, String>,
         keys: &build::Keys,
         date: &str,
-    ) -> Result<Option<std::rc::Rc<crate::reach::Reaches>>, crate::reach::LoadError> {
+    ) -> Result<Option<std::sync::Arc<crate::reach::Reaches>>, crate::reach::LoadError> {
         if build::reach_work(date, manifest, keys).is_some() {
             return Ok(None);
         }
@@ -8449,7 +8494,7 @@ impl Agent {
             }
         }
         let Some(r) = crate::reach::Reaches::load(root, manifest, date)? else { return Ok(None) };
-        let r = std::rc::Rc::new(r);
+        let r = std::sync::Arc::new(r);
         *cached = Some((c.clone(), r.clone()));
         Ok(Some(r))
     }
@@ -8466,7 +8511,7 @@ impl Agent {
         root: &Path,
         manifest: &BTreeMap<String, String>,
         edits: bool,
-    ) -> Result<std::rc::Rc<Coverages>, String> {
+    ) -> Result<std::sync::Arc<Coverages>, String> {
         // (The accepted version: keyed by its index's name, an edit being a new version.)
         let a = crate::inputs::regions::read::source(root, manifest)
             .map_err(|e| format!("the regions' accepted version: {e:#}"))?;
@@ -8516,7 +8561,7 @@ impl Agent {
             std::thread::sleep(Duration::from_millis(2));
         }
         let (_, h) = making.take().unwrap();
-        let c = std::rc::Rc::new(h.join().map_err(|_| "reading the regions' coverage failed".to_string())??);
+        let c = std::sync::Arc::new(h.join().map_err(|_| "reading the regions' coverage failed".to_string())??);
         *self.coverage.borrow_mut() = Some((a.version.clone(), c.clone()));
         Ok(c)
     }
@@ -10677,6 +10722,21 @@ fn clear_target_scratch(dir: &Path, target: &str) -> Vec<PathBuf> {
 /// What jobs read from inputs/ beside the manifest, by digest: which keys inputs/keys.env holds
 /// ("keys", `key_names`), and the 3D buildings' downloaded sources ("bld-release", "bld-key", "bldprep 6/x/y",
 /// "bldprep-rows 6/x/y": crate::bld::sources::digests).
+/// `keys` as every reader reads them (agent::rekey::as_read: re-keyed, terrain's and slope's derived),
+/// for `Agent::as_built` and the regions' steps' count off the loop.
+fn as_built_keys(
+    root: &Path,
+    cov: &crate::coverage::Coverage,
+    date: &str,
+    manifest: &BTreeMap<String, String>,
+    keys: &mut build::Keys,
+    reach: Option<&crate::reach::Reaches>,
+    tiles: &tiles::TerrainTiles,
+) {
+    let times = rekey::FileTimes::new(root);
+    rekey::as_read(keys, cov, date, manifest, reach, &input_digests(root), tiles, &times);
+}
+
 pub fn input_digests(root: &Path) -> BTreeMap<String, String> {
     let mut inputs: BTreeMap<String, String> = BTreeMap::new();
     // The heritage registers as the heritage sites' key names them (crate::heritage::registers_line);

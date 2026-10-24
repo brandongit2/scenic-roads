@@ -1219,7 +1219,9 @@ pub fn region_steps(
                         .map(|p| !trw.stale_lo.contains(&p.0)),
                 ),
             );
-            s.insert("pack", count(&mut mine.iter().map(|t| packs.get(t.as_str()).copied().unwrap_or(false))));
+            // (Its map tiles the plan draws: one its z6 tiles' ways reach that no built z6 tile
+            // draws isn't a target, as the plan's.)
+            s.insert("pack", count(&mut mine.iter().filter_map(|t| packs.get(t.as_str()).copied())));
             s.retain(|_, c| c[1] > 0);
             (id.clone(), s)
         })
@@ -6340,6 +6342,8 @@ pub(crate) mod tests {
         assert_eq!(s["a"]["unit"], [0, units], "{s:?}");
         assert!(s.values().flat_map(|r| r.values()).all(|[b, a]| b <= a && *a > 0), "{s:?}");
         assert!(s["a"].contains_key("terrain") && s["a"].contains_key("slope"), "{s:?}");
+        // (Its map tiles are the plan's targets alone: none before a z6 tile of theirs is built.)
+        assert!(!s["a"].contains_key("pack"), "{s:?}");
         rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
         let s = steps(&m, &done);
         assert_eq!(s["a"]["unit"][0], 1, "{s:?}");
