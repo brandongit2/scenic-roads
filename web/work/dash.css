@@ -295,7 +295,7 @@ html.card-modal, html.card-modal body { overflow: hidden; }
 .card-tip:has(.tc-head) { padding: 0; width: 280px; border-radius: 8px; box-shadow: 0 8px 24px var(--shadow); }
 .card-tip:has(.tc-head) { max-height: calc(100vh - 16px); overflow: hidden; }
 .card-tip.pinned:has(.tc-head) { overflow-y: auto; }
-.card-tip:has(.tc-head) .cb, .card-tip:has(.tc-head):not(.pinned), .tc-sec { display: flex; flex-direction: column; gap: 6px; }
+.card-tip:has(.tc-head) .cb, .card-tip:has(.tc-head):not(.pinned, [hidden]), .tc-sec { display: flex; flex-direction: column; gap: 6px; }
 .tc-sec { padding-bottom: 8px; }
 .tc-sec + .tc-sec, .tc-more { border-top: 1px solid var(--rule); }
 .tc-more { padding: 5px 10px; }

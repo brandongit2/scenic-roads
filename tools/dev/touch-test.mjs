@@ -362,9 +362,23 @@ async function run() {
         const st = await js(`(() => { const c = ${c}, t = document.querySelector(".card-tip:not(.pinned):not([hidden])"); if (!t) return null; const r = t.getBoundingClientRect(); const x = r.left + Math.min(20, r.width / 2), y = r.top + Math.min(20, r.height / 2); return { stack: c.dataset.also.split("|").length, outlined: +c.dataset.outlined, pe: getComputedStyle(t).pointerEvents, through: !t.contains(document.elementFromPoint(x, y)), x, y }; })()`);
         check("overview: a following card never catches the pointer", st && st.pe === "none" && st.through, st ? `pointer-events ${st.pe}, under it ${st.through ? "what's behind" : "the card"}` : "no card shown");
         check("overview: every item in the stack is outlined", st && st.outlined === st.stack, st ? `${st.outlined} outlined of ${st.stack}` : "no card shown");
+        // (Seen, not only marked hidden: the map's card is laid out by a rule of its own, which once
+        // outranked [hidden] and kept it up, #627.)
+        const seen = () => js(`[...document.querySelectorAll(".card-tip:not(.pinned)")].some((t) => t.getClientRects().length)`);
+        const mouse = async (x, y) => { await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y }); await sleep(250); };
+        const empty = await js(`(() => { for (let y = 60; y < innerHeight - 20; y += 10) for (let x = 6; x < innerWidth - 6; x += 10) { const e = document.elementFromPoint(x, y); if (e && !e.closest("[data-card], a, button, input, select, label, canvas, .card-tip")) return [x, y]; } return null; })()`);
+        if (empty) await mouse(...empty);
+        check("overview: the card goes on leaving the map", empty && !(await seen()) && (await js(`+${c}.dataset.outlined`)) === 0, empty ? "" : "no empty spot found");
         // (Out of the window: a pointerout to nowhere, as the browser sends one.)
+        await mouse(spot[0], spot[1]);
         await js(`(() => { const c = ${c}; c.dispatchEvent(new PointerEvent("pointerout", { pointerType: "mouse", bubbles: true, relatedTarget: null })); c.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" })); })()`);
-        check("overview: the card goes on leaving the map", !(await js(`!!document.querySelector(".card-tip:not(.pinned):not([hidden])")`)) && (await js(`+${c}.dataset.outlined`)) === 0);
+        check("overview: the card goes on leaving the window", !(await seen()));
+        // (A card's element, the stage bar's segment: on it, then off it.)
+        const seg = await js(`(() => { const e = [...document.querySelectorAll("[data-card]:not(canvas)")].find((e) => e.getClientRects().length && e.getBoundingClientRect().width > 4); if (!e) return null; e.scrollIntoView({ block: "center" }); const r = e.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2; return document.elementFromPoint(x, y)?.closest("[data-card]") === e ? [x, y] : null; })()`);
+        await sleep(300);
+        const off = seg && (await js(`(() => { for (let y = 20; y < innerHeight - 20; y += 10) for (let x = 6; x < innerWidth - 6; x += 10) { const e = document.elementFromPoint(x, y); if (e && !e.closest("[data-card], a, button, input, select, label, canvas, .card-tip")) return [x, y]; } return null; })()`));
+        if (off) { await mouse(...seg); const on = await seen(); await mouse(...off); check("overview: a card goes on leaving its element", on && !(await seen()), on ? "" : "no card shown on it"); }
+        else check("overview: a card goes on leaving its element", false, "no card element or empty spot found");
       }
     }
 
