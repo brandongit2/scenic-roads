@@ -15,6 +15,7 @@
 //                     card of one found, screenshots (chrome-member*), then set back
 //   --width W         the Chrome run at W px wide (default 390, a phone; 768 or more: a desktop, DPR 2)
 //   --scheme S        dark or light (prefers-color-scheme; default the system's)
+//   --agent H:P       the agent read (default 127.0.0.1:8090; the lead's to see the NAS tab filled)
 //   --only-catalogues only the Overview map's Catalogues tab's checks and screenshots
 //
 // The page comes from a read-only server on its own port (8097): web/work as /work/, and only the
@@ -35,7 +36,9 @@ const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? proces
 const PORT = +arg("--port", 8097);
 const OUT = arg("--out", join(tmpdir(), "scenic-touch"));
 const WEB = join(dirname(fileURLToPath(import.meta.url)), "../../web/work");
-const AGENT = { host: "127.0.0.1", port: 8090 };
+// (`--agent HOST:PORT`: another Mac's agent read instead, e.g. the lead's: the page is then its own
+// Mac's, the NAS tab's answer its own, no cross-origin call the test origin isn't allowed.)
+const AGENT = (([host, port]) => ({ host, port: +port }))(arg("--agent", "127.0.0.1:8090").split(":"));
 const TABS = ["overview", "jobs", "machines", "regions", "nas", "dropboxes", "activity", "details"];
 
 // ---- The read-only server ------------------------------------------------------------------------
@@ -287,7 +290,7 @@ async function run() {
       // #634): the NAS tab's rows are the Machines tab's, no gauge left. The lead answering is the
       // agent's own business: with none, the rows are hidden and the check says so.)
       const charts = `[...document.querySelectorAll(".panel:not([hidden]) .rate canvas")].filter((c) => c.getClientRects().length).map((c) => Math.round(c.getBoundingClientRect().width))`;
-      if (tab === "machines") machineW = (await js(charts))[0] ?? null;
+      if (tab === "machines") for (let i = 0; i < 5 && machineW == null; i++) { machineW = (await js(charts))[0] ?? null; if (machineW == null) await sleep(1000); }
       if (tab === "nas") {
         await sleep(2000);
         const n = await js(`[${charts}, document.querySelectorAll(".panel:not([hidden]) .d-nas .rate").length, document.querySelectorAll(".panel:not([hidden]) .d-nas .cbar, .panel:not([hidden]) .d-nas .chips").length, document.querySelector(".panel:not([hidden]) .d-nas .lhead")?.textContent || ""]`);

@@ -1725,6 +1725,6 @@ export function dashboard(opts) {
   window.addEventListener("hashchange", () => last && location.hash === "#machines" && loadSettings(ctx.call, last.macs || [], render));
   window.addEventListener("hashchange", () => last && location.hash === "#jobs" && render());
   poll();
-  startLive({ call: ctx.call, store: ctx.store, macs: () => last?.macs || [], active: () => location.hash === "#machines" || location.hash === "#nas" });
+  startLive({ call: ctx.call, store: ctx.store, macs: () => last?.macs || [], active: () => location.hash === "#machines" || location.hash === "#nas", only: () => (location.hash === "#nas" ? last?.agent?.host || null : null) });
   startActivity({ call: ctx.call, macs: () => last?.macs || [], machines: () => shownMacs, active: () => location.hash === "#activity" });
 }

@@ -9,7 +9,7 @@
 // alone, task #517 and #634) and its status's `agent.nas` (the limits, the target, the mount). A
 // measure missing is said so, never zero.
 import { draw } from "./chart.js";
-import { commonGaps, fmt, footer, latest, spanText } from "./chartmath.js";
+import { commonGaps, fmt, footer, latest, short, spanText } from "./chartmath.js";
 import { liveOf, onLive, row, words } from "./live.js";
 
 const MB = 1048576;
@@ -73,7 +73,9 @@ function paint() {
   const gl = commonGaps(["load1", "cores_busy", "mem_free_pct"].map((k) => ({ points: s[k], step: st.step })), now);
   const probe = v?.probes?.length ? Math.max(...v.probes.map((p) => p.at)) : null;
   const nowS = Math.floor(Date.now() / 1000);
-  parts.said.textContent = `${footer(st.range, st.step, gl)} · ${probe ? `capacity measured ${spanText(Math.max(60, nowS - probe))} ago, the best of ${v.probes.length} probes over the last day` : "the lead hasn't probed the NAS yet"}`;
+  // (The capacity's age a tip, the mockup's: the owner deleted its line, 04:26.)
+  parts.said.textContent = footer(st.range, st.step, gl);
+  parts.said.title = probe ? `The limits: capacity measured ${spanText(Math.max(60, nowS - probe))} ago, the best of ${v.probes.length} probes over the last day` : "The lead hasn't probed the NAS yet: no limits";
   const base = { from: now - st.range, to: now, step: st.step, gaps: gl, axis: true, times: true };
   // (The pool's series a point every 10 s: their lines joined over that.)
   const pool = { ...base, step: Math.max(st.step, POOL_EVERY) };
@@ -107,7 +109,7 @@ function paint() {
   // Use against the limits: each with its limit dashed and its share of it.
   const l = v?.limits;
   const limited = (r, series, limit, unit, extra = []) => {
-    const f = (x) => (unit === "MB/s" ? fmt(x, "MB/s") : `${fmt(x)}/s`);
+    const f = (x) => (unit === "MB/s" ? fmt(x, "MB/s") : `${x >= 1000 ? short(x) : fmt(x)}/s`);
     const used = series.reduce((t, k) => { const x = at(k); return x == null ? t : (t || 0) + x; }, null);
     const stacked = series.length > 1;
     draw(r.c, { ...pool, unit: unit === "MB/s" ? "MB/s" : "/s", stacked, refs: limit ? [{ v: limit, label: `limit ${f(limit)}` }] : [],

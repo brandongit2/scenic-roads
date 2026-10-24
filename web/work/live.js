@@ -39,7 +39,7 @@ const css = (k) => getComputedStyle(document.documentElement).getPropertyValue(k
 
 /** Starts asking: `call(path, body)` this page's own Mac ([status, json]); `store` the browser's
  * own (the footer's `range`); `macs()` the swarm's members' addresses; `active()` whether the
- * Machines tab is shown. */
+ * Machines or NAS tab is shown; `only()`, the one Mac to ask (the lead, on the NAS tab), or null. */
 export function startLive(c) {
   cfg = c;
   setInterval(tick, EVERY_MS);
@@ -58,8 +58,11 @@ const range = () => cfg.store.get("range", 3600);
 
 function tick() {
   if (!cfg || document.visibilityState !== "visible" || !cfg.active()) return;
-  ask(null);
-  for (const m of cfg.macs()) if (m.host !== ownHost) ask(m);
+  // (The NAS tab reads the lead's answer alone: only it is asked there, this Mac too till it knows
+  // its own name.)
+  const only = cfg.only?.();
+  if (!only || !ownHost || only === ownHost) ask(null);
+  for (const m of cfg.macs()) if (m.host !== ownHost && (!only || m.host === only)) ask(m);
 }
 
 // The newest point's time among the series (asked from on).

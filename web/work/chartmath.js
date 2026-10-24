@@ -16,6 +16,14 @@ const fix = (v, d) => {
 };
 const digits = (v) => (Math.abs(v) < 10 ? 1 : 0);
 
+/** A number short (the owner's: "250k", "1M"): a chart's scale and limits, so their words stay in
+ * the gutter and never meet the unit beside them on a phone. */
+export function short(x) {
+  const a = Math.abs(x);
+  const [d, s] = a >= 1e9 ? [1e9, "G"] : a >= 1e6 ? [1e6, "M"] : a >= 1e3 ? [1e3, "k"] : [1, ""];
+  return `${+(x / d).toPrecision(3)}${s}`;
+}
+
 // A value in its unit, as short as it reads (metric; the store's MB are 2^20 bytes, as it counts):
 // "MB/s" (kB/s below 1, GB/s from 1024), "GB" (TB from 1024), "MB" (GB from 1024), "B" (a count of
 // bytes: kB, MB, GB, TB), "ms" (s from 1000), "%", "cores", "" (a plain number). Null: "–".

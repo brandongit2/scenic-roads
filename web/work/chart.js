@@ -3,7 +3,7 @@
 // band faint when asked, filled or stacked when asked), the scale's lines and its top in the unit,
 // reference lines (a Mac's cores), the gaps where its Mac was silent shaded, the time below when
 // asked; under the pointer, the time and each series' value there.
-import { fmt, gapOver, hhmm, runs, topOf } from "./chartmath.js";
+import { fmt, gapOver, hhmm, runs, short, topOf } from "./chartmath.js";
 
 const opts = new WeakMap();
 // The scales' gutters (px), left and right: the same in every chart, so their plots start and end at
@@ -245,8 +245,9 @@ function axisWords(ys, max, unit) {
   const m = /^(-?[\d.,]+)\s*(.*)$/.exec(fmt(max, unit));
   if (!m) return [ys.map((v) => fmt(v, unit)), ""];
   const k = parseFloat(m[1].replace(/,/g, "")) / max;
-  return [ys.map((v) => (v === 0 ? "0" : String(+(v * k).toPrecision(3)))), m[2]];
+  return [ys.map((v) => (v === 0 ? "0" : short(v * k))), m[2]];
 }
+
 
 // The refs' tags, kept over the canvas between draws (one element a ref, reused): a settable one's
 // words drag it (cursor ns-resize; a touch after a long press), its ✎ a button opening the editor.
