@@ -333,6 +333,7 @@ async fn the_agents_room_target_above_the_reserve_is_the_mirrors_reserve() {
     let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     catalog(nas.path());
     // This Mac's agent keeps 40 GiB free (`scenic room 40`), above the 30 GB reserve.
+    std::fs::create_dir_all(home.path().join("agent")).unwrap();
     pipeline::agent::settings::set_room(&home.path().join("agent"), "40", "t").unwrap();
     let data = Data::open(crate::data::Options {
         home: home.path().to_owned(),
