@@ -10183,7 +10183,8 @@ impl Agent {
     /// What the lead keeps written besides its records (docs/pool.md §12): today's three files from
     /// a term's records after the first (term 1's own saves write them; `saved`: this step's
     /// records are on the NAS), the raw tiles' archives its records hold named in the raw store's
-    /// index, the coordinator's state of its term, its history's new events.
+    /// index, its term named to the coordinator's state's writer (crate::coord::keep), its history's
+    /// new events.
     fn pool_lead_files(&mut self, root: &Path, saved: bool) {
         let Some(mut guard) = self.pooled() else { return };
         let run = &mut *guard;
@@ -10221,14 +10222,8 @@ impl Agent {
         }
         let Some(co) = &self.coord else { return };
         let term = run.gates.leads.unwrap_or(run.gates.term);
-        if let Ok(b) = serde_json::to_vec(&co.pool_state()) {
-            if run.state_written.as_ref() != Some(&(term, b.clone())) {
-                match run.side.nas().write_whole(&pool::state_path(term), &b) {
-                    Ok(()) => run.state_written = Some((term, b)),
-                    Err(e) => eprintln!("agent: the coordinator's state of term {term}: {e:#}"),
-                }
-            }
-        }
+        // (Its state: written by the coordinator's own thread as it changes, crate::coord::keep.)
+        co.keep_state(run.side.shared_nas(), term);
         // The coordinator's view (what the worker page takes from its memory): when it changed, at
         // most each `pool::VIEW_EVERY`.
         let view = serde_json::to_vec(&co.view()).unwrap_or_default();
@@ -15928,7 +15923,8 @@ mod pool_tests {
         // The writer isn't named any more (its file as it was), the coordinator's state of its term
         // and its history are on the NAS, its heartbeat names it.
         assert_eq!(std::fs::read_to_string(r.join("state/build/writer")).unwrap(), "another-mac");
-        assert!(r.join(pool::state_path(1)).exists());
+        // (The state's by the coordinator's own thread, within `keep::BATCH` of its first change.)
+        until(&mut a, |_| r.join(pool::state_path(1)).exists());
         assert!(std::fs::read_dir(r.join("state/coord/history"))
             .unwrap()
             .flatten()

@@ -161,9 +161,9 @@ A term is `state/build/terms/<E>.json`, made once with create-new (`crate::pool:
   (`agent::pool::write_today`). Planned: reading the current term's snapshot (`Records::newest`,
   falling back to an earlier term's).
 - **The coordinator's state** is per term too: `state/coord/term/<E>/state.json`
-  (`crate::coord::PoolState`: leases, costs, floors, disks, failures, pause), written by the lead
-  each loop it changed. A take-up loads the handed-over state, else the newest earlier term's
-  (`took_up`, §7.5).
+  (`crate::coord::PoolState`: leases, costs, floors, disks, failures, pause), written by the lead's
+  coordinator's own thread as it changes (§7.5). A take-up loads the handed-over state, else the
+  newest earlier term's (`took_up`, §7.5).
 
 ### 6.3 Asking
 
@@ -765,8 +765,22 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
 
 ### 7.5 The coordinator across terms
 
-- Saved on the loop after every grant or finish; renewals aren't saved (a loaded lease gets a fresh
-  deadline).
+- **Its state on the NAS** (`crate::coord::keep`, task #641) is written by a thread of the
+  coordinator's own, never the agent's loop (whose step only names the term it leads): woken by
+  every change the coordinator saves on its disk (a grant, a finish, a lapse, a given-back lease, a
+  measure) and each minute for the rest (failures, the pause), written when its bytes changed. A
+  change waits `BATCH` (2 s) for the rest of its burst, and a write starts at least `GAP` (10 s)
+  after the one before, so a burst of grants is one ~3 MB file each 10 s at most (200 grants in 3 s:
+  15 writes at the test's 0.2 s gap), through the agent's NAS deadlines (§7.8), a failed write tried
+  again a gap on. Renewals aren't saved (a loaded lease gets a fresh deadline).
+- **What it must hold, and when.** A handover needs none of it: the lead settling stops granting,
+  then hands its state over whole (`Run::settled`), so every grant answered is in it. A lead gone
+  without handing over (crashed, asleep, off the NAS, or restarted: its re-assertion loads the file
+  over the leases on its disk) is taken up from the newest file, and a lease granted since that file is unknown
+  there: its worker's next renewal is refused, its job stops and its targets go out again. That
+  costs the work, never the records (the merge's lease order, §6.5), so a grant isn't held for the
+  write; it's on the NAS within `BATCH` plus a write (a `GAP` in a burst), where it waited for the
+  lead's next loop step before (20 s, minutes while the loop was busy).
 - Workers are a member id and an agent instance; a new lead drops only instances that no longer
   exist.
 - **The history** is one file per writer, `state/coord/history/<day>/<member>.jsonl`, for the last

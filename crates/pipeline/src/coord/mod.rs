@@ -28,6 +28,7 @@ pub mod brokers;
 pub mod client;
 pub mod history;
 pub mod hosts;
+pub mod keep;
 pub mod lease;
 pub mod sched;
 pub mod task;
@@ -372,6 +373,8 @@ pub struct Shared {
     /// Not the lead's: why a page's retry can't be passed on to the lead now (none leads, or it runs
     /// another app: crate::pool::driver's `Act`), as its agent last saw; None: it can.
     pub retry_blocked: Option<String>,
+    /// Its state's writer to the NAS, while it leads (`keep`, task #641): told of each change saved.
+    pub keep: Arc<keep::Keep>,
 }
 
 /// How long a target waits on the NAS budget before the status says so (s).
@@ -398,12 +401,14 @@ impl Shared {
     }
 
     fn save_leases(&self) {
+        self.keep.changed();
         if let Err(e) = self.leases.save(&self.dir.join("leases.json")) {
             eprintln!("coordinator: saving the leases: {e:#}");
         }
     }
 
     fn save_costs(&self) {
+        self.keep.changed();
         let r = serde_json::to_vec(&self.costs)
             .map_err(anyhow::Error::from)
             .and_then(|b| crate::whole::write(&self.dir.join("costs.json"), &b));
@@ -1314,6 +1319,7 @@ impl Coordinator {
             settings: None,
             page_acts: Vec::new(),
             retry_blocked: None,
+            keep: Default::default(),
             own_cap: None,
             dir: dir.to_path_buf(),
             clock: store::clock::real(),
@@ -1382,6 +1388,7 @@ impl Coordinator {
     /// returns (an upload's rename already under way, `/work/out`, may still land).
     pub fn stop(&self) {
         self.stopped.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.shared.lock().unwrap().keep.stop();
         *self.routes.write().unwrap_or_else(|e| e.into_inner()) = true;
         #[cfg(not(target_os = "wasi"))]
         self.wake.notify_one();
@@ -2271,25 +2278,13 @@ impl Coordinator {
     /// with its term and when it was granted), what each target cost, the workers' failures (when,
     /// by this Mac's wall clock), the pause. Taken under the lock, written by the caller without it.
     pub fn pool_state(&self) -> PoolState {
-        let s = self.shared.lock().unwrap();
-        let (now, unix) = (s.now(), unix_now());
-        let failed = s
-            .failed
-            .iter()
-            .map(|((w, k), (at, n))| (w.clone(), k.clone(), unix.saturating_sub(now.duration_since(*at).as_secs()), *n))
-            .collect();
-        PoolState {
-            leases: s.leases.snapshot(),
-            costs: s.costs.clone(),
-            floors: s.floors.clone(),
-            disks: s.disks.clone(),
-            job_disks: s.job_disks.keys().map(|k| (k.clone(), s.job_p90(k))).collect(),
-            job_peaks: s.job_disks.clone(),
-            fills: s.fills.clone(),
-            failed,
-            pause: s.paused.clone(),
-            pause_at: s.pause_at,
-        }
+        pool_state_of(&self.shared.lock().unwrap())
+    }
+
+    /// Writes its state of term `term` to the NAS from now on, off the caller's thread (`keep`):
+    /// each lead's step names its term.
+    pub fn keep_state(&self, nas: Arc<dyn crate::pool::nas::Nas + Send + Sync>, term: u64) {
+        keep::keep(&self.shared, nas, term, keep::PACE);
     }
 
     /// Takes up `p`, another lead's state (a handover's, or the term before's): its leases over
@@ -2434,6 +2429,28 @@ pub struct Measured {
     pub mem_mb: u64,
     pub disk_mb: u64,
     pub own: bool,
+}
+
+/// `Coordinator::pool_state`, of its state as locked.
+fn pool_state_of(s: &Shared) -> PoolState {
+    let (now, unix) = (s.now(), unix_now());
+    let failed = s
+        .failed
+        .iter()
+        .map(|((w, k), (at, n))| (w.clone(), k.clone(), unix.saturating_sub(now.duration_since(*at).as_secs()), *n))
+        .collect();
+    PoolState {
+        leases: s.leases.snapshot(),
+        costs: s.costs.clone(),
+        floors: s.floors.clone(),
+        disks: s.disks.clone(),
+        job_disks: s.job_disks.keys().map(|k| (k.clone(), s.job_p90(k))).collect(),
+        job_peaks: s.job_disks.clone(),
+        fills: s.fills.clone(),
+        failed,
+        pause: s.paused.clone(),
+        pause_at: s.pause_at,
+    }
 }
 
 /// The coordinator's state as the pool keeps it per term (`Coordinator::pool_state`):

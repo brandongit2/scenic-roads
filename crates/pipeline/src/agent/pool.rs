@@ -468,6 +468,11 @@ impl Side {
         &*self.nas
     }
 
+    /// The same, for a thread of its own (the coordinator's state's writer, crate::coord::keep).
+    pub fn shared_nas(&self) -> SharedNas {
+        self.nas.clone()
+    }
+
     /// The members it knows.
     pub fn members(&self) -> &BTreeSet<String> {
         &self.members
@@ -1132,12 +1137,11 @@ pub struct Run {
     /// once a saved state holds them.
     outbox_drained: bool,
     marks: Vec<(PathBuf, String)>,
-    /// The coordinator's state per term as last written, and the history's last event written.
-    pub state_written: Option<(u64, Vec<u8>)>,
     /// The coordinator's view (`view_path`) as last written: its term, its bytes, when.
     pub view_written: Option<(u64, Vec<u8>, std::time::Instant)>,
     /// The build page's regions as last written: the term and what they were made of.
     pub regions_written: Option<(u64, super::RegionsKey)>,
+    /// The history's last event written.
     pub history_seq: u64,
     /// The members in touch at the lead's last read of their heartbeats (its time; their ids and
     /// hosts), for the history's joins and leaves (crate::agent::lead::membership).
@@ -1411,7 +1415,6 @@ impl Run {
             named_raw: BTreeSet::new(),
             outbox_drained: false,
             marks: Vec::new(),
-            state_written: None,
             view_written: None,
             regions_written: None,
             history_seq: 0,
@@ -3200,5 +3203,117 @@ mod tests {
         // The views, fresh on both Macs without their loops.
         assert_eq!(read_view(&hb).and_then(|v| v.pool.lead).map(|v| (v.term, v.leading)), Some((2, true)));
         assert_eq!(read_view(&ha).and_then(|v| v.pool.gates.leads), None);
+    }
+
+    /// Task #641: a member asking all through a handover. Every grant it was answered is in the
+    /// state handed over (none after the settling's), so the new lead's coordinator holds them all;
+    /// the old lead's state's writer, off its loop, wrote its term's file meanwhile, none other.
+    #[test]
+    fn every_grant_of_a_burst_through_a_handover_is_in_the_state_handed_over() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let d = tempfile::tempdir().unwrap();
+        let r = root(d.path());
+        let (ha, hb) = (d.path().join("a/agent"), d.path().join("b/agent"));
+        let mut a = Run::new(side(&r, &ha), Role::Member, Gates::default());
+        let mut b = Run::new(side(&r, &hb), Role::Member, Gates::default());
+        let (ia, ib) = (a.side.member().id.clone(), b.side.member().id.clone());
+        let (coord, port) = crate::coord::start_for_test(&d.path().join("a/coord"), "a", "development");
+        let coord = Arc::new(coord);
+        let end = Instant::now() + WATCHDOG;
+        while !a.step(true).caught_up {
+            assert!(Instant::now() < end);
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        a.cx = Cx {
+            root: Some(r.clone()),
+            home: ha.clone(),
+            coord: Some(coord.clone()),
+            able: true,
+            ..Default::default()
+        };
+        b.cx = Cx { root: Some(r.clone()), home: hb.clone(), able: true, ..Default::default() };
+        tick_until(&mut [&mut a], |r| r[0].gates.caught_up);
+        coord.set_term(1);
+        coord.keep_state(a.side.shared_nas(), 1);
+        a.side.know(&ib);
+        b.side.know(&ia);
+        tick_until(&mut [&mut b], |r| r[0].side.driver().current().term == 1);
+        // The member asks without a pause, each grant a target of its own.
+        let stop = Arc::new(AtomicBool::new(false));
+        let (c2, s2) = (coord.clone(), stop.clone());
+        let burst = std::thread::spawn(move || {
+            let w = crate::coord::client::Client::at(
+                vec![format!("http://127.0.0.1:{port}")],
+                c2.contact.token.clone(),
+                "m1",
+            );
+            let mut granted = Vec::new();
+            let mut i = 0;
+            while !s2.load(Ordering::Relaxed) {
+                i += 1;
+                // (Measured, so not the step's one cold run; a worker an ask.)
+                let cost = crate::coord::Cost {
+                    peak_mb: 100,
+                    secs: 60,
+                    v: crate::coord::cost_version("unit"),
+                    sizes: [("threads".to_string(), 1)].into(),
+                    ..Default::default()
+                };
+                c2.add_costs(&[(format!("6/7/{i}"), cost)]);
+                let w = crate::coord::client::Client::at(
+                    vec![format!("http://127.0.0.1:{port}")],
+                    c2.contact.token.clone(),
+                    &format!("m{i}"),
+                );
+                let o = crate::coord::Offer {
+                    step: "unit".into(),
+                    targets: vec![(format!("6/7/{i}"), "k".into(), 100)],
+                    job: None,
+                };
+                c2.offer("p", vec![o]);
+                let ask = crate::coord::Ask {
+                    kind: "native".into(),
+                    can: vec!["unit".into()],
+                    mem_mb: 8192,
+                    cores: 8,
+                    app: Some("development".into()),
+                    want: 1,
+                    ..Default::default()
+                };
+                if let Ok(Some(g)) = w.ask(&ask) {
+                    granted.push(g.lease);
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            granted
+        });
+        let first = Instant::now() + Duration::from_secs(20);
+        while coord.leases_out() < 3 {
+            assert!(Instant::now() < first, "the burst granted nothing");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        crate::control::request_lead(&ha, crate::control::LeadAsk::Give { to: ib.clone() }, "a test").unwrap();
+        tick_until(&mut [&mut a, &mut b], |r| r[1].side.driver().leads() == Some(2));
+        stop.store(true, Ordering::Relaxed);
+        let granted = burst.join().unwrap();
+        let handed = b
+            .pending_took_up
+            .iter()
+            .find_map(|e| match e {
+                Event::TookUp { term: 2, handed: Some(h), .. } => Some(h.clone()),
+                _ => None,
+            })
+            .expect("the state handed over");
+        let (cb, _) = crate::coord::start_for_test(&d.path().join("b/coord"), "b", "development");
+        cb.load_pool_state(&serde_json::from_value(handed).unwrap()).unwrap();
+        let lost: Vec<u64> = granted.iter().copied().filter(|id| cb.lease_term(*id) != 1).collect();
+        assert!(granted.len() >= 3 && lost.is_empty(), "{} granted, not handed over: {lost:?}", granted.len());
+        // Its writer, off the loop (no loop step ran here), kept term 1's file; term 2's is B's.
+        let end = Instant::now() + crate::coord::keep::BATCH + Duration::from_secs(20);
+        while !r.join(state_path(1)).exists() {
+            assert!(Instant::now() < end, "term 1's state not written");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!r.join(state_path(2)).exists());
     }
 }
