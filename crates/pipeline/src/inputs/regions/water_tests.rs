@@ -184,6 +184,11 @@ fn world() -> World {
 
 /// The small world, A's land reaching `north` (its outline to 1°: a strip of land in no outline).
 fn world_with(north: f64) -> World {
+    world_more(north, Vec::new())
+}
+
+/// The world with more land.
+fn world_more(north: f64, more: Vec<Vec<geom::Ring>>) -> World {
     let d = tempfile::tempdir().unwrap();
     let p = outlines(
         d.path(),
@@ -196,6 +201,7 @@ fn world_with(north: f64) -> World {
     );
     let land =
         vec![bx(0.0, 0.0, 1.2, north), bx(2.0, 0.0, 3.0, 1.0), bx(1.6, 1.4, 1.62, 1.42), bx(20.0, 20.0, 21.0, 21.0)];
+    let land = [land, more].concat();
     let zone1 = vec![bx(-1.0, -1.0, 4.0, 2.5)[0].clone()];
     let eez = HashMap::from([(1, zone1), (2, bx(5.0, 5.0, 6.0, 6.0))]);
     let lakes = HashMap::from([(77, bx(0.2, 0.2, 0.4, 0.4)), (78, bx(0.6, 0.6, 0.61, 0.61))]);
@@ -375,6 +381,31 @@ fn a_large_piece_of_land_in_no_region_is_an_error() {
         "{:?}",
         out.problems
     );
+}
+
+/// Land in no region cut by a 2° cell's edge is sized whole: two halves each under `sliver_km2`
+/// (about 40 km² each side of 2°N) are one piece over it, found at a point of its land.
+#[test]
+fn land_in_no_region_across_a_cells_edge_is_sized_whole() {
+    let w = world_more(1.0, vec![bx(0.46, 1.96, 0.54, 2.04)]);
+    let out = run(&w, &all());
+    let gaps: Vec<_> = out.problems.iter().filter(|p| p.check == "rg-cover" && p.found == vec!["gap"]).collect();
+    assert_eq!(gaps.len(), 1, "{:?}", out.problems);
+    let m = &gaps[0].message;
+    assert!(m.starts_with("79.") && m.contains("sliver_km2"), "{m}");
+    let at: Vec<f64> = m
+        .split(" by ")
+        .nth(1)
+        .unwrap()
+        .split('°')
+        .take(2)
+        .map(|s| s.trim_start_matches(", ").parse().unwrap())
+        .collect();
+    assert!((0.46..0.54).contains(&at[0]) && (1.96..2.04).contains(&at[1]), "{m}");
+    // Under sliver_km2 whole, it's filled: no finding.
+    let w = world_more(1.0, vec![bx(0.48, 1.98, 0.52, 2.02)]);
+    let out = run(&w, &all());
+    assert!(out.problems.is_empty(), "{:?}", out.problems);
 }
 
 /// The new rules leave regions without water as they resolve alone: the cover's fills and a

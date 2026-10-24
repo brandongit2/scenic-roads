@@ -153,8 +153,9 @@ impl Checks for Regions {
         // 3: #600: a region resolved by cell is drawn with its cells dissolved. 4: #611: the drawn
         // shapes simplified at each point's own latitude (outlines::simplify), Antarctica's no
         // longer five points. 5: #468: a region with water stores its land and its water as
-        // shapes apart.)
-        5
+        // shapes apart. 6: #648: the cover check's gaps joined across the cells' edges before the
+        // fill and the sizes.)
+        6
     }
 
     fn recursive(&self) -> bool {

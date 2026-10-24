@@ -480,10 +480,12 @@ order where a region comes after those its water names whole (`region:`, `group:
 alone borders, and a stretch under `sliver_km2` goes to the one sharing its longest edge. With
 `cover = "earth"` in `_rules.toml`, then: a region's piece of water under `sliver_km2` touching
 none of its land joins the region with water it shares the longest edge with; and, cell by cell
-(2°), land in two regions is taken from those of them with water, and each piece in no region
-within 100 m of land (land in no outline, the sea between the zones' coastline and OSM's) up to
-`sliver_km2` joins the region with water it shares the longest edge with; a piece touching none
-stays. Land in no region over `sliver_km2` is an error (`rg-cover`). The region whose water is
+(2°), land in two regions is taken from those of them with water. Then each piece in no region
+(its cells' pieces joined across the cells' edges, as the stretches are) within 100 m of land
+(land in no outline, the sea between the zones' coastline and OSM's) up to `sliver_km2` joins the
+region with water it shares the longest edge with; a piece touching none stays. Land in no region
+over `sliver_km2` is an error (`rg-cover`), found at a point inside its largest part of land and
+naming the regions that had any of it both (taken from both). The region whose water is
 `rest` takes what's left; without one, water left is an error, as is water in two regions. A region
 without `water` resolves as before, and no new rule changes it: a hand-out gives only to regions
 with water (naming one without is `rg-ref`), and one without `water` may not name one with it
@@ -555,7 +557,7 @@ and may record other datasets a shape came from (`gadm = "4.1"`, checked only as
   operation on the whole); each expression is evaluated per cell, a buffer from the cells within
   its distance, a nearest-coast split against the coasts in the cells within 450 km; the land, water
   and lakes are kept by cell, stretches (`hand_out`, slivers) joined across the cells' shared
-  edges, and the cover check runs per cell. So an operation holds a cell's geometry (a buffer's or
+  edges, and the cover check runs per cell, its gaps then joined across the cells' edges. So an operation holds a cell's geometry (a buffer's or
   a split's, its neighbourhood's), never a region's; what's kept is every region's cells (the
   outcome itself) and the datasets, read only once a region in the folder names them (about 1 GB).
   A zone's internal waters are unioned with it. The datasets' rings are simplified within 20 m as
