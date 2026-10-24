@@ -150,8 +150,10 @@ impl Checks for Regions {
 
     fn version(&self) -> u32 {
         // (2: `disabled`, #495: files an older app held as an unknown field are checked again.
-        // 3: #600: a region resolved by cell is drawn with its cells dissolved.)
-        3
+        // 3: #600: a region resolved by cell is drawn with its cells dissolved. 4: #611: the drawn
+        // shapes simplified at each point's own latitude (outlines::simplify), Antarctica's no
+        // longer five points.)
+        4
     }
 
     fn recursive(&self) -> bool {
