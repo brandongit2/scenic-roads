@@ -948,10 +948,20 @@ pub fn membership(
         .map(|b| (b.member.clone(), if b.host.is_empty() { b.member.clone() } else { b.host.clone() }))
         .collect();
     let Some((_, was)) = kept.replace((at, now.clone())) else { return Vec::new() };
-    let ev = |note: String| history::Event { t: at, kind: "member".into(), worker: Some(host.to_string()), note, ..Default::default() };
+    let ev = |note: String| history::Event {
+        t: at,
+        kind: "member".into(),
+        worker: Some(host.to_string()),
+        note,
+        ..Default::default()
+    };
     let mut out: Vec<history::Event> =
         now.iter().filter(|(id, _)| !was.contains_key(*id)).map(|(_, h)| ev(format!("{h} joined the pool"))).collect();
-    out.extend(was.iter().filter(|(id, _)| !now.contains_key(*id)).map(|(_, h)| ev(format!("{h} left the pool (out of touch)"))));
+    out.extend(
+        was.iter()
+            .filter(|(id, _)| !now.contains_key(*id))
+            .map(|(_, h)| ev(format!("{h} left the pool (out of touch)"))),
+    );
     out
 }
 
@@ -1369,7 +1379,10 @@ mod tests {
         // Air's beat grows old: it left.
         let t1 = t0 + 60 + crate::pool::beat::OUT_OF_TOUCH_S + 1;
         let late = [beat("m-me", "mini", t1), beat("m-a", "air", t0 + 60), beat("m-b", "", t1)];
-        assert_eq!(notes(membership(&mut k, &late, Some(t1), "m-me", "mini", true)), [("member".to_string(), "air left the pool (out of touch)".to_string())]);
+        assert_eq!(
+            notes(membership(&mut k, &late, Some(t1), "m-me", "mini", true)),
+            [("member".to_string(), "air left the pool (out of touch)".to_string())]
+        );
         // Not leading: forgotten, and the next lead's first read notes nothing.
         assert!(membership(&mut k, &two, Some(t1 + 60), "m-me", "mini", false).is_empty());
         assert!(k.is_none());
