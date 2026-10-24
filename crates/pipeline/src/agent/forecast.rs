@@ -2654,6 +2654,33 @@ mod tests {
     /// the best of the last day's probes the logs show by then (`nas::Probes`; each probe timed by
     /// the term the log last named), the members' not (the switch, state/pool/nas-budget, was off).
     /// A start whose window holds a pause is skipped.
+    /// A z3 step's replayed dependencies (`backtest_against_the_history`): the steps whose targets
+    /// in its z3 tile it waits for. (depth-lo reads the depth source, not the depth chain's z6 tiles:
+    /// depth waits for it, `chain_deps`.)
+    fn z3_reads(step: &str) -> &'static [&'static str] {
+        match step {
+            "terrain-lo" => &["terrain"],
+            "slope-lo" => &["slope", "terrain"],
+            "trees-lo" => &["trees"],
+            "depth-shade" => &["depth", "depth-lo"],
+            _ => &[],
+        }
+    }
+
+    #[test]
+    fn the_depth_chains_replay_waits_on_earlier_steps_only() {
+        // The chain's order, as depth_next takes it: each step waits on earlier ones alone (#611).
+        let order = ["depth-lo", "depth", "depth-shade"];
+        for (i, s) in order.iter().enumerate() {
+            let waits: Vec<&str> = z3_reads(s).iter().chain(super::chain_deps(s).1).copied().collect();
+            for w in &waits {
+                let at = order.iter().position(|o| o == w).unwrap_or_else(|| panic!("{s} waits on {w}"));
+                assert!(at < i, "{s} waits on {w}, a later step");
+            }
+            assert_eq!(waits.is_empty(), i == 0, "{s}: {waits:?}");
+        }
+    }
+
     #[test]
     fn backtest_against_the_history() {
         use crate::coord::history::Event;
@@ -3044,11 +3071,7 @@ mod tests {
                         "pack" => {
                             pack_units.get(t).into_iter().flatten().map(|u| ("unit".to_string(), u.clone())).collect()
                         }
-                        "terrain-lo" => in_z3("terrain", &q()),
-                        "slope-lo" => [in_z3("slope", &q()), in_z3("terrain", &q())].concat(),
-                        "trees-lo" => in_z3("trees", &q()),
-                        "depth-lo" => in_z3("depth", &q()),
-                        "depth-shade" => [in_z3("depth", &q()), in_z3("depth-lo", &q())].concat(),
+                        s if !z3_reads(s).is_empty() => z3_reads(s).iter().flat_map(|r| in_z3(r, &q())).collect(),
                         "slope" => in_z3("terrain", &z3s(t)),
                         "unit" => {
                             let mut d = in_z3("terrain", &z3s(t));
