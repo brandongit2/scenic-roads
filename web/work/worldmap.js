@@ -29,7 +29,8 @@ const regionPaths = new WeakMap();
  * `update(data)` with {countries (rings), regions [{id, fill, edge, state}], running (Map key →
  * {step, frac, current, state}), finished (Map key → {t, step, state}: sums.js mapTilesKept), from,
  * now, colour(step) (a CSS colour, var() allowed), stageOf(step), fade (finished tiles paler as
- * they age)}, `minimap(key)` a canvas
+ * they age), and for the Catalogues tab paint (Map "z/x/y" → colour, in the stack as "cat z/x/y"),
+ * lit (keys in litColour, zoom litZoom filled)}, `minimap(key)` a canvas
  * of a tile and around it; `pick(keys, x, y)` called on a click or tap (keys: the stack there,
  * none off everything). */
 export function createMap({ pick = () => {} } = {}) {
@@ -195,6 +196,34 @@ export function createMap({ pick = () => {} } = {}) {
         c.clip();
       }
     };
+    // The Catalogues tab's tiles (catalogs.js): each its colour, solid; a catalogue's lit in the
+    // highlight colour over them, the zoom shown filled, the other outlined.
+    if (data.paint) {
+      for (const [key, col] of data.paint) {
+        const [bx, by, s] = tileBox(tileOf(key));
+        if (bx > x1 || by > y1 || bx + s < x0 || by + s < y0) continue;
+        c.globalAlpha = 0.85;
+        c.fillStyle = col;
+        c.fillRect(bx, by, s, s);
+      }
+      c.globalAlpha = 1;
+      // (The countries' edges over them, to tell where a tile is.)
+      if (paths.countries) {
+        c.globalAlpha = 0.6;
+        c.strokeStyle = tokens.bg;
+        c.lineWidth = px;
+        c.stroke(paths.countries);
+        c.globalAlpha = 1;
+      }
+      for (const key of data.lit || []) {
+        const t = tileOf(key);
+        const [bx, by, s] = tileBox(t);
+        c.fillStyle = c.strokeStyle = data.litColour;
+        if (t.z === data.litZoom) c.fillRect(bx, by, s, s);
+        c.lineWidth = px * 1.6;
+        c.strokeRect(bx, by, s, s);
+      }
+    }
     const outlines = [];
     for (const [key, v] of [...data.finished, ...data.running]) {
       const run = data.running.has(key) && data.running.get(key) === v;
@@ -425,6 +454,8 @@ export function createMap({ pick = () => {} } = {}) {
     [...d.running].map(([k, r]) => `${k}:${r.step}:${r.frac.toFixed(3)}:${r.current ? 1 : 0}`).join(","),
     [...d.finished].map(([k, f]) => `${k}:${f.step}:${f.state}:${Math.round((d.now - f.t) / Math.max(1, d.now - d.from) * 50)}`).join(","),
     d.fade,
+    d.paint ? [...d.paint].join(",") : "",
+    d.lit ? [...d.lit].join(",") : "",
   ].join("|");
 
   // ---- Data --------------------------------------------------------------------------------------
@@ -454,9 +485,10 @@ export function createMap({ pick = () => {} } = {}) {
     // (Tiles keyed by step and tile, "<step> z/x/y": two steps' at one spot are each their own,
     // drawn as diagonal stripes across the square in turn (`stripe`: [i, n]), each its own card.)
     atTile = new Map(); stripe = new Map();
-    for (const k of [...next.running.keys(), ...next.finished.keys()]) { const t = k.slice(k.lastIndexOf(" ") + 1); (atTile.get(t) || atTile.set(t, []).get(t)).push(k); }
+    const catKeys = next.paint ? [...next.paint.keys()].map((k) => `cat ${k}`) : [];
+    for (const k of [...next.running.keys(), ...next.finished.keys(), ...catKeys]) { const t = k.slice(k.lastIndexOf(" ") + 1); (atTile.get(t) || atTile.set(t, []).get(t)).push(k); }
     for (const ks of atTile.values()) { ks.sort(); ks.forEach((k, i) => stripe.set(k, [i, ks.length])); }
-    zooms = [...new Set([...next.running.keys(), ...next.finished.keys()].map((k) => tileOf(k)?.z).filter((z) => z != null))].sort((a, b) => b - a);
+    zooms = [...new Set([...next.running.keys(), ...next.finished.keys(), ...catKeys].map((k) => tileOf(k)?.z).filter((z) => z != null))].sort((a, b) => b - a);
     const sig = signature(next);
     const same = sig === lastSig && !fresh.length && !outlines;
     lastSig = sig;

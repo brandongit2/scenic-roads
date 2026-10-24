@@ -1092,6 +1092,21 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   the lead's pool step as `state/build/term/<E>/regions.json` (again in each new term), read by
   each Mac's page data when its time changes. Every Mac's port answers `POST /work/regions` with
   no key: in the pool from that read, out of it from this Mac's agent's; 503 until there is one.
+  Every Mac's port also answers `POST /work/catalogs` (`{"after": n}` optional; no key) for the
+  map's Catalogues tab (task #629, `agent::catalogsview`; the page asks the lead's): every
+  catalogue on the NAS as `{n, t, whole, first?, z3, z6, z3_gone?, z6_gone?}`, the tiles as
+  `y * 2^z + x`, with `latest`, `reading` and `error`. A catalogue publishes a z6 tile when a file it
+  names for it (base pack, road values, hi data, landmark points, a layer's hi pack, the fine
+  terrain under it) is new or another than the last catalogue's, a z3 tile by its layers' lo packs
+  and area overlays; `first` marks the oldest kept (it names everything). Read only while asked:
+  an ask starts the agent's reader thread when the folder wasn't listed in the last 20 s; it reads
+  the catalogues after the last it read, oldest first (a delta when it changes the last read, else
+  the whole file, streamed from zstd into only the tile sections), through nasread, and the answer
+  is what's read so far. Kept: the entries and each tile file's name hash by its key (about 18 000),
+  never a catalogue. Measured 24 Oct on the M4 (372 catalogues, 15–386, 14 whole): the first read
+  35 s (debug build, mostly the NAS) at 34 MB peak; the whole answer 67 KB of JSON (17 KB
+  gzipped), a new catalogue's a few hundred bytes. `scenic catalogs [--after N]` prints the same
+  JSON from the NAS (read only). 503 until the agent has made it.
   The page's own files carry the world's countries' outlines for the same map (`countries.json`,
   Natural Earth 1:50m, the same projection).
 - **Live** (`agent::live`, task #514): each Mac's own measures over time, in rings on its own

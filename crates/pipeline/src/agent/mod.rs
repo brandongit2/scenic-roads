@@ -24,6 +24,7 @@ pub mod backup;
 pub mod brokers;
 pub mod build;
 pub mod buildmem;
+pub mod catalogsview;
 pub mod cond;
 pub mod every;
 pub mod fcarchive;
@@ -1358,6 +1359,9 @@ pub struct Agent {
     /// coordinator, its broker, or with neither a viewer alone (`viewer`; tried again five minutes
     /// after it failed).
     pageview: std::sync::Arc<pageview::PageView>,
+    /// The build page's Catalogues map (crate::agent::catalogsview): made once the NAS's root is
+    /// known, read only while a page asks.
+    catalogs_view: Option<std::sync::Arc<catalogsview::CatalogsView>>,
     pageview_reading: bool,
     /// This Mac's live store (crate::agent::live), kept in its folder and answered on its port's
     /// `/work/live`: made as the loop starts, on a real Mac with the agent's lock alone.
@@ -1849,6 +1853,7 @@ impl Agent {
             brokers: false,
             broker: None,
             pageview: pageview::PageView::new(),
+            catalogs_view: None,
             pageview_reading: false,
             live: None,
             page_acts: Vec::new(),
@@ -9151,7 +9156,22 @@ impl Agent {
     /// NAS; that read told the term, the members, this app and this Mac's lanes now. In the pool
     /// alone (out of it, the coordinator answers from its memory, as before).
     fn tend_pageview(&mut self, root: &Path) {
-        if self._lock.is_none() || self.o.dry_run {
+        if self.o.dry_run {
+            return;
+        }
+        // (The Catalogues map, in the pool or out of it: what's on the NAS.)
+        let cv = self
+            .catalogs_view
+            .get_or_insert_with(|| {
+                catalogsview::CatalogsView::new(std::sync::Arc::new(catalogsview::NasCatalogs(root.join("catalog"))))
+            })
+            .clone();
+        for c in [&self.coord, &self.broker, &self.viewer].into_iter().flatten() {
+            if !c.has_catalogs() {
+                c.set_catalogs(cv.clone());
+            }
+        }
+        if self._lock.is_none() {
             return;
         }
         let now = Instant::now();

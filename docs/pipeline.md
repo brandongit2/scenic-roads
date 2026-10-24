@@ -171,6 +171,30 @@ boxes).
   (the last catalogue: its time, how long ago, its number and kind (with the low
   zooms or map tiles only); the next catalogue ≈ and the map tiles to draw; each Mac by name,
   a line each, with its jobs, idle or out of touch).
+- **The map's tabs** (#629): a tab bar right above it, "Build progress" (the world map below) and
+  "Catalogues" (`catalogs.js`), this browser's choice kept. Catalogues: the published z3 or z6
+  tiles (a radio, z3 first) on a world map of its own, each in the colour of when a catalogue last
+  published it (a ramp from deep blue, older, to light yellow, newer; its legend the ramp between
+  the range's ends, and the counts) over the range a pair of inputs sets. Each takes a local date
+  and time (`2026-10-23 14:05`, a date alone, "now") or a span (`48 hours`, `7 days`, `90 min`,
+  `2 weeks`), the span in one of the two at a time, counted from the other: the left's always back
+  (`-48 hours` whatever sign is typed), the right's always on (`+48 hours`); two times with the
+  left the later swap as one is committed (Enter or leaving it); anything else is refused, said
+  under them, the pair kept. Defaults: the left `-48 hours`, the right now at render (kept as
+  "now", moving on with the clock, until another time is committed there). "Hide tiles outside the
+  date range": unticked, those take the nearer end's colour; ticked, they aren't drawn. Under
+  the map a timeline across the box's width: every catalogue a mark (a tall one written whole),
+  labelled with its number where the label fits (none overlapping, the latest first), the range
+  in its middle 80% and the tenth beyond it each side dimmed, a time axis under it (times of day
+  up to two days, then days; local time, said once). Hovering a mark (a tap holds it, again lets
+  it go) names the catalogue (number, time, whole or delta, its tiles) and lights its tiles in
+  magenta, apart from the ramp, whatever the hide box: the zoom shown filled, the other outlined.
+  A tile's card: the catalogue that last published it, when, the degrees it covers, a minimap. The
+  range's inputs, zoom and hide box are this browser's (`catalogues`), but "now". Its data:
+  `/work/catalogs` (docs/pool.md §10), asked only while the tab is shown, the catalogues after
+  the last the page has: every 30 s, every 2 s while the agent is reading. The sums
+  (`parseWhen`, `commit`, `tileTimes`, `paint`, `labelled`, the axis) are tested by
+  web/test/catalogs.test.mjs.
 - **World map** (`worldmap.js`, a canvas in Web Mercator, the world 0–1000 each way): the z3 grid
   (z6's too once its cells are 24 px), opening on the whole world (about 82° N to 66° S) and zoomed out at most to that whole world fitting the box both ways (bands beside it in a wide box), a crosshair over it, the countries (`countries.json`), the regions' outlines
   (`/work/regions`) coloured by state (on the map or done, building, to come; counted in the

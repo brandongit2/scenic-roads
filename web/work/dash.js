@@ -19,6 +19,7 @@ import { TILE_STATES, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, 
 import { fmt, timeTicks } from "./chartmath.js";
 import { liveBlock, startLive } from "./live.js";
 import { createMap } from "./worldmap.js";
+import { createCatalogues, whenText } from "./catalogs.js";
 import { loadSettings, settingsSection } from "./settings.js";
 import { nasSection } from "./nas.js";
 import { startActivity, transfersPart } from "./activity.js";
@@ -419,9 +420,9 @@ function mapData(m) {
   regionCards(rows);
   // (The stack: `also` its keys, "|" between, the deepest tile first; each card under a line.)
   cards.set("mstack", (also) => {
-    const keys = (also || "").split("|").filter((k) => cards.has(k));
+    const keys = (also || "").split("|").filter((k) => cards.has(k) || catCards.has(k));
     const most = 8;
-    return [...keys.slice(0, most).map((k) => h("div", "tc-sec", cards.get(k)())),
+    return [...keys.slice(0, most).map((k) => h("div", "tc-sec", (cards.get(k) || catCards.get(k))())),
       keys.length > most ? h("div", "tc-more dim small", `and ${n(keys.length - most)} more here`) : null].filter(Boolean);
   });
   const regionKind = (st) => (st === "done" ? "on" : st);
@@ -469,11 +470,39 @@ function mapFilterBar(m) {
     h("div", { class: "mfrow", role: "radiogroup", "aria-label": "Show only for" }, h("span", "dim", "Show only for:"), radio("member", "", "All pool members"), members.map((nm) => radio("member", nm, nm))),
     h("div", { class: "mfrow", role: "radiogroup", "aria-label": "Show tile areas" }, h("span", "dim", "Show tile areas:"), radio("zoom", "", "All"), radio("zoom", "3", "z3"), radio("zoom", "6", "z6")));
 }
+// The map's tabs (#629): "Build progress" (the build's map) and "Catalogues" (catalogs.js: the
+// published tiles by when, read only while it's shown), this browser's choice kept.
+let catalogues = null, catMap = null, mapSec = null;
+// (The Catalogues tab's tiles' cards, kept across renders: its map is drawn between them.)
+const catCards = new Map();
+function catCard(c) {
+  const now = Date.now() / 1000;
+  return cardBody({ kicker: `Published · catalogue ${c.n}`, title: `Tile ${c.key}`,
+    stats: [[ago(now, c.t), c.first ? "published, or before" : "last published"]] }, [
+    ["catalogue", `${c.n}, ${whenText(c.t)}`],
+    ["note", c.first ? "the oldest catalogue kept: it may have come out before" : null],
+    ["covers", tileCovers(tileOf(c.key))],
+  ], catMap.minimap(c.key));
+}
 function mapSection(m, md) {
   worldMap ||= createMap({ pick: mapPick });
   worldMap.update(md.data);
+  const tab = ctx.store.get("mapTab", "progress") === "catalogues" ? "catalogues" : "progress";
+  if (tab === "catalogues" && !catalogues) {
+    catMap = createMap({ pick: mapPick });
+    catalogues = createCatalogues({ call: ctx.call, store: ctx.store, map: catMap, countries: () => countries,
+      card: (key, about) => catCards.set(key, () => catCard(about())) });
+  }
+  // (Typing in the range's inputs: the part kept as it is, the inputs not moved out of it.)
+  if (tab === "catalogues" && mapSec && catalogues.el.contains(document.activeElement) && document.activeElement.type === "text") return mapSec;
   const k = md.regs.length;
-  return section("d-map", "Map", `${k ? plural(k, "region") : "no regions"} · the z3 grid · tiles in their stage's colour`, h("div", "box wmap-box", worldMap.el, ...mapLegend(m, md, worldMap)));
+  const pick = (t) => () => { ctx.store.set("mapTab", t); unpin(); render(); };
+  const tabs = h("div", { class: "maptabs", role: "tablist" },
+    [["progress", "Build progress"], ["catalogues", "Catalogues"]].map(([t, text]) => h("button", { type: "button", role: "tab", class: t === tab ? "on" : "", "aria-selected": t === tab ? "true" : "false", onclick: pick(t) }, text)));
+  const sub = tab === "catalogues" ? "the published tiles by when each was last published" : `${k ? plural(k, "region") : "no regions"} · the z3 grid · tiles in their stage's colour`;
+  mapSec = section("d-map", "Map", sub, tabs, tab === "catalogues" ? h("div", "box wmap-box", catalogues.el) : h("div", "box wmap-box", worldMap.el, ...mapLegend(m, md, worldMap)));
+  catalogues?.show(tab === "catalogues");
+  return mapSec;
 }
 
 // ---- Machines -----------------------------------------------------------------------------------

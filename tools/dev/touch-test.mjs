@@ -7,6 +7,11 @@
 //
 //   node tools/dev/touch-test.mjs [--out DIR] [--port N]   the Chrome run
 //   node tools/dev/touch-test.mjs --serve [--port N]       only the server (for Mobile Safari)
+//   --catalogs FILE   /work/catalogs answered from FILE (`scenic catalogs > FILE`: an agent before
+//                     #629 hasn't the call), `after` honoured; else forwarded as the other reads
+//   --width W         the Chrome run at W px wide (default 390, a phone; 768 or more: a desktop, DPR 2)
+//   --scheme S        dark or light (prefers-color-scheme; default the system's)
+//   --only-catalogues only the Overview map's Catalogues tab's checks and screenshots
 //
 // The page comes from a read-only server on its own port (8097): web/work as /work/, and only the
 // reading calls forwarded to this Mac's agent (127.0.0.1:8090); everything else is refused, so the
@@ -28,7 +33,12 @@ const TABS = ["overview", "jobs", "machines", "regions", "nas", "dropboxes", "ac
 
 // ---- The read-only server ------------------------------------------------------------------------
 // A call forwarded only when its body has no other keys than these (an empty body: {}).
-const READS = { swarm: [], steps: [], regions: [], settings: [], history: ["since", "max"], live: ["range", "series", "net", "since"] };
+const READS = { swarm: [], steps: [], regions: [], settings: [], history: ["since", "max"], live: ["range", "series", "net", "since"], catalogs: ["after"] };
+const CATS = arg("--catalogs", null);
+const WIDTH = +arg("--width", 390);
+const PHONE = WIDTH < 768;
+const SCHEME = arg("--scheme", null);
+const ONLY_CATS = process.argv.includes("--only-catalogues");
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".webmanifest": "application/manifest+json", ".svg": "image/svg+xml" };
 function serve() {
   const srv = createServer((req, res) => {
@@ -43,6 +53,12 @@ function serve() {
         if (req.method !== "POST" || !v || typeof v !== "object" || Array.isArray(v) || Object.keys(v).some((k) => !READS[call].includes(k))) {
           res.writeHead(403, { "Content-Type": "application/json" });
           return res.end(JSON.stringify({ error: "the touch-test server forwards reads only" }));
+        }
+        if (call === "catalogs" && CATS) {
+          const a = JSON.parse(readFileSync(CATS, "utf8"));
+          a.catalogs = a.catalogs.filter((c) => v.after == null || c.n > v.after);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify(a));
         }
         const out = JSON.stringify(v);
         const fw = request({ ...AGENT, method: "POST", path: url.pathname, headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(out) } }, (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); });
@@ -101,16 +117,19 @@ async function run() {
     page.on("Runtime.consoleAPICalled", (p) => p.type === "error" && said(p.args.map((a) => a.value ?? a.description).join(" ")));
     page.on("Log.entryAdded", (p) => p.entry.level === "error" && said(`${p.entry.text} ${p.entry.url || ""}`));
     await Promise.all(["Runtime.enable", "Log.enable", "Page.enable"].map((m) => page.send(m)));
-    await page.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
-    await page.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
-    await page.send("Emulation.setUserAgentOverride", { userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1", platform: "iPhone" });
+    await page.send("Emulation.setDeviceMetricsOverride", PHONE ? { width: WIDTH, height: 844, deviceScaleFactor: 3, mobile: true } : { width: WIDTH, height: 900, deviceScaleFactor: 2, mobile: false });
+    if (PHONE) {
+      await page.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+      await page.send("Emulation.setUserAgentOverride", { userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1", platform: "iPhone" });
+    }
+    if (SCHEME) await page.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: SCHEME }] });
     const js = async (expr) => { const r = await page.send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text); return r.result.value; };
     const touch = (type, pts) => page.send("Input.dispatchTouchEvent", { type, touchPoints: pts.map(([x, y], id) => ({ x, y, id })) });
     const tap = async (x, y, hold = 0) => { await touch("touchStart", [[x, y]]); if (hold) await sleep(hold); await touch("touchEnd", []); await sleep(250); };
     const drag = async (x, y, dx, dy) => { await touch("touchStart", [[x, y]]); for (let i = 1; i <= 10; i++) { await touch("touchMove", [[x + (dx * i) / 10, y + (dy * i) / 10]]); await sleep(16); } await touch("touchEnd", []); await sleep(300); };
     const pinch = async (x, y, from, to) => { await touch("touchStart", [[x - from, y], [x + from, y]]); for (let i = 1; i <= 10; i++) { const d = from + ((to - from) * i) / 10; await touch("touchMove", [[x - d, y], [x + d, y]]); await sleep(16); } await touch("touchEnd", []); await sleep(300); };
     // (The whole page at 1 px a CSS px: a phone's 3× of a long tab is slow to make and to read.)
-    const shot = async (name) => { const h = await js("document.scrollingElement.scrollHeight"); const { data } = await page.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true, clip: { x: 0, y: 0, width: 390, height: Math.min(h, 6000), scale: 1 / 3 } }); writeFileSync(join(OUT, `${name}.png`), Buffer.from(data, "base64")); };
+    const shot = async (name) => { const h = await js("document.scrollingElement.scrollHeight"); const { data } = await page.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true, clip: { x: 0, y: 0, width: WIDTH, height: Math.min(h, 6000), scale: PHONE ? 1 / 3 : 1 / 2 } }); writeFileSync(join(OUT, `${name}.png`), Buffer.from(data, "base64")); };
     const show = async (tab) => { await js(`location.hash = "#${tab}"; window.scrollTo(0, 0)`); await sleep(1200); };
     // (The center of the first visible element matching `sel`, in the viewport, scrolled to.)
     const at = (sel, where = "") => js(`(() => { const el = [...document.querySelectorAll(${JSON.stringify(sel)})].find((e) => e.getClientRects().length && e.closest(".panel:not([hidden])")${where}); if (!el) return null; el.scrollIntoView({ block: "center" }); const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, r.width, r.height]; })()`);
@@ -118,6 +137,67 @@ async function run() {
     await page.send("Page.navigate", { url: `http://127.0.0.1:${PORT}/work/?view#overview` });
     for (let i = 0; i < 40 && !(await js(`!!document.querySelector('.panel[data-tab="overview"]')?.children.length`).catch(() => false)); i++) await sleep(250);
     await sleep(1500);
+
+    // The Overview map's Catalogues tab (#629): shown, its catalogues read, the map drawn, the
+    // timeline's marks; a mark hovered lights its tiles; the range's inputs swap two times out of
+    // order and refuse two spans; back to Build progress, its map there.
+    {
+      errors.length = 0;
+      await show("overview");
+      const tabBtn = (t) => js(`(() => { const b = [...document.querySelectorAll(".panel:not([hidden]) .maptabs button")].find((e) => e.textContent === ${JSON.stringify(t)}); if (!b) return false; b.click(); return true; })()`);
+      let tabbed = false;
+      for (let i = 0; i < 40 && !(tabbed = await tabBtn("Catalogues")); i++) await sleep(250);
+      check("overview: the map's tabs shown", tabbed);
+      let marks = 0;
+      for (let i = 0; i < 120 && !marks; i++) { await sleep(500); marks = await js(`document.querySelectorAll(".panel:not([hidden]) .cat-tl g.mk").length`); }
+      check("catalogues: the timeline marks the catalogues in its span", marks > 0, `${marks} marks; ${await js(`document.querySelector(".cat-status")?.textContent`)}`);
+      const cv = `[...document.querySelectorAll(".panel:not([hidden]) .cat canvas.wmap")][0]`;
+      const pix = () => js(`(() => { const c = ${cv}; if (!c || !c.width) return null; const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data; let h = 0; for (let j = 0; j < d.length; j += 4 * 13) h = (h * 31 + d[j] + d[j + 1] * 3 + d[j + 2] * 7) | 0; return h; })()`);
+      const p0 = await pix();
+      check("catalogues: its map drawn", p0 != null);
+      const wide = await js(`[document.scrollingElement.scrollWidth, document.documentElement.clientWidth]`);
+      check("catalogues: no horizontal scroll", wide[0] <= wide[1], `${wide[0]} in ${wide[1]}`);
+      await js(`document.querySelector(".panel:not([hidden]) .cat")?.scrollIntoView({ block: "start" })`);
+      await sleep(300);
+      await shot(`chrome-catalogues`);
+      // (The mark with the most tiles in the range, hovered by a mouse.)
+      const mk = await js(`(() => { const g = [...document.querySelectorAll(".panel:not([hidden]) .cat-tl g.mk:not(.out)")].pop() || document.querySelector(".panel:not([hidden]) .cat-tl g.mk"); if (!g) return null; g.scrollIntoView({ block: "center" }); const r = g.querySelector(".hit").getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, g.dataset.n]; })()`);
+      if (!mk) check("catalogues: a mark hovered lights its tiles", false, "no mark");
+      else {
+        await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: mk[0], y: mk[1], pointerType: "mouse" });
+        await sleep(400);
+        const lit = await js(`[document.querySelector(".panel:not([hidden]) .cat-tl g.mk.on")?.dataset.n, !document.querySelector(".cat-tip").hidden, document.querySelector(".cat-tip").textContent]`);
+        check("catalogues: a mark hovered lights its tiles", lit[0] === mk[2] && lit[1] && (await pix()) !== p0, `${lit[2]}`);
+        // (The page whole, the pointer held on the mark: a screenshot past the viewport would
+        // move it.)
+        const { data } = await page.send("Page.captureScreenshot", { format: "png" });
+        writeFileSync(join(OUT, "chrome-catalogues-hover.png"), Buffer.from(data, "base64"));
+        await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 2, y: 2, pointerType: "mouse" });
+      }
+      // The range's inputs (typed as a user would, committed by Enter).
+      const typeIn = async (i, text) => {
+        await js(`(() => { const e = document.querySelectorAll(".panel:not([hidden]) input.cat-when")[${i}]; e.focus(); e.select(); })()`);
+        await page.send("Input.insertText", { text });
+        await page.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+        await page.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+        await sleep(300);
+        return js(`[...document.querySelectorAll(".panel:not([hidden]) input.cat-when")].map((e) => e.value).concat(document.querySelector(".cat-msg").hidden ? "" : document.querySelector(".cat-msg").textContent)`);
+      };
+      const saved = await js(`localStorage.getItem("catalogues")`);
+      await typeIn(1, "2026-10-20 12:00");
+      const sw = await typeIn(0, "2026-10-22 12:00");
+      check("catalogues: a left time later than the right swaps them", sw[0] === "2026-10-20 12:00" && sw[1] === "2026-10-22 12:00", sw.join(" | "));
+      await typeIn(0, "48 hours");
+      const two = await typeIn(1, "7 days");
+      check("catalogues: one span at a time, the left's negative", two[0] === "-2 days" && two[1] === "2026-10-22 12:00" && /Only one/.test(two[2]), two.join(" | "));
+      await js(`localStorage.${saved == null ? `removeItem("catalogues")` : `setItem("catalogues", ${JSON.stringify(saved)})`}`);
+      check("catalogues: no console errors", !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
+      await tabBtn("Build progress");
+      await sleep(500);
+      check("overview: back on Build progress, its map shown", await js(`!![...document.querySelectorAll(".panel:not([hidden]) .wmap-box > .wmap-wrap canvas.wmap")].find((c) => c.getClientRects().length && c.width)`));
+      await js(`localStorage.removeItem("mapTab")`);
+    }
+    if (ONLY_CATS) throw Object.assign(new Error("only the Catalogues tab"), { done: true });
 
     // Each tab: no sideways scroll, no console errors, screenshots.
     for (const tab of TABS) {
@@ -317,7 +397,7 @@ async function run() {
     if (cors) console.log(`INFO ${cors} failed calls to the other Macs (CORS refused this test origin, or away; not counted)`);
     page.close();
   } catch (e) {
-    check("the run", false, e.message);
+    if (!e.done) check("the run", false, e.message);
   } finally {
     chrome.kill("SIGTERM");
     await new Promise((ok) => (chrome.exitCode !== null || chrome.pid === undefined ? ok() : chrome.once("exit", ok)));

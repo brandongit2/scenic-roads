@@ -241,7 +241,7 @@ let nearMisses = store.get("near", 0);
 // A POST of JSON to this page's own member (`base` "", at ROOT), or straight to another member's broker
 // (docs/pool.md §8: its address, with CORS), given up after eight seconds there: a member whose
 // firewall drops connections mustn't hold the page up.
-const READING = new Set(["/work/swarm", "/work/history"]);
+const READING = new Set(["/work/swarm", "/work/history", "/work/catalogs"]);
 async function call(path, body, base = "") {
   const headers = { "Content-Type": "application/json", "X-Worker": worker };
   const r = await fetch((base || ROOT) + path, { method: "POST", headers, body: JSON.stringify(body), signal: base && AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined });
@@ -464,7 +464,7 @@ async function failover() {
 }
 // The dashboard's calls: the build at a glance and the lead's controls at the lead's address when
 // it answers (the lead knows the whole build), else this page's member's.
-const LEADS = new Set(["/work/swarm", "/work/history", "/work/pause", "/work/lead", "/work/inputs"]);
+const LEADS = new Set(["/work/swarm", "/work/history", "/work/catalogs", "/work/pause", "/work/lead", "/work/inputs"]);
 async function dashCall(path, body) {
   const lead = peers?.lead;
   if (LEADS.has(path) && reachable(lead)) {

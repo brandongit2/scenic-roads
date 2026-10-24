@@ -342,6 +342,9 @@ pub struct Shared {
     pub pageview: Option<Arc<crate::agent::pageview::PageView>>,
     /// This Mac's live store (crate::agent::live): `/work/live`. None: not given one (503).
     pub live: Option<Arc<crate::agent::live::Store>>,
+    /// The build page's Catalogues map (crate::agent::catalogsview): `/work/catalogs`. None: not
+    /// given one (503).
+    pub catalogs: Option<Arc<crate::agent::catalogsview::CatalogsView>>,
     /// The build page's regions as this Mac's agent last made them (crate::agent::regionsview):
     /// `/work/regions` out of the pool. None: not made yet (503).
     pub regions: Option<Arc<serde_json::Value>>,
@@ -1270,6 +1273,7 @@ impl Coordinator {
             brokers: None,
             pageview: None,
             live: None,
+            catalogs: None,
             regions: None,
             viewer,
             forward: None,
@@ -2202,6 +2206,16 @@ impl Coordinator {
     /// Whether it answers `/work/live`.
     pub fn has_live(&self) -> bool {
         self.shared.lock().unwrap().live.is_some()
+    }
+
+    /// `/work/catalogs` answered from `cv` (crate::agent::catalogsview) from here on.
+    pub fn set_catalogs(&self, cv: Arc<crate::agent::catalogsview::CatalogsView>) {
+        self.shared.lock().unwrap().catalogs = Some(cv);
+    }
+
+    /// Whether it answers `/work/catalogs`.
+    pub fn has_catalogs(&self) -> bool {
+        self.shared.lock().unwrap().catalogs.is_some()
     }
 
     /// Its state as the pool keeps it per term (docs/pool.md §6.2, §7.5): the jobs' leases (each
@@ -3937,6 +3951,13 @@ fn route(
             let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
             Ok(live.map_or_else(not_ready, |l| (200, l.answer(&a, unix))))
         }
+        "/work/catalogs" => {
+            // The build page's Catalogues map (crate::agent::catalogsview): the catalogs after
+            // `after` as read so far (its reader started, the folder listed again, when due).
+            let b: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+            let cv = shared.lock().unwrap().catalogs.clone();
+            Ok(cv.map_or_else(not_ready, |cv| (200, cv.ask(b["after"].as_u64()))))
+        }
         "/work/regions" => {
             // The build page's regions (crate::agent::regionsview): in the pool, the lead's as this
             // Mac read them; out of it, this Mac's agent's.
@@ -4136,6 +4157,8 @@ mod http {
         // The overview's world map, and the world's countries' outlines it draws (Natural Earth
         // 1:50m, public domain): rings in Web Mercator, the world 0–1000 each way.
         ("worldmap.js", "text/javascript", include_bytes!("../../../../web/work/worldmap.js")),
+        // Its Catalogues tab: the range's and the tiles' sums.
+        ("catalogs.js", "text/javascript", include_bytes!("../../../../web/work/catalogs.js")),
         ("countries.json", "application/json", include_bytes!("../../../../web/work/countries.json")),
         ("sw.js", "text/javascript", include_bytes!("../../../../web/work/sw.js")),
         (
@@ -4317,6 +4340,7 @@ mod http {
             .route("/work/steps", any(json))
             .route("/work/live", any(json))
             .route("/work/regions", any(json))
+            .route("/work/catalogs", any(json))
             .route("/work/timings", any(json))
             .route("/work/floors", any(json))
             .route("/work/in/{lease}/{*path}", get(input))
@@ -4537,7 +4561,7 @@ mod http {
         let is_view = req.method() == Method::POST
             && matches!(
                 path.as_str(),
-                "/work/swarm" | "/work/history" | "/work/steps" | "/work/live" | "/work/regions"
+                "/work/swarm" | "/work/history" | "/work/steps" | "/work/live" | "/work/regions" | "/work/catalogs"
             );
         if is_page || is_view {
             return next.run(req).await;

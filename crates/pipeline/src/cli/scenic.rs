@@ -224,6 +224,15 @@ pub enum Cmd {
         #[command(flatten)]
         root: Root,
     },
+    /// The catalogs as the build page's Catalogues map reads them (docs/pool.md §10): each one's
+    /// number, time and the map tiles it published, as JSON (what `/work/catalogs` answers). Reads only
+    Catalogs {
+        /// Only those after this catalog
+        #[arg(long, value_name = "N")]
+        after: Option<u64>,
+        #[command(flatten)]
+        root: Root,
+    },
     /// The input gate (docs/inputs.md §4): every gate unit, its accepted version, its state, what
     /// holds it, its acceptances (those no check raises any more marked stale)
     Inputs(Inputs),

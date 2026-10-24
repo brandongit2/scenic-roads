@@ -125,7 +125,7 @@ settings with `{}`, history, live) to this Mac's agent on 127.0.0.1:8090, refusi
   with a pinch (its touch-action turns `none`, its zoomed-in sign) and pans
   with a drag (pixels changed once it held still), the page staying put; the Regions split stacked at phone width
   and dragged at 900 px; the schedule's dropdown takes a tap and a choice; settings fields focus on a
-  tap without a jump (never Set). One PASS/FAIL line a check, exit 1 on a FAIL. The other Macs'
+  tap without a jump (never Set); the Overview map's Catalogues tab (#629: its timeline, a mark hovered lighting its tiles, the range inputs' swap and one-span rule; `--catalogs FILE` answers `/work/catalogs` from `scenic catalogs > FILE`, `--width W --scheme dark|light --only-catalogues` for its screenshots). One PASS/FAIL line a check, exit 1 on a FAIL. The other Macs'
   live/settings calls fail from this test origin (CORS) or when away: counted on an INFO line.
   Chrome is its own child, killed by PID; its profile is a temp folder, deleted.
 - `tools/dev/safari-sim.sh [out-dir] [device]` (~1.5 min; this M1 only, the M4 has no simulators):

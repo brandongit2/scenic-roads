@@ -1505,6 +1505,13 @@ fn main() -> Result<()> {
         Some(Cmd::Steps { json }) => steps(json),
         Some(Cmd::Inputs(a)) => inputs(&a),
         Some(Cmd::ForecastCheck { from, to, json, root: r }) => forecast_check(from, to, json, &r.root),
+        Some(Cmd::Catalogs { after, root: r }) => {
+            use pipeline::agent::catalogsview::{CatalogsView, NasCatalogs};
+            let v = CatalogsView::new(std::sync::Arc::new(NasCatalogs(root(&r.root, false)?.join("catalog"))));
+            v.refresh();
+            println!("{}", serde_json::to_string(&v.answer(after))?);
+            Ok(())
+        }
     }
 }
 
