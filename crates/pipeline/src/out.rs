@@ -12,7 +12,7 @@
 //! saves its changes as hand-offs instead (crate::handoff), which the lead's agent merges: the
 //! lead alone writes the manifest.
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{bail, Context, Result};
 use sha2::Digest;
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -737,21 +737,8 @@ impl Out {
         }
         // (A first call, bounded: it authenticates, which may wait on the SSH agent unbounded
         // (osmpass::SSH_START), and opens the shared connection the hashes' calls then take.)
-        let mut probe = store::spawn::command(ssh[0]);
-        probe.args(&ssh[1..]).arg("true").stdin(std::process::Stdio::null());
-        let mut child = store::spawn::spawn(&mut probe).context("ssh to the NAS")?;
-        let pid = child.id();
-        let ((), stalled) = crate::osmpass::watched(pid, crate::osmpass::SSH_START, |_| {
-            // (Its end awaited, the child left to `wait` below: its PID stays its own till then.)
-            // SAFETY: a zeroed siginfo_t, written by waitid.
-            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-            unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT) };
-        });
-        let st = child.wait()?;
-        if stalled {
-            return Err(crate::osmpass::ssh_stalled("the checksums' first call", crate::osmpass::SSH_START));
-        }
-        ensure!(st.success(), "ssh to the NAS failed: {st}");
+        #[cfg(not(target_os = "wasi"))]
+        crate::osmpass::ssh_opened(ssh)?;
         let names: Vec<String> = self.pending.keys().cloned().collect();
         let mut bad = Vec::new();
         for chunk in names.chunks(200) {

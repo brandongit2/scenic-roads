@@ -221,6 +221,28 @@ pub(crate) fn watched<T>(pid: u32, bound: std::time::Duration, f: impl FnOnce(&d
     })
 }
 
+/// `ssh` (a command line, its host last) runs `true` within `SSH_START`: authenticated, and its
+/// shared connection opened when it makes one (ControlMaster), for the calls after to take.
+#[cfg(not(target_os = "wasi"))]
+pub(crate) fn ssh_opened(ssh: &[&str]) -> Result<()> {
+    let mut probe = store::spawn::command(ssh[0]);
+    probe.args(&ssh[1..]).arg("true").stdin(std::process::Stdio::null());
+    let mut child = store::spawn::spawn(&mut probe).context("ssh to the NAS")?;
+    let pid = child.id();
+    let ((), stalled) = watched(pid, SSH_START, |_| {
+        // (Its end awaited, the child left to `wait` below: its PID stays its own till then.)
+        // SAFETY: a zeroed siginfo_t, written by waitid.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT) };
+    });
+    let st = child.wait()?;
+    if stalled {
+        return Err(ssh_stalled("its first call", SSH_START));
+    }
+    ensure!(st.success(), "ssh to the NAS failed: {st}");
+    Ok(())
+}
+
 /// The error for an `ssh` to the NAS stopped by `watched`.
 #[cfg(not(target_os = "wasi"))]
 pub(crate) fn ssh_stalled(what: &str, bound: std::time::Duration) -> anyhow::Error {
