@@ -37,19 +37,27 @@ function fit(c) {
 
 /** Draws chart `o` on canvas `c` (again on each call, and as the pointer moves over it):
  * `{from, to, step, series: [{points, colour, label, fill, band, unit, right}], rightUnit, stacked, unit, least, max,
- *   refs: [{v, label, colour, edit}], ticks: [[v, label]], onEdit(key), gaps: [{from, to}], axis, colourOf(point), shade: {points, colour}, marks: [t]}` —
+ *   refs: [{v, label, colour, edit}], ticks: [[v, label]], gaps: [{from, to}], axis, colourOf(point), shade: {points, colour}, marks: [t]}` —
  * a series `right` is drawn thin and dashed on a second scale of its own (`rightUnit`), its words in the right gutter;
  * `colourOf` colours a line by its points (memory pressure by its level); `shade` shades the
  * spans a state was on (mains power, the owner present); `marks`, events' times (a vertical line each); `axis` draws the time and the scale's labels (`times: false`: the scale's alone);
  * `ticks`, the scale's lines and words in place of 0, half and the top; a ref's label is a boxed tag
- * over the canvas (the canvas's parent positioned), a button with ✎ calling `onEdit(edit)` when it has `edit`. */
+ * over the canvas (the canvas's parent positioned). A ref with `edit` is a setting the owner sets
+ * here: `{key, title, note, unit, min, max, step, label(v), set(v | "off") → Promise<bool>}`; its line
+ * or tag dragged up or down (a mouse at once, a touch after a long press on the tag) previews `v`
+ * snapped to `step` within [min, max] and sets it on release (Escape cancels); its ✎ opens a small
+ * editor on the chart (a number, Set, Off, Cancel). */
 export function draw(c, o) {
   opts.set(c, o);
   if (!c.dataset.hover) {
     c.dataset.hover = "1";
     const move = (e) => { const r = c.getBoundingClientRect(); hover.set(c, (e.clientX - r.left) / r.width); paint(c); };
-    c.addEventListener("pointermove", move);
-    c.addEventListener("pointerdown", move);
+    c.addEventListener("pointermove", (e) => { move(e); c.style.cursor = e.pointerType === "mouse" && lineAt(c, e) ? "ns-resize" : ""; });
+    c.addEventListener("pointerdown", (e) => {
+      // (A mouse on a settable line takes it; a touch scrolls, its tag's long press drags.)
+      const r = e.pointerType !== "touch" && e.button === 0 && lineAt(c, e);
+      if (r) { e.preventDefault(); startDrag(c, r.edit, r.v, e.clientY, "pointer"); } else move(e);
+    });
     c.addEventListener("pointerleave", () => { hover.delete(c); paint(c); });
   }
   paint(c);
@@ -193,12 +201,17 @@ function paint(c) {
   // Reference lines, dashed, in the warning's colour (or their own), each labelled by a boxed tag
   // over its right end, the highest first (under its line when over it would cover one already placed).
   const tags = [];
-  for (const r of [...(o.refs || [])].sort((a, b) => b.v - a.v)) {
+  // (A ref being dragged drawn at the drag's value, its tag saying it.)
+  const d = dragging.get(c);
+  const refs = (o.refs || []).map((r) => (d && r.edit?.key === d.edit.key ? { ...r, v: d.v, label: r.edit.label(d.v), live: true } : r));
+  geom.set(c, { top, ph, max, refs: [] });
+  for (const r of refs.sort((a, b) => b.v - a.v)) {
     if (r.v > max) continue;
     const y = Math.round(Y(r.v)) + 0.5;
     const col = r.colour || k.warn;
     g.strokeStyle = col; g.setLineDash([4, 3]); g.lineWidth = 1;
     g.beginPath(); g.moveTo(L, y); g.lineTo(W - R, y); g.stroke(); g.setLineDash([]);
+    if (r.edit) geom.get(c).refs.push({ y, r });
     if (r.label && o.axis) {
       const free = (ty) => !tags.some((t) => Math.abs(t.y - ty) < 16);
       const ty = [Math.max(0, y - 17), Math.min(H - 16, y + 2)].find(free);
@@ -235,29 +248,150 @@ function axisWords(ys, max, unit) {
   return [ys.map((v) => (v === 0 ? "0" : String(+(v * k).toPrecision(3)))), m[2]];
 }
 
-// The refs' tags, kept over the canvas between draws (one element a ref, reused).
+// The refs' tags, kept over the canvas between draws (one element a ref, reused): a settable one's
+// words drag it (cursor ns-resize; a touch after a long press), its ✎ a button opening the editor.
 function placeTags(c, o, tags, R) {
   const host = c.parentNode;
   if (!host) return;
   const old = [...host.querySelectorAll(":scope > .reftag")];
   tags.forEach((t, i) => {
-    const want = t.r.edit ? "BUTTON" : "SPAN";
+    const settable = !!t.r.edit;
     let e = old[i];
-    if (!e || e.tagName !== want) {
-      const n = document.createElement(want.toLowerCase());
-      n.className = "reftag";
-      if (want === "BUTTON") { n.type = "button"; n.addEventListener("click", () => n._go?.()); }
+    if (!e || e.classList.contains("set") !== settable) {
+      const n = document.createElement("span");
+      n.className = settable ? "reftag set" : "reftag";
+      if (settable) {
+        n.append(document.createElement("span"));
+        const pen = document.createElement("button");
+        pen.type = "button"; pen.className = "pen"; pen.textContent = "✎";
+        pen.addEventListener("click", () => n._edit && openEditor(c, n._edit, n._v));
+        n.append(pen);
+        tagDrag(c, n);
+      }
       if (e) e.replaceWith(n); else host.append(n);
       old[i] = e = n;
     }
-    const text = t.r.edit ? `${t.r.label} ✎` : t.r.label;
-    if (e.textContent !== text) e.textContent = text;
-    e._go = t.r.edit ? () => o.onEdit?.(t.r.edit) : null;
-    if (t.r.edit) e.title = "Change it in Settings";
+    const words = settable ? e.firstChild : e;
+    if (words.textContent !== t.r.label) words.textContent = t.r.label;
+    if (settable) {
+      e._edit = t.r.edit; e._v = t.r.v;
+      e.title = `Drag to set ${t.r.edit.title.toLowerCase()} (Escape cancels); ✎ to type it`;
+      e.lastChild.title = `Set ${t.r.edit.title.toLowerCase()}`;
+      e.classList.toggle("live", !!t.r.live);
+    }
     e.style.right = `${R + 2}px`; e.style.top = `${Math.round(t.y)}px`;
     e.style.color = t.col; e.style.borderColor = `color-mix(in srgb, ${t.col} 45%, transparent)`;
   });
   old.slice(tags.length).forEach((e) => e.remove());
+}
+
+// ---- Setting a ref's value: dragged, or typed in the editor ----------------------------------------
+// Per canvas: its plot's top, height and top value and its settable refs' lines as last drawn; the
+// drag under way ({edit, v, from}).
+const geom = new WeakMap();
+const dragging = new WeakMap();
+const LONG_PRESS_MS = 450;
+
+// The settable ref whose line is within 4 px of the pointer.
+function lineAt(c, e) {
+  const gm = geom.get(c);
+  if (!gm || dragging.has(c)) return null;
+  const y = e.clientY - c.getBoundingClientRect().top;
+  return gm.refs.find((x) => Math.abs(x.y - y) <= 4)?.r || null;
+}
+
+/** The value at `y` (px in the canvas) snapped to `edit.step` within [min, max] (the chart's top
+ * too: past it the line can't be drawn). */
+export function valueAt(gm, edit, y) {
+  const raw = ((gm.top + gm.ph - y) / gm.ph) * gm.max;
+  const top = Math.min(edit.max, Math.floor(gm.max / edit.step) * edit.step);
+  return Math.max(edit.min, Math.min(Math.max(edit.min, top), Math.round(raw / edit.step) * edit.step));
+}
+
+// A drag of `edit`'s line from `v`, its moves from the pointer (`by` "pointer") or a long-pressed
+// touch ("touch"): previewed on each move, set on release when it moved, given up on Escape.
+function startDrag(c, edit, v, clientY, by) {
+  const d = { edit, v, from: v };
+  dragging.set(c, d);
+  c.closest(".mc, .box")?.querySelector(".cfg")?.remove();
+  const at = (y) => { const nv = valueAt(geom.get(c), edit, y - c.getBoundingClientRect().top); if (nv !== d.v) { d.v = nv; paint(c); } };
+  const end = (keep) => {
+    removeEventListener("pointermove", pm); removeEventListener("pointerup", pu); removeEventListener("pointercancel", pc);
+    removeEventListener("touchmove", tm); removeEventListener("touchend", tu); removeEventListener("touchcancel", pc);
+    removeEventListener("keydown", kd, true);
+    document.body.classList.remove("dragging-ref");
+    if (!keep || d.v === d.from) { dragging.delete(c); paint(c); return; }
+    // (The preview stays till the set's answer: its caller draws the new value then.)
+    Promise.resolve(edit.set(d.v)).catch(() => false).finally(() => { if (dragging.get(c) === d) { dragging.delete(c); paint(c); } });
+  };
+  const pm = (e) => at(e.clientY), pu = () => end(true), pc = () => end(false);
+  const tm = (e) => { e.preventDefault(); at(e.touches[0].clientY); }, tu = () => end(true);
+  const kd = (e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); end(false); } };
+  if (by === "touch") { addEventListener("touchmove", tm, { passive: false }); addEventListener("touchend", tu); addEventListener("touchcancel", pc); }
+  else { addEventListener("pointermove", pm); addEventListener("pointerup", pu); addEventListener("pointercancel", pc); }
+  addEventListener("keydown", kd, true);
+  document.body.classList.add("dragging-ref");
+  at(clientY);
+  paint(c);
+}
+
+// A settable tag's drag: a mouse or pen pressing its words at once; a touch held still for
+// LONG_PRESS_MS (moved first, it's the page's scroll).
+function tagDrag(c, n) {
+  n.addEventListener("pointerdown", (e) => {
+    if (e.pointerType === "touch" || e.button !== 0 || e.target.closest(".pen") || !n._edit) return;
+    e.preventDefault();
+    startDrag(c, n._edit, n._v, e.clientY, "pointer");
+  });
+  let timer = null, y0 = 0;
+  const stop = () => { clearTimeout(timer); timer = null; };
+  n.addEventListener("touchstart", (e) => {
+    if (e.target.closest(".pen") || !n._edit || e.touches.length !== 1) return;
+    y0 = e.touches[0].clientY;
+    timer = setTimeout(() => { timer = null; startDrag(c, n._edit, n._v, y0, "touch"); }, LONG_PRESS_MS);
+  }, { passive: true });
+  n.addEventListener("touchmove", (e) => { if (timer && Math.abs(e.touches[0].clientY - y0) > 8) stop(); else if (timer) y0 = e.touches[0].clientY; }, { passive: true });
+  n.addEventListener("touchend", stop);
+  n.addEventListener("touchcancel", stop);
+  n.addEventListener("contextmenu", (e) => e.preventDefault());
+}
+
+// The editor on the chart (the mockup's): the setting's name, a number in its unit, Set, Off,
+// Cancel; Enter sets, Escape cancels; a refused set says why in it.
+function openEditor(c, edit, v) {
+  const host = c.parentNode;
+  host.querySelector(":scope > .cfg")?.remove();
+  const el = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; };
+  const pnl = el("div", "cfg");
+  const inp = el("input");
+  Object.assign(inp, { type: "number", min: edit.min, max: edit.max, step: 1, value: v });
+  inp.setAttribute("aria-label", edit.title);
+  const row = el("div", "cfgrow");
+  const set = el("button", "primary", "Set"), off = el("button", null, "Off"), cancel = el("button", null, "Cancel");
+  for (const b of [set, off, cancel]) b.type = "button";
+  const said = el("p", "dim");
+  row.append(inp, el("span", "dim", edit.unit), set, off, cancel);
+  pnl.append(el("b", null, edit.title), row, said);
+  if (edit.note) said.textContent = edit.note;
+  const close = () => pnl.remove();
+  const go = async (what) => {
+    if (what !== "off") {
+      const n = +inp.value;
+      if (inp.value === "" || !Number.isFinite(n)) { said.textContent = `a number, ${edit.min} to ${edit.max} ${edit.unit}`; return; }
+      what = Math.max(edit.min, Math.min(edit.max, n));
+    }
+    set.disabled = off.disabled = true;
+    said.textContent = "setting…";
+    const ok = await Promise.resolve(edit.set(what)).catch(() => false);
+    if (ok) close();
+    else { set.disabled = off.disabled = false; said.textContent = "not set: the page's banner says why"; }
+  };
+  set.addEventListener("click", () => go(null));
+  off.addEventListener("click", () => go("off"));
+  cancel.addEventListener("click", close);
+  pnl.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } else if (e.key === "Enter") go(null); });
+  host.append(pnl);
+  inp.focus({ preventScroll: true }); inp.select();
 }
 
 // The point at `t`, within a step of it (none in a gap).

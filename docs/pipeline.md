@@ -294,9 +294,16 @@ boxes).
   whether the owner is using the Mac (shaded while so; how long since a touch). What the agent's
   loop reads (power, idleness, the limits) is said while under 15 min old. Each chart (chart.js):
   at most five times under it, its scale's numbers with the unit once beside them (words for the
-  heat and the owner's use), each limit a boxed tag on its dashed line. Of the mockup, not drawn:
-  setting a limit from its tag (task #612); a settable limit's tag (✎: the cores, the build's
-  memory, the room target, the battery floor) scrolls to its Settings row and focuses its field. Gaps where the Mac was silent shaded faintly, and a footer with the range, the resolution and how long
+  heat and the owner's use), each limit a boxed tag on its dashed line. A settable limit (the
+  build's cores, the build's memory, the room target, the battery floor) is set on its chart, as
+  the mockup draws: its line or tag dragged up or down (a mouse at once; a touch after a long press
+  on the tag) previews the value snapped to whole cores, 1 GB, 5 GB or 5 %, within what
+  agent/settings.rs takes (cores 1 to the Mac's, memory 1 GB to the Mac's, room 1 GB to under its
+  disk, the floor 0 to 100 %), and sets it on release through POST /work/settings, as the Settings
+  rows do (Escape cancels); its ✎ opens a small editor on the chart (a number, Set, Off, Cancel).
+  Each Mac's lines set that Mac's; the battery floor's tag says it's pool-wide, set through the Mac
+  the Settings' pool box uses. Set, a line holds the new value till the agent's loop reports it (15
+  min at most). The Settings rows stay, for the keyboard. Gaps where the Mac was silent shaded faintly, and a footer with the range, the resolution and how long
   it was silent. What the lead offered a member is one line (its steps and the pieces it can
   take), the steps on a click. Pages one card.
 - **The pool:** `pool.js`, under the machines (the Machines tab).

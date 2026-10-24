@@ -2,7 +2,7 @@
 // in-use share, build memory and disk room target, a block per Mac, each set on that Mac, and the
 // pool's NAS reserve and battery floor. Read and set through
 // `/work/settings`, which sets each through the same function as its `scenic` command
-// (`scenic in-use`, `memory`, `room`, `nas-room`, `battery-floor`). Changed only when a person presses Set or Off.
+// (`scenic in-use`, `memory`, `room`, `nas-room`, `battery-floor`). Changed only when a person presses Set or Off, or lets go of a chart limit dragged (putSetting, from live.js).
 
 function h(tag, attrs, ...kids) {
   const e = document.createElement(tag);
@@ -26,6 +26,8 @@ const by = (s) => (s?.by ? ` · set by ${s.by}` : "");
 const kept = new Map();
 let ownHost = null;
 const EVERY_MS = 30_000;
+// The last section's or load's `call`, `macs`, `done` and `onError`, for putSetting.
+let ctx = null;
 
 // Asks a Mac's `/work/settings`: this page's own through `call`, another at its addresses (as
 // live.js's /work/live: HTTPS over an HTTPS page; its broker answers a member's page, CORS).
@@ -56,6 +58,7 @@ async function ask(call, m, st, body) {
 /** Reads every Mac's again when 30 s old: `call(path, body)` this page's own Mac, `macs` the
  * swarm's (host, urls, https: /work/swarm's `macs`); `done()` after each answer. */
 export function loadSettings(call, macs, done) {
+  ctx = { ...ctx, call, macs, done };
   const one = async (m) => {
     const host = m ? m.host : ownHost || "";
     const st = kept.get(host) || {};
@@ -77,14 +80,7 @@ export function loadSettings(call, macs, done) {
  * own, and the pool's NAS reserve and battery floor once; `call`, `macs` and `done` as loadSettings's;
  * `onError(text)` a refused ask. */
 export function settingsSection(call, macs, done, onError) {
-  const set = async (m, st, body, what) => {
-    try {
-      st.said = await ask(call, m, st, body); st.at = Date.now();
-    } catch (e) { onError?.(`couldn't set ${what}: ${e.message}`); }
-    // (A focused field keeps its section as it was, dash.js render: let go, so the new value shows.)
-    document.activeElement?.blur();
-    done();
-  };
+  ctx = { call, macs, done, onError };
   const row = (put, r) => {
     if (!r.input) return h("div", "setting", h("span", "k", r.what), h("b", null, r.now), h("span", "dim small", r.note));
     const { key, what, input } = r;
@@ -108,7 +104,7 @@ export function settingsSection(call, macs, done, onError) {
     return h("div", { class: "box settings", "data-host": name }, head, macRows(s).map((r) => row(put, r)));
   });
   // (The pool's, kept on the NAS: once, through the first Mac that reaches the NAS.)
-  const nas = list.map(([m, host]) => [m, kept.get(host) || {}]).find(([, st]) => st.said?.nas_room);
+  const nas = poolMac(list);
   const pool = nas
     ? (() => {
       const [m, st] = nas, put = (body, what) => set(m, st, body, what);
@@ -116,6 +112,39 @@ export function settingsSection(call, macs, done, onError) {
     })()
     : h("div", "box settings pool", h("h3", null, "The pool"), h("div", "setting dim small", "NAS reserve and battery floor: no Mac shown here reaches the NAS now"));
   return h("section", "d-settings", h("h2", null, "Settings", h("span", null, "each Mac's own, set on that Mac; the NAS reserve and battery floor, pool-wide")), blocks, pool);
+}
+
+// Sets `body` on Mac `m` (null: this page's) with its kept state `st`; a refusal said through
+// onError as "couldn't set <what>". Whether it was set.
+async function set(m, st, body, what) {
+  let ok = true;
+  try {
+    st.said = await ask(ctx.call, m, st, body); st.at = Date.now();
+  } catch (e) { ok = false; ctx.onError?.(`couldn't set ${what}: ${e.message}`); }
+  // (A focused field keeps its section as it was, dash.js render: let go, so the new value shows.)
+  document.activeElement?.blur();
+  ctx.done();
+  return ok;
+}
+
+// The Mac that sets the pool's settings: the first shown that reaches the NAS ([m, st]).
+const poolMac = (list) => list.map(([m, host]) => [m, kept.get(host) || {}]).find(([, st]) => st.said?.nas_room);
+
+/** Sets `body` (one setting, as /work/settings takes it) from a chart's limit (live.js): on Mac
+ * `host` (this page's own through its calls), or, for the pool's battery floor and NAS reserve,
+ * through the Mac the Settings' pool box uses. `what` names it in a refusal. Whether it was set. */
+export async function putSetting(host, body, what) {
+  if (!ctx) return false;
+  if ("battery_floor" in body || "nas_room" in body) {
+    const p = poolMac([[null, ownHost || ""], ...ctx.macs.filter((m) => m.host !== ownHost).map((m) => [m, m.host])]);
+    if (!p) { ctx.onError?.(`couldn't set ${what}: no Mac shown here reaches the NAS now`); return false; }
+    return set(p[0], p[1], body, what);
+  }
+  const m = host === ownHost ? null : ctx.macs.find((x) => x.host === host) || null;
+  const key = m ? m.host : ownHost || "";
+  const st = kept.get(key) || {};
+  kept.set(key, st);
+  return set(m, st, body, `${what} on ${host}`);
 }
 
 // A row's words and field, or, when the answer lacks the setting or it can't be read, "not set"

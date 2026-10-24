@@ -165,7 +165,7 @@ Common rules:
   (the same checks and files; `by` "the build page (<device>)"), and answers with them as they
   stand (`mac`: its host). One ask carrying several is set in order, so a bad one after a good one
   leaves the good one set; the page sends one at a time. A bad value is refused (400) with the check's words. They change only when a person
-  presses Set or Off. The menu bar's settings are unchanged. **The battery floor**
+  presses Set or Off, in a row or a chart's limit editor, or lets go of a chart's limit line dragged (docs/pipeline.md §5). The menu bar's settings are unchanged. **The battery floor**
   (`cond::BATTERY_FLOOR`, `cond::FloorCache`) is one pool-wide value on the NAS
   (`state/pool/battery-floor.json`, `{"pct", "by", "at"}`), set by `scenic battery-floor [<percent> |
   off]` on any Mac or the page (off: the file removed, the default, 30 %, `DEFAULT_BATTERY_MIN`;
@@ -173,7 +173,7 @@ Common rules:
   slow or away: the last floor read stands; the default until a first read lands, waited on up to 2 s at the first step), says
   it in its heartbeat's conditions (`Conds::battery_min`, so a member's why-not and the lead's
   handover use the floor that Mac went by) and in `/work/live`'s `mac.battery_min`, the battery
-  chart's line, whose tag (✎) scrolls to its row. Each slot (a Web Worker per core, less one) runs a
+  chart's line, set there by dragging it or its tag's ✎ (the tag says it's pool-wide). Each slot (a Web Worker per core, less one) runs a
   task's programs over an in-memory filesystem (`web/work/runtime.js`, over browser_wasi_shim).
 - **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`, `settings.js`, `sums.js`, `live.js`, `nas.js`, `activity.js`, `chart.js`, `chartmath.js`, `worldmap.js`; docs/pipeline.md §5): a
   sticky header (the verdict: going, done when, what needs a look; Pause, Freeze, Resume; the

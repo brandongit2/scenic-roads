@@ -13,6 +13,7 @@
 // long the Mac was silent in it (the charts' gaps). A measure missing is said so, never zero.
 import { draw } from "./chart.js";
 import { commonGaps, fmt, footer, hhmm, latest, merge, pressureClass, pressureWord, recentMean } from "./chartmath.js";
+import { putSetting } from "./settings.js";
 
 const EVERY_MS = 1500;
 // How often a Mac's day of missed NAS calls is asked (nas.js's "timed out").
@@ -31,6 +32,8 @@ const kept = new Map();
 // Per host: its block's elements, kept across the page's renders (moved into each new card).
 const blocks = new Map();
 let ownHost = null;
+// Limits set from a chart, by "host|key" ("|key" the pool's): {v, at (ms)}, drawn till the loop reads them.
+const pending = new Map();
 
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const css = (k) => getComputedStyle(document.documentElement).getPropertyValue(k).trim();
@@ -231,16 +234,23 @@ function paint(host) {
   // the Mac's starved; their lines joined over that.)
   const loop = (k) => latest(s[k], now, LOOP_FRESH_S);
   // (Every chart says the time under it, as the mockup's.)
-  // (A settable limit's ✎: its row in Settings, on this tab, scrolled to and its field focused; #612 sets it in place.)
-  const onEdit = (key) => {
-    // (The pool's settings, as the battery floor, are in the pool's box.)
-    const box = [...document.querySelectorAll(".d-settings .settings")].find((x) => (key === "battery_floor" ? x.classList.contains("pool") : x.dataset.host === host));
-    const at1 = box?.querySelector(`.setting[data-key="${key}"]`) || box;
-    if (!at1) return;
-    at1.scrollIntoView({ block: "center", behavior: "smooth" });
-    at1.querySelector("input")?.focus({ preventScroll: true });
+  // (A settable limit (#612): its line dragged, or its ✎'s editor, sets it on this Mac through
+  // /work/settings as Settings' rows do, the battery floor on the pool's; set, the line holds the
+  // new value till the agent's loop reads it (LOOP_FRESH_S at most).)
+  const id = (key) => `${key === "battery_floor" ? "" : host}|${key}`;
+  const held = (key, v) => {
+    const p = pending.get(id(key));
+    if (!p || Date.now() - p.at > LOOP_FRESH_S * 1000 || (v != null && Math.abs(v - p.v) < 1e-6)) return v;
+    return p.v;
   };
-  const base = { from, to: now, step, gaps: gapList, axis: true, times: true, onEdit };
+  const edit = (key, e) => ({ key, ...e, set: async (v) => {
+    const ok = await putSetting(host, { [key]: e.body ? e.body(v) : v }, e.title.toLowerCase());
+    if (ok && v !== "off") pending.set(id(key), { v, at: Date.now() });
+    else if (ok) pending.delete(id(key));
+    if (ok) paint(host);
+    return ok;
+  } });
+  const base = { from, to: now, step, gaps: gapList, axis: true, times: true };
   const loopBase = { ...base, step: Math.max(step, LOOP_FRESH_S / 2) };
   const nr = css("--nas-r"), nw = css("--nas-w"), nd = css("--net-d"), nu = css("--net-u"), acc = css("--accent"), dim = css("--dim");
   const ok = css("--ok"), warn = css("--warn"), bad = css("--bad");
@@ -279,10 +289,10 @@ function paint(host) {
 
   // CPU use: the build's and the rest's, stacked, against the Mac's cores and the build's limit.
   const n = mac.cores;
-  const lim = loop("build_cores_max");
+  const lim = held("in_use", loop("build_cores_max"));
   draw(b.cpu.c, { ...base, unit: "", stacked: true, least: n || 0,
     // (The cores' line unlabelled when the build's limit is drawn: the two labels would meet.)
-    refs: [...(n ? [{ v: n, label: lim != null && lim !== n ? "" : `${n} cores` }] : []), ...(lim != null && lim !== n ? [{ v: lim, label: `build's limit: ${fmt(lim)} cores`, edit: "in_use" }] : [])],
+    refs: [...(n ? [{ v: n, label: lim != null && lim !== n ? "" : `${n} cores` }] : []), ...(lim != null && lim !== n ? [{ v: lim, label: `build's limit: ${fmt(lim)} cores`, edit: edit("in_use", { title: "Cores for the build", note: `Most cores the build's jobs may use while the owner is using ${host}; the rest are kept for the owner's apps. Off: the default share.`, unit: "cores", min: 1, max: n, step: 1, label: (v) => `build's limit: ${fmt(v)} cores`, body: (v) => (v === "off" ? v : n - v) }) }] : [])],
     series: [{ points: s.build_cores, colour: acc, label: "build", unit: "cores" }, { points: s.others_cores, colour: dim, label: "other", unit: "cores" }] });
   const busy = at("cores_busy"), ce = at("cores_busy_e"), cp = at("cores_busy_p");
   words(b.cpu.v, busy == null ? ["not measured"] : [`${fmt(busy)}${n ? ` of ${n}` : ""} cores busy`, [acc, `build's jobs ${fmt(at("build_cores"))}`], [dim, `other apps ${fmt(at("others_cores"))}`],
@@ -294,8 +304,8 @@ function paint(host) {
   words(b.load.v, load == null ? ["not measured"] : [`load ${fmt(load)}`, n ? (load > n ? `${fmt(load - n)} waiting for a core` : "no queue") : ""], n && load > 2 * n ? "warn" : "");
 
   // Memory: the build's and the rest's (GB), stacked, against the Mac's and the build's limit.
-  const memGb = mac.mem_gb, memLim = loop("build_mem_max_gb");
-  draw(b.mem.c, { ...base, unit: "GB", stacked: true, max: memGb || undefined, refs: memLim != null ? [{ v: memLim, label: `build's memory: ${fmt(memLim, "GB")}`, edit: "memory" }] : [],
+  const memGb = mac.mem_gb, memLim = held("memory", loop("build_mem_max_gb"));
+  draw(b.mem.c, { ...base, unit: "GB", stacked: true, max: memGb || undefined, refs: memLim != null ? [{ v: memLim, label: `build's memory: ${fmt(memLim, "GB")}`, edit: edit("memory", { title: "Build memory", note: `The memory ${host} gives the build's jobs together. Off: the memory guard's limit alone.`, unit: "GB", min: 1, max: Math.floor(memGb || 1), step: 1, label: (v) => `build's memory: ${fmt(v, "GB")}` }) }] : [],
     series: [{ points: s.build_mem_gb, colour: acc, label: "build", unit: "GB" }, { points: s.others_mem_gb, colour: dim, label: "other", unit: "GB" }] });
   const free = at("mem_free_pct");
   words(b.mem.v, free == null ? ["not measured"] : [`${memGb ? fmt(memGb * (100 - free) / 100, "GB") : fmt(100 - free, "%")}${memGb ? ` of ${fmt(memGb, "GB")}` : ""} used`,
@@ -320,8 +330,8 @@ function paint(host) {
   words(b.swap.v, sw == null ? ["not measured"] : [fmt(sw / 1024, "GB"), "written out to disk"]);
 
   // Disk free, against the owner's room target; the jobs' reservations as words.
-  const df = latest(s.disk_free_gb, now, 60), size = latest(s.disk_size_gb, now, 60), room = loop("disk_room_gb"), resv = loop("disk_reserved_gb");
-  draw(b.disk.c, { ...base, unit: "GB", refs: room ? [{ v: room, label: `room target: ${fmt(room, "GB")}`, edit: "room" }] : [], series: [{ points: s.disk_free_gb, colour: acc, fill: true, label: "free", unit: "GB" }] });
+  const df = latest(s.disk_free_gb, now, 60), size = latest(s.disk_size_gb, now, 60), room = held("room", loop("disk_room_gb")), resv = loop("disk_reserved_gb");
+  draw(b.disk.c, { ...base, unit: "GB", refs: room ? [{ v: room, label: `room target: ${fmt(room, "GB")}`, edit: edit("room", { title: "Disk room target", note: `Free space the build keeps on ${host}'s disk. Off: no target.`, unit: "GB", min: 1, max: size ? Math.ceil(size) - 1 : 100000, step: 5, label: (v) => `room target: ${fmt(v, "GB")}` }) }] : [], series: [{ points: s.disk_free_gb, colour: acc, fill: true, label: "free", unit: "GB" }] });
   words(b.disk.v, df == null ? ["not measured"] : [`${fmt(df, "GB")} free`, size ? `of ${fmt(size, "GB")}` : "", resv != null ? `${fmt(resv, "GB")} reserved by jobs` : ""], room && df != null && df < room ? "bad" : "");
 
   // Disk write (MB/s).
@@ -330,8 +340,8 @@ function paint(host) {
   words(b.dw.v, dwNow == null ? ["not measured"] : [fmt(dwNow, "MB/s"), `last min ${fmt(recentMean(s.disk_write_mbs, now), "MB/s")}`]);
 
   // Battery: its charge, shaded while on mains, against the lead's floor on battery.
-  const bat = loop("battery_pct"), ac = loop("ac"), floor = mac.battery_min;
-  draw(b.power.c, { ...loopBase, unit: "%", max: 100, shade: { points: s.ac, colour: ok }, refs: floor ? [{ v: floor, label: `can't lead below ${floor} % on battery`, edit: "battery_floor" }] : [],
+  const bat = loop("battery_pct"), ac = loop("ac"), floor = held("battery_floor", mac.battery_min);
+  draw(b.power.c, { ...loopBase, unit: "%", max: 100, shade: { points: s.ac, colour: ok }, refs: floor ? [{ v: floor, label: `pool-wide: can't lead below ${floor} % on battery`, edit: edit("battery_floor", { title: "Battery floor", note: "Pool-wide, every Mac's: on battery, a Mac below it can't lead and a lead below it hands over. Off: the default.", unit: "%", min: 0, max: 100, step: 5, label: (v) => `pool-wide: can't lead below ${fmt(v)} % on battery` }) }] : [],
     series: [{ points: s.battery_pct, colour: ac === 0 && floor && bat < floor ? bad : ok, label: "battery", unit: "%" }] });
   words(b.power.v, bat == null ? [ac === 1 ? "on mains, no battery" : "not measured"] : [fmt(bat, "%"), ac === 0 ? "on battery" : "on mains"], ac === 0 && floor && bat < floor ? "warn" : "");
 

@@ -20,7 +20,10 @@
 // The page comes from a read-only server on its own port (8097): web/work as /work/, and only the
 // reading calls forwarded to this Mac's agent (127.0.0.1:8090); everything else is refused, so the
 // page can't lease work, pause, act or set a setting. The page opens as `?view` (never helps).
-// (Other Macs' /work/settings and /work/live the page asks straight; it only reads them.)
+// (Other Macs' /work/settings and /work/live the page asks straight; it only reads them.) A setting
+// the page sets (the limits' drags and editor, #612) never leaves it: the page's fetch is wrapped
+// before its scripts run, a POST to any /work/settings with a setting in its body recorded in
+// `window.__posted` and sent as a read ({}) instead; this server refuses such a body anyway.
 import { spawn } from "node:child_process";
 import { createServer, request } from "node:http";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, statSync } from "node:fs";
@@ -152,6 +155,7 @@ async function run() {
     // (The center of the first visible element matching `sel`, in the viewport, scrolled to.)
     const at = (sel, where = "") => js(`(() => { const el = [...document.querySelectorAll(${JSON.stringify(sel)})].find((e) => e.getClientRects().length && e.closest(".panel:not([hidden])")${where}); if (!el) return null; el.scrollIntoView({ block: "center" }); const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, r.width, r.height]; })()`);
 
+    await page.send("Page.addScriptToEvaluateOnNewDocument", { source: stub() });
     await page.send("Page.navigate", { url: `http://127.0.0.1:${PORT}/work/?view#overview` });
     for (let i = 0; i < 40 && !(await js(`!!document.querySelector('.panel[data-tab="overview"]')?.children.length`).catch(() => false)); i++) await sleep(250);
     await sleep(1500);
@@ -453,6 +457,7 @@ async function run() {
       await js("document.activeElement?.blur()");
     }
     check("machines: settings fields focus on a tap without a jump", n > 0 && !bad.length, n ? bad.join("; ") || `${Math.min(n, 4)} of ${n} tried` : "no fields shown");
+    await limitChecks({ js, at, touch, tap, page, check, shot, PHONE });
     if (cors) console.log(`INFO ${cors} failed calls to the other Macs (CORS refused this test origin, or away; not counted)`);
     page.close();
   } catch (e) {
@@ -466,6 +471,94 @@ async function run() {
   const failed = results.filter((r) => !r.ok).length;
   console.log(`${failed ? "FAIL" : "PASS"}: ${results.length - failed} of ${results.length} checks; screenshots in ${OUT}`);
   process.exit(failed ? 1 : 0);
+}
+
+// The page's settings writes recorded, never sent (see the server's note).
+function stub() {
+  return `(() => {
+  const real = window.fetch.bind(window);
+  window.__posted = [];
+  window.fetch = (u, o = {}) => {
+    const url = typeof u === "string" ? u : u.url;
+    if (/\\/work\\/settings$/.test(new URL(url, location.href).pathname) && o.body) {
+      let b = null;
+      try { b = JSON.parse(o.body); } catch {}
+      if (b && Object.keys(b).length) { window.__posted.push({ url, body: b }); o = { ...o, body: "{}" }; }
+    }
+    return real(u, o);
+  };
+})();`;
+}
+
+// The limits on the Machines tab's charts (#612): the own Mac's memory line long-pressed and dragged
+// sets it (recorded by stub(), not sent), Escape gives a drag up, the ✎'s editor sets and cancels, the
+// battery floor's tag says it's the pool's; a mouse drags the line itself (desktop width).
+async function limitChecks({ js, at, touch, tap, page, check, shot, PHONE }) {
+  const own = `[...document.querySelectorAll('.panel[data-tab="machines"] .live')].find((b) => b.querySelector(".reftag.set"))`;
+  const tagSel = (word) => `[...${own}.querySelectorAll(".reftag.set")].find((t) => t.title.includes(${JSON.stringify(word)}))`;
+  let ready = false;
+  for (let t = 0; t < 40 && !ready; t++) { ready = await js(`!!(${own} && ${tagSel("build memory")})`); if (!ready) await sleep(250); }
+  if (!ready) { check("machines: the build memory's limit drags on a long press", false, "no settable memory line on this Mac's charts"); return; }
+  const posted = () => js("window.__posted.length");
+  const where = (word) => js(`(() => { const t = ${tagSel(word)}; t.scrollIntoView({ block: "center" }); const r = t.firstChild.getBoundingClientRect(); return [r.left + Math.min(12, r.width / 2), r.top + r.height / 2]; })()`);
+  const press = async (x, y, dy, escape) => {
+    await touch("touchStart", [[x, y]]); await sleep(650);
+    for (let i = 1; i <= 8; i++) { await touch("touchMove", [[x, y + (dy * i) / 8]]); await sleep(30); }
+    const preview = await js(`${tagSel("build memory")}?.classList.contains("live")`);
+    if (escape) await page.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+    await touch("touchEnd", []); await sleep(500);
+    return preview;
+  };
+  if (PHONE) {
+    let n0 = await posted();
+    const [x, y] = await where("build memory");
+    const pv = await press(x, y, 25, true);
+    check("machines: Escape gives up a limit's drag", pv && (await posted()) === n0, `previewed ${pv}, ${(await posted()) - n0} sent`);
+    const scroll0 = await js("scrollY");
+    const [x2, y2] = await where("build memory");
+    const pv2 = await press(x2, y2, 25, false);
+    const last = await js("window.__posted.at(-1)");
+    check("machines: the build memory's limit drags on a long press and sets on release", pv2 && (await posted()) === n0 + 1 && last && Object.keys(last.body).join() === "memory" && Number.isInteger(last.body.memory),
+      `previewed ${pv2}, sent ${JSON.stringify(last?.body)}`);
+    check("machines: a limit's drag doesn't scroll the page", Math.abs((await js("scrollY")) - scroll0) <= 2);
+  } else {
+    const n0 = await posted();
+    // (A mouse on the line itself where the plot shows it left of its tag (past the scale's
+    // gutter), else on the tag's words; either at once, no long press.)
+    const box = await js(`(() => { const t = ${tagSel("build memory")}; const c = t.parentNode.querySelector("canvas"); c.scrollIntoView({ block: "center" }); const r = c.getBoundingClientRect(), q = t.getBoundingClientRect(), w = t.firstChild.getBoundingClientRect(); return [r.left + 60, q.top, q.left, w.left + 12, w.top + w.height / 2]; })()`);
+    let held = 0;
+    const mouse = (type, x, y) => { held = type === "mousePressed" ? 1 : type === "mouseReleased" ? 0 : held; return page.send("Input.dispatchMouseEvent", { type, x, y, button: type === "mouseMoved" && !held ? "none" : "left", buttons: held, clickCount: type === "mouseMoved" ? 0 : 1 }); };
+    let line = null;
+    if (box[2] - box[0] > 6) for (let dy = -6; dy <= 26 && !line; dy++) { await mouse("mouseMoved", box[0], box[1] + dy); if (await js(`${tagSel("build memory")}.parentNode.querySelector("canvas").style.cursor === "ns-resize"`)) line = [box[0], box[1] + dy]; }
+    const by = line ? "line" : "tag";
+    line ||= [box[3], box[4]];
+    await mouse("mouseMoved", line[0], line[1]); await mouse("mousePressed", line[0], line[1]);
+    for (let i = 1; i <= 6; i++) { await mouse("mouseMoved", line[0], line[1] - 4 * i); await sleep(30); }
+    await mouse("mouseReleased", line[0], line[1] - 24); await sleep(500);
+    const last = await js("window.__posted.at(-1)");
+    check("machines: a mouse drags the build memory's limit and sets it on release", (await posted()) === n0 + 1 && last && "memory" in last.body, `by its ${by}, sent ${JSON.stringify(last?.body)}`);
+  }
+  // The ✎: the editor opens on the chart; Cancel closes it, Set sends the number typed.
+  const penAt = () => js(`(() => { const t = ${tagSel("disk room")} || ${tagSel("build memory")}; t.scrollIntoView({ block: "center" }); const r = t.querySelector(".pen").getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, t.title]; })()`);
+  const pen = await penAt();
+  const n1 = await posted();
+  await tap(pen[0], pen[1]);
+  const open = await js(`!!${own}.querySelector(".cfg input")`);
+  await shot("machines-limit-editor");
+  const cancel = await js(`(() => { const b = [...${own}.querySelectorAll(".cfg button")].find((x) => x.textContent === "Cancel"); b.scrollIntoView({ block: "center" }); const r = b.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
+  await tap(...cancel);
+  const still = await js(`!!${own}.querySelector(".cfg")`);
+  check("machines: a limit's ✎ opens its editor on the chart; Cancel closes it, nothing sent", open && !still && (await posted()) === n1, `opened ${open}, still open ${still}, ${(await posted()) - n1} sent`);
+  const pen2 = await penAt();
+  await tap(pen2[0], pen2[1]);
+  await js(`(() => { const i = ${own}.querySelector(".cfg input"); i.value = "7"; })()`);
+  const setB = await js(`(() => { const b = [...${own}.querySelectorAll(".cfg button")].find((x) => x.textContent === "Set"); b.scrollIntoView({ block: "center" }); const r = b.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
+  await tap(...setB); await sleep(500);
+  const sent = await js("window.__posted.at(-1)");
+  const key = /disk room/.test(pen[2]) ? "room" : "memory";
+  check("machines: the editor's Set sends the number typed", (await posted()) === n1 + 1 && sent?.body?.[key] === 7, JSON.stringify(sent?.body));
+  check("machines: the battery floor's tag says it's pool-wide", await js(`[...${own}.querySelectorAll(".reftag.set")].some((t) => t.title.includes("battery floor") && /pool-wide/.test(t.textContent))`) || !(await js(`[...${own}.querySelectorAll(".reftag")].some((t) => /battery/.test(t.textContent))`)), "");
+  await js(`${own}.querySelector(".cfg")?.remove()`);
 }
 
 function sleep(ms) { return new Promise((ok) => setTimeout(ok, ms)); }
