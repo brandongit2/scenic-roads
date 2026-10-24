@@ -140,7 +140,9 @@ export async function putSetting(host, body, what) {
     if (!p) { ctx.onError?.(`couldn't set ${what}: no Mac shown here reaches the NAS now`); return false; }
     return set(p[0], p[1], body, what);
   }
-  const m = host === ownHost ? null : ctx.macs.find((x) => x.host === host) || null;
+  const m = host === ownHost ? null : ctx.macs.find((x) => x.host === host);
+  // (A Mac not in the swarm's list now is refused, never set on this page's own instead.)
+  if (m === undefined) { ctx.onError?.(`couldn't set ${what} on ${host}: it isn't in the pool's list now`); return false; }
   const key = m ? m.host : ownHost || "";
   const st = kept.get(key) || {};
   kept.set(key, st);

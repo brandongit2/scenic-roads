@@ -479,11 +479,14 @@ function stub() {
   const real = window.fetch.bind(window);
   window.__posted = [];
   window.fetch = (u, o = {}) => {
-    const url = typeof u === "string" ? u : u.url;
-    if (/\\/work\\/settings$/.test(new URL(url, location.href).pathname) && o.body) {
-      let b = null;
+    // (Anything but a bare read to a /work/settings is recorded and sent as one: a Request object,
+    // a body not JSON, a trailing slash; this test's server refuses a write to its own Mac besides.)
+    const url = typeof u === "string" || u instanceof URL ? String(u) : u.url;
+    if (/\\/work\\/settings\\/?$/.test(new URL(url, location.href).pathname) && (typeof u === "object" && !(u instanceof URL) || (o.body != null && String(o.body).trim() !== "{}"))) {
+      let b = o.body;
       try { b = JSON.parse(o.body); } catch {}
-      if (b && Object.keys(b).length) { window.__posted.push({ url, body: b }); o = { ...o, body: "{}" }; }
+      window.__posted.push({ url, body: b });
+      return real(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", signal: o.signal });
     }
     return real(u, o);
   };

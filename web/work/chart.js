@@ -318,7 +318,7 @@ function startDrag(c, edit, v, clientY, by) {
   const end = (keep) => {
     removeEventListener("pointermove", pm); removeEventListener("pointerup", pu); removeEventListener("pointercancel", pc);
     removeEventListener("touchmove", tm); removeEventListener("touchend", tu); removeEventListener("touchcancel", pc);
-    removeEventListener("keydown", kd, true);
+    removeEventListener("keydown", kd, true); removeEventListener("blur", pc);
     document.body.classList.remove("dragging-ref");
     if (!keep || d.v === d.from) { dragging.delete(c); paint(c); return; }
     // (The preview stays till the set's answer: its caller draws the new value then.)
@@ -330,6 +330,8 @@ function startDrag(c, edit, v, clientY, by) {
   if (by === "touch") { addEventListener("touchmove", tm, { passive: false }); addEventListener("touchend", tu); addEventListener("touchcancel", pc); }
   else { addEventListener("pointermove", pm); addEventListener("pointerup", pu); addEventListener("pointercancel", pc); }
   addEventListener("keydown", kd, true);
+  // (The window losing focus mid-drag gives it up: its release may never come.)
+  addEventListener("blur", pc);
   document.body.classList.add("dragging-ref");
   at(clientY);
   paint(c);
@@ -374,17 +376,19 @@ function openEditor(c, edit, v) {
   pnl.append(el("b", null, edit.title), row, said);
   if (edit.note) said.textContent = edit.note;
   const close = () => pnl.remove();
+  let busy = false;
   const go = async (what) => {
+    if (busy) return;
     if (what !== "off") {
       const n = +inp.value;
       if (inp.value === "" || !Number.isFinite(n)) { said.textContent = `a number, ${edit.min} to ${edit.max} ${edit.unit}`; return; }
       what = Math.max(edit.min, Math.min(edit.max, n));
     }
-    set.disabled = off.disabled = true;
+    busy = set.disabled = off.disabled = true;
     said.textContent = "setting…";
     const ok = await Promise.resolve(edit.set(what)).catch(() => false);
     if (ok) close();
-    else { set.disabled = off.disabled = false; said.textContent = "not set: the page's banner says why"; }
+    else { busy = set.disabled = off.disabled = false; said.textContent = "not set: the page's banner says why"; }
   };
   set.addEventListener("click", () => go(null));
   off.addEventListener("click", () => go("off"));

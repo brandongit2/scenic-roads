@@ -238,9 +238,13 @@ function paint(host) {
   // /work/settings as Settings' rows do, the battery floor on the pool's; set, the line holds the
   // new value till the agent's loop reads it (LOOP_FRESH_S at most).)
   const id = (key) => `${key === "battery_floor" ? "" : host}|${key}`;
-  const held = (key, v) => {
+  // (Dropped once the loop says it, or says otherwise twice since: set elsewhere since, or refused.)
+  const held = (key, v, points) => {
     const p = pending.get(id(key));
-    if (!p || Date.now() - p.at > LOOP_FRESH_S * 1000 || (v != null && Math.abs(v - p.v) < 1e-6)) return v;
+    if (!p) return v;
+    let since = 0;
+    for (let i = (points?.length || 0) - 1; i >= 0 && since < 2 && points[i][0] * 1000 > p.at; i--) since++;
+    if (Date.now() - p.at > LOOP_FRESH_S * 1000 || (v != null && Math.abs(v - p.v) < 1e-6) || since >= 2) { pending.delete(id(key)); return v; }
     return p.v;
   };
   const edit = (key, e) => ({ key, ...e, set: async (v) => {
@@ -289,7 +293,7 @@ function paint(host) {
 
   // CPU use: the build's and the rest's, stacked, against the Mac's cores and the build's limit.
   const n = mac.cores;
-  const lim = held("in_use", loop("build_cores_max"));
+  const lim = held("in_use", loop("build_cores_max"), s.build_cores_max);
   draw(b.cpu.c, { ...base, unit: "", stacked: true, least: n || 0,
     // (The cores' line unlabelled when the build's limit is drawn: the two labels would meet.)
     refs: [...(n ? [{ v: n, label: lim != null && lim !== n ? "" : `${n} cores` }] : []), ...(lim != null && lim !== n ? [{ v: lim, label: `build's limit: ${fmt(lim)} cores`, edit: edit("in_use", { title: "Cores for the build", note: `Most cores the build's jobs may use while the owner is using ${host}; the rest are kept for the owner's apps. Off: the default share.`, unit: "cores", min: 1, max: n, step: 1, label: (v) => `build's limit: ${fmt(v)} cores`, body: (v) => (v === "off" ? v : n - v) }) }] : [])],
@@ -304,7 +308,7 @@ function paint(host) {
   words(b.load.v, load == null ? ["not measured"] : [`load ${fmt(load)}`, n ? (load > n ? `${fmt(load - n)} waiting for a core` : "no queue") : ""], n && load > 2 * n ? "warn" : "");
 
   // Memory: the build's and the rest's (GB), stacked, against the Mac's and the build's limit.
-  const memGb = mac.mem_gb, memLim = held("memory", loop("build_mem_max_gb"));
+  const memGb = mac.mem_gb, memLim = held("memory", loop("build_mem_max_gb"), s.build_mem_max_gb);
   draw(b.mem.c, { ...base, unit: "GB", stacked: true, max: memGb || undefined, refs: memLim != null ? [{ v: memLim, label: `build's memory: ${fmt(memLim, "GB")}`, edit: edit("memory", { title: "Build memory", note: `The memory ${host} gives the build's jobs together. Off: the memory guard's limit alone.`, unit: "GB", min: 1, max: Math.floor(memGb || 1), step: 1, label: (v) => `build's memory: ${fmt(v, "GB")}` }) }] : [],
     series: [{ points: s.build_mem_gb, colour: acc, label: "build", unit: "GB" }, { points: s.others_mem_gb, colour: dim, label: "other", unit: "GB" }] });
   const free = at("mem_free_pct");
@@ -330,7 +334,7 @@ function paint(host) {
   words(b.swap.v, sw == null ? ["not measured"] : [fmt(sw / 1024, "GB"), "written out to disk"]);
 
   // Disk free, against the owner's room target; the jobs' reservations as words.
-  const df = latest(s.disk_free_gb, now, 60), size = latest(s.disk_size_gb, now, 60), room = held("room", loop("disk_room_gb")), resv = loop("disk_reserved_gb");
+  const df = latest(s.disk_free_gb, now, 60), size = latest(s.disk_size_gb, now, 60), room = held("room", loop("disk_room_gb"), s.disk_room_gb), resv = loop("disk_reserved_gb");
   draw(b.disk.c, { ...base, unit: "GB", refs: room ? [{ v: room, label: `room target: ${fmt(room, "GB")}`, edit: edit("room", { title: "Disk room target", note: `Free space the build keeps on ${host}'s disk. Off: no target.`, unit: "GB", min: 1, max: size ? Math.ceil(size) - 1 : 100000, step: 5, label: (v) => `room target: ${fmt(v, "GB")}` }) }] : [], series: [{ points: s.disk_free_gb, colour: acc, fill: true, label: "free", unit: "GB" }] });
   words(b.disk.v, df == null ? ["not measured"] : [`${fmt(df, "GB")} free`, size ? `of ${fmt(size, "GB")}` : "", resv != null ? `${fmt(resv, "GB")} reserved by jobs` : ""], room && df != null && df < room ? "bad" : "");
 
