@@ -1115,7 +1115,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   for three days, every 5 minutes for seven (task #624), each point the least, mean and most of
   its samples; each whole UTC day of the seven archived once to the NAS from the finest ring still
   holding it (yesterday by the minute, older days by 5 minutes), one file per Mac per day,
-  `state/live-archive/<host>/<day>.bin.zst` (the store's format, that ring alone, zstd; ~0.2-0.4 MB),
+  `state/live-archive/<host>/<day>.bin.zst` (the store's format, that ring alone, zstd; at most ~0.8 MB a day, measured with 70 series of random values),
   written in one create and rename on the NAS sampler's thread (never the agent's loop or the
   pool's lock; the folder listed once as the agent starts, then one write a day), kept for good.
   Sampled on the agent's own
