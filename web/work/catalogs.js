@@ -289,15 +289,19 @@ export function createCatalogues({ call, store, map, card, countries }) {
     const dated = new Set(base.filter((v, n) => n === 0 || day(shownCats[base[n - 1]]) !== day(shownCats[v])));
     const text = plain.map((t, i) => (dated.has(i) ? `${shownCats[i].n} · ${new Date(shownCats[i].t * 1000).getDate()} ${MON[new Date(shownCats[i].t * 1000).getMonth()]} ${hhmm(shownCats[i].t)}` : t));
     const lab = new Set(labelled(base.map((i) => xs[i]), base.map((i) => text[i].length * 5.8), 6, [...dated].map((i) => base.indexOf(i))).map((n) => base[n]).filter((i) => xs[i] - text[i].length * 2.9 >= 0 && xs[i] + text[i].length * 2.9 <= W));
+    // (Empty catalogues' marks go under the rest, so their hit boxes never cover a real one's.)
+    const empties = [], under = kids.length;
     shownCats.forEach((c, i) => {
+      const k = (c.z3 || []).length + (c.z6 || []).length;
       const out = c.t < from || c.t > to;
       const on = c.n === (hovered ?? pinnedN);
-      const g = svg("g", { class: `mk${out ? " out" : ""}${on ? " on" : ""}`, "data-n": c.n, "data-k": (c.z3 || []).length + (c.z6 || []).length });
+      const g = svg("g", { class: `mk${out ? " out" : ""}${on ? " on" : ""}`, "data-n": c.n, "data-k": k });
       g.append(svg("line", { x1: xs[i], x2: xs[i], y1: c.whole ? 10 : 18, y2: axisY }));
       if (lab.has(i)) { const t = svg("text", { x: xs[i], y: 8, class: "lbl" }); t.textContent = text[i]; g.append(t); }
       g.append(svg("rect", { x: xs[i] - 5, y: 0, width: 10, height: axisY, class: "hit" }));
-      kids.push(g);
+      (k ? kids : empties).push(g);
     });
+    kids.splice(under, 0, ...empties);
     line.replaceChildren(...kids);
   }
   const markOf = (e) => e.target.closest?.("g.mk");

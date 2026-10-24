@@ -163,7 +163,7 @@ async function run() {
       await sleep(300);
       await shot(`chrome-catalogues`);
       // (The mark with the most tiles in the range, hovered by a mouse.)
-      const mk = await js(`(() => { const all = [...document.querySelectorAll(".panel:not([hidden]) .cat-tl g.mk")]; const top = (g) => { const q = g.querySelector(".hit").getBoundingClientRect(); return document.elementFromPoint(q.left + q.width / 2, q.top + q.height / 2)?.closest("g.mk") === g; }; const g = all.reverse().find((e) => !e.classList.contains("out") && e.dataset.k !== "0" && top(e)) || all[0]; if (!g) return null; g.scrollIntoView({ block: "center" }); const r = g.querySelector(".hit").getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, g.dataset.n]; })()`);
+      const mk = await js(`(() => { const all = [...document.querySelectorAll(".panel:not([hidden]) .cat-tl g.mk")]; const top = (g) => { const q = g.querySelector(".hit").getBoundingClientRect(); return document.elementFromPoint(q.left + q.width / 2, q.top + q.height / 2)?.closest("g.mk") === g; }; const g = all.reverse().find((e) => !e.classList.contains("out") && top(e)) || all[0]; if (!g) return null; g.scrollIntoView({ block: "center" }); const r = g.querySelector(".hit").getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, g.dataset.n]; })()`);
       if (!mk) check("catalogues: a mark hovered lights its tiles", false, "no mark");
       else {
         await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: mk[0], y: mk[1], pointerType: "mouse" });
