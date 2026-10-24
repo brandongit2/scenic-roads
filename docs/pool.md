@@ -731,17 +731,24 @@ not counted as a failure, no floor learned) when it resumes and the jobs no long
   hour while the share answers is refused. Merging reads for at most a minute a loop.
 - **An entry its writer has moved on from is refused in minutes** (`driver::MOVED_ON_S`, 10
   minutes; task #630). A member writes an entry whole (a temporary file renamed into place,
-  `Nas::write_whole`) and tells the lead of it only once that write returned. So once the lead has
-  read whole an entry the same member first told it of at a later step, nothing of the first one
-  is still in flight: its rename landed before the later write began, and that member's writes
-  reach the share and the lead's reads. A first entry still read short or not there 10 minutes on
-  is this Mac's stale view or the share's damage, never a write to wait for, and is refused (its
-  job's targets done again: a refusal loses only work). Entries told in the same step, or found
-  only by a listing, wait the hour. This matters because the lead is caught up, and a catalog
-  goes out, only once every entry told or listed is read: on 24 Oct the Mac mini's own entry
+  `Nas::write_whole`) and tells the lead of it only once that write returned, so nothing of a told
+  entry is in flight. Once the lead has also read whole an entry the same member first told it of
+  at a later step of the lead's (the lead's own awake clock, never another Mac's), that member's
+  writes reach the share and the lead's reads; a first entry still read short or not there 10
+  minutes on is this Mac's stale view or the share's damage, and is refused (its job's targets done
+  again: a refusal loses only work). Refused, it's in the records' `rejected`, which every later
+  snapshot carries, so it is never merged if it reads whole later; the redone job's entry has a
+  later lease. Entries first told in the same step, or found only by a listing, wait the hour; so
+  does every entry after a lead change or a restart (the first tellings are kept only while the
+  same lead carries on). This matters because the lead is caught up, and a catalog goes out, only
+  once every entry told or listed is read: on 24 Oct the Mac mini's own entry
   `2026-10-24/414-1792809170065`, whole on the share (318 bytes, renamed at 02:37Z, read whole
   from the M1), opened as "No such file" on the Mac mini itself for over 40 minutes (its SMB
-  client's stale name), and the catalog, the only work left, waited behind it.
+  client's stale name), and the catalog, the only work left, waited behind it. Listing the folder
+  is no cure: the lead's own sweep listed that day's folder every 10 minutes (`SWEEP_S`) through
+  those 40 minutes, in the same process; the agent's restart read it at once. Meanwhile the
+  catalog isn't asked of the lead's coordinator (it was granted, leased and logged about once a
+  minute, only to wait).
 - Raw tile archives are only added by jobs; compacting is the lead's duty. `summaries.json` is a
   content-keyed cache any writer may update.
 
