@@ -16,12 +16,14 @@ esac
 CACHE="$HOME/Library/Application Support/scenic/agent/cache/aws-terrarium"
 NAS=brandontsang@fishandchips.local
 STORE=/volume1/personal/projects/scenic-roads/sources/aws-terrarium
+source ${0:A:h}/ssh-start.zsh
+ssh_start $NAS
 work=$(mktemp -d)
 trap 'rm -rf $work' EXIT
 # (Synology keeps metadata beside each file a Mac wrote over SMB, in @eaDir folders: a folder and
 # a file per tile, which the listing passes over.)
 remote_list() {
-  ssh -o BatchMode=yes $NAS "cd $STORE && find . -name @eaDir -prune -o -type f \( -name '*.png' -o -name '*.none' \) -printf '%P %s\n' | sort"
+  $SSH $NAS "cd $STORE && find . -name @eaDir -prune -o -type f \( -name '*.png' -o -name '*.none' \) -printf '%P %s\n' | sort"
 }
 # (Files at least a minute old: a running job's newest may still be written.)
 (cd "$CACHE" && find . -type f \( -name '*.png' -o -name '*.none' \) -mmin +1 -print0 | xargs -0 stat -f '%N %z' | sed 's|^\./||' | sort) > $work/local
@@ -30,7 +32,7 @@ join -v1 $work/local $work/nas | cut -d' ' -f1 > $work/missing
 echo "$(wc -l < $work/local | tr -d ' ') tiles here, $(wc -l < $work/nas | tr -d ' ') on the NAS; copying $(wc -l < $work/missing | tr -d ' ')"
 if [[ -s $work/missing ]]; then
   COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -C "$CACHE" -cf - -T $work/missing \
-    | ssh -o BatchMode=yes $NAS "mkdir -p $STORE && cd $STORE && tar --skip-old-files -xf -"
+    | $SSH $NAS "mkdir -p $STORE && cd $STORE && tar --skip-old-files -xf -"
 fi
 # Every tile here on the NAS at the same size; a NAS copy of another size is reported, not replaced
 # (a reader checks it whole and takes it again from the next source).

@@ -178,7 +178,7 @@ fn read_input(src: &Input, dir: &Path, reads: u32, run: impl FnOnce(&Path, bool)
         Input::Nas(p) => {
             let remote =
                 store::nas::on_nas(p).with_context(|| format!("{} isn't on the NAS's mounted share", p.display()))?;
-            let n = streamed(&ssh, &remote, reads, dir, |input| run(input, false))?;
+            let n = streamed(&ssh, SSH_START, &remote, reads, dir, |input| run(input, false))?;
             crate::timings::count(n, 1);
             Ok(())
         }
@@ -190,6 +190,49 @@ fn read_input(src: &Input, dir: &Path, reads: u32, run: impl FnOnce(&Path, bool)
 /// the server also offers, so a server without it falls to the next.
 #[cfg(not(target_os = "wasi"))]
 const STREAM_CIPHERS: &str = "aes128-gcm@openssh.com,chacha20-poly1305@openssh.com,aes128-ctr";
+
+/// How long an `ssh` to the NAS may take to start: to connect (ConnectTimeout, 20 s) and then to
+/// authenticate, its key from the SSH agent, 1Password's, which waits for an approval while it's
+/// locked, unbounded (ConnectTimeout doesn't cover it); a working one starts within seconds. The
+/// call past it is stopped and fails `TimedOut`, as a NAS call past its deadline does
+/// (`agent::nasread`): the job fails and is tried again later.
+#[cfg(not(target_os = "wasi"))]
+pub(crate) const SSH_START: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Runs `f` with `pid` (a child not yet waited for: the caller waits after) stopped (SIGTERM) if
+/// `f` hasn't called its argument ("started") within `bound`, or returned; and whether it was.
+#[cfg(not(target_os = "wasi"))]
+pub(crate) fn watched<T>(pid: u32, bound: std::time::Duration, f: impl FnOnce(&dyn Fn()) -> T) -> (T, bool) {
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    std::thread::scope(|s| {
+        let dog = s.spawn(move || {
+            let fire = rx.recv_timeout(bound) == Err(std::sync::mpsc::RecvTimeoutError::Timeout);
+            if fire {
+                // SAFETY: a plain signal to the caller's unreaped child.
+                unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+            }
+            fire
+        });
+        let got = f(&|| {
+            let _ = tx.send(());
+        });
+        drop(tx);
+        (got, dog.join().unwrap_or(false))
+    })
+}
+
+/// The error for an `ssh` to the NAS stopped by `watched`.
+#[cfg(not(target_os = "wasi"))]
+pub(crate) fn ssh_stalled(what: &str, bound: std::time::Duration) -> anyhow::Error {
+    anyhow::Error::new(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        format!(
+            "ssh {} ({what}) didn't start within {} s: stopped (connecting, or its SSH agent waiting for an approval: 1Password locked?)",
+            store::nas::SSH,
+            bound.as_secs()
+        ),
+    ))
+}
 
 /// `ssh` to the NAS in batch mode (no prompts), through the job's proxy when it has one (a job
 /// under the budgets' sandbox, crate::budget::SANDBOX, connects only to this Mac: the proxy
@@ -219,10 +262,12 @@ fn proxy_addr(url: &str) -> Option<String> {
 /// the path is a link to a named pipe, fed one `cat` each time osmium opens it: once it's opened,
 /// the link is pointed at a fresh pipe for the next open. Each read must carry the file's whole
 /// length (its size taken over SSH first): a short `cat` that exits 0 fails. `reads`: how many
-/// reads `run` makes, for progress (0: none said, the caller says its own). Returns the bytes read off the NAS. In `dir`, made afresh.
+/// reads `run` makes, for progress (0: none said, the caller says its own). Each `ssh` is bounded
+/// by `start` (`SSH_START`): the size's call whole, each `cat` to its first byte. Returns the bytes read off the NAS. In `dir`, made afresh.
 #[cfg(not(target_os = "wasi"))]
 pub fn streamed(
     ssh: &(dyn Fn() -> Command + Sync),
+    start: std::time::Duration,
     remote: &str,
     reads: u32,
     dir: &Path,
@@ -232,7 +277,22 @@ pub fn streamed(
     let mut check = ssh();
     // (Its size by `ls`, as producers/depth/repack.py reads sizes on the NAS: `-L` through a link.)
     check.arg(store::nas::SSH).arg(format!("test -r {quoted} && ls -lnL -- {quoted}"));
-    let ok = store::spawn::output(&mut check).with_context(|| "run ssh")?;
+    check.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let mut child = store::spawn::spawn(&mut check).context("run ssh")?;
+    let (mut out, mut err) =
+        (child.stdout.take().context("ssh's output")?, child.stderr.take().context("ssh's errors")?);
+    let (read, stalled) = watched(child.id(), start, |_| -> std::io::Result<(Vec<u8>, Vec<u8>)> {
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        std::io::Read::read_to_end(&mut out, &mut o)?;
+        std::io::Read::read_to_end(&mut err, &mut e)?;
+        Ok((o, e))
+    });
+    let status = child.wait()?;
+    if stalled {
+        return Err(ssh_stalled(&format!("the size of {remote}"), start));
+    }
+    let (stdout, stderr) = read.context("read ssh's output")?;
+    let ok = std::process::Output { status, stdout, stderr };
     ensure!(
         ok.status.success(),
         "can't read {remote} on the NAS over SSH ({}: {}): set up SSH keys to the NAS (docs/macs.md)",
@@ -292,9 +352,10 @@ pub fn streamed(
                 let mut from = child.stdout.take().context("ssh's output")?;
                 let mut buf = vec![0u8; 1 << 20];
                 let before = total;
-                let copied = (|| -> std::io::Result<()> {
+                let (copied, stalled) = watched(child.id(), start, |started| -> std::io::Result<()> {
                     loop {
                         let n = std::io::Read::read(&mut from, &mut buf)?;
+                        started();
                         if n == 0 {
                             return Ok(());
                         }
@@ -307,11 +368,14 @@ pub fn streamed(
                             said = f;
                         }
                     }
-                })();
+                });
                 if copied.is_err() {
                     child.kill().ok();
                 }
                 let st = child.wait()?;
+                if stalled {
+                    return Err(ssh_stalled(&format!("cat {remote}"), start));
+                }
                 copied.context("stream the NAS's file to osmium")?;
                 ensure!(st.success(), "ssh {} cat {remote} failed: {st}", store::nas::SSH);
                 ensure!(total - before == len, "a short read of {remote}: {} of its {len} bytes", total - before);
@@ -1515,15 +1579,17 @@ mod tests {
     }
 
     /// A fake `ssh` (in the returned folder) that runs its command here: its last argument; with
-    /// FAIL set it can't connect, with SHORT set a `cat` stops after 50 bytes and exits 0.
+    /// FAIL set it can't connect, with HANG it never returns (as while 1Password waits for an
+    /// approval), with HANG_CAT only its `cat`s don't, with SHORT set a `cat` stops after 50 bytes and exits 0.
     fn fake_ssh(dir: &Path) -> impl Fn(&str) -> Box<dyn Fn() -> Command + Sync> {
         let bin = dir.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let fake = bin.join("ssh");
         std::fs::write(
             &fake,
-            "#!/bin/sh\n[ -n \"$FAIL\" ] && { echo 'Permission denied' >&2; exit 255; }\nfor a; do last=$a; done\n\
-             case \"$last\" in cat*) [ -n \"$SHORT\" ] && { sh -c \"$last\" | head -c 50; exit 0; };; esac\n\
+            "#!/bin/sh\n[ -n \"$FAIL\" ] && { echo 'Permission denied' >&2; exit 255; }\n[ -n \"$HANG\" ] && exec sleep 600\n\
+             for a; do last=$a; done\n\
+             case \"$last\" in cat*) [ -n \"$HANG_CAT\" ] && exec sleep 600; [ -n \"$SHORT\" ] && { sh -c \"$last\" | head -c 50; exit 0; };; esac\n\
              exec sh -c \"$last\"\n",
         )
         .unwrap();
@@ -1571,23 +1637,45 @@ mod tests {
             c.arg("w/wikidata");
             run(c, "osmium tags-filter")
         };
-        let n = streamed(&*ssh(""), remote, 2, &stream, filter).unwrap();
+        let n = streamed(&*ssh(""), SSH_START, remote, 2, &stream, filter).unwrap();
         assert_eq!(n, 2 * len, "read twice, each read counted");
         let opl = store::spawn::output(osmium().args(["cat", "--no-progress", "-f", "opl"]).arg(&o)).unwrap().stdout;
         let ids: Vec<String> =
             String::from_utf8(opl).unwrap().lines().map(|l| l.split(' ').next().unwrap().to_string()).collect();
         assert_eq!(ids, ["n1", "n2", "w10"]);
         assert!(!stream.exists(), "its pipes gone");
-        let e = streamed(&*ssh("FAIL"), remote, 2, &stream, |_| panic!("osmium ran")).unwrap_err();
+        let e = streamed(&*ssh("FAIL"), SSH_START, remote, 2, &stream, |_| panic!("osmium ran")).unwrap_err();
         assert!(format!("{e:#}").contains("SSH keys"), "{e:#}");
-        let e = streamed(&*ssh("SHORT"), remote, 2, &stream, filter).unwrap_err();
+        let e = streamed(&*ssh("SHORT"), SSH_START, remote, 2, &stream, filter).unwrap_err();
         assert!(format!("{e:#}").contains("short read"), "{e:#}");
-        let e = streamed(&*ssh(""), remote, 2, &stream, |p| {
+        let e = streamed(&*ssh(""), SSH_START, remote, 2, &stream, |p| {
             drop(std::fs::File::open(p).unwrap());
             anyhow::bail!("osmium failed")
         })
         .unwrap_err();
         assert!(format!("{e:#}").contains("osmium failed"), "{e:#}");
+    }
+
+    /// An `ssh` to the NAS that never starts (its agent waiting for an approval, #638) is stopped
+    /// past its bound and fails `TimedOut`, saying why: the size's call, and a `cat` (osmium
+    /// waiting on its pipe let go).
+    #[test]
+    fn a_hung_ssh_to_the_nas_fails_in_time() {
+        let d = tempfile::tempdir().unwrap();
+        let src = osm(d.path(), "planet", "n1 v1 x1 y1\n");
+        let ssh = fake_ssh(d.path());
+        let bound = std::time::Duration::from_secs(1);
+        for mode in ["HANG", "HANG_CAT"] {
+            let t = std::time::Instant::now();
+            let e = streamed(&*ssh(mode), bound, src.to_str().unwrap(), 1, &d.path().join("stream"), |p| {
+                drop(std::fs::read(p));
+                Ok(())
+            })
+            .unwrap_err();
+            store::clock::ended_before(t, std::time::Duration::from_secs(20), mode);
+            assert!(crate::agent::nasread::timed_out(&e), "{mode}: {e:#}");
+            assert!(format!("{e:#}").contains("didn't start within 1 s"), "{mode}: {e:#}");
+        }
     }
 
     /// The first cut (`cut`, osmium extract's smart strategy) of a file streamed off the NAS makes
@@ -1607,8 +1695,10 @@ mod tests {
         let kids: Vec<TileId> = (0..2).flat_map(|x| (0..2).map(move |y| TileId { z: 1, x, y })).collect();
         let (here, there) = (d.path().join("here"), d.path().join("there"));
         cut(&src, &kids, &here, 4).unwrap();
-        let n = streamed(&*ssh(""), src.to_str().unwrap(), 0, &d.path().join("stream"), |p| cut(p, &kids, &there, 4))
-            .unwrap();
+        let n = streamed(&*ssh(""), SSH_START, src.to_str().unwrap(), 0, &d.path().join("stream"), |p| {
+            cut(p, &kids, &there, 4)
+        })
+        .unwrap();
         assert_eq!(n, 4 * len, "four whole reads (osmium 1.19)");
         let opl = |p: &Path| {
             store::spawn::output(osmium().args(["cat", "--no-progress", "-f", "opl"]).arg(p)).unwrap().stdout

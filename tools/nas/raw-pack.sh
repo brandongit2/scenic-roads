@@ -23,10 +23,12 @@ NAS=brandontsang@fishandchips.local
 STORE=/volume1/personal/projects/scenic-roads/sources/aws-terrarium
 ROOT=/Volumes/personal/projects/scenic-roads
 BUILD=${1:-"$HOME/Library/Application Support/scenic/app/current/scenic-build"}
+source ${0:A:h}/ssh-start.zsh
+ssh_start $NAS
 work=$(mktemp -d)
 trap 'rm -rf $work' EXIT
 # (Synology's @eaDir folders, and the archives themselves, passed over.)
-ssh -o BatchMode=yes $NAS "cd $STORE && find . -name @eaDir -prune -o -name packs -prune -o -type f \( -name '*.png' -o -name '*.none' \) -print" > $work/found
+$SSH $NAS "cd $STORE && find . -name @eaDir -prune -o -name packs -prune -o -type f \( -name '*.png' -o -name '*.none' \) -print" > $work/found
 if [[ ! -s $work/found ]]; then
   echo "raw-pack: no tiles on the NAS under $STORE" >&2
   exit 1
@@ -38,5 +40,5 @@ if (( n == 0 )); then
   exit 0
 fi
 echo "raw-pack: $n files to pack" >&2
-ssh -o BatchMode=yes $NAS "cd $STORE && tar -cf - -T -" < $work/list \
+$SSH $NAS "cd $STORE && tar -cf - -T -" < $work/list \
   | "$BUILD" raw-pack --root "$ROOT" --scratch "$work" --cache "$work/aws-terrarium" --from-tar - --expect $n

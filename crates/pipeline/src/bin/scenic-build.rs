@@ -152,8 +152,10 @@ use pipeline::timings::{phase, Class};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-const SSH: [&str; 8] = [
+const SSH: [&str; 10] = [
     "ssh",
+    "-o",
+    "BatchMode=yes",
     "-o",
     "ControlMaster=auto",
     "-o",

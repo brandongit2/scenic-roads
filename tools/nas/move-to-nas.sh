@@ -21,7 +21,8 @@ case $#:${1:-}:${3:-} in
 esac
 ROOT_SMB=/Volumes/personal/projects/scenic-roads
 ROOT_NAS=/volume1/personal/projects/scenic-roads
-NAS=(ssh -o ControlMaster=auto -o 'ControlPath=~/.ssh/cm-%r@%h:%p' -o ControlPersist=12h -o LogLevel=ERROR brandontsang@fishandchips.local)
+source ${0:A:h}/ssh-start.zsh
+NAS=($SSH brandontsang@fishandchips.local)
 LIST='find . -type f ! -name .DS_Store ! -path "*/@eaDir/*" -print0 | sort -z'
 tmp=$(mktemp -d)
 compare() { # $1 label
@@ -33,7 +34,8 @@ compare() { # $1 label
 }
 if [[ ${1:-} == --verify-from ]]; then
   host=$2; src=$3; rel=$4
-  ssh $host "cd '$src' && $LIST | xargs -0 shasum -a 256" > $tmp/local
+  ssh_start $host; ssh_start ${NAS[-1]}
+  $SSH $host "cd '$src' && $LIST | xargs -0 shasum -a 256" > $tmp/local
   "${NAS[@]}" "cd '$ROOT_NAS/$rel' && $LIST | xargs -0 -r sha256sum" > $tmp/nas
   compare "$host:$src -> $rel"
   exit 0
@@ -48,6 +50,7 @@ if [[ ${3:-} == --copy-only ]]; then
   echo "COPIED $src -> $rel"
   exit 0
 fi
+ssh_start ${NAS[-1]}
 (cd $src && eval $LIST | xargs -0 shasum -a 256) > $tmp/local
 "${NAS[@]}" "cd '$ROOT_NAS/$rel' && $LIST | xargs -0 -r sha256sum" > $tmp/nas
 compare "$src -> $rel"
