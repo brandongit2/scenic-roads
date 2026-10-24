@@ -1,9 +1,15 @@
 //! The live store (docs/pool.md §10, Live): each Mac's own measures as series over time, kept in
 //! rings on its own disk (never the NAS) and answered by its port's `POST /work/live`.
 //!
-//! - **Rings**: each series in three, by resolution (`TIERS`): a point a second for an hour, every
-//!   10 s for a day, a minute for three days. A point is a bucket of the samples in its time: the
-//!   least, the mean and the most. A sample goes into all three.
+//! - **Rings**: each series in four, by resolution (`TIERS`): a point a second for an hour, every
+//!   10 s for a day, a minute for three days, 5 minutes for seven (task #624). A point is a bucket
+//!   of the samples in its time: the least, the mean and the most. A sample goes into all four.
+//! - **Archived to the NAS** (task #624, `Store::archive`): each whole UTC day of the last seven,
+//!   once, from the finest ring still holding all of it (yesterday's a point a minute, older ones
+//!   every 5 min), one file per Mac per day: `ARCHIVE/<host>/<day>.bin.zst` (`encode`'s bytes, that
+//!   ring alone, zstd), written in one create and rename. Kept for good. On the NAS sampler's
+//!   thread, never the agent's loop or the pool's lock: the Mac's folder listed once as the agent
+//!   starts, then one write a day.
 //! - **Kept on this Mac's disk**: the whole store written (create and rename) in the agent's folder
 //!   (`FILE`) every `SAVE_EVERY` and as the agent stops, read back as it starts. A bucket older than
 //!   its ring's span is never answered.
@@ -50,8 +56,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// The rings: (seconds a point, points kept): an hour by the second, a day by 10 s, three days by
-/// the minute.
-pub const TIERS: [(u64, usize); 3] = [(1, 3600), (10, 8640), (60, 4320)];
+/// the minute, seven days by 5 minutes.
+pub const TIERS: [(u64, usize); 4] = [(1, 3600), (10, 8640), (60, 4320), (300, 2016)];
+
+/// The NAS folder of the live store's days (`Store::archive`), a folder per Mac.
+pub const ARCHIVE: &str = "state/live-archive";
+
+/// How often the NAS sampler's thread looks for a day to archive.
+const ARCHIVE_EVERY: Duration = Duration::from_secs(3600);
 
 /// The most points a series in one answer (the ring's buckets grouped past it): an hour by the
 /// second is 6 s a point, a page's first ask ~100 kB a Mac rather than ~1.5 MB.
@@ -66,8 +78,10 @@ pub const SAVE_EVERY: Duration = Duration::from_secs(300);
 /// How often the NAS's latency is measured while a build runs.
 pub const NAS_EVERY: Duration = Duration::from_secs(5);
 
-/// The file's first bytes (its format's version).
-const MAGIC: &[u8; 8] = b"SCLIVE01";
+/// The file's first bytes (its format's version: 02, four rings).
+const MAGIC: &[u8; 8] = b"SCLIVE02";
+/// A file of three rings (before task #624): read, its 5-minute ring made from its minutes'.
+const MAGIC_V1: &[u8; 8] = b"SCLIVE01";
 
 /// The series' names (units in the name; docs/pool.md §10).
 pub const NAS_MS: &str = "nas_ms";
@@ -154,25 +168,42 @@ struct Bucket {
 /// A series' rings, each allocated with its first sample.
 #[derive(Clone, Debug, Default)]
 struct Series {
-    rings: [Vec<Bucket>; 3],
+    rings: [Vec<Bucket>; 4],
 }
 
 impl Series {
     fn add(&mut self, t: u64, v: f64) {
-        for (ring, &(step, len)) in self.rings.iter_mut().zip(TIERS.iter()) {
-            if ring.is_empty() {
-                ring.resize(len, Bucket::default());
-            }
-            let slot = t / step;
-            let b = &mut ring[(slot % len as u64) as usize];
-            if b.slot != slot || b.n == 0 {
-                *b = Bucket { slot, n: 0, lo: f32::INFINITY, hi: f32::NEG_INFINITY, sum: 0.0 };
-            }
-            b.n += 1;
-            b.lo = b.lo.min(v as f32);
-            b.hi = b.hi.max(v as f32);
-            b.sum += v;
+        for (k, &(step, _)) in TIERS.iter().enumerate() {
+            self.merge(k, Bucket { slot: t / step, n: 1, lo: v as f32, hi: v as f32, sum: v });
         }
+    }
+
+    /// Bucket `x` (its slot in ring `k`'s steps) into ring `k`: an older bucket in its place
+    /// replaced, one of its slot added to.
+    fn merge(&mut self, k: usize, x: Bucket) {
+        let len = TIERS[k].1;
+        let ring = &mut self.rings[k];
+        if ring.is_empty() {
+            ring.resize(len, Bucket::default());
+        }
+        let b = &mut ring[(x.slot % len as u64) as usize];
+        if b.slot != x.slot || b.n == 0 {
+            *b = x;
+        } else {
+            b.n += x.n;
+            b.lo = b.lo.min(x.lo);
+            b.hi = b.hi.max(x.hi);
+            b.sum += x.sum;
+        }
+    }
+
+    /// Ring `k`'s buckets with samples from `from` to `to` (unix s, `to` excluded), oldest first.
+    fn buckets(&self, k: usize, from: u64, to: u64) -> Vec<Bucket> {
+        let step = TIERS[k].0;
+        let mut v: Vec<Bucket> =
+            self.rings[k].iter().filter(|b| b.n > 0 && b.slot * step >= from && b.slot * step < to).copied().collect();
+        v.sort_by_key(|b| b.slot);
+        v
     }
 
     /// Ring `k`'s points from `from` to `to` (unix s, bucket times), oldest first, `g` of its
@@ -258,7 +289,7 @@ fn mac() -> &'static serde_json::Value {
     })
 }
 
-/// The finest ring whose span covers `range` seconds (the coarsest past three days).
+/// The finest ring whose span covers `range` seconds (the coarsest past seven days).
 pub fn tier_for(range: u64) -> usize {
     TIERS.iter().position(|&(step, len)| step * len as u64 >= range).unwrap_or(TIERS.len() - 1)
 }
@@ -270,6 +301,8 @@ pub struct Store {
     host: String,
     /// The NAS's root while a build runs (`set_nas`): its latency sampled meanwhile alone.
     nas: Mutex<Option<PathBuf>>,
+    /// The NAS's root whenever the agent reads it (`set_root`): the days archived there.
+    root: Mutex<Option<PathBuf>>,
     /// The proxy's counts (`set_net`): answered as `net`, their rates sampled.
     net: Mutex<Option<Arc<crate::budget::net::Net>>>,
     /// The file stream (module doc), oldest first.
@@ -307,6 +340,7 @@ impl Store {
             file,
             host: host.to_string(),
             nas: Mutex::new(None),
+            root: Mutex::new(None),
             net: Mutex::new(None),
             files: Mutex::default(),
             sampling: AtomicBool::new(false),
@@ -360,6 +394,79 @@ impl Store {
         self.record(BUILD_MEM_MAX, t, mem_mb as f64 / 1024.0);
         self.record(DISK_ROOM, t, room as f64 / GB);
         self.record(DISK_RESERVED, t, reserved as f64 / GB);
+    }
+
+    /// The NAS's root, whether or not a build runs: the days archived there (`archive`).
+    pub fn set_root(&self, root: Option<&Path>) {
+        if let Ok(mut n) = self.root.lock() {
+            *n = root.map(Path::to_path_buf);
+        }
+    }
+
+    /// Archives to `root` (`ARCHIVE`, module doc) each whole UTC day of the coarsest ring's span
+    /// before `now`'s not in `done` (its files' names, `<day>.bin.zst`; the Mac's folder listed into
+    /// it first when empty), each from the finest ring holding all of it. The days written (a day
+    /// with no samples is noted done, not written).
+    pub fn archive(
+        &self,
+        root: &Path,
+        now: u64,
+        done: &mut std::collections::BTreeSet<String>,
+    ) -> anyhow::Result<usize> {
+        let dir = root.join(ARCHIVE).join(&self.host);
+        if done.is_empty() {
+            let d = dir.clone();
+            let names = super::nasread::with(&dir, move || match std::fs::read_dir(&d) {
+                Ok(rd) => Ok(rd.filter_map(|e| e.ok()?.file_name().into_string().ok()).collect::<Vec<_>>()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+                Err(e) => Err(e),
+            })?;
+            done.extend(names);
+            // (Listed: never again, though nothing is there.)
+            done.insert(String::new());
+        }
+        let (step, len) = TIERS[TIERS.len() - 1];
+        let span = step * len as u64;
+        let today = now / 86_400 * 86_400;
+        let mut wrote = 0;
+        for i in (1..=span / 86_400).rev() {
+            let from = today - i * 86_400;
+            let Some(day) = crate::pool::journal::day(from) else { continue };
+            let name = format!("{day}.bin.zst");
+            // (A day the coarsest ring no longer holds whole: passed over.)
+            if done.contains(&name) || now - from > span {
+                continue;
+            }
+            let k = tier_for(now - from);
+            let day_s: BTreeMap<String, Series> = match self.series.lock() {
+                Ok(s) => s
+                    .iter()
+                    .filter_map(|(n, ser)| {
+                        let b = ser.buckets(k, from, from + 86_400);
+                        (!b.is_empty()).then(|| {
+                            let mut one = Series::default();
+                            one.rings[k] = b;
+                            (n.clone(), one)
+                        })
+                    })
+                    .collect(),
+                Err(_) => return Ok(wrote),
+            };
+            if !day_s.is_empty() {
+                let bytes = zstd::encode_all(&encode(&day_s)[..], 9)?;
+                let (d, f) = (dir.clone(), dir.join(&name));
+                super::nasread::write(&f.clone(), move || {
+                    std::fs::create_dir_all(&d)?;
+                    let tmp = f.with_extension("zst.tmp");
+                    std::fs::write(&tmp, &bytes)?;
+                    std::fs::rename(&tmp, &f)?;
+                    Ok(())
+                })?;
+                wrote += 1;
+            }
+            done.insert(name);
+        }
+        Ok(wrote)
     }
 
     /// The NAS's latency sampled at `root` while a build runs (None: not sampled).
@@ -493,7 +600,11 @@ fn decode(b: &[u8]) -> Option<BTreeMap<String, Series>> {
             h.try_into().ok()
         }
     }
-    let mut r = R(b.strip_prefix(MAGIC.as_slice())?);
+    let (v1, rest) = match b.strip_prefix(MAGIC.as_slice()) {
+        Some(r) => (false, r),
+        None => (true, b.strip_prefix(MAGIC_V1.as_slice())?),
+    };
+    let mut r = R(rest);
     let n = u32::from_le_bytes(r.take()?);
     let mut out = BTreeMap::new();
     for _ in 0..n {
@@ -502,7 +613,7 @@ fn decode(b: &[u8]) -> Option<BTreeMap<String, Series>> {
         let name = std::str::from_utf8(name).ok()?.to_string();
         r.0 = rest;
         let mut ser = Series::default();
-        for (ring, &(_, len)) in ser.rings.iter_mut().zip(TIERS.iter()) {
+        for (ring, &(_, len)) in ser.rings.iter_mut().zip(TIERS.iter()).take(if v1 { 3 } else { TIERS.len() }) {
             let count = u32::from_le_bytes(r.take()?);
             if count > 0 {
                 ring.resize(len, Bucket::default());
@@ -520,6 +631,11 @@ fn decode(b: &[u8]) -> Option<BTreeMap<String, Series>> {
                 if ring[i].n == 0 || ring[i].slot < x.slot {
                     ring[i] = x;
                 }
+            }
+        }
+        if v1 {
+            for b in ser.buckets(2, 0, u64::MAX) {
+                ser.merge(3, Bucket { slot: b.slot / (TIERS[3].0 / TIERS[2].0), ..b });
             }
         }
         out.insert(name, ser);
@@ -562,15 +678,27 @@ pub fn spawn(store: Arc<Store>, home: PathBuf, guard: super::memguard::Sampler) 
         .ok();
     std::thread::Builder::new()
         .name("live-nas".into())
-        .spawn(move || loop {
-            let root = store.nas.lock().ok().and_then(|n| n.clone());
-            if let Some(r) = root {
-                let t = now_s();
-                if let Some(d) = super::nasread::probe(&r) {
-                    store.record(NAS_MS, t, d.as_secs_f64() * 1000.0);
+        .spawn(move || {
+            let mut done = std::collections::BTreeSet::new();
+            let mut looked: Option<std::time::Instant> = None;
+            loop {
+                let root = store.nas.lock().ok().and_then(|n| n.clone());
+                if let Some(r) = root {
+                    let t = now_s();
+                    if let Some(d) = super::nasread::probe(&r) {
+                        store.record(NAS_MS, t, d.as_secs_f64() * 1000.0);
+                    }
                 }
+                // (The days archived, an hour apart: tried again an hour on when the NAS failed.)
+                let root = store.root.lock().ok().and_then(|n| n.clone());
+                if let Some(r) = root.filter(|_| looked.is_none_or(|l| l.elapsed() >= ARCHIVE_EVERY)) {
+                    looked = Some(std::time::Instant::now());
+                    if let Err(e) = store.archive(&r, now_s(), &mut done) {
+                        eprintln!("agent: archiving the live store's days: {e:#}");
+                    }
+                }
+                std::thread::sleep(NAS_EVERY);
             }
-            std::thread::sleep(NAS_EVERY);
         })
         .ok();
 }
@@ -820,13 +948,17 @@ mod tests {
             by_s["series"][LOAD],
             serde_json::json!([[1e9, 3.0, 3.0, 3.0], [1e9 + 1.0, 1.0, 1.0, 1.0], [1e9 + 2.0, 5.0, 5.0, 5.0]])
         );
-        // (A day: the 10 s ring, 15 buckets a point, POINTS_MAX; three days and past: the minutes', 8.)
+        // (A day: the 10 s ring, 15 buckets a point, POINTS_MAX; three days: the minutes', 8; seven
+        // days and past: the 5 minutes', 4 a point, 504 points.)
         let by_10 = s.answer(&Ask { range: Some(86_400), ..Default::default() }, t0 + 2);
         assert_eq!(by_10["step"], 150);
         assert_eq!(by_10["series"][LOAD], serde_json::json!([[(t0 / 150 * 150) as f64, 1.0, 3.0, 5.0]]));
         let by_min = s.answer(&Ask { range: Some(3 * 86_400), ..Default::default() }, t0 + 2);
         assert_eq!(by_min["step"], 480);
-        assert_eq!(s.answer(&Ask { range: Some(30 * 86_400), ..Default::default() }, t0 + 2)["step"], 480);
+        let by_5 = s.answer(&Ask { range: Some(7 * 86_400), ..Default::default() }, t0 + 2);
+        assert_eq!(by_5["step"], 1200);
+        assert_eq!(by_5["series"][LOAD], serde_json::json!([[(t0 / 1200 * 1200) as f64, 1.0, 3.0, 5.0]]));
+        assert_eq!(s.answer(&Ask { range: Some(30 * 86_400), ..Default::default() }, t0 + 2)["step"], 1200);
     }
 
     /// An hour by the second answered as POINTS_MAX points, 6 s each (the least, the samples' mean,
@@ -1037,7 +1169,70 @@ mod tests {
         assert_eq!(tier_for(3601), 1);
         assert_eq!(tier_for(86_400), 1);
         assert_eq!(tier_for(86_401), 2);
-        assert_eq!(tier_for(u64::MAX), 2);
+        assert_eq!(tier_for(3 * 86_400 + 1), 3);
+        assert_eq!(tier_for(7 * 86_400), 3);
+        assert_eq!(tier_for(u64::MAX), 3);
+    }
+
+    /// Task #624: a file of three rings (before the 5-minute one) read back, its 5-minute ring made
+    /// from its minutes', so its three days answer at seven days at once.
+    #[test]
+    fn a_three_ring_file_is_read_and_its_week_ring_filled() {
+        let t0 = 1_700_000_000;
+        let s = Store::new(None, "m1");
+        for i in 0..600 {
+            s.record(LOAD, t0 + i, (i % 7) as f64);
+        }
+        let mut b = encode(&s.series.lock().unwrap());
+        b[..8].copy_from_slice(MAGIC_V1);
+        // (A v1 file: no ring 3's count or buckets, the last ring written.)
+        let ser = &s.series.lock().unwrap()[LOAD];
+        let r3 = ser.rings[3].iter().filter(|x| x.n > 0).count();
+        b.truncate(b.len() - 4 - r3 * 28);
+        let back = decode(&b).unwrap();
+        assert_eq!(back[LOAD].buckets(3, 0, u64::MAX), ser.buckets(3, 0, u64::MAX));
+        assert_eq!(back[LOAD].buckets(2, 0, u64::MAX), ser.buckets(2, 0, u64::MAX));
+    }
+
+    /// Task #624: each whole day of the last seven archived once, one file a Mac a day, from the
+    /// finest ring holding it whole (yesterday by the minute, older by 5 minutes); the folder
+    /// listed once; a day already there not written again; today's never.
+    #[test]
+    fn the_days_are_archived_once_each_from_the_finest_ring_holding_them() {
+        let root = tempfile::tempdir().unwrap();
+        let day = 86_400;
+        let today = 1_700_000_000 / day * day;
+        let now = today + 3600;
+        let s = Store::new(None, "m1");
+        // (A sample a minute over the last nine days.)
+        let mut t = today - 9 * day;
+        while t <= now {
+            s.record(LOAD, t, (t % 13) as f64);
+            t += 60;
+        }
+        let mut done = std::collections::BTreeSet::new();
+        assert_eq!(s.archive(root.path(), now, &mut done).unwrap(), 6);
+        let dir = root.path().join(ARCHIVE).join("m1");
+        let mut names: Vec<String> =
+            std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        names.sort();
+        let want: Vec<String> =
+            (1..=6).rev().map(|i| format!("{}.bin.zst", crate::pool::journal::day(today - i * day).unwrap())).collect();
+        assert_eq!(names, want);
+        let read = |n: &str| decode(&zstd::decode_all(&std::fs::read(dir.join(n)).unwrap()[..]).unwrap()).unwrap();
+        // (Yesterday by the minute, whole; the oldest kept by 5 minutes.)
+        let y = read(&want[5]);
+        assert_eq!(y[LOAD].buckets(2, 0, u64::MAX).len(), 1440);
+        assert!([0, 1, 3].iter().all(|&k| y[LOAD].buckets(k, 0, u64::MAX).is_empty()));
+        let o = read(&want[0]);
+        assert_eq!(o[LOAD].buckets(3, 0, u64::MAX).len(), 288);
+        assert_eq!(o[LOAD].buckets(3, 0, u64::MAX)[0].slot * 300, today - 6 * day);
+        // (Again: nothing new; a new agent lists the folder and writes nothing either.)
+        assert_eq!(s.archive(root.path(), now, &mut done).unwrap(), 0);
+        assert_eq!(s.archive(root.path(), now, &mut Default::default()).unwrap(), 0);
+        // (A day on: today's, now whole, alone.)
+        assert_eq!(s.archive(root.path(), now + day, &mut done).unwrap(), 1);
+        assert!(dir.join(format!("{}.bin.zst", crate::pool::journal::day(today).unwrap())).exists());
     }
 
     /// Task #516: the proxy's counts answered as `net`, and its bytes as rates by the second.

@@ -160,7 +160,7 @@ boxes).
 - **Header's verdict:** one sentence (paused, out of touch or idle; percent done; done ≈), the alerts as chips, the
   pause controls: Pause (each job stops at its next safe point), Freeze (each job frozen where it
   is, after a confirm), Resume.
-- **Footer:** the range the Machines tab's live charts show (1, 5, 10 or 30 min, 1, 2, 6, 24 or 72 h; this browser's own,
+- **Footer:** the range the Machines tab's live charts show (1, 5, 10 or 30 min, 1, 2, 6, 24 or 72 h, or 7 days, its time words then every two days; this browser's own,
   kept); the Live dot, green and blinking while the
   build's state answered in the last 30 s, else Stale with the time of the last answer.
 - **Overview tab:** the overview, then the world map.

@@ -30,6 +30,7 @@ assert.equal(fmt(5.25, "cores"), "5.3 cores");
 assert.equal(spanText(60), "1 min");
 assert.equal(spanText(900), "15 min");
 assert.equal(spanText(259200), "72 h");
+assert.equal(spanText(604800), "7 days");
 
 // Gaps where a Mac slept: more than two steps (and 5 s) without a point; and up to now.
 const pts = [[100, 0, 1, 1], [101, 0, 1, 1], [103, 0, 1, 1], [200, 0, 2, 2], [201, 0, 2, 2]];

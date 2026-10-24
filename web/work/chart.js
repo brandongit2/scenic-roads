@@ -10,9 +10,11 @@ const opts = new WeakMap();
 // the same x (the right's holds a second scale's words when a chart has one).
 const AXIS_W = 58;
 const AXIS_R = 40;
-// The time's tick steps (s), and a time ago in words: "now", "-45 s", "-10 min", "-6 h".
-const AGO_STEPS = [15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
-const ago = (a) => (a === 0 ? "now" : a < 60 ? `−${a} s` : a < 3600 ? `−${a / 60} min` : `−${+(a / 3600).toFixed(1)} h`);
+// The time's tick steps (s), and a time ago in words: "now", "-45 s", "-10 min", "-6 h", "-2 d"
+// (whole days from two on: seven days' ticks every two).
+const AGO_STEPS = [15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 172800];
+const ago = (a) =>
+  a === 0 ? "now" : a < 60 ? `−${a} s` : a < 3600 ? `−${a / 60} min` : a >= 172800 && a % 86400 === 0 ? `−${a / 86400} d` : `−${+(a / 3600).toFixed(1)} h`;
 const hover = new WeakMap();
 
 // The page's colours (index.html's tokens), read once a draw.
@@ -134,7 +136,7 @@ function paint(c) {
     }
     if (o.times !== false) {
       // (At most four steps, the mockup's: "−1 min, −45 s, −30 s, −15 s, now" at every range.)
-      const step = AGO_STEPS.find((x) => span / x <= Math.max(2, Math.min(4, Math.floor(pw / 80)))) ?? 86400;
+      const step = AGO_STEPS.find((x) => span / x <= Math.max(2, Math.min(4, Math.floor(pw / 80)))) ?? AGO_STEPS[AGO_STEPS.length - 1];
       g.textBaseline = "top";
       // (Right to left; a word that would meet the one beside it left out, the owner's: labels never overlap.)
       let edge = Infinity;

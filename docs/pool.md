@@ -1112,7 +1112,13 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
 - **Live** (`agent::live`, task #514): each Mac's own measures over time, in rings on its own
   disk (the agent's folder's `live.bin`, never the NAS; written every 5 minutes and as the agent
   stops, read back as it starts): a point a second for an hour, every 10 s for a day, a minute
-  for three days, each point the least, mean and most of its samples. Sampled on the agent's own
+  for three days, every 5 minutes for seven (task #624), each point the least, mean and most of
+  its samples; each whole UTC day of the seven archived once to the NAS from the finest ring still
+  holding it (yesterday by the minute, older days by 5 minutes), one file per Mac per day,
+  `state/live-archive/<host>/<day>.bin.zst` (the store's format, that ring alone, zstd; ~0.2-0.4 MB),
+  written in one create and rename on the NAS sampler's thread (never the agent's loop or the
+  pool's lock; the folder listed once as the agent starts, then one write a day), kept for good.
+  Sampled on the agent's own
   threads, never its loop: every second the load (`load1`), memory available (`mem_free_pct`,
   `kern.memorystatus_level`), its pressure (`mem_pressure`: 1, 2, 4) and the swap (`swap_mb`),
   and the jobs running (`jobs`); the cores busy in cores' worth (`cores_busy`, and by group
@@ -1218,7 +1224,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   chunks: 4 GiB over loopback in ~1.0 s on the M1, against ~2.6 s with `io::copy`'s 8 KB it
   replaced (task #516), so the counting costs nothing measurable. Every Mac's port
   answers `POST /work/live` with no key: `{range}` (seconds back from now, an hour by default,
-  three days at most) or `{since}` (unix seconds: the points from then on, the last again as it
+  seven days at most) or `{since}` (unix seconds: the points from then on, the last again as it
   may have grown), `series` to pick names; the answer `{host, now, step, from, series: {name:
   [[t, lo, mean, hi], …]}, net, files}` from the finest ring covering the window, its buckets grouped
   to at most 600 points a series (`POINTS_MAX`; an hour is a point every 6 s, a `since` ask grouped

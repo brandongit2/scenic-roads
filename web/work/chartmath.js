@@ -50,10 +50,11 @@ export function fmt(v, unit = "") {
   }
 }
 
-// A span of seconds as the footer's range says it: "1 min", "15 min", "1 h", "72 h".
+// A span of seconds as the footer's range says it: "1 min", "15 min", "1 h", "72 h", "7 days".
 export function spanText(s) {
   if (s < 60) return `${Math.round(s)} s`;
   if (s < 3600) return `${Math.round(s / 60)} min`;
+  if (s > 259200 && s % 86400 === 0) return `${s / 86400} days`;
   return `${fix(s / 3600, s % 3600 ? 1 : 0)} h`;
 }
 

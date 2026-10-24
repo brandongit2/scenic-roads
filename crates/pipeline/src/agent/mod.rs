@@ -9149,6 +9149,7 @@ impl Agent {
         }
         let building = self.running_jobs() > 0 || self.coord.as_ref().is_some_and(|c| c.leases_out() > 0);
         l.set_nas(root.filter(|_| building));
+        l.set_root(root);
     }
 
     /// The page on this Mac's port (crate::agent::pageview), each loop: a viewer alone started when
