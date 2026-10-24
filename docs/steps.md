@@ -52,8 +52,9 @@ What each step does, in detail. The steps as one table (names, chains, the check
 - **Terrain** (`pipeline::terrain_pack`): one terrain, z0 to each place's native zoom, in two steps:
   - **terrain**, a run per z6 tile near the coverage (`build_piece`): its z9–12 within the
     coverage plus 20 km, zoom capped by latitude so pixels stay ≥ 15 m (z12 to 67°, z11 to 79°, z10
-    beyond): its hi pack; its deep levels, z13–16 where a dataset has the detail (below): its deep
-    packs; and its mid (`work/terrain-mid/6-x-y`, never served: its z9 tiles' 2×2 means as f32, and
+    beyond): its hi pack; its deep levels where a dataset has the detail (below): z13–16 its deep
+    packs, and a deep z12 (north of 67°, where the base ends at z11) its hi pack, so every reader
+    finds z9–12 in the hi packs; and its mid (`work/terrain-mid/6-x-y`, never served: its z9 tiles' 2×2 means as f32, and
     its lakes' levels). A z6 tile making no hi tile drops its hi pack; there the server makes tiles
     from the z8 ones.
   - **terrain-lo**, an assembly per z3 tile (`build_lo`): z8 → z3 made again from children (a
@@ -144,12 +145,16 @@ What each step does, in detail. The steps as one table (names, chains, the check
   terrain level (z12, z11 north of 67°, the deep levels' zoom where the terrain has them) a
   pixel's are its own gradient's by Horn's method, with the neighbouring tiles' edges; each coarser
   pixel is the plain mean of the four beneath it (or where no finer level covers it, its own
-  level's terrain's), so the low zooms keep the finest level's steepness everywhere and its
+  level's terrain's; a steepness over 400 % counts as 400 %), so the low zooms keep the finest level's steepness everywhere and its
   direction where it agrees. Every level is stored, as `shade-webp` (crate::shade_codec: RGB in
   lossless WebP, the terrain's codec): R 255 × √(steepness ÷ 400 %), G and B the direction's east
   and south parts, 128 + 120 u rounded to 5 bits, (128, 128) where the coherence is under 0.25.
-  A parent is made from its children as stored, so a z6 tile's run and its assembly give the same
-  tiles. **slope**, a run per z6 tile: its hi pack (z9–12), its deep packs (z13–16 by z10 tile,
+  Inside a job a parent is the mean of its children's values at full precision, coded once; only
+  where a job hands its tiles on (a z6 tile's z6 tile to its assembly, the z3 tiles to the root)
+  is a parent made from its children as stored, so a z6 tile's run and its assembly give the same
+  tiles. (Coded again at every level, the direction drifted about a step of its 5 bits by z8 and
+  up to 9 % of pixels changed between none and some by z4: `slope_pack`'s
+  `measure_quantisation_drift`, task #632's review.) **slope**, a run per z6 tile: its hi pack (z9–12), its deep packs (z13–16 by z10 tile,
   `layers/slope/deep/10-x-y`, where the terrain has deep tiles; each z10 tile's made whole, one at a
   time, its terrain deep pack copied here first; those it no longer makes dropped) and its mid
   (`work/slope-mid/6-x-y`: its z6–8 tiles), reading the terrain packs (its own z6 tile's hi pack

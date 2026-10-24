@@ -1,6 +1,6 @@
 //! The shading tiles' values (docs/formats.md, Pack: `shade-webp`; .claude/notes/SHADING-PYRAMID.md,
 //! option E): per pixel the mean steepness of the ground beneath it, E|g|, and the mean of its
-//! downhill-facing unit directions, E[g / |g|] (g the height's gradient, east and south). One
+//! unit gradient directions (uphill), E[g / |g|] (g the height's gradient, east and south). One
 //! pyramid serves both the slope tint (the steepness) and the hill-shading (the map shades the
 //! steepness along the mean direction, flattened by its length, the coherence c: 1 on a plain face,
 //! about 0 where the faces beneath cancel). A parent pixel is the plain mean of its four children's
@@ -33,12 +33,13 @@ pub struct Px {
 }
 
 impl Px {
-    /// The pixel of a gradient (east, south; m per m): its steepness and its direction (none on flat
-    /// ground).
+    /// The pixel of a gradient (east, south; m per m): its steepness (steeper than `SLOPE_MAX`
+    /// counted as that, as stored, so a parent's mean is that of what its children store) and its
+    /// direction (none on flat ground).
     pub fn of_gradient(gx: f32, gy: f32) -> Px {
         let g = (gx * gx + gy * gy).sqrt();
         if g > 0.0 {
-            Px { s: g * 100.0, u: [gx / g, gy / g] }
+            Px { s: (g * 100.0).min(SLOPE_MAX), u: [gx / g, gy / g] }
         } else {
             Px::default()
         }

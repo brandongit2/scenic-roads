@@ -284,11 +284,14 @@ impl Pyramid<'_> {
     }
 }
 
-/// A tile as stored and its quadrant for its parent, from its pixels as read back
-/// (crate::shade_codec::stored).
+/// A tile as stored and its quadrant for its parent, from its pixels at full precision: inside a
+/// job a parent is the mean of its children's values, coded once, as itself; only where a job hands
+/// its tiles on (a z6 tile's mid to its assembly, the z3 tiles to the root) is a parent made from
+/// its children as stored. (Coded at every level, the direction drifted a step of its 5 bits by
+/// z8 and up to 9 % of pixels changed between none and some; the steepness crept up: task #632's
+/// review, `measure_quantisation_drift`.)
 pub fn stored(v: &[Px]) -> (Vec<u8>, Vec<Px>) {
-    let (blob, v) = crate::shade_codec::stored(v).expect("a tile's WebP");
-    (blob, quadrant(&v))
+    (crate::shade_codec::encode(v).expect("a tile's WebP"), quadrant(v))
 }
 
 /// What a slope run made.
@@ -449,12 +452,16 @@ const fn tiles_below(d0: u8, d1: u8) -> u64 {
 /// The decoded terrain a job keeps (`KEEP` tiles of 256 × 256 f32), in bytes.
 const KEPT: u64 = KEEP as u64 * (TS * TS * 4) as u64;
 
+/// A quadrant's values kept for its parent (128 × 128 pixels).
+const QUADRANT: u64 = (128 * 128 * std::mem::size_of::<Px>()) as u64;
+
 /// The most memory (MB) a z6 tile's run takes, from its bounds: its hi tiles held until written
 /// (z9–12) and the tiles of one deep pack likewise (z13–16 under a z10 tile: the deep packs are
-/// made one at a time), each at most its raw codes; its z6–8 tiles; the decoded terrain kept.
+/// made one at a time), each at most its raw codes; its z6–8 tiles; each z10 tile's quadrant kept
+/// from its deep pack's making for the z6 tile's; the decoded terrain kept.
 pub const fn peak_mb() -> u64 {
     let held = tiles_below(9 - 6, HI_MAX - 6) + tiles_below(3, MAX_Z - PACK_Z) + tiles_below(0, 2);
-    (held * RAW + KEPT) >> 20
+    (held * RAW + (1 << (2 * (PACK_Z - 6))) * QUADRANT + KEPT) >> 20
 }
 
 /// The most memory (MB) an assembly takes, from its bounds: its z6 tiles' mids (64 of z6–8) and
@@ -1049,32 +1056,48 @@ mod tests {
             assert!(at(z, x, y).is_some(), "{z}/{x}/{y} stored");
         }
         assert!(at(14, 7170, 4096).is_none() && at(13, 3586, 2048).is_none(), "none past the terrain's");
-        // z13 → z12: the parent's every pixel the mean of the four stored beneath (all four z13 tiles
-        // there), as stored; its z14 child likewise in its quadrant.
-        let parent_of = |z: u8, x: u32, y: u32| {
-            let p = at(z, x, y).unwrap();
-            let mut want = vec![Px::default(); TS * TS];
-            for k in 0..4u32 {
-                let (cx, cy) = (2 * x + (k & 1), 2 * y + (k >> 1));
-                let Some(c) = at(z + 1, cx, cy) else { continue };
-                let q = quadrant(&c);
-                for j in 0..128 {
-                    for i in 0..128 {
-                        want[((cy % 2) as usize * 128 + j) * TS + (cx % 2) as usize * 128 + i] = q[j * 128 + i];
-                    }
-                }
-            }
-            (p, want)
+        // z14 → z13 → z12: each parent's pixels the mean of the four beneath at full precision (its
+        // children's values as made, not as stored), coded once; its own terrain's beside them.
+        let get = |z: u8, x: u32, y: u32| {
+            let deep = [
+                (13, 3584, 2048),
+                (13, 3585, 2048),
+                (13, 3584, 2049),
+                (13, 3585, 2049),
+                (14, 7168, 4096),
+                (14, 7169, 4096),
+            ];
+            ((z == 12 && (1792..1800).contains(&x) && (1024..1032).contains(&y)) || deep.contains(&(z, x, y)))
+                .then(|| hill(z, x, y))
         };
-        let (p, want) = parent_of(12, 1792, 1024);
-        assert_eq!(roadcore::shade::rgb(&p), roadcore::shade::rgb(&want), "z12 from its z13 tiles");
+        let leaf = |z: u8, x: u32, y: u32| shade_direct(&get, z, x, y).unwrap();
+        let z13 = |x: u32, y: u32| {
+            let kids: Vec<((u32, u32), Vec<Px>)> = if (x, y) == (3584, 2048) {
+                [(7168, 4096), (7169, 4096)].iter().map(|&(cx, cy)| ((cx, cy), quadrant(&leaf(14, cx, cy)))).collect()
+            } else {
+                Vec::new()
+            };
+            compose(&kids, || Some(leaf(13, x, y))).unwrap()
+        };
+        let z12: Vec<((u32, u32), Vec<Px>)> = [(3584, 2048), (3585, 2048), (3584, 2049), (3585, 2049)]
+            .iter()
+            .map(|&(x, y)| ((x, y), quadrant(&z13(x, y))))
+            .collect();
+        let want12 = compose(&z12, || None).unwrap();
+        assert_eq!(
+            roadcore::shade::rgb(&at(12, 1792, 1024).unwrap()),
+            roadcore::shade::rgb(&want12),
+            "z12 from its z13 tiles"
+        );
+        assert_eq!(
+            roadcore::shade::rgb(&at(13, 3584, 2048).unwrap()),
+            roadcore::shade::rgb(&z13(3584, 2048)),
+            "z13 from its z14 tiles and its own"
+        );
         // (A tile's own terrain's shading, inside it: its neighbours don't matter there.)
         let own =
             |z, x, y| shade_tile(&Terrain::new(&|z, x, y| Some(hill(z, x, y)), &|_, _, _| true), z, x, y).unwrap();
-        let (p, want) = parent_of(13, 3584, 2048);
         let rgb = |v: &[Px], j: usize, i: usize| roadcore::shade::code(v[j * TS + i]);
-        assert_eq!(rgb(&p, 10, 10), rgb(&want, 10, 10), "z13's quadrant from its z14 tiles");
-        assert_eq!(rgb(&p, 200, 10), rgb(&own(13, 3584, 2048), 200, 10), "and its own terrain's beside them");
         // (The deep detail reaches the z12 level everywhere the deep tiles are: unlike z12's own.)
         assert_ne!(roadcore::shade::rgb(&at(12, 1792, 1024).unwrap()), roadcore::shade::rgb(&own(12, 1792, 1024)));
         drop(s);
@@ -1101,7 +1124,7 @@ mod tests {
     #[test]
     fn the_memory_bounds_count_the_tiles_held() {
         assert_eq!(tiles_below(3, 6), 64 + 256 + 1024 + 4096);
-        assert_eq!(peak_mb(), ((5440 * 2 + 21) * 196_608 + 512 * 262_144) >> 20);
+        assert_eq!(peak_mb(), ((5440 * 2 + 21) * 196_608 + 256 * 196_608 + 512 * 262_144) >> 20);
         assert_eq!(lo_peak_mb(), ((64 * 21 + 1365) * 196_608 + 512 * 262_144) >> 20);
     }
 
@@ -1366,6 +1389,173 @@ mod tests {
         }
         for p in &r.phases {
             println!("  {:<34} {:>8.1} s  CPU {:>6.1} s  n={}", p.name, p.wall_s, p.cpu_s.unwrap_or(0.0), p.n);
+        }
+    }
+
+    /// A measure (run by hand, read-only): how far the pyramid as built (each level the mean of its
+    /// children as stored, so coded again at every level) drifts from the same pyramid made from
+    /// full-precision means coded once at each level, over z6 tiles' z12 terrain down to z3; and a
+    /// hybrid, full precision inside a job and coded only where a job hands its tiles on (z6 to its
+    /// assembly, z3 to the root). Per level: R's codes (and the steepness's mean bias), the
+    /// direction's (G, B), pixels neutral in one and not the other, and the hill-shading's brightness
+    /// (GDAL's basic method, light from 315° at 45°, as the map's shader shades a pixel), in 255ths.
+    /// SCENIC_SHADE_DRIFT="<root> <x/y>[,<x/y>…]"; unset, nothing.
+    #[test]
+    fn measure_quantisation_drift() {
+        use roadcore::shade::{code, mean4, value};
+        let Ok(m) = std::env::var("SCENIC_SHADE_DRIFT") else { return };
+        let a: Vec<&str> = m.split_whitespace().collect();
+        let root = std::path::Path::new(a[0]);
+        let scratch = tempfile::tempdir().unwrap();
+        let out = Out::unbound(root, scratch.path()).unwrap();
+        let q = |p: Px| value(code(p));
+        let shade = |p: Px| -> f32 {
+            let (alt, az) = (45f32.to_radians(), 315f32.to_radians() + std::f32::consts::PI);
+            let basic = |gx: f32, gy: f32| {
+                let c = (alt.sin() - (gy * az.cos() * alt.cos() - gx * az.sin() * alt.cos()))
+                    / (1.0 + gx * gx + gy * gy).sqrt();
+                c.clamp(0.0, 1.0)
+            };
+            let s = p.s / 100.0;
+            let c = p.coherence().min(1.0);
+            let dir = if c > 0.0 { basic(s * p.u[0] / c, s * p.u[1] / c) } else { 0.0 };
+            let rough = (0..16)
+                .map(|k| {
+                    let t = (k as f32 + 0.5) * std::f32::consts::TAU / 16.0;
+                    basic(s * t.cos(), s * t.sin())
+                })
+                .sum::<f32>()
+                / 16.0;
+            c * dir + (1.0 - c) * rough
+        };
+        // Per level (z12 − k): [n, Σ|ΔR|, max ΔR, ΔR≠0, Σ Δsteepness, Σ|ΔG|+|ΔB|, max, neutral mismatch, Σ|Δshade|, max]
+        type St = [f64; 10];
+        let add = |st: &mut St, got: Px, want_full: Px| {
+            let (g, w) = (code(got), code(want_full));
+            let dr = (g[0] as f64 - w[0] as f64).abs();
+            let dd = (g[1] as f64 - w[1] as f64).abs() + (g[2] as f64 - w[2] as f64).abs();
+            let ng = g[1] == 128 && g[2] == 128;
+            let nw = w[1] == 128 && w[2] == 128;
+            let ds = (shade(value(g)) - shade(value(w))).abs() as f64 * 255.0;
+            st[0] += 1.0;
+            st[1] += dr;
+            st[2] = st[2].max(dr);
+            st[3] += (dr > 0.0) as u8 as f64;
+            st[4] += (value(g).s - value(w).s) as f64;
+            st[5] += dd;
+            st[6] = st[6].max(dd);
+            st[7] += (ng != nw) as u8 as f64;
+            st[8] += ds;
+            st[9] = st[9].max(ds);
+        };
+        let merge = |a: &mut St, b: &St| {
+            for i in 0..10 {
+                if i == 2 || i == 6 || i == 9 {
+                    a[i] = a[i].max(b[i])
+                } else {
+                    a[i] += b[i]
+                }
+            }
+        };
+        let down = |v: &[Px], w: usize| -> Vec<Px> {
+            let h = w / 2;
+            (0..h * h)
+                .map(|p| {
+                    let (j, i) = (p / h, p % h);
+                    let (a, b) = (2 * j * w + 2 * i, (2 * j + 1) * w + 2 * i);
+                    mean4(v[a], v[a + 1], v[b], v[b + 1])
+                })
+                .collect()
+        };
+        for t in a[1].split(',') {
+            let (tx, ty) = t.split_once('/').unwrap();
+            let t: (u32, u32) = (tx.parse().unwrap(), ty.parse().unwrap());
+            let terr = ManifestTiles::with_copies(&out, "terrain", out.scratch_file("terrain-copies"));
+            terr.copy_here(9, t.0 << 3, t.1 << 3);
+            let (get, has) = terrain_reads(&terr);
+            let terrain = Terrain::new(&get, &has);
+            let t0 = std::time::Instant::now();
+            // Each z12 tile: chains Q (coded every level), F (full) and H (full, coded at z6) to z4.
+            let per: Vec<((u32, u32), [Px; 3], Vec<(St, St)>)> = (0..64 * 64u32)
+                .into_par_iter()
+                .map(|k| {
+                    let (x, y) = (t.0 * 64 + k % 64, t.1 * 64 + k / 64);
+                    let f0 = shade_tile(&terrain, 12, x, y).unwrap_or_else(|| vec![Px::default(); TS * TS]);
+                    let mut qv: Vec<Px> = f0.iter().map(|&p| q(p)).collect();
+                    let mut fv = f0;
+                    let mut hv = fv.clone();
+                    let mut st = Vec::new();
+                    let mut w = TS;
+                    loop {
+                        let (mut sq, mut sh) = ([0f64; 10], [0f64; 10]);
+                        for i in 0..w * w {
+                            add(&mut sq, qv[i], fv[i]);
+                            add(&mut sh, hv[i], fv[i]);
+                        }
+                        st.push((sq, sh));
+                        if w == 1 {
+                            break;
+                        }
+                        qv = down(&qv, w).into_iter().map(q).collect();
+                        fv = down(&fv, w);
+                        hv = down(&hv, w);
+                        w /= 2;
+                        if w == 4 {
+                            hv = hv.into_iter().map(q).collect();
+                        } // z6: handed to the assembly
+                    }
+                    ((x, y), [qv[0], fv[0], hv[0]], st)
+                })
+                .collect();
+            let mut levels: Vec<(St, St)> = vec![([0.0; 10], [0.0; 10]); 10];
+            for (_, _, st) in &per {
+                for (k, (a, b)) in st.iter().enumerate() {
+                    merge(&mut levels[k].0, a);
+                    merge(&mut levels[k].1, b);
+                }
+            }
+            // z4 → z3 over the 64 × 64 tiles' pixels.
+            let grid = |c: usize| -> Vec<Px> {
+                let mut g = vec![Px::default(); 64 * 64];
+                for ((x, y), v, _) in &per {
+                    g[((y - t.1 * 64) * 64 + (x - t.0 * 64)) as usize] = v[c];
+                }
+                g
+            };
+            let (qg, fg, hg) = (grid(0), grid(1), grid(2));
+            let (q3, f3, h3): (Vec<Px>, Vec<Px>, Vec<Px>) =
+                (down(&qg, 64).into_iter().map(q).collect(), down(&fg, 64), down(&hg, 64));
+            let (mut sq, mut sh) = ([0f64; 10], [0f64; 10]);
+            for i in 0..32 * 32 {
+                add(&mut sq, q3[i], f3[i]);
+                add(&mut sh, h3[i], f3[i]);
+            }
+            levels[9] = (sq, sh);
+            println!(
+                "6/{}/{} ({:.0} s): per level, as built (Q) and hybrid (H) against full precision coded once",
+                t.0,
+                t.1,
+                t0.elapsed().as_secs_f64()
+            );
+            println!("  z   | Q: mean|dR| max dR  dR!=0  bias s%   mean|dGB| max  neutral≠  shade mean max (1/255) | H: mean|dR| max  dR!=0  mean|dGB| max neutral≠ shade mean max");
+            for (k, (a, b)) in levels.iter().enumerate() {
+                let z = 12 - k.min(8) as i32 - if k == 9 { 1 } else { 0 };
+                let r = |s: &St| {
+                    format!(
+                        "{:>6.3} {:>3} {:>6.2}% {:>+8.4} {:>7.3} {:>3} {:>6.2}% {:>6.3} {:>5.1}",
+                        s[1] / s[0],
+                        s[2],
+                        100.0 * s[3] / s[0],
+                        s[4] / s[0],
+                        s[5] / s[0],
+                        s[6],
+                        100.0 * s[7] / s[0],
+                        s[8] / s[0],
+                        s[9]
+                    )
+                };
+                println!("  z{z:<3}| {} | {}", r(a), r(b));
+            }
         }
     }
 }

@@ -14,10 +14,10 @@ pub const ENCODING: &str = "shade-webp";
 pub const LEVEL: u8 = 6;
 
 /// What a key naming the tiles' bytes names of their making: the encoding, libwebp's version and
-/// level, and the codes' constants.
+/// level, the codes' constants, and how a parent is made (crate::slope_pack::stored).
 pub fn version() -> String {
     format!(
-        "{ENCODING} libwebp {} z{LEVEL} exact; steepness sqrt to {SLOPE_MAX} %, direction 128 + {DIR_SCALE} u by {DIR_STEP}, none under {COHERENT}",
+        "{ENCODING} libwebp {} z{LEVEL} exact; steepness sqrt to {SLOPE_MAX} %, direction 128 + {DIR_SCALE} u by {DIR_STEP}, none under {COHERENT}; parents from full precision within a job",
         webpenc::version()
     )
 }
@@ -25,14 +25,6 @@ pub fn version() -> String {
 /// A tile's pixels (256 × 256) as stored: lossless WebP of their codes.
 pub fn encode(px: &[Px]) -> Result<Vec<u8>> {
     webpenc::lossless_rgb8(&rgb(px), 256, 256, LEVEL).map_err(|m| anyhow::anyhow!(m))
-}
-
-/// A tile as stored and its pixels as read back (what's stored: their codes' values), from which
-/// its parent is made, so a tile made now and one read from its pack later give the same parent.
-pub fn stored(px: &[Px]) -> Result<(Vec<u8>, Vec<Px>)> {
-    let b = rgb(px);
-    let blob = webpenc::lossless_rgb8(&b, 256, 256, LEVEL).map_err(|m| anyhow::anyhow!(m))?;
-    Ok((blob, roadcore::shade::pixels(&b, 3)))
 }
 
 #[cfg(test)]
@@ -45,9 +37,8 @@ mod tests {
         let px: Vec<Px> = (0..65536)
             .map(|i| Px::of_gradient(((i % 256) as f32 * 0.02).sin(), ((i / 256) as f32 * 0.03).cos() * 0.4))
             .collect();
-        let (b, back) = stored(&px).unwrap();
+        let b = encode(&px).unwrap();
         assert_eq!(&b[8..16], b"WEBPVP8L");
-        assert_eq!(roadcore::shade::decode(&b).unwrap(), back);
-        assert_eq!(encode(&px).unwrap(), b);
+        assert_eq!(roadcore::shade::decode(&b).unwrap(), roadcore::shade::pixels(&rgb(&px), 3));
     }
 }
