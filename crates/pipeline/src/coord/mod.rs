@@ -2391,6 +2391,8 @@ impl Coordinator {
     /// over with the term), the asks its.
     pub fn become_broker(&self) {
         let mut s = self.shared.lock().unwrap();
+        // (Its term's state no longer its to write: the new lead's, `keep`.)
+        s.keep.off();
         s.pass.clear();
         s.offers.clear();
         s.resume = None;

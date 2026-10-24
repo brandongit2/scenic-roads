@@ -772,7 +772,9 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
   change waits `BATCH` (2 s) for the rest of its burst, and a write starts at least `GAP` (10 s)
   after the one before, so a burst of grants is one ~3 MB file each 10 s at most (200 grants in 3 s:
   15 writes at the test's 0.2 s gap), through the agent's NAS deadlines (§7.8), a failed write tried
-  again a gap on. Renewals aren't saved (a loaded lease gets a fresh deadline).
+  again a gap on. A lead that loses its term stops writing it (its coordinator stopped, or kept on
+  as a broker: `Keep::off`), and a writer that panics is started again at the next lead's step.
+  Renewals aren't saved (a loaded lease gets a fresh deadline).
 - **What it must hold, and when.** A handover needs none of it: the lead settling stops granting,
   then hands its state over whole (`Run::settled`), so every grant answered is in it. A lead gone
   without handing over (crashed, asleep, off the NAS, or restarted: its re-assertion loads the file

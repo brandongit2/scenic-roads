@@ -69,6 +69,13 @@ impl Keep {
         self.cv.notify_all();
     }
 
+    /// Its coordinator no longer leads (a broker now): nothing written from here, no term's file,
+    /// until a lead's step names a term again.
+    pub fn off(&self) {
+        self.m.lock().unwrap_or_else(|e| e.into_inner()).term = None;
+        self.cv.notify_all();
+    }
+
     pub fn stop(&self) {
         self.m.lock().unwrap_or_else(|e| e.into_inner()).stop = true;
         self.cv.notify_all();
@@ -93,7 +100,14 @@ pub fn keep(shared: &Arc<Mutex<Shared>>, nas: Arc<dyn Nas + Send + Sync>, term: 
         let (weak, k2) = (Arc::downgrade(shared), k.clone());
         std::thread::Builder::new()
             .name("coord-state".into())
-            .spawn(move || run(weak, k2, nas, pace))
+            .spawn(move || {
+                // (A panic is said, and the next lead's step starts a writer again.)
+                let k3 = k2.clone();
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(weak, k2, nas, pace))).is_err() {
+                    eprintln!("coordinator: the state's writer panicked: started again at the lead's next step");
+                    k3.m.lock().unwrap_or_else(|e| e.into_inner()).started = false;
+                }
+            })
             .map_err(|e| eprintln!("coordinator: the state's writer: {e}"))
             .ok();
     }
@@ -141,6 +155,13 @@ fn run(shared: Weak<Mutex<Shared>>, k: Arc<Keep>, nas: Arc<dyn Nas + Send + Sync
         let Ok(b) = serde_json::to_vec(&state) else { continue };
         if written.as_ref().is_some_and(|(t, w)| *t == term && *w == b) {
             continue;
+        }
+        // (Not a term's any more since the snapshot: a broker now, or stopped.)
+        {
+            let m = k.m.lock().unwrap_or_else(|e| e.into_inner());
+            if m.stop || m.term != Some(term) {
+                continue;
+            }
         }
         last = Some(Instant::now());
         match nas.write_whole(&crate::agent::pool::state_path(term), &b) {
@@ -241,6 +262,35 @@ mod tests {
         assert!(n >= 1 && n <= most, "{n} writes for 200 grants in {took:?}");
         c.stop();
         c.hold("unit", &[("6/3/1".into(), "k".into())]).unwrap();
+        std::thread::sleep(QUICK.gap * 2);
+        assert_eq!(k.writes(), n + 1, "stopped: no more");
+    }
+
+    /// A lead that lost its term and kept its coordinator on as a broker writes its old term's
+    /// file no more (its job leases dropped would otherwise be written over the term's state).
+    #[test]
+    fn a_coordinator_no_longer_leading_writes_its_term_no_more() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("nas");
+        std::fs::create_dir_all(&root).unwrap();
+        let (c, _) = start_for_test(&d.path().join("a"), "m4", "");
+        c.set_term(4);
+        keep(&c.shared, Arc::new(Share::new(&root)), 4, QUICK);
+        let k = c.shared.lock().unwrap().keep.clone();
+        let id = c.hold("unit", &[("6/4/1".into(), "k".into())]).unwrap();
+        until("the lease on the NAS", || {
+            state(&root, 4).is_some_and(|s| s.leases.to_string().contains(&id.to_string()))
+        });
+        let (n, before) = (k.writes(), std::fs::read(root.join(crate::agent::pool::state_path(4))).unwrap());
+        c.become_broker();
+        c.hold("unit", &[("6/4/2".into(), "k".into())]).unwrap();
+        std::thread::sleep(QUICK.gap * 3);
+        assert_eq!(k.writes(), n, "a broker: no more writes");
+        assert_eq!(std::fs::read(root.join(crate::agent::pool::state_path(4))).unwrap(), before);
+        // Leading again (a later term): that term's file.
+        keep(&c.shared, Arc::new(Share::new(&root)), 6, QUICK);
+        until("term 6's file", || state(&root, 6).is_some());
+        c.stop();
         std::thread::sleep(QUICK.gap * 2);
         assert_eq!(k.writes(), n + 1, "stopped: no more");
     }
