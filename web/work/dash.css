@@ -402,17 +402,7 @@ button[disabled] { opacity: .5; }
 .settings .setting .k { color: var(--dim); min-width: 112px; }
 .settings .setting .ctl { margin-left: auto; display: flex; gap: 6px; align-items: center; }
 .settings .setting input { width: 76px; margin: 0; }
-/* The NAS (nas.js): the mockup's two columns, one on a phone; gauges over their scales' ticks. */
-.d-nas .nasgrid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 10px 16px; margin-bottom: 6px; }
-@media (max-width: 640px) { .d-nas .nasgrid { grid-template-columns: 1fr; } }
-.d-nas h3 { font-size: var(--fs-b); font-weight: 600; margin: 2px 0 4px; display: flex; flex-direction: column; gap: 1px; }
-.d-nas h3 span { color: var(--dim); font-weight: 400; font-size: var(--fs-s); }
-.d-nas .caps + h3 { margin-top: 8px; }
-.d-nas .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-.d-nas .barcell { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.d-nas .scale { display: flex; justify-content: space-between; font-size: var(--fs-s); color: var(--dim); line-height: 1.1; opacity: .85; }
-.d-nas .scale:empty { display: none; }
-.mc .lbody[hidden], .mc .caps[hidden] { display: none; }
+.mc .lbody[hidden] { display: none; }
 
 /* Activity: the transfers (activity.js). */
 .d-xfer { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; margin-top: 14px; min-width: 0; }
@@ -428,19 +418,10 @@ button[disabled] { opacity: .5; }
 .d-xfer table.t { margin: 0 0 4px; }
 .d-xfer table.t td { white-space: nowrap; }
 @media (max-width: 640px) { .d-xfer .xlog .t { display: none; } }
-/* The NAS's gauges as the mockup's: name, bar over its scale, figure */
-.d-nas .caps { display: grid; grid-template-columns: 86px minmax(0, 1fr) 64px; gap: 3px 8px; align-items: center; font-size: var(--fs-s); }
-.d-nas .cap { display: contents; }
-.d-nas .cap .k { color: var(--dim); line-height: 1.25; }
-.d-nas .cap .v { text-align: right; white-space: nowrap; }
-.d-nas .cbar { height: 5px; background: var(--line); border-radius: 3px; overflow: hidden; display: flex; }
-.d-nas .cbar > i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
-.d-nas .cbar.ok > i { background: var(--ok); } .d-nas .cbar.warn > i { background: var(--warn); } .d-nas .cbar.bad > i { background: var(--bad); } .d-nas .cbar.free > i { background: var(--dim); opacity: .45; }
-
 /* A phone (#617): labels stay one line on a desktop; here, what would be cut off wraps instead, at
    spaces and the " · " between parts (break-word splits a word only when it alone is too wide). */
 @media (max-width: 719px) {
-  .kpi .macs > div, .stages .title, .d-xfer .xlog div, .d-nas .cap .v, .gate .gh .files { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: break-word; }
+  .kpi .macs > div, .stages .title, .d-xfer .xlog div, .gate .gh .files { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: break-word; }
   .rrow { height: 104px; grid-template-rows: auto auto; align-content: center; }
   .rrow .nm { white-space: normal; overflow: visible; overflow-wrap: break-word; }
   .rrow .lw { flex-wrap: wrap; gap: 3px 8px; }
@@ -450,3 +431,5 @@ button[disabled] { opacity: .5; }
   .reftag { white-space: normal; overflow: visible; text-overflow: clip; }
   .mc .cname { white-space: normal; align-items: flex-start; } .mc .cname span { overflow: visible; text-overflow: clip; }
 }
+/* The NAS tab (nas.js): the Machines tab's live rows, alone in their card (no rule above them). */
+.d-nas .mc .live { border-top: 0; margin-top: 0; padding-top: 0; }

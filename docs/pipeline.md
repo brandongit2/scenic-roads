@@ -316,24 +316,24 @@ boxes).
   through the first Mac that reaches the NAS (`/work/settings`, workers.md §7); read every 30 s while the
   Machines tab is shown, and after each Set or Off. Every control on the page (Pause, Freeze,
   Resume, the lead's, Accept, Cancel, Try again, the settings) works from any device.
-- **NAS tab:** `nas.js`, as the owner's mockup's NAS part lays it out (docs/mockups/build-live.html),
-  without a heading of its own (the tab names it), from the lead's status and the answers `live.js`
-  asks while the Machines or NAS tab is shown (it keeps them and tells `nas.js` of each), drawn by
-  `chart.js`. **How fast the NAS responds**, beside it the server's name, protocol and free space
-  (`nas.mount`) and the last listing time: the lead's listing time over
-  the chart's range (`nas_ms`); gauges over their scales' ticks for that time (of 400 ms), the
-  requests waiting (every Mac's `nas_calls` together, of their NAS call threads, `mac.nas_threads`),
-  those timed out over the last 24 h (every answering Mac's `nas_missed`, of 10) and the busiest
-  disk's busy share (`nas.load_pct`); chips (when the capacity was measured, the sharing limits, how
-  many Macs are connected, timeouts). **Use against its capacity:** bars of what the pool moves now
-  (`nas.traffic`, summed over the Macs) against the limits its probes give (`nas.limits`: data
-  moved MB/s, files created, entries listed, files looked up a second). Under them, the pool's
-  NAS use over time from the lead's `/work/live`: its reads and writes (`pool_nas_*`, MB/s), files
-  opened, made and listed a second, the disks' busy share (`nas_disk_busy_pct`) against the target.
-  Each Mac's own NAS response, calls in flight and calls missed in the last minute are its Live
-  block's NAS row (`live.js`). A measure missing, or a Mac that doesn't answer, is said so, never
-  drawn as zero. The Machines cards' own NAS bar is gone (the shares are the list above); the
-  capacity table's NAS column and the alerts about reaching the NAS stay.
+- **NAS tab:** `nas.js`, every measure a chart over time (the owner's 04:33 ask, task #634), as
+  the owner's final mockup's NAS tab lists them, without a heading of its own (the tab names it):
+  the Machines tab's rows (`live.js`'s `row` and `words`: its name, its figure at the base size
+  with dim small lines under it, the chart beside; the same widths, `chart.js`, and the footer's
+  range), one column, under a line saying the range, its resolution and when the NAS's capacity
+  was last measured (the best of how many probes over the last day). From the lead's status
+  (`nas`) and its `/work/live` answer, which `live.js` asks while the Machines or NAS tab is shown:
+  **response time** (the lead's listing, `nas_ms`; the server's name, protocol and free space,
+  `nas.mount`), **requests waiting** (`pool_nas_calls`, every Mac's calls in flight, against
+  `pool_nas_threads` dashed), **timed out** (`pool_nas_missed`, a minute; the range's count),
+  **NAS disks busy** (`nas_disk_busy_pct` against the owner's target dashed; "the gate is shut"
+  when it holds), then the pool's use against the limits its probes give (`nas.limits`, dashed,
+  with its share of each): **data moved** (`pool_nas_read_mbs` and `pool_nas_write_mbs` stacked),
+  **files created**, **entries listed**, **files looked up** (`pool_nas_creates_s`,
+  `pool_nas_listed_s`, `pool_nas_stats_s`), and **files opened** (`pool_nas_files_s`). The pool's
+  series are the lead's alone, a point every 10 s. Each Mac's own NAS response, calls in flight
+  and calls missed in the last minute are its Live block's NAS row. A measure missing, or a lead
+  that doesn't answer, is said so, never drawn as zero.
 - **Regions:** the world map (worldmap.js) over the list, in its own box headed Regions, split by
   a bar to drag (a handle on it; kept in the browser; stacked, the map first, below 720 px). The list is virtual (only the rows in view are
   made) and ordered as the regions reach the map, A–Z or by most work left; found by name, id or

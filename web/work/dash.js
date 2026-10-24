@@ -1562,7 +1562,7 @@ function tabs(m) {
       part("d-settings", () => settingsSection(ctx.call, last?.macs || [], render, ctx.onError)),
     ],
     regions: [part("d-regions", () => regionsPane(m, md))],
-    nas: [part("d-nas", () => nasSection(last.agent, m.macs))],
+    nas: [part("d-nas", () => nasSection(last.agent))],
     dropboxes: [part("d-inputs", () => dropBoxes(m))],
     activity: [part("d-activity", () => section("d-activity", "Activity", "the last day",
       h("div", "box", hours(m),

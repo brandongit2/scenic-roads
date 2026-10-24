@@ -262,6 +262,7 @@ async function run() {
     }
 
     // Each tab: no sideways scroll, no console errors, screenshots.
+    let machineW = null;
     for (const tab of TABS) {
       errors.length = 0;
       await show(tab);
@@ -281,6 +282,17 @@ async function run() {
       if (tab === "jobs") {
         const j = await js(`(() => { const s = document.querySelector(".panel:not([hidden]) .stages"); if (!s) return null; const rows = [...s.querySelectorAll(":scope > .cells")]; return [rows.length, s.querySelectorAll(".cells > .jb").length, s.querySelectorAll(".cells .more").length, rows.filter((r) => !r.previousElementSibling?.classList.contains("st")).length]; })()`);
         check("jobs: each step's jobs a row under it, a box a job, none folded", j && j[1] > 0 && !j[2] && !j[3], j ? `${j[0]} rows, ${j[1]} jobs, ${j[2]} folded, ${j[3]} misplaced` : "no stages");
+      }
+      // (Machines and NAS: every measure a chart over time, the same width (the owner's 04:33 ask,
+      // #634): the NAS tab's rows are the Machines tab's, no gauge left. The lead answering is the
+      // agent's own business: with none, the rows are hidden and the check says so.)
+      const charts = `[...document.querySelectorAll(".panel:not([hidden]) .rate canvas")].filter((c) => c.getClientRects().length).map((c) => Math.round(c.getBoundingClientRect().width))`;
+      if (tab === "machines") machineW = (await js(charts))[0] ?? null;
+      if (tab === "nas") {
+        await sleep(2000);
+        const n = await js(`[${charts}, document.querySelectorAll(".panel:not([hidden]) .d-nas .rate").length, document.querySelectorAll(".panel:not([hidden]) .d-nas .cbar, .panel:not([hidden]) .d-nas .chips").length, document.querySelector(".panel:not([hidden]) .d-nas .lhead")?.textContent || ""]`);
+        check("nas: every measure a chart, no gauges", n[1] === 9 && !n[2], `${n[1]} rows, ${n[2]} gauges; ${n[3].slice(0, 80)}`);
+        check("nas: its charts as wide as the Machines tab's (±2 px: the cards' borders)", !n[0].length ? /asking|no live/.test(n[3]) : machineW != null && n[0].every((w) => Math.abs(w - machineW) <= 2), `${n[0].join(", ") || "none shown"} against ${machineW}`);
       }
       await shot(`chrome-${tab}`);
       check(`${tab}: no console errors`, !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));

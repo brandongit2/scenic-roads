@@ -16,15 +16,14 @@ import { commonGaps, fmt, footer, hhmm, latest, merge, pressureClass, pressureWo
 import { putSetting } from "./settings.js";
 
 const EVERY_MS = 1500;
-// How often a Mac's day of missed NAS calls is asked (nas.js's "timed out").
-const DAY_EVERY_MS = 60000;
 // How old a reading of the agent's loop (power, idleness, limits) may be and still be said.
 const LOOP_FRESH_S = 900;
 const SERIES = ["nas_read_mbs", "nas_write_mbs", "net_in_mbs", "net_out_mbs", "nas_files_s", "nas_creates_s", "net_req_s", "build_cores", "others_cores", "cores_busy", "cores_busy_e", "cores_busy_p", "load1",
   "mem_free_pct", "mem_pressure", "mem_compressed_gb", "thermal", "swap_mb", "build_mem_gb", "others_mem_gb", "disk_free_gb", "disk_size_gb", "disk_write_mbs", "battery_pct", "ac", "idle_s",
   "build_cores_max", "build_mem_max_gb", "disk_room_gb", "disk_reserved_gb", "nas_ms", "nas_calls", "nas_missed", "jobs",
   // (The lead's alone, summed over the pool; missing from the others' answers: nas.js.)
-  "pool_nas_read_mbs", "pool_nas_write_mbs", "pool_nas_files_s", "pool_nas_creates_s", "pool_nas_listed_s", "nas_disk_busy_pct"];
+  "pool_nas_read_mbs", "pool_nas_write_mbs", "pool_nas_files_s", "pool_nas_creates_s", "pool_nas_listed_s", "pool_nas_stats_s",
+  "pool_nas_calls", "pool_nas_missed", "pool_nas_threads", "nas_disk_busy_pct"];
 
 let cfg = null;
 // Per host: {series, step, now, mac, at (ms), error, asking, url (the address that answered)}.
@@ -49,9 +48,8 @@ export function startLive(c) {
   tick();
 }
 
-/** A Mac's kept answer ({series, now, step, range, mac, error, day}; null before the first) for the
- * NAS section (nas.js), and `onLive(fn)`: `fn(host)` after each answer or failure. `day`: its NAS
- * calls missed over the last day (the live store's minutes, asked once a minute; null till then). */
+/** A Mac's kept answer ({series, now, step, range, mac, error}; null before the first) for the
+ * NAS section (nas.js), and `onLive(fn)`: `fn(host)` after each answer or failure. */
 export const liveOf = (host) => kept.get(host) || null;
 const listeners = [];
 export const onLive = (fn) => listeners.push(fn);
@@ -86,14 +84,6 @@ async function ask(m) {
     } else ans = await remote(m, st, body);
     st.series = merge(fresh ? st.series : null, ans, ans.now - r);
     Object.assign(st, { range: r, step: ans.step, now: ans.now, mac: ans.mac, cores_now: ans.cores_now, at: Date.now(), error: null });
-    if (!(Date.now() - st.dayAt < DAY_EVERY_MS)) {
-      st.dayAt = Date.now();
-      const dayBody = { range: 86400, series: ["nas_missed"], net: false };
-      // (Its own failure kept apart: the minute's answer stands; the day said unknown till the next.)
-      const d = await (m ? remote(m, st, dayBody) : cfg.call("/work/live", dayBody).then(([code, v]) => (code === 200 ? v : null))).catch(() => null);
-      // (A point's mean a second times its span: the calls missed in it.)
-      st.day = d?.series ? (d.series.nas_missed || []).reduce((t, p) => t + p[2] * d.step, 0) : null;
-    }
   } catch (e) {
     st.error = e.name === "TimeoutError" ? "no answer in 5 s" : e.message;
   } finally {
@@ -136,7 +126,7 @@ export function liveBlock(host, guard) {
 }
 
 // A row (the mockup's .rate): its name over its words (its tip on hover) on the left, its chart on the right; `col`, a swatch before the name.
-function row(root, name, tip, col, cls = "vrow") {
+export function row(root, name, tip, col, cls = "vrow") {
   const r = el("div", `rate ${cls}`);
   const lab = el("div", "lab");
   lab.title = tip;
@@ -194,7 +184,7 @@ function build() {
 }
 
 // A value's words: its lines (the first the figure, the rest dim; [colour, text] keyed), coloured when it's a worry.
-function words(v, lines, cls = "", title = "") {
+export function words(v, lines, cls = "", title = "") {
   const shown = lines.filter((t) => t);
   v.replaceChildren(...shown.map((t, i) => {
     if (!i && !Array.isArray(t)) return document.createTextNode(t);

@@ -1218,7 +1218,10 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   `nas_disk_busy_pct.<n>` (each, from 1). Each Mac's agent's NAS calls under their deadlines
   (`agent::nasread`, §7.8) every second: `nas_calls`, in flight now in its three pools (stuck
   ones included), and `nas_missed`, those that passed their deadline or were refused, every
-  thread busy, over the second. The lead's status says the rest (`nas`, `coord::NasView`): the
+  thread busy, over the second; each member's ask carries them too (`Capacity::nas_calls`,
+  `Store::calls_now`: in flight now, missed a second over its last 30 s, its NAS call threads),
+  summed by the lead every 10 s into `pool_nas_calls`, `pool_nas_missed` and `pool_nas_threads`
+  (task #634; memory only, like every series). The lead's status says the rest (`nas`, `coord::NasView`): the
   day's probes as its prober keeps them (the ones in `state/pool/nas-probes.json`, read from there
   and saved there, no other copy), the limits they give, the gate's smoothed load, target and
   whether it holds, the disks' last reading (finite values alone), the pool's traffic summed, and
@@ -1277,8 +1280,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   `net: false` (the proxy's counts left out); an answer also says the Mac's size, `mac: {cores,
   cores_e, mem_gb, nas_threads}` (read once: `nas_threads` its NAS call threads, the most calls in
   flight at once), the charts' scales. Its NAS section (`web/work/nas.js`) reads the same answers:
-  each Mac's `nas_calls` and, asked once a minute over the last day, `nas_missed`; the lead's
-  `nas_ms`, `pool_nas_*` and `nas_disk_busy_pct` (missing from a member's answer); beside the
+  the lead's `nas_ms`, `pool_nas_*` and `nas_disk_busy_pct` (missing from a member's answer); beside the
   status's `nas` (`NasView`). The
   Activity tab (`web/work/activity.js`) asks every Mac every 2 s while it shows, with no series:
   their `files` and `net` for the file stream and the internet by website. No robots.txt result is
