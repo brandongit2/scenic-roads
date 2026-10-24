@@ -152,9 +152,10 @@ kind's others, with templated words.
 
 The shell: a header kept at the top (the title; the verdict; Pause, Freeze or Resume; the
 alerts; the tabs) and a footer fixed at the bottom (the charts' range, the Live dot). A tab per
-part, chosen by the address's `#hash` (`#overview`, `#jobs`, `#machines`, `#regions`,
-`#activity`, `#details`, `#device`; none or another: Overview), so a link or a reload opens the
-same tab; an alert links to the tab that says more.
+part, in the owner's order, chosen by the address's `#hash` (`#overview`, `#jobs`, `#machines`,
+`#regions`, `#nas`, `#dropboxes`, `#activity`, `#details`, `#device`; none or another: Overview), so a
+link or a reload opens the same tab; an alert links to the tab that says more (a held change: Drop
+boxes).
 
 - **Header's verdict:** one sentence (paused, out of touch or idle; percent done; done ≈), the alerts as chips, the
   pause controls: Pause (each job stops at its next safe point), Freeze (each job frozen where it
@@ -162,7 +163,7 @@ same tab; an alert links to the tab that says more.
 - **Footer:** the range the Machines tab's live charts show (1, 5, 10 or 30 min, 1, 2, 6, 24 or 72 h; this browser's own,
   kept); the Live dot, green and blinking while the
   build's state answered in the last 30 s, else Stale with the time of the last answer.
-- **Overview tab:** the gate's banners (held inputs), the overview, then the world map.
+- **Overview tab:** the overview, then the world map.
 - **Overview:** how far: the whole build's work done, every stage's (`sums.js` wholeProgress:
   each step's targets done at the forecast's time for a target of it, `each_s`, measured or
   estimated, of that plus the forecast's work left; 100% only when every stage is done), how long
@@ -264,10 +265,11 @@ same tab; an alert links to the tab that says more.
   first Mac that reaches the NAS (`/work/settings`, workers.md §7); read every 30 s while the
   Machines tab is shown, and after each Set or Off. Every control on the page (Pause, Freeze,
   Resume, the lead's, Accept, Cancel, Try again, the settings) works from any device.
-- **The NAS:** `nas.js`, under the pool (the Machines tab), as the owner's mockup's NAS part lays it
-  out (docs/mockups/build-live.html), from the lead's status and the answers `live.js` already asks
-  (it keeps them and tells `nas.js` of each), drawn by `chart.js`. Its heading: the server's name,
-  protocol and free space (`nas.mount`). **How fast the NAS responds:** the lead's listing time over
+- **NAS tab:** `nas.js`, as the owner's mockup's NAS part lays it out (docs/mockups/build-live.html),
+  without a heading of its own (the tab names it), from the lead's status and the answers `live.js`
+  asks while the Machines or NAS tab is shown (it keeps them and tells `nas.js` of each), drawn by
+  `chart.js`. **How fast the NAS responds**, beside it the server's name, protocol and free space
+  (`nas.mount`) and the last listing time: the lead's listing time over
   the chart's range (`nas_ms`); gauges over their scales' ticks for that time (of 400 ms), the
   requests waiting (every Mac's `nas_calls` together, of their NAS call threads, `mac.nas_threads`),
   those timed out over the last 24 h (every answering Mac's `nas_missed`, of 10) and the busiest
@@ -308,10 +310,15 @@ same tab; an alert links to the tab that says more.
   time goes: its three largest phases by their mean share of a run's wall time, each with its share
   of the bytes read and written (local disk, NAS and internet: "I/O"), over its last 10 runs that ended well (the lead's status's `phase_shares`,
   docs/pool.md §10; measured, none typed by hand; blank before a step's first run).
+- **Drop boxes tab:** the gate (docs/inputs.md §4.7), from the status's `inputs`: a banner per held
+  unit (its held files, each finding, Accept per warning, Accept all; errors say what to fix, the
+  only actions here: the inputs are otherwise read-only through the page), a quiet line per unit
+  being checked, else a line naming the drop boxes, all taken in. The header's alerts still say a
+  change is held.
 - **This device:** helping with this tab (index.html; not in `?view`).
 
 Each Mac's measures over time (NAS latency, load, cores busy, memory, the build against the other apps, disk space and writes, power, jobs, its NAS calls in flight and missed, the internet by host and its last transfers; on the lead the NAS's disks' busy share and the pool's NAS traffic) come from its own
-`/work/live` (docs/pool.md §10, Live); a series missing is shown as no measure yet. The Machines
-tab draws the ones above; the rest (the NAS's disks, the pool's traffic, the internet by host) aren't drawn yet.
+`/work/live` (docs/pool.md §10, Live); a series missing is shown as no measure yet. The Machines,
+NAS and Activity tabs draw them, each asking only while it is shown.
 
 Colours are the stage's (`STAGE_COLOURS` in `dash.js`), never a step's own.

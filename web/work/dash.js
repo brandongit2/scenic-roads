@@ -218,33 +218,37 @@ function alerts(m) {
     else if (p.visible === false && p.seen_s < 300) out.push({ cls: "warn", text: `${p.label} is in the background (iPhones and iPads stop it)`, to: "machines" });
   }
   if ((a.bad_recipes || []).length) out.push({ cls: "warn", text: `${plural(a.bad_recipes.length, "region recipe")} doesn't read`, to: "details" });
-  for (const v of (a.inputs || []).filter((v) => v.state === "held")) out.push({ cls: (v.findings || []).some((f) => f.level === "error") ? "bad" : "warn", text: `${v.unit}: a change held`, to: "overview" });
+  for (const v of (a.inputs || []).filter((v) => v.state === "held")) out.push({ cls: (v.findings || []).some((f) => f.level === "error") ? "bad" : "warn", text: `${v.unit}: a change held`, to: "dropboxes" });
   return out;
 }
 
-// ---- The gate (docs/inputs.md §4.7) -------------------------------------------------------------
+// ---- The drop boxes' gate (docs/inputs.md §4.7): the Drop boxes tab -----------------------------
 // A banner per held unit: its held files, each finding, Accept per warning and Accept All; errors
-// say what to fix. A quiet line per unit being checked.
-function gateBanners(m, accept) {
+// say what to fix. A quiet line per unit being checked; a line saying so when none waits.
+function dropBoxes(m) {
+  const accept = (body) => ctx.call("/work/inputs", body).then(poll, (e) => ctx.onError?.(`couldn't accept: ${e.message}`));
   const units = (m.a.inputs || []).filter((v) => v.state !== "ok");
-  return units.map((v) => {
-    if (v.state === "checking") return h("div", "gate checking", `${v.unit}: checking what was dropped…`);
-    const fs = v.findings || [];
-    const warns = fs.filter((f) => f.level === "warning");
-    const errors = fs.filter((f) => f.level === "error");
-    const all = warns.length > 1 && h("button", { onclick: () => confirm(`Accept all ${warns.length} warnings of ${v.unit}?\n\n${warns.map((f) => `• ${f.message}`).join("\n")}`) && accept({ unit: v.unit, all: true }), title: "Accepts every warning held here; the held changes are taken in at the next check (errors stay)" }, "Accept all");
-    return h("div", `gate${errors.length ? " has-error" : ""}`,
-      h("div", "gh", h("b", null, v.unit), h("span", "files", `held: ${(v.held || []).join(", ")}`), h("span", "dim small", v.checking ? "checking again…" : v.checked ? `checked ${clock(v.checked)}` : ""), all),
-      v.together ? h("div", "together", v.together) : null,
-      fs.map((f) => h("div", "gf",
-        chip(f.level, f.level === "error" ? "bad" : "warn"),
-        h("span", "msg", f.message),
-        f.level === "warning"
-          ? h("button", { onclick: () => confirm(`Accept this warning of ${v.unit}?\n\n${f.message}`) && accept({ unit: v.unit, accept: [f.id] }), title: `Takes the change in with it (${f.id})` }, "Accept")
-          : h("span", "dim small", "fix or remove"),
-        h("div", "sub", [f.files.join(", "), f.at ? ` · at ${f.at[1].toFixed(4)}, ${f.at[0].toFixed(4)}` : "", ` · ${f.id}`].join("")),
-        (f.lines || []).length ? h("pre", null, f.lines.map(([n, l]) => `${n}: ${l}`).join("\n") + (f.more ? `\n… and ${f.more} more lines (scenic inputs)` : "")) : null)));
-  });
+  const held = units.filter((v) => v.state === "held").length;
+  return section("d-inputs", "Drop boxes", held ? `${plural(held, "change")} held for a look` : "",
+    units.length ? units.map((v) => gateBanner(v, accept)) : h("div", "box dim small", `Nothing held: ${plural((m.a.inputs || []).length, "drop box", "drop boxes")} taken in${(m.a.inputs || []).length ? ` (${m.a.inputs.map((v) => v.unit).join(", ")})` : ""}.`));
+}
+function gateBanner(v, accept) {
+  if (v.state === "checking") return h("div", "gate checking", `${v.unit}: checking the files put in its drop box…`);
+  const fs = v.findings || [];
+  const warns = fs.filter((f) => f.level === "warning");
+  const errors = fs.filter((f) => f.level === "error");
+  const all = warns.length > 1 && h("button", { onclick: () => confirm(`Accept all ${warns.length} warnings of ${v.unit}?\n\n${warns.map((f) => `• ${f.message}`).join("\n")}`) && accept({ unit: v.unit, all: true }), title: "Accepts every warning held here; the held changes are taken in at the next check (errors stay)" }, "Accept all");
+  return h("div", `gate${errors.length ? " has-error" : ""}`,
+    h("div", "gh", h("b", null, v.unit), h("span", "files", `held: ${(v.held || []).join(", ")}`), h("span", "dim small", v.checking ? "checking again…" : v.checked ? `checked ${clock(v.checked)}` : ""), all),
+    v.together ? h("div", "together", v.together) : null,
+    fs.map((f) => h("div", "gf",
+      chip(f.level, f.level === "error" ? "bad" : "warn"),
+      h("span", "msg", f.message),
+      f.level === "warning"
+        ? h("button", { onclick: () => confirm(`Accept this warning of ${v.unit}?\n\n${f.message}`) && accept({ unit: v.unit, accept: [f.id] }), title: `Takes the change in with it (${f.id})` }, "Accept")
+        : h("span", "dim small", "fix or remove"),
+      h("div", "sub", [f.files.join(", "), f.at ? ` · at ${f.at[1].toFixed(4)}, ${f.at[0].toFixed(4)}` : "", ` · ${f.id}`].join("")),
+      (f.lines || []).length ? h("pre", null, f.lines.map(([n, l]) => `${n}: ${l}`).join("\n") + (f.more ? `\n… and ${f.more} more lines (scenic inputs)` : "")) : null)));
 }
 
 function verdictText(m) {
@@ -1416,7 +1420,6 @@ function tabs(m) {
   try { md = mapData(m); } catch (e) { part("map data", () => { throw e; }); }
   return {
     overview: [
-      part("d-inputs", () => h("section", "d-inputs", gateBanners(m, (body) => ctx.call("/work/inputs", body).then(poll, (e) => ctx.onError?.(`couldn't accept: ${e.message}`))))),
       part("d-overview", () => section("d-overview", null, null, overview(m))),
       part("d-map", () => mapSection(m, md)),
     ],
@@ -1432,9 +1435,10 @@ function tabs(m) {
         h("div", "machines", m.macs.map((x) => machineCard(m, x)), m.gone.map(goneCard), pagesCard(m)))),
       part("d-pool", () => poolSection(last.agent, m.now, (body) => ctx.call("/work/lead", body).then(poll, (e) => ctx.onError?.(`couldn't ask about the lead: ${e.message}`))) || section("d-pool")),
       part("d-settings", () => settingsSection(ctx.call, last?.macs || [], render, ctx.onError)),
-      part("d-nas", () => nasSection(last.agent, m.macs)),
     ],
     regions: [part("d-regions", () => regionsPane(m, md))],
+    nas: [part("d-nas", () => nasSection(last.agent, m.macs))],
+    dropboxes: [part("d-inputs", () => dropBoxes(m))],
     activity: [part("d-activity", () => section("d-activity", "Activity", "the last day",
       h("div", "box", hours(m),
         h("div", "feedbar", h("div", "seg", [["all", "All"], ["problems", "Problems"], ["publishing", "Publishing"], ["pauses", "Pauses & conditions"]].map(([k, t]) => h("button", { class: ui.feed === k ? "on" : "", onclick: () => { ui.feed = k; render(); } }, t)))),
@@ -1591,6 +1595,6 @@ export function dashboard(opts) {
   // (The Machines tab's settings asked as it opens, not at the next poll.)
   window.addEventListener("hashchange", () => last && location.hash === "#machines" && loadSettings(ctx.call, last.macs || [], render));
   poll();
-  startLive({ call: ctx.call, store: ctx.store, macs: () => last?.macs || [], active: () => location.hash === "#machines" });
+  startLive({ call: ctx.call, store: ctx.store, macs: () => last?.macs || [], active: () => location.hash === "#machines" || location.hash === "#nas" });
   startActivity({ call: ctx.call, macs: () => last?.macs || [], machines: () => shownMacs, active: () => location.hash === "#activity" });
 }

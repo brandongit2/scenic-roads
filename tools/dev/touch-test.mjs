@@ -24,7 +24,7 @@ const PORT = +arg("--port", 8097);
 const OUT = arg("--out", join(tmpdir(), "scenic-touch"));
 const WEB = join(dirname(fileURLToPath(import.meta.url)), "../../web/work");
 const AGENT = { host: "127.0.0.1", port: 8090 };
-const TABS = ["overview", "jobs", "machines", "regions", "activity", "details"];
+const TABS = ["overview", "jobs", "machines", "regions", "nas", "dropboxes", "activity", "details"];
 
 // ---- The read-only server ------------------------------------------------------------------------
 // A call forwarded only when its body has no other keys than these (an empty body: {}).

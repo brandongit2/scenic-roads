@@ -4,7 +4,7 @@
 /* A tab's sections, one under the other. */
 .panel { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); align-content: start; }
 .panel > section { min-width: 0; }
-.d-inputs:empty, .d-pool:empty { display: none; }
+.d-pool:empty { display: none; }
 
 /* Headings: a section's name, then a line of its own words. */
 .panel h2 { font-size: 11px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; margin: 0 0 6px; display: flex; gap: 10px; justify-content: space-between; align-items: baseline; }

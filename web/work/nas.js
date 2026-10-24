@@ -1,4 +1,4 @@
-// The NAS on the build page's Machines tab (docs/pool.md §10, Live; docs/pipeline.md §5), as the
+// The build page's NAS tab (docs/pool.md §10, Live; docs/pipeline.md §5), as the
 // owner's mockup lays it out (docs/mockups/build-live.html, "The NAS"): how fast it responds (the
 // lead's listing time over the chart's range, then gauges: response time, requests waiting, those
 // timed out over the last day, the disks' busy share; chips), its use against its capacity (what the
@@ -60,7 +60,6 @@ function build() {
   const h3 = (text, sub) => { const h = el("h3", null, text); if (sub) h.append(sub); return h; };
   parts.say = el("span");
   parts.lat = chartRow("Answer");
-  parts.latHead = el("span", null, "the lead's listing of the project's folder");
   const gs = el("div", "caps");
   parts.resp = gauge("response time", "How long the lead's listing of the project's folder took (every 5 s while a build runs on it)");
   parts.wait = gauge("requests waiting", "Every Mac's NAS calls in flight, against their NAS call threads together");
@@ -70,7 +69,7 @@ function build() {
   parts.chips = el("div", "chips");
   const latBody = parts.latBody = el("div", "lbody");
   latBody.append(parts.lat.row);
-  left.append(h3("How fast the NAS responds", parts.latHead), latBody, gs, parts.chips);
+  left.append(h3("How fast the NAS responds", parts.say), latBody, gs, parts.chips);
   parts.capSub = el("span");
   const lims = el("div", "caps");
   parts.lims = [["bytes", "data moved"], ["creates", "files created"], ["listed", "entries listed"], ["stats", "files looked up"]].map(([k, label]) => {
@@ -91,14 +90,11 @@ function build() {
   parts.body.append(parts.io.row, parts.files.row, parts.disk.row);
   live.append(head, parts.body);
   box.append(grid, live);
-  const h2 = el("h2", null, "The NAS");
-  h2.append(parts.say);
-  box.prepend(h2);
   root.append(box);
 }
 build();
 
-/** The NAS section for the Machines tab: `agent` the lead's status, `macs` the page's Macs (name,
+/** The NAS tab's section: `agent` the lead's status, `macs` the page's Macs (name,
  * fresh). The same element each call, filled in place. */
 export function nasSection(agent, macs) {
   seen = { agent, macs };
@@ -169,7 +165,7 @@ function paint() {
   const ms = lead?.series ? latest(lead.series.nas_ms, lead.now, 30) : null;
   const mt = v?.mount;
   parts.say.textContent = [mt && mt.name, mt && mt.proto, mt && `${tb(mt.free)} free`, ms != null && fmt(ms, "ms")].filter(Boolean).join(" · ")
-    || "how fast it answers, how close to its limits, and who is using it";
+    || "the lead's listing of the project's folder";
   set(parts.resp, ms ?? 0, 400, ms == null ? "not measured" : fmt(ms, "ms"), ms != null && ms > 200 ? "warn" : "", ["0", "200 ms", "400 ms"]);
   let wait = null, threads = 0, day = null, answering = 0;
   for (const m of macs) {

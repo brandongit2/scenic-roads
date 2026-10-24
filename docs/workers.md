@@ -171,13 +171,13 @@ Common rules:
   hovered or pinned by a click or tap; its legend and filters, docs/pipeline.md §5); Jobs (the schedule: each
   Mac's lanes with the jobs that ran, running and to come; the stages: a row per step with a cell
   per job; a card on hover, pinned on a click or tap); Machines (a card per
-  machine, the pool: who leads, "Make lead", "Take it"; the NAS, `nas.js`: how fast it responds, use against its limits, who is using it, its use over time); Regions (a second world map over a virtual list, split by a bar to drag; a row under the pointer lights its region on the map and shows its card); Activity (last day by the hour,
+  machine, the pool: who leads, "Make lead", "Take it"; the settings); Regions (a second world map over a virtual list, split by a bar to drag; a row under the pointer lights its region on the map and shows its card); NAS (`nas.js`: how fast it responds, use against its limits, who is using it, its use over time); Drop boxes (the gate's held changes with Accept and Accept all, docs/inputs.md §4.7); Activity (last day by the hour,
   events, the file stream and the internet by website: `activity.js`); Details (leases, waits, each Mac's capacity, workers, the steps table with each step's measured
   phase shares: the lead's status's `phase_shares`, docs/pool.md §10); This device. It reads
   `/work/steps` once (the steps table: every word about a step), `/work/swarm` every 10 s and
   `/work/history` incrementally (and further back, a chunk at a time, for the schedule's past jobs); `/work/regions` (each region's folders, download size and
   outline: docs/pool.md §10, Regions) when the last catalogue changes, else every ten minutes;
-  each Mac's measures over time (its vitals as docs/mockups/build-live.html draws them, each core's share now among them; on the lead also the NAS's disks and the pool's NAS traffic), and its internet's counts by host and last transfers, from its own port's `/work/live` (docs/pool.md §10, Live; the Machines tab asks each Mac's every 1.5 s while shown);
+  each Mac's measures over time (its vitals as docs/mockups/build-live.html draws them, each core's share now among them; on the lead also the NAS's disks and the pool's NAS traffic), and its internet's counts by host and last transfers, from its own port's `/work/live` (docs/pool.md §10, Live; the Machines and NAS tabs ask each Mac's every 1.5 s while shown);
   each running job's phase, target and NAS and internet bytes in the status (`jobs[].live`, and a
   member's on its lease, from its beat: the same section). The
   world map draws the regions' outlines and the countries' (`countries.json`, one of the page's
