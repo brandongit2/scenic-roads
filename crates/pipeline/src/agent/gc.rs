@@ -1192,7 +1192,8 @@ mod tests {
         rec.rejected.insert(damaged_key, "damaged".into());
         rec.save(&nas).unwrap();
         let r = run(root, 14, false).unwrap();
-        assert!(r.removed == 1 && r.warnings.is_empty(), "{r:?}");
+        // (The journal's GC marks the old entries, refused or merged: its own note, said.)
+        assert!(r.removed == 1 && r.warnings.iter().all(|w| w.starts_with("journal: marked")), "{r:?}");
         // No term led (its term not readable whole): no one refuses. An entry unreadable from today
         // still fails GC; one whose day is over `PASS_OVER_S` past (ten days here, the days far
         // from the bound) is passed over, said as a warning, the sweep going on.
@@ -1203,7 +1204,9 @@ mod tests {
         assert!(e.contains("1-8") && root.join(c).exists(), "{e}");
         fs::remove_file(&young).unwrap();
         entry_at(&format!("{}/1-7", journal::day(now - 10 * 86400).unwrap()), b"{\"member\": ");
-        let r = run(root, 14, false).unwrap();
+        let mut r = run(root, 14, false).unwrap();
+        // (The journal's GC waits for a lead: its own note.)
+        r.warnings.retain(|w| !w.starts_with("journal: "));
         assert!(
             r.removed == 1
                 && r.warnings.len() == 1
