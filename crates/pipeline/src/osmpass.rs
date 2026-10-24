@@ -236,7 +236,8 @@ pub(crate) fn ssh_opened(ssh: &[&str]) -> Result<()> {
         unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT) };
     });
     let st = child.wait()?;
-    if stalled {
+    // (One that ended well just as the bound fired stands: the signal met a finished child.)
+    if stalled && !st.success() {
         return Err(ssh_stalled("its first call", SSH_START));
     }
     ensure!(st.success(), "ssh to the NAS failed: {st}");
@@ -310,7 +311,7 @@ pub fn streamed(
         Ok((o, e))
     });
     let status = child.wait()?;
-    if stalled {
+    if stalled && !status.success() {
         return Err(ssh_stalled(&format!("the size of {remote}"), start));
     }
     let (stdout, stderr) = read.context("read ssh's output")?;
