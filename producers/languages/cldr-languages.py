@@ -52,9 +52,11 @@ REFINED = {
     "CH-BE": ["de", "fr"],
     "CH-TI": ["it"],
     "CH-GR": ["de", "rm", "it"],
-    # Belgium: each region its own language first.
+    # Belgium: each region its own language first. German is official only in the German-speaking
+    # Community's nine municipalities (east of Liège), which have no ISO 3166-2 code of their own,
+    # not Wallonia-wide.
     "BE-VLG": ["nl"],
-    "BE-WAL": ["fr", "de"],
+    "BE-WAL": ["fr"],
     "BE-BRU": ["fr", "nl"],
     # Italy: South Tyrol German, Aosta Valley French, beside Italian.
     "IT-BZ": ["de", "it"],

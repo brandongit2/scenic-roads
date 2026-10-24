@@ -37,7 +37,8 @@ punctuation or spacing, and not one of main's parts.
   English then French, Catalonia, Valencia, Galicia, the Basque Country, Wales, Scotland, Brittany,
   the Swiss cantons not German-first (Geneva, Vaud, Neuchâtel, Jura French; Fribourg, Valais French
   then German; Bern German then French; Ticino Italian; Graubünden German, Romansh, Italian),
-  Belgium's regions, South Tyrol, the Aosta Valley, Hong Kong and Macau (Cantonese). Territories
+  Belgium's regions (Flanders Dutch, Wallonia French, Brussels French then Dutch; the German-speaking
+  Community has no code of its own, so it reads Wallonia's French), South Tyrol, the Aosta Valley, Hong Kong and Macau (Cantonese). Territories
   with an ISO 3166-1 code of their own (Åland's AX, Swedish) take their own line. Elsewhere a
   country's subdivisions read the country's languages in its order.
   - The refinements reach the map once `inputs/languages/` holds the producer's output (`--base`)
