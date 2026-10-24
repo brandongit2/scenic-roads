@@ -253,7 +253,8 @@ pub struct Rules {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover: Option<String>,
     /// A region's piece of water under this (km²) joins a neighbour (`hand_out`'s stretches, and
-    /// with `cover`, every region's pieces of water touching none of its land).
+    /// with `cover`, every region's pieces of water touching none of its land); so does land in no
+    /// outline along a coast (`coast`), and with `cover`, any gap.
     #[serde(default = "sliver")]
     pub sliver_km2: f64,
 }
