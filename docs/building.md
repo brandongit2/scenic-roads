@@ -510,8 +510,13 @@ The check: `ssh m6 'security unlock-keychain -p "$(<~/.config/scenic/signing-key
 **Programs:** `scenic` (the user's command and the agent); `scenic-build` (the build steps);
 `server`; the `unit` job's programs `extract`, `elev`, `areaflags`, `landcover`, `tile`, `scenic-metrics`
 (rail runs `extract` and `railfreq`, tree cover `trees`). The app also carries `dem/` (the Python
-steps, run in `dem/.venv`, which uv makes from `uv.lock` at a Mac's first Python step: task #456),
-Scenic.app, `web/` and `fonts/`. `tools/app/install.sh` gives the agent a PATH with uv, osmium, zstd
+steps), Scenic.app, `web/` and `fonts/`. The Python steps run in one environment per lock file
+(`dem/uv.lock` with `dem/.python-version`), in `~/Library/Application Support/scenic/pyenv/<key>/`
+beside the versions, never inside one, and shared by every version with that lock
+(`pipeline::pyenv`): `install.sh` makes it (`scenic-build pyenv`), and a Python step makes it when
+it's missing (an update with a new lock). It's made by `uv sync` into a `.tmp-` folder and renamed
+into place, so concurrent makings are safe. The updater removes an environment no installed
+version uses a day after its last use. `tools/app/install.sh` gives the agent a PATH with uv, osmium, zstd
 and Java 21.
 
 **Command lines:** every program checks its arguments before it does anything. `--help` (or `-h`)

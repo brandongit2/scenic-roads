@@ -179,7 +179,8 @@ impl Updater {
     /// agent's (its jobs run programs from its folder; `agent/status.json` says which, and its
     /// `job_apps` those of jobs it took over from an older app's agent), and the
     /// newest other one (to roll back to). Versions are named from their UTC publish time, so they
-    /// sort by age. Unfinished copies (`.tmp`) an hour old go too.
+    /// sort by age. Unfinished copies (`.tmp`) an hour old go too, and the Python environments no
+    /// version left uses (pipeline::pyenv::prune).
     fn prune(&self, current: &str, running: &str) {
         let dir = self.home.join("app");
         remove_stale_copies(&dir, STALE_COPY);
@@ -211,6 +212,10 @@ impl Updater {
                 Ok(()) => eprintln!("app {v}: removed (replaced)"),
                 Err(e) => eprintln!("app {v}: can't remove it: {e}"),
             }
+        }
+        // (The Python environments the versions left share no longer, a day after their last use.)
+        for n in pipeline::pyenv::prune(&self.home, pipeline::pyenv::UNUSED_KEEP) {
+            eprintln!("python environment {n}: removed (no version uses it)");
         }
     }
 

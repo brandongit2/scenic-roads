@@ -102,6 +102,7 @@ const STEPS: &[Step] = &[
     s("catalog", "[--held] [--ready <ids>] [--building <id>=<built>/<total>,…] [--delta] [--whole]", "publish a catalog of the build manifest (--held: into catalog-held/)", &["--held", "--delta", "--whole"], &["--ready", "--building"], 0),
     s("rekey-check", "[--pass d]", "what re-keying the records for the units' new keys would do now. Reads only", &[], PASS, 0),
     s("fabdem-fetch", "--mirror <HF dataset URL> --work <local dir> [--first <square>,…]", "every FABDEM tile the store (sources/fetched/fabdem/) lacks, from the mirror, one at a time, the 10° squares named first; restartable", &[], &["--mirror", "--work", "--first"], 0),
+    s("pyenv", "[--dem dir]", "the Python environment of dem/'s lock file (beside the app's versions, shared by those with the same lock), made if it's missing; its folder printed", &[], &["--dem"], 0),
     s("geoid-offsets", "--sources <dir> --from <reference> --at <lon,lat>[;…] [--store <dir>]", "the offsets the elevation step adds to heights in a reference to bring them to EGM2008, by the geoid declarations in a folder. Reads only", &[], &["--sources", "--from", "--at", "--store"], 0),
     s("p5-check", "terrain|trees [--pass d] [--costs f]", "what switching terrain and slope, or tree cover, to z6 tiles and assemblies does now. Reads only", &[], &["--pass", "--costs"], 1),
 ];

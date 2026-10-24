@@ -58,6 +58,9 @@ if [[ ! -d "$HOME_S/app/$version" ]]; then
   done
   mv "$HOME_S/app/$version.tmp" "$HOME_S/app/$version"
 fi
+# The Python steps' environment for this version's lock file, made if no installed version has it
+# yet (in $HOME_S/pyenv/, shared by the versions with that lock; the version's folder untouched).
+PATH="${uv:h}:$PATH" "$HOME_S/app/$version/scenic-build" pyenv --dem "$HOME_S/app/$version/dem" >/dev/null
 # -h: replace the link itself, not something inside the folder it points to.
 ln -sfh "$version" "$HOME_S/app/current"
 # The map server: a service of its own (Scenic shows it, and starts or stops it when asked): its

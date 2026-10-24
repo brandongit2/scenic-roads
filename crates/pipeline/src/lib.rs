@@ -62,6 +62,7 @@ pub mod pageviews;
 pub mod peaks;
 pub mod pool;
 pub mod pubtimes;
+pub mod pyenv;
 pub mod pyjson;
 pub mod pynumpy;
 pub mod pytext;

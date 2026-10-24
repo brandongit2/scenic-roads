@@ -256,6 +256,17 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         println!("{spec}");
         return Ok(());
     }
+    if step == "pyenv" {
+        // pyenv [--dem dir]: the Python environment of dem/'s lock file, made if it's missing
+        // (pipeline::pyenv; tools/app/install.sh runs it); its folder printed.
+        let dem = PathBuf::from(opt(&args, "--dem").unwrap_or_else(|| "dem".into()));
+        let py = {
+            let _p = phase("the environment found or made", Class::Mixed);
+            pipeline::pyenv::python(&dem)?
+        };
+        println!("{}", py.parent().and_then(Path::parent).unwrap_or(&py).display());
+        return Ok(());
+    }
     if step == "geoid-offsets" {
         // geoid-offsets --sources <folder of geoid declarations> --from <reference> --at <lon,lat>[;…]
         // [--store <sources/fetched/>]: the offsets the elevation step adds to heights in the
@@ -3815,7 +3826,7 @@ fn heritage_epoch(out: &Out, date: &str, cache: &Path, scratch: &Path) -> Result
 }
 
 /// A stand-in root laid out as the repository for the heritage scripts: `dem/` the app's
-/// scripts and their Python project, `data/heritage` this pass's working copy of the chain's
+/// scripts (run in its lock file's environment, pipeline::pyenv),`data/heritage` this pass's working copy of the chain's
 /// answers (`epoch`; an empty folder for heritage.py, which fetches nothing).
 fn heritage_root(scratch: &Path, dem: &Path, epoch: Option<&Path>) -> Result<PathBuf> {
     let _p = phase("the scripts' stand-in root made", Class::Disk);
@@ -3826,9 +3837,7 @@ fn heritage_root(scratch: &Path, dem: &Path, epoch: Option<&Path>) -> Result<Pat
     }
     for e in std::fs::read_dir(dem)?.flatten() {
         let n = e.file_name().to_string_lossy().into_owned();
-        if e.path().is_file()
-            && (n.ends_with(".py") || n == "pyproject.toml" || n == "uv.lock" || n == ".python-version")
-        {
+        if e.path().is_file() && n.ends_with(".py") {
             store::sys::copy_data(e.path(), root.join("dem").join(&n))?;
         }
     }
@@ -3839,16 +3848,12 @@ fn heritage_root(scratch: &Path, dem: &Path, epoch: Option<&Path>) -> Result<Pat
     Ok(root)
 }
 
-/// Runs one of the heritage scripts in a stand-in root, in the Python environment of the app's `dem`
-/// (`dem/.venv`, which uv makes from the app's lock file the first time a step runs on a Mac, as
-/// for every other Python step; the lock file as is).
+/// Runs one of the heritage scripts in a stand-in root, in the Python environment of the app's
+/// lock file (pipeline::pyenv: shared by the versions with that lock, made if it's missing).
 fn heritage_script(root: &Path, dem: &Path, script: &str, args: &[&str]) -> Result<()> {
     let t = std::time::Instant::now();
-    let mut c = store::spawn::command("uv");
-    c.current_dir(root.join("dem"))
-        .env("UV_PROJECT_ENVIRONMENT", dem.join(".venv"))
-        .args(["run", "--frozen", "python", script])
-        .args(args);
+    let mut c = store::spawn::command(pipeline::pyenv::python(dem)?);
+    c.current_dir(root.join("dem")).arg(script).args(args);
     // (Its phase, its own phases under it: dem/timings.py.)
     let _p = phase(script, Class::Mixed);
     pipeline::timings::child(&mut c);
