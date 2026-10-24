@@ -749,7 +749,7 @@ function pagesCard(m) {
 // a clear veil under it takes every click and scroll behind it, a click on it only letting the
 // card go; the card itself scrolls and stays live. Escape or the close button let it go too.
 const cards = new Map();
-const pin = { key: null, el: null, also: "", veil: null };
+const pin = { key: null, el: null, also: "", veil: null, x: 0, y: 0 };
 let hoverCard = null;
 // `el`'s card: `build(also)` its rows (made when shown; `also`: what else is under the point, the
 // element's `data-also`, as the world map says it), `key` naming it across renders.
@@ -807,6 +807,8 @@ function pinCard(key, x, y, also = "") {
   const close = h("button", { class: "quiet x", title: "Close (Esc)", "aria-label": "Close", onclick: unpin }, "×");
   pin.key = key;
   pin.also = also;
+  pin.x = x;
+  pin.y = y;
   pin.el = h("div", { class: "card-tip pinned", role: "dialog", "aria-modal": "true" }, close, h("div", "cb", cards.get(key)(also)));
   // (The veil: a click on it lets the card go and nothing else; a wheel or a touch's drag there
   // moves nothing. The page under it can't scroll while the card is up.)
@@ -837,6 +839,7 @@ function refreshPin() {
   const body = pin.el.querySelector(".cb");
   if (build) body.replaceChildren(...build(pin.also));
   else if (!pin.el.classList.contains("gone")) { pin.el.classList.add("gone"); body.append(h("div", "dim small", "No longer shown (the schedule moved on).")); }
+  placeCard(pin.el, pin.x, pin.y); // (new words, new height: still off the pointer's line)
 }
 let cardsWired = false;
 function wireCards() {
