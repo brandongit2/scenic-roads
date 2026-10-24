@@ -1117,7 +1117,9 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   forecast's thread before `placed` is dropped): `{at, mac, steps: {step: [[z/x/y, s from at]…]},
   macs}`, each tile once a step at its first start, targets naming no tile left out; a Mac named
   by its host or the host's part before a "-". Another Mac's port answers 503 (it made no
-  forecast) and the page asks the lead's addresses. Asked only while the map's "Show only for"
+  forecast), or a former lead's its last, older one: the page takes its own Mac's answer only
+  when its `at` is the status's forecast's, else asks the lead's addresses; a lead change drops
+  the old answer at once and asks the new lead. Asked only while the map's "Show only for"
   names a member, once a forecast; never in the 10-second poll. Measured on the 24 Oct forecast
   (3,618 targets placed, 3,615 tiles): the Mac mini's answer 52 KB (14 KB gzipped, 3,053 tiles),
   the M4's 10 KB; held by the agent: ~150 KB.

@@ -43,6 +43,7 @@ const TOCOME = arg("--tocome", null);
 const MEMBER = arg("--member", null);
 const WIDTH = +arg("--width", 390);
 const PHONE = WIDTH < 768;
+const NARROW = WIDTH < 720; // dash.css's phone layout (max-width: 719px): stacked, wrapping
 const SCHEME = arg("--scheme", null);
 const ONLY_CATS = process.argv.includes("--only-catalogues");
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".webmanifest": "application/manifest+json", ".svg": "image/svg+xml" };
@@ -53,7 +54,7 @@ function serve() {
     if (call && call in READS) {
       let body = "";
       req.on("data", (c) => (body += c));
-      req.on("end", () => {
+      req.on("end", async () => {
         let v;
         try { v = JSON.parse(body); } catch { v = null; }
         if (req.method !== "POST" || !v || typeof v !== "object" || Array.isArray(v) || Object.keys(v).some((k) => !READS[call].includes(k))) {
@@ -67,11 +68,15 @@ function serve() {
           return res.end(JSON.stringify(a));
         }
         if (call === "tocome" && TOCOME) {
-          // (As forecast::ToCome::answer: the Mac named, or the one its name starts with before a "-".)
+          // (As forecast::ToCome::answer: the Mac named, or the one its name starts with before a "-";
+          // its `at` the agent's forecast's, as the page takes this Mac's answer only for the forecast
+          // its status shows (else asks the lead), the offsets kept from FILE's own `at`.)
           const a = JSON.parse(readFileSync(TOCOME, "utf8"));
           const mac = String(v.mac || ""), hit = Object.keys(a.macs).find((k) => k === mac) || Object.keys(a.macs).find((k) => mac.startsWith(`${k}-`));
+          const at = await fetch(`http://${AGENT.host}:${AGENT.port}/work/swarm`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()).then((w) => w.agent?.forecast?.at ?? a.at, () => a.at);
+          const steps = hit ? Object.fromEntries(Object.entries(a.macs[hit]).map(([k, ts]) => [k, ts.map(([t, s]) => [t, Math.max(0, s + a.at - at)])])) : {};
           res.writeHead(200, { "Content-Type": "application/json" });
-          return res.end(JSON.stringify({ at: a.at, mac: hit || mac, steps: hit ? a.macs[hit] : {}, macs: Object.keys(a.macs) }));
+          return res.end(JSON.stringify({ at, mac: hit || mac, steps, macs: Object.keys(a.macs) }));
         }
         const out = JSON.stringify(v);
         const fw = request({ ...AGENT, method: "POST", path: url.pathname, headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(out) } }, (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); });
@@ -230,7 +235,9 @@ async function run() {
       await shot("chrome-member");
       // (A spot whose stack has a tile to come, tapped (a click on a desktop): its pinned card says
       // when and on which Mac. The spots found as a mouse names their stacks in data-also.)
-      const spots = await js(`(() => { const c = [...document.querySelectorAll("canvas.wmap")].find((e) => e.getClientRects().length); c.scrollIntoView({ block: "center" }); const r = c.getBoundingClientRect(); const out = [], seen = new Set(); for (let i = 1; i < 60 && out.length < 40; i++) for (let j = 1; j < 40 && out.length < 40; j++) { const x = r.left + r.width * i / 60, y = r.top + r.height * j / 40; if (document.elementFromPoint(x, y) !== c) continue; c.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, pointerType: "mouse", bubbles: true })); const also = c.dataset.also; if (also && also.includes("mt ") && !seen.has(also)) { seen.add(also); out.push([x, y]); } } c.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" })); return out; })()`);
+      // (With --tocome, only spots holding one of FILE's tiles for the member: those its card names.)
+      const want = TOCOME ? (() => { const a = JSON.parse(readFileSync(TOCOME, "utf8")), hit = Object.keys(a.macs).find((k) => k === MEMBER || MEMBER.startsWith(`${k}-`)); return hit ? Object.entries(a.macs[hit]).flatMap(([st, ts]) => ts.map(([t]) => `mt ${st} ${t}`)) : []; })() : [];
+      const spots = await js(`(() => { const want = ${JSON.stringify(want)}, c = [...document.querySelectorAll("canvas.wmap")].find((e) => e.getClientRects().length); c.scrollIntoView({ block: "center" }); const r = c.getBoundingClientRect(); const out = [], seen = new Set(); for (let i = 1; i < 60 && out.length < 40; i++) for (let j = 1; j < 40 && out.length < 40; j++) { const x = r.left + r.width * i / 60, y = r.top + r.height * j / 40; if (document.elementFromPoint(x, y) !== c) continue; c.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, pointerType: "mouse", bubbles: true })); const also = c.dataset.also; if (also && (want.length ? want.some((k) => also.includes(k)) : also.includes("mt ")) && !seen.has(also)) { seen.add(also); out.push([x, y]); } } c.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" })); return out; })()`);
       let said = null;
       for (const [x, y] of spots) {
         if (PHONE) await tap(x, y);
@@ -256,9 +263,10 @@ async function run() {
       await show(tab);
       const wide = await js(`(() => { const w = document.documentElement.clientWidth; const over = [...document.querySelectorAll(".panel:not([hidden]) *, header *")].filter((e) => { const r = e.getBoundingClientRect(); return r.width && r.right > w + 1 && !e.closest(".twrap, [style*='overflow']"); }).slice(0, 4).map((e) => e.tagName.toLowerCase() + (e.className && typeof e.className === "string" ? "." + e.className.split(" ").join(".") : "") + " →" + Math.round(e.getBoundingClientRect().right)); return [document.scrollingElement.scrollWidth, w, over]; })()`);
       check(`${tab}: no horizontal scroll`, wide[0] <= wide[1], wide[0] > wide[1] ? `page ${wide[0]} px wide in ${wide[1]}; past the edge: ${wide[2].join(", ")}` : "");
-      // (No text cut off: a text element wider inside than its box, whatever hides the rest.)
-      const cut = await js(`(() => [...document.querySelectorAll(".panel:not([hidden]) *, header *")].filter((e) => e.scrollWidth > e.clientWidth + 1 && e.clientWidth && e.textContent.trim() && getComputedStyle(e).overflowX !== "visible" && getComputedStyle(e).overflowX !== "auto" && getComputedStyle(e).overflowX !== "scroll" && ![...e.childNodes].every((n) => n.nodeType === 1 && n.tagName !== "SPAN" && n.tagName !== "B" && n.tagName !== "I" && n.tagName !== "SMALL") && ![...e.childNodes].some((n) => n.nodeType === 1 && n.tagName === "CANVAS") ).slice(0, 6).map((e) => e.tagName.toLowerCase() + "." + String(e.className).split(" ").join(".") + " “" + e.textContent.trim().slice(0, 40) + "” " + e.scrollWidth + ">" + e.clientWidth))()`);
-      check(`${tab}: no text cut off`, !cut.length, cut.join("; "));
+      // (No text cut off below 720 px, where the page wraps what won't fit (dash.css, #617); a
+      // desktop keeps labels on one line, ellipsis and all, as the owner asked: not checked there.)
+      const cut = NARROW ? await js(`(() => [...document.querySelectorAll(".panel:not([hidden]) *, header *")].filter((e) => e.scrollWidth > e.clientWidth + 1 && e.clientWidth && e.textContent.trim() && getComputedStyle(e).overflowX !== "visible" && getComputedStyle(e).overflowX !== "auto" && getComputedStyle(e).overflowX !== "scroll" && ![...e.childNodes].every((n) => n.nodeType === 1 && n.tagName !== "SPAN" && n.tagName !== "B" && n.tagName !== "I" && n.tagName !== "SMALL") && ![...e.childNodes].some((n) => n.nodeType === 1 && n.tagName === "CANVAS") ).slice(0, 6).map((e) => e.tagName.toLowerCase() + "." + String(e.className).split(" ").join(".") + " “" + e.textContent.trim().slice(0, 40) + "” " + e.scrollWidth + ">" + e.clientWidth))()`) : [];
+      if (NARROW) check(`${tab}: no text cut off`, !cut.length, cut.join("; "));
       // (Regions: the list's rows have one fixed height, so every row's text must fit it: walked through the whole list.)
       if (tab === "regions") {
         const tall = await js(`(async () => { const R = document.querySelector(".rrow")?.parentElement; if (!R) return []; const L = R.parentElement, out = new Set(); for (let t = 0; t <= R.offsetHeight; t += 400) { L.scrollTop = t; L.dispatchEvent(new Event("scroll")); await new Promise((r) => setTimeout(r, 20)); for (const e of R.children) if (e.scrollHeight > e.clientHeight + 1) out.add(e.querySelector(".nm")?.textContent + " " + e.scrollHeight + ">" + e.clientHeight); } L.scrollTop = 0; return [...out].slice(0, 4); })()`);
@@ -403,7 +411,7 @@ async function run() {
 
     // The Regions split: stacked at phone width (no bar); dragged at a touch tablet's (900 px).
     await show("regions");
-    check("regions: no split bar at phone width (stacked)", !(await at(".rsplit")));
+    if (NARROW) check("regions: no split bar at phone width (stacked)", !(await at(".rsplit")));
     await page.send("Emulation.setDeviceMetricsOverride", { width: 900, height: 1180, deviceScaleFactor: 2, mobile: true });
     await sleep(600);
     const s = await at(".rsplit");

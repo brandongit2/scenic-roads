@@ -369,17 +369,19 @@ function setMapFilter(k, v) { mapFilters()[k] = v; ctx.store.set("mapFilters", m
 // The tiles the lead's last forecast places on a pool member later (#622: `/work/tocome`, the
 // forecast's lanes name none), asked only while a member is chosen in the map's filter: once a
 // member, again as the forecast is made anew (the status's `fc.at`). This Mac's agent answers when
-// it made the forecast (the lead's); else the lead's own, at its addresses.
-let toCome = { key: "", member: "", ans: null, asking: false, st: {} };
+// it made the forecast the status shows (the lead's: a Mac that led before keeps its last, older
+// one); else the lead's own, at its addresses. A lead change drops the old lead's answer at once.
+let toCome = { key: "", member: "", lead: "", ans: null, asking: false, st: {} };
 function askToCome(m, member) {
-  const key = `${member}@${m.fc?.at ?? ""}`;
+  const key = `${member}@${m.a.host}@${m.fc?.at ?? ""}`;
+  if (toCome.lead !== m.a.host) toCome = { ...toCome, lead: m.a.host, ans: null, st: {} };
   if (!member || toCome.key === key || toCome.asking) return;
   toCome.asking = true;
   const body = { mac: member };
   const lead = (last?.macs || []).find((x) => x.host === m.a.host);
-  ctx.call("/work/tocome", body).then(([code, v]) => (code === 200 && v ? v : lead ? remote(lead, toCome.st, body, "/work/tocome") : null))
+  ctx.call("/work/tocome", body).then(([code, v]) => (code === 200 && v && v.at === m.fc?.at ? v : lead ? remote(lead, toCome.st, body, "/work/tocome") : null))
     .catch(() => null)
-    .then((v) => { toCome = { ...toCome, key, member, ans: v, asking: false }; render(); });
+    .then((v) => { toCome = { ...toCome, key, member, ans: toCome.lead === m.a.host ? v : null, asking: false }; render(); });
 }
 // A member's tiles to come as the map draws them ("<step> z/x/y" → {step, at, mac, state}), kept
 // as the other tiles are (the stages unchecked, the tile areas) and none already running or done.
