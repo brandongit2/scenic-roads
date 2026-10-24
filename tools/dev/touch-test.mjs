@@ -168,6 +168,9 @@ async function run() {
         await sleep(400);
         const lit = await js(`[document.querySelector(".panel:not([hidden]) .cat-tl g.mk.on")?.dataset.n, !document.querySelector(".cat-tip").hidden, document.querySelector(".cat-tip").textContent]`);
         check("catalogues: a mark hovered lights its tiles", lit[0] === mk[2] && lit[1] && (await pix()) !== p0, `${lit[2]}`);
+        // (Its tip under the timeline, off the legend and the timeline's marks above it.)
+        const over = await js(`(() => { const t = document.querySelector(".cat-tip").getBoundingClientRect(); const hit = (s) => { const r = document.querySelector(".panel:not([hidden]) " + s).getBoundingClientRect(); return t.left < r.right && r.left < t.right && t.top < r.bottom && r.top < t.bottom; }; return [hit(".cat-legend"), hit(".cat-tl")]; })()`);
+        check("catalogues: the hover tip covers neither the legend nor the timeline", !over[0] && !over[1], `legend ${over[0]}, timeline ${over[1]}`);
         // (The page whole, the pointer held on the mark: a screenshot past the viewport would
         // move it.)
         const { data } = await page.send("Page.captureScreenshot", { format: "png" });
