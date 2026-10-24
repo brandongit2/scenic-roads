@@ -864,6 +864,18 @@ function runCard(m, r, kind, laneName) {
 // what the lead publishes, never typed in.)
 const phaseRows = () => [];
 
+// What keeps a Mac's lanes from the work, beside its name over them (task #628), as the Machines
+// tab's chips: paused alone (task #224; the forecast gives it no lanes, its past jobs still show),
+// out of touch, on battery.
+function laneChips(x) {
+  const st = x.status, c = st.conditions || {};
+  return [
+    st.held && chip(jobsOf(st).length ? "pausing" : "paused", "warn", `Paused alone, from ${st.held.by}: it takes no new work; the other Macs go on`),
+    !x.fresh && chip("out of touch", "bad", `Last heard from ${clock(st.beat)}`),
+    c.ac === false && chip(`on battery${c.battery != null ? ` ${c.battery}%` : ""}`, c.battery != null && c.battery < 40 ? "warn" : ""),
+  ].filter(Boolean);
+}
+
 // Each Mac's lanes, grouped by Mac (its short name over its slots' lanes, the lead first): the jobs
 // it ran (the history's ends, as far back as the past chosen), those running now (to the now line)
 // and the forecast's to come, each a segment in its stage's colour, packed where a pixel holds
@@ -897,7 +909,7 @@ function schedule(m) {
   };
   for (const g of groups) {
     const mac = m.macs.find((mm) => mm.name === g.host);
-    lanes.append(h("div", { class: "gh", title: g.host }, mac ? short[g.host] : g.host, mac ? null : h("span", "dim", " (gone)")), h("div", "ghr"));
+    lanes.append(h("div", { class: "gh", title: g.host }, mac ? short[g.host] : g.host, mac ? null : h("span", "dim", " (gone)")), h("div", "ghr", ...(mac ? laneChips(mac) : [])));
     for (const nm of g.lanes) {
       const track = h("div", "track");
       for (const r of packRuns(pastAll.filter((r) => r.lane === nm), gap)) segment(track, r, "past", `p ${nm} ${r.seq}`);

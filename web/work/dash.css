@@ -168,7 +168,7 @@ select.past { margin-left: 4px; background: var(--bg); color: var(--text); borde
 .sched .lanes { display: grid; grid-template-columns: var(--lw) minmax(0, 1fr); gap: 2px 8px; align-items: center; }
 @media (max-width: 719px) { .sched { --lw: 56px; } }
 .sched .gh { font-size: 11px; font-weight: 600; padding-top: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sched .ghr { border-bottom: 1px solid var(--row-line); align-self: end; }
+.sched .ghr { border-bottom: 1px solid var(--row-line); align-self: end; display: flex; gap: 4px; padding-bottom: 2px; min-height: 1px; }
 .sched .ln { font-size: 10.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
 .sched .track { position: relative; height: 13px; background: var(--bg); border-radius: 2px; overflow: hidden; }
 .sched .track > i { position: absolute; top: 1px; bottom: 1px; min-width: 2px; cursor: pointer; }

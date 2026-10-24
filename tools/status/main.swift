@@ -610,7 +610,7 @@ struct Built: Decodable {
 }
 
 enum Kind {
-    case unknown, outOfTouch, building, paused, waiting, idle, problem
+    case unknown, outOfTouch, building, paused, pausedHere, waiting, idle, problem
 
     var symbol: String {
         switch self {
@@ -618,6 +618,8 @@ enum Kind {
         case .outOfTouch: return "moon.zzz"
         case .building: return "gearshape.fill"
         case .paused: return "pause.circle"
+        // (This Mac paused alone, `scenic pause --here`: filled, the whole build's outlined.)
+        case .pausedHere: return "pause.circle.fill"
         case .waiting: return "circle.dotted"
         case .idle: return "checkmark.circle"
         case .problem: return "exclamationmark.triangle"
@@ -700,6 +702,8 @@ func classify(_ r: Reply?) -> (Kind, String) {
 /// why and what to do (docs/pool.md §10).
 func state(_ r: Reply?, own: Own?) -> (Kind, String) {
     let now = r?.now ?? Int(Date().timeIntervalSince1970)
+    // (This Mac paused alone, task #224: what this Mac does, whatever the pool's state; #628.)
+    if r?.held_here != nil { return (.pausedHere, "This Mac is paused; the other Macs go on") }
     if let o = own, now - o.beat <= outOfTouch, let a = o.pool?.lead?.alert { return (.problem, a) }
     return classify(r)
 }
@@ -741,6 +745,21 @@ func progressText(_ p: JobProgress, paused: Bool, now: Int) -> String {
     if let e = p.eta_s, !paused { t += " · about \(duration(e)) left" }
     if let m = p.moved_at, !paused, now - m >= 15 * 60 { t += " · no further for \(duration(now - m))" }
     return t
+}
+
+/// The menu's items for this Mac paused alone (`scenic pause --here`, task #224): the ask while the
+/// agent hasn't taken it up, then who paused it and Resume This Mac, else Pause This Mac. `held`:
+/// what pressing it asks (pause: true, resume: false), nil for a line only.
+func holdItems(_ r: Reply?) -> [(title: String, held: Bool?, tip: String)] {
+    var out: [(title: String, held: Bool?, tip: String)] = []
+    if r?.hold_asked == true { out.append(("Asked… (this Mac's agent takes it up within seconds)", nil, "")) }
+    if let h = r?.held_here {
+        out.append(("Paused since \(clock(h.at)) (from \(clip(h.by, 40)))", nil, ""))
+        out.append(("Resume This Mac", false, "This Mac takes work again, as `scenic resume --here` does"))
+    } else {
+        out.append(("Pause This Mac", true, "Only this Mac: its jobs stop at their next safe point and are given back, it takes no new work and hands the lead away if it leads; the other Macs go on building"))
+    }
+    return out
 }
 
 /// The menu's lines for an answer, under the state's line (and this Mac's caches, from its agent's
@@ -1933,22 +1952,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // This Mac alone paused, or going on (`scenic pause --here`, task #224): its jobs stop at
         // their next safe point and are given back, it takes no new work and hands the lead away;
         // the rest of the pool goes on.
-        if reply?.hold_asked == true {
-            let it = NSMenuItem(title: "Asked… (this Mac's agent takes it up within seconds)", action: nil, keyEquivalent: "")
-            it.isEnabled = false
-            m.addItem(it)
-        }
-        if let h = reply?.held_here {
-            let info = NSMenuItem(title: "This Mac is paused since \(clock(h.at)) (from \(clip(h.by, 40)))", action: nil, keyEquivalent: "")
-            info.isEnabled = false
-            m.addItem(info)
-            let it = NSMenuItem(title: "Resume This Mac", action: #selector(resumeHere), keyEquivalent: "")
+        for h in holdItems(reply) {
+            let it = NSMenuItem(title: h.title, action: h.held.map { $0 ? #selector(pauseHere) : #selector(resumeHere) }, keyEquivalent: "")
             it.target = self
-            m.addItem(it)
-        } else {
-            let it = NSMenuItem(title: "Pause This Mac", action: #selector(pauseHere), keyEquivalent: "")
-            it.target = self
-            it.toolTip = "Only this Mac: its jobs stop at their next safe point and are given back, it takes no new work and hands the lead away if it leads; the other Macs go on building"
+            it.isEnabled = h.held != nil
+            if !h.tip.isEmpty { it.toolTip = h.tip }
             m.addItem(it)
         }
         // A running job of this Mac's cancelled (`scenic job cancel`, crates/pipeline/src/control.rs
@@ -2566,6 +2574,7 @@ if let i = args.firstIndex(of: "--reopen") {
         let bar = l.style == .bar ? "[" + String(repeating: "█", count: Int(l.fraction * 20)) + String(repeating: "░", count: 20 - Int(l.fraction * 20)) + "] " : ""
         print(l.style == .separator ? "────" : (l.style == .title ? "" : "  ") + bar + l.text)
     }
+    for h in holdItems(r) { print("item: \(h.title)\(h.held == nil ? " (disabled)" : "")") }
     if let c = cachesItem(own, now: Int(Date().timeIntervalSince1970), asked: clearAsked()) {
         print("item: \(c.title)\(c.enabled || c.tip.isEmpty ? "" : " (disabled: \(c.tip))")")
     }
@@ -2582,7 +2591,7 @@ if let i = args.firstIndex(of: "--reopen") {
         }
     }
 } else if let i = args.firstIndex(of: "--render") {
-    // The menu's information lines as views, stacked as the menu stacks them, drawn into a PNG.
+    // The menu bar's icon and the menu's lines as views, stacked as the menu stacks them, drawn into a PNG.
     let done = DispatchSemaphore(value: 0)
     var r: Reply?
     URLSession.shared.dataTask(with: server.appendingPathComponent("api/build")) { data, _, _ in
@@ -2591,17 +2600,20 @@ if let i = args.firstIndex(of: "--reopen") {
     }.resume()
     done.wait()
     _ = NSApplication.shared
-    let d = AppDelegate()
-    d.reply = r
     let (kind, line) = state(r, own: ownStatus())
-    let views: [NSView] = lines(r, line, own: ownStatus()).map { l in
+    // (The menu bar's icon first, as the bar draws it: a template image, light on the dark bar.)
+    let bar = NSImageView(frame: NSRect(x: 0, y: 0, width: LineView.width, height: 24))
+    bar.image = iconImage(kind, held: !heldInputs(r).isEmpty, line: line)
+    bar.contentTintColor = .white
+    bar.imageAlignment = .alignLeft
+    let views: [NSView] = [bar] + lines(r, line, own: ownStatus()).map { l in
         l.style == .separator ? NSView(frame: NSRect(x: 0, y: 0, width: LineView.width, height: 11)) : l.style == .bar ? BarView(l.text, fraction: l.fraction) : LineView(l.text, font: fontFor(l.style).0, color: fontFor(l.style).1, wrapAnywhere: l.style == .mono)
     } + (ownStatus()?.pool.flatMap { p in p.lead.map { leadItems($0, me: p.member) } } ?? []).flatMap { li in
         [LineView(li.title + (li.children.isEmpty ? "" : "  ▸"), font: .menuFont(ofSize: 0), color: li.enabled ? .labelColor : .tertiaryLabelColor, wrapAnywhere: false)]
             + li.children.map { c in LineView("      \(c.title)\(c.enabled ? "" : " — \(c.tip)")", font: .menuFont(ofSize: NSFont.smallSystemFontSize), color: c.enabled ? .labelColor : .tertiaryLabelColor, wrapAnywhere: false) }
-    } + (r?.log != nil ? ["Open the Build Log"] : []).map { LineView($0, font: .menuFont(ofSize: 0), color: .labelColor, wrapAnywhere: false) }
+    } + holdItems(r).map { hi in LineView(hi.title, font: .menuFont(ofSize: 0), color: hi.held != nil ? .labelColor : .tertiaryLabelColor, wrapAnywhere: false) }
+        + (r?.log != nil ? ["Open the Build Log"] : []).map { LineView($0, font: .menuFont(ofSize: 0), color: .labelColor, wrapAnywhere: false) }
         + [LineView("Open the Map", font: .menuFont(ofSize: 0), color: .labelColor, wrapAnywhere: false)]
-    _ = (d, kind)
     let height = views.reduce(CGFloat(0)) { $0 + $1.frame.height } + 16
     let canvas = NSView(frame: NSRect(x: 0, y: 0, width: LineView.width, height: height))
     canvas.appearance = NSAppearance(named: .darkAqua)

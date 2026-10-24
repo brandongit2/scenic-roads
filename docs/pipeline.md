@@ -214,7 +214,10 @@ boxes).
   Safari, two fingers on a touch screen), a double click, its +/− and whole-map buttons or the
   keyboard; a two-finger scroll moves it only once zoomed in. Jobs with no tile (a worldwide step's) are named under it. Drawn only when something it shows changes; a theme change redraws it and the minimaps shown.
 - **Jobs tab, the schedule:** lanes grouped by Mac (its short name over a lane per slot, the lead
-  first, a Mac gone after), each segment in its stage's colour (a `--st-<stage>` token in
+  first, a Mac gone after; beside the name the Machines tab's chips for what keeps it from work:
+  paused or pausing (paused alone, `scenic pause --here`: the forecast gives it no lanes, the
+  lead's own too while it still leads; its jobs from before the pause still show), out of touch,
+  on battery), each segment in its stage's colour (a `--st-<stage>` token in
   index.html, a hue each in either theme): the jobs that ran (the history's job ends: a lead's
   `end` on its slot's lane, a worker's leased `done` or `fail`, which names no slot, on its Mac's
   first lane free by then; back as far as the Show past jobs choice: none, the past 1, 2, 6, 24,

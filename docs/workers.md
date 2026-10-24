@@ -139,7 +139,10 @@ Common rules:
 ## 7. The web worker
 
 - **The page** at `/work/` (also the menu bar's panel, on this Mac's own agent's port, and
-  `scenic status`'s "Build page") shows the build to anyone the Mac answers, with no key: in the
+  `scenic status`'s "Build page"; the menu bar's icon is a filled pause sign while this Mac is
+  paused alone, its menu saying so with Resume This Mac, the same ask file as `scenic resume
+  --here` (`hold-request.json`); the Jobs tab's schedule chips a paused, out-of-touch or
+  on-battery Mac's lanes) shows the build to anyone the Mac answers, with no key: in the
   pool every Mac's agent serves it, the same, from its own read of the build's state (docs/pool.md
   §10; a Mac with neither a coordinator nor a broker from a viewer that answers nothing else). A
   device helps only when its owner turns on "Help with this tab". A page on any device the Mac

@@ -8066,6 +8066,11 @@ impl Agent {
                 });
             }
         }
+        // (This Mac paused alone while it still leads (task #628): no lanes of its own either; it
+        // grants itself nothing new until it's resumed, task #224.)
+        if self.hold.held.is_some() {
+            machines.retain(|m| m.mac.as_deref() != Some(self.host.as_str()));
+        }
         // (Each Mac held to what held it back over the last day: its lanes and their pace.)
         let held = forecast::held_back(&events, now_s());
         let machines = forecast::hold_back(machines, &held);
@@ -17454,6 +17459,26 @@ mod pool_tests {
         let back = forecast::Record::from_bytes(&b).unwrap();
         assert!(!back.input.machines.is_empty());
         assert_eq!(back.forecast(), fc);
+    }
+
+    #[test]
+    fn the_forecast_gives_a_lead_paused_alone_no_lanes() {
+        // (Task #628: a lead paused alone grants itself nothing new, so none of its lanes show work.)
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        let mut a = agent_dry(&r, &d.path().join("home"));
+        a.hold.held = Some(crate::control::Hold::new("scenic pause --here"));
+        std::fs::create_dir_all(r.join("state/helpers")).unwrap();
+        let st = Status { host: "busy-mac".into(), beat: now_s(), ..Default::default() };
+        std::fs::write(r.join("state/helpers/busy-mac.json"), serde_json::to_vec(&st).unwrap()).unwrap();
+        let work: Vec<build::Work> = (0..40)
+            .map(|i| build::Work { step: "bldtiles".into(), targets: vec![(format!("6/{i}/1"), "k".into())] })
+            .collect();
+        let rec = a.forecast_record(&r, &[], &[], &work, Default::default(), None, &|_, _| 0);
+        assert!(rec.input.machines.iter().all(|m| m.mac.as_deref() != Some(a.host.as_str())));
+        let fc = rec.forecast();
+        let named = |h: &str| fc.lanes.keys().chain(fc.next.keys()).any(|k| is_slot_of(k, h));
+        assert!(named("busy-mac") && !named(&a.host), "{:?}", fc.lanes.keys().collect::<Vec<_>>());
     }
 
     #[test]
