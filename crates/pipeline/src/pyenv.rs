@@ -74,7 +74,11 @@ pub fn ensure_in(root: &Path, dem: &Path) -> Result<PathBuf> {
             std::fs::remove_dir_all(&tmp).ok();
             anyhow::bail!("uv sync for {} failed: {st}", dem.display());
         }
-        // (Another making's rename got there first: its copy is the same lock's, ours dropped.)
+        // (Another making's rename got there first: its copy is the same lock's, ours dropped. A
+        // folder there without bin/python is a removal stopped partway: ours replaces it.)
+        if env.exists() && !env.join("bin/python").exists() {
+            std::fs::remove_dir_all(&env).ok();
+        }
         if std::fs::rename(&tmp, &env).is_ok() {
             eprintln!("python environment {k} made for {}", dem.display());
         } else {

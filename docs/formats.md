@@ -547,8 +547,9 @@ run/<name>              what the launcher runs, one argument per line: server, a
                         Scenic.app when it opens)
 agent/quit-request.json Scenic's ask to quit (control::Quit: finish or now), until the agent exits
 app/<version>/          server, scenic, scenic-build, extract, tile, scenic-metrics, dem/, Scenic.app,
-                        web/, fonts/ (app/current → the one in use); dem/.venv made by uv from
-                        dem/uv.lock on first use
+                        web/, fonts/ (app/current → the one in use)
+pyenv/<key>/            the Python steps' environment of a lock file (dem/uv.lock + .python-version),
+                        shared by the versions with it (pipeline::pyenv); .used: its last use
 app/current.json, previous.json   {version, files, sha256}
 mirror/<content name>   downloads, named as on the NAS (docs/macs.md, Mirror; .partial/: in progress)
 mirror/.basemap/<hash16>/  the basemap's pieces (store::pieces): lo.pmtiles (zooms 0–10),
