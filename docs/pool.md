@@ -736,7 +736,10 @@ holds the job's slot, so it names nothing: the lease counts by its measures unti
   never looks at them on the NAS. Entries from before carry none.
 - **Lease order holds:** an older lease's entry for targets a newer one set changes nothing.
 - **The journal is a log:** nothing is removed on merge. Its days over a week old are removed by
-  the lead's daily `gc` job (`crate::pool::journal_gc`, task #644), off its loop, once its records
+  the lead's daily `gc` job (`crate::pool::journal_gc`, task #644) **only while the owner's switch
+  is on**: `state/pool/journal-gc` in the project folder saying `on` (`journal_gc::SWITCH`; missing,
+  unreadable or anything else: off, the default, nothing marked or removed; a marker already
+  written stays and still fences take-ups). Switched on, off its loop, once its records
   are re-asserted and caught up, in two runs at least `WAIT_S` (12 h) apart:
   1. **Mark:** once the last GC's entries are forgotten, `state/journal/gc.json` is written whole,
      naming every entry of the days before `KEEP_DAYS` (7) ago, up to the first day holding one
@@ -751,7 +754,9 @@ holds the job's slot, so it names nothing: the lease counts by its measures unti
      (`Records::forget`), its horizon the marker's: told of one again, it answers it as merged.
   **Why it's safe.** A take-up starts from the newest snapshot its reads find, which a stale read
   can make an older one, and replays what the journal holds that its records don't name: an entry
-  removed is replayed no more. So `records::start` refuses (tried again shortly) records that
+  removed is replayed no more. A lead told of an entry of a forgotten day that a read finds missing
+  answers it as merged only when the marker names it or it's before the marker's floor; else it
+  waits (one written late and read stale would be lost). So `records::start` refuses (tried again shortly) records that
   don't name or forget every entry the marker names, or haven't its floor; the wait lets every
   Mac's reads see the marker before a file goes; `agent::gc::unmerged` refuses such records too,
   removing nothing. An entry written into a removed day later (its member asleep with it unwritten)

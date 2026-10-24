@@ -330,8 +330,9 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
             Err(e) => rep.warnings.push(format!("history not archived: {e:#}")),
         }
         // The pool's journal's old days (task #644); a failure is said, never fails GC.
-        if !dry_run && root.join(crate::pool::journal::DIR).exists() {
-            let nas = crate::pool::nas::Share::new(root);
+        // Off unless the owner's switch says on (journal_gc::SWITCH): it deletes on the NAS.
+        let nas = crate::pool::nas::Share::new(root);
+        if !dry_run && root.join(crate::pool::journal::DIR).exists() && crate::pool::journal_gc::enabled(&nas) {
             let rmdir = |d: &str| {
                 std::fs::remove_dir(root.join(d)).ok();
             };
@@ -1192,7 +1193,7 @@ mod tests {
         rec.rejected.insert(damaged_key, "damaged".into());
         rec.save(&nas).unwrap();
         let r = run(root, 14, false).unwrap();
-        // (The journal's GC marks the old entries, refused or merged: its own note, said.)
+        // (The journal's GC is off: its switch, journal_gc::SWITCH, not set.)
         assert!(r.removed == 1 && r.warnings.iter().all(|w| w.starts_with("journal: marked")), "{r:?}");
         // No term led (its term not readable whole): no one refuses. An entry unreadable from today
         // still fails GC; one whose day is over `PASS_OVER_S` past (ten days here, the days far

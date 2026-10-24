@@ -4247,4 +4247,57 @@ mod tests {
         assert!(m.applied.is_empty() && m.waiting.is_empty(), "{m:?}");
         assert_eq!(r.keys.unit.len(), 2, "both jobs' records kept");
     }
+
+    #[test]
+    fn gc_resumes_after_a_crash_and_keeps_a_folder_a_late_entry_reached() {
+        // (Task #644 review) The remove phase stops midway (its process gone after one day): the
+        // next run removes the rest, never a file twice, and writes the marker done only then. A
+        // late entry written into a marked day keeps that day's folder; the switch reads off unless
+        // it says on.
+        use super::super::journal_gc;
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        assert!(!journal_gc::enabled(&ia));
+        mem.write_whole(journal_gc::SWITCH, b"on\n").unwrap();
+        assert!(journal_gc::enabled(&ia));
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        caught_up(&mut a, &ia, able());
+        let first = entry(A, 1, 1, "6-1-1");
+        caught_up(&mut a, &ia, Heard { entries: vec![first.clone()], ..able() });
+        ia.pass(86400);
+        let second = Entry { at: T0 + 86400, ..entry(A, 1, 2, "6-1-2") };
+        caught_up(&mut a, &ia, Heard { entries: vec![second.clone()], ..able() });
+        ia.pass(8 * 86400);
+        caught_up(&mut a, &ia, able());
+        assert_eq!(journal_gc::run(&ia, ia.now(), &|| {}, &|_| {}).unwrap().marked, 2);
+        let late = entry(C, 1, 9, "6-1-9");
+        let lk = journal::write(&mem, &late).unwrap();
+        assert_eq!(lk.split('/').next(), first.key().unwrap().split('/').next());
+        ia.pass(journal_gc::WAIT_S);
+        // A crash after the first day: `between` panics on the second.
+        let calls = std::cell::Cell::new(0);
+        let dirs = std::cell::RefCell::new(Vec::new());
+        let crash = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            journal_gc::run(
+                &ia,
+                ia.now(),
+                &|| {
+                    calls.set(calls.get() + 1);
+                    assert!(calls.get() < 2, "crash");
+                },
+                &|d| dirs.borrow_mut().push(d.to_string()),
+            )
+        }));
+        assert!(crash.is_err(), "{crash:?} {:?} {:?}", first.key(), second.key());
+        assert!(!mem.exists(&journal::path(&first.key().unwrap())).unwrap());
+        assert!(mem.exists(&journal::path(&second.key().unwrap())).unwrap());
+        assert!(dirs.borrow().is_empty(), "the day with a late entry keeps its folder");
+        assert!(!journal_gc::read(&ia).unwrap().unwrap().done);
+        let g = journal_gc::run(&ia, ia.now(), &|| {}, &|d| dirs.borrow_mut().push(d.to_string())).unwrap();
+        assert_eq!((g.removed, g.done, g.days), (1, true, 1), "{g:?}");
+        assert!(!mem.exists(&journal::path(&second.key().unwrap())).unwrap());
+        assert!(mem.exists(&journal::path(&lk)).unwrap(), "the late entry kept");
+        assert_eq!(dirs.borrow().len(), 1);
+    }
 }

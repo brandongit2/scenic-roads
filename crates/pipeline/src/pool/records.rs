@@ -344,6 +344,13 @@ pub fn merge_while(nas: &dyn Nas, r: &mut Records, keys: &[String], check: Check
     let mut read: BTreeMap<(LeaseId, String), Entry> = BTreeMap::new();
     let mut seen = BTreeSet::new();
     let mut stopped = false;
+    let marker = std::cell::OnceCell::new();
+    let removed = |k: &String| {
+        marker
+            .get_or_init(|| super::journal_gc::read(nas).ok().flatten())
+            .as_ref()
+            .is_some_and(|m: &super::journal_gc::Marker| m.removed(k))
+    };
     for k in keys {
         if r.handles(k) || !seen.insert(k.as_str()) {
             continue;
@@ -361,7 +368,9 @@ pub fn merge_while(nas: &dyn Nas, r: &mut Records, keys: &[String], check: Check
                 r.refuse(k, &why);
                 out.refused.push((k.clone(), why));
             }
-            Ok(journal::Read::Missing) if r.forgot(k) => out.forgotten.push(k.clone()),
+            // (Only one the journal's GC removed: one written late into a forgotten day and not
+            // seen yet, a stale read's, waits; acknowledged forgotten, it'd be lost.)
+            Ok(journal::Read::Missing) if r.forgot(k) && removed(k) => out.forgotten.push(k.clone()),
             Ok(journal::Read::Short | journal::Read::Missing) => out.waiting.push(k.clone()),
             Err(_) => out.failed.push(k.clone()),
         }
@@ -756,8 +765,23 @@ mod tests {
         nas.remove(&journal::path(&x)).unwrap();
         r.forget(std::slice::from_ref(&x), "2026-10-14");
         assert_eq!(r.horizon, "2026-10-14");
+        // No marker naming it: it may be one written late and read stale, so it waits.
+        let m = merge(&nas, &mut r, std::slice::from_ref(&x), &any);
+        assert_eq!((m.forgotten.len(), m.waiting.clone()), (0, vec![x.clone()]));
+        let g = super::super::journal_gc::Marker {
+            horizon: "2026-10-14".into(),
+            keys: [x.clone()].into(),
+            done: true,
+            ..Default::default()
+        };
+        nas.write_whole(super::super::journal_gc::PATH, &serde_json::to_vec(&g).unwrap()).unwrap();
         let m = merge(&nas, &mut r, std::slice::from_ref(&x), &any);
         assert_eq!((m.forgotten.clone(), m.waiting.len()), (vec![x.clone()], 0));
+        // (Task #644 review) One of the same forgotten day the marker doesn't name, missing from a
+        // read (written late, not seen yet): waits, never acknowledged as merged.
+        let late = format!("{}/9-9", x.split('/').next().unwrap());
+        let m = merge(&nas, &mut r, std::slice::from_ref(&late), &any);
+        assert_eq!((m.forgotten.len(), m.waiting.clone()), (0, vec![late]));
         // One of a forgotten day that's in the journal (written late) is merged as any; an earlier
         // horizon doesn't move it back.
         let y = journal::write(&nas, &built(4, 2, "6-1-2", "k2")).unwrap();

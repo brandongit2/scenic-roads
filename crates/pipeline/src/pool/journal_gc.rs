@@ -77,6 +77,13 @@ pub struct Marker {
 impl Marker {
     /// Whether records `r` can be taken up from with the marker's entries gone: they name or have
     /// forgotten every one, and have forgotten the floor's.
+    /// Whether journal entry `key` is one a GC removed, or may have: the marker's own, or of the
+    /// days before its floor (an earlier GC's; a late entry of those days, missing from a read, is
+    /// taken as removed: two GCs back, over two weeks asleep).
+    pub fn removed(&self, key: &str) -> bool {
+        self.keys.contains(key) || key < self.floor.as_str()
+    }
+
     pub fn covers(&self, r: &Records) -> bool {
         r.horizon.as_str() >= self.floor.as_str() && self.keys.iter().all(|k| r.handles(k) || r.forgot(k))
     }
@@ -89,6 +96,14 @@ pub fn read(nas: &dyn Nas) -> Result<Option<Marker>> {
         Some(b) => serde_json::from_slice(&b).map(Some).with_context(|| format!("parse {PATH}")),
         None => Ok(None),
     }
+}
+
+/// The owner's switch (`SWITCH`): the journal's GC runs only while it says `on`; missing, off.
+pub const SWITCH: &str = "state/pool/journal-gc";
+
+/// Whether the owner switched the journal's GC on. Unreadable: off.
+pub fn enabled(nas: &dyn Nas) -> bool {
+    matches!(nas.read(SWITCH), Ok(Some(b)) if String::from_utf8_lossy(&b).trim() == "on")
 }
 
 /// Whether records `r` may be taken up from (the fence): an error saying why not.
