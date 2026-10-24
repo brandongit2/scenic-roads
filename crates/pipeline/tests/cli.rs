@@ -368,3 +368,35 @@ fn every_shell_tool_checks_its_arguments() {
         assert!(seen.contains(&i), "{f}: exempt but not there any more");
     }
 }
+
+/// tools/app/remote-tests.sh never hangs connecting (#637): with an `ssh` that never returns (as
+/// when 1Password, the ssh agent, waits for an approval), its fresh-connection probe is stopped
+/// within its 20 s bound and the command runs here, saying why.
+#[test]
+fn remote_tests_falls_back_when_ssh_hangs() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let ssh = bin.join("ssh");
+    std::fs::write(&ssh, "#!/bin/sh\nexec sleep 600\n").unwrap();
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let src = dir.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    let mut cmd = store::spawn::command("zsh");
+    cmd.arg(repo().join("tools/app/remote-tests.sh"))
+        .args(["k637", src.to_str().unwrap(), "echo ran-here"])
+        .env("PATH", path)
+        .env("SCENIC_TEST_HOST", "hung-host")
+        .env_remove("SCENIC_CHECK_LOCAL")
+        .env_remove("SCENIC_TESTS_LOCAL");
+    let t0 = std::time::Instant::now();
+    let o = store::spawn::output(&mut cmd).unwrap();
+    let took = t0.elapsed().as_secs();
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success(), "{out}");
+    assert!(out.contains("no fresh ssh connection to hung-host within 20 s"), "{out}");
+    assert!(out.lines().any(|l| l == "ran-here"), "{out}");
+    assert!(took < 40, "took {took} s:\n{out}");
+}

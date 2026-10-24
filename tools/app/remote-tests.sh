@@ -32,6 +32,11 @@
 # such line is the result.
 # Disk: a key's folder unused for 3 days goes; past 60 GB in all, the least recently used go
 # (never one locked). tools/dev/sweep-targets.sh drops a removed worktree's key.
+# Connecting never hangs (#637): a fresh connection asks ~/.ssh/config's agent (1Password) for the
+# key, and a locked 1Password waits for its approval for ever, BatchMode or not. So each ssh this
+# side makes runs under a watchdog: the first, a fresh-connection probe, within 20 s; the lock and
+# drop calls within 60 s; the run itself must print its first line within 120 s (slot waits print
+# one at once). Past a bound, the ssh is stopped and the command runs here, saying why.
 host=${SCENIC_TEST_HOST:-m6}  # the test Mac: the Mac mini by default; any ssh alias, or this Mac itself (then it runs here)
 self=${0:A}
 setopt extendedglob
@@ -201,8 +206,18 @@ run_local() {  # <source dir> <command>
     zsh -c "$2" </dev/null 2>&1 )
 }
 
-on_test_mac() {  # <args...>: this script's test Mac side, over ssh (the shared connection)
-  ssh -o ConnectTimeout=10 -o BatchMode=yes $host zsh -s -- ${(q)@} < $self
+bounded() {  # <seconds> <command...>: the command, stopped (by its PID) past <seconds>, then 124
+  "${@:2}" <&0 &  # (its stdin this function's, not the /dev/null a background job gets)
+  local p=$! w rc
+  ( sleep $1 && kill $p ) </dev/null >/dev/null 2>&1 &
+  w=$!
+  wait $p; rc=$?
+  kill $w 2>/dev/null || rc=124  # (the watchdog already gone: it fired)
+  return $rc
+}
+
+on_test_mac() {  # <args...>: this script's test Mac side, over ssh (the shared connection), within 60 s
+  bounded 60 ssh -o ConnectTimeout=10 -o BatchMode=yes $host zsh -s -- ${(q)@} < $self
 }
 
 local_main() {  # <key> <source dir> <command>
@@ -212,7 +227,9 @@ local_main() {  # <key> <source dir> <command>
   local why= rname
   if [[ -n ${SCENIC_CHECK_LOCAL:-}${SCENIC_TESTS_LOCAL:-} ]]; then why="SCENIC_CHECK_LOCAL set"
   elif [[ -d $src/data/build ]]; then why="the tree has ignored test data in data/build, which the test Mac's copy wouldn't"
-  elif ! rname=$(ssh -o ConnectTimeout=5 -o BatchMode=yes $host scutil --get LocalHostName 2>/dev/null); then why="the test Mac is down (ssh failed)"
+  # (A fresh connection, as the run's own: its key from the agent, which may wait for an approval.)
+  elif ! rname=$(bounded 20 ssh -o ConnectTimeout=10 -o BatchMode=yes -o ControlPath=none $host scutil --get LocalHostName 2>/dev/null); then
+    why="no fresh ssh connection to $host within 20 s (down, or the ssh agent, 1Password, locked or waiting for an approval)"
   elif [[ $rname == "$(scutil --get LocalHostName 2>/dev/null)" ]]; then why="this is the test Mac"
   fi
   if [[ -n $why ]]; then
@@ -257,7 +274,7 @@ local_main() {  # <key> <source dir> <command>
     run_local $src "$cmd"; return
   fi
   local t0=$SECONDS
-  ssh -o BatchMode=yes $host "mkdir -p ~/scenic-check/$key/src" &&
+  bounded 60 ssh -o ConnectTimeout=10 -o BatchMode=yes $host "mkdir -p ~/scenic-check/$key/src" &&
   rsync -a --from0 --files-from=$tmp/files.list $src/ ${host}:scenic-check/$key/src/ &&
   rsync -a $tmp/files.list ${host}:scenic-check/$key/files.list
   rc=$?
@@ -282,13 +299,18 @@ local_main() {  # <key> <source dir> <command>
   setopt localoptions nomultios
   coproc ssh -o BatchMode=yes -o ControlPath=none -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
       $host zsh -s -- --remote $key ${(q)owner} ${(q)full} < $self 2>&1
-  local sp=$!
+  local sp=$! first=-t120 t1=$SECONDS
   trap "kill $sp 2>/dev/null; exit 143" INT TERM HUP
-  while IFS= read -r -p l || [[ -n $l ]]; do
+  # (Its first line within 120 s, or the connection is stopped: hung connecting.)
+  while IFS= read -r $first -p l || [[ -n $l ]]; do
+    first=
     if [[ $l == '@@remote-tests-status '* ]]; then print -r -- ${l#@@remote-tests-status } > $tmp/status
     else print -r -- "$l"; fi
     l=
   done
+  if [[ -n $first ]] && (( SECONDS - t1 >= 120 )); then
+    kill $sp 2>/dev/null; print -r -- "none no word from the test Mac within 120 s (ssh hung connecting)" > $tmp/status
+  fi
   wait $sp 2>/dev/null
   trap 'exit 143' INT TERM HUP
   local st=$(<$tmp/status)
@@ -309,7 +331,7 @@ case ${1:-} in
     [[ -n ${2:-} ]] || exit 2
     # (On the test Mac itself, which has no ssh alias for itself, the folder is dropped here.)
     if [[ -d ~/scenic-check ]]; then remote_drop $2
-    else ssh -o ConnectTimeout=5 -o BatchMode=yes $host zsh -s -- --remote-drop $2 < $self; fi ;;
+    else on_test_mac --remote-drop $2; fi ;;
   *)
     (( $# == 3 )) && [[ $1 != -* ]] || { print -u2 "usage: remote-tests.sh <key> <source dir> <command> | --drop <key>"; exit 2; }
     local_main "$@"; exit $? ;;
