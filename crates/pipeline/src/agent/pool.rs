@@ -3543,11 +3543,6 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false));
         let (c2, s2) = (coord.clone(), stop.clone());
         let burst = std::thread::spawn(move || {
-            let w = crate::coord::client::Client::at(
-                vec![format!("http://127.0.0.1:{port}")],
-                c2.contact.token.clone(),
-                "m1",
-            );
             let mut granted = Vec::new();
             let mut i = 0;
             while !s2.load(Ordering::Relaxed) {

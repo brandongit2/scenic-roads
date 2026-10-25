@@ -192,7 +192,8 @@ zsh tools/app/wasm.sh >/dev/null || { echo "WebAssembly build failed"; exit 1; }
 # at each publish, so only an entry a later publish needs again is built again.
 prune_target() {
   local p e stale=() kb
-  for p in target/*/(N/) target/*/release(N/); do
+  # (target/<profile>, and target/<triple>/<profile> of the WebAssembly builds: each once.)
+  for p in target/*/(N/) target/*-*/release(N/); do
     # (Files only: a folder's access time changes when it is listed, by this sweep too.)
     stale+=(${(f)"$(find $p/deps -mindepth 1 -maxdepth 1 -type f ! -newerat '2 days ago' ! -newermt '2 days ago' 2>/dev/null)"})
     for e in $p/{build,incremental,.fingerprint}/*(ND/); do

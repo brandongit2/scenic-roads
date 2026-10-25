@@ -217,25 +217,35 @@ const COPY_GRACE: std::time::Duration = std::time::Duration::from_secs(86400);
 
 /// Deletes what of the agent's cache at `cache` no current code reads (task #660): the retired
 /// caches (`RETIRED`), and the copies of the NAS's files (scenic-build's `local_copy`, by logical
-/// name with `/` as `-`) whose logical name the NAS's build manifest (under `root`) no longer names,
-/// untouched for `COPY_GRACE`: an old version's (`sources-terrain-z8-v3` once the z8 is v6), or an
-/// older pass's. Without a readable manifest, only the retired caches. Nothing a job holds
+/// name with `/` as `-`) whose logical name the NAS's build manifest (under `root`) no longer names
+/// (an older pass's), or of a z8 terrain version not the current one (`sources-terrain-z8-v3` once
+/// the z8 is v6: the manifest still names those), untouched for `COPY_GRACE`. Without a readable,
+/// non-empty manifest, only the retired caches. Nothing a job holds
 /// (store::cachefile), nothing through a link nor in the NAS's folder (`ours`). What it freed, by
 /// kind ("retired", "copies").
 pub fn retire(cache: &Path, root: Option<&Path>) -> BTreeMap<String, u64> {
     let mut freed: BTreeMap<String, u64> = BTreeMap::new();
+    // (Read as Out reads it, whole across the NAS's renames; an empty one is taken as unreadable.)
     let named: Option<HashSet<String>> = root.and_then(|r| {
         let m: BTreeMap<String, String> =
-            serde_json::from_slice(&std::fs::read(r.join("state/build/manifest.json")).ok()?).ok()?;
-        Some(m.keys().map(|l| l.replace('/', "-")).collect())
+            serde_json::from_slice(&crate::whole::read_replaced(&r.join("state/build/manifest.json")).ok()?).ok()?;
+        (!m.is_empty()).then(|| m.keys().map(|l| l.replace('/', "-")).collect())
     });
+    // (The manifest keeps naming the z8 terrain's older versions, which no code reads: those copies
+    // go too, by the version's prefix.)
+    let z8_now = crate::terrain_z8::logical("").replace('/', "-");
+    let z8_any = z8_now.trim_end_matches(|c: char| c != 'v');
+    let unread = |n: &str| match &named {
+        Some(named) => !named.contains(n) || (n.starts_with(z8_any) && !n.starts_with(&z8_now)),
+        None => false,
+    };
     let now = SystemTime::now();
     for e in std::fs::read_dir(cache).into_iter().flatten().flatten() {
         let (p, name) = (e.path(), e.file_name().to_string_lossy().into_owned());
         let k = if RETIRED.iter().any(|r| name.starts_with(r)) {
             "retired"
         } else if kind(&name) == Some("copies")
-            && named.as_ref().is_some_and(|n| !n.contains(&name))
+            && unread(&name)
             && std::fs::symlink_metadata(&p)
                 .and_then(|m| m.modified())
                 .is_ok_and(|t| now.duration_since(t).unwrap_or_default() >= COPY_GRACE)
@@ -1430,7 +1440,7 @@ mod tests {
         let f = retire(&c, Some(&root));
         assert_eq!(f, BTreeMap::from([("retired".to_string(), 150)]));
         assert!(!c.join("dem-cache.keys.u64").exists() && c.join("sources-terrain-z8-v3").exists());
-        let m = serde_json::json!({"sources/terrain-z8-v6-abc": "x", "work/summits/2026-09-28": "y"});
+        let m = serde_json::json!({"sources/terrain-z8-v3": "w", "sources/terrain-z8-v6-abc": "x", "work/summits/2026-09-28": "y"});
         bytes(&root.join("state/build/manifest.json"), m.to_string().as_bytes(), 0);
         // (One held by a job stays.)
         let held = c.join("work-summits-2026-03-28/x.bin");
