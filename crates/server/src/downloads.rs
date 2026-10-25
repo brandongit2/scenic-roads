@@ -174,11 +174,13 @@ pub struct Downloads {
     /// Bumped at every change of what's asked, and when owners are learned.
     version: AtomicU64,
     plan: Mutex<Option<Arc<Plan>>>,
-    /// The regions' parts for a catalog generation and the owners known then (they don't change
-    /// with the downloads).
-    regions: Mutex<Option<(u64, usize, Regions)>>,
-    /// The downloaded regions' hidata's owners, as far as they're read.
-    owners: Mutex<Arc<Owners>>,
+    /// The regions' parts for a catalog generation and an owners' change (they don't change
+    /// with the downloads otherwise).
+    regions: Mutex<Option<(u64, u64, Regions)>>,
+    /// The downloaded regions' hidata's owners, as far as they're read, and a count of their
+    /// changes (what `regions` is keyed on: their number alone stays when one region's swap for
+    /// another's).
+    owners: Mutex<(u64, Arc<Owners>)>,
     /// Set when the downloads change, to wake the mirror thread.
     wake: (Mutex<bool>, Condvar),
 }
@@ -282,11 +284,11 @@ impl Downloads {
             }
         }
         let cat = data.catalog();
-        let owners = self.owners.lock().unwrap().clone();
+        let (changes, owners) = self.owners.lock().unwrap().clone();
         let regions = {
             let mut g = self.regions.lock().unwrap();
             match g.as_ref() {
-                Some((gen, n, r)) if *gen == generation && *n == owners.len() => r.clone(),
+                Some((gen, n, r)) if *gen == generation && *n == changes => r.clone(),
                 _ => {
                     let r: Regions = Arc::new(
                         crate::regions::recorded(&cat)
@@ -294,7 +296,7 @@ impl Downloads {
                             .map(|r| (r.id.clone(), region_parts(&cat, &outer_rings(r), &owners)))
                             .collect(),
                     );
-                    *g = Some((generation, owners.len(), r.clone()));
+                    *g = Some((generation, changes, r.clone()));
                     r
                 }
             }
@@ -318,7 +320,7 @@ impl Downloads {
         for r in &plan.asked.regions {
             tiles.extend(plan.regions.get(&r.id).into_iter().flat_map(|p| p.near.iter().map(String::as_str)));
         }
-        let known = self.owners.lock().unwrap().clone();
+        let known = self.owners.lock().unwrap().1.clone();
         let mut next: Owners = Owners::new();
         let (mut complete, mut learnt) = (true, false);
         for t in tiles {
@@ -344,7 +346,8 @@ impl Downloads {
             }
         }
         if learnt || next.len() != known.len() {
-            *self.owners.lock().unwrap() = Arc::new(next);
+            let mut g = self.owners.lock().unwrap();
+            *g = (g.0 + 1, Arc::new(next));
             self.version.fetch_add(1, Ordering::SeqCst);
         }
         complete

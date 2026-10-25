@@ -243,7 +243,8 @@ and codesign.
   outlines.
 - **A region:** every layer's hi pack and the base pack and road values of each z6 tile
   within 2 km of it, and those of the owners of the ways those tiles' hi data list (read once
-  per hi data, from the Mac's copy or the NAS; a region's size counts them once read), so a way
+  per hi data, from the Mac's copy or the NAS; a downloaded region's size counts them once read,
+  a region not downloaded doesn't), so a way
   drawn in it that starts far outside has its info; the basemap's zooms 11–14 over those tiles; the terrain's and grids' hi packs
   within 25 km (the viewshed's reach); the hi data, landmark points (markdata) and area details
   (ovdata, by z3 tile) within 50 km; the worldwide `global/` files (those by z6 tile, such as the
