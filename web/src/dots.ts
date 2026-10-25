@@ -23,7 +23,8 @@
 // Morton order, into a heights texture the dots read. No per-dot work on the CPU, and a dot's
 // height always matches the mesh under it.
 import type { CustomLayerInterface, CustomRenderMethodInput, Map as MLMap } from 'maplibre-gl';
-import { HALO, HERITAGE_GROUPS, HER_R, POI_R, POI_STYLE, landmarkScoreOf, type NameScale } from './basemap';
+import { HERITAGE_GROUPS, HER_R, POI_ICON_MIN, POI_ICON_R, POI_ICON_STROKE, POI_R, POI_STYLE, landmarkScoreOf, type NameScale } from './basemap';
+import { CELL, ICON_PX, SDF_REACH, iconAtlas, iconIndex } from './poiicons';
 import { CHUNK_Z, DRAW_STRIDE, HEIGHT_W, HPOS_STRIDE, LOD_LEVELS, LOD_Z0, VIS_WORDS, lodZoom, tileRun, type DotData } from './dotlayout';
 import { perspectiveP22 } from './roads/layer';
 import { linkLater, type Later } from './glprog';
@@ -101,7 +102,11 @@ uniform float u_opacity;
 uniform vec3 u_baseR;       // radius (CSS px) per level class at this zoom
 uniform vec3 u_strokeW;     // stroke width per level class
 uniform vec3 u_col[4];      // fill per group (stops: the first)
+uniform float u_icon;       // the kind's icon (its atlas cell), or -1: dots
+uniform float u_iconR;      // the icon's half-width (CSS px) at this zoom, before prominence
+uniform float u_iconSw;     // its halo's width
 flat out float v_ext;
+flat out float v_icon;
 flat out float v_r;
 flat out float v_sw;
 flat out vec3 v_fill;
@@ -121,6 +126,7 @@ void main() {
   v_sw = 0.0;
   v_fill = vec3(0.0);
   v_a = 0.0;
+  v_icon = -1.0;
   if ((a_vis & 1u) == 0u) return;
   float h = 0.0;
   if (u_zmul > 0.0) {
@@ -155,6 +161,13 @@ void main() {
   int lv = cls - 3 * (cls / 3);
   float r = u_baseR[lv] * size;
   float sw = u_strokeW[lv];
+  // An icon where it is large enough to read, else a dot.
+  float ic = -1.0;
+  if (u_icon >= 0.0 && u_iconR * size >= ${POI_ICON_MIN.toFixed(1)}) {
+    ic = u_icon;
+    r = u_iconR * size;
+    sw = u_iconSw;
+  }
   float a = 0.95 * u_opacity * fade * (pass ? 1.0 : 0.12);
   // A speck zoomed out: only the dot standing for its cell, with the cell's opacity (the cells
   // finer where perspective draws larger).
@@ -194,6 +207,7 @@ void main() {
   v_ext = ext;
   v_r = r;
   v_sw = sw;
+  v_icon = ic;
   v_fill = u_col[cls / 3];
   v_a = a;
 }`;
@@ -205,19 +219,38 @@ flat in float v_r;
 flat in float v_sw;
 flat in vec3 v_fill;
 flat in float v_a;
+flat in float v_icon;
 uniform vec3 u_halo;
+uniform float u_haloA;      // the outline's opacity
 uniform float u_dpr;
+uniform sampler2D u_atlas;  // the icons' distance fields (poiicons.ts), a cell per kind
+uniform float u_atlasW;
 out vec4 fragColor;
 void main() {
   vec2 off = (gl_PointCoord * 2.0 - 1.0) * v_ext;
-  float d = length(off);
-  float aa = 0.5 / u_dpr + 0.35; // as the VS's square
-  float edge = v_r + v_sw;
-  float outer = 1.0 - smoothstep(edge - aa, edge + aa, d);
+  float inner, outer;
+  if (v_icon >= 0.0) {
+    // The icon's signed distance (CSS px, inside positive) from its cell, ${ICON_PX / 2} atlas px to v_r.
+    float s = ${(ICON_PX / 2).toFixed(1)} / v_r;
+    vec2 p = off * s;
+    float sdf = 0.0;
+    if (max(abs(p.x), abs(p.y)) < ${(CELL / 2 - 1).toFixed(1)}) sdf = texture(u_atlas, vec2((v_icon * ${CELL}.0 + ${CELL / 2}.0 + p.x) / u_atlasW, (${CELL / 2}.0 + p.y) / ${CELL}.0)).r;
+    float d = (sdf - 0.5) * ${(2 * SDF_REACH).toFixed(1)} / s;
+    float aa = 0.5 / u_dpr;
+    inner = smoothstep(-aa, aa, d);
+    outer = smoothstep(-aa, aa, d + v_sw);
+  } else {
+    float d = length(off);
+    float aa = 0.5 / u_dpr + 0.35; // as the VS's square
+    float edge = v_r + v_sw;
+    outer = 1.0 - smoothstep(edge - aa, edge + aa, d);
+    inner = v_sw > 0.0 ? 1.0 - smoothstep(v_r - aa, v_r + aa, d) : 1.0;
+  }
   if (outer <= 0.0) discard;
-  float inner = v_sw > 0.0 ? 1.0 - smoothstep(v_r - aa, v_r + aa, d) : 1.0;
-  float a = outer * v_a;
-  fragColor = vec4(mix(u_halo, v_fill, inner) * a, a);
+  // The fill over its outline, the outline at its opacity (premultiplied).
+  float ring = max(outer - inner, 0.0) * u_haloA;
+  float fill = min(inner, outer);
+  fragColor = vec4(v_fill * fill + u_halo * ring, fill + ring) * v_a;
 }`;
 
 // Ground heights of a terrain tile's dots, read from its DEM as MapLibre's get_elevation does
@@ -357,6 +390,35 @@ export class LandmarkDots implements CustomLayerInterface {
   private data = new Map<string, { d: DotData; vis: Uint32Array | null }>();
   /** A source's points or flags changed (its id). */
   onChange: (id: string) => void = () => {};
+  /** The map's point outline (Layers → Map), the dots' and icons' halo. */
+  private outline = { colour: '#0b0e13', opacity: 1 };
+  /** The icons' atlas (poiicons.ts), made on first use, and its width (px). */
+  private atlas: WebGLTexture | null = null;
+  private atlasW = 1;
+
+  /** The point outline's colour and opacity. */
+  setOutline(colour: string, opacity: number) {
+    if (colour === this.outline.colour && opacity === this.outline.opacity) return;
+    this.outline = { colour, opacity };
+    this.map?.triggerRepaint();
+  }
+
+  private atlasTexture(): WebGLTexture | null {
+    if (this.atlas) return this.atlas;
+    const gl = this.gl;
+    const a = iconAtlas();
+    this.atlas = gl.createTexture();
+    this.atlasW = a.w;
+    gl.bindTexture(gl.TEXTURE_2D, this.atlas);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, a.w, a.h, 0, gl.RED, gl.UNSIGNED_BYTE, a.data);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return this.atlas;
+  }
 
   onAdd(map: MLMap, gl: WebGL2RenderingContext) {
     this.map = map;
@@ -369,6 +431,8 @@ export class LandmarkDots implements CustomLayerInterface {
     for (const s of this.srcs.values()) this.free(s);
     if (this.tf) this.gl.deleteTransformFeedback(this.tf);
     this.tf = null;
+    if (this.atlas) this.gl.deleteTexture(this.atlas);
+    this.atlas = null;
   }
 
   /** A source's points, laid out by the landmarks worker (dotlayout.ts). */
@@ -493,8 +557,10 @@ export class LandmarkDots implements CustomLayerInterface {
     const pass = !th.on || (th.dir === 'low' ? sc >= q.r0 : th.dir === 'below' ? sc <= q.thrValue : sc >= q.thrValue);
     const size = (pass ? 1 : 0.6) * (1 + q.emphasis * (0.3 + 0.95 * u - 1));
     const z = this.map.getZoom();
-    const base = layer === 'heritage-pt' ? interpStops(HER_R[Number(p.level) === 1 ? 0 : Number(p.level) === 2 ? 1 : 2] as [number, number][], z) : interpStops(POI_R, z);
-    return base * size;
+    if (layer === 'heritage-pt') return interpStops(HER_R[Number(p.level) === 1 ? 0 : Number(p.level) === 2 ? 1 : 2] as [number, number][], z) * size;
+    // A kind with an icon: the icon where it is drawn as one (the VS), else the dot.
+    const ri = interpStops(POI_ICON_R, z) * size;
+    return iconIndex(layer.slice(4)) !== undefined && ri >= POI_ICON_MIN ? ri : interpStops(POI_R, z) * size;
   }
 
   private upload(s: Src, d: DotData) {
@@ -584,7 +650,7 @@ export class LandmarkDots implements CustomLayerInterface {
         const u: Record<string, WebGLUniformLocation | null> = {};
         for (const n of ['u_lodZ', 'u_world', 'u_heights', 'u_viewport', 'u_dpr', 'u_maxPt', 'u_camDist', 'u_zmul', 'u_lift', 'u_cam', 'u_ztol', 'u_p22', 'u_depth',
           'u_depthOn', 'u_occluded', 'u_range', 'u_eqOn', 'u_eq', 'u_lowFade', 'u_lowSpan', 'u_thrOn', 'u_thrDir', 'u_thrValue', 'u_balance',
-          'u_emphasis', 'u_opacity', 'u_baseR', 'u_strokeW', 'u_col', 'u_halo', 'u_projection_matrix', 'u_projection_tile_mercator_coords',
+          'u_emphasis', 'u_opacity', 'u_baseR', 'u_strokeW', 'u_col', 'u_halo', 'u_haloA', 'u_icon', 'u_iconR', 'u_iconSw', 'u_atlas', 'u_atlasW', 'u_projection_matrix', 'u_projection_tile_mercator_coords',
           'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix']) u[n] = gl.getUniformLocation(prog, n);
         return { prog, u };
       });
@@ -811,7 +877,14 @@ export class LandmarkDots implements CustomLayerInterface {
     gl.uniform1f(u.u_balance, q.balance);
     gl.uniform1f(u.u_emphasis, q.emphasis);
     gl.uniform1f(u.u_opacity, q.opacity);
-    gl.uniform3f(u.u_halo, ...hex(HALO));
+    gl.uniform3f(u.u_halo, ...hex(this.outline.colour));
+    gl.uniform1f(u.u_haloA, this.outline.opacity);
+    gl.uniform1f(u.u_iconR, interpStops(POI_ICON_R, zoom));
+    gl.uniform1f(u.u_iconSw, POI_ICON_STROKE);
+    gl.activeTexture(gl.TEXTURE6);
+    gl.bindTexture(gl.TEXTURE_2D, this.atlasTexture());
+    gl.uniform1i(u.u_atlas, 6);
+    gl.uniform1f(u.u_atlasW, this.atlasW);
     const camLL = tr?.getCameraLngLat?.();
     const camS = camLL ? Math.sin((camLL.lat * Math.PI) / 180) : 0;
     gl.uniform3f(u.u_cam, camLL ? (camLL.lng + 180) / 360 : 0, camLL ? 0.5 - Math.log((1 + camS) / (1 - camS)) / (4 * Math.PI) : 0, tr?.getCameraAltitude?.() ?? 0);
@@ -829,12 +902,14 @@ export class LandmarkDots implements CustomLayerInterface {
         gl.uniform3f(u.u_baseR, ...(HER_R.map((stops) => interpStops(stops as [number, number][], zoom)) as [number, number, number]));
         gl.uniform3f(u.u_strokeW, 1.2, 0.8, 0.8);
         gl.uniform3fv(u.u_col, HERITAGE_GROUPS.flatMap((g) => hex(g.colour)));
+        gl.uniform1f(u.u_icon, -1);
       } else {
         const r = interpStops(POI_R, zoom), sw = interpStops(POI_STROKE, zoom);
         gl.uniform3f(u.u_baseR, r, r, r);
         gl.uniform3f(u.u_strokeW, sw, sw, sw);
         const col = hex(POI_STYLE[id.slice(5)]?.[1] ?? '#cccccc');
         gl.uniform3fv(u.u_col, [...col, ...col, ...col, ...col]);
+        gl.uniform1f(u.u_icon, iconIndex(id.slice(5)) ?? -1);
       }
       gl.bindTexture(gl.TEXTURE_2D, s.texE);
       gl.bindVertexArray(s.vao);
@@ -867,6 +942,8 @@ export class LandmarkDots implements CustomLayerInterface {
       }
     }
     gl.bindVertexArray(null);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.activeTexture(gl.TEXTURE6);
     gl.bindTexture(gl.TEXTURE_2D, null);
     gl.activeTexture(gl.TEXTURE0);
     if (more) map.triggerRepaint();

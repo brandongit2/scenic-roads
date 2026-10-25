@@ -6,7 +6,7 @@
 // the lines are coloured on the GPU, per vertex; its tunnels' and low end's fades included) and
 // shows only once it has them (feature state k), so it never appears in another colour first;
 // where no line is drawn at it, its service group's. Its outline's colour and opacity are the
-// rail card's. Stops are coloured once the view settles, from the source's tiles and
+// map's point outline (Layers → Map). Stops are coloured once the view settles, from the source's tiles and
 // the rail line at their place: querying the rendered dots on the 3D globe ray-marched the
 // terrain for the view's corners in every tile, up to a second and more after a gesture.
 import type { ExpressionSpecification, Map as MLMap } from 'maplibre-gl';
@@ -77,8 +77,8 @@ export class Stations {
     // Shown once coloured, at the line's opacity there (a) × the layer's.
     const shown = (o: number): ExpressionSpecification => ['case', ['boolean', ['feature-state', 'k'], false], ['*', o, ['number', ['feature-state', 'a'], 1]], 0];
     map.setPaintProperty(DOTS, 'circle-opacity', shown(r.opacity));
-    map.setPaintProperty(DOTS, 'circle-stroke-opacity', shown(r.opacity * r.stopOutlineOpacity));
-    map.setPaintProperty(DOTS, 'circle-stroke-color', r.stopOutline);
+    map.setPaintProperty(DOTS, 'circle-stroke-opacity', shown(r.opacity * s.pointOutlineOpacity));
+    map.setPaintProperty(DOTS, 'circle-stroke-color', s.pointOutline);
   }
 
   /** The stops shown and not yet coloured (with `all`, the colouring changed: every stop again)

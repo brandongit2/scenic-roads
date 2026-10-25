@@ -260,7 +260,8 @@ export class Ferries {
     // (shown once coloured: recolourTerminals)
     const shown = (v: number): ExpressionSpecification => ['case', ['boolean', ['feature-state', 'k'], false], v, 0];
     map.setPaintProperty(TERMINALS, 'circle-opacity', shown(Math.min(1, o + 0.05)));
-    map.setPaintProperty(TERMINALS, 'circle-stroke-opacity', shown(Math.min(1, o + 0.05)));
+    map.setPaintProperty(TERMINALS, 'circle-stroke-opacity', shown(Math.min(1, o + 0.05) * s.pointOutlineOpacity));
+    map.setPaintProperty(TERMINALS, 'circle-stroke-color', s.pointOutline);
     const w = lineWeight(s, 'ferries');
     map.setPaintProperty(LINE, 'line-width', ['interpolate', ['linear'], ['zoom'], 3, 0.6 * w, 7, 1.1 * w, 11, 1.8 * w, 15, 3 * w, 18, 4.5 * w]);
     map.setPaintProperty(TERMINALS, 'circle-radius', ['interpolate', ['linear'], ['zoom'], 4, 1 * w, 9, 1.8 * w, 14, 3.5 * w]);

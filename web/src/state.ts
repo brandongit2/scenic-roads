@@ -412,12 +412,11 @@ export interface RailState extends ScaleFields {
   fitUnits: FitUnits<RailMetric>;
   /** The cross-ties' length, × the core line's thickness (raildraw.ts; none below zoom 9). */
   ties: number;
-  /** Stop dots: base size (× the size by stop spacing, the zoom's and the line weight), size
-   * contrast (0..1: how much stop spacing sizes them; 0 all alike), outline colour and opacity. */
+  /** Stop dots: base size (× the size by stop spacing, the zoom's and the line weight) and size
+   * contrast (0..1: how much stop spacing sizes them; 0 all alike); their outline is the map's
+   * (AppState.pointOutline). */
   stopSize: number;
   stopContrast: number;
-  stopOutline: string;
-  stopOutlineOpacity: number;
 }
 const RAIL_COLOURS: RailColour[] = ['line', 'group', 'metric', 'single'];
 /** The ties' and stop dots' settings' ranges (the rail card's sliders). */
@@ -427,7 +426,6 @@ const clampTo = (v: number, [lo, hi]: [number, number]) => Math.min(hi, Math.max
 function clampRailLook(r: RailState): RailState {
   return {
     ...r, ties: clampTo(r.ties, TIES_RANGE), stopSize: clampTo(r.stopSize, STOP_SIZE_RANGE), stopContrast: clampTo(r.stopContrast, [0, 1]),
-    stopOutline: /^#[0-9a-f]{6}$/i.test(r.stopOutline) ? r.stopOutline.toLowerCase() : defaults.rail.stopOutline, stopOutlineOpacity: clampTo(r.stopOutlineOpacity, [0, 1]),
   };
 }
 /** Passenger ferries and their colouring (top-left panel, "Ferries" section). */
@@ -530,6 +528,10 @@ export interface AppState {
   roadPersp: RoadPersp;
   /** Opacity of the boundary lines (countries, provinces & states, counties), 0..1. */
   boundaryOpacity: number;
+  /** The outline of every point drawn as a dot or icon (rail stops, ferry terminals, stops &
+   * sights, heritage sites; Layers → Map): its colour and opacity (0..1). */
+  pointOutline: string;
+  pointOutlineOpacity: number;
   routeGlow: boolean;
   /** Transparency at the low end of the colour scale (0..1) and the share of the scale it spans. */
   lowFade: number;
@@ -640,7 +642,7 @@ export const defaults: AppState = {
     ...scaleOfLook({ ...freshLook([0, 100], 0.6), palette: 'rocket', fit: [70, 99.8] }),
     weights: [...RAIL_DEFAULT_WEIGHTS], preset: RAIL_DEFAULT_PRESET, opacity: 1, single: '#e8ecf2',
     freqOn: false, freqMin: 0, freqMax: 0, freqUnknown: true, fitLens: {}, fitUnits: {},
-    ties: 2.5, stopSize: 1, stopContrast: STOP_CONTRAST, stopOutline: '#0b0e13', stopOutlineOpacity: 1,
+    ties: 2.5, stopSize: 1, stopContrast: STOP_CONTRAST,
   },
   trees: {
     on: true, variable: 'cover', style: 'mask', opacity: 0.05, palette: 'greens',
@@ -663,6 +665,8 @@ export const defaults: AppState = {
   roadOpacity: 1,
   roadPersp: { ...DEFAULT_PERSP },
   boundaryOpacity: 1,
+  pointOutline: '#0b0e13',
+  pointOutlineOpacity: 1,
   routeGlow: false,
   lowFade: 0.8,
   lowSpan: 0.6,
@@ -892,8 +896,8 @@ export function toHash(s: AppState, buildings: boolean): string {
     dr.opacity, ...fitFields(dr.fitLens, dr.fitUnits, RAIL_FIT_KEYS, looksField(dr.looks, dr.metric, RAIL_KEYS, railFreshLook)),
   ].join(',');
   if (rs !== rsd) p.set('rs', rs);
-  // Ties, then the stop dots' size, contrast, outline colour and opacity.
-  const rk = (x: RailState) => [+x.ties.toFixed(2), +x.stopSize.toFixed(2), +x.stopContrast.toFixed(2), x.stopOutline.replace('#', ''), +x.stopOutlineOpacity.toFixed(2)].join(',');
+  // Ties, then the stop dots' size and contrast.
+  const rk = (x: RailState) => [+x.ties.toFixed(2), +x.stopSize.toFixed(2), +x.stopContrast.toFixed(2)].join(',');
   if (rk(r) !== rk(dr)) p.set('rk', rk(r));
   if (r.weights.some((w, i) => w !== dr.weights[i])) p.set('rw', r.weights.map((w) => +w.toFixed(2)).join(','));
   if (r.preset !== dr.preset) p.set('rp', r.preset || 'custom');
@@ -919,6 +923,8 @@ export function toHash(s: AppState, buildings: boolean): string {
   const rp = (q: RoadPersp) => [q.strength, q.cap, q.fade].map((v) => +v.toFixed(2)).join(',');
   if (rp(s.roadPersp) !== rp(defaults.roadPersp)) p.set('wp', rp(s.roadPersp));
   if (s.boundaryOpacity !== defaults.boundaryOpacity) p.set('bo', s.boundaryOpacity.toFixed(2));
+  const pl = (x: AppState) => [x.pointOutline.replace('#', ''), +x.pointOutlineOpacity.toFixed(2)].join(',');
+  if (pl(s) !== pl(defaults)) p.set('pl', pl(s));
   if (s.routeGlow) p.set('rg', '1');
   const l = s.layers;
   if (!(l.roads && l.water && l.boundaries && l.places)) p.set('l', `${l.roads ? 'r' : ''}${l.water ? 'w' : ''}${l.boundaries ? 'b' : ''}${l.places ? 'p' : ''}`);
@@ -1065,16 +1071,16 @@ export function fromHash(hash: string, buildings = true): AppState {
     // Older links: the rail card's line weight.
     if (rs[8]) s.lineWeights.rail = clampWeight(num(rs[8], 1));
   }
-  // Ties and stop dots (older links: the defaults).
+  // Ties and stop dots (older links: the defaults; and the stops' outline, now the map's).
   const rk = p.get('rk')?.split(',');
   if (rk) {
     const n = (v: string | undefined, d: number) => (v !== undefined && v !== '' && Number.isFinite(Number(v)) ? Number(v) : d);
     const r = s.rail;
-    s.rail = clampRailLook({
-      ...r, ties: n(rk[0], r.ties), stopSize: n(rk[1], r.stopSize), stopContrast: n(rk[2], r.stopContrast),
-      stopOutline: /^[0-9a-f]{6}$/i.test(rk[3] ?? '') ? `#${rk[3].toLowerCase()}` : r.stopOutline, stopOutlineOpacity: n(rk[4], r.stopOutlineOpacity),
-    });
+    s.rail = clampRailLook({ ...r, ties: n(rk[0], r.ties), stopSize: n(rk[1], r.stopSize), stopContrast: n(rk[2], r.stopContrast) });
+    if (rk.length >= 5) Object.assign(s, migrateOutline(s, { stopOutline: `#${rk[3]}`, stopOutlineOpacity: Number(rk[4]) }));
   }
+  const pl = p.get('pl')?.split(',');
+  if (pl) Object.assign(s, migrateOutline(s, { stopOutline: `#${pl[0]}`, stopOutlineOpacity: Number(pl[1]) }));
   const fy = p.get('fy')?.split(',');
   if (fy && fy.length >= 7) {
     const f = s.ferry;
@@ -1331,6 +1337,16 @@ export { ob as overlayIndex };
 /** A #rrggbb colour. */
 const HEX = /^#[0-9a-f]{6}$/i;
 
+/** The point outline from the rail stops' outline (`stopOutline`, `stopOutlineOpacity`: the rail
+ * card's before it was the map's, in saves and links), where valid; else the state's. */
+function migrateOutline(s: AppState, o: Record<string, unknown>): Pick<AppState, 'pointOutline' | 'pointOutlineOpacity'> {
+  const c = o.stopOutline, a = o.stopOutlineOpacity;
+  return {
+    pointOutline: typeof c === 'string' && HEX.test(c) ? c.toLowerCase() : s.pointOutline,
+    pointOutlineOpacity: typeof a === 'number' && Number.isFinite(a) ? Math.min(1, Math.max(0, a)) : s.pointOutlineOpacity,
+  };
+}
+
 /**
  * State saved in localStorage, merged onto the defaults key by key (unknown or mistyped
  * values are dropped, so older saves keep working after new settings are added).
@@ -1370,6 +1386,11 @@ export function fromSaved(o: unknown): AppState {
   s.ferry.fitLens = fitLensOfSaved(src.ferry as Record<string, unknown> | undefined, FERRY_FIT_KEYS);
   const oldT = rest.terrain as Record<string, unknown> | undefined;
   if (oldT && 'tintPalette' in oldT && !('tintScales' in oldT)) s.terrain = migrateTint(s.terrain, oldT);
+  // Saved before the point outline was the map's: the rail stops' outline, once.
+  const oldR = rest.rail as Record<string, unknown> | undefined;
+  if (oldR && 'stopOutline' in oldR && !('pointOutline' in rest)) Object.assign(s, migrateOutline(s, oldR));
+  s.pointOutline = HEX.test(s.pointOutline) ? s.pointOutline.toLowerCase() : defaults.pointOutline;
+  s.pointOutlineOpacity = Math.min(1, Math.max(0, s.pointOutlineOpacity));
   if (!rest.lineWeights) {
     const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null);
     const w = num(rest.weight), rw = num((rest.rail as { weight?: unknown } | undefined)?.weight), fw = num((rest.ferry as { weight?: unknown } | undefined)?.weight);

@@ -67,7 +67,7 @@ export class LayersCard {
   private buildingsSection: HTMLElement;
   private railSection: Node[];
   private rail!: HTMLInputElement;
-  private stopOutline!: HTMLInputElement;
+  private pointOutline!: HTMLInputElement;
   private railBoxes: HTMLInputElement[] = [];
   private railKm: HTMLSpanElement[] = [];
   private ferrySection: Node[];
@@ -236,13 +236,6 @@ export class LayersCard {
       label: 'Size contrast', min: 0, max: 1, step: 0.05, reset: defaults.rail.stopContrast,
       title: 'How much a stop\u2019s size follows its line\u2019s stop spacing: intercity stations large, tram stops small. 0: all stops the same size',
       get: () => S().rail.stopContrast, set: (stopContrast) => R({ stopContrast }), fmt: pct, disabled: railOff,
-    });
-    this.stopOutline = h('input', { type: 'color', class: 'stop-outline', title: 'Colour of the stop dots\u2019 outline' });
-    this.stopOutline.addEventListener('input', () => R({ stopOutline: this.stopOutline.value }));
-    const stopOutlineRow = h('div', { class: 'row' }, h('span', { class: 'muted' }, 'Outline'), this.stopOutline);
-    const stopOutlineOpRow = sl({
-      label: 'Opacity', min: 0, max: 1, step: 0.05, reset: defaults.rail.stopOutlineOpacity, cls: 'sub', title: 'Opacity of the stop dots\u2019 outline (× the rail opacity)',
-      get: () => S().rail.stopOutlineOpacity, set: (stopOutlineOpacity) => R({ stopOutlineOpacity }), fmt: pct, disabled: railOff,
     });
     // Passenger ferries: the layer and its service groups (styling: top-left panel).
     this.ferry = cb((v) => this.store.set({ ferry: { ...this.store.s.ferry, on: v } }));
@@ -494,6 +487,15 @@ export class LayersCard {
     ];
     // The width table, editable (store.set({}): the listeners redraw the map with it).
     const widthGrid = new WidthGrid(() => this.store.set({}));
+    // The outline of every dot and icon: rail stops, ferry terminals, stops & sights, heritage sites.
+    this.pointOutline = h('input', { type: 'color', title: 'Colour of the outline of the rail stops, ferry terminals, stops & sights and heritage sites' });
+    this.pointOutline.addEventListener('input', () => this.store.set({ pointOutline: this.pointOutline.value }));
+    const pointOutlineRow = h('div', { class: 'row' }, h('span', { class: 'muted' }, 'Colour'), this.pointOutline);
+    const pointOutlineOpRow = sl({
+      label: 'Opacity', min: 0, max: 1, step: 0.05, reset: defaults.pointOutlineOpacity, cls: 'sub',
+      title: 'Opacity of the outline of the rail stops, ferry terminals, stops & sights and heritage sites (× each layer\u2019s opacity)',
+      get: () => S().pointOutlineOpacity, set: (pointOutlineOpacity) => this.store.set({ pointOutlineOpacity }), fmt: pct,
+    });
     const boundOpRow = sl({
       label: 'Opacity', min: 0, max: 1, step: 0.05, reset: defaults.boundaryOpacity, cls: 'sub', title: 'Opacity of the boundary lines',
       get: () => S().boundaryOpacity, set: (boundaryOpacity) => this.store.set({ boundaryOpacity }), fmt: pct, disabled: () => !S().layers.boundaries,
@@ -723,7 +725,7 @@ export class LayersCard {
         sub('Colour'), cards.rail,
         sub('Show'), ...this.railSection,
         sub('Style'), railOpRow, lwOf.rail, tiesRow,
-        sub('Stop dots'), stopSizeRow, stopContrastRow, stopOutlineRow, stopOutlineOpRow,
+        sub('Stop dots'), stopSizeRow, stopContrastRow,
       ),
       this.section('ferry', 'Ferries', this.ferry,
         sub('Colour'), cards.ferry,
@@ -766,6 +768,9 @@ export class LayersCard {
         tog(this.other.boundaries, 'Boundaries'),
         ...boundaryLevels,
         boundOpRow,
+        sub('Point outline'),
+        pointOutlineRow,
+        pointOutlineOpRow,
         sub('Line weights'),
         lineWeights,
       ),
@@ -946,8 +951,7 @@ export class LayersCard {
     this.glow.checked = s.routeGlow;
     this.occlude.checked = s.occlude;
     this.rail.checked = s.rail.on;
-    this.stopOutline.value = s.rail.stopOutline;
-    this.stopOutline.disabled = !s.rail.on;
+    this.pointOutline.value = s.pointOutline;
     this.railBoxes.forEach((c, i) => {
       c.checked = s.rail.groups[i];
       c.disabled = !s.rail.on;

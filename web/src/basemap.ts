@@ -337,6 +337,12 @@ export const landmarkScoreOf = (fa: number, ia: number, balance: number): number
   (1 - balance) * Math.min(1, fa / 5) + balance * Math.min(1, Math.max(0, (Math.log10(Math.max(0.05, ia)) + 1.3) / 5.6));
 /** Dot radius at a zoom before prominence: stops, and heritage sites by designation level. */
 export const POI_R: [number, number][] = [[3, 0.8], [7, 1.5], [12, 2.5], [16, 3.8]];
+/** A stops & sights kind's icon (poiicons.ts) at a zoom: its half-width (CSS px) before
+ * prominence, drawn as an icon from POI_ICON_MIN px (smaller: a dot, POI_R), with a halo
+ * POI_ICON_STROKE px wide in the point outline (Layers → Map). */
+export const POI_ICON_R: [number, number][] = [[7, 4], [10, 5.5], [13, 6.5], [16, 8]];
+export const POI_ICON_MIN = 3.5;
+export const POI_ICON_STROKE = 1.2;
 export const HER_R: [number, number][][] = [[[5, 3.8], [10, 5.2], [15, 6.8]], [[5, 2.2], [10, 3.3], [15, 5.2]], [[5, 1.2], [10, 2.2], [15, 3.8]]];
 /** The landmark dots' MapLibre layers. The dots are drawn by dots.ts, sized and faded by prominence
  * there (30 % of the zoom's radius at the bottom of the scale to 125 % at the top, Size contrast 0
@@ -403,7 +409,7 @@ export function poiLabelLayer(key: string): LayerSpecification {
         : twoLine(mainOf()),
       'text-font': ['Noto Sans Regular'],
       'text-size': 10.5,
-      'text-offset': [0, 0.8],
+      'text-offset': [0, 1.1],
       'text-anchor': 'top',
       'text-max-width': 8,
       'text-optional': true,
@@ -461,7 +467,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
       filter: poiKindFilter(key),
       // Drawn by dots.ts; this one for hit-testing (SIG_LAYERS).
       layout: { visibility: 'none' },
-      paint: hitPaint(['interpolate', ['linear'], ['zoom'], ...POI_R.flatMap(([z, r]) => [z, r * 1.25])] as ExpressionSpecification),
+      paint: hitPaint(['interpolate', ['linear'], ['zoom'], ...POI_ICON_R.flatMap(([z, r]) => [z, r * 1.25])] as ExpressionSpecification),
     },
     poiLabelLayer(key),
   ]);

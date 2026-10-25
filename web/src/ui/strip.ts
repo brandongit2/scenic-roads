@@ -333,7 +333,7 @@ export class Strip {
   }
 }
 
-/** The app's own credits, whatever data it shows: the colour ramps it ships. The data's come with
+/** The app's own credits, whatever data it shows: the colour ramps and icons it ships. The data's come with
  * its catalog (pipeline::rules::CREDITS, those of the sources its data comes from). */
 const APP_CREDITS: Credit[] = [
   {
@@ -341,6 +341,7 @@ const APP_CREDITS: Credit[] = [
     source: 'matplotlib (viridis, magma, plasma, inferno, cividis, cubehelix), seaborn (mako, rocket), Google (turbo), ColorBrewer (Cynthia Brewer), Fabio Crameri’s Scientific colour maps (batlow, hawaii, La Jolla, Oslo, Bamako, Tokyo, Vik, Berlin), cmocean (ice), colorcet (fire, Peter Kovesi)',
     terms: 'ColorBrewer: Apache 2.0; Crameri, cmocean: MIT; colorcet: CC BY 4.0',
   },
+  { what: 'Stops & sights icons', source: 'Maki (Mapbox)', terms: 'CC0 1.0' },
 ];
 
 /** Data sources and licences in a modal dialog: the catalog's credits (`set`), then the app's. */

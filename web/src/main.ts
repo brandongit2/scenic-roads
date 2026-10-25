@@ -2029,9 +2029,10 @@ async function main() {
       if (s.rail.on) loadRailFreq();
       map.triggerRepaint();
     }
-    if ((ch.has('layers') || ch.has('labelKinds') || ch.has('labelDensity')) && styleReady) overlays.apply(s);
-    if ((ch.has('rail') || ch.has('layers') || ch.has('lineWeights') || ch.has('labelKinds') || ch.has('labelDensity')) && styleReady) stations.apply(s);
-    if ((ch.has('ferry') || ch.has('layers') || ch.has('lineWeights') || ch.has('labelKinds')) && styleReady) {
+    const outline = ch.has('pointOutline') || ch.has('pointOutlineOpacity');
+    if ((ch.has('layers') || ch.has('labelKinds') || ch.has('labelDensity') || outline) && styleReady) overlays.apply(s);
+    if ((ch.has('rail') || ch.has('layers') || ch.has('lineWeights') || ch.has('labelKinds') || ch.has('labelDensity') || outline) && styleReady) stations.apply(s);
+    if ((ch.has('ferry') || ch.has('layers') || ch.has('lineWeights') || ch.has('labelKinds') || outline) && styleReady) {
       ferries.apply(s);
       updateFerries();
     }

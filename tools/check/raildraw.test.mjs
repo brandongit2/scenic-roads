@@ -65,35 +65,51 @@ const vite = await createServer({
 after(() => vite.close());
 const st = await vite.ssrLoadModule('/src/state.ts');
 
-const look = (r) => ({ ties: r.ties, stopSize: r.stopSize, stopContrast: r.stopContrast, stopOutline: r.stopOutline, stopOutlineOpacity: r.stopOutlineOpacity });
+const look = (s) => ({ ties: s.rail.ties, stopSize: s.rail.stopSize, stopContrast: s.rail.stopContrast, outline: s.pointOutline, outlineOpacity: s.pointOutlineOpacity });
 
 test('the defaults add nothing to a link', () => {
   const h = st.toHash(structuredClone(st.defaults), true);
-  assert.ok(!/(^|[#&])rk=/.test(h), h);
+  assert.ok(!/(^|[#&])(rk|pl)=/.test(h), h);
 });
 
-test('ties and stop dots survive a link', () => {
+test('ties, stop dots and the point outline survive a link', () => {
   const s = structuredClone(st.defaults);
-  Object.assign(s.rail, { ties: 3.5, stopSize: 1.75, stopContrast: 0.2, stopOutline: '#ffcc00', stopOutlineOpacity: 0.4 });
+  Object.assign(s.rail, { ties: 3.5, stopSize: 1.75, stopContrast: 0.2 });
+  Object.assign(s, { pointOutline: '#ffcc00', pointOutlineOpacity: 0.4 });
   const h = st.toHash(s, true);
-  assert.match(h, /rk=3\.5,1\.75,0\.2,ffcc00,0\.4/);
-  assert.deepEqual(look(st.fromHash(h).rail), look(s.rail));
+  assert.match(h, /rk=3\.5,1\.75,0\.2(&|$)/);
+  assert.match(h, /pl=ffcc00,0\.4/);
+  assert.deepEqual(look(st.fromHash(h)), look(s));
 });
 
 test('older links, without them, read as the defaults; bad values are clamped or dropped', () => {
   const s = structuredClone(st.defaults);
   s.rail.single = '#123456'; // some rail field in the link, so it has an rs= but no rk=
   const b = st.fromHash(st.toHash(s, true));
-  assert.deepEqual(look(b.rail), look(st.defaults.rail));
+  assert.deepEqual(look(b), look(st.defaults));
   const c = st.fromHash('#rk=99,0.01,7,nothex,-1');
-  assert.deepEqual(look(c.rail), { ties: 5, stopSize: 0.25, stopContrast: 1, stopOutline: st.defaults.rail.stopOutline, stopOutlineOpacity: 0 });
+  assert.deepEqual(look(c), { ties: 5, stopSize: 0.25, stopContrast: 1, outline: st.defaults.pointOutline, outlineOpacity: 0 });
   const d = st.fromHash('#rk=2');
-  assert.deepEqual(look(d.rail), { ...look(st.defaults.rail), ties: 2 });
+  assert.deepEqual(look(d), { ...look(st.defaults), ties: 2 });
+});
+
+test('a link with the rail card\'s old stop outline carries it to the point outline', () => {
+  const e = st.fromHash('#rk=2,1,0.5,AABBCC,0.3');
+  assert.deepEqual(look(e), { ...look(st.defaults), ties: 2, stopContrast: 0.5, outline: '#aabbcc', outlineOpacity: 0.3 });
 });
 
 test('saved settings keep them, and settings saved before them take the defaults', () => {
-  const r = { ties: 1.5, stopSize: 3, stopContrast: 0.9, stopOutline: '#AABBCC', stopOutlineOpacity: 0.3 };
-  assert.deepEqual(look(st.fromSaved({ rail: r }).rail), { ...r, stopOutline: '#aabbcc' });
-  assert.deepEqual(look(st.fromSaved({ rail: { on: true } }).rail), look(st.defaults.rail));
-  assert.deepEqual(look(st.fromSaved({ rail: { ties: 'x', stopOutline: 'red' } }).rail), look(st.defaults.rail));
+  const s = st.fromSaved({ rail: { ties: 1.5, stopSize: 3, stopContrast: 0.9 }, pointOutline: '#AABBCC', pointOutlineOpacity: 0.3 });
+  assert.deepEqual(look(s), { ties: 1.5, stopSize: 3, stopContrast: 0.9, outline: '#aabbcc', outlineOpacity: 0.3 });
+  assert.deepEqual(look(st.fromSaved({ rail: { on: true } })), look(st.defaults));
+  assert.deepEqual(look(st.fromSaved({ rail: { ties: 'x', stopOutline: 'red' } })), look(st.defaults));
+});
+
+test('the rail card\'s saved stop outline moves to the point outline once', () => {
+  const old = st.fromSaved({ rail: { stopOutline: '#AABBCC', stopOutlineOpacity: 0.3 } });
+  assert.deepEqual([old.pointOutline, old.pointOutlineOpacity], ['#aabbcc', 0.3]);
+  assert.ok(!('stopOutline' in old.rail));
+  // Saved since: the map's wins over a leftover rail one.
+  const now = st.fromSaved({ rail: { stopOutline: '#AABBCC', stopOutlineOpacity: 0.3 }, pointOutline: '#112233', pointOutlineOpacity: 0.7 });
+  assert.deepEqual([now.pointOutline, now.pointOutlineOpacity], ['#112233', 0.7]);
 });

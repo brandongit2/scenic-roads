@@ -340,6 +340,12 @@ export class Overlays {
     this.state = s;
     const spacing = kindSpacing(s.labelDensity, 'landmarks');
     this.names.spacingPx = spacing;
+    // The map's point outline: the dots' and icons' halo, and the heritage components'.
+    this.dots.setOutline(s.pointOutline, s.pointOutlineOpacity);
+    if (map.getLayer('heritage-part')) {
+      map.setPaintProperty('heritage-part', 'circle-stroke-color', s.pointOutline);
+      map.setPaintProperty('heritage-part', 'circle-stroke-opacity', ['interpolate', ['linear'], ['zoom'], 10, 0, 12, 0.85 * s.pointOutlineOpacity]);
+    }
     for (const [k] of OVERLAYS) {
       const on = s.overlays[k];
       const src = OVERLAY_SOURCE[k];
