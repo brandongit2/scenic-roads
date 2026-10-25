@@ -67,7 +67,7 @@ impl Inbox {
         self.held.lock().unwrap().clone()
     }
 
-    /// Drops what it holds from `from` up to number `upto` (read, its mark on disk), and every
+    /// Drops what it holds from each sender up to its mark in `marks` (read, on disk), and every
     /// sender's not in `keep` (forgotten); rewritten when that changed.
     pub fn read_up_to(&self, marks: &BTreeMap<String, u64>, keep: impl Fn(&str) -> bool) {
         let mut g = self.held.lock().unwrap();
@@ -78,7 +78,10 @@ impl Inbox {
             !q.is_empty() && keep(from)
         });
         if next != *g {
-            match serde_json::to_vec(&next).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&self.path, &b)) {
+            match serde_json::to_vec(&next)
+                .map_err(anyhow::Error::from)
+                .and_then(|b| crate::whole::write(&self.path, &b))
+            {
                 Ok(()) => *g = next,
                 Err(e) => eprintln!("pool: the inbox: {e:#}"),
             }
@@ -98,7 +101,10 @@ mod tests {
         let p = d.path().join("inbox.json");
         let i = Inbox::open(&p);
         assert_eq!(i.put(A, vec![(5, serde_json::json!({"Leads": 3}))]).unwrap(), 5);
-        assert_eq!(i.put(A, vec![(5, serde_json::json!({"Leads": 3})), (7, serde_json::json!({"Leads": 4}))]).unwrap(), 7);
+        assert_eq!(
+            i.put(A, vec![(5, serde_json::json!({"Leads": 3})), (7, serde_json::json!({"Leads": 4}))]).unwrap(),
+            7
+        );
         // (A new process: read back from its disk, each once.)
         let again = Inbox::open(&p);
         assert_eq!(again.held()[A].iter().map(|(n, _)| *n).collect::<Vec<_>>(), [5, 7]);

@@ -2841,7 +2841,11 @@ mod tests {
             until(
                 a,
                 || Give { able: true, ..Default::default() },
-                |o| o.send.iter().any(|(to, m)| to == ib && matches!(m, Msg::Ack { keys, .. } if keys.iter().any(|k| k == key))),
+                |o| {
+                    o.send
+                        .iter()
+                        .any(|(to, m)| to == ib && matches!(m, Msg::Ack { keys, .. } if keys.iter().any(|k| k == key)))
+                },
             );
         }
 
