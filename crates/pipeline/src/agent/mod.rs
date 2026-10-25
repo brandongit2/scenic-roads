@@ -6159,7 +6159,8 @@ impl Agent {
         if let Some(t) = self.retire_task.take_if(|t| t.is_finished()) {
             match t.join() {
                 Ok(f) if !f.is_empty() => {
-                    let said: Vec<String> = f.iter().map(|(k, b)| format!("{} {}", room::size(*b), room::words(k))).collect();
+                    let said: Vec<String> =
+                        f.iter().map(|(k, b)| format!("{} {}", room::size(*b), room::words(k))).collect();
                     eprintln!("agent: deleted what no code reads of the cache: {}", said.join(", "));
                 }
                 Ok(_) => {}
