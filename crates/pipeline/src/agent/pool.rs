@@ -771,8 +771,19 @@ impl Side {
         let mut msgs = Vec::new();
         let mut posted = self.inbox.held();
         posted.retain(|from, _| *from != self.me.id && !self.forgotten.contains(from));
-        for from in posted.keys() {
-            self.heard_of(from);
+        // (A sender it doesn't know yet: known once its heartbeat is on the NAS, as a listing would
+        // find it; none there, passed over and dropped, so no post makes up a member; the NAS not
+        // read, kept for the next read.)
+        let mut strangers = BTreeSet::new();
+        let froms: Vec<String> = posted.keys().filter(|f| !self.members.contains(*f)).cloned().collect();
+        for from in froms {
+            match self.read_heartbeat(&from) {
+                Ok(Some(_)) => self.heard_of(&from),
+                Ok(None) => {
+                    strangers.insert(from);
+                }
+                Err(_) => {}
+            }
         }
         let others: Vec<String> = self.members.iter().filter(|m| **m != self.me.id).cloned().collect();
         for from in others {
@@ -794,7 +805,7 @@ impl Side {
         }
         if self.save_mail() {
             let forgotten = &self.forgotten;
-            self.inbox.read_up_to(&self.mail.read, |m| !forgotten.contains(m));
+            self.inbox.read_up_to(&self.mail.read, |m| !forgotten.contains(m) && !strangers.contains(m));
         }
         msgs
     }
@@ -2872,6 +2883,12 @@ mod tests {
         assert_eq!(m.a.inbox().held()[&ib].len(), 1);
         Mail::acknowledged(&mut m.a, &ib, &key);
         assert!(m.a.inbox().held().is_empty(), "read, dropped once its mark is on disk");
+        // (Review) a post from an id with no heartbeat makes up no member: passed over, dropped.
+        let stranger = "m-00000000000000dd";
+        m.a.inbox().put(stranger, vec![(1, serde_json::json!({"Leads": 9}))]).unwrap();
+        m.a.step(Give { able: true, ..Default::default() }, &any);
+        assert!(!m.a.members().contains(stranger));
+        assert!(m.a.inbox().held().is_empty());
         // An old lead: its heartbeat says nothing of mail by HTTP.
         let ia = m.a.member().id.clone();
         let path = m.r.join(crate::pool::beat::path(&ia));

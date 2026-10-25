@@ -1088,7 +1088,10 @@ next process; the HTTP path keeps that (below).
 - **Auth**: the build's key (the coordinator's contact token, as every agent request: no page may
   call it, a viewer refuses it). Sent only to the lead's tailnet addresses (`mail_urls`: 100.64/10
   or `.ts.net`; never `.local` or a LAN address, any device's on the network to claim), its
-  heartbeat's broker's, else its contact's. None: by mailbox.
+  heartbeat's broker's, else its contact's. None: by mailbox. The key is the whole build's, not
+  one member's: `from` is what the post says, as a mailbox's path is (any member could write
+  another's on the NAS); the lead takes a sender it doesn't know only once its heartbeat is on the
+  NAS, and drops a post from one without, so no post makes up a member.
 - **Taken only by the member it's to**: the coordinator answers 409 unless `to` is its own member
   (`Shared::pool_member`) and its agent gave it an inbox. A lead that changed mid-send still takes
   mail to itself, as its mailbox would; an address that now answers as another member refuses it.
