@@ -479,7 +479,8 @@ impl Grid {
         let mut starts: Vec<u32> = vec![0; nx * ny + 1];
         each(&mut |c, _, _| starts[c + 1] += 1);
         for c in 0..nx * ny {
-            starts[c + 1] += starts[c];
+            // (Past u32's 4 billion entries the starts would wrap: refused, not read wrong.)
+            starts[c + 1] = starts[c + 1].checked_add(starts[c]).expect("a shape's grid over 4 billion edge entries");
         }
         let mut edges: Vec<(u32, u32)> = vec![(0, 0); starts[nx * ny] as usize];
         let mut at: Vec<u32> = starts[..nx * ny].to_vec();
@@ -932,6 +933,78 @@ mod tests {
             .collect();
         let hole = vec![e7(-2.1, 54.95), e7(-1.9, 54.95), e7(-1.9, 55.05), e7(-2.1, 55.05)];
         vec![outer, hole]
+    }
+
+    /// The grid's one edge list with per-cell starts holds, cell by cell, the edges the list a
+    /// cell held (lead memory, 25 Oct), in the same order: random rings, with and without a
+    /// buffer, a shape of one cell and the empty shape.
+    #[test]
+    fn grid_cells_list_the_edges_a_list_a_cell_did() {
+        let mut seed = 777u64;
+        let mut rnd = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as f64 / (1u64 << 31) as f64
+        };
+        let mut cases: Vec<(Vec<Vec<[i32; 2]>>, f64)> = vec![(Vec::new(), 0.0), (vec![vec![e7(1.0, 1.0); 3]], 500.0)];
+        for k in 0..12 {
+            let rings: Vec<Vec<[i32; 2]>> = (0..1 + (rnd() * 4.0) as usize)
+                .map(|_| {
+                    let (cx, cy, r) = (rnd() * 20.0 - 10.0, rnd() * 120.0 - 60.0, 0.01 + rnd() * 3.0);
+                    let n = 3 + (rnd() * 300.0) as usize;
+                    (0..n)
+                        .map(|i| {
+                            let t = i as f64 / n as f64 * std::f64::consts::TAU;
+                            let rr = r * (0.5 + rnd());
+                            e7(cx + rr * t.dcos(), cy + rr * t.dsin())
+                        })
+                        .collect()
+                })
+                .collect();
+            cases.push((rings, [0.0, 1000.0, OSM_BUFFER_M][k % 3]));
+        }
+        cases.push((shape_rings(), 1000.0));
+        for (n, (rings, buffer_m)) in cases.into_iter().enumerate() {
+            let s = Shape::new("t".into(), rings.clone(), buffer_m);
+            let g = &s.grid;
+            // (The old build, a list a cell, from the same cells per edge; the buffer in E7 units as Shape::new works it out.)
+            let mut bb = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
+            for p in rings.iter().flatten() {
+                bb = [bb[0].min(p[0]), bb[1].min(p[1]), bb[2].max(p[0]), bb[3].max(p[1])];
+            }
+            let lat = (bb[1].unsigned_abs().max(bb[3].unsigned_abs()) as f64 * 1e-7).min(85.0);
+            let be = ((buffer_m / (M_PER_E7 * lat.to_radians().dcos())).ceil() as i32)
+                .max((buffer_m / M_PER_E7).ceil() as i32) as f64;
+            assert_eq!(g.starts.len(), g.nx * g.ny + 1, "case {n}");
+            assert_eq!(g.starts[0], 0, "case {n}");
+            assert_eq!(*g.starts.last().unwrap() as usize, g.edges.len(), "case {n}");
+            assert!(g.starts.windows(2).all(|w| w[0] <= w[1]), "case {n}");
+            let mut old: Vec<Vec<(u32, u32)>> = vec![Vec::new(); g.nx * g.ny];
+            for (ri, r) in rings.iter().enumerate() {
+                for i in 0..r.len() {
+                    let (a, b) = (r[i], r[(i + 1) % r.len()]);
+                    if a == b {
+                        continue;
+                    }
+                    let c = |v: f64, o: f64, w: f64, m: usize| (((v - o) / w).floor().max(0.0) as usize).min(m - 1);
+                    let (cx0, cx1) = (
+                        c(a[0].min(b[0]) as f64 - be, g.x0, g.cw, g.nx),
+                        c(a[0].max(b[0]) as f64 + be, g.x0, g.cw, g.nx),
+                    );
+                    let (cy0, cy1) = (
+                        c(a[1].min(b[1]) as f64 - be, g.y0, g.ch, g.ny),
+                        c(a[1].max(b[1]) as f64 + be, g.y0, g.ch, g.ny),
+                    );
+                    for cy in cy0..=cy1 {
+                        for cx in cx0..=cx1 {
+                            old[cy * g.nx + cx].push((ri as u32, i as u32));
+                        }
+                    }
+                }
+            }
+            for (c, e) in old.iter().enumerate() {
+                assert_eq!(g.edges(c), &e[..], "case {n}, cell {c}");
+            }
+        }
     }
 
     #[test]

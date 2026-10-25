@@ -1208,8 +1208,13 @@ fn mac_of(m: &Machine) -> String {
 /// Cut once its thread has computed `budget`, or after `BACKSTOP` times it on the wall clock
 /// (`Sim::cut`, `thread_cpu`).
 fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64, budget: Duration) -> Sim {
+    run_on(inp, items(inp), scale, budget)
+}
+
+/// `run` on the items given.
+fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duration) -> Sim {
     let (cpu0, wall0) = (thread_cpu(), Instant::now());
-    let Items { mut items, region_items, groups } = items(inp);
+    let Items { mut items, region_items, groups } = its;
     for it in &mut items {
         it.cost.secs = scale(&it.cost).max(1.0);
     }
@@ -3560,6 +3565,52 @@ mod tests {
     /// of thousands of targets across regions and chains, twenty lanes on two Macs, the
     /// scheduler's state with thousands of measures (their NAS rates too), the NAS budget on and
     /// leases out. The forecast runs whole in bounded time; past its budget, cut and said so.
+    /// The shared groups wait as the per-target lists they replaced (lead memory, 25 Oct): each
+    /// input run with its groups, and again with every group spread into its items' own deps (the
+    /// old lists), places every item on the same machine at the same times.
+    #[test]
+    fn groups_wait_as_the_lists_they_replaced() {
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        for round in 0..6 {
+            let mut inp = live_scale_input(2 + next(5), 3 + next(20));
+            let job = |s: &str, t: String| (s.to_string(), t, Cost { secs: 50.0, known: true, peak_mb: 500 });
+            inp.before = (0..next(3)).map(|i| job(UNITS_NEED[i], "all".into())).collect();
+            inp.after = (0..next(3)).map(|i| job("catalog", format!("a{i}"))).collect();
+            inp.idle = (0..next(3)).map(|i| job("idle", format!("i{i}"))).collect();
+            let mut regions = inp.regions.to_vec();
+            for r in regions.iter_mut() {
+                r.slope_deep = r.slope.iter().take(next(4)).map(|t| t.replace("8/", "10/")).collect();
+                r.own_terrain_lo = vec!["3/0/0".into()];
+                r.terrain_lo = r.own_terrain_lo.clone();
+                r.slope_lo = vec!["3/0/0".into()];
+                r.expected = r.terrain.iter().skip(3).take(next(6)).cloned().collect();
+            }
+            inp.regions = Cow::Owned(regions);
+            let groups = items(&inp);
+            let mut spread = items(&inp);
+            for it in spread.items.iter_mut() {
+                for &g in &it.groups {
+                    it.deps.extend(&spread.groups[g]);
+                }
+                it.groups.clear();
+            }
+            spread.groups.clear();
+            assert!(groups.groups.iter().any(|g| !g.is_empty()), "round {round}: no group");
+            let a = run_on(&inp, groups, &scaled(SCALINGS[0]), Duration::from_secs(600));
+            let b = run_on(&inp, spread, &scaled(SCALINGS[0]), Duration::from_secs(600));
+            assert!(a.done && b.done && !a.cut && !b.cut, "round {round}");
+            let at = |s: &Sim| s.items.iter().map(|i| (i.by, i.from.to_bits(), i.end.to_bits())).collect::<Vec<_>>();
+            assert_eq!(at(&a), at(&b), "round {round}");
+            assert_eq!(a.grants, b.grants, "round {round}");
+        }
+    }
+
     #[test]
     fn a_live_scale_forecast_runs_whole_and_bounded() {
         let inp = live_scale_input(400, 1500);
