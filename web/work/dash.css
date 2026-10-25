@@ -264,7 +264,8 @@ select.past { margin-left: 4px; background: var(--bg); color: var(--text); borde
 .cells > .jb.c-run { border: 1px solid var(--c); background: color-mix(in srgb, var(--c) 12%, transparent); }
 .cells > .jb:hover { outline: 1px solid var(--mark); }
 @media (max-width: 719px) {
-  .stages { grid-template-columns: 14px minmax(0, 1fr) max-content; }
+  /* (A name keeps 96 px, the counts wrap beside it: long counts once squeezed the names to a letter a line.) */
+  .stages { grid-template-columns: 14px minmax(96px, 1fr) minmax(0, max-content); }
   .stages > .sh .title, .stages > .st .title { grid-column: 2; } .stages > .sh .pbar { grid-column: 2 / -1; }
 }
 .mark { color: var(--dim); text-align: center; } .mark.ok { color: var(--ok); } .mark.run { color: var(--accent); }

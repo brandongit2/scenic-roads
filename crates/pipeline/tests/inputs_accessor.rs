@@ -61,7 +61,7 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/bld/task.rs", "spec", "\"inputs\": list", "a task's input files (its spec's \"inputs\"), not a drop box"),
     ("crates/pipeline/src/terrain_task.rs", "spec", "\"inputs\": [[", "a task's input files (its spec's \"inputs\"), not a drop box"),
     ("crates/pipeline/src/agent/gc.rs", "NEVER", "\"translations\"", "GC's never-swept list (§4.9): the drop boxes, and the old translations/ and descriptions/ (#137), whose drops the input check flags"),
-    ("crates/pipeline/src/agent/steps.rs", "TABLE", "^\"inputs\",\"Input check\"", "the `inputs` step's row"),
+    ("crates/pipeline/src/agent/steps.rs", "TABLE", "^\"inputs\",\"Checks an input", "the `inputs` step's row"),
     ("crates/pipeline/src/agent/build.rs", "record", "^\"inputs\"| \"outlines\"", "the `inputs` step's name"),
     ("crates/pipeline/src/agent/backup.rs", "FOLDERS", "[\"inputs\",", "the backups: every drop box and the acceptances, by design (§4.9)"),
     ("crates/pipeline/src/agent/mod.rs", "finished", "\"inputs \"", "the `inputs` step's job ids"),
