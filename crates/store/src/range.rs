@@ -168,11 +168,17 @@ impl RangeRead for PooledFile {
 
 /// A file read with plain positioned reads (no pool, never mapped): for build steps, which may read
 /// the NAS directly (they run alone, and a stalled share just stalls the step).
-/// Its reads are counted as this Mac's own disk's (`LOCAL`) when it's on one.
+/// Its reads are counted as this Mac's own disk's (`LOCAL`) when it's on one. A read the share fails
+/// for a moment (crate::retry::transient) is tried again, the file opened again by its path (a
+/// dropped SMB session's handle stays dead), within crate::retry's bound.
 pub struct PlainFile {
-    file: File,
+    file: std::sync::Mutex<std::sync::Arc<File>>,
+    path: std::path::PathBuf,
     len: u64,
     local: bool,
+    /// (Tests: this many reads fail with this OS error first.)
+    #[cfg(test)]
+    faults: std::sync::Mutex<(u32, i32)>,
 }
 
 impl PlainFile {
@@ -184,7 +190,48 @@ impl PlainFile {
         if !local {
             crate::nasio::opened(path, len, t.elapsed().as_millis() as u64);
         }
-        Ok(Self { file, len, local })
+        Ok(Self {
+            file: std::sync::Mutex::new(std::sync::Arc::new(file)),
+            path: path.to_path_buf(),
+            len,
+            local,
+            #[cfg(test)]
+            faults: std::sync::Mutex::new((0, 0)),
+        })
+    }
+
+    /// One positioned read of `f`.
+    fn read_once(&self, f: &File, b: &mut [u8], off: u64) -> std::io::Result<()> {
+        use crate::sys::PosIo;
+        #[cfg(test)]
+        {
+            let mut g = self.faults.lock().unwrap();
+            if g.0 > 0 {
+                g.0 -= 1;
+                return Err(std::io::Error::from_raw_os_error(g.1));
+            }
+        }
+        f.read_exact_at(b, off)
+    }
+
+    fn handle(&self) -> std::sync::Arc<File> {
+        self.file.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// The file opened again by its path (its length unchanged: else `InvalidData`, never tried
+    /// again), for the reads after it.
+    fn reopen(&self) -> std::io::Result<std::sync::Arc<File>> {
+        let f = File::open(&self.path)?;
+        let len = f.metadata()?.len();
+        if len != self.len {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{} is {len} bytes now, {} when opened", self.path.display(), self.len),
+            ));
+        }
+        let f = std::sync::Arc::new(f);
+        *self.file.lock().unwrap_or_else(|p| p.into_inner()) = f.clone();
+        Ok(f)
     }
 }
 
@@ -194,10 +241,27 @@ impl RangeRead for PlainFile {
     }
 
     fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
-        use crate::sys::PosIo;
         check_range(self.len, off, len)?;
         let mut b = vec![0u8; len];
-        self.file.read_exact_at(&mut b, off).map_err(IoError::Io)?;
+        if let Err(e) = self.read_once(&self.handle(), &mut b, off) {
+            if !crate::retry::transient(&e) {
+                return Err(IoError::Io(e));
+            }
+            let what = format!("{}: read {len} bytes at {off}", self.path.display());
+            eprintln!("{what}: {e}");
+            // (Opened again each try: a "not found" then is the share's moment, the file was open.)
+            crate::retry::io(
+                &what,
+                Some(&self.path),
+                &crate::retry::waits(),
+                crate::retry::transient_or_missing,
+                || {
+                    let f = self.reopen()?;
+                    self.read_once(&f, &mut b, off)
+                },
+            )
+            .map_err(IoError::Io)?;
+        }
         if self.local {
             count_local(len as u64);
         } else {
@@ -311,6 +375,32 @@ mod tests {
         assert_eq!(r.read_at(10, 0).unwrap(), b"");
         assert!(matches!(r.read_at(8, 3), Err(IoError::Io(e)) if e.kind() == io::ErrorKind::UnexpectedEof));
         assert!(r.read_at(u64::MAX, 2).is_err());
+    }
+
+    /// A plain file's read the share fails for a moment, with each errno, is tried again (the file
+    /// opened again) and reads the same bytes; one failing past the bound fails with its error.
+    #[test]
+    fn plain_reads_ride_out_a_short_outage() {
+        crate::retry::fast();
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("f");
+        std::fs::write(&p, b"0123456789").unwrap();
+        let f = PlainFile::open(&p).unwrap();
+        for code in [libc::EIO, libc::ENXIO, libc::ETIMEDOUT, libc::ENOTCONN, libc::EAGAIN, libc::ESTALE] {
+            *f.faults.lock().unwrap() = (4, code);
+            assert_eq!(f.read_at(2, 5).unwrap(), b"23456", "errno {code}");
+        }
+        *f.faults.lock().unwrap() = (u32::MAX, libc::ENXIO);
+        let e = f.read_at(0, 3).unwrap_err().to_string();
+        assert_eq!(e, io::Error::from_raw_os_error(libc::ENXIO).to_string());
+        // Not the share's moment: at once.
+        *f.faults.lock().unwrap() = (1, libc::EISDIR);
+        assert!(f.read_at(0, 3).is_err());
+        assert_eq!(f.read_at(0, 3).unwrap(), b"012");
+        // The file changed under it: an error, not its new bytes.
+        *f.faults.lock().unwrap() = (1, libc::EIO);
+        std::fs::write(&p, b"01234").unwrap();
+        assert!(f.read_at(0, 3).unwrap_err().to_string().contains("5 bytes now"));
     }
 
     #[test]

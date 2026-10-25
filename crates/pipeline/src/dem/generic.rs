@@ -212,22 +212,54 @@ pub fn stored_name(url: &str) -> String {
 /// fetched here: a file the store lacks, or holds cut short, is an error naming it (a stored
 /// dataset is fetched once, by `scenic-build store-fetch <id> --index <its index>`: crate::dem::store_fetch).
 pub fn stored(id: &str, dir: &std::path::Path, url: &str) -> Result<Option<Arc<dyn RangeRead>>> {
+    stored_with(id, dir, url, &store::retry::waits())
+}
+
+/// `stored`, a read the share fails for a moment tried again after each of `waits`
+/// (store::retry): a "not found" too, when the store's listing has the file. A file the listing
+/// lacks fails at once, as does one cut short.
+fn stored_with(
+    id: &str,
+    dir: &std::path::Path,
+    url: &str,
+    waits: &[std::time::Duration],
+) -> Result<Option<Arc<dyn RangeRead>>> {
+    use store::retry::{io, transient, transient_or_missing};
     let name = stored_name(url);
     let f = dir.join(&name);
-    if !f.exists() {
-        if dir.join(format!("{name}.none")).exists() {
-            return Ok(None);
+    let what = format!("{id}: tile {name} in the store ({})", dir.display());
+    if let Err(e) = io(&what, Some(&f), waits, transient, || std::fs::metadata(&f)) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err(anyhow::Error::from(e).context(format!("{what}: its size")));
         }
-        bail!("{id}: tile {name} isn't in the store ({}): z6 tile builds don't download it; fetch it into the store first (scenic-build store-fetch {id} --index <its index>, docs/inputs.md §6.8)", dir.display());
+        let listed = io(&what, Some(dir), waits, transient, || {
+            let mut has = (false, false);
+            for d in std::fs::read_dir(dir)? {
+                let d = d?.file_name();
+                has.0 |= d.to_str() == Some(&name);
+                has.1 |= d.to_str() == Some(&format!("{name}.none"));
+            }
+            Ok(has)
+        });
+        match listed {
+            Ok((_, true)) => return Ok(None),
+            Ok((false, false)) => bail!("{id}: tile {name} isn't in the store ({}): z6 tile builds don't download it; fetch it into the store first (scenic-build store-fetch {id} --index <its index>, docs/inputs.md §6.8)", dir.display()),
+            Ok((true, false)) => eprintln!("{what}: not found, yet listed: the share's moment"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => bail!("{id}: the store {} isn't there", dir.display()),
+            Err(e) => return Err(anyhow::Error::from(e).context(format!("{id}: listing the store ({})", dir.display()))),
+        }
     }
-    let whole = crate::whole::tiff_file_checked(&f)
-        .with_context(|| format!("{id}: reading tile {name} in the store ({})", dir.display()))?;
-    ensure!(
-        whole,
-        "{id}: tile {name} in the store ({}) isn't whole: remove it and fetch it again (scenic-build store-fetch {id} --index <its index>)",
-        dir.display()
-    );
-    Ok(Some(Arc::new(PlainFile::open(&f)?)))
+    let read = io(&what, Some(&f), waits, transient_or_missing, || {
+        Ok(crate::whole::tiff_file_checked(&f)?.then(|| PlainFile::open(&f)).transpose()?)
+    })
+    .with_context(|| format!("{id}: reading tile {name} in the store ({})", dir.display()))?;
+    let Some(file) = read else {
+        bail!(
+            "{id}: tile {name} in the store ({}) isn't whole: remove it and fetch it again (scenic-build store-fetch {id} --index <its index>)",
+            dir.display()
+        );
+    };
+    Ok(Some(Arc::new(file)))
 }
 
 /// One GeoTIFF dataset's files as they're read.

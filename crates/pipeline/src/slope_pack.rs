@@ -438,7 +438,7 @@ pub fn read_mid(path: &std::path::Path) -> Result<((u32, u32), Vec<Made>)> {
     let bytes = crate::depth::grids::open_retrying(
         path,
         &|p| crate::depth::grids::within(p, MID_DEADLINE, read_file),
-        MID_WAITS,
+        &mid_waits(),
     )
     .with_context(what)?;
     let r = store::sect::SectReader::open(bytes).with_context(what)?;
@@ -473,8 +473,13 @@ const MID_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// The waits before a mid's read is tried again (crate::depth::grids::open_retrying); a test's
 /// short.
-const MID_WAITS: &[std::time::Duration] =
-    if cfg!(test) { &[std::time::Duration::from_millis(1)] } else { &crate::depth::grids::OPEN_WAITS };
+fn mid_waits() -> Vec<std::time::Duration> {
+    if cfg!(test) {
+        vec![std::time::Duration::from_millis(1)]
+    } else {
+        store::retry::waits()
+    }
+}
 
 /// How many mids an assembly reads at once (`read_mids`): each a round trip or two to the share.
 const MIDS_AT_ONCE: usize = 8;
@@ -954,7 +959,7 @@ pub fn read_deep_mid(path: &std::path::Path) -> Result<((u32, u32), DeepMid)> {
     let bytes = crate::depth::grids::open_retrying(
         path,
         &|p| crate::depth::grids::within(p, MID_DEADLINE, read_file),
-        MID_WAITS,
+        &mid_waits(),
     )
     .with_context(what)?;
     let r = store::sect::SectReader::open(bytes).with_context(what)?;

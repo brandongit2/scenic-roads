@@ -15,6 +15,7 @@ pub mod pack;
 pub mod pieces;
 pub mod pmtiles;
 pub mod range;
+pub mod retry;
 pub mod sect;
 pub mod spawn;
 pub mod sys;

@@ -355,10 +355,10 @@ impl ManifestTiles {
     /// and retries.
     fn open_file(p: &std::path::Path) -> anyhow::Result<std::sync::Arc<OpenPack>> {
         let owned = p.to_path_buf();
-        let open = nas_call(&p.display().to_string(), NAS_DEADLINE, &NAS_WAITS, move || {
+        let open = nas_call(&p.display().to_string(), NAS_DEADLINE, &store::retry::waits(), move || {
             let file = std::fs::File::open(&owned)?;
             let len = file.metadata()?.len();
-            let idx = store::pack::PackIndex::read_from(&FileSource(&file, len)).map_err(io_kind)?;
+            let idx = store::pack::PackIndex::read_from(&FileSource(&file, len)).map_err(store::retry::as_io)?;
             Ok(std::sync::Arc::new(OpenPack { file, idx }))
         });
         anyhow::Context::with_context(open, || format!("open the pack {}", p.display()))
@@ -394,7 +394,7 @@ impl ManifestTiles {
         let Some(e) = self.pack(z, x, y)? else { return Ok(None) };
         let Some(ent) = e.idx.find(z, x, y) else { return Ok(None) };
         let (off, len) = (ent.offset, ent.len as usize);
-        let b = nas_call(&format!("{}'s {z}/{x}/{y}", self.layer), NAS_DEADLINE, &NAS_WAITS, move || {
+        let b = nas_call(&format!("{}'s {z}/{x}/{y}", self.layer), NAS_DEADLINE, &store::retry::waits(), move || {
             let mut b = vec![0u8; len];
             e.file.read_exact_at(&mut b, off)?;
             Ok(b)
@@ -451,7 +451,7 @@ impl ManifestTiles {
                             let Some((e, s0, s1, ts)) = spans.get(k) else { break };
                             let (e, s0, n) = (e.clone(), *s0, (s1 - s0) as usize);
                             let what = format!("{}'s bytes {s0}..{s1}", self.layer);
-                            let b = nas_call(&what, NAS_DEADLINE, &NAS_WAITS, move || {
+                            let b = nas_call(&what, NAS_DEADLINE, &store::retry::waits(), move || {
                                 let mut b = vec![0u8; n];
                                 e.file.read_exact_at(&mut b, s0)?;
                                 Ok(b)
@@ -525,16 +525,13 @@ impl Drop for ManifestTiles {
 /// 0.5 MB/s) before it fails: an SMB call can stay stuck in the kernel for many minutes.
 pub const NAS_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// The waits before a pack's read or open is tried again after a transient failure
-/// (crate::depth::grids::transient: SMB's moment of "No such file or directory", EIO, ESTALE…).
-pub const NAS_WAITS: [std::time::Duration; 4] = crate::depth::grids::OPEN_WAITS;
-
 /// The threads `get_many` reads a layer's spans on (SMB's throughput wants a few calls in flight).
 const SPAN_READERS: usize = 8;
 
 /// `f` on a thread of its own, waited for `deadline` at most (past it, `TimedOut`, not tried again:
 /// the thread stuck in it left behind, the job's own retry takes over), tried again after each of
-/// `waits` while it fails transiently, each retry logged. No call through it blocks for ever.
+/// `waits` while it fails as the share does for a moment (store::retry::transient_or_missing),
+/// each retry logged. No call through it blocks for ever.
 pub fn nas_call<T: Send + 'static>(
     what: &str,
     deadline: std::time::Duration,
@@ -542,47 +539,19 @@ pub fn nas_call<T: Send + 'static>(
     f: impl Fn() -> std::io::Result<T> + Send + Sync + 'static,
 ) -> std::io::Result<T> {
     let f = std::sync::Arc::new(f);
-    let mut tries = 0;
-    loop {
+    store::retry::io(what, None, waits, store::retry::transient_or_missing, || {
         let (tx, rx) = std::sync::mpsc::channel();
         let g = f.clone();
         std::thread::Builder::new().name("pack-read".into()).spawn(move || {
             let _ = tx.send(g());
         })?;
-        let r = rx.recv_timeout(deadline).unwrap_or_else(|_| {
+        rx.recv_timeout(deadline).unwrap_or_else(|_| {
             Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 format!("{what}: over {} s (the NAS's share stuck?)", deadline.as_secs()),
             ))
-        });
-        match r {
-            Ok(t) => return Ok(t),
-            Err(e) if tries < waits.len() && crate::depth::grids::transient(&e) => {
-                eprintln!("{what}: {e}; tried again in {:?}", waits[tries]);
-                std::thread::sleep(waits[tries]);
-                tries += 1;
-            }
-            Err(e) => return Err(e),
-        }
-    }
-}
-
-/// An error as an I/O error of its kind (one the chain holds; else `InvalidData`, never transient).
-fn io_kind(e: anyhow::Error) -> std::io::Error {
-    let kind = e
-        .chain()
-        .find_map(|c| c.downcast_ref::<std::io::Error>().map(|i| (i.kind(), i.raw_os_error())))
-        .or_else(|| {
-            e.chain().find_map(|c| match c.downcast_ref::<store::iopool::IoError>() {
-                Some(store::iopool::IoError::Io(i)) => Some((i.kind(), i.raw_os_error())),
-                _ => None,
-            })
-        });
-    match kind {
-        Some((_, Some(code))) => std::io::Error::from_raw_os_error(code),
-        Some((k, None)) => std::io::Error::new(k, format!("{e:#}")),
-        None => std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{e:#}")),
-    }
+        })
+    })
 }
 
 struct FileSource<'a>(&'a std::fs::File, u64);

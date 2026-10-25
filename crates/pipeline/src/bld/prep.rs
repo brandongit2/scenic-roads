@@ -777,9 +777,19 @@ pub fn read(root: &Path, release: &str, ghsl: &str, t: TileId) -> Result<Prepped
         HashMap::new();
     for &(fi, ..) in &jobs {
         if let std::collections::hash_map::Entry::Vacant(e) = opened.entry(fi) {
+            // (Read again while the share fails for a moment: store::retry; the file is listed.)
             let path = base.join(&src.files[fi].name);
-            let file = std::fs::File::open(&path).with_context(|| format!("open {}", path.display()))?;
-            let meta = super::overture::open(&file).with_context(|| format!("{}: its footer", path.display()))?;
+            let what = format!("{}: its footer", path.display());
+            let meta = store::retry::any(
+                &what,
+                Some(&path),
+                &store::retry::waits(),
+                store::retry::transient_or_missing,
+                || {
+                    let file = std::fs::File::open(&path).with_context(|| format!("open {}", path.display()))?;
+                    super::overture::open(&file).with_context(|| what.clone())
+                },
+            )?;
             e.insert((path, meta));
         }
     }
@@ -789,7 +799,9 @@ pub fn read(root: &Path, release: &str, ghsl: &str, t: TileId) -> Result<Prepped
             .par_iter()
             .map(|(fi, k, part, bx, name)| {
                 let (path, meta) = &opened[fi];
-                super::overture::row_group(path, meta, *k, *part, *bx, name)
+                store::retry::any(name, Some(path), &store::retry::waits(), store::retry::transient_or_missing, || {
+                    super::overture::row_group(path, meta, *k, *part, *bx, name)
+                })
             })
             .collect();
         for f in frames {

@@ -80,7 +80,19 @@ The share is SMB 3 on a Synology. The design assumes:
   `scache: <dir> not removed …`. Calls still busy past the retries (a read busy for 5 s, a rename aside or into
   place busy) are noted with their file, the agent's own and its Rust jobs' (`whole::stuck`,
   `whole::STUCK_ENV`); three within 10 minutes drain this Mac's new work and then remount the
-  share (`crate::agent::heal`, docs/macs.md). A writer SIGKILLed mid-write leaves only its
+  share (`crate::agent::heal`, docs/macs.md). A build job's read that the share fails for a
+  moment (`store::retry`, task #656: EIO, ENXIO "Device not configured", ETIMEDOUT and the other
+  disconnects, EAGAIN, ESTALE; a "not found" only on a file known to be there: one open, one the
+  store's listing has, a source the release lists) is tried again after 1, 2, 4, 8, 16 s, then
+  30 s six times (211 s in all), each try logged; a process's retries run one at a time. Before
+  the last try the share's mount is looked at, and a share gone or not answering is waited for a
+  minute (the agent remounts it; a job never does). Past that the job fails with the original
+  error. Covered: plain-file reads (`store::range::PlainFile`, reopened by path each try: the
+  GLO-30 store's TIFF blocks, depth grids, building work files), GLO-30 store tiles' lookup and
+  check (`dem::generic::stored`: a tile the store's listing lacks fails at once, one cut short
+  too), terrain and slope packs' opens and spans (`terrain_pack::nas_call`), source grids' opens
+  (`depth::grids::open_retrying`), slope mids, and bldprep's parquet footers and row groups.
+  A writer SIGKILLed mid-write leaves only its
   temporary file (test `whole_kill`, on local disk, not SMB). No NAS file is flock'd or opened with O_EXLOCK/O_SHLOCK: every
   lock (`sys::PathLock`: the build lock, the member and agent locks; store::cachefile's holds) is
   on a local file; terms and leases use create-new (O_EXCL), an atomic create whose handle is

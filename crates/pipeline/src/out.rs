@@ -841,7 +841,7 @@ fn upload_hashed(
 }
 
 /// `upload`, tried again after each of `waits` while it fails transiently
-/// (crate::depth::grids::transient: an SMB moment of ENOENT, EIO, a reset connection), each retry
+/// (store::retry::transient_or_missing: an SMB moment of ENOENT, EIO, a reset connection), each retry
 /// logged; its last error returned.
 fn upload_retrying(
     root: &Path,
@@ -857,8 +857,9 @@ fn upload_retrying(
             Err(e)
                 if tries < waits.len()
                     && local.exists()
-                    && e.chain()
-                        .any(|c| c.downcast_ref::<std::io::Error>().is_some_and(crate::depth::grids::transient)) =>
+                    && e.chain().any(|c| {
+                        c.downcast_ref::<std::io::Error>().is_some_and(store::retry::transient_or_missing)
+                    }) =>
             {
                 eprintln!("{logical}: upload: {e:#}; again in {:?}", waits[tries]);
                 std::thread::sleep(waits[tries]);

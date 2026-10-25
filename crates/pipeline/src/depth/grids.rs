@@ -369,8 +369,9 @@ impl Reader {
         // (Its whole local copy where there's one or room for one: one sequential read of the NAS,
         // in place of a seek a grid's every block.)
         let at = crate::localread::path(self.local.as_deref(), p);
-        let f = open_retrying(&at, &|p| within(p, OPEN_DEADLINE, store::range::PlainFile::open), &OPEN_WAITS)
-            .with_context(|| format!("{}", at.display()))?;
+        let f =
+            open_retrying(&at, &|p| within(p, OPEN_DEADLINE, store::range::PlainFile::open), &store::retry::waits())
+                .with_context(|| format!("{}", at.display()))?;
         IO[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut o = self.open.lock().unwrap();
         if let Some(e) = o.packs.get(p) {
@@ -393,7 +394,7 @@ impl Reader {
             return Ok(t);
         }
         let tiff = match l.pack {
-            None => open_retrying(p, &|p| within(p, OPEN_DEADLINE, open_file), &OPEN_WAITS)
+            None => open_retrying(p, &|p| within(p, OPEN_DEADLINE, open_file), &store::retry::waits())
                 .with_context(|| format!("{}", p.display()))?,
             Some((pack, off, len)) => {
                 let f = self.pack(pack)?;
@@ -408,7 +409,7 @@ impl Reader {
                             tiff_of(Arc::new(s))
                         })
                     },
-                    &OPEN_WAITS,
+                    &store::retry::waits(),
                 )
                 .with_context(|| format!("{} in {}", p.display(), pack.display()))?
             }
@@ -480,16 +481,6 @@ pub static STRIP_CELLS: std::sync::atomic::AtomicUsize = std::sync::atomic::Atom
 /// How many of a source's grids are opened, or sampled, at once.
 pub const GRIDS_AT_ONCE: usize = 8;
 
-/// The waits between a source file's opens (task #398): an open on the NAS's SMB share can fail
-/// for a moment on a file that's there ("No such file or directory", 19 Oct: two depth-lo jobs in
-/// the same minute).
-pub const OPEN_WAITS: [std::time::Duration; 4] = [
-    std::time::Duration::from_secs(2),
-    std::time::Duration::from_secs(5),
-    std::time::Duration::from_secs(15),
-    std::time::Duration::from_secs(30),
-];
-
 /// A GeoTIFF opened, its header read. (Not on crate::agent::nasread's readers: their four
 /// threads, busy, fail a call at once, and the grids are opened `GRIDS_AT_ONCE` at once.)
 /// An I/O error in its header's read keeps its kind (a transient one is tried again); a header
@@ -500,24 +491,9 @@ fn open_file(p: &Path) -> std::io::Result<Tiff> {
     tiff_of(Arc::new(Counted(f)))
 }
 
-/// A GeoTIFF's header read from `src` (`open_file`'s errors).
+/// A GeoTIFF's header read from `src` (`open_file`'s errors: store::retry::as_io).
 fn tiff_of(src: Arc<dyn RangeRead>) -> std::io::Result<Tiff> {
-    Tiff::open(src).map_err(|e| {
-        let kind = e
-            .chain()
-            .find_map(|c| c.downcast_ref::<std::io::Error>().map(|i| (i.kind(), i.raw_os_error())))
-            .or_else(|| {
-                e.chain().find_map(|c| match c.downcast_ref::<store::IoError>() {
-                    Some(store::IoError::Io(i)) => Some((i.kind(), i.raw_os_error())),
-                    _ => None,
-                })
-            });
-        match kind {
-            Some((_, Some(code))) => std::io::Error::from_raw_os_error(code),
-            Some((k, None)) => std::io::Error::new(k, format!("{e:#}")),
-            None => std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{e:#}")),
-        }
-    })
+    Tiff::open(src).map_err(store::retry::as_io)
 }
 
 /// How long a source file's open and header read may take before the job fails (an SMB open can
@@ -552,42 +528,16 @@ pub fn within_do<T: Send + 'static>(
     })
 }
 
-/// Whether an open's failure may pass: SMB's moment of "No such file or directory" on a file
-/// that's there, an interrupted or reset call, EIO, ESTALE. Not a deadline passed (the job fails,
-/// its retry takes over), nor a file that isn't a GeoTIFF.
-pub fn transient(e: &std::io::Error) -> bool {
-    use std::io::ErrorKind as K;
-    matches!(
-        e.kind(),
-        K::NotFound
-            | K::Interrupted
-            | K::WouldBlock
-            | K::ConnectionReset
-            | K::ConnectionAborted
-            | K::NotConnected
-            | K::BrokenPipe
-    ) || matches!(e.raw_os_error(), Some(libc::EIO | libc::ESTALE | libc::EAGAIN | libc::EINTR))
-}
-
-/// `open(p)`, tried again after each of `waits` while it fails transiently (`transient`; its
-/// last error returned), each retry logged.
+/// `open(p)`, tried again after each of `waits` while it fails as the share does for a moment
+/// (store::retry::transient_or_missing: SMB's moment of "No such file or directory" on a file
+/// that's there, EIO, ENXIO, ESTALE…; not a deadline passed, nor a file that isn't a GeoTIFF), each
+/// retry logged; past the waits, its last error.
 pub fn open_retrying<T>(
     p: &Path,
     open: &dyn Fn(&Path) -> std::io::Result<T>,
     waits: &[std::time::Duration],
 ) -> std::io::Result<T> {
-    let mut tries = 0;
-    loop {
-        match open(p) {
-            Ok(t) => return Ok(t),
-            Err(e) if tries < waits.len() && transient(&e) => {
-                eprintln!("{}: {e}; opened again in {:?}", p.display(), waits[tries]);
-                std::thread::sleep(waits[tries]);
-                tries += 1;
-            }
-            Err(e) => return Err(e),
-        }
-    }
+    store::retry::io(&p.display().to_string(), Some(p), waits, store::retry::transient_or_missing, || open(p))
 }
 
 /// How many of a window's blocks are read at once (`Tiff::prefetch_window`; 1: in turn, as
@@ -1648,7 +1598,7 @@ pub(crate) mod tests {
         };
         assert!(open_retrying(Path::new("x"), &bad, &waits).is_err());
         assert_eq!(tries.get(), 1);
-        assert!(transient(&io::Error::from_raw_os_error(libc::EIO)));
+        assert!(store::retry::transient_or_missing(&io::Error::from_raw_os_error(libc::EIO)));
         fn stuck(_: &Path) -> io::Result<u8> {
             std::thread::sleep(std::time::Duration::from_secs(30));
             Ok(1)
@@ -1656,12 +1606,12 @@ pub(crate) mod tests {
         let t0 = std::time::Instant::now();
         let e = within(Path::new("x"), std::time::Duration::from_millis(50), stuck).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::TimedOut);
-        assert!(!transient(&e));
+        assert!(!store::retry::transient_or_missing(&e));
         store::clock::ended_before(t0, std::time::Duration::from_secs(30), "the stuck open ends at its deadline");
         // A file that isn't a GeoTIFF: InvalidData, not tried again.
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("n.tif"), b"nope").unwrap();
-        assert!(!transient(&open_file(&d.path().join("n.tif")).map(|_| ()).unwrap_err()));
+        assert!(!store::retry::transient_or_missing(&open_file(&d.path().join("n.tif")).map(|_| ()).unwrap_err()));
         assert_eq!(open_file(&d.path().join("missing.tif")).map(|_| ()).unwrap_err().kind(), io::ErrorKind::NotFound);
     }
 }
