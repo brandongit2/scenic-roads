@@ -81,7 +81,7 @@ pub struct Sched {
     /// files can outlast a target, so a batch is reckoned by the larger of its targets' disk
     /// summed and these runs' 90th percentile (`job_floor`); a step reading a shared cache's
     /// (crate::needs::CACHES) count for nothing past their cache's fill (`note_fill`). Kept in
-    /// `job-disks-v5.json` (`JOB_DISKS`).
+    /// `job-disks-v6.json` (`JOB_DISKS`).
     pub job_disks: BTreeMap<String, Vec<u64>>,
     /// What filling each shared cache (crate::needs::CACHES) on a Mac takes (MB, by cache): the
     /// last run that filled it, its disk past its targets' own output (`note_fill`). A Mac is

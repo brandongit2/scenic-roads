@@ -411,14 +411,17 @@ build) or a member waiting for its update.
 
 **Disk reservations** (task #242). Each job granted carries the disk it's measured to take
 (`Grant::disk_mb`: its targets' disks summed, or the 90th percentile of the disk its step's last
-20 jobs took over their runs (`job-disks-v5.json`), the larger; 0 for a cold start; a halo
+20 jobs took over their runs (`job-disks-v6.json`), the larger; 0 for a cold start; a halo
 step's, `needs::HALO_STEPS`: `pack` and `lo`, the most of its targets' rather than their sum. A
 `pack` job takes one z6 tile's map tiles (`build::by_unit`'s groups, each its own offer); `lo` stays
 one work of a pass's z3 tiles (the low zooms' gate opens for a pass as a whole). A `pack` or `lo`
 job's disk is its own: the parts of its halo's base packs it reads from the NAS, into its scratch,
 and its output (task #396; docs/steps.md §8); their runs and targets' disks from when their
 jobs copied whole base packs into a cache of the Mac's are dropped once, as `job-disks-v5.json`
-is first written (docs/formats.md). `depth-lo`'s (task #398, `coord::REMEASURED`): its job
+is first written, and their targets' disks again as `job-disks-v6.json` is (task #657: each take-up
+of a term's state had brought back those of 51–68 GB, which no Mac's room fitted; a term's state
+says its disks' generation, `disks_v`, and one of before it brings neither step's to a take-up;
+docs/formats.md). `depth-lo`'s (task #398, `coord::REMEASURED`): its job
 peaks and targets' measures past three times its targets' median and a GB (a 35 GB peak against
 65 MB targets, which kept it on the lead's Mac) are dropped each time the coordinator loads them,
 so it runs on any Mac by its measured use. **Shared caches** (task #392, `needs::CACHES`): `depth`, `depth-lo`, `terrain-water`, `lakefill` and `water` read the whole copies (task

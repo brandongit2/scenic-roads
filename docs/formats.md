@@ -866,8 +866,10 @@ class, id) within a tile. The client sends the id with the clicked point.
     secs, worker, v, sizes}}`, `sizes` as in `costs.jsonl`, absent before task #235; keys: a z6 tile, `"<step> <target>"`, or `"<kind> <tile>"` for tasks: `tail 6/x/y`,
     `bldtile 8/x/y`, `treeblock 8/x/y`, `terrainsub 8/x/y`); `floors.json` (`{<cost key>: {mb, alone,
     v}}`, crate::agent::memguard::Floor; `scenic pool floors` lists and clears them);
-    `disks.json` (`{<cost key>: MB}`, rising only, docs/pool.md §7.7); `job-disks-v5.json`
-    (`{<step>: [MB, …]}`, the disk its last 20 jobs took, oldest first; an older `job-disks-v4.json`
+    `disks.json` (`{<cost key>: MB}`, rising only, docs/pool.md §7.7); `job-disks-v6.json`
+    (`{<step>: [MB, …]}`, the disk its last 20 jobs took, oldest first; an older `job-disks-v5.json`
+    (the same) read once whole, `pack`'s and `lo`'s targets' entries in `disks.json` dropped (task
+    #657: those of before task #396, brought back by each take-up of a term's state); else an older `job-disks-v4.json`
     (the same) read once without `pack`'s and `lo`'s runs, which counted their copies of whole base
     packs before task #396, their targets' entries in `disks.json` dropped with them; else an older
     `job-disks-v3.json`, `-v2` or `job-disks.json` (`{<step>: MB}`, the most) read once, each peak
@@ -945,8 +947,10 @@ class, id) within a tile. The client sends the id with the clicked point.
   - `state/pool/mail/<to>/<from>.json`: the last 64 messages, `{msgs: [[n, msg], …]}`, `msg` one of
     `{"Tell": [keys]}`, `{"Ack": {term, keys, horizon}}`, `{"Passed": term}`, `{"Leads": E}`,
     `{"HandTo": member}`.
-  - `state/coord/term/<E>/state.json`: `{leases, costs, floors, disks, job_disks (the 90th percentiles), job_peaks, failed: [[worker,
-    cost key, unix seconds, times]], pause, pause_at}`; `state/coord/token`;
+  - `state/coord/term/<E>/state.json`: `{leases, costs, floors, disks, job_disks (the 90th percentiles), job_peaks, fills, disks_v, failed: [[worker,
+    cost key, unix seconds, times]], pause, pause_at}` (`disks_v`: its disks' generation, 6; a state
+    without it brings no `pack`'s nor `lo`'s targets' disks to a take-up, and fills only of the caches
+    there are); `state/coord/token`;
     `state/coord/history/<day>/<member>.jsonl` (history events, terms' as `kind: term`; days older than 7 are
     `state/coord/history-archive/<day>.tar`, a ustar of `<day>/<member>.jsonl`);
     `state/coord/forecasts/<day>.jsonl.zst` (the lead's forecasts, The forecasts' archive above;
