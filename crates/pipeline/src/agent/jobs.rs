@@ -255,6 +255,8 @@ impl Running {
         crate::sys::own_group(&mut c);
         let child = store::spawn::spawn(&mut c).with_context(|| format!("start {}", spec.id))?;
         let pgid = child.id() as i32;
+        #[cfg(test)]
+        test_groups::track(pgid);
         let caffeinate = keep_awake(child.id());
         let started = now_s();
         let rec = Record {
@@ -791,6 +793,35 @@ pub fn progress(log: &Path) -> Option<(f64, f64, String)> {
     match said(log) {
         Said::Progress(d, t, u) => Some((d, t, u)),
         _ => None,
+    }
+}
+
+/// Test builds: every job group a test starts, killed (by its exact group id) when the test
+/// process exits, however its test ended (#654: a panicking test left its job running 16.5 h).
+/// Not run if the process is killed outright; the stand-in programs also end when their temp
+/// folder is gone. A group still alive then is reported on stderr.
+#[cfg(test)]
+mod test_groups {
+    use std::sync::Mutex;
+
+    static STARTED: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+
+    extern "C" fn reap() {
+        for &g in STARTED.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            if !crate::sys::group_members(g).is_empty() {
+                eprintln!("test left job group {g} running: killed");
+                crate::sys::signal_group(g, crate::sys::Signal::Kill);
+            }
+        }
+    }
+
+    pub fn track(pgid: i32) {
+        let mut v = STARTED.lock().unwrap_or_else(|e| e.into_inner());
+        if v.is_empty() {
+            // SAFETY: registers a plain extern "C" fn with no captured state.
+            unsafe { libc::atexit(reap) };
+        }
+        v.push(pgid);
     }
 }
 
