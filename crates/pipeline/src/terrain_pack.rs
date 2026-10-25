@@ -132,6 +132,9 @@ pub fn open_water_with(
 pub trait RawSource: Sync {
     /// The raw tile (None: AWS has none), and whether it came from AWS just now.
     fn get(&self, z: u8, x: u32, y: u32) -> anyhow::Result<(Option<Vec<u8>>, bool)>;
+    /// Tiles `tiles` of zoom `z` with data, made by an earlier run (a resumed run's log:
+    /// crate::terrain_resume): taken as if read here.
+    fn made_before(&self, _z: u8, _tiles: &[(u32, u32)]) {}
     /// Makes the tiles of `tiles` (zoom `z`) ready to read, counting each into `done` as it is; the
     /// number that came from AWS.
     fn prefetch_counted(
@@ -1323,16 +1326,51 @@ impl<'a> Maker<'a> {
         quads: &HashMap<(u32, u32), Vec<f32>>,
         levels: &mut HashMap<u64, f32>,
         by_block: bool,
+        mut log: Option<&mut crate::terrain_resume::HiLog>,
     ) -> anyhow::Result<Level> {
+        use crate::terrain_resume::Kept;
         use crate::timings::{sub, Class};
-        // (A level's stages, each a sub-phase of the run's tiles made, added up over its levels.)
+        let up = z.min(self.block_up);
+        let blocks = if by_block { blocks(z, &tiles, self.block_up) } else { vec![tiles] };
+        // (What a resumed run's log kept of the level: its blocks, its end.)
+        let mut kept = log.as_deref_mut().map(|l| l.level(z)).unwrap_or_default();
+        let key = |b: &[(u32, u32)]| (b[0].0 >> up, b[0].1 >> up);
+        let (mut outs, mut nq) = (Vec::new(), HashMap::new());
+        // (A block kept: its tiles as finished, its lakes' levels; its tiles with data as if
+        // sampled, for the level above's `prepare` reads, crate::terrain_base::Tiles.)
+        let take = |k: &Kept,
+                    outs: &mut Vec<(u32, u32, Vec<u8>)>,
+                    nq: &mut HashMap<(u32, u32), Vec<f32>>,
+                    levels: &mut HashMap<u64, f32>| {
+            let with: Vec<(u32, u32)> = k.done.iter().filter(|f| f.2.is_some()).map(|f| (f.0, f.1)).collect();
+            self.raw.made_before(z, &with);
+            let n = k.done.len() as u64;
+            self.here.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+            self.processed.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+            levels.extend(k.lakes.iter().copied());
+            self.finished_into(k.done.clone(), outs, nq);
+        };
+        if let Some(end) = &kept.end {
+            for k in kept.blocks.values().chain([end]) {
+                take(k, &mut outs, &mut nq, levels);
+            }
+            return Ok((outs, nq));
+        }
+        let todo: Vec<usize> = (0..blocks.len()).filter(|&bi| !kept.blocks.contains_key(&key(&blocks[bi]))).collect();
         let p = sub("raw tiles made (the pool's datasets sampled)", Class::Net);
+        let want: Vec<(u32, u32)> = if todo.len() == blocks.len() {
+            blocks.concat()
+        } else {
+            todo.iter()
+                .flat_map(|&bi| blocks[bi].iter().copied())
+                .chain(kept.blocks.values().flat_map(|k| k.waiting.iter().copied()))
+                .collect()
+        };
         self.fetched.fetch_add(
-            self.raw.prefetch_counted(z, &tiles, FETCH_THREADS, &self.here)?,
+            self.raw.prefetch_counted(z, &want, FETCH_THREADS, &self.here)?,
             std::sync::atomic::Ordering::Relaxed,
         );
         drop(p);
-        let blocks = if by_block { blocks(z, &tiles, self.block_up) } else { vec![tiles] };
         // (Each lake's one block, None for one in two or more; without the water's lakes read, no
         // lake is one block's: every tile with a lake not yet levelled waits for the last block.)
         let one_block: Option<HashMap<u64, Option<usize>>> = match (blocks.len() > 1, self.src.water) {
@@ -1343,7 +1381,6 @@ impl<'a> Maker<'a> {
             _ => None,
         };
         let src = self.src;
-        let (mut outs, mut nq) = (Vec::new(), HashMap::new());
         let mut waiting: Vec<(u32, u32, Prepared)> = Vec::new();
         let mut shared: HashMap<u64, crate::terrain_water::LakeSamples> = HashMap::new();
         let prep = |block: &[(u32, u32)]| -> anyhow::Result<Vec<(u32, u32, Prepared)>> {
@@ -1359,23 +1396,49 @@ impl<'a> Maker<'a> {
                 .collect();
             prepared.into_iter().filter_map(|r| r.transpose()).collect()
         };
+        let ob = &one_block;
+        let own_of = |bi: usize| move |id: &u64| ob.as_ref().is_some_and(|m| m.get(id) == Some(&Some(bi)));
+        // (The blocks kept taken, their waiting tiles prepared again: their samples of the lakes
+        // shared with other blocks, which the level's end reads; those of their own lakes are in
+        // the levels kept.)
         let p = sub("tiles prepared (the water read)", Class::Compute);
-        let mut next = blocks.first().map(|b| prep(b)).transpose()?.unwrap_or_default();
+        for (bi, b) in blocks.iter().enumerate() {
+            let Some(k) = kept.blocks.remove(&key(b)) else { continue };
+            take(&k, &mut outs, &mut nq, levels);
+            let own = own_of(bi);
+            for (x, y, p) in prep(&k.waiting)? {
+                let rest: HashMap<_, _> = p.lake_samples().into_iter().filter(|(id, _)| !own(id)).collect();
+                crate::terrain_water::gather(&mut shared, rest);
+                waiting.push((x, y, p));
+            }
+        }
+        let mut next = todo.first().map(|&bi| prep(&blocks[bi])).transpose()?.unwrap_or_default();
         drop(p);
-        for bi in 0..blocks.len() {
+        // (The levels a block or the end works out, as kept.)
+        let added = |levels: &HashMap<u64, f32>, ids: Vec<u64>| -> Vec<(u64, f32)> {
+            ids.into_iter().filter_map(|id| levels.get(&id).map(|&l| (id, l))).collect()
+        };
+        let new_ids = |levels: &HashMap<u64, f32>, all: &HashMap<u64, crate::terrain_water::LakeSamples>| -> Vec<u64> {
+            let mut v: Vec<u64> = all.keys().filter(|id| !levels.contains_key(id)).copied().collect();
+            v.sort_unstable();
+            v
+        };
+        for (k, &bi) in todo.iter().enumerate() {
             let prepared = std::mem::take(&mut next);
             // (The block's own lakes levelled now; the others' samples kept for the level's end.)
-            let own = |id: &u64| one_block.as_ref().is_some_and(|m| m.get(id) == Some(&Some(bi)));
+            let own = own_of(bi);
             let mut mine = HashMap::new();
             for (_, _, p) in &prepared {
                 let (a, b): (HashMap<_, _>, HashMap<_, _>) = p.lake_samples().into_iter().partition(|(id, _)| own(id));
                 crate::terrain_water::gather(&mut mine, a);
                 crate::terrain_water::gather(&mut shared, b);
             }
+            let ids = new_ids(levels, &mine);
             crate::terrain_water::add_levels(levels, &mine);
             let (now, later): (Vec<_>, Vec<_>) = prepared.into_iter().partition(|(_, _, p)| {
                 p.water.as_ref().is_none_or(|w| w.ids.iter().all(|id| levels.contains_key(id) || own(id)))
             });
+            let later_at: Vec<(u32, u32)> = later.iter().map(|&(x, y, _)| (x, y)).collect();
             waiting.extend(later);
             // (This block's tiles finished while the next is prepared: the threads one leaves idle
             // at its end take the other's, so no block waits on its slowest tile. Two blocks'
@@ -1383,14 +1446,31 @@ impl<'a> Maker<'a> {
             let lv: &HashMap<u64, f32> = levels;
             let p = sub("tiles prepared, the block before them levelled, shaded and encoded", Class::Compute);
             let (done, n) =
-                rayon::join(|| self.finish_all(now, lv), || blocks.get(bi + 1).map(|b| prep(b)).transpose());
+                rayon::join(|| self.finish_all(now, lv), || todo.get(k + 1).map(|&b| prep(&blocks[b])).transpose());
             drop(p);
             next = n?.unwrap_or_default();
+            let done = match log.as_deref_mut() {
+                Some(l) => {
+                    let kb = Kept { done, lakes: added(levels, ids), waiting: later_at };
+                    l.block(z, key(&blocks[bi]), &kb)?;
+                    kb.done
+                }
+                None => done,
+            };
             self.finished_into(done, &mut outs, &mut nq);
         }
         let _p = sub("tiles' lakes levelled, shaded and encoded", Class::Compute);
+        let ids = new_ids(levels, &shared);
         crate::terrain_water::add_levels(levels, &shared);
         let done = self.finish_all(waiting, levels);
+        let done = match log {
+            Some(l) => {
+                let kb = Kept { done, lakes: added(levels, ids), waiting: Vec::new() };
+                l.end(z, &kb)?;
+                kb.done
+            }
+            None => done,
+        };
         self.finished_into(done, &mut outs, &mut nq);
         Ok((outs, nq))
     }
@@ -1436,12 +1516,17 @@ impl<'a> Maker<'a> {
     /// A z6 tile (z6 tile `t`): its levels z12 → z9 (`levels`, `piece_levels`), its lakes' levels
     /// from them alone, each level a block at a time (`by_block`, `level`; else all at once: the
     /// way before task #447, kept to check the bytes against). Its hi tiles, sorted, and its mid.
-    fn piece(&self, levels: Vec<(u8, Vec<(u32, u32)>)>, by_block: bool) -> anyhow::Result<(Vec<Made>, Mid)> {
+    fn piece(
+        &self,
+        levels: Vec<(u8, Vec<(u32, u32)>)>,
+        by_block: bool,
+        mut log: Option<&mut crate::terrain_resume::HiLog>,
+    ) -> anyhow::Result<(Vec<Made>, Mid)> {
         let mut quads = HashMap::new();
         let mut hi: Vec<Made> = Vec::new();
         let mut lakes: HashMap<u64, f32> = HashMap::new();
         for (z, tiles) in levels {
-            let (outs, nq) = self.level(z, tiles, &quads, &mut lakes, by_block)?;
+            let (outs, nq) = self.level(z, tiles, &quads, &mut lakes, by_block, log.as_deref_mut())?;
             hi.extend(outs.into_iter().map(|(x, y, b)| (z, x, y, b)));
             quads = nq;
         }
@@ -1464,7 +1549,7 @@ impl<'a> Maker<'a> {
         }
         let mut lo: Vec<Made> = Vec::new();
         for (z, tiles) in upper_levels(q) {
-            let (outs, nq) = self.level(z, tiles, &quads, &mut lakes, false)?;
+            let (outs, nq) = self.level(z, tiles, &quads, &mut lakes, false, None)?;
             lo.extend(outs.into_iter().map(|(x, y, b)| (z, x, y, b)));
             quads = nq;
         }
@@ -1487,7 +1572,7 @@ pub fn make_piece(
     src: &Sources,
     levels: Vec<(u8, Vec<(u32, u32)>)>,
 ) -> anyhow::Result<(Vec<Made>, Mid)> {
-    Maker::new(raw, src).piece(levels, true)
+    Maker::new(raw, src).piece(levels, true, None)
 }
 
 /// `make_piece` with each level's tiles all prepared at once (the way before task #447, which held
@@ -1498,7 +1583,7 @@ pub fn make_piece_whole(
     src: &Sources,
     levels: Vec<(u8, Vec<(u32, u32)>)>,
 ) -> anyhow::Result<(Vec<Made>, Mid)> {
-    Maker::new(raw, src).piece(levels, false)
+    Maker::new(raw, src).piece(levels, false, None)
 }
 
 /// The most memory (MB) a z6 tile's levels take as one run makes them (`make_piece`), from its
@@ -1522,7 +1607,22 @@ pub fn make_piece_up(
 ) -> anyhow::Result<(Vec<Made>, Mid)> {
     let mut m = Maker::new(raw, src);
     m.block_up = up;
-    m.piece(levels, true)
+    m.piece(levels, true, None)
+}
+
+/// `build_piece` keeping its blocks (crate::terrain_resume::HiLog), for tests: none offered out.
+#[cfg(test)]
+pub fn build_piece_keeping(
+    out: &mut Out,
+    raw: &dyn RawSource,
+    t: (u32, u32),
+    cov: &Coverage,
+    src: &Sources,
+) -> anyhow::Result<PackReport> {
+    let offers = crate::terrain_task::Offers::offer(None, t, &piece_levels(cov, t), raw, src);
+    let rep = build_piece_kept(out, raw, t, cov, src, false, &|_, _, _| {}, offers, None, true)?;
+    out.save()?;
+    Ok(rep)
 }
 
 /// A level's tiles (zoom `z`) in blocks, each those under one tile `up` levels up (a z8 subtree's
@@ -1620,6 +1720,11 @@ pub struct Bases<'a> {
 }
 
 impl<'a> Bases<'a> {
+    /// What the base is made from besides its raw tiles.
+    pub fn sources(&self) -> &Sources<'a> {
+        self.src
+    }
+
     pub fn new(raw: &'a dyn RawSource, src: &'a Sources<'a>, cov: &'a Coverage) -> Self {
         Bases { raw, src, cov, lakes: Default::default(), levels: Default::default() }
     }
@@ -1846,7 +1951,7 @@ pub fn build_q_with(
     let lo = saying(&mk, total, progress, || {
         let mut mids: Vec<((u32, u32), Mid)> = Vec::new();
         for (&t, levels) in ts.iter().zip(mine) {
-            let (hi, mid) = mk.piece(levels, true)?;
+            let (hi, mid) = mk.piece(levels, true, None)?;
             rep.hi_tiles += hi.len();
             let mut it = hi.into_iter().map(|(z, x, y, b)| {
                 let n = b.len() as u32;
@@ -1976,6 +2081,24 @@ pub fn build_piece_later(
     offers: crate::terrain_task::Offers,
     deep: Option<&crate::terrain_deep::Deep>,
 ) -> anyhow::Result<PackReport> {
+    build_piece_kept(out, raw, t, cov, src, expect_same, progress, offers, deep, crate::resume_log::on())
+}
+
+/// `build_piece_later`, its levels' blocks kept as made and those an earlier run kept taken with
+/// `keep` (crate::terrain_resume::HiLog; its log deleted once its hi pack and mid are written).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_piece_kept(
+    out: &mut Out,
+    raw: &dyn RawSource,
+    t: (u32, u32),
+    cov: &Coverage,
+    src: &Sources,
+    expect_same: bool,
+    progress: crate::rawpack::Progress,
+    offers: crate::terrain_task::Offers,
+    deep: Option<&crate::terrain_deep::Deep>,
+    keep: bool,
+) -> anyhow::Result<PackReport> {
     anyhow::ensure!(
         offers.piece() == t,
         "offers for 6/{}/{}, not 6/{}/{}",
@@ -1998,11 +2121,17 @@ pub fn build_piece_later(
     let (mut hi, mid) = saying(&mk, total, progress, || {
         let mine = offers.rest(&levels);
         let n = mine.iter().map(|(_, t)| t.len()).sum();
+        let mut log = keep
+            .then(|| {
+                let id = crate::terrain_resume::hi_id(&out.manifest, src, t, &mine, mk.block_up);
+                crate::terrain_resume::HiLog::open(&out.scratch, t, &id)
+            })
+            .flatten();
         let began = std::time::Instant::now();
-        let (mut hi, mut mid) = mk.piece(mine, true)?;
+        let (mut hi, mut mid) = mk.piece(mine, true, log.as_mut())?;
         offers.made_here(began.elapsed().as_secs_f64(), n);
         let _w = crate::timings::sub("the subtrees out taken in (or made here)", crate::timings::Class::Wait);
-        offers.settle(&|lv| mk.piece(lv, true), &mut hi, &mut mid)?;
+        offers.settle(&|lv| mk.piece(lv, true, None), &mut hi, &mut mid)?;
         hi.sort_by_key(|t| (t.0, t.1, t.2));
         Ok((hi, mid))
     })?;
@@ -2038,6 +2167,7 @@ pub fn build_piece_later(
     let ml = mid_logical(t.0, t.1);
     let mid_path = out.scratch_file(&format!("{ml}.sect"));
     write_mid(&mid_path, t, &mid)?;
+    std::fs::remove_file(crate::resume_log::path(&out.scratch, (6, t.0, t.1))).ok();
     let hl = format!("layers/terrain/hi/6-{}-{}", t.0, t.1);
     if expect_same {
         let made = pack.as_ref().map(|p| p.content_name()).transpose()?;

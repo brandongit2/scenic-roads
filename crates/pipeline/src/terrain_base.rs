@@ -352,6 +352,11 @@ fn points(z: u8, ts: &[(u32, u32)]) -> (Vec<f64>, Vec<f64>) {
 }
 
 impl RawSource for Tiles<'_> {
+    fn made_before(&self, z: u8, tiles: &[(u32, u32)]) {
+        // (A tile whose four children have data isn't sampled, as when they were sampled here.)
+        self.with_data.lock().unwrap().extend(tiles.iter().map(|&(x, y)| (z, x, y)));
+    }
+
     fn get(&self, z: u8, x: u32, y: u32) -> Result<(Option<Vec<u8>>, bool)> {
         if let Some(t) = self.held.lock().unwrap().remove(&(z, x, y)) {
             return Ok((t, false));

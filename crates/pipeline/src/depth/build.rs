@@ -458,7 +458,7 @@ fn level(
     y0: u32,
     n: u32,
     zmin: u8,
-    log: Option<&mut super::resume::Log>,
+    log: Option<&mut crate::resume_log::Log>,
     done: &(dyn Fn(f64) + Sync),
 ) -> Result<usize> {
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -500,7 +500,7 @@ fn level_blocks(
     y0: u32,
     n: u32,
     zmin: u8,
-    mut log: Option<&mut super::resume::Log>,
+    mut log: Option<&mut crate::resume_log::Log>,
     blocks: &std::sync::atomic::AtomicU32,
 ) -> Result<usize> {
     let mut kept = 0;
@@ -524,7 +524,7 @@ fn level_blocks(
             kept += put.len();
             if let Some(l) = log.as_deref_mut() {
                 let tiles: Vec<_> = put.iter().filter_map(|k| t.made.get_key_value(k)).collect();
-                l.keep((z, bx, by), &tiles)?;
+                super::resume::keep(l, (z, bx, by), &tiles)?;
             }
         }
     }
@@ -678,9 +678,9 @@ pub fn build_lo(
     local: Local,
     q: (u32, u32),
 ) -> Result<usize> {
-    let made = compose_lo(out, sources, water, local, q, LO_COMPOSED.1, super::resume::on())?;
+    let made = compose_lo(out, sources, water, local, q, LO_COMPOSED.1, crate::resume_log::on())?;
     let n = put_packs(out, &made, None, "lo", (3, q.0, q.1))?;
-    std::fs::remove_file(super::resume::path(&out.scratch, (3, q.0, q.1))).ok();
+    std::fs::remove_file(crate::resume_log::path(&out.scratch, (3, q.0, q.1))).ok();
     Ok(n)
 }
 
@@ -798,7 +798,7 @@ fn resume_log(
     water: &dyn WaterSource,
     t: (u8, u32, u32),
     upto: u8,
-) -> Option<super::resume::Log> {
+) -> Option<crate::resume_log::Log> {
     if !keep {
         return None;
     }
@@ -823,14 +823,14 @@ fn resume_log(
     } else {
         Vec::new()
     };
-    let id = super::resume::id(&[
+    let id = crate::resume_log::id(&[
         &format!("depth {DEPTH_V} {DEPTH_LO_V} {LAYER} {CLASS_LAYER} {} {}", super::ENCODING, super::CLASS_ENCODING),
         &format!("{}/{}/{} to z{upto}", t.0, t.1, t.2),
         &pins.join("\n"),
         &water.pin(),
         &lo.join("\n"),
     ]);
-    super::resume::Log::open(&tl.out.scratch, t, &id, &mut tl.made)
+    super::resume::open(&tl.out.scratch, t, &id, &mut tl.made)
 }
 
 /// The grids a reader holds open closed and the water's polygons let go, as a phase: on the NAS
@@ -850,7 +850,7 @@ pub fn build_hi(
     local: Local,
     t: (u32, u32),
 ) -> Result<usize> {
-    build_hi_keeping(out, sources, water, local, t, super::resume::on())
+    build_hi_keeping(out, sources, water, local, t, crate::resume_log::on())
 }
 
 /// `build_hi`, its blocks kept and taken (crate::depth::resume) with `keep`.
@@ -866,7 +866,7 @@ pub(super) fn build_hi_keeping(
     // (The shading from the tiles made alone: a resumed run's the same bytes.)
     let shade = shading(&made, HI.0)?;
     let n = put_packs(out, &made, Some(&shade), "hi", (6, t.0, t.1))?;
-    std::fs::remove_file(super::resume::path(&out.scratch, (6, t.0, t.1))).ok();
+    std::fs::remove_file(crate::resume_log::path(&out.scratch, (6, t.0, t.1))).ok();
     Ok(n)
 }
 

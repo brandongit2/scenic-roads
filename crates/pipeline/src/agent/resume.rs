@@ -60,11 +60,11 @@ pub const FRESH_S: u64 = 2 * crate::coord::TTL.as_secs();
 /// How often a running resumable job's `at` is noted again (half a lease's time to live).
 pub const REFRESH_S: u64 = crate::coord::TTL.as_secs() / 2;
 /// The steps whose jobs resume from their progress on their Mac's disk, offered back to it: the OSM
-/// pass (its stages' markers in its scratch folder, crate::osmpass). (A depth target's run resumes
-/// from its blocks' log when its Mac runs it again, crate::depth::resume, not offered back.) (A
-/// terrain z3 tile's raw tiles, the buildings
-/// scan's parts and a rail-feeds run's zips are planned: their jobs are a shared step's, offered by
-/// target, and start their targets afresh.)
+/// pass (its stages' markers in its scratch folder, crate::osmpass). (A depth, terrain-hi or
+/// terrain-deep target's run resumes from its blocks' log when its Mac runs it again,
+/// crate::resume_log, not offered back.) (A terrain z3 tile's raw tiles, the buildings scan's parts
+/// and a rail-feeds run's zips are planned: their jobs are a shared step's, offered by target, and
+/// start their targets afresh.)
 pub const RESUMABLE: [&str; 1] = ["osm-pass"];
 /// A job's environment: the file of its member's unacknowledged hand-offs for its step
 /// (`unmerged`), which crate::out::Out lays over the snapshot.

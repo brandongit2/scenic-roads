@@ -1088,7 +1088,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                         (base_secs, base_tiles) = (b0.elapsed().as_secs_f64(), base.len());
                         Ok(base)
                     };
-                    let (r, pack) = td::make(&out, t, &mut base_of, Some(&water), &fine, &fetch)?;
+                    let (r, pack) = td::make(&out, t, &mut base_of, Some(&water), &fine, &fetch, None)?;
                     let mut made = None;
                     if let Some(p) = pack {
                         made = Some(p.content_name()?);

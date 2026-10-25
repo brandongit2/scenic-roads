@@ -32,7 +32,7 @@ Where state lives:
 | Downloads | NAS: `sources/` | cache copies | nothing |
 | A pass's Wikidata/Wikipedia answers | NAS: `sources/items/<date>/` (`pipeline::answers`) | `agent/cache/items/`, `agent/cache/heritage-<date>/` | its first run takes them |
 | Z6 tiles' kept state | NAS: `cache/scenic-units/` | none | nothing |
-| A job's progress (the OSM pass's stages, a depth target's blocks, scratch) | the Mac running it | scratch folders | the OSM pass's resumed there (§7.2, Resuming), a depth target's when it runs there again; the rest redone |
+| A job's progress (the OSM pass's stages, a depth, terrain-hi or terrain-deep target's blocks, scratch) | the Mac running it | scratch folders | the OSM pass's resumed there (§7.2, Resuming), a depth, terrain-hi or terrain-deep target's when it runs there again; the rest redone |
 | The coordinator's state, token, history | NAS: `state/coord/` | `agent/coord/` | loads it (§6.2, §7.5) |
 | The lead's own (its catalogs' record, daily jobs' last runs) | the lead's disk | `agent/publishing.json`, `agent/state.json` | starts afresh |
 
@@ -648,15 +648,19 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
   on a Mac's disk (built for the OSM pass) is offered to that Mac alone for 24 hours from its first
   start, or until `scenic pool release <member> "<job>"`. Progress is in
   `state/pool/progress/<member>.json`, written only by that member. A finished one is held unoffered
-  until merged. A depth target (`depth`, `depth-lo`) resumes at the block after the last it
-  finished when it runs on that Mac again, not offered back (crate::depth::resume): a log at the
-  top of its step's scratch folder (`<z>_<x>_<y>.resume`, one append a block, each record with its
-  length and BLAKE3; a slot's moved to the slot running it), taken only for the same inputs (the
-  depth's versions and encodings, the sources' and water's pins, the depth lo packs it may read),
-  so its tiles, and the floor's shading made from them, are the same bytes. Counted in the job's
-  disk as its sampler counts its scratch's top. Deleted when its packs are saved, on a cancel,
-  with a given-back job's scratch by room-making, and, untouched for 24 hours, as the step's next
-  run on that Mac starts.
+  until merged. A long target resumes at the block after the last it finished when it runs on
+  that Mac again, not offered back (crate::resume_log): a depth target (`depth`, `depth-lo`: its
+  composing's blocks, crate::depth::resume), a terrain-hi z6 tile (each level's blocks, a z8
+  tile's tiles at z12, then the level's end) and a terrain-deep z10 tile (its base tiles, each
+  with its z13–16 subtree; crate::terrain_resume). slope-hi and slope-deep keep none: their
+  targets take minutes at most. A log at the top of its step's scratch folder
+  (`<z>_<x>_<y>.resume`, one append a block, each record with its length and BLAKE3, read a
+  record at a time; a slot's moved to the slot running it), taken only for the same inputs (its
+  step's versions and encodings, the target, the sources' and water's pins, and what else it
+  reads: the depth lo packs, the terrain's tiles made here, the fine datasets' lines), so its
+  outputs are the same bytes. Counted in the job's disk as its sampler counts its scratch's top.
+  Deleted when its packs are written, on a cancel, with a given-back job's scratch by
+  room-making, and, untouched for 24 hours, as the step's next run on that Mac starts.
 - **The forecast runs off the loop** (task #544): the lead makes its input on the loop and runs it
   on a thread of its own (`Agent::start_forecast`); the status keeps the last one done, so reaping,
   starting jobs and writing the status never wait on it. Its three runs go side by side (three
@@ -1531,8 +1535,9 @@ forecast. Gone: the pool's on/off switch and shadow
 run, claims, the named writer (`SCENIC_BUILD_MAC`), the NAS's hand-off folders, per-Mac record
 writes.
 
-A depth job resumes its target at the block after the last it finished, from a log in its
-scratch folder on its Mac (§7.2, Resuming; crate::depth::resume), with `resume` on.
+A depth, terrain-hi or terrain-deep job resumes its target at the block after the last it
+finished, from a log in its scratch folder on its Mac (§7.2, Resuming; crate::resume_log), with
+`resume` on.
 
 Still behind switches under `state/pool/` (a file; off while missing unless noted):
 `resume` (§7.2, §7.4), `brokers` (§8), `placement` (§7.2),

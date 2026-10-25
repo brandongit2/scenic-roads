@@ -835,7 +835,7 @@ fn measure_the_floors_shading() {
 #[test]
 fn a_depth_run_stopped_after_some_blocks_resumes_there_and_makes_the_same_bytes() {
     use super::build::{compose_hi, compose_lo};
-    use super::resume::STOP_AFTER;
+    use crate::resume_log::STOP_AFTER;
     let d = tempfile::tempdir().unwrap();
     let srcs = sources(d.path());
     let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
@@ -844,13 +844,13 @@ fn a_depth_run_stopped_after_some_blocks_resumes_there_and_makes_the_same_bytes(
     build_lo(&mut out, &srcs, &Fixture, None, q).unwrap();
     let fresh_lo = compose_lo(&out, &srcs, &Fixture, None, q, 8, false).unwrap();
     let fresh_hi = compose_hi(&out, &srcs, &Fixture, None, T, 12, false).unwrap();
-    assert!(!super::resume::path(&out.scratch, (6, T.0, T.1)).exists(), "nothing kept without resuming on");
+    assert!(!crate::resume_log::path(&out.scratch, (6, T.0, T.1)).exists(), "nothing kept without resuming on");
     for stop in [1, 5, 40] {
         let scratch = d.path().join(format!("scratch-{stop}"));
         let out = Out::unbound(&d.path().join("root"), &scratch).unwrap();
         STOP_AFTER.set(Some(stop));
         assert!(compose_hi(&out, &srcs, &Fixture, None, T, 12, true).is_err(), "stopped after {stop} blocks");
-        let log = std::fs::read(super::resume::path(&scratch, (6, T.0, T.1))).unwrap();
+        let log = std::fs::read(crate::resume_log::path(&scratch, (6, T.0, T.1))).unwrap();
         assert!(!log.is_empty());
         let resumed = compose_hi(&out, &srcs, &Fixture, None, T, 12, true).unwrap();
         assert!(resumed == fresh_hi, "the same tiles, stopped after {stop} blocks");
@@ -891,7 +891,7 @@ fn a_depth_run_stopped_after_some_blocks_resumes_there_and_makes_the_same_bytes(
 #[test]
 fn a_resumed_z6_tiles_packs_and_shading_are_the_same_bytes() {
     use super::build::build_hi_keeping;
-    use super::resume::STOP_AFTER;
+    use crate::resume_log::STOP_AFTER;
     let d = tempfile::tempdir().unwrap();
     let srcs = sources(d.path());
     let q = (T.0 >> 3, T.1 >> 3);
@@ -901,10 +901,10 @@ fn a_resumed_z6_tiles_packs_and_shading_are_the_same_bytes() {
         if let Some(n) = stop {
             STOP_AFTER.set(Some(n));
             assert!(build_hi_keeping(&mut out, &srcs, &Fixture, None, T, true).is_err());
-            assert!(super::resume::path(&out.scratch, (6, T.0, T.1)).exists());
+            assert!(crate::resume_log::path(&out.scratch, (6, T.0, T.1)).exists());
         }
         build_hi_keeping(&mut out, &srcs, &Fixture, None, T, stop.is_some()).unwrap();
-        assert!(!super::resume::path(&out.scratch, (6, T.0, T.1)).exists(), "the log gone once saved");
+        assert!(!crate::resume_log::path(&out.scratch, (6, T.0, T.1)).exists(), "the log gone once saved");
         [LAYER, CLASS_LAYER, SHADE_LAYER].map(|l| {
             let c = out.get(&hi_logical(l, T.0, T.1)).unwrap_or_else(|| panic!("{l}'s hi pack")).to_string();
             std::fs::read(out.path(&c)).unwrap()

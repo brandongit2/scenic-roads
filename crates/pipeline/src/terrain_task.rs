@@ -750,6 +750,61 @@ mod tests {
     }
 
     #[test]
+    fn a_z6_tile_stopped_and_resumed_makes_the_same_packs() {
+        use crate::resume_log::STOP_AFTER;
+        let d = tempfile::tempdir().unwrap();
+        let (t, cov, raw) = north_piece(d.path());
+        let levels = piece_levels(&cov, t);
+        let subs = groups(&levels, None).unwrap();
+        let water = Across { a: subs[0][0], b: subs[1][0] };
+        // (Its packs and mid as saved, their content names the bytes' digests; None when stopped.)
+        let run = |name: &str, src: &Sources, stop: Option<usize>| -> Option<Vec<(String, String)>> {
+            let root = d.path().join(name);
+            let scratch = d.path().join(format!("{name}-scratch"));
+            let mut out = Out::unbound(&root, &scratch).unwrap();
+            STOP_AFTER.set(stop);
+            let r = crate::terrain_pack::build_piece_keeping(&mut out, &raw, t, &cov, src);
+            STOP_AFTER.set(None);
+            let log = crate::resume_log::path(&scratch, (6, t.0, t.1));
+            if let Err(e) = r {
+                assert!(e.to_string().contains("a test's interruption") && log.exists(), "{e:#}");
+                return None;
+            }
+            assert!(!log.exists(), "the log gone once written");
+            let out = Out::unbound(&root, &scratch).unwrap();
+            Some(
+                out.manifest
+                    .into_iter()
+                    .filter(|(l, _)| l.starts_with("layers/terrain/") || l.starts_with("work/terrain-mid/"))
+                    .collect(),
+            )
+        };
+        let with = Sources { water: Some(&water), deeper: None };
+        let without = Sources::default();
+        let fresh = run("fresh", &with, None).unwrap();
+        assert_eq!(fresh.len(), 2, "{fresh:?}");
+        // Stopped after each of its blocks and level ends in turn, then resumed: the same bytes.
+        let mut kept = 0;
+        for stop in 1.. {
+            let name = format!("stop-{stop}");
+            if run(&name, &with, Some(stop)).is_some() {
+                break;
+            }
+            assert_eq!(run(&name, &with, None).as_ref(), Some(&fresh), "stopped after {stop}");
+            kept = stop;
+        }
+        assert_eq!(kept, 7, "its blocks and level ends, but the last");
+        // Stopped twice, the second time further on.
+        assert!(run("twice", &with, Some(2)).is_none() && run("twice", &with, Some(3)).is_none());
+        assert_eq!(run("twice", &with, None).as_ref(), Some(&fresh), "stopped twice");
+        // Another input (no water) voids the log: the dry run's bytes, not the wet log's.
+        let dry = run("dry", &without, None).unwrap();
+        assert_ne!(dry, fresh);
+        assert!(run("voided", &with, Some(kept - 1)).is_none());
+        assert_eq!(run("voided", &without, None), Some(dry));
+    }
+
+    #[test]
     fn a_groups_tiles_made_from_its_file_are_the_pieces_bytes() {
         let d = tempfile::tempdir().unwrap();
         let (t, cov, raw) = north_piece(d.path());

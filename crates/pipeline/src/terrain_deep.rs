@@ -1049,6 +1049,7 @@ pub fn hi_levels(
             deep.fetch,
             &store,
             0..FIRST_Z,
+            None,
             &mut |tiles| {
                 more.extend(tiles);
                 Ok(())
@@ -1164,13 +1165,34 @@ pub fn build_target(
     fine: &Fine,
     fetch: &dyn crate::fetch::Fetch,
 ) -> Result<Report> {
+    build_target_kept(out, t, bases, water, fine, fetch, crate::resume_log::on())
+}
+
+/// `build_target`, its base tiles' deep tiles kept as made and those an earlier run kept taken
+/// with `keep` (crate::terrain_resume::DeepLog; its log deleted once its pack is put).
+pub(crate) fn build_target_kept(
+    out: &mut Out,
+    t: (u32, u32),
+    bases: &crate::terrain_pack::Bases,
+    water: Option<&dyn crate::terrain_water::WaterSource>,
+    fine: &Fine,
+    fetch: &dyn crate::fetch::Fetch,
+    keep: bool,
+) -> Result<Report> {
+    let mut log = keep
+        .then(|| {
+            let pieces = base_want(t).into_iter().map(|(z, x, y)| (x >> (z - 6), y >> (z - 6))).collect();
+            let id = crate::terrain_resume::deep_id(&out.manifest, bases.sources(), water, fine, t, &pieces);
+            crate::terrain_resume::DeepLog::open(&out.scratch, t, &id)
+        })
+        .flatten();
     let mut base_of = |data: &[(u8, u32, u32)]| {
         let _p =
             crate::timings::sub("its base made (the pool sampled, its lakes levelled)", crate::timings::Class::Mixed);
         target_base(bases, t, Some(data))
     };
     let p = crate::timings::phase("its deep tiles made (the fine datasets read)", crate::timings::Class::Mixed);
-    let (mut rep, pack) = make(out, t, &mut base_of, water, fine, fetch)?;
+    let (mut rep, pack) = make(out, t, &mut base_of, water, fine, fetch, log.as_mut())?;
     drop(p);
     let mut gone = named_under(&out.manifest, PACK_Z, t.0, t.1);
     if let Some(p) = pack {
@@ -1179,6 +1201,7 @@ pub fn build_target(
         out.put_file(&p.logical, "pack", &p.local)?;
     }
     rep.dropped = crate::terrain_pack::drop_named(out, &gone);
+    std::fs::remove_file(crate::resume_log::path(&out.scratch, (PACK_Z, t.0, t.1))).ok();
     Ok(rep)
 }
 
@@ -1200,12 +1223,13 @@ pub fn make(
     water: Option<&dyn crate::terrain_water::WaterSource>,
     fine: &Fine,
     fetch: &dyn crate::fetch::Fetch,
+    log: Option<&mut crate::terrain_resume::DeepLog>,
 ) -> Result<(Report, Option<crate::layers::LocalPack>)> {
     let s = (t.0 >> (PACK_Z - SUB_Z), t.1 >> (PACK_Z - SUB_Z));
     let inside: Vec<(u8, u32, u32)> = base_want(t).into_iter().filter(|&(z, x, y)| under(z, x, y, PACK_Z, t)).collect();
     let mut tiles = Vec::new();
     let store = out.root().join("sources/fetched");
-    let mut rep = make_tiles(s, &inside, base_of, water, fine, fetch, &store, FIRST_Z..MAX_Z + 1, &mut |made| {
+    let mut rep = make_tiles(s, &inside, base_of, water, fine, fetch, &store, FIRST_Z..MAX_Z + 1, log, &mut |made| {
         tiles.extend(made);
         Ok(())
     })?;
@@ -1267,9 +1291,13 @@ fn make_tiles(
     fetch: &dyn crate::fetch::Fetch,
     store: &std::path::Path,
     zs: std::ops::Range<u8>,
+    mut log: Option<&mut crate::terrain_resume::DeepLog>,
     sink: &mut dyn FnMut(Vec<(u8, u32, u32, Vec<u8>)>) -> Result<()>,
 ) -> Result<Report> {
     let mut rep = Report { base_tiles: inside.len(), ..Report::default() };
+    // (The base tiles an earlier run kept, with their deep tiles: neither their presence sampled
+    // nor their data read again.)
+    let kept = |t: &(u8, u32, u32)| log.as_ref().is_some_and(|l| l.kept.contains_key(t));
     let b = crate::stage::tile_box_grown(SUB_Z, s.0, s.1, 0.0);
     let plans = if inside.is_empty() { None } else { fine.plans(b)? };
     let Some((presence, full)) = plans else { return Ok(rep) };
@@ -1310,24 +1338,29 @@ fn make_tiles(
             .map(|(g, ts)| (0..ts.len()).filter(|&i| keep(g, i)).map(|i| ts[i].0).collect())
             .collect()
     };
-    let items = plan_items(&plan_files(&presence, area, &bf)?, &tiles_of(&|_, _| true))?;
+    let todo: Vec<Vec<bool>> = groups.iter().map(|g| g.iter().map(|(t, _)| !kept(t)).collect()).collect();
+    let items = plan_items(&plan_files(&presence, area, &bf)?, &tiles_of(&|g, i| todo[g][i]))?;
     let mut with: Vec<Vec<bool>> = vec![Vec::new(); n];
     read_ahead(&items, n, false, |g| {
-        with[g] = groups[g].par_iter().map(|&(t, _)| has_data(&presence_s, t)).collect::<Result<_>>()?;
+        with[g] = groups[g]
+            .par_iter()
+            .zip(&todo[g])
+            .map(|(&(t, _), &d)| if d { has_data(&presence_s, t) } else { Ok(true) })
+            .collect::<Result<_>>()?;
         Ok(())
     })?;
-    let data: Vec<(u8, u32, u32)> = tiles_of(&|g, i| with[g][i]).into_iter().flatten().collect();
-    if data.is_empty() {
-        return Ok(rep);
-    }
+    let data: Vec<(u8, u32, u32)> = tiles_of(&|g, i| with[g][i] && todo[g][i]).into_iter().flatten().collect();
     // The base, of the tiles with data and those near them; of those with data, those it has.
-    let base = base_of(&data)?;
+    let base = if data.is_empty() { HashMap::new() } else { base_of(&data)? };
     for (g, ts) in groups.iter().enumerate() {
         for (i, (t, _)) in ts.iter().enumerate() {
-            with[g][i] &= base.contains_key(t);
+            with[g][i] &= !todo[g][i] || base.contains_key(t);
         }
     }
     rep.with_data = with.iter().flatten().filter(|&&d| d).count();
+    if rep.with_data == 0 {
+        return Ok(rep);
+    }
     let decoded: HashMap<(u8, u32, u32), Vec<f32>> =
         base.par_iter().map(|(&k, b)| Ok((k, roadcore::grid::decode_terrain(b)?))).collect::<Result<_>>()?;
     // (The base served to the sampler as a Terrarium pyramid of PNGs: crate::dem::encoding.)
@@ -1337,19 +1370,38 @@ fn make_tiles(
             .map(|(&k, e)| Ok((k, roadcore::grid::encode_terrain_png(e, 256, 256)?)))
             .collect::<Result<_>>()?,
     );
-    let items = plan_items(&plan_files(&full, area, &bf)?, &tiles_of(&|g, i| with[g][i]))?;
+    let items = plan_items(&plan_files(&full, area, &bf)?, &tiles_of(&|g, i| with[g][i] && todo[g][i]))?;
     bf.keep_only(&items);
     read_ahead(&items, n, true, |k| {
-        let made: Vec<Result<Vec<(u8, u32, u32, Vec<u8>)>>> = groups[k]
-            .par_iter()
-            .zip(&with[k])
-            .filter(|(_, &d)| d)
-            .map(|(&(t, zf), _)| deep_tiles(&full_s, water, &decoded, t, zf, &zs))
-            .collect();
+        let mine: Vec<(u8, u32, u32)> =
+            groups[k].iter().zip(&with[k]).filter(|(_, &d)| d).map(|((t, _), _)| *t).collect();
         let mut tiles = Vec::new();
-        for r in made {
-            tiles.extend(r?);
+        for t in &mine {
+            if let Some(l) = log.as_mut() {
+                tiles.extend(l.kept.remove(t).unwrap_or_default());
+            }
         }
+        // (Each base tile's deep tiles kept as it's made: made on the pool's threads, kept here.)
+        let (tx, rx) = std::sync::mpsc::channel();
+        let made = std::thread::scope(|s| -> Result<()> {
+            s.spawn(|| {
+                groups[k].par_iter().zip(&with[k]).zip(&todo[k]).filter(|((_, &d), &t)| d && t).for_each_with(
+                    tx,
+                    |tx, ((&(t, zf), _), _)| {
+                        tx.send((t, deep_tiles(&full_s, water, &decoded, t, zf, &zs))).ok();
+                    },
+                )
+            });
+            for (t, r) in rx {
+                let r = r?;
+                if let Some(l) = log.as_mut() {
+                    l.keep(t, &r)?;
+                }
+                tiles.extend(r);
+            }
+            Ok(())
+        });
+        made?;
         rep.tiles += tiles.len();
         rep.bytes += tiles.iter().map(|t| t.3.len() as u64).sum::<u64>();
         sink(tiles)
@@ -1822,7 +1874,7 @@ mod tests {
         let tile = |m: f32| crate::terrain_codec::encode(&mut vec![m; 65536], 0.1).unwrap();
         let base: HashMap<(u8, u32, u32), Vec<u8>> = [edge, inside, ring].iter().map(|&b| (b, tile(50.0))).collect();
         let flat = Flat(roadcore::grid::encode_terrain_png(&vec![100.0; 65536], 256, 256).unwrap());
-        let (rep, pack) = make(&out, t, &mut |_| Ok(base.clone()), None, &fine, &flat).unwrap();
+        let (rep, pack) = make(&out, t, &mut |_| Ok(base.clone()), None, &fine, &flat, None).unwrap();
         assert_eq!(
             (rep.base_tiles, rep.with_data, rep.tiles, rep.packs),
             (16, 2, 8, 1),
@@ -1855,6 +1907,76 @@ mod tests {
             done.fetch_add(tiles.len() as u64, Ordering::Relaxed);
             Ok(0)
         }
+    }
+
+    /// The world dataset's z10 tiles, each its own heights: a slope, raised by tile.
+    struct Varied;
+    impl crate::fetch::Fetch for Varied {
+        fn open(&self, _: &str) -> Result<Option<Arc<dyn store::range::RangeRead>>> {
+            Ok(None)
+        }
+        fn get(&self, url: &str) -> Result<Option<Vec<u8>>> {
+            let Some(r) = url.strip_prefix("https://e.org/10/") else { return Ok(None) };
+            let v: Vec<u32> = r.split(['/', '.']).filter_map(|s| s.parse().ok()).collect();
+            let k = (v[0] * 7 + v[1] * 3) % 11;
+            let e: Vec<f32> =
+                (0..65536).map(|p| 100.0 + k as f32 * 5.0 + (p % 256) as f32 * 0.3 + (p / 256) as f32 * 0.1).collect();
+            Ok(Some(roadcore::grid::encode_terrain_png(&e, 256, 256)?))
+        }
+    }
+
+    #[test]
+    fn a_deep_target_stopped_and_resumed_makes_the_same_pack() {
+        use crate::resume_log::STOP_AFTER;
+        let d = tempfile::tempdir().unwrap();
+        let cov = crate::coverage::Coverage::fixture(
+            &[crate::agent::recipes::Recipe {
+                id: "r".into(),
+                name: "R".into(),
+                outline: vec!["place:-75.5,44.6,3".into()],
+            }],
+            None,
+            d.path(),
+        )
+        .unwrap();
+        let src = crate::terrain_pack::Sources::default();
+        let raw = Level(50.0);
+        let bases = crate::terrain_pack::Bases::new(&raw, &src, &cov);
+        let (f14, f13) = (world_to(&d.path().join("f14"), 14), world_to(&d.path().join("f13"), 13));
+        let t = targets_in(&f14.sets, &cov, (18, 23))[0];
+        // (Its deep pack's content name, the bytes' digest; None when stopped.)
+        let run = |name: &str, fine: &Fine, stop: Option<usize>| -> Option<String> {
+            let root = d.path().join(name);
+            std::fs::create_dir_all(root.join("state/build")).unwrap();
+            let scratch = d.path().join(format!("{name}-scratch"));
+            let mut out = Out::unbound(&root, &scratch).unwrap();
+            STOP_AFTER.set(stop);
+            let r = build_target_kept(&mut out, t, &bases, None, fine, &Varied, true);
+            STOP_AFTER.set(None);
+            let log = crate::resume_log::path(&scratch, (PACK_Z, t.0, t.1));
+            if let Err(e) = r {
+                assert!(e.to_string().contains("a test's interruption") && log.exists(), "{e:#}");
+                return None;
+            }
+            assert!(r.unwrap().tiles > 0 && !log.exists(), "the log gone once put");
+            Some(out.get(&pack_logical(t.0, t.1)).unwrap().to_string())
+        };
+        let fresh = run("fresh", &f14, None).unwrap();
+        // Stopped after the first, a middle and the last but one of its 12 base tiles (made on
+        // the pool's threads, so not always the same ones), then resumed: the same bytes.
+        for stop in [1, 6, 11] {
+            let name = format!("stop-{stop}");
+            assert!(run(&name, &f14, Some(stop)).is_none(), "stopped after {stop}");
+            assert_eq!(run(&name, &f14, None).as_ref(), Some(&fresh), "stopped after {stop}");
+        }
+        assert!(run("all", &f14, Some(13)).is_some(), "12 base tiles");
+        assert!(run("twice", &f14, Some(1)).is_none() && run("twice", &f14, Some(4)).is_none());
+        assert_eq!(run("twice", &f14, None).as_ref(), Some(&fresh), "stopped twice");
+        // Another input (the data to z13, not z14) voids the log.
+        let to13 = run("to13", &f13, None).unwrap();
+        assert_ne!(to13, fresh);
+        assert!(run("voided", &f14, Some(6)).is_none());
+        assert_eq!(run("voided", &f13, None), Some(to13));
     }
 
     #[test]
@@ -1983,7 +2105,7 @@ mod tests {
             .filter(|m| base_want(t).contains(&(m.0, m.1, m.2)))
             .map(|m| ((m.0, m.1, m.2), m.3.clone()))
             .collect();
-        let (rep, pack) = make(&out, t, &mut |_| Ok(base.clone()), None, &fine, &flat).unwrap();
+        let (rep, pack) = make(&out, t, &mut |_| Ok(base.clone()), None, &fine, &flat, None).unwrap();
         assert_eq!(rep.tiles, 16);
         let pack = pack.unwrap();
         let (idx, _) = read_pack(&pack);
@@ -2049,6 +2171,7 @@ mod tests {
             &flat,
             d.path(),
             0..MAX_Z + 1,
+            None,
             &mut |m| {
                 zs.extend(m.into_iter().map(|t| (t.0, t.1, t.2)));
                 Ok(())
