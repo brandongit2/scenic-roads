@@ -1334,7 +1334,8 @@ impl<'a> Maker<'a> {
         let blocks = if by_block { blocks(z, &tiles, self.block_up) } else { vec![tiles] };
         // (What a resumed run's log kept of the level: its blocks, its end.)
         let mut kept = log.as_deref_mut().map(|l| l.level(z)).unwrap_or_default();
-        let key = |b: &[(u32, u32)]| (b[0].0 >> up, b[0].1 >> up);
+        // (A level of no tile, made whole, is one empty block.)
+        let key = |b: &[(u32, u32)]| b.first().map_or((0, 0), |t| (t.0 >> up, t.1 >> up));
         let (mut outs, mut nq) = (Vec::new(), HashMap::new());
         // (A block kept: its tiles as finished, its lakes' levels; its tiles with data as if
         // sampled, for the level above's `prepare` reads, crate::terrain_base::Tiles.)
