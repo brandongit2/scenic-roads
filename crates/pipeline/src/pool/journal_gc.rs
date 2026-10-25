@@ -258,13 +258,24 @@ pub fn plan(nas: &dyn Nas, r: &Records, now: u64) -> Result<Plan> {
     })
 }
 
-/// `scenic pool journal-gc [--repair]` on the share at `root`: `plan` against the newest records,
-/// and with `repair` its marker written, only while the kill switch says `off` (no GC run then
-/// changes the marker or removes a file meanwhile).
-pub fn check(nas: &dyn Nas, now: u64, repair: bool) -> Result<String> {
-    let cur = term::current(nas).context("the current term")?;
-    let r = Records::newest(nas, cur.term, true)?.context("no records to check the marker against")?;
-    let p = plan(nas, &r, now)?;
+/// The least time between `check`'s two reads before it repairs (s): a write is made only when
+/// both propose the same marker, so one stale view (#645 measured some at half a minute) or a GC
+/// run under way (it stops at its next day once the kill switch says off) isn't acted on alone.
+pub const REREAD_S: u64 = 60;
+
+/// `scenic pool journal-gc [--repair]` on the share: `plan` against the newest records, and with
+/// `repair` its marker written, only while the kill switch says `off` (a GC run stops at its next
+/// day then) and only when a second read, after `wait` (`REREAD_S` in the command), proposes the
+/// same; after the write, each dropped entry is checked still there, else the marker read first is
+/// put back and it fails.
+pub fn check(nas: &dyn Nas, now: u64, repair: bool, wait: &dyn Fn()) -> Result<String> {
+    let read_plan = || -> Result<(Plan, Option<Vec<u8>>)> {
+        let cur = term::current(nas).context("the current term")?;
+        let r = Records::newest(nas, cur.term, true)?.context("no records to check the marker against")?;
+        let was = nas.read(PATH)?;
+        Ok((plan(nas, &r, now)?, was))
+    };
+    let (p, was) = read_plan()?;
     let m = match p.write {
         Some(m) if repair => m,
         Some(_) => return Ok(format!("{}\nRun `scenic pool journal-gc --repair` to write it.", p.said)),
@@ -275,7 +286,30 @@ pub fn check(nas: &dyn Nas, now: u64, repair: bool) -> Result<String> {
         "{}\nNot written: say `off` in {SWITCH} first (the GC mustn't run meanwhile), then again.",
         p.said
     );
+    wait();
+    let (p2, was2) = read_plan()?;
+    anyhow::ensure!(
+        p2.write.as_ref() == Some(&m) && was2 == was && !enabled(nas),
+        "Not written: a second read {REREAD_S} s later doesn't agree (a stale view, or the marker or \
+         records changing): run it again.\nFirst: {}\nThen: {}",
+        p.said,
+        p2.said
+    );
     nas.write_whole(PATH, &serde_json::to_vec(&m)?)?;
+    // (Entries dropped as still in the journal: still there now, else the fence goes back.)
+    if let Some(Ok(old)) = was.as_deref().map(serde_json::from_slice::<Marker>) {
+        let on: BTreeSet<String> = journal::list(nas, None)?.into_iter().collect();
+        let gone: Vec<&String> = old.keys.iter().filter(|k| !m.keys.contains(*k) && !on.contains(*k)).collect();
+        if !gone.is_empty() {
+            nas.write_whole(PATH, was.as_deref().unwrap_or_default())?;
+            anyhow::bail!(
+                "Not safe after all: {} dropped entries were removed meanwhile ({}): the marker read first is \
+                 back. Check the kill switch and that no GC run is under way, then run it again.",
+                gone.len(),
+                gone.iter().take(3).map(|k| k.as_str()).collect::<Vec<_>>().join(", ")
+            );
+        }
+    }
     Ok(format!("{}\nWritten. Take-ups pass it now; {SWITCH} back to on (or removed) lets the GC run again.", p.said))
 }
 
@@ -397,6 +431,12 @@ fn remove(
     let mut left = MAX_REMOVES;
     for (day, keys) in by_day {
         between();
+        // (The owner's kill switch said off meanwhile: `scenic pool journal-gc --repair` may be
+        // rewriting the marker.)
+        if !enabled(nas) {
+            rep.waits.push(format!("{SWITCH} says off"));
+            return Ok(());
+        }
         // (The term and the marker as they were: a lead that lost its term, or a marker replaced,
         // stops here.)
         if term::next(nas, term)? {

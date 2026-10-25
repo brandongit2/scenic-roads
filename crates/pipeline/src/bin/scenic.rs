@@ -1391,7 +1391,9 @@ fn main() -> Result<()> {
                 Some(PoolCmd::JournalGc { repair }) => {
                     // The journal GC's marker against the newest records (crate::pool::journal_gc::check).
                     let nas = pipeline::pool::nas::Share::new(&r);
-                    println!("{}", pipeline::pool::journal_gc::check(&nas, now_s(), repair)?);
+                    println!("{}", pipeline::pool::journal_gc::check(&nas, now_s(), repair, &|| {
+                        std::thread::sleep(std::time::Duration::from_secs(pipeline::pool::journal_gc::REREAD_S))
+                    })?);
                 }
                 Some(PoolCmd::NasProbe { dir }) => {
                     // The NAS budget's probe once (pipeline::budget::nas), in `--dir <folder>` (made,

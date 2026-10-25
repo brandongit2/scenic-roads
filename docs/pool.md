@@ -773,7 +773,9 @@ holds the job's slot, so it names nothing: the lease counts by its measures unti
   alert (`agent::lead::alert`), on the build page above the Overview and on the menu bar; until
   then `scenic lead` says it on a line. `scenic pool journal-gc` checks the marker against the
   newest records (`journal_gc::plan`) and says what's safe; `--repair` writes what it proposes,
-  only while the kill switch says `off` (no GC run then changes the marker or removes a file):
+  only while the kill switch says `off` (no GC run then starts, and one under way stops before its
+  next day), and only when a second read `journal_gc::REREAD_S` (60 s) later proposes the same; a
+  dropped entry found removed after the write puts the marker read first back:
   - covered, or no marker: nothing to do (a refused take-up read stale);
   - records haven't the floor, or name not a marked entry already removed: **not safe**, nothing
     written: a take-up from them would lose those entries. Restore newer records
@@ -787,7 +789,8 @@ holds the job's slot, so it names nothing: the lease counts by its measures unti
     not done. The lost marker named only entries its snapshot, read back from the share, named,
     so records at least as new name them all or have forgotten them; the command reads the newest
     there now. Its one risk is that read itself being stale (an SMB client's stale view, seen for
-    up to 40 minutes): `--repair` it from a second Mac only if the first's proposal matches.
+    up to 40 minutes, longer than the reread's minute): `--repair` it from a second Mac only if
+    the first's proposal matches.
   Then the kill switch back to on (or removed).
 - **The lead lists the journal off its loop:** every day after take-up and daily, the last two days
   every ten minutes. Otherwise it reads the entries members tell it of. An entry unreadable for an

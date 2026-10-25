@@ -4186,12 +4186,17 @@ mod tests {
         }
         let f = Beat::read(&mem, B).unwrap().unwrap().fenced.expect("fenced");
         assert!(f.why.contains("can't be parsed") && f.since < ib.now(), "{f:?}");
-        let said = journal_gc::check(&mem, ib.now(), false).unwrap();
+        let said = journal_gc::check(&mem, ib.now(), false, &|| {}).unwrap();
         assert!(said.contains("made again") && said.contains("--repair"), "{said}");
-        let e = journal_gc::check(&mem, ib.now(), true).unwrap_err();
+        let e = journal_gc::check(&mem, ib.now(), true, &|| {}).unwrap_err();
         assert!(format!("{e:#}").contains("off"), "the switch first: {e:#}");
         mem.write_whole(journal_gc::SWITCH, b"off").unwrap();
-        assert!(journal_gc::check(&mem, ib.now(), true).unwrap().contains("Written"));
+        // A second read that doesn't agree (the marker rewritten meanwhile): nothing written.
+        let e = journal_gc::check(&mem, ib.now(), true, &|| mem.write_whole(journal_gc::PATH, b"{\"hor").unwrap())
+            .unwrap_err();
+        assert!(format!("{e:#}").contains("doesn't agree"), "{e:#}");
+        assert_eq!(mem.read(journal_gc::PATH).unwrap().unwrap(), b"{\"hor");
+        assert!(journal_gc::check(&mem, ib.now(), true, &|| {}).unwrap().contains("Written"));
         let m = journal_gc::read(&mem).unwrap().unwrap();
         assert!(m.covers(&was) && m.floor == was.horizon, "{m:?}");
         let o = caught_up(&mut b, &ib, able());
