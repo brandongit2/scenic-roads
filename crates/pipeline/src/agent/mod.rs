@@ -7746,11 +7746,12 @@ impl Agent {
         }
         plan.extend(alone);
         // The forecast of the work left (crate::agent::forecast): the lead's, for the status (made
-        // again at most each minute: idle, the plan's made each loop).
+        // again at most each `forecast::EVERY`: idle, the plan's made each loop).
         // (Run on a thread of its own, `start_forecast`: the loop reads the last one done and never
         // waits on it, task #544.)
         self.take_forecast();
-        let stale = self.forecast.borrow().as_ref().is_none_or(|f| now_s().saturating_sub(f.at) >= 60);
+        let stale =
+            self.forecast.borrow().as_ref().is_none_or(|f| now_s().saturating_sub(f.at) >= forecast::EVERY.as_secs());
         if !self.o.helper && stale && self.forecasting.borrow().is_none() {
             // (What can't be listed now: the regions' work after a new pass, or while the z6 tiles wait.)
             let blind = match newer {

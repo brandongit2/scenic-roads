@@ -1568,6 +1568,8 @@ const GRANTS_S: f64 = 3600.0;
 fn offers(items: &[Item], order: &[Vec<usize>], ask: &Ask) -> Vec<Offer> {
     let mut out: Vec<Offer> = Vec::new();
     let mut of_step: BTreeMap<&str, usize> = BTreeMap::new();
+    // (Whether the last step seen is offered to every member: a group is one step's.)
+    let mut last: Option<(&str, bool)> = None;
     for group in order {
         for &i in group {
             let it = &items[i];
@@ -1613,13 +1615,20 @@ fn offers(items: &[Item], order: &[Vec<usize>], ask: &Ask) -> Vec<Offer> {
 /// The key the run's targets are offered under (no work of the run is done under it yet).
 const KEY: &str = "forecast";
 
+/// How often a forecast is made again at most: the lead's for its status (crate::agent), a page's
+/// view's on every Mac while its input is unchanged (crate::agent::pageview).
+pub const EVERY: Duration = Duration::from_secs(60);
+
 /// How long each of a forecast's three runs may compute (its own thread's CPU time, not wall
 /// time): past it, the run stops where it is (`Sim::cut`) and the forecast is partial
 /// (`Forecast::partial`). It runs off the agent's loop (crate::agent's `start_forecast`); this bounds
-/// a run at a scale it was never measured at (task #544). CPU time, task #584: at the utility QoS a
-/// loaded Mac starves the runs (the mini at load 34: 4 s of CPU took 15 s of wall), and a wall-time
-/// cut then hid the finish of an input no bigger than usual. A run at live scale computes 1-4 s.
-pub const BUDGET: Duration = Duration::from_secs(15);
+/// a run at a scale it was never measured at (task #544). A quarter of `EVERY`: the three runs side
+/// by side, a forecast takes a quarter of the cadence's CPU at most on each of three cores, on every
+/// Mac (the pages' views run it too). CPU time, task #584: at the utility QoS a loaded Mac starves
+/// the runs (the mini at load 34: 4 s of CPU took 15 s of wall), and a wall-time cut then hid the
+/// finish of an input no bigger than usual. A run at live scale (the worldwide rebuild's ~30,000
+/// items, 25 Oct) computes 4-7 s on the M4.
+pub const BUDGET: Duration = Duration::from_secs(EVERY.as_secs() / 4);
 
 /// A run is cut too after this many times its budget on the wall clock (120 s for `BUDGET`), so a
 /// starved one can't hold the lead's next forecast (`Agent::forecasting`) nor the NAS self-heal's

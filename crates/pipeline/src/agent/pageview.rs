@@ -19,7 +19,7 @@
 //! (`forecast::Record::forecast`) with its time brought to now, this Mac's own lanes as its slots
 //! are now (`Inputs::own`, worked out as the lead works out its own: forecast::SlotJob). The
 //! forecast runs on a thread of its own (`Runs`, task #544), again when the input changed or
-//! `FORECAST_EVERY` passed: the snapshot carries the last one done, never waiting on it.
+//! `forecast::EVERY` passed: the snapshot carries the last one done, never waiting on it.
 
 use super::forecast::{Forecast, Record, SlotJob};
 use crate::coord::history::{self, Event, History, DAYS};
@@ -34,8 +34,6 @@ use std::time::{Duration, Instant, SystemTime};
 pub const ASKED_FOR_S: u64 = 60;
 /// The files are read again this often at most.
 pub const EVERY: Duration = Duration::from_secs(12);
-/// The forecast is run here again this often at most while its input is unchanged.
-const FORECAST_EVERY: Duration = Duration::from_secs(60);
 /// A member's status older than this (s) isn't shown (as the lead's own `helpers` takes them).
 const HELPER_FRESH_S: u64 = 600;
 /// The most of a history file taken in a read (bytes); the rest is read the next time.
@@ -472,7 +470,7 @@ fn mac_of(beat: &Value) -> Option<Value> {
 
 impl PageView {
     /// The lead's forecast (`record`, by its file's time) run here at `now` on a thread of its own,
-    /// when none is running and its input changed or `FORECAST_EVERY` passed; none without a
+    /// when none is running and its input changed or `forecast::EVERY` passed; none without a
     /// record. The snapshot's answer takes the last one done (`Runs`).
     fn forecast_run(&self, record: Option<&(SystemTime, Arc<Record<'static>>)>, now: u64, own: &[OwnLane]) {
         let mut r = self.forecast.lock().unwrap();
@@ -482,7 +480,7 @@ impl PageView {
             (r.done, r.of) = (None, None);
             return;
         };
-        let due = r.of.is_none_or(|(at, started)| at != *t || started.elapsed() >= FORECAST_EVERY);
+        let due = r.of.is_none_or(|(at, started)| at != *t || started.elapsed() >= super::forecast::EVERY);
         if r.running.is_some() || !due {
             return;
         }
