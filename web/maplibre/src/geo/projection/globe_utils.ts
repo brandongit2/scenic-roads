@@ -1,4 +1,5 @@
 import {type mat4, quat, type ReadonlyVec4, vec3, vec4} from 'gl-matrix';
+import {clampGlobeLatitude} from './pole_caps.ts';
 import {clamp, createVec3f64, createVec4f64, lerp, MAX_VALID_LATITUDE, mod, remapSaturate, scaleZoom, wrap} from '../../util/util.ts';
 import {LngLat} from '../lng_lat.ts';
 import {EXTENT} from '../../data/extent.ts';
@@ -391,7 +392,7 @@ export function computeGlobePanCenter(panDelta: Point, tr: {
     const panningDegreesPerPixel = getDegreesPerPixel(tr.worldSize, tr.center.lat);
     return new LngLat(
         tr.center.lng - rotatedPanDelta.x * panningDegreesPerPixel * lngSpeed,
-        clamp(tr.center.lat + rotatedPanDelta.y * panningDegreesPerPixel, -MAX_VALID_LATITUDE, MAX_VALID_LATITUDE)
+        clampGlobeLatitude(tr.center.lat + rotatedPanDelta.y * panningDegreesPerPixel, MAX_VALID_LATITUDE) // Scenic Roads: pole_caps.ts
     );
 }
 

@@ -1,4 +1,5 @@
 import Point from '@mapbox/point-geometry';
+import {clampGlobeLatitude} from './pole_caps.ts';
 import {cameraBoundsWarning, type CameraForBoxAndBearingHandlerResult, type EaseToHandlerResult, type EaseToHandlerOptions, type FlyToHandlerResult, type FlyToHandlerOptions, type ICameraHelper, type MapControlsDeltas, updateRotation, cameraForBoxAndBearing} from './camera_helper.ts';
 import {LngLat, type LngLatLike} from '../lng_lat.ts';
 import {angularCoordinatesToSurfaceVector, computeGlobePanCenter, getGlobeRadiusPixels, getZoomAdjustment, globeDistanceOfLocationsPixels, interpolateLngLatForGlobe, versorSetLocationAtPoint} from './globe_utils.ts';
@@ -131,7 +132,7 @@ export class VerticalPerspectiveCameraHelper implements ICameraHelper {
         const oldZoom = tr.zoom;
         const heuristicCenter = new LngLat(
             tr.center.lng + dLng * factor,
-            clamp(tr.center.lat + dLat * factor, -MAX_VALID_LATITUDE, MAX_VALID_LATITUDE)
+            clampGlobeLatitude(tr.center.lat + dLat * factor, MAX_VALID_LATITUDE) // Scenic Roads: pole_caps.ts
         );
 
         // Now compute the map center exact zoom

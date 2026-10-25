@@ -70,6 +70,12 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
   shimmer.
 - **Walls on the terrain under each corner** (`fill_extrusion*.vertex.glsl`): a base of 0 is the
   ground under each corner less 2 m.
+- **The poles left to the map** (`geo/projection/pole_caps.ts`, `Map#setPoleCaps`): with a pole's cap
+  off, the globe's meshes (the terrain's, the rasters', the background's) don't fan out to that pole
+  past the last row, and the camera's centre may go to 89.5° there (`clampGlobeLatitude`, in the
+  vertical-perspective transform's constrain and the globe's pan and zoom); elsewhere ±85.05° as
+  upstream. The app's polar layer draws the cap (docs/polar.md, planned). Vector fills' pole
+  triangles are still drawn.
 - **Distance fog, on the globe too** (`sky.ts` `fogRange`, `Map#setFogRange`, `terrain.*.glsl`,
   `draw_terrain.ts`, and the extrusions'): a vertex's fog depth is its distance along the view,
   scaled from 0 at the map's centre to 1 at the horizon (`fogDepth`); fog runs from the range's

@@ -1,4 +1,5 @@
 import {type mat2, mat4, vec3, vec4} from 'gl-matrix';
+import {clampGlobeLatitude} from './pole_caps.ts';
 import {TransformHelper} from '../transform_helper.ts';
 import {LngLat, type LngLatLike, earthRadius} from '../lng_lat.ts';
 import {angleToRotateBetweenVectors2D, clamp, createIdentityMat4f32, degreesToRadians, radiansToDegrees, scaleZoom, createIdentityMat4f64, createMat4f64, createVec3f64, createVec4f64, differenceOfAnglesDegrees, distanceOfAnglesRadians, MAX_VALID_LATITUDE, pointPlaneSignedDistance, warnOnce, type Mat4f32} from '../../util/util.ts';
@@ -678,7 +679,8 @@ export class VerticalPerspectiveTransform implements ITransform {
     defaultConstrain: TransformConstrainFunction = (lngLat, zoom) => {
         // Globe: TODO: respect _lngRange, _latRange
         // It is possible to implement exact constrain for globe, but I don't think it is worth the effort.
-        const constrainedLat = clamp(lngLat.lat, -MAX_VALID_LATITUDE, MAX_VALID_LATITUDE);
+        // Scenic Roads: past 85.05° where the map draws that pole itself (pole_caps.ts).
+        const constrainedLat = clampGlobeLatitude(lngLat.lat, MAX_VALID_LATITUDE);
         const constrainedZoom = clamp(+zoom, this.minZoom + getZoomAdjustment(0, constrainedLat), this.maxZoom);
         return {
             center: new LngLat(

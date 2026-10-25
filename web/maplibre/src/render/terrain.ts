@@ -1,4 +1,5 @@
 import {mat4} from 'gl-matrix';
+import {poleCaps} from '../geo/projection/pole_caps.ts';
 import {OverscaledTileID} from '../tile/tile_id.ts';
 import {RGBAImage} from '../util/image.ts';
 import {Pos3dArray, TriangleIndexArray} from '../data/array_types.g.ts';
@@ -507,8 +508,9 @@ export class Terrain {
      */
     getTerrainMesh(tileId: OverscaledTileID): Mesh {
         const globeEnabled = this.painter.style.projection?.transitionState > 0;
-        const northPole = globeEnabled && tileId.canonical.y === 0;
-        const southPole = globeEnabled && tileId.canonical.y === (1 << tileId.canonical.z) - 1;
+        // Scenic Roads: unless the map draws the poles itself (pole_caps.ts).
+        const northPole = globeEnabled && poleCaps.north && tileId.canonical.y === 0;
+        const southPole = globeEnabled && poleCaps.south && tileId.canonical.y === (1 << tileId.canonical.z) - 1;
         const key = `m_${northPole ? 'n' : ''}_${southPole ? 's' : ''}`;
         if (this._meshCache[key]) {
             return this._meshCache[key];

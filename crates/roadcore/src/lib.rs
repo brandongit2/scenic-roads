@@ -17,6 +17,7 @@ pub mod elev;
 pub mod grid;
 pub mod lsum;
 pub mod packs;
+pub mod polar;
 pub mod scenic;
 pub mod shade;
 pub mod tile;

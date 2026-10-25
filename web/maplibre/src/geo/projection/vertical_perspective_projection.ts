@@ -1,4 +1,5 @@
 import {SubdivisionGranularityExpression, SubdivisionGranularitySetting} from '../../render/subdivision_granularity_settings.ts';
+import {poleCaps} from './pole_caps.ts';
 import {type PreparedShader, shaders} from '../../shaders/shaders.ts';
 import {createTileMeshWithBuffers, type CreateTileMeshOptions} from '../../util/create_tile_mesh.ts';
 
@@ -77,8 +78,9 @@ export class VerticalPerspectiveProjection implements Projection {
         // Stencil granularity must match fill granularity
         const granularityConfig = usage === 'stencil' ? granularitySettingsGlobe.stencil : granularitySettingsGlobe.tile;
         const granularity = granularityConfig.getGranularityForZoomLevel(canonical.z);
-        const north = (canonical.y === 0) && allowPoles;
-        const south = (canonical.y === (1 << canonical.z) - 1) && allowPoles;
+        // Scenic Roads: unless the map draws the poles itself (pole_caps.ts).
+        const north = (canonical.y === 0) && allowPoles && poleCaps.north;
+        const south = (canonical.y === (1 << canonical.z) - 1) && allowPoles && poleCaps.south;
         return this._getMesh(context, {
             granularity,
             generateBorders: hasBorder,

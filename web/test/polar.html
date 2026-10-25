@@ -1,0 +1,75 @@
+<!doctype html>
+<!-- The polar layer (web/src/polar.ts; docs/polar.md) over the map's own terrain and shading, for
+     checking the caps and the 85° seam by eye: `pnpm dev` in web/, with a folder of polar tiles
+     (scenic-polar's --out) linked as web/public/polar-dev (untracked), then
+     /test/polar.html?pole=s#lon,lat,zoom,pitch,bearing. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Polar caps</title>
+    <link rel="stylesheet" href="../maplibre/built/maplibre-gl.css" />
+    <style>
+      html, body, #map { margin: 0; height: 100%; background: #05070a; }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+    <script type="module">
+      import * as maplibregl from 'maplibre-gl';
+      import mlWorkerUrl from 'maplibre-gl/src/source/worker.ts?worker&url';
+      import { polarLayer, premultiplied } from '../src/polar.ts';
+      import { LAND_COLOUR } from '../src/basecolours.ts';
+      import { SHADE_SHIFT } from '../src/basemap.ts';
+
+      maplibregl.setWorkerUrl(mlWorkerUrl);
+      const q = new URLSearchParams(location.search);
+      const pole = q.get('pole') === 'n' ? 'n' : 's';
+      // (?land=rrggbb: a lighter land than the app's near-black, to see the seam and the relief.)
+      const land = q.get('land') ? `#${q.get('land')}` : LAND_COLOUR;
+      const [lon, lat, zoom, pitch, bearing] = (location.hash.slice(1) || (pole === 's' ? '0,-85,3.5,0,0' : '0,85,3.5,0,0')).split(',').map(Number);
+      const dem = { type: 'raster-dem', tiles: [`${location.origin}/tiles/terrain/{z}/{x}/{y}`], encoding: 'terrarium', tileSize: 256, maxzoom: 12 };
+      const map = new maplibregl.Map({
+        container: 'map',
+        center: [lon, lat],
+        zoom, pitch, bearing,
+        maxPitch: 85,
+        canvasContextAttributes: { preserveDrawingBuffer: true },
+        style: {
+          version: 8,
+          // (The app's projection below street level: web/src/main.ts applyProjection.)
+          projection: { type: ['interpolate', ['linear'], ['zoom'], 15.5, 'vertical-perspective', 16.5, 'mercator'] },
+          sky: { 'atmosphere-blend': 0 },
+          sources: {
+            dem,
+            slope: { ...dem, tiles: [`${location.origin}/tiles/slope/{z}/{x}/{y}`], encoding: 'custom', redFactor: 256, greenFactor: 1, blueFactor: 1 / 256, baseShift: SHADE_SHIFT },
+          },
+          terrain: { source: 'dem', exaggeration: 1 },
+          layers: [
+            { id: 'bg', type: 'background', paint: { 'background-color': land } },
+            { id: 'hillshade', type: 'hillshade', source: 'slope', paint: {
+              resampling: 'linear', 'hillshade-method': 'combined', 'hillshade-exaggeration': 0.55,
+              'hillshade-illumination-direction': 315, 'hillshade-illumination-anchor': 'map',
+              'hillshade-shadow-color': 'rgba(0,0,0,0.85)', 'hillshade-highlight-color': 'rgba(170,190,215,0.30)',
+              'hillshade-accent-color': 'rgba(0,0,0,0.35)' } },
+          ],
+        },
+      });
+      map.on('style.load', () => {
+        if (q.get('off') !== '1') {
+          map.addLayer(polarLayer({
+            pole,
+            url: (kind, z, x, y) => `/polar-dev/${pole}/${kind}/${z}/${x}/${y}.webp`,
+            maxZoom: Number(q.get('maxz') ?? 9),
+            land: premultiplied(land),
+            water: premultiplied('#0c1622'),
+          }));
+          // (Past 85.05° only once the layer draws the pole: the camera is held to it before.)
+          map.jumpTo({ center: [lon, lat], zoom, pitch, bearing });
+        }
+        map.once('idle', () => (window.polarIdle = true));
+      });
+      window.map = map;
+    </script>
+  </body>
+</html>

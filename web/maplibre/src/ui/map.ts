@@ -1,4 +1,5 @@
 import {ensureError, extend, warnOnce, uniqueId, isImageBitmap, type Complete, pick, type Subscription} from '../util/util.ts';
+import {poleCaps} from '../geo/projection/pole_caps.ts';
 import {browser} from '../util/browser.ts';
 import {now} from '../util/time_control.ts';
 import {DOM} from '../util/dom.ts';
@@ -3934,6 +3935,17 @@ export class Map extends Evented<MapEventType> {
      */
     getSky(): SkySpecification {
         return this.style.getSky();
+    }
+
+    /**
+     * Scenic Roads: whether the globe closes the north and south poles past the Web Mercator tiles
+     * (upstream's caps, drawn at the last row's colour and height). Off where the map draws a pole
+     * itself (docs/polar.md).
+     */
+    setPoleCaps(caps: {north: boolean; south: boolean}): this {
+        poleCaps.north = caps.north;
+        poleCaps.south = caps.south;
+        return this._update(true);
     }
 
     /**

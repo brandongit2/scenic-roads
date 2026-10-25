@@ -224,6 +224,39 @@ pub struct Terrainsub {
     pub workers: Option<usize>,
 }
 
+/// A polar cap's terrain and shading tiles (pipeline::polar; docs/polar.md, planned) from the
+/// elevation pool, into a folder of tiles (`<out>/<pole>/{terrain,shade}/z/x/y.webp`). Reads the NAS
+/// (the build's records and the pool's datasets); writes only `--out`
+#[derive(Parser, Debug)]
+#[command(name = "scenic-polar")]
+pub struct Polar {
+    /// The NAS project folder (or a local folder standing in for it), read only
+    #[arg(long, value_name = "DIR")]
+    pub root: PathBuf,
+    /// The pole: n (EPSG:3413) or s (EPSG:3031)
+    #[arg(long, value_name = "n|s")]
+    pub pole: String,
+    /// The finest zoom (pipeline::polar::MAX_Z at most)
+    #[arg(long, value_name = "Z", default_value_t = pipeline_max_z())]
+    pub max_z: u8,
+    /// The zoom of the blocks made one at a time (memory: one block's subtree)
+    #[arg(long, value_name = "Z", default_value_t = 4)]
+    pub block: u8,
+    /// The output folder (and its scratch/)
+    #[arg(long, value_name = "DIR")]
+    pub out: PathBuf,
+    /// Only these blocks (x/y at the block's zoom, repeated), and no level above them: a sample
+    #[arg(long, value_name = "X/Y")]
+    pub only: Vec<String>,
+    /// Threads (default: rayon's)
+    #[arg(long, value_name = "N")]
+    pub workers: Option<usize>,
+}
+
+fn pipeline_max_z() -> u8 {
+    crate::polar::MAX_Z
+}
+
 /// Canada's lakes missing from OSM, sheet by sheet: the lakefill step's parts (pipeline::lakefill::run)
 /// one at a time, and checks of a fill. Scratch folders only
 #[derive(Parser, Debug)]
