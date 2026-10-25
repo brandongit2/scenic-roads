@@ -220,8 +220,10 @@ pub fn stored(id: &str, dir: &std::path::Path, url: &str) -> Result<Option<Arc<d
         }
         bail!("{id}: tile {name} isn't in the store ({}): z6 tile builds don't download it; fetch it into the store first (scenic-build store-fetch {id} --index <its index>, docs/inputs.md §6.8)", dir.display());
     }
+    let whole = crate::whole::tiff_file_checked(&f)
+        .with_context(|| format!("{id}: reading tile {name} in the store ({})", dir.display()))?;
     ensure!(
-        crate::whole::tiff_file_whole(&f),
+        whole,
         "{id}: tile {name} in the store ({}) isn't whole: remove it and fetch it again (scenic-build store-fetch {id} --index <its index>)",
         dir.display()
     );

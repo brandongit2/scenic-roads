@@ -524,15 +524,41 @@ pub fn tiff_file_whole(p: &Path) -> bool {
 
 /// Whether open TIFF file `f` is whole (its directories read, not its data).
 pub fn tiff_whole(f: &std::fs::File) -> bool {
+    tiff_whole_checked(f).unwrap_or(false)
+}
+
+/// Whether TIFF file `p` is whole, or the I/O error that kept it from being read (a NAS's EIO or
+/// timeout says nothing of the file: the store's reader names the error rather than calling a
+/// whole file cut short, as on 25 Oct while the NAS restarted after a DSM update).
+pub fn tiff_file_checked(p: &Path) -> std::io::Result<bool> {
+    tiff_whole_checked(&std::fs::File::open(p)?)
+}
+
+/// Whether open TIFF file `f` is whole, or the first I/O error met reading it (a read cut by the
+/// file's end is "not whole", not an error).
+pub fn tiff_whole_checked(f: &std::fs::File) -> std::io::Result<bool> {
     use store::sys::PosIo;
-    let Ok(len) = f.metadata().map(|m| m.len()) else { return false };
-    tiff_whole_with(len, &|o, n| {
+    let len = f.metadata()?.len();
+    let err = std::cell::RefCell::new(None);
+    let whole = tiff_whole_with(len, &|o, n| {
         if o.checked_add(n as u64)? > len {
             return None;
         }
         let mut b = vec![0u8; n];
-        f.read_exact_at(&mut b, o).ok().map(|_| b)
-    })
+        match f.read_exact_at(&mut b, o) {
+            Ok(()) => Some(b),
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::UnexpectedEof {
+                    err.borrow_mut().get_or_insert(e);
+                }
+                None
+            }
+        }
+    });
+    match err.into_inner() {
+        Some(e) => Err(e),
+        None => Ok(whole),
+    }
 }
 
 /// Whether kept file `p` is whole, by its kind (`.png`, `.tif`); a file of another kind is taken
@@ -818,6 +844,19 @@ mod tests {
         bad[b.len() / 2] ^= 1;
         assert!(!png_whole(&bad), "a flipped bit");
         assert!(!png_whole(b""));
+    }
+
+    #[test]
+    fn tiff_read_errors_are_errors() {
+        let d = tempfile::tempdir().unwrap();
+        let p = tiff(d.path(), false);
+        assert!(tiff_file_checked(&p).unwrap());
+        std::fs::write(&p, &std::fs::read(&p).unwrap()[..9]).unwrap();
+        assert!(!tiff_file_checked(&p).unwrap(), "cut short: not whole, no error");
+        // A read that fails (a folder's read is EISDIR, as a NAS's EIO): an error, not "not whole".
+        let e = tiff_whole_checked(&std::fs::File::open(d.path()).unwrap()).unwrap_err();
+        assert_ne!(e.kind(), std::io::ErrorKind::UnexpectedEof, "{e}");
+        assert!(tiff_file_checked(&d.path().join("missing.tif")).is_err());
     }
 
     #[test]
