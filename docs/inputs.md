@@ -478,17 +478,18 @@ less the coastline's land and every region without `water` (the land dominates t
 order where a region comes after those its water names whole (`region:`, `group:`). Then one
 coastline, with or without `cover`: what lies in no region along the coastline, on either side of
 it — land where an outline's coast lay inland of the coastline's, sea where the water's parts
-stopped short of it — is the coast's. Each side's pieces touching the coastline, joined across the
-cells' edges, up to `sliver_km2` go to the region sharing the longest edge with them (a piece of
+stopped short of it — is the coast's (the coastline: the land's edge, the big lakes' shores
+included, never a cell's edge). Each side's pieces touching the coastline in their cell, joined
+across the cells' edges, up to `sliver_km2` go to the region sharing the longest edge with them (a piece of
 land by its land, a piece of sea by its water and lakes), if it has `water`; so a region's land and
 water meet on the coastline's coast (a `land:` part names the land before this). A region's
 `hand_out` folder then takes each stretch (a connected piece) of its water that one of its regions
 alone borders, and a stretch under `sliver_km2` goes to the one sharing its longest edge. With
 `cover = "earth"` in `_rules.toml`, then: a region's piece of water under `sliver_km2` touching
 none of its land joins the region with water it shares the longest edge with; and, cell by cell
-(2°), land in two regions is taken from those of them with water. Then each piece still in no region
-(its cells' pieces joined across the cells' edges, as the stretches are) within 100 m of land up to `sliver_km2` joins the
-region with water it shares the longest edge with; a piece touching none stays. Land in no region
+(2°), land in two regions is taken from those of them with water. Then each piece still in no
+region (its cells' pieces joined across the cells' edges, as the stretches are) within 100 m of land
+up to `sliver_km2` joins the region with water it shares the longest edge with; a piece touching none stays. Land in no region
 over `sliver_km2` is an error (`rg-cover`), found at a point inside its largest part of land and
 naming the regions that had any of it both (taken from both). The region whose water is
 `rest` takes what's left; without one, water left is an error, as is water in two regions. A region
