@@ -3,7 +3,7 @@
 // slots and Macs, and the wait while this Mac hasn't read the build's state.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { busyLanes, finishedTiles, inRings, mapTilesKept, regionWork, regionsShown, rowsWindow, stageFill, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, pastFrom, pastRuns, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, targetsOf, tileBox, tileCovers, tileOf, wholeProgress } from '../../web/work/sums.js';
+import { areaOf, areaTargets, busyLanes, finishedTiles, inRings, mapTilesKept, regionWork, regionsShown, rowsWindow, stageFill, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, pastFrom, pastRuns, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, targetsOf, tileBox, tileCovers, tileOf, wholeProgress } from '../../web/work/sums.js';
 
 test('map: tiles from targets, their squares', () => {
   assert.deepEqual(tileOf('6/10/15'), { z: 6, x: 10, y: 15 });
@@ -39,7 +39,7 @@ test('map: finished tiles in the window, the last end each', () => {
   assert.deepEqual([...f].map(([k, v]) => [k, v.t]), [['pack 6/1/1', 150]]);
 });
 
-test('map: the filters keep tiles by state, member, stage and zoom (#615, #627)', () => {
+test('map: the filters keep tiles by state, member, step and tile area (#615, #627, #659)', () => {
   const running = new Map([['unit 6/1/1', { step: 'unit', frac: 0, run: { mac: 'A' } }], ['unit 6/1/2', { step: 'unit', frac: 0.4, current: true, run: { mac: 'A' } }], ['slope 6/1/3', { step: 'slope', frac: 1, run: { mac: 'B #2' } }]]);
   const done = new Map([['pack 3/0/0', { t: 100, step: 'pack', worker: 'B' }], ['unit 6/2/2', { t: 300, step: 'unit', worker: 'A' }], ['unit 6/1/2', { t: 50, step: 'unit', worker: 'A' }]]);
   const all = {};
@@ -55,13 +55,16 @@ test('map: the filters keep tiles by state, member, stage and zoom (#615, #627)'
   assert.deepEqual(keys(mapTilesKept(running, done, { tiles: { completed: false } })), [['unit 6/1/1', 'unit 6/1/2'], []]);
   const macOf = (w) => w.split(' #')[0];
   assert.deepEqual(keys(mapTilesKept(running, done, { ...all, member: 'B' }, { macOf })), [['slope 6/1/3'], ['pack 3/0/0']]);
-  // (By stage: the unchecked stages' tiles go; none unchecked, all stay.)
-  const stageOf = (s) => (s === 'unit' ? 'roads' : s === 'slope' ? 'terrain' : 'out');
-  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, offStages: ['terrain', 'out'] }, { stageOf })), [['unit 6/1/1', 'unit 6/1/2'], ['unit 6/2/2']]);
-  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, offStages: [] }, { stageOf })), keys(mapTilesKept(running, done, all)));
-  // (Tile areas: z3 alone hides every z6 tile, and z6 every z3.)
-  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, zoom: '3' })), [[], ['pack 3/0/0']]);
-  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, zoom: '6' }))[1], ['unit 6/2/2']);
+  // (By step: the steps toggled off lose their tiles; none off, all stay.)
+  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, offSteps: ['slope', 'pack'] })), [['unit 6/1/1', 'unit 6/1/2'], ['unit 6/2/2']]);
+  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, offSteps: [] })), keys(mapTilesKept(running, done, all)));
+  // (Tile areas, by the packs' zooms: hi off hides every z6 tile, lo off every z3.)
+  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, offAreas: ['hi'] })), [[], ['pack 3/0/0']]);
+  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, offAreas: ['lo', 'root', 'deep'] }))[1], ['unit 6/2/2']);
+  assert.deepEqual(['0/0/0', '3/1/1', '6/1/1', '10/1/1', 'terrain-deep 10/5/5', '8/1/1'].map(areaOf), ['root', 'lo', 'hi', 'deep', 'deep', 'z8']);
+  // (A root step's worldwide target is the root tile; others' as they are.)
+  assert.deepEqual([areaTargets('terrain-root', ['terrain-root']), areaTargets('slope-root', []), areaTargets('unit', ['6/1/1'])], [['0/0/0'], ['0/0/0'], ['6/1/1']]);
+  assert.deepEqual([...finishedTiles([{ kind: 'end', t: 5, step: 'slope-root', targets: ['slope-root'] }], 0).keys()], ['slope-root 0/0/0']);
   assert.equal(tileCovers({ z: 1, x: 1, y: 0 }), '0.0°–85.1° N, 0.0°–180.0° E');
 });
 
@@ -151,7 +154,7 @@ test("slots: a worker's slot of a host, and a job's lane by its slot index", () 
 
 test("past jobs: each job's end since `from`, by start, once each", () => {
   const ev = [
-    { kind: 'end', seq: 5, t: 500, secs: 100, step: 'unit', worker: 'm4 #2', targets: ['a', 'b'], ok: true, what: 'Roads: 2 tiles' },
+    { kind: 'end', seq: 5, t: 500, secs: 100, step: 'unit', worker: 'm4 #2', targets: ['a', 'b'], ok: true },
     { kind: 'start', seq: 6, t: 510, step: 'unit', worker: 'm4' },
     { kind: 'end', seq: 7, t: 300, secs: 250, step: 'depth', worker: 'm1', targets: ['c'], ok: false },
     { kind: 'end', seq: 5, t: 500, secs: 100, step: 'unit', worker: 'm4 #2', targets: ['a', 'b'] }, // the same again

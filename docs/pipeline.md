@@ -29,8 +29,7 @@ Every row has the same fields; nothing about a step is kept anywhere else.
 
 | Field | Meaning | Values |
 |---|---|---|
-| `id` (`name`) | the stored name: in the records, the journal, the leases, the timings, the floors, the `work/` paths; never shown as such, renamed only with its old name read as the new (§3) | `unit`, `terrain-lo`, … |
-| `title` | the name people see | "Roads", "Terrain, zoomed out" |
+| `id` (`name`) | the stored name: in the records, the journal, the leases, the timings, the floors, the `work/` paths; and the name every reader shows (task #659: no display names, the build page's, the menu bar's and `scenic status`' alike); renamed only with its old name read as the new (§3) | `unit`, `terrain-lo`, … |
 | `does` | one sentence: what it makes from what | |
 | `kind` | where its output goes | `fetch` (`sources/`, from outside), `derive` (`work/`, `global/`: what other steps read), `pack` (what the map serves), `publish` (a catalog), `keep` (checks, lists, removals, backups) |
 | `scope` | what one target is, and the noun its targets are counted in | `world` (one target: a run), z3 tile, z6 tile, `input` (a drop box); a task's `task`. Counted in "z3 tiles", "z6 tiles", … (`Scope::noun`); sent as `scope` `area` and `tile` by `/work/steps` (the stored words, kept: `Scope`'s serde names) |
@@ -38,18 +37,18 @@ Every row has the same fields; nothing about a step is kept anywhere else.
 | `place` | which Mac runs it: derived from the pool's rules (`agent::every::offered`), not kept | `any` (any member whose measured room fits), `lead` |
 | resources | its first guess of memory until measured, whether members take it and at what rank (`shared`), a whole-build run alone (`alone`), whether it keeps the pass's answers (`answered`), its write-set (`writes`). The rest is measured, not kept: each target's memory, disk, cores, time and NAS rate by the step's model (`needs::Book`), targets per job (`coord::JOB_S`), and whether a job runs with others on a Mac (packing, by those measures) | pool.md §7.2, §7.7 |
 
-The naming of titles: the thing a step makes (**Terrain**, **Roads**, **Map tiles**); its zoomed-out
-assembly by z3 tile "…, zoomed out"; its world level "…, world level"; a fetch "…'s sources" or what it
-fetches (**Rail timetables**); a task its step's part (**Terrain's subtrees**).
-
-Every text about a step is templated from its row (`steps::title`, `said`, `counted`):
+Stages, steps, tasks, jobs, targets, parts and phases have no display names: each is said by the
+name the code gives it (a stage's `id`, a step's `id`, a job's id: its step and first target, a
+target's name, a part's or phase's words as the job emits them). Every text about a step is
+templated from its row (its `id`, `steps::said`, `counted`):
 
 | Text | Template | Example |
 |---|---|---|
-| a job's name | `{title}: {n} {noun}s`; a worldwide step `{title}` | "Terrain: 8 tiles", "Outlines" |
-| a checklist count | `{done} of {total} {noun}s`, `{left} {noun}s left`, "done", "to come" (not sized yet) | "156 of 284 tiles" |
-| a step waiting | `{title}: {why}` | "Lake fill: failed 3 times in a row: …" |
-| an event | `{who} finished {job's name} in {time}` | "m4 finished Roads: 6 tiles in 10 min" |
+| a job's name (agent, menu bar) | `{id}: {n} {noun}s`; a worldwide step `{id}` | "terrain-hi: 8 z6 tiles", "outlines" |
+| a job's name (the build page) | its id: `{id} {first target}`; a worldwide step `{id}` | "terrain-deep 10/259/338", "outlines" |
+| a checklist count | `{done} of {total} {noun}s`, `{left} {noun}s left`, "done", "to come" (not sized yet) | "156 of 284 z6 tiles" |
+| a step waiting | `{id}: {why}` | "lakefill: failed 3 times in a row: …" |
+| an event | `{who} finished {job's name} in {time}` | "m4 finished unit 6/33/22 (unit: 6 z6 tiles) in 10 min" |
 
 The build page, the menu bar and `scenic status` have no words of their own for a step: the page
 reads the table from the coordinator (`POST /work/steps`: every row and the stages), `scenic
@@ -67,66 +66,66 @@ records' `terrain` and `slope` keys read as `terrain_hi` and `slope_hi` (`jobs.j
 paths (`terrain-mid`, `slope-mid`) and a mid's `step` field keep the old names. Place: any member
 (⇄) or the lead.
 
-| Stage | Step (title) | id | kind | each target | place |
-|---|---|---|---|---|---|
-| OpenStreetMap pass | Planet | `osm-pass` | derive | the world | lead |
-| | Pass sets | `pass-sets` | derive | the world | lead |
-| | Outlines | `outlines` | derive | the world | lead |
-| | Route ends | `trailends` | derive | the world | lead |
-| | Road reach | `reach` | derive | the world | lead |
-| | World terrain, z8 | `terrain-z8` | derive | the world | lead |
-| | Roadside buildings | `buildings` | fetch | the world | lead |
-| | Summits | `summits` | derive | the world | lead |
-| | Place labels | `labels` | pack | the world | lead |
-| | Lake fill | `lakefill` | derive | the world | lead |
-| | Water | `water` | pack | the world | lead |
-| | Spoken languages | `spoken` | derive | the world | lead |
-| | Regions' extract | `regions-extract` | derive | the world | lead |
-| Heritage sites | Heritage sites | `heritage-sites` | derive | the world | lead |
-| Terrain | Terrain water | `terrain-water` | derive | the world | lead |
-| | Terrain | `terrain-hi` | pack | a z6 tile | ⇄ |
-| | Terrain, deep levels | `terrain-deep` | pack | a z10 tile | ⇄ |
-| | Terrain, zoomed out | `terrain-lo` | pack | a z3 tile | ⇄ |
-| | Terrain's subtrees (task) | `terrainsub` | | a task of Terrain | ⇄ |
-| Slope | Slope, deep levels | `slope-deep` | pack | a z10 tile | ⇄ |
-| | Slope | `slope-hi` | pack | a z6 tile | ⇄ |
-| | Slope, zoomed out | `slope-lo` | pack | a z3 tile | ⇄ |
-| Tree cover | Tree cover | `trees` | pack | a z6 tile | ⇄ |
-| | Tree cover, zoomed out | `trees-lo` | pack | a z3 tile | ⇄ |
-| | Tree cover's blocks (task) | `treeblock` | | a task of Tree cover | ⇄ |
-| Water depth | Depth, zoomed out | `depth-lo` | pack | a z3 tile | ⇄ |
-| | Depth | `depth` | pack | a z6 tile | ⇄ |
-| | Depth shading, zoomed out | `depth-shade` | pack | a z3 tile | ⇄ |
-| Roads | Roads | `unit` | pack | a z6 tile | ⇄ |
-| | Roads' last steps (task) | `tail` | | a task of Roads | ⇄ |
-| Map tiles | Map tiles | `pack` | pack | a z6 tile | ⇄ |
-| | Map tiles, zoomed out | `lo` | pack | a z3 tile | ⇄ |
-| Map finishing | Prune | `prune` | keep | the world | lead |
-| | Road index | `roadunits` | derive | the world | lead |
-| | Rail stops | `stations` | pack | the world | lead |
-| | Ferries | `ferries` | pack | the world | lead |
-| | Terrain, world level | `terrain-root` | pack | the world | lead |
-| | Slope, world level | `slope-root` | pack | the world | lead |
-| Trains | Rail timetables | `rail-feeds` | fetch | the world | lead |
-| | Trains a day | `rail` | derive | the world | lead |
-| Landmarks | Landmark candidates | `pois` | derive | a z6 tile | ⇄ |
-| | Peaks | `peaks` | derive | a z6 tile | ⇄ |
-| | Wikidata facts | `items` | fetch | the world | lead |
-| | Heritage details | `heritage` | derive | the world | lead |
-| | Landmarks | `marks` | pack | the world | lead |
-| | Area overlays | `overlays` | pack | the world | lead |
-| 3D buildings | Buildings' sources | `bld-fetch` | fetch | the world | lead |
-| | Buildings read | `bldprep` | derive | a z6 tile | ⇄ |
-| | 3D buildings | `bldtiles` | pack | a z6 tile | ⇄ |
-| | 3D buildings, zoomed out | `bldfield-lo` | pack | a z3 tile | ⇄ |
-| | 3D buildings' z8 tiles (task) | `bldtile` | | a task of 3D buildings | ⇄ |
-| Publishing | Catalog | `catalog` | publish | the world | lead |
-| | Catalog, held | `catalog-held` | publish | the world | lead |
-| Upkeep | Input check | `inputs` | keep | an input | lead |
-| | Names to do | `names-todo` | keep | the world | lead |
-| | Timetables to do | `timetables-todo` | keep | the world | lead |
-| | Clean-up | `gc` | keep | the world | lead |
-| | Backup | `backup` | keep | the world | lead |
+| Stage | Step | kind | each target | place |
+|---|---|---|---|---|
+| `pass` | `osm-pass` | derive | the world | lead |
+| | `pass-sets` | derive | the world | lead |
+| | `outlines` | derive | the world | lead |
+| | `trailends` | derive | the world | lead |
+| | `reach` | derive | the world | lead |
+| | `terrain-z8` | derive | the world | lead |
+| | `buildings` | fetch | the world | lead |
+| | `summits` | derive | the world | lead |
+| | `labels` | pack | the world | lead |
+| | `lakefill` | derive | the world | lead |
+| | `water` | pack | the world | lead |
+| | `spoken` | derive | the world | lead |
+| | `regions-extract` | derive | the world | lead |
+| `sites` | `heritage-sites` | derive | the world | lead |
+| `terrain` | `terrain-water` | derive | the world | lead |
+| | `terrain-hi` | pack | a z6 tile | ⇄ |
+| | `terrain-deep` | pack | a z10 tile | ⇄ |
+| | `terrain-lo` | pack | a z3 tile | ⇄ |
+| | `terrainsub` (task) | | a task of `terrain-hi` | ⇄ |
+| `slope` | `slope-deep` | pack | a z10 tile | ⇄ |
+| | `slope-hi` | pack | a z6 tile | ⇄ |
+| | `slope-lo` | pack | a z3 tile | ⇄ |
+| `trees` | `trees` | pack | a z6 tile | ⇄ |
+| | `trees-lo` | pack | a z3 tile | ⇄ |
+| | `treeblock` (task) | | a task of `trees` | ⇄ |
+| `depth` | `depth-lo` | pack | a z3 tile | ⇄ |
+| | `depth` | pack | a z6 tile | ⇄ |
+| | `depth-shade` | pack | a z3 tile | ⇄ |
+| `roads` | `unit` | pack | a z6 tile | ⇄ |
+| | `tail` (task) | | a task of `unit` | ⇄ |
+| `tiles` | `pack` | pack | a z6 tile | ⇄ |
+| | `lo` | pack | a z3 tile | ⇄ |
+| `finish` | `prune` | keep | the world | lead |
+| | `roadunits` | derive | the world | lead |
+| | `stations` | pack | the world | lead |
+| | `ferries` | pack | the world | lead |
+| | `terrain-root` | pack | the world | lead |
+| | `slope-root` | pack | the world | lead |
+| `trains` | `rail-feeds` | fetch | the world | lead |
+| | `rail` | derive | the world | lead |
+| `landmarks` | `pois` | derive | a z6 tile | ⇄ |
+| | `peaks` | derive | a z6 tile | ⇄ |
+| | `items` | fetch | the world | lead |
+| | `heritage` | derive | the world | lead |
+| | `marks` | pack | the world | lead |
+| | `overlays` | pack | the world | lead |
+| `buildings` | `bld-fetch` | fetch | the world | lead |
+| | `bldprep` | derive | a z6 tile | ⇄ |
+| | `bldtiles` | pack | a z6 tile | ⇄ |
+| | `bldfield-lo` | pack | a z3 tile | ⇄ |
+| | `bldtile` (task) | | a task of `bldtiles` | ⇄ |
+| `publish` | `catalog` | publish | the world | lead |
+| | `catalog-held` | publish | the world | lead |
+| `upkeep` | `inputs` | keep | an input | lead |
+| | `names-todo` | keep | the world | lead |
+| | `timetables-todo` | keep | the world | lead |
+| | `gc` | keep | the world | lead |
+| | `backup` | keep | the world | lead |
 
 Publishing has no lane or step of its own: it goes per z6 tile (docs/building.md §2, Publishing), and the
 forecast marks each region where it's all on the map (`map_at`).
@@ -134,7 +133,7 @@ forecast marks each region where it's all on the map (`map_at`).
 ## 4. The checklist
 
 The agent's status carries the build to the end as a line per stage (`agent::build::Line`), each
-with an item per step counted (`agent::build::Item`: its step, title and noun, and its targets
+with an item per step counted (`agent::build::Item`: its step and noun, and its targets
 `done` of `total`, or `left` (a worldwide step's run: 1 or 0; a chain step's: the targets of its
 works to come), or neither while it can't be sized yet, "to come"). A line names every step of its
 stage (`steps`); its own `done` and `total` count the items of one noun (its `unit` field: the first sized
@@ -237,15 +236,21 @@ boxes).
   where it lifted, and never leaves them to the page: Mobile Safari pinned the tap before's,
   #615). Under it the legend (#627): the regions by state ("64 regions on the map", building, to
   come), the tiles by state (unstarted, in progress, completed not yet published, published),
-  counted, and every stage's colour, each item a toggle showing or hiding its kind (off: struck
-  and dimmed), hovered: the rest of the map faint; "Check all" and "Uncheck all" by the stages.
+  counted; the tile areas by the packs the steps make (#659, `sums.js` AREAS: `root` z0, `lo` z3,
+  `hi` z6, `deep` z10; a tile's area is its zoom's, a `<layer>-root` step's worldwide target drawn
+  as 0/0/0), counted, each with its outline's weight (the root's heaviest, a deep tile's a
+  hairline: the weight says the area, the dashes stay the states'); and every step that draws
+  tiles, by its id and counted, grouped by its stage (the stage's id first, a toggle of all its
+  steps; the stage's colour, the one colour a step has across the page); each item a toggle
+  showing or hiding its kind (off: struck and dimmed), hovered: the rest of the map faint;
+  "Check all" and "Uncheck all" by the steps.
   Then the filters. Toggles and filters are this browser's own (localStorage): completed tiles
   faded by age; "Show only for" one pool member (the tiles it ran, the history's ends,
   and runs or will run in its running jobs and leases, and, task #622, the tiles the lead's last
   forecast places on it later: a "to come" layer, faint under a dotted outline in each stage's
-  colour, a legend toggle of its own, kept by the stages and tile areas, its card saying "to come
-  at ≈ HH:MM on <Mac>"; asked of `/work/tocome` only while a member is chosen, pool.md §10);
-  "Show tile areas" (all, z3 or z6). Both maps and
+  colour, a legend toggle of its own, kept by the steps and tile areas, its card saying "to come
+  at ≈ HH:MM on <Mac>"; asked of `/work/tocome` only while a member is chosen, pool.md §10).
+  Both maps and
   their stacks share them (`sums.js` mapTilesKept). On a touch screen, zoomed out, a finger
   moves the map sideways only: up and down is the page's scroll. Moved by a drag, zoomed by a pinch (ctrl+wheel in Chrome, gesture events in
   Safari, two fingers on a touch screen), a double click, its +/− and whole-map buttons or the
@@ -268,12 +273,18 @@ boxes).
   and the forecast's to come, faint; a red now line capped by a dot labelled "now"; each region's mark where it's all on the map; a
   dense time axis (`chartmath.js` timeTicks, midnight a day's name); the pages' lane when a page
   helps.
-- **Jobs tab, the stages:** a list: a stage's line (mark, title, counts, bar), then a row per step
-  (mark, id, title, ⇄ when any Mac may take it, count), under it a row of its jobs, every one (none
+- **Jobs tab, the stages:** a list: a stage's line (mark, id, counts, bar), then a row per step
+  (mark, id, ⇄ when any Mac may take it, count), under it a row of its jobs, every one (none
   folded into a count): a box a job, a square a target (filled once done), finished (the history
   held: the targets its end names), running (its live targets done), to come (the forecast's lane `n`).
-- **Cards:** everything in the Jobs tab has a card (what, where, when, how long, how it went; a
-  step's forecast and jobs; a stage's note and next jobs), shown on hover with a mouse or trackpad
+- **Cards:** everything in the Jobs tab has a card, drawn as the final mockup's (#659: a head
+  with the stage's swatch, a kicker ("terrain-hi · step", "terrain-deep · job under way", "stage")
+  and the code's name as its title; a world map of a job's tiles, 190 px until pinned, then the
+  card's width up to 1000 px; stat tiles; a bar; key–value rows; chips; a foot with its names;
+  560 px wide, twice the map's cards): a job's (where, when, how long, how it went, its part,
+  what's inside it; its targets as chips), a step's (its targets done, what it makes, kind, where
+  it runs, memory, its forecast and jobs; its time by phase as chips), a stage's (steps done, its
+  counts, what it makes, work left, done ≈, now or next, its note; its steps as chips), shown on hover with a mouse or trackpad
   and pinned on a click or tap, refreshed with each render. A following card never catches the
   pointer (pointer-events none; placed beside the point, never over it) and goes as the pointer
   leaves what it's about (into anything else, off the map, out of the window). A pinned card is

@@ -136,10 +136,10 @@ async function run() {
     ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--hide-scrollbars", "about:blank"],
     { stdio: ["ignore", "ignore", "pipe"] });
   const results = [];
-  // (A Ctrl-C, a kill or a run past 3 min: Chrome and its profile go too, by its own PID.)
+  // (A Ctrl-C, a kill or a run past 5 min: Chrome and its profile go too, by its own PID.)
   const stop = () => { chrome.kill("SIGTERM"); setTimeout(() => { rmSync(profile, { recursive: true, force: true }); process.exit(2); }, 1000); };
   process.once("SIGINT", stop).once("SIGTERM", stop);
-  setTimeout(() => { console.log("FAIL the run (past 3 min)"); stop(); }, 180000).unref();
+  setTimeout(() => { console.log("FAIL the run (past 5 min)"); stop(); }, 300000).unref();
   const check = (name, ok, note = "") => { results.push({ name, ok }); console.log(`${ok ? "PASS" : "FAIL"} ${name}${note ? ` (${note})` : ""}`); };
   try {
     const wsBrowser = await new Promise((ok, no) => {
@@ -357,6 +357,79 @@ async function run() {
       const lp = await js(`!!document.querySelector(".card-tip.pinned")`);
       console.log(`INFO jobs: a long-press on a card ${lp && !before ? "pins it" : "does nothing"}`);
       await js(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
+    }
+
+    // Task #659: the map's legend a toggle per step, grouped by stage; the tile areas by pack type;
+    // no display names (every stage, step and job label shown is the code's name); the Jobs tab's
+    // cards as the mockup's.
+    {
+      errors.length = 0;
+      const t = await js(`fetch("/work/steps", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json())`);
+      const steps = new Set((t.steps || []).map((s) => s.id)), stages = (t.stages || []).map((g) => g.id);
+      const tiled = (t.steps || []).filter((s) => !s.of && (["area", "tile", "z10"].includes(s.scope) || /-root$/.test(s.id))).map((s) => s.id);
+      await show("overview");
+      const lg = await js(`(() => { const box = [...document.querySelectorAll(".wmap-steps")].find((e) => e.getClientRects().length); if (!box) return null; return [...box.querySelectorAll(".lgg")].map((g) => ({ stage: g.dataset.stage, head: g.querySelector(".lg.stage")?.dataset.name, steps: [...g.querySelectorAll(".lg.step")].map((b) => [b.dataset.name, b.textContent]) })); })()`);
+      const flat = (lg || []).flatMap((g) => g.steps.map(([id]) => id));
+      const order = (lg || []).map((g) => stages.indexOf(g.stage));
+      const misgrouped = (lg || []).flatMap((g) => g.steps.filter(([id]) => (t.steps.find((s) => s.id === id)?.stage || "") !== g.stage).map(([id]) => id));
+      check("legend: a toggle per step, grouped by stage in the build's order", lg && lg.length > 1 && lg.every((g) => g.head === g.stage && g.steps.length) && tiled.every((id) => flat.includes(id)) && !misgrouped.length && order.every((k, i) => k >= 0 && (!i || k > order[i - 1])),
+        lg ? `${lg.length} stages, ${flat.length} steps; missing ${tiled.filter((id) => !flat.includes(id)).join(", ") || "none"}; misgrouped ${misgrouped.join(", ") || "none"}` : "no step legend");
+      check("legend: each step counted", (lg || []).every((g) => g.steps.every(([id, text]) => text === `${id} ${text.slice(id.length + 1)}` && /^[\d,]+$/.test(text.slice(id.length + 1)))), (lg || []).flatMap((g) => g.steps.map(([, x]) => x)).slice(0, 4).join(" | "));
+      // (A step toggled off: struck, its state kept; on again.)
+      const flip = (sel) => js(`(() => { const b = [...document.querySelectorAll(${JSON.stringify(sel)})].find((e) => e.getClientRects().length); if (!b) return null; b.click(); return [...document.querySelectorAll(${JSON.stringify(sel)})].find((e) => e.getClientRects().length)?.getAttribute("aria-pressed"); })()`);
+      const s1 = await flip(`.wmap-steps .lg.step[data-name="${flat[0]}"]`), s2 = await flip(`.wmap-steps .lg.step[data-name="${flat[0]}"]`);
+      check("legend: a step's item toggles it", s1 === "false" && s2 === "true", `${s1} then ${s2}`);
+      const areas = await js(`[...([...document.querySelectorAll(".wmap-areas")].find((e) => e.getClientRects().length)?.querySelectorAll(".lg.area") || [])].map((b) => [b.dataset.name, getComputedStyle(b.querySelector("i")).borderTopWidth])`);
+      check("legend: the tile areas by pack type, each its outline", areas.map((a) => a[0]).join() === "root,lo,hi,deep" && new Set(areas.map((a) => a[1])).size >= 2, areas.map((a) => `${a[0]} ${a[1]}`).join(", "));
+      const cv = `[...document.querySelectorAll(".panel:not([hidden]) .wmap-box canvas.wmap")].find((c) => c.getClientRects().length)`;
+      const pix = () => js(`(() => { const c = ${cv}; const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data; let h = 0; for (let j = 0; j < d.length; j += 4 * 7) h = (h * 31 + d[j] + d[j + 1] * 3 + d[j + 2] * 7) | 0; return h; })()`);
+      const big = await js(`[...document.querySelectorAll(".wmap-areas .lg.area")].filter((e) => e.getClientRects().length).map((e) => [e.dataset.name, +e.textContent.replace(/.*· /, "").replace(/,/g, "")]).sort((p, q) => q[1] - p[1])[0]`);
+      const p0 = await pix();
+      const a1 = await flip(`.wmap-areas .lg.area[data-name="${big[0]}"]`);
+      await sleep(300);
+      const p1 = await pix();
+      const a2 = await flip(`.wmap-areas .lg.area[data-name="${big[0]}"]`);
+      check("legend: a tile area's item hides its tiles", a1 === "false" && a2 === "true" && (big[1] === 0 || p1 !== p0), `${big[0]} (${big[1]} tiles): ${a1} then ${a2}, map ${p1 !== p0 ? "changed" : "unchanged"}`);
+      check("map: no \"Show tile areas\" radio left", !(await js(`[...document.querySelectorAll(".wmap-filters")].some((e) => /Show tile areas/.test(e.textContent))`)));
+      // (Every label of a stage, step or job: the code's name. The legend's, the strip's stage cards,
+      // the Jobs tab's stage and step rows, the schedule's legend, each running job on the Machines tab.)
+      const names = await js(`({ legend: [...document.querySelectorAll(".wmap-legend .lg[data-name]")].map((b) => b.dataset.name), legendText: [...document.querySelectorAll(".wmap-steps .lg.step")].map((b) => b.textContent.split(" ")[0]), strip: [...document.querySelectorAll(".strip > i[data-card]")].map((e) => e.dataset.card.slice(2)) })`);
+      await show("jobs");
+      Object.assign(names, await js(`(() => { const txt = (e) => e.textContent.replace(" ⇄", "").trim(); return { stageRows: [...document.querySelectorAll(".stages > .sh .title")].map(txt), stepRows: [...document.querySelectorAll(".stages > .st .title")].map(txt), schedule: [...document.querySelectorAll(".sched .legend > span:not(.keys)")].map(txt).filter((x) => x !== "a region all on the map") }; })()`));
+      await show("machines");
+      names.jobs = await js(`[...document.querySelectorAll(".mc .job .what")].map((e) => [...e.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join("").trim()).filter((x) => x && !/^(Waiting|Nothing|Paused|This Mac)/.test(x))`);
+      const area = new Set(["root", "lo", "hi", "deep"]);
+      const bad = [
+        ...names.legend.filter((x) => !steps.has(x) && !stages.includes(x) && !area.has(x)), ...names.legendText.filter((x) => !steps.has(x)),
+        ...names.strip.filter((x) => !stages.includes(x)), ...names.stageRows.filter((x) => !stages.includes(x)), ...names.stepRows.filter((x) => !steps.has(x)),
+        ...names.schedule.filter((x) => !stages.includes(x)), ...names.jobs.filter((x) => !steps.has(x.split(" ")[0])),
+      ];
+      const shown = Object.values(names).reduce((k, v) => k + v.length, 0);
+      check("no display names: every stage, step and job label is the code's name", shown > 0 && !bad.length, `${shown} labels; not a code name: ${bad.slice(0, 5).join(" | ") || "none"}`);
+      // The Jobs tab's cards: a step's (hovered by a mouse on a desktop, pinned by a tap on a phone),
+      // then a job's: head (swatch, kicker, title), stat tiles, rows, a foot, twice the map cards'
+      // width; a world map of its tiles, small until pinned; ≤ 50svh, off the pointer's line (#627).
+      await show("jobs");
+      const card = async (sel, where = "") => {
+        const p = await at(sel, where);
+        if (!p) return null;
+        await sleep(300);
+        if (PHONE) await tap(p[0], p[1]);
+        else { await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: p[0], y: p[1] }); await sleep(300); }
+        const r = await js(`(() => { const t = [...document.querySelectorAll(".card-tip")].find((e) => e.getClientRects().length && !e.hidden); if (!t) return null; const b = t.getBoundingClientRect(), m = t.querySelector(".tc-map"); return { wide: !!t.querySelector(".tc-head.wide"), parts: [".tc-sw", ".tc-kick", ".tc-title", ".cstats", ".ckv", ".tc-foot"].filter((s) => !t.querySelector(s)), title: t.querySelector(".tc-title")?.textContent, kick: t.querySelector(".tc-kick")?.textContent, w: Math.round(b.width), top: b.top, bottom: b.bottom, h: b.height, max: innerHeight / 2, map: m ? Math.round(m.getBoundingClientRect().width) : 0 }; })()`);
+        if (PHONE) await js(`document.querySelector(".card-tip.pinned .x")?.click()`);
+        return r && { ...r, y: p[1] };
+      };
+      const wide = Math.min(560, WIDTH - 16);
+      const sc = await card(".stages > .st .title");
+      check("jobs card: a step's as the mockup's (head, stat tiles, rows, foot; twice as wide)", sc && sc.wide && !sc.parts.length && steps.has(sc.title) && Math.abs(sc.w - wide) <= 2, sc ? `${sc.kick} / ${sc.title}, ${sc.w} px; missing ${sc.parts.join(" ") || "none"}` : "no step row");
+      if (sc && !PHONE) check("jobs card: off the pointer's line, ≤ 50svh (#627)", (sc.top >= sc.y || sc.bottom <= sc.y) && sc.h <= sc.max + 1, `${Math.round(sc.top)}–${Math.round(sc.bottom)}, pointer ${Math.round(sc.y)}`);
+      // (A job of a step whose targets are tiles: its map drawn.)
+      const jc = await card(".cells > .jb.c-run, .cells > .jb.c-done", ` && ${JSON.stringify(tiled)}.includes(e.parentElement.previousElementSibling?.querySelector(".title")?.firstChild?.textContent)`);
+      if (!jc) check("jobs card: a job's named as the code names it, a world map of its tiles", !(await js(`!!document.querySelector(".cells > .jb")`)), "a job's box shown, no card on it");
+      else check("jobs card: a job's named as the code names it, a world map of its tiles", jc.wide && steps.has(String(jc.title).split(/[ :]/)[0]) && jc.map > 0 && (PHONE || jc.map <= 200), `${jc.kick} / ${jc.title}, map ${jc.map} px`);
+      if (!PHONE) await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 2, y: 2 });
+      check("#659: no console errors", !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
     }
 
     // The Overview's stage bar: a tap on a segment pins the stage card.

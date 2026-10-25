@@ -18,11 +18,14 @@
 // click or a tap the map takes itself, at the point lifted, and hands the stack to `pick` (a
 // tap's click isn't left to the page: Mobile Safari, #615). It draws a tile's minimap for its card
 // (`minimap`).
-import { inRings, tileBox, tileOf } from "./sums.js";
+import { areaOf, inRings, tileBox, tileOf } from "./sums.js";
 
 const FADE_MS = 900;
 const MAX_K = 48; // pixels a world unit, most zoomed in (a z6 tile ≈ 750 px)
 const Z6 = 1000 / 64;
+// A tile area's outline weight (#659: sums.js AREAS), times a state's own: the root's heaviest, a
+// deep tile's a hairline; the dashes stay the states' (completed dashed, to come dotted).
+const AREA_W = { root: 2.4, lo: 1.7, hi: 1, deep: 0.6 };
 // The regions' paths, made once for every map (the Overview's and the Regions tab's), by outline.
 const regionPaths = new WeakMap();
 
@@ -167,7 +170,7 @@ export function createMap({ pick = () => {} } = {}) {
     const faint = (yes) => (yes ? 1 : 0.15);
     const regionKind = (st) => (st === "done" ? "on" : st);
     const regionRel = (r) => !emph || emph.region === regionKind(r.state);
-    const tileRel = (v) => !emph || emph.tile === v.state || (emph.stage != null && data.stageOf(v.step) === emph.stage);
+    const tileRel = (v, key) => !emph || emph.tile === v.state || (emph.stage != null && data.stageOf(v.step) === emph.stage) || (emph.step != null && v.step === emph.step) || (emph.area != null && areaOf(key) === emph.area);
     // Regions, by state.
     const regionColour = { on: tokens.ok, done: tokens.ok, building: tokens.accent, queued: tokens.dim };
     for (const r of data.regions) {
@@ -233,7 +236,7 @@ export function createMap({ pick = () => {} } = {}) {
       const [bx, by, s] = tileBox(tileOf(key.slice(key.lastIndexOf(" ") + 1)));
       if (bx > x1 || by > y1 || bx + s < x0 || by + s < y0) continue;
       const [i, n] = stripe.get(key) || [0, 1];
-      const col = resolve(data.colour(v.step)), f = faint(tileRel(v));
+      const col = resolve(data.colour(v.step)), f = faint(tileRel(v, key)), aw = AREA_W[areaOf(key)] || 1;
       // (A low zoom's tile, one of thousands of square kilometres, is drawn paler: it would hide the rest.)
       const low = s > Z6 * 1.5 ? 0.3 : 1;
       stripes(bx, by, s, i, n);
@@ -242,14 +245,14 @@ export function createMap({ pick = () => {} } = {}) {
         // To come: barely filled under a dotted outline, behind what's running or done.
         c.globalAlpha = 0.07 * f * low;
         c.fillRect(bx, by, s, s);
-        outlines.push([bx, by, s, col, 0.5 * f * low, px * 0.9, [1.5 * px, 2 * px]]);
+        outlines.push([bx, by, s, col, 0.5 * f * low, px * 0.9 * aw, [1.5 * px, 2 * px]]);
       } else if (run) {
         // Running: faint, filled from the bottom as far as done, outlined.
         c.globalAlpha = 0.12 * f;
         c.fillRect(bx, by, s, s);
         c.globalAlpha = 0.75 * f;
         c.fillRect(bx, by + s * (1 - v.frac), s, s * v.frac);
-        outlines.push([bx, by, s, col, f, px * (v.current ? 2 : 1.2), null]);
+        outlines.push([bx, by, s, col, f, px * (v.current ? 2 : 1.2) * aw, null]);
       } else {
         // Finished: faded in as it came, paler as it ages over the window; completed (not in a
         // catalogue yet) half as strong as published, under a dashed outline.
@@ -258,7 +261,7 @@ export function createMap({ pick = () => {} } = {}) {
         const pub = v.state === "published";
         c.globalAlpha = fade * f * low * (data.fade === false ? 0.6 : 0.18 + 0.5 * (1 - age)) * (pub ? 1 : 0.5);
         c.fillRect(bx, by, s, s);
-        if (!pub) outlines.push([bx, by, s, col, f * fade * low, px * 1.1, [4 * px, 3 * px]]);
+        outlines.push(pub ? [bx, by, s, col, 0.55 * f * fade * low, px * 0.8 * aw, null] : [bx, by, s, col, f * fade * low, px * 1.1 * aw, [4 * px, 3 * px]]);
       }
       c.restore();
     }
@@ -525,8 +528,8 @@ export function createMap({ pick = () => {} } = {}) {
     scene(cv.getContext("2d"), { cx: bx + s / 2, cy: by + s / 2, k: w / (s * 2) }, w, hgt, dpr, `mt ${key}`);
   }
 
-  // A legend item hovered (#627): {region: "on" | "building" | "queued"}, {tile: state} or
-  // {stage: id}, what it isn't drawn faint; null: all as they are.
+  // A legend item hovered (#627, #659): {region: "on" | "building" | "queued"}, {tile: state},
+  // {stage: id}, {step: id} or {area: name}, what it isn't drawn faint; null: all as they are.
   function emphasize(e) {
     if (JSON.stringify(e) === JSON.stringify(emph)) return;
     emph = e;
@@ -542,4 +545,65 @@ export function createMap({ pick = () => {} } = {}) {
   }
 
   return { el, update, minimap, highlight, emphasize };
+}
+
+// A world map for a Jobs card (#659, as the mockup's): the whole world square, the countries
+// (`countries`, rings in the map's 0–1000) faintly, the tiles a job names lit in its colour
+// (`colour`, var() allowed), each at least 5 px; no grid, no regions. Small until its card is
+// pinned (dash.css .tc-map).
+const countryPaths = new WeakMap();
+export function tilesMap(countries, tiles, colour) {
+  const size = 520, dpr = window.devicePixelRatio || 1;
+  const cv = document.createElement("canvas");
+  cv.className = "tc-map";
+  cv.width = cv.height = size * dpr;
+  cv.dataset.tiles = tiles.length;
+  const g = cv.getContext("2d");
+  g.scale(dpr, dpr);
+  const cs = getComputedStyle(document.documentElement);
+  const v = (k) => cs.getPropertyValue(k).trim() || "#888";
+  g.fillStyle = v("--bg");
+  g.fillRect(0, 0, size, size);
+  let p = Array.isArray(countries) && countryPaths.get(countries);
+  if (!p && Array.isArray(countries)) {
+    p = new Path2D();
+    for (const r of countries) {
+      if (r.length < 4) continue;
+      p.moveTo(r[0], r[1]);
+      for (let k = 2; k + 1 < r.length; k += 2) p.lineTo(r[k], r[k + 1]);
+      p.closePath();
+    }
+    countryPaths.set(countries, p);
+  }
+  if (p) {
+    g.save();
+    g.scale(size / 1000, size / 1000);
+    g.globalAlpha = 0.55;
+    g.strokeStyle = v("--dim");
+    g.lineWidth = 0.6 * (1000 / size);
+    g.stroke(p);
+    g.restore();
+  }
+  const el = document.createElement("i");
+  el.style.color = colour || "var(--accent)";
+  document.body.append(el);
+  const col = getComputedStyle(el).color;
+  el.remove();
+  g.lineWidth = 1.2;
+  for (const t of tiles) {
+    const tile = tileOf(t);
+    if (!tile) continue;
+    let [x, y, w] = tileBox(tile).map((q) => (q * size) / 1000), hh = w;
+    if (w < 5) { x -= (5 - w) / 2; y -= (5 - w) / 2; w = hh = 5; }
+    g.globalAlpha = tiles.length > 1 ? 0.45 : 0.6;
+    g.fillStyle = col;
+    g.fillRect(x, y, w, hh);
+    g.globalAlpha = 1;
+    g.strokeStyle = col;
+    g.strokeRect(x + 0.5, y + 0.5, w - 1, hh - 1);
+  }
+  g.strokeStyle = v("--line");
+  g.lineWidth = 1;
+  g.strokeRect(0.5, 0.5, size - 1, size - 1);
+  return cv;
 }

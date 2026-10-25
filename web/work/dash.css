@@ -78,7 +78,14 @@ button:disabled { opacity: .5; }
 .wmap-legend .tl.tocome { border: 1px dotted var(--st-roads); background: color-mix(in srgb, var(--st-roads) 7%, transparent); }
 .wmap-legend .tl.published { border-color: transparent; background: color-mix(in srgb, var(--st-roads) 70%, transparent); }
 .wmap-legend .hint { margin-left: auto; }
-.wmap-stages { padding-top: 4px; }
+/* The tile areas (#659): each swatch's outline as heavy as the area's on the map (worldmap.js AREA_W). */
+.wmap-areas, .wmap-steps { padding-top: 4px; }
+.wmap-legend .lgh { color: var(--dim); }
+.wmap-legend .ar { background: transparent; border-color: var(--text); }
+.wmap-legend .ar.root { border-width: 3px; } .wmap-legend .ar.lo { border-width: 2px; } .wmap-legend .ar.hi { border-width: 1px; } .wmap-legend .ar.deep { border-width: 1px; border-style: dotted; width: 6px; height: 6px; }
+/* The steps by stage (#659): a group a stage, its toggle first (bold), its steps after; a group never split across lines on a wide screen. */
+.wmap-legend .lgg { display: inline-flex; flex-wrap: wrap; gap: 2px 10px; align-items: center; padding: 1px 8px 1px 0; border-right: 1px solid var(--row-line); }
+.wmap-legend .lgg:last-of-type { border-right: 0; }
 .wmap-legend .mfbtn { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; font: inherit; font-size: var(--fs-s); padding: 1px 7px; cursor: pointer; }
 .wmap-filters { display: flex; flex-direction: column; gap: 4px; padding: 8px 4px 2px; margin-top: 6px; border-top: 1px solid var(--row-line); }
 .wmap-filters .mfrow { display: flex; flex-wrap: wrap; gap: 3px 14px; align-items: center; }
@@ -237,17 +244,16 @@ select.past { margin-left: 4px; background: var(--bg); color: var(--text); borde
 .stages { display: grid; grid-template-columns: 14px minmax(70px, 120px) minmax(90px, 210px) minmax(90px, 170px) minmax(0, 1fr); gap: 0 8px; align-items: center; font-size: var(--fs-b); }
 .stages > .sh { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center; padding: 5px 0 2px 6px; margin: 6px 0 1px -6px; border-left: 3px solid var(--line); font-weight: 600; cursor: pointer; }
 .stages > .sh:first-child { margin-top: 0; }
-.stages > .sh .title { grid-column: 2 / 4; }
+.stages > .sh .title, .stages > .st .title { grid-column: 2 / 4; }
 .stages > .sh .n { font-weight: 400; }
 .stages > .sh .pbar { margin: 0; height: 4px; }
 .stages > .st { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center; padding: 1px 0; border-bottom: 1px solid var(--row-line); }
-.stages .title, .stages .id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stages .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* (A count wraps, never cut off.) */
 .stages .n { overflow-wrap: break-word; }
 .stages .st .title { cursor: pointer; }
 .stages .n { color: var(--dim); font-size: var(--fs-s); }
 .mono { font: var(--fs-s)/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
-.stages .id { color: var(--dim); }
 /* A step's jobs, under its row, as the mockup's: a box a job, its targets as squares (done filled). */
 .stages > .cells { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 3px; align-items: flex-start; padding: 2px 0 6px; }
 .cells > .jb { display: inline-grid; grid-template-columns: repeat(var(--w), 5px); gap: 1px; padding: 2px; border: 1px dashed color-mix(in srgb, var(--c) 55%, transparent); border-radius: 2px; cursor: pointer; }
@@ -259,8 +265,7 @@ select.past { margin-left: 4px; background: var(--bg); color: var(--text); borde
 .cells > .jb:hover { outline: 1px solid var(--mark); }
 @media (max-width: 719px) {
   .stages { grid-template-columns: 14px minmax(0, 1fr) max-content; }
-  .stages > .sh .title { grid-column: 2; } .stages > .sh .pbar { grid-column: 2 / -1; }
-  .stages .id { display: none; }
+  .stages > .sh .title, .stages > .st .title { grid-column: 2; } .stages > .sh .pbar { grid-column: 2 / -1; }
 }
 .mark { color: var(--dim); text-align: center; } .mark.ok { color: var(--ok); } .mark.run { color: var(--accent); }
 .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
@@ -283,6 +288,13 @@ html.card-modal, html.card-modal body { overflow: hidden; }
 .card-tip .cstat { background: var(--bg); border: 1px solid var(--row-line); border-radius: 5px; padding: 3px 7px; }
 .card-tip .cstat .n { font-size: var(--fs-b); font-weight: 600; }
 .card-tip .cstat .l { font-size: var(--fs-s); color: var(--dim); }
+/* The Jobs tab's cards (#659), as the mockup's: twice the map cards' width, a world map under the
+   head (small, its full width once pinned), a fade where an unpinned card is cut. */
+.card-tip:has(.tc-head.wide) { width: 560px; max-width: calc(100vw - 16px); }
+.card-tip .tc-map { display: block; width: 190px; max-width: 100%; height: auto; aspect-ratio: 1; margin: 0 auto; border-radius: 5px; }
+.card-tip.pinned .tc-map { width: 100%; max-width: 1000px; }
+.card-tip.pinned:has(.tc-head.wide) { box-shadow: 0 0 0 2px var(--accent), 0 8px 24px var(--shadow); }
+.card-tip:has(.tc-head.wide):not(.pinned)::after { content: ""; position: sticky; bottom: 0; display: block; flex: none; height: 28px; margin-top: -28px; background: linear-gradient(transparent, var(--tip)); pointer-events: none; }
 /* The map's cards, as the mockup's: a head (swatch, kicker, title) over a rule, a body, a foot; a
    stack of them (everything under a point) one under the other, a line between. */
 .card-tip:has(.tc-head) { padding: 0; width: 280px; border-radius: 8px; box-shadow: 0 8px 24px var(--shadow); }

@@ -967,7 +967,7 @@ class, id) within a tile. The client sends the id with the clicked point.
   (agent::build::PublishLine: `why`, `tiles`, `units`, `regions`, `low`, `wait_s`), `published`
   (agent::Published: `last` `{n, at}`, `low`, `drawing` by Mac, `adopted` by Mac `{n, at}`), the
   forecast (`regions` with `map_at`; `publishes`: `{what: low | marks | overlays, at}`), the checklist (a line per stage: `id`, `what`, `steps`, `done`/`total`/`left`,
-  `unit`, `items` (per step: `step`, `title`, `noun`, `done`, `total`, `left`), `next`, `note`,
+  `unit`, `items` (per step: `step`, `noun`, `done`, `total`, `left`), `next`, `note`,
   `shared`: docs/pipeline.md §4), `caches`
   (agent::room::Caches: `clearable`, `each`, `why_not`, `cleared`, `declined`, `room`),
   `pool`, `lead` (crate::agent::lead::View), `inputs`

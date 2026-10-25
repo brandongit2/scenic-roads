@@ -69,7 +69,7 @@ export function macSlot(name, hosts = []) {
 }
 
 // The jobs that ended at or after `from`, as the history has them, as runs {lane, step, from, until,
-// n, ok, what, targets, seq}, by start: a lead's job's end (kind "end": its worker the slot) and a
+// n, ok, targets, seq}, by start: a lead's job's end (kind "end": its worker the slot) and a
 // worker's leased job's ("done", "fail": its worker the Mac, no slot; put on the first of its Mac's
 // lanes free by then). `t` is the end, `secs` how long it ran. Lanes are named by `hosts` (macSlot).
 // An event without its time or step is passed over; one given twice (by its seq), once.
@@ -79,7 +79,7 @@ export function pastRuns(events, from, hosts = []) {
     if (!["end", "done", "fail"].includes(e.kind) || !e.step || e.secs == null || !e.worker || e.t < from || seen.has(e.seq)) continue;
     seen.add(e.seq);
     const { host, slot } = macSlot(e.worker, hosts);
-    const r = { lane: slotName(host, slot - 1), step: e.step, from: e.t - e.secs, until: e.t, n: (e.targets || []).length, ok: e.ok !== false, what: e.what || "", targets: e.targets || [], seq: e.seq };
+    const r = { lane: slotName(host, slot - 1), step: e.step, from: e.t - e.secs, until: e.t, n: (e.targets || []).length, ok: e.ok !== false, targets: e.targets || [], seq: e.seq };
     (e.kind === "end" ? out : leased).push(r);
     if (e.kind !== "end") r.host = host;
   }
@@ -148,6 +148,14 @@ export function tileOf(t) {
 }
 // A tile's square on the map (Web Mercator, the world 0–1000 each way, y down): [x0, y0, side].
 export const tileBox = ({ z, x, y }) => { const s = 1000 / 2 ** z; return [x * s, y * s, s]; };
+// The tile areas (#659), by the packs the steps make at each zoom (docs/steps.md, task #639): the
+// root (z0–2, one tile: 0/0/0), lo (a z3 tile's), hi (a z6 tile's) and deep (a z10 tile's), each
+// [name, zoom]. A tile's area is its zoom's.
+export const AREAS = [["root", 0], ["lo", 3], ["hi", 6], ["deep", 10]];
+export const areaOf = (t) => { const z = tileOf(t)?.z; return AREAS.find(([, k]) => k === z)?.[0] ?? `z${z}`; };
+// A job's targets as the map draws them: a root step's (`<layer>-root`, worldwide: its target its
+// own name) is the root tile, 0/0/0; any other's as they are.
+export const areaTargets = (step, targets) => (/-root$/.test(step || "") ? ["0/0/0"] : targets || []);
 const tileWords = (s) => String(s || "").split(/\s+/).filter((w) => tileOf(w));
 
 // A running job's targets: a lead's or helper's job (`{step, id, started}`) as its "start" event
@@ -197,7 +205,7 @@ export function finishedTiles(ends, from) {
   const out = new Map();
   for (const e of ends || []) {
     if ((e.kind !== "end" && e.kind !== "done") || e.ok === false || e.t < from) continue;
-    for (const t of e.targets || []) { const k = `${e.step} ${t}`; if (tileOf(t) && !(out.get(k)?.t > e.t)) out.set(k, { t: e.t, step: e.step, worker: e.worker }); }
+    for (const t of areaTargets(e.step, e.targets)) { const k = `${e.step} ${t}`; if (tileOf(t) && !(out.get(k)?.t > e.t)) out.set(k, { t: e.t, step: e.step, worker: e.worker }); }
   }
   return out;
 }
@@ -218,12 +226,12 @@ export const finishedState = (d, pubAt) => (pubAt != null && d.t <= pubAt ? "pub
 // The world map's tiles as its filters keep them (#615, #627): `running` and `finished`
 // (runningTiles', finishedTiles') cut to the states kept (`f.tiles[state] === false`: hidden), to
 // the pool member `f.member` (the Mac that ran, runs or holds it in its running job: `macOf(worker)`
-// its host), the stages not unchecked (`f.offStages`, of `stageOf(step)`) and the tile areas
-// `f.zoom` ("": all, else "3" or "6"). A tile running again is the running one. Returns [running,
+// its host), the steps not toggled off (`f.offSteps`) and the tile areas not toggled off
+// (`f.offAreas`: AREAS' names). A tile running again is the running one. Returns [running,
 // finished], new Maps, each value given its `state`.
-export function mapTilesKept(running, done, f, { pubAt = null, macOf = (w) => w, stageOf = () => "" } = {}) {
+export function mapTilesKept(running, done, f, { pubAt = null, macOf = (w) => w } = {}) {
   const shown = (st) => f.tiles?.[st] !== false;
-  const keep = (key, step, who) => !f.offStages?.includes(stageOf(step)) && (!f.zoom || tileOf(key)?.z === +f.zoom) && (!f.member || (who != null && macOf(who) === f.member));
+  const keep = (key, step, who) => !f.offSteps?.includes(step) && !f.offAreas?.includes(areaOf(key)) && (!f.member || (who != null && macOf(who) === f.member));
   const run = new Map(), fin = new Map();
   for (const [k, r] of running) {
     const state = runningState(r);
