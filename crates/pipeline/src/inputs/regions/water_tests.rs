@@ -433,6 +433,21 @@ fn the_coast_is_the_coastlines_land() {
     assert!(water.contains([e7(21.01), e7(20.45)]) && !water.contains([e7(21.51), e7(20.45)]));
 }
 
+/// The coast is the coastline's, not a cell's edge (#649 review): land in no region inland, at a
+/// cell's edge (32°) with land on past it, stays out, though a region with water borders it.
+#[test]
+fn a_cells_edge_is_no_coast() {
+    let w = world_more(1.002, vec![bx(30.0, 30.0, 34.0, 32.0)]);
+    let r = "id = \"r\"\nname = \"R\"\n\
+             outline = [{ minus = [\"box:30.0,30.0,32.0,32.0\", \"box:31.99,30.5,32.0,30.6\"] }]\n\
+             water = [\"box:29.0,29.0,30.0,30.0\"]\n";
+    let l = "id = \"l\"\nname = \"L\"\noutline = [\"box:32.0,30.0,34.0,32.0\"]\n";
+    let out = run(&w, &[PINS, ("r.toml", r), ("l.toml", l)]);
+    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    let land = area_of(&out.resolved["r"].geometry);
+    assert!(land.contains([e7(31.9), e7(30.55)]) && !land.contains([e7(31.995), e7(30.55)]));
+}
+
 /// The new rules leave regions without water as they resolve alone: the cover's fills and a
 /// hand-out never change them (a hand-out naming one says so).
 #[test]

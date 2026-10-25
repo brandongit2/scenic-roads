@@ -1209,6 +1209,7 @@ fn coast(
             return Vec::new();
         }
         let coastline = SegIndex::new(land.polys.iter().flatten().map(|r| (0, r)));
+        let bx = cell_box(c);
         let mut out = Vec::new();
         for (sea, side) in [(false, free.intersect(&land)), (true, free.minus(&land))] {
             let idx = SegIndex::new(
@@ -1224,7 +1225,10 @@ fn coast(
                     for k in 0..r.len() {
                         let (a, b) = (r[k], r[(k + 1) % r.len()]);
                         let m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-                        on_coast = on_coast || coastline.on(m).is_some();
+                        // (The land's rings run along the cell's edges too: no coast there.)
+                        let edge = (a[0] == b[0] && (a[0] == bx[0] || a[0] == bx[2]))
+                            || (a[1] == b[1] && (a[1] == bx[1] || a[1] == bx[3]));
+                        on_coast = on_coast || (!edge && coastline.on(m).is_some());
                         if let Some(o) = idx.on(m) {
                             len[o] += seg_m(a, b);
                         }
