@@ -1,6 +1,8 @@
 //! No code in the workspace dates an `Instant` back from now (now minus a duration): it panics on a
 //! Mac booted less than `d` ago, so a test doing it depends on the machine. A limit the code reads
 //! is made injectable instead (the agent's `grace` and `pass_max`, say), and a test sets it.
+//!
+//! scans: crates
 
 use std::path::Path;
 

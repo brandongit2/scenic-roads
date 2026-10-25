@@ -19,6 +19,8 @@
 //! code by §6.9's table cite its row (`KEPT`), which must say so. An exemption matching no line
 //! fails (`every_exemption_matches_a_line`), so the list can't go stale. A name built at run time
 //! (joined from parts) isn't seen.
+//!
+//! scans: crates dem web/src tools scripts producers
 
 mod common;
 

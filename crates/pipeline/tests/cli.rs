@@ -3,6 +3,8 @@
 //! flag it doesn't take it's refused with its usage (exit 2), and neither does anything: its home
 //! (HOME, the working folder) is left empty, no NAS or agent reached. And the calls of these
 //! programs in the docs and in tools/ name commands and flags they take.
+//!
+//! scans: crates docs tools
 
 use clap::Command;
 use pipeline::cli::{command, PROGRAMS};

@@ -2,6 +2,8 @@
 //! by language (`$NAMES_CONVERTED`: a copy of the translations' `0-converted/`, never the drop box). Those reading it are
 //! ignored unless asked for (`--ignored`: the suite reads no real data), and each skips (passes,
 //! saying so) when its data isn't there.
+//!
+//! scans: data/build
 
 use names::mvt::{self, gunzip_if_gzip, LayerRule, Tile, Value, LABELS, MAIN, OPENMAPTILES, SUB};
 use names::{Kind, Lang, Names};

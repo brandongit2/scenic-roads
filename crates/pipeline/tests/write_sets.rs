@@ -12,6 +12,8 @@
 //! matches a line fails too, so the list can't go stale. Run by tools/app/publish.sh: it gates
 //! publish. It's best-effort, a scan of the source's text: a writer that names none of the markers
 //! (a path put together in pieces, a hand-off made by deserializing) passes it.
+//!
+//! scans: crates
 
 mod common;
 

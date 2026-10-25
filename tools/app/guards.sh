@@ -23,6 +23,16 @@ log=~/Library/Logs/scenic/guards-$(date +%Y%m%d-%H%M%S).log
 # No test measures the machine (#441): no short elapsed() bound asserted, no fixed sleep then an
 # assert (tools/app/test_timing.py says why and what instead).
 python3 tools/app/test_timing.py || exit 1
+# A test reading the repo's own files says which (#662): `//! scans: <path prefix> …`, so
+# tools/dev/affected-tests.sh runs it when any of them changes (write_sets missed #660's room.rs).
+python3 - <<'PY' || exit 1
+import glob, re, sys
+bad = [t for t in sorted(glob.glob("crates/*/tests/*.rs"))
+       if re.search(r'\b(?:root|repo)\(\)|CARGO_MANIFEST_DIR"\)\)\.(?:join|parent)\("\.\./|\.parent\(\)', s := open(t).read())
+       and not re.search(r"^//! scans: \S", s, re.M)]
+for t in bad: print(t + ": reads the repo's files without a `//! scans: <path prefix> …` line (tools/dev/testing.md)")
+sys.exit(1 if bad else 0)
+PY
 cargo test -q -p pipeline --test inputs_accessor --test source_names > $log 2>&1 || {
   sed -n '/^---- /,/^failures:$/p' $log
   echo "a guard failed; the tests' whole output: $log"

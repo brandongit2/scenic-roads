@@ -13,6 +13,8 @@
 //!
 //! A new file naming a metered host, or a new way around the proxy, fails here until it's listed;
 //! an entry matching nothing fails too, so the lists can't go stale.
+//!
+//! scans: crates dem
 
 mod common;
 

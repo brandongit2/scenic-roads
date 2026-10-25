@@ -19,7 +19,7 @@ case $#:${1:-} in
   *) print -ru2 -- "affected-tests.sh: unexpected arguments: $*"$'\n'"$usage"; exit 2 ;;
 esac
 exec python3 - "$@" <<'PY'
-import os, re, subprocess, sys
+import glob, os, re, subprocess, sys
 from collections import OrderedDict
 args = sys.argv[1:]
 def git(*a):
@@ -36,11 +36,22 @@ elif ".." in args[0]:
     changed = git("diff", "--name-only", args[0]).split(); what = args[0]
 else:
     changed = git("diff", "--name-only", args[0] + "^", args[0]).split(); what = "commit " + args[0][:9]
+# Scan tests (#662): an integration test that reads the repo's files (write_sets, inputs_accessor,
+# cli …) says which with a `//! scans: <path prefix> …` line; any change under one (any kind of
+# file, deleted ones too) runs it whole. tools/app/guards.sh refuses a test file reading the repo
+# without that line.
+scan_hits = []
+for t in sorted(glob.glob("crates/*/tests/*.rs")):
+    m = re.search(r"^//! scans: (.+)$", open(t, encoding="utf-8").read(), re.M)
+    if not m: continue
+    pre = m.group(1).split()
+    hit = next((f for f in dict.fromkeys(changed) if any(f == q or f.startswith(q.rstrip("/") + "/") for q in pre)), None)
+    if hit: scan_hits.append((t.split("/")[1], "--test " + os.path.basename(t).removesuffix(".rs"), "scans " + hit))
 # Files as they are in this checkout (a deleted file's module is gone; its users' own changes show).
 changed = [f for f in dict.fromkeys(changed) if f.endswith(".rs") and f.startswith("crates/") and os.path.exists(f)]
 print("# affected tests: " + what)
-if not changed:
-    print("# no Rust file changed: no tests to run"); sys.exit()
+if not changed and not scan_hits:
+    print("# no Rust file changed and no scan test's files: no tests to run"); sys.exit()
 
 _cache = {}
 def read(p):
@@ -159,6 +170,7 @@ for f in changed:
                 add(c, "--test " + os.path.basename(tt).removesuffix(".rs"), None, "names %s (via %s)" % (path, t))
         else: add(c, "--test " + rel.removesuffix(".rs"), None, "names " + path)
 
+for c, tgt, reason in scan_hits: add(c, tgt, None, reason)
 if not want:
     print("# the changed Rust files have no tests and no tested users: nothing to run"); sys.exit()
 print("# why:"); print("\n".join(dict.fromkeys(why)))

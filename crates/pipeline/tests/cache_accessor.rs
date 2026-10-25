@@ -4,6 +4,8 @@
 //! it may not: it builds a job's arguments, counts, or the path isn't the agent's cache at all.
 //! A new reader of the caches fails here until it's routed through the accessor (or, if it truly
 //! reads no cache file, listed with its reason).
+//!
+//! scans: crates
 
 use std::path::{Path, PathBuf};
 

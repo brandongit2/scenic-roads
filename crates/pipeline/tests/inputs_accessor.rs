@@ -8,6 +8,8 @@
 //! through the accessor; an exemption that no longer matches a line fails too, so
 //! the list can't go stale. At run time the NAS root the steps get refuses a drop-box path asked of
 //! it by content name (`out::Out::path`).
+//!
+//! scans: crates dem
 
 mod common;
 

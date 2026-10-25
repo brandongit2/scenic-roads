@@ -4,6 +4,8 @@
 //! (`RULES`) but in the scheduler itself and where the budget's limits are defined
 //! (crate::budget::nas), or as listed in `EXEMPT` with why; an exemption that no longer matches
 //! fails too, so the list can't go stale.
+//!
+//! scans: crates/pipeline/src
 
 use std::path::{Path, PathBuf};
 
