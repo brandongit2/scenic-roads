@@ -604,7 +604,7 @@ pub async fn coverage(State(s): State<S>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     /// A pool over the share `root` with a minute for each operation: none here is timed.
     fn pool(root: &std::path::Path) -> Arc<IoPool> {
@@ -641,12 +641,10 @@ mod tests {
     fn release(p: &std::path::Path) {
         use std::os::unix::fs::OpenOptionsExt;
         // (A watchdog: the reader is a stuck pool thread, already waiting.)
-        let end = Instant::now() + Duration::from_secs(300);
         // (A writer that doesn't wait opens once a reader waits, and closes at once.)
-        while let Err(e) = std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(p) {
-            assert!(Instant::now() < end, "nothing reads {}: {e}", p.display());
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        store::testkit::eventually(&format!("a reader of {}", p.display()), || {
+            std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(p).is_ok()
+        });
     }
 
     #[test]

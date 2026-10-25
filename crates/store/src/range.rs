@@ -206,10 +206,27 @@ pub fn plain_open_cap() -> usize {
     }
 }
 
-/// Sets `plain_open_cap` (0: back to the derived one), for tests that open more files than it.
-#[doc(hidden)]
-pub fn set_plain_open_cap(n: usize) {
+/// Test builds: `plain_open_cap` set to `n` until the guard is dropped (a panic included), for a
+/// test that opens more files than it. Process-wide: one test at a time holds it (the others
+/// wait), so no test runs under another's cap.
+#[cfg(any(test, feature = "testkit"))]
+pub fn cap_plain_opens(n: usize) -> PlainOpenCap {
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let turn = lock(&TURN);
     CAP.store(n, std::sync::atomic::Ordering::Relaxed);
+    PlainOpenCap { _turn: turn }
+}
+
+#[cfg(any(test, feature = "testkit"))]
+pub struct PlainOpenCap {
+    _turn: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(any(test, feature = "testkit"))]
+impl Drop for PlainOpenCap {
+    fn drop(&mut self) {
+        CAP.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// The PlainFiles' descriptors open now (those closed but mid-read aside).

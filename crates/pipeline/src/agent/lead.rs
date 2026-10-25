@@ -1558,7 +1558,7 @@ mod tests {
         /// Steps the Macs in turn until `done` (their listings made off the loop meanwhile, as long
         /// as a busy Mac takes: five minutes is a watchdog, not a measure).
         pub(super) fn until(macs: &mut [&mut Mac], done: impl Fn(&[&mut Mac]) -> bool) {
-            let end = std::time::Instant::now() + std::time::Duration::from_secs(300);
+            let end = std::time::Instant::now() + store::testkit::WATCHDOG;
             loop {
                 for m in macs.iter_mut() {
                     m.go();

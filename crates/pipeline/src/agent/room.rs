@@ -1552,12 +1552,8 @@ mod tests {
         // moment, between its fork and its exec: trimmed again until it goes, five minutes a
         // watchdog.)
         store::cachefile::release(&held);
-        let end = std::time::Instant::now() + Duration::from_secs(300);
-        let mut freed = trim(c, nas).unwrap().bytes();
-        while freed == 0 && std::time::Instant::now() < end {
-            std::thread::sleep(Duration::from_millis(10));
-            freed = trim(c, nas).unwrap().bytes();
-        }
+        let freed =
+            store::testkit::wait_for("the copy let go", || Some(trim(c, nas).unwrap().bytes()).filter(|&n| n > 0));
         assert_eq!(freed, 1000);
     }
 

@@ -5251,8 +5251,7 @@ mod tests {
         assert!(asked.join().unwrap());
     }
 
-    /// Only turns a hang into a failure: never reached by a test that passes.
-    const WATCHDOG: Duration = Duration::from_secs(300);
+    use store::testkit::WATCHDOG;
 
     /// The next coordinator, this process's (a member that takes the lead again), starts on the port
     /// a stopped one let go, a request answered by it before: `stop` returns once the port is free,

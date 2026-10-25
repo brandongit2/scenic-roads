@@ -929,29 +929,10 @@ mod tests {
         let mut c = store::spawn::spawn(store::spawn::command("/bin/sh").args(["-c", "sleep 3600 & sleep 3600; wait"]))
             .unwrap();
         let pid = c.id() as i32;
-        // (Waited for as long as a busy Mac takes to start them: five minutes, a watchdog.)
-        let watchdog = || std::time::Instant::now() + std::time::Duration::from_secs(300);
-        let mut kids = Vec::new();
-        let end = watchdog();
-        while std::time::Instant::now() < end {
-            kids = children(pid);
-            if kids.len() == 2 {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        assert_eq!(kids.len(), 2, "{kids:?}");
+        let kids = store::testkit::wait_for("its two sleeps started", || Some(children(pid)).filter(|k| k.len() == 2));
         kill_tree(pid);
         assert!(!c.wait().unwrap().success());
         // (Gone once launchd has reaped them.)
-        let alive = || kids.iter().filter(|&&k| unsafe { libc::kill(k, 0) } == 0).count();
-        let end = watchdog();
-        while std::time::Instant::now() < end {
-            if alive() == 0 {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        assert_eq!(alive(), 0);
+        store::testkit::eventually("its sleeps gone", || kids.iter().all(|&k| unsafe { libc::kill(k, 0) } != 0));
     }
 }

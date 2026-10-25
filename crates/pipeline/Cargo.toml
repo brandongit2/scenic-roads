@@ -74,5 +74,6 @@ bytes = "1"
 ureq = { version = "=3.4.2", default-features = false }
 
 [dev-dependencies]
+store = { path = "../store", features = ["testkit"] }
 tempfile = "3"
 image-webp = "0.2"

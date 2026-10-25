@@ -19,6 +19,8 @@ pub mod retry;
 pub mod sect;
 pub mod spawn;
 pub mod sys;
+#[cfg(any(test, feature = "testkit"))]
+pub mod testkit;
 
 pub use iopool::{IoError, IoPool};
 pub use range::{MmapFile, PooledFile, RangeRead};

@@ -3583,11 +3583,7 @@ mod tests {
             }
             granted
         });
-        let first = Instant::now() + Duration::from_secs(20);
-        while coord.leases_out() < 3 {
-            assert!(Instant::now() < first, "the burst granted nothing");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        store::testkit::eventually("the burst's first grants", || coord.leases_out() >= 3);
         crate::control::request_lead(&ha, crate::control::LeadAsk::Give { to: ib.clone() }, "a test").unwrap();
         tick_until(&mut [&mut a, &mut b], |r| r[1].side.driver().leads() == Some(2));
         stop.store(true, Ordering::Relaxed);
@@ -3605,11 +3601,7 @@ mod tests {
         let lost: Vec<u64> = granted.iter().copied().filter(|id| cb.lease_term(*id) != 1).collect();
         assert!(granted.len() >= 3 && lost.is_empty(), "{} granted, not handed over: {lost:?}", granted.len());
         // Its writer, off the loop (no loop step ran here), kept term 1's file; term 2's is B's.
-        let end = Instant::now() + crate::coord::keep::BATCH + Duration::from_secs(20);
-        while !r.join(state_path(1)).exists() {
-            assert!(Instant::now() < end, "term 1's state not written");
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        store::testkit::eventually("term 1's state written", || r.join(state_path(1)).exists());
         assert!(!r.join(state_path(2)).exists());
     }
 }

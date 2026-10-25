@@ -201,13 +201,7 @@ mod tests {
         serde_json::from_slice(&b).ok()
     }
 
-    fn until(what: &str, done: impl Fn() -> bool) {
-        let end = Instant::now() + Duration::from_secs(20);
-        while !done() {
-            assert!(Instant::now() < end, "{what}: not in 20 s");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
+    use store::testkit::eventually as until;
 
     fn ask() -> Ask {
         Ask {

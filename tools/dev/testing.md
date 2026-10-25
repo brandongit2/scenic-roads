@@ -89,6 +89,41 @@ check.sh's `tests` part and publish.sh's nextest suite run on the test Mac throu
   locked key. The sweep drops a removed worktree's key (`remote-tests.sh --drop <key>`).
 fmt, clippy, guards, wasm, web, swift and python stay on this Mac.
 
+## A test that can't flake (#662, 25 Oct)
+
+The suite runs three at a time on the test Mac at nice 10, beside builds: what takes milliseconds
+idle takes seconds there. Every flaky test so far measured that machine. The way to write a test
+that can't is the shortest one, in `store::testkit` (test builds only; other crates' tests get it
+through their dev-dependency on store, `features = ["testkit"]`):
+
+- **Time in code under test: a `store::clock::Clock`.** Code whose decisions turn on how long
+  something took or waited reads the time and sleeps through one; its test hands it a
+  `clock::Virtual`, which moves only when slept on (`at`/`after` run the other party at named
+  moments). Such a test never sleeps and can't race.
+- **Waiting for something on the real clock: `eventually(what, cond)` or `wait_for(what, || Option)`.**
+  They poll every 10 ms under `WATCHDOG` (5 min), which only turns a hang into a failure. Never a
+  loop of your own with a deadline: `while t.elapsed() < 5 s` is what failed takeover's test.
+- **A thread or callback saying "done": `Signal`** (`set` / `wait(what)`), not a flag polled
+  with sleeps. For "has it NOT happened", a sleep marked `// (absence)` is fine: a slow Mac can only
+  make it pass.
+- **A stand-in child process: `testkit::sh(script, args)`.** It runs in its own process group; the
+  script makes `$READY` once set up (`: >"$READY"`), `ready()` waits for that, and dropping it
+  (a panic included) kills the whole group and reaps it. No fixed head start, no leaked `sleep`.
+- **"It didn't wait": `ended_before(t0, never, what)`**, half of what waiting would take, never
+  a fixed "fast" bound.
+- **Process-wide settings:** pass the value in. Where the code reads an environment variable, a
+  test sets it with `EnvVar::set(k, v)` (restored on drop, tests taking turns), and only for a
+  variable no other test in that binary reads. Statics a test changes (caps, hooks) are thread-local
+  in test builds (`TEST_PORT`, `TEST_ROOT`), so tests in one process can't see each other's.
+- **Hermetic by default:** temp folders (`tempfile::tempdir()`), never the real NAS or app home
+  (`agent::is_live_path`); coordinators on loopback ports from `coord::test_port()` (held until the
+  coordinator takes them); no `.local` names (`net::urls` gives 127.0.0.1 in tests).
+
+`tools/app/guards.sh` (publish and check.sh) runs `tools/app/test_timing.py`, which refuses what
+these replace: an assert of a short `elapsed()` bound, a fixed sleep then an assert, and (#662) a
+wait's own watchdog under a minute (`Instant::now() + 20 s`, a loop on `elapsed() < 5 s`,
+`recv_timeout(10 s)` expected to succeed). A bound that isn't a wait says why: `// (bound ok: …)`.
+
 ## Setting up a Mac (tools/dev is tracked, #548)
 
 Every script finds the repo from its own location (the main checkout from the shared `.git`, the

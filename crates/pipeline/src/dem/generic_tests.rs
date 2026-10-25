@@ -1042,7 +1042,7 @@ fn sampling_many_stored_tiles_holds_a_bounded_number_of_files() {
     let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
     let o = Opts { fetch: &f, store: Some(d.path().to_path_buf()), pool: Some(&pool) };
     let run = |cap: usize| {
-        store::range::set_plain_open_cap(cap);
+        let _cap = store::range::cap_plain_opens(cap);
         let s = Sampler::new(&plan, &o).unwrap();
         let got = s.sample(&lon, &lat, &|_| {}).unwrap();
         let held = fds_under(d.path());
@@ -1052,7 +1052,6 @@ fn sampling_many_stored_tiles_holds_a_bounded_number_of_files() {
     // (Every file held, as before the fix: each tile and its mask open at the end.)
     let (want, all) = run(1_000_000);
     let (got, held) = run(8);
-    store::range::set_plain_open_cap(0);
     eprintln!("held: {all} with no cap, {held} with a cap of 8");
     assert_eq!(all, 2 * cols * rows, "all held open");
     assert!(held <= 8 + threads, "{held} held, past the cap");

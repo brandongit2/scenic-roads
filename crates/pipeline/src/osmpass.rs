@@ -1691,7 +1691,7 @@ mod tests {
                 Ok(())
             })
             .unwrap_err();
-            store::clock::ended_before(t, std::time::Duration::from_secs(20), mode);
+            store::testkit::ended_before(t, std::time::Duration::from_secs(20), mode);
             assert!(crate::agent::nasread::timed_out(&e), "{mode}: {e:#}");
             assert!(format!("{e:#}").contains("didn't start within 1 s"), "{mode}: {e:#}");
         }

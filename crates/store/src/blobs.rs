@@ -176,12 +176,8 @@ mod tests {
         crate::cachefile::release(&a);
         // (A sibling test's child may hold a copy of the hold's descriptor a moment, between its
         // fork and its exec: evicted again until it goes, five minutes a watchdog.)
-        let end = std::time::Instant::now() + Duration::from_secs(300);
-        let mut freed = b.evict(1, Duration::ZERO);
-        while freed == 0 && std::time::Instant::now() < end {
-            std::thread::sleep(Duration::from_millis(10));
-            freed = b.evict(1, Duration::ZERO);
-        }
+        let freed =
+            crate::testkit::wait_for("the copy evicted", || Some(b.evict(1, Duration::ZERO)).filter(|&n| n > 0));
         assert_eq!(freed, 100);
         assert_eq!(b.bytes(), 0);
     }

@@ -50,13 +50,14 @@ fn killed_writer_leaves_whole_files() {
         )
         .unwrap();
         let started = dir.path().join("started");
-        let wait = Instant::now() + Duration::from_secs(60);
+        let wait = Instant::now() + store::testkit::WATCHDOG;
         while !started.exists() {
             assert!(Instant::now() < wait, "round {round}: the writer never started");
             let b = pipeline::whole::read(&path).unwrap();
             assert!(whole(&b), "round {round}: a torn read ({} bytes)", b.len());
         }
         std::fs::remove_file(&started).unwrap();
+        // (bound ok: how long it reads before the kill, not a wait)
         let until = Instant::now() + Duration::from_millis(300 + 97 * round);
         let mut reads = 0;
         while Instant::now() < until {

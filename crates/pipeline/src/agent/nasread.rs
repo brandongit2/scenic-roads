@@ -539,7 +539,7 @@ pub(crate) mod tests {
             })
             .unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::TimedOut);
-        store::clock::ended_before(
+        store::testkit::ended_before(
             t,
             Duration::from_secs(60),
             "the stuck call ends at its deadline, not when the share answers",
@@ -556,12 +556,12 @@ pub(crate) mod tests {
         let t = Instant::now();
         let e = r.call(Path::new("z"), Duration::from_secs(30), || ()).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::TimedOut);
-        store::clock::ended_before(t, Duration::from_secs(30), "refused at once, not at its deadline");
+        store::testkit::ended_before(t, Duration::from_secs(30), "refused at once, not at its deadline");
         // Task #517: two past their deadline, one refused.
         assert_eq!(r.missed(), 3);
         // The share answers again: the threads free.
         drop(hold);
-        store::clock::eventually("the threads free", || r.busy() == 0);
+        store::testkit::eventually("the threads free", || r.busy() == 0);
         assert_eq!(r.call(Path::new("x"), Duration::from_secs(5), || 1).unwrap(), 1);
     }
 
@@ -598,19 +598,19 @@ pub(crate) mod tests {
         // refused at once while the first still runs (never two at once on one temporary name).
         let t = Instant::now();
         assert!(n.write_whole("state/pool/members/m.json", b"{}").is_err());
-        store::clock::ended_before(t, Duration::from_secs(60), "the stuck write ends at its deadline");
+        store::testkit::ended_before(t, Duration::from_secs(60), "the stuck write ends at its deadline");
         assert_eq!(writes.busy(), 1);
         let t = Instant::now();
         let e = n.write_whole("state/pool/members/m.json", b"{}").unwrap_err();
         assert!(timed_out(&e) && format!("{e}").contains("still runs"), "{e:#}");
-        store::clock::ended_before(t, Duration::from_secs(4), "refused at once, not at the write deadline");
+        store::testkit::ended_before(t, Duration::from_secs(4), "refused at once, not at the write deadline");
         assert_eq!(writes.busy(), 1, "no second thread on it");
         // Another path's write takes the other writer; then every writer is stuck: at once.
         assert!(n.write_whole("state/pool/members/o.json", b"{}").is_err());
         assert_eq!(writes.busy(), 2);
         let t = Instant::now();
         assert!(n.write_whole("state/pool/members/p.json", b"{}").is_err());
-        store::clock::ended_before(t, Duration::from_secs(4), "refused at once, not at the write deadline");
+        store::testkit::ended_before(t, Duration::from_secs(4), "refused at once, not at the write deadline");
         // The reads go on: the terms listed, read.
         assert_eq!(n.list("state/pool/terms").unwrap(), vec!["1.json".to_string()]);
         assert_eq!(n.read("state/pool/terms/1.json").unwrap().unwrap(), b"{}");
@@ -619,7 +619,7 @@ pub(crate) mod tests {
         assert_eq!(read_switch(&d.path().join("sw")).unwrap(), "on");
         // The share answers: the path's write ends on its thread, and the path is free again.
         drop(hold);
-        store::clock::eventually("the path's write ends", || writes.busy() == 0);
+        store::testkit::eventually("the path's write ends", || writes.busy() == 0);
         n.write_whole("state/pool/members/m.json", b"{\"a\":1}").unwrap();
         assert_eq!(std::fs::read(d.path().join("state/pool/members/m.json")).unwrap(), b"{\"a\":1}");
     }
@@ -665,7 +665,7 @@ pub(crate) mod tests {
         )
         .unwrap_err();
         assert!(timed_out(&e), "{e:#}");
-        store::clock::ended_before(t, Duration::from_secs(60), "tried three times, never hung");
+        store::testkit::ended_before(t, Duration::from_secs(60), "tried three times, never hung");
         assert_eq!(reads.busy(), 3, "one stuck reader a try");
         drop(hold);
         // A listing that answers on a later try.
@@ -690,10 +690,10 @@ pub(crate) mod tests {
         static DONE: AtomicBool = AtomicBool::new(false);
         let d = tempfile::tempdir().unwrap();
         let t = watch(&AT, &DONE, d.path().into(), Duration::from_secs(1), Duration::ZERO, Duration::from_millis(50));
-        store::clock::eventually("the stall flagged", || stall(d.path()).is_some());
+        store::testkit::eventually("the stall flagged", || stall(d.path()).is_some());
         // (A round just now, a little ahead so a second ticking over meanwhile doesn't count.)
         AT.store(crate::agent::now_s() + 60, Ordering::SeqCst);
-        store::clock::eventually("the stall cleared", || stall(d.path()).is_none());
+        store::testkit::eventually("the stall cleared", || stall(d.path()).is_none());
         DONE.store(true, Ordering::SeqCst);
         t.join().unwrap();
     }

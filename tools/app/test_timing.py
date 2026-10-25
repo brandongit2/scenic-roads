@@ -1,6 +1,6 @@
 """Tests that measure the machine (task #441; run by tools/app/guards.sh). On the real clock a test
-waits for what happens (store::clock::eventually, WATCHDOG) and checks code didn't wait by
-store::clock::ended_before. It never holds a timing to a short bound of its own (under 30 s): an
+waits for what happens (store::testkit: eventually, wait_for, Signal, sh's ready, all under
+WATCHDOG) and checks code didn't wait by store::testkit::ended_before. It never holds a timing to a short bound of its own (under 30 s): an
 assert of `elapsed() <` one (on one line or several, as a Duration or a count of seconds or
 milliseconds, or of a variable holding an elapsed time, within the variable's block), or an
 `if ...elapsed() > short { panic!`. Nor does it sleep a fixed time (std's thread::sleep, by path or
@@ -10,7 +10,10 @@ misses both. A sleep before asserts that something did NOT happen (a stopped job
 same size, a cancelled call never run) can't fail under load: mark it `// (absence)`. Any other
 sleep whose asserts hold however long it took (file times set apart, a head start whose asserts
 hold either way) says why: `// (sleep ok: <why>)`. A mark goes on the sleep's line or the line
-above. Comments are skipped. Prints each offence; exits 1 on any.
+above. Nor does a wait carry a watchdog of its own under a minute (task #662: takeover's 5 s, keep's
+20 s): a deadline `Instant::now() + <short>`, a loop on `elapsed() < <short>`, or a
+`recv_timeout(<short>)` expected to succeed. A bound that isn't a wait (how long a test keeps
+reading) says so: `// (bound ok: <why>)`. Comments are skipped. Prints each offence; exits 1 on any.
 `python3 tools/app/test_timing.py --self-test` checks the guard on sample snippets (every scan runs
 it first)."""
 import os
@@ -31,6 +34,11 @@ ASSERT = re.compile(r'(?<![\w])(?:debug_)?assert(?:_eq|_ne)?!\s*\(')
 # A sleep: std's thread::sleep or tokio's, by path; `sleep(` alone when imported. Not a clock's `.sleep(`.
 SLEEP = re.compile(r'(?:\bthread::|\btokio::time::|(?<![\w:])time::)sleep\(')
 BARE_SLEEP = re.compile(r'(?<![\w.:])(?<!fn )sleep\(')
+# A watchdog under a minute: millis, or seconds below 60.
+SHORT_WAIT = r'(?:std::time::)?Duration::from_(?:millis\(|secs\((?:[0-9]|[1-5][0-9])\))'
+DEADLINE = re.compile(r'Instant::now\(\)\s*\+[^;]*?' + SHORT_WAIT)
+LOOP_ON = re.compile(r'(?:\bwhile\b|&&|\|\|)[^;{]*elapsed\(\)(?:\.unwrap\(\))?\s*<\s*' + SHORT_WAIT)
+RECV = re.compile(r'recv_timeout\(\s*' + SHORT_WAIT + r'[^;]*?\)\s*\.(?:is_ok|unwrap|expect)\b')
 IMPORTS_SLEEP = re.compile(r'use\s+(?:std::thread|tokio::time)::(?:sleep\b|\{[^}]*\bsleep\b)')
 
 
@@ -101,9 +109,9 @@ def strip_comments(text):
     return ''.join(out)
 
 
-def marked(raw, n):
-    """Whether the sleep on line n is marked fine, on its line or the line above."""
-    return any('(absence)' in raw[i] or '(sleep ok:' in raw[i] for i in (n, n - 1) if 0 <= i < len(raw))
+def marked(raw, n, marks=('(absence)', '(sleep ok:')):
+    """Whether line n is marked fine (`marks`), on its line or the line above."""
+    return any(m in raw[i] for m in marks for i in (n, n - 1) if 0 <= i < len(raw))
 
 
 def check(text, name='<text>'):
@@ -140,6 +148,12 @@ def check(text, name='<text>'):
     # if ...elapsed() > short { panic!
     for m in PANIC_IF.finditer(code):
         bad.append(f'{name}:{lineno(m.start())}: a panic past a short elapsed() bound: {" ".join(m.group(0).split())[:120]}')
+    # A watchdog of the test's own, under a minute.
+    for rx, what in ((DEADLINE, 'a deadline'), (LOOP_ON, 'a loop bounded'), (RECV, 'a recv_timeout')):
+        for m in rx.finditer(code):
+            n = lineno(m.start()) - 1
+            if not marked(raw, n, ('(bound ok:',)):
+                bad.append(f'{name}:{n + 1}: {what} under a minute on a wait: {lines[n].strip()[:120]}')
     # A fixed sleep, then an assert before the next sleep or the end of its block.
     sleeps = [SLEEP] + ([BARE_SLEEP] if IMPORTS_SLEEP.search(code) else [])
 
@@ -203,6 +217,10 @@ SAMPLES_BAD = [
     'tokio::time::sleep(Duration::from_millis(50)).await;\nassert!(done());',
     'use std::thread::sleep;\nfn f() {\n    sleep(Duration::from_millis(50));\n    assert!(done());\n}',
     '/* a note */ assert!(\n  t.elapsed() < ms(5)\n);',
+    'let end = Instant::now() + Duration::from_secs(20);',
+    'let end = Instant::now() + crate::coord::keep::BATCH + Duration::from_secs(20);',
+    'while !ready.exists() && t.elapsed() < Duration::from_secs(5) {\n    std::thread::sleep(ms(20));\n}',
+    'assert!(rx.recv_timeout(std::time::Duration::from_secs(10)).is_ok(), "goes");',
 ]
 SAMPLES_OK = [
     'store::clock::ended_before(t, Duration::from_secs(30), "at once");',
@@ -223,6 +241,11 @@ SAMPLES_OK = [
     'std::thread::sleep(ms(1));\nstd::thread::sleep(ms(1));',
     'clock.sleep(Duration::from_secs(1));\nassert!(done());',
     'sleep(Duration::from_secs(1));\nassert!(done());',
+    'let end = Instant::now() + store::testkit::WATCHDOG;',
+    'let end = Instant::now() + Duration::from_secs(300);',
+    '// (bound ok: how long it reads)\nlet until = Instant::now() + Duration::from_millis(300);',
+    'assert!(rx.recv_timeout(wait).is_err(), "a request past the cap waits");',
+    'assert!(rx.recv_timeout(Duration::from_millis(100)).is_err(), "not yet");',
 ]
 
 
@@ -254,6 +277,8 @@ if __name__ == '__main__':
     for b in bad:
         print(b)
     if bad:
-        print('wait for the event (store::clock::eventually) or use store::clock::ended_before; a sleep before '
-              "asserts that nothing happened is marked // (absence), any other that's fine // (sleep ok: why)")
+        print('wait for the event (store::testkit: eventually, wait_for, Signal, sh + ready, under WATCHDOG) or '
+              'use store::testkit::ended_before; a sleep before asserts that nothing happened is marked // (absence), '
+              "any other that's fine // (sleep ok: why); a bound that isn't a wait // (bound ok: why). "
+              'tools/dev/testing.md, "A test that can\'t flake"')
         sys.exit(1)

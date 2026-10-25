@@ -17,5 +17,9 @@ zstd = "0.13"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 libc = "0.2"
 
+[features]
+# Test helpers (src/testkit.rs) for other crates' tests: their dev-dependency on store turns it on.
+testkit = []
+
 [dev-dependencies]
 tempfile = "3"

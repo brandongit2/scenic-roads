@@ -965,17 +965,22 @@ pub(crate) mod tests {
             assert_eq!(Arc::strong_count(&live), 1, "{n}");
         }
         // (At once: the closes overlap, each a round trip on the NAS. Each close waits until a
-        // second one is under way, so they can only all end if several run together.)
-        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        // second one is under way, so they can only all end if several run together; one at a
+        // time, the first waits out the watchdog and the rest don't wait.)
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
         static NOW: AtomicUsize = AtomicUsize::new(0);
         static MOST: AtomicUsize = AtomicUsize::new(0);
+        static ALONE: AtomicBool = AtomicBool::new(false);
         struct Slow;
         impl Drop for Slow {
             fn drop(&mut self) {
                 let n = NOW.fetch_add(1, SeqCst) + 1;
                 MOST.fetch_max(n, SeqCst);
                 let t = std::time::Instant::now();
-                while MOST.load(SeqCst) < 2 && t.elapsed() < std::time::Duration::from_secs(10) {
+                while MOST.load(SeqCst) < 2 && !ALONE.load(SeqCst) {
+                    if t.elapsed() > store::testkit::WATCHDOG {
+                        ALONE.store(true, SeqCst);
+                    }
                     std::thread::yield_now();
                 }
                 NOW.fetch_sub(1, SeqCst);
@@ -1607,7 +1612,7 @@ pub(crate) mod tests {
         let e = within(Path::new("x"), std::time::Duration::from_millis(50), stuck).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::TimedOut);
         assert!(!store::retry::transient_or_missing(&e));
-        store::clock::ended_before(t0, std::time::Duration::from_secs(30), "the stuck open ends at its deadline");
+        store::testkit::ended_before(t0, std::time::Duration::from_secs(30), "the stuck open ends at its deadline");
         // A file that isn't a GeoTIFF: InvalidData, not tried again.
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("n.tif"), b"nope").unwrap();

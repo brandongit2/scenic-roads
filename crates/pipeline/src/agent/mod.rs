@@ -12646,7 +12646,7 @@ mod tests {
         assert_eq!(lead_start(&mut a, std::slice::from_ref(&job), &cond, &root, &mut w), [0], "{w:?}");
         let t = Instant::now();
         while a.slots[0].running.is_some() {
-            assert!(t.elapsed() < store::clock::WATCHDOG, "it ends");
+            assert!(t.elapsed() < store::testkit::WATCHDOG, "it ends");
             a.tend(0, &cond, Some(&root), 0).unwrap();
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -13375,7 +13375,7 @@ mod tests {
         let until = |what: &str, f: &dyn Fn() -> bool| {
             let t = Instant::now();
             while !f() {
-                assert!(t.elapsed() < store::clock::WATCHDOG, "{what}");
+                assert!(t.elapsed() < store::testkit::WATCHDOG, "{what}");
                 std::thread::sleep(Duration::from_millis(20));
             }
         };
@@ -14428,7 +14428,7 @@ mod tests {
         ask(&a);
         let t = Instant::now();
         while watch(&a).is_none() {
-            assert!(t.elapsed() < store::clock::WATCHDOG, "listed");
+            assert!(t.elapsed() < store::testkit::WATCHDOG, "listed");
             std::thread::sleep(Duration::from_millis(20));
         }
         // The first check: a full one, before every other job.
@@ -14481,7 +14481,7 @@ mod tests {
         assert_eq!(crate::inputs::acceptances(&root, unit).unwrap().len(), 1);
         let t = Instant::now();
         while watch(&a).is_none_or(|l| l.accepted.is_empty()) {
-            assert!(t.elapsed() < store::clock::WATCHDOG, "listed again");
+            assert!(t.elapsed() < store::testkit::WATCHDOG, "listed again");
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(a.plan(&root, &c, &mut w)[0].id, format!("inputs {unit}"));
@@ -14490,7 +14490,7 @@ mod tests {
         b.step().unwrap();
         let t = Instant::now();
         while watch(&b).is_none() {
-            assert!(t.elapsed() < store::clock::WATCHDOG, "listed");
+            assert!(t.elapsed() < store::testkit::WATCHDOG, "listed");
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(
@@ -14901,7 +14901,7 @@ mod tests {
         std::fs::write(&go, "").unwrap();
         let t = Instant::now();
         while !b.tend(0, &cond, Some(&root), 0).unwrap() {
-            assert!(t.elapsed() < store::clock::WATCHDOG, "the job ends");
+            assert!(t.elapsed() < store::testkit::WATCHDOG, "the job ends");
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(b.slots[0].running.is_none() && b.slots[0].lease.is_none());
@@ -14975,7 +14975,7 @@ mod tests {
         let _kill = Kill(pgid);
         let t = Instant::now();
         while !first.exists() {
-            assert!(t.elapsed() < store::clock::WATCHDOG, "its first request answered");
+            assert!(t.elapsed() < store::testkit::WATCHDOG, "its first request answered");
             std::thread::sleep(Duration::from_millis(20));
         }
         let wiki = |p: &crate::budget::Proxy| p.view().wiki;
@@ -15817,7 +15817,7 @@ mod pool_tests {
         }
     }
 
-    use store::clock::WATCHDOG;
+    use store::testkit::WATCHDOG;
 
     /// A member's Mac with more room than its lead's test Mac (`cond::Mac::TEST`'s 16 GB), as the
     /// M4's 48 GB: a cold start (no job of its step measured) goes to it, whatever Mac runs the test.
@@ -17282,11 +17282,9 @@ mod pool_tests {
         // (Its coordinator's state, its job's lease with it, saved for the term: by the coordinator's
         // own thread, crate::coord::keep, once the loop's step has named the term.)
         lead.step().unwrap();
-        let end = Instant::now() + crate::coord::keep::BATCH + Duration::from_secs(60);
-        while !std::fs::read_to_string(r.join(pool::state_path(1))).is_ok_and(|s| s.contains("6/4/4")) {
-            assert!(Instant::now() < end, "the lease not in term 1's state");
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        store::testkit::eventually("the lease in term 1's state", || {
+            std::fs::read_to_string(r.join(pool::state_path(1))).is_ok_and(|s| s.contains("6/4/4"))
+        });
         // The lead "frozen" (not stepped): the member takes over, forced, on a port of its own.
         TEST_PORT.with(|p| p.set(Some(free_port())));
         crate::control::request_lead(

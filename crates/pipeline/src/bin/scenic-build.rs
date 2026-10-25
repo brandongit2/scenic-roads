@@ -6060,9 +6060,9 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let done = d.path().join("done");
         // (The only test here that notes targets done or their costs.)
-        std::env::set_var(pipeline::control::DONE_ENV, &done);
+        let _done = store::testkit::EnvVar::set(pipeline::control::DONE_ENV, &done);
         let costs = d.path().join("costs");
-        std::env::set_var("SCENIC_COSTS", &costs);
+        let _costs = store::testkit::EnvVar::set("SCENIC_COSTS", &costs);
         let now = std::time::Instant::now;
         // Each target's cost line, with its own uploads' bytes and files.
         let cost_of = |target: &str| -> Option<(u64, u64)> {
@@ -6111,8 +6111,6 @@ mod tests {
         assert_eq!(noted(), ["6/1/1", "6/1/2"]);
         assert_eq!(cost_of("6/1/4"), None);
         assert!(landing.land(&mut out).is_ok(), "nothing uploading");
-        std::env::remove_var(pipeline::control::DONE_ENV);
-        std::env::remove_var("SCENIC_COSTS");
     }
 
     /// A job's steps' programs are its own app's: `app/current` followed to the version it names

@@ -710,23 +710,13 @@ mod tests {
 
     /// A minute, for what isn't timed.
     const LONG: Duration = Duration::from_secs(60);
-    /// How long `eventually` waits: a watchdog, not a measure.
-    const WATCHDOG: Duration = Duration::from_secs(300);
+    use crate::testkit::eventually;
 
     fn cfg(probe: PathBuf, threads: usize, timeout_ms: u64) -> PoolConfig {
         PoolConfig {
             probe_interval: Duration::from_millis(20),
             alive_timeout: Duration::from_secs(600),
             ..PoolConfig::new(threads, Duration::from_millis(timeout_ms), probe)
-        }
-    }
-
-    /// Polls `cond` until it holds; false only past the watchdog (`what` it waited for, said).
-    fn eventually(what: &str, cond: impl Fn() -> bool) {
-        let end = Instant::now() + WATCHDOG;
-        while !cond() {
-            assert!(Instant::now() < end, "never: {what} (in {WATCHDOG:?})");
-            thread::sleep(Duration::from_millis(10));
         }
     }
 

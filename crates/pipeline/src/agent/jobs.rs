@@ -850,9 +850,9 @@ mod tests {
             if let Some(x) = f(r) {
                 return x;
             }
-            if t.elapsed() > store::clock::WATCHDOG {
+            if t.elapsed() > store::testkit::WATCHDOG {
                 r.stop(Duration::from_secs(1));
-                panic!("{what}: not within {:?}", store::clock::WATCHDOG);
+                panic!("{what}: not within {:?}", store::testkit::WATCHDOG);
             }
             std::thread::sleep(Duration::from_millis(10));
         }

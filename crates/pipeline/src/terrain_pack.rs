@@ -2358,7 +2358,7 @@ pub(crate) mod tests {
         })
         .unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::TimedOut);
-        store::clock::ended_before(t, ms(30_000), "the stuck call ends at its deadline");
+        store::testkit::ended_before(t, ms(30_000), "the stuck call ends at its deadline");
         let tries = std::sync::Arc::new(AtomicUsize::new(0));
         let n = tries.clone();
         let got =

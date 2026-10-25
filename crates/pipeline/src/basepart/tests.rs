@@ -219,7 +219,7 @@ fn a_stuck_read_is_given_up() {
         Ok(())
     })
     .unwrap_err();
-    store::clock::ended_before(t0, std::time::Duration::from_secs(60), "given up at its stall time");
+    store::testkit::ended_before(t0, std::time::Duration::from_secs(60), "given up at its stall time");
     assert!(format!("{e:#}").contains("no byte read"), "{e:#}");
     let slow = watched(stall, "read y", |p| {
         for _ in 0..8 {

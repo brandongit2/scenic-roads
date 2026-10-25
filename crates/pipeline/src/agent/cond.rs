@@ -455,7 +455,7 @@ mod tests {
         use super::*;
         let d = tempfile::tempdir().unwrap();
         let wait = |c: &FloorCache, want: u8| {
-            store::clock::eventually(&format!("the floor read, {want}"), || {
+            store::testkit::eventually(&format!("the floor read, {want}"), || {
                 !c.reading.load(Ordering::Acquire) && c.pct.load(Ordering::Relaxed) == want
             })
         };

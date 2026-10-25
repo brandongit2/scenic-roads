@@ -1356,7 +1356,7 @@ mod tests {
         let r = cancellable(&flag, || net::Net::new().with_down(None).range(&url, 0, 10));
         let e = format!("{:#}", r.unwrap_err());
         assert!(e.contains("given up"), "{e}");
-        store::clock::ended_before(
+        store::testkit::ended_before(
             t0,
             std::time::Duration::from_secs(60),
             "ended as its reader stopped, not after its retries (minutes)",
@@ -1371,7 +1371,7 @@ mod tests {
         let t0 = std::time::Instant::now();
         let r = net::Net::new().with_down(Some(d.path().to_path_buf())).range(&url, 0, 10);
         assert!(is_unreachable(&r.unwrap_err()));
-        store::clock::ended_before(
+        store::testkit::ended_before(
             t0,
             std::time::Duration::from_secs(60),
             "ended as its host was noted down, not after its retries (minutes)",
@@ -1395,7 +1395,7 @@ mod tests {
         let wait = std::time::Duration::from_millis(100);
         assert!(rx.recv_timeout(wait).is_err(), "a request past the cap waits");
         drop(held);
-        assert!(rx.recv_timeout(std::time::Duration::from_secs(10)).is_ok(), "and goes once a slot is free");
+        assert!(rx.recv_timeout(store::testkit::WATCHDOG).is_ok(), "and goes once a slot is free");
         t.join().unwrap();
     }
 

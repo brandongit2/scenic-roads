@@ -32,4 +32,5 @@ rayon = { workspace = true }
 bytemuck = { workspace = true }
 
 [dev-dependencies]
+store = { path = "../store", features = ["testkit"] }
 tempfile = "3"

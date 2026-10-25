@@ -1326,7 +1326,7 @@ mod tests {
         panic!("the places were never made (in {WATCHDOG:?})");
     }
 
-    const WATCHDOG: Duration = Duration::from_secs(300);
+    use store::testkit::WATCHDOG;
 
     #[tokio::test]
     async fn the_search_answers_once_the_maps_places_are_made() {
