@@ -654,7 +654,7 @@ keeps its content name, so jobs keyed on it stop there.
 | our layers | the pack for the tile; names attached |
 | basemap | tiles from the catalog's PMTiles archives (`/tiles/base`); names attached |
 | drives, rides, rail lines | parts from the hidata in view plus half the window, joined by offset; zoomed out (wider than ~1,200 km) from the 500 m summaries (`approx`) |
-| whole road (hover) | the road's parts, through the road → z6 tiles index |
+| whole road (hover) | the road's parts, through the road → z6 tiles index; away from the NAS, cut where the Mac's downloads end |
 | details, profiles | by OSM id plus location (ways-here index → base pack) |
 | landmarks, overlays, stations, ferries | by view (`docs/phase5.md`) |
 | `/api/meta` | the map's meta, summed from the base packs' summaries |

@@ -243,10 +243,11 @@ pub struct RoadWay {
 }
 
 /// The ways of the road through `f` whose offsets lie within `window` metres of `f`'s, in order
-/// along the road (each unit's ways joined by offset). The second value: whether the window cut
-/// the road short.
-/// An error when a unit the road crosses couldn't be read (the NAS away): a road with gaps would
-/// be cached as if whole.
+/// along the road (each unit's ways joined by offset). The second value: whether the road was cut
+/// short, by the window or away from the NAS.
+/// Away from the NAS, a unit the road crosses that this Mac hasn't downloaded cuts it: the ways
+/// joined end to end through `f` are kept (task #457). At home, an error when a unit couldn't be
+/// read: a road with gaps would be cached as if whole.
 pub fn road_ways(s: &AppState, f: &Found, window: f32) -> anyhow::Result<(Vec<RoadWay>, bool)> {
     let rv = f.base.road_val(f.index)?;
     let (lo, hi) = (rv.offset - window, rv.offset + window);
@@ -255,9 +256,17 @@ pub fn road_ways(s: &AppState, f: &Found, window: f32) -> anyhow::Result<(Vec<Ro
         None => vec![unit_key(&f.base.unit).unwrap_or(0)],
     };
     let mut out: Vec<RoadWay> = Vec::new();
-    let mut truncated = false;
+    let (mut truncated, mut away) = (false, false);
     for u in units {
-        let Some(bp) = s.data.base(&unit_str(u))? else { continue };
+        let bp = match s.data.base(&unit_str(u)) {
+            Ok(Some(bp)) => bp,
+            Ok(None) => continue,
+            Err(_) if !s.data.online() => {
+                away = true;
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         let idx = bp.on_road(rv.road)?;
         let vals = bp.roads.get_many(&idx.iter().map(|&i| i as usize).collect::<Vec<_>>())?;
         for (&i, r) in idx.iter().zip(&vals) {
@@ -269,7 +278,34 @@ pub fn road_ways(s: &AppState, f: &Found, window: f32) -> anyhow::Result<(Vec<Ro
         }
     }
     out.sort_by(|a, b| a.offset.total_cmp(&b.offset));
+    if away {
+        out = joined_through(out, f)?;
+        truncated = true;
+    }
     Ok((out, truncated))
+}
+
+/// Of `ways` (in order along their road), those joined end to end through `f`'s: where one way's
+/// end isn't the next one's start, the ways between are missing.
+fn joined_through(ways: Vec<RoadWay>, f: &Found) -> anyhow::Result<Vec<RoadWay>> {
+    let Some(at) = ways.iter().position(|w| Arc::ptr_eq(&w.base, &f.base) && w.index == f.index) else {
+        return Ok(ways);
+    };
+    let recs = records(&ways)?;
+    let mut ends = Vec::with_capacity(ways.len());
+    for (w, r) in ways.iter().zip(&recs) {
+        let (a, b) =
+            (w.base.verts.get(r.vstart as usize)?, w.base.verts.get((r.vstart + r.vcount.max(1) as u64 - 1) as usize)?);
+        ends.push(if w.rev { (b, a) } else { (a, b) });
+    }
+    let (mut lo, mut hi) = (at, at);
+    while lo > 0 && ends[lo - 1].1 == ends[lo].0 {
+        lo -= 1;
+    }
+    while hi + 1 < ways.len() && ends[hi].1 == ends[hi + 1].0 {
+        hi += 1;
+    }
+    Ok(ways.into_iter().skip(lo).take(hi + 1 - lo).collect())
 }
 
 /// The ways' records, read unit by unit.

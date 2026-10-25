@@ -26,7 +26,8 @@
 //!   warns of it).
 //! - **A region** (`area_part`): every layer's hi pack (zooms
 //!   9–14), and the base pack and road values, of each z6 tile within 2 km of it (its outlines are
-//!   simplified), and the basemap's zooms 11–14 over those tiles; the terrain's and the grids' hi
+//!   simplified), and those of the owners of the ways those tiles' hidata list
+//!   (`Downloads::learn_owners`), and the basemap's zooms 11–14 over those tiles; the terrain's and the grids' hi
 //!   packs within 25 km (the viewshed's reach, so one from inside works offline); and the hi data
 //!   of the z6 tiles within 50 km (what the lists of a view read around it); and what the map reads
 //!   zoomed in from the World's files (pipeline::areafiles::files_of), so only zoomed out needs it.
@@ -141,7 +142,13 @@ pub struct RegionParts {
     pub coarse: Part,
     pub detail: Part,
     pub cover: f64,
+    /// Its z6 tiles' hidata ("6/x/y" with one): whose ways' owners its download keeps
+    /// (`Downloads::learn_owners`).
+    pub near: Vec<String>,
 }
+
+/// The owner units (tile keys) of the ways each hidata lists (`here`), by its content name.
+type Owners = std::collections::HashMap<String, Arc<BTreeSet<u64>>>;
 
 /// Every region the catalog records, what downloading it copies, by id.
 type Regions = Arc<BTreeMap<String, RegionParts>>;
@@ -164,11 +171,14 @@ pub struct Plan {
 pub struct Downloads {
     path: std::path::PathBuf,
     asked: Mutex<Asked>,
-    /// Bumped at every change of what's asked.
+    /// Bumped at every change of what's asked, and when owners are learned.
     version: AtomicU64,
     plan: Mutex<Option<Arc<Plan>>>,
-    /// The regions' parts for a catalog generation (they don't change with the downloads).
-    regions: Mutex<Option<(u64, Regions)>>,
+    /// The regions' parts for a catalog generation and the owners known then (they don't change
+    /// with the downloads).
+    regions: Mutex<Option<(u64, usize, Regions)>>,
+    /// The downloaded regions' hidata's owners, as far as they're read.
+    owners: Mutex<Arc<Owners>>,
     /// Set when the downloads change, to wake the mirror thread.
     wake: (Mutex<bool>, Condvar),
 }
@@ -211,6 +221,7 @@ impl Downloads {
             version: AtomicU64::new(1),
             plan: Mutex::new(None),
             regions: Mutex::new(None),
+            owners: Default::default(),
             wake: (Mutex::new(false), Condvar::new()),
         });
         if old {
@@ -271,18 +282,19 @@ impl Downloads {
             }
         }
         let cat = data.catalog();
+        let owners = self.owners.lock().unwrap().clone();
         let regions = {
             let mut g = self.regions.lock().unwrap();
             match g.as_ref() {
-                Some((gen, r)) if *gen == generation => r.clone(),
+                Some((gen, n, r)) if *gen == generation && *n == owners.len() => r.clone(),
                 _ => {
                     let r: Regions = Arc::new(
                         crate::regions::recorded(&cat)
                             .iter()
-                            .map(|r| (r.id.clone(), region_parts(&cat, &outer_rings(r))))
+                            .map(|r| (r.id.clone(), region_parts(&cat, &outer_rings(r), &owners)))
                             .collect(),
                     );
-                    *g = Some((generation, r.clone()));
+                    *g = Some((generation, owners.len(), r.clone()));
                     r
                 }
             }
@@ -291,6 +303,51 @@ impl Downloads {
         let plan = Arc::new(make_plan(&cat, generation, version, asked, regions));
         *self.plan.lock().unwrap() = Some(plan.clone());
         plan
+    }
+}
+
+impl Downloads {
+    /// Reads the owners of the ways the downloaded regions' hidata list, where not known yet: from
+    /// this Mac's copy, else the NAS. A region keeps its ways' owners' base packs and road values
+    /// (`area_part`), so a way drawn in it that starts far outside has its info away from the NAS.
+    /// Whether every one is known (an unread one is tried again next round). Learning any
+    /// changes the plan.
+    fn learn_owners(&self, data: &Data, plan: &Plan) -> bool {
+        let cat = data.catalog();
+        let mut tiles: BTreeSet<&str> = BTreeSet::new();
+        for r in &plan.asked.regions {
+            tiles.extend(plan.regions.get(&r.id).into_iter().flat_map(|p| p.near.iter().map(String::as_str)));
+        }
+        let known = self.owners.lock().unwrap().clone();
+        let mut next: Owners = Owners::new();
+        let (mut complete, mut learnt) = (true, false);
+        for t in tiles {
+            let Some(content) = cat.hidata.get(t).and_then(|l| cat.content(l)) else { continue };
+            if let Some(o) = known.get(content) {
+                next.insert(content.to_string(), o.clone());
+                continue;
+            }
+            let read = data.hidata(t).and_then(|hv| {
+                let Some(hv) = hv else { return Ok(BTreeSet::new()) };
+                let all = hv.here.all()?;
+                Ok(all.cast::<roadcore::packs::Here>().iter().map(|h| h.owner).collect())
+            });
+            match read {
+                Ok(o) => {
+                    next.insert(content.to_string(), Arc::new(o));
+                    learnt = true;
+                }
+                Err(e) => {
+                    eprintln!("mirror: the owners of hidata {t}'s ways: {e:#}");
+                    complete = false;
+                }
+            }
+        }
+        if learnt || next.len() != known.len() {
+            *self.owners.lock().unwrap() = Arc::new(next);
+            self.version.fetch_add(1, Ordering::SeqCst);
+        }
+        complete
     }
 }
 
@@ -320,16 +377,39 @@ fn world_part(cat: &Catalog) -> Part {
     Part::new(cat, files, &basemap_archives(cat), &[Piece::Lo])
 }
 
-/// A region's download (`rings`, each read as a filled area): its files, then its basemap pieces.
-fn area_part(cat: &Catalog, rings: &[Vec<[f64; 2]>]) -> Part {
-    let pieces: Vec<Piece> = tiles_meeting(rings, NEAR_KM).into_iter().map(|(x, y)| Piece::Tile(x, y)).collect();
-    Part::new(cat, files_of(cat, rings), &basemap_archives(cat), &pieces)
+/// A region's download (`rings`, each read as a filled area): its files, with the base packs and
+/// road values of the owners of the ways its tiles' hidata list (as far as `owners` knows them),
+/// then its basemap pieces.
+fn area_part(cat: &Catalog, rings: &[Vec<[f64; 2]>], owners: &Owners) -> Part {
+    let tiles = tiles_meeting(rings, NEAR_KM);
+    let mut files: BTreeMap<String, u64> = files_of(cat, rings).names.into_iter().collect();
+    let units: BTreeSet<u64> = tiles
+        .iter()
+        .filter_map(|(x, y)| cat.hidata.get(&format!("6/{x}/{y}")).and_then(|l| cat.content(l)))
+        .filter_map(|c| owners.get(c))
+        .flat_map(|o| o.iter().copied())
+        .collect();
+    for u in units {
+        let unit = crate::ways::unit_str(u);
+        for l in [cat.base.get(&unit), cat.roads.get(&unit)].into_iter().flatten() {
+            if let Some(f) = cat.files.get(l) {
+                files.insert(f.file.clone(), f.size);
+            }
+        }
+    }
+    let pieces: Vec<Piece> = tiles.into_iter().map(|(x, y)| Piece::Tile(x, y)).collect();
+    Part::new(cat, Files::from_map(files), &basemap_archives(cat), &pieces)
 }
 
 /// A region's downloads (`rings`, its outer rings): the region, and its terrain detail.
-fn region_parts(cat: &Catalog, rings: &[Vec<[f64; 2]>]) -> RegionParts {
+fn region_parts(cat: &Catalog, rings: &[Vec<[f64; 2]>], owners: &Owners) -> RegionParts {
     let (files, cover) = detail_of(cat, rings);
-    RegionParts { coarse: area_part(cat, rings), detail: Part::new(cat, files, &[], &[]), cover }
+    let near = tiles_meeting(rings, NEAR_KM)
+        .into_iter()
+        .map(|(x, y)| format!("6/{x}/{y}"))
+        .filter(|k| cat.hidata.contains_key(k))
+        .collect();
+    RegionParts { coarse: area_part(cat, rings, owners), detail: Part::new(cat, files, &[], &[]), cover, near }
 }
 
 fn basemap_archives(cat: &Catalog) -> Vec<String> {
@@ -371,6 +451,7 @@ static MIRROR_MARKS: std::sync::Mutex<pipeline::pubtimes::MirrorMarks> =
 /// One round of the mirror; whether to go again at once (the catalog or the downloads changed
 /// meanwhile).
 fn once(s: &crate::AppState, m: &Mirror) -> bool {
+    let owners_known = s.downloads.learn_owners(&s.data, &s.downloads.plan(&s.data));
     let plan = s.downloads.plan(&s.data);
     let changed =
         || s.data.generation.load(Ordering::SeqCst) != plan.generation || s.downloads.version() != plan.version;
@@ -418,7 +499,9 @@ fn once(s: &crate::AppState, m: &Mirror) -> bool {
                 eprintln!("mirror: sizing the basemap's pieces: {e:#}");
             }
         }
-        // Away from home: what isn't downloaded goes all the same.
+        // Away from home: what isn't downloaded goes all the same; nothing while an owner's files
+        // can't be told (a hidata not read yet).
+        _ if !owners_known => {}
         _ => match m.sync_away(&cat, &plan.wanted) {
             Ok(st) if st.removed > 0 => eprintln!("mirror (away): {st:?}"),
             Ok(_) => {}

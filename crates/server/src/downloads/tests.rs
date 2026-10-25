@@ -122,7 +122,7 @@ fn an_areas_files_are_its_tiles_hi_packs_and_base_packs_and_the_hi_data_around()
     );
     assert_eq!(f.bytes, 30_031 + 300 + 4_031 + 5_031 + 5_032 + 20_031 + 10_031 + 10_032);
     // And the basemap's zooms 11–14 over its tile, after its files.
-    let p = area_part(&cat, &[rect(-0.3, 51.4, -0.1, 51.6)]);
+    let p = area_part(&cat, &[rect(-0.3, 51.4, -0.1, 51.6)], &Owners::new());
     assert_eq!(
         p.items.last(),
         Some(&Item::Piece { archive: cat.content("layers/basemap/world").unwrap().into(), piece: Piece::Tile(31, 21) })
@@ -157,7 +157,7 @@ async fn downloading_the_world_and_regions() {
     let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let cat = catalog(nas.path());
     let s = crate::test_state_with(home.path(), nas.path(), true);
-    let london = area_part(&cat, &[rect(-0.3, 51.4, -0.1, 51.6)]);
+    let london = area_part(&cat, &[rect(-0.3, 51.4, -0.1, 51.6)], &Owners::new());
 
     // Nothing downloaded: nothing copied; the sizes worked out, the basemap's pieces too.
     let v = get(&s).await;
@@ -259,7 +259,7 @@ async fn a_macs_downloaded_views_are_removed_and_their_files_go() {
         .unwrap(),
     )
     .unwrap();
-    let rotterdam = area_part(&cat, std::slice::from_ref(&view));
+    let rotterdam = area_part(&cat, std::slice::from_ref(&view), &Owners::new());
     {
         let m = Mirror::open(home.path().to_owned(), 0).unwrap();
         let all =
@@ -404,7 +404,7 @@ async fn a_region_still_building_downloads_as_its_tiles_come() {
     assert_eq!(region(&s, "se", true).await.0, StatusCode::OK);
     tokio::task::block_in_place(|| settle(&s));
     let m = s.data.mirror.clone().unwrap();
-    let one = area_part(&first, std::slice::from_ref(&se));
+    let one = area_part(&first, std::slice::from_ref(&se), &Owners::new());
     let v = get(&s).await;
     assert_eq!(v["regions"]["se"]["state"].as_str(), Some("done"), "{v}");
     assert!(logicals(&one.files).iter().all(|l| !l.contains("6-32-21")));
@@ -417,7 +417,7 @@ async fn a_region_still_building_downloads_as_its_tiles_come() {
     store::catalog::write(&dir, &second).unwrap();
     assert!(tokio::task::block_in_place(|| s.data.refresh_catalog()));
     assert_eq!(s.data.catalog().n, 2);
-    let two = area_part(&second, std::slice::from_ref(&se));
+    let two = area_part(&second, std::slice::from_ref(&se), &Owners::new());
     let added: Vec<(String, u64)> = two.files.names.iter().filter(|(n, _)| !one.files.contains(n)).cloned().collect();
     assert!(!added.is_empty() && one.files.names.iter().all(|(n, _)| two.files.contains(n)), "the wanted set grows");
     tokio::task::block_in_place(|| settle(&s));
@@ -583,4 +583,163 @@ async fn a_region_alone_has_what_the_map_reads_zoomed_in() {
     assert!(!m.has(cat.content("layers/terrain/lo/3-3-2").unwrap()), "nor the World's zoomed-out packs");
     let v = get(&s).await;
     assert_eq!(v["regions"]["london"]["here"], v["regions"]["london"]["bytes"], "counted in its size");
+}
+
+/// One way of the roads fixture: its id, owner (z6 x at y 21), and its two ends' longitudes (at
+/// 51.5° N).
+struct FixWay {
+    id: i64,
+    owner: u32,
+    lons: [f64; 2],
+}
+
+/// One road (id 100) of three ways across 30/21, 31/21 and 32/21, written as real files: each
+/// tile's base pack and road values, its hidata (the ways drawn in it, with their owners) and the
+/// road → units index. Way 100 starts far west of London (owned by 30/21) and runs into it; 101
+/// runs on through London into 32/21; 102 lies in 32/21 alone.
+fn put_roads(root: &std::path::Path, cat: &mut Catalog) {
+    use roadcore::packs::{Here, RoadRec};
+    use roadcore::WayRec;
+    let ways = [
+        FixWay { id: 100, owner: 30, lons: [-5.8, -0.2] },
+        FixWay { id: 101, owner: 31, lons: [-0.2, 0.1] },
+        FixWay { id: 102, owner: 32, lons: [0.1, 1.0] },
+    ];
+    let e7 = |d: f64| (d * 1e7).round() as i32;
+    let lat = e7(51.5);
+    let tile_of = |lon: f64| ((lon + 180.0) / 360.0 * 64.0).floor() as u32;
+    let mut file = |logical: &str, write: &dyn Fn(&mut store::sect::SectWriter)| {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("f");
+        let mut w =
+            store::sect::SectWriter::create(&p, json!({"unit": logical_unit(logical), "tile": logical_unit(logical)}))
+                .unwrap();
+        write(&mut w);
+        w.finish().unwrap();
+        let name = write_atomic(root, logical, "sect", Source::Bytes(&std::fs::read(&p).unwrap())).unwrap();
+        let size = std::fs::metadata(root.join(&name)).unwrap().len();
+        cat.files.insert(logical.into(), FileRef { file: name, size, fmt: 1, extra: Default::default() });
+    };
+    let mut offset = 0f32;
+    let mut offsets = Vec::new();
+    for w in &ways {
+        offsets.push(offset);
+        offset += ((w.lons[1] - w.lons[0]) * 69_000.0) as f32;
+    }
+    for x in [30u32, 31, 32] {
+        let t = format!("6-{x}-21");
+        let mine: Vec<usize> = (0..ways.len()).filter(|&k| ways[k].owner == x).collect();
+        let recs: Vec<WayRec> = mine
+            .iter()
+            .enumerate()
+            .map(|(i, &k)| WayRec { id: ways[k].id, vstart: 2 * i as u64, vcount: 2, ..bytemuck::Zeroable::zeroed() })
+            .collect();
+        let verts: Vec<[i32; 2]> = mine.iter().flat_map(|&k| ways[k].lons.map(|l| [e7(l), lat])).collect();
+        let n = verts.len();
+        file(&format!("base/{t}"), &|w| {
+            w.add("strings", b"").unwrap();
+            w.add_pod("ways", &recs).unwrap();
+            w.add_pod("verts", &verts).unwrap();
+            w.add_pod("elevu", &vec![6_000u16; n]).unwrap();
+            w.add_pod("grade", &vec![0u8; n]).unwrap();
+            w.add_pod("src", &vec![1u8; n]).unwrap();
+        });
+        let vals: Vec<RoadRec> = mine
+            .iter()
+            .map(|&k| RoadRec { road: 100, len: offset, offset: offsets[k], dir: 0, _pad: [0; 7] })
+            .collect();
+        file(&format!("global/roads/{t}"), &|w| w.add_pod("roads", &vals).unwrap());
+        // The ways drawn in the tile, with their owners.
+        let here: Vec<Here> = (0..ways.len())
+            .filter(|&k| (tile_of(ways[k].lons[0])..=tile_of(ways[k].lons[1] - 1e-9)).contains(&x))
+            .map(|k| {
+                let o = ways[k].owner;
+                let index = (0..k).filter(|&j| ways[j].owner == o).count() as u32;
+                Here {
+                    id: ways[k].id as u64,
+                    owner: roadcore::archive::tile_key(6, o, 21),
+                    index,
+                    bbox: [e7(ways[k].lons[0]), lat, e7(ways[k].lons[1]), lat],
+                    ..bytemuck::Zeroable::zeroed()
+                }
+            })
+            .collect();
+        file(&format!("hidata/{t}"), &|w| w.add_pod("here", &here).unwrap());
+    }
+    let pairs: Vec<[u64; 2]> = [30u32, 31, 32].iter().map(|&x| [100, roadcore::archive::tile_key(6, x, 21)]).collect();
+    file("global/roadunits", &|w| w.add_pod("pairs", &pairs).unwrap());
+    cat.global.insert("roadunits".into(), "global/roadunits".into());
+}
+
+fn logical_unit(logical: &str) -> String {
+    let last = logical.rsplit('/').next().unwrap_or("");
+    last.replace('-', "/")
+}
+
+async fn way_call(s: &S, what: &str, id: u64, at: [f64; 2]) -> (StatusCode, Value) {
+    let q = axum::extract::Query(serde_json::from_value(json!({"at": format!("{},{}", at[0], at[1])})).unwrap());
+    let (s, p) = (State(s.clone()), Path(id));
+    call(match what {
+        "way" => crate::ways::way_h(s, p, q).await,
+        "road" => crate::ways::road_h(s, p, q).await,
+        _ => crate::ways::profile_h(s, p, q).await,
+    })
+    .await
+}
+
+/// Task #457: away from the NAS, a downloaded region's ways have their info (their owners' base
+/// packs come with it, though they start far outside), and a road leaving it is cut where this
+/// Mac's files end.
+#[tokio::test(flavor = "multi_thread")]
+async fn away_a_regions_ways_have_their_info_and_its_roads_are_cut_at_its_edge() {
+    let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let root = nas.path().join("project");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut cat = catalog(&root);
+    put_roads(&root, &mut cat);
+    cat.n = 2;
+    cat.validate().unwrap();
+    store::catalog::write(&root.join("catalog"), &cat).unwrap();
+    let s = crate::test_state_with(home.path(), &root, true);
+    let in_london = [-0.15, 51.5];
+
+    // At home: the whole road, three ways.
+    let (code, v) = way_call(&s, "road", 101, in_london).await;
+    assert_eq!((code, v), (StatusCode::OK, json!([100, 101, 102])));
+
+    assert_eq!(region(&s, "london", true).await.0, StatusCode::OK);
+    tokio::task::block_in_place(|| settle(&s));
+    let m = s.data.mirror.clone().unwrap();
+    assert!(m.has(cat.content("base/6-30-21").unwrap()), "way 100's owner, listed in London's hidata");
+    assert!(m.has(cat.content("global/roads/6-30-21").unwrap()));
+    assert!(!m.has(cat.content("base/6-32-21").unwrap()), "no owner of a way drawn in London");
+    let v = get(&s).await;
+    assert_eq!(v["regions"]["london"]["here"], v["regions"]["london"]["bytes"], "counted in its size");
+
+    // Away: the NAS gone.
+    std::fs::rename(&root, nas.path().join("gone")).unwrap();
+    s.data.pool().unwrap().mark_offline("test");
+    tokio::task::block_in_place(|| settle(&s));
+    assert!(m.has(cat.content("base/6-30-21").unwrap()), "kept away from the NAS");
+
+    // Way 100 starts 390 km outside London: its info all the same.
+    let (code, v) = way_call(&s, "way", 100, [-0.25, 51.5]).await;
+    assert_eq!(code, StatusCode::OK, "{v}");
+    assert_eq!(v["osm_id"], json!(100));
+    // The road through London, cut where this Mac's files end (32/21 isn't here).
+    let (code, v) = way_call(&s, "road", 101, in_london).await;
+    assert_eq!((code, v), (StatusCode::OK, json!([100, 101])));
+    let (code, v) = way_call(&s, "profile", 101, in_london).await;
+    assert_eq!(code, StatusCode::OK, "{v}");
+    assert_eq!((v["ways"].clone(), v["truncated"].clone()), (json!([100, 101]), json!(true)));
+
+    // Started again away from the NAS: the owners read from this Mac's hidata, nothing goes.
+    let s = crate::test_state_with(home.path(), &root, true);
+    if let Some(p) = s.data.pool() {
+        p.mark_offline("test");
+    }
+    tokio::task::block_in_place(|| settle(&s));
+    assert!(s.data.mirror.clone().unwrap().has(cat.content("base/6-30-21").unwrap()), "kept after a start away");
+    let (code, v) = way_call(&s, "way", 100, [-0.25, 51.5]).await;
+    assert_eq!((code, v["osm_id"].clone()), (StatusCode::OK, json!(100)));
 }

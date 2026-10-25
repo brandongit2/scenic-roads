@@ -242,11 +242,16 @@ and codesign.
   and lo packs (z0–8), markdata, ovdata, and the basemap's zooms 0–10: about 10 GB. Not the pass's
   outlines.
 - **A region:** every layer's hi pack and the base pack and road values of each z6 tile
-  within 2 km of it; the basemap's zooms 11–14 over those tiles; the terrain's and grids' hi packs
+  within 2 km of it, and those of the owners of the ways those tiles' hi data list (read once
+  per hi data, from the Mac's copy or the NAS; a region's size counts them once read), so a way
+  drawn in it that starts far outside has its info; the basemap's zooms 11–14 over those tiles; the terrain's and grids' hi packs
   within 25 km (the viewshed's reach); the hi data, landmark points (markdata) and area details
   (ovdata, by z3 tile) within 50 km; the worldwide `global/` files (those by z6 tile, such as the
   roads' English names and ids, only for its tiles); the Canadian lake fill when it meets Canada.
-  So a region works zoomed in without the World; only zoomed out is missing (but task #457).
+  So a region works zoomed in without the World; only zoomed out is missing. Away from the NAS, a
+  whole road (hover, profile) leaving it is cut where this Mac's files end: the ways joined end to
+  end through the one asked for, the profile marked cut short. While a downloaded region's hi data
+  can't be read for its owners, away from the NAS nothing goes.
 - **A region's terrain detail** (an add-on to the region, which it needs): the terrain's deep packs
   and their shading's (z13 and finer, by z10 tile) within 2 km of it, where the terrain goes past
   z12; the panel says
