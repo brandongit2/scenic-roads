@@ -108,14 +108,16 @@ impl TerrainTiles {
     /// read now is tried again with the next load (`unread`).
     pub fn load(&mut self, root: &Path, m: &BTreeMap<String, String>) -> usize {
         use rayon::prelude::*;
+        let want: BTreeSet<&str> = Self::packs(m).map(|(_, c)| c.as_str()).collect();
+        // (What couldn't be read, dropped before the loads below say it again: kept after them, a
+        // water digest's or the elevation index's reason was dropped, its wait saying none.)
+        self.unread.retain(|c, _| want.contains(c.as_str()));
         self.load_water(root, m);
         self.load_elevation(root, m);
         self.load_buildings(root, m);
         self.load_depth(root, m);
         self.load_fine(root, m);
-        let want: BTreeSet<&str> = Self::packs(m).map(|(_, c)| c.as_str()).collect();
         self.held.retain(|c, _| want.contains(c.as_str()));
-        self.unread.retain(|c, _| want.contains(c.as_str()));
         let missing: Vec<&str> = want.iter().copied().filter(|c| !self.held.contains_key(*c)).collect();
         if missing.is_empty() {
             return 0;
@@ -708,6 +710,12 @@ mod tests {
         assert_eq!(t.load(&root, &m), 1);
         assert_eq!(t.unread().count(), 0);
         assert_eq!(t.hash(&m, 12, 1856, 1024).unwrap(), Some(made[&(12, 1856, 1024)]));
+        // A water digest that can't be read: its reason stays said after the load.
+        let water = format!("{}0-0-0", crate::terrain_water::IDX_PREFIX);
+        m.insert(water.clone(), "work/water-idx/0-0-0.5555555555555555.idx".into());
+        t.load(&root, &m);
+        assert!(t.unread().any(|(c, w)| c == &m[&water] && !w.is_empty()), "{:?}", t.unread().collect::<Vec<_>>());
+        m.remove(&water);
         // A pack the manifest no longer names isn't held; its kept index stays (for a fortnight).
         m.remove("layers/terrain/hi/6-29-16");
         t.load(&root, &m);
