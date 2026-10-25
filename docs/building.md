@@ -268,7 +268,9 @@ devices away use the M6's (always on; https://map.brandontsang.net, docs/macs.md
   over: `scenic lead`, pool.md §11) and leads it: it plans, runs a coordinator (`pipeline::coord`,
   port 8090) from which every other worker asks for work, and merges the journal into the records.
   A lead restarting or waking makes the next term naming itself; one on an app older than its term's
-  stands down, and another member takes over after two minutes. A process changes part in place
+  stands down, and another member takes over after two minutes (`STOOD_DOWN_S`); a lead gone silent
+  (asleep, away, off the NAS) is taken over by a member after about ten minutes (`SILENT_SEEN_S`,
+  docs/pool.md §6.7). A process changes part in place
   (docs/pool.md §7.6).
 - **What's offered** (crate::agent::every): every step to every member except the lead's own
   (`LEAD_ONLY`: catalogs, prune, `bld-fetch`, the OSM pass, GC, backup, input checks, …), the steps
