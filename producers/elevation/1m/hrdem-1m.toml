@@ -1,5 +1,5 @@
 name = "NRCan HRDEM, 1 m lidar mosaic"
-label = "NRCan HRDEM lidar (1 m)"
+label = "NRCan HRDEM lidar (1–2 m)"
 what = "Road elevation and the 3D terrain, eastern Canada"
 credit = "Natural Resources Canada: High Resolution Digital Elevation Model (HRDEM), lidar mosaic"
 licence = "OGL-Canada-2.0"
