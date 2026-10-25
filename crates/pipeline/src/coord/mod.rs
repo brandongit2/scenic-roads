@@ -1271,6 +1271,7 @@ impl Coordinator {
             sched: sched::Sched {
                 leases,
                 offers: Vec::new(),
+                offered: Default::default(),
                 done: BTreeMap::new(),
                 failed: BTreeMap::new(),
                 workers: BTreeMap::new(),
@@ -1291,6 +1292,7 @@ impl Coordinator {
                 quiet_since: Default::default(),
                 last: BTreeMap::new(),
                 measured_steps: Default::default(),
+                measured_of: Default::default(),
             },
             pass: String::new(),
             resume: None,
@@ -1589,7 +1591,7 @@ impl Coordinator {
             .filter(|((st, t), k)| planned.get(&(st.as_str(), t.as_str())) == Some(&k.as_str()))
             .collect();
         s.pass = pass.to_string();
-        s.offers = offers.into_iter().filter(|o| !o.targets.is_empty()).collect();
+        s.set_offers(offers.into_iter().filter(|o| !o.targets.is_empty()).collect());
         let steps: BTreeSet<String> = s.offers.iter().map(|o| o.step.clone()).collect();
         s.last.retain(|(_, st), _| steps.contains(st));
     }
@@ -1640,7 +1642,7 @@ impl Coordinator {
         if st == step {
             return None;
         }
-        let (w, _) = sched::Sched::job_nas(&nw, step, targets);
+        let (w, _) = sched::Sched::job_nas(&nw, step, targets.iter().map(String::as_str));
         let whole = crate::budget::nas::WHOLE;
         (w > 0 && running.saturating_add(rw) > whole && running.saturating_sub(w).saturating_add(rw) <= whole).then(
             || {
@@ -1737,7 +1739,7 @@ impl Coordinator {
         let mut out: BTreeMap<String, u32> = BTreeMap::new();
         for lease in s.leases.all(now) {
             if let Work::Job { step, targets } = &lease.work {
-                let (w, _) = sched::Sched::job_nas(&nw, step, &targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>());
+                let (w, _) = sched::Sched::job_nas(&nw, step, targets.iter().map(|t| t.0.as_str()));
                 let e = out.entry(lease.worker.clone()).or_default();
                 *e = e.saturating_add(w);
             }
@@ -1754,7 +1756,7 @@ impl Coordinator {
         let mut out: BTreeMap<String, u32> = BTreeMap::new();
         for lease in s.leases.all(now) {
             if let Work::Job { step, targets } = &lease.work {
-                let (w, _) = sched::Sched::job_nas(&nw, step, &targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>());
+                let (w, _) = sched::Sched::job_nas(&nw, step, targets.iter().map(|t| t.0.as_str()));
                 let e = out.entry(step.clone()).or_default();
                 *e = (*e).max(w);
             }
@@ -2044,8 +2046,8 @@ impl Coordinator {
     /// another step's guess); None when nothing of its step was measured and it isn't offered.
     pub fn peak(&self, step: &str, target: &str) -> Option<u64> {
         let s = self.shared.lock().unwrap();
-        match s.offers.iter().filter(|o| o.step == step).find_map(|o| o.targets.iter().find(|t| t.0 == target)) {
-            Some(t) => Some(s.peak_of(step, target, t.2, 0)),
+        match s.offered_size(step, target) {
+            Some(size) => Some(s.peak_of(step, target, size, 0)),
             None => {
                 let (mb, from) = s.book().mem(step, target, 0, 0);
                 (from != crate::needs::From::Table).then_some(mb)
@@ -2404,7 +2406,7 @@ impl Coordinator {
         // (Its term's state no longer its to write: the new lead's, `keep`.)
         s.keep.off();
         s.pass.clear();
-        s.offers.clear();
+        s.set_offers(Vec::new());
         s.resume = None;
         s.moving = None;
         s.told = None;

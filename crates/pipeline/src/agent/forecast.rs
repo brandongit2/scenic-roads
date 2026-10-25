@@ -1581,7 +1581,15 @@ fn offers(items: &[Item], order: &[Vec<usize>], ask: &Ask) -> Vec<Offer> {
                 _ => it.cost.peak_mb,
             };
             let target = (it.target.clone(), KEY.to_string(), size);
-            if !super::every::offered(&it.step) {
+            let offered = match last {
+                Some((st, o)) if st == it.step => o,
+                _ => {
+                    let o = super::every::offered(&it.step);
+                    last = Some((&it.step, o));
+                    o
+                }
+            };
+            if !offered {
                 out.push(Offer {
                     step: it.step.clone(),
                     job: Some(format!("{} {}", it.step, it.target)),

@@ -187,7 +187,13 @@ pub struct Cache(
     Mutex<(u64, BTreeMap<(String, Measure), Model>)>,
     Mutex<(u64, BTreeMap<String, Option<u32>>)>,
     Mutex<(u64, BTreeMap<String, Option<crate::budget::nas::Rate>>)>,
+    /// Each target's `Book::nas` (step → target → it): the NAS budget weighs each target offered
+    /// and leased for every ask.
+    Mutex<(u64, Rates)>,
 );
+
+/// `Cache`'s targets' NAS rates: step → target → `Book::nas`.
+type Rates = std::collections::HashMap<String, std::collections::HashMap<String, Option<crate::budget::nas::Rate>>>;
 
 /// The measures needs are read from: what each target cost (crate::coord::Cost), and, where kept,
 /// the floors (crate::agent::memguard) and disk floors (MB, by cost key); the models made from them
@@ -618,7 +624,29 @@ impl<'a> Book<'a> {
     /// percentile of each over its runs the way it runs now; None when none of them was measured.
     /// What crate::budget::nas weighs it by.
     pub fn nas(&self, step: &str, target: &str) -> Option<crate::budget::nas::Rate> {
-        self.nas_own(step, target).or_else(|| self.nas_prior(step))
+        let CacheRef::Kept(cache) = &self.cache else {
+            return self.nas_own(step, target).or_else(|| self.nas_prior(step));
+        };
+        {
+            let mut g = cache.3.lock().unwrap_or_else(|e| e.into_inner());
+            if g.0 != self.rev {
+                *g = (self.rev, Rates::new());
+            }
+            if let Some(&r) = g.1.get(step).and_then(|t| t.get(target)) {
+                return r;
+            }
+        }
+        // (Worked out unlocked: `nas_prior` takes its own lock.)
+        let r = self.nas_own(step, target).or_else(|| self.nas_prior(step));
+        cache
+            .3
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .1
+            .entry(step.to_string())
+            .or_default()
+            .insert(target.to_string(), r);
+        r
     }
 
     /// `nas`'s own run's rate alone.
@@ -634,7 +662,12 @@ impl<'a> Book<'a> {
         if g.0 != self.rev {
             *g = (self.rev, BTreeMap::new());
         }
-        *g.1.entry(step.to_string()).or_insert_with(|| self.nas_p90(step))
+        if let Some(&r) = g.1.get(step) {
+            return r;
+        }
+        let r = self.nas_p90(step);
+        g.1.insert(step.to_string(), r);
+        r
     }
 
     /// `nas_prior` worked out: its step's runs' 90th percentile of each rate.

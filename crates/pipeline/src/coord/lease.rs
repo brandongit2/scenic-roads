@@ -235,7 +235,7 @@ impl Leases {
         true
     }
 
-    fn live(&self, now: Instant) -> impl Iterator<Item = &Lease> {
+    pub fn live(&self, now: Instant) -> impl Iterator<Item = &Lease> {
         self.by_id.values().filter(move |l| l.deadline > now)
     }
 

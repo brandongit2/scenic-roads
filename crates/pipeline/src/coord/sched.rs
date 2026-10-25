@@ -53,8 +53,11 @@ pub struct Pick {
 pub struct Sched {
     pub leases: Leases,
     /// The plan's work a worker that mounts the NAS may do, a step at a time in plan order, and the
-    /// lead's own planned jobs (`Offer::job`).
+    /// lead's own planned jobs (`Offer::job`). Set through `set_offers`, which keeps `offered`.
     pub offers: Vec<Offer>,
+    /// Each step's offered targets, the size each was first offered with (`offers` indexed: the
+    /// placement looks up every target it weighs, and a worldwide pass offers tens of thousands).
+    pub offered: std::collections::HashMap<String, std::collections::HashMap<String, u64>>,
     /// Work done (journaled, or recorded by this Mac's job), (step, target) → key, under a key the
     /// plan hasn't shown yet: not offered again meanwhile.
     pub done: BTreeMap<(String, String), String>,
@@ -122,7 +125,13 @@ pub struct Sched {
     pub last: BTreeMap<(String, String), String>,
     /// The steps with a measure of any kind, as the measures stood (`never_measured`).
     pub measured_steps: Mutex<(u64, BTreeSet<String>)>,
+    /// Each target's `measured` (step → target → it), as the measures stood (`rev`) and as offered
+    /// (`set_offers` clears it): a placement weighs each target it may grant for every ask.
+    pub measured_of: Mutex<(u64, Measures)>,
 }
+
+/// `Sched::measured_of`'s targets' measures: step → target → `Sched::measures`.
+pub type Measures = std::collections::HashMap<String, std::collections::HashMap<String, (u64, Option<Measured>)>>;
 
 /// The NAS budget's weights for one placement (`Shared::nas_room`): the limits and one Book (its
 /// steps' 90th percentiles kept with its models: crate::needs::Book::nas_prior).
@@ -286,11 +295,35 @@ impl Sched {
     /// The first guess of offered `target` of `step` (`first_guess` by the size it was offered
     /// with), 0 when it isn't offered.
     pub(super) fn offered_guess(&self, step: &str, target: &str) -> u64 {
-        self.offers
-            .iter()
-            .filter(|o| o.step == step)
-            .find_map(|o| o.targets.iter().find(|t| t.0 == target))
-            .map_or(0, |t| first_guess(&self.costs, step, target, t.2))
+        self.offered_size(step, target).map_or(0, |size| first_guess(&self.costs, step, target, size))
+    }
+
+    /// The size `target` of `step` was first offered with; None when it isn't offered.
+    pub(super) fn offered_size(&self, step: &str, target: &str) -> Option<u64> {
+        self.offered.get(step)?.get(target).copied()
+    }
+
+    /// Whether `worker` failed any target (`failed`): its first in the map's order, by worker.
+    fn failed_any(&self, worker: &str) -> bool {
+        self.failed.range((worker.to_string(), String::new())..).next().is_some_and(|((w, _), _)| w == worker)
+    }
+
+    /// Whether any target of `step` is done (`done`): its first in the map's order, by step.
+    fn done_any(&self, step: &str) -> bool {
+        self.done.range((step.to_string(), String::new())..).next().is_some_and(|((s, _), _)| s == step)
+    }
+
+    /// The plan's offers, and their index (`offered`).
+    pub(super) fn set_offers(&mut self, offers: Vec<Offer>) {
+        self.offers = offers;
+        self.offered.clear();
+        self.measured_of.lock().unwrap_or_else(|e| e.into_inner()).1.clear();
+        for o in &self.offers {
+            let of = self.offered.entry(o.step.clone()).or_default();
+            for t in &o.targets {
+                of.entry(t.0.clone()).or_insert(t.2);
+            }
+        }
     }
 
     /// `Coordinator::measured`, under its lock: its step's model's (crate::needs) memory and disk (a
@@ -298,13 +331,29 @@ impl Sched {
     /// offered with); None while nothing of its step was measured. Floors of an older way of the
     /// step count for nothing (crate::needs).
     pub(super) fn measured(&self, step: &str, target: &str) -> Option<Measured> {
+        self.measures(step, target).1
+    }
+
+    /// `target` of `step`'s memory by the book (a step never measured: its first guess, `lease_mem`)
+    /// and `measured`; kept while the measures stand (`measured_of`).
+    fn measures(&self, step: &str, target: &str) -> (u64, Option<Measured>) {
+        let rev = self.rev();
+        let mut g = self.measured_of.lock().unwrap_or_else(|e| e.into_inner());
+        if g.0 != rev {
+            *g = (rev, Measures::new());
+        }
+        if let Some(&m) = g.1.get(step).and_then(|t| t.get(target)) {
+            return m;
+        }
         let b = self.book();
         let (mem_mb, from) = b.mem(step, target, 0, self.offered_guess(step, target));
-        (from != crate::needs::From::Table).then(|| Measured {
+        let m = (from != crate::needs::From::Table).then(|| Measured {
             mem_mb,
             disk_mb: b.disk(step, target, 0).unwrap_or(0),
             own: from == crate::needs::From::Measured,
-        })
+        });
+        g.1.entry(step.to_string()).or_default().insert(target.to_string(), (mem_mb, m));
+        (mem_mb, m)
     }
 
     /// How long `target` of `step` is measured to take `worker` (s): its own run's (`job_secs`), else
@@ -316,7 +365,7 @@ impl Sched {
 
     /// `worker`'s live jobs' leases.
     pub(super) fn job_leases(&self, worker: &str, now: Instant) -> Vec<Lease> {
-        self.leases.all(now).into_iter().filter(|l| l.worker == worker && matches!(l.work, Work::Job { .. })).collect()
+        self.leases.live(now).filter(|l| l.worker == worker && matches!(l.work, Work::Job { .. })).cloned().collect()
     }
 
     /// A job of `step` over `targets`: its NAS weight under `l` (its heaviest target's,
@@ -324,13 +373,9 @@ impl Sched {
     /// step's), and whether it
     /// downloads (its step's kind a fetch, crate::agent::steps::Kind::Fetch).
     /// (`nw` keeps the Book and the steps' percentiles for one placement: `NasWeigher`.)
-    pub(super) fn job_nas(nw: &NasWeigher, step: &str, targets: &[String]) -> (u32, bool) {
+    pub(super) fn job_nas<'t>(nw: &NasWeigher, step: &str, targets: impl IntoIterator<Item = &'t str>) -> (u32, bool) {
         // (A job of no targets of its own, the clean-up's lease: its step's measured weight, task #451.)
-        let w = if targets.is_empty() {
-            nw.weight(step, "")
-        } else {
-            targets.iter().map(|t| nw.weight(step, t)).max().unwrap_or(0)
-        };
+        let w = targets.into_iter().map(|t| nw.weight(step, t)).max().unwrap_or_else(|| nw.weight(step, ""));
         (w, crate::agent::steps::row(step).is_some_and(|r| r.kind == crate::agent::steps::Kind::Fetch))
     }
 
@@ -354,12 +399,12 @@ impl Sched {
         // them either, only by its own (task #440: else a member's unheld jobs keep the lead idle).)
         let members_held = self.nas.is_some();
         let (mut w, mut members, mut dl, mut most) = (0u32, 0u32, 0usize, [0u32; 2]);
-        for lease in self.leases.all(now) {
+        for lease in self.leases.live(now) {
             if !members_held && lease.worker != self.lead_name {
                 continue;
             }
             if let Work::Job { step, targets } = &lease.work {
-                let (jw, d) = Self::job_nas(&nw, step, &targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>());
+                let (jw, d) = Self::job_nas(&nw, step, targets.iter().map(|t| t.0.as_str()));
                 w = w.saturating_add(jw);
                 most[0] = most[0].max(jw);
                 if lease.worker != self.lead_name {
@@ -847,7 +892,7 @@ impl Sched {
                 .collect();
             if !aged.is_empty() {
                 if let Some((nw, ..)) = self.nas_room(clock.now, true) {
-                    let w = Self::job_nas(&nw, &o.step, &ts).0;
+                    let w = Self::job_nas(&nw, &o.step, ts.iter().map(String::as_str)).0;
                     for t in aged.into_iter().filter(|t| nw.weight(&o.step, t) <= w) {
                         if let Some(e) = g.get_mut(&(o.step.clone(), t)) {
                             e.0 = clock.now;
@@ -936,7 +981,7 @@ impl Sched {
         }
         .is_some_and(|since| now.duration_since(since) >= crate::budget::nas::OWN_AGE);
         self.nas_room_heaviest(now, true).is_none_or(|(nw, running, members, dl, most)| {
-            let (w, fetch) = Self::job_nas(&nw, &o.step, &ts);
+            let (w, fetch) = Self::job_nas(&nw, &o.step, ts.iter().map(String::as_str));
             let (running, heaviest) = if alone { (members, most[1]) } else { (running, most[0]) };
             if fetch && nw.limits.downloads.is_some_and(|c| dl >= c) {
                 return false;
@@ -1004,12 +1049,16 @@ impl Sched {
     /// pool at a time.
     pub(super) fn pick_every(&self, o: &Offer, a: &Ask, now: Instant) -> Vec<(String, String)> {
         let held = self.leases.held(&o.step, now);
+        // (Each target's look-ups only where the worker failed any or the step has any done.)
+        let (any_failed, any_done) = (self.failed_any(&a.worker), self.done_any(&o.step));
         let open = |t: &str, k: &str| {
-            let backoff = self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))).is_some_and(|(at, n)| {
-                now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5))
-            });
+            let backoff = any_failed
+                && self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))).is_some_and(|(at, n)| {
+                    now.duration_since(*at)
+                        < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5))
+                });
             !held.contains(t)
-                && self.done.get(&(o.step.clone(), t.to_string())).map(String::as_str) != Some(k)
+                && !(any_done && self.done.get(&(o.step.clone(), t.to_string())).map(String::as_str) == Some(k))
                 && !backoff
         };
         let job_disk = self.job_floor(&o.step);
@@ -1019,7 +1068,7 @@ impl Sched {
         let lead = a.worker == self.lead_name;
         let nas = self.nas_room_heaviest(now, lead);
         let downloads_full = nas.as_ref().is_some_and(|(nw, _, _, dl, _)| {
-            nw.limits.downloads.is_some_and(|c| *dl >= c) && Self::job_nas(nw, &o.step, &[]).1
+            nw.limits.downloads.is_some_and(|c| *dl >= c) && Self::job_nas(nw, &o.step, []).1
         });
         if downloads_full {
             return Vec::new();
@@ -1119,12 +1168,14 @@ impl Sched {
         held: &BTreeSet<String>,
         now: Instant,
     ) -> bool {
-        let backoff = self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))).is_some_and(|(at, n)| {
-            now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5))
-        });
+        let backoff = self.failed_any(&a.worker)
+            && self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))).is_some_and(|(at, n)| {
+                now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5))
+            });
         let job_disk = self.job_floor(&o.step);
         !held.contains(t)
-            && self.done.get(&(o.step.clone(), t.to_string())).map(String::as_str) != Some(k)
+            && !(self.done_any(&o.step)
+                && self.done.get(&(o.step.clone(), t.to_string())).map(String::as_str) == Some(k))
             && !backoff
             && m.mem_mb <= a.mem_mb
             && a.disk_mb.is_none_or(|d| m.disk_mb.max(job_disk) <= d)
@@ -1233,8 +1284,7 @@ impl Sched {
     /// (a step never measured: its table's or the offer's guess, not 0).
     pub(super) fn lease_mem(&self, l: &Lease) -> u64 {
         let Work::Job { step, targets } = &l.work else { return 0 };
-        let b = self.book();
-        targets.iter().map(|t| b.mem(step, &t.0, 0, self.offered_guess(step, &t.0)).0).max().unwrap_or(0)
+        targets.iter().map(|t| self.measures(step, &t.0).0).max().unwrap_or(0)
     }
 
     /// Whether worker `n`, by its last ask `x` (made at `asked`), would take a target measured `m`
@@ -1427,9 +1477,10 @@ impl Sched {
                 )
             })
             .collect();
-        Sched {
+        let mut sched = Sched {
             leases,
-            offers: s.offers.clone(),
+            offers: Vec::new(),
+            offered: Default::default(),
             done: s.done.iter().map(|(st, t, k)| ((st.clone(), t.clone()), k.clone())).collect(),
             failed: s.failed.iter().map(|(w, k, a, n)| ((w.clone(), k.clone()), (ago(now, *a), *n))).collect(),
             workers,
@@ -1455,7 +1506,10 @@ impl Sched {
             quiet_since: Mutex::new(s.quiet_since.iter().map(|(st, a)| (st.clone(), ago(now, *a))).collect()),
             last: s.last.iter().map(|(w, st, t)| ((w.clone(), st.clone()), t.clone())).collect(),
             measured_steps: Default::default(),
-        }
+            measured_of: Default::default(),
+        };
+        sched.set_offers(s.offers.clone());
+        sched
     }
 
     /// The members in `idle` (name, slots free now, the memory its Mac has with no job of the pool
