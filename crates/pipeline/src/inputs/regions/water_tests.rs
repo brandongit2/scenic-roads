@@ -421,6 +421,16 @@ fn the_coast_is_the_coastlines_land() {
     g.shapes.retain(|s| !s.water);
     let land = area_of(&g);
     assert!(land.contains([e7(0.6), e7(1.001)]) && !land.contains([e7(0.6), e7(1.003)]));
+    // Its sea: water parts stopping short of the coast (a notch of about 24 km² at the land's
+    // east edge) reach it; a notch off the coast stays out.
+    let s = "id = \"s\"\nname = \"S\"\noutline = [\"osm:4\"]\n\
+             water = [{ minus = [\"box:19.0,19.0,22.0,22.0\", \"box:21.0,20.4,21.02,20.5\", \"box:21.5,20.4,21.52,20.5\"] }]\n";
+    let out = run(&w, &[PINS, ("s.toml", s)]);
+    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    let mut g = out.resolved["s"].geometry.clone();
+    g.shapes.retain(|s| s.water);
+    let water = area_of(&g);
+    assert!(water.contains([e7(21.01), e7(20.45)]) && !water.contains([e7(21.51), e7(20.45)]));
 }
 
 /// The new rules leave regions without water as they resolve alone: the cover's fills and a

@@ -473,21 +473,21 @@ cross itself.
 **Land and water.** A region with a `water` key is resolved in two steps, cell by cell (crate::inputs::
 regions::tiles; §6.1.4). First its land: its outline exact (no coast tolerance), cut back to the coastline's land
 (the `regions-land` source) less the lakes over 100 km² (`regions-lakes`); those lakes inside its
-outline are its water, unless another region's water names them. Then one coastline: where an
-outline's coast lies inland of the coastline's, the land between is in no outline; each piece of
-it (its cells' pieces joined across the cells' edges) up to `sliver_km2` goes to the region whose
-land shares the longest edge with it, if that region has `water` (with or without `cover`; a
-`land:` part names the land before this). So a region's coast is the coastline's, as its water's
-is. Then its water: the `water` parts,
+outline are its water, unless another region's water names them. Then its water: the `water` parts,
 less the coastline's land and every region without `water` (the land dominates the sea), in an
-order where a region comes after those its water names whole (`region:`, `group:`). A region's
+order where a region comes after those its water names whole (`region:`, `group:`). Then one
+coastline, with or without `cover`: what lies in no region along the coastline, on either side of
+it — land where an outline's coast lay inland of the coastline's, sea where the water's parts
+stopped short of it — is the coast's. Each side's pieces touching the coastline, joined across the
+cells' edges, up to `sliver_km2` go to the region sharing the longest edge with them (a piece of
+land by its land, a piece of sea by its water and lakes), if it has `water`; so a region's land and
+water meet on the coastline's coast (a `land:` part names the land before this). A region's
 `hand_out` folder then takes each stretch (a connected piece) of its water that one of its regions
 alone borders, and a stretch under `sliver_km2` goes to the one sharing its longest edge. With
 `cover = "earth"` in `_rules.toml`, then: a region's piece of water under `sliver_km2` touching
 none of its land joins the region with water it shares the longest edge with; and, cell by cell
-(2°), land in two regions is taken from those of them with water. Then each piece in no region
-(its cells' pieces joined across the cells' edges, as the stretches are) within 100 m of land
-(land in no outline, the sea between the zones' coastline and OSM's) up to `sliver_km2` joins the
+(2°), land in two regions is taken from those of them with water. Then each piece still in no region
+(its cells' pieces joined across the cells' edges, as the stretches are) within 100 m of land up to `sliver_km2` joins the
 region with water it shares the longest edge with; a piece touching none stays. Land in no region
 over `sliver_km2` is an error (`rg-cover`), found at a point inside its largest part of land and
 naming the regions that had any of it both (taken from both). The region whose water is
