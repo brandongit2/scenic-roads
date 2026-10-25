@@ -21,6 +21,7 @@ case $#:${1:-} in
   *) print -ru2 -- "publish.sh: unexpected arguments: $*"$'\n'"$usage"; exit 2 ;;
 esac
 cd ${0:A:h}/../..
+source tools/app/lib.zsh
 # Its tools found without a login shell's profile (over ssh, `ssh m6 '…/publish.sh'`, the PATH is the
 # system's): brew's mise and rustup's cargo; the rest come from mise.toml through `mise env` below.
 path=(/opt/homebrew/bin ~/.cargo/bin $path)
@@ -37,19 +38,18 @@ cleanup=()
 # FAILED, nothing published (exit N)" with N non-zero, whatever stopped it. (A wrapper's own exit
 # status, e.g. `publish.sh > log; grep … log`, is the wrapper's last command's: read this line or
 # publish.sh's own status.)
+# (tools/app/lib.zsh's at_end: zsh runs no EXIT trap when errexit stops it inside a function.)
 published=
 on_exit() {
-  local rc=$?
+  local rc=$? c
   for c in $cleanup; do eval $c; done
   if [[ -z $published && ${rollback:-} != done ]]; then
     (( rc == 0 )) && rc=1
     echo "publish: FAILED, nothing published (exit $rc)"
   fi
-  exit $rc
+  return $rc
 }
-trap on_exit EXIT
-# (Ctrl-C or a kill leaves through EXIT too, so the lock is freed.)
-trap 'exit 130' INT TERM HUP
+at_end on_exit
 who="$(scutil --get LocalHostName 2>/dev/null || hostname -s) $$ $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 if ! ( set -o noclobber; print -r -- "$who" > $lock ) 2>/dev/null; then
   held=$(cat $lock 2>/dev/null)
@@ -62,7 +62,7 @@ if ! ( set -o noclobber; print -r -- "$who" > $lock ) 2>/dev/null; then
   # (moving the stale one first) is put back and left to it.
   mv $lock $lock.stale-$$ 2>/dev/null || { echo "another publish took $lock just now"; exit 1; }
   if [[ $(cat $lock.stale-$$ 2>/dev/null) != $held ]]; then
-    ( set -o noclobber; cat $lock.stale-$$ > $lock ) 2>/dev/null
+    ( set -o noclobber; cat $lock.stale-$$ > $lock ) 2>/dev/null || true  # (one made meanwhile kept)
     rm -f $lock.stale-$$
     echo "another publish took $lock just now"; exit 1
   fi
@@ -187,29 +187,8 @@ fi
 zsh tools/app/wasm.sh >/dev/null || { echo "WebAssembly build failed"; exit 1; }
 # The build folder kept small (task #660): cargo never deletes what it built, so each change of the
 # dependencies or a profile left every workspace crate's old build behind (the mini's target/ grew
-# by ~35 GB a day, to 127 GB). Of each profile's deps/, build/, incremental/ and .fingerprint/, an
-# entry not read nor written for 2 days goes (by the newest access of any file in it: macOS
-# updates a file's access time when it is read, at most once a day): what these builds use is read
-# at each publish, so only an entry a later publish needs again is built again.
-prune_target() {
-  local p e stale=() kb
-  # (target/<profile>, and target/<triple>/<profile> of the WebAssembly builds: each once.)
-  for p in target/*/(N/) target/*-*/release(N/); do
-    # (Files only: a folder's access time changes when it is listed, by this sweep too. `|| true`: a
-    # profile without deps/, target/tmp, makes find fail, which under errexit ended the publish.)
-    stale+=(${(f)"$(find $p/deps -mindepth 1 -maxdepth 1 -type f ! -newerat '2 days ago' ! -newermt '2 days ago' 2>/dev/null || true)"})
-    for e in $p/{build,incremental,.fingerprint}/*(ND/); do
-      # (`if`, not `&&`: under errexit a false test as a loop's last command ended the publish silently.)
-      if [[ -z $(find $e -type f \( -newerat '2 days ago' -o -newermt '2 days ago' \) -print -quit 2>/dev/null || true) ]]; then stale+=($e); fi
-    done
-  done
-  kb=0
-  if (( $#stale )); then
-    kb=$(print -rN -- $stale | xargs -0 du -sk 2>/dev/null | awk '{s+=$1} END {print s+0}')
-    print -rN -- $stale | xargs -0 rm -rf
-  fi
-  print -r -- "build folder: $(( kb / 1024 )) MB of old builds removed, $(du -sh target 2>/dev/null | cut -f1) left"
-}
+# by ~35 GB a day, to 127 GB). What these builds use is read at each publish, so only an entry a
+# later publish needs again is built again (tools/app/lib.zsh's prune_target).
 prune_target
 # Built into its own folder: web/dist may be what a development server is serving. (The type check
 # writes and checks our MapLibre's declarations, then the app's; the build compiles its source with
