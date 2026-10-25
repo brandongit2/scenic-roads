@@ -10,7 +10,8 @@
 # `<crate>::<mod>`, the parent naming `<leaf>::`, a child using `super::`); the integration tests
 # under crates/<crate>/tests/ that name it, or that changed. Modules without tests are left out.
 # Lines starting with # explain; the others are the commands. No command for doc-only or non-Rust
-# changes. tools/dev/test-guard.sh holds agents' cargo test to this set.
+# changes. A `#[path]` module's file maps to its declared module (dem/generic_tests.rs → dem::generic::tests).
+# tools/dev/test-guard.sh holds agents' cargo test to this set.
 usage="usage: tools/dev/affected-tests.sh [<commit> | <a>..<b>]"
 case $#:${1:-} in
   1:-h|1:--help) print -r -- $usage; exit 0 ;;
@@ -59,6 +60,18 @@ def target_of(f):
     parts = rel.removesuffix(".rs").split("/")
     if parts[-1] == "mod": parts = parts[:-1]
     tgt = "--lib" if has_lib(c) else "--bin " + c
+    # A file a sibling declares with `#[path = "<file>"] mod <name>;` (dem/generic.rs declaring
+    # generic_tests.rs as `tests`) is that sibling's module <name>: dem::generic::tests.
+    d, name = os.path.split(f)
+    pat = re.compile(r'#\[path\s*=\s*"%s"\]\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;' % re.escape(name))
+    for s in sorted(os.listdir(d)):
+        sp = os.path.join(d, s)
+        if s == name or not s.endswith(".rs"): continue
+        m = pat.search(read(sp))
+        if m:
+            owner = target_of(sp)
+            if owner and owner[2] is not None:
+                return (c, tgt, (owner[2] + "::" if owner[2] else "") + m.group(1))
     return (c, tgt, "" if parts in ([], ["lib"], ["main"]) else "::".join(parts))
 def mod_file(c, path):
     if not path: return root_file(c)
