@@ -7482,6 +7482,14 @@ impl Agent {
                 why: format!("the regions' z6 tiles wait: {why}"),
             });
         }
+        // The peaks held for the world's z8 terrain (the pool's terrain-z8, still to be made): said.
+        if manifest.contains_key(&format!("work/summits/{date}")) && !build::z8_built(&manifest, &inputs) {
+            waiting.push(Waiting {
+                step: Some("peaks".into()),
+                what: steps::title("peaks").into(),
+                why: build::PEAKS_Z8_WAIT.into(),
+            });
+        }
         // Z6 tiles whose terrain can't be worked out now (a pack's index unread): they wait for it.
         // Or the declared elevation datasets: before their switch (docs/inputs.md §6.8), or while
         // their accepted version can't be read.

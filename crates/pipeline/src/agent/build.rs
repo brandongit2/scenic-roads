@@ -951,6 +951,18 @@ pub fn summits_work(date: &str, m: &BTreeMap<String, String>, done: &Keys, pool:
         .then(|| Work { step: "summits".into(), targets: vec![("summits".into(), k)] })
 }
 
+/// Whether the world's z8 terrain the peaks and summits read (the pool's, `inputs`
+/// crate::terrain_z8::INPUT) is built: both its logical names in `m`. Until then the peaks wait
+/// (they'd fail on it), whatever `summits_work` says (None too while it's missing).
+pub fn z8_built(m: &BTreeMap<String, String>, inputs: &BTreeMap<String, String>) -> bool {
+    inputs.get(crate::terrain_z8::INPUT).is_some_and(|p| {
+        m.contains_key(&crate::terrain_z8::logical(p)) && m.contains_key(&crate::terrain_z8::max_logical(p))
+    })
+}
+
+/// The status's line for peaks held by `z8_built`.
+pub const PEAKS_Z8_WAIT: &str = "waits for the world's z8 terrain (terrain-z8)";
+
 /// The peaks' version (crate::peaks::unit).
 pub const PEAKS_V: u32 = 1;
 
@@ -3603,8 +3615,8 @@ fn landmarks_chain(
     if !stale_pois.is_empty() {
         return Some(Work { step: "pois".into(), targets: stale_pois });
     }
-    // Their peaks (once the pass's summits exist).
-    if !m.contains_key(&format!("work/summits/{date}")) {
+    // Their peaks (once the pass's summits and the world's z8 terrain exist).
+    if !m.contains_key(&format!("work/summits/{date}")) || !z8_built(m, inputs) {
         return None;
     }
     let stale_peaks: Vec<(String, String)> =
@@ -3646,7 +3658,7 @@ fn landmarks_chain(
 /// as not built: what read it would be built twice), none waiting for the z6 tiles but the overlays
 /// (they read the built z6 tiles: after the last, `last`): the candidates (once the pass's
 /// hiking-route ends are made); their peaks once every candidate is, the pass's summits are made
-/// and the terrain they read is built (`terrain_left`), each z6 tile's as its own is; the items' facts
+/// and the terrain they read is built (the world's z8, `z8_built`, and `terrain_left`), each z6 tile's as its own is; the items' facts
 /// and pageviews once every candidate is; the rest of the heritage chain once the heritage sites
 /// are; the landmark points once those four are (on the pass's heritage, never today's meanwhile);
 /// then the overlays. They don't wait for each other otherwise: the heritage chain (an hour and
@@ -3683,6 +3695,7 @@ fn landmarks_work(
     }
     if pois_built
         && m.contains_key(&format!("work/summits/{date}"))
+        && z8_built(m, inputs)
         && summits_work(date, m, done, inputs.get(crate::terrain_z8::INPUT).map(String::as_str)).is_none()
     {
         let stale_peaks: Vec<(TileId, String)> =
@@ -3751,6 +3764,7 @@ fn marks_ready(
         && units.iter().all(|(u, k)| !stale(&done.pois, &u.slash(), k));
     let peaks_built = pois_built
         && m.contains_key(&format!("work/summits/{date}"))
+        && z8_built(m, inputs)
         && summits_work(date, m, done, inputs.get(crate::terrain_z8::INPUT).map(String::as_str)).is_none()
         && peaks_keys(cov, date, m, inputs.get(crate::terrain_z8::INPUT).map_or("-", String::as_str))
             .iter()
@@ -7710,7 +7724,16 @@ pub(crate) mod tests {
         m.insert("work/pois/6-28-16".into(), "work/pois/6-28-16.9999999999999999.json".into());
         assert_eq!(steps(&plan(&c, "d", &m, &done, &BTreeMap::new())), vec!["items"]);
         m.insert("work/summits/d".into(), "work/summits/d.aaaaaaaaaaaaaaaa.bin".into());
-        assert_eq!(steps(&plan(&c, "d", &m, &done, &BTreeMap::new())), vec!["peaks", "items"]);
+        // Nor while the world's z8 terrain they read isn't built (#655: they'd fail on it).
+        let ins: BTreeMap<String, String> = [(crate::terrain_z8::INPUT.to_string(), "p".to_string())].into();
+        assert_eq!(steps(&plan(&c, "d", &m, &done, &ins)), vec!["items"]);
+        assert!(!z8_built(&m, &ins));
+        assert_eq!(steps(&plan(&c, "d", &m, &done, &BTreeMap::new())), vec!["items"]);
+        for l in [crate::terrain_z8::logical("p"), crate::terrain_z8::max_logical("p")] {
+            m.insert(l.clone(), format!("{l}.1111111111111111.bin"));
+        }
+        // Built: offered.
+        assert_eq!(steps(&plan(&c, "d", &m, &done, &ins)), vec!["peaks", "items"]);
     }
 
     #[test]

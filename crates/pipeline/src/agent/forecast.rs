@@ -717,7 +717,7 @@ enum Phase {
 }
 
 /// What a chain's step waits for (crate::agent::build::landmarks_work): the candidates for the
-/// pass's hiking-route ends; the peaks for every candidate, the pass's summits and the terrain; the
+/// pass's hiking-route ends; the peaks for every candidate, the pass's summits, the world's z8 terrain and the terrain; the
 /// items' facts for every candidate; the rest of the heritage chain for the heritage sites; the
 /// landmark points for those four; trains a day for their feeds; the 3D buildings' tiles for the
 /// normalized files. By step: (the jobs before the
@@ -725,7 +725,7 @@ enum Phase {
 fn chain_deps(step: &str) -> (&'static [&'static str], &'static [&'static str], bool) {
     match step {
         "pois" => (&["trailends"], &[], false),
-        "peaks" => (&["summits"], &["pois"], true),
+        "peaks" => (&["summits", "terrain-z8"], &["pois"], true),
         "items" => (&[], &["pois"], false),
         "heritage" => (&["heritage-sites"], &[], false),
         "marks" => (&[], &["pois", "peaks", "items", "heritage"], false),
