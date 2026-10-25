@@ -69,6 +69,7 @@ const EXEMPT: &[(&str, &str, &str)] = &[
     ("crates/pipeline/src/bin/scenic-build.rs", "terrain_step", "the terrain job's arguments: RawTiles holds what it reads"),
     ("crates/pipeline/src/bin/scenic-build.rs", "terrain_pieces", "terrain's pieces' arguments: RawTiles holds what it reads"),
     ("crates/pipeline/src/bin/scenic-build.rs", "terrain_lo_step", "terrain's assemblies' arguments: RawTiles holds what it reads"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "terrain_deep_step", "the deep targets' arguments: RawTiles holds what it reads"),
 ];
 
 fn root() -> PathBuf {
