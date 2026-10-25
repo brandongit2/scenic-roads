@@ -40,6 +40,8 @@ ending term 130 'f() { kill -TERM $$; sleep 2; echo no; }; f'
 ending exit-in-function 7 'f() { exit 7; }; f'
 # A failure errexit lets through (a condition, `|| true`) neither ends it nor runs at_end early.
 ending tolerated 0 'f() { false; echo inside; }; f || true; if f; then :; fi; ! false; x=$(false || true); echo fine'
+ending tolerated-lists 0 'f() { false; }; f && echo no; false || :; while f; do :; done; until ! f; do :; done; ! f; g() { f || return 0; }; g; echo fine'
+ending tolerated-then-failed 6 'f() { false; }; if f; then :; fi; f || :; g() { return 6; }; g; echo no'
 
 # found: nothing found where the start folder is missing, without failing under errexit.
 out=$(zsh -euo pipefail -c "source ${(q)lib}; x=\$(found $tmp/missing -type f); print -r -- \"[\$x]\"" 2>&1)
