@@ -5271,7 +5271,7 @@ pub(crate) mod tests {
                 "d",
                 m,
                 done,
-                &spaced(&BTreeMap::new()),
+                &spaced(&[(crate::terrain_z8::INPUT.to_string(), "p".to_string())].into()),
                 Some(reach),
                 &tiles_for(m),
                 Publish {
@@ -7935,6 +7935,10 @@ pub(crate) mod tests {
         unit_inputs(&mut m, "d");
         m.insert("work/trailends/d".into(), "work/trailends/d.8888888888888888.json".into());
         m.insert("work/summits/d".into(), "work/summits/d.aaaaaaaaaaaaaaaa.bin".into());
+        // (And the pool's world z8 the peaks read.)
+        for l in [crate::terrain_z8::logical("p"), crate::terrain_z8::max_logical("p")] {
+            m.insert(l.clone(), format!("{l}.6161616161616161.bin"));
+        }
         let each = c.by_region();
         let plan_with = |m: &BTreeMap<String, String>, done: &Keys, way: Publishing| {
             super::plan(
@@ -7942,7 +7946,7 @@ pub(crate) mod tests {
                 "d",
                 m,
                 done,
-                &spaced(&BTreeMap::new()),
+                &spaced(&[(crate::terrain_z8::INPUT.to_string(), "p".to_string())].into()),
                 Some(&reach),
                 &tiles_for(m),
                 Publish {
@@ -8073,7 +8077,14 @@ pub(crate) mod tests {
         // (Task #529) The checklist sizes them as planned: everything before them built, the
         // points recorded and the overlays not, a run of the overlays left; recorded, none.
         let left = |done: &Keys| {
-            let l = checklist(&c, "d", &m, done, &BTreeMap::new(), false);
+            let l = checklist(
+                &c,
+                "d",
+                &m,
+                done,
+                &spaced(&[(crate::terrain_z8::INPUT.to_string(), "p".to_string())].into()),
+                false,
+            );
             let left = |s: &str| l.iter().flat_map(|x| x.items.iter()).find(|i| i.step == s).unwrap().left;
             (left("marks"), left("overlays"))
         };
