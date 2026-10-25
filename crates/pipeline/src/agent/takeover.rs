@@ -136,18 +136,25 @@ mod tests {
     #[test]
     fn openers_names_who_holds_a_file() {
         // (This process's own descriptor isn't listed: another's is.)
+        // (The child says when it holds the file; the scan is then given a minute, not 5 s: on a
+        // loaded test Mac one look at every process's descriptors can take seconds.)
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("held");
+        let ready = d.path().join("ready");
         std::fs::write(&f, b"").unwrap();
         let mut c = store::spawn::spawn(store::spawn::command("/bin/sh").args([
             "-c",
-            "exec 3<\"$0\"; sleep 30",
+            "exec 3<\"$0\"; : >\"$1\"; sleep 120",
             f.to_str().unwrap(),
+            ready.to_str().unwrap(),
         ]))
         .unwrap();
         let t = Instant::now();
+        while !ready.exists() && t.elapsed() < Duration::from_secs(60) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         let mut seen = false;
-        while t.elapsed() < Duration::from_secs(5) && !seen {
+        while t.elapsed() < Duration::from_secs(60) && !seen {
             seen = crate::sys::openers(&f).contains(&(c.id() as i32));
             std::thread::sleep(Duration::from_millis(50));
         }
