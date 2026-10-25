@@ -409,7 +409,8 @@ export function poiLabelLayer(key: string): LayerSpecification {
         : twoLine(mainOf()),
       'text-font': ['Noto Sans Regular'],
       'text-size': 10.5,
-      'text-offset': [0, 1.1],
+      // Below the icon at its largest prominence (× 1.25) and its halo, as it grows with zoom.
+      'text-offset': ['interpolate', ['linear'], ['zoom'], ...POI_ICON_R.flatMap(([z, r]) => [z, ['literal', [0, (r * 1.25 + POI_ICON_STROKE + 1) / 10.5]]])] as unknown as ExpressionSpecification,
       'text-anchor': 'top',
       'text-max-width': 8,
       'text-optional': true,
