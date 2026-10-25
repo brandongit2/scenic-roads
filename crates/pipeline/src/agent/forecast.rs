@@ -744,8 +744,10 @@ struct Item {
     target: String,
     cost: Cost,
     phase: Phase,
-    /// The items it waits for.
+    /// The items it waits for: its own, and the shared sets in `Items::groups` (each waited for
+    /// whole).
     deps: Vec<usize>,
+    groups: Vec<usize>,
     /// Whether a helper may do it (a shared step's, not before the regions').
     shared: bool,
     /// Being built now (its machine free when it's done).
@@ -796,9 +798,21 @@ struct Index {
     z3: BTreeMap<(String, String), Vec<usize>>,
 }
 
+/// The work as items (`items`): each region's, and the sets of items many wait for, each listed
+/// once (sorted, no repeats): a z3 tile's terrain that its slope targets wait for, a region's
+/// terrain that its z6 tiles wait for, all the terrain, all before the steps after. (Lead memory,
+/// 25 Oct: each slope target had its own copy, about 6,750 items, 8x that in capacity: 20,000
+/// lists of 432 KB in the three runs, 8.7 GB of the agents' 17 GB.)
+struct Items {
+    items: Vec<Item>,
+    region_items: Vec<Vec<usize>>,
+    groups: Vec<Vec<usize>>,
+}
+
 /// The work as items, each with the items it waits for.
-fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
+fn items(inp: &Input) -> Items {
     let mut out: Vec<Item> = Vec::new();
+    let mut groups: Vec<Vec<usize>> = Vec::new();
     let mut by_target = Index::default();
     let add = |out: &mut Vec<Item>,
                by: &mut Index,
@@ -806,18 +820,20 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
                target: &str,
                cost: Cost,
                phase: Phase,
-               deps: Vec<usize>|
+               (mut deps, gs): (Vec<usize>, Vec<usize>)|
      -> usize {
         if let Some(&i) = by.of.get(&(step.to_string(), target.to_string())) {
             return i;
         }
         let shared = SHARED.contains(&step) && phase != Phase::Before;
+        deps.shrink_to_fit();
         out.push(Item {
             step: step.into(),
             target: target.into(),
             cost,
             phase,
             deps,
+            groups: gs,
             shared,
             running: false,
             by: None,
@@ -833,7 +849,7 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
         i
     };
     for (step, target, cost) in &inp.before {
-        add(&mut out, &mut by_target, step, target, *cost, Phase::Before, Vec::new());
+        add(&mut out, &mut by_target, step, target, *cost, Phase::Before, (Vec::new(), Vec::new()));
     }
     let before: Vec<usize> = (0..out.len()).collect();
     // (The z6 tiles wait for the pass's heritage sites, reaches and roadside buildings, as the plan's
@@ -847,24 +863,53 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
     let mut region_items: Vec<Vec<usize>> = vec![Vec::new(); inp.regions.len()];
     let item_of = |by: &Index, step: &str, t: &str| by.of.get(&(step.to_string(), t.to_string())).copied();
     // (A step's items in z3 tile `q`: its z6 tiles there, or its target that's the z3 tile itself;
-    // in order.)
+    // in order, no repeats: `add` lists each item once, in order.)
     let of_z3 = |by: &Index, step: &str, q: &str| -> Vec<usize> {
-        let mut v = by.z3.get(&(step.to_string(), q.to_string())).cloned().unwrap_or_default();
+        by.z3.get(&(step.to_string(), q.to_string())).cloned().unwrap_or_default()
+    };
+    // (A set many wait for, listed once: its index in `groups`.)
+    let group = |groups: &mut Vec<Vec<usize>>, mut v: Vec<usize>| -> usize {
         v.sort_unstable();
         v.dedup();
-        v
+        v.shrink_to_fit();
+        groups.push(v);
+        groups.len() - 1
     };
     for r in inp.regions.iter() {
         for t in &r.own_terrain {
-            add(&mut out, &mut by_target, "terrain-hi", t, inp.cost("terrain-hi", t), Phase::Region, Vec::new());
+            add(
+                &mut out,
+                &mut by_target,
+                "terrain-hi",
+                t,
+                inp.cost("terrain-hi", t),
+                Phase::Region,
+                (Vec::new(), Vec::new()),
+            );
         }
         // (The deep levels wait for nothing: their base is made from the pool.)
         for t in &r.own_terrain_deep {
-            add(&mut out, &mut by_target, "terrain-deep", t, inp.cost("terrain-deep", t), Phase::Region, Vec::new());
+            add(
+                &mut out,
+                &mut by_target,
+                "terrain-deep",
+                t,
+                inp.cost("terrain-deep", t),
+                Phase::Region,
+                (Vec::new(), Vec::new()),
+            );
         }
         for q in &r.own_terrain_lo {
             let deps = of_z3(&by_target, "terrain-hi", q);
-            add(&mut out, &mut by_target, "terrain-lo", q, inp.cost("terrain-lo", q), Phase::Region, deps);
+            add(
+                &mut out,
+                &mut by_target,
+                "terrain-lo",
+                q,
+                inp.cost("terrain-lo", q),
+                Phase::Region,
+                (deps, Vec::new()),
+            );
         }
         // (Its terrain is its own or a region's before it: listed by now; its deep levels too, which
         // its roads' heights read.)
@@ -872,14 +917,15 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
         deps.extend(r.terrain_deep.iter().filter_map(|t| item_of(&by_target, "terrain-deep", t)));
         deps.extend(r.terrain_lo.iter().filter_map(|q| item_of(&by_target, "terrain-lo", q)));
         deps.extend(&units_need);
+        let g = vec![group(&mut groups, deps)];
         for u in &r.own_units {
-            add(&mut out, &mut by_target, "unit", u, inp.cost("unit", u), Phase::Region, deps.clone());
+            add(&mut out, &mut by_target, "unit", u, inp.cost("unit", u), Phase::Region, (Vec::new(), g.clone()));
         }
         // Those its stale terrain may make stale: a share, the first in its order (`add` lists a
         // z6 tile two regions expect once).
         let n = (r.expected.len() as f64 * EXPECTED_STALE).round() as usize;
         for u in r.expected.iter().take(n) {
-            add(&mut out, &mut by_target, "unit", u, inp.cost("unit", u), Phase::Region, deps.clone());
+            add(&mut out, &mut by_target, "unit", u, inp.cost("unit", u), Phase::Region, (Vec::new(), g.clone()));
         }
         // Its map tiles, each once the z6 tiles that draw it are built (a tile two regions draw, with
         // the first).
@@ -887,15 +933,16 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
             let mut built: Vec<usize> = us.iter().filter_map(|u| item_of(&by_target, "unit", u)).collect();
             built.sort_unstable();
             built.dedup();
-            add(&mut out, &mut by_target, "pack", t, inp.cost("pack", t), Phase::Publish, built);
+            add(&mut out, &mut by_target, "pack", t, inp.cost("pack", t), Phase::Publish, (built, Vec::new()));
         }
     }
+    // (The terrain of a set of z3 tiles, a group listed once: by_z3s.)
+    let mut by_z3s: BTreeMap<Vec<String>, usize> = BTreeMap::new();
     for r in inp.regions.iter() {
         // (A slope target waits for the terrain of its z6 tile's z3 tile and its edge neighbours' z3
         // tiles, the deep levels' too; a slope-hi z6 tile for its z10 tiles' slope-deep too.)
-        let terrain_of = |by: &Index, t: &str| -> Vec<usize> {
-            let mut deps: Vec<usize> = Vec::new();
-            let z3s: Vec<String> = match crate::legacy::TileId::parse(t) {
+        let mut terrain_of = |by: &Index, groups: &mut Vec<Vec<usize>>, t: &str| -> Vec<usize> {
+            let mut z3s: Vec<String> = match crate::legacy::TileId::parse(t) {
                 Some(u) if u.z >= 6 => {
                     let k = u.z - 6;
                     std::iter::once((u.x >> k, u.y >> k))
@@ -905,21 +952,26 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
                 }
                 _ => vec![t.to_string()],
             };
-            for q in z3s {
-                deps.extend(of_z3(by, "terrain-hi", &q));
-                deps.extend(of_z3(by, "terrain-deep", &q));
-                deps.extend(item_of(by, "terrain-lo", &q));
-            }
-            deps
+            z3s.sort_unstable();
+            z3s.dedup();
+            let g = *by_z3s.entry(z3s).or_insert_with_key(|z3s| {
+                let mut deps: Vec<usize> = Vec::new();
+                for q in z3s {
+                    deps.extend(of_z3(by, "terrain-hi", q));
+                    deps.extend(of_z3(by, "terrain-deep", q));
+                    deps.extend(item_of(by, "terrain-lo", q));
+                }
+                group(groups, deps)
+            });
+            vec![g]
         };
         for t in &r.slope_deep {
-            let mut deps = terrain_of(&by_target, t);
-            deps.sort_unstable();
-            deps.dedup();
-            add(&mut out, &mut by_target, "slope-deep", t, inp.cost("slope-deep", t), Phase::Late, deps);
+            let g = terrain_of(&by_target, &mut groups, t);
+            add(&mut out, &mut by_target, "slope-deep", t, inp.cost("slope-deep", t), Phase::Late, (Vec::new(), g));
         }
         for t in &r.slope {
-            let mut deps = terrain_of(&by_target, t);
+            let g = terrain_of(&by_target, &mut groups, t);
+            let mut deps: Vec<usize> = Vec::new();
             if let Some(q) = crate::agent::build::z3_of(t) {
                 let k = crate::terrain_deep::PACK_Z - 6;
                 deps.extend(of_z3(&by_target, "slope-deep", &q).into_iter().filter(|&i| {
@@ -927,25 +979,23 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
                     a.zip(b).is_some_and(|(a, b)| (a.x >> k, a.y >> k) == (b.x, b.y))
                 }));
             }
-            deps.sort_unstable();
-            deps.dedup();
-            add(&mut out, &mut by_target, "slope-hi", t, inp.cost("slope-hi", t), Phase::Late, deps);
+            add(&mut out, &mut by_target, "slope-hi", t, inp.cost("slope-hi", t), Phase::Late, (deps, g));
         }
         for q in &r.slope_lo {
             let mut deps = of_z3(&by_target, "slope-hi", q);
             deps.extend(of_z3(&by_target, "terrain-hi", q));
             deps.extend(item_of(&by_target, "terrain-lo", q));
-            add(&mut out, &mut by_target, "slope-lo", q, inp.cost("slope-lo", q), Phase::Late, deps);
+            add(&mut out, &mut by_target, "slope-lo", q, inp.cost("slope-lo", q), Phase::Late, (deps, Vec::new()));
         }
         for t in &r.trees {
-            add(&mut out, &mut by_target, "trees", t, inp.cost("trees", t), Phase::Late, Vec::new());
+            add(&mut out, &mut by_target, "trees", t, inp.cost("trees", t), Phase::Late, (Vec::new(), Vec::new()));
         }
         // A z3 tile's tree cover assembled once its z6 tiles are made (a region lists every z6 tile of
         // its z3 tiles: listed by now).
         for q in &r.trees_lo {
             // (crate::treepacks::z3_of is build's: a z6 tile's z3 tile.)
             let deps: Vec<usize> = of_z3(&by_target, "trees", q).into_iter().filter(|&i| out[i].target != *q).collect();
-            add(&mut out, &mut by_target, "trees-lo", q, inp.cost("trees-lo", q), Phase::Late, deps);
+            add(&mut out, &mut by_target, "trees-lo", q, inp.cost("trees-lo", q), Phase::Late, (deps, Vec::new()));
         }
     }
     // Each region's items: its terrain, all its z6 tiles (some come with a region before it), its
@@ -973,28 +1023,28 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
     let terrain: Vec<usize> = (0..out.len())
         .filter(|&i| matches!(out[i].step.as_str(), "terrain-hi" | "terrain-deep" | "terrain-lo"))
         .collect();
+    let terrain = vec![group(&mut groups, terrain)];
     let mut chain: Vec<usize> = Vec::new();
     for (step, target, cost) in &inp.chains {
         let (pre, earlier, reads_terrain) = chain_deps(step);
         let mut deps: Vec<usize> = before.iter().copied().filter(|&i| pre.contains(&out[i].step.as_str())).collect();
         deps.extend(chain.iter().copied().filter(|&i| earlier.contains(&out[i].step.as_str())));
-        if reads_terrain {
-            deps.extend(&terrain);
-        }
-        let i = add(&mut out, &mut by_target, step, target, *cost, Phase::Chain, deps);
+        let g = if reads_terrain { terrain.clone() } else { Vec::new() };
+        let i = add(&mut out, &mut by_target, step, target, *cost, Phase::Chain, (deps, g));
         chain.push(i);
     }
     // (Each after all before it: the catalog after the overlays.)
-    let mut all: Vec<usize> = (0..out.len()).collect();
+    let all = vec![group(&mut groups, (0..out.len()).collect())];
+    let mut after: Vec<usize> = Vec::new();
     for (step, target, cost) in &inp.after {
-        let i = add(&mut out, &mut by_target, step, target, *cost, Phase::After, all.clone());
-        all.push(i);
+        let i = add(&mut out, &mut by_target, step, target, *cost, Phase::After, (after.clone(), all.clone()));
+        after.push(i);
     }
     // (After all that, not each other.)
     for (step, target, cost) in &inp.idle {
-        add(&mut out, &mut by_target, step, target, *cost, Phase::After, all.clone());
+        add(&mut out, &mut by_target, step, target, *cost, Phase::After, (after.clone(), all.clone()));
     }
-    (out, region_items)
+    Items { items: out, region_items, groups }
 }
 
 /// The items ready to take (their deps done, not yet taken), each phase's by step in order (an
@@ -1159,7 +1209,7 @@ fn mac_of(m: &Machine) -> String {
 /// (`Sim::cut`, `thread_cpu`).
 fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64, budget: Duration) -> Sim {
     let (cpu0, wall0) = (thread_cpu(), Instant::now());
-    let (mut items, region_items) = items(inp);
+    let Items { mut items, region_items, groups } = items(inp);
     for it in &mut items {
         it.cost.secs = scale(&it.cost).max(1.0);
     }
@@ -1208,16 +1258,31 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64, budget: Duration) -> Sim {
     let pi = |p: Phase| PHASES.iter().position(|&q| q == p).unwrap_or(0);
     // Each item's deps not yet done, the items waiting on each, and each phase's items ready (their
     // deps done, not yet taken), in order.
+    // (A group, `Items::groups`, counts as one dep, done once its items left are: the groups each
+    // item is in, each group's items not yet done and the items waiting on it.)
+    let done_now = |d: usize| items[d].by.is_some() && items[d].end <= 1e-9;
     let mut waiting_on: Vec<Vec<usize>> = vec![Vec::new(); items.len()];
     let mut pending: Vec<usize> = vec![0; items.len()];
-    for (i, it) in items.iter().enumerate() {
-        for &d in &it.deps {
-            if !(items[d].by.is_some() && items[d].end <= 1e-9) {
-                pending[i] += 1;
-                waiting_on[d].push(i);
-            }
+    let mut in_groups: Vec<Vec<usize>> = vec![Vec::new(); items.len()];
+    let mut group_left: Vec<usize> = vec![0; groups.len()];
+    let mut group_waiting: Vec<Vec<usize>> = vec![Vec::new(); groups.len()];
+    for (g, members) in groups.iter().enumerate() {
+        for &d in members.iter().filter(|&&d| !done_now(d)) {
+            group_left[g] += 1;
+            in_groups[d].push(g);
         }
     }
+    for (i, it) in items.iter().enumerate() {
+        for &d in it.deps.iter().filter(|&&d| !done_now(d)) {
+            pending[i] += 1;
+            waiting_on[d].push(i);
+        }
+        for &g in it.groups.iter().filter(|&&g| group_left[g] > 0) {
+            pending[i] += 1;
+            group_waiting[g].push(i);
+        }
+    }
+    drop(groups);
     // (Those not ready before a time (`Input::release`): counted as waiting until then, the
     // latest first.)
     let mut timed: Vec<(f64, usize)> = inp
@@ -1316,7 +1381,14 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64, budget: Duration) -> Sim {
             }
         }
         for d in ended {
-            for &w in &waiting_on[d] {
+            let mut freed: Vec<usize> = waiting_on[d].clone();
+            for &g in &in_groups[d] {
+                group_left[g] -= 1;
+                if group_left[g] == 0 {
+                    freed.extend(&group_waiting[g]);
+                }
+            }
+            for w in freed {
                 pending[w] -= 1;
                 if pending[w] == 0 && items[w].by.is_none() {
                     ready.insert(w, &items[w], pi(items[w].phase));
@@ -3491,7 +3563,7 @@ mod tests {
     #[test]
     fn a_live_scale_forecast_runs_whole_and_bounded() {
         let inp = live_scale_input(400, 1500);
-        let n = items(&inp).0.len();
+        let n = items(&inp).items.len();
         assert!(n > 30_000, "{n} targets");
         // (Whole, its CPU time bounded well past what it takes (50 to 73 s for the three runs in
         // the test build under load; 21 Oct's code took over 200 s in one run at a tenth of the
@@ -3531,10 +3603,42 @@ mod tests {
         let Ok(p) = std::env::var("SCENIC_FORECAST_RECORD") else { return };
         let r = Record::from_bytes(&std::fs::read(p).unwrap()).unwrap();
         let limit: u64 = std::env::var("SCENIC_FORECAST_LIMIT_S").ok().and_then(|s| s.parse().ok()).unwrap_or(15);
-        let (items, _) = items(&r.input);
-        eprintln!("items {}, machines {}", items.len(), r.input.machines.len());
+        let mb = || crate::sys::footprint().unwrap_or(0) >> 20;
+        let base = mb();
+        let peak = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watch = {
+            let (peak, stop) = (peak.clone(), stop.clone());
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    peak.fetch_max(crate::sys::footprint().unwrap_or(0) >> 20, std::sync::atomic::Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(20)); // (sleep ok: a sampler)
+                }
+            })
+        };
+        let Items { items, groups, .. } = items(&r.input);
+        let held: usize = items.iter().map(|i| i.deps.capacity() + i.groups.capacity()).sum::<usize>()
+            + groups.iter().map(|g| g.capacity()).sum::<usize>();
+        eprintln!(
+            "items {}, machines {}, dep entries held {held}, after items {} MB",
+            items.len(),
+            r.input.machines.len(),
+            mb().saturating_sub(base)
+        );
+        drop(items);
         let t = Instant::now();
         let f = forecast_by(&r.input, Duration::from_secs(limit));
-        eprintln!("lead: {} ms, partial {}, done_at {:?}", t.elapsed().as_millis(), f.partial, f.done_at);
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = watch.join();
+        eprintln!(
+            "lead: {} ms, partial {}, done_at {:?}; footprint {base} MB before, peak {} MB",
+            t.elapsed().as_millis(),
+            f.partial,
+            f.done_at,
+            peak.load(std::sync::atomic::Ordering::SeqCst)
+        );
+        if let Ok(out) = std::env::var("SCENIC_FORECAST_OUT") {
+            std::fs::write(out, serde_json::to_vec_pretty(&f).unwrap()).unwrap();
+        }
     }
 }

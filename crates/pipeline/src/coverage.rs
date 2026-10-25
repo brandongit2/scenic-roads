@@ -148,8 +148,12 @@ struct Grid {
     ny: usize,
     /// Per cell: the centre inside?
     centre: Vec<bool>,
-    /// Per cell: edges (ring, index of first point) crossing it or within the buffer of it.
-    edges: Vec<Vec<(u32, u32)>>,
+    /// Per cell: edges (ring, index of first point) crossing it or within the buffer of it, cell
+    /// `c`'s at `edges[starts[c]..starts[c + 1]]` (`Grid::edges`). (One list, not a list a cell:
+    /// a cell's empty list was 24 B, most of a shape's million cells empty; lead memory, 25 Oct:
+    /// 6.4 GB of the agent's 17.)
+    starts: Vec<u32>,
+    edges: Vec<(u32, u32)>,
 }
 
 impl Shape {
@@ -198,7 +202,7 @@ impl Shape {
         let centre = [(g.x0 + (cx as f64 + 0.5) * g.cw) as i64, (g.y0 + (cy as f64 + 0.5) * g.ch) as i64];
         let pp = [p[0] as i64, p[1] as i64];
         let mut ins = g.centre[c];
-        for &(r, i) in &g.edges[c] {
+        for &(r, i) in g.edges(c) {
             let ring = &self.rings[r as usize];
             let (a, b) = (ring[i as usize], ring[(i as usize + 1) % ring.len()]);
             if segments_cross(centre, pp, [a[0] as i64, a[1] as i64], [b[0] as i64, b[1] as i64]) {
@@ -251,7 +255,7 @@ impl Shape {
         let (g, c) = (&self.grid, self.cell(p));
         let kx = M_PER_E7 * (p[1] as f64 * 1e-7).to_radians().dcos();
         let lim = self.buffer_m * self.buffer_m;
-        g.edges[c].iter().any(|&(r, i)| {
+        g.edges(c).iter().any(|&(r, i)| {
             let ring = &self.rings[r as usize];
             let (a, b) = (ring[i as usize], ring[(i as usize + 1) % ring.len()]);
             dist2_m(p, a, b, kx) <= lim
@@ -316,7 +320,7 @@ impl Shape {
         let (cy0, cy1) = (cell(rg[1] as f64, g.y0, g.ch, g.ny), cell(rg[3] as f64, g.y0, g.ch, g.ny));
         for cy in cy0..=cy1 {
             for cx in cx0..=cx1 {
-                for &(ri, i) in &g.edges[cy * g.nx + cx] {
+                for &(ri, i) in g.edges(cy * g.nx + cx) {
                     let ring = &self.rings[ri as usize];
                     let (a, b) = (ring[i as usize], ring[(i as usize + 1) % ring.len()]);
                     if segment_meets_box([a[0] as i64, a[1] as i64], [b[0] as i64, b[1] as i64], rg) && f((ri, i), a, b)
@@ -451,26 +455,38 @@ impl Grid {
         let (nx, ny) = (((w / cell).ceil() as usize).clamp(1, 4096), ((h / cell).ceil() as usize).clamp(1, 4096));
         let (cw, ch) = (w / nx as f64, h / ny as f64);
         let (x0, y0) = (bbox[0] as f64, bbox[1] as f64);
-        let mut edges: Vec<Vec<(u32, u32)>> = vec![Vec::new(); nx * ny];
-        for (ri, r) in rings.iter().enumerate() {
-            for i in 0..r.len() {
-                let (a, b) = (r[i], r[(i + 1) % r.len()]);
-                if a == b {
-                    continue;
-                }
-                // Every cell the edge's box (grown by the buffer) touches: a superset, fine for the
-                // crossing test and needed for the buffer.
-                let cx0 = ((((a[0].min(b[0]) as f64 - buf_e7) - x0) / cw).floor().max(0.0) as usize).min(nx - 1);
-                let cx1 = ((((a[0].max(b[0]) as f64 + buf_e7) - x0) / cw).floor().max(0.0) as usize).min(nx - 1);
-                let cy0 = ((((a[1].min(b[1]) as f64 - buf_e7) - y0) / ch).floor().max(0.0) as usize).min(ny - 1);
-                let cy1 = ((((a[1].max(b[1]) as f64 + buf_e7) - y0) / ch).floor().max(0.0) as usize).min(ny - 1);
-                for cy in cy0..=cy1 {
-                    for cx in cx0..=cx1 {
-                        edges[cy * nx + cx].push((ri as u32, i as u32));
+        // Every cell each edge's box (grown by the buffer) touches: a superset, fine for the
+        // crossing test and needed for the buffer. Counted, then listed in place.
+        let each = |f: &mut dyn FnMut(usize, u32, u32)| {
+            for (ri, r) in rings.iter().enumerate() {
+                for i in 0..r.len() {
+                    let (a, b) = (r[i], r[(i + 1) % r.len()]);
+                    if a == b {
+                        continue;
+                    }
+                    let cx0 = ((((a[0].min(b[0]) as f64 - buf_e7) - x0) / cw).floor().max(0.0) as usize).min(nx - 1);
+                    let cx1 = ((((a[0].max(b[0]) as f64 + buf_e7) - x0) / cw).floor().max(0.0) as usize).min(nx - 1);
+                    let cy0 = ((((a[1].min(b[1]) as f64 - buf_e7) - y0) / ch).floor().max(0.0) as usize).min(ny - 1);
+                    let cy1 = ((((a[1].max(b[1]) as f64 + buf_e7) - y0) / ch).floor().max(0.0) as usize).min(ny - 1);
+                    for cy in cy0..=cy1 {
+                        for cx in cx0..=cx1 {
+                            f(cy * nx + cx, ri as u32, i as u32);
+                        }
                     }
                 }
             }
+        };
+        let mut starts: Vec<u32> = vec![0; nx * ny + 1];
+        each(&mut |c, _, _| starts[c + 1] += 1);
+        for c in 0..nx * ny {
+            starts[c + 1] += starts[c];
         }
+        let mut edges: Vec<(u32, u32)> = vec![(0, 0); starts[nx * ny] as usize];
+        let mut at: Vec<u32> = starts[..nx * ny].to_vec();
+        each(&mut |c, ri, i| {
+            edges[at[c] as usize] = (ri, i);
+            at[c] += 1;
+        });
         // Each row's centres: crossings of the row's centre line, sorted, give the parity.
         let mut centre = vec![false; nx * ny];
         let mut xs: Vec<f64> = Vec::new();
@@ -496,7 +512,12 @@ impl Grid {
                 centre[cy * nx + cx] = k % 2 == 1;
             }
         }
-        Grid { x0, y0, cw, ch, nx, ny, centre, edges }
+        Grid { x0, y0, cw, ch, nx, ny, centre, starts, edges }
+    }
+
+    /// Cell `c`'s edges.
+    fn edges(&self, c: usize) -> &[(u32, u32)] {
+        &self.edges[self.starts[c] as usize..self.starts[c + 1] as usize]
     }
 }
 
@@ -513,7 +534,7 @@ pub struct Coverage {
 impl Coverage {
     /// The memory a step's process takes to read this coverage (MB; `coverage_of` in scenic-build,
     /// through `Coverage::accepted`), worked out from the coverage itself: every shape's rings (8 B a
-    /// point), its grid (`Grid`: per cell a bool and an edge list's 24 B header, 8 B an entry), the
+    /// point), its grid (`Grid`: per cell a bool and its edges' 4 B start, 8 B an entry), the
     /// kept bytes read whole while the shapes are made again from them (`from_kept`; or written,
     /// `kept_bytes`, when the cache misses), and the memos' cap (`MEMO_CAP`). A job's memory bound
     /// adds it to what its step holds besides (the agent's `guess` and `peak`, task #639).
@@ -524,9 +545,8 @@ impl Coverage {
             for sh in list {
                 let points: u64 = sh.rings.iter().map(|r| r.len() as u64).sum();
                 let g = &sh.grid;
-                let entries: u64 = g.edges.iter().map(|e| e.capacity() as u64).sum();
                 let rings = points * 8 + sh.rings.len() as u64 * 24;
-                let grid = (g.nx * g.ny) as u64 * 25 + entries * 8;
+                let grid = (g.nx * g.ny) as u64 * 5 + 4 + g.edges.len() as u64 * 8;
                 let kept = 8
                     + sh.source.len() as u64
                     + 8
@@ -1284,10 +1304,10 @@ mod tests {
         }
         let c = from_kept(&kept_bytes(&Coverage { shapes, depth_only: Vec::new() })).unwrap();
         let points: u64 = c.shapes.iter().flat_map(|s| s.rings.iter()).map(|r| r.len() as u64).sum();
-        let entries: u64 = c.shapes.iter().flat_map(|s| s.grid.edges.iter()).map(|e| e.len() as u64).sum();
+        let entries: u64 = c.shapes.iter().map(|s| s.grid.edges.len() as u64).sum();
         let cells: u64 = c.shapes.iter().map(|s| (s.grid.nx * s.grid.ny) as u64).sum();
         // Held at once while it's read: the kept bytes, the rings made from them, every grid, the memos.
-        let held = kept_bytes(&c).len() as u64 + points * 8 + cells * 25 + entries * 8 + MEMO_CAP as u64;
+        let held = kept_bytes(&c).len() as u64 + points * 8 + cells * 5 + entries * 8 + MEMO_CAP as u64;
         let mb = c.read_peak_mb();
         assert!(mb << 20 >= held, "{mb} MB under {held} B");
         assert!(entries > points, "the coast's buffer lists its edges in several cells");
