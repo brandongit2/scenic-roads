@@ -510,6 +510,39 @@ pub struct Coverage {
     pub depth_only: Vec<Shape>,
 }
 
+impl Coverage {
+    /// The memory a step's process takes to read this coverage (MB; `coverage_of` in scenic-build,
+    /// through `Coverage::accepted`), worked out from the coverage itself: every shape's rings (8 B a
+    /// point), its grid (`Grid`: per cell a bool and an edge list's 24 B header, 8 B an entry), the
+    /// kept bytes read whole while the shapes are made again from them (`from_kept`; or written,
+    /// `kept_bytes`, when the cache misses), and the memos' cap (`MEMO_CAP`). A job's memory bound
+    /// adds it to what its step holds besides (the agent's `guess` and `peak`, task #639).
+    pub fn read_peak_mb(&self) -> u64 {
+        let mut bytes = MEMO_CAP as u64 + KEPT_MAGIC.len() as u64;
+        for list in [&self.shapes, &self.depth_only] {
+            bytes += 8;
+            for sh in list {
+                let points: u64 = sh.rings.iter().map(|r| r.len() as u64).sum();
+                let g = &sh.grid;
+                let entries: u64 = g.edges.iter().map(|e| e.capacity() as u64).sum();
+                let rings = points * 8 + sh.rings.len() as u64 * 24;
+                let grid = (g.nx * g.ny) as u64 * 25 + entries * 8;
+                let kept = 8
+                    + sh.source.len() as u64
+                    + 8
+                    + sh.country.len() as u64
+                    + 8
+                    + 1
+                    + 8
+                    + sh.rings.len() as u64 * 8
+                    + points * 8;
+                bytes += rings + grid + kept;
+            }
+        }
+        bytes.div_ceil(1 << 20)
+    }
+}
+
 /// The buffer around `osm:` outlines (coasts), metres.
 pub const OSM_BUFFER_M: f64 = 1000.0;
 
@@ -1230,5 +1263,34 @@ mod tests {
         let back = from_kept(&kept_bytes(&c)).unwrap();
         assert_eq!(back.shapes.iter().map(|s| s.water).collect::<Vec<_>>(), vec![false, true]);
         assert!(!back.meets_rect(r(1.4)) && back.meets_rect_depth(r(1.4)));
+    }
+
+    /// A coverage's read bound (`Coverage::read_peak_mb`, task #639) covers what reading it holds, on
+    /// a real-shaped one: a coast of 300,000 points over a country's box with the coasts' buffer,
+    /// many small outlines besides, read back from its kept bytes.
+    #[test]
+    fn the_read_bound_covers_a_real_shaped_coverage() {
+        let coast: Vec<[i32; 2]> = (0..300_000)
+            .map(|i| {
+                let t = i as f64 / 300_000.0 * std::f64::consts::TAU;
+                let r = 4.0 + 0.3 * (t * 997.0).dsin() + 0.1 * (t * 13_001.0).dsin();
+                e7(10.0 + r * t.dcos(), 50.0 + r * 0.6 * t.dsin())
+            })
+            .collect();
+        let mut shapes = vec![Shape::new("r: osm:1".into(), vec![coast], OSM_BUFFER_M)];
+        for k in 0..200 {
+            let (x, y) = (-5.0 + (k % 20) as f64, 40.0 + (k / 20) as f64);
+            shapes.push(Shape::new(format!("r{k}: place"), vec![fixture_circle(x, y, 20.0)], 0.0));
+        }
+        let c = from_kept(&kept_bytes(&Coverage { shapes, depth_only: Vec::new() })).unwrap();
+        let points: u64 = c.shapes.iter().flat_map(|s| s.rings.iter()).map(|r| r.len() as u64).sum();
+        let entries: u64 = c.shapes.iter().flat_map(|s| s.grid.edges.iter()).map(|e| e.len() as u64).sum();
+        let cells: u64 = c.shapes.iter().map(|s| (s.grid.nx * s.grid.ny) as u64).sum();
+        // Held at once while it's read: the kept bytes, the rings made from them, every grid, the memos.
+        let held = kept_bytes(&c).len() as u64 + points * 8 + cells * 25 + entries * 8 + MEMO_CAP as u64;
+        let mb = c.read_peak_mb();
+        assert!(mb << 20 >= held, "{mb} MB under {held} B");
+        assert!(entries > points, "the coast's buffer lists its edges in several cells");
+        assert!(mb > (MEMO_CAP >> 20) as u64 + 5, "{mb} MB: the coverage's own part counted");
     }
 }

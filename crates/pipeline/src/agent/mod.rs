@@ -7681,6 +7681,9 @@ impl Agent {
         }
         // (Every step to every member: the plan's every step offered but the lead's own,
         // crate::agent::every.)
+        // (What a terrain or slope job's process holds of the coverage it reads, `coverage_of`:
+        // added to its step's bound, crate::coverage::Coverage::read_peak_mb.)
+        let cov_read = cov.read_peak_mb();
         for w in plan.iter_mut().filter(|w| every::offered(&w.step)) {
             // What another worker builds now isn't planned here: what it leased from this Mac's
             // coordinator.
@@ -7696,7 +7699,9 @@ impl Agent {
                 "unit" | "pois" => size(t),
                 "terrain-hi" => {
                     terrain_peak(if t.starts_with("6/") { 1 } else { z6.get(t).copied().unwrap_or(64) }, deep(t))
+                        + cov_read
                 }
+                s @ ("terrain-deep" | "slope-deep" | "slope-hi") => first_peak(s) + cov_read,
                 s @ ("bldprep" | "bldtiles") => bld_rows(t).map_or(first_peak(s), |n| bld_peak(s, n)),
                 s => first_peak(s),
             };
@@ -7758,7 +7763,9 @@ impl Agent {
                 "unit" | "pois" => crate::coord::unit_peak(&BTreeMap::new(), t, size(t)),
                 "terrain-hi" => {
                     terrain_peak(if t.starts_with("6/") { 1 } else { z6.get(t).copied().unwrap_or(64) }, deep(t))
+                        + cov_read
                 }
+                s @ ("terrain-deep" | "slope-deep" | "slope-hi") => first_peak(s) + cov_read,
                 s @ ("bldprep" | "bldtiles") => bld_rows(t).map_or(first_peak(s), |n| bld_peak(s, n)),
                 s => first_peak(s),
             };

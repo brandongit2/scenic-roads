@@ -1470,7 +1470,9 @@ fn terrain_slope_targets_made(cov: &Coverage, m: &BTreeMap<String, String>, tile
                     .map(|(x, y)| {
                         let p = format!("6/{x}/{y}");
                         let fp = cov.fingerprint(grown_e7(6, x, y, 20.0));
-                        Some(format!("{p} {fp} {} {}", datasets(6, x, y)?, water(&p, &fp)?))
+                        // (As its terrain-hi key names them, the z10 tiles it rounds as coarser than
+                        // native among them, crate::terrain_pack::Sources::deeper: the base is made so.)
+                        Some(format!("{p} {fp} {} {}", piece_datasets(x, y)?, water(&p, &fp)?))
                     })
                     .collect();
                 let key = reads.map_or_else(
@@ -1547,7 +1549,8 @@ pub fn none_deep_key(step: &str, t: &str) -> String {
 /// code) and the codec, the tile, what it reads of the fine datasets
 /// (crate::terrain_deep::target_key_lines: their code too), and of each z6 tile its base is made
 /// of, what that tile's terrain-hi run reads (`bases`: its coverage's fingerprint, the pool's
-/// datasets meeting it and its water, as `terrain_piece_key` names them).
+/// datasets meeting it with its z10 tiles past the base's zoom, and its water, as `terrain_piece_key`
+/// names them).
 pub fn terrain_deep_key(t: (u32, u32), fine: &str, bases: &[String]) -> String {
     h(&[
         &format!("terrain-deep {TERRAIN_DEEP_V}"),

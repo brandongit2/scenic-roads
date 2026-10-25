@@ -146,7 +146,8 @@ What each step does, in detail. The steps as one table (names, chains, the check
     once, each once, kept in memory (2 GB at most), each file opened once; a job reads the fine
     datasets' declarations once. Its memory is the code's bounds: its base made as a z6 tile's run
     at most (`terrain_pack::piece_peak_mb`) or its deep tiles' (`terrain_deep::peak_mb`), the larger
-    (`terrain_deep::target_peak_mb`). Measured as their own step before one terrain (Mac mini, 12
+    (`terrain_deep::target_peak_mb`), with the coverage the process reads
+    (`coverage::Coverage::read_peak_mb`). Measured as their own step before one terrain (Mac mini, 12
     cores shared with other jobs, read over the network, 23 Oct): z8 tile 8/75/91 (Montreal, all 256
     z12 tiles with HRDEM, some 3DEP): 86,773 tiles in 27 min with 12.6 GB fetched.
   - **Stored** (crate::terrain_codec; the owner's, 24 Oct): every terrain tile, at every zoom, is
@@ -188,7 +189,8 @@ What each step does, in detail. The steps as one table (names, chains, the check
   tried again while it fails transiently); **slope-root**, z0–2 from the z3 tiles. Memory from the
   tiles a run holds (`slope_pack::peak_mb`: a z6 tile's hi tiles, each counted at its raw RGB, its
   z10 tiles' quadrants, the pyramid's working memory and the decoded terrain kept; `deep_peak_mb` a
-  z10 tile's deep tiles and z10–12 tiles likewise; `lo_peak_mb` an assembly's). The
+  z10 tile's deep tiles and z10–12 tiles likewise; `lo_peak_mb` an assembly's); slope-hi's and
+  slope-deep's with the coverage the process reads (`coverage::Coverage::read_peak_mb`). The
   pyramid (`slope_pack::Pyramid`, the depth's shading's too) makes the children of the tiles within
   three levels of its top in parallel and each subtree below them on one thread, on at most 16 of
   the job's threads, so its working memory has a bound (`working_bytes`: per thread a chain of

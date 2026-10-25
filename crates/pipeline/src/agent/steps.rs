@@ -355,7 +355,8 @@ pub const TABLE: [Step; 54] = [
     },
     // (Its memory offered by target, the agent's terrain_peak: a z6 tile's levels' bound,
     // crate::terrain_pack::piece_peak_mb, and its deep z12's north of 67° where a fine dataset meets
-    // it, crate::terrain_deep::peak_mb. Until a z6 tile's own run says.)
+    // it, crate::terrain_deep::peak_mb; with the coverage its process reads,
+    // crate::coverage::Coverage::read_peak_mb. Until a z6 tile's own run says.)
     Step {
         shared: Some(0),
         ..step(
@@ -369,7 +370,8 @@ pub const TABLE: [Step; 54] = [
         )
     },
     // (Its memory from the code's bounds: its base made as a z6 tile's run at most, then its deep
-    // tiles, crate::terrain_deep::target_peak_mb. Until a target's own run says.)
+    // tiles, crate::terrain_deep::target_peak_mb; the agent adds the coverage its process reads,
+    // crate::coverage::Coverage::read_peak_mb. Until a target's own run says.)
     Step {
         mem_mb: crate::terrain_deep::target_peak_mb(),
         shared: Some(1),
@@ -398,7 +400,8 @@ pub const TABLE: [Step; 54] = [
         )
     },
     // (Slope's memory from the tiles each job holds: crate::slope_pack::deep_peak_mb, peak_mb,
-    // lo_peak_mb.)
+    // lo_peak_mb; slope-deep's and slope-hi's with the coverage their process reads added by the
+    // agent, crate::coverage::Coverage::read_peak_mb.)
     Step {
         mem_mb: crate::slope_pack::deep_peak_mb(),
         shared: Some(2),
