@@ -22,7 +22,8 @@
 //! - With `cover = "earth"` in `_rules.toml`: per cell, land in two regions is taken from those of
 //!   them with water; then what no region covers, joined across the cells' edges: each piece within
 //!   100 m of land, up to `sliver_km2`, joins the region with water sharing the longest edge with
-//!   it, and a piece touching none stays; land in no region over `sliver_km2` is `rg-cover`, as is
+//!   it, as does one touching none (a hole in the zones' water off any coast); one over it touching
+//!   none stays; land in no region over `sliver_km2` is `rg-cover`, as is
 //!   water in two regions in a cell, or in none without a `rest` region. The `rest` region takes
 //!   what's left. Regions without water are never changed.
 
@@ -1709,7 +1710,7 @@ fn cells_pass(
                 continue;
             }
             let mut len = vec![0.0f64; pieces.len()];
-            if touches || sides.iter().any(|s| !s.is_empty()) {
+            {
                 for r in &g.polys[0] {
                     for k in 0..r.len() {
                         let (a, b) = (r[k], r[(k + 1) % r.len()]);
@@ -1753,8 +1754,9 @@ fn cells_pass(
         return rest_t;
     }
     trace("the gaps joined across the cells' edges");
-    // The gaps' stretches, each decided whole: one touching no land is the rest's, as is one over
-    // `fill_km2`; the others go to the region with water sharing the longest edge with them.
+    // The gaps' stretches, each decided whole: one over `fill_km2` touching no land is the rest's
+    // (one touching land, an error if its land is over it); the others, a hole in the zones' water
+    // off any coast too, go to the region with water sharing the longest edge with them.
     let roots = joined(&gaps.iter().map(|g| (g.c, &g.sides)).collect::<Vec<_>>());
     let mut stretches: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for (i, r) in roots.into_iter().enumerate() {
@@ -1763,11 +1765,10 @@ fn cells_pass(
     let mut to: Vec<Option<String>> = vec![None; gaps.len()];
     let mut big: Vec<Vec<usize>> = Vec::new();
     for idx in stretches.into_values() {
-        if !idx.iter().any(|&i| gaps[i].touches) {
-            continue;
-        }
         if idx.iter().map(|&i| gaps[i].km2).sum::<f64>() > fill_km2 {
-            big.push(idx);
+            if idx.iter().any(|&i| gaps[i].touches) {
+                big.push(idx);
+            }
             continue;
         }
         let mut len: BTreeMap<&String, f64> = BTreeMap::new();

@@ -489,7 +489,9 @@ alone borders, and a stretch under `sliver_km2` goes to the one sharing its long
 none of its land joins the region with water it shares the longest edge with; and, cell by cell
 (2°), land in two regions is taken from those of them with water. Then each piece still in no
 region (its cells' pieces joined across the cells' edges, as the stretches are) within 100 m of land
-up to `sliver_km2` joins the region with water it shares the longest edge with; a piece touching none stays. Land in no region
+up to `sliver_km2` joins the region with water it shares the longest edge with, as does one
+touching none (a hole in the zones' water off any coast, where their source has a rock OSM hasn't);
+one over `sliver_km2` touching none stays. Land in no region
 over `sliver_km2` is an error (`rg-cover`), found at a point inside its largest part of land and
 naming the regions that had any of it both (taken from both). The region whose water is
 `rest` takes what's left; without one, water left is an error, as is water in two regions. A region

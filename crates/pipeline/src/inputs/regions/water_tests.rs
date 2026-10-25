@@ -448,6 +448,23 @@ fn a_cells_edge_is_no_coast() {
     assert!(land.contains([e7(31.9), e7(30.55)]) && !land.contains([e7(31.995), e7(30.55)]));
 }
 
+/// A hole in a zone's water off any coast (the zones' source has a rock OSM hasn't), under
+/// `sliver_km2`, is the zone's, not the rest's (#649 review: Clayoquot Sound's specks of high seas).
+#[test]
+fn a_small_hole_in_the_sea_off_any_coast_is_its_neighbours() {
+    let w = world();
+    let holed = "id = \"disputed\"\nname = \"Disputed zone\"\n\
+                 water = [{ minus = [\"eez:2\", \"box:5.5,5.5,5.52,5.52\"] }]\n";
+    let mut files = all();
+    for f in files.iter_mut().filter(|f| f.0 == "disputed.toml") {
+        f.1 = holed;
+    }
+    let out = run(&w, &files);
+    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    let at = |id: &str| area_of(&out.resolved[id].geometry).contains([e7(5.51), e7(5.51)]);
+    assert!(at("disputed") && !at("high-seas"));
+}
+
 /// The new rules leave regions without water as they resolve alone: the cover's fills and a
 /// hand-out never change them (a hand-out naming one says so).
 #[test]
