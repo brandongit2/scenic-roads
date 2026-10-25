@@ -749,6 +749,102 @@ mod tests {
         ((34, 14), cov, RawTiles::with_store(&d.join("local"), &d.join("store"), crate::terrain_pack::TEST_BASE))
     }
 
+    /// Raw tiles with the pool's shortcut (crate::terrain_base::Tiles): a tile whose four children
+    /// were read with data isn't read, a flat tile stands for it (its four quarters are its
+    /// children's, so the bytes don't show it; the tiles read do).
+    struct Shortcut<'a> {
+        inner: &'a RawTiles,
+        with: std::sync::Mutex<std::collections::HashSet<(u8, u32, u32)>>,
+        flat: Vec<u8>,
+        stood: std::sync::atomic::AtomicUsize,
+        read: std::sync::Mutex<BTreeSet<(u8, u32, u32)>>,
+    }
+    impl<'a> Shortcut<'a> {
+        fn new(inner: &'a RawTiles) -> Self {
+            let flat = roadcore::grid::encode_terrain_png(&vec![1000f32; 65536], 256, 256).unwrap();
+            Shortcut { inner, with: Default::default(), flat, stood: Default::default(), read: Default::default() }
+        }
+    }
+    impl RawSource for Shortcut<'_> {
+        fn made_before(&self, z: u8, tiles: &[(u32, u32)]) {
+            self.with.lock().unwrap().extend(tiles.iter().map(|&(x, y)| (z, x, y)));
+        }
+        fn get(&self, z: u8, x: u32, y: u32) -> Result<(Option<Vec<u8>>, bool)> {
+            let covered = {
+                let w = self.with.lock().unwrap();
+                (0..4u32).all(|k| w.contains(&(z + 1, 2 * x + (k & 1), 2 * y + (k >> 1))))
+            };
+            let got = if covered {
+                self.stood.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Some(self.flat.clone())
+            } else {
+                self.read.lock().unwrap().insert((z, x, y));
+                self.inner.get(z, x, y)?.0
+            };
+            if got.is_some() {
+                self.with.lock().unwrap().insert((z, x, y));
+            }
+            Ok((got, false))
+        }
+        fn prefetch_counted(
+            &self,
+            z: u8,
+            tiles: &[(u32, u32)],
+            threads: usize,
+            done: &std::sync::atomic::AtomicU64,
+        ) -> Result<usize> {
+            self.inner.prefetch_counted(z, tiles, threads, done)
+        }
+    }
+
+    /// With the pool's shortcut (`Shortcut`), a z6 tile stopped after each of its blocks and level
+    /// ends makes the same packs, and reads no tile its first run didn't: a resumed run takes the
+    /// tiles kept as read with data (`RawSource::made_before`), so a tile over four of them isn't
+    /// sampled, as when they were read.
+    #[test]
+    fn a_z6_tile_resumed_takes_the_pools_shortcut_as_its_first_run() {
+        use crate::resume_log::STOP_AFTER;
+        let d = tempfile::tempdir().unwrap();
+        let (t, cov, inner) = north_piece(d.path());
+        let src = Sources::default();
+        #[allow(clippy::type_complexity)]
+        let run =
+            |name: &str, stop: Option<usize>| -> (Option<Vec<(String, String)>>, usize, BTreeSet<(u8, u32, u32)>) {
+                let raw = Shortcut::new(&inner);
+                let root = d.path().join(name);
+                let scratch = d.path().join(format!("{name}-scratch"));
+                let mut out = Out::unbound(&root, &scratch).unwrap();
+                STOP_AFTER.set(stop);
+                let r = crate::terrain_pack::build_piece_keeping(&mut out, &raw, t, &cov, &src);
+                STOP_AFTER.set(None);
+                let stood = raw.stood.load(std::sync::atomic::Ordering::Relaxed);
+                let read = raw.read.into_inner().unwrap();
+                if let Err(e) = r {
+                    assert!(e.to_string().contains("a test's interruption"), "{e:#}");
+                    return (None, stood, read);
+                }
+                let out = Out::unbound(&root, &scratch).unwrap();
+                let packs = out.manifest.into_iter().filter(|(l, _)| l.starts_with("layers/terrain/")).collect();
+                (Some(packs), stood, read)
+            };
+        let (fresh, stood, first) = run("fresh", None);
+        let fresh = fresh.unwrap();
+        assert!(stood > 0, "the shortcut taken");
+        let mut stops = 0;
+        for stop in 1.. {
+            let name = format!("stop-{stop}");
+            if run(&name, Some(stop)).0.is_some() {
+                break;
+            }
+            let (packs, _, read) = run(&name, None);
+            assert_eq!(packs.as_ref(), Some(&fresh), "stopped after {stop}");
+            let extra: Vec<_> = read.difference(&first).collect();
+            assert!(extra.is_empty(), "stopped after {stop}, read again: {extra:?}");
+            stops = stop;
+        }
+        assert!(stops >= 2, "{stops}");
+    }
+
     #[test]
     fn a_z6_tile_stopped_and_resumed_makes_the_same_packs() {
         use crate::resume_log::STOP_AFTER;

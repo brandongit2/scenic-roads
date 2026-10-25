@@ -1331,7 +1331,7 @@ impl<'a> Maker<'a> {
         use crate::terrain_resume::Kept;
         use crate::timings::{sub, Class};
         let up = z.min(self.block_up);
-        let blocks = if by_block { blocks(z, &tiles, self.block_up) } else { vec![tiles] };
+        let blocks = if by_block { blocks(z, &tiles, self.block_up) } else { vec![tiles.clone()] };
         // (What a resumed run's log kept of the level: its blocks, its end.)
         let mut kept = log.as_deref_mut().map(|l| l.level(z)).unwrap_or_default();
         // (A level of no tile, made whole, is one empty block.)
@@ -1343,7 +1343,9 @@ impl<'a> Maker<'a> {
                     outs: &mut Vec<(u32, u32, Vec<u8>)>,
                     nq: &mut HashMap<(u32, u32), Vec<f32>>,
                     levels: &mut HashMap<u64, f32>| {
-            let with: Vec<(u32, u32)> = k.done.iter().filter(|f| f.2.is_some()).map(|f| (f.0, f.1)).collect();
+            // (Every tile finished had a raw tile, as `prep` skips those without: each one sampled
+            // with data, its bytes or not, as crate::terrain_base::Tiles::sample counts them.)
+            let with: Vec<(u32, u32)> = k.done.iter().map(|f| (f.0, f.1)).collect();
             self.raw.made_before(z, &with);
             let n = k.done.len() as u64;
             self.here.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
@@ -1359,8 +1361,9 @@ impl<'a> Maker<'a> {
         }
         let todo: Vec<usize> = (0..blocks.len()).filter(|&bi| !kept.blocks.contains_key(&key(&blocks[bi]))).collect();
         let p = sub("raw tiles made (the pool's datasets sampled)", Class::Net);
+        // (Nothing kept: the level's tiles in their order, as a run without a log reads them.)
         let want: Vec<(u32, u32)> = if todo.len() == blocks.len() {
-            blocks.concat()
+            tiles
         } else {
             todo.iter()
                 .flat_map(|&bi| blocks[bi].iter().copied())
