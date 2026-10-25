@@ -297,7 +297,9 @@ its heartbeat), so another member takes over (§6.5). Every step it also checks 
   loop steps it about every 20 s, and the pool's own thread steps it when that loop has been quiet
   for `QUIET_S` (25 s). Jobs and the coordinator's start/stop stay with the loop. A tick held past
   `STALL_S` is taken as hung on the share: the lead grants nothing, its coordinator's answers stop
-  saying its term (`Coordinator::set_member(None)`, until a step runs again) and the status says so.
+  saying its term (`Coordinator::set_member(None)`, until a step runs again) and the status says so,
+  with the manual fix if it lasts: disconnect that Mac's SMB session in DSM (docs/macs.md). Nothing
+  remounts a hung share by itself (the self-heal's remount waits for idle slots, `crate::agent::heal`).
 - **Late, not gone:** every coordinator answer carries `x-pool-term` and `x-pool-member`, except
   while its Mac has lost the NAS or its pool step is taken as hung; a lead whose heartbeat is stale but whose coordinator answered
   with them within `ANSWERED_S` is shown as late, and isn't taken over by itself.

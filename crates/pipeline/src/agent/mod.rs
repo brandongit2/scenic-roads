@@ -291,6 +291,8 @@ const WORLDWIDE_STEPS: [&str; 10] = [
 /// The loop's pool steps passed over in a row, a tick holding the run, before the status says the
 /// pool's step hangs (about a minute of the loop's steps; or at once past `STALL_S`).
 const HUNG_SKIPS: u32 = 3;
+/// What the coordinator says while its pool step hangs on the share (`Agent::pool_skipped`).
+const HUNG: &str = "its pool step hangs (the NAS not answering)";
 /// How long the loop tries for the run when no tick is said to hold it (the pool's thread's moment's
 /// check, or a tick begun and not yet said), before passing its pool step over.
 const TRY_FOR: Duration = Duration::from_millis(200);
@@ -9858,7 +9860,7 @@ impl Agent {
             }
             self.pool_hung = since;
             if let Some(co) = &self.coord {
-                co.set_moving(Some("its pool step hangs (the NAS not answering)".into()));
+                co.set_moving(Some(HUNG.into()));
                 // (Its answers say no term: its members take over once its heartbeat is silent,
                 // rather than count it late, not gone; the next pool step that runs says it again.)
                 co.set_member(None);
@@ -9876,7 +9878,7 @@ impl Agent {
             }
         }
         let why = if self.pool_hung.is_some() {
-            format!("its step on the pool's thread has hung for {} min (the NAS isn't answering it): nothing is granted or started on its behalf until it ends", held / 60)
+            format!("its step on the pool's thread has hung for {} min (the NAS isn't answering it): nothing is granted or started on its behalf until it ends; if it lasts, disconnect this Mac's SMB session in DSM (Control Panel → File Services → SMB, or Resource Monitor → Connections; docs/macs.md)", held / 60)
         } else if self.pool_skips >= HUNG_SKIPS {
             format!("its step on the pool's thread has been under way {held} s (its share slow to answer): nothing is granted or started on its behalf until it ends")
         } else {
@@ -15847,7 +15849,7 @@ mod pool_tests {
         assert!(a.pool_skips == 1 && a.pool_hung.is_none() && a.published.is_some(), "a minute: under way");
         ticking.start_at(pool::Ticking::awake() - crate::pool::driver::STALL_S - 1);
         a.step().unwrap();
-        assert_eq!(moving(&a).as_deref(), Some("its pool step hangs (the NAS not answering)"));
+        assert_eq!(moving(&a).as_deref(), Some(HUNG));
         assert!(a.published.is_none() && a.pool_hung.is_some(), "its contact off the NAS");
         let member = |a: &Agent| a.coord.as_ref().unwrap().shared.lock().unwrap().pool_member.clone();
         assert_eq!(member(&a), None, "its answers say no term: not late, not gone");
@@ -15866,7 +15868,7 @@ mod pool_tests {
         a.step().unwrap();
         assert!(a.pool_hung.is_none() && a.pool_skips == 0 && a.published.is_some());
         assert!(member(&a).is_some(), "its term said again");
-        assert_ne!(moving(&a).as_deref(), Some("its pool step hangs (the NAS not answering)"));
+        assert_ne!(moving(&a).as_deref(), Some(HUNG));
         let st = read_status(Some(&r), &a.o.home).unwrap();
         assert!(!st.waiting.iter().any(|w| w.why.contains("has hung")), "{:?}", st.waiting);
         stop_jobs(&mut a);
