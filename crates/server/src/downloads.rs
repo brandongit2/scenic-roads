@@ -46,7 +46,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use pipeline::areafiles::{detail_of, files_of, outer_rings, tiles_meeting, Files, NEAR_KM};
+use pipeline::areafiles::{box_meets, detail_of, files_of, outer_rings, tiles_meeting, Files, NEAR_KM};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -147,8 +147,9 @@ pub struct RegionParts {
     pub near: Vec<String>,
 }
 
-/// The owner units (tile keys) of the ways each hidata lists (`here`), by its content name.
-type Owners = std::collections::HashMap<String, Arc<BTreeSet<u64>>>;
+/// By (region id, z6 tile): the hidata's content name read, and the owner units (tile keys) of the
+/// ways it lists (`here`) whose boxes meet the region's outline grown by `NEAR_KM`.
+type Owners = std::collections::HashMap<(String, String), (String, Arc<BTreeSet<u64>>)>;
 
 /// Every region the catalog records, what downloading it copies, by id.
 type Regions = Arc<BTreeMap<String, RegionParts>>;
@@ -293,7 +294,7 @@ impl Downloads {
                     let r: Regions = Arc::new(
                         crate::regions::recorded(&cat)
                             .iter()
-                            .map(|r| (r.id.clone(), region_parts(&cat, &outer_rings(r), &owners)))
+                            .map(|r| (r.id.clone(), region_parts(&cat, &outer_rings(r), &units_of(&owners, &r.id))))
                             .collect(),
                     );
                     *g = Some((generation, changes, r.clone()));
@@ -310,48 +311,72 @@ impl Downloads {
 
 impl Downloads {
     /// Reads the owners of the ways the downloaded regions' hidata list, where not known yet: from
-    /// this Mac's copy, else the NAS. A region keeps its ways' owners' base packs and road values
-    /// (`area_part`), so a way drawn in it that starts far outside has its info away from the NAS.
-    /// Whether every one is known (an unread one is tried again next round). Learning any
-    /// changes the plan.
+    /// this Mac's copy, else the NAS. A region keeps the base packs and road values of the owners
+    /// of those ways whose boxes meet its outline grown by `NEAR_KM` (`area_part`), so a way drawn
+    /// in it that starts far outside has its info away from the NAS. Whether every one is known
+    /// for the catalog served: a hidata that can't be read keeps what was known of its tile, and is
+    /// tried again next round. A change changes the plan.
     fn learn_owners(&self, data: &Data, plan: &Plan) -> bool {
         let cat = data.catalog();
-        let mut tiles: BTreeSet<&str> = BTreeSet::new();
-        for r in &plan.asked.regions {
-            tiles.extend(plan.regions.get(&r.id).into_iter().flat_map(|p| p.near.iter().map(String::as_str)));
-        }
+        let drawn = crate::regions::recorded(&cat);
         let known = self.owners.lock().unwrap().1.clone();
-        let mut next: Owners = Owners::new();
-        let (mut complete, mut learnt) = (true, false);
-        for t in tiles {
-            let Some(content) = cat.hidata.get(t).and_then(|l| cat.content(l)) else { continue };
-            if let Some(o) = known.get(content) {
-                next.insert(content.to_string(), o.clone());
+        let mut next = Owners::new();
+        let mut complete = true;
+        for asked in &plan.asked.regions {
+            let (Some(parts), Some(r)) = (plan.regions.get(&asked.id), drawn.iter().find(|d| d.id == asked.id)) else {
                 continue;
-            }
-            let read = data.hidata(t).and_then(|hv| {
-                let Some(hv) = hv else { return Ok(BTreeSet::new()) };
-                let all = hv.here.all()?;
-                Ok(all.cast::<roadcore::packs::Here>().iter().map(|h| h.owner).collect())
-            });
-            match read {
-                Ok(o) => {
-                    next.insert(content.to_string(), Arc::new(o));
-                    learnt = true;
+            };
+            let rings = outer_rings(r);
+            for t in &parts.near {
+                let Some(content) = cat.hidata.get(t).and_then(|l| cat.content(l)) else { continue };
+                let key = (asked.id.clone(), t.clone());
+                let old = known.get(&key);
+                if let Some(o) = old.filter(|o| o.0 == content) {
+                    next.insert(key, o.clone());
+                    continue;
                 }
-                Err(e) => {
-                    eprintln!("mirror: the owners of hidata {t}'s ways: {e:#}");
-                    complete = false;
+                match owners_near(data, t, &rings) {
+                    Ok(o) => {
+                        next.insert(key, (content.to_string(), Arc::new(o)));
+                    }
+                    Err(e) => {
+                        eprintln!("mirror: the owners of hidata {t}'s ways: {e:#}");
+                        complete = false;
+                        if let Some(o) = old {
+                            next.insert(key, o.clone());
+                        }
+                    }
                 }
             }
         }
-        if learnt || next.len() != known.len() {
+        let same = next.len() == known.len()
+            && next.iter().all(|(k, v)| known.get(k).is_some_and(|o| o.0 == v.0 && Arc::ptr_eq(&o.1, &v.1)));
+        if !same {
             let mut g = self.owners.lock().unwrap();
             *g = (g.0 + 1, Arc::new(next));
             self.version.fetch_add(1, Ordering::SeqCst);
         }
         complete
     }
+}
+
+/// The owners of the ways a z6 tile's hidata lists ("6/x/y") whose boxes meet `rings` grown by
+/// `NEAR_KM`. An owner kept isn't tested again; the box's own test first.
+fn owners_near(data: &Data, tile: &str, rings: &[Vec<[f64; 2]>]) -> Result<BTreeSet<u64>> {
+    let Some(hv) = data.hidata(tile)? else { return Ok(BTreeSet::new()) };
+    let all = hv.here.all()?;
+    let mut out = BTreeSet::new();
+    for h in all.cast::<roadcore::packs::Here>() {
+        if !out.contains(&h.owner) && box_meets(rings, h.bbox.map(|v| f64::from(v) / 1e7), NEAR_KM) {
+            out.insert(h.owner);
+        }
+    }
+    Ok(out)
+}
+
+/// The owner units a region's download keeps, as far as they're known.
+fn units_of(owners: &Owners, region: &str) -> BTreeSet<u64> {
+    owners.iter().filter(|((r, _), _)| r == region).flat_map(|(_, (_, o))| o.iter().copied()).collect()
 }
 
 fn make_plan(cat: &Catalog, generation: u64, version: u64, asked: Asked, regions: Regions) -> Plan {
@@ -381,18 +406,12 @@ fn world_part(cat: &Catalog) -> Part {
 }
 
 /// A region's download (`rings`, each read as a filled area): its files, with the base packs and
-/// road values of the owners of the ways its tiles' hidata list (as far as `owners` knows them),
-/// then its basemap pieces.
-fn area_part(cat: &Catalog, rings: &[Vec<[f64; 2]>], owners: &Owners) -> Part {
+/// road values of `units` (the owners of its ways, `Downloads::learn_owners`), then its basemap
+/// pieces.
+fn area_part(cat: &Catalog, rings: &[Vec<[f64; 2]>], units: &BTreeSet<u64>) -> Part {
     let tiles = tiles_meeting(rings, NEAR_KM);
     let mut files: BTreeMap<String, u64> = files_of(cat, rings).names.into_iter().collect();
-    let units: BTreeSet<u64> = tiles
-        .iter()
-        .filter_map(|(x, y)| cat.hidata.get(&format!("6/{x}/{y}")).and_then(|l| cat.content(l)))
-        .filter_map(|c| owners.get(c))
-        .flat_map(|o| o.iter().copied())
-        .collect();
-    for u in units {
+    for &u in units {
         let unit = crate::ways::unit_str(u);
         for l in [cat.base.get(&unit), cat.roads.get(&unit)].into_iter().flatten() {
             if let Some(f) = cat.files.get(l) {
@@ -405,14 +424,14 @@ fn area_part(cat: &Catalog, rings: &[Vec<[f64; 2]>], owners: &Owners) -> Part {
 }
 
 /// A region's downloads (`rings`, its outer rings): the region, and its terrain detail.
-fn region_parts(cat: &Catalog, rings: &[Vec<[f64; 2]>], owners: &Owners) -> RegionParts {
+fn region_parts(cat: &Catalog, rings: &[Vec<[f64; 2]>], units: &BTreeSet<u64>) -> RegionParts {
     let (files, cover) = detail_of(cat, rings);
     let near = tiles_meeting(rings, NEAR_KM)
         .into_iter()
         .map(|(x, y)| format!("6/{x}/{y}"))
         .filter(|k| cat.hidata.contains_key(k))
         .collect();
-    RegionParts { coarse: area_part(cat, rings, owners), detail: Part::new(cat, files, &[], &[]), cover, near }
+    RegionParts { coarse: area_part(cat, rings, units), detail: Part::new(cat, files, &[], &[]), cover, near }
 }
 
 fn basemap_archives(cat: &Catalog) -> Vec<String> {
@@ -463,13 +482,29 @@ fn once(s: &crate::AppState, m: &Mirror) -> bool {
     if cat.n == 0 {
         return false;
     }
+    // While a downloaded region's hidata is unread, its owners can't be told: every base pack and
+    // road values here stay (at home too: a NAS hiccup mustn't let them go).
+    let keep;
+    let wanted = if owners_known {
+        &plan.wanted
+    } else {
+        let mut w = plan.wanted.clone();
+        let mut seen: std::collections::HashSet<Item> = w.items.iter().cloned().collect();
+        for f in cat.base.values().chain(cat.roads.values()).filter_map(|l| cat.files.get(l)) {
+            if m.has(&f.file) {
+                w.push(Item::File { name: f.file.clone(), size: f.size }, &mut seen);
+            }
+        }
+        keep = w;
+        &keep
+    };
     match (s.data.nas_root(), s.data.pool()) {
         (Some(root), Some(pool)) if pool.is_online() => {
-            let wanted = plan.wanted.items.iter().filter_map(|i| match i {
+            let pieces = plan.wanted.items.iter().filter_map(|i| match i {
                 Item::Piece { archive, piece } => Some((archive.as_str(), *piece)),
                 Item::File { .. } => None,
             });
-            if let Err(e) = size_pieces(m, wanted, &root, &pool, &changed) {
+            if let Err(e) = size_pieces(m, pieces, &root, &pool, &changed) {
                 eprintln!("mirror: sizing the basemap's pieces: {e:#}");
             }
             let slow = || s.data.agent_busy();
@@ -478,7 +513,7 @@ fn once(s: &crate::AppState, m: &Mirror) -> bool {
             if MIRROR_MARKS.lock().unwrap().start(cat.n, now()) {
                 crate::data::publish_event(&root, "mirror-start", cat.n, None);
             }
-            match m.sync(&cat, &plan.wanted, &root, &pool, &Control { stop: &changed, slow: &slow }) {
+            match m.sync(&cat, wanted, &root, &pool, &Control { stop: &changed, slow: &slow }) {
                 Ok(st) => {
                     let through =
                         st.end == store::mirror::SyncEnd::Done && st.waiting == 0 && st.failed == 0 && st.pending == 0;
@@ -502,10 +537,8 @@ fn once(s: &crate::AppState, m: &Mirror) -> bool {
                 eprintln!("mirror: sizing the basemap's pieces: {e:#}");
             }
         }
-        // Away from home: what isn't downloaded goes all the same; nothing while an owner's files
-        // can't be told (a hidata not read yet).
-        _ if !owners_known => {}
-        _ => match m.sync_away(&cat, &plan.wanted) {
+        // Away from home: what isn't downloaded goes all the same.
+        _ => match m.sync_away(&cat, wanted) {
             Ok(st) if st.removed > 0 => eprintln!("mirror (away): {st:?}"),
             Ok(_) => {}
             Err(e) => eprintln!("mirror: {e:#}"),

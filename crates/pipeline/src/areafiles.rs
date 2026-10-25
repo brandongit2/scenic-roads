@@ -246,6 +246,16 @@ pub fn tiles_meeting(rings: &[Vec<[f64; 2]>], km: f64) -> BTreeSet<(u32, u32)> {
     out
 }
 
+/// Whether a box ([w, s, e, n], degrees) grown by `km` meets an area (`rings`, each read as a filled
+/// area; longitudes may run past ±180, so the box is tried a turn east too).
+pub fn box_meets(rings: &[Vec<[f64; 2]>], b: [f64; 4], km: f64) -> bool {
+    let (dlat, dlon) = (km / 111.32, km_lon(km, b[1].abs().max(b[3].abs())));
+    [0.0, 360.0].iter().any(|shift| {
+        let g = [b[0] - dlon + shift, b[1] - dlat, b[2] + dlon + shift, b[3] + dlat];
+        rings.iter().filter(|r| r.len() >= 3).any(|r| ring_meets_box(r, g))
+    })
+}
+
 /// Whether a ring (read as a filled area) and a box [w, s, e, n] meet.
 fn ring_meets_box(ring: &[[f64; 2]], b: [f64; 4]) -> bool {
     if ring.iter().any(|p| p[0] >= b[0] && p[0] <= b[2] && p[1] >= b[1] && p[1] <= b[3]) {
