@@ -1104,7 +1104,7 @@ next process; the HTTP path keeps that (below).
   written, then what it read dropped from the inbox. A forgotten member's dropped.
 - **The member**: each message to the current lead is posted with every earlier one the lead's
   coordinator hasn't taken (`Mail::posted`), so a mailbox message not read yet rides along too.
-  Anything but a 200 taking them all (unreachable, 404, 409, 5xx, a 15 s timeout): the mailbox is
+  Anything but a 200 taking them all (unreachable, 404, 409, 5xx, 15 s an address gone by): the mailbox is
   written as before, and HTTP left alone for 5 minutes (`POST_AGAIN`). A lead changed mid-send is
   either still the member the message is to (it takes it) or refuses it (mailbox); either way the
   driver re-tells the new lead.
