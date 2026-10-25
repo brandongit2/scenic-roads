@@ -194,14 +194,19 @@ prune_target() {
   local p e stale=() kb
   # (target/<profile>, and target/<triple>/<profile> of the WebAssembly builds: each once.)
   for p in target/*/(N/) target/*-*/release(N/); do
-    # (Files only: a folder's access time changes when it is listed, by this sweep too.)
-    stale+=(${(f)"$(find $p/deps -mindepth 1 -maxdepth 1 -type f ! -newerat '2 days ago' ! -newermt '2 days ago' 2>/dev/null)"})
+    # (Files only: a folder's access time changes when it is listed, by this sweep too. `|| true`: a
+    # profile without deps/, target/tmp, makes find fail, which under errexit ended the publish.)
+    stale+=(${(f)"$(find $p/deps -mindepth 1 -maxdepth 1 -type f ! -newerat '2 days ago' ! -newermt '2 days ago' 2>/dev/null || true)"})
     for e in $p/{build,incremental,.fingerprint}/*(ND/); do
-      [[ -z $(find $e -type f \( -newerat '2 days ago' -o -newermt '2 days ago' \) 2>/dev/null | head -1) ]] && stale+=($e)
+      # (`if`, not `&&`: under errexit a false test as a loop's last command ended the publish silently.)
+      if [[ -z $(find $e -type f \( -newerat '2 days ago' -o -newermt '2 days ago' \) -print -quit 2>/dev/null || true) ]]; then stale+=($e); fi
     done
   done
-  kb=$( (( $#stale )) && print -rN -- $stale | xargs -0 du -sk 2>/dev/null | awk '{s+=$1} END {print s+0}' || print 0)
-  (( $#stale )) && print -rN -- $stale | xargs -0 rm -rf
+  kb=0
+  if (( $#stale )); then
+    kb=$(print -rN -- $stale | xargs -0 du -sk 2>/dev/null | awk '{s+=$1} END {print s+0}')
+    print -rN -- $stale | xargs -0 rm -rf
+  fi
   print -r -- "build folder: $(( kb / 1024 )) MB of old builds removed, $(du -sh target 2>/dev/null | cut -f1) left"
 }
 prune_target
