@@ -414,11 +414,11 @@ async function run() {
         const p = await at(sel, where);
         if (!p) return null;
         await sleep(300);
-        if (PHONE) await tap(p[0], p[1]);
+        if (PHONE) { await tap(p[0], p[1]); await sleep(300); }
         else { await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: p[0], y: p[1] }); await sleep(300); }
         const r = await js(`(() => { const t = [...document.querySelectorAll(".card-tip")].find((e) => e.getClientRects().length && !e.hidden); if (!t) return null; const b = t.getBoundingClientRect(), m = t.querySelector(".tc-map"); return { wide: !!t.querySelector(".tc-head.wide"), parts: [".tc-sw", ".tc-kick", ".tc-title", ".cstats", ".ckv", ".tc-foot"].filter((s) => !t.querySelector(s)), title: t.querySelector(".tc-title")?.textContent, kick: t.querySelector(".tc-kick")?.textContent, w: Math.round(b.width), top: b.top, bottom: b.bottom, h: b.height, max: innerHeight / 2, map: m ? Math.round(m.getBoundingClientRect().width) : 0 }; })()`);
         if (PHONE) await js(`document.querySelector(".card-tip.pinned .x")?.click()`);
-        return r && { ...r, y: p[1] };
+        return { ...(r || { none: true }), y: p[1] };
       };
       const wide = Math.min(560, WIDTH - 16);
       const sc = await card(".stages > .st .title");
@@ -426,7 +426,8 @@ async function run() {
       if (sc && !PHONE) check("jobs card: off the pointer's line, ≤ 50svh (#627)", (sc.top >= sc.y || sc.bottom <= sc.y) && sc.h <= sc.max + 1, `${Math.round(sc.top)}–${Math.round(sc.bottom)}, pointer ${Math.round(sc.y)}`);
       // (A job of a step whose targets are tiles: its map drawn.)
       const jc = await card(".cells > .jb.c-run, .cells > .jb.c-done", ` && ${JSON.stringify(tiled)}.includes(e.parentElement.previousElementSibling?.querySelector(".title")?.firstChild?.textContent)`);
-      if (!jc) check("jobs card: a job's named as the code names it, a world map of its tiles", !(await js(`!!document.querySelector(".cells > .jb")`)), "a job's box shown, no card on it");
+      if (!jc) console.log("INFO jobs card: no finished or running job of a tiled step shown (the live build's state), its map not checked");
+      else if (jc.none) check("jobs card: a job's named as the code names it, a world map of its tiles", false, "no card shown on a job's box");
       else check("jobs card: a job's named as the code names it, a world map of its tiles", jc.wide && steps.has(String(jc.title).split(/[ :]/)[0]) && jc.map > 0 && (PHONE || jc.map <= 200), `${jc.kick} / ${jc.title}, map ${jc.map} px`);
       if (!PHONE) await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 2, y: 2 });
       check("#659: no console errors", !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
