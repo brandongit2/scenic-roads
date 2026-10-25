@@ -2494,13 +2494,13 @@ impl Agent {
                 let unit = task["unit"].as_str().unwrap_or("").to_string();
                 self.slots[k].lease = Some(Held::Leased { lease, dir });
                 let what = if task["runs"][0]["prog"] == crate::bld::task::KIND {
-                    format!("3D buildings of the lead's z8 tile {unit}")
+                    format!("{}: z8 tile {unit}", crate::bld::task::KIND)
                 } else if task["runs"][0]["what"] == crate::trees::task::KIND {
-                    format!("Tree cover of the lead's blocks {}", task["blocks"].as_str().unwrap_or(&unit))
+                    format!("{}: blocks {}", crate::trees::task::KIND, task["blocks"].as_str().unwrap_or(&unit))
                 } else if task["runs"][0]["what"] == crate::terrain_task::KIND {
-                    format!("Terrain of the lead's subtrees {}", task["subtrees"].as_str().unwrap_or(&unit))
+                    format!("{}: subtrees {}", crate::terrain_task::KIND, task["subtrees"].as_str().unwrap_or(&unit))
                 } else {
-                    format!("Scenery for the lead's z6 tile {unit}")
+                    format!("tail {unit}")
                 };
                 Some((
                     k,
@@ -5977,11 +5977,11 @@ impl Agent {
                             .to_string()
                     }
                 };
-                h.why.push(Waiting { step: Some(w.step.clone()), what: steps::title(&w.step).into(), why: format!("{n_all} target{s} need{v} about {:.1} GB, past the lead's limit of {:.1} GB; this step runs only on the lead. {remedy} (`scenic pool floors --clear` once it's fixed)", gb(need), gb(limit)) });
+                h.why.push(Waiting { step: Some(w.step.clone()), what: steps::current(&w.step).into(), why: format!("{n_all} target{s} need{v} about {:.1} GB, past the lead's limit of {:.1} GB; this step runs only on the lead. {remedy} (`scenic pool floors --clear` once it's fixed)", gb(need), gb(limit)) });
             } else if n_all > 0 {
-                h.why.push(Waiting { step: Some(w.step.clone()), what: steps::title(&w.step).into(), why: format!("{n_all} target{} need{} about {:.1} GB, more than any Mac in the pool has (the most: {:.1} GB): a step whose memory grows with its target, for the owner to see to (`scenic pool floors --clear` once it's fixed)", if n_all == 1 { "" } else { "s" }, if n_all == 1 { "s" } else { "" }, gb(need), gb(most)) });
+                h.why.push(Waiting { step: Some(w.step.clone()), what: steps::current(&w.step).into(), why: format!("{n_all} target{} need{} about {:.1} GB, more than any Mac in the pool has (the most: {:.1} GB): a step whose memory grows with its target, for the owner to see to (`scenic pool floors --clear` once it's fixed)", if n_all == 1 { "" } else { "s" }, if n_all == 1 { "s" } else { "" }, gb(need), gb(most)) });
             } else if n_here > 0 {
-                h.why.push(Waiting { step: Some(w.step.clone()), what: steps::title(&w.step).into(), why: format!("{n_here} target{} need{} about {:.1} GB, past this Mac's limit of {:.1} GB: left to a Mac with room", if n_here == 1 { "" } else { "s" }, if n_here == 1 { "s" } else { "" }, gb(need), gb(limit)) });
+                h.why.push(Waiting { step: Some(w.step.clone()), what: steps::current(&w.step).into(), why: format!("{n_here} target{} need{} about {:.1} GB, past this Mac's limit of {:.1} GB: left to a Mac with room", if n_here == 1 { "" } else { "s" }, if n_here == 1 { "s" } else { "" }, gb(need), gb(limit)) });
             }
         }
         h
@@ -7009,7 +7009,7 @@ impl Agent {
         if self.due("backup", Duration::from_secs(86400)) {
             out.push(JobSpec {
                 id: "backup".into(),
-                what: steps::title("backup").into(),
+                what: "backup".into(),
                 cmd: vec![
                     s(&me),
                     "backup".into(),
@@ -7026,7 +7026,7 @@ impl Agent {
         if self.due("gc", Duration::from_secs(86400)) {
             out.push(JobSpec {
                 id: "gc".into(),
-                what: steps::title("gc").into(),
+                what: "gc".into(),
                 cmd: vec![s(&me), "gc".into(), "--root".into(), s(root)],
                 needs: Needs { nas: true },
                 restart_after_sleep: true,
@@ -7129,7 +7129,7 @@ impl Agent {
             let mut cmd =
                 vec![build_bin.clone(), step.to_string(), "--root".into(), s(root), "--scratch".into(), s(&scratch)];
             cmd.extend(extra);
-            let what = steps::title(step_of(&id).as_deref().unwrap_or(step)).to_string();
+            let what = steps::current(step_of(&id).as_deref().unwrap_or(step)).to_string();
             // (Every job needs the NAS; none waits for power or home, the owner's choice: the pass's
             // whole-planet reads go over Tailscale when away, slowly.)
             JobSpec { id, what, cmd, needs: Needs { nas: true }, restart_after_sleep: true, record }
@@ -7162,7 +7162,7 @@ impl Agent {
                 }
                 waiting.push(Waiting {
                     step: Some("outlines".into()),
-                    what: steps::title("outlines").into(),
+                    what: "outlines".into(),
                     why: format!(
                         "failed {failures} times in a row: the rest goes on with the outlines the pass has meanwhile"
                     ),
@@ -7180,7 +7180,7 @@ impl Agent {
                     crate::reach::LoadError::Bad(e) => {
                         waiting.push(Waiting {
                             step: None,
-                            what: steps::stage_title("roads").into(),
+                            what: "roads".into(),
                             why: format!("the pass's reaches don't read ({e}); making them again"),
                         });
                         if let Some(k) = build::reach_key(date, &manifest) {
@@ -7192,7 +7192,7 @@ impl Agent {
                     }
                     crate::reach::LoadError::Io(e) => waiting.push(Waiting {
                         step: None,
-                        what: steps::stage_title("roads").into(),
+                        what: "roads".into(),
                         why: format!("the pass's reaches can't be read now: {e}"),
                     }),
                 }
@@ -7242,14 +7242,14 @@ impl Agent {
             } else if table.is_none() && manifest.contains_key(&format!("sources/osm/{date}/outlines")) {
                 waiting.push(Waiting {
                     step: Some("spoken".into()),
-                    what: steps::title("spoken").into(),
+                    what: "spoken".into(),
                     why: "the languages' first accepted version (the input check takes inputs/languages/ in)".into(),
                 });
             }
             if !manifest.contains_key(&crate::inputs::logical(crate::inputs::heritage::UNIT)) {
                 waiting.push(Waiting {
                     step: Some("heritage-sites".into()),
-                    what: steps::title("heritage-sites").into(),
+                    what: "heritage-sites".into(),
                     why: "the heritage registers' first accepted version (the input check takes inputs/heritage/ in)"
                         .into(),
                 });
@@ -7263,11 +7263,7 @@ impl Agent {
             match crate::lakefill::run::planned_source(root, &manifest) {
                 Err(e) => {
                     held.lakefill = true;
-                    waiting.push(Waiting {
-                        step: Some("lakefill".into()),
-                        what: steps::title("lakefill").into(),
-                        why: e,
-                    });
+                    waiting.push(Waiting { step: Some("lakefill".into()), what: "lakefill".into(), why: e });
                 }
                 Ok(source) => {
                     let lakefill = build::lakefill_work(date, &manifest, &keys, source.as_deref());
@@ -7275,7 +7271,7 @@ impl Agent {
                     held.lakefill = build::water_waits_for_lakefill(lakefill.is_some(), failures);
                     if let Some(w) = lakefill {
                         if failures >= build::LAKEFILL_HOLDS {
-                            waiting.push(Waiting { step: Some("lakefill".into()), what: steps::title("lakefill").into(), why: format!("failed {failures} times in a row: the water, terrain and map go without this pass's fill meanwhile") });
+                            waiting.push(Waiting { step: Some("lakefill".into()), what: "lakefill".into(), why: format!("failed {failures} times in a row: the water, terrain and map go without this pass's fill meanwhile") });
                         }
                         jobs.push(job(format!("lakefill {date}"), "lakefill", p.clone(), Some(w)));
                     }
@@ -7312,7 +7308,7 @@ impl Agent {
         {
             waiting.push(Waiting {
                 step: Some("names-todo".into()),
-                what: steps::title("names-todo").into(),
+                what: "names-todo".into(),
                 why: "the translations' or the descriptions' first accepted version (the input check takes them in)"
                     .into(),
             });
@@ -7406,21 +7402,21 @@ impl Agent {
         }
         let reach = self.current_reach(root, &manifest, &done, date).ok().flatten();
         if !manifest.contains_key(&crate::inputs::logical(crate::inputs::feeds::UNIT)) {
-            waiting.push(Waiting { step: None, what: steps::stage_title("trains").into(), why: "the timetable feeds' declarations' first accepted version (inputs/timetables/feeds/: the input check takes them in)".into() });
+            waiting.push(Waiting { step: None, what: "trains".into(), why: "the timetable feeds' declarations' first accepted version (inputs/timetables/feeds/: the input check takes them in)".into() });
         } else if inputs.get("keys").map(String::as_str) == Some("?") {
             waiting.push(Waiting {
                 step: None,
-                what: steps::stage_title("trains").into(),
+                what: "trains".into(),
                 why: "inputs/keys.env can't be read now".into(),
             });
         } else if inputs.get("feed-keys").map(String::as_str) == Some("?") {
             waiting.push(Waiting {
                 step: None,
-                what: steps::stage_title("trains").into(),
+                what: "trains".into(),
                 why: "the timetable feeds' accepted declarations can't be read now".into(),
             });
         } else if let Some(why) = missing_feed_keys(&inputs) {
-            waiting.push(Waiting { step: None, what: steps::stage_title("trains").into(), why });
+            waiting.push(Waiting { step: None, what: "trains".into(), why });
         }
         // (The ferries count the ferry feeds: without their list, rail-feeds' to make, they wait.)
         if manifest.contains_key(&crate::osmpass::set_name(date, "ferries"))
@@ -7428,7 +7424,7 @@ impl Agent {
         {
             waiting.push(Waiting {
                 step: Some("ferries".into()),
-                what: steps::title("ferries").into(),
+                what: "ferries".into(),
                 why: "the ferry feeds' list (rail-feeds makes it once the timetable feeds' declarations are accepted)"
                     .into(),
             });
@@ -7438,24 +7434,16 @@ impl Agent {
         if !manifest.contains_key(&crate::inputs::logical(crate::inputs::gtfs::UNIT)) {
             let why = "the static timetables' first accepted version (inputs/timetables/gtfs/: the input check takes them in)";
             if manifest.contains_key(crate::rail::FEEDS) {
-                waiting.push(Waiting {
-                    step: Some("rail".into()),
-                    what: steps::stage_title("trains").into(),
-                    why: why.into(),
-                });
+                waiting.push(Waiting { step: Some("rail".into()), what: "trains".into(), why: why.into() });
             }
             if manifest.contains_key(&crate::osmpass::set_name(date, "ferries")) {
-                waiting.push(Waiting {
-                    step: Some("ferries".into()),
-                    what: steps::title("ferries").into(),
-                    why: why.into(),
-                });
+                waiting.push(Waiting { step: Some("ferries".into()), what: "ferries".into(), why: why.into() });
             }
         }
         if inputs.get("bld-release").map(String::as_str) == Some("?") {
             waiting.push(Waiting {
                 step: None,
-                what: steps::stage_title("buildings").into(),
+                what: "buildings".into(),
                 why: "the 3D buildings' sources' indexes on the NAS can't be read now".into(),
             });
         }
@@ -7516,7 +7504,7 @@ impl Agent {
         if let Some(why) = build::heritage_awaits_acceptance(cov, date, &manifest, &inputs) {
             waiting.push(Waiting {
                 step: Some("heritage-sites".into()),
-                what: steps::stage_title("sites").into(),
+                what: "sites".into(),
                 why: format!("the regions' z6 tiles wait: {why}"),
             });
         }
@@ -7524,7 +7512,7 @@ impl Agent {
         if manifest.contains_key(&format!("work/summits/{date}")) && !build::z8_built(&manifest, &inputs) {
             waiting.push(Waiting {
                 step: Some("peaks".into()),
-                what: steps::title("peaks").into(),
+                what: "peaks".into(),
                 why: build::PEAKS_Z8_WAIT.into(),
             });
         }
@@ -7540,7 +7528,7 @@ impl Agent {
                     format!("the terrain's indexes can't be read now for {} of them{why}", planned.unknown.len())
                 }
             };
-            waiting.push(Waiting { step: Some("unit".into()), what: steps::stage_title("roads").into(), why });
+            waiting.push(Waiting { step: Some("unit".into()), what: "roads".into(), why });
         }
         let edit_hold = edit_held(self.edited_at.get(), std::time::SystemTime::now());
         // (Hand-offs of a step a catalog waits for (build::CATALOG_GATE: the map tiles, the road
@@ -7596,7 +7584,7 @@ impl Agent {
         if let Some(why) = credits_unread.filter(|_| plan.iter().any(|w| w.step == "catalog")) {
             waiting.push(Waiting {
                 step: Some("catalog".into()),
-                what: steps::stage_title("publish").into(),
+                what: "publish".into(),
                 why: format!("the inputs' descriptions (their credits) can't be read now: {why}"),
             });
             planned.publishing.why = "the catalog waits for the inputs' descriptions to be read".into();
@@ -7625,7 +7613,7 @@ impl Agent {
             held_back = true;
             waiting.push(Waiting {
                 step: Some("catalog".into()),
-                what: steps::stage_title("publish").into(),
+                what: "publish".into(),
                 why: "waits for a helper's work to be merged".into(),
             });
             planned.publishing.why = "the catalog waits for a helper's work to be merged".into();
@@ -7718,7 +7706,7 @@ impl Agent {
             for w in plan.iter_mut().filter(|w| !w.targets.is_empty() && c.cold_under_way(&w.step)) {
                 waiting.push(Waiting {
                     step: Some(w.step.clone()),
-                    what: steps::title(&w.step).to_string(),
+                    what: steps::current(&w.step).to_string(),
                     why: "its first job, never measured, runs on another member now: its others wait for its measure"
                         .into(),
                 });
@@ -7836,7 +7824,7 @@ impl Agent {
                 if done.catalog_held.as_deref() == Some(k.as_str()) {
                     waiting.push(Waiting {
                         step: None,
-                        what: steps::stage_title("publish").into(),
+                        what: "publish".into(),
                         why: "held for review (inputs/hold-catalog); its catalog is in catalog-held/".into(),
                     });
                     continue;
@@ -8459,10 +8447,7 @@ impl Agent {
             left: Some(l as usize),
             ..Default::default()
         }));
-        next.insert(
-            "pass",
-            WORLDWIDE_STEPS.iter().zip(left).filter(|(_, l)| *l).map(|(s, _)| steps::title(s).to_string()).collect(),
-        );
+        next.insert("pass", WORLDWIDE_STEPS.iter().zip(left).filter(|(_, l)| *l).map(|(s, _)| s.to_string()).collect());
         if regions.is_empty() {
             return build::fold(&items, &next, &notes);
         }
@@ -14335,15 +14320,11 @@ mod tests {
     fn the_checklist_says_which_steps_helpers_take() {
         let steps = build::fold(&build::checklist_to_come(), &BTreeMap::new(), &BTreeMap::new());
         let shared = |id: &str| steps.iter().find(|s| s.id == id).and_then(|s| s.shared.clone());
-        assert_eq!(
-            shared("terrain").as_deref(),
-            Some("Terrain and Terrain, deep levels"),
-            "the pieces, not the assemblies"
-        );
-        assert_eq!(shared("slope").as_deref(), Some("Slope, deep levels and Slope"));
+        assert_eq!(shared("terrain").as_deref(), Some("terrain-hi and terrain-deep"), "the pieces, not the assemblies");
+        assert_eq!(shared("slope").as_deref(), Some("slope-deep and slope-hi"));
         assert_eq!(shared("roads").as_deref(), Some("all"));
-        assert_eq!(shared("landmarks").as_deref(), Some("Landmark candidates and Peaks"));
-        assert_eq!(shared("trees").as_deref(), Some("Tree cover"), "the pieces, not the assemblies");
+        assert_eq!(shared("landmarks").as_deref(), Some("pois and peaks"));
+        assert_eq!(shared("trees").as_deref(), Some("trees"), "the pieces, not the assemblies");
         assert_eq!(shared("tiles"), None);
         assert_eq!(shared("publish"), None);
     }
@@ -14399,8 +14380,9 @@ mod tests {
         // (The regions' check of their accepted version comes first, the gate's jobs first of all;
         // the backup after it.)
         assert!(
-            st.waiting.iter().any(|w| w.what == crate::agent::steps::title("backup")
-                || w.what.starts_with("Checking the inputs dropped in regions")),
+            st.waiting
+                .iter()
+                .any(|w| w.what == "backup" || w.what.starts_with("Checking the inputs dropped in regions")),
             "{:?}",
             st.waiting
         );
@@ -15591,7 +15573,7 @@ mod tests {
             ..Default::default()
         };
         let mut l = vec![build::Line {
-            what: "Landmarks".into(),
+            what: "landmarks".into(),
             steps: ["peaks", "heritage", "marks"].iter().map(|s| s.to_string()).collect(),
             done: 4,
             total: Some(4),
@@ -15604,7 +15586,7 @@ mod tests {
         annotate(&mut l, &["heritage".to_string()], &[], &[]);
         assert!(!l[0].finished(), "its step runs");
         assert_eq!(l[0].left, Some(1));
-        assert_eq!(l[0].items[1].left, Some(1), "Heritage details: 1 run left, not done");
+        assert_eq!(l[0].items[1].left, Some(1), "heritage: 1 run left, not done");
         assert!(l[0].items[2].finished());
         // A sized step's: one target under way, the stage's count one fewer. And a helper's job
         // counts as this Mac's does.

@@ -820,7 +820,7 @@ fn status(places: &cli::Places) -> Result<()> {
                     } else {
                         "○"
                     },
-                    agent::steps::title(&i.step),
+                    agent::steps::current(&i.step),
                     count_line(i.done, i.total, i.left, &noun)
                 );
             }
@@ -964,20 +964,19 @@ fn steps(json: bool) -> Result<()> {
         Kind::Keep => "keep",
     };
     let each = |r: &steps::Info| match (&r.of, r.scope) {
-        (Some(of), _) => format!("a task of {}", steps::title(of)),
+        (Some(of), _) => format!("a task of {of}"),
         (None, Scope::World) => "the world".to_string(),
         (None, s) => format!("{} {}", if s == Scope::Input { "an" } else { "a" }, s.noun()),
     };
     for st in steps::STAGES {
-        println!("{}: {}", st.title, st.does);
+        println!("{}: {}", st.id, st.does);
         for r in rows.iter().filter(|r| r.stage == st.id) {
             println!(
-                "  {:<26} {:<8} {:<22} {:<8} {:<16} {}",
-                r.title,
+                "  {:<16} {:<8} {:<22} {:<8} {}",
+                r.id,
                 kind(r.kind),
                 each(r),
                 if r.place == Place::Any { "any Mac" } else { "the lead" },
-                format!("id {}", r.id),
                 r.does
             );
         }

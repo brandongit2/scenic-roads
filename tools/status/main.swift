@@ -535,9 +535,8 @@ struct Step: Decodable {
 
 /// A step's line of a stage (docs/pipeline.md §4): its targets done of total, or left.
 struct Item: Decodable {
+    /// Its step's id, the name it's shown by (task #659), and the noun its targets are counted in.
     let step: String
-    /// Its step's title and the noun its targets are counted in, from the steps table.
-    let title: String
     let noun: String
     let done: Int?
     let total: Int?
@@ -876,7 +875,7 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
             // Its steps, each the same: done, under way or to come, its count in its noun.
             for it in st.items ?? [] {
                 let here = now.contains(it.step)
-                out.append(Line(text: "      \(it.finished ? "✓" : here ? "▸" : "○") \(it.title): \(it.count)", style: .small))
+                out.append(Line(text: "      \(it.finished ? "✓" : here ? "▸" : "○") \(it.step): \(it.count)", style: .small))
             }
             // (Only some of its jobs: which.)
             if let sh = st.shared, sh != "all" { out.append(Line(text: "      ⇄ any Mac can take its \(sh)", style: .small)) }

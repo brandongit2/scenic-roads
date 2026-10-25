@@ -3012,7 +3012,7 @@ pub fn plan(
                         );
                     }
                 } else if gated && catalog.is_none() {
-                    publishing.why = format!("{} next, then a catalog", super::steps::title(&w.step));
+                    publishing.why = format!("{} next, then a catalog", super::steps::current(&w.step));
                 }
                 // (The catalog first: what it waits for is done.)
                 work.extend(catalog.take());
@@ -4292,10 +4292,8 @@ fn depth_next(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, tiles: 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Item {
     pub step: String,
-    /// Its step's title and the noun its targets are counted in (crate::agent::steps), filled as
-    /// the lines are folded: readers without the table (the menu bar) say it so.
-    #[serde(default)]
-    pub title: String,
+    /// The noun its targets are counted in (crate::agent::steps), filled as the lines are folded:
+    /// readers without the table (the menu bar) say it so.
     #[serde(default)]
     pub noun: String,
     #[serde(default)]
@@ -4351,7 +4349,7 @@ pub struct Line {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<Item>,
     /// The jobs still to do, by name, in the order they'll run (a step's runs together, its targets
-    /// counted: "Peaks: 178 z6 tiles"); the first is the one under way.
+    /// counted: "peaks: 178 z6 tiles"); the first is the one under way.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub next: Vec<String>,
     /// While it has work left and isn't this Mac's job now: why (another Mac is on it, it waits
@@ -4446,7 +4444,6 @@ pub fn fold(items: &[Item], next: &BTreeMap<&str, Vec<String>>, notes: &BTreeMap
             continue;
         }
         for i in its.iter_mut() {
-            i.title = steps::title(&i.step).into_owned();
             i.noun = steps::noun(&i.step).into();
         }
         let known = its.iter().all(Item::known);
@@ -4457,7 +4454,7 @@ pub fn fold(items: &[Item], next: &BTreeMap<&str, Vec<String>>, notes: &BTreeMap
         let sized: Vec<&Item> = its.iter().filter(|i| i.total.is_some() && steps::noun(&i.step) == noun).collect();
         out.push(Line {
             id: st.id.into(),
-            what: st.title.into(),
+            what: st.id.into(),
             steps: steps.iter().map(|s| s.to_string()).collect(),
             done: sized.iter().map(|i| i.done).sum(),
             total: (known && !sized.is_empty()).then(|| sized.iter().map(|i| i.total.unwrap_or(0)).sum()),
@@ -4498,7 +4495,7 @@ pub fn mark_shared(lines: &mut [Line]) {
         l.shared = match shared.len() {
             0 => None,
             n if n == l.steps.len() => Some("all".into()),
-            _ => Some(shared.iter().map(|s| super::steps::title(s)).collect::<Vec<_>>().join(" and ")),
+            _ => Some(shared.iter().map(|s| super::steps::current(s)).collect::<Vec<_>>().join(" and ")),
         };
     }
 }
@@ -4625,7 +4622,7 @@ pub fn checklist(
         || !m.contains_key(&crate::heritage::base_logical(date, "heritage-sources"));
     out.push(Item::left("heritage-sites", Some(sites_left as usize)));
     if sites_left {
-        next.insert("sites", vec![super::steps::title("heritage-sites").into()]);
+        next.insert("sites", vec!["heritage-sites".into()]);
     }
     // (A slope target whose key can't be told now isn't done; the deep levels' are known once the
     // fine datasets are read.)
@@ -6885,9 +6882,9 @@ pub(crate) mod tests {
         };
         assert_eq!(
             next_of(&[w("peaks", 12), w("peaks", 166), w("items", 1), w("heritage", 1)]),
-            ["Peaks: 178 z6 tiles", "Wikidata facts", "Heritage details"]
+            ["peaks: 178 z6 tiles", "items", "heritage"]
         );
-        assert_eq!(next_of(&[w("pois", 1), w("marks", 1)]), ["Landmark candidates: 1 z6 tile", "Landmarks"]);
+        assert_eq!(next_of(&[w("pois", 1), w("marks", 1)]), ["pois: 1 z6 tile", "marks"]);
     }
 
     #[test]
@@ -6999,7 +6996,7 @@ pub(crate) mod tests {
         // Each stage's jobs left, by name, in their order (a worldwide step's run one each).
         let roads = line(&l, "finish");
         assert_eq!(Some(roads.next.len()), roads.left, "{:?}", roads.next);
-        assert!(roads.next.iter().all(|n| !n.is_empty() && n != "Catalog"), "{:?}", roads.next);
+        assert!(roads.next.iter().all(|n| !n.is_empty() && n != "catalog"), "{:?}", roads.next);
         assert_eq!(roads.unit, "runs");
         assert!(roads.counts()[0].starts_with(&format!("{} run", roads.left.unwrap())), "{:?}", roads.counts());
         assert_eq!(
@@ -8600,21 +8597,18 @@ pub(crate) mod tests {
                 format!("0 of {} z3 tiles", tt.lo.len())
             ]
         );
-        assert_eq!(b.next[0], "Buildings' sources");
-        assert!(b.next[1].starts_with("Buildings read: "));
+        assert_eq!(b.next[0], "bld-fetch");
+        assert!(b.next[1].starts_with("bldprep: "));
         // Its steps' targets go by tile in the jobs' names.
         assert_eq!(
             next_of(&[Work {
                 step: "bldtiles".into(),
                 targets: vec![("6/1/1".into(), "k".into()), ("6/1/2".into(), "k".into())]
             }]),
-            ["3D buildings: 2 z6 tiles"]
+            ["bldtiles: 2 z6 tiles"]
         );
         let st = fold(&checklist_to_come(), &BTreeMap::new(), &BTreeMap::new());
-        assert_eq!(
-            st.iter().find(|x| x.id == "buildings").unwrap().shared.as_deref(),
-            Some("Buildings read and 3D buildings")
-        );
+        assert_eq!(st.iter().find(|x| x.id == "buildings").unwrap().shared.as_deref(), Some("bldprep and bldtiles"));
         assert!(st.iter().all(|x| x.left.is_none() && x.total.is_none() && !x.finished()), "to come: not sized");
         assert_eq!(st.iter().find(|x| x.id == "roads").unwrap().counts(), ["z6 tiles to come"]);
     }
