@@ -304,12 +304,12 @@ impl Sched {
     }
 
     /// Whether `worker` failed any target (`failed`): its first in the map's order, by worker.
-    fn failed_any(&self, worker: &str) -> bool {
+    pub(super) fn failed_any(&self, worker: &str) -> bool {
         self.failed.range((worker.to_string(), String::new())..).next().is_some_and(|((w, _), _)| w == worker)
     }
 
     /// Whether any target of `step` is done (`done`): its first in the map's order, by step.
-    fn done_any(&self, step: &str) -> bool {
+    pub(super) fn done_any(&self, step: &str) -> bool {
         self.done.range((step.to_string(), String::new())..).next().is_some_and(|((s, _), _)| s == step)
     }
 

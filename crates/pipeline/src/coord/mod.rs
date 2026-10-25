@@ -6209,6 +6209,160 @@ mod tests {
         assert!(c.hold("slope-hi", &[("3/1/1".into(), "k".into())]).unwrap() >= old + 5);
     }
 
+    /// Task #657: the scheduler's look-ups kept (`Sched::offered`, `measured_of`, the Book's NAS
+    /// rates) grant as they'd grant worked out afresh. Two coordinators take one random run of
+    /// offers, measures (costs, floors, disk floors), asks, finishes, failures and lapses; before
+    /// each ask the second's kept look-ups are dropped (its offers indexed again, its memo and
+    /// models emptied). Their grants are the same, every one; and the offer index, `failed_any` and
+    /// `done_any` say what a scan of the whole says.
+    #[test]
+    fn kept_lookups_grant_as_fresh_ones() {
+        let (_da, a, _wa) = start();
+        let (_db, b, _wb) = start();
+        let t0 = Instant::now();
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut rnd = |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n.max(1)
+        };
+        let steps = ["pack", "peaks", "terrain-hi", "depth"];
+        let tile = |i: u64| format!("6/{}/{}", i % 7, i / 7);
+        // (Each job's lease in each: their ids are each coordinator's own.)
+        let mut leases: Vec<(u64, u64)> = Vec::new();
+        let (mut grants, mut offered) = (0usize, 0usize);
+        for round in 0..600u64 {
+            let now = t0 + Duration::from_secs(round * 7);
+            let clock = sched::Clock { now, unix: 1_800_000_000 + round * 7 };
+            match rnd(10) {
+                0 => {
+                    let offers: Vec<Offer> = (0..1 + rnd(3))
+                        .map(|_| {
+                            let st = steps[rnd(steps.len() as u64) as usize];
+                            let n = 1 + rnd(12);
+                            Offer {
+                                step: st.into(),
+                                targets: (0..n)
+                                    .map(|_| {
+                                        let t = tile(rnd(12));
+                                        (t.clone(), format!("k {t}"), rnd(3) * 400)
+                                    })
+                                    .collect(),
+                                job: None,
+                            }
+                        })
+                        .collect();
+                    offered += 1;
+                    a.offer("p", offers.clone());
+                    b.offer("p", offers);
+                }
+                1 => {
+                    let (st, t) = (steps[rnd(4) as usize], tile(rnd(12)));
+                    let c = Cost {
+                        peak_mb: 100 + rnd(30) * 500,
+                        secs: 10 + rnd(600),
+                        worker: None,
+                        v: if rnd(5) == 0 { 0 } else { cost_version(st) },
+                        sizes: [("threads".to_string(), 1)].into(),
+                        ..Default::default()
+                    };
+                    a.add_costs_by(&[(cost_key(st, &t), c.clone())], "m1");
+                    b.add_costs_by(&[(cost_key(st, &t), c)], "m1");
+                }
+                2 | 3 => {
+                    let (st, t, mb) = (steps[rnd(4) as usize], tile(rnd(12)), rnd(40) * 1000);
+                    a.add_disks(&[(cost_key(st, &t), mb)]);
+                    b.add_disks(&[(cost_key(st, &t), mb)]);
+                }
+                4 => {
+                    let (st, t) = (steps[rnd(4) as usize], tile(rnd(12)));
+                    let f = Floor { mb: 1000 + rnd(20) * 1000, alone: rnd(2) == 0, v: cost_version(st) };
+                    a.add_floors(&[(cost_key(st, &t), f)]);
+                    b.add_floors(&[(cost_key(st, &t), f)]);
+                }
+                5 if !leases.is_empty() => {
+                    // A job ended: its targets done, or some failed, or its lease lapsed.
+                    let ids = leases.remove(rnd(leases.len() as u64) as usize);
+                    let how = rnd(3);
+                    for (c, id) in [(&a, ids.0), (&b, ids.1)] {
+                        let mut s = c.shared.lock().unwrap();
+                        let Some(l) = s.leases.all(now).into_iter().find(|l| l.id == id) else { continue };
+                        if let Work::Job { step, targets } = &l.work {
+                            for (t, k) in targets {
+                                match how {
+                                    0 => {
+                                        s.done.insert((step.clone(), t.clone()), k.clone());
+                                    }
+                                    1 => {
+                                        s.failed.insert((l.worker.clone(), cost_key(step, t)), (now, 1));
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        s.end(id);
+                    }
+                }
+                _ => {
+                    let lead = rnd(3) == 0;
+                    let ask = Ask {
+                        worker: if lead { "m4".into() } else { format!("w{}", rnd(3)) },
+                        kind: "native".into(),
+                        can: steps.iter().map(|s| s.to_string()).collect(),
+                        mem_mb: 2_000 + rnd(30) * 1_000,
+                        cores: 8,
+                        disk_mb: Some(5_000 + rnd(40) * 1_000),
+                        ..Default::default()
+                    };
+                    // (What each offered target and live job measures, as kept and afresh.)
+                    let measures = |s: &Shared| {
+                        let m: Vec<_> = s
+                            .offers
+                            .iter()
+                            .flat_map(|o| o.targets.iter().map(|t| s.measured(&o.step, &t.0)).collect::<Vec<_>>())
+                            .collect();
+                        let l: Vec<u64> = s.leases.all(now).iter().map(|l| s.lease_mem(l)).collect();
+                        (m, l)
+                    };
+                    let (ma, pa) = {
+                        let mut s = a.shared.lock().unwrap();
+                        let offers = s.offers.clone();
+                        (measures(&s), s.sched.pack(&ask, &offers, lead, clock).0)
+                    };
+                    let pb = {
+                        let mut s = b.shared.lock().unwrap();
+                        let offers = s.offers.clone();
+                        s.set_offers(offers.clone());
+                        s.needs = Default::default();
+                        // (The offer index and the shortcuts against a scan of the whole.)
+                        for o in &offers {
+                            for t in &o.targets {
+                                let first = offers
+                                    .iter()
+                                    .filter(|x| x.step == o.step)
+                                    .find_map(|x| x.targets.iter().find(|y| y.0 == t.0))
+                                    .map(|y| y.2);
+                                assert_eq!(s.offered_size(&o.step, &t.0), first);
+                            }
+                            assert_eq!(s.done_any(&o.step), s.done.keys().any(|(st, _)| *st == o.step));
+                        }
+                        assert_eq!(s.failed_any(&ask.worker), s.failed.keys().any(|(w, _)| *w == ask.worker));
+                        assert_eq!(ma, measures(&s), "round {round}: the measures kept");
+                        s.sched.pack(&ask, &offers, lead, clock).0
+                    };
+                    let same = |p: &[sched::Pick]| -> Vec<sched::Pick> {
+                        p.iter().map(|x| sched::Pick { lease: 0, ..x.clone() }).collect()
+                    };
+                    assert_eq!(same(&pa), same(&pb), "round {round}: {ask:?}");
+                    grants += pa.len();
+                    leases.extend(pa.iter().zip(&pb).map(|(x, y)| (x.lease, y.lease)));
+                }
+            }
+        }
+        assert!(grants > 30 && offered > 30, "the run granted {grants} jobs over {offered} offers");
+    }
+
     /// Task #657: a term's state of before `DISKS_V` brings back no `pack`'s nor `lo`'s targets'
     /// disks (those of before task #396, the whole base packs' copy counted in: 9 z6 tiles at
     /// 51–68 GB no Mac's room fitted, never granted) and no fill of a cache there isn't; one of
