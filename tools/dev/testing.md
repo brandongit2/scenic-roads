@@ -118,8 +118,11 @@ through their dev-dependency on store, `features = ["testkit"]`):
   a fixed "fast" bound.
 - **Process-wide settings:** pass the value in. Where the code reads an environment variable, a
   test sets it with `EnvVar::set(k, v)` (restored on drop, tests taking turns), and only for a
-  variable no other test in that binary reads. Statics a test changes (caps, hooks) are thread-local
-  in test builds (`TEST_PORT`, `TEST_ROOT`), so tests in one process can't see each other's.
+  variable no other test in that binary reads. A static a test changes is thread-local in test
+  builds where it can be (the agent's `TEST_PORT`, `TEST_ROOT`), so tests in one process can't see
+  each other's; the one that can't, the plain-open cap, is set through a guard
+  (`store::range::cap_plain_opens`) that tests take in turn and that restores it on drop (other
+  tests in a `cargo test` process run under it meanwhile: a lower cap only closes files sooner).
 - **Hermetic by default:** temp folders (`tempfile::tempdir()`), never the real NAS or app home
   (`agent::is_live_path`); coordinators on loopback ports from `coord::test_port()` (held until the
   coordinator takes them); no `.local` names (`net::urls` gives 127.0.0.1 in tests).

@@ -208,7 +208,8 @@ pub fn plain_open_cap() -> usize {
 
 /// Test builds: `plain_open_cap` set to `n` until the guard is dropped (a panic included), for a
 /// test that opens more files than it. Process-wide: one test at a time holds it (the others
-/// wait), so no test runs under another's cap.
+/// wait); in one `cargo test` process, tests that don't take it run under it meanwhile (a lower cap
+/// only closes idle files sooner).
 #[cfg(any(test, feature = "testkit"))]
 pub fn cap_plain_opens(n: usize) -> PlainOpenCap {
     static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());

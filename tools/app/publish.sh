@@ -157,16 +157,17 @@ export SCENIC_PUBLISH=1
 # file and line (the panic's location needs none), and no backtrace is asked for here. (Passed to
 # the test Mac with the other CARGO_PROFILE_* variables: tools/app/remote-tests.sh.)
 export CARGO_PROFILE_DEV_DEBUG=false CARGO_PROFILE_TEST_DEBUG=false
-# (After the libraries, the pipeline's whole-crate checks: every cache read through the accessor,
-# the records written only through Out (docs/pool.md §7.3), every Wikimedia request through the
-# budgets' proxy (§7.7), the Python steps' timer. The drop boxes' and the sources' guards ran first.)
+# (After the libraries, every one of the pipeline's integration tests, by glob (#662: a list of four
+# had missed no_instant_back, cli, grant_rules and whole_kill as they were added): every cache read
+# through the accessor, the records written only through Out (docs/pool.md §7.3), every Wikimedia
+# request through the budgets' proxy (§7.7), the Python steps' timer, no Instant dated back...)
 # Both run on the test Mac, the mini by default (tools/app/remote-tests.sh, #442: an exact copy of this snapshot, its build
 # folder kept there between publishes, at nice 10; here when this is the test Mac, when it can't be reached,
 # or with SCENIC_TESTS_LOCAL=1): the suite took 13-30 min on the M1 beside its builds, and a
 # timing test failed under that load. Its exit status is the suite's.
 suite='export SCENIC_PUBLISH=1; cargo nextest --version >/dev/null 2>&1 || { mise install -q; eval "$(mise env -s zsh)"; }; rc=0
 cargo nextest run --no-fail-fast --hide-progress-bar -p store -p names -p pipeline --lib || rc=$?
-cargo nextest run --no-fail-fast --hide-progress-bar -p pipeline --test cache_accessor --test write_sets --test budgets --test timings_python || rc=$?
+cargo nextest run --no-fail-fast --hide-progress-bar -p pipeline --test "*" || rc=$?
 exit $rc'
 zsh tools/app/remote-tests.sh publish $snap $suite > $tests_log 2>&1 || tests_ok=$?
 # (And every child, listener and taken connection by store::spawn: clippy's disallowed-methods,

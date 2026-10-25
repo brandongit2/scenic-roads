@@ -1040,7 +1040,6 @@ mod net {
             let want = (e - s) as usize;
             let mut out: Vec<u8> = Vec::with_capacity(want);
             let (mut idle, mut requests) = (0u32, 0u32);
-            let mut last = String::new();
             // (The first answer's validator and the file's length, which every later one must match.)
             let mut first: Option<(Option<String>, Option<u64>)> = None;
             down_check(self.down.as_deref(), url)?;
@@ -1106,10 +1105,10 @@ mod net {
                         c => bail!("{url}: bytes {from}-{}: status {c}", e - 1),
                     }
                 })()?;
-                match r {
+                let last = match r {
                     Ok(()) => return Ok(out),
-                    Err(why) => last = why,
-                }
+                    Err(why) => why,
+                };
                 if last == "the file changed while it was read" {
                     // (From the start, of the file as it is now.)
                     out.clear();

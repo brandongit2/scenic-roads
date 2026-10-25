@@ -150,24 +150,31 @@ impl Drop for TestChild {
 pub struct EnvVar {
     key: OsString,
     was: Option<OsString>,
-    _turn: Option<std::sync::MutexGuard<'static, ()>>,
+    /// Not Send: dropped on the thread that set it, where the turn is kept.
+    _here: std::marker::PhantomData<*const ()>,
 }
 
 static ENV: Mutex<()> = Mutex::new(());
 
 thread_local! {
-    /// How many of this thread's EnvVars are live (the first takes the turn).
-    static SET_HERE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// This thread's live EnvVars and, while any is, the turn: taken by the first, given back with
+    /// the last (in whatever order they're dropped).
+    static HERE: std::cell::RefCell<(usize, Option<std::sync::MutexGuard<'static, ()>>)> =
+        const { std::cell::RefCell::new((0, None)) };
 }
 
 impl EnvVar {
     pub fn set(key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> EnvVar {
-        let turn = (SET_HERE.get() == 0).then(|| ENV.lock().unwrap_or_else(|e| e.into_inner()));
-        SET_HERE.set(SET_HERE.get() + 1);
+        HERE.with_borrow_mut(|(n, turn)| {
+            if *n == 0 {
+                *turn = Some(ENV.lock().unwrap_or_else(|e| e.into_inner()));
+            }
+            *n += 1;
+        });
         let key = key.as_ref().to_owned();
         let was = std::env::var_os(&key);
         std::env::set_var(&key, value);
-        EnvVar { key, was, _turn: turn }
+        EnvVar { key, was, _here: std::marker::PhantomData }
     }
 }
 
@@ -177,7 +184,12 @@ impl Drop for EnvVar {
             Some(v) => std::env::set_var(&self.key, v),
             None => std::env::remove_var(&self.key),
         }
-        SET_HERE.set(SET_HERE.get() - 1);
+        HERE.with_borrow_mut(|(n, turn)| {
+            *n -= 1;
+            if *n == 0 {
+                *turn = None;
+            }
+        });
     }
 }
 
@@ -212,6 +224,15 @@ mod tests {
             let _v = EnvVar::set(k, "1");
             let _w = EnvVar::set("SCENIC_TESTKIT_PROBE_2", "2");
             assert_eq!(std::env::var(k).as_deref(), Ok("1"));
+            // The first dropped first: the second still holds the turn.
+            drop(_v);
+            assert!(std::env::var_os(k).is_none());
+            let other = std::thread::spawn(|| {
+                let _x = EnvVar::set("SCENIC_TESTKIT_PROBE_3", "3");
+                std::env::var_os("SCENIC_TESTKIT_PROBE_2")
+            });
+            drop(_w);
+            assert_eq!(other.join().unwrap(), None, "another thread waited for the turn");
         }
         assert!(std::env::var_os(k).is_none() && std::env::var_os("SCENIC_TESTKIT_PROBE_2").is_none());
     }
