@@ -424,9 +424,15 @@ async function run() {
       const sc = await card(".stages > .st .title");
       check("jobs card: a step's as the mockup's (head, stat tiles, rows, foot; twice as wide)", sc && sc.wide && !sc.parts.length && steps.has(sc.title) && Math.abs(sc.w - wide) <= 2, sc ? `${sc.kick} / ${sc.title}, ${sc.w} px; missing ${sc.parts.join(" ") || "none"}` : "no step row");
       if (sc && !PHONE) check("jobs card: off the pointer's line, ≤ 50svh (#627)", (sc.top >= sc.y || sc.bottom <= sc.y) && sc.h <= sc.max + 1, `${Math.round(sc.top)}–${Math.round(sc.bottom)}, pointer ${Math.round(sc.y)}`);
-      // (A job of a step whose targets are tiles: its map drawn.)
-      const jc = await card(".cells > .jb.c-run, .cells > .jb.c-done", ` && ${JSON.stringify(tiled)}.includes(e.parentElement.previousElementSibling?.querySelector(".title")?.firstChild?.textContent)`);
-      if (!jc) console.log("INFO jobs card: no finished or running job of a tiled step shown (the live build's state), its map not checked");
+      // (A job of a step whose targets are tiles: its map drawn. The tab's past jobs come with the
+      // history read further back: waited for, up to 20 s. None then: an INFO only when the last
+      // 6 h of the history has no such job's end either (the live build's state), else a FAIL.)
+      const jobSel = ".cells > .jb.c-run, .cells > .jb.c-done", jobWhere = ` && ${JSON.stringify(tiled)}.includes(e.parentElement.previousElementSibling?.querySelector(".title")?.firstChild?.textContent)`;
+      for (let k = 0; k < 40 && !(await at(jobSel, jobWhere)); k++) await sleep(500);
+      const jc = await card(jobSel, jobWhere);
+      const ended = jc ? 0 : await js(`(async () => { const tail = await fetch("/work/history", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()); const h = await fetch("/work/history", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ since: Math.max(0, (tail.seq || 0) - 5000), max: 5000 }) }).then((r) => r.json()); const from = Date.now() / 1000 - 6 * 3600; return (h.events || []).filter((e) => ["end", "done"].includes(e.kind) && e.ok !== false && e.t >= from && ${JSON.stringify(tiled)}.includes(e.step)).length; })()`);
+      if (!jc && !ended) console.log("INFO jobs card: no finished or running job of a tiled step in the last 6 h (the live build's state), its map not checked");
+      else if (!jc) check("jobs card: a job's named as the code names it, a world map of its tiles", false, `the history has ${ended} finished jobs of tiled steps in 6 h, none shown in 20 s`);
       else if (jc.none) check("jobs card: a job's named as the code names it, a world map of its tiles", false, "no card shown on a job's box");
       else check("jobs card: a job's named as the code names it, a world map of its tiles", jc.wide && steps.has(String(jc.title).split(/[ :]/)[0]) && jc.map > 0 && (PHONE || jc.map <= 200), `${jc.kick} / ${jc.title}, map ${jc.map} px`);
       if (!PHONE) await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 2, y: 2 });
