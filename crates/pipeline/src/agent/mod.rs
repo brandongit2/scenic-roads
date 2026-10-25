@@ -15617,7 +15617,8 @@ mod tests {
     /// a fresh job from its progress first seen.
     #[test]
     fn a_taken_over_jobs_pace_runs_from_its_start() {
-        let started = Instant::now() - Duration::from_secs(20 * 60);
+        // (A Mac up less than 20 min has no such Instant: nothing to check there.)
+        let Some(started) = Instant::now().checked_sub(Duration::from_secs(20 * 60)) else { return };
         let (t0, f0, _, _) = pace_base(true, started, 0.81, "steps".into(), None);
         assert_eq!((t0, f0), (started, 0.0));
         let eta = t0.elapsed().as_secs_f64() * (1.0 - 0.82) / (0.82 - f0);
