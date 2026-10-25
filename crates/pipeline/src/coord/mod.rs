@@ -28,6 +28,7 @@ pub mod brokers;
 pub mod client;
 pub mod history;
 pub mod hosts;
+pub mod inbox;
 pub mod keep;
 pub mod lease;
 pub mod sched;
@@ -306,6 +307,9 @@ pub struct Shared {
     /// The build page's asks of the pool's lead (`/work/lead`), for the agent to take up
     /// (crate::agent::lead).
     pub lead_asks: Vec<crate::control::LeadRequest>,
+    /// Where the members' messages to this Mac's member go (`/pool/mail`, `inbox`): its agent's
+    /// (`Coordinator::set_inbox`); None, refused (the member sends by mail).
+    pub inbox: Option<std::sync::Arc<inbox::Inbox>>,
     /// The build page's acceptances of the gate's warnings (`/work/inputs`), for the agent to write
     /// (crate::inputs::apply_ask).
     pub inputs_asks: Vec<crate::inputs::Ask>,
@@ -1299,6 +1303,7 @@ impl Coordinator {
             min_app: None,
             pool_member: None,
             lead_asks: Vec::new(),
+            inbox: None,
             inputs_asks: Vec::new(),
             nas_failures: 0,
             nas_loop: Default::default(),
@@ -2130,6 +2135,11 @@ impl Coordinator {
     /// gone" and take over once its heartbeat is silent (docs/pool.md §6.5).
     pub fn set_member(&self, member: Option<&str>) {
         self.shared.lock().unwrap().pool_member = member.map(str::to_string);
+    }
+
+    /// Where the members' messages to its member go (`Shared::inbox`).
+    pub fn set_inbox(&self, inbox: Option<std::sync::Arc<inbox::Inbox>>) {
+        self.shared.lock().unwrap().inbox = inbox;
     }
 
     /// The pool's term the leases it grants now are in (docs/pool.md §7.5; 0: the pool off).
@@ -3632,6 +3642,22 @@ fn route(
             shared.lock().unwrap().page_acts.push(act);
             Ok((200, ok))
         }
+        "/pool/mail" => {
+            // A member's messages to this Mac's member (docs/pool.md §9): taken only by the member
+            // they're to, on its disk before the answer; else refused, sent by mail instead.
+            let p: inbox::Post = serde_json::from_slice(body)?;
+            let (me, inbox) = {
+                let s = shared.lock().unwrap();
+                (s.pool_member.clone(), s.inbox.clone())
+            };
+            match (me, inbox) {
+                (Some(me), Some(i)) if me == p.to => {
+                    anyhow::ensure!(p.msgs.len() <= inbox::KEPT, "at most {} messages a post", inbox::KEPT);
+                    Ok((200, serde_json::json!({ "took": i.put(&p.from, p.msgs)? })))
+                }
+                _ => Ok((409, serde_json::json!({ "error": "not this member's mail" }))),
+            }
+        }
         "/work/lead" => {
             // The build page's ask of the pool's lead (docs/pool.md §11): hand it to a member
             // (`{"to": <member>}`), or have this Mac take it over (`{"take": true}`), unforced: the
@@ -4435,6 +4461,7 @@ mod http {
             .route("/work/tocome", any(json))
             .route("/work/timings", any(json))
             .route("/work/floors", any(json))
+            .route("/pool/mail", any(json))
             .route("/work/in/{lease}/{*path}", get(input))
             .route("/work/net/{lease}/{*path}", get(net))
             .route("/work/out/{lease}/{*path}", put(output))

@@ -95,7 +95,7 @@ def build(check=False):
               ['Handed over by hand: the menu bar (Hand the Build To…), the build page or scenic lead;', 'taken over when the lead is gone. By itself only when the lead’s battery is below 30 %,', 'its heartbeat goes silent, it loses the NAS while online, or it stood down. No score.'])
     px = nx + ctl[2] + 16
     box(px, py0, W - 16 - px, 'Planned',
-        ['The journal’s GC (#455); the HTTP pool API for the mailboxes; resuming beyond the OSM pass;', 'readers reading the term’s snapshot. Behind switches: job slots changing part in place, each', 'member brokering its own jobs’ tasks, resume, placement.'], cls='later')
+        ['The journal’s GC (#455); retiring the mailboxes for the HTTP pool API; resuming beyond the OSM pass;', 'readers reading the term’s snapshot. Behind switches: job slots changing part in place, each', 'member brokering its own jobs’ tasks, resume, placement.'], cls='later')
     h = py0 + ctl[3] + 14
 
     aria = ('Who builds the map. The NAS holds the terms, which say who leads, the journal every job writes its results to, the '
@@ -106,7 +106,7 @@ def build(check=False):
             'takes the shared steps that fit the memory its owner gives the build, and tasks to any worker, a device’s build page too, '
             'with no key; a worker’s first three tasks, then one in eight, are checked. Who leads is the owner’s call: the lead is '
             'handed over by hand, and moves by itself only on low battery, a silent heartbeat, the NAS lost or a stand-down. Planned: '
-            'the journal’s GC, the HTTP pool API, resuming beyond the OSM pass.')
+            'the journal’s GC, retiring the mailboxes, resuming beyond the OSM pass.')
     marker = ('<marker id="wm-a" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">'
               '<path class="st-mk" d="M0,0.8 L10,5 L0,9.2 z"/></marker>')
     return (f'<svg viewBox="0 0 {W} {h:.0f}" role="img" aria-label="{E(aria)}" xmlns="http://www.w3.org/2000/svg">'

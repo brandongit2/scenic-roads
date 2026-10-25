@@ -89,7 +89,7 @@ pub fn origin(url: &str) -> Option<String> {
 }
 
 /// Whether an origin is a tailnet address's (100.64.0.0/10, or a name under .ts.net).
-fn tailnet(o: &str) -> bool {
+pub fn tailnet(o: &str) -> bool {
     let host = o.split_once("://").map_or(o, |(_, h)| h);
     let name = host.rsplit_once(':').filter(|(_, p)| p.bytes().all(|b| b.is_ascii_digit())).map_or(host, |(n, _)| n);
     name.ends_with(".ts.net")

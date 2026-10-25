@@ -9939,7 +9939,8 @@ impl Agent {
         self.hand_for_quit();
         let duty = self.slots.iter().any(|s| s.running.as_ref().is_some_and(|j| is_duty(&j.spec.id)));
         let answered = self.client.as_ref().and_then(|c| c.answered());
-        let (lead_urls, lead_failed) = self.client.as_ref().map(|c| (c.urls(), c.failed())).unwrap_or_default();
+        let (lead_urls, lead_failed, lead_token) =
+            self.client.as_ref().map(|c| (c.urls(), c.failed(), c.token())).unwrap_or_default();
         let mut run = self.pooled()?;
         // (Only an answer from the current term's lead's coordinator, as it said it is.)
         let cur = run.side.driver().current().lead.clone();
@@ -9960,6 +9961,7 @@ impl Agent {
             broker_https: self.broker_https.as_ref().and_then(|h| h.1.clone()),
             lead_urls,
             lead_failed,
+            lead_token,
         };
         // (The jobs an earlier process left, once `run` stopped any still running; those this one
         // took over, `adopt_jobs`, hand off as they end.)

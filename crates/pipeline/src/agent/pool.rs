@@ -25,7 +25,10 @@
 //! - **The messages** between members, by mailbox on the NAS (`MAIL`: `<to>/<from>.json`, written
 //!   whole by its sender alone, the last `KEPT` it sent there, each numbered; read by member id,
 //!   never by listing): best effort, as the driver's are (a message lost is told again or made up
-//!   for). The pool's API (§9) is planned.
+//!   for). Those to the lead go first by HTTP (§9, `post_mail`): its coordinator's `/pool/mail`,
+//!   into its inbox (crate::coord::inbox) on its disk before it answers; the mailbox when that
+//!   fails or the lead's heartbeat doesn't say it takes them (`Heartbeat::mail_http`). A lead reads
+//!   both, each message once by its number.
 //! - **The heartbeat**: the driver's fields, the members it knows, written each step they change
 //!   and at least every two minutes, stamped as it's written, to `state/pool/members/<id>.json`.
 //! - **The merge's checks** (`check`): what phase 1 checks of an entry.
@@ -64,6 +67,8 @@ const MEMBERS_EVERY: Duration = Duration::from_secs(crate::pool::beat::OUT_OF_TO
 pub const FORGET_AFTER: Duration = Duration::from_secs(2 * crate::pool::beat::OUT_OF_TOUCH_S);
 /// The members forgotten (`Side::forgotten`), in the agent's pool folder: kept across restarts.
 const FORGOTTEN: &str = "forgotten.json";
+/// After a post to the lead failed, its mail goes by mailbox this long before HTTP is tried again.
+const POST_AGAIN: Duration = Duration::from_secs(300);
 /// A failed listing is made again after this.
 const AGAIN: Duration = Duration::from_secs(60);
 /// The heartbeat is written at least this often.
@@ -147,28 +152,39 @@ struct Mailbox {
     msgs: Vec<(u64, Msg)>,
 }
 
-/// A mailbox as read: each message parsed alone (`take_mail`).
+/// A mailbox as read: each message parsed alone (`after`).
 #[derive(Deserialize)]
 struct RawMailbox {
     msgs: Vec<(u64, serde_json::Value)>,
 }
 
-/// A mailbox's messages after number `last`, and the number read up to: each message read alone,
-/// so one this app doesn't know (a newer app's) is passed over, and read past all the same (never
-/// read again, never holding the others back). None: the file doesn't read.
-fn read_mailbox(b: &[u8], last: u64) -> Option<(Vec<Msg>, u64)> {
-    let mb = serde_json::from_slice::<RawMailbox>(b).ok()?;
-    let mut top = last;
-    let mut out = Vec::new();
-    for (n, m) in mb.msgs {
-        if n > last {
-            top = top.max(n);
-            if let Ok(m) = serde_json::from_value::<Msg>(m) {
-                out.push(m);
-            }
-        }
-    }
-    Some((out, top))
+/// The messages after number `last` (from its mailbox and its posts, crate::coord::inbox), in
+/// their sender's order, each once, and the number read up to: each message read alone, so one
+/// this app doesn't know (a newer app's) is passed over, and read past all the same (never read
+/// again, never holding the others back).
+fn after(msgs: impl IntoIterator<Item = (u64, serde_json::Value)>, last: u64) -> (Vec<Msg>, u64) {
+    let new: BTreeMap<u64, serde_json::Value> = msgs.into_iter().filter(|(n, _)| *n > last).collect();
+    let top = new.keys().last().copied().unwrap_or(last);
+    (new.into_values().filter_map(|m| serde_json::from_value::<Msg>(m).ok()).collect(), top)
+}
+
+/// How a member posts its mail to the lead's coordinator (`/pool/mail`): its addresses, its key,
+/// the post; the answer's status and JSON. (A test's own reaches a coordinator on loopback.)
+pub type Courier =
+    Arc<dyn Fn(&[String], &str, &serde_json::Value) -> Result<crate::coord::client::Reply> + Send + Sync>;
+
+/// The courier over HTTP: each address in turn (crate::coord::client).
+pub fn http_courier() -> Courier {
+    Arc::new(|urls, token, body| {
+        crate::coord::client::Client::at(urls.to_vec(), token.to_string(), "pool").post_json("/pool/mail", body)
+    })
+}
+
+/// The addresses mail may be posted to: the tailnet's alone (a LAN's name or address is any
+/// device's on the network to claim, crate::coord::brokers::origins_of).
+fn mail_urls(urls: &[String]) -> Vec<String> {
+    use crate::coord::brokers::{origin, tailnet};
+    urls.iter().filter(|u| origin(u).is_some_and(|o| tailnet(&o))).cloned().collect()
 }
 
 /// The path of the mailbox `from` sends `to`.
@@ -187,6 +203,10 @@ struct Mail {
     sent: BTreeMap<String, Vec<(u64, Msg)>>,
     #[serde(default)]
     n: u64,
+    /// The number up to which each lead's coordinator took what it sent by HTTP (`post_mail`): a
+    /// post carries what it sent after.
+    #[serde(default)]
+    posted: BTreeMap<String, u64>,
 }
 
 /// The heartbeat a member writes (`state/pool/members/<id>.json`): the driver's fields, and the
@@ -209,6 +229,10 @@ pub struct Heartbeat {
     /// the switch off, and by apps before it (ignored by them).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub broker: Option<crate::coord::brokers::Broker>,
+    /// Its app takes its members' mail by HTTP when it leads (`/pool/mail`, §9) and posts its own
+    /// to a lead that says so. Left out by apps before it: their mail goes by mailbox alone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mail_http: bool,
 }
 
 /// A member's conditions, as its heartbeat says them (§10, §11).
@@ -323,6 +347,14 @@ pub struct Side {
     mail_written: Vec<u8>,
     /// The mailboxes posted to and not written since.
     mail_dirty: BTreeSet<String>,
+    /// What members posted it by HTTP (crate::coord::inbox, its coordinator's when it leads).
+    inbox: Arc<crate::coord::inbox::Inbox>,
+    /// How it posts to the lead, the lead's coordinator's addresses and key as its contact on the
+    /// NAS says (`Cx::lead_urls`, `lead_token`), and until when it sends each member by mailbox
+    /// alone (a post failed).
+    pub courier: Courier,
+    pub lead_contact: (Vec<String>, String),
+    post_off: BTreeMap<String, Instant>,
     /// The last Tell sent each member, and when.
     told: BTreeMap<String, (Vec<String>, Instant)>,
     /// The members it knows (itself among them), as listed last and heard from since.
@@ -431,6 +463,10 @@ impl Side {
             mail,
             mail_written: Vec::new(),
             mail_dirty: BTreeSet::new(),
+            inbox: Arc::new(crate::coord::inbox::Inbox::open(&dir.join("inbox.json"))),
+            courier: http_courier(),
+            lead_contact: Default::default(),
+            post_off: BTreeMap::new(),
             told: BTreeMap::new(),
             members,
             members_listed: None,
@@ -471,6 +507,11 @@ impl Side {
     /// The same, for a thread of its own (the coordinator's state's writer, crate::coord::keep).
     pub fn shared_nas(&self) -> SharedNas {
         self.nas.clone()
+    }
+
+    /// What members posted it (its coordinator's while it leads: `Coordinator::set_inbox`).
+    pub fn inbox(&self) -> Arc<crate::coord::inbox::Inbox> {
+        self.inbox.clone()
     }
 
     /// The members it knows.
@@ -523,6 +564,7 @@ impl Side {
             );
             // (Its mail not sent: nobody reads it.)
             self.mail.sent.remove(&m);
+            self.mail.posted.remove(&m);
             self.mail_dirty.remove(&m);
             self.told.remove(&m);
             self.forgotten.insert(m);
@@ -722,28 +764,38 @@ impl Side {
         Ok(())
     }
 
-    /// The messages its members sent it since it last read, by member id (none listed: read by the
-    /// ids it knows).
+    /// The messages its members sent it since it last read: their mailboxes, by the member ids it
+    /// knows (none listed), and what they posted (its inbox), each once by its number. What it
+    /// read of the inbox dropped from it once its marks are on disk.
     fn take_mail(&mut self) -> Vec<(String, Msg)> {
         let mut msgs = Vec::new();
+        let mut posted = self.inbox.held();
+        posted.retain(|from, _| *from != self.me.id && !self.forgotten.contains(from));
+        for from in posted.keys() {
+            self.heard_of(from);
+        }
         let others: Vec<String> = self.members.iter().filter(|m| **m != self.me.id).cloned().collect();
         for from in others {
-            let b = match self.nas.read(&mail_path(&self.me.id, &from)) {
-                Ok(Some(b)) => b,
-                Ok(None) => continue,
-                Err(e) => {
-                    eprintln!("pool: reading {from}'s mail: {e:#}");
-                    continue;
-                }
-            };
+            let mut got = posted.remove(&from).unwrap_or_default();
+            match self.nas.read(&mail_path(&self.me.id, &from)) {
+                Ok(Some(b)) => match serde_json::from_slice::<RawMailbox>(&b) {
+                    Ok(mb) => got.extend(mb.msgs),
+                    Err(e) => eprintln!("pool: {from}'s mailbox doesn't read: {e}"),
+                },
+                Ok(None) => {}
+                Err(e) => eprintln!("pool: reading {from}'s mail: {e:#}"),
+            }
             let last = self.mail.read.get(&from).copied().unwrap_or(0);
-            let Some((got, top)) = read_mailbox(&b, last) else { continue };
+            let (got, top) = after(got, last);
             msgs.extend(got.into_iter().map(|m| (from.clone(), m)));
             if top > last {
                 self.mail.read.insert(from, top);
             }
         }
-        self.save_mail();
+        if self.save_mail() {
+            let forgotten = &self.forgotten;
+            self.inbox.read_up_to(&self.mail.read, |m| !forgotten.contains(m));
+        }
         msgs
     }
 
@@ -772,9 +824,14 @@ impl Side {
         self.mail_dirty.insert(to.to_string());
     }
 
-    /// Writes the mailboxes it posted to since.
+    /// Sends what it queued since: to the lead by HTTP (`post_mail`), else, and to the others, by
+    /// mailbox.
     fn send_mail(&mut self) {
+        let lead = self.driver.as_ref().and_then(|d| d.current().lead.as_ref().map(|t| t.member.clone()));
         for to in std::mem::take(&mut self.mail_dirty) {
+            if lead.as_ref() == Some(&to) && to != self.me.id && self.post_mail(&to) {
+                continue;
+            }
             let mb = Mailbox { msgs: self.mail.sent.get(&to).cloned().unwrap_or_default() };
             match serde_json::to_vec(&mb)
                 .map_err(anyhow::Error::from)
@@ -792,10 +849,65 @@ impl Side {
         self.save_mail();
     }
 
-    fn save_mail(&mut self) {
-        let Ok(b) = serde_json::to_vec(&self.mail) else { return };
-        if b != self.mail_written && crate::whole::write(&self.dir.join("mail.json"), &b).is_ok() {
-            self.mail_written = b;
+    /// Posts lead `to` what it sent it that its coordinator hasn't taken (`/pool/mail`): whether
+    /// it took them all. Not tried (false: by mailbox) when the lead's heartbeat doesn't say it
+    /// takes mail so, nor for `POST_AGAIN` after a post failed; tried at its tailnet addresses
+    /// alone (`mail_urls`), its broker's else its contact's.
+    fn post_mail(&mut self, to: &str) -> bool {
+        let now = self.clock.now();
+        if self.post_off.get(to).is_some_and(|t| now < *t) {
+            return false;
+        }
+        let Some(hb) = self.heartbeat(to).filter(|h| h.mail_http) else { return false };
+        let mut urls = mail_urls(&hb.broker.map(|b| b.urls).unwrap_or_default());
+        if urls.is_empty() {
+            urls = mail_urls(&self.lead_contact.0);
+        }
+        let token = self.lead_contact.1.clone();
+        if urls.is_empty() || token.is_empty() {
+            return false;
+        }
+        let from = self.mail.posted.get(to).copied().unwrap_or(0);
+        let msgs: Vec<(u64, serde_json::Value)> = self
+            .mail
+            .sent
+            .get(to)
+            .into_iter()
+            .flatten()
+            .filter(|(n, _)| *n > from)
+            .filter_map(|(n, m)| Some((*n, serde_json::to_value(m).ok()?)))
+            .collect();
+        let Some(top) = msgs.last().map(|(n, _)| *n) else { return true };
+        let post = crate::coord::inbox::Post { from: self.me.id.clone(), to: to.to_string(), msgs };
+        let Ok(body) = serde_json::to_value(&post) else { return false };
+        let why = match (self.courier)(&urls, &token, &body) {
+            Ok((200, v)) if v["took"].as_u64().is_some_and(|t| t >= top) => {
+                self.mail.posted.insert(to.to_string(), top);
+                return true;
+            }
+            Ok((code, v)) => format!("answered {code}: {}", v["error"].as_str().unwrap_or("")),
+            Err(e) => format!("{e:#}"),
+        };
+        eprintln!("pool: posting mail to {to}: {why} (by mailbox for {} min)", POST_AGAIN.as_secs() / 60);
+        self.post_off.insert(to.to_string(), now + POST_AGAIN);
+        false
+    }
+
+    /// Writes `mail.json` when it changed: whether what it holds is on disk.
+    fn save_mail(&mut self) -> bool {
+        let Ok(b) = serde_json::to_vec(&self.mail) else { return false };
+        if b == self.mail_written {
+            return true;
+        }
+        match crate::whole::write(&self.dir.join("mail.json"), &b) {
+            Ok(()) => {
+                self.mail_written = b;
+                true
+            }
+            Err(e) => {
+                eprintln!("pool: its mail's marks: {e:#}");
+                false
+            }
         }
     }
 
@@ -807,6 +919,7 @@ impl Side {
             shadow: false,
             conds: self.conds,
             broker: self.broker.clone(),
+            mail_http: true,
         };
         if hb.pool.member.is_empty() {
             return;
@@ -1256,6 +1369,8 @@ pub struct Cx {
     /// (crate::pool::reachable).
     pub lead_urls: Vec<String>,
     pub lead_failed: Option<(u64, String)>,
+    /// The key its client calls the lead's coordinator with (the contact's): its mail's posts too.
+    pub lead_token: String,
 }
 
 /// How a member tries another's coordinator: at its addresses, reached or not and why
@@ -1700,6 +1815,12 @@ impl Run {
     /// One step: what the agent gathered handed over, the gates kept; the role's change noted (it
     /// restarts into its new part).
     pub fn step(&mut self, able: bool) -> Out {
+        // (Its members' posts to its coordinator, when it leads, go to its inbox; its own to the
+        // lead's coordinator as its contact says.)
+        if let Some(co) = &self.cx.coord {
+            co.set_inbox(Some(self.side.inbox()));
+        }
+        self.side.lead_contact = (self.cx.lead_urls.clone(), self.cx.lead_token.clone());
         let give = Give {
             entries: std::mem::take(&mut self.entries),
             settled: self.settled.take(),
@@ -2190,10 +2311,11 @@ mod tests {
         // (Task #409 review) a newer app's message among the others: passed over, the rest taken,
         // and read past (its number the top), so it holds nothing back and isn't read again.
         let b = br#"{"msgs": [[5, {"Leads": 3}], [6, {"FromTheFuture": {"x": 1}}], [7, {"HandTo": "m-b"}]]}"#;
-        let (msgs, top) = super::read_mailbox(b, 4).unwrap();
+        let raw = || serde_json::from_slice::<super::RawMailbox>(b).unwrap().msgs;
+        let (msgs, top) = super::after(raw(), 4);
         assert_eq!(msgs, vec![super::Msg::Leads(3), super::Msg::HandTo("m-b".into())]);
         assert_eq!(top, 7);
-        let (msgs, top) = super::read_mailbox(b, 7).unwrap();
+        let (msgs, top) = super::after(raw(), 7);
         assert!(msgs.is_empty() && top == 7);
     }
 
@@ -2444,6 +2566,7 @@ mod tests {
                 battery_min: None,
             }),
             broker: None,
+            mail_http: true,
         };
         let b = serde_json::to_vec(&new).unwrap();
         // An older app reads the newer's: its fields, the conditions passed over.
@@ -2463,7 +2586,7 @@ mod tests {
         );
         // A newer app reads the older's: no conditions ("conditions unknown" in the views).
         let back: Heartbeat = serde_json::from_slice(&serde_json::to_vec(&old).unwrap()).unwrap();
-        assert_eq!(back, Heartbeat { conds: None, ..new.clone() });
+        assert_eq!(back, Heartbeat { conds: None, mail_http: false, ..new.clone() });
         assert!(crate::agent::lead::state_of(&back, 1000, None).starts_with("conditions unknown"));
         // And its own, back as written.
         assert_eq!(serde_json::from_slice::<Heartbeat>(&b).unwrap(), new);
@@ -2657,6 +2780,163 @@ mod tests {
             |o| o.events.iter().any(|e| matches!(e, Event::Handover { what: "over", .. })),
         );
         assert_eq!(out.term, 2);
+    }
+
+    /// The lead's tailnet address as its contact says it, in the mail tests: posts to it reach
+    /// the test's coordinator on loopback (`to_loopback`).
+    const LEAD_URL: &str = "http://100.64.0.1:8090";
+
+    /// A courier over HTTP to the coordinator on `port` in place of the lead's tailnet address,
+    /// counting its posts.
+    fn to_loopback(port: u16, posts: Arc<std::sync::atomic::AtomicUsize>) -> Courier {
+        let http = http_courier();
+        Arc::new(move |urls, token, body| {
+            posts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(urls, [LEAD_URL], "the tailnet's addresses alone");
+            http(&[format!("http://127.0.0.1:{port}")], token, body)
+        })
+    }
+
+    /// Lead A with its coordinator (its member's, its inbox), and member B posting to it.
+    struct Mail {
+        d: tempfile::TempDir,
+        r: PathBuf,
+        a: Side,
+        b: Side,
+        c: crate::coord::Coordinator,
+        posts: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    fn mail_pool() -> Mail {
+        let d = tempfile::tempdir().unwrap();
+        let r = root(d.path());
+        let (mut a, mut b) = (side(&r, &d.path().join("a/agent")), side(&r, &d.path().join("b/agent")));
+        assert_eq!(until(&mut a, || Give { able: true, ..Default::default() }, |o| o.caught_up).leads, Some(1));
+        let (c, port) = crate::coord::start_for_test(&d.path().join("a/coord"), "a", "");
+        c.set_member(Some(&a.member().id));
+        c.set_inbox(Some(a.inbox()));
+        let posts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        b.courier = to_loopback(port, posts.clone());
+        b.lead_contact = (vec![LEAD_URL.into(), "http://mac-a.local:8090".into()], c.contact.token.clone());
+        Mail { d, r, a, b, c, posts }
+    }
+
+    impl Mail {
+        /// B's job's entry `n`: B's Tell of it to A sent.
+        fn tell(&mut self, n: u64) -> String {
+            let (ia, ib) = (self.a.member().id.clone(), self.b.member().id.clone());
+            let e = unit_entry(&ib, LeaseId { term: 1, n }, &format!("6/1/{n}"), "k2");
+            let key = e.key().unwrap();
+            let out = self.b.step(Give { entries: vec![(e, None)], able: true, ..Default::default() }, &any);
+            assert!(
+                out.send.iter().any(|(to, m)| *to == ia && matches!(m, Msg::Tell(k) if k.contains(&key))),
+                "{:?}",
+                out.send
+            );
+            key
+        }
+
+        /// A steps until it merged `key` and acknowledged it to B.
+        fn acknowledged(a: &mut Side, ib: &str, key: &str) {
+            until(
+                a,
+                || Give { able: true, ..Default::default() },
+                |o| o.send.iter().any(|(to, m)| to == ib && matches!(m, Msg::Ack { keys, .. } if keys.iter().any(|k| k == key))),
+            );
+        }
+
+        fn mailbox(&self) -> bool {
+            self.r.join(mail_path(&self.a.member().id, &self.b.member().id)).exists()
+        }
+
+        fn posts(&self) -> usize {
+            self.posts.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    /// Task #642: a member's mail to a lead that takes it by HTTP is posted to its coordinator (no
+    /// mailbox written), taken from its inbox once, and acknowledged; to an old lead (its heartbeat
+    /// not saying so) it goes by mailbox, not tried; and a post an old coordinator refuses (no
+    /// `/pool/mail`: 404) goes by mailbox, HTTP not tried again for `POST_AGAIN`.
+    #[test]
+    fn a_members_mail_is_posted_to_its_lead_and_by_mailbox_to_an_old_one() {
+        let mut m = mail_pool();
+        let ib = m.b.member().id.clone();
+        let key = m.tell(5);
+        assert_eq!(m.posts(), 1);
+        assert!(!m.mailbox(), "posted, no mailbox written");
+        assert_eq!(m.a.inbox().held()[&ib].len(), 1);
+        Mail::acknowledged(&mut m.a, &ib, &key);
+        assert!(m.a.inbox().held().is_empty(), "read, dropped once its mark is on disk");
+        // An old lead: its heartbeat says nothing of mail by HTTP.
+        let ia = m.a.member().id.clone();
+        let path = m.r.join(crate::pool::beat::path(&ia));
+        let mut hb: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        hb.as_object_mut().unwrap().remove("mail_http");
+        std::fs::write(&path, serde_json::to_vec(&hb).unwrap()).unwrap();
+        m.tell(6);
+        assert_eq!(m.posts(), 1, "not tried");
+        assert!(m.mailbox());
+        // One whose coordinator has no `/pool/mail`.
+        let mut m = mail_pool();
+        m.b.courier = Arc::new(|_, _, _| Ok((404, serde_json::Value::Null)));
+        m.tell(5);
+        assert!(m.mailbox());
+        assert!(m.b.post_off.contains_key(&m.a.member().id), "by mailbox for a while");
+        drop(m.c);
+        drop(m.d);
+    }
+
+    /// Task #642: the lead changes while a member posts: the address now answers as another member
+    /// (refused, 409), or no longer answers. Its mail goes by mailbox to the member it was to, which
+    /// reads it as ever; the driver tells the new lead itself.
+    #[test]
+    fn a_lead_changed_mid_post_gets_its_mail_by_mailbox() {
+        let mut m = mail_pool();
+        let ib = m.b.member().id.clone();
+        m.c.set_member(Some("m-00000000000000cc"));
+        let key = m.tell(5);
+        assert_eq!(m.posts(), 1);
+        assert!(m.mailbox(), "refused: by mailbox");
+        assert!(m.a.inbox().held().is_empty());
+        m.a.know(&ib);
+        Mail::acknowledged(&mut m.a, &ib, &key);
+        // Its coordinator stopped (a lead gone): the same.
+        let mut m = mail_pool();
+        m.c.stop();
+        let key = m.tell(5);
+        assert!(m.mailbox());
+        let ib = m.b.member().id.clone();
+        m.a.know(&ib);
+        Mail::acknowledged(&mut m.a, &ib, &key);
+    }
+
+    /// Task #642: the lead crashes after its coordinator answered a post, before its agent read it:
+    /// the post is on its disk before the answer, so its next process reads it; and a post whose
+    /// record couldn't be written isn't answered as taken: it goes by mailbox. Nothing lost.
+    #[test]
+    fn a_post_answered_survives_the_leads_crash() {
+        let mut m = mail_pool();
+        let ib = m.b.member().id.clone();
+        let key = m.tell(5);
+        assert!(!m.mailbox());
+        // (Crashed: neither stepped again nor its state written past this.)
+        let home = m.d.path().join("a/agent");
+        m.c.stop();
+        drop(m.a);
+        let mut a = side(&m.r, &home);
+        Mail::acknowledged(&mut a, &ib, &key);
+        // Its inbox can't be written (a folder where its file goes): refused, by mailbox.
+        let mut m = mail_pool();
+        let inbox = m.d.path().join("a/agent/pool/inbox.json");
+        std::fs::create_dir_all(&inbox).unwrap();
+        let key = m.tell(5);
+        assert_eq!(m.posts(), 1);
+        assert!(m.mailbox());
+        std::fs::remove_dir(&inbox).unwrap();
+        let ib = m.b.member().id.clone();
+        m.a.know(&ib);
+        Mail::acknowledged(&mut m.a, &ib, &key);
     }
 
     #[test]

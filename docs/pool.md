@@ -1060,13 +1060,62 @@ Any worker that can run its programs takes it: a page or a member's idle slot.
 
 ## 9. The pool's API
 
-Members' messages go by mailbox on the NAS (`state/pool/mail/<to>/<from>.json`, one writer each,
-read by member id). Jobs go through the lead's coordinator (`/work/*`), tasks through each member's
-broker (§8), and the worker page's lead asks through `/work/lead`. Every member answers on port
-8090. A member that can't reach the lead keeps its jobs running and starts nothing new. A member's
-agent passes its owner's job cancels to the lead through `/work/cancel` (§11).
+Members' messages to the lead go by HTTP to its coordinator (`POST /pool/mail`), else by mailbox
+on the NAS (`state/pool/mail/<to>/<from>.json`, one writer each, read by member id), as all other
+messages between members do (§9.1). Jobs go through the lead's coordinator (`/work/*`), tasks
+through each member's broker (§8), and the worker page's lead asks through `/work/lead`. Every
+member answers on port 8090. A member that can't reach the lead keeps its jobs running and starts
+nothing new. A member's agent passes its owner's job cancels to the lead through `/work/cancel`
+(§11).
 
-Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the mailbox.
+### 9.1 Members' mail by HTTP (task #642)
+
+**What goes by mail** (`crate::pool::driver::Msg`, `crate::agent::pool`): to the lead, a member's
+`Tell` (the keys of its journal entries the lead hasn't acknowledged: tens of bytes a key, sent when
+they change and again every 10 minutes, `TELL_AGAIN`), `Leads` (once, taking a handed term up),
+and the owner's `HandTo`, `Cancel` and `Retry` passed on (rare). From the lead: `Ack` (keys and
+the horizon, once per merge) and `Passed` (once per handover). A pool of 3 members sends a few
+messages a minute at most; a mailbox holds its sender's last 64 (`KEPT`), each a few hundred bytes.
+Nothing is read back after a lead change: each mailbox is to one member, read by it alone, its read
+marks in its own folder (`mail.json`); a new lead never reads its predecessor's. What depends on
+durability: nothing the driver can't make up. Entries live in the journal, not in the message; a
+`Tell` lost is told again (every 10 minutes, and to each new lead), an `Ack` lost is asked again by
+the next `Tell`. Only the owner's asks passed on are one-shot: a mailbox kept them for the lead's
+next process; the HTTP path keeps that (below).
+
+**The endpoint**: `POST /pool/mail` on the lead's coordinator, JSON
+`{"from": <member>, "to": <member>, "msgs": [[<n>, <Msg>], …]}` (at most 64; `crate::coord::inbox`).
+- **Auth**: the build's key (the coordinator's contact token, as every agent request: no page may
+  call it, a viewer refuses it). Sent only to the lead's tailnet addresses (`mail_urls`: 100.64/10
+  or `.ts.net`; never `.local` or a LAN address, any device's on the network to claim), its
+  heartbeat's broker's, else its contact's. None: by mailbox.
+- **Taken only by the member it's to**: the coordinator answers 409 unless `to` is its own member
+  (`Shared::pool_member`) and its agent gave it an inbox. A lead that changed mid-send still takes
+  mail to itself, as its mailbox would; an address that now answers as another member refuses it.
+- **Durable before the answer**: the messages are added to the inbox (`inbox.json` in the agent's
+  pool folder, on the lead's own disk, written whole and flushed) before the 200 `{"took": <n>}`.
+  A crash after the answer loses nothing: the next process reads the inbox. A write that fails is
+  an error, never a 200.
+- **Read once**: the lead's agent reads its inbox with its mailboxes, each sender's messages merged
+  and taken in its numbering's order, each number once (a message may come both ways); its marks
+  written, then what it read dropped from the inbox. A forgotten member's dropped.
+- **The member**: each message to the current lead is posted with every earlier one the lead's
+  coordinator hasn't taken (`Mail::posted`), so a mailbox message not read yet rides along too.
+  Anything but a 200 taking them all (unreachable, 404, 409, 5xx, a 15 s timeout): the mailbox is
+  written as before, and HTTP left alone for 5 minutes (`POST_AGAIN`). A lead changed mid-send is
+  either still the member the message is to (it takes it) or refuses it (mailbox); either way the
+  driver re-tells the new lead.
+
+**Mixed versions**: each heartbeat says whether its app takes and posts mail so
+(`Heartbeat::mail_http`). A new member and an old lead: the lead's heartbeat doesn't say so, the
+member never posts (and a 404 falls back too). An old member and a new lead: the lead reads its
+mailboxes as ever. Messages from the lead to members stay by mailbox.
+
+Planned (a later, gated step): **retiring the mailbox.** Once every member's heartbeat in touch says
+`mail_http`, and has for a day, a lead stops reading mailboxes (as #640 and #644 gate on the
+heartbeats); a member then keeps its messages queued while the lead is unreachable rather than
+writing a mailbox. The lead's messages to members go to the members' brokers the same way. Also
+planned: `/pool/status` in place of reading heartbeats for the view.
 
 ## 10. Seeing the pool
 
@@ -1477,7 +1526,7 @@ switched: `state/pool/slots` isn't read, but stays `on` on the NAS while an olde
 `state/pool/budgets` are no longer read either.
 
 Planned: readers reading the term's snapshot and the lead no longer writing today's three files;
-the HTTP pool API; resuming beyond the OSM pass. Packing a terrain z6 tile's fetched raw
+retiring the mailbox (§9.1); resuming beyond the OSM pass. Packing a terrain z6 tile's fetched raw
 tiles (`pack_raw_with`) stays inside that z6 tile's job.
 
 ## 13. Testing
