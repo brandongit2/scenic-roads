@@ -138,7 +138,16 @@ impl ureq::unversioned::transport::Transport for IdleTransport {
                 }
                 Err(ureq::Error::Timeout(why)) if !own => {
                     if (self.files.clock)().saturating_sub(self.last) >= self.files.idle {
-                        return Err(ureq::Error::Timeout(why));
+                        // (Once more before failing: bytes that came while this thread waited to
+                        // read the clock moved, so it's no stall.)
+                        return match self.inner.await_input(Self::shorter(timeout, self.files.tick)) {
+                            Ok(moved) => {
+                                self.last = (self.files.clock)();
+                                Ok(moved)
+                            }
+                            Err(ureq::Error::Timeout(_)) => Err(ureq::Error::Timeout(why)),
+                            Err(e) => Err(e),
+                        };
                     }
                 }
                 Err(e) => return Err(e),
