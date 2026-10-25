@@ -171,14 +171,87 @@ impl RangeRead for PooledFile {
 /// Its reads are counted as this Mac's own disk's (`LOCAL`) when it's on one. A read the share fails
 /// for a moment (crate::retry::transient) is tried again, the file opened again by its path (a
 /// dropped SMB session's handle stays dead), within crate::retry's bound.
+/// Its descriptor is held only while it's among the `plain_open_cap` files read last: past that the
+/// one read longest ago is closed, and opened again by its path at its next read (its length
+/// unchanged: else `InvalidData`). A run that keeps thousands open (a pool's GLO-30 tiles and their
+/// masks over the world: terrain-z8) holds a bounded number of descriptors.
 pub struct PlainFile {
-    file: std::sync::Mutex<std::sync::Arc<File>>,
+    slot: Arc<Slot>,
     path: std::path::PathBuf,
     len: u64,
     local: bool,
     /// (Tests: this many reads fail with this OS error first.)
     #[cfg(test)]
     faults: std::sync::Mutex<(u32, i32)>,
+}
+
+/// A PlainFile's descriptor (None: closed, `plain_open_cap`'s) and when it was read last.
+struct Slot {
+    file: std::sync::Mutex<Option<Arc<File>>>,
+    used: std::sync::atomic::AtomicU64,
+}
+
+/// The PlainFiles with a descriptor open, the order of their reads by `CLOCK`.
+static OPEN: std::sync::Mutex<Vec<std::sync::Weak<Slot>>> = std::sync::Mutex::new(Vec::new());
+static CLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// (Tests: a cap of their own; 0: `plain_open_cap`'s derived one.)
+static CAP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The PlainFiles' descriptors held open at most (beyond those mid-read): a quarter of this
+/// process's open-file limit (crate::cachefile holds up to another quarter), at least 16.
+pub fn plain_open_cap() -> usize {
+    match CAP.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => (crate::cachefile::open_files_limit() / 4).max(16) as usize,
+        n => n,
+    }
+}
+
+/// Sets `plain_open_cap` (0: back to the derived one), for tests that open more files than it.
+#[doc(hidden)]
+pub fn set_plain_open_cap(n: usize) {
+    CAP.store(n, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The PlainFiles' descriptors open now (those closed but mid-read aside).
+pub fn plain_open_count() -> usize {
+    let open = OPEN.lock().unwrap_or_else(|p| p.into_inner());
+    open.iter().filter(|w| w.strong_count() > 0).count()
+}
+
+fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// `s` among the open, the ones read longest ago closed past the cap. (No slot's lock is held
+/// while `OPEN`'s is taken but here, under it.)
+fn register(s: &Arc<Slot>) {
+    let mut open = lock(&OPEN);
+    open.push(Arc::downgrade(s));
+    let cap = plain_open_cap();
+    if open.len() <= cap {
+        return;
+    }
+    open.retain(|w| w.strong_count() > 0);
+    while open.len() > cap {
+        // (The one read longest ago, never `s`.)
+        let Some((i, _)) = open
+            .iter()
+            .enumerate()
+            .filter_map(|(i, w)| w.upgrade().map(|o| (i, o)))
+            .filter(|(_, o)| !Arc::ptr_eq(o, s))
+            .min_by_key(|(_, o)| o.used.load(std::sync::atomic::Ordering::Relaxed))
+        else {
+            break;
+        };
+        if let Some(o) = open.swap_remove(i).upgrade() {
+            // (A read under way keeps its own Arc: the descriptor closes when it's done.)
+            *lock(&o.file) = None;
+        }
+    }
+}
+
+fn tick() -> u64 {
+    CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl PlainFile {
@@ -190,8 +263,13 @@ impl PlainFile {
         if !local {
             crate::nasio::opened(path, len, t.elapsed().as_millis() as u64);
         }
+        let slot = Arc::new(Slot {
+            file: std::sync::Mutex::new(Some(Arc::new(file))),
+            used: std::sync::atomic::AtomicU64::new(tick()),
+        });
+        register(&slot);
         Ok(Self {
-            file: std::sync::Mutex::new(std::sync::Arc::new(file)),
+            slot,
             path: path.to_path_buf(),
             len,
             local,
@@ -214,13 +292,18 @@ impl PlainFile {
         f.read_exact_at(b, off)
     }
 
-    fn handle(&self) -> std::sync::Arc<File> {
-        self.file.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    /// Its descriptor, opened again by its path when it was closed (`plain_open_cap`).
+    fn handle(&self) -> std::io::Result<Arc<File>> {
+        self.slot.used.store(tick(), std::sync::atomic::Ordering::Relaxed);
+        if let Some(f) = lock(&self.slot.file).as_ref() {
+            return Ok(f.clone());
+        }
+        self.reopen()
     }
 
     /// The file opened again by its path (its length unchanged: else `InvalidData`, never tried
-    /// again), for the reads after it.
-    fn reopen(&self) -> std::io::Result<std::sync::Arc<File>> {
+    /// again), for the reads after it; the descriptor it replaces closes once no read holds it.
+    fn reopen(&self) -> std::io::Result<Arc<File>> {
         let f = File::open(&self.path)?;
         let len = f.metadata()?.len();
         if len != self.len {
@@ -229,8 +312,11 @@ impl PlainFile {
                 format!("{} is {len} bytes now, {} when opened", self.path.display(), self.len),
             ));
         }
-        let f = std::sync::Arc::new(f);
-        *self.file.lock().unwrap_or_else(|p| p.into_inner()) = f.clone();
+        let f = Arc::new(f);
+        let was = lock(&self.slot.file).replace(f.clone());
+        if was.is_none() {
+            register(&self.slot);
+        }
         Ok(f)
     }
 }
@@ -243,7 +329,7 @@ impl RangeRead for PlainFile {
     fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
         check_range(self.len, off, len)?;
         let mut b = vec![0u8; len];
-        if let Err(e) = self.read_once(&self.handle(), &mut b, off) {
+        if let Err(e) = self.handle().and_then(|f| self.read_once(&f, &mut b, off)) {
             if !crate::retry::transient(&e) {
                 return Err(IoError::Io(e));
             }

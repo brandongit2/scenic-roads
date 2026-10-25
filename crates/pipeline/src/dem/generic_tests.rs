@@ -966,3 +966,99 @@ fn many_files_are_found_by_their_grid_as_by_a_scan() {
     assert_eq!(grid(0.5, 45.5).len(), 4, "its own, the world's, the one without, the other");
     assert!(g.near(f64::NAN, 1.0).is_empty());
 }
+
+/// The descriptors this process holds on files under `dir` (macOS: by F_GETPATH).
+#[cfg(target_os = "macos")]
+fn fds_under(dir: &std::path::Path) -> usize {
+    let dir = dir.canonicalize().unwrap();
+    (0..store::cachefile::open_files_limit() as i32)
+        .filter(|&fd| {
+            let mut b = [0u8; libc::PATH_MAX as usize];
+            // SAFETY: F_GETPATH writes at most PATH_MAX bytes into `b`.
+            if unsafe { libc::fcntl(fd, libc::F_GETPATH, b.as_mut_ptr()) } != 0 {
+                return false;
+            }
+            let n = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+            std::path::Path::new(std::str::from_utf8(&b[..n]).unwrap_or("")).starts_with(&dir)
+        })
+        .count()
+}
+
+/// terrain-z8 (25 Oct): a run over the world's GLO-30 tiles kept every tile and its fill mask open
+/// (the sets' `opened`, `opened_masks`) until "Too many open files". Sampled over many stored tiles
+/// and masks, a run holds no more of their descriptors than store::range::plain_open_cap (plus
+/// those mid-read, one a thread), and its heights are those of a run holding them all, to the bit.
+#[cfg(target_os = "macos")]
+#[test]
+fn sampling_many_stored_tiles_holds_a_bounded_number_of_files() {
+    use super::super::declared::{Dataset, Plan, Source};
+    use crate::geotiff::write_f32;
+    let d = tempfile::tempdir().unwrap();
+    let dir = d.path().join("glo");
+    std::fs::create_dir_all(&dir).unwrap();
+    // (6 × 5 tiles of 0.1°, 100 px each way, each with a mask: 60 files.)
+    let (cols, rows, n) = (6usize, 5usize, 100usize);
+    let mut files = Vec::new();
+    let mut masks = Vec::new();
+    for c in 0..cols {
+        for r in 0..rows {
+            let (w, nn) = (10.0 + 0.1 * c as f64, 46.0 - 0.1 * r as f64);
+            let gt = [w, 0.001, 0.0, nn, 0.0, -0.001];
+            let e: Vec<f32> = (0..n * n).map(|p| (100 * (c * rows + r) + p % n + p / n) as f32).collect();
+            let m = vec![1.0f32; n * n];
+            let name = format!("T{c}_{r}");
+            let tif = |v: &[f32]| write_f32(n as u32, n as u32, v, 32, gt, 4326, None).unwrap();
+            std::fs::write(dir.join(format!("{name}_DEM.tif")), tif(&e)).unwrap();
+            std::fs::write(dir.join(format!("{name}_FLM.tif")), tif(&m)).unwrap();
+            files.push((format!("https://e.org/{name}/{name}_DEM.tif"), Some([w, nn - 0.1, w + 0.1, nn])));
+            masks.push(Some(format!("https://e.org/{name}/{name}_FLM.tif")));
+        }
+    }
+    let plan = Plan {
+        fmt: 1,
+        version: "t".into(),
+        tag: "1".into(),
+        datasets: vec![Dataset {
+            convert: None,
+            id: "glo".into(),
+            code: 3,
+            resolution: 78.0,
+            cover: None,
+            source: Source::Geotiff { crs: 4326, read_resolution: None, store: true, files, masks },
+        }],
+    };
+    let mut seed = 11u64;
+    let mut rnd = move || {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let (mut lon, mut lat) = (Vec::new(), Vec::new());
+    for _ in 0..4000 {
+        lon.push(10.0 + rnd() * 0.1 * cols as f64);
+        lat.push(46.0 - rnd() * 0.1 * rows as f64);
+    }
+    let f = crate::fetch::MapFetch::default();
+    let threads = 2;
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+    let o = Opts { fetch: &f, store: Some(d.path().to_path_buf()), pool: Some(&pool) };
+    let run = |cap: usize| {
+        store::range::set_plain_open_cap(cap);
+        let s = Sampler::new(&plan, &o).unwrap();
+        let got = s.sample(&lon, &lat, &|_| {}).unwrap();
+        let held = fds_under(d.path());
+        drop(s);
+        (got, held)
+    };
+    // (Every file held, as before the fix: each tile and its mask open at the end.)
+    let (want, all) = run(1_000_000);
+    let (got, held) = run(8);
+    store::range::set_plain_open_cap(0);
+    eprintln!("held: {all} with no cap, {held} with a cap of 8");
+    assert_eq!(all, 2 * cols * rows, "all held open");
+    assert!(held <= 8 + threads, "{held} held, past the cap");
+    let bits = |s: &Sampled| s.elev.iter().map(|e| e.to_bits()).collect::<Vec<_>>();
+    assert_eq!(bits(&got), bits(&want));
+    assert_eq!((&got.src, &got.blended), (&want.src, &want.blended));
+    assert!(want.elev.iter().all(|e| e.is_finite()));
+    assert_eq!(fds_under(d.path()), 0, "none once the sampler's gone");
+}

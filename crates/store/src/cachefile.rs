@@ -126,6 +126,12 @@ pub fn cap() -> usize {
     (LIMIT.load(Ordering::Relaxed) / 4).max(32) as usize
 }
 
+/// This process's open-file limit, raised once to what the system allows (`raise_limit`).
+pub fn open_files_limit() -> u64 {
+    held();
+    LIMIT.load(Ordering::Relaxed)
+}
+
 /// The files this process holds now.
 pub fn held_count() -> usize {
     held().lock().unwrap().files.len()
