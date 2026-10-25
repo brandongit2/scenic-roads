@@ -1503,6 +1503,10 @@ pub struct Agent {
     /// (crate::answers::seed), on a thread of its own; and whether it was started (once an agent).
     answers_seed: Option<std::thread::JoinHandle<Result<Vec<String>>>>,
     answers_seeded: bool,
+    /// The sweep of what no current code reads of the cache (room::retire): when it last started,
+    /// and the one under way.
+    retired_at: Option<Instant>,
+    retire_task: Option<std::thread::JoinHandle<BTreeMap<String, u64>>>,
     /// The lead's: the members' last clear or declined ask noted in the history (its time), by host.
     helper_caches: BTreeMap<String, u64>,
     /// Jobs an earlier agent left that couldn't be shown stopped (jobs::Orphan): their process
@@ -1930,6 +1934,8 @@ impl Agent {
             caches_task: None,
             answers_seed: None,
             answers_seeded: false,
+            retired_at: None,
+            retire_task: None,
             helper_caches: BTreeMap::new(),
             orphans: Vec::new(),
             last_cond: None,
@@ -6118,6 +6124,7 @@ impl Agent {
             return why;
         }
         let (cache, sources) = (self.o.home.join("cache"), root.map(|r| r.join("sources")));
+        self.retire(&cache, root);
         if let Some(ask) = room::take_clear(&self.o.home) {
             match (&why, sources) {
                 (None, Some(s)) => self.caches_start(ask, move || room::clear(&cache, &s)),
@@ -6141,6 +6148,36 @@ impl Agent {
             }
         }
         self.caches_busy().or(why)
+    }
+
+    /// What no current code reads of this Mac's cache deleted (room::retire), at the agent's start
+    /// and daily after, on a thread of its own, jobs running or not (what they use they hold:
+    /// store::cachefile); not while a job an earlier agent left runs (its programs may not hold what
+    /// they use), nor without the NAS (the manifest says which copies are current). What it freed
+    /// logged.
+    fn retire(&mut self, cache: &Path, root: Option<&Path>) {
+        if let Some(t) = self.retire_task.take_if(|t| t.is_finished()) {
+            match t.join() {
+                Ok(f) if !f.is_empty() => {
+                    let said: Vec<String> = f.iter().map(|(k, b)| format!("{} {}", room::size(*b), room::words(k))).collect();
+                    eprintln!("agent: deleted what no code reads of the cache: {}", said.join(", "));
+                }
+                Ok(_) => {}
+                Err(_) => eprintln!("agent: the sweep of the cache's retired files failed midway"),
+            }
+        }
+        self.orphans.retain(jobs::Group::is_the_jobs);
+        let Some(root) = root else { return };
+        if self.retire_task.is_some()
+            || !self.orphans.is_empty()
+            || self.retired_at.is_some_and(|t| t.elapsed() < Duration::from_secs(86400))
+        {
+            return;
+        }
+        self.retired_at = Some(Instant::now());
+        let (cache, root) = (cache.to_path_buf(), root.to_path_buf());
+        self.retire_task =
+            std::thread::Builder::new().name("retire".into()).spawn(move || room::retire(&cache, Some(&root))).ok();
     }
 
     /// The lead's, once an agent, when no job runs here: the pass's answers its cache has, sent

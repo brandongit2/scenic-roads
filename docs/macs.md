@@ -51,8 +51,12 @@ lead's coordinator. Below, the M4 (48 GB) unless said.
     copies of record files staging reads (`blobs/`: hi packs, roadside buildings' z8 tiles), pageview month indexes (`items/months/`).
   - **Cleared too, on the owner's ask:** the pack cache (`base/`, the base packs' way indexes for
     pack(T) and lo), the
-    old DEM cache's leftover files (`dem-cache.*`, read by nothing), local copies the summits and peaks jobs
+    retired caches, local copies the summits and peaks jobs
     read, and the heritage job's clip of the pass's `whs` set (made again by osmium).
+  - **Deleted always** (`room::retire`, at the agent's start and daily, room needed or not): caches no
+    code reads any more (`room::RETIRED`: the old DEM cache, `dem-cache.*`), and local copies of NAS
+    files whose logical name the build manifest no longer names, a day old (an old version's, such as
+    `sources-terrain-z8-v3` once the z8 is v6, or an older pass's). A file a job holds stays.
   - **Kept:** the answers (`items/`, `heritage-<date>/`), the trains' stop pairs (`rail/`), the z6 tile
     stages' timings (`unit-stages.json`), what a z6 tile kept that isn't on the NAS yet, and the
     coverage as last read (`coverage/<hash16>.cov`, by the regions' accepted version).

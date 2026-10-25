@@ -51,7 +51,7 @@
 //! `ClearRequest`), once the build is done, jobs running here or not: those caches, the canopy squares
 //! too, and the others a later job fills again from the NAS or makes again from what's there
 //! (`kind`): the pack cache, the local copies of the NAS's files and the heritage jobs' clip of the
-//! planet; and the old DEM cache's leftovers (`dem-cache.*`, unused since task #595). Kept: the
+//! planet; and the retired caches (`RETIRED`, which `retire` deletes anyway). Kept: the
 //! Wikidata and Wikipedia answers the items and heritage jobs keep (crate::answers: the NAS has them too, but they free little, and
 //! the heritage chain's working copy, `heritage-<date>/`, is whole or nothing), the heritage
 //! scripts' old Python environment (`heritage-venv/`: their next run removes it), what frees next to
@@ -66,7 +66,7 @@
 //! the agent frees its caches toward that on a thread of its own, jobs running or not,
 //! whether or not the build has work left: the cheap caches by room-making's rules and order (the
 //! canopy squares too), then a clear's others, the cheapest to fill again first (`TOWARD_ORDER`:
-//! the old DEM cache's leftovers, copies of the NAS's files, the base packs a file at a time, the
+//! the retired caches, copies of the NAS's files, the base packs a file at a time, the
 //! least recently used first, the heritage clip last, and only while it can be made again:
 //! `heritage_remade`), each only as far as needed, the goal read again as it goes (lowered or
 //! off: it stops).
@@ -194,12 +194,64 @@ fn kind(name: &str) -> Option<&'static str> {
         "items" => "months",
         // (pack(T)'s and lo's base packs, copied from the NAS where the mirror lacks them.)
         "base" => "base",
-        _ if name.starts_with("dem-cache.") => "dem",
+        _ if RETIRED.iter().any(|r| name.starts_with(r)) => "retired",
         // (scenic-build's local copies, by their logical names: the z8 terrain, the summits.)
         _ if name.starts_with("sources-") || name.starts_with("work-") => "copies",
         _ if name.starts_with("heritage-merged-") => "heritage",
         _ => return None,
     })
+}
+
+/// Caches no code reads any more, by their names' prefixes in the agent's cache: deleted whenever
+/// the agent sweeps them (`retire`), room needed or not (removed means deleted). A cache whose code
+/// is deleted adds its name here.
+pub const RETIRED: [&str; 1] = [
+    // (The DEM cache: its code deleted by task #595.)
+    "dem-cache.",
+];
+
+/// How long a local copy of a NAS file (`sources-*`, `work-*`) the build manifest no longer names
+/// stays (`retire`): a day, so one a job copied under a name the manifest's file lags is never taken
+/// (a job holds what it uses anyway: store::cachefile).
+const COPY_GRACE: std::time::Duration = std::time::Duration::from_secs(86400);
+
+/// Deletes what of the agent's cache at `cache` no current code reads (task #660): the retired
+/// caches (`RETIRED`), and the copies of the NAS's files (scenic-build's `local_copy`, by logical
+/// name with `/` as `-`) whose logical name the NAS's build manifest (under `root`) no longer names,
+/// untouched for `COPY_GRACE`: an old version's (`sources-terrain-z8-v3` once the z8 is v6), or an
+/// older pass's. Without a readable manifest, only the retired caches. Nothing a job holds
+/// (store::cachefile), nothing through a link nor in the NAS's folder (`ours`). What it freed, by
+/// kind ("retired", "copies").
+pub fn retire(cache: &Path, root: Option<&Path>) -> BTreeMap<String, u64> {
+    let mut freed: BTreeMap<String, u64> = BTreeMap::new();
+    let named: Option<HashSet<String>> = root.and_then(|r| {
+        let m: BTreeMap<String, String> =
+            serde_json::from_slice(&std::fs::read(r.join("state/build/manifest.json")).ok()?).ok()?;
+        Some(m.keys().map(|l| l.replace('/', "-")).collect())
+    });
+    let now = SystemTime::now();
+    for e in std::fs::read_dir(cache).into_iter().flatten().flatten() {
+        let (p, name) = (e.path(), e.file_name().to_string_lossy().into_owned());
+        let k = if RETIRED.iter().any(|r| name.starts_with(r)) {
+            "retired"
+        } else if kind(&name) == Some("copies")
+            && named.as_ref().is_some_and(|n| !n.contains(&name))
+            && std::fs::symlink_metadata(&p)
+                .and_then(|m| m.modified())
+                .is_ok_and(|t| now.duration_since(t).unwrap_or_default() >= COPY_GRACE)
+        {
+            "copies"
+        } else {
+            continue;
+        };
+        if !ours(&p, root) {
+            continue;
+        }
+        let t = store::cachefile::remove_tree(&p);
+        *freed.entry(k.to_string()).or_default() += t.freed;
+    }
+    freed.retain(|_, b| *b > 0);
+    freed
 }
 
 /// Whether cache `kind` is one of the cheap ones, which room-making empties too.
@@ -215,7 +267,7 @@ pub fn words(kind: &str) -> &str {
         "blobs" => "copies of the records' files",
         "months" => "pageview months",
         "base" => "base packs",
-        "dem" => "the old DEM cache (unused since #595)",
+        "retired" => "caches no code reads any more (room::RETIRED)",
         "copies" => "copies of the NAS's files",
         "heritage" => "the heritage jobs' planet clip",
         k => k,
@@ -341,7 +393,7 @@ pub fn gone(clear: &BTreeMap<String, u64>, mb_s: f64) -> Vec<Gone> {
                 "blobs" => format!("copied back from the NAS as the z3 tiles are built again ({} in all)", time(b)),
                 "months" => format!("copied back from the NAS when the items and heritage jobs next run ({})", time(b)),
                 "base" => format!("copied back by the next map tiles' job, from the mirror where it has them, else the NAS ({})", time(b)),
-                "dem" => "never: nothing reads it".to_string(),
+                "retired" => "never: nothing reads it".to_string(),
                 "copies" => format!("copied back from the NAS when the summits and peaks next run ({})", time(b)),
                 "heritage" => "made again from the NAS's filtered planet when the heritage chain next runs (about an hour of osmium)".to_string(),
                 _ => "filled again from the NAS".to_string(),
@@ -558,10 +610,10 @@ pub struct RoomView {
 }
 
 /// The caches a freeing toward the target empties after the cheap ones, in this order: the
-/// cheapest to fill again first (the old DEM cache's leftovers, which nothing reads; copies of the
+/// cheapest to fill again first (the retired caches, which nothing reads; copies of the
 /// NAS's files and the base packs, minutes from the NAS; the heritage jobs' planet clip, an hour of
 /// osmium, last).
-const TOWARD_ORDER: [&str; 4] = ["dem", "copies", "base", "heritage"];
+const TOWARD_ORDER: [&str; 4] = ["retired", "copies", "base", "heritage"];
 
 /// Whether the heritage jobs' clip of the planet at `p` (`heritage-merged-<date>-<cover>.osm.pbf`)
 /// can be made again: the NAS's build manifest (under `root`) names the pass's filtered planet of
@@ -1353,6 +1405,47 @@ mod tests {
         assert!(c.exists() && given_back(home).is_empty());
     }
 
+    /// The sweep of what no code reads (task #660): the retired caches always; a copy of a NAS file
+    /// the manifest no longer names once a day old (an old version's, an older pass's); the current
+    /// copies, a fresh unnamed one, the other caches and one a job holds stay; with no manifest
+    /// readable, only the retired caches go.
+    #[test]
+    fn retire_deletes_only_what_no_code_reads() {
+        let d = tempfile::tempdir().unwrap();
+        let (c, root) = (d.path().join("cache"), d.path().join("nas"));
+        let old = |p: &Path| {
+            std::fs::File::open(p).unwrap().set_modified(SystemTime::now() - Duration::from_secs(2 * 86400)).unwrap()
+        };
+        file(&c.join("dem-cache.keys.u64"), 100, 9000);
+        file(&c.join("dem-cache.elev.f32"), 50, 0);
+        for n in ["sources-terrain-z8-v3", "sources-terrain-z8-v6-abc", "work-summits-2026-03-28", "sources-new-v1"] {
+            file(&c.join(n).join("x.bin"), 10, 9000);
+            if n != "sources-new-v1" {
+                old(&c.join(n));
+            }
+        }
+        file(&c.join("chm10/a.tif"), 10, 9000);
+        file(&c.join("heritage-merged-2026-09-28-x.osm.pbf"), 10, 9000);
+        // (No manifest: only the retired caches.)
+        let f = retire(&c, Some(&root));
+        assert_eq!(f, BTreeMap::from([("retired".to_string(), 150)]));
+        assert!(!c.join("dem-cache.keys.u64").exists() && c.join("sources-terrain-z8-v3").exists());
+        let m = serde_json::json!({"sources/terrain-z8-v6-abc": "x", "work/summits/2026-09-28": "y"});
+        bytes(&root.join("state/build/manifest.json"), m.to_string().as_bytes(), 0);
+        // (One held by a job stays.)
+        let held = c.join("work-summits-2026-03-28/x.bin");
+        store::cachefile::hold(&held, &mut |_| Ok(())).unwrap();
+        let f = retire(&c, Some(&root));
+        assert_eq!(f, BTreeMap::from([("copies".to_string(), 10)]));
+        assert!(!c.join("sources-terrain-z8-v3").exists());
+        assert!(held.exists() && c.join("sources-terrain-z8-v6-abc/x.bin").exists());
+        assert!(c.join("sources-new-v1/x.bin").exists(), "unnamed but fresh");
+        assert!(c.join("chm10/a.tif").exists() && c.join("heritage-merged-2026-09-28-x.osm.pbf").exists());
+        store::cachefile::release(&held);
+        assert_eq!(retire(&c, Some(&root)).get("copies"), Some(&10));
+        assert!(!c.join("work-summits-2026-03-28").exists());
+    }
+
     fn file(p: &Path, len: usize, age_s: u64) {
         bytes(p, &vec![0u8; len], age_s);
     }
@@ -1858,7 +1951,7 @@ mod tests {
                 ("blobs".to_string(), 1000),
                 ("canopy".to_string(), square),
                 ("copies".to_string(), 200),
-                ("dem".to_string(), 130),
+                ("retired".to_string(), 130),
                 ("heritage".to_string(), 100)
             ])
         );
@@ -1882,7 +1975,7 @@ mod tests {
         file(&c.join("dem-cache.keys.u64"), 80, 60);
         file(&c.join("dem-cache.keys.u64.m1.123.tmp"), 30, 60);
         let f = clear(c, nas).unwrap();
-        assert_eq!((f.freed.get("dem"), f.left), (Some(&110), 100));
+        assert_eq!((f.freed.get("retired"), f.left), (Some(&110), 100));
         assert!(!c.join("dem-cache.keys.u64").exists() && !c.join("dem-cache.keys.u64.m1.123.tmp").exists());
     }
 
@@ -1923,7 +2016,7 @@ mod tests {
                 ("base".to_string(), 2000),
                 ("blobs".to_string(), 1000),
                 ("copies".to_string(), 500),
-                ("dem".to_string(), 130)
+                ("retired".to_string(), 130)
             ])
         );
         assert_eq!((f.target, f.left), (Some(3500), 0));

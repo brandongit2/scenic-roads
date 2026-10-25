@@ -151,6 +151,12 @@ tests_ok=0
 # (Tests that pass over what a Mac lacks fail instead when they're run for a publish: uv for the
 # translations' checker.)
 export SCENIC_PUBLISH=1
+# The tests' and clippy's builds without debug info (task #660): on macOS each build's line tables
+# stay in its object files beside the binaries (split-debuginfo "unpacked"), 80 GB of the 122 GB this
+# tree's target/debug had grown to in 3.5 days on the mini (25 Oct). A failed test still says its
+# file and line (the panic's location needs none), and no backtrace is asked for here. (Passed to
+# the test Mac with the other CARGO_PROFILE_* variables: tools/app/remote-tests.sh.)
+export CARGO_PROFILE_DEV_DEBUG=false CARGO_PROFILE_TEST_DEBUG=false
 # (After the libraries, the pipeline's whole-crate checks: every cache read through the accessor,
 # the records written only through Out (docs/pool.md §7.3), every Wikimedia request through the
 # budgets' proxy (§7.7), the Python steps' timer. The drop boxes' and the sources' guards ran first.)
@@ -178,6 +184,26 @@ if (( tests_ok != 0 )); then
 fi
 # The programs' WebAssembly builds, which the coordinator serves to web workers (docs/workers.md).
 zsh tools/app/wasm.sh >/dev/null || { echo "WebAssembly build failed"; exit 1; }
+# The build folder kept small (task #660): cargo never deletes what it built, so each change of the
+# dependencies or a profile left every workspace crate's old build behind (the mini's target/ grew
+# by ~35 GB a day, to 127 GB). Of each profile's deps/, build/, incremental/ and .fingerprint/, an
+# entry not read nor written for 2 days goes (by the newest access of any file in it: macOS
+# updates a file's access time when it is read, at most once a day): what these builds use is read
+# at each publish, so only an entry a later publish needs again is built again.
+prune_target() {
+  local p e stale=() kb
+  for p in target/*/(N/) target/*/release(N/); do
+    # (Files only: a folder's access time changes when it is listed, by this sweep too.)
+    stale+=(${(f)"$(find $p/deps -mindepth 1 -maxdepth 1 -type f ! -newerat '2 days ago' ! -newermt '2 days ago' 2>/dev/null)"})
+    for e in $p/{build,incremental,.fingerprint}/*(ND/); do
+      [[ -z $(find $e -type f \( -newerat '2 days ago' -o -newermt '2 days ago' \) 2>/dev/null | head -1) ]] && stale+=($e)
+    done
+  done
+  kb=$( (( $#stale )) && print -rN -- $stale | xargs -0 du -sk 2>/dev/null | awk '{s+=$1} END {print s+0}' || print 0)
+  (( $#stale )) && print -rN -- $stale | xargs -0 rm -rf
+  print -r -- "build folder: $(( kb / 1024 )) MB of old builds removed, $(du -sh target 2>/dev/null | cut -f1) left"
+}
+prune_target
 # Built into its own folder: web/dist may be what a development server is serving. (The type check
 # writes and checks our MapLibre's declarations, then the app's; the build compiles its source with
 # the app: web/maplibre/FORK.md.)
