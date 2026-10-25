@@ -216,8 +216,9 @@ pub fn stored(id: &str, dir: &std::path::Path, url: &str) -> Result<Option<Arc<d
 }
 
 /// `stored`, a read the share fails for a moment tried again after each of `waits`
-/// (store::retry): a "not found" too, when the store's listing has the file. A file the listing
-/// lacks fails at once, as does one cut short.
+/// (store::retry): a "not found" too, when the store's listing has the file (listed only when
+/// neither the file nor its `.none` is found). A file the listing lacks fails at once, as does one
+/// cut short.
 fn stored_with(
     id: &str,
     dir: &std::path::Path,
@@ -231,6 +232,13 @@ fn stored_with(
     if let Err(e) = io(&what, Some(&f), waits, transient, || std::fs::metadata(&f)) {
         if e.kind() != std::io::ErrorKind::NotFound {
             return Err(anyhow::Error::from(e).context(format!("{what}: its size")));
+        }
+        // (A tile with no data, its `.none` marker, is common: looked at by its name, not a listing.)
+        let none = dir.join(format!("{name}.none"));
+        match io(&what, Some(&none), waits, transient, || std::fs::metadata(&none)) {
+            Ok(_) => return Ok(None),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(anyhow::Error::from(e).context(format!("{what}: its .none"))),
         }
         let listed = io(&what, Some(dir), waits, transient, || {
             let mut has = (false, false);
