@@ -313,6 +313,7 @@ impl Fine {
                 cover: Some(cover),
                 source: Source::Tiles { url: BASE_URL.into(), zoom: zb, encoding: "terrarium".into() },
                 convert: None,
+                outline: None,
             });
         }
         Ok(Some((presence, full)))
@@ -1532,7 +1533,7 @@ mod tests {
         FineSet {
             id: id.into(),
             line: format!("{id} k"),
-            cover: Cover { world: false, cells: cells.iter().copied().collect() },
+            cover: Cover { world: false, cells: cells.iter().copied().collect(), outline: None },
             detail,
             cut: None,
         }
@@ -1778,6 +1779,7 @@ mod tests {
                 files: vec![(url.into(), None)],
                 masks: Vec::new(),
             },
+            outline: None,
         };
         let plan = Plan {
             fmt: 1,

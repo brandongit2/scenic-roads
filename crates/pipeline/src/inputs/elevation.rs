@@ -63,6 +63,9 @@ pub struct Elevation {
     pub geoid: Option<Vec<crate::inputs::sources::Source>>,
     /// Each geoid grid's boxes, by its URL: read once a check.
     grids: Mutex<HashMap<String, std::result::Result<Vec<[f64; 4]>, String>>>,
+    /// The accepted regions' stored geometry (content names) by region id: what a dataset's
+    /// outlines are read from (`Measured::outline`).
+    pub region_geometry: BTreeMap<String, String>,
 }
 
 impl Elevation {
@@ -176,6 +179,16 @@ impl Elevation {
             if !missing.is_empty() {
                 return Err(format!("it names regions no accepted region is: {}", missing.join(", ")));
             }
+            let geometry = regions
+                .iter()
+                .map(|g| {
+                    self.region_geometry
+                        .get(g)
+                        .cloned()
+                        .ok_or_else(|| format!("region {g}'s stored geometry isn't named"))
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            m.outline = Some(declared::scope_outline(&cover, regions, cov, geometry));
             m.uncut = Some(m.cover.take().unwrap_or_else(|| vec![declared::WORLD]));
             m.cover = Some(cover);
         }
@@ -185,6 +198,14 @@ impl Elevation {
             let kept = declared::Cover::of(Some(&had)).cells.into_iter().filter(|c| !out.contains(c)).collect();
             m.cover = Some(declared::cells_to_boxes(&kept));
             m.uncut.get_or_insert(had);
+            // (An excluded cell is no edge cell either.)
+            if let Some(o) = &mut m.outline {
+                o.edges.retain(|c, _| {
+                    c.split_once(',')
+                        .and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)))
+                        .is_none_or(|c| !out.contains(&c))
+                });
+            }
         }
         Ok(m)
     }
@@ -206,6 +227,7 @@ impl Elevation {
                         resolution: crate::dem::generic::tile_resolution(*zoom, 0.0),
                         cover: None,
                         uncut: None,
+                        outline: None,
                     });
                 }
                 if territory.is_empty() {
@@ -226,6 +248,7 @@ impl Elevation {
                     resolution: crate::dem::generic::tile_resolution(*zoom, mid),
                     cover: Some(declared::cells_to_boxes(&cells)),
                     uncut: None,
+                    outline: None,
                 })
             }
             Data::Geotiff { urls, index, files, store } => {
@@ -330,7 +353,7 @@ impl Elevation {
                     }
                     Some(declared::cells_to_boxes(&cells))
                 };
-                Ok(Measured { crs: Some(crs), resolution, cover, uncut: None })
+                Ok(Measured { crs: Some(crs), resolution, cover, uncut: None, outline: None })
             }
         }
     }
@@ -431,9 +454,10 @@ impl Checks for Elevation {
         UNIT
     }
 
-    /// 3: heights no geoid chain converts, or converts only in part, found (`el-geoid`).
+    /// 3: heights no geoid chain converts, or converts only in part, found (`el-geoid`). 4: a
+    /// dataset's `regions` cut it to their outlines inside its cells (`Measured::outline`).
     fn version(&self) -> u32 {
-        3
+        4
     }
 
     fn recursive(&self) -> bool {
@@ -675,18 +699,25 @@ impl Checks for Elevation {
             None => None,
         };
         // (The accepted regions: a dataset's `regions` cut its coverage.)
-        let regions = match crate::inputs::open(root, manifest, crate::inputs::regions::UNIT) {
+        let (regions, region_geometry) = match crate::inputs::open(root, manifest, crate::inputs::regions::UNIT) {
             Ok(Some(a)) => {
                 let cache = std::env::var_os(crate::coverage::CACHE_ENV).map(std::path::PathBuf::from);
-                match crate::coverage::Coverage::accepted(root, &a, cache.as_deref()) {
-                    Ok(c) => Some(c),
+                let read = crate::coverage::Coverage::accepted(root, &a, cache.as_deref()).and_then(|c| {
+                    let named = crate::inputs::regions::read::enabled(&a)?
+                        .into_iter()
+                        .filter_map(|l| Some((l.recipe.id, l.stored?.geometry)))
+                        .collect();
+                    Ok((c, named))
+                });
+                match read {
+                    Ok((c, named)) => (Some(c), named),
                     Err(e) => {
                         eprintln!("inputs: {UNIT}: the accepted regions can't be read ({e:#})");
-                        None
+                        (None, BTreeMap::new())
                     }
                 }
             }
-            _ => None,
+            _ => (None, BTreeMap::new()),
         };
         // (The accepted geoid sources: none accepted, none.)
         let geoid = match manifest.get(&crate::inputs::logical(crate::inputs::sources::UNIT)) {
@@ -700,6 +731,7 @@ impl Checks for Elevation {
                 store: Some(root.join("sources/fetched")),
                 regions,
                 geoid: Some(geoid),
+                region_geometry,
                 ..Elevation::new(fetch, outlines)
             })));
         }
@@ -707,6 +739,7 @@ impl Checks for Elevation {
             store: Some(root.join("sources/fetched")),
             regions,
             geoid: Some(geoid),
+            region_geometry,
             ..Elevation::new(Arc::new(crate::fetch::Fetcher::from_env()), outlines)
         })))
     }
@@ -828,7 +861,7 @@ pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, Str
         exclude: Vec::new(),
         data: Data::Tiles { url: "https://e.org/{z}/{x}/{y}.png".into(), zoom: 10, encoding: "terrarium".into() },
     };
-    let measured = Measured { crs: None, resolution: 150.0, cover: None, uncut: None };
+    let measured = Measured { crs: None, resolution: 150.0, cover: None, uncut: None, outline: None };
     let entry = |id: &str, d: &Declaration, measured: Measured, keyed: &str| {
         let mut facts = serde_json::Map::new();
         facts.insert("declaration".into(), serde_json::to_value(d).unwrap());
@@ -859,7 +892,12 @@ pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, Str
             encoding: "terrarium".into(),
         },
     };
-    files.extend([entry("terrarium", &base, Measured { crs: None, resolution: 38.0, cover: None, uncut: None }, "t")]);
+    files.extend([entry(
+        "terrarium",
+        &base,
+        Measured { crs: None, resolution: 38.0, cover: None, uncut: None, outline: None },
+        "t",
+    )]);
     let north = Declaration {
         surface: "surface".into(),
         heights: "EGM2008".into(),
@@ -872,7 +910,13 @@ pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, Str
     files.extend([entry(
         "glo30",
         &north,
-        Measured { crs: Some(4326), resolution: 30.0, cover: Some(vec![[-148.0, 64.0, -147.0, 66.0]]), uncut: None },
+        Measured {
+            crs: Some(4326),
+            resolution: 30.0,
+            cover: Some(vec![[-148.0, 64.0, -147.0, 66.0]]),
+            uncut: None,
+            outline: None,
+        },
         "g",
     )]);
     let feature = |la: i32, lo: i32| serde_json::json!({ "type": "Feature", "properties": { "url": format!("https://copernicus-dem-30m.s3.amazonaws.com/N{la}_W{}_DEM.tif", -lo), "mask": format!("https://copernicus-dem-30m.s3.amazonaws.com/N{la}_W{}_FLM.tif", -lo) }, "geometry": { "type": "Polygon", "coordinates": [[[lo, la], [lo + 1, la], [lo + 1, la + 1], [lo, la + 1], [lo, la]]] } });

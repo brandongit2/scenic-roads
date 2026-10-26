@@ -321,6 +321,7 @@ fn declared_plan() -> declared::Plan {
         resolution,
         cover: cover.map(|c| vec![c]),
         source: Source::Geotiff { crs, read_resolution, store, files, masks: Vec::new() },
+        outline: None,
     };
     let glo =
         |tile: &str, b: [f64; 4], mask: bool| ((glo_url(tile, "DEM"), Some(b)), mask.then(|| glo_url(tile, "FLM")));
@@ -331,6 +332,7 @@ fn declared_plan() -> declared::Plan {
         resolution: generic::tile_resolution(zoom, 35.0),
         cover: Some(vec![[122.0, 20.0, 154.0, 47.0]]),
         source: Source::Tiles { url: format!("{GSI}/{layer}/{{z}}/{{x}}/{{y}}.png"), zoom, encoding: "gsi-png".into() },
+        outline: None,
     };
     let canada = Some([-70.0, 44.0, -63.0, 48.0]);
     declared::Plan {
@@ -369,6 +371,7 @@ fn declared_plan() -> declared::Plan {
                     resolution: 30.9,
                     cover: None,
                     source: Source::Geotiff { crs: 4326, read_resolution: None, store: true, files, masks },
+                    outline: None,
                 }
             },
         ],

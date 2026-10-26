@@ -153,6 +153,34 @@ fn excluded_cells_are_cut_from_a_coverage() {
     assert_eq!(m.uncut, Some(vec![declared::WORLD]));
 }
 
+/// A dataset's `regions` cut what was measured to their cells, then to their outlines inside
+/// them, naming the regions' stored geometry; a region whose geometry isn't named is an error.
+#[test]
+fn regions_cut_a_coverage_to_their_outlines() {
+    let dir = tempfile::tempdir().unwrap();
+    let r =
+        crate::agent::recipes::Recipe { id: "a".into(), name: "a".into(), outline: vec!["place:10.5,45.5,20".into()] };
+    let cov = crate::coverage::Coverage::fixture(&[r], None, dir.path()).unwrap();
+    let d2 = Declaration {
+        regions: Some(vec!["a".into()]),
+        ..declared::parse(&decl("", "format = \"geotiff\"\nurl = \"https://e.org/a.tif\"")).unwrap()
+    };
+    let m = Measured { resolution: 30.0, cover: Some(vec![[10.0, 45.0, 12.0, 46.0]]), ..Default::default() };
+    let e = Elevation {
+        regions: Some(cov),
+        region_geometry: BTreeMap::from([("a".to_string(), "sources/inputs/regions/@geometry/a.0.rgeo".to_string())]),
+        ..Elevation::default()
+    };
+    let got = e.scoped(&d2, m.clone()).unwrap();
+    assert_eq!(got.cover, Some(vec![[10.0, 45.0, 11.0, 46.0]]));
+    let o = got.outline.unwrap();
+    assert_eq!(o.geometry, ["sources/inputs/regions/@geometry/a.0.rgeo"]);
+    // (A circle of 20 km in its cell: the cell is an edge.)
+    assert_eq!(o.edges.keys().collect::<Vec<_>>(), ["10,45"]);
+    let unnamed = Elevation { region_geometry: BTreeMap::new(), ..e };
+    assert!(unnamed.scoped(&d2, m).unwrap_err().contains("stored geometry"));
+}
+
 #[test]
 fn good_declarations_are_measured_from_their_data() {
     let f = Fixture::new(vec![

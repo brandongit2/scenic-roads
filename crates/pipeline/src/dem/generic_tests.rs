@@ -50,6 +50,7 @@ fn tiles_blend_across_their_edges() {
         resolution: tile_resolution(z, 0.0),
         cover: None,
         source: Source::Tiles { url: url.into(), zoom: z, encoding: "terrarium".into() },
+        outline: None,
     };
     let plan = Plan {
         fmt: 1,
@@ -161,6 +162,7 @@ fn the_distance_to_the_invalid_area_is_the_scans_whatever_the_shortcut() {
             files: vec![(url.into(), Some(b))],
             masks: Vec::new(),
         },
+        outline: None,
     };
     let (rf, rc) = (PX * M_PER_DEG, 3.0 * PX * M_PER_DEG);
     let ds_fine = geo("fine", 1, rf, "https://a.org/fine.tif", fine_box);
@@ -235,6 +237,7 @@ fn sampling_says_increasing_fractions_to_one_per_chunk() {
         resolution: tile_resolution(z, 0.0),
         cover: None,
         source: Source::Tiles { url: url.into(), zoom: z, encoding: "terrarium".into() },
+        outline: None,
     };
     let plan = Plan {
         fmt: 1,
@@ -417,6 +420,7 @@ fn a_runs_tiles_are_fetched_once_and_together_and_the_heights_are_the_same() {
             zoom: z,
             encoding: "terrarium".into(),
         },
+        outline: None,
     };
     let plan = Plan {
         fmt: 1,
@@ -531,6 +535,7 @@ fn heights_are_converted_before_the_blend() {
         resolution: tile_resolution(z, 0.0),
         cover: None,
         source: Source::Tiles { url: url.into(), zoom: z, encoding: "terrarium".into() },
+        outline: None,
     };
     let plan = Plan {
         fmt: 1,
@@ -640,6 +645,7 @@ fn a_geotiffs_blocks_are_read_ahead_once_and_the_heights_are_the_same() {
             files: vec![(url.into(), Some(b))],
             masks: Vec::new(),
         },
+        outline: None,
     };
     let fine_box = [10.0, 50.0 - h as f64 * PX, 10.0 + w as f64 * PX, 50.0];
     let plan = Plan {
@@ -716,6 +722,7 @@ fn a_geotiff_dataset_in_degrees_keeps_no_copy_of_the_points() {
         resolution: 30.0,
         cover: None,
         source: Source::Geotiff { crs, read_resolution: None, store: false, files: Vec::new(), masks: Vec::new() },
+        outline: None,
     };
     let (lon, lat) = (vec![-80.0, -79.5], vec![43.0, 44.0]);
     let cache = Arc::new(Mutex::new(BlockCache::new(1 << 20)));
@@ -1025,6 +1032,7 @@ fn sampling_many_stored_tiles_holds_a_bounded_number_of_files() {
             resolution: 78.0,
             cover: None,
             source: Source::Geotiff { crs: 4326, read_resolution: None, store: true, files, masks },
+            outline: None,
         }],
     };
     let mut seed = 11u64;

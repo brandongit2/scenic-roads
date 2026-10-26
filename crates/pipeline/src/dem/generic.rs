@@ -1537,7 +1537,7 @@ impl<'a> Sampler<'a> {
     ) -> Result<Sampler<'a>> {
         Ok(Sampler {
             plan,
-            covers: plan.datasets.iter().map(|d| Cover::of(d.cover.as_deref())).collect(),
+            covers: plan.datasets.iter().map(Cover::of_dataset).collect(),
             sets: plan.datasets.iter().map(|d| Set::new(d, o, &cache, &memo)).collect::<Result<_>>()?,
             grids: super::geoid::Grids::new(o),
             memo,

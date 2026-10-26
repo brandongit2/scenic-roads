@@ -3680,7 +3680,11 @@ pub(crate) mod tests {
         let sets = vec![FineSet {
             id: "lidar".into(),
             line: "lidar k".into(),
-            cover: crate::dem::declared::Cover { world: false, cells: [(-79, 45), (19, 66), (20, 66)].into() },
+            cover: crate::dem::declared::Cover {
+                world: false,
+                cells: [(-79, 45), (19, 66), (20, 66)].into(),
+                outline: None,
+            },
             detail: Detail::Raster(2000),
             cut: None,
         }];

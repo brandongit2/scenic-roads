@@ -524,6 +524,11 @@ pub struct Accepted {
 }
 
 impl Accepted {
+    /// The root it was read under (where the other units' content names are).
+    pub fn root(&self) -> &store::nasfs::NasRoot {
+        &self.root
+    }
+
     /// The checked copy of inputs-folder path `path`.
     pub fn path(&self, path: &str) -> Option<store::nasfs::NasPath> {
         self.index.files.get(path).map(|f| self.root.join(&f.file))

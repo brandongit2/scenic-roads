@@ -310,6 +310,24 @@ impl Shape {
         [r[0] as i64 - bx, r[1] as i64 - by, r[2] as i64 + bx, r[3] as i64 + by]
     }
 
+    /// The ring edges meeting the box `rg` (w, s, e, n, E7, edges included), sorted, each once per
+    /// place in the rings (a cell grid lists an edge in every cell it crosses) as its lesser end
+    /// then its other (direction doesn't matter to which points are inside); an edge the rings
+    /// hold twice stays twice, since under even–odd the two cancel.
+    pub fn edges_in(&self, rg: [i64; 4]) -> Vec<[i32; 4]> {
+        let mut by_place: std::collections::BTreeMap<(u32, u32), [i32; 4]> = std::collections::BTreeMap::new();
+        self.edges_meeting(rg, &mut |at, a, b| {
+            by_place.insert(
+                at,
+                if (a[0], a[1]) <= (b[0], b[1]) { [a[0], a[1], b[0], b[1]] } else { [b[0], b[1], a[0], a[1]] },
+            );
+            false
+        });
+        let mut edges: Vec<[i32; 4]> = by_place.into_values().collect();
+        edges.sort_unstable();
+        edges
+    }
+
     /// Calls `f` with each ring edge meeting the box `rg`, with its place (ring, index), from the
     /// grid cells the box overlaps (so an edge crossing several cells comes several times), until it
     /// returns true; whether one did.
@@ -363,19 +381,7 @@ impl Shape {
         {
             return None;
         }
-        // Each edge once per place in the rings (a cell grid lists an edge in every cell it crosses);
-        // an edge the rings hold twice stays twice, since under even–odd the two cancel.
-        let mut by_place: std::collections::BTreeMap<(u32, u32), [i32; 4]> = std::collections::BTreeMap::new();
-        self.edges_meeting(rg, &mut |at, a, b| {
-            // (Direction doesn't matter to which points are inside.)
-            by_place.insert(
-                at,
-                if (a[0], a[1]) <= (b[0], b[1]) { [a[0], a[1], b[0], b[1]] } else { [b[0], b[1], a[0], a[1]] },
-            );
-            false
-        });
-        let mut edges: Vec<[i32; 4]> = by_place.into_values().collect();
-        edges.sort_unstable();
+        let edges = self.edges_in(rg);
         // A reference point on no edge, so its inside-ness doesn't depend on how the grid's cells
         // fall (on an edge, either answer would be right, and the cell decides).
         let on_edge = |p: [i32; 2]| {

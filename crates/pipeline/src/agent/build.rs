@@ -6840,8 +6840,13 @@ pub(crate) mod tests {
                 encoding: "terrarium".into(),
             },
         };
-        let measured =
-            crate::dem::declared::Measured { crs: None, resolution: 30.0, cover: cover.clone(), uncut: None };
+        let measured = crate::dem::declared::Measured {
+            crs: None,
+            resolution: 30.0,
+            cover: cover.clone(),
+            uncut: None,
+            outline: None,
+        };
         (
             crate::dem::declared::Accepted {
                 convert: None,

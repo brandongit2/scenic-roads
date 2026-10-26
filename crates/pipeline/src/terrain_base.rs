@@ -617,6 +617,7 @@ mod tests {
                         masks: vec![Some("https://e.org/T/T_FLM.tif".into())],
                     },
                     convert: None,
+                    outline: None,
                 },
                 Dataset {
                     id: "terrarium".into(),
@@ -629,6 +630,7 @@ mod tests {
                         encoding: "terrarium".into(),
                     },
                     convert: None,
+                    outline: None,
                 },
             ],
         };
@@ -709,6 +711,7 @@ mod tests {
                         masks: vec![Some("https://e.org/F/F_FLM.tif".into())],
                     },
                     convert: None,
+                    outline: None,
                 },
                 Dataset {
                     id: "flat".into(),
@@ -723,6 +726,7 @@ mod tests {
                         masks: vec![None],
                     },
                     convert: None,
+                    outline: None,
                 },
             ],
         };
@@ -804,6 +808,7 @@ mod tests {
                         encoding: "gsi-png".into(),
                     },
                     convert: None,
+                    outline: None,
                 },
                 Dataset {
                     id: "flat".into(),
@@ -821,6 +826,7 @@ mod tests {
                         masks: vec![None],
                     },
                     convert: None,
+                    outline: None,
                 },
             ],
         };
@@ -879,6 +885,7 @@ mod tests {
             cover: None,
             source,
             convert: None,
+            outline: None,
         };
         let plan = Plan {
             fmt: 1,

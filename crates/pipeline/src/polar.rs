@@ -770,6 +770,7 @@ mod tests {
                     masks: vec![Some("https://e.org/T/T_FLM.tif".into())],
                 },
                 convert: None,
+                outline: None,
             }],
         };
         crate::fetch::go_offline();
