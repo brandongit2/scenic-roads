@@ -256,7 +256,10 @@ impl PageView {
     /// Reads `state/build/pause.json` alone (without the state's lock) into the snapshot, if there
     /// is one; a file not there is no pause (the lead removes it when the build goes on).
     fn refresh_pause(&self, src: &dyn Source) {
-        let pause = src.read("state/build/pause.json").and_then(|b| serde_json::from_slice::<Value>(&b).ok()).unwrap_or(Value::Null);
+        let pause = src
+            .read("state/build/pause.json")
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .unwrap_or(Value::Null);
         if let Some(s) = self.state.lock().unwrap().snap.as_mut() {
             s.pause = pause;
         }
