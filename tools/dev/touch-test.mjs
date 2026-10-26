@@ -388,7 +388,14 @@ async function run() {
       check("pause: Cancel closes it and asks nothing", (await until(`!document.querySelector(".card-tip.pinned")`)) >= 0 && (await posts()) === p0);
       await tap(...(await ctl("Freeze now")));
       check("pause: Freeze asks too", (await until(pop("Freeze every job now?"))) >= 0);
-      await tap(...(await inPop("Cancel")));
+      check("pause: the card's focus is on Cancel", (await js(`document.activeElement?.textContent`)) === "Cancel");
+      await js(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
+      check("pause: Escape closes it and asks nothing", (await until(`!document.querySelector(".card-tip.pinned")`)) >= 0 && (await posts()) === p0);
+      await tap(...(await ctl("Freeze now")));
+      await until(pop("Freeze every job now?"));
+      await sleep(900); // (a tap's own click on the veil within 800 ms is passed over)
+      await tap(WIDTH - 12, 836);
+      check("pause: a tap outside closes it and asks nothing", (await until(`!document.querySelector(".card-tip.pinned")`)) >= 0 && (await posts()) === p0);
       await tap(...(await ctl("Pause at a safe point")));
       await until(pop("Pause at a safe point?"));
       const t0 = Date.now();

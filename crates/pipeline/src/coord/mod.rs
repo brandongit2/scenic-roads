@@ -4069,9 +4069,19 @@ fn route(
         "/work/swarm" => {
             // (In the pool, from this Mac's read of the NAS: the same on every Mac; none yet, not
             // ready. Never the memory's meanwhile: its numbering isn't the read's.)
-            let pv = shared.lock().unwrap().pageview.clone().filter(|p| p.active());
+            // (The pause, on the lead (nothing to forward: its pages' asks are set here), from its
+            // memory: its NAS mirror waits for the agent's next loop, many seconds on a busy lead.)
+            let (pv, own) = {
+                let s = shared.lock().unwrap();
+                (s.pageview.clone().filter(|p| p.active()), s.forward.is_none().then(|| s.paused.clone()))
+            };
             if let Some(p) = pv {
-                return Ok(p.swarm().map_or_else(not_ready, |a| (200, a)));
+                return Ok(p.swarm().map_or_else(not_ready, |mut a| {
+                    if let Some(own) = own {
+                        a["pause"] = serde_json::to_value(own).unwrap_or_default();
+                    }
+                    (200, a)
+                }));
             }
             // The whole build at a glance, for the worker page: the lead's heartbeat (its
             // agent's status, written each loop beside this folder: its job, the checklist to the
@@ -9303,6 +9313,29 @@ mod tests {
         let next = Coordinator::viewer(listener, "m1", "1.2.3").unwrap();
         assert!(!stale.exists());
         next.stop();
+    }
+
+    #[test]
+    fn the_leads_page_has_its_pause_from_memory_a_members_from_the_nas() {
+        // (Task #673 review) the lead's NAS mirror waits for its agent's next loop: its own pages
+        // see a press at once.
+        let (d, c, w) = start();
+        let addr = w.urls()[0].trim_start_matches("http://").to_string();
+        let root = d.path().join("nas");
+        std::fs::create_dir_all(&root).unwrap();
+        let pv = crate::agent::pageview::PageView::new();
+        pv.set_inputs(crate::agent::pageview::Inputs { root: Some(root.clone()), ..Default::default() });
+        pv.touch();
+        assert!(pv.tick(&crate::agent::pageview::NasFiles(root.clone()), unix_now()));
+        c.set_pageview(pv);
+        let pause = || send(&addr, "POST", "/work/swarm", None, &[], &serde_json::json!({})).2["pause"].clone();
+        assert!(pause().is_null());
+        let p = crate::control::Pause { mode: crate::control::Mode::Freeze, by: "x".into(), at: 1 };
+        c.set_pause(Some(p), 1);
+        assert_eq!(pause()["mode"], "freeze", "the lead's own, before its mirror");
+        // A member's (forwarding its pages' asks): the NAS's alone, none there.
+        c.set_forward(Some(d.path().into()));
+        assert!(pause().is_null());
     }
 
     #[test]

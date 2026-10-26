@@ -749,7 +749,7 @@ function pagesCard(m) {
 // a clear veil under it takes every click and scroll behind it, a click on it only letting the
 // card go; the card itself scrolls and stays live. Escape or the close button let it go too.
 const cards = new Map();
-const pin = { key: null, el: null, also: "", veil: null, x: 0, y: 0 };
+const pin = { key: null, el: null, also: "", veil: null, x: 0, y: 0, back: null };
 let hoverCard = null;
 // `el`'s card: `build(also)` its rows (made when shown; `also`: what else is under the point, the
 // element's `data-also`, as the world map says it), `key` naming it across renders.
@@ -831,12 +831,15 @@ function unpin() {
   pin.el?.remove();
   pin.veil?.remove();
   document.documentElement.classList.remove("card-modal");
-  pin.key = pin.el = pin.veil = null;
+  // (A card opened from a button (the header's asks): the focus back on it, if it's still there.)
+  if (pin.back?.isConnected && !pin.back.disabled) pin.back.focus();
+  pin.key = pin.el = pin.veil = pin.back = null;
 }
 // (After a render: the pinned card's words again, from what's shown now; kept as they were, said
 // to be over, when it's gone.)
 function refreshPin() {
-  if (!pin.el) return;
+  // (The confirmation of a press: words that don't change, and made again it'd lose its focus.)
+  if (!pin.el || pin.key === "ask") return;
   const build = cards.get(pin.key);
   const body = pin.el.querySelector(".cb");
   if (build) body.replaceChildren(...build(pin.also));
@@ -1660,6 +1663,9 @@ function head(m) {
     e.stopPropagation(); // (Not the page's own click: it lets a card go.)
     const r = e.currentTarget.getBoundingClientRect();
     pinCard("ask", r.left + r.width / 2, r.bottom - 6, kind);
+    // (For the keyboard: on Cancel, so Enter or Space twice never acts; Escape lets it go.)
+    pin.back = e.currentTarget;
+    pin.el.querySelector(".ask-btns button")?.focus();
   };
   const btn = (kind, label, cls, title) => {
     const on = pending?.kind === kind;
