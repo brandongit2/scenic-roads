@@ -570,9 +570,9 @@ pub struct Placed {
     pub until: u64,
 }
 
-/// The tiles each Mac will work on, from a forecast's `placed` (task #622): for the build page's
-/// world map with a pool member chosen (`/work/tocome`, asked only then; never in the status).
-/// Each Mac's (its lanes' `Machine::mac`, else name), by step, each tile once (a target that names
+/// The tiles each Mac will work on, from a forecast's `placed` (task #622): the build page's
+/// world map's queue, every tile left to build (task #685; `/work/tocome`, asked once a forecast;
+/// never in the status). Each Mac's (its lanes' `Machine::mac`, else name), by step, each tile once (a target that names
 /// no z/x/y tile, a region's or the world's, left out) at its first placing's start, in time order:
 /// [tile, seconds from `at`].
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -617,19 +617,9 @@ impl ToCome {
         out
     }
 
-    /// `/work/tocome`'s answer for Mac `mac` (a page's host name: a forecast's Mac named by it, or
-    /// by its first part before a "-"): {at, mac, steps: {step: [[tile, s from at]…]}, macs (every
-    /// Mac with tiles to come)}; `steps` empty when it has none.
-    pub fn answer(&self, mac: &str) -> serde_json::Value {
-        let hit = self.macs.get_key_value(mac).or_else(|| {
-            self.macs.iter().find(|(k, _)| mac.strip_prefix(k.as_str()).is_some_and(|r| r.starts_with('-')))
-        });
-        serde_json::json!({
-            "at": self.at,
-            "mac": hit.map_or(mac, |h| h.0.as_str()),
-            "steps": hit.map(|h| h.1.clone()).unwrap_or_default(),
-            "macs": self.macs.keys().collect::<Vec<_>>(),
-        })
+    /// `/work/tocome`'s answer: {at, macs: {mac: {step: [[tile, s from at]…]}}}, every Mac's.
+    pub fn answer(&self) -> serde_json::Value {
+        serde_json::json!({ "at": self.at, "macs": self.macs })
     }
 }
 
@@ -1963,11 +1953,10 @@ mod tests {
         let tc = ToCome::of(&placed, &macs, 1000);
         assert_eq!(tc.macs["m4"]["terrain-hi"], vec![("6/34/20".to_string(), 50), ("6/33/20".to_string(), 100)]);
         assert_eq!(tc.macs["m6"].keys().collect::<Vec<_>>(), ["slope-hi"]);
-        let a = tc.answer("m6-mini");
-        assert_eq!(a["mac"], "m6");
-        assert_eq!(a["steps"]["slope-hi"][0], serde_json::json!(["3/4/2", 500]));
-        assert_eq!(a["macs"], serde_json::json!(["m4", "m6"]));
-        assert_eq!(tc.answer("m1")["steps"], serde_json::json!({}));
+        let a = tc.answer();
+        assert_eq!(a["at"], 1000);
+        assert_eq!(a["macs"]["m6"]["slope-hi"][0], serde_json::json!(["3/4/2", 500]));
+        assert_eq!(a["macs"].as_object().unwrap().keys().collect::<Vec<_>>(), ["m4", "m6"]);
     }
 
     /// The CPU time (ms) a timing test's forecast may take (a debug build: well under a second

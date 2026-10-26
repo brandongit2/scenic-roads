@@ -1355,17 +1355,16 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   Regions tab shows): again after a job ends or each minute; held in memory (a few numbers a
   region), nothing written to the NAS. A member's port answers 503: the page then
   asks the lead's addresses.
-  To come (task #622): the lead's port answers `POST /work/tocome` (`{"mac": host}`; no key) with
-  that Mac's tiles in its last forecast (`forecast::ToCome`, made of `Forecast::placed` on the
-  forecast's thread before `placed` is dropped): `{at, mac, steps: {step: [[z/x/y, s from at]…]},
-  macs}`, each tile once a step at its first start, targets naming no tile left out; a Mac named
-  by its host or the host's part before a "-". Another Mac's port answers 503 (it made no
-  forecast), or a former lead's its last, older one: the page takes its own Mac's answer only
-  when its `at` is the status's forecast's, else asks the lead's addresses; a lead change drops
-  the old answer at once and asks the new lead. Asked only while the map's "Show only for"
-  names a member, once a forecast; never in the 10-second poll. Measured on the 24 Oct forecast
-  (3,618 targets placed, 3,615 tiles): the Mac mini's answer 52 KB (14 KB gzipped, 3,053 tiles),
-  the M4's 10 KB; held by the agent: ~150 KB.
+  To come (tasks #622, #685): the lead's port answers `POST /work/tocome` (`{}`; no key) with every
+  Mac's tiles in its last forecast (`forecast::ToCome`, made of `Forecast::placed` on the
+  forecast's thread before `placed` is dropped): `{at, macs: {mac: {step: [[z/x/y, s from at]…]}}}`,
+  each tile once a Mac and step at its first start, targets naming no tile left out: the page's
+  map's queue. Another Mac's port answers 503 (it made no forecast), or a former lead's its last,
+  older one: the page takes its own Mac's answer only when its `at` is the status's forecast's,
+  else asks the lead's addresses; a lead change drops the old answer at once and asks the new
+  lead. Asked once a forecast; never in the 10-second poll. Measured on the 24 Oct forecast
+  (3,618 targets placed, 3,615 tiles): about 62 KB (the Mac mini's 52 KB, 3,053 tiles, the M4's
+  10 KB); held by the agent: ~150 KB.
   Every Mac's port also answers `POST /work/built` (no key; task #674) for the map's finished
   tiles: `{at, steps: {step: [z/x/y…]}, error}`, every tile target the build's keys
   (`state/build/jobs.json`) record, by step (a `-root` step's as 0/0/0; worldwide steps', records of steps the app doesn't know (a
@@ -1375,7 +1374,7 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   SMB), the last read kept when the file can't be read now. The page asks each minute while the
   map is drawn.
   Every Mac's port also answers `POST /work/catalogs` (`{"after": n}` optional; no key) for the
-  map's Catalogues tab (task #629, `agent::catalogsview`; the page asks the lead's): every
+  map's age controls (task #629, `agent::catalogsview`; the page asks the lead's): every
   catalogue on the NAS as `{n, t, whole, first?, z3, z6, z3_gone?, z6_gone?}`, the tiles as
   `y * 2^z + x`, with `latest`, `reading` and `error`. A catalogue publishes a z6 tile when a file it
   names for it (base pack, road values, hi data, landmark points, a layer's hi pack, the fine

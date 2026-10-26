@@ -2,15 +2,16 @@
 // The build page at phone size with touch (#614): headless Chrome over CDP as a 390×844 phone
 // (DPR 3, mobile, 5 touch points, an iPhone user agent), real touches (Input.dispatchTouchEvent),
 // every tab walked: no sideways scroll, no console errors, screenshots; then the touch checks
-// (cards pin and unpin, the world maps pan and pinch, the Regions split drags, the schedule's
-// dropdown, settings fields focus without a jump). One PASS/FAIL line per check; exit 1 on a FAIL.
+// (cards pin and unpin, the world map pans and pinches, the map's solo and age controls, the
+// panels' split drags, the schedule's dropdown, settings fields focus without a jump). One PASS/FAIL line per check; exit 1 on a FAIL.
 //
 //   node tools/dev/touch-test.mjs [--out DIR] [--port N]   the Chrome run
 //   node tools/dev/touch-test.mjs --serve [--port N]       only the server (for Mobile Safari)
 //   --catalogs FILE   /work/catalogs answered from FILE (`scenic catalogs > FILE`: an agent before
 //                     #629 hasn't the call), `after` honoured; else forwarded as the other reads
 //   --tocome FILE     /work/tocome answered from FILE ({at, macs: {mac: {step: [[tile, s]…]}}}, the
-//                     lead's forecast::ToCome: an agent before #622 hasn't the call), `mac` honoured
+//                     lead's forecast::ToCome, the map's queue); without it an agent before #685,
+//                     which answers one Mac at a time, is asked for each and the answers put together
 //   --built FILE      /work/built answered from FILE ({at, steps: {step: [z/x/y…]}}, agent::builtview:
 //                     an agent before #674 hasn't the call)
 //   --live FILE       /work/live's `net.hosts` given FILE's hosts ({host: {in, out, requests, conns,
@@ -18,13 +19,13 @@
 //                     #635 tells no robots.txt; a paused build moves nothing), the Activity tab's rows
 //   --steps FILE      /work/regions with `steps` answered from FILE ({at, regions: {id: {step:
 //                     [built, all]}}}, the lead's build::region_steps: an agent before #636 hasn't
-//                     them); the Regions tab's stage bars then checked filled by them
-//   --member NAME     the Overview map's "Show only for" set to NAME: its tiles to come shown, a
-//                     card of one found, screenshots (chrome-member*), then set back
+//                     them); the Regions tab's stage bars then checked saying what's left by them
+//   --member NAME     the map's "Show only for" set to NAME: its queued tiles counted, a card of
+//                     one found, screenshots (chrome-member*), then set back
 //   --width W         the Chrome run at W px wide (default 390, a phone; 768 or more: a desktop, DPR 2)
 //   --scheme S        dark or light (prefers-color-scheme; default the system's)
 //   --agent H:P       the agent read (default 127.0.0.1:8090; the lead's to see the NAS tab filled)
-//   --only-catalogues only the Overview map's Catalogues tab's checks and screenshots
+//   --only-map        only the map's checks (its solo, its age controls) and screenshots
 //
 // The page comes from a read-only server on its own port (8097): web/work as /work/, and only the
 // reading calls forwarded to this Mac's agent (127.0.0.1:8090); everything else is refused, so the
@@ -53,7 +54,7 @@ const TABS = ["overview", "jobs", "machines", "regions", "nas", "dropboxes", "ac
 
 // ---- The read-only server ------------------------------------------------------------------------
 // A call forwarded only when its body has no other keys than these (an empty body: {}).
-const READS = { pause: ["pause"], swarm: [], steps: [], regions: ["steps"], settings: [], history: ["since", "max"], live: ["range", "series", "net", "since"], catalogs: ["after"], tocome: ["mac"], built: [] };
+const READS = { pause: ["pause"], swarm: [], steps: [], regions: ["steps"], settings: [], history: ["since", "max"], live: ["range", "series", "net", "since"], catalogs: ["after"], tocome: [], built: [] };
 const CATS = arg("--catalogs", null);
 const TOCOME = arg("--tocome", null);
 const BUILT = arg("--built", null);
@@ -66,7 +67,7 @@ const NARROW = WIDTH < 720; // dash.css's phone layout (max-width: 719px): stack
 const SCHEME = arg("--scheme", null);
 const PAUSE_LAG = +arg("--pause-lag", 3000);
 const fake = { pause: null, posts: 0 }; // (the page's Pause as this server keeps it)
-const ONLY_CATS = process.argv.includes("--only-catalogues");
+const ONLY_MAP = process.argv.includes("--only-map");
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".webmanifest": "application/manifest+json", ".svg": "image/svg+xml" };
 function serve() {
   const srv = createServer((req, res) => {
@@ -96,16 +97,30 @@ function serve() {
           res.writeHead(200, { "Content-Type": "application/json" });
           return res.end(readFileSync(STEPS));
         }
-        if (call === "tocome" && TOCOME) {
-          // (As forecast::ToCome::answer: the Mac named, or the one its name starts with before a "-";
-          // its `at` the agent's forecast's, as the page takes this Mac's answer only for the forecast
-          // its status shows (else asks the lead), the offsets kept from FILE's own `at`.)
-          const a = JSON.parse(readFileSync(TOCOME, "utf8"));
-          const mac = String(v.mac || ""), hit = Object.keys(a.macs).find((k) => k === mac) || Object.keys(a.macs).find((k) => mac.startsWith(`${k}-`));
-          const at = await fetch(`http://${AGENT.host}:${AGENT.port}/work/swarm`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()).then((w) => w.agent?.forecast?.at ?? a.at, () => a.at);
-          const steps = hit ? Object.fromEntries(Object.entries(a.macs[hit]).map(([k, ts]) => [k, ts.map(([t, s]) => [t, Math.max(0, s + a.at - at)])])) : {};
+        if (call === "tocome") {
+          // (FILE's, its `at` the agent's forecast's, as the page takes this Mac's answer only for the
+          // forecast its status shows (else asks the lead), the offsets kept from FILE's own `at`;
+          // else the agent's, put together a Mac at a time from one before #685.)
+          const ask = (body) => fetch(`http://${AGENT.host}:${AGENT.port}/work/tocome`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))));
+          let a;
+          try {
+            if (TOCOME) {
+              const f = JSON.parse(readFileSync(TOCOME, "utf8"));
+              const at = await fetch(`http://${AGENT.host}:${AGENT.port}/work/swarm`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()).then((w) => w.agent?.forecast?.at ?? f.at, () => f.at);
+              a = { at, macs: Object.fromEntries(Object.entries(f.macs).map(([mac, steps]) => [mac, Object.fromEntries(Object.entries(steps).map(([k, ts]) => [k, ts.map(([t, s]) => [t, Math.max(0, s + f.at - at)])]))])) };
+            } else {
+              a = await ask({});
+              if (Array.isArray(a.macs)) {
+                const each = await Promise.all(a.macs.map((mac) => ask({ mac })));
+                a = { at: a.at, macs: Object.fromEntries(each.map((x) => [x.mac, x.steps])) };
+              }
+            }
+          } catch (e) {
+            res.writeHead(503, { "Content-Type": "application/json" });
+            return res.end(JSON.stringify({ error: e.message }));
+          }
           res.writeHead(200, { "Content-Type": "application/json" });
-          return res.end(JSON.stringify({ at, mac: hit || mac, steps, macs: Object.keys(a.macs) }));
+          return res.end(JSON.stringify(a));
         }
         if (call === "pause") {
           fake.posts++;
@@ -160,10 +175,10 @@ async function run() {
     ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--hide-scrollbars", "about:blank"],
     { stdio: ["ignore", "ignore", "pipe"] });
   const results = [];
-  // (A Ctrl-C, a kill or a run past 5 min: Chrome and its profile go too, by its own PID.)
+  // (A Ctrl-C, a kill or a run past 8 min: Chrome and its profile go too, by its own PID.)
   const stop = () => { chrome.kill("SIGTERM"); setTimeout(() => { rmSync(profile, { recursive: true, force: true }); process.exit(2); }, 1000); };
   process.once("SIGINT", stop).once("SIGTERM", stop);
-  setTimeout(() => { console.log("FAIL the run (past 5 min)"); stop(); }, 300000).unref();
+  setTimeout(() => { console.log("FAIL the run (past 8 min)"); stop(); }, 480000).unref();
   const check = (name, ok, note = "") => { results.push({ name, ok }); console.log(`${ok ? "PASS" : "FAIL"} ${name}${note ? ` (${note})` : ""}`); };
   try {
     const wsBrowser = await new Promise((ok, no) => {
@@ -198,99 +213,132 @@ async function run() {
     const shot = async (name) => { const h = await js("document.scrollingElement.scrollHeight"); const { data } = await page.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true, clip: { x: 0, y: 0, width: WIDTH, height: Math.min(h, 6000), scale: PHONE ? 1 / 3 : 1 / 2 } }); writeFileSync(join(OUT, `${name}.png`), Buffer.from(data, "base64")); };
     const show = async (tab) => { await js(`location.hash = "#${tab}"; window.scrollTo(0, 0)`); await sleep(1200); };
     // (The center of the first visible element matching `sel`, in the viewport, scrolled to.)
-    const at = (sel, where = "") => js(`(() => { const el = [...document.querySelectorAll(${JSON.stringify(sel)})].find((e) => e.getClientRects().length && e.closest(".panel:not([hidden])")${where}); if (!el) return null; el.scrollIntoView({ block: "center" }); const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, r.width, r.height]; })()`);
+    const at = (sel, where = "") => js(`(() => { const el = [...document.querySelectorAll(${JSON.stringify(sel)})].find((e) => e.getClientRects().length && e.closest(".panel:not([hidden]), #mappane")${where}); if (!el) return null; el.scrollIntoView({ block: "center" }); const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, r.width, r.height]; })()`);
+    // (A condition waited for, checked every 50 ms: the ms it took, -1 past `ms`.)
+    const until = async (expr, ms = 15000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await js(expr).catch(() => false)) return Date.now() - t0; await sleep(50); } return -1; };
+    let held = 0;
+    const mouse = (x, y, type = "mouseMoved") => { held = type === "mousePressed" ? 1 : type === "mouseReleased" ? 0 : held; return page.send("Input.dispatchMouseEvent", { type, x, y, button: type === "mouseMoved" && !held ? "none" : "left", buttons: held, clickCount: type === "mouseMoved" ? 0 : 1, pointerType: "mouse" }); };
+    const click = async (x, y) => { await mouse(x, y, "mousePressed"); await mouse(x, y, "mouseReleased"); };
+    // (The world map, in its own panel (#685), and a hash of its pixels; held still: no tile fading in.)
+    const MAP = `document.querySelector("#mappane canvas.wmap")`;
+    const pix = () => js(`(() => { const c = ${MAP}; if (!c || !c.width) return null; const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data; let h = 0; for (let j = 0; j < d.length; j += 4 * 13) h = (h * 31 + d[j] + d[j + 1] * 3 + d[j + 2] * 7) | 0; return h; })()`);
+    const still = () => until(`!${MAP}?.dataset.fading`, 5000);
 
     await page.send("Page.addScriptToEvaluateOnNewDocument", { source: stub() });
     await page.send("Page.navigate", { url: `http://127.0.0.1:${PORT}/work/?view#overview` });
-    for (let i = 0; i < 40 && !(await js(`!!document.querySelector('.panel[data-tab="overview"]')?.children.length`).catch(() => false)); i++) await sleep(250);
-    await sleep(1500);
+    await until(`!!document.querySelector('.panel[data-tab="overview"]')?.children.length && !!${MAP}?.width`, 20000);
 
-    // The Overview map's Catalogues tab (#629): shown, its catalogues read, the map drawn, the
-    // timeline's marks; a mark hovered lights its tiles; the range's inputs swap two times out of
-    // order and refuse two spans; back to Build progress, its map there.
+    // The map (#685): in its own panel, no tabs over it, no fade setting, published tiles off at
+    // first; a step's legend item solos it while hovered (a mouse) and holds it on a click or tap,
+    // its published tiles painted by age; the age controls (#629): the timeline's marks, a mark
+    // hovered lights its tiles; the range's inputs swap two times out of order and refuse two spans.
     {
       errors.length = 0;
       await show("overview");
-      const tabBtn = (t) => js(`(() => { const b = [...document.querySelectorAll(".panel:not([hidden]) .maptabs button")].find((e) => e.textContent === ${JSON.stringify(t)}); if (!b) return false; b.click(); return true; })()`);
-      let tabbed = false;
-      for (let i = 0; i < 40 && !(tabbed = await tabBtn("Catalogues")); i++) await sleep(250);
-      check("overview: the map's tabs shown", tabbed);
-      let marks = 0;
-      for (let i = 0; i < 120 && !marks; i++) { await sleep(500); marks = await js(`document.querySelectorAll(".panel:not([hidden]) .cat-tl g.mk").length`); }
-      check("catalogues: the timeline marks the catalogues in its span", marks > 0, `${marks} marks; ${await js(`document.querySelector(".cat-status")?.textContent`)}`);
-      const lbls = await js(`(() => { const r = [...document.querySelectorAll(".panel:not([hidden]) .cat-tl .lbl")].map((e) => { const b = e.getBoundingClientRect(); return [b.left, b.right, e.textContent]; }).sort((p, q) => p[0] - q[0]); const bad = r.filter((v, i) => i && v[0] < r[i - 1][1]).map((v) => v[2]); return [r.length, bad, r.filter((v) => !/^\\d+ · /.test(v[2])).length]; })()`);
-      check("catalogues: mark labels name number and time, never overlap", lbls[0] > 0 && !lbls[1].length && !lbls[2], `${lbls[0]} labels; overlapping ${lbls[1].join(", ")}; number alone ${lbls[2]}`);
-      const cv = `[...document.querySelectorAll(".panel:not([hidden]) .cat canvas.wmap")][0]`;
-      const pix = () => js(`(() => { const c = ${cv}; if (!c || !c.width) return null; const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data; let h = 0; for (let j = 0; j < d.length; j += 4 * 13) h = (h * 31 + d[j] + d[j + 1] * 3 + d[j + 2] * 7) | 0; return h; })()`);
+      const drawn = await until(`!!${MAP}?.width && !!document.querySelector("#mappane .wmap-steps .lg.step")`, 20000);
+      check("map: in its own panel beside the tabs, no tabs over it, no fade setting", drawn >= 0 && !(await js(`!!document.querySelector(".maptabs") || /Fade completed/.test(document.getElementById("mappane").textContent) || !!document.querySelector('.panel [data-tab] canvas.wmap, .panel canvas.wmap')`)));
+      const pub = await js(`[...document.querySelectorAll("#mappane .wmap-legend button.lg")].find((b) => b.querySelector("i.tl.published"))?.getAttribute("aria-pressed")`);
+      check("map: published tiles not shown at first", pub === "false", `published's toggle pressed: ${pub}`);
+      // (The catalogues read: the age controls' marks.)
+      // (Read oldest first: waited for until a mark is in the range or the reading's done, 3 min at most.)
+      await until(`document.querySelectorAll("#mappane .cat-tl g.mk").length > 0 || /catalogues? kept/.test(document.querySelector(".cat-status")?.textContent || "") && !/reading/.test(document.querySelector(".cat-status").textContent)`, 180000);
+      const marks = await js(`document.querySelectorAll("#mappane .cat-tl g.mk").length`);
+      check("ages: the timeline marks the catalogues in its span", marks > 0, `${marks} marks; ${await js(`document.querySelector(".cat-status")?.textContent`)}`);
+      // (The step with the most tiles built that the legend names: its published tiles painted.)
+      const built = await js(`fetch("/work/built", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()).then((v) => Object.entries(v.steps || {}).sort((p, q) => q[1].length - p[1].length).map(([k, t]) => [k, t.length]), () => [])`);
+      const named = await js(`[...document.querySelectorAll("#mappane .wmap-steps .lg.step")].map((b) => b.dataset.name)`);
+      const [step, nBuilt] = built.find(([k]) => named.includes(k)) || [named[0], 0];
+      const btn = (q = "") => js(`(() => { const b = [...document.querySelectorAll("#mappane .wmap-steps .lg.step")].find((e) => e.dataset.name === ${JSON.stringify(step)}); if (!b) return null; ${q} b.scrollIntoView({ block: "center" }); const r = b.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
+      const soloed = `(document.querySelector("#mappane .wmap-lgs")?.classList.contains("soloing") && [...document.querySelectorAll("#mappane .wmap-steps .lg.step.soloed")].map((b) => b.dataset.name).join() === ${JSON.stringify(step)})`;
+      const painted = () => js(`+${MAP}.dataset.painted`);
+      await still();
       const p0 = await pix();
-      check("catalogues: its map drawn", p0 != null);
+      if (!PHONE) {
+        const b = await btn();
+        await mouse(b[0], b[1]);
+        const on = await until(soloed, 3000);
+        await still();
+        const p1 = await pix(), n1 = await painted();
+        check("map: a step's legend item solos it while hovered, its published tiles by age", on >= 0 && p1 !== p0 && (n1 > 0 || !nBuilt), `${step}: ${n1} painted of ${nBuilt} built, map ${p1 !== p0 ? "changed" : "unchanged"}`);
+        const { data } = await page.send("Page.captureScreenshot", { format: "png" });
+        writeFileSync(join(OUT, "chrome-solo-hover.png"), Buffer.from(data, "base64"));
+        await mouse(2, 2);
+        check("map: the solo goes as the pointer leaves", (await until(`!document.querySelector("#mappane .wmap-lgs")?.classList.contains("soloing")`, 3000)) >= 0 && (await painted()) === 0);
+      }
+      // (A click or a tap holds it, the pointer gone; again lets it go.)
+      const hold = async () => { const b = await btn(); if (PHONE) await tap(b[0], b[1]); else { await click(b[0], b[1]); await mouse(2, 2); } };
+      await hold();
+      const held = await until(`${soloed} && [...document.querySelectorAll("#mappane .wmap-steps .lg.step")].find((e) => e.dataset.name === ${JSON.stringify(step)})?.getAttribute("aria-pressed") === "true"`, 3000);
+      await still();
+      check("map: a click or tap holds a step's solo", held >= 0 && (nBuilt === 0 || (await painted()) > 0), `${step}: ${await painted()} painted`);
+      await js(`document.getElementById("mappane").scrollTo(0, 0); window.scrollTo(0, 0)`);
+      await shot("chrome-solo");
+      { const { data } = await page.send("Page.captureScreenshot", { format: "png" }); writeFileSync(join(OUT, "chrome-solo-view.png"), Buffer.from(data, "base64")); }
+      const lbls = await js(`(() => { const r = [...document.querySelectorAll("#mappane .cat-tl .lbl")].map((e) => { const b = e.getBoundingClientRect(); return [b.left, b.right, e.textContent]; }).sort((p, q) => p[0] - q[0]); const bad = r.filter((v, i) => i && v[0] < r[i - 1][1]).map((v) => v[2]); return [r.length, bad, r.filter((v) => !/^\\d+ · /.test(v[2])).length]; })()`);
+      check("ages: mark labels name number and time, never overlap", lbls[0] > 0 && !lbls[1].length && !lbls[2], `${lbls[0]} labels; overlapping ${lbls[1].join(", ")}; number alone ${lbls[2]}`);
       const wide = await js(`[document.scrollingElement.scrollWidth, document.documentElement.clientWidth]`);
-      check("catalogues: no horizontal scroll", wide[0] <= wide[1], `${wide[0]} in ${wide[1]}`);
-      await js(`document.querySelector(".panel:not([hidden]) .cat")?.scrollIntoView({ block: "start" })`);
-      await sleep(300);
-      await shot(`chrome-catalogues`);
-      // (The mark with the most tiles in the range, hovered by a mouse.)
-      const mk = await js(`(() => { const all = [...document.querySelectorAll(".panel:not([hidden]) .cat-tl g.mk")]; const top = (g) => { const q = g.querySelector(".hit").getBoundingClientRect(); return document.elementFromPoint(q.left + q.width / 2, q.top + q.height / 2)?.closest("g.mk") === g; }; const g = all.reverse().find((e) => !e.classList.contains("out") && top(e)) || all[0]; if (!g) return null; g.scrollIntoView({ block: "center" }); const r = g.querySelector(".hit").getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, g.dataset.n]; })()`);
-      if (!mk) check("catalogues: a mark hovered lights its tiles", false, "no mark");
+      check("map: no horizontal scroll", wide[0] <= wide[1], `${wide[0]} in ${wide[1]}`);
+      // (The mark with the most tiles in the range, hovered by a mouse: its tiles lit over the solo.)
+      const mk = await js(`(() => { const all = [...document.querySelectorAll("#mappane .cat-tl g.mk")]; const top = (g) => { const q = g.querySelector(".hit").getBoundingClientRect(); return document.elementFromPoint(q.left + q.width / 2, q.top + q.height / 2)?.closest("g.mk") === g; }; all.forEach((g) => g.scrollIntoView({ block: "center" })); const g = all.reverse().filter((e) => !e.classList.contains("out") && +e.dataset.k > 0).find(top) || all[0]; if (!g) return null; g.scrollIntoView({ block: "center" }); const r = g.querySelector(".hit").getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, g.dataset.n]; })()`);
+      if (!mk) check("ages: a mark hovered lights its tiles", false, "no mark");
       else {
-        await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: mk[0], y: mk[1], pointerType: "mouse" });
-        await sleep(400);
-        const lit = await js(`[document.querySelector(".panel:not([hidden]) .cat-tl g.mk.on")?.dataset.n, !document.querySelector(".cat-tip").hidden, document.querySelector(".cat-tip").textContent]`);
-        check("catalogues: a mark hovered lights its tiles", lit[0] === mk[2] && lit[1] && (await pix()) !== p0, `${lit[2]}`);
+        await still();
+        const q0 = await pix();
+        await mouse(mk[0], mk[1]);
+        const lit = await until(`document.querySelector("#mappane .cat-tl g.mk.on")?.dataset.n === ${JSON.stringify(mk[2])} && !document.querySelector(".cat-tip").hidden`, 3000);
+        check("ages: a mark hovered lights its tiles", lit >= 0 && (await pix()) !== q0, await js(`document.querySelector(".cat-tip").textContent`));
         // (Its tip under the timeline, off the legend and the timeline's marks above it.)
-        const over = await js(`(() => { const t = document.querySelector(".cat-tip").getBoundingClientRect(); const hit = (s) => { const r = document.querySelector(".panel:not([hidden]) " + s).getBoundingClientRect(); return t.left < r.right && r.left < t.right && t.top < r.bottom && r.top < t.bottom; }; return [hit(".cat-legend"), hit(".cat-tl")]; })()`);
-        check("catalogues: the hover tip covers neither the legend nor the timeline", !over[0] && !over[1], `legend ${over[0]}, timeline ${over[1]}`);
-        // (The page whole, the pointer held on the mark: a screenshot past the viewport would
-        // move it.)
+        const over = await js(`(() => { const t = document.querySelector(".cat-tip").getBoundingClientRect(); const hit = (s) => { const r = document.querySelector("#mappane " + s).getBoundingClientRect(); return t.left < r.right && r.left < t.right && t.top < r.bottom && r.top < t.bottom; }; return [hit(".cat-legend"), hit(".cat-tl")]; })()`);
+        check("ages: the hover tip covers neither the legend nor the timeline", !over[0] && !over[1], `legend ${over[0]}, timeline ${over[1]}`);
         const { data } = await page.send("Page.captureScreenshot", { format: "png" });
         writeFileSync(join(OUT, "chrome-catalogues-hover.png"), Buffer.from(data, "base64"));
-        await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 2, y: 2, pointerType: "mouse" });
+        await mouse(2, 2);
       }
+      await hold();
+      check("map: a click or tap again lets the solo go", (await until(`!document.querySelector("#mappane .wmap-lgs")?.classList.contains("soloing")`, 3000)) >= 0);
       // The range's inputs (typed as a user would, committed by Enter).
       const typeIn = async (i, text) => {
-        await js(`(() => { const e = document.querySelectorAll(".panel:not([hidden]) input.cat-when")[${i}]; e.focus(); e.select(); })()`);
+        await js(`(() => { const e = document.querySelectorAll("#mappane input.cat-when")[${i}]; e.focus(); e.select(); })()`);
         await page.send("Input.insertText", { text });
         await page.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
         await page.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
-        await sleep(300);
-        return js(`[...document.querySelectorAll(".panel:not([hidden]) input.cat-when")].map((e) => e.value).concat(document.querySelector(".cat-msg").hidden ? "" : document.querySelector(".cat-msg").textContent)`);
+        await until(`document.activeElement !== document.querySelectorAll("#mappane input.cat-when")[${i}]`, 2000);
+        return js(`[...document.querySelectorAll("#mappane input.cat-when")].map((e) => e.value).concat(document.querySelector(".cat-msg").hidden ? "" : document.querySelector(".cat-msg").textContent)`);
       };
       const saved = await js(`localStorage.getItem("catalogues")`);
       await typeIn(1, "2026-10-20 12:00");
       const sw = await typeIn(0, "2026-10-22 12:00");
-      check("catalogues: a left time later than the right swaps them", sw[0] === "2026-10-20 12:00" && sw[1] === "2026-10-22 12:00", sw.join(" | "));
+      check("ages: a left time later than the right swaps them", sw[0] === "2026-10-20 12:00" && sw[1] === "2026-10-22 12:00", sw.join(" | "));
       await typeIn(0, "48 hours");
       const two = await typeIn(1, "7 days");
-      check("catalogues: one span at a time, the left's negative", two[0] === "-2 days" && two[1] === "2026-10-22 12:00" && /Only one/.test(two[2]), two.join(" | "));
+      check("ages: one span at a time, the left's negative", two[0] === "-2 days" && two[1] === "2026-10-22 12:00" && /Only one/.test(two[2]), two.join(" | "));
       await js(`localStorage.${saved == null ? `removeItem("catalogues")` : `setItem("catalogues", ${JSON.stringify(saved)})`}`);
-      check("catalogues: no console errors", !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
-      await tabBtn("Build progress");
-      await sleep(500);
-      check("overview: back on Build progress, its map shown", await js(`!![...document.querySelectorAll(".panel:not([hidden]) .wmap-box > .wmap-wrap canvas.wmap")].find((c) => c.getClientRects().length && c.width)`));
-      await js(`localStorage.removeItem("mapTab")`);
+      check("map: no console errors", !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
     }
-    if (ONLY_CATS) throw Object.assign(new Error("only the Catalogues tab"), { done: true });
+    if (ONLY_MAP) throw Object.assign(new Error("only the map"), { done: true });
 
-    // A pool member chosen (#622): its tiles to come in the legend and on the map, a card of one
-    // saying when and where; then all members again.
+    // A pool member chosen (#622): its queued tiles counted in the legend and on the map, a card of
+    // one saying when and where; then all members again.
     if (MEMBER) {
       errors.length = 0;
       await show("overview");
-      const pick = (v) => js(`(() => { const e = [...document.querySelectorAll('.panel:not([hidden]) .wmap-filters input[type=radio][value=' + ${JSON.stringify(JSON.stringify(v))} + ']')].find((x) => x.name.startsWith("mf-member")); if (!e) return false; e.click(); return true; })()`);
+      const pick = (v) => js(`(() => { const e = [...document.querySelectorAll('#mappane .wmap-filters input[type=radio][value=' + ${JSON.stringify(JSON.stringify(v))} + ']')].find((x) => x.name.startsWith("mf-member")); if (!e) return false; e.click(); return true; })()`);
       check("member: its radio chosen", await pick(MEMBER));
-      let lg = null;
-      for (let i = 0; i < 40 && !(lg = await js(`[...document.querySelectorAll(".panel:not([hidden]) .wmap-legend .lg")].map((e) => e.textContent).find((t) => / to come on /.test(t)) || null`)); i++) await sleep(250);
-      check("member: the legend counts its tiles to come", !!lg && /^[1-9]/.test(lg), lg || "none");
+      const lgq = `[...document.querySelectorAll("#mappane .wmap-legend .lg")].map((e) => e.textContent).find((t) => / queued$/.test(t)) || ""`;
+      await until(`/^[1-9]/.test(${lgq})`, 10000);
+      const lg = await js(lgq);
+      check("member: the legend counts its queued tiles", /^[1-9]/.test(lg), lg || "none");
       await shot("chrome-member");
       // (A spot whose stack has a tile to come, tapped (a click on a desktop): its pinned card says
       // when and on which Mac. The spots found as a mouse names their stacks in data-also.)
       // (With --tocome, only spots holding one of FILE's tiles for the member: those its card names.)
       const want = TOCOME ? (() => { const a = JSON.parse(readFileSync(TOCOME, "utf8")), hit = Object.keys(a.macs).find((k) => k === MEMBER || MEMBER.startsWith(`${k}-`)); return hit ? Object.entries(a.macs[hit]).flatMap(([st, ts]) => ts.map(([t]) => `mt ${st} ${t}`)) : []; })() : [];
-      const spots = await js(`(() => { const want = ${JSON.stringify(want)}, c = [...document.querySelectorAll("canvas.wmap")].find((e) => e.getClientRects().length); c.scrollIntoView({ block: "center" }); const r = c.getBoundingClientRect(); const out = [], seen = new Set(); for (let i = 1; i < 60 && out.length < 40; i++) for (let j = 1; j < 40 && out.length < 40; j++) { const x = r.left + r.width * i / 60, y = r.top + r.height * j / 40; if (document.elementFromPoint(x, y) !== c) continue; c.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, pointerType: "mouse", bubbles: true })); const also = c.dataset.also; if (also && (want.length ? want.some((k) => also.includes(k)) : also.includes("mt ")) && !seen.has(also)) { seen.add(also); out.push([x, y]); } } c.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" })); return out; })()`);
+      const spots = await js(`(() => { const want = ${JSON.stringify(want)}, c = ${MAP}; c.scrollIntoView({ block: "center" }); const r = c.getBoundingClientRect(); const out = [], seen = new Set(); for (let i = 1; i < 60 && out.length < 40; i++) for (let j = 1; j < 40 && out.length < 40; j++) { const x = r.left + r.width * i / 60, y = r.top + r.height * j / 40; if (document.elementFromPoint(x, y) !== c) continue; c.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, pointerType: "mouse", bubbles: true })); const also = c.dataset.also; if (also && (want.length ? want.some((k) => also.includes(k)) : also.includes("mt ")) && !seen.has(also)) { seen.add(also); out.push([x, y]); } } c.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" })); return out; })()`);
       let said = null;
       for (const [x, y] of spots) {
         if (PHONE) await tap(x, y);
-        else { for (const type of ["mousePressed", "mouseReleased"]) await page.send("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1, pointerType: "mouse" }); await sleep(250); }
+        else await click(x, y);
+        await until(`!!document.querySelector(".card-tip.pinned")`, 2000);
         said = await js(`(document.querySelector(".card-tip.pinned")?.textContent || "").match(/to come at ≈ \\d\\d:\\d\\d on \\S+/)?.[0] || null`);
         if (said) break;
         await js(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
@@ -303,7 +351,7 @@ async function run() {
       }
       check("member: no console errors", !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
       await pick("");
-      await sleep(300);
+      await until(`!!document.querySelector('#mappane .wmap-filters input[value=""]:checked')`, 3000);
     }
 
     // Each tab: no sideways scroll, no console errors, screenshots.
@@ -311,7 +359,7 @@ async function run() {
     for (const tab of TABS) {
       errors.length = 0;
       await show(tab);
-      const wide = await js(`(() => { const w = document.documentElement.clientWidth; const over = [...document.querySelectorAll(".panel:not([hidden]) *, header *")].filter((e) => { const r = e.getBoundingClientRect(); return r.width && r.right > w + 1 && !e.closest(".twrap, [style*='overflow']"); }).slice(0, 4).map((e) => e.tagName.toLowerCase() + (e.className && typeof e.className === "string" ? "." + e.className.split(" ").join(".") : "") + " →" + Math.round(e.getBoundingClientRect().right)); return [document.scrollingElement.scrollWidth, w, over]; })()`);
+      const wide = await js(`(() => { const w = document.documentElement.clientWidth; const over = [...document.querySelectorAll(".panel:not([hidden]) *, header *, #mappane *, #tabs *")].filter((e) => { const r = e.getBoundingClientRect(); return r.width && r.right > w + 1 && !e.closest(".twrap, [style*='overflow']"); }).slice(0, 4).map((e) => e.tagName.toLowerCase() + (e.className && typeof e.className === "string" ? "." + e.className.split(" ").join(".") : "") + " →" + Math.round(e.getBoundingClientRect().right)); return [document.scrollingElement.scrollWidth, w, over]; })()`);
       check(`${tab}: no horizontal scroll`, wide[0] <= wide[1], wide[0] > wide[1] ? `page ${wide[0]} px wide in ${wide[1]}; past the edge: ${wide[2].join(", ")}` : "");
       // (No text cut off below 720 px, where the page wraps what won't fit (dash.css, #617); a
       // desktop keeps labels on one line, ellipsis and all, as the owner asked: not checked there.)
@@ -321,28 +369,42 @@ async function run() {
       if (tab === "regions") {
         const tall = await js(`(async () => { const R = document.querySelector(".rrow")?.parentElement; if (!R) return []; const L = R.parentElement, out = new Set(); for (let t = 0; t <= R.offsetHeight; t += 400) { L.scrollTop = t; L.dispatchEvent(new Event("scroll")); await new Promise((r) => setTimeout(r, 20)); for (const e of R.children) if (e.scrollHeight > e.clientHeight + 1) out.add(e.querySelector(".nm")?.textContent + " " + e.scrollHeight + ">" + e.clientHeight); } L.scrollTop = 0; return [...out].slice(0, 4); })()`);
         check("regions: every row's text fits its height", !tall.length, tall.join("; "));
-        // (With --steps: each stage the lead counts filled by its share built, its numbers on hover;
-        // the one under way striped past it, #636.)
-        if (STEPS) {
-          await js(`new Promise((r) => setTimeout(r, 300))`);
-          const f = await js(`(() => { const s = [...document.querySelectorAll(".rrow .sbar > i.fill")]; const p = s.map((e) => parseFloat(e.style.getPropertyValue("--f"))); return [s.length, s.filter((e) => / of .+ built \\(\\d+%\\)/.test(e.title)).length, p.filter((x) => x > 0 && x < 100).length, p.filter((x) => !(x >= 0 && x <= 100)).length, document.querySelectorAll(".rrow .sbar > i.fill.run").length]; })()`);
-          check("regions: the stage bars filled by the share built, numbers on hover", f[0] > 0 && f[1] === f[0] && f[2] > 0 && !f[3], `${f[0]} filled, ${f[1]} with numbers, ${f[2]} part-built, ${f[3]} out of range, ${f[4]} under way`);
+        // (Each stage's segment says what's left there or that it's built, never a share (#685);
+        // with --steps, by the lead's counts, #636.)
+        await until(`document.querySelectorAll(".rrow .sbar > i").length > 0`, 5000);
+        const f = await js(`(() => { const s = [...document.querySelectorAll(".rrow .sbar > i")]; return [s.length, s.filter((e) => /^[\\w-]+: ([\\d,]+ left(, building)?|built|not counted by region)$/.test(e.title)).length, s.filter((e) => /%| of /.test(e.title + e.textContent)).length]; })()`);
+        check("regions: each stage's segment says what's left, no share built", f[0] > 0 && f[1] === f[0] && !f[2], `${f[0]} segments, ${f[1]} saying what's left, ${f[2]} with a share`);
+        // (A row under the mouse lights its region on the map, #685.)
+        if (!PHONE) {
+          await js(`(async () => { const L = document.querySelector(".rlist"); L.scrollTop = 0; L.scrollIntoView({ block: "start" }); L.dispatchEvent(new Event("scroll")); await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))); })()`);
+          const row = await js(`(() => { const r = [...document.querySelectorAll(".rrow")].find((e) => { const q = e.getBoundingClientRect(); return document.elementFromPoint(q.left + 40, q.top + q.height / 2)?.closest(".rrow") === e; }); if (!r) return null; const b = r.getBoundingClientRect(); return [b.left + 40, b.top + b.height / 2, r.dataset.id]; })()`);
+          if (row) {
+            await mouse(row[0], row[1]);
+            // (Outlined on the map only where the agent gave the region's outline: /work/regions.)
+            const lit = await until(`document.querySelector(".rrow.lit")?.dataset.id === ${JSON.stringify(row[2])} && ${MAP}.dataset.held === "mr " + ${JSON.stringify(row[2])}`, 3000);
+            check("regions: a row under the pointer lights its region on the map", lit >= 0, `${row[2]}, ${await js(`${MAP}.dataset.outlined`)} outlined`);
+            const { data } = await page.send("Page.captureScreenshot", { format: "png" });
+            writeFileSync(join(OUT, "chrome-regions-hover.png"), Buffer.from(data, "base64"));
+            await mouse(2, 2);
+          } else check("regions: a row under the pointer lights its region on the map", false, "no row");
         }
       }
-      // (Jobs: each step's jobs on a row of their own under it, every one a box of its targets, none
-      // folded into a "+N".)
+      // (Jobs: the stages count done and left in each step's noun (#685, the one place a whole is
+      // counted), with no job squares.)
       if (tab === "jobs") {
-        const j = await js(`(() => { const s = document.querySelector(".panel:not([hidden]) .stages"); if (!s) return null; const rows = [...s.querySelectorAll(":scope > .cells")]; return [rows.length, s.querySelectorAll(".cells > .jb").length, s.querySelectorAll(".cells .more").length, rows.filter((r) => !r.previousElementSibling?.classList.contains("st")).length]; })()`);
-        // (A paused build with no lease and no forecast has no job to draw: nothing to check then.)
-        const post = (call) => fetch(`http://${AGENT.host}:${AGENT.port}/work/${call}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json(), () => ({}));
-        const idle = j && !j[1] && (await (async () => {
-          const sw = await post("swarm");
-          const tc = TOCOME ? JSON.parse(readFileSync(TOCOME, "utf8")) : await post("tocome");
-          const toCome = Object.values(tc.macs || {}).reduce((n, steps) => n + Object.values(steps).reduce((k, l) => k + l.length, 0), 0);
-          return sw.pause && !sw.leases?.length && !toCome;
-        })());
-        if (idle) console.log("INFO jobs: each step's jobs a row under it: skipped, the build is paused with no job leased and no forecast (nothing to draw)");
-        else check("jobs: each step's jobs a row under it, a box a job, none folded", j && j[1] > 0 && !j[2] && !j[3], j ? `${j[0]} rows, ${j[1]} jobs, ${j[2]} folded, ${j[3]} misplaced` : "no stages");
+        await until(`!!document.querySelector(".panel:not([hidden]) .stages > .st")`, 10000);
+        const j = await js(`(() => { const s = document.querySelector(".panel:not([hidden]) .stages"); if (!s) return null; const rows = [...s.querySelectorAll(":scope > .st")]; return [rows.length, s.querySelectorAll(".cells, .jb").length, rows.filter((r) => !/(done|left|to come)$/.test(r.querySelector(".n")?.textContent || "")).map((r) => r.querySelector(".n")?.textContent).slice(0, 3)]; })()`);
+        check("jobs: the stages count done and left, no job squares", j && j[0] > 0 && !j[1] && !j[2].length, j ? `${j[0]} steps, ${j[1]} squares; not done or left: ${j[2].join(" | ")}` : "no stages");
+        await js(`document.querySelector(".panel:not([hidden]) .d-stages")?.scrollIntoView({ block: "start" })`);
+        const { data } = await page.send("Page.captureScreenshot", { format: "png" });
+        writeFileSync(join(OUT, "chrome-jobs-stages.png"), Buffer.from(data, "base64"));
+        await js(`document.getElementById("tabpane").scrollTo(0, 0); window.scrollTo(0, 0)`);
+      }
+      // (No share of the whole outside the Jobs tab's stages (#685): no percentage, no "x of y" in
+      // the header, the Overview or the map's legend.)
+      if (tab === "overview") {
+        const bad = await js(`[".verdict .say", ".panel:not([hidden]) .overview", "#mappane .wmap-lgs"].map((q) => document.querySelector(q)?.textContent || "").join(" | ").match(/\\d+ ?%|\\d[\\d,]* of [\\d,]+/g)`);
+        check("overview: no share of a whole in the header, the Overview or the legend", !bad, (bad || []).slice(0, 3).join(", "));
       }
       // (Machines and NAS: every measure a chart over time, the same width (the owner's 04:33 ask,
       // #634): the NAS tab's rows are the Machines tab's, no gauge left. The lead answering is the
@@ -434,7 +496,7 @@ async function run() {
       await js(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
     }
 
-    // Task #659: the map's legend a toggle per step, grouped by stage; the tile areas by pack type;
+    // Task #659: the map's legend an item per step (a solo since #685), grouped by stage; the tile areas by pack type;
     // no display names (every stage, step and job label shown is the code's name); the Jobs tab's
     // cards as the mockup's.
     {
@@ -443,32 +505,30 @@ async function run() {
       const steps = new Set((t.steps || []).map((s) => s.id)), stages = (t.stages || []).map((g) => g.id);
       const tiled = (t.steps || []).filter((s) => !s.of && (["area", "tile", "z10"].includes(s.scope) || /-root$/.test(s.id))).map((s) => s.id);
       await show("overview");
-      const lg = await js(`(() => { const box = [...document.querySelectorAll(".wmap-steps")].find((e) => e.getClientRects().length); if (!box) return null; return [...box.querySelectorAll(".lgg")].map((g) => ({ stage: g.dataset.stage, head: g.querySelector(".lg.stage")?.dataset.name, steps: [...g.querySelectorAll(".lg.step")].map((b) => [b.dataset.name, b.textContent]) })); })()`);
+      const lg = await js(`(() => { const box = document.querySelector("#mappane .wmap-steps"); if (!box) return null; return [...box.querySelectorAll(".lgg")].map((g) => ({ stage: g.dataset.stage, head: g.querySelector(".lg.stage")?.dataset.name, steps: [...g.querySelectorAll(".lg.step")].map((b) => [b.dataset.name, b.textContent]) })); })()`);
       const flat = (lg || []).flatMap((g) => g.steps.map(([id]) => id));
       const order = (lg || []).map((g) => stages.indexOf(g.stage));
       const misgrouped = (lg || []).flatMap((g) => g.steps.filter(([id]) => (t.steps.find((s) => s.id === id)?.stage || "") !== g.stage).map(([id]) => id));
-      check("legend: a toggle per step, grouped by stage in the build's order", lg && lg.length > 1 && lg.every((g) => g.head === g.stage && g.steps.length) && tiled.every((id) => flat.includes(id)) && !misgrouped.length && order.every((k, i) => k >= 0 && (!i || k > order[i - 1])),
+      check("legend: an item per step, grouped by stage in the build's order", lg && lg.length > 1 && lg.every((g) => g.head === g.stage && g.steps.length) && tiled.every((id) => flat.includes(id)) && !misgrouped.length && order.every((k, i) => k >= 0 && (!i || k > order[i - 1])),
         lg ? `${lg.length} stages, ${flat.length} steps; missing ${tiled.filter((id) => !flat.includes(id)).join(", ") || "none"}; misgrouped ${misgrouped.join(", ") || "none"}` : "no step legend");
       check("legend: each step counted", (lg || []).every((g) => g.steps.every(([id, text]) => text === `${id} ${text.slice(id.length + 1)}` && /^[\d,]+$/.test(text.slice(id.length + 1)))), (lg || []).flatMap((g) => g.steps.map(([, x]) => x)).slice(0, 4).join(" | "));
-      // (A step toggled off: struck, its state kept; on again.)
+      // (A step's item clicked: its solo held, its state kept; again, let go.)
       const flip = (sel) => js(`(() => { const b = [...document.querySelectorAll(${JSON.stringify(sel)})].find((e) => e.getClientRects().length); if (!b) return null; b.click(); return [...document.querySelectorAll(${JSON.stringify(sel)})].find((e) => e.getClientRects().length)?.getAttribute("aria-pressed"); })()`);
       const s1 = await flip(`.wmap-steps .lg.step[data-name="${flat[0]}"]`), s2 = await flip(`.wmap-steps .lg.step[data-name="${flat[0]}"]`);
-      check("legend: a step's item toggles it", s1 === "false" && s2 === "true", `${s1} then ${s2}`);
+      check("legend: a step's item holds its solo, again lets it go", s1 === "true" && s2 === "false", `${s1} then ${s2}`);
       const areas = await js(`[...([...document.querySelectorAll(".wmap-areas")].find((e) => e.getClientRects().length)?.querySelectorAll(".lg.area") || [])].map((b) => [b.dataset.name, getComputedStyle(b.querySelector("i")).borderTopWidth])`);
       check("legend: the tile areas by pack type, each its outline", areas.map((a) => a[0]).join() === "root,lo,hi,deep" && new Set(areas.map((a) => a[1])).size >= 2, areas.map((a) => `${a[0]} ${a[1]}`).join(", "));
-      const cv = `[...document.querySelectorAll(".panel:not([hidden]) .wmap-box canvas.wmap")].find((c) => c.getClientRects().length)`;
-      const pix = () => js(`(() => { const c = ${cv}; const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data; let h = 0; for (let j = 0; j < d.length; j += 4 * 7) h = (h * 31 + d[j] + d[j + 1] * 3 + d[j + 2] * 7) | 0; return h; })()`);
       const big = await js(`[...document.querySelectorAll(".wmap-areas .lg.area")].filter((e) => e.getClientRects().length).map((e) => [e.dataset.name, +e.textContent.replace(/.*· /, "").replace(/,/g, "")]).sort((p, q) => q[1] - p[1])[0]`);
       const p0 = await pix();
       const a1 = await flip(`.wmap-areas .lg.area[data-name="${big[0]}"]`);
-      await sleep(300);
+      await still();
       const p1 = await pix();
       const a2 = await flip(`.wmap-areas .lg.area[data-name="${big[0]}"]`);
       check("legend: a tile area's item hides its tiles", a1 === "false" && a2 === "true" && (big[1] === 0 || p1 !== p0), `${big[0]} (${big[1]} tiles): ${a1} then ${a2}, map ${p1 !== p0 ? "changed" : "unchanged"}`);
       check("map: no \"Show tile areas\" radio left", !(await js(`[...document.querySelectorAll(".wmap-filters")].some((e) => /Show tile areas/.test(e.textContent))`)));
       // (Every label of a stage, step or job: the code's name. The legend's, the strip's stage cards,
       // the Jobs tab's stage and step rows, the schedule's legend, each running job on the Machines tab.)
-      const names = await js(`({ legend: [...document.querySelectorAll(".wmap-legend .lg[data-name]")].map((b) => b.dataset.name), legendText: [...document.querySelectorAll(".wmap-steps .lg.step")].map((b) => b.textContent.split(" ")[0]), strip: [...document.querySelectorAll(".strip > i[data-card]")].map((e) => e.dataset.card.slice(2)) })`);
+      const names = await js(`({ legend: [...document.querySelectorAll("#mappane .wmap-legend .lg[data-name]")].map((b) => b.dataset.name), legendText: [...document.querySelectorAll(".wmap-steps .lg.step")].map((b) => b.textContent.split(" ")[0]), strip: [...document.querySelectorAll(".strip > i[data-card]")].map((e) => e.dataset.card.slice(2)) })`);
       await show("jobs");
       Object.assign(names, await js(`(() => { const txt = (e) => e.textContent.replace(" ⇄", "").trim(); return { stageRows: [...document.querySelectorAll(".stages > .sh .title")].map(txt), stepRows: [...document.querySelectorAll(".stages > .st .title")].map(txt), schedule: [...document.querySelectorAll(".sched .legend > span:not(.keys)")].map(txt).filter((x) => x !== "a region all on the map") }; })()`));
       await show("machines");
@@ -488,9 +548,9 @@ async function run() {
       const card = async (sel, where = "") => {
         const p = await at(sel, where);
         if (!p) return null;
-        await sleep(300);
-        if (PHONE) { await tap(p[0], p[1]); await sleep(300); }
-        else { await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: p[0], y: p[1] }); await sleep(300); }
+        if (PHONE) await tap(p[0], p[1]);
+        else await mouse(p[0], p[1]);
+        await until(`[...document.querySelectorAll(".card-tip")].some((e) => e.getClientRects().length && !e.hidden)`, 2000);
         const r = await js(`(() => { const t = [...document.querySelectorAll(".card-tip")].find((e) => e.getClientRects().length && !e.hidden); if (!t) return null; const b = t.getBoundingClientRect(), m = t.querySelector(".tc-map"); return { wide: !!t.querySelector(".tc-head.wide"), parts: [".tc-sw", ".tc-kick", ".tc-title", ".cstats", ".ckv", ".tc-foot"].filter((s) => !t.querySelector(s)), title: t.querySelector(".tc-title")?.textContent, kick: t.querySelector(".tc-kick")?.textContent, w: Math.round(b.width), top: b.top, bottom: b.bottom, h: b.height, max: innerHeight / 2, map: m ? Math.round(m.getBoundingClientRect().width) : 0 }; })()`);
         if (PHONE) await js(`document.querySelector(".card-tip.pinned .x")?.click()`);
         return { ...(r || { none: true }), y: p[1] };
@@ -499,12 +559,19 @@ async function run() {
       const sc = await card(".stages > .st .title");
       check("jobs card: a step's as the mockup's (head, stat tiles, rows, foot; twice as wide)", sc && sc.wide && !sc.parts.length && steps.has(sc.title) && Math.abs(sc.w - wide) <= 2, sc ? `${sc.kick} / ${sc.title}, ${sc.w} px; missing ${sc.parts.join(" ") || "none"}` : "no step row");
       if (sc && !PHONE) check("jobs card: off the pointer's line, ≤ 50svh (#627)", (sc.top >= sc.y || sc.bottom <= sc.y) && sc.h <= sc.max + 1, `${Math.round(sc.top)}–${Math.round(sc.bottom)}, pointer ${Math.round(sc.y)}`);
-      // (A job of a step whose targets are tiles: its map drawn. The tab's past jobs come with the
-      // history read further back: waited for, up to 20 s. None then: an INFO only when the last
-      // 6 h of the history has no such job's end either (the live build's state), else a FAIL.)
-      const jobSel = ".cells > .jb.c-run, .cells > .jb.c-done", jobWhere = ` && ${JSON.stringify(tiled)}.includes(e.parentElement.previousElementSibling?.querySelector(".title")?.firstChild?.textContent)`;
-      for (let k = 0; k < 40 && !(await at(jobSel, jobWhere)); k++) await sleep(500);
-      const jc = await card(jobSel, jobWhere);
+      // (A job of a step whose targets are tiles, in the schedule (running, else ran): its map
+      // drawn. The past jobs come with the history read further back: waited for, up to 20 s. None
+      // then: an INFO only when the last 6 h of the history has no such job's end either (the live
+      // build's state), else a FAIL.)
+      const jobSel = ".sched .track > i.running, .sched .track > i.past", jobs = `[...document.querySelectorAll(".panel:not([hidden]) .sched .track > i.running, .panel:not([hidden]) .sched .track > i.past")]`;
+      await until(`${jobs}.length > 0`, 20000);
+      let jc = null;
+      const nJobs = await js(`${jobs}.length`);
+      for (let k = 0; k < Math.min(nJobs, 15); k++) {
+        const c = await card(jobSel, ` && ${jobs}.indexOf(e) === ${k}`);
+        if (!PHONE) await mouse(2, 2);
+        if (c && !c.none && c.map > 0) { jc = c; break; }
+      }
       const ended = jc ? 0 : await js(`(async () => { const tail = await fetch("/work/history", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()); const h = await fetch("/work/history", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ since: Math.max(0, (tail.seq || 0) - 5000), max: 5000 }) }).then((r) => r.json()); const from = Date.now() / 1000 - 6 * 3600; return (h.events || []).filter((e) => ["end", "done"].includes(e.kind) && e.ok !== false && e.t >= from && ${JSON.stringify(tiled)}.includes(e.step)).length; })()`);
       if (!jc && !ended) console.log("INFO jobs card: no finished or running job of a tiled step in the last 6 h (the live build's state), its map not checked");
       else if (!jc) check("jobs card: a job's named as the code names it, a world map of its tiles", false, `the history has ${ended} finished jobs of tiled steps in 6 h, none shown in 20 s`);
@@ -514,15 +581,15 @@ async function run() {
       check("#659: no console errors", !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
     }
 
-    // The Overview's stage bar: a tap on a segment pins the stage card.
+    // The Overview's strip of the queue's stages: a tap on a segment pins the stage card.
     await show("overview");
-    // (The strip comes with the lead's steps: waited for, up to 10 s.)
-    let seg = null;
-    for (let t = 0; t < 40 && !seg; t++) { seg = await at(".strip > i[data-card]"); if (!seg) await sleep(250); }
-    if (!seg) check("overview: a stage-bar segment pins its card on a tap", false, "no segment with a card");
+    // (The strip comes with the lead's forecast: waited for, up to 10 s; none with nothing queued.)
+    await until(`!!document.querySelector(".strip > i[data-card]")`, 10000);
+    const seg = await at(".strip > i[data-card]");
+    if (!seg) console.log("INFO overview: no stage with work left in the queue (the live build's state): the strip's card not checked");
     else {
       await tap(seg[0], seg[1]);
-      check("overview: a stage-bar segment pins its card on a tap", await js(`!!document.querySelector(".card-tip.pinned")`));
+      check("overview: a stage-bar segment pins its card on a tap", (await until(`!!document.querySelector(".card-tip.pinned")`, 2000)) >= 0);
       await js(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
     }
 
@@ -531,7 +598,7 @@ async function run() {
     // pinned nothing, then the tap before's), and a tap off the map pins nothing. (The stacks
     // found as a mouse names them in the canvas's data-also.)
     await show("overview");
-    const spots = await js(`(() => { const c = [...document.querySelectorAll("canvas.wmap")].find((e) => e.getClientRects().length); c.scrollIntoView({ block: "center" }); const r = c.getBoundingClientRect(); const out = []; for (let i = 1; i < 20 && out.length < 2; i++) for (let j = 1; j < 12 && out.length < 2; j++) { const x = r.left + r.width * i / 20, y = r.top + r.height * j / 12; if (document.elementFromPoint(x, y) !== c) continue; c.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, pointerType: "mouse", bubbles: true })); const also = c.dataset.also; if (also && !out.some((o) => o[2] === also)) out.push([x, y, also]); } c.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" })); return out; })()`);
+    const spots = await js(`(() => { const c = ${MAP}; c.scrollIntoView({ block: "center" }); const r = c.getBoundingClientRect(); const out = []; for (let i = 1; i < 20 && out.length < 2; i++) for (let j = 1; j < 12 && out.length < 2; j++) { const x = r.left + r.width * i / 20, y = r.top + r.height * j / 12; if (document.elementFromPoint(x, y) !== c) continue; c.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, pointerType: "mouse", bubbles: true })); const also = c.dataset.also; if (also && !out.some((o) => o[2] === also)) out.push([x, y, also]); } c.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" })); return out; })()`);
     if (spots.length < 2) check("overview: a tap on the map pins its stack's card", false, "fewer than two spots with something under them");
     else {
       const pinned = () => js(`document.querySelector(".card-tip.pinned .tc-sec") ? [...document.querySelectorAll(".card-tip.pinned .tc-sec")].length + " " + document.querySelector(".card-tip.pinned .tc-title")?.textContent : null`);
@@ -598,77 +665,82 @@ async function run() {
         // (A tall card, the pointer near the window's bottom, then near its top: wholly above or
         // below the pointer's line, never across it, and no taller than 50svh.)
         for (const [where, frac] of [["bottom", 0.85], ["top", 0.15]]) {
-          const at = await js(`(() => { const c = ${c}; c.scrollIntoView({ block: "center" }); const ax = ${spot[0]}, ay = ${spot[1]} + scrollY; scrollTo(0, ay - innerHeight * ${frac}); const y = ay - scrollY; return y > c.getBoundingClientRect().top && y < c.getBoundingClientRect().bottom ? [ax, y] : null; })()`);
-          await sleep(300);
-          if (!at) { check(`overview: a card near the ${where} stays off the pointer's line, ≤ 50svh`, false, "the map's spot can't scroll there"); continue; }
+          // (A page that scrolls (a phone's) brings the spot there; one that doesn't (beside the
+          // tabs, #685) has a spot with a stack nearest that height found instead.)
+          const at = await js(`(() => { const c = ${c}; if (getComputedStyle(document.body).overflow !== "hidden") { c.scrollIntoView({ block: "center" }); const ax = ${spot[0]}, ay = ${spot[1]} + scrollY; scrollTo(0, ay - innerHeight * ${frac}); const y = ay - scrollY; return y > c.getBoundingClientRect().top && y < c.getBoundingClientRect().bottom ? [ax, y] : null; }
+            const r = c.getBoundingClientRect(), want = innerHeight * ${frac}; let best = null;
+            for (let i = 1; i < 30; i++) for (let j = 1; j < 30; j++) { const x = r.left + r.width * i / 30, y = r.top + r.height * j / 30; if (document.elementFromPoint(x, y) !== c) continue; c.dispatchEvent(new PointerEvent("pointermove", { clientX: x, clientY: y, pointerType: "mouse", bubbles: true })); if ((c.dataset.also || "").split("|").length > 1 && (!best || Math.abs(y - want) < Math.abs(best[1] - want))) best = [x, y]; }
+            c.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" })); return best && Math.abs(best[1] - want) < innerHeight * 0.2 ? best : null; })()`);
+          if (!at) { console.log(`INFO overview: no spot with a stack near the ${where} of the window: the card's place there not checked`); continue; }
+          await js("new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))");
           await mouse(at[0] + 1, at[1]);
+          await until(`[...document.querySelectorAll(".card-tip:not(.pinned)")].some((t) => t.getClientRects().length)`, 2000);
           const t = await js(`(() => { const t = [...document.querySelectorAll(".card-tip:not(.pinned)")].find((t) => t.getClientRects().length); if (!t) return null; const r = t.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, h: r.height, max: innerHeight / 2 }; })()`);
           check(`overview: a card near the ${where} stays off the pointer's line, ≤ 50svh`, t && (t.top >= at[1] || t.bottom <= at[1]) && t.h <= t.max + 1, t ? `card ${Math.round(t.top)}–${Math.round(t.bottom)}, pointer ${Math.round(at[1])}, max ${Math.round(t.max)}` : "no card shown");
         }
       }
     }
 
-    // The world maps (every tab showing one): a pinch zooms, then a one-finger sideways drag pans
-    // (fitted, the map has no room to pan sideways); the canvas's pixels change, the page stays put.
-    let maps = 0;
-    for (const tab of TABS) {
-      await show(tab);
-      const m = await at("canvas.wmap");
-      if (!m) continue;
-      maps++;
-      const cv = `[...document.querySelectorAll("canvas.wmap")].find((e) => e.getClientRects().length && e.closest(".panel:not([hidden])"))`;
-      const px = () => js(`${cv}.toDataURL()`);
-      const y0 = await js("scrollY");
-      // (The map's own say: its touch-action turns "none" only once zoomed in past the fit.)
-      const wasZoomed = await js(`${cv}.style.touchAction === "none"`);
-      await pinch(m[0], m[1], 20, 80);
-      const zoomedNow = await js(`${cv}.style.touchAction === "none"`);
-      check(`${tab}: the world map zooms with a pinch`, !wasZoomed && zoomedNow && (await js("scrollY")) === y0, `zoomed before ${wasZoomed}, after ${zoomedNow}`);
-      // (A redraw of its own, tiles fading in after the zoom or new data, would pass a pixel
-      // compare: the map waited on until it holds still for 400 ms, at most 4 s.)
-      let b = await px(), still = false;
-      for (let t = 0; t < 10 && !still; t++) { await sleep(400); const c = await px(); still = c === b; b = c; }
-      await drag(m[0] + m[2] * 0.25, m[1], -m[2] * 0.3, 0);
-      check(`${tab}: the world map pans with a drag`, still && b !== (await px()) && (await js("scrollY")) === y0, still ? "" : "the map redrew by itself: the pan can't be told");
-      await shot(`chrome-${tab}-map-moved`);
+    // The world map: a pinch zooms, then a one-finger sideways drag pans (fitted, the map has no
+    // room to pan sideways); the canvas's pixels change, the page stays put.
+    {
+      await show("overview");
+      const m = await js(`(() => { const c = ${MAP}; if (!c) return null; c.scrollIntoView({ block: "center" }); const r = c.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, r.width, r.height]; })()`);
+      check("world map shown", !!m);
+      if (m) {
+        const y0 = await js("scrollY");
+        // (The map's own say: its touch-action turns "none" only once zoomed in past the fit.)
+        const wasZoomed = await js(`${MAP}.style.touchAction === "none"`);
+        await pinch(m[0], m[1], 20, 80);
+        const zoomedNow = await js(`${MAP}.style.touchAction === "none"`);
+        check("the world map zooms with a pinch", !wasZoomed && zoomedNow && (await js("scrollY")) === y0, `zoomed before ${wasZoomed}, after ${zoomedNow}`);
+        // (A redraw of its own, tiles fading in after the zoom, would pass a pixel compare: held still first.)
+        const held = (await still()) >= 0, b = await pix();
+        await drag(m[0] + m[2] * 0.25, m[1], -m[2] * 0.3, 0);
+        check("the world map pans with a drag", held && b !== (await pix()) && (await js("scrollY")) === y0, held ? "" : "the map kept fading in: the pan can't be told");
+        await shot("chrome-map-moved");
+        await js(`document.querySelector("#mappane .wmap-ctl").lastChild.click()`);
+      }
     }
-    check("world maps shown", maps > 0, `${maps}`);
 
-    // Every filter and legend toggle under each map toggled, focused as a click leaves it: the map still there,
-    // sized, drawn (#627: a focused checkbox kept the old part, the map's element gone with it).
-    for (const tab of ["overview", "regions"]) {
-      await show(tab);
-      const cv = `[...document.querySelectorAll("canvas.wmap")].find((e) => e.getClientRects().length && e.closest(".panel:not([hidden])"))`;
-      const inputs = `[...document.querySelectorAll(".panel:not([hidden]) .wmap-filters input, .panel:not([hidden]) .wmap-legend button")]`;
+    // Every filter and legend item under the map clicked, focused as a click leaves it: the map
+    // still there, sized, drawn (#627: a focused checkbox kept the old part, the map's element gone with it).
+    {
+      await show("overview");
+      const inputs = `[...document.querySelectorAll("#mappane .wmap-filters input:not([type=text]), #mappane .wmap-legend button")]`;
       const count = await js(`${inputs}.length`);
       const bad = [];
       for (let i = 0; i < count; i++) {
         const what = await js(`(() => { const el = ${inputs}[${i}]; if (!el) return null; const t = el.closest("label")?.textContent || el.textContent; el.focus(); el.click(); return t; })()`);
-        await sleep(350);
-        const state = await js(`(() => { const c = ${cv}; if (!c) return "gone"; const r = c.getBoundingClientRect(); if (r.width < 50 || r.height < 50 || !c.width) return "zero size"; const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data; for (let j = 4; j < d.length; j += 4 * 97) if (d[j] !== d[0] || d[j + 1] !== d[1] || d[j + 2] !== d[2]) return ""; return "blank"; })()`);
+        await still();
+        const state = await js(`(() => { const c = ${MAP}; if (!c) return "gone"; const r = c.getBoundingClientRect(); if (r.width < 50 || r.height < 50 || !c.width) return "zero size"; const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data; for (let j = 4; j < d.length; j += 4 * 97) if (d[j] !== d[0] || d[j + 1] !== d[1] || d[j + 2] !== d[2]) return ""; return "blank"; })()`);
         if (state) bad.push(`${what}: ${state}`);
       }
       // (Back as they were: the defaults.)
       await js(`localStorage.clear()`);
-      check(`${tab}: the map stays drawn through every filter`, count > 0 && !bad.length, count ? bad.slice(0, 4).join("; ") || `${count} toggled` : "no filters shown");
+      check("map: it stays drawn through every filter and legend item", count > 0 && !bad.length, count ? bad.slice(0, 4).join("; ") || `${count} clicked` : "no filters shown");
     }
 
-    // The Regions split: stacked at phone width (no bar); dragged at a touch tablet's (900 px).
-    await show("regions");
-    if (NARROW) check("regions: no split bar at phone width (stacked)", !(await at(".rsplit")));
-    await page.send("Emulation.setDeviceMetricsOverride", { width: 900, height: 1180, deviceScaleFactor: 2, mobile: true });
-    await sleep(600);
-    const s = await at(".rsplit");
-    const split = () => js(`document.querySelector(".rpane")?.style.getPropertyValue("--split")`);
-    if (!s) check("regions: the split pane drags (900 px)", false, "no split bar shown");
-    else {
-      const f0 = await split();
-      await drag(s[0], s[1], 0, -80);
-      const f1 = await split();
-      check("regions: the split pane drags (900 px)", f0 !== f1, `${f0 || "unset"} → ${f1 || "unset"}`);
+    // The panels' split (#685): at phone width one under the other, the map first, no bar; at a
+    // desktop's width side by side, 2:1 at first, the bar dragged by a mouse, a double click back to 2:1.
+    if (NARROW) check("split: stacked at phone width, the map over the tabs, no bar", await js(`(() => { const m = document.getElementById("mappane").getBoundingClientRect(), t = document.getElementById("tabpane").getBoundingClientRect(); return !document.getElementById("splitbar").getClientRects().length && m.bottom <= t.top + 1 && Math.abs(m.width - t.width) < 2; })()`));
+    await page.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 2, mobile: false });
+    {
+      await js(`localStorage.removeItem("split"); document.getElementById("splitbar").dispatchEvent(new MouseEvent("dblclick"))`);
+      const shown = await until(`document.getElementById("splitbar").getClientRects().length > 0`, 3000);
+      const share = `(() => { const m = document.getElementById("mappane").getBoundingClientRect(), t = document.getElementById("tabpane").getBoundingClientRect(); return Math.round(m.width / (m.width + t.width) * 1000) / 1000; })()`;
+      const s0 = await js(share);
+      check("split: side by side at 1280 px, 2:1 at first", shown >= 0 && Math.abs(s0 - 2 / 3) < 0.02, `map ${s0} of the width`);
+      const b = await js(`(() => { const r = document.getElementById("splitbar").getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
+      if (PHONE) await drag(b[0], b[1], -200, 0);
+      else { await mouse(b[0], b[1]); await mouse(b[0], b[1], "mousePressed"); for (let i = 1; i <= 8; i++) await mouse(b[0] - 25 * i, b[1]); await mouse(b[0] - 200, b[1], "mouseReleased"); }
+      const moved = await until(`${share} < ${s0 - 0.1}`, 2000);
+      check("split: its bar drags", moved >= 0 && (await js(`+JSON.parse(localStorage.getItem("split"))`)) < s0, `map ${await js(share)} of the width`);
+      await js(`document.getElementById("splitbar").dispatchEvent(new MouseEvent("dblclick"))`);
+      check("split: a double click puts it back to 2:1", (await until(`Math.abs(${share} - 2 / 3) < 0.02`, 2000)) >= 0);
     }
-    await page.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
-    await sleep(400);
+    await page.send("Emulation.setDeviceMetricsOverride", PHONE ? { width: WIDTH, height: 844, deviceScaleFactor: 3, mobile: true } : { width: WIDTH, height: 900, deviceScaleFactor: 2, mobile: false });
+    await until(`document.documentElement.clientWidth === ${WIDTH}`, 3000);
 
     // The Jobs schedule's dropdown: a tap focuses it; a choice re-renders the schedule.
     await show("jobs");

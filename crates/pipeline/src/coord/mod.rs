@@ -4160,11 +4160,10 @@ fn route(
             Ok(bv.map_or_else(not_ready, |bv| (200, bv.ask())))
         }
         "/work/tocome" => {
-            // A Mac's tiles to come in the lead's last forecast (crate::agent::forecast::ToCome),
-            // asked by the build page's map only while a pool member is chosen.
-            let b: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+            // Every Mac's tiles to come in the lead's last forecast (crate::agent::forecast::ToCome):
+            // the build page's map's queue, asked once a forecast.
             let tc = shared.lock().unwrap().tocome.clone();
-            Ok(tc.map_or_else(not_ready, |t| (200, t.answer(b["mac"].as_str().unwrap_or_default()))))
+            Ok(tc.map_or_else(not_ready, |t| (200, t.answer())))
         }
         "/work/regions" => {
             // With `steps`: each region's targets built of all by step, as this Mac's agent last
@@ -9986,12 +9985,12 @@ mod tests {
     }
 
     /// `/work/tocome` (docs/pool.md §10, To come), with no key: 503 until this Mac's forecast made
-    /// them, then the asked Mac's tiles by step.
+    /// them, then every Mac's tiles by step.
     #[test]
     fn the_tiles_to_come_answer_the_page_once_a_forecast_made_them() {
         let (_d, c, w) = start();
         let addr = w.urls()[0].trim_start_matches("http://").to_string();
-        let post = || raw(&addr, "POST", "/work/tocome", &[("Content-Type", "application/json")], br#"{"mac":"m4"}"#);
+        let post = || raw(&addr, "POST", "/work/tocome", &[("Content-Type", "application/json")], b"{}");
         assert_eq!(status(&post()), 503);
         let placed = [crate::agent::forecast::Placed {
             lane: 0,
@@ -10004,7 +10003,7 @@ mod tests {
         let r = post();
         assert_eq!(status(&r), 200, "{r}");
         let a: serde_json::Value = serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap();
-        assert_eq!(a["steps"]["terrain-hi"], serde_json::json!([["6/33/20", 60]]));
+        assert_eq!(a["macs"]["m4"]["terrain-hi"], serde_json::json!([["6/33/20", 60]]));
     }
 
     /// Tasks brokered by every member (docs/pool.md §8): a page from another member's address takes

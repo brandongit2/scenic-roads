@@ -3,28 +3,6 @@
 // A stage's or step's line finished: nothing left (build::Line, build::Item).
 export const finished = (x) => (x.left != null ? x.left === 0 : x.total != null && x.done >= x.total && x.total > 0);
 
-// The whole build's progress, every stage's: the work done of the whole, in time at the lead's
-// pace. Done: each step's targets done (the stages' items) at the forecast's time for a target
-// of it (`each_s`, measured or estimated); left: the forecast's work left (its steps' `work_s`,
-// what "of work left" says). 100 only when every stage is finished and the forecast has nothing
-// left; null without a forecast that weighs (an older lead's: no `each_s`).
-// Returns { pct, done_s, left_s } or null.
-export function wholeProgress(lines, fc) {
-  if (!fc?.each_s) return null;
-  let done = 0;
-  for (const l of lines || []) {
-    const items = l.items?.length ? l.items : (l.steps || []).slice(0, 1).map((step) => ({ step, done: l.done || 0 }));
-    for (const it of items) done += (it.done || 0) * (fc.each_s[it.step] || 0);
-  }
-  const left = (fc.steps || []).reduce((t, s) => t + (s.work_s || 0), 0);
-  const all = (lines || []).length > 0 && lines.every(finished) && left === 0;
-  if (all) return { pct: 100, done_s: done, left_s: 0 };
-  const whole = done + left;
-  const pct = whole > 0 ? Math.min(99, Math.floor((done / whole) * 100)) : 0;
-  return { pct, done_s: done, left_s: left };
-}
-
-
 // The schedule's lanes worth a row: those with a bar in the window [t0, t1] (a run ending at or
 // after t0 and starting by t1), in the order given.
 export const busyLanes = (names, lanes, t0, t1) => names.filter((nm) => (lanes[nm] || []).some((l) => l.until >= t0 && l.from <= t1));
@@ -224,37 +202,59 @@ export function tileCovers({ z, x, y }) {
   return `${lat(y + 1).toFixed(1)}°–${lat(y).toFixed(1)}° N, ${lon(x).toFixed(1)}°–${lon(x + 1).toFixed(1)}° E`;
 }
 
-// A map tile's state (#627): "unstarted" (a running job's tile not begun), "progress" (under
-// way), "completed" (its job's work on it done, or finished, and not in a catalogue yet: a finish
-// after the last catalogue's time `pubAt`) or "published" (finished by `pubAt`: in the app; a
-// recorded tile whose end isn't held, `t` null, finished before the oldest event held, `before`:
-// published when that's by `pubAt`, else completed, as it can't be told).
-export const TILE_STATES = ["unstarted", "progress", "completed", "published"];
-export const runningState = (r) => (r.frac >= 1 ? "completed" : r.frac > 0 || r.current ? "progress" : "unstarted");
+// The queue (task #685): every tile the lead's last forecast places, by key ("<step> z/x/y"), each
+// {step, at (unix s, its first start), mac}: `/work/tocome`'s answer ({at, macs: {mac: {step:
+// [[z/x/y, s from at]…]}}}, forecast::ToCome), the earliest where two Macs name one.
+export function queuedTiles(a) {
+  const out = new Map();
+  for (const [mac, steps] of Object.entries(a?.macs || {})) {
+    for (const [step, tiles] of Object.entries(steps)) {
+      for (const [t, off] of tiles) {
+        const k = `${step} ${t}`, at = a.at + off;
+        if (tileOf(t) && !(out.get(k)?.at <= at)) out.set(k, { step, at, mac });
+      }
+    }
+  }
+  return out;
+}
+
+// A map tile's state (#627, #685): "queued" (to build: the forecast's, or a running job's tile
+// not begun), "progress" (under way), "completed" (its job's work on it done, or finished, and not
+// in a catalogue yet: a finish after the last catalogue's time `pubAt`) or "published" (finished
+// by `pubAt`: in the app; a recorded tile whose end isn't held, `t` null, finished before the
+// oldest event held, `before`: published when that's by `pubAt`, else completed, as it can't be
+// told).
+export const TILE_STATES = ["queued", "progress", "completed", "published"];
+export const runningState = (r) => (r.frac >= 1 ? "completed" : r.frac > 0 || r.current ? "progress" : "queued");
 export const finishedState = (d, pubAt) => {
   const by = d.t ?? d.before;
   return pubAt != null && by != null && by <= pubAt ? "published" : "completed";
 };
 
-// The world map's tiles as its filters keep them (#615, #627): `running` and `finished`
-// (runningTiles', finishedTiles') cut to the states kept (`f.tiles[state] === false`: hidden), to
-// the pool member `f.member` (the Mac that ran, runs or holds it in its running job: `macOf(worker)`
-// its host), the steps not toggled off (`f.offSteps`) and the tile areas not toggled off
-// (`f.offAreas`: AREAS' names). A tile running again is the running one. Returns [running,
-// finished], new Maps, each value given its `state`.
-export function mapTilesKept(running, done, f, { pubAt = null, macOf = (w) => w } = {}) {
+// The world map's tiles (#615, #627, #685): `running`, `queued` and `done` (runningTiles',
+// queuedTiles', finishedTiles') as the map's view keeps them, each given its `state`; a tile in
+// more than one is the running one, else the queued one (built before, to be built again: its
+// published tile not drawn). Kept: the states shown (`f.tiles[state] === false`: hidden), the pool
+// member `f.member` (the Mac that ran, runs or will run it: `macOf(worker)` its host), the tile
+// areas not toggled off (`f.offAreas`: AREAS' names), and with `solo` (step ids) those steps'
+// alone, their published tiles apart in `published` whatever `f.tiles` says. Returns {running,
+// queued, finished, published}, new Maps.
+export function mapTiles(running, queued, done, f, { pubAt = null, macOf = (w) => w, solo = null } = {}) {
   const shown = (st) => f.tiles?.[st] !== false;
-  const keep = (key, step, who) => !f.offSteps?.includes(step) && !f.offAreas?.includes(areaOf(key)) && (!f.member || (who != null && macOf(who) === f.member));
-  const run = new Map(), fin = new Map();
+  const keep = (key, step, who) => (!solo || solo.includes(step)) && !f.offAreas?.includes(areaOf(key)) && (!f.member || (who != null && macOf(who) === f.member));
+  const out = { running: new Map(), queued: new Map(), finished: new Map(), published: new Map() };
   for (const [k, r] of running) {
     const state = runningState(r);
-    if (shown(state) && keep(k, r.step, r.run?.mac)) run.set(k, { ...r, state });
+    if (shown(state) && keep(k, r.step, r.run?.mac)) out.running.set(k, { ...r, state });
   }
+  for (const [k, q] of queued) if (!running.has(k) && shown("queued") && keep(k, q.step, q.mac)) out.queued.set(k, { ...q, state: "queued" });
   for (const [k, t] of done) {
     const state = finishedState(t, pubAt);
-    if (!running.has(k) && shown(state) && keep(k, t.step, t.worker)) fin.set(k, { ...t, state });
+    if (running.has(k) || queued.has(k) || !keep(k, t.step, t.worker)) continue;
+    if (solo && state === "published") out.published.set(k, { ...t, state });
+    else if (shown(state)) out.finished.set(k, { ...t, state });
   }
-  return [run, fin];
+  return out;
 }
 
 // Whether point (x, y) is inside rings (flat [x0, y0, x1, y1, …] each, closed), nonzero, as the

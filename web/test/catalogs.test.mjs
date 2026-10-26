@@ -2,7 +2,7 @@
 // (web/work/catalogs.js): the range's inputs (parsing, the sides' signs, one span at a time, the
 // swap), the tiles' times, the colour map, the timeline.
 import assert from "node:assert/strict";
-import { axisTicks, commit, formatWhen, keyOf, labelled, mergeCatalogs, pairAt, paint, parseWhen, RAMP, rampColour, rangeOf, tileTimes, timelineSpan } from "../work/catalogs.js";
+import { axisTicks, commit, formatWhen, keyOf, labelled, mergeCatalogs, pairAt, paint, parseWhen, publishedAt, RAMP, rampColour, rangeOf, tileTimes, timelineSpan } from "../work/catalogs.js";
 
 process.env.TZ = "UTC";
 const NOW = Date.UTC(2026, 9, 24, 12, 0, 0) / 1000;
@@ -67,6 +67,14 @@ const cats = mergeCatalogs(mergeCatalogs([], [{ n: 1, t: 100, first: true, z3: [
 assert.deepEqual(cats.map((c) => c.n), [1, 2]);
 assert.deepEqual([...tileTimes(cats, 6)], [["6/1/1", { t: 200, n: 2, first: false }]]);
 assert.deepEqual([...tileTimes(cats, 3)], [["3/0/0", { t: 100, n: 1, first: true }]]);
+// A tile's last publish (#685): its own at z3 or z6, a deeper one's z6 tile's, the root's newest z3.
+const t3 = new Map([["3/0/0", { t: 100, n: 1 }], ["3/7/7", { t: 300, n: 3 }]]), t6 = new Map([["6/1/1", { t: 200, n: 2 }]]);
+assert.equal(publishedAt(t3, t6, { z: 6, x: 1, y: 1 }).n, 2);
+assert.equal(publishedAt(t3, t6, { z: 10, x: 16, y: 31 }).n, 2);
+assert.equal(publishedAt(t3, t6, { z: 3, x: 0, y: 0 }).n, 1);
+assert.equal(publishedAt(t3, t6, { z: 0, x: 0, y: 0 }).n, 3);
+assert.equal(publishedAt(t3, t6, { z: 2, x: 0, y: 0 }).n, 1);
+assert.equal(publishedAt(t3, t6, { z: 6, x: 9, y: 9 }), null);
 
 // The colour map: its ends, clamped beyond; hidden outside with the box ticked.
 assert.equal(rampColour(0, 0, 10), "rgb(63,79,168)");

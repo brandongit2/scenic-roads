@@ -178,14 +178,14 @@ Common rules:
   chart's line, set there by dragging it or its tag's ✎ (the tag says it's pool-wide). Each slot (a Web Worker per core, less one) runs a
   task's programs over an in-memory filesystem (`web/work/runtime.js`, over browser_wasi_shim).
 - **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`, `settings.js`, `sums.js`, `live.js`, `nas.js`, `activity.js`, `chart.js`, `chartmath.js`, `worldmap.js`; docs/pipeline.md §5): a
-  sticky header (the verdict: going, done when, what needs a look; Pause, Freeze, Resume; the
-  tabs), a tab per part by the address's `#hash`, and a fixed footer (the charts' range, the Live
-  dot). Overview: the overview (its map figure from the last catalogue) and the world map
-  (`worldmap.js`: regions, running and finished tiles; a card of the whole stack under a point,
-  hovered or pinned by a click or tap; its legend and filters, docs/pipeline.md §5); Jobs (the schedule: each
-  Mac's lanes with the jobs that ran, running and to come; the stages: a row per step with a cell
-  per job; a card on hover, pinned on a click or tap); Machines (a card per
-  machine, the pool: who leads, "Make lead", "Take it"; the settings); Regions (a second world map over a virtual list, split by a bar to drag; a row under the pointer lights its region on the map and shows its card); NAS (`nas.js`: how fast it responds, use against its limits, its use over time); Drop boxes (the gate's held changes with Accept and Accept all, docs/inputs.md §4.7); Activity (last day by the hour,
+  sticky header (the verdict: going, done when; Pause, Freeze, Resume), the world map in a left
+  panel beside the tabs (`worldmap.js`: regions, the queue, running and finished tiles; a step
+  soloed from its legend, its published tiles by age, `catalogs.js`; a card of the whole stack
+  under a point, hovered or pinned by a click or tap; docs/pipeline.md §5), a tab per part by the
+  address's `#hash` in the right panel, and a fixed footer (the charts' range, the Live dot).
+  Overview (the alerts, the work left in the queue, the last and next catalogue, the Macs); Jobs (the schedule: each
+  Mac's lanes with the jobs that ran, running and to come; the stages: done and left a step; a card on hover, pinned on a click or tap); Machines (a card per
+  machine, the pool: who leads, "Make lead", "Take it"; the settings); Regions (a virtual list; a row under the pointer lights its region on the left panel's map and shows its card); NAS (`nas.js`: how fast it responds, use against its limits, its use over time); Drop boxes (the gate's held changes with Accept and Accept all, docs/inputs.md §4.7); Activity (last day by the hour,
   events, the file stream and the internet by website: `activity.js`); Details (leases, waits, each Mac's capacity, workers, the steps table with each step's measured
   phase shares: the lead's status's `phase_shares`, docs/pool.md §10); This device. It reads
   `/work/steps` once (the steps table: every word about a step), `/work/swarm` every 10 s and

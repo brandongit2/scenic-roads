@@ -44,18 +44,42 @@
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font: var(--fs-b)/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; font-variant-numeric: tabular-nums; }
-  main { max-width: 1400px; margin: 0 auto; padding: 14px 16px 56px; }
+  /* Two panels side by side (#685): the world map left, the tabs right, a bar between to drag
+     (2:1 at first); each scrolls on its own and the page doesn't. Under 720 px one under the
+     other, the map first, the page scrolling. */
+  #split { display: flex; min-height: 0; }
+  #mappane { flex: 0 0 var(--split, 66.667%); min-width: 0; overflow: auto; padding: 10px 6px 10px 16px; overscroll-behavior: contain; }
+  #tabpane { flex: 1 1 0; min-width: 0; overflow: auto; container: tabs / inline-size; overscroll-behavior: contain; }
+  #splitbar { flex: none; width: 9px; cursor: col-resize; position: relative; touch-action: none; outline: none; }
+  #splitbar::after { content: ""; position: absolute; top: 0; bottom: 0; left: 4px; width: 1px; background: var(--line); }
+  #splitbar::before { content: ""; position: absolute; top: calc(50% - 18px); height: 36px; left: 2px; width: 5px; border-radius: 3px; background: var(--dim); z-index: 1; }
+  #splitbar:hover::after, #splitbar.on::after, #splitbar:focus-visible::after, #splitbar:hover::before, #splitbar.on::before, #splitbar:focus-visible::before { background: var(--accent); }
+  @media (min-width: 720px) {
+    body { height: 100vh; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
+    #split { flex: 1 1 auto; }
+    body > footer { position: static; flex: none; }
+    #tabpane nav { position: sticky; top: 0; z-index: 5; background: var(--bg); padding: 0 16px 0 10px; }
+  }
+  @media (max-width: 719px) {
+    #split { display: block; }
+    #mappane { overflow: visible; padding: 10px 16px 0; }
+    #tabpane { overflow: visible; }
+    #splitbar { display: none; }
+    #tabpane nav { padding: 0 16px; border-top: 1px solid var(--line); margin-top: 10px; }
+  }
+  main { padding: 10px 16px 14px 10px; }
+  @media (max-width: 719px) { main { padding: 10px 16px 56px; } }
   #device { max-width: 760px; }
   /* The header, kept at the top: the title, the build's status and controls, the tabs. */
   body > header { position: sticky; top: 0; z-index: 10; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
-  body > header > div { max-width: 1400px; margin: 0 auto; padding: 8px 16px 0; }
+  body > header > div { padding: 8px 16px; }
   .top { display: flex; align-items: center; gap: 4px 12px; flex-wrap: wrap; }
   h1 { font-size: var(--fs-l); font-weight: 600; margin: 0; }
   #state { color: var(--dim); font-size: var(--fs-s); }
   #status { flex: 1 1 auto; min-width: 0; }
   /* (A phone: Install beside the title, not a row of its own under the wrapped status.) */
   @media (max-width: 719px) { .top h1, #state { order: -2; } #install { order: -1; margin-left: auto; } #status { flex-basis: 100%; } }
-  nav { display: flex; gap: 2px; margin-top: 6px; overflow-x: auto; scrollbar-width: none; }
+  nav { display: flex; gap: 2px; padding-top: 4px; overflow-x: auto; scrollbar-width: none; border-bottom: 1px solid var(--line); }
   nav::-webkit-scrollbar { display: none; }
   nav a { color: var(--dim); text-decoration: none; padding: 5px 10px 6px; border-bottom: 2px solid transparent; white-space: nowrap; font-size: var(--fs-b); }
   nav a:hover { color: var(--text); }
@@ -63,7 +87,7 @@
   .panel[hidden] { display: none; }
   /* The footer, fixed at the bottom: the charts' range, and whether the page is live. */
   body > footer { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border-top: 1px solid var(--line); font-size: var(--fs-s); color: var(--dim); }
-  body > footer > div { max-width: 1400px; margin: 0 auto; padding: 6px 16px calc(6px + env(safe-area-inset-bottom)); display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+  body > footer > div { padding: 6px 16px calc(6px + env(safe-area-inset-bottom)); display: flex; gap: 12px; align-items: center; justify-content: space-between; }
   #range { margin: 0 0 0 4px; width: auto; padding: 1px 4px; font-size: var(--fs-s); background: var(--panel); }
   #live { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
   #live i { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
@@ -97,12 +121,17 @@
 </head>
 <body>
 <header><div>
-  <!-- Row one: the title, the build's status and its pause controls (dash.js), Install; row two, the tabs. -->
+  <!-- The title, the build's status and its pause controls (dash.js), Install. -->
   <div class="top"><h1 id="title">Scenic build</h1><span id="state">starting…</span><div id="status"></div><button id="install" hidden>Install</button></div>
-  <nav id="tabs">
-    <a href="#overview">Overview</a><a href="#jobs">Jobs</a><a href="#machines">Machines</a><a href="#nas">NAS</a><a href="#regions">Regions</a><a href="#dropboxes">Drop boxes</a><a href="#activity">Activity</a><a href="#details">Details</a><a href="#device" id="tab-device">This device</a>
-  </nav>
 </div></header>
+<div id="split">
+<!-- Left, the world map (dash.js); right, the tabs; the bar between drags. -->
+<aside id="mappane" aria-label="World map"></aside>
+<div id="splitbar" role="separator" aria-orientation="vertical" aria-label="The map's share of the width" tabindex="0" title="Drag to share the width · double-click to reset"></div>
+<section id="tabpane">
+<nav id="tabs">
+  <a href="#overview">Overview</a><a href="#jobs">Jobs</a><a href="#machines">Machines</a><a href="#nas">NAS</a><a href="#regions">Regions</a><a href="#dropboxes">Drop boxes</a><a href="#activity">Activity</a><a href="#details">Details</a><a href="#device" id="tab-device">This device</a>
+</nav>
 <main>
   <p class="note" id="note" hidden></p>
   <p class="hint" id="hint" hidden></p>
@@ -131,6 +160,8 @@
   </div>
   </section>
 </main>
+</section>
+</div>
 <footer><div>
   <label>Charts show the last<select id="range"></select></label>
   <span id="live" title="Green and blinking: the build's state is asked for every 10 s and answered"><i></i><b>Live</b><span id="live-at"></span></span>
@@ -653,8 +684,30 @@ function showTab() {
   for (const [k, el] of Object.entries(panels)) el.hidden = k !== name;
   for (const a of $("tabs").children) a.classList.toggle("on", a.getAttribute("href") === `#${name}`);
 }
-window.addEventListener("hashchange", () => { showTab(); window.scrollTo(0, 0); });
+window.addEventListener("hashchange", () => { showTab(); $("tabpane").scrollTop = 0; });
 showTab();
+
+// ---- The split (#685): the map's share of the width, dragged, stepped by the arrow keys or reset by
+// a double click (2:1); this browser's own, kept. (Under 720 px the panels stack: no bar.)
+const SPLIT = [0.25, 0.8], SPLIT0 = 2 / 3;
+function setSplit(f, keep) {
+  const v = Math.max(SPLIT[0], Math.min(SPLIT[1], f));
+  $("split").style.setProperty("--split", `${(v * 100).toFixed(2)}%`);
+  $("splitbar").setAttribute("aria-valuenow", String(Math.round(v * 100)));
+  if (keep) store.set("split", v);
+  return v;
+}
+{
+  const bar = $("splitbar");
+  let split = setSplit(Number(store.get("split", SPLIT0)) || SPLIT0, false), drag = false;
+  bar.addEventListener("pointerdown", (e) => { drag = true; bar.setPointerCapture(e.pointerId); bar.classList.add("on"); e.preventDefault(); });
+  bar.addEventListener("pointermove", (e) => { if (!drag) return; const r = $("split").getBoundingClientRect(); split = setSplit((e.clientX - r.left) / r.width, false); });
+  const end = () => { if (!drag) return; drag = false; bar.classList.remove("on"); split = setSplit(split, true); };
+  bar.addEventListener("pointerup", end);
+  bar.addEventListener("pointercancel", end);
+  bar.addEventListener("dblclick", () => { split = setSplit(SPLIT0, true); });
+  bar.addEventListener("keydown", (e) => { const d = { ArrowLeft: -0.02, ArrowRight: 0.02 }[e.key]; if (d) { e.preventDefault(); split = setSplit(split + d, true); } });
+}
 
 // ---- The footer: the charts' range (this browser's own, kept), and the Live dot ---------------------
 // (The range is the Machines tab's live charts', from each Mac's /work/live: live.js, docs/pipeline.md §5.)
@@ -680,7 +733,7 @@ liveDot();
 // ---- The whole build at a glance (dash.js) -------------------------------------------------------
 let buildState = "";
 dashboard({
-  head: $("status"), panels, call: dashCall, label, store,
+  head: $("status"), mapPane: $("mappane"), tabsEl: $("tabpane"), panels, call: dashCall, label, store,
   onAnswer: () => { answeredAt = Date.now(); liveDot(); },
   // (The header says how the build goes; while this device helps, how its own work goes.)
   onState: (st) => { buildState = st; if (!helping) $("state").textContent = st; },

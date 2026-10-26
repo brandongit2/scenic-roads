@@ -1,9 +1,8 @@
-// The Overview map's Catalogues tab (task #629; docs/pipeline.md §5): the map's published tiles
-// (z3 or z6) coloured by when each was last published, over a range set by a pair of inputs, and
-// a timeline of every catalogue under it (hovering one lights the tiles it published). Its data:
-// /work/catalogs (crate::agent::catalogsview), read only while the tab is shown, the catalogues
-// after the last one this page has. The sums are apart from the DOM so Node tests them
-// (web/test/catalogs.test.mjs).
+// The world map's age controls (task #629; top-level since #685; docs/pipeline.md §5): a soloed
+// step's published tiles coloured by when a catalogue last published each, over a range set by a
+// pair of inputs, and a timeline of every catalogue (hovering one lights the tiles it published).
+// Its data: /work/catalogs (crate::agent::catalogsview), the catalogues after the last one this
+// page has. The sums are apart from the DOM so Node tests them (web/test/catalogs.test.mjs).
 import { hhmm, timeTicks } from "./chartmath.js";
 
 // ---- The range's inputs ---------------------------------------------------------------------------
@@ -106,6 +105,20 @@ export function tileTimes(cats, z) {
   return out;
 }
 
+/** When a tile ({z, x, y}) was last published, from the z3 and z6 tiles' times (`tileTimes`): its
+ * own at z3 or z6; a deeper tile's, its z6 tile's; a shallower one's (the root), the latest of the
+ * z3 tiles under it. {t, n, first} or null (no catalogue kept names it). */
+export function publishedAt(t3, t6, { z, x, y }) {
+  if (z === 3) return t3.get(`3/${x}/${y}`) || null;
+  if (z >= 6) return t6.get(`6/${x >> (z - 6)}/${y >> (z - 6)}`) || null;
+  let best = null;
+  for (const [k, v] of t3) {
+    const [, kx, ky] = k.split("/").map(Number);
+    if (kx >> (3 - z) === x && ky >> (3 - z) === y && !(best?.t >= v.t)) best = v;
+  }
+  return best;
+}
+
 // The colour map, oldest to newest: one hue path from a deep blue to a light yellow, which reads on
 // either theme's ground; the highlight is apart from every colour of it (magenta).
 export const RAMP = ["#3f4fa8", "#2f86b8", "#2fae9a", "#7fc35c", "#d8cf4a", "#f6e9a0"];
@@ -190,17 +203,17 @@ function el(tag, attrs, ...kids) {
 const svg = (tag, attrs) => { const e = document.createElementNS(SVGNS, tag); for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v); return e; };
 const plural = (k, one) => `${Number(k).toLocaleString("en-US")} ${one}${k === 1 ? "" : "s"}`;
 
-/** The tab: `el` (kept across the page's renders), `show(on)` as it's shown or not. `call(path,
- * body)` asks the lead; `store` this browser's own; `map` a world map (worldmap.js) of its own;
- * `card(key, about)` names a tile's card for the page ({key, t, n}); `countries()` their outlines. */
-export function createCatalogues({ call, store, map, card, countries }) {
+/** The age controls: `el` (kept across the page's renders), `view()` what they say now ({from,
+ * to, hide, lit (the "z/x/y" keys a hovered or held catalogue published), at(tile) its last
+ * publish, publishedAt}); `onChange()` called as any of it changes. `call(path, body)` asks the
+ * lead; `store` this browser's own. Reads the catalogues while the page is seen. */
+export function createAges({ call, store, onChange }) {
   const now = () => Math.floor(Date.now() / 1000);
   const kept = store.get("catalogues", {}) || {};
-  const st = { zoom: kept.zoom === 6 ? 6 : 3, hide: !!kept.hide, pair: pairAt(kept, now()), keepRight: kept.right ? kept.right : null };
-  let cats = [], latest = null, reading = false, error = "", shown = false, timer = 0, hovered = null, pinnedN = null;
-  const save = () => store.set("catalogues", { zoom: st.zoom, hide: st.hide, left: st.pair.left, right: st.keepRight });
+  const st = { hide: !!kept.hide, pair: pairAt(kept, now()), keepRight: kept.right ? kept.right : null };
+  let cats = [], t3 = new Map(), t6 = new Map(), latest = null, reading = false, error = "", timer = 0, hovered = null, pinnedN = null;
+  const save = () => store.set("catalogues", { hide: st.hide, left: st.pair.left, right: st.keepRight });
 
-  const radio = (z) => el("label", { class: "mf" }, el("input", { type: "radio", name: "cat-zoom", value: String(z), checked: st.zoom === z, onchange: () => { st.zoom = z; save(); draw(); } }), `z${z}`);
   const input = (side) => {
     const i = el("input", { type: "text", class: "cat-when", spellcheck: "false", autocomplete: "off", "aria-label": side === "left" ? "From (a time, or a span back from the other)" : "To (a time, or a span on from the other)" });
     const go = () => {
@@ -213,7 +226,7 @@ export function createCatalogues({ call, store, map, card, countries }) {
       st.pair = { left: r.left, right: r.right };
       save();
       fill();
-      draw();
+      changed();
     };
     i.addEventListener("change", go);
     i.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); i.blur(); } else if (e.key === "Escape") { fill(); i.blur(); } });
@@ -223,10 +236,9 @@ export function createCatalogues({ call, store, map, card, countries }) {
   const fill = () => { leftIn.value = formatWhen(st.pair.left); rightIn.value = formatWhen(st.pair.right); };
   fill();
   const msg = el("div", { class: "cat-msg small", role: "alert", hidden: true });
-  const hide = el("input", { type: "checkbox", checked: st.hide, onchange: (e) => { st.hide = e.target.checked; save(); draw(); } });
+  const hide = el("input", { type: "checkbox", checked: st.hide, onchange: (e) => { st.hide = e.target.checked; save(); changed(); } });
   const controls = el("div", { class: "wmap-filters cat-ctl small" },
     el("div", { class: "mfrow" },
-      el("span", { role: "radiogroup", "aria-label": "Tiles", class: "mfrow" }, el("span", { class: "dim" }, "Tiles:"), radio(3), radio(6)),
       el("span", { class: "cat-pair" }, el("span", { class: "dim" }, "Published from"), leftIn, el("span", { class: "dim" }, "to"), rightIn),
       el("label", { class: "mf" }, hide, "Hide tiles outside the date range")),
     msg);
@@ -235,29 +247,31 @@ export function createCatalogues({ call, store, map, card, countries }) {
   const tip = el("div", { class: "cat-tip small", hidden: true });
   const status = el("div", { class: "small dim cat-status" });
   const tlBox = el("div", { class: "cat-tlbox" }, line, tip);
-  const root = el("div", { class: "cat" }, map.el, legend, tlBox, status, controls);
-  new ResizeObserver(() => shown && drawLine()).observe(tlBox);
+  const root = el("div", { class: "cat" }, controls, legend, tlBox, status);
+  new ResizeObserver(() => drawLine()).observe(tlBox);
 
   const range = () => rangeOf(st.pair.left, st.pair.right) || [now() - 48 * 3600, now()];
+  const changed = () => { draw(); onChange(); };
 
-  function draw() {
+  function view() {
     const [from, to] = range();
-    const times = tileTimes(cats, st.zoom);
-    const { paint: p, inside } = paint(times, from, to, st.hide);
     const lit = new Set();
     const hc = cats.find((c) => c.n === (hovered ?? pinnedN));
     if (hc) for (const z of [3, 6]) for (const i of hc[`z${z}`] || []) lit.add(keyOf(z, i));
-    for (const [k, v] of times) card(`mt cat ${k}`, () => ({ key: k, ...v }));
-    map.update({ countries: countries(), regions: [], running: new Map(), finished: new Map(), now: now(), from, colour: () => "", stageOf: () => "", paint: p, lit, litColour: HIGHLIGHT, litZoom: st.zoom });
+    return { from, to, hide: st.hide, lit, at: (tile) => publishedAt(t3, t6, tile) };
+  }
+
+  function draw() {
+    const [from, to] = range();
     const grad = `linear-gradient(to right, ${RAMP.join(", ")})`;
     legend.replaceChildren(
-      el("span", null, `${plural(times.size, `z${st.zoom} tile`)} published · ${inside.toLocaleString("en-US")} in the range${st.hide ? " (the rest hidden)" : " (the rest at the nearer end's colour)"}`),
+      el("span", null, "A soloed step's published tiles, by when:"),
       el("span", { class: "cat-scale" }, el("span", null, whenText(from)), el("i", { style: `background:${grad}` }), el("span", null, whenText(to))),
+      el("span", null, st.hide ? "(the rest hidden)" : "(the rest at the nearer end's colour)"),
       el("span", { class: "lg" }, el("i", { style: `background:${HIGHLIGHT};border-color:${HIGHLIGHT}` }), "a catalogue's tiles, its mark hovered"));
     status.textContent = error ? `Can't read the catalogues: ${error}` : reading && !cats.length ? "Reading the catalogues on the NAS…" : `${plural(cats.length, "catalogue")} kept on the NAS${latest != null ? `, the last ${latest}` : ""}${reading ? " · reading" : ""} · times local`;
     drawLine();
   }
-
   // The timeline: the range in its centre 80%, the ends dimmed; a mark a catalogue (tall for one
   // written whole), labelled where its label fits; the time axis under it, its unit (local time)
   // said once in the status line.
@@ -316,26 +330,28 @@ export function createCatalogues({ call, store, map, card, countries }) {
   line.addEventListener("pointermove", (e) => {
     if (e.pointerType === "touch") return;
     const g = markOf(e), n = g ? +g.dataset.n : null;
-    if (n !== hovered) { hovered = n; draw(); }
+    if (n !== hovered) { hovered = n; changed(); }
     if (n != null) say(n, e); else if (pinnedN == null) tip.hidden = true;
   });
-  line.addEventListener("pointerleave", () => { hovered = null; if (pinnedN == null) tip.hidden = true; draw(); });
+  line.addEventListener("pointerleave", () => { if (hovered == null) return; hovered = null; if (pinnedN == null) tip.hidden = true; changed(); });
   // (A tap or click holds a catalogue lit; again, or off the marks, lets it go.)
   line.addEventListener("click", (e) => {
     e.stopPropagation();
     const g = markOf(e), n = g ? +g.dataset.n : null;
     pinnedN = n === pinnedN ? null : n;
     if (pinnedN != null) say(pinnedN, e); else tip.hidden = true;
-    draw();
+    changed();
   });
 
   async function load() {
     clearTimeout(timer);
-    if (!shown || document.visibilityState !== "visible") return;
+    if (document.visibilityState !== "visible") return;
     try {
       const [code, a] = await call("/work/catalogs", latest == null ? {} : { after: latest });
       if (code === 200 && a) {
+        const had = cats.length;
         cats = mergeCatalogs(cats, a.catalogs);
+        if (cats.length !== had) { t3 = tileTimes(cats, 3); t6 = tileTimes(cats, 6); }
         latest = cats.length ? cats[cats.length - 1].n : null;
         reading = !!a.reading;
         error = a.error || "";
@@ -343,15 +359,11 @@ export function createCatalogues({ call, store, map, card, countries }) {
     } catch (e) { error = e.message; }
     // ("now" at render: the right input moves on with the clock while kept as now.)
     if (st.keepRight == null) { st.pair = pairAt({ left: st.pair.left, right: null }, now()); if (document.activeElement !== rightIn && document.activeElement !== leftIn) fill(); }
-    draw();
+    changed();
     timer = setTimeout(load, reading ? 2000 : 30000);
   }
-  document.addEventListener("visibilitychange", () => shown && document.visibilityState === "visible" && load());
-
-  function show(on) {
-    if (on === shown) return;
-    shown = on;
-    if (on) { draw(); load(); } else clearTimeout(timer);
-  }
-  return { el: root, show, redraw: draw };
+  document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && load());
+  draw();
+  load();
+  return { el: root, view };
 }

@@ -3,7 +3,7 @@
 // slots and Macs, and the wait while this Mac hasn't read the build's state.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { areaOf, areaTargets, busyLanes, finishedTiles, inRings, mapTilesKept, regionWork, regionsShown, rowsWindow, stageFill, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, pastFrom, pastRuns, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, targetsOf, tileBox, tileCovers, tileOf, wholeProgress } from '../../web/work/sums.js';
+import { areaOf, areaTargets, busyLanes, finishedTiles, inRings, mapTiles, queuedTiles, regionWork, regionsShown, rowsWindow, stageFill, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, pastFrom, pastRuns, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, targetsOf, tileBox, tileCovers, tileOf } from '../../web/work/sums.js';
 
 test('map: tiles from targets, their squares', () => {
   assert.deepEqual(tileOf('6/10/15'), { z: 6, x: 10, y: 15 });
@@ -60,36 +60,43 @@ test('map: every tile the keys record stays finished, whatever the window and ev
   // catalogue's time, else it can't be told and isn't claimed.)
   const held = finishedTiles(ends, 5000, built, 900);
   assert.equal(held.get('terrain-deep 10/100/100').before, 900);
-  const [, fin] = mapTilesKept(new Map(), held, {}, { pubAt: 8000 });
+  const fin = mapTiles(new Map(), new Map(), held, {}, { pubAt: 8000 }).finished;
   assert.deepEqual([...fin].map(([k, v]) => [k.split(' ')[1], v.state]).sort(), [['10/100/100', 'published'], ['10/257/342', 'published'], ['10/257/343', 'published'], ['10/264/360', 'completed']]);
-  assert.equal(mapTilesKept(new Map(), finishedTiles(ends, 5000, built, 8500), {}, { pubAt: 8000 })[1].get('terrain-deep 10/100/100').state, 'completed', 'held from after the catalogue');
-  assert.equal(mapTilesKept(new Map(), f, {}, { pubAt: 8000 })[1].get('terrain-deep 10/100/100').state, 'completed', 'nothing held');
-  assert.equal(mapTilesKept(new Map(), f, {}, {})[1].get('terrain-deep 10/100/100').state, 'completed', 'no catalogue: none published');
-  assert.equal(mapTilesKept(new Map(), f, { member: 'm4' }, {})[1].size, 1, 'a member: the tiles its ends name');
+  assert.equal(mapTiles(new Map(), new Map(), finishedTiles(ends, 5000, built, 8500), {}, { pubAt: 8000 }).finished.get('terrain-deep 10/100/100').state, 'completed', 'held from after the catalogue');
+  assert.equal(mapTiles(new Map(), new Map(), f, {}, { pubAt: 8000 }).finished.get('terrain-deep 10/100/100').state, 'completed', 'nothing held');
+  assert.equal(mapTiles(new Map(), new Map(), f, {}, {}).finished.get('terrain-deep 10/100/100').state, 'completed', 'no catalogue: none published');
+  assert.equal(mapTiles(new Map(), new Map(), f, { member: 'm4' }, {}).finished.size, 1, 'a member: the tiles its ends name');
 });
 
-test('map: the filters keep tiles by state, member, step and tile area (#615, #627, #659)', () => {
+test('map: the queue from the forecast, the earliest where two Macs name a tile (#685)', () => {
+  const a = { at: 1000, macs: { m4: { unit: [['6/1/1', 60], ['norway', 5]], pack: [['3/0/0', 10]] }, mini: { unit: [['6/1/1', 30], ['6/1/2', 90]] } } };
+  const q = queuedTiles(a);
+  assert.deepEqual([...q.keys()].sort(), ['pack 3/0/0', 'unit 6/1/1', 'unit 6/1/2']);
+  assert.deepEqual(q.get('unit 6/1/1'), { step: 'unit', at: 1030, mac: 'mini' });
+  assert.equal(queuedTiles(null).size, 0);
+});
+
+test('map: the view keeps tiles by state, member, tile area and solo (#615, #627, #685)', () => {
   const running = new Map([['unit 6/1/1', { step: 'unit', frac: 0, run: { mac: 'A' } }], ['unit 6/1/2', { step: 'unit', frac: 0.4, current: true, run: { mac: 'A' } }], ['slope 6/1/3', { step: 'slope', frac: 1, run: { mac: 'B #2' } }]]);
-  const done = new Map([['pack 3/0/0', { t: 100, step: 'pack', worker: 'B' }], ['unit 6/2/2', { t: 300, step: 'unit', worker: 'A' }], ['unit 6/1/2', { t: 50, step: 'unit', worker: 'A' }]]);
-  const all = {};
-  const keys = ([r, f]) => [[...r.keys()].sort(), [...f.keys()].sort()];
-  assert.deepEqual(keys(mapTilesKept(running, done, all)), [['slope 6/1/3', 'unit 6/1/1', 'unit 6/1/2'], ['pack 3/0/0', 'unit 6/2/2']]);
-  // (Each state its own: unstarted, in progress, completed (a running job's done tile, or finished
-  // after the last catalogue), published (finished by it).)
-  const states = ([r, f]) => [...r, ...f].map(([k, v]) => `${k}:${v.state}`).sort();
-  assert.deepEqual(states(mapTilesKept(running, done, all, { pubAt: 200 })), ['pack 3/0/0:published', 'slope 6/1/3:completed', 'unit 6/1/1:unstarted', 'unit 6/1/2:progress', 'unit 6/2/2:completed']);
-  assert.deepEqual(keys(mapTilesKept(running, done, { tiles: { unstarted: false, completed: false } }, { pubAt: 200 })), [['unit 6/1/2'], ['pack 3/0/0']]);
-  assert.deepEqual(keys(mapTilesKept(running, done, { tiles: { published: false } }, { pubAt: 200 })), [['slope 6/1/3', 'unit 6/1/1', 'unit 6/1/2'], ['unit 6/2/2']]);
+  const queued = new Map([['unit 6/3/3', { step: 'unit', at: 5, mac: 'B' }], ['unit 6/2/2', { step: 'unit', at: 9, mac: 'A' }], ['unit 6/1/1', { step: 'unit', at: 1, mac: 'A' }]]);
+  const done = new Map([['pack 3/0/0', { t: 100, step: 'pack', worker: 'B' }], ['unit 6/2/2', { t: 300, step: 'unit', worker: 'A' }], ['unit 6/1/2', { t: 50, step: 'unit', worker: 'A' }], ['unit 6/4/4', { t: 150, step: 'unit', worker: 'A' }]]);
+  const keys = (v) => Object.fromEntries(Object.entries(v).map(([k, m]) => [k, [...m.keys()].sort()]));
+  const states = (v) => [...v.running, ...v.queued, ...v.finished, ...v.published].map(([k, x]) => `${k}:${x.state}`).sort();
+  // (Running first, then the queue (built before, to be built again: its finished tile not drawn), then finished.)
+  assert.deepEqual(states(mapTiles(running, queued, done, {}, { pubAt: 200 })), ['pack 3/0/0:published', 'slope 6/1/3:completed', 'unit 6/1/1:queued', 'unit 6/1/2:progress', 'unit 6/2/2:queued', 'unit 6/3/3:queued', 'unit 6/4/4:published']);
+  // (Published off, as the page starts; queued off.)
+  assert.deepEqual(keys(mapTiles(running, queued, done, { tiles: { published: false } }, { pubAt: 200 })).finished, []);
+  assert.deepEqual(keys(mapTiles(running, queued, done, { tiles: { queued: false } }, { pubAt: 200 })), { running: ['slope 6/1/3', 'unit 6/1/2'], queued: [], finished: ['pack 3/0/0', 'unit 6/4/4'], published: [] });
   // (No catalogue yet: nothing published, every finish completed.)
-  assert.deepEqual(keys(mapTilesKept(running, done, { tiles: { completed: false } })), [['unit 6/1/1', 'unit 6/1/2'], []]);
+  assert.deepEqual(states(mapTiles(new Map(), new Map(), done, {})), ['pack 3/0/0:completed', 'unit 6/1/2:completed', 'unit 6/2/2:completed', 'unit 6/4/4:completed']);
   const macOf = (w) => w.split(' #')[0];
-  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, member: 'B' }, { macOf })), [['slope 6/1/3'], ['pack 3/0/0']]);
-  // (By step: the steps toggled off lose their tiles; none off, all stay.)
-  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, offSteps: ['slope', 'pack'] })), [['unit 6/1/1', 'unit 6/1/2'], ['unit 6/2/2']]);
-  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, offSteps: [] })), keys(mapTilesKept(running, done, all)));
+  assert.deepEqual(keys(mapTiles(running, queued, done, { member: 'B' }, { macOf, pubAt: 200 })), { running: ['slope 6/1/3'], queued: ['unit 6/3/3'], finished: ['pack 3/0/0'], published: [] });
+  // (A solo: its steps alone, its published tiles apart whatever the states shown.)
+  const solo = mapTiles(running, queued, done, { tiles: { published: false } }, { pubAt: 200, solo: ['unit'] });
+  assert.deepEqual(keys(solo), { running: ['unit 6/1/1', 'unit 6/1/2'], queued: ['unit 6/2/2', 'unit 6/3/3'], finished: [], published: ['unit 6/4/4'] });
+  assert.deepEqual(keys(mapTiles(running, queued, done, {}, { pubAt: 200, solo: ['pack'] })), { running: [], queued: [], finished: [], published: ['pack 3/0/0'] });
   // (Tile areas, by the packs' zooms: hi off hides every z6 tile, lo off every z3.)
-  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, offAreas: ['hi'] })), [[], ['pack 3/0/0']]);
-  assert.deepEqual(keys(mapTilesKept(running, done, { ...all, offAreas: ['lo', 'root', 'deep'] }))[1], ['unit 6/2/2']);
+  assert.deepEqual(keys(mapTiles(running, queued, done, { offAreas: ['hi'] }, { pubAt: 200 })), { running: [], queued: [], finished: ['pack 3/0/0'], published: [] });
   assert.deepEqual(['0/0/0', '3/1/1', '6/1/1', '10/1/1', 'terrain-deep 10/5/5', '8/1/1'].map(areaOf), ['root', 'lo', 'hi', 'deep', 'deep', 'z8']);
   // (A root step's worldwide target is the root tile; others' as they are.)
   assert.deepEqual([areaTargets('terrain-root', ['terrain-root']), areaTargets('slope-root', []), areaTargets('unit', ['6/1/1'])], [['0/0/0'], ['0/0/0'], ['6/1/1']]);
@@ -110,37 +117,6 @@ test('map: a point in rings, nonzero', () => {
   const sq = [0, 0, 10, 0, 10, 10, 0, 10, 0, 0];
   assert.equal(inRings([sq], 5, 5), true);
   assert.equal(inRings([sq], 15, 5), false);
-});
-
-const line = (step, done, total) => ({ steps: [step], done, total, left: total - done, items: [{ step, done, total, left: total - done }] });
-
-test('headline: the work done of the whole, each step weighed by its time a target', () => {
-  // Terrain all done (10 × 60 s), roads 58 of 284 (× 300 s), the rest of roads left in the forecast.
-  const lines = [line('terrain', 10, 10), line('unit', 58, 284)];
-  const fc = { each_s: { terrain: 60, unit: 300 }, steps: [{ step: 'unit', work_s: 226 * 300 }] };
-  const p = wholeProgress(lines, fc);
-  assert.equal(p.done_s, 600 + 58 * 300);
-  assert.equal(p.left_s, 226 * 300);
-  assert.equal(p.pct, Math.floor(((600 + 17400) / (600 + 17400 + 67800)) * 100));
-});
-
-test('headline: never 100% while any stage has work left', () => {
-  // The roads all built, a cheap stage still to come: 99%, not 100.
-  const lines = [line('unit', 1000, 1000), line('marks', 0, 1)];
-  const fc = { each_s: { unit: 1000, marks: 1 }, steps: [{ step: 'marks', work_s: 1 }] };
-  assert.equal(wholeProgress(lines, fc).pct, 99);
-  // A stage not finished though the forecast lists nothing left: still not 100.
-  assert.equal(wholeProgress([line('unit', 5, 10)], { each_s: { unit: 1 }, steps: [] }).pct, 99);
-});
-
-test('headline: 100% when every stage is done and nothing is left', () => {
-  const lines = [line('unit', 10, 10), line('marks', 1, 1)];
-  assert.equal(wholeProgress(lines, { each_s: { unit: 5, marks: 1 }, steps: [] }).pct, 100);
-});
-
-test('headline: none without a forecast that weighs the steps', () => {
-  assert.equal(wholeProgress([line('unit', 1, 2)], null), null);
-  assert.equal(wholeProgress([line('unit', 1, 2)], { steps: [] }), null);
 });
 
 test('lanes: only those with a bar in the window, in their order', () => {

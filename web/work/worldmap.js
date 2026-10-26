@@ -1,13 +1,14 @@
-// The overview's world map (the build page's Overview tab; docs/pipeline.md §5): one canvas in Web
+// The build page's world map, in its left panel (docs/pipeline.md §5): one canvas in Web
 // Mercator (the world 0–1000 each way, y down: countries.json's and /work/regions' outlines), with
 // the z3 grid (and z6's when zoomed in enough to see it), the countries, the regions coloured by
-// how far they are, the finished tiles (every one built, #674; those of the past window each fading in as it comes, paler as it
-// ages; published solid, completed but not in a catalogue yet paler under a dashed outline), and
-// each running job's target tiles in its stage's colour, filled as far as they're done, and with a
-// pool member chosen the tiles the forecast places on it later ("to come": faint, dotted). Steps at
-// one spot share its square as diagonal stripes, each step's colour in turn.
-// Kept across the page's renders (its element moved into each new section), drawn again when its
-// data changes, as it's moved or zoomed, and while tiles fade in; nothing runs otherwise.
+// how far they are, the queue (task #685: every tile to build, faint under a dotted outline), each
+// running job's target tiles in its stage's colour, filled as far as they're done, and the
+// finished tiles (each fading in as it comes; completed but not in a catalogue yet pale under a
+// dashed outline, published solid); a soloed step's published tiles painted by age (`paint`), and
+// a catalogue's tiles lit (`lit`). Steps at one spot share its square as diagonal stripes, each
+// step's colour in turn.
+// Kept across the page's renders, drawn again when its data changes, as it's moved or zoomed, and
+// while tiles fade in; nothing runs otherwise.
 //
 // Moved by a drag (mouse, pen or one finger), zoomed by a pinch (a trackpad's: ctrl+wheel in
 // Chrome, gesture events in Safari; two fingers on a touch screen), a double click, the +/−
@@ -26,18 +27,17 @@ const Z6 = 1000 / 64;
 // A tile area's outline weight (#659: sums.js AREAS), times a state's own: the root's heaviest, a
 // deep tile's a hairline; the dashes stay the states' (completed dashed, to come dotted).
 const AREA_W = { root: 2.4, lo: 1.7, hi: 1, deep: 0.6 };
-// The regions' paths, made once for every map (the Overview's and the Regions tab's), by outline.
+// The regions' paths, made once, by outline.
 const regionPaths = new WeakMap();
 
 /** A map: `el` to place, `highlight(id)` to light a region, `emphasize(e)` a legend item's kind,
  * `update(data)` with {countries (rings), regions [{id, fill, edge, state}], running (Map key →
- * {step, frac, current, state}), finished (Map key → {t, step, state}: sums.js mapTilesKept), toCome
- * (Map key → {step, at, mac, state "tocome"}: a member's later tiles, dash.js), from,
- * now, colour(step) (a CSS colour, var() allowed), stageOf(step), fade (finished tiles paler as
- * they age), and for the Catalogues tab paint (Map "z/x/y" → colour, in the stack as "cat z/x/y"),
- * lit (keys in litColour, zoom litZoom filled)}, `minimap(key)` a canvas
- * of a tile and around it; `pick(keys, x, y)` called on a click or tap (keys: the stack there,
- * none off everything). */
+ * {step, frac, current, state}), finished (Map key → {t, step, state}), queued (Map key → {step,
+ * at, mac, state "queued"}: sums.js mapTiles), colour(step) (a CSS colour, var() allowed),
+ * paint (Map key → colour: a soloed step's published tiles by age), lit ("z/x/y"
+ * keys in litColour: a catalogue's, its z6 tiles filled)}, `minimap(key)` a canvas of a tile and
+ * around it; `pick(keys, x, y)` called on a click or tap (keys: the stack there, none off
+ * everything). Every key but lit's "<step> z/x/y". */
 export function createMap({ pick = () => {} } = {}) {
   const canvas = document.createElement("canvas");
   canvas.className = "wmap";
@@ -52,7 +52,7 @@ export function createMap({ pick = () => {} } = {}) {
   el.className = "wmap-wrap";
   el.append(canvas, ctl);
 
-  let data = { countries: [], regions: [], running: new Map(), finished: new Map(), toCome: new Map(), now: 0, from: 0, colour: () => "#888", stageOf: () => "" };
+  let data = { countries: [], regions: [], running: new Map(), finished: new Map(), queued: new Map(), colour: () => "#888" };
   let paths = { countries: null, regions: new Map() };
   const view = { cx: 500, cy: 420, k: 0, fitted: false };
   let size = { w: 0, h: 0 };
@@ -170,7 +170,7 @@ export function createMap({ pick = () => {} } = {}) {
     const faint = (yes) => (yes ? 1 : 0.15);
     const regionKind = (st) => (st === "done" ? "on" : st);
     const regionRel = (r) => !emph || emph.region === regionKind(r.state);
-    const tileRel = (v, key) => !emph || emph.tile === v.state || (emph.stage != null && data.stageOf(v.step) === emph.stage) || (emph.step != null && v.step === emph.step) || (emph.area != null && areaOf(key) === emph.area);
+    const tileRel = (v, key) => !emph || emph.tile === v.state || (emph.area != null && areaOf(key) === emph.area);
     // Regions, by state.
     const regionColour = { on: tokens.ok, done: tokens.ok, building: tokens.accent, queued: tokens.dim };
     for (const r of data.regions) {
@@ -188,7 +188,6 @@ export function createMap({ pick = () => {} } = {}) {
     c.globalAlpha = 1;
     // Tiles. Steps sharing a spot: each its diagonal stripes, in turn, across the whole square.
     const t = performance.now();
-    const span = Math.max(1, data.now - data.from);
     const stripes = (bx, by, s, i, n) => {
       c.save();
       c.beginPath();
@@ -201,18 +200,20 @@ export function createMap({ pick = () => {} } = {}) {
         c.clip();
       }
     };
-    // The Catalogues tab's tiles (catalogs.js): each its colour, solid; a catalogue's lit in the
-    // highlight colour over them, the zoom shown filled, the other outlined.
-    if (data.paint) {
+    // A soloed step's published tiles (dash.js), each its age's colour, solid; the countries'
+    // edges over them, to tell where a tile is.
+    if (data.paint?.size) {
       for (const [key, col] of data.paint) {
         const [bx, by, s] = tileBox(tileOf(key));
         if (bx > x1 || by > y1 || bx + s < x0 || by + s < y0) continue;
+        const [i, n] = stripe.get(key) || [0, 1];
+        stripes(bx, by, s, i, n);
         c.globalAlpha = 0.85;
         c.fillStyle = col;
         c.fillRect(bx, by, s, s);
+        c.restore();
       }
       c.globalAlpha = 1;
-      // (The countries' edges over them, to tell where a tile is.)
       if (paths.countries) {
         c.globalAlpha = 0.6;
         c.strokeStyle = tokens.bg;
@@ -220,19 +221,11 @@ export function createMap({ pick = () => {} } = {}) {
         c.stroke(paths.countries);
         c.globalAlpha = 1;
       }
-      for (const key of data.lit || []) {
-        const t = tileOf(key);
-        const [bx, by, s] = tileBox(t);
-        c.fillStyle = c.strokeStyle = data.litColour;
-        if (t.z === data.litZoom) c.fillRect(bx, by, s, s);
-        c.lineWidth = px * 1.6;
-        c.strokeRect(bx, by, s, s);
-      }
     }
     const outlines = [];
-    for (const [key, v] of [...(data.toCome || []), ...data.finished, ...data.running]) {
+    for (const [key, v] of [...data.queued, ...data.finished, ...data.running]) {
       const run = data.running.has(key) && data.running.get(key) === v;
-      const later = v.state === "tocome";
+      const later = !run && v.state === "queued";
       const [bx, by, s] = tileBox(tileOf(key.slice(key.lastIndexOf(" ") + 1)));
       if (bx > x1 || by > y1 || bx + s < x0 || by + s < y0) continue;
       const [i, n] = stripe.get(key) || [0, 1];
@@ -242,7 +235,7 @@ export function createMap({ pick = () => {} } = {}) {
       stripes(bx, by, s, i, n);
       c.fillStyle = col;
       if (later) {
-        // To come: barely filled under a dotted outline, behind what's running or done.
+        // Queued: barely filled under a dotted outline, behind what's running or done.
         c.globalAlpha = 0.07 * f * low;
         c.fillRect(bx, by, s, s);
         outlines.push([bx, by, s, col, 0.5 * f * low, px * 0.9 * aw, [1.5 * px, 2 * px]]);
@@ -254,12 +247,11 @@ export function createMap({ pick = () => {} } = {}) {
         c.fillRect(bx, by + s * (1 - v.frac), s, s * v.frac);
         outlines.push([bx, by, s, col, f, px * (v.current ? 2 : 1.2) * aw, null]);
       } else {
-        // Finished: faded in as it came, paler as it ages over the window; completed (not in a
-        // catalogue yet) half as strong as published, under a dashed outline.
+        // Finished: faded in as it came; completed (not in a catalogue yet) half as strong as
+        // published, under a dashed outline.
         const fade = Math.max(0, Math.min(1, (t - (appeared.get(key) ?? 0)) / FADE_MS));
-        const age = Math.max(0, Math.min(1, (data.now - v.t) / span));
         const pub = v.state === "published";
-        c.globalAlpha = fade * f * low * (data.fade === false ? 0.6 : 0.18 + 0.5 * (1 - age)) * (pub ? 1 : 0.5);
+        c.globalAlpha = fade * f * low * 0.6 * (pub ? 1 : 0.5);
         c.fillRect(bx, by, s, s);
         outlines.push(pub ? [bx, by, s, col, 0.55 * f * fade * low, px * 0.8 * aw, null] : [bx, by, s, col, f * fade * low, px * 1.1 * aw, [4 * px, 3 * px]]);
       }
@@ -274,6 +266,16 @@ export function createMap({ pick = () => {} } = {}) {
     }
     c.setLineDash([]);
     c.globalAlpha = 1;
+    // A catalogue's tiles (its timeline mark hovered or held), over everything: z6 filled, z3 outlined.
+    for (const key of data.lit || []) {
+      const tl = tileOf(key);
+      if (!tl) continue;
+      const [bx, by, s] = tileBox(tl);
+      c.fillStyle = c.strokeStyle = data.litColour;
+      if (tl.z === 6) c.fillRect(bx, by, s, s);
+      c.lineWidth = px * 1.6;
+      c.strokeRect(bx, by, s, s);
+    }
     // What's pointed at: each region by its outline, each tile's whole square (counted: the
     // scene's answer, the canvas's `data-outlined` for the touch test).
     let outlined = 0;
@@ -310,10 +312,14 @@ export function createMap({ pick = () => {} } = {}) {
     const dpr = window.devicePixelRatio || 1;
     const c = canvas.getContext("2d");
     canvas.dataset.outlined = scene(c, view, size.w, size.h, dpr, held ? [...hover, held] : hover);
+    // (For the touch test: the tiles painted by age, the region the page lights, whether any tile still fades in.)
+    canvas.dataset.painted = data.paint?.size || 0;
+    canvas.dataset.held = held || "";
     // (Still fading in: drawn again next frame.)
     const t = performance.now();
     let fading = false;
     for (const k of data.finished.keys()) if (t - (appeared.get(k) ?? 0) < FADE_MS) { fading = true; break; }
+    canvas.dataset.fading = fading ? "1" : "";
     cancelAnimationFrame(raf);
     if (fading) raf = requestAnimationFrame(draw);
   }
@@ -463,9 +469,8 @@ export function createMap({ pick = () => {} } = {}) {
   const signature = (d) => [
     d.regions.map((r) => `${r.id}:${r.state}`).join(","),
     [...d.running].map(([k, r]) => `${k}:${r.step}:${r.frac.toFixed(3)}:${r.current ? 1 : 0}`).join(","),
-    [...d.finished].map(([k, f]) => `${k}:${f.step}:${f.state}:${Math.round((d.now - f.t) / Math.max(1, d.now - d.from) * 50)}`).join(","),
-    [...(d.toCome?.keys() || [])].join(","),
-    d.fade,
+    [...d.finished].map(([k, f]) => `${k}:${f.state}`).join(","),
+    [...d.queued.keys()].join(","),
     d.paint ? [...d.paint].join(",") : "",
     d.lit ? [...d.lit].join(",") : "",
   ].join("|");
@@ -497,11 +502,10 @@ export function createMap({ pick = () => {} } = {}) {
     // (Tiles keyed by step and tile, "<step> z/x/y": two steps' at one spot are each their own,
     // drawn as diagonal stripes across the square in turn (`stripe`: [i, n]), each its own card.)
     atTile = new Map(); stripe = new Map();
-    const catKeys = next.paint ? [...next.paint.keys()].map((k) => `cat ${k}`) : [];
-    const later = [...(next.toCome?.keys() || [])];
-    for (const k of [...next.running.keys(), ...next.finished.keys(), ...later, ...catKeys]) { const t = k.slice(k.lastIndexOf(" ") + 1); (atTile.get(t) || atTile.set(t, []).get(t)).push(k); }
+    const keys = [...next.running.keys(), ...next.finished.keys(), ...next.queued.keys(), ...(next.paint?.keys() || [])];
+    for (const k of keys) { const t = k.slice(k.lastIndexOf(" ") + 1); (atTile.get(t) || atTile.set(t, []).get(t)).push(k); }
     for (const ks of atTile.values()) { ks.sort(); ks.forEach((k, i) => stripe.set(k, [i, ks.length])); }
-    zooms = [...new Set([...next.running.keys(), ...next.finished.keys(), ...later, ...catKeys].map((k) => tileOf(k)?.z).filter((z) => z != null))].sort((a, b) => b - a);
+    zooms = [...new Set(keys.map((k) => tileOf(k)?.z).filter((z) => z != null))].sort((a, b) => b - a);
     const sig = signature(next);
     const same = sig === lastSig && !fresh.length && !outlines;
     lastSig = sig;
@@ -528,8 +532,9 @@ export function createMap({ pick = () => {} } = {}) {
     scene(cv.getContext("2d"), { cx: bx + s / 2, cy: by + s / 2, k: w / (s * 2) }, w, hgt, dpr, `mt ${key}`);
   }
 
-  // A legend item hovered (#627, #659): {region: "on" | "building" | "queued"}, {tile: state},
-  // {stage: id}, {step: id} or {area: name}, what it isn't drawn faint; null: all as they are.
+  // A legend item hovered (#627, #659): {region: "on" | "building" | "queued"}, {tile: state} or
+  // {area: name}, what it isn't drawn faint; null: all as they are. (A step's or stage's solos it:
+  // dash.js.)
   function emphasize(e) {
     if (JSON.stringify(e) === JSON.stringify(emph)) return;
     emph = e;
