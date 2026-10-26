@@ -887,6 +887,12 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   those 40 minutes, in the same process; the agent's restart read it at once. Meanwhile the
   catalog isn't asked of the lead's coordinator (it was granted, leased and logged about once a
   minute, only to wait).
+- **A removed step's names leave the records the same way** (task #701): the lead's daily `gc`
+  job removes from the manifest every name under `agent::gc::RETIRED` (a removed step's outputs'
+  prefixes), its write-set these removals alone, so its one hand-off is merged as any entry, in
+  one save of the records; none left, it hands off nothing. A lead on an app without them refuses
+  the entry (outside `gc`'s write-set then), and the next run's hand-off tries again. The files
+  then go by GC's own rule (docs/storage.md, GC).
 - Raw tile archives are only added by jobs; compacting is the lead's duty. `summaries.json` is a
   content-keyed cache any writer may update.
 

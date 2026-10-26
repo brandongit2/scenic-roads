@@ -3143,6 +3143,43 @@ mod tests {
         assert!(why.contains("layers/terrain/hi/6-1-3"), "{why}");
     }
 
+    /// Task #701: the clean-up's entry dropping a removed step's names (crate::agent::gc::RETIRED)
+    /// is merged into the records, in one save; one also removing another name is refused whole;
+    /// told again, it changes nothing.
+    #[test]
+    fn the_merge_takes_the_clean_ups_drop_of_removed_steps_names() {
+        let d = tempfile::tempdir().unwrap();
+        let r = root(d.path());
+        std::fs::write(
+            r.join("state/build/manifest.json"),
+            r#"{"base/6-1-1": "base/6-1-1.1111111111111111.base", "sources/terrain-z8-v1": "sources/terrain-z8-v1.2222222222222222.pack", "sources/terrain-z8-v1-max": "sources/terrain-z8-v1-max.3333333333333333.f32"}"#,
+        )
+        .unwrap();
+        let home = d.path().join("a/agent");
+        let mut run = Run::new(side(&store::nasfs::NasRoot::local_for_test(&r), &home), Role::Lead, Gates::default());
+        let me = run.side.member().id.clone();
+        let gc = |n: u64, names: &[&str]| Entry {
+            member: me.clone(),
+            lease: LeaseId { term: 1, n },
+            step: "gc".into(),
+            handoff: Handoff { changes: names.iter().map(|l| (l.to_string(), None)).collect(), ..Default::default() },
+            at: crate::agent::jobs::now_s(),
+        };
+        let too_far = gc(1, &["sources/terrain-z8-v1", "base/6-1-1"]);
+        let bad = too_far.key().unwrap();
+        let drop = gc(2, &["sources/terrain-z8-v1", "sources/terrain-z8-v1-max"]);
+        run.entries.extend([(too_far, None), (drop.clone(), None)]);
+        assert_eq!(run.step(true).leads, Some(1));
+        let rec = run.side.driver().records().unwrap();
+        assert_eq!(rec.manifest.keys().collect::<Vec<_>>(), ["base/6-1-1"]);
+        assert!(rec.rejected.get(&bad).expect("refused").contains("base/6-1-1"));
+        let seq = rec.seq;
+        run.entries.push((drop, None));
+        run.step(true);
+        let rec = run.side.driver().records().unwrap();
+        assert_eq!((rec.manifest.len(), rec.seq), (1, seq));
+    }
+
     #[test]
     fn jobs_an_earlier_process_left_are_handed_off() {
         let d = tempfile::tempdir().unwrap();

@@ -80,13 +80,22 @@ NAS's own planet fetch.
 **GC** runs daily, in the agent, when the NAS is quiet: only beside leased jobs that leave its
 measured weight room (pool.md §7.2, `Limits::fits_quiet`), or, held back 24 hours, as an aged job
 of the lead's own (`QUIET_AGE`); running, it yields to a target held back for the budget.
-- **Roots:** the newest catalog, every catalog of the last 14 days, and the build manifest.
+- **Roots:** the newest catalog, every catalog of the last 14 days, the build manifest, and (with
+  the pool) its newest records and the journal entries they don't reflect yet.
 - An unreferenced content-named file goes once older than 14 days; older catalogs go except the
   newest; stray `.tmp` files after 2 days.
 - Retired passes' sources (`sources/osm/<date>/`, `sources/items/<date>/`) go by the same rule, their
   other files 14 days after the newer pass completed.
 - The input check's checked copies (`sources/inputs/`, inputs.md §4.9) are kept while the manifest,
   an accepted index, an unmerged journal entry or an index of the last 14 days names them.
+- **Removed steps' data** (`agent::gc::RETIRED`, logical-name prefixes; today `sources/terrain-z8-`,
+  the worldwide z8 terrain removed by task #670): each run first drops every manifest name under one,
+  as the `gc` job's own change through `Out` (its write-set is these removals alone,
+  `agent::steps`): in the pool a hand-off the lead merges into its records in one save, as any
+  job's (pool.md §7.3). With nothing left to drop it writes nothing. The files then go by the rule
+  above, in each prefix's folder: kept while a catalog of the window, the manifest, the records or
+  an unmerged entry names them. A step whose code is deleted adds its outputs' prefix there, so
+  "removed" means its data deleted too; no step may make a name under one.
 - Never swept: the newest pass, a planet waiting for its pass, the rest of `sources/`, inputs,
   state, app and nas.
 

@@ -15,6 +15,8 @@
 //! the manifest (or the newest records) names them, an accepted index it names lists them, a
 //! journal entry not yet merged does, or an index made or replaced within `keep_days` lists them
 //! (`inputs_kept`; none swept when one of those can't be read).
+//! What removed steps made (`RETIRED`): the run first drops their names from the manifest through
+//! the records (`drop_retired`), then their files go by the same rule as any content-named file.
 //! The newest pass, a planet waiting for its pass, the rest of `sources/`, the user's folders (the
 //! inputs folders), state and the app are never touched. With no readable catalog nothing is deleted.
 
@@ -35,7 +37,9 @@ pub struct Report {
     pub tmp_removed: usize,
     /// Unreferenced but too young to remove.
     pub young: usize,
-    /// Of the removed, files of retired passes' sources (and their bytes).
+    /// The names removed steps made (`RETIRED`) this run dropped from the manifest.
+    pub retired_dropped: usize,
+    /// Of the removed, files of retired passes' sources and of removed steps (and their bytes).
     pub retired_removed: usize,
     pub retired_bytes: u64,
     /// Of the removed, the gate's checked copies; and why none were swept, when they weren't.
@@ -65,6 +69,37 @@ pub struct Report {
 /// Folders never swept, whatever a catalog says (`sources/` but its retired passes and the gate's
 /// checked copies, `sources/inputs/`, swept on their own rules).
 const NEVER: [&str; 7] = ["translations", "descriptions", "inputs", "state", "app", "nas", "sources"];
+
+/// The logical-name prefixes of what removed steps made (removed means deleted): GC's run drops
+/// every name the manifest has under one, in one save of the records (`drop_retired`: a hand-off
+/// of the `gc` job's, merged by the lead as any job's, its write-set these removals alone,
+/// crate::agent::steps), and its files then go as any no catalog, manifest or records name, once
+/// old (`sweep_retired_names`): a catalog of the last `keep_days` naming one keeps it. A step whose
+/// code is deleted adds its outputs' prefix here; no step of the table may make a name under one.
+pub const RETIRED: [&str; 1] = [
+    // (The worldwide z8 terrain and its maxima, `-v<n>` and `-v<n>-max`: its code deleted by task #670.)
+    "sources/terrain-z8-",
+];
+
+/// Whether logical name `l` is one a removed step made (`RETIRED`).
+pub fn retired(l: &str) -> bool {
+    RETIRED.iter().any(|p| l.starts_with(p))
+}
+
+/// Drops the names removed steps made (`RETIRED`) from the build's manifest at `root`, as the `gc`
+/// step's job (`Out`, its scratch `scratch`): in the pool a hand-off the lead merges, else saved
+/// under the build lock. How many; none named, nothing written, so a run after is a no-op.
+pub fn drop_retired(root: &store::nasfs::NasRoot, scratch: &std::path::Path) -> Result<usize> {
+    let mut out = crate::out::Out::open(root, scratch, STEP)?;
+    let names: Vec<String> = out.manifest.keys().filter(|l| retired(l)).cloned().collect();
+    for l in &names {
+        out.remove(l);
+    }
+    if !names.is_empty() {
+        out.save()?;
+    }
+    Ok(names.len())
+}
 
 /// What the pool's records and journal name beyond today's manifest (docs/pool.md §7.3, §7.7): the
 /// newest records' manifest and pending uploads (today's files may lag them a save), and every
@@ -318,7 +353,21 @@ pub fn run(root: &store::nasfs::NasRoot, keep_days: u64, dry_run: bool) -> Resul
         COUNTING.set(true);
         crate::costin::begin();
     }
+    // (The removed steps' names first; a failure is said and tried again next run, never fails GC.
+    // Its scratch only a folder: a removal writes nothing.)
+    let mut dropped = Ok(0);
+    if !dry_run {
+        static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let scratch = std::env::temp_dir().join(format!("scenic-gc-{}-{n}", std::process::id()));
+        dropped = drop_retired(root, &scratch);
+        std::fs::remove_dir_all(&scratch).ok();
+    }
     let r = run_once(root, keep_days, dry_run).map(|mut rep| {
+        match &dropped {
+            Ok(n) => rep.retired_dropped = *n,
+            Err(e) => rep.warnings.push(format!("removed steps' names not dropped: {e:#}")),
+        }
         // The history's old days, one tar a day (task #531); a failure is said, never fails GC.
         match super::histarchive::run(root, crate::agent::jobs::now_s(), dry_run, &yield_point) {
             Ok(h) => {
@@ -591,6 +640,10 @@ fn run_once(root: &store::nasfs::NasRoot, keep_days: u64, dry_run: bool) -> Resu
             }
         }
     }
+    {
+        let _p = phase("removed steps' files swept", Class::NasWrite);
+        sweep_retired_names(root, &referenced, &old, dry_run, &mut rep)?;
+    }
     let _p = phase("old catalogs removed", Class::NasWrite);
     for p in drop_cats {
         remove(&p, dry_run)?;
@@ -660,6 +713,48 @@ fn sweep_retired(
         if d.read_dir().is_ok_and(|rd| rd.is_empty()) && !dry_run {
             meta(0, 0, 1);
             d.remove_dir().ok();
+        }
+    }
+    Ok(())
+}
+
+/// The files of removed steps (`RETIRED`), in each prefix's folder (not below it): content-named
+/// ones no catalog, manifest or records name, once old; a tombstone of one put back.
+fn sweep_retired_names(
+    root: &store::nasfs::NasRoot,
+    referenced: &BTreeSet<String>,
+    old: &dyn Fn(SystemTime) -> bool,
+    dry_run: bool,
+    rep: &mut Report,
+) -> Result<()> {
+    for prefix in RETIRED {
+        yield_point();
+        let dir = prefix.rsplit_once('/').map_or("", |(d, _)| d);
+        let Ok(rd) = root.join(dir).read_dir() else { continue };
+        for e in rd {
+            let rel = e.path.rel().to_string();
+            meta(1, 1, 0);
+            if !rel.starts_with(prefix) || rep.restored.contains(&e.path) {
+                continue;
+            }
+            if e.name.ends_with(TOMB) {
+                put_back(&e.path, dry_run, rep);
+                continue;
+            }
+            let Ok(md) = e.metadata() else { continue };
+            if md.is_dir() || store::naming::parse_content_name(&rel).is_none() || referenced.contains(&rel) {
+                continue;
+            }
+            rep.files_seen += 1;
+            if !old(md.modified().unwrap_or(SystemTime::now())) || !remove_unless_touched(&e.path, old, dry_run)? {
+                rep.young += 1;
+                continue;
+            }
+            crate::timings::count(md.len(), 1);
+            rep.removed += 1;
+            rep.removed_bytes += md.len();
+            rep.retired_removed += 1;
+            rep.retired_bytes += md.len();
         }
     }
     Ok(())
@@ -1291,5 +1386,87 @@ mod tests {
         let r = run(&store::nasfs::NasRoot::local_for_test(d.path()), 14, false).unwrap();
         assert_eq!((r.removed, r.files_seen), (0, 0));
         assert!(p.exists());
+    }
+
+    /// Task #701: a removed step's names (`RETIRED`) leave the manifest in one save, the rest kept;
+    /// its files then go once old, but one a catalog of the window names stays; a run after
+    /// changes nothing (no names left, the manifest not written).
+    #[test]
+    fn removed_steps_names_leave_the_manifest_and_their_files_go() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let (v1, v1max, v3, other) = (
+            "sources/terrain-z8-v1.1111111111111111.pack",
+            "sources/terrain-z8-v1-max.2222222222222222.f32",
+            "sources/terrain-z8-v3.3333333333333333.pack",
+            "base/6-1-1.4444444444444444.sect",
+        );
+        for f in [v1, v1max, v3, other, "sources/terrain-z8-README"] {
+            fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
+            fs::write(root.join(f), b"x").unwrap();
+            age(&root.join(f), 30);
+        }
+        // (A tombstone of one, a GC stopped between: put back, then judged next run.)
+        fs::write(root.join(format!("{v1max}{TOMB}")), b"x").unwrap();
+        fs::remove_file(root.join(v1max)).unwrap();
+        fs::create_dir_all(root.join("state/build")).unwrap();
+        let manifest = serde_json::json!({
+            "sources/terrain-z8-v1": v1,
+            "sources/terrain-z8-v1-max": v1max,
+            "sources/terrain-z8-v3": v3,
+            "base/6-1-1": other,
+        });
+        let mpath = root.join("state/build/manifest.json");
+        fs::write(&mpath, manifest.to_string()).unwrap();
+        // The catalog in the window still serves v3: kept.
+        let mut cat = store::catalog::Catalog::new(1);
+        cat.files
+            .insert("sources/terrain-z8-v3".into(), store::catalog::FileRef { file: v3.into(), ..Default::default() });
+        store::catalog::write(&root.join("catalog"), &cat).unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(root);
+        let r = run(&nas, 14, false).unwrap();
+        assert_eq!(r.retired_dropped, 3, "{:?}", r.warnings);
+        let m: std::collections::BTreeMap<String, String> = serde_json::from_slice(&fs::read(&mpath).unwrap()).unwrap();
+        assert_eq!(m.keys().collect::<Vec<_>>(), ["base/6-1-1"]);
+        assert_eq!((r.retired_removed, r.tombs), (1, 1));
+        assert!(!root.join(v1).exists() && root.join(v3).exists() && root.join(other).exists());
+        assert!(root.join(v1max).exists() && root.join("sources/terrain-z8-README").exists());
+        // Again: nothing to drop, the manifest left as it was; the one put back goes now.
+        let before = fs::metadata(&mpath).unwrap().modified().unwrap();
+        age(&root.join(v1max), 30);
+        let r = run(&nas, 14, false).unwrap();
+        assert_eq!((r.retired_dropped, r.retired_removed), (0, 1));
+        assert_eq!(fs::metadata(&mpath).unwrap().modified().unwrap(), before);
+        assert!(!root.join(v1max).exists() && root.join(v3).exists());
+        // A dry run drops nothing.
+        fs::write(&mpath, manifest.to_string()).unwrap();
+        assert_eq!(run(&nas, 14, true).unwrap().retired_dropped, 0);
+        assert_eq!(fs::read(&mpath).unwrap(), manifest.to_string().as_bytes());
+    }
+
+    /// Task #701: in the pool the drop is the gc job's hand-off (merged by the lead), never a
+    /// save of the records; a name outside `RETIRED` it can't remove.
+    #[test]
+    fn in_the_pool_the_drop_is_a_hand_off() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("nas");
+        fs::create_dir_all(root.join("state/build")).unwrap();
+        let manifest = r#"{"sources/terrain-z8-v3": "sources/terrain-z8-v3.3333333333333333.pack", "base/6-1-1": "base/6-1-1.4444444444444444.sect"}"#;
+        fs::write(root.join("state/build/manifest.json"), manifest).unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        let hand = d.path().join("handoff");
+        let mut out = crate::out::Out::open(&nas, &d.path().join("s"), STEP).unwrap().handing_off(&hand);
+        out.remove("sources/terrain-z8-v3");
+        out.save().unwrap();
+        let hs = crate::handoff::written_in(&hand).unwrap().unwrap();
+        assert_eq!(hs.len(), 1);
+        assert_eq!(
+            hs[0].changes,
+            [("sources/terrain-z8-v3".to_string(), None)].into_iter().collect::<std::collections::BTreeMap<_, _>>()
+        );
+        assert_eq!(fs::read_to_string(root.join("state/build/manifest.json")).unwrap(), manifest);
+        let mut out = crate::out::Out::open(&nas, &d.path().join("s"), STEP).unwrap().handing_off(&hand);
+        out.remove("base/6-1-1");
+        assert!(out.save().is_err());
     }
 }

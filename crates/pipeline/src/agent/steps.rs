@@ -740,7 +740,7 @@ pub const TABLE: [Step; 56] = [
     },
     Step {
         alone: true,
-        ..step("upkeep", Keep, World, "gc", "Removes replaced files from the NAS.", w_none)
+        ..step("upkeep", Keep, World, "gc", "Removes replaced files from the NAS.", w_gc)
     },
     Step {
         ..step(
@@ -1168,6 +1168,12 @@ fn w_none(_: &str, _: bool) -> bool {
     false
 }
 
+/// The clean-up's: it removes the names removed steps made (crate::agent::gc::RETIRED), and
+/// writes nothing.
+fn w_gc(l: &str, removal: bool) -> bool {
+    removal && crate::agent::gc::retired(l)
+}
+
 /// The pass's sources (`sources/osm/<date>/…`: its filtered planet, sets, outlines, extracts, road
 /// values, the mark that it's complete) and its basemap; as it completes, the older passes' entries
 /// removed (crate::osmpass::retire_older: their sources, items, heritage, summits, route ends).
@@ -1463,6 +1469,19 @@ fn w_prune(l: &str, removal: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// Task #701: no step makes a removed step's names (crate::agent::gc::RETIRED); the clean-up
+    /// removes them, and nothing else.
+    #[test]
+    fn no_step_makes_a_retired_name() {
+        for p in crate::agent::gc::RETIRED {
+            for l in [format!("{p}v1"), format!("{p}v3-max")] {
+                assert!(!made(&l), "{l}");
+                assert_eq!(writes("gc", &l, true), Some(true));
+            }
+        }
+        assert_eq!(writes("gc", "base/6-1-1", true), Some(false));
+    }
+
     use super::*;
     use crate::handoff::Handoff;
     use crate::pool::journal::{Entry, LeaseId};
