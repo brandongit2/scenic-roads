@@ -6,7 +6,7 @@
 // and the tints by itself (polarGlobeLayer reads them from the map each frame).
 
 import type { Map as MlMap } from 'maplibre-gl';
-import { packUrl, version } from './api';
+import { packUrl, packVersion, version } from './api';
 import { hostFor } from './hosts';
 import { polarLayerName, type Pole, type TileKind } from './polar';
 import { polarGlobeLayer, premultiplied, type Rgba } from './polarglobe';
@@ -74,6 +74,8 @@ export class PolarCaps {
         pole,
         maxZoom,
         url: (kind, z, x, y) => this.url(pole, kind, z, x, y),
+        // (A tile no pack holds, a block not built, isn't asked for: '' from meta's packs.)
+        stored: (z, x, y) => (['terrain', 'slope'] as TileKind[]).every((k) => packVersion(polarLayerName(k, pole), z, x, y) !== ''),
         land: () => this.premultiplied(this.look.land()),
         water: () => this.premultiplied(this.look.water() ?? this.look.land()),
         hillshade: 'hillshade',

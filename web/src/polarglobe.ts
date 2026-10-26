@@ -272,6 +272,8 @@ export type PolarGlobeOptions = {
   maxZoom: number;
   /** A tile's URL. */
   url: (kind: TileKind, z: number, x: number, y: number) => string;
+  /** Whether tile z/x/y may be stored (PolarTilesOptions.stored). */
+  stored?: (z: number, x: number, y: number) => boolean;
   /** The land's and the water's colours now (premultiplied). */
   land: () => Rgba;
   water: () => Rgba;
@@ -320,7 +322,7 @@ export function polarGlobeLayer(o: PolarGlobeOptions): CustomLayerInterface & { 
   let nIdx = 0;
   const { sign, lon0 } = poleParams(o.pole);
   const seam = Math.sin((MERCATOR_LAT * Math.PI) / 180);
-  const tiles = new PolarTiles({ pole: o.pole, maxZoom: o.maxZoom, url: o.url, onLoad: () => map?.triggerRepaint() });
+  const tiles = new PolarTiles({ pole: o.pole, maxZoom: o.maxZoom, url: o.url, stored: o.stored, onLoad: () => map?.triggerRepaint() });
   // Each tile's GL side: its mesh and textures.
   const gpu = new WeakMap<PolarTile, { vbo: WebGLBuffer; terrain: WebGLTexture; shade: WebGLTexture }>();
   const tints: { stops: WebGLTexture | null; colours: WebGLTexture | null; key: unknown; n: number }[] = [

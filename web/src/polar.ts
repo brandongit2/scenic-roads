@@ -60,7 +60,7 @@ export function inverse(p: Pole, x: number, y: number): [number, number] {
 }
 
 /** The grid distance from the pole (m) of latitude `lat`: roadcore::polar::rho. */
-export const rho = (p: Pole, lat: number) => rhoScale(p) * tOf((Math.abs(lat) * Math.PI) / 180);
+const rho = (p: Pole, lat: number) => rhoScale(p) * tOf((Math.abs(lat) * Math.PI) / 180);
 
 /** Longitude and latitude (degrees) to grid metres: roadcore::polar::forward. */
 export function forward(p: Pole, lon: number, lat: number): [number, number] {
@@ -154,6 +154,8 @@ export type PolarTilesOptions = {
   maxZoom: number;
   /** A tile's URL. */
   url: (kind: TileKind, z: number, x: number, y: number) => string;
+  /** Whether tile z/x/y may be stored (false: not asked for, as one that isn't); always without. */
+  stored?: (z: number, x: number, y: number) => boolean;
   /** Called when a tile has loaded (or failed). */
   onLoad: () => void;
 };
@@ -177,6 +179,12 @@ export class PolarTiles {
     if (!t) {
       const tt: PolarTile = { key, z, x, y, terrain: null, slope: null, failed: false, used: this.frame };
       t = tt;
+      this.tiles.set(key, t);
+      if (this.o.stored && !this.o.stored(z, x, y)) {
+        tt.failed = true;
+        t.used = this.frame;
+        return t;
+      }
       const gen = this.gen;
       const load = async (kind: TileKind) => {
         const r = await fetch(this.o.url(kind, z, x, y));
@@ -196,7 +204,6 @@ export class PolarTiles {
           this.o.onLoad();
         },
       );
-      this.tiles.set(key, t);
     }
     t.used = this.frame;
     return t;
