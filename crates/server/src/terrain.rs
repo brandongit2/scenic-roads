@@ -127,7 +127,17 @@ pub(crate) fn respond(got: Got, v: bool) -> Response {
 }
 
 /// The stored tile of `layer`, or the browser's copy when current; None when the layer lacks it.
-pub(crate) fn stored(s: &crate::AppState, layer: &str, z: u8, x: u32, y: u32, headers: &HeaderMap) -> Option<Got> {
+/// `tag` ends its ETag (the shading layers': their encoding, so a browser's copy of a tile from
+/// before it, as the pack still holds it, isn't answered 304).
+pub(crate) fn stored(
+    s: &crate::AppState,
+    layer: &str,
+    z: u8,
+    x: u32,
+    y: u32,
+    headers: &HeaderMap,
+    tag: &str,
+) -> Option<Got> {
     let h = match s.data.tile_hash(layer, z, x, y) {
         Ok(Some(h)) => h,
         Ok(None) => return None,
@@ -136,7 +146,7 @@ pub(crate) fn stored(s: &crate::AppState, layer: &str, z: u8, x: u32, y: u32, he
             return Some(Got::Failed);
         }
     };
-    let etag = format!("\"{h:016x}\"");
+    let etag = format!("\"{h:016x}{tag}\"");
     if etag_match(headers, &etag) {
         return Some(Got::Same(etag));
     }
@@ -195,7 +205,7 @@ pub async fn terrain_tile(
                 Ok(crate::depth::terrain_floor(&s, z, x, y)?.unwrap_or_else(flat))
             });
         }
-        match stored(&s, "terrain", z, x, y, &headers) {
+        match stored(&s, "terrain", z, x, y, &headers, "") {
             // (A deep tile that can't be read now: made from its ancestor, `terrain_f32`.)
             Some(Got::Failed) if deep_zoom(z) => {}
             Some(g) => return g,
@@ -217,6 +227,25 @@ fn is_shade(b: &[u8]) -> bool {
     b.starts_with(b"RIFF")
 }
 
+/// Says once per pack (and server run) that `layer`'s tile z/x/y is read as none: `why`, a pack
+/// from before the shading's encoding or a tile that won't decode. Every tile below it asks again,
+/// so per request it would be tens of thousands of lines.
+fn none_once(s: &crate::AppState, layer: &str, z: u8, x: u32, y: u32, why: &dyn std::fmt::Display) {
+    static SAID: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    let pack = s.data.pack_of(layer, z, x, y).unwrap_or_default();
+    if SAID.get_or_init(Default::default).lock().unwrap().insert(pack.clone()) {
+        eprintln!(
+            "{layer} {z}/{x}/{y}: read as none, flat or from an ancestor ({why}); the same in {pack} not said again"
+        );
+    }
+}
+
+/// Why a stored shading tile isn't shading: its first bytes.
+fn not_shade(b: &[u8]) -> String {
+    let kind = if b.starts_with(b"\x89PNG") { "a PNG" } else { "not WebP" };
+    format!("{kind}, not {}: a pack from before it, until its step is rebuilt", pipeline::shade_codec::ENCODING)
+}
+
 /// A shading tile's pixels made from its nearest stored ancestor in `layer` (up to eight levels
 /// up: the terrain's reach, roadcore::grid::tile_with_fallback_by), scaled up
 /// (roadcore::shade::upsampled), encoded as stored; None with none. A deep tile's ancestor that
@@ -226,12 +255,23 @@ pub fn shade_from_ancestor(s: &crate::AppState, layer: &str, z: u8, x: u32, y: u
         let (pz, px, py) = (z - dz, x >> dz, y >> dz);
         let b = match s.data.tile(layer, pz, px, py) {
             Ok(Some((b, _))) if is_shade(b.bytes()) => b,
-            // Not stored, or a pack from before the shading's encoding (slope4-png): none.
-            Ok(_) => continue,
+            // A pack from before the shading's encoding (slope4-png): none.
+            Ok(Some((b, _))) => {
+                none_once(s, layer, pz, px, py, &not_shade(b.bytes()));
+                continue;
+            }
+            Ok(None) => continue,
             Err(_) if deep_zoom(pz) => continue,
             Err(e) => return Err(e),
         };
-        let p = roadcore::shade::decode(b.bytes())?;
+        // (One that won't decode: said once, and none, never a 503 for every tile under it.)
+        let p = match roadcore::shade::decode(b.bytes()) {
+            Ok(p) => p,
+            Err(e) => {
+                none_once(s, layer, pz, px, py, &format!("undecodable: {e:#}"));
+                continue;
+            }
+        };
         return Ok(Some(pipeline::shade_codec::encode(&roadcore::shade::upsampled(&p, dz, x, y))?));
     }
     Ok(None)
@@ -254,8 +294,8 @@ pub async fn shade_tile(
         || FLAT_SHADE.get_or_init(|| pipeline::shade_codec::encode(&vec![Default::default(); 65536]).unwrap()).clone();
     let cache = if layer == "slope" { &SHADE } else { &DEPTH_SHADE };
     let got = tokio::task::spawn_blocking(move || {
-        match stored(&s, layer, z, x, y, &headers) {
-            Some(Got::Stored(b, _)) if !is_shade(&b) => {}
+        match stored(&s, layer, z, x, y, &headers, &format!("-{}", pipeline::shade_codec::ENCODING)) {
+            Some(Got::Stored(b, _)) if !is_shade(&b) => none_once(&s, layer, z, x, y, &not_shade(&b)),
             Some(Got::Failed) if deep_zoom(z) => {}
             Some(g) => return g,
             None => {}
@@ -303,8 +343,9 @@ async fn polar_tile(
     let Some(pole) = roadcore::polar::Pole::of_letter(pole) else { return StatusCode::NOT_FOUND.into_response() };
     let v = versioned(q.as_deref());
     let layer = pipeline::polar::layer(kind, pole);
-    let got =
-        tokio::task::spawn_blocking(move || stored(&s, &layer, z, x, y, &headers)).await.unwrap_or(Some(Got::Failed));
+    let got = tokio::task::spawn_blocking(move || stored(&s, &layer, z, x, y, &headers, ""))
+        .await
+        .unwrap_or(Some(Got::Failed));
     match got {
         Some(g) => respond(g, v),
         None => StatusCode::NOT_FOUND.into_response(),
@@ -468,7 +509,8 @@ mod tests {
         };
         let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\x01\0\0\0\x01\0\x08\x06\0\0\0".to_vec();
         let webp = pipeline::shade_codec::encode(&vec![roadcore::shade::Px { s: 30.0, u: [1.0, 0.0] }; 65536]).unwrap();
-        for (i, (y6, b)) in [(22u32, &webp), (23, &png)].into_iter().enumerate() {
+        let bad = b"RIFF\x10\0\0\0WEBPVP8L\x04\0\0\0junk".to_vec();
+        for (i, (y6, b)) in [(22u32, &webp), (23, &png), (24, &bad)].into_iter().enumerate() {
             let key = format!("6/18/{y6}");
             let logical = format!("layers/slope/hi/{}", key.replace('/', "-"));
             let file = format!("{logical}.000000000000000{i}.pack");
@@ -500,5 +542,20 @@ mod tests {
         assert_eq!(get(13, 18 << 7, 22 << 7).await, code(30.0), "from its stored ancestor");
         assert_eq!(get(12, 18 << 6, 23 << 6).await, flat, "a slope4-png tile: none");
         assert_eq!(get(13, 18 << 7, 23 << 7).await, flat, "below one: none");
+        assert_eq!(get(13, 18 << 7, 24 << 7).await, flat, "below an undecodable one: none, not 503");
+        // (Its ETag names the encoding: a browser's copy from a slope4-png pack, under the hash the
+        // pack still holds, isn't answered 304.)
+        let r = slope_tile(State(s.clone()), Path((12, 18 << 6, 22 << 6)), RawQuery(None), HeaderMap::new()).await;
+        let etag = r.headers()[header::ETAG].to_str().unwrap().to_string();
+        assert!(etag.ends_with("-shade-webp\""), "{etag}");
+        let mut h = HeaderMap::new();
+        let old = format!("{}\"", etag.trim_end_matches("-shade-webp\""));
+        h.insert(header::IF_NONE_MATCH, old.parse().unwrap());
+        let r = slope_tile(State(s.clone()), Path((12, 18 << 6, 22 << 6)), RawQuery(None), h).await;
+        assert_eq!(r.status(), StatusCode::OK, "an untagged ETag: the tile again");
+        let mut h = HeaderMap::new();
+        h.insert(header::IF_NONE_MATCH, etag.parse().unwrap());
+        let r = slope_tile(State(s.clone()), Path((12, 18 << 6, 22 << 6)), RawQuery(None), h).await;
+        assert_eq!(r.status(), StatusCode::NOT_MODIFIED);
     }
 }

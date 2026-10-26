@@ -444,7 +444,7 @@ impl Data {
     }
 
     /// The pack holding a tile of `layer`, by logical name.
-    fn pack_of(&self, layer: &str, z: u8, x: u32, y: u32) -> Option<String> {
+    pub(crate) fn pack_of(&self, layer: &str, z: u8, x: u32, y: u32) -> Option<String> {
         let cat = self.catalogue();
         let l = cat.layers.get(layer)?;
         let f = pipeline::terrain_deep::PACK_Z;

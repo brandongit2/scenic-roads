@@ -771,7 +771,12 @@ fn meta_json(s: &AppState) -> serde_json::Value {
         ("depth-shade.tiles", "depth-shade"),
     ] {
         if cat.layers.contains_key(layer) {
-            let v = s.data.layer_version(layer);
+            let mut v = s.data.layer_version(layer);
+            // (The shading layers' in the encoding served too: a browser's copy from a pack before it,
+            // cached for good under the same pack's version, is never reused, terrain::shade_tile.)
+            if layer == "slope" || layer == "depth-shade" {
+                v = format!("{v}-{}", pipeline::shade_codec::ENCODING);
+            }
             versions.insert(old.into(), if layer == "labels" { named(v) } else { serde_json::Value::from(v) });
         }
     }

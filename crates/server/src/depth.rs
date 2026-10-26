@@ -65,7 +65,7 @@ async fn tile(s: S, layer: &'static str, z: u8, x: u32, y: u32, q: Option<String
         if !s.data.catalogue().layers.contains_key(layer) {
             return None;
         }
-        if let Some(g) = crate::terrain::stored(&s, layer, z, x, y, &headers) {
+        if let Some(g) = crate::terrain::stored(&s, layer, z, x, y, &headers, "") {
             return Some(g);
         }
         let g = gen(&s);
