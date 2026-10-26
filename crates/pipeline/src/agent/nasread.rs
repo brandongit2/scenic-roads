@@ -520,13 +520,14 @@ pub fn watch(
 /// This process sampled by `sampler` for 10 s into `out`, off the watchdog's thread (waited for
 /// there, so it leaves no zombie). Its failure is logged, nothing more.
 fn sample_self(sampler: &Path, out: &Path) {
-    let child = std::process::Command::new(sampler)
-        .args([std::process::id().to_string(), "10".into(), "-mayDie".into(), "-file".into()])
-        .arg(out)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+    let child = store::spawn::spawn(
+        store::spawn::command(sampler)
+            .args([std::process::id().to_string(), "10".into(), "-mayDie".into(), "-file".into()])
+            .arg(out)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null()),
+    );
     match child {
         Ok(mut c) => {
             let out = out.to_path_buf();
