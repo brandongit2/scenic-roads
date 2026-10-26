@@ -532,6 +532,22 @@ fn helper_need(step: &str) -> u64 {
     }
 }
 
+/// Of the work a helper could ask for (`can`), what starts beside a running job (`try_start_said`):
+/// its need (`helper_need`) free past `held` (the owner's room target and the jobs' reservations),
+/// none made for it.
+fn room_beside(can: Vec<String>, free: u64, held: u64) -> Vec<String> {
+    can.into_iter().filter(|s| free >= held.saturating_add(helper_need(s))).collect()
+}
+
+/// A task's kind from its spec (`take_grant`'s `what`: "bldtile: z8 tile …", "tail …").
+fn task_kind(spec: &JobSpec) -> &str {
+    spec.what
+        .split_once(": ")
+        .map(|(k, _)| k)
+        .filter(|k| [crate::bld::task::KIND, crate::trees::task::KIND, crate::terrain_task::KIND].contains(k))
+        .unwrap_or("tail")
+}
+
 /// The work a helper asks for (the shared steps, and "tail", "bldtile", "treeblock" and "terrainsub" for tasks): what its disk has free for
 /// (a step's need and its margin), or can have, from the caches it may empty (`free` the disk's free
 /// bytes, `cheap` what `make_room` can delete there: room::helper_cheap_bytes). A job granted that
@@ -2258,6 +2274,26 @@ impl Agent {
                 }
             }
         }
+        // (Beside a running job no room is made and the owner's target holds (`try_start_said`):
+        // only the work the disk has room for now, past the target and the jobs' reservations;
+        // asked for regardless, each grant would be given back at once and offered again, #703.)
+        let floor = self.floor();
+        if floor > 0 && self.running_jobs() > 0 {
+            let (free, held) = (self.disk_free(), floor.saturating_add(self.reserved(None)));
+            can = room_beside(can, free, held);
+            if can.is_empty() {
+                waiting.push(Waiting {
+                    step: None,
+                    what: "Building".into(),
+                    why: format!(
+                        "no more work beside the jobs running: {} GB free, the disk room target and their reservations {} GB",
+                        free >> 30,
+                        held >> 30
+                    ),
+                });
+                return Vec::new();
+            }
+        }
         if can.is_empty() {
             let need = helper_need(crate::trees::task::KIND);
             let floor = self.floor();
@@ -2654,8 +2690,15 @@ impl Agent {
             let beside_waiting = (0..self.slots.len())
                 .find(|&j| j != k && self.waiting_on(j).is_some())
                 .and_then(|j| self.slots[j].running.as_ref().map(|r| r.spec.id.clone()));
+            let said = waiting.len();
             if self.try_start_said(k, spec, c, root, waiting) {
                 self.slots[k].yields = beside_waiting;
+            } else if self.slots[k].running.is_none() && self.slots[k].lease.is_some() {
+                // Not started: its lease given back with why (the lead's history says it).
+                let why =
+                    waiting.get(said..).and_then(|w| w.last()).map_or("it couldn't start here", |w| w.why.as_str());
+                let why = why.to_string();
+                self.end_lease(k, Outcome::Interrupted, &[], &why);
             }
         }
     }
@@ -5074,7 +5117,7 @@ impl Agent {
     /// member's its step's; else, beside another job, its measured disk; alone, none of its own.
     fn need_of(&self, k: usize, spec: &JobSpec) -> u64 {
         if self.o.helper {
-            helper_need(spec.record.as_ref().map_or("tail", |w| w.step.as_str()))
+            helper_need(spec.record.as_ref().map_or_else(|| task_kind(spec), |w| w.step.as_str()))
         } else {
             // (Beside another job: what it was measured to take on the disk. Alone in the first
             // slot: nothing past the target, the disk guard its backstop, so a
@@ -5191,8 +5234,7 @@ impl Agent {
         // (By measure, the first slot alone waits for the target, when room-making fell short of it: started
         // short of it, the disk guard would freeze it at once and give it back, and the next job
         // likewise, each kept from this Mac an hour.)
-        let held = true;
-        if !(k > 0 || other) && held && !self.o.helper && short && self.disk_free() < room {
+        if !(k > 0 || other) && !self.o.helper && short && self.disk_free() < room {
             waiting.push(Waiting { step: Some(step), what: what.clone(), why: self.floor_why(need) });
             return false;
         }
@@ -5252,7 +5294,7 @@ impl Agent {
             // between jobs (`tend_caches`).
             // The caches' others are then freed toward it between jobs (`tend_caches`, `goal`: the
             // least room a job held needs), and room-making tried again once that's done.
-            if held && !self.o.helper && self.disk_free() < room {
+            if !self.o.helper && self.disk_free() < room {
                 waiting.push(Waiting { step: Some(step), what: what.clone(), why: self.floor_why(need) });
                 self.floor_short = Some((
                     floor,
@@ -5261,7 +5303,7 @@ impl Agent {
                 ));
                 return false;
             }
-        } else if held && !self.o.helper && self.disk_free() < room {
+        } else if !self.o.helper && self.disk_free() < room {
             // (Without the NAS no room is made, nor while a freeing runs: it waits for it.)
             waiting.push(Waiting { step: Some(step), what: what.clone(), why: self.floor_why(need) });
             return false;
@@ -12062,6 +12104,39 @@ mod tests {
         assert_eq!(helper_steps(gb(70), 0, gb(60)), all(&["tail", "bldtile", "treeblock", "terrainsub"]));
         assert_eq!(helper_steps(gb(70), 0, gb(69)), all(&[]));
         assert!(helper_steps(gb(70), 0, gb(71)).is_empty());
+    }
+    /// Beside a running job (#703): only the work whose need is free now past the room target and
+    /// the jobs' reservations is asked for, so none is granted only to be given back. The M4, 35 GB
+    /// free, a 20 GB target and 12 GB reserved by its bldtiles jobs: tails and bldtiles (5 GB) not
+    /// asked for, treeblocks and terrainsubs (1 GB) and the shared steps (their own room granted) are.
+    #[test]
+    fn a_helper_asks_beside_its_jobs_only_for_what_starts() {
+        let gb = |n: u64| n << 30;
+        let all = |s: &[&str]| s.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let can = all(&["bldtiles", "tail", "bldtile", "treeblock", "terrainsub"]);
+        assert_eq!(room_beside(can.clone(), gb(35), gb(32)), all(&["bldtiles", "treeblock", "terrainsub"]));
+        assert_eq!(room_beside(can.clone(), gb(35), gb(20)), can);
+        assert_eq!(room_beside(can, gb(19), gb(20)), all(&[]));
+    }
+
+    /// A helper's task needs its kind's room, not a tail's whatever it is (#703: a terrainsub held
+    /// for 5 GB though asked for with 1 GB, given back).
+    #[test]
+    fn a_task_needs_its_kinds_room() {
+        let spec = |what: &str| JobSpec {
+            id: "task 3".into(),
+            what: what.into(),
+            cmd: Vec::new(),
+            needs: Needs { nas: true },
+            restart_after_sleep: false,
+            record: None,
+        };
+        let kinds: Vec<_> =
+            ["terrainsub: subtrees 8/1/2", "treeblock: blocks 3", "bldtile: z8 tile 8/4/5", "tail 6/1/1"]
+                .iter()
+                .map(|w| helper_need(task_kind(&spec(w))) >> 30)
+                .collect();
+        assert_eq!(kinds, [1, 1, 5, 5]);
     }
 
     #[test]

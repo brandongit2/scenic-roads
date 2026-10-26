@@ -28,7 +28,7 @@ pub struct Event {
     #[serde(default)]
     pub t: u64,
     /// What: "start" and "end" (a lead's job), "lease", "done", "fail" and "lapse" (a worker's
-    /// job), "task" and "task-fail",
+    /// job), "task", "task-fail" and "task-back" (a task given back unfinished, not failed),
     /// "catalog" (a catalog written: its `n`, its job's time and its crate::pubtimes::CatalogStats),
     /// "merged" (journal entries merged: their keys), "planned" (map tiles first
     /// planned: crate::pubtimes::planned_event), "pause" and "resume", "worker" (first heard from), "device" (a device's ask to
@@ -228,7 +228,7 @@ impl History {
                         spans.push((w, t0, e.t));
                     }
                 }
-                "task" | "task-fail" => {
+                "task" | "task-fail" | "task-back" => {
                     if let Some(s) = e.secs {
                         spans.push((w.clone(), e.t.saturating_sub(s as u64), e.t));
                     }

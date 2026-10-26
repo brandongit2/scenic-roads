@@ -4039,19 +4039,25 @@ fn route(
                     targets: targets.iter().map(|t| t.0.clone()).collect(),
                     ..history::Event::new("fail")
                 },
-                Work::Task { .. } => history::Event { step: Some(kind.clone()), ..history::Event::new("task-fail") },
+                // (A task given back, not failed: "task-back", #703.)
+                Work::Task { .. } => history::Event {
+                    step: Some(kind.clone()),
+                    ..history::Event::new(if f.interrupted { "task-back" } else { "task-fail" })
+                },
             };
             let note = if f.interrupted { format!("stopped: {why}") } else { why.clone() };
+            let back = e.kind == "task-back";
             s.history.add(history::Event {
                 worker: Some(f.worker.clone()),
                 lease: Some(f.lease),
                 secs: Some(now.duration_since(l.granted).as_secs_f64().round()),
-                ok: Some(false),
-                note,
+                ok: (!back).then_some(false),
+                note: if back { why.clone() } else { note },
                 ..e
             });
-            s.seen(&f.worker, format!("failed {}: {why}", l.what()), None, now);
-            eprintln!("coordinator: {} failed {}: {why}", f.worker, l.what());
+            let how = if f.interrupted { "gave back" } else { "failed" };
+            s.seen(&f.worker, format!("{how} {}: {why}", l.what()), None, now);
+            eprintln!("coordinator: {} {how} {}: {why}", f.worker, l.what());
             Ok((200, ok))
         }
         "/work/status" => {
@@ -9798,6 +9804,51 @@ mod tests {
         assert_eq!(get(&format!("{base}/nas/sources/canopy/none.tif?probe"), "ipad", None).0, 404);
         assert_eq!(get(&format!("{base}/nas/sources/canopy/sq.tif?probe"), "phone", None).0, 410);
         assert_eq!(get(&format!("{base}/web/example.com/x.tif?probe"), "ipad", None).0, 403);
+    }
+
+    /// A task given back (it couldn't start on the worker, #703) is "task-back" in the history, its
+    /// why the note and no `ok: false`; one that failed stays "task-fail".
+    #[test]
+    fn a_task_given_back_is_not_a_failure() {
+        let (d, c, w) = start();
+        let root = d.path().join("job");
+        std::fs::create_dir_all(&root).unwrap();
+        let job = client::Client::at(w.urls().to_vec(), c.job_token.clone(), "job");
+        let offer = task::Offer {
+            owner: 42,
+            kind: "tail".into(),
+            spec: serde_json::json!({ "unit": "6/1/1" }),
+            root,
+            inputs: Default::default(),
+            mem_mb: 800,
+            ahead: None,
+        };
+        job.post_json("/task/offer", &serde_json::to_value(&offer).unwrap()).unwrap();
+        let ask = Ask {
+            worker: "m1".into(),
+            kind: "native".into(),
+            can: vec!["tail".into()],
+            mem_mb: 4000,
+            cores: 4,
+            ..Default::default()
+        };
+        let g = w.ask(&ask).unwrap().unwrap();
+        w.give_back(g.lease, "needs 25 GB free on the disk").unwrap();
+        let g = w.ask(&ask).unwrap().unwrap();
+        w.fail(g.lease, "exit status: 1", None).unwrap();
+        let ends: Vec<_> = c
+            .history_since(0)
+            .into_iter()
+            .filter(|e| e.kind.starts_with("task-"))
+            .map(|e| (e.kind, e.ok, e.note))
+            .collect();
+        assert_eq!(
+            ends,
+            [
+                ("task-back".to_string(), None, "needs 25 GB free on the disk".to_string()),
+                ("task-fail".to_string(), Some(false), "exit status: 1".to_string()),
+            ]
+        );
     }
 
     #[test]

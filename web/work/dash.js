@@ -1434,6 +1434,7 @@ function eventText(m, e, k = 1) {
     case "lapse": return [`${who} went quiet: its lease on ${e.note || what} lapsed and the work is offered again`, "warn"];
     case "task": return [k > 1 ? `${who} did ${plural(k, "task")}` : `${who} did a task${t[0] ? ` (${t[0]})` : ""} in ${dur(e.secs || 0)}`, "dim"];
     // (Given back, not failed: the page reloaded or closed, or emptied in the background.)
+    case "task-back": return [`${who}: a task given back (${e.note})`, "warn"];
     case "task-fail": return /^stopped:/.test(e.note || "") ? [`${who}: a task given back (${e.note.replace(/^stopped:\s*/, "")})`, "warn"] : [`${who}: a task failed: ${e.note}`, "bad"];
     case "catalog": return [t.length ? `The map got ${t.length > 3 ? `${t.length} regions` : t.map(nm).join(", ")}` : "The map was updated", "ok"];
     case "pause": return [`The build was paused by ${e.note}`, "warn"];
