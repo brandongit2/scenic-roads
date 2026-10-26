@@ -85,6 +85,7 @@ const FROM_ARG: &[(&str, &str)] = &[
     ("crates/pipeline/src/bin/scenic.rs", "main"),
     ("crates/pipeline/src/bin/scenic-build.rs", "step_main"),
     ("crates/pipeline/src/bin/scenic-build.rs", "unit_step"),
+    ("crates/pipeline/src/bin/scenic-polar.rs", "main"),
     ("crates/server/src/main.rs", "main"),
     ("crates/server/src/data.rs", "find_nas"),
     ("crates/pipeline/examples/checklist.rs", "main"),
