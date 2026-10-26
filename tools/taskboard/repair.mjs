@@ -103,7 +103,7 @@ export function repair(store) {
       if (d[k] === undefined) continue;
       const t = toTime(d[k]);
       if (t === null) { delete d[k]; was("time unreadable, removed", k, null); }
-      else if (t !== d[k]) { d[k] = t; if (k !== "added" || typeof d0[k] !== "string" || !normTime(d0[k])) was("time converted", k, t); else was("time written in the one format", k, t); }
+      else if (t !== d[k]) { d[k] = t; was(typeof d0[k] === "string" && normTime(d0[k]) ? "time written in the one format" : "time converted", k, t); }
     }
     if (d.archivedAt !== undefined && d.archived !== true) { delete d.archivedAt; was("archivedAt without archived, removed", "archivedAt", null); }
     fixedItems.set(id, d);
