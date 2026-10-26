@@ -41,7 +41,8 @@ Run `tools/dev/check.sh` in your worktree after your last commit, and report onl
 PASS. It runs what publish would refuse your work on: `cargo fmt --check`, publish's clippy line
 (`-D clippy::disallowed_methods`: processes only through `store::spawn`), `tools/app/guards.sh`,
 `tools/app/wasm.sh` when a crate the wasm build compiles changed (an unguarded `crate::net` fails
-there), the web typecheck and build when web/ changed, `tools/app/test/shell.zsh` (publish.sh's shell
+there), the web typecheck and build when web/ changed, `node --test` of tools/taskboard/test when
+tools/taskboard changed (#672), `tools/app/test/shell.zsh` (publish.sh's shell
 steps in `tools/app/lib.zsh`, tested in a scratch folder) when tools/app changed, the Swift build when tools/status changed,
 the tests `affected-tests.sh` prints, and pyflakes and unittest when producers/ or dem/ Python
 changed. One PASS/FAIL line per part; whole outputs in ~/Library/Logs/scenic/check-<time>/. A pass

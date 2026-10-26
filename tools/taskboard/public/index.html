@@ -162,6 +162,8 @@
   .sep { width: 1px; height: 16px; background: var(--line-strong); margin: 0 2px; }
   .tabs { display: none; }
   .banner { margin: 0; padding: 5px 10px; border-radius: 6px; background: var(--st-int-bg); color: var(--st-int-fg); font-size: 12px; }
+  #bad summary { cursor: pointer; }
+  #bad ul { margin: 6px 0 2px; padding-left: 16px; max-height: 14em; overflow: auto; font: 11px/1.5 var(--mono, monospace); }
   .ghost-btn.hist { display: inline-flex; align-items: center; gap: 4px; }
   .ghost-btn svg { width: 13px; height: 13px; }
   .ghost-btn.hist[aria-expanded="true"] { background: var(--line); color: var(--fg); }
@@ -466,6 +468,7 @@
       <div class="chips" id="chips" role="group" aria-label="Filters"></div>
     </div>
     <p class="banner" id="banner" role="status" hidden></p>
+    <details class="banner" id="bad" hidden><summary id="bad-sum"></summary><ul id="bad-list"></ul></details>
     <div class="tabs" role="tablist" aria-label="Panes">
       <button class="tab" type="button" role="tab" id="tab-tree" aria-controls="pane-tree" aria-selected="true">Tree</button>
       <button class="tab" type="button" role="tab" id="tab-prio" aria-controls="pane-prio" aria-selected="false" tabindex="-1">Priorities</button>
@@ -488,7 +491,6 @@
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 <div class="viewer" id="viewer" hidden><img id="viewer-img" alt=""><button class="btn" type="button" id="viewer-close">Close</button></div>
 <div class="ghost" id="ghost" aria-hidden="true" hidden></div>
-<datalist id="where-list"></datalist>
 
 <script>
 (() => {
@@ -574,7 +576,6 @@
   // The order numbers are given in: when it was added (those from before `added` existed first),
   // then id.
   const byAdded = (a, b) => (ms(a.added) ?? -Infinity) - (ms(b.added) ?? -Infinity) || natCmp(a.id, b.id);
-  const highestNum = (docs) => { let m = 0; for (const d of docs.values()) if (d && validNum(d.num) && d.num > m) m = d.num; return m; };
 
   // ---------------------------------------------------------------------------------------------
   // Stages, filters, the model.
@@ -595,7 +596,32 @@
       default: return "";
     }
   }
-  const TYPICAL_WHERE = ["Subagent", "Sonnet subagent", "Haiku subagent", "Me", "You", "Build Mac process"];
+  // The schema the server enforces (schema.mjs, served beside the page): the lists the editor offers, and
+  // what a stored record is checked against. Without it (not loaded yet) nothing is checked.
+  let schema = null;
+  let WHERES = [];
+  // Records that don't fit it are shown, not dropped: a banner counts them, and lists why. (Old data
+  // may have some; the server lets none in.)
+  function checkRaw() {
+    const bad = [];
+    if (schema && S.loaded.items) {
+      const say = (col, id, errs) => { for (const e of errs) bad.push(`${col}/${id}: ${schema.errorText([e])}`); };
+      for (const [id, d] of S.raw.items) {
+        say("items", id, schema.itemErrors(d));
+        if (typeof d.parent === "string" && d.parent && !S.raw.items.has(d.parent)) say("items", id, [{ field: "parent", message: `item ${d.parent} doesn't exist` }]);
+      }
+      for (const [id, d] of S.raw.events) {
+        say("events", id, schema.eventErrors(d));
+        if (typeof d.item === "string" && d.item && S.loaded.items && !S.raw.items.has(d.item)) say("events", id, [{ field: "item", message: `item ${d.item} doesn't exist` }]);
+      }
+    }
+    if (S.unread.events) bad.push(`events: the ${S.unread.events} oldest weren't loaded (the page reads the newest 10000)`);
+    if (same(bad, S.bad)) return;
+    S.bad = bad;
+    $("bad").hidden = !bad.length;
+    $("bad-sum").textContent = `${bad.length} thing${bad.length === 1 ? "" : "s"} the page can't show as it should: records that don't fit the board's schema (the server accepts no more; repair.mjs fixes old ones).`;
+    $("bad-list").replaceChildren(...bad.slice(0, 200).map((t) => h("li", null, t)), ...(bad.length > 200 ? [h("li", null, `… and ${bad.length - 200} more`)] : []));
+  }
   const TASK_FIELDS = ["priority", "slot", "where", "stage", "discuss", "started", "finished", "reply"];
   const FILTERS = [
     { key: "working", label: "Under way", sw: "var(--st-work-fg)", test: (t) => stageOf(t) === "working" },
@@ -629,6 +655,8 @@
     draft: null, // {kind, parent, text}: a new item whose title is being typed
     dragging: false,
     needRender: false,
+    bad: [], // the records that don't fit the schema (checkRaw)
+    unread: { events: 0 }, // events the server has beyond the newest 10000 asked for
     synced: false, // (the items' latest snapshot is the server's, not a cached one)
     stuck: false, // (a write unanswered for a minute: changes paused)
     down: false, // (the items' subscription failed: retrying)
@@ -818,10 +846,9 @@
   // since.)
   const keyOf = (o) => o.col + "/" + o.id;
   const changed = (a, b) => [...new Set([...Object.keys(a || {}), ...Object.keys(b || {})])].filter((k) => !same(a?.[k], b?.[k]));
-  // The fields an op writes: all of a doc it creates, else those it changes; but never a number
-  // taken away (a task keeps its number for good: one turned into a folder keeps it, unshown, and
-  // no undo clears one).
-  const opKeys = (op) => (op.before === null ? Object.keys(op.after) : changed(op.before, op.after)).filter((k) => k !== "num" || validNum(op.after?.num));
+  // The fields an op writes: all of a doc it creates, else those it changes (never a number: a task
+  // keeps its number for good, one turned into a folder keeps it, unshown, and the server alone gives them).
+  const opKeys = (op) => (op.before === null ? Object.keys(op.after) : changed(op.before, op.after)).filter((k) => k !== "num");
   // An op's layer: the fields it changes (a field that goes: null), a doc it creates, or a delete.
   function layerOf(op, tok) {
     if (op.after === null) return { tok, op: "del" };
@@ -844,20 +871,20 @@
   function writeOne(op) {
     const ref = S.db.collection(op.col).doc(op.id);
     if (op.after === null) return ref.delete();
-    // (A doc to create, or to recreate: set only while it's absent; one that's there is updated.)
-    if (op.before === null && !S.raw[op.col].has(op.id)) return ref.set(op.after);
+    // (A doc that was deleted, to put back: the server keeps what it deleted for a while.)
+    if (op.before === null && !S.raw[op.col].has(op.id)) return ref.restore();
     const ks = opKeys(op);
     if (!ks.length) return Promise.resolve();
     const patch = {};
     for (const k of ks) patch[k] = k in op.after ? op.after[k] : null;
     return ref.update(patch).catch((e) => {
       // (Deleted meanwhile, by Claude or another tab: nothing to change.)
-      if (e?.code === "invalid_argument" && !S.raw[op.col].has(op.id)) return;
+      if (e?.code === "not_found" && !S.raw[op.col].has(op.id)) return;
       throw e;
     });
   }
   // Refusals that won't pass by waiting: not tried again.
-  const FINAL = new Set(["invalid_argument", "quota_exceeded", "revoked", "not_granted", "capability_disabled", "capability_removed", "transform_error"]);
+  const FINAL = new Set(["invalid_argument", "not_found", "forbidden", "conflict", "quota_exceeded", "revoked", "not_granted", "capability_disabled", "capability_removed", "transform_error"]);
   let slowCalls = 0;
   let readBack = false; // (the last slow write was found landed by reading the doc)
   const stuck = new Set(); // ops whose call hasn't answered for a minute
@@ -974,18 +1001,24 @@
     writing = true;
     const a = Q[0];
     await write(a);
+    a.madeRes?.(null);
     Q.shift();
     writing = false;
     if (a.error) failed(a);
     else { release(a.ops, a.tok); render("data"); }
     pump();
   }
-  // An action's writes; if one fails for good, the rest stop, and what landed is put back. (A task
-  // it makes gets its number first.)
+  // An action's writes; if one fails for good, the rest stop, and what landed is put back. (What it
+  // makes is POSTed first, in order: the server gives each its id.)
   async function write(a) {
-    try { await numberOps(a); } catch (e) { console.warn("backlog: numbering", e); } // (never stalls the queue)
-    await Promise.all(a.ops.map((o, i) => inTurn(keyOf(o), () => lane(() => (a.error ? Promise.resolve("skip") : persist(o))).then(
-      (r) => { a.state[i] = r === "skip" ? "skipped" : "landed"; },
+    const made = new Set();
+    try { await createOps(a, made); } catch (e) { a.error = e; }
+    await Promise.all(a.ops.map((o, i) => inTurn(keyOf(o), () => lane(() => (made.has(o) ? Promise.resolve("made") : a.error ? Promise.resolve("skip") : persist(o))).then(
+      (r) => {
+        a.state[i] = r === "skip" ? "skipped" : "landed";
+        // (A folder made a task: the server's reply says its number.)
+        if (a.renum && r && typeof r.num === "number") relabel(a, a.renum(r.num));
+      },
       (e) => { a.state[i] = "failed"; a.error = a.error || e; },
     ))));
     if (!a.error) return;
@@ -1047,151 +1080,36 @@
     ] });
   }
   // ---------------------------------------------------------------------------------------------
-  // Numbers. Every task has one, `num`: 1, 2, 3…, never two tasks the same (archived and done ones
-  // count), never one given twice (a deleted task's stays retired). Folders have none (one that was
-  // a task keeps its number, unshown, and shows it again if it turns back into a task). The
-  // high-water mark is the doc meta/counter, {next}. A number is taken under a short lease on that
-  // doc, so this page's tabs never take one at once: read the counter; n = the larger of its `next`
-  // and one past the highest number any item has; set the counter to n + 1 (a value, never an
-  // increment, so a write that goes twice does no harm), and only then give n out. Claude writes
-  // the counter and its task in one batch pinned to the counter's version, so its own numbers never
-  // clash; a page and Claude taking one in the same moment still could, and the repair below
-  // parts them.
-  const TAB = "tab-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
-  const LEASE_MS = 2000;
-  const NO_LEASE = new Set(["capability_removed", "capability_disabled", "not_granted", "transform_error"]);
-  const timed = (p, n = 12000) => Promise.race([p, sleep(n).then(() => { throw { code: "timeout", message: "no answer" }; })]);
-  // A read or write tried again after 1 and 2 s on a refusal that can pass (not on a timeout: that
-  // write may still land, and one doc takes one write at a time).
-  async function again(fn) {
-    for (let i = 0; ; i++) {
-      try { return await timed(fn()); }
-      catch (e) { if (!e?.code || FINAL.has(e.code) || e.code === "timeout" || i >= 2) throw e; }
-      await sleep(1000 * 2 ** i * (0.8 + Math.random() * 0.4));
+  // Numbers. Every task has one, `num`: the server gives it (a new task's, in its reply to the POST
+  // that makes it; a folder made a task's, in the reply to that edit), so no two share one and a
+  // deleted task's is never given again. Folders have none (one that was a task keeps its number,
+  // unshown, and shows it again if it turns back into a task).
+  // A task, folder or event this page makes is POSTed (the server gives it its id, and a task its
+  // num, order and added time): while it's written the page shows it under a stand-in id.
+  let standIn = 0;
+  const tmpId = () => "~new" + ++standIn;
+  // An op making a doc: `create` is what the server is sent; `after` what shows meanwhile.
+  const makeOp = (col, create, local = {}) => ({ col, id: tmpId(), before: null, after: { ...create, ...local }, create });
+  // The ops that make docs, written (one POST each, never tried again: one that landed would make
+  // a second); each op then names the doc it made. Returns the ops done.
+  async function createOps(a, made) {
+    const ids = new Map(); // stand-in id → the server's
+    for (const o of a.ops) {
+      if (!o.create) continue;
+      const body = Object.assign({}, o.create, o.create.item && ids.has(o.create.item) ? { item: ids.get(o.create.item) } : {});
+      const r = await S.db.collection(o.col).add(body);
+      release([o], a.tok);
+      ids.set(o.id, r.id);
+      const { id, ...own } = r;
+      Object.assign(o, { id, after: Object.assign({}, o.after, body, own), create: null });
+      lay([o], a.tok);
+      made.add(o);
+      if (o.col === "items" && a.madeRes) { a.madeRes(id); a.madeRes = null; }
+      if (a.renum && typeof r.num === "number") relabel(a, a.renum(r.num));
+      render("data");
     }
-  }
-  // `fn(ref, lost)` with numbering to itself: one at a time in this tab, and across tabs under the
-  // lease (renewed while `fn` runs; `lost()` says it lapsed all the same). Busy: wait till the
-  // lease lapses, read again, try again. Where the platform has no leases, without one.
-  let numTurn = Promise.resolve();
-  function leased(fn) {
-    const p = numTurn.then(() => lease(fn));
-    numTurn = p.catch(() => {});
-    return p;
-  }
-  async function lease(fn) {
-    const ref = S.db.doc("meta/counter");
-    let held = false;
-    if (typeof ref.acquire === "function") {
-      // (Busy for over 10 s, as while another tab numbers a hundred tasks: given up for now; a new
-      // task then goes without its number for a moment, and the repair gives it one.)
-      for (const t0 = Date.now(); !held;) {
-        let r;
-        try { r = await again(() => ref.acquire({ holder: TAB, ttlMs: LEASE_MS })); }
-        catch (e) { if (NO_LEASE.has(e?.code)) break; throw e; }
-        if (r && r.acquired) held = true;
-        else if (Date.now() - t0 > 10000) throw { code: "busy", message: "the counter stayed busy" };
-        else await sleep(Math.min(LEASE_MS + 1000, Math.max(150, (ms(r?.expiresAt) ?? Date.now() + 500) - Date.now())) + Math.random() * 200);
-      }
-    }
-    let lost = false;
-    const renew = held ? setInterval(() => timed(ref.acquire({ holder: TAB, ttlMs: LEASE_MS })).then((r) => { if (!r?.acquired) lost = true; }, () => {}), LEASE_MS / 3) : 0;
-    try { return await fn(ref, () => lost); }
-    finally { clearInterval(renew); }
-  }
-  // `k` numbers in a row, the counter moved past them first: [n, n + 1, …]. `floor()`: one past the
-  // highest number the page knows of.
-  async function reserve(ref, lost, k, floor) {
-    let snap = null;
-    for (let i = 0; i < 3; i++) {
-      snap = await again(() => ref.get());
-      if (!snap.metadata?.fromCache) break; // (a cached read isn't the server's: once more)
-      await sleep(400);
-    }
-    const d = snap.exists ? snap.data() || {} : null;
-    const n = Math.max(d && validNum(d.next) ? d.next : 1, floor());
-    if (lost()) throw { code: "lost", message: "the lease lapsed" };
-    try { await again(() => (d ? ref.update({ next: n + k }) : ref.set({ next: n + k }))); }
-    catch (e) { if (e?.code !== "timeout") throw e; } // (no answer yet: the numbers stay good, as the tasks carrying them keep the next ones above them)
-    return Array.from({ length: k }, (_, i) => n + i);
-  }
-  async function numbered(k, floor) {
-    for (let tries = 0; ; tries++) {
-      try { return await leased((ref, lost) => reserve(ref, lost, k, floor)); }
-      catch (e) { if (e?.code !== "lost" || tries >= 2) throw e; }
-    }
-  }
-  // An action's new tasks (made, back from a delete without one, or a folder turned task) get their
-  // numbers before it writes them. When none can be had (the counter out of reach), the task goes
-  // without, and the repair numbers it later.
-  const wantsNum = (o) => o.col === "items" && !!o.after && o.after.kind === "task" && !validNum(o.after.num) && (o.before === null || o.before.kind === "folder");
-  async function numberOps(a) {
-    const need = a.ops.filter(wantsNum);
-    if (!need.length) return;
-    let nums = null;
-    try { nums = await numbered(need.length, () => 1 + highestNum(merged("items"))); }
-    catch (e) { console.warn("backlog: no number for now", e); }
-    if (!nums) return;
-    need.forEach((o, i) => {
-      o.after = Object.assign({}, o.after, { num: nums[i] });
-      const l = (S.overlay.get(keyOf(o)) || []).find((x) => x.tok === a.tok);
-      if (l) l.body = l.op === "set" ? o.after : Object.assign({}, l.body, { num: nums[i] });
-    });
-    if (a.renum) relabel(a, a.renum(nums[0]));
-    render("data");
   }
 
-  // The repair, in the owner's view, once it has the server's latest items: a task without a number
-  // (made by an older page, or written without one), or with one a task added before it has, gets
-  // a new one, in the order they were added, under the same lease, one write per task (paced as
-  // every write is). It reads the items afresh under the lease (another tab may have just numbered
-  // them) and leaves alone a task this page is still writing. Normally there's nothing to do.
-  function unnumbered(items) {
-    const parents = new Set();
-    for (const d of items.values()) if (d && typeof d.parent === "string" && d.parent) parents.add(d.parent);
-    const tasks = [];
-    for (const [id, d] of items) if (d && (d.kind === "task" || (d.kind !== "folder" && !d.group && !parents.has(id)))) tasks.push({ id, added: d.added, num: d.num });
-    tasks.sort(byAdded);
-    const seen = new Set(), out = [];
-    for (const t of tasks) { if (validNum(t.num) && !seen.has(t.num)) seen.add(t.num); else out.push(t.id); }
-    return out;
-  }
-  let repairT = 0, repairing = false;
-  function repairSoon(wait = 1500) { clearTimeout(repairT); repairT = setTimeout(repair, wait); }
-  async function repair() {
-    if (repairing || !canWrite() || !S.loaded.items || !unnumbered(S.raw.items).length) return;
-    if (Q.length || S.dragging) return repairSoon(); // (once the page's own changes are written)
-    repairing = true;
-    try {
-      await leased(async (ref, lost) => {
-        const snap = await again(() => S.db.collection("items").limit(1000).get());
-        if (snap.metadata?.fromCache) return repairSoon(15000); // (not the server's: later)
-        const items = new Map(snap.docs.map((d) => [d.id, d.data() || {}]));
-        const ids = unnumbered(items).filter((id) => !S.overlay.has("items/" + id));
-        if (!ids.length) return;
-        const nums = await reserve(ref, lost, ids.length, () => 1 + Math.max(highestNum(items), highestNum(merged("items"))));
-        // (The lease is kept till they're written, so another tab's repair, reading afresh after
-        // it, finds them numbered.)
-        const r = await Promise.allSettled(ids.map((id, i) => renumber(id, items.get(id).num, nums[i])));
-        if (r.some((x) => x.status === "rejected")) console.warn("backlog: some numbers weren't written", r.filter((x) => x.status === "rejected").map((x) => x.reason));
-      });
-    } catch (e) {
-      console.warn("backlog: the numbers' repair stopped", e);
-    } finally {
-      repairing = false;
-    }
-  }
-  async function renumber(id, old, n) {
-    const op = { col: "items", id, before: { num: old ?? null }, after: { num: n } };
-    const t = ++tok;
-    lay([op], t);
-    render("data");
-    try { await inTurn(keyOf(op), () => lane(() => persist(op))); }
-    catch (e) { if (e?.code !== "invalid_argument") throw e; } // (deleted meanwhile)
-    finally { release([op], t); render("data"); }
-  }
-
-  const newId = (col) => S.db.collection(col).doc().id;
   // An op changing `fields` of an item (null clears one; no field is ever removed).
   function edit(id, fields) {
     const before = data("items", id);
@@ -1200,7 +1118,7 @@
     for (const k in fields) if (fields[k] === undefined) after[k] = null;
     return { col: "items", id, before, after };
   }
-  const evOp = (item, text) => ({ col: "events", id: newId("events"), before: null, after: { item, t: nowIso(), text, kind: "owner" } });
+  const evOp = (item, text) => makeOp("events", { item, kind: "owner", text }, { t: nowIso() });
   const patch = (id, fields) => commit([edit(id, fields)]);
 
   // ---------------------------------------------------------------------------------------------
@@ -1830,11 +1748,11 @@
       parts.push(f.reply);
       f.stage = h("select", { class: "inp", id: "ed-stage" }, Object.entries(STAGES).map(([v, l]) => h("option", { value: v }, l)));
       f.prio = h("input", { class: "inp num", id: "ed-prio", type: "text", inputmode: "decimal", autocomplete: "off", placeholder: "none", maxlength: "12" });
-      f.where = h("input", { class: "inp", id: "ed-where", type: "text", list: "where-list", autocomplete: "off", placeholder: "Subagent", maxlength: "200" });
+      f.where = h("select", { class: "inp", id: "ed-where" }, WHERES.map((w) => h("option", { value: w }, w || "(nobody)")));
       f.disc = h("button", { class: "toggle", id: "ed-disc", type: "button", "aria-pressed": "false" }, icon("bubble"), "Needs discussion");
       f.stage.disabled = ro;
       f.prio.readOnly = ro;
-      f.where.readOnly = ro;
+      f.where.disabled = ro;
       f.disc.disabled = ro;
       const base = "1 is next; equal numbers go together; 2.5 slots in between 2 and 3.";
       f.prioHint = h("p", { class: "hint", "data-hint-for": "ed-prio", "data-base": ro ? "" : base }, ro ? "" : base);
@@ -1849,7 +1767,7 @@
         hint(f.prio, ok === false ? "A priority is a number from 1 up, or blank for none." : "");
         if (ok === false) return false;
       });
-      bindField(f.where, (t, v) => { const w = v.trim() || "Subagent"; if (w !== (t.where ?? "")) patch(t.id, { where: w }); f.where.value = w; });
+      bindField(f.where, (t, v) => { if (v !== (t.where ?? "")) patch(t.id, { where: v }); });
       f.disc.addEventListener("click", () => { const t = edItem(); if (t && canEdit()) patch(t.id, { discuss: !t.discuss }); });
     } else {
       f.stats = h("div", { class: "stats" });
@@ -1907,6 +1825,7 @@
     } else {
       setVal(f.stage, stageOf(it));
       setVal(f.prio, isNum(it.priority) ? String(it.priority) : "");
+      if (it.where && ![...f.where.options].some((o) => o.value === it.where)) f.where.append(h("option", { value: it.where }, `${it.where} (not in the list)`));
       setVal(f.where, String(it.where ?? ""));
       f.disc.setAttribute("aria-pressed", String(!!it.discuss));
       f.reply.replaceChildren(...(it.reply ? [h("h3", { class: "sec-h" }, "Claude's note"), h("div", { class: "reply" }, rich(it.reply))] : []));
@@ -2181,25 +2100,28 @@
     }
     if (S.draft === d) S.draft = null;
     if (!text) { render(); return; }
-    const id = newId("items");
-    createWith(id, d.kind, d.parent, text);
-    // The new item is selected with its details open, so its description, priority and the rest can be
-    // filled in right away: focus goes to the description (the title is already typed).
-    S.fresh = { id, until: Date.now() + 2000 };
-    setTimeout(() => render(), 2100); // (a still-missing item is then deselected)
-    select(id, { open: true });
-    rowEl("tree", id)?.scrollIntoView({ block: "nearest" });
-    if (wasFocused) ($("ed-note") && !$("ed-note").readOnly ? $("ed-note") : rowEl("tree", id))?.focus({ preventScroll: true });
+    // Once the server has made the new item it is selected with its details open, so its description,
+    // priority and the rest can be filled in right away: focus goes to the description (the title is
+    // already typed).
+    createWith(d.kind, d.parent, text)?.made.then((id) => {
+      if (!id) return;
+      S.fresh = { id, until: Date.now() + 2000 };
+      setTimeout(() => render(), 2100); // (a still-missing item is then deselected)
+      select(id, { open: true });
+      rowEl("tree", id)?.scrollIntoView({ block: "nearest" });
+      if (wasFocused) ($("ed-note") && !$("ed-note").readOnly ? $("ed-note") : rowEl("tree", id))?.focus({ preventScroll: true });
+    });
   }
-  // (A new task's number comes as it's written: its notice says it then.)
-  function createWith(id, kind, parent, text) {
+  // (A new task's number comes as it's written: its notice says it then. Returns the action, whose
+  // `made` promise gives the new item's id once the server has made it, or null if it didn't.)
+  function createWith(kind, parent, text) {
     const list = kidsOf(parent);
     const last = list[list.length - 1];
-    const doc = { kind, text, parent, order: last && isNum(last.order) ? last.order + 1 : list.length + 1, added: nowIso() };
-    if (kind === "task") Object.assign(doc, { where: "Subagent", stage: "" });
-    const ops = [{ col: "items", id, before: null, after: doc }, evOp(id, kind === "task" ? "Created" : "Created (a folder)")];
-    if (kind !== "task") return commit(ops, { toast: `Added the folder ${quote(text)}` });
-    return commit(ops, { toast: `Added ${quote(text)}`, renum: (n) => `Added #${n} ${quote(text)}` });
+    const item = makeOp("items", kind === "task" ? { kind, text, parent, where: "Subagent", stage: "" } : { kind, text, parent }, { order: last && isNum(last.order) ? last.order + 1 : list.length + 1, added: nowIso() });
+    const ops = [item, evOp(item.id, kind === "task" ? "Created" : "Created (a folder)")];
+    const a = kind !== "task" ? commit(ops, { toast: `Added the folder ${quote(text)}` }) : commit(ops, { toast: `Added ${quote(text)}`, renum: (n) => `Added #${n} ${quote(text)}` });
+    if (a) a.made = new Promise((res) => { a.madeRes = res; });
+    return a;
   }
   $("tree").addEventListener("input", (e) => { if (e.target.id === "draft-input" && S.draft) S.draft.text = e.target.value; });
   $("tree").addEventListener("focusout", (e) => { if (e.target.id === "draft-input" && S.draft) finishDraft(S.draft, e.target.value); });
@@ -2679,11 +2601,6 @@
 
   // ---------------------------------------------------------------------------------------------
   // Start: the database (read-only where it's refused), photos where this viewer may add them.
-  function updateWhereList() {
-    const vals = new Set(TYPICAL_WHERE);
-    for (const it of S.raw.items.values()) if (typeof it.where === "string" && it.where.trim()) vals.add(it.where.trim());
-    $("where-list").replaceChildren(...[...vals].map((v) => h("option", { value: v })));
-  }
   // Each subscription, should it fail, is opened again after 1, 2, 4… up to 30 s, for as long as it
   // takes; while the items' is down the page is read-only, with a banner saying so.
   function sub(make, onSnap, critical) {
@@ -2706,17 +2623,18 @@
       const paused = !canWrite();
       S.raw.items = new Map(snap.docs.map((d) => [d.id, d.data() || {}]));
       S.loaded.items = true;
+      checkRaw();
       // (Only a cached view counts as not yet the server's: the page's own unconfirmed writes come
       // with hasPendingWrites, never fromCache.)
       S.synced = !snap.metadata?.fromCache;
       if (paused && canWrite()) setTimeout(() => { render(); resume(); }, 0);
-      updateWhereList();
       soon();
-      repairSoon();
     }, true);
-    sub(() => S.db.collection("events").orderBy("t", "desc").limit(1000), (snap) => {
+    sub(() => S.db.collection("events").orderBy("t", "desc").limit(10000), (snap) => {
       S.raw.events = new Map(snap.docs.map((d) => [d.id, d.data() || {}]));
+      S.unread.events = Math.max(0, (snap.total ?? 0) - snap.size);
       S.loaded.events = true;
+      checkRaw();
       soon();
     });
     sub(() => S.db.doc("meta/status"), (snap) => { S.meta = snap.exists ? snap.data() || null : null; soon(); });
@@ -2733,6 +2651,7 @@
       return;
     }
     S.db = db;
+    import("./schema.mjs").then((m) => { schema = m; WHERES = m.WHERES; checkRaw(); render(); }, (e) => console.warn("backlog: the schema didn't load", e));
     const writable = c.use("user").then((u) => (u && typeof u.can === "function" ? u.can("data.write") : null)).catch(() => null);
     const w = await Promise.race([writable, sleep(1500).then(() => undefined)]);
     const take = (v) => { if (v === true || v === false) S.writable = v; if (v === false) S.readOnly = true; };

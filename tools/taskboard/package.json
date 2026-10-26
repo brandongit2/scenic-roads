@@ -2,6 +2,11 @@
   "name": "scenic-task-board",
   "private": true,
   "type": "module",
-  "scripts": { "start": "node server.mjs", "seed": "node seed.mjs" },
-  "engines": { "node": ">=22.5" }
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
 }

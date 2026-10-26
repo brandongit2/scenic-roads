@@ -3,319 +3,332 @@
 //
 //   node server.mjs [--port 8077] [--host 127.0.0.1] [--db taskboard.db]
 //
-// The page is the Claude artifact's, unchanged; public/shim.js gives it the document-database API it
-// was written against (collection/doc/get/set/update/delete/onSnapshot/acquire, and photo uploads)
-// over this server's HTTP API: a change is written here, and every open tab is told through an
-// event stream to read the collection again.
-import { DatabaseSync } from "node:sqlite";
+// The page is the Claude artifact's, unchanged in spirit; public/shim.js gives it the document-database
+// API it was written against (collection/doc/get/add/update/delete/restore/onSnapshot, and photo
+// uploads) over this server's HTTP API: a change is written here, and every open tab is told through
+// an event stream to read the collection again.
+//
+// The server owns the data's shape (schema.mjs: every collection, on every write; README.md has the
+// API). A client sends content only: the server gives a new item its num, id, order and added time,
+// a new event its id and time, and keeps the counter. A write that doesn't fit is refused with 400 and
+// every reason, and nothing is written.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { openStore } from "./store.mjs";
+import {
+  ITEM_FIELDS, ITEM_CREATE, EVENT_CREATE, ITEM_EDIT, EVENT_EDIT,
+  itemErrors, eventErrors, metaErrors, sentErrors, errorText, normTime, validId, describe,
+} from "./schema.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const arg = (name, d) => { const i = process.argv.indexOf("--" + name); return i > 0 ? process.argv[i + 1] : d; };
-const PORT = Number(arg("port", process.env.PORT || 8077));
-const HOST = arg("host", process.env.HOST || "127.0.0.1");
-const DB_PATH = path.resolve(arg("db", process.env.TASKBOARD_DB || path.join(here, "taskboard.db")));
-
-const db = new DatabaseSync(DB_PATH);
-// A task's stage is one of these, enforced by the table itself (a CHECK constraint): the page's
-// list (public/index.html STAGES), '' meaning queued. A changed list rebuilds the table at start.
-const STAGES = ["", "working", "backgrounded", "integrating", "review", "waiting", "done", "abandoned"];
 const STAGE_LABEL = { "": "Queued", working: "Under way", backgrounded: "Backgrounded", integrating: "Integrating", review: "In review", waiting: "Waiting on you", done: "Done", abandoned: "Abandoned" };
-const STAGE_CHECK = `CHECK (stage IN (${STAGES.map((s) => `'${s}'`).join(", ")}))`;
-const itemsTable = (name) => `CREATE TABLE ${name} (
-    id TEXT PRIMARY KEY,
-    kind TEXT,                 -- 'task' | 'folder'
-    text TEXT,
-    parent TEXT,
-    "order" REAL,
-    num INTEGER,               -- a task's number, #57
-    stage TEXT ${STAGE_CHECK},  -- STAGES: the page's (public/index.html), '' queued
-    "where" TEXT,              -- who or what it runs on
-    note TEXT,
-    reply TEXT,
-    priority REAL,
-    slot INTEGER,
-    discuss INTEGER,           -- 0/1
-    archived INTEGER,          -- 0/1
-    archivedAt TEXT,
-    added TEXT, started TEXT, finished TEXT,   -- ISO times
-    photos TEXT,               -- JSON array of blob ids
-    extra TEXT                 -- JSON: any other field
-  )`;
-const ITEMS_INDEXES = `
-  CREATE INDEX IF NOT EXISTS items_parent ON items(parent);
-  CREATE INDEX IF NOT EXISTS items_num ON items(num);
-  CREATE UNIQUE INDEX IF NOT EXISTS items_num_unique ON items(num) WHERE num IS NOT NULL;`;
-db.exec(`
-  PRAGMA journal_mode = WAL;
-  PRAGMA foreign_keys = ON;
-  CREATE TABLE IF NOT EXISTS events (
-    id TEXT PRIMARY KEY,
-    item TEXT,
-    kind TEXT,
-    t TEXT,
-    text TEXT,
-    extra TEXT
-  );
-  CREATE INDEX IF NOT EXISTS events_item ON events(item);
-  CREATE INDEX IF NOT EXISTS events_t ON events(t);
-  CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);   -- JSON
-  CREATE TABLE IF NOT EXISTS blobs (id TEXT PRIMARY KEY, type TEXT NOT NULL, data BLOB NOT NULL, sha256 TEXT, created TEXT);
-`);
-{
-  const cur = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'items'`).get();
-  if (!cur) db.exec(itemsTable("items") + ";" + ITEMS_INDEXES);
-  else if (!cur.sql.includes(STAGE_CHECK)) {
-    // (Rows with a stage outside the list are refused by the copy: the rebuild fails, nothing changes.)
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      db.exec(`${itemsTable("items_new")}; INSERT INTO items_new SELECT * FROM items; DROP TABLE items; ALTER TABLE items_new RENAME TO items;${ITEMS_INDEXES}`);
-      db.exec("COMMIT");
-    } catch (e) { db.exec("ROLLBACK"); throw e; }
-  }
-}
-
-// ---- documents <-> rows -------------------------------------------------------------------------
-const BOOL = new Set(["discuss", "archived"]);
-const JSONCOL = new Set(["photos"]);
-const COLS = {
-  items: ["kind", "text", "parent", "order", "num", "stage", "where", "note", "reply", "priority", "slot", "discuss", "archived", "archivedAt", "added", "started", "finished", "photos"],
-  events: ["item", "kind", "t", "text"],
-};
-const q = (c) => `"${c}"`;
-
-function toRow(col, doc) {
-  const cols = COLS[col], row = {}, extra = {};
-  for (const [k, v] of Object.entries(doc)) {
-    if (v === null || v === undefined) continue; // (a field that goes is null: not stored)
-    if (cols.includes(k)) row[k] = BOOL.has(k) ? (v ? 1 : 0) : JSONCOL.has(k) ? JSON.stringify(v) : v;
-    else extra[k] = v;
-  }
-  row.extra = Object.keys(extra).length ? JSON.stringify(extra) : null;
-  return row;
-}
-function toDoc(col, row) {
-  const doc = {};
-  for (const c of COLS[col]) {
-    const v = row[c];
-    if (v === null || v === undefined) continue;
-    doc[c] = BOOL.has(c) ? !!v : JSONCOL.has(c) ? JSON.parse(v) : v;
-  }
-  if (row.extra) Object.assign(doc, JSON.parse(row.extra));
-  return doc;
-}
-
-const stmts = {};
-const stmt = (sql) => (stmts[sql] ||= db.prepare(sql));
-const SELECT = {
-  items: `SELECT * FROM items`,
-  events: `SELECT * FROM events`,
-};
-
-function getDoc(col, id) {
-  if (col === "meta") {
-    const r = stmt(`SELECT value FROM meta WHERE key = ?`).get(id);
-    return r ? JSON.parse(r.value) : null;
-  }
-  const r = stmt(`${SELECT[col]} WHERE id = ?`).get(id);
-  return r ? toDoc(col, r) : null;
-}
-function putDoc(col, id, doc) {
-  if (col === "meta") {
-    stmt(`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(id, JSON.stringify(doc));
-    return;
-  }
-  const row = toRow(col, doc);
-  const names = ["id", ...COLS[col], "extra"];
-  const vals = names.map((n) => (n === "id" ? id : row[n] ?? null));
-  stmt(`INSERT OR REPLACE INTO ${col} (${names.map(q).join(", ")}) VALUES (${names.map(() => "?").join(", ")})`).run(...vals);
-}
-function delDoc(col, id) {
-  if (col === "meta") return stmt(`DELETE FROM meta WHERE key = ?`).run(id).changes;
-  return stmt(`DELETE FROM ${col} WHERE id = ?`).run(id).changes;
-}
-function listDocs(col, { orderBy, dir, limit }) {
-  if (col === "meta") return db.prepare(`SELECT key, value FROM meta`).all().map((r) => ({ id: r.key, data: JSON.parse(r.value) }));
-  const o = orderBy && (COLS[col].includes(orderBy) || orderBy === "id") ? ` ORDER BY ${q(orderBy)} ${dir === "desc" ? "DESC" : "ASC"}, id` : " ORDER BY id";
-  const lim = Number.isFinite(limit) && limit > 0 ? ` LIMIT ${Math.min(limit, 10000)}` : "";
-  return db.prepare(`${SELECT[col]}${o}${lim}`).all().map((r) => ({ id: r.id, data: toDoc(col, r) }));
-}
-
-// ---- change notices ------------------------------------------------------------------------------
-const streams = new Set();
-let pending = new Set(), notifyT = null;
-function changed(col) {
-  pending.add(col);
-  if (notifyT) return;
-  notifyT = setTimeout(() => {
-    for (const c of pending) for (const res of streams) res.write(`event: change\ndata: ${JSON.stringify({ col: c })}\n\n`);
-    pending = new Set();
-    notifyT = null;
-  }, 25);
-}
-setInterval(() => { for (const res of streams) res.write(": ping\n\n"); }, 25000).unref();
-
-// ---- leases (the numbering counter's) ------------------------------------------------------------
-const leases = new Map(); // name → {holder, expires}
-function acquire(name, holder, ttlMs) {
-  const now = Date.now(), l = leases.get(name);
-  if (l && l.expires > now && l.holder !== holder) return { acquired: false, expiresAt: new Date(l.expires).toISOString() };
-  const expires = now + Math.min(Math.max(ttlMs || 2000, 200), 60000);
-  leases.set(name, { holder, expires });
-  return { acquired: true, expiresAt: new Date(expires).toISOString() };
-}
-
-// ---- http ----------------------------------------------------------------------------------------
-const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json" };
+const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json" };
 const IMAGE = /^image\/(png|jpeg|gif|webp|avif|heic|heif)$/;
 const MAX_BLOB = 20 * 1024 * 1024;
+const UNDO_KEPT = 100; // deleted groups kept for a restore
 
-const send = (res, code, body, type = "application/json; charset=utf-8", headers = {}) => {
-  res.writeHead(code, { "content-type": type, "cache-control": "no-store", ...headers });
-  res.end(typeof body === "string" || Buffer.isBuffer(body) ? body : JSON.stringify(body));
-};
-const fail = (res, code, errCode, message) => send(res, code, { error: { code: errCode, message } });
-const readBody = (req, max) => new Promise((resolve, reject) => {
-  const chunks = []; let n = 0;
-  req.on("data", (c) => { n += c.length; if (n > max) { reject({ code: "too_large" }); req.destroy(); } else chunks.push(c); });
-  req.on("end", () => resolve(Buffer.concat(chunks)));
-  req.on("error", reject);
-});
-const jsonBody = async (req) => { try { return JSON.parse((await readBody(req, 2e6)).toString("utf8") || "{}"); } catch { return null; } };
-const validId = (s) => typeof s === "string" && /^[A-Za-z0-9_\-.~:@+]{1,200}$/.test(s) && s !== "." && s !== "..";
-const newId = () => { const a = "abcdefghijklmnopqrstuvwxyz0123456789"; const b = crypto.randomBytes(20); return Array.from(b, (x) => a[x % a.length]).join(""); };
-
-
-// Every task has a number, and no two share one (owner, 18 Oct): a task written without `num` is
-// given the next (the larger of the counter, meta/counter's `next`, and one past the highest), the
-// counter moved past it; one written with another item's number is refused (409), whoever writes.
-// Every change of a task's stage leaves a history event, whoever writes it (the page, a script):
-// `kind: "stage"`, the old and new stages, and what wrote it (the page, or the client's User-Agent).
-function logStage(id, before, after, req) {
-  const from = before?.stage ?? "", to = after?.stage ?? "";
-  if (!after || after.kind !== "task" || (before && from === to) || (!before && to === "")) return;
-  const ua = String(req.headers["user-agent"] || "unknown");
-  const by = /Mozilla/.test(ua) ? "the page" : ua.split(/[ /]/)[0];
-  const text = before ? `Stage ${STAGE_LABEL[from] ?? from} → ${STAGE_LABEL[to] ?? to} (by ${by})` : `Stage ${STAGE_LABEL[to] ?? to} (by ${by})`;
-  putDoc("events", crypto.randomUUID(), { item: id, t: new Date().toISOString(), kind: "stage", text });
+// A request the server refuses: the HTTP status, a code for the shim, why (and each field's reason).
+class Refusal extends Error {
+  constructor(status, code, message, errors) { super(message); Object.assign(this, { status, code, errors }); }
 }
+const refuse = (status, code, message, errors) => { throw new Refusal(status, code, message, errors); };
+const invalid = (errs) => refuse(400, "invalid_argument", errorText(errs), errs);
+const refuseIf = (errs) => { if (errs.length) invalid(errs); };
+const newId = () => { const a = "abcdefghijklmnopqrstuvwxyz0123456789"; return Array.from(crypto.randomBytes(20), (x) => a[x % a.length]).join(""); };
+const nowIso = () => new Date().toISOString();
 
-function numberTask(id, doc) {
-  if (!doc || doc.kind !== "task") return null;
-  if (doc.num === undefined || doc.num === null) {
-    const top = stmt(`SELECT MAX(num) AS m FROM items`).get().m || 0;
-    const c = getDoc("meta", "counter") || {};
-    const n = Math.max(Number(c.next) || 0, top + 1);
-    doc.num = n;
-    putDoc("meta", "counter", { ...c, next: n + 1 });
-    return null;
-  }
-  if (!Number.isInteger(doc.num) || doc.num < 1) return "a task's num must be a whole number from 1";
-  const other = stmt(`SELECT id FROM items WHERE num = ? AND id != ?`).get(doc.num, id);
-  if (other) return `#${doc.num} is already ${other.id}'s`;
-  return null;
-}
+export function makeServer(store) {
+  const { db } = store;
 
-async function api(req, res, url) {
-  const parts = url.pathname.split("/").slice(2).map(decodeURIComponent); // after /api
-  const [what, col, id] = parts;
+  // ---- change notices ----------------------------------------------------------------------------
+  const streams = new Set();
+  let pending = new Set(), notifyT = null;
+  const changed = (...cols) => {
+    for (const c of cols) pending.add(c);
+    if (notifyT) return;
+    notifyT = setTimeout(() => {
+      for (const c of pending) for (const res of streams) res.write(`event: change\ndata: ${JSON.stringify({ col: c })}\n\n`);
+      pending = new Set();
+      notifyT = null;
+    }, 25);
+  };
+  const ping = setInterval(() => { for (const res of streams) res.write(": ping\n\n"); }, 25000);
+  ping.unref();
 
-  if (what === "stream" && req.method === "GET") {
-    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
-    res.write("retry: 1000\n\n");
-    streams.add(res);
-    req.on("close", () => streams.delete(res));
-    return;
-  }
-  if (what === "lease" && req.method === "POST") {
-    const b = await jsonBody(req);
-    if (!b || !validId(b.name) || typeof b.holder !== "string") return fail(res, 400, "invalid_argument", "bad lease");
-    return send(res, 200, acquire(b.name, b.holder, Number(b.ttlMs)));
-  }
-  if (what === "blob" && req.method === "POST") {
-    const type = String(req.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
-    if (!IMAGE.test(type)) return fail(res, 415, "unsupported_type", "not an image");
-    let data;
-    try { data = await readBody(req, MAX_BLOB); } catch { return fail(res, 413, "too_large", "over 20 MB"); }
-    if (!data.length) return fail(res, 400, "invalid_argument", "empty");
-    const sha = crypto.createHash("sha256").update(data).digest("hex");
-    const bid = sha.slice(0, 32);
-    stmt(`INSERT OR IGNORE INTO blobs (id, type, data, sha256, created) VALUES (?, ?, ?, ?, ?)`).run(bid, type, data, sha, new Date().toISOString());
-    return send(res, 200, { id: bid, url: "_blob/" + bid });
-  }
-  if (what !== "c" || !(col in COLS || col === "meta")) return fail(res, 404, "not_found", "no such route");
-
-  if (!id) {
-    if (req.method !== "GET") return fail(res, 405, "invalid_argument", "method not allowed");
-    const docs = listDocs(col, { orderBy: url.searchParams.get("orderBy"), dir: url.searchParams.get("dir"), limit: Number(url.searchParams.get("limit")) });
-    return send(res, 200, { docs });
-  }
-  if (!validId(id)) return fail(res, 400, "invalid_argument", "bad id");
-
-  if (req.method === "GET") {
-    const d = getDoc(col, id);
-    return send(res, 200, { exists: d !== null, data: d });
-  }
-  if (req.method === "DELETE") {
-    delDoc(col, id);
-    changed(col);
-    return send(res, 200, {});
-  }
-  if (req.method === "PUT" || req.method === "PATCH") {
-    const b = await jsonBody(req);
-    if (!b || typeof b !== "object" || Array.isArray(b)) return fail(res, 400, "invalid_argument", "body must be an object");
+  // One write, all or nothing.
+  function tx(fn) {
     db.exec("BEGIN IMMEDIATE");
-    try {
-      const before = col === "items" ? getDoc(col, id) : null;
-      if (req.method === "PATCH") {
-        const cur = getDoc(col, id);
-        if (cur === null) { db.exec("ROLLBACK"); return fail(res, 404, "invalid_argument", "no such document"); }
-        const merged = { ...cur };
-        for (const [k, v] of Object.entries(b)) { if (v === null) delete merged[k]; else merged[k] = v; }
-        const bad = col === "items" ? numberTask(id, merged) : null;
-        if (bad) { db.exec("ROLLBACK"); return fail(res, 409, "conflict", bad); }
-        putDoc(col, id, merged);
-      } else {
-        const bad = col === "items" ? numberTask(id, b) : null;
-        if (bad) { db.exec("ROLLBACK"); return fail(res, 409, "conflict", bad); }
-        putDoc(col, id, b);
-      }
-      if (col === "items") logStage(id, before, getDoc(col, id), req);
-      db.exec("COMMIT");
-    } catch (e) {
-      db.exec("ROLLBACK");
-      if (/CHECK constraint failed/.test(e.message)) return fail(res, 400, "invalid_argument", `stage must be one of ${STAGES.map((x) => JSON.stringify(x)).join(", ")}`);
-      return fail(res, 500, "internal", String(e.message));
-    }
-    changed(col);
-    if (col === "items") changed("events");
-    return send(res, 200, {});
+    try { const r = fn(); db.exec("COMMIT"); return r; }
+    catch (e) { db.exec("ROLLBACK"); throw e; }
   }
-  return fail(res, 405, "invalid_argument", "method not allowed");
+
+  // ---- numbers -----------------------------------------------------------------------------------
+  // meta/counter is the server's: the larger of its `next` and one past the highest number any item
+  // has. A deleted task's number stays retired.
+  function takeNum() {
+    const n = Math.max(store.get("meta", "counter")?.next || 1, store.maxNum() + 1);
+    store.put("meta", "counter", { next: n + 1 });
+    return n;
+  }
+  // The status line's `updated` is the server's too, so it can only be a valid time.
+  // (Fresh files get both documents.)
+  if (!store.get("meta", "counter")) store.put("meta", "counter", { next: store.maxNum() + 1 });
+  if (!store.get("meta", "status")) store.put("meta", "status", { now: "", updated: nowIso() });
+
+  // Every change of a task's stage leaves a history event, whoever writes it (the page, a script):
+  // `kind: "stage"`, the old and new stages, and what wrote it (the page, or the client's User-Agent).
+  function logStage(id, before, after, req) {
+    const from = before?.stage ?? "", to = after?.stage ?? "";
+    if (!after || after.kind !== "task" || (before && from === to) || (!before && to === "")) return;
+    const ua = String(req.headers["user-agent"] || "unknown");
+    const by = /Mozilla/.test(ua) ? "the page" : ua.split(/[ /]/)[0];
+    const text = before ? `Stage ${STAGE_LABEL[from] ?? from} → ${STAGE_LABEL[to] ?? to} (by ${by})` : `Stage ${STAGE_LABEL[to] ?? to} (by ${by})`;
+    store.put("events", crypto.randomUUID(), { item: id, t: nowIso(), kind: "stage", text });
+  }
+
+  // ---- items -------------------------------------------------------------------------------------
+  const normTimes = (spec, fields) => {
+    const out = {};
+    for (const [k, v] of Object.entries(fields)) out[k] = spec[k]?.type === "time" ? normTime(v) ?? v : v;
+    return out;
+  };
+  const dropNulls = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== null));
+  // `parent` must be "" or an item that exists (and, for a move, not the item or inside it).
+  function checkParent(id, parent) {
+    if (parent === "") return;
+    if (typeof parent !== "string") return; // (the schema says so)
+    if (!store.get("items", parent)) invalid([{ field: "parent", message: `no item ${JSON.stringify(parent)} to be inside of` }]);
+    for (let p = parent, n = 0; p && n < 10000; n++) {
+      if (p === id) invalid([{ field: "parent", message: "an item can't be inside itself or what is inside it" }]);
+      p = store.get("items", p)?.parent;
+    }
+  }
+  function createItem(body, req) {
+    refuseIf(sentErrors(body, ITEM_CREATE, ["id", "num", "order", "added"]));
+    const given = dropNulls(body);
+    const task = (given.kind ?? "task") === "task";
+    const doc = { kind: "task", parent: "", ...(task ? { stage: "", where: "Subagent" } : {}), ...given };
+    return tx(() => {
+      // (The server's fields are filled in before the check, so it names what the client got wrong.)
+      doc.added = nowIso();
+      doc.order = (store.maxOrder(doc.parent) ?? 0) + 1;
+      if (task) doc.num = takeNum();
+      refuseIf(itemErrors(doc));
+      checkParent("", doc.parent);
+      let id = task ? `i${doc.num}` : newId();
+      while (store.get("items", id)) id = newId();
+      store.put("items", id, doc);
+      logStage(id, null, doc, req);
+      changed("items", "events");
+      return { id, ...ownFields(doc) };
+    });
+  }
+  const ownFields = (d) => ({ ...(d.num !== undefined ? { num: d.num } : {}), order: d.order, added: d.added });
+
+  // PATCH (merge: null removes a field) or PUT (replace what a client may write; the server's num,
+  // added and, unless given, order stay) of an item that exists.
+  function updateItem(id, body, replace, req) {
+    const cur = store.get("items", id);
+    if (!cur) refuse(404, "not_found", `no item ${JSON.stringify(id)}`);
+    refuseIf(sentErrors(body, ITEM_EDIT, ["id", "num", "added"]));
+    return tx(() => {
+      const sent = normTimes(ITEM_FIELDS, body);
+      const doc = replace
+        ? { ...Object.fromEntries(Object.entries(cur).filter(([k]) => ITEM_FIELDS[k]?.server || (k === "order" && !("order" in sent)))), ...dropNulls(sent) }
+        : { ...cur, ...sent };
+      if (!replace) for (const k of Object.keys(doc)) if (doc[k] === null) delete doc[k];
+      if (doc.kind === "task" && doc.num === undefined) doc.num = takeNum(); // (a folder made a task)
+      refuseIf(itemErrors(doc));
+      checkParent(id, doc.parent);
+      store.put("items", id, doc);
+      logStage(id, cur, doc, req);
+      changed("items", "events");
+      return { id, ...ownFields(doc) };
+    });
+  }
+
+  // ---- events ------------------------------------------------------------------------------------
+  const checkItem = (item) => { if (item !== "" && typeof item === "string" && !store.get("items", item)) invalid([{ field: "item", message: `no item ${JSON.stringify(item)}; use its id (a task's is i<number>), or "" for the board itself` }]); };
+  function createEvent(body) {
+    refuseIf(sentErrors(body, EVENT_CREATE, ["id", "t"]));
+    const doc = { ...dropNulls(body), t: nowIso() };
+    refuseIf(eventErrors(doc));
+    return tx(() => {
+      checkItem(doc.item);
+      const id = crypto.randomUUID();
+      store.put("events", id, doc);
+      changed("events");
+      return { id, t: doc.t };
+    });
+  }
+  function updateEvent(id, body, replace) {
+    const cur = store.get("events", id);
+    if (!cur) refuse(404, "not_found", `no event ${JSON.stringify(id)}`);
+    refuseIf(sentErrors(body, EVENT_EDIT, ["id", "item", "t"]));
+    return tx(() => {
+      const doc = replace ? { item: cur.item, t: cur.t, ...dropNulls(body) } : { ...cur, ...body };
+      for (const k of Object.keys(doc)) if (doc[k] === null) delete doc[k];
+      refuseIf(eventErrors(doc));
+      store.put("events", id, doc);
+      changed("events");
+      return { id, t: doc.t };
+    });
+  }
+
+  // ---- meta --------------------------------------------------------------------------------------
+  function updateMeta(key, body, replace) {
+    if (key === "counter") refuse(403, "forbidden", "meta/counter is the server's: a new task's number comes from POST /api/c/items");
+    if (key !== "status") invalid(metaErrors(key, {}));
+    refuseIf(sentErrors(body, ["now"], ["updated"]));
+    return tx(() => {
+      const doc = { ...(replace ? {} : store.get("meta", "status")), ...body, updated: nowIso() };
+      refuseIf(metaErrors("status", doc));
+      store.put("meta", "status", doc);
+      changed("meta");
+      return { updated: doc.updated };
+    });
+  }
+
+  // ---- delete, and restore -----------------------------------------------------------------------
+  // Deleting an item deletes what is inside it and every event about any of them (a reference never
+  // points at nothing). What goes is kept in memory, the last UNDO_KEPT deletions, for the page's
+  // Undo: POST <col>/<id>/restore puts the group back, as it was (a restart forgets them).
+  const trash = new Map(); // "col/id" → {docs: [{col, id, doc}]}
+  const keep = (docs) => {
+    const g = { docs };
+    for (const d of docs) trash.set(`${d.col}/${d.id}`, g);
+    while (new Set(trash.values()).size > UNDO_KEPT) for (const [k, v] of trash) { for (const d of v.docs) trash.delete(`${d.col}/${d.id}`); break; }
+  };
+  function remove(col, id) {
+    if (col === "meta") refuse(405, "invalid_argument", "meta documents can't be deleted");
+    return tx(() => {
+      const docs = [];
+      const take = (c, i) => { const doc = store.get(c, i); if (doc) docs.push({ col: c, id: i, doc }); };
+      if (col === "events") take("events", id);
+      else {
+        const walk = (i) => { take("items", i); for (const k of store.childrenOf(i)) walk(k); };
+        if (store.get("items", id)) walk(id);
+        for (const d of [...docs]) for (const e of store.eventsOf(d.id)) take("events", e);
+      }
+      for (const d of docs) store.del(d.col, d.id);
+      if (docs.length) { keep(docs); changed(...new Set(docs.map((d) => d.col))); }
+      return { deleted: docs.map((d) => `${d.col}/${d.id}`) };
+    });
+  }
+  function restore(col, id) {
+    if (store.get(col, id)) return { restored: [] }; // (back already: a group's other members ask too)
+    const g = trash.get(`${col}/${id}`);
+    if (!g) refuse(404, "not_found", `nothing deleted to restore as ${col}/${id} (it may be older than the last ${UNDO_KEPT} deletions, or the server restarted)`);
+    return tx(() => {
+      const have = new Set(g.docs.filter((d) => d.col === "items").map((d) => d.id));
+      for (const d of g.docs) {
+        if (d.col === "items") {
+          if (d.doc.num !== undefined && store.numOwner(d.doc.num)) refuse(409, "conflict", `#${d.doc.num} is another task's now`);
+          if (d.doc.parent && !have.has(d.doc.parent) && !store.get("items", d.doc.parent)) refuse(409, "conflict", `its folder ${d.doc.parent} is gone`);
+          if (store.get("items", d.id)) refuse(409, "conflict", `${d.id} exists again`);
+        } else if (d.doc.item && !have.has(d.doc.item) && !store.get("items", d.doc.item)) refuse(409, "conflict", `its item ${d.doc.item} is gone`);
+      }
+      for (const d of g.docs) { store.put(d.col, d.id, d.doc); trash.delete(`${d.col}/${d.id}`); }
+      changed(...new Set(g.docs.map((d) => d.col)));
+      return { restored: g.docs.map((d) => `${d.col}/${d.id}`) };
+    });
+  }
+
+  // ---- http --------------------------------------------------------------------------------------
+  const send = (res, code, body, type = "application/json; charset=utf-8", headers = {}) => {
+    res.writeHead(code, { "content-type": type, "cache-control": "no-store", ...headers });
+    res.end(typeof body === "string" || Buffer.isBuffer(body) ? body : JSON.stringify(body));
+  };
+  const fail = (res, code, errCode, message, errors) => send(res, code, { error: { code: errCode, message, ...(errors ? { errors } : {}) } });
+  const readBody = (req, max) => new Promise((resolve, reject) => {
+    const chunks = []; let n = 0;
+    req.on("data", (c) => { n += c.length; if (n > max) { reject({ code: "too_large" }); req.destroy(); } else chunks.push(c); });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+  const jsonBody = async (req) => {
+    const text = (await readBody(req, 2e6)).toString("utf8");
+    try { return JSON.parse(text || "{}"); } catch { return refuse(400, "invalid_argument", "the body is not valid JSON"); }
+  };
+
+  async function api(req, res, url) {
+    const [what, col, id, action] = url.pathname.split("/").slice(2).map(decodeURIComponent); // after /api
+    if (what === "stream" && req.method === "GET") {
+      res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
+      res.write("retry: 1000\n\n");
+      streams.add(res);
+      req.on("close", () => streams.delete(res));
+      return;
+    }
+    if (what === "schema" && req.method === "GET") return send(res, 200, describe());
+    if (what === "blob" && req.method === "POST") {
+      const type = String(req.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
+      if (!IMAGE.test(type)) return fail(res, 415, "unsupported_type", "not an image");
+      let data;
+      try { data = await readBody(req, MAX_BLOB); } catch { return fail(res, 413, "too_large", "over 20 MB"); }
+      if (!data.length) return fail(res, 400, "invalid_argument", "empty");
+      const sha = crypto.createHash("sha256").update(data).digest("hex");
+      const bid = sha.slice(0, 32);
+      store.stmt(`INSERT OR IGNORE INTO blobs (id, type, data, sha256, created) VALUES (?, ?, ?, ?, ?)`).run(bid, type, data, sha, nowIso());
+      return send(res, 200, { id: bid, url: "_blob/" + bid });
+    }
+    if (what !== "c" || !["items", "events", "meta"].includes(col)) return fail(res, 404, "not_found", "no such route");
+    const m = req.method;
+
+    if (!id) {
+      // (`total`: how many there are, so a reader that asked for fewer can say so.)
+      if (m === "GET") return send(res, 200, { docs: store.list(col, { orderBy: url.searchParams.get("orderBy"), dir: url.searchParams.get("dir"), limit: Number(url.searchParams.get("limit")) }), total: store.count(col) });
+      if (m === "POST" && col !== "meta") return send(res, 200, (col === "items" ? createItem : createEvent)(await jsonBody(req), req));
+      return fail(res, 405, "invalid_argument", col === "meta" ? "meta documents are changed by PATCH meta/status" : "method not allowed: POST creates, PATCH/DELETE need an id");
+    }
+    if (!validId(id)) return fail(res, 400, "invalid_argument", "bad id");
+    if (action === "restore" && m === "POST" && col !== "meta") return send(res, 200, restore(col, id));
+    if (action) return fail(res, 404, "not_found", "no such route");
+    if (m === "GET") { const d = store.get(col, id); return send(res, 200, { exists: d !== null, data: d }); }
+    if (m === "DELETE") return send(res, 200, remove(col, id));
+    if (m === "PUT" || m === "PATCH") {
+      const body = await jsonBody(req);
+      const replace = m === "PUT";
+      if (col === "meta") return send(res, 200, updateMeta(id, body, replace));
+      if (!store.get(col, id)) refuse(404, "not_found", `no ${col === "items" ? "item" : "event"} ${JSON.stringify(id)}; POST /api/c/${col} creates one (the server picks the id)`);
+      return send(res, 200, col === "items" ? updateItem(id, body, replace, req) : updateEvent(id, body, replace));
+    }
+    return fail(res, 405, "invalid_argument", "method not allowed");
+  }
+
+  return http.createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, "http://x");
+      if (url.pathname.startsWith("/api/")) return await api(req, res, url);
+      if (url.pathname.startsWith("/_blob/") && req.method === "GET") {
+        const r = store.stmt(`SELECT type, data FROM blobs WHERE id = ?`).get(decodeURIComponent(url.pathname.slice(7)));
+        if (!r) return send(res, 404, "not found", "text/plain");
+        return send(res, 200, Buffer.from(r.data), r.type, { "cache-control": "public, max-age=31536000, immutable", "x-content-type-options": "nosniff" });
+      }
+      if (req.method !== "GET" && req.method !== "HEAD") return send(res, 405, "method not allowed", "text/plain");
+      const p = url.pathname === "/" ? "/index.html" : url.pathname;
+      // (schema.mjs is the page's too: it checks what it shows by the same rules.)
+      const file = p === "/schema.mjs" ? path.join(here, "schema.mjs") : path.join(here, "public", path.normalize(p));
+      if ((p !== "/schema.mjs" && !file.startsWith(path.join(here, "public") + path.sep)) || !fs.existsSync(file) || !fs.statSync(file).isFile()) return send(res, 404, "not found", "text/plain");
+      return send(res, 200, fs.readFileSync(file), TYPES[path.extname(file)] || "application/octet-stream");
+    } catch (e) {
+      if (e instanceof Refusal) return fail(res, e.status, e.code, e.message, e.errors);
+      if (e?.code === "too_large") return fail(res, 413, "too_large", "the body is over 2 MB");
+      console.error(e);
+      if (!res.headersSent) fail(res, 500, "internal", String(e?.message || e));
+      else res.end();
+    }
+  });
 }
 
-const server = http.createServer(async (req, res) => {
-  try {
-    const url = new URL(req.url, "http://x");
-    if (url.pathname.startsWith("/api/")) return await api(req, res, url);
-    if (url.pathname.startsWith("/_blob/") && req.method === "GET") {
-      const r = stmt(`SELECT type, data FROM blobs WHERE id = ?`).get(decodeURIComponent(url.pathname.slice(7)));
-      if (!r) return send(res, 404, "not found", "text/plain");
-      return send(res, 200, Buffer.from(r.data), r.type, { "cache-control": "public, max-age=31536000, immutable", "x-content-type-options": "nosniff" });
-    }
-    if (req.method !== "GET" && req.method !== "HEAD") return send(res, 405, "method not allowed", "text/plain");
-    let p = url.pathname === "/" ? "/index.html" : url.pathname;
-    const file = path.join(here, "public", path.normalize(p));
-    if (!file.startsWith(path.join(here, "public") + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) return send(res, 404, "not found", "text/plain");
-    return send(res, 200, fs.readFileSync(file), TYPES[path.extname(file)] || "application/octet-stream");
-  } catch (e) {
-    console.error(e);
-    if (!res.headersSent) fail(res, 500, "internal", String(e?.message || e));
-    else res.end();
-  }
-});
-server.listen(PORT, HOST, () => console.log(`Task board on http://${HOST}:${PORT}  (data: ${DB_PATH})`));
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const arg = (name, d) => { const i = process.argv.indexOf("--" + name); return i > 0 ? process.argv[i + 1] : d; };
+  const PORT = Number(arg("port", process.env.PORT || 8077));
+  const HOST = arg("host", process.env.HOST || "127.0.0.1");
+  const DB_PATH = path.resolve(arg("db", process.env.TASKBOARD_DB || path.join(here, "taskboard.db")));
+  const server = makeServer(openStore(DB_PATH));
+  server.listen(PORT, HOST, () => console.log(`Task board on http://${HOST}:${PORT}  (data: ${DB_PATH})`));
+}

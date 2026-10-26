@@ -10,6 +10,7 @@
 #   wasm      tools/app/wasm.sh, when a crate the wasm build compiles changed (det, roadcore,
 #             pipeline, store, names)
 #   web       web/test/rings.test.ts, wheelkind.test.ts, chartmath.test.mjs, catalogs.test.mjs and tools/check/worksums.test.mjs under node, pnpm typecheck and vite build (to a scratch folder), when web/ changed
+#   taskboard node --test tools/taskboard/test/*.test.mjs, when tools/taskboard changed
 #   shell     tools/app/test/shell.zsh (publish.sh's shell steps, tools/app/lib.zsh), when tools/app changed
 #   swift     swiftc of tools/status/main.swift (publish's line) and its --test (arguments, reopen, launchd), when tools/status changed
 #   tests     each command tools/dev/affected-tests.sh prints, run on the test Mac (tools/app/remote-tests.sh;
@@ -23,7 +24,7 @@
 set -uo pipefail
 case $#:${1:-} in
   0:) ;;
-  1:-h|1:--help) sed -n '2,21p' ${0:A} | sed 's/^# \{0,1\}//'; exit 0 ;;
+  1:-h|1:--help) sed -n '2,22p' ${0:A} | sed 's/^# \{0,1\}//'; exit 0 ;;
   *) print -u2 "check.sh takes no arguments (check.sh --help)"; exit 2 ;;
 esac
 root=$(git rev-parse --show-toplevel) || exit 2
@@ -52,6 +53,8 @@ else skip wasm "no wasm crate changed"; fi
 if has 'web/*' || has 'tools/check/worksums.test.mjs'; then
   part web zsh -c "cd web && node test/rings.test.ts && node test/wheelkind.test.ts && node test/chartmath.test.mjs && node test/catalogs.test.mjs && node --test ../tools/check/worksums.test.mjs && pnpm run typecheck && pnpm exec vite build --outDir ${(q)logs}/web-dist --emptyOutDir"
 else skip web "web/ unchanged"; fi
+if has 'tools/taskboard/*'; then part taskboard zsh -c "cd tools/taskboard && node --test test/*.test.mjs"
+else skip taskboard "tools/taskboard unchanged"; fi
 if has 'tools/app/*'; then part shell zsh tools/app/test/shell.zsh
 else skip shell "tools/app unchanged"; fi
 if has 'tools/status/*'; then

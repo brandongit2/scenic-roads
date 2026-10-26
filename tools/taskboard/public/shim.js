@@ -16,7 +16,7 @@
   const docSnap = (id, j) => ({ id, exists: !!j.exists, data: () => (j.exists ? j.data : undefined), metadata: META });
   const querySnap = (j) => {
     const docs = j.docs.map((d) => ({ id: d.id, exists: true, data: () => d.data, metadata: META }));
-    return { docs, size: docs.length, empty: !docs.length, metadata: META, forEach: (f) => docs.forEach(f) };
+    return { docs, size: docs.length, total: j.total, empty: !docs.length, metadata: META, forEach: (f) => docs.forEach(f) };
   };
 
   // One event stream, shared: it tells which collection changed, and each listener reads again.
@@ -49,15 +49,13 @@
     const ref = {
       id,
       get: async () => docSnap(id, await call("GET", url)),
-      set: (data) => call("PUT", url, data).then(() => {}),
-      update: (patch) => call("PATCH", url, patch).then(() => {}),
+      update: (patch) => call("PATCH", url, patch), // (the server's reply: the item's id, num, order, added)
       delete: () => call("DELETE", url).then(() => {}),
+      restore: () => call("POST", url + "/restore", {}), // (what was just deleted, back as it was)
       onSnapshot: (next, error) => listen(col, () => call("GET", url), (j) => docSnap(id, j), next, error),
     };
-    if (col === "meta" && id === "counter") ref.acquire = ({ holder, ttlMs }) => call("POST", "api/lease", { name: "counter", holder, ttlMs });
     return ref;
   }
-  const rnd = () => { const a = "abcdefghijklmnopqrstuvwxyz0123456789"; return Array.from(crypto.getRandomValues(new Uint8Array(20)), (x) => a[x % a.length]).join(""); };
   function query(col, opts) {
     const qs = () => { const p = new URLSearchParams(); if (opts.orderBy) { p.set("orderBy", opts.orderBy); p.set("dir", opts.dir || "asc"); } if (opts.limit) p.set("limit", opts.limit); return `api/c/${encodeURIComponent(col)}?${p}`; };
     return {
@@ -68,7 +66,8 @@
     };
   }
   const db = {
-    collection: (col) => Object.assign(query(col, {}), { doc: (id) => docRef(col, id || rnd()) }),
+    // add(content): the server makes the doc (its id, and an item's num, order and added time) and says them.
+    collection: (col) => Object.assign(query(col, {}), { doc: (id) => docRef(col, id), add: (data) => call("POST", `api/c/${encodeURIComponent(col)}`, data) }),
     doc: (path) => { const [col, id] = path.split("/"); return docRef(col, id); },
   };
   const assets = {
