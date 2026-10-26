@@ -542,7 +542,10 @@ pub fn nas_call<T: Send + 'static>(
     store::retry::io(what, None, waits, store::retry::transient_or_missing, || {
         let (tx, rx) = std::sync::mpsc::channel();
         let g = f.clone();
+        // (The worker is this retry's try: a NasPath call in it tries once, store::retry::attempt.)
+        let nested = store::retry::in_attempt();
         std::thread::Builder::new().name("pack-read".into()).spawn(move || {
+            let _a = nested.then(store::retry::attempt);
             let _ = tx.send(g());
         })?;
         rx.recv_timeout(deadline).unwrap_or_else(|_| {

@@ -554,7 +554,11 @@ pub fn within_do<T: Send + 'static>(
     f: impl FnOnce() -> std::io::Result<T> + Send + 'static,
 ) -> std::io::Result<T> {
     let (tx, rx) = std::sync::mpsc::channel();
+    // (Inside `open_retrying`'s try, the worker is that try: a NasPath call in it tries once,
+    // store::retry::attempt.)
+    let nested = store::retry::in_attempt();
     std::thread::Builder::new().name("depth-open".into()).spawn(move || {
+        let _a = nested.then(store::retry::attempt);
         let _ = tx.send(f());
     })?;
     rx.recv_timeout(deadline).unwrap_or_else(|_| {

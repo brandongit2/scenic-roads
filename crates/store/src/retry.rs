@@ -30,6 +30,35 @@ static UNIT_MS: AtomicU64 = AtomicU64::new(1000);
 /// A process's retries, one at a time.
 static LANE: Mutex<()> = Mutex::new(());
 
+thread_local! {
+    /// Whether this thread runs a try of an outer retry (`Attempt`).
+    static IN_ATTEMPT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A try of a retry under way on this thread (or on a worker it waits on, which takes one of its
+/// own, `attempt`): a retry inside it tries once and leaves the waits to the outer one. Nested,
+/// the inner one would wait on `LANE`, which the outer try holds: forever on the same thread (a
+/// std mutex isn't reentrant), and past the outer's deadline on a worker (review of #663: a store
+/// tile's retry around `NasPath::open`, a pack open's `nas_call`, bldprep's footers).
+pub struct Attempt(bool);
+
+/// Marks this thread as running an outer retry's try until dropped (a worker thread an outer try
+/// waits on takes one when `in_attempt()` was true where it was spawned).
+pub fn attempt() -> Attempt {
+    Attempt(IN_ATTEMPT.with(|a| a.replace(true)))
+}
+
+impl Drop for Attempt {
+    fn drop(&mut self) {
+        IN_ATTEMPT.with(|a| a.set(self.0));
+    }
+}
+
+/// Whether this thread runs an outer retry's try.
+pub fn in_attempt() -> bool {
+    IN_ATTEMPT.with(|a| a.get())
+}
+
 /// The waits in this process (`WAITS`, scaled by `fast`).
 pub fn waits() -> Vec<Duration> {
     let u = UNIT_MS.load(Ordering::Relaxed);
@@ -143,8 +172,14 @@ pub fn io<T>(
     again: fn(&io::Error) -> bool,
     mut f: impl FnMut() -> io::Result<T>,
 ) -> io::Result<T> {
+    if in_attempt() {
+        return f();
+    }
     let mut tries = 0;
-    let mut r = f();
+    let mut r = {
+        let _a = attempt();
+        f()
+    };
     loop {
         let e = match r {
             Ok(t) => return Ok(t),
@@ -162,6 +197,7 @@ pub fn io<T>(
             }
         }
         let _lane = LANE.lock().unwrap_or_else(|p| p.into_inner());
+        let _a = attempt();
         r = f();
     }
 }
@@ -175,8 +211,14 @@ pub fn any<T>(
     again: fn(&io::Error) -> bool,
     mut f: impl FnMut() -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
+    if in_attempt() {
+        return f();
+    }
     let mut tries = 0;
-    let mut r = f();
+    let mut r = {
+        let _a = attempt();
+        f()
+    };
     loop {
         let e = match r {
             Ok(t) => return Ok(t),
@@ -198,6 +240,7 @@ pub fn any<T>(
             }
         }
         let _lane = LANE.lock().unwrap_or_else(|p| p.into_inner());
+        let _a = attempt();
         r = f();
     }
 }
@@ -303,6 +346,47 @@ mod tests {
             assert_eq!(n.get(), 1);
         }
         assert!(transient_or_missing(&io::Error::from_raw_os_error(libc::ENOENT)));
+    }
+
+    /// A retry inside another's try tries once: no wait on the lane the outer try holds (a hang
+    /// on the same thread), no second schedule (on a worker the outer try waits on, past its
+    /// deadline).
+    #[test]
+    fn a_retry_inside_a_retry_tries_once() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (outer, inner) = (Cell::new(0), Cell::new(0));
+            let r = io("outer", None, &ms(3), transient_or_missing, || {
+                outer.set(outer.get() + 1);
+                // (The first try missing, the rest failing as the share does for a moment.)
+                if outer.get() == 1 {
+                    return Err(io::Error::from_raw_os_error(libc::ENOENT));
+                }
+                io("inner", None, &ms(3), transient, || {
+                    inner.set(inner.get() + 1);
+                    if inner.get() < 3 {
+                        Err(io::Error::from_raw_os_error(libc::EIO))
+                    } else {
+                        Ok(5)
+                    }
+                })
+            });
+            let worker = io("outer", None, &ms(2), transient, || {
+                let nested = in_attempt();
+                std::thread::spawn(move || {
+                    let _a = nested.then(attempt);
+                    io("inner", None, &ms(5), transient, || -> io::Result<()> {
+                        Err(io::Error::from_raw_os_error(libc::EIO))
+                    })
+                })
+                .join()
+                .unwrap()
+            });
+            let _ = tx.send((r.map_err(|e| e.to_string()), outer.get(), inner.get(), worker.is_err()));
+        });
+        let got = rx.recv_timeout(Duration::from_secs(20)).expect("a nested retry hangs");
+        assert_eq!(got, (Ok(5), 4, 3, true));
+        assert!(!in_attempt());
     }
 
     #[test]
