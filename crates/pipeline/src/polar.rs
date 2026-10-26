@@ -36,9 +36,9 @@ pub const BLOCK_Z: u8 = 4;
 pub const POLES: [Pole; 1] = [Pole::South];
 
 /// The steps' versions (in their keys).
-pub const TERRAIN_V: u32 = 1;
+pub const TERRAIN_V: u32 = 2;
 pub const SLOPE_V: u32 = 1;
-pub const ROOT_V: u32 = 1;
+pub const ROOT_V: u32 = 2;
 
 /// A polar layer's name: `polar-terrain-s`, `polar-slope-s` (`kind` "terrain" or "slope").
 pub fn layer(kind: &str, pole: Pole) -> String {
@@ -48,11 +48,6 @@ pub fn layer(kind: &str, pole: Pole) -> String {
 /// A block's pack: `layers/polar-terrain-s/polar/4-x-y` (its key in the catalog's layer `polar`).
 pub fn block_logical(kind: &str, pole: Pole, b: (u32, u32)) -> String {
     format!("layers/{}/polar/{BLOCK_Z}-{}-{}", layer(kind, pole), b.0, b.1)
-}
-
-/// A pole's root pack (z0–3).
-pub fn root_logical(kind: &str, pole: Pole) -> String {
-    format!("layers/{}/root/0-0-0", layer(kind, pole))
 }
 
 /// A block's target name: `s/4/x/y`.
@@ -188,18 +183,7 @@ pub fn sample(s: &Sampler, pole: Pole, z: u8, ts: &[(u32, u32)], voids: &Voids) 
             let mut e = vec![f32::NAN; TS * TS];
             for (p, v) in e.iter_mut().enumerate() {
                 let (pj, pi) = (p / TS, p % TS);
-                let (mut sum, mut n) = (0f32, 0u32);
-                for k in 0..K * K {
-                    let (si, sj) = (pi * K + k % K, pj * K + k / K);
-                    let h = got.elev[base + sj * TS * K + si];
-                    if !h.is_nan() {
-                        sum += h;
-                        n += 1;
-                    }
-                }
-                if n > 0 {
-                    *v = sum / n as f32;
-                }
+                *v = pixel_mean((0..K * K).map(|k| got.elev[base + (pj * K + k / K) * TS * K + pi * K + k % K]));
             }
             close_gaps(&mut e);
             for v in &mut e {
@@ -208,6 +192,21 @@ pub fn sample(s: &Sampler, pole: Pole, z: u8, ts: &[(u32, u32)], voids: &Voids) 
             e
         })
         .collect())
+}
+
+/// A pixel's height from its samples (NaN: none with data): their mean, the samples at exactly
+/// 0 left out where another is above it. GLO-30's overviews (read for the levels coarser than
+/// z9) hold 0 along their files' edges where the full resolution has no data, which drew as pits
+/// of a quarter or half the height along the one-degree lines; a pixel at the sea keeps its 0.
+fn pixel_mean(hs: impl Iterator<Item = f32>) -> f32 {
+    let hs: Vec<f32> = hs.filter(|h| !h.is_nan()).collect();
+    let above = hs.iter().any(|&h| h > 0.0);
+    let (sum, n) = hs.iter().filter(|&&h| !above || h != 0.0).fold((0f32, 0u32), |(s, n), &h| (s + h, n + 1));
+    if n == 0 {
+        f32::NAN
+    } else {
+        sum / n as f32
+    }
 }
 
 /// How wide a gap in the data (pixels with no sample with data) is closed from its neighbours:
@@ -526,7 +525,7 @@ pub fn root(
 // ---- The steps (crate::agent::build's polar chain) ----------------------------------------------
 
 /// The pool over latitudes `b` (crate::terrain_base::Pool), its levels' plans read at `max_z`.
-fn pool_plans(out: &crate::out::Out, b: [f64; 4]) -> Result<(Vec<Plan>, std::path::PathBuf)> {
+fn pool_plans(out: &crate::out::Out, b: [f64; 4]) -> Result<(Vec<Plan>, store::nasfs::NasPath)> {
     let pool = crate::terrain_base::Pool::read(out.root(), &out.manifest, b)?;
     Ok((plans(&pool.plan, MAX_Z), pool.store.clone()))
 }
@@ -543,9 +542,9 @@ impl Pack {
         let Some(c) = out.get(logical) else { return Ok(None) };
         let p = out.path(c);
         let src: Box<dyn store::range::RangeRead> = if whole {
-            Box::new(std::fs::read(&p).with_context(|| format!("read {}", p.display()))?)
+            Box::new(p.read().with_context(|| format!("read {}", p.display()))?)
         } else {
-            Box::new(store::range::PlainFile::open(&p).with_context(|| format!("open {}", p.display()))?)
+            Box::new(p.open_plain().with_context(|| format!("open {}", p.display()))?)
         };
         let idx = store::pack::PackIndex::read_from(&*src).with_context(|| format!("read {logical}'s index"))?;
         Ok(Some(Pack { idx, src }))
@@ -775,7 +774,7 @@ mod tests {
         };
         crate::fetch::go_offline();
         let net = crate::fetch::Fetcher::from_env();
-        let o = crate::dem::generic::Opts { fetch: &net, store: Some(store) };
+        let o = crate::dem::generic::Opts { fetch: &net, store: Some(store::nasfs::NasPath::local_for_test(store)) };
         let s = Sampler::new(&plan, &o).unwrap();
         let (lon, lat) = ([10.2525, 10.7525, 12.0], [45.5, 45.5, 45.5]);
         let mut got = s.sample(&lon, &lat, &|_| {}).unwrap();
@@ -810,5 +809,44 @@ mod tests {
         assert_eq!(block_logical("terrain", Pole::South, (7, 8)), "layers/polar-terrain-s/polar/4-7-8");
         assert_eq!(blocks(Pole::South).len(), 76);
         assert_eq!(around(Pole::South, (7, 8)).len(), 9);
+    }
+
+    /// REMA's coverage as its index is cut (100 km tiles wholly south of 87° S, measured as the
+    /// input check measures a projected dataset: 1° cells with their neighbours) meets no Web
+    /// Mercator tile's key box at any zoom, so accepting it re-keys only the polar targets; it
+    /// meets the pole's blocks.
+    #[test]
+    fn rema_south_of_87_meets_no_mercator_tile() {
+        let (_, r) = roadcore::polar::forward(Pole::South, 0.0, -87.0);
+        let r = r.abs() / std::f64::consts::SQRT_2 - 1.0;
+        let mut boxes = Vec::new();
+        let n = (2.0 * r / 100_000.0).floor() as i32;
+        for i in 0..n {
+            for j in 0..n {
+                let (x0, y0) = (-r + i as f64 * 100_000.0, -r + j as f64 * 100_000.0);
+                boxes.push([x0, y0, x0 + 100_000.0, y0 + 100_000.0]);
+            }
+        }
+        let cells = crate::dem::declared::projected_cells(3031, &boxes).unwrap();
+        assert_eq!(cells.iter().map(|c| c.1).max(), Some(-87), "to 86° S");
+        let boxes: Vec<[f64; 4]> =
+            cells.iter().map(|&(x, y)| [x as f64, y as f64, x as f64 + 1.0, y as f64 + 1.0]).collect();
+        let cover = crate::dem::declared::Cover::of(Some(&boxes));
+        for z in 0..=6u8 {
+            let last = (1u32 << z) - 1;
+            for x in 0..=last {
+                assert!(!cover.meets(crate::stage::tile_box_grown(z, x, last, 0.0)), "{z}/{x}/{last}");
+            }
+        }
+        assert!(cover.meets(roadcore::polar::lat_box(Pole::South, BLOCK_Z, 7, 7)));
+    }
+
+    /// A pixel's mean leaves out no-data samples, and a 0 beside data (an overview's file edge).
+    #[test]
+    fn a_pixels_mean() {
+        assert_eq!(pixel_mean([2600.0, 2600.0, 0.0, 2600.0].into_iter()), 2600.0);
+        assert_eq!(pixel_mean([f32::NAN, 10.0, 20.0, f32::NAN].into_iter()), 15.0);
+        assert_eq!(pixel_mean([0.0, 0.0, -0.0, 0.0].into_iter()), 0.0);
+        assert!(pixel_mean([f32::NAN; 4].into_iter()).is_nan());
     }
 }

@@ -179,7 +179,7 @@ pub fn tile_box(z: u8, x: u32, y: u32) -> [f64; 4] {
 }
 
 /// Whether tile (z, x, y) meets the disc of radius `r` (m) around the pole.
-pub fn meets_disc(z: u8, x: u32, y: u32, r: f64) -> bool {
+fn meets_disc(z: u8, x: u32, y: u32, r: f64) -> bool {
     let b = tile_box(z, x, y);
     let dx = if b[0] > 0.0 {
         b[0]

@@ -20,7 +20,7 @@ fn main() -> Result<()> {
     if let Some(w) = a.workers {
         rayon::ThreadPoolBuilder::new().num_threads(w.max(1)).build_global()?;
     }
-    let out = pipeline::out::Out::unbound(&a.root, &a.out.join("scratch"))?;
+    let out = pipeline::out::Out::unbound(&store::nasfs::NasRoot::from_arg(&a.root), &a.out.join("scratch"))?;
     // (Over the root's latitudes: z0–3 reach about 80.6° past the cap.)
     let base = pipeline::terrain_base::Pool::read(out.root(), &out.manifest, roadcore::polar::lat_box(pole, 0, 0, 0))?;
     let net = pipeline::fetch::Fetcher::from_env();
