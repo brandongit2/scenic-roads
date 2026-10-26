@@ -1311,7 +1311,7 @@ mod tests {
     #[test]
     fn the_file_stream_keeps_the_newest_files_below_the_root() {
         let s = Store::new(None, "m4");
-        s.set_nas(Some(&store::nasfs::NasRoot::local_for_test(Path::new("/Volumes/p/scenic"))));
+        s.set_nas(Some(&store::nasfs::NasRoot::from_arg("/Volumes/p/scenic")));
         let note = |t: u64, path: &str| FileNote {
             t,
             kind: store::nasio::Kind::Wrote,

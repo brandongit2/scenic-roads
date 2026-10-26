@@ -72,7 +72,7 @@ it (store::nasio) and retries the reads, stats and listings the share fails for 
 The scan covers every item outside `#[cfg(test)]` code and outside store::nasfs. It fails when:
 
 - an item calls `unchecked_path()` and is not in `EXEMPT`, or makes another number of calls than its
-  entry says (51 items, 62 calls when it was built);
+  entry says (50 items, 62 calls when it was built);
 - an item makes a root with `NasRoot::from_arg` and is not in `FROM_ARG` (8 items);
 - an item names a NAS location literally (`/Volumes/`, the NAS's name, the project folder on the
   share, `smb://`) outside store::nas and `LITERALS` (none);
