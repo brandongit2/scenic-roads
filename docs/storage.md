@@ -68,6 +68,13 @@ folder's, so `std::fs::copy` or plain `cp` fail with "Permission denied".
   for each pack key it holds; the landmark points (a sectioned file per z6 tile) are one bundle,
   `markdata/all`. Each file made on the NAS costs a second or so of round trips: the marks and
   overlays jobs made about 450 and 380 a run before (task #449).
+- **Small files are written one by one, not staged and batched** (task #683, measured 26 Oct from
+  the lead's timings, the last 20 runs of each step: 85 h of jobs). Uploads took 5.5 % of job time,
+  nearly all of it bytes of large packs; the jobs made 12,959 files, which at the NAS's measured 28
+  creates/s is 0.15 % of job time. Only heritage-sites (about 720 slices a run, 76 s), stations (230,
+  58 s) and water (1,628, 174 s, one run) make hundreds, and none is on the build's path: the pool was
+  core-bound with the NAS budget at 1–3 %. Staging and batching would buy nothing; measure again if a
+  step starts making thousands of files a run.
 - **The basemap** is Planetiler's worldwide PMTiles file, one per pass, served tile by tile.
 - **Base packs, hidata, markdata and ovdata** are sectioned files: mapped when local, read from the
   NAS in pages (docs/macs.md).
