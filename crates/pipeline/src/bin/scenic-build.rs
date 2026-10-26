@@ -2054,7 +2054,7 @@ fn catalog(
     let p = phase("the last catalogs listed and the records' sizes read", Class::NasRead);
     let due = if delta && last.is_some() { store::catalog::whole_due(&dir)? } else { None };
     if due == Some(true) {
-        eprintln!("catalog: the deltas since the last whole catalog add up to one: this one whole");
+        eprintln!("catalog: a whole catalog is due (the deltas since the last add up to it, or their run is long): this one whole");
     }
     let as_delta = due == Some(false);
     let recorded = out.recorded_sizes()?;
