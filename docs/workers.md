@@ -211,9 +211,9 @@ Common rules:
   page when the coordinator's hash changes, reloading once no task runs. It works only while open
   on screen.
 - **Task files in memory:** a task's files are held in memory beside its programs and counted in
-  its budget. Moving them to the browser's storage (OPFS) wouldn't widen what pages take: a tail's
-  files average about 1 GB, but its programs alone peak past 1.7 GB, past a 1 GB page anyway, and
-  the other kinds' files are tens of MB at most.
+  its budget; none go to the browser's storage (OPFS). Measured 19-26 Oct: a tail's files averaged
+  about 1 GB beside programs peaking past 1.7 GB (past the 1 GB default page ceiling either way),
+  the other kinds' tens of MB at most, and no page asked for work, so none was held back by memory.
 
 ## 8. Native workers
 
