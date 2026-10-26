@@ -4055,10 +4055,9 @@ fn depth_versions(step: &str) -> String {
 }
 
 /// What a depth z6 tile's water digest is made from (`WaterIdx`'s from): its tiles and the ring
-/// around them at each zoom it composes from z9 to its sources' finest there or z14, the
-/// basemap's deepest (z15–16 draw on z14's), as the depth reads them, the rivers too
-/// (`depth_hi_water`).
-pub const DEPTH_WATER_FROM: &str = "depth z9-sources ring +rivers";
+/// around them at each zoom from z9 to z14 that its blocks compose (z15–16 draw on z14's), as the
+/// depth reads them, the rivers too (`depth_hi_water`).
+pub const DEPTH_WATER_FROM: &str = "depth z9-14 composed, ring +rivers";
 /// A depth assembly's: its z3 tile's z6–8, the rivers too ("depth 3/x/y": the terrain's assembly
 /// reads the same tiles without them, "3/x/y").
 pub const DEPTH_LO_WATER_FROM: &str = "depth z6-8 +rivers";
@@ -4115,16 +4114,27 @@ pub fn depth_water_reads(cov: &Coverage, sources: &[crate::depth::grids::Source]
     out
 }
 
-/// The water tiles z6 tile `t`'s depth reads: at each zoom from z9 to the finest of the sources
-/// meeting it (2 km round, as its key's sources), at most the basemap's z14 (z15–16 are drawn from
-/// z14's polygons), its tiles and the ring of one around them (a block reads its neighbours' for
-/// its margin). A change at a zoom it never composes isn't among them.
+/// The water tiles z6 tile `t`'s depth reads: each zoom from z9 at which a block of it composes (a
+/// source of that zoom or finer meets the tile with the blocks' margin, `PAD` pixels of that zoom,
+/// as `build`'s blocks test), at most the basemap's z14 (z15–16 are drawn from z14's polygons):
+/// its tiles there and the ring of one around them (a block reads its neighbours' for its margin).
+/// A change at a zoom it never composes isn't among them.
 fn depth_hi_water(sources: &[crate::depth::grids::Source], t: (u32, u32)) -> Vec<(u8, u32, u32)> {
-    let b = crate::hipack::grow(crate::hipack::tile_bounds(6, t.0, t.1), 2.0);
-    let deg = [f64::from(b[0]) * 1e-7, f64::from(b[1]) * 1e-7, f64::from(b[2]) * 1e-7, f64::from(b[3]) * 1e-7];
-    let top = sources.iter().filter_map(|s| s.max_zoom_in(deg)).max().unwrap_or(0);
-    let top = top.min(crate::depth::build::HI.1).min(crate::depth::build::WATER_Z);
-    (crate::depth::build::HI.0..=top)
+    use crate::depth::{build, compose::PAD};
+    (build::HI.0..=build::HI.1.min(build::WATER_Z))
+        .filter(|&z| {
+            let s = 1i64 << (z - 6);
+            let side = (s * 256) as usize + 2 * PAD;
+            let bbox = crate::depth::grids::window_box(
+                z,
+                i64::from(t.0) * s * 256 - PAD as i64,
+                i64::from(t.1) * s * 256 - PAD as i64,
+                side,
+                side,
+            );
+            // (At z14 a finer source counts too: z15–16's blocks, inside these, read z14's water.)
+            sources.iter().any(|src| src.max_zoom_in(bbox).is_some_and(|m| m >= z))
+        })
         .flat_map(|z| {
             let (s, n) = (1i64 << (z - 6), 1i64 << z);
             let (x0, y0) = (i64::from(t.0) * s, i64::from(t.1) * s);
@@ -8513,6 +8523,20 @@ pub(crate) mod tests {
         let b = keys(&Lakes(vec![(8, x * 4 + 1, y * 4 + 1)]));
         let changed: Vec<&String> = a.keys().filter(|t| a[*t] != b[*t]).collect();
         assert_eq!(changed, [&format!("lo 3/{}/{}", x >> 3, y >> 3)]);
+    }
+
+    /// A z6 tile's water reaches a zoom when a source of it meets the tile within its blocks'
+    /// margin at that zoom, past the key's 2 km too: a z9 grid 0.06° east of tile 28/16 (about
+    /// 3 km at 63°N, within z9's 32-px margin of 0.088° but not z10's 0.044°) adds z9's tiles and
+    /// ring alone.
+    #[test]
+    fn a_depth_tiles_water_follows_its_blocks_margin() {
+        let mut src = depth_sources().remove(1);
+        src.grids[0].bbox = [-16.815, 63.0, -16.5, 63.5];
+        src.grids[0].zoom = 9;
+        let w = depth_hi_water(&[src], (28, 16));
+        assert_eq!(w.len(), 10 * 10, "z9's 8 × 8 tiles and the ring");
+        assert!(w.iter().all(|t| t.0 == 9));
     }
 
     /// The depth chain waits for its sources and its water's digests, then makes the assemblies
