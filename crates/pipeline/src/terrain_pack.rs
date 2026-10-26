@@ -189,11 +189,19 @@ impl Prepared {
 /// A tile's elevations made (docs/steps.md §2, Terrain), but for its water: each quarter whose child
 /// tile exists made again whole from it (`quads`, the children's 2×2 means, their water flattened:
 /// a coarser zoom's pixel is the mean of the finer ones under it); its voids (pixels not
-/// `roadcore::grid::defined`) at sea level. Then `finish` flattens its water.
-pub fn prepare(raw: Vec<u8>, z: u8, x: u32, y: u32, quads: &HashMap<(u32, u32), Vec<f32>>, src: &Sources) -> Prepared {
+/// `roadcore::grid::defined`) at sea level. Then `finish` flattens its water. An error where its
+/// water can't be read: a tile made without it would be kept under a key naming that water.
+pub fn prepare(
+    raw: Vec<u8>,
+    z: u8,
+    x: u32,
+    y: u32,
+    quads: &HashMap<(u32, u32), Vec<f32>>,
+    src: &Sources,
+) -> anyhow::Result<Prepared> {
     let quantum = src.quantum(z, x, y);
     let Ok(mut e) = decode_terrain(&raw) else {
-        return Prepared { e: Vec::new(), before: Vec::new(), water: None, decoded: false, z, quantum };
+        return Ok(Prepared { e: Vec::new(), before: Vec::new(), water: None, decoded: false, z, quantum });
     };
     let before = e.clone();
     for k in 0..4u32 {
@@ -209,14 +217,13 @@ pub fn prepare(raw: Vec<u8>, z: u8, x: u32, y: u32, quads: &HashMap<(u32, u32), 
             *v = 0.0;
         }
     }
-    let water = src.water.and_then(|w| match crate::terrain_water::tile_water(w, z, x, y) {
-        Ok(t) => t,
-        Err(err) => {
-            eprintln!("terrain: the water of {z}/{x}/{y}: {err:#}");
-            None
+    let water = match src.water {
+        Some(w) => {
+            crate::terrain_water::tile_water(w, z, x, y).map_err(|e| e.context(format!("the water of {z}/{x}/{y}")))?
         }
-    });
-    Prepared { e, before, water, decoded: true, z, quantum }
+        None => None,
+    };
+    Ok(Prepared { e, before, water, decoded: true, z, quantum })
 }
 
 /// A prepared tile finished: its water flattened (`levels`: the lakes' levels,
@@ -263,11 +270,11 @@ pub fn process(
     y: u32,
     quads: &HashMap<(u32, u32), Vec<f32>>,
     src: &Sources,
-) -> (Option<Vec<u8>>, bool, Option<Vec<f32>>) {
-    let p = prepare(raw, z, x, y, quads, src);
+) -> anyhow::Result<(Option<Vec<u8>>, bool, Option<Vec<f32>>)> {
+    let p = prepare(raw, z, x, y, quads, src)?;
     let mut levels = HashMap::new();
     crate::terrain_water::add_levels(&mut levels, &p.lake_samples());
-    finish(p, &levels)
+    Ok(finish(p, &levels))
 }
 
 /// Latitude of a tile's centre.
@@ -1375,7 +1382,7 @@ impl<'a> Maker<'a> {
                         self.processed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         return Ok(None);
                     };
-                    Ok(Some((x, y, prepare(b, z, x, y, quads, src))))
+                    Ok(Some((x, y, prepare(b, z, x, y, quads, src)?)))
                 })
                 .collect();
             prepared.into_iter().filter_map(|r| r.transpose()).collect()
@@ -1779,7 +1786,10 @@ impl<'a> Bases<'a> {
         let none = HashMap::new();
         let got: Vec<anyhow::Result<Option<(u32, u32, Prepared)>>> = ts
             .par_iter()
-            .map(|&(x, y)| Ok(self.raw.get(z, x, y)?.0.map(|b| (x, y, prepare(b, z, x, y, &none, self.src)))))
+            .map(|&(x, y)| match self.raw.get(z, x, y)?.0 {
+                Some(b) => Ok(Some((x, y, prepare(b, z, x, y, &none, self.src)?))),
+                None => Ok(None),
+            })
             .collect();
         got.into_iter().filter_map(|r| r.transpose()).collect()
     }
@@ -2308,7 +2318,7 @@ pub fn build_root(out: &mut Out, raw: &dyn RawSource, src: &Sources) -> anyhow::
         for x in 0..n {
             for y in 0..n {
                 let Some(b) = raw.get(z, x, y)?.0 else { continue };
-                let (b, _, q) = process(b, z, x, y, &quads, src);
+                let (b, _, q) = process(b, z, x, y, &quads, src)?;
                 if let Some(q) = q {
                     next.insert((x, y), q);
                 }
@@ -2334,6 +2344,26 @@ pub fn build_root(out: &mut Out, raw: &dyn RawSource, src: &Sources) -> anyhow::
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// A tile whose water can't be read fails (6/18/22 on 25 Oct: every tile's water read failed
+    /// while the NAS restarted, the tiles were made dry and kept under a key naming the water).
+    #[test]
+    fn a_tile_whose_water_cant_be_read_fails() {
+        struct Down;
+        impl crate::terrain_water::WaterSource for Down {
+            fn polys(&self, _: u8, _: u32, _: u32) -> anyhow::Result<Vec<crate::terrain_water::Poly>> {
+                anyhow::bail!("Input/output error (os error 5)")
+            }
+            fn pin(&self) -> String {
+                "down".into()
+            }
+        }
+        let raw = roadcore::grid::encode_terrain_png(&vec![10.0; 256 * 256], 256, 256).unwrap();
+        let src = Sources { water: Some(&Down), deeper: None };
+        let err = prepare(raw.clone(), 12, 1, 2, &HashMap::new(), &src).err().expect("an error");
+        assert!(format!("{err:#}").contains("the water of 12/1/2"), "{err:#}");
+        assert!(process(raw, 12, 1, 2, &HashMap::new(), &src).is_err());
+    }
 
     /// A pack copied here reads the same tiles as the NAS's, and the copy goes with the reader: a
     /// pack it isn't asked to copy, or none there, is read where it is.
@@ -2492,7 +2522,7 @@ pub(crate) mod tests {
             let mut nq = HashMap::new();
             for (x, y) in tiles {
                 let Some(b) = raw.get(z, x, y).unwrap().0 else { continue };
-                let (b, _, qd) = process(b, z, x, y, &quads, &Sources::default());
+                let (b, _, qd) = process(b, z, x, y, &quads, &Sources::default()).unwrap();
                 if let Some(qd) = qd {
                     nq.insert((x, y), qd);
                 }
@@ -3098,7 +3128,7 @@ pub(crate) mod tests {
                         processed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         return Ok(None);
                     };
-                    Ok(Some((x, y, prepare(b, z, x, y, quads, src))))
+                    Ok(Some((x, y, prepare(b, z, x, y, quads, src)?)))
                 })
                 .collect();
             let mut prepared: Vec<(u32, u32, Prepared)> =
@@ -3819,7 +3849,7 @@ pub(crate) mod tests {
             .iter()
             .map(|&x| {
                 let (png, g) = raw(x);
-                (prepare(png, Z, x, y, &HashMap::new(), &src), g)
+                (prepare(png, Z, x, y, &HashMap::new(), &src).unwrap(), g)
             })
             .collect();
         let mut lakes = HashMap::new();
