@@ -1168,10 +1168,10 @@ fn w_none(_: &str, _: bool) -> bool {
     false
 }
 
-/// The clean-up's: it removes the names removed steps made (crate::agent::gc::RETIRED), and
-/// writes nothing.
+/// The clean-up's: it removes the names removed steps made (crate::agent::gc::RETIRED) and the
+/// depth packs no current target names (crate::agent::gc::DepthKeep), and writes nothing.
 fn w_gc(l: &str, removal: bool) -> bool {
-    removal && crate::agent::gc::retired(l)
+    removal && (crate::agent::gc::retired(l) || w_depth(l, true) || w_depth_lo(l, true) || w_depth_shade(l, true))
 }
 
 /// The pass's sources (`sources/osm/<date>/…`: its filtered planet, sets, outlines, extracts, road
@@ -1480,6 +1480,25 @@ mod tests {
             }
         }
         assert_eq!(writes("gc", "base/6-1-1", true), Some(false));
+    }
+
+    /// Task #679: the clean-up removes the depth's packs (a z6 tile's hi, a z3 tile's lo), never
+    /// writes one, and removes no other layer's.
+    #[test]
+    fn the_clean_up_removes_depth_packs_only() {
+        for l in [
+            "layers/depth/hi/6-1-33",
+            "layers/depth-class/hi/6-1-33",
+            "layers/depth-shade/hi/6-1-33",
+            "layers/depth/lo/3-0-4",
+            "layers/depth-shade/lo/3-0-4",
+        ] {
+            assert_eq!(writes("gc", l, true), Some(true), "{l}");
+            assert_eq!(writes("gc", l, false), Some(false), "{l}");
+        }
+        for l in ["layers/terrain/hi/6-1-33", "layers/slope/lo/3-0-4", "hidata/6-1-33"] {
+            assert_eq!(writes("gc", l, true), Some(false), "{l}");
+        }
     }
 
     use super::*;

@@ -2135,6 +2135,21 @@ impl Coordinator {
         (s.costs.clone(), leased, s.history.since(0, usize::MAX), mem)
     }
 
+    /// The targets of `steps` leased now, every Mac's.
+    pub fn leased_targets(&self, steps: &[&str]) -> Vec<(String, String)> {
+        let s = self.shared.lock().unwrap();
+        let now = s.now();
+        let mut out = Vec::new();
+        for l in s.leases.all(now) {
+            if let Work::Job { step, targets } = &l.work {
+                if steps.contains(&step.as_str()) {
+                    out.extend(targets.iter().map(|(t, _)| (step.clone(), t.clone())));
+                }
+            }
+        }
+        out
+    }
+
     /// The targets of `step` leased now, by worker (a job's, every Mac's: the lead's own are by
     /// grant too).
     pub fn leased_of(&self, step: &str) -> BTreeMap<String, usize> {

@@ -90,12 +90,22 @@ of the lead's own (`QUIET_AGE`); running, it yields to a target held back for th
   an accepted index, an unmerged journal entry or an index of the last 14 days names them.
 - **Removed steps' data** (`agent::gc::RETIRED`, logical-name prefixes; today `sources/terrain-z8-`,
   the worldwide z8 terrain removed by task #670): each run first drops every manifest name under one,
-  as the `gc` job's own change through `Out` (its write-set is these removals alone,
-  `agent::steps`): in the pool a hand-off the lead merges into its records in one save, as any
+  as the `gc` job's own change through `Out` (its write-set: these removals and the depth packs'
+  below, `agent::steps`): in the pool a hand-off the lead merges into its records in one save, as any
   job's (pool.md §7.3). With nothing left to drop it writes nothing. The files then go by the rule
   above, in each prefix's folder: kept while a catalog of the window, the manifest, the records or
   an unmerged entry names them. A step whose code is deleted adds its outputs' prefix there, so
   "removed" means its data deleted too; no step may make a name under one.
+- **Depth packs no target names** (task #679): in the same drop, every depth pack (the `depth`,
+  `depth-class` and `depth-shade` layers' z6 hi and z3 lo packs) whose tile no current depth
+  target names: the z6 tiles and z3 tiles the coverage and the declared depth sources make
+  targets (`build::depth_kept`, as the planner's `depth_tiles`, whatever their water's keys), and
+  those leased now. The agent writes them to its home (`gc-depth-keep.json`) as each plan finds
+  GC due and passes them (`scenic gc --depth-keep`); none found (sources or coverage unreadable, no
+  source declared, an empty coverage), or the file over an hour old (`DEPTH_KEEP_FRESH_S`), no
+  depth name is dropped that run. That covers the targets the coverage left and those the depth's
+  rules no longer make (a z6 tile no source finer than z8 meets). Their files then go by the rule
+  above (`layers/` is swept). `scenic gc --dry-run` counts them, writing nothing.
 - Never swept: the newest pass, a planet waiting for its pass, the rest of `sources/`, inputs,
   state, app and nas.
 

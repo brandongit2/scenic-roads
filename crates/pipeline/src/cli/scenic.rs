@@ -192,6 +192,10 @@ pub enum Cmd {
         /// Files replaced this many days ago or more
         #[arg(long, value_name = "N", default_value_t = 14)]
         days: u64,
+        /// The depth's current targets (the agent writes them, agent::gc::DepthKeep): its packs
+        /// no target names are dropped
+        #[arg(long, value_name = "FILE")]
+        depth_keep: Option<PathBuf>,
         #[command(flatten)]
         root: Root,
     },

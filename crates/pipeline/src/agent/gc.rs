@@ -15,8 +15,9 @@
 //! the manifest (or the newest records) names them, an accepted index it names lists them, a
 //! journal entry not yet merged does, or an index made or replaced within `keep_days` lists them
 //! (`inputs_kept`; none swept when one of those can't be read).
-//! What removed steps made (`RETIRED`): the run first drops their names from the manifest through
-//! the records (`drop_retired`), then their files go by the same rule as any content-named file.
+//! What removed steps made (`RETIRED`) and the depth packs of tiles no current depth target names
+//! (`DepthKeep`): the run first drops their names from the manifest through the records
+//! (`drop_names`), then their files go by the same rule as any content-named file.
 //! The newest pass, a planet waiting for its pass, the rest of `sources/`, the user's folders (the
 //! inputs folders), state and the app are never touched. With no readable catalog nothing is deleted.
 
@@ -39,6 +40,9 @@ pub struct Report {
     pub young: usize,
     /// The names removed steps made (`RETIRED`) this run dropped from the manifest.
     pub retired_dropped: usize,
+    /// The depth packs no current depth target names (`DepthKeep`) this run dropped from the
+    /// manifest (a dry run: would drop).
+    pub depth_dropped: usize,
     /// Of the removed, files of retired passes' sources and of removed steps (and their bytes).
     pub retired_removed: usize,
     pub retired_bytes: u64,
@@ -71,7 +75,7 @@ pub struct Report {
 const NEVER: [&str; 7] = ["translations", "descriptions", "inputs", "state", "app", "nas", "sources"];
 
 /// The logical-name prefixes of what removed steps made (removed means deleted): GC's run drops
-/// every name the manifest has under one, in one save of the records (`drop_retired`: a hand-off
+/// every name the manifest has under one, in one save of the records (`drop_names`: a hand-off
 /// of the `gc` job's, merged by the lead as any job's, its write-set these removals alone,
 /// crate::agent::steps), and its files then go as any no catalog, manifest or records name, once
 /// old (`sweep_retired_names`): a catalog of the last `keep_days` naming one keeps it. A step whose
@@ -86,19 +90,124 @@ pub fn retired(l: &str) -> bool {
     RETIRED.iter().any(|p| l.starts_with(p))
 }
 
-/// Drops the names removed steps made (`RETIRED`) from the build's manifest at `root`, as the `gc`
-/// step's job (`Out`, its scratch `scratch`): in the pool a hand-off the lead merges, else saved
-/// under the build lock. How many; none named, nothing written, so a run after is a no-op.
-pub fn drop_retired(root: &store::nasfs::NasRoot, scratch: &std::path::Path) -> Result<usize> {
+/// The depth's current targets as the agent's last plan found them (`build::depth_kept`: the z3 and
+/// z6 tiles the coverage and the declared sources make targets, and those leased now), written to
+/// the agent's home as the `gc` job is planned (`DEPTH_KEEP_FILE`) and passed by `--depth-keep`. A
+/// depth pack is dropped only when no tile of these names it (`orphan`): an assembly's and the
+/// floor's shading's lo packs by their z3 tile, a z6 tile's hi packs by it. None read (no file, one
+/// not fresh, one unreadable), no depth name is dropped.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, serde::Deserialize)]
+pub struct DepthKeep {
+    /// When the plan found them (unix seconds).
+    pub at: u64,
+    /// The z3 tiles: the assemblies' and the floor's shading's targets.
+    pub lo: BTreeSet<(u32, u32)>,
+    /// The z6 tiles: the `depth` step's targets.
+    pub hi: BTreeSet<(u32, u32)>,
+}
+
+/// The depth's steps, whose leased targets `DepthKeep` keeps (`with_leased`).
+pub const DEPTH_STEPS: [&str; 3] = ["depth-lo", "depth", "depth-shade"];
+
+/// The file in the agent's home `DepthKeep` is written to.
+pub const DEPTH_KEEP_FILE: &str = "gc-depth-keep.json";
+/// How old a `DepthKeep` may be when GC reads it: an hour. The agent writes it at each plan while
+/// GC is due, so a job started from that plan reads one minutes old; one older (a job restarted
+/// after a sleep, a plan that stopped) drops no depth name that run.
+pub const DEPTH_KEEP_FRESH_S: u64 = 3600;
+
+impl DepthKeep {
+    /// The one at `p` if fresh at `now`; why not otherwise (none there: Ok(None)).
+    pub fn read(p: &std::path::Path, now: u64) -> Result<Option<DepthKeep>> {
+        let b = match std::fs::read(p) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e).with_context(|| format!("read {}", p.display())),
+        };
+        let k: DepthKeep = serde_json::from_slice(&b).with_context(|| format!("parse {}", p.display()))?;
+        anyhow::ensure!(
+            now.saturating_sub(k.at) <= DEPTH_KEEP_FRESH_S && k.at <= now + 60,
+            "the depth's targets in {} are from {} s ago, not within {DEPTH_KEEP_FRESH_S} s",
+            p.display(),
+            now as i64 - k.at as i64
+        );
+        Ok(Some(k))
+    }
+
+    /// With the targets of the depth's steps leased now (`leased`: step, target): a job running
+    /// for a tile the coverage left since it was planned keeps its tile's packs this run.
+    pub fn with_leased(mut self, leased: &[(String, String)]) -> DepthKeep {
+        for (step, t) in leased {
+            if let Some(u) = crate::legacy::TileId::parse(t) {
+                match (step.as_str(), u.z) {
+                    ("depth", 6) => self.hi.insert((u.x, u.y)),
+                    ("depth-lo" | "depth-shade", 3) => self.lo.insert((u.x, u.y)),
+                    _ => false,
+                };
+            }
+        }
+        self
+    }
+
+    /// Whether logical name `l` is a depth pack (crate::depth's layers, a z6 tile's hi or a z3
+    /// tile's lo) of a tile no current target names.
+    pub fn orphan(&self, l: &str) -> bool {
+        use crate::depth::{CLASS_LAYER, LAYER, SHADE_LAYER};
+        let Some(r) = l.strip_prefix("layers/") else { return false };
+        let Some((ly, r)) = r.split_once('/') else { return false };
+        if ![LAYER, CLASS_LAYER, SHADE_LAYER].contains(&ly) {
+            return false;
+        }
+        let tile = |r: &str, z: &str| -> Option<(u32, u32)> {
+            let (x, y) = r.strip_prefix(z)?.strip_prefix('-')?.split_once('-')?;
+            Some((x.parse().ok()?, y.parse().ok()?))
+        };
+        if let Some(t) = r.strip_prefix("hi/").and_then(|r| tile(r, "6")) {
+            return !self.hi.contains(&t);
+        }
+        if let Some(t) = r.strip_prefix("lo/").and_then(|r| tile(r, "3")) {
+            return !self.lo.contains(&t);
+        }
+        false
+    }
+}
+
+/// Whether the clean-up drops logical name `l`: a removed step's (`RETIRED`), or a depth pack no
+/// current target names (`depth`).
+fn dropped(l: &str, depth: Option<&DepthKeep>) -> bool {
+    retired(l) || depth.is_some_and(|k| k.orphan(l))
+}
+
+/// Drops from the build's manifest at `root` the names removed steps made (`RETIRED`) and the depth
+/// packs no current target names (`depth`), as the `gc` step's job (`Out`, its scratch `scratch`):
+/// in the pool a hand-off the lead merges, else saved under the build lock. How many of each
+/// (removed steps', depth's); none named, nothing written, so a run after is a no-op. A dry run
+/// counts them from the manifest, writing nothing.
+pub fn drop_names(
+    root: &store::nasfs::NasRoot,
+    scratch: &std::path::Path,
+    depth: Option<&DepthKeep>,
+    dry_run: bool,
+) -> Result<(usize, usize)> {
+    let count = |names: &[&String]| {
+        let r = names.iter().filter(|l| retired(l)).count();
+        (r, names.len() - r)
+    };
+    if dry_run {
+        let m: std::collections::BTreeMap<String, String> =
+            crate::out::read_record(&root.join("state/build/manifest.json"))?;
+        let names: Vec<&String> = m.keys().filter(|l| dropped(l, depth)).collect();
+        return Ok(count(&names));
+    }
     let mut out = crate::out::Out::open(root, scratch, STEP)?;
-    let names: Vec<String> = out.manifest.keys().filter(|l| retired(l)).cloned().collect();
+    let names: Vec<String> = out.manifest.keys().filter(|l| dropped(l, depth)).cloned().collect();
     for l in &names {
         out.remove(l);
     }
     if !names.is_empty() {
         out.save()?;
     }
-    Ok(names.len())
+    Ok(count(&names.iter().collect::<Vec<_>>()))
 }
 
 /// What the pool's records and journal name beyond today's manifest (docs/pool.md §7.3, §7.7): the
@@ -347,26 +456,24 @@ fn meta(listed: u64, stats: u64, deletes: u64) {
 
 /// `run_once`, its NAS work counted from its start and noted as it ends (`note_cost`), in a job
 /// (`SCENIC_COSTS` set).
-pub fn run(root: &store::nasfs::NasRoot, keep_days: u64, dry_run: bool) -> Result<Report> {
+/// `depth`: the depth's current targets (`DepthKeep`; None: no depth name dropped).
+pub fn run(root: &store::nasfs::NasRoot, keep_days: u64, dry_run: bool, depth: Option<&DepthKeep>) -> Result<Report> {
     STARTED.get_or_init(std::time::Instant::now);
     if std::env::var_os("SCENIC_COSTS").is_some() {
         COUNTING.set(true);
         crate::costin::begin();
     }
-    // (The removed steps' names first; a failure is said and tried again next run, never fails GC.
-    // Its scratch only a folder: a removal writes nothing.)
-    let mut dropped = Ok(0);
-    if !dry_run {
-        static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let scratch = std::env::temp_dir().join(format!("scenic-gc-{}-{n}", std::process::id()));
-        dropped = drop_retired(root, &scratch);
-        std::fs::remove_dir_all(&scratch).ok();
-    }
+    // (The names to drop first; a failure is said and tried again next run, never fails GC. Its
+    // scratch only a folder: a removal writes nothing.)
+    static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let scratch = std::env::temp_dir().join(format!("scenic-gc-{}-{n}", std::process::id()));
+    let dropped = drop_names(root, &scratch, depth, dry_run);
+    std::fs::remove_dir_all(&scratch).ok();
     let r = run_once(root, keep_days, dry_run).map(|mut rep| {
         match &dropped {
-            Ok(n) => rep.retired_dropped = *n,
-            Err(e) => rep.warnings.push(format!("removed steps' names not dropped: {e:#}")),
+            Ok((r, d)) => (rep.retired_dropped, rep.depth_dropped) = (*r, *d),
+            Err(e) => rep.warnings.push(format!("names not dropped: {e:#}")),
         }
         // The history's old days, one tar a day (task #531); a failure is said, never fails GC.
         match super::histarchive::run(root, crate::agent::jobs::now_s(), dry_run, &yield_point) {
@@ -888,7 +995,7 @@ mod tests {
             store::catalog::FileRef { file: kept.into(), ..Default::default() },
         );
         store::catalog::write(&root.join("catalog"), &cat).unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None).unwrap();
         assert_eq!((r.removed, r.tmp_removed, r.young), (1, 1, 1));
         assert!(root.join(kept).exists());
         assert!(!root.join("layers/roads/hi/6-1-2.fedcba9876543210.pack").exists());
@@ -947,7 +1054,7 @@ mod tests {
         }
         store::catalog::write(&root.join("catalog"), &cat).unwrap();
         YIELD_CHECKS.set(0);
-        run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
+        run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None).unwrap();
         // (layers, layers/a and its six folders.)
         assert!(YIELD_CHECKS.get() >= 8, "{}", YIELD_CHECKS.get());
     }
@@ -970,7 +1077,7 @@ mod tests {
         mk(1, "layers/a/hi/6-1-1.1111111111111111.pack");
         mk(2, "layers/a/hi/6-1-1.2222222222222222.pack");
         mk(3, "layers/a/hi/6-1-1.3333333333333333.pack");
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None).unwrap();
         assert_eq!((r.catalogs_kept, r.catalogs_removed, r.removed), (1, 2, 2));
         assert!(root.join("layers/a/hi/6-1-1.3333333333333333.pack").exists());
         assert_eq!(store::catalog::latest(&root.join("catalog")).unwrap().unwrap().n, 3);
@@ -1002,7 +1109,7 @@ mod tests {
             }
             prev = Some(cat);
         }
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None).unwrap();
         // (3 and 4 kept, read; 1 and 2 kept as what 3 is read through, their files not kept for them
         // but 3's names them all.)
         assert_eq!((r.catalogs_kept, r.catalogs_removed, r.removed), (2, 0, 0));
@@ -1030,7 +1137,7 @@ mod tests {
         store::catalog::write(&root.join("catalog"), &cat2).unwrap();
         fs::create_dir_all(root.join("state/build")).unwrap();
         fs::write(root.join("state/build/manifest.json"), format!("{{\"base/6-1-1\": \"{f}\"}}")).unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None).unwrap();
         assert_eq!(r.removed, 0);
         assert!(root.join(f).exists());
     }
@@ -1056,7 +1163,7 @@ mod tests {
         put("sources/osm/2027-03-01/planet.osm.pbf", 1);
         put("sources/registers/legacy.5555555555555555.tar.zst", 300);
         store::catalog::write(&root.join("catalog"), &store::catalog::Catalog::new(1)).unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None).unwrap();
         assert_eq!(r.retired_removed, 3, "{r:?}");
         assert!(
             !root.join("sources/osm/2026-03-01").exists() && !root.join("sources/items/2026-03-01").exists(),
@@ -1074,7 +1181,7 @@ mod tests {
         put("sources/osm/2026-03-01/planet.osm.pbf", 200);
         put("sources/osm/2026-03-01/roads/6-1-1.6666666666666666.bin", 200);
         put("sources/osm/2026-09-28/pass.3333333333333333.json", 3);
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None).unwrap();
         assert_eq!(r.retired_removed, 1);
         assert!(root.join("sources/osm/2026-03-01/planet.osm.pbf").exists());
     }
@@ -1141,7 +1248,7 @@ mod tests {
             at: 1_791_500_000,
         };
         crate::pool::journal::write(&store::nasfs::NasRoot::local_for_test(&root), &entry).unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None).unwrap();
         assert_eq!(r.inputs_skipped, None);
         assert_eq!(r.inputs_removed, 3, "{r:?}");
         assert!(
@@ -1170,7 +1277,7 @@ mod tests {
             &index("_gate-test", &[&format!("{u}/a.cccccccccccccccc.jsonl")]),
             1,
         );
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None).unwrap();
         assert_eq!(r.inputs_removed, 0, "{r:?}");
         assert!(root.join(format!("{u}/a.cccccccccccccccc.jsonl")).exists());
         // Its touch failed (its time 30 days old), but the check's state made yesterday names it
@@ -1184,7 +1291,7 @@ mod tests {
             40,
         );
         put(&format!("{n}/@listed.bbbbbbbbbbbbbbbb.json"), &serde_json::json!({"fmt": 1, "unit": "_gate-nest/inner", "listed": {}, "replaced": format!("{n}/@index.aaaaaaaaaaaaaaaf.json")}).to_string(), 2);
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None).unwrap();
         assert_eq!(r.inputs_removed, 0, "{r:?}");
         assert!(
             root.join(format!("{u}/a.cccccccccccccccc.jsonl")).exists()
@@ -1192,13 +1299,13 @@ mod tests {
         );
         // 15 days after it was replaced (the state that named it that old too): gone, with its index.
         age(&root.join(format!("{u}/@listed.eeeeeeeeeeeeeeee.json")), 15);
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None).unwrap();
         assert_eq!(r.inputs_removed, 3, "the copy, its index, the old state: {r:?}");
         assert!(!root.join(format!("{u}/a.cccccccccccccccc.jsonl")).exists());
         // An index named that can't be read: nothing there swept.
         put(&format!("{u}/a.aaaaaaaaaaaaaaaa.jsonl"), "x", 60);
         fs::write(root.join(format!("{u}/@index.5555555555555555.json")), b"{not json").unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None).unwrap();
         assert!(r.inputs_skipped.is_some() && r.inputs_removed == 0);
         assert!(root.join(format!("{u}/a.aaaaaaaaaaaaaaaa.jsonl")).exists());
     }
@@ -1250,7 +1357,7 @@ mod tests {
             at: 1_791_500_000,
         };
         journal::write(&nas, &e).unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None).unwrap();
         assert_eq!((r.unmerged, r.removed), (1, 1), "{r:?}");
         assert!(root.join(a).exists() && root.join(b).exists() && !root.join(c).exists());
         // Merged (term 1's records reflect it, naming nothing of it: replaced since): its files go.
@@ -1261,7 +1368,7 @@ mod tests {
         let mut rec = crate::pool::records::Records { term: 1, ..Default::default() };
         rec.reflected.insert(e.key().unwrap());
         rec.save(&nas).unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None).unwrap();
         assert_eq!((r.unmerged, r.removed), (0, 2), "{r:?}");
         // A term led: an entry that doesn't read whole (short, of whatever day: a read cut short
         // says nothing of it), or reads damaged: GC fails, nothing removed, every run, until the
@@ -1277,7 +1384,7 @@ mod tests {
         let short_key = format!("{}/1-5", journal::day(now - 10 * 86400).unwrap());
         entry_at(&short_key, b"{\"member\": ");
         for _ in 0..2 {
-            let e = format!("{:#}", run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap_err());
+            let e = format!("{:#}", run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None).unwrap_err());
             assert!(e.contains("nothing removed") && e.contains("1-5"), "{e}");
             assert!(root.join(c).exists());
         }
@@ -1285,12 +1392,12 @@ mod tests {
         entry_at(&damaged_key, b"{\"not\": \"an entry\"}");
         rec.rejected.insert(short_key, "never whole".into());
         rec.save(&nas).unwrap();
-        let e = format!("{:#}", run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap_err());
+        let e = format!("{:#}", run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None).unwrap_err());
         assert!(e.contains("damaged") && root.join(c).exists(), "{e}");
         // Both refused by the lead: passed over, the sweep goes on.
         rec.rejected.insert(damaged_key, "damaged".into());
         rec.save(&nas).unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None).unwrap();
         // (The journal's GC marks the old entries, refused or merged: its own note, said.)
         assert!(r.removed == 1 && r.warnings.iter().all(|w| w.starts_with("journal: marked")), "{r:?}");
         // No term led (its term not readable whole): no one refuses. An entry unreadable from today
@@ -1299,11 +1406,11 @@ mod tests {
         fs::write(root.join(crate::pool::term::DIR).join("1.json"), b"{\"term\": ").unwrap();
         put(c, 60);
         let young = entry_at(&format!("{}/1-8", journal::day(now).unwrap()), b"{\"member\": ");
-        let e = format!("{:#}", run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap_err());
+        let e = format!("{:#}", run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None).unwrap_err());
         assert!(e.contains("1-8") && root.join(c).exists(), "{e}");
         fs::remove_file(&young).unwrap();
         entry_at(&format!("{}/1-7", journal::day(now - 10 * 86400).unwrap()), b"{\"member\": ");
-        let mut r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
+        let mut r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None).unwrap();
         // (The journal's GC waits for a lead: its own note.)
         r.warnings.retain(|w| !w.starts_with("journal: "));
         assert!(
@@ -1362,12 +1469,12 @@ mod tests {
         store::catalog::write(&root.join("catalog"), &cat).unwrap();
         fs::create_dir_all(root.join("state/build")).unwrap();
         fs::write(root.join("state/build/manifest.json"), "{}").unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None).unwrap();
         assert!(r.tombs == 1 && p.exists() && !tomb.exists() && r.removed == 0, "put back, decided next run: {r:?}");
         // (Its name a young file of the same bytes, uploaded again meanwhile.)
         fs::File::options().write(true).open(&p).unwrap().set_modified(SystemTime::now()).unwrap();
         fs::write(&tomb, b"x").unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None).unwrap();
         assert!(r.tombs == 1 && !tomb.exists() && p.exists(), "its name taken: the tombstone's copy goes: {r:?}");
         // (The upload's time kept, not the tombstone's: never replaced by it.)
         assert!(
@@ -1383,7 +1490,7 @@ mod tests {
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(&p, b"x").unwrap();
         age(&p, 300);
-        let r = run(&store::nasfs::NasRoot::local_for_test(d.path()), 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(d.path()), 14, false, None).unwrap();
         assert_eq!((r.removed, r.files_seen), (0, 0));
         assert!(p.exists());
     }
@@ -1424,7 +1531,7 @@ mod tests {
             .insert("sources/terrain-z8-v3".into(), store::catalog::FileRef { file: v3.into(), ..Default::default() });
         store::catalog::write(&root.join("catalog"), &cat).unwrap();
         let nas = store::nasfs::NasRoot::local_for_test(root);
-        let r = run(&nas, 14, false).unwrap();
+        let r = run(&nas, 14, false, None).unwrap();
         assert_eq!(r.retired_dropped, 3, "{:?}", r.warnings);
         let m: std::collections::BTreeMap<String, String> = serde_json::from_slice(&fs::read(&mpath).unwrap()).unwrap();
         assert_eq!(m.keys().collect::<Vec<_>>(), ["base/6-1-1"]);
@@ -1434,13 +1541,13 @@ mod tests {
         // Again: nothing to drop, the manifest left as it was; the one put back goes now.
         let before = fs::metadata(&mpath).unwrap().modified().unwrap();
         age(&root.join(v1max), 30);
-        let r = run(&nas, 14, false).unwrap();
+        let r = run(&nas, 14, false, None).unwrap();
         assert_eq!((r.retired_dropped, r.retired_removed), (0, 1));
         assert_eq!(fs::metadata(&mpath).unwrap().modified().unwrap(), before);
         assert!(!root.join(v1max).exists() && root.join(v3).exists());
-        // A dry run drops nothing.
+        // A dry run counts, writing nothing.
         fs::write(&mpath, manifest.to_string()).unwrap();
-        assert_eq!(run(&nas, 14, true).unwrap().retired_dropped, 0);
+        assert_eq!(run(&nas, 14, true, None).unwrap().retired_dropped, 3, "a dry run counts what it would drop");
         assert_eq!(fs::read(&mpath).unwrap(), manifest.to_string().as_bytes());
     }
 
@@ -1468,5 +1575,162 @@ mod tests {
         let mut out = crate::out::Out::open(&nas, &d.path().join("s"), STEP).unwrap().handing_off(&hand);
         out.remove("base/6-1-1");
         assert!(out.save().is_err());
+    }
+
+    /// Task #679: the depth's targets as the agent's plan finds them (z3 tile 0/4, z6 tile 1/33).
+    fn keep() -> DepthKeep {
+        DepthKeep { at: crate::agent::jobs::now_s(), lo: [(0, 4)].into(), hi: [(1, 33)].into() }
+    }
+
+    /// Task #679: a depth pack goes only when no current target names its tile: a z6 tile's hi
+    /// packs (depth, classes, shading) by it, a z3 tile's lo packs (the assembly's and the floor's
+    /// shading's) by it; nothing else, whatever its tile.
+    #[test]
+    fn a_depth_pack_is_an_orphan_only_when_no_target_names_its_tile() {
+        let k = keep();
+        for l in ["layers/depth/hi/6-1-33", "layers/depth-class/hi/6-1-33", "layers/depth-shade/hi/6-1-33"] {
+            assert!(!k.orphan(l), "{l}");
+        }
+        for l in ["layers/depth/lo/3-0-4", "layers/depth-class/lo/3-0-4", "layers/depth-shade/lo/3-0-4"] {
+            assert!(!k.orphan(l), "{l}");
+        }
+        for l in [
+            "layers/depth/hi/6-2-33",
+            "layers/depth-class/hi/6-1-34",
+            "layers/depth-shade/lo/3-1-4",
+            "layers/depth/lo/3-0-5",
+        ] {
+            assert!(k.orphan(l), "{l}");
+        }
+        // (Not a depth pack, or not a tile as the depth names them: never.)
+        for l in [
+            "layers/terrain/hi/6-2-33",
+            "layers/depthx/hi/6-2-33",
+            "layers/depth/hi/7-2-33",
+            "layers/depth/lo/6-2-33",
+            "layers/depth/hi/6-2",
+            "layers/depth/root",
+            "sources/depth/6-2-33",
+        ] {
+            assert!(!k.orphan(l), "{l}");
+        }
+    }
+
+    /// Task #679: the depth's targets are read only fresh; none there, none read (no depth name
+    /// dropped); one stale or damaged, an error (said, no depth name dropped).
+    #[test]
+    fn the_depth_targets_are_read_only_fresh() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join(DEPTH_KEEP_FILE);
+        let now = crate::agent::jobs::now_s();
+        assert!(DepthKeep::read(&p, now).unwrap().is_none());
+        let k = keep();
+        fs::write(&p, serde_json::to_vec(&k).unwrap()).unwrap();
+        assert_eq!(DepthKeep::read(&p, now).unwrap(), Some(k.clone()));
+        assert!(DepthKeep::read(&p, k.at + DEPTH_KEEP_FRESH_S + 1).is_err());
+        fs::write(&p, b"{\"at\": ").unwrap();
+        assert!(DepthKeep::read(&p, now).is_err());
+    }
+
+    /// Task #679: the depth packs no current target names leave the manifest in one save, with the
+    /// removed steps' names; every other name stays (a target's packs, other layers' of the same
+    /// tile). Their files then go once old, but one a catalog of the window names stays; a file a
+    /// running depth job uploaded (its entry unmerged) stays. Without the targets, no depth name
+    /// goes; a dry run counts them, writing nothing; a run after drops nothing.
+    #[test]
+    fn depth_packs_no_target_names_leave_the_manifest_and_their_files_go() {
+        use crate::pool::journal::{self, Entry, LeaseId};
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let kept_hi = "layers/depth/hi/6-1-33.1111111111111111.pack";
+        let kept_lo = "layers/depth-shade/lo/3-0-4.2222222222222222.pack";
+        let gone_hi = "layers/depth/hi/6-2-33.3333333333333333.pack";
+        let gone_class = "layers/depth-class/hi/6-2-33.4444444444444444.pack";
+        let gone_lo = "layers/depth/lo/3-5-5.5555555555555555.pack";
+        let terrain = "layers/terrain/hi/6-2-33.6666666666666666.pack";
+        let z8 = "sources/terrain-z8-v1.7777777777777777.pack";
+        // (A running depth job's upload for the orphan tile, its entry written, not merged.)
+        let running = "layers/depth-shade/hi/6-2-33.8888888888888888.pack";
+        for f in [kept_hi, kept_lo, gone_hi, gone_class, gone_lo, terrain, z8, running] {
+            fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
+            fs::write(root.join(f), b"x").unwrap();
+            age(&root.join(f), 30);
+        }
+        let logical = |c: &str| c.split_once('.').unwrap().0.to_string();
+        let manifest: std::collections::BTreeMap<String, String> =
+            [kept_hi, kept_lo, gone_hi, gone_class, gone_lo, terrain, z8]
+                .iter()
+                .map(|c| (logical(c), c.to_string()))
+                .collect();
+        fs::create_dir_all(root.join("state/build")).unwrap();
+        let mpath = root.join("state/build/manifest.json");
+        let text = serde_json::to_string(&manifest).unwrap();
+        fs::write(&mpath, &text).unwrap();
+        // A catalog in the window still serves the orphan's classes: kept.
+        let mut cat = store::catalog::Catalog::new(1);
+        cat.files
+            .insert(logical(gone_class), store::catalog::FileRef { file: gone_class.into(), ..Default::default() });
+        store::catalog::write(&root.join("catalog"), &cat).unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(root);
+        let mut h = crate::handoff::Handoff::default();
+        h.changes.insert(logical(running), Some(running.into()));
+        let e = Entry {
+            member: "m-0000000000000002".into(),
+            lease: LeaseId { term: 1, n: 4 },
+            step: "depth".into(),
+            handoff: h,
+            at: 1_791_500_000,
+        };
+        journal::write(&nas, &e).unwrap();
+        let k = keep();
+        // Without the targets: no depth name goes (the removed step's does).
+        assert_eq!(drop_names(&nas, &d.path().join("s"), None, true).unwrap(), (1, 0));
+        // A dry run counts, writing nothing.
+        let r = run(&nas, 14, true, Some(&k)).unwrap();
+        assert_eq!((r.retired_dropped, r.depth_dropped), (1, 3), "{:?}", r.warnings);
+        assert_eq!(fs::read_to_string(&mpath).unwrap(), text);
+        let r = run(&nas, 14, false, Some(&k)).unwrap();
+        assert_eq!((r.retired_dropped, r.depth_dropped), (1, 3), "{:?}", r.warnings);
+        let m: std::collections::BTreeMap<String, String> = serde_json::from_slice(&fs::read(&mpath).unwrap()).unwrap();
+        assert_eq!(
+            m.keys().collect::<Vec<_>>(),
+            ["layers/depth-shade/lo/3-0-4", "layers/depth/hi/6-1-33", "layers/terrain/hi/6-2-33"]
+        );
+        for f in [kept_hi, kept_lo, terrain, gone_class, running] {
+            assert!(root.join(f).exists(), "{f}");
+        }
+        for f in [gone_hi, gone_lo, z8] {
+            assert!(!root.join(f).exists(), "{f}");
+        }
+        // Again: nothing to drop, the manifest left as it was.
+        let before = fs::metadata(&mpath).unwrap().modified().unwrap();
+        let r = run(&nas, 14, false, Some(&k)).unwrap();
+        assert_eq!((r.retired_dropped, r.depth_dropped), (0, 0));
+        assert_eq!(fs::metadata(&mpath).unwrap().modified().unwrap(), before);
+    }
+
+    /// Task #679: a depth job leased for a tile the coverage has left since keeps its packs; other
+    /// steps' leases keep nothing.
+    #[test]
+    fn a_running_depth_job_keeps_its_tiles_packs() {
+        let leased = [
+            ("depth".to_string(), "6/2/33".to_string()),
+            ("depth-shade".to_string(), "3/1/4".to_string()),
+            ("depth-lo".to_string(), "3/5/5".to_string()),
+            ("terrain-hi".to_string(), "6/9/9".to_string()),
+            ("depth".to_string(), "3/7/7".to_string()),
+        ];
+        let k = keep().with_leased(&leased);
+        for l in [
+            "layers/depth/hi/6-2-33",
+            "layers/depth-shade/lo/3-1-4",
+            "layers/depth-class/lo/3-5-5",
+            "layers/depth/hi/6-1-33",
+        ] {
+            assert!(!k.orphan(l), "{l}");
+        }
+        for l in ["layers/depth/hi/6-9-9", "layers/depth/lo/3-7-7"] {
+            assert!(k.orphan(l), "{l}");
+        }
     }
 }

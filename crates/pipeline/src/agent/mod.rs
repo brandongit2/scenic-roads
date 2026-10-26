@@ -1454,6 +1454,9 @@ pub struct Agent {
     /// The terrain packs' indexes, which the z6 tiles' keys read (`tiles`, kept in `pack-idx/`): those
     /// the manifest names, each read once.
     tiles: std::cell::RefCell<tiles::TerrainTiles>,
+    /// The depth's targets as the last plan found them, for GC (`build::depth_kept`; None: not
+    /// found then, and no depth pack is dropped).
+    depth_keep: std::cell::RefCell<Option<gc::DepthKeep>>,
     /// The coverage and each region's as last made, with what they were made from (`coverage`).
     coverage: std::cell::RefCell<Option<(String, std::sync::Arc<Coverages>)>>,
     /// The coverage being read off the loop (`coverage`), by the accepted version it's of.
@@ -1923,6 +1926,7 @@ impl Agent {
             steps_making: None,
             reach: Default::default(),
             tiles,
+            depth_keep: Default::default(),
             coverage: Default::default(),
             coverage_making: Default::default(),
             edits: Default::default(),
@@ -7125,10 +7129,19 @@ impl Agent {
             });
         }
         if self.due("gc", Duration::from_secs(86400)) {
+            // (The depth's targets for its clean-up, from this plan and the leases now: written as
+            // each plan finds GC due, so the job reads them minutes old; none found, none there.)
+            let keep = self.o.home.join(gc::DEPTH_KEEP_FILE);
+            let leased = self.coord.as_ref().map(|c| c.leased_targets(&gc::DEPTH_STEPS)).unwrap_or_default();
+            let found = self.depth_keep.borrow().clone().map(|k| k.with_leased(&leased));
+            let written = found.map(|k| store::whole::write(&keep, &serde_json::to_vec(&k).unwrap_or_default()));
+            if !matches!(written, Some(Ok(()))) {
+                std::fs::remove_file(&keep).ok();
+            }
             out.push(JobSpec {
                 id: "gc".into(),
                 what: "gc".into(),
-                cmd: vec![s(&me), "gc".into(), "--root".into(), jobs::root_arg(root)],
+                cmd: vec![s(&me), "gc".into(), "--root".into(), jobs::root_arg(root), "--depth-keep".into(), s(&keep)],
                 needs: Needs { nas: true },
                 restart_after_sleep: true,
                 record: None,
@@ -7169,6 +7182,8 @@ impl Agent {
         waiting: &mut Vec<Waiting>,
         held: &mut Holds,
     ) -> Vec<JobSpec> {
+        // (The depth's targets for GC: none until this plan finds them.)
+        self.depth_keep.borrow_mut().take();
         // (The records unreadable now: nothing planned until they are, rather than everything again.)
         let (manifest, keys): (BTreeMap<String, String>, build::Keys) =
             match crate::out::read_record(&root.join("state/build/manifest.json"))
@@ -7569,6 +7584,7 @@ impl Agent {
         };
         let mut planned = {
             let tiles = self.terrain_tiles(root, &manifest);
+            *self.depth_keep.borrow_mut() = build::depth_kept(cov, &manifest, &tiles, now_s());
             // (The records as re-keyed: what they are once the loop has re-keyed them, as a dry run,
             // or a loop that couldn't take the build lock, plans too.)
             let times = rekey::FileTimes::new(root);

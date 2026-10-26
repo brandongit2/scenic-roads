@@ -3180,6 +3180,62 @@ mod tests {
         assert_eq!((rec.manifest.len(), rec.seq), (1, seq));
     }
 
+    /// Task #679: the clean-up's entry dropping depth packs no target names is merged; a depth
+    /// job running for one of those tiles (an older lease, its entry merged after) puts its pack
+    /// back, its work not lost (the next clean-up judges it again); an entry from a member on a
+    /// newer app dropping a name this lead's write-sets don't let gc remove is held, not refused,
+    /// so a mixed-version pool loses neither (check_from).
+    #[test]
+    fn the_merge_takes_the_clean_ups_drop_of_depth_packs() {
+        let d = tempfile::tempdir().unwrap();
+        let r = root(d.path());
+        std::fs::write(
+            r.join("state/build/manifest.json"),
+            r#"{"layers/depth/hi/6-2-33": "layers/depth/hi/6-2-33.1111111111111111.pack", "layers/depth/lo/3-5-5": "layers/depth/lo/3-5-5.2222222222222222.pack", "layers/terrain/hi/6-2-33": "layers/terrain/hi/6-2-33.3333333333333333.pack"}"#,
+        )
+        .unwrap();
+        let home = d.path().join("a/agent");
+        let mut run = Run::new(side(&store::nasfs::NasRoot::local_for_test(&r), &home), Role::Lead, Gates::default());
+        let me = run.side.member().id.clone();
+        let entry = |n: u64, step: &str, changes: &[(&str, Option<&str>)]| Entry {
+            member: me.clone(),
+            lease: LeaseId { term: 1, n },
+            step: step.into(),
+            handoff: Handoff {
+                changes: changes.iter().map(|(l, c)| (l.to_string(), c.map(str::to_string))).collect(),
+                ..Default::default()
+            },
+            at: crate::agent::jobs::now_s(),
+        };
+        let drop = entry(3, "gc", &[("layers/depth/hi/6-2-33", None), ("layers/depth/lo/3-5-5", None)]);
+        let terrain = entry(4, "gc", &[("layers/terrain/hi/6-2-33", None)]);
+        let bad = terrain.key().unwrap();
+        run.entries.extend([(drop, None), (terrain.clone(), None)]);
+        run.step(true);
+        let rec = run.side.driver().records().unwrap();
+        assert_eq!(rec.manifest.keys().collect::<Vec<_>>(), ["layers/terrain/hi/6-2-33"]);
+        assert!(rec.rejected.get(&bad).expect("refused").contains("layers/terrain/hi/6-2-33"));
+        // The running depth job's entry, of an older lease, merged after: its pack is back.
+        let mut job =
+            entry(2, "depth", &[("layers/depth/hi/6-2-33", Some("layers/depth/hi/6-2-33.4444444444444444.pack"))]);
+        job.handoff.pending.insert("layers/depth/hi/6-2-33.4444444444444444.pack".into(), "0".repeat(64));
+        job.handoff.done = Some(("depth".into(), vec![("6/2/33".into(), "k".into())]));
+        run.entries.push((job, None));
+        run.step(true);
+        let rec = run.side.driver().records().unwrap();
+        assert_eq!(
+            rec.manifest.get("layers/depth/hi/6-2-33").map(String::as_str),
+            Some("layers/depth/hi/6-2-33.4444444444444444.pack"),
+            "{:?}",
+            rec.rejected
+        );
+        // Mixed versions: what this lead's gc may not remove, from a newer app, held.
+        let on = |app: &'static str| move |_: &str| Some(app.to_string());
+        let held = check_from(&terrain, &Records::default(), "20261009-0000-bbbbbbb", &on("20261010-0000-ccccccc"))
+            .unwrap_err();
+        assert!(held.starts_with(crate::pool::records::HOLD), "{held}");
+    }
+
     #[test]
     fn jobs_an_earlier_process_left_are_handed_off() {
         let d = tempfile::tempdir().unwrap();

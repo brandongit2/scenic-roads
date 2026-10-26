@@ -4097,6 +4097,24 @@ pub fn depth_tiles(cov: &Coverage, sources: &[crate::depth::grids::Source]) -> (
     (lo, hi)
 }
 
+/// The depth's targets' tiles for GC (crate::agent::gc::DepthKeep, at `now`): the z3 and z6 tiles
+/// `depth_tiles` finds, whatever their water's keys (a target waiting for its water is still one).
+/// None while the depth's sources can't be read, or none is declared, or the coverage is empty: no
+/// depth pack is dropped then.
+pub fn depth_kept(
+    cov: &Coverage,
+    m: &BTreeMap<String, String>,
+    tiles: &TerrainTiles,
+    now: u64,
+) -> Option<crate::agent::gc::DepthKeep> {
+    let sources = tiles.depth(m)?;
+    if sources.is_empty() || (cov.shapes.is_empty() && cov.depth_only.is_empty()) {
+        return None;
+    }
+    let (lo, hi) = depth_tiles(cov, &sources);
+    Some(crate::agent::gc::DepthKeep { at: now, lo: lo.into_iter().collect(), hi: hi.into_iter().collect() })
+}
+
 /// The water the depth's targets read, as the terrain-water job works their digests out: an
 /// assembly's z6–8 tiles ("depth 3/x/y"), a z6 tile's `depth_hi_water` ("depth 6/x/y"), the rivers
 /// in both.

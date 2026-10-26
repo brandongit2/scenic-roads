@@ -893,6 +893,11 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   one save of the records; none left, it hands off nothing. A lead on an app without them refuses
   the entry (outside `gc`'s write-set then), and the next run's hand-off tries again. The files
   then go by GC's own rule (docs/storage.md, GC).
+- **So do the depth packs no target names** (task #679): in the same hand-off, the depth's packs
+  (`layers/depth*/hi/6-…`, `…/lo/3-…`) whose tile is none of the depth's current targets as the
+  lead's last plan found them, with those leased now (`agent::gc::DepthKeep`); `gc`'s write-set
+  takes removals of depth packs. A depth job still running for such a tile merges after and puts
+  its pack back (lease order sets no targets of gc's); the next run judges it again.
 - Raw tile archives are only added by jobs; compacting is the lead's duty. `summaries.json` is a
   content-keyed cache any writer may update.
 
