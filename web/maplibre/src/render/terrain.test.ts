@@ -306,6 +306,59 @@ describe('Terrain', () => {
         expect(terrain.tileManager.getSourceTile).toHaveBeenCalledTimes(2);
     });
 
+    describe('surface (Scenic Roads)', () => {
+        const tileID = new OverscaledTileID(1, 0, 1, 0, 0);
+        const demOf = (f: (x: number, y: number) => number, min = 0, max = 0) => ({dim: 2, min, max, sampleBilinear: f});
+        function withSurface(surfaceDem: any, floorDem: any = demOf(() => -100, -100, -100)) {
+            const terrain = new Terrain(null, {_source: {tileSize: 512}} as any, {exaggeration: 2} as any);
+            terrain.tileManager.getSourceTile = vi.fn(() => ({tileID, dem: floorDem}) as any as Tile);
+            terrain.tileManager.getSource = vi.fn(() => ({minzoom: 0, maxzoom: 22}) as any);
+            terrain.tileManager.findTileInCaches = vi.fn(() => ({tileID, dem: floorDem}) as any as Tile);
+            const surfaceTiles = {_source: {tileSize: 512}, getRenderableIds: () => [tileID.key], getTileByID: () => ({tileID, dem: surfaceDem})} as any as TileManager;
+            terrain.setSurface(surfaceTiles);
+            terrain.surface.getSourceTile = vi.fn(() => (surfaceDem ? {tileID, dem: surfaceDem} : {tileID}) as any as Tile);
+            return terrain;
+        }
+
+        test('without a surface, getSurfaceElevation is the terrain\'s and the rise 0', () => {
+            const terrain = new Terrain(null, {_source: {tileSize: 512}} as any, {exaggeration: 2} as any);
+            terrain.tileManager.getSourceTile = vi.fn(() => ({tileID, dem: demOf((x, y) => 100 * x + 10 * y)}) as any as Tile);
+            terrain.tileManager.getSource = vi.fn(() => ({minzoom: 0, maxzoom: 22}) as any);
+            expect(terrain.surface).toBeNull();
+            expect(terrain.getSurfaceElevation(tileID, EXTENT / 2, EXTENT / 2)).toBeCloseTo(terrain.getElevation(tileID, EXTENT / 2, EXTENT / 2));
+            expect(terrain.getSurfaceElevation(tileID, EXTENT / 2, EXTENT / 2)).toBeCloseTo(110);
+            expect(terrain.surfaceRise()).toBe(0);
+        });
+
+        test('getSurfaceElevation samples the surface DEM at the terrain\'s cell centres, exaggerated', () => {
+            const terrain = withSurface(demOf((x, y) => 100 * x + 10 * y));
+            expect(terrain.getSurfaceElevation(tileID, EXTENT / 2, EXTENT / 2)).toBeCloseTo(110);
+            expect(terrain.getElevation(tileID, EXTENT / 2, EXTENT / 2)).toBe(-200);
+        });
+
+        test('getSurfaceElevation falls back to the terrain before the surface\'s tile has loaded', () => {
+            const terrain = withSurface(undefined);
+            expect(terrain.getSurfaceElevation(tileID, EXTENT / 2, EXTENT / 2)).toBe(-200);
+        });
+
+        test('surfaceRise: the surface\'s highest over the terrain\'s highest in a tile, exaggerated, 0 at least', () => {
+            // A tile of open water: the surface at 0, the floor at most 100 m under it.
+            expect(withSurface(demOf(() => 0, 0, 0), demOf(() => -300, -300, -100)).surfaceRise()).toBe(200);
+            // A tile with land: the land's height in both, the floor's depth doesn't count.
+            expect(withSurface(demOf(() => 0, 0, 500), demOf(() => 0, -300, 500)).surfaceRise()).toBe(0);
+        });
+
+        test('setSurface marks the source as the terrain\'s and null releases it', () => {
+            const terrain = withSurface(demOf(() => 0));
+            const surfaceTiles = terrain.surface.tileManager;
+            expect(surfaceTiles.usedForTerrain).toBe(true);
+            terrain.surface.releaseAllRTT = vi.fn();
+            terrain.setSurface(null);
+            expect(terrain.surface).toBeNull();
+            expect(surfaceTiles.usedForTerrain).toBe(false);
+        });
+    });
+
     test('getElevationForLngLat samples the rendered tile where its DEM is loaded', () => {
         const terrain = createFlatTerrain(500);
         terrain.tileManager.minzoom = 0;

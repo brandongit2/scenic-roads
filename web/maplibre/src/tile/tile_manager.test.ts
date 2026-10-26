@@ -2760,6 +2760,32 @@ describe('TileManager content elevation', () => {
         (map as any).terrain = null;
     });
 
+    test('counts the surface\'s rise for a surface reference or anchor (Scenic Roads)', async () => {
+        map = globalCreateMap({
+            style: {
+                version: 8,
+                sources: {id: {type: 'geojson', data: {type: 'FeatureCollection', features: []}}},
+                layers: [
+                    {id: 'water', type: 'fill', source: 'id', paint: {'fill-z-offset': 1, 'fill-elevation-reference': 'surface'}},
+                    {id: 'name', type: 'symbol', source: 'id', layout: {'symbol-height-anchor': 'surface'}}
+                ]
+            } as any
+        });
+        await map.once('load');
+        tileManager = createTileManager({async loadTile(tile: Tile) { tile.state = 'loaded'; }});
+        tileManager.onAdd(map);
+        const transform = new MercatorTransform();
+        transform.resize(512, 512);
+        tileManager.transform = transform;
+        (map as any).terrain = {exaggeration: 3, surfaceRise: () => 600};
+        expect(tileManager._updateMaxContentElevation()).toBe(600);
+        map.removeLayer('water');
+        // (the anchor alone; the mark kept, so a lower rise doesn't lower it)
+        (map as any).terrain = {exaggeration: 3, surfaceRise: () => 900};
+        expect(tileManager._updateMaxContentElevation()).toBe(900);
+        (map as any).terrain = null;
+    });
+
     test.each(['resetMaxContentElevation', 'clearTiles'] as const)(
         'preserves expanded tile coverage after unloading until %s', async (reset) => {
             map = globalCreateMap({

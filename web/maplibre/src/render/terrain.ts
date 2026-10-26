@@ -235,9 +235,12 @@ export class Terrain {
     }
 
     /**
-     * Scenic Roads: the most the surface (`setSurface`) stands over the terrain in the surface's
-     * loaded tiles, exaggerated (a tile's highest surface less the lowest terrain of the same tile):
-     * room the culling of what stands on the surface keeps (TileManager's content elevation).
+     * Scenic Roads: the most the surface (`setSurface`) stands over the terrain's top in the
+     * surface's loaded tiles, exaggerated (a tile's highest surface less the highest terrain of the
+     * same tile, 0 at least): room the culling of what stands on the surface keeps over each tile's
+     * terrain (TileManager's content elevation). A tile with land keeps the land's height in both,
+     * so only water with no land in its tile counts (a tile's highest surface less its lowest
+     * terrain counted the land over the deepest floor: 11.7 km over Puget Sound, culling far less).
      */
     surfaceRise(): number {
         if (!this.surface) return 0;
@@ -245,7 +248,7 @@ export class Terrain {
         for (const id of this.surface.tileManager.getRenderableIds()) {
             const s = this.surface.tileManager.getTileByID(id);
             const t = this.tileManager.findTileInCaches(id);
-            if (s?.dem && t?.dem) rise = Math.max(rise, s.dem.max - t.dem.min);
+            if (s?.dem && t?.dem) rise = Math.max(rise, s.dem.max - t.dem.max);
         }
         return rise * this.exaggeration;
     }

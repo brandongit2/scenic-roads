@@ -157,8 +157,11 @@ export function applyWater(map: MLMap, w: WaterLook, input: () => CoastInput, wa
       const src = map.getSource('water') as maplibregl.RasterTileSource | undefined;
       if (src && src.tiles?.[0] !== waterTiles()) src.setTiles([waterTiles()]);
     }, 250);
-  } else if (map.getLayer('water')) {
-    map.setPaintProperty('water', 'fill-color', ['match', ['get', 'class'], 'ocean', w.colour, lake]);
+  } else {
+    // (and its see-through copy at the surface over the depth's 3D floor, depth.ts setFloor)
+    for (const id of ['water', 'water-surface']) {
+      if (map.getLayer(id)) map.setPaintProperty(id, 'fill-color', ['match', ['get', 'class'], 'ocean', w.colour, lake]);
+    }
   }
   if (map.getLayer('waterway')) map.setPaintProperty('waterway', 'line-color', river);
   const on = w.shade && waterShown;
