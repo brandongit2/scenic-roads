@@ -94,8 +94,9 @@ from the first (`edit_held`).
   - **Held** by the lead's coordinator (`coord/pause.json`, mirrored to `state/build/pause.json`) and
     told to every worker; each agent keeps what it last heard.
   - **At a safe point** (the default): each job finishes its target, notes it done (`SCENIC_DONE`)
-    and exits as paused (75; `SCENIC_CONTROL` said "drain"); a job not there within 15 minutes is
-    frozen instead. **Now:** every job frozen at once (SIGSTOP).
+    and exits as paused (75; `SCENIC_CONTROL` said "drain"); the terrain's steps stop mid-target
+    instead, between their sampling's chunks, the target unsaved (docs/pool.md §7.2, Resuming); a
+    job not there within 15 minutes is frozen instead. **Now:** every job frozen at once (SIGSTOP).
   - **While paused** no lease lapses, and a job stopped by the pause, sleep or a restart is given
     back, not failed.
   - A job without the NAS is frozen at once and goes on when it's back.

@@ -10,9 +10,11 @@
 //!
 //! A pause stops the work at its next safe point (`Mode::Drain`): the running job finishes the
 //! target it's on (a z3 tile, a z6 tile, a map tile), saves it, notes it done (`done`) and ends
-//! (`PAUSED_EXIT`); nothing new starts. A job that hasn't reached a safe point within the agent's
-//! grace is frozen where it is instead, and goes on from there. Or at once (`Mode::Freeze`): the job
-//! frozen where it is. Either way nothing done is lost, and nothing is counted as a failure.
+//! (`PAUSED_EXIT`); nothing new starts. The terrain's steps stop sooner, between their sampling's
+//! chunks, the target they're on unsaved but for its resume log (`Paused`). A job that hasn't
+//! reached a safe point within the agent's grace is frozen where it is instead, and goes on from
+//! there. Or at once (`Mode::Freeze`): the job frozen where it is. Either way no target finished is
+//! lost, and nothing is counted as a failure.
 
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -361,6 +363,45 @@ pub fn safe_point(step: &str) {
     if draining() {
         stop_paused(step);
     }
+}
+
+/// What a long piece of work between a step's safe points returns when the build is pausing
+/// (`pause_point`): the terrain's sampling of the elevation pool checks between its chunks
+/// (crate::terrain_base::Tiles), as a level's sampling can run for hours. The step catches it at
+/// its own safe point, once its uploads in flight have landed, and stops there as a pause does
+/// (`stop_if_paused`): the target it was on not saved, its resume log (crate::terrain_resume)
+/// kept.
+#[derive(Debug)]
+pub struct Paused;
+
+impl std::fmt::Display for Paused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the build is pausing: stopped between chunks")
+    }
+}
+
+impl std::error::Error for Paused {}
+
+/// Err(`Paused`) when `draining` says the build is pausing.
+pub fn pause_point(draining: &dyn Fn() -> bool) -> anyhow::Result<()> {
+    if draining() {
+        return Err(Paused.into());
+    }
+    Ok(())
+}
+
+/// Whether `e` is (or wraps) a `Paused`.
+pub fn is_paused(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.is::<Paused>())
+}
+
+/// `e`, unless it's a pause (`is_paused`): then the job ends as paused here (`stop_paused`). Called
+/// at `step`'s safe point, its uploads in flight landed.
+pub fn stop_if_paused(step: &str, e: anyhow::Error) -> anyhow::Error {
+    if is_paused(&e) {
+        stop_paused(step);
+    }
+    e
 }
 
 /// Ends the job as paused, at a safe point it stopped at (each target before it saved and noted

@@ -853,6 +853,50 @@ mod tests {
         assert!(stops >= 2, "{stops}");
     }
 
+    /// Paused mid-sampling (task #705: crate::control::Paused, between the pool's chunks), a z6 tile
+    /// saves nothing, its blocks made so far kept in its log; resumed, the packs of a run never
+    /// paused.
+    #[test]
+    fn a_z6_tile_paused_mid_sampling_resumes_to_the_same_packs() {
+        use crate::terrain_pack::tests::{files_under, PauseAfter};
+        let d = tempfile::tempdir().unwrap();
+        let (t, cov, raw) = north_piece(d.path());
+        let src = Sources::default();
+        let saved = |root: &Path, scratch: &Path| -> Vec<(String, String)> {
+            let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(root), scratch).unwrap();
+            out.manifest
+                .into_iter()
+                .filter(|(l, _)| l.starts_with("layers/terrain/") || l.starts_with("work/terrain-mid/"))
+                .collect()
+        };
+        let fresh = {
+            let (root, scratch) = (d.path().join("fresh"), d.path().join("fresh-scratch"));
+            let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch).unwrap();
+            crate::terrain_pack::build_piece_keeping(&mut out, &raw, t, &cov, &src).unwrap();
+            saved(&root, &scratch)
+        };
+        assert_eq!(fresh.len(), 2, "{fresh:?}");
+        let (mut paused, mut logged) = (0, 0);
+        for left in [0, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377] {
+            let name = format!("paused-{left}");
+            let (root, scratch) = (d.path().join(&name), d.path().join(format!("{name}-scratch")));
+            let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch).unwrap();
+            let p = PauseAfter::new(&raw, left);
+            let Err(e) = crate::terrain_pack::build_piece_keeping(&mut out, &p, t, &cov, &src) else { break };
+            assert!(crate::control::is_paused(&e), "{e:#}");
+            assert!(saved(&root, &scratch).is_empty(), "paused after {left}: nothing saved");
+            let packs = files_under(&root).into_iter().filter(|f| f.to_string_lossy().contains("terrain")).count();
+            assert_eq!(packs, 0, "paused after {left}: no pack");
+            paused += 1;
+            logged += crate::resume_log::path(&scratch, (6, t.0, t.1)).exists() as usize;
+            // Resumed: the same packs.
+            let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch).unwrap();
+            crate::terrain_pack::build_piece_keeping(&mut out, &raw, t, &cov, &src).unwrap();
+            assert_eq!(saved(&root, &scratch), fresh, "paused after {left}, resumed");
+        }
+        assert!(paused >= 3 && logged >= 1, "{paused} paused, {logged} with blocks kept");
+    }
+
     #[test]
     fn a_z6_tile_stopped_and_resumed_makes_the_same_packs() {
         use crate::resume_log::STOP_AFTER;

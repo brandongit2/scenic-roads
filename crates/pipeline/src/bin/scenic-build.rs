@@ -1158,8 +1158,10 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let pool = base_pool(&out, 0, &[(0, 0)])?;
             drop(p);
             let src = pipeline::terrain_pack::Sources { water: Some(&water), deeper: None };
-            let n =
-                pool.with_tiles(&raw, src.water, |tiles| pipeline::terrain_pack::build_root(&mut out, tiles, &src))??;
+            // (Paused mid-sampling: nothing of it put.)
+            let n = pool
+                .with_tiles(&raw, src.water, |tiles| pipeline::terrain_pack::build_root(&mut out, tiles, &src))?
+                .map_err(|e| pipeline::control::stop_if_paused("terrain-root", e))?;
             eprintln!("terrain root: {n} tiles");
             pack_raw(&out, &raw_dir);
         }
@@ -5088,19 +5090,22 @@ fn terrain_pieces_from(
                 pipeline::terrain_pack::piece_levels(cov, (t.x, t.y)).iter().map(|(_, l)| l.len()).sum();
             ahead = ts.get(k + 1).map(|n| offer_after(n, before));
         }
-        let r = landing.after(out, |out| {
-            pipeline::terrain_pack::build_piece_later(
-                out,
-                raw,
-                (t.x, t.y),
-                cov,
-                src,
-                same.contains(&t.slash()),
-                &say,
-                offers,
-                Some(deep),
-            )
-        })?;
+        let r = landing
+            .after(out, |out| {
+                pipeline::terrain_pack::build_piece_later(
+                    out,
+                    raw,
+                    (t.x, t.y),
+                    cov,
+                    src,
+                    same.contains(&t.slash()),
+                    &say,
+                    offers,
+                    Some(deep),
+                )
+            })
+            // (Paused mid-sampling: the z6 tile before landed (`after`), its blocks kept in its resume log.)
+            .map_err(|e| pipeline::control::stop_if_paused("terrain-hi", e))?;
         let said = format!("terrain-hi {} ({} of {n}): {r:?}", t.slash(), k + 1);
         landing.then(out, "terrain-hi", &t.slash(), said, c)?;
     }
@@ -5167,7 +5172,9 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
             pipeline::agent::jobs::part(k, &names);
             let c = cost_start(STEP, &t.slash());
             let fetched = pipeline::fetch::fetched_bytes();
-            let r = td::build_target(out, (t.x, t.y), &bases, Some(&water), &fine, &fetch)?;
+            // (Paused mid-sampling: nothing of it put, its base tiles made kept in its resume log.)
+            let r = td::build_target(out, (t.x, t.y), &bases, Some(&water), &fine, &fetch)
+                .map_err(|e| pipeline::control::stop_if_paused(STEP, e))?;
             out.save()?;
             eprintln!(
                 "{STEP} {}: {} of {} base tiles with finer data, {} tiles, {} MB; {} dropped; {} MB fetched",
@@ -5272,9 +5279,12 @@ fn terrain_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
         pipeline::agent::jobs::part(k, &names);
         let c = cost_start("terrain-lo", &q.slash());
         let pool = base_pool(out, 3, &[(q.x, q.y)])?;
-        let r = pool.with_tiles(&raw, src.water, |tiles| {
-            pipeline::terrain_pack::build_lo(out, tiles, (q.x, q.y), ts, &src, &say)
-        })??;
+        // (Paused mid-sampling: nothing of it put.)
+        let r = pool
+            .with_tiles(&raw, src.water, |tiles| {
+                pipeline::terrain_pack::build_lo(out, tiles, (q.x, q.y), ts, &src, &say)
+            })?
+            .map_err(|e| pipeline::control::stop_if_paused("terrain-lo", e))?;
         eprintln!("terrain-lo {}: {r:?} ({:.0?})", q.slash(), c.elapsed());
         pipeline::control::done("terrain-lo", &q.slash());
         note_cost("terrain-lo", &q.slash(), c);

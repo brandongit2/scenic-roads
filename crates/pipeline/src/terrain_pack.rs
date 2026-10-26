@@ -2345,6 +2345,176 @@ pub fn build_root(out: &mut Out, raw: &dyn RawSource, src: &Sources) -> anyhow::
 pub(crate) mod tests {
     use super::*;
 
+    /// Raw tiles `inner`'s, sampled as crate::terrain_base::Tiles samples the pool: `CHUNK` tiles a
+    /// call of `prefetch_counted`, or a tile read not prefetched; once `left` of those have run, the
+    /// next finds the build pausing (crate::control::Paused, task #705).
+    pub(crate) struct PauseAfter<'a> {
+        inner: &'a dyn RawSource,
+        left: std::sync::atomic::AtomicUsize,
+        held: std::sync::Mutex<std::collections::HashSet<(u8, u32, u32)>>,
+    }
+
+    /// Tiles sampled in one call (crate::terrain_base's).
+    const CHUNK: usize = 16;
+
+    impl<'a> PauseAfter<'a> {
+        pub(crate) fn new(inner: &'a dyn RawSource, left: usize) -> Self {
+            PauseAfter { inner, left: left.into(), held: Default::default() }
+        }
+
+        /// One sampling, or the build pausing.
+        fn sampling(&self) -> anyhow::Result<()> {
+            let ord = std::sync::atomic::Ordering::Relaxed;
+            let went = self.left.fetch_update(ord, ord, |n| n.checked_sub(1)).is_ok();
+            crate::control::pause_point(&|| !went)
+        }
+    }
+
+    impl RawSource for PauseAfter<'_> {
+        fn get(&self, z: u8, x: u32, y: u32) -> anyhow::Result<(Option<Vec<u8>>, bool)> {
+            if !self.held.lock().unwrap().remove(&(z, x, y)) {
+                self.sampling()?;
+            }
+            self.inner.get(z, x, y)
+        }
+        fn made_before(&self, z: u8, tiles: &[(u32, u32)]) {
+            self.inner.made_before(z, tiles)
+        }
+        fn prefetch_counted(
+            &self,
+            z: u8,
+            tiles: &[(u32, u32)],
+            threads: usize,
+            done: &std::sync::atomic::AtomicU64,
+        ) -> anyhow::Result<usize> {
+            let mut n = 0;
+            for c in tiles.chunks(CHUNK) {
+                self.sampling()?;
+                n += self.inner.prefetch_counted(z, c, threads, done)?;
+                self.held.lock().unwrap().extend(c.iter().map(|&(x, y)| (z, x, y)));
+            }
+            Ok(n)
+        }
+    }
+
+    /// The files under `d` (none when it isn't there).
+    pub(crate) fn files_under(d: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let Ok(rd) = std::fs::read_dir(d) else { return Vec::new() };
+        let mut out = Vec::new();
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                out.extend(files_under(&p));
+            } else {
+                out.push(p);
+            }
+        }
+        out
+    }
+
+    /// Paused mid-sampling (task #705), an assembly and the root put nothing and save nothing; run
+    /// again, the bytes of a run never paused.
+    #[test]
+    fn a_lo_and_root_run_paused_mid_sampling_save_nothing_and_run_again_the_same() {
+        let d = tempfile::tempdir().unwrap();
+        let local = d.path().join("local");
+        let cov = Coverage::fixture(
+            &[crate::agent::recipes::Recipe {
+                id: "r".into(),
+                name: "R".into(),
+                outline: vec!["place:11.25,70.5,2".into()],
+            }],
+            None,
+            d.path(),
+        )
+        .unwrap();
+        let by_q = crate::agent::build::coverage_tiles(&cov);
+        let (&q, ts) = by_q.iter().next().unwrap();
+        synthetic_raw(&local, &cov, q, ts);
+        let raw = RawTiles::with_store(
+            &local,
+            &store::nasfs::NasPath::local_for_test(&d.path().join("store")),
+            crate::terrain_pack::TEST_BASE,
+        );
+        let src = Sources::default();
+        let open = |root: &str| {
+            Out::unbound(
+                &store::nasfs::NasRoot::local_for_test(&d.path().join(root)),
+                &d.path().join(format!("{root}-scratch")),
+            )
+            .unwrap()
+        };
+        let packs = |root: &str, kind: &str| {
+            files_under(&d.path().join(root)).into_iter().filter(|p| p.to_string_lossy().contains(kind)).count()
+        };
+        // The assembly: its z6 tiles' mids first, then the assembly whole, then paused at each
+        // chunk in turn.
+        let mut o = open("lo");
+        for &t in ts {
+            build_piece(&mut o, &raw, t, &cov, &src, false, &|_, _, _| {}).unwrap();
+        }
+        let before = o.manifest.clone();
+        let lo = format!("layers/terrain/lo/3-{}-{}", q.0, q.1);
+        let mut paused = 0;
+        for left in 0.. {
+            let mut o = open("lo");
+            let p = PauseAfter::new(&raw, left);
+            match build_lo(&mut o, &p, q, ts, &src, &|_, _, _| {}) {
+                Ok(_) => break,
+                Err(e) => assert!(crate::control::is_paused(&e), "{e:#}"),
+            }
+            assert_eq!(open("lo").manifest, before, "paused after {left}: nothing saved");
+            assert_eq!(packs("lo", "terrain/lo/"), 0, "paused after {left}: no lo pack");
+            paused += 1;
+        }
+        assert!(paused >= 2, "{paused}");
+        let whole = open("lo").get(&lo).unwrap().to_string();
+        let mut again = open("lo");
+        again.remove(&lo);
+        again.save().unwrap();
+        build_lo(&mut again, &raw, q, ts, &src, &|_, _, _| {}).unwrap();
+        assert_eq!(open("lo").get(&lo), Some(whole.as_str()), "run again: the same bytes");
+        // The root: 85 tiles read (z3's 64, none in a lo pack, then z2 → z0's), each sampled alone.
+        let flat = |z: u8, x: u32, y: u32| {
+            let e: Vec<f32> =
+                (0..65536).map(|p| 50.0 + (z as u32 * 7 + x * 3 + y) as f32 + (p % 256) as f32 * 0.2).collect();
+            roadcore::grid::encode_terrain_png(&e, 256, 256).unwrap()
+        };
+        struct Made<F>(F);
+        impl<F: Fn(u8, u32, u32) -> Vec<u8> + Sync> RawSource for Made<F> {
+            fn get(&self, z: u8, x: u32, y: u32) -> anyhow::Result<(Option<Vec<u8>>, bool)> {
+                Ok((Some((self.0)(z, x, y)), false))
+            }
+            fn prefetch_counted(
+                &self,
+                _: u8,
+                tiles: &[(u32, u32)],
+                _: usize,
+                done: &std::sync::atomic::AtomicU64,
+            ) -> anyhow::Result<usize> {
+                done.fetch_add(tiles.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                Ok(0)
+            }
+        }
+        let made = Made(flat);
+        let root = "layers/terrain/root/0-0-0";
+        let mut o = open("root");
+        assert_eq!(build_root(&mut o, &made, &src).unwrap(), 21);
+        let whole = o.get(root).unwrap().to_string();
+        let mut o = open("root-paused");
+        o.save().unwrap();
+        for left in [0, 1, 40, 84] {
+            let mut o = open("root-paused");
+            let e = build_root(&mut o, &PauseAfter::new(&made, left), &src).unwrap_err();
+            assert!(crate::control::is_paused(&e), "{e:#}");
+            assert!(open("root-paused").get(root).is_none(), "paused after {left}: nothing saved");
+            assert_eq!(packs("root-paused", "terrain/root/"), 0, "paused after {left}: no root pack");
+        }
+        let mut o = open("root-paused");
+        build_root(&mut o, &PauseAfter::new(&made, 85), &src).unwrap();
+        assert_eq!(open("root-paused").get(root), Some(whole.as_str()), "run again: the same bytes");
+    }
+
     /// A tile whose water can't be read fails (6/18/22 on 25 Oct: every tile's water read failed
     /// while the NAS restarted, the tiles were made dry and kept under a key naming the water).
     #[test]

@@ -1982,6 +1982,63 @@ mod tests {
         assert_eq!(run("voided", &f13, None), Some(to13));
     }
 
+    /// Paused mid-sampling (task #705: crate::control::Paused, between the pool's chunks), a deep
+    /// target puts nothing and saves nothing, its base tiles made so far kept in its log; resumed,
+    /// the pack of a run never paused.
+    #[test]
+    fn a_deep_target_paused_mid_sampling_resumes_to_the_same_pack() {
+        use crate::terrain_pack::tests::{files_under, PauseAfter};
+        let d = tempfile::tempdir().unwrap();
+        let cov = crate::coverage::Coverage::fixture(
+            &[crate::agent::recipes::Recipe {
+                id: "r".into(),
+                name: "R".into(),
+                outline: vec!["place:-75.5,44.6,3".into()],
+            }],
+            None,
+            d.path(),
+        )
+        .unwrap();
+        let src = crate::terrain_pack::Sources::default();
+        let raw = Level(50.0);
+        let fine = world_to(&d.path().join("f14"), 14);
+        let t = targets_in(&fine.sets, &cov, (18, 23))[0];
+        let open = |name: &str| {
+            let root = d.path().join(name);
+            std::fs::create_dir_all(root.join("state/build")).unwrap();
+            Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join(format!("{name}-scratch")))
+                .unwrap()
+        };
+        let fresh = {
+            let bases = crate::terrain_pack::Bases::new(&raw, &src, &cov);
+            let mut out = open("fresh");
+            build_target_kept(&mut out, t, &bases, None, &fine, &Varied, true).unwrap();
+            out.get(&pack_logical(t.0, t.1)).unwrap().to_string()
+        };
+        let (mut paused, mut logged) = (0, 0);
+        for left in [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512] {
+            let name = format!("paused-{left}");
+            let p = PauseAfter::new(&raw, left);
+            let bases = crate::terrain_pack::Bases::new(&p, &src, &cov);
+            let mut out = open(&name);
+            let Err(e) = build_target_kept(&mut out, t, &bases, None, &fine, &Varied, true) else { break };
+            assert!(crate::control::is_paused(&e), "{e:#}");
+            assert!(open(&name).get(&pack_logical(t.0, t.1)).is_none(), "paused after {left}: nothing saved");
+            let packs =
+                files_under(&d.path().join(&name)).into_iter().filter(|f| f.to_string_lossy().contains("deep")).count();
+            assert_eq!(packs, 0, "paused after {left}: no pack");
+            paused += 1;
+            logged += crate::resume_log::path(&d.path().join(format!("{name}-scratch")), (PACK_Z, t.0, t.1)).exists()
+                as usize;
+            // Resumed: the same pack.
+            let bases = crate::terrain_pack::Bases::new(&raw, &src, &cov);
+            let mut out = open(&name);
+            build_target_kept(&mut out, t, &bases, None, &fine, &Varied, true).unwrap();
+            assert_eq!(out.get(&pack_logical(t.0, t.1)), Some(fresh.as_str()), "paused after {left}, resumed");
+        }
+        assert!(paused >= 2 && logged >= 1, "{paused} paused, {logged} with base tiles kept");
+    }
+
     #[test]
     fn a_deep_target_makes_its_pack_from_its_own_base_and_drops_it_once_no_target() {
         let d = tempfile::tempdir().unwrap();

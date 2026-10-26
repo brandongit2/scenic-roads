@@ -282,6 +282,9 @@ pub struct Tiles<'a> {
     /// The tiles sampled with data: a tile whose four children all are one is made from them alone
     /// (crate::terrain_pack::prepare's quarters), so it isn't sampled (`FLAT` stands for it).
     with_data: Mutex<std::collections::HashSet<(u8, u32, u32)>>,
+    /// Whether the build is pausing (crate::control::draining; a test's own): checked before each
+    /// sampling, a chunk or a tile, which then stops with crate::control::Paused.
+    draining: &'a (dyn Fn() -> bool + Sync),
 }
 
 /// A tile at sea level: what stands for a tile made from its four children alone.
@@ -299,6 +302,7 @@ impl<'a> Tiles<'a> {
             at_sea: &[],
             held: Mutex::new(HashMap::new()),
             with_data: Mutex::new(Default::default()),
+            draining: &crate::control::draining,
         }
     }
 
@@ -380,6 +384,9 @@ impl<'a> Tiles<'a> {
             made.extend(skip.iter().map(|&t| (t, Some(flat.clone()))));
         }
         if !todo.is_empty() {
+            // (Between chunks: a level's sampling runs for hours, and a pause waits for no more
+            // than the chunks under way, task #705.)
+            crate::control::pause_point(self.draining)?;
             made.extend(todo.iter().copied().zip(self.sample_all(z, &todo)?));
         }
         let mut w = self.with_data.lock().unwrap();
@@ -526,7 +533,8 @@ impl RawSource for Tiles<'_> {
         Ok((self.sample(z, &[(x, y)])?.pop().flatten(), false))
     }
 
-    // (Its chunks up to AT_ONCE at a time: a chunk's reads mostly wait on the NAS, one at a time left a
+    // (Its chunks up to AT_ONCE at a time, the first to fail stopping the rest, as one that finds the
+    // build pausing does (crate::control::Paused, from `sample`). A chunk's reads mostly wait on the NAS, one at a time left a
     // job's threads idle, task #695. The same bytes: a tile's sampling reads only the level below's
     // `with_data`, which a level's own tiles never add to.)
     fn prefetch_counted(&self, z: u8, tiles: &[(u32, u32)], _threads: usize, done: &AtomicU64) -> Result<usize> {
@@ -902,5 +910,70 @@ mod tests {
         assert!(p5.datasets[0].resolution > 1000.0);
         let p9 = pool.at_zoom(ROW_Z, 0.0);
         assert!(matches!(&p9.datasets[2].source, Source::Tiles { zoom: 15, .. }), "from ROW_Z at its own zoom");
+    }
+
+    /// A drain asked while a level's chunks are sampled (task #705): the chunk under way finishes
+    /// and no other begins, the sampling ending with crate::control::Paused; what it sampled is
+    /// what a run never paused samples.
+    #[test]
+    fn a_drain_mid_sampling_stops_within_a_chunk() {
+        let d = tempfile::tempdir().unwrap();
+        let store = d.path().join("fetched");
+        std::fs::create_dir_all(store.join("glo")).unwrap();
+        let n = 1000usize;
+        let gt = [10.0, 0.001, 0.0, 46.0, 0.0, -0.001];
+        let e: Vec<f32> = (0..n * n).map(|p| 100.0 + (p % n) as f32 * 0.5 + (p / n) as f32 * 0.25).collect();
+        let tif = crate::geotiff::write_f32(n as u32, n as u32, &e, 256, gt, 4326, None).unwrap();
+        std::fs::write(store.join("glo/T_DEM.tif"), tif).unwrap();
+        let plan = Plan {
+            fmt: 1,
+            version: "test".into(),
+            tag: "t".into(),
+            datasets: vec![Dataset {
+                id: "glo".into(),
+                code: 3,
+                resolution: 78.0,
+                cover: Some(vec![[10.0, 45.0, 11.0, 46.0]]),
+                source: Source::Geotiff {
+                    crs: 4326,
+                    read_resolution: None,
+                    store: true,
+                    files: vec![("https://e.org/T/T_DEM.tif".into(), Some([10.0, 45.0, 11.0, 46.0]))],
+                    masks: vec![None],
+                },
+                convert: None,
+            }],
+        };
+        let pool = Pool::of(plan, store::nasfs::NasPath::local_for_test(store), [10.0, 45.0, 11.0, 46.0]);
+        let raw = RawTiles::new(&d.path().join("local"), crate::terrain_pack::TEST_BASE);
+        crate::fetch::go_offline();
+        let net = crate::fetch::Fetcher::from_env();
+        let fetch = RawFetch::new(&raw, None, &net);
+        let o = Opts { fetch: &fetch, store: Some(pool.store.clone()) };
+        let plans: Vec<Plan> = (0..=MAX_Z).map(|z| pool.at_zoom(z, 45.5)).collect();
+        // (Three chunks' tiles of z12 over the raster.)
+        let z = 12u8;
+        let nn = (1u64 << z) as f64;
+        let x0 = ((10.5 + 180.0) / 360.0 * nn) as u32;
+        let y0 = ((1.0 - 45.5f64.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * nn) as u32;
+        let ts: Vec<(u32, u32)> = (x0 - 4..x0 + 4).flat_map(|x| (y0 - 2..y0 + 3).map(move |y| (x, y))).collect();
+        assert!(ts.len() > 2 * CHUNK);
+        // The drain asked as the first chunk begins: every later chunk finds it.
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let draining = || asked.fetch_add(1, Ordering::Relaxed) >= 1;
+        let paused = Tiles { draining: &draining, ..Tiles::new(&plans, &o) };
+        let done = AtomicU64::new(0);
+        let e = paused.prefetch_counted(z, &ts, 1, &done).unwrap_err();
+        assert!(crate::control::is_paused(&e), "{e:#}");
+        assert_eq!(done.load(Ordering::Relaxed), CHUNK as u64, "the one chunk under way, no other");
+        let held: HashMap<(u8, u32, u32), Option<Vec<u8>>> = paused.held.lock().unwrap().clone();
+        assert_eq!(held.len(), CHUNK);
+        // Never paused: the same bytes.
+        let whole = Tiles::new(&plans, &o);
+        whole.prefetch_counted(z, &ts, 1, &AtomicU64::new(0)).unwrap();
+        for (k, b) in &held {
+            assert!(b.is_some());
+            assert_eq!(whole.held.lock().unwrap().get(k), Some(b), "{k:?}");
+        }
     }
 }
