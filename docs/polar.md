@@ -73,7 +73,7 @@ tiles, on the pole's polar stereographic grid.
   them to the ground's by longitude (`roadcore::polar::east_north`). Nothing is computed from heights
   at render time.
 - **Not here:** depth (IBCAO and IBCSO for the Arctic floor); roads, labels and landmarks past 85°
-  (#668: the OSM pass cuts by Mercator z6 tiles and drops them).
+  (§10).
 
 ## 3. Steps and packs
 
@@ -205,7 +205,7 @@ Memory: 0.3–0.9 GB a terrain job as measured (its `mem_mb`, 4,096, is the firs
 1. Registering the steps with the live pool and publishing, after the rebuild.
 2. REMA into the drop box and the store on the NAS (the owner's word first: §9), then the input
    check accepts it.
-3. Roads, labels and landmarks past 85° (#668). Depth for the Arctic floor (the north cap).
+3. Labels and landmarks past 85° (§10). Depth for the Arctic floor (the north cap).
 
 ## 9. Decisions
 
@@ -238,3 +238,26 @@ Memory: 0.3–0.9 GB a terrain job as measured (its `mem_mb`, 4,096, is the firs
    zoom number already puts the camera close (zoom 8 at 89.5° S is at the ground; zoom 4.6 is
    1.8 km above it). The app's zoom-dependent choices (the globe's hand-off, tile levels) read odd
    there; whether to cap that compensation near the poles is for the owner.
+
+## 10. Roads, labels and landmarks past 85° (not built)
+
+Measured on the 2026-09-28 pass (task #668, 26 Oct): the filtered planet clipped to 85°–90° N/S.
+
+- **Roads:** OSM has **no `highway` way** past 85° S or 85° N. The South Pole Traverse isn't mapped
+  as a road there (one route marker node, "657 km to South Pole"). Past 85° S: one `aeroway`
+  (the station's skiway, a node). So there is nothing for a polar road layer to draw yet.
+- **Labels** (the `labels` and `places` sets, which aren't cut by tile): 8 place nodes past 85° S
+  (the South Pole, Amundsen–Scott station, six localities and plateaus) and 1 past 85° N (the North
+  Pole). `labels.rs` clamps a label's latitude to ±85.05° when it places it in its Mercator tile,
+  so these are drawn on the map's edge at their longitude, not where they are.
+- **Landmarks:** about 185 peaks, the ceremonial pole, the station, the skiway, a few historic
+  sites (Polheim, a cairn, a memorial) past 85° S; a drifting ice camp's node past 85° N. The
+  landmark candidates and peaks come from the z6 tiles' extracts, whose top and bottom rows reach
+  only the 10 km buffer past 85.05° (`osmpass::BUFFER_KM`, about 85.14°): everything further is
+  dropped there. The `summits` set (worldwide, uncut) holds the peaks.
+- **What a cap layer needs:** points only (no lines while OSM has no roads there): a polar step
+  reading the uncut sets (`labels`, `summits`, `named`) for the points past 85.05°, a small file
+  per pole keyed by the sets, and the cap drawing text and dots in its custom layer (MapLibre's
+  symbols and the dot layer work in Mercator tile coordinates and can't place a point past
+  85.05°). Moving the edge's labels there means `labels.rs` leaving out what lies past 85.05°: a
+  change to the worldwide labels' output.
