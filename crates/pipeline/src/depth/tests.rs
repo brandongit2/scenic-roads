@@ -99,13 +99,13 @@ fn tile(out: &Out, layer: &str, scope: &str, root: (u8, u32, u32), z: u8, x: u32
     idx.get(&b, z, x, y).unwrap().map(|(_, b)| b)
 }
 
-fn depth_at(png: &[u8], px: usize, py: usize) -> f32 {
-    let Grid::F(v) = fall::decode(Kind::Terrarium, png).unwrap() else { panic!() };
+fn depth_at(b: &[u8], px: usize, py: usize) -> f32 {
+    let Grid::F(v) = fall::decode(Kind::Terrarium, b).unwrap() else { panic!() };
     v[py * 256 + px]
 }
 
-fn class_at(png: &[u8], px: usize, py: usize) -> u8 {
-    let Grid::C(v) = fall::decode(Kind::Class, png).unwrap() else { panic!() };
+fn class_at(b: &[u8], px: usize, py: usize) -> u8 {
+    let Grid::C(v) = fall::decode(Kind::Class, b).unwrap() else { panic!() };
     v[py * 256 + px]
 }
 
