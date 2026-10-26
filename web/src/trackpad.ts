@@ -1,5 +1,6 @@
 import type { Map as MLMap } from 'maplibre-gl';
 import { anchorAt, centrePoint, dolly, ownPan, orbit, panTo, setLocationAt, type Anchor } from './camera3d';
+import { WheelClassifier } from './wheelkind';
 import { TwoFingers, type Pt } from './twofinger';
 
 /**
@@ -12,7 +13,8 @@ import { TwoFingers, type Pt } from './twofinger';
  *                                              carrying on briefly after the fingers stop (PINCH_TAU_MS)
  *   ⌘ Cmd + two-finger drag    → zoom        (vertical)
  *   ⌥ Option + two-finger drag → x rotates, y tilts
- *   right-drag / Ctrl-drag     → rotate + tilt
+ *   double-click, hold, drag   → zoom        (down in, up out, a level per 128 px, about the click)
+ *   right-drag / Ctrl-drag     → rotate + tilt (drag right raises the bearing)
  * And on a touch screen: one finger pans (as a left-drag); two pinch to zoom, turn to rotate,
  * move together to pan and drag up or down side by side to tilt, all about the terrain point
  * between them (twofinger.ts reads the fingers; the one-finger pan is let go of when the second
@@ -43,8 +45,6 @@ const GLIDE_MAX_SPEED = 3500;
 const GLIDE_END_SPEED = 15;
 /** Zoom levels per pixel of a ⌘ two-finger scroll (the trackpad's own momentum carries it on). */
 const CMD_ZOOM_PER_PX = 0.0045;
-/** Firefox on macOS reports a mouse wheel notch as this many pixels (as MapLibre's scroll zoom). */
-const FIREFOX_NOTCH = 4.000244140625;
 export interface CameraControls {
   /** Smooth zoom by dz levels about a screen point (default: the view centre). */
   zoomBy(dz: number, px?: number, py?: number): void;
@@ -68,7 +68,7 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
   map.touchZoomRotate.disable();
   map.touchPitch.disable();
   const el = map.getCanvasContainer();
-  let lastEvent = 0;
+  const wheels = new WheelClassifier();
   let burstMouse = false;
   let burstCmd = false;
   // Anchor for the current gesture burst, re-picked when the cursor moves.
@@ -227,25 +227,13 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
     (e: WheelEvent) => {
       e.preventDefault();
       stopGlide(); // a scroll takes over from a drag's glide
-      const now = performance.now();
       const rect = el.getBoundingClientRect();
       const px = e.clientX - rect.left, py = e.clientY - rect.top;
       let dx = e.deltaX, dy = e.deltaY;
-      // Classify the burst: a mouse wheel reports whole notches (deltaMode 1, or legacy
-      // wheelDelta in multiples of 120 that are not the trackpad's −3 × deltaY).
-      const wdy = (e as unknown as { wheelDeltaY?: number }).wheelDeltaY;
-      // A mouse: lines; Chromium's notches (wheelDelta in 120s, not the trackpad's −3 × deltaY);
-      // Firefox's (multiples of FIREFOX_NOTCH); or, opening a burst, a large whole-pixel vertical
-      // step (a trackpad starts small and fractional, with some sideways motion).
-      const looksMouse = e.deltaMode === 1 || (e.deltaX === 0 && e.deltaY !== 0 && (
-        (!!wdy && Math.abs(wdy) % 120 === 0 && wdy !== -3 * e.deltaY) ||
-        Math.abs(e.deltaY) % FIREFOX_NOTCH === 0 ||
-        (now - lastEvent > 280 && Number.isInteger(e.deltaY) && Math.abs(e.deltaY) >= 50 && wdy !== -3 * e.deltaY)));
-      if (now - lastEvent > 280) {
-        burstMouse = looksMouse;
-        burstCmd = e.metaKey && !e.ctrlKey && !looksMouse;
-      } else if (e.deltaX !== 0 && !e.altKey) burstMouse = false;
-      lastEvent = now;
+      // Classify the burst (wheelkind.ts); the Alt exception keeps a mouse burst's sideways steps.
+      const { kind, opening, mouseLook } = wheels.push(e, e.altKey);
+      if (opening) burstCmd = e.metaKey && !e.ctrlKey && !mouseLook;
+      burstMouse = kind === 'mouse';
       if (e.deltaMode === 1) {
         dx *= 16;
         dy *= 16;
@@ -308,7 +296,7 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
     drag.x = e.clientX;
     drag.y = e.clientY;
     if (dx || dy) dragged = true;
-    orbitAt(-dx * 0.5, -dy * 0.5, drag.a, drag.ax, drag.ay);
+    orbitAt(dx * 0.5, -dy * 0.5, drag.a, drag.ax, drag.ay);
     e.stopPropagation();
   }, true);
   const end = (e: PointerEvent) => {
@@ -332,6 +320,9 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
   // A tap's place and time, for a double tap; and when a double tap last zoomed (the double click
   // a browser may send for it as well isn't another zoom).
   let lastTap: { t: number; x: number; y: number } | null = null;
+  // The same for a mouse's click (a double click's time is the system's, about this long).
+  const CLICK_DOUBLE_MS = 500;
+  let lastClick: { t: number; x: number; y: number } | null = null;
   let tapZoomed = -Infinity;
   // For `single`: when a finger's tap last ended, and the fingers down so far.
   const DOUBLE_MS = 300;
@@ -439,9 +430,11 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
     const a = anchorAt(map, e.clientX - rect.left, e.clientY - rect.top);
     if (!a) return; // sky
     hold = { id: e.pointerId, a, own: a.ground && ownPan(map, a), moved: false, x0: e.clientX, y0: e.clientY, trail: [] };
-    if (e.pointerType === 'touch' && lastTap && performance.now() - lastTap.t < DOUBLE_MS) {
+    // A press soon after a tap or click, near it: dragging zooms about that point.
+    const prev = e.pointerType === 'touch' ? lastTap : lastClick;
+    if (prev && performance.now() - prev.t < (e.pointerType === 'touch' ? DOUBLE_MS : CLICK_DOUBLE_MS)) {
       const px = e.clientX - rect.left, py = e.clientY - rect.top;
-      if (Math.hypot(px - lastTap.x, py - lastTap.y) < 30) hold.tapDrag = { a: anchorAt(map, lastTap.x, lastTap.y), x: lastTap.x, y: lastTap.y, lastY: py };
+      if (Math.hypot(px - prev.x, py - prev.y) < 30) hold.tapDrag = { a: anchorAt(map, prev.x, prev.y), x: prev.x, y: prev.y, lastY: py };
     }
     zLeft = 0;
     stopInertia();
@@ -489,9 +482,10 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
     while (hold.trail.length > 2 && now - hold.trail[0][0] > GLIDE_SAMPLE_MS + GLIDE_HELD_MS) hold.trail.shift();
     const td = hold.tapDrag;
     if (td) {
-      // Tap then drag: down zooms in, up out (MapLibre's rate, a level per 128 px), about the
-      // tapped point; not a double tap.
-      lastTap = null;
+      // Tap (or double click) then drag: down zooms in, up out (MapLibre's rate, a level per
+      // 128 px), about the tapped point; not a double tap.
+      lastTap = lastClick = null;
+      tapZoomed = now; // (the double click the browser sends after it isn't another zoom)
       zoomAt(td.x, td.y, (y - td.lastY) / 128, td.a);
       td.lastY = y;
       return;
@@ -518,6 +512,11 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
         lastTap = { t: now, x, y };
         tapUp = now;
       }
+    }
+    // A mouse click that ends a plain press (no drag): a second press soon after, dragged, zooms.
+    if (e.type === 'pointerup' && e.pointerType !== 'touch' && !hold.moved && !hold.tapDrag) {
+      const rect = el.getBoundingClientRect();
+      lastClick = { t: performance.now(), x: e.clientX - rect.left, y: e.clientY - rect.top };
     }
     // A drag (not a tap-drag zoom) released while moving glides on; a second finger's landing
     // (letGo, no pointerup) doesn't.
