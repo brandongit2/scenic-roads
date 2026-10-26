@@ -36,6 +36,30 @@ impl Files {
     }
 }
 
+/// The polar blocks (crate::polar::BLOCK_Z tiles of `pole`'s grid) an area may meet: those meeting
+/// the box of its rings' points in that hemisphere, projected onto the grid and grown by `km` (the
+/// stereographic grid is conformal: a ring round the pole, as Antarctica's, boxes the pole in). A
+/// superset where an area isn't box-like; never misses one it meets.
+pub fn polar_blocks_meeting(rings: &[Vec<[f64; 2]>], pole: roadcore::polar::Pole, km: f64) -> Vec<(u32, u32)> {
+    let north = pole == roadcore::polar::Pole::North;
+    let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    for p in rings.iter().flatten().filter(|p| (p[1] > 0.0) == north) {
+        let (x, y) = roadcore::polar::forward(pole, p[0], p[1]);
+        b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
+    }
+    if b[0] > b[2] {
+        return Vec::new();
+    }
+    let g = km * 1000.0;
+    crate::polar::blocks(pole)
+        .into_iter()
+        .filter(|&(x, y)| {
+            let t = roadcore::polar::tile_box(crate::polar::BLOCK_Z, x, y);
+            t[0] <= b[2] + g && t[2] >= b[0] - g && t[1] <= b[3] + g && t[3] >= b[1] - g
+        })
+        .collect()
+}
+
 /// A region's outer rings, as the catalog records them (simplified; holes left out: a tile in a
 /// hole is kept all the same).
 pub fn outer_rings(r: &crate::coverage::DrawnRegion) -> Vec<Vec<[f64; 2]>> {
@@ -61,6 +85,15 @@ pub fn files_of(cat: &Catalog, rings: &[Vec<[f64; 2]>]) -> Files {
         for m in [&cat.base, &cat.roads] {
             if let Some(l) = m.get(&key) {
                 add(l);
+            }
+        }
+    }
+    // (The polar caps' blocks the area meets, its pole's layers: `polar_blocks_meeting`.)
+    for (name, l) in cat.layers.iter().filter(|(_, l)| !l.polar.is_empty()) {
+        let Some(pole) = name.rsplit('-').next().and_then(roadcore::polar::Pole::of_letter) else { continue };
+        for (x, y) in polar_blocks_meeting(rings, pole, NEAR_KM) {
+            if let Some(b) = l.polar.get(&format!("{}/{x}/{y}", crate::polar::BLOCK_Z)) {
+                add(b);
             }
         }
     }
@@ -287,4 +320,24 @@ fn cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
     let o = |p: [f64; 2], q: [f64; 2], r: [f64; 2]| (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
     let (o1, o2, o3, o4) = (o(a, b, c), o(a, b, d), o(c, d, a), o(c, d, b));
     (o1 > 0.0) != (o2 > 0.0) && (o3 > 0.0) != (o4 > 0.0) && o1 != 0.0 && o2 != 0.0 && o3 != 0.0 && o4 != 0.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use roadcore::polar::Pole;
+
+    /// A ring round the pole (Antarctica's coast) meets every block; a small area by the pole (the
+    /// station) the four at the pole; one in the other hemisphere none.
+    #[test]
+    fn polar_blocks_an_area_meets() {
+        let coast: Vec<[f64; 2]> = (0..=72).map(|k| [-180.0 + 5.0 * k as f64, -70.0]).collect();
+        assert_eq!(polar_blocks_meeting(&[coast], Pole::South, NEAR_KM).len(), crate::polar::blocks(Pole::South).len());
+        let station = vec![[-10.0, -89.99], [10.0, -89.99], [10.0, -89.98], [-10.0, -89.98]];
+        let mut near = polar_blocks_meeting(&[station], Pole::South, NEAR_KM);
+        near.sort();
+        assert_eq!(near, vec![(7, 7), (7, 8), (8, 7), (8, 8)]);
+        let north = vec![[0.0, 60.0], [1.0, 60.0], [1.0, 61.0]];
+        assert!(polar_blocks_meeting(&[north], Pole::South, NEAR_KM).is_empty());
+    }
 }

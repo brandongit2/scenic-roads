@@ -50,7 +50,7 @@ pub struct Declaration {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rank: Option<i64>,
     /// The source byte its heights carry in the units' outputs (`src.u8`, which the map's server
-    /// names by its description's `label`, through the catalog's `dem_labels`), 1–8 (roadcore::NDEM − 1).
+    /// names by its description's `label`, through the catalog's `dem_labels`), 1–9 (roadcore::NDEM − 1).
     pub code: u8,
     /// The map regions it's used in at all (by id, crate::inputs::regions), by the roads and the
     /// terrain alike; None: wherever it has data. Its coverage is cut to them as it's read

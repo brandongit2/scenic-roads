@@ -277,6 +277,50 @@ pub async fn depth_shade_tile(
     shade_tile(s, pipeline::depth::SHADE_LAYER, z, x, y, q, headers).await
 }
 
+/// A polar cap's tile (`/tiles/polar-terrain/{pole}/{z}/{x}/{y}`, `/tiles/polar-slope/…`: the
+/// catalog's `polar-<kind>-<pole>`, pipeline::polar): as stored, else 404 (past the cap, or not
+/// built; the map draws the tile's loaded ancestor). Nothing is made here: a renderer of any
+/// projection reads the grid's tiles as they are.
+#[allow(clippy::too_many_arguments)]
+async fn polar_tile(
+    s: S,
+    kind: &str,
+    pole: &str,
+    z: u8,
+    x: u32,
+    y: u32,
+    q: Option<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(pole) = roadcore::polar::Pole::of_letter(pole) else { return StatusCode::NOT_FOUND.into_response() };
+    let v = versioned(q.as_deref());
+    let layer = pipeline::polar::layer(kind, pole);
+    let got =
+        tokio::task::spawn_blocking(move || stored(&s, &layer, z, x, y, &headers)).await.unwrap_or(Some(Got::Failed));
+    match got {
+        Some(g) => respond(g, v),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+pub async fn polar_terrain_tile(
+    State(s): State<S>,
+    Path((pole, z, x, y)): Path<(String, u8, u32, u32)>,
+    RawQuery(q): RawQuery,
+    headers: HeaderMap,
+) -> Response {
+    polar_tile(s, "terrain", &pole, z, x, y, q, headers).await
+}
+
+pub async fn polar_slope_tile(
+    State(s): State<S>,
+    Path((pole, z, x, y)): Path<(String, u8, u32, u32)>,
+    RawQuery(q): RawQuery,
+    headers: HeaderMap,
+) -> Response {
+    polar_tile(s, "slope", &pole, z, x, y, q, headers).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

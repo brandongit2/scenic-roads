@@ -184,11 +184,14 @@ impl Atlas {
     }
 }
 
-/// The projected CRSs the DEMs are read in: Canada Atlas Lambert, or a NAD83 / UTM zone.
+/// The projected CRSs the DEMs are read in: Canada Atlas Lambert, a NAD83 / UTM zone, or a WGS 84
+/// polar stereographic (EPSG:3031, Antarctic: REMA; EPSG:3413, the north: roadcore::polar, the
+/// polar caps' own grids, docs/polar.md).
 #[derive(Clone, Debug)]
 pub enum Projection {
     Atlas(Box<Atlas>),
     Utm(Utm),
+    Polar(roadcore::polar::Pole),
 }
 
 impl Projection {
@@ -198,6 +201,8 @@ impl Projection {
         match crs {
             3979 => Some(Projection::Atlas(Box::new(Atlas::new()))),
             26901..=26923 => Some(Projection::Utm(Utm::new(u32::from(crs - 26900)))),
+            3031 => Some(Projection::Polar(roadcore::polar::Pole::South)),
+            3413 => Some(Projection::Polar(roadcore::polar::Pole::North)),
             _ => None,
         }
     }
@@ -207,13 +212,14 @@ impl Projection {
         match self {
             Projection::Atlas(a) => a.project(lon, lat),
             Projection::Utm(u) => u.project(lon, lat),
+            Projection::Polar(p) => roadcore::polar::forward(*p, lon, lat),
         }
     }
 }
 
 /// Whether EPSG code `crs` is one the app projects to (metres), not a geographic one.
 pub fn projected(crs: u16) -> bool {
-    matches!(crs, 3979 | 26901..=26923)
+    matches!(crs, 3979 | 3031 | 3413 | 26901..=26923)
 }
 
 /// PROJ's Clenshaw sum of `p` at `b` (`gatg`).
@@ -391,6 +397,11 @@ mod tests {
         }
         assert!(Projection::of(4326).is_none() && Projection::of(26924).is_none());
         assert!(projected(3979) && projected(26901) && projected(26923) && !projected(4269) && !projected(26900));
+        assert!(projected(3031) && projected(3413));
+        // EPSG:3031 is roadcore::polar's south grid (checked against EPSG guidance note 7-2 there):
+        // McMurdo (166.67° E, 77.85° S) at Snyder 21-33, 21-34 worked by hand in f64.
+        let (x, y) = Projection::of(3031).unwrap().project(166.67, -77.85);
+        assert!((x - 305_467.162_732).abs() < 1e-3 && (y + 1_289_201.537_714).abs() < 1e-3, "{x} {y}");
     }
 
     #[test]

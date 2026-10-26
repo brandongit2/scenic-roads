@@ -153,7 +153,7 @@ pub mod flag {
 
 /// Number of DEM source codes counted per way, 0 (none) included: a vertex's `src.u8` is its
 /// elevation dataset's declared `code` (docs/inputs.md §6.8), named by the catalog's `dem_labels`.
-pub const NDEM: usize = 9;
+pub const NDEM: usize = 10;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]

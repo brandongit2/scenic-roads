@@ -2143,7 +2143,7 @@ impl Agent {
             "ferries" | "rail-feeds" => vec!["--pass".into(), date.to_string()],
             // (bld-fetch's coverage, and bldtiles' countries, from the pass's outlines.)
             "bld-fetch" | "bldtiles" => vec!["--pass".into(), date.to_string()],
-            "terrain-water" => vec!["--pass".into(), date.to_string()],
+            "terrain-water" | "polar-root" => vec!["--pass".into(), date.to_string()],
             "items" => vec!["--pass".into(), date.to_string(), "--cache".into(), s(&cache)],
             "heritage-sites" | "heritage" => {
                 vec!["--pass".into(), date.to_string(), "--dem".into(), dem(), "--cache".into(), s(&cache)]
@@ -7953,7 +7953,7 @@ impl Agent {
         before: &[JobSpec],
         regions: &[build::RegionLeft],
         backfill: &[build::Work],
-        chains: [Vec<build::Work>; 4],
+        chains: [Vec<build::Work>; 5],
         blind: Option<String>,
         peak: &dyn Fn(&str, &str) -> u64,
     ) -> forecast::Record<'static> {
@@ -8052,7 +8052,7 @@ impl Agent {
             .collect();
         // (A region's map tiles each at its measured time, `cost`; the whole-map steps by their
         // cadence, as last run.)
-        let [rail, landmarks, buildings, depth] = chains;
+        let [rail, landmarks, buildings, depth, polar] = chains;
         let cadence = {
             let c = self.catalogs.borrow();
             let now = now_s();
@@ -8066,7 +8066,7 @@ impl Agent {
         // built: forecast::chain_deps), but the overlays (they read the built z6 tiles) after everything
         // else; and a catalog after them with what the chains made since.
         let (mut chain_jobs, mut after): (Vec<forecast::Job>, Vec<forecast::Job>) = (Vec::new(), Vec::new());
-        for w in rail.iter().chain(landmarks.iter()).chain(buildings.iter()).chain(depth.iter()) {
+        for w in rail.iter().chain(landmarks.iter()).chain(buildings.iter()).chain(depth.iter()).chain(polar.iter()) {
             let jobs: Vec<forecast::Job> = if steps::SHARED.contains(&w.step.as_str()) {
                 w.targets.iter().map(|t| (w.step.clone(), t.0.clone(), cost(&w.step, &t.0))).collect()
             } else {
@@ -8082,7 +8082,8 @@ impl Agent {
                 chain_jobs.extend(jobs)
             }
         }
-        if !rail.is_empty() || !landmarks.is_empty() || !buildings.is_empty() || !depth.is_empty() {
+        if !rail.is_empty() || !landmarks.is_empty() || !buildings.is_empty() || !depth.is_empty() || !polar.is_empty()
+        {
             after.push(("catalog".into(), "after the chains".into(), mine("catalog", 1)));
         }
         // Each slot's job's time left: its pace says only its part's; its targets not yet done, as
@@ -11478,6 +11479,11 @@ fn first_secs(step: &str) -> f64 {
         "stations" => 110.0,
         "ferries" => 30.0,
         "terrain-root" | "slope-root" => 10.0,
+        // (A block to z9 from GLO-30 on the NAS, terrain and shading together: 5.2 min a block on the
+        // M4's 8 threads, 25 Oct; the root's z0–3, 41 tiles sampled.)
+        "polar-terrain" => 240.0,
+        "polar-slope" => 70.0,
+        "polar-root" => 300.0,
         "rail-feeds" => 240.0,
         "rail" => 540.0,
         "pois" => 10.0,

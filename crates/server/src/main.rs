@@ -517,6 +517,8 @@ async fn main() -> Result<()> {
         .route("/tiles/buildings-field/{z}/{x}/{y}", get(tiles::building_field_tile))
         .route("/tiles/terrain/{z}/{x}/{y}", get(terrain::terrain_tile))
         .route("/tiles/slope/{z}/{x}/{y}", get(terrain::slope_tile))
+        .route("/tiles/polar-terrain/{pole}/{z}/{x}/{y}", get(terrain::polar_terrain_tile))
+        .route("/tiles/polar-slope/{pole}/{z}/{x}/{y}", get(terrain::polar_slope_tile))
         .route("/tiles/depth/{z}/{x}/{y}", get(depth::depth_tile))
         .route("/tiles/depth-class/{z}/{x}/{y}", get(depth::class_tile))
         .route("/tiles/depth-shade/{z}/{x}/{y}", get(terrain::depth_shade_tile))
@@ -801,7 +803,8 @@ fn meta_json(s: &AppState) -> serde_json::Value {
     // Each tiled layer's packs' versions (a tile's `?v=` is that of the pack holding it): a new
     // catalog changes only the tokens of the packs it changed, so a browser asks again only for
     // their tiles. Root: z0–2; lo: z3–8, by z3 tile; hi: z9–14, by z6 tile; the terrain's deep
-    // packs past z12, by z10 tile (Data::pack_of) ("z/x/y").
+    // packs past z12, by z10 tile; a polar layer's root z0–3 and blocks z4–9, by z4 tile of its
+    // grid (Data::pack_of) ("z/x/y").
     let mut packs = serde_json::Map::new();
     for (k, l) in &cat.layers {
         let names = k == "labels" || k == "stations" || k == "ferries" || k.starts_with("ov-");
@@ -826,6 +829,10 @@ fn meta_json(s: &AppState) -> serde_json::Value {
         o.insert("hi".into(), serde_json::Value::Object(by(&l.hi)));
         if !l.deep.is_empty() {
             o.insert("deep".into(), serde_json::Value::Object(by(&l.deep)));
+        }
+        // (A polar layer's blocks, z4–9 by z4 tile of its pole's grid; its root z0–3: pipeline::polar.)
+        if !l.polar.is_empty() {
+            o.insert("polar".into(), serde_json::Value::Object(by(&l.polar)));
         }
         packs.insert(k.clone(), serde_json::Value::Object(o));
     }

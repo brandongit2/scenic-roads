@@ -133,6 +133,10 @@ pub struct Layer {
     /// native_zoom; elsewhere the base's finest, z12 to 67°): the map's zoom by area.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub native_zoom: BTreeMap<String, u8>,
+    /// A polar layer's block packs (z4–9) by z4 tile of its pole's grid ("4/x/y": pipeline::polar,
+    /// docs/polar.md); its `root` then holds z0–3. A polar layer is named `polar-<kind>-<pole>`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub polar: BTreeMap<String, String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -159,7 +163,7 @@ impl Catalog {
             if let Some(r) = &l.root {
                 out.push((format!("layers.{name}.root"), r.as_str()));
             }
-            for (k, v) in l.lo.iter().chain(&l.hi).chain(&l.deep) {
+            for (k, v) in l.lo.iter().chain(&l.hi).chain(&l.deep).chain(&l.polar) {
                 out.push((format!("layers.{name}[{k}]"), v.as_str()));
             }
         }
@@ -772,6 +776,7 @@ mod tests {
                 hi: [("6/32/21".to_string(), hi)].into(),
                 deep: BTreeMap::new(),
                 native_zoom: BTreeMap::new(),
+                polar: BTreeMap::new(),
                 extra: BTreeMap::new(),
             },
         );

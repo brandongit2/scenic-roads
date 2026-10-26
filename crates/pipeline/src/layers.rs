@@ -34,6 +34,9 @@ pub struct LayerOut {
     /// The native zoom of each deep pack's z10 tile (crate::terrain_deep::native_zoom).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub native_zoom: BTreeMap<String, u8>,
+    /// A polar layer's block packs by z4 tile of its pole's grid (crate::polar).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub polar: BTreeMap<String, String>,
 }
 
 impl LayerOut {
@@ -50,6 +53,9 @@ impl LayerOut {
             }
             "deep" => {
                 self.deep.insert(k, logical);
+            }
+            "polar" => {
+                self.polar.insert(k, logical);
             }
             _ => {
                 self.hi.insert(k, logical);

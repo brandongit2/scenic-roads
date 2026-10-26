@@ -464,8 +464,9 @@ impl GeoSet<'_> {
             .filter(move |&k| self.files[k].1.is_none_or(|b| in_box(&b, x, y)))
     }
 
-    /// Points `sel` (native `x`, `y`) sampled: each one's value (NaN: none) and the file it came from.
-    fn sample(&self, sel: &[u32], x: &[f64], y: &[f64]) -> Result<Vec<(f32, u32)>> {
+    /// Points `sel` (native `x`, `y`) sampled: each one's value (NaN: none) and the file it came from;
+    /// a fill mask's voids none unless `masks` is false (`Sampler::fill_voids`).
+    fn sample(&self, sel: &[u32], x: &[f64], y: &[f64], masks: bool) -> Result<Vec<(f32, u32)>> {
         let mut out = vec![(f32::NAN, u32::MAX); sel.len()];
         let mut todo: Vec<Vec<usize>> = vec![Vec::new(); self.files.len()];
         for (j, &i) in sel.iter().enumerate() {
@@ -482,7 +483,7 @@ impl GeoSet<'_> {
             let (xs, ys): (Vec<f64>, Vec<f64>) = mine.iter().map(|&j| (x[sel[j] as usize], y[sel[j] as usize])).unzip();
             let Some((t, level)) = self.open(k)? else { continue };
             // (A file whose fill mask has voids: no block of it is known to hold data in every pixel.)
-            let has_mask = self.has_voids(k)?;
+            let has_mask = masks && self.has_voids(k)?;
             let clean = (!has_mask).then(|| &self.clean[k]);
             let v = sample_raster_noting(&t, level, &xs, &ys, clean).with_context(|| self.files[k].0.clone())?;
             for (n, (&j, v)) in mine.iter().zip(v).enumerate() {
@@ -1372,7 +1373,7 @@ impl Reader<'_, '_> {
         match self {
             Reader::Geo(g, xy) => {
                 let (x, y) = native(xy, lon, lat);
-                g.sample(sel, x, y)
+                g.sample(sel, x, y, true)
             }
             Reader::Tiles(t) => Ok(t.sample(sel, lon, lat, step)?.into_iter().map(|v| (v, 0)).collect()),
         }
@@ -1717,6 +1718,49 @@ impl<'a> Sampler<'a> {
         );
         }
         Ok(out)
+    }
+}
+
+impl Sampler<'_> {
+    /// Fills `got`'s points no dataset had data for (`sample`'s NaN) from the datasets' fill
+    /// masks' voids: the first GeoTIFF dataset in the order holding the point gives its own filled
+    /// value there (GLO-30's FLM 3 and up: filled from another DEM), brought to EGM2008 as
+    /// `sample`'s are, with its code; no blend. For the polar caps alone (crate::polar), where no
+    /// dataset lies beneath GLO-30 near the South Pole; the Mercator terrain and the roads read
+    /// `sample` as it is. The points filled.
+    pub fn fill_voids(&self, lon: &[f64], lat: &[f64], got: &mut Sampled) -> Result<usize> {
+        let plan = self.plan;
+        let mut filled = 0;
+        for (k, ds) in plan.datasets.iter().enumerate() {
+            let Set::Geo(_) = &self.sets[k] else { continue };
+            let sel: Vec<u32> = (0..lon.len() as u32)
+                .filter(|&i| got.elev[i as usize].is_nan() && self.covers[k].contains(lon[i as usize], lat[i as usize]))
+                .collect();
+            if sel.is_empty() {
+                continue;
+            }
+            let r = self.sets[k].reader(lon, lat, &self.covers[k]);
+            let Reader::Geo(g, xy) = &r else { continue };
+            let (x, y) = native(xy, lon, lat);
+            let sel = r.in_reading_order(sel, lon, lat);
+            let v = g.sample(&sel, x, y, false)?;
+            let mut now: Vec<(usize, f32)> =
+                sel.iter().zip(v).filter(|(_, (v, _))| v.is_finite()).map(|(&i, (v, _))| (i as usize, v)).collect();
+            if let Some(c) = &ds.convert {
+                let (lo, la): (Vec<f64>, Vec<f64>) = now.iter().map(|&(i, _)| (lon[i], lat[i])).unzip();
+                for ((_, v), d) in now.iter_mut().zip(self.grids.offsets(c, &lo, &la)?) {
+                    if d.is_finite() {
+                        *v = (*v as f64 + d) as f32;
+                    }
+                }
+            }
+            for (i, v) in now {
+                got.elev[i] = v;
+                got.src[i] = ds.code;
+                filled += 1;
+            }
+        }
+        Ok(filled)
     }
 }
 

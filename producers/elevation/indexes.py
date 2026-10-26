@@ -19,6 +19,11 @@ the index's CRS), which the app reads as the file's box (min x <= x < max x, min
   glo30   Copernicus DEM GLO-30 (the worldwide dataset): every tile in the bucket's
           tileList.txt (or --tiles, a copy of it), its DEM by `url` and its fill mask (FLM, in its
           AUXFILES/) by `mask`, its footprint the 1° square it's named by (its south-west corner).
+  rema    PGC's REMA v2.0 32 m mosaic (EPSG:3031, Antarctica): every tile of the bucket's
+          rema/mosaics/v2.0/32m/ (listed), its DEM by `url`, its footprint its STAC item's
+          `proj:bbox`; with --south-of <lat> only the tiles wholly south of that latitude (their
+          corner farthest from the pole), so the dataset meets no Web Mercator tile (they end at
+          85.05° S) and its coverage changes no existing key (docs/polar.md §2).
 
 Drop the index beside its declaration in inputs/elevation/; the input check reads it.
 
@@ -26,6 +31,7 @@ usage: indexes.py hrdem [--res 1|2] [--tiles <listing.txt>] --squares <index.geo
        indexes.py 3dep --out <file>
        indexes.py 3dep-1m --bbox <w,s,e,n> --out <file with {zone}>
        indexes.py glo30 [--tiles <tileList.txt>] --out <file>
+       indexes.py rema [--south-of <lat>] --out <file>
 """
 import argparse
 import json
@@ -41,6 +47,8 @@ NRCAN = "https://canelevation-dem.s3.ca-central-1.amazonaws.com"
 USGS = "https://prd-tnm.s3.amazonaws.com"
 USGS_PREFIX = "StagedProducts/Elevation/13/TIFF/current/"
 GLO30 = "https://copernicus-dem-30m.s3.amazonaws.com"
+PGC = "https://pgc-opendata-dems.s3.us-west-2.amazonaws.com"
+REMA_PREFIX = "rema/mosaics/v2.0/32m/"
 UA = {"User-Agent": "scenic-roads/0.1 (personal offline map)"}
 # What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): the buckets' listings and published files.
 FETCHES = "api, data"
@@ -215,13 +223,45 @@ def glo30(a):
     return {"type": "FeatureCollection", "features": feats}
 
 
+def rema_lat(x, y):
+    """The latitude of EPSG:3031's (x, y): polar stereographic variant B on WGS 84, standard
+    parallel 71° S (Snyder 21-33, 21-34; roadcore::polar::inverse)."""
+    import math
+    a, f = 6378137.0, 1 / 298.257223563
+    e = math.sqrt(f * (2 - f))
+    pc = math.radians(71.0)
+    tc = math.tan(math.pi / 4 - pc / 2) / ((1 - e * math.sin(pc)) / (1 + e * math.sin(pc))) ** (e / 2)
+    mc = math.cos(pc) / math.sqrt(1 - (e * math.sin(pc)) ** 2)
+    t = math.hypot(x, y) * tc / (a * mc)
+    phi = math.pi / 2 - 2 * math.atan(t)
+    for _ in range(20):
+        es = e * math.sin(phi)
+        phi = math.pi / 2 - 2 * math.atan(t * ((1 - es) / (1 + es)) ** (e / 2))
+    return -math.degrees(phi)
+
+
+def rema(a):
+    tiles = sorted({m.group(1) for k in s3_keys(PGC, REMA_PREFIX) for m in [re.fullmatch(re.escape(REMA_PREFIX) + r"(\d+_\d+)\.json", k)] if m})
+    feats = []
+    for t in tiles:
+        item = json.loads(get(f"{PGC}/{REMA_PREFIX}{t}/{t}_32m_v2.0.json"))
+        x0, y0, x1, y1 = item["properties"]["proj:bbox"]
+        if a.south_of is not None:
+            far = max((abs(x0), abs(x1))), max((abs(y0), abs(y1)))
+            if not rema_lat(*far) < a.south_of:
+                continue
+        feats.append(feature(item["assets"]["dem"]["href"], square(x0, y0, x1, y1)))
+    return {"type": "FeatureCollection", "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:EPSG::3031"}}, "features": feats}
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("source", choices=["hrdem", "3dep", "3dep-1m", "glo30"])
+    ap.add_argument("source", choices=["hrdem", "3dep", "3dep-1m", "glo30", "rema"])
     ap.add_argument("--tiles")
     ap.add_argument("--squares")
     ap.add_argument("--res", type=int, choices=[1, 2], default=2)
     ap.add_argument("--bbox")
+    ap.add_argument("--south-of", type=float)
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
     if a.source == "3dep-1m":
@@ -229,7 +269,7 @@ def main():
             ap.error("3dep-1m needs --bbox and an --out naming {zone}")
         docs = {a.out.format(zone=c - 26900): d for c, d in usgs_1m(a).items()}
     else:
-        docs = {a.out: {"hrdem": hrdem, "3dep": usgs, "glo30": glo30}[a.source](a)}
+        docs = {a.out: {"hrdem": hrdem, "3dep": usgs, "glo30": glo30, "rema": rema}[a.source](a)}
     for out, doc in docs.items():
         with open(out, "w") as f:
             json.dump(doc, f, separators=(",", ":"))

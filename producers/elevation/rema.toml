@@ -1,0 +1,17 @@
+name = "REMA, Reference Elevation Model of Antarctica, 32 m mosaic v2.0"
+label = "REMA (32 m)"
+what = "The 3D terrain near the South Pole, where Copernicus GLO-30 has voids"
+credit = "DEMs provided by the Byrd Polar and Climate Research Center and the Polar Geospatial Center under NSF-OPP awards 1043681, 1542736, 1543501, 1559691, 1810976, and 2129685. Howat, I., et al., 2022, The Reference Elevation Model of Antarctica – Mosaics, Version 2, https://doi.org/10.7910/DVN/EBW8UC, Harvard Dataverse"
+licence = "CC-BY-4.0"
+source = "https://registry.opendata.aws/pgc-rema/"
+territory = ["AQ"]
+surface = "surface"
+heights = "ellipsoid-WGS84"
+rank = 3
+code = 9
+notes = "Ranked after GLO-30 and the Terrarium tiles: it serves only where GLO-30 has a void (its fill mask's 3 and up) and the Terrarium tiles, which end at 85.05° S, have nothing. Index: producers/elevation/indexes.py rema --south-of -87 (the 100 km tiles wholly south of 87° S, so its coverage, 1° cells, meets no Web Mercator tile and no existing key changes: docs/polar.md §2). Kept in the store (sources/fetched/rema/, `scenic-build store-fetch rema --index rema-tiles.geojson`). Heights above the WGS 84 ellipsoid, brought to EGM2008 by the egm2008 grid."
+
+[data]
+format = "geotiff"
+index = "rema-tiles.geojson"
+store = true

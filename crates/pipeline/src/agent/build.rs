@@ -111,6 +111,13 @@ pub struct Keys {
     /// The floor's shading's assemblies, per z3 tile ("3/x/y": `depth_targets`).
     #[serde(default)]
     pub depth_shade: BTreeMap<String, String>,
+    /// The polar caps' blocks ("s/4/x/y": crate::polar::target) and roots ("s"): `polar_targets`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub polar_terrain: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub polar_slope: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub polar_root: BTreeMap<String, String>,
     /// The served files the last catalog was made from.
     #[serde(default)]
     pub catalog: Option<String>,
@@ -189,6 +196,9 @@ impl Keys {
             "depth" => &mut self.depth,
             "depth-lo" => &mut self.depth_lo,
             "depth-shade" => &mut self.depth_shade,
+            "polar-terrain" => &mut self.polar_terrain,
+            "polar-slope" => &mut self.polar_slope,
+            "polar-root" => &mut self.polar_root,
             _ => &mut self.lo,
         }
     }
@@ -215,6 +225,9 @@ impl Keys {
             "depth" => &self.depth,
             "depth-lo" => &self.depth_lo,
             "depth-shade" => &self.depth_shade,
+            "polar-terrain" => &self.polar_terrain,
+            "polar-slope" => &self.polar_slope,
+            "polar-root" => &self.polar_root,
             _ => return None,
         };
         m.get(target).map(String::as_str)
@@ -264,7 +277,8 @@ impl Keys {
             self.catalog_held = done.first().map(|d| d.1.clone());
             return;
         }
-        if step.ends_with("-root")
+        // (The polar roots are kept by pole, `polar_root`.)
+        if (step.ends_with("-root") && step != "polar-root")
             || matches!(
                 step,
                 "inputs"
@@ -2543,6 +2557,7 @@ pub fn plan(
         let each: Vec<&Coverage> = updates.each.iter().map(|(_, c)| c).collect();
         work.extend(bld_work(cov, m, done, inputs, &bld_rank(&each)));
         work.extend(depth_work(cov, m, done, tiles));
+        work.extend(polar_work(cov, m, done, tiles));
         work.extend(backfill.iter().cloned());
         let why = match heritage_awaits_acceptance(cov, date, m, inputs) {
             Some(r) => format!("the regions' z6 tiles wait for the pass's heritage sites: {r}"),
@@ -2871,6 +2886,7 @@ pub fn plan(
         .collect();
     let bld = bld_work(cov, m, done, inputs, &bld_rank(&bld_regions));
     let depth = depth_work(cov, m, done, tiles);
+    let polar = polar_work(cov, m, done, tiles);
     // The low zooms (the roads' and rails' lo packs, the terrain's and slope's roots, the near
     // way's assemblies) by their cadence (`low_gate`): nothing else queued counts the z6 tiles, terrain,
     // slope and tree z6 tiles, the 3D buildings and the depths (their assemblies aside: they go with
@@ -2881,7 +2897,8 @@ pub fn plan(
         && slope_deep.is_empty()
         && trees.is_empty()
         && bld.is_empty()
-        && depth.is_empty();
+        && depth.is_empty()
+        && polar.is_empty();
     let low = low_gate(last_now, queue_empty, low_due_of(&pl.1, done), updates.way.since_low);
     // The terrain's and slope's roots wait for what makes the lo packs they read: terrain's for the
     // terrain left (its z6 tiles' mids, its assemblies), slope's for that and the slope left, so a
@@ -3032,6 +3049,7 @@ pub fn plan(
     work.extend(chains(last_now));
     work.extend(bld);
     work.extend(depth);
+    work.extend(polar);
     // Last of all, in idle time: the mids of current z6 tiles that have none (expected the same).
     work.extend(backfill.iter().cloned());
     Plan {
@@ -4244,6 +4262,130 @@ fn depth_next(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, tiles: 
     (!shade.is_empty()).then(|| Work { step: "depth-shade".into(), targets: shade })
 }
 
+/// The polar caps' targets with their keys (crate::polar; docs/polar.md §3), of the poles built
+/// (`polar::POLES`): a block where the coverage meets its latitudes (`roadcore::polar::lat_box`),
+/// and a root per pole with a block. None while the elevation pool's datasets can't be told.
+///
+/// - a block's terrain: its version, the terrain codec's, the block, the pool's datasets meeting
+///   it (by their lines, as the Mercator terrain's keys name them);
+/// - its shading: its version, the shading codec's, the block, the terrain packs of it and its
+///   neighbours (what its border reads), by content;
+/// - a root: its version, both codecs', the pole, the datasets meeting the root's tiles (sampled
+///   past the cap), its blocks and every block pack of its layers, by content.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PolarTargets {
+    pub terrain: Vec<(String, String)>,
+    pub slope: Vec<(String, String)>,
+    pub root: Vec<(String, String)>,
+}
+
+pub fn polar_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> Option<PolarTargets> {
+    use crate::polar::{self as p, BLOCK_Z};
+    let content = |l: String| m.get(&l).map_or("-", String::as_str).to_string();
+    let mut out = PolarTargets::default();
+    for pole in p::POLES {
+        let blocks = p::built(cov, pole);
+        if blocks.is_empty() {
+            continue;
+        }
+        let built: BTreeSet<(u32, u32)> = blocks.iter().copied().collect();
+        for &b in &blocks {
+            let t = p::target(pole, b);
+            let ds = tiles.terrain_datasets(m, roadcore::polar::lat_box(pole, BLOCK_Z, b.0, b.1))?;
+            let v = format!("polar-terrain {}", p::TERRAIN_V);
+            out.terrain.push((t.clone(), h(&[&v, &crate::terrain_codec::version(), &t, &ds])));
+            let mut ins = vec![format!("polar-slope {}", p::SLOPE_V), crate::shade_codec::version(), t.clone()];
+            ins.extend(
+                p::around(pole, b)
+                    .into_iter()
+                    .filter(|n| built.contains(n))
+                    .map(|n| content(p::block_logical("terrain", pole, n))),
+            );
+            let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
+            out.slope.push((t, h(&refs)));
+        }
+        let ds = tiles.terrain_datasets(m, roadcore::polar::lat_box(pole, 0, 0, 0))?;
+        let mut ins = vec![
+            format!("polar-root {}", p::ROOT_V),
+            crate::terrain_codec::version(),
+            crate::shade_codec::version(),
+            p::root_target(pole),
+            ds,
+        ];
+        for &b in &blocks {
+            ins.push(p::target(pole, b));
+        }
+        for kind in ["terrain", "slope"] {
+            let pre = format!("layers/{}/polar/", p::layer(kind, pole));
+            ins.extend(
+                m.range(pre.clone()..).take_while(|(l, _)| l.starts_with(&pre)).map(|(l, c)| format!("{l}={c}")),
+            );
+        }
+        let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
+        out.root.push((p::root_target(pole), h(&refs)));
+    }
+    Some(out)
+}
+
+/// The polar chain's work that can run now: the stale blocks' terrain; the stale blocks' shading
+/// whose own and neighbours' terrain is done as it'll stay (their packs are in its key); a pole's
+/// root once none of its blocks is stale in either.
+pub fn polar_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, tiles: &TerrainTiles) -> Vec<Work> {
+    let Some(pt) = polar_targets(cov, m, tiles) else { return Vec::new() };
+    let stale = |map: &BTreeMap<String, String>, v: &[(String, String)]| -> Vec<(String, String)> {
+        v.iter().filter(|(t, k)| map.get(t) != Some(k)).cloned().collect()
+    };
+    let terrain = stale(&done.polar_terrain, &pt.terrain);
+    let mut slope = stale(&done.polar_slope, &pt.slope);
+    let left: BTreeSet<&str> = terrain.iter().map(|(t, _)| t.as_str()).collect();
+    // (A hand-off waiting to be merged: its packs aren't in the manifest the keys read yet.)
+    let handed = |kind: &str, t: &str| {
+        crate::polar::parse_target(t)
+            .is_some_and(|(pole, b)| done.handed.contains(&crate::polar::block_logical(kind, pole, b)))
+    };
+    slope.retain(|(t, _)| {
+        crate::polar::parse_target(t).is_some_and(|(pole, b)| {
+            crate::polar::around(pole, b).into_iter().all(|n| {
+                let nt = crate::polar::target(pole, n);
+                !left.contains(nt.as_str()) && !handed("terrain", &nt)
+            })
+        })
+    });
+    let slope_left: BTreeSet<String> = stale(&done.polar_slope, &pt.slope).into_iter().map(|(t, _)| t).collect();
+    let root: Vec<(String, String)> = stale(&done.polar_root, &pt.root)
+        .into_iter()
+        .filter(|(r, _)| {
+            let of = |t: &String| t.split('/').next() == Some(r.as_str());
+            !left.iter().any(|t| of(&t.to_string()))
+                && !slope_left.iter().any(of)
+                && !pt.terrain.iter().any(|(t, _)| of(t) && (handed("terrain", t) || handed("slope", t)))
+        })
+        .collect();
+    let mut out = Vec::new();
+    for (step, targets) in [("polar-terrain", terrain), ("polar-slope", slope), ("polar-root", root)] {
+        if !targets.is_empty() {
+            out.push(Work { step: step.into(), targets });
+        }
+    }
+    out
+}
+
+/// The polar chain's first stale step, as if each before it succeeded (`remaining`).
+fn polar_next(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, tiles: &TerrainTiles) -> Option<Work> {
+    let pt = polar_targets(cov, m, tiles)?;
+    for (step, map, v) in [
+        ("polar-terrain", &done.polar_terrain, pt.terrain),
+        ("polar-slope", &done.polar_slope, pt.slope),
+        ("polar-root", &done.polar_root, pt.root),
+    ] {
+        let left: Vec<(String, String)> = v.into_iter().filter(|(t, k)| map.get(t) != Some(k)).collect();
+        if !left.is_empty() {
+            return Some(Work { step: step.into(), targets: left });
+        }
+    }
+    None
+}
+
 /// One step's line of the build's checklist: its targets done of all (`total` None until an earlier
 /// step makes them known), or how many are left (a worldwide step's: 1 or 0; a chain's: the targets
 /// of its works to come). Neither: to come, not sized yet.
@@ -4521,7 +4663,7 @@ fn remaining(done: &Keys, next: impl Fn(&Keys) -> Option<Work>) -> Vec<Work> {
 }
 
 /// The chains' work still to run, as if each step succeeded (`remaining`): the trains', the
-/// landmarks', the 3D buildings' and the depths', for the forecast (crate::agent::forecast; the
+/// landmarks', the 3D buildings', the depths' and the polar caps', for the forecast (crate::agent::forecast; the
 /// regions' map tiles are each region's, `RegionLeft::packs`, and the whole-map steps go by their
 /// cadence).
 pub fn chains_left(
@@ -4531,12 +4673,13 @@ pub fn chains_left(
     done: &Keys,
     inputs: &BTreeMap<String, String>,
     tiles: &TerrainTiles,
-) -> [Vec<Work>; 4] {
+) -> [Vec<Work>; 5] {
     [
         remaining(done, |d| rail_chain(cov, date, m, d, inputs)),
         remaining(done, |d| landmarks_chain(cov, date, m, d, inputs)),
         remaining(done, |d| bld_next(cov, m, d, inputs)),
         remaining(done, |d| depth_next(cov, m, d, tiles)),
+        remaining(done, |d| polar_next(cov, m, d, tiles)),
     ]
 }
 
@@ -4611,6 +4754,18 @@ pub fn checklist(
     out.push(sized("depth", &d.hi, &done.depth, dk));
     out.push(sized("depth-shade", &d.shade, &done.depth_shade, dk));
     next.insert("depth", next_of(&remaining(done, |k| depth_next(cov, m, k, tiles))));
+    // (The polar caps where the coverage reaches them: known once the elevation pool's datasets
+    // are read.)
+    match polar_targets(cov, m, tiles) {
+        Some(pt) if pt.terrain.is_empty() => {}
+        pt => {
+            let pk = pt.is_some();
+            let pt = pt.unwrap_or_default();
+            out.push(sized("polar-terrain", &pt.terrain, &done.polar_terrain, pk));
+            out.push(sized("polar-slope", &pt.slope, &done.polar_slope, pk));
+            out.push(sized("polar-root", &pt.root, &done.polar_root, pk));
+        }
+    }
     let pieces = m.keys().any(|l| l.starts_with(&format!("sources/osm/{date}/pieces/")));
     let units = unit_keys(cov, date, m, reach, tiles);
     // (One whose key can't be worked out now isn't done.)
@@ -6898,7 +7053,10 @@ pub(crate) mod tests {
             "two pieces, their assembly apart"
         );
         // Every line names every step of its stage, its items in the table's order.
-        assert_eq!(line(&l, "terrain").steps, ["terrain-water", "terrain-hi", "terrain-deep", "terrain-lo"]);
+        assert_eq!(
+            line(&l, "terrain").steps,
+            ["terrain-water", "terrain-hi", "terrain-deep", "terrain-lo", "polar-terrain"]
+        );
         assert_eq!(
             line(&l, "terrain").items.iter().map(|i| i.step.as_str()).collect::<Vec<_>>(),
             ["terrain-hi", "terrain-deep", "terrain-lo"]
@@ -8278,6 +8436,61 @@ pub(crate) mod tests {
 
     /// The depth chain waits for its sources and its water's digests, then makes the assemblies
     /// before the z6 tiles that read them; a source's change re-keys what it meets.
+    #[test]
+    fn the_polar_chain() {
+        // A region at the South Pole (30 km round it): the four blocks there and their root.
+        let d = tempfile::tempdir().unwrap();
+        let c = Coverage::fixture(
+            &[Recipe { id: "p".into(), name: "P".into(), outline: vec!["place:0,-89.99,30".into()] }],
+            None,
+            d.path(),
+        )
+        .unwrap();
+        let m: BTreeMap<String, String> = BTreeMap::new();
+        let tiles = TerrainTiles::new(None);
+        let pt = polar_targets(&c, &m, &tiles).unwrap();
+        let ts: Vec<&str> = pt.terrain.iter().map(|t| t.0.as_str()).collect();
+        assert_eq!(ts, ["s/4/7/7", "s/4/8/7", "s/4/7/8", "s/4/8/8"]);
+        assert_eq!(pt.root.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["s"]);
+        // The terrain first; the shading of a block once its and its neighbours' terrain is done.
+        let mut done = Keys::default();
+        let steps = |w: &[Work]| w.iter().map(|x| x.step.clone()).collect::<Vec<_>>();
+        let w = polar_work(&c, &m, &done, &tiles);
+        assert_eq!(steps(&w), ["polar-terrain"]);
+        done.record("polar-terrain", &w[0].targets[..3]);
+        assert_eq!(steps(&polar_work(&c, &m, &done, &tiles)), ["polar-terrain"], "each neighbour of the pole's");
+        done.record("polar-terrain", &w[0].targets);
+        // (Its terrain packs made: the shading's and root's keys read them.)
+        let mut m2 = m.clone();
+        for t in &ts {
+            let (pole, b) = crate::polar::parse_target(t).unwrap();
+            let l = crate::polar::block_logical("terrain", pole, b);
+            m2.insert(l.clone(), format!("{l}.0404040404040404.pack"));
+        }
+        let w = polar_work(&c, &m2, &done, &tiles);
+        assert_eq!(steps(&w), ["polar-slope"]);
+        assert_eq!(w[0].targets.len(), 4);
+        // A terrain pack waiting to be merged holds its neighbours' shading.
+        let mut handed = done.clone();
+        handed.handed.insert(crate::polar::block_logical("terrain", roadcore::polar::Pole::South, (7, 7)));
+        assert!(polar_work(&c, &m2, &handed, &tiles).is_empty());
+        done.record("polar-slope", &w[0].targets);
+        let w = polar_work(&c, &m2, &done, &tiles);
+        assert_eq!(steps(&w), ["polar-root"]);
+        done.record("polar-root", &w[0].targets);
+        assert!(polar_work(&c, &m2, &done, &tiles).is_empty());
+        assert!(remaining(&done, |d| polar_next(&c, &m2, d, &tiles)).is_empty());
+        // A block's terrain made again: its and its neighbours' shading, and the root, go again.
+        let mut m3 = m2.clone();
+        let l = crate::polar::block_logical("terrain", roadcore::polar::Pole::South, (7, 7));
+        m3.insert(l.clone(), format!("{l}.0505050505050505.pack"));
+        let w = polar_work(&c, &m3, &done, &tiles);
+        assert_eq!(steps(&w), ["polar-slope"]);
+        assert_eq!(w[0].targets.len(), 4, "the pole's blocks are each other's neighbours");
+        // A region nowhere near a pole: none.
+        assert!(polar_targets(&cov(), &m, &tiles).unwrap().terrain.is_empty());
+    }
+
     #[test]
     fn the_depth_chain() {
         let c = cov();

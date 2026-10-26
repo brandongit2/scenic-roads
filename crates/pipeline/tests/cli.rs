@@ -31,6 +31,7 @@ fn exe(prog: &str) -> &'static str {
         "terrainsub" => env!("CARGO_BIN_EXE_terrainsub"),
         "lakefill" => env!("CARGO_BIN_EXE_lakefill"),
         "coastcheck" => env!("CARGO_BIN_EXE_coastcheck"),
+        "scenic-polar" => env!("CARGO_BIN_EXE_scenic-polar"),
         p => panic!("no binary for {p}: add it to exe() and pipeline::cli::PROGRAMS"),
     }
 }

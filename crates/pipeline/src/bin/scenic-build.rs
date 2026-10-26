@@ -46,6 +46,9 @@
 //!   slope-lo <Q …>               z3 tiles Q's zoomed-out slope (lo packs, z3–8) from their z6 tiles'
 //!                                mids and the lo pack as it is
 //!   terrain-root, slope-root     their z0–2 root packs, from the lo packs' z3 tiles
+//!   polar-terrain <s/4/x/y …>    polar blocks' terrain (z4–9) from the elevation pool (pipeline::polar)
+//!   polar-slope <s/4/x/y …>      polar blocks' shading from their and their neighbours' terrain packs
+//!   polar-root <s …> [--regions dir] [--pass d]  a pole's z0–3 of both, from its blocks; those no longer built dropped
 //!   raw-pack [--from-tar -] [--cache dir]  AWS's raw tiles packed into the NAS's archives
 //!                                (pipeline::rawpack): a tar of them on stdin (tools/nas/raw-pack.sh),
 //!                                else those waiting in the cache
@@ -1140,6 +1143,25 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let n = pipeline::slope_pack::build_root(&mut out)?;
             eprintln!("slope root: {n} tiles");
         }
+        // The polar caps (pipeline::polar; docs/polar.md): blocks named "s/4/x/y", roots by pole.
+        "polar-terrain" | "polar-slope" => {
+            let ts: Vec<_> = positional(&args)
+                .iter()
+                .map(|t| pipeline::polar::parse_target(t).with_context(|| format!("{t}: not a polar block (s/4/x/y)")))
+                .collect::<Result<_>>()?;
+            if step == "polar-terrain" {
+                pipeline::polar::terrain_step(&mut out, &ts)?;
+            } else {
+                pipeline::polar::slope_step(&mut out, &ts)?;
+            }
+        }
+        "polar-root" => {
+            let cov = coverage_of(&out, &args)?;
+            for p in positional(&args) {
+                let pole = roadcore::polar::Pole::of_letter(&p).with_context(|| format!("{p}: not a pole (n or s)"))?;
+                pipeline::polar::root_step(&mut out, pole, &pipeline::polar::built(&cov, pole))?;
+            }
+        }
         "put" => {
             // put <logical> <ext> <file>: upload a file under a logical name (manual operations).
             let p = positional(&args);
@@ -1791,6 +1813,8 @@ fn layer_encoding(layer: &str) -> &'static str {
         pipeline::depth::LAYER => pipeline::depth::ENCODING,
         pipeline::depth::CLASS_LAYER => pipeline::depth::CLASS_ENCODING,
         pipeline::depth::SHADE_LAYER => pipeline::shade_codec::ENCODING,
+        l if l.starts_with("polar-terrain-") => pipeline::terrain_codec::ENCODING,
+        l if l.starts_with("polar-slope-") => pipeline::shade_codec::ENCODING,
         _ => "unknown",
     }
 }
@@ -1819,6 +1843,8 @@ fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
         // Depth: z3–8 in the lo packs, z9–16 in the hi where a source has that detail; the server
         // makes the others from their ancestors (pipeline::depth).
         pipeline::depth::LAYER | pipeline::depth::CLASS_LAYER | pipeline::depth::SHADE_LAYER => pipeline::depth::ZOOMS,
+        // The polar caps: z0–3 in the root, z4–9 in the blocks (pipeline::polar).
+        l if l.starts_with("polar-") => (0, pipeline::polar::MAX_Z),
         _ => return None,
     })
 }
@@ -1906,13 +1932,14 @@ fn catalog(
                 layer_bundles.push((layer.to_string(), logical.clone()));
             }
             // (A layer's packs by their scopes; any other folder isn't served.)
-            ["layers", layer, scope @ ("root" | "lo" | "hi" | "deep"), key] => {
+            ["layers", layer, scope @ ("root" | "lo" | "hi" | "deep" | "polar"), key] => {
                 let u = TileId::parse(key).context("pack key")?;
                 let enc = layer_encoding(layer);
                 let zs = match *scope {
                     "root" => (0, 2),
                     "lo" => (3, 8),
                     "deep" => (pipeline::terrain_deep::FIRST_Z, pipeline::terrain_deep::MAX_Z),
+                    "polar" => (pipeline::polar::BLOCK_Z, pipeline::polar::MAX_Z),
                     _ => (9, 14),
                 };
                 layers.entry(layer.to_string()).or_insert_with(|| LayerOut::new(enc)).add(

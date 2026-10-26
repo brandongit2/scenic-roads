@@ -239,13 +239,10 @@ pub struct Polar {
     /// The finest zoom (pipeline::polar::MAX_Z at most)
     #[arg(long, value_name = "Z", default_value_t = pipeline_max_z())]
     pub max_z: u8,
-    /// The zoom of the blocks made one at a time (memory: one block's subtree)
-    #[arg(long, value_name = "Z", default_value_t = 4)]
-    pub block: u8,
     /// The output folder (and its scratch/)
     #[arg(long, value_name = "DIR")]
     pub out: PathBuf,
-    /// Only these blocks (x/y at the block's zoom, repeated), and no level above them: a sample
+    /// Only these blocks (x/y at z4, repeated), and no root: a sample
     #[arg(long, value_name = "X/Y")]
     pub only: Vec<String>,
     /// Threads (default: rayon's)

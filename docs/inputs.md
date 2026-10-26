@@ -1141,7 +1141,7 @@ the same declarations.
 | `surface` | `ground` or `surface` | a DTM, or a DSM with trees and buildings |
 | `heights` | `EGM2008`, `EGM96`, `CGVD2013`, `NAVD88`, `JGD2011`, `TWVD2001`, `ellipsoid-WGS84` | the height reference, brought to EGM2008 before the blend (below) |
 | `rank` | integer, default 0 | overrides the order by resolution (lower first), where datasets of one resolution differ in quality |
-| `code` | 1–8 | the source byte (at most `roadcore::NDEM` − 1, where the server counts a way's sources) in the z6 tiles' outputs (`src.u8`), named on the map by `label` |
+| `code` | 1–9 | the source byte (at most `roadcore::NDEM` − 1, where the server counts a way's sources) in the z6 tiles' outputs (`src.u8`), named on the map by `label` |
 | `label` | string | the short name a road's details give its elevation source (`"GSI lidar (5 m)"`), else `name`; one label per `code` (an `el-decl` error otherwise); not keyed: it reaches the map through the catalog's `dem_labels` (formats.md, Catalog), as a credit edit does (§4.8) |
 | `regions` | region ids (§6.1) | optional: the map regions the dataset is used in at all, by the roads and the terrain alike; elsewhere the next dataset in the order serves both. Its coverage (`facts.measured.cover`) is cut at check time to the 1° cells meeting one of them (`declared::scope_cover`; the check's key names the accepted regions, so a regions change measures again); an id no accepted region has is an `el-data` error. Not in its `keyed` digest (`Declaration::keyed_part`): a key names the cut only where it changed the cells the key's box reads (`cut_note`), so the z6 tiles inside keep their keys and those whose datasets change are built again. Planned: cut to the regions' outlines inside those cells too |
 | `territory` | ISO codes or `"world"` | required for a tile pyramid (its coverage is its territory's outlines' boxes); `"world"` makes any dataset's coverage the world |
@@ -1175,7 +1175,8 @@ credits' extent (§4.8).
 declaration's fields wrong: unknown `surface`, `heights` or encoding, no `code`, a template without
 placeholders, not exactly one way of naming files (`el-decl`); an unparsable index (`el-index`); an
 index or files missing (`el-missing`); unreadable or unmeasurable data: a header, a missing file, a
-CRS the app can't project (EPSG 4326, 4269, 3979, NAD83 / UTM 26901–26923: `pipeline::dem::proj`,
+CRS the app can't project (EPSG 4326, 4269, 3979, NAD83 / UTM 26901–26923, polar stereographic 3031
+and 3413: `pipeline::dem::proj`,
 `declared::known_crs`) or contradicting its index, a pyramid without a known territory or with
 non-256 tiles (`el-data`). Warnings: a folder or index no declaration names (`el-orphan`); two
 datasets of one rank, resolution and surface meeting (`el-tie`). A declaration is held with the
@@ -1305,8 +1306,22 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   is in one CRS; `indexes.py 3dep-1m --bbox -79.8,40.4,-66.8,47.5`), each with `regions` the ten
   eastern regions. Ranked before the 2 m and 10 m datasets (HRDEM 1 m −1, the 3DEP zones −2 to −4). Where zones overlap, their ranks decide (zone 19 before 18 before
   17): an index's files are newest first within its zone alone, not across zones. HRDEM 1 m shares HRDEM 2 m's code and label (the same lidar, read
-  alike); 3DEP 1 m takes code 8, the last free one. Their heights reach EGM2008 by the existing
+  alike); 3DEP 1 m takes code 8. Their heights reach EGM2008 by the existing
   chains (CGVD2013 by CGG2013a, NAVD88 by GEOID18).
+- **REMA** (#601, the owner's approval of 25 Oct; staged in `producers/elevation/rema.toml`, not yet
+  in the drop box): PGC's Reference Elevation Model of Antarctica, its 32 m mosaic v2.0, cloud-optimised
+  GeoTIFFs in EPSG:3031 on AWS's open data (`pgc-opendata-dems`, CC-BY-4.0; PGC's acknowledgement
+  and the mosaic's citation in its credit). Ranked after GLO-30 and the Terrarium tiles (`rank = 3`,
+  `code = 9`, `roadcore::NDEM` raised to 10 for it), so it serves only in GLO-30's voids where the
+  Terrarium tiles, which end at 85.05° S, have nothing: the polar caps (docs/polar.md §2). Heights
+  above the WGS 84 ellipsoid, brought to EGM2008 by the `egm2008` grid. Its index is made by
+  `indexes.py rema --south-of -87` (the mosaic's STAC items: each 100 km tile's `proj:bbox`): the
+  tiles wholly south of 87° S, so its coverage (1° cells and their neighbours, to 86° S) meets no
+  Web Mercator tile and changes no existing key; 20 tiles, 0.24 GB in the store
+  (`sources/fetched/rema/`, `scenic-build store-fetch rema --index rema-tiles.geojson`). The mosaic
+  has no data within about 150 km of the pole (no tile there); the caps take GLO-30's own filled
+  values where nothing lies beneath (docs/polar.md §2). EPSG:3031 (and 3413) are projected by
+  `roadcore::polar` (`dem::proj::Projection::Polar`).
 
 **The 3D terrain** reads the same pool (crate::terrain_base; docs/steps.md §2, Terrain): its base
 tiles are sampled from these datasets in this order, blended as the roads' are, so the roads and

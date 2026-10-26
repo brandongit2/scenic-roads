@@ -198,6 +198,26 @@ pub fn meets_disc(z: u8, x: u32, y: u32, r: f64) -> bool {
     dx * dx + dy * dy <= r * r
 }
 
+/// The latitudes a tile spans, as a geographic box (west, south, east, north; degrees) over every
+/// longitude: from its nearest point to the pole to its farthest corner. A superset of its footprint,
+/// for asking what meets it (the elevation pool's datasets, the coverage).
+pub fn lat_box(pole: Pole, z: u8, x: u32, y: u32) -> [f64; 4] {
+    let b = tile_box(z, x, y);
+    let near = |lo: f64, hi: f64| {
+        if lo > 0.0 {
+            lo
+        } else if hi < 0.0 {
+            -hi
+        } else {
+            0.0
+        }
+    };
+    let r0 = near(b[0], b[2]).dhypot(near(b[1], b[3]));
+    let r1 = b[0].abs().max(b[2].abs()).dhypot(b[1].abs().max(b[3].abs()));
+    let (lat0, lat1) = (inverse(pole, r0, 0.0).1, inverse(pole, r1, 0.0).1);
+    [-180.0, lat0.min(lat1), 180.0, lat0.max(lat1)]
+}
+
 /// The tiles of zoom `z` meeting the pole's cap (out to `CAP_LAT`), by row then column. A tile's
 /// parent meets the cap whenever it does, so each zoom's tiles are the parents of the next's.
 pub fn cap_tiles(pole: Pole, z: u8) -> Vec<(u32, u32)> {
@@ -229,6 +249,16 @@ pub fn east_north(pole: Pole, lon: f64) -> ([f64; 2], [f64; 2]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tile's latitudes: the pole's own tile reaches the pole; an edge tile's farthest corner is
+    /// past the cap.
+    #[test]
+    fn lat_boxes() {
+        let b = lat_box(Pole::South, 4, 7, 8);
+        assert!(b[1] == -90.0 && b[3] > -88.9 && b[3] < -87.0, "{b:?}");
+        let n = lat_box(Pole::North, 1, 0, 0);
+        assert!(n[3] == 90.0 && n[1] < CAP_LAT, "{n:?}");
+    }
 
     /// The EPSG guidance note 7-2's example of polar stereographic variant B (WGS 84, standard
     /// parallel 71° S, origin longitude 70° E, false easting and northing 6,000,000 m): 75° S,

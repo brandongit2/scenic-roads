@@ -448,6 +448,14 @@ impl Data {
         let cat = self.catalog();
         let l = cat.layers.get(layer)?;
         let f = pipeline::terrain_deep::PACK_Z;
+        // (A polar layer's: z0–3 in its root, z4–9 in its blocks, pipeline::polar.)
+        if !l.polar.is_empty() {
+            let b = pipeline::polar::BLOCK_Z;
+            return match z {
+                _ if z < b => l.root.clone(),
+                _ => l.polar.get(&format!("{b}/{}/{}", x >> (z - b), y >> (z - b))).cloned(),
+            };
+        }
         match z {
             0..=2 => l.root.clone(),
             3..=8 => l.lo.get(&format!("3/{}/{}", x >> (z - 3), y >> (z - 3))).cloned(),
@@ -565,7 +573,9 @@ impl Data {
         let cat = self.catalog();
         let Some(l) = cat.layers.get(layer) else { return String::new() };
         let mut h = blake3::Hasher::new();
-        for logical in l.root.iter().chain(l.lo.values()).chain(l.hi.values()).chain(l.deep.values()) {
+        for logical in
+            l.root.iter().chain(l.lo.values()).chain(l.hi.values()).chain(l.deep.values()).chain(l.polar.values())
+        {
             if let Some(f) = cat.files.get(logical) {
                 h.update(f.file.as_bytes());
             }

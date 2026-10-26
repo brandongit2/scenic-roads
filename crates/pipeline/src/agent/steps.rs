@@ -74,6 +74,8 @@ pub enum Scope {
     Z6,
     /// A z10 tile ("10/x/y"): a deep pack's (crate::terrain_deep::PACK_Z).
     Z10,
+    /// A polar block ("s/4/x/y": a pole and a z4 tile of its grid, crate::polar::target).
+    Polar,
     /// An input's drop box (docs/inputs.md §4.3).
     Input,
     /// A task's piece of a job (`TASKS`).
@@ -88,6 +90,7 @@ impl Scope {
             Scope::Z3 => "z3 tile",
             Scope::Z6 => "z6 tile",
             Scope::Z10 => "z10 tile",
+            Scope::Polar => "polar block",
             Scope::Input => "input",
             Scope::Task => "task",
         }
@@ -172,10 +175,10 @@ const fn step(
 }
 
 use Kind::{Derive, Fetch, Keep, Pack, Publish};
-use Scope::{Input, World, Z10, Z3, Z6};
+use Scope::{Input, Polar, World, Z10, Z3, Z6};
 
 /// The table, by stage (the ranks order what's ranked).
-pub const TABLE: [Step; 53] = [
+pub const TABLE: [Step; 56] = [
     // The OSM pass: the planet filtered, its sets, extracts and road values; then its worldwide steps.
     Step {
         alone: true,
@@ -405,6 +408,41 @@ pub const TABLE: [Step; 53] = [
             "slope-lo",
             "Assembles a z3 tile's zoomed-out slope from its tiles.",
             w_slope_lo,
+        )
+    },
+    // The polar caps past the Web Mercator tiles' 85.05° (crate::polar; docs/polar.md): a block's
+    // terrain, then its shading, then a pole's root of both. (A block's z9 tiles held whole: its
+    // heights and shading, 1 GB, and the pool's cache: 3.4 GB at most measured on the M4, 25 Oct.)
+    Step {
+        mem_mb: 4096,
+        ..step(
+            "terrain",
+            Pack,
+            Polar,
+            "polar-terrain",
+            "Samples a polar block's terrain past 85° from the elevation pool (z4–9).",
+            w_polar_terrain,
+        )
+    },
+    Step {
+        mem_mb: 2048,
+        ..step(
+            "slope",
+            Pack,
+            Polar,
+            "polar-slope",
+            "Works out a polar block's shading from its terrain and its neighbours' (z4–9).",
+            w_polar_slope,
+        )
+    },
+    Step {
+        ..step(
+            "slope",
+            Pack,
+            World,
+            "polar-root",
+            "Builds a pole's zoomed-out terrain and shading (z0–3) from its blocks.",
+            w_polar_root,
         )
     },
     // (Tree cover's program holds a band of a block's rows on each thread and the blocks made but
@@ -1274,6 +1312,30 @@ fn w_slope_root(l: &str, _: bool) -> bool {
     pack(l, "slope", &["root"])
 }
 
+/// A polar layer's (`kind`) block packs (`layers/polar-<kind>-<pole>/polar/4-x-y`) or root.
+fn polar_pack(l: &str, kind: &str, scope: &str) -> bool {
+    crate::polar::POLES.iter().any(|&p| match parts(l).as_slice() {
+        ["layers", ly, sc, t] => {
+            *ly == crate::polar::layer(kind, p)
+                && *sc == scope
+                && (if scope == "root" { *t == "0-0-0" } else { tile(t, u32::from(crate::polar::BLOCK_Z)) })
+        }
+        _ => false,
+    })
+}
+
+fn w_polar_terrain(l: &str, _: bool) -> bool {
+    polar_pack(l, "terrain", "polar")
+}
+
+fn w_polar_slope(l: &str, _: bool) -> bool {
+    polar_pack(l, "slope", "polar")
+}
+
+fn w_polar_root(l: &str, _: bool) -> bool {
+    polar_pack(l, "terrain", "root") || polar_pack(l, "slope", "root")
+}
+
 /// The tree layers' hi packs and a z6 tile's mid (a z6 tile); a z3 tile's whole run their lo packs
 /// too.
 fn w_trees(l: &str, _: bool) -> bool {
@@ -1613,6 +1675,9 @@ mod tests {
                 "slope-lo",
                 "terrain-root",
                 "slope-root",
+                "polar-terrain",
+                "polar-slope",
+                "polar-root",
                 "unit",
                 "osm-pass",
                 "regions-extract",
@@ -1705,6 +1770,9 @@ mod tests {
                 "slope-deep",
                 "slope-hi",
                 "slope-lo",
+                "polar-terrain",
+                "polar-slope",
+                "polar-root",
                 "trees",
                 "trees-lo",
                 "depth-lo",
