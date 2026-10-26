@@ -43,6 +43,10 @@ const GLIDE_HELD_MS = 50;
 const GLIDE_MIN_SPEED = 120;
 const GLIDE_MAX_SPEED = 3500;
 const GLIDE_END_SPEED = 15;
+/** A right-drag's spin carries on likewise (same decay), in degrees per second. */
+const SPIN_MIN_SPEED = 20;
+const SPIN_MAX_SPEED = 400;
+const SPIN_END_SPEED = 2;
 /** Zoom levels per pixel of a ⌘ two-finger scroll (the trackpad's own momentum carries it on). */
 const CMD_ZOOM_PER_PX = 0.0045;
 export interface CameraControls {
@@ -230,8 +234,8 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
       const rect = el.getBoundingClientRect();
       const px = e.clientX - rect.left, py = e.clientY - rect.top;
       let dx = e.deltaX, dy = e.deltaY;
-      // Classify the burst (wheelkind.ts); the Alt exception keeps a mouse burst's sideways steps.
-      const { kind, opening, mouseLook } = wheels.push(e, e.altKey);
+      // Classify the burst (wheelkind.ts).
+      const { kind, opening, mouseLook } = wheels.push(e);
       if (opening) burstCmd = e.metaKey && !e.ctrlKey && !mouseLook;
       burstMouse = kind === 'mouse';
       if (e.deltaMode === 1) {
@@ -280,12 +284,14 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
 
   // Right-drag or Ctrl + left-drag: rotate (x) and tilt (y) around the point under the cursor.
   // The anchor stays pinned where the drag started (ax, ay).
-  let drag: { id: number; x: number; y: number; ax: number; ay: number; a: Anchor | null } | null = null;
+  // After release the turn and tilt carry on at their release speed, decaying (GLIDE_TAU_MS), by
+  // the same rule as a drag's glide (GLIDE_SAMPLE_MS, GLIDE_HELD_MS), in degrees per ms.
+  let drag: { id: number; x: number; y: number; ax: number; ay: number; a: Anchor | null; trail: [number, number, number][] } | null = null;
   el.addEventListener('pointerdown', (e: PointerEvent) => {
     if (!(e.button === 2 || (e.button === 0 && e.ctrlKey))) return;
     const rect = el.getBoundingClientRect();
     const px = e.clientX - rect.left, py = e.clientY - rect.top;
-    drag = { id: e.pointerId, x: e.clientX, y: e.clientY, ax: px, ay: py, a: anchorAt(map, px, py) };
+    drag = { id: e.pointerId, x: e.clientX, y: e.clientY, ax: px, ay: py, a: anchorAt(map, px, py), trail: [] };
     el.setPointerCapture(e.pointerId);
     e.preventDefault();
     e.stopPropagation();
@@ -296,13 +302,21 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
     drag.x = e.clientX;
     drag.y = e.clientY;
     if (dx || dy) dragged = true;
+    if (dx || dy) {
+      const now = performance.now();
+      const q = drag.trail[drag.trail.length - 1];
+      drag.trail.push([now, (q?.[1] ?? 0) + dx * 0.5, (q?.[2] ?? 0) - dy * 0.5]);
+      while (drag.trail.length > 2 && now - drag.trail[0][0] > GLIDE_SAMPLE_MS + GLIDE_HELD_MS) drag.trail.shift();
+    }
     orbitAt(dx * 0.5, -dy * 0.5, drag.a, drag.ax, drag.ay);
     e.stopPropagation();
   }, true);
   const end = (e: PointerEvent) => {
     if (!drag || e.pointerId !== drag.id) return;
+    const d = drag;
     drag = null;
     el.releasePointerCapture(e.pointerId);
+    if (e.type === 'pointerup') startSpin(d.a, d.ax, d.ay, d.trail, performance.now());
   };
   el.addEventListener('pointerup', end, true);
   el.addEventListener('pointercancel', end, true);
@@ -364,6 +378,38 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
     glideCam = null;
   }
   map.on('remove', stopGlide); // a pending glide frame never touches a removed map
+  /** A right-drag's turn and tilt carrying on (the angles turned and tilted over the last GLIDE_SAMPLE_MS). */
+  const startSpin = (a: Anchor | null, ax: number, ay: number, trail: [number, number, number][], tUp: number) => {
+    stopGlide();
+    const last = trail[trail.length - 1];
+    if (!last || tUp - last[0] > GLIDE_HELD_MS) return; // held still before release
+    const first = trail.find(([t], i) => last[0] - t <= GLIDE_SAMPLE_MS || i === trail.length - 2) ?? last;
+    const span = last[0] - first[0];
+    if (span < 8) return;
+    let vb = (last[1] - first[1]) / span, vp = (last[2] - first[2]) / span; // degrees per ms
+    if (Math.hypot(vb, vp) * 1000 < SPIN_MIN_SPEED) return;
+    const cap = Math.min(1, SPIN_MAX_SPEED / (Math.hypot(vb, vp) * 1000));
+    vb *= cap;
+    vp *= cap;
+    let t0 = performance.now();
+    glideCam = camKey();
+    const tick = (now: number) => {
+      glide = 0;
+      if (glideCam !== camKey()) return stopGlide();
+      const dt = Math.min(48, now - t0);
+      t0 = now;
+      const k = Math.exp(-dt / GLIDE_TAU_MS);
+      const f = GLIDE_TAU_MS * (1 - k);
+      orbitAt(vb * f, vp * f, a, ax, ay);
+      vb *= k;
+      vp *= k;
+      const key = camKey();
+      if (key === glideCam || Math.hypot(vb, vp) * 1000 < SPIN_END_SPEED) return stopGlide();
+      glideCam = key;
+      glide = requestAnimationFrame(tick);
+    };
+    glide = requestAnimationFrame(tick);
+  };
   const startGlide = (a: Anchor, own: boolean, trail: [number, number, number][], tUp: number) => {
     stopGlide();
     const last = trail[trail.length - 1];
