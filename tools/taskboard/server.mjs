@@ -255,7 +255,9 @@ export function makeServer(store) {
   };
 
   async function api(req, res, url) {
-    const [what, col, id, action] = url.pathname.split("/").slice(2).map(decodeURIComponent); // after /api
+    let parts;
+    try { parts = url.pathname.split("/").slice(2).map(decodeURIComponent); } catch { return fail(res, 400, "invalid_argument", "the path is not valid percent-encoding"); }
+    const [what, col, id, action] = parts; // after /api
     if (what === "stream" && req.method === "GET") {
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
       res.write("retry: 1000\n\n");

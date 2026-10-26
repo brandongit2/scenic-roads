@@ -64,6 +64,22 @@ export function repair(store) {
   const firstT = new Map();
   for (const e of out) { const t = toTime(e.doc.t); if (t && typeof e.doc.item === "string" && (!firstT.has(e.doc.item) || t < firstT.get(e.doc.item))) firstT.set(e.doc.item, t); }
   const earliest = [...firstT.values()].sort()[0] ?? new Date(0).toISOString();
+  // Write order: SQLite's rowid. The first rows came from an import sorted by id (ascending ids);
+  // after them each row was appended as written (a replace appends again). For an undated row there,
+  // the time of the last dated row before it.
+  const writtenAfter = new Map();
+  {
+    const rows = store.db.prepare("SELECT id, t, extra FROM events ORDER BY rowid").all();
+    let imp = 0;
+    while (imp + 1 < rows.length && rows[imp + 1].id > rows[imp].id) imp++;
+    let last = null;
+    rows.forEach((r, i) => {
+      let at = toTime(r.t);
+      if (at === null && r.extra) { try { at = toTime(JSON.parse(r.extra).at); } catch {} }
+      if (at) { if (i > imp) last = last && last > at ? last : at; }
+      else if (i > imp && last) writtenAfter.set(r.id, last);
+    });
+  }
   for (const e of out) {
     const { doc } = e;
     const bad = [];
@@ -74,9 +90,13 @@ export function repair(store) {
     if (!EVENT_KINDS.includes(doc.kind)) { note("events: kind missing, set to note", e.id, `was ${JSON.stringify(doc.kind ?? null)}`); doc.kind = "note"; }
     const t = toTime(doc.t);
     if (t === null) {
+      // Rows past the first import were inserted as written, so the dated row written just before
+      // this one bounds when it was (last) written; never before its item's first event.
       const it = items.get(doc.item);
-      doc.t = firstT.get(doc.item) ?? toTime(it?.added) ?? toTime(it?.started) ?? earliest;
-      note("events: time missing, dated by the item's other times", e.id, `${doc.t} (item ${doc.item || "(board)"})`);
+      const own = [firstT.get(doc.item), toTime(it?.added), toTime(it?.started)].filter(Boolean).sort()[0];
+      const before = writtenAfter.get(e.from);
+      doc.t = [own, before].filter(Boolean).sort().at(-1) ?? earliest;
+      note("events: time missing, dated by the item's other times", e.id, `${doc.t} (item ${doc.item || "(board)"}${before && doc.t === before ? ", from the row written before it" : ""})`);
     } else {
       if (t !== doc.t) note(typeof doc.t === "string" && normTime(doc.t) ? "events: time written in the one format" : "events: time converted", e.id, `${JSON.stringify(doc.t)} → ${t}`);
       doc.t = t;
@@ -108,15 +128,27 @@ export function repair(store) {
     if (d.archivedAt !== undefined && d.archived !== true) { delete d.archivedAt; was("archivedAt without archived, removed", "archivedAt", null); }
     fixedItems.set(id, d);
   }
-  // An item with no added time takes its first event's, else its start, else the nearest lower
-  // numbered task's (tasks are numbered as they are made), else its folder's, else the earliest time.
-  const withAdded = [...fixedItems.values()].filter((d) => d.added && Number.isInteger(d.num)).sort((a, b) => a.num - b.num);
-  for (const [id, d] of fixedItems) {
-    if (d.added) continue;
-    const lower = [...withAdded].reverse().find((x) => x.num < (d.num ?? Infinity));
-    const how = firstT.has(id) ? ["its first event", firstT.get(id)] : d.started ? ["its start", d.started] : lower ? [`#${lower.num}'s`, lower.added] : fixedItems.get(d.parent)?.added ? ["its folder's", fixedItems.get(d.parent).added] : ["the earliest time on the board", earliest];
-    d.added = how[1];
-    note("items: added missing, dated", id, `${how[1]} (from ${how[0]})`);
+  // An item with no added time: no later than any time it has (its first event, start, finish,
+  // archiving). A numbered task also no later than the next higher-numbered task's added (tasks are
+  // numbered as they are made), and with no time of its own, the next lower one's. A folder no later
+  // than what is inside it (dated first). Else the earliest time on the board.
+  const ownT = (id, d) => [firstT.get(id), d.started, d.finished, d.archivedAt].filter(Boolean).sort()[0];
+  const dated = [...fixedItems.values()].filter((d) => d.added && Number.isInteger(d.num)).sort((a, b) => a.num - b.num);
+  const depth = (id) => { let n = 0; for (let p = fixedItems.get(id)?.parent; p && n < 1000; p = fixedItems.get(p)?.parent) n++; return n; };
+  const undated = [...fixedItems].filter(([, d]) => !d.added).sort((a, b) => (Number.isInteger(b[1].num) - Number.isInteger(a[1].num)) || depth(b[0]) - depth(a[0]));
+  for (const [id, d] of undated) {
+    let t = ownT(id, d), how = t ? "its own times" : null;
+    if (Number.isInteger(d.num)) {
+      const hi = dated.find((x) => x.num > d.num), lo = [...dated].reverse().find((x) => x.num < d.num);
+      if (!t && lo) { t = lo.added; how = `#${lo.num}'s`; }
+      if (hi && (!t || hi.added < t)) { t = hi.added; how = `#${hi.num}'s (made after it)`; }
+    } else {
+      const kids = [...fixedItems].filter(([, k]) => k.parent === id && k.added).map(([, k]) => k.added).sort();
+      if (kids.length && (!t || kids[0] < t)) { t = kids[0]; how = "what is inside it"; }
+    }
+    if (!t) { t = earliest; how = "the earliest time on the board"; }
+    d.added = t;
+    note("items: added missing, dated", id, `${t} (from ${how})`);
   }
   // Numbers: a task has one, and no two share one.
   const taken = new Set();

@@ -98,3 +98,30 @@ test("--run repairs it, keeps a copy, and a second run does nothing", () => {
   s.close();
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test("undated items and events are dated by what bounds them", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "taskboard-repair-"));
+  const store = openStore(path.join(dir, "t.db"));
+  const ins = (col, id, row) => {
+    const names = ["id", ...Object.keys(row)];
+    store.db.prepare(`INSERT INTO ${col} (${names.map((n) => `"${n}"`).join(",")}) VALUES (${names.map(() => "?").join(",")})`).run(id, ...Object.values(row));
+  };
+  // Imported events first (ascending ids), then rows as they were written.
+  ins("events", "a-imported", { item: "", kind: "note", t: "2026-10-01T00:00:00Z", text: "imported" });
+  ins("events", "b-imported", { item: "", kind: "note", t: "2026-10-02T00:00:00Z", text: "imported" });
+  ins("items", "g", { kind: "folder", text: "Old folder", parent: "", order: 1 });
+  ins("items", "old", { kind: "task", text: "Old task, finished", parent: "g", order: 1, num: 5, stage: "done", where: "You", finished: "2026-10-03T00:00:00Z", archived: 1, archivedAt: "2026-10-20T00:00:00Z" });
+  ins("items", "bare", { kind: "task", text: "Old task, no times", parent: "g", order: 2, num: 6, stage: "done", where: "You" });
+  ins("items", "later", { kind: "task", text: "Dated", parent: "", order: 2, num: 7, stage: "", where: "You", added: "2026-10-04T00:00:00Z" });
+  ins("items", "new", { kind: "task", text: "Newest", parent: "", order: 3, num: 9, stage: "", where: "You", added: "2026-10-25T00:00:00Z" });
+  ins("events", "0-written", { item: "new", kind: "note", t: "2026-10-25T10:00:00Z", text: "written" });
+  ins("events", "c-undated", { item: "new", kind: "note", text: "late note, no time" });
+  repair(store);
+  assert.deepEqual(problems(store), []);
+  assert.equal(store.get("items", "old").added, "2026-10-03T00:00:00.000Z", "its finish, not its archiving");
+  assert.equal(store.get("items", "bare").added, "2026-10-04T00:00:00.000Z", "no later than #7, made after it");
+  assert.equal(store.get("items", "g").added, "2026-10-03T00:00:00.000Z", "no later than what is inside it");
+  assert.equal(store.list("events").find((e) => e.data.text === "late note, no time").data.t, "2026-10-25T10:00:00.000Z", "the row written before it, not its item's first time");
+  store.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});

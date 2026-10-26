@@ -272,3 +272,9 @@ test("after all of that, every item, event and meta document fits the schema", (
   for (const { data } of store.list("items")) assert.match(data.added, ISO);
   for (const { data } of store.list("events")) assert.match(data.t, ISO);
 });
+
+test("a path that isn't valid percent-encoding is a 400, not a 500", async () => {
+  const r = await call("GET", "/api/c/items/%E0%A4%A");
+  assert.equal(r.status, 400);
+  assert.equal(r.body.error.code, "invalid_argument");
+});

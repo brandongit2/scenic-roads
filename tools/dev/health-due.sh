@@ -14,7 +14,7 @@ upd=$(curl -s --max-time 5 $BOARD/api/c/meta/status 2>/dev/null | python3 -c 'im
 board=$(date -j -u -f '%Y-%m-%dT%H:%M:%S' "${upd%%.*}" +%s 2>/dev/null || echo 0)
 msg=
 (( now - last >= 1200 )) && msg+="HEALTH CHECK OVERDUE (last $(( (now - last) / 60 )) min ago): run tools/dev/health.sh now, act on what it flags, check every running agent. "
-(( now - board >= 1200 )) && msg+="TASK BOARD OVERDUE (status line last updated $(( (now - board) / 60 )) min ago): update every changed task's stage and history, and PATCH the status line (meta/status {now, updated}). "
+(( now - board >= 1200 )) && msg+="TASK BOARD OVERDUE (status line last updated $(( (now - board) / 60 )) min ago): update every changed task's stage and history, and PATCH the status line (meta/status {now}; the server sets updated). "
 [[ -z $msg ]] && exit 0
 print -u2 "$msg"
 exit 2
