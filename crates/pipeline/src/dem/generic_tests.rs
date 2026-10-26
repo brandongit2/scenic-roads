@@ -1075,6 +1075,14 @@ fn by_runs_orders_as_a_full_sort() {
         sel.push(i);
         keys.push((((col / 30) + row % 3) as usize % 3, -(row as f64) * 0.25));
     }
+    // Keys a full sort tells apart by total_cmp (-0 before 0, NaN last) or a point in no file.
+    for (k, i) in [(0.0, 5000), (-0.0, 5001), (f64::NAN, 5002), (0.0, 5003), (-0.0, 5004)] {
+        sel.push(i);
+        keys.push((if i == 5003 { usize::MAX } else { 1 }, k));
+    }
+    let empty: Vec<(usize, f64)> = Vec::new();
+    assert!(super::by_runs(&[], &empty, |a, b| a == b, |a, b| a.0.cmp(&b.0)).is_empty());
+    assert_eq!(super::by_runs(&[9], &[(0usize, 0.0)], |a, b| a == b, |a, b| a.0.cmp(&b.0)), [9]);
     let mut full: Vec<(usize, f64, u32)> = keys.iter().zip(&sel).map(|(k, &i)| (k.0, k.1, i)).collect();
     full.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
     let got = super::by_runs(
