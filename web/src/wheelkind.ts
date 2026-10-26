@@ -4,7 +4,8 @@
  * (web/test/wheelkind.test.ts, from the owner's mouse and trackpad in Chrome and Safari).
  *
  * A device is judged once per burst (events more than BURST_GAP_MS apart open a new one), on the
- * burst's first event (the recordings need no later correction). What separates them in the recordings:
+ * burst's first event, and a mouse reading is taken back within the burst by a step under NOTCH_MIN
+ * (a trackpad's; no notch is smaller than the one that opened it). What separates them in the recordings:
  *   mouse: the opening event is a whole-pixel step of NOTCH_MIN px or more along one axis only (a
  *          sideways one with Shift): a notch, 12-13 on the owner's mouse in both browsers; then a spin
  *          scales it up (103, 205, 308 ...) at 5-9 ms, or a slow wheel gives single events 40 ms
@@ -13,9 +14,11 @@
  *   trackpad: opens at 1-7 px (often on both axes), then follows the display at 8 ms with
  *          steps that grow into the hundreds in a flick; a pinch is ctrlKey (left out of the
  *          reading, the burst's kind stands).
- * Risks: the notch size is the owner's mouse's (macOS passes other mice's notches as other
- * sizes, a mouse with smooth scrolling may open small, read as a trackpad), and a trackpad
- * opening at a notch's size or more is read as a mouse for its whole burst.
+ * Misreadings lean to the trackpad, the less harmful here: a mouse read as a trackpad pans a
+ * little per notch, a trackpad read as a mouse zooms a level per event. So a mouse whose notch is
+ * under NOTCH_MIN px with no wheelDeltaY in 120s, a smooth-scrolling mouse and a Magic Mouse (small
+ * opening steps) read as trackpads; Windows-style notches (100, 120 px) as mice; a trackpad opening
+ * at NOTCH_MIN or more reads as a mouse only until its first smaller step (a few ms in a flick).
  */
 export interface WheelSample {
   deltaX: number;
@@ -64,6 +67,7 @@ export class WheelClassifier {
     const opening = gap > BURST_GAP_MS;
     const mouseLook = looksMouse(e, opening);
     if (opening) this.kind = mouseLook ? 'mouse' : 'trackpad';
+    else if (this.kind === 'mouse' && e.deltaMode === 0 && Math.max(Math.abs(e.deltaX), Math.abs(e.deltaY)) < NOTCH_MIN && !mouseLook) this.kind = 'trackpad';
     this.last = e.timeStamp;
     return { kind: this.kind, opening, mouseLook };
   }

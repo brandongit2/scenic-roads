@@ -563,7 +563,7 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
     if (e.type === 'pointerup' && e.pointerType !== 'touch' && !hold.moved && !hold.tapDrag) {
       const rect = el.getBoundingClientRect();
       lastClick = { t: performance.now(), x: e.clientX - rect.left, y: e.clientY - rect.top };
-    }
+    } else if (hold.tapDrag) lastClick = null; // a double click done: a third press is a fresh one
     // A drag (not a tap-drag zoom) released while moving glides on; a second finger's landing
     // (letGo, no pointerup) doesn't.
     if (e.type === 'pointerup' && hold.moved && !hold.tapDrag) startGlide(hold.a, hold.own, hold.trail, performance.now());

@@ -16,6 +16,13 @@ const fixtures: [string, WheelSample[], WheelKind][] = [
   ['a later burst is judged afresh', [ev(0, 100, { wheelDeltaY: -120 }), ev(1000, 1.5, { deltaX: 1 })], 'trackpad'],
   ['and back', [ev(0, 1.5, { deltaX: 1 }), ev(1000, 3, { deltaMode: 1 })], 'mouse'],
   ['empty', [], 'trackpad'],
+  ['Windows notch 100 px', [ev(0, 100), ev(70, 100)], 'mouse'],
+  ['Windows notch 120 px, two at once', [ev(0, 240), ev(90, 120)], 'mouse'],
+  ['mouse with a small notch (8 px) reads as a trackpad', [ev(0, 8, { wheelDeltaY: -24 }), ev(60, 8, { wheelDeltaY: -24 })], 'trackpad'],
+  ['smooth-scrolling mouse opening small', [ev(0, 2, { wheelDeltaY: -6 }), ev(8, 9, { wheelDeltaY: -27 }), ev(16, 30, { wheelDeltaY: -90 })], 'trackpad'],
+  ['Magic Mouse, small steps on both axes', [ev(0, 3, { deltaX: 1, wheelDeltaY: -9 }), ev(8, 14, { wheelDeltaY: -42 })], 'trackpad'],
+  ['trackpad opening big is taken back at its first small step', [ev(0, 40, { wheelDeltaY: -120 }), ev(8, 30, { wheelDeltaY: -90 }), ev(16, 5, { deltaX: 1, wheelDeltaY: -15 })], 'trackpad'],
+
 ];
 for (const [name, events, want] of fixtures) assert.equal(classifyWheel(events), want, name);
 
