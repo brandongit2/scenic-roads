@@ -81,11 +81,15 @@ const NEVER: [&str; 7] = ["translations", "descriptions", "inputs", "state", "ap
 /// every name the manifest has under one, in one save of the records (`drop_names`: a hand-off
 /// of the `gc` job's, merged by the lead as any job's, its write-set these removals alone,
 /// crate::agent::steps), and its files then go as any no catalogue, manifest or records name, once
-/// old (`sweep_retired_names`): a catalogue of the last `keep_days` naming one keeps it. A step whose
-/// code is deleted adds its outputs' prefix here; no step of the table may make a name under one.
-pub const RETIRED: [&str; 1] = [
+/// old: a catalogue of the last `keep_days` naming one keeps it. Under a folder GC sweeps anyway
+/// (not `NEVER`) the sweep of the folders takes them; under `sources/` only their prefix's folder
+/// is looked in (`sweep_retired_names`). A step whose code is deleted adds its outputs' prefix
+/// here; no step of the table may make a name under one. A prefix ends in `/` for a folder.
+pub const RETIRED: [&str; 2] = [
     // (The worldwide z8 terrain and its maxima, `-v<n>` and `-v<n>-max`: its code deleted by task #670.)
     "sources/terrain-z8-",
+    // (The old pipeline's data, converted once and read by nothing since; task #52.)
+    "global/legacy/",
 ];
 
 /// Whether logical name `l` is one a removed step made (`RETIRED`).
@@ -621,6 +625,7 @@ fn run_once(root: &store::nasfs::NasRoot, keep_days: u64, dry_run: bool) -> Resu
     let tops: BTreeSet<String> = referenced
         .iter()
         .filter_map(|f| f.split('/').next())
+        .chain(RETIRED.iter().filter_map(|p| p.split('/').next()))
         .filter(|t| !NEVER.contains(t))
         .map(str::to_string)
         .collect();
@@ -674,6 +679,10 @@ fn run_once(root: &store::nasfs::NasRoot, keep_days: u64, dry_run: bool) -> Resu
                 }
                 rep.removed += 1;
                 rep.removed_bytes += md.len();
+                if retired(&rel) {
+                    rep.retired_removed += 1;
+                    rep.retired_bytes += md.len();
+                }
                 sweep.count(md.len(), 1);
             }
         }
@@ -830,7 +839,8 @@ fn sweep_retired(
     Ok(())
 }
 
-/// The files of removed steps (`RETIRED`), in each prefix's folder (not below it): content-named
+/// The files of removed steps (`RETIRED`) under `sources/` (`NEVER` keeps the folder sweep out; a
+/// prefix elsewhere is the folder sweep's), in each prefix's folder (not below it): content-named
 /// ones no catalogue, manifest or records name, once old; a tombstone of one put back.
 fn sweep_retired_names(
     root: &store::nasfs::NasRoot,
@@ -839,7 +849,7 @@ fn sweep_retired_names(
     dry_run: bool,
     rep: &mut Report,
 ) -> Result<()> {
-    for prefix in RETIRED {
+    for prefix in RETIRED.iter().filter(|p| p.split('/').next().is_some_and(|t| NEVER.contains(&t))) {
         yield_point();
         let dir = prefix.rsplit_once('/').map_or("", |(d, _)| d);
         let Ok(rd) = root.join(dir).read_dir() else { continue };
@@ -1558,6 +1568,58 @@ mod tests {
         fs::write(&mpath, manifest.to_string()).unwrap();
         assert_eq!(run(&nas, 14, true, None).unwrap().retired_dropped, 3, "a dry run counts what it would drop");
         assert_eq!(fs::read(&mpath).unwrap(), manifest.to_string().as_bytes());
+    }
+
+    /// Task #52: the old pipeline's converted data (`global/legacy/`) is retired: its names leave
+    /// the manifest and its files go by the folder sweep alone (once, counted as retired), its
+    /// tombstones put back; nothing else under `global/` is dropped, a look-alike folder included.
+    #[test]
+    fn the_legacy_folder_is_retired_and_nothing_else_under_global() {
+        for l in ["global/legacy/ferries", "global/legacy/details-poi", "global/legacy/dem-stats"] {
+            assert!(retired(l), "{l}");
+        }
+        for l in ["global/legacy", "global/legacyx/ferries", "global/railfreq", "global/heritage/layer-summary"] {
+            assert!(!retired(l), "{l}");
+        }
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let (ferries, poi, stats, rail, near) = (
+            "global/legacy/ferries.1111111111111111.json",
+            "global/legacy/details-poi.2222222222222222.jsonl",
+            "global/legacy/dem-stats.3333333333333333.json",
+            "global/railfreq.4444444444444444.bin",
+            "global/legacyx/ferries.5555555555555555.json",
+        );
+        for f in [ferries, poi, stats, rail, near] {
+            fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
+            fs::write(root.join(f), b"xy").unwrap();
+            age(&root.join(f), 30);
+        }
+        fs::write(root.join(format!("{stats}{TOMB}")), b"xy").unwrap();
+        fs::remove_file(root.join(stats)).unwrap();
+        fs::create_dir_all(root.join("state/build")).unwrap();
+        let manifest = serde_json::json!({
+            "global/legacy/ferries": ferries,
+            "global/legacy/details-poi": poi,
+            "global/legacy/dem-stats": stats,
+            "global/railfreq": rail,
+            "global/legacyx/ferries": near,
+        });
+        let mpath = root.join("state/build/manifest.json");
+        fs::write(&mpath, manifest.to_string()).unwrap();
+        store::catalogue::write(&root.join("catalog"), &store::catalogue::Catalogue::new(1)).unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(root);
+        let r = run(&nas, 14, false, None).unwrap();
+        assert_eq!(r.retired_dropped, 3, "{:?}", r.warnings);
+        let m: std::collections::BTreeMap<String, String> = serde_json::from_slice(&fs::read(&mpath).unwrap()).unwrap();
+        assert_eq!(m.keys().collect::<Vec<_>>(), ["global/legacyx/ferries", "global/railfreq"]);
+        assert_eq!((r.retired_removed, r.retired_bytes, r.removed, r.tombs), (2, 4, 2, 1));
+        assert!(!root.join(ferries).exists() && !root.join(poi).exists() && root.join(stats).exists());
+        assert!(root.join(rail).exists() && root.join(near).exists());
+        age(&root.join(stats), 30);
+        let r = run(&nas, 14, false, None).unwrap();
+        assert_eq!((r.retired_dropped, r.retired_removed, r.removed), (0, 1, 1));
+        assert!(!root.join(stats).exists() && root.join(rail).exists() && root.join(near).exists());
     }
 
     /// Task #701: in the pool the drop is the gc job's hand-off (merged by the lead), never a

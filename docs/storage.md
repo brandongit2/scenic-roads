@@ -96,11 +96,12 @@ of the lead's own (`QUIET_AGE`); running, it yields to a target held back for th
 - The input check's checked copies (`sources/inputs/`, inputs.md §4.9) are kept while the manifest,
   an accepted index, an unmerged journal entry or an index of the last 14 days names them.
 - **Removed steps' data** (`agent::gc::RETIRED`, logical-name prefixes; today `sources/terrain-z8-`,
-  the worldwide z8 terrain removed by task #670): each run first drops every manifest name under one,
+  the worldwide z8 terrain removed by task #670, and `global/legacy/`, the old pipeline's converted
+  data, read by nothing since): each run first drops every manifest name under one,
   as the `gc` job's own change through `Out` (its write-set: these removals and the depth packs'
   below, `agent::steps`): in the pool a hand-off the lead merges into its records in one save, as any
   job's (pool.md §7.3). With nothing left to drop it writes nothing. The files then go by the rule
-  above, in each prefix's folder: kept while a catalogue of the window, the manifest, the records or
+  above (under `sources/`, looked for in each prefix's folder; elsewhere in the folder sweep): kept while a catalogue of the window, the manifest, the records or
   an unmerged entry names them. A step whose code is deleted adds its outputs' prefix there, so
   "removed" means its data deleted too; no step may make a name under one.
 - **Depth packs no target names** (task #679): in the same drop, every depth pack (the `depth`,

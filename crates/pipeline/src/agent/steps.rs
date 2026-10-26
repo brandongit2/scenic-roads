@@ -1480,6 +1480,12 @@ mod tests {
             }
         }
         assert_eq!(writes("gc", "base/6-1-1", true), Some(false));
+        // (Task #52: the legacy folder only, as removals.)
+        assert_eq!(writes("gc", "global/legacy/ferries", true), Some(true));
+        assert_eq!(writes("gc", "global/legacy/ferries", false), Some(false));
+        for l in ["global/railfreq", "global/legacyx/ferries", "global/heritage/layer-summary"] {
+            assert_eq!(writes("gc", l, true), Some(false), "{l}");
+        }
     }
 
     /// Task #679: the clean-up removes the depth's packs (a z6 tile's hi, a z3 tile's lo), never
@@ -1547,8 +1553,8 @@ mod tests {
         ] {
             assert!(made(l), "{l}");
         }
-        // Files an older pipeline left under global/ (no step makes them): not today's outputs.
-        for l in ["global/legacy/details-poi", "global/legacy/ferries", "global/pois", "global/other/x"] {
+        // Names no step makes under global/: not today's outputs.
+        for l in ["global/pois", "global/other/x"] {
             assert!(!made(l), "{l}");
         }
     }
