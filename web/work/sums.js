@@ -199,13 +199,20 @@ export function runningTiles(runs, eachS, now) {
   return out;
 }
 
-// The tiles jobs finished well at or after `from`, by key ("<step> z/x/y"): the last one's {t, step, worker}, from
-// the history's ends (a lead's "end", a worker's "done").
-export function finishedTiles(ends, from) {
+// The finished tiles, by key ("<step> z/x/y"), each {t, step, worker} (#674): every tile the build's
+// keys record as built (`built`, `/work/built`'s steps: {step: [z/x/y]}, crate::agent::builtview),
+// whenever it was, and those jobs finished well at or after `from` (not merged into the keys yet);
+// the time and worker of the last of the history's ends held for it (a lead's "end", a worker's
+// "done"), at any time; a recorded tile with none held, null for both.
+export function finishedTiles(ends, from, built = {}) {
   const out = new Map();
+  for (const [step, tiles] of Object.entries(built || {})) for (const t of tiles) if (tileOf(t)) out.set(`${step} ${t}`, { t: null, step, worker: null });
   for (const e of ends || []) {
-    if ((e.kind !== "end" && e.kind !== "done") || e.ok === false || e.t < from) continue;
-    for (const t of areaTargets(e.step, e.targets)) { const k = `${e.step} ${t}`; if (tileOf(t) && !(out.get(k)?.t > e.t)) out.set(k, { t: e.t, step: e.step, worker: e.worker }); }
+    if ((e.kind !== "end" && e.kind !== "done") || e.ok === false) continue;
+    for (const t of areaTargets(e.step, e.targets)) {
+      const k = `${e.step} ${t}`, had = out.get(k);
+      if (tileOf(t) && (e.t >= from || had) && !(had?.t > e.t)) out.set(k, { t: e.t, step: e.step, worker: e.worker });
+    }
   }
   return out;
 }
@@ -218,10 +225,12 @@ export function tileCovers({ z, x, y }) {
 
 // A map tile's state (#627): "unstarted" (a running job's tile not begun), "progress" (under
 // way), "completed" (its job's work on it done, or finished, and not in a catalogue yet: a finish
-// after the last catalogue's time `pubAt`) or "published" (finished by `pubAt`: in the app).
+// after the last catalogue's time `pubAt`) or "published" (finished by `pubAt`: in the app; a
+// recorded tile whose end isn't held, `t` null, finished before the events held: taken as
+// published once there's a catalogue).
 export const TILE_STATES = ["unstarted", "progress", "completed", "published"];
 export const runningState = (r) => (r.frac >= 1 ? "completed" : r.frac > 0 || r.current ? "progress" : "unstarted");
-export const finishedState = (d, pubAt) => (pubAt != null && d.t <= pubAt ? "published" : "completed");
+export const finishedState = (d, pubAt) => (pubAt != null && (d.t == null || d.t <= pubAt) ? "published" : "completed");
 
 // The world map's tiles as its filters keep them (#615, #627): `running` and `finished`
 // (runningTiles', finishedTiles') cut to the states kept (`f.tiles[state] === false`: hidden), to

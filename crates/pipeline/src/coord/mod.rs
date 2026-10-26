@@ -350,6 +350,9 @@ pub struct Shared {
     /// The build page's Catalogues map (crate::agent::catalogsview): `/work/catalogs`. None: not
     /// given one (503).
     pub catalogs: Option<Arc<crate::agent::catalogsview::CatalogsView>>,
+    /// The build page's map's finished tiles (crate::agent::builtview): `/work/built`. None: not
+    /// given one (503).
+    pub built: Option<Arc<crate::agent::builtview::BuiltView>>,
     /// The build page's regions as this Mac's agent last made them (crate::agent::regionsview):
     /// `/work/regions` out of the pool. None: not made yet (503).
     pub regions: Option<Arc<serde_json::Value>>,
@@ -1323,6 +1326,7 @@ impl Coordinator {
             pageview: None,
             live: None,
             catalogs: None,
+            built: None,
             regions: None,
             region_steps: None,
             region_steps_asked: None,
@@ -2295,6 +2299,16 @@ impl Coordinator {
     /// `/work/catalogs` answered from `cv` (crate::agent::catalogsview) from here on.
     pub fn set_catalogs(&self, cv: Arc<crate::agent::catalogsview::CatalogsView>) {
         self.shared.lock().unwrap().catalogs = Some(cv);
+    }
+
+    /// `/work/built` answered from `bv` (crate::agent::builtview) from here on.
+    pub fn set_built(&self, bv: Arc<crate::agent::builtview::BuiltView>) {
+        self.shared.lock().unwrap().built = Some(bv);
+    }
+
+    /// Whether it answers `/work/built`.
+    pub fn has_built(&self) -> bool {
+        self.shared.lock().unwrap().built.is_some()
     }
 
     /// Whether it answers `/work/catalogs`.
@@ -4111,6 +4125,12 @@ fn route(
             let cv = shared.lock().unwrap().catalogs.clone();
             Ok(cv.map_or_else(not_ready, |cv| (200, cv.ask(b["after"].as_u64()))))
         }
+        "/work/built" => {
+            // The build page's map's finished tiles (crate::agent::builtview): every tile target the
+            // build's keys record, by step, as last read.
+            let bv = shared.lock().unwrap().built.clone();
+            Ok(bv.map_or_else(not_ready, |bv| (200, bv.ask())))
+        }
         "/work/tocome" => {
             // A Mac's tiles to come in the lead's last forecast (crate::agent::forecast::ToCome),
             // asked by the build page's map only while a pool member is chosen.
@@ -4510,6 +4530,7 @@ mod http {
             .route("/work/regions", any(json))
             .route("/work/catalogs", any(json))
             .route("/work/tocome", any(json))
+            .route("/work/built", any(json))
             .route("/work/timings", any(json))
             .route("/work/floors", any(json))
             .route("/pool/mail", any(json))
@@ -4738,6 +4759,7 @@ mod http {
                     | "/work/regions"
                     | "/work/catalogs"
                     | "/work/tocome"
+                    | "/work/built"
             );
         if is_page || is_view {
             return next.run(req).await;

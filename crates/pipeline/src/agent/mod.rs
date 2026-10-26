@@ -24,6 +24,7 @@ pub mod backup;
 pub mod brokers;
 pub mod build;
 pub mod buildmem;
+pub mod builtview;
 pub mod catalogsview;
 pub mod cond;
 pub mod every;
@@ -1373,6 +1374,8 @@ pub struct Agent {
     /// The build page's Catalogues map (crate::agent::catalogsview): made once the NAS's root is
     /// known, read only while a page asks.
     catalogs_view: Option<std::sync::Arc<catalogsview::CatalogsView>>,
+    /// The build page's map's finished tiles (crate::agent::builtview): made with `catalogs_view`.
+    built_view: Option<std::sync::Arc<builtview::BuiltView>>,
     pageview_reading: bool,
     /// This Mac's live store (crate::agent::live), kept in its folder and answered on its port's
     /// `/work/live`: made as the loop starts, on a real Mac with the agent's lock alone.
@@ -1877,6 +1880,7 @@ impl Agent {
             broker: None,
             pageview: pageview::PageView::new(),
             catalogs_view: None,
+            built_view: None,
             pageview_reading: false,
             live: None,
             page_acts: Vec::new(),
@@ -9394,6 +9398,13 @@ impl Agent {
         for c in [&self.coord, &self.broker, &self.viewer].into_iter().flatten() {
             if !c.has_catalogs() {
                 c.set_catalogs(cv.clone());
+            }
+        }
+        // (The map's finished tiles, the same: the build's keys on the NAS.)
+        let bv = self.built_view.get_or_insert_with(|| builtview::BuiltView::new(root.to_path_buf())).clone();
+        for c in [&self.coord, &self.broker, &self.viewer].into_iter().flatten() {
+            if !c.has_built() {
+                c.set_built(bv.clone());
             }
         }
         if self._lock.is_none() {

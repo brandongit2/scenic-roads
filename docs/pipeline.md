@@ -207,10 +207,13 @@ boxes).
 - **World map** (`worldmap.js`, a canvas in Web Mercator, the world 0–1000 each way): the z3 grid
   (z6's too once its cells are 24 px), opening on the whole world (about 82° N to 66° S) and zoomed out at most to that whole world fitting the box both ways (bands beside it in a wide box), a crosshair over it, the countries (`countries.json`), the regions' outlines
   (`/work/regions`) coloured by state (on the map or done, building, to come; counted in the
-  legend), the tiles finished in the Jobs tab's past window (the history's ends, `sums.js`
-  finishedTiles; each fades in as it comes, the window's history played back on the first look,
-  paler as it ages, or evenly with the fade filter off; a low zoom's tile paler still; published,
-  finished by the last catalogue's time, solid; completed but not in a catalogue yet half as
+  legend), the finished tiles (`sums.js` finishedTiles, #674: every tile the build's keys record
+  as built, `/work/built`, whenever it was, and those the history's ends held finished in the Jobs
+  tab's past window, not merged into the keys yet; its time and Mac the last end held for it, a
+  recorded tile with none "earlier"; each fades in as it comes, the window's history played back
+  on the first look, paler as it ages, or evenly with the fade filter off; a low zoom's tile paler
+  still; published, finished by the last catalogue's time (one with no end held taken as
+  published once there's a catalogue), solid; completed but not in a catalogue yet half as
   strong under a dashed outline), and each running job's target tiles (the
   history's start or lease event, else the tiles its id or words name: `sums.js` targetsOf) in
   its stage's colour, filled as far as they're done (`sums.js` runningTiles: from the job's

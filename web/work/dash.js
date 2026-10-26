@@ -387,6 +387,16 @@ function askToCome(m, member) {
     .catch(() => null)
     .then((v) => { toCome = { ...toCome, key, member, ans: toCome.lead === m.a.host ? v : null, asking: false }; render(); });
 }
+// Every tile the build's keys record as built, by step (`/work/built`: crate::agent::builtview,
+// each Mac's agent reading the NAS's), asked each `BUILT_EVERY_MS` while the map is drawn.
+const built = { steps: {}, at: 0, asked: 0, asking: false };
+const BUILT_EVERY_MS = 60000;
+function askBuilt() {
+  if (built.asking || Date.now() - built.asked < BUILT_EVERY_MS) return;
+  Object.assign(built, { asking: true, asked: Date.now() });
+  ctx.call("/work/built", {}).catch(() => [0, null])
+    .then(([code, v]) => { built.asking = false; if (code === 200 && v?.steps && v.at !== built.at) { Object.assign(built, { steps: v.steps, at: v.at }); render(); } });
+}
 // A member's tiles to come as the map draws them ("<step> z/x/y" → {step, at, mac, state}), kept
 // as the other tiles are (the steps and tile areas toggled off) and none already running or done.
 function toComeTiles(m, f, shown) {
@@ -421,7 +431,8 @@ function mapData(m) {
   const pubAt = catJob?.secs != null ? catAt - catJob.secs : catAt;
   // (The legend counts every step and tile area, those toggled off too, and every state of the
   // steps and areas shown; the map gets the kept.)
-  const [run0, done0] = mapTilesKept(runningTiles(runs, m.fc?.each_s, m.now), finishedTiles(endsHeld(), from), { ...f, tiles: {}, offSteps: [], offAreas: [] },
+  askBuilt();
+  const [run0, done0] = mapTilesKept(runningTiles(runs, m.fc?.each_s, m.now), finishedTiles(endsHeld(), from, built.steps), { ...f, tiles: {}, offSteps: [], offAreas: [] },
     { pubAt, macOf: (w) => macSlot(w, hosts).host });
   const stepCount = {}, areaCount = {};
   for (const [k, v] of [...run0, ...done0]) { stepCount[v.step] = (stepCount[v.step] || 0) + 1; areaCount[areaOf(k)] = (areaCount[areaOf(k)] || 0) + 1; }
@@ -454,8 +465,8 @@ function mapData(m) {
   for (const [key, d] of done) {
     const out = d.state === "published";
     cards.set(`mt ${key}`, () => cardBody({ ...head(key, d.step, out ? "published" : "completed, not yet published"),
-      stats: [[ago(m.now, d.t), "finished"], [out ? "yes" : "next catalogue", "in the app"]],
-      bar: { frac: 1, label: `done ${clock(d.t)}` },
+      stats: [[d.t == null ? "earlier" : ago(m.now, d.t), "finished"], [out ? "yes" : "next catalogue", "in the app"]],
+      bar: { frac: 1, label: d.t == null ? "done, before the history held" : `done ${clock(d.t)}` },
       foot: `${d.worker || "?"} · ${key}` }, [
       ["stage", S.stage(d.step)],
       ["on", d.worker],

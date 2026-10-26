@@ -39,6 +39,29 @@ test('map: finished tiles in the window, the last end each', () => {
   assert.deepEqual([...f].map(([k, v]) => [k, v.t]), [['pack 6/1/1', 150]]);
 });
 
+test('map: every tile the keys record stays finished, whatever the window and events held (#674)', () => {
+  // (Live, 26 Oct: terrain-deep's northeastern Ontario tiles ended 7–12 h before; in a 6 h window
+  // they were gone, the newer central ones alone drawn.)
+  const ends = [
+    { kind: 'end', step: 'terrain-deep', t: 1000, worker: 'mini #3', targets: ['10/257/342', '10/257/343'] },
+    { kind: 'done', step: 'terrain-deep', t: 9000, worker: 'm4', targets: ['10/264/360'] },
+  ];
+  const built = { 'terrain-deep': ['10/257/342', '10/257/343', '10/264/360', '10/100/100'] };
+  assert.deepEqual([...finishedTiles(ends, 5000).keys()], ['terrain-deep 10/264/360'], 'the window alone');
+  const f = finishedTiles(ends, 5000, built);
+  assert.deepEqual([...f.keys()].sort(), ['terrain-deep 10/100/100', 'terrain-deep 10/257/342', 'terrain-deep 10/257/343', 'terrain-deep 10/264/360']);
+  assert.deepEqual(f.get('terrain-deep 10/257/342'), { t: 1000, step: 'terrain-deep', worker: 'mini #3' }, 'its end held: its time, before the window too');
+  assert.deepEqual(f.get('terrain-deep 10/100/100'), { t: null, step: 'terrain-deep', worker: null }, 'none held');
+  // (The page's events gone, a new numbering: the recorded tiles stay.)
+  assert.equal(finishedTiles([], 5000, built).size, 4);
+  // (Finished, not merged into the keys yet: from its end.)
+  assert.ok(finishedTiles([{ kind: 'done', step: 'terrain-deep', t: 9500, targets: ['10/1/1'] }], 5000, built).has('terrain-deep 10/1/1'));
+  const [, fin] = mapTilesKept(new Map(), f, {}, { pubAt: 8000 });
+  assert.deepEqual([...fin].map(([k, v]) => [k.split(' ')[1], v.state]).sort(), [['10/100/100', 'published'], ['10/257/342', 'published'], ['10/257/343', 'published'], ['10/264/360', 'completed']]);
+  assert.equal(mapTilesKept(new Map(), f, {}, {})[1].get('terrain-deep 10/100/100').state, 'completed', 'no catalogue: none published');
+  assert.equal(mapTilesKept(new Map(), f, { member: 'm4' }, {})[1].size, 1, 'a member: the tiles its ends name');
+});
+
 test('map: the filters keep tiles by state, member, step and tile area (#615, #627, #659)', () => {
   const running = new Map([['unit 6/1/1', { step: 'unit', frac: 0, run: { mac: 'A' } }], ['unit 6/1/2', { step: 'unit', frac: 0.4, current: true, run: { mac: 'A' } }], ['slope 6/1/3', { step: 'slope', frac: 1, run: { mac: 'B #2' } }]]);
   const done = new Map([['pack 3/0/0', { t: 100, step: 'pack', worker: 'B' }], ['unit 6/2/2', { t: 300, step: 'unit', worker: 'A' }], ['unit 6/1/2', { t: 50, step: 'unit', worker: 'A' }]]);

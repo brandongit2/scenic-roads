@@ -1325,6 +1325,13 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   names a member, once a forecast; never in the 10-second poll. Measured on the 24 Oct forecast
   (3,618 targets placed, 3,615 tiles): the Mac mini's answer 52 KB (14 KB gzipped, 3,053 tiles),
   the M4's 10 KB; held by the agent: ~150 KB.
+  Every Mac's port also answers `POST /work/built` (no key; task #674) for the map's finished
+  tiles: `{at, steps: {step: [z/x/y…]}, error}`, every tile target the build's keys
+  (`state/build/jobs.json`) record, by step (a `-root` step's as 0/0/0; worldwide steps' and
+  records of steps the app doesn't know left out: `agent::builtview`), read by the agent on a
+  thread of its own while a page asks, again a minute after the last read at most (~600 KB over
+  SMB), the last read kept when the file can't be read now. The page asks each minute while the
+  map is drawn.
   Every Mac's port also answers `POST /work/catalogs` (`{"after": n}` optional; no key) for the
   map's Catalogues tab (task #629, `agent::catalogsview`; the page asks the lead's): every
   catalogue on the NAS as `{n, t, whole, first?, z3, z6, z3_gone?, z6_gone?}`, the tiles as

@@ -11,6 +11,8 @@
 //                     #629 hasn't the call), `after` honoured; else forwarded as the other reads
 //   --tocome FILE     /work/tocome answered from FILE ({at, macs: {mac: {step: [[tile, s]…]}}}, the
 //                     lead's forecast::ToCome: an agent before #622 hasn't the call), `mac` honoured
+//   --built FILE      /work/built answered from FILE ({at, steps: {step: [z/x/y…]}}, agent::builtview:
+//                     an agent before #674 hasn't the call)
 //   --live FILE       /work/live's `net.hosts` given FILE's hosts ({host: {in, out, requests, conns,
 //                     open, retries, holds, limit, robots}}) beside the agent's own (an agent before
 //                     #635 tells no robots.txt; a paused build moves nothing), the Activity tab's rows
@@ -49,9 +51,10 @@ const TABS = ["overview", "jobs", "machines", "regions", "nas", "dropboxes", "ac
 
 // ---- The read-only server ------------------------------------------------------------------------
 // A call forwarded only when its body has no other keys than these (an empty body: {}).
-const READS = { swarm: [], steps: [], regions: ["steps"], settings: [], history: ["since", "max"], live: ["range", "series", "net", "since"], catalogs: ["after"], tocome: ["mac"] };
+const READS = { swarm: [], steps: [], regions: ["steps"], settings: [], history: ["since", "max"], live: ["range", "series", "net", "since"], catalogs: ["after"], tocome: ["mac"], built: [] };
 const CATS = arg("--catalogs", null);
 const TOCOME = arg("--tocome", null);
+const BUILT = arg("--built", null);
 const LIVE = arg("--live", null);
 const STEPS = arg("--steps", null);
 const MEMBER = arg("--member", null);
@@ -80,6 +83,10 @@ function serve() {
           a.catalogs = a.catalogs.filter((c) => v.after == null || c.n > v.after);
           res.writeHead(200, { "Content-Type": "application/json" });
           return res.end(JSON.stringify(a));
+        }
+        if (call === "built" && BUILT) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          return res.end(readFileSync(BUILT));
         }
         if (call === "regions" && v.steps && STEPS) {
           res.writeHead(200, { "Content-Type": "application/json" });
