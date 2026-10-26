@@ -57,6 +57,10 @@ tiles, on the pole's polar stereographic grid.
   Mercator terrain and the roads read the pool as they did). This is what fills the pole: GLO-30's
   values from its own fill. The steps log each block's samples with no data and how many of them
   were filled so.
+- **Gaps between GLO-30's files:** some of its one-degree files leave a line a sample wide with no
+  data along an edge. Near the pole, where the meridians converge, these drew as dashed pits along
+  every meridian. A pixel with no sample with data in a gap up to 3 pixels wide takes its
+  neighbours' mean (`polar::close_gaps`, `GAP_PX`); wider voids stay sea level.
 - **Shading:** one precomputed pyramid, as `slope_pack` makes it: at z9 Horn's method on the grid
   (a pixel's ground size the grid's ÷ the scale at its latitude), each coarser pixel the plain mean
   of its four children, or Horn's on its own level's terrain where there are none (past the cap).
@@ -167,7 +171,28 @@ data or the steps is the globe's:
 
 ## 7. Sizes and costs
 
-(§7 is filled from the scratch run of the whole south cap, below.)
+**Estimates,** scaled from what was built in a scratch root on the M4 (26 Oct, two jobs at a time
+beside the live pool's): 25 terrain blocks (the 16 round the pole, 8 more and 8/12 at the seam), 5
+shading blocks (the pole's four and 8/12) and the root. The whole cap wasn't built: the pool builds
+it after the rebuild.
+
+| What | Measured | Whole south cap (estimate) |
+|---|---|---|
+| Terrain, a full block (1,365 tiles, z4–9) | 84.6 MB (≈ 62 KB a tile) | ≈ 4.6 GB over ~74,700 tiles |
+| Shading, a full block | 118.9 MB (≈ 87 KB a tile) | ≈ 6.5 GB |
+| Root, z0–3 (41 tiles a layer) | 2.9 MB terrain, 3.6 MB shading | 6.5 MB |
+| REMA's store | 20 tiles, 0.24 GB | the same |
+
+So about **11 GB** for the south cap, under the 12.6 GB first estimated (§1's tile counts, the edge
+blocks only partly in the cap). Shading is the larger: GLO-30 is a surface model, and its speckle
+over the ice fills the direction bits.
+
+**Times** (a block's job, M4, nice'd, beside the live pool): terrain 245–280 s for a full block away
+from the pole, 600–1,230 s for the pole's four (GLO-30's files are densest in longitude there, and
+the voids are filled in a second pass); shading 75–125 s; the root 77 min, but most of that sampled
+the pool where the 51 unbuilt blocks were missing; with every block built it reads their z4 tiles
+instead. So the cap is about 76 × ~6 min ≈ 7–8 h of one job, half that at two at a time.
+Memory: 0.3–0.9 GB a terrain job as measured (its `mem_mb`, 4,096, is the first guess).
 
 ## 8. What remains
 
@@ -178,4 +203,24 @@ data or the steps is the globe's:
 
 ## 9. Decisions
 
-See the task's report (25 Oct).
+1. **REMA's reach (open; recommended: keep 87° S until after the rebuild).** Its index holds the
+   tiles wholly south of 87° S, so no Web Mercator key changes. Reaching to 85° S would fill
+   GLO-30's voids between 85° and 87° (0.7–0.9 % of samples) from REMA instead of from GLO-30's own
+   fill, but re-keys the bottom row of Antarctic Mercator tiles once Antarctica is built.
+2. **The voids' last resort (taken, the agent's call; for the owner to confirm):** GLO-30's own
+   filled values where nothing lies beneath, the caps only. REMA has no data within ~150 km of the
+   pole, so without it the pole keeps its 2,800 m pits. Measured: 0.405 % of the pole's z4 pixels
+   were pits before, 0 after.
+3. **REMA on the NAS (approved 26 Oct; not yet done).** Its store and drop box need writing
+   (`scenic-build store-fetch rema` against the NAS, then the declaration and index into
+   `inputs/elevation/`). Accepting it changes the elevation pool's digest (`terrain_z8::pool_digest`),
+   so the worldwide z8 terrain and what reads it (peaks, summits) are made again: recommended after
+   the rebuild, not during it.
+4. **Members take the polar blocks (open; recommended later):** `polar-terrain` and `polar-slope` are
+   offered to the pool's members like the other per-tile steps, but aren't in the shared set (the
+   forecast's and the hand-off checks' per-target accounting). Add them if the cap's hours matter.
+5. **The north cap (recommended: wait for the depth):** it is all sea level.
+6. **Zoom near the pole (open):** the globe scales its zoom by latitude, so near the pole a small
+   zoom number already puts the camera close (zoom 8 at 89.5° S is at the ground; zoom 4.6 is
+   1.8 km above it). The app's zoom-dependent choices (the globe's hand-off, tile levels) read odd
+   there; whether to cap that compensation near the poles is for the owner.

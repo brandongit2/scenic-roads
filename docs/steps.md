@@ -201,8 +201,8 @@ What each step does, in detail. The steps as one table (names, chains, the check
   `roadcore::polar`), z0–9, of the poles built (`polar::POLES`: the south; the north is sea level
   and waits for the depth). Each from the elevation pool as the Mercator terrain is, read at the
   level's detail, the tile pyramids left out (a Web Mercator pyramid has nothing past 85.05°); where
-  no dataset has data, a fill mask's own filled value (`dem::generic::Sampler::fill_voids`), else
-  sea level; below zero to 0; no water flattened. **polar-terrain**, a run per block (a z4 tile of
+  no dataset has data, a fill mask's own filled value (`dem::generic::Sampler::fill_voids`); a gap
+  up to 3 pixels wide (GLO-30's file edges) its neighbours' (`polar::close_gaps`); else sea level; below zero to 0; no water flattened. **polar-terrain**, a run per block (a z4 tile of
   the grid, "s/4/x/y", where the coverage meets its latitudes: `polar::built`): its cap tiles at z9
   sampled, each coarser level its children's means (sampled where they aren't, past the cap), coded
   as the Mercator terrain is: its pack `layers/polar-terrain-<pole>/polar/4-x-y`. **polar-slope**, a

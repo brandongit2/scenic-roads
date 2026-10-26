@@ -149,8 +149,9 @@ impl Voids {
 }
 
 /// Tiles `ts` of zoom `z` sampled from `s`: each its 256 × 256 heights (m, EGM2008), each the
-/// mean of `K` × `K` samples; where no dataset has data, a fill mask's own filled value
-/// (`Sampler::fill_voids`), else sea level (both counted in `voids`); below zero to zero (the
+/// mean of its `K` × `K` samples with data; where no dataset has data, a fill mask's own filled
+/// value (`Sampler::fill_voids`; both counted in `voids`); a pixel with no sample with data in a
+/// gap up to `GAP_PX` wide its neighbours' (`close_gaps`), else sea level; below zero to zero (the
 /// Mercator terrain's rule after its water).
 pub fn sample(s: &Sampler, pole: Pole, z: u8, ts: &[(u32, u32)], voids: &Voids) -> Result<Vec<Vec<f32>>> {
     let per = TS * TS * K * K;
@@ -184,20 +185,68 @@ pub fn sample(s: &Sampler, pole: Pole, z: u8, ts: &[(u32, u32)], voids: &Voids) 
         .enumerate()
         .map(|(t, _)| {
             let base = t * per;
-            let mut e = vec![0f32; TS * TS];
+            let mut e = vec![f32::NAN; TS * TS];
             for (p, v) in e.iter_mut().enumerate() {
                 let (pj, pi) = (p / TS, p % TS);
-                let mut sum = 0f32;
+                let (mut sum, mut n) = (0f32, 0u32);
                 for k in 0..K * K {
                     let (si, sj) = (pi * K + k % K, pj * K + k / K);
                     let h = got.elev[base + sj * TS * K + si];
-                    sum += if h.is_nan() { 0.0 } else { h };
+                    if !h.is_nan() {
+                        sum += h;
+                        n += 1;
+                    }
                 }
-                *v = (sum / (K * K) as f32).max(0.0);
+                if n > 0 {
+                    *v = sum / n as f32;
+                }
+            }
+            close_gaps(&mut e);
+            for v in &mut e {
+                *v = if v.is_nan() { 0.0 } else { v.max(0.0) };
             }
             e
         })
         .collect())
+}
+
+/// How wide a gap in the data (pixels with no sample with data) is closed from its neighbours:
+/// GLO-30's one-degree files leave a line a sample wide without data along some of their edges,
+/// which near the pole, where the meridians converge, drew as dashed pits along every meridian.
+pub const GAP_PX: usize = 3;
+
+/// Closes the gaps up to `GAP_PX` wide in `e` (NaN: no data): each pass gives a pixel with no data
+/// the mean of its four neighbours that have some. Wider ones (a real void) stay NaN.
+fn close_gaps(e: &mut [f32]) {
+    for _ in 0..GAP_PX {
+        let was = e.to_vec();
+        let mut any = false;
+        for j in 0..TS {
+            for i in 0..TS {
+                if !was[j * TS + i].is_nan() {
+                    continue;
+                }
+                let (mut sum, mut n) = (0f32, 0u32);
+                for (di, dj) in [(-1i64, 0i64), (1, 0), (0, -1), (0, 1)] {
+                    let (a, b) = (i as i64 + di, j as i64 + dj);
+                    if (0..TS as i64).contains(&a) && (0..TS as i64).contains(&b) {
+                        let v = was[b as usize * TS + a as usize];
+                        if !v.is_nan() {
+                            sum += v;
+                            n += 1;
+                        }
+                    }
+                }
+                if n > 0 {
+                    e[j * TS + i] = sum / n as f32;
+                    any = true;
+                }
+            }
+        }
+        if !any {
+            return;
+        }
+    }
 }
 
 /// The shading of tile (z, x, y) by Horn's method from the heights of its zoom's tiles `tile`
@@ -734,6 +783,21 @@ mod tests {
         assert_eq!(s.fill_voids(&lon, &lat, &mut got).unwrap(), 1);
         assert!((got.elev[0] - 150.0).abs() < 1.0 && got.src[0] == 3, "{:?}", got.elev);
         assert!(got.elev[2].is_nan(), "outside every dataset: none");
+    }
+
+    /// A line of pixels without data is closed from its neighbours; a void wider than `GAP_PX` stays.
+    #[test]
+    fn narrow_gaps_close_and_voids_stay() {
+        let mut e = vec![100f32; TS * TS];
+        for j in 0..TS {
+            e[j * TS + 40] = f32::NAN;
+            for i in 100..120 {
+                e[j * TS + i] = f32::NAN;
+            }
+        }
+        close_gaps(&mut e);
+        assert_eq!(e[50 * TS + 40], 100.0);
+        assert!(e[50 * TS + 110].is_nan() && e[50 * TS + 100] == 100.0);
     }
 
     /// Targets name a block and its pole, and only that.
