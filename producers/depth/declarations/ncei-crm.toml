@@ -5,7 +5,7 @@ licence = "Public domain (US Government work)"
 licence_url = "https://www.ncei.noaa.gov/products/coastal-relief-model"
 source = "https://www.ncei.noaa.gov/products/coastal-relief-model"
 territory = ["US"]
-notes = "The owner's hand download, kept in sources/ncei-crm/ (volume 6 absent). producers/depth/ncei.py crm (raster.py over each volume, z12, cut by z7 tile; land left out; the files' own nodata). Volumes 1–5, 7, 8 are heights above EGM2008, taken as mean sea level (the difference between them, the mean dynamic topography, isn't corrected); 9 and 10 are above local MSL. Not for navigation."
+notes = "The owner's hand download, kept in sources/ncei-crm/ (volume 6 absent). producers/depth/ncei.py crm (raster.py over each volume, z12, cut by z7 tile; land left out; the files' own nodata). Volumes 1–5, 7, 8 are heights above EGM2008, brought to MSL by a datum surface over each volume's sea (ncei.py egm2008's table: NOAA CO-OPS tide stations' MSL − NAVD88, stations.py noaa, plus NAVD88 → EGM2008 by the declared geoid grids, GEOID18 and EGM2008); 9 and 10 are above local MSL. Not for navigation."
 
 [data]
 role = "depth"
@@ -19,5 +19,5 @@ refresh = "pinned"
 code = 12
 water = "sea"
 label = "NCEI Coastal Relief Model, 1″"
-datum = "mean sea level (EGM2008 taken as MSL for volumes 1–5, 7, 8)"
+datum = "mean sea level (volumes 1–5, 7, 8 from EGM2008 by the tide stations)"
 band_m = 300

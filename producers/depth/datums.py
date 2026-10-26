@@ -315,10 +315,10 @@ class Surface:
         return warp_onto((self.a, from_origin(self.west, self.north, self.res, self.res), "EPSG:4326"), 1, win, "bilinear", src_nodata=np.nan)
 
 
-def from_table(table, rasters, res: float = 0.005, sea: OpenSea | None = None) -> Surface | None:
+def from_table(table, rasters, res: float = 0.005, sea: OpenSea | None = None, below: float | None = None) -> Surface | None:
     """A station table's surface (`table`: path, column, ids left out, the id column) over the
-    water the `rasters` (a source's files, any CRS) have data on: a constant when every station
-    says the same; None without a table."""
+    water the `rasters` (a source's files, any CRS) have data on (with `below`, their values under
+    it: a grid of land and sea alike): a constant when every station says the same; None without a table."""
     if table is None:
         return None
     path, column, skip, id_column = table
@@ -327,12 +327,13 @@ def from_table(table, rasters, res: float = 0.005, sea: OpenSea | None = None) -
         raise SystemExit(f"{path}: no station has {column}")
     if len({round(p[2], 3) for p in pts}) == 1:
         return Surface.constant(pts[0][2])
-    water, w, n, r = water_of(rasters, res)
+    water, w, n, r = water_of(rasters, res, below)
     return Surface.harmonic(pts, water, w, n, r, sea)
 
 
-def water_of(rasters, res: float) -> tuple[np.ndarray, float, float, float]:
-    """A lon/lat grid (cells of `res`°) of where any of `rasters` has data, over their bounds."""
+def water_of(rasters, res: float, below: float | None = None) -> tuple[np.ndarray, float, float, float]:
+    """A lon/lat grid (cells of `res`°) of where any of `rasters` has data, over their bounds (with
+    `below`: where any of a cell's values is under it)."""
     import rasterio
     from rasterio.enums import Resampling
     from rasterio.transform import from_origin
@@ -349,8 +350,9 @@ def water_of(rasters, res: float) -> tuple[np.ndarray, float, float, float]:
     for p in rasters:
         with rasterio.open(p) as d:
             a = np.full((H, W), np.nan, "float32")
-            reproject(rasterio.band(d, 1), a, dst_transform=from_origin(w, n, res, res), dst_crs="EPSG:4326", dst_nodata=np.nan, resampling=Resampling.max)
-            out |= np.isfinite(a)
+            reproject(rasterio.band(d, 1), a, dst_transform=from_origin(w, n, res, res), dst_crs="EPSG:4326", dst_nodata=np.nan,
+                      resampling=Resampling.max if below is None else Resampling.min)
+            out |= np.isfinite(a) if below is None else np.isfinite(a) & (a < below)
     return out, w, n, res
 
 

@@ -276,5 +276,22 @@ class LowWaterDatum(unittest.TestCase):
                 ncei.low_water_datum(d, 183.413)
 
 
+class Egm2008Table(unittest.TestCase):
+    # (scenic-build geoid-offsets' lines, 26 Oct 2026.)
+    OUT = ("-74.0000,40.0000  NAVD88→EGM2008 -0.388 m  (NAVD88→ellipsoid-NAD83 -33.080, ellipsoid-NAD83→ellipsoid-WGS84 -1.275, ellipsoid-WGS84→EGM2008 +33.966)\n"
+           "-81.0000,25.5000  NAVD88→EGM2008 +0.047 m  (…)\n"
+           "timings: geoid-offsets done in 725 ms\n")
+
+    def test_the_separations_are_read(self):
+        self.assertEqual(ncei.separations(self.OUT), {(-74.0, 40.0): -0.388, (-81.0, 25.5): 0.047})
+
+    def test_msl_above_egm2008_is_msl_above_navd88_plus_navd88_above_egm2008(self):
+        rows = [{"id": "a", "name": "A", "lon": "-74", "lat": "40", "msl_minus_navd88_m": "0.1"},
+                {"id": "b", "name": "B", "lon": "-81.0", "lat": "25.5", "msl_minus_navd88_m": "-0.2"},
+                {"id": "c", "name": "C", "lon": "-70", "lat": "40", "msl_minus_navd88_m": "0.3"}]
+        out = ncei.egm2008_rows(rows, ncei.separations(self.OUT))
+        self.assertEqual([(r["id"], r[ncei.COLUMN]) for r in out], [("a", -0.288), ("b", -0.153)])
+
+
 if __name__ == "__main__":
     unittest.main()
