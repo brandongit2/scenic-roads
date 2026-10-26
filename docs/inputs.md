@@ -1183,7 +1183,9 @@ each grid's box, against the coverage's 1° cells: the cells left out, merged in
 area left out in km², reckoned at 0.05°; a grid's own voids inside its box are the sampler's
 `unconverted`); a folder or index no declaration names (`el-orphan`); two
 datasets of one rank, resolution and surface meeting (`el-tie`). A declaration is held with the
-index it names. Planned: files not meeting the declared territory.
+index it names. The checks run whole on every check, files changed or not (`holds_unchanged`), so
+a finding on an unchanged dataset (an `el-geoid` the accepted sources or this check's version
+newly raise) holds it as accepted and shows it held. Planned: files not meeting the declared territory.
 
 **Projections** (crate::dem::proj, as PROJ 9.8 computes them, tested against pyproj): WGS 84 to
 NAD83(CSRS) by EPSG:1946's Helmert, then Canada Atlas Lambert (EPSG:3979: HRDEM) or a NAD83 /
@@ -1242,7 +1244,9 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   first dataset was converted and whose dataset beneath had no value, `unconverted_seam`). The
   input check holds each dataset to its chain (`el-geoid`, below, against the accepted sources: the
   check's key names them): no chain is an error, and a chain whose grids' boxes miss part of the
-  dataset's coverage is a warning, the dataset accepted only with it (§4.5).
+  dataset's coverage is a warning, the dataset accepted only with it (§4.5). A dataset already
+  accepted that the sources then leave without a chain is held, its accepted version still read
+  (its heights then left as they are, said on the agent's stderr).
   `producers/geoid/fetch.sh` downloads the grids (published data: no robots.txt, §6.9). Only
   EGM2008 is named in code. `scenic-build geoid-offsets --sources <folder>
   --from <reference> --at <lon,lat>[;…]` prints a chain's offsets, hop by hop.

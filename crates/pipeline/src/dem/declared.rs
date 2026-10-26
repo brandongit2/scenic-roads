@@ -667,7 +667,7 @@ pub fn accepted(a: &crate::inputs::Accepted) -> Result<Vec<Accepted>> {
 /// (`geoid`: the role's, crate::dem::geoid); for each dataset no chain of them reaches, why (its
 /// heights are then left as they are, and its key names no conversion). The input check refuses
 /// such a dataset (crate::inputs::elevation, `el-geoid`): one is met here only when the sources
-/// accepted since dropped its chain, until the elevation check runs again on them.
+/// accepted since dropped its chain, the dataset then held as accepted until that's mended.
 pub fn convert(ds: &mut [Accepted], geoid: &[crate::inputs::sources::Source]) -> Vec<String> {
     let mut why = Vec::new();
     for d in ds.iter_mut() {

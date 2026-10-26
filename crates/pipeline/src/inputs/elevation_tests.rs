@@ -497,3 +497,64 @@ fn heights_whose_grids_reach_all_the_data_pass() {
     f.checks.geoid = Some(Vec::new());
     assert!(f.whole().iter().all(|x| x.check() != GEOID));
 }
+
+#[test]
+fn an_unchanged_dataset_whose_grids_stop_reaching_it_is_held_as_accepted() {
+    // (single.toml in NAVD88, taken in with a grid reaching all of it.)
+    let d = String::from_utf8(decl("", "format = \"geotiff\"\nurl = \"https://e.org/a.tif\"")).unwrap();
+    let b = d.replace("EGM2008", "NAVD88").into_bytes();
+    let listing = crate::inputs::Listing {
+        files: [("single.toml".to_string(), (b.len() as u64, 1))].into(),
+        ..Default::default()
+    };
+    let checks = |grid: [f64; 4]| {
+        let mut fetch = fetch();
+        let (w, h) = (((grid[2] - grid[0]) * 10.0) as u32, ((grid[3] - grid[1]) * 10.0) as u32);
+        let g = crate::geotiff::write_f32(
+            w,
+            h,
+            &vec![-30.0f32; (w * h) as usize],
+            16,
+            [grid[0], 0.1, 0.0, grid[3], 0.0, -0.1],
+            4326,
+            None,
+        )
+        .unwrap();
+        fetch.0.insert("https://g.org/w.tif".into(), Some(g));
+        Elevation {
+            geoid: Some(vec![geoid_grid("g", "NAVD88", "https://g.org/w.tif")]),
+            ..Elevation::new(Arc::new(fetch), None)
+        }
+    };
+    let copies: std::sync::Mutex<BTreeMap<String, Vec<u8>>> = Default::default();
+    let read_new = |_: &str| Ok(b.clone());
+    let read_old = |e: &crate::inputs::FileEntry| {
+        use anyhow::Context as _;
+        copies.lock().unwrap().get(&e.file).cloned().context("no copy")
+    };
+    let decide = |c: &Elevation, prev: Option<&crate::inputs::Index>, prev_listed: &BTreeMap<String, (u64, u64)>| {
+        let d = crate::inputs::gate::decide(&crate::inputs::gate::Given {
+            checks: c,
+            prev,
+            prev_listed,
+            listing: &listing,
+            unsettled: &BTreeSet::new(),
+            accepted: &BTreeSet::new(),
+            full: false,
+            read_new: &read_new,
+            read_old: &read_old,
+        })
+        .unwrap();
+        copies.lock().unwrap().extend(d.store.iter().map(|(n, b)| (n.clone(), b.to_vec())));
+        d
+    };
+    let first = decide(&checks([0.0, 40.0, 10.0, 50.0]), None, &BTreeMap::new());
+    assert!(first.report.is_none() && first.index.files.contains_key("single.toml"), "{:?}", first.report);
+    // The sources now accepted reach only part of it: nothing changed in the folder, and it's held,
+    // the version in use kept.
+    let again = decide(&checks([1.0, 47.0, 3.5, 51.0]), Some(&first.index), &first.listed);
+    let r = again.report.expect("held");
+    assert_eq!(r.held, vec!["single.toml".to_string()]);
+    assert!(r.findings.iter().any(|f| f.check() == GEOID && f.level == Level::Warning), "{:?}", r.findings);
+    assert!(!again.changed && again.index.files == first.index.files);
+}

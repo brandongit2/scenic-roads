@@ -432,6 +432,13 @@ impl Checks for Elevation {
         true
     }
 
+    /// `el-geoid` turns on what the context names, not the files: accepted sources that drop a
+    /// dataset's chain, or this check's version first finding a gap, hold its files unchanged
+    /// (kept as accepted, shown held) rather than nothing showing until the file is edited.
+    fn holds_unchanged(&self) -> bool {
+        true
+    }
+
     fn file(&self, path: &str, bytes: &[u8]) -> FileCheck {
         let mut c = FileCheck::default();
         let err = |check: &str, why: &[String]| {
