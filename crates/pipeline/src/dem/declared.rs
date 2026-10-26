@@ -960,6 +960,82 @@ mod tests {
         assert!(d("regions = [\"New York\"]").is_err() && d("regions = []").is_err());
     }
 
+    /// `cut_note` as it was before task #700 (a set of the uncut boxes' cells), against it for
+    /// uncut boxes and key boxes on cell edges, the poles, the antimeridian (and across it, w > e),
+    /// fractional, empty and the whole world: its notes feed terrain keys, so they're equal.
+    #[test]
+    fn cut_note_as_before() {
+        fn before(measured: &Measured, cover: &Cover, b: [f64; 4]) -> Option<String> {
+            let uncut = Cover::of(Some(measured.uncut.as_deref()?));
+            let (x0, x1, y0, y1) =
+                (b[0].ceil() as i32 - 1, b[2].floor() as i32, b[1].ceil() as i32 - 1, b[3].floor() as i32);
+            let mut kept = Vec::new();
+            let mut cut = false;
+            for x in x0..=x1 {
+                for y in y0..=y1 {
+                    match (uncut.cells.contains(&(x, y)), cover.cells.contains(&(x, y))) {
+                        (_, true) => kept.push(format!("{x},{y}")),
+                        (true, false) => cut = true,
+                        (false, false) => {}
+                    }
+                }
+            }
+            cut.then(|| format!("cut {}", store::naming::hash16(kept.join(" ").as_bytes())))
+        }
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move |n: u64| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) % n
+        };
+        // (A coordinate: a whole degree, or a fraction off one; within or just past the world.)
+        let fr = [0.0, 0.0, 0.25, 0.5, 0.999, 1e-9];
+        let coord = |lim: i64, next: &mut dyn FnMut(u64) -> u64| {
+            (next(2 * lim as u64 + 3) as i64 - lim - 1) as f64 + fr[next(fr.len() as u64) as usize]
+        };
+        let fixed: Vec<[f64; 4]> = vec![
+            WORLD,
+            [179.0, -10.0, 180.0, 10.0],
+            [-180.0, -10.0, -179.0, 10.0],
+            [170.0, -5.0, -170.0, 5.0],
+            [-180.0, 89.0, 180.0, 90.0],
+            [-180.0, -90.0, 180.0, -89.0],
+            [10.0, 45.0, 10.0, 45.0],
+            [179.5, 0.5, 180.5, 1.5],
+        ];
+        let mut cases = 0;
+        for i in 0..200 {
+            let mut boxes: Vec<[f64; 4]> = (0..1 + next(4))
+                .map(|_| {
+                    let (w, s) = (coord(180, &mut next), coord(90, &mut next));
+                    let (dw, ds) = (next(30) as f64 * 0.5, next(20) as f64 * 0.5);
+                    [w, s, w + dw, s + ds]
+                })
+                .collect();
+            boxes.push(fixed[i % fixed.len()]);
+            // (As measured: a coverage's cells merged into whole-degree boxes, `cells_to_boxes`.)
+            if i % 2 == 1 {
+                boxes = cells_to_boxes(&Cover::of(Some(&boxes)).cells.into_iter().collect());
+            }
+            // (Cut to some of its cells, as `scope_cover` cuts: the boxes of a subset.)
+            let keep: BTreeSet<(i32, i32)> =
+                Cover::of(Some(&boxes)).cells.into_iter().filter(|_| next(3) == 0).collect();
+            let cover_boxes = cells_to_boxes(&keep);
+            let m = Measured { cover: Some(cover_boxes.clone()), uncut: Some(boxes.clone()), ..Default::default() };
+            let c = Cover::of(Some(&cover_boxes));
+            let mut keys = fixed.clone();
+            for _ in 0..40 {
+                let (w, s) = (coord(181, &mut next), coord(91, &mut next));
+                let (dw, ds) = (next(6) as f64 * 0.5, next(6) as f64 * 0.5);
+                keys.push([w, s, w + dw, s + ds]);
+            }
+            for b in boxes.iter().chain(&keys) {
+                assert_eq!(cut_note(&m, &c, *b), before(&m, &c, *b), "uncut {boxes:?}, key box {b:?}");
+                cases += 1;
+            }
+        }
+        assert!(cases > 7_000);
+    }
+
     #[test]
     fn declarations_parse_and_refuse() {
         let ok = br#"

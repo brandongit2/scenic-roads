@@ -183,7 +183,7 @@ remote_main() {  # on the test Mac: <key> <owner> <command>
   versions "the test Mac"
   print "remote-tests: on the test Mac (load $(loadavg), slot $slot, $dir)"
   # (In the background, waited for: a TERM's trap runs at once, not when the command ends.)
-  nice -n 10 taskpolicy -c utility zsh -c "$cmd" </dev/null 2>&1 &
+  nice -n 10 /usr/sbin/taskpolicy -c utility zsh -c "$cmd" </dev/null 2>&1 &
   g_cpid=$!
   wait $g_cpid
   local rc=$?

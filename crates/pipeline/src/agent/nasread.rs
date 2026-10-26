@@ -420,12 +420,16 @@ pub static WATCH_DONE: AtomicBool = AtomicBool::new(false);
 /// as an instant).
 static PHASE: Mutex<Option<(&'static str, u64, std::time::Instant)>> = Mutex::new(None);
 
+/// The loop's wait between rounds (up to 20 s, as planned): a phase, never logged as slow.
+pub const WAIT: &str = "the wait between rounds";
+
 /// The loop enters phase `name` (the one before it ends): the watchdog names it in a stall, and
-/// the one that ends is logged if it took `SLOW_PHASE` or more.
+/// the one that ends is logged if it took `SLOW_PHASE` or more (but `WAIT`). A mutex held only to
+/// swap the phase, by the loop ~20 times a round and the watchdog every 15 s.
 pub fn phase(name: &'static str) {
     let was =
         PHASE.lock().unwrap_or_else(|e| e.into_inner()).replace((name, super::now_s(), std::time::Instant::now()));
-    if let Some((was, _, t)) = was.filter(|w| w.2.elapsed() >= SLOW_PHASE) {
+    if let Some((was, _, t)) = was.filter(|w| w.0 != WAIT && w.2.elapsed() >= SLOW_PHASE) {
         eprintln!("agent: {} the loop's phase \"{was}\" took {} s", clock(super::now_s()), t.elapsed().as_secs());
     }
 }
@@ -517,9 +521,16 @@ pub fn watch(
         .expect("spawn the loop's watchdog")
 }
 
-/// This process sampled by `sampler` for 10 s into `out`, off the watchdog's thread (waited for
-/// there, so it leaves no zombie). Its failure is logged, nothing more.
+/// This process sampled by `sampler` for 10 s into `out` (overwritten), off the watchdog's thread
+/// (waited for there, so it leaves no zombie). Never two at once: while one runs (or hangs, until
+/// it's killed at `SAMPLE_LIMIT`), another stall's isn't started. Its failure is logged, nothing
+/// more.
 fn sample_self(sampler: &Path, out: &Path) {
+    static SAMPLING: AtomicBool = AtomicBool::new(false);
+    if SAMPLING.swap(true, Ordering::SeqCst) {
+        eprintln!("agent: the stalled loop not sampled: the last stall's sampler still runs");
+        return;
+    }
     let child = store::spawn::spawn(
         store::spawn::command(sampler)
             .args([std::process::id().to_string(), "10".into(), "-mayDie".into(), "-file".into()])
@@ -531,15 +542,38 @@ fn sample_self(sampler: &Path, out: &Path) {
     match child {
         Ok(mut c) => {
             let out = out.to_path_buf();
-            std::thread::spawn(move || match c.wait() {
-                Ok(st) if st.success() => eprintln!("agent: the stalled loop sampled into {}", out.display()),
-                Ok(st) => eprintln!("agent: sampling the stalled loop: {st}"),
-                Err(e) => eprintln!("agent: sampling the stalled loop: {e}"),
+            std::thread::spawn(move || {
+                let t = std::time::Instant::now();
+                let st = loop {
+                    match c.try_wait() {
+                        Ok(None) if t.elapsed() < SAMPLE_LIMIT => std::thread::sleep(Duration::from_millis(250)),
+                        Ok(None) => {
+                            c.kill().ok();
+                            break c.wait().map(|_| None);
+                        }
+                        r => break r,
+                    }
+                };
+                match st {
+                    Ok(Some(st)) if st.success() => eprintln!("agent: the stalled loop sampled into {}", out.display()),
+                    Ok(Some(st)) => eprintln!("agent: sampling the stalled loop: {st}"),
+                    Ok(None) => {
+                        eprintln!("agent: sampling the stalled loop: killed after {} s", SAMPLE_LIMIT.as_secs())
+                    }
+                    Err(e) => eprintln!("agent: sampling the stalled loop: {e}"),
+                }
+                SAMPLING.store(false, Ordering::SeqCst);
             });
         }
-        Err(e) => eprintln!("agent: sampling the stalled loop ({}): {e}", sampler.display()),
+        Err(e) => {
+            eprintln!("agent: sampling the stalled loop ({}): {e}", sampler.display());
+            SAMPLING.store(false, Ordering::SeqCst);
+        }
     }
 }
+
+/// A sampler still running this long after it started (it samples for 10 s) is killed.
+const SAMPLE_LIMIT: Duration = Duration::from_secs(60);
 
 /// The loop's stall as its watchdog last wrote it in `home`, if it's current (seen within a minute).
 pub fn stall(home: &Path) -> Option<Stall> {

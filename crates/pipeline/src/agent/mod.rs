@@ -3595,6 +3595,7 @@ impl Agent {
             // soon.)
             let quitting = self.quit_ask().is_some();
             let wait = if quick || quitting { 2 } else { 20 };
+            nasread::phase(nasread::WAIT);
             for _ in 0..wait {
                 if STOP.load(Ordering::SeqCst) || (!quitting && self.quit_ask().is_some()) || self.hold_asked_anew() {
                     break;

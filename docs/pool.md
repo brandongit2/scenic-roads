@@ -1062,8 +1062,9 @@ A healthy share's calls are unchanged.
 A watchdog thread, started before the agent opens anything on the NAS, looks at when the loop last
 finished a round (or the agent started, given five minutes more: a slow start isn't a stall): past
 five minutes it logs the stall with the round's phase in progress (the loop names each phase as it
-enters it, and logs one that took 10 s or more as it ends), has `/usr/bin/sample` sample the agent
-for 10 s into `loop-stall-sample.txt`, and keeps `loop-stall.json` (the round's start, the phase
+enters it, and logs one that took 10 s or more as it ends, but the wait between rounds), has
+`/usr/bin/sample` sample the agent for 10 s into `loop-stall-sample.txt` (once per stall, the last
+stall's overwritten; never two at once, one still running at 60 s killed), and keeps `loop-stall.json` (the round's start, the phase
 and since when) in the agent's folder (this Mac's disk), which `scenic status` shows as "this Mac's
 agent loop is stalled"; it's removed when the loop goes on, and the round's real length is logged.
 These lines carry the time of day (UTC).
