@@ -9398,7 +9398,7 @@ impl Agent {
             }
         }
         // (The map's finished tiles, the same: the build's keys on the NAS.)
-        let bv = self.built_view.get_or_insert_with(|| builtview::BuiltView::new(root.to_path_buf())).clone();
+        let bv = self.built_view.get_or_insert_with(|| builtview::BuiltView::new(root)).clone();
         for c in [&self.coord, &self.broker, &self.viewer].into_iter().flatten() {
             if !c.has_built() {
                 c.set_built(bv.clone());

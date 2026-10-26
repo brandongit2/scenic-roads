@@ -831,20 +831,21 @@ mod tests {
         // removed) isn't the stale view's pause.
         let d = tempfile::tempdir().unwrap();
         let now = now_s();
-        fixture(d.path(), now);
+        let r = store::nasfs::NasRoot::local_for_test(d.path());
+        fixture(&r, now);
         let src = Dir(d.path().into(), AtomicUsize::new(0));
         let pv = PageView::default();
         pv.set_inputs(inputs(""));
         pv.touch_at(now);
         assert!(pv.tick(&src, now));
         assert!(pv.swarm().unwrap()["pause"].is_null());
-        put(d.path(), "state/build/pause.json", br#"{"mode":"drain","by":"me","at":1}"#);
+        put(&r, "state/build/pause.json", br#"{"mode":"drain","by":"me","at":1}"#);
         assert!(!pv.tick(&src, now), "not a full read");
         assert_eq!(pv.swarm().unwrap()["pause"]["mode"], "drain");
         // The view still says paused (as before the lead wrote it again): the file's absence wins.
-        let mut v: Value = serde_json::from_slice(&local(d.path(), "state/coord/term/7/view.json").unwrap()).unwrap();
+        let mut v: Value = serde_json::from_slice(&local(&r, "state/coord/term/7/view.json").unwrap()).unwrap();
         v["view"]["pause"] = serde_json::json!({ "mode": "drain", "by": "me", "at": 1 });
-        put(d.path(), "state/coord/term/7/view.json", v.to_string().as_bytes());
+        put(&r, "state/coord/term/7/view.json", v.to_string().as_bytes());
         std::fs::remove_file(d.path().join("state/build/pause.json")).unwrap();
         pv.tick(&src, now);
         assert!(pv.swarm().unwrap()["pause"].is_null());

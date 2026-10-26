@@ -9351,10 +9351,11 @@ mod tests {
         let addr = w.urls()[0].trim_start_matches("http://").to_string();
         let root = d.path().join("nas");
         std::fs::create_dir_all(&root).unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
         let pv = crate::agent::pageview::PageView::new();
-        pv.set_inputs(crate::agent::pageview::Inputs { root: Some(root.clone()), ..Default::default() });
+        pv.set_inputs(crate::agent::pageview::Inputs { root: Some(nas.clone()), ..Default::default() });
         pv.touch();
-        assert!(pv.tick(&crate::agent::pageview::NasFiles(root.clone()), unix_now()));
+        assert!(pv.tick(&crate::agent::pageview::NasFiles(nas.clone()), unix_now()));
         c.set_pageview(pv);
         let pause = || send(&addr, "POST", "/work/swarm", None, &[], &serde_json::json!({})).2["pause"].clone();
         assert!(pause().is_null());

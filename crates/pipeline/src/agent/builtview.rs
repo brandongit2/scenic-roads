@@ -10,7 +10,6 @@
 use super::build::Keys;
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -56,7 +55,7 @@ struct Read {
 }
 
 pub struct BuiltView {
-    root: PathBuf,
+    root: store::nasfs::NasRoot,
     read: Mutex<Read>,
     reading: AtomicBool,
 }
@@ -68,8 +67,14 @@ impl std::fmt::Debug for BuiltView {
 }
 
 impl BuiltView {
-    pub fn new(root: PathBuf) -> Arc<Self> {
-        Arc::new(BuiltView { root, read: Mutex::new(Read::default()), reading: AtomicBool::new(false) })
+    /// `root` read on the server's short schedule (store::nasfs::NasRoot::short_retry): a page's
+    /// answer, read again a minute on; a blip ridden out, an outage shown as the error at once.
+    pub fn new(root: &store::nasfs::NasRoot) -> Arc<Self> {
+        Arc::new(BuiltView {
+            root: root.short_retry(),
+            read: Mutex::new(Read::default()),
+            reading: AtomicBool::new(false),
+        })
     }
 
     /// A page's ask: the reader started when it isn't running and the keys weren't read in the last
@@ -133,12 +138,12 @@ mod tests {
     #[test]
     fn read_from_the_keys_file_while_asked() {
         let d = tempfile::tempdir().unwrap();
-        let v = BuiltView::new(d.path().to_path_buf());
+        let v = BuiltView::new(&store::nasfs::NasRoot::local_for_test(d.path()));
         v.refresh();
         assert_eq!(v.ask()["steps"], serde_json::json!({}), "no keys yet: none built");
         let mut k = Keys::default();
         k.record("terrain-deep", &[("10/1/2".into(), "a".into())]);
-        k.save(d.path()).unwrap();
+        k.save(&store::nasfs::NasRoot::local_for_test(d.path())).unwrap();
         v.refresh();
         let a = v.ask();
         assert_eq!(a["steps"]["terrain-deep"], serde_json::json!(["10/1/2"]));
