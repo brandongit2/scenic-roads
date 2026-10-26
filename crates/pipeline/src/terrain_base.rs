@@ -3,7 +3,8 @@
 //! the same way, as the roads' elevations (crate::dem::generic), so the roads and the terrain use
 //! one dataset at every point. Each pixel is the mean of 2 × 2 samples over it (`K`), each dataset
 //! read at the level's detail: a GeoTIFF at its overview nearest half a pixel, a Terrarium pyramid at the level's own zoom (AWS's publishes every zoom),
-//! another pyramid at its declared zoom. Where no dataset has data, sea level. Heights are EGM2008
+//! another pyramid at its declared zoom, and only from z9 (`ROW_Z`) on: below, its next dataset serves
+//! (a z8 tile would read 16,384 of GSI's z15 tiles over the network). Where no dataset has data, sea level. Heights are EGM2008
 //! (each dataset's brought there as the roads' are). The tiles come out as Terrarium PNGs, the
 //! terrain's levels made from them as from any raw tile (crate::terrain_pack: the water, the coarser
 //! levels from the finer).
@@ -114,10 +115,16 @@ impl Pool {
         Pool { plan, terrarium, store, area }
     }
 
-    /// The plan read at zoom `z` over latitude `lat` (`Pool`'s rule).
+    /// The plan read at zoom `z` over latitude `lat` (`Pool`'s rule). Below `ROW_Z` (the z3 tiles'
+    /// levels, terrain-lo's) a pyramid published at one zoom only (any but Terrarium) is left out, the
+    /// next dataset serving there: its tiles a z8 tile would read are 4^(zoom − 8) (GSI's z15: 16,384,
+    /// a request each, task #704).
     fn at_zoom(&self, z: u8, lat: f64) -> Plan {
         let half = tile_resolution(z as u32, lat) / 2.0;
         let mut p = self.plan.clone();
+        if z < ROW_Z {
+            p.datasets.retain(|d| !matches!(&d.source, Source::Tiles { encoding, .. } if encoding != "terrarium"));
+        }
         for d in &mut p.datasets {
             match &mut d.source {
                 Source::Geotiff { read_resolution, .. } => {
@@ -706,7 +713,9 @@ mod tests {
             matches!(&p5.datasets[1].source, Source::Tiles { zoom: 5, .. }),
             "a Terrarium pyramid at the level's zoom"
         );
-        assert!(matches!(&p5.datasets[2].source, Source::Tiles { zoom: 15, .. }), "another at its own");
+        assert_eq!(p5.datasets.len(), 2, "another pyramid left out below ROW_Z");
         assert!(p5.datasets[0].resolution > 1000.0);
+        let p9 = pool.at_zoom(ROW_Z, 0.0);
+        assert!(matches!(&p9.datasets[2].source, Source::Tiles { zoom: 15, .. }), "from ROW_Z at its own zoom");
     }
 }
