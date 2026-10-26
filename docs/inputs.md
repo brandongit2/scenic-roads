@@ -1210,14 +1210,19 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   the sampler doesn't wait on a chunk's few blocks one round trip after another. A tile pyramid's
   tiles likewise (`TileSet::rolling`): `TILE_FETCHES` (64) kept in flight, whatever the threads
   the step was granted (task #665: a terrain job fetched GSI's tiles only on its three sampling
-  threads, one at a time each, about 2 tiles a second where the host answers 15 at once). Only each point's
+  threads, one at a time each, about 2 tiles a second where the host answers 15 at once); the
+  terrain pool's own Terrarium tiles, read from this Mac's cache or the NAS's archives
+  (`terrain_base::RawFetch`), are read only as many at once as the job has threads, as before.
+  Only each point's
   first file (the first whose footprint holds it) is read ahead; a point that file has no data for
   reads the next file's block when it's sampled. The reading ahead goes no further than a quarter
   of the cache holds (`generic::ahead_for`), and it stops with the sampling: a read of it waiting
   out its retries gives up at once (`fetch::cancellable`), and every retry checks its host's
   down note first (`SCENIC_FETCH_DOWN`), so a host that stopped answering doesn't hold the step
   through each thread's retries. The fetcher holds
-  a process's requests to one host to `fetch::net::HOST_REQUESTS` (64) at once.
+  a process's requests to one host to `fetch::net::HOST_REQUESTS` (16) at once, whatever its
+  readers keep in flight: the hosts read live are free services that publish no limit (GSI's
+  among them), so a pool of four jobs asks one host 64 at once at most (task #665 review).
 - **Heights brought to EGM2008** (step 3, crate::dem::geoid), each dataset's before the blend (A's
   and B's alike): the conversions are declared sources (§6.9, role `geoid`, any number), each
   linking two references by `params.from` and `to`: a separation grid (`geoid-grid`: one GeoTIFF in

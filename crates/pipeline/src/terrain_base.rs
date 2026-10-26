@@ -113,7 +113,7 @@ impl Pool {
     /// `f` given the pool's tiles (`Tiles`), the Terrarium pyramid's read through `raw`.
     pub fn with_tiles<R>(&self, raw: &RawTiles, f: impl FnOnce(&Tiles) -> R) -> Result<R> {
         let net = crate::fetch::Fetcher::from_env();
-        let fetch = RawFetch { raw, url: self.terrarium.as_deref(), inner: &net };
+        let fetch = RawFetch::new(raw, self.terrarium.as_deref(), &net);
         let o = Opts { fetch: &fetch, store: Some(self.store.clone()) };
         let mid = (self.area[1] + self.area[3]) / 2.0;
         let plans: Vec<Plan> = (0..=MAX_Z).map(|z| self.at_zoom(z, mid)).collect();
@@ -144,9 +144,38 @@ struct RawFetch<'a> {
     raw: &'a RawTiles,
     url: Option<&'a str>,
     inner: &'a dyn Fetch,
+    /// The raw tiles read at once, and the most: the threads the job runs on, as when the
+    /// sampler's threads fetched its tiles themselves (task #665 review: its pyramids' tiles are
+    /// fetched `TILE_FETCHES` at once, and these are read from the NAS's archives and loose tiles,
+    /// whose load stays as it was).
+    reading: (Mutex<usize>, std::sync::Condvar),
+    most: usize,
 }
 
-impl RawFetch<'_> {
+impl<'a> RawFetch<'a> {
+    fn new(raw: &'a RawTiles, url: Option<&'a str>, inner: &'a dyn Fetch) -> RawFetch<'a> {
+        RawFetch { raw, url, inner, reading: Default::default(), most: rayon::current_num_threads().max(1) }
+    }
+
+    /// Raw tile z/x/y, read once fewer than `most` are.
+    fn raw_get(&self, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>> {
+        let (m, cv) = &self.reading;
+        {
+            let mut n = m.lock().unwrap_or_else(|e| e.into_inner());
+            while *n >= self.most {
+                n = cv.wait(n).unwrap_or_else(|e| e.into_inner());
+            }
+            *n += 1;
+        }
+        let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.raw.get(z, x, y)));
+        *m.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
+        cv.notify_one();
+        match got {
+            Ok(r) => Ok(r?.0),
+            Err(p) => std::panic::resume_unwind(p),
+        }
+    }
+
     /// Tile z/x/y of the Terrarium template, when `url` is one of its tiles.
     fn tile(&self, url: &str) -> Option<(u8, u32, u32)> {
         let t = self.url?;
@@ -162,14 +191,14 @@ impl RawFetch<'_> {
 impl Fetch for RawFetch<'_> {
     fn open(&self, url: &str) -> Result<Option<Arc<dyn RangeRead>>> {
         match self.tile(url) {
-            Some((z, x, y)) => Ok(self.raw.get(z, x, y)?.0.map(|b| Arc::new(b) as Arc<dyn RangeRead>)),
+            Some((z, x, y)) => Ok(self.raw_get(z, x, y)?.map(|b| Arc::new(b) as Arc<dyn RangeRead>)),
             None => self.inner.open(url),
         }
     }
 
     fn get(&self, url: &str) -> Result<Option<Vec<u8>>> {
         match self.tile(url) {
-            Some((z, x, y)) => Ok(self.raw.get(z, x, y)?.0),
+            Some((z, x, y)) => self.raw_get(z, x, y),
             None => self.inner.get(url),
         }
     }
@@ -178,7 +207,7 @@ impl Fetch for RawFetch<'_> {
     // a silent connection given up in 30 s, not the client's 90 s a try.)
     fn get_within(&self, url: &str, within: crate::fetch::Within) -> Result<Option<Vec<u8>>> {
         match self.tile(url) {
-            Some((z, x, y)) => Ok(self.raw.get(z, x, y)?.0),
+            Some((z, x, y)) => self.raw_get(z, x, y),
             None => self.inner.get_within(url, within),
         }
     }
@@ -558,7 +587,7 @@ mod tests {
         // (Read at the wide area's middle, 40°N: another blend.)
         let pool = Pool::of(plan.clone(), store.clone(), [10.0, 20.0, 11.0, 60.0]);
         let net = crate::fetch::MapFetch::default();
-        let fetch = RawFetch { raw: &raw, url: pool.terrarium.as_deref(), inner: &net };
+        let fetch = RawFetch::new(&raw, pool.terrarium.as_deref(), &net);
         let o = Opts { fetch: &fetch, store: Some(store.clone()) };
         let plans: Vec<Plan> = (0..=MAX_Z).map(|z| pool.at_zoom(z, 40.0)).collect();
         let at_area = Tiles::new(&plans, &o).sample(z, &[(x, y)]).unwrap().pop().unwrap().unwrap();
@@ -589,7 +618,7 @@ mod tests {
     fn the_raw_tiles_are_told_by_the_template() {
         let raw = RawTiles::new(std::path::Path::new("/nonexistent"), crate::terrain_pack::TEST_BASE);
         let net = crate::fetch::MapFetch::default();
-        let f = RawFetch { raw: &raw, url: Some("https://t.org/a/{z}/{x}/{y}.png"), inner: &net };
+        let f = RawFetch::new(&raw, Some("https://t.org/a/{z}/{x}/{y}.png"), &net);
         assert_eq!(f.tile("https://t.org/a/12/3/4.png"), Some((12, 3, 4)));
         assert_eq!(f.tile("https://t.org/a/12/3.png"), None);
         assert_eq!(f.tile("https://t.org/b/12/3/4.png"), None);
