@@ -446,7 +446,8 @@ and when:
   (a part refilled after an eviction), leave it.
 - *What a Mac holds* (`Capacity::caches`, `have_mb`): read off its disk as its agent asks
   (`caches_here`: the bytes of its cache folder's `blobs/layers/basemap*` and
-  `blobs/sources/fetched*`, the whole copies), so
+  `blobs/sources/fetched/<id>/*.tar`, the whole copies; the terrain's copies of the stored GeoTIFFs,
+  `*.tif` beside them (task #689), are its jobs' own disk, not this cache), so
   whatever emptied them (room-making, the OSM pass's clear, a hand) counts.
 - *The reservation*: the first job granted on a Mac reading a cache (a cold start too) carries
   in its `Grant::disk_mb`, beside its output, the fill less what that Mac holds of it: nothing

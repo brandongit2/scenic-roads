@@ -97,7 +97,11 @@ What each step does, in detail. The steps as one table (names, chains, the check
     job makes with it (a deep target's base among them); heights brought to EGM2008 as the
     roads' are; where no dataset has data, sea level. The Terrarium tiles are read through this
     Mac's cache and the NAS's archives (fetched once, packed onto the NAS: docs/macs.md), GLO-30
-    from its store (`sources/fetched/glo30/`). The sampling goes 16 tiles a chunk; with the build pausing it stops before
+    from its store (`sources/fetched/glo30/`): a tile read at a level holding 10 % of its pixels or
+    more (the z9–16 levels' full resolution and first overview), and every fill mask (read whole),
+    copied whole to the Mac's SSD once and read there (task #689: pipeline::localread, where the disk
+    has room past the owner's target; else, and for the coarse levels' many tiles, NAS range reads;
+    the same bytes either way). The sampling goes 16 tiles a chunk; with the build pausing it stops before
     the next chunk, the step ending as paused with the target unsaved (docs/pool.md §7.2, Resuming). Then the water of the latest pass's basemap. Each is
     pinned in the key (`TERRAIN_V`, the datasets meeting the target by their lines as the roads'
     keys name them, the digest of the water the target reads), so a rebuild with the same key gives

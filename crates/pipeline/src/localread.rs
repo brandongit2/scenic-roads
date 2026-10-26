@@ -32,10 +32,6 @@ use store::nasfs::{NasPath, Place};
 /// The shared cache's name (crate::needs::CACHES).
 pub const CACHE: &str = "whole copies";
 
-/// The folders of `blobs/` the shared cache is (what a Mac holds of it: crate::agent's
-/// `caches_here`).
-pub const FOLDERS: [(&str, &str); 2] = [("layers", "basemap"), ("sources", "fetched")];
-
 /// This Mac's copies of the NAS's files under `root`.
 pub struct Local {
     root: store::nasfs::NasRoot,
@@ -175,9 +171,23 @@ pub fn path(local: Option<&Local>, p: &NasPath) -> Place {
     local.map_or_else(|| Place::Nas(p.clone()), |l| l.path(p))
 }
 
-/// The bytes this Mac's cache folder `cache` holds of the shared cache (`FOLDERS`).
+/// The bytes this Mac's cache folder `cache` holds of the shared cache (what a Mac holds of it:
+/// crate::agent's `caches_here`): the basemaps' copies (`blobs/layers/basemap*`) and the depth
+/// sources' packs' (`blobs/sources/fetched/<id>/*.tar`). The stored GeoTIFFs' copies (`.tif`, the
+/// terrain's) are not the shared cache's: each terrain job's disk counts those it makes.
 pub fn held(cache: &Path) -> u64 {
-    FOLDERS.iter().map(|(d, prefix)| store::cachefile::bytes_of(&cache.join("blobs").join(d), prefix)).sum()
+    let blobs = cache.join("blobs");
+    let packs: u64 = std::fs::read_dir(blobs.join("sources/fetched"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .flat_map(|d| std::fs::read_dir(d.path()).into_iter().flatten().flatten())
+        .filter(|f| f.file_name().to_string_lossy().ends_with(".tar"))
+        .filter_map(|f| f.metadata().ok())
+        .filter(|m| m.is_file())
+        .map(|m| m.len())
+        .sum();
+    store::cachefile::bytes_of(&blobs.join("layers"), "basemap") + packs
 }
 
 #[cfg(test)]
@@ -210,6 +220,10 @@ mod tests {
         assert_eq!(got, cache.join("blobs").join(name));
         assert!(store::nasio::get(store::nasio::Count::ReadBytes) - read >= 4096, "the copy counted as read");
         assert_eq!(std::fs::read(&got).unwrap(), vec![5u8; 4096]);
+        assert_eq!(held(&cache), 4096);
+        // (A stored GeoTIFF's copy is its terrain job's, not the shared cache's.)
+        std::fs::create_dir_all(cache.join("blobs/sources/fetched/glo30")).unwrap();
+        std::fs::write(cache.join("blobs/sources/fetched/glo30/x_DEM.tif"), [0u8; 10]).unwrap();
         assert_eq!(held(&cache), 4096);
         std::fs::remove_dir_all(&nas).unwrap();
         // (Here already: no room asked, the NAS not read.)
