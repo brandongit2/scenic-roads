@@ -94,6 +94,9 @@
 //!   terrain-same <6/x/y> [--whole]  z6 tile 6/x/y made as its job makes it (by z8 subtree), or
 //!                                whole, its hi pack and mid written locally; their content names
 //!                                beside the manifest's. Nothing written to the NAS
+//!   terrain-lo-same <3/x/y>      z3 tile 3/x/y's lo tiles made as its job makes them, its lo pack
+//!                                written locally; its content name beside the manifest's. Nothing
+//!                                written to the NAS
 //!   terrainsub-task <6/x/y> --out dir [--group 8/x/y] [--pass d]  a terrain z6 tile's z8 subtrees
 //!                                in their groups, each group's task file as the z6 tile's run cuts
 //!                                it (pipeline::terrain_task: out/<x>-<y>/u/in.sect), for the
@@ -1010,6 +1013,49 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             println!(
                 "{}",
                 serde_json::json!({ "piece": t.slash(), "way": if whole { "whole" } else { "by block" }, "tiles": n, "secs": secs, "hi": made, "hi_manifest": out.get(&hl), "mid": mid_made, "mid_manifest": out.get(&ml) })
+            );
+            return Ok(());
+        }
+        "terrain-lo-same" => {
+            // terrain-lo-same <3/x/y> [--raw dir] [--pass d] [--regions dir]: z3 tile 3/x/y's lo
+            // tiles made as its terrain-lo job makes them (pipeline::terrain_pack::make_lo), its lo
+            // pack written in the scratch folder only; its content name said beside the manifest's,
+            // with the time. It only reads the NAS.
+            let cov = coverage_of(&out, &args)?;
+            let [(q, ts)]: [(TileId, Vec<(u32, u32)>); 1] =
+                z3s_named(&cov, &args, "terrain-lo-same")?.try_into().ok().context("terrain-lo-same <3/x/y>")?;
+            anyhow::ensure!(!ts.is_empty(), "{} has no z6 tile near the coverage", q.slash());
+            let raw_dir = PathBuf::from(
+                opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
+            );
+            let raw = raw_tiles(&out, &raw_dir)?;
+            let water = pipeline::terrain_pack::open_water(&out)?;
+            let src = pipeline::terrain_pack::Sources { water: Some(&water), deeper: None };
+            let t0 = std::time::Instant::now();
+            let pool = base_pool(&out, 3, &[(q.x, q.y)])?;
+            let (lo, _) = pool.with_tiles(&raw, |tiles| {
+                pipeline::terrain_pack::make_lo(&out, tiles, (q.x, q.y), &ts, &src, &|_, _, _| {})
+            })??;
+            let secs = t0.elapsed().as_secs_f64();
+            let n = lo.len();
+            let mut it = lo.into_iter().map(|(z, x, y, b)| {
+                let n = b.len() as u32;
+                (z, x, y, b, n)
+            });
+            let pack = layers::write_pack_local(
+                &out,
+                "terrain",
+                pipeline::terrain_codec::ENCODING,
+                false,
+                "lo",
+                (3, q.x, q.y),
+                &mut it,
+            )?;
+            let made = pack.as_ref().map(|p| p.content_name()).transpose()?;
+            let ll = format!("layers/terrain/lo/3-{}-{}", q.x, q.y);
+            println!(
+                "{}",
+                serde_json::json!({ "z3": q.slash(), "tiles": n, "secs": secs, "lo": made, "lo_manifest": out.get(&ll) })
             );
             return Ok(());
         }

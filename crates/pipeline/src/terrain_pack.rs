@@ -13,6 +13,8 @@ use std::time::Duration;
 
 /// Raw tiles downloaded at once (each mostly waits on S3).
 const FETCH_THREADS: usize = 64;
+/// A z3 tile's mids read at once (`build_lo`): SMB's throughput wants a few calls in flight.
+const MID_READERS: usize = 8;
 
 /// An HTTP agent for AWS's tiles, keeping a connection for each of the fetching threads (ureq keeps
 /// 3 a host by default: the others would make a new connection, a lookup and a TLS handshake, for
@@ -2197,27 +2199,7 @@ pub fn build_lo(
     src: &Sources,
     progress: crate::rawpack::Progress,
 ) -> anyhow::Result<PackReport> {
-    use anyhow::Context;
-    let mut rep = PackReport::default();
-    let mut mids: Vec<((u32, u32), Mid)> = Vec::new();
-    let p = crate::timings::phase("the pieces' mids read", crate::timings::Class::NasRead);
-    for &t in ts {
-        anyhow::ensure!((t.0 >> 3, t.1 >> 3) == q, "6/{}/{} isn't in 3/{}/{}", t.0, t.1, q.0, q.1);
-        p.count(0, 1);
-        let c = out
-            .get(&mid_logical(t.0, t.1))
-            .with_context(|| format!("6/{}/{} has no mid yet: its z3 tile can't be assembled", t.0, t.1))?;
-        let (of, mid) = read_mid(&out.path(c))?;
-        anyhow::ensure!(of == t, "{c} is 6/{}/{}'s mid", of.0, of.1);
-        mids.push((t, mid));
-    }
-    drop(p);
-    let mk = Maker::new(raw, src);
-    let refs: Vec<((u32, u32), &Mid)> = mids.iter().map(|(t, m)| (*t, m)).collect();
-    let p = crate::timings::phase("the z3 tile's tiles made (z8 → z3)", crate::timings::Class::Mixed);
-    let lo = saying(&mk, 1365, progress, || mk.lo(q, &refs))?;
-    drop(p);
-    mk.report(&mut rep);
+    let (lo, mut rep) = make_lo(out, raw, q, ts, src, progress)?;
     let up = crate::timings::phase("the lo pack uploaded", crate::timings::Class::NasWrite);
     progress("packs", 0, 1);
     rep.lo_tiles = lo.len();
@@ -2234,6 +2216,60 @@ pub fn build_lo(
     out.save()?;
     progress("packs", 1, 1);
     Ok(rep)
+}
+
+/// `build_lo`'s tiles, sorted, and what it did; nothing written (`scenic-build terrain-lo-same`
+/// too).
+pub fn make_lo(
+    out: &Out,
+    raw: &dyn RawSource,
+    q: (u32, u32),
+    ts: &[(u32, u32)],
+    src: &Sources,
+    progress: crate::rawpack::Progress,
+) -> anyhow::Result<(Vec<Made>, PackReport)> {
+    use anyhow::Context;
+    let mut rep = PackReport::default();
+    let p = crate::timings::phase("the pieces' mids read", crate::timings::Class::NasRead);
+    let mut paths = Vec::with_capacity(ts.len());
+    for &t in ts {
+        anyhow::ensure!((t.0 >> 3, t.1 >> 3) == q, "6/{}/{} isn't in 3/{}/{}", t.0, t.1, q.0, q.1);
+        let c = out
+            .get(&mid_logical(t.0, t.1))
+            .with_context(|| format!("6/{}/{} has no mid yet: its z3 tile can't be assembled", t.0, t.1))?;
+        paths.push((t, c.to_string(), out.path(c)));
+    }
+    p.count(0, paths.len() as u64);
+    // (MID_READERS at once: each a few MB, mostly waiting on the NAS. Kept in `ts`'s order, which
+    // `lo` takes the lakes' levels by.)
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mids: Vec<((u32, u32), Mid)> = std::thread::scope(|s| {
+        let read = || -> anyhow::Result<Vec<(usize, Mid)>> {
+            let mut got = Vec::new();
+            loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some((t, c, path)) = paths.get(i) else { return Ok(got) };
+                let (of, mid) = read_mid(path)?;
+                anyhow::ensure!(of == *t, "{c} is 6/{}/{}'s mid", of.0, of.1);
+                got.push((i, mid));
+            }
+        };
+        let ws: Vec<_> = (0..MID_READERS.min(paths.len())).map(|_| s.spawn(read)).collect();
+        let mut all: Vec<(usize, Mid)> = Vec::with_capacity(paths.len());
+        for w in ws {
+            all.extend(w.join().unwrap_or_else(|e| std::panic::resume_unwind(e))?);
+        }
+        all.sort_by_key(|m| m.0);
+        anyhow::Ok(all.into_iter().map(|(i, m)| (paths[i].0, m)).collect())
+    })?;
+    drop(p);
+    let mk = Maker::new(raw, src);
+    let refs: Vec<((u32, u32), &Mid)> = mids.iter().map(|(t, m)| (*t, m)).collect();
+    let p = crate::timings::phase("the z3 tile's tiles made (z8 → z3)", crate::timings::Class::Mixed);
+    let lo = saying(&mk, 1365, progress, || mk.lo(q, &refs))?;
+    drop(p);
+    mk.report(&mut rep);
+    Ok((lo, rep))
 }
 
 /// The root pack (z0–2) remade from the 64 z3 tiles as stored in the lo packs (their 2×2 means),

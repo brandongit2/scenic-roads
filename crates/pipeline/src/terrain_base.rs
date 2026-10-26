@@ -28,6 +28,9 @@ pub const K: usize = 2;
 pub const MAX_Z: u8 = 12;
 /// Tiles sampled in one call (each 256 × 256 × K² points).
 const CHUNK: usize = 16;
+/// Chunks sampled at once (`Tiles::prefetch_counted`): ~200 MB each (their points, and what each
+/// point's read gives).
+const AT_ONCE: usize = 4;
 
 /// The Terrarium pyramid's URL template in the accepted elevation version manifest `m` names
 /// under `root` (the last declared: the base's raw tiles are its, through `RawTiles`).
@@ -409,15 +412,32 @@ impl RawSource for Tiles<'_> {
         Ok((self.sample(z, &[(x, y)])?.pop().flatten(), false))
     }
 
+    // (Its chunks AT_ONCE at a time: a chunk's reads mostly wait on the NAS, one at a time left a
+    // job's threads idle, task #695. The same bytes: a tile's sampling reads only the level below's
+    // `with_data`, which a level's own tiles never add to.)
     fn prefetch_counted(&self, z: u8, tiles: &[(u32, u32)], _threads: usize, done: &AtomicU64) -> Result<usize> {
-        for c in tiles.chunks(CHUNK) {
-            let got = self.sample(z, c)?;
-            let mut h = self.held.lock().unwrap();
-            for (&(x, y), t) in c.iter().zip(got) {
-                h.insert((z, x, y), t);
+        let chunks: Vec<&[(u32, u32)]> = tiles.chunks(CHUNK).collect();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let failed = std::sync::atomic::AtomicBool::new(false);
+        let run = || -> Result<()> {
+            loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                let Some(c) = chunks.get(i) else { return Ok(()) };
+                if failed.load(Ordering::Relaxed) {
+                    return Ok(());
+                }
+                let got = self.sample(z, c).inspect_err(|_| failed.store(true, Ordering::Relaxed))?;
+                let mut h = self.held.lock().unwrap();
+                for (&(x, y), t) in c.iter().zip(got) {
+                    h.insert((z, x, y), t);
+                }
+                done.fetch_add(c.len() as u64, Ordering::Relaxed);
             }
-            done.fetch_add(c.len() as u64, Ordering::Relaxed);
-        }
+        };
+        std::thread::scope(|s| {
+            let ws: Vec<_> = (0..AT_ONCE.min(chunks.len())).map(|_| s.spawn(run)).collect();
+            ws.into_iter().map(|w| w.join().unwrap_or_else(|p| std::panic::resume_unwind(p))).collect::<Result<()>>()
+        })?;
         Ok(0)
     }
 }
