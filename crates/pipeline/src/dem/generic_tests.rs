@@ -984,7 +984,7 @@ fn fds_under(dir: &std::path::Path) -> usize {
         .count()
 }
 
-/// terrain-z8 (25 Oct): a run over the world's GLO-30 tiles kept every tile and its fill mask open
+/// A run over the world's GLO-30 tiles (25 Oct) kept every tile and its fill mask open
 /// (the sets' `opened`, `opened_masks`) until "Too many open files". Sampled over many stored tiles
 /// and masks, a run holds no more of their descriptors than store::range::plain_open_cap (plus
 /// those mid-read, one a thread), and its heights are those of a run holding them all, to the bit.

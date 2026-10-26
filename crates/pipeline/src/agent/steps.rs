@@ -175,7 +175,7 @@ use Kind::{Derive, Fetch, Keep, Pack, Publish};
 use Scope::{Input, World, Z10, Z3, Z6};
 
 /// The table, by stage (the ranks order what's ranked).
-pub const TABLE: [Step; 54] = [
+pub const TABLE: [Step; 53] = [
     // The OSM pass: the planet filtered, its sets, extracts and road values; then its worldwide steps.
     Step {
         alone: true,
@@ -227,17 +227,6 @@ pub const TABLE: [Step; 54] = [
     Step {
         alone: true,
         ..step("pass", Derive, World, "reach", "Works out how far each tile's roads reach.", w_reach)
-    },
-    Step {
-        alone: true,
-        ..step(
-            "pass",
-            Derive,
-            World,
-            "terrain-z8",
-            "Makes every z8 terrain tile of the world from the elevation pool, once.",
-            w_terrain_z8,
-        )
     },
     // (`buildtiles::WORKERS` files read at once: 2.1 GB at the peak on the Mac mini, 23 Oct, task
     // #579.)
@@ -1172,10 +1161,6 @@ fn w_reach(l: &str, _: bool) -> bool {
     matches!(parts(l).as_slice(), ["sources", "osm", d, "reach"] if date(d))
 }
 
-fn w_terrain_z8(l: &str, _: bool) -> bool {
-    crate::terrain_z8::is_logical(l)
-}
-
 /// The world's roadside buildings' index, per Overture release.
 fn w_buildings(l: &str, _: bool) -> bool {
     matches!(parts(l).as_slice(), ["sources", "buildings", _, "index"])
@@ -1629,7 +1614,6 @@ mod tests {
                 "terrain-root",
                 "slope-root",
                 "unit",
-                "terrain-z8",
                 "osm-pass",
                 "regions-extract",
             ]
@@ -1706,7 +1690,6 @@ mod tests {
                 "outlines",
                 "trailends",
                 "reach",
-                "terrain-z8",
                 "buildings",
                 "summits",
                 "labels",
@@ -1881,9 +1864,6 @@ mod tests {
         for (step, ch) in ok {
             assert_eq!(outside(&entry(step, ch)), None, "{step}");
         }
-        let z8 = [crate::terrain_z8::logical("0123456789abcdef"), crate::terrain_z8::max_logical("0123456789abcdef")];
-        assert_eq!(outside(&entry("terrain-z8", &[(&z8[0], false), (&z8[1], false)])), None);
-        assert!(outside(&entry("terrain-z8", &[("sources/terrain-z8-v0", false)])).is_some());
         // Outside: another step's files, a name of the wrong zoom, another layer, a pass's files
         // removed by a step that doesn't retire passes, a prune that writes, a removal the step
         // doesn't make.

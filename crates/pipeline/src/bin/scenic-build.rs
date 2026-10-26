@@ -584,29 +584,6 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 eprintln!("raw-pack: {n} tiles from {} packed", dir.display());
             }
         }
-        "terrain-z8" => {
-            // terrain-z8 [--raw dir]: the elevation pool's z8 worldwide (pipeline::terrain_z8), once for
-            // the accepted elevation and sources versions.
-            let pool = pipeline::terrain_z8::pool_digest(out.root(), &out.manifest)
-                .context("the elevation pool can't be read (docs/inputs.md §6.8)")?;
-            let l = pipeline::terrain_z8::logical(&pool);
-            if out.get(&l).is_some() {
-                eprintln!("terrain-z8: already made ({l})");
-            } else {
-                let raw_dir = PathBuf::from(
-                    opt(&args, "--raw")
-                        .unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
-                );
-                let raw = raw_tiles(&out, &raw_dir)?;
-                let pool = base_pool(&out, 0, &[(0, 0)])?;
-                let parts = Parts(&["Sampling the world's z8 terrain", "Packing the new raw tiles onto the NAS"]);
-                parts.start(0);
-                let (n, none) = pool.with_tiles(&raw, |tiles| pipeline::terrain_z8::build(&mut out, tiles))??;
-                eprintln!("terrain-z8: {n} tiles ({none} of open sea)");
-                parts.start(1);
-                pack_raw_with(&out, &raw_dir, &|what, done, total| pipeline::agent::jobs::report(done, total, what));
-            }
-        }
         "inputs" => inputs_step(&mut out, &args)?,
         "regions-extract" => {
             // regions-extract --pass <date> --ids r1,w2,…: the regions' extract of those ids (and
@@ -2679,13 +2656,14 @@ fn local_copy(out: &Out, logical: &str, cache: &Path) -> Result<PathBuf> {
     Ok(local)
 }
 
-/// The z8 artifact, from local copies under `cache`.
-fn open_z8(out: &Out, cache: &Path) -> Result<pipeline::terrain_z8::Z8> {
-    let pool = pipeline::terrain_z8::pool_digest(out.root(), &out.manifest)
-        .context("the elevation pool can't be read (docs/inputs.md §6.8)")?;
-    let pack = local_copy(out, &pipeline::terrain_z8::logical(&pool), cache)?;
-    let maxes = local_copy(out, &pipeline::terrain_z8::max_logical(&pool), cache)?;
-    pipeline::terrain_z8::Z8::open(&pack, &maxes, 4096)
+/// The terrain packs' z8 (pipeline::peaks::z8): the lo packs the manifest names, from local copies
+/// under `cache`.
+fn open_z8(out: &Out, cache: &Path) -> Result<pipeline::peaks::z8::Z8> {
+    let mut packs = Vec::new();
+    for (l, q) in pipeline::peaks::z8::lo_packs(&out.manifest) {
+        packs.push((q, local_copy(out, &l, cache)?));
+    }
+    pipeline::peaks::z8::Z8::open(&packs, 4096)
 }
 
 /// summits [--pass <date>] [--cache dir]: every summit worldwide with its z8 height (pipeline::summits).
@@ -2695,12 +2673,8 @@ fn summits_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let cache =
         PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned()));
     let t = std::time::Instant::now();
-    let parts = Parts(&[
-        "Copying the summits",
-        "Reading them",
-        "Taking their heights from the worldwide z8 terrain",
-        "Uploading",
-    ]);
+    let parts =
+        Parts(&["Copying the summits", "Reading them", "Taking their heights from the terrain packs' z8", "Uploading"]);
     parts.start(0);
     let p = phase("the summits set copied here", Class::NasRead);
     let set = local_copy(out, &pipeline::osmpass::set_name(&date, "summits"), &cache)?;
@@ -2710,7 +2684,7 @@ fn summits_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let mut summits = pipeline::summits::read_set(&set)?;
     drop(p);
     parts.start(2);
-    let p = phase("the worldwide z8 terrain copied here", Class::NasRead);
+    let p = phase("the terrain packs' z8 copied here", Class::NasRead);
     let z8 = open_z8(out, &cache)?;
     drop(p);
     let p = phase("their z8 heights taken", Class::Compute);
@@ -2731,7 +2705,7 @@ fn summits_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     Ok(())
 }
 
-/// peaks <z6 tiles…> [--pass <date>] [--raw dir] [--cache dir] [--coarse-threads n]: prominence and
+/// peaks <z6 tiles…> [--pass <date>] [--cache dir] [--coarse-threads n]: prominence and
 /// isolation of each z6 tile's peak candidates (pipeline::peaks::unit), as `work/peaks/<u>`.
 fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     use pipeline::peaks::unit;
@@ -2739,9 +2713,6 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
     let cache =
         PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned()));
-    let raw_dir =
-        PathBuf::from(opt(args, "--raw").unwrap_or_else(|| cache.join("aws-terrarium").to_string_lossy().into_owned()));
-    let raw = raw_tiles(out, &raw_dir)?;
     let coarse_threads: usize = opt(args, "--coarse-threads").map(|s| s.parse()).transpose()?.unwrap_or(4);
     let p = phase("the summits copied here and read", Class::NasRead);
     let summits = pipeline::summits::read(&local_copy(out, &format!("work/summits/{date}"), &cache)?)?;
@@ -2749,37 +2720,20 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let p = phase("the summits' z8 base made", Class::Compute);
     let base8 = unit::Z8Base::new(&summits);
     drop(p);
-    let p = phase("the worldwide z8 terrain copied here", Class::NasRead);
+    let p = phase("the terrain packs' z8 copied here", Class::NasRead);
     let z8 = open_z8(out, &cache)?;
     drop(p);
     std::fs::create_dir_all(scratch)?;
     let units: Vec<TileId> = positional(args).iter().filter_map(|s| TileId::parse(s)).collect();
-    // Its parts: the z6 tiles' peaks, then the raw tiles AWS gave packed onto the NAS.
-    let parts = Parts(&["Measuring the z6 tiles' peaks", "Packing the new raw tiles onto the NAS"]);
-    parts.start(0);
-    // Each z6 tile's candidates and z12 tiles, the next z6 tile's read while this one's are measured
+    // Each z6 tile's candidates and z12 tiles, the next z6 tile's read while this one's peaks are measured
     // (unit::read_ahead), from the packs as the manifest had them at the start (the job writes none).
     let pois: Vec<Option<store::nasfs::NasPath>> =
         units.iter().map(|u| out.get(&format!("work/pois/{}", u.dash())).map(|c| out.path(c))).collect();
     let packs = pipeline::terrain_pack::ManifestTiles::new(out, "terrain");
-    // (Their z12 the packs' tiles, else the pool's base tiles over the z6 tiles and 30 km more.)
-    let ts: Vec<(u32, u32)> = units.iter().map(|u| (u.x, u.y)).collect();
-    let b = pipeline::terrain_base::tiles_box(6, &ts);
-    let pool = pipeline::terrain_base::Pool::read(
-        out.root(),
-        &out.manifest,
-        [b[0] - 0.5, (b[1] - 0.3).max(-85.0), b[2] + 0.5, (b[3] + 0.3).min(85.0)],
-    )?;
-    pool.with_tiles(&raw, |raw| {
-        peaks_from(out, scratch, &units, &pois, &packs, raw, &summits, &base8, &z8, coarse_threads)
-    })??;
-    drop(packs);
-    parts.start(1);
-    pack_raw_with(out, &raw_dir, &|what, done, total| pipeline::agent::jobs::report(done, total, what));
-    Ok(())
+    peaks_from(out, scratch, &units, &pois, &packs, &summits, &base8, &z8, coarse_threads)
 }
 
-/// `peaks_step`'s z6 tiles measured, their z12 from the packs `packs`, else the pool's base tiles `raw`.
+/// `peaks_step`'s z6 tiles measured, their z12 from the packs `packs`.
 #[allow(clippy::too_many_arguments)]
 fn peaks_from(
     out: &mut Out,
@@ -2787,10 +2741,9 @@ fn peaks_from(
     units: &[TileId],
     pois: &[Option<store::nasfs::NasPath>],
     packs: &pipeline::terrain_pack::ManifestTiles,
-    raw: &dyn pipeline::terrain_pack::RawSource,
     summits: &[pipeline::summits::Summit],
     base8: &pipeline::peaks::unit::Z8Base,
-    z8: &pipeline::terrain_z8::Z8,
+    z8: &pipeline::peaks::z8::Z8,
     coarse_threads: usize,
 ) -> Result<()> {
     use pipeline::peaks::unit;
@@ -2808,12 +2761,12 @@ fn peaks_from(
             &peaks.iter().map(|p| (p.lon as f64 * 1e-7, p.lat as f64 * 1e-7)).collect::<Vec<_>>(),
             29.5,
         );
-        Ok((peaks, unit::UnitZ12::load_from(packs, raw, &want)?))
+        Ok((peaks, unit::UnitZ12::load_from(packs, &want)?))
     };
     let order: Vec<usize> = (0..units.len()).collect();
     unit::read_ahead(&order, load, |k, _, (peaks, z12)| {
         let u = units[k];
-        // (A safe point before each z6 tile: the raw tiles fetched wait in the cache for the next job.)
+        // (A safe point before each z6 tile.)
         pipeline::control::safe_point("peaks");
         pipeline::agent::jobs::report(k as u64, units.len() as u64, "z6 tiles");
         let t = cost_start("peaks", &u.slash());
@@ -2841,17 +2794,16 @@ fn peaks_from(
         pipeline::control::done("peaks", &u.slash());
         std::fs::remove_file(&file).ok();
         eprintln!(
-            "peaks {}: {} peaks; z12 tiles {} from the packs, {} from the pool, {} sea ({:.0?})",
+            "peaks {}: {} peaks; z12 tiles {} from the packs, {} not built ({:.0?})",
             u.slash(),
             res.len(),
             z12.from.0,
             z12.from.1,
-            z12.from.2,
             t.elapsed()
         );
         // (Its inputs' measures: the peaks, the z12 tiles read.)
         pipeline::costin::set("peaks", peaks.len() as u64);
-        pipeline::costin::set("z12_tiles", (z12.from.0 + z12.from.1) as u64);
+        pipeline::costin::set("z12_tiles", z12.from.0 as u64);
         note_cost("peaks", &u.slash(), t);
         Ok(())
     })?;

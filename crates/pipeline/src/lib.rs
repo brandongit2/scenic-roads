@@ -90,7 +90,6 @@ pub mod terrain_pack;
 pub mod terrain_resume;
 pub mod terrain_task;
 pub mod terrain_water;
-pub mod terrain_z8;
 pub mod tiling;
 pub mod timetables;
 pub mod timings;

@@ -1,24 +1,22 @@
 //! Prominence and isolation for a z6 tile's peaks (docs/phase5.md "peaks"), so that a peak's result
 //! doesn't depend on which z6 tile computes it (the coverage decides which z12 tiles are the packs'):
 //!
-//! - z12 is the terrain pack's tile where the manifest has it, else AWS's raw tile repaired
-//!   (`UnitZ12`: `terrain_pack::process` with no sources, so not GLO-30, the water nor the coarse
-//!   data's repair the packs' tiles have; the open sea, which AWS has no tile for, at 0 m). Either
-//!   is the same whichever z6 tile reads it.
+//! - z12 is the terrain hi pack's tile (`UnitZ12`); where the packs have none, nothing is built and
+//!   there are no heights (0 m, as the open sea). It is the same whichever z6 tile reads it.
 //! - The summits near a peak count at their own heights, each worked out from z12 the same way
 //!   whichever peak asks: its summit pixel (highest within 150 m), its claim of that pixel (several
 //!   on one: the highest tagged, then the nearest to it, then the lowest OSM id), its height.
 //! - The fine stage reads nothing farther than 28 km from the summit: a flood that would goes to
 //!   the coarse stage; the 25 km isolation search counts and opens only what lies within 25 km.
-//! - The coarse stage reads the worldwide z8 (`terrain_z8::Z8`), with the summits near the peak at
+//! - The coarse stage reads the terrain lo packs' z8 (`z8::Z8`; 0 m where nothing is built), with the summits near the peak at
 //!   their z12 heights and the others at their tagged ones where plausible (`summits::z8_height`).
 //! - Distances are great-circle; the isolation searches visit tiles in order of an exact
 //!   great-circle lower bound, x wrapping at the antimeridian; nothing higher within 5,000 km is a
 //!   lower bound of 5,000 km.
 
+use super::z8::Z8;
 use super::{despike, round5, tile_lat, Out, Overlay, COARSE_MAX, FINE_MAX, ISO_FINE_KM, TS};
 use crate::summits::Summit;
-use crate::terrain_z8::Z8;
 use anyhow::{Context, Result};
 use det::Det;
 use rayon::prelude::*;
@@ -111,76 +109,43 @@ pub fn tile_lower_bound_m(lon: f64, lat: f64, z: u8, tx: u32, ty: u32) -> f64 {
     best
 }
 
-/// A z6 tile's z12 tiles, read before the run: each is the terrain pack's when the manifest has it,
-/// else the elevation pool's base tile (crate::terrain_base: a failed read fails) processed the
-/// same way and read back from its PNG; no dataset having data there is the open sea. A tile asked for that
+/// A z6 tile's z12 tiles, read before the run: each is the terrain hi pack's where the manifest has
+/// it; where it hasn't, nothing is built, no heights (0 m, as the open sea). A tile asked for that
 /// wasn't read before is counted (`unexpected`), and fails the run.
 pub struct UnitZ12 {
     tiles: HashMap<(u32, u32), Option<Arc<Vec<u8>>>>,
     unexpected: AtomicUsize,
-    /// How many came from the packs, from the pool, as sea.
-    pub from: (usize, usize, usize),
+    /// How many came from the packs, how many have none.
+    pub from: (usize, usize),
 }
 
 impl UnitZ12 {
-    pub fn load(
-        out: &crate::out::Out,
-        raw: &dyn crate::terrain_pack::RawSource,
-        want: &BTreeSet<(u32, u32)>,
-    ) -> Result<UnitZ12> {
-        Self::load_from(&crate::terrain_pack::ManifestTiles::new(out, "terrain"), raw, want)
+    pub fn load(out: &crate::out::Out, want: &BTreeSet<(u32, u32)>) -> Result<UnitZ12> {
+        Self::load_from(&crate::terrain_pack::ManifestTiles::new(out, "terrain"), want)
     }
 
     /// `load`, from the terrain packs `packs` reads (a job's several z6 tiles', each pack opened once).
-    pub fn load_from(
-        packs: &crate::terrain_pack::ManifestTiles,
-        raw: &dyn crate::terrain_pack::RawSource,
-        want: &BTreeSet<(u32, u32)>,
-    ) -> Result<UnitZ12> {
-        // (From the terrain packs on the NAS, else the pool's base tiles: in parallel, one phase,
-        // its tiles' bytes counted.)
-        let p =
-            crate::timings::phase("z12 terrain tiles loaded (packs, else the pool)", crate::timings::Class::NasRead);
+    pub fn load_from(packs: &crate::terrain_pack::ManifestTiles, want: &BTreeSet<(u32, u32)>) -> Result<UnitZ12> {
+        // (In one phase, its tiles' bytes counted.)
+        let p = crate::timings::phase("z12 terrain tiles loaded from the packs", crate::timings::Class::NasRead);
         // (The packs' tiles read in spans, a pack's at once: `get_many`.)
         let want: Vec<(u32, u32)> = want.iter().copied().collect();
         let from_packs = packs.get_many(&want.iter().map(|&(x, y)| (Z12, x, y)).collect::<Vec<_>>())?;
-        let got: Vec<Result<((u32, u32), Option<Arc<Vec<u8>>>, u8)>> = want
-            .par_iter()
-            .zip(from_packs)
-            .map(|(&(x, y), from_pack)| {
-                if let Some(b) = from_pack {
+        let mut tiles = HashMap::with_capacity(want.len());
+        let mut from = (0, 0);
+        for (&(x, y), b) in want.iter().zip(from_packs) {
+            match b {
+                Some(b) => {
                     p.count(b.len() as u64, 1);
                     anyhow::ensure!(decode_terrain(&b).is_ok(), "the terrain pack's z12 {x}/{y} doesn't decode");
-                    return Ok(((x, y), Some(Arc::new(b)), 0));
+                    from.0 += 1;
+                    tiles.insert((x, y), Some(Arc::new(b)));
                 }
-                match raw.get(Z12, x, y)?.0 {
-                    Some(b) => {
-                        p.count(b.len() as u64, 1);
-                        anyhow::ensure!(decode_terrain(&b).is_ok(), "the pool's z12 {x}/{y} doesn't decode");
-                        let (tile, _, _) = crate::terrain_pack::process(
-                            b,
-                            Z12,
-                            x,
-                            y,
-                            &HashMap::new(),
-                            &crate::terrain_pack::Sources::default(),
-                        );
-                        Ok(((x, y), tile.map(Arc::new), 1))
-                    }
-                    None => Ok(((x, y), None, 2)),
+                None => {
+                    from.1 += 1;
+                    tiles.insert((x, y), None);
                 }
-            })
-            .collect();
-        let mut tiles = HashMap::with_capacity(want.len());
-        let mut from = (0, 0, 0);
-        for g in got {
-            let (k, t, src) = g?;
-            match src {
-                0 => from.0 += 1,
-                1 => from.1 += 1,
-                _ => from.2 += 1,
             }
-            tiles.insert(k, t);
         }
         Ok(UnitZ12 { tiles, unexpected: AtomicUsize::new(0), from })
     }
@@ -190,7 +155,7 @@ impl UnitZ12 {
         UnitZ12 {
             tiles: tiles.into_iter().map(|(k, v)| (k, v.map(Arc::new))).collect(),
             unexpected: AtomicUsize::new(0),
-            from: (0, 0, 0),
+            from: (0, 0),
         }
     }
 
@@ -355,7 +320,7 @@ struct UDem<'a> {
     z8: Option<&'a Z8>,
     cache: HashMap<(u32, u32), Option<Arc<Vec<f32>>>>,
     max_cache: usize,
-    /// A z8 read that failed (the local artifact): fails the run.
+    /// A z8 read that failed (the lo packs' local copies): fails the run.
     failed: Option<String>,
 }
 
@@ -840,7 +805,9 @@ pub fn run(
                     }
                 }
                 if !f.iso_done {
-                    match nearest_higher(&mut d, Some(&ov8), sx, sy, e, COARSE_ISO_KM, &|x, y| Some(z8.max(x, y))) {
+                    match nearest_higher(&mut d, Some(&ov8), sx, sy, e, COARSE_ISO_KM, &|x, y| {
+                        Some(z8.max(x, y).unwrap_or(f32::INFINITY))
+                    }) {
                         Some((km, at)) => {
                             out.iso = km.max(ISO_FINE_KM);
                             out.hi = Some(round5(d.lonlat(at.0, at.1)));
@@ -914,7 +881,7 @@ mod tests {
     /// measured from the same packs read a tile at a time, each z6 tile in turn.
     #[test]
     fn read_ahead_in_spans_gives_the_same_bytes_as_tile_by_tile() {
-        use crate::terrain_pack::{ManifestTiles, RawTiles};
+        use crate::terrain_pack::ManifestTiles;
         let d = tempfile::tempdir().unwrap();
         let mut out = crate::out::Out::unbound(
             &store::nasfs::NasRoot::local_for_test(&d.path().join("root")),
@@ -971,7 +938,7 @@ mod tests {
             )
             .unwrap();
         }
-        // The worldwide z8: one flat tile elsewhere (the rest the open sea), its maxima.
+        // The z8: one flat tile elsewhere in a lo pack (nothing built elsewhere).
         let flat = roadcore::grid::encode_terrain_png(&vec![0f32; 256 * 256], 256, 256).unwrap();
         let z8p = crate::layers::write_pack_local(
             &out,
@@ -984,9 +951,7 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        let maxes = d.path().join("maxes.f32");
-        std::fs::write(&maxes, vec![0u8; 4 << 16]).unwrap();
-        let z8 = Z8::open(&z8p.local, &maxes, 64).unwrap();
+        let z8 = Z8::open(&[((0, 0), z8p.local.clone())], 64).unwrap();
         let base8 = Z8Base::new(&summits);
         let bytes = |res: Vec<(String, Out)>| -> Vec<u8> {
             let mut b = Vec::new();
@@ -1014,13 +979,12 @@ mod tests {
             .collect();
         // In spans, the next z6 tile's read ahead.
         let packs = ManifestTiles::new(&out, "terrain");
-        let raw = RawTiles::new(&d.path().join("raw"), "http://127.0.0.1:9/{z}/{x}/{y}.png");
         let mut ahead: Vec<Vec<u8>> = Vec::new();
         read_ahead(
             &[0usize, 1],
-            |&k| UnitZ12::load_from(&packs, &raw, &wants[k]),
+            |&k| UnitZ12::load_from(&packs, &wants[k]),
             |_, &k, z12| {
-                assert_eq!(z12.from, (wants[k].len(), 0, 0), "every tile from the packs");
+                assert_eq!(z12.from, (wants[k].len(), 0), "every tile from the packs");
                 ahead.push(bytes(run(&peaks_of(k), &summits, &base8, &z12, &z8, 2)?));
                 Ok(())
             },

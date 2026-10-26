@@ -73,7 +73,6 @@ paths (`terrain-mid`, `slope-mid`) and a mid's `step` field keep the old names. 
 | | `outlines` | derive | the world | lead |
 | | `trailends` | derive | the world | lead |
 | | `reach` | derive | the world | lead |
-| | `terrain-z8` | derive | the world | lead |
 | | `buildings` | fetch | the world | lead |
 | | `summits` | derive | the world | lead |
 | | `labels` | pack | the world | lead |

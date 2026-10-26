@@ -30,6 +30,7 @@
 
 use det::Det;
 pub mod unit;
+pub mod z8;
 
 use rayon::prelude::*;
 use roadcore::archive::Archive;

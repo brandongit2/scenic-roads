@@ -196,8 +196,8 @@ fn kind(name: &str) -> Option<&'static str> {
         // (pack(T)'s and lo's base packs, copied from the NAS where the mirror lacks them.)
         "base" => "base",
         _ if RETIRED.iter().any(|r| name.starts_with(r)) => "retired",
-        // (scenic-build's local copies, by their logical names: the z8 terrain, the summits.)
-        _ if name.starts_with("sources-") || name.starts_with("work-") => "copies",
+        // (scenic-build's local copies, by their logical names: the terrain lo packs, the summits.)
+        _ if name.starts_with("sources-") || name.starts_with("work-") || name.starts_with("layers-") => "copies",
         _ if name.starts_with("heritage-merged-") => "heritage",
         _ => return None,
     })
@@ -206,12 +206,14 @@ fn kind(name: &str) -> Option<&'static str> {
 /// Caches no code reads any more, by their names' prefixes in the agent's cache: deleted whenever
 /// the agent sweeps them (`retire`), room needed or not (removed means deleted). A cache whose code
 /// is deleted adds its name here.
-pub const RETIRED: [&str; 1] = [
+pub const RETIRED: [&str; 2] = [
     // (The DEM cache: its code deleted by task #595.)
     "dem-cache.",
+    // (The worldwide z8 terrain's copies: its code deleted by task #670.)
+    "sources-terrain-z8-",
 ];
 
-/// How long a local copy of a NAS file (`sources-*`, `work-*`) the build manifest no longer names
+/// How long a local copy of a NAS file (`sources-*`, `work-*`, `layers-*`) the build manifest no longer names
 /// stays (`retire`): a day, so one a job copied under a name the manifest's file lags is never taken
 /// (a job holds what it uses anyway: store::cachefile).
 const COPY_GRACE: std::time::Duration = std::time::Duration::from_secs(86400);
@@ -219,8 +221,7 @@ const COPY_GRACE: std::time::Duration = std::time::Duration::from_secs(86400);
 /// Deletes what of the agent's cache at `cache` no current code reads (task #660): the retired
 /// caches (`RETIRED`), and the copies of the NAS's files (scenic-build's `local_copy`, by logical
 /// name with `/` as `-`) whose logical name the NAS's build manifest (under `root`) no longer names
-/// (an older pass's), or of a z8 terrain version not the current one (`sources-terrain-z8-v3` once
-/// the z8 is v6: the manifest still names those), untouched for `COPY_GRACE`. Without a readable,
+/// (an older pass's), untouched for `COPY_GRACE`. Without a readable,
 /// non-empty manifest, only the retired caches. Nothing a job holds
 /// (store::cachefile), nothing through a link nor in the NAS's folder (`ours`). What it freed, by
 /// kind ("retired", "copies").
@@ -232,14 +233,7 @@ pub fn retire(cache: &Path, root: Option<&store::nasfs::NasRoot>) -> BTreeMap<St
             serde_json::from_slice(&r.join("state/build/manifest.json").read_replaced().ok()?).ok()?;
         (!m.is_empty()).then(|| m.keys().map(|l| l.replace('/', "-")).collect())
     });
-    // (The manifest keeps naming the z8 terrain's older versions, which no code reads: those copies
-    // go too, by the version's prefix.)
-    let z8_now = crate::terrain_z8::logical("").replace('/', "-");
-    let z8_any = z8_now.trim_end_matches(|c: char| c != 'v');
-    let unread = |n: &str| match &named {
-        Some(named) => !named.contains(n) || (n.starts_with(z8_any) && !n.starts_with(&z8_now)),
-        None => false,
-    };
+    let unread = |n: &str| named.as_ref().is_some_and(|named| !named.contains(n));
     let now = SystemTime::now();
     for e in std::fs::read_dir(cache).into_iter().flatten().flatten() {
         let (p, name) = (e.path(), e.file_name().to_string_lossy().into_owned());
@@ -400,7 +394,7 @@ pub fn gone(clear: &BTreeMap<String, u64>, mb_s: f64) -> Vec<Gone> {
         .map(|(k, &b)| {
             let back = match k.as_str() {
                 "canopy" => format!("copied back from the NAS as the z3 tiles that read them are built ({} in all)", time(b)),
-                "terrain" => format!("copied back from the NAS's archives as terrain and peaks read them ({} in all)", time(b)),
+                "terrain" => format!("copied back from the NAS's archives as the terrain reads them ({} in all)", time(b)),
                 "blobs" => format!("copied back from the NAS as the z3 tiles are built again ({} in all)", time(b)),
                 "months" => format!("copied back from the NAS when the items and heritage jobs next run ({})", time(b)),
                 "base" => format!("copied back by the next map tiles' job, from the mirror where it has them, else the NAS ({})", time(b)),
@@ -1427,7 +1421,7 @@ mod tests {
         let home = d.path();
         let (a, b, c, e) = (
             home.join("scratch/pass-sets"),
-            home.join("scratch-2/terrain-z8"),
+            home.join("scratch-2/summits"),
             home.join("scratch/buildings"),
             home.join("scratch/water"),
         );
@@ -1448,7 +1442,7 @@ mod tests {
         // Room enough: all kept.
         assert_eq!(room(10_000, 10_000, &[]), 0);
         assert!(a.exists() && b.exists() && c.exists() && e.exists());
-        // Short by 2500: the oldest first (pass-sets, then terrain-z8), no further.
+        // Short by 2500: the oldest first (pass-sets, then summits), no further.
         assert_eq!(room(7_500, 10_000, &[]), 3000);
         assert!(!a.exists() && !b.exists() && c.exists() && e.exists());
         // Short again, buildings' running (or frozen) here: passed over, water goes.
@@ -1473,7 +1467,8 @@ mod tests {
         };
         file(&c.join("dem-cache.keys.u64"), 100, 9000);
         file(&c.join("dem-cache.elev.f32"), 50, 0);
-        for n in ["sources-terrain-z8-v3", "sources-terrain-z8-v6-abc", "work-summits-2026-03-28", "sources-new-v1"] {
+        file(&c.join("sources-terrain-z8-v6-abc/x.pack"), 40, 0);
+        for n in ["layers-terrain-lo-3-1-2", "work-summits-2026-09-28", "work-summits-2026-03-28", "sources-new-v1"] {
             file(&c.join(n).join("x.bin"), 10, 9000);
             if n != "sources-new-v1" {
                 old(&c.join(n));
@@ -1483,17 +1478,18 @@ mod tests {
         file(&c.join("heritage-merged-2026-09-28-x.osm.pbf"), 10, 9000);
         // (No manifest: only the retired caches.)
         let f = retire(&c, Some(&store::nasfs::NasRoot::local_for_test(&root)));
-        assert_eq!(f, BTreeMap::from([("retired".to_string(), 150)]));
-        assert!(!c.join("dem-cache.keys.u64").exists() && c.join("sources-terrain-z8-v3").exists());
-        let m = serde_json::json!({"sources/terrain-z8-v3": "w", "sources/terrain-z8-v6-abc": "x", "work/summits/2026-09-28": "y"});
+        assert_eq!(f, BTreeMap::from([("retired".to_string(), 190)]));
+        assert!(!c.join("dem-cache.keys.u64").exists() && !c.join("sources-terrain-z8-v6-abc").exists());
+        assert!(c.join("work-summits-2026-03-28").exists());
+        let m = serde_json::json!({"layers/terrain/lo/3-1-2": "x", "work/summits/2026-09-28": "y"});
         bytes(&root.join("state/build/manifest.json"), m.to_string().as_bytes(), 0);
         // (One held by a job stays.)
         let held = c.join("work-summits-2026-03-28/x.bin");
         store::cachefile::hold(&held, &mut |_| Ok(())).unwrap();
         let f = retire(&c, Some(&store::nasfs::NasRoot::local_for_test(&root)));
-        assert_eq!(f, BTreeMap::from([("copies".to_string(), 10)]));
-        assert!(!c.join("sources-terrain-z8-v3").exists());
-        assert!(held.exists() && c.join("sources-terrain-z8-v6-abc/x.bin").exists());
+        assert!(f.is_empty(), "{f:?}");
+        assert!(held.exists() && c.join("layers-terrain-lo-3-1-2/x.bin").exists());
+        assert!(c.join("work-summits-2026-09-28/x.bin").exists());
         assert!(c.join("sources-new-v1/x.bin").exists(), "unnamed but fresh");
         assert!(c.join("chm10/a.tif").exists() && c.join("heritage-merged-2026-09-28-x.osm.pbf").exists());
         store::cachefile::release(&held);
@@ -1881,7 +1877,7 @@ mod tests {
         for f in [
             "base/base/6-1-1.0000000000000001.base",
             "dem-cache.keys.u64",
-            "sources-terrain-z8-v1/terrain-z8-v1.0000000000000001.pack",
+            "layers-terrain-lo-3-1-2/3-1-2.0000000000000001.pack",
             "items/facts-2026-09-28.jsonl",
         ] {
             file(&c.join(f), 100, 60);
@@ -1903,7 +1899,7 @@ mod tests {
         for f in [
             "base/base/6-1-1.0000000000000001.base",
             "dem-cache.keys.u64",
-            "sources-terrain-z8-v1/terrain-z8-v1.0000000000000001.pack",
+            "layers-terrain-lo-3-1-2/3-1-2.0000000000000001.pack",
             "items/facts-2026-09-28.jsonl",
         ] {
             assert!(c.join(f).exists(), "{f}");
@@ -1967,7 +1963,7 @@ mod tests {
         let others = [
             "base/base/6-1-1.0000000000000001.base",
             "base/global/roads/6-1-1.0000000000000002.roads",
-            "sources-terrain-z8-v1/terrain-z8-v1.0000000000000001.pack",
+            "layers-terrain-lo-3-1-2/3-1-2.0000000000000001.pack",
             "work-summits-2026-09-28/2026-09-28.0000000000000001.jsonl.zst",
             "heritage-merged-2026-09-28-0123456789ab.osm.pbf",
         ];
@@ -2051,7 +2047,7 @@ mod tests {
         // NAS's files, three base packs (the oldest used longest ago), the old DEM cache's leftovers
         // and the heritage clip.
         file(&c.join("blobs/layers/terrain/hi/6-1-2.0000000000000001.pack"), 1000, 60);
-        file(&c.join("sources-terrain-z8-v1/terrain-z8-v1.0000000000000001.pack"), 500, 60);
+        file(&c.join("layers-terrain-lo-3-1-2/3-1-2.0000000000000001.pack"), 500, 60);
         for (i, age) in [(1, 300), (2, 200), (3, 100)] {
             file(&c.join(format!("base/base/6-1-{i}.0000000000000001.base")), 2000, age);
         }

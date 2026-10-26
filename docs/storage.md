@@ -11,7 +11,7 @@ inputs/        the drop boxes (docs/inputs.md): regions/, languages/, translatio
 sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, reach, pass),
                basemap/ (Planetiler's jar and data), items/<date>/ (facts, pageviews, answers),
                pageviews/, buildings/<release>/,
-               trees/, canopy/, aws-terrarium/, rail/, canvec/, fetched/glo30/, terrain-z8-v6-<pool>,
+               trees/, canopy/, aws-terrarium/, rail/, canvec/, fetched/glo30/,
                inputs/<unit>/ (the input check's checked copies and accepted indexes: inputs.md §4.6)
 base/          base packs, one per z6 tile
 hidata/        per z6 tile: ways-here index, query parts, rail lines, zoomed-out summaries

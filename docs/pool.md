@@ -931,7 +931,7 @@ on a slow NAS) no longer kills its running jobs. A lease whose job ended without
 leaves the set at the next loop and lapses as any; a stopped agent's are dropped as the next one
 starts (`drop_where`, `drop_workers` taking a term up, sparing the jobs it adopts), the set not
 saved; after a handover the old lead's leases are a member's, lapsing as any. A beat that still
-finds its lease gone holds it again, a job of no record (terrain-z8) by its step from its id and no
+finds its lease gone holds it again, a job of no record (buildings) by its step from its id and no
 targets (`held_work`, as `adopt_jobs` and `lease_own` do). A live job of no targets holds its whole
 step: no other lease of the step is held beside it (`Coordinator::hold`), and none beside a lease
 of the step when the one asked has no targets; the planned jobs' grants already wait on any lease

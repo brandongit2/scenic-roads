@@ -2,10 +2,11 @@
 //! volcano, nodes and ways), each with the position and `ele` it has as a candidate (extract's
 //! rules: a node's position; a way's centre, the integer mean of its nodes, the closing node
 //! counted twice, truncated; `ele` parsed and rounded, nodes only), and its height for the peaks'
-//! z8 overlay: its tagged `ele` where that is plausible at z8, else none. Sorted by OSM type and
-//! id; written as zstd JSON lines (`work/summits/<d>`).
+//! z8 overlay: its tagged `ele` where that is plausible at the terrain packs' z8 (crate::peaks::z8;
+//! 0 m where nothing is built), else none. Sorted by OSM type and id; written as zstd JSON
+//! lines (`work/summits/<d>`).
 
-use crate::terrain_z8::Z8;
+use crate::peaks::z8::Z8;
 use anyhow::{Context, Result};
 use osmpbf::{Element, ElementReader};
 use serde::{Deserialize, Serialize};
@@ -150,14 +151,14 @@ pub fn read_set(pbf: &Path) -> Result<Vec<Summit>> {
 /// The summit's z8 pixel (global pixel coordinates at z8).
 pub fn z8_pixel(lon: i32, lat: i32) -> (i64, i64) {
     let (x, y) = roadcore::merc(lon as f64 * 1e-7, lat as f64 * 1e-7);
-    let w = 256.0 * (1u64 << crate::terrain_z8::Z) as f64;
+    let w = 256.0 * (1u64 << crate::peaks::z8::Z) as f64;
     ((x * w).floor() as i64, (y * w).floor() as i64)
 }
 
 /// Each summit's z8 height (`z8_height`), from the highest pixel within one pixel of it.
 pub fn add_z8(summits: &mut [Summit], z8: &Z8) -> Result<usize> {
     use rayon::prelude::*;
-    let w = 256i64 << crate::terrain_z8::Z;
+    let w = 256i64 << crate::peaks::z8::Z;
     summits
         .par_iter_mut()
         .map(|s| -> Result<usize> {

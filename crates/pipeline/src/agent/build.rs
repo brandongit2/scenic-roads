@@ -939,31 +939,21 @@ pub fn heritage_sites_work(
 /// read.
 pub const SUMMITS_V: u32 = 1;
 
-/// `pool`: the elevation pool's digest (crate::terrain_z8::pool_digest; None: no summits while it
-/// can't be read).
-pub fn summits_work(date: &str, m: &BTreeMap<String, String>, done: &Keys, pool: Option<&str>) -> Option<Work> {
+/// Its key: the pass's summits set and the terrain packs' z8 it reads (crate::peaks::z8::digest).
+/// The agent runs it only once no terrain-hi or terrain-lo work is left (`Plan::terrain_built`), so
+/// a lo pack still to be made doesn't make it twice.
+pub fn summits_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
     let set = m.get(&crate::osmpass::set_name(date, "summits"))?;
-    let pool = pool?;
-    let (z8, z8m) = (m.get(&crate::terrain_z8::logical(pool))?, m.get(&crate::terrain_z8::max_logical(pool))?);
-    let k = h(&[&format!("summits {SUMMITS_V}"), set, z8, z8m]);
+    let k = h(&[&format!("summits {SUMMITS_V}"), set, &crate::peaks::z8::digest(m)]);
     (done.lo.get("summits").map(String::as_str) != Some(k.as_str()))
         .then(|| Work { step: "summits".into(), targets: vec![("summits".into(), k)] })
 }
 
-/// Whether the world's z8 terrain the peaks and summits read (the pool's, `inputs`
-/// crate::terrain_z8::INPUT) is built: both its logical names in `m`. Until then the peaks wait
-/// (they'd fail on it), whatever `summits_work` says (None too while it's missing).
-pub fn z8_built(m: &BTreeMap<String, String>, inputs: &BTreeMap<String, String>) -> bool {
-    inputs.get(crate::terrain_z8::INPUT).is_some_and(|p| {
-        m.contains_key(&crate::terrain_z8::logical(p)) && m.contains_key(&crate::terrain_z8::max_logical(p))
-    })
-}
+/// The status's line for the summits and peaks held for the terrain packs (`Plan::terrain_built`).
+pub const PEAKS_TERRAIN_WAIT: &str = "wait for the terrain packs they read (terrain-hi, terrain-lo)";
 
-/// The status's line for peaks held by `z8_built`.
-pub const PEAKS_Z8_WAIT: &str = "waits for the world's z8 terrain (terrain-z8)";
-
-/// The peaks' version (crate::peaks::unit).
-pub const PEAKS_V: u32 = 1;
+/// The peaks' version (crate::peaks::unit). (2: heights from the terrain packs alone, task #670.)
+pub const PEAKS_V: u32 = 2;
 
 /// The z6 tiles meeting a box (degrees), x wrapping at the antimeridian.
 fn tiles_in_wrapped(z: u8, b: [f64; 4]) -> Vec<(u32, u32)> {
@@ -980,34 +970,15 @@ fn tiles_in_wrapped(z: u8, b: [f64; 4]) -> Vec<(u32, u32)> {
 }
 
 /// The coverage's z6 tiles with candidates, each with its peaks' key: the candidates, the summits,
-/// the z8 (named for the elevation and sources versions the pool is read from: crate::terrain_z8),
-/// the terrain hi packs within 30 km of it, across the antimeridian too, and the terrain's version
-/// (its peaks' z12: the packs', else the pool's base tiles, crate::terrain_base, of those versions,
-/// processed by the terrain's code as it is now: `terrain_pack::process`, which `TERRAIN_V`
-/// versions).
-pub fn peaks_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, pool: &str) -> Vec<(TileId, String)> {
-    peaks_keys_at(cov, date, m, pool, TERRAIN_V)
-}
-
-/// `peaks_keys` with the terrain's version given (tests).
-fn peaks_keys_at(
-    cov: &Coverage,
-    date: &str,
-    m: &BTreeMap<String, String>,
-    pool: &str,
-    terrain_v: u32,
-) -> Vec<(TileId, String)> {
+/// the terrain packs' z8 (its lo packs: crate::peaks::z8::digest) and the terrain hi packs within
+/// 30 km of it, across the antimeridian too (its z12).
+pub fn peaks_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Vec<(TileId, String)> {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
-    let common = [
-        get(&format!("work/summits/{date}")),
-        get(&crate::terrain_z8::logical(pool)),
-        get(&crate::terrain_z8::max_logical(pool)),
-    ]
-    .join(",");
+    let common = [get(&format!("work/summits/{date}")), &crate::peaks::z8::digest(m)].join(",");
     let mut out = Vec::new();
     for (u, _, _) in pois_units(cov, date, m) {
         let Some(c) = m.get(&format!("work/pois/{}", u.dash())) else { continue };
-        let mut inputs = vec![format!("peaks {PEAKS_V}"), format!("terrain-hi {terrain_v}"), c.clone(), common.clone()];
+        let mut inputs = vec![format!("peaks {PEAKS_V}"), c.clone(), common.clone()];
         for (x, y) in tiles_in_wrapped(6, crate::stage::tile_box_grown(u.z, u.x, u.y, 30.0)) {
             inputs.push(get(&format!("layers/terrain/hi/6-{x}-{y}")).to_string());
         }
@@ -2409,6 +2380,8 @@ pub struct Plan {
     pub publishing: PublishLine,
     /// No z6 tile or terrain left to build: the steps gated by time (`GATED`) run at once.
     pub idle: bool,
+    /// No terrain-hi or terrain-lo work left: the summits and peaks, which read their packs, may run.
+    pub terrain_built: bool,
 }
 
 /// A region's work left (`Plan::regions`), as targets.
@@ -2522,6 +2495,8 @@ pub fn plan(
     let TerrainWork {
         terrain, terrain_lo, terrain_deep, slope, slope_lo, slope_deep, terrain_left, slope_left, ..
     } = tw.clone();
+    // (The summits and peaks read the terrain packs' z8 and z12: they wait till none is to be made.)
+    let terrain_built = tw.terrain_pieces_left.is_empty() && tw.terrain_lo_left.is_empty();
     let tt = crate::treepacks::targets_with(cov, m, tiles.keyed(m).and_then(|k| k.trees.as_deref()));
     let TreeWork {
         pieces: trees,
@@ -2552,7 +2527,7 @@ pub fn plan(
     let chains = |last: bool| -> Vec<Work> {
         rail_chain(cov, date, m, done, inputs)
             .into_iter()
-            .chain(landmarks_work(cov, date, m, done, inputs, &terrain_left, last, updates.way))
+            .chain(landmarks_work(cov, date, m, done, inputs, terrain_built, last, updates.way))
             .collect()
     };
     let Some(reach) = reach.filter(|_| !waiting) else {
@@ -2574,7 +2549,7 @@ pub fn plan(
             None => "the regions' z6 tiles wait for the pass's heritage sites, reaches or roadside buildings".into(),
         };
         let publishing = PublishLine { why, ..Default::default() };
-        return Plan { work, backfill, publishing, ..Default::default() };
+        return Plan { work, backfill, publishing, terrain_built, ..Default::default() };
     };
 
     // base(U): the z6 tiles the coverage builds. Each region's: those it builds itself (a road of theirs
@@ -3071,6 +3046,7 @@ pub fn plan(
         backfill,
         publishing,
         idle: last_now,
+        terrain_built,
     }
 }
 
@@ -3584,14 +3560,6 @@ fn overlays_key(date: &str, m: &BTreeMap<String, String>) -> Option<String> {
     Some(h(&refs))
 }
 
-/// The terrain's z3 tiles a z6 tile's peaks read (the terrain's z6 tiles within 30 km: peaks_keys).
-fn peaks_terrain(u: TileId) -> BTreeSet<String> {
-    tiles_in_wrapped(6, crate::stage::tile_box_grown(u.z, u.x, u.y, 30.0))
-        .into_iter()
-        .map(|(x, y)| format!("3/{}/{}", x >> 3, y >> 3))
-        .collect()
-}
-
 /// The landmarks' chain, a step at a time: candidates, peaks, the items' facts and pageviews, the
 /// rest of the heritage chain, the landmark points, the area overlays; its first stale step (the
 /// forecast's and the checklist's view of what's left: `landmarks_work` is what runs).
@@ -3614,16 +3582,15 @@ fn landmarks_chain(
     if !stale_pois.is_empty() {
         return Some(Work { step: "pois".into(), targets: stale_pois });
     }
-    // Their peaks (once the pass's summits and the world's z8 terrain exist).
-    if !m.contains_key(&format!("work/summits/{date}")) || !z8_built(m, inputs) {
+    // Their peaks (once the pass's summits exist).
+    if !m.contains_key(&format!("work/summits/{date}")) {
         return None;
     }
-    let stale_peaks: Vec<(String, String)> =
-        peaks_keys(cov, date, m, inputs.get(crate::terrain_z8::INPUT).map_or("-", String::as_str))
-            .into_iter()
-            .filter(|(u, k)| stale(&done.peaks, &u.slash(), k))
-            .map(|(u, k)| (u.slash(), k))
-            .collect();
+    let stale_peaks: Vec<(String, String)> = peaks_keys(cov, date, m)
+        .into_iter()
+        .filter(|(u, k)| stale(&done.peaks, &u.slash(), k))
+        .map(|(u, k)| (u.slash(), k))
+        .collect();
     if !stale_peaks.is_empty() {
         return Some(Work { step: "peaks".into(), targets: stale_peaks });
     }
@@ -3657,7 +3624,7 @@ fn landmarks_chain(
 /// as not built: what read it would be built twice), none waiting for the z6 tiles but the overlays
 /// (they read the built z6 tiles: after the last, `last`): the candidates (once the pass's
 /// hiking-route ends are made); their peaks once every candidate is, the pass's summits are made
-/// and the terrain they read is built (the world's z8, `z8_built`, and `terrain_left`), each z6 tile's as its own is; the items' facts
+/// and the terrain packs they read are (`terrain_built`: no terrain-hi or terrain-lo work left); the items' facts
 /// and pageviews once every candidate is; the rest of the heritage chain once the heritage sites
 /// are; the landmark points once those four are (on the pass's heritage, never today's meanwhile);
 /// then the overlays. They don't wait for each other otherwise: the heritage chain (an hour and
@@ -3671,7 +3638,7 @@ fn landmarks_work(
     m: &BTreeMap<String, String>,
     done: &Keys,
     inputs: &BTreeMap<String, String>,
-    terrain_left: &BTreeSet<String>,
+    terrain_built: bool,
     last: bool,
     way: Publishing,
 ) -> Vec<Work> {
@@ -3693,18 +3660,13 @@ fn landmarks_work(
         out.push(Work { step: "pois".into(), targets: stale_pois });
     }
     if pois_built
+        && terrain_built
         && m.contains_key(&format!("work/summits/{date}"))
-        && z8_built(m, inputs)
-        && summits_work(date, m, done, inputs.get(crate::terrain_z8::INPUT).map(String::as_str)).is_none()
+        && summits_work(date, m, done).is_none()
     {
-        let stale_peaks: Vec<(TileId, String)> =
-            peaks_keys(cov, date, m, inputs.get(crate::terrain_z8::INPUT).map_or("-", String::as_str))
-                .into_iter()
-                .filter(|(u, k)| stale(&done.peaks, &u.slash(), k))
-                .collect();
-        let ready: Vec<(String, String)> = stale_peaks
+        let ready: Vec<(String, String)> = peaks_keys(cov, date, m)
             .into_iter()
-            .filter(|(u, _)| peaks_terrain(*u).is_disjoint(terrain_left))
+            .filter(|(u, k)| stale(&done.peaks, &u.slash(), k))
             .map(|(u, k)| (u.slash(), k))
             .collect();
         if !ready.is_empty() {
@@ -3763,11 +3725,8 @@ fn marks_ready(
         && units.iter().all(|(u, k)| !stale(&done.pois, &u.slash(), k));
     let peaks_built = pois_built
         && m.contains_key(&format!("work/summits/{date}"))
-        && z8_built(m, inputs)
-        && summits_work(date, m, done, inputs.get(crate::terrain_z8::INPUT).map(String::as_str)).is_none()
-        && peaks_keys(cov, date, m, inputs.get(crate::terrain_z8::INPUT).map_or("-", String::as_str))
-            .iter()
-            .all(|(u, k)| !stale(&done.peaks, &u.slash(), k));
+        && summits_work(date, m, done).is_none()
+        && peaks_keys(cov, date, m).iter().all(|(u, k)| !stale(&done.peaks, &u.slash(), k));
     let pois_now = if peaks_built { current_pois(cov, date, m) } else { Vec::new() };
     let items_built =
         !pois_now.is_empty() && done.lo.get("items").map(String::as_str) == Some(items_key(date, &pois_now).as_str());
@@ -5267,7 +5226,7 @@ pub(crate) mod tests {
                 "d",
                 m,
                 done,
-                &spaced(&[(crate::terrain_z8::INPUT.to_string(), "p".to_string())].into()),
+                &spaced(&BTreeMap::new()),
                 Some(reach),
                 &tiles_for(m),
                 Publish {
@@ -5317,14 +5276,9 @@ pub(crate) mod tests {
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
         unit_inputs(&mut m, "d");
-        // (The pass's route ends, summits and worldwide z8: the candidates and their peaks run.)
-        for l in [
-            "work/trailends/d".to_string(),
-            "work/summits/d".to_string(),
-            crate::terrain_z8::logical("p"),
-            crate::terrain_z8::max_logical("p"),
-        ] {
-            m.insert(l.clone(), format!("{l}.6161616161616161.bin"));
+        // (The pass's route ends and summits: the candidates and their peaks run.)
+        for l in ["work/trailends/d", "work/summits/d"] {
+            m.insert(l.into(), format!("{l}.6161616161616161.bin"));
         }
         let mut done = Keys::default();
         let first = run_all(&c, &reach, &mut m, &mut done);
@@ -5343,7 +5297,7 @@ pub(crate) mod tests {
         for layer in ["terrain", "slope"] {
             done.record(&format!("{layer}-root"), &[(format!("{layer}-root"), root_key(layer, &m).unwrap())]);
         }
-        let (uk, pk) = (ukeys(&c, "d", &m, Some(&reach)), peaks_keys(&c, "d", &m, "p"));
+        let (uk, pk) = (ukeys(&c, "d", &m, Some(&reach)), peaks_keys(&c, "d", &m));
         assert!(uk[0].1 != done.unit["6/28/16"] && pk[0].1 != done.peaks["6/28/16"], "their keys see the packs");
         done.record("unit", &[("6/28/16".to_string(), uk[0].1.clone())]);
         done.record("peaks", &[("6/28/16".to_string(), pk[0].1.clone())]);
@@ -7725,22 +7679,15 @@ pub(crate) mod tests {
         m.insert("work/pois/6-28-16".into(), "work/pois/6-28-16.9999999999999999.json".into());
         assert_eq!(steps(&plan(&c, "d", &m, &done, &BTreeMap::new())), vec!["items"]);
         m.insert("work/summits/d".into(), "work/summits/d.aaaaaaaaaaaaaaaa.bin".into());
-        // Nor while the world's z8 terrain they read isn't built (#655: they'd fail on it).
-        let ins: BTreeMap<String, String> = [(crate::terrain_z8::INPUT.to_string(), "p".to_string())].into();
-        assert_eq!(steps(&plan(&c, "d", &m, &done, &ins)), vec!["items"]);
-        assert!(!z8_built(&m, &ins));
-        assert_eq!(steps(&plan(&c, "d", &m, &done, &BTreeMap::new())), vec!["items"]);
-        for l in [crate::terrain_z8::logical("p"), crate::terrain_z8::max_logical("p")] {
-            m.insert(l.clone(), format!("{l}.1111111111111111.bin"));
-        }
-        // Built: offered.
-        assert_eq!(steps(&plan(&c, "d", &m, &done, &ins)), vec!["peaks", "items"]);
+        // Nor while terrain-hi or terrain-lo has work left (#670: they read the packs it makes).
+        let w = landmarks_work(&c, "d", &m, &done, &spaced(&BTreeMap::new()), false, false, Default::default());
+        assert_eq!(steps(&w), vec!["items"]);
+        // The terrain built: offered.
+        assert_eq!(steps(&plan(&c, "d", &m, &done, &BTreeMap::new())), vec!["peaks", "items"]);
     }
 
     #[test]
-    fn the_peaks_key_names_the_terrains_version() {
-        // (Its peaks' z12 outside the packs are AWS's raw tiles processed by the terrain's code:
-        // a new version of it runs them again, the packs and all else the same.)
+    fn the_peaks_key_names_the_terrain_packs_they_read() {
         let c = cov();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
@@ -7748,25 +7695,21 @@ pub(crate) mod tests {
         m.insert("work/pois/6-28-16".into(), "work/pois/6-28-16.9999999999999999.json".into());
         m.insert("work/summits/d".into(), "work/summits/d.aaaaaaaaaaaaaaaa.bin".into());
         m.insert("layers/terrain/hi/6-28-16".into(), "layers/terrain/hi/6-28-16.bbbbbbbbbbbbbbbb.pack".into());
-        for p in ["p", "q"] {
-            for l in [crate::terrain_z8::logical(p), crate::terrain_z8::max_logical(p)] {
-                m.insert(
-                    l.clone(),
-                    format!("{l}.{}.bin", if p == "p" { "1111111111111111" } else { "2222222222222222" }),
-                );
-            }
-        }
-        let now = peaks_keys(&c, "d", &m, "p");
+        m.insert("layers/terrain/lo/3-0-0".into(), "layers/terrain/lo/3-0-0.1111111111111111.pack".into());
+        let now = peaks_keys(&c, "d", &m);
         assert_eq!(now.len(), 1);
-        assert_eq!(now, peaks_keys_at(&c, "d", &m, "p", TERRAIN_V));
-        let next = peaks_keys_at(&c, "d", &m, "p", TERRAIN_V + 1);
-        assert_eq!(next[0].0, now[0].0);
-        assert_ne!(next[0].1, now[0].1);
-        // A hi pack within 30 km changing changes it too.
+        // A hi pack within 30 km changing changes it (its z12).
         m.insert("layers/terrain/hi/6-28-16".into(), "layers/terrain/hi/6-28-16.cccccccccccccccc.pack".into());
-        assert_ne!(peaks_keys(&c, "d", &m, "p")[0].1, now[0].1);
-        // So does another pool (its z8 another).
-        assert_ne!(peaks_keys(&c, "d", &m, "q")[0].1, peaks_keys(&c, "d", &m, "p")[0].1);
+        let hi = peaks_keys(&c, "d", &m);
+        assert_ne!(hi[0].1, now[0].1);
+        // So does any lo pack, however far (its z8: the coarse stage reaches 5,000 km).
+        m.insert("layers/terrain/lo/3-0-0".into(), "layers/terrain/lo/3-0-0.2222222222222222.pack".into());
+        assert_ne!(peaks_keys(&c, "d", &m)[0].1, hi[0].1);
+        // A hi pack farther than 30 km doesn't, nor a deep pack.
+        let lo = peaks_keys(&c, "d", &m);
+        m.insert("layers/terrain/hi/6-0-0".into(), "layers/terrain/hi/6-0-0.3333333333333333.pack".into());
+        m.insert("layers/terrain/deep/10-0-0".into(), "layers/terrain/deep/10-0-0.3333333333333333.pack".into());
+        assert_eq!(peaks_keys(&c, "d", &m), lo);
     }
 
     #[test]
@@ -7936,10 +7879,6 @@ pub(crate) mod tests {
         unit_inputs(&mut m, "d");
         m.insert("work/trailends/d".into(), "work/trailends/d.8888888888888888.json".into());
         m.insert("work/summits/d".into(), "work/summits/d.aaaaaaaaaaaaaaaa.bin".into());
-        // (And the pool's world z8 the peaks read.)
-        for l in [crate::terrain_z8::logical("p"), crate::terrain_z8::max_logical("p")] {
-            m.insert(l.clone(), format!("{l}.6161616161616161.bin"));
-        }
         let each = c.by_region();
         let plan_with = |m: &BTreeMap<String, String>, done: &Keys, way: Publishing| {
             super::plan(
@@ -7947,7 +7886,7 @@ pub(crate) mod tests {
                 "d",
                 m,
                 done,
-                &spaced(&[(crate::terrain_z8::INPUT.to_string(), "p".to_string())].into()),
+                &spaced(&BTreeMap::new()),
                 Some(&reach),
                 &tiles_for(m),
                 Publish {
@@ -8000,8 +7939,9 @@ pub(crate) mod tests {
         m.insert("work/pois/6-22-17".into(), "work/pois/6-22-17.9999999999999999.json".into());
         let w = plan(&m, &done);
         assert_eq!(line(&w)[3..], ["pois 6/28/16", "heritage heritage"]);
-        // All made: the items' facts; the peaks only where the terrain they read is built (Nuuk's,
-        // once 3/2/2 is: Reykjavik's terrain isn't yet).
+        // All made: the items' facts; the peaks only once no terrain-hi or terrain-lo work is left
+        // anywhere (they read every lo pack's z8: Nuuk's 3/2/2 built isn't enough while
+        // Reykjavik's terrain isn't).
         done.record("pois", &[w[3].targets[0].clone()]);
         m.insert("work/pois/6-28-16".into(), "work/pois/6-28-16.9999999999999999.json".into());
         let w = plan(&m, &done);
@@ -8012,11 +7952,10 @@ pub(crate) mod tests {
         terrain_did(&mut m, &mut done, &w[0]);
         let w = plan(&m, &done);
         assert_eq!(line(&w).last().unwrap(), "heritage heritage");
-        assert!(line(&w).contains(&"peaks 6/22/17".to_string()), "{:?}", line(&w));
+        assert!(!w.iter().any(|x| x.step == "peaks"), "{:?}", line(&w));
         // The landmark points wait for the peaks, the items' facts and the heritage chain; the
         // overlays for the last z6 tile.
-        let rest: Vec<Work> =
-            w.iter().filter(|x| matches!(x.step.as_str(), "peaks" | "items" | "heritage")).cloned().collect();
+        let rest: Vec<Work> = w.iter().filter(|x| matches!(x.step.as_str(), "items" | "heritage")).cloned().collect();
         for x in &rest {
             done.record(&x.step, &x.targets);
         }
@@ -8032,6 +7971,7 @@ pub(crate) mod tests {
             terrain_did(&mut m, &mut done, &t);
         }
         let peaks = plan(&m, &done).into_iter().find(|x| x.step == "peaks").unwrap();
+        assert_eq!(peaks.targets.len(), 2, "both z6 tiles' at once");
         done.record("peaks", &peaks.targets);
         assert_eq!(marks(&m, &done), ["marks"]);
         // Gated by time while z6 tiles build: the points at most hourly, the overlays every 6 h (their
@@ -8078,14 +8018,7 @@ pub(crate) mod tests {
         // (Task #529) The checklist sizes them as planned: everything before them built, the
         // points recorded and the overlays not, a run of the overlays left; recorded, none.
         let left = |done: &Keys| {
-            let l = checklist(
-                &c,
-                "d",
-                &m,
-                done,
-                &spaced(&[(crate::terrain_z8::INPUT.to_string(), "p".to_string())].into()),
-                false,
-            );
+            let l = checklist(&c, "d", &m, done, &spaced(&BTreeMap::new()), false);
             let left = |s: &str| l.iter().flat_map(|x| x.items.iter()).find(|i| i.step == s).unwrap().left;
             (left("marks"), left("overlays"))
         };

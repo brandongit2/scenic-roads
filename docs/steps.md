@@ -196,10 +196,6 @@ What each step does, in detail. The steps as one table (names, chains, the check
   the job's threads, so its working memory has a bound (`working_bytes`: per thread a chain of
   tiles' children's quadrants and one tile's making); its tiles don't depend on the threads (each
   pixel the mean of its four children's in a fixed order, nothing summed across tiles).
-- **Worldwide z8 terrain** (`sources/terrain-z8-v6-<pool>`, once for the accepted elevation and
-  sources versions, `<pool>` their content names' digest; not served): every z8 tile the elevation
-  pool's base tile there (crate::terrain_base, as the terrain's), made as the packs' are, without
-  the water (task #465), with each tile's maximum. Peaks read it.
 - **Grids (z11):** land cover, canopy and cover, for analysis only. Each `unit` job makes the grid tiles
   its packs lack and uploads them as its z6 tile's `grid-*` hi packs; they aren't in those jobs' keys
   (made from fixed datasets, the same whether read or made).

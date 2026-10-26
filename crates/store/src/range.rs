@@ -172,7 +172,7 @@ impl RangeRead for PooledFile {
 /// Its descriptor is held only while it's among the `plain_open_cap` files read last: past that the
 /// one read longest ago is closed, and opened again by its path at its next read (its length
 /// unchanged: else `InvalidData`). A run that keeps thousands open (a pool's GLO-30 tiles and their
-/// masks over the world: terrain-z8) holds a bounded number of descriptors.
+/// masks over a wide area) holds a bounded number of descriptors.
 pub struct PlainFile {
     slot: Arc<Slot>,
     path: std::path::PathBuf,

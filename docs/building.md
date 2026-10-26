@@ -16,7 +16,7 @@ which the NAS does itself. The jobs (§2 has their order and keys):
    heritage-named objects, water), the worldwide basemap, z6 tile extracts (filtered OSM per z6 tile, 10 km
    buffer, ways whole) and worldwide road values (docs/steps.md).
 2. **Worldwide jobs, once per pass:** missing sets, the outlines, hiking routes' ends, each z6 tile's
-   reach (docs/regions.md), summits, place labels, the water, the lake fill; once ever, the worldwide z8 terrain.
+   reach (docs/regions.md), summits (once the terrain packs are built), place labels, the water, the lake fill.
 3. **Heritage sites and designated areas:** one job over the coverage plus 20 km.
 4. **Global-source layers near the coverage:** terrain, slope and tree cover, a run per z6 tile
    and an assembly per z3 tile.
@@ -325,7 +325,8 @@ devices away use the M6's (always on; https://map.brandontsang.net, docs/macs.md
    slot or beside a job.
 1. **The OSM pass**, when the NAS holds a newer planet.
 2. **The pass's worldwide jobs:** `pass-sets`, `outlines` (the rest waits for them), hiking routes'
-   ends, `reach`, `terrain-z8` (once), roadside buildings (once per release; z6 tiles wait), summits,
+   ends, `reach`, roadside buildings (once per release; z6 tiles wait), summits (once terrain-hi
+   and terrain-lo have no work left: they read the lo packs' z8),
    labels, the lake fill, the water.
 3. **The regions' build,** a region at a time (`agent::build::plan`):
    - heritage-sites first;

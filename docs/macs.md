@@ -54,10 +54,10 @@ lead's coordinator. Below, the M4 (48 GB) unless said.
     retired caches, local copies the summits and peaks jobs
     read, and the heritage job's clip of the pass's `whs` set (made again by osmium).
   - **Deleted always** (`room::retire`, at the agent's start and daily, room needed or not): caches no
-    code reads any more (`room::RETIRED`: the old DEM cache, `dem-cache.*`), and local copies of NAS
-    files a day old whose logical name the build manifest no longer names (an older pass's) or that
-    are of an older z8 terrain version than the code's (`sources-terrain-z8-v3` once the z8 is v6;
-    the manifest still names those). Without the NAS or a readable manifest, only the retired caches;
+    code reads any more (`room::RETIRED`: the old DEM cache, `dem-cache.*`; the worldwide z8
+    terrain's copies, `sources-terrain-z8-*`), and local copies of NAS files (`sources-*`, `work-*`,
+    `layers-*`: the summits' and peaks' terrain lo packs) a day old whose logical name the build
+    manifest no longer names (an older pass's). Without the NAS or a readable manifest, only the retired caches;
     not while a job an earlier agent left runs. A file a job holds stays.
   - **Kept:** the answers (`items/`, `heritage-<date>/`), the trains' stop pairs (`rail/`), the z6 tile
     stages' timings (`unit-stages.json`), what a z6 tile kept that isn't on the NAS yet, and the

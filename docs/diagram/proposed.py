@@ -122,7 +122,7 @@ def build(check=False):
                    'hand downloads, scripts by hand', 'part')
     s_osm2 = d.src('osm', c_regs.b + 10, 'OSM extracts · sets', ['POIs · designated areas ·', 'summits · hiking routes'])
     s_wd = d.src('place', s_osm2.b + 8, 'Wikidata · Wikipedia', ['facts; pageviews, four', 'months a pass, all languages'])
-    n_poi = d.card('place', 'd1', n_hs.b + 22, 'candidates · peaks', 'Rust', ['each z6 tile’s points; prominence', 'and isolation over z12 and', 'the worldwide z8'],
+    n_poi = d.card('place', 'd1', n_hs.b + 22, 'candidates · peaks', 'Rust', ['each z6 tile’s points; prominence', 'and isolation over the terrain', 'packs’ z12 and z8'],
                    [(['work/pois/ · work/peaks/'], 'per z6 tile')], scope='z6', shared=True,
                    fig='peaks: median 5 s a tile, p90 24 s; 1.4 GB p90')
     n_items = d.card('place', 'd2', n_poi.y, 'facts · pageviews', 'Python', ['the candidates’ Wikidata', 'items, once a pass'],
@@ -171,8 +171,6 @@ def build(check=False):
                      [(['layers/slope/ hi'], 'packs · PNG')], scope='z6', shared=True, fig='median 10 s a tile, p90 59 s; 0.9 GB p90')
     n_slo = d.card('terr', 'd3', n_slope.b + 22, 'slope, zoomed out', 'Rust', ['z3–8 from its z6 tiles’ mids;', 'the root once none is left'],
                    [(['layers/slope/ lo · root'], 'packs · PNG')], scope='z3', shared=True)
-    n_z8 = d.card('terr', 'd2', n_tlo.b + 22, 'z8 terrain', 'Rust', ['every z8 tile, repaired,', 'with its maximum, once', '(peaks read it; not served)'],
-                  [(['sources/terrain-z8-v6-<pool>'], 'one pack')], scope='global')
     p_t = d.pill('terr', cy + 12, ['/tiles/terrain'], note='the pack for the tile')
     b_terr = d.layer('terr', 0, '3D terrain · hill-shading', ['elevation tint'], cy=p_t.my)
     b_cont = d.layer('terr', b_terr.b + 8, 'Contour lines', ['traced from terrain tiles'], computed=True)
@@ -185,13 +183,12 @@ def build(check=False):
     d.arrow('terr', (n_terr.r, n_tlo.y + 18), (n_tlo.l, n_tlo.y + 18))
     d.arrow('terr', (n_tlo.r, n_slope.y + 18), (n_slope.l, n_slope.y + 18))
     d.arrow('terr', (n_slope.l + 40, n_slope.b), (n_slope.l + 40, n_slo.t))
-    d.arrow('terr', (s_aws.r, s_aws.y + 40), (n_terr.l - 28, s_aws.y + 40), (n_terr.l - 28, n_z8.y + 18), (n_z8.l, n_z8.y + 18))
     d.arrow('terr', (n_terr.r, p_t.my), (p_t.l, p_t.my))
     d.arrow('terr', (n_slope.r, p_s.my), (p_s.l, p_s.my))
     d.to_layer('terr', p_t, b_terr)
     d.arrow('terr', (p_t.r, p_t.my + 8), (b_cont.l - 12, p_t.my + 8), (b_cont.l - 12, b_cont.my), (b_cont.l, b_cont.my))
     d.to_layer('terr', p_s, b_slope)
-    y1 = max(n_terr.b, n_z8.b, n_slo.b, b_slope.b, s_bw.b) + PAD
+    y1 = max(n_terr.b, n_tlo.b, n_slo.b, b_slope.b, s_bw.b) + PAD
     d.lane('TERRAIN · SLOPE', y0, y1)
     l4_bottom = y1
 

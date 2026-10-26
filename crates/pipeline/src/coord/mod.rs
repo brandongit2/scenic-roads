@@ -1485,7 +1485,7 @@ impl Coordinator {
     }
 
     /// A lease for this Mac's own job of `step` over `targets`, unless a worker holds one of them,
-    /// or (a job of no targets, like terrain-z8, either side) any job of the step; its id.
+    /// or (a job of no targets, like buildings, either side) any job of the step; its id.
     pub fn hold(&self, step: &str, targets: &[(String, String)]) -> Option<u64> {
         let mut s = self.shared.lock().unwrap();
         let now = s.now();
@@ -5391,7 +5391,7 @@ mod tests {
         assert!(!contact_path(&store::nasfs::NasRoot::local_for_test(&root)).exists(), "not published since: it goes");
     }
 
-    /// #666 (25 Oct, the mini: its loop stuck ~10 min on the NAS lost terrain-z8 at 56 %, and a
+    /// #666 (25 Oct, the mini: its loop stuck ~10 min on the NAS lost a worldwide job at 56 %, and a
     /// second was granted): past the TTL with no beat the leases the lead's slots run (`keep_own`)
     /// stay, renewable and finishable; one of the lead's whose job ended unsaid lapses, as a member's
     /// does; a job of no targets blocks another of its step, and is held again once its holder's
@@ -5401,7 +5401,7 @@ mod tests {
         let (_d, c, _w) = start();
         let clock = store::clock::Virtual::new();
         c.shared.lock().unwrap().clock = clock.clone();
-        let z8 = c.hold("terrain-z8", &[]).unwrap();
+        let z8 = c.hold("buildings", &[]).unwrap();
         let unit = c.hold("unit", &[("6/1/1".into(), "k".into())]).unwrap();
         let dead = c.hold("unit", &[("6/1/2".into(), "k".into())]).unwrap();
         let member = {
@@ -5411,13 +5411,13 @@ mod tests {
         };
         c.keep_own([z8, unit].into());
         // No duplicate of a job of no targets, the lead's or a member's, with targets or none.
-        assert_eq!(c.hold("terrain-z8", &[]), None);
+        assert_eq!(c.hold("buildings", &[]), None);
         assert_eq!(c.hold("gc", &[]), None);
         assert_eq!(c.hold("gc", &[("x".into(), "k".into())]), None);
         clock.advance(TTL + Duration::from_secs(60));
         let gone: BTreeSet<u64> = c.expire().iter().map(|l| l.id).collect();
         assert_eq!(gone, [dead, member].into(), "a job ended unsaid lapses as a member's does");
-        assert_eq!(c.hold("terrain-z8", &[]), None, "the lead's z8 still holds its step");
+        assert_eq!(c.hold("buildings", &[]), None, "the lead's job still holds its step");
         assert!(c.renew_live(z8, None, None));
         assert!(c.held("unit").contains("6/1/1") && !c.held("unit").contains("6/1/2"));
         // Its job ended, the loop still stuck: finished all the same, past its deadline.

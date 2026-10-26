@@ -128,12 +128,11 @@ The jobs form a chain without cycles; the landmark chain runs beside the roads c
 |---|---|---|
 | OSM pass sets | the filtered planet | `summits` (`-v2`), `hikes`, `named` (the heritage chain's filter plus World Heritage tags), `whs` (pipeline::whsshapes' objects and every multipolygon, with their references), `marks` |
 | `trailends` (per pass) | `hikes` | `work/trailends/<d>`: every simple linear hiking route's two ends |
-| `terrain-z8` (once a pool) | the elevation pool's z8 base tiles | `sources/terrain-z8-v6-<pool>` and `-max` |
-| `summits` (per pass) | `summits` set, `terrain-z8` | `work/summits/<d>` |
+| `summits` (per pass; once terrain-hi and terrain-lo have no work left) | `summits` set, the terrain lo packs' z8 | `work/summits/<d>` |
 | `heritage-sites` (before the z6 tiles) | the registers meeting the cover, the matches (docs/inputs.md §6.5), the pass's `areas` set, the coverage | `work/heritage/<d>/base/…` and per z6 tile slices |
 | `unit` | as docs/steps.md, with the heritage slices within U + 30 km | the base pack |
 | `pois` (per z6 tile) | U's extract, `trailends`, the coverage | `work/pois/<u>` |
-| `peaks` (per z6 tile; network) | U's peak candidates, `summits`, z12 within 30 km, `terrain-z8` | `work/peaks/<u>` |
+| `peaks` (per z6 tile; once terrain-hi and terrain-lo have no work left) | U's peak candidates, `summits`, the terrain hi packs within 30 km (z12), the terrain lo packs (z8) | `work/peaks/<u>` |
 | `items` (per pass; network) | the current z6 tiles' candidates' QIDs | `sources/items/<d>/{facts,views,meta}` |
 | `heritage` (network) | the heritage-sites outputs, the `areas`, `named` and `whs` sets, the pass's answers | `work/heritage/<d>/…` |
 | `marks` (worldwide) | the z6 tiles' `work/pois` and `work/peaks`, the items' facts and views, the heritage job's outputs | a `marks-*` bundle per kind, the `markdata` bundle, `global/marks/summary`, `work/marks/heritage-dots` |
@@ -146,18 +145,21 @@ and items include the pass's date; the coverage enters as a hash of its shapes; 
 the z6 tiles within 20 km of a built z6 tile (`ovconv::cover_of`: a z6 tile amid built ones changes
 nothing); overlays name the built z6 tiles, the heritage dots as the last marks run wrote them
 (`work/marks/heritage-dots`) and the pass's heritage job's files; ferries the ferries set, the ferry feeds' list (each zip by
-content) and the static timetables' index, all `ovconv::ferries_job` reads. `pass-sets` and
-`terrain-z8` run when their versioned outputs are missing. peaks (`agent::build::peaks_keys`) name
-the z6 tile's candidates, the summits, `terrain-z8` and its max, the terrain hi packs within U + 30 km,
-and `TERRAIN_V` (raw tiles outside the packs are processed by its code), not the z12 tiles read
-(task #484).
+content) and the static timetables' index, all `ovconv::ferries_job` reads. `pass-sets` runs
+when its versioned outputs are missing. The summits name the summits set and every terrain lo
+pack (`peaks::z8::digest`); peaks (`agent::build::peaks_keys`) name the z6 tile's candidates, the
+summits, every terrain lo pack and the terrain hi packs within U + 30 km, not the z12 tiles read
+(task #484). Any lo pack made again measures every z6 tile's peaks again: the coarse stage reaches
+5,000 km. So the summits and peaks wait until terrain-hi and terrain-lo have no work left
+(`Plan::terrain_built`).
 
 **Network jobs:** a tile or answer that can't be fetched fails the job (retried), never counts as
 "none".
 
-**Determinism across z6 tiles:** a peak's result reads only z12 within 28 km and the worldwide z8, the
-same whichever z6 tile computes it (z12 the pack's tile, else the elevation pool's base tile; a
-missing z12 tile is sea level). Neighbouring summits count at their own heights; ties go by tagged height,
+**Determinism across z6 tiles:** a peak's result reads only z12 within 28 km and the terrain lo
+packs' z8, the same whichever z6 tile computes it (z12 the hi pack's tile). Heights come only from
+the terrain packs: where nothing is built (no pack has the tile) there are none, read as 0 m like
+the open sea, and a peak whose search reaches there gets the number that gives. Neighbouring summits count at their own heights; ties go by tagged height,
 distance, OSM id. Trailheads within 150 m are de-duplicated on U plus the extract's buffer in one
 order, so neighbouring z6 tiles agree; route ends come from the whole route; the coverage clip comes
 after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sites.
@@ -174,19 +176,13 @@ after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sit
   bridges, `viewpoint: "yes"` for peaks tagged so.
 - **`trailends`** (per pass): each `hikes` route's way-end nodes used once; exactly two make a simple
   linear route. Worldwide, so every z6 tile sees the same ends.
-- **`terrain-z8`** (once for the accepted elevation and sources versions): the elevation pool's
-  65,536 z8 base tiles (crate::terrain_base over the world, `terrain_pack::process`), one
-  content-named pack under `sources/` with each tile's maximum. Coverage-free (the packs' z8 isn't),
-  so floods and isolation searches don't depend on what's built.
 - **`summits`** (per pass): the `summits` set, nodes then ways by id. A summit's position and `ele`
-  are the same as a candidate's (shared code). Each summit's z8 pixel is raised to its `ele` when
+  are the same as a candidate's (shared code). The z8 is the terrain lo packs' (`peaks::z8`, local
+  copies of each lo pack), each tile's maximum worked out on its first read. Each summit's z8 pixel is raised to its `ele` when
   plausible: at most 8,900 m, at most 1,500 m over the highest z8 pixel within one pixel, and at
   most twice that plus 300 m.
 - **`peaks`** (per z6 tile, `pipeline::peaks`):
-  - z12 is the pack's tile when the manifest has it, else the elevation pool's base tile
-    (crate::terrain_base over the job's z6 tiles and 30 km more; not the water: task #465), read
-    back from the PNG as stored. A peaks key names the z8 (`sources/terrain-z8-v6-<pool>`), so a
-    new pool measures every z6 tile's peaks again. A z6 tile's pack tiles
+  - z12 is the terrain hi pack's tile when the manifest has it, else none (0 m). A z6 tile's pack tiles
     are read in spans (neighbours under 256 KB apart together, up to 32 MB a read, 8 reads at
     once, each under a 2-minute deadline and retried after 2, 5, 15, 30 s when it fails
     transiently), and a job's next z6 tile's are read while this one's peaks are measured
@@ -194,7 +190,7 @@ after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sit
   - Summits within 28 km + a margin get a summit pixel (highest within 150 m), a height (max(ele,
     DEM) when `ele` is within −30/+200 m of the DEM, else the DEM's) and a claim on shared pixels.
   - **Fine stage** (z12, a 600k-pixel flood, stopping at 28 km; isolation within 25 km), then the
-    **coarse stage** over `terrain-z8` with the overlay (40M pixels; tiles by great-circle lower
+    **coarse stage** over the lo packs' z8 with the overlay (40M pixels; tiles by great-circle lower
     bound; nothing higher within 5,000 km gives a lower bound).
   - "Sea" is ≤ 0 m (negative values are clamped).
   - **Output:** `work/peaks/<u>` by candidate key: e, p, pl, c, ce, iso, il, hi.

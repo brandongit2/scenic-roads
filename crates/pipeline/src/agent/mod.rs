@@ -283,18 +283,8 @@ fn write_published(home: &Path, r: &build::LastCatalog) -> Result<()> {
 }
 
 /// The pass's worldwide steps the checklist counts, after the planet's own.
-const WORLDWIDE_STEPS: [&str; 10] = [
-    "pass-sets",
-    "outlines",
-    "trailends",
-    "reach",
-    "terrain-z8",
-    "buildings",
-    "summits",
-    "labels",
-    "lakefill",
-    "water",
-];
+const WORLDWIDE_STEPS: [&str; 9] =
+    ["pass-sets", "outlines", "trailends", "reach", "buildings", "summits", "labels", "lakefill", "water"];
 
 /// The loop's pool steps passed over in a row, a tick holding the run, before the status says the
 /// pool's step hangs (about a minute of the loop's steps; or at once past `STALL_S`).
@@ -2151,8 +2141,6 @@ impl Agent {
             "peaks" => vec![
                 "--pass".into(),
                 date.to_string(),
-                "--raw".into(),
-                s(&cache.join("aws-terrarium")),
                 "--cache".into(),
                 s(&cache),
                 "--coarse-threads".into(),
@@ -7220,16 +7208,6 @@ impl Agent {
                     }),
                 }
             }
-            // (Once the pool's declarations are accepted: before, the job could only fail.)
-            let pool = crate::terrain_z8::pool_digest(root, &manifest);
-            if pool.as_ref().is_some_and(|p| !manifest.contains_key(&crate::terrain_z8::logical(p))) {
-                jobs.push(job(
-                    "terrain-z8".into(),
-                    "terrain-z8",
-                    vec!["--raw".into(), s(&self.o.home.join("cache").join("aws-terrarium"))],
-                    None,
-                ));
-            }
             // (Of the declared release: none before the source declarations are accepted.)
             let release = crate::buildtiles::release_of(root, &manifest).ok();
             if let Some(release) =
@@ -7241,14 +7219,6 @@ impl Agent {
                 for e in rd.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("parts-")) {
                     std::fs::remove_dir_all(e.path()).ok();
                 }
-            }
-            if let Some(w) = build::summits_work(date, &manifest, &keys, pool.as_deref()) {
-                jobs.push(job(
-                    format!("summits {date}"),
-                    "summits",
-                    [p.clone(), vec!["--cache".into(), s(&self.o.home.join("cache"))]].concat(),
-                    Some(w),
-                ));
             }
             if let Some(w) = build::labels_work(date, &manifest, &keys) {
                 jobs.push(job(format!("labels {date}"), "labels", p.clone(), Some(w)));
@@ -7348,7 +7318,7 @@ impl Agent {
             return jobs;
         };
         // (The pass's worldwide jobs: the forecast's before the regions'.)
-        let before = jobs.clone();
+        let mut before = jobs.clone();
         let covs = match self.coverage(root, &manifest, unread.is_empty()) {
             Ok(c) => c,
             Err(why) => {
@@ -7531,13 +7501,24 @@ impl Agent {
                 why: format!("the regions' z6 tiles wait: {why}"),
             });
         }
-        // The peaks held for the world's z8 terrain (the pool's terrain-z8, still to be made): said.
-        if manifest.contains_key(&format!("work/summits/{date}")) && !build::z8_built(&manifest, &inputs) {
+        // The pass's summits (worldwide), once the terrain packs they read are built (as the
+        // peaks after them): held, said.
+        let summits = build::summits_work(date, &manifest, &done);
+        if !planned.terrain_built && (summits.is_some() || manifest.contains_key(&format!("work/summits/{date}"))) {
             waiting.push(Waiting {
-                step: Some("peaks".into()),
-                what: "peaks".into(),
-                why: build::PEAKS_Z8_WAIT.into(),
+                step: Some("summits".into()),
+                what: "summits and peaks".into(),
+                why: build::PEAKS_TERRAIN_WAIT.into(),
             });
+        } else if let Some(w) = summits {
+            let j = job(
+                format!("summits {date}"),
+                "summits",
+                vec!["--pass".into(), date.to_string(), "--cache".into(), s(&self.o.home.join("cache"))],
+                Some(w),
+            );
+            jobs.insert(before.len(), j.clone());
+            before.push(j);
         }
         // Z6 tiles whose terrain can't be worked out now (a pack's index unread): they wait for it.
         // Or the declared elevation datasets: before their switch (docs/inputs.md §6.8), or while
@@ -8446,7 +8427,6 @@ impl Agent {
             }
         }
         // The pass's worldwide steps, each one run left or none.
-        let pool = crate::terrain_z8::pool_digest(root, &manifest);
         let left = [
             !crate::osmpass::SETS.iter().all(|st| manifest.contains_key(&crate::osmpass::set_name(&date, st.0))),
             build::outlines_work(&date, &manifest, &keys).is_some()
@@ -8454,10 +8434,9 @@ impl Agent {
             build::trailends_work(&date, &manifest, &keys).is_some()
                 || !manifest.contains_key(&crate::osmpass::set_name(&date, "hikes")),
             build::reach_work(&date, &manifest, &keys).is_some(),
-            pool.as_ref().is_none_or(|p| !manifest.contains_key(&crate::terrain_z8::logical(p))),
             crate::buildtiles::release_of(root, &manifest)
                 .map_or(true, |r| !manifest.contains_key(&crate::buildtiles::index_logical(&r))),
-            build::summits_work(&date, &manifest, &keys, pool.as_deref()).is_some()
+            build::summits_work(&date, &manifest, &keys).is_some()
                 || !manifest.contains_key(&format!("work/summits/{date}")),
             build::labels_work(&date, &manifest, &keys).is_some(),
             // (A source folder that can't be read: held, left, as the jobs see it.)
@@ -10890,14 +10869,6 @@ pub fn input_digests(root: &store::nasfs::NasRoot) -> BTreeMap<String, String> {
         crate::inputs::regions::read::source_now(root).map(|a| a.version).unwrap_or_else(|_| "?".into()),
     );
     inputs.insert("keys".into(), key_names(&root.join("inputs/keys.env")).unwrap_or_else(|| "?".into()));
-    // The elevation pool's digest, as the worldwide z8's name and the summits' and peaks' keys name
-    // it (crate::terrain_z8::pool_digest); none while it can't be read.
-    if let Some(p) = crate::terrain_z8::pool_digest(
-        root,
-        &crate::out::read_record(&root.join("state/build/manifest.json")).unwrap_or_default(),
-    ) {
-        inputs.insert(crate::terrain_z8::INPUT.into(), p);
-    }
     // The 3D buildings' sources, of the declared releases (crate::inputs::sources): what each z6
     // tile's bldprep reads, and its rows, and what the keys name of the declarations ("bld-key");
     // none before they're accepted (no 3D buildings' work), "?" while they can't be read now.
@@ -11055,7 +11026,7 @@ pub fn step_of(id: &str) -> Option<String> {
     id.split(' ').next().filter(|s| !s.is_empty()).map(str::to_string)
 }
 
-/// What job `spec`'s own lease is held again for: its record, or for a job of none (terrain-z8)
+/// What job `spec`'s own lease is held again for: its record, or for a job of none (buildings)
 /// its step from its id and no targets (#666: it was killed when its lease lapsed).
 fn held_work(spec: &JobSpec) -> build::Work {
     spec.record
@@ -11469,7 +11440,7 @@ fn first_secs(step: &str) -> f64 {
         "outlines" => 330.0,
         "trailends" => 15.0,
         "reach" => 1800.0,
-        "terrain-z8" | "buildings" | "items" => 3600.0,
+        "buildings" | "items" => 3600.0,
         "summits" => 30.0,
         "labels" => 2200.0,
         "water" => 3600.0,
@@ -11576,12 +11547,12 @@ mod tests {
     }
     use super::*;
 
-    /// #666: a job of no record (terrain-z8) is held again by its step from its id, no targets,
+    /// #666: a job of no record (buildings) is held again by its step from its id, no targets,
     /// when its lease's beat fails; one with a record by its record.
     #[test]
     fn a_record_less_job_is_held_again_by_its_step() {
         let spec = |record| JobSpec {
-            id: "terrain-z8".into(),
+            id: "buildings 2026-09-01".into(),
             what: String::new(),
             cmd: Vec::new(),
             needs: Default::default(),
@@ -11589,7 +11560,7 @@ mod tests {
             record,
         };
         let w = held_work(&spec(None));
-        assert_eq!((w.step.as_str(), w.targets.len()), ("terrain-z8", 0));
+        assert_eq!((w.step.as_str(), w.targets.len()), ("buildings", 0));
         let r = build::Work { step: "unit".into(), targets: vec![("6/1/1".into(), "k".into())] };
         assert_eq!(held_work(&spec(Some(r.clone()))).targets, r.targets);
     }
@@ -14635,12 +14606,9 @@ mod tests {
         let o = plan.iter().find(|j| j.id == format!("outlines {date}")).unwrap_or_else(|| panic!("{:?}", ids(&plan)));
         assert_eq!(o.record.as_ref().map(|r| r.step.as_str()), Some("outlines"));
         assert!(o.cmd[1] == "outlines" && o.cmd.windows(2).any(|p| p == ["--pass", date]), "{:?}", o.cmd);
-        // Nothing else of the build meanwhile (the z8 terrain, which waits for nothing else, among it).
+        // Nothing else of the build meanwhile.
         assert!(
-            !ids(&plan).iter().any(|i| i.starts_with("terrain-z8")
-                || i.starts_with("unit ")
-                || i.starts_with("spoken")
-                || i.starts_with("lakefill")),
+            !ids(&plan).iter().any(|i| i.starts_with("unit ") || i.starts_with("spoken") || i.starts_with("lakefill")),
             "{:?}",
             ids(&plan)
         );
@@ -14650,12 +14618,7 @@ mod tests {
         keys.record("outlines", &build::outlines_work(date, &m, &keys).unwrap().targets);
         keys.save(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         let plan = a.plan(&store::nasfs::NasRoot::local_for_test(&root), &cond, &mut Vec::new());
-        assert!(
-            !ids(&plan).iter().any(|i| i.starts_with("outlines"))
-                && ids(&plan).iter().any(|i| i.starts_with("terrain-z8")),
-            "{:?}",
-            ids(&plan)
-        );
+        assert!(!ids(&plan).iter().any(|i| i.starts_with("outlines")) && !ids(&plan).is_empty(), "{:?}", ids(&plan));
     }
 
     #[test]
