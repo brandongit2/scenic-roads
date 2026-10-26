@@ -172,4 +172,34 @@ out=$(cd $g && zsh -c "source ${(q)lib}; fast_forward $cur $C 20261026-1000-$C" 
 out=$(cd $g && zsh -c "source ${(q)lib}; fast_forward $cur $C 20261026-0953-$B" 2>&1) && ok "fast_forward begun after a rollback" || no "fast_forward after rollback" "$out"
 rm -f $nas/app/previous.json
 
+# smoke: two publishes' smoke tests at once (task #698), each its own port and fake server (a
+# Python stand-in answering 200 after a delay, as the server answers once its catalog is read).
+# The first's server is slow to start, as the mini's was beside the other publish's build: it is
+# waited for, not reported as six 000s. One still starting past the wait, and one that exits, are
+# each said so, with whether it printed anything.
+fake=$tmp/fake.py
+print -r -- 'import sys, time, http.server
+time.sleep(float(sys.argv[2]))
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self): self.send_response(200); self.end_headers()
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()' > $fake
+sm() {  # <name> <port> <delay> <wait>: smoke against a fake server, its output in $tmp/smoke-<name>
+  python3 -I $fake $2 $3 > $tmp/log-$1 2>&1 &
+  local p=$! rc
+  zsh -c "source ${(q)lib}; smoke $2 $p $tmp/log-$1 $4 /api/ping /api/meta /" > $tmp/smoke-$1 2>&1; rc=$?
+  kill $p 2>/dev/null; wait $p 2>/dev/null
+  return $rc
+}
+p1=$(( 20000 + RANDOM % 20000 )); p2=$(( p1 + 1 ))
+sm first $p1 3 20 & s1=$!; sm second $p2 0 20 & s2=$!
+wait $s1; r1=$?; wait $s2; r2=$?
+(( r1 == 0 && r2 == 0 )) && ok "smoke: two at once, the first's server slow to start, both pass" || no "smoke two at once" "$r1/$r2: $(<$tmp/smoke-first) $(<$tmp/smoke-second)"
+sm slow $p1 30 1 && no "smoke still starting" "passed" || {
+  [[ $(<$tmp/smoke-slow) == *'still running'*'printed nothing'* && $(<$tmp/smoke-slow) != *000* ]] && ok "smoke: a server still starting past the wait said so" || no "smoke still starting" "$(<$tmp/smoke-slow)"; }
+print -r -- 'import sys; print("boom", file=sys.stderr); sys.exit(3)' > $tmp/die.py
+# (Started by the shell that runs smoke, as publish.sh does: its status is that shell's to wait for.)
+out=$(zsh -c "source ${(q)lib}; python3 -I $tmp/die.py > $tmp/log-die 2>&1 & smoke $p1 \$! $tmp/log-die 20 /api/ping") && no "smoke exited" "passed" || {
+  [[ $out == *'exited (status 3)'*boom* ]] && ok "smoke: a server that exited said so, with its log" || no "smoke exited" "$out"; }
+
 exit $failed

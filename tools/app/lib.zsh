@@ -137,3 +137,42 @@ fast_forward() {
 }
 # live_version <current.json>: its version's name.
 live_version() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' $1 2>/dev/null; }
+
+# smoke <port> <pid> <log> <seconds> <path>...: the smoke test of the server <pid> started on <port>,
+# its output in <log>. It waits up to <seconds> for /api/ping (the server listens only once its
+# catalog is read from the NAS, and prints nothing before then), then asks each path, a few tries
+# on 503 (a busy NAS's slow read), and wants 200 or 204. 0 when all answered so; else says which
+# didn't and returns 1. A server that never answered is told apart, its paths not asked: exited
+# (its status), or still starting after <seconds> (task #698: under a second publish's build the
+# mini's took over the old 2 min), with its log's last lines or that it printed nothing.
+smoke() {
+  local port=$1 pid=$2 log=$3 wait=$4 u code try t0=$SECONDS ok=1 rc
+  shift 4
+  until curl -sf -o /dev/null http://127.0.0.1:$port/api/ping; do
+    if ! kill -0 $pid 2>/dev/null; then
+      wait $pid 2>/dev/null; rc=$?
+      print -r -- "smoke test: the server exited (status $rc) after $(( SECONDS - t0 )) s without answering"
+      ok=0; break
+    fi
+    if (( SECONDS - t0 >= wait )); then
+      print -r -- "smoke test: the server, still running, didn't answer /api/ping within $wait s (it listens once its catalog is read from the NAS)"
+      ok=0; break
+    fi
+    sleep 0.5
+  done
+  if (( ! ok )); then
+    if [[ -s $log ]]; then print -r -- "its log's last lines:"; tail -20 $log
+    else print -r -- "it printed nothing"; fi
+    return 1
+  fi
+  (( SECONDS - t0 > 60 )) && print -r -- "smoke test: the server answered after $(( SECONDS - t0 )) s"
+  for u in "$@"; do
+    for try in 1 2 3 4 5; do
+      code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port$u") || true
+      [[ $code == 503 ]] || break
+      sleep 3
+    done
+    [[ $code == 200 || $code == 204 ]] || { print -r -- "smoke test: $u answered $code"; ok=0; }
+  done
+  (( ok )) || { tail -20 $log; return 1; }
+}

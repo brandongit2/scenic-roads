@@ -214,20 +214,10 @@ home=$(mktemp -d); port=18080; [[ $snap == $spare ]] && port=18081
 ./target/release/server --port $port --home $home --no-mirror --web web/dist-publish --fonts $fonts > $home/server.log 2>&1 &
 pid=$!
 cleanup+=("kill $pid 2>/dev/null; rm -rf $home")
-ok=1
-# Up to 2 min: its catalog is read from the NAS, which a busy NAS answers slowly (21 Oct: 19 s+ under the
-# depth repack; past the old 30 s the smoke test's curl couldn't connect and the publish ended, exit 7).
-for i in {1..240}; do curl -sf -o /dev/null http://127.0.0.1:$port/api/ping && break; kill -0 $pid 2>/dev/null || break; sleep 0.5; done
-for u in /api/ping /api/meta /api/catalog / "/tiles/terrain/5/9/11" "/tiles/roads/10/300/380"; do
-  # A busy NAS can answer 503 for a moment (a slow read fails alone): a few tries each.
-  for try in 1 2 3 4 5; do
-    code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port$u") || true
-    [[ $code == 503 ]] || break
-    sleep 3
-  done
-  [[ $code == 200 || $code == 204 ]] || { echo "smoke test: $u answered $code"; ok=0; }
-done
-[[ $ok == 1 ]] || { cat $home/server.log | tail -20; exit 1; }
+# Up to 10 min for its first answer: its catalog is read from the NAS first, which a busy NAS, or
+# this Mac under a second publish's build, slows (21 Oct: 19 s+ under the depth repack; 26 Oct:
+# past 2 min beside another publish's build, task #698).
+smoke $port $pid $home/server.log 600 /api/ping /api/meta /api/catalog / "/tiles/terrain/5/9/11" "/tiles/roads/10/300/380" || exit 1
 kill $pid; wait $pid 2>/dev/null || true
 version=$(date -u +%Y%m%d-%H%M)-$head
 dest=$NAS/app/$version
