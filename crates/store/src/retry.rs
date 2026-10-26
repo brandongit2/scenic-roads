@@ -384,7 +384,7 @@ mod tests {
             });
             let _ = tx.send((r.map_err(|e| e.to_string()), outer.get(), inner.get(), worker.is_err()));
         });
-        let got = rx.recv_timeout(Duration::from_secs(20)).expect("a nested retry hangs");
+        let got = rx.recv_timeout(crate::testkit::WATCHDOG).expect("a nested retry hangs");
         assert_eq!(got, (Ok(5), 4, 3, true));
         assert!(!in_attempt());
     }
