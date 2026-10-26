@@ -534,10 +534,14 @@ async function run() {
       await show("machines");
       names.jobs = await js(`[...document.querySelectorAll(".mc .job .what")].map((e) => [...e.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join("").trim()).filter((x) => x && !/^(Waiting|Nothing|Paused|This Mac)/.test(x))`);
       const area = new Set(["root", "lo", "hi", "deep"]);
+      // (A job an older app runs, taken over at an update (the status's `old_app`), may be of a
+      // step this app no longer has, e.g. terrain-z8 after #670: its name is that app's code's.)
+      const sw = await js(`fetch("/work/swarm", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()).catch(() => ({}))`);
+      const oldJobs = new Set(JSON.stringify(sw).match(/"old_app":\[[^\]]*\]/g)?.flatMap((m) => [...m.matchAll(/"job":"([^" ]+)/g)].map((x) => x[1])) || []);
       const bad = [
-        ...names.legend.filter((x) => !steps.has(x) && !stages.includes(x) && !area.has(x)), ...names.legendText.filter((x) => !steps.has(x)),
-        ...names.strip.filter((x) => !stages.includes(x)), ...names.stageRows.filter((x) => !stages.includes(x)), ...names.stepRows.filter((x) => !steps.has(x)),
-        ...names.schedule.filter((x) => !stages.includes(x)), ...names.jobs.filter((x) => !steps.has(x.split(" ")[0])),
+        ...names.legend.filter((x) => !steps.has(x) && !stages.includes(x) && !area.has(x)).map((x) => `legend ${x}`), ...names.legendText.filter((x) => !steps.has(x)).map((x) => `legend ${x}`),
+        ...names.strip.filter((x) => !stages.includes(x)).map((x) => `strip ${x}`), ...names.stageRows.filter((x) => !stages.includes(x)).map((x) => `stage row ${x}`), ...names.stepRows.filter((x) => !steps.has(x)).map((x) => `step row ${x}`),
+        ...names.schedule.filter((x) => !stages.includes(x)).map((x) => `schedule ${x}`), ...names.jobs.filter((x) => !steps.has(x.split(" ")[0]) && !oldJobs.has(x.split(" ")[0])).map((x) => `Machines job ${x}`),
       ];
       const shown = Object.values(names).reduce((k, v) => k + v.length, 0);
       check("no display names: every stage, step and job label is the code's name", shown > 0 && !bad.length, `${shown} labels; not a code name: ${bad.slice(0, 5).join(" | ") || "none"}`);

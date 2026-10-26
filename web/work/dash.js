@@ -420,7 +420,8 @@ function mapData(m) {
   const from = m.now - (ui.past || 6 * 3600);
   const runs = mapRuns(m);
   // (Jobs with no tile to show, a worldwide step's: named under the map, as the mockup does.)
-  const world = runs.filter((r) => !r.targets.some((t) => tileOf(t)));
+  // (A job and its lease are one run: named once.)
+  const world = [...new Map(runs.filter((r) => !r.targets.some((t) => tileOf(t))).map((r) => [`${r.step} ${r.mac}`, r])).values()];
   const hosts = m.macs.map((x) => x.name);
   // (In the last catalogue: what finished by its job's start, when it took what was done; the
   // record's time is its end.)
