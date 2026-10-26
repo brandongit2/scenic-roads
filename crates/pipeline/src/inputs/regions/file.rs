@@ -80,7 +80,7 @@ pub enum Target {
 
 impl std::fmt::Display for Part {
     /// The part as text: `osm:<id>`, `shape:<name>`, `region:<id>`, `{buffer <of> <by>}`, `{cut <of>
-    /// line:<name> <keep>}`: a stored shape's `from`, and the outline entries a catalog records.
+    /// line:<name> <keep>}`: a stored shape's `from`, and the outline entries a catalogue records.
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Part::Osm(id) => write!(f, "osm:{id}"),
@@ -359,7 +359,7 @@ impl Region {
         v
     }
 
-    /// Its outline entries as text, as a catalog records them and `outline_digest` hashes them: the
+    /// Its outline entries as text, as a catalogue records them and `outline_digest` hashes them: the
     /// same strings as a recipe's for `osm:` parts.
     pub fn outline_text(&self) -> Vec<String> {
         self.outline.iter().map(|p| p.to_string()).chain(self.water.iter().map(|p| format!("water {p}"))).collect()

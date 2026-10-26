@@ -1,9 +1,9 @@
-//! Tiles of every layer, from the catalog's packs (and the basemap's PMTiles archives).
+//! Tiles of every layer, from the catalogue's packs (and the basemap's PMTiles archives).
 //!
 //! Caching: a tile's ETag is its content hash (the basemap's: its archives' content names and its
 //! position), plus, for tiles with names, the version of the translations it uses. A 304 is answered
-//! from the pack index (the basemap's from the catalog) alone, never the NAS. URLs the app versions
-//! (`?v=`, the layer's version from the catalog) are cached for good.
+//! from the pack index (the basemap's from the catalogue) alone, never the NAS. URLs the app versions
+//! (`?v=`, the layer's version from the catalogue) are cached for good.
 
 use crate::S;
 use anyhow::Context;
@@ -277,7 +277,7 @@ pub async fn named_mvt_tile(
     }
 }
 
-/// A basemap tile's identity, known from the catalog without reading the tile: its archives'
+/// A basemap tile's identity, known from the catalogue without reading the tile: its archives'
 /// content names (immutable, so the same names hold the same tiles) and its position. With the
 /// version of the translations it uses, that's everything the served tile is made from.
 fn base_hash(archives: &[String], z: u8, x: u32, y: u32) -> u64 {
@@ -293,7 +293,7 @@ fn base_hash(archives: &[String], z: u8, x: u32, y: u32) -> u64 {
 }
 
 /// The basemap: the tile from every basemap archive that has it (today's basemap and its parts),
-/// merged, with names attached. Its ETag comes from the catalog, so the browser's copy is confirmed
+/// merged, with names attached. Its ETag comes from the catalogue, so the browser's copy is confirmed
 /// (304) without reading the archives, which are on the NAS until the mirror has them.
 pub async fn base_tile(
     State(s): State<S>,
@@ -318,7 +318,7 @@ pub async fn base_tile(
     }
     let s2 = s.clone();
     let got = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Vec<u8>>> {
-        // From the archives the ETag names, even if a new catalog came meanwhile.
+        // From the archives the ETag names, even if a new catalogue came meanwhile.
         let tiles = s2.basemap.tiles(&s2.data, &archives, z, x, y)?;
         let raw: Vec<Vec<u8>> =
             tiles.iter().filter_map(|b| names::mvt::gunzip_if_gzip(b).ok().map(|c| c.into_owned())).collect();
@@ -455,23 +455,23 @@ mod tests {
         b
     }
 
-    /// A NAS folder whose catalog's basemap is the one archive `name` (on the NAS when given), and
+    /// A NAS folder whose catalogue's basemap is the one archive `name` (on the NAS when given), and
     /// its content name.
     fn nas_with_basemap(name: &str, archive: Option<&[u8]>) -> (tempfile::TempDir, String) {
         let nas = tempfile::tempdir().unwrap();
         let logical = format!("layers/basemap/{name}");
         let content = format!("{logical}.0123456789abcdef.pmtiles");
-        let mut cat = store::catalog::Catalog::new(1);
+        let mut cat = store::catalogue::Catalogue::new(1);
         cat.basemap = vec![logical.clone()];
         cat.files.insert(
             logical,
-            store::catalog::FileRef {
+            store::catalogue::FileRef {
                 file: content.clone(),
                 size: archive.map_or(0, |a| a.len() as u64),
                 ..Default::default()
             },
         );
-        store::catalog::write_copy(&nas.path().join("catalog"), &cat).unwrap();
+        store::catalogue::write_copy(&nas.path().join("catalog"), &cat).unwrap();
         if let Some(a) = archive {
             let p = nas.path().join(&content);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -512,7 +512,7 @@ mod tests {
 
     #[tokio::test]
     async fn basemap_304_reads_nothing() {
-        // The catalog names an archive the NAS doesn't have, so any read of it fails.
+        // The catalogue names an archive the NAS doesn't have, so any read of it fails.
         let (nas, content) = nas_with_basemap("world-gone", None);
         let home = tempfile::tempdir().unwrap();
         let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
@@ -566,13 +566,13 @@ mod tests {
             store::naming::Source::Bytes(&archive),
         )
         .unwrap();
-        let mut cat = store::catalog::Catalog::new(1);
+        let mut cat = store::catalogue::Catalogue::new(1);
         cat.basemap = vec![logical.into()];
         cat.files.insert(
             logical.into(),
-            store::catalog::FileRef { file: content.clone(), size: archive.len() as u64, ..Default::default() },
+            store::catalogue::FileRef { file: content.clone(), size: archive.len() as u64, ..Default::default() },
         );
-        store::catalog::write_copy(&nas.path().join("catalog"), &cat).unwrap();
+        store::catalogue::write_copy(&nas.path().join("catalog"), &cat).unwrap();
         let home = tempfile::tempdir().unwrap();
         let s = crate::test_state_with(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()), true);
         // 31/21's piece downloaded; then the NAS's archive gone.

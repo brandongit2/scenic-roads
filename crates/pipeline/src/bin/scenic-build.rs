@@ -131,7 +131,7 @@
 //!                                or time changed)
 //!   put <logical> <ext> <file>   upload a file under a logical name
 //!   verify                       check every unverified upload on the NAS (SHA-256 over SSH)
-//!   catalog                      publish a catalog of the build manifest
+//!   catalogue                      publish a catalogue of the build manifest
 //!   regions-check --dir d [--declarations d] [--report f]   the regions' check on a scratch
 //!                                folder, in memory: findings and sizes. Reads only
 //!   p5-check trees [--pass d] [--costs f]  what switching tree cover to z6 tiles and assemblies
@@ -405,7 +405,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
     }
     if step == "names-todo" {
         // names-todo --translations-index <index> --descriptions-index <index> [--out <dir>]: the
-        // translations' and descriptions' to-do lists from the newest catalog (pipeline::namestodo)
+        // translations' and descriptions' to-do lists from the newest catalogue (pipeline::namestodo)
         // and those inputs' accepted versions the agent names (their indexes' content names), into
         // the inputs folders' todo/ under the root (or --out); it writes nothing else.
         let out = opt(&args, "--out").map_or_else(|| root.clone(), store::nasfs::NasRoot::from_arg);
@@ -484,18 +484,18 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let n = out.verify(&SSH, &format!("{}/{}", store::nas::SHARE_ON_NAS, store::nas::PROJECT))?;
             eprintln!("verified {n} uploads");
         }
-        // catalog [--held] [--ready <ids>] [--delta]: held, it goes to catalog-held/, which
+        // catalogue [--held] [--ready <ids>] [--delta]: held, it goes to catalog-held/, which
         // no server reads (a build to compare before it's switched to: inputs/hold-catalog);
         // `--ready`, the regions it records as built (comma-separated; the agent's plan says which),
-        // the others as the last catalog had them (without it: every region as its recipe is now);
+        // the others as the last catalogue had them (without it: every region as its recipe is now);
         // `--building`, the regions still building with their z6 tiles built of their total (the
-        // plan's), recorded as their recipes are now with that count, unless the last catalog had
+        // plan's), recorded as their recipes are now with that count, unless the last catalogue had
         // them built (with an older outline, or z6 tiles rebuilt: on the map as they were).
-        // `--delta` (the agent's, with state/pool/delta-catalog on): the served catalog written as
-        // what changed over the last (docs/formats.md, Delta catalogs), each file's size as the
-        // records or the last catalog have it, not looked at on the NAS, unless a whole one is due
-        // (store::catalog::whole_due), written whole then, every file looked at.
-        "catalog" => {
+        // `--delta` (the agent's, with state/pool/delta-catalog on): the served catalogue written as
+        // what changed over the last (docs/formats.md, Delta catalogues), each file's size as the
+        // records or the last catalogue have it, not looked at on the NAS, unless a whole one is due
+        // (store::catalogue::whole_due), written whole then, every file looked at.
+        store::catalogue::NAME => {
             // (`<id>=<outline digest>` each, or a bare id: a region built with the outline it has now.)
             let ready: Option<BTreeMap<String, Option<String>>> = opt(&args, "--ready").map(|v| {
                 v.split(',')
@@ -521,12 +521,12 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 .transpose()?
                 .unwrap_or_default();
             let has = |f: &str| flag(&args, f);
-            catalog(
+            catalogue(
                 &mut out,
                 has("--held"),
                 ready.as_ref(),
                 &building,
-                CatalogWay { delta: has("--delta") },
+                CatalogueWay { delta: has("--delta") },
                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs(),
             )
             .map(|st| eprintln!("{}", st.line()))?
@@ -1715,12 +1715,12 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>, 
     Ok(())
 }
 
-// ---- catalog --------------------------------------------------------------------------------
+// ---- catalogue --------------------------------------------------------------------------------
 
 /// The map's meta, added up from the z6 tiles' summaries: each base pack's own, else worked out from
 /// its sections once (packs without it) and kept in `state/build/summaries.json` by content
 /// name (a content name never changes).
-/// `now`: the catalog's moment (seconds since the epoch), its `built`.
+/// `now`: the catalogue's moment (seconds since the epoch), its `built`.
 fn units_meta(out: &Out, base: &BTreeMap<String, String>, now: u64) -> Result<serde_json::Value> {
     use pipeline::summary::Summary;
     let path = out.root().join("state/build/summaries.json");
@@ -1753,21 +1753,21 @@ fn units_meta(out: &Out, base: &BTreeMap<String, String>, now: u64) -> Result<se
     if made > 0 || known.len() != used.len() {
         known.retain(|c, _| used.contains(c));
         path.write_whole(&serde_json::to_vec(&known)?)?;
-        eprintln!("catalog: {made} unit summaries made from their packs");
+        eprintln!("catalogue: {made} unit summaries made from their packs");
     }
     let mut m = total.meta();
     m["built"] = serde_json::json!(now);
     Ok(m)
 }
 
-/// Names the bundles (docs/formats.md "Bundles"; task #449) in the catalog for every key they hold,
+/// Names the bundles (docs/formats.md "Bundles"; task #449) in the catalogue for every key they hold,
 /// over any pack or file of that key from before: each layer bundle (`layers`: a layer, its
 /// bundle's logical name) for the root, lo and hi keys of its tiles, the markdata's for its tiles.
-/// The keys are the last catalog's when it named the same file (by content name: the same bytes),
+/// The keys are the last catalogue's when it named the same file (by content name: the same bytes),
 /// else read from the bundle's index on the NAS (its header and index: a read or two).
 fn bundled(
     out: &Out,
-    last: Option<&store::catalog::Catalog>,
+    last: Option<&store::catalogue::Catalogue>,
     layer_bundles: &[(String, String)],
     markdata_bundle: Option<&str>,
     layers: &mut BTreeMap<String, LayerOut>,
@@ -1818,7 +1818,7 @@ fn bundled(
     Ok(())
 }
 
-/// A layer's tiles' encoding, as the catalog lists it.
+/// A layer's tiles' encoding, as the catalogue lists it.
 fn layer_encoding(layer: &str) -> &'static str {
     match layer {
         "roads" | "rails" => "rt7",
@@ -1871,7 +1871,7 @@ fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
     })
 }
 
-/// The catalog's `global` names besides `global/…` files: the latest pass's outlines, for the
+/// The catalogue's `global` names besides `global/…` files: the latest pass's outlines, for the
 /// Regions panel and the modules (exactly `sources/osm/<date>/outlines`: the pass's outline set,
 /// sets/outlines, is its input), and the lakes filled from Canada's own data made from the latest
 /// pass's basemap, which the server draws into the water's deeper zooms
@@ -1889,7 +1889,7 @@ fn worldwide_globals(m: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     g
 }
 
-/// Whether the catalog lists logical `l` among its files: only what the map reads (build sources,
+/// Whether the catalogue lists logical `l` among its files: only what the map reads (build sources,
 /// the planet's extracts, sets and road values, stay out, or every Mac's mirror would copy them).
 fn served_file(l: &str, basemap: &[String], global: &BTreeMap<String, String>) -> bool {
     (l.starts_with("layers/") && (!l.starts_with("layers/basemap/") || basemap.iter().any(|b| b == l)))
@@ -1901,42 +1901,42 @@ fn served_file(l: &str, basemap: &[String], global: &BTreeMap<String, String>) -
         || global.values().any(|g| g == l)
 }
 
-/// Whether `l` is a worldwide file the catalog serves: one under `global/` that a step of today's
+/// Whether `l` is a worldwide file the catalogue serves: one under `global/` that a step of today's
 /// build makes (pipeline::agent::steps::made). Another name there that the manifest still holds,
 /// made by an older pipeline, isn't listed: no Mac's mirror copies it, the map never reads it.
 fn served_global(l: &str) -> bool {
     l.starts_with("global/") && pipeline::agent::steps::made(l)
 }
 
-/// How a catalog is written (`--delta`).
+/// How a catalogue is written (`--delta`).
 #[derive(Clone, Copy, Default)]
-struct CatalogWay {
+struct CatalogueWay {
     /// Served (not held): as a delta over the last, unless there's no whole one to start from or
-    /// one is due (store::catalog::whole_due: the deltas since add up to it, or their run is half
+    /// one is due (store::catalogue::whole_due: the deltas since add up to it, or their run is half
     /// as long as readers go); each
-    /// file's size from the records (crate::out::SIZES) or the last catalog (by content name: the
+    /// file's size from the records (crate::out::SIZES) or the last catalogue (by content name: the
     /// same name, the same bytes), the NAS looked at only for a file neither has.
     delta: bool,
 }
 
-/// `now`: the catalog's moment (seconds since the epoch), its `created` and its meta's `built`.
-fn catalog(
+/// `now`: the catalogue's moment (seconds since the epoch), its `created` and its meta's `built`.
+fn catalogue(
     out: &mut Out,
     held: bool,
     ready: Option<&BTreeMap<String, Option<String>>>,
     building: &BTreeMap<String, pipeline::coverage::Tiles>,
-    way: CatalogWay,
+    way: CatalogueWay,
     now: u64,
-) -> Result<pipeline::pubtimes::CatalogStats> {
+) -> Result<pipeline::pubtimes::CatalogueStats> {
     let delta = way.delta && !held;
-    let p = phase("the manifest's files sorted into the catalog's", Class::Compute);
+    let p = phase("the manifest's files sorted into the catalogue's", Class::Compute);
     let mut layers: BTreeMap<String, LayerOut> = BTreeMap::new();
     let (mut base, mut roads, mut hidata, mut global, mut basemap) =
         (BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), Vec::new());
     let mut markdata = BTreeMap::new();
     let mut ovdata = BTreeMap::new();
     // Bundles (docs/formats.md "Bundles"): a layer's (layer, logical), and the markdata's; named
-    // for the keys they hold once the last catalog is read (`bundled`), over any pack or file of
+    // for the keys they hold once the last catalogue is read (`bundled`), over any pack or file of
     // the same key from before.
     let mut layer_bundles: Vec<(String, String)> = Vec::new();
     let mut markdata_bundle: Option<String> = None;
@@ -2036,16 +2036,17 @@ fn catalog(
     let units: Vec<String> = base.keys().cloned().collect();
     // The coverage it's built for, drawn from the outlines it lists, and the credits of the sources
     // its data comes from: where the coverage is, and where the z6 tiles' ways are.
-    let dir = out.root().join(if held { "catalog-held" } else { "catalog" });
-    // The last catalog there, whole (the first held one goes by the served one).
-    let mut last = store::catalog::latest(&dir).with_context(|| format!("the last catalog in {}", dir.display()))?;
+    let dir = out.root().join(if held { store::catalogue::HELD_NAME } else { store::catalogue::NAME });
+    // The last catalogue there, whole (the first held one goes by the served one).
+    let mut last =
+        store::catalogue::latest(&dir).with_context(|| format!("the last catalogue in {}", dir.display()))?;
     if last.is_none() && held {
-        last = store::catalog::latest(&out.root().join("catalog")).context("the last catalog")?;
+        last = store::catalogue::latest(&out.root().join(store::catalogue::NAME)).context("the last catalogue")?;
     }
     bundled(out, last.as_ref(), &layer_bundles, markdata_bundle.as_deref(), &mut layers, &mut markdata)?;
-    let regions = catalog_coverage(out, global.get("outlines").map(String::as_str), ready, building, last.as_ref())?;
+    let regions = catalogue_coverage(out, global.get("outlines").map(String::as_str), ready, building, last.as_ref())?;
     // (The inputs' accepted descriptions' credits beside the table's: pipeline::inputs::credits;
-    // one that can't be read now fails the catalog, as the agent's plan waits then, rather than
+    // one that can't be read now fails the catalogue, as the agent's plan waits then, rather than
     // publish credits without it.)
     let described = pipeline::inputs::credits::described(out.root(), &out.manifest)?;
     // (The depth's sources whose grids meet the depth's packs: credited wherever they are.)
@@ -2078,9 +2079,9 @@ fn catalog(
             .map(|id| (pipeline::inputs::feeds::UNIT.to_string(), format!("{id}.toml"))),
     );
     let credits =
-        pipeline::inputs::credits::catalog_credits_with(&regions, &unit_extents(out, &base), &described, &credited);
+        pipeline::inputs::credits::catalogue_credits_with(&regions, &unit_extents(out, &base), &described, &credited);
     eprintln!(
-        "catalog: {} regions, {} credits (of the table's {} and {} description{})",
+        "catalogue: {} regions, {} credits (of the table's {} and {} description{})",
         regions.len(),
         credits.len(),
         pipeline::rules::CREDITS.len(),
@@ -2088,22 +2089,22 @@ fn catalog(
         if described.len() == 1 { "" } else { "s" }
     );
     // Only what the map reads: build sources (the planet's extracts, sets and road values) stay out,
-    // or every Mac's mirror would copy them. A file missing on the NAS stops a whole catalog (a
+    // or every Mac's mirror would copy them. A file missing on the NAS stops a whole catalogue (a
     // delta takes its new files' sizes from the records and doesn't look).
     let served = |l: &str| served_file(l, &basemap, &global);
     drop(p);
-    // (A delta (`--delta`, served, with a whole catalog to start from and none due:
-    // store::catalog::whole_due, weighed here, by the job, so a lead that's never idle writes one
+    // (A delta (`--delta`, served, with a whole catalogue to start from and none due:
+    // store::catalogue::whole_due, weighed here, by the job, so a lead that's never idle writes one
     // too) lists each file's size as
-    // the records have it (crate::out::SIZES, from its job's hand-off) or the last catalog does (by
+    // the records have it (crate::out::SIZES, from its job's hand-off) or the last catalogue does (by
     // content name: the same name, the same bytes), looking at the NAS only for a file neither has
-    // (one written before the records kept sizes: once, the next catalog has it from this one). A
-    // whole catalog looks at every file, its check that each is there and of its recorded size:
+    // (one written before the records kept sizes: once, the next catalogue has it from this one). A
+    // whole catalogue looks at every file, its check that each is there and of its recorded size:
     // made when one is due, or when a delta can't be.)
     let p = phase("the last catalogs listed and the records' sizes read", Class::NasRead);
-    let due = if delta && last.is_some() { store::catalog::whole_due(&dir)? } else { None };
+    let due = if delta && last.is_some() { store::catalogue::whole_due(&dir)? } else { None };
     if due == Some(true) {
-        eprintln!("catalog: a whole catalog is due (the deltas since the last add up to it, or their run is long): this one whole");
+        eprintln!("catalogue: a whole catalogue is due (the deltas since the last add up to it, or their run is long): this one whole");
     }
     let as_delta = due == Some(false);
     let recorded = out.recorded_sizes()?;
@@ -2118,7 +2119,7 @@ fn catalog(
     if as_delta {
         let from_records = all.iter().filter(|(_, n)| recorded.contains_key(n.as_str())).count();
         eprintln!(
-            "catalog: {} of {} files' sizes from the records, {} more from catalog {}, {} looked at on the NAS",
+            "catalogue: {} of {} files' sizes from the records, {} more from catalogue {}, {} looked at on the NAS",
             from_records,
             all.len(),
             all.len() - listed.len() - from_records,
@@ -2150,7 +2151,7 @@ fn catalog(
     for ((l, n), size) in listed.into_iter().zip(sizes) {
         let size =
             size.into_inner().context("not checked")?.with_context(|| format!("{l}: {n} is missing on the NAS"))?;
-        // (Whole: a file of another size than the records or the last catalog say is an error.)
+        // (Whole: a file of another size than the records or the last catalogue say is an error.)
         if let Some(&k) = known.get(n.as_str()) {
             anyhow::ensure!(size == k, "{l}: {n} is {size} bytes on the NAS, {k} as recorded");
         }
@@ -2162,11 +2163,12 @@ fn catalog(
         files.insert(l.clone(), serde_json::json!({"file": n, "size": known[n.as_str()], "fmt": 1}));
     }
     drop(p);
+    // (Phase names are stored in the job logs and their stats: the old spelling stays, task #547.)
     let _p = phase("the catalog written", Class::NasWrite);
     dir.create_dir_all()?;
-    let n = store::catalog::next_n(&dir)?;
+    let n = store::catalogue::next_n(&dir)?;
     let cat = serde_json::json!({
-        "fmt": store::catalog::FMT,
+        "fmt": store::catalogue::FMT,
         "n": n,
         "created": utc(now as i64),
         // The published app that made it (its folder's name), or "development".
@@ -2184,16 +2186,16 @@ fn catalog(
         "meta": meta,
         "credits": credits,
         "dem_labels": pipeline::inputs::credits::dem_labels(&described),
-        // (`recorded`: this catalog says which regions it's built for, even none of them yet; one
-        // made before catalogs did has none, and the server draws the recipes for it.)
+        // (`recorded`: this catalogue says which regions it's built for, even none of them yet; one
+        // made before catalogues did has none, and the server draws the recipes for it.)
         "coverage": {"regions": regions, "recorded": true},
     });
-    let catalog: store::catalog::Catalog = serde_json::from_value(cat)?;
-    // (As a delta over the last whole-read catalog, however large: the whole one comes with the
-    // next catalog, store::catalog::whole_due.)
+    let catalogue: store::catalogue::Catalogue = serde_json::from_value(cat)?;
+    // (As a delta over the last whole-read catalogue, however large: the whole one comes with the
+    // next catalogue, store::catalogue::whole_due.)
     let as_delta = match last.as_ref().filter(|_| as_delta) {
         Some(base) => {
-            let d = store::catalog::Delta::between(base, &catalog)?;
+            let d = store::catalogue::Delta::between(base, &catalogue)?;
             let size = d.encode()?.len() as u64;
             Some((base, d, size))
         }
@@ -2203,40 +2205,40 @@ fn catalog(
     let path = match as_delta {
         Some((base, d, size)) => {
             eprintln!(
-                "catalog: {n} as a delta over {} ({size} bytes; changed: {})",
+                "catalogue: {n} as a delta over {} ({size} bytes; changed: {})",
                 base.n,
-                store::catalog::delta::changed_keys(&d.patch).into_iter().collect::<Vec<_>>().join(", ")
+                store::catalogue::delta::changed_keys(&d.patch).into_iter().collect::<Vec<_>>().join(", ")
             );
-            // (Published by store::catalog's writer, its own temporary name and read-back:
+            // (Published by store::catalogue's writer, its own temporary name and read-back:
             // tests/nas_access.rs.)
-            store::catalog::write_delta_of(&dir.unchecked_path(), base, &catalog, &d)?
+            store::catalogue::write_delta_of(&dir.unchecked_path(), base, &catalogue, &d)?
         }
-        None => store::catalog::write(&dir.unchecked_path(), &catalog)?,
+        None => store::catalogue::write(&dir.unchecked_path(), &catalogue)?,
     };
     eprintln!("published {}", path.display());
     // (What it did, for publishing's times (pipeline::pubtimes): its phases once written, the
     // write's whole.)
     drop(_p);
-    Ok(pipeline::pubtimes::CatalogStats::now(n, delta_written, all.len() as u64, total))
+    Ok(pipeline::pubtimes::CatalogueStats::now(n, delta_written, all.len() as u64, total))
 }
 
-/// The coverage a catalog records: the regions built as their recipes are now (`ready`; without it
+/// The coverage a catalogue records: the regions built as their recipes are now (`ready`; without it
 /// every recipe), each outline entry simplified for drawing (pipeline::coverage::drawn), `osm:`
-/// ones from `outlines` (the catalog's own); and a region not built yet as the last catalog in
+/// ones from `outlines` (the catalogue's own); and a region not built yet as the last catalogue in
 /// `catalogs` had it, if it had it (on the map as it was: its old outline, its z6 tiles not yet rebuilt),
-/// in the recipes' order; a region still building (`building`, the plan's) the last catalog didn't
+/// in the recipes' order; a region still building (`building`, the plan's) the last catalogue didn't
 /// have built, as its recipe is now with its tiles built of its total (`DrawnRegion::tiles`): its
-/// z6 tiles are on the map, and downloadable, as they come. So the regions are those the catalog's
+/// z6 tiles are on the map, and downloadable, as they come. So the regions are those the catalogue's
 /// data is built for or being built for; the Regions panel shows a recipe it lacks, or has with
 /// another outline, as still to come.
-/// A read that fails (the NAS) fails the catalog, to be tried again, rather than record a region
+/// A read that fails (the NAS) fails the catalogue, to be tried again, rather than record a region
 /// without its outline or leave a region out.
-fn catalog_coverage(
+fn catalogue_coverage(
     out: &Out,
     outlines: Option<&str>,
     ready: Option<&BTreeMap<String, Option<String>>>,
     building: &BTreeMap<String, pipeline::coverage::Tiles>,
-    last: Option<&store::catalog::Catalog>,
+    last: Option<&store::catalogue::Catalogue>,
 ) -> Result<Vec<pipeline::coverage::DrawnRegion>> {
     use pipeline::inputs::regions::read;
     let _ = outlines;
@@ -2249,7 +2251,7 @@ fn catalog_coverage(
             .get(&r.id)
             .is_some_and(|d| d.as_ref().is_none_or(|d| *d == pipeline::agent::recipes::outline_digest(&r.outline)))
     };
-    // (The first held catalog keeps the regions as the served one has them: `last`, the caller's.)
+    // (The first held catalogue keeps the regions as the served one has them: `last`, the caller's.)
     let had: BTreeMap<String, pipeline::coverage::DrawnRegion> = last
         .and_then(|c| {
             c.coverage
@@ -2275,7 +2277,7 @@ fn catalog_coverage(
     let building_n = drawn.values().filter(|d| d.tiles.is_some()).count();
     let kept = recipes.iter().filter(|r| !drawn.contains_key(&r.id) && had.contains_key(&r.id)).count();
     eprintln!(
-        "catalog: {} regions built as they are now, {building_n} still building, {kept} as the last catalog had them",
+        "catalogue: {} regions built as they are now, {building_n} still building, {kept} as the last catalogue had them",
         drawn.len() - building_n
     );
     Ok(recipes.iter().filter_map(|r| drawn.remove(&r.id).or_else(|| had.get(&r.id).cloned())).collect())
@@ -2415,7 +2417,7 @@ fn utc(s: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem / 60 % 60, rem % 60)
 }
 
-/// RFC 3339 UTC as `utc` writes it (a catalog's `created`), as seconds since the epoch (tests: `utc`'s
+/// RFC 3339 UTC as `utc` writes it (a catalogue's `created`), as seconds since the epoch (tests: `utc`'s
 /// round trip).
 #[cfg(test)]
 fn epoch_of(t: &str) -> Option<i64> {
@@ -3606,14 +3608,14 @@ fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result
     Ok(())
 }
 
-/// The `unit` step's global-source layers: the manifest's, or a pilot's published catalog.
+/// The `unit` step's global-source layers: the manifest's, or a pilot's published catalogue.
 fn layers_source<'a>(
     out: &'a Out,
-    pilot: &'a Option<(store::nasfs::NasRoot, store::catalog::Catalog)>,
+    pilot: &'a Option<(store::nasfs::NasRoot, store::catalogue::Catalogue)>,
     blobs: Option<&'a store::blobs::Blobs>,
 ) -> pipeline::stage::Source<'a> {
     match pilot {
-        Some((r, c)) => pipeline::stage::Source::Catalog(r, c),
+        Some((r, c)) => pipeline::stage::Source::Catalogue(r, c),
         None => pipeline::stage::Source::Manifest(out, blobs),
     }
 }
@@ -3746,11 +3748,12 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let setup = phase("the pass, coverage, pieces and reaches read", Class::NasRead);
     let (date, cov, regions) = pass_and_coverage(out, args)?;
     // Global-source layers: as this build's manifest has them now (what the z6 tile keys hash: a
-    // terrain job of the same plan is published only with its catalog, at the end), or another
-    // root's published catalog (a pilot builds against the real one).
+    // terrain job of the same plan is published only with its catalogue, at the end), or another
+    // root's published catalogue (a pilot builds against the real one).
     let pilot = match opt(args, "--layers-root").map(store::nasfs::NasRoot::from_arg) {
         Some(r) => {
-            let c = store::catalog::latest(&r.join("catalog"))?.context("no catalog for the global-source layers")?;
+            let c =
+                store::catalogue::latest(&r.join("catalog"))?.context("no catalogue for the global-source layers")?;
             Some((r, c))
         }
         None => None,
@@ -4449,7 +4452,7 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
 }
 
 /// Drops the prune targets' entries from the manifest (agent::build's prune works): the next
-/// catalog leaves them out, and GC frees their files once no catalog of the last 14 days lists them.
+/// catalogue leaves them out, and GC frees their files once no catalogue of the last 14 days lists them.
 fn prune_step(out: &mut Out, args: &[String]) -> Result<()> {
     let p = phase("the targets' entries dropped", Class::Compute);
     let mut gone = 0;
@@ -6314,13 +6317,13 @@ mod tests {
         assert!(super::done_line("pois", "8/1/2", t)["sizes"].get("ways").is_none());
     }
 
-    /// The tests' catalogs' moment: fixed, so two runs make the same catalog whenever they run.
+    /// The tests' catalogues' moment: fixed, so two runs make the same catalogue whenever they run.
     const NOW: u64 = 1_790_000_000;
 
-    /// The catalog names the pass's lake fill in `global` and lists it among its files (so the
+    /// The catalogue names the pass's lake fill in `global` and lists it among its files (so the
     /// server draws it and the mirror copies it); a fill of an older pass's basemap neither.
     #[test]
-    fn the_catalog_names_and_lists_the_passs_lake_fill() {
+    fn the_catalogue_names_and_lists_the_passs_lake_fill() {
         let mut m = std::collections::BTreeMap::new();
         m.insert(
             "layers/basemap/world-2026-09-28".to_string(),
@@ -6346,10 +6349,10 @@ mod tests {
         assert_eq!(super::worldwide_globals(&m).get("lakefill"), None);
     }
 
-    /// Under `global/`, the catalog lists only what a step of today's build makes: a file an older
+    /// Under `global/`, the catalogue lists only what a step of today's build makes: a file an older
     /// pipeline left in the manifest isn't served (nor named in `global`).
     #[test]
-    fn the_catalog_serves_only_global_files_a_step_makes() {
+    fn the_catalogue_serves_only_global_files_a_step_makes() {
         let g = std::collections::BTreeMap::new();
         assert!(super::served_file("global/railfreq", &[], &g));
         assert!(super::served_file("global/heritage/layer-summary", &[], &g));
@@ -6378,12 +6381,12 @@ mod tests {
         super::prune_cache(&cache, &std::collections::BTreeSet::new()).unwrap();
         assert!(!used.exists());
     }
-    /// Delta catalogs (`--delta`): written as what changed over the last, read back whole as the
-    /// catalog written whole would be (its time and app aside), with the sizes of the files the last
+    /// Delta catalogues (`--delta`): written as what changed over the last, read back whole as the
+    /// catalogue written whole would be (its time and app aside), with the sizes of the files the last
     /// one lists taken from it (one gone from the NAS since isn't looked at; a whole one's check
     /// would stop on it).
     #[test]
-    fn a_delta_catalog_is_the_whole_one_and_takes_the_last_ones_sizes() {
+    fn a_delta_catalogue_is_the_whole_one_and_takes_the_last_ones_sizes() {
         let d = tempfile::tempdir().unwrap();
         let roots = [d.path().join("delta"), d.path().join("whole")];
         let put = |root: &store::nasfs::NasRoot, logical: &str, bytes: &[u8]| -> String {
@@ -6397,11 +6400,11 @@ mod tests {
             p.write(serde_json::to_vec(&m).unwrap()).unwrap();
             name
         };
-        let run = |root: &store::nasfs::NasRoot, way: super::CatalogWay| {
+        let run = |root: &store::nasfs::NasRoot, way: super::CatalogueWay| {
             let mut out = pipeline::out::Out::unbound(root, &root.unchecked_path().join("scratch")).unwrap();
-            super::catalog(&mut out, false, None, &Default::default(), way, NOW).unwrap();
+            super::catalogue(&mut out, false, None, &Default::default(), way, NOW).unwrap();
         };
-        let delta = super::CatalogWay { delta: true };
+        let delta = super::CatalogueWay { delta: true };
         let mut gone = String::new();
         for root in &roots {
             std::fs::create_dir_all(root.join("state/build")).unwrap();
@@ -6425,7 +6428,7 @@ mod tests {
                     format!("tile {i}").as_bytes(),
                 );
             }
-            run(&store::nasfs::NasRoot::local_for_test(root), super::CatalogWay::default());
+            run(&store::nasfs::NasRoot::local_for_test(root), super::CatalogueWay::default());
         }
         // A tile drawn again and one added; the lo pack gone from the NAS (its size from the last).
         for root in &roots {
@@ -6434,38 +6437,38 @@ mod tests {
         }
         std::fs::remove_file(roots[0].join(&gone)).unwrap();
         run(&store::nasfs::NasRoot::local_for_test(&roots[0]), delta);
-        run(&store::nasfs::NasRoot::local_for_test(&roots[1]), super::CatalogWay::default());
+        run(&store::nasfs::NasRoot::local_for_test(&roots[1]), super::CatalogueWay::default());
         assert!(roots[0].join("catalog/2.delta.json.zst").exists() && !roots[0].join("catalog/2.json.zst").exists());
-        let strip = |mut c: store::catalog::Catalog| {
+        let strip = |mut c: store::catalogue::Catalogue| {
             c.created.clear();
             c
         };
         let (a, b) = (
-            store::catalog::latest(&roots[0].join("catalog")).unwrap().unwrap(),
-            store::catalog::latest(&roots[1].join("catalog")).unwrap().unwrap(),
+            store::catalogue::latest(&roots[0].join("catalog")).unwrap().unwrap(),
+            store::catalogue::latest(&roots[1].join("catalog")).unwrap().unwrap(),
         );
         assert_eq!(a.n, 2);
         assert_eq!(strip(a), strip(b));
         // Not as a delta: whole, whatever.
         put(&store::nasfs::NasRoot::local_for_test(&roots[0]), "layers/roads/hi/6-1-4", b"four");
         std::fs::write(roots[0].join(&gone), b"lo pack").unwrap();
-        run(&store::nasfs::NasRoot::local_for_test(&roots[0]), super::CatalogWay::default());
+        run(&store::nasfs::NasRoot::local_for_test(&roots[0]), super::CatalogueWay::default());
         assert!(roots[0].join("catalog/3.json.zst").exists());
-        // A whole one checks every file: one the last catalog lists, gone from the NAS, stops it.
+        // A whole one checks every file: one the last catalogue lists, gone from the NAS, stops it.
         std::fs::remove_file(roots[0].join(&gone)).unwrap();
         put(&store::nasfs::NasRoot::local_for_test(&roots[0]), "layers/roads/hi/6-1-5", b"five");
         {
-            let way = super::CatalogWay::default();
+            let way = super::CatalogueWay::default();
             let mut out = pipeline::out::Out::unbound(
                 &store::nasfs::NasRoot::local_for_test(&roots[0]),
                 &roots[0].join("scratch"),
             )
             .unwrap();
-            let e = super::catalog(&mut out, false, None, &Default::default(), way, NOW).unwrap_err();
+            let e = super::catalogue(&mut out, false, None, &Default::default(), way, NOW).unwrap_err();
             assert!(format!("{e:#}").contains("missing on the NAS"), "{e:#}");
         }
         // So much new that the delta is as big as the whole one: a delta still (weighed before it's
-        // made), the files whose sizes came from the last not looked at; the next catalog, asked
+        // made), the files whose sizes came from the last not looked at; the next catalogue, asked
         // as a delta like every one a busy lead writes, is whole.
         for i in 0..3000 {
             put(
@@ -6476,18 +6479,18 @@ mod tests {
         }
         run(&store::nasfs::NasRoot::local_for_test(&roots[0]), delta);
         assert!(roots[0].join("catalog/4.delta.json.zst").exists());
-        assert_eq!(store::catalog::whole_due(&roots[0].join("catalog")).unwrap(), Some(true));
+        assert_eq!(store::catalogue::whole_due(&roots[0].join("catalog")).unwrap(), Some(true));
         // (A whole one looks at every file: the lo pack back on the NAS.)
         std::fs::write(roots[0].join(&gone), b"lo pack").unwrap();
         put(&store::nasfs::NasRoot::local_for_test(&roots[0]), "layers/roads/hi/6-9-3000", b"one more");
         run(&store::nasfs::NasRoot::local_for_test(&roots[0]), delta);
         assert!(roots[0].join("catalog/5.json.zst").exists() && !roots[0].join("catalog/5.delta.json.zst").exists());
-        assert_eq!(store::catalog::whole_due(&roots[0].join("catalog")).unwrap(), Some(false));
+        assert_eq!(store::catalogue::whole_due(&roots[0].join("catalog")).unwrap(), Some(false));
     }
 
-    /// A delta catalog's sizes are the records' (from the files' writers, Out) and the last
-    /// catalog's: it looks at the NAS only for a file written before sizes were recorded, once,
-    /// and lists the same sizes as a whole catalog of the same manifest, which looks at every file.
+    /// A delta catalogue's sizes are the records' (from the files' writers, Out) and the last
+    /// catalogue's: it looks at the NAS only for a file written before sizes were recorded, once,
+    /// and lists the same sizes as a whole catalogue of the same manifest, which looks at every file.
     #[test]
     fn a_deltas_sizes_are_the_records_and_equal_a_wholes() {
         let d = tempfile::tempdir().unwrap();
@@ -6515,11 +6518,11 @@ mod tests {
             let mut out =
                 pipeline::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch"))
                     .unwrap();
-            super::catalog(&mut out, false, None, &Default::default(), way, NOW).unwrap()
+            super::catalogue(&mut out, false, None, &Default::default(), way, NOW).unwrap()
         };
-        let delta = super::CatalogWay { delta: true };
+        let delta = super::CatalogueWay { delta: true };
         write(&(0..40).map(|i| (format!("layers/roads/hi/6-2-{i}"), vec![b'x'; 10 + i])).collect::<Vec<_>>());
-        let first = run(super::CatalogWay::default());
+        let first = run(super::CatalogueWay::default());
         assert_eq!((first.delta, first.stated), (false, 40));
         // A file from before the records kept sizes (named in the manifest by hand, none recorded).
         let old = store::naming::content_name("layers/roads/hi/6-1-1", "00000000000000aa", "pack");
@@ -6551,29 +6554,29 @@ mod tests {
         }
         let third = run(delta);
         assert_eq!((third.delta, third.stated, third.files), (true, 0, 43));
-        let as_delta = store::catalog::latest(&root.join("catalog")).unwrap().unwrap();
+        let as_delta = store::catalogue::latest(&root.join("catalog")).unwrap().unwrap();
         // A whole one of the same manifest: every file looked at, the same sizes.
         for (c, b) in &kept {
             std::fs::write(root.join(c), b).unwrap();
         }
-        let whole = run(super::CatalogWay::default());
+        let whole = run(super::CatalogueWay::default());
         assert_eq!((whole.delta, whole.stated), (false, 43));
-        let as_whole = store::catalog::latest(&root.join("catalog")).unwrap().unwrap();
+        let as_whole = store::catalogue::latest(&root.join("catalog")).unwrap().unwrap();
         assert_eq!(as_delta.files, as_whole.files);
         // A recorded size the NAS disagrees with stops a whole one.
         std::fs::write(root.join(&kept[0].0), b"another size altogether").unwrap();
         let mut out =
             pipeline::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
-        let e =
-            super::catalog(&mut out, false, None, &Default::default(), super::CatalogWay::default(), NOW).unwrap_err();
+        let e = super::catalogue(&mut out, false, None, &Default::default(), super::CatalogueWay::default(), NOW)
+            .unwrap_err();
         assert!(format!("{e:#}").contains("as recorded"), "{e:#}");
     }
 
-    /// What a catalog says of itself (pipeline::pubtimes::CatalogStats): whole, then a delta that
+    /// What a catalogue says of itself (pipeline::pubtimes::CatalogueStats): whole, then a delta that
     /// stat'ed only the new files, its phases taken once written (the write's phase among them).
     /// Task #449: a layer's bundle is named for every root, lo and hi key its tiles fall in (over
     /// a pack of before), the markdata's for each tile it holds; a delta takes them from the last
-    /// catalog naming the same file, without reading it again.
+    /// catalogue naming the same file, without reading it again.
     #[test]
     fn bundles_are_named_for_every_key_they_hold() {
         let d = tempfile::tempdir().unwrap();
@@ -6615,11 +6618,11 @@ mod tests {
             let mut out =
                 pipeline::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch"))
                     .unwrap();
-            super::catalog(&mut out, false, None, &Default::default(), way, NOW).unwrap()
+            super::catalogue(&mut out, false, None, &Default::default(), way, NOW).unwrap()
         };
-        run(super::CatalogWay::default());
+        run(super::CatalogueWay::default());
         let check = || {
-            let c = store::catalog::latest(&root.join("catalog")).unwrap().unwrap();
+            let c = store::catalogue::latest(&root.join("catalog")).unwrap().unwrap();
             c.validate().unwrap();
             let l = &c.layers["ov-whs"];
             assert_eq!(l.root.as_deref(), Some("layers/ov-whs/all"));
@@ -6646,13 +6649,13 @@ mod tests {
             pipeline::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
         out.put_bytes("layers/roads/hi/6-1-1", "pack", b"new").unwrap();
         out.save().unwrap();
-        let second = run(super::CatalogWay { delta: true });
+        let second = run(super::CatalogueWay { delta: true });
         assert!(second.delta);
         assert_eq!(check().n, 2);
     }
 
     #[test]
-    fn a_catalog_says_what_it_did_once_written() {
+    fn a_catalogue_says_what_it_did_once_written() {
         pipeline::timings::start("catalog");
         let d = tempfile::tempdir().unwrap();
         let root = d.path();
@@ -6680,22 +6683,22 @@ mod tests {
             let mut out =
                 pipeline::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch"))
                     .unwrap();
-            super::catalog(&mut out, false, None, &Default::default(), way, NOW).unwrap()
+            super::catalogue(&mut out, false, None, &Default::default(), way, NOW).unwrap()
         };
-        let first = run(super::CatalogWay::default());
+        let first = run(super::CatalogueWay::default());
         assert_eq!((first.n, first.delta), (1, false));
         assert_eq!(first.stated, first.files);
         put("layers/roads/hi/6-1-3", b"three");
-        let second = run(super::CatalogWay { delta: true });
+        let second = run(super::CatalogueWay { delta: true });
         assert_eq!((second.n, second.delta, second.stated, second.files), (2, true, 1, first.files + 1));
         let written = second.phases.iter().find(|(p, _)| p == "the catalog written").expect("the write's phase");
         assert!(written.1 > 0.0, "{:?}", second.phases);
         let line = second.line();
-        assert_eq!(pipeline::pubtimes::CatalogStats::from_log(&line), Some(second));
+        assert_eq!(pipeline::pubtimes::CatalogueStats::from_log(&line), Some(second));
     }
 
     #[test]
-    fn catalog_times_both_ways() {
+    fn catalogue_times_both_ways() {
         for t in ["2026-10-05T03:55:11Z", "2024-02-29T23:59:59Z", "1970-01-01T00:00:00Z", "2000-03-01T12:00:00Z"] {
             assert_eq!(super::utc(super::epoch_of(t).unwrap()), t);
         }

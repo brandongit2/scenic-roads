@@ -5,14 +5,14 @@
 //!   "done"); its hand-off merged ("merged": `merged_event`, each entry's key, member, step and
 //!   targets); the map tiles (pack) planned ("planned": `planned_event`, the z6 tiles the lead
 //!   first plans at their keys, and the z6 tiles whose change made each stale, `restaled_by`), leased
-//!   ("lease", "start") and done ("end", "done"); and catalog n written ("catalog": its `n`, its
-//!   job's time, and `CatalogStats`: delta or whole, the files it stat'ed, its phases).
+//!   ("lease", "start") and done ("end", "done"); and catalogue n written ("catalog": its `n`, its
+//!   job's time, and `CatalogueStats`: delta or whole, the files it stat'ed, its phases).
 //! - **The Macs' map servers' own log on the NAS** (`SERVERS`, a file per Mac appended to: a few
-//!   lines a catalog, never a file per event; cut to its newer half past `SERVERS_MAX`): each
-//!   server's adoption of catalog n ("adopt") and its mirror's sync of it, begun ("mirror-start")
-//!   and through everything wanted ("mirror-end"), each once per catalog and server process.
+//!   lines a catalogue, never a file per event; cut to its newer half past `SERVERS_MAX`): each
+//!   server's adoption of catalogue n ("adopt") and its mirror's sync of it, begun ("mirror-start")
+//!   and through everything wanted ("mirror-end"), each once per catalogue and server process.
 //!
-//! `chains` joins them, per catalog and per z6 tile; `scenic timings publish` prints them.
+//! `chains` joins them, per catalogue and per z6 tile; `scenic timings publish` prints them.
 
 use crate::coord::history::Event;
 use serde::{Deserialize, Serialize};
@@ -23,10 +23,10 @@ use std::path::Path;
 /// The map servers' log: `<host>.jsonl` in it, one writer each.
 pub const SERVERS: &str = "state/publish";
 /// A Mac's log past this many bytes is cut to its newer half as it's next appended to (a few
-/// hundred bytes a catalog: months of them).
+/// hundred bytes a catalogue: months of them).
 pub const SERVERS_MAX: u64 = 512 * 1024;
 
-/// The steps whose runs are counted per catalog (besides the map tiles').
+/// The steps whose runs are counted per catalogue (besides the map tiles').
 pub const COUNTED: [&str; 5] = ["ferries", "stations", "roadunits", "marks", "names-todo"];
 
 /// A map server's event.
@@ -36,9 +36,9 @@ pub struct ServerEvent {
     pub host: String,
     /// "adopt", "mirror-start" or "mirror-end".
     pub kind: String,
-    /// The catalog.
+    /// The catalogue.
     pub n: u64,
-    /// The mirror's sync, from its start for this catalog.
+    /// The mirror's sync, from its start for this catalogue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secs: Option<f64>,
 }
@@ -83,9 +83,9 @@ pub fn read_servers(root: &store::nasfs::NasRoot, since: u64) -> Vec<ServerEvent
     out
 }
 
-/// What a map server's mirror said of its syncs, per process: each catalog's start once, its end
+/// What a map server's mirror said of its syncs, per process: each catalogue's start once, its end
 /// once (a sync through everything wanted, nothing waiting or failed). A server started again says
-/// the catalog's start again (`chains` takes the first).
+/// the catalogue's start again (`chains` takes the first).
 #[derive(Debug, Default)]
 pub struct MirrorMarks {
     started: Option<(u64, u64)>,
@@ -97,7 +97,7 @@ impl MirrorMarks {
         MirrorMarks { started: None, ended: None }
     }
 
-    /// A sync of catalog `n` begins at `t`: whether it's this process's first of it (to say).
+    /// A sync of catalogue `n` begins at `t`: whether it's this process's first of it (to say).
     pub fn start(&mut self, n: u64, t: u64) -> bool {
         if self.started.is_some_and(|(m, _)| m == n) {
             return false;
@@ -106,7 +106,7 @@ impl MirrorMarks {
         true
     }
 
-    /// A sync of catalog `n` ended at `t`, `complete` or not: its time from the first start of it,
+    /// A sync of catalogue `n` ended at `t`, `complete` or not: its time from the first start of it,
     /// once, when complete.
     pub fn end(&mut self, n: u64, t: u64, complete: bool) -> Option<f64> {
         let (m, began) = self.started?;
@@ -118,10 +118,10 @@ impl MirrorMarks {
     }
 }
 
-/// What a catalog's job said of itself (a line of its log, `CATALOG_LINE`, which the agent reads
+/// What a catalogue's job said of itself (a line of its log, `CATALOGUE_LINE`, which the agent reads
 /// into the history's "catalog" event).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct CatalogStats {
+pub struct CatalogueStats {
     pub n: u64,
     /// Written as a delta over the last (else whole).
     pub delta: bool,
@@ -133,33 +133,34 @@ pub struct CatalogStats {
     pub phases: Vec<(String, f64)>,
 }
 
-/// The start of a catalog's line in its log.
-pub const CATALOG_LINE: &str = "catalog-stats: ";
+/// The start of a catalogue's line in its log: stored in the job logs on the NAS, so it keeps its old
+/// spelling (task #547).
+pub const CATALOGUE_LINE: &str = "catalog-stats: ";
 
-impl CatalogStats {
-    /// Catalog `n`'s, with the job's phases as timed so far (crate::timings; none untimed).
-    pub fn now(n: u64, delta: bool, files: u64, stated: u64) -> CatalogStats {
+impl CatalogueStats {
+    /// Catalogue `n`'s, with the job's phases as timed so far (crate::timings; none untimed).
+    pub fn now(n: u64, delta: bool, files: u64, stated: u64) -> CatalogueStats {
         let phases = crate::timings::snapshot(true)
             .map(|r| r.phases.into_iter().map(|p| (p.name, p.wall_s)).collect())
             .unwrap_or_default();
-        CatalogStats { n, delta, files, stated, phases }
+        CatalogueStats { n, delta, files, stated, phases }
     }
 
     pub fn line(&self) -> String {
-        format!("{CATALOG_LINE}{}", serde_json::to_string(self).unwrap_or_default())
+        format!("{CATALOGUE_LINE}{}", serde_json::to_string(self).unwrap_or_default())
     }
 
     /// The last such line in a log's tail.
-    pub fn from_log(tail: &str) -> Option<CatalogStats> {
-        tail.lines()
-            .rev()
-            .find_map(|l| l.find(CATALOG_LINE).and_then(|i| serde_json::from_str(&l[i + CATALOG_LINE.len()..]).ok()))
+    pub fn from_log(tail: &str) -> Option<CatalogueStats> {
+        tail.lines().rev().find_map(|l| {
+            l.find(CATALOGUE_LINE).and_then(|i| serde_json::from_str(&l[i + CATALOGUE_LINE.len()..]).ok())
+        })
     }
 }
 
 /// The z6 tiles whose change made each of `tiles` (z6, "6/x/y") stale: of its owners (their ways meet
 /// it: crate::agent::build::{unit_reach, owns}, as its key reads them), those whose base pack or
-/// road values in the manifest `m` aren't what `served` (the served catalog's, by logical name)
+/// road values in the manifest `m` aren't what `served` (the served catalogue's, by logical name)
 /// has: by z6 tile ("6/x/y"), its tiles. A z6 tile rebuilt the same (the same content names) made none
 /// stale.
 pub fn restaled_by(
@@ -192,9 +193,9 @@ pub fn restaled_by(
     out
 }
 
-/// The served catalog's base packs' and road values' content names, by logical name (what
+/// The served catalogue's base packs' and road values' content names, by logical name (what
 /// `restaled_by` compares with).
-pub fn served_units(c: &store::catalog::Catalog) -> BTreeMap<String, String> {
+pub fn served_units(c: &store::catalogue::Catalogue) -> BTreeMap<String, String> {
     c.files
         .iter()
         .filter(|(l, _)| l.starts_with("base/") || l.starts_with("global/roads/"))
@@ -223,7 +224,7 @@ pub fn planned_event(tiles: &[(String, String)], by_unit: BTreeMap<String, Vec<S
 }
 
 /// The (tile, key) pairs `events` say were planned since `since` (keys as `planned_event` keeps
-/// them): what a lead, restarted or new, noted already since the last catalog.
+/// them): what a lead, restarted or new, noted already since the last catalogue.
 pub fn planned_since<'a>(events: impl IntoIterator<Item = &'a Event>, since: u64) -> BTreeSet<(String, String)> {
     let mut out = BTreeSet::new();
     for e in events.into_iter().filter(|e| e.kind == "planned" && e.t >= since) {
@@ -250,8 +251,8 @@ pub fn note_planned(noted: &mut BTreeSet<(String, String)>, new: &[(String, Stri
 /// lead to read.
 pub const JUST_BEGUN_S: u64 = 120;
 
-/// What the lead noted planned since the last catalog (`planned_event`), by tile and key, and
-/// the served catalog's z6 tiles as last read (`served_units`, once a catalog). What it noted before
+/// What the lead noted planned since the last catalogue (`planned_event`), by tile and key, and
+/// the served catalogue's z6 tiles as last read (`served_units`, once a catalogue). What it noted before
 /// a restart comes back from its coordinator's history (`begin`); before a change of lead, from
 /// the NAS's, read on a thread of its own (`seed_from_nas`) so a slow share never holds the plan.
 #[derive(Debug, Default)]
@@ -259,18 +260,18 @@ pub struct PlannedNotes {
     began: u64,
     noted: BTreeSet<(String, String)>,
     served: Option<(u64, BTreeMap<String, String>)>,
-    /// The served catalogs read (for the tests).
+    /// The served catalogues read (for the tests).
     pub served_reads: u32,
     seed: std::sync::Arc<std::sync::Mutex<Option<(u64, BTreeSet<(String, String)>)>>>,
 }
 
 impl PlannedNotes {
-    /// When its notes begin (the last catalog's time).
+    /// When its notes begin (the last catalogue's time).
     pub fn began(&self) -> u64 {
         self.began
     }
 
-    /// Its notes begin at `b` (the last catalog's time); `own`: this coordinator's history. On a new
+    /// Its notes begin at `b` (the last catalogue's time); `own`: this coordinator's history. On a new
     /// beginning, what `own` says was noted since; true when the NAS's must be read too
     /// (`seed_from_nas`): `own` doesn't reach back to `b`, and it didn't just begin (at `now`).
     pub fn begin(&mut self, b: u64, own: &[Event], now: u64) -> bool {
@@ -317,9 +318,9 @@ impl PlannedNotes {
         note_planned(&mut self.noted, new);
     }
 
-    /// The served catalog's z6 tiles (`cat`, as the agent read it: crate::agent's `served`),
-    /// worked out again only for a new catalog.
-    pub fn served(&mut self, cat: Option<&store::catalog::Catalog>) -> BTreeMap<String, String> {
+    /// The served catalogue's z6 tiles (`cat`, as the agent read it: crate::agent's `served`),
+    /// worked out again only for a new catalogue.
+    pub fn served(&mut self, cat: Option<&store::catalogue::Catalogue>) -> BTreeMap<String, String> {
         if let Some(c) = cat.filter(|c| self.served.as_ref().map(|s| s.0) != Some(c.n)) {
             self.served_reads += 1;
             self.served = Some((c.n, served_units(c)));
@@ -350,29 +351,32 @@ pub struct UnitChain {
     pub planned: Option<u64>,
     pub leased: Option<u64>,
     pub packed: Option<u64>,
-    /// The catalog it's in: the first begun once it was merged and packed.
-    pub catalog: Option<u64>,
-    pub catalog_t: Option<u64>,
-    /// Each Mac's server adopting it (that catalog or a later one), and its mirror through it.
+    /// The catalogue it's in: the first begun once it was merged and packed.
+    // The JSON keys keep their old spelling (task #547): the build page reads them.
+    #[serde(rename = "catalog")]
+    pub catalogue: Option<u64>,
+    #[serde(rename = "catalog_t")]
+    pub catalogue_t: Option<u64>,
+    /// Each Mac's server adopting it (that catalogue or a later one), and its mirror through it.
     pub adopted: BTreeMap<String, u64>,
     pub mirrored: BTreeMap<String, u64>,
     /// The map tiles its change made stale (`restaled_by`), as planned after its hand-off.
     pub restaled: usize,
 }
 
-/// A catalog's publishing.
+/// A catalogue's publishing.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
-pub struct CatalogChain {
+pub struct CatalogueChain {
     pub n: Option<u64>,
     pub t: u64,
     /// Its job's time.
     pub secs: Option<f64>,
-    pub stats: Option<CatalogStats>,
-    /// Each Mac's server: seconds from the catalog to its adoption; its mirror's sync (from the
-    /// catalog to its start, and its length).
+    pub stats: Option<CatalogueStats>,
+    /// Each Mac's server: seconds from the catalogue to its adoption; its mirror's sync (from the
+    /// catalogue to its start, and its length).
     pub adopted: BTreeMap<String, f64>,
     pub mirrored: BTreeMap<String, (f64, Option<f64>)>,
-    /// The z6 tiles in it, and the map tiles planned between the catalog before's beginning and its own.
+    /// The z6 tiles in it, and the map tiles planned between the catalogue before's beginning and its own.
     pub units: usize,
     pub tiles: usize,
     /// Of `COUNTED`, the steps that ran for it (between the same beginnings; names-todo after it).
@@ -383,19 +387,19 @@ fn ok_job(e: &Event, step: &str) -> bool {
     matches!(e.kind.as_str(), "end" | "done") && e.ok == Some(true) && e.step.as_deref() == Some(step)
 }
 
-/// When a catalog's job began (it read the manifest then): its end less its time.
+/// When a catalogue's job began (it read the manifest then): its end less its time.
 fn began(c: &Event) -> u64 {
     c.t.saturating_sub(c.secs.unwrap_or(0.0).ceil() as u64)
 }
 
-/// The chains of the catalogs in `events` (any order) and their z6 tiles, joined with the servers'
-/// events; oldest first. A z6 tile is in the first catalog begun once its hand-off was merged (a
+/// The chains of the catalogues in `events` (any order) and their z6 tiles, joined with the servers'
+/// events; oldest first. A z6 tile is in the first catalogue begun once its hand-off was merged (a
 /// member's job; the lead's own, at its end) and the map tiles its change made stale were packed;
-/// a catalog's map tiles and steps are those between the catalog before's beginning and its own.
-pub fn chains(events: &[Event], servers: &[ServerEvent]) -> (Vec<CatalogChain>, Vec<UnitChain>) {
+/// a catalogue's map tiles and steps are those between the catalogue before's beginning and its own.
+pub fn chains(events: &[Event], servers: &[ServerEvent]) -> (Vec<CatalogueChain>, Vec<UnitChain>) {
     let mut ev: Vec<&Event> = events.iter().collect();
     ev.sort_by_key(|e| (e.t, e.seq));
-    let cats: Vec<&Event> = ev.iter().copied().filter(|e| e.kind == "catalog").collect();
+    let cats: Vec<&Event> = ev.iter().copied().filter(|e| e.kind == store::catalogue::NAME).collect();
     // The merges' jobs: (time, lease number, step, targets).
     let mut merges: Vec<(u64, Option<u64>, String, Vec<String>)> = Vec::new();
     for e in ev.iter().filter(|e| e.kind == "merged") {
@@ -415,7 +419,7 @@ pub fn chains(events: &[Event], servers: &[ServerEvent]) -> (Vec<CatalogChain>, 
         host.iter().filter(|s| s.kind == kind && s.n >= n && s.t >= after).map(|s| s.t).min()
     };
     let stats_of =
-        |c: &Event| -> Option<CatalogStats> { c.data.as_ref().and_then(|d| serde_json::from_value(d.clone()).ok()) };
+        |c: &Event| -> Option<CatalogueStats> { c.data.as_ref().and_then(|d| serde_json::from_value(d.clone()).ok()) };
     let n_of = |c: &Event| c.n.or(stats_of(c).map(|s| s.n));
     // Each planned tile: when, which, and the z6 tiles whose change made it stale.
     let planned: Vec<(u64, String, Vec<String>)> = ev
@@ -469,7 +473,7 @@ pub fn chains(events: &[Event], servers: &[ServerEvent]) -> (Vec<CatalogChain>, 
             let packs: Vec<Option<u64>> = mine.iter().map(|(tile, t)| pack_at(tile, *t, &["end", "done"])).collect();
             let all_packed: Option<Vec<u64>> = packs.iter().copied().collect();
             let packed = all_packed.as_ref().and_then(|v| v.iter().max().copied());
-            // (Its catalog: the first begun once it was merged and packed; a tile not packed yet, none.)
+            // (Its catalogue: the first begun once it was merged and packed; a tile not packed yet, none.)
             let cat =
                 all_packed.map(|_| packed.unwrap_or(hand).max(hand)).and_then(|r| cats.iter().find(|c| began(c) >= r));
             let mut uc = UnitChain {
@@ -480,13 +484,13 @@ pub fn chains(events: &[Event], servers: &[ServerEvent]) -> (Vec<CatalogChain>, 
                 planned: mine.values().min().copied(),
                 leased,
                 packed,
-                catalog: cat.and_then(|c| n_of(c)),
-                catalog_t: cat.map(|c| c.t),
+                catalogue: cat.and_then(|c| n_of(c)),
+                catalogue_t: cat.map(|c| c.t),
                 restaled: mine.len(),
                 ..Default::default()
             };
-            if let Some(n) = uc.catalog {
-                let after = uc.catalog_t.unwrap_or(0).saturating_sub(120);
+            if let Some(n) = uc.catalogue {
+                let after = uc.catalogue_t.unwrap_or(0).saturating_sub(120);
                 for (host, hs) in &by_host {
                     if let Some(a) = first_at(hs, "adopt", n, after) {
                         uc.adopted.insert(host.to_string(), a);
@@ -506,13 +510,13 @@ pub fn chains(events: &[Event], servers: &[ServerEvent]) -> (Vec<CatalogChain>, 
         let n = n_of(c);
         let tiles: BTreeSet<&str> =
             planned.iter().filter(|(t, _, _)| *t > from && *t <= to).map(|p| p.1.as_str()).collect();
-        let mut cc = CatalogChain {
+        let mut cc = CatalogueChain {
             n,
             t: c.t,
             secs: c.secs,
             stats: stats_of(c),
             tiles: tiles.len(),
-            units: units.iter().filter(|u| u.catalog_t == Some(c.t)).count(),
+            units: units.iter().filter(|u| u.catalogue_t == Some(c.t)).count(),
             ..Default::default()
         };
         if let Some(n) = n {
@@ -575,23 +579,23 @@ fn unit_stages(u: &UnitChain) -> Vec<(&'static str, Option<f64>)> {
         ("to planned", gap(hand, u.planned)),
         ("to leased", gap(u.planned, u.leased)),
         ("packed", gap(u.leased.or(u.planned), u.packed)),
-        ("to catalog", gap(u.packed.or(hand), u.catalog_t)),
-        ("servers", gap(u.catalog_t, last(&u.adopted))),
-        ("mirrors", gap(u.catalog_t, last(&u.mirrored))),
+        ("to catalogue", gap(u.packed.or(hand), u.catalogue_t)),
+        ("servers", gap(u.catalogue_t, last(&u.adopted))),
+        ("mirrors", gap(u.catalogue_t, last(&u.mirrored))),
         ("on every map", gap(Some(u.done), last(&u.mirrored).max(last(&u.adopted)))),
     ]
 }
 
-/// The chains in words: the last `last` catalogs, each with its z6 tiles, then the medians.
-pub fn text(cats: &[CatalogChain], units: &[UnitChain], last: usize) -> String {
+/// The chains in words: the last `last` catalogues, each with its z6 tiles, then the medians.
+pub fn text(cats: &[CatalogueChain], units: &[UnitChain], last: usize) -> String {
     let mut o = String::new();
     let cats = &cats[cats.len().saturating_sub(last)..];
     let from = cats.first().map_or(u64::MAX, |c| c.t);
-    let units: Vec<&UnitChain> = units.iter().filter(|u| u.catalog_t.is_some_and(|t| t >= from)).collect();
+    let units: Vec<&UnitChain> = units.iter().filter(|u| u.catalogue_t.is_some_and(|t| t >= from)).collect();
     for c in cats {
         let kind = c.stats.as_ref().map_or("?", |s| if s.delta { "delta" } else { "whole" });
         let n = c.n.map_or_else(|| "?".into(), |n| n.to_string());
-        o += &format!("catalog {n} ({kind}): {} in its job", s(c.secs));
+        o += &format!("catalogue {n} ({kind}): {} in its job", s(c.secs));
         if let Some(st) = &c.stats {
             o += &format!(", {} of {} files stat'ed", st.stated, st.files);
         }
@@ -613,7 +617,7 @@ pub fn text(cats: &[CatalogChain], units: &[UnitChain], last: usize) -> String {
         for (h, m) in c.mirrored.iter().filter(|(h, _)| !c.adopted.contains_key(*h)) {
             o += &format!("  {h}: not adopted; mirror began after {}, took {}\n", s(Some(m.0)), s(m.1));
         }
-        for u in units.iter().filter(|u| u.catalog_t == Some(c.t)) {
+        for u in units.iter().filter(|u| u.catalogue_t == Some(c.t)) {
             let st: Vec<String> = unit_stages(u).into_iter().map(|(k, v)| format!("{k} {}", s(v))).collect();
             o += &format!(
                 "  unit {} ({}): {}; restaled {}\n",
@@ -624,7 +628,7 @@ pub fn text(cats: &[CatalogChain], units: &[UnitChain], last: usize) -> String {
             );
         }
     }
-    o += &format!("\nMedians over {} unit(s) and {} catalog(s):\n", units.len(), cats.len());
+    o += &format!("\nMedians over {} unit(s) and {} catalogue(s):\n", units.len(), cats.len());
     let names: Vec<&str> =
         units.first().map(|u| unit_stages(u).into_iter().map(|(k, _)| k).collect()).unwrap_or_default();
     for (i, k) in names.iter().enumerate() {
@@ -636,7 +640,7 @@ pub fn text(cats: &[CatalogChain], units: &[UnitChain], last: usize) -> String {
         median(units.iter().map(|u| u.restaled as f64).collect()).map_or("-".into(), |m| format!("{m:.1}"))
     );
     for delta in [true, false] {
-        let of: Vec<&CatalogStats> =
+        let of: Vec<&CatalogueStats> =
             cats.iter().filter_map(|c| c.stats.as_ref()).filter(|s| s.delta == delta).collect();
         if of.is_empty() {
             continue;
@@ -644,7 +648,7 @@ pub fn text(cats: &[CatalogChain], units: &[UnitChain], last: usize) -> String {
         let secs: Vec<f64> =
             cats.iter().filter(|c| c.stats.as_ref().is_some_and(|s| s.delta == delta)).filter_map(|c| c.secs).collect();
         o += &format!(
-            "  {} catalogs ({}): {} in the job, {} files stat'ed\n",
+            "  {} catalogues ({}): {} in the job, {} files stat'ed\n",
             if delta { "delta" } else { "whole" },
             of.len(),
             s(median(secs)),
@@ -673,7 +677,7 @@ pub fn text(cats: &[CatalogChain], units: &[UnitChain], last: usize) -> String {
     }
     for st in COUNTED {
         let k = cats.iter().filter(|c| c.ran.iter().any(|r| r == st)).count();
-        o += &format!("  {st}: ran for {k} of {} catalog(s)\n", cats.len());
+        o += &format!("  {st}: ran for {k} of {} catalogue(s)\n", cats.len());
     }
     o
 }
@@ -743,16 +747,16 @@ mod tests {
         }
     }
 
-    /// Catalog `n` written at `t`, its job `secs` long.
-    fn catalog(t: u64, secs: f64, n: u64, delta: bool) -> Event {
-        let st = CatalogStats {
+    /// Catalogue `n` written at `t`, its job `secs` long.
+    fn catalogue(t: u64, secs: f64, n: u64, delta: bool) -> Event {
+        let st = CatalogueStats {
             n,
             delta,
             files: 1000,
             stated: if delta { 12 } else { 1000 },
             phases: vec![
                 ("every file checked on the NAS".into(), if delta { 1.0 } else { 9.0 }),
-                ("the catalog written".into(), 2.0),
+                ("the catalogue written".into(), 2.0),
             ],
         };
         Event { n: Some(n), secs: Some(secs), data: serde_json::to_value(&st).ok(), ..ev("catalog", t) }
@@ -772,12 +776,12 @@ mod tests {
         Event { t, ..planned_event(&tiles, by) }
     }
 
-    /// A z6 tile from its job to every Mac's map: each stage's time, its restale count, the catalog's
+    /// A z6 tile from its job to every Mac's map: each stage's time, its restale count, the catalogue's
     /// kind, its files stat'ed, the counted steps, and the servers' adoptions and mirrors.
     #[test]
     fn a_units_chain_from_its_job_to_every_macs_map() {
         let events = vec![
-            catalog(1000, 60.0, 7, false),
+            catalogue(1000, 60.0, 7, false),
             job("done", 1100, "unit", &["6/1/1"], Some(42)),
             job("end", 1110, "unit", &["6/5/5"], None),
             merged(1130, "2026-10-17/3-42", "unit", &["6/1/1"]),
@@ -790,16 +794,16 @@ mod tests {
             job("end", 1310, "ferries", &["ferries"], None),
             job("end", 1320, "stations", &["stations"], None),
             Event { ok: Some(false), ..job("end", 1320, "marks", &["marks"], None) },
-            catalog(1400, 20.0, 8, true),
+            catalogue(1400, 20.0, 8, true),
             job("end", 1500, "names-todo", &["names-todo"], None),
         ];
         let servers = vec![
             ServerEvent { t: 1430, host: "m1".into(), kind: "adopt".into(), n: 8, secs: None },
             ServerEvent { t: 1440, host: "m1".into(), kind: "mirror-start".into(), n: 8, secs: None },
             ServerEvent { t: 1540, host: "m1".into(), kind: "mirror-end".into(), n: 8, secs: Some(100.0) },
-            // (The M4 skipped catalog 8: a later one counts.)
+            // (The M4 skipped catalogue 8: a later one counts.)
             ServerEvent { t: 1600, host: "m4".into(), kind: "adopt".into(), n: 9, secs: None },
-            // (Catalog 7's, before 8: not its.)
+            // (Catalogue 7's, before 8: not its.)
             ServerEvent { t: 1010, host: "m4".into(), kind: "adopt".into(), n: 7, secs: None },
         ];
         let (cats, units) = chains(&events, &servers);
@@ -814,7 +818,7 @@ mod tests {
         assert_eq!(cats[0].ran, Vec::<String>::new());
         let a = units.iter().find(|u| u.unit == "6/1/1").unwrap();
         assert_eq!(
-            (a.done, a.merged, a.planned, a.leased, a.packed, a.catalog, a.restaled),
+            (a.done, a.merged, a.planned, a.leased, a.packed, a.catalogue, a.restaled),
             (1100, Some(1130), Some(1150), Some(1200), Some(1300), Some(8), 2)
         );
         assert_eq!(a.adopted, [("m1".to_string(), 1430), ("m4".into(), 1600)].into());
@@ -825,26 +829,26 @@ mod tests {
         assert_eq!(stages["hand-off"], Some(30.0));
         assert_eq!(stages["to planned"], Some(20.0));
         assert_eq!(stages["packed"], Some(100.0));
-        assert_eq!(stages["to catalog"], Some(100.0));
+        assert_eq!(stages["to catalogue"], Some(100.0));
         assert_eq!(stages["servers"], Some(200.0));
         assert_eq!(stages["on every map"], Some(500.0));
         let t = text(&cats, &units, 10);
-        assert!(t.contains("catalog 8 (delta)"), "{t}");
+        assert!(t.contains("catalogue 8 (delta)"), "{t}");
         assert!(t.contains("12 of 1000 files stat'ed"), "{t}");
         assert!(t.contains("unit 6/1/1 (m1)") && t.contains("restaled 2"), "{t}");
-        assert!(t.contains("delta catalogs (1)") && t.contains("whole catalogs (1)"), "{t}");
+        assert!(t.contains("delta catalogues (1)") && t.contains("whole catalogues (1)"), "{t}");
         assert!(t.contains("ferries: ran for 1 of 2"), "{t}");
         assert!(t.contains("m4: adopts after"), "{t}");
-        assert!(!text(&cats, &units, 1).contains("catalog 7"));
+        assert!(!text(&cats, &units, 1).contains("catalogue 7"));
     }
 
-    /// A catalog reads the manifest as it begins: a z6 tile merged, or its tiles packed, while one
-    /// runs is in the next; the map tiles and steps are counted by the catalogs' beginnings.
+    /// A catalogue reads the manifest as it begins: a z6 tile merged, or its tiles packed, while one
+    /// runs is in the next; the map tiles and steps are counted by the catalogues' beginnings.
     #[test]
-    fn a_unit_done_while_a_catalog_runs_is_in_the_next() {
+    fn a_unit_done_while_a_catalogue_runs_is_in_the_next() {
         let events = vec![
-            catalog(1000, 10.0, 7, true),
-            // Catalog 8 runs from 1500 to 1600.
+            catalogue(1000, 10.0, 7, true),
+            // Catalogue 8 runs from 1500 to 1600.
             job("done", 1100, "unit", &["6/1/1"], Some(1)),
             merged(1550, "2026-10-17/1-1", "unit", &["6/1/1"]),
             job("end", 1120, "unit", &["6/2/2"], None),
@@ -853,11 +857,11 @@ mod tests {
             // (A z6 tile with no map tile stale: in the first begun after its end.)
             job("end", 1200, "unit", &["6/3/3"], None),
             job("end", 1540, "ferries", &["ferries"], None),
-            catalog(1600, 100.0, 8, true),
-            catalog(1800, 50.0, 9, true),
+            catalogue(1600, 100.0, 8, true),
+            catalogue(1800, 50.0, 9, true),
         ];
         let (cats, units) = chains(&events, &[]);
-        let cat_of = |u: &str| units.iter().find(|x| x.unit == u).unwrap().catalog;
+        let cat_of = |u: &str| units.iter().find(|x| x.unit == u).unwrap().catalogue;
         assert_eq!(cat_of("6/1/1"), Some(9));
         assert_eq!(cat_of("6/2/2"), Some(9));
         assert_eq!(cat_of("6/3/3"), Some(8));
@@ -866,16 +870,16 @@ mod tests {
         assert_eq!((cats[1].tiles, cats[2].tiles), (1, 0));
         assert_eq!(cats[1].ran, Vec::<String>::new());
         assert_eq!(cats[2].ran, ["ferries"]);
-        // (A tile never packed: no catalog yet.)
+        // (A tile never packed: no catalogue yet.)
         let (_, units) = chains(
             &[
                 job("end", 10, "unit", &["6/4/4"], None),
                 planned(20, &["6/4/4"], &[("6/4/4", &["6/4/4"])]),
-                catalog(100, 5.0, 3, true),
+                catalogue(100, 5.0, 3, true),
             ],
             &[],
         );
-        assert_eq!(units[0].catalog, None);
+        assert_eq!(units[0].catalogue, None);
     }
 
     /// Lease numbers repeat across leads (terms): a hand-off's merge is the one of its z6 tile, after
@@ -893,7 +897,7 @@ mod tests {
             job("done", 300, "unit", &["6/1/1"], Some(7)),
             merged(320, "2026-10-17/3-6", "unit", &["6/1/1"]),
             merged(340, "2026-10-17/3-7", "unit", &["6/1/1"]),
-            catalog(500, 10.0, 4, true),
+            catalogue(500, 10.0, 4, true),
         ];
         let (_, units) = chains(&events, &[]);
         let m: Vec<(String, u64, Option<u64>)> = units.iter().map(|u| (u.unit.clone(), u.done, u.merged)).collect();
@@ -904,7 +908,7 @@ mod tests {
     }
 
     /// The z6 tiles whose change made a tile stale: its owners whose base pack or road values aren't
-    /// the served catalog's; one rebuilt the same made none.
+    /// the served catalogue's; one rebuilt the same made none.
     #[test]
     fn a_tile_is_restaled_by_its_owners_that_changed() {
         let m: BTreeMap<String, String> = [
@@ -964,9 +968,9 @@ mod tests {
     }
 
     /// The agent's notes: a restart's from its coordinator's history (no NAS read), a new lead's
-    /// from the NAS's (none for notes just begun), and the served catalog read once a catalog.
+    /// from the NAS's (none for notes just begun), and the served catalogue read once a catalogue.
     #[test]
-    fn the_planned_notes_across_a_restart_a_new_lead_and_catalogs() {
+    fn the_planned_notes_across_a_restart_a_new_lead_and_catalogues() {
         let pair = |t: &str, k: &str| (t.to_string(), k.to_string());
         let (t0, now) = (1_791_500_000, 1_791_500_600);
         let noted = Event { t: t0 + 10, ..planned_event(&[pair("6/1/1", "aaaaaaaaaaaaaaaa")], BTreeMap::new()) };
@@ -1002,11 +1006,11 @@ mod tests {
         assert!(m.new_tiles(&[pair("6/1/1", "aaaaaaaaaaaaaaaa")]).is_empty());
         // Just begun: no NAS read.
         assert!(!PlannedNotes::default().begin(t, &[], t + 30));
-        // The served catalog: read once, and again for a newer one.
+        // The served catalogue: read once, and again for a newer one.
         let cats = d.path().join("catalog");
         std::fs::create_dir_all(&cats).unwrap();
         let cat = |n: u64, base: &str| {
-            let mut c = store::catalog::Catalog { fmt: 1, n, ..Default::default() };
+            let mut c = store::catalogue::Catalogue { fmt: 1, n, ..Default::default() };
             c.files.insert(
                 "base/6-1-1".into(),
                 serde_json::from_value(serde_json::json!({"file": base, "size": 1})).unwrap(),
@@ -1015,9 +1019,9 @@ mod tests {
                 "layers/roads/hi/6-1-1".into(),
                 serde_json::from_value(serde_json::json!({"file": "x", "size": 1})).unwrap(),
             );
-            store::catalog::write_copy(&cats, &c).unwrap();
+            store::catalogue::write_copy(&cats, &c).unwrap();
         };
-        let read = |n| store::catalog::read_n(&cats, n).unwrap();
+        let read = |n| store::catalogue::read_n(&cats, n).unwrap();
         assert!(m.served(None).is_empty());
         cat(1, "b1");
         assert_eq!(m.served(Some(&read(1))), [("base/6-1-1".to_string(), "b1".to_string())].into());
@@ -1029,18 +1033,18 @@ mod tests {
     }
 
     #[test]
-    fn the_medians_and_a_catalogs_line() {
+    fn the_medians_and_a_catalogues_line() {
         assert_eq!(median(vec![]), None);
         assert_eq!(median(vec![3.0, 1.0, 2.0]), Some(2.0));
         assert_eq!(median(vec![4.0, 1.0, 2.0, 3.0]), Some(2.5));
-        let st = CatalogStats { n: 5, delta: true, files: 10, stated: 2, phases: vec![("x".into(), 1.5)] };
-        let log = format!("catalog: something\n{}\npublished /x/5.json\n", st.line());
-        assert_eq!(CatalogStats::from_log(&log), Some(st));
-        assert_eq!(CatalogStats::from_log("nothing"), None);
+        let st = CatalogueStats { n: 5, delta: true, files: 10, stated: 2, phases: vec![("x".into(), 1.5)] };
+        let log = format!("catalogue: something\n{}\npublished /x/5.json\n", st.line());
+        assert_eq!(CatalogueStats::from_log(&log), Some(st));
+        assert_eq!(CatalogueStats::from_log("nothing"), None);
     }
 
     #[test]
-    fn the_mirror_says_each_catalogs_start_and_end_once() {
+    fn the_mirror_says_each_catalogues_start_and_end_once() {
         let mut m = MirrorMarks::default();
         assert_eq!(m.end(3, 10, true), None);
         assert!(m.start(3, 100));

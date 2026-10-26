@@ -17,7 +17,7 @@
 //! 5. the heartbeat: `state/status.json` on the NAS, and a copy in the agent's local folder.
 //!
 //! Nothing depends on the lead being available: until work is done, the map serves the last
-//! catalog. A job is a child process (see `jobs`) that resumes from its own completion markers, so
+//! catalogue. A job is a child process (see `jobs`) that resumes from its own completion markers, so
 //! stopping it at any time loses at most its current stage.
 
 pub mod backup;
@@ -25,7 +25,7 @@ pub mod brokers;
 pub mod build;
 pub mod buildmem;
 pub mod builtview;
-pub mod catalogsview;
+pub mod cataloguesview;
 pub mod cond;
 pub mod every;
 pub mod fcarchive;
@@ -241,17 +241,17 @@ fn slot_suffix(k: usize) -> String {
     }
 }
 
-/// The lead's record of its catalogs (build::LastCatalog), in the agent's folder.
+/// The lead's record of its catalogues (build::LastCatalogue), in the agent's folder.
 const PUBLISHED_FILE: &str = "publishing.json";
-/// The lead's record of its catalogs kept in `home` (`PUBLISHED_FILE`); none when it doesn't read.
-fn read_published(home: &Path) -> build::LastCatalog {
+/// The lead's record of its catalogues kept in `home` (`PUBLISHED_FILE`); none when it doesn't read.
+fn read_published(home: &Path) -> build::LastCatalogue {
     std::fs::read(home.join(PUBLISHED_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
 /// The map updates' file before task #254 (`map-update.json` in `home`) taken into the record `r`:
 /// when the low zooms were last made (its `low_at`, else its `began` if it made them), when `r` has
 /// none, kept (`PUBLISHED_FILE`); then the file goes. A file that doesn't read is just removed.
-fn take_map_update(home: &Path, mut r: build::LastCatalog) -> build::LastCatalog {
+fn take_map_update(home: &Path, mut r: build::LastCatalogue) -> build::LastCatalogue {
     #[derive(Deserialize)]
     struct Old {
         #[serde(default)]
@@ -277,8 +277,8 @@ fn take_map_update(home: &Path, mut r: build::LastCatalog) -> build::LastCatalog
     r
 }
 
-/// Keeps the lead's record of its catalogs in `home` (`PUBLISHED_FILE`).
-fn write_published(home: &Path, r: &build::LastCatalog) -> Result<()> {
+/// Keeps the lead's record of its catalogues in `home` (`PUBLISHED_FILE`).
+fn write_published(home: &Path, r: &build::LastCatalogue) -> Result<()> {
     store::whole::write(&home.join(PUBLISHED_FILE), &serde_json::to_vec(r)?)
 }
 
@@ -295,7 +295,7 @@ const HUNG: &str = "its pool step hangs (the NAS not answering)";
 /// check, or a tick begun and not yet said), before passing its pool step over.
 const TRY_FOR: Duration = Duration::from_millis(200);
 
-/// Whether job `id` is one of the lead's duties (a catalog, a sweep: crate::agent::pool's
+/// Whether job `id` is one of the lead's duties (a catalogue, a sweep: crate::agent::pool's
 /// `PUBLISHES`, `SWEEPS`).
 fn is_duty(id: &str) -> bool {
     step_of(id).is_some_and(|st| pool::PUBLISHES.contains(&st.as_str()) || pool::SWEEPS.contains(&st.as_str()))
@@ -308,7 +308,7 @@ fn own_cost_key(id: &str) -> String {
     crate::coord::cost_key(s, t)
 }
 
-/// Why the lead's catalog waits while its pool's records don't reflect the journal (`Gates::publish`).
+/// Why the lead's catalogue waits while its pool's records don't reflect the journal (`Gates::publish`).
 const UNPUBLISHED: &str = "waits for the pool's records to reflect the journal (a listing of every day merged)";
 
 /// Whether `spec` is an offered step's work in the plan (crate::agent::every::offered): it marks the
@@ -881,9 +881,9 @@ pub struct Status {
     /// (crate::timetables, docs/inputs.md §6.7.3): the lead's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timetables: Option<crate::timetables::View>,
-    /// The last catalog the plan read: its number and when it went out (seconds since the epoch).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub catalog: Option<CatalogSeen>,
+    /// The last catalogue the plan read: its number and when it went out (seconds since the epoch).
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "catalog")] // wire key: old spelling
+    pub catalogue: Option<CatalogueSeen>,
     /// Publishing as it stands (`Published`; the lead's): the build page's map KPI (its last catalogue) and
     /// `scenic status`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -944,25 +944,25 @@ impl PoolView {
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CatalogSeen {
+pub struct CatalogueSeen {
     pub n: u64,
     pub at: u64,
 }
 
 /// Publishing as it stands, for the build page's map KPI and `scenic status` (the
-/// lead's; docs/building.md §2, Publishing): the last catalog, whether it went with the low zooms
-/// (build::LastCatalog::low_at), the map tiles being drawn by Mac (pack's targets leased), and the
-/// catalog each Mac's map server last adopted (crate::pubtimes, the servers' log on the NAS).
+/// lead's; docs/building.md §2, Publishing): the last catalogue, whether it went with the low zooms
+/// (build::LastCatalogue::low_at), the map tiles being drawn by Mac (pack's targets leased), and the
+/// catalogue each Mac's map server last adopted (crate::pubtimes, the servers' log on the NAS).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Published {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last: Option<CatalogSeen>,
+    pub last: Option<CatalogueSeen>,
     #[serde(default)]
     pub low: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub drawing: BTreeMap<String, usize>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub adopted: BTreeMap<String, CatalogSeen>,
+    pub adopted: BTreeMap<String, CatalogueSeen>,
 }
 
 /// The Mac a worker is (`slot_worker`: its slots' names folded to the host's; a page's its own).
@@ -973,18 +973,18 @@ pub fn host_of(worker: &str) -> &str {
     }
 }
 
-/// The catalog each Mac's map server last adopted, from the servers' log under `root`
+/// The catalogue each Mac's map server last adopted, from the servers' log under `root`
 /// (crate::pubtimes::SERVERS; the last two days'), read within the NAS readers' deadline
 /// (`nasread::with`): `TimedOut` past it.
-fn adopted(root: &store::nasfs::NasRoot) -> std::io::Result<BTreeMap<String, CatalogSeen>> {
+fn adopted(root: &store::nasfs::NasRoot) -> std::io::Result<BTreeMap<String, CatalogueSeen>> {
     let owned = root.clone();
     let since = now_s().saturating_sub(2 * 86_400);
     let events =
         nasread::with(&root.join(crate::pubtimes::SERVERS), move || Ok(crate::pubtimes::read_servers(&owned, since)))?;
-    let mut out: BTreeMap<String, CatalogSeen> = BTreeMap::new();
+    let mut out: BTreeMap<String, CatalogueSeen> = BTreeMap::new();
     for e in events {
         if e.kind == "adopt" && out.get(&e.host).is_none_or(|c| e.n >= c.n) {
-            out.insert(e.host.clone(), CatalogSeen { n: e.n, at: e.t });
+            out.insert(e.host.clone(), CatalogueSeen { n: e.n, at: e.t });
         }
     }
     Ok(out)
@@ -1164,10 +1164,10 @@ struct Memory {
     /// When each daily job last succeeded (seconds since the epoch).
     last_ok: BTreeMap<String, u64>,
     recent: Vec<Done>,
-    /// When a catalog last started (seconds since the epoch): the next waits
-    /// build::CATALOG_EVERY_S from it, whether or not it went out.
-    #[serde(default)]
-    catalog_at: u64,
+    /// When a catalogue last started (seconds since the epoch): the next waits
+    /// build::CATALOGUE_EVERY_S from it, whether or not it went out.
+    #[serde(default, rename = "catalog_at")] // stored key: old spelling
+    catalogue_at: u64,
     /// About how long a target of each step takes here (seconds, as its jobs went lately), by
     /// `secs_key`: the forecast's, for the steps no other worker does.
     #[serde(default)]
@@ -1391,10 +1391,10 @@ pub struct Agent {
     /// coordinator, its broker, or with neither a viewer alone (`viewer`; tried again five minutes
     /// after it failed).
     pageview: std::sync::Arc<pageview::PageView>,
-    /// The build page's Catalogues map (crate::agent::catalogsview): made once the NAS's root is
+    /// The build page's Catalogues map (crate::agent::cataloguesview): made once the NAS's root is
     /// known, read only while a page asks.
-    catalogs_view: Option<std::sync::Arc<catalogsview::CatalogsView>>,
-    /// The build page's map's finished tiles (crate::agent::builtview): made with `catalogs_view`.
+    catalogues_view: Option<std::sync::Arc<cataloguesview::CataloguesView>>,
+    /// The build page's map's finished tiles (crate::agent::builtview): made with `catalogues_view`.
     built_view: Option<std::sync::Arc<builtview::BuiltView>>,
     pageview_reading: bool,
     /// This Mac's live store (crate::agent::live), kept in its folder and answered on its port's
@@ -1496,8 +1496,8 @@ pub struct Agent {
     unjournaled: BTreeMap<u64, PathBuf>,
     /// A helper's: the bytes its cheap caches held (room::cheap_bytes) and when they were counted.
     cheap: Option<(Instant, u64)>,
-    /// The last catalog's folder and number, and its regions' outline entries by id (`on_map`).
-    last_catalog: std::cell::RefCell<Option<((String, u64), BTreeMap<String, Vec<String>>)>>,
+    /// The last catalogue's folder and number, and its regions' outline entries by id (`on_map`).
+    last_catalogue: std::cell::RefCell<Option<((String, u64), BTreeMap<String, Vec<String>>)>>,
     /// The regions the last plan would publish as built (build::Plan::ready), for the checklist.
     ready: std::cell::RefCell<Vec<String>>,
     /// The build's pause as this agent knows it (crate::control): its coordinator's on the
@@ -1543,7 +1543,7 @@ pub struct Agent {
     orphans: Vec<jobs::Group>,
     /// The conditions the last loop saw: a change is noted in the history (crate::coord::history).
     last_cond: Option<Conditions>,
-    /// The last plan's forecast (crate::agent::forecast), and the last catalog it read, for the
+    /// The last plan's forecast (crate::agent::forecast), and the last catalogue it read, for the
     /// status.
     forecast: std::cell::RefCell<Option<forecast::Forecast>>,
     /// When each (Mac, step) last had its grants' departure from the forecast logged
@@ -1575,19 +1575,19 @@ pub struct Agent {
     /// The timetables' report as last read (its content name, and what the status shows).
     timetables: std::cell::RefCell<Option<(String, crate::timetables::View)>>,
     publish_logged: std::cell::RefCell<String>,
-    catalog_seen: std::cell::Cell<Option<CatalogSeen>>,
-    /// The catalog each Mac's map server last adopted (`adopted`), and when it was read: read
-    /// again when a newer catalog is seen, else every five minutes.
-    adopted: std::cell::RefCell<(u64, Option<u64>, BTreeMap<String, CatalogSeen>)>,
-    /// The lead's record of its catalogs (build::LastCatalog, its folder's `publishing.json`): when
+    catalogue_seen: std::cell::Cell<Option<CatalogueSeen>>,
+    /// The catalogue each Mac's map server last adopted (`adopted`), and when it was read: read
+    /// again when a newer catalogue is seen, else every five minutes.
+    adopted: std::cell::RefCell<(u64, Option<u64>, BTreeMap<String, CatalogueSeen>)>,
+    /// The lead's record of its catalogues (build::LastCatalogue, its folder's `publishing.json`): when
     /// the last went out with the low zooms made.
-    catalogs: std::cell::RefCell<build::LastCatalog>,
-    /// Whether the catalog last planned had the low zooms made (build::Plan::low, nothing left of
-    /// the publishing chain): its catalog, once made, is noted so (`LastCatalog::low_at`).
-    catalog_low: std::cell::Cell<bool>,
+    catalogues: std::cell::RefCell<build::LastCatalogue>,
+    /// Whether the catalogue last planned had the low zooms made (build::Plan::low, nothing left of
+    /// the publishing chain): its catalogue, once made, is noted so (`LastCatalogue::low_at`).
+    catalogue_low: std::cell::Cell<bool>,
     /// Publishing's switches as last read (crate::agent::publish).
     publishing: std::cell::Cell<publish::Switches>,
-    /// The map tiles noted planned in the history (crate::pubtimes), since the last catalog.
+    /// The map tiles noted planned in the history (crate::pubtimes), since the last catalogue.
     planned_tiles: std::cell::RefCell<crate::pubtimes::PlannedNotes>,
     /// The pool (docs/pool.md, crate::agent::pool), always on: this Mac's part in it (None while this
     /// process isn't in it: the NAS not reached as it started, or its member's lock held by another
@@ -1642,7 +1642,7 @@ struct Gate {
     cache: std::cell::RefCell<crate::inputs::view::Cache>,
     full: std::cell::RefCell<BTreeSet<String>>,
     /// The descriptions' credits' digest as last read (None inside: there are none), for the
-    /// catalog's key while they can't be read.
+    /// catalogue's key while they can't be read.
     credits: std::cell::RefCell<Option<Option<String>>>,
     /// Each unit's last full check's time, by its check's state's content name (crate::inputs::
     /// Listed: content-named, so read once).
@@ -1858,11 +1858,11 @@ impl Agent {
         let hold = crate::control::read_hold(&o.home);
         let pause: Option<crate::control::Pause> =
             std::fs::read(o.home.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
-        // (A record that doesn't read: none, the low zooms made with the next catalog. The map
+        // (A record that doesn't read: none, the low zooms made with the next catalogue. The map
         // updates' file, before task #254, goes.)
-        let mut catalogs = read_published(&o.home);
+        let mut catalogues = read_published(&o.home);
         if !o.dry_run {
-            catalogs = take_map_update(&o.home, catalogs);
+            catalogues = take_map_update(&o.home, catalogues);
         }
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
         let mut a = Agent {
@@ -1896,7 +1896,7 @@ impl Agent {
             brokers: false,
             broker: None,
             pageview: pageview::PageView::new(),
-            catalogs_view: None,
+            catalogues_view: None,
             built_view: None,
             pageview_reading: false,
             live: None,
@@ -1944,7 +1944,7 @@ impl Agent {
             owed: Vec::new(),
             unjournaled: BTreeMap::new(),
             cheap: None,
-            last_catalog: Default::default(),
+            last_catalogue: Default::default(),
             ready: Default::default(),
             pause,
             pause_local: false,
@@ -1980,10 +1980,10 @@ impl Agent {
             publish_line: Default::default(),
             timetables: Default::default(),
             publish_logged: Default::default(),
-            catalog_seen: Default::default(),
+            catalogue_seen: Default::default(),
             adopted: Default::default(),
-            catalogs: std::cell::RefCell::new(catalogs),
-            catalog_low: Default::default(),
+            catalogues: std::cell::RefCell::new(catalogues),
+            catalogue_low: Default::default(),
             publishing: Default::default(),
             planned_tiles: Default::default(),
             member_id: run.as_ref().map(|r| r.side.member().id.clone()),
@@ -2653,7 +2653,7 @@ impl Agent {
         }
         let mut skip: BTreeSet<String> =
             jobs.iter().filter(|j| !offered_job(j) && self.wait_reason(j, c).is_some()).map(|j| j.id.clone()).collect();
-        // (A catalog while the pool's records don't reflect the journal (`Gates::publish`): not asked
+        // (A catalogue while the pool's records don't reflect the journal (`Gates::publish`): not asked
         // for, said waiting here. Granted, it would only wait in `try_start_said`, and be granted,
         // logged and leased again every loop: 41 times in the 40 minutes of task #630.)
         if self.try_pooled().flatten().is_some_and(|r| !r.gates.publish()) {
@@ -4722,7 +4722,7 @@ impl Agent {
             forecast: if self.o.helper { None } else { self.forecast.borrow().clone() },
             publishing: if self.o.helper { None } else { self.publish_line.borrow().clone() },
             timetables: if self.o.helper { None } else { self.timetables.borrow().as_ref().map(|t| t.1.clone()) },
-            catalog: self.catalog_seen.get(),
+            catalogue: self.catalogue_seen.get(),
             published: if self.o.helper { None } else { Some(self.published(root.as_ref())) },
             caches: Some(self.caches_view(caches_why, c.home, c.nas)),
             pool: match self.try_pooled() {
@@ -4854,9 +4854,9 @@ impl Agent {
                 }
             };
             let (id, what) = (r.spec.id.clone(), r.spec.what.clone());
-            // (A catalog's own line of what it did: crate::pubtimes::CatalogStats.)
+            // (A catalogue's own line of what it did: crate::pubtimes::CatalogueStats.)
             let cat_stats = if ok && step == "catalog" {
-                crate::pubtimes::CatalogStats::from_log(&jobs::tail(&r.log, 60))
+                crate::pubtimes::CatalogueStats::from_log(&jobs::tail(&r.log, 60))
             } else {
                 None
             };
@@ -4890,7 +4890,7 @@ impl Agent {
             if ok && step == "catalog" {
                 // (This Mac's map server adopts it now.)
                 #[cfg(not(target_os = "wasi"))]
-                crate::net::catalog_written();
+                crate::net::catalogue_written();
                 let ready = self.ready.borrow().clone();
                 let (n, data) = (cat_stats.as_ref().map(|c| c.n), cat_stats.and_then(|c| serde_json::to_value(c).ok()));
                 self.note(crate::coord::history::Event {
@@ -4914,9 +4914,9 @@ impl Agent {
             };
             // (The coordinator's record of what's done.)
             let handed = done.clone();
-            // (A catalog made: noted in the lead's record, with the low zooms if it had them.)
+            // (A catalogue made: noted in the lead's record, with the low zooms if it had them.)
             if ok && matches!(step.as_str(), "catalog" | "catalog-held") {
-                self.catalog_made(now_s());
+                self.catalogue_made(now_s());
             }
             self.take_timings(k);
             self.end_lease(k, outcome, &handed, &note);
@@ -5381,9 +5381,9 @@ impl Agent {
                 return false;
             }
         }
-        // (A catalog's start: the next waits build::CATALOG_EVERY_S from it, whether or not it goes out.)
+        // (A catalogue's start: the next waits build::CATALOGUE_EVERY_S from it, whether or not it goes out.)
         if spec.id.starts_with("catalog") {
-            self.mem.catalog_at = now_s();
+            self.mem.catalogue_at = now_s();
             self.save();
         }
         if let Err(e) = self.start(k, spec, c) {
@@ -6772,7 +6772,7 @@ impl Agent {
             Some(Running::start(spec, threads, &env, log, &self.record_path(k), Some(&done), sandbox)?);
         self.slots[k].beaten = None;
         self.slots[k].hand_saved = None;
-        // (A job of no targets of its own, the OSM pass, GC, a catalog: measured by its id, so it's
+        // (A job of no targets of its own, the OSM pass, GC, a catalogue: measured by its id, so it's
         // placed by measure as any, docs/pool.md §7.7: `watch_job`.)
         if let Some(pgid) = self.slots[k].running.as_ref().map(|r| r.pgid) {
             self.watch_job(k, pgid);
@@ -6881,33 +6881,33 @@ impl Agent {
         self.mem.last_ok.get(id).is_none_or(|&t| now_s().saturating_sub(t) >= every.as_secs())
     }
 
-    /// Whether this agent keeps the lead's record of its catalogs (and notes planned map tiles in
+    /// Whether this agent keeps the lead's record of its catalogues (and notes planned map tiles in
     /// its history): the one that runs its jobs, not a dry run beside it (planning only: its record
     /// is its own, in memory).
     fn keeps_publishing(&self) -> bool {
         self._lock.is_some() && !self.o.dry_run
     }
 
-    /// A catalog made at `at`: noted in the lead's record (build::LastCatalog), with the low zooms
-    /// made if its plan had them (`catalog_low`).
-    fn catalog_made(&self, at: u64) {
-        let mut r = self.catalogs.borrow_mut();
+    /// A catalogue made at `at`: noted in the lead's record (build::LastCatalogue), with the low zooms
+    /// made if its plan had them (`catalogue_low`).
+    fn catalogue_made(&self, at: u64) {
+        let mut r = self.catalogues.borrow_mut();
         r.at = at;
         r.held_at = None;
-        if self.catalog_low.get() {
+        if self.catalogue_low.get() {
             r.low_at = Some(at);
         }
         if self.keeps_publishing() {
             if let Err(e) = write_published(&self.o.home, &r) {
-                eprintln!("agent: noting the catalog made: {e:#}");
+                eprintln!("agent: noting the catalogue made: {e:#}");
             }
         }
     }
 
     /// The steps gated by time whose recorded keys in `done` changed: noted run now in the lead's
-    /// record (build::LastCatalog::observe).
+    /// record (build::LastCatalogue::observe).
     fn note_ran(&self, done: &build::Keys) {
-        let mut r = self.catalogs.borrow_mut();
+        let mut r = self.catalogues.borrow_mut();
         if r.observe(done, now_s()) && self.keeps_publishing() {
             if let Err(e) = write_published(&self.o.home, &r) {
                 eprintln!("agent: noting the steps run: {e:#}");
@@ -6915,17 +6915,17 @@ impl Agent {
         }
     }
 
-    /// When a catalog due was first held back (build::LastCatalog::held_at), kept in the lead's
+    /// When a catalogue due was first held back (build::LastCatalogue::held_at), kept in the lead's
     /// record when it changes.
     fn note_held(&self, held_at: Option<u64>) {
-        let mut r = self.catalogs.borrow_mut();
+        let mut r = self.catalogues.borrow_mut();
         if r.held_at == held_at {
             return;
         }
         r.held_at = held_at;
         if self.keeps_publishing() {
             if let Err(e) = write_published(&self.o.home, &r) {
-                eprintln!("agent: noting the catalog held back: {e:#}");
+                eprintln!("agent: noting the catalogue held back: {e:#}");
             }
         }
     }
@@ -6988,8 +6988,8 @@ impl Agent {
             serde_json::to_string(&p.gates).unwrap_or_default().hash(&mut h);
         }
         serde_json::to_string(&self.pause).unwrap_or_default().hash(&mut h);
-        // (Publishing's switches, the hold on catalogs, the catalogs' folders.)
-        for f in [publish::DELTA_CATALOG, publish::NEAR_SLOPE, "inputs/hold-catalog", "catalog", "catalog-held"] {
+        // (Publishing's switches, the hold on catalogues, the catalogues' folders.)
+        for f in [publish::DELTA_CATALOGUE, publish::NEAR_SLOPE, "inputs/hold-catalog", "catalog", "catalog-held"] {
             stat(&mut h, (&root.join(f)).into());
         }
         // (The coordinator's leases: one lapsed, given back or taken frees or holds targets.)
@@ -7002,7 +7002,7 @@ impl Agent {
     }
 
     /// When the plan's timed waits end (epoch seconds, past `now`), the earliest: a job's failure or
-    /// memory guard wait, room-making's ten minutes, the regions' edit hold, the next catalog's
+    /// memory guard wait, room-making's ten minutes, the regions' edit hold, the next catalogue's
     /// minute. An idle agent plans again then (`plan_due`).
     fn replan_at(&self, plan: &[JobSpec], now: u64) -> Option<u64> {
         let mut at: Vec<u64> = Vec::new();
@@ -7118,7 +7118,7 @@ impl Agent {
             }
         }
 
-        // The regions: terrain and slope near the coverage, base(U), pack(T), lo, a catalog.
+        // The regions: terrain and slope near the coverage, base(U), pack(T), lo, a catalogue.
         out.extend(self.region_work(root, have.as_deref(), newer.as_ref().map(|n| n.1.as_str()), waiting));
 
         // The gate's checks before every other step (docs/inputs.md §4.3): a change is checked
@@ -7275,7 +7275,7 @@ impl Agent {
             }
             // The pass's outlines (their own step: made again when their assembly changes, not at
             // the next pass). While they have work, nothing else is planned (the regions' coverage,
-            // the languages spoken, the lake fill, the rail feeds and the catalog read them), so
+            // the languages spoken, the lake fill, the rail feeds and the catalogue read them), so
             // nothing is made from the outlines they replace; unless the job has failed
             // `build::OUTLINES_HOLDS` times in a row (counted on this Mac) and the pass has
             // outlines: the rest then goes on with those.
@@ -7370,7 +7370,7 @@ impl Agent {
             // (The lakes filled from Canada's own data first: while the lakefill job has work, unless
             // it has failed LAKEFILL_HOLDS times in a row (counted on this Mac, from nought again with
             // a new app), the jobs that read the fill wait (`hold_for_lakefill`: the water, the
-            // terrain's water digests, the catalog), so the pass's water, terrain and map all have
+            // terrain's water digests, the catalogue), so the pass's water, terrain and map all have
             // the new fill, or after that many failures all go without it. While the source's folder
             // can't be read, or while its source isn't declared, they wait too.)
             match crate::lakefill::run::planned_source(root, &manifest) {
@@ -7394,14 +7394,14 @@ impl Agent {
                 jobs.push(job(format!("water {date}"), "water", p.clone(), Some(w)));
             }
         }
-        // After each catalog the map serves: the names to translate and descriptions to write.
+        // After each catalogue the map serves: the names to translate and descriptions to write.
         // (From the translations' and descriptions' accepted versions, which the agent names: the
         // job reads them through the accessor, never the inputs folders.)
         let served = served((&root.join("catalog")).into());
         // (The steps gated by time: when each last ran, as its recorded key changed.)
         self.note_ran(&keys);
         let (since, idle) = {
-            let r = self.catalogs.borrow();
+            let r = self.catalogues.borrow();
             (r.since("names-todo", now_s()), r.idle)
         };
         if let Some(w) = build::names_todo_work(served.as_ref().map(|s| s.key.as_str()), &manifest, &keys, since, idle)
@@ -7461,9 +7461,9 @@ impl Agent {
         self.note_timetables(root, &manifest);
         let mut done = keys;
         let mut inputs = input_digests(root);
-        // (The inputs' descriptions' credits, for the catalog's key: crate::inputs::credits. None
-        // yet, no line, so the catalog's key is as it was. Unreadable now: the last digest read
-        // stands, or, with none read yet, the catalog waits; never a key that flips on a failed
+        // (The inputs' descriptions' credits, for the catalogue's key: crate::inputs::credits. None
+        // yet, no line, so the catalogue's key is as it was. Unreadable now: the last digest read
+        // stands, or, with none read yet, the catalogue waits; never a key that flips on a failed
         // read.)
         let mut credits_unread = None;
         match crate::inputs::credits::described(root, &manifest) {
@@ -7482,8 +7482,8 @@ impl Agent {
             inputs.insert("feed-keys".into(), d.as_ref().map(|d| d.key_names.join(",")).unwrap_or_else(|_| "?".into()));
             inputs.insert("feeds".into(), d.map(|d| d.keyed).unwrap_or_else(|_| "?".into()));
         }
-        // (The declared feeds the catalog credits, for its key: "?" while they can't be read, and
-        // the catalog waits.)
+        // (The declared feeds the catalogue credits, for its key: "?" while they can't be read, and
+        // the catalogue waits.)
         match crate::inputs::feeds::credited(root, &manifest) {
             Ok(Some(ids)) => {
                 inputs.insert("feeds-credited".into(), ids.join(","));
@@ -7561,18 +7561,18 @@ impl Agent {
                 why: "the 3D buildings' sources' indexes on the NAS can't be read now".into(),
             });
         }
-        // The regions the map's catalog has (or the held one's, when catalogs are held for review)
+        // The regions the map's catalogue has (or the held one's, when catalogues are held for review)
         // and how long ago it went out: what the plan publishes regions by.
         // (The held ones, once there are any: the first goes by what's served.)
         let held_dir = root.join("catalog-held");
-        let dir = if held && store::catalog::list(&held_dir).is_ok_and(|ns| !ns.is_empty()) {
+        let dir = if held && store::catalogue::list(&held_dir).is_ok_and(|ns| !ns.is_empty()) {
             held_dir
         } else {
             root.join("catalog")
         };
         let (on_map, since_publish) = self.on_map((&dir).into(), &recipes);
-        // (The map's: the served catalog's, held ones aside.)
-        self.catalog_seen.set(served_catalog((&root.join("catalog")).into()));
+        // (The map's: the served catalogue's, held ones aside.)
+        self.catalogue_seen.set(served_catalogue((&root.join("catalog")).into()));
         // (Publishing's switches: crate::agent::publish.)
         let sw = publish::Switches::read(root, self.publishing.get());
         if sw != self.publishing.get() {
@@ -7580,12 +7580,12 @@ impl Agent {
         }
         self.publishing.set(sw);
         let way = build::Publishing {
-            since_low: self.catalogs.borrow().low_at.map(|t| now_s().saturating_sub(t)),
+            since_low: self.catalogues.borrow().low_at.map(|t| now_s().saturating_sub(t)),
             near: sw.near,
-            since_marks: self.catalogs.borrow().since("marks", now_s()),
-            since_overlays: self.catalogs.borrow().since("overlays", now_s()),
+            since_marks: self.catalogues.borrow().since("marks", now_s()),
+            since_overlays: self.catalogues.borrow().since("overlays", now_s()),
         };
-        // (The served catalog's z6 tiles, read again only when a newer catalog is there: the map tiles
+        // (The served catalogue's z6 tiles, read again only when a newer catalogue is there: the map tiles
         // to draw grouped by the z6 tile that changed.)
         let served = {
             let cat = crate::agent::served((&root.join("catalog")).into()).map(|s| s.cat);
@@ -7612,15 +7612,15 @@ impl Agent {
                     each: &covs.each,
                     on_map: &on_map,
                     served: &served,
-                    since_catalog: since_publish,
-                    held_for: self.catalogs.borrow().held_at.map(|t| now_s().saturating_sub(t)),
+                    since_catalogue: since_publish,
+                    held_for: self.catalogues.borrow().held_at.map(|t| now_s().saturating_sub(t)),
                     held,
                     way,
                 },
             )
         };
         nasread::phase("the plan: its jobs");
-        self.catalogs.borrow_mut().idle = planned.idle;
+        self.catalogues.borrow_mut().idle = planned.idle;
         // The z6 tiles held until the heritage registers are first accepted: said, not a silent stall.
         if let Some(why) = build::heritage_awaits_acceptance(cov, date, &manifest, &inputs) {
             waiting.push(Waiting {
@@ -7666,19 +7666,20 @@ impl Agent {
             waiting.push(Waiting { step: Some("unit".into()), what: "roads".into(), why });
         }
         let edit_hold = edit_held(self.edited_at.get(), std::time::SystemTime::now());
-        // (Hand-offs of a step a catalog waits for (build::CATALOG_GATE: the map tiles, the road
+        // (Hand-offs of a step a catalogue waits for (build::CATALOGUE_GATE: the map tiles, the road
         // index) not yet merged: counted as done, their files not yet in the manifest. A z6 tile's
-        // waiting goes out with a later catalog.)
+        // waiting goes out with a later catalogue.)
         let unmerged = self.handoff_bases(root).iter().any(|b| {
             crate::handoff::waiting_in(b)
                 .map(|w| {
-                    w.iter().any(|(_, h)| h.done.as_ref().is_some_and(|d| build::CATALOG_GATE.contains(&d.0.as_str())))
+                    w.iter()
+                        .any(|(_, h)| h.done.as_ref().is_some_and(|d| build::CATALOGUE_GATE.contains(&d.0.as_str())))
                 })
                 .unwrap_or(false)
         });
         let ready = planned.ready;
         *self.ready.borrow_mut() = ready.clone();
-        // (As the catalog's `--ready`: each with the outline it was built with.)
+        // (As the catalogue's `--ready`: each with the outline it was built with.)
         let ready_arg: String = ready
             .iter()
             .map(|id| match recipes.iter().find(|r| &r.id == id) {
@@ -7687,19 +7688,19 @@ impl Agent {
             })
             .collect::<Vec<_>>()
             .join(",");
-        // (The catalog's `--building`: the regions still building, each with its z6 tiles built of
+        // (The catalogue's `--building`: the regions still building, each with its z6 tiles built of
         // those it builds.)
         let building_arg: String =
             planned.building.iter().map(|(id, b, t)| format!("{id}={b}/{t}")).collect::<Vec<_>>().join(",");
         let mut plan = planned.work;
         // (The map tiles as first planned at their keys, for publishing's times:
-        // crate::pubtimes::PlannedNotes, since the last catalog, what was noted known again after a
+        // crate::pubtimes::PlannedNotes, since the last catalogue, what was noted known again after a
         // restart or a change of lead.)
         if self.keeps_publishing() {
-            let at = self.catalogs.borrow().at;
+            let at = self.catalogues.borrow().at;
             let b = if at > 0 { at } else { self.started };
             let mut notes = self.planned_tiles.borrow_mut();
-            // (This coordinator's history read once a catalog.)
+            // (This coordinator's history read once a catalogue.)
             if notes.began() != b {
                 let own = self.coord.as_ref().map(|c| c.history_since(0)).unwrap_or_default();
                 if notes.begin(b, &own, now_s()) {
@@ -7722,7 +7723,7 @@ impl Agent {
                 what: "publish".into(),
                 why: format!("the inputs' descriptions (their credits) can't be read now: {why}"),
             });
-            planned.publishing.why = "the catalog waits for the inputs' descriptions to be read".into();
+            planned.publishing.why = "the catalogue waits for the inputs' descriptions to be read".into();
             plan.retain(|w| w.step != "catalog");
         }
         // Just edited: the regions' work waits a while for more edits (each would build again what
@@ -7732,16 +7733,16 @@ impl Agent {
             waiting.push(Waiting { step: None, what: "Building the regions".into(), why: format!("a region's recipe or outline changed {} min ago: their work starts in {left} min, after any more edits", age.as_secs() / 60) });
             plan.clear();
         }
-        // A catalog waits while a helper's hand-offs of its map tiles or road index wait to be
+        // A catalogue waits while a helper's hand-offs of its map tiles or road index wait to be
         // merged (counted as done, their files not yet in the manifest).
-        // (Held so since the gate first held past build::CATALOG_CAP_S: it goes, the regions those
+        // (Held so since the gate first held past build::CATALOGUE_CAP_S: it goes, the regions those
         // hand-offs touch left out of `--ready`, build::plan's.)
-        let held_for = self.catalogs.borrow().held_at.map(|t| now_s().saturating_sub(t));
-        let mut held_back = planned.catalog_held;
+        let held_for = self.catalogues.borrow().held_at.map(|t| now_s().saturating_sub(t));
+        let mut held_back = planned.catalogue_held;
         if unmerged && !publish::unmerged_holds(unmerged, held_for) && plan.iter().any(|w| w.step == "catalog") {
             planned.publishing.why = format!(
-                "a catalog now with what's merged: held {} min by hand-offs waiting to be merged",
-                build::CATALOG_CAP_S / 60
+                "a catalogue now with what's merged: held {} min by hand-offs waiting to be merged",
+                build::CATALOGUE_CAP_S / 60
             );
         }
         if publish::unmerged_holds(unmerged, held_for) && plan.iter().any(|w| w.step == "catalog") {
@@ -7751,17 +7752,17 @@ impl Agent {
                 what: "publish".into(),
                 why: "waits for a helper's work to be merged".into(),
             });
-            planned.publishing.why = "the catalog waits for a helper's work to be merged".into();
+            planned.publishing.why = "the catalogue waits for a helper's work to be merged".into();
             plan.retain(|w| w.step != "catalog");
         }
-        // (When a catalog was first held back, kept in the lead's record; none held, none to make
+        // (When a catalogue was first held back, kept in the lead's record; none held, none to make
         // and none waiting out its minute: the count starts again.)
-        let catalog_planned = plan.iter().any(|w| w.step == "catalog");
-        let was = self.catalogs.borrow().held_at;
-        self.note_held(publish::held_at(was, held_back, catalog_planned || planned.catalog_due, now_s()));
-        // (Its catalog, once made, went out with the low zooms made, or not.)
+        let catalogue_planned = plan.iter().any(|w| w.step == "catalog");
+        let was = self.catalogues.borrow().held_at;
+        self.note_held(publish::held_at(was, held_back, catalogue_planned || planned.catalogue_due, now_s()));
+        // (Its catalogue, once made, went out with the low zooms made, or not.)
         if plan.iter().any(|w| w.step == "catalog") {
-            self.catalog_low.set(planned.low);
+            self.catalogue_low.set(planned.low);
         }
         self.record_publishing(std::mem::take(&mut planned.publishing));
         // (What room-making lets go last: `hints`.)
@@ -7932,14 +7933,14 @@ impl Agent {
         // (A job a step's work in the plan: an offered step's is its place in the plan's order, its
         // targets granted as many as fit a quarter of an hour, `offer_plan`.)
         for w in plan {
-            // Held for review: the catalog goes to catalog-held/ (no server reads it), once.
+            // Held for review: the catalogue goes to catalog-held/ (no server reads it), once.
             if w.step == "catalog" && held {
                 let k = w.targets.first().map(|t| t.1.clone()).unwrap_or_default();
-                if done.catalog_held.as_deref() == Some(k.as_str()) {
+                if done.catalogue_held.as_deref() == Some(k.as_str()) {
                     waiting.push(Waiting {
                         step: None,
                         what: "publish".into(),
-                        why: "held for review (inputs/hold-catalog); its catalog is in catalog-held/".into(),
+                        why: "held for review (inputs/hold-catalog); its catalogue is in catalog-held/".into(),
                     });
                     continue;
                 }
@@ -7991,7 +7992,7 @@ impl Agent {
             if !same.is_empty() {
                 extra.extend(["--expect-same".to_string(), same.join(",")]);
             }
-            // (The regions a catalog records as built: the plan's.)
+            // (The regions a catalogue records as built: the plan's.)
             if w.step == "catalog" {
                 extra.extend([
                     "--ready".to_string(),
@@ -7999,7 +8000,7 @@ impl Agent {
                     "--building".to_string(),
                     building_arg.clone(),
                 ]);
-                // (Delta catalogs: crate::agent::publish; the step writes a whole one when due.)
+                // (Delta catalogues: crate::agent::publish; the step writes a whole one when due.)
                 if self.publishing.get().delta {
                     extra.push("--delta".into());
                 }
@@ -8021,11 +8022,11 @@ impl Agent {
     }
 
     /// Publishing as it stands (`Published`), the servers' log under `root` read again (within the
-    /// NAS readers' deadline; past it, the last read kept) when a newer catalog is seen or five
+    /// NAS readers' deadline; past it, the last read kept) when a newer catalogue is seen or five
     /// minutes have passed.
     fn published(&self, root: Option<&store::nasfs::NasRoot>) -> Published {
-        let last = self.catalog_seen.get();
-        let c = self.catalogs.borrow();
+        let last = self.catalogue_seen.get();
+        let c = self.catalogues.borrow();
         let mut drawing: BTreeMap<String, usize> = BTreeMap::new();
         for (w, k) in self.coord.as_ref().map(|c| c.leased_of("pack")).unwrap_or_default() {
             *drawing.entry(host_of(&w).to_string()).or_default() += k;
@@ -8039,7 +8040,7 @@ impl Agent {
                 *a = (now_s(), n, read);
             }
         }
-        // (The low zooms' flag of the same catalog as `last`: the one this record noted, not a
+        // (The low zooms' flag of the same catalogue as `last`: the one this record noted, not a
         // newer one served since.)
         let low = c.at > 0 && c.low_at == Some(c.at) && last.is_some_and(|l| l.at <= c.at);
         Published { last, low, drawing, adopted: self.adopted.borrow().2.clone() }
@@ -8161,7 +8162,7 @@ impl Agent {
         // cadence, as last run.)
         let [rail, landmarks, buildings, depth, polar] = chains;
         let cadence = {
-            let c = self.catalogs.borrow();
+            let c = self.catalogues.borrow();
             let now = now_s();
             forecast::Cadence {
                 since_low: c.low_at.map(|t| now.saturating_sub(t)),
@@ -8171,7 +8172,7 @@ impl Agent {
         };
         // The trains' and the landmarks' chains from the start (their steps once what they read is
         // built: forecast::chain_deps), but the overlays (they read the built z6 tiles) after everything
-        // else; and a catalog after them with what the chains made since.
+        // else; and a catalogue after them with what the chains made since.
         let (mut chain_jobs, mut after): (Vec<forecast::Job>, Vec<forecast::Job>) = (Vec::new(), Vec::new());
         for w in rail.iter().chain(landmarks.iter()).chain(buildings.iter()).chain(depth.iter()).chain(polar.iter()) {
             let jobs: Vec<forecast::Job> = if steps::SHARED.contains(&w.step.as_str()) {
@@ -8828,11 +8829,11 @@ impl Agent {
         *self.regions_view.borrow_mut() = Some((key, v));
     }
 
-    /// The regions the last catalog in `dir` has, by id: whether as its recipe is now (same outline
-    /// entries); and how long ago it went out (seconds, by its file's time). Read once per catalog;
+    /// The regions the last catalogue in `dir` has, by id: whether as its recipe is now (same outline
+    /// entries); and how long ago it went out (seconds, by its file's time). Read once per catalogue;
     /// none (nothing on the map: every region new) when there's none, or it can't be read now.
     fn on_map(&self, dir: store::nasfs::Loc<'_>, recipes: &[recipes::Recipe]) -> (BTreeMap<String, bool>, Option<u64>) {
-        let mut cached = self.last_catalog.borrow_mut();
+        let mut cached = self.last_catalogue.borrow_mut();
         // (The newest that reads, read once (`served`): a damaged one is passed over, as the map's
         // server does, not taken for none.)
         let mut at = None;
@@ -8853,11 +8854,11 @@ impl Agent {
             }
             at = Some(std::time::UNIX_EPOCH + Duration::from_secs(sv.seen.at));
         }
-        // How long ago the last catalog went out, or one last started (it may have failed): a
+        // How long ago the last catalogue went out, or one last started (it may have failed): a
         // time ahead of this Mac's clock (the NAS's) counts as now.
         let now = std::time::SystemTime::now();
         let since = |t: std::time::SystemTime| now.duration_since(t).map_or(0, |d| d.as_secs());
-        let started = (self.mem.catalog_at > 0).then(|| now_s().saturating_sub(self.mem.catalog_at));
+        let started = (self.mem.catalogue_at > 0).then(|| now_s().saturating_sub(self.mem.catalogue_at));
         let since_publish = match (at.map(since), started) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -9466,14 +9467,16 @@ impl Agent {
         }
         // (The Catalogues map, in the pool or out of it: what's on the NAS.)
         let cv = self
-            .catalogs_view
+            .catalogues_view
             .get_or_insert_with(|| {
-                catalogsview::CatalogsView::new(std::sync::Arc::new(catalogsview::NasCatalogs(root.join("catalog"))))
+                cataloguesview::CataloguesView::new(std::sync::Arc::new(cataloguesview::NasCatalogues(
+                    root.join("catalog"),
+                )))
             })
             .clone();
         for c in [&self.coord, &self.broker, &self.viewer].into_iter().flatten() {
-            if !c.has_catalogs() {
-                c.set_catalogs(cv.clone());
+            if !c.has_catalogues() {
+                c.set_catalogues(cv.clone());
             }
         }
         // (The map's finished tiles, the same: the build's keys on the NAS.)
@@ -10091,9 +10094,9 @@ impl Agent {
             }
             return Some(run.gates.clone());
         };
-        // Settling a handover: the duties in flight cancelled (a catalog killed: it writes once at
+        // Settling a handover: the duties in flight cancelled (a catalogue killed: it writes once at
         // its end; a sweep stopped), then the coordinator's state written, for the next step.
-        // (So too when it no longer leads: a catalog or a sweep of a term it lost.)
+        // (So too when it no longer leads: a catalogue or a sweep of a term it lost.)
         let settling = self.pooled().is_some_and(|p| p.gates.settle && p.settled.is_none());
         let lost = lead && self.pooled().is_some_and(|p| p.gates.leads.is_none());
         if settling || lost {
@@ -10240,7 +10243,7 @@ impl Agent {
             // coordinator's state written now holds a retry's forgotten failures.)
             self.act_on(&out.acts);
             self.pool_lead_files(r, saved);
-            // (A catalog and GC read today's files: caught up only once they hold these records.)
+            // (A catalogue and GC read today's files: caught up only once they hold these records.)
             let mut run = self.pooled()?;
             if run.behind() {
                 waiting.push(Waiting {
@@ -10324,7 +10327,7 @@ impl Agent {
                 }
                 self.o.helper = true;
                 self.client = None;
-                // (Its duties in flight stopped, a catalog or a sweep: the lead's alone.)
+                // (Its duties in flight stopped, a catalogue or a sweep: the lead's alone.)
                 for k in 0..self.slots.len() {
                     if self.slots[k].running.as_ref().is_some_and(|j| is_duty(&j.spec.id)) {
                         let j = self.slots[k].running.as_mut().unwrap();
@@ -10962,7 +10965,7 @@ pub fn input_digests(root: &store::nasfs::NasRoot) -> BTreeMap<String, String> {
             inputs.insert("heritage".into(), "?".into());
         }
     }
-    // The regions as a catalog records them; "?" when they can't be read now (build::catalog_work
+    // The regions as a catalogue records them; "?" when they can't be read now (build::catalogue_work
     // then waits).
     inputs.insert(
         "regions".into(),
@@ -11163,7 +11166,7 @@ fn hold_for_sources(jobs: Vec<JobSpec>, held: bool, waiting: &mut Vec<Waiting>) 
 }
 
 /// The jobs that read the pass's lake fill (crate::lakefill: the water, which draws it; the terrain's
-/// water digests, whose pin names it; the catalogs, which name it to the server), taken out of
+/// water digests, whose pin names it; the catalogues, which name it to the server), taken out of
 /// `jobs` while it `held`s them (the lakefill job has work and hasn't failed
 /// build::LAKEFILL_HOLDS times in a row, or its source can't be read), each said in `waiting`.
 /// Nothing reads a fill made from an older basemap meanwhile, and nothing is made twice.
@@ -11186,7 +11189,7 @@ fn hold_for_lakefill(jobs: Vec<JobSpec>, held: bool, waiting: &mut Vec<Waiting>)
 /// The checklist as the status shows it. A step with work left that isn't this Mac's job now (`now`,
 /// its step) says why: another Mac is on it, or its job waits (`waiting`: for the home network,
 /// out a failure). Publishing, while a step above has work left, goes out as each z6 tile is built (a
-/// catalog at most each minute) and once they all are: it's done only then.
+/// catalogue at most each minute) and once they all are: it's done only then.
 fn annotate(list: &mut [build::Line], now: &[String], helpers: &[Status], waiting: &[Waiting]) {
     // (A step whose job runs, here or on a helper, isn't done: build::Line::under_way.)
     let helper_steps = helpers.iter().flat_map(|h| h.jobs()).filter_map(|j| step_of(&j.id));
@@ -11215,9 +11218,9 @@ fn annotate(list: &mut [build::Line], now: &[String], helpers: &[Status], waitin
     if let Some(p) = list.last_mut().filter(|p| p.steps.iter().any(|s| s == "catalog")) {
         if before_left && !busy(p) {
             p.left = Some(p.left.unwrap_or(0).max(1));
-            // (Its own, a catalog failing, says more.)
+            // (Its own, a catalogue failing, says more.)
             p.note.get_or_insert_with(|| {
-                "as each unit is built (a catalog at most each minute), and once the steps above are".into()
+                "as each unit is built (a catalogue at most each minute), and once the steps above are".into()
             });
         }
     }
@@ -11491,30 +11494,30 @@ fn helpers(root: &store::nasfs::NasRoot) -> Vec<Status> {
     out
 }
 
-/// The newest catalog in `dir` that reads, its number and when it went out: what the map's server
+/// The newest catalogue in `dir` that reads, its number and when it went out: what the map's server
 /// serves (a damaged one passed over, as it does), whole (`served`).
-fn served_catalog(dir: store::nasfs::Loc<'_>) -> Option<CatalogSeen> {
+fn served_catalogue(dir: store::nasfs::Loc<'_>) -> Option<CatalogueSeen> {
     served(dir).map(|s| s.seen)
 }
 
-/// The newest catalog in `dir` that reads (`served_catalog`), whole, with what the names' to-do
+/// The newest catalogue in `dir` that reads (`served_catalogue`), whole, with what the names' to-do
 /// lists read of it (crate::namestodo::inputs_key).
 #[derive(Clone)]
 struct Served {
-    seen: CatalogSeen,
-    cat: std::sync::Arc<store::catalog::Catalog>,
+    seen: CatalogueSeen,
+    cat: std::sync::Arc<store::catalogue::Catalogue>,
     key: String,
 }
 
-/// `served_catalog`, read once per catalog file and kept for each folder (the map's, the held
+/// `served_catalogue`, read once per catalogue file and kept for each folder (the map's, the held
 /// ones'), for the loop, `on_map` and the build page's regions alike: a new one is read from the
-/// last (its new deltas applied, store::catalog::read_n_from), never again back to a whole one
-/// (task #684: on 26 Oct three readers each read catalog 464 through 135 deltas from a 9 MB whole
-/// one, the loop stalled 300 s after each catalog and the regions took 136 s).
+/// last (its new deltas applied, store::catalogue::read_n_from), never again back to a whole one
+/// (task #684: on 26 Oct three readers each read catalogue 464 through 135 deltas from a 9 MB whole
+/// one, the loop stalled 300 s after each catalogue and the regions took 136 s).
 fn served(dir: store::nasfs::Loc<'_>) -> Option<Served> {
     type Kept = BTreeMap<String, (store::nasfs::Place, std::time::SystemTime, Served)>;
     static READ: std::sync::Mutex<Kept> = std::sync::Mutex::new(BTreeMap::new());
-    let mut ns = store::catalog::list(dir).unwrap_or_default();
+    let mut ns = store::catalogue::list(dir).unwrap_or_default();
     if ns.is_empty() {
         // (A folder emptied (the held ones, served): its catalogue isn't kept.)
         READ.lock().unwrap_or_else(|e| e.into_inner()).remove(&dir.display());
@@ -11522,7 +11525,7 @@ fn served(dir: store::nasfs::Loc<'_>) -> Option<Served> {
     }
     ns.sort_unstable();
     ns.into_iter().rev().find_map(|n| {
-        let path = store::catalog::path_n(dir, n)?;
+        let path = store::catalogue::path_n(dir, n)?;
         let t = path.loc().metadata().and_then(|m| m.modified()).ok()?;
         let mut g = READ.lock().unwrap_or_else(|e| e.into_inner());
         let kept = g.get(&dir.display());
@@ -11530,8 +11533,8 @@ fn served(dir: store::nasfs::Loc<'_>) -> Option<Served> {
             return Some(s.clone());
         }
         let have = kept.map(|k| k.2.cat.clone());
-        let cat = std::sync::Arc::new(store::catalog::read_n_from(dir, n, have.as_deref()).ok()?);
-        let seen = CatalogSeen { n, at: t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) };
+        let cat = std::sync::Arc::new(store::catalogue::read_n_from(dir, n, have.as_deref()).ok()?);
+        let seen = CatalogueSeen { n, at: t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) };
         let s = Served { seen, key: crate::namestodo::inputs_key(&cat), cat };
         g.insert(dir.display(), (path, t, s.clone()));
         Some(s)
@@ -11861,15 +11864,15 @@ mod tests {
         let now = a.plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
         assert_ne!(now, last);
         last = now;
-        // Publishing's switches and the hold on catalogs.
-        for f in [publish::DELTA_CATALOG, publish::NEAR_SLOPE, "inputs/hold-catalog"] {
+        // Publishing's switches and the hold on catalogues.
+        for f in [publish::DELTA_CATALOGUE, publish::NEAR_SLOPE, "inputs/hold-catalog"] {
             std::fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
             std::fs::write(root.join(f), "on").unwrap();
             let now = a.plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
             assert_ne!(now, last, "{f}");
             last = now;
         }
-        // A held catalog's folder made.
+        // A held catalogue's folder made.
         std::fs::create_dir_all(root.join("catalog-held")).unwrap();
         let now = a.plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
         assert_ne!(now, last);
@@ -11928,7 +11931,7 @@ mod tests {
         for st in steps::TABLE.iter() {
             let step = st.name.to_string();
             // (gc and backup: `scenic`'s, their commands checked as the plan makes them.)
-            // (catalog-held: `catalog --held --ready …`, as the plan makes it.)
+            // (catalog-held: `catalogue --held --ready …`, as the plan makes it.)
             let scenics = crate::cli::command("scenic").unwrap().find_subcommand(&step).is_some();
             let takes = crate::cli::build::takes_targets(&step);
             if (scenics && takes.is_none()) || step == "catalog-held" {
@@ -12139,9 +12142,9 @@ mod tests {
         );
         assert_eq!(v["regions"][0]["bytes"], serde_json::Value::Null);
         // A catalogue recording it over z6 tile 6/40/31, whose base pack weighs 777 bytes.
-        let mut c = store::catalog::Catalog::new(1);
+        let mut c = store::catalogue::Catalogue::new(1);
         c.base.insert("6/40/31".into(), "base/6-40-31".into());
-        let f = store::catalog::FileRef {
+        let f = store::catalogue::FileRef {
             file: "base/6-40-31.1111111111111111.base".into(),
             size: 777,
             fmt: 0,
@@ -12150,7 +12153,7 @@ mod tests {
         c.files.insert("base/6-40-31".into(), f);
         c.coverage = serde_json::json!({ "regions": [{ "id": "a", "name": "Alpha", "outline": ["osm:5"],
             "shapes": { "osm:5": [[[[50.0, 0.5], [50.1, 0.5], [50.1, 0.6], [50.0, 0.6], [50.0, 0.5]]]] } }] });
-        store::catalog::write(&root.join("catalog"), &c).unwrap();
+        store::catalogue::write(&root.join("catalog"), &c).unwrap();
         ag.regions_view(&store::nasfs::NasRoot::local_for_test(root), &a, &recipes);
         settle(&ag);
         let v = ag.regions_view.borrow().as_ref().unwrap().1.clone();
@@ -14063,7 +14066,7 @@ mod tests {
     }
 
     #[test]
-    fn a_catalog_made_is_noted_with_the_low_zooms_if_it_had_them_and_a_dry_run_keeps_its_own() {
+    fn a_catalogue_made_is_noted_with_the_low_zooms_if_it_had_them_and_a_dry_run_keeps_its_own() {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("state/build")).unwrap();
@@ -14081,25 +14084,25 @@ mod tests {
         })
         .unwrap();
         assert!(!home.join("map-update.json").exists());
-        assert_eq!(*a.catalogs.borrow(), build::LastCatalog { at: 0, low_at: Some(50), ..Default::default() });
-        let file = || -> build::LastCatalog {
+        assert_eq!(*a.catalogues.borrow(), build::LastCatalogue { at: 0, low_at: Some(50), ..Default::default() });
+        let file = || -> build::LastCatalogue {
             serde_json::from_slice(&std::fs::read(home.join(PUBLISHED_FILE)).unwrap()).unwrap()
         };
-        // A catalog planned with the low zooms made: noted so.
-        a.catalog_low.set(true);
-        a.catalog_made(100);
-        assert_eq!(file(), build::LastCatalog { at: 100, low_at: Some(100), ..Default::default() });
+        // A catalogue planned with the low zooms made: noted so.
+        a.catalogue_low.set(true);
+        a.catalogue_made(100);
+        assert_eq!(file(), build::LastCatalogue { at: 100, low_at: Some(100), ..Default::default() });
         // One without them (the low zooms later): when they were last made carried.
-        a.catalog_low.set(false);
-        a.catalog_made(200);
-        assert_eq!(file(), build::LastCatalog { at: 200, low_at: Some(100), ..Default::default() });
-        // A catalog held back: when, kept in the file (a restart reads it), until the next is made.
+        a.catalogue_low.set(false);
+        a.catalogue_made(200);
+        assert_eq!(file(), build::LastCatalogue { at: 200, low_at: Some(100), ..Default::default() });
+        // A catalogue held back: when, kept in the file (a restart reads it), until the next is made.
         a.note_held(Some(250));
         assert_eq!(file().held_at, Some(250));
         assert_eq!(read_published(&home).held_at, Some(250));
-        a.catalog_made(900);
-        a.catalog_made(200);
-        assert_eq!(file(), build::LastCatalog { at: 200, low_at: Some(100), ..Default::default() });
+        a.catalogue_made(900);
+        a.catalogue_made(200);
+        assert_eq!(file(), build::LastCatalogue { at: 200, low_at: Some(100), ..Default::default() });
         // A dry run beside it (a second agent on this Mac, planning only): its record its own,
         // never the file.
         let dry = test_agent(Options {
@@ -14111,13 +14114,13 @@ mod tests {
             helper: false,
         })
         .unwrap();
-        assert_eq!(*dry.catalogs.borrow(), file());
-        dry.catalog_low.set(true);
-        dry.catalog_made(300);
-        assert_eq!(file(), build::LastCatalog { at: 200, low_at: Some(100), ..Default::default() });
+        assert_eq!(*dry.catalogues.borrow(), file());
+        dry.catalogue_low.set(true);
+        dry.catalogue_made(300);
+        assert_eq!(file(), build::LastCatalogue { at: 200, low_at: Some(100), ..Default::default() });
         // (A record that doesn't read: none.)
         std::fs::write(home.join(PUBLISHED_FILE), "?").unwrap();
-        assert_eq!(read_published(&home), build::LastCatalog::default());
+        assert_eq!(read_published(&home), build::LastCatalogue::default());
     }
 
     /// The lead's plan `jobs` offered through its coordinator and asked for as its loop asks
@@ -14155,10 +14158,10 @@ mod tests {
         .unwrap()
     }
 
-    /// (Task #259 review) each Mac's adopted catalog from the servers' log, read through the NAS
+    /// (Task #259 review) each Mac's adopted catalogue from the servers' log, read through the NAS
     /// readers (`nasread::with`); worker names folded to their Macs.
     #[test]
-    fn each_macs_adopted_catalog_is_its_last_adopt() {
+    fn each_macs_adopted_catalogue_is_its_last_adopt() {
         use crate::pubtimes::{append_server, ServerEvent};
         let d = tempfile::tempdir().unwrap();
         let t = now_s() - 100;
@@ -14178,8 +14181,8 @@ mod tests {
             append_server(&store::nasfs::NasRoot::local_for_test(d.path()), e).unwrap();
         }
         let a = adopted(&store::nasfs::NasRoot::local_for_test(d.path())).unwrap();
-        assert_eq!(a["m4"], CatalogSeen { n: 812, at: t + 10 });
-        assert_eq!(a["m1"], CatalogSeen { n: 811, at: t + 5 });
+        assert_eq!(a["m4"], CatalogueSeen { n: 812, at: t + 10 });
+        assert_eq!(a["m1"], CatalogueSeen { n: 811, at: t + 5 });
         assert!(adopted(&store::nasfs::NasRoot::local_for_test(&d.path().join("none"))).unwrap().is_empty());
         assert_eq!((host_of("m4 #3"), host_of("m4"), host_of("page #1")), ("m4", "m4", "page #1"));
     }
@@ -14709,7 +14712,7 @@ mod tests {
                 each: &cov.by_region(),
                 on_map: &BTreeMap::new(),
                 served: &BTreeMap::new(),
-                since_catalog: None,
+                since_catalogue: None,
                 held_for: None,
                 held: false,
                 way: Default::default(),
@@ -14763,7 +14766,7 @@ mod tests {
                 each: &cov.by_region(),
                 on_map: &BTreeMap::new(),
                 served: &BTreeMap::new(),
-                since_catalog: None,
+                since_catalogue: None,
                 held_for: None,
                 held: false,
                 way: Default::default(),
@@ -16312,7 +16315,7 @@ mod tests {
         assert_eq!(l[0].note.as_deref(), Some("away from home"));
         assert_eq!(l[1].note.as_deref(), Some("on m1"));
         assert_eq!(l[2].note, None, "this Mac's job now");
-        // Publishing waits for the steps above, though its catalog is current.
+        // Publishing waits for the steps above, though its catalogue is current.
         assert!(!l[3].finished() && l[3].note.as_deref().is_some_and(|n| n.starts_with("as each unit is built")));
         // All above done: done.
         let mut l: Vec<build::Line> = list()
@@ -16325,7 +16328,7 @@ mod tests {
         annotate(&mut l, &[], &[], &[]);
         assert!(l.iter().all(|s| s.finished() && s.note.is_none()));
         // A line not sized yet (trains a day before its sources) holds publishing up no more than a
-        // done one; and publishing's own note (its catalog failing) is kept.
+        // done one; and publishing's own note (its catalogue failing) is kept.
         l[1].left = None;
         annotate(&mut l, &[], &[], &[]);
         assert!(l[3].finished() && l[3].note.is_none());
@@ -18047,7 +18050,7 @@ mod pool_tests {
         lead.mem.last_ok.insert("backup".into(), now_s());
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
-        let catalog = JobSpec {
+        let catalogue = JobSpec {
             id: "catalog catalog".into(),
             what: "catalog".into(),
             cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
@@ -18056,12 +18059,12 @@ mod pool_tests {
             record: Some(build::Work { step: "catalog".into(), targets: vec![("catalog".into(), "kc".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
-        assert!(lead.try_start(0, catalog, &cond, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut Vec::new()));
+        assert!(lead.try_start(0, catalogue, &cond, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut Vec::new()));
         let port = TEST_PORT.with(|p| p.get()).unwrap();
         // (Its step said it leads no term any more.)
         let out = crate::pool::driver::Out::default();
         lead.change_part(&store::nasfs::NasRoot::local_for_test(&r), &out);
-        assert!(lead.slots[0].running.is_none(), "its catalog stopped");
+        assert!(lead.slots[0].running.is_none(), "its catalogue stopped");
         assert!(lead.coord.is_none() && lead.o.helper && lead.pooled().unwrap().role == pool::Role::Member);
         // (Its listener closed as its stop returned: the port can be listened on again.)
         crate::coord::port_free(port).unwrap_or_else(|e| panic!("its listener closed: {e}"));
@@ -18536,10 +18539,10 @@ mod pool_tests {
         assert!(a.hold.held.is_none() && a.hold_why().is_none() && crate::control::read_hold(&home).held.is_none());
     }
 
-    /// Task #630: a catalog the pool's records hold back (not caught up) isn't asked of the lead's
+    /// Task #630: a catalogue the pool's records hold back (not caught up) isn't asked of the lead's
     /// coordinator, so not granted, leased and logged again every loop only to wait; said waiting.
     #[test]
-    fn a_catalog_the_records_hold_back_is_not_asked_for() {
+    fn a_catalogue_the_records_hold_back_is_not_asked_for() {
         room::TEST_FREE.with(|c| c.set(Some(100 << 30)));
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
@@ -18593,7 +18596,7 @@ mod pool_tests {
     }
 
     #[test]
-    fn the_leads_gates_hold_a_catalog_and_a_sweep() {
+    fn the_leads_gates_hold_a_catalogue_and_a_sweep() {
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let home = d.path().join("home");
@@ -18614,13 +18617,13 @@ mod pool_tests {
             restart_after_sleep: false,
             record: None,
         };
-        // Not caught up: no catalog; a sweep asks for a re-assertion first.
+        // Not caught up: no catalogue; a sweep asks for a re-assertion first.
         let mut w = Vec::new();
         assert!(!a.try_start(0, job("catalog"), &c, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut w));
         assert!(w.iter().any(|w| w.why.contains("reflect the journal")), "{w:?}");
         assert!(!a.try_start(0, job("gc"), &c, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut w));
         assert!(a.pooled().unwrap().reassert);
-        // Caught up: the catalog; the sweep only on a step that re-asserted.
+        // Caught up: the catalogue; the sweep only on a step that re-asserted.
         a.pooled().unwrap().gates.caught_up = true;
         assert!(
             a.try_start(0, job("catalog"), &c, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut Vec::new()),

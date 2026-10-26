@@ -826,7 +826,7 @@ fn credits_come_from_the_descriptions_beside_the_tables() {
     let qc = credits::Extent::Box([-79.8, 45.0, -57.1, 62.6]);
     let a = credits::digest(&[mk("A", Some(qc.clone()))]);
     assert!(a.is_some() && a != credits::digest(&[mk("B", Some(qc.clone()))]));
-    assert_eq!(credits::digest(&[]), None, "none: the catalog's key as it was");
+    assert_eq!(credits::digest(&[]), None, "none: the catalogue's key as it was");
     // Listed by the same rule as the table's: near Montreal, after the table's; around Tokyo, not.
     // A heritage register's names it.
     let region = |w: f64, s: f64, e: f64, n: f64| {
@@ -839,11 +839,12 @@ fn credits_come_from_the_descriptions_beside_the_tables() {
             tiles: None,
         }
     };
-    let mtl = credits::catalog_credits(&[region(-73.7, 45.4, -73.5, 45.6)], &[], &[mk("Ministere", Some(qc.clone()))]);
+    let mtl =
+        credits::catalogue_credits(&[region(-73.7, 45.4, -73.5, 45.6)], &[], &[mk("Ministere", Some(qc.clone()))]);
     let whats: Vec<&str> = mtl.iter().filter_map(|c| c["what"].as_str()).collect();
     assert_eq!(whats.iter().filter(|w| **w == "Québec heritage").count(), 1);
     assert!(mtl.iter().any(|c| c["source"] == "Ministere" && c["register"] == "qc"));
-    let table = crate::rules::catalog_credits(&[region(-73.7, 45.4, -73.5, 45.6)], &[]).len();
+    let table = crate::rules::catalogue_credits(&[region(-73.7, 45.4, -73.5, 45.6)], &[]).len();
     assert_eq!(mtl.len(), table + 1);
     // A description of a table entry's `what`: in its place, not added to it.
     let lc = credits::Described {
@@ -853,15 +854,15 @@ fn credits_come_from_the_descriptions_beside_the_tables() {
         extent: Some(credits::Extent::World("world".into())),
         code: None,
     };
-    let mtl = credits::catalog_credits(&[region(-73.7, 45.4, -73.5, 45.6)], &[], &[lc]);
+    let mtl = credits::catalogue_credits(&[region(-73.7, 45.4, -73.5, 45.6)], &[], &[lc]);
     assert_eq!(mtl.len(), table);
     assert!(mtl
         .iter()
         .any(|c| c["what"] == "Land cover" && c["source"] == d.credit.as_str() && c.get("register").is_none()));
-    let tokyo = credits::catalog_credits(&[region(139.5, 35.5, 140.0, 36.0)], &[], &[mk("Ministere", Some(qc))]);
+    let tokyo = credits::catalogue_credits(&[region(139.5, 35.5, 140.0, 36.0)], &[], &[mk("Ministere", Some(qc))]);
     assert!(!tokyo.iter().any(|c| c["source"] == "Ministere"));
-    // One the catalog's depth holds is listed wherever it is (the depth reaches past the coverage).
-    let depth = credits::catalog_credits_with(
+    // One the catalogue's depth holds is listed wherever it is (the depth reaches past the coverage).
+    let depth = credits::catalogue_credits_with(
         &[region(139.5, 35.5, 140.0, 36.0)],
         &[],
         &[mk("Ministere", Some(credits::Extent::Box([-79.8, 45.0, -57.1, 62.6])))],
@@ -869,7 +870,7 @@ fn credits_come_from_the_descriptions_beside_the_tables() {
     );
     assert!(depth.iter().any(|c| c["source"] == "Ministere"));
     // A source for the whole world: anywhere; one whose extent isn't known yet: nowhere.
-    let world = credits::catalog_credits(
+    let world = credits::catalogue_credits(
         &[],
         &[],
         &[credits::Described {
@@ -878,7 +879,7 @@ fn credits_come_from_the_descriptions_beside_the_tables() {
         }],
     );
     assert!(world.iter().any(|c| c["what"] == "New world source" && c.get("areas").is_none()));
-    assert!(!credits::catalog_credits(
+    assert!(!credits::catalogue_credits(
         &[],
         &[],
         &[credits::Described {
@@ -890,8 +891,8 @@ fn credits_come_from_the_descriptions_beside_the_tables() {
     .any(|c| c["what"] == "Unknown"));
 }
 
-/// The elevation datasets' labels (the catalog's `dem_labels`, §6.8): each code's label, else its
-/// name, the first of a code's; a label edit changes the catalog's key.
+/// The elevation datasets' labels (the catalogue's `dem_labels`, §6.8): each code's label, else its
+/// name, the first of a code's; a label edit changes the catalogue's key.
 #[test]
 fn elevation_labels_come_from_the_declarations() {
     let el = |path: &str, name: &str, label: &str, code: Option<u8>| credits::Described {

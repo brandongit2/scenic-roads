@@ -350,9 +350,9 @@ pub struct Shared {
     pub pageview: Option<Arc<crate::agent::pageview::PageView>>,
     /// This Mac's live store (crate::agent::live): `/work/live`. None: not given one (503).
     pub live: Option<Arc<crate::agent::live::Store>>,
-    /// The build page's Catalogues map (crate::agent::catalogsview): `/work/catalogs`. None: not
+    /// The build page's Catalogues map (crate::agent::cataloguesview): `/work/catalogs`. None: not
     /// given one (503).
-    pub catalogs: Option<Arc<crate::agent::catalogsview::CatalogsView>>,
+    pub catalogues: Option<Arc<crate::agent::cataloguesview::CataloguesView>>,
     /// The build page's map's finished tiles (crate::agent::builtview): `/work/built`. None: not
     /// given one (503).
     pub built: Option<Arc<crate::agent::builtview::BuiltView>>,
@@ -1341,7 +1341,7 @@ impl Coordinator {
             brokers: None,
             pageview: None,
             live: None,
-            catalogs: None,
+            catalogues: None,
             built: None,
             regions: None,
             region_steps: None,
@@ -2103,7 +2103,7 @@ impl Coordinator {
         c.sizes.get("threads").map(|&t| t as u32)
     }
 
-    /// Notes what happened (`history`): this Mac's jobs started and ended, catalogs, its conditions.
+    /// Notes what happened (`history`): this Mac's jobs started and ended, catalogues, its conditions.
     pub fn note(&self, e: history::Event) {
         self.shared.lock().unwrap().history.add(e);
     }
@@ -2327,9 +2327,9 @@ impl Coordinator {
         self.shared.lock().unwrap().live.is_some()
     }
 
-    /// `/work/catalogs` answered from `cv` (crate::agent::catalogsview) from here on.
-    pub fn set_catalogs(&self, cv: Arc<crate::agent::catalogsview::CatalogsView>) {
-        self.shared.lock().unwrap().catalogs = Some(cv);
+    /// `/work/catalogs` answered from `cv` (crate::agent::cataloguesview) from here on.
+    pub fn set_catalogues(&self, cv: Arc<crate::agent::cataloguesview::CataloguesView>) {
+        self.shared.lock().unwrap().catalogues = Some(cv);
     }
 
     /// `/work/built` answered from `bv` (crate::agent::builtview) from here on.
@@ -2343,8 +2343,8 @@ impl Coordinator {
     }
 
     /// Whether it answers `/work/catalogs`.
-    pub fn has_catalogs(&self) -> bool {
-        self.shared.lock().unwrap().catalogs.is_some()
+    pub fn has_catalogues(&self) -> bool {
+        self.shared.lock().unwrap().catalogues.is_some()
     }
 
     /// Its state as the pool keeps it per term (docs/pool.md §6.2, §7.5): the jobs' leases (each
@@ -4171,10 +4171,10 @@ fn route(
             Ok(live.map_or_else(not_ready, |l| (200, l.answer(&a, unix))))
         }
         "/work/catalogs" => {
-            // The build page's Catalogues map (crate::agent::catalogsview): the catalogs after
+            // The build page's Catalogues map (crate::agent::cataloguesview): the catalogues after
             // `after` as read so far (its reader started, the folder listed again, when due).
             let b: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
-            let cv = shared.lock().unwrap().catalogs.clone();
+            let cv = shared.lock().unwrap().catalogues.clone();
             Ok(cv.map_or_else(not_ready, |cv| (200, cv.ask(b["after"].as_u64()))))
         }
         "/work/built" => {
@@ -4397,7 +4397,8 @@ mod http {
         // 1:50m, public domain): rings in Web Mercator, the world 0–1000 each way.
         ("worldmap.js", "text/javascript", include_bytes!("../../../../web/work/worldmap.js")),
         // Its Catalogues tab: the range's and the tiles' sums.
-        ("catalogs.js", "text/javascript", include_bytes!("../../../../web/work/catalogs.js")),
+        // the served name keeps its old spelling (task #547: a page from an older lead asks for it)
+        ("catalogs.js", "text/javascript", include_bytes!("../../../../web/work/catalogues.js")),
         ("countries.json", "application/json", include_bytes!("../../../../web/work/countries.json")),
         ("sw.js", "text/javascript", include_bytes!("../../../../web/work/sw.js")),
         (
@@ -6927,7 +6928,7 @@ mod tests {
 
     /// Task #499: a cold job of the lead's own (bld-fetch, run before but not measured the way it
     /// runs now) goes beside the lead's jobs when its provisional need (its declared memory times
-    /// 3/2) fits the room left; one that doesn't, or a step never measured (the catalog), isn't
+    /// 3/2) fits the room left; one that doesn't, or a step never measured (the catalogue), isn't
     /// starved: the lead's asks get nothing more until it can go. A member with more room, asking
     /// for the step it may never be granted, isn't its asker.
     #[test]

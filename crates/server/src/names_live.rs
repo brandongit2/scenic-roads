@@ -4,7 +4,7 @@
 //! server serves. The records are read every minute, but only while the map is in use (a request
 //! in the last ten minutes), so an idle server leaves the NAS alone.
 //!
-//! The languages spoken where a thing is come from the catalog's `global/spoken`; a catalog without
+//! The languages spoken where a thing is come from the catalogue's `global/spoken`; a catalogue without
 //! one has them made from its outlines (the pass's) and the languages input's accepted table
 //! (docs/inputs.md §6.2: kept here as the translations are, crate::accepted), made into a raster
 //! once per outlines file and table and kept in the home (`names/spoken-<content>+<table>.bin`), so they hold offline too.
@@ -64,7 +64,7 @@ pub struct NamesState {
     old: PathBuf,
     /// Where the rasters are kept.
     spoken_dir: PathBuf,
-    /// The local copy of the languages' accepted version (for a catalog without `global/spoken`).
+    /// The local copy of the languages' accepted version (for a catalogue without `global/spoken`).
     languages: PathBuf,
     /// Seconds since the epoch of the last request that used names.
     last_use: AtomicU64,
@@ -142,7 +142,7 @@ impl NamesState {
         self.snapshot().map_or(0, |nm| nm.version_in(w, s, e, n))
     }
 
-    /// Each language's version and the raster's (for the catalog's status).
+    /// Each language's version and the raster's (for the catalogue's status).
     pub fn versions(&self) -> serde_json::Value {
         let g = self.names.read().unwrap();
         let mut langs = serde_json::Map::new();
@@ -194,7 +194,7 @@ impl NamesState {
     }
 
     /// Load the local copy, then keep it in step with the NAS while the map is in use; make (or
-    /// read back) the spoken languages for the catalog's outlines.
+    /// read back) the spoken languages for the catalogue's outlines.
     pub fn spawn(self: &Arc<Self>, data: Arc<Data>) {
         // The spoken languages on a thread of their own: made from the outlines on the NAS, they
         // take minutes the first time, which the translations' sync shouldn't wait for.
@@ -228,7 +228,7 @@ impl NamesState {
             .ok();
     }
 
-    /// Sets the spoken languages (tests: their catalogs have no outlines).
+    /// Sets the spoken languages (tests: their catalogues have no outlines).
     #[cfg(test)]
     pub fn set_spoken(&self, s: Spoken) {
         self.set_spoken_from("test".into(), s);
@@ -266,12 +266,12 @@ impl NamesState {
         }
     }
 
-    /// The spoken languages: the catalog's `global/spoken` (the `spoken` job's, mirrored as an
-    /// essential: offline too); in a catalog without it, made from the catalog's outlines (read
+    /// The spoken languages: the catalogue's `global/spoken` (the `spoken` job's, mirrored as an
+    /// essential: offline too); in a catalogue without it, made from the catalogue's outlines (read
     /// from the mirror or the NAS) and kept in the home, or read back from there. Without either
     /// (offline, never made here): the newest kept, else none, and names stay unloaded.
     fn ensure_spoken(&self, data: &Data) {
-        let cat = data.catalog();
+        let cat = data.catalogue();
         let have = self.spoken.read().unwrap().as_ref().map(|(c, _)| c.clone());
         if let Some(logical) = cat.global.get("spoken") {
             let content = data.content(logical);
@@ -357,7 +357,7 @@ impl NamesState {
         }
     }
 
-    /// The languages table for a catalog without `global/spoken`, and what names it (its file's
+    /// The languages table for a catalogue without `global/spoken`, and what names it (its file's
     /// hash): the languages' accepted version, kept here (brought up to date first while the NAS is
     /// there); None before there's one.
     fn table(&self, data: &Data) -> Option<(names::Table, String)> {

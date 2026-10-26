@@ -81,7 +81,7 @@ export const rgb01 = (hex: string): [number, number, number] => [1, 3, 5].map((i
 /** By height: the scale's domain (m). */
 export const HEIGHT_DOMAIN: [number, number] = [0, 400];
 
-/** The tiles' URL (versioned: the catalog's `buildings.tiles`). */
+/** The tiles' URL (versioned: the catalogue's `buildings.tiles`). */
 export const buildingTiles = (): string => {
   // PROTOTYPE (task #102): `?bldtiles=<url>` takes the tiles from another server, in the comparison
   // mode only (`?bldcmp`, bldcmp.ts).
@@ -237,7 +237,7 @@ export function keepWhole(map: MLMap) {
   map.on('render', check);
 }
 
-/** Adds the source and layers (when the catalog has buildings): the extrusions after the road and
+/** Adds the source and layers (when the catalogue has buildings): the extrusions after the road and
  * rail layers (`before`: the first symbol layer), the footprints among the draped layers
  * (`flatBefore`: the first boundary layer). */
 export function addBuildings(map: MLMap, before: string, flatBefore: string) {
@@ -324,7 +324,7 @@ export function heritageChanged(map: MLMap, shown: boolean) {
   map.triggerRepaint();
 }
 
-/** A new catalog's tiles. */
+/** A new catalogue's tiles. */
 export function switchBuildings(map: MLMap) {
   (map.getSource(SOURCE) as { setTiles?: (t: string[]) => void } | undefined)?.setTiles?.([buildingTiles()]);
 }
@@ -913,11 +913,11 @@ export function summarise(f: MapGeoJSONFeature): FeatureSummary {
   };
 }
 
-/** The 3D buildings' credit, from the catalog's credits (the declared source's, docs/inputs.md
- * §4.8): what a building's details name as its source; empty until the catalog says. */
+/** The 3D buildings' credit, from the catalogue's credits (the declared source's, docs/inputs.md
+ * §4.8): what a building's details name as its source; empty until the catalogue says. */
 let buildingsCredit = '';
 
-/** The catalog's credits, for the 3D buildings' (as the catalog is polled). */
+/** The catalogue's credits, for the 3D buildings' (as the catalogue is polled). */
 export function setBuildingsCredit(credits: { what: string; source: string }[] | undefined): void {
   buildingsCredit = (credits ?? []).find((c) => c.what === '3D buildings')?.source ?? '';
 }

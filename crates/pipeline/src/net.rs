@@ -211,21 +211,21 @@ pub fn same(a: &str, b: &str) -> bool {
 /// .claude/launch.json and the docs; the server's test pins it.
 pub const DEFAULT_PORT: u16 = 7311;
 
-/// Tells this Mac's map server (DEFAULT_PORT, on loopback) a catalog was just written, so it adopts
+/// Tells this Mac's map server (DEFAULT_PORT, on loopback) a catalogue was just written, so it adopts
 /// it at once (its /api/catalog/refresh) instead of at its next poll. On a thread of its own, best
-/// effort: no server running is fine (it reads the catalog when it starts).
-pub fn catalog_written() {
+/// effort: no server running is fine (it reads the catalogue when it starts).
+pub fn catalogue_written() {
     // (Not from tests: a map server running on this Mac is not theirs.)
     if cfg!(test) {
         return;
     }
-    let _ = std::thread::Builder::new().name("catalog-refresh".into()).spawn(|| {
+    let _ = std::thread::Builder::new().name("catalogue-refresh".into()).spawn(|| {
         let agent: ureq::Agent =
             ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(30))).build().into();
         let url = format!("http://127.0.0.1:{DEFAULT_PORT}/api/catalog/refresh");
         if let Err(e) = agent.post(&url).send_empty() {
             if !matches!(e, ureq::Error::Io(_) | ureq::Error::ConnectionFailed) {
-                eprintln!("agent: telling the map's server of the new catalog: {e}");
+                eprintln!("agent: telling the map's server of the new catalogue: {e}");
             }
         }
     });

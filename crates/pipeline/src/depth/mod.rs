@@ -32,7 +32,7 @@ pub const LAYER: &str = "depth";
 pub const CLASS_LAYER: &str = "depth-class";
 /// The floor's shading's (`depth-shade`; encoding crate::shade_codec::ENCODING).
 pub const SHADE_LAYER: &str = "depth-shade";
-/// Their encodings in the packs' meta and the catalog.
+/// Their encodings in the packs' meta and the catalogue.
 pub const ENCODING: &str = "terrarium-webp";
 pub const CLASS_ENCODING: &str = "class-webp";
 /// The zooms each layer holds.

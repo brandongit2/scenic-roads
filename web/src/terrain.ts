@@ -186,22 +186,22 @@ export function contourInterval(z: number, density = 0): [number, number] {
 
 let contourDem = false;
 let contourDensity = 0;
-/** The catalog's areas where the terrain goes past z12 (the meta's terrainAreas). */
+/** The catalogue's areas where the terrain goes past z12 (the meta's terrainAreas). */
 let terrainAreas: TerrainAreas | undefined;
 /** A contour tile's intervals: from z8 (none coarser). */
 const contourLevels = (z: number, density: number) => (z < 8 ? [] : contourInterval(Math.min(z, 16), density));
 
-/** The contours' DEM's finest zoom where the catalog has no finer terrain. */
+/** The contours' DEM's finest zoom where the catalogue has no finer terrain. */
 const CONTOUR_DEM_MAXZOOM = 12;
 
 /** The contours' terrain tiles (contour/dem.ts reads them itself, in its worker): to z12, finer
- * in the areas the catalog has finer terrain; each tile at its pack's version. */
+ * in the areas the catalogue has finer terrain; each tile at its pack's version. */
 function newContourDem() {
   setContourDem({ url: terrainTiles(), packs: layerPacks('terrain'), maxzoom: CONTOUR_DEM_MAXZOOM, areas: terrainAreas }, contourLevels);
   contourDem = true;
 }
 
-/** The catalog's areas of terrain finer than its base: the contours' DEM follows them (the terrain
+/** The catalogue's areas of terrain finer than its base: the contours' DEM follows them (the terrain
  * sources take them from the style: basemap.ts). */
 export function setTerrainAreas(map: MLMap, a: TerrainAreas | undefined) {
   if (JSON.stringify(a) === JSON.stringify(terrainAreas)) return;
@@ -210,7 +210,7 @@ export function setTerrainAreas(map: MLMap, a: TerrainAreas | undefined) {
   refreshContours(map, old, false);
 }
 
-/** New terrain tiles (a new catalog): the contours' DEM anew, and the contour tiles reading the
+/** New terrain tiles (a new catalogue): the contours' DEM anew, and the contour tiles reading the
  * DEM tiles of the packs it changed asked for again. */
 export function switchContours(map: MLMap) {
   refreshContours(map, terrainAreas, true);

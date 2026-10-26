@@ -116,7 +116,7 @@ What each step does, in detail. The steps as one table (names, chains, the check
     it is that dataset's zoom (pixels no finer than half its cell: 2 m to z16, 3DEP to z14, z13 north
     of ~55°; a tile pyramid to its own zoom), never past z16 (`MAX_Z`, the owner's: 1 m data stops
     there too); elsewhere the latitude's cap above. It is told by z10 tile
-    (`terrain_deep::native_zoom`; the catalog's `native_zoom`, the map's zoom by area). A
+    (`terrain_deep::native_zoom`; the catalogue's `native_zoom`, the map's zoom by area). A
     terrain-deep target is a z10 tile near the coverage (20 km) where a fine dataset meets its z8
     tile and one of its base tiles reaches z13 (`terrain_deep::is_target`). Its run first reads which
     of its base tiles its datasets have data in (below: the presence grids, the fine datasets alone);
@@ -406,7 +406,7 @@ drawn as a raster.
     CSS px: every pixel holding any land is a shore, placed by its share (`web/src/coastdist.ts`).
     The distance is exact within 192 pixels; past 60° the far field comes from coarser ancestors.
     Stored in metres in MapLibre's 'custom' raster-DEM encoding.
-  - Without the layer in the catalog, the basemap's water polygons are drawn.
+  - Without the layer in the catalogue, the basemap's water polygons are drawn.
   - The water has no hover or click; its names are the labels'.
 - **Checked** by `tools/coastcheck` (its README has the metric and views): the map in an eval mode
   against full detail over 137 views, and with `--screen` the screen in the app's colours against
@@ -432,9 +432,9 @@ drawn as a raster.
   - **Where it plugs in:** the step makes `work/lakefill/<date>.<h>.sect` (docs/formats.md), keyed
     by the basemap, the outlines and the source's zips (`run::source_pin`); only the fill from the
     latest basemap is drawn (`lakefill::current`). The water, the terrain's water digests and the
-    catalogs wait for it (`hold_for_lakefill`) until it has failed 3 times in a row
+    catalogues wait for it (`hold_for_lakefill`) until it has failed 3 times in a row
     (`water_waits_for_lakefill`), then go without it. The water layer draws its lakes as an extra
-    z14 tile (`water::Extra`, the catalog's `global.lakefill`), read only for tiles in its reach
+    z14 tile (`water::Extra`, the catalogue's `global.lakefill`), read only for tiles in its reach
     (`lakefill::REACH`, Canada's box, which the step refuses a lake outside), so away from the NAS a
     region elsewhere draws its deeper zooms without it; the terrain flattens them
     (`lakefill::FilledWater`; `terrain_pack::water_source_pin` names the fill).
@@ -542,9 +542,9 @@ index, so a new release rebuilds every z6 tile.
   §6.7.0) and the static timetables (docs/inputs.md §6.7.2).
 - **Rail service** (below).
 - **Landmarks:** `docs/phase5.md`.
-- **The to-do lists:** `names-todo` after a catalog the map serves that changed what it reads
+- **The to-do lists:** `names-todo` after a catalogue the map serves that changed what it reads
   (`namestodo::inputs_key`: the z6 tiles, coverage, languages spoken, labels' hi packs, base packs,
-  own-road lists, hi data, landmark points and area overlays, by content; a catalog of depth or
+  own-road lists, hi data, landmark points and area overlays, by content; a catalogue of depth or
   terrain alone changes none), at most daily while z6 tiles build, after any such once none's left
   (docs/names.md, `NAMES_TODO_EVERY_S`); `timetables-todo` after each rail
   and ferries run (docs/inputs.md §6.7.3).
@@ -689,15 +689,15 @@ keeps its content name, so jobs keyed on it stop there.
 |---|---|
 | our layers | the pack for the tile; names attached |
 | polar caps | `/tiles/polar-terrain/<pole>/z/x/y`, `/tiles/polar-slope/…`: the pole's root (z0–3) or block (z4–9) pack's tile as stored, else 404 |
-| basemap | tiles from the catalog's PMTiles archives (`/tiles/base`); names attached |
+| basemap | tiles from the catalogue's PMTiles archives (`/tiles/base`); names attached |
 | drives, rides, rail lines | parts from the hidata in view plus half the window, joined by offset; zoomed out (wider than ~1,200 km) from the 500 m summaries (`approx`) |
 | whole road (hover) | the road's parts, through the road → z6 tiles index; away from the NAS, cut where the Mac's downloads end |
 | details, profiles | by OSM id plus location (ways-here index → base pack) |
 | landmarks, overlays, stations, ferries | by view (`docs/phase5.md`) |
 | `/api/meta` | the map's meta, summed from the base packs' summaries |
-| `/api/catalog` | the catalog's number, layers, zoom ranges, versions, credits, regions, NAS and build state |
+| `/api/catalog` | the catalogue's number, layers, zoom ranges, versions, credits, regions, NAS and build state |
 | `/api/coverage` | each region's outlines, simplified |
 
 **Browser:** the map is drawn by our own MapLibre, `web/maplibre/` (MapLibre GL JS 6.11.2's source,
 changed where needed: `web/maplibre/FORK.md`), compiled with the app. English comes from the server.
-The page switches to a new catalog in place (it polls `/api/catalog` every minute).
+The page switches to a new catalogue in place (it polls `/api/catalog` every minute).

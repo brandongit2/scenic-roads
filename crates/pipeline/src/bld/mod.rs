@@ -40,7 +40,7 @@ pub const BLDPREP_V: u32 = 2;
 /// Bumped when the fill (its rules, fits and defaults: [`fill`]) or the tiles change (every
 /// `bldtiles` target runs again, nothing else).
 pub const BUILDINGS_V: u32 = 4;
-/// The served layer (`/tiles/buildings/…`, the catalog's `buildings`).
+/// The served layer (`/tiles/buildings/…`, the catalogue's `buildings`).
 pub const LAYER: &str = "buildings";
 /// The zooms the tiles are made at.
 pub const ZOOM: u8 = 14;

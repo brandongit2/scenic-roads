@@ -88,7 +88,7 @@ fn made_from(s: &crate::AppState, archives: &[String]) -> u64 {
     let mut h = blake3::Hasher::new();
     h.update(&wt::VERSION.to_le_bytes());
     h.update(s.data.layer_version(wt::LAYER).as_bytes());
-    // (The lakes filled from Canada's own data, when the catalog has them.)
+    // (The lakes filled from Canada's own data, when the catalogue has them.)
     if let Some(c) = fill_content(s) {
         h.update(b"lakefill ");
         h.update(c.as_bytes());
@@ -106,10 +106,10 @@ pub fn version(s: &crate::AppState) -> String {
     format!("{:012x}", made_from(s, &s.data.basemap_names()) >> 16)
 }
 
-/// The catalog's lakes filled from Canada's own data (pipeline::lakefill): its logical and content
+/// The catalogue's lakes filled from Canada's own data (pipeline::lakefill): its logical and content
 /// names.
 fn fill_names(s: &crate::AppState) -> Option<(String, String)> {
-    let l = s.data.catalog().global.get("lakefill")?.clone();
+    let l = s.data.catalogue().global.get("lakefill")?.clone();
     let c = s.data.content(&l)?;
     Some((l, c))
 }
@@ -118,7 +118,7 @@ fn fill_content(s: &crate::AppState) -> Option<String> {
     fill_names(s).map(|(_, c)| c)
 }
 
-/// The catalog's fill, opened once (kept while the catalog names it): memory-mapped from this
+/// The catalogue's fill, opened once (kept while the catalogue names it): memory-mapped from this
 /// Mac's mirror (793 MB, 2026-10-15), never read into memory, but read whole from the NAS when the
 /// mirror lacks it. One request opens it while the others wait for it (the lock is held across
 /// the opening). One that can't be read fails the tile's request, which is tried again on the
@@ -173,7 +173,7 @@ fn stored(s: &S, z: u8, x: u32, y: u32) -> Result<Option<Cov>> {
 
 /// Tile z/x/y's shares if they're stored (Ok(None): to be drawn).
 fn from_store(s: &S, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>> {
-    let has_layer = s.data.catalog().layers.contains_key(wt::LAYER);
+    let has_layer = s.data.catalogue().layers.contains_key(wt::LAYER);
     if has_layer && z <= wt::STORED_MAXZ {
         let from_packs = (|| -> Result<Option<Vec<u8>>> {
             if let Some(c) = stored(s, z, x, y)? {
@@ -463,7 +463,7 @@ mod tests {
 
     #[tokio::test]
     async fn stored_tiles_and_their_uniform_children_coloured_or_raw() {
-        // A catalog whose water layer is one root pack holding z0: its left half sea, its bottom
+        // A catalogue whose water layer is one root pack holding z0: its left half sea, its bottom
         // right quarter a lake.
         let mut c = Cov::uniform(0, 0);
         for y in 0..wt::SIZE {
@@ -489,10 +489,10 @@ mod tests {
         .unwrap();
         w.add(0, 0, 0, &png0, png0.len() as u32).unwrap();
         w.finish().unwrap();
-        let mut cat = store::catalog::Catalog::new(1);
+        let mut cat = store::catalogue::Catalogue::new(1);
         cat.files.insert(
             "layers/water/root/0-0-0".into(),
-            store::catalog::FileRef {
+            store::catalogue::FileRef {
                 file: content.into(),
                 size: std::fs::metadata(&path).unwrap().len(),
                 ..Default::default()
@@ -500,7 +500,7 @@ mod tests {
         );
         cat.layers.insert(
             "water".into(),
-            store::catalog::Layer {
+            store::catalogue::Layer {
                 encoding: "water-png".into(),
                 minzoom: 0,
                 maxzoom: 9,
@@ -508,17 +508,17 @@ mod tests {
                 ..Default::default()
             },
         );
-        // A basemap the catalog names but the NAS hasn't (away, not mirrored).
+        // A basemap the catalogue names but the NAS hasn't (away, not mirrored).
         cat.basemap = vec!["layers/basemap/world-gone".into()];
         cat.files.insert(
             "layers/basemap/world-gone".into(),
-            store::catalog::FileRef {
+            store::catalogue::FileRef {
                 file: "layers/basemap/world-gone.0123456789abcdef.pmtiles".into(),
                 size: 1,
                 ..Default::default()
             },
         );
-        store::catalog::write_copy(&nas.path().join("catalog"), &cat).unwrap();
+        store::catalogue::write_copy(&nas.path().join("catalog"), &cat).unwrap();
         let home = tempfile::tempdir().unwrap();
         let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
         let get = |z, x, y, q: &str| {

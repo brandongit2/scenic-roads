@@ -111,7 +111,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   whatever else its checks read (`Checks::context`: the pass's outlines, the accepted registers for
   the matches, check.py for translations, the regions' extract).
 - **Where:** on the lead, either slot, never beside a step that runs alone, another heavy NAS reader
-  (`bldprep`) or another check. It holds no region and no catalog.
+  (`bldprep`) or another check. It holds no region and no catalogue.
 - **What it does:**
   1. Hashes the files that may have changed (BLAKE3 hash16, formats.md, Names and hashes); a file
      with the accepted bytes is unchanged whatever its time.
@@ -219,7 +219,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   pipeline::inputs::served), and from that copy away from the NAS. The Regions panel reads the
   region files read-only plus the accepted index and held report. `names-todo` reads the accepted
   translations and descriptions the agent names.
-- Planned: the catalog recording the accepted index of every unit it was built from.
+- Planned: the catalogue recording the accepted index of every unit it was built from.
 
 ### 4.7 Where it shows
 
@@ -245,7 +245,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
 
 ### 4.8 Credits from the inputs
 
-- The catalog's `credits` (formats.md, Catalog) are made from the accepted descriptions (§5.1) by
+- The catalogue's `credits` (formats.md, Catalogue) are made from the accepted descriptions (§5.1) by
   crate::inputs::credits, beside `pipeline::rules::CREDITS` for sources with no description yet
   (descriptions win for a source both name), with one rule for which to list: those whose extent
   meets the coverage, 20 km around it, or a built z6 tile's ways (`rules::listed`). A description's
@@ -253,16 +253,16 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   one whose extent isn't known is listed nowhere, except the depth sources whose grids meet the
   depth's packs and the timetable feeds the trains and ferries count (§6.7.1), listed wherever they
   are.
-- **Credit edits reach the catalog without rebuilding:** credits enter no step's key, but the
-  catalog's key (`catalog_key`) has the digest of every accepted description's credit fields
+- **Credit edits reach the catalogue without rebuilding:** credits enter no step's key, but the
+  catalogue's key (`catalogue_key`) has the digest of every accepted description's credit fields
   (`credits::digest`). When descriptions can't be read now, the last digest read stands; with none
-  read yet, the catalog waits.
+  read yet, the catalogue waits.
 - **Popups name their source by register id** (`register`, `registers`), resolved in the map against
-  the catalog's credits (web/src/overlays.ts `sourceOf`), so a credit edit reaches popups with the
-  next catalog.
+  the catalogue's credits (web/src/overlays.ts `sourceOf`), so a credit edit reaches popups with the
+  next catalogue.
 - The map's own credits for what the app makes (colour ramps, `web/src/ui/strip.ts`) stay the app's.
-  The server's fallback for catalogs without credits (`credits_of`, which reads `rules::CREDITS`)
-  stays while such catalogs are served.
+  The server's fallback for catalogues without credits (`credits_of`, which reads `rules::CREDITS`)
+  stays while such catalogues are served.
 
 ### 4.9 GC and backups
 
@@ -380,7 +380,7 @@ any water in two regions, or in none, is an error.
   lower first; then by name). The check reads it (`rg-group`); the index carries it (`facts.group`)
   and the tree is made from the index alone (`regions::read::tree`). Empty folders aren't shown.
   Moving a region between folders changes its group, never its geometry or keys (the index, and so
-  the catalog, is new).
+  the catalogue, is new).
 - **Special files** are the `.toml` files whose name starts with `_`: never a region (an id has no
   `_`, so a region file can't be named so). Three are known, and any other `_*.toml` is an error
   (`rg-special`) naming them; so are the old names `pins.toml` and `rules.toml`, which say to
@@ -416,7 +416,7 @@ may name it (`region:`, `land:`, `group:`, `rest`, nearest-coast splits, hand-ou
 `cover = "earth"` it counts toward covering the Earth once. Its stored geometry is the same either
 way. The index records it (`facts.disabled`, set only when true). The readers leave it out
 (crate::inputs::regions::read: `recipes`, `enabled`, `Coverage::accepted`), so it is in no coverage,
-unit, map tile, catalog or download, and it adds nothing to any forecast or size. The regions'
+unit, map tile, catalogue or download, and it adds nothing to any forecast or size. The regions'
 extract (§6.1.6) still fetches the relations and ways a disabled region names, because the check
 needs them. Enabling or disabling a region changes only the index, which makes a new version. The
 coverage changes over the region's area alone, so only jobs whose box it reaches run again. The panel
@@ -600,7 +600,7 @@ and may record other datasets a shape came from (`gadm = "4.1"`, checked only as
   ```
   No name, so renaming changes no key. `tolerance_m` is 1,000 for an `osm:` part with the coast
   tolerance, else 0; `country` is the relation's ISO code (a computed shape's first `osm:` part's).
-- `sources/inputs/regions/@drawn/<id>.<hash16>.json`, what the catalog and the region layer draw:
+- `sources/inputs/regions/@drawn/<id>.<hash16>.json`, what the catalogue and the region layer draw:
   each shape simplified for drawing (an `osm:` part as the pass simplified it, else by
   `draw_tolerance_m`), degrees to 5 decimals, keyed by `from`. A region resolved by cell
   (§6.1.3) is drawn with its cells' pieces dissolved into one area first, so no 2° cell edge is
@@ -729,8 +729,8 @@ region file takes it out with the next version.
 Every reader reads `Coverage::accepted`, and only once the records hold
 `sources/inputs/regions/@switched` (crate::inputs::regions::read `switched`); without it the readers
 refuse, saying to do the migration's runbook first. The switch records the app it was made on, and
-no Mac on an older app leads or is handed the lead. Catalogs record their regions' shapes inline
-(formats.md, Catalog `coverage`), so old catalogs still draw. The tests (crate::inputs::regions's)
+no Mac on an older app leads or is handed the lead. Catalogues record their regions' shapes inline
+(formats.md, Catalogue `coverage`), so old catalogues still draw. The tests (crate::inputs::regions's)
 cover the operations on small fixtures: union, minus, intersect, cuts (past the shape, ending
 inside, pieces missed), a 12 nmi buffer against a geodesic distance, ways that don't join, a loop,
 duplicate ids, a pin mismatch, the antimeridian, byte-identical output twice.
@@ -763,7 +763,7 @@ lines as read, so comments rerun nothing.
 **Ingesting.** The `spoken` job (docs/names.md) keys on the outlines, `spoken::RULES` and the accepted
 index (`--languages-index`), and waits while there's none. `global/spoken` carries the table, which
 `names-todo` reads; the server reads the accepted table (`accepted/languages/` in its home) only for
-catalogs without `global/spoken`.
+catalogues without `global/spoken`.
 
 ### 6.3 Translations
 
@@ -805,7 +805,7 @@ content. `names-todo` keys on the accepted version.
 **Kind:** request–fulfil. **Inputs folder:** `inputs/descriptions/`. Code: crate::inputs::descriptions.
 
 **Shape** (docs/names.md, Descriptions): `**/*.jsonl` lines, and an optional `about.toml` (its credit;
-without one the catalog keeps `rules::CREDITS`' "Heritage descriptions"; its extent is the world
+without one the catalogue keeps `rules::CREDITS`' "Heritage descriptions"; its extent is the world
 when its `territory` is `"world"`, else unknown):
 
 | Field | Type | |
@@ -1042,9 +1042,9 @@ rail list, `ferries` on the ferry list. With a catalogue copy but no accepted ca
 rail-feeds fails rather than read it uncorrected. A declaration's `pin` is put in by rail-feeds the
 first time it runs with no zip for that feed, so a pinned feed is never fetched before its pin.
 
-**Credits.** A declared feed in the rail or ferry feeds' list with a zip is credited in the catalog
-from its description, wherever it is (`inputs::feeds::credited`; the catalog's key names those ids,
-and the catalog waits while they can't be read). The catalogue's own feeds are credited by the
+**Credits.** A declared feed in the rail or ferry feeds' list with a zip is credited in the catalogue
+from its description, wherever it is (`inputs::feeds::credited`; the catalogue's key names those ids,
+and the catalogue waits while they can't be read). The catalogue's own feeds are credited by the
 table's line (`rules::CREDITS`). The catalogue's copy is fetched only when there is none: it isn't
 refreshed yet (task #367).
 
@@ -1140,7 +1140,7 @@ the same declarations.
 | `heights` | `EGM2008`, `EGM96`, `CGVD2013`, `NAVD88`, `JGD2011`, `TWVD2001`, `ellipsoid-WGS84` | the height reference, brought to EGM2008 before the blend (below) |
 | `rank` | integer, default 0 | overrides the order by resolution (lower first), where datasets of one resolution differ in quality |
 | `code` | 1–9 | the source byte (at most `roadcore::NDEM` − 1, where the server counts a way's sources) in the z6 tiles' outputs (`src.u8`), named on the map by `label` |
-| `label` | string | the short name a road's details give its elevation source (`"GSI lidar (5 m)"`), else `name`; one label per `code` (an `el-decl` error otherwise); not keyed: it reaches the map through the catalog's `dem_labels` (formats.md, Catalog), as a credit edit does (§4.8) |
+| `label` | string | the short name a road's details give its elevation source (`"GSI lidar (5 m)"`), else `name`; one label per `code` (an `el-decl` error otherwise); not keyed: it reaches the map through the catalogue's `dem_labels` (formats.md, Catalogue), as a credit edit does (§4.8) |
 | `regions` | region ids (§6.1) | optional: the map regions the dataset is used in at all, by the roads and the terrain alike; elsewhere the next dataset in the order serves both. Its coverage (`facts.measured.cover`) is cut at check time to the 1° cells meeting one of them (`declared::scope_cover`; the check's key names the accepted regions, so a regions change measures again); an id no accepted region has is an `el-data` error. Not in its `keyed` digest (`Declaration::keyed_part`): a key names the cut only where it changed the cells the key's box reads (`cut_note`), so the z6 tiles inside keep their keys and those whose datasets change are built again. Planned: cut to the regions' outlines inside those cells too |
 | `territory` | ISO codes or `"world"` | required for a tile pyramid (its coverage is its territory's outlines' boxes); `"world"` makes any dataset's coverage the world |
 | `[data] format` | `geotiff` or `tiles` | |
@@ -1379,7 +1379,7 @@ land cover, the canopy files' URLs); a tree cover run from `sources.json` beside
 (`trees::RunSources`, passed to the trees program as `--sources`, which makes its leaf-type
 squares from them: `leaftype`). The jobs that read them (the z6 tiles, tree cover, items, the
 heritage chain) wait until a version is accepted (the agent's `hold_for_sources`); the lake fill,
-and the water, terrain and catalog that read it, wait too (`lakefill::run::planned_source`); so do
+and the water, terrain and catalogue that read it, wait too (`lakefill::run::planned_source`); so do
 the roadside buildings' job and the z6 tiles' keys (the release, `buildtiles::release_of`, held by
 `agent::tiles` for the keys) and the 3D buildings' chain (no "bld-key" in `agent::input_digests`).
 
@@ -1423,7 +1423,7 @@ grids on the NAS (`sources/ncei-crm/`, `sources/ncei-greatlakes/`) among them.
 
 **The rollout:**
 1. Both Macs run the app that reads the declarations. Until a version is accepted, the z6 tiles, tree
-   cover, items, heritage chain, lake fill (and the water, terrain and catalog that read it), the
+   cover, items, heritage chain, lake fill (and the water, terrain and catalogue that read it), the
    roadside buildings' job and the 3D buildings wait, and say so.
 2. CanVec's zips are copied with their times kept (`cp -p`) from `sources/canvec/50k/` to
    `sources/fetched/canvec-lakes/`, and each copy's modification time checked to match its
@@ -1638,8 +1638,8 @@ declarations are made and staged there.
 
 | Where | Why |
 |---|---|
-| `rules::CREDITS` (the declared sources' entries, the CanVec licence's notice) | the credits' fallback (§4.8): a declared source's entry is replaced by its declaration's credit once one is accepted, and stands in until then, so a catalog never lacks a licence's notice |
-| `lakefill::run::fill`'s metadata | part of the fill's content name: changed, the fill and the water, terrain and catalog reading it would be made again for nothing |
+| `rules::CREDITS` (the declared sources' entries, the CanVec licence's notice) | the credits' fallback (§4.8): a declared source's entry is replaced by its declaration's credit once one is accepted, and stands in until then, so a catalogue never lacks a licence's notice |
+| `lakefill::run::fill`'s metadata | part of the fill's content name: changed, the fill and the water, terrain and catalogue reading it would be made again for nothing |
 | `leaftype`'s square tags, and `trees::squares::complete` | a made square's GeoTIFF `source`, as every square already made says it (`trees::squares::complete` reads the tags) |
 | `trees::META` | the tree tiles' metadata, part of their content: changed, every tree tile would be made again for nothing |
 | `leaftype`'s `fetch_nalcms` and `nalcms_centre` | the reader of NALCMS's zip and its GeoTIFF's projection, made for their layout; their messages name what they read |
@@ -1654,7 +1654,7 @@ declarations are made and staged there.
 
 Of what §6.9 keeps in code, Planetiler (a version, `water::PLANETILER_VERSION`) and
 `bld::fill::ESTIMATES` (Overture's dataset name the fill's rule matches) name no marker, so neither needs an exemption. The 3D buildings'
-details name their source from the catalog's credits (`web/src/buildings.ts`, `setBuildingsCredit`).
+details name their source from the catalogue's credits (`web/src/buildings.ts`, `setBuildingsCredit`).
 Short names other than the ids (`Terrarium`, an encoding; `GHSL`, `EEA`) and store folders
 (`sources/overture/`) aren't markers.
 
@@ -1694,16 +1694,16 @@ agent) stay.
 
 - **Credits:** `pipeline::rules::CREDITS` and its area boxes (D: each source's description, extents
   derived), and the server's `credits_of` fallback; the tree tiles' meta source string (D); source lines in web/src's layer help and popups
-  (trees.ts, ferries.ts, overlays.ts, details.ts: D, from the catalog's credits). The World
+  (trees.ts, ferries.ts, overlays.ts, details.ts: D, from the catalogue's credits). The World
   Heritage outlines' popup (overlays.ts, "site: UNESCO World Heritage Centre"): planned, the
-  outlines carrying their register's id (`register`) so the popup reads its credit from the catalog
+  outlines carrying their register's id (`register`) so the popup reads its credit from the catalogue
   (`sourceOf`); the overlays step can't add it alone (`ovconv`'s outlines know their dot's id and
   place, not its register), so it waits for the heritage job's next change to its outlines'
   file (`layer-whs-shapes`).
 - **Kept by design, credits:** the 3D buildings' height-source legend and hover help
   (buildings.ts `SOURCES`, ui/buildings.ts: "Microsoft", "GHSL", "Esri"): they name the method
   that found a building's height (its `s`, docs/buildings3d.md §2.3), not a credit; the
-  buildings' credit itself comes from the catalog (`setBuildingsCredit`).
+  buildings' credit itself comes from the catalogue (`setBuildingsCredit`).
 - **Terrain:** the raw tiles' store path (`sources/aws-terrarium/`, named for its source) and the
   credit in `rules::CREDITS` the base's declaration takes over once accepted.
 - **Trees and land cover:** the canopy and leaf-type squares' resolutions (D, read from data).

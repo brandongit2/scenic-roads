@@ -228,10 +228,11 @@ pub enum Cmd {
         #[command(flatten)]
         root: Root,
     },
-    /// The catalogs as the build page's Catalogues map reads them (docs/pool.md §10): each one's
+    /// The catalogues as the build page's Catalogues map reads them (docs/pool.md §10): each one's
     /// number, time and the map tiles it published, as JSON (what `/work/catalogs` answers). Reads only
-    Catalogs {
-        /// Only those after this catalog
+    #[command(name = "catalogs")] // the command keeps its old spelling (task #547)
+    Catalogues {
+        /// Only those after this catalogue
         #[arg(long, value_name = "N")]
         after: Option<u64>,
         #[command(flatten)]
@@ -383,12 +384,12 @@ pub struct Timings {
 
 #[derive(Subcommand, Debug)]
 pub enum TimingsCmd {
-    /// Publishing end to end over the last N catalogs: each unit from its job's end to its hand-off
-    /// merged, its map tiles planned, leased and packed, the catalog, each Mac's server adopting it
+    /// Publishing end to end over the last N catalogues: each unit from its job's end to its hand-off
+    /// merged, its map tiles planned, leased and packed, the catalogue, each Mac's server adopting it
     /// and its mirror through it; the map tiles each unit made stale, the steps that ran per
-    /// catalog, and the medians
+    /// catalogue, and the medians
     Publish {
-        /// The last N catalogs
+        /// The last N catalogues
         #[arg(long, value_name = "N", default_value_t = 10)]
         last: usize,
         /// A history file (default: the NAS's, else this Mac's coordinator's)

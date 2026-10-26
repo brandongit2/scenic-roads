@@ -7,7 +7,7 @@
 // dialog on the right. Every slot has a fixed width and its elements persist, so nothing moves as
 // the values change.
 import type { Map as MLMap } from 'maplibre-gl';
-import type { Credit } from '../catalog';
+import type { Credit } from '../catalogue';
 import { CLASS_LABELS, RAIL0, RAIL_GROUPS, ST_BRIDGE, ST_LINK, ST_TUNNEL, ST_UNPAVED } from '../config';
 import type { FeatureSummary } from '../overlays';
 import { legibleCss } from '../linecolour';
@@ -87,7 +87,7 @@ export class Strip {
   private loading: HTMLSpanElement;
   private build: HTMLSpanElement;
   private credits: { d: HTMLDialogElement; set: (data: Credit[]) => void; depth: (labels: string[], n: string[]) => void };
-  /** The data's credits shown, as a key (they come again with every catalog poll). */
+  /** The data's credits shown, as a key (they come again with every catalogue poll). */
   private creditsKey = '';
   private last: { hov: HoverInfo; info: WayInfo | null | 'loading'; areas: FeatureSummary[] } | null = null;
   private featLine: HTMLSpanElement;
@@ -170,7 +170,7 @@ export class Strip {
     return this.build;
   }
 
-  /** The credits of the sources the map's data comes from, as its catalog lists them (catalog.ts;
+  /** The credits of the sources the map's data comes from, as its catalogue lists them (catalogue.ts;
    * none before its first answer). */
   setCredits(data: Credit[] | undefined) {
     const key = JSON.stringify(data ?? []);
@@ -179,7 +179,7 @@ export class Strip {
     this.credits.set(data ?? []);
   }
 
-  /** The depth's sources (their labels; none: no depth in the catalog) and the notices their
+  /** The depth's sources (their labels; none: no depth in the catalogue) and the notices their
    * licences ask every map showing their data to carry, in full. */
   setDepth(labels: string[], notices: string[]) {
     this.credits.depth(labels, notices);
@@ -334,7 +334,7 @@ export class Strip {
 }
 
 /** The app's own credits, whatever data it shows: the colour ramps and icons it ships. The data's come with
- * its catalog (pipeline::rules::CREDITS, those of the sources its data comes from). */
+ * its catalogue (pipeline::rules::CREDITS, those of the sources its data comes from). */
 const APP_CREDITS: Credit[] = [
   {
     what: 'Colour ramps',
@@ -344,7 +344,7 @@ const APP_CREDITS: Credit[] = [
   { what: 'Stops & sights icons', source: 'Maki (Mapbox)', terms: 'CC0 1.0' },
 ];
 
-/** Data sources and licences in a modal dialog: the catalog's credits (`set`), then the app's. */
+/** Data sources and licences in a modal dialog: the catalogue's credits (`set`), then the app's. */
 function creditsDialog(): { d: HTMLDialogElement; set: (data: Credit[]) => void; depth: (labels: string[], n: string[]) => void } {
   const body = h('tbody');
   const noticeBox = h('div', { class: 'notices' });

@@ -160,7 +160,7 @@ live_version() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1])
 
 # smoke <port> <pid> <log> <seconds> <path>...: the smoke test of the server <pid> started on <port>,
 # its output in <log>. It waits up to <seconds> for /api/ping (the server listens only once its
-# catalog is read from the NAS; its first line, "catalog <n> · NAS …", says the read is done), then asks each path, a few tries
+# catalogue is read from the NAS; its first line, "catalogue <n> · NAS …", says the read is done), then asks each path, a few tries
 # on 503 (a busy NAS's slow read), and wants 200 or 204. 0 when all answered so; else says which
 # didn't and returns 1. A server that never answered is told apart, its paths not asked: exited
 # (its status), or still starting after <seconds> (task #698: under a second publish's build the
@@ -175,10 +175,10 @@ smoke() {
       ok=0; break
     fi
     if (( SECONDS - t0 >= wait )); then
-      if grep -q '^catalog ' $log 2>/dev/null; then
-        print -r -- "smoke test: the server, still running, didn't answer /api/ping within $wait s, its catalog read"
+      if grep -q '^catalogue ' $log 2>/dev/null; then
+        print -r -- "smoke test: the server, still running, didn't answer /api/ping within $wait s, its catalogue read"
       else
-        print -r -- "smoke test: the server, still running, didn't answer /api/ping within $wait s, still reading its catalog from the NAS"
+        print -r -- "smoke test: the server, still running, didn't answer /api/ping within $wait s, still reading its catalogue from the NAS"
       fi
       ok=0; break
     fi

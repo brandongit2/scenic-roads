@@ -29,7 +29,7 @@ values' `byroad`, hidata's `railinfo` and meta `lsum`.
 32  u32      meta length n
 36  [u8; n]  meta JSON: {"layer", "scope": "root"|"lo"|"hi"|"deep"|"polar", "root": "z/x/y",
              "encoding" (e.g. "rt7", "terrarium-webp", "shade-webp", "mvt"), …}
-             (zoom ranges are the catalog's)
+             (zoom ranges are the catalogue's)
 …            blobs (identical blobs stored once; entries may share an offset)
 index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
              u64 key, u64 offset, u32 len, u32 raw_len (0 if unknown), u64 xxh3
@@ -41,14 +41,14 @@ index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
   has the detail (a deep z12, north of 67°, is in its z6 tile's hi pack) (pipeline::terrain_deep; a z6 tile's would be up to 130 GB). Every terrain tile, in
   every scope, is Terrarium RGB as lossless WebP (`RIFF…WEBPVP8L`, the packs' encoding
   `terrarium-webp`: pipeline::terrain_codec; heights rounded to 1 cm at the place's native zoom and
-  in the deep levels, to 10 cm coarser), served as `image/webp`. The catalog names the deep packs
+  in the deep levels, to 10 cm coarser), served as `image/webp`. The catalogue names the deep packs
   under the layer's `deep`, each one's z10 tile's native zoom under `native_zoom`
   (`terrain_deep::native_zoom`; elsewhere the base's finest, z12 to 67°), and the terrain's
   `maxzoom` is the finest of those. The app's meta passes `native_zoom` on as `terrainAreas`
   (`{"zoom": 10, "tiles": {"x/y": z}}`), and the map takes its terrain and shading tiles to that
   zoom there (our MapLibre's `scenic:zoom-by-area`), z12 elsewhere. The meta's
   `packs.terrain.deep` gives each deep pack's version by z10 tile (`"10/x/y"`), as `lo` and `hi` do
-  theirs, so a tile past z12 there carries its deep pack's `?v=` and a new catalog asks again only
+  theirs, so a tile past z12 there carries its deep pack's `?v=` and a new catalogue asks again only
   for the tiles of the deep packs it changed. **The terrain's shading** (the `slope` layer:
   pipeline::slope_pack, steps.md §2) has the same packs, its deep packs `layers/slope/deep/10-<x>-<y>`
   beside the terrain's; **the floor's** (`depth-shade`) the depth's (Depth below). Every shading tile
@@ -59,7 +59,7 @@ index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
   **The polar caps** (`polar-terrain-<pole>`, `polar-slope-<pole>`: pipeline::polar, docs/polar.md)
   are tiled on their pole's polar stereographic grid, not Web Mercator: their root pack
   (`layers/<layer>/root/0-0-0`) holds z0–3 and a block pack (`layers/<layer>/polar/4-<x>-<y>`, scope
-  `polar`, root "4/x/y" of the grid) z4–9 under one z4 tile; the catalog names the blocks under the
+  `polar`, root "4/x/y" of the grid) z4–9 under one z4 tile; the catalogue names the blocks under the
   layer's `polar` ("4/x/y"), and meta's `packs` gives their versions there likewise. The tiles are the
   terrain's and the shading's encodings (the shading's directions on the grid: east = +x, south = −y).
   **Offline:** a region's deep packs, the terrain's and its shading's, are on a Mac only where its
@@ -71,8 +71,8 @@ index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
   (`idx/<file hash>.idx`), so serving a tile is one range read.
 - **Layer bundles** (`layers/<layer>/all`; meta `{"layer", "scope": "all", "encoding"}`): every tile
   of a layer one job makes whole in one pack (each landmark kind's thinned tiles, the area
-  overlays). The catalog names it for each pack key its tiles fall in (`root`, `lo`'s z3 keys, `hi`'s
-  z6 keys), over any pack of before; the keys come from its index, or from the last catalog when that
+  overlays). The catalogue names it for each pack key its tiles fall in (`root`, `lo`'s z3 keys, `hi`'s
+  z6 keys), over any pack of before; the keys come from its index, or from the last catalogue when that
   named the same file.
 
 ## Bundles of files (`.pack`, an RDPACK of files)
@@ -81,9 +81,9 @@ Files made per tile by one job, in one pack keyed by the tile (`roadcore::archiv
 member a whole file as it would be on its own, not gzip'd, starting on a 64-byte boundary
 (`PackWriter::aligned`), so a sectioned file in it is mapped and cast in place as on its own
 (`pipeline::layers::write_file_bundle`). `markdata/all` (meta `{"bundle": "markdata", "fmt": 1}`):
-the landmark points, a member per z6 tile. The catalog's `markdata` names it for each tile it holds;
+the landmark points, a member per z6 tile. The catalogue's `markdata` names it for each tile it holds;
 a reader finds the member through the pack's index (kept as a pack's is) and reads it in place
-(`SectView::open_at`; `pipeline::marks::markdata_files`). A catalog naming a `.sect` per tile (before
+(`SectView::open_at`; `pipeline::marks::markdata_files`). A catalogue naming a `.sect` per tile (before
 task #449) is read as before.
 
 ## Sectioned file (`.sect`, RDSECT v1): named arrays
@@ -107,7 +107,7 @@ A local file is mmapped and its sections cast in place. A NAS file is read throu
 The roads are made and stored per z6 tile. A way's owner is the z6 tile of its first vertex. (Stored
 names keep the word `unit` for a z6 tile, from before the grid's terms were fixed: the meta key
 `"unit"`, the `unit` step, `global/roadunits`, `cache/scenic-units/`, the
-catalog's `units` list; the OSM pass's `pieces/` folder holds its z6 tile extracts.)
+catalogue's `units` list; the OSM pass's `pieces/` folder holds its z6 tile extracts.)
 
 ## Base pack (`base/<z>-<x>-<y>.<h>.sect`): what one z6 tile owns
 
@@ -115,7 +115,7 @@ Meta: `{"fmt": 1, "unit": "z/x/y", "ways", "verts", "samples", "extent": [w, s, 
 geometry), "source": "pass:<date>", "scenic": bool, "drape": bool, "summary": {…}}`. `summary` is
 what the map's meta adds up: `extent`, `ways`, `vertices`, `elev_min`/`elev_max` (roads, metres),
 `hist` (road km by 10 m of elevation, 256 bands), `rail_km` (track km per service group); the
-catalog works it out from the sections where missing.
+catalogue works it out from the sections where missing.
 
 | Section | Record | Notes |
 |---|---|---|
@@ -124,7 +124,7 @@ catalog works it out from the sections where missing.
 | `elevu` | `u16` | elevation, decimetres + 5,000 (`final.u16`); older packs: `elev`, `i16` dm clamped at ±3,200 m. Readers take either (`roadcore::elev`) |
 | `raw` | `f32` | raw DEM sample, NaN = none |
 | `grade` | `u8` | \|grade\|, 0.5 % units |
-| `src` | `u8` | DEM source: the dataset's declared `code` (docs/inputs.md §6.8), named by the catalog's `dem_labels` |
+| `src` | `u8` | DEM source: the dataset's declared `code` (docs/inputs.md §6.8), named by the catalogue's `dem_labels` |
 | `scenic` | `[u8; 13]` | per-vertex channels (`roadcore::scenic::ch`) |
 | `drape` | `i16` | drape height, metres |
 | `strings` | UTF-8 lines | line 0 is "" |
@@ -300,7 +300,7 @@ elsewhere.
 | `grid` | u32 × (256² + 1) | per z8 cell (row by row) its first entry in `cells`, then the total |
 | `cells` | u32 | lake indices, ascending per cell; a lake in every cell its box meets |
 
-The catalog names it in `global` (`"lakefill"`); the server draws its lakes into the water's deeper
+The catalogue names it in `global` (`"lakefill"`); the server draws its lakes into the water's deeper
 zooms as a z14 tile beside the basemap's (layer `water`, class `lake`, extent 4096, clipped to the
 tile grown by a sixteenth).
 
@@ -435,7 +435,7 @@ Each a folder on the job's Mac, its files sent to the worker as `u/…`, not in 
   (`n123`, `w123`, `r123`), `k` kind, `c` class, `mz`, `ms`, `s` (crates/pipeline/src/labels.rs). Before `LABELS_V`
   2: `n`, `en`, `k`, `c`, `mz`, `ms`, `s`.
 - **To translate** (`inputs/translations/todo/<language>.jsonl`, `names-todo`'s, rewritten after
-  each catalog that changed what it reads): `{"n", "kind", "langs", "things", "example": {"osm" | "qid" | "label", "at": [lon,
+  each catalogue that changed what it reads): `{"n", "kind", "langs", "things", "example": {"osm" | "qid" | "label", "at": [lon,
   lat]}, "priority"}`, by priority; with `README.md` and `check.py`.
 - **Lines with no timetable** (`inputs/timetables/gtfs/todo/lines.jsonl`, `timetables-todo`'s):
   `{"osm", "kind" ("rail" | "ferry"), "name", "ref", "operator", "from", "to", "km", "priority"}`;
@@ -468,10 +468,19 @@ for depth and its shading, with the depth ancestor's neighbours' edges; nearest 
   steepness and mean direction, a tile for each depth tile (docs/steps.md §3): the hi packs made
   with the depth's, the lo packs by the `depth-shade` step from the depth's lo packs and the hi
   packs' z9 tiles.
-- **The catalog's meta** `depth`: `{"sources": [{"code", "id", "label", "datum", "water", "notice"}]}`,
+- **The catalogue's meta** `depth`: `{"sources": [{"code", "id", "label", "datum", "water", "notice"}]}`,
   the accepted depth declarations (the credits' depth line and notices, and the readout).
 
-## Catalog (`catalog/<n>.json.zst`)
+## Catalogue (`catalog/<n>.json.zst`)
+
+Spelling: the code and docs say catalogue, but every stored or wire name keeps the old spelling, because the
+NAS holds years of data and the pool runs mixed app versions: the folders `catalog/` and `catalog-held/`, the
+file `inputs/hold-catalog`, `state/pool/delta-catalog`, the steps `catalog` and `catalog-held`, the history
+event kind `catalog`, JSON keys (`catalog`, `catalog_held`, `catalog_t`, `catalog_at`, `catalogs`,
+`catalogs_kept`, `catalogs_removed`), the routes `/api/catalog` and `/work/catalogs` (and the page's
+`catalogs.js`), the commands `scenic catalogs` and `lakefill catalog-add` with the flag `--catalog`, the
+log line prefix `catalog-stats:` and the phase names that say "the catalog". In Rust they are
+`store::catalogue::NAME` and `HELD_NAME` or a `serde(rename)`.
 
 zstd with its content checksum; written as `.tmp`, then renamed. Readers take the highest `<n>`
 that decodes and parses, else the next.
@@ -503,9 +512,9 @@ that decodes and parses, else the next.
 }
 ```
 
-- `files` holds every file the catalog references.
+- `files` holds every file the catalogue references.
 - `fmt` 2 (task #449): `markdata` may name the bundle of every tile ("Bundles"). Readers take 1 and 2;
-  an app that reads only 1 passes a catalog of 2 over and keeps the last it can read until it updates.
+  an app that reads only 1 passes a catalogue of 2 over and keeps the last it can read until it updates.
 - `credits`: `pipeline::rules::CREDITS` plus the inputs' accepted descriptions
   (`pipeline::inputs::credits`, docs/inputs.md §4.8; a description replaces the table's entry of its
   `what`), those whose areas meet the coverage + 20 km or a built z6 tile's extent. `areas` are w, s, e,
@@ -513,55 +522,55 @@ that decodes and parses, else the next.
   `register`, which popups name their source by (docs/inputs.md §6.5).
 - `dem_labels`: the elevation datasets' labels by source byte (`src.u8`), from their accepted
   declarations (`label`, else `name`; `pipeline::inputs::credits::dem_labels`, docs/inputs.md
-  §6.8): how a road's details name its elevation sources. Left out when none; a catalog without
+  §6.8): how a road's details name its elevation sources. Left out when none; a catalogue without
   it gets "source <n>".
 - `coverage`: the regions built for: those done at publish time as their recipes then were
-  (`--ready <id>=<outline digest>,…`), and those not done yet as the last catalog had them, in the
+  (`--ready <id>=<outline digest>,…`), and those not done yet as the last catalogue had them, in the
   recipes' order. A region still building (the agent's `--building <id>=<built>/<total>,…`: every
   region its plan doesn't record built, with its z6 tiles built of those it builds, by the records)
-  that the last catalog didn't have built is recorded as its recipe is now with `tiles`
+  that the last catalogue didn't have built is recorded as its recipe is now with `tiles`
   (`coverage::DrawnRegion::tiles`): its z6 tiles are on the map, and downloadable, as they come. A
   built region has no `tiles`; an app made before them reads such a region as built, and this app
-  reads a catalog without them as before. Outlines are GeoJSON MultiPolygon coordinates in degrees to 5 decimals, rings
+  reads a catalogue without them as before. Outlines are GeoJSON MultiPolygon coordinates in degrees to 5 decimals, rings
   closed: `osm:` entries from the pass's simplified outlines, others simplified by size (60 m–1 km);
   a region with water (docs/inputs.md §6.1.3) lists its `water` parts after its outline's, each
   `"water <part>"`, and draws one shape, its land and water together;
-  an unreadable entry has no shape. A catalog with `"credits": []` and no `recorded`: the server
+  an unreadable entry has no shape. A catalogue with `"credits": []` and no `recorded`: the server
   gives every credit and builds the coverage from the recipes.
-- GC's roots: the newest catalog, every catalog of the last 14 days and the build manifest; an
-  unreferenced file goes once also older than 14 days (docs/storage.md). A held catalog is written to
+- GC's roots: the newest catalogue, every catalogue of the last 14 days and the build manifest; an
+  unreferenced file goes once also older than 14 days (docs/storage.md). A held catalogue is written to
   `catalog-held/` (`inputs/hold-catalog`).
 
-### Delta catalogs (`catalog/<n>.delta.json.zst`)
+### Delta catalogues (`catalog/<n>.delta.json.zst`)
 
-With `state/pool/delta-catalog` on (docs/building.md §2, Publishing's switches), catalog `n` may be written as a
-patch on an earlier one (`store::catalog::Delta`), compressed and written as a whole one is; a
+With `state/pool/delta-catalog` on (docs/building.md §2, Publishing's switches), catalogue `n` may be written as a
+patch on an earlier one (`store::catalogue::Delta`), compressed and written as a whole one is; a
 number is used once, whole or as a delta:
 
 ```json
 {"fmt": 1, "n": 8, "of": 7, "of_digest": "<32 hex>", "digest": "<32 hex>", "patch": {"o": {"n": {"=": 8}, "files": {"o": {"layers/roads/hi/6-32-21": {"=": {…}}, "base/6-1-1": null}}, "coverage": {"o": {"regions": {"a": {"ids": ["monaco", "andorra"], "set": {"andorra": {"=": {…}}}}}}}}}}
 ```
 
-- `digest`: XXH3-128 (hex) of a whole catalog's JSON as written (maps in key order): `of_digest`
+- `digest`: XXH3-128 (hex) of a whole catalogue's JSON as written (maps in key order): `of_digest`
   the base, `digest` the result.
 - `patch`: `{"=": v}` the value is `v`; `{"o": {key: patch | null}}` an object, each named key
   patched (null: removed), the rest kept; `{"a": {"ids": [...], "set": {id: patch}}}` an array of
   objects with distinct string `id`s, in `ids`' order, those in `set` patched (from nothing, if
   new). The writer takes whichever form is shortest.
-- Readers (`store::catalog`: `latest`, `latest_nas_from`, `read_n`) take the highest number that
-  reads whole: a delta applied to catalog `of` (itself read the same way), checked against both
+- Readers (`store::catalogue`: `latest`, `latest_nas_from`, `read_n`) take the highest number that
+  reads whole: a delta applied to catalogue `of` (itself read the same way), checked against both
   digests; one that doesn't fit is passed over as damaged.
 - A delta lists each file's size as the records have it (`state/build/sizes.json`, from its job's
-  hand-off) or the last catalog does, looking at the NAS only for a file neither has (one written
-  before sizes were recorded: once). A whole catalog looks at every file, and stops on one missing
+  hand-off) or the last catalogue does, looking at the NAS only for a file neither has (one written
+  before sizes were recorded: once). A whole catalogue looks at every file, and stops on one missing
   or of another size than recorded.
-- A catalog is written whole, not as a delta, when there's no whole one to start from, and once
+- A catalogue is written whole, not as a delta, when there's no whole one to start from, and once
   the deltas since the last whole one add up to its size or their run is half `MAX_CHAIN`
-  (`store::catalog::whole_due`, weighed by the catalog job each time it would write a delta, so a
+  (`store::catalogue::whole_due`, weighed by the catalogue job each time it would write a delta, so a
   lead that's never idle writes them too). Its content is the same either way: a reader gets the
-  same catalog from the whole one as from the chain.
-- GC also keeps every catalog a kept delta is read through, back to its whole one. A Mac keeps the
-  catalogs it reads whole, in its own `catalog/`.
+  same catalogue from the whole one as from the chain.
+- GC also keeps every catalogue a kept delta is read through, back to its whole one. A Mac keeps the
+  catalogues it reads whole, in its own `catalog/`.
 
 ## On each Mac (`~/Library/Application Support/scenic/`)
 
@@ -581,10 +590,10 @@ mirror/.basemap/<hash16>/  the basemap's pieces (store::pieces): lo.pmtiles (zoo
                         6-<x>-<y>.pmtiles (a z6 tile's 11–14), PMTiles v3 (clustered, gzip'd
                         directories, tiles as stored); sizes.json {piece: bytes}
 idx/<hash16>.idx        pack indexes (RDPKIDX1: header, meta, entries, XXH3 trailer)
-catalog/<n>.json.zst    the last catalogs read
+catalog/<n>.json.zst    the last catalogues read
 accepted/<unit>/        accepted inputs copied from the NAS: @index.json ({"version", "index"}) and
                         each file by content name (pipeline::inputs::served)
-names/spoken-<content>.bin   languages spoken where, for a catalog without `global/spoken`
+names/spoken-<content>.bin   languages spoken where, for a catalogue without `global/spoken`
                         (names::spoken::Spoken::to_bytes: "SPOKEN01", u32 head length, head (rules'
                         version, then per region its ISO code, a tab, its languages), u32 run
                         count, 23,041 u32 row starts, runs of (u32 first column, u16 region))
@@ -605,9 +614,9 @@ The agent's folder, `agent/`:
 timings.jsonl, timings-run.json, timings-run-<k>.json   jobs' timings (below)
 status.json             the lead's status; a member not leading writes helper.json
 state.json, job.json, agent.lock, logs/
-publishing.json         the lead's record of its catalogs {at, low_at, held_at}: when the last
-                        went out, the last with the low zooms made, and when a catalog due was
-                        first held back since (none: none is) (agent::build::LastCatalog)
+publishing.json         the lead's record of its catalogues {at, low_at, held_at}: when the last
+                        went out, the last with the low zooms made, and when a catalogue due was
+                        first held back since (none: none is) (agent::build::LastCatalogue)
 clear-request.json      the owner's ask to clear build caches ({by, at}, agent::room::ClearRequest;
                         renamed .taken when taken up)
 room-target.json        the owner's free-disk target {bytes, by, at} (agent::room::Target; none: off)
@@ -726,7 +735,7 @@ batch of lines, a line a forecast, `fcarchive::Entry`:
   hi: {"6/x/y"}}}`: its content name's hash, 12 hex digits, plus the names version for layers with
   names). The map's tiles carry their pack's token (root z0–2, lo z3–8 by z3 tile, hi z9–14 by z6
   tile: `web/src/api.ts` packVersion; MapLibre's sources through the map's request transform), so a
-  catalog re-requests only the tiles of the packs it changed. Every pack token and layer version
+  catalogue re-requests only the tiles of the packs it changed. Every pack token and layer version
   meta gives out is current.
 - **Ways:** `/api/way/{id}?at=lon,lat`, `/api/profile/{id}?at=…`, `/api/road/{id}?at=…`: `at` picks
   the hidata of the z6 tile holding it, or a neighbour's whose `here` holds the way.
@@ -742,18 +751,18 @@ batch of lines, a line a forecast, `fcarchive::Entry`:
 - Drives, rides and rail lines take `approx=1` (zoomed out): answered from hidata's summaries when
   every hidata of the view plus margin has them (drives and rides: windows of at least 2 km); the
   answer says `approx`.
-- `POST /api/catalog/refresh` (this Mac's own requests alone, else 403): follow a newer catalog on
-  the NAS now; answers `read` (whether the NAS was read) and `n` (the catalog served after). The
-  build agent's, after writing a catalog.
+- `POST /api/catalog/refresh` (this Mac's own requests alone, else 403): follow a newer catalogue on
+  the NAS now; answers `read` (whether the NAS was read) and `n` (the catalogue served after). The
+  build agent's, after writing a catalogue.
 - `/api/catalog`: `n`, `created`, `units` (a count), `layers` (encoding, zooms, version), `coverage`
   (without outlines), `credits`, `online`, `nas`, `held`, `app`, `agent`, `names` (`langs`, `spoken`,
   `warning`, `waiting`), `v`, `marks` (tiles with points, kinds with tiles, totals), `depth` (the
-  catalog meta's: its sources, Depth below). The map's meta: `/api/meta`.
+  catalogue meta's: its sources, Depth below). The map's meta: `/api/meta`.
 - **Depth:** `/tiles/depth/…` and `/tiles/depth-class/…`: the stored tile, else made from its nearest
   stored ancestor (`pipeline::depth::fall`), 404 outside the layer; versions `depth.tiles`,
   `depth-class.tiles`. `/tiles/terrain/{z}/{x}/{y}?floor=1`: the terrain less the depth where the
   class tile says water (the floor under the water, for a 3D floor); the terrain as it is without
-  depth in the catalog.
+  depth in the catalogue.
 - `/api/names?n=<name>&at=lon,lat` repeated (each optionally with `en=`, `k=road|settlement|other`,
   `l=` before its `at`): `[{main, sub}]`.
 - `/api/build`: the agent's status (this Mac's when it leads, else the lead's heartbeat, or this
@@ -768,14 +777,14 @@ batch of lines, a line a forecast, `fcarchive::Entry`:
   here, more, unknown}, copying: {what, bytes, have, slow} | null, last: {…} | null, regions: {id:
   {name, bytes, here, unknown, on, state, tiles?, detail?: {bytes, here, unknown, on, state, cover}}}}`
   (`unknown`: basemap pieces not yet sized; `state`: done, copying, queued, room, away,
-  missing; `tiles`: a region still building, as its catalog has it, its files those of the catalog
-  served, more with each catalog). `PUT /api/downloads/world {on}` (each on its own: a region
+  missing; `tiles`: a region still building, as its catalogue has it, its files those of the catalogue
+  served, more with each catalogue). `PUT /api/downloads/world {on}` (each on its own: a region
   doesn't bring the World, and the World goes while regions stay); `PUT /api/downloads/regions/{id}
   {on}` (off removes its terrain detail too); `PUT /api/downloads/regions/{id}/detail {on}` (its
   terrain detail, the deep packs near it; on refused unless the region is downloaded); `PUT /api/downloads/reserve {gb}` (whole GB, 5 to under the
   disk size) → `{ok, reserve}`. A download that wouldn't fit is refused; refusals are 400 `{error}`.
 - **Regions** (read only): `GET /api/regions`, `/api/regions/layer`, `/api/areas/{id}`,
-  `/api/coverage` (the catalog's coverage as GeoJSON, one feature per outline entry, with `regions`
+  `/api/coverage` (the catalogue's coverage as GeoJSON, one feature per outline entry, with `regions`
   and `catalog`).
 - **Names in answers:** MVT tiles and API JSON carry `main` and, when any, `sub`; JSON layer files,
   ferry blocks and marks tiles carry `main` only where it differs from the name; popup records are
@@ -968,8 +977,8 @@ class, id) within a tile. The client sends the id with the clicked point.
     `state/coord/forecasts/<day>.jsonl.zst` (the lead's forecasts, The forecasts' archive above;
     days older than 7 in `state/coord/forecasts-archive/<YYYY-MM>.tar`).
   - `state/publish/<host>.jsonl` (pipeline::pubtimes): each Mac's map server's lines, appended,
-    `{t, host, kind, n, secs?}`, `kind` one of `adopt` (catalog n served), `mirror-start` and
-    `mirror-end` (its mirror's sync of catalog n begun, and through everything wanted, `secs` from
+    `{t, host, kind, n, secs?}`, `kind` one of `adopt` (catalogue n served), `mirror-start` and
+    `mirror-end` (its mirror's sync of catalogue n begun, and through everything wanted, `secs` from
     the start: each once per server process, so a restarted server says them again). Past 512 KB a
     file is written again with its newer half.
   - Leases carry `term` and `granted_at`; `/work/done {…, journaled: true}`; `/work/done` and

@@ -107,7 +107,7 @@ button:disabled { opacity: .5; }
 .wmap-filters .mfrow { display: flex; flex-wrap: wrap; gap: 3px 14px; align-items: center; }
 .wmap-filters .mf { display: inline-flex; gap: 5px; align-items: center; cursor: pointer; white-space: nowrap; }
 .wmap-filters .mf input { width: auto; flex: none; margin: 0; padding: 0; accent-color: var(--accent); }
-/* The age controls (catalogs.js, #629, top-level since #685). */
+/* The age controls (catalogues.js, #629, top-level since #685). */
 .cat { margin-top: 2px; }
 .cat-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; padding: 6px 4px 0; }
 .cat-legend .lg { display: inline-flex; gap: 5px; align-items: center; }

@@ -756,7 +756,7 @@ pub fn plan() -> Vec<Step> {
         },
         Step {
             cache_mb: 0,
-            name: "catalog",
+            name: store::catalogue::NAME,
             targets: 1,
             mem_mb: 2_000,
             disk_mb: 100,

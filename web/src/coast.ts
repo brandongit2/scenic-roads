@@ -177,7 +177,7 @@ export function applyWater(map: MLMap, w: WaterLook, input: () => CoastInput, wa
   updateCoastRamp(map, w);
 }
 
-/** The water under new URLs (a new catalog): the
+/** The water under new URLs (a new catalogue): the
  * workers measure the shore from it, and the shading's tiles are made again. */
 export function switchCoast(map: MLMap, input: CoastInput) {
   if (!workers.length) return;

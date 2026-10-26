@@ -37,7 +37,7 @@ import type { DepthMsg, DepthReply, Probe } from './depth.worker';
 
 type RGB = [number, number, number];
 
-/** A depth source as the catalog names it (pipeline::depth::grids). */
+/** A depth source as the catalogue names it (pipeline::depth::grids). */
 export interface DepthSource {
   code: number;
   id: string;
@@ -56,7 +56,7 @@ const SURFACE_LIFT_M = 1;
 
 export class Depth {
   private s: DepthState = DEPTH_DEFAULTS;
-  /** The catalog has depth (its layers) and its sources. */
+  /** The catalogue has depth (its layers) and its sources. */
   private has = false;
   private sources: DepthSource[] = [];
   private workers: Worker[] = [];
@@ -90,8 +90,8 @@ export class Depth {
     onVersions((f) => f.startsWith('depth'), () => this.initWorkers());
   }
 
-  /** The catalog's depth: whether it has the layers, and its sources. */
-  setCatalog(layers: Record<string, unknown> | undefined, depth: { sources?: DepthSource[] } | null | undefined) {
+  /** The catalogue's depth: whether it has the layers, and its sources. */
+  setCatalogue(layers: Record<string, unknown> | undefined, depth: { sources?: DepthSource[] } | null | undefined) {
     const has = !!layers && 'depth' in layers && 'depth-class' in layers;
     this.sources = depth?.sources ?? [];
     if (has !== this.has) {
@@ -100,7 +100,7 @@ export class Depth {
     }
   }
 
-  /** Whether the catalog has depth. */
+  /** Whether the catalogue has depth. */
   get available() {
     return this.has;
   }

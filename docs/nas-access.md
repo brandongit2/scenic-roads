@@ -45,7 +45,7 @@ it (store::nasio) and retries the reads, stats and listings the share fails for 
   from local files, renames (`rename`, `rename_over`, `rename_no_replace`), removes (one `Deletes`),
   `create_dir_all`, `set_modified` (a reuse's touch, not counted).
 - **`Loc` and `Place`** are a file on this Mac or on the NAS (`Loc` borrowed, `Place` owned), for the
-  readers that take both: a local copy or the NAS's file (pipeline::localread), the catalogs'
+  readers that take both: a local copy or the NAS's file (pipeline::localread), the catalogues'
   folder (a Mac's copies and the NAS's), the packs a step reads. A caller passes a `&Path` or a
   `&NasPath`.
 - **The escape** is `unchecked_path()` on a `NasRoot`, a `NasPath` or a `Loc`. It is for a program's
@@ -109,7 +109,7 @@ local folder of links, is a `Path`.
   not become a typed `inputs()` accessor.
 - Errors carry the path through `display()`, as before; they don't carry `nas:<rel>` and the
   operation.
-- `store::catalog`'s writers (`write`, `write_delta_of`) still take a `Path`; the lead's catalog
+- `store::catalogue`'s writers (`write`, `write_delta_of`) still take a `Path`; the lead's catalogue
   publish passes the NAS folder through `unchecked_path()`. Its readers take a `Loc`.
 - The step programs' NAS inputs (osmium's, extract's, the trees program's, GDAL's, basepart's,
   railfeeds', lakefill's, the names crate's tables) are paths on their command lines or in their

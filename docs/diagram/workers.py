@@ -35,7 +35,7 @@ def build(check=False):
     nx, nw = 16, 236
     nas = box(nx, top, nw, 'NAS', ['the terms: who leads, made', 'once each (state/build/terms/);',
                                    'the journal: every job’s', 'results (state/journal/);', 'the term’s records, which',
-                                   'only the lead writes; every', 'built file, by content name;', 'a catalog at most a minute;', 'GC daily, when the NAS is', 'quiet (or after waiting a day)'],
+                                   'only the lead writes; every', 'built file, by content name;', 'a catalogue at most a minute;', 'GC daily, when the NAS is', 'quiet (or after waiting a day)'],
               cls='nas')
 
     # The lead: its agent and, inside it, the coordinator.
@@ -43,9 +43,9 @@ def build(check=False):
     ix, iw, gap = bx + 16, 330, 68
     cx = ix + iw + gap
     agent_lines = ['plans every step from the job keys, a region at a', 'time: those the map lacks first, the fewest tiles',
-                   'left first; runs its own steps (the pass, worldwide', 'steps, catalogs, GC) and any shared step, packed',
+                   'left first; runs its own steps (the pass, worldwide', 'steps, catalogues, GC) and any shared step, packed',
                    'by measured memory, disk and cores; merges the', 'journal into the term’s records; publishes each',
-                   'z6 tile’s map tiles as it’s built, a catalog at most', 'each minute']
+                   'z6 tile’s map tiles as it’s built, a catalogue at most', 'each minute']
     coord_lines = ['port 8090, for this Mac, its LAN and the tailnet;', 'grants every job, the lead’s own too, on leases',
                    'of ten minutes renewed each minute: a lapsed', 'lease’s work is offered again; holds jobs to the',
                    'NAS budget; its state is the term’s, on the NAS;', 'checks a worker’s first three tasks, then one in',
@@ -99,7 +99,7 @@ def build(check=False):
     h = py0 + ctl[3] + 14
 
     aria = ('Who builds the map. The NAS holds the terms, which say who leads, the journal every job writes its results to, the '
-            'term’s records, which only the lead writes, every built file by content name and a catalog at most each minute; GC runs '
+            'term’s records, which only the lead writes, every built file by content name and a catalogue at most each minute; GC runs '
             'daily, when the NAS is quiet (or after waiting a day). The lead plans every step a region at a time, runs its own steps and any shared one, packed by '
             'measured memory, disk and cores, merges the journal into the records and publishes each z6 tile’s map tiles as it’s built. '
             'Its coordinator, on port 8090, grants every job on ten-minute leases renewed each minute: jobs to the M1, a member that '

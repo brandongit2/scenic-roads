@@ -60,7 +60,7 @@ pub struct Records {
     /// Uploads not yet verified on the NAS: content name → SHA-256.
     pub pending: BTreeMap<String, String>,
     /// The sizes of the files the manifest names, as their jobs wrote them (content name → bytes;
-    /// crate::out::SIZES): a catalog's, without a look at the NAS. Records from before them have
+    /// crate::out::SIZES): a catalogue's, without a look at the NAS. Records from before them have
     /// none, nor files written before.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sizes: BTreeMap<String, u64>,
@@ -128,7 +128,7 @@ impl Records {
         Ok(Some(r))
     }
 
-    /// The records a reader (a job, the map server, a catalog) has while term `term` is current:
+    /// The records a reader (a job, the map server, a catalogue) has while term `term` is current:
     /// its snapshot, or while it has none yet (its lead taking it up, or gone before saving one)
     /// the newest of a term before it; for term 1, as `term_one` says (`today` as it says). None
     /// before any.

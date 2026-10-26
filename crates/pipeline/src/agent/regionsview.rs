@@ -42,7 +42,7 @@ pub fn build(
     root: &store::nasfs::NasRoot,
     a: &crate::inputs::Accepted,
     regions: &[crate::agent::recipes::Recipe],
-    cat: Option<std::sync::Arc<store::catalog::Catalog>>,
+    cat: Option<std::sync::Arc<store::catalogue::Catalogue>>,
     had: Option<(u64, BTreeMap<String, u64>)>,
 ) -> Made {
     let t = std::time::Instant::now();
@@ -71,7 +71,7 @@ pub fn build(
 /// what it was made of.
 pub fn make(
     version: &str,
-    catalog: Option<u64>,
+    catalogue: Option<u64>,
     regions: &[crate::agent::recipes::Recipe],
     drawn: &[DrawnRegion],
     tree: &Folder,
@@ -88,11 +88,11 @@ pub fn make(
             json!({ "id": r.id, "name": r.name, "crumbs": c, "bytes": bytes.get(&r.id), "fill": fill, "edge": edge })
         })
         .collect();
-    json!({ "version": version, "catalog": catalog, "regions": out })
+    json!({ "version": version, "catalog": catalogue, "regions": out })
 }
 
 /// The bytes a download of each region the catalogue records copies of its files (module doc).
-pub fn bytes_of(cat: &store::catalog::Catalog) -> BTreeMap<String, u64> {
+pub fn bytes_of(cat: &store::catalogue::Catalogue) -> BTreeMap<String, u64> {
     let recorded: Vec<DrawnRegion> =
         cat.coverage.get("regions").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
     recorded

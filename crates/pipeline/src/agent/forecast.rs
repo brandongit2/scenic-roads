@@ -15,13 +15,13 @@
 //! way. The trains' and the landmarks' chains run from the start, each step once what it reads is
 //! built. Publishing goes per z6 tile (docs/building.md §2, Publishing): each map tile of a region
 //! (`RegionLeft::packs`, at its own measured time) is drawn once the z6 tiles that draw it are built,
-//! ahead of the regions' work, and a catalog follows within the minute (build::CATALOG_EVERY_S):
+//! ahead of the regions' work, and a catalogue follows within the minute (build::CATALOGUE_EVERY_S):
 //! the region is all on the map then (none said once only slope and tree cover are left). The whole-map steps go by their cadence (`Forecast::publishes`:
 //! build::low_gate, build::gate_open). Each target takes its last run's time (else its step's mean,
 //! else a first guess), at the speed measured for the machine doing it. It's run three times: as
 //! estimated, and for a range, the times measured a little off and those guessed much more.
 
-use super::build::{RegionLeft, CATALOG_EVERY_S, LOW_EVERY_S, MARKS_EVERY_S, OVERLAYS_EVERY_S};
+use super::build::{RegionLeft, CATALOGUE_EVERY_S, LOW_EVERY_S, MARKS_EVERY_S, OVERLAYS_EVERY_S};
 use crate::coord::sched::{Clock, Sched, State};
 use crate::coord::{cost_key, Ask, Capacity, Offer};
 use serde::{Deserialize, Serialize};
@@ -109,7 +109,7 @@ pub struct Input<'a> {
     /// The trains' and the landmarks' chains (but the overlays): from the start, each step once what
     /// it reads is built (`chain_deps`).
     pub chains: Vec<Job>,
-    /// After everything else: the overlays (they read the built z6 tiles) and a catalog with what the
+    /// After everything else: the overlays (they read the built z6 tiles) and a catalogue with what the
     /// chains made since.
     pub after: Vec<Job>,
     /// Last of all, in idle time: the tree cover z6 tiles' mids (build::TreeWork::backfill), each
@@ -217,10 +217,11 @@ pub fn hold_back(machines: Vec<Machine>, held: &BTreeMap<String, Held>) -> Vec<M
         .collect()
 }
 
-/// The lead's steps on its own clock, not the plan's dependencies: the catalogs and low zooms
+/// The lead's steps on its own clock, not the plan's dependencies: the catalogues and low zooms
 /// published, the backups, the sweeps, the inputs' refreshes, the names' and timetables' todo
 /// lists, the tasks. Left out of `Forecast::curve` and of the work `pace` counts done.
-pub const CLOCKED: [&str; 8] = ["catalog", "lo", "backup", "gc", "inputs", "names-todo", "timetables-todo", "task"];
+pub const CLOCKED: [&str; 8] =
+    [store::catalogue::NAME, "lo", "backup", "gc", "inputs", "names-todo", "timetables-todo", "task"];
 
 /// The spacing of a forecast's `curve` (s), and how far it reaches (its points).
 pub const CURVE_S: u64 = 600;
@@ -485,8 +486,8 @@ impl Record<'_> {
 pub const ZSTD_OVER: usize = 2 << 20;
 
 /// Seconds since each cadenced publish last went out (None: not known, so due now): the low zooms
-/// (build::LastCatalog::low_at), the landmark points and the area overlays
-/// (build::LastCatalog::since).
+/// (build::LastCatalogue::low_at), the landmark points and the area overlays
+/// (build::LastCatalogue::since).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Cadence {
     pub since_low: Option<u64>,
@@ -668,7 +669,7 @@ pub struct RegionFc {
     /// Its targets left by step ("unit", "terrain-hi", "slope-hi", "trees", "trees-lo", "pack", …).
     pub left: BTreeMap<String, usize>,
     /// When it'll be done, and when it'll be on the map as it's built now: its last z6 tile's end,
-    /// then its map tiles drawn, then a catalog within the minute (None: no work left of its own).
+    /// then its map tiles drawn, then a catalogue within the minute (None: no work left of its own).
     pub ready_at: Option<u64>,
     pub map_at: Option<u64>,
 }
@@ -1025,7 +1026,7 @@ fn items(inp: &Input) -> Items {
         let i = add(&mut out, &mut by_target, step, target, *cost, Phase::Chain, (deps, g));
         chain.push(i);
     }
-    // (Each after all before it: the catalog after the overlays.)
+    // (Each after all before it: the catalogue after the overlays.)
     let all = vec![group(&mut groups, (0..out.len()).collect())];
     let mut after: Vec<usize> = Vec::new();
     for (step, target, cost) in &inp.after {
@@ -1428,7 +1429,7 @@ fn run_on(inp: &Input, its: Items, scale: &dyn Fn(&Cost) -> f64, budget: Duratio
         // The order the lane takes the work ready in: the lead's first lane, while the regions have
         // work left, the pass's first, then the map tiles of the z6 tiles built (publishing comes
         // before the regions' work), then the slope and tree cover of a region on the map whose
-        // catalog doesn't record it built yet, then the regions' (in order), the chains' with none
+        // catalogue doesn't record it built yet, then the regions' (in order), the chains' with none
         // it can do now; after the last z6 tile and terrain, the map tiles left, the slope and tree
         // cover, the chains', then what comes after. Every other lane: the plan's order.
         let key = (!mac.helper).then(|| (mac_of(mac), m == 0 || mac.lead_steps, mac.equal));
@@ -1761,7 +1762,7 @@ pub fn forecast_by(inp: &Input, budget: Duration) -> Forecast {
         });
     }
     // Each region: its work left, when it's done, and when it's on the map as it's built now: its
-    // z6 tiles and map tiles done, and a catalog within the minute.
+    // z6 tiles and map tiles done, and a catalogue within the minute.
     let on_map_at = |mine: &[usize]| {
         let its: Vec<&Item> = mine
             .iter()
@@ -1769,7 +1770,7 @@ pub fn forecast_by(inp: &Input, budget: Duration) -> Forecast {
             .filter(|i| matches!(i.phase, Phase::Region | Phase::Publish))
             .collect();
         (!its.is_empty() && its.iter().all(|i| i.by.is_some()))
-            .then(|| its.iter().map(|i| i.end).fold(0.0, f64::max) + CATALOG_EVERY_S as f64)
+            .then(|| its.iter().map(|i| i.end).fold(0.0, f64::max) + CATALOGUE_EVERY_S as f64)
     };
     for (k, r) in inp.regions.iter().enumerate() {
         let mine = &expected.region_items[k];
@@ -2196,7 +2197,7 @@ mod tests {
         let f = forecast(&input(&regions, vec![mac("m4", 1.0, false)], &cost));
         // Terrain 600, two z6 tiles 600, each z6 tile's map tile (100 s, measured per tile) drawn once
         // that z6 tile is built, before the next z6 tile (each tile waits for its own z6 tiles alone): on
-        // the map a catalog's minute after the last. Then its slope (200), then the landmarks (300).
+        // the map a catalogue's minute after the last. Then its slope (200), then the landmarks (300).
         assert_eq!(f.regions[0].map_at, Some(1_000_000 + 1200 + 200 + 60));
         assert_eq!(f.regions[0].ready_at, Some(1_000_000 + 1600));
         assert_eq!(f.done_at, Some(1_000_000 + 1900));
@@ -2258,7 +2259,7 @@ mod tests {
         // The M1 takes b's terrain (the far end) at half the pace (1,200 s), then b's z6 tile, its
         // terrain built (600 s at its pace); the lead a's terrain and z6 tile (900 s), its two map
         // tiles (200 s), then its slope (200 s), on the map by then. Each region on the map a
-        // catalog's minute after its last z6 tile and map tiles.
+        // catalogue's minute after its last z6 tile and map tiles.
         assert_eq!(
             f.next["m1"].iter().map(|n| (n.step.as_str(), n.targets[0].as_str())).collect::<Vec<_>>(),
             [("terrain-hi", "3/2/2"), ("unit", "6/16/16")]

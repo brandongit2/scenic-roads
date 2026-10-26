@@ -1054,7 +1054,7 @@ mod tests {
             .unwrap_err()
             .contains("no accepted version"));
         crate::inputs::sources::accept_fixture(&store::nasfs::NasRoot::local_for_test(d.path()), &mut m);
-        // (Declared, its folder not there: an error, which holds the water, terrain and catalog.)
+        // (Declared, its folder not there: an error, which holds the water, terrain and catalogue.)
         assert!(planned_source(&store::nasfs::NasRoot::local_for_test(d.path()), &m)
             .unwrap_err()
             .contains("isn't there"));

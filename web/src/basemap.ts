@@ -55,7 +55,7 @@ export const POI_SOURCE = 'pois';
 export const poiKinds = (key: string): string[] => (key === 'rest' ? ['rest_area', 'picnic_site'] : [key]);
 /** The features of a stops & sights overlay key. */
 export const poiKindFilter = (key: string): ExpressionSpecification => ['in', ['get', 'kind'], ['literal', poiKinds(key)]];
-/** The stops & sights' tiles (landmarks.worker.ts tile): the catalog's points version `v`, and the
+/** The stops & sights' tiles (landmarks.worker.ts tile): the catalogue's points version `v`, and the
  * kinds (overlay keys) they hold, in POI_STYLE's order. */
 export const poiTilesUrl = (v: string | number, keys: string[]) =>
   `${pointTiles(POI_SOURCE)}?v=${v}&k=${Object.keys(POI_STYLE).filter((k) => keys.includes(k)).join(',')}`;
@@ -190,7 +190,7 @@ export const OV_LAYER = 'a';
 /** The rail stops' tiles' layer (`/tiles/stations`). */
 export const STATION_LAYER = 's';
 /** The water as exact coverage (`/tiles/water`: pipeline::water, crates/server/src/water.rs),
- * where the catalog has it: each pixel's share of sea and of inland water at every zoom, from the
+ * where the catalogue has it: each pixel's share of sea and of inland water at every zoom, from the
  * basemap's full-detail z14 water, drawn as a raster at the screen's density (512 px for 256 CSS
  * px). Without it, the basemap's own water polygons (simplified, small ones left out zoomed out,
  * Natural Earth's below z6). */
@@ -260,7 +260,7 @@ export const floorTiles = (): string =>
   `${hostFor('terrain')}/tiles/terrain/{z}/{x}/{y}?floor=1&d=${version('depth.tiles')}.${version('depth-class.tiles')}${ver('terrain.tiles').replace('?', '&')}`;
 
 /** The style's tile sources whose URLs carry a data file's version, with that file: baseStyle
- * builds them from here, and a new catalog switches them in place (main.ts). */
+ * builds them from here, and a new catalogue switches them in place (main.ts). */
 export function versionedTiles(): { source: string; file: string; url: string }[] {
   const trees = (v: string) => ({ source: `trees-${v}`, file: `trees-${v}.tiles`, url: `${hostFor('trees')}/tiles/trees/${v}/{z}/{x}/{y}${ver(`trees-${v}.tiles`)}` });
   return [
@@ -580,7 +580,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
           'hillshade-accent-color': 'rgba(0,0,0,0.35)',
         },
       } as LayerSpecification,
-      // The water: its exact coverage where the catalog has it (draped and tilted as any raster, its
+      // The water: its exact coverage where the catalogue has it (draped and tilted as any raster, its
       // texture mipmapped), else the basemap's polygons.
       waterTiles
         // (No cross-fade: with 3D terrain a draped texture drawn mid-fade would keep it. Minified

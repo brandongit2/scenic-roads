@@ -21,7 +21,7 @@ Companions: `docs/steps.md` (pipeline, keys), `docs/building.md` (order), `docs/
   way: docs/regions.md). Where the coverage ends, buildings end.
 - **Zooms:** meshes from z14 tiles alone, wherever MapLibre's cover takes z14 tiles (from map zoom
   14, and nearer the camera of a tilted view below it); above z14 the z14 tiles are drawn whole up
-  to zoom 19.5 (§4.1). Elsewhere the field (§4.8), on by default where the catalog has the layer
+  to zoom 19.5 (§4.1). Elsewhere the field (§4.8), on by default where the catalogue has the layer
   `buildings-field` (`?bldfield=off` leaves it out; without it, no buildings below zoom 14).
 - **On the terrain:** the roof is level at the centroid's ground plus the height; each wall's foot
   stands 2 m below the terrain under its own corner (§4.3). Heights are true by default; a setting
@@ -37,7 +37,7 @@ Companions: `docs/steps.md` (pipeline, keys), `docs/building.md` (order), `docs/
 - **Settings → Buildings** (on by default): 3D or flat footprints, colour mode, plain colour (with
   a reset), heritage tint, opacity, height scale. Link fields `bd=` (its seventh field the plain
   colour) and `bh=`; **B** toggles the layer. All hidden until the
-  catalog has the layer.
+  catalogue has the layer.
 - **Hover:** the bottom bar gives height, where it comes from ("measured", "from 6 floors",
   "estimated by Microsoft", "estimated from neighbours", "estimated, GHSL", "estimated from its
   size"), base and kind; the hovered building turns amber (§4.5). No click action.
@@ -175,7 +175,7 @@ No `unit` (roads) key reads any of them.
   (docs/pool.md §7.2), a job beside others by their measured memory, disk and cores, never beside a
   cold start (docs/pool.md §7.7), as many tiles as fit a quarter of an hour by their measured
   times (`coord::JOB_S`).
-- **Publishing:** buildings hold no region's readiness; their packs go out with the next catalog,
+- **Publishing:** buildings hold no region's readiness; their packs go out with the next catalogue,
   at most one a minute (docs/building.md §2).
 - **Status:** the checklist's "3D buildings" stage, its steps "Buildings' sources", "Buildings
   read", "3D buildings", "3D buildings, zoomed out" (docs/pipeline.md §3). The forecast
@@ -270,8 +270,8 @@ the centroid's elevation), tiles and data-driven paint. An opacity under 1 draws
 
 ### 4.2 Where in the style
 
-- `addBuildings(map, 'water-name-line', …)` after `rails` (main.ts), when the catalog has the layer
-  or once a new catalog brings it: among the 3D layers, since between the draped layers it would
+- `addBuildings(map, 'water-name-line', …)` after `rails` (main.ts), when the catalogue has the layer
+  or once a new catalogue brings it: among the 3D layers, since between the draped layers it would
   split the terrain's drape. `buildings-flat` and `buildings-pick` among the draped layers, after
   water and parks, before `boundary-county`.
 - **Occlusion:** extrusions test and write depth against the terrain's. The road and rail layers
@@ -357,7 +357,7 @@ gabled roofs inferred for small houses); distance-based detail under our control
 The aim: buildings at every zoom looking as full detail would, rendered at high resolution and
 downsampled. Builder `pipeline::bld::field` (in `bldtiles` and `bldfield-lo`); renderer
 `web/src/bldfield.ts` with `bldfield.worker.ts`, loaded by `import()` from `main.ts` where the
-catalog has the layer `buildings-field` (`?bldfield=off`: off; `?bldfield=<url>`: tiles from there).
+catalogue has the layer `buildings-field` (`?bldfield=off`: off; `?bldfield=<url>`: tiles from there).
 `web/src/bldcmp.ts` (`?bldcmp`) and `tools/bldcheck/` compare it with full detail.
 
 **What full detail shrinks to.** Once a building is under a pixel, a pixel holds a share of roofs, a

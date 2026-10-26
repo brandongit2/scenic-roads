@@ -7,7 +7,7 @@
 
 use anyhow::Result;
 
-/// The encoding packs of terrain tiles name (their header's `encoding`, the catalog's).
+/// The encoding packs of terrain tiles name (their header's `encoding`, the catalogue's).
 pub const ENCODING: &str = "terrarium-webp";
 /// libwebp's lossless preset (cwebp's `-z`).
 pub const LEVEL: u8 = 6;

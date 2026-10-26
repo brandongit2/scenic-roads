@@ -93,8 +93,8 @@
     waiting for room, away). A region still building says "x of y tiles, on the map as they come"
     (every z6 tile built but not yet recorded built: "finishing: x of x tiles, the last map tiles and
     layers being made")
-    (its catalog's `tiles`; the menu bar and `scenic status` say the same, from the agent's
-    status) and can be downloaded: its download grows with each catalog, what's here never fetched
+    (its catalogue's `tiles`; the menu bar and `scenic status` say the same, from the agent's
+    status) and can be downloaded: its download grows with each catalogue, what's here never fetched
     again, copied at the build's slow rate.
   - **Terrain detail (z13+)** (a region's second line, only where it has any): the share of the
     region the terrain past z12 covers, its size, Download or Remove, its state. An add-on: its Download
@@ -104,7 +104,7 @@
   - The Mac's line: what's downloaded, free space, the reserve, the copy under way, and that copies
     keep to 20 MB/s while the build runs.
 - The status bar offers to reload when new data or a new app is in, and says when the NAS or the map server can't be reached.
-- New areas appear as their catalog goes out, a z6 tile's tiles within minutes of its build (docs/building.md §2, Publishing).
+- New areas appear as their catalogue goes out, a z6 tile's tiles within minutes of its build (docs/building.md §2, Publishing).
 
 **Translations and descriptions** (docs/names.md) are inputs folders of the input check: `inputs/translations/` and
 `inputs/descriptions/` (docs/inputs.md §6.3, §6.4). An update shows on the map a few minutes after it's

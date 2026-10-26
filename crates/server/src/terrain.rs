@@ -57,7 +57,7 @@ fn flat() -> Vec<u8> {
     FLAT.get_or_init(|| encode(vec![0.0; 65536]).unwrap()).clone()
 }
 
-/// The catalog generation, so synthesised tiles from an older catalog aren't served.
+/// The catalogue generation, so synthesised tiles from an older catalogue aren't served.
 fn gen(s: &crate::AppState) -> u64 {
     s.data.generation.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -150,7 +150,7 @@ pub(crate) fn stored(s: &crate::AppState, layer: &str, z: u8, x: u32, y: u32, he
     }
 }
 
-/// A tile made here, cached per catalog generation; failures aren't kept.
+/// A tile made here, cached per catalogue generation; failures aren't kept.
 fn made(
     cache: &'static OnceLock<Mutex<HashMap<(u8, u32, u32, u64), Vec<u8>>>>,
     g: u64,
@@ -180,7 +180,7 @@ fn made(
 }
 
 /// A terrain tile; `?floor=1`: with the floor under the water (crate::depth::terrain_floor),
-/// where the catalog has depth (else the terrain as it is).
+/// where the catalogue has depth (else the terrain as it is).
 pub async fn terrain_tile(
     State(s): State<S>,
     Path((z, x, y)): Path<(u8, u32, u32)>,
@@ -190,7 +190,7 @@ pub async fn terrain_tile(
     let v = versioned(q.as_deref());
     let floor = q.as_deref().is_some_and(|q| q.split('&').any(|kv| kv == "floor=1"));
     let got = tokio::task::spawn_blocking(move || {
-        if floor && s.data.catalog().layers.contains_key(pipeline::depth::LAYER) {
+        if floor && s.data.catalogue().layers.contains_key(pipeline::depth::LAYER) {
             return made(&FLOOR, gen(&s), z, x, y, || {
                 Ok(crate::depth::terrain_floor(&s, z, x, y)?.unwrap_or_else(flat))
             });
@@ -278,7 +278,7 @@ pub async fn depth_shade_tile(
 }
 
 /// A polar cap's tile (`/tiles/polar-terrain/{pole}/{z}/{x}/{y}`, `/tiles/polar-slope/…`: the
-/// catalog's `polar-<kind>-<pole>`, pipeline::polar): as stored, else 404 (past the cap, or not
+/// catalogue's `polar-<kind>-<pole>`, pipeline::polar): as stored, else 404 (past the cap, or not
 /// built; the map draws the tile's loaded ancestor). Nothing is made here: a renderer of any
 /// projection reads the grid's tiles as they are.
 #[allow(clippy::too_many_arguments)]
@@ -338,14 +338,14 @@ mod tests {
     }
 
     /// A NAS with a terrain hi pack (z12 at 50 m) and a deep pack (z13 at 100 m) under z10 tile
-    /// (296, 360), and a catalog naming them; the deep pack's path.
+    /// (296, 360), and a catalogue naming them; the deep pack's path.
     fn nas(root: &store::nasfs::NasRoot) -> std::path::PathBuf {
         let (hi, fine) = ("layers/terrain/hi/6-18-22", "layers/terrain/deep/10-296-360");
         let (hc, fc) = (format!("{hi}.0000000000000001.pack"), format!("{fine}.0000000000000002.pack"));
         let hs = pack(&root.unchecked_path().join(&hc), &[(12, 296 * 4, 360 * 4, 50.0)]);
         let fs = pack(&root.unchecked_path().join(&fc), &[(13, 296 * 8, 360 * 8, 100.0)]);
-        let mut cat = store::catalog::Catalog::new(1);
-        let mut l = store::catalog::Layer {
+        let mut cat = store::catalogue::Catalogue::new(1);
+        let mut l = store::catalogue::Layer {
             encoding: pipeline::terrain_codec::ENCODING.into(),
             maxzoom: 16,
             ..Default::default()
@@ -354,9 +354,9 @@ mod tests {
         l.deep.insert("10/296/360".into(), fine.into());
         cat.layers.insert("terrain".into(), l);
         for (lg, c, size) in [(hi, &hc, hs), (fine, &fc, fs)] {
-            cat.files.insert(lg.into(), store::catalog::FileRef { file: c.clone(), size, ..Default::default() });
+            cat.files.insert(lg.into(), store::catalogue::FileRef { file: c.clone(), size, ..Default::default() });
         }
-        store::catalog::write_copy(&root.unchecked_path().join("catalog"), &cat).unwrap();
+        store::catalogue::write_copy(&root.unchecked_path().join("catalog"), &cat).unwrap();
         root.unchecked_path().join(fc)
     }
 
@@ -406,8 +406,8 @@ mod tests {
         let (hc, dc) = (format!("{hi}.0000000000000001.pack"), format!("{deep}.0000000000000002.pack"));
         let hs = shade_pack(&root.path().join(&hc), "slope", &[(12, 296 * 4, 360 * 4, 30.0)]);
         let ds = shade_pack(&root.path().join(&dc), "slope", &[(13, 296 * 8, 360 * 8, 80.0)]);
-        let mut cat = store::catalog::Catalog::new(1);
-        let mut l = store::catalog::Layer {
+        let mut cat = store::catalogue::Catalogue::new(1);
+        let mut l = store::catalogue::Layer {
             encoding: pipeline::shade_codec::ENCODING.into(),
             maxzoom: 16,
             ..Default::default()
@@ -416,9 +416,9 @@ mod tests {
         l.deep.insert("10/296/360".into(), deep.into());
         cat.layers.insert("slope".into(), l);
         for (lg, c, size) in [(hi, &hc, hs), (deep, &dc, ds)] {
-            cat.files.insert(lg.into(), store::catalog::FileRef { file: c.clone(), size, ..Default::default() });
+            cat.files.insert(lg.into(), store::catalogue::FileRef { file: c.clone(), size, ..Default::default() });
         }
-        store::catalog::write_copy(&root.path().join("catalog"), &cat).unwrap();
+        store::catalogue::write_copy(&root.path().join("catalog"), &cat).unwrap();
         let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(root.path()));
         let steep = |z: u8, x: u32, y: u32| {
             let b = match s.data.tile("slope", z, x, y) {

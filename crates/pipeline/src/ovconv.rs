@@ -34,7 +34,7 @@ pub const MAXZ: u8 = 12;
 /// Hi tiles (z9–12) only where the coverage is, and this far around it.
 const HALO_KM: f64 = 20.0;
 
-/// An area overlay: its catalog layer, its lean file (the heritage job's), its details (file, and the key its
+/// An area overlay: its catalogue layer, its lean file (the heritage job's), its details (file, and the key its
 /// records go under in ovdata and the detail route).
 struct Area {
     layer: &'static str,

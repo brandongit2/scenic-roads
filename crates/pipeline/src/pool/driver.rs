@@ -43,7 +43,7 @@
 //!   heartbeat, to write with the rest of it, stamped as it's written; the term it leads, if it
 //!   leads, and what it may do as that now: grant jobs and plan (`duties`); settle a handover
 //!   (`settle`: stop granting, cancel its duties in flight, write the coordinator's state and hand
-//!   it back in `Heard::settled`); publish a catalog only while it may do its duties and its
+//!   it back in `Heard::settled`); publish a catalogue only while it may do its duties and its
 //!   records reflect the journal (`duties` and `caught_up`: a listing of every day merged and
 //!   saved, its take-up's or a daily one, asked for under a day ago, `listed_at` saying when;
 //!   nothing told or listed waiting to be read; no re-assertion owed; a re-assertion keeping it),
@@ -201,7 +201,7 @@ pub const UNREADABLE_S: u64 = 3600;
 /// write reached the share and this Mac's reads, so no rename of this one is still to land; what's
 /// left is this Mac's SMB client answering from a stale name (task #630: the lead's own entry read
 /// as not there for 40 minutes, whole on the share) or the share's damage. Refusing loses only the
-/// job's work, done again; the hour held every catalog. Past a stale read's usual `STALE_S`.
+/// job's work, done again; the hour held every catalogue. Past a stale read's usual `STALE_S`.
 pub const MOVED_ON_S: u64 = STALE_S;
 /// How long an entry waits to be read whole before its lead says so, once (s).
 const WAIT_SAID_S: u64 = 600;
@@ -351,7 +351,7 @@ pub struct Out {
     /// daily one) asked for less than `RELIST_S` ago is merged and saved, every entry told or
     /// listed is read (on a share under load a loop leaves some to the next; one never read whole
     /// is refused after `UNREADABLE_S`, or `MOVED_ON_S`), and no re-assertion is owed. A re-assertion keeps it, but
-    /// after a sleep. A catalog waits for it (and `duties`); GC too (and `fresh`): an entry not
+    /// after a sleep. A catalogue waits for it (and `duties`); GC too (and `fresh`): an entry not
     /// merged yet may hold uploads the records don't name.
     pub caught_up: bool,
     /// Leading: the entries its check holds (`records::HOLD`: from a member on a newer app), with
@@ -865,7 +865,7 @@ impl Driver {
         } else {
             out.fresh = false;
         }
-        // (Its lock not known held this step: no duties, catalog or sweep until it's checked
+        // (Its lock not known held this step: no duties, catalogue or sweep until it's checked
         // again.)
         if let Some(why) = unsure {
             out.events.push(Event::Failed { what: "check the member's lock", why });
@@ -2538,7 +2538,7 @@ mod tests {
 
     /// An entry its check holds (`records::HOLD`: a member's on a newer app, outside this app's
     /// write-sets) is neither merged nor refused, merged again every step, said once, and keeps
-    /// no catalog back; once the check takes it (the lead on that app), it's merged.
+    /// no catalogue back; once the check takes it (the lead on that app), it's merged.
     #[test]
     fn an_entry_held_is_merged_again_until_taken() {
         let mem = Mem::default();
@@ -2590,7 +2590,7 @@ mod tests {
     fn an_entry_never_read_whole_is_refused_after_an_hour() {
         // B tells the lead of an entry whose file the share cut short for good (a NAS that lost a
         // renamed file's last bytes). Read again every step, it kept the lead from being caught up
-        // for ever: no catalog, no sweep.
+        // for ever: no catalogue, no sweep.
         let mem = Mem::default();
         setup(&mem);
         let ia = Mac::new(&mem);
@@ -2656,7 +2656,7 @@ mod tests {
     #[test]
     fn an_entry_not_whole_is_refused_in_minutes_once_its_writer_moved_on() {
         // On 24 Oct the lead's own entry read as not there for 40 minutes (its SMB client's stale
-        // name; whole on the share), and no catalog went out: one waits for every entry read.
+        // name; whole on the share), and no catalogue went out: one waits for every entry read.
         for short in [true, false] {
             let (refused, at_5, at_10) = told_not_whole(short, true);
             assert!(!at_5.caught_up, "short {short}: 5 minutes: read again");
@@ -3381,7 +3381,7 @@ mod tests {
     fn a_listing_lost_is_asked_for_again_once_overdue() {
         // A lead that never sleeps (the M4, on power) whose agent loses its take-up's
         // listing, never handing it back. (Re-review 3: it was never caught up again, so no
-        // catalog and no GC, and nothing said why.) Nothing else is asked for while it's out; two
+        // catalogue and no GC, and nothing said why.) Nothing else is asked for while it's out; two
         // hours on with none back, it's said and asked for again; once that one's back it's caught
         // up, and the first, back late after all, counts for no more.
         let mem = Mem::default();

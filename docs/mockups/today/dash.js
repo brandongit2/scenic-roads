@@ -9,8 +9,8 @@
 // cells; a machine is a card of its jobs, each job the same lines; an event is one templated
 // sentence. The parts: the verdict (going or not, done when, next on the map, what needs a look,
 // the pause), the overview (how far, how long), the road to done (each machine's schedule) and
-// publishing (the last catalog, the map tiles to draw by Mac, the cadenced publishes next, each
-// Mac's catalog), the stages (each step to the end), the machines (what each does now and next,
+// publishing (the last catalogue, the map tiles to draw by Mac, the cadenced publishes next, each
+// Mac's catalogue), the stages (each step to the end), the machines (what each does now and next,
 // why one waits, its power, disk, memory and pace), the regions, and the activity (the hours,
 // what happened).
 
@@ -273,7 +273,7 @@ function verdictText(m) {
 }
 
 // The next region (or regions, at the same time) to reach the map as it's built now: the forecast's
-// earliest `map_at` (its last unit's end, its map tiles drawn, a catalog within the minute).
+// earliest `map_at` (its last unit's end, its map tiles drawn, a catalogue within the minute).
 function nextOnMap(m) {
   const regs = (m.fc?.regions || []).filter((r) => r.map_at);
   if (!regs.length) return null;
@@ -312,7 +312,7 @@ function overview(m) {
   const nextUpdate = nextOnMap(m);
   const busy = m.macs.filter((x) => x.fresh && jobsOf(x.status).length).length;
   const kpis = h("div", "kpis",
-    kpi("Regions on the map", regs.length ? `${onMap} of ${regs.length}` : "–", [asWas ? `${asWas} more as they were` : "", readyNow ? `${readyNow} done, recorded built by the next catalog` : ""].filter(Boolean).join(" · ") || null),
+    kpi("Regions on the map", regs.length ? `${onMap} of ${regs.length}` : "–", [asWas ? `${asWas} more as they were` : "", readyNow ? `${readyNow} done, recorded built by the next catalogue` : ""].filter(Boolean).join(" · ") || null),
     kpi("Map last updated", lastAt ? ago(now, lastAt) : "–", nextUpdate ? `next ≈ ${clock(nextUpdate.at)}` : null),
     kpi("Machines", `${busy} of ${m.macs.length} Macs working`, m.pages.length ? `and ${plural(m.pages.length, "page")}` : null),
   );
@@ -599,7 +599,7 @@ function shortNames(m) {
 }
 
 // Each machine's lane: a run of a step's targets is a segment in its stage's colour (the map
-// tiles' as any step's; 3 px at least, so a step as short as a catalog's publishing shows as its
+// tiles' as any step's; 3 px at least, so a step as short as a catalogue's publishing shows as its
 // legend says), each lane named by its Mac's short name and slot; under them, each region
 // marked where it's all on the map (its `map_at`).
 function schedule(m) {
@@ -721,7 +721,7 @@ function regionRows(m, rerender) {
     }
     let state, cls = "";
     if (!lft && r.on_map === true) [state, cls] = ["on the map", "ok"];
-    else if (!lft) [state, cls] = ["done; recorded built by the next catalog", "ok"];
+    else if (!lft) [state, cls] = ["done; recorded built by the next catalogue", "ok"];
     else if (r.rank === 0) [state, cls] = ["building now", "run"];
     else [state, cls] = [`#${r.rank + 1} in line`, ""];
     if (r.on_map === false) state += " · on the map as it was";
@@ -743,8 +743,8 @@ function regionRows(m, rerender) {
   return [out, more].filter(Boolean);
 }
 
-// When the map last got new data: the last catalog the lead read (its number and time), else
-// its last catalog job's end.
+// When the map last got new data: the last catalogue the lead read (its number and time), else
+// its last catalogue job's end.
 function lastUpdate(m) {
   return m.a.catalog?.at || (m.a.recent || []).find((d) => stepOf(d.id) === "catalog" && d.ok)?.ended || null;
 }
@@ -753,8 +753,8 @@ function lastUpdate(m) {
 const PUBLISH_NAMES = { low: "the low zooms", marks: "the landmarks", overlays: "the area overlays" };
 
 // The Publishing card (agent::Published, agent::build::PublishLine, the forecast's `publishes`):
-// what publishing does and why; the last catalog, its number, when and its kind; the map tiles to
-// draw, by the Mac drawing them; when each cadenced publish may next go out; the catalog each Mac's
+// what publishing does and why; the last catalogue, its number, when and its kind; the map tiles to
+// draw, by the Mac drawing them; when each cadenced publish may next go out; the catalogue each Mac's
 // map server adopted.
 function publishing(m) {
   const { a, fc, now } = m;
@@ -764,7 +764,7 @@ function publishing(m) {
   const row = (k, ...v) => rows.push(h("div", "pubrow", h("span", "k", k), h("span", "v", ...v)));
   if (u) rows.push(h("div", "pubwhy", u.why));
   const last = p.last || a.catalog;
-  row("Last catalog", last ? [h("b", null, `${last.n}`), ` · ${clock(last.at)} (${ago(now, last.at)})`, h("span", "dim", p.last ? ` · ${p.low ? "with the low zooms" : "map tiles only"}` : "")] : "none yet");
+  row("Last catalogue", last ? [h("b", null, `${last.n}`), ` · ${clock(last.at)} (${ago(now, last.at)})`, h("span", "dim", p.last ? ` · ${p.low ? "with the low zooms" : "map tiles only"}` : "")] : "none yet");
   if (u) {
     const by = Object.entries(p.drawing || {});
     row("Map tiles to draw", h("b", null, n(u.tiles || 0)), by.length ? h("span", "dim", " · being drawn: ") : null, ...by.map(([host, k]) => h("span", { class: "by", title: host }, swatch(m.colourOf(host)), `${nm(host)}: ${plural(k, "tile")}`)));
@@ -773,11 +773,11 @@ function publishing(m) {
     row("Next", fc.publishes.map((x, i) => [i ? " · " : "", `${PUBLISH_NAMES[x.what] || x.what} `, h("b", null, x.what === "low" && u?.low ? "now" : x.at <= now + 59 ? "now" : `≈ ${clock(x.at)}`)]).flat());
   }
   const ad = Object.entries(p.adopted || {});
-  if (ad.length) row("Each Mac's map", ...ad.map(([host, c], i) => h("span", { class: `by ${last && c.n < last.n ? "behind" : ""}`, title: `${host}'s map server adopted catalog ${c.n} ${ago(now, c.at)}` }, i ? " " : "", swatch(m.colourOf(host)), `${nm(host)}: ${c.n}`)));
+  if (ad.length) row("Each Mac's map", ...ad.map(([host, c], i) => h("span", { class: `by ${last && c.n < last.n ? "behind" : ""}`, title: `${host}'s map server adopted catalogue ${c.n} ${ago(now, c.at)}` }, i ? " " : "", swatch(m.colourOf(host)), `${nm(host)}: ${c.n}`)));
   const waits = (a.waiting || []).filter((w) => w.step === "catalog" || /publish/i.test(w.what));
   for (const w of waits) rows.push(h("div", "small warn", w.why));
   if (u?.regions?.length) rows.push(h("div", "small", `Done, not on the map as they are: ${u.regions.slice(0, 6).map((r) => `${m.regionName[r.id] || r.id} (${r.kinds.join(", ")})`).join(", ")}${u.regions.length > 6 ? ` and ${u.regions.length - 6} more` : ""}`));
-  if (!u) rows.push(h("div", "small dim", "A unit's map tiles are drawn as soon as it's built, and a catalog goes out at most each minute."));
+  if (!u) rows.push(h("div", "small dim", "A unit's map tiles are drawn as soon as it's built, and a catalogue goes out at most each minute."));
   return h("div", "pub", rows);
 }
 

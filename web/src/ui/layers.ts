@@ -59,11 +59,11 @@ export class LayersCard {
   readonly trees: TreeSection;
   /** 3D buildings controls. */
   readonly buildings: BuildingSection;
-  /** Depth under the water (ui/depth.ts); its section hidden until the catalog has the layers
+  /** Depth under the water (ui/depth.ts); its section hidden until the catalogue has the layers
    * (showDepth). */
   readonly depth: DepthSection;
   private depthSection!: HTMLElement;
-  /** Their section: hidden until the catalog has the layer (showBuildings). */
+  /** Their section: hidden until the catalogue has the layer (showBuildings). */
   private buildingsSection: HTMLElement;
   private railSection: Node[];
   private rail!: HTMLInputElement;
@@ -792,12 +792,12 @@ export class LayersCard {
     this.sync(store.s);
   }
 
-  /** The Depth section shown, or not: only once the catalog has the layers. */
+  /** The Depth section shown, or not: only once the catalogue has the layers. */
   showDepth(on: boolean) {
     this.depthSection.hidden = !on;
   }
 
-  /** The Buildings section shown, or not: only once the catalog has the layer. */
+  /** The Buildings section shown, or not: only once the catalogue has the layer. */
   showBuildings(on: boolean) {
     this.buildingsSection.hidden = !on;
   }

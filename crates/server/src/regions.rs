@@ -7,13 +7,13 @@
 //!                                   NAS, the last list read
 //!   GET    /api/regions/layer       every region's accepted outline for drawing (its drawn files,
 //!                                   kept on this Mac), a colour from its id, held or not; the
-//!                                   catalog's regions until this Mac has the accepted copy
+//!                                   catalogue's regions until this Mac has the accepted copy
 //!   GET    /api/areas/{id}          one outline, simplified (a GeoJSON feature)
-//!   GET    /api/coverage            the coverage the catalog was built for: its regions' outlines,
+//!   GET    /api/coverage            the coverage the catalogue was built for: its regions' outlines,
 //!                                   simplified (GeoJSON), and the regions
 //!
-//! Outlines come from the latest OSM pass (the catalog's `global.outlines`); records and strings are
-//! read once per catalog, rings when an outline is drawn or tested.
+//! Outlines come from the latest OSM pass (the catalogue's `global.outlines`); records and strings are
+//! read once per catalogue, rings when an outline is drawn or tested.
 //!
 //! Nothing here writes a region: regions change only as files in the inputs folder, which the input
 //! check takes in (docs/inputs.md §6.1). The region files are read through the NAS I/O pool like
@@ -35,7 +35,7 @@ use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use store::iopool::{IoError, IoPool};
 
-/// The outlines of the current catalog: records and strings in memory, rings read on demand.
+/// The outlines of the current catalogue: records and strings in memory, rings read on demand.
 pub struct OutlineIndex {
     content: String,
     sect: Arc<crate::views::SectView>,
@@ -45,7 +45,7 @@ pub struct OutlineIndex {
 
 impl OutlineIndex {
     fn open(data: &crate::data::Data) -> Result<Option<OutlineIndex>> {
-        let cat = data.catalog();
+        let cat = data.catalogue();
         let Some(logical) = cat.global.get("outlines") else { return Ok(None) };
         let Some(sect) = data.sect(logical)? else { return Ok(None) };
         let content = data.content(logical).unwrap_or_default();
@@ -142,8 +142,8 @@ fn lies_in<'a>(recs: &[OutlineRec], string: impl Fn(u32) -> &'a str, o: &Outline
     (code.to_string(), name.to_string())
 }
 
-/// The languages spoken where (`names::spoken`), from the catalog's outlines (their simplified
-/// rings, read from the mirror or the NAS) and `table` (None when the catalog has no outlines).
+/// The languages spoken where (`names::spoken`), from the catalogue's outlines (their simplified
+/// rings, read from the mirror or the NAS) and `table` (None when the catalogue has no outlines).
 pub fn spoken_from_outlines(data: &crate::data::Data, table: &names::Table) -> Result<Option<names::Spoken>> {
     let Some(ix) = OutlineIndex::open(data)? else { return Ok(None) };
     let polygons = |o: &OutlineRec| -> Result<Vec<Vec<Vec<[i32; 2]>>>> {
@@ -160,7 +160,7 @@ pub fn spoken_from_outlines(data: &crate::data::Data, table: &names::Table) -> R
     Ok(Some(names::Spoken::build(table, areas)))
 }
 
-/// The outline index of the current catalog, opened once per catalog.
+/// The outline index of the current catalogue, opened once per catalogue.
 #[derive(Default)]
 pub struct Areas {
     cur: Mutex<Option<Arc<OutlineIndex>>>,
@@ -168,7 +168,7 @@ pub struct Areas {
 
 impl Areas {
     pub fn get(&self, s: &crate::AppState) -> Result<Option<Arc<OutlineIndex>>> {
-        let cat = s.data.catalog();
+        let cat = s.data.catalogue();
         let want = cat.global.get("outlines").and_then(|l| s.data.content(l));
         let mut g = self.cur.lock().unwrap();
         if let Some(cur) = g.as_ref() {
@@ -469,7 +469,7 @@ pub fn is_disabled(s: &crate::AppState, id: &str) -> bool {
 
 /// The region layer (docs/inputs.md §6.1.9): every region's accepted outline, from the drawn files
 /// kept on this Mac, a feature per stored shape with the region's id, name, colour and whether it's
-/// held now; the catalog's regions (as built) until this Mac has the accepted copy.
+/// held now; the catalogue's regions (as built) until this Mac has the accepted copy.
 pub async fn layer(State(s): State<S>) -> Response {
     let s2 = s.clone();
     tokio::task::spawn_blocking(move || -> Result<Response> {
@@ -490,12 +490,12 @@ pub async fn layer(State(s): State<S>) -> Response {
             }
             "accepted"
         } else {
-            for r in recorded(&s2.data.catalog()) {
+            for r in recorded(&s2.data.catalogue()) {
                 for (from, coords) in &r.shapes {
                     feats.push(json!({ "type": "Feature", "geometry": { "type": "MultiPolygon", "coordinates": coords }, "properties": { "region": r.id, "name": r.name, "from": from, "colour": colour(&r.id), "held": false } }));
                 }
             }
-            "catalog"
+            store::catalogue::NAME
         };
         Ok(Json(json!({ "type": "FeatureCollection", "features": feats, "source": source })).into_response())
     })
@@ -525,16 +525,16 @@ pub async fn one(State(s): State<S>, Path(id): Path<u64>) -> Response {
     .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-/// The regions a catalog records (its `coverage`), each with its outlines simplified for drawing;
-/// none for a catalog made before they were recorded (or one whose coverage this app can't read).
-pub fn recorded(cat: &store::catalog::Catalog) -> Vec<DrawnRegion> {
+/// The regions a catalogue records (its `coverage`), each with its outlines simplified for drawing;
+/// none for a catalogue made before they were recorded (or one whose coverage this app can't read).
+pub fn recorded(cat: &store::catalogue::Catalogue) -> Vec<DrawnRegion> {
     cat.coverage.get("regions").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default()
 }
 
-/// The regions a catalog records, without their outlines (id, name and outline entries, and a region
+/// The regions a catalogue records, without their outlines (id, name and outline entries, and a region
 /// still building's `tiles`: built of total), read straight from its coverage: /api/catalog asks
 /// for them every minute.
-pub fn recorded_list(cat: &store::catalog::Catalog) -> Vec<Value> {
+pub fn recorded_list(cat: &store::catalogue::Catalogue) -> Vec<Value> {
     let regions = cat.coverage.get("regions").and_then(Value::as_array);
     regions
         .map(|rs| {
@@ -576,13 +576,13 @@ fn recorded_features(regions: &[DrawnRegion], ix: Option<&OutlineIndex>) -> Vec<
     feats
 }
 
-/// The coverage for drawing, as the current catalog recorded it, with the regions it was built for
+/// The coverage for drawing, as the current catalogue recorded it, with the regions it was built for
 /// (`regions`), so the panel can tell which regions aren't on the map yet (added or redrawn since)
 /// and works away from home.
 pub async fn coverage(State(s): State<S>) -> Response {
     let s2 = s.clone();
     tokio::task::spawn_blocking(move || -> Result<Response> {
-        let cat = s2.data.catalog();
+        let cat = s2.data.catalogue();
         let regions = recorded(&cat);
         // The areas' fields are a nicety: without the pass's outlines (the NAS away, not mirrored
         // yet) the outlines are drawn all the same.
@@ -753,19 +753,19 @@ mod tests {
         s.data.pool().unwrap().mark_offline("test");
         let v = json_of(list(State(s.clone())).await).await;
         assert_eq!((ids(&v), v["offline"].as_bool()), (vec!["borders".to_string()], Some(true)));
-        assert_eq!(coverage(State(s.clone())).await.status(), StatusCode::OK, "drawn from the catalog, away too");
+        assert_eq!(coverage(State(s.clone())).await.status(), StatusCode::OK, "drawn from the catalogue, away too");
     }
 
-    fn catalog(coverage: Value) -> store::catalog::Catalog {
-        let mut c = store::catalog::Catalog::new(3);
+    fn catalogue(coverage: Value) -> store::catalogue::Catalogue {
+        let mut c = store::catalogue::Catalogue::new(3);
         c.coverage = coverage;
         c
     }
 
     #[test]
-    fn coverage_as_the_catalog_recorded_it() {
+    fn coverage_as_the_catalogue_recorded_it() {
         let ring = json!([[1.0, 50.0], [2.0, 50.0], [2.0, 51.0], [1.0, 50.0]]);
-        let c = catalog(json!({"regions": [
+        let c = catalogue(json!({"regions": [
             {"id": "b", "name": "B", "outline": ["poly:b.poly", "osm:7"], "shapes": {"poly:b.poly": [[ring]]}},
             {"id": "a", "name": "A", "outline": ["place:1,2,3"], "shapes": {}},
         ]}));
@@ -785,9 +785,9 @@ mod tests {
                 json!({"id": "a", "name": "A", "outline": ["place:1,2,3"]})
             ]
         );
-        // Catalogs made before catalogs recorded their coverage: none (then it's the recipes').
+        // Catalogues made before catalogues recorded their coverage: none (then it's the recipes').
         for old in [json!({"regions": []}), Value::Null, json!({"regions": ["northumberland"]})] {
-            assert!(recorded(&catalog(old.clone())).is_empty() && recorded_list(&catalog(old)).is_empty());
+            assert!(recorded(&catalogue(old.clone())).is_empty() && recorded_list(&catalogue(old)).is_empty());
         }
     }
 

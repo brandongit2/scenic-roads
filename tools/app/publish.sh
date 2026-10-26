@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Publish the app (docs/building.md §2, App publishing): build the server and the web app, run the
-# tests, smoke-test the new server on a spare port against the NAS's current catalog, then copy it
+# tests, smoke-test the new server on a spare port against the NAS's current catalogue, then copy it
 # to the NAS (app/<version>/) and point app/current.json at it. Both Macs' servers pick it up within
 # five minutes and restart into it when their map is idle.
 #
@@ -204,13 +204,13 @@ prune_target
 fonts=$repo/data/fonts
 [[ -d $fonts ]] || fonts=$NAS/app/fonts
 [[ -d $fonts ]] || { echo "no fonts folder (data/fonts or the NAS's app/fonts)"; exit 1; }
-# Smoke test: the new server, its own empty home (no mirror), the NAS's catalog.
+# Smoke test: the new server, its own empty home (no mirror), the NAS's catalogue.
 # (Its port its tree's, so two publishes' smoke tests can run at once.)
 home=$(mktemp -d); port=18080; [[ $snap == $spare ]] && port=18081
 ./target/release/server --port $port --home $home --no-mirror --web web/dist-publish --fonts $fonts > $home/server.log 2>&1 &
 pid=$!
 cleanup+=("kill $pid 2>/dev/null; rm -rf $home")
-# Up to 10 min for its first answer: its catalog is read from the NAS first, which a busy NAS, or
+# Up to 10 min for its first answer: its catalogue is read from the NAS first, which a busy NAS, or
 # this Mac under a second publish's build, slows (21 Oct: 19 s+ under the depth repack; 26 Oct:
 # past 2 min beside another publish's build, task #698).
 smoke $port $pid $home/server.log 600 /api/ping /api/meta /api/catalog / "/tiles/terrain/5/9/11" "/tiles/roads/10/300/380" || exit 1

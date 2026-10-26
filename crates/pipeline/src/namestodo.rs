@@ -8,9 +8,9 @@
 //!   (`areas.jsonl`) with an English Wikipedia article or a register entry and no description,
 //!   sorted by fame; with `README.md`, the writers' brief.
 //!
-//! What it reads, all from the newest catalog:
+//! What it reads, all from the newest catalogue:
 //! - **Labels** (places, states, water, parks): the labels layer's zoom-12 tiles in the units' z6
-//!   tiles, each label inside the coverage the catalog records once (its feature id). Own English:
+//!   tiles, each label inside the coverage the catalogue records once (its feature id). Own English:
 //!   `en`, else `kana` romanised; OSM's languages: `l`.
 //! - **Roads, rail lines and ferries:** each unit's base pack (ways, names) and its roads' own
 //!   English (`global/roaden/<u>`), read first; then each named way placed once, at the centre of
@@ -19,7 +19,7 @@
 //! - **Landmarks:** the markdata's points (all eight kinds), their `en`, fame, and popup records
 //!   (Wikidata item, Wikipedia article, register entry, written description).
 //! - **Parks:** the ovdata's park records.
-//! - The languages spoken where: the catalog's outlines (`names::spoken`), kept in the scratch.
+//! - The languages spoken where: the catalogue's outlines (`names::spoken`), kept in the scratch.
 //! - The translations' and the descriptions' accepted versions (docs/inputs.md §6.3, §6.4), as the
 //!   agent names them (their indexes' content names, in the job's key): never the inputs folders.
 
@@ -317,10 +317,10 @@ impl Lists<'_> {
     }
 }
 
-/// A catalog file's path under the root.
+/// A catalogue file's path under the root.
 fn path_of(
     root: &store::nasfs::NasRoot,
-    cat: &store::catalog::Catalog,
+    cat: &store::catalogue::Catalogue,
     logical: &str,
 ) -> Option<store::nasfs::NasPath> {
     cat.file(logical).map(|f| root.join(&f.file))
@@ -332,22 +332,22 @@ fn sect<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<SectReader<PlainFi
         .with_context(|| format!("read {}", path.display()))
 }
 
-/// The spoken languages the catalog was made with: its `global/spoken` (the `spoken` job's, from
+/// The spoken languages the catalogue was made with: its `global/spoken` (the `spoken` job's, from
 /// the languages input's accepted version).
-pub fn spoken_for(root: &store::nasfs::NasRoot, cat: &store::catalog::Catalog) -> Result<Spoken> {
+pub fn spoken_for(root: &store::nasfs::NasRoot, cat: &store::catalogue::Catalogue) -> Result<Spoken> {
     let f =
         cat.global.get("spoken").and_then(|l| cat.file(l)).context(
-            "the catalog has no global/spoken (the spoken job makes it from the languages' accepted version)",
+            "the catalogue has no global/spoken (the spoken job makes it from the languages' accepted version)",
         )?;
     let b = root.join(&f.file).read().with_context(|| format!("read {}", f.file))?;
     Spoken::from_bytes(&b).with_context(|| format!("read {}", f.file))
 }
 
-/// What `run` reads of catalog `cat`, by content: the units and the coverage it records, the
+/// What `run` reads of catalogue `cat`, by content: the units and the coverage it records, the
 /// languages spoken, the labels' hi packs, the base packs, the units' own-road lists, the hi data,
-/// the landmark points and the area overlays. A catalog that changed none of them (most do: a
+/// the landmark points and the area overlays. A catalogue that changed none of them (most do: a
 /// depth or terrain tile alone) leaves the lists as they are, so they aren't made again.
-pub fn inputs_key(cat: &store::catalog::Catalog) -> String {
+pub fn inputs_key(cat: &store::catalogue::Catalogue) -> String {
     let mut parts: Vec<String> = vec![format!("names-todo inputs {VERSION}")];
     parts.extend(cat.units.iter().cloned());
     parts.push(cat.coverage.get("regions").map(|r| r.to_string()).unwrap_or_default());
@@ -369,7 +369,7 @@ pub fn inputs_key(cat: &store::catalog::Catalog) -> String {
 }
 
 /// The units' z6 tiles.
-fn unit_tiles(cat: &store::catalog::Catalog) -> HashSet<(u32, u32)> {
+fn unit_tiles(cat: &store::catalogue::Catalogue) -> HashSet<(u32, u32)> {
     cat.units
         .iter()
         .filter_map(|u| {
@@ -386,8 +386,8 @@ fn tile_of(key: &str) -> Option<(u32, u32)> {
     Some((p.next()?.parse().ok()?, p.next()?.parse().ok()?))
 }
 
-/// The coverage the catalog records, as shapes for point tests (none: a catalog that records none).
-fn coverage(cat: &store::catalog::Catalog) -> Vec<crate::coverage::Shape> {
+/// The coverage the catalogue records, as shapes for point tests (none: a catalogue that records none).
+fn coverage(cat: &store::catalogue::Catalogue) -> Vec<crate::coverage::Shape> {
     let regions: Vec<crate::coverage::DrawnRegion> =
         cat.coverage.get("regions").and_then(|r| serde_json::from_value(r.clone()).ok()).unwrap_or_default();
     let e7 = |p: &[f64; 2]| [(p[0] * 1e7).round() as i32, (p[1] * 1e7).round() as i32];
@@ -409,7 +409,7 @@ fn coverage(cat: &store::catalog::Catalog) -> Vec<crate::coverage::Shape> {
 /// the coverage (`cov`; empty: all).
 fn labels(
     root: &store::nasfs::NasRoot,
-    cat: &store::catalog::Catalog,
+    cat: &store::catalogue::Catalogue,
     units: &HashSet<(u32, u32)>,
     cov: &[crate::coverage::Shape],
     lists: &mut Lists,
@@ -513,7 +513,7 @@ fn road_priority(c: u8) -> f64 {
 /// ways-here index (each way once: its first tile's record).
 fn roads(
     root: &store::nasfs::NasRoot,
-    cat: &store::catalog::Catalog,
+    cat: &store::catalogue::Catalogue,
     lists: &mut Lists,
     progress: &dyn Fn(&str, u64, u64),
 ) -> Result<()> {
@@ -640,7 +640,7 @@ fn enwiki(info: &Value) -> Option<String> {
 /// The landmarks: names on the lists, and the descriptions wanted.
 fn landmarks(
     root: &store::nasfs::NasRoot,
-    cat: &store::catalog::Catalog,
+    cat: &store::catalogue::Catalogue,
     lists: &mut Lists,
     done: &HashSet<String>,
     want: &mut Vec<Wanted>,
@@ -648,7 +648,7 @@ fn landmarks(
 ) -> Result<()> {
     let n = cat.markdata.len() as u64;
     // Each file opened once (a bundle holds every tile, task #449), its tiles read in the
-    // catalog's order.
+    // catalogue's order.
     let mut files: HashMap<&str, HashMap<(u32, u32), crate::marks::MarkdataFile>> = HashMap::new();
     for logical in cat.markdata.values() {
         if files.contains_key(logical.as_str()) {
@@ -727,7 +727,7 @@ fn landmarks(
                     "designation": pr.get("designation").or_else(|| inf.pointer("/props/category")),
                     "at": [(lon * 1e5).round() / 1e5, (lat * 1e5).round() / 1e5],
                     "enwiki": article, "wiki": other, "register": register,
-                    // (Its heritage register's id: the catalog's credits name the register.)
+                    // (Its heritage register's id: the catalogue's credits name the register.)
                     "source": inf.pointer("/props/register").or_else(|| inf.pointer("/props/source")), "fame": (fame * 1000.0).round() / 1000.0,
                 }),
             });
@@ -740,7 +740,7 @@ fn landmarks(
 /// Wikidata's sitelinks where known, else area.
 fn areas(
     root: &store::nasfs::NasRoot,
-    cat: &store::catalog::Catalog,
+    cat: &store::catalogue::Catalogue,
     done: &HashSet<String>,
     want: &mut Vec<Wanted>,
 ) -> Result<()> {
@@ -799,7 +799,7 @@ fn put(path: &store::nasfs::NasPath, bytes: &[u8]) -> Result<()> {
     path.write_whole(bytes)
 }
 
-/// Makes the lists from the newest catalog under `root` into `out` (the translations' and the
+/// Makes the lists from the newest catalogue under `root` into `out` (the translations' and the
 /// descriptions' `todo/` under it: the root itself for the job, a scratch folder to look first),
 /// with the accepted versions of the translations and the descriptions the agent names.
 pub fn run(
@@ -811,7 +811,7 @@ pub fn run(
 ) -> Result<Report> {
     use crate::timings::{phase, Class};
     let p = phase("the catalog, the languages spoken and the translations read", Class::NasRead);
-    let cat = store::catalog::latest(&root.join("catalog"))?.context("no catalog")?;
+    let cat = store::catalogue::latest(&root.join(store::catalogue::NAME))?.context("no catalogue")?;
     let spoken = spoken_for(root, &cat)?;
     let mut names = Names::from_files(&translation_files(translations));
     let failed = names.take_warnings();
@@ -901,26 +901,26 @@ pub fn run(
 
 #[cfg(test)]
 mod tests {
-    /// A measure on real catalogs, reading the NAS alone: `SCENIC_NAMES_KEYS="<root> <last n>"`
-    /// prints each of the last n catalogs' `inputs_key` and how many of them changed it (the runs
+    /// A measure on real catalogues, reading the NAS alone: `SCENIC_NAMES_KEYS="<root> <last n>"`
+    /// prints each of the last n catalogues' `inputs_key` and how many of them changed it (the runs
     /// the lists would take).
     #[test]
-    fn measure_the_catalogs_inputs_keys() {
+    fn measure_the_catalogues_inputs_keys() {
         let Ok(m) = std::env::var("SCENIC_NAMES_KEYS") else { return };
         let (root, last) = m.split_once(' ').unwrap();
         let dir = std::path::Path::new(root).join("catalog");
-        let mut ns = store::catalog::list(&dir).unwrap();
+        let mut ns = store::catalogue::list(&dir).unwrap();
         ns.sort_unstable();
         let ns = &ns[ns.len().saturating_sub(last.parse().unwrap())..];
         let (mut prev, mut changed) = (String::new(), 0);
         for &n in ns {
-            let Ok(cat) = store::catalog::read_n(&dir, n) else { continue };
+            let Ok(cat) = store::catalogue::read_n(&dir, n) else { continue };
             let k = super::inputs_key(&cat);
             changed += usize::from(k != prev);
             println!("{n} {} {k}", cat.created);
             prev = k;
         }
-        println!("{} catalogs, {changed} with the names' inputs changed", ns.len());
+        println!("{} catalogues, {changed} with the names' inputs changed", ns.len());
     }
     use super::*;
 

@@ -423,7 +423,7 @@ struct Recipe: Decodable {
 }
 
 /// The forecast's part the menu shows: when it'll all be done (and the range), and when each region
-/// is all on the map as it's built now (its `map_at`: its last z6 tile, its map tiles drawn, a catalog
+/// is all on the map as it's built now (its `map_at`: its last z6 tile, its map tiles drawn, a catalogue
 /// within the minute).
 struct Forecast: Decodable {
     let done_at: Int?

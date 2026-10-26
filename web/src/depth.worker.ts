@@ -54,7 +54,7 @@ const cancelled = new Set<number>();
 self.onmessage = (ev: MessageEvent<DepthMsg>) => {
   const m = ev.data;
   if (m.type === 'init') {
-    // (A new catalog: its URLs, and nothing kept from the old one.)
+    // (A new catalogue: its URLs, and nothing kept from the old one.)
     if (m.depth !== depthUrl || m.base !== base) {
       fetched.clear();
       composites.clear();

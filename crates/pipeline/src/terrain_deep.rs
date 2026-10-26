@@ -195,7 +195,7 @@ pub fn zoom_of(sets: &[FineSet], z: u8, x: u32, y: u32) -> Option<u8> {
 }
 
 /// Z10 tile `t`'s native zoom: the deep levels' there (`zoom_of`), else the base's finest
-/// (`terrain_pack::max_zoom_at`). The catalog's `native_zoom` (by deep pack) and the map's zoom by
+/// (`terrain_pack::max_zoom_at`). The catalogue's `native_zoom` (by deep pack) and the map's zoom by
 /// area (crate::layers).
 pub fn native_zoom(sets: &[FineSet], t: (u32, u32)) -> u8 {
     zoom_of(sets, PACK_Z, t.0, t.1)

@@ -21,7 +21,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
-use store::catalog::Catalog;
+use store::catalogue::Catalogue;
 use unicode_normalization::UnicodeNormalization;
 
 /// The labels' kinds (pipeline::labels `k`).
@@ -321,7 +321,7 @@ fn each_label(tile: &[u8], z: u8, x: u32, y: u32, mut f: impl FnMut(&Label)) -> 
 
 /// What makes two labels one place: their feature id (pipeline::labels' row: a label's copies at
 /// zooms 8 and 12 have the same) and their name (ids are rows of one run of pipeline::labels, and nothing
-/// else ties a catalog's packs to one run). 0 for a label without an id: kept, its copies too.
+/// else ties a catalogue's packs to one run). 0 for a label without an id: kept, its copies too.
 fn same(id: Option<u64>, name: &str) -> u64 {
     let Some(id) = id else { return 0 };
     let mut h = std::hash::DefaultHasher::new();
@@ -700,9 +700,9 @@ pub struct Found<'a> {
 
 /// The labels' packs to read in `cat`: the hi packs of the map's areas (zoom 12: every label), then
 /// each lo pack (zoom 8: what shows by then, worldwide), as content names (so they're the one
-/// catalog's) and the zoom read. (The areas' first: a label in both is kept at zoom 12, its place
+/// catalogue's) and the zoom read. (The areas' first: a label in both is kept at zoom 12, its place
 /// the more exact.)
-fn sources(cat: &Catalog) -> Vec<(String, u8)> {
+fn sources(cat: &Catalogue) -> Vec<(String, u8)> {
     let Some(layer) = cat.layers.get("labels") else { return Vec::new() };
     let content = |l: &String| cat.files.get(l).map(|f| f.file.clone());
     let hi =
@@ -711,7 +711,7 @@ fn sources(cat: &Catalog) -> Vec<(String, u8)> {
 }
 
 /// The places' key: the packs they're read from and the translations' version they're named with.
-/// A catalog whose labels and areas are the same, with the same translations, keeps them.
+/// A catalogue whose labels and areas are the same, with the same translations, keeps them.
 fn key_of(packs: &[(String, u8)], names_version: u64) -> u64 {
     let mut h = blake3::Hasher::new();
     for (c, z) in packs {
@@ -798,7 +798,7 @@ pub enum Got {
     Failed(String, Duration),
 }
 
-/// The places of the catalog being served: made in the background when a search first asks for
+/// The places of the catalogue being served: made in the background when a search first asks for
 /// them, and again when the map's labels or the translations change (the last made searched
 /// meanwhile); let go once no search has asked for IDLE. A build that fails (the NAS away) is
 /// tried again after REST at the soonest; one that couldn't read every pack, after PARTIAL.
@@ -811,7 +811,7 @@ pub struct Index {
     /// Why the last build failed, and when.
     failed: Mutex<Option<(String, Instant)>>,
     used: Mutex<Option<Instant>>,
-    /// The key of the places to search (`key_of`) for the catalog generation and translations
+    /// The key of the places to search (`key_of`) for the catalogue generation and translations
     /// version it was worked out at.
     key: Mutex<Option<((u64, u64), u64)>>,
 }
@@ -872,17 +872,17 @@ impl Index {
         }
     }
 
-    /// The key of the places to search (`key_of`), worked out again when the catalog or the
+    /// The key of the places to search (`key_of`), worked out again when the catalogue or the
     /// translations change.
     fn key(&self, data: &Data, names: &NamesState) -> u64 {
-        // (The generation before the catalog: a catalog newer than its generation is worked out
+        // (The generation before the catalogue: a catalogue newer than its generation is worked out
         // again at the next.)
         let now = (data.generation.load(Ordering::Relaxed), names.version_all());
         let mut k = self.key.lock().unwrap();
         match *k {
             Some((at, key)) if at == now => key,
             _ => {
-                let key = key_of(&sources(&data.catalog()), now.1);
+                let key = key_of(&sources(&data.catalogue()), now.1);
                 *k = Some((now, key));
                 key
             }
@@ -895,8 +895,8 @@ impl Index {
         let spawned = std::thread::Builder::new().name("places".into()).spawn(move || {
             let made = {
                 let _making = Making(&me);
-                // (One catalog and one copy of the tables throughout: what its key says.)
-                let (cat, tables) = (data.catalog(), names.snapshot());
+                // (One catalogue and one copy of the tables throughout: what its key says.)
+                let (cat, tables) = (data.catalogue(), names.snapshot());
                 let packs = sources(&cat);
                 let key = key_of(&packs, names_live::version_all(tables.as_deref()));
                 let t = Instant::now();
@@ -910,7 +910,7 @@ impl Index {
                             ),
                         };
                         eprintln!(
-                            "places: {} of catalog {} ({} MB) in {:.1} s{skipped}",
+                            "places: {} of catalogue {} ({} MB) in {:.1} s{skipped}",
                             b.places.len(),
                             cat.n,
                             b.places.bytes() >> 20,
@@ -1257,10 +1257,10 @@ mod tests {
     /// tiles; `hash` its content name's.
     type Pack<'a> = (&'a str, u64, Vec<(u8, u32, u32, Vec<u8>)>);
 
-    /// Catalog `n` of a NAS folder, its labels these packs (written there unless `missing`).
-    fn catalog(nas: &std::path::Path, n: u64, packs: &[Pack], missing: &[&str]) {
-        let mut cat = store::catalog::Catalog::new(n);
-        let mut layer = store::catalog::Layer::default();
+    /// Catalogue `n` of a NAS folder, its labels these packs (written there unless `missing`).
+    fn catalogue(nas: &std::path::Path, n: u64, packs: &[Pack], missing: &[&str]) {
+        let mut cat = store::catalogue::Catalogue::new(n);
+        let mut layer = store::catalogue::Layer::default();
         for (key, hash, tiles) in packs {
             let lo = key.starts_with("3/");
             let logical = format!("layers/labels/{}/{}", if lo { "lo" } else { "hi" }, key.replace('/', "-"));
@@ -1281,10 +1281,10 @@ mod tests {
                 layer.hi.insert(key.to_string(), logical.clone());
                 cat.hidata.insert(key.to_string(), format!("global/hidata/{}", key.replace('/', "-")));
             }
-            cat.files.insert(logical, store::catalog::FileRef { file: content, size: 1, ..Default::default() });
+            cat.files.insert(logical, store::catalogue::FileRef { file: content, size: 1, ..Default::default() });
         }
         cat.layers.insert("labels".into(), layer);
-        store::catalog::write_copy(&nas.join("catalog"), &cat).unwrap();
+        store::catalogue::write_copy(&nas.join("catalog"), &cat).unwrap();
     }
 
     /// A lo pack (3/4/2) with a zoom-8 tile of Banff and Yokohama, and a hi pack of one of the
@@ -1331,7 +1331,7 @@ mod tests {
     #[tokio::test]
     async fn the_search_answers_once_the_maps_places_are_made() {
         let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        catalog(nas.path(), 1, &packs(), &[]);
+        catalogue(nas.path(), 1, &packs(), &[]);
         let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
         // The first ask has them made: not ready until they are.
         assert_eq!(ask(&s, "", None).await, serde_json::json!({ "ready": false, "hits": [] }));
@@ -1360,12 +1360,12 @@ mod tests {
     #[test]
     fn the_mirrors_packs_are_read_as_the_nass() {
         let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        catalog(nas.path(), 1, &packs(), &[]);
+        catalogue(nas.path(), 1, &packs(), &[]);
         let on_nas = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
-        let b = build(&on_nas.data, &sources(&on_nas.data.catalog()), None).unwrap();
+        let b = build(&on_nas.data, &sources(&on_nas.data.catalogue()), None).unwrap();
         // The same packs in this Mac's mirror.
         let home = tempfile::tempdir().unwrap();
-        for (c, _) in sources(&on_nas.data.catalog()) {
+        for (c, _) in sources(&on_nas.data.catalogue()) {
             let p = home.path().join("mirror").join(&c);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::copy(nas.path().join(&c), p).unwrap();
@@ -1377,8 +1377,8 @@ mod tests {
             reserve: 0,
         })
         .unwrap();
-        assert!(sources(&data.catalog()).iter().all(|(c, _)| data.mirror.as_ref().unwrap().local(c).is_some()));
-        let m = build(&data, &sources(&data.catalog()), None).unwrap();
+        assert!(sources(&data.catalogue()).iter().all(|(c, _)| data.mirror.as_ref().unwrap().local(c).is_some()));
+        let m = build(&data, &sources(&data.catalogue()), None).unwrap();
         let all = |p: &Places| (0..p.len()).map(|i| p.text_of(i).to_string()).collect::<Vec<_>>();
         assert_eq!((m.places.len(), m.unread, m.bad), (3, 0, 0));
         assert_eq!(all(&m.places), all(&b.places));
@@ -1390,7 +1390,7 @@ mod tests {
         // Yokohama's tile is in Japan's area (z8 130/70 isn't: a tile there instead).
         let (x, y) = (227, 101);
         let lo = labels_tile(&[(2, "横浜", None, "place", "city", 76.0, (2048, 2048))]);
-        catalog(nas.path(), 1, &[("3/7/3", 1, vec![(8, x, y, lo)])], &[]);
+        catalogue(nas.path(), 1, &[("3/7/3", 1, vec![(8, x, y, lo)])], &[]);
         crate::accepted::put(&store::nasfs::NasRoot::local_for_test(nas.path()), "translations", &[("0-converted/japanese.jsonl", "{\"n\": \"横浜\", \"kind\": \"settlement\", \"langs\": \"ja\", \"main\": \"横浜\", \"sub\": \"Yokohama-shi\"}\n")]);
         let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
         assert!(s.names.sync(&s.data));
@@ -1423,7 +1423,7 @@ mod tests {
         // pack not on the NAS.
         let mut ps = packs();
         ps[0].2.push((8, 131, 70, vec![0x1f, 0x8b, 1, 2, 3]));
-        catalog(nas.path(), 1, &ps, &["6/32/21"]);
+        catalogue(nas.path(), 1, &ps, &["6/32/21"]);
         let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
         assert_eq!(ready(&s).await["ready"], true);
         assert_eq!(ask(&s, "banff", None).await["hits"].as_array().map(Vec::len), Some(1));
@@ -1431,12 +1431,12 @@ mod tests {
         let made = s.places.made.read().unwrap();
         assert!(made.as_ref().is_some_and(|m| m.partial.is_some()), "made again later");
         drop(made);
-        let b = build(&s.data, &sources(&s.data.catalog()), None).unwrap();
+        let b = build(&s.data, &sources(&s.data.catalogue()), None).unwrap();
         assert_eq!((b.places.len(), b.unread, b.bad), (2, 1, 1));
 
         // Nothing readable: not ready, and why, and when it's tried again.
         let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        catalog(nas.path(), 1, &packs(), &["3/4/2", "6/32/21"]);
+        catalogue(nas.path(), 1, &packs(), &["3/4/2", "6/32/21"]);
         let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
         let v = ready(&s).await;
         assert_eq!(v["ready"], false);
@@ -1449,18 +1449,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_places_are_kept_for_a_catalog_whose_labels_didnt_change() {
+    async fn the_places_are_kept_for_a_catalogue_whose_labels_didnt_change() {
         let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let ps = packs();
-        catalog(nas.path(), 1, &ps, &[]);
+        catalogue(nas.path(), 1, &ps, &[]);
         let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
         assert_eq!(ready(&s).await["ready"], true);
         let first = |s: &S| s.places.made.read().unwrap().as_ref().map(|m| (m.n, Arc::as_ptr(&m.places)));
         let was = first(&s);
-        // A new catalog, its labels the same (another layer changed): the same places.
-        catalog(nas.path(), 2, &ps, &[]);
-        assert!(s.data.refresh_catalog());
-        assert_eq!(s.data.catalog().n, 2);
+        // A new catalogue, its labels the same (another layer changed): the same places.
+        catalogue(nas.path(), 2, &ps, &[]);
+        assert!(s.data.refresh_catalogue());
+        assert_eq!(s.data.catalogue().n, 2);
         assert_eq!(ask(&s, "banff", None).await["hits"].as_array().map(Vec::len), Some(1));
         assert!(!s.places.making.load(Ordering::SeqCst), "not made again");
         assert_eq!(first(&s), was);
@@ -1469,8 +1469,8 @@ mod tests {
         ps3[1].1 = 3;
         ps3[1].2 =
             vec![(12, 2050, 1350, labels_tile(&[(3, "Moraine Lake", None, "water", "lake", 5.0, (2048, 2048))]))];
-        catalog(nas.path(), 3, &ps3, &[]);
-        assert!(s.data.refresh_catalog());
+        catalogue(nas.path(), 3, &ps3, &[]);
+        assert!(s.data.refresh_catalogue());
         assert_eq!(ask(&s, "lake louise", None).await["hits"].as_array().map(Vec::len), Some(1), "the old, meanwhile");
         let end = Instant::now() + WATCHDOG;
         while Instant::now() < end {
@@ -1514,7 +1514,7 @@ mod tests {
         })
         .unwrap();
         let t = Instant::now();
-        let b = build(&data, &sources(&data.catalog()), None).unwrap();
+        let b = build(&data, &sources(&data.catalogue()), None).unwrap();
         let p = b.places;
         eprintln!(
             "{} places, {} words, {} MB, {:.1} s; passed over: {} packs, {} tiles",

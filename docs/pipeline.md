@@ -31,7 +31,7 @@ Every row has the same fields; nothing about a step is kept anywhere else.
 |---|---|---|
 | `id` (`name`) | the stored name: in the records, the journal, the leases, the timings, the floors, the `work/` paths; and the name every reader shows (task #659: no display names, the build page's, the menu bar's and `scenic status`' alike); renamed only with its old name read as the new (§3) | `unit`, `terrain-lo`, … |
 | `does` | one sentence: what it makes from what | |
-| `kind` | where its output goes | `fetch` (`sources/`, from outside), `derive` (`work/`, `global/`: what other steps read), `pack` (what the map serves), `publish` (a catalog), `keep` (checks, lists, removals, backups) |
+| `kind` | where its output goes | `fetch` (`sources/`, from outside), `derive` (`work/`, `global/`: what other steps read), `pack` (what the map serves), `publish` (a catalogue), `keep` (checks, lists, removals, backups) |
 | `scope` | what one target is, and the noun its targets are counted in | `world` (one target: a run), z3 tile, z6 tile, `input` (an inputs folder); a task's `task`. Counted in "z3 tiles", "z6 tiles", … (`Scope::noun`); sent as `scope` `area` and `tile` by `/work/steps` (the stored words, kept: `Scope`'s serde names) |
 | `stage` | its stage | `pass`, `sites`, `terrain`, `slope`, `trees`, `depth`, `roads`, `tiles`, `finish`, `trains`, `landmarks`, `buildings`, `publish`, `upkeep` |
 | `place` | which Mac runs it: derived from the pool's rules (`agent::every::offered`), not kept | `any` (any member whose measured room fits), `lead` |
@@ -236,11 +236,11 @@ The Jobs tab's stages are the one exception.
   step's tiles alone are drawn while the pointer's on it; a click or a tap holds the solo until
   it's clicked again (a stage's item: its steps). Soloed, no other step's tiles show; the step's
   queued, in progress and completed tiles look as above, and its published tiles, the whole
-  world's, are painted by when a catalogue last published each (`catalogs.js` publishedAt: the
+  world's, are painted by when a catalogue last published each (`catalogues.js` publishedAt: the
   tile's own z3 or z6 time, a deeper tile's z6 one, the root's newest z3 one). Then "Show only
   for" one pool member (the tiles it ran, runs or will run: the history's ends, its running jobs
   and leases, the queue's placed on it).
-  Then the **age controls** (`catalogs.js`, #629; top-level since #685, applying the same to
+  Then the **age controls** (`catalogues.js`, #629; top-level since #685, applying the same to
   whichever step is soloed): a pair of inputs setting the colour map's range (a ramp from deep blue,
   older, to light yellow, newer). Each takes a local date and time (`2026-10-23 14:05`, a date
   alone, "now") or a span (`48 hours`, `7 days`, `90 min`, `2 weeks`), the span in one of the two
@@ -259,7 +259,7 @@ The Jobs tab's stages are the one exception.
   filled, z3 outlined. Its data: `/work/catalogs` (docs/pool.md §10), the catalogues after the
   last the page has, every 30 s while the page is seen, every 2 s while the agent is reading. The
   sums (`parseWhen`, `commit`, `tileTimes`, `publishedAt`, `paint`, `labelled`, the axis) are
-  tested by web/test/catalogs.test.mjs.
+  tested by web/test/catalogues.test.mjs.
   The view (states, areas, solo, member) and the age controls' range and hide box are this
   browser's own (localStorage). On a touch screen, zoomed out, a finger moves the map sideways
   only: up and down is the page's scroll. Moved by a drag, zoomed by a pinch (ctrl+wheel in

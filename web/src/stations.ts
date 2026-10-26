@@ -47,7 +47,7 @@ export class Stations {
   }
 
   constructor(private map: MLMap) {
-    // New stops (a new catalog): the new tiles come with the others' (main.ts), and the colours go
+    // New stops (a new catalogue): the new tiles come with the others' (main.ts), and the colours go
     // with them.
     onVersions(['stations.tiles'], () => {
       this.coloured.clear();

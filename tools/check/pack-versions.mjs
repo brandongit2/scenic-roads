@@ -1,18 +1,18 @@
 // A one-pack publish re-requests only that pack's tiles (task #253): an open page's road tiles are
-// counted from Chrome's network log before and after a catalog that changed one z6 (hi) pack.
+// counted from Chrome's network log before and after a catalogue that changed one z6 (hi) pack.
 // Driven through the Chrome DevTools Protocol.
 //
 // Start a Chrome with remote debugging and a scratch profile, and the map server over a test root
-// of your own (--root, --home, --port: never the live server's) whose next catalog `--publish`
-// writes (and the server then takes: a server over --root reads its catalog at start, so the
+// of your own (--root, --home, --port: never the live server's) whose next catalogue `--publish`
+// writes (and the server then takes: a server over --root reads its catalogue at start, so the
 // command restarts it):
 //   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --remote-debugging-port=18229 \
 //     --user-data-dir=<scratch>/chrome about:blank
 //   node tools/check/pack-versions.mjs --port 18229 --url 'http://127.0.0.1:18153/?checks' \
-//     --at -73.125,45.24,9.5 --pack 6/18/22 --publish '<command writing the next catalog>'
+//     --at -73.125,45.24,9.5 --pack 6/18/22 --publish '<command writing the next catalogue>'
 //
 // It frames `--at` (lng,lat,zoom: best a corner of four z6 packs), waits for the road tiles to
-// settle, runs `--publish`, waits for the server to take the new catalog (/api/catalog), has the
+// settle, runs `--publish`, waits for the server to take the new catalogue (/api/catalog), has the
 // page ask (as it does every minute), and waits again. Passes when every road tile asked for after
 // the switch lies under `--pack`, and at least one did.
 import { execSync } from 'node:child_process';
@@ -69,8 +69,8 @@ async function settle(quiet = 4000, max = 60000) {
 }
 const zxy = (u) => new URL(u).pathname.split('/').slice(-3).map(Number);
 const packOf = ([z, x, y]) => (z <= 2 ? 'root' : z <= 8 ? `3/${x >> (z - 3)}/${y >> (z - 3)}` : `6/${x >> (z - 6)}/${y >> (z - 6)}`);
-const catalogN = async () => (await (await fetch(`${origin}/api/catalog`)).json()).n;
-const catalogNow = () => catalogN().catch(() => undefined);
+const catalogueN = async () => (await (await fetch(`${origin}/api/catalog`)).json()).n;
+const catalogueNow = () => catalogueN().catch(() => undefined);
 
 await send('Network.enable');
 await send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
@@ -83,22 +83,22 @@ for (let i = 0; i < 120; i++) {
 await evaluate(`window.__map.jumpTo({ center: [${lng}, ${lat}], zoom: ${zoom}, pitch: 0, bearing: 0 }); return 1;`);
 await settle();
 const before = tiles.splice(0);
-const n0 = await catalogN();
-console.log(`catalog ${n0}: ${before.length} road tile requests at ${lng},${lat} z${zoom}; under ${PACK}: ${before.filter(([, u]) => packOf(zxy(u)) === PACK).length}`);
+const n0 = await catalogueN();
+console.log(`catalogue ${n0}: ${before.length} road tile requests at ${lng},${lat} z${zoom}; under ${PACK}: ${before.filter(([, u]) => packOf(zxy(u)) === PACK).length}`);
 
 execSync(String(args.publish), { stdio: 'inherit' });
 let n1 = n0;
 for (let i = 0; i < 90 && (n1 === n0 || n1 === undefined); i++) {
   await sleep(1000);
-  n1 = await catalogNow();
+  n1 = await catalogueNow();
 }
-if (n1 === n0 || n1 === undefined) throw new Error('the server never took the new catalog');
-// The page asks again when it comes back into view (catalog.ts), as it would within the minute.
+if (n1 === n0 || n1 === undefined) throw new Error('the server never took the new catalogue');
+// The page asks again when it comes back into view (catalogue.ts), as it would within the minute.
 await evaluate(`document.dispatchEvent(new Event('visibilitychange')); return 1;`);
 await settle(6000);
 const after = tiles.splice(0);
 const outside = after.filter(([, u]) => packOf(zxy(u)) !== PACK);
-console.log(`catalog ${n1}: ${after.length} road tile requests; outside ${PACK}: ${outside.length}`);
+console.log(`catalogue ${n1}: ${after.length} road tile requests; outside ${PACK}: ${outside.length}`);
 for (const [, u] of after) console.log(`  ${new URL(u).pathname}${new URL(u).search}  (${packOf(zxy(u))})`);
 await fetch(`http://127.0.0.1:${PORT}/json/close/${target.id}`).catch(() => {});
 ws.close();

@@ -1,4 +1,4 @@
-//! Catalogs (docs/formats.md, Catalog): the only index of what's on the NAS. Each publish writes
+//! Catalogues (docs/formats.md, Catalogue): the only index of what's on the NAS. Each publish writes
 //! the next `catalog/<n>.json.zst` (zstd with its content checksum on), naming every current file
 //! by content name with its size and format version. Readers take the highest `<n>` that decodes
 //! and parses, falling back past a damaged or half-copied one. A Mac keeps copies of the last few
@@ -15,9 +15,17 @@ use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-/// The catalog format version written. (2, task #449: `markdata` may name one bundle of every
+/// The stored and wire name of a catalogue: the NAS folder (`catalog/<n>.json.zst`), the build step
+/// and the history event that publish one, and the JSON key naming it. It keeps its old spelling
+/// (task #547: the NAS holds years of data under it, and the pool runs mixed app versions): only the
+/// Rust names around it say "catalogue". JSON keys and serde names elsewhere keep it with a comment.
+pub const NAME: &str = "catalog";
+/// The same for a catalogue held for review: its folder (`catalog-held/`) and its step.
+pub const HELD_NAME: &str = "catalog-held";
+
+/// The catalogue format version written. (2, task #449: `markdata` may name one bundle of every
 /// tile, docs/formats.md "Bundles", which an app reading only 1 can't read: it keeps its last
-/// catalog of format 1 until it updates.)
+/// catalogue of format 1 until it updates.)
 pub const FMT: u32 = 2;
 /// The oldest version read (docs/building.md §2).
 pub const MIN_FMT: u32 = 1;
@@ -28,12 +36,12 @@ const DELTA_SUFFIX: &str = ".delta.json.zst";
 
 pub mod delta;
 
-/// One catalog (docs/formats.md). Maps are `BTreeMap`s so the JSON comes out the same for the same
-/// catalog; fields this version doesn't know are kept in `extra`, so nothing is lost when a
-/// catalog is read and written again.
+/// One catalogue (docs/formats.md). Maps are `BTreeMap`s so the JSON comes out the same for the same
+/// catalogue; fields this version doesn't know are kept in `extra`, so nothing is lost when a
+/// catalogue is read and written again.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Catalog {
-    /// The catalog format version.
+pub struct Catalogue {
+    /// The catalogue format version.
     pub fmt: u32,
     /// The publish number, also the file's name.
     pub n: u64,
@@ -43,11 +51,11 @@ pub struct Catalog {
     /// The published app that made it (its folder's name), or "development".
     #[serde(default)]
     pub app: String,
-    /// Every file the catalog references, by logical name. GC keeps them, and the files of the last
-    /// 14 days' catalogs (docs/storage.md).
+    /// Every file the catalogue references, by logical name. GC keeps them, and the files of the last
+    /// 14 days' catalogues (docs/storage.md).
     #[serde(default)]
     pub files: BTreeMap<String, FileRef>,
-    /// The built z6 tiles (tile keys as "z/x/y"), sorted. (Stored and served as `units`: catalogs on the NAS and
+    /// The built z6 tiles (tile keys as "z/x/y"), sorted. (Stored and served as `units`: catalogues on the NAS and
     /// the web client read it so; kept.)
     #[serde(default)]
     pub units: Vec<String>,
@@ -76,18 +84,18 @@ pub struct Catalog {
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub meta: Value,
     /// The credits of the sources its data comes from: `[{"what", "source", "terms", "areas"?}]`
-    /// (pipeline::rules::Credit). Empty in catalogs made before they were recorded. Kept as JSON,
-    /// as `coverage` is, so a part the app can't read never makes the catalog unreadable.
+    /// (pipeline::rules::Credit). Empty in catalogues made before they were recorded. Kept as JSON,
+    /// as `coverage` is, so a part the app can't read never makes the catalogue unreadable.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub credits: Value,
     /// The elevation datasets' labels by source byte (`src.u8`), from their declarations
     /// (pipeline::inputs::credits::dem_labels): how the map names a road's elevation sources. None
-    /// in catalogs made before they were recorded.
+    /// in catalogues made before they were recorded.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub dem_labels: BTreeMap<u8, String>,
     /// The coverage it was built for: `{"regions": [{"id", "name", "outline", "shapes"}]}`, each
     /// outline entry's polygons simplified for drawing (pipeline::coverage::DrawnRegion). No
-    /// regions in catalogs made before they were recorded.
+    /// regions in catalogues made before they were recorded.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub coverage: Value,
     #[serde(flatten)]
@@ -141,8 +149,8 @@ pub struct Layer {
     pub extra: BTreeMap<String, Value>,
 }
 
-impl Catalog {
-    /// An empty catalog number `n` in the current format.
+impl Catalogue {
+    /// An empty catalogue number `n` in the current format.
     pub fn new(n: u64) -> Self {
         Self { fmt: FMT, n, ..Default::default() }
     }
@@ -156,7 +164,7 @@ impl Catalog {
         self.files.get(logical).map(|f| f.file.as_str())
     }
 
-    /// Every logical name the catalog's sections refer to, with where it's referred from.
+    /// Every logical name the catalogue's sections refer to, with where it's referred from.
     pub fn references(&self) -> Vec<(String, &str)> {
         let mut out = Vec::new();
         for (name, l) in &self.layers {
@@ -188,7 +196,7 @@ impl Catalog {
     /// Checks that every reference resolves through `files`, and that every file's content name
     /// is well formed and belongs to its logical name. Publishers check before writing.
     pub fn validate(&self) -> Result<()> {
-        ensure!(self.fmt == FMT, "catalog format {} (this app writes {FMT})", self.fmt);
+        ensure!(self.fmt == FMT, "catalogue format {} (this app writes {FMT})", self.fmt);
         for (logical, f) in &self.files {
             let c = parse_content_name(&f.file)
                 .with_context(|| format!("files[{logical}]: {:?} isn't a content name", f.file))?;
@@ -200,7 +208,7 @@ impl Catalog {
         Ok(())
     }
 
-    /// The catalog as stored: compact JSON, zstd level 9 with its content checksum.
+    /// The catalogue as stored: compact JSON, zstd level 9 with its content checksum.
     pub fn encode(&self) -> Result<Vec<u8>> {
         let json = serde_json::to_vec(self)?;
         let mut enc = zstd::stream::Encoder::new(Vec::with_capacity(json.len() / 4 + 64), LEVEL)?;
@@ -209,15 +217,15 @@ impl Catalog {
         Ok(enc.finish()?)
     }
 
-    /// Decodes a stored catalog: an error when the zstd frame is damaged or cut short (the checksum
+    /// Decodes a stored catalogue: an error when the zstd frame is damaged or cut short (the checksum
     /// catches what the format doesn't), the JSON doesn't parse, or the format isn't one this app
     /// reads.
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        let json = zstd::stream::decode_all(bytes).context("catalog doesn't decompress")?;
-        let c: Catalog = serde_json::from_slice(&json).context("catalog doesn't parse")?;
+        let json = zstd::stream::decode_all(bytes).context("catalogue doesn't decompress")?;
+        let c: Catalogue = serde_json::from_slice(&json).context("catalogue doesn't parse")?;
         ensure!(
             (MIN_FMT..=FMT).contains(&c.fmt),
-            "catalog format {} isn't supported (this app reads {MIN_FMT}–{FMT})",
+            "catalogue format {} isn't supported (this app reads {MIN_FMT}–{FMT})",
             c.fmt
         );
         Ok(c)
@@ -241,36 +249,36 @@ fn digits(d: &str) -> Option<u64> {
     d.parse().ok()
 }
 
-/// The file name of catalog `n`, whole.
+/// The file name of catalogue `n`, whole.
 pub fn file_name(n: u64) -> String {
     format!("{n}{SUFFIX}")
 }
 
-/// The file name of catalog `n` written as what changed over the one before it (`Delta`).
+/// The file name of catalogue `n` written as what changed over the one before it (`Delta`).
 pub fn delta_file_name(n: u64) -> String {
     format!("{n}{DELTA_SUFFIX}")
 }
 
-/// Publishes `cat` into `dir` as `<n>.json.zst` after checking it (`Catalog::validate`).
-pub fn write(dir: &Path, cat: &Catalog) -> Result<PathBuf> {
-    cat.validate().with_context(|| format!("catalog {}", cat.n))?;
-    ensure!(!dir.join(delta_file_name(cat.n)).exists(), "catalog {} exists already, as a delta", cat.n);
+/// Publishes `cat` into `dir` as `<n>.json.zst` after checking it (`Catalogue::validate`).
+pub fn write(dir: &Path, cat: &Catalogue) -> Result<PathBuf> {
+    cat.validate().with_context(|| format!("catalogue {}", cat.n))?;
+    ensure!(!dir.join(delta_file_name(cat.n)).exists(), "catalogue {} exists already, as a delta", cat.n);
     write_copy(dir, cat)
 }
 
-/// Writes `cat` into `dir` as `<n>.json.zst`, unchecked: for keeping a copy of a catalog read
+/// Writes `cat` into `dir` as `<n>.json.zst`, unchecked: for keeping a copy of a catalogue read
 /// elsewhere (a Mac's own `catalog/`). The bytes go to `<n>.json.zst.tmp`, are decoded back and
-/// compared, then renamed into place. A catalog number is written once: if it exists with the
+/// compared, then renamed into place. A catalogue number is written once: if it exists with the
 /// same content this does nothing, and with other content it's an error.
-pub fn write_copy(dir: &Path, cat: &Catalog) -> Result<PathBuf> {
+pub fn write_copy(dir: &Path, cat: &Catalogue) -> Result<PathBuf> {
     let path = dir.join(file_name(cat.n));
     if let Some(done) = same_as_existing(&path, cat)? {
         return Ok(done);
     }
     let bytes = cat.encode()?;
     let check = |b: &[u8]| -> Result<()> {
-        let back = Catalog::decode(b)?;
-        ensure!(&back == cat, "catalog read back differs from what was written");
+        let back = Catalogue::decode(b)?;
+        ensure!(&back == cat, "catalogue read back differs from what was written");
         Ok(())
     };
     match put_once(dir, &path, &bytes, &check)? {
@@ -308,13 +316,13 @@ fn put_once(dir: &Path, path: &Path, bytes: &[u8], check: &dyn Fn(&[u8]) -> Resu
     }
 }
 
-/// `Some(path)` when the catalog file exists and holds `cat`; None when it doesn't exist; an error
+/// `Some(path)` when the catalogue file exists and holds `cat`; None when it doesn't exist; an error
 /// when it holds something else.
-fn same_as_existing(path: &Path, cat: &Catalog) -> Result<Option<PathBuf>> {
+fn same_as_existing(path: &Path, cat: &Catalogue) -> Result<Option<PathBuf>> {
     match fs::read(path) {
-        Ok(b) => match Catalog::decode(&b) {
+        Ok(b) => match Catalogue::decode(&b) {
             Ok(old) if &old == cat => Ok(Some(path.to_owned())),
-            Ok(_) => bail!("{} exists with other content; a catalog number is never reused", path.display()),
+            Ok(_) => bail!("{} exists with other content; a catalogue number is never reused", path.display()),
             Err(e) => bail!("{} exists but is damaged ({e:#}); it must be removed by hand", path.display()),
         },
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -322,25 +330,25 @@ fn same_as_existing(path: &Path, cat: &Catalog) -> Result<Option<PathBuf>> {
     }
 }
 
-/// Reads one whole catalog file (`read_n` reads a catalog by number, whichever way it was written).
-pub fn read<'a>(path: impl Into<Loc<'a>>) -> Result<Catalog> {
+/// Reads one whole catalogue file (`read_n` reads a catalogue by number, whichever way it was written).
+pub fn read<'a>(path: impl Into<Loc<'a>>) -> Result<Catalogue> {
     let path = path.into();
     let b = path.read().with_context(|| format!("read {}", path.display()))?;
-    Catalog::decode(&b).with_context(|| path.display())
+    Catalogue::decode(&b).with_context(|| path.display())
 }
 
-/// Catalog `n` in `dir`, whole: its own file, or what changed over the one before it applied to
+/// Catalogue `n` in `dir`, whole: its own file, or what changed over the one before it applied to
 /// that one (`Delta`), back to a whole one.
-pub fn read_n<'a>(dir: impl Into<Loc<'a>>, n: u64) -> Result<Catalog> {
+pub fn read_n<'a>(dir: impl Into<Loc<'a>>, n: u64) -> Result<Catalogue> {
     read_n_from(dir, n, None)
 }
 
-/// `read_n` from a catalog read before (`have`): when it's on catalog `n`'s chain, only the deltas
-/// after it are read and applied, not the chain back to a whole catalog.
-/// Each delta checks the catalog it changes by its digest, so a `have` that isn't the one now
+/// `read_n` from a catalogue read before (`have`): when it's on catalogue `n`'s chain, only the deltas
+/// after it are read and applied, not the chain back to a whole catalogue.
+/// Each delta checks the catalogue it changes by its digest, so a `have` that isn't the one now
 /// numbered so (a number taken again) fails there, and `n` is read without it. `have` taken for
 /// `n` itself is checked against `n`'s delta's digest first (a whole `n` is read).
-pub fn read_n_from<'a>(dir: impl Into<Loc<'a>>, n: u64, have: Option<&Catalog>) -> Result<Catalog> {
+pub fn read_n_from<'a>(dir: impl Into<Loc<'a>>, n: u64, have: Option<&Catalogue>) -> Result<Catalogue> {
     let dir = dir.into();
     let names = Names::of_dir(dir)?;
     let mut read = |f: &str| local_read(dir.join(f).loc());
@@ -359,21 +367,21 @@ pub fn read_n_from<'a>(dir: impl Into<Loc<'a>>, n: u64, have: Option<&Catalog>) 
         }
     }
     materialize(Path::new(&shown), &names, n, None, &mut read)?
-        .with_context(|| format!("catalog {n} in {} can't be read whole", dir.display()))
+        .with_context(|| format!("catalogue {n} in {} can't be read whole", dir.display()))
 }
 
-/// The file catalog `n` is in (whole, or as a delta), for its time: None when neither is there.
+/// The file catalogue `n` is in (whole, or as a delta), for its time: None when neither is there.
 pub fn path_n<'a>(dir: impl Into<Loc<'a>>, n: u64) -> Option<Place> {
     let dir = dir.into();
     [file_name(n), delta_file_name(n)].into_iter().map(|f| dir.join(&f)).find(|p| p.loc().exists())
 }
 
-/// The catalog numbers in `dir`, whole or deltas, highest first (none when `dir` doesn't exist).
+/// The catalogue numbers in `dir`, whole or deltas, highest first (none when `dir` doesn't exist).
 pub fn list<'a>(dir: impl Into<Loc<'a>>) -> Result<Vec<u64>> {
     Ok(Names::of_dir(dir.into())?.numbers())
 }
 
-/// The catalogs in a folder by kind.
+/// The catalogues in a folder by kind.
 #[derive(Default)]
 struct Names {
     whole: BTreeSet<u64>,
@@ -415,14 +423,14 @@ fn local_read(p: Loc<'_>) -> Result<Option<Vec<u8>>> {
         Ok(b) => Ok(Some(b)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => {
-            eprintln!("catalog: skipping {}: {e}", p.display());
+            eprintln!("catalogue: skipping {}: {e}", p.display());
             Ok(None)
         }
     }
 }
 
-/// The highest catalog in `dir` that reads whole; damaged ones are logged and skipped.
-pub fn latest<'a>(dir: impl Into<Loc<'a>>) -> Result<Option<Catalog>> {
+/// The highest catalogue in `dir` that reads whole; damaged ones are logged and skipped.
+pub fn latest<'a>(dir: impl Into<Loc<'a>>) -> Result<Option<Catalogue>> {
     let dir = dir.into();
     let names = Names::of_dir(dir)?;
     pick(Path::new(&dir.display()), &names, None, &mut |n| local_read(dir.join(n).loc()))
@@ -430,7 +438,7 @@ pub fn latest<'a>(dir: impl Into<Loc<'a>>) -> Result<Option<Catalog>> {
 
 /// `latest` for a folder on the NAS read directly (crate::nasfs: counted, its reads retried), not
 /// through the I/O pool: a build's or the CLI's.
-pub fn latest_on(dir: &NasPath) -> Result<Option<Catalog>> {
+pub fn latest_on(dir: &NasPath) -> Result<Option<Catalogue>> {
     let mut names = Names::default();
     let entries = match dir.read_dir() {
         Ok(v) => v,
@@ -444,22 +452,22 @@ pub fn latest_on(dir: &NasPath) -> Result<Option<Catalog>> {
         Ok(b) => Ok(Some(b)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => {
-            eprintln!("catalog: skipping {dir:?}/{n}: {e}");
+            eprintln!("catalogue: skipping {dir:?}/{n}: {e}");
             Ok(None)
         }
     })
 }
 
 /// `latest` for a directory on the NAS: every listing and read goes through the I/O pool. The
-/// NAS going offline midway is an error, never a reason to fall back to an older catalog.
-pub fn latest_nas(pool: &IoPool, dir: &NasPath) -> Result<Option<Catalog>> {
+/// NAS going offline midway is an error, never a reason to fall back to an older catalogue.
+pub fn latest_nas(pool: &IoPool, dir: &NasPath) -> Result<Option<Catalogue>> {
     latest_nas_from(pool, dir, None)
 }
 
-/// `latest_nas` from a catalog this Mac read before (`have`): the newest is `have` itself when its
+/// `latest_nas` from a catalogue this Mac read before (`have`): the newest is `have` itself when its
 /// number is the highest there (nothing read but the listing), and the deltas after it are read
-/// and applied to it, not the chain back to a whole catalog.
-pub fn latest_nas_from(pool: &IoPool, dir: &NasPath, have: Option<&Catalog>) -> Result<Option<Catalog>> {
+/// and applied to it, not the chain back to a whole catalogue.
+pub fn latest_nas_from(pool: &IoPool, dir: &NasPath, have: Option<&Catalogue>) -> Result<Option<Catalogue>> {
     let mut names = Names::default();
     match pool.list(dir) {
         Ok(items) => {
@@ -477,20 +485,20 @@ pub fn latest_nas_from(pool: &IoPool, dir: &NasPath, have: Option<&Catalog>) -> 
         Ok(b) => Ok(Some(b)),
         Err(IoError::Io(e)) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(IoError::Io(e)) => {
-            eprintln!("catalog: skipping {dir:?}/{n}: {e}");
+            eprintln!("catalogue: skipping {dir:?}/{n}: {e}");
             Ok(None)
         }
         Err(e) => Err(e).with_context(|| format!("read {dir:?}/{n}")),
     })
 }
 
-/// The first catalog of `names` (highest first) that reads whole.
+/// The first catalogue of `names` (highest first) that reads whole.
 fn pick(
     dir: &Path,
     names: &Names,
-    have: Option<&Catalog>,
+    have: Option<&Catalogue>,
     read: &mut dyn FnMut(&str) -> Result<Option<Vec<u8>>>,
-) -> Result<Option<Catalog>> {
+) -> Result<Option<Catalogue>> {
     for n in names.numbers() {
         if let Some(c) = materialize(dir, names, n, have, read)? {
             return Ok(Some(c));
@@ -499,16 +507,16 @@ fn pick(
     Ok(None)
 }
 
-/// Catalog `n` whole: its own file, or its delta applied to the one before it (`have` when that's
+/// Catalogue `n` whole: its own file, or its delta applied to the one before it (`have` when that's
 /// the one, else read the same way), each step checked by the digests the delta carries. None
 /// (logged) when a file is damaged, missing or doesn't carry its own number, or a digest differs.
 fn materialize(
     dir: &Path,
     names: &Names,
     n: u64,
-    have: Option<&Catalog>,
+    have: Option<&Catalogue>,
     read: &mut dyn FnMut(&str) -> Result<Option<Vec<u8>>>,
-) -> Result<Option<Catalog>> {
+) -> Result<Option<Catalogue>> {
     let mut chain: Vec<Delta> = Vec::new();
     let mut at = n;
     let base = loop {
@@ -516,21 +524,21 @@ fn materialize(
             break h.clone();
         }
         if chain.len() > MAX_CHAIN {
-            eprintln!("catalog: skipping {n}: its deltas go back more than {MAX_CHAIN}");
+            eprintln!("catalogue: skipping {n}: its deltas go back more than {MAX_CHAIN}");
             return Ok(None);
         }
         if names.whole.contains(&at) {
             let p = dir.join(file_name(at));
             let Some(bytes) = read(&file_name(at))? else { return Ok(None) };
-            match Catalog::decode(&bytes) {
+            match Catalogue::decode(&bytes) {
                 Ok(c) if c.n == at => break c,
-                Ok(c) => eprintln!("catalog: skipping {}: it says it is number {}", p.display(), c.n),
-                Err(e) => eprintln!("catalog: skipping {}: {e:#}", p.display()),
+                Ok(c) => eprintln!("catalogue: skipping {}: it says it is number {}", p.display(), c.n),
+                Err(e) => eprintln!("catalogue: skipping {}: {e:#}", p.display()),
             }
             return Ok(None);
         }
         if !names.delta.contains(&at) {
-            eprintln!("catalog: skipping {n}: catalog {at}, which it changes, isn't there");
+            eprintln!("catalogue: skipping {n}: catalogue {at}, which it changes, isn't there");
             return Ok(None);
         }
         let p = dir.join(delta_file_name(at));
@@ -541,18 +549,18 @@ fn materialize(
                 chain.push(d);
             }
             Ok(d) => {
-                eprintln!("catalog: skipping {}: it says it is number {} over {}", p.display(), d.n, d.of);
+                eprintln!("catalogue: skipping {}: it says it is number {} over {}", p.display(), d.n, d.of);
                 return Ok(None);
             }
             Err(e) => {
-                eprintln!("catalog: skipping {}: {e:#}", p.display());
+                eprintln!("catalogue: skipping {}: {e:#}", p.display());
                 return Ok(None);
             }
         }
     };
     if chain.len() >= MAX_CHAIN / 2 {
         eprintln!(
-            "catalog: {n} is read through {} deltas (at most {MAX_CHAIN}): its writer should have written a whole one",
+            "catalogue: {n} is read through {} deltas (at most {MAX_CHAIN}): its writer should have written a whole one",
             chain.len()
         );
     }
@@ -561,7 +569,7 @@ fn materialize(
         match d.apply(&cat) {
             Ok(c) => cat = c,
             Err(e) => {
-                eprintln!("catalog: skipping {n}: delta {} over {}: {e:#}", d.n, d.of);
+                eprintln!("catalogue: skipping {n}: delta {} over {}: {e:#}", d.n, d.of);
                 return Ok(None);
             }
         }
@@ -569,23 +577,23 @@ fn materialize(
     Ok(Some(cat))
 }
 
-/// The longest run of deltas read back to a whole catalog (a writer writes a whole one long
+/// The longest run of deltas read back to a whole catalogue (a writer writes a whole one long
 /// before: `Delta::due_whole`).
 const MAX_CHAIN: usize = 1000;
 
-/// A catalog written as what changed over the one before it (docs/formats.md, Delta catalogs):
+/// A catalogue written as what changed over the one before it (docs/formats.md, Delta catalogues):
 /// `catalog/<n>.delta.json.zst`, zstd with its content checksum. This app's readers apply it to
-/// catalog `of` (whole, or itself a delta) and get catalog `n` exactly as the whole one would be:
+/// catalogue `of` (whole, or itself a delta) and get catalogue `n` exactly as the whole one would be:
 /// `of_digest` and `digest` (`digest`) check both ends. An older app's readers don't list it (its
-/// name isn't `<n>.json.zst`): they keep to the last whole catalog.
+/// name isn't `<n>.json.zst`): they keep to the last whole catalogue.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Delta {
     pub fmt: u32,
     pub n: u64,
-    /// The catalog it changes.
+    /// The catalogue it changes.
     pub of: u64,
     pub of_digest: String,
-    /// Catalog `n`'s digest, whole.
+    /// Catalogue `n`'s digest, whole.
     pub digest: String,
     /// `delta::diff` of the two as JSON.
     pub patch: Value,
@@ -593,18 +601,18 @@ pub struct Delta {
 
 impl Delta {
     /// The delta from `base` to `cat`.
-    pub fn between(base: &Catalog, cat: &Catalog) -> Result<Self> {
+    pub fn between(base: &Catalogue, cat: &Catalogue) -> Result<Self> {
         let patch = delta::diff(&serde_json::to_value(base)?, &serde_json::to_value(cat)?);
         Ok(Delta { fmt: FMT, n: cat.n, of: base.n, of_digest: digest(base)?, digest: digest(cat)?, patch })
     }
 
-    /// Catalog `n`: this applied to `base` (catalog `of`), checked by the digests.
-    pub fn apply(&self, base: &Catalog) -> Result<Catalog> {
-        ensure!(base.n == self.of, "it changes catalog {}, not {}", self.of, base.n);
-        ensure!(digest(base)? == self.of_digest, "catalog {} isn't the one it changes (digests differ)", base.n);
+    /// Catalogue `n`: this applied to `base` (catalogue `of`), checked by the digests.
+    pub fn apply(&self, base: &Catalogue) -> Result<Catalogue> {
+        ensure!(base.n == self.of, "it changes catalogue {}, not {}", self.of, base.n);
+        ensure!(digest(base)? == self.of_digest, "catalogue {} isn't the one it changes (digests differ)", base.n);
         let v = delta::apply(&serde_json::to_value(base)?, &self.patch)?;
-        let c: Catalog = serde_json::from_value(v).context("the patched catalog doesn't parse")?;
-        ensure!(c.n == self.n && digest(&c)? == self.digest, "applied, it isn't catalog {} (digests differ)", self.n);
+        let c: Catalogue = serde_json::from_value(v).context("the patched catalogue doesn't parse")?;
+        ensure!(c.n == self.n && digest(&c)? == self.digest, "applied, it isn't catalogue {} (digests differ)", self.n);
         Ok(c)
     }
 
@@ -628,14 +636,14 @@ impl Delta {
         Ok(d)
     }
 
-    /// Whether the next catalog is written whole rather than as a delta of `size` bytes: when the
+    /// Whether the next catalogue is written whole rather than as a delta of `size` bytes: when the
     /// deltas since the last whole one (`since`, their sizes) and it add up to the whole one's size
-    /// (`whole`) or more, so a reader starting afresh never reads more than two whole catalogs' worth.
+    /// (`whole`) or more, so a reader starting afresh never reads more than two whole catalogues' worth.
     /// A run of deltas as long as MAX_CHAIN, whatever their sizes, is due too (readers stop there).
     pub fn due_whole(since: &[u64], size: u64, whole: u64) -> bool {
         if since.len() + 1 >= MAX_CHAIN / 2 {
             eprintln!(
-                "catalog: {} deltas since the last whole catalog (readers stop at {MAX_CHAIN}): a whole one now",
+                "catalogue: {} deltas since the last whole catalogue (readers stop at {MAX_CHAIN}): a whole one now",
                 since.len()
             );
             return true;
@@ -644,33 +652,33 @@ impl Delta {
     }
 }
 
-/// A catalog's digest: XXH3-128 of its JSON as written (maps in key order: the same catalog, the
+/// A catalogue's digest: XXH3-128 of its JSON as written (maps in key order: the same catalogue, the
 /// same digest).
-pub fn digest(cat: &Catalog) -> Result<String> {
+pub fn digest(cat: &Catalogue) -> Result<String> {
     Ok(format!("{:032x}", xxhash_rust::xxh3::xxh3_128(&serde_json::to_vec(cat)?)))
 }
 
 /// Publishes `cat` into `dir` as what changed over `base` (`<n>.delta.json.zst`), after checking it
 /// as `write` does; read back and applied to `base` before it's renamed into place.
-pub fn write_delta(dir: &Path, base: &Catalog, cat: &Catalog) -> Result<PathBuf> {
+pub fn write_delta(dir: &Path, base: &Catalogue, cat: &Catalogue) -> Result<PathBuf> {
     write_delta_of(dir, base, cat, &Delta::between(base, cat)?)
 }
 
 /// `write_delta` of a delta made already (`Delta::between`: its size weighed first).
-pub fn write_delta_of(dir: &Path, base: &Catalog, cat: &Catalog, d: &Delta) -> Result<PathBuf> {
-    cat.validate().with_context(|| format!("catalog {}", cat.n))?;
+pub fn write_delta_of(dir: &Path, base: &Catalogue, cat: &Catalogue, d: &Delta) -> Result<PathBuf> {
+    cat.validate().with_context(|| format!("catalogue {}", cat.n))?;
     let path = dir.join(delta_file_name(cat.n));
-    ensure!(!dir.join(file_name(cat.n)).exists(), "catalog {} exists already", cat.n);
+    ensure!(!dir.join(file_name(cat.n)).exists(), "catalogue {} exists already", cat.n);
     let check = |b: &[u8]| -> Result<()> {
         let back = Delta::decode(b)?;
-        ensure!(&back.apply(base)? == cat, "delta read back doesn't make the catalog");
+        ensure!(&back.apply(base)? == cat, "delta read back doesn't make the catalogue");
         Ok(())
     };
     ensure!(put_once(dir, &path, &d.encode()?, &check)?, "{} appeared meanwhile", path.display());
     Ok(path)
 }
 
-/// The sizes of the deltas written since the last whole catalog in `dir` (newest first), and that
+/// The sizes of the deltas written since the last whole catalogue in `dir` (newest first), and that
 /// whole one's size: what `Delta::due_whole` weighs.
 pub fn since_whole<'a>(dir: impl Into<Loc<'a>>) -> Result<(Vec<u64>, Option<u64>)> {
     let dir = dir.into();
@@ -678,7 +686,7 @@ pub fn since_whole<'a>(dir: impl Into<Loc<'a>>) -> Result<(Vec<u64>, Option<u64>
     let mut sizes = Vec::new();
     for n in names.numbers() {
         if names.whole.contains(&n) {
-            let len = dir.join(&file_name(n)).loc().metadata().with_context(|| format!("catalog {n}"))?.len();
+            let len = dir.join(&file_name(n)).loc().metadata().with_context(|| format!("catalogue {n}"))?.len();
             return Ok((sizes, Some(len)));
         }
         sizes.push(dir.join(&delta_file_name(n)).loc().metadata().with_context(|| format!("delta {n}"))?.len());
@@ -686,17 +694,17 @@ pub fn since_whole<'a>(dir: impl Into<Loc<'a>>) -> Result<(Vec<u64>, Option<u64>
     Ok((sizes, None))
 }
 
-/// Whether the next catalog in `dir` is written whole rather than as a delta: None with no whole
-/// catalog to start a delta from (it's whole anyway); else whether one is due, the deltas since the
+/// Whether the next catalogue in `dir` is written whole rather than as a delta: None with no whole
+/// catalogue to start a delta from (it's whole anyway); else whether one is due, the deltas since the
 /// last whole one adding up to its size or their run half MAX_CHAIN long (`Delta::due_whole`),
-/// false with no delta since one. Asked by the catalog step each time it would write a delta, so a
-/// writer that's never idle writes whole ones too. Stats each delta since the last whole catalog.
+/// false with no delta since one. Asked by the catalogue step each time it would write a delta, so a
+/// writer that's never idle writes whole ones too. Stats each delta since the last whole catalogue.
 pub fn whole_due<'a>(dir: impl Into<Loc<'a>>) -> Result<Option<bool>> {
     let (since, whole) = since_whole(dir)?;
     Ok(whole.map(|w| !since.is_empty() && Delta::due_whole(&since, 0, w)))
 }
 
-/// The catalogs catalog `n` in `dir` is read through: itself, and back by its deltas' `of` to the
+/// The catalogues catalogue `n` in `dir` is read through: itself, and back by its deltas' `of` to the
 /// whole one they start from (what's kept while `n` is). An error when a delta doesn't read.
 pub fn chain<'a>(dir: impl Into<Loc<'a>>, n: u64) -> Result<Vec<u64>> {
     let dir = dir.into();
@@ -720,7 +728,7 @@ pub fn next_n<'a>(dir: impl Into<Loc<'a>>) -> Result<u64> {
     Ok(list(dir)?.first().map_or(1, |n| n + 1))
 }
 
-/// Deletes all but the `keep` highest catalogs in `dir`. For a Mac's own copies only: on the NAS,
+/// Deletes all but the `keep` highest catalogues in `dir`. For a Mac's own copies only: on the NAS,
 /// deletions go through SSH (docs/storage.md); a Mac keeps its copies whole (`write_copy`), so none is a
 /// delta another needs. Returns how many were deleted.
 pub fn prune(dir: &Path, keep: usize) -> Result<usize> {
@@ -744,8 +752,8 @@ mod tests {
     use serde_json::json;
     use std::time::Duration;
 
-    fn sample(n: u64) -> Catalog {
-        let mut c = Catalog::new(n);
+    fn sample(n: u64) -> Catalogue {
+        let mut c = Catalogue::new(n);
         c.created = "2026-10-03T04:05:06Z".into();
         c.app = "0.1.0".into();
         let mut add = |logical: &str, ext: &str, size: u64| {
@@ -799,7 +807,7 @@ mod tests {
     fn round_trip_keeps_unknown_fields() {
         let c = sample(7);
         c.validate().unwrap();
-        assert_eq!(Catalog::decode(&c.encode().unwrap()).unwrap(), c);
+        assert_eq!(Catalogue::decode(&c.encode().unwrap()).unwrap(), c);
         assert_eq!(c.encode().unwrap(), c.encode().unwrap(), "deterministic");
 
         // A newer publisher's extra fields survive a read and a write.
@@ -807,14 +815,14 @@ mod tests {
         v["future"] = json!({"x": 1});
         v["files"]["global/pois"]["etag"] = json!("abc");
         v["layers"]["roads"]["tilesize"] = json!(512);
-        let c2: Catalog = serde_json::from_value(v.clone()).unwrap();
+        let c2: Catalogue = serde_json::from_value(v.clone()).unwrap();
         assert_eq!(c2.extra["future"], json!({"x": 1}));
         assert_eq!(serde_json::to_value(&c2).unwrap(), v);
 
         // Missing optional parts are fine; missing fmt or n isn't.
-        let minimal: Catalog = serde_json::from_str(r#"{"fmt":1,"n":3}"#).unwrap();
+        let minimal: Catalogue = serde_json::from_str(r#"{"fmt":1,"n":3}"#).unwrap();
         assert_eq!(minimal.n, 3);
-        assert!(serde_json::from_str::<Catalog>(r#"{"fmt":1}"#).is_err());
+        assert!(serde_json::from_str::<Catalogue>(r#"{"fmt":1}"#).is_err());
     }
 
     #[test]
@@ -845,25 +853,25 @@ mod tests {
         assert_eq!(latest(&d).unwrap().unwrap(), sample(3));
         assert!(!d.join("3.json.zst.tmp").exists());
 
-        // Writing the same catalog again is a no-op; different content under a used number is not.
+        // Writing the same catalogue again is a no-op; different content under a used number is not.
         write(&d, &sample(3)).unwrap();
         let mut other = sample(3);
         other.app = "0.2.0".into();
         assert!(write(&d, &other).is_err());
         assert_eq!(latest(&d).unwrap().unwrap(), sample(3));
 
-        // A truncated newest catalog (a copy cut short) is skipped for the one before.
+        // A truncated newest catalogue (a copy cut short) is skipped for the one before.
         let good4 = sample(4).encode().unwrap();
         fs::write(d.join("4.json.zst"), &good4[..good4.len() - 3]).unwrap();
         assert_eq!(latest(&d).unwrap().unwrap().n, 3);
         // So is garbage, and a file whose number disagrees with its content.
         fs::write(d.join("5.json.zst"), b"not zstd").unwrap();
         fs::write(d.join("6.json.zst"), sample(2).encode().unwrap()).unwrap();
-        // And a catalog in a format this app doesn't read.
+        // And a catalogue in a format this app doesn't read.
         // (Task #449: format 1, before markdata bundles, still read.)
         let mut one = sample(1);
         one.fmt = 1;
-        assert_eq!(Catalog::decode(&one.encode().unwrap()).unwrap().fmt, 1);
+        assert_eq!(Catalogue::decode(&one.encode().unwrap()).unwrap().fmt, 1);
         let mut future = sample(7);
         future.fmt = FMT + 1;
         fs::write(d.join("7.json.zst"), future.encode().unwrap()).unwrap();
@@ -897,19 +905,19 @@ mod tests {
         fs::write(d.join("3.json.zst"), b"damaged").unwrap();
         assert_eq!(latest_nas(&pool, &nd).unwrap().unwrap().n, 2);
         assert_eq!(latest_on(&nd).unwrap().unwrap().n, 2);
-        // Offline is an error, not "no catalog".
+        // Offline is an error, not "no catalogue".
         pool.mark_offline("test");
         let e = latest_nas(&pool, &nd).unwrap_err();
         assert!(matches!(IoError::find(&e), Some(IoError::Offline)), "{e:#}");
     }
 
-    /// Catalog `n` of a run: each some tiles drawn again, a unit added, a region's shapes redrawn or
-    /// a region added, now and then one taken away (as publishing changes a catalog).
-    fn evolve(prev: &Catalog, n: u64) -> Catalog {
+    /// Catalogue `n` of a run: each some tiles drawn again, a unit added, a region's shapes redrawn or
+    /// a region added, now and then one taken away (as publishing changes a catalogue).
+    fn evolve(prev: &Catalogue, n: u64) -> Catalogue {
         let mut c = prev.clone();
         c.n = n;
         c.created = format!("2026-10-15T{:02}:00:00Z", n % 24);
-        let add = |c: &mut Catalog, logical: &str, ext: &str| {
+        let add = |c: &mut Catalogue, logical: &str, ext: &str| {
             let h = format!("{:016x}", n * 7919 + logical.len() as u64);
             c.files.insert(
                 logical.into(),
@@ -923,7 +931,7 @@ mod tests {
         c.base.insert(format!("6/{n}/9"), base);
         c.units.push(format!("6/{n}/9"));
         if n % 4 == 0 {
-            // (A unit the coverage no longer builds: gone from the catalog.)
+            // (A unit the coverage no longer builds: gone from the catalogue.)
             let u = format!("6/{}/9", n - 2);
             c.units.retain(|x| *x != u);
             c.base.remove(&u);
@@ -943,7 +951,7 @@ mod tests {
     }
 
     #[test]
-    fn a_catalog_read_through_its_deltas_is_the_whole_one_exactly() {
+    fn a_catalogue_read_through_its_deltas_is_the_whole_one_exactly() {
         let dir = tempfile::tempdir().unwrap();
         let (d, whole) = (dir.path().join("catalog"), dir.path().join("whole"));
         let mut prev = sample(1);
@@ -964,9 +972,9 @@ mod tests {
         }
         assert_eq!(list(&d).unwrap(), (1..=12).rev().collect::<Vec<_>>());
         assert_eq!(next_n(&d).unwrap(), 13);
-        // Every catalog by number, and the newest, as the whole ones written beside.
+        // Every catalogue by number, and the newest, as the whole ones written beside.
         for n in 1..=12 {
-            assert_eq!(read_n(&d, n).unwrap(), read_n(&whole, n).unwrap(), "catalog {n}");
+            assert_eq!(read_n(&d, n).unwrap(), read_n(&whole, n).unwrap(), "catalogue {n}");
         }
         assert_eq!(latest(&d).unwrap().unwrap(), latest(&whole).unwrap().unwrap());
         let pool = IoPool::new(2, Duration::from_secs(60), dir.path().to_owned());
@@ -984,12 +992,12 @@ mod tests {
         assert_eq!((since.len(), w.is_some()), (0, true));
         let (since, _) = since_whole(&dir.path().join("none")).unwrap();
         assert!(since.is_empty());
-        // A delta is smaller than the whole catalog it makes.
+        // A delta is smaller than the whole catalogue it makes.
         assert!(
             fs::metadata(d.join("11.delta.json.zst")).unwrap().len()
                 < fs::metadata(whole.join("11.json.zst")).unwrap().len() / 2
         );
-        // An older app's reader lists only the whole ones (its names): it keeps to catalog 12's
+        // An older app's reader lists only the whole ones (its names): it keeps to catalogue 12's
         // last whole one, 12 itself here.
         assert!(fs::read_dir(&d)
             .unwrap()
@@ -1015,7 +1023,7 @@ mod tests {
         assert!(read_n(&d, 3).is_err(), "back to the whole one: gone");
         assert_eq!(read_n_from(&d, 3, Some(&have)).unwrap(), three);
         assert_eq!(read_n_from(&d, 2, Some(&have)).unwrap(), have, "itself, by its delta's digest");
-        // (A number taken again: the one read before isn't the catalog numbered so now, so it's
+        // (A number taken again: the one read before isn't the catalogue numbered so now, so it's
         // read without it, not served stale.)
         let other = tempfile::tempdir().unwrap();
         let o = other.path().join("catalog");
@@ -1040,7 +1048,7 @@ mod tests {
         write_delta(&d, &one, &two).unwrap();
         let three = evolve(&two, 3);
         write_delta(&d, &two, &three).unwrap();
-        // Applied to another catalog 2 than the one it changes: refused by its digest.
+        // Applied to another catalogue 2 than the one it changes: refused by its digest.
         let mut other = two.clone();
         other.app = "else".into();
         let d3 = Delta::decode(&fs::read(d.join("3.delta.json.zst")).unwrap()).unwrap();
@@ -1074,7 +1082,7 @@ mod tests {
         assert!(!Delta::due_whole(&vec![1; MAX_CHAIN / 2 - 2], 1, u64::MAX));
     }
 
-    /// A whole catalog due once the deltas past the newest whole one add up to it; none to start
+    /// A whole catalogue due once the deltas past the newest whole one add up to it; none to start
     /// a delta from with no whole one.
     #[test]
     fn whether_a_whole_one_is_due() {

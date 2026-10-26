@@ -1,5 +1,5 @@
-//! A unit's summary (its base pack's meta `summary`), added up over a catalog's units into the
-//! map's meta (`Catalog::meta`): where the data is, its way and vertex counts, and road length by
+//! A unit's summary (its base pack's meta `summary`), added up over a catalogue's units into the
+//! map's meta (`Catalogue::meta`): where the data is, its way and vertex counts, and road length by
 //! elevation (what `tile` used to write as `roads.json` for the whole build).
 
 use roadcore::elev::Elevs;

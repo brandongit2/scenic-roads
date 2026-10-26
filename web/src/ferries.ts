@@ -147,7 +147,7 @@ export class Ferries {
   }
 
   constructor(private map: MLMap) {
-    // New ferry blocks (a new catalog): asked for again.
+    // New ferry blocks (a new catalogue): asked for again.
     onVersions(['ferries.tiles'], () => {
       this.blocks.clear();
       this.merged = '';

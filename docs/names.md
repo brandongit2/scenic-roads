@@ -49,7 +49,7 @@ punctuation or spacing, and not one of main's parts.
   its neighbour's languages.
   - **Made once per pass** by the `spoken` job (keyed by the outlines, `spoken::RULES` and the
     languages' accepted version): `global/spoken`, in the World download.
-  - A catalog without it: the server makes the raster from the catalog's outlines and keeps it in
+  - A catalogue without it: the server makes the raster from the catalogue's outlines and keeps it in
     its home (`names/spoken-…bin`).
   - Until it's there, names show with their own English alone (`/api/catalog`'s `names.waiting`).
 - It's the only place location enters.
@@ -80,7 +80,7 @@ their source area's languages, not each language spoken where their things are.
 carried (the landmark and area popups keep the English Wikipedia article's title, `wd.w_en`, as a
 link only).
 
-**To-do** (`pipeline::namestodo`, the `names-todo` job, after a catalog the map serves that changed
+**To-do** (`pipeline::namestodo`, the `names-todo` job, after a catalogue the map serves that changed
 what it reads (`inputs_key`): at most daily while z6 tiles build, after any such once none's left):
 - **`inputs/translations/todo/<language>.jsonl`:** each name something in the coverage has with no
   English of its own and no line in any language spoken there. Read from labels, roads and rail

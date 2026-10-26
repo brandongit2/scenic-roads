@@ -221,25 +221,25 @@ and codesign.
   search after the labels or translations change, on three threads, and dropped after half an hour
   unused (its arrays mapped, so the memory goes back). Unreadable packs are passed over and the
   index rebuilt later.
-- **Offline start:** the last catalog and the pack indexes read so far stay local.
+- **Offline start:** the last catalogue and the pack indexes read so far stay local.
 - **In use** means any request in the last ten minutes except the status polls (`/api/catalog`,
   `/api/ping`, `/api/build`, `/api/downloads`) and the search's `poll=1`. It checks for a newer
-  catalog every 10 s while the lead's heartbeat (`state/status.json`, read at most every 30 s)
+  catalogue every 10 s while the lead's heartbeat (`state/status.json`, read at most every 30 s)
   says a build runs, else every 30 s in use and every 10 minutes otherwise; each check is one
   listing of `catalog/`. On the lead's Mac the agent also POSTs `/api/catalog/refresh` (this Mac's
-  own requests alone) after writing a catalog, so it is adopted at once. A mirror's copy stopped by a
-  new catalog resumes under it (copies are kept by content name).
+  own requests alone) after writing a catalogue, so it is adopted at once. A mirror's copy stopped by a
+  new catalogue resumes under it (copies are kept by content name).
 - **URLs and ETags:** data URLs carry a content version (`?v=`): a tile's is its pack's (meta
-  `packs`), so a new catalog re-fetches only the changed packs' tiles; a versioned response is
+  `packs`), so a new catalogue re-fetches only the changed packs' tiles; a versioned response is
   `immutable` while current. ETags are content hashes, for named tiles combined with the versions of
   the languages spoken there and the spoken-languages raster (docs/names.md). The basemap's come from the
-  catalog, so its 304s read nothing.
+  catalogue, so its 304s read nothing.
 
 **Mirror, per Mac** (`store::mirror`, `store::pieces`, `crates/server/src/downloads.rs`).
 - **Only what's downloaded.** The map reads a file from the Mac when it's there, else from the NAS.
   What's downloaded is this Mac's alone (`downloads.json` in its home).
 - **The World, zoomed out:** the build's worldwide files (`global/`: only those a step makes, the
-  catalog lists no other), the Canadian lake fill
+  catalogue lists no other), the Canadian lake fill
   (`work/lakefill/<date>`, read by the water's deeper zooms anywhere in Canada), every layer's root
   and lo packs (z0–8), markdata, ovdata, and the basemap's zooms 0–10: about 10 GB. Not the pass's
   outlines.
@@ -267,7 +267,7 @@ and codesign.
   runs and mostly sequential reads. Sizes are known ahead (`sizes.json`); a piece cut short resumes;
   each tile's gzip checksum is checked. Pieces rather than a sparse copy: removed by deleting, sized
   as packs are, shared, opened as any archive.
-- **Kept current:** each new catalog's files a download names are copied, and what no download
+- **Kept current:** each new catalogue's files a download names are copied, and what no download
   names any more goes. Nothing else goes, ever.
 - **Copies:** one file or piece at a time, the World first, then small worldwide files, root and lo
   packs, hi data and road values, base packs, hi packs, buildings, basemap pieces. While the build
@@ -312,7 +312,7 @@ itself.
   Address and `scenic status` give it. Only a proxy that says so (`X-Forwarded-For`) keeps its
   requests from passing for this Mac's own.
 - **An app** (`web/public/manifest.webmanifest`): Add to Home Screen. Its service worker
-  (`web/public/sw.js`, HTTPS only, never on localhost) keeps the page, its scripts and the catalog's
+  (`web/public/sw.js`, HTTPS only, never on localhost) keeps the page, its scripts and the catalogue's
   metadata, plus the fonts, icons and `immutable` data as viewed (12,000 files; 3D buildings' tiles
   in a cache of their own, 2,000). A Mac that doesn't answer within 4 s is taken as away for a
   minute.

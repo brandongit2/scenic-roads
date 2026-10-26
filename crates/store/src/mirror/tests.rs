@@ -1,5 +1,5 @@
 use super::*;
-use crate::catalog::{FileRef, Layer};
+use crate::catalogue::{FileRef, Layer};
 use crate::naming::{write_atomic, Source};
 use crate::pack::PackWriter;
 use crate::pmtiles::Compression;
@@ -62,7 +62,7 @@ impl Nas {
     }
 
     /// Puts a file on the "NAS" and lists it in `cat`.
-    fn put(&self, cat: &mut Catalog, logical: &str, ext: &str, body: &[u8]) -> String {
+    fn put(&self, cat: &mut Catalogue, logical: &str, ext: &str, body: &[u8]) -> String {
         let name = write_atomic(self.root(), logical, ext, Source::Bytes(body)).unwrap();
         cat.files.insert(
             logical.into(),
@@ -104,8 +104,8 @@ fn basemap_tiles(seed: u8) -> Vec<(u8, u32, u32, Vec<u8>)> {
 
 /// Two z6 tiles' files, A (the z6 tile 6/32/21) and B (6/33/21), the worldwide ones and a basemap.
 /// `seed` changes their contents; `b_base` B's base pack's alone.
-fn two_areas(nas: &Nas, n: u64, seed: u8, b_base: u8) -> Catalog {
-    let mut c = Catalog::new(n);
+fn two_areas(nas: &Nas, n: u64, seed: u8, b_base: u8) -> Catalogue {
+    let mut c = Catalogue::new(n);
     let s = |k: u8| seed.wrapping_add(k);
     let mut lay = Layer { encoding: "rt7".into(), minzoom: 4, maxzoom: 14, ..Default::default() };
     nas.put(&mut c, "global/railfreq", "bin", &bytes(s(0), 1_000));
@@ -139,12 +139,12 @@ fn two_areas(nas: &Nas, n: u64, seed: u8, b_base: u8) -> Catalog {
     c
 }
 
-fn basemap(cat: &Catalog) -> String {
+fn basemap(cat: &Catalogue) -> String {
     cat.content("layers/basemap/world").unwrap().to_string()
 }
 
 /// The World download: the essentials, then the basemap's lo piece.
-fn world(cat: &Catalog) -> Vec<Item> {
+fn world(cat: &Catalogue) -> Vec<Item> {
     let mut v: Vec<Item> = essentials(cat)
         .into_iter()
         .map(|n| Item::File { size: cat.files.values().find(|f| f.file == n).unwrap().size, name: n })
@@ -154,7 +154,7 @@ fn world(cat: &Catalog) -> Vec<Item> {
 }
 
 /// A z6 tile's download: its hi pack, base pack, road values and hi data, then its basemap piece.
-fn z6_files(cat: &Catalog, tile: &str) -> Vec<Item> {
+fn z6_files(cat: &Catalogue, tile: &str) -> Vec<Item> {
     let mut v: Vec<Item> = ["global/roads", "hidata", "base", "layers/roads/hi"]
         .iter()
         .map(|d| cat.files[&format!("{d}/{tile}")].clone())
@@ -175,17 +175,17 @@ fn wanted(parts: &[Vec<Item>]) -> Wanted {
 }
 
 /// Of `cat`'s files, the logical names of those here, sorted.
-fn here(m: &Mirror, cat: &Catalog) -> Vec<String> {
+fn here(m: &Mirror, cat: &Catalogue) -> Vec<String> {
     cat.files.iter().filter(|(_, f)| m.has(&f.file)).map(|(l, _)| l.clone()).collect()
 }
 
-fn sync(m: &Mirror, cat: &Catalog, w: &Wanted, nas: &Nas) -> SyncStats {
+fn sync(m: &Mirror, cat: &Catalogue, w: &Wanted, nas: &Nas) -> SyncStats {
     m.sync(cat, w, nas.root(), &nas.pool, &Control::FREE).unwrap()
 }
 
 #[test]
 fn the_lake_fill_is_an_essential_and_the_outlines_are_not() {
-    let mut cat = Catalog::default();
+    let mut cat = Catalogue::default();
     for (key, l) in [
         ("lakefill", "work/lakefill/2026-09-28"),
         ("outlines", "sources/osm/2026-09-28/outlines"),
@@ -336,7 +336,7 @@ fn what_no_download_wants_goes_and_the_rest_stays_as_it_is() {
 }
 
 #[test]
-fn a_new_catalog_replaces_what_changed() {
+fn a_new_catalogue_replaces_what_changed() {
     let nas = nas();
     let home = tempfile::tempdir().unwrap();
     let m = big(home.path());
@@ -469,11 +469,11 @@ fn pause_and_resume() {
     assert!(!part.exists());
 }
 
-/// A copy stopped by a new catalog (Control::stop: the server's catalog changed) resumes under that
-/// catalog where it stopped, when the file is still in it: copies are kept by content name, not by
-/// catalog.
+/// A copy stopped by a new catalogue (Control::stop: the server's catalogue changed) resumes under that
+/// catalogue where it stopped, when the file is still in it: copies are kept by content name, not by
+/// catalogue.
 #[test]
-fn a_copy_stopped_by_a_new_catalog_resumes_under_it() {
+fn a_copy_stopped_by_a_new_catalogue_resumes_under_it() {
     let nas = nas();
     let home = tempfile::tempdir().unwrap();
     let m = big(home.path());
@@ -484,7 +484,7 @@ fn a_copy_stopped_by_a_new_catalog_resumes_under_it() {
     let stop = || fs::metadata(&part).is_ok_and(|md| md.len() >= CHUNK);
     let s = m.sync(&cat, &wanted(&[item.clone()]), nas.root(), &nas.pool, &Control { stop: &stop, ..Control::FREE });
     assert_eq!(s.unwrap().end, SyncEnd::Paused);
-    // The next catalog: other files changed, this one not.
+    // The next catalogue: other files changed, this one not.
     let mut cat2 = two_areas(&nas, 2, 7, 1);
     assert_eq!(nas.put(&mut cat2, "base/6-32-21", "sect", &bytes(3, 9 << 20)), name);
     let w2 = wanted(&[item, world(&cat2)]);
@@ -575,7 +575,7 @@ fn index_cache() {
     w.add(3, 1, 1, b"tile", 4).unwrap();
     w.finish().unwrap();
     let body = fs::read(&p).unwrap();
-    let mut cat = Catalog::new(1);
+    let mut cat = Catalogue::new(1);
     let name = nas.put(&mut cat, "layers/roads/lo/3-1-1", "pack", &body);
     let loads = AtomicUsize::new(0);
     let load = || {
@@ -590,24 +590,24 @@ fn index_cache() {
     fs::write(&idx, b"junk").unwrap();
     assert_eq!(m.index(&name, || PackIndex::read_from(&body)).unwrap(), a);
     assert!(m.index("not-a-content-name", || PackIndex::read_from(&body)).is_err());
-    // Pack indexes no recent catalog uses are dropped after a sync.
+    // Pack indexes no recent catalogue uses are dropped after a sync.
     sync(&m, &cat, &Wanted::default(), &nas);
     assert!(idx.exists());
-    sync(&m, &Catalog::new(2), &Wanted::default(), &nas);
+    sync(&m, &Catalogue::new(2), &Wanted::default(), &nas);
     assert!(!idx.exists());
 }
 
 #[test]
-fn saved_catalogs() {
+fn saved_catalogues() {
     let nas = nas();
     let home = tempfile::tempdir().unwrap();
     let m = big(home.path());
-    assert!(m.saved_catalog().unwrap().is_none());
+    assert!(m.saved_catalogue().unwrap().is_none());
     for n in 1..=5 {
-        m.save_catalog(&two_areas(&nas, n, n as u8, 1)).unwrap();
+        m.save_catalogue(&two_areas(&nas, n, n as u8, 1)).unwrap();
     }
-    assert_eq!(m.saved_catalog().unwrap().unwrap().n, 5);
-    assert_eq!(catalog::list(&home.path().join("catalog")).unwrap(), [5, 4, 3]);
+    assert_eq!(m.saved_catalogue().unwrap().unwrap().n, 5);
+    assert_eq!(catalogue::list(&home.path().join("catalog")).unwrap(), [5, 4, 3]);
 }
 
 #[test]
@@ -672,7 +672,7 @@ fn the_floor_holds_when_its_above_the_setting_and_is_asked_each_time() {
 
 #[test]
 fn the_buildings_and_their_field_are_copied_after_the_other_hi_packs_their_lo_in_the_world() {
-    let mut c = Catalog::new(1);
+    let mut c = Catalogue::new(1);
     for (name, enc) in [("roads", "rt7"), ("buildings", "mvt"), ("buildings-field", "field5-webp")] {
         let mut l = Layer { encoding: enc.into(), minzoom: 4, maxzoom: 14, ..Default::default() };
         l.hi.insert("6/18/24".into(), format!("layers/{name}/hi/6-18-24"));

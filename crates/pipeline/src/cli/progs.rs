@@ -351,9 +351,10 @@ pub enum LakefillCmd {
         #[arg(value_name = "OUT.PNG")]
         out: PathBuf,
     },
-    /// A test root's newest catalog again, one newer, with the fill (copied into the root's work/).
+    /// A test root's newest catalogue again, one newer, with the fill (copied into the root's work/).
     /// Never the NAS's
-    CatalogAdd {
+    #[command(name = "catalog-add")] // the command keeps its old spelling (task #547)
+    CatalogueAdd {
         /// The test root
         #[arg(long, value_name = "DIR")]
         root: PathBuf,
@@ -434,13 +435,13 @@ pub enum CoastcheckCmd {
         #[arg(long, default_value_t = 512)]
         size: usize,
     },
-    /// water-build's tiles as the water layer's packs in a test root, and a catalog one newer than
+    /// water-build's tiles as the water layer's packs in a test root, and a catalogue one newer than
     /// --catalog with them. Never the NAS's
     WaterPacks {
         #[arg(long, value_name = "DIR")]
         tiles: PathBuf,
-        #[arg(long, value_name = "N.JSON.ZST")]
-        catalog: PathBuf,
+        #[arg(long = "catalog", value_name = "N.JSON.ZST")] // the flag keeps its old spelling
+        catalogue: PathBuf,
         #[arg(long, value_name = "DIR")]
         root: PathBuf,
     },

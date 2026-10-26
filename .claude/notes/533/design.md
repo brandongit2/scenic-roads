@@ -45,7 +45,7 @@
 - Nothing else rebuilds: the terrain's keys don't name the fine datasets.
 
 ## Serving
-- Catalog: terrain layer `fine` (z10 keys) and `fine_zoom` (`terrain_fine::zoom_of` per pack);
+- Catalogue: terrain layer `fine` (z10 keys) and `fine_zoom` (`terrain_fine::zoom_of` per pack);
   `maxzoom` the finest of those. Meta: `terrainAreas` `{zoom: 10, tiles: {"x/y": z}}`.
 - Server: past the base's zoom at the tile's latitude it reads the fine pack; a fine tile that
   can't be read (NAS away: fine packs aren't mirrored, not in downloads) is made from its hi-pack
@@ -58,7 +58,7 @@
   (`colorSpaceConversion: 'none'`), which reads JXL natively in Chrome and Safari (owner checked:
   exact).
 - Contours read the DEM by area too (#543: our copy of maplibre-contour, web/src/contour/, its worker
-  capping each contour tile's DEM at its area's zoom); a new catalog's areas are taken in place
+  capping each contour tile's DEM at its area's zoom); a new catalogue's areas are taken in place
   (`RasterTileSource.setZoomByArea`, the contours' DEM anew).
 
 ## Measured, 1 cm JXL (M4, 21 Oct; network reads; `encode` timed on one thread)

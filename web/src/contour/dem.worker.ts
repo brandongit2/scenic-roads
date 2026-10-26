@@ -1,7 +1,7 @@
 // The contour lines' vector tiles, made off the main thread from the terrain's DEM tiles: our copy
 // of maplibre-contour's (BSD-3-Clause, ./LICENSE; its HeightTile, isolines and vector-tile encoder
 // are ./height-tile.ts, ./isolines.ts and ./vtpbf.ts as it has them), cut to what the map uses, and
-// reading the DEM by area: where the catalog has the terrain finer than its base (the meta's
+// reading the DEM by area: where the catalogue has the terrain finer than its base (the meta's
 // terrainAreas, our MapLibre's `scenic:zoom-by-area`), a contour tile reads it to that zoom, so the
 // lines follow the deep terrain there; elsewhere to the DEM's maxzoom (z12).
 //
@@ -10,11 +10,11 @@
 // meet across tiles; subsampled to at least 100 pixels a side, smoothed to the grid, its isolines
 // at the tile's levels, a line's `level` the largest index whose interval divides its elevation.
 //
-// The DEM is the catalog's: a new catalog's (`dem`) changes the DEM tiles' URLs only where their
+// The DEM is the catalogue's: a new catalogue's (`dem`) changes the DEM tiles' URLs only where their
 // packs changed (each URL carries its pack's version, as the map's terrain sources ask for it, so
 // the two share the browser's cache); those cached under old URLs age out. A contour tile reads the
 // DEM as it was when the tile was asked for (its `Dem`), so a new DEM mid-tile can't mix two
-// catalogs' tiles in one; a cancelled tile's fetches that no other tile waits for are aborted.
+// catalogues' tiles in one; a cancelled tile's fetches that no other tile waits for are aborted.
 import { HeightTile, type DemTile } from './height-tile';
 import generateIsolines from './isolines';
 import encodeVectorTile, { GeomType } from './vtpbf';
@@ -40,7 +40,7 @@ const SUBSAMPLE_BELOW = 100;
 const EXTENT = 4096;
 const BUFFER = 1;
 
-/** A catalog's DEM. */
+/** A catalogue's DEM. */
 export interface Dem {
   url: string;
   packs?: LayerPacks;

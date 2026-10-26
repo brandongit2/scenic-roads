@@ -25,7 +25,7 @@ which the NAS does itself. The jobs (§2 has their order and keys):
    elevations, grade and scenic channels.
 6. **Then chains** that don't wait for each other: **roads** (road → z6 tiles index, pack(T) per z6
    tile from the base data of the z6 tiles whose ways come into it, lo packs, rail stops and ferries, roots,
-   then a catalog), **rail service** (docs/steps.md), **landmarks** (`docs/phase5.md`) and **3D buildings**
+   then a catalogue), **rail service** (docs/steps.md), **landmarks** (`docs/phase5.md`) and **3D buildings**
    (`docs/buildings3d.md`).
 
 Because road values come from the whole planet, adding a region changes nothing outside its own
@@ -54,7 +54,7 @@ from the first (`edit_held`).
 - **Order:** the lead offers its plan in its order through its coordinator, and every Mac's agent,
   the lead's included, asks it for work (docs/pool.md §7.2). It plans again when what
   the plan depends on changes (`plan_seen`: the manifest, records, hand-offs, the gate, the pool,
-  the pause, a newer app, switch files, catalogs, leases), at the earliest end of its timed waits
+  the pause, a newer app, switch files, catalogues, leases), at the earliest end of its timed waits
   (`replan_at`), and otherwise every five minutes (`plan_due`). Planning reads the terrain packs'
   indexes once each by content name, kept in the agent's `pack-idx/`. On the lead, the journal is
   merged each loop.
@@ -199,9 +199,9 @@ from the first (`edit_held`).
   goes per z6 tile: a region's map tiles (`RegionLeft::packs`: its z6 tiles' map tiles stale now or to be
   once its z6 tiles left are built) are drawn once its z6 tiles are, ahead of the regions' work, each at
   its own measured time; a region is all on the map as it's built now (`map_at`) at its last
-  z6 tile's end, plus its map tiles, plus at most a minute for the catalog (`CATALOG_EVERY_S`). The
+  z6 tile's end, plus its map tiles, plus at most a minute for the catalogue (`CATALOGUE_EVERY_S`). The
   whole-map steps go by their cadence (`publishes`): the low zooms, the landmarks and the area
-  overlays each once its cadence has passed since it last went (`LastCatalog`), or once no z6 tile or
+  overlays each once its cadence has passed since it last went (`LastCatalogue`), or once no z6 tile or
   terrain is left, whichever comes first (the low zooms may go sooner, half their packs stale).
   Each target takes its last run's time at the lead's pace, else its step's mean, else a first
   guess; each machine at its measured speed (half the lead's until measured). Run three times for
@@ -209,7 +209,7 @@ from the first (`edit_held`).
   the map, when each cadenced publish may next go, and each machine's schedule, or why there's no
   finish.
 - **The history** (`coord::history`): the last week's events (50,000 at most) on the lead's disk
-  (`coord/history.jsonl`): jobs, leases, tasks, map tiles planned, catalogs, pauses, workers,
+  (`coord/history.jsonl`): jobs, leases, tasks, map tiles planned, catalogues, pauses, workers,
   agents, conditions, cache clears and freeings. Summed by the hour for the worker page, and the
   forecast's measure of members' pace and of publishing's time.
 - **Timings** (`pipeline::timings`; `dem/timings.py`; a page's task in `web/work/worker.js`): every
@@ -233,16 +233,16 @@ from the first (`edit_held`).
   merged (`merged`: each journal entry's key, member, step and targets); the map tiles
   first planned at their keys (`planned`: noted once per tile and key, what was noted known again
   from the history after a restart or a change of lead; with, per z6 tile, the tiles its change made
-  stale: their owners whose base pack or road values differ from the served catalog's), leased and
-  done; and catalog n written (`catalog`: its `n`, its job's time, delta or whole, the files listed
-  and stat'ed, its phases once written, from the catalog's own `catalog-stats:` log line). On the
-  NAS, each Mac's map server appends to `state/publish/<host>.jsonl` its adoption of each catalog
-  and its mirror's sync of it (begun, and through everything wanted). The Mac writing a catalog
+  stale: their owners whose base pack or road values differ from the served catalogue's), leased and
+  done; and catalogue n written (`catalog`: its `n`, its job's time, delta or whole, the files listed
+  and stat'ed, its phases once written, from the catalogue's own `catalog-stats:` log line). On the
+  NAS, each Mac's map server appends to `state/publish/<host>.jsonl` its adoption of each catalogue
+  and its mirror's sync of it (begun, and through everything wanted). The Mac writing a catalogue
   tells its own server at once (`/api/catalog/refresh`); the others look every 10 s while a build
-  runs (docs/macs.md). `scenic timings publish [--last N]` joins them: a z6 tile is in the first catalog begun
-  once it was merged and its stale tiles packed; per catalog and per z6 tile, the hand-off, planned, leased, packed, catalog, servers
+  runs (docs/macs.md). `scenic timings publish [--last N]` joins them: a z6 tile is in the first catalogue begun
+  once it was merged and its stale tiles packed; per catalogue and per z6 tile, the hand-off, planned, leased, packed, catalogue, servers
   and mirrors, the tiles each z6 tile restaled, which of ferries, stations, roadunits, marks and
-  names-todo ran, and the medians (the catalogs' phases split delta and whole).
+  names-todo ran, and the medians (the catalogues' phases split delta and whole).
 
 **The pool** (`docs/pool.md`; `crate::pool`, `crate::agent::pool`; other workers: `docs/workers.md`),
 always on. Every Mac's agent is a member; one leads each term. A process not in the pool (no NAS at
@@ -270,7 +270,7 @@ devices away use the M6's (always on; https://map.brandontsang.net, docs/macs.md
   docs/pool.md §6.7). A process changes part in place
   (docs/pool.md §7.6).
 - **What's offered** (crate::agent::every): every step to every member except the lead's own
-  (`LEAD_ONLY`: catalogs, prune, `bld-fetch`, the OSM pass, GC, backup, input checks, …), the steps
+  (`LEAD_ONLY`: catalogues, prune, `bld-fetch`, the OSM pass, GC, backup, input checks, …), the steps
   that keep the pass's answers, and the worldwide steps. The steps table (`agent::steps`, docs/pool.md
   §7.2) ranks the shared steps (`agent::steps::SHARED`): terrain's and slope's z6 tiles, tree cover's
   z6 tiles, roads (`unit`), the landmarks' candidates and peaks, bldprep and bldtiles. The status marks a step
@@ -313,7 +313,7 @@ devices away use the M6's (always on; https://map.brandontsang.net, docs/macs.md
   the lead only their names (`Handoff::raw`); the lead names them in the raw store's index, which
   it alone writes.
 - **A job that fails** hands off the targets it finished; the rest are held against it.
-- **A catalog** goes out only once the lead's records reflect the journal. **GC** runs only on a
+- **A catalogue** goes out only once the lead's records reflect the journal. **GC** runs only on a
   step that re-asserted the lead's term; it keeps every file the newest records or an unmerged
   journal entry names (`agent::gc::unmerged`), and renames a file to a tombstone first, putting it
   back if touched since.
@@ -340,22 +340,22 @@ devices away use the M6's (always on; https://map.brandontsang.net, docs/macs.md
      change, from the records as they are (nothing is fixed as of a time): a prune of what the
      coverage no longer builds (docs/regions.md, Shrinking), then the publishing chain (4, Roads), its map tiles
      whose owners changed a z6 tile's together (`build::by_unit`: the z6 tiles whose base pack or road
-     values differ from the served catalog's, in build order; the tiles no z6 tile's change explains
+     values differ from the served catalogue's, in build order; the tiles no z6 tile's change explains
      by their z3 tile), each group its own work and offer, so a job of them opens one halo of base
      packs (crate::needs::HALO_STEPS: its disk the halo's cache, not its tiles' summed, its NAS
      weight what it writes; docs/pool.md §7.1, §7.7), offered in the plan's order to every
      Mac asking, the lead's agent among them (docs/pool.md §7.2); once the map tiles and the road
-     index are drawn (`build::CATALOG_GATE`) and none of their hand-offs waits to be merged (or ten
+     index are drawn (`build::CATALOGUE_GATE`) and none of their hand-offs waits to be merged (or ten
      minutes after it was first held back), a
-     catalog (5), listed before the chain's rest (the low zooms, rail stops, ferries, roots), which
+     catalogue (5), listed before the chain's rest (the low zooms, rail stops, ferries, roots), which
      goes out with a later one. Nothing is published before a z6 tile is
      built, while the regions have work left. The lead keeps `publishing.json` in its agent's folder
-     (`build::LastCatalog`: when its last catalog went out, the last with the low zooms made, and
-     when a catalog due was first held back since),
+     (`build::LastCatalogue`: when its last catalogue went out, the last with the low zooms made, and
+     when a catalogue due was first held back since),
      and records what publishing does and why (`build::PublishLine`), shown in the build status
      (`publishing`), the worker page and `scenic status`, and logged when it changes. Beside it the
-     status's `published` (`agent::Published`): the last catalog (number, when, with the low zooms
-     or map tiles only), the map tiles being drawn by Mac (pack's targets leased), and the catalog
+     status's `published` (`agent::Published`): the last catalogue (number, when, with the low zooms
+     or map tiles only), the map tiles being drawn by Mac (pack's targets leased), and the catalogue
      each Mac's map server last adopted (`pubtimes`' servers' log). The worker page's Publishing
      card and `scenic status` say these in the same words, with the cadenced publishes next (the
      forecast's `publishes`); the Regions panel, `scenic status` and the menu bar say a region
@@ -363,21 +363,21 @@ devices away use the M6's (always on; https://map.brandontsang.net, docs/macs.md
    - **The low zooms' cadence** (`build::low_gate`): the low zooms (roads' and rails' lo packs,
      terrain's and slope's roots, and with `near-slope` the slope and tree cover assemblies) are
      planned when nothing else is queued (no `unit`, terrain, slope or tree cover z6 tile, 3D buildings or
-     depth work), at once; else `build::LOW_EVERY_S` (three hours) after a catalog last went out
-     with them made (`LastCatalog::low_at`), when half the roads' lo packs are stale
+     depth work), at once; else `build::LOW_EVERY_S` (three hours) after a catalogue last went out
+     with them made (`LastCatalogue::low_at`), when half the roads' lo packs are stale
      (`build::low_due`), or once everything is built. The gate decides only when; their keys stay
      by content. Zoom ranges don't overlap, so a region new since shows its roads from z9 until the
      low zooms are next made.
    - **Publishing's switches** (crate::agent::publish), under `state/pool/`, each off while missing
      or `off`:
-     - `delta-catalog`: the catalog job (`scenic-build catalog --delta`) writes what changed over the
-       last (docs/formats.md, Delta catalogs), each file's size from the records
-       (`state/build/sizes.json`, which the files' jobs hand off) or the last catalog: it looks up no
+     - `delta-catalog`: the catalogue job (`scenic-build catalogue --delta`) writes what changed over the
+       last (docs/formats.md, Delta catalogues), each file's size from the records
+       (`state/build/sizes.json`, which the files' jobs hand off) or the last catalogue: it looks up no
        file's size on the NAS but a file written before sizes were recorded. The same job writes a whole
-       catalog instead, which looks at every file, when the deltas since the last whole one add up
-       to it or their run is half `MAX_CHAIN` (`store::catalog::whole_due`, weighed by each catalog
-       job, busy lead or not). Readers apply deltas (`store::catalog::latest_nas_from`). Switch on only once
-       every Mac's server reads deltas. Held catalogs are always whole.
+       catalogue instead, which looks at every file, when the deltas since the last whole one add up
+       to it or their run is half `MAX_CHAIN` (`store::catalogue::whole_due`, weighed by each catalogue
+       job, busy lead or not). Readers apply deltas (`store::catalogue::latest_nas_from`). Switch on only once
+       every Mac's server reads deltas. Held catalogues are always whole.
      - `near-slope`: a done region's slope and tree cover are the z6 tiles near it
        (`Publishing::near`), not every stale z6 tile around; it's recorded built with those.
 4. **Four chains:**
@@ -392,7 +392,7 @@ devices away use the M6's (always on; https://map.brandontsang.net, docs/macs.md
      once after the last z6 tile.
    - **Gated by time** (`build::GATED`: marks, overlays, names-todo): the gate decides only when
      a step is planned; its key stays by content. When each last ran is the lead's observation of
-     its recorded key changing (`LastCatalog::observe`, kept in `publishing.json`; not known: due).
+     its recorded key changing (`LastCatalogue::observe`, kept in `publishing.json`; not known: due).
    - **3D buildings** (`docs/buildings3d.md` §3.3; `agent::build::bld_work`): `bld-fetch`, a prune,
      `bldprep` per z6 tile, then `bldtiles` once a tile and its 8 neighbours are prepared, in the
      regions' order.
@@ -400,29 +400,29 @@ devices away use the M6's (always on; https://map.brandontsang.net, docs/macs.md
    The trains', landmarks' and buildings' work is listed after the regions'. Last, in idle time: the
    mids of z6 tiles current without one, each made again with `--expect-same` (`scenic-build
    trees|terrain|slope --expect-same`: a pack differing from the manifest fails the job).
-5. **A catalog** whenever the served files, the regions or which of them are done change
-   (`build::catalog_key`), at most one each `build::CATALOG_EVERY_S` (a minute) since the last
-   began. It waits while the map tiles or the road index are left to draw (`build::CATALOG_GATE`)
-   or a hand-off of theirs waits to be merged. That wait is counted from when a catalog due was
+5. **A catalogue** whenever the served files, the regions or which of them are done change
+   (`build::catalogue_key`), at most one each `build::CATALOGUE_EVERY_S` (a minute) since the last
+   began. It waits while the map tiles or the road index are left to draw (`build::CATALOGUE_GATE`)
+   or a hand-off of theirs waits to be merged. That wait is counted from when a catalogue due was
    first held back, whether or not one was made before (`Publish::held_for`: the lead's agent keeps
-   that time in `publishing.json`, `LastCatalog::held_at`, so a restart doesn't reset it; a new
-   lead's agent, with a record of its own, starts the count afresh). It's reset by each catalog
+   that time in `publishing.json`, `LastCatalogue::held_at`, so a restart doesn't reset it; a new
+   lead's agent, with a record of its own, starts the count afresh). It's reset by each catalogue
    made, and when none is held back, none is due and none waits out its minute: past
-   `build::CATALOG_CAP_S` (ten minutes) one goes out with what's drawn and merged, its minute
+   `build::CATALOGUE_CAP_S` (ten minutes) one goes out with what's drawn and merged, its minute
    allowing, the status saying which held it (the map tiles or the road index to draw, or their
    hand-offs waiting to be merged). It records as built (`--ready <id>=<outline
    digest>,…`) the regions done whose z6 tiles are merged, whose map tiles are drawn and merged and
-   whose slope and tree cover are made, and the others as the last catalog had them; the status
+   whose slope and tree cover are made, and the others as the last catalogue had them; the status
    says why a done region isn't yet ("waiting to be merged", "map tiles to draw", "slope and tree
-   cover to make"). A z6 tile's hand-off waiting holds no catalog: it goes out with a later one.
-   While `inputs/hold-catalog` exists, catalogs go to `catalog-held/`.
+   cover to make"). A z6 tile's hand-off waiting holds no catalogue: it goes out with a later one.
+   While `inputs/hold-catalog` exists, catalogues go to `catalog-held/`.
 6. **Daily:** backup and GC.
 
 **Planned:** stale work after step-version bumps done oldest first in idle time; registers, Overture
 and timetables refetched every ~6 months.
 
 **Interruptions.** Any Mac may be asleep, away or unplugged at any time; nothing depends on it being
-available. Until work is done, the map serves the last catalog.
+available. Until work is done, the map serves the last catalogue.
 - When the NAS goes, the agent freezes the job (`SIGSTOP`) and resumes it (`SIGCONT`) when it's back.
 - Sleep often breaks SMB handles, so a job touching the NAS restarts after wake.
 - **Kills** lose only the target under way: each target is noted done as it's saved. The OSM pass is
@@ -459,8 +459,8 @@ outputs, no hash-map order, reductions independent of thread count, and every tr
 function from one implementation (the `det` crate, over `libm`). Checked per step by hand and by
 `tools/check/`; planned: a "build twice, compare hashes" test per step.
 
-**Validation:** every upload is read back and checked against its hash, and a catalog fails on a
-missing file. A held catalog is compared with the current map by hand. Planned: decode checks,
+**Validation:** every upload is read back and checked against its hash, and a catalogue fails on a
+missing file. A held catalogue is compared with the current map by hand. Planned: decode checks,
 plausible ranges, and holding a publish when a z6 tile loses over 20 % of its ways without its coverage
 shrinking.
 
@@ -493,9 +493,9 @@ on the PATH itself and takes the rest from mise.toml, so no shell profile is nee
 3. builds the server and pipeline;
 4. runs the crates' tests, the type check and the web build, and checks every Python step loads
    from a copy of `dem/` in a fresh environment and passes pyflakes;
-5. smoke-tests a server on a spare port against the NAS's catalog (waiting up to 10 min for its first
-   answer, which comes only once it has read the catalog; one that exits, or is still starting (still
-   reading its catalog or past it), is said so), and signs the programs and Scenic.app;
+5. smoke-tests a server on a spare port against the NAS's catalogue (waiting up to 10 min for its first
+   answer, which comes only once it has read the catalogue; one that exits, or is still starting (still
+   reading its catalogue or past it), is said so), and signs the programs and Scenic.app;
 6. takes the lock on the NAS (`app/publish.lock`, create-new; one over six hours old taken over),
    waiting while another publish holds it, checks the order again, writes `app/<version>/` and
    `app/current.json` with every file's SHA-256, copies `tools/nas/fetch-planet.sh` to the NAS's

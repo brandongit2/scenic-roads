@@ -1037,7 +1037,7 @@ export class RoadLayer implements CustomLayerInterface {
 
   style: RoadStyle;
   bounds: [number, number, number, number] = [-180, -85, 180, 85];
-  /** The tiles' version (the catalog's for the layer), appended to their URLs so new data bypasses
+  /** The tiles' version (the catalogue's for the layer), appended to their URLs so new data bypasses
    * the browser's cached tiles ('' when unknown: no version in the URLs). */
   private version = '';
   /** Terrain-aware ground points for the tilted tile cover (camera3d.coverSamples); null: flat unprojection. */
@@ -1186,7 +1186,7 @@ export class RoadLayer implements CustomLayerInterface {
   // ---- tiles ----------------------------------------------------------------------
 
   /** Where the tiles come from: the layer's version and the data's bounds (meta.bounds). A new
-   * version (a new catalog) fetches again, as they are wanted, the tiles whose pack's version
+   * version (a new catalogue) fetches again, as they are wanted, the tiles whose pack's version
    * changed (tileVersion), each drawn from its old data until the new data is up (swap). */
   setSource(version: string, bounds: [number, number, number, number]) {
     if (version === this.version && bounds.every((v, i) => v === this.bounds[i])) return;
@@ -1436,7 +1436,7 @@ export class RoadLayer implements CustomLayerInterface {
     this.map.triggerRepaint();
   }
 
-  /** A tile's version: its pack's (meta.packs), so a new catalog fetches again only the tiles of
+  /** A tile's version: its pack's (meta.packs), so a new catalogue fetches again only the tiles of
    * the packs it changed; the layer's when meta gave no packs. */
   private tileVersion(t: RoadTile): string {
     return packVersion(this.id, t.z, t.x, t.y) ?? this.version;

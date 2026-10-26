@@ -8,7 +8,7 @@ import { LOD_LEVELS, LOD_Z0, layoutDots, lodZoom, tileRun, visWords, type DotAux
 import { CELL_DZ, F_COMPONENT, F_NAMED, cellCentre, decodeMarkTile, extraTile, type MarkTile } from './marktile';
 import { stopFilterPass, type StopFilter } from './stopfilters';
 
-/** The catalog's points (/api/catalog `marks`). */
+/** The catalogue's points (/api/catalog `marks`). */
 export interface MarksCfg {
   /** The points' version: sent with every request (409: newer points or names, ask again). */
   v: string;
@@ -156,7 +156,7 @@ export class MarksView {
     this.z6 = new Set(cfg.tiles);
   }
 
-  /** Stops (a newer catalog's points replace these): nothing more is asked for or sent. */
+  /** Stops (a newer catalogue's points replace these): nothing more is asked for or sent. */
   dispose() {
     this.disposed = true;
     for (const t of [this.timer, this.retryTimer, ...this.qTimers.values()]) if (t) clearTimeout(t);

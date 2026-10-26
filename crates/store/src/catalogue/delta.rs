@@ -1,4 +1,4 @@
-//! What changed between two catalogs, as JSON (docs/formats.md, Delta catalog): `diff(a, b)` is a
+//! What changed between two catalogues, as JSON (docs/formats.md, Delta catalogue): `diff(a, b)` is a
 //! patch that `apply` turns `a` into `b`, exactly (`apply(a, &diff(a, b)) == b` for any two JSON
 //! values: the tests' property). A patch is one of
 //! - `{"=": v}`: the value is `v`;
@@ -8,7 +8,7 @@
 //!   `id` (the coverage's regions), in the order `ids` lists them, each one `set` names changed by
 //!   its patch (from nothing, for one that's new), the others as they were.
 //!
-//! The diff takes whichever of these is shortest written out, so a catalog's patch names what
+//! The diff takes whichever of these is shortest written out, so a catalogue's patch names what
 //! changed (a region's shapes, the files of the tiles drawn again) and not what didn't.
 
 use anyhow::{bail, Context, Result};
@@ -188,7 +188,7 @@ mod tests {
                 }
             }
         }
-        /// `v` changed a little (so pairs share most of their parts, as catalogs do).
+        /// `v` changed a little (so pairs share most of their parts, as catalogues do).
         fn nudge(&mut self, v: &Value, depth: u32) -> Value {
             if self.below(5) == 0 || depth == 0 {
                 return self.value(depth);

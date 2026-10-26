@@ -34,7 +34,7 @@ export interface KindQuery {
 }
 
 export type LandmarkRequest =
-  /** Points by view (docs/phase5.md) from the server at `base` (null: the catalog has none). */
+  /** Points by view (docs/phase5.md) from the server at `base` (null: the catalogue has none). */
   | { type: 'marks'; cfg: MarksCfg | null; base: string }
   /** By view: the map's zoom, the ground in view (lon/lat box), in a tilted view the visible area
    * beyond it, and the point sources shown. */
@@ -60,7 +60,7 @@ export type LandmarkResponse =
   | { type: 'dots'; src: string; dots: DotData; vis: Uint32Array | null }
   /** By view: name tiles (z, x, y) to make again (extras came or went in them). */
   | { type: 'refresh'; src: string; tiles: [number, number, number][] }
-  /** By view: the server has newer points (or names) than these: the catalog should be read. */
+  /** By view: the server has newer points (or names) than these: the catalogue should be read. */
   | { type: 'stale' }
   /** The dots' filter flags (dotlayout.ts visWords). */
   | { type: 'mask'; id: number; src: string; vis: Uint32Array }
@@ -107,9 +107,9 @@ const TILE_MAX = 5000;
 /** Bins of the in-view score histogram (as distFromSamples makes them). */
 const HIST_BINS = 512;
 
-/** Points by view, when the catalog has them (undefined: not known yet). */
+/** Points by view, when the catalogue has them (undefined: not known yet). */
 let mv: MarksView | null | undefined = undefined;
-/** Tile requests that came before the catalog's points were known. */
+/** Tile requests that came before the catalogue's points were known. */
 const tileWaits: Extract<LandmarkRequest, { type: 'tile' }>[] = [];
 let mvBase = '';
 /** The newest view query sent: an older answer's extras are left (the newer one knows better). */
@@ -143,7 +143,7 @@ self.onmessage = async (ev: MessageEvent<LandmarkRequest>) => {
   }
   if (m.type === 'tile') return tile(m);
   if (mv) return byView(mv, m);
-  // No points in the catalog: an empty view (none in view, nothing to count or mask).
+  // No points in the catalogue: an empty view (none in view, nothing to count or mask).
   if (m.type === 'query') {
     const none = new Float64Array(HIST_BINS);
     post({ type: 'result', id: m.id, hist: none, n: 0, atRanks: null, byKind: [], top: [], topByKind: {}, fhist: {}, summit: null }, [none.buffer]);
@@ -234,7 +234,7 @@ function capped(pts: { t: MarkTile; i: number }[], z: number): { t: MarkTile; i:
 }
 
 /** A map tile of a source's points, sent back as a vector tile (empty without points; waiting
- * until the catalog's points are known). */
+ * until the catalogue's points are known). */
 function tile(m: Extract<LandmarkRequest, { type: 'tile' }>) {
   if (mv) return void viewTile(mv, m);
   if (mv === undefined) return void tileWaits.push(m);

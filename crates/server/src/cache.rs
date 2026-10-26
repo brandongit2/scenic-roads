@@ -28,7 +28,7 @@ pub fn cache_control(versioned: bool, fallback: &'static str) -> HeaderValue {
 }
 
 /// On a response: not cached for good even under a current version (`versioned_caching`): what
-/// the server made from other tiles, which a catalog changing only those can leave stale.
+/// the server made from other tiles, which a catalogue changing only those can leave stale.
 #[derive(Clone, Copy)]
 pub struct NotForGood;
 
@@ -47,7 +47,7 @@ pub struct Packs {
 }
 
 impl Packs {
-    /// Drops what was prepared for files no longer in the catalog.
+    /// Drops what was prepared for files no longer in the catalogue.
     pub fn retain_contents(&self, keep: &std::collections::HashSet<String>) {
         self.cells.lock().unwrap().retain(|(c, _), _| keep.contains(c));
     }

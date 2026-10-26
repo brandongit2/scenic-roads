@@ -21,7 +21,7 @@ now=time.time()
 print("status from: %s (the lead view when this Mac does not lead), app %s" % (s.get("host"), s.get("app")))
 c=s.get("catalog") or {}
 age=(now-c.get("at",now))/3600
-print("catalog: %s made %.1f h ago" % (c.get("n"), age)+("  <-- STALE (>6 h)" if age>6 else ""))
+print("catalogue: %s made %.1f h ago" % (c.get("n"), age)+("  <-- STALE (>6 h)" if age>6 else ""))
 js=s.get("jobs") or [x for x in [s.get("job"),s.get("beside")]+list(s.get("more") or []) if x]
 for j in js:
   p=j.get("progress") or {}; mv=(now-p.get("moved_at",now))/60

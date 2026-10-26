@@ -64,7 +64,7 @@ export interface Meta {
   elev_max: number;
   elev_hist_10m_km: number[];
   built: number;
-  /** Version token of each data file, by its file name (the catalog's, under the files' old names). */
+  /** Version token of each data file, by its file name (the catalogue's, under the files' old names). */
   versions?: Record<string, string | number>;
   /** Each tiled layer's packs' versions (a tile's `?v=`: packVersion). */
   packs?: Record<string, LayerPacks>;
@@ -72,9 +72,9 @@ export interface Meta {
   labelTiles?: boolean;
   /** Whether the water is served as exact coverage (/tiles/water: pipeline::water). */
   water?: boolean;
-  /** The catalog's number (catalog.ts follows it). */
-  catalog?: number;
-  /** The catalog's tile layers and their zooms (the 3D buildings: `buildings`). */
+  /** The catalogue's number (catalogue.ts follows it). */
+  catalog?: number; // the JSON key keeps its old spelling (task #547)
+  /** The catalogue's tile layers and their zooms (the 3D buildings: `buildings`). */
   layers?: Record<string, [number, number]>;
   /** Where the terrain goes past z12 (pipeline::terrain_deep): its z10 tiles with deep packs,
    * "x/y", and the native zoom of each. */
@@ -83,13 +83,13 @@ export interface Meta {
 
 // Tiles and layers are cached by the browser, so their URLs carry the version of the file they
 // come from: when the data changes the URLs change and the new data is fetched. Every URL built
-// from a version goes through ver() or version(); a new catalog (catalog.ts) brings new versions
+// from a version goes through ver() or version(); a new catalogue (catalogue.ts) brings new versions
 // in place, and whatever built URLs from a file whose version changed builds them again
 // (onVersions): sources get their new URLs, caches of the old data are dropped.
 let versions: Record<string, string | number> = {};
 const watchers: { reads: (file: string) => boolean; apply: (changed: string[]) => void }[] = [];
 
-/** The data files' versions (meta.versions): at start, and for each new catalog. Every watcher of
+/** The data files' versions (meta.versions): at start, and for each new catalogue. Every watcher of
  * a file whose version changed applies the new ones; returns those files. */
 export function setVersions(v: Record<string, string | number> | undefined): string[] {
   const old = versions;
@@ -116,7 +116,7 @@ export function onVersions(reads: string[] | ((file: string) => boolean), apply:
 let packs: Record<string, LayerPacks> | null = null;
 let oldPacks: Record<string, LayerPacks> | null = null;
 
-/** The packs' versions: at start, and for each new catalog, before setVersions (whose watchers ask
+/** The packs' versions: at start, and for each new catalogue, before setVersions (whose watchers ask
  * packChanged). */
 export function setPacks(p: Record<string, LayerPacks> | undefined) {
   oldPacks = packs;
@@ -128,14 +128,14 @@ function packOf(from: Record<string, LayerPacks> | null, layer: string, z: numbe
   return l && packToken(l, z, x, y);
 }
 
-/** The packs of a catalog layer (undefined when meta gave none). */
+/** The packs of a catalogue layer (undefined when meta gave none). */
 export const layerPacks = (layer: string): LayerPacks | undefined => packs?.[layer];
 
-/** The version token of tile z/x/y of a catalog layer (`roads`, `ov-whs`, …): its pack's, '' when no
+/** The version token of tile z/x/y of a catalogue layer (`roads`, `ov-whs`, …): its pack's, '' when no
  * pack holds it, or undefined when meta gave no packs for the layer (then its layer version). */
 export const packVersion = (layer: string, z: number, x: number, y: number): string | undefined => packOf(packs, layer, z, x, y);
 
-/** Whether the last catalog changed the pack holding tile z/x/y of `layer` (true when unknown). */
+/** Whether the last catalogue changed the pack holding tile z/x/y of `layer` (true when unknown). */
 export function packChanged(layer: string, z: number, x: number, y: number): boolean {
   const a = packOf(oldPacks, layer, z, x, y);
   const b = packOf(packs, layer, z, x, y);
@@ -176,7 +176,7 @@ const ways = new Map<number, Promise<WayInfo | null>>();
 /** The ways answered (null: no such way), to show at once. */
 const waysKnown = new Map<number, WayInfo | null>();
 /** A way's info changes with the ways and with the roads' English names, both in ways.bin's
- * version (the catalog's number and the translations'). */
+ * version (the catalogue's number and the translations'). */
 const wayVer = () => version('ways.bin');
 /** Bumped when the way caches are dropped (new data): answers to older requests aren't kept. */
 let wayGen = 0;
@@ -241,7 +241,7 @@ export function getRoadWays(id: number, at: [number, number]): Promise<Set<numbe
   return p;
 }
 
-// New ways or road names (a new catalog): the ways and whole roads are asked for again.
+// New ways or road names (a new catalogue): the ways and whole roads are asked for again.
 onVersions(['ways.bin'], () => {
   wayGen++;
   ways.clear();

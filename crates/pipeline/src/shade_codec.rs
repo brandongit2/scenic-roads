@@ -8,7 +8,7 @@
 use anyhow::Result;
 use roadcore::shade::{rgb, Px, COHERENT, DIR_SCALE, DIR_STEP, SLOPE_MAX};
 
-/// The encoding packs of shading tiles name (their header's `encoding`, the catalog's).
+/// The encoding packs of shading tiles name (their header's `encoding`, the catalogue's).
 pub const ENCODING: &str = "shade-webp";
 /// libwebp's lossless preset (cwebp's `-z`).
 pub const LEVEL: u8 = 6;

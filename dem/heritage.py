@@ -14,7 +14,7 @@ they're read in the order of their ids. A register's `class` says what its entri
   boundary named `osm_name` (else its name) nearby, else drawn as a circle of its `area_km2`; a
   polygon is its boundary.
 Every site, area and special place carries its register's id (`register`), which the map resolves
-to the register's credit from the catalog's credits, and a site its reference there (`ref`).
+to the register's credit from the catalogue's credits, and a site its reference there (`ref`).
 
 Two sites are one place (docs/inputs.md §6.5, the merging rule): when the owner's matches say so
 (--matches, the accepted inputs/heritage-matches/, `same: true`), or when the lower-graded one is

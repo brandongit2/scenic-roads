@@ -28,11 +28,11 @@ fn main() -> Result<()> {
         C::Build { osm, water_polygons, out, index } => build(&osm, &water_polygons, &out, &index),
         C::Serve { store, port } => serve(&store, port),
         C::Stats { store, z, sample, size } => stats(&store, z, sample, size),
-        C::WaterPacks { tiles, catalog, root } => {
+        C::WaterPacks { tiles, catalogue, root } => {
             // water-build's tiles as the water layer's packs (pipeline::layers' scopes) in a test
-            // root, and a catalog one newer than --catalog with them (written into <root>/catalog).
+            // root, and a catalogue one newer than --catalog with them (written into <root>/catalogue).
             // Never the NAS's.
-            let mut cat = store::catalog::read(&catalog)?;
+            let mut cat = store::catalogue::read(&catalogue)?;
             let mut all: Vec<(u8, u32, u32, PathBuf)> = Vec::new();
             for z in 0..=pipeline::water::STORED_MAXZ {
                 let zd = tiles.join(z.to_string());
@@ -54,7 +54,7 @@ fn main() -> Result<()> {
                 let (scope, pz, px, py) = pipeline::layers::pack_of(t.0, t.1, t.2);
                 groups.entry((scope, pz, px, py)).or_default().push(t);
             }
-            let mut layer = store::catalog::Layer {
+            let mut layer = store::catalogue::Layer {
                 encoding: "water-png".into(),
                 minzoom: 0,
                 maxzoom: pipeline::water::STORED_MAXZ,
@@ -78,7 +78,7 @@ fn main() -> Result<()> {
                 std::fs::rename(&tmp, root.join(&content))?;
                 cat.files.insert(
                     logical.clone(),
-                    store::catalog::FileRef {
+                    store::catalogue::FileRef {
                         file: content.clone(),
                         size: std::fs::metadata(root.join(&content))?.len(),
                         ..Default::default()
@@ -96,7 +96,7 @@ fn main() -> Result<()> {
             }
             cat.layers.insert("water".into(), layer);
             cat.n += 1;
-            let p = store::catalog::write_copy(&root.join("catalog"), &cat)?;
+            let p = store::catalogue::write_copy(&root.join(store::catalogue::NAME), &cat)?;
             eprintln!("coastcheck: {}", p.display());
             Ok(())
         }

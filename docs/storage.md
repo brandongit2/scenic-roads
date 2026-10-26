@@ -23,7 +23,7 @@ layers/<layer>/  root, lo and hi packs, or one bundle (all); basemap/world-<date
 work/          build intermediates, not served
 cache/         what z6 tiles keep for later runs, shared by both Macs: scenic-units/
 catalog/       <n>.json.zst (or deltas): every file the map reads, by content name
-catalog-held/  a catalog kept back for review (while inputs/hold-catalog exists)
+catalog-held/  a catalogue kept back for review (while inputs/hold-catalog exists)
 app/           published app versions; current.json, previous.json
 state/         status.json (the lead's heartbeat), build/ (manifest, job keys, pending, terms),
                journal/, coord/, pool/ (switches), helpers/, backups/, logs/
@@ -47,7 +47,7 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
   set or removal of a name still uploading waits for that upload first. An upload that fails
   transiently is tried again after 2, 5 and 15 s; one that fails or doesn't land within a minute
   and a second per 2 MB fails the job, the target not noted done, and every later save with it.
-- **Catalogs** list every file the map reads, with the coverage they were built for and the credits
+- **Catalogues** list every file the map reads, with the coverage they were built for and the credits
   of their sources. Readers take the highest that decodes.
 - **The build manifest** (`state/build/manifest.json`) lists everything built; **job keys**
   (`state/build/jobs.json`) say what each output was made from. These and the unverified uploads
@@ -64,7 +64,7 @@ folder's, so `std::fs::copy` or plain `cp` fail with "Permission denied".
   tile; hi: z9–14 per z6 tile. Hi tiles exist only near the coverage for the layers built per z6 tile;
   worldwide layers (labels, water) have them wherever they have tiles.
 - **Bundles** (docs/formats.md): a small layer one job makes whole (each landmark kind's thinned
-  tiles, each area overlay) is one pack of every tile, `layers/<layer>/all`, which the catalog names
+  tiles, each area overlay) is one pack of every tile, `layers/<layer>/all`, which the catalogue names
   for each pack key it holds; the landmark points (a sectioned file per z6 tile) are one bundle,
   `markdata/all`. Each file made on the NAS costs a second or so of round trips: the marks and
   overlays jobs made about 450 and 380 a run before (task #449).
@@ -87,9 +87,9 @@ NAS's own planet fetch.
 **GC** runs daily, in the agent, when the NAS is quiet: only beside leased jobs that leave its
 measured weight room (pool.md §7.2, `Limits::fits_quiet`), or, held back 24 hours, as an aged job
 of the lead's own (`QUIET_AGE`); running, it yields to a target held back for the budget.
-- **Roots:** the newest catalog, every catalog of the last 14 days, the build manifest, and (with
+- **Roots:** the newest catalogue, every catalogue of the last 14 days, the build manifest, and (with
   the pool) its newest records and the journal entries they don't reflect yet.
-- An unreferenced content-named file goes once older than 14 days; older catalogs go except the
+- An unreferenced content-named file goes once older than 14 days; older catalogues go except the
   newest; stray `.tmp` files after 2 days.
 - Retired passes' sources (`sources/osm/<date>/`, `sources/items/<date>/`) go by the same rule, their
   other files 14 days after the newer pass completed.
@@ -100,7 +100,7 @@ of the lead's own (`QUIET_AGE`); running, it yields to a target held back for th
   as the `gc` job's own change through `Out` (its write-set: these removals and the depth packs'
   below, `agent::steps`): in the pool a hand-off the lead merges into its records in one save, as any
   job's (pool.md §7.3). With nothing left to drop it writes nothing. The files then go by the rule
-  above, in each prefix's folder: kept while a catalog of the window, the manifest, the records or
+  above, in each prefix's folder: kept while a catalogue of the window, the manifest, the records or
   an unmerged entry names them. A step whose code is deleted adds its outputs' prefix there, so
   "removed" means its data deleted too; no step may make a name under one.
 - **Depth packs no target names** (task #679): in the same drop, every depth pack (the `depth`,

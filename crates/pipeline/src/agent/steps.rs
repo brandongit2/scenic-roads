@@ -54,7 +54,7 @@ pub enum Kind {
     Derive,
     /// Makes what the map serves (`layers/`, `base/`, `hidata/`, …).
     Pack,
-    /// Makes a catalog: the map's new data goes out.
+    /// Makes a catalogue: the map's new data goes out.
     Publish,
     /// Keeps the build in order: checks, lists, removals, backups; nothing the map reads.
     Keep,
@@ -129,7 +129,7 @@ pub const STAGES: [Stage; 14] = [
     Stage { id: "trains", does: "Trains a day on the regions' rail, from timetables." },
     Stage { id: "landmarks", does: "The landmarks: candidates, peaks, Wikidata facts, heritage details, ranked and drawn, and the area overlays." },
     Stage { id: "buildings", does: "Every building in the coverage, raised in 3D, a tile at a time." },
-    Stage { id: "publish", does: "A catalog: the map's new data goes out." },
+    Stage { id: "publish", does: "A catalogue: the map's new data goes out." },
     Stage { id: "upkeep", does: "Checks, to-do lists, removals and backups; nothing the map reads." },
 ];
 
@@ -691,8 +691,8 @@ pub const TABLE: [Step; 56] = [
             "publish",
             Publish,
             World,
-            "catalog",
-            "Makes the catalog the map serves: the new data goes out.",
+            store::catalogue::NAME,
+            "Makes the catalogue the map serves: the new data goes out.",
             w_none,
         )
     },
@@ -701,8 +701,8 @@ pub const TABLE: [Step; 56] = [
             "publish",
             Publish,
             World,
-            "catalog-held",
-            "Makes a catalog held for review (inputs/hold-catalog).",
+            store::catalogue::HELD_NAME,
+            "Makes a catalogue held for review (inputs/hold-catalog).",
             w_none,
         )
     },

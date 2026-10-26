@@ -1,8 +1,8 @@
 // The world map's age controls (task #629; top-level since #685; docs/pipeline.md §5): a soloed
 // step's published tiles coloured by when a catalogue last published each, over a range set by a
 // pair of inputs, and a timeline of every catalogue (hovering one lights the tiles it published).
-// Its data: /work/catalogs (crate::agent::catalogsview), the catalogues after the last one this
-// page has. The sums are apart from the DOM so Node tests them (web/test/catalogs.test.mjs).
+// Its data: /work/catalogs (crate::agent::cataloguesview), the catalogues after the last one this
+// page has. The sums are apart from the DOM so Node tests them (web/test/catalogues.test.mjs).
 import { hhmm, timeTicks } from "./chartmath.js";
 
 // ---- The range's inputs ---------------------------------------------------------------------------
@@ -83,7 +83,7 @@ export function pairAt(kept, now) {
 // ---- The tiles ------------------------------------------------------------------------------------
 /** The catalogues kept: `have` (sorted by number) with an answer's `catalogs` (those after the
  * last) added. */
-export function mergeCatalogs(have, add) {
+export function mergeCatalogues(have, add) {
   const out = have.slice();
   const last = out.length ? out[out.length - 1].n : -Infinity;
   for (const c of add || []) if (c.n > last) out.push(c);
@@ -350,7 +350,7 @@ export function createAges({ call, store, onChange }) {
       const [code, a] = await call("/work/catalogs", latest == null ? {} : { after: latest });
       if (code === 200 && a) {
         const had = cats.length;
-        cats = mergeCatalogs(cats, a.catalogs);
+        cats = mergeCatalogues(cats, a.catalogs);
         if (cats.length !== had) { t3 = tileTimes(cats, 3); t6 = tileTimes(cats, 6); }
         latest = cats.length ? cats[cats.length - 1].n : null;
         reading = !!a.reading;

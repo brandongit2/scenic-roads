@@ -19,7 +19,7 @@ use pipeline::depth::fall::{self, Grid, Kind, Stored};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-/// Decoded stored tiles, by layer, tile and catalog generation (an ancestor serves many children).
+/// Decoded stored tiles, by layer, tile and catalogue generation (an ancestor serves many children).
 static DECODED: OnceLock<Mutex<HashMap<(&'static str, u8, u32, u32, u64), Stored>>> = OnceLock::new();
 /// Tiles made here, by the same.
 static MADE: OnceLock<Mutex<HashMap<(&'static str, u8, u32, u32, u64), Vec<u8>>>> = OnceLock::new();
@@ -50,7 +50,7 @@ fn decoded(s: &crate::AppState, layer: &'static str, kind: Kind, z: u8, x: u32, 
 /// Tile z/x/y of a depth layer as the map is given it (stored or made), decoded: None outside it.
 pub fn served(s: &crate::AppState, layer: &'static str, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Grid>> {
     let kind = Kind::of_layer(layer).ok_or_else(|| anyhow::anyhow!("{layer} isn't a depth layer"))?;
-    if !s.data.catalog().layers.contains_key(layer) {
+    if !s.data.catalogue().layers.contains_key(layer) {
         return Ok(None);
     }
     Ok(fall::served(&|z, x, y| decoded(s, layer, kind, z, x, y), kind, z, x, y)?.map(|(g, _)| g))
@@ -62,7 +62,7 @@ async fn tile(s: S, layer: &'static str, z: u8, x: u32, y: u32, q: Option<String
         return StatusCode::NOT_FOUND.into_response();
     }
     let got = tokio::task::spawn_blocking(move || {
-        if !s.data.catalog().layers.contains_key(layer) {
+        if !s.data.catalogue().layers.contains_key(layer) {
             return None;
         }
         if let Some(g) = crate::terrain::stored(&s, layer, z, x, y, &headers) {

@@ -19,7 +19,7 @@
 //! the step runs it (`run::all`).
 //!
 //! `lakefill catalog-add --root <test root> --fill <lakefill.<hash>.sect>`: a test root's newest
-//! catalog again, one newer, with the fill (copied into the root's `work/`) in its files and
+//! catalogue again, one newer, with the fill (copied into the root's `work/`) in its files and
 //! `global` as a publish would put it, for a test server to draw. Never the NAS's.
 //!
 //! `lakefill stats --fill <f> --sheets <gap-sheets.csv>`: the fill's lakes and their area (km²) by
@@ -90,7 +90,7 @@ fn main() -> Result<()> {
             run::fill(&o, &gaps, band, &out)?;
             Ok(())
         }
-        LakefillCmd::CatalogAdd { root, fill } => catalog_add(&root, &fill),
+        LakefillCmd::CatalogueAdd { root, fill } => catalogue_add(&root, &fill),
         LakefillCmd::Stats { fill, sheets } => stats(&fill, &sheets),
         LakefillCmd::Seamcheck { fill, basemap, max } => seamcheck(&fill, &basemap, max),
         LakefillCmd::Merge { out, runs } => {
@@ -170,11 +170,11 @@ fn declaration(d: &Declaration) -> Result<pipeline::inputs::sources::Source> {
     Ok(pipeline::inputs::sources::Source { id, data: d.data, keyed: String::new(), index: Vec::new() })
 }
 
-fn catalog_add(root: &Path, fill: &Path) -> Result<()> {
+fn catalogue_add(root: &Path, fill: &Path) -> Result<()> {
     anyhow::ensure!(!root.starts_with("/Volumes"), "a test root, not the NAS's");
-    let dir = root.join("catalog");
-    let n = *store::catalog::list(&dir)?.first().context("no catalog in the root")?;
-    let mut cat = store::catalog::read_n(&dir, n)?;
+    let dir = root.join(store::catalogue::NAME);
+    let n = *store::catalogue::list(&dir)?.first().context("no catalogue in the root")?;
+    let mut cat = store::catalogue::read_n(&dir, n)?;
     let name = fill.file_name().context("a fill file")?.to_string_lossy().into_owned();
     let hash = name.trim_start_matches("lakefill.").trim_end_matches(".sect");
     let logical = format!("{}test", pipeline::lakefill::PREFIX);
@@ -183,7 +183,7 @@ fn catalog_add(root: &Path, fill: &Path) -> Result<()> {
     std::fs::copy(fill, root.join(&content))?;
     cat.files.insert(
         logical.clone(),
-        store::catalog::FileRef {
+        store::catalogue::FileRef {
             file: content.clone(),
             size: std::fs::metadata(fill)?.len(),
             fmt: 1,
@@ -192,7 +192,7 @@ fn catalog_add(root: &Path, fill: &Path) -> Result<()> {
     );
     cat.global.insert("lakefill".into(), logical);
     cat.n += 1;
-    let p = store::catalog::write_copy(&dir, &cat)?;
+    let p = store::catalogue::write_copy(&dir, &cat)?;
     eprintln!("lakefill: {} with {content}", p.display());
     Ok(())
 }

@@ -9,8 +9,8 @@
 //! here: the declared datasets' digests take their place in a unit's key, docs/inputs.md §6.8.)
 //!
 //! The data sources' credits are here too, another rule by location: each with the areas whose data
-//! comes from it, the boxes its source's code tests. A catalog lists the credits whose areas meet
-//! what it serves (`catalog_credits`), and the map shows the catalog's (© Credits). They enter no
+//! comes from it, the boxes its source's code tests. A catalogue lists the credits whose areas meet
+//! what it serves (`catalogue_credits`), and the map shows the catalogue's (© Credits). They enter no
 //! key: a credit changes what the map says, not its data. The inputs' credits come from their own
 //! descriptions instead (crate::inputs::credits: the heritage registers' and the elevation
 //! datasets' among them).
@@ -68,8 +68,8 @@ pub fn versions_meeting(b: [i32; 4]) -> String {
 // ---- credits ----------------------------------------------------------------------------------
 
 /// A data source's credit as the map shows it: what came from it, the source as its terms ask to be
-/// named, the terms, and the areas whose data comes from it (none: anywhere). Catalogs carry them as
-/// written here (docs/formats.md, Catalog `credits`), `areas` left out for anywhere.
+/// named, the terms, and the areas whose data comes from it (none: anywhere). Catalogues carry them as
+/// written here (docs/formats.md, Catalogue `credits`), `areas` left out for anywhere.
 #[derive(Debug, serde::Serialize)]
 pub struct Credit {
     pub what: &'static str,
@@ -206,20 +206,20 @@ pub const CREDITS: &[Credit] = &[
     },
 ];
 
-/// How far past the coverage a catalog's data reaches: heritage sites and terrain are made within
+/// How far past the coverage a catalogue's data reaches: heritage sites and terrain are made within
 /// 20 km of it.
 const NEAR_COVERAGE_KM: f64 = 20.0;
 
-/// The credits a catalog lists, in the table's order: those for anywhere, and those whose areas meet
+/// The credits a catalogue lists, in the table's order: those for anywhere, and those whose areas meet
 /// what it serves. That's the coverage it records (`regions`) and 20 km around it, and the built
 /// units' ways (`extents`, E7), which reach past the coverage (ways are kept whole) and stay served
 /// while their region's removal waits for a rebuild.
-pub fn catalog_credits(regions: &[DrawnRegion], extents: &[[i32; 4]]) -> Vec<&'static Credit> {
+pub fn catalogue_credits(regions: &[DrawnRegion], extents: &[[i32; 4]]) -> Vec<&'static Credit> {
     CREDITS.iter().filter(|c| listed(c.areas, regions, extents)).collect()
 }
 
-/// Whether a credit of areas `areas` (none: anywhere) is listed by a catalog serving `regions` and
-/// the built units' ways `extents` (`catalog_credits`' rule; the inputs' descriptions' too,
+/// Whether a credit of areas `areas` (none: anywhere) is listed by a catalogue serving `regions` and
+/// the built units' ways `extents` (`catalogue_credits`' rule; the inputs' descriptions' too,
 /// crate::inputs::credits).
 pub fn listed(areas: &[[f64; 4]], regions: &[DrawnRegion], extents: &[[i32; 4]]) -> bool {
     let e7 = |d: f64| (d * 1e7).round() as i32;
@@ -249,7 +249,7 @@ mod tests {
         assert!(tokyo.contains("networks-europe=1") && quebec.contains("spacing=1") && !tokyo.contains("dem-"));
     }
 
-    /// A region of one drawn box, as a catalog records it.
+    /// A region of one drawn box, as a catalogue records it.
     fn region(id: &str, w: f64, s: f64, e: f64, n: f64) -> DrawnRegion {
         let ring = vec![[w, s], [e, s], [e, n], [w, n], [w, s]];
         let entry = format!("poly:{id}.poly");
@@ -267,9 +267,9 @@ mod tests {
     }
 
     #[test]
-    fn credits_by_what_a_catalog_serves() {
+    fn credits_by_what_a_catalogue_serves() {
         // Around Tokyo: the world's, no one else's.
-        let tokyo = whats(catalog_credits(&[region("tokyo", 139.5, 35.5, 140.0, 36.0)], &[]));
+        let tokyo = whats(catalogue_credits(&[region("tokyo", 139.5, 35.5, 140.0, 36.0)], &[]));
         for w in ["Rail service frequency", "Land cover"] {
             assert!(tokyo.contains(&w), "{w}");
         }
@@ -284,13 +284,13 @@ mod tests {
         // The data reaches 20 km past the coverage: Canada's box for a region a few km west of it,
         // not for one 4° west (20 km grows the box by the most degrees at its northern edge).
         let canvec = "Lakes missing from OpenStreetMap in parts of Canada";
-        assert!(whats(catalog_credits(&[region("near", -141.2, 60.0, -141.15, 60.1)], &[])).contains(&canvec));
-        assert!(!whats(catalog_credits(&[region("far", -145.2, 60.0, -145.1, 60.1)], &[])).contains(&canvec));
+        assert!(whats(catalogue_credits(&[region("near", -141.2, 60.0, -141.15, 60.1)], &[])).contains(&canvec));
+        assert!(!whats(catalogue_credits(&[region("far", -145.2, 60.0, -145.1, 60.1)], &[])).contains(&canvec));
         // A unit's ways in France, its region since removed: Europe's credits stay with its data.
-        let both = whats(catalog_credits(&[region("tokyo", 139.5, 35.5, 140.0, 36.0)], &[e7(2.2, 48.7, 2.5, 48.9)]));
+        let both = whats(catalogue_credits(&[region("tokyo", 139.5, 35.5, 140.0, 36.0)], &[e7(2.2, 48.7, 2.5, 48.9)]));
         assert!(both.contains(&"Forest leaf type, Europe") && !both.contains(&canvec));
         // Nothing served: the world's only.
-        assert!(whats(catalog_credits(&[], &[]))
+        assert!(whats(catalogue_credits(&[], &[]))
             .iter()
             .all(|w| CREDITS.iter().any(|c| c.what == *w && c.areas.is_empty())));
     }
@@ -323,7 +323,7 @@ mod tests {
         let release = s.role(crate::inputs::sources::BUILDINGS).unwrap().version().unwrap().to_string();
         assert!(CREDITS.iter().any(|c| c.what == "3D buildings" && c.source.contains(&release)));
         assert_eq!(CREDITS.len(), 18);
-        // As catalogs carry them: areas only where a credit has some.
+        // As catalogues carry them: areas only where a credit has some.
         let v = serde_json::to_value(&CREDITS[..2]).unwrap();
         assert!(v[0].get("areas").is_none() && v[1]["areas"][0][2] == -52.5);
     }

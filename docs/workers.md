@@ -180,7 +180,7 @@ Common rules:
 - **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`, `settings.js`, `sums.js`, `live.js`, `nas.js`, `activity.js`, `chart.js`, `chartmath.js`, `worldmap.js`; docs/pipeline.md §5): a
   sticky header (the verdict: going, done when; Pause, Freeze, Resume), the world map in a left
   panel beside the tabs (`worldmap.js`: regions, the queue, running and finished tiles; a step
-  soloed from its legend, its published tiles by age, `catalogs.js`; a card of the whole stack
+  soloed from its legend, its published tiles by age, `catalogues.js`; a card of the whole stack
   under a point, hovered or pinned by a click or tap; docs/pipeline.md §5), a tab per part by the
   address's `#hash` in the right panel, and a fixed footer (the charts' range, the Live dot).
   Overview (the alerts, the work left in the queue, the last and next catalogue, the Macs); Jobs (the schedule: each

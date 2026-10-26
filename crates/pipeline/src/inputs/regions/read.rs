@@ -1,6 +1,6 @@
 //! How the build reads the regions (docs/inputs.md §4.6, §6.1.4, §6.1.10): from the accepted version
 //! alone, the regions listed by the index (each region file's `facts`: its id, name and outline
-//! entries), the coverage made from their stored geometry (`Coverage::accepted`), the catalog's
+//! entries), the coverage made from their stored geometry (`Coverage::accepted`), the catalogue's
 //! drawn regions from their drawn files, and the Regions list's tree from the index's paths.
 
 use super::stored::{Drawn, Geometry};
@@ -197,7 +197,7 @@ pub fn tree(index: &crate::inputs::Index) -> Folder {
 }
 
 /// The regions the build reads, sorted by id: the enabled ones (a disabled region is checked and
-/// stored, others may name it, but nothing builds, plans, sizes, downloads or catalogs it), less
+/// stored, others may name it, but nothing builds, plans, sizes, downloads or catalogues it), less
 /// those that resolved to nothing (no area: nothing to build).
 pub fn recipes(a: &Accepted) -> Result<Vec<Recipe>> {
     Ok(enabled(a)?.into_iter().map(|l| l.recipe).collect())

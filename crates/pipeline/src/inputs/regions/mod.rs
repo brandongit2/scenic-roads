@@ -7,7 +7,7 @@
 //! outline set, and the regions' extract for any other relation or way: crate::inputs::regions::
 //! extract) into its stored geometry (crate::inputs::regions::resolve, ::stored, ::geom), which it
 //! stores with the accepted version: per region a `.rgeo` the coverage reads and a drawn `.json` the
-//! catalog and the map's region layer draw, named in the index's `facts.geometry` and `facts.drawn`.
+//! catalogue and the map's region layer draw, named in the index's `facts.geometry` and `facts.drawn`.
 //! Every finding is an error (`rg-*`, §6.1.8). A region whose pin names another pass than the
 //! build's is held with its file unchanged (`Checks::holds_unchanged`), keeping its accepted
 //! geometry.

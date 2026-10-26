@@ -96,7 +96,7 @@ pub fn find_here(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<(
 }
 
 /// A way by OSM id and a point near it. The "ways here" entry must name a way of that id in its
-/// owner's base pack (a mismatch would mean packs of different catalogs).
+/// owner's base pack (a mismatch would mean packs of different catalogues).
 pub fn find_way(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<Found>> {
     let Some((_, h)) = find_here(s, id, at)? else { return Ok(None) };
     let Some(base) = s.data.base(&unit_str(h.owner))? else { return Ok(None) };
@@ -524,12 +524,12 @@ fn build_profile(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<P
     }))
 }
 
-/// Elevation source byte `k`'s name: its declaration's label, as the catalog carries it
-/// (`dem_labels`, docs/inputs.md §6.8); a catalog made before it did names the byte alone.
+/// Elevation source byte `k`'s name: its declaration's label, as the catalogue carries it
+/// (`dem_labels`, docs/inputs.md §6.8); a catalogue made before it did names the byte alone.
 fn dem_label(s: &AppState, k: usize) -> String {
     u8::try_from(k)
         .ok()
-        .and_then(|c| s.data.catalog().dem_labels.get(&c).cloned())
+        .and_then(|c| s.data.catalogue().dem_labels.get(&c).cloned())
         .unwrap_or_else(|| format!("source {k}"))
 }
 

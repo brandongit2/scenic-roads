@@ -3,7 +3,7 @@
 //! standard properties) and `<register>.toml` (its description, §5.1, with its `class`,
 //! `territory`, `wikidata_property` and `osm_ref_tags`); the register's id is the files' stem. The
 //! heritage-sites job reads every accepted register whose box meets its cover, generically
-//! (dem/heritage.py; crate::heritage::registers), and the catalog credits each by its description.
+//! (dem/heritage.py; crate::heritage::registers), and the catalogue credits each by its description.
 //!
 //! The checks:
 //! - **Errors:** a file that isn't a register's `.geojson` or `.toml`, or whose stem isn't a
@@ -23,7 +23,7 @@
 //!   outlines of its declared territory (the newest pass's: NRHP's legation in Tangier is real).
 //!
 //! What's derived: each `.geojson`'s box and entry count (`facts.box`, `facts.entries`), and each
-//! description's extent, its register's box (`facts.extent`), which the catalog's credits list it by
+//! description's extent, its register's box (`facts.extent`), which the catalogue's credits list it by
 //! (crate::inputs::credits).
 
 use super::{Checks, Derived, FileCheck, FileEntry, Finding, Level, Version};
@@ -448,7 +448,7 @@ impl Checks for Heritage {
                         c.facts.insert("description".into(), serde_json::to_value(&d).unwrap_or_default());
                         c.facts.insert("class".into(), own.class.clone().into());
                         // (What enters builds: the class, territory and how its ids are known; its
-                        // credit reaches the catalog through the credits' digest.)
+                        // credit reaches the catalogue through the credits' digest.)
                         let k = format!(
                             "{keyed}\nclass {}\nterritory {}\nwikidata {}\nosm {}",
                             own.class,
@@ -675,7 +675,7 @@ impl Checks for Heritage {
             if keep.contains(p) || !v.paths.contains(&g) {
                 continue;
             }
-            // (The description's extent: its register's box, which the catalog's credits list it by.)
+            // (The description's extent: its register's box, which the catalogue's credits list it by.)
             let s = summary(&(v.read)(&g)?);
             let mut facts = serde_json::Map::new();
             if let Some(b) = s.bbox {

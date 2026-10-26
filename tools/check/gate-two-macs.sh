@@ -76,7 +76,7 @@
 #    Given M1 → M4 with the M1's check stopped across it: the new lead (term 5) took up the lease
 #    handed over, and merged the check's journal entry (lease 4-…, the M1's member) once it ended.
 # A lead taking over runs each unit's full check once (its own daily timer), here 0.5 s.
-# GC (`scenic gc`, 14 days, with a catalog there: with none GC sweeps nothing), every copy aged 30
+# GC (`scenic gc`, 14 days, with a catalogue there: with none GC sweeps nothing), every copy aged 30
 # days, then a change: kept the current index and its files, the index it replaced (touched by the
 # check, and again with its touch undone, by @listed's `replaced`) and the current @listed; old
 # indexes, listings, held reports and copies no version names went. The nested unit

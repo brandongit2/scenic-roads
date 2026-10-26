@@ -391,7 +391,7 @@ mod tests {
                 each: &c.by_region(),
                 on_map: &BTreeMap::new(),
                 served: &BTreeMap::new(),
-                since_catalog: None,
+                since_catalogue: None,
                 held_for: None,
                 held: false,
                 way: Default::default(),

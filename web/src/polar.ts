@@ -287,5 +287,5 @@ export class PolarTiles {
   }
 }
 
-/** The polar layers' catalog names for a pole (`polar-terrain-s`, …). */
+/** The polar layers' catalogue names for a pole (`polar-terrain-s`, …). */
 export const polarLayerName = (kind: TileKind, pole: Pole) => `polar-${kind}-${pole}`;

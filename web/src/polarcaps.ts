@@ -1,7 +1,7 @@
 // The polar caps on the app's map (docs/polar.md; task #601): a pole's cap is drawn (polarglobe.ts)
-// while the catalog lists its layers, `polar-terrain-<pole>` and `polar-slope-<pole>`. Its tiles
+// while the catalogue lists its layers, `polar-terrain-<pole>` and `polar-slope-<pole>`. Its tiles
 // come from /tiles/polar-terrain|polar-slope/<pole>/z/x/y at the layers' versions (their packs' where
-// the catalog gives packs: api.ts packUrl); a new version asks for every tile again. The cap
+// the catalogue gives packs: api.ts packUrl); a new version asks for every tile again. The cap
 // follows the map's hillshade layer, the terrain's 3D and exaggeration, the land and water colours
 // and the tints by itself (polarGlobeLayer reads them from the map each frame).
 
@@ -11,7 +11,7 @@ import { hostFor } from './hosts';
 import { polarLayerName, type Pole, type TileKind } from './polar';
 import { polarGlobeLayer, premultiplied, type Rgba } from './polarglobe';
 
-type CatalogLayer = { maxzoom?: number; version?: string | number };
+type CatalogueLayer = { maxzoom?: number; version?: string | number };
 
 export type PolarLook = {
   /** The land's colour (CSS). */
@@ -20,7 +20,7 @@ export type PolarLook = {
   water: () => string | null;
 };
 
-/** The caps drawn on `map`, by the catalog's layers. */
+/** The caps drawn on `map`, by the catalogue's layers. */
 export class PolarCaps {
   private caps = new Map<Pole, { layer: ReturnType<typeof polarGlobeLayer>; v: string; maxZoom: number }>();
   private layers: Record<string, unknown> = {};
@@ -39,9 +39,9 @@ export class PolarCaps {
     return v;
   }
 
-  /** A layer's version: the catalog's, else its file's (meta's versions). */
+  /** A layer's version: the catalogue's, else its file's (meta's versions). */
   private version(name: string): string {
-    const l = this.layers[name] as CatalogLayer | undefined;
+    const l = this.layers[name] as CatalogueLayer | undefined;
     return String(l?.version ?? version(`${name}.tiles`));
   }
 
@@ -50,12 +50,12 @@ export class PolarCaps {
     return packUrl(`${hostFor('terrain')}/tiles/polar-${kind}/${pole}/${z}/${x}/${y}${v ? `?v=${v}` : ''}`);
   }
 
-  /** The catalog's layers (at start and for each new catalog): a cap for each pole listing both. */
-  setCatalog(layers: Record<string, unknown> | undefined) {
+  /** The catalogue's layers (at start and for each new catalogue): a cap for each pole listing both. */
+  setCatalogue(layers: Record<string, unknown> | undefined) {
     this.layers = layers ?? {};
     for (const pole of ['n', 's'] as Pole[]) {
-      const t = this.layers[polarLayerName('terrain', pole)] as CatalogLayer | undefined;
-      const s = this.layers[polarLayerName('slope', pole)] as CatalogLayer | undefined;
+      const t = this.layers[polarLayerName('terrain', pole)] as CatalogueLayer | undefined;
+      const s = this.layers[polarLayerName('slope', pole)] as CatalogueLayer | undefined;
       const have = this.caps.get(pole);
       if (!t || !s) {
         if (have && this.map.getLayer(have.layer.id)) this.map.removeLayer(have.layer.id);

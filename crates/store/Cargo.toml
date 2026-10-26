@@ -2,7 +2,7 @@
 name = "store"
 version = "0.1.0"
 edition = "2021"
-description = "NAS storage for the map: content-named files, packs, sectioned files, catalogs, the NAS I/O pool, finding and mounting the share, the per-Mac mirror, PMTiles reading"
+description = "NAS storage for the map: content-named files, packs, sectioned files, catalogues, the NAS I/O pool, finding and mounting the share, the per-Mac mirror, PMTiles reading"
 
 [dependencies]
 roadcore = { path = "../roadcore" }

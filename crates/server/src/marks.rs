@@ -415,7 +415,7 @@ fn named_props(s: &crate::AppState, raw: &[u8], lon: f64, lat: f64) -> Map<Strin
 
 /// The markdata tiles a region can need.
 fn views_for(s: &S, region: &Region) -> anyhow::Result<Vec<Arc<MarkView>>> {
-    let cat = s.data.catalog();
+    let cat = s.data.catalogue();
     let want: Vec<String> = region
         .tiles()
         .into_iter()
@@ -661,10 +661,10 @@ fn extra_json(s: &S, views: &[Arc<MarkView>], list: &[&Cand]) -> anyhow::Result<
 }
 
 /// The points' version: their files' content names and the translations their names come from. It
-/// changes with new points or names, not with every catalog (a roads-only one keeps it).
+/// changes with new points or names, not with every catalogue (a roads-only one keeps it).
 pub fn marks_version(s: &S) -> String {
     static LAST: LazyLock<Mutex<Option<((u64, u64), String)>>> = LazyLock::new(Default::default);
-    let cat = s.data.catalog();
+    let cat = s.data.catalogue();
     let key = (cat.n, s.names.version_all());
     if let Some((k, v)) = LAST.lock().unwrap().as_ref() {
         if *k == key {
@@ -683,13 +683,13 @@ pub fn marks_version(s: &S) -> String {
     v
 }
 
-/// A request made for other points than these (a new catalog's or new names): 409, ask again.
-fn catalog_mismatch(s: &S, v: Option<&str>) -> bool {
+/// A request made for other points than these (a new catalogue's or new names): 409, ask again.
+fn catalogue_mismatch(s: &S, v: Option<&str>) -> bool {
     v.is_some_and(|v| v != marks_version(s))
 }
 
 pub async fn view(State(s): State<S>, Json(q): Json<ViewQ>) -> Response {
-    if catalog_mismatch(&s, q.v.as_deref()) {
+    if catalogue_mismatch(&s, q.v.as_deref()) {
         return StatusCode::CONFLICT.into_response();
     }
     let s2 = s.clone();
@@ -798,7 +798,7 @@ pub async fn tile(
     if pm::kind_index(&kind).is_none() || z > pm::THIN_MAX_Z || x >> z != 0 || y >> z != 0 {
         return StatusCode::NOT_FOUND.into_response();
     }
-    if catalog_mismatch(&s, v_of(q.as_deref())) {
+    if catalogue_mismatch(&s, v_of(q.as_deref())) {
         return StatusCode::CONFLICT.into_response();
     }
     let layer = format!("marks-{kind}");
@@ -846,7 +846,7 @@ pub async fn block(
     if z != 6 || x >> 6 != 0 || y >> 6 != 0 {
         return StatusCode::NOT_FOUND.into_response();
     }
-    if catalog_mismatch(&s, v_of(q.as_deref())) {
+    if catalogue_mismatch(&s, v_of(q.as_deref())) {
         return StatusCode::CONFLICT.into_response();
     }
     let tile = format!("6/{x}/{y}");
@@ -886,7 +886,7 @@ pub struct QParam {
 
 /// The z6 tiles under tile z/x/y (z ≤ 6) that have markdata.
 fn z6_under(s: &S, z: u8, x: u32, y: u32) -> Vec<String> {
-    let cat = s.data.catalog();
+    let cat = s.data.catalogue();
     let d = 6 - z;
     let mut out = Vec::new();
     for xx in (x << d)..((x + 1) << d) {
@@ -913,7 +913,7 @@ pub async fn specks(
     if z > pm::THIN_MAX_Z || x >> z != 0 || y >> z != 0 {
         return StatusCode::NOT_FOUND.into_response();
     }
-    if catalog_mismatch(&s, v_of(raw.as_deref())) {
+    if catalogue_mismatch(&s, v_of(raw.as_deref())) {
         return StatusCode::CONFLICT.into_response();
     }
     let qs = p.q.unwrap_or_default();
@@ -961,7 +961,7 @@ pub async fn specks(
     .await
 }
 
-/// Worldwide filtered counts, per catalog, kind and query.
+/// Worldwide filtered counts, per catalogue, kind and query.
 static COUNTS: LazyLock<Mutex<HashMap<(u64, String, String), (u64, u64)>>> = LazyLock::new(Default::default);
 
 #[derive(Deserialize)]
@@ -977,14 +977,14 @@ pub struct CountQ {
 /// (the worker's `count`).
 pub async fn count(State(s): State<S>, Query(c): Query<CountQ>) -> Response {
     let Some(k) = pm::kind_index(&c.kind) else { return StatusCode::NOT_FOUND.into_response() };
-    if catalog_mismatch(&s, c.v.as_deref()) {
+    if catalogue_mismatch(&s, c.v.as_deref()) {
         return StatusCode::CONFLICT.into_response();
     }
     let qs = c.q.unwrap_or_default();
     let Ok(sq) = (if qs.is_empty() { Ok(SpeckQ::default()) } else { serde_json::from_str::<SpeckQ>(&qs) }) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    let n_cat = s.data.catalog().n;
+    let n_cat = s.data.catalogue().n;
     let key = (n_cat, c.kind.clone(), qs);
     if let Some((n, of)) = COUNTS.lock().unwrap().get(&key).copied() {
         return Json(json!({ "n": n, "of": of })).into_response();
@@ -994,7 +994,7 @@ pub async fn count(State(s): State<S>, Query(c): Query<CountQ>) -> Response {
     let got = tokio::task::spawn_blocking(move || -> anyhow::Result<(u64, u64)> {
         let pass = pass_fn(&kind, &sq.filters, sq.keep_unknown);
         let off: HashSet<u8> = sq.off.iter().filter_map(|t| pm::tier_index(t)).collect();
-        let tiles: Vec<String> = s2.data.catalog().markdata.keys().cloned().collect();
+        let tiles: Vec<String> = s2.data.catalogue().markdata.keys().cloned().collect();
         let per: Vec<(u64, u64)> = tiles
             .par_iter()
             .map(|t| -> anyhow::Result<(u64, u64)> {
@@ -1030,7 +1030,7 @@ pub async fn count(State(s): State<S>, Query(c): Query<CountQ>) -> Response {
     match got {
         Ok(Ok((n, of))) => {
             let mut c = COUNTS.lock().unwrap();
-            // (Per catalog and filter setting: a few hundred at most in use; older ones go.)
+            // (Per catalogue and filter setting: a few hundred at most in use; older ones go.)
             c.retain(|k, _| k.0 == n_cat);
             if c.len() > 512 {
                 c.clear();
@@ -1057,7 +1057,7 @@ pub struct DetailQ {
 /// the z6 tile holding the point (or one next to it, for a point on an edge).
 pub async fn detail(State(s): State<S>, Path((kind, id)): Path<(String, u64)>, Query(d): Query<DetailQ>) -> Response {
     let Some(k) = pm::kind_index(&kind) else { return StatusCode::NOT_FOUND.into_response() };
-    if catalog_mismatch(&s, d.v.as_deref()) {
+    if catalogue_mismatch(&s, d.v.as_deref()) {
         return StatusCode::CONFLICT.into_response();
     }
     let mut it = d.at.split(',').map(|v| v.trim().parse::<f64>());

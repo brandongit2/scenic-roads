@@ -3,7 +3,7 @@
 //! downloaded goes until the owner removes it (store::mirror).
 //!
 //!   GET    /api/downloads                 this Mac's room, the World download, every region the
-//!                                         catalog has (a region still building with its `tiles`
+//!                                         catalogue has (a region still building with its `tiles`
 //!                                         built of total) with its size, how much of it is here
 //!                                         and whether it's downloaded, the copy under way
 //!   PUT    /api/downloads/world           {on}: download the World, zoomed out, or remove it
@@ -53,7 +53,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use store::catalog::Catalog;
+use store::catalogue::Catalogue;
 use store::mirror::{Control, Item, Mirror, SyncEnd, Wanted};
 use store::pieces::Piece;
 
@@ -85,7 +85,7 @@ pub struct AskedRegion {
     pub detail: bool,
 }
 
-/// What a download copies: files of the catalog and pieces of its basemap's archives, in copy order.
+/// What a download copies: files of the catalogue and pieces of its basemap's archives, in copy order.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Part {
     pub files: Files,
@@ -94,7 +94,7 @@ pub struct Part {
 
 impl Part {
     /// The files (`names`, content names; put in copy order) and the pieces of each of `archives`.
-    fn new(cat: &Catalog, files: Files, archives: &[String], pieces: &[Piece]) -> Part {
+    fn new(cat: &Catalogue, files: Files, archives: &[String], pieces: &[Piece]) -> Part {
         let by_content: std::collections::HashMap<&str, &str> =
             cat.files.iter().map(|(l, f)| (f.file.as_str(), l.as_str())).collect();
         let mut logicals: Vec<&str> =
@@ -151,19 +151,19 @@ pub struct RegionParts {
 /// ways it lists (`here`) whose boxes meet the region's outline grown by `NEAR_KM`.
 type Owners = std::collections::HashMap<(String, String), (String, Arc<BTreeSet<u64>>)>;
 
-/// Every region the catalog records, what downloading it copies, by id.
+/// Every region the catalogue records, what downloading it copies, by id.
 type Regions = Arc<BTreeMap<String, RegionParts>>;
 
-/// What the mirror copies for one catalog and one set of downloads.
+/// What the mirror copies for one catalogue and one set of downloads.
 pub struct Plan {
-    /// The catalog generation and the downloads' version it was made for.
+    /// The catalogue generation and the downloads' version it was made for.
     generation: u64,
     version: u64,
     /// What's downloaded, in copy order: the World, then the regions as they were asked, then their
     /// terrain detail.
     pub wanted: Wanted,
     pub world: Part,
-    /// Every region the catalog records (for its size, downloaded or not).
+    /// Every region the catalogue records (for its size, downloaded or not).
     pub regions: Regions,
     pub asked: Asked,
 }
@@ -175,7 +175,7 @@ pub struct Downloads {
     /// Bumped at every change of what's asked, and when owners are learned.
     version: AtomicU64,
     plan: Mutex<Option<Arc<Plan>>>,
-    /// The regions' parts for a catalog generation and an owners' change (they don't change
+    /// The regions' parts for a catalogue generation and an owners' change (they don't change
     /// with the downloads otherwise).
     regions: Mutex<Option<(u64, u64, Regions)>>,
     /// The downloaded regions' hidata's owners, as far as they're read, and a count of their
@@ -275,7 +275,7 @@ impl Downloads {
         *g = false;
     }
 
-    /// The plan for the catalog being served and the downloads as they are.
+    /// The plan for the catalogue being served and the downloads as they are.
     pub fn plan(&self, data: &Data) -> Arc<Plan> {
         let generation = data.generation.load(Ordering::SeqCst);
         let version = self.version();
@@ -284,7 +284,7 @@ impl Downloads {
                 return p.clone();
             }
         }
-        let cat = data.catalog();
+        let cat = data.catalogue();
         let (changes, owners) = self.owners.lock().unwrap().clone();
         let regions = {
             let mut g = self.regions.lock().unwrap();
@@ -314,10 +314,10 @@ impl Downloads {
     /// this Mac's copy, else the NAS. A region keeps the base packs and road values of the owners
     /// of those ways whose boxes meet its outline grown by `NEAR_KM` (`area_part`), so a way drawn
     /// in it that starts far outside has its info away from the NAS. Whether every one is known
-    /// for the catalog served: a hidata that can't be read keeps what was known of its tile, and is
+    /// for the catalogue served: a hidata that can't be read keeps what was known of its tile, and is
     /// tried again next round. A change changes the plan.
     fn learn_owners(&self, data: &Data, plan: &Plan) -> bool {
-        let cat = data.catalog();
+        let cat = data.catalogue();
         let drawn = crate::regions::recorded(&cat);
         let known = self.owners.lock().unwrap().1.clone();
         let mut next = Owners::new();
@@ -379,7 +379,7 @@ fn units_of(owners: &Owners, region: &str) -> BTreeSet<u64> {
     owners.iter().filter(|((r, _), _)| r == region).flat_map(|(_, (_, o))| o.iter().copied()).collect()
 }
 
-fn make_plan(cat: &Catalog, generation: u64, version: u64, asked: Asked, regions: Regions) -> Plan {
+fn make_plan(cat: &Catalogue, generation: u64, version: u64, asked: Asked, regions: Regions) -> Plan {
     let world = world_part(cat);
     let mut wanted = Wanted::default();
     let mut seen = HashSet::new();
@@ -399,7 +399,7 @@ fn make_plan(cat: &Catalog, generation: u64, version: u64, asked: Asked, regions
 }
 
 /// The World, zoomed out: the essentials and the basemap's zooms 0–10.
-fn world_part(cat: &Catalog) -> Part {
+fn world_part(cat: &Catalogue) -> Part {
     let ess = store::mirror::essentials(cat);
     let files = of_contents(cat, ess.iter().map(String::as_str));
     Part::new(cat, files, &basemap_archives(cat), &[Piece::Lo])
@@ -408,7 +408,7 @@ fn world_part(cat: &Catalog) -> Part {
 /// A region's download (`rings`, each read as a filled area): its files, with the base packs and
 /// road values of `units` (the owners of its ways, `Downloads::learn_owners`), then its basemap
 /// pieces.
-fn area_part(cat: &Catalog, rings: &[Vec<[f64; 2]>], units: &BTreeSet<u64>) -> Part {
+fn area_part(cat: &Catalogue, rings: &[Vec<[f64; 2]>], units: &BTreeSet<u64>) -> Part {
     let tiles = tiles_meeting(rings, NEAR_KM);
     let mut files: BTreeMap<String, u64> = files_of(cat, rings).names.into_iter().collect();
     for &u in units {
@@ -424,7 +424,7 @@ fn area_part(cat: &Catalog, rings: &[Vec<[f64; 2]>], units: &BTreeSet<u64>) -> P
 }
 
 /// A region's downloads (`rings`, its outer rings): the region, and its terrain detail.
-fn region_parts(cat: &Catalog, rings: &[Vec<[f64; 2]>], units: &BTreeSet<u64>) -> RegionParts {
+fn region_parts(cat: &Catalogue, rings: &[Vec<[f64; 2]>], units: &BTreeSet<u64>) -> RegionParts {
     let (files, cover) = detail_of(cat, rings);
     let near = tiles_meeting(rings, NEAR_KM)
         .into_iter()
@@ -434,12 +434,12 @@ fn region_parts(cat: &Catalog, rings: &[Vec<[f64; 2]>], units: &BTreeSet<u64>) -
     RegionParts { coarse: area_part(cat, rings, units), detail: Part::new(cat, files, &[], &[]), cover, near }
 }
 
-fn basemap_archives(cat: &Catalog) -> Vec<String> {
+fn basemap_archives(cat: &Catalogue) -> Vec<String> {
     cat.basemap.iter().filter_map(|l| cat.content(l)).map(str::to_string).collect()
 }
 
-/// The catalog's files of these content names.
-fn of_contents<'a>(cat: &Catalog, contents: impl IntoIterator<Item = &'a str>) -> Files {
+/// The catalogue's files of these content names.
+fn of_contents<'a>(cat: &Catalogue, contents: impl IntoIterator<Item = &'a str>) -> Files {
     let sizes: std::collections::HashMap<&str, u64> = cat.files.values().map(|f| (f.file.as_str(), f.size)).collect();
     Files::from_map(contents.into_iter().filter_map(|c| sizes.get(c).map(|&s| (c.to_string(), s))).collect())
 }
@@ -447,7 +447,7 @@ fn of_contents<'a>(cat: &Catalog, contents: impl IntoIterator<Item = &'a str>) -
 // ---- the mirror thread --------------------------------------------------------------------------
 
 /// Keeps the mirror (store::mirror) on its own thread: every minute, or as soon as the downloads
-/// change, it lets go of what isn't downloaded and copies what is; a new catalog or a change of the
+/// change, it lets go of what isn't downloaded and copies what is; a new catalogue or a change of the
 /// downloads has it plan again at once. Away from home, it only lets go. While the build runs (the
 /// lead's heartbeat on the NAS says a job runs, as the copies' pause read it before
 /// downloads), copies keep to 20 MB/s; a file this Mac's pack or lo job holds isn't deleted
@@ -470,14 +470,14 @@ pub fn spawn_mirror(s: S) {
 static MIRROR_MARKS: std::sync::Mutex<pipeline::pubtimes::MirrorMarks> =
     std::sync::Mutex::new(pipeline::pubtimes::MirrorMarks::new());
 
-/// One round of the mirror; whether to go again at once (the catalog or the downloads changed
+/// One round of the mirror; whether to go again at once (the catalogue or the downloads changed
 /// meanwhile).
 fn once(s: &crate::AppState, m: &Mirror) -> bool {
     let owners_known = s.downloads.learn_owners(&s.data, &s.downloads.plan(&s.data));
     let plan = s.downloads.plan(&s.data);
     let changed =
         || s.data.generation.load(Ordering::SeqCst) != plan.generation || s.downloads.version() != plan.version;
-    let cat = s.data.catalog();
+    let cat = s.data.catalogue();
     // (Nothing known of the map yet: what's here can't be told from what isn't wanted.)
     if cat.n == 0 {
         return false;
@@ -508,7 +508,7 @@ fn once(s: &crate::AppState, m: &Mirror) -> bool {
                 eprintln!("mirror: sizing the basemap's pieces: {e:#}");
             }
             let slow = || s.data.agent_busy();
-            // (Each catalog's sync begun and through, once, in publishing's log: pipeline::pubtimes.)
+            // (Each catalogue's sync begun and through, once, in publishing's log: pipeline::pubtimes.)
             let now = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
             if MIRROR_MARKS.lock().unwrap().start(cat.n, now()) {
                 crate::data::publish_event(&root, "mirror-start", cat.n, None);
@@ -616,7 +616,7 @@ pub fn status(s: &crate::AppState) -> Result<Value> {
     };
     let state = |p: &Part| part_state(p, m, cname, room.more, online);
     let on: HashSet<&str> = plan.asked.regions.iter().map(|r| r.id.as_str()).collect();
-    let listed: BTreeMap<String, Value> = crate::regions::recorded_list(&s.data.catalog())
+    let listed: BTreeMap<String, Value> = crate::regions::recorded_list(&s.data.catalogue())
         .into_iter()
         .filter_map(|r| Some((r["id"].as_str()?.to_string(), r)))
         .collect();
@@ -636,7 +636,7 @@ pub fn status(s: &crate::AppState) -> Result<Value> {
         }
         let r = listed.get(id);
         v["name"] = json!(r.and_then(|r| r["name"].as_str()).unwrap_or_default());
-        // (Still building: its tiles built of total; its files grow with each catalog.)
+        // (Still building: its tiles built of total; its files grow with each catalogue.)
         if let Some(t) = r.and_then(|r| r.get("tiles")) {
             v["tiles"] = t.clone();
         }
@@ -644,7 +644,7 @@ pub fn status(s: &crate::AppState) -> Result<Value> {
         v["state"] = json!(downloaded.then(|| state(p)));
         regions.insert(id.clone(), v);
     }
-    // Downloaded regions the catalog doesn't have (not built yet, or removed since).
+    // Downloaded regions the catalogue doesn't have (not built yet, or removed since).
     for r in &plan.asked.regions {
         regions.entry(r.id.clone()).or_insert_with(
             || json!({ "name": r.name, "bytes": 0, "here": 0, "unknown": 0, "on": true, "state": "missing" }),
@@ -751,7 +751,7 @@ fn size(b: u64) -> String {
 /// the NAS first where they aren't known.
 fn need(s: &crate::AppState, m: &Mirror, next: &Asked) -> Result<(u64, u64)> {
     let cur = s.downloads.plan(&s.data);
-    let cat = s.data.catalog();
+    let cat = s.data.catalogue();
     let plan = make_plan(&cat, cur.generation, cur.version, next.clone(), cur.regions.clone());
     let unknown = plan.wanted.items.iter().any(|i| m.item_size(i).is_none());
     if unknown {
@@ -835,9 +835,9 @@ pub async fn put_world(State(s): State<S>, Json(q): Json<On>) -> Response {
     .await
 }
 
-/// Downloads a region, or removes it (with its terrain detail). A region the catalog doesn't have yet
-/// can be downloaded: its files come once a catalog has it. One still building (its `tiles`) is
-/// downloaded as its tiles come: its files are those of the catalog served, more with each catalog
+/// Downloads a region, or removes it (with its terrain detail). A region the catalogue doesn't have yet
+/// can be downloaded: its files come once a catalogue has it. One still building (its `tiles`) is
+/// downloaded as its tiles come: its files are those of the catalogue served, more with each catalogue
 /// (what's here already never fetched again), copied at the slow rate while the build runs.
 pub async fn put_region(State(s): State<S>, Path(id): Path<String>, Json(q): Json<On>) -> Response {
     blocking(s, move |s| {
@@ -847,7 +847,7 @@ pub async fn put_region(State(s): State<S>, Path(id): Path<String>, Json(q): Jso
             !(q.on && crate::regions::is_disabled(s, &id)),
             "{id:?} is disabled in its file (disabled = true): nothing is built for it to download"
         );
-        let cat = s.data.catalog();
+        let cat = s.data.catalogue();
         let name = crate::regions::recorded_list(&cat)
             .iter()
             .find(|r| r["id"] == id.as_str())

@@ -1,6 +1,6 @@
 //! A z6 tile's local copies of the global-source layers, in the files the z6 tile's programs read
 //! (docs/steps.md §6): `terrain.tiles` (z0–12) and the z11 grids (`grid.idx`,
-//! `grid.terrain.i16`, `grid.class.u8`, `grid.areas.u8`, and canopy and cover when the catalog has
+//! `grid.terrain.i16`, `grid.class.u8`, `grid.areas.u8`, and canopy and cover when the catalogue has
 //! them), over the z6 tile grown by a margin (viewsheds see 15 km past the z6 tile's buffer ways).
 //!
 //! Read from the packs with plain reads (never mmapped), each pack's index once: the ones this
@@ -8,7 +8,7 @@
 //! local copies of them when it has a `Blobs` cache (each pack copied once, whole: neighbouring
 //! z6 tiles share most of theirs, and a pack read tile by tile over SMB took thousands of small reads;
 //! but a neighbour's terrain hi pack the margin only clips is read where it is, its few tiles in
-//! spans, unless it's here already: `copied_whole`), or a published catalog's (`Source::Catalog`,
+//! spans, unless it's here already: `copied_whole`), or a published catalogue's (`Source::Catalogue`,
 //! another root's for a pilot).
 
 use crate::out::Out;
@@ -19,7 +19,7 @@ use roadcore::archive::ArchiveWriter;
 use roadcore::grid::{decode_terrain, CELLS};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use store::catalog::Catalog;
+use store::catalogue::Catalogue;
 use store::nasfs::Place;
 use store::pack::PackIndex;
 use store::range::PlainFile;
@@ -30,11 +30,11 @@ pub const MARGIN_KM: f64 = 30.0;
 /// Where the global-source layers are read from.
 pub enum Source<'a> {
     /// This build's manifest as it is now: the packs the z6 tile keys hash, including what earlier
-    /// jobs of the same plan wrote (the catalog is published only at its end); read through the
+    /// jobs of the same plan wrote (the catalogue is published only at its end); read through the
     /// local copies when there's a cache.
     Manifest(&'a Out, Option<&'a store::blobs::Blobs>),
-    /// A published catalog under a root (another root's, for a pilot built against the real one).
-    Catalog(&'a store::nasfs::NasRoot, &'a Catalog),
+    /// A published catalogue under a root (another root's, for a pilot built against the real one).
+    Catalogue(&'a store::nasfs::NasRoot, &'a Catalogue),
 }
 
 impl Source<'_> {
@@ -43,7 +43,7 @@ impl Source<'_> {
     fn pack_of(&self, layer: &str, z: u8, x: u32, y: u32) -> Option<String> {
         match self {
             Source::Manifest(..) => Some(ManifestTiles::logical(layer, z, x, y)),
-            Source::Catalog(_, cat) => {
+            Source::Catalogue(_, cat) => {
                 let l = cat.layers.get(layer)?;
                 let d = crate::terrain_deep::PACK_Z;
                 match z {
@@ -70,7 +70,7 @@ impl Source<'_> {
                     Place::Nas(out.path(c))
                 }
             }),
-            Source::Catalog(root, cat) => cat.files.get(logical).map(|f| Place::Nas(root.join(&f.file))),
+            Source::Catalogue(root, cat) => cat.files.get(logical).map(|f| Place::Nas(root.join(&f.file))),
         }
     }
 
@@ -110,7 +110,7 @@ impl Source<'_> {
                 let p = format!("layers/{layer}/");
                 out.manifest.range(p.clone()..).next().is_some_and(|(l, _)| l.starts_with(&p))
             }
-            Source::Catalog(_, cat) => cat.layers.contains_key(layer),
+            Source::Catalogue(_, cat) => cat.layers.contains_key(layer),
         }
     }
 }

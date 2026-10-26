@@ -2,7 +2,7 @@
 //! areas without a description (`todo/`, crate::namestodo); the answers are `**/*.jsonl` files
 //! added anywhere else in `inputs/descriptions/`, a line a thing, `{"qid" | "id", "long", "src",
 //! "drop"}`, laid over the popups by the map's server from the accepted copies. Beside them,
-//! `about.toml` may describe the input (docs/inputs.md §5.1): its credit goes into the catalog's
+//! `about.toml` may describe the input (docs/inputs.md §5.1): its credit goes into the catalogue's
 //! credits (crate::inputs::credits) in place of `rules::CREDITS`' "Heritage descriptions".
 //!
 //! The checks:

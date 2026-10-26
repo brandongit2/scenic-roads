@@ -841,7 +841,7 @@ const ob = (k: OverlayKey) => OVERLAYS.findIndex((o) => o[0] === k);
 const FREQ_WEIGHT_ADDED = 0.3;
 const HM: HillshadeMethod[] = ['standard', 'basic', 'combined', 'igor', 'multidirectional'];
 
-/** The state as a link (the address bar's hash). `buildings`: whether the catalog has the 3D
+/** The state as a link (the address bar's hash). `buildings`: whether the catalogue has the 3D
  * buildings; without them their settings stay out of links. */
 export function toHash(s: AppState, buildings: boolean): string {
   const p = new URLSearchParams();
@@ -979,7 +979,7 @@ export function toHash(s: AppState, buildings: boolean): string {
   return '#' + p.toString().replace(/%2F/g, '/').replace(/%2C/g, ',');
 }
 
-/** The state a link gives (`buildings`: whether the catalog has the 3D buildings; without, their
+/** The state a link gives (`buildings`: whether the catalogue has the 3D buildings; without, their
  * `bd=` is left out, as `toHash` leaves it out). */
 export function fromHash(hash: string, buildings = true): AppState {
   const s: AppState = structuredClone(defaults);

@@ -59,10 +59,10 @@ const KEPT: &[&str] = &["OSM planet", "Planetiler and its data"];
 /// Lines naming a source that may: by file, item, anchor (a part of the line), with why.
 const EXEMPT: &[(&str, &str, &str, &str)] = &[
     // The credits.
-    ("crates/pipeline/src/rules.rs", "CREDITS", "source: \"", "the credits' fallback (§4.8): each entry of a declared source is replaced by its declaration's credit once one is accepted (crate::inputs::credits), and stands in until then, so a catalog never lacks a licence's notice"),
+    ("crates/pipeline/src/rules.rs", "CREDITS", "source: \"", "the credits' fallback (§4.8): each entry of a declared source is replaced by its declaration's credit once one is accepted (crate::inputs::credits), and stands in until then, so a catalogue never lacks a licence's notice"),
     ("crates/pipeline/src/rules.rs", "CREDITS", "open.canada.ca/en/open-government-licence-canada", "the credits' fallback (§4.8): the licence's own notice"),
     // Content already made, named by its content.
-    ("crates/pipeline/src/lakefill/run.rs", "fill", "\"source\": \"CanVec (Natural Resources Canada)", "the lake fill's own metadata, part of its content name: changed, the fill and the water, terrain and catalog reading it would be made again for no change in what they hold"),
+    ("crates/pipeline/src/lakefill/run.rs", "fill", "\"source\": \"CanVec (Natural Resources Canada)", "the lake fill's own metadata, part of its content name: changed, the fill and the water, terrain and catalogue reading it would be made again for no change in what they hold"),
     ("crates/pipeline/src/leaftype/mod.rs", "NALCMS_SOURCE", "\"NALCMS 2020 land cover 30 m (CEC)", "a made square's tag, as above"),
     ("crates/pipeline/src/trees/squares.rs", "complete", "starts_with(\"NALCMS\")", "reads the made squares' tags, as above"),
     ("crates/pipeline/src/trees/mod.rs", "META", "Copernicus HRL DLT 2018; NALCMS 2020", "the tree tiles' metadata, part of their content: changed, every tree tile would be made again for nothing"),

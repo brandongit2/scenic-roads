@@ -4,10 +4,10 @@
 //! (`parse_description`) and keep it in the index with the file's facts (`description`), with the
 //! extent read from the data (`extent`: a box, or `"world"`), never typed.
 //!
-//! The catalog's credits are the accepted descriptions' beside `rules::CREDITS` (until every input
+//! The catalogue's credits are the accepted descriptions' beside `rules::CREDITS` (until every input
 //! has its description): the same rule for which to list (`rules::listed`), a description winning
-//! over a `CREDITS` entry of the same `what`. The catalog's key names the descriptions' credit
-//! fields (`digest`), so an edited credit gets a new catalog without rebuilding anything.
+//! over a `CREDITS` entry of the same `what`. The catalogue's key names the descriptions' credit
+//! fields (`digest`), so an edited credit gets a new catalogue without rebuilding anything.
 
 use super::{Finding, Level};
 use serde::{Deserialize, Serialize};
@@ -143,7 +143,7 @@ pub fn iso_3166(c: &str) -> bool {
         })
 }
 
-/// An accepted description, as the catalog lists it.
+/// An accepted description, as the catalogue lists it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Described {
     pub unit: String,
@@ -168,7 +168,7 @@ impl Described {
         }
     }
 
-    /// As the catalog carries a credit (docs/formats.md, Catalog `credits`): a heritage register's
+    /// As the catalogue carries a credit (docs/formats.md, Catalogue `credits`): a heritage register's
     /// with its id (`register`), which the map's popups name their source by.
     pub fn credit(&self) -> serde_json::Value {
         let d = &self.description;
@@ -229,7 +229,7 @@ pub fn described(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, Strin
     Ok(out)
 }
 
-/// The digest of the accepted descriptions' credit fields (for the catalog's key: §4.8); None when
+/// The digest of the accepted descriptions' credit fields (for the catalogue's key: §4.8); None when
 /// there are none.
 pub fn digest(described: &[Described]) -> Option<String> {
     if described.is_empty() {
@@ -239,7 +239,7 @@ pub fn digest(described: &[Described]) -> Option<String> {
         .iter()
         .map(|d| {
             let mut l = format!("{} {}\n{}", d.unit, d.path, serde_json::to_string(&d.credit()).unwrap_or_default());
-            // (An elevation dataset's label too: the catalog's `dem_labels`.)
+            // (An elevation dataset's label too: the catalogue's `dem_labels`.)
             if let Some(c) = d.code {
                 l.push_str(&format!("\nlabel {c} {}", d.label()));
             }
@@ -261,7 +261,7 @@ impl Described {
     }
 }
 
-/// The elevation datasets' labels by source byte (the catalog's `dem_labels`, which the map's
+/// The elevation datasets' labels by source byte (the catalogue's `dem_labels`, which the map's
 /// server names a road's elevation sources by): each code's first in unit and path order.
 pub fn dem_labels(described: &[Described]) -> BTreeMap<u8, String> {
     let mut out = BTreeMap::new();
@@ -273,22 +273,22 @@ pub fn dem_labels(described: &[Described]) -> BTreeMap<u8, String> {
     out
 }
 
-/// The credits a catalog lists (`rules::catalog_credits`' rule): `rules::CREDITS`' in its order, a
+/// The credits a catalogue lists (`rules::catalogue_credits`' rule): `rules::CREDITS`' in its order, a
 /// description in place of the entry of its `what`, then the other descriptions in unit and path
 /// order.
-pub fn catalog_credits(
+pub fn catalogue_credits(
     regions: &[crate::coverage::DrawnRegion],
     extents: &[[i32; 4]],
     described: &[Described],
 ) -> Vec<serde_json::Value> {
-    catalog_credits_with(regions, extents, described, &[])
+    catalogue_credits_with(regions, extents, described, &[])
 }
 
-/// `catalog_credits`, the descriptions `also` names (unit, path) listed wherever they are: the depth
-/// sources whose data the catalog's depth holds, which reaches 200 nautical miles past the coverage
+/// `catalogue_credits`, the descriptions `also` names (unit, path) listed wherever they are: the depth
+/// sources whose data the catalogue's depth holds, which reaches 200 nautical miles past the coverage
 /// (crate::depth), so a source's territory beside the coverage isn't enough to tell; and the
 /// declared timetable feeds the trains and ferries count (crate::inputs::feeds::credited).
-pub fn catalog_credits_with(
+pub fn catalogue_credits_with(
     regions: &[crate::coverage::DrawnRegion],
     extents: &[[i32; 4]],
     described: &[Described],

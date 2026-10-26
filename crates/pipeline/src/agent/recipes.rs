@@ -10,7 +10,7 @@ pub struct Recipe {
     pub outline: Vec<String>,
 }
 
-/// A recipe's outline entries, hashed: what a catalog's `--ready` names a region built with
+/// A recipe's outline entries, hashed: what a catalogue's `--ready` names a region built with
 /// (`<id>=<digest>`), so one redrawn since isn't recorded as built with its new outline.
 pub fn outline_digest(outline: &[String]) -> String {
     store::naming::hash16(outline.join("\n").as_bytes())

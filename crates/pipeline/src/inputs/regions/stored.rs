@@ -1,7 +1,7 @@
 //! The regions' stored geometry (docs/inputs.md §6.1.4): per region, what the coverage reads
 //! (`sources/inputs/regions/@geometry/<id>.<hash16>.rgeo`: the magic, a JSON head, each shape's rings
 //! as zigzag varint deltas; no compression, so the same geometry is the same bytes whatever library
-//! a Mac has) and what the catalog and the map's region layer draw
+//! a Mac has) and what the catalogue and the map's region layer draw
 //! (`sources/inputs/regions/@drawn/<id>.<hash16>.json`).
 
 use anyhow::{bail, ensure, Context, Result};
@@ -184,20 +184,20 @@ impl Geometry {
     }
 }
 
-/// A region as drawn (the catalog's `DrawnRegion` shapes, the map's region layer): each stored
+/// A region as drawn (the catalogue's `DrawnRegion` shapes, the map's region layer): each stored
 /// shape's polygons simplified for drawing, GeoJSON coordinates in degrees, by `from`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Drawn {
     pub fmt: u32,
     pub id: String,
     pub name: String,
-    /// The outline entries as text (`Region::outline_text`), as a catalog records a region's.
+    /// The outline entries as text (`Region::outline_text`), as a catalogue records a region's.
     pub outline: Vec<String>,
     pub shapes: BTreeMap<String, Vec<Vec<Vec<[f64; 2]>>>>,
 }
 
 impl Drawn {
-    /// As the catalog records a region (`coverage::DrawnRegion`).
+    /// As the catalogue records a region (`coverage::DrawnRegion`).
     pub fn region(&self) -> crate::coverage::DrawnRegion {
         crate::coverage::DrawnRegion {
             id: self.id.clone(),

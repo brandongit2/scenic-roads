@@ -1,20 +1,20 @@
-//! The build page's Catalogues map (docs/pool.md §10, task #629): every catalog on the NAS
+//! The build page's Catalogues map (docs/pool.md §10, task #629): every catalogue on the NAS
 //! (`catalog/<n>.json.zst` whole, `<n>.delta.json.zst` as what changed over the one before,
-//! store::catalog) as the map tiles it published, for `/work/catalogs`.
+//! store::catalogue) as the map tiles it published, for `/work/catalogs`.
 //!
-//! A catalog publishes a tile when a file it names for that tile is new or other than the last
-//! catalog's: a z6 tile by its base pack, road values, hi data, landmark points, its layers' hi
+//! A catalogue publishes a tile when a file it names for that tile is new or other than the last
+//! catalogue's: a z6 tile by its base pack, road values, hi data, landmark points, its layers' hi
 //! packs and the terrain's deep packs under it (z10 keys, their z6 tile's); a z3 tile by its layers' lo
 //! packs and area overlays' details. Its entry: its number, time (`created`), whether it was written
 //! whole, and the z3 and z6 tiles it published (`y * 2^z + x`), and those it dropped. The oldest
-//! catalog kept (GC keeps 14 days') publishes every tile it names: `first`, what was there before it
+//! catalogue kept (GC keeps 14 days') publishes every tile it names: `first`, what was there before it
 //! isn't known.
 //!
 //! Read only while a page asks (`ask`): a thread of its own lists the folder (no more often than
-//! `EVERY`) and reads the catalogs after the last it read, oldest first, each through the agent's
+//! `EVERY`) and reads the catalogues after the last it read, oldest first, each through the agent's
 //! NAS reads (crate::agent::nasread); the answer is what's read so far, never waiting on it. What it
-//! keeps: the entries (a few hundred, tens of tiles each) and, to tell a whole catalog's tiles from
-//! the last's, each tile file's name by its key, hashed (some 18 000, about 2 MB): never a catalog.
+//! keeps: the entries (a few hundred, tens of tiles each) and, to tell a whole catalogue's tiles from
+//! the last's, each tile file's name by its key, hashed (some 18 000, about 2 MB): never a catalogue.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 /// The folder is listed again this often at most while a page asks.
 pub const EVERY: Duration = Duration::from_secs(20);
 
-/// One catalog as the map shows it.
+/// One catalogue as the map shows it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Entry {
     pub n: u64,
@@ -34,7 +34,7 @@ pub struct Entry {
     pub t: u64,
     /// Written whole (else as a delta).
     pub whole: bool,
-    /// The oldest catalog read: every tile it names counts as published by it.
+    /// The oldest catalogue read: every tile it names counts as published by it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub first: bool,
     /// The tiles it published, `y * 2^z + x`, sorted.
@@ -80,7 +80,7 @@ fn unix_of(s: &str) -> Option<u64> {
 /// A layer's packs keyed by tile.
 const PACKS: [&str; 3] = ["lo", "hi", "deep"];
 
-/// A whole catalog, only what's read of it (the rest skipped as it parses).
+/// A whole catalogue, only what's read of it (the rest skipped as it parses).
 #[derive(Default, Deserialize)]
 struct Slim {
     #[serde(default)]
@@ -109,7 +109,7 @@ struct SlimLayer {
     deep: BTreeMap<String, String>,
 }
 
-/// A delta catalog's header and patch (store::catalog::Delta), only what's read of it: the
+/// A delta catalogue's header and patch (store::catalogue::Delta), only what's read of it: the
 /// patch's tile sections (the coverage's, megabytes as JSON values, skipped as it parses).
 #[derive(Deserialize)]
 struct SlimDelta {
@@ -117,7 +117,7 @@ struct SlimDelta {
     patch: SlimPatch,
 }
 
-/// A catalog's patch: `{"=": catalog}` or `{"o": {section: patch}}` (store::catalog::delta).
+/// A catalogue's patch: `{"=": catalogue}` or `{"o": {section: patch}}` (store::catalogue::delta).
 #[derive(Default, Deserialize)]
 struct SlimPatch {
     #[serde(rename = "=")]
@@ -136,7 +136,7 @@ struct SlimSections {
     layers: Option<Value>,
 }
 
-/// Every tile file the last catalog read names: by section ("base", "<layer>.hi"), its key → its
+/// Every tile file the last catalogue read names: by section ("base", "<layer>.hi"), its key → its
 /// tile and its name hashed; and how many files each tile has.
 #[derive(Default)]
 struct Files {
@@ -144,7 +144,7 @@ struct Files {
     count: HashMap<Tile, u32>,
 }
 
-/// What one catalog changed, as it's applied.
+/// What one catalogue changed, as it's applied.
 #[derive(Default)]
 struct Change {
     set: BTreeSet<Tile>,
@@ -233,7 +233,7 @@ impl Files {
         }
     }
 
-    /// A delta's patch applied; the catalog's `created` if it names one.
+    /// A delta's patch applied; the catalogue's `created` if it names one.
     fn patch(&mut self, p: &SlimPatch, ch: &mut Change) -> anyhow::Result<Option<String>> {
         if let Some(c) = &p.whole {
             self.whole(c, ch);
@@ -331,7 +331,7 @@ fn op(p: &Value) -> anyhow::Result<(&str, &Value)> {
     }
 }
 
-/// Where the catalogs are read: the NAS's folder, or a test's.
+/// Where the catalogues are read: the NAS's folder, or a test's.
 pub trait Source: Send + Sync {
     /// The folder's file names; None when it can't be listed.
     fn list(&self) -> Option<Vec<String>>;
@@ -340,9 +340,9 @@ pub trait Source: Send + Sync {
 }
 
 /// The NAS's `catalog/`, read through the agent's NAS reads under their deadline.
-pub struct NasCatalogs(pub store::nasfs::NasPath);
+pub struct NasCatalogues(pub store::nasfs::NasPath);
 
-impl Source for NasCatalogs {
+impl Source for NasCatalogues {
     fn list(&self) -> Option<Vec<String>> {
         let p = self.0.clone();
         super::nasread::with(&self.0, move || Ok(p.read_dir()?.into_iter().map(|e| e.name).collect())).ok()
@@ -356,7 +356,7 @@ impl Source for NasCatalogs {
 #[derive(Default)]
 struct Read {
     files: Files,
-    /// The last catalog applied.
+    /// The last catalogue applied.
     at: Option<u64>,
     entries: Vec<Entry>,
     listed: Option<Instant>,
@@ -364,15 +364,15 @@ struct Read {
 }
 
 /// The view: what's read, and its reader.
-pub struct CatalogsView {
+pub struct CataloguesView {
     src: Arc<dyn Source>,
     read: Mutex<Read>,
     reading: AtomicBool,
 }
 
-impl std::fmt::Debug for CatalogsView {
+impl std::fmt::Debug for CataloguesView {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CatalogsView").field("latest", &self.read.lock().unwrap().at).finish()
+        f.debug_struct("CataloguesView").field("latest", &self.read.lock().unwrap().at).finish()
     }
 }
 
@@ -383,25 +383,25 @@ fn number(name: &str) -> Option<(u64, bool)> {
     name.strip_suffix(".json.zst")?.parse().ok().map(|n| (n, true))
 }
 
-/// A catalog file's JSON parsed as it's decompressed (a whole catalog is some 40 MB of JSON: never
+/// A catalogue file's JSON parsed as it's decompressed (a whole catalogue is some 40 MB of JSON: never
 /// held whole).
 fn parse<T: serde::de::DeserializeOwned>(b: &[u8]) -> anyhow::Result<T> {
     let r = std::io::BufReader::new(zstd::stream::Decoder::new(b)?);
     Ok(serde_json::from_reader(r)?)
 }
 
-impl CatalogsView {
+impl CataloguesView {
     pub fn new(src: Arc<dyn Source>) -> Arc<Self> {
-        Arc::new(CatalogsView { src, read: Mutex::new(Read::default()), reading: AtomicBool::new(false) })
+        Arc::new(CataloguesView { src, read: Mutex::new(Read::default()), reading: AtomicBool::new(false) })
     }
 
     /// A page's ask: the reader started when it isn't running and the folder wasn't listed in the
-    /// last `EVERY`; the catalogs after `after` as read so far.
+    /// last `EVERY`; the catalogues after `after` as read so far.
     pub fn ask(self: &Arc<Self>, after: Option<u64>) -> Value {
         let due = self.read.lock().unwrap().listed.is_none_or(|t| t.elapsed() >= EVERY);
         if due && !self.reading.swap(true, Ordering::SeqCst) {
             let me = self.clone();
-            let started = std::thread::Builder::new().name("catalogs-view".into()).spawn(move || {
+            let started = std::thread::Builder::new().name("catalogues-view".into()).spawn(move || {
                 me.refresh();
                 me.reading.store(false, Ordering::SeqCst);
             });
@@ -425,12 +425,12 @@ impl CatalogsView {
         })
     }
 
-    /// Lists the folder and reads every catalog after the last read, oldest first, adding each
+    /// Lists the folder and reads every catalogue after the last read, oldest first, adding each
     /// one's entry as it's read.
     pub fn refresh(&self) {
         let Some(names) = self.src.list() else {
             let mut r = self.read.lock().unwrap();
-            r.error = Some("the catalogs' folder can't be listed".into());
+            r.error = Some("the catalogues' folder can't be listed".into());
             r.listed = Some(Instant::now());
             return;
         };
@@ -467,7 +467,7 @@ impl CatalogsView {
                 // (Neither readable as the next: one written whole later starts again from it.)
                 Ok(None) => {}
                 Err(e) => {
-                    error = Some(format!("catalog {n}: {e:#}"));
+                    error = Some(format!("catalogue {n}: {e:#}"));
                     break;
                 }
             }
@@ -477,7 +477,7 @@ impl CatalogsView {
         r.error = error;
     }
 
-    /// Catalog `n` applied to `files` (as of catalog `at`): its delta when it changes `at`, else
+    /// Catalogue `n` applied to `files` (as of catalogue `at`): its delta when it changes `at`, else
     /// its whole file; its time and whether it was whole. None: neither there to read as the next.
     fn one(
         &self,
@@ -490,7 +490,7 @@ impl CatalogsView {
     ) -> anyhow::Result<Option<(u64, bool)>> {
         if at.is_some() && delta.contains(&n) {
             let b =
-                self.src.read(&store::catalog::delta_file_name(n)).ok_or_else(|| anyhow::anyhow!("can't be read"))?;
+                self.src.read(&store::catalogue::delta_file_name(n)).ok_or_else(|| anyhow::anyhow!("can't be read"))?;
             let d: SlimDelta = parse(&b)?;
             if Some(d.of) == at {
                 let created = files.patch(&d.patch, ch)?;
@@ -498,7 +498,7 @@ impl CatalogsView {
             }
         }
         if whole.contains(&n) {
-            let b = self.src.read(&store::catalog::file_name(n)).ok_or_else(|| anyhow::anyhow!("can't be read"))?;
+            let b = self.src.read(&store::catalogue::file_name(n)).ok_or_else(|| anyhow::anyhow!("can't be read"))?;
             let c: Slim = parse(&b)?;
             files.whole(&c, ch);
             return Ok(Some((unix_of(&c.created).unwrap_or(0), true)));
@@ -509,7 +509,7 @@ impl CatalogsView {
 
 fn entry(n: u64, t: u64, whole: bool, first: bool, ch: Change) -> Entry {
     let at = |s: &BTreeSet<Tile>, z: u8| s.iter().filter(|t| t.0 == z).map(|t| t.1).collect::<Vec<u32>>();
-    // (A tile dropped and another file of it set in one catalog: published, not dropped.)
+    // (A tile dropped and another file of it set in one catalogue: published, not dropped.)
     let dropped: BTreeSet<Tile> = ch.dropped.difference(&ch.set).copied().collect();
     Entry {
         n,
@@ -581,7 +581,7 @@ mod tests {
             m.insert("3.json.zst".into(), zst(&c3));
             m.insert("junk.txt".into(), vec![]);
         }
-        let v = CatalogsView::new(mem.clone());
+        let v = CataloguesView::new(mem.clone());
         v.refresh();
         let a = v.answer(None);
         assert_eq!(a["latest"], 3, "{a}");
@@ -626,7 +626,7 @@ mod tests {
             m.insert("6.delta.json.zst".into(), zst(&serde_json::json!({"n": 6, "of": 4, "patch": {"o": {}}})));
             m.insert("7.json.zst".into(), zst(&c(7)));
         }
-        let v = CatalogsView::new(mem);
+        let v = CataloguesView::new(mem);
         v.refresh();
         let a = v.answer(None);
         let ns: Vec<u64> = a["catalogs"].as_array().unwrap().iter().map(|e| e["n"].as_u64().unwrap()).collect();

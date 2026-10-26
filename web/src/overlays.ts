@@ -18,7 +18,7 @@ import type { LandmarkDots } from './dots';
 import { fitPopup } from './popupfit';
 import { cap, fmt, h } from './ui/dom';
 import type { LayersCard } from './ui/layers';
-import type { Credit } from './catalog';
+import type { Credit } from './catalogue';
 
 const POI_LABEL: Record<string, string> = {
   viewpoint: 'Viewpoint', peak: 'Peak', waterfall: 'Waterfall', lighthouse: 'Lighthouse', covered_bridge: 'Covered bridge',
@@ -43,11 +43,11 @@ export interface FeatureSummary {
   also?: string[];
 }
 
-/** The heritage registers' credits by id (the catalog's credits that name a `register`): what a
+/** The heritage registers' credits by id (the catalogue's credits that name a `register`): what a
  * heritage feature's popup names as its source (docs/inputs.md §6.5). */
 let registerCredits = new Map<string, string>();
 
-/** The catalog's credits, for the heritage registers' (`setCredits` as the catalog is polled). */
+/** The catalogue's credits, for the heritage registers' (`setCredits` as the catalogue is polled). */
 export function setRegisterCredits(credits: Credit[] | undefined): void {
   registerCredits = new Map((credits ?? []).filter((c) => c.register).map((c) => [c.register as string, `${c.source} (${c.terms})`]));
 }
@@ -116,7 +116,7 @@ const isWhs = (id: string) => id === 'whs-fill' || id === 'whs-line';
 
 /** The area overlays' counts (the overlays job's layer-summary.json), versioned for the browser cache. */
 const summaryUrl = () => `${hostFor('layers')}/api/layer/summary${ver('layer-summary.json')}`;
-/** The point kinds the catalog must have by view (docs/phase5.md). */
+/** The point kinds the catalogue must have by view (docs/phase5.md). */
 const MARK_KINDS = ['viewpoint', 'peak', 'waterfall', 'lighthouse', 'covered_bridge', 'rest', 'trailhead', 'heritage'];
 /** Point sources: heritage, and the stops & sights per kind (pois-<kind>). */
 type PointSource = string;
@@ -172,7 +172,7 @@ export class Overlays {
   private countId = 0;
   private countFor = new Map<number, OverlayKey>();
   private countLatest = new Map<OverlayKey, number>();
-  /** By view: the server has newer points than the catalog read (main.ts: read it now). */
+  /** By view: the server has newer points than the catalogue read (main.ts: read it now). */
   onStale: (() => void) | null = null;
   /** Feature counts and areas of the polygon overlays (layer-summary.json), for their counts. */
   private summary: Record<string, { n: number; a: (number | null)[] }> | null = null;
@@ -183,7 +183,7 @@ export class Overlays {
    * re-evaluates every loaded feature). */
   private painted = new Map<string, string>();
   private summit: { name: string; ele: number; lngLat: [number, number] } | null = null;
-  /** Points by view (docs/phase5.md): the catalog's; null: none; undefined: not known yet. */
+  /** Points by view (docs/phase5.md): the catalogue's; null: none; undefined: not known yet. */
   private marks: MarksCfg | null | undefined = undefined;
   private top: LandmarkItem[] = [];
   private topByKind: Record<string, LandmarkItem[]> = {};
@@ -206,11 +206,11 @@ export class Overlays {
     onVersions((f) => f.endsWith('.json'), (files) => this.reload(files));
   }
 
-  /** The catalog's points by view (/api/catalog `marks`, null: none): the point sources whose kind
-   * has them are loaded by view from then on (a new catalog: again, from its tiles). */
+  /** The catalogue's points by view (/api/catalog `marks`, null: none): the point sources whose kind
+   * has them are loaded by view from then on (a new catalogue: again, from its tiles). */
   setMarks(cfg: MarksCfg | null) {
     // Every kind or none, so the In view statistics come from one place: by view whenever the
-    // catalog has the points' tiles (a kind without points has no thinned tiles, and is still by
+    // catalogue has the points' tiles (a kind without points has no thinned tiles, and is still by
     // view).
     if (cfg && !cfg.tiles.length) cfg = null;
     if (cfg) cfg = { ...cfg, kinds: MARK_KINDS };
@@ -261,7 +261,7 @@ export class Overlays {
     this.worker.postMessage({ type: 'view', zoom: this.map.getZoom(), dpr: window.devicePixelRatio || 1, box, far, srcs } satisfies LandmarkRequest);
   }
 
-  /** Layer files with new versions (a new catalog): the polygon counts asked for again. (Tiles by
+  /** Layer files with new versions (a new catalogue): the polygon counts asked for again. (Tiles by
    * view get their new versions with the other tiles: main.ts onVersions.) */
   private reload(files: string[]) {
     if (files.includes('layer-summary.json') && (this.summary || this.summaryLoading)) {
@@ -298,7 +298,7 @@ export class Overlays {
       // By view: name tiles whose extras changed (their hit-testing), made again.
       this.map.refreshTiles(mapSourceOf(m.src), m.tiles.map(([z, x, y]) => ({ z, x, y })));
     } else if (m.type === 'stale') {
-      // The server has newer points: the catalog is read now (setMarks follows).
+      // The server has newer points: the catalogue is read now (setMarks follows).
       this.onStale?.();
     } else if (m.type === 'dots') {
       // By view: the source's points as drawn now (the view's tiles changed), with their flags.
@@ -414,7 +414,7 @@ export class Overlays {
     this.prominence(s);
   }
 
-  /** The catalog's points version in the stops & sights' tile URL (a new catalog's: setMarks). */
+  /** The catalogue's points version in the stops & sights' tile URL (a new catalogue's: setMarks). */
   private poiV: string | number = 0;
   private poiUrl = '';
   /** The stops & sights' tiles hold these kinds (a change loads them again). */
@@ -602,7 +602,7 @@ export class Overlays {
     // tiles, and the roads are what the map is for.
     if (this.held) return;
     if (isPoints(src)) {
-      // Known once the catalog's status is in (setMarks applies again); none without points.
+      // Known once the catalogue's status is in (setMarks applies again); none without points.
       if (!this.byView(src)) return;
       if (!this.indexed.has(src)) this.indexed.set(src, 'loading');
       return this.sendView();

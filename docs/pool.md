@@ -28,13 +28,13 @@ Where state lives:
 
 | State | Truth | On a Mac | A new lead |
 | --- | --- | --- | --- |
-| Records, built files, catalogs | NAS: `state/build/`, content-named files | caches (`agent/cache/…`) | reads them |
+| Records, built files, catalogues | NAS: `state/build/`, content-named files | caches (`agent/cache/…`) | reads them |
 | Downloads | NAS: `sources/` | cache copies | nothing |
 | A pass's Wikidata/Wikipedia answers | NAS: `sources/items/<date>/` (`pipeline::answers`) | `agent/cache/items/`, `agent/cache/heritage-<date>/` | its first run takes them |
 | Z6 tiles' kept state | NAS: `cache/scenic-units/` | none | nothing |
 | A job's progress (the OSM pass's stages, a depth, terrain-hi or terrain-deep target's blocks, scratch) | the Mac running it | scratch folders | the OSM pass's resumed there (§7.2, Resuming), a depth, terrain-hi or terrain-deep target's when it runs there again; the rest redone |
 | The coordinator's state, token, history | NAS: `state/coord/` | `agent/coord/` | loads it (§6.2, §7.5) |
-| The lead's own (its catalogs' record, daily jobs' last runs) | the lead's disk | `agent/publishing.json`, `agent/state.json` | starts afresh |
+| The lead's own (its catalogues' record, daily jobs' last runs) | the lead's disk | `agent/publishing.json`, `agent/state.json` | starts afresh |
 
 ## 3. What the NAS gives us
 
@@ -122,7 +122,7 @@ Checked by the simulator (§13):
   step; a process that loses it stops, saving its state). A member writes its heartbeat (§10), runs
   job slots (§7), brokers its jobs' tasks (§8), and passes the owner's asks to the lead.
 - **The lead** is the member the current term names. It also plans (`crate::agent::build`) and
-  runs the coordinator, merges the journal into its term's records, publishes catalogs, runs GC,
+  runs the coordinator, merges the journal into its term's records, publishes catalogues, runs GC,
   compacts the raw tiles' archives, keeps the pause and writes the build's status. Its slots are
   ordinary member slots: its agent asks its own coordinator for work as any member asks (§7.2).
 
@@ -159,7 +159,7 @@ A term is `state/build/terms/<E>.json`, made once with create-new (`crate::pool:
 
 - **One file per term** (`crate::pool::records`): `state/build/term/<E>/records.json` holds the
   manifest, keys, pending uploads, the sizes of the files the manifest names (from the entries'
-  hand-offs, for the catalogs: `sizes.json` beside `manifest.json`), raw archives awaiting the
+  hand-offs, for the catalogues: `sizes.json` beside `manifest.json`), raw archives awaiting the
   index (each taken off once the lead has named it in the raw store's index and saved that,
   `Heard::named_raw`, with the next snapshot; one named but not yet off when the lead restarts is
   named again, passed over unread; an archive that index lists as merged away is never named
@@ -173,7 +173,7 @@ A term is `state/build/terms/<E>.json`, made once with create-new (`crate::pool:
   (a handover's only from its `seq` or later; a stale read fails and is retried; never from records
   missing an entry the journal's GC removes or removed, §7.3). The new lead then
   replays every journal entry its records don't name, in (term, lease) order. It is **caught up**
-  (`caught_up`) once a listing of every day, asked for under a day ago, is merged; catalogs and GC
+  (`caught_up`) once a listing of every day, asked for under a day ago, is merged; catalogues and GC
   wait for that. It relists daily.
 - **Acknowledgements are per term** (`journal::Mine`): each loop a member tells the current lead of
   its entries that lead hasn't acknowledged. A lead acknowledges an entry once a saved snapshot
@@ -206,7 +206,7 @@ two heartbeats and the terms.
 | **Leading** (A, term E) | | ask to hand to B: **Offered** |
 | **Offered** | A's heartbeat: `handing_to: B` and the offer | B answers within `OFFER_S` (2 min): **Ready**; else **Leading** |
 | **Ready** | B checks disk and app, heartbeat `ready_for: E+1` naming the offer | **Settling** |
-| **Settling** | A stops granting ("the lead is moving"), keeps renewing leases, stops a catalog or GC in flight, saves records with the coordinator's state | within `SETTLE_S` (1 min), B still ready: **Passed**; else **Leading** |
+| **Settling** | A stops granting ("the lead is moving"), keeps renewing leases, stops a catalogue or GC in flight, saves records with the coordinator's state | within `SETTLE_S` (1 min), B still ready: **Passed**; else **Leading** |
 | **Passed** | A makes `terms/<E+1>.json` naming B with `seq`; A is now a member | B takes up within 2 min: **Leading** (B, E+1); else **Taken back** |
 | **Taken back** | A makes `terms/<E+2>.json` naming itself | **Leading** (A, E+2) |
 
@@ -618,7 +618,7 @@ Rows of note: `trees`/`terrain-hi`/`slope-hi` per z6 tile with `*-lo` assemblies
 target per z6 tile, the lead's, planned before every other job (docs/inputs.md §4.3).
 
 - **Every step to every member** (`crate::agent::every`, `crate::coord`'s `pick_every`): all but the
-  lead's own steps (`every::LEAD_ONLY`: catalogs, prunes, `bld-fetch`, the answer-keeping steps, the
+  lead's own steps (`every::LEAD_ONLY`: catalogues, prunes, `bld-fetch`, the answer-keeping steps, the
   worldwide steps) go to any member whose measured room fits, the lead among them. A cold start
   (§7.7) goes, one target, to the first asker its provisional need fits (or one holding no job),
   while no job of its step runs anywhere.
@@ -804,7 +804,7 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   app; otherwise it's refused, the why noted at `state/journal/rejected/<key>.why`
   (`journal::note_refusal`). The lint `tests/write_sets.rs` gates publish.
 - **Sizes ride along:** `Out` records each file it writes with its size, and the hand-off carries
-  them (`Handoff::sizes`); the merge keeps those of the files the entry names, so a delta catalog
+  them (`Handoff::sizes`); the merge keeps those of the files the entry names, so a delta catalogue
   never looks at them on the NAS. Entries from before carry none.
 - **Lease order holds:** an older lease's entry for targets a newer one set changes nothing.
 - **The journal is a log:** nothing is removed on merge. Its days over a week old are removed by
@@ -878,14 +878,14 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   snapshot carries, so it is never merged if it reads whole later; the redone job's entry has a
   later lease. Entries first told in the same step, or found only by a listing, wait the hour; so
   does every entry after a lead change or a restart (the first tellings are kept only while the
-  same lead carries on). This matters because the lead is caught up, and a catalog goes out, only
+  same lead carries on). This matters because the lead is caught up, and a catalogue goes out, only
   once every entry told or listed is read: on 24 Oct the Mac mini's own entry
   `2026-10-24/414-1792809170065`, whole on the share (318 bytes, renamed at 02:37Z, read whole
   from the M1), opened as "No such file" on the Mac mini itself for over 40 minutes (its SMB
-  client's stale name), and the catalog, the only work left, waited behind it. Listing the folder
+  client's stale name), and the catalogue, the only work left, waited behind it. Listing the folder
   is no cure: the lead's own sweep listed that day's folder every 10 minutes (`SWEEP_S`) through
   those 40 minutes, in the same process; the agent's restart read it at once. Meanwhile the
-  catalog isn't asked of the lead's coordinator (it was granted, leased and logged about once a
+  catalogue isn't asked of the lead's coordinator (it was granted, leased and logged about once a
   minute, only to wait).
 - **A removed step's names leave the records the same way** (task #701): the lead's daily `gc`
   job removes from the manifest every name under `agent::gc::RETIRED` (a removed step's outputs'
@@ -904,7 +904,7 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
 ### 7.4 Planning reads only the records
 
 Behind `state/pool/resume`, a pass is complete when its records name `sources/osm/<date>/pass`
-(`crate::osmpass::latest_pass_by`); off, a `pass.*.json` file still says it. A catalog runs only
+(`crate::osmpass::latest_pass_by`); off, a `pass.*.json` file still says it. A catalogue runs only
 when the lead is caught up. A resuming job is given its member's unacknowledged hand-offs of its
 step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
 
@@ -1230,9 +1230,9 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   minutes; a member missing from listings for twenty minutes is forgotten.
 - **Build status**, written by the lead per term (`state/build/term/<E>/status.json`): the
   checklist (a line per stage with an item per step: docs/pipeline.md §4), forecast, regions,
-  waits, what publishing does, publishing as it stands (`published`: the last catalog and its
-  kind, the map tiles being drawn by Mac, each Mac's adopted catalog), recent jobs, pause, last
-  catalog, the lead.
+  waits, what publishing does, publishing as it stands (`published`: the last catalogue and its
+  kind, the map tiles being drawn by Mac, each Mac's adopted catalogue), recent jobs, pause, last
+  catalogue, the lead.
   A member writes `helper.json` instead.
 - **Coordinator view**, written by the lead per term (`state/coord/term/<E>/view.json`,
   `Coordinator::view`, in its pool step: `pool_lead_files`): `{at, view}`, the view what the
@@ -1389,7 +1389,7 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   SMB), the last read kept when the file can't be read now. The page asks each minute while the
   map is drawn.
   Every Mac's port also answers `POST /work/catalogs` (`{"after": n}` optional; no key) for the
-  map's age controls (task #629, `agent::catalogsview`; the page asks the lead's): every
+  map's age controls (task #629, `agent::cataloguesview`; the page asks the lead's): every
   catalogue on the NAS as `{n, t, whole, first?, z3, z6, z3_gone?, z6_gone?}`, the tiles as
   `y * 2^z + x`, with `latest`, `reading` and `error`. A catalogue publishes a z6 tile when a file it
   names for it (base pack, road values, hi data, landmark points, a layer's hi pack, the fine

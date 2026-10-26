@@ -309,7 +309,7 @@ impl Checks for Feeds {
         c.findings = findings;
         if let Some(feed) = feed {
             let (d, _, _) = super::credits::parse_description(path, bytes);
-            // (No extent: a catalog credits it while the trains or ferries count it: `credited`.)
+            // (No extent: a catalogue credits it while the trains or ferries count it: `credited`.)
             c.facts.insert("description".into(), serde_json::to_value(d).unwrap_or_default());
             c.keyed = Some(store::naming::hash16(feed.to_string().as_bytes()));
             // (One that replaces another is held with it when that one is held.)
@@ -490,7 +490,7 @@ pub fn declared_of(i: &super::Index) -> Declared {
 static CREDITED: std::sync::Mutex<Option<(String, Vec<String>)>> = std::sync::Mutex::new(None);
 
 /// The declared feeds the map's trains and ferries count (in the rail or ferry feeds' list with a
-/// zip), sorted: the declarations a catalog credits (docs/inputs.md §6.7.1). None before the
+/// zip), sorted: the declarations a catalogue credits (docs/inputs.md §6.7.1). None before the
 /// declarations are accepted; read again only when the lists or the index change.
 pub fn credited(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Result<Option<Vec<String>>> {
     let Some(index) = manifest.get(&super::logical(UNIT)) else { return Ok(None) };

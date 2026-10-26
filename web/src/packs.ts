@@ -26,7 +26,7 @@ export function packToken(l: LayerPacks, z: number, x: number, y: number): strin
   }
   if (z <= 2) return l.root ?? '';
   // ('' past z12 outside the deep packs: the server makes those tiles from their ancestor and
-  // serves them uncached for good (no current token), so no stale copy outlives a catalog.)
+  // serves them uncached for good (no current token), so no stale copy outlives a catalogue.)
   if (z >= DEEP_FIRST_Z && l.deep) return l.deep[`${DEEP_PACK_Z}/${x >> (z - DEEP_PACK_Z)}/${y >> (z - DEEP_PACK_Z)}`] ?? '';
   const pz = z <= 8 ? 3 : 6;
   return (z <= 8 ? l.lo : l.hi)?.[`${pz}/${x >> (z - pz)}/${y >> (z - pz)}`] ?? '';

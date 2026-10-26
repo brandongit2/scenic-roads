@@ -83,7 +83,7 @@ def build(check=False):
     cy = y0 + 24
     n_sp = d.card('base', 'd1', cy, 'spoken', 'Rust', ['the languages spoken where,', 'from the pass’s outlines', 'and CLDR, once a pass'],
                   [(['global/spoken'], 'a raster of 1/128° cells')], scope='global')
-    n_todo = d.card('base', 'd2', cy, 'to-do lists', 'Rust', ['after a catalog that changed', 'what they read: names with no', 'English; landmarks with no', 'description'],
+    n_todo = d.card('base', 'd2', cy, 'to-do lists', 'Rust', ['after a catalogue that changed', 'what they read: names with no', 'English; landmarks with no', 'description'],
                     [(['translations/todo/'], 'a list per language'), (['descriptions/todo/'], 'landmarks · areas')], scope='global',
                     fig='10 min a run, all NAS reads')
     s_osmn = d.src('osm', cy, 'Outlines · every name', ['the pass’s outlines; names', 'in labels, roads, landmarks'])
@@ -332,7 +332,7 @@ def build(check=False):
     # ---- 8. publishing, as the z6 tiles are built -----------------------------------------------------------
     y0 = y1 + GAP
     cy = y0 + 24
-    n_rd = d.card('mix', 'd1', cy, 'publishing', 'Rust', ['as soon as a z6 tile is built:', 'the map tiles whose owners', 'changed, a z6 tile’s together,', 'and the road index; then at', 'most one catalog a minute;', 'the low zooms, landmarks and', 'overlays by their cadence'],
+    n_rd = d.card('mix', 'd1', cy, 'publishing', 'Rust', ['as soon as a z6 tile is built:', 'the map tiles whose owners', 'changed, a z6 tile’s together,', 'and the road index; then at', 'most one catalogue a minute;', 'the low zooms, landmarks and', 'overlays by their cadence'],
                   [(['catalog/<n>.json.zst'], 'fmt 2: every file the map reads, bundles named per pack')], scope='global')
     s_rd = d.src('mix', cy, 'Regions as they’re done', ['a region at a time: those', 'the map lacks first, then', 'the fewest z6 tiles left'], minh=n_rd.h)
     p_cat = d.pill('mix', n_rd.y + 46, ['/api/catalog · meta'], note=['the newest that decodes;', 'every 30 s while in use'])
@@ -373,5 +373,5 @@ def build(check=False):
             'the languages spoken where, the to-do lists, landmarks, the heritage chain, area overlays, rail stops, ferries and trains '
             'a day are worldwide, run by the lead. Curated inputs, made by hand, feed them, each with how reproducible it is today. '
             'Any member of the pool may take the jobs marked ⇄, the rest are the lead’s; tasks any worker may run, a device’s page too. '
-            'Measured time and memory are from docs/phase-times.md. Publishing puts each z6 tile on the map within minutes, a catalog at most each minute.')
+            'Measured time and memory are from docs/phase-times.md. Publishing puts each z6 tile on the map within minutes, a catalogue at most each minute.')
     return d.svg(h, aria, heads)

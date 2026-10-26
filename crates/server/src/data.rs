@@ -1,7 +1,7 @@
-//! The map's data as the server sees it (docs/storage.md–4): the current catalog, every file it
+//! The map's data as the server sees it (docs/storage.md–4): the current catalogue, every file it
 //! names read from this Mac's mirror when it's there (memory-mapped) or from the NAS (through the
 //! bounded I/O pool, never mapped), and the background work that keeps all that current: finding
-//! and mounting the NAS, following new catalogs, filling the mirror.
+//! and mounting the NAS, following new catalogues, filling the mirror.
 
 use crate::views::{BaseView, Blob, HiView, RoadUnits, SectView, Src};
 use anyhow::{anyhow, Context, Result};
@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
-use store::catalog::Catalog;
+use store::catalogue::Catalogue;
 use store::iopool::IoPool;
 use store::pack::PackIndex;
 
@@ -82,7 +82,7 @@ pub struct Data {
     nas: RwLock<Option<store::nasfs::NasRoot>>,
     pool: RwLock<Option<Arc<IoPool>>>,
     pub mirror: Option<Arc<store::mirror::Mirror>>,
-    cat: RwLock<Arc<Catalog>>,
+    cat: RwLock<Arc<Catalogue>>,
     /// Local maps of mirrored files, and open NAS files, by content name.
     maps: Mutex<Bounded<Arc<Mmap>>>,
     remotes: Mutex<Bounded<Arc<crate::views::RemoteFile>>>,
@@ -94,7 +94,7 @@ pub struct Data {
     ovs: Mutex<Bounded<Arc<crate::ovdata::OvView>>>,
     roadunits: Mutex<Option<(String, Arc<RoadUnits>)>>,
     globals: Mutex<Bounded<Arc<Vec<u8>>>>,
-    /// Set when the catalog changes, so caches built from the old one are dropped.
+    /// Set when the catalogue changes, so caches built from the old one are dropped.
     pub generation: std::sync::atomic::AtomicU64,
     /// Set when the mirror has copied files, so archives opened from the NAS are opened again.
     pub mirror_gen: std::sync::atomic::AtomicU64,
@@ -104,7 +104,7 @@ pub struct Data {
     busy: Mutex<Option<(std::time::Instant, bool)>>,
     /// A mount by the bare name has been reported (once).
     warned_tunnel: std::sync::atomic::AtomicBool,
-    /// Held while a catalog is followed (the background poll and /api/catalog/refresh: one at a time).
+    /// Held while a catalogue is followed (the background poll and /api/catalog/refresh: one at a time).
     refreshing: Mutex<()>,
 }
 
@@ -119,7 +119,7 @@ pub struct Options {
 
 impl Data {
     pub fn open(o: Options) -> Result<Arc<Data>> {
-        std::fs::create_dir_all(o.home.join("catalog"))?;
+        std::fs::create_dir_all(o.home.join(store::catalogue::NAME))?;
         let mirror = if o.mirror {
             let m = store::mirror::Mirror::open(o.home.clone(), o.reserve)?;
             // This Mac's build agent's room target, when above the reserve (docs/macs.md, Mirror).
@@ -134,7 +134,7 @@ impl Data {
             nas: RwLock::new(None),
             pool: RwLock::new(None),
             mirror,
-            cat: RwLock::new(Arc::new(Catalog::default())),
+            cat: RwLock::new(Arc::new(Catalogue::default())),
             maps: Mutex::new(Bounded::new(4096)),
             remotes: Mutex::new(Bounded::new(128)),
             indexes: Mutex::new(Bounded::new(8192)),
@@ -156,21 +156,21 @@ impl Data {
             Some(root) => d.set_nas(Some(root)),
             None => d.find_nas(),
         }
-        // The newest catalog: the NAS's, else the last one this Mac kept.
-        if !d.refresh_catalog() || d.catalog().n == 0 {
+        // The newest catalogue: the NAS's, else the last one this Mac kept.
+        if !d.refresh_catalogue() || d.catalogue().n == 0 {
             let kept = match &d.mirror {
-                Some(m) => m.saved_catalog().ok().flatten(),
-                None => store::catalog::latest(&o.home.join("catalog")).ok().flatten(),
+                Some(m) => m.saved_catalogue().ok().flatten(),
+                None => store::catalogue::latest(&o.home.join(store::catalogue::NAME)).ok().flatten(),
             };
             if let Some(c) = kept {
-                eprintln!("offline: serving catalog {} from this Mac", c.n);
+                eprintln!("offline: serving catalogue {} from this Mac", c.n);
                 *d.cat.write().unwrap() = Arc::new(c);
             }
         }
         Ok(d)
     }
 
-    pub fn catalog(&self) -> Arc<Catalog> {
+    pub fn catalogue(&self) -> Arc<Catalogue> {
         self.cat.read().unwrap().clone()
     }
 
@@ -232,28 +232,28 @@ impl Data {
         );
     }
 
-    /// Follow a newer catalog on the NAS; true when the NAS was read (whether or not it changed).
+    /// Follow a newer catalogue on the NAS; true when the NAS was read (whether or not it changed).
     /// From the one served now: unchanged, nothing read but the folder's listing; newer as deltas
-    /// (docs/formats.md, Delta catalogs), only those read and applied to it.
-    pub fn refresh_catalog(&self) -> bool {
+    /// (docs/formats.md, Delta catalogues), only those read and applied to it.
+    pub fn refresh_catalogue(&self) -> bool {
         let _one = self.refreshing.lock().unwrap_or_else(|e| e.into_inner());
         let (Some(root), Some(pool)) = (self.nas_root(), self.pool()) else { return false };
-        let have = self.catalog();
-        match store::catalog::latest_nas_from(
+        let have = self.catalogue();
+        match store::catalogue::latest_nas_from(
             &pool,
-            &root.join("catalog"),
+            &root.join(store::catalogue::NAME),
             Some(&have).filter(|c| c.n > 0).map(|c| c.as_ref()),
         ) {
             Ok(Some(c)) => {
-                if c.n != self.catalog().n {
-                    eprintln!("catalog {} ({} files)", c.n, c.files.len());
+                if c.n != self.catalogue().n {
+                    eprintln!("catalogue {} ({} files)", c.n, c.files.len());
                     // Keep a copy on this Mac for offline starts (and so the mirror protects it).
                     let kept = match &self.mirror {
-                        Some(m) => m.save_catalog(&c),
-                        None => store::catalog::write_copy(&self.home.join("catalog"), &c).map(|_| ()),
+                        Some(m) => m.save_catalogue(&c),
+                        None => store::catalogue::write_copy(&self.home.join(store::catalogue::NAME), &c).map(|_| ()),
                     };
                     if let Err(e) = kept {
-                        eprintln!("catalog: can't keep a local copy: {e:#}");
+                        eprintln!("catalogue: can't keep a local copy: {e:#}");
                     }
                     let n = c.n;
                     *self.cat.write().unwrap() = Arc::new(c);
@@ -264,15 +264,15 @@ impl Data {
             }
             Ok(None) => true,
             Err(e) => {
-                eprintln!("catalog: {e:#}");
+                eprintln!("catalogue: {e:#}");
                 false
             }
         }
     }
 
-    /// A logical name's content name in the current catalog.
+    /// A logical name's content name in the current catalogue.
     pub fn content(&self, logical: &str) -> Option<String> {
-        self.catalog().files.get(logical).map(|f| f.file.clone())
+        self.catalogue().files.get(logical).map(|f| f.file.clone())
     }
 
     /// A content-named file: mapped from the mirror, else on the NAS.
@@ -326,10 +326,10 @@ impl Data {
         Ok(Some(s))
     }
 
-    /// A unit's base pack with its road values ("6/32/21"). Cached by content: a new catalog's
+    /// A unit's base pack with its road values ("6/32/21"). Cached by content: a new catalogue's
     /// pack for the same unit is another entry.
     pub fn base(&self, unit: &str) -> Result<Option<Arc<BaseView>>> {
-        let cat = self.catalog();
+        let cat = self.catalogue();
         let (Some(b), Some(r)) = (cat.base.get(unit), cat.roads.get(unit)) else { return Ok(None) };
         let (Some(bc), Some(rc)) = (self.content(b), self.content(r)) else { return Ok(None) };
         let key = format!("{bc}|{rc}");
@@ -344,7 +344,7 @@ impl Data {
 
     /// A z6 tile's hidata ("6/32/21"), cached by content.
     pub fn hidata(&self, tile: &str) -> Result<Option<Arc<HiView>>> {
-        let cat = self.catalog();
+        let cat = self.catalogue();
         let Some(l) = cat.hidata.get(tile) else { return Ok(None) };
         let Some(content) = self.content(l) else { return Ok(None) };
         if let Some(v) = self.his.lock().unwrap().get(&content) {
@@ -358,16 +358,16 @@ impl Data {
 
     /// What names a z6 tile's landmark points ("6/32/21") in caches and ETags: its file's content
     /// name, with the tile when the file is the marks job's bundle of every tile (docs/formats.md
-    /// "Bundles"; task #449). None when the catalog has none there.
+    /// "Bundles"; task #449). None when the catalogue has none there.
     pub fn markdata_id(&self, tile: &str) -> Option<String> {
-        let content = self.content(self.catalog().markdata.get(tile)?)?;
+        let content = self.content(self.catalogue().markdata.get(tile)?)?;
         Some(if is_bundle(&content) { format!("{content}#{tile}") } else { content })
     }
 
     /// A z6 tile's landmark points ("6/32/21"), cached by `markdata_id`: its own file, or its member
     /// of the bundle (read in place: one range read of the bundle's index, kept as a pack's is).
     pub fn markdata(&self, tile: &str) -> Result<Option<Arc<crate::markview::MarkView>>> {
-        let cat = self.catalog();
+        let cat = self.catalogue();
         let Some(l) = cat.markdata.get(tile) else { return Ok(None) };
         let Some(content) = self.content(l) else { return Ok(None) };
         let id = if is_bundle(&content) { format!("{content}#{tile}") } else { content.clone() };
@@ -389,7 +389,7 @@ impl Data {
 
     /// A z3 tile's area details and parks ("3/x/y"), cached by content.
     pub fn ovdata(&self, tile: &str) -> Result<Option<Arc<crate::ovdata::OvView>>> {
-        let cat = self.catalog();
+        let cat = self.catalogue();
         let Some(l) = cat.ovdata.get(tile) else { return Ok(None) };
         let Some(content) = self.content(l) else { return Ok(None) };
         if let Some(v) = self.ovs.lock().unwrap().get(&content) {
@@ -445,7 +445,7 @@ impl Data {
 
     /// The pack holding a tile of `layer`, by logical name.
     fn pack_of(&self, layer: &str, z: u8, x: u32, y: u32) -> Option<String> {
-        let cat = self.catalog();
+        let cat = self.catalogue();
         let l = cat.layers.get(layer)?;
         let f = pipeline::terrain_deep::PACK_Z;
         // (A polar layer's: z0–3 in its root, z4–9 in its blocks, pipeline::polar.)
@@ -509,7 +509,7 @@ impl Data {
         Ok(self.index(&content)?.find(z, x, y).map(|e| e.hash))
     }
 
-    /// Each tile at zoom `z` of the pack named `content` (a content name, so of whichever catalog
+    /// Each tile at zoom `z` of the pack named `content` (a content name, so of whichever catalogue
     /// named it): its x, y and bytes as stored, in the order they're stored. Read a MB or so at a
     /// time, several tiles a read, from this Mac's mirror, else the NAS: not through a map, as a
     /// tile served is (a whole layer read so would stay in the server's memory as long as its maps
@@ -570,7 +570,7 @@ impl Data {
 
     /// A version token for a layer's URLs: changes whenever any of its packs does.
     pub fn layer_version(&self, layer: &str) -> String {
-        let cat = self.catalog();
+        let cat = self.catalogue();
         let Some(l) = cat.layers.get(layer) else { return String::new() };
         let mut h = blake3::Hasher::new();
         for logical in
@@ -583,9 +583,9 @@ impl Data {
         h.finalize().to_hex()[..12].to_string()
     }
 
-    /// The basemap's archives in the current catalog: their content names, in the catalog's order.
+    /// The basemap's archives in the current catalogue: their content names, in the catalogue's order.
     pub fn basemap_names(&self) -> Vec<String> {
-        let cat = self.catalog();
+        let cat = self.catalogue();
         cat.basemap.iter().filter_map(|l| cat.files.get(l).map(|f| f.file.clone())).collect()
     }
 
@@ -690,7 +690,7 @@ impl Data {
         self.mirror_gen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Start the background work: the NAS mount, new catalogs. (The mirror's thread is
+    /// Start the background work: the NAS mount, new catalogues. (The mirror's thread is
     /// downloads::spawn_mirror's.)
     pub fn spawn_background(self: &Arc<Self>) {
         let d = self.clone();
@@ -704,7 +704,7 @@ impl Data {
                         if d.nas_root().is_none() || !d.online() {
                             d.find_nas();
                         }
-                        d.refresh_catalog();
+                        d.refresh_catalogue();
                         last = std::time::Instant::now();
                     }
                     std::thread::sleep(Duration::from_secs(5));
@@ -721,7 +721,7 @@ pub fn host() -> &'static str {
 }
 
 /// Notes in the map servers' log on the NAS (`root`; pipeline::pubtimes::SERVERS, an append to
-/// this Mac's file) this server's adoption of catalog `n` or its mirror's sync of it (`kind`): on a
+/// this Mac's file) this server's adoption of catalogue `n` or its mirror's sync of it (`kind`): on a
 /// thread of its own, as the share may be slow, best effort.
 pub fn publish_event(root: &store::nasfs::NasRoot, kind: &str, n: u64, secs: Option<f64>) {
     let (root, e) =
@@ -739,10 +739,10 @@ pub fn default_home() -> PathBuf {
     home.join("Library/Application Support/scenic")
 }
 
-/// POST /api/catalog/refresh: follow a new catalog on the NAS now. The build agent's word after
-/// writing one (pipeline::net::catalog_written), so this Mac adopts it at once instead of at the
+/// POST /api/catalog/refresh: follow a new catalogue on the NAS now. The build agent's word after
+/// writing one (pipeline::net::catalogue_written), so this Mac adopts it at once instead of at the
 /// next poll. This Mac's own requests alone (loopback, not through a proxy). Answers whether the
-/// NAS was read and the catalog served after.
+/// NAS was read and the catalogue served after.
 pub async fn refresh_h(
     axum::extract::State(s): axum::extract::State<crate::S>,
     axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
@@ -753,15 +753,15 @@ pub async fn refresh_h(
         return (axum::http::StatusCode::FORBIDDEN, "this Mac's own requests alone").into_response();
     }
     let s2 = s.clone();
-    let read = tokio::task::spawn_blocking(move || s2.data.refresh_catalog()).await.unwrap_or(false);
-    let body = serde_json::json!({ "read": read, "n": s.data.catalog().n });
+    let read = tokio::task::spawn_blocking(move || s2.data.refresh_catalogue()).await.unwrap_or(false);
+    let body = serde_json::json!({ "read": read, "n": s.data.catalogue().n });
     ([(axum::http::header::CACHE_CONTROL, "no-store")], axum::Json(body)).into_response()
 }
 
-/// How often (seconds) the background thread looks for a new catalog: every 10 s while the lead's
-/// heartbeat says a build runs (catalogs come often then); else every 30 s while the map is in use,
+/// How often (seconds) the background thread looks for a new catalogue: every 10 s while the lead's
+/// heartbeat says a build runs (catalogues come often then); else every 30 s while the map is in use,
 /// and every 10 minutes idle, so the NAS rests. Each look is one listing of catalog/ (an unchanged
-/// catalog reads nothing more: refresh_catalog). The lead's own server is told at once
+/// catalogue reads nothing more: refresh_catalogue). The lead's own server is told at once
 /// (/api/catalog/refresh).
 pub fn poll_every(in_use: bool, building: bool) -> u64 {
     if building {
@@ -844,8 +844,8 @@ mod tests {
             files.push(p);
         }
         // The two forms: a file per tile, and the bundle (docs/formats.md "Bundles").
-        let mut old = Catalog::new(1);
-        let mut new = Catalog::new(1);
+        let mut old = Catalogue::new(1);
+        let mut new = Catalogue::new(1);
         let mut w = store::pack::PackWriter::create(&made.join("all.pack"), json!({"bundle": "markdata"}), false)
             .unwrap()
             .aligned(64);
@@ -860,7 +860,7 @@ mod tests {
             )
             .unwrap();
             old.files
-                .insert(l.clone(), store::catalog::FileRef { file: c, size: b.len() as u64, ..Default::default() });
+                .insert(l.clone(), store::catalogue::FileRef { file: c, size: b.len() as u64, ..Default::default() });
             old.markdata.insert(format!("6/{x}/{y}"), l);
             new.markdata.insert(format!("6/{x}/{y}"), "markdata/all".into());
             w.add(6, x, y, &b, b.len() as u32).unwrap();
@@ -876,12 +876,12 @@ mod tests {
         .unwrap();
         new.files.insert(
             "markdata/all".into(),
-            store::catalog::FileRef { file: c.clone(), size: b.len() as u64, ..Default::default() },
+            store::catalogue::FileRef { file: c.clone(), size: b.len() as u64, ..Default::default() },
         );
-        let open = |home: &std::path::Path, cat: &Catalog| {
+        let open = |home: &std::path::Path, cat: &Catalogue| {
             let dir = nas.path().join("catalog");
             std::fs::remove_dir_all(&dir).ok();
-            store::catalog::write(&dir, cat).unwrap();
+            store::catalogue::write(&dir, cat).unwrap();
             Data::open(Options {
                 home: home.to_owned(),
                 nas_root: Some(store::nasfs::NasRoot::local_for_test(nas.path().to_owned())),
@@ -922,18 +922,18 @@ mod tests {
         assert!(z.markdata("6/1/1").unwrap().is_none());
     }
 
-    /// The agent's word after a catalog: adopted at once, from this Mac alone (not the LAN, the
+    /// The agent's word after a catalogue: adopted at once, from this Mac alone (not the LAN, the
     /// tailnet, or a device through a proxy on this Mac).
     #[tokio::test]
-    async fn a_refresh_from_this_mac_adopts_the_new_catalog_at_once() {
+    async fn a_refresh_from_this_mac_adopts_the_new_catalogue_at_once() {
         use axum::http::StatusCode;
         use tower::ServiceExt;
         let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let dir = nas.path().join("catalog");
-        store::catalog::write_copy(&dir, &Catalog::new(1)).unwrap();
+        store::catalogue::write_copy(&dir, &Catalogue::new(1)).unwrap();
         let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
-        assert_eq!(s.data.catalog().n, 1);
-        store::catalog::write_copy(&dir, &Catalog::new(2)).unwrap();
+        assert_eq!(s.data.catalogue().n, 1);
+        store::catalogue::write_copy(&dir, &Catalogue::new(2)).unwrap();
         let ask = |peer: &str, proxied: bool| {
             let app =
                 axum::Router::new().route("/api/catalog/refresh", axum::routing::post(refresh_h)).with_state(s.clone());
@@ -949,16 +949,16 @@ mod tests {
         for (peer, proxied) in [("192.168.1.66", false), ("100.101.102.103", false), ("127.0.0.1", true)] {
             assert_eq!(ask(peer, proxied).await, StatusCode::FORBIDDEN, "{peer}");
         }
-        assert_eq!(s.data.catalog().n, 1, "refused: nothing read");
-        // Adopted at once: the new catalog read by the time the answer comes, not at the next poll.
+        assert_eq!(s.data.catalogue().n, 1, "refused: nothing read");
+        // Adopted at once: the new catalogue read by the time the answer comes, not at the next poll.
         assert_eq!(ask("127.0.0.1", false).await, StatusCode::OK);
-        assert_eq!(s.data.catalog().n, 2);
+        assert_eq!(s.data.catalogue().n, 2);
         assert_eq!(ask("::1", false).await, StatusCode::OK);
     }
 
     /// A build running (the lead's heartbeat): a look every 10 s, in use or not; else 30 s / 10 min.
     #[test]
-    fn catalogs_are_looked_for_every_ten_seconds_while_a_build_runs() {
+    fn catalogues_are_looked_for_every_ten_seconds_while_a_build_runs() {
         assert_eq!((poll_every(true, true), poll_every(false, true)), (10, 10));
         assert_eq!((poll_every(true, false), poll_every(false, false)), (30, 600));
         // As the background thread asks it: the lead's heartbeat on the NAS, a fresh one with a job.
@@ -980,20 +980,20 @@ mod tests {
         assert_eq!(beat(serde_json::Value::Null), 600);
     }
 
-    /// Delta catalogs (docs/formats.md): the server follows them from the catalog it serves, as the
-    /// whole catalog would be, keeping a whole copy on this Mac; the deltas after the one it has are
+    /// Delta catalogues (docs/formats.md): the server follows them from the catalogue it serves, as the
+    /// whole catalogue would be, keeping a whole copy on this Mac; the deltas after the one it has are
     /// all it reads (the whole one under them gone from the NAS, it still follows).
     #[test]
-    fn the_server_follows_delta_catalogs_from_the_one_it_has() {
+    fn the_server_follows_delta_catalogues_from_the_one_it_has() {
         let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let dir = nas.path().join("catalog");
         let cat = |n: u64, files: &[&str]| {
-            let mut c = Catalog::new(n);
+            let mut c = Catalogue::new(n);
             for f in files {
                 let logical = format!("layers/roads/hi/{f}");
                 c.files.insert(
                     logical.clone(),
-                    store::catalog::FileRef {
+                    store::catalogue::FileRef {
                         file: format!("{logical}.{:016x}.pack", n),
                         size: n,
                         ..Default::default()
@@ -1004,7 +1004,7 @@ mod tests {
             c
         };
         let (one, two, three) = (cat(1, &["6-1-1"]), cat(2, &["6-1-1", "6-1-2"]), cat(3, &["6-1-2", "6-1-3"]));
-        store::catalog::write(&dir, &one).unwrap();
+        store::catalogue::write(&dir, &one).unwrap();
         let d = Data::open(Options {
             home: home.path().to_owned(),
             nas_root: Some(store::nasfs::NasRoot::local_for_test(nas.path().to_owned())),
@@ -1012,19 +1012,19 @@ mod tests {
             reserve: 0,
         })
         .unwrap();
-        assert_eq!(*d.catalog(), one);
-        store::catalog::write_delta(&dir, &one, &two).unwrap();
-        assert!(d.refresh_catalog());
-        assert_eq!(*d.catalog(), two);
-        assert_eq!(store::catalog::read(&home.path().join("catalog/2.json.zst")).unwrap(), two, "kept whole here");
-        // The whole one under the deltas gone: catalog 3 still followed, from 2.
-        store::catalog::write_delta(&dir, &two, &three).unwrap();
+        assert_eq!(*d.catalogue(), one);
+        store::catalogue::write_delta(&dir, &one, &two).unwrap();
+        assert!(d.refresh_catalogue());
+        assert_eq!(*d.catalogue(), two);
+        assert_eq!(store::catalogue::read(&home.path().join("catalog/2.json.zst")).unwrap(), two, "kept whole here");
+        // The whole one under the deltas gone: catalogue 3 still followed, from 2.
+        store::catalogue::write_delta(&dir, &two, &three).unwrap();
         std::fs::remove_file(dir.join("1.json.zst")).unwrap();
-        assert!(d.refresh_catalog());
-        assert_eq!(*d.catalog(), three);
+        assert!(d.refresh_catalogue());
+        assert_eq!(*d.catalogue(), three);
         // (Nothing newer: as it is.)
-        assert!(d.refresh_catalog());
-        assert_eq!(*d.catalog(), three);
+        assert!(d.refresh_catalogue());
+        assert_eq!(*d.catalogue(), three);
     }
 }
 

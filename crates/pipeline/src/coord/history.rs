@@ -1,6 +1,6 @@
 //! What happened in the build, in order (the worker page's activity: docs/workers.md, The page):
 //! each job the lead started and ended, each lease a worker took, handed back, failed or let
-//! lapse, each task done or failed, the catalogs written and the map tiles planned, the pauses,
+//! lapse, each task done or failed, the catalogues written and the map tiles planned, the pauses,
 //! the workers first heard from, the devices let help or not, the agents started, the
 //! lead's conditions changing, and each Mac's build caches cleared or freed. Kept on the
 //! lead's disk (`history.jsonl`, a line an event, the last week's, KEEP_MAX at most), served by
@@ -29,7 +29,7 @@ pub struct Event {
     pub t: u64,
     /// What: "start" and "end" (a lead's job), "lease", "done", "fail" and "lapse" (a worker's
     /// job), "task", "task-fail" and "task-back" (a task given back unfinished, not failed),
-    /// "catalog" (a catalog written: its `n`, its job's time and its crate::pubtimes::CatalogStats),
+    /// "catalog" (a catalogue written: its `n`, its job's time and its crate::pubtimes::CatalogueStats),
     /// "merged" (journal entries merged: their keys), "planned" (map tiles first
     /// planned: crate::pubtimes::planned_event), "pause" and "resume", "worker" (first heard from), "device" (a device's ask to
     /// help accepted or declined, a device forgotten: its asks aren't), "agent" (one started),
@@ -57,11 +57,11 @@ pub struct Event {
     /// In words: how it ended, why it failed, what changed, who paused.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
-    /// The catalog it's about (a "catalog": the one written).
+    /// The catalogue it's about (a "catalog": the one written).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub n: Option<u64>,
     /// What else it says, for publishing's times (crate::pubtimes): a "catalog"'s
-    /// crate::pubtimes::CatalogStats, a "planned"'s units reaching each map tile.
+    /// crate::pubtimes::CatalogueStats, a "planned"'s units reaching each map tile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
 }

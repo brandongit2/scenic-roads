@@ -5,7 +5,7 @@
 //!
 //! Before the expensive steps the folder is cut down to the ways that touch the coverage (whoever
 //! owns them: a way just outside still gives the clean-up its junction context at shared nodes).
-//! The global-source layers come from the catalog's packs (`stage`), and the roads' heights from the
+//! The global-source layers come from the catalogue's packs (`stage`), and the roads' heights from the
 //! finished terrain staged with them (crate::road_terrain).
 
 use crate::coverage::Coverage;

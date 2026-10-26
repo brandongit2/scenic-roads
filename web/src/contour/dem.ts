@@ -9,7 +9,7 @@ const waiting = new Map<number, { resolve: (r: ContourReply) => void; reject: (e
 
 /**
  * The protocol, once (`levels`: a tile zoom's contour intervals [minor, major] at a density, none
- * for no lines), and its DEM (a catalog's: the tiles asked for from now on read it; the source's
+ * for no lines), and its DEM (a catalogue's: the tiles asked for from now on read it; the source's
  * tiles it changed are for the caller to ask for again).
  */
 export function setContourDem(dem: Dem, levels: (z: number, density: number) => number[]) {

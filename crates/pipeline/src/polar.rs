@@ -45,7 +45,7 @@ pub fn layer(kind: &str, pole: Pole) -> String {
     format!("polar-{kind}-{}", pole.letter())
 }
 
-/// A block's pack: `layers/polar-terrain-s/polar/4-x-y` (its key in the catalog's layer `polar`).
+/// A block's pack: `layers/polar-terrain-s/polar/4-x-y` (its key in the catalogue's layer `polar`).
 pub fn block_logical(kind: &str, pole: Pole, b: (u32, u32)) -> String {
     format!("layers/{}/polar/{BLOCK_Z}-{}-{}", layer(kind, pole), b.0, b.1)
 }

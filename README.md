@@ -45,7 +45,7 @@ Rail frequencies come only from published timetables (GTFS feeds from the Mobili
 
 ## Building and running
 
-The lead Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the map into the NAS from a worldwide OpenStreetMap download, a region at a time, and publishes a catalog that each Mac's server switches to in place. Other Macs and any browser on the LAN help through its coordinator (`docs/workers.md`); the lead can be handed between Macs (`scenic lead`, `docs/pool.md`).
+The lead Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the map into the NAS from a worldwide OpenStreetMap download, a region at a time, and publishes a catalogue that each Mac's server switches to in place. Other Macs and any browser on the LAN help through its coordinator (`docs/workers.md`); the lead can be handed between Macs (`scenic lead`, `docs/pool.md`).
 
 - `scenic status` shows what the build is doing; `scenic pause` / `scenic resume` pause the whole build; `scenic --help` lists the commands. The menu bar item and the lead's build page (`/work/`) show and control the same.
 - **Inputs** are NAS inputs folders, each checked before use (`docs/inputs.md`): regions (`inputs/regions/`, §6.1), translations and descriptions (`inputs/translations/`, `inputs/descriptions/`; what still lacks them is listed in each `todo/`), heritage registers (§6.5), languages (§6.2), timetables (§6.7), elevation (§6.8).
@@ -107,7 +107,7 @@ The lead Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the ma
 
 **Terrain.** The 3D terrain is sampled from the same elevation datasets as the roads, in the same order, so a road and the ground under it always come from one dataset: regional lidar and DEMs where declared, then Copernicus GLO-30 (its filled voids left out), then AWS's Terrain Tiles. Coarser zooms are the means of the finer tiles under them; the sea goes to 0 m and each lake to its shore's level, from the basemap's water (`terrain_base`, `terrain_water`, `docs/steps.md`).
 
-The map's © Credits dialog lists each source as its catalog serves it (`CREDITS` in `crates/pipeline/src/rules.rs`, plus the inputs' own descriptions).
+The map's © Credits dialog lists each source as its catalogue serves it (`CREDITS` in `crates/pipeline/src/rules.rs`, plus the inputs' own descriptions).
 
 **Terms.** Portugal's atlas is non-commercial (CC BY-NC); the Ontario Heritage Trust register, Andorra's inventory and Guernsey's data are for personal or private use. **Do not publish or redistribute the built data or a hosted copy of this map.**
 

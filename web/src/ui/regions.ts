@@ -2,7 +2,7 @@
 // only. Regions are files in their inputs folder, inputs/regions/ (docs/inputs.md §6.1), changed there
 // alone and checked before they're used: the list shows them grouped by their folders, each with
 // its check's state (and the findings holding it), and the coverage they add up to on the map.
-// The coverage drawn is the one the map's catalog was built for; a region it doesn't have (added
+// The coverage drawn is the one the map's catalogue was built for; a region it doesn't have (added
 // or redrawn since) is listed as pending.
 // Downloads (docs/macs.md, "Mirror, per Mac"): nothing is copied to this Mac unless it's
 // downloaded here: the World, zoomed out, each region, and a downloaded region's terrain detail, each
@@ -89,10 +89,10 @@ export class RegionsPanel {
   private tree: Folder | null = null;
   private bad: [string, string][] = [];
   private coverage: Coverage | null = null;
-  /** The outlines of the regions the catalog doesn't have yet, from their osm: entries' areas. */
+  /** The outlines of the regions the catalogue doesn't have yet, from their osm: entries' areas. */
   private pendingOutlines = new Map<string, Outline[]>();
-  /** The catalog the map shows, as last told (setCatalog). */
-  private catalogN: number | undefined;
+  /** The catalogue the map shows, as last told (setCatalogue). */
+  private catalogueN: number | undefined;
   private loadedAt = -Infinity;
   private loadTok = 0;
   private open = false;
@@ -148,11 +148,11 @@ export class RegionsPanel {
     if (this.covBox.checked || this.regBox.checked) void this.refresh();
   }
 
-  /** The map's catalog now (catalog.ts). A new one was built for its own coverage: drawn again
+  /** The map's catalogue now (catalogue.ts). A new one was built for its own coverage: drawn again
    * while it's shown or the panel is open. */
-  setCatalog(n: number | undefined) {
-    if (n === undefined || n === this.catalogN) return;
-    this.catalogN = n;
+  setCatalogue(n: number | undefined) {
+    if (n === undefined || n === this.catalogueN) return;
+    this.catalogueN = n;
     const had = this.coverage?.catalog;
     if (had !== undefined && had !== n && (this.covBox.checked || this.open)) void this.refresh();
   }
@@ -210,8 +210,8 @@ export class RegionsPanel {
     this.loadPending(tok);
   }
 
-  /** Not on the map yet: the catalog has no region by its id with its outline (added or redrawn
-   * since it was made). Never when the catalog doesn't say which regions it was built for. */
+  /** Not on the map yet: the catalogue has no region by its id with its outline (added or redrawn
+   * since it was made). Never when the catalogue doesn't say which regions it was built for. */
   private isPending(r: Region): boolean {
     const built = this.coverage?.regions;
     if (!built) return false;
@@ -219,7 +219,7 @@ export class RegionsPanel {
     return !c || c.outline.length !== r.outline.length || c.outline.some((e, i) => e !== r.outline[i]);
   }
 
-  /** A region's outlines: the catalog's (each entry's; none until the coverage is loaded), or for a
+  /** A region's outlines: the catalogue's (each entry's; none until the coverage is loaded), or for a
    * pending one its osm: entries' areas, once loaded. */
   private outlinesOf(r: Region): Outline[] {
     if (this.isPending(r)) return this.pendingOutlines.get(r.id) ?? [];
@@ -279,8 +279,8 @@ export class RegionsPanel {
     if (!n && !this.bad.length && this.loadedAt > -Infinity) this.list.append(h('div', { class: 'faint rg-empty' }, 'No regions yet'));
   }
 
-  /** A region's state in words: pending while the map's catalog doesn't have it, its tiles built of
-   * total while it's building, built when the catalog says so. */
+  /** A region's state in words: pending while the map's catalogue doesn't have it, its tiles built of
+   * total while it's building, built when the catalogue says so. */
   private stateOf(r: Region): { text: string; cls: string; title?: string } | null {
     // The check comes first: a region not accepted yet isn't what's built.
     if (r.state === 'checking') return { text: 'checking…', cls: 'wait', title: 'Its file changed: being checked before it’s used' };
@@ -291,7 +291,7 @@ export class RegionsPanel {
     if (r.disabled) return { text: 'disabled', cls: 'off', title: 'Disabled in its file (disabled = true): checked like every region, and other regions may name it, but nothing is built for it, so it isn’t on the map and can’t be downloaded. Its file enables it.' };
     if (this.isPending(r)) return { text: 'pending', cls: 'wait', title: 'Not on the map yet: it’s added when the lead next publishes the map data' };
     const building = this.coverage?.regions?.find((b) => b.id === r.id)?.tiles;
-    if (building) return { text: tilesText(building), cls: 'wait', title: 'Still building: its tiles are on the map as each catalog brings them, and a download of it grows with them' };
+    if (building) return { text: tilesText(building), cls: 'wait', title: 'Still building: its tiles are on the map as each catalogue brings them, and a download of it grows with them' };
     if (this.coverage?.regions) return { text: 'built', cls: 'ok' };
     return null;
   }
@@ -414,8 +414,8 @@ export class RegionsPanel {
     els.size.className = cls;
     els.size.textContent = text;
     els.size.title = (rk ? `Its packs and the basemap’s zooms 11–14 over it: ${size(rk.bytes)}, of which ${size(rk.here)} on this Mac` : '');
-    // (Still building: so far; a download of it grows with each catalog, copied slowly meanwhile.)
-    if (rk?.tiles) els.size.title += `\nSo far: ${tilesText(rk.tiles)}. Downloaded, it grows with each catalog, copied slowly while the build runs`;
+    // (Still building: so far; a download of it grows with each catalogue, copied slowly meanwhile.)
+    if (rk?.tiles) els.size.title += `\nSo far: ${tilesText(rk.tiles)}. Downloaded, it grows with each catalogue, copied slowly while the build runs`;
     const on = !!rk?.on;
     if (els.on !== on || !els.btn) {
       const name = r?.name ?? rk?.name ?? id;

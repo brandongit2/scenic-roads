@@ -40,7 +40,7 @@ def build(check=False):
             ('global/', 'worldwide results: whole roads, road → z6 tiles, trains a day, languages'),
             ('layers/', 'what the map draws, in packs (detail near the coverage) or one bundle a small layer; basemap, water'),
             ('work/ · cache/', 'build intermediates; what each z6 tile keeps for its next run, on either Mac'),
-            ('app/ · catalog/', 'the app your Macs run; catalogs: every file the map reads'),
+            ('app/ · catalog/', 'the app your Macs run; catalogues: every file the map reads'),
             ('state/', 'who leads (terms); the journal; the records: what each file is made from')]
     # GC: unreferenced files after 14 days, daily, when the NAS is quiet or after waiting a day (storage.md, pool.md §7.2)
     top = 16
@@ -91,7 +91,7 @@ def build(check=False):
             'descriptions, registers, timetables and source declarations; sources (the planet the NAS fetches itself, and every '
             'download, kept once, the depth grids among them); base data and query data per z6 tile, landmark points in one bundle, '
             'worldwide results, the layers in packs or bundles, build intermediates and what each z6 tile keeps for its next run, the '
-            'published app, the catalogs (at most one a minute), and the build’s terms, journal and records. The lead and every member '
+            'published app, the catalogues (at most one a minute), and the build’s terms, journal and records. The lead and every member '
             'run jobs packed by their measured memory, disk and cores, staging on their SSDs, at any charge. What was made by hand, by '
             'you, by Claude agents or by downloads a script can’t make, goes into the NAS directly. Your Macs run the map under a '
             'launcher, copy only what you download in the Regions panel, read the rest from the NAS, and list the regions read only.')

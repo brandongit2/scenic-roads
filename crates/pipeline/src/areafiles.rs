@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::PI;
-use store::catalog::Catalog;
+use store::catalogue::Catalogue;
 
 /// How far around an area its tiles are kept: its outlines are simplified (60 m to 1 km), and the
 /// build reaches 1 km past coasts.
@@ -18,7 +18,7 @@ pub const LISTS_KM: f64 = 50.0;
 pub const VIEWSHED_KM: f64 = 25.0;
 pub const VIEWSHED_LAYERS: [&str; 3] = ["terrain", "grid-canopy", "grid-class"];
 
-/// Some of the catalog's files: (content name, size), sorted by name.
+/// Some of the catalogue's files: (content name, size), sorted by name.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Files {
     pub names: Vec<(String, u64)>,
@@ -60,7 +60,7 @@ pub fn polar_blocks_meeting(rings: &[Vec<[f64; 2]>], pole: roadcore::polar::Pole
         .collect()
 }
 
-/// A region's outer rings, as the catalog records them (simplified; holes left out: a tile in a
+/// A region's outer rings, as the catalogue records them (simplified; holes left out: a tile in a
 /// hole is kept all the same).
 pub fn outer_rings(r: &crate::coverage::DrawnRegion) -> Vec<Vec<[f64; 2]>> {
     r.shapes.values().flat_map(|polys| polys.iter().filter_map(|p| p.first().cloned())).collect()
@@ -68,7 +68,7 @@ pub fn outer_rings(r: &crate::coverage::DrawnRegion) -> Vec<Vec<[f64; 2]>> {
 
 /// The files an area (`rings`, each read as a filled area) needs of `cat`, the essentials and the
 /// basemap aside (module doc).
-pub fn files_of(cat: &Catalog, rings: &[Vec<[f64; 2]>]) -> Files {
+pub fn files_of(cat: &Catalogue, rings: &[Vec<[f64; 2]>]) -> Files {
     let mut out = BTreeMap::new();
     let mut add = |logical: &String| {
         if let Some(f) = cat.files.get(logical) {
@@ -146,7 +146,7 @@ pub fn files_of(cat: &Catalog, rings: &[Vec<[f64; 2]>]) -> Files {
 /// area) needs, with their shading's (the slope layer's deep packs of the same z10 tiles:
 /// crate::slope_pack): those whose z10 tile meets it grown by 2 km; and the share of the area the detail
 /// covers (per cent, in Web Mercator: the deep packs' z10 tiles clipped to it, over its area).
-pub fn detail_of(cat: &Catalog, rings: &[Vec<[f64; 2]>]) -> (Files, f64) {
+pub fn detail_of(cat: &Catalogue, rings: &[Vec<[f64; 2]>]) -> (Files, f64) {
     let Some(l) = cat.layers.get("terrain").filter(|l| !l.deep.is_empty()) else { return (Files::default(), 0.0) };
     let rings: Vec<&Vec<[f64; 2]>> =
         rings.iter().filter(|r| r.len() >= 3 && r.iter().all(|p| p[0].is_finite() && p[1].is_finite())).collect();

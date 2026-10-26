@@ -2,7 +2,7 @@
 //! (z0–2), a lo pack per z3 tile (z3–8) or a hi pack per z6 tile (z9–14; the terrain's z13 and finer
 //! in deep packs per z10 tile, crate::terrain_deep) — uploaded content-named
 //! under `layers/<layer>/`. A small layer made whole by one job may instead be one bundle
-//! (`layers/<layer>/all`, docs/formats.md "Bundles"): every tile in one pack, which the catalog
+//! (`layers/<layer>/all`, docs/formats.md "Bundles"): every tile in one pack, which the catalogue
 //! names for each pack key its tiles fall in (`bundle_keys`).
 
 use crate::out::Out;
@@ -19,7 +19,7 @@ pub fn pack_of(z: u8, x: u32, y: u32) -> (&'static str, u8, u32, u32) {
     }
 }
 
-/// A layer's packs as the catalog lists them.
+/// A layer's packs as the catalogue lists them.
 #[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LayerOut {
     pub encoding: String,
@@ -65,7 +65,7 @@ impl LayerOut {
         self.maxzoom = self.maxzoom.max(zs.1);
     }
 
-    /// A bundle's pack keys (`bundle_keys`) named in the catalog as one pack: `logical` for each.
+    /// A bundle's pack keys (`bundle_keys`) named in the catalogue as one pack: `logical` for each.
     pub fn add_bundle(&mut self, logical: &str, keys: &BundleKeys) {
         if keys.root {
             self.root = Some(logical.to_string());
@@ -329,7 +329,7 @@ pub fn split_grid(out: &mut Out, dir: &std::path::Path, var: &str) -> Result<Lay
 /// root on the NAS (`SCENIC_BUNDLE_SCRATCH`) as the jobs wrote them before (a file per tile, a pack
 /// per key) and as bundles: files made and time, each bundle's members checked byte for byte
 /// against the files they replace; and heritage-sites' slices put again unchanged, looked at on the
-/// NAS (before) and not (now). Writes catalogs of each form (`old/`, `new/`) for a server to compare.
+/// NAS (before) and not (now). Writes catalogues of each form (`old/`, `new/`) for a server to compare.
 #[cfg(test)]
 mod measure {
     use super::*;
@@ -491,7 +491,7 @@ mod measure {
         }
         eprintln!("every member byte for byte as before");
 
-        // Catalogs of each form, with the overlays' details and the summaries, for a server.
+        // Catalogues of each form, with the overlays' details and the summaries, for a server.
         let extra: Vec<(&String, &String)> = m
             .iter()
             .filter(|(l, _)| {
@@ -505,12 +505,14 @@ mod measure {
                 out.put_file(l, ext, &p).unwrap();
             }
             out.save().unwrap();
-            let mut cat = store::catalog::Catalog::new(1);
+            let mut cat = store::catalogue::Catalogue::new(1);
             let mut layers_out: BTreeMap<String, LayerOut> = BTreeMap::new();
             for (l, c) in &out.manifest {
                 let size = std::fs::metadata(root.join(c)).unwrap().len();
-                cat.files
-                    .insert(l.clone(), store::catalog::FileRef { file: c.clone(), size, fmt: 1, ..Default::default() });
+                cat.files.insert(
+                    l.clone(),
+                    store::catalogue::FileRef { file: c.clone(), size, fmt: 1, ..Default::default() },
+                );
                 let parts: Vec<&str> = l.split('/').collect();
                 match parts.as_slice() {
                     ["layers", ly, "all"] => {
@@ -553,7 +555,7 @@ mod measure {
             }
             cat.validate().unwrap();
             std::fs::remove_dir_all(root.join("catalog")).ok();
-            store::catalog::write(&root.join("catalog"), &cat).unwrap();
+            store::catalogue::write(&root.join("catalog"), &cat).unwrap();
         }
 
         // Heritage-sites' slices put again unchanged (a sample): looked at on the NAS, as before

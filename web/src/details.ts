@@ -75,7 +75,7 @@ export async function loadDetail(r: DetailRef): Promise<Detail | null> {
   return d;
 }
 
-// New area overlays (a new catalog): their details and the parks' asked for again. (The points'
+// New area overlays (a new catalogue): their details and the parks' asked for again. (The points'
 // go with the marks version: setMarksVersion.)
 onVersions((f) => f.startsWith('ov-'), () => {
   for (const m of [cache, loaded]) for (const k of [...m.keys()]) if (!k.startsWith('mark:')) m.delete(k);

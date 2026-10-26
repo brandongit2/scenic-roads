@@ -1,8 +1,8 @@
-// node web/test/catalogs.test.mjs (tools/dev/check.sh's web part): the Catalogues tab's sums
-// (web/work/catalogs.js): the range's inputs (parsing, the sides' signs, one span at a time, the
+// node web/test/catalogues.test.mjs (tools/dev/check.sh's web part): the Catalogues tab's sums
+// (web/work/catalogues.js): the range's inputs (parsing, the sides' signs, one span at a time, the
 // swap), the tiles' times, the colour map, the timeline.
 import assert from "node:assert/strict";
-import { axisTicks, commit, formatWhen, keyOf, labelled, mergeCatalogs, pairAt, paint, parseWhen, publishedAt, RAMP, rampColour, rangeOf, tileTimes, timelineSpan } from "../work/catalogs.js";
+import { axisTicks, commit, formatWhen, keyOf, labelled, mergeCatalogues, pairAt, paint, parseWhen, publishedAt, RAMP, rampColour, rangeOf, tileTimes, timelineSpan } from "../work/catalogues.js";
 
 process.env.TZ = "UTC";
 const NOW = Date.UTC(2026, 9, 24, 12, 0, 0) / 1000;
@@ -63,7 +63,7 @@ assert.deepEqual(p, { left: { kind: "abs", t: NOW }, right: { kind: "abs", t: Da
 
 // The tiles: the last catalogue publishing each; one dropped later gone.
 assert.equal(keyOf(6, 50 * 64 + 30), "6/30/50");
-const cats = mergeCatalogs(mergeCatalogs([], [{ n: 1, t: 100, first: true, z3: [0], z6: [65, 130] }]), [{ n: 1, t: 100, z6: [] }, { n: 2, t: 200, z3: [], z6: [65], z6_gone: [130] }]);
+const cats = mergeCatalogues(mergeCatalogues([], [{ n: 1, t: 100, first: true, z3: [0], z6: [65, 130] }]), [{ n: 1, t: 100, z6: [] }, { n: 2, t: 200, z3: [], z6: [65], z6_gone: [130] }]);
 assert.deepEqual(cats.map((c) => c.n), [1, 2]);
 assert.deepEqual([...tileTimes(cats, 6)], [["6/1/1", { t: 200, n: 2, first: false }]]);
 assert.deepEqual([...tileTimes(cats, 3)], [["3/0/0", { t: 100, n: 1, first: true }]]);
@@ -104,4 +104,4 @@ assert.ok(axisTicks(NOW - 6 * H, NOW).every((t) => /^\d\d:\d\d$/.test(t.label)))
 const days = axisTicks(NOW - 10 * D, NOW, 6);
 assert.ok(days.length >= 2 && days.length <= 6 && days.every((t) => /^\d+ [A-Z][a-z]{2}$/.test(t.label)), JSON.stringify(days));
 
-console.log("catalogs.test.mjs: ok");
+console.log("catalogues.test.mjs: ok");

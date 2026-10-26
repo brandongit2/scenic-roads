@@ -1,4 +1,4 @@
-//! The map's server: tiles, layers and the APIs over the catalog's data (docs/macs.md).
+//! The map's server: tiles, layers and the APIs over the catalogue's data (docs/macs.md).
 //!
 //! Its command line: `Cli` below (`server --help`).
 //!
@@ -8,7 +8,7 @@
 //! the NAS: a `--home` of its own, never this Mac's app folder). The free space the mirror leaves on
 //! the disk is the owner's setting in the Regions panel (crate::reserve). `--listen`: the one address to answer on (a test
 //! server's 127.0.0.1), else every IPv4 address and IPv6's loopback. Nothing is loaded at start:
-//! the catalog says where everything is, and files are opened on first use.
+//! the catalogue says where everything is, and files are opened on first use.
 
 mod accepted;
 mod cache;
@@ -57,9 +57,9 @@ pub struct AppState {
     pub basemap: tiles::Basemap,
     /// Overlay and layer files gzipped once (cache.rs), by content name.
     pub packs: Arc<cache::Packs>,
-    /// Roads' English names from OSM (name:en), by OSM way id, per catalog.
+    /// Roads' English names from OSM (name:en), by OSM way id, per catalogue.
     road_en: Mutex<Option<(u64, Arc<HashMap<u64, String>>)>>,
-    /// Trains a day per rail way (OSM id), sorted, per catalog.
+    /// Trains a day per rail way (OSM id), sorted, per catalogue.
     rail_freq: Mutex<Option<(u64, Arc<Vec<(u32, f32)>>)>>,
     /// The build agent's heartbeat (state/status.json), re-read at most every 30 s.
     agent: Mutex<Option<(std::time::Instant, serde_json::Value)>>,
@@ -76,7 +76,7 @@ pub struct AppState {
     pub downloads: Arc<downloads::Downloads>,
     /// The mirror's reserve, the owner's setting (reserve.rs).
     pub reserve: reserve::Setting,
-    /// The current version tokens of the app's URLs, per (catalog generation, translations version).
+    /// The current version tokens of the app's URLs, per (catalogue generation, translations version).
     tokens: Mutex<Option<((u64, u64), Arc<std::collections::HashSet<String>>)>>,
 }
 
@@ -87,7 +87,7 @@ impl AppState {
         self.data.generation.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// A global file, read whole: None when the catalog has none. A failed read (the NAS away) is
+    /// A global file, read whole: None when the catalogue has none. A failed read (the NAS away) is
     /// logged and noted in `failed`, so what's built from it isn't kept.
     fn global_or_note(&self, logical: &str, failed: &std::cell::Cell<bool>) -> Option<Arc<Vec<u8>>> {
         match self.data.global(logical) {
@@ -107,7 +107,7 @@ impl AppState {
         if cur.as_ref().is_none_or(|(gg, _)| *gg != g) {
             let failed = std::cell::Cell::new(false);
             let units: Vec<String> =
-                self.data.catalog().files.keys().filter(|l| l.starts_with("global/roaden/")).cloned().collect();
+                self.data.catalogue().files.keys().filter(|l| l.starts_with("global/roaden/")).cloned().collect();
             let mut map: HashMap<u64, String> = HashMap::new();
             for l in units {
                 let part = self
@@ -286,7 +286,7 @@ impl AppState {
         self.areas.forget(names);
     }
 
-    /// Whether the rail frequencies and roads' English names of this catalog are loaded.
+    /// Whether the rail frequencies and roads' English names of this catalogue are loaded.
     fn loaded(&self) -> bool {
         let g = self.generation();
         self.rail_freq.lock().unwrap().as_ref().is_some_and(|(gg, _)| *gg == g)
@@ -337,7 +337,7 @@ pub fn test_state_from(home: &std::path::Path, data: Arc<data::Data>) -> S {
 
 /// `--mirror` with `--root` needs a `--home` of its own: mirrored into this Mac's own app folder
 /// (`default`), a root would let its mirror's files go, tidy its indexes away and add the root's
-/// catalog to its own.
+/// catalogue to its own.
 fn check_root_mirror(
     root: bool,
     mirror: bool,
@@ -362,7 +362,7 @@ fn same_dir(a: &std::path::Path, b: &std::path::Path) -> bool {
     }
 }
 
-/// The map's server: tiles, layers and the APIs over the catalog's data (docs/macs.md). Its command
+/// The map's server: tiles, layers and the APIs over the catalogue's data (docs/macs.md). Its command
 /// line, checked before anything starts (clap: docs/building.md, "Command lines"), so a mistyped or
 /// unknown option never runs the server with its defaults (this Mac's own app folder and the NAS).
 #[derive(clap::Parser, Debug)]
@@ -443,8 +443,8 @@ async fn main() -> Result<()> {
         reserve: reserve::Setting::load(&home).bytes(),
     })?;
     eprintln!(
-        "catalog {} · NAS {}",
-        d.catalog().n,
+        "catalogue {} · NAS {}",
+        d.catalogue().n,
         d.nas_root().map(|p| p.display().to_string()).unwrap_or_else(|| "not mounted".into())
     );
     if root.is_none() {
@@ -531,7 +531,7 @@ async fn main() -> Result<()> {
         .route("/api/marks/count", get(marks::count))
         .route("/api/marks/detail/{kind}/{id}", get(marks::detail))
         .route("/api/meta", get(meta_h))
-        .route("/api/catalog", get(catalog_h))
+        .route("/api/catalog", get(catalogue_h))
         .route("/api/catalog/refresh", axum::routing::post(data::refresh_h))
         .route("/api/way/{id}", get(ways::way_h))
         .route("/api/profile/{id}", get(ways::profile_h))
@@ -630,10 +630,10 @@ async fn rail_freq_h(State(s): State<S>, RawQuery(q): RawQuery) -> Response {
 /// The layer files the app loads whole (the overlays job's summary), with display names attached to
 /// their features.
 async fn layer_h(State(s): State<S>, Path(name): Path<String>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
-    let Some(logical) = layer_logical(&s.data.catalog(), &name) else { return StatusCode::NOT_FOUND.into_response() };
+    let Some(logical) = layer_logical(&s.data.catalogue(), &name) else { return StatusCode::NOT_FOUND.into_response() };
     match cache::respond_layer(&s, &logical, &headers, cache::versioned(q.as_deref())).await {
         Some(r) => r,
-        // In the catalog but not read (the NAS away): try again later.
+        // In the catalogue but not read (the NAS away): try again later.
         None if s.data.content(&logical).is_some() => StatusCode::SERVICE_UNAVAILABLE.into_response(),
         None => ([(header::CONTENT_TYPE, "application/geo+json")], r#"{"type":"FeatureCollection","features":[]}"#)
             .into_response(),
@@ -641,7 +641,7 @@ async fn layer_h(State(s): State<S>, Path(name): Path<String>, RawQuery(q): RawQ
 }
 
 /// The file a layer name is served from: the overlays job's (`global/heritage/`).
-fn layer_logical(cat: &store::catalog::Catalog, name: &str) -> Option<String> {
+fn layer_logical(cat: &store::catalogue::Catalogue, name: &str) -> Option<String> {
     let l = match name {
         "summary" => "global/heritage/layer-summary",
         _ => return None,
@@ -651,7 +651,7 @@ fn layer_logical(cat: &store::catalog::Catalog, name: &str) -> Option<String> {
 
 /// Loads what a first click or page load would otherwise wait for: the rail frequencies, roads'
 /// English names and the layer files (with names attached, gzipped).
-/// Again whenever the catalog or the translations change.
+/// Again whenever the catalogue or the translations change.
 async fn warm(s: S) {
     // Nothing until the map is first used: an idle server loads nothing (docs/surface.md).
     while !updater::in_use(u64::MAX) {
@@ -670,8 +670,8 @@ async fn warm(s: S) {
             })
             .await
             .unwrap_or(false);
-            let cat = s.data.catalog();
-            // Prepared layer files of earlier catalogs go.
+            let cat = s.data.catalogue();
+            // Prepared layer files of earlier catalogues go.
             s.packs.retain_contents(&cat.files.values().map(|f| f.file.clone()).collect());
             let layers: Vec<String> = ["summary"].iter().filter_map(|name| layer_logical(&cat, name)).collect();
             for l in &layers {
@@ -687,7 +687,7 @@ async fn warm(s: S) {
     }
 }
 
-/// Whether a request is the map in use. An open page's polls of the catalog aren't (a tab left open
+/// Whether a request is the map in use. An open page's polls of the catalogue aren't (a tab left open
 /// would hold an update off), nor the menu bar item's of the build's status (every five seconds),
 /// nor the Regions panel's of the downloads' (`/api/downloads`), nor the place search's while its places
 /// are made (`poll=1`: places.rs).
@@ -706,7 +706,7 @@ fn version_token(query: Option<&str>) -> Option<String> {
 
 /// Records the request (for the updater and "in use", polls aside: `is_use`), and caches responses
 /// to versioned URLs for good, but only when their version is the current one: an answer fetched
-/// under an old version during a catalog or translations switch may hold the new data, and
+/// under an old version during a catalogue or translations switch may hold the new data, and
 /// mustn't be pinned to the old URL for a year.
 async fn versioned_caching(State(s): State<S>, req: axum::extract::Request, next: axum::middleware::Next) -> Response {
     if is_use(req.uri()) {
@@ -725,12 +725,12 @@ async fn versioned_caching(State(s): State<S>, req: axum::extract::Request, next
 
 /// What the app needs to start: the build's meta, each layer's version (for its URLs) and zooms,
 /// the NAS status.
-/// The area overlays served as vector tiles (`/tiles/ov/{name}`, catalog layers `ov-{name}`).
+/// The area overlays served as vector tiles (`/tiles/ov/{name}`, catalogue layers `ov-{name}`).
 const OV_LAYERS: [&str; 4] = ["heritage-areas", "indigenous", "special", "whs"];
 
 fn meta_json(s: &AppState) -> serde_json::Value {
-    let cat = s.data.catalog();
-    // An object even before the first catalog (the app then shows an empty map, not an error).
+    let cat = s.data.catalogue();
+    // An object even before the first catalogue (the app then shows an empty map, not an error).
     let mut meta = if cat.meta.is_object() { cat.meta.clone() } else { serde_json::json!({}) };
     let mut versions = serde_json::Map::new();
     // Data served with display names changes with the translations too: their versions carry the
@@ -786,7 +786,7 @@ fn meta_json(s: &AppState) -> serde_json::Value {
             versions.insert(format!("ov-{l}.tiles"), named(s.data.layer_version(&format!("ov-{l}"))));
         }
     }
-    // Way info and whole roads change with any data (the catalog's number) and carry names.
+    // Way info and whole roads change with any data (the catalogue's number) and carry names.
     versions.insert("ways.bin".into(), named(format!("c{}", cat.n)));
     // The basemap: its archives' content names.
     let mut bm = blake3::Hasher::new();
@@ -801,7 +801,7 @@ fn meta_json(s: &AppState) -> serde_json::Value {
     // The water's tiles: its packs and the basemap they're drawn from deeper.
     versions.insert("water".into(), serde_json::Value::from(water::version(s)));
     // Each tiled layer's packs' versions (a tile's `?v=` is that of the pack holding it): a new
-    // catalog changes only the tokens of the packs it changed, so a browser asks again only for
+    // catalogue changes only the tokens of the packs it changed, so a browser asks again only for
     // their tiles. Root: z0–2; lo: z3–8, by z3 tile; hi: z9–14, by z6 tile; the terrain's deep
     // packs past z12, by z10 tile; a polar layer's root z0–3 and blocks z4–9, by z4 tile of its
     // grid (Data::pack_of) ("z/x/y").
@@ -859,7 +859,7 @@ fn meta_json(s: &AppState) -> serde_json::Value {
         m.insert("catalog".into(), serde_json::json!(cat.n));
         m.insert("online".into(), serde_json::json!(s.data.online()));
         m.insert("labelTiles".into(), serde_json::json!(cat.layers.contains_key("labels")));
-        // The water as exact coverage (pipeline::water; water.rs), where the catalog has it.
+        // The water as exact coverage (pipeline::water; water.rs), where the catalogue has it.
         m.insert("water".into(), serde_json::json!(cat.layers.contains_key("water")));
     }
     meta
@@ -874,7 +874,7 @@ fn pack_token(content: &str) -> String {
     blake3::hash(content.as_bytes()).to_hex()[..12].to_string()
 }
 
-/// A fingerprint of every version the app's URLs use: it changes with the catalog and with the
+/// A fingerprint of every version the app's URLs use: it changes with the catalogue and with the
 /// translations, so an open page knows to switch.
 fn versions_fingerprint(s: &AppState) -> String {
     let tokens = s.current_tokens();
@@ -888,9 +888,9 @@ fn versions_fingerprint(s: &AppState) -> String {
     h.finalize().to_hex()[..12].to_string()
 }
 
-/// The credits of the sources a catalog's data comes from (© Credits). A catalog made before
-/// catalogs carried them has none, and gets every credit the app knows: what the map showed then.
-fn credits_of(cat: &store::catalog::Catalog) -> serde_json::Value {
+/// The credits of the sources a catalogue's data comes from (© Credits). A catalogue made before
+/// catalogues carried them has none, and gets every credit the app knows: what the map showed then.
+fn credits_of(cat: &store::catalogue::Catalogue) -> serde_json::Value {
     match cat.credits.as_array() {
         Some(c) if !c.is_empty() => cat.credits.clone(),
         _ => serde_json::to_value(pipeline::rules::CREDITS).unwrap_or_default(),
@@ -961,15 +961,15 @@ fn save_bench(dir: &std::path::Path, name: &str, body: &[u8]) -> std::result::Re
     std::fs::write(dir.join(file), body).map_err(BenchSave::Io)
 }
 
-async fn catalog_h(State(s): State<S>) -> Response {
+async fn catalogue_h(State(s): State<S>) -> Response {
     let s2 = s.clone();
     let agent = tokio::task::spawn_blocking(move || s2.agent_status()).await.unwrap_or(serde_json::Value::Null);
-    let cat = s.data.catalog();
+    let cat = s.data.catalogue();
     // Landmarks by view (docs/phase5.md): the z6 tiles with points, the kinds with tiles, and their
-    // totals; absent while the catalog has none.
+    // totals; absent while the catalogue has none.
     let s2 = s.clone();
     let marks = tokio::task::spawn_blocking(move || -> serde_json::Value {
-        let cat = s2.data.catalog();
+        let cat = s2.data.catalogue();
         if cat.markdata.is_empty() {
             return serde_json::Value::Null;
         }
@@ -1224,9 +1224,9 @@ mod tests {
     }
 
     #[test]
-    fn credits_of_older_catalogs_too() {
-        let mut c = store::catalog::Catalog::new(1);
-        // A catalog made before catalogs carried credits: every credit the app knows.
+    fn credits_of_older_catalogues_too() {
+        let mut c = store::catalogue::Catalogue::new(1);
+        // A catalogue made before catalogues carried credits: every credit the app knows.
         for none in [serde_json::json!([]), serde_json::Value::Null] {
             c.credits = none;
             let all = credits_of(&c);
@@ -1238,11 +1238,11 @@ mod tests {
         assert_eq!(credits_of(&c), c.credits);
     }
 
-    /// A catalog `n` whose roads have a root, a lo pack (3/1/2) and a hi pack (6/8/16), the hi
+    /// A catalogue `n` whose roads have a root, a lo pack (3/1/2) and a hi pack (6/8/16), the hi
     /// pack's content named after `hi`.
-    fn roads_catalog(n: u64, hi: &str) -> store::catalog::Catalog {
-        let mut c = store::catalog::Catalog::new(n);
-        let mut l = store::catalog::Layer {
+    fn roads_catalogue(n: u64, hi: &str) -> store::catalogue::Catalogue {
+        let mut c = store::catalogue::Catalogue::new(n);
+        let mut l = store::catalogue::Layer {
             encoding: "mvt".into(),
             minzoom: 0,
             maxzoom: 14,
@@ -1256,7 +1256,7 @@ mod tests {
             ("layers/roads/lo-3-1-2", "layers/roads/lo-3-1-2.00000000000000bb.pack".into()),
             ("layers/roads/hi-6-8-16", format!("layers/roads/hi-6-8-16.{hi}.pack")),
         ] {
-            c.files.insert(logical.into(), store::catalog::FileRef { file, ..Default::default() });
+            c.files.insert(logical.into(), store::catalogue::FileRef { file, ..Default::default() });
         }
         c.layers.insert("roads".into(), l);
         c
@@ -1267,7 +1267,7 @@ mod tests {
         use tower::ServiceExt;
         let nas = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
-        store::catalog::write_copy(&nas.path().join("catalog"), &roads_catalog(1, "00000000000000c1")).unwrap();
+        store::catalogue::write_copy(&nas.path().join("catalog"), &roads_catalogue(1, "00000000000000c1")).unwrap();
         let s = test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
         let packs = |s: &S| meta_json(s)["packs"]["roads"].clone();
         let p1 = packs(&s);
@@ -1296,9 +1296,9 @@ mod tests {
         };
         const GOOD: &str = "public, max-age=31536000, immutable";
         assert_eq!(cache(&s, hi1.clone()).await, GOOD);
-        // A catalog that changed the hi pack alone: its old token is no longer cached; the others are.
-        store::catalog::write_copy(&nas.path().join("catalog"), &roads_catalog(2, "00000000000000c2")).unwrap();
-        assert!(s.data.refresh_catalog());
+        // A catalogue that changed the hi pack alone: its old token is no longer cached; the others are.
+        store::catalogue::write_copy(&nas.path().join("catalog"), &roads_catalogue(2, "00000000000000c2")).unwrap();
+        assert!(s.data.refresh_catalogue());
         let p2 = packs(&s);
         let hi2 = p2["hi"]["6/8/16"].as_str().unwrap().to_string();
         assert_ne!(hi1, hi2);
@@ -1308,8 +1308,8 @@ mod tests {
             assert_eq!(cache(&s, v).await, GOOD);
         }
         assert_eq!(cache(&s, "000000000000".into()).await, "no-cache");
-        // A tile the server makes (terrain the catalog hasn't: from ancestors, here flat) isn't
-        // cached for good under a current token: a catalog changing only its sources would leave it stale.
+        // A tile the server makes (terrain the catalogue hasn't: from ancestors, here flat) isn't
+        // cached for good under a current token: a catalogue changing only its sources would leave it stale.
         let app = Router::new()
             .route("/tiles/terrain/{z}/{x}/{y}", get(terrain::terrain_tile))
             .layer(axum::middleware::from_fn_with_state(s.clone(), versioned_caching))

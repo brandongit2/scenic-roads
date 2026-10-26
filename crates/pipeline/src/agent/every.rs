@@ -5,7 +5,7 @@
 //! - **Every step of the plan offered** (`offered`): the lead's coordinator offers its members the
 //!   plan's steps, not only the shared ones (the map tiles' `pack` and `lo` among them; each Mac's
 //!   saves reach the records only through the journal, so a member's are merged as any). Kept to
-//!   the lead: its duties (`LEAD_ONLY`: the catalogs, a prune, the 3D buildings' sources' fetch),
+//!   the lead: its duties (`LEAD_ONLY`: the catalogues, a prune, the 3D buildings' sources' fetch),
 //!   the steps that keep the pass's answers (the agent seeds them as it starts), and the worldwide
 //!   steps (one target, the world: the roads' index, the rail stops, the ferries, the world's roots,
 //!   the landmarks' and overlays' draws, the rail chain, the terrain's water; the pass's own), whose
@@ -21,14 +21,14 @@
 //!   steps kept to the lead (`LEAD_ONLY`, the answer-keeping steps, the worldwide steps: those not
 //!   `offered`) and the lead's own planned jobs are granted to the current lead's member alone.
 
-/// The steps kept to the lead: the catalogs and prune (their gates:
-/// crate::agent's catalog and sweep), the 3D buildings' sources' fetch (written outside the records,
+/// The steps kept to the lead: the catalogues and prune (their gates:
+/// crate::agent's catalogue and sweep), the 3D buildings' sources' fetch (written outside the records,
 /// under `sources/`), and its duties outside the plan (the OSM pass, offered only to the Mac holding
 /// its progress: crate::agent::resume; GC, the backup, the input checks, the names and timetables to do: written into the inputs folders'
 /// `todo/`, outside the records).
 pub const LEAD_ONLY: [&str; 11] = [
-    "catalog",
-    "catalog-held",
+    store::catalogue::NAME,
+    store::catalogue::HELD_NAME,
     "prune",
     "bld-fetch",
     "osm-pass",
@@ -66,7 +66,7 @@ pub fn grants(step: &str, own: bool, lead: bool) -> bool {
 pub fn names_target(t: &str) -> bool {
     !matches!(
         t,
-        "catalog"
+        store::catalogue::NAME
             | "items"
             | "marks"
             | "roadunits"

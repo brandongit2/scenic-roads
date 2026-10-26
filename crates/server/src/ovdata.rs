@@ -83,7 +83,7 @@ impl OvView {
     }
 }
 
-/// The area overlays' tiles: `/tiles/ov/{name}/{z}/{x}/{y}` from the catalog's `ov-{name}`.
+/// The area overlays' tiles: `/tiles/ov/{name}/{z}/{x}/{y}` from the catalogue's `ov-{name}`.
 pub async fn ov_tile(
     State(s): State<S>,
     Path((name, z, x, y)): Path<(String, u8, u32, u32)>,

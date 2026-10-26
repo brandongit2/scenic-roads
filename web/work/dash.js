@@ -12,7 +12,7 @@
 // sentence. Progress is the work left in the queue, never a share of a whole (task #685; the Jobs
 // tab's stages alone count done and left). The parts: the header's verdict (paused, out of touch
 // or idle; done when; the pause); the world map in the left panel (worldmap.js: the queue, a step
-// soloed by its legend, the catalogues' age controls: catalogs.js); by tab in the right one, the
+// soloed by its legend, the catalogues' age controls: catalogues.js); by tab in the right one, the
 // overview (the alerts, the work left, the last and next catalogue, the Macs), the jobs (each
 // Mac's schedule, past and to come; the stages, done and left), the machines (what each does now,
 // inside each job, why one waits, and live on each: live.js), the regions (lit on the map), and
@@ -24,7 +24,7 @@ import { AREAS, TILE_STATES, areaOf, areaTargets, busyLanes, finished, finishedT
 import { fmt, timeTicks } from "./chartmath.js";
 import { liveBlock, remote, startLive } from "./live.js";
 import { createMap, tilesMap } from "./worldmap.js";
-import { HIGHLIGHT, createAges, paint as agePaint, whenText } from "./catalogs.js";
+import { HIGHLIGHT, createAges, paint as agePaint, whenText } from "./catalogs.js"; // the route keeps its old spelling (task #547); the file is catalogues.js
 import { loadSettings, settingsSection } from "./settings.js";
 import { nasSection } from "./nas.js";
 import { startActivity, transfersPart } from "./activity.js";
@@ -283,7 +283,7 @@ function verdictText(m) {
 }
 
 // The next region (or regions, at the same time) to reach the map as it's built now: the forecast's
-// earliest `map_at` (its last z6 tile's end, its map tiles drawn, a catalog within the minute).
+// earliest `map_at` (its last z6 tile's end, its map tiles drawn, a catalogue within the minute).
 function nextOnMap(m) {
   const regs = (m.fc?.regions || []).filter((r) => r.map_at);
   if (!regs.length) return null;
@@ -450,7 +450,7 @@ function mapData(m) {
 }
 
 // What the map draws now (sums.js mapTiles): the view's tiles; a solo's published tiles painted
-// by when a catalogue last published each (the age controls' range, catalogs.js); a catalogue's
+// by when a catalogue last published each (the age controls' range, catalogues.js); a catalogue's
 // tiles lit; with each tile's card and the stack's.
 function mapView(md) {
   const f = mapFilters(), m = md.m, age = ages.view();
@@ -589,7 +589,7 @@ function mapFilterBar(m) {
     h("div", { class: "mfrow", role: "radiogroup", "aria-label": "Show only for" }, h("span", "dim", "Show only for:"), radio("member", "", "All pool members"), members.map((nm) => radio("member", nm, nm))));
 }
 // The left panel (#685): the map, its legend (made again each render), the age controls
-// (catalogs.js); one element, kept across renders.
+// (catalogues.js); one element, kept across renders.
 let mapRoot = null, legendHost = null;
 function mapSection(md) {
   if (!mapRoot) {
@@ -1554,7 +1554,7 @@ let last = null;
 let shownMacs = [];
 // The regions' outlines, folders and sizes (`/work/regions`: crate::agent::regionsview), by id; the
 // catalogue they were sized by, and when they were asked.
-const drawn = { byId: {}, catalog: undefined, at: 0, asking: false };
+const drawn = { byId: {}, catalogue: undefined, at: 0, asking: false };
 const REGIONS_EVERY_MS = 600000;
 // Each region's targets built of all by step (`/work/regions` with `steps`: the lead counts them
 // while asked, crate::agent::build::region_steps), asked each `STEPS_EVERY_MS` while the Regions tab
@@ -1757,13 +1757,13 @@ async function loadTable() {
 // made (503): asked again next poll.
 async function loadRegions(sw) {
   const n = sw.agent?.catalog?.n ?? null;
-  if (drawn.asking || (drawn.at && drawn.catalog === n && Date.now() - drawn.at < REGIONS_EVERY_MS)) return;
+  if (drawn.asking || (drawn.at && drawn.catalogue === n && Date.now() - drawn.at < REGIONS_EVERY_MS)) return;
   drawn.asking = true;
   try {
     const [code, v] = await ctx.call("/work/regions", {});
     if (code !== 200 || !v?.regions) return;
     drawn.byId = Object.fromEntries(v.regions.map((r) => [r.id, r]));
-    drawn.catalog = v.catalog ?? null; // the catalogue it was made from: asked again until it catches up
+    drawn.catalogue = v.catalog ?? null; // the catalogue it was made from: asked again until it catches up
     drawn.at = Date.now();
     render();
   } catch { /* (Asked again with the next poll.) */ } finally {

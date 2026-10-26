@@ -687,7 +687,7 @@ impl Side {
     /// step with `check`, its saved state written if it changed; then, only once that's on disk, the
     /// step's messages sent, its heartbeat written, the listings it asked for begun. A step whose
     /// state couldn't be written does none of that, and says the lead may do nothing now (its
-    /// duties, catalogs and sweeps held) until one is.
+    /// duties, catalogues and sweeps held) until one is.
     pub fn step(&mut self, give: Give, check: crate::pool::records::Check) -> Out {
         if let Some(why) = &self.stopped {
             return Out { stop: Some(why.clone()), ..Default::default() };
@@ -1185,7 +1185,7 @@ pub struct Gates {
     /// Leading: settle a handover.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub settle: bool,
-    /// Leading: its records reflect the journal (a catalog may go out).
+    /// Leading: its records reflect the journal (a catalogue may go out).
     pub caught_up: bool,
     /// Leading: it re-asserted this step (a sweep may run, caught up).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -1212,7 +1212,7 @@ impl Gates {
         }
     }
 
-    /// A catalog may be published now.
+    /// A catalogue may be published now.
     pub fn publish(&self) -> bool {
         self.duties && self.caught_up
     }
@@ -1225,7 +1225,7 @@ impl Gates {
 
 /// The steps that are sweeps (GC: the lead's, once fresh and caught up).
 pub const SWEEPS: [&str; 1] = ["gc"];
-/// The steps that publish (a catalog: the lead's, once caught up).
+/// The steps that publish (a catalogue: the lead's, once caught up).
 pub const PUBLISHES: [&str; 2] = ["catalog", "catalog-held"];
 /// Lease numbers at and above this are hand-offs a lead's coordinator journaled on its disk, drained
 /// into the pool's journal by its member (`Run::drain`; term 0: before any term). Below it, a job
@@ -1361,7 +1361,7 @@ pub struct Cx {
     pub coord: Option<Arc<crate::coord::Coordinator>>,
     /// Whether this Mac can lead now (its disk, home and power).
     pub able: bool,
-    /// A duty (a catalog, a sweep) runs here, or passed its gate to start: a tick doesn't settle a
+    /// A duty (a catalogue, a sweep) runs here, or passed its gate to start: a tick doesn't settle a
     /// handover (the agent's step stops the duty first).
     pub duty: bool,
     /// The agent's loop is starting a job (its lease from this coordinator): a tick doesn't settle
@@ -1774,7 +1774,7 @@ impl Run {
     }
 
     /// Leading term 2 or later, today's records files not yet written from its records: not caught
-    /// up (a catalog and GC read them). True when so.
+    /// up (a catalogue and GC read them). True when so.
     pub fn behind(&mut self) -> bool {
         if self.gates.leads.is_none() {
             return false;
@@ -2201,7 +2201,7 @@ pub fn seed(nas: &dyn Nas, coord: &Path) -> Result<()> {
 }
 
 /// Today's three files written from `r` (the records of a term after the first: term 1's own saves
-/// write them), for the readers that read them: the jobs, the map's server, the catalogs, and the
+/// write them), for the readers that read them: the jobs, the map's server, the catalogues, and the
 /// lead's own planning (§6.2's readers of the snapshot itself: planned).
 pub fn write_today(nas: &dyn Nas, r: &Records) -> Result<()> {
     nas.write_whole("state/build/manifest.json", &serde_json::to_vec_pretty(&r.manifest)?)?;
@@ -3608,7 +3608,7 @@ mod tests {
         a.side.know(&ib);
         b.side.know(&ia);
         tick_until(&mut [&mut b], |r| r[0].side.driver().current().term == 1);
-        // A duty runs on A (a catalog): offered and answered, but not settled while it runs.
+        // A duty runs on A (a catalogue): offered and answered, but not settled while it runs.
         crate::control::request_lead(&ha, crate::control::LeadAsk::Give { to: ib.clone() }, "a test").unwrap();
         a.cx.duty = true;
         tick_until(&mut [&mut a, &mut b], |r| r[0].gates.settle);

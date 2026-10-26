@@ -9,7 +9,7 @@
 //   stays to look at again without the Mac (the last KEEP files kept); the 3D buildings' tiles in a
 //   cache of their own (the last KEEP_BLD), so a city's buildings don't crowd out its roads and
 //   terrain;
-// - the catalog's metadata, from the Mac whenever it answers, else as kept, so the map opens.
+// - the catalogue's metadata, from the Mac whenever it answers, else as kept, so the map opens.
 // Everything else (searches, the build's status, any write) goes straight through. A Mac that
 // doesn't answer within WAIT_MS (asleep, or away) is taken for away for AWAY_MS: what was kept is
 // used at once meanwhile, and what the Mac sends later still replaces it. A refusal (403: not from

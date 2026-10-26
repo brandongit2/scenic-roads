@@ -24,7 +24,7 @@ export interface RegionDl extends Tally {
   /** Its terrain detail (z13 and finer, where the terrain goes past z12), an add-on to it: the
    * share of the region it covers (per cent). Absent where it has none. */
   detail?: DetailDl;
-  /** Still building: its tiles built of total; its files grow with each catalog. */
+  /** Still building: its tiles built of total; its files grow with each catalogue. */
   tiles?: { built: number; total: number };
 }
 

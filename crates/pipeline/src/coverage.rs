@@ -8,8 +8,8 @@
 //! crossing the segment from the centre to the point, then the buffer's distance to the cell's
 //! edges. Building a grid costs one pass over the edges plus a scanline per row.
 //!
-//! A catalog records the coverage it was built for, simplified for drawing ([`DrawnRegion`]), so
-//! the map draws it from the catalog rather than from the recipes.
+//! A catalogue records the coverage it was built for, simplified for drawing ([`DrawnRegion`]), so
+//! the map draws it from the catalogue rather than from the recipes.
 
 #[cfg(test)]
 use crate::agent::recipes::Recipe;
@@ -827,10 +827,10 @@ impl Coverage {
     }
 }
 
-// ---- the coverage a catalog records ------------------------------------------------------------
+// ---- the coverage a catalogue records ------------------------------------------------------------
 
-/// A region as a catalog records it (docs/formats.md, Catalog `coverage`): its recipe when the
-/// catalog was made, and each outline entry's polygons simplified for drawing, as GeoJSON
+/// A region as a catalogue records it (docs/formats.md, Catalogue `coverage`): its recipe when the
+/// catalogue was made, and each outline entry's polygons simplified for drawing, as GeoJSON
 /// MultiPolygon coordinates (degrees to 5 decimals, about a metre; rings closed).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DrawnRegion {
@@ -841,8 +841,8 @@ pub struct DrawnRegion {
     #[serde(default)]
     pub shapes: BTreeMap<String, Vec<Vec<Vec<[f64; 2]>>>>,
     /// A region still building (not recorded built yet): its units (z6 tiles) built of those it
-    /// builds, by the records when the catalog was made; on the map, and downloadable, as they come.
-    /// None for a built region, and in catalogs made before this was recorded.
+    /// builds, by the records when the catalogue was made; on the map, and downloadable, as they come.
+    /// None for a built region, and in catalogues made before this was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tiles: Option<Tiles>,
 }

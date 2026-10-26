@@ -1,6 +1,6 @@
 // Regions (docs/surface.md, docs/regions.md), read only: the server's list of the region files (/api/regions),
 // the outlines of the administrative areas they're made of (/api/areas/{id}), and the coverage the
-// map's catalog was built for, drawn on the map (/api/coverage). The panel is ui/regions.ts.
+// map's catalogue was built for, drawn on the map (/api/coverage). The panel is ui/regions.ts.
 import type { ExpressionSpecification, GeoJSONSource, Map as MLMap } from 'maplibre-gl';
 import { nested } from './rings';
 import { fmt } from './ui/dom';
@@ -41,8 +41,8 @@ export interface Region {
   /** `disabled = true` in its file: checked like any region (others may name it), never built or
    * downloaded. */
   disabled?: boolean;
-  /** In the catalog's coverage, a region still building: its units (z6 tiles) built of those it
-   * builds when the catalog was made. Its tiles are on the map, and downloadable, as they come. */
+  /** In the catalogue's coverage, a region still building: its units (z6 tiles) built of those it
+   * builds when the catalogue was made. Its tiles are on the map, and downloadable, as they come. */
   tiles?: Tiles;
 }
 
@@ -92,14 +92,14 @@ export interface Folder {
   folders: Folder[];
 }
 /**
- * The coverage the map's catalog (`catalog`, its number) was built for: each region's outline
+ * The coverage the map's catalogue (`catalog`, its number) was built for: each region's outline
  * entries, simplified for drawing (properties: region, region_name, entry, and an osm: entry's area
- * fields), and the regions themselves. A catalog made before catalogs recorded their coverage has
+ * fields), and the regions themselves. A catalogue made before catalogues recorded their coverage has
  * no `regions`: its outlines are then the recipes', and which regions it holds isn't known.
  */
 export type Coverage = GeoJSON.FeatureCollection<GeoJSON.MultiPolygon> & { regions?: Region[]; catalog?: number };
 /** Every region's accepted outline for drawing, a feature per stored shape (properties: region,
- * name, from, colour, held, disabled). `source` 'catalog': the catalog's coverage stands in until this Mac
+ * name, from, colour, held, disabled). `source` 'catalog': the catalogue's coverage stands in until this Mac
  * has the accepted copy. */
 export type RegionsLayer = GeoJSON.FeatureCollection<GeoJSON.MultiPolygon> & { source?: 'accepted' | 'catalog' };
 export const getRegionsLayer = () => call<RegionsLayer>('/api/regions/layer');

@@ -25,7 +25,7 @@ feature-state id.
   changing it would change the ids.)
 - **Repeats** get `#2`, `#3`, … in the byte order of their records' canonical JSON. **Clashes** move
   the later reference to `<reference>#h1` (`#h2`, …), and the job asserts uniqueness.
-- Nothing stores ids across catalogs (URL state holds only `s` and `st`; descriptions are keyed by
+- Nothing stores ids across catalogues (URL state holds only `s` and `st`; descriptions are keyed by
   QID or OSM id), so a rebuild changing one breaks nothing.
 
 ## Points: the 8 kinds
@@ -43,7 +43,7 @@ flags), `fvals` (per kind, an f64 column per filter property), `props` and `info
 of 256), and `summits` (the named peaks with a height, with their place in the worldwide list).
 
 **`layers/marks-<kind>/all`**: thinned tiles (z0–5) in the marks tile format, one bundle per kind
-that the catalog names as the kind's root and lo packs.
+that the catalogue names as the kind's root and lo packs.
 At zoom z a tile keeps the named points with mz ≤ z − 3, the top 256 by score at balances 0, ¼, ½, ¾
 and 1, and the top 64 by each range filter but years. Ties go by rank, so "kept at z" is "kz ≤ z".
 World Heritage components are drawn from z6 blocks only. The rest are speck cells at zoom z + 10
@@ -89,7 +89,7 @@ in the summits list's order.
 ## Areas: heritage areas, Indigenous lands, special areas, World Heritage outlines
 
 - **`layers/ov-{heritage-areas,indigenous,special,whs}/all`** (z0–8; z9–12 within the coverage +
-  20 km): one bundle per layer, which the catalog names as each root, lo and hi pack it holds; MVT, layer `a`, each feature with its id, lean properties and `own` (the z3 tile whose
+  20 km): one bundle per layer, which the catalogue names as each root, lo and hi pack it holds; MVT, layer `a`, each feature with its id, lean properties and `own` (the z3 tile whose
   ovdata holds its details). A World Heritage outline carries its site dot's id and position.
 - **`ovdata/3-x-y`**: area details by id and park records, owned by the z3 tile of the box centre.
 - **Routes:** `GET /api/overlays/detail/{layer}/{id}?own=3/x/y`; `/api/park`.
@@ -117,7 +117,7 @@ records. `ferries.ts` merges blocks by id; in-view kilometres are measured on th
 - The client loads z6 blocks from zoom 6 and thinned tiles below, held as typed arrays (least
   recently used dropped past 256 MB); `/api/marks/view` is asked by the worker and `extra` joins
   its kind's points; specks below zoom 6 are pseudo-points weighted by count; filtered kinds' cells
-  come from `/api/marks/specks`; `lmk://` tiles are made from the loaded points. A catalog without
+  come from `/api/marks/specks`; `lmk://` tiles are made from the loaded points. A catalogue without
   the points' tiles shows none.
 
 ## Build
@@ -253,9 +253,9 @@ docs/inputs.md §6.5.2), split into two jobs so the z6 tiles never wait on Wikid
 
 ## Storage
 
-`markdata/` and `ovdata/` are catalog maps (the markdata's every tile naming the one bundle), so GC
+`markdata/` and `ovdata/` are catalogue maps (the markdata's every tile naming the one bundle), so GC
 handles them. `work/` holds build intermediates,
-in no catalog: `work/pois/<u>`, `work/peaks/<u>`, `work/trailends/<d>`, `work/summits/<d>`,
+in no catalogue: `work/pois/<u>`, `work/peaks/<u>`, `work/trailends/<d>`, `work/summits/<d>`,
 `work/heritage/<d>/…`, `work/marks/heritage-dots`. GC keeps what the manifest names; a retired pass's
 entries leave it when a newer pass completes, a z6 tile's pois and peaks with the prune (docs/regions.md,
 Shrinking).

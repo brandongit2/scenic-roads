@@ -752,7 +752,7 @@ fn a_disabled_region_is_checked_and_named_but_never_built() {
     assert!(a.index.files["b.toml"].facts.contains_key("geometry"), "stored, so others read it");
     assert!(!a.index.files["c.toml"].facts.contains_key("disabled"), "an enabled region's facts as before");
     // Listed, and in the tree (the panel shows it), but not among the regions the build reads, nor
-    // in the coverage (units, tiles, catalogs and downloads all come from these).
+    // in the coverage (units, tiles, catalogues and downloads all come from these).
     let listed = read::listed(&a).unwrap();
     assert_eq!(
         listed.iter().map(|l| (l.recipe.id.as_str(), l.disabled)).collect::<Vec<_>>(),

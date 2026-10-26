@@ -29,7 +29,7 @@
 // worked out once a tile a frame. Each step reads only the classes its texel's mask holds.
 // Timed against the frame budget (2 ms at 2880 × 1626 on the M4), see docs/buildings3d.md §4.8.1.
 //
-// On by default where the catalog has the layer (main.ts; `?bldfield=off`: off; `?bldfield=<url>`: the tiles at <url>/{z}/{x}/{y}, else the server's
+// On by default where the catalogue has the layer (main.ts; `?bldfield=off`: off; `?bldfield=<url>`: the tiles at <url>/{z}/{x}/{y}, else the server's
 // /tiles/buildings-field): `field5-webp` tiles, fetched and decoded to linear values in a worker
 // (bldfield.worker.ts), a few at a time, those the view has left cancelled. A tile the server
 // doesn't have (204) holds no building, nor do its children: they aren't asked for. A tile that

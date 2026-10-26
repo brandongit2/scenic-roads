@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 /// The marks job's markdata: one bundle of every z6 tile's file (crate::layers::write_file_bundle,
-/// docs/formats.md "Bundles"; task #449). The catalog names it for each tile it holds.
+/// docs/formats.md "Bundles"; task #449). The catalogue names it for each tile it holds.
 pub const MARKDATA_BUNDLE: &str = "markdata/all";
 
 /// A markdata file read in place: a bundle's member, or a file of its own.

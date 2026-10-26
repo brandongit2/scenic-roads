@@ -1,5 +1,5 @@
 //! Where build steps put their outputs: the NAS project folder (docs/storage.md), as immutable
-//! content-named files, with a build manifest (logical name → file) the catalog is made from.
+//! content-named files, with a build manifest (logical name → file) the catalogue is made from.
 //!
 //! A file is first written locally (this Mac's SSD), hashed, then copied to `<name>.tmp` on
 //! the NAS, read back past the client's cache and checked against its hash, and renamed into place
@@ -30,7 +30,7 @@ pub struct Out {
     /// Content name → SHA-256 (hex) of uploads not yet verified on the NAS.
     pending: BTreeMap<String, String>,
     /// Content name → size (bytes) of the files this run wrote or reused, handed on with the
-    /// manifest changes that name them (`SIZES`, the catalogs' sizes without a look at the NAS).
+    /// manifest changes that name them (`SIZES`, the catalogues' sizes without a look at the NAS).
     sizes: BTreeMap<String, u64>,
     manifest_path: NasPath,
     /// Local scratch space for files before upload.
@@ -113,8 +113,8 @@ const UPLOAD_WAITS: &[std::time::Duration] = if cfg!(test) {
 
 /// The records' sizes of the files the manifest names (content name → bytes, compact JSON), kept
 /// beside the manifest by its writer (`Out::save_held`; in the pool its lead, from its records):
-/// what a catalog lists a file's size as without looking at the NAS. A file written before them
-/// isn't in it (the catalog looks at it once, then has it from the catalog before).
+/// what a catalogue lists a file's size as without looking at the NAS. A file written before them
+/// isn't in it (the catalogue looks at it once, then has it from the catalogue before).
 pub const SIZES: &str = "state/build/sizes.json";
 
 /// A unit's outputs that map tiles, the road index and rail stops read: its base pack, road values
@@ -712,7 +712,7 @@ impl Out {
     }
 
     /// The sizes the records hold of the files the manifest names (`SIZES`), with this run's own:
-    /// what a catalog lists them as, never looking at the NAS for them. An error when the record
+    /// what a catalogue lists them as, never looking at the NAS for them. An error when the record
     /// can't be read now; a file it lacks (written before sizes were recorded) isn't in it.
     pub fn recorded_sizes(&self) -> Result<BTreeMap<String, u64>> {
         let mut s: BTreeMap<String, u64> = read_record(&self.root.join(SIZES))?;
@@ -814,7 +814,7 @@ fn upload_hashed(
     let got = store::naming::write_atomic_hashed(root, logical, ext, local, &h, size)?;
     anyhow::ensure!(got == name, "{logical}: wrote {got}, expected {name}");
     if existed {
-        // In use again: a fresh time keeps GC's age rule from taking it before a catalog does
+        // In use again: a fresh time keeps GC's age rule from taking it before a catalogue does
         // (GC looks at a file's time again right before it removes it). One that can't be
         // touched, or is gone once touched (GC took it between), is uploaded again.
         let touched = dest.set_modified(std::time::SystemTime::now()).is_ok();
@@ -1035,7 +1035,7 @@ mod tests {
     /// as the job's earlier attempts left them, none of them this job's own changes; none given,
     /// the snapshot as it is.
     /// What a job writes is recorded with its size: handed off with the changes naming it, or saved
-    /// beside the manifest (`SIZES`), where the catalog reads it (`recorded_sizes`); a name the
+    /// beside the manifest (`SIZES`), where the catalogue reads it (`recorded_sizes`); a name the
     /// manifest no longer has is let go.
     #[test]
     fn a_files_size_goes_with_the_change_naming_it() {

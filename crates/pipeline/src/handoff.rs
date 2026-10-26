@@ -25,8 +25,8 @@ pub struct Handoff {
     #[serde(default)]
     pub checked: Vec<String>,
     /// The sizes (bytes) of the files the job wrote (content name → size), as it wrote them
-    /// (crate::out::Out): the records keep them for the catalogs, which then never look at those
-    /// files on the NAS. A hand-off from before them has none (the catalog looks at those files once).
+    /// (crate::out::Out): the records keep them for the catalogues, which then never look at those
+    /// files on the NAS. A hand-off from before them has none (the catalogue looks at those files once).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub sizes: BTreeMap<String, u64>,
     /// A job done: its step, and its targets with their keys (build::Keys::record).

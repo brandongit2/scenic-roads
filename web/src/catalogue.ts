@@ -1,5 +1,5 @@
-// The catalog the map is drawn from (server /api/catalog), asked for
-// every minute while the page is shown and again when it comes back. A new catalog (its number
+// The catalogue the map is drawn from (server /api/catalog), asked for
+// every minute while the page is shown and again when it comes back. A new catalogue (its number
 // changes) is switched to in place: its versions (/api/meta) reach every URL built from them
 // (api.ts onVersions), and what can't follow asks for a reload instead (the status bar shows it).
 import { setPacks, setVersions, type Meta } from './api';
@@ -16,12 +16,12 @@ export interface Credit {
   register?: string;
 }
 
-export interface CatalogStatus {
+export interface CatalogueStatus {
   n: number;
   /** When it was published (ISO 8601). */
   created: string;
   units: number;
-  /** The credits of the sources the catalog's data comes from (for a catalog made before catalogs
+  /** The credits of the sources the catalogue's data comes from (for a catalogue made before catalogues
    * carried them, every credit the server knows). */
   credits?: Credit[];
   /** Whether the NAS can be reached (map data not mirrored on this Mac may be missing). */
@@ -29,11 +29,11 @@ export interface CatalogStatus {
   nas: string | null;
   /** The app version the server runs (null: development). */
   app: string | null;
-  /** A fingerprint of every version the URLs use: changes with the catalog and the translations. */
+  /** A fingerprint of every version the URLs use: changes with the catalogue and the translations. */
   v?: string;
   /** Landmark points by view (docs/phase5.md); null or absent: none. */
   marks?: import('./marksview').MarksCfg | null;
-  /** The catalog's layers by name (their encodings and zooms). */
+  /** The catalogue's layers by name (their encodings and zooms). */
   layers?: Record<string, unknown>;
   /** The depth's sources (pipeline::depth): absent without depth. */
   depth?: { sources?: import('./depth').DepthSource[] } | null;
@@ -43,15 +43,15 @@ const POLL_MS = 60_000;
 /** Back on the page within this long of the last answer: not asked again yet. */
 const FRESH_MS = 5_000;
 
-export class CatalogWatch {
+export class CatalogueWatch {
   /** The last answer (null before the first). */
-  status: CatalogStatus | null = null;
+  status: CatalogueStatus | null = null;
   /** The last request failed (the server can't be reached). */
   unreachable = false;
   /** What wants a reload ("New map data" that can't all be switched to in place, "App updated"),
    * or ''. */
   reload = '';
-  /** A new catalog's metadata, once its versions are in (main.ts: what isn't in the versions). */
+  /** A new catalogue's metadata, once its versions are in (main.ts: what isn't in the versions). */
   onSwitch: (meta: Meta, changed: string[]) => void = () => {};
   private fns: (() => void)[] = [];
   private timer = 0;
@@ -60,7 +60,7 @@ export class CatalogWatch {
   /** The app the page was loaded from (undefined: not known yet). */
   private app: string | null | undefined = undefined;
 
-  /** `n`: the number of the catalog the page started from (meta.catalog). */
+  /** `n`: the number of the catalogue the page started from (meta.catalog). */
   /** The versions' fingerprint the page's URLs were built with. */
   private v: string | undefined;
 
@@ -102,7 +102,7 @@ export class CatalogWatch {
 
   private async ask() {
     this.askedAt = performance.now();
-    let c: CatalogStatus;
+    let c: CatalogueStatus;
     try {
       const r = await fetch('/api/catalog', { cache: 'no-store' });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -115,17 +115,17 @@ export class CatalogWatch {
     this.unreachable = false;
     if (this.app === undefined) this.app = c.app;
     else if (c.app !== this.app) this.reload ||= 'App updated';
-    // A new catalog, or new translations (the versions' fingerprint `v` changes without `n`).
+    // A new catalogue, or new translations (the versions' fingerprint `v` changes without `n`).
     if (this.n === undefined) {
       this.n = c.n;
       this.v = c.v;
     } else if (c.n !== this.n || (c.v !== undefined && c.v !== this.v)) {
-      await this.switchTo().catch((e) => console.warn('new catalog', e));
+      await this.switchTo().catch((e) => console.warn('new catalogue', e));
     }
     this.emit();
   }
 
-  /** The new catalog's versions, in place. A failure keeps the old one: tried again next time. */
+  /** The new catalogue's versions, in place. A failure keeps the old one: tried again next time. */
   private async switchTo() {
     const r = await fetch('/api/meta', { cache: 'no-store' });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);

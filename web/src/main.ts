@@ -40,7 +40,7 @@ import { ROAD_WEIGHT, Store, classMask, defaults, labelShown, modeGroup, fromHas
 import * as cam3d from './camera3d';
 import { applyLabelOpacity, applyLabelSize, applyTerrain, applyTint, cacheTerrainRays, setTerrainAreas, switchContours, TINT_VARS, tintColourAt, tintCss } from './terrain';
 import { applyWater, switchCoast, updateCoastRamp } from './coast';
-import { CatalogWatch } from './catalog';
+import { CatalogueWatch } from './catalogue';
 import { PolarCaps } from './polarcaps';
 import { globeProjection } from './polarglobe';
 import { TileRetry } from './retry';
@@ -83,7 +83,7 @@ if (new URLSearchParams(location.search).has('bgrender')) {
 async function main() {
   // The metadata and the data hosts' probe (hosts.ts) load while the map engine starts (its
   // container, WebGL context and workers, on an empty style); the basemap style follows them, as
-  // its tile URLs need both. (No cached metadata: a stale catalog's packs and versions would fetch
+  // its tile URLs need both. (No cached metadata: a stale catalogue's packs and versions would fetch
   // tiles the server no longer has.)
   const metaReady = Promise.all([fetch('/api/meta'), initHosts()]).then(async ([r]) => {
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -121,7 +121,7 @@ async function main() {
     fadeDuration: 120,
     // The camera does not ride up and down with the terrain under the view centre.
     centerClampedToGround: false,
-    // Each tile's version is its pack's (a new catalog re-requests only the tiles it changed).
+    // Each tile's version is its pack's (a new catalogue re-requests only the tiles it changed).
     transformRequest: (url) => ({ url: packUrl(url) }),
     // (Eval mode reads the canvas back, at its own pixel ratio, its reference finer: evalmode.ts.)
     ...(EVAL ? { canvasContextAttributes: { preserveDrawingBuffer: true }, maxCanvasSize: [16384, 16384] as [number, number], ...(EVAL.dpr ? { pixelRatio: EVAL.dpr } : {}) } : {}),
@@ -152,8 +152,8 @@ async function main() {
     return;
   }
 
-  /** Whether the catalog has the 3D buildings: their settings section, the B key and `bd=` in
-   * links only then (a catalog can gain them while the map is open: newCatalog). */
+  /** Whether the catalogue has the 3D buildings: their settings section, the B key and `bd=` in
+   * links only then (a catalogue can gain them while the map is open: newCatalogue). */
   let hasBuildings = !!meta.layers?.buildings;
   // A link (URL hash) wins; otherwise restore the last session from localStorage. (A link's `bd=`
   // only with the buildings: without, the saved settings stay.)
@@ -175,9 +175,9 @@ async function main() {
   map.setStyle(baseStyle(!!meta.labelTiles, store.s.labelDensity, !!meta.water, meta.terrainAreas), { diff: false });
   setTerrainAreas(map, meta.terrainAreas);
   if (EVAL) installEval(map);
-  // The far buildings' field (bldfield.ts, task #102), on by default where the catalog has its
+  // The far buildings' field (bldfield.ts, task #102), on by default where the catalogue has its
   // layer (`buildings-field`); `?bldfield=off` leaves it out, `?bldfield=<url>` takes its tiles from
-  // <url>, a bare `?bldfield` the server's (either whatever the catalog says). Without it the meshes alone (z14), as before the field.
+  // <url>, a bare `?bldfield` the server's (either whatever the catalogue says). Without it the meshes alone (z14), as before the field.
   // Its comparison mode: bldcmp.ts.
   const fieldParam = new URLSearchParams(location.search).get('bldfield');
   let field: FieldLayer | null = null;
@@ -332,7 +332,7 @@ async function main() {
     casingMask: CASING_CLASSES_MASK,
     persp: { ...s0.roadPersp },
   });
-  // The tiles' version in their URLs (cached for good): the catalog's for the layer, else none. (Not
+  // The tiles' version in their URLs (cached for good): the catalogue's for the layer, else none. (Not
   // the build time in meta: it stayed when the tiles' way column changed from indices to OSM ids,
   // and a browser holding the older tiles under the same URLs would have kept them.)
   roads.setSource(version('roads.tiles'), meta.bounds);
@@ -405,7 +405,7 @@ async function main() {
   };
   applyRailStyle(s0);
   // Rail service frequency per way (railfreq): sorted OSM way ids (as the rail tiles' way column)
-  // and trains a day each way. Loaded for a version of the file (again for a new catalog's); a
+  // and trains a day each way. Loaded for a version of the file (again for a new catalogue's); a
   // failed request isn't kept (asked again the next time rail changes).
   let railFreqFor: string | null = null;
   const loadRailFreq = () => {
@@ -1725,7 +1725,7 @@ async function main() {
   };
   layers.onViewshed = () => (viewshed.active ? viewshed.cancel() : viewshed.start());
   layers.trees.onPreview = (palette) => applyTrees(map, palette ? { ...store.s.trees, palette } : store.s.trees);
-  // Depth under the water (depth.ts): its layers once the catalog has them.
+  // Depth under the water (depth.ts): its layers once the catalogue has them.
   const depth = new Depth(map);
   layers.depth.onPreview = (palette) => depth.preview(palette);
   layers.depth.domain = () => depth.domain(store.s.depth);
@@ -1883,7 +1883,7 @@ async function main() {
       search.focus();
       return;
     }
-    // B: the 3D buildings on and off (when the catalog has them).
+    // B: the 3D buildings on and off (when the catalogue has them).
     if (k === 'b' && hasBuildings && !e.metaKey && !e.ctrlKey && !e.altKey && !isTyping(e.target)) {
       e.preventDefault();
       const on = !store.s.buildings.on;
@@ -1954,7 +1954,7 @@ async function main() {
   };
   let styleReady = false;
   // The depth's 3D floor (depth.ts setFloor): the terrain's source swapped and the water's surface
-  // drawn over it, while the terrain is on and the catalog has depth.
+  // drawn over it, while the terrain is on and the catalogue has depth.
   let floorShown = false;
   const floorWanted = (s: AppState) => s.terrain.on && s.depth.floor && depth.available;
   const applyTerrainNow = (s: AppState) => {
@@ -2179,11 +2179,11 @@ async function main() {
   });
 
   // ---- new data, the lead, regions -------------------------------------------------
-  // A new catalog (catalog.ts) switches the map to its data in place: the modules that fetch data
+  // A new catalogue (catalogue.ts) switches the map to its data in place: the modules that fetch data
   // follow its versions by themselves (api.ts onVersions), the map's tile sources here, and what
   // can't follow asks for a reload (the status bar offers it). The status bar shows the lead
   // and the NAS from the same answers.
-  let watch: CatalogWatch | null = null;
+  let watch: CatalogueWatch | null = null;
   onVersions(['roads.tiles'], () => roads.setSource(version('roads.tiles'), roads.bounds));
   onVersions(['rails.tiles'], () => rails.setSource(version('rails.tiles'), rails.bounds));
   onVersions(['buildings.tiles'], () => switchBuildings(map));
@@ -2202,12 +2202,12 @@ async function main() {
     if (files.includes('base.pmtiles') || files.includes('water')) switchCoast(map, coastInput());
     if (files.includes('terrain.tiles')) switchContours(map);
   });
-  const newCatalog = (m: Meta) => {
+  const newCatalogue = (m: Meta) => {
     // What the versions don't say: the data's bounds (where tiles are asked for), and whether the
     // labels come from our tiles (the style is made for one or the other).
     roads.setSource(version('roads.tiles'), m.bounds);
     rails.setSource(version('rails.tiles'), m.bounds);
-    // The buildings, once a catalog has them: the layers, their settings, the B key and `bd=`.
+    // The buildings, once a catalogue has them: the layers, their settings, the B key and `bd=`.
     if (m.layers?.buildings && !hasBuildings) {
       hasBuildings = true;
       layers.showBuildings(true);
@@ -2219,7 +2219,7 @@ async function main() {
       heritageChanged(map, store.s.overlays.heritage);
       addField();
     }
-    // The field, once a catalog has its layer (not in the comparison mode: set up at start).
+    // The field, once a catalogue has its layer (not in the comparison mode: set up at start).
     if (!fieldReady && !CMP && wantField(m) && styleReady && map.getLayer('buildings')) {
       loadField();
       addField();
@@ -2301,33 +2301,33 @@ async function main() {
     stations.apply(store.s);
     applyDrivesShown();
     regions.start();
-    // The catalog from now on (a new catalog finds the style's sources there).
-    watch = new CatalogWatch(meta.catalog);
-    watch.onSwitch = newCatalog;
-    // Newer points on the server than the page has (a 409): the catalog now, not in a minute.
+    // The catalogue from now on (a new catalogue finds the style's sources there).
+    watch = new CatalogueWatch(meta.catalog);
+    watch.onSwitch = newCatalogue;
+    // Newer points on the server than the page has (a 409): the catalogue now, not in a minute.
     overlays.onStale = () => void watch?.poll();
     new MapStatus(strip.buildStatus, watch);
-    // The coverage drawn is the catalog's, so it follows a new one.
+    // The coverage drawn is the catalogue's, so it follows a new one.
     const w = watch;
-    w.on(() => regions.setCatalog(w.status?.n));
-    // The credits of the sources the catalog's data comes from.
+    w.on(() => regions.setCatalogue(w.status?.n));
+    // The credits of the sources the catalogue's data comes from.
     w.on(() => strip.setCredits(w.status?.credits));
     // (The heritage registers' among them: what the heritage popups name as their source.)
     w.on(() => setRegisterCredits(w.status?.credits));
     w.on(() => setBuildingsCredit(w.status?.credits));
-    // The polar caps, while the catalog has their layers (under the contours and everything after).
+    // The polar caps, while the catalogue has their layers (under the contours and everything after).
     const polar = new PolarCaps(map, { land: () => store.s.land, water: () => (store.s.layers.water ? store.s.water.colour : null) }, contours.id);
-    w.on(() => polar.setCatalog(w.status?.layers));
+    w.on(() => polar.setCatalogue(w.status?.layers));
     // The depth's layers and sources, and the notices their licences ask for in the credits.
     w.on(() => {
       if (!w.status) return;
-      depth.setCatalog(w.status.layers, w.status.depth);
+      depth.setCatalogue(w.status.layers, w.status.depth);
       layers.showDepth(depth.available);
       if (styleReady && floorWanted(store.s) !== floorShown) applyTerrainNow(store.s);
       const ds = w.status.depth?.sources ?? [];
       strip.setDepth(ds.map((x) => x.label), ds.map((x) => x.notice).filter((n): n is string => !!n));
     });
-    // Landmarks by view, when the catalog has them.
+    // Landmarks by view, when the catalogue has them.
     w.on(() => {
       if (w.status) overlays.setMarks(w.status.marks ?? null);
       else if (w.unreachable) overlays.setMarks(null);
@@ -2367,7 +2367,7 @@ async function main() {
     map.once('load', attach);
   }
   map.on('error', (e) => console.warn(e.error?.message ?? e));
-  (window as any).__app = { map, roads, rails, store, cam3d, ferries, dots, overlays, idle, contours, regions, catalog: () => watch };
+  (window as any).__app = { map, roads, rails, store, cam3d, ferries, dots, overlays, idle, contours, regions, catalogue: () => watch };
   if (BENCH) void runBench((window as any).__app);
 }
 

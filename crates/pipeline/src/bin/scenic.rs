@@ -148,7 +148,7 @@ fn timings(a: &cli::Timings) -> Result<()> {
 
 /// `scenic timings publish [--last N]`: publishing end to end (pipeline::pubtimes), from the
 /// build's history (the NAS's, else this Mac's coordinator's; `--file` a history file) and the map
-/// servers' log on the NAS: each catalog of the last N (10) and its z6 tiles, then the medians.
+/// servers' log on the NAS: each catalogue of the last N (10) and its z6 tiles, then the medians.
 fn timings_publish(last: usize, file: Option<&Path>, json: bool, places: &cli::Places) -> Result<()> {
     use pipeline::pubtimes;
     let home = home_or_default(&places.home);
@@ -170,10 +170,10 @@ fn timings_publish(last: usize, file: Option<&Path>, json: bool, places: &cli::P
         return Ok(());
     }
     if cats.is_empty() {
-        println!("no catalogs in the build's history yet ({} events read)", events.len());
+        println!("no catalogues in the build's history yet ({} events read)", events.len());
         return Ok(());
     }
-    println!("Publishing, the last {last} catalogs: each unit's hand-off, its map tiles planned, leased and packed, the catalog, each Mac's server and mirror\n");
+    println!("Publishing, the last {last} catalogues: each unit's hand-off, its map tiles planned, leased and packed, the catalogue, each Mac's server and mirror\n");
     print!("{}", pubtimes::text(&cats, &units, last));
     Ok(())
 }
@@ -680,8 +680,8 @@ fn publish_name(what: &str) -> &str {
 }
 
 /// Publishing as it stands (the build page's map KPI says its last catalogue): what it does and
-/// why (agent::build::PublishLine), the last catalog, the map tiles to draw and by which Mac, the
-/// cadenced publishes next (agent::forecast), each Mac's catalog adopted (agent::Published).
+/// why (agent::build::PublishLine), the last catalogue, the map tiles to draw and by which Mac, the
+/// cadenced publishes next (agent::forecast), each Mac's catalogue adopted (agent::Published).
 fn publishing_lines(st: &agent::Status) -> Vec<String> {
     let mut out = Vec::new();
     let Some(u) = &st.publishing else { return out };
@@ -689,7 +689,7 @@ fn publishing_lines(st: &agent::Status) -> Vec<String> {
     let p = st.published.clone().unwrap_or_default();
     if let Some(c) = p.last {
         let kind = if p.low { "with the low zooms" } else { "map tiles only" };
-        out.push(format!("  last catalog: {}, {}, {kind}", c.n, ago(c.at)));
+        out.push(format!("  last catalogue: {}, {}, {kind}", c.n, ago(c.at)));
     }
     if u.tiles > 0 || !p.drawing.is_empty() {
         let by: Vec<String> = p.drawing.iter().map(|(h, k)| format!("{h}: {}", plural(*k, "tile"))).collect();
@@ -709,7 +709,7 @@ fn publishing_lines(st: &agent::Status) -> Vec<String> {
         out.push(format!("  next: {}", next.join(", ")));
     }
     if !p.adopted.is_empty() {
-        let a: Vec<String> = p.adopted.iter().map(|(h, c)| format!("{h}: catalog {} ({})", c.n, ago(c.at))).collect();
+        let a: Vec<String> = p.adopted.iter().map(|(h, c)| format!("{h}: catalogue {} ({})", c.n, ago(c.at))).collect();
         out.push(format!("  adopted: {}", a.join(", ")));
     }
     for r in &u.regions {
@@ -907,8 +907,8 @@ fn status(places: &cli::Places) -> Result<()> {
         }
     }
     if let Some(r) = &root {
-        if let Ok(Some(cat)) = store::catalog::latest(&r.join("catalog")) {
-            println!("Map data: catalog {} of {}, {} units", cat.n, cat.created, cat.units.len());
+        if let Ok(Some(cat)) = store::catalogue::latest(&r.join(store::catalogue::NAME)) {
+            println!("Map data: catalogue {} of {}, {} units", cat.n, cat.created, cat.units.len());
         }
     }
     // Other workers, and where a device's browser joins in (docs/workers.md §7).
@@ -1539,9 +1539,11 @@ fn main() -> Result<()> {
         Some(Cmd::Steps { json }) => steps(json),
         Some(Cmd::Inputs(a)) => inputs(&a),
         Some(Cmd::ForecastCheck { from, to, json, root: r }) => forecast_check(from, to, json, &r.root),
-        Some(Cmd::Catalogs { after, root: r }) => {
-            use pipeline::agent::catalogsview::{CatalogsView, NasCatalogs};
-            let v = CatalogsView::new(std::sync::Arc::new(NasCatalogs(root(&r.root, false)?.join("catalog"))));
+        Some(Cmd::Catalogues { after, root: r }) => {
+            use pipeline::agent::cataloguesview::{CataloguesView, NasCatalogues};
+            let v = CataloguesView::new(std::sync::Arc::new(NasCatalogues(
+                root(&r.root, false)?.join(store::catalogue::NAME),
+            )));
             v.refresh();
             println!("{}", serde_json::to_string(&v.answer(after))?);
             Ok(())
@@ -1616,12 +1618,12 @@ mod tests {
     }
 
     /// Publishing in `scenic status` as the build page's card says it (task #259): what it does,
-    /// the last catalog and its kind, the map tiles to draw by Mac, the cadenced publishes next,
-    /// each Mac's catalog adopted.
+    /// the last catalogue and its kind, the map tiles to draw by Mac, the cadenced publishes next,
+    /// each Mac's catalogue adopted.
     #[test]
-    fn publishing_says_the_last_catalog_the_tiles_by_mac_the_next_and_each_macs_catalog() {
+    fn publishing_says_the_last_catalogue_the_tiles_by_mac_the_next_and_each_macs_catalogue() {
         let now = now_s();
-        let seen = |n: u64, ago: u64| agent::CatalogSeen { n, at: now - ago };
+        let seen = |n: u64, ago: u64| agent::CatalogueSeen { n, at: now - ago };
         let fc = |what: &str, at: u64| agent::forecast::PublishFc { what: what.into(), at };
         let st = agent::Status {
             publishing: Some(agent::build::PublishLine {
@@ -1645,10 +1647,10 @@ mod tests {
             publishing_lines(&st),
             [
                 "Publishing: drawing the map tiles of the units built",
-                "  last catalog: 812, 2 min ago, map tiles only",
+                "  last catalogue: 812, 2 min ago, map tiles only",
                 "  map tiles to draw: 18 (being drawn: m1: 6 tiles, m4: 12 tiles)",
                 "  next: the low zooms in 2.0 h, the landmarks in 50 min, the area overlays now",
-                "  adopted: m1: catalog 811 (3 min ago), m4: catalog 812 (1 min ago)",
+                "  adopted: m1: catalogue 811 (3 min ago), m4: catalogue 812 (1 min ago)",
             ]
         );
     }

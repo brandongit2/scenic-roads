@@ -14,12 +14,12 @@
 //! mirror/.basemap/<hash16>/<piece>.pmtiles.part   a piece being made, resumed where it stopped
 //! mirror/.basemap/<hash16>/sizes.json             each piece's size, worked out from the archive
 //! idx/<hash16>.idx                  pack indexes (PackIndex::to_bytes), cached as they're read
-//! catalog/<n>.json.zst              the last catalogs adopted
+//! catalog/<n>.json.zst              the last catalogues adopted
 //! ```
 //!
 //! **What's wanted** (`Wanted`, from the caller: the server's downloads) is a list of files of the
-//! current catalog and pieces of its basemap, in the order they're copied. A sync first lets go of
-//! everything else here (an older catalog's files, replaced ones, what a removed download had), then
+//! current catalogue and pieces of its basemap, in the order they're copied. A sync first lets go of
+//! everything else here (an older catalogue's files, replaced ones, what a removed download had), then
 //! copies what's wanted and missing, one at a time, in large sequential reads through the I/O pool.
 //! A file that doesn't fit (the disk's free space, less the reserve) waits, and nothing goes to make
 //! room for it. While the caller says the build is running (`Control::slow`), copies keep to 20 MB/s
@@ -28,7 +28,7 @@
 //! jobs read this mirror's base packs under a shared lock, crate::cachefile) stays until a later
 //! sync finds it let go.
 
-use crate::catalog::{self, Catalog};
+use crate::catalogue::{self, Catalogue};
 use crate::iopool::{IoError, IoPool};
 use crate::naming::{hex16, parse_content_name, replace_file};
 use crate::pack::PackIndex;
@@ -47,8 +47,8 @@ use std::time::{Duration, Instant, SystemTime};
 const CHUNK: u64 = 4 << 20;
 /// Shortest timeout for one read: long enough that a slow link isn't taken for a dead one.
 const CHUNK_TIMEOUT: Duration = Duration::from_secs(30);
-/// Catalogs kept in `catalog/`.
-const KEEP_CATALOGS: usize = 3;
+/// Catalogues kept in `catalog/`.
+const KEEP_CATALOGUES: usize = 3;
 /// Age past which a temporary file in `idx/` is left over from an interrupted write.
 const STALE_TMP: Duration = Duration::from_secs(3600);
 const PARTIAL: &str = ".partial";
@@ -65,7 +65,7 @@ type FreeSpace = dyn Fn(&Path) -> io::Result<u64> + Send + Sync;
 /// each goes: the server drops its maps of them, so the disk gets their room back.
 type OnRemove = dyn Fn(&[String]) + Send + Sync;
 
-/// Something to copy: a file of the catalog, or a piece of one of its basemap archives.
+/// Something to copy: a file of the catalogue, or a piece of one of its basemap archives.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Item {
     File { name: String, size: u64 },
@@ -115,7 +115,7 @@ fn hash_of(archive: &str) -> Option<&str> {
 
 /// What the caller tells a sync as it goes.
 pub struct Control<'a> {
-    /// Stop now (the downloads changed, a new catalog): a copy under way resumes next time.
+    /// Stop now (the downloads changed, a new catalogue): a copy under way resumes next time.
     pub stop: &'a dyn Fn() -> bool,
     /// The build is running: copies keep to `SLOW_RATE`.
     pub slow: &'a dyn Fn() -> bool,
@@ -278,7 +278,7 @@ impl Mirror {
     /// Opens (creating as needed) the mirror under `root`, the app's folder. `reserve_bytes` of
     /// the disk stay free (docs/macs.md: the owner's setting in the Regions panel, 30 GB unless set).
     pub fn open(root: PathBuf, reserve_bytes: u64) -> Result<Mirror> {
-        for d in ["mirror", "idx", "catalog"] {
+        for d in ["mirror", "idx", crate::catalogue::NAME] {
             let p = root.join(d);
             fs::create_dir_all(&p).with_context(|| format!("create {}", p.display()))?;
         }
@@ -486,16 +486,16 @@ impl Mirror {
     }
 
     /// Keeps a copy of `cat` in `catalog/` (for starting offline), and the last few before it.
-    pub fn save_catalog(&self, cat: &Catalog) -> Result<()> {
-        let dir = self.root.join("catalog");
-        catalog::write_copy(&dir, cat)?;
-        catalog::prune(&dir, KEEP_CATALOGS)?;
+    pub fn save_catalogue(&self, cat: &Catalogue) -> Result<()> {
+        let dir = self.root.join(crate::catalogue::NAME);
+        catalogue::write_copy(&dir, cat)?;
+        catalogue::prune(&dir, KEEP_CATALOGUES)?;
         Ok(())
     }
 
-    /// The newest catalog kept here.
-    pub fn saved_catalog(&self) -> Result<Option<Catalog>> {
-        catalog::latest(&self.root.join("catalog"))
+    /// The newest catalogue kept here.
+    pub fn saved_catalogue(&self) -> Result<Option<Catalogue>> {
+        catalogue::latest(&self.root.join(crate::catalogue::NAME))
     }
 
     /// Works out the sizes of `wanted` pieces of `archive` (a content name) not known yet, from
@@ -559,7 +559,7 @@ impl Mirror {
     /// Lets go of what `wanted` doesn't name: the files and pieces here, copies in progress, the
     /// pieces of archives `cat` no longer has (their sizes too). Away from home as at home. A file
     /// a job holds stays (`SyncStats::held`). What it did.
-    pub fn let_go(&self, cat: &Catalog, wanted: &Wanted) -> Result<SyncStats> {
+    pub fn let_go(&self, cat: &Catalogue, wanted: &Wanted) -> Result<SyncStats> {
         let mut stats = SyncStats::default();
         let files = wanted.files();
         let gone: Vec<(String, u64)> = self
@@ -594,7 +594,7 @@ impl Mirror {
                 }
             }
         }
-        // Pieces: those of archives the catalog no longer has go with their folder.
+        // Pieces: those of archives the catalogue no longer has go with their folder.
         let pieces = wanted.pieces();
         let current: HashSet<String> =
             cat.basemap.iter().filter_map(|l| cat.content(l)).filter_map(hash_of).map(str::to_string).collect();
@@ -644,7 +644,7 @@ impl Mirror {
     /// thread; it never holds the mirror's lock while it waits on the NAS.
     pub fn sync(
         &self,
-        cat: &Catalog,
+        cat: &Catalogue,
         wanted: &Wanted,
         nas_root: &crate::nasfs::NasRoot,
         pool: &Arc<IoPool>,
@@ -702,7 +702,7 @@ impl Mirror {
     }
 
     /// Away from the NAS: lets go of what isn't wanted, copies nothing. What it did.
-    pub fn sync_away(&self, cat: &Catalog, wanted: &Wanted) -> Result<SyncStats> {
+    pub fn sync_away(&self, cat: &Catalogue, wanted: &Wanted) -> Result<SyncStats> {
         let mut stats = self.let_go(cat, wanted)?;
         stats.end = SyncEnd::Offline;
         stats.pending = wanted.items.iter().filter(|i| !self.is_here(i)).count() as u32;
@@ -728,9 +728,9 @@ impl Mirror {
         Ok(false)
     }
 
-    /// Deletes local copies whose size isn't the catalog's (damaged, or cut short while the app
+    /// Deletes local copies whose size isn't the catalogue's (damaged, or cut short while the app
     /// wasn't running), so they're copied again; one a job holds stays until it's let go.
-    fn drop_mismatched(&self, cat: &Catalog) {
+    fn drop_mismatched(&self, cat: &Catalogue) {
         let bad: Vec<(String, u64, u64)> = {
             let st = self.state();
             cat.files
@@ -739,7 +739,7 @@ impl Mirror {
                 .collect()
         };
         for (name, have, want) in bad {
-            eprintln!("mirror: {name} is {have} bytes here but {want} in the catalog; copying it again");
+            eprintln!("mirror: {name} is {have} bytes here but {want} in the catalogue; copying it again");
             let p = self.path(&name);
             if crate::cachefile::try_remove(&p) != crate::cachefile::Removed::InUse {
                 self.state().files.remove(&name);
@@ -759,7 +759,7 @@ impl Mirror {
         }
     }
 
-    /// Copies a file of the catalog (None: it waits for room).
+    /// Copies a file of the catalogue (None: it waits for room).
     #[allow(clippy::too_many_arguments)]
     fn copy_file(
         &self,
@@ -783,7 +783,7 @@ impl Mirror {
             Err(e) => return Ok(Some(Copy::Failed(format!("open on the NAS: {e}")))),
         };
         if len != size {
-            return Ok(Some(Copy::Failed(format!("{len} bytes on the NAS, but the catalog says {size}"))));
+            return Ok(Some(Copy::Failed(format!("{len} bytes on the NAS, but the catalogue says {size}"))));
         }
         if let Some(dir) = part.parent() {
             fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
@@ -942,14 +942,14 @@ impl Mirror {
         Ok(Some(Copy::Done(plan.size)))
     }
 
-    /// After a sync: drops pack indexes no recent catalog needs (and temporary files an
+    /// After a sync: drops pack indexes no recent catalogue needs (and temporary files an
     /// interrupted write left in `idx/`).
-    fn tidy(&self, cat: &Catalog) {
+    fn tidy(&self, cat: &Catalogue) {
         let mut recent: HashSet<String> =
             cat.files.values().filter_map(|f| parse_content_name(&f.file).map(|c| c.hash16.to_string())).collect();
-        let dir = self.root.join("catalog");
-        if let Ok(ns) = catalog::list(&dir) {
-            if let Some(prev) = ns.into_iter().filter(|&n| n < cat.n).find_map(|n| catalog::read_n(&dir, n).ok()) {
+        let dir = self.root.join(crate::catalogue::NAME);
+        if let Ok(ns) = catalogue::list(&dir) {
+            if let Some(prev) = ns.into_iter().filter(|&n| n < cat.n).find_map(|n| catalogue::read_n(&dir, n).ok()) {
                 recent.extend(
                     prev.files.values().filter_map(|f| parse_content_name(&f.file).map(|c| c.hash16.to_string())),
                 );
@@ -1008,7 +1008,7 @@ fn label(i: &Item) -> String {
 /// ovdata). Not the pass's area outlines (a worldwide
 /// file under `sources/`, read only to make new regions), nor the basemap (its pieces:
 /// crate::pieces).
-fn essential_logicals(cat: &Catalog) -> std::collections::HashSet<&str> {
+fn essential_logicals(cat: &Catalogue) -> std::collections::HashSet<&str> {
     let mut e: HashSet<&str> = cat
         .global
         .values()
@@ -1025,7 +1025,7 @@ fn essential_logicals(cat: &Catalog) -> std::collections::HashSet<&str> {
 }
 
 /// The content names of `cat`'s essentials (`essential_logicals`), in copy order (`copy_order`).
-pub fn essentials(cat: &Catalog) -> Vec<String> {
+pub fn essentials(cat: &Catalogue) -> Vec<String> {
     let mut v: Vec<&str> = essential_logicals(cat).into_iter().collect();
     copy_order(cat, &mut v);
     v.into_iter().filter_map(|l| cat.content(l).map(str::to_string)).collect()
@@ -1035,18 +1035,18 @@ pub fn essentials(cat: &Catalog) -> Vec<String> {
 /// values (and the per-tile records), base packs, hi packs, the 3D buildings' hi packs and their
 /// field's (a city's z6 tile is hundreds of MB to 2 GB: the roads and terrain first), and anything
 /// else; by name within each. (The field's lo packs are lo packs: in the World download.)
-pub fn copy_order(cat: &Catalog, logicals: &mut [&str]) {
+pub fn copy_order(cat: &Catalogue, logicals: &mut [&str]) {
     let g = groups(cat);
     logicals.sort_by(|a, b| {
         g.get(a).copied().unwrap_or(LAST_GROUP).cmp(&g.get(b).copied().unwrap_or(LAST_GROUP)).then(a.cmp(b))
     });
 }
 
-/// The 3D buildings' layers in the catalog (pipeline::bld::LAYER, pipeline::bld::field::LAYER).
+/// The 3D buildings' layers in the catalogue (pipeline::bld::LAYER, pipeline::bld::field::LAYER).
 const BUILDINGS_LAYERS: [&str; 2] = ["buildings", "buildings-field"];
 const LAST_GROUP: u8 = 6;
 
-fn groups(cat: &Catalog) -> HashMap<&str, u8> {
+fn groups(cat: &Catalogue) -> HashMap<&str, u8> {
     fn set<'a>(g: &mut HashMap<&'a str, u8>, logical: &'a str, k: u8) {
         let e = g.entry(logical).or_insert(k);
         *e = (*e).min(k);

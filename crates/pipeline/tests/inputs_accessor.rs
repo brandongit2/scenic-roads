@@ -98,7 +98,7 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
 
 /// Each gate unit's name as code would write it in a path. (The regions', the heritage
 /// registers' and matches', the elevation datasets' and the source declarations' aside: "regions",
-/// "heritage", "elevation" and "sources" are words every reader of the coverage, the catalog, the
+/// "heritage", "elevation" and "sources" are words every reader of the coverage, the catalogue, the
 /// heritage chain, the roads' heights and the NAS's stores (`sources/…`) says, and their inputs folders
 /// are only ever named `inputs/regions`,
 /// `inputs/heritage`, `inputs/heritage-matches`, `inputs/elevation`, `inputs/sources`, which

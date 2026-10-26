@@ -1,13 +1,13 @@
 // The status bar's connection items: the NAS or the map server when it can't be reached (map data
 // not mirrored on this Mac may be missing), and new map data or a new app that wants a reload.
-import type { CatalogWatch } from '../catalog';
+import type { CatalogueWatch } from '../catalogue';
 import { h } from './dom';
 
 export class MapStatus {
   private nas = h('span', { class: 'bs-nas' });
   private reload = h('button', { class: 'bs-reload', type: 'button', onclick: () => location.reload() });
 
-  constructor(root: HTMLElement, private watch: CatalogWatch) {
+  constructor(root: HTMLElement, private watch: CatalogueWatch) {
     root.classList.add('build');
     root.append(this.reload, this.nas);
     this.render();
