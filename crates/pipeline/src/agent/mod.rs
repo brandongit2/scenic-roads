@@ -12481,10 +12481,13 @@ mod tests {
         // (Task #665: a job under a core-minute for IDLE_CPU_S is named idle, its lease alone; one
         // busy within it, or not sampled yet, isn't.)
         assert!(a.capacity(&cond).idle.is_empty());
-        let ago_i = |s: u64| Instant::now() - Duration::from_secs(s);
-        a.sampler.set_test_busy(Some(vec![Some(ago_i(IDLE_CPU_S + 60)), Some(ago_i(IDLE_CPU_S - 60)), None]));
-        assert_eq!(a.capacity(&cond).idle, [leases[0]]);
-        a.sampler.set_test_busy(None);
+        // (A Mac up under IDLE_CPU_S + 1 min skips it: no Instant that far back.)
+        let ago_i = |s: u64| Instant::now().checked_sub(Duration::from_secs(s));
+        if let Some(old) = ago_i(IDLE_CPU_S + 60) {
+            a.sampler.set_test_busy(Some(vec![Some(old), ago_i(IDLE_CPU_S - 60), None]));
+            assert_eq!(a.capacity(&cond).idle, [leases[0]]);
+            a.sampler.set_test_busy(None);
+        }
         // (Its slots full by what the lead grants: asked again, nothing more fits.)
         assert!(a.helper_grants(&root, &cond, &mut w).is_empty());
         assert_eq!(a.slots.len(), 3, "no slot made for nothing");
