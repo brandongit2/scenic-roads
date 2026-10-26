@@ -1049,11 +1049,11 @@ fn sampling_many_stored_tiles_holds_a_bounded_number_of_files() {
         drop(s);
         (got, held)
     };
-    // (Every file held, as before the fix: each tile and its mask open at the end.)
+    // (Every tile held, as before the fix, open at the end; masks are read whole once and closed.)
     let (want, all) = run(1_000_000);
     let (got, held) = run(8);
     eprintln!("held: {all} with no cap, {held} with a cap of 8");
-    assert_eq!(all, 2 * cols * rows, "all held open");
+    assert_eq!(all, cols * rows, "all held open");
     assert!(held <= 8 + threads, "{held} held, past the cap");
     let bits = |s: &Sampled| s.elev.iter().map(|e| e.to_bits()).collect::<Vec<_>>();
     assert_eq!(bits(&got), bits(&want));
@@ -1092,4 +1092,33 @@ fn by_runs_orders_as_a_full_sort() {
         |a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)),
     );
     assert_eq!(got, full.into_iter().map(|p| p.2).collect::<Vec<_>>());
+}
+
+/// A mask's bits answer as its pixels do, in edge blocks too (70 × 50 in 32 × 32 blocks).
+#[test]
+fn a_mask_answers_as_its_pixels() {
+    let (w, h) = (70u32, 50u32);
+    let v: Vec<f32> = (0..w * h)
+        .map(|p| {
+            if (p * 7919) % 13 < 3 && p / w > 33 {
+                [3.0, 7.0][(p % 2) as usize]
+            } else {
+                [0.0, 1.0, 2.9][(p % 3) as usize]
+            }
+        })
+        .collect();
+    let gt = [10.0, 0.01, 0.0, 46.0, 0.0, -0.01];
+    let tif = crate::geotiff::write_f32(w, h, &v, 32, gt, 4326, None).unwrap();
+    let t = Tiff::open(Arc::new(tif.clone())).unwrap();
+    let m = Mask::of(Tiff::open(Arc::new(tif)).unwrap()).unwrap();
+    // (The top row of blocks holds no void.)
+    assert!(m.voids[..3].iter().all(Option::is_none) && m.voids[3..].iter().all(Option::is_some));
+    for r in 0..h {
+        for c in 0..w {
+            let (x, y) = (gt[0] + (c as f64 + 0.5) * gt[1], gt[3] + (r as f64 + 0.5) * gt[5]);
+            let want = t.pixel(0, c, r).unwrap() >= super::super::declared::MASK_FILLED;
+            assert_eq!(m.masked(x, y), want, "({c}, {r})");
+        }
+    }
+    assert!(!m.masked(9.99, 45.9) && !m.masked(10.71, 45.9) && !m.masked(10.1, 46.01) && !m.masked(10.1, 45.49));
 }

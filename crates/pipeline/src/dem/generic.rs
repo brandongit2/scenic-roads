@@ -264,7 +264,7 @@ struct GeoSet<'a> {
     o: &'a Opts<'a>,
     /// By file: the open file and the level read (None: the server has none).
     opened: Mutex<HashMap<usize, Option<(Arc<Tiff>, usize)>>>,
-    /// By file: its fill mask, open and summed up (`Mask`; None: it has none), once.
+    /// By file: its fill mask, read (`Mask`; None: it has none), once.
     opened_masks: Vec<std::sync::OnceLock<Result<Option<Arc<Mask>>, String>>>,
     /// The files by where their footprints lie, for a plan of many (`FileGrid`).
     grid: Option<FileGrid>,
@@ -274,55 +274,58 @@ struct GeoSet<'a> {
     cache: Arc<Mutex<BlockCache>>,
 }
 
-/// A file's fill mask, open, with which of its blocks hold a void (a value `MASK_FILLED` or more):
-/// a point in a block with none is no void, its pixel not read.
+/// A file's fill mask, read whole once: by block, the pixels holding a void (a value `MASK_FILLED`
+/// or more) as bits, row by row `block_w` wide (None: the block has none), so a point is looked up
+/// without reading the file again.
 struct Mask {
-    tiff: Tiff,
     gt: [f64; 6],
     width: u32,
     height: u32,
     block_w: u32,
     block_h: u32,
     across: u32,
-    dirty: Vec<bool>,
+    voids: Vec<Option<Box<[u64]>>>,
 }
 
 impl Mask {
-    /// The mask of `t`, its blocks read once to sum them up.
+    /// The mask of `t`, each block read once.
     fn of(t: Tiff) -> Result<Mask> {
         let gt = t.transform(0)?;
         let img = t.level(0)?.clone();
         let (across, down) = (img.width.div_ceil(img.block_w), img.height.div_ceil(img.block_h));
-        let mut dirty = Vec::with_capacity((across * down) as usize);
+        let n = (img.block_w * img.block_h) as usize;
+        let mut voids = Vec::with_capacity((across * down) as usize);
         for by in 0..down {
             for bx in 0..across {
                 let b = t.block(0, bx, by)?;
-                let any = (0..b.height).any(|y| (0..b.width).any(|x| b.f32_at(x, y) >= super::declared::MASK_FILLED));
-                dirty.push(any);
+                let mut bits = vec![0u64; n.div_ceil(64)];
+                let mut any = false;
+                for y in 0..b.height {
+                    for x in 0..b.width {
+                        if b.f32_at(x, y) >= super::declared::MASK_FILLED {
+                            let i = y * img.block_w as usize + x;
+                            bits[i / 64] |= 1 << (i % 64);
+                            any = true;
+                        }
+                    }
+                }
+                voids.push(any.then(|| bits.into_boxed_slice()));
             }
         }
-        Ok(Mask {
-            tiff: t,
-            gt,
-            width: img.width,
-            height: img.height,
-            block_w: img.block_w,
-            block_h: img.block_h,
-            across,
-            dirty,
-        })
+        Ok(Mask { gt, width: img.width, height: img.height, block_w: img.block_w, block_h: img.block_h, across, voids })
     }
 
-    fn masked(&self, x: f64, y: f64) -> Result<bool> {
+    fn masked(&self, x: f64, y: f64) -> bool {
         let (c, r) = (((x - self.gt[0]) / self.gt[1]).floor(), ((y - self.gt[3]) / self.gt[5]).floor());
         if !(c >= 0.0 && r >= 0.0 && c < self.width as f64 && r < self.height as f64) {
-            return Ok(false);
+            return false;
         }
         let (c, r) = (c as u32, r as u32);
-        if !self.dirty[((r / self.block_h) * self.across + c / self.block_w) as usize] {
-            return Ok(false);
-        }
-        Ok(self.tiff.pixel(0, c, r)? >= super::declared::MASK_FILLED)
+        let Some(bits) = &self.voids[((r / self.block_h) * self.across + c / self.block_w) as usize] else {
+            return false;
+        };
+        let i = ((r % self.block_h) * self.block_w + c % self.block_w) as usize;
+        bits[i / 64] >> (i % 64) & 1 == 1
     }
 }
 
@@ -401,7 +404,7 @@ impl GeoSet<'_> {
         }
     }
 
-    /// File `k`'s fill mask, open and summed up once (None: it has none).
+    /// File `k`'s fill mask, read once (None: it has none).
     fn mask(&self, k: usize) -> Result<Option<Arc<Mask>>> {
         let Some(Some(url)) = self.masks.get(k) else { return Ok(None) };
         self.opened_masks[k]
@@ -410,8 +413,7 @@ impl GeoSet<'_> {
                     let src = self
                         .source(url)?
                         .with_context(|| format!("{}: its fill mask {url} isn't on the server", self.id))?;
-                    let id = FILE_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let t = Tiff::open(src).with_context(|| url.clone())?.with_shared_cache(id, self.cache.clone());
+                    let t = Tiff::open(src).with_context(|| url.clone())?;
                     Ok(Some(Arc::new(Mask::of(t).with_context(|| url.clone())?)))
                 })()
                 .map_err(|e| format!("{e:#}"))
@@ -422,14 +424,13 @@ impl GeoSet<'_> {
 
     /// Whether file `k` has voids by its fill mask anywhere (a mask with none counts as none).
     fn has_voids(&self, k: usize) -> Result<bool> {
-        Ok(self.mask(k)?.is_some_and(|m| m.dirty.iter().any(|&d| d)))
+        Ok(self.mask(k)?.is_some_and(|m| m.voids.iter().any(Option::is_some)))
     }
 
     /// Whether native point (x, y) is a void by file `k`'s fill mask (its nearest pixel there
     /// `MASK_FILLED` or more); false without a mask, outside it, or in a block of it with none.
     fn masked(&self, k: usize, x: f64, y: f64) -> Result<bool> {
-        let Some(m) = self.mask(k)? else { return Ok(false) };
-        m.masked(x, y)
+        Ok(self.mask(k)?.is_some_and(|m| m.masked(x, y)))
     }
 
     fn open(&self, k: usize) -> Result<Option<(Arc<Tiff>, usize)>> {
