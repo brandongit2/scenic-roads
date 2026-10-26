@@ -13,13 +13,12 @@ const itemsTable = (name) => `CREATE TABLE ${name} (
     text TEXT,
     parent TEXT,
     "order" REAL,
-    num INTEGER,               -- a task's number, #57
+    num INTEGER,               -- the item's number, #57
     stage TEXT ${STAGE_CHECK},  -- schema.mjs STAGES, '' queued
     "where" TEXT,              -- who or what it runs on
     note TEXT,
     reply TEXT,
     priority REAL,
-    slot INTEGER,
     discuss INTEGER,           -- 0/1
     archived INTEGER,          -- 0/1
     archivedAt TEXT,
@@ -33,7 +32,7 @@ const ITEMS_INDEXES = `
   CREATE UNIQUE INDEX IF NOT EXISTS items_num_unique ON items(num) WHERE num IS NOT NULL;`;
 
 export const COLS = {
-  items: ["kind", "text", "parent", "order", "num", "stage", "where", "note", "reply", "priority", "slot", "discuss", "archived", "archivedAt", "added", "started", "finished", "photos"],
+  items: ["kind", "text", "parent", "order", "num", "stage", "where", "note", "reply", "priority", "discuss", "archived", "archivedAt", "added", "started", "finished", "photos"],
   events: ["item", "kind", "t", "text"],
 };
 const BOOL = new Set(["discuss", "archived"]);
@@ -103,7 +102,7 @@ export function openStore(file) {
     eventsOf: (id) => stmt(`SELECT id FROM events WHERE item = ?`).all(id).map((r) => r.id),
     maxNum: () => stmt(`SELECT MAX(num) AS m FROM items`).get().m || 0,
     numOwner: (num) => stmt(`SELECT id FROM items WHERE num = ?`).get(num)?.id ?? null,
-    maxOrder: (parent) => stmt(`SELECT MAX("order") AS m FROM items WHERE parent = ?`).get(parent).m,
+    maxOrder: () => stmt(`SELECT MAX("order") AS m FROM items`).get().m,
     close() { db.close(); },
   };
   return s;

@@ -39,8 +39,8 @@ export const ITEM_FIELDS = {
   kind: { type: "enum", values: ITEM_KINDS },
   text: F.string(2000),
   parent: { type: "string", max: 200 }, // "" = top level; else an item's id (checked against the items)
-  order: { type: "number" }, // among its parent's children; changed by a reorder
-  num: { ...F.int(1), server: true }, // a task's number, #57
+  order: { type: "number" }, // its place among all items: siblings in the tree, and ties in a sort; changed by a drag
+  num: { ...F.int(1), server: true }, // every item's number (#57), tasks and folders from one counter
   added: { type: "time", server: true },
   note: F.string(100000),
   archived: { type: "bool" },
@@ -49,7 +49,6 @@ export const ITEM_FIELDS = {
   stage: { type: "enum", values: STAGES, task: true },
   where: { type: "enum", values: WHERES, task: true },
   priority: { type: "number", min: 0, task: true },
-  slot: { ...F.int(0), task: true },
   discuss: { type: "bool", task: true },
   started: { type: "time", task: true },
   finished: { type: "time", task: true },
@@ -67,7 +66,7 @@ export const META_FIELDS = {
 };
 // What a client may send when it creates one (the server fills the rest: ids, num, order, added, t,
 // and the defaults).
-export const ITEM_CREATE = ["kind", "text", "parent", "note", "where", "priority", "stage", "discuss", "slot"];
+export const ITEM_CREATE = ["kind", "text", "parent", "note", "where", "priority", "stage", "discuss"];
 export const EVENT_CREATE = ["item", "kind", "text"];
 // What a client may change in one that exists (null removes an optional field).
 export const ITEM_EDIT = Object.keys(ITEM_FIELDS).filter((k) => !ITEM_FIELDS[k].server);
@@ -106,8 +105,8 @@ export function itemErrors(doc) {
     else if (s.task && doc.kind === "folder") bad(k, "is only for tasks (a folder has none)");
     else { const w = badValue(s, doc[k]); if (w) bad(k, w); }
   }
-  for (const k of ["kind", "text", "parent", "order", "added"]) if (doc[k] === undefined) bad(k, "is required");
-  if (task) for (const k of ["num", "stage", "where"]) if (doc[k] === undefined) bad(k, "is required for a task");
+  for (const k of ["kind", "text", "parent", "order", "num", "added"]) if (doc[k] === undefined) bad(k, "is required");
+  if (task) for (const k of ["stage", "where"]) if (doc[k] === undefined) bad(k, "is required for a task");
   if (typeof doc.text === "string" && !doc.text.trim()) bad("text", "must not be empty");
   if (doc.archivedAt !== undefined && doc.archived !== true) bad("archivedAt", "is only for an archived item (archived: true)");
   return errs;

@@ -5,9 +5,9 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <style>
-  /* A sticky header (Claude's status, search, filters, adding), then two panes side by side: the
-     folder tree, and every task by priority. The selected item's details dock on the right on wide
-     screens and slide over the panes when narrower; under 900 px the panes become two tabs. */
+  /* A sticky header (Claude's status, search, filters, adding), then one list, shown as the folder
+     tree or sorted flat (the View menu). The selected item's details dock on the right on wide
+     screens and slide over the list when narrower. */
   :root {
     --bg: #f5f7f6;
     --panel: #ffffff;
@@ -28,6 +28,7 @@
     --st-int-bg: #f7edd6;
     --st-rev-fg: #6847b5;
     --st-rev-bg: #eee8fb;
+    --active: #7c3aed;
     --st-wait-fg: #b3261d;
     --st-wait-bg: #fbe6e3;
     --st-done-fg: #1e7a51;
@@ -67,6 +68,7 @@
       --st-int-bg: #2c2414;
       --st-rev-fg: #baa2f3;
       --st-rev-bg: #251e38;
+    --active: #a98bf5;
       --st-wait-fg: #f38a7f;
       --st-wait-bg: #3a1c19;
       --st-done-fg: #5fc89b;
@@ -102,6 +104,7 @@
     --st-int-bg: #2c2414;
     --st-rev-fg: #baa2f3;
     --st-rev-bg: #251e38;
+    --active: #a98bf5;
     --st-wait-fg: #f38a7f;
     --st-wait-bg: #3a1c19;
     --st-done-fg: #5fc89b;
@@ -160,7 +163,6 @@
   .chip select { border: 0; background: transparent; color: inherit; font-size: 12px; padding: 0; max-width: 12rem; }
   .chip.zero { opacity: 0.55; }
   .sep { width: 1px; height: 16px; background: var(--line-strong); margin: 0 2px; }
-  .tabs { display: none; }
   .banner { margin: 0; padding: 5px 10px; border-radius: 6px; background: var(--st-int-bg); color: var(--st-int-fg); font-size: 12px; }
   #bad summary { cursor: pointer; }
   #bad ul { margin: 6px 0 2px; padding-left: 16px; max-height: 14em; overflow: auto; font: 11px/1.5 var(--mono, monospace); }
@@ -171,8 +173,8 @@
   .top-hist .sec-h { margin: 2px 0 4px; }
   .filt { display: none; }
 
-  /* Panes. */
-  .panes { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(320px, 380px); }
+  /* The list, and the details beside it. */
+  .panes { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 420px); }
   .pane { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); border-right: 1px solid var(--line); }
   .pane-h { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 16px; border-bottom: 1px solid var(--line); min-width: 0; }
   .pane-h h2 { margin: 0; font: 600 11px/1 var(--sans); letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
@@ -195,6 +197,8 @@
   .row.sel::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--accent); }
   .row:focus-visible { box-shadow: inset 0 0 0 2px var(--focus); }
   .row.sel:focus-visible { box-shadow: none; } /* (the selection, which follows the keys, shows where you are) */
+  /* Several picked (⌘-click, ⇧-click): the last one clicked, where a ⇧-click's range starts from. */
+  .rows.multi .row.active { box-shadow: inset 0 0 0 2px var(--active); }
   .grip { position: absolute; left: 3px; top: 6px; width: 16px; height: 18px; display: grid; place-items: center; border-radius: 4px; color: var(--faint); cursor: grab; touch-action: none; opacity: 0; }
   .grip::before { content: ""; width: 8px; height: 13px; background-image: radial-gradient(circle, currentColor 1.15px, transparent 1.5px); background-size: 4px 4.4px; background-position: center; }
   .row:hover .grip, .row.sel .grip, .row:focus-visible .grip { opacity: 1; }
@@ -258,7 +262,7 @@
   /* A row's actions show over its "where" column while it's hovered, focused or selected. */
   .acts { position: absolute; right: 0; top: -2px; z-index: 1; display: flex; align-items: center; gap: 2px; padding-left: 18px; background: linear-gradient(to right, transparent, var(--rowbg) 16px); opacity: 0; pointer-events: none; }
   .task .acts { min-width: calc(var(--where-w) + 2px); justify-content: flex-end; padding-left: 0; background: var(--rowbg); }
-  #tree .task .acts { right: calc(var(--pr-w) + 2px); }
+  #list.tree .task .acts { right: calc(var(--pr-w) + 2px); }
   .folder .acts { right: calc(100% + 2px); }
   .row:hover .acts, .row.sel .acts, .row:focus-within .acts { opacity: 1; pointer-events: auto; }
   @media (hover: none) { .row .acts { position: static; min-width: 0; padding-left: 0; background: none; opacity: 1; pointer-events: auto; } }
@@ -296,7 +300,6 @@
   .grp { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 12px 0 22px; color: var(--muted); font: 600 10.5px/1 var(--sans); letter-spacing: 0.07em; text-transform: uppercase; }
   .grp::after { content: ""; flex: 1; height: 1px; background: var(--line); }
   .grp .n { font: 500 11px var(--mono); letter-spacing: 0; color: var(--faint); }
-  .grp.wait { color: var(--st-wait-fg); }
   .grp.drop { color: var(--accent); }
   .grp.drop::after { height: 2px; background: var(--accent); }
 
@@ -305,6 +308,7 @@
   .row.drop-in { background: var(--sel); box-shadow: inset 0 0 0 1.5px var(--accent); }
   .drop-line { position: absolute; z-index: 2; left: 0; right: 10px; height: 2px; margin-top: -1px; display: none; border-radius: 1px; background: var(--accent); pointer-events: none; }
   .drop-line::before { content: ""; position: absolute; left: -4px; top: -3px; width: 8px; height: 8px; border: 2px solid var(--accent); border-radius: 50%; background: var(--bg); }
+  .drop-line b:empty { display: none; }
   .drop-line b { position: absolute; right: 0; top: -9px; height: 18px; padding: 0 6px; border-radius: 4px; background: var(--accent); color: var(--on-accent); font: 600 11px/18px var(--mono); white-space: nowrap; }
   .ghost { position: fixed; left: 0; top: 0; z-index: 30; max-width: 340px; padding: 5px 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); box-shadow: var(--shadow); font-weight: 500; pointer-events: none; will-change: transform; }
   body.drag-live, body.drag-live * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
@@ -408,10 +412,10 @@
   .viewer img { max-width: 100%; max-height: calc(100vh - 96px); border-radius: 6px; }
   .viewer .btn { position: absolute; top: calc(12px + env(safe-area-inset-top, 0px)); right: 16px; }
 
-  /* Narrower: the details slide over the panes. */
-  @media (max-width: 1199px) {
-    .panes { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-    .pane:last-of-type { border-right: 0; }
+  /* Narrower: the details slide over the list. */
+  @media (max-width: 1099px) {
+    .panes { grid-template-columns: minmax(0, 1fr); }
+    .pane { border-right: 0; }
     .editor { position: fixed; z-index: 20; top: 0; right: 0; bottom: 0; width: min(420px, 100%); padding-bottom: env(safe-area-inset-bottom, 0px); border-left: 1px solid var(--line-strong); box-shadow: var(--shadow); transform: translateX(104%); visibility: hidden; transition: transform 0.18s ease, visibility 0s linear 0.18s; }
     .app.sheet .editor { transform: none; visibility: visible; transition: transform 0.18s ease; }
     .scrim { display: block; position: fixed; inset: 0; z-index: 19; background: var(--scrim); opacity: 0; visibility: hidden; transition: opacity 0.18s ease, visibility 0s linear 0.18s; }
@@ -419,17 +423,7 @@
     .ed-close { display: grid; }
     .ed-empty { display: none; }
   }
-  /* Narrow: one pane at a time, as tabs. */
   @media (max-width: 899px) {
-    .panes { grid-template-columns: minmax(0, 1fr); }
-    .pane { border-right: 0; }
-    .app[data-tab="tree"] #pane-prio, .app[data-tab="prio"] #pane-tree { display: none; }
-    .tabs { display: flex; margin: 0 -16px -9px; padding: 0 8px; border-top: 1px solid var(--line); }
-    .tab { flex: 1; height: 34px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--muted); font-weight: 500; }
-    .tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
-    .tab .n { font: 11px var(--mono); color: var(--faint); }
-    .pane-h h2 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-    .pane-h { padding-left: 16px; }
     .search { flex: 1 1 100%; }
   }
   @media (max-width: 560px) {
@@ -451,7 +445,7 @@
   }
 </style>
 
-<div class="app" id="app" data-tab="tree">
+<div class="app" id="app">
   <header class="top">
     <div class="bar1">
       <h1>Task board</h1>
@@ -469,19 +463,11 @@
     </div>
     <p class="banner" id="banner" role="status" hidden></p>
     <details class="banner" id="bad" hidden><summary id="bad-sum"></summary><ul id="bad-list"></ul></details>
-    <div class="tabs" role="tablist" aria-label="Panes">
-      <button class="tab" type="button" role="tab" id="tab-tree" aria-controls="pane-tree" aria-selected="true">Tree</button>
-      <button class="tab" type="button" role="tab" id="tab-prio" aria-controls="pane-prio" aria-selected="false" tabindex="-1">Priorities</button>
-    </div>
   </header>
   <main class="panes">
-    <section class="pane" id="pane-tree" aria-labelledby="tree-h">
-      <div class="pane-h"><h2 id="tree-h">Tree</h2><span class="sum" id="tree-sum"></span><span class="sp"></span><button class="ghost-btn hist" id="top-hist" type="button" hidden aria-expanded="false" title="The top level's history: what was deleted there">Top level</button><button class="ghost-btn" id="expand-all" type="button">Expand all</button><button class="ghost-btn" id="collapse-all" type="button">Collapse all</button></div>
-      <div class="scroll" id="tree-scroll"><div class="rows" id="tree" role="tree" aria-labelledby="tree-h"><p class="empty">The folders and tasks appear here as soon as they load.</p></div><div class="drop-line" id="tree-line"></div></div>
-    </section>
-    <section class="pane" id="pane-prio" aria-labelledby="prio-h">
-      <div class="pane-h"><h2 id="prio-h">Priorities</h2><span class="sum" id="prio-sum"></span><span class="sp"></span><label for="sort">Sort</label><select id="sort"><option value="priority">Priority</option><option value="recent">Recently changed</option><option value="added">Added</option></select></div>
-      <div class="scroll" id="prio-scroll"><div class="rows" id="prio" role="list" aria-labelledby="prio-h"></div><div class="drop-line" id="prio-line"><b></b></div></div>
+    <section class="pane" id="pane-list" aria-label="Tasks">
+      <div class="pane-h"><label for="view">View</label><select id="view"><option value="tree">Tree</option><optgroup label="Sort"><option value="priority">Priority</option><option value="recent">Recently changed</option><option value="added">Added</option></optgroup></select><span class="sum" id="list-sum"></span><span class="sp"></span><button class="ghost-btn hist" id="top-hist" type="button" hidden aria-expanded="false" title="The top level's history: what was deleted there">Top level</button><button class="ghost-btn" id="expand-all" type="button">Expand all</button><button class="ghost-btn" id="collapse-all" type="button">Collapse all</button></div>
+      <div class="scroll" id="list-scroll"><div class="rows" id="list" aria-label="Tasks"><p class="empty">The folders and tasks appear here as soon as they load.</p></div><div class="drop-line" id="list-line"><b></b></div></div>
     </section>
     <aside class="editor" id="editor" aria-label="Details"></aside>
   </main>
@@ -530,7 +516,7 @@
     }
     return iconCache[name].cloneNode(true);
   }
-  // Per-viewer conveniences only (collapsed folders, the archived toggle, the sort, the tab).
+  // Per-viewer conveniences only (collapsed folders, the archived toggle, the view).
   const local = {
     get(k, d) { try { const v = localStorage.getItem("backlog:" + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
     set(k, v) { try { localStorage.setItem("backlog:" + k, JSON.stringify(v)); } catch { /* (fine without) */ } },
@@ -576,6 +562,9 @@
   // The order numbers are given in: when it was added (those from before `added` existed first),
   // then id.
   const byAdded = (a, b) => (ms(a.added) ?? -Infinity) - (ms(b.added) ?? -Infinity) || natCmp(a.id, b.id);
+  // `order`: one order over every item, the tiebreaker of every view (siblings in the tree, equal
+  // priorities, the same time); then id.
+  const byOrder = (a, b) => (isNum(a.order) ? a.order : 0) - (isNum(b.order) ? b.order : 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
   // ---------------------------------------------------------------------------------------------
   // Stages, filters, the model.
@@ -622,15 +611,15 @@
     $("bad-sum").textContent = `${bad.length} thing${bad.length === 1 ? "" : "s"} the page can't show as it should: records that don't fit the board's schema (the server accepts no more; repair.mjs fixes old ones).`;
     $("bad-list").replaceChildren(...bad.slice(0, 200).map((t) => h("li", null, t)), ...(bad.length > 200 ? [h("li", null, `… and ${bad.length - 200} more`)] : []));
   }
-  const TASK_FIELDS = ["priority", "slot", "where", "stage", "discuss", "started", "finished", "reply"];
+  const TASK_FIELDS = ["priority", "where", "stage", "discuss", "started", "finished", "reply"];
+  // The toggles: one per stage, and needing discussion. Several on: a task that fits any of them.
+  const SW = { "": "var(--faint)", working: "var(--st-work-fg)", backgrounded: "var(--st-work-fg)", integrating: "var(--st-int-fg)", review: "var(--st-rev-fg)", waiting: "var(--st-wait-fg)", done: "var(--st-done-fg)", abandoned: "var(--dim, #888)" };
   const FILTERS = [
-    { key: "working", label: "Under way", sw: "var(--st-work-fg)", test: (t) => stageOf(t) === "working" },
-    { key: "backgrounded", label: "Backgrounded", sw: "var(--st-work-fg)", test: (t) => stageOf(t) === "backgrounded" },
-    { key: "intrev", label: "Integrating or in review", sw: "var(--st-rev-fg)", test: (t) => stageOf(t) === "integrating" || stageOf(t) === "review" },
-    { key: "waiting", label: "Waiting on you", sw: "var(--st-wait-fg)", test: (t) => stageOf(t) === "waiting" },
-    { key: "abandoned", label: "Abandoned", sw: "var(--dim, #888)", test: (t) => stageOf(t) === "abandoned" },
+    ...Object.entries(STAGES).map(([st, label]) => ({ key: st || "queued", label, sw: SW[st], test: (t) => stageOf(t) === st })),
     { key: "discuss", label: "Needs discussion", sw: "var(--disc)", test: (t) => !!t.discuss },
   ];
+  // The list's views: the tree, or every task flat by one of the sorts.
+  const VIEWS = ["tree", "priority", "recent", "added"];
 
   const S = {
     db: null,
@@ -642,16 +631,17 @@
     loaded: { items: false, events: false },
     meta: null,
     overlay: new Map(), // "items/<id>" → [{tok, op: "patch" | "set" | "del", body}]: writes under way, shown at once
-    sel: null,
+    sel: null, // the selected item: in the address and the details
+    picked: new Set(), // every item selected (⌘-click and ⇧-click pick several; the selected one among them)
+    anchor: null, // the last one clicked: where a ⇧-click's range starts (outlined while several are picked)
     sheet: false,
     collapsed: new Set([].concat(local.get("collapsed", [])).filter((x) => typeof x === "string")),
     showArch: !!local.get("archived", false),
-    sort: ["priority", "recent", "added"].includes(local.get("sort", "")) ? local.get("sort", "") : "priority",
-    tab: local.get("tab", "tree") === "prio" ? "prio" : "tree",
+    view: VIEWS.includes(local.get("view", "")) ? local.get("view", "") : "tree",
     q: "",
     filters: new Set(),
     where: null,
-    hist: new Set(), // "<pane>:<id>": a row's history, open
+    hist: new Set(), // ids whose history shows open in their rows ("" the top level's)
     draft: null, // {kind, parent, text}: a new item whose title is being typed
     dragging: false,
     needRender: false,
@@ -703,9 +693,8 @@
       it.$p = p;
       list(p).push(it);
     }
-    const cmp = (a, b) => (isNum(a.order) ? a.order : 0) - (isNum(b.order) ? b.order : 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-    for (const l of kids.values()) l.sort(cmp);
-    for (const it of byId.values()) it.$folder = it.kind === "folder" || (it.kind !== "task" && (!!it.group || list(it.id).length > 0));
+    for (const l of kids.values()) l.sort(byOrder);
+    for (const it of byId.values()) it.$folder = it.kind === "folder";
     const order = [];
     const seen = new Set();
     const walk = (it, depth, crumbs, archAnc) => {
@@ -725,10 +714,9 @@
       walk(lost, 0, [], false);
     }
     const tasks = order.filter((it) => !it.$folder);
-    // Numbers to tasks (a number two tasks share, until the repair below parts them, names the
-    // one added first; a folder's kept number names nothing).
+    // Numbers to items (tasks and folders share one counter; the server lets no two share one).
     const byNum = new Map();
-    for (const t of [...tasks].sort(byAdded)) if (validNum(t.num) && !byNum.has(t.num)) byNum.set(t.num, t.id);
+    for (const t of [...order].sort(byAdded)) if (validNum(t.num) && !byNum.has(t.num)) byNum.set(t.num, t.id);
     // (Archived items are left out of a folder's counts, unless the folder is archived itself.)
     const stat = (it) => {
       let open = 0, done = 0;
@@ -751,7 +739,7 @@
     for (const l of ev.values()) l.sort((a, b) => (ms(b.t) ?? 0) - (ms(a.t) ?? 0));
     const queued = tasks.filter((t) => stageOf(t) === "" && !t.archived && !t.$archAnc && isNum(t.priority));
     const next = queued.length ? Math.min(...queued.map((t) => t.priority)) : null;
-    return { byId, kids, order, tasks, ev, next, byNum };
+    return { byId, kids, order, tasks, ev, next, byNum, byOrder: [...byId.values()].sort(byOrder) };
   }
   const kidsOf = (id) => M.kids.get(id) || [];
   function under(id) {
@@ -772,7 +760,7 @@
   const terms = () => S.q.toLowerCase().split(/\s+/).filter(Boolean);
   const numTerm = (t) => (/^#\d{1,9}$/.test(t) ? Number(t.slice(1)) : null);
   const bareNum = (t) => (/^\d{1,9}$/.test(t) ? Number(t) : null);
-  const shownNum = (it) => (it && !it.$folder && validNum(it.num) ? it.num : null);
+  const shownNum = (it) => (it && validNum(it.num) ? it.num : null);
   const hay = (it) => [it.text, it.note, it.where, it.reply, ...it.$crumbs.map((c) => c.text)].map((s) => String(s ?? "")).join("\n").toLowerCase();
   const matchQ = (it) => {
     const ts = terms();
@@ -783,7 +771,7 @@
   // (Is the task's own number one the search names?)
   const numHit = (it) => { const n = shownNum(it); return n != null && terms().some((t) => (numTerm(t) ?? bareNum(t)) === n); };
   const chipsOn = () => S.filters.size > 0 || S.where != null;
-  const matchChips = (t) => FILTERS.every((f) => !S.filters.has(f.key) || f.test(t)) && (S.where == null || String(t.where ?? "") === S.where);
+  const matchChips = (t) => (!S.filters.size || FILTERS.some((f) => S.filters.has(f.key) && f.test(t))) && (S.where == null || String(t.where ?? "") === S.where);
   const searching = () => !!S.q.trim() || chipsOn();
   const passTask = (t) => !hiddenArch(t) && matchChips(t) && matchQ(t);
   function hl(text) {
@@ -802,10 +790,9 @@
     if (at < s.length) frag.append(s.slice(at));
     return frag;
   }
-  // A task's number before its title ("#57", marked when the search names it); a task still being
+  // An item's number before its title ("#57", marked when the search names it); one still being
   // given one keeps the space.
   function numEl(it) {
-    if (it.$folder) return null;
     const n = shownNum(it);
     if (n == null) return h("span", { class: "num", "aria-hidden": "true" });
     return h("span", { class: "num" }, numHit(it) ? h("mark", null, `#${n}`) : `#${n}`);
@@ -1014,11 +1001,7 @@
     const made = new Set();
     try { await createOps(a, made); } catch (e) { a.error = e; }
     await Promise.all(a.ops.map((o, i) => inTurn(keyOf(o), () => lane(() => (made.has(o) ? Promise.resolve("made") : a.error ? Promise.resolve("skip") : persist(o))).then(
-      (r) => {
-        a.state[i] = r === "skip" ? "skipped" : "landed";
-        // (A folder made a task: the server's reply says its number.)
-        if (a.renum && r && typeof r.num === "number") relabel(a, a.renum(r.num));
-      },
+      (r) => { a.state[i] = r === "skip" ? "skipped" : "landed"; },
       (e) => { a.state[i] = "failed"; a.error = a.error || e; },
     ))));
     if (!a.error) return;
@@ -1080,11 +1063,10 @@
     ] });
   }
   // ---------------------------------------------------------------------------------------------
-  // Numbers. Every task has one, `num`: the server gives it (a new task's, in its reply to the POST
-  // that makes it; a folder made a task's, in the reply to that edit), so no two share one and a
-  // deleted task's is never given again. Folders have none (one that was a task keeps its number,
-  // unshown, and shows it again if it turns back into a task).
-  // A task, folder or event this page makes is POSTed (the server gives it its id, and a task its
+  // Numbers. Every item has one, `num`, tasks and folders from one counter: the server gives it, in
+  // its reply to the POST that makes the item, so no two share one and a deleted item's is never
+  // given again; it stays through a change of kind.
+  // A task, folder or event this page makes is POSTed (the server gives it its id, and an item its
   // num, order and added time): while it's written the page shows it under a stand-in id.
   let standIn = 0;
   const tmpId = () => "~new" + ++standIn;
@@ -1123,21 +1105,26 @@
 
   // ---------------------------------------------------------------------------------------------
   // Actions.
-  // The order for an item put at `index` among `parent`'s children (without the item itself), or
-  // the ops that renumber them all when there's no room left between two.
-  function placeOps(id, parent, index, extra = {}) {
+  // `id` put just after `a` and before `b` (items; either may be null) in the one order over all
+  // items: an order between theirs (after `a` alone: between it and the next item; before `b`
+  // alone: between it and the one before), with `extra` changed too; or, with no room left between
+  // the two, the ops that number every item 1, 2, 3… with it in that place.
+  const ordOf = (it) => (isNum(it.order) ? it.order : 0);
+  function orderOps(id, a, b, extra = {}) {
+    const all = M.byOrder.filter((x) => x.id !== id);
+    if (!a && !b) return [edit(id, extra)];
+    const ia = a ? all.indexOf(a) : all.indexOf(b) - 1;
+    const lo = ia >= 0 ? ordOf(all[ia]) : ordOf(b) - 2;
+    const hi = b ? ordOf(b) : all[ia + 1] ? ordOf(all[ia + 1]) : lo + 2;
+    const o = (lo + hi) / 2;
+    if (hi - lo > 1e-6 && o > lo && o < hi) return [edit(id, Object.assign({}, extra, { order: o }))];
+    const seq = [...all.slice(0, ia + 1), { id }, ...all.slice(ia + 1)];
+    return seq.map((c, k) => (c.id === id ? edit(id, Object.assign({}, extra, { order: k + 1 })) : ordOf(c) === k + 1 ? null : edit(c.id, { order: k + 1 }))).filter(Boolean);
+  }
+  // An item put at `index` among `parent`'s children (without the item itself).
+  function placeOps(id, parent, index) {
     const list = kidsOf(parent).filter((c) => c.id !== id);
-    const prev = list[index - 1], next = list[index];
-    const po = prev && isNum(prev.order) ? prev.order : null;
-    const no = next && isNum(next.order) ? next.order : null;
-    let o = null;
-    if (prev && next) { if (po != null && no != null && no - po > 1e-4) o = (po + no) / 2; }
-    else if (prev) { if (po != null) o = po + 1; }
-    else if (next) { if (no != null) o = no - 1; }
-    else o = 1;
-    if (o != null && (!prev || o > po) && (!next || o < no)) return [edit(id, Object.assign({ parent, order: o }, extra))];
-    const seq = [...list.slice(0, index), { id }, ...list.slice(index)];
-    return seq.map((c, k) => (c.id === id ? edit(id, Object.assign({ parent, order: k + 1 }, extra)) : data("items", c.id)?.order === k + 1 ? null : edit(c.id, { order: k + 1 }))).filter(Boolean);
+    return orderOps(id, list[index - 1] || null, list[index] || null, { parent });
   }
   function refuse(msg) { toast(msg, { bad: true }); }
   // A tree move: `id` into `parent` ("" = the top level) at `index` among its other children.
@@ -1155,9 +1142,10 @@
   // with a fraction (a move between two) slots in, rounded up, and the open tasks whose numbers it
   // then runs into move down one, as far as the first free number (the rest keep theirs). Done and
   // archived tasks keep their numbers and don't count in moves (the old page left done ones out
-  // too). Between two that share a number, a moved task takes that number too, placed between them
-  // by `slot` (the order within a number). (While the open numbers run unbroken, as 2 to 13 do
-  // today, a move to the top still renumbers every one after it: some twenty writes.)
+  // too). Between two that share a number, a moved task takes that number too. Among equal numbers
+  // tasks go by `order`, so a drop next to one with its new number takes an order beside it. (While
+  // the open numbers run unbroken, as 2 to 13 do today, a move to the top still renumbers every one
+  // after it: some twenty writes.)
   const isOpen = (t) => !isClosed(t) && !isArch(t);
   function placeAt(it, x) {
     const p = Math.ceil(x);
@@ -1170,7 +1158,7 @@
         floor = Math.max(floor, o.priority + 1);
       }
     }
-    ops.push(edit(it.id, { priority: p, slot: null }));
+    ops.push(edit(it.id, { priority: p }));
     return { ops, to: p };
   }
   // `it` moved to `idx` among `open` (the open tasks as shown, without it).
@@ -1178,27 +1166,26 @@
     const above = open[idx - 1], below = open[idx];
     const pa = above && isNum(above.priority) ? above.priority : null;
     const pb = below && isNum(below.priority) ? below.priority : null;
-    if (pa != null && pa === pb) {
-      const group = prioSorted(M.tasks.filter((o) => o.id !== it.id && o.priority === pa && isOpen(o) && stageOf(o) !== "waiting"));
-      let at = group.indexOf(below);
-      if (at < 0) at = group.length;
-      group.splice(at, 0, it);
-      const ops = group.map((o, k) => (o.id === it.id ? edit(o.id, { priority: pa, slot: k }) : o.slot === k ? null : edit(o.id, { slot: k }))).filter(Boolean);
-      return { ops, to: pa, joins: true };
-    }
     let x;
-    if (pa != null && pb != null) x = (pa + pb) / 2;
+    if (pa != null && pa === pb) x = pa;
+    else if (pa != null && pb != null) x = (pa + pb) / 2;
     else if (pb != null) x = pb - 0.5;
     else if (pa != null) x = pa + 1;
     else x = Math.max(0, ...M.tasks.filter((o) => o.id !== it.id && isOpen(o) && isNum(o.priority)).map((o) => o.priority)) + 1;
-    return placeAt(it, x);
+    const r = placeAt(it, x);
+    r.joins = pa != null && pa === pb;
+    // (Beside a neighbour that ends up with the same number: its order goes next to that one's.)
+    const after = (o) => (o ? r.ops.find((e) => e.id === o.id)?.after.priority ?? o.priority : null);
+    const a = after(above) === r.to ? above : null, b = after(below) === r.to ? below : null;
+    if (a || b) r.ops = [...r.ops.filter((e) => e.id !== it.id), ...orderOps(it.id, a, b, { priority: r.to })];
+    return r;
   }
-  const prioSorted = (list) => list.sort((a, b) => rank(a.priority) - rank(b.priority) || rank(a.slot) - rank(b.slot) || a.$idx - b.$idx);
+  const prioSorted = (list) => list.sort((a, b) => rank(a.priority) - rank(b.priority) || byOrder(a, b));
   // A move to `idx` among `rest` (the list as shown, without it), or below "No priority" (`unset`):
   // its ops, or null when nothing would change.
   function prioPlan(it, rest, idx, unset) {
     const old = isNum(it.priority) ? it.priority : null;
-    if (unset) return old == null ? null : { ops: [edit(it.id, { priority: null, slot: null })], to: null };
+    if (unset) return old == null ? null : { ops: [edit(it.id, { priority: null })], to: null };
     const open = rest.filter((o) => o.id !== it.id && isOpen(o));
     const at = rest.slice(0, idx).filter((o) => o.id !== it.id && isOpen(o)).length;
     if (isOpen(it) && old != null && prioSorted([...open, it]).indexOf(it) === at) return null;
@@ -1219,7 +1206,7 @@
   function typePrio(it, raw) {
     const s = String(raw).trim().replace(",", ".");
     const old = isNum(it.priority) ? it.priority : null;
-    if (s === "") return old == null ? true : commit([edit(it.id, { priority: null, slot: null })], { toast: `${quote(title(it))}: no priority` });
+    if (s === "") return old == null ? true : commit([edit(it.id, { priority: null })], { toast: `${quote(title(it))}: no priority` });
     const x = /^\d+(\.\d+)?$/.test(s) ? Number(s) : NaN;
     if (!Number.isFinite(x) || x < 1) return false;
     if (x === old) return true;
@@ -1227,13 +1214,20 @@
     commit(r.ops, { toast: `${quote(title(it))}: priority ${fmtP(old)} → ${fmtP(r.to)}`, undoable: true });
     return true;
   }
-  function archive(it) {
+  // Archiving one item or several (⌘E on a selection), with what is inside them, in one action.
+  function archive(...its) {
+    its = its.filter((it) => !its.some((o) => o !== it && isInside(it.id, o.id)));
     const stamp = nowIso();
-    const docs = [it, ...under(it.id)].filter((d) => !d.archived);
-    const n = docs.length - 1;
-    const ops = docs.map((d) => edit(d.id, { archived: true, archivedAt: stamp }));
-    ops.push(evOp(it.id, n ? `Archived, with ${n} inside` : "Archived"));
-    commit(ops, { toast: `Archived ${quote(title(it))}${n ? ` and ${n} inside` : ""}` });
+    const ops = [];
+    let inside = 0;
+    for (const it of its) {
+      const docs = [it, ...under(it.id)].filter((d) => !d.archived);
+      const n = docs.length - 1;
+      inside += n;
+      ops.push(...docs.map((d) => edit(d.id, { archived: true, archivedAt: stamp })), evOp(it.id, n ? `Archived, with ${n} inside` : "Archived"));
+    }
+    const what = its.length === 1 ? quote(title(its[0])) : `${its.length} items`;
+    commit(ops, { toast: `Archived ${what}${inside ? ` and ${inside} inside` : ""}` });
   }
   // Unarchiving restores the archive it came from, whole: everything archived at the same moment
   // (one archive, one stamp), and likewise for any archived folder around it (or it would stay
@@ -1259,7 +1253,7 @@
     const what = `${quote(title(it))}${n ? ` and ${n} inside` : ""}`;
     const ops = docs.map((d) => ({ col: "items", id: d.id, before: data("items", d.id), after: null }));
     ops.push(evOp(it.$p, `Deleted ${what}`));
-    if (S.sel && docs.some((d) => d.id === S.sel)) { S.sel = null; S.sheet = false; }
+    if (S.sel && docs.some((d) => d.id === S.sel)) { S.sel = null; S.sheet = false; syncUrl(false); }
     commit(ops, { toast: `Deleted ${what}` });
   }
   function toFolder(it) {
@@ -1270,9 +1264,7 @@
   function toTask(it) {
     const n = kidsOf(it.id).length;
     if (n) return refuse(`${quote(title(it))} has ${n} item${n === 1 ? "" : "s"} inside, so it stays a folder.`);
-    // (It takes a number now, or shows again the one it had as a task before.)
-    const was = validNum(it.num) ? ` (#${it.num} again)` : "";
-    commit([edit(it.id, { kind: "task", where: "Subagent", stage: "" }), evOp(it.id, "Converted to a task")], { toast: `${quote(title(it))} is a task now${was}`, renum: (n) => `${quote(title(it))} is a task now: #${n}` });
+    commit([edit(it.id, { kind: "task", where: "Subagent", stage: "" }), evOp(it.id, "Converted to a task")], { toast: `${quote(title(it))} is a task now` });
   }
   // Tab / Shift-Tab in the tree: into the folder just above, or out one level.
   function indent(it) {
@@ -1290,7 +1282,7 @@
   }
 
   // ---------------------------------------------------------------------------------------------
-  // Rendering. Both panes are rebuilt from the model on every change (a hundred rows is quick);
+  // Rendering. The list is rebuilt from the model on every change (some hundreds of rows is quick);
   // focus and scroll survive it. Not while a row is being dragged or a new title typed: then it
   // waits for that to end.
   let renderQueued = false;
@@ -1309,25 +1301,24 @@
     // snapshot showing it; `fresh` holds for 2 s at most, then a still-missing item is deselected.)
     const holding = !!S.fresh && S.fresh.id === S.sel && Date.now() < S.fresh.until;
     if (S.fresh && !holding) S.fresh = null;
-    if (S.sel && !M.byId.has(S.sel) && !holding) { S.sel = null; S.sheet = false; }
+    for (const id of S.picked) if (!M.byId.has(id) && !(holding && id === S.sel)) S.picked.delete(id);
+    if (S.sel && !M.byId.has(S.sel) && !holding) { S.sel = null; S.sheet = false; syncUrl(false); }
+    if (S.anchor && !S.picked.has(S.anchor)) S.anchor = S.sel;
     const focus = rememberFocus();
-    const scrolls = ["tree-scroll", "prio-scroll"].map((id) => $(id).scrollTop);
+    const scroll = $("list-scroll").scrollTop;
     renderHeader();
-    renderTree();
-    renderPrio();
+    if (S.view === "tree") renderTree();
+    else renderSorted();
     renderEditor();
-    ["tree-scroll", "prio-scroll"].forEach((id, i) => { if ($(id).scrollTop !== scrolls[i]) $(id).scrollTop = scrolls[i]; });
+    if ($("list-scroll").scrollTop !== scroll) $("list-scroll").scrollTop = scroll;
     restoreFocus(focus);
-    const app = $("app");
-    app.classList.toggle("sheet", !!(S.sel && S.sheet));
-    app.dataset.tab = S.tab;
+    $("app").classList.toggle("sheet", !!(S.sel && S.sheet));
   }
   function rememberFocus() {
     const a = document.activeElement;
     if (!a || a === document.body) return null;
-    const row = a.closest?.(".row[data-id]");
-    const pane = a.closest?.(".rows");
-    if (row && pane) return { pane: pane.id, id: row.dataset.id, act: a.dataset?.act || null };
+    const row = a.closest?.("#list .row[data-id]");
+    if (row) return { id: row.dataset.id, act: a.dataset?.act || null };
     if (a.dataset?.chip) return { chip: a.dataset.chip };
     return null;
   }
@@ -1338,12 +1329,12 @@
     let el = null;
     if (f.chip) el = document.querySelector(`[data-chip="${CSS.escape(f.chip)}"]`);
     else {
-      const row = rowEl(f.pane, f.id);
+      const row = rowEl(f.id);
       el = row && f.act ? row.querySelector(`[data-act="${f.act}"]`) || row : row;
     }
     el?.focus({ preventScroll: true });
   }
-  const rowEl = (pane, id) => (id ? $(pane).querySelector(`.row[data-id="${CSS.escape(id)}"]`) : null);
+  const rowEl = (id) => (id ? $("list").querySelector(`.row[data-id="${CSS.escape(id)}"]`) : null);
 
   function renderHeader() {
     const m = S.meta;
@@ -1362,18 +1353,22 @@
     $("banner").textContent = banner;
     $("banner").hidden = !banner;
     const topEv = M.ev.get("")?.length || 0;
-    $("top-hist").hidden = !topEv;
-    $("top-hist").setAttribute("aria-expanded", String(S.hist.has("tree:")));
+    const tree = S.view === "tree";
+    $("top-hist").hidden = !topEv || !tree;
+    $("top-hist").setAttribute("aria-expanded", String(S.hist.has("")));
     put($("top-hist"), icon("clock"), `Top level · ${topEv}`);
-    $("expand-all").hidden = $("collapse-all").hidden = !M.order.some((it) => it.$folder);
+    $("expand-all").hidden = $("collapse-all").hidden = !tree || !M.order.some((it) => it.$folder);
     renderChips();
-    const open = M.tasks.filter((t) => !isArch(t) && !isClosed(t)).length;
+    const open = M.tasks.filter((t) => !isArch(t) && !isClosed(t));
     const done = M.tasks.filter((t) => !isArch(t) && stageOf(t) === "done").length;
-    $("tree-sum").textContent = M.order.length ? `${open} open · ${done} done` : "";
-    $("tab-tree").setAttribute("aria-selected", String(S.tab === "tree"));
-    $("tab-prio").setAttribute("aria-selected", String(S.tab === "prio"));
-    $("tab-tree").tabIndex = S.tab === "tree" ? 0 : -1;
-    $("tab-prio").tabIndex = S.tab === "prio" ? 0 : -1;
+    $("list-sum").textContent = !S.loaded.items ? "" : !tree && searching() ? `${M.tasks.filter(passTask).length} shown`
+      : S.view === "priority" ? `${open.filter((t) => isNum(t.priority)).length} with a priority · ${open.filter((t) => !isNum(t.priority)).length} without`
+      : `${open.length} open · ${done} done`;
+    $("view").value = S.view;
+    $("list").className = "rows " + (tree ? "tree" : "flat") + (S.picked.size > 1 ? " multi" : "");
+    $("list").setAttribute("role", tree ? "tree" : "list");
+    if (tree) $("list").setAttribute("aria-multiselectable", "true");
+    else $("list").removeAttribute("aria-multiselectable");
   }
   function renderChips() {
     if (!S.loaded.items) { $("chips").replaceChildren(); return; }
@@ -1383,7 +1378,7 @@
     for (const f of FILTERS) {
       const n = base.filter(f.test).length;
       const on = S.filters.has(f.key);
-      out.push(h("button", { class: "chip" + (n || on ? "" : " zero"), type: "button", "data-chip": f.key, "aria-pressed": String(on), title: `Only tasks ${f.label.toLowerCase()}` },
+      out.push(h("button", { class: "chip" + (n || on ? "" : " zero"), type: "button", "data-chip": f.key, "aria-pressed": String(on), title: `Tasks: ${f.label.toLowerCase()} (with other filters on: a task that fits any of them)` },
         h("span", { class: "sw", style: `background:${f.sw}`, "aria-hidden": "true" }), f.label, h("span", { class: "n" }, String(n))));
     }
     const counts = new Map();
@@ -1414,10 +1409,10 @@
     if (!canWrite()) return on ? h("span", { class: "ic disc on", role: "img", "aria-label": "Needs discussion", title: "Needs discussion" }, icon("bubble")) : null;
     return h("button", { class: "ic disc" + (on ? " on" : ""), type: "button", tabindex: "-1", "data-act": "disc", "aria-pressed": String(on), "aria-label": "Needs discussion", title: on ? "Needs discussion (click to clear)" : "Mark as needing discussion" }, icon("bubble"));
   }
-  function histBtn(t, pane) {
+  function histBtn(t) {
     const n = M.ev.get(t.id)?.length || 0;
     if (!n) return null;
-    const open = S.hist.has(pane + ":" + t.id);
+    const open = S.hist.has(t.id);
     return h("button", { class: "ic hist" + (open ? " open" : ""), type: "button", tabindex: "-1", "data-act": "hist", "aria-expanded": String(open), "aria-label": `History, ${n} event${n === 1 ? "" : "s"}`, title: `History (${n})` }, icon("clock"), String(n));
   }
   // The actions that show on hover: a folder's "+", a task's discussion mark while it's off, "…".
@@ -1427,9 +1422,9 @@
     const evs = M.ev.get(it.id) || [];
     return h("div", { class: "hist-list", style: `--d:${depth}`, "data-for": it.id }, evs.length ? evs.map((e) => h("div", { class: "ev" }, timeEl(e.t), h("span", null, rich(e.text || "", { row: true })), e.kind === "owner" ? h("span", { class: "who" }, "you") : null)) : h("span", { class: "none" }, "Nothing yet."));
   }
-  function rowBase(it, pane, depth, extra) {
+  function rowBase(it, depth, extra) {
     const st = it.$folder ? "" : stageOf(it);
-    const cls = ["row", it.$folder ? "folder" : "task", st === "done" ? "done" : "", st === "abandoned" ? "done abandoned" : "", isArch(it) ? "arch" : "", S.sel === it.id ? "sel" : "", extra].filter(Boolean).join(" ");
+    const cls = ["row", it.$folder ? "folder" : "task", st === "done" ? "done" : "", st === "abandoned" ? "done abandoned" : "", isArch(it) ? "arch" : "", S.picked.has(it.id) ? "sel" : "", S.anchor === it.id ? "active" : "", extra].filter(Boolean).join(" ");
     return h("div", { class: cls, "data-id": it.id, tabindex: "-1", style: `--d:${depth}` });
   }
 
@@ -1472,10 +1467,10 @@
   }
   function treeRow(it, depth, ctx) {
     const st = it.$folder ? "" : stageOf(it);
-    const row = rowBase(it, "tree", depth, (it.$folder && !expanded(it) ? "collapsed" : "") + (ctx ? " ctx" : ""));
+    const row = rowBase(it, depth, (it.$folder && !expanded(it) ? "collapsed" : "") + (ctx ? " ctx" : ""));
     row.setAttribute("role", "treeitem");
     row.setAttribute("aria-level", String(depth + 1));
-    row.setAttribute("aria-selected", String(S.sel === it.id));
+    row.setAttribute("aria-selected", String(S.picked.has(it.id)));
     if (it.$folder) row.setAttribute("aria-expanded", String(expanded(it)));
     if (canWrite()) row.append(h("span", { class: "grip", "data-grip": "", title: "Drag to move (or ⌥↑ ⌥↓, Tab, ⇧Tab)" }));
     if (it.$folder) row.append(h("button", { class: "tw" + (kidsOf(it.id).length ? "" : " leaf"), type: "button", tabindex: "-1", "data-act": "toggle", "aria-label": expanded(it) ? "Collapse" : "Expand" }));
@@ -1490,13 +1485,13 @@
       tail.append(h("span", { class: "cnt", title: `${it.$open} open, ${it.$done} done${isArch(it) ? "" : " (archived ones left out)"}` }, it.$open ? `${it.$open} open` : all ? "all done" : "empty"));
       if (all) tail.append(h("span", { class: "meter", role: "img", "aria-label": `${it.$done} of ${all} done`, title: `${it.$done} of ${all} done` }, h("i", { style: `width:${(100 * it.$done) / all}%` })));
     } else {
-      add(tail, histBtn(it, "tree"), it.discuss ? discBtn(it) : null, h("span", { class: "where", title: it.where || null }, st === "working" ? "" : hl(shortWhere(it.where))), h("span", { class: "pr" + (isNum(it.priority) ? "" : " none") + (stageOf(it) === "" && isNum(it.priority) && it.priority === M.next && !isArch(it) ? " next" : ""), title: isNum(it.priority) ? `Priority ${it.priority}` : "No priority" }, fmtP(it.priority)));
+      add(tail, histBtn(it), it.discuss ? discBtn(it) : null, h("span", { class: "where", title: it.where || null }, st === "working" ? "" : hl(shortWhere(it.where))), h("span", { class: "pr" + (isNum(it.priority) ? "" : " none") + (stageOf(it) === "" && isNum(it.priority) && it.priority === M.next && !isArch(it) ? " next" : ""), title: isNum(it.priority) ? `Priority ${it.priority}` : "No priority" }, fmtP(it.priority)));
     }
     row.append(tail);
     return row;
   }
   function renderTree() {
-    const host = $("tree");
+    const host = $("list");
     const frag = document.createDocumentFragment();
     if (S.noDb) frag.append(h("p", { class: "empty" }, "This view can't load the task board. Open it on claude.ai while signed in."));
     else if (!S.loaded.items) frag.append(h("p", { class: "empty" }, "The folders and tasks appear here as soon as they load."));
@@ -1506,7 +1501,7 @@
         if (searching()) frag.append(h("div", { class: "empty" }, h("div", null, S.q.trim() ? `Nothing matches ${quote(S.q.trim())}${chipsOn() ? " with these filters" : ""}.` : "No task matches these filters."), h("button", { class: "btn", type: "button", "data-act": "clear-search" }, "Clear the search and filters")));
         else frag.append(h("div", { class: "empty" }, h("div", null, M.order.length ? "Everything here is archived." : "No folders or tasks yet."), canWrite() && !M.order.length ? h("button", { class: "btn", type: "button", "data-act": "add-top" }, "Add the first task") : null));
       }
-      if (S.hist.has("tree:") && M.ev.get("")?.length) frag.append(h("div", { class: "top-hist" }, h("h3", { class: "sec-h" }, "Top level: history"), histList({ id: "" }, 0)));
+      if (S.hist.has("") && M.ev.get("")?.length) frag.append(h("div", { class: "top-hist" }, h("h3", { class: "sec-h" }, "Top level: history"), histList({ id: "" }, 0)));
       let tabbed = false;
       for (const r of rows) {
         if (r.add && !canWrite()) frag.append(h("div", { class: "gap", "aria-hidden": "true" }));
@@ -1521,7 +1516,7 @@
           const row = treeRow(r.it, r.depth, r.ctx);
           if (S.sel === r.it.id) { row.tabIndex = 0; tabbed = true; }
           frag.append(row);
-          if (S.hist.has("tree:" + r.it.id) && !r.it.$folder) frag.append(histList(r.it, r.depth));
+          if (S.hist.has(r.it.id) && !r.it.$folder) frag.append(histList(r.it, r.depth));
         }
       }
       if (!tabbed) { const first = frag.querySelector(".row[data-id]"); if (first) first.tabIndex = 0; }
@@ -1529,61 +1524,50 @@
     host.replaceChildren(frag);
   }
 
-  // The priorities pane: every task, flat, by priority (or another sort), its folders under it.
-  function prioLists() {
+  // The sorted views: every task, flat, by priority, by its last change or by when it was added (ties
+  // by order), its folders under it.
+  function sortedTasks() {
     const tasks = M.tasks.filter(passTask);
-    const waiting = prioSorted(tasks.filter((t) => stageOf(t) === "waiting"));
-    let rest = tasks.filter((t) => stageOf(t) !== "waiting");
-    if (S.sort === "recent") rest.sort((a, b) => changedAt(b) - changedAt(a) || a.$idx - b.$idx);
-    else if (S.sort === "added") rest.sort((a, b) => (ms(b.added) ?? -Infinity) - (ms(a.added) ?? -Infinity) || a.$idx - b.$idx);
-    else rest = prioSorted(rest);
-    return { waiting, rest };
+    if (S.view === "recent") return tasks.sort((a, b) => changedAt(b) - changedAt(a) || byOrder(a, b));
+    if (S.view === "added") return tasks.sort((a, b) => (ms(b.added) ?? -Infinity) - (ms(a.added) ?? -Infinity) || byOrder(a, b));
+    return prioSorted(tasks);
   }
-  function prioRow(it, waiting) {
-    const row = rowBase(it, "prio", 0, waiting ? "waiting" : "");
+  function flatRow(it) {
+    const row = rowBase(it, 0, "");
     row.setAttribute("role", "listitem");
     if (S.sel === it.id) row.setAttribute("aria-current", "true");
-    if (canWrite() && S.sort === "priority") row.append(h("span", { class: "grip", "data-grip": "", title: waiting ? "Drag into the list below to set its priority (it stays here while it waits on you)" : "Drag to change its priority (or ⌥↑ ⌥↓)" }));
+    if (canWrite() && S.view === "priority") row.append(h("span", { class: "grip", "data-grip": "", title: "Drag to change its priority (or ⌥↑ ⌥↓)" }));
     const has = isNum(it.priority);
     row.append(h("span", { class: "pr lead" + (has ? "" : " none") + (stageOf(it) === "" && has && it.priority === M.next && !isArch(it) ? " next" : ""), title: has ? `Priority ${it.priority}` : "No priority" }, has ? String(it.priority) : "–"));
     row.append(h("span", { class: `box s-${stageOf(it) || "queued"}`, "aria-hidden": "true" }));
     const l1 = h("span", { class: "l1" }, numEl(it), h("span", { class: "ttl", title: title(it) }, hl(title(it))), stChip(it), isArch(it) ? h("span", { class: "tag" }, "Archived") : null);
     const crumbs = it.$crumbs.map(title).join(" › ");
     row.append(h("span", { class: "main" }, l1, crumbs ? h("span", { class: "l2 crumbs", title: crumbs }, hl(crumbs)) : null));
-    row.append(h("span", { class: "tail" }, acts(it), histBtn(it, "prio"), it.discuss ? discBtn(it) : null, h("span", { class: "where", title: it.where || null }, stageOf(it) === "working" ? "" : hl(shortWhere(it.where)))));
+    row.append(h("span", { class: "tail" }, acts(it), histBtn(it), it.discuss ? discBtn(it) : null, h("span", { class: "where", title: it.where || null }, stageOf(it) === "working" ? "" : hl(shortWhere(it.where)))));
     return row;
   }
-  function renderPrio() {
-    const host = $("prio");
+  function renderSorted() {
+    const host = $("list");
     const frag = document.createDocumentFragment();
-    let total = 0;
     if (S.loaded.items) {
-      const { waiting, rest } = prioLists();
-      total = waiting.length + rest.length;
-      const add = (it, w) => { frag.append(prioRow(it, w)); if (S.hist.has("prio:" + it.id)) frag.append(histList(it, 0)); };
-      if (waiting.length) {
-        frag.append(h("div", { class: "grp wait", "data-grp": "waiting" }, "Waiting on you", h("span", { class: "n" }, String(waiting.length))));
-        waiting.forEach((t) => add(t, true));
-        if (rest.length) frag.append(h("div", { class: "grp", "data-grp": "rest" }, S.sort === "priority" ? "By priority" : S.sort === "recent" ? "Recently changed" : "Newest first"));
-      }
+      const tasks = sortedTasks();
+      const prio = S.view === "priority";
       let divided = false;
-      for (const t of rest) {
-        if (S.sort === "priority" && !divided && !isNum(t.priority)) {
-          frag.append(h("div", { class: "grp", "data-grp": "none", id: "no-prio" }, "No priority", h("span", { class: "n" }, String(rest.filter((o) => !isNum(o.priority)).length))));
+      for (const t of tasks) {
+        if (prio && !divided && !isNum(t.priority)) {
+          frag.append(h("div", { class: "grp", "data-grp": "none", id: "no-prio" }, "No priority", h("span", { class: "n" }, String(tasks.filter((o) => !isNum(o.priority)).length))));
           divided = true;
         }
-        add(t, false);
+        frag.append(flatRow(t));
+        if (S.hist.has(t.id)) frag.append(histList(t, 0));
       }
-      if (S.sort === "priority" && !divided && rest.length && canWrite()) frag.append(h("div", { class: "grp", "data-grp": "none", id: "no-prio" }, "No priority", h("span", { class: "n" }, "0")));
-      if (!total) frag.append(h("p", { class: "empty" }, searching() ? "No task matches." : "No tasks yet."));
+      if (prio && !divided && tasks.length && canWrite()) frag.append(h("div", { class: "grp", "data-grp": "none", id: "no-prio" }, "No priority", h("span", { class: "n" }, "0")));
+      if (!tasks.length) frag.append(h("p", { class: "empty" }, searching() ? "No task matches." : "No tasks yet."));
       const sel = S.sel && frag.querySelector(`.row[data-id="${CSS.escape(S.sel)}"]`);
       const first = sel || frag.querySelector(".row[data-id]");
       if (first) first.tabIndex = 0;
-    } else frag.append(h("p", { class: "empty" }, "Every task, by priority, appears here."));
+    } else frag.append(h("p", { class: "empty" }, "Every task appears here as soon as they load."));
     host.replaceChildren(frag);
-    const open = M.tasks.filter((t) => !isArch(t) && !isClosed(t));
-    $("prio-sum").textContent = S.loaded.items ? (searching() ? `${total} shown` : `${open.filter((t) => isNum(t.priority)).length} with a priority · ${open.filter((t) => !isNum(t.priority)).length} without`) : "";
-    $("sort").value = S.sort;
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -1630,10 +1614,10 @@
     }
     legend.append(h("dt", null, h("span", { class: "ic disc on", "aria-hidden": "true" }, icon("bubble"))), h("dd", null, "needs discussion first"));
     const keys = h("dl", { class: "keys" });
-    for (const [k, what] of [["↑ ↓", "move between rows"], ["Enter", "edit the row's details"], ["⌥↑ ⌥↓", "move it up or down"], ["Tab ⇧Tab", "into the folder above, or out of its folder"], ["← →", "collapse or expand a folder"], ["/", "search"], ["⌘Z", "undo, while the notice shows"], ["⇧⌘Z", "redo, while the notice shows"]]) {
+    for (const [k, what] of [["↑ ↓", "move between rows"], ["⌘J ⌘K", "the previous or next row, from anywhere"], ["⌘E", "archive what is selected (or unarchive it)"], ["⌘-click", "pick several; ⇧-click picks a range"], ["Enter", "edit the row's details"], ["⌥↑ ⌥↓", "move it up or down"], ["Tab ⇧Tab", "into the folder above, or out of its folder"], ["← →", "collapse or expand a folder"], ["/", "search"], ["⌘Z", "undo, while the notice shows"], ["⇧⌘Z", "redo, while the notice shows"]]) {
       keys.append(h("dt", null, k.split(" ").map((x) => h("kbd", null, x))), h("dd", null, what));
     }
-    return h("div", { class: "ed-empty" }, h("p", null, "Select a task or folder to see and edit its details."), h("p", null, "Each task has a number, as ", h("span", { class: "num" }, "#57"), ": search for #57 to find it; write #57 in a description or a note to link to it."), h("div", { class: "sec" }, h("h3", { class: "sec-h" }, "Stages"), legend), h("div", { class: "sec" }, h("h3", { class: "sec-h" }, "Keys"), keys));
+    return h("div", { class: "ed-empty" }, h("p", null, "Select a task or folder to see and edit its details."), h("p", null, "Each task and folder has a number, as ", h("span", { class: "num" }, "#57"), ": search for #57 to find it; write #57 in a description or a note to link to it; open …/task-board/57 to land on it."), h("div", { class: "sec" }, h("h3", { class: "sec-h" }, "Stages"), legend), h("div", { class: "sec" }, h("h3", { class: "sec-h" }, "Keys"), keys));
   }
   function renderEditor() {
     const host = $("editor");
@@ -1740,8 +1724,8 @@
     const top = h("div", { class: "ed-top" }, f.crumbs,
       ro ? null : h("button", { class: "ic", type: "button", "data-act": "ed-menu", "aria-haspopup": "menu", "aria-label": "Actions", title: "Actions" }, icon("more")),
       h("button", { class: "ic ed-close", type: "button", "data-act": "ed-close", "aria-label": "Close the details", title: "Close (Esc)" }, icon("close")));
-    // (A task's number, before its title: a click copies "#57".)
-    f.num = kind === "task" ? h("button", { class: "ed-num", type: "button", "data-act": "copy-num", hidden: true }) : null;
+    // (Its number, before its title: a click copies "#57".)
+    f.num = h("button", { class: "ed-num", type: "button", "data-act": "copy-num", hidden: true });
     const parts = [h("div", { class: "ed-sticky" }, top, h("div", { class: "ed-head" }, f.num, f.title)), h("p", { class: "hint bad", id: "ed-unsaved", hidden: ![...pending.values()].some((p) => p.id === it.id) }, "Not saved yet: changes are paused until the connection is back. What you typed is kept and saved then; Esc puts a field back."), f.chips];
     f.reply = h("div", { class: "sec" });
     if (kind === "task") {
@@ -1808,7 +1792,7 @@
       f.num.hidden = n == null;
       if (f.num.textContent !== s) f.num.textContent = s; // (as it was: a selection in it stays)
       f.num.title = `Copy ${s}`;
-      f.num.setAttribute("aria-label", `Task ${s}: copy`);
+      f.num.setAttribute("aria-label", `${it.$folder ? "Folder" : "Task"} ${s}: copy`);
     }
     autoGrow(f.title);
     const chips = [];
@@ -1902,7 +1886,7 @@
 
   // ---------------------------------------------------------------------------------------------
   // The actions menu, the toast.
-  let menu = null; // {id, anchor: {pane, act} | "editor"}
+  let menu = null; // {id, anchor: {act} (in its row) | "editor"}
   function openMenu(anchor, id) {
     const it = M.byId.get(id);
     if (!it || !canWrite()) return;
@@ -1929,7 +1913,7 @@
     m.style.left = `${left}px`;
     m.style.top = `${top}px`;
     const row = anchor.closest(".row[data-id]");
-    menu = { id, anchor: row ? { pane: row.closest(".rows").id, act: anchor.dataset.act } : "editor" };
+    menu = { id, anchor: row ? { act: anchor.dataset.act } : "editor" };
     m.querySelector("button:not([aria-disabled])")?.focus();
   }
   function closeMenu(refocus) {
@@ -1939,7 +1923,7 @@
     $("menu").hidden = true;
     if (!refocus) return;
     if (was.anchor === "editor") $("editor").querySelector('[data-act="ed-menu"]')?.focus();
-    else (rowEl(was.anchor.pane, was.id)?.querySelector(`[data-act="${was.anchor.act}"]`) || rowEl(was.anchor.pane, was.id))?.focus();
+    else (rowEl(was.id)?.querySelector(`[data-act="${was.anchor.act}"]`) || rowEl(was.id))?.focus();
   }
   $("menu").addEventListener("click", (e) => {
     const b = e.target.closest("button[data-mact]");
@@ -2040,17 +2024,100 @@
   });
 
   // ---------------------------------------------------------------------------------------------
-  // Selecting, adding, searching.
-  function select(id, { pane = null, open = true } = {}) {
+  // Selecting. One item is selected (S.sel: its details show, and its number is in the address,
+  // …/task-board/57); ⌘-click and ⇧-click pick more beside it (S.picked, for ⌘E), and the last one
+  // clicked (S.anchor) is where a ⇧-click's range starts. Every change of the selected item is a new
+  // entry in the browser's history, so Back goes to the one before.
+  // `focus`: the row takes the focus (a click or a key in the list); `open`: the details open over
+  // the list (narrow screens), else they stay as they were.
+  function select(id, { focus = false, open = true, push = true } = {}) {
     S.sel = id;
-    if (open) S.sheet = true;
-    // (Chosen anywhere but the tree: its folders open there, so it shows in both.)
-    const it = M.byId.get(id);
-    if (pane !== "tree" && it) for (const a of it.$crumbs) if (S.collapsed.has(a.id)) setCollapsed(a.id, false);
-    render();
-    for (const p of ["tree", "prio"]) if (p !== pane) rowEl(p, id)?.scrollIntoView({ block: "nearest" });
-    if (pane) rowEl(pane, id)?.focus({ preventScroll: true });
+    S.picked = new Set(id ? [id] : []);
+    S.anchor = id;
+    if (open) S.sheet = !!id;
+    if (!id) S.sheet = false;
+    showSelected({ focus, push });
   }
+  function showSelected({ focus = false, push = true } = {}) {
+    // (Its folders open in the tree, so it shows there.)
+    const it = S.sel && M.byId.get(S.sel);
+    if (it) for (const a of it.$crumbs) if (S.collapsed.has(a.id)) setCollapsed(a.id, false);
+    render();
+    if (push) syncUrl(true);
+    const row = rowEl(S.anchor || S.sel);
+    row?.scrollIntoView({ block: "nearest" });
+    if (focus) row?.focus({ preventScroll: true });
+  }
+  // ⌘-click: picks it, or leaves it out (the selected item then passes to the one clicked, or the
+  // first left); either way the click's row is where the next range starts.
+  function pickToggle(id) {
+    if (!S.sel) return select(id, { focus: true, open: false });
+    if (S.picked.has(id) && S.picked.size > 1) {
+      S.picked.delete(id);
+      if (S.sel === id) S.sel = shownIds().find((x) => S.picked.has(x)) ?? [...S.picked][0];
+      S.anchor = S.picked.has(S.anchor) ? S.anchor : S.sel;
+    } else if (!S.picked.has(id)) { S.picked.add(id); S.anchor = id; }
+    showSelected({ focus: true });
+  }
+  // ⇧-click: every row shown from the anchor to this one (⌘⇧-click adds them to what is picked).
+  function pickRange(id, keep) {
+    if (!S.anchor) return select(id, { focus: true, open: false });
+    const ids = shownIds();
+    let a = ids.indexOf(S.anchor), b = ids.indexOf(id);
+    if (a < 0 || b < 0) return select(id, { focus: true, open: false });
+    if (a > b) [a, b] = [b, a];
+    const range = ids.slice(a, b + 1);
+    S.picked = new Set(keep ? [...S.picked, ...range] : range);
+    if (!S.picked.has(S.sel)) S.sel = id;
+    showSelected({ focus: true });
+  }
+  const shownIds = () => [...$("list").querySelectorAll(".row[data-id]")].map((r) => r.dataset.id);
+  // ⌘J / ⌘K: the row before or after the selected one (or the first).
+  function step(dir) {
+    const ids = shownIds();
+    if (!ids.length) return;
+    const i = ids.indexOf(S.sel);
+    const to = i < 0 ? ids[dir > 0 ? 0 : ids.length - 1] : ids[i + dir];
+    if (to) select(to, { focus: !typing(document.activeElement), open: false });
+  }
+  // ⌘E: what is picked archived in one go (all of it archived already: unarchived), and the
+  // selection moves on to the next row that stays.
+  function archivePicked() {
+    if (!canWrite()) return;
+    const its = [...S.picked].map((id) => M.byId.get(id)).filter(Boolean);
+    if (!its.length) return;
+    if (its.every(isArch)) { for (const it of its) unarchive(it); return; }
+    const ids = shownIds();
+    const gone = (id) => S.picked.has(id) || its.some((it) => isInside(id, it.id));
+    const last = Math.max(...its.map((it) => ids.indexOf(it.id)));
+    const next = ids.slice(last + 1).find((id) => !gone(id)) ?? ids.slice(0, last).reverse().find((id) => !gone(id)) ?? null;
+    archive(...its.filter((it) => !isArch(it)));
+    if (!S.showArch) select(next, { focus: !!next && !typing(document.activeElement), open: false });
+  }
+  // The address names the selected item by its number: <base>/57 (the page's own folder, as the
+  // page's relative addresses need: /task-board/57 on Caddy, /57 on the server itself), or #57.
+  const BASE = location.pathname.replace(/\/(\d+|index\.html)$/, "/").replace(/([^/])$/, "$1/");
+  function urlNum() {
+    const m = /\/(\d+)$/.exec(location.pathname) || /^#(\d+)$/.exec(location.hash);
+    return m ? Number(m[1]) : null;
+  }
+  function syncUrl(push) {
+    const it = S.sel && M.byId.get(S.sel);
+    const n = shownNum(it);
+    if (S.sel && n == null) return; // (just made: its number comes with the server's reply)
+    const want = BASE + (n != null ? n : "") + location.search;
+    if (location.pathname + location.search === want && !location.hash) return;
+    history[push ? "pushState" : "replaceState"](null, "", want);
+  }
+  // The address read: at the start, once the items are in, and on Back and Forward.
+  function fromUrl() {
+    const n = urlNum();
+    const id = n != null ? M.byNum.get(n) ?? null : null;
+    if (n != null && !id) toast(`There is no #${n} on the board.`, { bad: true });
+    if (id !== S.sel) select(id, { push: false });
+    if (location.hash) syncUrl(false); // (#57 becomes /57)
+  }
+  window.addEventListener("popstate", () => { if (S.loaded.items) fromUrl(); });
   // A "#57" link followed: that task selected, its details open. (A keyboard user lands on its
   // number in the details, as the link they were on is gone.)
   function goRef(id) {
@@ -2061,9 +2128,7 @@
   }
   function deselect() {
     const id = S.sel;
-    S.sel = null;
-    S.sheet = false;
-    render();
+    select(null);
     return id;
   }
   function clearSearch(rerender = true) {
@@ -2078,7 +2143,7 @@
     if (searching()) clearSearch(false);
     if (parent) setCollapsed(parent, false);
     S.draft = { kind, parent, text: "" };
-    S.tab = "tree";
+    if (S.view !== "tree") { S.view = "tree"; local.set("view", S.view); }
     S.sheet = false;
     render();
     const input = $("draft-input");
@@ -2108,24 +2173,23 @@
       S.fresh = { id, until: Date.now() + 2000 };
       setTimeout(() => render(), 2100); // (a still-missing item is then deselected)
       select(id, { open: true });
-      rowEl("tree", id)?.scrollIntoView({ block: "nearest" });
-      if (wasFocused) ($("ed-note") && !$("ed-note").readOnly ? $("ed-note") : rowEl("tree", id))?.focus({ preventScroll: true });
+      if (wasFocused) ($("ed-note") && !$("ed-note").readOnly ? $("ed-note") : rowEl(id))?.focus({ preventScroll: true });
     });
   }
   // (A new task's number comes as it's written: its notice says it then. Returns the action, whose
   // `made` promise gives the new item's id once the server has made it, or null if it didn't.)
   function createWith(kind, parent, text) {
-    const list = kidsOf(parent);
-    const last = list[list.length - 1];
-    const item = makeOp("items", kind === "task" ? { kind, text, parent, where: "Subagent", stage: "" } : { kind, text, parent }, { order: last && isNum(last.order) ? last.order + 1 : list.length + 1, added: nowIso() });
+    const last = M.byOrder[M.byOrder.length - 1];
+    const item = makeOp("items", kind === "task" ? { kind, text, parent, where: "Subagent", stage: "" } : { kind, text, parent }, { order: last ? ordOf(last) + 1 : 1, added: nowIso() });
     const ops = [item, evOp(item.id, kind === "task" ? "Created" : "Created (a folder)")];
-    const a = kind !== "task" ? commit(ops, { toast: `Added the folder ${quote(text)}` }) : commit(ops, { toast: `Added ${quote(text)}`, renum: (n) => `Added #${n} ${quote(text)}` });
+    const what = kind === "task" ? "" : "the folder ";
+    const a = commit(ops, { toast: `Added ${what}${quote(text)}`, renum: (n) => `Added ${what}#${n} ${quote(text)}` });
     if (a) a.made = new Promise((res) => { a.madeRes = res; });
     return a;
   }
-  $("tree").addEventListener("input", (e) => { if (e.target.id === "draft-input" && S.draft) S.draft.text = e.target.value; });
-  $("tree").addEventListener("focusout", (e) => { if (e.target.id === "draft-input" && S.draft) finishDraft(S.draft, e.target.value); });
-  $("tree").addEventListener("keydown", (e) => {
+  $("list").addEventListener("input", (e) => { if (e.target.id === "draft-input" && S.draft) S.draft.text = e.target.value; });
+  $("list").addEventListener("focusout", (e) => { if (e.target.id === "draft-input" && S.draft) finishDraft(S.draft, e.target.value); });
+  $("list").addEventListener("keydown", (e) => {
     if (e.target.id !== "draft-input") return;
     if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); finishDraft(); }
     else if (e.key === "Escape") {
@@ -2144,11 +2208,10 @@
     const grip = e.target.closest("[data-grip]");
     if (!grip || (e.pointerType === "mouse" && e.button !== 0) || !canWrite() || DR) return;
     const row = grip.closest(".row[data-id]");
-    const pane = row?.parentElement?.id;
-    if (!row || (pane !== "tree" && pane !== "prio")) return;
+    if (!row || row.parentElement?.id !== "list") return;
     e.preventDefault();
     try { grip.setPointerCapture(e.pointerId); } catch { /* (window listeners still see it) */ }
-    DR = { id: row.dataset.id, pane, pid: e.pointerId, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, live: false, row, target: null, raf: 0, auto: 0 };
+    DR = { id: row.dataset.id, tree: S.view === "tree", pid: e.pointerId, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, live: false, row, target: null, raf: 0, auto: 0 };
     window.addEventListener("pointermove", dragMove, true);
     window.addEventListener("pointerup", dragUp, true);
     window.addEventListener("pointercancel", dragCancel, true);
@@ -2159,13 +2222,13 @@
     S.dragging = true;
     closeMenu(false);
     d.it = M.byId.get(d.id);
-    d.rows = $(d.pane);
-    d.scroll = $(d.pane + "-scroll");
-    d.line = $(d.pane + "-line");
+    d.rows = $("list");
+    d.scroll = $("list-scroll");
+    d.line = $("list-line");
     d.geo = [];
     for (const el of d.rows.children) {
       const g = { el, top: el.offsetTop, h: el.offsetHeight };
-      if (el.matches(".row[data-id]")) Object.assign(g, { kind: "row", id: el.dataset.id, it: M.byId.get(el.dataset.id), depth: +el.style.getPropertyValue("--d") || 0, waiting: el.classList.contains("waiting") });
+      if (el.matches(".row[data-id]")) Object.assign(g, { kind: "row", id: el.dataset.id, it: M.byId.get(el.dataset.id), depth: +el.style.getPropertyValue("--d") || 0 });
       else if (el.matches(".addrow")) Object.assign(g, { kind: "add", folder: el.dataset.folder, depth: +el.style.getPropertyValue("--d") || 0 });
       else if (el.matches(".grp")) Object.assign(g, { kind: "grp", grp: el.dataset.grp });
       else if (el.matches(".hist-list") && d.geo.length && d.geo[d.geo.length - 1].kind === "row") { d.geo[d.geo.length - 1].h = el.offsetTop + el.offsetHeight - d.geo[d.geo.length - 1].top; continue; }
@@ -2173,7 +2236,7 @@
       d.geo.push(g);
     }
     // (The dragged item and, in the tree, everything inside it.)
-    for (const g of d.geo) if (g.kind === "row" && (g.id === d.id || (d.pane === "tree" && isInside(g.id, d.id)))) { g.self = true; g.el.classList.add("dragging"); }
+    for (const g of d.geo) if (g.kind === "row" && (g.id === d.id || (d.tree && isInside(g.id, d.id)))) { g.self = true; g.el.classList.add("dragging"); }
     document.body.classList.add("drag-live");
     const gh = $("ghost");
     gh.textContent = title(d.it);
@@ -2198,7 +2261,7 @@
   function hit(d) {
     const r = d.scroll.getBoundingClientRect();
     if (d.x < r.left - 12 || d.x > r.right + 12 || d.y < r.top || d.y > r.bottom) return null;
-    return d.pane === "tree" ? hitTree(d) : hitPrio(d);
+    return d.tree ? hitTree(d) : hitPrio(d);
   }
   function frame(d) {
     if (DR !== d || !d.live) return;
@@ -2282,17 +2345,12 @@
     return t;
   }
   // Priorities: between two rows takes the priority between theirs (or joins a number they
-  // share); below "No priority" clears it. ("Waiting on you" isn't a target: a drop there goes to
-  // the top of the rest.)
+  // share); below "No priority" clears it.
   function hitPrio(d) {
     const y = d.y - d.rows.getBoundingClientRect().top;
     const div = d.geo.find((g) => g.kind === "grp" && g.grp === "none");
-    const rows = d.geo.filter((g) => g.kind === "row" && !g.waiting && !g.self);
+    const rows = d.geo.filter((g) => g.kind === "row" && !g.self);
     const rest = rows.map((g) => g.it);
-    // (A task waiting on you, let go over its own group: nothing changes. Any other let go there
-    // goes to the top of the rest.)
-    const waits = d.geo.filter((g) => g.kind === "row" && g.waiting);
-    if (stageOf(d.it) === "waiting" && waits.length && y < waits[waits.length - 1].top + waits[waits.length - 1].h + 6) return null;
     if (div && y > div.top + div.h / 2) return isNum(d.it.priority) ? { unset: true, rest, label: "no priority" } : null;
     const numbered = div ? rows.filter((g) => g.top < div.top) : rows;
     let idx = numbered.findIndex((g) => y < g.top + g.h / 2);
@@ -2308,7 +2366,7 @@
     if (!t) { line.style.display = "none"; return; }
     if (t.inside) {
       line.style.display = "none";
-      rowEl(d.pane, t.inside)?.classList.add("drop-in");
+      rowEl(t.inside)?.classList.add("drop-in");
       return;
     }
     if (t.unset) {
@@ -2318,7 +2376,7 @@
     }
     line.style.display = "block";
     line.style.top = `${d.rows.offsetTop + t.lineY}px`;
-    line.style.left = `${(d.pane === "tree" ? 18 + t.depth * 16 : 18)}px`;
+    line.style.left = `${(d.tree ? 18 + t.depth * 16 : 18)}px`;
     const b = line.querySelector("b");
     if (b) b.textContent = t.label || "";
   }
@@ -2348,15 +2406,13 @@
     const t = d.live ? d.target : null;
     const wasLive = d.live;
     endDrag(d);
-    if (!wasLive) { select(d.id, { pane: d.pane, open: true }); return; }
+    if (!wasLive) { select(d.id, { focus: true }); return; }
     suppressClick();
     if (!t) { if (S.needRender) render(); return; }
-    // (The moved item ends up selected, as a dragged file does.)
-    S.sel = d.id;
-    if (d.pane === "tree") moveTree(d.id, t.parent, t.index);
+    if (d.tree) moveTree(d.id, t.parent, t.index);
     else movePrio(d.id, t.rest, t.idx, !!t.unset);
-    render();
-    rowEl(d.pane, d.id)?.focus({ preventScroll: true });
+    // (The moved item ends up selected, as a dragged file does.)
+    select(d.id, { focus: true, open: false });
   }
   function dragCancel(e) {
     if (!DR || (e && e.pointerId !== DR.pid)) return;
@@ -2385,8 +2441,7 @@
   window.addEventListener("pointercancel", unpress, true);
   window.addEventListener("blur", unpress);
 
-  function paneClick(e) {
-    const pane = e.currentTarget.id;
+  function listClick(e) {
     const ref = e.target.closest("[data-ref]");
     if (ref) return goRef(ref.dataset.ref);
     const act = e.target.closest("[data-act]");
@@ -2400,39 +2455,42 @@
       if (!it) return;
       if (a === "toggle") { if (!searching()) { setCollapsed(it.id, expanded(it)); render(); } return; }
       if (a === "disc") { if (canWrite()) patch(it.id, { discuss: !it.discuss }); return; }
-      if (a === "hist") { const k = pane + ":" + it.id; if (S.hist.has(k)) S.hist.delete(k); else S.hist.add(k); render(); return; }
+      if (a === "hist") { if (S.hist.has(it.id)) S.hist.delete(it.id); else S.hist.add(it.id); render(); return; }
       if (a === "menu") return openMenu(act, it.id);
       if (a === "add-in") return startDraft("task", it.id);
     }
-    if (it && !e.target.closest("[data-grip], .draft")) select(it.id, { pane, open: true });
+    if (!it || e.target.closest("[data-grip], .draft")) return;
+    if (e.shiftKey) pickRange(it.id, e.metaKey || e.ctrlKey);
+    else if (e.metaKey || e.ctrlKey) pickToggle(it.id);
+    else select(it.id, { focus: true });
   }
-  function paneKey(e) {
-    const pane = e.currentTarget.id;
+  function listKey(e) {
     const row = e.target.closest?.(".row[data-id]");
     if (!row || e.target !== row) return;
     const it = M.byId.get(row.dataset.id);
     if (!it) return;
     const k = e.key;
-    const rows = [...$(pane).querySelectorAll(".row[data-id]")];
+    const tree = S.view === "tree";
+    const rows = [...$("list").querySelectorAll(".row[data-id]")];
     const i = rows.indexOf(row);
-    const go = (r) => { if (r) select(r.dataset.id, { pane, open: false }); };
-    if (e.altKey && (k === "ArrowUp" || k === "ArrowDown")) { e.preventDefault(); keyMove(pane, it, k === "ArrowUp" ? -1 : 1); return; }
+    const go = (r) => { if (r) select(r.dataset.id, { focus: true, open: false }); };
+    if (e.altKey && (k === "ArrowUp" || k === "ArrowDown")) { e.preventDefault(); keyMove(it, k === "ArrowUp" ? -1 : 1); return; }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (k === "ArrowDown" || k === "ArrowUp") { e.preventDefault(); go(rows[i + (k === "ArrowDown" ? 1 : -1)]); }
     else if (k === "Home" || k === "End") { e.preventDefault(); go(rows[k === "Home" ? 0 : rows.length - 1]); }
-    else if (k === "Enter") { e.preventDefault(); select(it.id, { pane, open: true }); $("ed-title")?.focus(); }
-    else if (k === " ") { e.preventDefault(); if (it.$folder && pane === "tree" && !searching()) { setCollapsed(it.id, expanded(it)); render(); } else select(it.id, { pane, open: true }); }
-    else if (pane === "tree" && k === "ArrowRight" && it.$folder) { e.preventDefault(); if (!expanded(it)) { setCollapsed(it.id, false); render(); } else go(rows[i + 1]?.style.getPropertyValue("--d") > row.style.getPropertyValue("--d") ? rows[i + 1] : null); }
-    else if (pane === "tree" && k === "ArrowLeft") { e.preventDefault(); if (it.$folder && expanded(it) && !searching()) { setCollapsed(it.id, true); render(); } else if (it.$p) go(rowEl(pane, it.$p)); }
-    else if (pane === "tree" && k === "Tab" && canWrite() && !searching()) { if (e.shiftKey ? outdent(it) : indent(it)) e.preventDefault(); }
+    else if (k === "Enter") { e.preventDefault(); select(it.id); $("ed-title")?.focus(); }
+    else if (k === " ") { e.preventDefault(); if (it.$folder && tree && !searching()) { setCollapsed(it.id, expanded(it)); render(); } else select(it.id, { focus: true }); }
+    else if (tree && k === "ArrowRight" && it.$folder) { e.preventDefault(); if (!expanded(it)) { setCollapsed(it.id, false); render(); } else go(rows[i + 1]?.style.getPropertyValue("--d") > row.style.getPropertyValue("--d") ? rows[i + 1] : null); }
+    else if (tree && k === "ArrowLeft") { e.preventDefault(); if (it.$folder && expanded(it) && !searching()) { setCollapsed(it.id, true); render(); } else if (it.$p) go(rowEl(it.$p)); }
+    else if (tree && k === "Tab" && canWrite() && !searching()) { if (e.shiftKey ? outdent(it) : indent(it)) e.preventDefault(); }
     else if (k === "Escape") { if (S.sel) { e.preventDefault(); deselect(); } }
     else if (k === "ContextMenu" || (k === "F10" && e.shiftKey)) { e.preventDefault(); openMenu(row.querySelector('[data-act="menu"]') || row, it.id); }
   }
-  // ⌥↑ / ⌥↓: in the tree, among its siblings; in the priorities, up or down one among the open
-  // tasks (across "No priority": the last with a number loses it; one without takes the last + 1).
-  function keyMove(pane, it, dir) {
+  // ⌥↑ / ⌥↓: in the tree, among its siblings; by priority, up or down one among the open tasks
+  // (across "No priority": the last with a number loses it; one without takes the last + 1).
+  function keyMove(it, dir) {
     if (!canWrite()) return;
-    if (pane === "tree") {
+    if (S.view === "tree") {
       const vis = kidsOf(it.$p).filter((c) => !hiddenArch(c));
       const sib = vis[vis.indexOf(it) + dir];
       if (!sib) return;
@@ -2440,8 +2498,8 @@
       moveTree(it.id, it.$p, full.indexOf(sib) + (dir > 0 ? 1 : 0));
       return;
     }
-    if (S.sort !== "priority" || stageOf(it) === "waiting" || !isOpen(it)) return;
-    const open = prioLists().rest.filter(isOpen);
+    if (S.view !== "priority" || !isOpen(it)) return;
+    const open = sortedTasks().filter(isOpen);
     const i = open.findIndex((o) => o.id === it.id);
     if (i < 0) return;
     const others = open.filter((o) => o.id !== it.id);
@@ -2452,40 +2510,41 @@
       else movePrio(it.id, others, i + dir, false);
     } else if (dir < 0) movePrio(it.id, others, numbered, false);
   }
-  for (const id of ["tree", "prio"]) {
-    const el = $(id);
+  {
+    const el = $("list");
     el.addEventListener("pointerdown", gripDown);
-    el.addEventListener("click", paneClick);
-    el.addEventListener("keydown", paneKey);
+    el.addEventListener("click", listClick);
+    el.addEventListener("keydown", listKey);
+    // (⇧-click: a range of rows, not of text.)
+    el.addEventListener("mousedown", (e) => { if (e.shiftKey && e.target.closest(".row[data-id]") && !e.target.closest("input")) e.preventDefault(); });
     el.addEventListener("dblclick", (e) => {
       const row = e.target.closest(".row[data-id]");
       const it = row && M.byId.get(row.dataset.id);
-      if (it && it.$folder && id === "tree" && !e.target.closest("button") && !searching()) { setCollapsed(it.id, expanded(it)); render(); }
+      if (it && it.$folder && S.view === "tree" && !e.target.closest("button") && !searching()) { setCollapsed(it.id, expanded(it)); render(); }
     });
   }
   // (The "+ Task  + Folder" line at the end of an open folder shows while the pointer is in it.)
   let hot = null;
-  $("tree").addEventListener("pointerover", (e) => {
+  $("list").addEventListener("pointerover", (e) => {
     const row = e.target.closest(".row[data-id], .addrow");
     let f = null;
     if (row?.classList.contains("addrow")) f = row.dataset.folder;
-    else if (row) { const it = M.byId.get(row.dataset.id); f = it ? (it.$folder && expanded(it) ? it.id : it.$p) : null; }
+    else if (row && S.view === "tree") { const it = M.byId.get(row.dataset.id); f = it ? (it.$folder && expanded(it) ? it.id : it.$p) : null; }
     if (f === hot) return;
     hot = f;
-    for (const a of $("tree").querySelectorAll(".addrow.hot")) a.classList.remove("hot");
-    if (f) $("tree").querySelector(`.addrow[data-folder="${CSS.escape(f)}"]`)?.classList.add("hot");
+    for (const a of $("list").querySelectorAll(".addrow.hot")) a.classList.remove("hot");
+    if (f) $("list").querySelector(`.addrow[data-folder="${CSS.escape(f)}"]`)?.classList.add("hot");
   });
-  $("tree").addEventListener("pointerleave", () => { hot = null; for (const a of $("tree").querySelectorAll(".addrow.hot")) a.classList.remove("hot"); });
+  $("list").addEventListener("pointerleave", () => { hot = null; for (const a of $("list").querySelectorAll(".addrow.hot")) a.classList.remove("hot"); });
 
   // The header.
   $("q").addEventListener("input", () => { S.q = $("q").value; render(); });
   $("q").addEventListener("keydown", (e) => {
     if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); if ($("q").value) { $("q").value = ""; S.q = ""; render(); } else $("q").blur(); }
     else if (e.key === "ArrowDown" || (e.key === "Enter" && !e.isComposing)) {
-      const pane = S.tab === "prio" && matchMedia("(max-width: 899px)").matches ? "prio" : "tree";
       // (The first match: a folder shown only around one isn't.)
-      const first = $(pane).querySelector(".row[data-id]:not(.ctx)") || $(pane).querySelector(".row[data-id]");
-      if (first) { e.preventDefault(); select(first.dataset.id, { pane, open: false }); }
+      const first = $("list").querySelector(".row[data-id]:not(.ctx)") || $("list").querySelector(".row[data-id]");
+      if (first) { e.preventDefault(); select(first.dataset.id, { focus: true, open: false }); }
     }
   });
   $("chips").addEventListener("click", (e) => {
@@ -2505,26 +2564,13 @@
     $("app").classList.toggle("filters-open", open);
     $("filters-btn").setAttribute("aria-expanded", String(open));
   });
-  if (window.ResizeObserver) new ResizeObserver(() => $("app").style.setProperty("--top-h", `${document.querySelector(".top").offsetHeight}px`)).observe(document.querySelector(".top"));
   $("add-task").addEventListener("click", () => startDraft("task", ""));
   $("add-folder").addEventListener("click", () => startDraft("folder", ""));
-  $("sort").addEventListener("change", () => { S.sort = $("sort").value; local.set("sort", S.sort); render(); });
-  $("top-hist").addEventListener("click", () => { if (S.hist.has("tree:")) S.hist.delete("tree:"); else S.hist.add("tree:"); render(); });
+  $("view").addEventListener("change", () => { S.view = $("view").value; local.set("view", S.view); render(); rowEl(S.sel)?.scrollIntoView({ block: "nearest" }); });
+  $("top-hist").addEventListener("click", () => { if (S.hist.has("")) S.hist.delete(""); else S.hist.add(""); render(); });
   $("expand-all").addEventListener("click", () => { S.collapsed.clear(); local.set("collapsed", []); render(); });
   $("collapse-all").addEventListener("click", () => { for (const it of M.order) if (it.$folder) S.collapsed.add(it.id); local.set("collapsed", [...S.collapsed]); render(); });
-  function setTab(t, focus) {
-    S.tab = t;
-    local.set("tab", t);
-    render();
-    if (focus) $(t === "tree" ? "tab-tree" : "tab-prio").focus();
-  }
-  $("tab-tree").addEventListener("click", () => setTab("tree"));
-  $("tab-prio").addEventListener("click", () => setTab("prio"));
-  for (const t of ["tab-tree", "tab-prio"]) $(t).addEventListener("keydown", (e) => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); setTab(S.tab === "tree" ? "prio" : "tree", true); } });
-  const narrow = matchMedia("(max-width: 899px)");
-  const roles = () => { for (const id of ["pane-tree", "pane-prio"]) { if (narrow.matches) { $(id).setAttribute("role", "tabpanel"); $(id).setAttribute("aria-labelledby", id === "pane-tree" ? "tab-tree" : "tab-prio"); } else { $(id).removeAttribute("role"); $(id).setAttribute("aria-labelledby", id === "pane-tree" ? "tree-h" : "prio-h"); } } };
-  narrow.addEventListener?.("change", roles);
-  roles();
+  const sheetOnly = matchMedia("(max-width: 1099px)"); // (the details slide over the list)
 
   // The editor's buttons, photos and paste.
   $("editor").addEventListener("click", (e) => {
@@ -2539,7 +2585,7 @@
     if (b.dataset.photo) return showPhoto(b.dataset.photo);
     if (b.dataset.ref) return goRef(b.dataset.ref);
     const a = b.dataset.act;
-    if (a === "ed-close") { const pane = S.tab; S.sheet = false; if (!narrow.matches && !matchMedia("(max-width: 1199px)").matches) S.sel = null; render(); rowEl(pane, S.sel)?.focus({ preventScroll: true }); }
+    if (a === "ed-close") { const id = S.sel; if (sheetOnly.matches) { S.sheet = false; render(); } else select(null); rowEl(id)?.focus({ preventScroll: true }); }
     else if (a === "ed-menu" && it) openMenu(b, it.id);
     else if (a === "copy-num" && it) copyNum(it, b);
     else if ((a === "ed-add-task" || a === "ed-add-folder") && it) startDraft(a === "ed-add-task" ? "task" : "folder", it.id);
@@ -2565,7 +2611,9 @@
   $("viewer-close").addEventListener("click", closePhoto);
   $("viewer").addEventListener("click", (e) => { if (e.target === $("viewer")) closePhoto(); });
 
-  // Keys anywhere: / searches, Esc steps back, ⌘Z undoes while the notice shows.
+  // Keys anywhere: / searches, Esc steps back, ⌘Z undoes while the notice shows, ⌘J and ⌘K go to
+  // the row before and after (from a field in the details too: it is saved first, as on leaving
+  // it), ⌘E archives what is picked (not from a field, where it is the browser's own).
   const typing = (el) => !!el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
   document.addEventListener("keydown", (e) => {
     if (e.defaultPrevented) return;
@@ -2576,15 +2624,22 @@
       if (a && $("editor").contains(a)) {
         e.preventDefault();
         a.blur();
-        if (matchMedia("(max-width: 1199px)").matches) { S.sheet = false; render(); }
-        const pane = narrow.matches ? S.tab : "tree";
-        (rowEl(pane, S.sel) || rowEl("prio", S.sel))?.focus({ preventScroll: true });
+        if (sheetOnly.matches) { S.sheet = false; render(); }
+        rowEl(S.sel)?.focus({ preventScroll: true });
         return;
       }
       if (S.sheet && S.sel) { e.preventDefault(); S.sheet = false; render(); }
       return;
     }
+    const cmd = (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey ? e.key.toLowerCase() : "";
+    if ((cmd === "j" || cmd === "k") && S.loaded.items && a?.id !== "q" && a?.id !== "draft-input" && !menu && $("viewer").hidden) {
+      e.preventDefault();
+      if (typing(a)) a.blur();
+      step(cmd === "j" ? -1 : 1);
+      return;
+    }
     if (typing(a)) return;
+    if (cmd === "e" && S.picked.size && !menu) { e.preventDefault(); archivePicked(); return; }
     if ((e.key === "Enter" || e.key === " ") && a?.dataset?.ref && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); goRef(a.dataset.ref); return; }
     if (e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); $("q").focus(); $("q").select(); }
     else if ((e.key === "z" || e.key === "Z") && (e.metaKey || e.ctrlKey) && !e.shiftKey && undoFn) { e.preventDefault(); undo(); }
@@ -2621,8 +2676,10 @@
   function listen() {
     sub(() => S.db.collection("items"), (snap) => {
       const paused = !canWrite();
+      const first = !S.loaded.items;
       S.raw.items = new Map(snap.docs.map((d) => [d.id, d.data() || {}]));
       S.loaded.items = true;
+      if (first) { M = build(); fromUrl(); }
       checkRaw();
       // (Only a cached view counts as not yet the server's: the page's own unconfirmed writes come
       // with hasPendingWrites, never fromCache.)

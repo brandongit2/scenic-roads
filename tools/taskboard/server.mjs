@@ -67,7 +67,7 @@ export function makeServer(store) {
 
   // ---- numbers -----------------------------------------------------------------------------------
   // meta/counter is the server's: the larger of its `next` and one past the highest number any item
-  // has. A deleted task's number stays retired.
+  // has. Tasks and folders take their numbers from it alike; a deleted item's number stays retired.
   function takeNum() {
     const n = Math.max(store.get("meta", "counter")?.next || 1, store.maxNum() + 1);
     store.put("meta", "counter", { next: n + 1 });
@@ -96,15 +96,18 @@ export function makeServer(store) {
     return out;
   };
   const dropNulls = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== null));
-  // `parent` must be "" or an item that exists (and, for a move, not the item or inside it).
+  // `parent` must be "" or a folder that exists (only folders hold items; and, for a move, not the
+  // item or inside it).
   function checkParent(id, parent) {
     if (parent === "") return;
     if (typeof parent !== "string") return; // (the schema says so)
-    if (!store.get("items", parent)) invalid([{ field: "parent", message: `no item ${JSON.stringify(parent)} to be inside of` }]);
-    for (let p = parent, n = 0; p && n < 10000; n++) {
-      if (p === id) invalid([{ field: "parent", message: "an item can't be inside itself or what is inside it" }]);
-      p = store.get("items", p)?.parent;
+    const p = store.get("items", parent);
+    if (!p) invalid([{ field: "parent", message: `no item ${JSON.stringify(parent)} to be inside of` }]);
+    for (let q = parent, n = 0; q && n < 10000; n++) {
+      if (q === id) invalid([{ field: "parent", message: "an item can't be inside itself or what is inside it" }]);
+      q = store.get("items", q)?.parent;
     }
+    if (p.kind !== "folder") invalid([{ field: "parent", message: `${parent} is a task; only folders hold items` }]);
   }
   function createItem(body, req) {
     refuseIf(sentErrors(body, ITEM_CREATE, ["id", "num", "order", "added"]));
@@ -114,11 +117,11 @@ export function makeServer(store) {
     return tx(() => {
       // (The server's fields are filled in before the check, so it names what the client got wrong.)
       doc.added = nowIso();
-      doc.order = (store.maxOrder(doc.parent) ?? 0) + 1;
-      if (task) doc.num = takeNum();
+      doc.order = (store.maxOrder() ?? 0) + 1;
+      doc.num = takeNum();
       refuseIf(itemErrors(doc));
       checkParent("", doc.parent);
-      let id = task ? `i${doc.num}` : newId();
+      let id = `i${doc.num}`;
       while (store.get("items", id)) id = newId();
       store.put("items", id, doc);
       logStage(id, null, doc, req);
@@ -126,7 +129,7 @@ export function makeServer(store) {
       return { id, ...ownFields(doc) };
     });
   }
-  const ownFields = (d) => ({ ...(d.num !== undefined ? { num: d.num } : {}), order: d.order, added: d.added });
+  const ownFields = (d) => ({ num: d.num, order: d.order, added: d.added });
 
   // PATCH (merge: null removes a field) or PUT (replace what a client may write; the server's num,
   // added and, unless given, order stay) of an item that exists.
@@ -140,9 +143,9 @@ export function makeServer(store) {
         ? { ...Object.fromEntries(Object.entries(cur).filter(([k]) => ITEM_FIELDS[k]?.server || (k === "order" && !("order" in sent)))), ...dropNulls(sent) }
         : { ...cur, ...sent };
       if (!replace) for (const k of Object.keys(doc)) if (doc[k] === null) delete doc[k];
-      if (doc.kind === "task" && doc.num === undefined) doc.num = takeNum(); // (a folder made a task)
       refuseIf(itemErrors(doc));
       checkParent(id, doc.parent);
+      if (doc.kind !== "folder" && store.childrenOf(id).length) invalid([{ field: "kind", message: `${id} holds ${store.childrenOf(id).length} item(s); only folders hold items, so it stays a folder` }]);
       store.put("items", id, doc);
       logStage(id, cur, doc, req);
       changed("items", "events");
@@ -226,7 +229,7 @@ export function makeServer(store) {
       const have = new Set(g.docs.filter((d) => d.col === "items").map((d) => d.id));
       for (const d of g.docs) {
         if (d.col === "items") {
-          if (d.doc.num !== undefined && store.numOwner(d.doc.num)) refuse(409, "conflict", `#${d.doc.num} is another task's now`);
+          if (d.doc.num !== undefined && store.numOwner(d.doc.num)) refuse(409, "conflict", `#${d.doc.num} is another item's now`);
           if (d.doc.parent && !have.has(d.doc.parent) && !store.get("items", d.doc.parent)) refuse(409, "conflict", `its folder ${d.doc.parent} is gone`);
           if (store.get("items", d.id)) refuse(409, "conflict", `${d.id} exists again`);
         } else if (d.doc.item && !have.has(d.doc.item) && !store.get("items", d.doc.item)) refuse(409, "conflict", `its item ${d.doc.item} is gone`);
@@ -311,7 +314,8 @@ export function makeServer(store) {
         return send(res, 200, Buffer.from(r.data), r.type, { "cache-control": "public, max-age=31536000, immutable", "x-content-type-options": "nosniff" });
       }
       if (req.method !== "GET" && req.method !== "HEAD") return send(res, 405, "method not allowed", "text/plain");
-      const p = url.pathname === "/" ? "/index.html" : url.pathname;
+      // (An item's own address, /709, is the page too: it opens with #709 selected.)
+      const p = url.pathname === "/" || /^\/\d+$/.test(url.pathname) ? "/index.html" : url.pathname;
       // (schema.mjs is the page's too: it checks what it shows by the same rules.)
       const file = p === "/schema.mjs" ? path.join(here, "schema.mjs") : path.join(here, "public", path.normalize(p));
       if ((p !== "/schema.mjs" && !file.startsWith(path.join(here, "public") + path.sep)) || !fs.existsSync(file) || !fs.statSync(file).isFile()) return send(res, 404, "not found", "text/plain");

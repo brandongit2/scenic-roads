@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { openStore } from "../store.mjs";
 import { makeServer } from "../server.mjs";
-import { problems } from "../repair.mjs";
+import { problems } from "../migrate.mjs";
 import { STAGES, WHERES, EVENT_KINDS } from "../schema.mjs";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "taskboard-test-"));
@@ -42,18 +42,22 @@ test("POST items: the server assigns num, id, order and added, and keeps the cou
   const f = await post("items", { kind: "folder", text: "A folder" });
   assert.equal(f.status, 200);
   folder = f.body.id;
-  assert.equal(f.body.num, undefined, "a folder has no number");
+  assert.equal(f.body.num, 1, "a folder is numbered too");
+  assert.equal(f.body.id, "i1");
+  assert.equal(f.body.order, 1);
   assert.match(f.body.added, ISO);
   const a = await post("items", { text: "First", parent: folder, note: "n", priority: 2.5 });
   const b = await post("items", { text: "Second", parent: folder, stage: "working", where: "You" });
+  const g = await post("items", { kind: "folder", text: "Another folder" });
+  const c = await post("items", { text: "Third" });
   t1 = a.body.id;
   assert.equal(a.body.id, `i${a.body.num}`);
-  assert.equal(b.body.num, a.body.num + 1);
-  assert.equal(b.body.order, a.body.order + 1, "put last among its siblings");
-  assert.equal(a.body.order, 1);
+  assert.deepEqual([a.body.num, b.body.num, g.body.num, c.body.num], [2, 3, 4, 5], "tasks and folders from one counter");
+  assert.deepEqual([a.body.order, b.body.order, g.body.order, c.body.order], [2, 3, 4, 5], "last in the one order over all items");
   assert.match(a.body.added, ISO);
-  assert.deepEqual(await get("items", a.body.id), { kind: "task", text: "First", parent: folder, note: "n", priority: 2.5, stage: "", where: "Subagent", num: a.body.num, order: 1, added: a.body.added });
-  assert.equal((await get("meta", "counter")).next, b.body.num + 1);
+  assert.deepEqual(await get("items", a.body.id), { kind: "task", text: "First", parent: folder, note: "n", priority: 2.5, stage: "", where: "Subagent", num: a.body.num, order: 2, added: a.body.added });
+  assert.equal((await get("items", g.body.id)).num, 4);
+  assert.equal((await get("meta", "counter")).next, c.body.num + 1);
   // working at birth leaves a stage event, dated by the server
   const ev = store.list("events").filter((e) => e.data.item === b.body.id);
   assert.equal(ev.length, 1);
@@ -94,7 +98,8 @@ const BAD_POSTS = {
   "priority a string": [{ text: "x", priority: "1" }, /priority: must be a number/],
   "priority negative": [{ text: "x", priority: -1 }, /priority: must be a number from 0/],
   "discuss a string": [{ text: "x", discuss: "yes" }, /discuss: must be true or false/],
-  "slot fractional": [{ text: "x", slot: 1.5 }, /slot: must be a whole number/],
+  "slot (gone: order is the order)": [{ text: "x", slot: 1 }, /slot: is not a field you can send here/],
+  "inside a task": [{ text: "x", parent: "T1" }, /parent: i\d+ is a task; only folders hold items/],
   "note a number": [{ text: "x", note: 1 }, /note: must be a string/],
   "folder with a stage": [{ text: "x", kind: "folder", stage: "done" }, /stage: is only for tasks/],
   "folder with a where": [{ text: "x", kind: "folder", where: "You" }, /where: is only for tasks/],
@@ -103,7 +108,7 @@ const BAD_POSTS = {
   "a string": ['"x"', /the body must be a JSON object/],
   "not JSON": ["{", /not valid JSON/],
 };
-for (const [name, [body, says]] of Object.entries(BAD_POSTS)) test(`POST items refused: ${name}`, () => refused(() => post("items", body), { says }));
+for (const [name, [body, says]] of Object.entries(BAD_POSTS)) test(`POST items refused: ${name}`, () => refused(() => post("items", JSON.parse(JSON.stringify(body).replace("T1", t1))), { says }));
 
 test("PATCH items: edits an existing item only", async () => {
   await refused(() => patch("items", "nope", { text: "x" }), { status: 404, code: "not_found", says: /no item "nope"/ });
@@ -144,7 +149,7 @@ const BAD_PATCHES = {
 for (const [name, [body, says]] of Object.entries(BAD_PATCHES)) test(`PATCH items refused: ${name}`, () => refused(() => patch("items", t1, JSON.parse(JSON.stringify(body).replace("SELF", t1))), { says }));
 
 test("PATCH: times are stored in one format; reorder, archive and the rest go through", async () => {
-  const r = await patch("items", t1, { started: "2026-10-26T08:35:48Z", finished: "2026-10-26T09:00:00.5Z", archived: true, archivedAt: "2026-10-26T10:00:00Z", order: 7.5, discuss: true, slot: 2, reply: "ok", photos: ["0123456789abcdef0123456789abcdef"] });
+  const r = await patch("items", t1, { started: "2026-10-26T08:35:48Z", finished: "2026-10-26T09:00:00.5Z", archived: true, archivedAt: "2026-10-26T10:00:00Z", order: 7.5, discuss: true, reply: "ok", photos: ["0123456789abcdef0123456789abcdef"] });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   const d = await get("items", t1);
   assert.equal(d.started, "2026-10-26T08:35:48.000Z");
@@ -152,22 +157,26 @@ test("PATCH: times are stored in one format; reorder, archive and the rest go th
   assert.equal(d.archivedAt, "2026-10-26T10:00:00.000Z");
   assert.equal(d.order, 7.5);
 });
-test("PATCH: a cycle of parents is refused; a move into a folder is not", async () => {
+test("PATCH: a cycle of parents is refused; a move into a folder is not, into a task is", async () => {
   const inner = await post("items", { kind: "folder", text: "Inner", parent: folder });
   await refused(() => patch("items", folder, { parent: inner.body.id }), { says: /inside itself or what is inside it/ });
   assert.equal((await patch("items", t1, { parent: inner.body.id })).status, 200);
+  const other = await post("items", { text: "Not a folder" });
+  await refused(() => patch("items", t1, { parent: other.body.id }), { says: /is a task; only folders hold items/ });
 });
-test("a folder made a task gets a number (once); a task made a folder keeps its own", async () => {
+test("a folder and a task change kind keeping their number; a folder holding items stays one", async () => {
   const f = await post("items", { kind: "folder", text: "Becomes a task" });
+  const n = f.body.num;
   const r = await patch("items", f.body.id, { kind: "task", stage: "", where: "You" });
   assert.equal(r.status, 200);
-  assert.ok(Number.isInteger(r.body.num));
-  const n = r.body.num;
+  assert.equal(r.body.num, n);
   await patch("items", f.body.id, { kind: "folder", stage: null, where: null });
   assert.equal((await get("items", f.body.id)).num, n);
-  const again = await patch("items", f.body.id, { kind: "task", stage: "", where: "You" });
-  assert.equal(again.body.num, n, "the same number again");
+  assert.equal((await patch("items", f.body.id, { kind: "task", stage: "", where: "You" })).body.num, n, "the same number again");
   await refused(() => patch("items", f.body.id, { kind: "folder" }), { says: /stage: is only for tasks.*where: is only for tasks/ });
+  await patch("items", f.body.id, { kind: "folder", stage: null, where: null });
+  await post("items", { text: "Inside", parent: f.body.id });
+  await refused(() => patch("items", f.body.id, { kind: "task", stage: "", where: "You" }), { says: /holds 1 item\(s\); only folders hold items/ });
 });
 test("PUT items: replaces what a client writes, and keeps num, added and order", async () => {
   const a = await post("items", { text: "Put me", note: "gone soon", priority: 4 });
@@ -260,7 +269,7 @@ test("routes: nothing else is open", async () => {
 });
 
 test("the page and its schema are served (the page checks what it shows by the same rules)", async () => {
-  for (const [url, type] of [["/", /text\/html/], ["/shim.js", /javascript/], ["/schema.mjs", /javascript/]]) {
+  for (const [url, type] of [["/", /text\/html/], ["/709", /text\/html/], ["/shim.js", /javascript/], ["/schema.mjs", /javascript/]]) {
     const r = await fetch(base + url);
     assert.equal(r.status, 200, url);
     assert.match(r.headers.get("content-type"), type, url);
