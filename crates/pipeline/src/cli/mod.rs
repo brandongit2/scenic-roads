@@ -92,7 +92,7 @@ mod tests {
         ));
         assert!(!ok("/app/scenic-build unit --root /r --nwo"));
         assert!(!ok("/app/scenic-build unit --pass a --pass b"));
-        assert!(!ok("/app/scenic-build verify stray"));
+        assert!(!ok("/app/scenic-build pyenv stray"));
         assert!(!ok("/app/scenic-metrics /u buildings"));
         assert!(!ok("/app/scenic-build pack --help"));
         assert!(!ok("/app/trees --out o"), "no mode");
@@ -105,7 +105,7 @@ mod tests {
         assert_eq!(t("scenic-build inputs --full regions --root /r"), ("inputs".into(), vec!["regions".to_string()]));
         assert_eq!(t("scenic-build pack --pass d 6/1/1 6/1/2").1, ["6/1/1", "6/1/2"]);
         assert_eq!(t("scenic-build regions-fixture --root /r b4 -7,46,20").1, ["b4", "-7,46,20"]);
-        assert!(t("scenic-build verify").1.is_empty());
+        assert!(t("scenic-build pyenv").1.is_empty());
     }
 
     #[test]
@@ -115,6 +115,6 @@ mod tests {
         assert_eq!(v("scenic-build --root /r unit", "--root"), ["/r"]);
         assert_eq!(v("scenic-build osm-pass --planet p --date d --clear a --clear=b", "--clear"), ["a", "b"]);
         assert!(v("scenic-build unit --pass d", "--cache").is_empty(), "a flag the step doesn't take");
-        assert!(v("scenic-build verify", "--scratch").is_empty());
+        assert!(v("scenic-build pyenv", "--scratch").is_empty());
     }
 }
