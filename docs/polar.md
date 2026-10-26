@@ -61,6 +61,11 @@ tiles, on the pole's polar stereographic grid.
   data along an edge. Near the pole, where the meridians converge, these drew as dashed pits along
   every meridian. A pixel with no sample with data in a gap up to 3 pixels wide takes its
   neighbours' mean (`polar::close_gaps`, `GAP_PX`); wider voids stay sea level.
+- **File edges in the overviews:** the levels coarser than z9 read GLO-30's overviews, which hold
+  0 along their files' edges where the full resolution has none; a pixel's mean leaves out a
+  sample at exactly 0 where another has data (`polar::pixel_mean`), else these drew as pits of a
+  quarter or half the height along the one-degree lines (measured in the root's z3 past the built
+  blocks, 26 Oct).
 - **Shading:** one precomputed pyramid, as `slope_pack` makes it: at z9 Horn's method on the grid
   (a pixel's ground size the grid's ÷ the scale at its latitude), each coarser pixel the plain mean
   of its four children, or Horn's on its own level's terrain where there are none (past the cap).
@@ -119,7 +124,8 @@ custom layer on the globe.
   method, the accent, the anchor), and draws the elevation and slope tints from those layers' own
   ramps, over the land or water colour. Tiles are culled by the frustum and the horizon.
 - **`web/src/polarcaps.ts`**: adds a pole's cap while the catalog lists both its layers, its URLs
-  at the packs' versions (`api.ts` `packUrl`, `packs.ts` `packToken` read `polar`).
+  at the packs' versions (`api.ts` `packUrl`, `packs.ts` `packToken` read `polar`); a tile no pack
+  holds (a block not built) isn't asked for (`PolarTilesOptions.stored`), its ancestor drawn.
 - **The fork** (web/maplibre/FORK.md):
   - `Map#setPoleCaps({north, south})` turns off upstream's pole fans on the globe: the terrain
     mesh's, the rasters', and the vector fills' and fill extrusions' pole triangles (the
@@ -213,9 +219,17 @@ Memory: 0.3–0.9 GB a terrain job as measured (its `mem_mb`, 4,096, is the firs
    were pits before, 0 after.
 3. **REMA on the NAS (approved 26 Oct; not yet done).** Its store and drop box need writing
    (`scenic-build store-fetch rema` against the NAS, then the declaration and index into
-   `inputs/elevation/`). Accepting it changes the elevation pool's digest (`terrain_z8::pool_digest`),
-   so the worldwide z8 terrain and what reads it (peaks, summits) are made again: recommended after
-   the rebuild, not during it.
+   `inputs/elevation/`). **What accepting it re-keys: the polar targets alone.** The keys name the
+   pool's datasets meeting each target's box (`declared::meeting`, unexpanded tile boxes); REMA's
+   cells reach 86° S and the Mercator tiles' last row ends at 85.05° S, so no Mercator terrain,
+   slope, deep, lo, root or road (`unit`) key changes, nor peaks and summits (they read the
+   terrain packs' z8). The fine datasets and the roads' spacing don't change: REMA's 32 m isn't
+   finer than the base (GLO-30's 30.9 m, `terrain_deep::base_resolution`). Tested by
+   `polar::tests::rema_south_of_87_meets_no_mercator_tile`. Two side effects, neither a re-key: a
+   terrain run under way when the index switches restarts its resume state
+   (`terrain_resume::inputs`), and the agent works its terrain targets out again once. Keep it so:
+   REMA's 2 m or 10 m mosaics (rank above 0, finer than the base) would lower the base resolution
+   and re-key every terrain target.
 4. **Members take the polar blocks (open; recommended later):** `polar-terrain` and `polar-slope` are
    offered to the pool's members like the other per-tile steps, but aren't in the shared set (the
    forecast's and the hand-off checks' per-target accounting). Add them if the cap's hours matter.
