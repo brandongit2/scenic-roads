@@ -167,7 +167,9 @@ boxes).
 
 - **Header's verdict:** one sentence (paused, out of touch or idle; percent done; done ≈), the
   pause controls: Pause at a safe point (each job stops at its next safe point), Freeze now (each job frozen where it
-  is, after a confirm), Resume.
+  is), Resume. Each press opens a small confirmation card (Cancel, or the ask); the confirmed button shows pending
+  (its words, every control disabled) and the page asks the build's state each second, up to 60 s, until it says what
+  was asked. The sentence is always the state as the build reports it.
 - **Footer:** the range the Machines tab's live charts show (1, 5, 10 or 30 min, 1, 2, 6, 24 or 72 h, or 7 days, its time words then every two days; this browser's own,
   kept); the Live dot, green and blinking while the
   build's state answered in the last 30 s, else Stale with the time of the last answer.

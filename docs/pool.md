@@ -1208,7 +1208,7 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   coordinator answers from its memory, as before. A thread of the agent reads only while a page
   has asked in the last 60 s, every 12 s at most, by known name (no listing): the lead's
   `state/status.json`, the term's `view.json`, its `forecast-input.json` (again only when its
-  time changes), `state/build/pause.json`, the term's `regions.json` (again only when its time changes), each member's heartbeat (`state/pool/members/<id>.json`,
+  time changes), `state/build/pause.json` (also alone each second between the full reads; its absence is no pause, never the view's), the term's `regions.json` (again only when its time changes), each member's heartbeat (`state/pool/members/<id>.json`,
   for its host) and own status (`state/helpers/<host>.json`), and what each member's history
   file of the last 7 days (today's and the six before: `pageview::DAYS`) gained since the offset
   it last read to (whole lines, 4 MiB of a file a read at most, `CHUNK_MAX`, the rest the next
