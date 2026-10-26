@@ -1725,7 +1725,7 @@ impl Agent {
             if let Some(r) = o.root.clone().or_else(|| find_root(false)).filter(|r| probe(r)) {
                 {
                     let nas: pool::SharedNas =
-                        std::sync::Arc::new(nasread::Deadlined::new(std::sync::Arc::new(r.clone())));
+                        std::sync::Arc::new(nasread::Deadlined::new(std::sync::Arc::new(r.no_retry())));
                     let locks = o.home.parent().unwrap_or(&o.home).to_path_buf();
                     // (The member's lock held by another process, most often the agent before this
                     // one still draining after an update: tried again each second for `JOIN_WAIT`,
@@ -3504,6 +3504,10 @@ impl Agent {
     }
 
     /// The NAS root, when mounted and answering; tries to mount it every five minutes otherwise.
+    /// Its reads are never retried (`NasRoot::no_retry`): the loop plans, gates, steps the pool and
+    /// feeds the coordinator with it, and a read riding out an outage for minutes would stall them
+    /// all (25 Oct); a failed read fails this beat, and the next reads again. A thread the loop
+    /// starts and never waits on takes `long_retry()`.
     fn root(&mut self) -> Option<NasRoot> {
         let root = match &self.o.root {
             Some(r) => Some(r.clone()),
@@ -3520,7 +3524,7 @@ impl Agent {
                 r
             }
         };
-        root.filter(|r| (self.probe)(r))
+        root.filter(|r| (self.probe)(r)).map(|r| r.no_retry())
     }
 
     /// Runs until stopped (SIGTERM, SIGINT), or for one loop with `once`.
@@ -5798,7 +5802,7 @@ impl Agent {
             _ if self.caches_task.is_some() => false,
             _ => {
                 let Some(r) = root else { return false };
-                let (cache, sources) = (self.o.home.join("cache"), r.join("sources"));
+                let (cache, sources) = (self.o.home.join("cache"), r.long_retry().join("sources"));
                 let goal = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(floor + room::margin(floor)));
                 let hints = self.hints();
                 match std::thread::Builder::new()
@@ -6184,7 +6188,7 @@ impl Agent {
             return;
         }
         self.retired_at = Some(Instant::now());
-        let (cache, root) = (cache.to_path_buf(), root.clone());
+        let (cache, root) = (cache.to_path_buf(), root.long_retry());
         self.retire_task =
             std::thread::Builder::new().name("retire".into()).spawn(move || room::retire(&cache, Some(&root))).ok();
     }
@@ -6210,7 +6214,8 @@ impl Agent {
             return;
         };
         self.answers_seeded = true;
-        let (root, cache, scratch) = (root.clone(), self.o.home.join("cache"), self.o.home.join("scratch/answers"));
+        let (root, cache, scratch) =
+            (root.long_retry(), self.o.home.join("cache"), self.o.home.join("scratch/answers"));
         // (With the budgets on, alone among the steps keeping answers here by their lock, and each
         // archive sent under the answers' lease on the NAS: crate::answers::Local, Lease.)
         let leased = true;
@@ -8662,7 +8667,7 @@ impl Agent {
         self.coverage.borrow_mut().take();
         let mut making = self.coverage_making.borrow_mut();
         let fresh = if making.as_ref().is_none_or(|(v, h)| *v != a.version && h.is_finished()) {
-            let (root, cache, a, v) = (root.clone(), self.o.home.join("cache"), a.clone(), a.version.clone());
+            let (root, cache, a, v) = (root.long_retry(), self.o.home.join("cache"), a.clone(), a.version.clone());
             let run = std::thread::Builder::new().name("coverage".into()).spawn(move || {
                 let all = crate::coverage::Coverage::accepted(&root, &a, Some(&cache)).map_err(|e| format!("{e:#}"))?;
                 Ok(Coverages { each: all.by_region(), all })
@@ -8703,7 +8708,8 @@ impl Agent {
         if self.regions_making.borrow().is_some() || self.regions_tried.borrow().as_ref() == Some(&key) {
             return;
         }
-        let (root, a, regions, had) = (root.clone(), a.clone(), regions.to_vec(), self.region_bytes.borrow().clone());
+        let (root, a, regions, had) =
+            (root.long_retry(), a.clone(), regions.to_vec(), self.region_bytes.borrow().clone());
         let run = std::thread::Builder::new()
             .name("regions-view".into())
             .spawn(move || regionsview::build(&root, &a, &regions, n, had));

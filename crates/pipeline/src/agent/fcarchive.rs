@@ -337,7 +337,9 @@ impl Archiver {
     /// Its thread started, writing under `root`.
     pub fn start(root: store::nasfs::NasRoot) -> io::Result<Archiver> {
         let (tx, rx) = mpsc::sync_channel::<Entry>(CHANNEL);
-        std::thread::Builder::new().name("forecast-archive".into()).spawn(move || Batcher::new(root).run(rx))?;
+        std::thread::Builder::new()
+            .name("forecast-archive".into())
+            .spawn(move || Batcher::new(root.long_retry()).run(rx))?;
         Ok(Archiver { tx })
     }
 

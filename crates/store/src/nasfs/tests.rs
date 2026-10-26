@@ -153,6 +153,19 @@ fn reads_ride_out_a_transient_error_and_missing_is_missing() {
     // The server's root: the short schedule.
     assert_eq!(r.short_retry().waits().len(), crate::retry::SHORT_WAITS.len());
     assert_eq!(r.waits().len(), crate::retry::WAITS.len());
+    // The agent's loop's root: one try, its error as it came; its copies share what was made.
+    let once = r.no_retry();
+    let n = std::cell::Cell::new(0);
+    let e = once
+        .join("x")
+        .retry("read", || -> io::Result<()> {
+            n.set(n.get() + 1);
+            Err(io::Error::from_raw_os_error(libc::EIO))
+        })
+        .unwrap_err();
+    assert_eq!((n.get(), e.raw_os_error()), (1, Some(libc::EIO)));
+    once.join("made/a").write_whole_made(b"a").unwrap();
+    assert!(r.join("made/b").parent_remembered() && r.long_retry().join("made/c").parent_remembered());
 }
 
 /// A read past the cache reads what a write left.

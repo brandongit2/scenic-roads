@@ -37,13 +37,17 @@ enum Waits {
     Long,
     /// crate::retry::short_waits: ~5 s (the server: an HTTP worker never stalls for minutes, D3).
     Short,
+    /// None: the agent's loop, the pool's thread and the coordinator (their reads fail at once, as
+    /// before #663: a stalled loop stops planning and the pool, and its next beat reads again).
+    Never,
 }
 
 struct Inner {
     root: PathBuf,
     /// The folders this process has made (or found made) under it (`make_parent`): the writes'
     /// hot path makes no folder twice; one is dropped again when a write into it fails (`forget`).
-    made: Mutex<BTreeSet<PathBuf>>,
+    /// (Shared by the root's copies with other schedules.)
+    made: Arc<Mutex<BTreeSet<PathBuf>>>,
     waits: Waits,
 }
 
@@ -67,7 +71,7 @@ impl Eq for NasRoot {}
 
 impl NasRoot {
     fn new(root: PathBuf) -> NasRoot {
-        NasRoot(Arc::new(Inner { root, made: Mutex::new(BTreeSet::new()), waits: Waits::Long }))
+        NasRoot(Arc::new(Inner { root, made: Arc::default(), waits: Waits::Long }))
     }
 
     /// The share's project folder where it is mounted; when it isn't and `mount` is set, mounted
@@ -109,9 +113,24 @@ impl NasRoot {
         NasRoot::new(dir)
     }
 
-    /// This root with the server's short retries (`Waits::Short`).
+    /// This root with the server's short retries (`Waits::Short`, ~5 s).
     pub fn short_retry(&self) -> NasRoot {
-        NasRoot(Arc::new(Inner { root: self.0.root.clone(), made: Mutex::new(BTreeSet::new()), waits: Waits::Short }))
+        self.with_waits(Waits::Short)
+    }
+
+    /// This root with no retries (`Waits::Never`): the agent's loop, the pool, the coordinator.
+    pub fn no_retry(&self) -> NasRoot {
+        self.with_waits(Waits::Never)
+    }
+
+    /// This root with the build's retries (`Waits::Long`, ~3.5 min, the default): a thread the
+    /// agent's loop starts and never waits on.
+    pub fn long_retry(&self) -> NasRoot {
+        self.with_waits(Waits::Long)
+    }
+
+    fn with_waits(&self, waits: Waits) -> NasRoot {
+        NasRoot(Arc::new(Inner { root: self.0.root.clone(), made: self.0.made.clone(), waits }))
     }
 
     /// The root folder itself.
@@ -139,6 +158,7 @@ impl NasRoot {
         match self.0.waits {
             Waits::Long => crate::retry::waits(),
             Waits::Short => crate::retry::short_waits(),
+            Waits::Never => Vec::new(),
         }
     }
 }
@@ -356,13 +376,16 @@ impl NasPath {
     /// `f()` (an operation on this path) tried again while it fails transiently, on its root's
     /// schedule (`RETRY`), its retries logged with `what`.
     pub fn retry<T>(&self, what: &str, f: impl FnMut() -> io::Result<T>) -> io::Result<T> {
-        if !RETRY {
+        if !RETRY || self.root.0.waits == Waits::Never {
             let mut f = f;
             return f();
         }
         let p = self.full();
         let what = format!("{what} {}", p.display());
-        crate::retry::io(&what, Some(&p), &self.root.waits(), crate::retry::transient, f)
+        // (The share looked at, and waited for up to a minute, before the last try: the build's
+        // schedule only, never the server's 5 s.)
+        let share = (self.root.0.waits == Waits::Long).then_some(p.as_path());
+        crate::retry::io(&what, share, &self.root.waits(), crate::retry::transient, f)
     }
 
     /// `f()` tried again after each of `waits` while it fails as `again` says (a caller's own

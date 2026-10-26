@@ -113,7 +113,9 @@ pub fn start_proxy(root: &store::nasfs::NasRoot, me: &str, listener: std::net::T
         let resolve: Option<proxy::Resolve> = to.map(|a| Arc::new(move |_: &str, _: u16| Some(a)) as proxy::Resolve);
         #[cfg(test)]
         let resolve = resolve.or_else(|| TEST_RESOLVE.with(|r| r.borrow().clone()));
-        Proxy::start_listening(Arc::new(Budget::new(root, me, Arc::new(SysClock))), resolve, listener)
+        // (Its NAS reads never retried: they run under the budgets' lock, which every job's
+        // request waits on; store::nasfs::NasRoot::no_retry.)
+        Proxy::start_listening(Arc::new(Budget::new(&root.no_retry(), me, Arc::new(SysClock))), resolve, listener)
     }
     #[cfg(target_os = "wasi")]
     {
