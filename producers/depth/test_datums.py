@@ -241,6 +241,13 @@ class Harmonic(unittest.TestCase):
         self.assertIn("needs a station within", str(r.exception))
         self.assertIn("km from its nearest water cell", str(r.exception))
 
+    def test_a_station_beyond_snap_km_is_left_out(self):
+        water = np.zeros((10, 10), bool)
+        water[:, :3] = True  # 10.0..10.3 E
+        pts = [(10.15, 49.45, 0.2), (10.45, 49.45, 1.5)]  # the second ~14 km east of the water
+        self.assertGreater(float(np.nanmax(datums.Surface.harmonic(pts, water, 10.0, 50.0, 0.1).a)), 1.0)
+        self.assertEqual(float(np.nanmax(datums.Surface.harmonic(pts, water, 10.0, 50.0, 0.1, snap_km=2.0).a)), np.float32(0.2))
+
     def test_no_water_or_no_stations_still_stops(self):
         with self.assertRaises(SystemExit):
             datums.Surface.harmonic([(11.0, 49.0, 1.0)], np.zeros((5, 5), bool), 10.0, 50.0, 0.1)

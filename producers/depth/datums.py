@@ -47,13 +47,13 @@ REACH_KM = 25.0
 KM_DEG = 111.32
 
 
-def nearest_water(water: np.ndarray, lon: float, lat: float, west: float, north: float, res: float):
-    """The (row, col) of the water cell nearest the point, within REACH_KM, or None."""
+def nearest_water(water: np.ndarray, lon: float, lat: float, west: float, north: float, res: float, reach_km: float = REACH_KM):
+    """The (row, col) of the water cell nearest the point, within `reach_km`, or None."""
     H, W = water.shape
     fr, fc = (north - lat) / res - 0.5, (lon - west) / res - 0.5
     ky = KM_DEG * res
     kx = ky * max(np.cos(np.radians(lat)), 0.05)
-    ry, rx = int(np.ceil(REACH_KM / ky)) + 1, int(np.ceil(REACH_KM / kx)) + 1
+    ry, rx = int(np.ceil(reach_km / ky)) + 1, int(np.ceil(reach_km / kx)) + 1
     r0, r1 = max(0, int(np.floor(fr)) - ry), min(H, int(np.ceil(fr)) + ry + 1)
     c0, c1 = max(0, int(np.floor(fc)) - rx), min(W, int(np.ceil(fc)) + rx + 1)
     if r1 <= r0 or c1 <= c0:
@@ -63,7 +63,7 @@ def nearest_water(water: np.ndarray, lon: float, lat: float, west: float, north:
         return None
     d = np.hypot((rr + r0 - fr) * ky, (cc + c0 - fc) * kx)
     k = int(np.argmin(d))
-    return (int(rr[k]) + r0, int(cc[k]) + c0) if d[k] <= REACH_KM else None
+    return (int(rr[k]) + r0, int(cc[k]) + c0) if d[k] <= reach_km else None
 
 
 def nearest_station(water: np.ndarray, pts, west: float, north: float, res: float):
@@ -225,9 +225,10 @@ class Surface:
         return cls(np.full((2, 2), v, "float32"), -180.0, 90.0, 180.0)
 
     @classmethod
-    def harmonic(cls, pts, water: np.ndarray, west: float, north: float, res: float, sea: OpenSea | None = None) -> "Surface":
+    def harmonic(cls, pts, water: np.ndarray, west: float, north: float, res: float, sea: OpenSea | None = None, snap_km: float = REACH_KM) -> "Surface":
         """Solved over `water` (a bool lon/lat grid from `west`, `north`, cells of `res` degrees);
-        with `sea`, open sea beyond the reach is extrapolated (see OpenSea)."""
+        with `sea`, open sea beyond the reach is extrapolated (see OpenSea). A station further than
+        `snap_km` from the water is left out."""
         from scipy.ndimage import distance_transform_edt, label
         from scipy.sparse import coo_matrix
         from scipy.sparse.linalg import spsolve
@@ -237,7 +238,7 @@ class Surface:
             raise SystemExit("a datum surface needs water and stations")
         fixed: dict = {}
         for lon, lat, v in pts:
-            hit = nearest_water(water, lon, lat, west, north, res)
+            hit = nearest_water(water, lon, lat, west, north, res, snap_km)
             if hit:
                 fixed.setdefault(hit, []).append(v)
         lab, _ = label(water)
@@ -315,10 +316,11 @@ class Surface:
         return warp_onto((self.a, from_origin(self.west, self.north, self.res, self.res), "EPSG:4326"), 1, win, "bilinear", src_nodata=np.nan)
 
 
-def from_table(table, rasters, res: float = 0.005, sea: OpenSea | None = None, below: float | None = None) -> Surface | None:
+def from_table(table, rasters, res: float = 0.005, sea: OpenSea | None = None, below: float | None = None,
+               snap_km: float = REACH_KM) -> Surface | None:
     """A station table's surface (`table`: path, column, ids left out, the id column) over the
     water the `rasters` (a source's files, any CRS) have data on (with `below`, their values under
-    it: a grid of land and sea alike): a constant when every station says the same; None without a table."""
+    it: a grid of land and sea alike; a station further than `snap_km` from it left out): a constant when every station says the same; None without a table."""
     if table is None:
         return None
     path, column, skip, id_column = table
@@ -328,7 +330,7 @@ def from_table(table, rasters, res: float = 0.005, sea: OpenSea | None = None, b
     if len({round(p[2], 3) for p in pts}) == 1:
         return Surface.constant(pts[0][2])
     water, w, n, r = water_of(rasters, res, below)
-    return Surface.harmonic(pts, water, w, n, r, sea)
+    return Surface.harmonic(pts, water, w, n, r, sea, snap_km)
 
 
 def water_of(rasters, res: float, below: float | None = None) -> tuple[np.ndarray, float, float, float]:

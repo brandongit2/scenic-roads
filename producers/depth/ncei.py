@@ -3,8 +3,8 @@
 
 - `crm`: the Coastal Relief Models (1″, sources/ncei-crm/crm_vol*.nc), heights up. Volumes 1–5, 7, 8
   are on EGM2008 and 9, 10 on local MSL (each file's `z#vert_crs_name`): an EGM2008 volume is brought
-  to MSL by `--offset` (`egm2008`'s table, MSL above EGM2008, a datum surface over the volume's sea).
-  Land (≥ 0) left out.
+  to MSL by `--offset` (`egm2008`'s table, MSL above EGM2008, a datum surface over the volume's sea,
+  stations more than SNAP_KM from it left out). Land (≥ 0 above MSL, after the correction) left out.
 - `egm2008`: that table, from one of tide stations' MSL − NAVD88 (`stations.py noaa`, or `vdatum.py`'s):
   each row's NAVD88 → EGM2008 separation added by `scenic-build geoid-offsets` (the declared geoid
   grids, GEOID18 and EGM2008, docs/inputs.md's heights brought to EGM2008), as `msl_minus_egm2008_m`.
@@ -29,6 +29,8 @@ import json
 import re
 import subprocess
 from pathlib import Path
+
+import numpy as np
 
 from datums import Surface, from_table
 from grid import Writer, fetch, log
@@ -94,6 +96,10 @@ VERT = {"EGM2008": True, "Mean Sea Level": False}
 COLUMN = "msl_minus_egm2008_m"
 # The surface's cells (°): the offset changes by decimetres over tens of km; a volume's sea at 0.005° is millions of cells.
 OFFSET_RES = 0.01
+# A station further than this from a volume's sea (cells under EGM2008's 0 at OFFSET_RES) is left out:
+# a gauge up a river the grid doesn't resolve would pin its river's MSL (up to ~1.5 m above the
+# coast's) on the estuary cell nearest it. One on a river wide enough to show keeps its slope.
+SNAP_KM = 2.0
 
 
 def on_egm2008(src: Path) -> bool:
@@ -169,13 +175,17 @@ def main():
     w = Writer(a.out)
     for s in a.src:
         if a.which == "crm":
-            offset = None
+            offset, hi = None, -0.001
             if on_egm2008(s):
                 if a.offset is None:
                     raise SystemExit(f"{s}: on EGM2008; crm needs --offset (egm2008's table)")
                 # (Per volume, over its sea: its values under 0, land a barrier.)
-                offset = from_table((a.offset, COLUMN, frozenset(), "id"), [s], OFFSET_RES, below=0.0)
-            spec = Spec(valid=(-12000.0, -0.001), piece_zoom=a.piece_zoom, offset=offset)
+                offset = from_table((a.offset, COLUMN, frozenset(), "id"), [s], OFFSET_RES, below=0.0, snap_km=SNAP_KM)
+                # Land is land by MSL: a cell above EGM2008's 0 but under MSL (MSL above EGM2008 there) is
+                # sea, one under it but above MSL land; so the volume's heights up to the surface's
+                # highest are read, and the corrected ones above −0.001 left out.
+                hi = max(hi, float(np.nanmax(offset.a)))
+            spec = Spec(valid=(-12000.0, hi), piece_zoom=a.piece_zoom, offset=offset, top=-0.001)
             name = s.stem.split("_20")[0].replace("_", "-")
         else:
             lake = s.stem.split("_")[0]

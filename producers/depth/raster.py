@@ -56,12 +56,14 @@ def mid_lat(ds) -> float:
 class Spec:
     """How one source's rasters become depth grids."""
 
-    def __init__(self, band=1, scale=1.0, valid=None, zoom=None, piece_zoom=None, flags=(), offset=None, low=None, nodata=None, resampling=None, low_raster=None):
+    def __init__(self, band=1, scale=1.0, valid=None, zoom=None, piece_zoom=None, flags=(), offset=None, low=None, nodata=None, resampling=None, low_raster=None, top=None):
         self.band, self.scale, self.valid, self.zoom, self.piece_zoom = band, scale, valid, zoom, piece_zoom
         # Each flag: (raster or None for the source itself, band, a function of its values → bool, zoom).
         self.flags = list(flags)
         # Datum surfaces (datums.Surface): MSL above the raster's datum; a chart's low water below MSL.
         self.offset, self.low, self.nodata, self.resampling = offset, low, nodata, resampling
+        # Values above `top` once brought to MSL left out (`valid` is on the raster's own datum).
+        self.top = top
         # Or the low water as a raster of its own (the chart's datum below MSL, m ≥ 0: a source's own
         # separation, its MSL grid minus its chart-datum grid).
         self.low_raster = low_raster
@@ -86,6 +88,10 @@ def produce(src: Path, spec: Spec, writer: Writer, url: str, name: str) -> int:
             v = v * spec.scale
             if spec.offset is not None:
                 v = v - spec.offset.on(win)
+            if spec.top is not None:
+                v[v > spec.top] = np.nan
+                if not np.isfinite(v).any():
+                    continue
             low = spec.low.on(win) if spec.low is not None else None
             if spec.low_raster is not None:
                 from scipy.ndimage import distance_transform_edt

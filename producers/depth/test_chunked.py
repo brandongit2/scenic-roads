@@ -293,5 +293,43 @@ class Egm2008Table(unittest.TestCase):
         self.assertEqual([(r["id"], r[ncei.COLUMN]) for r in out], [("a", -0.288), ("b", -0.153)])
 
 
+class CrmLandByMsl(unittest.TestCase):
+    """An EGM2008 volume's land is cut by MSL, not by EGM2008's 0 (raster.Spec.top)."""
+
+    def corrected(self, value, msl_above_egm2008):
+        import numpy as np
+        import rasterio
+        from rasterio.transform import from_origin
+
+        import datums
+        import raster
+
+        got = []
+
+        class Keep:
+            def put(self, name, url, win, depth, zoom=None, low=None, crop=True):
+                got.append(depth[np.isfinite(depth)])
+                return True
+
+        with tempfile.TemporaryDirectory() as t:
+            src = Path(t) / "v.tif"
+            with rasterio.open(src, "w", driver="GTiff", height=64, width=64, count=1, dtype="float32",
+                               transform=from_origin(-74.0, 40.0, 1 / 3600, 1 / 3600), crs="EPSG:4326") as o:
+                o.write(np.full((1, 64, 64), value, "float32"))
+            spec = raster.Spec(valid=(-12000.0, max(-0.001, msl_above_egm2008)), offset=datums.Surface.constant(msl_above_egm2008), top=-0.001)
+            raster.produce(src, spec, Keep(), "u", "v")
+        vals = np.concatenate(got) if got else np.zeros(0)
+        return None if not len(vals) else round(float(vals.mean()), 3)
+
+    def test_above_egm2008_but_under_msl_is_sea(self):
+        self.assertEqual(self.corrected(0.1, 0.3), -0.2)
+
+    def test_under_egm2008_but_above_msl_is_land(self):
+        self.assertIsNone(self.corrected(-0.2, -0.4))
+
+    def test_sea_is_brought_to_msl(self):
+        self.assertEqual(self.corrected(-5.0, -0.4), -4.6)
+
+
 if __name__ == "__main__":
     unittest.main()
