@@ -28,9 +28,23 @@ pub const K: usize = 2;
 pub const MAX_Z: u8 = 12;
 /// Tiles sampled in one call (each 256 × 256 × K² points).
 const CHUNK: usize = 16;
-/// Chunks sampled at once (`Tiles::prefetch_counted`): ~200 MB each (their points, and what each
-/// point's read gives).
+/// Chunks sampled at once (`Tiles::prefetch_counted`), at most the job's threads.
 const AT_ONCE: usize = 4;
+
+/// The memory (MB) a level's chunks in flight take at most (`Tiles::prefetch_counted`): `AT_ONCE`
+/// chunks of `CHUNK` tiles' K × K points a pixel, each point's longitude and latitude
+/// (`points`), what the sampler gives it (crate::dem::generic::Sampled: its height, dataset and
+/// blend) and works it out with (its height, first dataset and file).
+pub const fn sampling_mb() -> u64 {
+    use std::mem::size_of;
+    let point = 2 * size_of::<f64>()
+        + 2 * size_of::<f32>()
+        + size_of::<u8>()
+        + size_of::<bool>()
+        + size_of::<u16>()
+        + size_of::<u32>();
+    (AT_ONCE * CHUNK * 256 * 256 * K * K * point / (1 << 20)) as u64
+}
 
 /// The Terrarium pyramid's URL template in the accepted elevation version manifest `m` names
 /// under `root` (the last declared: the base's raw tiles are its, through `RawTiles`).
@@ -412,11 +426,14 @@ impl RawSource for Tiles<'_> {
         Ok((self.sample(z, &[(x, y)])?.pop().flatten(), false))
     }
 
-    // (Its chunks AT_ONCE at a time: a chunk's reads mostly wait on the NAS, one at a time left a
+    // (Its chunks up to AT_ONCE at a time: a chunk's reads mostly wait on the NAS, one at a time left a
     // job's threads idle, task #695. The same bytes: a tile's sampling reads only the level below's
     // `with_data`, which a level's own tiles never add to.)
     fn prefetch_counted(&self, z: u8, tiles: &[(u32, u32)], _threads: usize, done: &AtomicU64) -> Result<usize> {
         let chunks: Vec<&[(u32, u32)]> = tiles.chunks(CHUNK).collect();
+        // (No more at once than the job's threads: each chunk's own work, its points and their
+        // means, is on its thread, outside the job's pool.)
+        let at_once = AT_ONCE.min(rayon::current_num_threads()).max(1);
         let next = std::sync::atomic::AtomicUsize::new(0);
         let failed = std::sync::atomic::AtomicBool::new(false);
         let run = || -> Result<()> {
@@ -435,7 +452,7 @@ impl RawSource for Tiles<'_> {
             }
         };
         std::thread::scope(|s| {
-            let ws: Vec<_> = (0..AT_ONCE.min(chunks.len())).map(|_| s.spawn(run)).collect();
+            let ws: Vec<_> = (0..at_once.min(chunks.len())).map(|_| s.spawn(run)).collect();
             ws.into_iter().map(|w| w.join().unwrap_or_else(|p| std::panic::resume_unwind(p))).collect::<Result<()>>()
         })?;
         Ok(0)

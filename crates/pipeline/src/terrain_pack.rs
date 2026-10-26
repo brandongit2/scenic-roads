@@ -1572,10 +1572,11 @@ pub fn make_piece_whole(
 
 /// The most memory (MB) a z6 tile's levels take as one run makes them (`make_piece`), from its
 /// bounds: its hi tiles held until written (z9–12, up to 5,440, ~270 KB each made), a level's tiles
-/// while the next coarser is made (up to 4,096 at 256 KB), its quarters (~20 MB), and half a GB
-/// besides (the pool's samplers and their caches).
+/// while the next coarser is made (up to 4,096 at 256 KB), its quarters (~20 MB), the pool's
+/// chunks being sampled (crate::terrain_base::sampling_mb), and half a GB besides (the pool's
+/// samplers and their caches).
 pub const fn piece_peak_mb() -> u64 {
-    500 + 5440 * 270 / 1024 + 4096 / 4 + 20
+    500 + 5440 * 270 / 1024 + 4096 / 4 + 20 + crate::terrain_base::sampling_mb()
 }
 
 /// How many levels up a block's tile is (`blocks`): a z8 subtree's tiles at z12, 256 at most.
@@ -2218,7 +2219,7 @@ pub fn build_lo(
     Ok(rep)
 }
 
-/// `build_lo`'s tiles, sorted, and what it did; nothing written (`scenic-build terrain-lo-same`
+/// `build_lo`'s tiles, sorted, and what it did; nothing written (`scenic-build terrain-same 3/x/y`
 /// too).
 pub fn make_lo(
     out: &Out,

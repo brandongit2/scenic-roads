@@ -74,7 +74,8 @@ What each step does, in detail. The steps as one table (names, chains, the check
     level is of its samples in any order. Measured (task #447, footprint with `MallocLargeCache=0`):
     6/8/18 5.5–6.0 GB → 2.6–3.0 GB, 6/13/18 6.5 → 2.8 GB, 6/10/21 3.2 → 1.1 GB. `scenic-build
     terrain-same 6/x/y [--whole]` makes a live z6 tile either way and sets its pack's and mid's
-    content names beside the manifest's, writing nothing to the NAS.
+    content names beside the manifest's, writing nothing to the NAS; `terrain-same 3/x/y` does so
+    for a z3 tile's lo pack.
   - Together they make the same packs, byte for byte, as the z3 tile's whole run (`build_q_with`,
     `scenic-build terrain-hi 3/x/y`; `terrain_pack` tests).
   - **The root (z0–2)** is made from the lo packs once no terrain work is left.

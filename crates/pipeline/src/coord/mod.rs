@@ -131,10 +131,12 @@ fn is_zero64(v: &u64) -> bool {
 /// 4: a z6 tile's tiles made a group of z8 subtrees at a time, where 3 held all its z12 tiles' at once,
 /// 7 GB at its 90th percentile; 5: its deep levels too, z13–16 where a fine dataset is, a z8 tile's
 /// blocks read ahead and kept, task #633; terrain-hi 6 and slope-hi 4: named so, their deep levels
-/// their own steps', terrain-deep and slope-deep, task #639).
+/// their own steps', terrain-deep and slope-deep, task #639; terrain-hi 7 and terrain-lo 2: the
+/// pool's base tiles sampled up to 4 chunks at once, crate::terrain_base::sampling_mb, where one at
+/// a time took 0.2–0.7 GB less, task #695).
 pub fn cost_version(step: &str) -> u32 {
     match crate::agent::steps::current(step) {
-        "terrain-hi" => 6,
+        "terrain-hi" => 7,
         "slope-hi" => 4,
         // (3: the canopy rows read where they lie and counted, its blocks paced, task #606: 2's
         // copied whole squares uncounted, so its NAS weight was its uploads alone.)
@@ -151,7 +153,8 @@ pub fn cost_version(step: &str) -> u32 {
         // (1: the coverage asked by distance, never grown, task #493: 0's floors, 43 GB from
         // buffering the regions' outlines, no run since came near: 0.2 GB.)
         "bld-fetch" => 1,
-        "trees-lo" | "terrain-lo" | "slope-lo" => 1,
+        "terrain-lo" => 2,
+        "trees-lo" | "slope-lo" => 1,
         // (A grid lined up with no overview sampled from one askew, task #433: the assemblies
         // that read tens of GB read a hundredth of it.)
         "depth" | "depth-lo" => 1,
