@@ -210,7 +210,10 @@ Common rules:
   WebAssembly by version (`?v=`), takes a new
   page when the coordinator's hash changes, reloading once no task runs. It works only while open
   on screen.
-- **Planned:** task files in OPFS so a worker holds less in memory.
+- **Task files in memory:** a task's files are held in memory beside its programs and counted in
+  its budget. Moving them to the browser's storage (OPFS) wouldn't widen what pages take: a tail's
+  files average about 1 GB, but its programs alone peak past 1.7 GB, past a 1 GB page anyway, and
+  the other kinds' files are tens of MB at most.
 
 ## 8. Native workers
 

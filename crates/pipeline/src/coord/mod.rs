@@ -4415,19 +4415,9 @@ mod http {
             include_bytes!("../../../../web/work/vendor/browser_wasi_shim/fs_mem.js"),
         ),
         (
-            "vendor/browser_wasi_shim/fs_opfs.js",
-            "text/javascript",
-            include_bytes!("../../../../web/work/vendor/browser_wasi_shim/fs_opfs.js"),
-        ),
-        (
             "vendor/browser_wasi_shim/debug.js",
             "text/javascript",
             include_bytes!("../../../../web/work/vendor/browser_wasi_shim/debug.js"),
-        ),
-        (
-            "vendor/browser_wasi_shim/strace.js",
-            "text/javascript",
-            include_bytes!("../../../../web/work/vendor/browser_wasi_shim/strace.js"),
         ),
     ];
 
