@@ -194,8 +194,7 @@ pub fn drop_names(
         (r, names.len() - r)
     };
     if dry_run {
-        let m: std::collections::BTreeMap<String, String> =
-            crate::out::read_record(&root.join("state/build/manifest.json"))?;
+        let m = crate::out::read_manifest(root)?;
         let names: Vec<&String> = m.keys().filter(|l| dropped(l, depth)).collect();
         return Ok(count(&names));
     }
