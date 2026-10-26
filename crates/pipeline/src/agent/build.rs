@@ -8527,12 +8527,12 @@ pub(crate) mod tests {
 
     /// A z6 tile's water reaches a zoom when a source of it meets the tile within its blocks'
     /// margin at that zoom, past the key's 2 km too: a z9 grid 0.06° east of tile 28/16 (about
-    /// 3 km at 63°N, within z9's 32-px margin of 0.088° but not z10's 0.044°) adds z9's tiles and
+    /// 2.8 km at 65°N, within z9's 32-px margin of 0.088° but not z10's 0.044°) adds z9's tiles and
     /// ring alone.
     #[test]
     fn a_depth_tiles_water_follows_its_blocks_margin() {
         let mut src = depth_sources().remove(1);
-        src.grids[0].bbox = [-16.815, 63.0, -16.5, 63.5];
+        src.grids[0].bbox = [-16.815, 65.0, -16.5, 65.5];
         src.grids[0].zoom = 9;
         let w = depth_hi_water(&[src], (28, 16));
         assert_eq!(w.len(), 10 * 10, "z9's 8 × 8 tiles and the ring");
