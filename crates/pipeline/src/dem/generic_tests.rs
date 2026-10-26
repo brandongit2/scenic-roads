@@ -1094,7 +1094,7 @@ fn by_runs_orders_as_a_full_sort() {
     assert_eq!(got, full.into_iter().map(|p| p.2).collect::<Vec<_>>());
 }
 
-/// A mask's bits answer as its pixels do, in edge blocks too (70 × 50 in 32 × 32 blocks).
+/// A mask's bits answer as its pixels do (NaN no void), in edge blocks too (70 × 50 in 32 × 32 blocks).
 #[test]
 fn a_mask_answers_as_its_pixels() {
     let (w, h) = (70u32, 50u32);
@@ -1103,7 +1103,7 @@ fn a_mask_answers_as_its_pixels() {
             if (p * 7919) % 13 < 3 && p / w > 33 {
                 [3.0, 7.0][(p % 2) as usize]
             } else {
-                [0.0, 1.0, 2.9][(p % 3) as usize]
+                [0.0, 1.0, 2.9, f32::NAN][(p % 4) as usize]
             }
         })
         .collect();

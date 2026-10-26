@@ -264,8 +264,10 @@ struct GeoSet<'a> {
     o: &'a Opts<'a>,
     /// By file: the open file and the level read (None: the server has none).
     opened: Mutex<HashMap<usize, Option<(Arc<Tiff>, usize)>>>,
-    /// By file: its fill mask, read (`Mask`; None: it has none), once.
-    opened_masks: Vec<std::sync::OnceLock<Result<Option<Arc<Mask>>, String>>>,
+    /// By file: its fill mask's cell in the memo shared by every sampler of the run
+    /// (`TileMemo::masks`), looked up once.
+    opened_masks: Vec<std::sync::OnceLock<Arc<MaskCell>>>,
+    memo: Arc<TileMemo>,
     /// The files by where their footprints lie, for a plan of many (`FileGrid`).
     grid: Option<FileGrid>,
     /// By file: which of its blocks are known to hold data in every pixel.
@@ -408,6 +410,7 @@ impl GeoSet<'_> {
     fn mask(&self, k: usize) -> Result<Option<Arc<Mask>>> {
         let Some(Some(url)) = self.masks.get(k) else { return Ok(None) };
         self.opened_masks[k]
+            .get_or_init(|| self.memo.masks.lock().unwrap().entry(format!("{} {url}", self.id)).or_default().clone())
             .get_or_init(|| {
                 (|| -> Result<Option<Arc<Mask>>> {
                     let src = self
@@ -750,7 +753,14 @@ impl<'a> Tally<'a> {
 pub(crate) struct TileMemo {
     cap: usize,
     inner: Mutex<MemoIn>,
+    /// The fill masks read, by dataset and URL: each read once however many samplers share the
+    /// memo (a pole's levels, a base's), its bits held once (at most 2 MiB for a GLO-30 mask:
+    /// 16 blocks of 1024², a bit a pixel, only blocks holding a void).
+    masks: Mutex<HashMap<String, Arc<MaskCell>>>,
 }
+
+/// A fill mask, read once (None: it has none; Err: why it couldn't be).
+type MaskCell = std::sync::OnceLock<Result<Option<Arc<Mask>>, String>>;
 
 /// A memo's entry: None while it's being fetched (or its fetch failed), then the file or None.
 type Slot = Arc<Mutex<Option<Option<Arc<[u8]>>>>>;
@@ -783,7 +793,7 @@ pub const TILE_WITHIN: crate::fetch::Within =
 
 impl TileMemo {
     pub(crate) fn new(cap: usize) -> TileMemo {
-        TileMemo { cap, inner: Mutex::new(MemoIn::default()) }
+        TileMemo { cap, inner: Mutex::new(MemoIn::default()), masks: Default::default() }
     }
 
     /// `url`'s file, fetched by `fetch` unless kept.
@@ -1289,6 +1299,7 @@ impl<'a> Set<'a> {
                     o,
                     opened: Mutex::new(HashMap::new()),
                     opened_masks: (0..files.len()).map(|_| std::sync::OnceLock::new()).collect(),
+                    memo: memo.clone(),
                     grid: (files.len() > FileGrid::FROM).then(|| FileGrid::of(files)),
                     clean: (0..files.len()).map(|_| Clean::default()).collect(),
                     cache: cache.clone(),
