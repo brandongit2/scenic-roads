@@ -74,4 +74,74 @@ else ok prune_target; fi
 out=$(zsh -euo pipefail -c "source ${(q)lib}; prune_target $tmp/none; echo done" 2>&1)
 [[ $out == *$'\n'done ]] && ok "prune_target no target" || no "prune_target no target" "$out"
 
+# nas_lock / nas_unlock: create-new, held by another, freed only by its holder, a stale one taken over.
+nas=$tmp/nas; mkdir -p $nas/app; L=$nas/app/publish.lock
+r() { zsh -euo pipefail -c "source ${(q)lib}; $1" 2>&1 }
+out=$(r "nas_lock $L 'a 1'; echo rc=\$?; nas_lock $L 'b 2' || echo \"held: \$lock_held\"; nas_unlock $L 'b 2'; cat $L")
+[[ $out == $'rc=0\nheld: a 1, 0 min ago\na 1' ]] && ok "nas_lock held, not freed by another" || no "nas_lock held" "$out"
+out=$(r "nas_unlock $L 'a 1'; [[ ! -e $L ]] && echo freed")
+[[ $out == freed ]] && ok "nas_unlock by its holder" || no "nas_unlock by its holder" "$out"
+print 'old 9' > $L; touch -t 202601010000 $L
+out=$(r "nas_lock $L 'c 3'; cat $L")
+[[ $out == *'took over a lock'*'(old 9)'*$'\nc 3' ]] && ok "nas_lock stale taken over" || no "nas_lock stale" "$out"
+rm -f $L
+
+# hold / unhold: a live holder keeps it; a gone one's is taken over; freed only by its owner.
+H=$tmp/tree.busy
+zsh -c "source ${(q)lib}; hold $H; sleep 30" & hp=$!
+for i in {1..50}; do [[ -s $H/owner ]] && break; sleep 0.1; done
+out=$(r "hold $H || echo \"held: \$lock_held\"; unhold $H; [[ -d $H ]] && echo kept")
+[[ $out == "held: process $hp "*$'\nkept' ]] && ok "hold held by a live process" || no "hold live" "$out"
+kill $hp; wait $hp 2>/dev/null
+out=$(r "hold $H && echo taken; unhold $H; [[ -d $H ]] || echo freed")
+[[ $out == $'taken\nfreed' ]] && ok "hold taken over from a gone process" || no "hold gone" "$out"
+
+# fast_forward: in a stand-in repository, live = b; c builds on it, a is older, d diverged.
+g=$tmp/repo; git init -q $g
+c() { git -C $g -c user.name=t -c user.email=t@t commit -q --allow-empty -m $1; git -C $g rev-parse --short HEAD }
+A=$(c a); B=$(c b); C=$(c c); git -C $g checkout -q $A; D=$(c d)
+cur=$nas/app/current.json
+ff() { (cd $g && zsh -c "source ${(q)lib}; fast_forward $cur $1" 2>&1) }
+out=$(ff $A) && ok "fast_forward nothing live" || no "fast_forward nothing live" "$out"
+print -r -- "{\"version\": \"20261026-0953-$B\"}" > $cur
+out=$(ff $C) && ok "fast_forward newer" || no "fast_forward newer" "$out"
+out=$(ff $B) && ok "fast_forward same" || no "fast_forward same" "$out"
+out=$(ff $A) && no "fast_forward older" "allowed" || { [[ $out == *'older than the live version'* ]] && ok "fast_forward older refused" || no "fast_forward older" "$out"; }
+out=$(ff $D) && no "fast_forward diverged" "allowed" || { [[ $out == *diverged* ]] && ok "fast_forward diverged refused" || no "fast_forward diverged" "$out"; }
+print -r -- '{"version": "20261026-0953-0000000"}' > $cur
+out=$(ff $C) && no "fast_forward unknown live" "allowed" || ok "fast_forward unknown live refused"
+
+# Two publishes at once, as publish.sh composes these steps (fake steps, the stand-in NAS and
+# repository): each takes a tree, the tests one at a time, the NAS lock only around its install
+# with the ordering checked under it. The second (c, newer) builds beside the first (b) and goes in
+# right after it; a third, of an older commit (a), is refused at its install.
+rm -f $cur; cache=$tmp/cache; mkdir -p $cache; ev=$tmp/events; : > $ev
+pub() {  # <name> <commit> <build seconds>
+  (cd $g && zsh -c "set -euo pipefail; source ${(q)lib}
+    e() { print -r -- \"$1 \$*\" >> $ev; }
+    who='$1 '\$\$
+    snap=; for t in tree tree-2; do hold $cache/\$t.busy && { snap=\$t; break; }; done
+    [[ -n \$snap ]] || { e no-tree; exit 1; }
+    e build \$snap; sleep $3; e built
+    until hold $cache/tests.busy; do sleep 0.1; done; e tests; sleep 0.5; e tested; unhold $cache/tests.busy
+    until nas_lock $L \"\$who\"; do sleep 0.1; done; e locked
+    if ! fast_forward $cur $2 > $tmp/why-$1; then e refused; nas_unlock $L \"\$who\"; unhold $cache/\$snap.busy; exit 1; fi
+    sleep 0.5; print -r -- '{\"version\": \"20261026-0953-$2\"}' > $cur; e installed
+    nas_unlock $L \"\$who\"; e unlocked; unhold $cache/\$snap.busy" 2>&1)
+}
+pub b $B 0.3 & p1=$!
+sleep 0.1; pub c $C 0.2 & p2=$!
+wait $p1; r1=$?; wait $p2; r2=$?
+order=$(tr '\n' ',' < $ev)
+seq() { local s=$order w; for w in "$@"; do [[ $s == *"$w"* ]] || return 1; s=${s#*"$w"}; done }
+if (( r1 || r2 )); then no "two publishes" "exit $r1/$r2: $order"
+elif ! seq 'b build tree,' 'c build tree-2,' 'b built'; then no "two publishes build beside each other" "$order"
+elif ! seq 'b tests' 'b tested' 'c tests' 'c tested'; then no "two publishes' tests one at a time" "$order"
+elif ! seq 'b locked' 'b installed' 'b unlocked' 'c locked' 'c installed' 'c unlocked'; then no "two publishes install one after the other" "$order"
+elif [[ $(<$cur) != *$C* ]]; then no "two publishes" "live: $(<$cur)"
+else ok "two publishes: built side by side, tests queued, installed in turn"; fi
+: > $ev
+pub a $A 0 && no "older publish" "installed: $(<$ev)" || {
+  [[ $(<$ev) == *refused* && $(<$cur) == *$C* && ! -e $L && ! -e $cache/tree.busy ]] && ok "older publish refused, lock freed" || no "older publish" "$(<$ev) $(<$tmp/why-a)"; }
+
 exit $failed

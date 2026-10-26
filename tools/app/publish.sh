@@ -7,9 +7,11 @@
 #   tools/app/publish.sh              build, test, publish
 #   tools/app/publish.sh --rollback   point app/current.json back at the previous version
 #
-# Either Mac may publish: a lock on the NAS (app/publish.lock) keeps two publishes from writing
-# app/current.json at once, and a publish is only ever of a clean tree whose commit is on origin's
-# main (no -dirty versions).
+# Either Mac may publish, and two publishes may run at once: each builds and tests in its own tree
+# beside the other, and only the install (app/<version>/, app/current.json) holds the lock on the NAS
+# (app/publish.lock), the second waiting for the first's. A publish is only ever of a clean tree whose
+# commit is on origin's main (no -dirty versions), and installs only over a live version its commit
+# contains (fast-forward).
 set -euo pipefail
 # (Its arguments checked before anything: `--help` publishes nothing.)
 usage="usage: tools/app/publish.sh [--rollback]"
@@ -29,9 +31,6 @@ NAS=/Volumes/personal/projects/scenic-roads
 # (Every copy leaves the extended attributes behind, cp -X: the NAS refuses macOS's provenance one
 # when it differs from the folder's, failing the copy.)
 [[ -d $NAS ]] || { echo "the NAS isn't mounted at /Volumes/personal"; exit 2; }
-# The lock: made with create-new (zsh's noclobber opens with O_EXCL, which the share does
-# atomically), naming its Mac, process and time; removed as this script exits. One older than six
-# hours (its Mac gone mid-publish) is moved aside and taken.
 lock=$NAS/app/publish.lock
 cleanup=()
 # Its last line says how it ended: "published <version>" (exit 0), or, on any other exit, "publish:
@@ -51,28 +50,9 @@ on_exit() {
 }
 at_end on_exit
 who="$(scutil --get LocalHostName 2>/dev/null || hostname -s) $$ $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-if ! ( set -o noclobber; print -r -- "$who" > $lock ) 2>/dev/null; then
-  held=$(cat $lock 2>/dev/null)
-  age=$(( $(date +%s) - $(stat -f %m $lock 2>/dev/null || date +%s) ))
-  if (( age < 6 * 3600 )); then
-    echo "another publish holds $lock ($held, $(( age / 60 )) min ago): try again once it's over"
-    exit 1
-  fi
-  # Moved aside, then checked to be the stale lock read above: one another publish took meanwhile
-  # (moving the stale one first) is put back and left to it.
-  mv $lock $lock.stale-$$ 2>/dev/null || { echo "another publish took $lock just now"; exit 1; }
-  if [[ $(cat $lock.stale-$$ 2>/dev/null) != $held ]]; then
-    ( set -o noclobber; cat $lock.stale-$$ > $lock ) 2>/dev/null || true  # (one made meanwhile kept)
-    rm -f $lock.stale-$$
-    echo "another publish took $lock just now"; exit 1
-  fi
-  ( set -o noclobber; print -r -- "$who" > $lock ) 2>/dev/null || { echo "another publish took $lock just now"; exit 1; }
-  echo "publish: took over a lock $(( age / 3600 )) h old ($(cat $lock.stale-$$ 2>/dev/null))"
-  rm -f $lock.stale-$$
-fi
-# (Removed only while it's still this publish's.)
-cleanup+=('[[ $(cat $lock 2>/dev/null) == $who ]] && rm -f $lock')
 if [[ $rollback == asked ]]; then
+  nas_lock $lock "$who" || { echo "another publish holds $lock ($lock_held): try again once it's over"; exit 1; }
+  cleanup+=('nas_unlock $lock "$who"')
   [[ -f $NAS/app/previous.json ]] || { echo "no previous version to roll back to"; exit 1; }
   cp -X $NAS/app/current.json $NAS/app/current.json.tmp.old
   cp -X $NAS/app/previous.json $NAS/app/current.json.tmp && mv $NAS/app/current.json.tmp $NAS/app/current.json
@@ -86,6 +66,8 @@ fi
 # snapshot of that commit, below.)
 git fetch -q origin main || { echo "can't fetch origin's main"; exit 1; }
 head=$(git rev-parse --short origin/main)
+# (Refused now, before building, when it couldn't go in; checked again at the install.)
+fast_forward $NAS/app/current.json $head || exit 1
 # The old name of the lead's role (the pattern below) nowhere in the code, docs or UI (the owner's
 # rule, 14 Oct 2026): the role is the lead's, a measure taken on a Mac names it (the M4, the M1).
 # History (the task board) is exempt.
@@ -98,11 +80,26 @@ fi
 # for publishing (~/Library/Caches/scenic-publish/tree), so commits and edits here meanwhile change
 # nothing published. Kept between publishes as a build cache: its target/ and web/node_modules
 # (reinstalled when web's lockfile changed) carry over, so only what changed is rebuilt.
+# Each publish running at once has its own: the first free of tree and tree-2, held (tree.busy) until
+# it ends. tree-2, built only beside another publish, is removed by a publish that finds it
+# unused for 3 days; both have their target/ pruned (prune_target, below).
 repo=$PWD
-snap=~/Library/Caches/scenic-publish/tree
+cache=~/Library/Caches/scenic-publish
+mkdir -p $cache
+snap=
+for t in tree tree-2; do
+  if hold $cache/$t.busy; then snap=$cache/$t; cleanup+=("unhold $cache/$t.busy"); break; fi
+done
+[[ -n $snap ]] || { echo "two publishes are already running on this Mac ($lock_held)"; exit 1; }
+spare=$cache/tree-2
+if [[ $snap != $spare && -e $spare && -z $(found $cache/tree-2.used -newermt '3 days ago') ]] && hold $spare.busy; then
+  git worktree remove --force $spare 2>/dev/null || rm -rf $spare
+  rm -f $cache/tree-2.used; unhold $spare.busy
+  echo "removed the spare publish tree (unused for 3 days)"
+fi
+touch $cache/${snap:t}.used
 if [[ ! -e $snap/.git ]]; then
   git worktree prune
-  mkdir -p ${snap:h}
   git worktree add -q --detach $snap $head
 fi
 git -C $snap checkout -q --detach --force $head
@@ -169,10 +166,18 @@ suite='export SCENIC_PUBLISH=1; cargo nextest --version >/dev/null 2>&1 || { mis
 cargo nextest run --no-fail-fast --hide-progress-bar -p store -p names -p pipeline --lib || rc=$?
 cargo nextest run --no-fail-fast --hide-progress-bar -p pipeline --test "*" || rc=$?
 exit $rc'
+# One publish's suite and clippy at a time on this Mac (two at once overload the test Mac, #684): the
+# second waits for the first's (tests.busy).
+until hold $cache/tests.busy; do
+  [[ -n ${said_wait:-} ]] || { echo "waiting for the other publish's tests ($lock_held)"; said_wait=1; }
+  sleep 10
+done
+cleanup+=("unhold $cache/tests.busy")
 zsh tools/app/remote-tests.sh publish $snap $suite > $tests_log 2>&1 || tests_ok=$?
 # (And every child, listener and taken connection by store::spawn: clippy's disallowed-methods,
 # clippy.toml, docs/pool.md §7.5. A hit fails the publish.)
 cargo clippy -q --workspace --all-targets -- -A clippy::all -D clippy::disallowed_methods >> $tests_log 2>&1 || { tests_ok=$?; grep -A6 'disallowed' $tests_log; }
+unhold $cache/tests.busy
 # (Only the final result counts: when the M4's run ended without one and the suite ran again here,
 # remote-tests.sh marked where the rerun starts.)
 from=$(grep -n -- '^--- remote result discarded, local rerun ---$' $tests_log | tail -1 | cut -d: -f1 || true)
@@ -198,7 +203,8 @@ fonts=$repo/data/fonts
 [[ -d $fonts ]] || fonts=$NAS/app/fonts
 [[ -d $fonts ]] || { echo "no fonts folder (data/fonts or the NAS's app/fonts)"; exit 1; }
 # Smoke test: the new server, its own empty home (no mirror), the NAS's catalog.
-home=$(mktemp -d); port=18080
+# (Its port its tree's, so two publishes' smoke tests can run at once.)
+home=$(mktemp -d); port=18080; [[ $snap == $spare ]] && port=18081
 ./target/release/server --port $port --home $home --no-mirror --web web/dist-publish --fonts $fonts > $home/server.log 2>&1 &
 pid=$!
 cleanup+=("kill $pid 2>/dev/null; rm -rf $home")
@@ -219,13 +225,29 @@ done
 kill $pid; wait $pid 2>/dev/null || true
 version=$(date -u +%Y%m%d-%H%M)-$head
 dest=$NAS/app/$version
-mkdir -p $dest.tmp/web $dest.tmp/fonts
+sb=$(mktemp -d)
 # The programs that listen (the map server; the agent, whose coordinator and broker members reach)
 # signed with the owner's certificate when this Mac has it, under fixed identifiers, so a Mac's
 # firewall allow outlives an update (an ad-hoc signature is the build's own hash, so its allow went
 # with it). Signed here before the copy: codesign refuses files on the NAS.
 codesign -s "$sign_id" -i local.scenic.server --force target/release/server
 codesign -s "$sign_id" -i local.scenic.agent --force target/release/scenic
+# Scenic.app (tools/status: the menu bar item, the build service, the map server's controls), built
+# and signed on this Mac (codesign refuses a bundle on the NAS, whose SMB share adds Finder info),
+# then copied without extended attributes (none to keep as AppleDouble files). Each Mac's copy in
+# /Applications replaces itself with it.
+zsh tools/status/bundle.sh $sb $version "$sign_id" >/dev/null
+# The install, the one part two publishes can't run at once: the lock on the NAS, waited for while
+# another publish installs (one older than six hours is taken over), freed only by its holder.
+until nas_lock $lock "$who"; do
+  [[ -n ${said_lock:-} ]] || { echo "waiting for the publish holding $lock ($lock_held)"; said_lock=1; }
+  sleep 10
+done
+cleanup+=('nas_unlock $lock "$who"')
+# (Again, under the lock: the publish that went in meanwhile may be newer.)
+fast_forward $NAS/app/current.json $head || exit 1
+[[ ! -e $dest ]] || { echo "$dest exists already"; exit 1; }
+rm -rf $dest.tmp; mkdir -p $dest.tmp/web $dest.tmp/fonts
 # The server, and the agent with the programs its jobs run (each Mac runs them from here):
 # the pipeline's binaries, and the Python steps (dem/, run with uv) with their lock file.
 cp -X target/release/server target/release/scenic target/release/scenic-build target/release/extract \
@@ -236,13 +258,7 @@ mkdir -p $dest.tmp/wasm
 cp -X target/wasm32-wasip1/release/{extract,tile,scenic-metrics,areaflags,elev,landcover,trees,bldtile,terrainsub}.wasm $dest.tmp/wasm/
 mkdir -p $dest.tmp/dem
 git ls-files dem | while read f; do cp -X "$f" "$dest.tmp/$f"; done
-# Scenic.app (tools/status: the menu bar item, the build service, the map server's controls), built
-# and signed on this Mac (codesign refuses a bundle on the NAS, whose SMB share adds Finder info),
-# then copied without extended attributes (none to keep as AppleDouble files). Each Mac's copy in
-# /Applications replaces itself with it.
-sb=$(mktemp -d)
-zsh tools/status/bundle.sh $sb $version "$sign_id" >/dev/null
-cp -RX "$sb/Scenic.app" "$dest.tmp/"
+cp -RX "$sb/Scenic.app" "$dest.tmp/"  # (Scenic.app, signed above)
 rsync -a web/dist-publish/ $dest.tmp/web/
 rsync -a $fonts/ $dest.tmp/fonts/
 mv $dest.tmp $dest

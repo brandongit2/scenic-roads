@@ -484,18 +484,26 @@ everything is rebuilt.
 "Scenic Code Signing" identity in its login keychain; normally on the Mac mini over ssh:
 `ssh m6 'cd ~/projets/scenic-roads && tools/app/publish.sh'` (it puts brew's and rustup's folders
 on the PATH itself and takes the rest from mise.toml, so no shell profile is needed). It
-1. takes a lock on the NAS (`app/publish.lock`, create-new; one over six hours old taken over);
-2. builds the tip of origin's main, fetched now, in its own snapshot
+1. builds the tip of origin's main, fetched now, in its own snapshot
    (`~/Library/Caches/scenic-publish/tree`, kept as a build cache), whatever this checkout holds;
    refuses without the signing identity, or when codesign can't use its key unprompted;
-3. refuses while the lead's role's old name appears in the code, docs or UI (`tools/taskboard`
-   exempt);
-4. builds the server and pipeline;
-5. runs the crates' tests, the type check and the web build, and checks every Python step loads
+2. refuses while the lead's role's old name appears in the code, docs or UI (`tools/taskboard`
+   exempt), or when its commit doesn't contain the live version's (below);
+3. builds the server and pipeline;
+4. runs the crates' tests, the type check and the web build, and checks every Python step loads
    from a copy of `dem/` in a fresh environment and passes pyflakes;
-6. smoke-tests a server on a spare port against the NAS's catalog;
-7. writes `app/<version>/` and `app/current.json` with every file's SHA-256;
-8. copies `tools/nas/fetch-planet.sh` to the NAS's `nas/` when it differs.
+5. smoke-tests a server on a spare port against the NAS's catalog, and signs the programs and Scenic.app;
+6. takes the lock on the NAS (`app/publish.lock`, create-new; one over six hours old taken over),
+   waiting while another publish holds it, checks the order again, writes `app/<version>/` and
+   `app/current.json` with every file's SHA-256, copies `tools/nas/fetch-planet.sh` to the NAS's
+   `nas/` when it differs, and frees the lock.
+
+Two publishes may run at once: the second takes a second tree (`tree-2`, removed by a publish that
+finds it unused for 3 days; both trees' `target/` pruned each publish), its smoke test a port of its
+own, and its tests wait for the first's (`tests.busy`, so the test Mac runs one suite at a time),
+then it installs once the first has freed the lock. A publish installs only when its commit contains
+the live version's (fast-forward): one of an older or diverged commit fails, saying so. Its last line
+is `published <version>` or `publish: FAILED …`.
 
 `publish.sh --rollback` swaps `current.json` and `previous.json`. The agent never fetches from git.
 
