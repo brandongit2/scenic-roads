@@ -244,10 +244,22 @@ impl PageView {
             return false;
         }
         if self.state.lock().unwrap().last.is_some_and(|t| t.elapsed() < EVERY) {
+            // (Between the full reads, the pause alone, one small file: a press of Pause or
+            // Resume shows within a second or two, not at the next full read.)
+            self.refresh_pause(src);
             return false;
         }
         self.refresh(src, now);
         true
+    }
+
+    /// Reads `state/build/pause.json` alone (without the state's lock) into the snapshot, if there
+    /// is one; a file not there is no pause (the lead removes it when the build goes on).
+    fn refresh_pause(&self, src: &dyn Source) {
+        let pause = src.read("state/build/pause.json").and_then(|b| serde_json::from_slice::<Value>(&b).ok()).unwrap_or(Value::Null);
+        if let Some(s) = self.state.lock().unwrap().snap.as_mut() {
+            s.pause = pause;
+        }
     }
 
     /// Reads the files (without the state's lock: what it needs of it taken first) and makes the
@@ -442,8 +454,9 @@ fn answer(s: &Snap, forecast: Option<&Forecast>, h: Option<&History>, epoch: &st
     // (A lead on an app before view.json: no leases, workers nor tasks; its status's own forecast
     // when it writes no input either.)
     let (leases, workers) = crate::coord::ages(&s.view, now);
-    // (The pause as the lead mirrors it, at once; else as its view said.)
-    let pause = if s.pause.is_null() { s.view["pause"].clone() } else { s.pause.clone() };
+    // (The pause as the lead mirrors it to the NAS, absent when the build goes on: never the
+    // view's, which a Resume leaves saying "paused" until the lead writes it again.)
+    let pause = s.pause.clone();
     serde_json::json!({
         "now": now,
         "pause": pause,
@@ -801,7 +814,33 @@ mod tests {
         // (The forecast's input read again only when its file changed.)
         pv.touch_at(now);
         assert!(pv.tick(&src, now));
-        assert_eq!(src.1.load(Ordering::Relaxed) - n, n - 1, "all but the forecast's input");
+        // (n: the full read and the pause's one read between.)
+        assert_eq!(src.1.load(Ordering::Relaxed) - n, n - 2, "all but the forecast's input");
+    }
+
+    #[test]
+    fn the_pause_follows_its_file_between_full_reads_and_a_resume_is_no_pause() {
+        // (Task #673) a press of Pause shows within a tick, not a full read; Resume (the file
+        // removed) isn't the stale view's pause.
+        let d = tempfile::tempdir().unwrap();
+        let now = now_s();
+        fixture(d.path(), now);
+        let src = Dir(d.path().into(), AtomicUsize::new(0));
+        let pv = PageView::default();
+        pv.set_inputs(inputs(""));
+        pv.touch_at(now);
+        assert!(pv.tick(&src, now));
+        assert!(pv.swarm().unwrap()["pause"].is_null());
+        put(d.path(), "state/build/pause.json", br#"{"mode":"drain","by":"me","at":1}"#);
+        assert!(!pv.tick(&src, now), "not a full read");
+        assert_eq!(pv.swarm().unwrap()["pause"]["mode"], "drain");
+        // The view still says paused (as before the lead wrote it again): the file's absence wins.
+        let mut v: Value = serde_json::from_slice(&local(d.path(), "state/coord/term/7/view.json").unwrap()).unwrap();
+        v["view"]["pause"] = serde_json::json!({ "mode": "drain", "by": "me", "at": 1 });
+        put(d.path(), "state/coord/term/7/view.json", v.to_string().as_bytes());
+        std::fs::remove_file(d.path().join("state/build/pause.json")).unwrap();
+        pv.tick(&src, now);
+        assert!(pv.swarm().unwrap()["pause"].is_null());
     }
 
     #[test]

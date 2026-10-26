@@ -26,6 +26,9 @@ import { nasSection } from "./nas.js";
 import { startActivity, transfersPart } from "./activity.js";
 
 const POLL_MS = 10000;
+// A pressed Pause or Resume: the page asks again this often until the build says so, for this long at most.
+const PENDING_POLL_MS = 1000;
+const PENDING_MAX_MS = 60000;
 const STALE_S = 360;
 const STUCK_S = 900;
 
@@ -1636,14 +1639,39 @@ function section(cls, title, sub, ...body) {
   return h("section", { class: cls }, title ? h("h2", null, title, sub ? h("span", null, sub) : null) : null, ...body);
 }
 
-// The header's status: the verdict's sentence and the pause controls.
+// The pause controls (task #673): each press opens a small confirmation (a pinned card, `pinCard("ask", …, kind)`);
+// the confirmed one shows pending at once and the page asks again each second until the build's state is
+// what was asked (`ctx.ask`). The header's sentence is always the state as the build reports it.
+const ASKS = {
+  drain: { title: "Pause at a safe point?", text: "Every Mac's job stops at its next safe point; nothing new starts. Resume lets it go on.", ok: "Pause", busy: "Pausing…", pause: { mode: "drain" } },
+  freeze: { title: "Freeze every job now?", text: "Every Mac's job is frozen where it is, at once, and goes on from there when resumed.", ok: "Freeze", busy: "Freezing…", pause: { mode: "freeze" } },
+  resume: { title: "Resume the build?", text: "The paused jobs go on and new work starts again.", ok: "Resume", busy: "Resuming…", pause: null },
+};
+const askCard = (kind) => {
+  const a = ASKS[kind];
+  return [h("div", "ct", a.title), h("div", "dim", a.text),
+    h("div", "ask-btns", h("button", { class: "quiet", onclick: unpin }, "Cancel"), h("button", { class: "primary", onclick: () => { unpin(); ctx.ask(kind); } }, a.ok))];
+};
+let pending = null; // {kind, at}: a press waiting for the build to say so
+const settled = (kind, p) => (kind === "resume" ? !p : kind === "freeze" ? p?.mode === "freeze" : !!p);
 function head(m) {
-  const pausing = !!m.sw.pause;
-  const ctl = h("div", "ctl",
-    pausing ? h("button", { class: "primary", onclick: () => ctx.ask(null) }, "Resume")
-      : [h("button", { onclick: () => ctx.ask({ mode: "drain" }), title: "Every Mac's job stops at its next safe point; nothing new starts" }, "Pause at a safe point"),
-        h("button", { class: "quiet", onclick: () => confirm("Freeze every Mac's job where it is now? (It goes on from there when resumed.)") && ctx.ask({ mode: "freeze" }), title: "Freeze every Mac's job where it is, at once" }, "Freeze now")]);
-  return [h("div", "verdict", h("div", "say", verdictText(m)), ctl)];
+  cards.set("ask", askCard); // (The cards are made again with each render.)
+  const open = (kind) => (e) => {
+    e.stopPropagation(); // (Not the page's own click: it lets a card go.)
+    const r = e.currentTarget.getBoundingClientRect();
+    pinCard("ask", r.left + r.width / 2, r.bottom - 6, kind);
+  };
+  const btn = (kind, label, cls, title) => {
+    const on = pending?.kind === kind;
+    return h("button", { class: [cls, on ? "pending" : ""].filter(Boolean).join(" "), disabled: !!pending, "aria-busy": on ? "true" : null, onclick: open(kind), title }, on ? ASKS[kind].busy : label);
+  };
+  const ctl = h("div", "ctl", m.sw.pause
+    ? btn("resume", "Resume", "primary", "Lets every job go on")
+    : [btn("drain", "Pause at a safe point", "", "Every Mac's job stops at its next safe point; nothing new starts"),
+      btn("freeze", "Freeze now", "quiet", "Freeze every Mac's job where it is, at once")]);
+  const say = verdictText(m);
+  if (pending) say.push(h("span", "dim", ` · ${ASKS[pending.kind].busy.replace("…", "")} asked, the build hasn't said so yet`));
+  return [h("div", "verdict", h("div", "say", say), ctl)];
 }
 
 // The alerts, full width above the Overview's map (the owner, 21 Oct 04:00), not in the sticky
@@ -1793,6 +1821,7 @@ async function pollOnce() {
     readSince = null;
     clearTimeout(retry);
     last = sw;
+    if (pending && settled(pending.kind, sw.pause)) pending = null;
     // (Not waited for: the rows show the regions' folders and sizes once they come.)
     loadRegions(sw);
     ctx.onAnswer?.();
@@ -1826,20 +1855,42 @@ async function pollOnce() {
 }
 
 /** Starts the dashboard: its header status in `head`, each tab's sections in `panels[tab]`;
- * `onAnswer()` on each answer of the build's (the footer's Live dot); `call(path, body)` asks the coordinator ([status, json]); `ask(pause)`
- * pauses the build (null: lets it go on); `store` keeps this browser's own (what it last showed). */
+ * `onAnswer()` on each answer of the build's (the footer's Live dot); `call(path, body)` asks the coordinator ([status, json]); `ask(kind)`
+ * pauses the build ("drain", "freeze") or lets it go on ("resume"); `store` keeps this browser's own (what it last showed). */
 export function dashboard(opts) {
   ctx = opts;
   ui.past = PAST.some(([s]) => s === ctx.store.get("past", ui.past)) ? ctx.store.get("past", ui.past) : ui.past;
   wireCards();
-  ctx.ask = async (pause) => {
+  let watching = false;
+  ctx.ask = async (kind) => {
+    const a = ASKS[kind];
+    pending = { kind, at: Date.now() };
+    render();
     try {
       // (No time of this browser's: the coordinator's clock orders the asks, and stamps it.)
-      await ctx.call("/work/pause", { pause: pause && { ...pause, by: ctx.label, at: 0 } });
-      poll();
+      const [code] = await ctx.call("/work/pause", { pause: a.pause && { ...a.pause, by: ctx.label, at: 0 } });
+      if (code !== 200) throw new Error(`answer ${code}`);
     } catch (e) {
-      ctx.onError?.(`couldn't ask the build to ${pause ? "pause" : "go on"}: ${e.message}`);
+      pending = null;
+      render();
+      return ctx.onError?.(`couldn't ask the build to ${a.pause ? "pause" : "go on"}: ${e.message}`);
     }
+    // (The state follows the ask a few seconds later, through the agent and the NAS: asked again each second until it does.)
+    if (watching) return;
+    watching = true;
+    while (pending) {
+      await poll();
+      if (!pending) break;
+      if (Date.now() - pending.at > PENDING_MAX_MS) {
+        const what = ASKS[pending.kind].busy.replace("…", "").toLowerCase();
+        pending = null;
+        render();
+        ctx.onError?.(`the build hasn't said it's ${what} after ${PENDING_MAX_MS / 1000} s (the lead may be out of touch)`);
+        break;
+      }
+      await new Promise((ok) => setTimeout(ok, PENDING_POLL_MS));
+    }
+    watching = false;
   };
   // What this page has shown, kept as it's left: when it's back (or the next visit), what came
   // since is highlighted ("since you last looked").

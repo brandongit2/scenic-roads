@@ -28,7 +28,9 @@
 //
 // The page comes from a read-only server on its own port (8097): web/work as /work/, and only the
 // reading calls forwarded to this Mac's agent (127.0.0.1:8090); everything else is refused, so the
-// page can't lease work, pause, act or set a setting. The page opens as `?view` (never helps).
+// page can't lease work, act or set a setting. Its Pause is the test's own (#673): /work/pause is
+// answered here, never forwarded, and /work/swarm's `pause` is this server's (none until a press;
+// then PAUSE_LAG ms after it, as the build takes seconds to say so), so the pool is never paused. The page opens as `?view` (never helps).
 // (Other Macs' /work/settings and /work/live the page asks straight; it only reads them.) A setting
 // the page sets (the limits' drags and editor, #612) never leaves it: the page's fetch is wrapped
 // before its scripts run, a POST to any /work/settings with a setting in its body recorded in
@@ -51,7 +53,7 @@ const TABS = ["overview", "jobs", "machines", "regions", "nas", "dropboxes", "ac
 
 // ---- The read-only server ------------------------------------------------------------------------
 // A call forwarded only when its body has no other keys than these (an empty body: {}).
-const READS = { swarm: [], steps: [], regions: ["steps"], settings: [], history: ["since", "max"], live: ["range", "series", "net", "since"], catalogs: ["after"], tocome: ["mac"], built: [] };
+const READS = { pause: ["pause"], swarm: [], steps: [], regions: ["steps"], settings: [], history: ["since", "max"], live: ["range", "series", "net", "since"], catalogs: ["after"], tocome: ["mac"], built: [] };
 const CATS = arg("--catalogs", null);
 const TOCOME = arg("--tocome", null);
 const BUILT = arg("--built", null);
@@ -62,6 +64,8 @@ const WIDTH = +arg("--width", 390);
 const PHONE = WIDTH < 768;
 const NARROW = WIDTH < 720; // dash.css's phone layout (max-width: 719px): stacked, wrapping
 const SCHEME = arg("--scheme", null);
+const PAUSE_LAG = +arg("--pause-lag", 3000);
+const fake = { pause: null, posts: 0 }; // (the page's Pause as this server keeps it)
 const ONLY_CATS = process.argv.includes("--only-catalogues");
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".webmanifest": "application/manifest+json", ".svg": "image/svg+xml" };
 function serve() {
@@ -103,6 +107,13 @@ function serve() {
           res.writeHead(200, { "Content-Type": "application/json" });
           return res.end(JSON.stringify({ at, mac: hit || mac, steps, macs: Object.keys(a.macs) }));
         }
+        if (call === "pause") {
+          fake.posts++;
+          const p = v.pause && { ...v.pause, at: Math.floor(Date.now() / 1000) };
+          setTimeout(() => { fake.pause = p; }, PAUSE_LAG);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          return res.end("{}");
+        }
         const out = JSON.stringify(v);
         if (call === "live" && LIVE && v.net !== false) {
           const a = await fetch(`http://${AGENT.host}:${AGENT.port}/work/live`, { method: "POST", headers: { "Content-Type": "application/json" }, body: out }).then((r) => r.json(), () => ({}));
@@ -110,12 +121,18 @@ function serve() {
           res.writeHead(200, { "Content-Type": "application/json" });
           return res.end(JSON.stringify(a));
         }
-        const fw = request({ ...AGENT, method: "POST", path: url.pathname, headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(out) } }, (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); });
+        const fw = request({ ...AGENT, method: "POST", path: url.pathname, headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(out) } }, (r) => {
+          if (call !== "swarm" || r.statusCode !== 200) { res.writeHead(r.statusCode, r.headers); return r.pipe(res); }
+          let b = "";
+          r.on("data", (c) => (b += c));
+          r.on("end", () => { const o = { ...JSON.parse(b), pause: fake.pause }; res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); });
+        });
         fw.on("error", (e) => { console.error(`touch-test server: ${url.pathname}: ${e.message}`); res.writeHead(502); res.end("{}"); });
         fw.end(out);
       });
       return;
     }
+    if (req.method === "GET" && url.pathname === "/__posts") { res.writeHead(200); return res.end(String(fake.posts)); }
     if (req.method !== "GET" || !url.pathname.startsWith("/work/")) { res.writeHead(403); return res.end(); }
     // (No service worker: it would cache the page across runs.)
     if (url.pathname === "/work/sw.js") { res.writeHead(404); return res.end(); }
@@ -346,6 +363,50 @@ async function run() {
       }
       await shot(`chrome-${tab}`);
       check(`${tab}: no console errors`, !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
+    }
+
+    // The header's Pause, Freeze and Resume (#673): a press opens a confirmation and asks nothing;
+    // Cancel asks nothing either; the confirmed one is pending at once (its words, disabled, the
+    // header still saying what the build says), the page asks again each second so the state shows
+    // within a few seconds of the lag, not at the next 10 s poll; then Resume the same way. The
+    // asks go to this server's own /work/pause (never the pool's).
+    {
+      errors.length = 0;
+      await show("overview");
+      const until = async (expr, ms = 15000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await js(expr).catch(() => false)) return Date.now() - t0; await sleep(50); } return -1; };
+      const ctl = (text) => js(`(() => { const b = [...document.querySelectorAll(".verdict .ctl button")].find((e) => e.textContent.includes(${JSON.stringify(text)})); if (!b) return null; const r = b.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
+      const pop = (text) => `[...document.querySelectorAll(".card-tip.pinned")].some((e) => e.querySelector(".ct")?.textContent.includes(${JSON.stringify(text)}))`;
+      const inPop = (text) => js(`(() => { const b = [...document.querySelectorAll(".card-tip.pinned button")].find((e) => e.textContent === ${JSON.stringify(text)}); if (!b) return null; const r = b.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
+      const posts = async () => +(await (await fetch(`http://127.0.0.1:${PORT}/__posts`)).text());
+      const verdict = () => js(`document.querySelector(".verdict .say")?.textContent || ""`);
+      check("pause: the controls are there", (await until(`!!document.querySelector(".verdict .ctl button")`)) >= 0);
+      const p0 = await posts();
+      await tap(...(await ctl("Pause at a safe point")));
+      check("pause: a press opens a confirmation and asks nothing", (await until(pop("Pause at a safe point?"))) >= 0 && (await posts()) === p0 && !/Paused/.test(await verdict()), `${await js(`document.querySelectorAll(".card-tip.pinned").length`)} cards; ${await posts()} vs ${p0} posts; ${await verdict()}; ${errors.join(" / ").slice(0, 300)}`);
+      await shot("chrome-pause-confirm");
+      await tap(...(await inPop("Cancel")));
+      check("pause: Cancel closes it and asks nothing", (await until(`!document.querySelector(".card-tip.pinned")`)) >= 0 && (await posts()) === p0);
+      await tap(...(await ctl("Freeze now")));
+      check("pause: Freeze asks too", (await until(pop("Freeze every job now?"))) >= 0);
+      await tap(...(await inPop("Cancel")));
+      await tap(...(await ctl("Pause at a safe point")));
+      await until(pop("Pause at a safe point?"));
+      const t0 = Date.now();
+      await tap(...(await inPop("Pause")));
+      const shown = await until(`(() => { const b = document.querySelector(".verdict .ctl button.pending"); return !!b && b.disabled && b.textContent === "Pausing…" && !document.querySelector(".card-tip.pinned") && [...document.querySelectorAll(".verdict .ctl button")].every((x) => x.disabled); })()`, 2000);
+      check("pause: the press is pending at once (its words, the controls disabled, the card gone)", shown >= 0 && Date.now() - t0 < 2000 && !/Paused/.test(await verdict()), `${shown} ms`);
+      await shot("chrome-pause-pending");
+      const settled = await until(`/Paused/.test(document.querySelector(".verdict .say")?.textContent || "") && !document.querySelector(".verdict .ctl button.pending") && [...document.querySelectorAll(".verdict .ctl button")].some((x) => x.textContent === "Resume" && !x.disabled)`, 9000);
+      check("pause: the header says Paused within seconds of the build's state, not at the next 10 s poll", settled >= 0, `${Date.now() - t0} ms after the press, lag ${PAUSE_LAG} ms`);
+      await tap(...(await ctl("Resume")));
+      check("resume: a press opens a confirmation and asks nothing more", (await until(pop("Resume the build?"))) >= 0 && (await posts()) === p0 + 1);
+      await shot("chrome-resume-confirm");
+      const t1 = Date.now();
+      await tap(...(await inPop("Resume")));
+      check("resume: pending at once", (await until(`document.querySelector(".verdict .ctl button.pending")?.textContent === "Resuming…"`, 2000)) >= 0 && /Paused/.test(await verdict()));
+      const back = await until(`!/Paused/.test(document.querySelector(".verdict .say")?.textContent || "") && [...document.querySelectorAll(".verdict .ctl button")].some((x) => x.textContent === "Pause at a safe point" && !x.disabled)`, 9000);
+      check("resume: the header drops Paused within seconds", back >= 0, `${Date.now() - t1} ms after the press`);
+      check("pause: no console errors", errors.length === 0, errors.slice(0, 2).join(" | "));
     }
 
     // Cards pin on a tap, unpin on a tap elsewhere (the Jobs tab's).

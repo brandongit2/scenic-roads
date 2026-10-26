@@ -34,6 +34,13 @@
 button.primary { background: var(--primary-bg); border-color: var(--info-line); color: var(--primary-fg); }
 button.quiet { color: var(--dim); }
 button:disabled { opacity: .5; }
+/* A pressed Pause, Freeze or Resume, until the build says so (dash.js head): its words, a turning ring. */
+.ctl button.pending { opacity: 1; }
+.ctl button.pending::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; vertical-align: -1px; animation: ctl-spin .8s linear infinite; }
+@keyframes ctl-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ctl button.pending::before { animation: none; } }
+/* The confirmation of a press (a pinned card): its words, then Cancel and the ask, right-aligned. */
+.card-tip .ask-btns { display: flex; gap: 6px; justify-content: flex-end; margin-top: 8px; }
 
 /* The overview: how far, how long, the steps as a strip, the numbers that matter. */
 .overview { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); align-items: start; }
