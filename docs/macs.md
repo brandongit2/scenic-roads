@@ -38,7 +38,7 @@ lead's coordinator. Below, the M4 (48 GB) unless said.
     an archive that doesn't read whole is moved aside, not written over. A new pass's answers start
     from the last pass's.
   - **Whole:** each copy is written by a temporary name, flushed and its length checked before the
-    rename, and checked whole when read (`pipeline::whole`). One that isn't is taken
+    rename, and checked whole when read (`pipeline::whole`; written whole by `store::whole`). One that isn't is taken
     again from the NAS, else the source.
   - **"Not there"** (a 404, or S3's 403) is remembered only once the source says so twice.
   - **What's fetched again** is only new data (a planet, Wikidata facts and pageviews, timetables, an
@@ -150,7 +150,7 @@ and codesign.
   docs/pool.md §3).
 - **Stale SMB handles** (docs/pool.md §3): a Mac that dies with files open on the share (kill -9,
   Migration Assistant, a power cut) leaves its session's handles on the NAS until the server drops
-  the session. Writers rename a held file aside meanwhile (`crate::whole`). The build agent heals
+  the session. Writers rename a held file aside meanwhile (`store::whole`). The build agent heals
   its own session (`crate::agent::heal`). A NAS call busy past whole's retries (a read for 5 s, a
   rename aside or into place) is noted with its file and logged (`whole: <path> stays busy …`):
   the agent's own in the process, its Rust jobs' appended to `nas-stuck.log` in the agent's folder

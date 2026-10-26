@@ -143,8 +143,9 @@ impl NasRoot {
     }
 }
 
-/// A file or folder under a `NasRoot`.
-#[derive(Clone, PartialEq, Eq)]
+/// A file or folder under a `NasRoot`. Two are equal when they name the same file (their full
+/// paths), whichever root each was joined from.
+#[derive(Clone)]
 pub struct NasPath {
     root: NasRoot,
     /// '/'-joined parts, none empty, `.` or `..`; "" for the root.
@@ -157,6 +158,14 @@ impl std::fmt::Debug for NasPath {
     }
 }
 
+impl PartialEq for NasPath {
+    fn eq(&self, o: &NasPath) -> bool {
+        self.full() == o.full()
+    }
+}
+
+impl Eq for NasPath {}
+
 impl PartialOrd for NasPath {
     fn partial_cmp(&self, o: &NasPath) -> Option<std::cmp::Ordering> {
         Some(self.cmp(o))
@@ -165,14 +174,13 @@ impl PartialOrd for NasPath {
 
 impl Ord for NasPath {
     fn cmp(&self, o: &NasPath) -> std::cmp::Ordering {
-        (&self.root.0.root, &self.rel).cmp(&(&o.root.0.root, &o.rel))
+        self.full().cmp(&o.full())
     }
 }
 
 impl std::hash::Hash for NasPath {
     fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
-        self.root.0.root.hash(h);
-        self.rel.hash(h);
+        self.full().hash(h);
     }
 }
 
@@ -297,11 +305,6 @@ impl NasPath {
         Path::new(self.file_name()?).extension().and_then(|x| x.to_str())
     }
 
-    /// Its name without the extension, as `Path::file_stem` says.
-    pub fn file_stem(&self) -> Option<&str> {
-        Path::new(self.file_name()?).file_stem().and_then(|x| x.to_str())
-    }
-
     /// The same folder, named `name`.
     #[track_caller]
     pub fn with_file_name(&self, name: impl AsRef<str>) -> NasPath {
@@ -318,20 +321,12 @@ impl NasPath {
         self.with_file_name(name.to_string_lossy())
     }
 
-    /// Whether `self` is `base` or under it.
-    pub fn starts_with(&self, base: &NasPath) -> bool {
-        self.root == base.root
-            && (base.rel.is_empty()
-                || self.rel == base.rel
-                || self.rel.strip_prefix(&base.rel).is_some_and(|r| r.starts_with('/')))
-    }
-
-    /// `self` relative to `base` ('/'-joined); None when it isn't under it.
-    pub fn strip_prefix(&self, base: &NasPath) -> Option<&str> {
-        if !self.starts_with(base) {
-            return None;
-        }
-        Some(self.rel[base.rel.len()..].trim_start_matches('/'))
+    /// It relative to `root` ('/'-joined), when it lies under it (by their full paths: a path
+    /// joined from another root naming the same folder is under it too).
+    pub fn rel_under(&self, root: &NasRoot) -> Option<String> {
+        let p = self.full();
+        let r = p.strip_prefix(&root.0.root).ok()?;
+        Some(r.to_string_lossy().replace('\\', "/"))
     }
 
     /// A temporary name beside it (crate::whole::tmp_name).
@@ -467,7 +462,7 @@ impl NasPath {
     }
 
     /// A stat not following a link (`std::fs::symlink_metadata`). One `Stats`.
-    pub fn symlink_metadata(&self) -> io::Result<std::fs::Metadata> {
+    fn symlink_metadata(&self) -> io::Result<std::fs::Metadata> {
         let p = self.full();
         nasio::add(Count::Stats, 1);
         self.retry("stat", || std::fs::symlink_metadata(&p))
@@ -672,15 +667,6 @@ impl NasPath {
         Ok(n)
     }
 
-    /// Copies local file `src` to it (crate::sys::copy_data: in place). The bytes, counted as made.
-    pub fn copy_data_from_local(&self, src: &Path) -> io::Result<u64> {
-        let p = self.full();
-        let t = Instant::now();
-        let n = crate::sys::copy_data(src, &p)?;
-        nasio::wrote(&p, n, ms_since(t));
-        Ok(n)
-    }
-
     /// Copies it to `to` on the NAS (crate::sys::copy_data). Counted as a read and a file made.
     pub fn copy_data_to(&self, to: &NasPath) -> io::Result<u64> {
         let (p, q) = (self.full(), to.full());
@@ -701,25 +687,9 @@ impl NasPath {
         crate::whole::rename_over(&self.full(), &to.full())
     }
 
-    /// Renames it over `to`, `to` renamed aside when that stays busy (crate::whole::rename_or_aside).
-    pub fn rename_or_aside(&self, to: &NasPath) -> io::Result<Option<NasPath>> {
-        let aside = crate::whole::rename_or_aside(&self.full(), &to.full())?;
-        Ok(aside.and_then(|a| a.file_name().map(|n| to.with_file_name(n.to_string_lossy()))))
-    }
-
     /// Renames it to `to` unless `to` exists (then `AlreadyExists`): crate::naming::rename_no_replace.
     pub fn rename_no_replace(&self, to: &NasPath) -> io::Result<()> {
         crate::naming::rename_no_replace(&self.full(), &to.full())
-    }
-
-    /// Moves local file `src` here (`std::fs::rename`: both on one filesystem, else an error).
-    /// Counted as a file made.
-    pub fn rename_from_local(&self, src: &Path) -> io::Result<()> {
-        let p = self.full();
-        let n = std::fs::metadata(src).map_or(0, |m| m.len());
-        std::fs::rename(src, &p)?;
-        nasio::wrote(&p, n, 0);
-        Ok(())
     }
 
     /// Removes the file (`std::fs::remove_file`). One `Deletes`.
@@ -748,15 +718,10 @@ impl NasPath {
         std::fs::create_dir_all(self.full())
     }
 
-    /// Makes the folder (`std::fs::create_dir`).
-    pub fn create_dir(&self) -> io::Result<()> {
-        std::fs::create_dir(self.full())
-    }
-
     /// Its folder made, once a process (the `made` set). On SMB `create_dir_all` may fail with
     /// EEXIST when its follow-up stat of a folder another Mac just made is stale: taken as made
     /// (the write that follows fails if the folder truly is missing), but not remembered.
-    pub fn make_parent(&self) -> Result<()> {
+    fn make_parent(&self) -> Result<()> {
         let Some(d) = self.full().parent().map(Path::to_path_buf) else { return Ok(()) };
         if self.root.0.made.lock().unwrap().contains(&d) {
             return Ok(());
@@ -772,25 +737,21 @@ impl NasPath {
     }
 
     /// A write into its folder failed: the folder is made again next time (it may have gone).
-    pub fn forget(&self) {
+    fn forget(&self) {
         if let Some(d) = self.full().parent() {
             self.root.0.made.lock().unwrap().remove(d);
         }
     }
 
     /// Whether `make_parent` remembers its folder as made (tests).
-    pub fn parent_remembered(&self) -> bool {
+    #[cfg(test)]
+    fn parent_remembered(&self) -> bool {
         self.full().parent().is_some_and(|d| self.root.0.made.lock().unwrap().contains(d))
     }
 
     /// Sets its modification time (a reuse's touch: what GC reads as in use). Not counted.
     pub fn set_modified(&self, t: std::time::SystemTime) -> io::Result<()> {
         std::fs::File::options().write(true).open(self.full())?.set_modified(t)
-    }
-
-    /// Sets its permissions (`std::fs::set_permissions`).
-    pub fn set_permissions(&self, perm: std::fs::Permissions) -> io::Result<()> {
-        std::fs::set_permissions(self.full(), perm)
     }
 }
 

@@ -159,9 +159,8 @@ const SSH: [&str; 10] = [
     "ControlPath=~/.ssh/cm-%r@%h:%p",
     "-o",
     "ControlPersist=12h",
-    "brandontsang@fishandchips.local",
+    store::nas::SSH,
 ];
-const NAS_ROOT: &str = "/volume1/personal/projects/scenic-roads";
 
 /// Stage `k` (from 0) of a step's `n` starting: its progress line, which the agent's status shows
 /// ("2 of 4 steps (what's being done)"). Within a part (`Parts`), its steps.
@@ -478,7 +477,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             eprintln!("patch-ferries: {pieces} pieces of the {date} pass gained {ways} ferry ways");
         }
         "verify" => {
-            let n = out.verify(&SSH, NAS_ROOT)?;
+            let n = out.verify(&SSH, &format!("{}/{}", store::nas::SHARE_ON_NAS, store::nas::PROJECT))?;
             eprintln!("verified {n} uploads");
         }
         // catalog [--held] [--ready <ids>] [--delta] [--whole]: held, it goes to catalog-held/, which

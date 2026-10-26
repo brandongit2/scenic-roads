@@ -9,7 +9,7 @@ use std::path::Path;
 use std::time::Duration;
 
 /// The NAS.
-pub const HOST: &str = "fishandchips.local";
+pub const HOST: &str = store::nas::LAN_HOST;
 /// The keys' file, under the project folder.
 pub const KEYS: &str = "inputs/keys.env";
 /// SYNOLOGY-STORAGEIO-MIB storageIOLA: each disk's busy share now (%), disks 1 to 3.

@@ -62,7 +62,7 @@ impl Nas for NasRoot {
         match p.read() {
             Ok(b) => Ok(Some(b)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e).with_context(|| format!("read {}", p.unchecked_path().display())),
+            Err(e) => Err(e).with_context(|| format!("read {}", p.display())),
         }
     }
 
@@ -71,18 +71,18 @@ impl Nas for NasRoot {
         match p.read_fresh() {
             Ok(b) => Ok(Some(b)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e).with_context(|| format!("read {}", p.unchecked_path().display())),
+            Err(e) => Err(e).with_context(|| format!("read {}", p.display())),
         }
     }
 
     fn exists(&self, path: &str) -> Result<bool> {
         let p = self.join(path);
-        p.try_exists().with_context(|| format!("stat {}", p.unchecked_path().display()))
+        p.try_exists().with_context(|| format!("stat {}", p.display()))
     }
 
     fn list(&self, dir: &str) -> Result<Vec<String>> {
         let d = self.join(dir);
-        d.list().with_context(|| format!("list {}", d.unchecked_path().display()))
+        d.list().with_context(|| format!("list {}", d.display()))
     }
 
     fn remove(&self, path: &str) -> Result<()> {
@@ -90,7 +90,7 @@ impl Nas for NasRoot {
         match p.remove_file() {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e).with_context(|| format!("remove {}", p.unchecked_path().display())),
+            Err(e) => Err(e).with_context(|| format!("remove {}", p.display())),
         }
     }
 }

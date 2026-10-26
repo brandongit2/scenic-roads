@@ -90,8 +90,12 @@ fn paths_join_and_never_leave_the_root() {
     assert_eq!(p.parent().unwrap().rel(), "sources/buildings/2026");
     assert_eq!(r.join("a").parent().unwrap().rel(), "");
     assert!(r.path().parent().is_none());
-    assert!(p.starts_with(&r.join("sources")) && !p.starts_with(&r.join("sour")));
-    assert_eq!(p.strip_prefix(&r.join("sources")), Some("buildings/2026/x.f32"));
+    assert_eq!(p.rel_under(&r).as_deref(), Some("sources/buildings/2026/x.f32"));
+    assert_eq!(
+        NasPath::local_for_test(d.path().join("sources/buildings/2026/x.f32")),
+        p,
+        "the same file, from another root"
+    );
     assert_eq!(format!("{p:?}"), "nas:sources/buildings/2026/x.f32");
     assert_eq!(r.path().unchecked_path(), d.path());
     assert!(std::panic::catch_unwind(|| r.join("a/../b")).is_err());

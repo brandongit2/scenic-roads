@@ -68,10 +68,7 @@ impl Local {
     /// NAS's bytes read); else `p` itself (a copy that fails says so and reads the NAS).
     pub fn path(&self, p: &NasPath) -> Place {
         let nas = || Place::Nas(p.clone());
-        if p.root() != &self.root {
-            return nas();
-        }
-        let content = p.rel().to_string();
+        let Some(content) = p.rel_under(&self.root) else { return nas() };
         if let Some(l) = self.blobs.have(&content) {
             return Place::Local(l);
         }

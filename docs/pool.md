@@ -51,18 +51,18 @@ The share is SMB 3 on a Synology. The design assumes:
   `driver::STALE_S` takes 10 minutes, for a share under load; one name stale for 40 minutes
   (task #630) is past any such bound.
 - **Renaming over a file another SMB session has open fails** (EBUSY) for as long as it's held:
-  `crate::whole::rename_over` retries for 5 s. The server can hold a file for hours with no process
+  `store::whole::rename_over` retries for 5 s. The server can hold a file for hours with no process
   on either Mac having it open;
   renaming the held file away, and renaming into its free name, still work, but removing it fails
   until it's let go (a Mac killed with a file open: kill -9, Migration Assistant). So every
-  replaced file (`crate::whole::write`/`copy`, `Nas::write_whole`: heartbeats, `state/status.json`,
-  the manifest, pending, sizes, records) falls back to `crate::whole::rename_or_aside`: the old file renamed to
+  replaced file (`store::whole::write`/`copy`, `Nas::write_whole`: heartbeats, `state/status.json`,
+  the manifest, pending, sizes, records) falls back to `store::whole::rename_or_aside`: the old file renamed to
   `<name>.<host>.<pid>.<n>.aside.tmp`, the new one renamed into place, then asides removed: each
   fallback removes up to 4 (the oldest first), finds any Mac's or process's asides of that file by
   listing its folder at most once a minute, and remembers at most 16 not yet removable. Listings
   skip asides as temporary. When the second rename fails the aside stays (renaming it back could
   replace a newer file), so the file is missing until the next write. Every read of the NAS
-  (`crate::whole::read`/`retried`: `Nas::read`/`read_fresh`) tries a busy read or open again for
+  (`store::whole::read`/`retried`: `Nas::read`/`read_fresh`) tries a busy read or open again for
   5 s, and never lists. The files that must never read as missing, all replaced by
   `whole::write` and never removed on purpose (`state/build/manifest.json`, `pending.json`,
   `sizes.json`, `summaries.json`, the extents, `state/status.json`), are read with
