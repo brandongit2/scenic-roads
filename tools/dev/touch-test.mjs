@@ -68,6 +68,9 @@ const SCHEME = arg("--scheme", null);
 const PAUSE_LAG = +arg("--pause-lag", 3000);
 const fake = { pause: null, posts: 0 }; // (the page's Pause as this server keeps it)
 const ONLY_MAP = process.argv.includes("--only-map");
+// Served names whose file on disk is named otherwise, as the coordinator's list has them
+// (crate::coord's page files): the route keeps its old spelling (task #547).
+const ON_DISK = { "catalogs.js": "catalogues.js" };
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".webmanifest": "application/manifest+json", ".svg": "image/svg+xml" };
 function serve() {
   const srv = createServer((req, res) => {
@@ -152,7 +155,7 @@ function serve() {
     // (No service worker: it would cache the page across runs.)
     if (url.pathname === "/work/sw.js") { res.writeHead(404); return res.end(); }
     const rel = normalize(url.pathname.slice(6) || "index.html").replace(/^(\.\.[/\\])+/, "");
-    let p = join(WEB, rel);
+    let p = join(WEB, ON_DISK[rel] || rel);
     if (existsSync(p) && statSync(p).isDirectory()) p = join(p, "index.html");
     if (!existsSync(p)) { res.writeHead(404); return res.end(); }
     res.writeHead(200, { "Content-Type": TYPES[extname(p)] || "application/octet-stream", "Cache-Control": "no-store" });
