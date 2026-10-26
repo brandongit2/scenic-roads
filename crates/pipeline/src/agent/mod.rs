@@ -2734,10 +2734,7 @@ impl Agent {
             self.slots[k].lease = Some(Held::Own(n));
             return true;
         }
-        let w = spec
-            .record
-            .clone()
-            .unwrap_or_else(|| build::Work { step: step_of(&spec.id).unwrap_or_default(), targets: Vec::new() });
+        let w = held_work(spec);
         let lease = crate::pool::journal::LeaseId { term: co.lease_term(n), n };
         let dir = pool::job_dir(&self.o.home, lease);
         let kept = pool::JobKept { step: w.step.clone(), targets: w.targets.clone(), lease };
@@ -3100,9 +3097,9 @@ impl Agent {
     }
 
     /// Beats for slot `k`'s job's lease (each minute it isn't paused); false when it's lost: it
-    /// lapsed and its work went to another worker. (This Mac's own never lapses while it leads,
-    /// docs/pool.md §7.6; one gone all the same, as across a handover, is held again when no one
-    /// took its work meanwhile.)
+    /// lapsed and its work went to another worker. (One of this Mac's running jobs never lapses
+    /// while it leads, `keep_own`, docs/pool.md §7.6; one gone all the same, as across a handover,
+    /// is held again when no one took its work meanwhile.)
     fn beat(&mut self, k: usize, root: Option<&Path>) -> bool {
         self.slots[k].beaten = Some(Instant::now());
         // (Its progress as the status last read it: what it said, out of sight or not.)
@@ -4239,6 +4236,20 @@ impl Agent {
         self.tend_ramp();
         for k in 0..self.slots.len() {
             ended |= self.tend(k, &c, root.as_deref(), slept)?;
+        }
+        // (The leases its slots run jobs under, which its coordinator keeps however long this loop
+        // stalls: docs/pool.md §7.6.)
+        if let Some(co) = &self.coord {
+            co.keep_own(
+                self.slots
+                    .iter()
+                    .filter(|s| s.running.is_some())
+                    .filter_map(|s| match &s.lease {
+                        Some(Held::Own(id) | Held::Pooled { id, .. }) => Some(*id),
+                        _ => None,
+                    })
+                    .collect(),
+            );
         }
         ended |= self.guard();
         ended |= self.disk_guard(root.as_deref());

@@ -293,7 +293,7 @@ devices away use the M6's (always on; https://map.brandontsang.net, docs/macs.md
   first three, then one in eight: docs/workers.md §5).
 - **The contact:** `state/coordinator.json`, the coordinator's addresses and the agents' token
   (pages need none: docs/workers.md §7), removed when the agent stops.
-- **Leases:** ten minutes on the coordinator's clock, renewed by a beat each minute (the lead's own never lapse: docs/pool.md §7.6); a lapsed lease's
+- **Leases:** ten minutes on the coordinator's clock, renewed by a beat each minute (those the lead's running jobs hold never lapse: docs/pool.md §7.6); a lapsed lease's
   work is offered again, its "lapse" in the history saying why (no word from its worker for ten
   minutes: `coord::lapse_why`). A member's job that fails saying nothing goes to the lead with a
   reason all the same (`fail_why`). Paused, every lease is held. The lead's own jobs hold leases too, so a

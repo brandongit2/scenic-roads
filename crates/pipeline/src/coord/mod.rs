@@ -1502,6 +1502,12 @@ impl Coordinator {
         Some(id)
     }
 
+    /// The leases this Mac's slots run jobs under now (crate::agent: each loop): those never lapse,
+    /// beats or not, while they're said; one whose job ended leaves and lapses as any (#666).
+    pub fn keep_own(&self, ids: BTreeSet<u64>) {
+        self.shared.lock().unwrap().leases.mine = ids;
+    }
+
     /// Keeps this Mac's job's lease alive; false when it lapsed (the job paused too long, or the
     /// agent was stuck) and another may be building its targets.
     pub fn renew(&self, id: u64, progress: Option<String>) -> bool {
@@ -5344,34 +5350,41 @@ mod tests {
     }
 
     /// #666 (25 Oct, the mini: its loop stuck ~10 min on the NAS lost terrain-z8 at 56 %, and a
-    /// second was granted): past the TTL with no beat the lead's own leases (its slots') stay,
-    /// renewable, a member's lapses; a job of no targets blocks another of its step, and is held
-    /// again once its holder's lapsed.
+    /// second was granted): past the TTL with no beat the leases the lead's slots run (`keep_own`)
+    /// stay, renewable and finishable; one of the lead's whose job ended unsaid lapses, as a member's
+    /// does; a job of no targets blocks another of its step, and is held again once its holder's
+    /// lapsed.
     #[test]
-    fn a_stalled_loop_keeps_the_leads_own_leases() {
+    fn a_stalled_loop_keeps_the_leads_running_leases() {
         let (_d, c, _w) = start();
         let clock = store::clock::Virtual::new();
         c.shared.lock().unwrap().clock = clock.clone();
         let z8 = c.hold("terrain-z8", &[]).unwrap();
-        let (slot2, member) = {
+        let unit = c.hold("unit", &[("6/1/1".into(), "k".into())]).unwrap();
+        let dead = c.hold("unit", &[("6/1/2".into(), "k".into())]).unwrap();
+        let member = {
             let mut s = c.shared.lock().unwrap();
             let now = s.now();
-            let job = |step: &str, t: &str| Work::Job { step: step.into(), targets: vec![(t.into(), "k".into())] };
-            (
-                s.leases.grant("m4 #2", job("unit", "6/1/1"), now),
-                s.leases.grant("m1", Work::Job { step: "gc".into(), targets: Vec::new() }, now),
-            )
+            s.leases.grant("m1", Work::Job { step: "gc".into(), targets: Vec::new() }, now)
         };
+        c.keep_own([z8, unit].into());
         // No duplicate of a job of no targets, the lead's or a member's, with targets or none.
         assert_eq!(c.hold("terrain-z8", &[]), None);
         assert_eq!(c.hold("gc", &[]), None);
         assert_eq!(c.hold("gc", &[("x".into(), "k".into())]), None);
         clock.advance(TTL + Duration::from_secs(60));
-        let gone: Vec<u64> = c.expire().iter().map(|l| l.id).collect();
-        assert_eq!(gone, [member]);
+        let gone: BTreeSet<u64> = c.expire().iter().map(|l| l.id).collect();
+        assert_eq!(gone, [dead, member].into(), "a job ended unsaid lapses as a member's does");
         assert_eq!(c.hold("terrain-z8", &[]), None, "the lead's z8 still holds its step");
         assert!(c.renew_live(z8, None, None));
-        assert!(c.held("unit").contains("6/1/1") && c.lease_term(slot2) == 0);
+        assert!(c.held("unit").contains("6/1/1") && !c.held("unit").contains("6/1/2"));
+        // Its job ended, the loop still stuck: finished all the same, past its deadline.
+        c.finish(unit, &[]);
+        assert!(!c.held("unit").contains("6/1/1"));
+        // Said no more (its job gone): z8's lapses too.
+        c.keep_own(BTreeSet::new());
+        clock.advance(TTL + Duration::from_secs(60));
+        assert_eq!(c.expire().iter().map(|l| l.id).collect::<Vec<_>>(), [z8]);
         // The member's gone: its step is the lead's to hold.
         assert!(c.hold("gc", &[]).is_some());
     }

@@ -921,17 +921,19 @@ point like any member (docs/building.md §2, A newly installed app). The lead's 
 holds packing off for the pool (§7.1, Mixed versions); its heartbeat says whether the pool is all on
 the new app (`all_new`) for its members' heartbeats.
 
-**The lead's own leases never lapse** (task #666): its coordinator runs inside its agent, so a lease
-of one of its slots (worker its host or `<host> #k`, `agent::is_slot_of`; `Leases::me`) is alive by
-construction, beats or not: `expire` passes over it and it can always be renewed, so a loop stuck
-past `coord::TTL` (10 min on a slow NAS) no longer kills its running jobs. A stopped agent's are
-dropped as the next one starts (`drop_where`, `drop_workers` taking a term up, sparing the jobs it
-adopts); after a handover the old lead's leases are a member's, lapsing as any. A beat that still
+**The lead's running jobs' leases never lapse** (task #666): its coordinator runs inside its agent,
+and each loop the agent says which leases its slots run jobs under (`Coordinator::keep_own`,
+`Leases::mine`, its own name's alone): those are live past `coord::TTL`, beats or not, so `expire`
+passes over them and they can always be renewed and finished, and a loop stuck past the TTL (10 min
+on a slow NAS) no longer kills its running jobs. A lease whose job ended without giving it back
+leaves the set at the next loop and lapses as any; a stopped agent's are dropped as the next one
+starts (`drop_where`, `drop_workers` taking a term up, sparing the jobs it adopts), the set not
+saved; after a handover the old lead's leases are a member's, lapsing as any. A beat that still
 finds its lease gone holds it again, a job of no record (terrain-z8) by its step from its id and no
-targets (`held_work`, as `adopt_jobs` does). A live job of no targets holds its whole step: no other
-lease of the step is held beside it (`Coordinator::hold`), and none beside a lease of the step when
-the one asked has no targets; the planned jobs' grants already wait on any lease of their step
-(`own_open`).
+targets (`held_work`, as `adopt_jobs` and `lease_own` do). A live job of no targets holds its whole
+step: no other lease of the step is held beside it (`Coordinator::hold`), and none beside a lease
+of the step when the one asked has no targets; the planned jobs' grants already wait on any lease
+of their step (`own_open`).
 
 ### 7.7 What a step needs, by structure
 

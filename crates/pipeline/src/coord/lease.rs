@@ -127,11 +127,14 @@ pub struct Leases {
     holds: Vec<Hold>,
     /// The app this coordinator runs (crate::coord::Shared::app): what releases a hold.
     pub app: String,
-    /// The Mac whose agent runs this coordinator ("" in tests: none). Its slots' leases
-    /// (crate::agent::is_slot_of) never lapse: their worker is this process, alive by construction,
-    /// beats or not (a loop stuck on the NAS past `ttl` lost them, #666); a dead agent's are dropped
-    /// as the next one starts.
+    /// The Mac whose agent runs this coordinator ("" in tests: none). Its leases in `mine` never
+    /// lapse: their jobs run in this process's slots, beats or not (a loop stuck on the NAS past
+    /// `ttl` lost them, #666); a dead agent's are dropped as the next one starts.
     pub me: String,
+    /// The leases this Mac's agent's slots run jobs under, as its loop last said
+    /// (`Coordinator::keep_own`): one whose job ended, finished or not, leaves it and lapses as any.
+    /// Not saved: a new agent says its own.
+    pub mine: BTreeSet<u64>,
     /// The owner's cancels of running jobs (`scenic job cancel`, crate::control::Cancel), by lease:
     /// told to the lease's worker in its beat's answer (this Mac's own, `Coordinator::cancel_of`),
     /// which stops its job and gives the lease back, not failed. Each goes with its lease (finished,
@@ -164,6 +167,7 @@ impl Leases {
             holds: Vec::new(),
             app: String::new(),
             me: String::new(),
+            mine: BTreeSet::new(),
             cancels: BTreeMap::new(),
         }
     }
@@ -245,9 +249,9 @@ impl Leases {
         self.by_id.values().filter(move |l| self.lasts(l, now))
     }
 
-    /// Whether `l` is live at `now`: before its deadline, or this process's own (`me`).
+    /// Whether `l` is live at `now`: before its deadline, or one this process's slots run (`mine`).
     fn lasts(&self, l: &Lease, now: Instant) -> bool {
-        l.deadline > now || (!self.me.is_empty() && crate::agent::is_slot_of(&l.worker, &self.me))
+        l.deadline > now || (!self.me.is_empty() && l.worker == self.me && self.mine.contains(&l.id))
     }
 
     /// Every target of `step` held now, by anyone, or until a newer app (`Hold`).
@@ -344,7 +348,7 @@ impl Leases {
 
     /// `worker`'s live lease `id`, if it is one.
     pub fn get(&self, id: u64, worker: &str, now: Instant) -> Option<&Lease> {
-        self.by_id.get(&id).filter(|l| l.worker == worker && l.deadline > now)
+        self.by_id.get(&id).filter(|l| l.worker == worker && self.lasts(l, now))
     }
 
     /// Renews `worker`'s lease `id`; false when it isn't that worker's live lease (lapsed, finished,
@@ -413,11 +417,11 @@ impl Leases {
     /// goes to another meanwhile), and once more as it goes on.
     pub fn hold_all(&mut self, now: Instant) {
         for l in self.by_id.values_mut() {
-            l.deadline = now + self.ttl;
+            l.deadline = l.deadline.max(now + self.ttl);
         }
     }
 
-    /// Every lease past its deadline, removed (but this process's own, `me`): their work is
+    /// Every lease past its deadline, removed (but those this process's slots run, `mine`): their work is
     /// offered again.
     pub fn expire(&mut self, now: Instant) -> Vec<Lease> {
         let gone: Vec<u64> = self.by_id.values().filter(|l| !self.lasts(l, now)).map(|l| l.id).collect();
