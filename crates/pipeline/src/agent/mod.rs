@@ -539,7 +539,34 @@ fn room_beside(can: Vec<String>, free: u64, held: u64) -> Vec<String> {
     can.into_iter().filter(|s| free >= held.saturating_add(helper_need(s))).collect()
 }
 
-/// A task's kind from its spec (`take_grant`'s `what`: "bldtile: z8 tile …", "tail …").
+/// A granted task's kind, from its spec's first run (crate::coord::Granted::Task carries no kind
+/// of its own): "bldtile", "treeblock", "terrainsub", else "tail".
+fn grant_task_kind(task: &serde_json::Value) -> &'static str {
+    let run = &task["runs"][0];
+    if run["prog"] == crate::bld::task::KIND {
+        crate::bld::task::KIND
+    } else if run["what"] == crate::trees::task::KIND {
+        crate::trees::task::KIND
+    } else if run["what"] == crate::terrain_task::KIND {
+        crate::terrain_task::KIND
+    } else {
+        "tail"
+    }
+}
+
+/// What a granted task of `kind` does, for the status ("bldtile: z8 tile 8/4/5", "tail 6/1/1"):
+/// `task_kind` reads its kind back from it.
+fn task_what(kind: &str, task: &serde_json::Value, unit: &str) -> String {
+    match kind {
+        crate::bld::task::KIND => format!("{kind}: z8 tile {unit}"),
+        crate::trees::task::KIND => format!("{kind}: blocks {}", task["blocks"].as_str().unwrap_or(unit)),
+        crate::terrain_task::KIND => format!("{kind}: subtrees {}", task["subtrees"].as_str().unwrap_or(unit)),
+        _ => format!("tail {unit}"),
+    }
+}
+
+/// A task's kind from its spec's `what` (`task_what`; a JobSpec, kept over a hand-over, has no
+/// kind of its own): "tail", the most room, for any other.
 fn task_kind(spec: &JobSpec) -> &str {
     spec.what
         .split_once(": ")
@@ -2516,15 +2543,7 @@ impl Agent {
                 ];
                 let unit = task["unit"].as_str().unwrap_or("").to_string();
                 self.slots[k].lease = Some(Held::Leased { lease, dir });
-                let what = if task["runs"][0]["prog"] == crate::bld::task::KIND {
-                    format!("{}: z8 tile {unit}", crate::bld::task::KIND)
-                } else if task["runs"][0]["what"] == crate::trees::task::KIND {
-                    format!("{}: blocks {}", crate::trees::task::KIND, task["blocks"].as_str().unwrap_or(&unit))
-                } else if task["runs"][0]["what"] == crate::terrain_task::KIND {
-                    format!("{}: subtrees {}", crate::terrain_task::KIND, task["subtrees"].as_str().unwrap_or(&unit))
-                } else {
-                    format!("tail {unit}")
-                };
+                let what = task_what(grant_task_kind(&task), &task, &unit);
                 Some((
                     k,
                     JobSpec {
@@ -12131,12 +12150,22 @@ mod tests {
             restart_after_sleep: false,
             record: None,
         };
-        let kinds: Vec<_> =
-            ["terrainsub: subtrees 8/1/2", "treeblock: blocks 3", "bldtile: z8 tile 8/4/5", "tail 6/1/1"]
-                .iter()
-                .map(|w| helper_need(task_kind(&spec(w))) >> 30)
-                .collect();
-        assert_eq!(kinds, [1, 1, 5, 5]);
+        // (Its kind read back from what `take_grant` says of it, each kind's.)
+        let tasks = [
+            serde_json::json!({ "unit": "6/1/2", "subtrees": "8/1/2", "runs": [{ "what": crate::terrain_task::KIND }] }),
+            serde_json::json!({ "unit": "6/1/3", "blocks": "3", "runs": [{ "what": crate::trees::task::KIND }] }),
+            serde_json::json!({ "unit": "8/4/5", "runs": [{ "prog": crate::bld::task::KIND }] }),
+            serde_json::json!({ "unit": "6/1/1", "runs": [{ "prog": "roads" }] }),
+        ];
+        let kinds: Vec<_> = tasks
+            .iter()
+            .map(|t| {
+                let what = task_what(grant_task_kind(t), t, t["unit"].as_str().unwrap());
+                (task_kind(&spec(&what)).to_string(), helper_need(task_kind(&spec(&what))) >> 30)
+            })
+            .collect();
+        let want = [crate::terrain_task::KIND, crate::trees::task::KIND, crate::bld::task::KIND, "tail"];
+        assert_eq!(kinds, want.iter().zip([1, 1, 5, 5]).map(|(k, n)| (k.to_string(), n)).collect::<Vec<_>>());
     }
 
     #[test]
