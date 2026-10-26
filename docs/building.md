@@ -498,12 +498,18 @@ on the PATH itself and takes the rest from mise.toml, so no shell profile is nee
    `app/current.json` with every file's SHA-256, copies `tools/nas/fetch-planet.sh` to the NAS's
    `nas/` when it differs, and frees the lock.
 
-Two publishes may run at once: the second takes a second tree (`tree-2`, removed by a publish that
-finds it unused for 3 days; both trees' `target/` pruned each publish), its smoke test a port of its
-own, and its tests wait for the first's (`tests.busy`, so the test Mac runs one suite at a time),
-then it installs once the first has freed the lock. A publish installs only when its commit contains
-the live version's (fast-forward): one of an older or diverged commit fails, saying so. Its last line
-is `published <version>` or `publish: FAILED …`.
+Two publishes may run at once: the second takes a second tree (`tree-2`, kept as a build cache
+like the first, failed builds included, and removed by a publish that finds it unused for 3 days;
+each publish prunes the `target/` of the tree it builds in), its smoke test a port of its own, and
+its tests wait for the first's (`tests.busy`, per Mac), then it installs once the first has freed
+the lock. Publishes from two Macs queue their tests only through the test Mac's `publish` key
+(tools/app/remote-tests.sh: after 30 min one runs on its own Mac), and the test Mac's own publish
+runs its suite there beside them. A publish installs only when its commit contains the live
+version's (fast-forward; a live commit published from the other Mac since this one's fetch is
+fetched): one of an older or diverged commit fails, saying so, as does one begun before a rollback
+(`--rollback` no longer waits for a publish's build, only its install). A lock held by a process
+of this Mac that is gone is taken over at once. Its last line is `published <version>` or
+`publish: FAILED …`.
 
 `publish.sh --rollback` swaps `current.json` and `previous.json`. The agent never fetches from git.
 

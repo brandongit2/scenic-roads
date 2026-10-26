@@ -66,7 +66,9 @@ fi
 # snapshot of that commit, below.)
 git fetch -q origin main || { echo "can't fetch origin's main"; exit 1; }
 head=$(git rev-parse --short origin/main)
-# (Refused now, before building, when it couldn't go in; checked again at the install.)
+# (Refused now, before building, when it couldn't go in; checked again at the install, where a
+# rollback since now refuses it too.)
+began=$(live_version $NAS/app/current.json || true)
 fast_forward $NAS/app/current.json $head || exit 1
 # The old name of the lead's role (the pattern below) nowhere in the code, docs or UI (the owner's
 # rule, 14 Oct 2026): the role is the lead's, a measure taken on a Mac names it (the M4, the M1).
@@ -92,13 +94,17 @@ for t in tree tree-2; do
 done
 [[ -n $snap ]] || { echo "two publishes are already running on this Mac ($lock_held)"; exit 1; }
 spare=$cache/tree-2
+# (Moved aside while held, then removed after: its lock is held a moment, not for the removal, so a
+# publish starting meanwhile still finds it free.)
 if [[ $snap != $spare && -e $spare && -z $(found $cache/tree-2.used -newermt '3 days ago') ]] && hold $spare.busy; then
-  git worktree remove --force $spare 2>/dev/null || rm -rf $spare
-  rm -f $cache/tree-2.used; unhold $spare.busy
+  mv $spare $cache/tree-2.old-$$ && rm -f $cache/tree-2.used; unhold $spare.busy
+  rm -rf $cache/tree-2.old-$$; git worktree prune
   echo "removed the spare publish tree (unused for 3 days)"
 fi
 touch $cache/${snap:t}.used
 if [[ ! -e $snap/.git ]]; then
+  # (A tree whose creation stopped part way is made again.)
+  rm -rf $snap
   git worktree prune
   git worktree add -q --detach $snap $head
 fi
@@ -143,7 +149,7 @@ cargo build --release -p server -p pipeline 2>&1 | tail -2
 # (~/Library/Logs/scenic/publish-tests-<time>.log); shown: the summaries, and each failed test's own output.
 ulimit -n 8192 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
 mkdir -p ~/Library/Logs/scenic
-tests_log=~/Library/Logs/scenic/publish-tests-$(date +%Y%m%d-%H%M%S).log
+tests_log=~/Library/Logs/scenic/publish-tests-$(date +%Y%m%d-%H%M%S)-$$.log
 tests_ok=0
 # (Tests that pass over what a Mac lacks fail instead when they're run for a publish: uv for the
 # translations' checker.)
@@ -244,8 +250,8 @@ until nas_lock $lock "$who"; do
   sleep 10
 done
 cleanup+=('nas_unlock $lock "$who"')
-# (Again, under the lock: the publish that went in meanwhile may be newer.)
-fast_forward $NAS/app/current.json $head || exit 1
+# (Again, under the lock: the publish that went in meanwhile may be newer, or a rollback since.)
+fast_forward $NAS/app/current.json $head "$began" || exit 1
 [[ ! -e $dest ]] || { echo "$dest exists already"; exit 1; }
 rm -rf $dest.tmp; mkdir -p $dest.tmp/web $dest.tmp/fonts
 # The server, and the agent with the programs its jobs run (each Mac runs them from here):

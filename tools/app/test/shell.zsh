@@ -130,7 +130,7 @@ pub() {  # <name> <commit> <build seconds>
     nas_unlock $L \"\$who\"; e unlocked; unhold $cache/\$snap.busy" 2>&1)
 }
 pub b $B 0.3 & p1=$!
-sleep 0.1; pub c $C 0.2 & p2=$!
+sleep 0.1; pub c $C 0.6 & p2=$!
 wait $p1; r1=$?; wait $p2; r2=$?
 order=$(tr '\n' ',' < $ev)
 seq() { local s=$order w; for w in "$@"; do [[ $s == *"$w"* ]] || return 1; s=${s#*"$w"}; done }
@@ -143,5 +143,33 @@ else ok "two publishes: built side by side, tests queued, installed in turn"; fi
 : > $ev
 pub a $A 0 && no "older publish" "installed: $(<$ev)" || {
   [[ $(<$ev) == *refused* && $(<$cur) == *$C* && ! -e $L && ! -e $cache/tree.busy ]] && ok "older publish refused, lock freed" || no "older publish" "$(<$ev) $(<$tmp/why-a)"; }
+
+# nas_lock: a lock of this Mac's whose process is gone is taken over at once; a live one's kept.
+zsh -c 'exit 0' & dp=$!; wait $dp
+print -r -- "mac $dp 2026-10-26T00:00:00Z" > $L
+out=$(r "nas_lock $L 'mac 1 now' && cat $L")
+[[ $out == *'took over'*$'\nmac 1 now' ]] && ok "nas_lock this Mac's gone holder taken over" || no "nas_lock gone holder" "$out"
+print -r -- "mac $$ 2026-10-26T00:00:00Z" > $L
+out=$(r "nas_lock $L 'mac 1 now' || echo held")
+[[ $out == held ]] && ok "nas_lock this Mac's live holder kept" || no "nas_lock live holder" "$out"
+print -r -- "other $dp 2026-10-26T00:00:00Z" > $L
+out=$(r "nas_lock $L 'mac 1 now' || echo held")
+[[ $out == held ]] && ok "nas_lock another Mac's holder kept" || no "nas_lock other Mac" "$out"
+rm -f $L
+
+# hold: a lock taken by another while this one moved the stale one aside is put back.
+H2=$tmp/race.busy; mkdir $H2; print -r -- "$dp gone" > $H2/owner
+# (Another takes it just before this one's move: its owner then in the folder moved aside.)
+out=$(r "mv() { [[ \$2 == *aside* ]] && print -r -- 'x other' > \$1/owner; command mv \$@ }
+  hold $H2 || echo \"held: \$lock_held\"")
+[[ $out == 'held: taken just now' && -d $H2 && $(<$H2/owner 2>/dev/null) == 'x other' ]] && ok "hold puts back one taken meanwhile" || no "hold put back" "$out; $(ls $tmp | grep race)"
+
+# fast_forward: a publish begun before a rollback is refused; one begun after it goes in.
+print -r -- "{\"version\": \"20261026-1000-$C\"}" > $nas/app/previous.json
+print -r -- "{\"version\": \"20261026-0953-$B\"}" > $cur
+out=$(cd $g && zsh -c "source ${(q)lib}; fast_forward $cur $C 20261026-1000-$C" 2>&1) && no "fast_forward after a rollback" "allowed" || {
+  [[ $out == *'rolled back'* ]] && ok "fast_forward begun before a rollback refused" || no "fast_forward rollback" "$out"; }
+out=$(cd $g && zsh -c "source ${(q)lib}; fast_forward $cur $C 20261026-0953-$B" 2>&1) && ok "fast_forward begun after a rollback" || no "fast_forward after rollback" "$out"
+rm -f $nas/app/previous.json
 
 exit $failed

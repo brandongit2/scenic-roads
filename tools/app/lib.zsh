@@ -52,15 +52,19 @@ prune_target() {
 # nas_lock <lock> <who>: takes publish.sh's lock on the NAS (app/publish.lock), made with create-new
 # (zsh's noclobber opens with O_EXCL, which the share does atomically) and holding <who> (its Mac,
 # process and time). 0 when taken; 1 when another holds it, its holder and age then in $lock_held.
-# One older than six hours (its Mac gone mid-publish) is moved aside, checked to be the one read
-# (one another publish took meanwhile is put back), and taken.
+# One older than six hours (its Mac gone mid-publish), or held by a process of this Mac that is gone
+# (a publish killed here mid-install), is moved aside, checked to be the one read (one another
+# publish took meanwhile is put back), and taken.
 nas_lock() {
-  local lock=$1 who=$2 held age
+  local lock=$1 who=$2 held age hp
   typeset -g lock_held=
   ( set -o noclobber; print -r -- "$who" > $lock ) 2>/dev/null && return 0
   held=$(cat $lock 2>/dev/null)
   age=$(( $(date +%s) - $(stat -f %m $lock 2>/dev/null || date +%s) ))
-  if (( age < 6 * 3600 )); then lock_held="$held, $(( age / 60 )) min ago"; return 1; fi
+  hp=${${held#* }%% *}
+  if (( age < 6 * 3600 )) && ! { [[ -n $held && ${held%% *} == ${who%% *} && $hp == <-> ]] && ! kill -0 $hp 2>/dev/null; }; then
+    lock_held="$held, $(( age / 60 )) min ago"; return 1
+  fi
   mv $lock $lock.stale-$$ 2>/dev/null || { lock_held="taken just now"; return 1; }
   if [[ $(cat $lock.stale-$$ 2>/dev/null) != $held ]]; then
     ( set -o noclobber; cat $lock.stale-$$ > $lock ) 2>/dev/null || true  # (one made meanwhile kept)
@@ -89,24 +93,47 @@ hold() {
     elif [[ -n $(found $d -maxdepth 0 -newermt '10 seconds ago') ]]; then lock_held="being taken"; return 1
     fi
     mv $d $d.aside-$$ 2>/dev/null || continue
-    if [[ $(cat $d.aside-$$/owner 2>/dev/null) != "$held" ]]; then lock_held="taken just now"; return 1; fi
+    if [[ $(cat $d.aside-$$/owner 2>/dev/null) != "$held" ]]; then
+      # (Another's, taken meanwhile: put back unless a third has made one since, a move onto which
+      # would nest inside it.)
+      [[ -e $d ]] || mv $d.aside-$$ $d 2>/dev/null
+      rm -rf $d.aside-$$; lock_held="taken just now"; return 1
+    fi
     rm -rf $d.aside-$$
   done
   print -r -- "$me" > $d/owner
 }
 unhold() { [[ $(cat $1/owner 2>/dev/null) == "$$ $(ps -o lstart= -p $$)" ]] && rm -rf $1; return 0; }
 
-# fast_forward <current.json> <commit>: 0 when nothing is live, or the live version's commit (its
-# name's last part) is <commit> or an ancestor of it; else says why and returns 1: a publish never
-# puts an older tree, or one without everything published, over the live one. Run in the repository.
+# fast_forward <current.json> <commit> [<live version when the publish began>]: 0 when nothing is
+# live, or the live version's commit (its name's last part) is <commit> or an ancestor of it; else
+# says why and returns 1: a publish never puts an older tree, or one without everything published,
+# over the live one. A live commit this repository lacks (published from another Mac after this
+# one's fetch) is fetched once. With the third argument: also refused when the live version changed
+# since then by a rollback (previous.json's commit not in the live one's), so a publish begun before
+# a rollback doesn't put back what was rolled back. Run in the repository.
 fast_forward() {
   [[ -f $1 ]] || return 0
-  local v live
-  v=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' $1) || { print -r -- "can't read $1"; return 1; }
+  local v live pv
+  v=$(live_version $1) || { print -r -- "can't read $1"; return 1; }
   live=${v##*-}
-  if ! git cat-file -e "$live^{commit}" 2>/dev/null; then print -r -- "the live version $v's commit $live isn't in this repository"; return 1; fi
-  git merge-base --is-ancestor $live $2 && return 0
-  if git merge-base --is-ancestor $2 $live; then print -r -- "$2 is older than the live version $v: refused"
-  else print -r -- "$2 doesn't contain the live version $v (diverged): refused"; fi
-  return 1
+  if ! git cat-file -e "$live^{commit}" 2>/dev/null; then
+    git fetch -q origin main 2>/dev/null
+    if ! git cat-file -e "$live^{commit}" 2>/dev/null; then print -r -- "the live version $v's commit $live isn't in this repository"; return 1; fi
+  fi
+  if ! git merge-base --is-ancestor $live $2; then
+    if git merge-base --is-ancestor $2 $live; then print -r -- "$2 is older than the live version $v: refused"
+    else print -r -- "$2 doesn't contain the live version $v (diverged): refused"; fi
+    return 1
+  fi
+  if [[ -n ${3:-} && $v != $3 && -f ${1:h}/previous.json ]]; then
+    pv=$(live_version ${1:h}/previous.json) || pv=
+    pv=${pv##*-}
+    if [[ -n $pv ]] && ! git merge-base --is-ancestor $pv $live 2>/dev/null; then
+      print -r -- "rolled back to $v since this publish began: refused (publish again to go past it)"; return 1
+    fi
+  fi
+  return 0
 }
+# live_version <current.json>: its version's name.
+live_version() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' $1 2>/dev/null; }
