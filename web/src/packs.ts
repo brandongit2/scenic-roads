@@ -4,17 +4,26 @@ import { DEEP_FIRST_Z, DEEP_PACK_Z } from './config';
 
 /** A tiled layer's packs' versions (meta.packs): the root's (z0–2), the lo packs' (z3–8) by z3
  * tile, the hi packs' (z9–14) by z6 tile and the terrain's deep packs (past z12, where it has
- * any: pipeline::terrain_deep) by z10 tile, "z/x/y". */
+ * any: pipeline::terrain_deep) by z10 tile, "z/x/y"; a polar layer's root (z0–3) and blocks (z4–9)
+ * by z4 tile of its pole's grid (pipeline::polar). */
 export interface LayerPacks {
   root?: string;
   lo?: Record<string, string>;
   hi?: Record<string, string>;
   deep?: Record<string, string>;
+  polar?: Record<string, string>;
 }
+
+/** A polar layer's blocks' zoom (pipeline::polar::BLOCK_Z). */
+const POLAR_BLOCK_Z = 4;
 
 
 /** The version token of tile z/x/y of a layer with packs `l`: its pack's, or '' when no pack holds it. */
 export function packToken(l: LayerPacks, z: number, x: number, y: number): string {
+  if (l.polar) {
+    const b = POLAR_BLOCK_Z;
+    return (z < b ? l.root : l.polar[`${b}/${x >> (z - b)}/${y >> (z - b)}`]) ?? '';
+  }
   if (z <= 2) return l.root ?? '';
   // ('' past z12 outside the deep packs: the server makes those tiles from their ancestor and
   // serves them uncached for good (no current token), so no stale copy outlives a catalog.)

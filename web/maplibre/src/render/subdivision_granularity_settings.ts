@@ -69,6 +69,12 @@ export class SubdivisionGranularitySetting {
      */
     public readonly circle: CircleGranularity;
 
+    /**
+     * Scenic Roads: whether fills close the north and south poles past the Web Mercator tiles' last
+     * row (pole_caps.ts: off where the map draws a pole itself).
+     */
+    public readonly poles: {north: boolean; south: boolean};
+
     constructor(options: {
         /**
          * Granularity settings used for fill and fill-extrusion layers (for fill, both polygons and their anti-aliasing outlines).
@@ -91,12 +97,14 @@ export class SubdivisionGranularitySetting {
          * More granular circles will more closely follow the map's surface.
          */
         circle: CircleGranularity;
+        poles?: {north: boolean; south: boolean};
     }) {
         this.fill = options.fill;
         this.line = options.line;
         this.tile = options.tile;
         this.stencil = options.stencil;
         this.circle = options.circle;
+        this.poles = options.poles ?? {north: true, south: true};
     }
 
     /**

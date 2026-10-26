@@ -8,7 +8,7 @@
     "build": "pnpm run typecheck && vite build",
     "typecheck": "tsc -p maplibre/tsconfig.app.json && tsc --noEmit && tsc -p tsconfig.node.json"
   },
-  "//": "The map is drawn by our own MapLibre, web/maplibre/ (FORK.md): vite.config.ts aliases maplibre-gl to its source, and its runtime dependencies are listed here at the versions its lockfile names (vite.config.ts checks). The app reaches into its internals (src/buildings.ts's keepWhole, which keeps z14's buildings whole above z14; the tile managers read in covers, contours, maptasks, namefade and terrainstats; main.ts's terrain rise writes Terrain.exaggeration directly, read back by bldfield.ts's terrainKey).",
+  "//": "The map is drawn by our own MapLibre, web/maplibre/ (FORK.md): vite.config.ts aliases maplibre-gl to its source, and its runtime dependencies are listed here at the versions its lockfile names (vite.config.ts checks). The app reaches into its internals (src/buildings.ts's keepWhole, which keeps z14's buildings whole above z14; the tile managers read in covers, contours, maptasks, namefade and terrainstats; main.ts's terrain rise writes Terrain.exaggeration directly, read back by bldfield.ts's terrainKey and polarglobe.ts; polarglobe.ts also reads the hillshade and color-relief style layers' evaluated paint).",
   "dependencies": {
     "@mapbox/point-geometry": "1.1.0",
     "@mapbox/tiny-sdf": "2.2.0",

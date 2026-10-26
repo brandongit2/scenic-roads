@@ -41,6 +41,8 @@ import * as cam3d from './camera3d';
 import { applyLabelOpacity, applyLabelSize, applyTerrain, applyTint, cacheTerrainRays, setTerrainAreas, switchContours, TINT_VARS, tintColourAt, tintCss } from './terrain';
 import { applyWater, switchCoast, updateCoastRamp } from './coast';
 import { CatalogWatch } from './catalog';
+import { PolarCaps } from './polarcaps';
+import { globeProjection } from './polarglobe';
 import { TileRetry } from './retry';
 import { RegionLayers } from './regions';
 import { ContourLayer, type ContourDraw } from './contours';
@@ -1915,14 +1917,21 @@ async function main() {
   // ---- state → map ------------------------------------------------------------------
   // A true globe for all but street level, so tilted views show the real horizon distance and dip
   // and far ranges sinking below it; it hands over to flat Web Mercator at zoom 15.5–16.5, where
-  // the horizon is 30–80 km out in the fog (and globe rendering, in float32, would wobble).
+  // the horizon is 30–80 km out in the fog (and globe rendering, in float32, would wobble), but
+  // not above 80° of latitude, where the polar caps are drawn on the globe alone (polarglobe.ts
+  // globeProjection: set again as the centre moves through 78–80°).
   // The cursor-anchored camera handles both (camera3d.ts).
-  const applyProjection = () =>
-    map.setProjection({
-      type: store.s.globe
-        ? (['interpolate', ['linear'], ['zoom'], 15.5, 'vertical-perspective', 16.5, 'mercator'] as unknown as 'globe')
-        : 'mercator',
-    });
+  let projectionKey = '';
+  const applyProjection = () => {
+    const type = store.s.globe ? globeProjection(map.getCenter().lat) : 'mercator';
+    const key = JSON.stringify(type);
+    if (key === projectionKey) return;
+    projectionKey = key;
+    map.setProjection({ type: type as 'globe' });
+  };
+  map.on('move', () => {
+    if (styleReady) applyProjection();
+  });
   const applyLayers = () => {
     const vis = (id: string, show: boolean) => {
       if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', show ? 'visible' : 'none');
@@ -2290,6 +2299,9 @@ async function main() {
     // (The heritage registers' among them: what the heritage popups name as their source.)
     w.on(() => setRegisterCredits(w.status?.credits));
     w.on(() => setBuildingsCredit(w.status?.credits));
+    // The polar caps, while the catalog has their layers (under the contours and everything after).
+    const polar = new PolarCaps(map, { land: () => store.s.land, water: () => (store.s.layers.water ? store.s.water.colour : null) }, contours.id);
+    w.on(() => polar.setCatalog(w.status?.layers));
     // The depth's layers and sources, and the notices their licences ask for in the credits.
     w.on(() => {
       if (!w.status) return;

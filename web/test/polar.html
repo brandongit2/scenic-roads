@@ -1,8 +1,9 @@
 <!doctype html>
-<!-- The polar layer (web/src/polar.ts; docs/polar.md) over the map's own terrain and shading, for
-     checking the caps and the 85° seam by eye: `pnpm dev` in web/, with a folder of polar tiles
-     (scenic-polar's --out) linked as web/public/polar-dev (untracked), then
-     /test/polar.html?pole=s#lon,lat,zoom,pitch,bearing. -->
+<!-- The polar layer (web/src/polarglobe.ts; docs/polar.md) over the map's own terrain and shading,
+     for checking the caps and the 85° seam by eye: `pnpm dev` in web/, with a folder of polar tiles
+     (scenic-polar's --out: <pole>/terrain|slope/z/x/y.webp) linked as web/public/polar-dev
+     (untracked), then /test/polar.html?pole=s#lon,lat,zoom,pitch,bearing. ?tiles=server reads the
+     server's /tiles/polar-terrain|polar-slope/<pole>/z/x/y instead. -->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -18,7 +19,7 @@
     <script type="module">
       import * as maplibregl from 'maplibre-gl';
       import mlWorkerUrl from 'maplibre-gl/src/source/worker.ts?worker&url';
-      import { polarLayer, premultiplied } from '../src/polar.ts';
+      import { globeProjection, polarGlobeLayer, premultiplied } from '../src/polarglobe.ts';
       import { LAND_COLOUR } from '../src/basecolours.ts';
       import { SHADE_SHIFT } from '../src/basemap.ts';
 
@@ -37,8 +38,8 @@
         canvasContextAttributes: { preserveDrawingBuffer: true },
         style: {
           version: 8,
-          // (The app's projection below street level: web/src/main.ts applyProjection.)
-          projection: { type: ['interpolate', ['linear'], ['zoom'], 15.5, 'vertical-perspective', 16.5, 'mercator'] },
+          // (The app's projection: web/src/main.ts applyProjection.)
+          projection: { type: globeProjection(lat) },
           sky: { 'atmosphere-blend': 0 },
           sources: {
             dem,
@@ -57,16 +58,20 @@
       });
       map.on('style.load', () => {
         if (q.get('off') !== '1') {
-          map.addLayer(polarLayer({
+          const server = q.get('tiles') === 'server';
+          // (scenic-polar's folder names the slope tiles 'shade'.)
+          map.addLayer(polarGlobeLayer({
             pole,
-            url: (kind, z, x, y) => `/polar-dev/${pole}/${kind}/${z}/${x}/${y}.webp`,
+            url: (kind, z, x, y) => server ? `/tiles/polar-${kind}/${pole}/${z}/${x}/${y}` : `/polar-dev/${pole}/${kind === 'slope' ? 'shade' : kind}/${z}/${x}/${y}.webp`,
             maxZoom: Number(q.get('maxz') ?? 9),
-            land: premultiplied(land),
-            water: premultiplied('#0c1622'),
+            land: () => premultiplied(land),
+            water: () => premultiplied('#0c1622'),
+            hillshade: 'hillshade',
           }));
           // (Past 85.05° only once the layer draws the pole: the camera is held to it before.)
           map.jumpTo({ center: [lon, lat], zoom, pitch, bearing });
         }
+        map.on('move', () => map.setProjection({ type: globeProjection(map.getCenter().lat) }));
         map.once('idle', () => (window.polarIdle = true));
       });
       window.map = map;

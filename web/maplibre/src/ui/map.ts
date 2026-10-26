@@ -1,5 +1,5 @@
 import {ensureError, extend, warnOnce, uniqueId, isImageBitmap, type Complete, pick, type Subscription} from '../util/util.ts';
-import {poleCaps} from '../geo/projection/pole_caps.ts';
+import {poleCaps, poleGround, type PoleGround} from '../geo/projection/pole_caps.ts';
 import {browser} from '../util/browser.ts';
 import {now} from '../util/time_control.ts';
 import {DOM} from '../util/dom.ts';
@@ -3940,12 +3940,31 @@ export class Map extends Evented<MapEventType> {
     /**
      * Scenic Roads: whether the globe closes the north and south poles past the Web Mercator tiles
      * (upstream's caps, drawn at the last row's colour and height). Off where the map draws a pole
-     * itself (docs/polar.md).
+     * itself (docs/polar.md). Fills' tiles on a pole's row are parsed again when it changes.
      */
     setPoleCaps(caps: {north: boolean; south: boolean}): this {
+        const changed = {north: poleCaps.north !== caps.north, south: poleCaps.south !== caps.south};
         poleCaps.north = caps.north;
         poleCaps.south = caps.south;
+        if ((changed.north || changed.south) && this.style) {
+            for (const id in this.style.tileManagers) {
+                const type = this.style.tileManagers[id].getSource().type;
+                if (type !== 'vector' && type !== 'geojson') continue;
+                this.style.tileManagers[id].refreshTilesWhere((t) => (changed.north && t.y === 0) || (changed.south && t.y === (1 << t.z) - 1));
+            }
+        }
         return this._update(true);
+    }
+
+    /**
+     * Scenic Roads: the ground's height past the Web Mercator tiles (pole_caps.ts `PoleGround`: m
+     * before the terrain's exaggeration, or null), which the terrain's elevation lookups, and so the
+     * camera, read there; null to read 0 there again, as upstream.
+     */
+    setPoleGround(fn: PoleGround | null): this {
+        poleGround.fn = fn;
+        this.terrain?.resetElevationCache();
+        return this._update();
     }
 
     /**

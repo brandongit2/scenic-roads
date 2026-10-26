@@ -45,6 +45,9 @@ Besides the changes below, the app reaches into internals that aren't API (liste
 `map.terrain.exaggeration` (the `Terrain`'s field) each frame, as `setTerrain` would build a new
 `Terrain`; `map.getTerrain()` keeps the options' value meanwhile, so readers that must follow the
 height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
+`web/src/polarglobe.ts` (the polar caps) reads the same exaggeration, and follows the
+`hillshade` layer's and the tints' (`color-relief`) evaluated paint through their style layers
+(`isHidden`, `paint.get`, `getIlluminationProperties`, `_createColorRamp`).
 
 ## What we changed
 
@@ -72,10 +75,22 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
   ground under each corner less 2 m.
 - **The poles left to the map** (`geo/projection/pole_caps.ts`, `Map#setPoleCaps`): with a pole's cap
   off, the globe's meshes (the terrain's, the rasters', the background's) don't fan out to that pole
-  past the last row, and the camera's centre may go to 89.5° there (`clampGlobeLatitude`, in the
-  vertical-perspective transform's constrain and the globe's pan and zoom); elsewhere ±85.05° as
-  upstream. The app's polar layer draws the cap (docs/polar.md, planned). Vector fills' pole
-  triangles are still drawn.
+  past the last row, nor do fills (`subdivision.ts`: fill and fill-extrusion buckets close only the
+  poles in the projection's `SubdivisionGranularitySetting.poles`, which the globe's projection
+  makes from `poleCaps`, so the setting reaches the workers with each tile; vector and GeoJSON
+  tiles on a pole's row are parsed again when it changes); and the camera's centre may go to 89.5°
+  there (`clampGlobeLatitude`, in the vertical-perspective transform's constrain and the globe's
+  pan and zoom); elsewhere ±85.05° as upstream. The app's polar layer draws the cap
+  (docs/polar.md).
+- **The ground past 85.05°** (`pole_caps.ts` `poleGround`, `Map#setPoleGround(fn)`): upstream's
+  terrain reads 0 past the Web Mercator tiles, so a close camera over the Antarctic plateau was
+  under the ice. A provider `(lng, lat) => metres | null` (before exaggeration; null: 0) answers
+  `Terrain`'s lookups there (`_poleElevation`, in `getElevationForLngLat`,
+  `elevationForLngLatFn`, `getElevationForLngLatZoom` and `getMinTileElevationForLngLatZoom`, times
+  the exaggeration), so the camera's centre elevation, its height above the ground, the frustum's
+  ground and `queryTerrainElevation` follow the cap. The app's polar layer gives its loaded
+  tiles' heights (`web/src/polar.ts` `PolarTiles#height`). Only with 3D terrain on, as upstream's
+  lookups.
 - **Distance fog, on the globe too** (`sky.ts` `fogRange`, `Map#setFogRange`, `terrain.*.glsl`,
   `draw_terrain.ts`, and the extrusions'): a vertex's fog depth is its distance along the view,
   scaled from 0 at the map's centre to 1 at the horizon (`fogDepth`); fog runs from the range's

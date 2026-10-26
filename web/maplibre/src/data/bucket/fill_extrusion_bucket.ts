@@ -249,7 +249,7 @@ export class FillExtrusionBucket implements Bucket {
             return;
 
         // Do not generate outlines, since outlines already got subdivided earlier.
-        const subdividedPolygon = subdividePolygon(polygon, canonical, granularity, false);
+        const subdividedPolygon = subdividePolygon(polygon, canonical, granularity, false, subdivisionGranularity.poles); // Scenic Roads: poles (pole_caps.ts)
         const vertexArray = this.layoutVertexArray;
 
         fillLargeMeshArrays(

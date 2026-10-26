@@ -1,5 +1,6 @@
 import {mat4} from 'gl-matrix';
-import {poleCaps} from '../geo/projection/pole_caps.ts';
+import {poleCaps, poleGround} from '../geo/projection/pole_caps.ts';
+import {MAX_VALID_LATITUDE} from '../util/util.ts';
 import {OverscaledTileID} from '../tile/tile_id.ts';
 import {RGBAImage} from '../util/image.ts';
 import {Pos3dArray, TriangleIndexArray} from '../data/array_types.g.ts';
@@ -234,6 +235,8 @@ export class Terrain {
      * @returns the elevation
      */
     getElevationForLngLatZoom(lnglat: LngLat, zoom: number): number {
+        const polar = this._poleElevation(lnglat);
+        if (polar !== undefined) return polar;
         if (!isInBoundsForZoomLngLat(zoom, lnglat.wrap())) return 0;
         const {tileID, mercatorX, mercatorY} = this._getOverscaledTileIDFromLngLatZoom(lnglat, zoom);
         return this.getElevation(tileID, mercatorX % EXTENT, mercatorY % EXTENT, EXTENT);
@@ -266,6 +269,8 @@ export class Terrain {
         let zoom = -1;
         const ids = new Map<number, OverscaledTileID>();
         return (lnglat: LngLat): number => {
+            const polar = this._poleElevation(lnglat);
+            if (polar !== undefined) return polar;
             if (index) {
                 const mercator = MercatorCoordinate.fromLngLat(lnglat);
                 const sample = sampleAt(index, this.exaggeration, mercator.x, mercator.y);
@@ -319,6 +324,17 @@ export class Terrain {
      * @param extent - optional, default 8192
      * @returns the elevation
      */
+    /**
+     * Scenic Roads: past the Web Mercator tiles (|lat| > 85.05°), the ground the map's pole provider
+     * gives (pole_caps.ts `poleGround`; 0 where it has none), with the exaggeration; undefined
+     * elsewhere, or without a provider (upstream's lookups then, which read 0 there).
+     */
+    _poleElevation(lnglat: LngLat): number | undefined {
+        const fn = poleGround.fn;
+        if (!fn || Math.abs(lnglat.lat) <= MAX_VALID_LATITUDE) return undefined;
+        return (fn(lnglat.lng, lnglat.lat) ?? 0) * this.exaggeration;
+    }
+
     getElevation(tileID: OverscaledTileID, x: number, y: number, extent: number = EXTENT): number {
         return this.getDEMElevation(tileID, x, y, extent) * this.exaggeration;
     }
@@ -554,6 +570,8 @@ export class Terrain {
     }
 
     getMinTileElevationForLngLatZoom(lnglat: LngLat, zoom: number): number {
+        const polar = this._poleElevation(lnglat);
+        if (polar !== undefined) return polar;
         if (!isInBoundsForZoomLngLat(zoom, lnglat.wrap())) return 0;
         const {tileID} = this._getOverscaledTileIDFromLngLatZoom(lnglat, zoom);
         // Scenic Roads: the whole DEM tile's minimum, as upstream's, not the tile's own

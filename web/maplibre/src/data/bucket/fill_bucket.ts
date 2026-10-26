@@ -210,7 +210,7 @@ export class FillBucket implements Bucket {
         [_: string]: ImagePosition;
     }, subdivisionGranularity: SubdivisionGranularitySetting): void {
         for (const polygon of classifyRings(geometry, EARCUT_MAX_RINGS)) {
-            const subdivided = subdividePolygon(polygon, canonical, subdivisionGranularity.fill.getGranularityForZoomLevel(canonical.z));
+            const subdivided = subdividePolygon(polygon, canonical, subdivisionGranularity.fill.getGranularityForZoomLevel(canonical.z), true, subdivisionGranularity.poles); // Scenic Roads: poles (pole_caps.ts)
 
             const vertexArray = this.layoutVertexArray;
 

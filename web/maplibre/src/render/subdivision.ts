@@ -42,7 +42,11 @@ class Subdivider {
     private readonly _granularity;
     private readonly _granularityCellSize;
 
-    constructor(granularity: number, canonical: CanonicalTileID) {
+    // Scenic Roads: the poles this subdivider closes (pole_caps.ts).
+    private readonly _poles: {north: boolean; south: boolean};
+
+    constructor(granularity: number, canonical: CanonicalTileID, poles: {north: boolean; south: boolean} = {north: true, south: true}) {
+        this._poles = poles;
         this._granularity = granularity;
         this._granularityCellSize = EXTENT / granularity;
         this._canonical = canonical;
@@ -464,11 +468,12 @@ class Subdivider {
         let north = false;
         let south = false;
         if (this._canonical) {
+            // Scenic Roads: unless the map draws that pole itself (pole_caps.ts).
             if (this._canonical.y === 0) {
-                north = true;
+                north = this._poles.north;
             }
             if (this._canonical.y === (1 << this._canonical.z) - 1) {
-                south = true;
+                south = this._poles.south;
             }
         }
         if (north || south) {
@@ -705,10 +710,11 @@ class Subdivider {
  * divisible by 4096 (including outside the tile range, so -8192, -4096, or 12288...), granularity of 8 on axes divisible by 1024 and so on.
  * Granularity of 1 or lower results in *no* subdivision.
  * @param generateOutlineLines - When true, also generates index arrays for subdivided lines that form the outline of the supplied polygon. True by default.
+ * @param poles - Scenic Roads: the poles closed at the Mercator edge (both by default; pole_caps.ts).
  * @returns An object that contains the generated vertex array, triangle index array and, if specified, line index arrays.
  */
-export function subdividePolygon(polygon: Point[][], canonical: CanonicalTileID, granularity: number, generateOutlineLines: boolean = true): SubdivisionResult {
-    const subdivider = new Subdivider(granularity, canonical);
+export function subdividePolygon(polygon: Point[][], canonical: CanonicalTileID, granularity: number, generateOutlineLines: boolean = true, poles?: {north: boolean; south: boolean}): SubdivisionResult {
+    const subdivider = new Subdivider(granularity, canonical, poles); // Scenic Roads: poles (pole_caps.ts)
     return subdivider.subdividePolygonInternal(polygon, generateOutlineLines);
 }
 

@@ -27,6 +27,8 @@ const granularitySettingsGlobe: SubdivisionGranularitySetting = new SubdivisionG
     circle: 3
 });
 
+const granularityByPoles: Record<string, SubdivisionGranularitySetting> = {'11': granularitySettingsGlobe};
+
 export class VerticalPerspectiveProjection implements Projection {
     private _tileMeshCache: {[_: string]: Mesh} = {};
 
@@ -59,7 +61,10 @@ export class VerticalPerspectiveProjection implements Projection {
     }
 
     get subdivisionGranularity(): SubdivisionGranularitySetting {
-        return granularitySettingsGlobe;
+        // Scenic Roads: fills close only the poles the map doesn't draw itself (pole_caps.ts); a
+        // setting a combination, so the tiles' parameters change with it.
+        const key = `${+poleCaps.north}${+poleCaps.south}`;
+        return granularityByPoles[key] ??= new SubdivisionGranularitySetting({...granularitySettingsGlobe, poles: {...poleCaps}});
     }
 
     get useGlobeControls(): boolean {
