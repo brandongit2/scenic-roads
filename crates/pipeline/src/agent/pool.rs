@@ -1112,6 +1112,20 @@ pub fn check(e: &Entry, _r: &Records) -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// A redo's entry (crate::agent::redo: it forgets records) from the lead of its lease's term alone,
+/// as `lead_of` reads it (None: not read now, the entry held): one written by any other member, a
+/// forged or copied one, is refused.
+pub fn by_its_lead(e: &Entry, lead_of: &dyn Fn(u64) -> Option<String>) -> std::result::Result<(), String> {
+    if e.step != crate::agent::redo::STEP {
+        return Ok(());
+    }
+    match lead_of(e.lease.term) {
+        Some(m) if m == e.member => Ok(()),
+        Some(m) => Err(format!("a redo is the lead's: {} didn't lead term {} ({m} did)", e.member, e.lease.term)),
+        None => Err(format!("{}a redo's: term {}'s lead can't be read now", crate::pool::records::HOLD, e.lease.term)),
+    }
+}
+
 /// `check`, by a lead on app `lead_app`, members' apps as `app_of` reads them (their heartbeats;
 /// None: not read): an entry with a change outside its step's write-set from a member on a newer
 /// app than the lead's is held (`records::HOLD`), neither merged nor refused, until the lead runs
@@ -1857,7 +1871,13 @@ impl Run {
                 .and_then(|b| serde_json::from_slice::<Heartbeat>(&b).ok())
                 .map(|h| h.pool.app)
         };
-        let checked = |e: &Entry, r: &Records| check_from(e, r, &lead_app, &app_of);
+        let lead_of = |term: u64| -> Option<String> {
+            crate::pool::term::read(nas.as_ref(), term).ok().flatten().map(|t| t.member)
+        };
+        let checked = |e: &Entry, r: &Records| {
+            by_its_lead(e, &lead_of)?;
+            check_from(e, r, &lead_app, &app_of)
+        };
         let out = self.side.step(give, &checked);
         // (Named and off the records now, or no longer leading: forgotten here.)
         let raw: BTreeSet<&str> = self
@@ -3342,6 +3362,23 @@ mod tests {
     /// An entry outside its step's write-set from a member on a newer app than the lead's is held,
     /// not refused (its app's write-sets may know the name); from the lead's app or an older one,
     /// refused; its member's app not read now, held; any other refusal stands whatever the app.
+    /// Task #780 review: a redo's entry is merged from the lead of its lease's term alone; another
+    /// member's is refused, and one whose term's lead can't be read is held. Other steps' pass.
+    #[test]
+    fn a_redo_entry_from_anyone_but_its_terms_lead_is_refused() {
+        let lead = |t: u64| (t == 3).then(|| "m-lead".to_string());
+        let mut e = unit_entry("m-lead", LeaseId { term: 3, n: 1 }, "6/1/2", "");
+        e.step = crate::agent::redo::STEP.into();
+        assert_eq!(by_its_lead(&e, &lead), Ok(()));
+        e.member = "m-other".into();
+        assert!(by_its_lead(&e, &lead).unwrap_err().contains("didn't lead term 3"));
+        e.member = "m-lead".into();
+        e.lease.term = 4;
+        assert!(by_its_lead(&e, &lead).unwrap_err().starts_with(crate::pool::records::HOLD));
+        let u = unit_entry("m-other", LeaseId { term: 3, n: 2 }, "6/1/2", "k");
+        assert_eq!(by_its_lead(&u, &lead), Ok(()));
+    }
+
     #[test]
     fn an_entry_outside_from_a_newer_app_is_held() {
         let r = Records::default();

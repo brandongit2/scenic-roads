@@ -804,7 +804,7 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   app; otherwise it's refused, the why noted at `state/journal/rejected/<key>.why`
   (`journal::note_refusal`). The lint `tests/write_sets.rs` gates publish.
 - **A redo is a hand-off too:** `scenic redo` (§11) clears targets' keys through a job of the
-  lead's whose entry carries only a done record, merged as any.
+  lead's whose entry carries only a done record, merged as any, from that term's lead alone.
 - **Sizes ride along:** `Out` records each file it writes with its size, and the hand-off carries
   them (`Handoff::sizes`); the merge keeps those of the files the entry names, so a delta catalogue
   never looks at them on the NAS. Entries from before carry none.
@@ -1620,7 +1620,8 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   agent keeps the ask in its folder (`redo.json`, over restarts) and plans a job of the `redo`
   step for it, the lead's own (`every::LEAD_ONLY`). That job changes no file (its write-set is
   empty) and hands off a done record of `<step> <target>` with no key; the merge checks it as any
-  entry (§7.3) and `Keys::record` forgets those targets' keys and nothing else, the lease order
+  entry (§7.3), and takes it only from the lead of its lease's term (`agent::pool::by_its_lead`:
+  another member's refused, one whose term can't be read held), and `Keys::record` forgets those targets' keys and nothing else, the lease order
   kept by `<step>, <target>` as a prune's is (a build of the target leased before the redo,
   merged after, is passed over). The job succeeded, the ask leaves `redo.json`. The plan then
   offers the targets again under the keys it has; what reads their outputs follows by content

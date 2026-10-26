@@ -109,10 +109,16 @@ fn read_or_default<T: Default + serde::de::DeserializeOwned>(nas: &dyn Nas, p: &
 
 /// The slots a done record's target `t` of step `step` is kept under, for lease order (`last`): a
 /// prune's or a redo's `<kind> <at>` removes kind's key for `at` (and a pois prune the peaks' too:
-/// crate::agent::build::Keys::record); any other target is its step's.
+/// crate::agent::build::Keys::record; a redo's kind under its old names too, as a member on an
+/// older app names its builds: crate::agent::steps::RENAMED); any other target is its step's.
 fn slots(step: &str, t: &str) -> Vec<(String, String)> {
-    match t.split_once(' ').filter(|_| step == "prune" || step == crate::agent::redo::STEP) {
-        Some(("pois", at)) => vec![("pois".into(), at.into()), ("peaks".into(), at.into())],
+    let redo = step == crate::agent::redo::STEP;
+    match t.split_once(' ').filter(|_| step == "prune" || redo) {
+        Some(("pois", at)) if !redo => vec![("pois".into(), at.into()), ("peaks".into(), at.into())],
+        Some((kind, at)) if redo => std::iter::once(kind)
+            .chain(crate::agent::steps::RENAMED.iter().filter(|(_, new)| *new == kind).map(|(old, _)| *old))
+            .map(|k| (k.to_string(), at.to_string()))
+            .collect(),
         Some((kind, at)) => vec![(kind.into(), at.into())],
         None => vec![(step.into(), t.into())],
     }
@@ -726,6 +732,12 @@ mod tests {
         let k = journal::write(&nas, &redo(6)).unwrap();
         merge(&nas, &mut r, std::slice::from_ref(&k), &check);
         assert_eq!(r.keys, again, "a second redo changes nothing");
+        // (Review: a redo's slots are its step's alone, under its old names too.)
+        assert_eq!(slots("redo", "pois 6/1/1"), [("pois".to_string(), "6/1/1".to_string())]);
+        assert_eq!(
+            slots("redo", "terrain-hi 6/1/1"),
+            [("terrain-hi".to_string(), "6/1/1".to_string()), ("terrain".into(), "6/1/1".into())]
+        );
         let next = journal::write(&nas, &built(3, 7, "6-1-1", "k1")).unwrap();
         assert_eq!(merge(&nas, &mut r, std::slice::from_ref(&next), &any).applied, [next]);
         assert_eq!(r.keys, before, "built again under its key");

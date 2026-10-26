@@ -1377,7 +1377,7 @@ fn redo(step: &str, targets: &[String], run: bool, root_: &Option<PathBuf>) -> R
             Err(e) => eprintln!("the records can't be read now: {e:#}"),
         }
     }
-    bail!("not merged in 15 minutes; the lead keeps the ask (`scenic status`; `scenic redo {step} …` says what's still recorded)")
+    bail!("not merged in 15 minutes: `scenic status` shows its job; a lead that changed meanwhile may have lost the ask (`scenic redo {step} …` says what's still recorded; ask again)")
 }
 
 fn main() -> Result<()> {

@@ -4228,7 +4228,10 @@ fn route(
         "/work/redo" => {
             // The owner's ask to build `step`'s finished `targets` again (`scenic redo`, with the
             // build's key; crate::agent::redo): kept by this Mac's agent, which runs it as a job of
-            // its own. Its number answered.
+            // its own. Its number answered. (Never a page's: the gate lets only the key through.)
+            if caller.page {
+                return not_mine();
+            }
             let b: serde_json::Value = serde_json::from_slice(body)?;
             let targets: Vec<String> = b["targets"]
                 .as_array()
