@@ -1123,7 +1123,10 @@ mod tests {
             let t = 4 + (i % 3) * 4;
             costs.insert(
                 format!("terrain-lo 3/{i}/1"),
-                Cost { v: 1, ..cost(200 + i * 10 + t * 100, 5, &[("tiffs", i), ("threads", t)]) },
+                Cost {
+                    v: cost_version("terrain-lo"),
+                    ..cost(200 + i * 10 + t * 100, 5, &[("tiffs", i), ("threads", t)])
+                },
             );
         }
         let b = Book::new(&costs);
