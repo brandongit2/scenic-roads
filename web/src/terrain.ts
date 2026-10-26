@@ -291,8 +291,11 @@ function setupContours(map: MLMap, density: number) {
   );
 }
 
-export function applyTerrain(map: MLMap, t: Terrain) {
-  map.setTerrain(t.on ? { source: 'dem', exaggeration: t.exaggeration } : null);
+/** The terrain's settings on the map; `floor`: the 3D terrain from the sea and lake floor (the
+ * depth's, depth.ts), its surface the terrain itself, where the water and what's on it are drawn. */
+export function applyTerrain(map: MLMap, t: Terrain, floor: boolean) {
+  map.setTerrainSurface(t.on && floor ? 'dem' : null);
+  map.setTerrain(t.on ? { source: floor ? 'dem-floor' : 'dem', exaggeration: t.exaggeration } : null);
   fastTerrainCoords(map);
   finerTerrainMesh(map);
   // Hillshade.

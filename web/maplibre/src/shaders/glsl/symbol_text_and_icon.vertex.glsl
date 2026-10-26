@@ -28,6 +28,8 @@ uniform vec2 u_translation;
 uniform float u_pitched_scale;
 uniform bool u_is_offset;
 uniform bool u_height_anchor_ground;
+// Scenic Roads: with u_height_anchor_ground, from the terrain's surface DEM (the anchor `surface`).
+uniform bool u_height_anchor_surface;
 // Scenic Roads: symbol-height-offset times this (the terrain's exaggeration for the anchor `sea`).
 uniform float u_height_scale;
 
@@ -57,7 +59,7 @@ void main() {
     float a_size_min = float(a_data.z >> 1u);
     float is_sdf = float(a_data.z & 1u);
 
-    float ele = a_height_offset * u_height_scale + (u_height_anchor_ground ? get_elevation(a_pos) : 0.0);
+    float ele = a_height_offset * u_height_scale + (u_height_anchor_ground ? (u_height_anchor_surface ? get_surface_elevation(a_pos) : get_elevation(a_pos)) : 0.0);
     highp float segment_angle = -a_projected_pos[2];
     float size;
 

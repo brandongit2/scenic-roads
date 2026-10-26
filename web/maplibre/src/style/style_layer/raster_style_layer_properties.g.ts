@@ -29,7 +29,7 @@ export type RasterPaintProps = {
     "raster-resampling": DataConstantProperty<"linear" | "nearest">,
     "raster-fade-duration": DataConstantProperty<number>,
     "raster-z-offset": DataConstantProperty<number>,
-    "raster-elevation-reference": DataConstantProperty<"ground" | "sea">,
+    "raster-elevation-reference": DataConstantProperty<"ground" | "sea" | "surface">,
 };
 
 export type RasterPaintPropsPossiblyEvaluated = {
@@ -43,7 +43,7 @@ export type RasterPaintPropsPossiblyEvaluated = {
     "raster-resampling": "linear" | "nearest",
     "raster-fade-duration": number,
     "raster-z-offset": number,
-    "raster-elevation-reference": "ground" | "sea",
+    "raster-elevation-reference": "ground" | "sea" | "surface",
 };
 
 let paint: Properties<RasterPaintProps>;

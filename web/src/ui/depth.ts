@@ -1,6 +1,6 @@
 // The settings panel's Depth section (ui/layers.ts): the depth's two layers, each with its switch:
 // the depth colour and the floor's shading (its colour ramp chosen as the panel's other ramps are),
-// and the depth contours with their labels (depth.ts).
+// and the depth contours with their labels; and the 3D floor's switch (depth.ts).
 import { DEPTH_DEFAULTS, DEPTH_PALETTES, depthColour, rgba, scaleFns, type DepthState } from '../depthlook';
 import type { Store } from '../state';
 import { ColourPick, Slider, pct } from './controls';
@@ -30,6 +30,7 @@ export class DepthSection {
   private fixed: HTMLSelectElement;
   private index: HTMLSelectElement;
   private labels: HTMLInputElement;
+  private floor: HTMLInputElement;
   private legend: HTMLDivElement;
   private ticks: HTMLDivElement;
   private note: HTMLDivElement;
@@ -79,6 +80,8 @@ export class DepthSection {
     this.index.addEventListener('change', () => D({ index: Number(this.index.value) }));
     this.labels = h('input', { type: 'checkbox' });
     this.labels.addEventListener('change', () => D({ labels: this.labels.checked }));
+    this.floor = h('input', { type: 'checkbox' });
+    this.floor.addEventListener('change', () => D({ floor: this.floor.checked }));
     const lineCol = new ColourPick({ label: 'Colour', get: () => S().colour, set: (colour) => D({ colour }), reset: DEPTH_DEFAULTS.colour });
     this.colours = [dryCol, lineCol];
     const lineSliders = [
@@ -102,6 +105,7 @@ export class DepthSection {
       dryCol.el,
       tog(this.contours, 'Depth contours', 'Lines of equal depth, labelled'),
       this.contourBox,
+      tog(this.floor, '3D sea and lake floor', 'The 3D terrain shows the floor under the water, its surface drawn over it, see-through (with 3D terrain on)'),
       this.note,
     );
     this.nodes = [this.body];
@@ -130,6 +134,7 @@ export class DepthSection {
     this.fixed.value = String(d.fixed);
     this.index.value = String(d.index);
     this.labels.checked = d.labels;
+    this.floor.checked = d.floor;
     // The legend: the ramp over its domain, with round depths marked.
     const [lo, hi] = this.domain();
     const [fwd] = scaleFns(d.scale === 'linear' ? 'linear' : 'log', Math.max(0, lo), Math.max(lo + 0.5, hi));

@@ -16,6 +16,8 @@ import type {Context} from '../../webgl/context.ts';
 export type TerrainPreludeUniformsType = {
     'u_depth': Uniform1i;
     'u_terrain': Uniform1i;
+    // Scenic Roads: the surface DEM (Terrain.setSurface).
+    'u_surface': Uniform1i;
 };
 
 // Scenic Roads: the distance fog (Sky#fogRange); the extrusions take the same uniforms.
@@ -41,7 +43,8 @@ export type TerrainDepthUniformsType = {
 
 const terrainPreludeUniforms = (context: Context, locations: UniformLocations): TerrainPreludeUniformsType => ({
     'u_depth': new Uniform1i(context, locations.u_depth),
-    'u_terrain': new Uniform1i(context, locations.u_terrain)
+    'u_terrain': new Uniform1i(context, locations.u_terrain),
+    'u_surface': new Uniform1i(context, locations.u_surface)
 });
 
 const fogUniforms = (context: Context, locations: UniformLocations): FogUniformsType => ({

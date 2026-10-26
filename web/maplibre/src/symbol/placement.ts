@@ -237,9 +237,11 @@ export class Placement {
         this.placedOrientations = {};
     }
 
-    private _getTerrainElevationFunc(tileID: OverscaledTileID): GetElevation | undefined {
+    private _getTerrainElevationFunc(tileID: OverscaledTileID, surface: boolean = false): GetElevation | undefined {
         const terrain = this.terrain;
         if (!terrain) return undefined;
+        // (Scenic Roads: the anchor `surface` takes the terrain's surface, Terrain#getSurfaceElevation.)
+        if (surface) return (x: number, y: number) => terrain.getSurfaceElevation(tileID, x, y);
         return (x: number, y: number) => terrain.getElevation(tileID, x, y);
     }
 
@@ -440,7 +442,9 @@ export class Placement {
         const pitchWithMap = layout.get('text-pitch-alignment') === 'map';
         const hasIconTextFit = layout.get('icon-text-fit') !== 'none';
         const zOrderByViewportY = layout.get('symbol-z-order') === 'viewport-y';
-        const heightAnchorGround = layout.get('symbol-height-anchor') === 'ground';
+        // Scenic Roads: the anchor `surface` measures from the terrain's surface DEM as `ground` from
+        // the terrain (its elevations from getElevation below).
+        const heightAnchorGround = layout.get('symbol-height-anchor') === 'ground' || layout.get('symbol-height-anchor') === 'surface';
         // Scenic Roads: the anchor `sea` scales the offsets by the terrain's exaggeration (style_spec_extensions.ts).
         const heightScale = symbolHeightScale(layout.get('symbol-height-anchor'), this.terrain?.exaggeration);
 
@@ -466,7 +470,7 @@ export class Placement {
         }
 
         const tileID = this.retainedQueryData[bucket.bucketInstanceId].tileID;
-        const getElevation = this._getTerrainElevationFunc(tileID);
+        const getElevation = this._getTerrainElevationFunc(tileID, layout.get('symbol-height-anchor') === 'surface');
         const simpleProjectionMatrix = this.transform.getFastPathSimpleProjectionMatrix(tileID);
 
         const placeSymbol = (symbolInstance: SymbolInstance, collisionArrays: CollisionArrays, symbolIndex: number) => {

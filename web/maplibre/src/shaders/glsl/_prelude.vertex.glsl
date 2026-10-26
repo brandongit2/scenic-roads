@@ -89,11 +89,17 @@ mat3 rotationMatrixFromAxisAngle(vec3 u, float angle) {
 #ifdef TERRAIN3D
 uniform sampler2D u_terrain;
 uniform highp sampler2D u_depth;
+// Scenic Roads: the terrain's surface DEM (Map#setTerrainSurface; the terrain's own without one),
+// for the elevation reference and the height anchor `surface`.
+uniform sampler2D u_surface;
 layout(std140) uniform TerrainUBO {
     highp mat4 u_terrain_matrix;
     highp vec4 u_terrain_unpack;
     highp float u_terrain_dim;
     highp float u_terrain_exaggeration;
+    highp mat4 u_surface_matrix;
+    highp vec4 u_surface_unpack;
+    highp float u_surface_dim;
 };
 #endif
 
@@ -168,11 +174,45 @@ float get_elevation(vec2 pos) {
     #endif
 }
 
+// Scenic Roads: the terrain's surface DEM's elevation at a coordinate (Map#setTerrainSurface), as
+// get_elevation's, exaggerated as the terrain is.
+float surface_ele(ivec2 pos) {
+    #ifdef TERRAIN3D
+        vec4 rgb = (texelFetch(u_surface, pos, 0) * 255.0) * u_surface_unpack;
+        return rgb.r + rgb.g + rgb.b - u_surface_unpack.a;
+    #else
+        return 0.0;
+    #endif
+}
+
+float get_surface_elevation(vec2 pos) {
+    #ifdef TERRAIN3D
+        #ifdef GLOBE
+            if ((pos.y < -32767.5) || (pos.y > 32766.5)) {
+                return 0.0;
+            }
+        #endif
+        vec2 coord = (u_surface_matrix * vec4(pos, 0.0, 1.0)).xy * u_surface_dim + 1.5;
+        vec2 f = fract(coord);
+        ivec2 c = ivec2(floor(coord));
+        ivec2 hi = textureSize(u_surface, 0) - 1;
+        float tl = surface_ele(clamp(c, ivec2(0), hi));
+        float tr = surface_ele(clamp(c + ivec2(1, 0), ivec2(0), hi));
+        float bl = surface_ele(clamp(c + ivec2(0, 1), ivec2(0), hi));
+        float br = surface_ele(clamp(c + ivec2(1, 1), ivec2(0), hi));
+        return mix(mix(tl, tr, f.x), mix(bl, br, f.x), f.y) * u_terrain_exaggeration;
+    #else
+        return 0.0;
+    #endif
+}
+
 // Scenic Roads: the elevation of an elevated line's or fill's vertex (style_spec_extensions.ts):
 // reference 1, z_offset metres above the terrain under it; 2, z_offset above sea level on the
-// terrain's scale (times its exaggeration). Without 3D terrain the ground is at 0.
+// terrain's scale (times its exaggeration); 3, z_offset metres above the terrain's surface DEM.
+// Without 3D terrain the ground is at 0.
 float elevationOf(vec2 pos, float z_offset, float reference) {
     #ifdef TERRAIN3D
+        if (reference > 2.5) return get_surface_elevation(pos) + z_offset;
         return reference > 1.5 ? z_offset * u_terrain_exaggeration : get_elevation(pos) + z_offset;
     #else
         return z_offset;

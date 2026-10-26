@@ -24,10 +24,13 @@ export class FillStyleLayer extends StyleLayer {
      * Scenic Roads: how the fill is drawn: 0 draped on the terrain (or flat on the map), as
      * upstream; 1 in 3D, `fill-z-offset` above the ground under each vertex; 2 in 3D,
      * `fill-z-offset` above sea level (style_spec_extensions.ts): the water's surface at 0 m or a
-     * lake's level over a sea floor.
+     * lake's level over a sea floor; 3 in 3D, `fill-z-offset` above the terrain's surface DEM
+     * (Map#setTerrainSurface): the water at its surface over the sea and lake floor.
      */
     elevationReference(): number {
-        if (this.paint.get('fill-elevation-reference') === 'sea') return 2;
+        const reference = this.paint.get('fill-elevation-reference');
+        if (reference === 'sea') return 2;
+        if (reference === 'surface') return 3;
         return this.paint.get('fill-z-offset').constantOr(1) !== 0 ? 1 : 0;
     }
 

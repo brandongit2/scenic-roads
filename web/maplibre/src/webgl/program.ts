@@ -248,6 +248,9 @@ export class Program<Us extends UniformBindings> {
             gl.bindTexture(gl.TEXTURE_2D, terrain.depthTexture);
             context.activeTexture.set(gl.TEXTURE3);
             gl.bindTexture(gl.TEXTURE_2D, terrain.texture);
+            // (Scenic Roads: the surface DEM, Terrain.setSurface; the terrain's own without one.)
+            context.activeTexture.set(gl.TEXTURE6);
+            gl.bindTexture(gl.TEXTURE_2D, terrain.surfaceTexture);
             for (const name in this.terrainUniforms) {
                 this.terrainUniforms[name].set(terrain[name]);
             }

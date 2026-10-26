@@ -664,6 +664,8 @@ export class Map extends Evented<MapEventType> {
     /** @internal */
     _zoomLevelsToOverscale: number | undefined;
     _terrainSkirtLength: 'none' | 'auto';
+    /** Scenic Roads: the surface over the 3D terrain (`setTerrainSurface`). */
+    _terrainSurface: string | null = null;
 
     /**
      * @internal
@@ -3002,6 +3004,7 @@ export class Map extends Evented<MapEventType> {
                 this.terrain.destroy();
             }
             this.terrain = new Terrain(this.painter, tileManager, options, this._terrainSkirtLength);
+            this.terrain.setSurface(this._terrainSurface ? this.style.tileManagers[this._terrainSurface] ?? null : null);
             this.painter.renderToTexture = new RenderToTexture(this.painter, this.terrain);
             this._camera.setTerrain(this.terrain);
             this._terrainDataCallback = e => this._handleTerrainDataEvent(e, options.source);
@@ -3010,6 +3013,24 @@ export class Map extends Evented<MapEventType> {
 
         this.style.triggerSymbolPlacement();
         this.fire(new MapTerrainEvent({terrain: options}));
+        return this;
+    }
+
+    /**
+     * Scenic Roads: the surface over the 3D terrain: a raster-dem source whose heights the elevation
+     * reference and height anchor `surface` take (style_spec_extensions.ts, Terrain#setSurface), or
+     * null for the terrain's own. Kept across `setTerrain`.
+     * @param sourceId - the surface's raster-dem source, or null
+     */
+    setTerrainSurface(sourceId: string | null): this {
+        if (sourceId && !this.style.tileManagers[sourceId]) throw new Error(`cannot set the terrain's surface: no source with ID ${sourceId}`);
+        if (sourceId === this._terrainSurface) return this;
+        this._terrainSurface = sourceId;
+        if (this.terrain) {
+            this.terrain.setSurface(sourceId ? this.style.tileManagers[sourceId] : null);
+            this.style.triggerSymbolPlacement();
+            this.triggerRepaint();
+        }
         return this;
     }
 

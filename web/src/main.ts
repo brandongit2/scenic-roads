@@ -218,7 +218,8 @@ async function main() {
     terrain.exaggeration = ease(Math.max(0, riseF));
     const ready = () => {
       if (map.terrain !== terrain) return map.off('sourcedata', ready);
-      if (!map.getSource('dem') || !map.isSourceLoaded('dem')) return;
+      const dem = map.getTerrain()?.source ?? 'dem';
+      if (!map.getSource(dem) || !map.isSourceLoaded(dem)) return;
       map.off('sourcedata', ready);
       const t0 = performance.now() - Math.max(0, riseF) * RISE_MS;
       const step = () => {
@@ -1952,6 +1953,15 @@ async function main() {
     prefs.saveSoon('state', () => ({ ...store.s, selected: null }));
   };
   let styleReady = false;
+  // The depth's 3D floor (depth.ts setFloor): the terrain's source swapped and the water's surface
+  // drawn over it, while the terrain is on and the catalog has depth.
+  let floorShown = false;
+  const floorWanted = (s: AppState) => s.terrain.on && s.depth.floor && depth.available;
+  const applyTerrainNow = (s: AppState) => {
+    floorShown = floorWanted(s);
+    applyTerrain(map, s.terrain, floorShown);
+    depth.setFloor(floorShown);
+  };
   let lastExaggeration = store.s.terrain.on ? store.s.terrain.exaggeration : 0;
   // Colour by height: the shared colour scale over the buildings in view (their tiles' heights,
   // read when the map is idle: buildings.onHeights), auto-fit to its percentiles as the roads'.
@@ -2047,7 +2057,13 @@ async function main() {
     }
     if (ch.has('ferry')) ferryCard.sync();
     if (ch.has('trees') && styleReady) applyTrees(map, s.trees);
-    if (ch.has('depth') && styleReady) depth.apply(s.depth);
+    if (ch.has('depth') && styleReady) {
+      depth.apply(s.depth);
+      if (floorWanted(s) !== floorShown && !ch.has('terrain')) {
+        applyTerrainNow(s);
+        riseTerrain();
+      }
+    }
     if ((ch.has('buildings') || ch.has('terrain')) && styleReady) {
       applyBuildingsNow(s);
       if (!s.buildings.on) hoverBuilding(null);
@@ -2063,7 +2079,7 @@ async function main() {
           else map.on('idle', levelOnce);
         }
         lastExaggeration = s.terrain.on ? s.terrain.exaggeration : 0;
-        applyTerrain(map, s.terrain);
+        applyTerrainNow(s);
         if (s.terrain.on) riseTerrain(); // (unless it has finished)
         applyLabelOpacity(map, s.labelOpacity, overlayLabelScale(s.poiOpacity));
       }
@@ -2211,7 +2227,7 @@ async function main() {
     if (!!m.labelTiles !== labelTilesOn() || !!m.water !== waterTilesOn()) watch?.wantReload('New map data');
     // The areas of terrain finer than its base, as they grow: the terrain sources' covers and the
     // contours follow in place.
-    for (const id of ['dem', 'dem-tint', 'slope']) (map.getSource(id) as maplibregl.RasterTileSource | undefined)?.setZoomByArea(m.terrainAreas);
+    for (const id of ['dem', 'dem-tint', 'dem-floor', 'slope']) (map.getSource(id) as maplibregl.RasterTileSource | undefined)?.setZoomByArea(m.terrainAreas);
     setTerrainAreas(map, m.terrainAreas);
     markDirty();
   };
@@ -2264,7 +2280,7 @@ async function main() {
     // Under every landmark name (and above the parts of World Heritage Sites).
     map.addLayer(dots, `poi-${Object.keys(POI_STYLE)[0]}`);
     applyLayers();
-    applyTerrain(map, store.s.terrain);
+    applyTerrainNow(store.s);
     if (store.s.terrain.on) riseTerrain();
     // (MapLibre's 'load' came with the empty style, and the opening view's moves before this.)
     cam3d.tuneDepth(map);
@@ -2307,6 +2323,7 @@ async function main() {
       if (!w.status) return;
       depth.setCatalog(w.status.layers, w.status.depth);
       layers.showDepth(depth.available);
+      if (styleReady && floorWanted(store.s) !== floorShown) applyTerrainNow(store.s);
       const ds = w.status.depth?.sources ?? [];
       strip.setDepth(ds.map((x) => x.label), ds.map((x) => x.notice).filter((n): n is string => !!n));
     });

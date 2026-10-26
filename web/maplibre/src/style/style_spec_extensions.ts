@@ -13,6 +13,10 @@ import {latest} from '@maplibre/maplibre-gl-style-spec';
  * - `sea`: the offset is an elevation above sea level, on the terrain's scale (multiplied by its
  *   exaggeration, as the terrain's own heights are), so 0 is the sea's surface and a lake's level
  *   puts it on the lake.
+ * - `surface`: the offset is a height in metres above the terrain's surface (`Map#setTerrainSurface`:
+ *   another DEM's heights, as the terrain's are exaggerated), the terrain's own without one. The app
+ *   draws a sea and lake floor as the terrain and keeps the water and what's on it at the surface
+ *   the floor was cut from.
  * Without 3D terrain the ground is at 0, so both are a height above the map.
  */
 const elevationReference = (prefix: string) => ({
@@ -20,6 +24,7 @@ const elevationReference = (prefix: string) => ({
     values: {
         ground: {doc: 'The z-offset is a height above the terrain under the feature.'},
         sea: {doc: 'The z-offset is an elevation above sea level, on the terrain\'s exaggerated scale.'},
+        surface: {doc: 'The z-offset is a height above the terrain\'s surface DEM (Map#setTerrainSurface), the terrain without one.'},
     },
     default: 'ground',
     doc: `What \`${prefix}-z-offset\` is measured from (Scenic Roads).`,
@@ -33,7 +38,7 @@ const rasterZOffset = {
     default: 0,
     units: 'meters',
     transition: false,
-    doc: 'The raster\'s height above `raster-elevation-reference`: with it other than 0, or the reference `sea`, drawn in 3D over the terrain rather than draped (Scenic Roads).',
+    doc: 'The raster\'s height above `raster-elevation-reference`: with it other than 0, or the reference `sea` or `surface`, drawn in 3D over the terrain rather than draped (Scenic Roads).',
     expression: {interpolated: true, parameters: ['zoom']},
     'property-type': 'data-constant',
 };
@@ -43,7 +48,7 @@ const zOffset = (prefix: string) => ({
     default: 0,
     units: 'meters',
     transition: true,
-    doc: `The feature's height above \`${prefix}-elevation-reference\`: with it other than 0, or the reference \`sea\`, drawn in 3D over the terrain rather than draped (Scenic Roads).`,
+    doc: `The feature's height above \`${prefix}-elevation-reference\`: with it other than 0, or the reference \`sea\` or \`surface\`, drawn in 3D over the terrain rather than draped (Scenic Roads).`,
     expression: {interpolated: true, parameters: ['zoom', 'feature', 'feature-state']},
     'property-type': 'data-driven',
 });
@@ -65,10 +70,13 @@ export const SCENIC_PROPERTIES: Record<string, Record<string, unknown>> = {
 
 // Point labels on the same terms: `symbol-height-anchor` `sea`, its `symbol-height-offset` an
 // elevation above sea level on the terrain's scale (times its exaggeration), where upstream's
-// `absolute` isn't exaggerated (a label at a lake's level sank into exaggerated terrain).
+// `absolute` isn't exaggerated (a label at a lake's level sank into exaggerated terrain); and
+// `surface`, its offset a height above the terrain's surface DEM (Map#setTerrainSurface), as
+// `ground` is above the terrain.
 const heightAnchor = (latest as unknown as {layout_symbol: Record<string, {values: Record<string, unknown>; doc?: string}>}).layout_symbol['symbol-height-anchor'];
 if (heightAnchor && !heightAnchor.values.sea) {
     heightAnchor.values.sea = {doc: 'The offset is an elevation above sea level, on the terrain\'s exaggerated scale (Scenic Roads).'};
+    heightAnchor.values.surface = {doc: 'The offset is a height above the terrain\'s surface DEM, the terrain without one (Scenic Roads).'};
 }
 
 /** Scenic Roads: what a symbol's `symbol-height-offset` is multiplied by: the terrain's exaggeration for the anchor `sea`. */

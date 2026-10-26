@@ -49,10 +49,13 @@ export class LineStyleLayer extends StyleLayer {
     /**
      * Scenic Roads: how the line is drawn: 0 draped on the terrain (or flat on the map), as
      * upstream; 1 in 3D, `line-z-offset` above the ground under it; 2 in 3D, `line-z-offset` above
-     * sea level (style_spec_extensions.ts).
+     * sea level; 3 in 3D, `line-z-offset` above the terrain's surface DEM (Map#setTerrainSurface)
+     * (style_spec_extensions.ts).
      */
     elevationReference(): number {
-        if (this.paint.get('line-elevation-reference') === 'sea') return 2;
+        const reference = this.paint.get('line-elevation-reference');
+        if (reference === 'sea') return 2;
+        if (reference === 'surface') return 3;
         return this.paint.get('line-z-offset').constantOr(1) !== 0 ? 1 : 0;
     }
 

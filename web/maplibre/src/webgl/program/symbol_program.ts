@@ -24,6 +24,7 @@ export type SymbolIconUniformsType = {
     'u_pitched_scale': Uniform1f;
     'u_is_offset': Uniform1i;
     'u_height_anchor_ground': Uniform1i;
+    'u_height_anchor_surface': Uniform1i;
     'u_height_scale': Uniform1f;
 };
 
@@ -48,6 +49,7 @@ export type SymbolSDFUniformsType = {
     'u_pitched_scale': Uniform1f;
     'u_is_offset': Uniform1i;
     'u_height_anchor_ground': Uniform1i;
+    'u_height_anchor_surface': Uniform1i;
     'u_height_scale': Uniform1f;
 };
 
@@ -73,6 +75,7 @@ export type symbolTextAndIconUniformsType = {
     'u_pitched_scale': Uniform1f;
     'u_is_offset': Uniform1i;
     'u_height_anchor_ground': Uniform1i;
+    'u_height_anchor_surface': Uniform1i;
     'u_height_scale': Uniform1f;
 };
 
@@ -94,6 +97,7 @@ const symbolIconUniforms = (context: Context, locations: UniformLocations): Symb
     'u_pitched_scale': new Uniform1f(context, locations.u_pitched_scale),
     'u_is_offset': new Uniform1i(context, locations.u_is_offset),
     'u_height_anchor_ground': new Uniform1i(context, locations.u_height_anchor_ground),
+    'u_height_anchor_surface': new Uniform1i(context, locations.u_height_anchor_surface),
     'u_height_scale': new Uniform1f(context, locations.u_height_scale),
 });
 
@@ -118,6 +122,7 @@ const symbolSDFUniforms = (context: Context, locations: UniformLocations): Symbo
     'u_pitched_scale': new Uniform1f(context, locations.u_pitched_scale),
     'u_is_offset': new Uniform1i(context, locations.u_is_offset),
     'u_height_anchor_ground': new Uniform1i(context, locations.u_height_anchor_ground),
+    'u_height_anchor_surface': new Uniform1i(context, locations.u_height_anchor_surface),
     'u_height_scale': new Uniform1f(context, locations.u_height_scale),
 });
 
@@ -143,6 +148,7 @@ const symbolTextAndIconUniforms = (context: Context, locations: UniformLocations
     'u_pitched_scale': new Uniform1f(context, locations.u_pitched_scale),
     'u_is_offset': new Uniform1i(context, locations.u_is_offset),
     'u_height_anchor_ground': new Uniform1i(context, locations.u_height_anchor_ground),
+    'u_height_anchor_surface': new Uniform1i(context, locations.u_height_anchor_surface),
     'u_height_scale': new Uniform1f(context, locations.u_height_scale),
 });
 
@@ -165,7 +171,8 @@ const symbolIconUniformValues = (
     pitchedScale: number,
     isOffset: boolean,
     heightAnchorGround: boolean,
-    heightScale: number = 1
+    heightScale: number = 1,
+    heightAnchorSurface: boolean = false
 ): UniformValues<SymbolIconUniformsType> => {
     return {
         'u_is_size_zoom_constant': +(functionType === 'constant' || functionType === 'source'),
@@ -185,6 +192,8 @@ const symbolIconUniformValues = (
         'u_pitched_scale': pitchedScale,
         'u_is_offset': isOffset,
         'u_height_anchor_ground': +heightAnchorGround,
+        // Scenic Roads: with u_height_anchor_ground, from the terrain's surface DEM (the anchor `surface`).
+        'u_height_anchor_surface': +heightAnchorSurface,
         // Scenic Roads: symbol-height-offset times this (the terrain's exaggeration for the anchor `sea`).
         'u_height_scale': heightScale,
     };
@@ -210,13 +219,14 @@ const symbolSDFUniformValues = (
     pitchedScale: number,
     isOffset: boolean,
     heightAnchorGround: boolean,
-    heightScale: number = 1
+    heightScale: number = 1,
+    heightAnchorSurface: boolean = false
 ): UniformValues<SymbolSDFUniformsType> => {
     const transform = painter.transform;
 
     return extend(symbolIconUniformValues(functionType, size,
         rotateInShader, pitchWithMap, isAlongLine, isVariableAnchor, painter, labelPlaneMatrix,
-        glCoordMatrix, translation, isText, texSize, pitchedScale, isOffset, heightAnchorGround, heightScale), {
+        glCoordMatrix, translation, isText, texSize, pitchedScale, isOffset, heightAnchorGround, heightScale, heightAnchorSurface), {
         'u_gamma_scale': (pitchWithMap ? Math.cos(transform.pitch * Math.PI / 180.0) * transform.cameraToCenterDistance : 1),
         'u_is_halo': isHalo ? 1 : 0,
         'u_is_plain': 1
@@ -242,11 +252,12 @@ const symbolTextAndIconUniformValues = (
     pitchedScale: number,
     isOffset: boolean,
     heightAnchorGround: boolean,
-    heightScale: number = 1
+    heightScale: number = 1,
+    heightAnchorSurface: boolean = false
 ): UniformValues<SymbolIconUniformsType> => {
     return extend(symbolSDFUniformValues(functionType, size,
         rotateInShader, pitchWithMap, isAlongLine, isVariableAnchor, painter, labelPlaneMatrix,
-        glCoordMatrix, translation, true, texSizeSDF, true, pitchedScale, isOffset, heightAnchorGround, heightScale), {
+        glCoordMatrix, translation, true, texSizeSDF, true, pitchedScale, isOffset, heightAnchorGround, heightScale, heightAnchorSurface), {
         'u_texsize_icon': texSizeIcon,
         'u_texture_icon': 1
     });

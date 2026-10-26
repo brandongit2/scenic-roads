@@ -16,10 +16,14 @@ export class RasterStyleLayer extends StyleLayer {
      * Scenic Roads: how the raster is drawn: 0 draped on the terrain (or flat on the map), as
      * upstream; 1 in 3D, `raster-z-offset` above the ground under each vertex of its tiles' meshes;
      * 2 in 3D, a level surface `raster-z-offset` above sea level (style_spec_extensions.ts): the
-     * app's water raster at the water's surface over a sea floor.
+     * app's water raster at the water's surface over a sea floor; 3 in 3D,
+     * `raster-z-offset` above the terrain's surface DEM under each vertex (Map#setTerrainSurface),
+     * drawn on a fine grid (draw_raster.ts): the water at its surface over the sea and lake floor.
      */
     elevationReference(): number {
-        if (this.paint.get('raster-elevation-reference') === 'sea') return 2;
+        const reference = this.paint.get('raster-elevation-reference');
+        if (reference === 'sea') return 2;
+        if (reference === 'surface') return 3;
         return this.paint.get('raster-z-offset') !== 0 ? 1 : 0;
     }
 

@@ -68,7 +68,7 @@ export type SymbolLayoutProps = {
     "text-ignore-placement": DataConstantProperty<boolean>,
     "text-optional": DataConstantProperty<boolean>,
     "symbol-height-offset": DataDrivenProperty<number>,
-    "symbol-height-anchor": DataConstantProperty<"ground" | "absolute" | "sea">,
+    "symbol-height-anchor": DataConstantProperty<"ground" | "absolute" | "sea" | "surface">,
 };
 
 export type SymbolLayoutPropsPossiblyEvaluated = {
@@ -117,7 +117,7 @@ export type SymbolLayoutPropsPossiblyEvaluated = {
     "text-ignore-placement": boolean,
     "text-optional": boolean,
     "symbol-height-offset": PossiblyEvaluatedPropertyValue<number>,
-    "symbol-height-anchor": "ground" | "absolute" | "sea",
+    "symbol-height-anchor": "ground" | "absolute" | "sea" | "surface",
 };
 
 let layout: Properties<SymbolLayoutProps>;

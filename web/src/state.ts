@@ -910,7 +910,7 @@ export function toHash(s: AppState, buildings: boolean): string {
   const tc = (t: TreeState) => [t.on ? 1 : 0, t.variable, t.style, +t.opacity.toFixed(2), t.palette, t.cutCover, t.cutHeight, t.maskCover, t.maskHeight, t.maskColour.replace('#', '')].join(',');
   if (tc(s.trees) !== tc(defaults.trees)) p.set('tc', tc(s.trees));
   const dp = (d: DepthState) => [d.on ? 1 : 0, d.palette, d.scale, Math.round(d.max), +d.opacity.toFixed(2), +d.shade.toFixed(2), Math.round(d.light), d.dry ? 1 : 0, d.dryColour.slice(1),
-    d.contours ? 1 : 0, d.interval, d.fixed, d.index, d.labels ? 1 : 0, d.colour.slice(1), +d.weight.toFixed(2), +d.lineOpacity.toFixed(2)].join(',');
+    d.contours ? 1 : 0, d.interval, d.fixed, d.index, d.labels ? 1 : 0, d.colour.slice(1), +d.weight.toFixed(2), +d.lineOpacity.toFixed(2), d.floor ? 1 : 0].join(',');
   if (dp(s.depth) !== dp(defaults.depth)) p.set('dp', dp(s.depth));
   const bd = (b: BuildingState) => [b.on ? 1 : 0, b.flat ? 1 : 0, b.colour, +b.opacity.toFixed(2), +b.scale.toFixed(2), b.heritage ? 1 : 0, b.plain.slice(1)].join(',');
   if (buildings && bd(s.buildings) !== bd(defaults.buildings)) p.set('bd', bd(s.buildings));
@@ -1151,6 +1151,7 @@ export function fromHash(hash: string, buildings = true): AppState {
       colour: col(dpv[14], d.colour),
       weight: n(dpv[15], d.weight, 0.4, 3),
       lineOpacity: n(dpv[16], d.lineOpacity, 0.1, 1),
+      floor: dpv[17] === '1',
     };
   }
   const bdv = buildings ? p.get('bd')?.split(',') : undefined;

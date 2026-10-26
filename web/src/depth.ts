@@ -15,14 +15,21 @@
 // 2. Depth contours with labels: vector tiles the same worker makes (maplibre-contour's, contour/:
 //    isolines), clipped to the water.
 // All go over the water fill and under the coast shading and everything else, draped on the 3D
-// terrain like the water (which stays flat at the surface). Depth is below the local water
+// terrain like the water (which stays flat at the surface).
+// 3. The 3D floor (setFloor, its switch in the same section): the 3D terrain from the terrain less
+//    the depth (the server's `?floor=1`, basemap.ts floorTiles), the terrain itself its surface
+//    (terrain.ts applyTerrain; our MapLibre's Map#setTerrainSurface). The water stays draped, now on
+//    the floor (with the depth's colour over it), and a see-through copy of it is drawn at the
+//    surface (`water-surface`, the elevation reference `surface`); the ferries' lines are lifted to
+//    the surface, and the water's and ferries' names stand on it (basemap.ts: the anchor `surface`,
+//    the terrain itself without a floor). Roads and bridges keep their own heights (roads/). Depth is below the local water
 // surface: mean sea level at sea, the lake's surface on lakes; estimated depths look as measured
 // ones do (the readout says which they are). The depth's sources and the notices their licences ask
 // for are in the credits (ui/strip.ts), not on the map.
 import * as maplibregl from 'maplibre-gl';
 import type { ExpressionSpecification, Map as MLMap } from 'maplibre-gl';
 import { onVersions, ver } from './api';
-import { SHADE_SHIFT, waterTilesOn } from './basemap';
+import { SHADE_SHIFT, floorTiles, waterTilesOn } from './basemap';
 import { hostFor } from './hosts';
 import { depthColour, hdepth, hexRgb, HBINS, rgba, scaleFns, DEPTH_DEFAULTS, type DepthState } from './depthlook';
 import { h } from './ui/dom';
@@ -41,6 +48,11 @@ export interface DepthSource {
 }
 
 const CLASSES = ['', 'measured', 'interpolated', 'estimated', 'filled to the shore'];
+/** The water's surface over the floor (setFloor): see-through, the floor's colours showing. */
+const SURFACE_OPACITY = 0.5;
+/** What's drawn at the surface stands this high over it (m), clear of the floor where the two meet
+ * (the shore, water without depth). */
+const SURFACE_LIFT_M = 1;
 
 export class Depth {
   private s: DepthState = DEPTH_DEFAULTS;
@@ -51,6 +63,8 @@ export class Depth {
   private seq = 0;
   private waiting = new Map<number, { resolve: (r: DepthReply) => void; reject: (e: Error) => void }>();
   private added = false;
+  /** The 3D floor shown (setFloor). */
+  private floorOn = false;
   /** The fitted domain (m) of the "fit to view" scale. */
   private fit: [number, number] = [1, 100];
   private viewTimer = 0;
@@ -112,6 +126,7 @@ export class Depth {
     };
     for (const w of this.workers) w.postMessage(msg);
     (this.map.getSource('depth-shade') as maplibregl.RasterDEMTileSource | undefined)?.setTiles([this.shadeUrl()]);
+    (this.map.getSource('dem-floor') as maplibregl.RasterDEMTileSource | undefined)?.setTiles([floorTiles()]);
   }
 
   /** The floor's shading tiles (the server's `depth-shade`). */
@@ -254,6 +269,39 @@ export class Depth {
       m.setPaintProperty('depth-contour-label', 'text-opacity', Math.min(1, s.lineOpacity * 1.5));
     }
     this.scheduleView();
+  }
+
+  /**
+   * The 3D floor on the map or off (the depth's head, 3): with it, the water's see-through surface
+   * over the floor and the ferries' lines lifted to it; main.ts swaps the terrain's source with it
+   * (terrain.ts applyTerrain). Lifted layers aren't draped, so both go after the draped ones, under
+   * the roads (one among them would split the terrain's draping in two).
+   */
+  setFloor(on: boolean) {
+    if (on === this.floorOn) return;
+    this.floorOn = on;
+    const m = this.map;
+    const above = m.getLayer('roads') ? 'roads' : undefined;
+    const water = m.getLayer('water');
+    if (on && water && !m.getLayer('water-surface')) {
+      const layout = { visibility: m.getLayoutProperty('water', 'visibility') ?? 'visible' };
+      m.addLayer(water.type === 'raster'
+        ? {
+          id: 'water-surface', type: 'raster', source: 'water', layout,
+          paint: { 'raster-opacity': SURFACE_OPACITY, 'raster-resampling': 'linear', 'raster-fade-duration': 0, 'raster-elevation-reference': 'surface', 'raster-z-offset': SURFACE_LIFT_M } as never,
+        }
+        : {
+          id: 'water-surface', type: 'fill', source: 'base', 'source-layer': 'water', layout, filter: m.getFilter('water') ?? undefined,
+          paint: { 'fill-color': m.getPaintProperty('water', 'fill-color'), 'fill-opacity': SURFACE_OPACITY, 'fill-elevation-reference': 'surface', 'fill-z-offset': SURFACE_LIFT_M } as never,
+        }, above);
+    }
+    if (!on && m.getLayer('water-surface')) m.removeLayer('water-surface');
+    if (m.getLayer('ferry-line')) {
+      // (Back under the selection's halo when off: its place in the basemap's style.)
+      m.moveLayer('ferry-line', on ? above : m.getLayer('sel-halo') ? 'sel-halo' : undefined);
+      m.setPaintProperty('ferry-line', 'line-elevation-reference' as never, (on ? 'surface' : 'ground') as never);
+      m.setPaintProperty('ferry-line', 'line-z-offset' as never, (on ? SURFACE_LIFT_M : 0) as never);
+    }
   }
 
   /** A palette shown on the map before it's chosen (the panel's ramp list); null: the chosen one. */

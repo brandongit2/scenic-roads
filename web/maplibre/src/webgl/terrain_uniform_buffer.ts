@@ -8,6 +8,10 @@ const layout = std140Layout([
     {name: 'u_terrain_unpack', type: 'vec4'},
     {name: 'u_terrain_dim', type: 'float'},
     {name: 'u_terrain_exaggeration', type: 'float'},
+    // Scenic Roads: the surface DEM (Terrain.setSurface).
+    {name: 'u_surface_matrix', type: 'mat4'},
+    {name: 'u_surface_unpack', type: 'vec4'},
+    {name: 'u_surface_dim', type: 'float'},
 ]);
 
 const offsets = layout.offsets;
@@ -26,5 +30,8 @@ export function updateTerrainUniformBuffer(buffer: UniformBuffer, terrain: Terra
     f32.set(terrain.u_terrain_unpack, offsets.u_terrain_unpack);
     f32[offsets.u_terrain_dim] = terrain.u_terrain_dim;
     f32[offsets.u_terrain_exaggeration] = terrain.u_terrain_exaggeration;
+    f32.set(terrain.u_surface_matrix, offsets.u_surface_matrix);
+    f32.set(terrain.u_surface_unpack, offsets.u_surface_unpack);
+    f32[offsets.u_surface_dim] = terrain.u_surface_dim;
     buffer.upload();
 }

@@ -534,13 +534,16 @@ export class TileManager extends Evented<SourceEventType> {
         if (!layers) return maxElevation;
         const tiles = this._inViewTiles.getAllTiles();
         // Scenic Roads: the lifted lines, fills and rasters (style_spec_extensions.ts) too: their
-        // offset, times the terrain's exaggeration for the reference `sea`.
+        // offset, times the terrain's exaggeration for the reference `sea`; for the reference and
+        // anchor `surface`, plus the most the surface rises over the terrain (Terrain#surfaceRise).
         const exaggeration = this.map?.terrain?.exaggeration ?? 1;
         for (const layerId in layers) {
             const layer = layers[layerId];
             if (layer.source !== this.id || layer.isHidden(this.transform.zoom)) continue;
             const lifted = layer as unknown as {elevationReference?: () => number; paint: {get(k: string): unknown}};
             const reference = typeof lifted.elevationReference === 'function' ? lifted.elevationReference() : 0;
+            const surfaced = reference === 3 || (layer.type === 'symbol' && (layer as SymbolStyleLayer).layout?.get('symbol-height-anchor') === 'surface');
+            if (surfaced) maxElevation = Math.max(maxElevation, this.map?.terrain?.surfaceRise() ?? 0);
             if (reference > 0) {
                 const scale = reference === 2 ? exaggeration : 1;
                 const name = `${layer.type}-z-offset`;

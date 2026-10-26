@@ -1,6 +1,6 @@
 import type { ExpressionSpecification, LayerSpecification, StyleSpecification } from 'maplibre-gl';
 import { LAND_COLOUR } from './basecolours';
-import { ver } from './api';
+import { ver, version } from './api';
 import type { TerrainAreas } from './packs';
 import { hostFor } from './hosts';
 import { DEFAULT_DENSITY, kindSpacing, type DensityKind, type LabelDensity, type LineKind, type LineWeights } from './state';
@@ -9,7 +9,7 @@ import { DEFAULT_DENSITY, kindSpacing, type DensityKind, type LabelDensity, type
 // Planetiler tiles, designation / stop overlays (GeoJSON, loaded on demand) and labels.
 // Layer ids are grouped so the UI can toggle them.
 export const LAYER_GROUPS: Record<string, string[]> = {
-  water: ['water', 'waterway'],
+  water: ['water', 'waterway', 'water-surface'],
   // Countries, provinces & states, counties & regions (order of AppState.boundaryLevels).
   boundaries: ['boundary-country', 'boundary-state', 'boundary-county'],
 };
@@ -249,6 +249,16 @@ export const basemapTiles = (): string => `${hostFor('base')}/tiles/base/{z}/{x}
 /** The terrain tiles (Terrarium), as the terrain sources and the contours (terrain.ts) read them. */
 export const terrainTiles = (): string => `${hostFor('terrain')}/tiles/terrain/{z}/{x}/{y}${ver('terrain.tiles')}`;
 
+/** Labels on the water stand on its surface: over the depth's 3D floor the terrain's surface
+ * (depth.ts), without it the terrain (our MapLibre's anchor `surface`, not in the style spec's types). */
+const ON_SURFACE = 'surface' as unknown as 'ground';
+
+/** The terrain with the sea and lake floor under its water (the server's `?floor=1`: the terrain
+ * less the depth, made from the nearest stored depth tile past the depth's own zooms), the 3D
+ * terrain's source with the depth's floor on (depth.ts): its URL carries the depth's versions too. */
+export const floorTiles = (): string =>
+  `${hostFor('terrain')}/tiles/terrain/{z}/{x}/{y}?floor=1&d=${version('depth.tiles')}.${version('depth-class.tiles')}${ver('terrain.tiles').replace('?', '&')}`;
+
 /** The style's tile sources whose URLs carry a data file's version, with that file: baseStyle
  * builds them from here, and a new catalog switches them in place (main.ts). */
 export function versionedTiles(): { source: string; file: string; url: string }[] {
@@ -258,6 +268,7 @@ export function versionedTiles(): { source: string; file: string; url: string }[
     { source: 'lbl', file: 'labels.tiles', url: `${hostFor('base')}/tiles/labels/{z}/{x}/{y}${ver('labels.tiles')}` },
     { source: 'dem', file: 'terrain.tiles', url: terrainTiles() },
     { source: 'dem-tint', file: 'terrain.tiles', url: terrainTiles() },
+    { source: 'dem-floor', file: 'terrain.tiles', url: floorTiles() },
     { source: 'slope', file: 'slope.tiles', url: `${hostFor('terrain')}/tiles/slope/{z}/{x}/{y}${ver('slope.tiles')}` },
     trees('cover'), trees('height'), trees('leaf'),
     ...Object.entries(OV_SOURCES).map(([source, name]) => ({ source, file: `ov-${name}.tiles`, url: `${hostFor('layers')}/tiles/ov/${name}/{z}/{x}/{y}${ver(`ov-${name}.tiles`)}` })),
@@ -487,6 +498,8 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
       dem,
       // The elevation tint's: the screen's own tiles (the 3D mesh's source loads its own).
       'dem-tint': { ...dem },
+      // The 3D terrain's with the depth's floor on (floorTiles).
+      'dem-floor': { ...dem, tiles: [tiles['dem-floor']] },
       // The terrain's shading, as the build stores it to each place's finest zoom (the slope layer:
       // pipeline::slope_pack): each pixel's mean steepness and direction, which the slope tint
       // colours and the hill-shading shades (web/maplibre's color_relief and hillshade shaders). The
@@ -781,6 +794,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
         filter: ['==', ['get', 'class'], 'river'],
         layout: {
           'symbol-placement': 'line',
+          'symbol-height-anchor': ON_SURFACE,
           'text-field': inline(name),
           'text-font': ['Noto Sans Italic'],
           'text-size': 11,
@@ -795,6 +809,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
         'source-layer': 'water_name',
         paint: { 'text-color': '#4b6582', 'text-halo-color': HALO, 'text-halo-width': 1.2, 'text-opacity': TEXT_OPACITY },
       }, {
+        'symbol-height-anchor': ON_SURFACE,
         'text-field': twoLine(nm),
         'text-font': ['Noto Sans Italic'],
         'text-size': ['interpolate', ['linear'], ['zoom'], 5, 10, 12, 13],
@@ -933,6 +948,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
         layout: {
           visibility: 'none',
           'symbol-placement': 'line',
+          'symbol-height-anchor': ON_SURFACE,
           'symbol-spacing': 400,
           'text-field': inline(mainOf('n')),
           'text-font': ['Noto Sans Italic'],

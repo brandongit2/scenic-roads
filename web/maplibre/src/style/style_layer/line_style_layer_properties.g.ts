@@ -57,7 +57,7 @@ export type LinePaintProps = {
     "line-pattern": CrossFadedDataDrivenProperty<ResolvedImage>,
     "line-gradient": ColorRampProperty,
     "line-z-offset": DataDrivenProperty<number>,
-    "line-elevation-reference": DataConstantProperty<"ground" | "sea">,
+    "line-elevation-reference": DataConstantProperty<"ground" | "sea" | "surface">,
 };
 
 export type LinePaintPropsPossiblyEvaluated = {
@@ -74,7 +74,7 @@ export type LinePaintPropsPossiblyEvaluated = {
     "line-pattern": PossiblyEvaluatedPropertyValue<CrossFaded<ResolvedImage>>,
     "line-gradient": ColorRampProperty,
     "line-z-offset": PossiblyEvaluatedPropertyValue<number>,
-    "line-elevation-reference": "ground" | "sea",
+    "line-elevation-reference": "ground" | "sea" | "surface",
 };
 
 let paint: Properties<LinePaintProps>;

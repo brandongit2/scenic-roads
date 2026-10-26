@@ -34,6 +34,12 @@ export type TerrainData = {
     'u_terrain_matrix': mat4;
     'u_terrain_unpack': number[];
     'u_terrain_exaggeration': number;
+    // Scenic Roads: the surface DEM's tile under it (Terrain.setSurface; the terrain's own without one).
+    'u_surface': number;
+    'u_surface_dim': number;
+    'u_surface_matrix': mat4;
+    'u_surface_unpack': number[];
+    surfaceTexture: WebGLTexture;
     texture: WebGLTexture;
     depthTexture: WebGLTexture;
     tile: Tile;
@@ -118,6 +124,10 @@ export class Terrain {
      * the tilemanager this terrain is based on
      */
     tileManager: TerrainTileManager;
+    /**
+     * Scenic Roads: the surface DEM's tiles (`setSurface`), null without one.
+     */
+    surface: TerrainTileManager | null = null;
     /**
      * the TerrainSpecification object passed to this instance
      */
@@ -208,6 +218,55 @@ export class Terrain {
         }
         this._meshCache = {};
         this.tileManager.destruct();
+        this.surface?.destruct();
+    }
+
+    /**
+     * Scenic Roads: the surface over the terrain: another raster-dem source's tiles (as the
+     * terrain's, by its cover), whose heights the elevation reference and height anchor `surface`
+     * take (style_spec_extensions.ts), or null for the terrain's own. The app's terrain is the sea
+     * and lake floor, its surface the terrain the floor was cut from: the water is drawn there.
+     * @param tileManager - the surface source's tile manager, or null
+     */
+    setSurface(tileManager: TileManager | null): void {
+        if (this.surface?.tileManager === tileManager) return;
+        this.surface?.destruct();
+        this.surface = tileManager ? new TerrainTileManager(tileManager) : null;
+    }
+
+    /**
+     * Scenic Roads: the most the surface (`setSurface`) stands over the terrain in the surface's
+     * loaded tiles, exaggerated (a tile's highest surface less the lowest terrain of the same tile):
+     * room the culling of what stands on the surface keeps (TileManager's content elevation).
+     */
+    surfaceRise(): number {
+        if (!this.surface) return 0;
+        let rise = 0;
+        for (const id of this.surface.tileManager.getRenderableIds()) {
+            const s = this.surface.tileManager.getTileByID(id);
+            const t = this.tileManager.findTileInCaches(id);
+            if (s?.dem && t?.dem) rise = Math.max(rise, s.dem.max - t.dem.min);
+        }
+        return rise * this.exaggeration;
+    }
+
+    /**
+     * Scenic Roads: the surface's elevation (`setSurface`) at a tile coordinate, exaggerated as
+     * `getElevation`'s; the terrain's own without a surface, or before its tile has loaded.
+     */
+    getSurfaceElevation(tileID: OverscaledTileID, x: number, y: number, extent: number = EXTENT): number {
+        if (!this.surface) return this.getElevation(tileID, x, y, extent);
+        const normalized = tileID.normalizeCoordinates(x, y, extent);
+        if (!normalized) return 0;
+        const sourceTile = this.surface.getSourceTile(normalized.tileID, true);
+        const dem = sourceTile?.dem;
+        if (!dem) return this.getElevation(tileID, x, y, extent);
+        const m = this._getDEMTileMatrix(normalized.tileID, sourceTile);
+        const k = extent === EXTENT ? 1 : EXTENT / extent;
+        return dem.sampleBilinear(
+            normalized.x * k * m[0] * dem.dim + m[12] * dem.dim + DEM_CELL_CENTER_OFFSET,
+            normalized.y * k * m[5] * dem.dim + m[13] * dem.dim + DEM_CELL_CENTER_OFFSET
+        ) * this.exaggeration;
     }
 
     /**
@@ -469,6 +528,21 @@ export class Terrain {
             sourceTile.needsTerrainPrepare = false;
         }
         const terrainMatrix = sourceTile ? this._getDEMTileMatrix(tileID, sourceTile) : this._emptyDemMatrix;
+        // Scenic Roads: the surface's tile (setSurface), its texture made as the terrain's; without
+        // one, or before it has loaded, the terrain's own.
+        const surfaceTile = this.surface?.getSourceTile(tileID, true);
+        let surface = {texture: sourceTile?.demTexture || this._emptyDemTexture, dim: sourceTile?.dem?.dim || 1, matrix: terrainMatrix, unpack: sourceTile?.dem?.getUnpackVector() || this._emptyDemUnpack};
+        if (surfaceTile?.dem) {
+            const context = this.painter.context;
+            if (!surfaceTile.demTexture || surfaceTile.needsTerrainPrepare) {
+                surfaceTile.demTexture ||= this.painter.getTileTexture(surfaceTile.dem.stride);
+                if (surfaceTile.demTexture) surfaceTile.demTexture.update(surfaceTile.dem.getPixels(), {premultiply: false});
+                else surfaceTile.demTexture = new Texture(context, surfaceTile.dem.getPixels(), context.gl.RGBA, {premultiply: false});
+                surfaceTile.demTexture.bind(context.gl.NEAREST, context.gl.CLAMP_TO_EDGE);
+                surfaceTile.needsTerrainPrepare = false;
+            }
+            surface = {texture: surfaceTile.demTexture, dim: surfaceTile.dem.dim, matrix: this._getDEMTileMatrix(tileID, surfaceTile), unpack: surfaceTile.dem.getUnpackVector()};
+        }
         // return uniform values & textures
         return {
             'u_depth': 2,
@@ -477,6 +551,11 @@ export class Terrain {
             'u_terrain_matrix': terrainMatrix,
             'u_terrain_unpack': sourceTile?.dem?.getUnpackVector() || this._emptyDemUnpack,
             'u_terrain_exaggeration': this.exaggeration,
+            'u_surface': 6,
+            'u_surface_dim': surface.dim,
+            'u_surface_matrix': surface.matrix,
+            'u_surface_unpack': surface.unpack,
+            surfaceTexture: surface.texture.texture,
             texture: (sourceTile?.demTexture || this._emptyDemTexture).texture,
             depthTexture: (this._fboDepthTexture || this._emptyDepthTexture).texture,
             tile: sourceTile

@@ -258,10 +258,16 @@ Paint properties (`style_spec_extensions.ts`, after Mapbox GL v3's API):
 | Property | Values |
 |---|---|
 | `line-z-offset`, `fill-z-offset` | metres, data-driven, default 0 |
-| `line-elevation-reference`, `fill-elevation-reference` | `ground` (default), `sea` |
+| `line-elevation-reference`, `fill-elevation-reference` | `ground` (default), `sea`, `surface` |
 | `raster-z-offset`, `raster-elevation-reference` | as above, one height per layer |
-| `symbol-height-anchor` | upstream's `ground`, `absolute`, plus `sea` |
+| `symbol-height-anchor` | upstream's `ground`, `absolute`, plus `sea`, `surface` |
 
+- `surface` (all four, the anchor too): metres above the terrain's surface DEM
+  (`Map#setTerrainSurface(sourceId | null)`, `Terrain#setSurface`: another raster-dem source's
+  tiles by the terrain's cover, sampled in the shaders from `u_surface` on unit 6 and the
+  `TerrainUBO`'s `u_surface_*`, on the CPU by `Terrain#getSurfaceElevation`); the terrain's own
+  without one. A surface-referenced raster is drawn on a 64 × 64 grid a tile; culling keeps room
+  for the surface's rise over the terrain (`Terrain#surfaceRise`). The app's depth floor.
 - `ground`: metres above the terrain under each vertex, not exaggerated; offset 0 drapes as
   upstream. `sea`: above sea level on the terrain's (exaggerated) scale.
 - Otherwise the layer isn't draped but drawn in 3D in the main pass, depth-tested against the

@@ -41,7 +41,7 @@ export type FillPaintProps = {
     "fill-translate-anchor": DataConstantProperty<"map" | "viewport">,
     "fill-pattern": CrossFadedDataDrivenProperty<ResolvedImage>,
     "fill-z-offset": DataDrivenProperty<number>,
-    "fill-elevation-reference": DataConstantProperty<"ground" | "sea">,
+    "fill-elevation-reference": DataConstantProperty<"ground" | "sea" | "surface">,
 };
 
 export type FillPaintPropsPossiblyEvaluated = {
@@ -54,7 +54,7 @@ export type FillPaintPropsPossiblyEvaluated = {
     "fill-translate-anchor": "map" | "viewport",
     "fill-pattern": PossiblyEvaluatedPropertyValue<CrossFaded<ResolvedImage>>,
     "fill-z-offset": PossiblyEvaluatedPropertyValue<number>,
-    "fill-elevation-reference": "ground" | "sea",
+    "fill-elevation-reference": "ground" | "sea" | "surface",
 };
 
 let paint: Properties<FillPaintProps>;

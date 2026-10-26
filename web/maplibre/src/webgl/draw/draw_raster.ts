@@ -20,7 +20,38 @@ import type {TileManager} from '../../tile/tile_manager.ts';
 import type {RasterStyleLayer} from '../../style/style_layer/raster_style_layer.ts';
 import type {OverscaledTileID} from '../../tile/tile_id.ts';
 import type {Tile} from '../../tile/tile.ts';
-import type {Mesh} from '../../render/mesh.ts';
+import {Mesh} from '../../render/mesh.ts';
+import {PosArray, TriangleIndexArray} from '../../data/array_types.g.ts';
+import {SegmentVector} from '../../data/segment.ts';
+import posAttributes from '../../data/pos_attributes.ts';
+import type {Context} from '../context.ts';
+
+/** Scenic Roads: the cells a side of the grid a surface-referenced raster is drawn on (`surfaceMesh`). */
+const SURFACE_GRID = 64;
+const surfaceMeshes = new WeakMap<Context, Mesh>();
+
+/**
+ * Scenic Roads: a tile's grid of SURFACE_GRID² cells, on which a raster lifted to the terrain's
+ * surface DEM (`raster-elevation-reference` `surface`) follows its heights: a lake's level beside
+ * the sea's, where the projection's mesh is the tile's four corners.
+ */
+function surfaceMesh(context: Context): Mesh {
+    let mesh = surfaceMeshes.get(context);
+    if (mesh) return mesh;
+    const n = SURFACE_GRID, step = EXTENT / n;
+    const pos = new PosArray();
+    for (let y = 0; y <= n; y++) for (let x = 0; x <= n; x++) pos.emplaceBack(x * step, y * step);
+    const tris = new TriangleIndexArray();
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+        const i = y * (n + 1) + x;
+        // (wound as the projection's quad)
+        tris.emplaceBack(i + 1, i, i + n + 1);
+        tris.emplaceBack(i + 1, i + n + 1, i + n + 2);
+    }
+    mesh = new Mesh(context.createVertexBuffer(pos, posAttributes.members), context.createIndexBuffer(tris), SegmentVector.simpleSegment(0, 0, pos.length, tris.length));
+    surfaceMeshes.set(context, mesh);
+    return mesh;
+}
 
 type FadeProperties = {
     parentTile: Tile;
@@ -152,7 +183,8 @@ function drawTiles(
         const projectionData = getProjectionDataForTile(renderContext, coord, {aligned: align});
         const uniformValues = rasterUniformValues(parentTopLeft, parentScaleBy, fadeValues.fadeMix, layer, corners, imageWarp);
 
-        const mesh = sourceMesh ?? projection.getMeshFromTileID(context, coord.canonical, useBorder, allowPoles, 'raster');
+        const mesh = sourceMesh ?? (layer.elevationReference() === 3 && isTerrain ? surfaceMesh(context) :
+            projection.getMeshFromTileID(context, coord.canonical, useBorder, allowPoles, 'raster'));
         const stencilMode = stencilModes ? stencilModes[coord.overscaledZ] : StencilMode.disabled;
 
         program.draw(context, gl.TRIANGLES, depthMode, stencilMode, colorMode, flipCullfaceMode ? CullFaceMode.frontCCW : CullFaceMode.backCCW,

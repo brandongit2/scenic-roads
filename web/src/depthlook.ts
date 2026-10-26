@@ -31,11 +31,14 @@ export interface DepthState {
   colour: string;
   weight: number;
   lineOpacity: number;
+  /** The 3D terrain from the sea and lake floor, the water's surface drawn over it (depth.ts). */
+  floor: boolean;
 }
 
 export const DEPTH_DEFAULTS: DepthState = {
   on: true, palette: 'nautical', scale: 'log', max: 300, opacity: 0.85, shade: 0.45, light: 315, dry: true, dryColour: '#8fae7d',
   contours: false, interval: 'zoom', fixed: 10, index: 5, labels: true, colour: '#9ec3dc', weight: 1, lineOpacity: 0.55,
+  floor: false,
 };
 
 /** Depth ramps made for the dark map: shallow light, deep sinking into the water's own colour. */

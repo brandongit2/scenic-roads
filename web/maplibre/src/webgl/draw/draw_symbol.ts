@@ -31,7 +31,7 @@ import type {UniformValues} from '../uniform_binding.ts';
 import type {SymbolSDFUniformsType} from '../program/symbol_program.ts';
 import type {CrossTileID, VariableOffset} from '../../symbol/placement.ts';
 import type {SymbolBucket, SymbolBuffers} from '../../data/bucket/symbol_bucket.ts';
-import type {TerrainData} from '../../render/terrain.ts';
+import type {Terrain, TerrainData} from '../../render/terrain.ts';
 import type {SymbolLayerSpecification} from '@maplibre/maplibre-gl-style-spec';
 import type {IReadonlyTransform, GetElevation} from '../../geo/transform_interface.ts';
 import type {ColorMode} from '../color_mode.ts';
@@ -109,6 +109,16 @@ export function drawSymbols(painter: Painter, tileManager: TileManager, layer: S
     }
 }
 
+/**
+ * Scenic Roads: the elevations a layer's labels stand on: the terrain's, or with the anchor
+ * `surface` its surface DEM's (Terrain#getSurfaceElevation); none without terrain.
+ */
+function symbolElevationFunc(terrain: Terrain | null | undefined, coord: OverscaledTileID, anchor: string): GetElevation | undefined {
+    if (!terrain) return undefined;
+    if (anchor === 'surface') return (x: number, y: number) => terrain.getSurfaceElevation(coord, x, y);
+    return (x: number, y: number) => terrain.getElevation(coord, x, y);
+}
+
 function calculateVariableRenderShift(
     anchor: TextAnchor,
     width: number,
@@ -152,11 +162,12 @@ function updateVariableAnchors(coords: OverscaledTileID[],
 
         if (size) {
             const tileScale = Math.pow(2, transform.zoom - tile.tileID.overscaledZ);
-            const getElevation = terrain ? (x: number, y: number) => terrain.getElevation(coord, x, y) : undefined;
+            const anchor = layer.layout.get('symbol-height-anchor');
+            const getElevation = symbolElevationFunc(terrain, coord, anchor);
             const translation = translatePosition(transform, tile, translate, translateAnchor);
             updateVariableAnchorsForBucket(bucket, rotateWithMap, pitchWithMap, variableOffsets,
                 transform, pitchedLabelPlaneMatrix, tileScale, size, updateTextFitIcon, translation, coord.toUnwrapped(), getElevation,
-                layer.layout.get('symbol-height-anchor') === 'ground', symbolHeightScale(layer.layout.get('symbol-height-anchor'), terrain?.exaggeration));
+                anchor === 'ground' || anchor === 'surface', symbolHeightScale(anchor, terrain?.exaggeration));
         }
     }
 }
@@ -389,14 +400,16 @@ function drawLayerSymbols(
             hasVariableAnchors &&
             bucket.hasIconData();
         const isOffset = layer._unevaluatedLayout.hasValue('icon-offset');
-        const heightAnchorGround = layer.layout.get('symbol-height-anchor') === 'ground';
+        // (Scenic Roads: `surface` measured from the terrain's surface DEM as `ground` from the terrain.)
+        const heightAnchorSurface = layer.layout.get('symbol-height-anchor') === 'surface';
+        const heightAnchorGround = layer.layout.get('symbol-height-anchor') === 'ground' || heightAnchorSurface;
         const heightScale = symbolHeightScale(layer.layout.get('symbol-height-anchor'), painter.style.map?.terrain?.exaggeration);
 
         if (alongLine) {
             const pitchedLabelPlaneMatrixInverse = mat4.create();
             fastInvertTransformMat4(pitchedLabelPlaneMatrixInverse, pitchedLabelPlaneMatrix);
 
-            const getElevation = painter.style.map.terrain ? (x: number, y: number) => painter.style.map.terrain.getElevation(coord, x, y) : undefined;
+            const getElevation = symbolElevationFunc(painter.style.map.terrain, coord, layer.layout.get('symbol-height-anchor'));
             const rotateToLine = layer.layout.get('text-rotation-alignment') === 'map';
             updateLineLabels(bucket, painter, isText, pitchedLabelPlaneMatrix, pitchedLabelPlaneMatrixInverse, pitchWithMap, keepUpright, rotateToLine, coord.toUnwrapped(), transform.width, transform.height, translation, getElevation);
         }
@@ -416,16 +429,16 @@ function drawLayerSymbols(
             if (!bucket.iconsInText) {
                 uniformValues = symbolSDFUniformValues(sizeData.kind,
                     size, rotateInShader, pitchWithMap, alongLine, shaderVariableAnchor, painter,
-                    uLabelPlaneMatrix, glCoordMatrixForShader, translation, isText, texSize, hasHalo, pitchedTextRescaling, isOffset, heightAnchorGround, heightScale);
+                    uLabelPlaneMatrix, glCoordMatrixForShader, translation, isText, texSize, hasHalo, pitchedTextRescaling, isOffset, heightAnchorGround, heightScale, heightAnchorSurface);
             } else {
                 uniformValues = symbolTextAndIconUniformValues(sizeData.kind,
                     size, rotateInShader, pitchWithMap, alongLine, shaderVariableAnchor, painter,
-                    uLabelPlaneMatrix, glCoordMatrixForShader, translation, texSize, texSizeIcon, pitchedTextRescaling, isOffset, heightAnchorGround, heightScale);
+                    uLabelPlaneMatrix, glCoordMatrixForShader, translation, texSize, texSizeIcon, pitchedTextRescaling, isOffset, heightAnchorGround, heightScale, heightAnchorSurface);
             }
         } else {
             uniformValues = symbolIconUniformValues(sizeData.kind,
                 size, rotateInShader, pitchWithMap, alongLine, shaderVariableAnchor, painter,
-                uLabelPlaneMatrix, glCoordMatrixForShader, translation, isText, texSize, pitchedTextRescaling, isOffset, heightAnchorGround, heightScale);
+                uLabelPlaneMatrix, glCoordMatrixForShader, translation, isText, texSize, pitchedTextRescaling, isOffset, heightAnchorGround, heightScale, heightAnchorSurface);
         }
 
         const state = {

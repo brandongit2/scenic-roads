@@ -339,8 +339,13 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   tiles come from SRTM-derived data a river's surface is noisy and not flattened, so the floor
   there is as rough. A
   pixel of narrow water is the terrain's blend of water and shore (§2, Terrain), so its floor is
-  rough. The map's toggle (the 3D terrain from it, the water's surface drawn at its level, what's
-  draped on the water kept at the surface) is planned (task #466).
+  rough. The map's toggle (Layers → Depth, "3D sea and lake floor"; web/src/depth.ts): the 3D
+  terrain from the floor, the terrain itself its surface (our MapLibre's `Map#setTerrainSurface`);
+  the water draped on the floor under the depth's colour, a see-through copy of it drawn at the
+  surface; the ferries' lines lifted to the surface and the water's and ferries' names standing on
+  it (the elevation reference and anchor `surface`); roads and bridges keep their own heights.
+  Past the depth's stored zooms the floor takes the nearest stored depth tile scaled up, as the
+  depth's own tiles do.
 - **The map:** two layers, each switched on its own (Layers → Depth): the depth's colour with the
   floor's shading (nautical blues on a log scale to 300 m by default; the panel's ramp picker; linear,
   log or fitted to the view; the shading from the stored `depth-shade` tiles, as the terrain's
