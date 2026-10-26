@@ -167,17 +167,25 @@ impl Elevation {
         m
     }
 
-    /// What's measured `m` of declaration `d`, its coverage cut to its `regions` (docs/inputs.md
-    /// §6.8): where the roads and the terrain use it at all.
+    /// What's measured `m` of declaration `d`, its coverage cut to its `regions`, then its
+    /// `exclude` cells left out (docs/inputs.md §6.8): where the roads and the terrain use it at all.
     fn scoped(&self, d: &Declaration, mut m: Measured) -> std::result::Result<Measured, String> {
-        let Some(regions) = &d.regions else { return Ok(m) };
-        let cov = self.regions.as_ref().ok_or("it names regions, and no regions version is accepted")?;
-        let (cover, missing) = declared::scope_cover(m.cover.as_deref(), regions, cov);
-        if !missing.is_empty() {
-            return Err(format!("it names regions no accepted region is: {}", missing.join(", ")));
+        if let Some(regions) = &d.regions {
+            let cov = self.regions.as_ref().ok_or("it names regions, and no regions version is accepted")?;
+            let (cover, missing) = declared::scope_cover(m.cover.as_deref(), regions, cov);
+            if !missing.is_empty() {
+                return Err(format!("it names regions no accepted region is: {}", missing.join(", ")));
+            }
+            m.uncut = Some(m.cover.take().unwrap_or_else(|| vec![declared::WORLD]));
+            m.cover = Some(cover);
         }
-        m.uncut = Some(m.cover.take().unwrap_or_else(|| vec![declared::WORLD]));
-        m.cover = Some(cover);
+        if !d.exclude.is_empty() {
+            let had = m.cover.take().unwrap_or_else(|| vec![declared::WORLD]);
+            let out = declared::Cover::of(Some(&d.exclude)).cells;
+            let kept = declared::Cover::of(Some(&had)).cells.into_iter().filter(|c| !out.contains(c)).collect();
+            m.cover = Some(declared::cells_to_boxes(&kept));
+            m.uncut.get_or_insert(had);
+        }
         Ok(m)
     }
 
@@ -817,6 +825,7 @@ pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, Str
         rank: None,
         code: 4,
         regions: None,
+        exclude: Vec::new(),
         data: Data::Tiles { url: "https://e.org/{z}/{x}/{y}.png".into(), zoom: 10, encoding: "terrarium".into() },
     };
     let measured = Measured { crs: None, resolution: 150.0, cover: None, uncut: None };
@@ -843,6 +852,7 @@ pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, Str
         rank: Some(2),
         code: 6,
         regions: None,
+        exclude: Vec::new(),
         data: Data::Tiles {
             url: "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png".into(),
             zoom: 12,
@@ -856,6 +866,7 @@ pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, Str
         rank: Some(1),
         code: 3,
         regions: None,
+        exclude: Vec::new(),
         data: Data::Geotiff { urls: vec![], index: Some("glo30.geojson".into()), files: vec![], store: true },
     };
     files.extend([entry(

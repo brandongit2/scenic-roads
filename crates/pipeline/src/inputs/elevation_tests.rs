@@ -136,6 +136,24 @@ fn the_checks_key_names_the_accepted_regions_and_sources() {
 }
 
 #[test]
+fn excluded_cells_are_cut_from_a_coverage() {
+    let f = Fixture::new(vec![(
+        "cut.toml",
+        decl(
+            "territory = \"world\"\nexclude = [[153, 24, 155, 25]]",
+            "format = \"tiles\"\nurl = \"https://e.org/{z}/{x}/{y}.png\"\nzoom = 12\nencoding = \"terrarium\"",
+        ),
+    )]);
+    assert!(f.checks().is_empty(), "{:?}", f.whole());
+    let m: Measured = serde_json::from_value(f.derive().facts["cut.toml"].0["measured"].clone()).unwrap();
+    let c = declared::Cover::of(m.cover.as_deref());
+    assert!(!c.contains(153.98, 24.29) && !c.contains(154.5, 24.5));
+    assert!(c.contains(152.5, 24.5) && c.contains(154.5, 25.5) && c.contains(-70.0, -30.0));
+    assert_eq!(c.cells.len(), 360 * 180 - 2);
+    assert_eq!(m.uncut, Some(vec![declared::WORLD]));
+}
+
+#[test]
 fn good_declarations_are_measured_from_their_data() {
     let f = Fixture::new(vec![
         ("single.toml", decl("", "format = \"geotiff\"\nurl = \"https://e.org/a.tif\"")),

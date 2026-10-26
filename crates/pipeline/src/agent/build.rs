@@ -6766,6 +6766,7 @@ pub(crate) mod tests {
             rank: None,
             code: 1,
             regions: None,
+            exclude: Vec::new(),
             data: crate::dem::declared::Data::Tiles {
                 url: "https://e.org/{z}/{x}/{y}.png".into(),
                 zoom: 10,

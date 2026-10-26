@@ -58,13 +58,18 @@ pub struct Declaration {
     /// their keys and only those whose datasets change are built again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub regions: Option<Vec<String>>,
+    /// 1° cells it isn't used in (boxes w, s, e, n of whole degrees), by the roads and the terrain
+    /// alike, cut from its coverage after its `regions` (`scope`); not in its `keyed` digest, as
+    /// `regions`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<[f64; 4]>,
     pub data: Data,
 }
 
 impl Declaration {
-    /// The declaration as its `keyed` digest names it: its `regions` left out.
+    /// The declaration as its `keyed` digest names it: its `regions` and `exclude` left out.
     pub fn keyed_part(&self) -> Declaration {
-        Declaration { regions: None, ..self.clone() }
+        Declaration { regions: None, exclude: Vec::new(), ..self.clone() }
     }
 }
 
@@ -118,7 +123,7 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
     ];
     for k in v.keys() {
         if !DESCRIPTION.contains(&k.as_str())
-            && !["surface", "heights", "rank", "code", "regions", "data"].contains(&k.as_str())
+            && !["surface", "heights", "rank", "code", "regions", "exclude", "data"].contains(&k.as_str())
         {
             why.push(format!("`{k}` isn't a field of an elevation declaration (docs/inputs.md §6.8)"));
         }
@@ -132,6 +137,29 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
                 _ => {
                     why.push("`regions` isn't a list of region ids".into());
                     None
+                }
+            }
+        }
+    };
+    let exclude = match v.get("exclude") {
+        None => Vec::new(),
+        Some(x) => {
+            let boxes = x.as_array().and_then(|a| {
+                a.iter()
+                    .map(|b| {
+                        let n: Vec<f64> =
+                            b.as_array()?.iter().map(|e| e.as_integer().map(|i| i as f64)).collect::<Option<_>>()?;
+                        let b: [f64; 4] = n.try_into().ok()?;
+                        (-180.0 <= b[0] && b[0] < b[2] && b[2] <= 180.0 && -90.0 <= b[1] && b[1] < b[3] && b[3] <= 90.0)
+                            .then_some(b)
+                    })
+                    .collect::<Option<Vec<_>>>()
+            });
+            match boxes {
+                Some(b) if !b.is_empty() => b,
+                _ => {
+                    why.push("`exclude` isn't a list of boxes [w, s, e, n] in whole degrees".into());
+                    Vec::new()
                 }
             }
         }
@@ -254,7 +282,7 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
     if !why.is_empty() {
         return Err(why);
     }
-    Ok(Declaration { surface, heights, rank, code, regions, data })
+    Ok(Declaration { surface, heights, rank, code, regions, exclude, data })
 }
 
 // ---- What's measured from the data ---------------------------------------------------------------
@@ -960,6 +988,18 @@ mod tests {
         assert_eq!(scoped.regions, Some(vec!["ontario".to_string(), "new-york".to_string()]));
         assert_eq!(scoped.keyed_part(), d("").unwrap());
         assert!(d("regions = [\"New York\"]").is_err() && d("regions = []").is_err());
+        // (Excluded cells as whole-degree boxes; not in the digest either.)
+        let cut = d("exclude = [[153, 24, 155, 25]]").unwrap();
+        assert_eq!(cut.exclude, vec![[153.0, 24.0, 155.0, 25.0]]);
+        assert_eq!(cut.keyed_part(), d("").unwrap());
+        for bad in [
+            "exclude = []",
+            "exclude = [[153.5, 24, 155, 25]]",
+            "exclude = [[155, 24, 153, 25]]",
+            "exclude = [[1, 2, 3]]",
+        ] {
+            assert!(d(bad).is_err(), "{bad}");
+        }
     }
 
     /// `cut_note` as it was before task #700 (a set of the uncut boxes' cells), against it for

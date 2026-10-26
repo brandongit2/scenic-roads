@@ -189,6 +189,7 @@ mod tests {
                 rank,
                 code: 1,
                 regions: None,
+                exclude: Vec::new(),
                 data: Data::Geotiff {
                     urls: vec!["https://example.org/a.tif".into()],
                     index: None,
