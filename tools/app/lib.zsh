@@ -105,6 +105,26 @@ hold() {
 }
 unhold() { [[ $(cat $1/owner 2>/dev/null) == "$$ $(ps -o lstart= -p $$)" ]] && rm -rf $1; return 0; }
 
+# claim_tree <cache>: takes the first free of <cache>/tree and tree-2 (hold, above) into $snap,
+# waiting while both are held: says so once, naming both holders, and polls every $tree_poll
+# seconds (2). A holder that died frees its tree (hold's stale rule), so the wait ends. Its unholds
+# are put on $cleanup first, so a TERM at any point leaves nothing held (unhold frees only this
+# process's own).
+claim_tree() {
+  local cache=$1 t said= who=
+  typeset -g snap=
+  cleanup+=("unhold $cache/tree.busy" "unhold $cache/tree-2.busy")
+  while :; do
+    who=
+    for t in tree tree-2; do
+      if hold $cache/$t.busy; then snap=$cache/$t; return 0; fi
+      who+="${who:+; }$t: $lock_held"
+    done
+    [[ -n $said ]] || { echo "two publishes are already running on this Mac ($who): waiting for one to end"; said=1; }
+    sleep ${tree_poll:-2}
+  done
+}
+
 # fast_forward <current.json> <commit> [<live version when the publish began>]: 0 when nothing is
 # live, or the live version's commit (its name's last part) is <commit> or an ancestor of it; else
 # says why and returns 1: a publish never puts an older tree, or one without everything published,

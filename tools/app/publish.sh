@@ -83,16 +83,12 @@ fi
 # nothing published. Kept between publishes as a build cache: its target/ and web/node_modules
 # (reinstalled when web's lockfile changed) carry over, so only what changed is rebuilt.
 # Each publish running at once has its own: the first free of tree and tree-2, held (tree.busy) until
-# it ends. tree-2, built only beside another publish, is removed by a publish that finds it
+# it ends; with both held a publish waits for one to free (claim_tree), making no third. tree-2, built only beside another publish, is removed by a publish that finds it
 # unused for 3 days; both have their target/ pruned (prune_target, below).
 repo=$PWD
 cache=~/Library/Caches/scenic-publish
 mkdir -p $cache
-snap=
-for t in tree tree-2; do
-  if hold $cache/$t.busy; then snap=$cache/$t; cleanup+=("unhold $cache/$t.busy"); break; fi
-done
-[[ -n $snap ]] || { echo "two publishes are already running on this Mac ($lock_held)"; exit 1; }
+claim_tree $cache
 spare=$cache/tree-2
 # (Moved aside while held, then removed after: its lock is held a moment, not for the removal, so a
 # publish starting meanwhile still finds it free.)
