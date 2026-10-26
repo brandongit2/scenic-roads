@@ -1479,11 +1479,12 @@ source's loose grids already on the NAS are packed once by `producers/depth/repa
 docstring: by tar over SSH, resumable, each depth file checked against its `hash` and every
 member's hash recorded, the inputs folder's index replaced only once every pack is on the NAS at its
 size). Its `--sweep` deletes the loose files only while both the inputs folder and the build's current
-accepted version hold the packed index, the lead's status is fresh (10 min), the same accepted
-version has named it for 24 h (a rollback starts the wait again), and no depth or depth-lo job is
-running on any Mac, waiting, or held to resume in a member's progress file; jobs planned before the
-switch read the loose index, and those planned but not yet started aren't in the status, so the
-24 h wait is what guards them. The packs are checked on the NAS, and the build on the packed index,
+accepted version hold the packed index, the lead's status is fresh (10 min), the accepted versions
+have named the same copy of the index for 24 h (a rollback or a new pack starts the wait again; a
+new acceptance for other files doesn't), and no depth or depth-lo job may read the loose index: a
+job reads the records when it starts, so one running on any Mac refuses only if it started before
+the sweep first saw the switch (or says no start), and any waiting or held to resume in a member's
+progress file refuses. The packs are checked on the NAS, and the build on the packed index,
 once more just before. The sweep is the point of no return: after it the loose index can't be rolled back to;
 until it, putting the loose index back in the inputs folder is a full rollback.
 
