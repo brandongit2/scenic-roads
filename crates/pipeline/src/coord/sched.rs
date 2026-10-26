@@ -217,10 +217,15 @@ pub fn outside_cores(a: &Ask, ours: u32) -> u32 {
     })
 }
 
+/// How long a Mac's load is given to show its last grant before it's granted a job past the cores
+/// its jobs' threads leave (`Sched::pack`, task #688 review): the minute its load average spans.
+pub const SETTLE: Duration = Duration::from_secs(60);
+
 /// The most threads a packed job is granted, of the `cores` its Mac has for its jobs:
 /// a quarter of them, at least two where they allow (the M1's 8: 2; the M4's 14: 3). The same alone or
 /// beside others: a run's threads bound what it's measured to use (crate::needs::Book::cores), so a
 /// job given them all while alone could be measured to leave no room beside it.
+
 pub fn packed_share(cores: u32) -> u32 {
     (cores / 4).max(2).min(cores.max(1))
 }
@@ -697,6 +702,25 @@ impl Sched {
         // jobs in the other half only. A job keeping more busy than it was measured to shows here.)
         let outside = outside_cores(a, total.saturating_sub(cores));
         cores = cores.saturating_sub(outside);
+        // (The cores left were its jobs counted at their threads, as before task #688: a grant
+        // past them is an overcommit, trusting its busy cores (task #688 review). At most one per
+        // ask, and none while its Mac's load hasn't had `SETTLE` to show its last grant or shows
+        // load past its jobs' busy cores by more than a core (their rounding): the jobs go up one at a time, each measured by the load
+        // before the next, so jobs busier than their runs said (or #690's reads in parallel) stop
+        // the climb within a minute instead of a whole ask's worth landing at once.)
+        let mut by_threads = needs
+            .iter()
+            .zip(&held_steps)
+            .fold(total, |left, (n, (st, ts))| {
+                left.saturating_sub(if n.waits || n.idle { 0 } else { self.need_cores(st, ts, n, share, total).0 })
+            })
+            .saturating_sub(outside);
+        let settled = mine.iter().all(|l| now.saturating_duration_since(l.granted) >= SETTLE);
+        let unexplained = a.cap.as_ref().is_some_and(|c| {
+            let kept = if c.in_use { c.kept_cores } else { 0 };
+            c.cores.saturating_sub(c.cores_free).saturating_sub(kept) > total.saturating_sub(cores + outside) + 1
+        });
+        let mut over_ok = settled && !unexplained;
         // (The ask's memory and disk are its Mac's whole room for jobs, whatever it runs (the
         // memory its owner gives the build, the agent's `build_room`; its free disk): every job
         // it holds is taken off its memory here. Its disk is taken off already for the jobs its agent reserves for (its capacity's
@@ -772,6 +796,7 @@ impl Sched {
         while grants.len() < want {
             let mut short: Option<(String, u32)> = None;
             let mut cold_why: Option<String> = None;
+            let mut ramp_why: Option<String> = None;
             let beside = held > 0;
             let mut got = None;
             for o in offers {
@@ -801,10 +826,21 @@ impl Sched {
                     });
                     continue;
                 }
-                let need = self.need_cores(&o.step, &ts, &n, share, total).1;
+                let (need_threads, need) = self.need_cores(&o.step, &ts, &n, share, total);
                 if beside && need > cores {
                     if short.is_none() {
                         short = Some((o.step.clone(), need));
+                    }
+                    continue;
+                }
+                if beside && need_threads > by_threads && !over_ok {
+                    if ramp_why.is_none() {
+                        ramp_why = Some(format!(
+                            "cores: {} counted at their threads; a job of {} past them waits for the load to show the last ({}s)",
+                            by_threads,
+                            o.step,
+                            SETTLE.as_secs()
+                        ));
                     }
                     continue;
                 }
@@ -815,6 +851,7 @@ impl Sched {
                 let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
                 why = Some(match short {
                     None if cold_why.is_some() => cold_why.unwrap_or_default(),
+                    None if ramp_why.is_some() => ramp_why.unwrap_or_default(),
                     Some((st, c)) if outside > 0 => {
                         format!(
                             "cores: {cores} of {total} left ({outside} busy outside the pool), a job of {st} takes {c}"
@@ -852,6 +889,10 @@ impl Sched {
             room.mem_mb = room.mem_mb.saturating_sub(m.mem_mb);
             room.disk_mb = room.disk_mb.map(|d| d.saturating_sub(m.disk_mb + fill));
             cores = cores.saturating_sub(busy);
+            if beside && threads > by_threads {
+                over_ok = false;
+            }
+            by_threads = by_threads.saturating_sub(threads);
         }
         let why = why.filter(|_| grants.len() < want).or_else(|| {
             old.filter(|_| a.want > grants.len() && !grants.is_empty()).map(|w| {

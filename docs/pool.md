@@ -500,9 +500,16 @@ threads on 26 Oct and counts for 1, where it counted for 3 and the M4 packed 3â€
 2 of 14 left, a job of terrain-hi takes 3") with 22 GB of its 39 GB build memory free. The rule
 reads the runs, not the step: a terrain job reading faster (from this Mac's disk, say) keeps more
 busy and counts for more. A job's threads stay within the cores left plus those it leaves idle
-(its grant less its busy cores). A job keeping more busy than it was measured to shows in its
-Mac's load past its jobs' busy cores, so it comes off the cores left as outside load does
-(`outside_cores`). A first
+(its grant less its busy cores). **Past the cores its jobs' threads leave, a Mac climbs one job
+at a time** (task #688 review, `coord::SETTLE`): an ask is granted at most one job that fits only
+by busy cores, and none until a minute has passed since its last grant (the span of the load
+average its capacity reports) or while that load passes its jobs' busy cores by more than a core.
+So the M4 takes four terrain-hi jobs by their threads at once, then one a minute up to what its
+memory, disk and the NAS budget hold, and stops climbing as soon as jobs keep more busy than their
+runs said (a run's busy cores read low where it waited on a busy NAS or was paused by the memory
+guard: its wall time counts the pause). Load past the busy cores beyond the packed share comes off
+the cores left as outside load does (`outside_cores`, at most half the Mac's), which stops further
+grants but stops no running job. A first
 job alone gets no more than the share, so its run is never measured to take every core and leave
 no room beside it. The agent, the lead's as a member's,
 starts a granted job with those threads, within its Mac's cores less those the in-use share keeps

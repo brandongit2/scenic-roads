@@ -7991,12 +7991,27 @@ mod tests {
         };
         // Waiting on its reads (1.16 busy): granted 3 threads, counted for 1; the build's memory,
         // 39 GB, holds ten of 3.7 GB, where by threads 14 cores held four.
-        let (_d, _c, w, _clock) = packed(696_000);
+        // (Task #688 review: past the four their threads allow, one a minute, as the load shows
+        // each.)
+        let (_d, _c, w, clock) = packed(696_000);
         let gs = w.ask(&ask(39_000, vec![])).unwrap().unwrap();
         let mut leases = vec![gs.lease];
         leases.extend(gs.more.iter().map(|g| g.lease));
-        assert_eq!(leases.len(), 10, "memory decides");
+        assert_eq!(leases.len(), 5, "four by their threads, one past them");
         assert!(std::iter::once(&gs).chain(&gs.more).all(|g| g.threads == 3), "each keeps its threads");
+        assert!(w.ask(&ask(39_000, leases.clone())).unwrap().is_none(), "none before the load shows the last");
+        // (Load past their busy cores by more than one: the climb stops.)
+        clock.advance(sched::SETTLE);
+        let mut swamped = ask(39_000, leases.clone());
+        swamped.cap.as_mut().unwrap().cores_free = 14 - 5 - 2;
+        assert!(w.ask(&swamped).unwrap().is_none(), "busier than measured: no more");
+        while leases.len() < 10 {
+            let gs = w.ask(&ask(39_000, leases.clone())).unwrap().expect("one more each minute");
+            assert!(gs.more.is_empty(), "one at a time");
+            leases.push(gs.lease);
+            clock.advance(sched::SETTLE);
+        }
+        assert!(w.ask(&ask(39_000, leases.clone())).unwrap().is_none(), "memory decides");
         // Busy on its threads (3 of 3): counted for them, four on 14 cores whatever the memory.
         let (_d, _c, w, _clock) = packed(1_800_000);
         assert_eq!(all_granted(&w, &ask(64_000, vec![])).len(), 4, "cores decide");
