@@ -4054,9 +4054,11 @@ fn depth_versions(step: &str) -> String {
     )
 }
 
-/// What a depth z6 tile's water digest is made from (`WaterIdx`'s from): its z6–12 tiles, as the depth
-/// reads them (the rivers too: `terrain_water::RIVERS_FROM`).
-pub const DEPTH_WATER_FROM: &str = "depth z6-12 +rivers";
+/// What a depth z6 tile's water digest is made from (`WaterIdx`'s from): its tiles and the ring
+/// around them at each zoom it composes from z9 to its sources' finest there or z14, the
+/// basemap's deepest (z15–16 draw on z14's), as the depth reads them, the rivers too
+/// (`depth_hi_water`).
+pub const DEPTH_WATER_FROM: &str = "depth z9-sources ring +rivers";
 /// A depth assembly's: its z3 tile's z6–8, the rivers too ("depth 3/x/y": the terrain's assembly
 /// reads the same tiles without them, "3/x/y").
 pub const DEPTH_LO_WATER_FROM: &str = "depth z6-8 +rivers";
@@ -4097,7 +4099,8 @@ pub fn depth_tiles(cov: &Coverage, sources: &[crate::depth::grids::Source]) -> (
 }
 
 /// The water the depth's targets read, as the terrain-water job works their digests out: an
-/// assembly's z6–8 tiles ("depth 3/x/y"), a z6 tile's z6–12 ("depth 6/x/y"), the rivers in both.
+/// assembly's z6–8 tiles ("depth 3/x/y"), a z6 tile's `depth_hi_water` ("depth 6/x/y"), the rivers
+/// in both.
 pub fn depth_water_reads(cov: &Coverage, sources: &[crate::depth::grids::Source]) -> Vec<crate::terrain_water::Reads> {
     let (lo, hi) = depth_tiles(cov, sources);
     let mut out: Vec<crate::terrain_water::Reads> = lo
@@ -4107,15 +4110,29 @@ pub fn depth_water_reads(cov: &Coverage, sources: &[crate::depth::grids::Source]
         })
         .collect();
     for (x, y) in hi {
-        let tiles: Vec<(u8, u32, u32)> = (6..=12u8)
-            .flat_map(|z| {
-                let s = 1u32 << (z - 6);
-                (x * s..(x + 1) * s).flat_map(move |tx| (y * s..(y + 1) * s).map(move |ty| (z, tx, ty)))
-            })
-            .collect();
-        out.push((format!("depth 6/{x}/{y}"), DEPTH_WATER_FROM.to_string(), tiles));
+        out.push((format!("depth 6/{x}/{y}"), DEPTH_WATER_FROM.to_string(), depth_hi_water(sources, (x, y))));
     }
     out
+}
+
+/// The water tiles z6 tile `t`'s depth reads: at each zoom from z9 to the finest of the sources
+/// meeting it (2 km round, as its key's sources), at most the basemap's z14 (z15–16 are drawn from
+/// z14's polygons), its tiles and the ring of one around them (a block reads its neighbours' for
+/// its margin). A change at a zoom it never composes isn't among them.
+fn depth_hi_water(sources: &[crate::depth::grids::Source], t: (u32, u32)) -> Vec<(u8, u32, u32)> {
+    let b = crate::hipack::grow(crate::hipack::tile_bounds(6, t.0, t.1), 2.0);
+    let deg = [f64::from(b[0]) * 1e-7, f64::from(b[1]) * 1e-7, f64::from(b[2]) * 1e-7, f64::from(b[3]) * 1e-7];
+    let top = sources.iter().filter_map(|s| s.max_zoom_in(deg)).max().unwrap_or(0);
+    let top = top.min(crate::depth::build::HI.1).min(crate::depth::build::WATER_Z);
+    (crate::depth::build::HI.0..=top)
+        .flat_map(|z| {
+            let (s, n) = (1i64 << (z - 6), 1i64 << z);
+            let (x0, y0) = (i64::from(t.0) * s, i64::from(t.1) * s);
+            (y0 - 1..=y0 + s).filter(move |ty| (0..n).contains(ty)).flat_map(move |ty| {
+                (x0 - 1..=x0 + s).filter(move |tx| (0..n).contains(tx)).map(move |tx| (z, tx as u32, ty as u32))
+            })
+        })
+        .collect()
 }
 
 /// The depth's targets with their keys; None while its sources can't be read or there's no water
@@ -4124,7 +4141,8 @@ pub fn depth_water_reads(cov: &Coverage, sources: &[crate::depth::grids::Source]
 /// - an assembly's key: the versions, the z3 tile, the sources meeting it (their ids and digests),
 ///   the water it reads ("depth 3/x/y", `DEPTH_LO_WATER_FROM`);
 /// - a z6 tile's: the versions, the z6 tile, the sources meeting it, the lo packs of its z3 tile and
-///   its eight neighbours (what its capped pixels are scaled up from), its water ("depth 6/x/y").
+///   its eight neighbours (what its capped pixels are scaled up from), its water ("depth 6/x/y",
+///   `depth_hi_water`).
 pub fn depth_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> Option<DepthTargets> {
     let sources = tiles.depth(m)?;
     let pin = crate::terrain_pack::water_source_pin(m)?;
@@ -8433,6 +8451,68 @@ pub(crate) mod tests {
         let back = crate::inputs::regions::stored::Geometry::decode(&g.encode()).unwrap();
         let cov = crate::inputs::regions::read::coverage_of(&[back]);
         assert!(cov.shapes.is_empty() && cov.depth_only.len() == 1);
+    }
+
+    /// A z6 tile's depth is keyed on the water at the zooms it composes: a lake the basemap draws
+    /// only at z13 (the fine source's zoom) re-keys that tile alone; one at z14, finer than any
+    /// source there, re-keys nothing.
+    #[test]
+    fn a_depth_tile_is_keyed_on_its_water_to_its_sources_zoom() {
+        use crate::terrain_water::{tests::square, Kind, Poly, WaterSource};
+        struct Lakes(Vec<(u8, u32, u32)>);
+        impl WaterSource for Lakes {
+            fn polys(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Vec<Poly>> {
+                let mut v = vec![square(Kind::Sea, 0, 0.0, 0.0, 256.0, 10.0)];
+                if self.0.contains(&(z, x, y)) {
+                    v.push(square(Kind::Lake, 7, 100.0, 100.0, 140.0, 130.0));
+                }
+                Ok(v)
+            }
+            fn pin(&self) -> String {
+                "w".into()
+            }
+        }
+        let c = cov();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        m.insert(crate::inputs::logical(crate::inputs::sources::UNIT), "x".into());
+        m.insert(
+            "layers/basemap/world-2026-09-28".into(),
+            "layers/basemap/world-2026-09-28.0101010101010101.pmtiles".into(),
+        );
+        let pin = crate::terrain_pack::water_source_pin(&m).unwrap();
+        let reads = depth_water_reads(&c, &depth_sources());
+        let keys = |src: &Lakes| {
+            let mut idx = crate::terrain_water::make_idx(src, None, &reads, &|_, _| {}).unwrap();
+            idx.pin = pin.clone();
+            let mut tiles = TerrainTiles::new(None);
+            tiles.hold_depth("x", depth_sources());
+            let mut m = m.clone();
+            let name = format!("{}.0202020202020202.json", crate::terrain_water::idx_logical(&pin));
+            m.insert(crate::terrain_water::idx_logical(&pin), name.clone());
+            tiles.hold_water(&name, idx);
+            let dt = depth_targets(&c, &m, &tiles).unwrap();
+            assert_eq!(dt.unknown, 0);
+            let all: BTreeMap<String, String> = dt
+                .lo
+                .into_iter()
+                .map(|(t, k)| (format!("lo {t}"), k))
+                .chain(dt.hi.into_iter().map(|(t, k)| (format!("hi {t}"), k)))
+                .chain(dt.shade.into_iter().map(|(t, k)| (format!("shade {t}"), k)))
+                .collect();
+            all
+        };
+        let a = keys(&Lakes(Vec::new()));
+        // (A lake in the middle of z6 tile 28/16, away from its neighbours' rings.)
+        let (x, y) = (28u32, 16u32);
+        let b = keys(&Lakes(vec![(13, x * 128 + 64, y * 128 + 64)]));
+        let changed: Vec<&String> = a.keys().filter(|t| a[*t] != b[*t]).collect();
+        assert_eq!(changed, [&format!("hi 6/{x}/{y}")]);
+        // Finer than the sources there (z13): not read, nothing re-keyed.
+        assert_eq!(a, keys(&Lakes(vec![(14, x * 256 + 128, y * 256 + 128)])));
+        // z6–8, the assembly's alone.
+        let b = keys(&Lakes(vec![(8, x * 4 + 1, y * 4 + 1)]));
+        let changed: Vec<&String> = a.keys().filter(|t| a[*t] != b[*t]).collect();
+        assert_eq!(changed, [&format!("lo 3/{}/{}", x >> 3, y >> 3)]);
     }
 
     /// The depth chain waits for its sources and its water's digests, then makes the assemblies

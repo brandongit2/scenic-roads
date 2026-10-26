@@ -661,8 +661,11 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   digest of declaration and index), the digest of its z6–8 water as the depth reads it, rivers
   included ("depth 3/x/y", worked out by the terrain-water job).
 - **depth (a z6 tile):** the same versions, the tile, the sources meeting it (2 km round), the content
-  names of the depth lo packs of its z3 tile and its neighbours, and the digest of its z6–12 water,
-  rivers included ("depth 6/x/y").
+  names of the depth lo packs of its z3 tile and its neighbours, and the digest of its water,
+  rivers included ("depth 6/x/y"): its tiles and the ring around them at each zoom it composes,
+  z9 to the finest source meeting it, at most z14 (z15–16 are drawn from z14's polygons), so a
+  change the basemap shows only at z13–14 remakes the z6 tiles whose sources reach it, and one
+  finer than a tile's sources none.
 - **depth-shade (a z3 tile):** the same versions and `DEPTH_SHADE_V`, the tile, the content names of
   its depth lo pack and of its z6 tiles' `depth-shade` hi packs.
 - **bldtiles (per z6 tile):** `BUILDINGS_V`, the normalized files of the tile and its 8 neighbours,

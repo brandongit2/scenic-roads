@@ -49,7 +49,7 @@ pub const HI: (u8, u8) = (9, 16);
 /// The zooms an assembly composes (coarser ones from children).
 pub const LO_COMPOSED: (u8, u8) = (6, 8);
 /// The deepest zoom the basemap has water at.
-const WATER_Z: u8 = 14;
+pub const WATER_Z: u8 = 14;
 
 pub fn hi_logical(layer: &str, x: u32, y: u32) -> String {
     format!("layers/{layer}/hi/6-{x}-{y}")
