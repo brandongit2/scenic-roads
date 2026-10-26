@@ -110,7 +110,7 @@ What each step does, in detail. The steps as one table (names, chains, the check
     4 × 4 samples a pixel. The sea goes to 0; each lake, pond, reservoir or dock to its level (the
     10th percentile of its shore's dry pixels, or its source's own lower level); rivers,
     intermittent water and pools are left. One level per lake by OSM id across the tiles made
-    together. Partly-water pixels are blended.
+    together; a lake without one is its tile's alone (`own_key`: never another tile's or feature's). Partly-water pixels are blended.
   - **Below zero** is clamped to 0 after the water. Planned: polders keeping their depth.
   - **Native zoom and the deep levels** (crate::terrain_deep): a place's native zoom is the finest
     its data supports. Where a dataset of the pool is finer than the worldwide datasets (those

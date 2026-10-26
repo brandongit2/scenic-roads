@@ -23,7 +23,7 @@
 //!   pack's coarser ones, finest first: a lake keeps the level its finest tiles gave it), by its OSM
 //!   id. A lake across two z6 tiles may take a level from each, a metre or two apart.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -196,25 +196,33 @@ pub fn polys_of_mvt_with(mvt: &[u8], z: u8, x: u32, y: u32, rivers: bool) -> Res
         let id = match num(prop("id")) {
             Some(i) if i > 0 => i as u64,
             // (No id: a key of this tile's own.)
-            _ => own_key(z, x, y, k),
+            _ => own_key(z, x, y, k)
+                .with_context(|| format!("water feature {k} of {z}/{x}/{y}: past own_key's range"))?,
         };
         let rings = decode_rings(&f.geometry)
             .into_iter()
             .map(|r| r.into_iter().map(|(px, py)| [px * s, py * s]).collect())
             .collect();
         out.push(Poly { kind, id, rings });
-        let _ = (z, x, y);
     }
     Ok(out)
 }
 
-/// The key of a lake without an OSM id, feature `k` of tile z/x/y: meant to be its tile's own, but
-/// not always (task #464): from the tile's 16th feature on, `k`'s bits meet `y`'s, so two
-/// tiles of a column can give two lakes one key, and a z6 tile's run would gather them as one lake
-/// (one level). The live basemap's lakes all have ids (none keyed so in the 398 z6 tiles near the
-/// coverage, 9 Oct 2026); kept as it is until the terrain's version changes anyway.
-pub fn own_key(z: u8, x: u32, y: u32, k: usize) -> u64 {
-    (1u64 << 63) | (u64::from(z) << 56) ^ (u64::from(x) << 30) ^ (u64::from(y) << 4) ^ k as u64
+/// The key of a lake without an OSM id, feature `k` of tile z/x/y (z at most 14): its tile's own,
+/// never another's. Features 0-15 keep the key they always had (`1<<63 | z<<56 | x<<30 | y<<4 | k`,
+/// its fields apart while x, y < 2^26, so terrain made before stays as it was); from feature 16 on,
+/// whose old key met the next rows' (task #464), bit 62 (never set by those: z < 64) marks a
+/// layout of its own, `z<<56 | x<<42 | y<<28 | k-16`. None past z14 or 2^28 + 16 features.
+pub fn own_key(z: u8, x: u32, y: u32, k: usize) -> Option<u64> {
+    if z > 14 || x >> z != 0 || y >> z != 0 {
+        return None;
+    }
+    let (z, x, y) = (u64::from(z), u64::from(x), u64::from(y));
+    if k < 16 {
+        return Some(OWN | z << 56 | x << 30 | y << 4 | k as u64);
+    }
+    let k = (k - 16) as u64;
+    (k < 1 << 28).then_some(OWN | 1 << 62 | z << 56 | x << 42 | y << 28 | k)
 }
 
 /// An MVT geometry's rings (tile units).
@@ -845,15 +853,46 @@ pub mod tests {
         assert!(!water_tile(&[square(Kind::River, OWN, 0.0, 0.0, 10.0, 10.0)]).is_empty());
     }
 
-    /// Pins the own keys as they are (task #464): one tile's are distinct, but feature 16 of
-    /// a tile and feature 0 of the tile below it in its column share one.
+    /// The key own_key had until task #464's fix (gap 11).
+    fn old_own_key(z: u8, x: u32, y: u32, k: usize) -> u64 {
+        (1u64 << 63) | (u64::from(z) << 56) ^ (u64::from(x) << 30) ^ (u64::from(y) << 4) ^ k as u64
+    }
+
+    /// Own keys (gap 11): features 0-15 keep their old key in every tile z6-14 (the old key's
+    /// whole range where it is its tile's own: feature 16 on met the next rows'); and every key is
+    /// one tile's feature's alone, where the old ones collided too.
     #[test]
-    fn own_keys_as_they_are() {
-        let keys: std::collections::HashSet<u64> = (0..64).map(|k| own_key(12, 5, 7, k)).collect();
-        assert_eq!(keys.len(), 64);
-        assert!(keys.iter().all(|k| k & OWN != 0));
-        assert_eq!(own_key(12, 5, 0, 16), own_key(12, 5, 1, 0), "the latent collision");
+    fn own_keys() {
+        for z in 6..=14u8 {
+            let n = 1u32 << z;
+            for x in (0..n).step_by((n / 64).max(1) as usize).chain([n - 1]) {
+                for y in 0..n {
+                    for k in 0..16 {
+                        assert_eq!(own_key(z, x, y, k), Some(old_own_key(z, x, y, k)), "{z}/{x}/{y} {k}");
+                    }
+                }
+            }
+        }
+        // (Distinct over whole columns, a feature run past 16 in each tile, at both ends of z.)
+        for (z, x) in [(6u8, 0u32), (6, 63), (14, 0), (14, 9999), (14, 16383)] {
+            let mut seen = std::collections::HashMap::new();
+            let ys: Vec<u32> = if z == 6 { (0..64).collect() } else { (0..64).chain(16320..16384).collect() };
+            for &y in &ys {
+                for k in (0..300).chain([(1 << 28) + 15]) {
+                    let key = own_key(z, x, y, k).unwrap();
+                    assert!(key & OWN != 0);
+                    assert_eq!(seen.insert(key, (y, k)), None, "{z}/{x}/{y} {k}");
+                }
+            }
+        }
+        assert_eq!(old_own_key(12, 5, 0, 16), old_own_key(12, 5, 1, 0), "the old collision");
+        assert_ne!(own_key(12, 5, 0, 16), own_key(12, 5, 1, 0));
         assert_ne!(own_key(12, 5, 0, 15), own_key(12, 6, 0, 15));
         assert_ne!(own_key(11, 5, 0, 0), own_key(12, 5, 0, 0));
+        assert_ne!(own_key(14, 0, 0, 16), own_key(13, 0, 0, 16));
+        assert_eq!(
+            (own_key(15, 0, 0, 0), own_key(12, 1 << 12, 0, 0), own_key(12, 0, 0, (1 << 28) + 16)),
+            (None, None, None)
+        );
     }
 }

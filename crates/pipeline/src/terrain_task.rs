@@ -1145,26 +1145,21 @@ mod tests {
         w.join().unwrap().unwrap();
         assert!(c.shared.lock().unwrap().workers["m1"].bad);
     }
-    /// By hand, read-only (§10 latent bug): lakes without an OSM id keyed by their tile
-    /// (`terrain_water::polys_of_mvt`: `1<<63 | z<<56 ^ x<<30 ^ y<<4 ^ k`) can share a key between
-    /// two tiles of a column once a tile has 16 features or more (y's bits and k's overlap); a
-    /// z6 tile's run gathers one level's lakes by key, so two such lakes would take one level. Over
-    /// every z6 tile near the live coverage (`TT_ROOT`: the NAS's project folder, read only), the
-    /// keys two tiles of one level of one z6 tile share, rasterized in both (`water_tile`'s lakes),
-    /// each said with its tiles; and the count.
+    /// By hand, read-only (gap 11): over every z6 tile near the live coverage (`TT_ROOT`: the
+    /// NAS's project folder, read only, as `scenic-build terrain-same` reads it), the lakes keyed by
+    /// their tile's own (no OSM id), and those of a tile's feature 16 on (`own_key`'s bit 62: their
+    /// key differs from the one before gap 11), each said with its tile.
     #[test]
     #[ignore]
-    fn own_lake_keys_shared_in_live_pieces() {
+    fn own_lake_keys_in_live_pieces() {
         use crate::terrain_water::{tile_water, WaterSource};
         use rayon::prelude::*;
-        let root = PathBuf::from(std::env::var("TT_ROOT").expect("TT_ROOT"));
-        let out =
-            Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &std::env::temp_dir().join("tt-own-keys"))
-                .unwrap();
+        let root = store::nasfs::NasRoot::from_arg(std::env::var("TT_ROOT").expect("TT_ROOT"));
+        let out = Out::unbound(&root, &std::env::temp_dir().join("tt-own-keys")).unwrap();
         let cov = live_coverage(&out);
         let water = crate::terrain_pack::open_water(&out).unwrap();
         let pieces: Vec<(u32, u32)> = crate::agent::build::coverage_tiles(&cov).into_values().flatten().collect();
-        let (mut n_tiles, mut shared, mut own) = (0usize, Vec::new(), 0usize);
+        let (mut n_tiles, mut own, mut moved) = (0usize, 0usize, 0usize);
         for (k, &t) in pieces.iter().enumerate() {
             for (z, tiles) in piece_levels(&cov, t) {
                 n_tiles += tiles.len();
@@ -1177,36 +1172,25 @@ mod tests {
                             .unwrap_or_default()
                     })
                     .collect();
-                let mut by: HashMap<u64, Vec<(u32, u32)>> = HashMap::new();
                 for (&(x, y), v) in tiles.iter().zip(ids) {
                     own += v.len();
-                    for i in v {
-                        by.entry(i).or_default().push((x, y));
+                    for i in v.into_iter().filter(|i| i >> 62 & 1 == 1) {
+                        moved += 1;
+                        println!("piece 6/{}/{} tile {z}/{x}/{y}: key {i:#x}, feature 16 on", t.0, t.1);
                     }
-                }
-                for (i, v) in by.into_iter().filter(|(_, v)| v.len() > 1) {
-                    let lonlat = |(x, y): (u32, u32)| {
-                        let n = (1u64 << z) as f64;
-                        (
-                            (x as f64 + 0.5) / n * 360.0 - 180.0,
-                            (std::f64::consts::PI * (1.0 - 2.0 * (y as f64 + 0.5) / n)).sinh().atan().to_degrees(),
-                        )
-                    };
-                    println!(
-                        "piece 6/{}/{} z{z} key {i:#x}: tiles {:?} at {:?}",
-                        t.0,
-                        t.1,
-                        v,
-                        v.iter().map(|&p| lonlat(p)).collect::<Vec<_>>()
-                    );
-                    shared.push((t, z, i, v));
                 }
             }
             if k % 50 == 0 {
-                eprintln!("{k} of {} pieces, {n_tiles} tiles, {own} own keys, {} shared", pieces.len(), shared.len());
+                eprintln!(
+                    "{k} of {} pieces, {n_tiles} tiles, {own} own keys, {moved} from feature 16 on",
+                    pieces.len()
+                );
             }
         }
-        println!("{} pieces, {n_tiles} tiles, {own} lakes keyed by their tile's own: {} keys shared by two tiles or more of one piece's level, in {} pieces", pieces.len(), shared.len(), shared.iter().map(|s| s.0).collect::<BTreeSet<_>>().len());
+        println!(
+            "{} pieces, {n_tiles} tiles, {own} lakes keyed by their tile's own, {moved} of them from feature 16 on",
+            pieces.len()
+        );
     }
 
     /// The coverage of `out`'s regions, as scenic-build's steps read it (the latest pass's outlines).
