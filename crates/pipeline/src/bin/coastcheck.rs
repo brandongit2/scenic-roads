@@ -30,7 +30,7 @@ fn main() -> Result<()> {
         C::Stats { store, z, sample, size } => stats(&store, z, sample, size),
         C::WaterPacks { tiles, catalogue, root } => {
             // water-build's tiles as the water layer's packs (pipeline::layers' scopes) in a test
-            // root, and a catalogue one newer than --catalog with them (written into <root>/catalogue).
+            // root, and a catalogue one newer than --catalog with them (written into <root>/catalog).
             // Never the NAS's.
             let mut cat = store::catalogue::read(&catalogue)?;
             let mut all: Vec<(u8, u32, u32, PathBuf)> = Vec::new();

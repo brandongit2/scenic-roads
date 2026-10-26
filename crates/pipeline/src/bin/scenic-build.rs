@@ -1929,7 +1929,8 @@ fn catalogue(
     now: u64,
 ) -> Result<pipeline::pubtimes::CatalogueStats> {
     let delta = way.delta && !held;
-    let p = phase("the manifest's files sorted into the catalogue's", Class::Compute);
+    // (Stored phase name: old spelling, task #547.)
+    let p = phase("the manifest's files sorted into the catalog's", Class::Compute);
     let mut layers: BTreeMap<String, LayerOut> = BTreeMap::new();
     let (mut base, mut roads, mut hidata, mut global, mut basemap) =
         (BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), Vec::new());

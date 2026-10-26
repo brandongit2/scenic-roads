@@ -756,7 +756,7 @@ mod tests {
             stated: if delta { 12 } else { 1000 },
             phases: vec![
                 ("every file checked on the NAS".into(), if delta { 1.0 } else { 9.0 }),
-                ("the catalogue written".into(), 2.0),
+                ("the catalog written".into(), 2.0),
             ],
         };
         Event { n: Some(n), secs: Some(secs), data: serde_json::to_value(&st).ok(), ..ev("catalog", t) }

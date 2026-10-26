@@ -527,7 +527,8 @@ fn run_once(root: &store::nasfs::NasRoot, keep_days: u64, dry_run: bool) -> Resu
 
     // Catalogues: the newest always, and every one of the last `keep_days`.
     let cat_dir = root.join("catalog");
-    let read = phase("catalogues read", Class::NasRead);
+    // (Phase names are stored in the job logs and their stats: the old spelling stays, task #547.)
+    let read = phase("catalogs read", Class::NasRead);
     let ns = if cat_dir.exists() { store::catalogue::list(&cat_dir).context("list catalogues")? } else { Vec::new() };
     // Before the first catalogue there's nothing to keep track of, so nothing is removed.
     let Some(&latest) = ns.iter().max() else { return Ok(rep) };
@@ -754,7 +755,8 @@ fn run_once(root: &store::nasfs::NasRoot, keep_days: u64, dry_run: bool) -> Resu
         let _p = phase("removed steps' files swept", Class::NasWrite);
         sweep_retired_names(root, &referenced, &old, dry_run, &mut rep)?;
     }
-    let _p = phase("old catalogues removed", Class::NasWrite);
+    // (Stored phase name: old spelling, task #547.)
+    let _p = phase("old catalogs removed", Class::NasWrite);
     for p in drop_cats {
         remove(&p, dry_run)?;
         rep.catalogues_removed += 1;

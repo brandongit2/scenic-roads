@@ -479,7 +479,7 @@ file `inputs/hold-catalog`, `state/pool/delta-catalog`, the steps `catalog` and 
 event kind `catalog`, JSON keys (`catalog`, `catalog_held`, `catalog_t`, `catalog_at`, `catalogs`,
 `catalogs_kept`, `catalogs_removed`), the routes `/api/catalog` and `/work/catalogs` (and the page's
 `catalogs.js`), the commands `scenic catalogs` and `lakefill catalog-add` with the flag `--catalog`, the
-log line prefix `catalog-stats:` and the phase names that say "the catalog". In Rust they are
+log line prefix `catalog-stats:` and the phase names (scenic-build's "the last catalogs listed and the records' sizes read", "the manifest's files sorted into the catalog's" and "the catalog written", gc's "catalogs read" and "old catalogs removed", namestodo's "the catalog, the languages spoken and the translations read"). In Rust they are
 `store::catalogue::NAME` and `HELD_NAME` or a `serde(rename)`.
 
 zstd with its content checksum; written as `.tmp`, then renamed. Readers take the highest `<n>`
