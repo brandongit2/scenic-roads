@@ -712,6 +712,24 @@ pub fn current(m: &BTreeMap<String, String>) -> Option<(String, &str)> {
     Some((f, c.as_str()))
 }
 
+/// Where the fill's lakes lie (longitude, latitude: west, south, east, north): Canada, as a box.
+/// `write` refuses a lake outside it, so elsewhere a reader leaves the fill unread: the server's
+/// water (away from the NAS a region outside Canada doesn't download it) and a region's download.
+pub const REACH: [f64; 4] = [-141.5, 41.5, -52.0, 84.0];
+
+/// Whether a point (longitude, latitude) is in `REACH`.
+pub fn in_reach(lon: f64, lat: f64) -> bool {
+    (REACH[0]..=REACH[2]).contains(&lon) && (REACH[1]..=REACH[3]).contains(&lat)
+}
+
+/// Whether tile z/x/y, grown by a tile each way (what a tile's lakes are cut from), meets `REACH`.
+pub fn reaches(z: u8, x: u32, y: u32) -> bool {
+    let n = f64::from(1u32 << z);
+    let (w, north) = lonlat([(f64::from(x) - 1.0) / n, (f64::from(y) - 1.0) / n]);
+    let (e, south) = lonlat([(f64::from(x) + 2.0) / n, (f64::from(y) + 2.0) / n]);
+    w <= REACH[2] && e >= REACH[0] && south <= REACH[3] && north >= REACH[1]
+}
+
 /// The fill file's format (meta `fmt`).
 pub const FORMAT: &str = "lakefill-1";
 /// Its grid's zoom: lakes filed by their boxes' z8 tiles.
@@ -752,6 +770,11 @@ pub fn write(path: &Path, lakes: &[Lake], meta: serde_json::Value) -> Result<()>
                 points.push(q);
             }
         }
+        let corners = [[b[0], b[1]], [b[2], b[3]]].map(|q| lonlat([f64::from(q[0]) / SCALE, f64::from(q[1]) / SCALE]));
+        ensure!(
+            corners.iter().all(|&(lon, lat)| in_reach(lon, lat)),
+            "a lake outside the fill's reach (REACH): {corners:?}"
+        );
         let id = (1u64 << 62) | (l.key() & ((1u64 << 61) - 1)) | if l.intermittent { INTERMITTENT } else { 0 };
         recs.push(LakeRec { id, bbox: b, first_ring, nrings: u32::try_from(l.rings.len())? });
     }
@@ -1803,6 +1826,30 @@ mod tests {
         r.reverse();
         let l = lake(&[r]);
         assert!(crate::watercov::area2(&l.rings[0]) > 0.0);
+    }
+
+    #[test]
+    fn a_lake_outside_the_reach_is_refused() {
+        let d = tempfile::tempdir().unwrap();
+        let gibraltar = lake(&[sq(-5.36, 36.13, -5.35, 36.14)]);
+        let e = write(&d.path().join("fill.sect"), &[gibraltar], serde_json::json!({})).unwrap_err();
+        assert!(format!("{e:#}").contains("outside the fill's reach"), "{e:#}");
+    }
+
+    #[test]
+    fn tiles_in_reach() {
+        // Gibraltar's z14 tile and Reykjavík's are out of it; the Yukon's edge and Ellesmere's in.
+        let tile = |lon: f64, lat: f64| {
+            let n = f64::from(1u32 << 14);
+            let y = (1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * n;
+            (((lon + 180.0) / 360.0 * n) as u32, y as u32)
+        };
+        for (lon, lat, want) in [(-5.35, 36.13, false), (-21.9, 64.1, false), (-141.0, 69.6, true), (-75.0, 82.0, true)]
+        {
+            let (x, y) = tile(lon, lat);
+            assert_eq!(reaches(14, x, y), want, "{lon},{lat}");
+        }
+        assert!(reaches(0, 0, 0));
     }
 
     fn written(lakes: &[Lake]) -> (tempfile::TempDir, Fill) {

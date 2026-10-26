@@ -152,7 +152,11 @@ fn z14(s: &S, archives: &[String], x: u32, y: u32) -> Result<Vec<wt::Stored>> {
             out.push(wt::Stored { key, bytes: Arc::new(bytes) });
         }
     }
-    // The fill's lakes there, as a tile of their own beside the basemap's.
+    // The fill's lakes there, as a tile of their own beside the basemap's (only in its reach:
+    // elsewhere it has none, and away from the NAS a region there hasn't downloaded it).
+    if !pipeline::lakefill::reaches(wt::BASE_Z, x, y) {
+        return Ok(out);
+    }
     if let Some(f) = fill(s)? {
         out.extend(<pipeline::lakefill::Fill as wt::Extra>::z14(&f, x, y));
     }

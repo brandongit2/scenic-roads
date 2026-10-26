@@ -423,7 +423,9 @@ drawn as a raster.
     latest basemap is drawn (`lakefill::current`). The water, the terrain's water digests and the
     catalogs wait for it (`hold_for_lakefill`) until it has failed 3 times in a row
     (`water_waits_for_lakefill`), then go without it. The water layer draws its lakes as an extra
-    z14 tile (`water::Extra`, the catalog's `global.lakefill`); the terrain flattens them
+    z14 tile (`water::Extra`, the catalog's `global.lakefill`), read only for tiles in its reach
+    (`lakefill::REACH`, Canada's box, which the step refuses a lake outside), so away from the NAS a
+    region elsewhere draws its deeper zooms without it; the terrain flattens them
     (`lakefill::FilledWater`; `terrain_pack::water_source_pin` names the fill).
 
 ## 5. Worldwide road values (in the OSM pass)

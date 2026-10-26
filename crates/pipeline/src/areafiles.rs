@@ -121,9 +121,9 @@ pub fn files_of(cat: &Catalog, rings: &[Vec<[f64; 2]>]) -> Files {
     // region works away from the NAS without it: the worldwide files, those of a z6 tile
     // (`…/6-x-y.<hash>…`) only for its tiles; the Canadian lake fill only when it meets Canada.
     let near: BTreeSet<String> = tiles_meeting(rings, NEAR_KM).iter().map(|(x, y)| format!("6-{x}-{y}")).collect();
-    let canada = rings.iter().flatten().any(|p| (-141.5..=-52.0).contains(&p[0]) && (41.5..=84.0).contains(&p[1]));
+    let canada = rings.iter().flatten().any(|p| crate::lakefill::in_reach(p[0], p[1]));
     for l in cat.global.values() {
-        if l.starts_with("work/lakefill/") {
+        if l.starts_with(crate::lakefill::PREFIX) {
             if canada {
                 add(l);
             }

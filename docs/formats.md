@@ -288,7 +288,9 @@ sea's share, green the inland water's.
 Lakes OSM lacks in Canada's unimported map sheets (docs/steps.md §4), from CanVec. Meta `{"fmt":
 "lakefill-1", "grid_z": 8, "lakes", "rings", "points", "source", "layer", "field", "keep",
 "intermittent", "rules": {"tol_m"}, "gap_sheets"}`. Points are Web Mercator world units × 2³² (u32);
-outer rings clockwise on the map, holes anticlockwise.
+outer rings clockwise on the map, holes anticlockwise. Every lake lies in `lakefill::REACH` (lon
+−141.5 to −52, lat 41.5 to 84; `write` refuses one outside), which readers rely on to leave it unread
+elsewhere.
 
 | Section | Record | Notes |
 |---|---|---|
