@@ -503,7 +503,9 @@ on the PATH itself and takes the rest from mise.toml, so no shell profile is nee
 
 Two publishes may run at once: the second takes a second tree (`tree-2`, kept as a build cache
 like the first, failed builds included, and removed by a publish that finds it unused for 3 days;
-each publish prunes the `target/` of the tree it builds in; a third waits, polling every 2 s and saying so once, until one of the two frees, never making a third tree), its smoke test a port of its own, and
+each publish prunes the `target/` of the tree it builds in; a third waits, polling every 2 s and
+saying so once, until one of the two frees, never making a third tree), its smoke test a port of its
+own, and
 its tests wait for the first's (`tests.busy`, per Mac), then it installs once the first has freed
 the lock. Publishes from two Macs queue their tests only through the test Mac's `publish` key
 (tools/app/remote-tests.sh: after 30 min one runs on its own Mac), and the test Mac's own publish

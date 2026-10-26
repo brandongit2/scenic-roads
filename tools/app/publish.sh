@@ -83,8 +83,8 @@ fi
 # nothing published. Kept between publishes as a build cache: its target/ and web/node_modules
 # (reinstalled when web's lockfile changed) carry over, so only what changed is rebuilt.
 # Each publish running at once has its own: the first free of tree and tree-2, held (tree.busy) until
-# it ends; with both held a publish waits for one to free (claim_tree), making no third. tree-2, built only beside another publish, is removed by a publish that finds it
-# unused for 3 days; both have their target/ pruned (prune_target, below).
+# it ends; with both held a publish waits for one to free (claim_tree), making no third. tree-2,
+# built only beside another publish, is removed by a publish that finds it unused for 3 days; both have their target/ pruned (prune_target, below).
 repo=$PWD
 cache=~/Library/Caches/scenic-publish
 mkdir -p $cache
