@@ -34,26 +34,22 @@ pub struct Made {
     pub took: std::time::Duration,
 }
 
-/// The page's regions of accepted version `a` (its enabled `regions`) and served catalogue `n` in
-/// `root`: its drawn files read, and the catalogue's sizes unless `had` has them (its number's).
-/// Run off the agent's loop (`Agent::regions_view`); a read that fails is logged, its part left out.
+/// The page's regions of accepted version `a` (its enabled `regions`) and the served catalogue
+/// `cat` (as the agent read it): its drawn files read in `root`, and the catalogue's sizes unless
+/// `had` has them (its number's). Run off the agent's loop (`Agent::regions_view`); a read that
+/// fails is logged, its part left out.
 pub fn build(
     root: &store::nasfs::NasRoot,
     a: &crate::inputs::Accepted,
     regions: &[crate::agent::recipes::Recipe],
-    n: Option<u64>,
+    cat: Option<std::sync::Arc<store::catalog::Catalog>>,
     had: Option<(u64, BTreeMap<String, u64>)>,
 ) -> Made {
     let t = std::time::Instant::now();
-    let bytes = match (n, had) {
-        (Some(n), Some((m, b))) if m == n => Some((n, b)),
-        (Some(n), _) => match store::catalog::read_n(&root.join("catalog"), n) {
-            Ok(cat) => Some((n, bytes_of(&cat))),
-            Err(e) => {
-                eprintln!("agent: the regions' sizes from catalogue {n}: {e:#}");
-                None
-            }
-        },
+    let n = cat.as_ref().map(|c| c.n);
+    let bytes = match (cat, had) {
+        (Some(c), Some((m, b))) if m == c.n => Some((m, b)),
+        (Some(c), _) => Some((c.n, bytes_of(&c))),
         (None, _) => None,
     };
     let view = match crate::inputs::regions::read::drawn(root, a, regions) {

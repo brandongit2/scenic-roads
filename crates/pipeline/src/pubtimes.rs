@@ -193,20 +193,13 @@ pub fn restaled_by(
 }
 
 /// The served catalog's base packs' and road values' content names, by logical name (what
-/// `restaled_by` compares with): the latest in `dir`, with its number.
-pub fn served_units<'a>(
-    dir: impl Into<store::nasfs::Loc<'a>>,
-) -> anyhow::Result<Option<(u64, BTreeMap<String, String>)>> {
-    Ok(store::catalog::latest(dir)?.map(|c| {
-        (
-            c.n,
-            c.files
-                .into_iter()
-                .filter(|(l, _)| l.starts_with("base/") || l.starts_with("global/roads/"))
-                .map(|(l, f)| (l, f.file))
-                .collect(),
-        )
-    }))
+/// `restaled_by` compares with).
+pub fn served_units(c: &store::catalog::Catalog) -> BTreeMap<String, String> {
+    c.files
+        .iter()
+        .filter(|(l, _)| l.starts_with("base/") || l.starts_with("global/roads/"))
+        .map(|(l, f)| (l.clone(), f.file.clone()))
+        .collect()
 }
 
 /// How much of a planned tile's key a "planned" event keeps: enough to tell its keys apart.
@@ -324,16 +317,12 @@ impl PlannedNotes {
         note_planned(&mut self.noted, new);
     }
 
-    /// The served catalog's z6 tiles (in `dir`), read again only when a newer catalog is there.
-    pub fn served<'a>(&mut self, dir: impl Into<store::nasfs::Loc<'a>>) -> BTreeMap<String, String> {
-        let dir = dir.into();
-        let latest = store::catalog::list(dir).ok().and_then(|ns| ns.into_iter().max());
-        if latest.is_some() && self.served.as_ref().map(|s| s.0) != latest {
+    /// The served catalog's z6 tiles (`cat`, as the agent read it: crate::agent's `served`),
+    /// worked out again only for a new catalog.
+    pub fn served(&mut self, cat: Option<&store::catalog::Catalog>) -> BTreeMap<String, String> {
+        if let Some(c) = cat.filter(|c| self.served.as_ref().map(|s| s.0) != Some(c.n)) {
             self.served_reads += 1;
-            match served_units(dir) {
-                Ok(s) => self.served = s,
-                Err(e) => eprintln!("agent: the served catalog's units, for publishing's times: {e:#}"),
-            }
+            self.served = Some((c.n, served_units(c)));
         }
         self.served.as_ref().map(|s| s.1.clone()).unwrap_or_default()
     }
@@ -1028,13 +1017,14 @@ mod tests {
             );
             store::catalog::write_copy(&cats, &c).unwrap();
         };
-        assert!(m.served(&cats).is_empty());
+        let read = |n| store::catalog::read_n(&cats, n).unwrap();
+        assert!(m.served(None).is_empty());
         cat(1, "b1");
-        assert_eq!(m.served(&cats), [("base/6-1-1".to_string(), "b1".to_string())].into());
-        m.served(&cats);
+        assert_eq!(m.served(Some(&read(1))), [("base/6-1-1".to_string(), "b1".to_string())].into());
+        m.served(Some(&read(1)));
         assert_eq!(m.served_reads, 1);
         cat(2, "b2");
-        assert_eq!(m.served(&cats)["base/6-1-1"], "b2");
+        assert_eq!(m.served(Some(&read(2)))["base/6-1-1"], "b2");
         assert_eq!(m.served_reads, 2);
     }
 

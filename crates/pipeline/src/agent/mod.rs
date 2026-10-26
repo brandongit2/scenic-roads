@@ -7277,14 +7277,15 @@ impl Agent {
         // After each catalog the map serves: the names to translate and descriptions to write.
         // (From the translations' and descriptions' accepted versions, which the agent names: the
         // job reads them through the accessor, never the drop boxes.)
-        let served = served_catalog_and((&root.join("catalog")).into());
+        let served = served((&root.join("catalog")).into());
         // (The steps gated by time: when each last ran, as its recorded key changed.)
         self.note_ran(&keys);
         let (since, idle) = {
             let r = self.catalogs.borrow();
             (r.since("names-todo", now_s()), r.idle)
         };
-        if let Some(w) = build::names_todo_work(served.as_ref().map(|s| s.1.as_str()), &manifest, &keys, since, idle) {
+        if let Some(w) = build::names_todo_work(served.as_ref().map(|s| s.key.as_str()), &manifest, &keys, since, idle)
+        {
             let n = w.targets[0].1.clone();
             let mut args = Vec::new();
             for unit in [crate::inputs::translations::UNIT, crate::inputs::descriptions::UNIT] {
@@ -7466,7 +7467,10 @@ impl Agent {
         };
         // (The served catalog's z6 tiles, read again only when a newer catalog is there: the map tiles
         // to draw grouped by the z6 tile that changed.)
-        let served = self.planned_tiles.borrow_mut().served(&root.join("catalog"));
+        let served = {
+            let cat = crate::agent::served((&root.join("catalog")).into()).map(|s| s.cat);
+            self.planned_tiles.borrow_mut().served(cat.as_deref())
+        };
         let mut planned = {
             let tiles = self.terrain_tiles(root, &manifest);
             // (The records as re-keyed: what they are once the loop has re-keyed them, as a dry run,
@@ -8687,8 +8691,8 @@ impl Agent {
     /// (`pool_lead_files`).
     fn regions_view(&self, root: &store::nasfs::NasRoot, a: &crate::inputs::Accepted, regions: &[recipes::Recipe]) {
         self.take_regions();
-        let n = served_catalog((&root.join("catalog")).into()).map(|c| c.n);
-        let key: RegionsKey = (a.version.clone(), n);
+        let cat = served((&root.join("catalog")).into()).map(|s| s.cat);
+        let key: RegionsKey = (a.version.clone(), cat.as_ref().map(|c| c.n));
         if self.regions_making.borrow().is_some() || self.regions_tried.borrow().as_ref() == Some(&key) {
             return;
         }
@@ -8696,7 +8700,7 @@ impl Agent {
             (root.long_retry(), a.clone(), regions.to_vec(), self.region_bytes.borrow().clone());
         let run = std::thread::Builder::new()
             .name("regions-view".into())
-            .spawn(move || regionsview::build(&root, &a, &regions, n, had));
+            .spawn(move || regionsview::build(&root, &a, &regions, cat, had));
         match run {
             Ok(h) => {
                 *self.regions_making.borrow_mut() = Some(h);
@@ -8733,17 +8737,14 @@ impl Agent {
     /// entries); and how long ago it went out (seconds, by its file's time). Read once per catalog;
     /// none (nothing on the map: every region new) when there's none, or it can't be read now.
     fn on_map(&self, dir: store::nasfs::Loc<'_>, recipes: &[recipes::Recipe]) -> (BTreeMap<String, bool>, Option<u64>) {
-        // (The newest catalog that reads: a damaged one is passed over, as the map's server does,
-        // not taken for none.)
         let mut cached = self.last_catalog.borrow_mut();
+        // (The newest that reads, read once (`served`): a damaged one is passed over, as the map's
+        // server does, not taken for none.)
         let mut at = None;
-        for n in store::catalog::list(dir).unwrap_or_default() {
-            // (Whole, or what changed over the one before: store::catalog::read_n.)
-            let Some(path) = store::catalog::path_n(dir, n) else { continue };
-            let Ok(t) = path.loc().metadata().and_then(|m| m.modified()) else { continue };
-            if cached.as_ref().is_none_or(|c| c.0 != (dir.display(), n)) {
-                let Ok(cat) = store::catalog::read_n(dir, n) else { continue };
-                let regions: BTreeMap<String, Vec<String>> = cat
+        if let Some(sv) = served(dir) {
+            if cached.as_ref().is_none_or(|c| c.0 != (dir.display(), sv.seen.n)) {
+                let regions: BTreeMap<String, Vec<String>> = sv
+                    .cat
                     .coverage
                     .get("regions")
                     .and_then(serde_json::Value::as_array)
@@ -8753,10 +8754,9 @@ impl Agent {
                         Some((r["id"].as_str()?.to_string(), serde_json::from_value(r["outline"].clone()).ok()?))
                     })
                     .collect();
-                *cached = Some(((dir.display(), n), regions));
+                *cached = Some(((dir.display(), sv.seen.n), regions));
             }
-            at = Some(t);
-            break;
+            at = Some(std::time::UNIX_EPOCH + Duration::from_secs(sv.seen.at));
         }
         // How long ago the last catalog went out, or one last started (it may have failed): a
         // time ahead of this Mac's clock (the NAS's) counts as now.
@@ -11397,32 +11397,49 @@ fn helpers(root: &store::nasfs::NasRoot) -> Vec<Status> {
 }
 
 /// The newest catalog in `dir` that reads, its number and when it went out: what the map's server
-/// serves (a damaged one passed over, as it does). (One read whole once: by its file and time, the
-/// last that read is remembered, so a delta's chain isn't read again each loop.)
+/// serves (a damaged one passed over, as it does), whole (`served`).
 fn served_catalog(dir: store::nasfs::Loc<'_>) -> Option<CatalogSeen> {
-    served_catalog_and(dir).map(|(c, _)| c)
+    served(dir).map(|s| s.seen)
 }
 
-/// `served_catalog`, with what the names' to-do lists read of it (crate::namestodo::inputs_key),
-/// worked out as it's read.
-fn served_catalog_and(dir: store::nasfs::Loc<'_>) -> Option<(CatalogSeen, String)> {
-    type Seen = Option<(store::nasfs::Place, std::time::SystemTime, String)>;
-    static READ: std::sync::Mutex<Seen> = std::sync::Mutex::new(None);
-    let mut ns = store::catalog::list(dir).ok()?;
+/// The newest catalog in `dir` that reads (`served_catalog`), whole, with what the names' to-do
+/// lists read of it (crate::namestodo::inputs_key).
+#[derive(Clone)]
+struct Served {
+    seen: CatalogSeen,
+    cat: std::sync::Arc<store::catalog::Catalog>,
+    key: String,
+}
+
+/// `served_catalog`, read once per catalog file and kept for each folder (the map's, the held
+/// ones'), for the loop, `on_map` and the build page's regions alike: a new one is read from the
+/// last (its new deltas applied, store::catalog::read_n_from), never again back to a whole one
+/// (task #684: on 26 Oct three readers each read catalog 464 through 135 deltas from a 9 MB whole
+/// one, the loop stalled 300 s after each catalog and the regions took 136 s).
+fn served(dir: store::nasfs::Loc<'_>) -> Option<Served> {
+    type Kept = BTreeMap<String, (store::nasfs::Place, std::time::SystemTime, Served)>;
+    static READ: std::sync::Mutex<Kept> = std::sync::Mutex::new(BTreeMap::new());
+    let mut ns = store::catalog::list(dir).unwrap_or_default();
+    if ns.is_empty() {
+        // (A folder emptied (the held ones, served): its catalogue isn't kept.)
+        READ.lock().unwrap_or_else(|e| e.into_inner()).remove(&dir.display());
+        return None;
+    }
     ns.sort_unstable();
     ns.into_iter().rev().find_map(|n| {
         let path = store::catalog::path_n(dir, n)?;
         let t = path.loc().metadata().and_then(|m| m.modified()).ok()?;
         let mut g = READ.lock().unwrap_or_else(|e| e.into_inner());
-        let key = match &*g {
-            Some((p, at, k)) if *p == path && *at == t => k.clone(),
-            _ => {
-                let k = crate::namestodo::inputs_key(&store::catalog::read_n(dir, n).ok()?);
-                *g = Some((path.clone(), t, k.clone()));
-                k
-            }
-        };
-        Some((CatalogSeen { n, at: t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) }, key))
+        let kept = g.get(&dir.display());
+        if let Some((_, _, s)) = kept.filter(|(p, at, _)| *p == path && *at == t) {
+            return Some(s.clone());
+        }
+        let have = kept.map(|k| k.2.cat.clone());
+        let cat = std::sync::Arc::new(store::catalog::read_n_from(dir, n, have.as_deref()).ok()?);
+        let seen = CatalogSeen { n, at: t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) };
+        let s = Served { seen, key: crate::namestodo::inputs_key(&cat), cat };
+        g.insert(dir.display(), (path, t, s.clone()));
+        Some(s)
     })
 }
 

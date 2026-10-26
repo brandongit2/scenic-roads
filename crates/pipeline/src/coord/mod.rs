@@ -7074,7 +7074,7 @@ mod tests {
     }
 
     /// Task #440 (b44: the M1's load ~280 from agents' builds outside the pool): a Mac whose load
-    /// average keeps its cores busy is granted no job beside those it holds, and the cores busy
+    /// average keeps its cores busy is granted jobs in half its cores only, and the cores busy
     /// outside the pool are said; one idle is packed as before.
     #[test]
     fn a_mac_busy_outside_the_pool_gets_fewer_jobs() {
@@ -7085,11 +7085,11 @@ mod tests {
             cap: Some(Capacity { at: unix_now(), cores: 8, cores_free: free, ..Default::default() }),
             ..every_ask("m1", "slope-hi", 64_000, 100_000)
         };
-        assert_eq!(all_granted(&w, &ask(0)).len(), 1, "swamped: its first job only");
+        // (Swamped, half its cores at most kept for the load outside the pool (task #684): its
+        // first job's two threads and one more job's.)
+        assert_eq!(all_granted(&w, &ask(0)).len(), 2, "swamped: the half left only");
         let why = c.refusals().into_values().collect::<Vec<_>>().join("; ");
         assert!(why.contains("busy outside the pool"), "{why}");
-        // (Its one job's two threads busy, four more by others: two cores left, one job more.)
-        assert_eq!(all_granted(&w, &ask(2)).len(), 1, "two cores free: one more");
         let (_d, c, w, _clock) = every((0, 0));
         packable(&c, "slope-hi", 6, Some(2));
         assert_eq!(all_granted(&w, &ask(8)).len(), 4, "idle: by its cores");
@@ -8300,8 +8300,8 @@ mod tests {
 
     /// Task #440 review: placement leaves a member out of a target's draw only while load from
     /// outside the pool fills its cores, not while its own jobs do. Member m2 holds one job: granted
-    /// all 8 cores, all busy by its load, it stays in the draw by its weight; granted 2 with all 8
-    /// busy (6 outside), it's left out and m1 takes every target.
+    /// all 8 cores, all busy by its load, it stays in the draw by its weight; granted 4 with all 8
+    /// busy (4 outside, the most counted: half), it's left out and m1 takes every target.
     #[test]
     fn placement_leaves_out_only_a_member_swamped_outside_the_pool() {
         let (_d, c, _w, _clock) = every((0, 0));
@@ -8337,7 +8337,7 @@ mod tests {
         };
         let in_draw = m1_takes(8);
         assert!(in_draw > 5 && in_draw < 34, "m2 by its weight: m1 took {in_draw} of 39");
-        assert_eq!(m1_takes(2), 39, "m2 swamped outside the pool: left out");
+        assert_eq!(m1_takes(4), 39, "m2 swamped outside the pool: left out");
     }
 
     /// Task #440 review: the load average lags and is rounded up, so an excess within the packed
@@ -8351,7 +8351,26 @@ mod tests {
         assert_eq!(outside_cores(&ask(6), 0), 0, "two busy: a job of the share's just ended");
         assert_eq!(outside_cores(&ask(5), 0), 3);
         assert_eq!(outside_cores(&ask(4), 2), 0, "its job's two and two more: within the share");
-        assert_eq!(outside_cores(&ask(0), 2), 6);
+        assert_eq!(outside_cores(&ask(0), 2), 4, "at most half its cores (task #684)");
+    }
+
+    /// Task #684: a load far past the Mac's cores (a niced test build) keeps half its cores at
+    /// most: its own jobs still get the other half.
+    #[test]
+    fn load_outside_the_pool_keeps_half_the_cores_at_most() {
+        let (_d, c, _w, _clock) = every((0, 0));
+        packable(&c, "slope-hi", 40, Some(1));
+        let offer = c.shared.lock().unwrap().offers[0].clone();
+        let mut a = every_ask("m1", "slope-hi", 64_000, 100_000);
+        a.want = 8;
+        a.cap = Some(Capacity { at: unix_now(), cores: 12, cores_free: 0, ..Default::default() });
+        assert_eq!(outside_cores(&a, 0), 6);
+        // (The forecast packs it into the same: its cores less those (State::cores_left).)
+        assert_eq!(sched::State::default().cores_left(&a), 6);
+        let mut s = c.shared.lock().unwrap();
+        let now = s.now();
+        s.seen("m1", String::new(), Some(&a), now);
+        assert!(!s.pick_every(&offer, &a, now).is_empty(), "granted beside the load");
     }
 
     /// Task #440 review: a member's job weighing the whole isn't starved by two members' jobs

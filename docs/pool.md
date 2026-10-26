@@ -582,8 +582,9 @@ on done) 17 / 48 / âˆ’14 %; asserted: as live at most 40 % and at most two third
 back. The live error said then was off by 38 % (median). The Mac-mini-led days (from 21 Oct
 23:00) have no finish yet (its work never ran out); their progress over the next 6 h (the time
 the run took to do what the history did, against 6 h): median 8 % over 11 starts (all leads: 30 %
-over 68). The forecast also assumes no load from outside the
-pool (each ask's `cores_free` taken as its cores): while the owner uses a Mac it's optimistic. The
+over 68). The forecast packs each Mac into its cores less those its last ask showed busy
+outside the pool, as the coordinator counts them (`coord::outside_cores`, task #684), for the
+whole run: load that comes or goes later isn't foreseen. The
 lead logs a departure only when a Mac's jobs of a step differ from the forecast's by 2 or more and
 by more than half, each Mac and step at most once an hour.
 
@@ -622,8 +623,13 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   while its owner uses it, and less the cores busy outside the pool: those its last minute's load
   average keeps busy (`Capacity::cores_free`, in each ask's capacity) past the threads its
   jobs were granted (`Lease::threads`), an excess within the packed share counting none (the
-  load lags a minute and is rounded up: a job just ended), `coord::outside_cores`; task #440: a Mac swamped by other work, builds and tests,
-  gets no job beside those it holds, and its refusal says the cores busy outside the pool), less the measured needs of every job it holds and of those granted
+  load lags a minute and is rounded up: a job just ended), and at most half the cores it has
+  for jobs (`coord::ask_cores`: less the in-use share; `coord::outside_cores`; task #440: a Mac swamped by other work, builds and tests, gets no job
+  beside those it holds past the other half, and its refusal says the cores busy outside the
+  pool; task #684: the load average can't tell a niced test build (`tools/app/remote-tests.sh`
+  runs at nice 10 on the Mac mini, the lead) from work that competes, and on 26 Oct one held the
+  lead's load at 47 of 12 cores, its free cores none, for two hours; the owner's own use keeps
+  the in-use share besides), less the measured needs of every job it holds and of those granted
   with it. A lease counts until it ends or lapses: a restarted Mac's old leases hold its room
   until their TTL runs out. The room left is never more than what the Mac's jobs hold now leaves
   (the ask's memory less `Capacity::held_mb`, its memory guard's last sample): a cold start holding
@@ -1296,9 +1302,14 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   outer rings and `edge` the lines to stroke (a stretch two of its shapes share along a parallel
   or meridian left out). Made by the lead, on a thread of its own, once per regions' accepted
   version and served catalogue (the status's `catalog`; a failed read not tried again until one
-  of them changes): the drawn files read then, the catalogue's sizes once per catalogue. On real
-  data (22 Oct, 129 regions, catalogue 216, read from the M1 over the NAS) it took 14.5 s with a
-  new catalogue (its delta chain read), 1.1 s without; regions.json is about 0.96 MB. Written by
+  of them changes): the drawn files read then, the catalogue's sizes once per catalogue, from
+  the catalogue the agent's loop read (`agent::served`: each new catalogue read once, by its
+  new deltas applied to the last, for the loop, its regions on the map, publishing's times
+  (`pubtimes::PlannedNotes::served`) and this view alike; a delta checks the catalogue it
+  changes by its digest, so a number taken again is read afresh, never served stale; task
+  #684: read three times over, each back through 135 deltas to a 9 MB whole one, it held the
+  lead's agent near a whole core, stalled its loop 300 s after each catalogue and took this view
+  136 s on 26 Oct). regions.json is about 0.96 MB. Written by
   the lead's pool step as `state/build/term/<E>/regions.json` (again in each new term), read by
   each Mac's page data when its time changes. Every Mac's port answers `POST /work/regions` with
   no key: in the pool from that read, out of it from this Mac's agent's; 503 until there is one.

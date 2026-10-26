@@ -1159,8 +1159,12 @@ impl Pool {
             a.worker = g.clone();
             a.kind = "native".into();
             a.want = 1;
+            // (Its cores less those busy outside the pool as its last ask said, as the coordinator
+            // counts them (task #684): the run's jobs are packed into what's left, as granted.)
+            let cores = inp.sched.as_ref().map(|s| s.cores_left(&a));
             if let Some(c) = a.cap.as_mut() {
                 a.disk_mb = a.disk_mb.map(|d| d + c.reserved_mb);
+                c.cores = cores.unwrap_or(c.cores);
                 (c.held_mb, c.reserved_mb, c.cores_free) = (0, 0, c.cores);
                 c.leases.clear();
             }

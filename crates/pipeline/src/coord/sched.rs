@@ -198,15 +198,21 @@ pub fn ask_cores(a: &Ask) -> u32 {
 /// The load average lags a minute and is rounded up, and `ours` counts granted threads: an excess
 /// within the packed share (`packed_share`, a job's threads: one just ended still in the load) is
 /// taken for that and counts none.
+/// At most half the cores its Mac has for its jobs (`ask_cores`) count (task #684): the load
+/// average can't tell a niced test build (tools/app/remote-tests.sh runs at nice 10) from work
+/// that competes, and on 26 Oct an agent's check build held the
+/// lead's load at 47 of 12 cores, so it granted itself nothing for two hours. The owner's own use
+/// keeps the in-use share besides.
 pub fn outside_cores(a: &Ask, ours: u32) -> u32 {
     a.cap.as_ref().map_or(0, |c| {
         let busy = c.cores.saturating_sub(c.cores_free);
         let kept = if c.in_use { c.kept_cores } else { 0 };
         let excess = busy.saturating_sub(ours).saturating_sub(kept);
-        if excess <= packed_share(ask_cores(a)) {
+        let total = ask_cores(a);
+        if excess <= packed_share(total) {
             0
         } else {
-            excess
+            excess.min(total / 2)
         }
     })
 }
@@ -684,7 +690,8 @@ impl Sched {
         // (Its Mac's load from outside the pool (other processes: builds, tests): the cores its
         // last minute's load average keeps busy (`Capacity::cores_free`) past the threads of the
         // jobs it holds, less those the in-use share keeps already, come off the cores left
-        // (task #440): a Mac swamped by other work is granted no job beside the ones it holds.)
+        // (task #440), at most half its cores (task #684): a Mac swamped by other work is granted
+        // jobs in the other half only.)
         let outside = outside_cores(a, mine.iter().map(|l| l.threads).sum::<u32>().max(total.saturating_sub(cores)));
         cores = cores.saturating_sub(outside);
         // (The ask's memory and disk are its Mac's whole room for jobs, whatever it runs (the
@@ -1353,6 +1360,17 @@ pub struct State {
     pub quiet_since: Vec<(String, u64)>,
     /// (worker, step, its last target).
     pub last: Vec<(String, String, String)>,
+}
+
+impl State {
+    /// The cores `a`'s Mac has past those busy outside the pool as its ask says (`outside_cores`,
+    /// past the threads of the jobs it holds here): the forecast's room for its jobs (task #684).
+    pub fn cores_left(&self, a: &Ask) -> u32 {
+        let ours: u32 = self.leases.iter().filter(|l| l.worker == a.worker).map(|l| l.threads).sum();
+        // (A capacity saying no cores falls back to the ask's, as `ask_cores` does.)
+        let cores = a.cap.as_ref().map(|c| c.cores).filter(|&c| c > 0).unwrap_or(a.cores);
+        cores.saturating_sub(outside_cores(a, ours)).max(1)
+    }
 }
 
 /// A job's lease out (`State::leases`).

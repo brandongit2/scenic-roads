@@ -328,9 +328,33 @@ pub fn read<'a>(path: impl Into<Loc<'a>>) -> Result<Catalog> {
 /// Catalog `n` in `dir`, whole: its own file, or what changed over the one before it applied to
 /// that one (`Delta`), back to a whole one.
 pub fn read_n<'a>(dir: impl Into<Loc<'a>>, n: u64) -> Result<Catalog> {
+    read_n_from(dir, n, None)
+}
+
+/// `read_n` from a catalog read before (`have`): when it's on catalog `n`'s chain, only the deltas
+/// after it are read and applied, not the chain back to a whole catalog.
+/// Each delta checks the catalog it changes by its digest, so a `have` that isn't the one now
+/// numbered so (a number taken again) fails there, and `n` is read without it. `have` taken for
+/// `n` itself is checked against `n`'s delta's digest first (a whole `n` is read).
+pub fn read_n_from<'a>(dir: impl Into<Loc<'a>>, n: u64, have: Option<&Catalog>) -> Result<Catalog> {
     let dir = dir.into();
     let names = Names::of_dir(dir)?;
-    materialize(Path::new(&dir.display()), &names, n, None, &mut |f| local_read(dir.join(f).loc()))?
+    let mut read = |f: &str| local_read(dir.join(f).loc());
+    if let Some(h) = have.filter(|h| h.n == n && !names.whole.contains(&n) && names.delta.contains(&n)) {
+        if let (Ok(Some(b)), Ok(dg)) = (read(&delta_file_name(n)), digest(h)) {
+            if Delta::decode(&b).is_ok_and(|d| d.n == n && d.digest == dg) {
+                return Ok(h.clone());
+            }
+        }
+    }
+    let shown = dir.display();
+    let have = have.filter(|h| h.n < n);
+    if have.is_some() {
+        if let Some(c) = materialize(Path::new(&shown), &names, n, have, &mut read)? {
+            return Ok(c);
+        }
+    }
+    materialize(Path::new(&shown), &names, n, None, &mut read)?
         .with_context(|| format!("catalog {n} in {} can't be read whole", dir.display()))
 }
 
@@ -984,6 +1008,38 @@ mod tests {
             .flatten()
             .filter_map(|e| number(e.file_name().to_str()?))
             .all(|n| n % 3 == 0 || n == 1));
+    }
+
+    /// Task #684: from one read before, only the deltas after it are read: the chain behind it
+    /// gone, it still reads.
+    #[test]
+    fn read_n_from_one_read_before_reads_only_the_deltas_after_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().join("catalog");
+        let one = sample(1);
+        write(&d, &one).unwrap();
+        let two = evolve(&one, 2);
+        write_delta(&d, &one, &two).unwrap();
+        let have = read_n(&d, 2).unwrap();
+        let three = evolve(&two, 3);
+        write_delta(&d, &two, &three).unwrap();
+        fs::remove_file(d.join(file_name(1))).unwrap();
+        assert!(read_n(&d, 3).is_err(), "back to the whole one: gone");
+        assert_eq!(read_n_from(&d, 3, Some(&have)).unwrap(), three);
+        assert_eq!(read_n_from(&d, 2, Some(&have)).unwrap(), have, "itself, by its delta's digest");
+        // (A number taken again: the one read before isn't the catalog numbered so now, so it's
+        // read without it, not served stale.)
+        let other = tempfile::tempdir().unwrap();
+        let o = other.path().join("catalog");
+        let mut alt = sample(1);
+        alt.app = "elsewhere".into();
+        write(&o, &alt).unwrap();
+        let alt2 = evolve(&alt, 2);
+        write_delta(&o, &alt, &alt2).unwrap();
+        assert_eq!(read_n_from(&o, 2, Some(&have)).unwrap(), alt2, "not the one read before");
+        let alt3 = evolve(&alt2, 3);
+        write_delta(&o, &alt2, &alt3).unwrap();
+        assert_eq!(read_n_from(&o, 3, Some(&have)).unwrap(), alt3, "its delta doesn't fit: read whole");
     }
 
     #[test]
