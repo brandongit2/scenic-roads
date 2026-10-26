@@ -4042,13 +4042,14 @@ pub struct DepthTargets {
     pub unknown: usize,
 }
 
-/// The depth's version line in its keys: its steps' versions and its shading's codec
-/// (crate::shade_codec::version).
+/// The depth's version line in its keys: its steps' versions, its tiles' codec
+/// (crate::depth::fall::version) and its shading's (crate::shade_codec::version).
 fn depth_versions(step: &str) -> String {
     format!(
-        "{step} {} {}; {}",
+        "{step} {} {}; {}; {}",
         crate::depth::build::DEPTH_V,
         crate::depth::build::DEPTH_LO_V,
+        crate::depth::fall::version(),
         crate::shade_codec::version()
     )
 }

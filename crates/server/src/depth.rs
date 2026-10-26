@@ -1,8 +1,8 @@
-//! The depth layers' tiles (docs/steps.md §3; docs/formats.md, Depth): `depth` (Terrarium PNG,
+//! The depth layers' tiles (docs/steps.md §3; docs/formats.md, Depth): `depth` (Terrarium RGB,
 //! metres below the water's surface) and `depth-class` (a byte a pixel: class, dries, source), as
-//! stored, or, where the layer stores none (depth follows each source's own detail), made from the
-//! nearest stored ancestor as the build scales a level up (pipeline::depth::fall). Outside the
-//! layer: 404.
+//! stored, or, where the layer stores none (depth stops at each source's own zoom), made from the
+//! nearest stored ancestor as the build scales a level up (pipeline::depth::fall), encoded as the
+//! stored ones are (lossless WebP). Outside the layer: 404.
 //!
 //! And the terrain with the floor (`terrain_floor`): the terrain's heights minus the depth on the
 //! water the depth lies on (the terrain flattened there to the water's surface), for the map's 3D

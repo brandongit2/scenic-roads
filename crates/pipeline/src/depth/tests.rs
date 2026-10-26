@@ -166,6 +166,26 @@ fn the_depth_of_a_tile_follows_its_sources_detail() {
         assert!(tile(&out, LAYER, "hi", hi, z, x, y).is_none(), "z{z}");
     }
 
+    // Every stored fine tile holds a source's own data of its zoom (measured, of a grid that fine):
+    // none is kept for a finer source feathered in or a gap filled from one.
+    let grid_zoom = |code: u8| srcs.iter().find(|s| s.code == code).map_or(0, |s| s.grids[0].zoom);
+    let c = out.get(&hi_logical(CLASS_LAYER, T.0, T.1)).unwrap();
+    let b = out.path(c).read().unwrap();
+    let idx = store::pack::PackIndex::parse_bytes(&b).unwrap();
+    let mut seen = 0;
+    for z in 9..=16u8 {
+        let n = 1u32 << (z - 6);
+        for y in T.1 * n..(T.1 + 1) * n {
+            for x in T.0 * n..(T.0 + 1) * n {
+                let Some((_, t)) = idx.get(&b, z, x, y).unwrap() else { continue };
+                let Grid::C(k) = fall::decode(Kind::Class, &t).unwrap() else { panic!() };
+                assert!(k.iter().any(|&v| v & 7 == C_MEASURED && grid_zoom(v >> 4) >= z), "{z}/{x}/{y}");
+                seen += 1;
+            }
+        }
+    }
+    assert!(seen > 0);
+
     // A tile the layer lacks, made from its stored ancestor, is what the composition scaled up
     // there: the open sea at z9 is the z8 tile's quadrant.
     let get = |z: u8, x: u32, y: u32| -> anyhow::Result<fall::Stored> {

@@ -15,8 +15,9 @@
 //!    keeps a `BLEED_PX` band of the nearest water's value (≥ 0) so the map's finer shoreline never
 //!    meets a gap; a lake with no data of its own stays empty.
 //! 4. A pixel above its chart's low water (an intertidal source's, in the sea) dries at low tide.
-//! 5. A tile is kept when one of its water pixels has data of its own zoom (at `ALL_UPTO` and
-//!    coarser: any data).
+//! 5. A tile is kept when one of its water pixels is a source's data of the tile's zoom (the
+//!    source painted there, not one feathered in under half nor a gap filled from it; at `ALL_UPTO`
+//!    and coarser: any data), so no tile is stored finer than the data under it.
 
 use super::edt::nearest;
 use super::grids::{px, sample, Reader, Source};
@@ -217,10 +218,10 @@ pub fn compose(
                 continue;
             }
             c[i] = if c[i].is_finite() { wgt[i] * disp[i] + (1.0 - wgt[i]) * c[i] } else { disp[i] };
-            if wgt[i] > 0.0 {
-                zz[i] = zz[i].max(zs[i] as i8);
-            }
             if wgt[i] >= 0.5 {
+                // (The zoom of the source the pixel is: a source feathered in under half, or
+                // filled from, gives the tile no detail of its own.)
+                zz[i] = zs[i] as i8;
                 k[i] = if s.estimated {
                     C_ESTIMATED
                 } else if native[i] {
@@ -262,7 +263,7 @@ pub fn compose(
     }
     if (0..n).any(|i| water.water[i] && !c[i].is_finite()) {
         let _p = crate::timings::sub("gaps filled", crate::timings::Class::Compute);
-        fill(&mut c, &mut k, &mut zz, water, w, h, gpx);
+        fill(&mut c, &mut k, water, w, h, gpx);
     }
     let (dl, near) = nearest(&water.water, w, h);
     for i in 0..n {
@@ -297,7 +298,7 @@ pub fn compose(
 /// Water without data near data: filled from the nearest data of the same water body, falling
 /// linearly to 0 at the shore, within `GAP_M`; a lake with no data of its own stays empty (a river
 /// is filled from a river's data alone).
-fn fill(c: &mut [f32], k: &mut [u8], zz: &mut [i8], water: &Water, w: usize, h: usize, gpx: f32) {
+fn fill(c: &mut [f32], k: &mut [u8], water: &Water, w: usize, h: usize, gpx: f32) {
     let n = w * h;
     let g = (GAP_M / gpx).clamp(2.0, (4 * PAD) as f32);
     let valid: Vec<bool> = (0..n).map(|i| c[i].is_finite() && water.water[i]).collect();
@@ -322,7 +323,6 @@ fn fill(c: &mut [f32], k: &mut [u8], zz: &mut [i8], water: &Water, w: usize, h: 
         let t = dl[i] / (dl[i] + dv[i]).max(1e-6);
         c[i] = c[j] * t;
         k[i] = C_FILLED;
-        zz[i] = zz[j];
     }
 }
 

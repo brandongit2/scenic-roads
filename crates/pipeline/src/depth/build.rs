@@ -32,13 +32,14 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-/// The depth piece's version: bumped with any change to the bytes `build_hi` writes (4: the
+/// The depth piece's version: bumped with any change to the bytes `build_hi` writes (5: lossless
+/// WebP, task #671; 4: the
 /// floor's shading, `shading`, task #632; 3: a grid lined up with no overview sampled from one
 /// askew, `grids::level_for`, task #433). Its key names crate::shade_codec::version too.
-pub const DEPTH_V: u32 = 4;
-/// The depth assembly's (`build_lo`; 5: the floor's shading no longer made here, `depth-shade`
+pub const DEPTH_V: u32 = 5;
+/// The depth assembly's (`build_lo`; 6: lossless WebP, task #671; 5: the floor's shading no longer made here, `depth-shade`
 /// makes it; 4: the floor's shading).
-pub const DEPTH_LO_V: u32 = 5;
+pub const DEPTH_LO_V: u32 = 6;
 /// The floor's shading's assembly's (`build_shade_lo`).
 pub const DEPTH_SHADE_V: u32 = 1;
 /// How far from the coverage depth is built (km): 200 nautical miles, a region's EEZ's reach.
@@ -320,7 +321,7 @@ impl WaterCache {
     }
 }
 
-/// The depth tiles a job has: its own, made so far (as stored: PNG), and the lo packs it reads.
+/// The depth tiles a job has: its own, made so far (as stored: fall::encode), and the lo packs it reads.
 struct Tiles<'a> {
     out: &'a Out,
     made: BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>,
@@ -342,7 +343,7 @@ impl<'a> Tiles<'a> {
         }
     }
 
-    fn png(&self, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>> {
+    fn stored(&self, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>> {
         if let Some((d, _)) = self.made.get(&(z, x, y)) {
             return Ok(Some(d.clone()));
         }
@@ -371,7 +372,7 @@ impl<'a> Tiles<'a> {
         if let Some(g) = self.decoded.borrow().get(&(z, x, y)) {
             return Ok(g.clone());
         }
-        let g = match self.png(z, x, y)? {
+        let g = match self.stored(z, x, y)? {
             Some(b) => Some(Arc::new(fall::decode(Kind::Terrarium, &b)?)),
             None => None,
         };
@@ -687,8 +688,9 @@ pub fn build_lo(
 const SHADE_CACHED: usize = 2048;
 
 /// The most memory (MB) the floor's shading's assembly of a z3 tile takes (`build_shade_lo`), from
-/// its bounds: its z6 tiles' z9 quadrants (64 × 64); its depth lo tiles (z3–8) as stored, each at
-/// most a PNG of its raw RGBA (its rows' filter bytes and zlib's block headers besides); its depth
+/// its bounds: its z6 tiles' z9 quadrants (64 × 64); its depth lo tiles (z3–8) as stored, each
+/// taken at its raw RGBA and a margin for the container's headers (lossless WebP of a 256-px tile
+/// is smaller); its depth
 /// tiles kept decoded (`SHADE_CACHED`, and one more); the shading's tiles made, each at most its raw
 /// codes; the pyramid's working memory (crate::slope_pack::working_bytes, z3 to z8).
 pub const fn shade_lo_peak_mb() -> u64 {
@@ -696,11 +698,11 @@ pub const fn shade_lo_peak_mb() -> u64 {
     let px = std::mem::size_of::<roadcore::shade::Px>() as u64;
     let quadrant = 128 * 128 * px;
     let lo_tiles = 1 + 4 + 16 + 64 + 256 + 1024;
-    let png = TS * (TS * 4 + 1) + (TS * TS * 4 / 16_384 + 1) * 5 + 1024;
+    let stored = TS * (TS * 4 + 1) + (TS * TS * 4 / 16_384 + 1) * 5 + 1024;
     let decoded = (SHADE_CACHED as u64 + 1) * TS * TS * 4;
     let made = lo_tiles * TS * TS * 3;
     let bytes =
-        64 * 64 * quadrant + lo_tiles * png + decoded + made + crate::slope_pack::working_bytes(3, LO_COMPOSED.1);
+        64 * 64 * quadrant + lo_tiles * stored + decoded + made + crate::slope_pack::working_bytes(3, LO_COMPOSED.1);
     bytes >> 20
 }
 
@@ -802,7 +804,7 @@ fn resume_log(
         return None;
     }
     let pins: Vec<&str> = sources.iter().map(|s| s.pin.as_str()).collect();
-    // (`Tiles::png` reads only the depth lo packs, of the z3 tile over `t` and its neighbours:
+    // (`Tiles::stored` reads only the depth lo packs, of the z3 tile over `t` and its neighbours:
     // `Tiles::up` reaches one tile past a block at most, wrapping east–west. Not every lo pack: the
     // others, and the class's and the shading's, are saved as the rebuild goes on, and would
     // throw the log away for nothing.)
@@ -823,7 +825,7 @@ fn resume_log(
         Vec::new()
     };
     let id = crate::resume_log::id(&[
-        &format!("depth {DEPTH_V} {DEPTH_LO_V} {LAYER} {CLASS_LAYER} {} {}", super::ENCODING, super::CLASS_ENCODING),
+        &format!("depth {DEPTH_V} {DEPTH_LO_V} {LAYER} {CLASS_LAYER} {}", fall::version()),
         &format!("{}/{}/{} to z{upto}", t.0, t.1, t.2),
         &pins.join("\n"),
         &water.pin(),

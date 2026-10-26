@@ -304,7 +304,10 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   **depth-shade** step's (a z3 tile, after its z6 tiles' depth, which read the depth's lo packs:
   `build_shade_lo`): its z3–8 over its depth lo pack's tiles, each z8 pixel under a z6 tile's z9
   shading the mean of those four as the hi pack stores them, so the fine sources' detail reaches z3.
-- **depth (a z6 tile):** z9–16, a block only where a source has a grid of that zoom or finer; its
+- **depth (a z6 tile):** z9–16, a block only where a source has a grid of that zoom or finer, a
+  tile kept only where a water pixel is a source's own data of the tile's zoom (that source painted
+  there: not one feathered in under half, nor a gap filled from one), so no tile is finer than the
+  data under it and a finer view scales up the nearest stored tile; its
   capped pixels scaled up from this job's coarser tiles and, at z8 and coarser, from the lo packs
   of its z3 tile and its neighbours (its neighbours' fine tiles are another job's: within a block's
   32-pixel margin across the tile's edge, their lo levels stand in).

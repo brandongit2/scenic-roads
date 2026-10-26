@@ -1,8 +1,8 @@
 // Depth tiles made ready for MapLibre, off the main thread (depth.ts).
 //
 // A map tile z/x/y (512 px) is built from the server's depth and class tiles of zoom z + 1 (four
-// 256-px tiles: the stored ones, or the server's from their nearest ancestor: crates/server/src/
-// depth.rs) and the basemap's own water (its vector tile of zoom min(z, 14), as the map draws it),
+// 256-px tiles, lossless WebP, decoded exact: the stored ones, or past a place's sources' zoom the
+// server's from their nearest stored ancestor, crates/server/src/depth.rs) and the basemap's own water (its vector tile of zoom min(z, 14), as the map draws it),
 // painted at 512 px. From that one composite come:
 //   relief   depth, reaching REACH px past its data (?mask=1: on land too, the map drawing it
 //            only in its water tiles' water; else in the basemap's water); elsewhere +12,000 m,
@@ -130,7 +130,7 @@ function serverTile(z: number, x: number, y: number): Promise<Grid> {
     const d = new Float32Array(256 * 256), k = new Uint8Array(256 * 256);
     for (let i = 0; i < 256 * 256; i++) {
       d[i] = dp[4 * i] * 256 + dp[4 * i + 1] + dp[4 * i + 2] / 256 - 32768;
-      k[i] = kp ? kp[4 * i] : 0;
+      k[i] = kp ? kp[4 * i] : 0; // (the class byte, in all three channels)
     }
     return { d, k };
   })();

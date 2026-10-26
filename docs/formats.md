@@ -448,18 +448,22 @@ Each a folder on the job's Mac, its files sent to the worker as `u/…`, not in 
 ## Depth (`layers/depth/`, `layers/depth-class/`, `layers/depth-shade/`; pipeline::depth)
 
 Three layers of 256-px tiles in packs like the terrain's: `lo/3-x-y` (z3–8) and `hi/6-x-y` (z9–16,
-only where a source is finer than z8). A tile is stored where one of its water pixels has data of
-its zoom (every water tile up to z8); a missing one is its nearest stored ancestor scaled up (bilinear
+only where a source is finer than z8). A tile is stored where one of its water pixels is a source's
+own data of its zoom (every water tile up to z8; never finer than the sources under it: steps.md §3); a missing one is its nearest stored ancestor scaled up (bilinear
 for depth and its shading, with the depth ancestor's neighbours' edges; nearest for classes).
 
-- **`depth`** (encoding `terrarium-png`): metres below the water's surface (the sea's mean level, a
+- **`depth`** (encoding `terrarium-webp`: Terrarium RGB as lossless WebP, as the terrain's, but
+  rounded as below, not to the terrain's centimetre): metres below the water's surface (the sea's mean level, a
   lake's mean surface), negative; drying heights positive (at most 20 m); +12,000 m where there's
   none (≥ 9,000 is none). Quantised: 0.1 m in the first 100 m, 1 m deeper. The terrain's water
   (`terrain_water`: half a pixel or more of sea or lake) is where it lies, and the land keeps a band
   of 3 pixels of the nearest water's value (≥ 0) so a finer shoreline never meets a gap.
-- **`depth-class`** (encoding `class-png`, 8-bit grey): bits 0–2 the class (0 none or land, 1
+- **`depth-class`** (encoding `class-webp`: lossless WebP, the byte in R, G and B alike): bits 0–2 the class (0 none or land, 1
   measured, 2 interpolated, 3 estimated, 4 filled to the shore), bit 3 dries at low tide, bits 4–7 the
   source's `code` (docs/inputs.md §6.10).
+- Both are libwebp 1.6.0's `-lossless -z 6 -exact` (pipeline::depth::fall), decoded exact by Chrome
+  and Safari; readers still take the PNGs of packs from before (`terrarium-png`, `class-png`, grey)
+  until the depth is rebuilt.
 - **`depth-shade`** (encoding `shade-webp`, as the terrain's shading: Pack above): the floor's
   steepness and mean direction, a tile for each depth tile (docs/steps.md §3): the hi packs made
   with the depth's, the lo packs by the `depth-shade` step from the depth's lo packs and the hi
@@ -712,8 +716,8 @@ batch of lines, a line a forecast, `fcarchive::Entry`:
   versions of the languages spoken within them and of the spoken-languages raster (docs/names.md);
   `/tiles/base`'s a hash of the basemap archives' content names, the tile's z/x/y and the names
   version; tiles the server makes (missing terrain and shading tiles, a deep one that can't be read)
-  carry none. Terrain and shading tiles (`slope`, `depth-shade`: stored as `shade-webp`, Pack) are
-  `image/webp`, stored or made (made ones encoded as the stored are, from the nearest stored
+  carry none. Terrain, shading and depth tiles (`slope`, `depth-shade`: stored as `shade-webp`, Pack;
+  `depth`, `depth-class`: Depth) are `image/webp` (a depth pack from before, `image/png`), stored or made (made ones encoded as the stored are, from the nearest stored
   ancestor, scaled up; a stored shading tile in another encoding, a pack from before it, is read as
   none). With `?v=` (the app's URLs): `public, max-age=31536000, immutable` while that version is
   current, else `no-cache`; the tiles the server makes (terrain and shading from ancestors, flat

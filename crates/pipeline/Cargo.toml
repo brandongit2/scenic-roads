@@ -25,6 +25,8 @@ png = "0.18"
 # The terrain's tiles (crate::terrain_codec): lossless WebP through libwebp (not crate::webp, the tree cover's own encoder), natively and in the
 # WebAssembly build alike (terrainsub makes terrain tiles).
 webpenc = { path = "../webpenc" }
+# The depth's tiles read back (crate::depth::fall), as roadcore reads the terrain's.
+image-webp = "0.2"
 crc32fast = "1"
 weezl = "0.2"
 libc = "0.2"
@@ -76,4 +78,3 @@ ureq = { version = "=3.4.2", default-features = false }
 [dev-dependencies]
 store = { path = "../store", features = ["testkit"] }
 tempfile = "3"
-image-webp = "0.2"

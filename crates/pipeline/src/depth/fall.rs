@@ -1,9 +1,9 @@
 //! The depth layers' fallback (docs/steps.md §3): depth follows each source's own detail, so
-//! the deepest zoom stored varies from place to place (4 m surveys nearshore, the 15″ grid
-//! offshore, estimated lakes capped at z12). A tile the layer lacks is made from its nearest stored
-//! ancestor: that tile's part scaled up, bilinear in metres for depth (Terrarium PNG) and nearest
-//! for classes (8-bit grey PNG), with the ancestor's neighbours' edge pixels, so tiles cut from
-//! different ancestors meet without a seam. The server makes them so (crates/server/src/depth.rs),
+//! the deepest zoom stored varies from place to place (4 m surveys nearshore at z15, the 15″ grid
+//! offshore at z8): no tile is stored finer than the data under it. A tile the layer lacks is made
+//! from its nearest stored ancestor: that tile's part scaled up, bilinear in metres for depth and
+//! nearest for classes, with the ancestor's neighbours' edge pixels, so tiles cut from different
+//! ancestors meet without a seam. Tiles are stored, and made, as lossless WebP (`encode`). The server makes them so (crates/server/src/depth.rs),
 //! and the build scales a coarser level up the same way (crate::depth::compose), so a stored tile
 //! and a made one beside it agree.
 //!
@@ -41,7 +41,28 @@ pub enum Grid {
     C(Vec<u8>),
 }
 
-pub fn decode(kind: Kind, bytes: &[u8]) -> Result<Grid> {
+/// libwebp's lossless preset the tiles are stored at (cwebp's `-z`, as the terrain's:
+/// crate::terrain_codec::LEVEL).
+pub const LEVEL: u8 = 6;
+
+/// What a key naming the tiles' bytes names of their making: the encodings, libwebp's version and
+/// level.
+pub fn version() -> String {
+    format!("{} {} libwebp {} z{LEVEL} exact", super::ENCODING, super::CLASS_ENCODING, webpenc::version())
+}
+
+/// A stored tile's pixels: lossless WebP (`RIFF…WEBPVP8L`), RGB; or a PNG, a pack from before
+/// task #671 (Terrarium RGB, classes 8-bit grey), read until the depth is rebuilt.
+fn pixels(bytes: &[u8]) -> Result<(Vec<u8>, usize)> {
+    if bytes.starts_with(b"RIFF") {
+        let mut d = image_webp::WebPDecoder::new(std::io::Cursor::new(bytes)).map_err(|e| anyhow!("WebP: {e}"))?;
+        let (w, h) = d.dimensions();
+        ensure!(w as usize == TILE && h as usize == TILE, "a {w}×{h} tile (want {TILE})");
+        let ch = if d.has_alpha() { 4 } else { 3 };
+        let mut buf = vec![0u8; d.output_buffer_size().ok_or_else(|| anyhow!("WebP too large"))?];
+        d.read_image(&mut buf).map_err(|e| anyhow!("WebP: {e}"))?;
+        return Ok((buf, ch));
+    }
     let mut d = png::Decoder::new(std::io::Cursor::new(bytes));
     d.set_transformations(png::Transformations::EXPAND);
     let mut r = d.read_info()?;
@@ -54,45 +75,44 @@ pub fn decode(kind: Kind, bytes: &[u8]) -> Result<Grid> {
         info.height
     );
     ensure!(info.bit_depth == png::BitDepth::Eight, "a {:?}-bit tile", info.bit_depth);
-    let ch = info.color_type.samples();
-    let px = &buf[..info.buffer_size()];
+    buf.truncate(info.buffer_size());
+    Ok((buf, info.color_type.samples()))
+}
+
+pub fn decode(kind: Kind, bytes: &[u8]) -> Result<Grid> {
+    let (px, ch) = pixels(bytes)?;
     Ok(match kind {
         Kind::Terrarium => {
-            ensure!(ch >= 3, "a depth tile in {:?}", info.color_type);
+            ensure!(ch >= 3, "a depth tile of {ch} channels");
             Grid::F(
                 px.chunks_exact(ch)
                     .map(|p| f32::from(p[0]) * 256.0 + f32::from(p[1]) + f32::from(p[2]) / 256.0 - 32768.0)
                     .collect(),
             )
         }
+        // (Grey: the red channel, as the app's reader takes it.)
         Kind::Class => Grid::C(px.chunks_exact(ch).map(|p| p[0]).collect()),
     })
 }
 
+/// A tile as stored: lossless WebP, RGB: depth Terrarium-encoded, a class byte in all three channels.
 pub fn encode(g: &Grid) -> Result<Vec<u8>> {
-    let mut out = Vec::new();
-    {
-        let mut enc = png::Encoder::new(&mut out, TILE as u32, TILE as u32);
-        enc.set_depth(png::BitDepth::Eight);
-        enc.set_compression(png::Compression::Fast);
-        match g {
-            Grid::F(v) => {
-                enc.set_color(png::ColorType::Rgb);
-                let mut rgb = Vec::with_capacity(TILE * TILE * 3);
-                for &m in v {
-                    // Terrarium: (m + 32768) as R·256 + G + B/256.
-                    let c = ((f64::from(m) + 32768.0) * 256.0).round().clamp(0.0, 16_777_215.0) as u32;
-                    rgb.extend_from_slice(&[(c >> 16) as u8, (c >> 8) as u8, c as u8]);
-                }
-                enc.write_header()?.write_image_data(&rgb)?;
+    let mut rgb = Vec::with_capacity(TILE * TILE * 3);
+    match g {
+        Grid::F(v) => {
+            for &m in v {
+                // Terrarium: (m + 32768) as R·256 + G + B/256.
+                let c = ((f64::from(m) + 32768.0) * 256.0).round().clamp(0.0, 16_777_215.0) as u32;
+                rgb.extend_from_slice(&[(c >> 16) as u8, (c >> 8) as u8, c as u8]);
             }
-            Grid::C(v) => {
-                enc.set_color(png::ColorType::Grayscale);
-                enc.write_header()?.write_image_data(v)?;
+        }
+        Grid::C(v) => {
+            for &k in v {
+                rgb.extend_from_slice(&[k, k, k]);
             }
         }
     }
-    Ok(out)
+    webpenc::lossless_rgb8(&rgb, TILE as u32, TILE as u32, LEVEL).map_err(|m| anyhow!(m))
 }
 
 /// Tile z/x/y made from its ancestor `k` zooms up: `anc` is that ancestor, `nb` its neighbours at
@@ -257,14 +277,26 @@ mod tests {
         }
     }
 
+    /// Depth (on Terrarium's 1/256 m steps) and classes come back exact through lossless WebP, and
+    /// a PNG from before (a pack not yet rebuilt) is read alike.
     #[test]
-    fn terrarium_round_trip() {
-        let g = tile(|r, c| -(r as f32) * 3.5 - c as f32 / 7.0);
-        let back = decode(Kind::Terrarium, &encode(&g).unwrap()).unwrap();
-        let (Grid::F(a), Grid::F(b)) = (&g, &back) else { panic!() };
-        for (x, y) in a.iter().zip(b) {
-            assert!((x - y).abs() <= 1.0 / 256.0, "{x} {y}");
+    fn tiles_come_back_as_stored() {
+        let g = tile(|r, c| -(r as f32) * 3.5 - c as f32 / 256.0);
+        let b = encode(&g).unwrap();
+        assert_eq!(&b[8..16], b"WEBPVP8L");
+        assert_eq!(decode(Kind::Terrarium, &b).unwrap(), g);
+        let k = Grid::C((0..TILE * TILE).map(|i| (i * 37 % 251) as u8).collect());
+        let b = encode(&k).unwrap();
+        assert_eq!(&b[8..16], b"WEBPVP8L");
+        assert_eq!(decode(Kind::Class, &b).unwrap(), k);
+        let Grid::C(v) = &k else { panic!() };
+        let mut png = Vec::new();
+        {
+            let mut e = png::Encoder::new(&mut png, TILE as u32, TILE as u32);
+            e.set_color(png::ColorType::Grayscale);
+            e.write_header().unwrap().write_image_data(v).unwrap();
         }
+        assert_eq!(decode(Kind::Class, &png).unwrap(), k);
     }
 
     #[test]

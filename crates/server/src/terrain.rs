@@ -29,8 +29,8 @@ static SHADE: OnceLock<Mutex<HashMap<(u8, u32, u32, u64), Vec<u8>>>> = OnceLock:
 static DEPTH_SHADE: OnceLock<Mutex<HashMap<(u8, u32, u32, u64), Vec<u8>>>> = OnceLock::new();
 static FLOOR: OnceLock<Mutex<HashMap<(u8, u32, u32, u64), Vec<u8>>>> = OnceLock::new();
 
-/// A tile's response: a terrain or shading tile's WebP (pipeline::terrain_codec,
-/// pipeline::shade_codec), else a PNG (depth).
+/// A tile's response: a terrain, shading or depth tile's WebP (pipeline::terrain_codec,
+/// pipeline::shade_codec, pipeline::depth::fall), else a PNG (a depth pack from before task #671).
 fn image(b: Vec<u8>, versioned: bool, etag: Option<String>) -> Response {
     let kind = if b.starts_with(b"RIFF") { "image/webp" } else { "image/png" };
     let mut r = (
