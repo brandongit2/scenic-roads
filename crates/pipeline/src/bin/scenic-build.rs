@@ -480,7 +480,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let n = out.verify(&SSH, &format!("{}/{}", store::nas::SHARE_ON_NAS, store::nas::PROJECT))?;
             eprintln!("verified {n} uploads");
         }
-        // catalog [--held] [--ready <ids>] [--delta] [--whole]: held, it goes to catalog-held/, which
+        // catalog [--held] [--ready <ids>] [--delta]: held, it goes to catalog-held/, which
         // no server reads (a build to compare before it's switched to: inputs/hold-catalog);
         // `--ready`, the regions it records as built (comma-separated; the agent's plan says which),
         // the others as the last catalog had them (without it: every region as its recipe is now);
@@ -489,8 +489,8 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         // them built (with an older outline, or z6 tiles rebuilt: on the map as they were).
         // `--delta` (the agent's, with state/pool/delta-catalog on): the served catalog written as
         // what changed over the last (docs/formats.md, Delta catalogs), each file's size as the
-        // records or the last catalog have it, not looked at on the NAS; `--whole` (the agent's in
-        // idle time, when store::catalog::whole_due) writes it whole, every file looked at.
+        // records or the last catalog have it, not looked at on the NAS, unless a whole one is due
+        // (store::catalog::whole_due), written whole then, every file looked at.
         "catalog" => {
             // (`<id>=<outline digest>` each, or a bare id: a region built with the outline it has now.)
             let ready: Option<BTreeMap<String, Option<String>>> = opt(&args, "--ready").map(|v| {
@@ -522,7 +522,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 has("--held"),
                 ready.as_ref(),
                 &building,
-                CatalogWay { delta: has("--delta"), whole: has("--whole") },
+                CatalogWay { delta: has("--delta") },
                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs(),
             )
             .map(|st| eprintln!("{}", st.line()))?
@@ -1860,15 +1860,15 @@ fn served_global(l: &str) -> bool {
     l.starts_with("global/") && pipeline::agent::steps::made(l)
 }
 
-/// How a catalog is written (`--delta`, `--whole`).
+/// How a catalog is written (`--delta`).
 #[derive(Clone, Copy, Default)]
 struct CatalogWay {
-    /// Served (not held): as a delta over the last, unless asked whole, there's no whole one to
-    /// start from or the run of deltas nears where readers stop (store::catalog::chain_full); each
+    /// Served (not held): as a delta over the last, unless there's no whole one to start from or
+    /// one is due (store::catalog::whole_due: the deltas since add up to it, or their run is half
+    /// as long as readers go); each
     /// file's size from the records (crate::out::SIZES) or the last catalog (by content name: the
     /// same name, the same bytes), the NAS looked at only for a file neither has.
     delta: bool,
-    whole: bool,
 }
 
 /// `now`: the catalog's moment (seconds since the epoch), its `created` and its meta's `built`.
@@ -2043,20 +2043,20 @@ fn catalog(
     // delta takes its new files' sizes from the records and doesn't look).
     let served = |l: &str| served_file(l, &basemap, &global);
     drop(p);
-    // (A delta (`--delta`, served, not asked whole, with a whole catalog to start from and its run
-    // of deltas short of where readers stop: store::catalog::chain_full) lists each file's size as
+    // (A delta (`--delta`, served, with a whole catalog to start from and none due:
+    // store::catalog::whole_due, weighed here, by the job, so a lead that's never idle writes one
+    // too) lists each file's size as
     // the records have it (crate::out::SIZES, from its job's hand-off) or the last catalog does (by
     // content name: the same name, the same bytes), looking at the NAS only for a file neither has
     // (one written before the records kept sizes: once, the next catalog has it from this one). A
     // whole catalog looks at every file, its check that each is there and of its recorded size:
-    // made in idle time (`--whole`, the agent's when store::catalog::whole_due), or when a delta
-    // can't be.)
+    // made when one is due, or when a delta can't be.)
     let p = phase("the last catalogs listed and the records' sizes read", Class::NasRead);
-    let chain = if delta && !way.whole { store::catalog::deltas_since_whole(&dir)? } else { None };
-    let as_delta = last.is_some() && chain.is_some_and(|c| !store::catalog::chain_full(c));
-    if chain.is_some_and(store::catalog::chain_full) {
-        eprintln!("catalog: {} deltas since the last whole catalog: this one whole", chain.unwrap_or(0));
+    let due = if delta && last.is_some() { store::catalog::whole_due(&dir)? } else { None };
+    if due == Some(true) {
+        eprintln!("catalog: the deltas since the last whole catalog add up to one: this one whole");
     }
+    let as_delta = due == Some(false);
     let recorded = out.recorded_sizes()?;
     let mut known: BTreeMap<&str, u64> =
         last.iter().flat_map(|c| c.files.values().map(|f| (f.file.as_str(), f.size))).collect();
@@ -2140,8 +2140,8 @@ fn catalog(
         "coverage": {"regions": regions, "recorded": true},
     });
     let catalog: store::catalog::Catalog = serde_json::from_value(cat)?;
-    // (As a delta over the last whole-read catalog, however large: the whole one comes in idle
-    // time, store::catalog::whole_due.)
+    // (As a delta over the last whole-read catalog, however large: the whole one comes with the
+    // next catalog, store::catalog::whole_due.)
     let as_delta = match last.as_ref().filter(|_| as_delta) {
         Some(base) => {
             let d = store::catalog::Delta::between(base, &catalog)?;
@@ -6351,7 +6351,7 @@ mod tests {
             let mut out = pipeline::out::Out::unbound(root, &root.unchecked_path().join("scratch")).unwrap();
             super::catalog(&mut out, false, None, &Default::default(), way, NOW).unwrap();
         };
-        let delta = super::CatalogWay { delta: true, whole: false };
+        let delta = super::CatalogWay { delta: true };
         let mut gone = String::new();
         for root in &roots {
             std::fs::create_dir_all(root.join("state/build")).unwrap();
@@ -6396,15 +6396,16 @@ mod tests {
         );
         assert_eq!(a.n, 2);
         assert_eq!(strip(a), strip(b));
-        // Asked for whole: whole, whatever.
+        // Not as a delta: whole, whatever.
         put(&store::nasfs::NasRoot::local_for_test(&roots[0]), "layers/roads/hi/6-1-4", b"four");
         std::fs::write(roots[0].join(&gone), b"lo pack").unwrap();
-        run(&store::nasfs::NasRoot::local_for_test(&roots[0]), super::CatalogWay { delta: true, whole: true });
+        run(&store::nasfs::NasRoot::local_for_test(&roots[0]), super::CatalogWay::default());
         assert!(roots[0].join("catalog/3.json.zst").exists());
         // A whole one checks every file: one the last catalog lists, gone from the NAS, stops it.
         std::fs::remove_file(roots[0].join(&gone)).unwrap();
         put(&store::nasfs::NasRoot::local_for_test(&roots[0]), "layers/roads/hi/6-1-5", b"five");
-        for way in [super::CatalogWay { delta: true, whole: true }, super::CatalogWay::default()] {
+        {
+            let way = super::CatalogWay::default();
             let mut out = pipeline::out::Out::unbound(
                 &store::nasfs::NasRoot::local_for_test(&roots[0]),
                 &roots[0].join("scratch"),
@@ -6413,8 +6414,9 @@ mod tests {
             let e = super::catalog(&mut out, false, None, &Default::default(), way, NOW).unwrap_err();
             assert!(format!("{e:#}").contains("missing on the NAS"), "{e:#}");
         }
-        // So much new that the delta is as big as the whole one: a delta still (the whole one comes
-        // in idle time), the files whose sizes came from the last not looked at.
+        // So much new that the delta is as big as the whole one: a delta still (weighed before it's
+        // made), the files whose sizes came from the last not looked at; the next catalog, asked
+        // as a delta like every one a busy lead writes, is whole.
         for i in 0..3000 {
             put(
                 &store::nasfs::NasRoot::local_for_test(&roots[0]),
@@ -6424,7 +6426,13 @@ mod tests {
         }
         run(&store::nasfs::NasRoot::local_for_test(&roots[0]), delta);
         assert!(roots[0].join("catalog/4.delta.json.zst").exists());
-        assert!(store::catalog::whole_due(&roots[0].join("catalog")).unwrap());
+        assert_eq!(store::catalog::whole_due(&roots[0].join("catalog")).unwrap(), Some(true));
+        // (A whole one looks at every file: the lo pack back on the NAS.)
+        std::fs::write(roots[0].join(&gone), b"lo pack").unwrap();
+        put(&store::nasfs::NasRoot::local_for_test(&roots[0]), "layers/roads/hi/6-9-3000", b"one more");
+        run(&store::nasfs::NasRoot::local_for_test(&roots[0]), delta);
+        assert!(roots[0].join("catalog/5.json.zst").exists() && !roots[0].join("catalog/5.delta.json.zst").exists());
+        assert_eq!(store::catalog::whole_due(&roots[0].join("catalog")).unwrap(), Some(false));
     }
 
     /// A delta catalog's sizes are the records' (from the files' writers, Out) and the last
@@ -6459,7 +6467,7 @@ mod tests {
                     .unwrap();
             super::catalog(&mut out, false, None, &Default::default(), way, NOW).unwrap()
         };
-        let delta = super::CatalogWay { delta: true, whole: false };
+        let delta = super::CatalogWay { delta: true };
         write(&(0..40).map(|i| (format!("layers/roads/hi/6-2-{i}"), vec![b'x'; 10 + i])).collect::<Vec<_>>());
         let first = run(super::CatalogWay::default());
         assert_eq!((first.delta, first.stated), (false, 40));
@@ -6498,7 +6506,7 @@ mod tests {
         for (c, b) in &kept {
             std::fs::write(root.join(c), b).unwrap();
         }
-        let whole = run(super::CatalogWay { delta: true, whole: true });
+        let whole = run(super::CatalogWay::default());
         assert_eq!((whole.delta, whole.stated), (false, 43));
         let as_whole = store::catalog::latest(&root.join("catalog")).unwrap().unwrap();
         assert_eq!(as_delta.files, as_whole.files);
@@ -6588,7 +6596,7 @@ mod tests {
             pipeline::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
         out.put_bytes("layers/roads/hi/6-1-1", "pack", b"new").unwrap();
         out.save().unwrap();
-        let second = run(super::CatalogWay { delta: true, whole: false });
+        let second = run(super::CatalogWay { delta: true });
         assert!(second.delta);
         assert_eq!(check().n, 2);
     }
@@ -6628,7 +6636,7 @@ mod tests {
         assert_eq!((first.n, first.delta), (1, false));
         assert_eq!(first.stated, first.files);
         put("layers/roads/hi/6-1-3", b"three");
-        let second = run(super::CatalogWay { delta: true, whole: false });
+        let second = run(super::CatalogWay { delta: true });
         assert_eq!((second.n, second.delta, second.stated, second.files), (2, true, 1, first.files + 1));
         let written = second.phases.iter().find(|(p, _)| p == "the catalog written").expect("the write's phase");
         assert!(written.1 > 0.0, "{:?}", second.phases);

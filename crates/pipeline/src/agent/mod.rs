@@ -1424,9 +1424,6 @@ pub struct Agent {
     /// The OSM extracts' sizes by content name (the coordinator sizes z6 tiles by them; content-named
     /// files never change).
     piece_sizes: std::cell::RefCell<std::collections::HashMap<String, u64>>,
-    /// The served catalog's key (`Keys::catalog`) last asked whether a whole catalog is due
-    /// (store::catalog::whole_due, in idle time): asked once a catalog.
-    whole_asked: std::cell::RefCell<Option<String>>,
     /// The placement's per-step speeds last worked out and what from (`placement::step_speeds_key`):
     /// the history is read again only when it changed.
     step_speeds: std::cell::RefCell<placement::StepSpeedsKept>,
@@ -1613,9 +1610,6 @@ struct Gate {
 type CacheCount = (Option<Instant>, Option<room::Sizes>);
 /// What the build page's regions were made of: the regions' accepted version and the catalogue.
 type RegionsKey = (String, Option<u64>);
-
-/// The target of the idle-time whole catalog's job (`--whole`; its key the last catalog's).
-const WHOLE: &str = "whole";
 
 /// A clear, a freeing toward the room target or room-making under way on a thread of its own (`Agent::caches_task`).
 struct CachesTask {
@@ -1893,7 +1887,6 @@ impl Agent {
             o,
             me,
             piece_sizes: Default::default(),
-            whole_asked: Default::default(),
             step_speeds: Default::default(),
             planned: None,
             queued: Default::default(),
@@ -4837,10 +4830,8 @@ impl Agent {
             };
             // (The coordinator's record of what's done.)
             let handed = done.clone();
-            // (A catalog made: noted in the lead's record, with the low zooms if it had them. Not
-            // the idle-time whole catalog's, which changes nothing it lists.)
-            let whole = done.first().is_some_and(|t| t.0 == WHOLE);
-            if ok && matches!(step.as_str(), "catalog" | "catalog-held") && !whole {
+            // (A catalog made: noted in the lead's record, with the low zooms if it had them.)
+            if ok && matches!(step.as_str(), "catalog" | "catalog-held") {
                 self.catalog_made(now_s());
             }
             self.take_timings(k);
@@ -7666,29 +7657,6 @@ impl Agent {
             self.catalog_low.set(planned.low);
         }
         self.record_publishing(std::mem::take(&mut planned.publishing));
-        // Idle (nothing else to do, no job running), with delta catalogs
-        // on: the served catalog written whole when store::catalog::whole_due says so (asked once
-        // a catalog), so a delta catalog never weighs or writes one. Its target names the last
-        // catalog's key: its done record changes nothing.
-        let idle_lead = self.pooled().is_none_or(|p| p.role == pool::Role::Lead) && !self.o.helper;
-        if plan.is_empty()
-            && !held
-            && idle_lead
-            && self.publishing.get().delta
-            && self.slots.iter().all(|s| s.running.is_none())
-        {
-            if let Some(k) = done.catalog.clone().filter(|k| self.whole_asked.borrow().as_deref() != Some(k.as_str())) {
-                *self.whole_asked.borrow_mut() = Some(k.clone());
-                match store::catalog::whole_due(&root.join("catalog")) {
-                    Ok(true) => {
-                        eprintln!("agent: the deltas since the last whole catalog add up to one: a whole catalog now");
-                        plan.push(build::Work { step: "catalog".into(), targets: vec![(WHOLE.into(), k)] });
-                    }
-                    Ok(false) => {}
-                    Err(e) => eprintln!("agent: whether a whole catalog is due: {e:#}"),
-                }
-            }
-        }
         // (What room-making lets go last: `hints`.)
         *self.queued.borrow_mut() = plan.clone();
         // A z6 tile's extract's size (content-named files never change: each looked up once).
@@ -7884,13 +7852,8 @@ impl Agent {
                 jobs.push(j);
                 continue;
             }
-            let whole = w.step == "catalog" && w.targets.iter().any(|t| t.0 == WHOLE);
-            let mut extra: Vec<String> = w
-                .targets
-                .iter()
-                .map(|t| t.0.clone())
-                .filter(|t| every::names_target(t) && *t != w.step && !(whole && t == WHOLE))
-                .collect();
+            let mut extra: Vec<String> =
+                w.targets.iter().map(|t| t.0.clone()).filter(|t| every::names_target(t) && *t != w.step).collect();
             extra.extend(self.step_args(&w.step, date));
             // (The timetable feeds' declarations: the accepted version it was planned with.)
             if w.step == "rail-feeds" {
@@ -7929,10 +7892,8 @@ impl Agent {
                     "--building".to_string(),
                     building_arg.clone(),
                 ]);
-                // (Delta catalogs: crate::agent::publish; the whole one in idle time.)
-                if whole {
-                    extra.push("--whole".into());
-                } else if self.publishing.get().delta {
+                // (Delta catalogs: crate::agent::publish; the step writes a whole one when due.)
+                if self.publishing.get().delta {
                     extra.push("--delta".into());
                 }
             }

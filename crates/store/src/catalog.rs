@@ -682,31 +682,14 @@ pub fn since_whole<'a>(dir: impl Into<Loc<'a>>) -> Result<(Vec<u64>, Option<u64>
     Ok((sizes, None))
 }
 
-/// How many deltas `dir` holds past its newest whole catalog, from its listing alone (nothing
-/// read): about the length of the chain its newest catalog is read through. None when it holds no
-/// whole catalog.
-pub fn deltas_since_whole<'a>(dir: impl Into<Loc<'a>>) -> Result<Option<usize>> {
-    let names = Names::of_dir(dir.into())?;
-    Ok(names.whole.iter().next_back().map(|w| names.delta.range(w + 1..).count()))
-}
-
-/// Whether a delta writer must write a whole catalog now after all: a run of `deltas` (and the one
-/// it would add) nearing MAX_CHAIN, where readers stop. The idle-time whole catalog
-/// (`whole_due`) comes long before; this is the backstop for when idle time never comes.
-pub fn chain_full(deltas: usize) -> bool {
-    deltas + 1 >= MAX_CHAIN * 9 / 10
-}
-
-/// Whether the catalogs in `dir` are due a whole one (written in idle time: `catalog --whole`):
-/// the deltas since the last whole one add up to its size, or their run is half MAX_CHAIN long
-/// (`Delta::due_whole`). False with no whole catalog (the next catalog is whole anyway) or no
-/// delta since one. Stats each delta since the last whole catalog.
-pub fn whole_due<'a>(dir: impl Into<Loc<'a>>) -> Result<bool> {
+/// Whether the next catalog in `dir` is written whole rather than as a delta: None with no whole
+/// catalog to start a delta from (it's whole anyway); else whether one is due, the deltas since the
+/// last whole one adding up to its size or their run half MAX_CHAIN long (`Delta::due_whole`),
+/// false with no delta since one. Asked by the catalog step each time it would write a delta, so a
+/// writer that's never idle writes whole ones too. Stats each delta since the last whole catalog.
+pub fn whole_due<'a>(dir: impl Into<Loc<'a>>) -> Result<Option<bool>> {
     let (since, whole) = since_whole(dir)?;
-    Ok(match whole {
-        Some(w) if !since.is_empty() => Delta::due_whole(&since, 0, w),
-        _ => false,
-    })
+    Ok(whole.map(|w| !since.is_empty() && Delta::due_whole(&since, 0, w)))
 }
 
 /// The catalogs catalog `n` in `dir` is read through: itself, and back by its deltas' `of` to the
@@ -1086,35 +1069,30 @@ mod tests {
         assert!(!Delta::due_whole(&vec![1; MAX_CHAIN / 2 - 2], 1, u64::MAX));
     }
 
-    /// The deltas past the newest whole catalog counted from the listing; a whole one due once
-    /// they add up to it (in idle time: `whole_due`); a delta writer's backstop near MAX_CHAIN.
+    /// A whole catalog due once the deltas past the newest whole one add up to it; none to start
+    /// a delta from with no whole one.
     #[test]
-    fn deltas_since_the_whole_one_and_whether_its_due() {
+    fn whether_a_whole_one_is_due() {
         let t = tempfile::tempdir().unwrap();
         let d = t.path().join("catalog");
-        assert_eq!(deltas_since_whole(&d).unwrap(), None);
-        assert!(!whole_due(&d).unwrap());
+        assert_eq!(whole_due(&d).unwrap(), None);
         let one = sample(1);
         write(&d, &one).unwrap();
-        assert_eq!(deltas_since_whole(&d).unwrap(), Some(0));
-        assert!(!whole_due(&d).unwrap());
+        assert_eq!(whole_due(&d).unwrap(), Some(false));
         let mut prev = one;
         let whole = fs::metadata(d.join(file_name(1))).unwrap().len();
         let mut sum = 0;
         let mut n = 2;
         while sum < whole {
-            assert!(!whole_due(&d).unwrap(), "{sum} of {whole}");
+            assert_eq!(whole_due(&d).unwrap(), Some(false), "{sum} of {whole}");
             let next = evolve(&prev, n);
             write_delta(&d, &prev, &next).unwrap();
             sum += fs::metadata(d.join(delta_file_name(n))).unwrap().len();
             prev = next;
             n += 1;
         }
-        assert!(whole_due(&d).unwrap());
-        assert_eq!(deltas_since_whole(&d).unwrap(), Some(n as usize - 2));
+        assert_eq!(whole_due(&d).unwrap(), Some(true));
         write(&d, &evolve(&prev, n)).unwrap();
-        assert_eq!(deltas_since_whole(&d).unwrap(), Some(0));
-        assert!(!whole_due(&d).unwrap());
-        assert!(!chain_full(MAX_CHAIN / 2) && chain_full(MAX_CHAIN * 9 / 10 - 1));
+        assert_eq!(whole_due(&d).unwrap(), Some(false));
     }
 }

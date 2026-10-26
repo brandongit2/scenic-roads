@@ -541,10 +541,11 @@ number is used once, whole or as a delta:
   hand-off) or the last catalog does, looking at the NAS only for a file neither has (one written
   before sizes were recorded: once). A whole catalog looks at every file, and stops on one missing
   or of another size than recorded.
-- A whole catalog is written in idle time once the deltas since the last whole one add up to its
-  size or their run is half `MAX_CHAIN` (`store::catalog::whole_due`: the agent's `catalog --whole`
-  job, nothing else to do), when there's none, when a delta's run nears `MAX_CHAIN`
-  (`store::catalog::chain_full`), or on `scenic-build catalog --whole`.
+- A catalog is written whole, not as a delta, when there's no whole one to start from, and once
+  the deltas since the last whole one add up to its size or their run is half `MAX_CHAIN`
+  (`store::catalog::whole_due`, weighed by the catalog job each time it would write a delta, so a
+  lead that's never idle writes them too). Its content is the same either way: a reader gets the
+  same catalog from the whole one as from the chain.
 - GC also keeps every catalog a kept delta is read through, back to its whole one. A Mac keeps the
   catalogs it reads whole, in its own `catalog/`.
 

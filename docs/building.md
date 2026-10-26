@@ -373,10 +373,10 @@ devices away use the M6's (always on; https://map.brandontsang.net, docs/macs.md
      - `delta-catalog`: the catalog job (`scenic-build catalog --delta`) writes what changed over the
        last (docs/formats.md, Delta catalogs), each file's size from the records
        (`state/build/sizes.json`, which the files' jobs hand off) or the last catalog: it looks up no
-       file's size on the NAS but a file written before sizes were recorded. The whole catalog, which looks
-       at every file, is an idle-time job (`scenic-build catalog --whole`) the lead's agent runs
-       when the deltas add up to a whole one (`store::catalog::whole_due`), or a delta's run nears
-       `MAX_CHAIN`. Readers apply deltas (`store::catalog::latest_nas_from`). Switch on only once
+       file's size on the NAS but a file written before sizes were recorded. The same job writes a whole
+       catalog instead, which looks at every file, when the deltas since the last whole one add up
+       to it or their run is half `MAX_CHAIN` (`store::catalog::whole_due`, weighed by each catalog
+       job, busy lead or not). Readers apply deltas (`store::catalog::latest_nas_from`). Switch on only once
        every Mac's server reads deltas. Held catalogs are always whole.
      - `near-slope`: a done region's slope and tree cover are the z6 tiles near it
        (`Publishing::near`), not every stale z6 tile around; it's recorded built with those.
