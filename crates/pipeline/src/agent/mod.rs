@@ -7039,6 +7039,23 @@ impl Agent {
         jobs
     }
 
+    /// The depth's targets for GC's clean-up (`gc::DEPTH_KEEP_FILE` in the home), from this plan
+    /// and the leases now: written as each plan finds GC due, so the job reads them minutes old;
+    /// none found, none there. Only by the agent that runs the jobs: a dry run beside it, maybe
+    /// another app's and with no leases, shares its home and never touches the file. Its path.
+    fn keep_depth_targets(&self) -> PathBuf {
+        let keep = self.o.home.join(gc::DEPTH_KEEP_FILE);
+        if self._lock.is_some() && !self.o.dry_run {
+            let leased = self.coord.as_ref().map(|c| c.leased_targets(&gc::DEPTH_STEPS)).unwrap_or_default();
+            let found = self.depth_keep.borrow().clone().map(|k| k.with_leased(&leased));
+            let written = found.map(|k| store::whole::write(&keep, &serde_json::to_vec(&k).unwrap_or_default()));
+            if !matches!(written, Some(Ok(()))) {
+                std::fs::remove_file(&keep).ok();
+            }
+        }
+        keep
+    }
+
     fn plan_unchecked(
         &self,
         root: &store::nasfs::NasRoot,
@@ -7129,19 +7146,7 @@ impl Agent {
             });
         }
         if self.due("gc", Duration::from_secs(86400)) {
-            // (The depth's targets for its clean-up, from this plan and the leases now: written as
-            // each plan finds GC due, so the job reads them minutes old; none found, none there.
-            // Only by the agent that runs the jobs: a dry run beside it, maybe another app's and
-            // with no leases, shares its home and never touches the file.)
-            let keep = self.o.home.join(gc::DEPTH_KEEP_FILE);
-            if self._lock.is_some() && !self.o.dry_run {
-                let leased = self.coord.as_ref().map(|c| c.leased_targets(&gc::DEPTH_STEPS)).unwrap_or_default();
-                let found = self.depth_keep.borrow().clone().map(|k| k.with_leased(&leased));
-                let written = found.map(|k| store::whole::write(&keep, &serde_json::to_vec(&k).unwrap_or_default()));
-                if !matches!(written, Some(Ok(()))) {
-                    std::fs::remove_file(&keep).ok();
-                }
-            }
+            let keep = self.keep_depth_targets();
             out.push(JobSpec {
                 id: "gc".into(),
                 what: "gc".into(),
@@ -12070,6 +12075,34 @@ mod tests {
             helper: false,
         })
         .unwrap()
+    }
+
+    /// Task #679: only the agent that runs the jobs writes GC's depth targets; a planning-only
+    /// agent beside it (no lock, a dry run) neither writes nor removes them.
+    #[test]
+    fn only_the_running_agent_writes_the_depth_targets() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (store::nasfs::NasRoot::local_for_test(&d.path().join("nas")), d.path().join("home"));
+        let mut a = agent(&root, &home);
+        a.o.dry_run = false;
+        assert!(a._lock.is_some());
+        let k = gc::DepthKeep { at: now_s(), lo: [(0, 4)].into(), hi: [(1, 33)].into() };
+        *a.depth_keep.borrow_mut() = Some(k.clone());
+        let p = a.keep_depth_targets();
+        assert_eq!(gc::DepthKeep::read(&p, now_s()).unwrap(), Some(k));
+        // Beside it, without the lock: its own targets (another app's) or none, the file untouched.
+        let b = agent(&root, &home);
+        assert!(b._lock.is_none() && b.o.dry_run);
+        let before = std::fs::read(&p).unwrap();
+        *b.depth_keep.borrow_mut() = Some(gc::DepthKeep { at: now_s(), ..Default::default() });
+        b.keep_depth_targets();
+        b.depth_keep.borrow_mut().take();
+        b.keep_depth_targets();
+        assert_eq!(std::fs::read(&p).unwrap(), before);
+        // The running agent finding none: removed.
+        a.depth_keep.borrow_mut().take();
+        a.keep_depth_targets();
+        assert!(!p.exists());
     }
 
     /// The build page's regions made off the loop, waited for and taken in.
