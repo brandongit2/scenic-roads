@@ -1061,3 +1061,27 @@ fn sampling_many_stored_tiles_holds_a_bounded_number_of_files() {
     assert!(want.elev.iter().all(|e| e.is_finite()));
     assert_eq!(fds_under(d.path()), 0, "none once the sampler's gone");
 }
+
+#[test]
+fn by_runs_orders_as_a_full_sort() {
+    // Rows of points across two files and back, some filtered out, keys repeating apart.
+    let mut sel = Vec::new();
+    let mut keys = Vec::new();
+    for i in 0..4000u32 {
+        if i % 7 == 3 {
+            continue;
+        }
+        let (row, col) = (i / 100, i % 100);
+        sel.push(i);
+        keys.push((((col / 30) + row % 3) as usize % 3, -(row as f64) * 0.25));
+    }
+    let mut full: Vec<(usize, f64, u32)> = keys.iter().zip(&sel).map(|(k, &i)| (k.0, k.1, i)).collect();
+    full.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
+    let got = super::by_runs(
+        &sel,
+        &keys,
+        |a, b| a.0 == b.0 && a.1.total_cmp(&b.1).is_eq(),
+        |a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)),
+    );
+    assert_eq!(got, full.into_iter().map(|p| p.2).collect::<Vec<_>>());
+}

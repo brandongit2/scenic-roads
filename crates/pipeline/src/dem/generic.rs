@@ -1316,6 +1316,29 @@ impl<'a> Set<'a> {
     }
 }
 
+/// `sel` (ascending) ordered by `key` (each point's, `same` its equality), ties by index: the same
+/// order as sorting every point, but sorting only the runs of neighbours sharing a key (a sample
+/// row's points in one file or tile), a few thousand where the points are hundreds of thousands. A
+/// run's indices ascend and two runs with one key don't overlap, so ordering runs by key then first
+/// index orders the points.
+fn by_runs<K: Sync>(
+    sel: &[u32],
+    key: &[K],
+    same: impl Fn(&K, &K) -> bool,
+    cmp: impl Fn(&K, &K) -> std::cmp::Ordering + Sync,
+) -> Vec<u32> {
+    debug_assert!(sel.windows(2).all(|w| w[0] < w[1]));
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    for j in 0..sel.len() {
+        match runs.last_mut() {
+            Some(r) if same(&key[r.0], &key[j]) => r.1 = j + 1,
+            _ => runs.push((j, j + 1)),
+        }
+    }
+    runs.par_sort_unstable_by(|a, b| cmp(&key[a.0], &key[b.0]).then(a.0.cmp(&b.0)));
+    runs.into_iter().flat_map(|(a, b)| sel[a..b].iter().copied()).collect()
+}
+
 /// A dataset reading one batch of points.
 enum Reader<'s, 'a> {
     /// A GeoTIFF dataset, with its points' native coordinates where its CRS isn't the points'
@@ -1332,24 +1355,27 @@ impl Reader<'_, '_> {
         match self {
             Reader::Tiles(t) => {
                 let n = 1i64 << t.zoom;
-                let mut keyed: Vec<(i64, u32)> = sel
+                let keys: Vec<i64> = sel
                     .par_iter()
                     .map(|&i| {
                         let (fx, fy) = mercator_tile(lon[i as usize], lat[i as usize], t.zoom);
-                        (fx.floor() as i64 * n + fy.floor() as i64, i)
+                        fx.floor() as i64 * n + fy.floor() as i64
                     })
                     .collect();
-                keyed.par_sort_unstable();
-                keyed.into_iter().map(|p| p.1).collect()
+                by_runs(&sel, &keys, |a, b| a == b, |a, b| a.cmp(b))
             }
             Reader::Geo(g, xy) => {
                 let (x, y) = native(xy, lon, lat);
-                let mut keyed: Vec<(usize, f64, u32)> = sel
-                    .iter()
-                    .map(|&i| (g.holding(x[i as usize], y[i as usize]).next().unwrap_or(usize::MAX), y[i as usize], i))
+                let keys: Vec<(usize, f64)> = sel
+                    .par_iter()
+                    .map(|&i| (g.holding(x[i as usize], y[i as usize]).next().unwrap_or(usize::MAX), y[i as usize]))
                     .collect();
-                keyed.par_sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
-                keyed.into_iter().map(|p| p.2).collect()
+                by_runs(
+                    &sel,
+                    &keys,
+                    |a, b| a.0 == b.0 && a.1.total_cmp(&b.1).is_eq(),
+                    |a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)),
+                )
             }
         }
     }
