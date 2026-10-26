@@ -13,8 +13,9 @@
 //! stuck threads never pile up past a pool's size. A healthy share answers well inside the
 //! deadline: the result is the call's own, as before.
 //!
-//! And the loop's watchdog (`watch`): a round not finished in `STALL_AFTER` is logged and kept in
-//! the agent's folder for `scenic status`.
+//! And the loop's watchdog (`watch`): a round not finished in `STALL_AFTER` is logged with the
+//! phase of the round it's in (`phase`), kept in the agent's folder for `scenic status`, and the
+//! agent sampled once into that folder.
 
 use crate::pool::nas::{Created, Nas};
 use std::collections::BTreeSet;
@@ -402,15 +403,43 @@ pub fn probe(p: &NasPath) -> Option<Duration> {
 
 /// The watchdog's file in the agent's folder while its loop is stalled (`Stall`).
 pub const STALL_FILE: &str = "loop-stall.json";
+/// The agent sampled (`sample <pid> 10`) as a stall begins, in the agent's folder (the last stall's).
+pub const STALL_SAMPLE: &str = "loop-stall-sample.txt";
 /// A loop that hasn't finished a round in this long is stalled (its start counts as a round).
 pub const STALL_AFTER: Duration = Duration::from_secs(300);
 /// The agent's start given this much more before it's a stall (its first round opens the pool).
 pub const STALL_GRACE: Duration = Duration::from_secs(300);
+/// A phase of a round that takes this long or longer is logged by name as it ends (`phase`).
+pub const SLOW_PHASE: Duration = Duration::from_secs(10);
 
 /// When the agent's loop last finished a round, or the agent started (s since the epoch).
 pub static ROUND_AT: AtomicU64 = AtomicU64::new(0);
 /// Set as the agent's loop ends: the watchdog stops.
 pub static WATCH_DONE: AtomicBool = AtomicBool::new(false);
+/// The loop's phase in progress (`phase`): its name, and when it began (s since the epoch, and
+/// as an instant).
+static PHASE: Mutex<Option<(&'static str, u64, std::time::Instant)>> = Mutex::new(None);
+
+/// The loop enters phase `name` (the one before it ends): the watchdog names it in a stall, and
+/// the one that ends is logged if it took `SLOW_PHASE` or more.
+pub fn phase(name: &'static str) {
+    let was =
+        PHASE.lock().unwrap_or_else(|e| e.into_inner()).replace((name, super::now_s(), std::time::Instant::now()));
+    if let Some((was, _, t)) = was.filter(|w| w.2.elapsed() >= SLOW_PHASE) {
+        eprintln!("agent: {} the loop's phase \"{was}\" took {} s", clock(super::now_s()), t.elapsed().as_secs());
+    }
+}
+
+/// The loop's phase in progress, and when it began (s since the epoch).
+fn phase_now() -> Option<(&'static str, u64)> {
+    PHASE.lock().unwrap_or_else(|e| e.into_inner()).map(|(n, at, _)| (n, at))
+}
+
+/// `s` (s since the epoch) as the time of day in UTC, for the log: 14:03:59Z.
+pub fn clock(s: u64) -> String {
+    let d = s % 86400;
+    format!("{:02}:{:02}:{:02}Z", d / 3600, d / 60 % 60, d % 60)
+}
 
 /// The loop stalled, as the watchdog saw it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -419,12 +448,19 @@ pub struct Stall {
     pub round_at: u64,
     /// When the watchdog last looked (s since the epoch).
     pub seen_at: u64,
+    /// The round's phase in progress (`phase`), and since when (s since the epoch).
+    #[serde(default)]
+    pub phase: String,
+    #[serde(default)]
+    pub phase_at: u64,
 }
 
 /// The agent's watchdog, started before the agent opens anything on the NAS (`round_at` set to
 /// now): a thread that looks every `every` at when the loop last finished a round (`round_at`,
-/// stored by the loop); past `after`, it logs it once and keeps `STALL_FILE` in `home` (this Mac's
-/// disk, never the NAS) up to date, removed when the loop goes on. It ends once `done` is set.
+/// stored by the loop); past `after`, it logs it once with its phase (`phase`), has `sample` (the
+/// sampler's path: `/usr/bin/sample`) sample this process for 10 s into `STALL_SAMPLE`, and keeps
+/// `STALL_FILE` in `home` (this Mac's disk, never the NAS) up to date, removed when the loop goes
+/// on (its real length logged then). It ends once `done` is set.
 pub fn watch(
     round_at: &'static AtomicU64,
     done: &'static AtomicBool,
@@ -432,6 +468,7 @@ pub fn watch(
     after: Duration,
     grace: Duration,
     every: Duration,
+    sample: Option<PathBuf>,
 ) -> std::thread::JoinHandle<()> {
     let start = super::now_s();
     round_at.store(start, Ordering::SeqCst);
@@ -440,24 +477,37 @@ pub fn watch(
         .name("loop-watchdog".into())
         .spawn(move || {
             let file = home.join(STALL_FILE);
-            let mut stalled = false;
+            // (The round the stall is in: when the one before it finished.)
+            let mut stalled: Option<u64> = None;
             std::fs::remove_file(&file).ok();
             while !done.load(Ordering::SeqCst) {
                 let now = super::now_s();
                 let at = round_at.load(Ordering::SeqCst);
                 // (The start given `grace` more: a slow start isn't a stall.)
                 let limit = if at == start { after + grace } else { after };
+                let (phase, phase_at) = phase_now().map_or((String::new(), 0), |(n, t)| (n.to_string(), t));
                 if now.saturating_sub(at) >= limit.as_secs() {
-                    if !stalled {
-                        eprintln!("agent: the loop hasn't finished a round in {} s; stalled", now.saturating_sub(at));
+                    if stalled.is_none() {
+                        eprintln!(
+                            "agent: {} the loop hasn't finished a round in {} s; stalled in \"{phase}\" ({} s so far)",
+                            clock(now),
+                            now.saturating_sub(at),
+                            now.saturating_sub(phase_at)
+                        );
+                        if let Some(s) = &sample {
+                            sample_self(s, &home.join(STALL_SAMPLE));
+                        }
                     }
-                    stalled = true;
-                    if let Ok(b) = serde_json::to_vec(&Stall { round_at: at, seen_at: now }) {
+                    stalled = Some(at);
+                    if let Ok(b) = serde_json::to_vec(&Stall { round_at: at, seen_at: now, phase, phase_at }) {
                         std::fs::write(&file, b).ok();
                     }
-                } else if stalled {
-                    eprintln!("agent: the loop goes on again");
-                    stalled = false;
+                } else if let Some(from) = stalled.take() {
+                    eprintln!(
+                        "agent: {} the loop goes on again: that round took {} s",
+                        clock(now),
+                        at.saturating_sub(from)
+                    );
                     std::fs::remove_file(&file).ok();
                 }
                 std::thread::sleep(every);
@@ -465,6 +515,29 @@ pub fn watch(
             std::fs::remove_file(&file).ok();
         })
         .expect("spawn the loop's watchdog")
+}
+
+/// This process sampled by `sampler` for 10 s into `out`, off the watchdog's thread (waited for
+/// there, so it leaves no zombie). Its failure is logged, nothing more.
+fn sample_self(sampler: &Path, out: &Path) {
+    let child = std::process::Command::new(sampler)
+        .args([std::process::id().to_string(), "10".into(), "-mayDie".into(), "-file".into()])
+        .arg(out)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    match child {
+        Ok(mut c) => {
+            let out = out.to_path_buf();
+            std::thread::spawn(move || match c.wait() {
+                Ok(st) if st.success() => eprintln!("agent: the stalled loop sampled into {}", out.display()),
+                Ok(st) => eprintln!("agent: sampling the stalled loop: {st}"),
+                Err(e) => eprintln!("agent: sampling the stalled loop: {e}"),
+            });
+        }
+        Err(e) => eprintln!("agent: sampling the stalled loop ({}): {e}", sampler.display()),
+    }
 }
 
 /// The loop's stall as its watchdog last wrote it in `home`, if it's current (seen within a minute).
@@ -703,8 +776,27 @@ pub(crate) mod tests {
         static AT: AtomicU64 = AtomicU64::new(0);
         static DONE: AtomicBool = AtomicBool::new(false);
         let d = tempfile::tempdir().unwrap();
-        let t = watch(&AT, &DONE, d.path().into(), Duration::from_secs(1), Duration::ZERO, Duration::from_millis(50));
+        // (A sampler that writes its arguments: sampled once, as the stall begins.)
+        let sampler = d.path().join("sampler");
+        std::fs::write(&sampler, "#!/bin/sh\necho \"$@\" > \"$5\"\n").unwrap();
+        std::fs::set_permissions(&sampler, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        phase("a test's phase");
+        let t = watch(
+            &AT,
+            &DONE,
+            d.path().into(),
+            Duration::from_secs(1),
+            Duration::ZERO,
+            Duration::from_millis(50),
+            Some(sampler),
+        );
         store::testkit::eventually("the stall flagged", || stall(d.path()).is_some());
+        // (Another test's loop may have entered a phase of its own since.)
+        assert!(!stall(d.path()).unwrap().phase.is_empty());
+        store::testkit::eventually("the agent sampled", || {
+            std::fs::read_to_string(d.path().join(STALL_SAMPLE))
+                .is_ok_and(|s| s.starts_with(&format!("{} 10 -mayDie -file", std::process::id())))
+        });
         // (A round just now, a little ahead so a second ticking over meanwhile doesn't count.)
         AT.store(crate::agent::now_s() + 60, Ordering::SeqCst);
         store::testkit::eventually("the stall cleared", || stall(d.path()).is_none());

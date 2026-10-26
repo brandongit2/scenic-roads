@@ -755,14 +755,22 @@ pub fn meeting(ds: &[(Accepted, Cover)], b: [f64; 4]) -> Vec<String> {
 /// (grown by a cell, as `Cover::meets` reads it), what a key adds to its line: the cells it keeps
 /// there; None where nothing was cut there, so a key there is as before its regions.
 pub fn cut_note(measured: &Measured, cover: &Cover, b: [f64; 4]) -> Option<String> {
-    let uncut = Cover::of(Some(measured.uncut.as_deref()?));
+    let uncut = measured.uncut.as_deref()?;
+    // (A cell of `Cover::of(uncut)`, tested against the boxes: a set of them is the whole world's
+    // 64,800 cells for a dataset cut from WORLD, built per call, task #700.)
+    let in_uncut = |x: i32, y: i32| {
+        uncut.iter().any(|u| {
+            (u[0].floor() as i32..u[2].ceil() as i32).contains(&x)
+                && (u[1].floor() as i32..u[3].ceil() as i32).contains(&y)
+        })
+    };
     // (The cells `Cover::meets` reads for `b`: those the closed box touches.)
     let (x0, x1, y0, y1) = (b[0].ceil() as i32 - 1, b[2].floor() as i32, b[1].ceil() as i32 - 1, b[3].floor() as i32);
     let mut kept = Vec::new();
     let mut cut = false;
     for x in x0..=x1 {
         for y in y0..=y1 {
-            match (uncut.cells.contains(&(x, y)), cover.cells.contains(&(x, y))) {
+            match (in_uncut(x, y), cover.cells.contains(&(x, y))) {
                 (_, true) => kept.push(format!("{x},{y}")),
                 (true, false) => cut = true,
                 (false, false) => {}
@@ -935,6 +943,10 @@ mod tests {
         assert!(cut_note(&m, &c, [10.5, 45.2, 11.0, 45.3]).is_some(), "a box on 11°E touches 11,45");
         assert_eq!(cut_note(&m, &c, [30.2, 45.2, 30.3, 45.3]), None);
         assert_eq!(cut_note(&Measured { uncut: None, ..m.clone() }, &c, [10.2, 45.2, 10.3, 45.3]), None);
+        // (Cut from the whole world, as a dataset without a cover is: every cell but its own cut.)
+        let w = Measured { uncut: Some(vec![WORLD]), ..m.clone() };
+        assert!(cut_note(&w, &c, [-179.9, -89.9, -179.8, -89.8]).is_some());
+        assert_eq!(cut_note(&w, &c, [10.2, 45.2, 10.3, 45.3]), None);
         // (Declared as region ids; not in the digest the keys name.)
         let d = |extra: &str| {
             parse(

@@ -1663,6 +1663,7 @@ impl Agent {
                 nasread::STALL_AFTER,
                 nasread::STALL_GRACE,
                 Duration::from_secs(15),
+                Some(PathBuf::from("/usr/bin/sample")).filter(|p| p.exists()),
             );
         }
         Agent::new_with(o, answers)
@@ -3556,6 +3557,7 @@ impl Agent {
         }
         loop {
             let quick = self.step()?;
+            nasread::phase("between rounds");
             // (Each job's slot with its record as it changes: a restart or a crash leaves what the
             // next agent takes it over by.)
             self.save_hands();
@@ -4142,6 +4144,7 @@ impl Agent {
 
     /// One loop; true when a job just ended (look again soon).
     fn step(&mut self) -> Result<bool> {
+        nasread::phase("the NAS's mount");
         let slept = self.sleep.slept();
         let home = self.mac.at_home();
         // Back home with the share mounted through Tailscale (mounted while away): unmounted while
@@ -4166,6 +4169,7 @@ impl Agent {
         if root.is_some() {
             self.last_root = root.clone();
         }
+        nasread::phase("this Mac's settings");
         let home = cond::home(home, root.is_some() && self.mac.lan_mounted());
         // The owner's disk room target, as set now (`scenic room`, the menu bar).
         let target = room::target(&self.o.home);
@@ -4205,6 +4209,7 @@ impl Agent {
         let (ac, battery) = self.mac.power();
         let c = Conditions { ac, battery, nas: root.is_some(), home, idle_s: self.mac.idle_seconds() };
         self.note_conditions(&c, slept);
+        nasread::phase("the pool's switch and the live view");
         self.pool_switch(root.as_ref());
         self.tend_live(root.as_ref(), &c);
         let mut waiting: Vec<Waiting> = Vec::new();
@@ -4213,11 +4218,13 @@ impl Agent {
         }
         let mut ended = false;
         self.begin_round();
+        nasread::phase("the pause and hold");
         // The build's pause: this Mac's ask passed on; the lead's coordinator's.
         self.sync_pause(root.as_ref(), &mut waiting);
         // This Mac paused alone, or going on (task #224).
         self.sync_hold(root.as_ref());
 
+        nasread::phase("the running jobs");
         // The running jobs; then what they hold together, against this Mac's limit (the memory
         // guard: crate::agent::memguard), its switch as the NAS says.
         if let Some(on) = root.as_ref().and_then(memguard::on) {
@@ -4251,6 +4258,7 @@ impl Agent {
                     .collect(),
             );
         }
+        nasread::phase("the memory and disk guards");
         ended |= self.guard();
         ended |= self.disk_guard(root.as_ref());
         // (A job ended: room for the target may be made again.)
@@ -4259,6 +4267,7 @@ impl Agent {
         }
         // The pool's step, once the jobs that ended handed their work over (docs/pool.md §12):
         // what this Mac may do now, as its lead or a member.
+        nasread::phase("the pool's step");
         let gates = self.pool_step(root.as_ref(), &c, &mut waiting);
         // (Ends owed to the lead, once this process works as a member.)
         if let Some(r) = root.as_ref() {
@@ -4285,6 +4294,7 @@ impl Agent {
         // The pass's answers on the NAS, once this agent starts (the lead's).
         self.seed_answers(root.as_ref());
 
+        nasread::phase("the coordinator's contact");
         // The coordinator: where the NAS is (tasks read it where it lies), how to reach it on the NAS
         // (looked at every five minutes: it may have been deleted, or this Mac's addresses changed),
         // and leases whose workers went quiet dropped.
@@ -4323,6 +4333,7 @@ impl Agent {
                 );
             }
         }
+        nasread::phase("the outbox");
         // A helper's finished jobs not yet with the coordinator: sent before anything new.
         if let (true, Some(r)) = (self.o.helper, root.clone()) {
             self.send_outbox(&r, &mut waiting);
@@ -4330,12 +4341,14 @@ impl Agent {
 
         // (A slot free and nothing holding more back: this agent asks for work, `may_pack`.)
         let free = self.may_pack();
+        nasread::phase("the gate");
         // The gate: the drop boxes listed off the loop (the lead's), and the asks of it from this
         // Mac's menu bar, map, `scenic inputs` and (leading) the build page.
         if let Some(r) = root.as_ref() {
             self.tend_gate(r);
         }
 
+        nasread::phase("the plan");
         // The plan (leading): offered through this Mac's coordinator as it's made (`offer_plan`).
         // Made when a job ends; with a slot free, when what it depends on changed, a start held
         // briefly, a timed wait ended, or as a fallback (`plan_due`; once each loop took a core on an
@@ -4429,6 +4442,7 @@ impl Agent {
                 });
             }
         }
+        nasread::phase("the grants");
         // A newer app installed: nothing new starts, so the loop exits once every slot is free (or
         // its job had its wait) and the launcher starts the new one (with work queued back to back,
         // it would otherwise never get a turn).
@@ -4500,6 +4514,7 @@ impl Agent {
             }
         }
         self.trim_slots();
+        nasread::phase("the caches");
         // This Mac's caches, between jobs: the owner's ask to clear them (room::clear), else the
         // freeing toward the room target.
         let caches_why = self.tend_caches(root.as_ref());
@@ -4508,6 +4523,7 @@ impl Agent {
             waiting.push(Waiting { step: None, what: "The disk room target".into(), why });
         }
 
+        nasread::phase("the checklist and counts");
         // The heartbeat.
         let (regions, bad) = match (&root, &self.planned) {
             (Some(_), Some(p)) => (p.regions.clone(), p.bad.clone()),
@@ -4668,6 +4684,7 @@ impl Agent {
             inputs: if self.o.helper { Vec::new() } else { self.inputs.view.borrow().clone() },
             ..Default::default()
         };
+        nasread::phase("the heartbeat");
         status.set_jobs(views, all_new);
         let body = serde_json::to_vec_pretty(&status)?;
         if self._lock.is_none() {
@@ -7493,7 +7510,9 @@ impl Agent {
             // (The records as re-keyed: what they are once the loop has re-keyed them, as a dry run,
             // or a loop that couldn't take the build lock, plans too.)
             let times = rekey::FileTimes::new(root);
+            nasread::phase("the plan: the records re-keyed");
             rekey::as_read(&mut done, cov, &manifest, &tiles, &times);
+            nasread::phase("the plan: build::plan");
             build::plan(
                 &cov,
                 date,
@@ -7513,6 +7532,7 @@ impl Agent {
                 },
             )
         };
+        nasread::phase("the plan: its jobs");
         self.catalogs.borrow_mut().idle = planned.idle;
         // The z6 tiles held until the heritage registers are first accepted: said, not a silent stall.
         if let Some(why) = build::heritage_awaits_acceptance(cov, date, &manifest, &inputs) {

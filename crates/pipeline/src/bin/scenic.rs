@@ -747,7 +747,9 @@ fn status(places: &cli::Places) -> Result<()> {
     }
     // This Mac's agent's loop stalled, as its watchdog says (agent::nasread::watch).
     if let Some(s) = own_home.as_deref().and_then(agent::nasread::stall) {
-        println!("  this Mac's agent loop is stalled: no round finished since {}", ago(s.round_at));
+        let phase =
+            if s.phase.is_empty() { String::new() } else { format!(", in \"{}\" since {}", s.phase, ago(s.phase_at)) };
+        println!("  this Mac's agent loop is stalled: no round finished since {}{phase}", ago(s.round_at));
     }
     // The memory guard as its thread last sampled (every 5 s, whatever the agent's loop waits on).
     if let Some(m) = own_home.as_deref().and_then(agent::memguard::live).filter(|m| now_s().saturating_sub(m.at) < 60) {

@@ -76,7 +76,8 @@ check.sh's `tests` part and publish.sh's nextest suite run on the test Mac throu
   included) rsync into `~/scenic-check/<key>/src`; files and symlinks not in that list, then empty
   folders, are deleted there. Build folder `~/scenic-check/<key>/target`, kept between runs; rustc
   through the test Mac's sccache.
-- The run: nice 10, 8192 open files, `mise env` of the tree, with this side's exported RUST_LOG,
+- The run: nice 10 at utility priority (`taskpolicy -c utility`, as the pool's jobs, so the lead's
+  agent loop isn't starved: #700), 8192 open files, `mise env` of the tree, with this side's exported RUST_LOG,
   RUST_BACKTRACE, RUST_TEST_THREADS, RUST_MIN_STACK, CARGO_TERM_COLOR, CARGO_INCREMENTAL,
   CARGO_BUILD_JOBS, CARGO_PROFILE_*, NEXTEST_* and SCENIC_*. Both sides print their rustc, cargo
   and nextest versions and whether the NAS is mounted. Three runs at a time on the test Mac; the rest
@@ -98,7 +99,7 @@ fmt, clippy, guards, wasm, web, swift and python stay on this Mac.
 
 ## A test that can't flake (#662, 25 Oct)
 
-The suite runs three at a time on the test Mac at nice 10, beside builds: what takes milliseconds
+The suite runs three at a time on the test Mac at nice 10 and utility priority, beside builds: what takes milliseconds
 idle takes seconds there. Every flaky test so far measured that machine. The way to write a test
 that can't is the shortest one, in `store::testkit` (test builds only; other crates' tests get it
 through their dev-dependency on store, `features = ["testkit"]`):

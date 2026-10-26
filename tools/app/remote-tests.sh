@@ -19,7 +19,8 @@
 # which tests read when present and skip without) runs here, where that data is.
 # The build folder, ~/scenic-check/<key>/target, is kept between runs (only what changed rebuilds),
 # and rustc goes through the test Mac's sccache when it has one (third-party crates shared between keys).
-# The command runs at nice 10 (the test Mac's pool jobs first), under `mise env` of the tree, with 8192
+# The command runs at nice 10 and utility priority (`taskpolicy -c utility`, as the pool's jobs: the
+# agent's loop first, task #700), under `mise env` of the tree, with 8192
 # open files, its stdin closed, with this side's RUST_LOG, RUST_BACKTRACE, RUST_TEST_THREADS,
 # RUST_MIN_STACK, CARGO_TERM_COLOR, CARGO_INCREMENTAL, CARGO_BUILD_JOBS, CARGO_PROFILE_*, NEXTEST_*
 # and SCENIC_* (exported ones). Both sides print their rustc, cargo and nextest versions.
@@ -182,7 +183,7 @@ remote_main() {  # on the test Mac: <key> <owner> <command>
   versions "the test Mac"
   print "remote-tests: on the test Mac (load $(loadavg), slot $slot, $dir)"
   # (In the background, waited for: a TERM's trap runs at once, not when the command ends.)
-  nice -n 10 zsh -c "$cmd" </dev/null 2>&1 &
+  nice -n 10 taskpolicy -c utility zsh -c "$cmd" </dev/null 2>&1 &
   g_cpid=$!
   wait $g_cpid
   local rc=$?
