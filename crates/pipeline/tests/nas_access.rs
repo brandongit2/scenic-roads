@@ -211,8 +211,8 @@ fn nas_locations_are_named_only_where_listed() {
             continue;
         }
         for (i, l) in lines.iter().enumerate() {
-            // (In code or a string, not in a comment.)
-            let c = l.split("//").next().unwrap_or("");
+            // (In code or a string, not in a comment: `smb://` isn't one.)
+            let c = without_comment(l);
             if tests[i] || !LITERAL_MARKERS.iter().any(|m| c.contains(m)) {
                 continue;
             }
@@ -261,6 +261,27 @@ fn scripts_name_the_nas_only_where_listed() {
             .map(|(p, _)| format!("{p}: listed, names none")),
     );
     assert!(bad.is_empty(), "scripts naming the NAS outside TOOLS:\n{}", bad.join("\n"));
+}
+
+/// `l` up to its line comment: the first `//` not part of a URL's `://`.
+fn without_comment(l: &str) -> &str {
+    let mut at = 0;
+    while let Some(i) = l[at..].find("//") {
+        let i = at + i;
+        if !l[..i].ends_with(':') {
+            return &l[..i];
+        }
+        at = i + 2;
+    }
+    l
+}
+
+/// A URL's `//` isn't a comment: a share named by its URL is found.
+#[test]
+fn a_url_is_not_a_comment() {
+    assert_eq!(without_comment(r#"let u = "smb://fishandchips/x"; // y"#), r#"let u = "smb://fishandchips/x"; "#);
+    assert!(LITERAL_MARKERS.iter().any(|m| without_comment(r#"mount("smb://h/personal")"#).contains(m)));
+    assert_eq!(without_comment("x // /Volumes/a"), "x ");
 }
 
 /// The scan's own rule: a call in a string or a comment isn't one; one in a test item isn't

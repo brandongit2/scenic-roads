@@ -81,7 +81,9 @@ The share is SMB 3 on a Synology. The design assumes:
   place busy) are noted with their file, the agent's own and its Rust jobs' (`whole::stuck`,
   `whole::STUCK_ENV`); three within 10 minutes drain this Mac's new work and then remount the
   share (`crate::agent::heal`, docs/macs.md). A build job's read that the share fails for a
-  moment (`store::retry`, task #656: EIO, ENXIO "Device not configured", ETIMEDOUT and the other
+  moment (`store::retry`, task #656; since #663 every read, stat and listing through
+  store::nasfs, docs/nas-access.md §2, but the agent's loop's, the pool's and the coordinator's,
+  which fail at once, and the server's, 5 s: EIO, ENXIO "Device not configured", ETIMEDOUT and the other
   disconnects, EAGAIN, ESTALE; a "not found" only on a file known to be there: one open, one the
   store's listing has, a source the release lists) is tried again after 1, 2, 4, 8, 16 s, then
   30 s six times (211 s in all), each try logged; a process's retries run one at a time. Before

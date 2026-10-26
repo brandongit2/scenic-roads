@@ -17,8 +17,13 @@ it (store::nasio) and retries the reads, stats and listings the share fails for 
     `--root`, `--out`, `--layers-root`, `--store`, the server's `--root`.
   - `NasRoot::local_for_test(dir)` exists only in test builds (`store`'s `testkit` feature). It
     refuses the real NAS and the app's home (`nasfs::is_live_path`).
-  - `short_retry()` is the server's root: its reads are retried for about 5 s
-    (`retry::SHORT_WAITS`, decision D3), never the build's 3.5 minutes.
+  - A root carries its retry schedule, and its copies with another share its `made` set:
+    the default is the build's ~3.5 minutes (`retry::WAITS`: jobs, the CLI, the threads the
+    agent's loop starts and never waits on, which take `long_retry()`); `short_retry()`, about 5 s
+    (`retry::SHORT_WAITS`, decision D3), is the server's; `no_retry()` is the agent's loop's
+    (`Agent::root`), and so the pool's tick, its `Deadlined` NAS, the coordinator's and the
+    budgets' proxy's: their reads fail at once, as before #663, and the next beat reads again
+    (25 Oct: a loop stalled on slow reads stops planning and the pool).
 - **`NasPath`** is a file or folder under a root: the root, and a `/`-joined relative path with no
   `..` and no absolute part (`join` panics on either). Two are equal when they name the same file.
   Path parts: `join`, `parent`, `file_name`, `extension`, `with_file_name`, `with_extension`,
@@ -55,8 +60,11 @@ it (store::nasio) and retries the reads, stats and listings the share fails for 
 - **Retries (decision D2).** Every read, stat and listing goes through `store::retry::io` with
   `retry::transient` on the root's schedule. A "not found" is never retried there; a caller that
   rides out SMB's moment of ENOENT on a file that is there says so with `retry_with` or
-  `retry_any` (`transient_or_missing`). An inner retry that runs out is `Exhausted`, so an outer one
-  never starts again. Writes, removes, renames, create-new and appends are never retried here: a lost
+  `retry_any` (`transient_or_missing`). A retry inside another's try tries once and leaves the waits
+  to the outer one (`retry::attempt`; the workers `nas_call` and `depth::grids::within_do` start
+  for a try count as that try): nested, it would wait on the lane the outer try holds, for good on
+  the same thread. Only the build's schedule looks at the share before its last try (and waits up
+  to a minute for it); the server's 5 s never does. Writes, removes, renames, create-new and appends are never retried here: a lost
   answer can't tell made from not made. `nasfs::RETRY` turns the widening off without a revert.
 - **The I/O pool** (store::iopool, the server's and the mirror's) takes `NasPath`s. Its reads are
   counted and retried on the root's schedule; its timeouts and its breaker stay its own.

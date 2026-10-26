@@ -144,8 +144,10 @@ and codesign.
   answers on 445) it mounts the share with `osascript` and the Keychain, at most every five minutes,
   by the LAN name when the Keychain has it, else the bare (Tailscale) name. `nsmb.conf` makes it a
   soft mount.
-- **Short NAS outages** (a dropped SMB session, the NAS restarting): a build job's NAS read that
-  fails for a moment (EIO, ENXIO, ETIMEDOUT, ESTALE…) is tried again for up to ~3.5 minutes,
+- **Short NAS outages** (a dropped SMB session, the NAS restarting): a NAS read, stat or listing
+  (store::nasfs, docs/nas-access.md) that fails for a moment (EIO, ENXIO, ETIMEDOUT, ESTALE…) is
+  tried again for up to ~3.5 minutes in a build job or a thread of the agent's own (5 s in the
+  server; never in the agent's loop, the pool or the coordinator, whose next beat reads again),
   the share's mount looked at before its last try, instead of failing the job (`store::retry`,
   docs/pool.md §3).
 - **Stale SMB handles** (docs/pool.md §3): a Mac that dies with files open on the share (kill -9,
