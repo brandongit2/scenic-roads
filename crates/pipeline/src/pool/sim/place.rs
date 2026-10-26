@@ -365,11 +365,13 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                 })
                 .collect(),
         );
+        // (The cores a job keeps busy: its threads, at most its step's (`measures`' CPU time).)
+        let busy = |j: &Job| j.threads.min(steps[j.step.as_str()].threads);
         let used = |r: &[Job]| {
             (
                 r.iter().map(|j| j.mem_mb).sum::<u64>(),
                 r.iter().map(|j| j.disk_mb).sum::<u64>(),
-                r.iter().map(|j| j.threads).sum::<u32>(),
+                r.iter().map(busy).sum::<u32>(),
             )
         };
         let measured = |step: &str, ts: &[String]| c.measured_batch(step, ts);
@@ -517,12 +519,15 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                     disk_of(k)
                 ));
             }
-            // (The threads granted it, within the cores a member's in-use share leaves.)
+            // (The cores it keeps busy with those beside it, within the cores a member's in-use
+            // share leaves; its threads waiting on reads past them (task #688).)
             let kept = if k > 0 { cfg.in_use.unwrap_or(0) } else { 0 };
-            if job.threads == 0 || threads + job.threads + kept > cfg.macs[k].cores {
+            if job.threads == 0 || threads + busy(&job) + kept > cfg.macs[k].cores {
                 return Err(format!(
-                    "{} placed {step} past its cores: {threads} + {} threads + {kept} kept > {}",
-                    cfg.macs[k].name, job.threads, cfg.macs[k].cores
+                    "{} placed {step} past its cores: {threads} + {} busy + {kept} kept > {}",
+                    cfg.macs[k].name,
+                    busy(&job),
+                    cfg.macs[k].cores
                 ));
             }
             for j in &running[k] {
@@ -550,7 +555,7 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                 held_mb: mem,
                 mem_mb: limit(0).saturating_sub(mem),
                 cores: m.cores,
-                cores_free: m.cores - threads,
+                cores_free: m.cores.saturating_sub(threads),
                 disk_mb: disk_of(0).saturating_sub(wrote + reserved_mb),
                 reserved_mb,
                 ac: true,
@@ -616,7 +621,7 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                     held_mb: mem,
                     mem_mb,
                     cores: m.cores,
-                    cores_free: m.cores - threads,
+                    cores_free: m.cores.saturating_sub(threads),
                     disk_mb,
                     reserved_mb,
                     in_use: cfg.in_use.is_some(),

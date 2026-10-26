@@ -1043,6 +1043,24 @@ pub struct Notice {
     pub why: String,
 }
 
+/// The notices for jobs running an older app than their Mac's agent (`Capacity::old_app`, each
+/// Mac's as its lead last heard it): taken over at an update, they run that release's code to
+/// their end (task #688).
+fn old_app_notices(capacity: &[(String, crate::coord::Capacity)]) -> Vec<Notice> {
+    capacity
+        .iter()
+        .flat_map(|(mac, c)| {
+            c.old_app.iter().map(move |o| Notice {
+                what: format!("{mac}: {}", o.job),
+                why: format!(
+                    "runs app {}, older than its agent's: taken over at an update, it runs that release's code until it ends",
+                    o.app
+                ),
+            })
+        })
+        .collect()
+}
+
 /// The waiting lines for targets the lead's NAS budget has held back (`waits`: step, target,
 /// minutes; coord::Coordinator::nas_waits), once each: those already in `waiting` (a plan's lines,
 /// kept and said again between plans) replaced (task #444: each was listed twice). While the
@@ -3681,6 +3699,13 @@ impl Agent {
         job_apps_of(cmds.map(String::as_str), &self.o.bin, &self.app)
     }
 
+    /// The app a job taken over (`adopt_jobs`) runs the programs of, when it isn't this agent's
+    /// (`job_apps_of`): an older one's, its job started before the update.
+    fn old_app_of(&self, r: &jobs::Running) -> Option<String> {
+        let cmd = r.spec.cmd.first().filter(|_| r.adopted)?;
+        job_apps_of(std::iter::once(cmd.as_str()), &self.o.bin, &self.app).into_iter().next()
+    }
+
     /// Slot `k`'s state an agent after this one needs to take its job over (`Hand`).
     fn hand_of(&self, k: usize) -> Hand {
         let s = &self.slots[k];
@@ -3766,11 +3791,14 @@ impl Agent {
                 }
                 (l, _) => l,
             };
+            // (One of an older app runs that release's programs to its end: said, task #688.)
+            let old = self.old_app_of(&r).map(|v| format!(", on app {v} (older than this agent's {})", self.app));
             eprintln!(
-                "agent: took over {} (group {}), left running by the agent before this one{}",
+                "agent: took over {} (group {}), left running by the agent before this one{}{}",
                 id,
                 r.pgid,
-                if k > 0 { format!(", in slot {}", k + 1) } else { String::new() }
+                if k > 0 { format!(", in slot {}", k + 1) } else { String::new() },
+                old.clone().unwrap_or_default()
             );
             // (Its channel "run" unless this Mac's build is paused, the pool's or this Mac's alone:
             // then "drain", so it passes no safe point before `tend` asks it again.)
@@ -3793,7 +3821,7 @@ impl Agent {
                 worker: Some(self.worker_of(k)),
                 step: Some(w.step.clone()).filter(|s| !s.is_empty()),
                 targets: w.targets.iter().map(|t| t.0.clone()).collect(),
-                note: "taken over from the agent before".into(),
+                note: format!("taken over from the agent before{}", old.unwrap_or_default()),
                 ..crate::coord::history::Event::new("adopt")
             });
         }
@@ -4560,6 +4588,7 @@ impl Agent {
         annotate(&mut checklist, &now_steps, &helpers, &waiting);
         let views: Vec<JobView> = (0..self.slots.len()).filter_map(|k| self.job_view(k)).collect();
         let all_new = self.all_new(root.as_ref());
+        let capacity = self.coord.as_ref().map(|c| c.capacities()).unwrap_or_default();
         let mut status = Status {
             host: self.host.clone(),
             pid: std::process::id(),
@@ -4578,6 +4607,7 @@ impl Agent {
                 .elevation_unconverted()
                 .iter()
                 .map(|why| Notice { what: "elevation heights".into(), why: format!("not converted to EGM2008: {why}") })
+                .chain(old_app_notices(&capacity))
                 .collect(),
             recent: self.mem.recent.clone(),
             regions,
@@ -4585,7 +4615,7 @@ impl Agent {
             built,
             checklist,
             helpers,
-            capacity: self.coord.as_ref().map(|c| c.capacities()).unwrap_or_default(),
+            capacity,
             packing: self.coord.as_ref().map(|c| c.refusals()).unwrap_or_default(),
             nas_share: self.coord.as_ref().map(|c| c.nas_shares()).unwrap_or_default(),
             nas_step: self.coord.as_ref().map(|c| c.nas_step_weights()).unwrap_or_default(),
@@ -5326,10 +5356,14 @@ impl Agent {
             t => t,
         };
         let limit_mb = self.jobs_limit(total);
-        let (mut held_mb, mut need, mut leases, mut waiting, mut idle) =
-            (0u64, 0u64, Vec::new(), Vec::new(), Vec::new());
+        let (mut held_mb, mut need, mut leases, mut waiting, mut idle, mut old_app) =
+            (0u64, 0u64, Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for (k, s) in self.slots.iter().enumerate() {
             if let Some(r) = &s.running {
+                // (Taken over from an older app's agent, its programs that app's: task #688.)
+                if let Some(app) = self.old_app_of(r) {
+                    old_app.push(crate::coord::OldAppJob { job: r.spec.id.clone(), app });
+                }
                 let held = self.held_mb(k).unwrap_or(0);
                 held_mb += held;
                 need += held.max(self.spec_peak(&r.spec));
@@ -5376,6 +5410,7 @@ impl Agent {
             leases,
             waiting,
             idle,
+            old_app,
             caches: caches_here(&self.o.home.join("cache")),
             nas_traffic: self.live.as_ref().and_then(|l| {
                 let t = now_s();
@@ -6526,21 +6561,12 @@ impl Agent {
             (None, true) => cores.saturating_sub(2).max(1),
             (None, false) => cores,
         };
-        // Within the cores its Mac has: those the in-use share keeps while the owner uses it, and,
-        // for a granted job, those its other jobs were given, left out (one at least).
+        // Within the cores its Mac has less those the in-use share keeps while the owner uses it (one
+        // at least). Those its other jobs were given aren't taken off: its lead packed it beside
+        // them by the cores each keeps busy (crate::coord::sched's `need_cores`, task #688), so a
+        // job waiting on its reads keeps its threads.
         let kept = if c.user_active() { share::cores(self.in_use_share.as_ref(), cores as u32) as usize } else { 0 };
-        let beside: usize = if granted.is_some() {
-            self.slots
-                .iter()
-                .enumerate()
-                .filter(|(j, _)| *j != k)
-                .filter_map(|(_, s)| s.running.as_ref())
-                .map(|r| r.threads)
-                .sum()
-        } else {
-            0
-        };
-        let threads = wanted.min(cores.saturating_sub(kept + beside)).max(1);
+        let threads = wanted.min(cores.saturating_sub(kept)).max(1);
         // A slot's scratch folder its own past the first (a step's work in it, wiped by its next run).
         if k > 0 {
             let first = self.o.home.join("scratch");
@@ -6561,7 +6587,7 @@ impl Agent {
         self.slots[k].timings_out = None;
         let log = self.o.home.join("logs").join(format!("{}.log", spec.id.replace([' ', '/'], "-")));
         eprintln!(
-            "agent: starting {}{} ({threads} threads: {} of {cores} cores, {kept} kept for the owner, {beside} given to jobs beside it)",
+            "agent: starting {}{} ({threads} threads: {} of {cores} cores, {kept} kept for the owner)",
             spec.id,
             if k > 0 { format!(" in slot {}", k + 1) } else { String::new() },
             match granted {
@@ -15029,6 +15055,26 @@ mod tests {
     /// An agent started by `app/current` starts its jobs from its own version's folder, so after
     /// `current` moves twice the agent then lists that version as a running job's (the map server's
     /// updater keeps it).
+    /// Task #688: each Mac's jobs on an older app (`Capacity::old_app`, as the lead last heard it)
+    /// are notices in the lead's status, by Mac, job and app.
+    #[test]
+    fn jobs_on_an_older_app_are_noticed() {
+        let cap = |old: &[(&str, &str)]| crate::coord::Capacity {
+            old_app: old
+                .iter()
+                .map(|(j, a)| crate::coord::OldAppJob { job: j.to_string(), app: a.to_string() })
+                .collect(),
+            ..Default::default()
+        };
+        let n = old_app_notices(&[
+            ("m4".into(), cap(&[("terrain-hi 6/48/16", "20261025-1051-940d8881")])),
+            ("mini".into(), cap(&[])),
+        ]);
+        assert_eq!(n.len(), 1);
+        assert_eq!(n[0].what, "m4: terrain-hi 6/48/16");
+        assert!(n[0].why.starts_with("runs app 20261025-1051-940d8881, older than its agent's"), "{}", n[0].why);
+    }
+
     #[test]
     fn a_job_started_through_current_keeps_its_version_listed() {
         let d = tempfile::tempdir().unwrap();

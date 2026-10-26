@@ -905,6 +905,12 @@ pub struct Capacity {
     /// none of their cores, so CPU work goes beside them (task #665).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub idle: Vec<u64>,
+    /// Its running jobs an agent of an older app started and this one took over
+    /// (crate::agent::jobs::adopt), running that app's programs still: each one's job and app
+    /// (task #688: terrain jobs on a release before #665's rolling fetch crawled over GSI's tiles
+    /// for hours after the update). Said in the lead's status (`old_app_notices`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub old_app: Vec<OldAppJob>,
     /// What it holds of each shared cache (crate::needs::CACHES, by name; task #392), measured on
     /// its disk as it asks: the first job reading one is reserved its fill less that.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -917,6 +923,13 @@ pub struct Capacity {
     /// threads): the lead sums the members' into its live store (task #634). None: not measured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nas_calls: Option<[f64; 3]>,
+}
+
+/// A job of a Mac's on an older app than its agent's (`Capacity::old_app`): its id and that app.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OldAppJob {
+    pub job: String,
+    pub app: String,
 }
 
 /// A job of a Mac's that only waits on a worker (`Capacity::waiting`): its lease, and what it holds
@@ -7931,6 +7944,62 @@ mod tests {
         let mut leases = vec![gs.lease];
         leases.extend(gs.more.iter().map(|g| g.lease));
         assert!(w.ask(&ask("m1", 9000, leases.clone(), leases.clone())).unwrap().is_none(), "its memory counts");
+    }
+
+    /// Task #688: a job counts for the cores it kept busy, not its threads, so jobs waiting on their
+    /// reads go together until memory is full; a busy one counts for its threads as ever. The
+    /// measures are terrain-hi's on 26 Oct (3 threads, 1.16 cores busy, 600 s).
+    #[test]
+    fn a_job_counts_for_the_cores_it_kept_busy() {
+        let ask = |mem: u64, leases: Vec<u64>| Ask {
+            want: 12,
+            cap: Some(Capacity {
+                at: unix_now(),
+                cores: 14,
+                cores_free: 14,
+                disk_mb: 64_000,
+                leases,
+                ..Default::default()
+            }),
+            ..every_ask("m1", "slope-hi", mem, 64_000)
+        };
+        let packed = |cpu_ms: u64| {
+            let (d, c, w, clock) = every((0, 0));
+            let ts: Vec<String> = (1..=12).map(|i| format!("6/1/{i}")).collect();
+            for t in &ts {
+                let sizes = [("threads".to_string(), 3), ("cpu_ms".to_string(), cpu_ms)].into();
+                let cost = Cost {
+                    peak_mb: 3700,
+                    secs: 600,
+                    worker: None,
+                    v: cost_version("slope-hi"),
+                    sizes,
+                    ..Default::default()
+                };
+                c.add_costs_by(&[(cost_key("slope-hi", t), cost)], "m1");
+                c.add_disks(&[(cost_key("slope-hi", t), 100)]);
+            }
+            c.offer(
+                "p",
+                vec![Offer {
+                    step: "slope-hi".into(),
+                    targets: ts.iter().map(|t| (t.clone(), format!("k {t}"), 0)).collect(),
+                    job: None,
+                }],
+            );
+            (d, c, w, clock)
+        };
+        // Waiting on its reads (1.16 busy): granted 3 threads, counted for 1; the build's memory,
+        // 39 GB, holds ten of 3.7 GB, where by threads 14 cores held four.
+        let (_d, _c, w, _clock) = packed(696_000);
+        let gs = w.ask(&ask(39_000, vec![])).unwrap().unwrap();
+        let mut leases = vec![gs.lease];
+        leases.extend(gs.more.iter().map(|g| g.lease));
+        assert_eq!(leases.len(), 10, "memory decides");
+        assert!(std::iter::once(&gs).chain(&gs.more).all(|g| g.threads == 3), "each keeps its threads");
+        // Busy on its threads (3 of 3): counted for them, four on 14 cores whatever the memory.
+        let (_d, _c, w, _clock) = packed(1_800_000);
+        assert_eq!(all_granted(&w, &ask(64_000, vec![])).len(), 4, "cores decide");
     }
 
     /// Disk reservations (task #242): a grant carries its job's measured disk, which its agent

@@ -482,21 +482,34 @@ and pass-sets reckon their room past it, and run by hand, without it, keep none.
 **Threads granted** (task #241). Each job granted carries the worker threads it runs with
 (`Grant::threads`), which the member's agent sets as `RAYON_NUM_THREADS` (the programs taking
 workers read it: `scenic-build`'s); costs record them (`threads`), with the CPU time the target
-took (`cpu_ms`). A job's measured cores (`needs::Book::cores`) are the threads its runs were given,
-or fewer where their CPU time over their wall time says fewer were busy, plus one (a serial step:
-1–2), or twice them where three quarters or more were busy (so a grant can climb back; capped at
-the Mac's cores). The cores a Mac's jobs may use together (`coord::ask_cores`) are its Mac's
+took (`cpu_ms`). A job's measured cores (`needs::Book::cores`, its own run's, else the most of its
+step's) are two: its **grant**, the threads its runs were given, or fewer where their CPU time over
+their wall time says fewer were busy, plus one (a serial step: 1–2), or twice them where three
+quarters or more were busy (so a grant can climb back; capped at the Mac's cores); and its
+**busy** cores, that CPU time over that wall time to the nearest core (one at least, never past
+its grant). The cores a Mac's jobs may use together (`coord::ask_cores`) are its Mac's
 less, while its owner uses it, its in-use share's. Each job is granted its
-measured cores within the packed share (`coord::packed_share`: a quarter of those cores, at least
-two where they allow: the M1's 8, 2) and the cores its other jobs leave, else the share; a step
+measured grant within the packed share (`coord::packed_share`: a quarter of those cores, at least
+two where they allow: the M1's 8, 2), else the share; a step
 reading the NAS as it goes (`coord::NAS_STEPS`: `unit`, elev, pack, lo; or one whose costs show
-10 MB/s or more of NAS bytes) the share, never fewer, its threads overlapping the waits. A first
+10 MB/s or more of NAS bytes) the share, never fewer, its threads overlapping the waits. **A job
+counts for its busy cores** (task #688, `Sched::need_cores`): the packing takes those, not its
+threads, off its Mac's cores, so jobs waiting on their reads go beside each other until memory,
+disk or the NAS budget is full rather than their threads: terrain-hi kept 1.16 cores busy of 2–3
+threads on 26 Oct and counts for 1, where it counted for 3 and the M4 packed 3–4 of them ("cores:
+2 of 14 left, a job of terrain-hi takes 3") with 22 GB of its 39 GB build memory free. The rule
+reads the runs, not the step: a terrain job reading faster (from this Mac's disk, say) keeps more
+busy and counts for more. A job's threads stay within the cores left plus those it leaves idle
+(its grant less its busy cores). A job keeping more busy than it was measured to shows in its
+Mac's load past its jobs' busy cores, so it comes off the cores left as outside load does
+(`outside_cores`). A first
 job alone gets no more than the share, so its run is never measured to take every core and leave
 no room beside it. The agent, the lead's as a member's,
 starts a granted job with those threads, within its Mac's cores less those the in-use share keeps
-while the owner uses it and those its other running jobs were given (one at least), and logs a
+while the owner uses it (one at least; not less those its other jobs were given: its lead packed
+them by their busy cores), and logs a
 line per job: `agent: starting <job> (<n> threads: granted <g> of <c> cores, <k> kept for the
-owner, <b> given to jobs beside it)`. The coordinator logs the threads with each grant.
+owner)`. The coordinator logs the threads with each grant.
 
 **The in-use share** (`crate::agent::share`): the cores a Mac's agent keeps free of its jobs for
 its owner (by default 2) while the owner uses the Mac (used within the last five minutes).
@@ -747,7 +760,11 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   wait (its target under way's measured time, else its step's fit, else the 90th percentile of
   its step's runs, `needs::Book::secs_p90`, ×1.5, at most 3 h, at least 15 minutes); a job still
   running then is left running, its lease kept, and the new agent takes it over (docs/building.md §2,
-  Restarts), as after any restart but a quit. The new agent may start while the old one still
+  Restarts), as after any restart but a quit. A job taken over so runs the old release's programs to its end: its
+  agent says so as it takes it over (its log line and the history's `adopt` event name the app),
+  and names it in its capacity (`Capacity::old_app`: its job and app) for as long as it runs, so
+  the lead's status says it as a notice, by Mac, job and app (task #688: terrain jobs of a release
+  before #665's rolling fetch crawled over GSI's tiles for hours after the update). The new agent may start while the old one still
   holds the member lock: it tries the lock for up to two minutes, joining as it starts; past that
   it starts out of the pool, its jobs' leases still beaten with the lead, and restarts into the
   pool at once when the lock comes free, its jobs left running for the next agent (docs/building.md §2,

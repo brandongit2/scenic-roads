@@ -178,6 +178,18 @@ struct Model {
     prior: Option<u64>,
 }
 
+/// A job's cores as its runs measured them (`Book::cores`): the threads it is granted (`grant`),
+/// and those it keeps busy (`busy`: its CPU time over its wall time, to the nearest, one at least,
+/// never past `grant`; None where no run said its CPU time: it counts for its threads), what its
+/// Mac's packing counts it for (crate::coord::sched, task #688: a job
+/// waiting on its reads holds its threads but not its cores, so memory decides how many go
+/// together).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Cores {
+    pub grant: u32,
+    pub busy: Option<u32>,
+}
+
 /// The models made, kept until the measures they're made from change: the change count they were
 /// made at (the owner's: the coordinator bumps its count with each cost, floor or disk floor it
 /// takes), by (step, measure); each step's most cores (`Book::cores`) and NAS prior
@@ -185,7 +197,7 @@ struct Model {
 #[derive(Debug, Default)]
 pub struct Cache(
     Mutex<(u64, BTreeMap<(String, Measure), Model>)>,
-    Mutex<(u64, BTreeMap<String, Option<u32>>)>,
+    Mutex<(u64, BTreeMap<String, Option<Cores>>)>,
     Mutex<(u64, BTreeMap<String, Option<crate::budget::nas::Rate>>)>,
     /// Each target's `Book::nas` (step → target → it): the NAS budget weighs each target offered
     /// and leased for every ask.
@@ -587,31 +599,37 @@ impl<'a> Book<'a> {
         })
     }
 
-    /// The cores a job of `step` for `target` takes, as measured (crate::costin's `sizes`): the
-    /// threads its run was given (`threads`), or fewer where its CPU time over its wall time
-    /// (`cpu_ms`) says it kept fewer busy, one more than those (a serial step's: 1–2); its own run's,
-    /// else the most of its step's runs the way it runs now; None when none of them says (what
-    /// packs jobs beside each other, crate::coord's packing, then packs none beside it).
-    pub fn cores(&self, step: &str, target: &str) -> Option<u32> {
+    /// The cores a job of `step` for `target` takes, as measured (crate::costin's `sizes`): its own
+    /// run's, else the most of its step's runs the way it runs now (each of `Cores` its most); None
+    /// when none of them says (what packs jobs beside each other, crate::coord's packing, then
+    /// packs none beside it).
+    pub fn cores(&self, step: &str, target: &str) -> Option<Cores> {
         let v = cost_version(step);
-        let threads = |c: &Cost| {
+        let of = |c: &Cost| {
             let t = *c.sizes.get("threads").filter(|_| c.v >= v)? as u32;
-            // (Its threads kept busy; three quarters of them or more: it may have used more, twice
-            // them, so a grant can climb back (crate::coord caps it at the Mac's cores).)
-            let busy = c.sizes.get("cpu_ms").map(|&ms| ms.div_ceil(c.secs.max(1) * 1000) as u32);
-            Some(
-                match busy {
-                    None => t,
-                    Some(b) if b * 4 >= t * 3 => t * 2,
-                    Some(b) => (b + 1).min(t),
+            // (Its CPU time over its wall time, `cpu_ms`: the cores it kept busy.)
+            let kept = c.sizes.get("cpu_ms").map(|&ms| ms as f64 / (c.secs.max(1) * 1000) as f64);
+            Some(match kept {
+                None => Cores { grant: t.max(1), busy: None },
+                Some(k) => {
+                    let b = k.ceil() as u32;
+                    // (Three quarters of them or more: it may have used more, twice them, so a
+                    // grant can climb back (crate::coord caps it at the Mac's cores); else one
+                    // more than it kept busy (a serial step's: 1–2).)
+                    let grant = if b * 4 >= t * 3 { t * 2 } else { (b + 1).min(t) }.max(1);
+                    Cores { grant, busy: Some((k.round() as u32).clamp(1, grant)) }
                 }
-                .max(1),
-            )
+            })
         };
-        if let Some(t) = self.costs.get(&cost_key(step, target)).and_then(threads) {
-            return Some(t);
+        if let Some(c) = self.costs.get(&cost_key(step, target)).and_then(of) {
+            return Some(c);
         }
-        let most = || self.costs.iter().filter(|(k, _)| step_of_key(k) == step).filter_map(|(_, c)| threads(c)).max();
+        let most =
+            || {
+                self.costs.iter().filter(|(k, _)| step_of_key(k) == step).filter_map(|(_, c)| of(c)).reduce(|a, b| {
+                    Cores { grant: a.grant.max(b.grant), busy: a.busy.zip(b.busy).map(|(a, b)| a.max(b)) }
+                })
+            };
         // (Its step's most kept with the models while the measures stand: a placement asks it for
         // every job held.)
         let CacheRef::Kept(cache) = &self.cache else { return most() };
@@ -825,24 +843,45 @@ mod tests {
         }
     }
 
-    /// A job's cores: its target's run's threads, else the most of its step's; None when no run says.
+    /// A job's cores: its target's run's, else the most of its step's; None when no run says.
     #[test]
     fn cores_are_the_targets_run_else_the_most_of_its_steps() {
         let now = |step: &str, c: Cost| Cost { v: cost_version(step), ..c };
+        let c = |grant, busy| Some(Cores { grant, busy });
         let mut costs = BTreeMap::new();
         costs.insert(cost_key("slope", "6/1/1"), now("slope", cost(100, 5, &[("threads", 4)])));
         costs.insert(cost_key("slope", "6/1/2"), now("slope", cost(100, 5, &[("threads", 2)])));
         costs.insert(cost_key("slope", "6/1/3"), cost(100, 5, &[("threads", 8)]));
         costs.insert(cost_key("lo", "3/1/1"), now("lo", cost(100, 5, &[])));
         let b = Book::new(&costs);
-        assert_eq!(b.cores("slope", "6/1/2"), Some(2));
-        assert_eq!(b.cores("slope", "6/1/9"), Some(4), "an older way's run counts for nothing");
+        assert_eq!(b.cores("slope", "6/1/2"), c(2, None), "no CPU time said: its busy cores not known");
+        assert_eq!(b.cores("slope", "6/1/9"), c(4, None), "an older way's run counts for nothing");
         assert_eq!(b.cores("lo", "3/1/1"), None);
-        // (Its CPU time over its wall time: a serial run given 8 threads takes 2, a busy one its 8.)
+        // (Its CPU time over its wall time: a serial run given 8 threads is granted 2 and counted
+        // for 1, a busy one granted twice its 8 and counted for 8.)
         costs.insert(cost_key("pois", "6/1/1"), now("pois", cost(100, 10, &[("threads", 8), ("cpu_ms", 9_500)])));
         costs.insert(cost_key("pois", "6/1/2"), now("pois", cost(100, 10, &[("threads", 8), ("cpu_ms", 80_000)])));
         let b = Book::new(&costs);
-        assert_eq!((b.cores("pois", "6/1/1"), b.cores("pois", "6/1/2")), (Some(2), Some(16)), "a busy run climbs back");
+        assert_eq!(
+            (b.cores("pois", "6/1/1"), b.cores("pois", "6/1/2")),
+            (c(2, Some(1)), c(16, Some(8))),
+            "a busy run climbs back"
+        );
+        // (Task #688: terrain-hi as measured on 26 Oct, 1.16 cores busy of 3 threads: granted 3,
+        // counted for 1; its step's most, each the most of its runs'.)
+        let v = cost_version("terrain-hi");
+        costs.insert(
+            cost_key("terrain-hi", "6/48/16"),
+            Cost { v, ..cost(3700, 1000, &[("threads", 3), ("cpu_ms", 1_160_000)]) },
+        );
+        costs.insert(
+            cost_key("terrain-hi", "6/48/17"),
+            Cost { v, ..cost(3700, 1000, &[("threads", 2), ("cpu_ms", 1_600_000)]) },
+        );
+        let b = Book::new(&costs);
+        assert_eq!(b.cores("terrain-hi", "6/48/16"), c(3, Some(1)));
+        assert_eq!(b.cores("terrain-hi", "6/48/17"), c(4, Some(2)));
+        assert_eq!(b.cores("terrain-hi", "6/48/18"), c(4, Some(2)));
     }
 
     /// A target's NAS rate: its own run's bytes (read and written) and creates over its time, else
