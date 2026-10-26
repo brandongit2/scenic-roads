@@ -127,6 +127,11 @@ pub struct Leases {
     holds: Vec<Hold>,
     /// The app this coordinator runs (crate::coord::Shared::app): what releases a hold.
     pub app: String,
+    /// The Mac whose agent runs this coordinator ("" in tests: none). Its slots' leases
+    /// (crate::agent::is_slot_of) never lapse: their worker is this process, alive by construction,
+    /// beats or not (a loop stuck on the NAS past `ttl` lost them, #666); a dead agent's are dropped
+    /// as the next one starts.
+    pub me: String,
     /// The owner's cancels of running jobs (`scenic job cancel`, crate::control::Cancel), by lease:
     /// told to the lease's worker in its beat's answer (this Mac's own, `Coordinator::cancel_of`),
     /// which stops its job and gives the lease back, not failed. Each goes with its lease (finished,
@@ -158,6 +163,7 @@ impl Leases {
             term: 0,
             holds: Vec::new(),
             app: String::new(),
+            me: String::new(),
             cancels: BTreeMap::new(),
         }
     }
@@ -236,7 +242,12 @@ impl Leases {
     }
 
     pub fn live(&self, now: Instant) -> impl Iterator<Item = &Lease> {
-        self.by_id.values().filter(move |l| l.deadline > now)
+        self.by_id.values().filter(move |l| self.lasts(l, now))
+    }
+
+    /// Whether `l` is live at `now`: before its deadline, or this process's own (`me`).
+    fn lasts(&self, l: &Lease, now: Instant) -> bool {
+        l.deadline > now || (!self.me.is_empty() && crate::agent::is_slot_of(&l.worker, &self.me))
     }
 
     /// Every target of `step` held now, by anyone, or until a newer app (`Hold`).
@@ -352,8 +363,9 @@ impl Leases {
         live: Option<crate::agent::jobs::Live>,
         now: Instant,
     ) -> bool {
+        let lasts = self.by_id.get(&id).is_some_and(|l| self.lasts(l, now));
         match self.by_id.get_mut(&id) {
-            Some(l) if l.worker == worker && l.deadline > now => {
+            Some(l) if l.worker == worker && lasts => {
                 l.deadline = now + self.ttl;
                 if progress.is_some() {
                     l.progress = progress;
@@ -373,7 +385,7 @@ impl Leases {
     /// Ends `worker`'s live lease `id` (done or given back); the lease, if it was that.
     pub fn finish(&mut self, id: u64, worker: &str, now: Instant) -> Option<Lease> {
         match self.by_id.get(&id) {
-            Some(l) if l.worker == worker && l.deadline > now => {
+            Some(l) if l.worker == worker && self.lasts(l, now) => {
                 self.cancels.remove(&id);
                 self.by_id.remove(&id)
             }
@@ -401,13 +413,15 @@ impl Leases {
     /// goes to another meanwhile), and once more as it goes on.
     pub fn hold_all(&mut self, now: Instant) {
         for l in self.by_id.values_mut() {
-            l.deadline = l.deadline.max(now + self.ttl);
+            l.deadline = now + self.ttl;
         }
     }
 
-    /// Every lease past its deadline, removed: their work is offered again.
+    /// Every lease past its deadline, removed (but this process's own, `me`): their work is
+    /// offered again.
     pub fn expire(&mut self, now: Instant) -> Vec<Lease> {
-        self.drop_where(|l| l.deadline <= now)
+        let gone: Vec<u64> = self.by_id.values().filter(|l| !self.lasts(l, now)).map(|l| l.id).collect();
+        self.drop_where(|l| gone.contains(&l.id))
     }
 
     /// Every live lease, for the status.

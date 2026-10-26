@@ -3100,8 +3100,9 @@ impl Agent {
     }
 
     /// Beats for slot `k`'s job's lease (each minute it isn't paused); false when it's lost: it
-    /// lapsed and its work went to another worker. (This Mac's own lapses when its job paused past
-    /// it, or this loop was stuck: it's held again when no one took its work meanwhile.)
+    /// lapsed and its work went to another worker. (This Mac's own never lapses while it leads,
+    /// docs/pool.md §7.6; one gone all the same, as across a handover, is held again when no one
+    /// took its work meanwhile.)
     fn beat(&mut self, k: usize, root: Option<&Path>) -> bool {
         self.slots[k].beaten = Some(Instant::now());
         // (Its progress as the status last read it: what it said, out of sight or not.)
@@ -3119,7 +3120,7 @@ impl Agent {
                 if c.renew_live(id, progress, live) {
                     return true;
                 }
-                let work = self.slots[k].running.as_ref().and_then(|r| r.spec.record.clone());
+                let work = self.slots[k].running.as_ref().map(|r| held_work(&r.spec));
                 match work.and_then(|w| c.hold(&w.step, &w.targets)) {
                     Some(id) => {
                         // (Held again under a new id; its hand-off keeps the lease it began under,
@@ -3778,11 +3779,7 @@ impl Agent {
                 self.slots.push(Slot::default());
             }
             let id = r.spec.id.clone();
-            let w = r
-                .spec
-                .record
-                .clone()
-                .unwrap_or_else(|| build::Work { step: step_of(&id).unwrap_or_default(), targets: Vec::new() });
+            let w = held_work(&r.spec);
             let lease = match (hand.lease, &self.coord) {
                 (Some(Held::Own(n)), Some(c)) => {
                     Some(Held::Own(if c.renew(n, None) { n } else { c.hold(&w.step, &w.targets).unwrap_or(n) }))
@@ -11019,6 +11016,14 @@ pub fn step_of(id: &str) -> Option<String> {
     id.split(' ').next().filter(|s| !s.is_empty()).map(str::to_string)
 }
 
+/// What job `spec`'s own lease is held again for: its record, or for a job of none (terrain-z8)
+/// its step from its id and no targets (#666: it was killed when its lease lapsed).
+fn held_work(spec: &JobSpec) -> build::Work {
+    spec.record
+        .clone()
+        .unwrap_or_else(|| build::Work { step: step_of(&spec.id).unwrap_or_default(), targets: Vec::new() })
+}
+
 /// What holds the region work's jobs that read an input (`Agent::region_jobs`).
 #[derive(Clone, Copy, Debug, Default)]
 struct Holds {
@@ -11519,6 +11524,24 @@ mod tests {
         assert_eq!(w.len(), 1, "granted: gone");
     }
     use super::*;
+
+    /// #666: a job of no record (terrain-z8) is held again by its step from its id, no targets,
+    /// when its lease's beat fails; one with a record by its record.
+    #[test]
+    fn a_record_less_job_is_held_again_by_its_step() {
+        let spec = |record| JobSpec {
+            id: "terrain-z8".into(),
+            what: String::new(),
+            cmd: Vec::new(),
+            needs: Default::default(),
+            restart_after_sleep: false,
+            record,
+        };
+        let w = held_work(&spec(None));
+        assert_eq!((w.step.as_str(), w.targets.len()), ("terrain-z8", 0));
+        let r = build::Work { step: "unit".into(), targets: vec![("6/1/1".into(), "k".into())] };
+        assert_eq!(held_work(&spec(Some(r.clone()))).targets, r.targets);
+    }
 
     /// Task #392 review: what a capacity says this Mac holds of the shared caches is read off its
     /// disk: the whole local copies; emptied by whatever, nothing. (The base packs' folder holds

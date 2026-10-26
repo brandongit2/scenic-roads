@@ -1221,6 +1221,7 @@ impl Coordinator {
         let mut leases = Leases::load(&dir.join("leases.json"), TTL, now);
         // (What releases a target held for a newer app: this one, `Hold`.)
         leases.app = app.to_string();
+        leases.me = me.to_string();
         // This Mac's own: its jobs ended with the agent that ran them.
         for l in leases.drop_where(|l| l.worker == me) {
             eprintln!("coordinator: {}'s lease ended with the agent before this one", l.what());
@@ -1479,13 +1480,17 @@ impl Coordinator {
         }
     }
 
-    /// A lease for this Mac's own job of `step` over `targets`, unless a worker holds one of them;
-    /// its id.
+    /// A lease for this Mac's own job of `step` over `targets`, unless a worker holds one of them,
+    /// or (a job of no targets, like terrain-z8, either side) any job of the step; its id.
     pub fn hold(&self, step: &str, targets: &[(String, String)]) -> Option<u64> {
         let mut s = self.shared.lock().unwrap();
         let now = s.now();
         let held = s.leases.held(step, now);
-        if targets.iter().any(|t| held.contains(&t.0)) {
+        if targets.iter().any(|t| held.contains(&t.0))
+            || s.leases.live(now).any(|l| {
+                matches!(&l.work, Work::Job { step: st, targets: ts } if st == step && (ts.is_empty() || targets.is_empty()))
+            })
+        {
             return None;
         }
         // (In the pool, a target a member did under this key, its entry not merged yet: as held.)
@@ -5336,6 +5341,39 @@ mod tests {
         let at = gens.load(std::sync::atomic::Ordering::SeqCst);
         c.unpublish_unless(&root, &|| gens.load(std::sync::atomic::Ordering::SeqCst) != at);
         assert!(!contact_path(&root).exists(), "not published since: it goes");
+    }
+
+    /// #666 (25 Oct, the mini: its loop stuck ~10 min on the NAS lost terrain-z8 at 56 %, and a
+    /// second was granted): past the TTL with no beat the lead's own leases (its slots') stay,
+    /// renewable, a member's lapses; a job of no targets blocks another of its step, and is held
+    /// again once its holder's lapsed.
+    #[test]
+    fn a_stalled_loop_keeps_the_leads_own_leases() {
+        let (_d, c, _w) = start();
+        let clock = store::clock::Virtual::new();
+        c.shared.lock().unwrap().clock = clock.clone();
+        let z8 = c.hold("terrain-z8", &[]).unwrap();
+        let (slot2, member) = {
+            let mut s = c.shared.lock().unwrap();
+            let now = s.now();
+            let job = |step: &str, t: &str| Work::Job { step: step.into(), targets: vec![(t.into(), "k".into())] };
+            (
+                s.leases.grant("m4 #2", job("unit", "6/1/1"), now),
+                s.leases.grant("m1", Work::Job { step: "gc".into(), targets: Vec::new() }, now),
+            )
+        };
+        // No duplicate of a job of no targets, the lead's or a member's, with targets or none.
+        assert_eq!(c.hold("terrain-z8", &[]), None);
+        assert_eq!(c.hold("gc", &[]), None);
+        assert_eq!(c.hold("gc", &[("x".into(), "k".into())]), None);
+        clock.advance(TTL + Duration::from_secs(60));
+        let gone: Vec<u64> = c.expire().iter().map(|l| l.id).collect();
+        assert_eq!(gone, [member]);
+        assert_eq!(c.hold("terrain-z8", &[]), None, "the lead's z8 still holds its step");
+        assert!(c.renew_live(z8, None, None));
+        assert!(c.held("unit").contains("6/1/1") && c.lease_term(slot2) == 0);
+        // The member's gone: its step is the lead's to hold.
+        assert!(c.hold("gc", &[]).is_some());
     }
 
     fn start() -> (tempfile::TempDir, Coordinator, client::Client) {
