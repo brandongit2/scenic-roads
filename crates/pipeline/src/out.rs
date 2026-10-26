@@ -604,6 +604,12 @@ impl Out {
         self.changes.insert(logical.to_string(), None);
     }
 
+    /// Drops content name `c` from the unverified uploads (`pending`) at the next save, as a check
+    /// would: a removed step's file GC drops (crate::agent::gc::drop_names), never verified now.
+    pub fn unpend(&mut self, c: &str) {
+        self.checked.insert(c.to_string());
+    }
+
     /// Writes this run's changes into the manifest on disk (re-read under a lock, so another step's
     /// changes saved meanwhile are kept), and the unverified uploads likewise. A helper's job hands
     /// them off instead (crate::handoff): in the pool, every job's (`check_writer`).

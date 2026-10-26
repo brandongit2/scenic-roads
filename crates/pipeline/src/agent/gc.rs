@@ -210,7 +210,15 @@ pub fn drop_names(
     for l in &names {
         out.remove(l);
     }
-    if !names.is_empty() {
+    // (Their uploads never verified leave the pending ones too: the records' pending keep a file
+    // from the sweeps, and a verify would find it gone.)
+    let pending: std::collections::BTreeMap<String, String> =
+        crate::out::read_record(&root.join("state/build/pending.json")).context("the pending uploads")?;
+    let unpend: Vec<&String> = pending.keys().filter(|c| retired(c)).collect();
+    for c in &unpend {
+        out.unpend(c);
+    }
+    if !names.is_empty() || !unpend.is_empty() {
         out.save()?;
     }
     Ok(count(&names.iter().collect::<Vec<_>>()))
@@ -625,9 +633,19 @@ fn run_once(root: &store::nasfs::NasRoot, keep_days: u64, dry_run: bool) -> Resu
     let tops: BTreeSet<String> = referenced
         .iter()
         .filter_map(|f| f.split('/').next())
-        .chain(RETIRED.iter().filter_map(|p| p.split('/').next()))
         .filter(|t| !NEVER.contains(t))
         .map(str::to_string)
+        .collect();
+    // A retired prefix outside `NEVER` adds its own folder only, when its top folder isn't swept
+    // anyway (never the rest of that top folder; `sweep_retired_names` takes those under `NEVER`).
+    let tops: Vec<String> = RETIRED
+        .iter()
+        .filter_map(|p| p.rsplit_once('/').map(|(d, _)| d))
+        .filter(|d| d.split('/').next().is_some_and(|t| !NEVER.contains(&t) && !tops.contains(t)))
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .chain(tops)
         .collect();
 
     crate::agent::jobs::stage(1, 2, "steps (sweeping the folders)");
@@ -1607,10 +1625,15 @@ mod tests {
         });
         let mpath = root.join("state/build/manifest.json");
         fs::write(&mpath, manifest.to_string()).unwrap();
+        // (Uploads never verified: the retired ones leave the pending too, the rest stay.)
+        let ppath = root.join("state/build/pending.json");
+        fs::write(&ppath, serde_json::json!({ferries: "a", poi: "b", rail: "c"}).to_string()).unwrap();
         store::catalogue::write(&root.join("catalog"), &store::catalogue::Catalogue::new(1)).unwrap();
         let nas = store::nasfs::NasRoot::local_for_test(root);
         let r = run(&nas, 14, false, None).unwrap();
         assert_eq!(r.retired_dropped, 3, "{:?}", r.warnings);
+        let p: std::collections::BTreeMap<String, String> = serde_json::from_slice(&fs::read(&ppath).unwrap()).unwrap();
+        assert_eq!(p.keys().collect::<Vec<_>>(), [rail]);
         let m: std::collections::BTreeMap<String, String> = serde_json::from_slice(&fs::read(&mpath).unwrap()).unwrap();
         assert_eq!(m.keys().collect::<Vec<_>>(), ["global/legacyx/ferries", "global/railfreq"]);
         assert_eq!((r.retired_removed, r.retired_bytes, r.removed, r.tombs), (2, 4, 2, 1));
@@ -1620,6 +1643,26 @@ mod tests {
         let r = run(&nas, 14, false, None).unwrap();
         assert_eq!((r.retired_dropped, r.retired_removed, r.removed), (0, 1, 1));
         assert!(!root.join(stats).exists() && root.join(rail).exists() && root.join(near).exists());
+        // With nothing else under global/ named, only the legacy folder is listed: an old,
+        // content-named file beside it no one names stays (the folder sweep never took it).
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let (ferries, other) = ("global/legacy/ferries.1111111111111111.json", "global/railfreq.4444444444444444.bin");
+        for f in [ferries, other] {
+            fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
+            fs::write(root.join(f), b"xy").unwrap();
+            age(&root.join(f), 30);
+        }
+        fs::create_dir_all(root.join("state/build")).unwrap();
+        fs::write(
+            root.join("state/build/manifest.json"),
+            serde_json::json!({"global/legacy/ferries": ferries}).to_string(),
+        )
+        .unwrap();
+        store::catalogue::write(&root.join("catalog"), &store::catalogue::Catalogue::new(1)).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false, None).unwrap();
+        assert_eq!((r.retired_dropped, r.retired_removed, r.removed), (1, 1, 1), "{:?}", r.warnings);
+        assert!(!root.join(ferries).exists() && root.join(other).exists());
     }
 
     /// Task #701: in the pool the drop is the gc job's hand-off (merged by the lead), never a
@@ -1635,9 +1678,12 @@ mod tests {
         let hand = d.path().join("handoff");
         let mut out = crate::out::Out::open(&nas, &d.path().join("s"), STEP).unwrap().handing_off(&hand);
         out.remove("sources/terrain-z8-v3");
+        out.unpend("sources/terrain-z8-v3.3333333333333333.pack");
         out.save().unwrap();
         let hs = crate::handoff::written_in(&hand).unwrap().unwrap();
         assert_eq!(hs.len(), 1);
+        // (Its upload, never verified, leaves the records' pending as the lead merges it.)
+        assert_eq!(hs[0].checked, ["sources/terrain-z8-v3.3333333333333333.pack".to_string()]);
         assert_eq!(
             hs[0].changes,
             [("sources/terrain-z8-v3".to_string(), None)].into_iter().collect::<std::collections::BTreeMap<_, _>>()

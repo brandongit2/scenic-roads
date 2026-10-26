@@ -97,12 +97,14 @@ of the lead's own (`QUIET_AGE`); running, it yields to a target held back for th
   an accepted index, an unmerged journal entry or an index of the last 14 days names them.
 - **Removed steps' data** (`agent::gc::RETIRED`, logical-name prefixes; today `sources/terrain-z8-`,
   the worldwide z8 terrain removed by task #670, and `global/legacy/`, the old pipeline's converted
-  data, read by nothing since): each run first drops every manifest name under one,
+  data, read by nothing since): each run first drops every manifest name under one, and every
+  upload under one still pending verification (the records' pending would keep its file),
   as the `gc` job's own change through `Out` (its write-set: these removals and the depth packs'
   below, `agent::steps`): in the pool a hand-off the lead merges into its records in one save, as any
   job's (pool.md §7.3). With nothing left to drop it writes nothing. The files then go by the rule
-  above (under `sources/`, looked for in each prefix's folder; elsewhere in the folder sweep): kept while a catalogue of the window, the manifest, the records or
-  an unmerged entry names them. A step whose code is deleted adds its outputs' prefix there, so
+  above (in each prefix's folder; outside `sources/` by the folder sweep, which lists only that
+  folder when nothing else names a file of its top folder): kept while a catalogue of the window,
+  the manifest, the records or an unmerged entry names them. A step whose code is deleted adds its outputs' prefix there, so
   "removed" means its data deleted too; no step may make a name under one.
 - **Depth packs no target names** (task #679): in the same drop, every depth pack (the `depth`,
   `depth-class` and `depth-shade` layers' z6 hi and z3 lo packs) whose tile no current depth
