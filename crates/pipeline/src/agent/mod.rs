@@ -7504,7 +7504,10 @@ impl Agent {
         // The pass's summits (worldwide), once the terrain packs they read are built (as the
         // peaks after them): held, said.
         let summits = build::summits_work(date, &manifest, &done);
+        // (Held, they're the landmarks chain's first step in the forecast, after the terrain.)
+        let mut summits_held = None;
         if !planned.terrain_built && (summits.is_some() || manifest.contains_key(&format!("work/summits/{date}"))) {
+            summits_held = summits;
             waiting.push(Waiting {
                 step: Some("summits".into()),
                 what: "summits and peaks".into(),
@@ -7814,7 +7817,9 @@ impl Agent {
                     .filter(|w| w.step == "heritage-sites")
                     .map(|w| job(format!("heritage-sites {date}"), "heritage-sites", Vec::new(), Some(w.clone()))),
             );
-            let chains = build::chains_left(cov, date, &manifest, &done, &inputs, &self.terrain_tiles(root, &manifest));
+            let mut chains =
+                build::chains_left(cov, date, &manifest, &done, &inputs, &self.terrain_tiles(root, &manifest));
+            chains[1].splice(0..0, summits_held);
             let record = self.forecast_record(root, &before, &planned.regions, &planned.backfill, chains, blind, &peak);
             self.start_forecast(record);
         }

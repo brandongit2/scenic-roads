@@ -178,7 +178,9 @@ after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sit
   linear route. Worldwide, so every z6 tile sees the same ends.
 - **`summits`** (per pass): the `summits` set, nodes then ways by id. A summit's position and `ele`
   are the same as a candidate's (shared code). The z8 is the terrain lo packs' (`peaks::z8`, local
-  copies of each lo pack), each tile's maximum worked out on its first read. Each summit's z8 pixel is raised to its `ele` when
+  copies of each lo pack): the built z9's 2×2 means, water flattened (in the Alps a z8 tile's highest
+  pixel is 10–110 m under the elevation pool's own z8's, 26 Oct). Each tile's maximum is worked out on
+  its first read, without keeping the tile. Each summit's z8 pixel is raised to its `ele` when
   plausible: at most 8,900 m, at most 1,500 m over the highest z8 pixel within one pixel, and at
   most twice that plus 300 m.
 - **`peaks`** (per z6 tile, `pipeline::peaks`):

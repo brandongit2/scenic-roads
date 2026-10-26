@@ -80,27 +80,27 @@ impl Z8 {
         Ok(Z8 { packs: by, maxes: Mutex::new(HashMap::new()), cache: Mutex::new(HashMap::new()), cap })
     }
 
+    /// Tile `x`/`y` decoded and despiked; None where nothing is built (no lo pack, or not in it).
+    fn decode(&self, x: u32, y: u32) -> Result<Option<Vec<f32>>> {
+        let Some(p) = self.packs.get(&(x >> (Z - 3), y >> (Z - 3))) else { return Ok(None) };
+        let len = p.file.metadata()?.len();
+        let Some((_, png)) = p.idx.get(&FileSource(&p.file, len), Z, x, y)? else { return Ok(None) };
+        let mut e = decode_terrain(&png).with_context(|| format!("the terrain's z8 8/{x}/{y}"))?;
+        crate::peaks::despike(&mut e, Z, crate::peaks::tile_lat(Z, y));
+        Ok(Some(e))
+    }
+
+    fn max_of(e: &[f32]) -> f32 {
+        e.iter().cloned().fold(0f32, f32::max)
+    }
+
     /// The tile's elevations, despiked (zeros where nothing is built).
     pub fn tile(&self, x: u32, y: u32) -> Result<Arc<Vec<f32>>> {
         if let Some(t) = self.cache.lock().unwrap().get(&(x, y)) {
             return Ok(t.clone());
         }
-        let png = match self.packs.get(&(x >> (Z - 3), y >> (Z - 3))) {
-            Some(p) => {
-                let len = p.file.metadata()?.len();
-                p.idx.get(&FileSource(&p.file, len), Z, x, y)?.map(|(_, b)| b)
-            }
-            None => None,
-        };
-        let t = match png {
-            Some(png) => {
-                let mut e = decode_terrain(&png).with_context(|| format!("the terrain's z8 8/{x}/{y}"))?;
-                crate::peaks::despike(&mut e, Z, crate::peaks::tile_lat(Z, y));
-                Arc::new(e)
-            }
-            None => Arc::new(vec![0f32; 256 * 256]),
-        };
-        self.maxes.lock().unwrap().entry((x, y)).or_insert_with(|| t.iter().cloned().fold(0f32, f32::max));
+        let t = Arc::new(self.decode(x, y)?.unwrap_or_else(|| vec![0f32; 256 * 256]));
+        self.maxes.lock().unwrap().entry((x, y)).or_insert_with(|| Self::max_of(&t));
         let mut c = self.cache.lock().unwrap();
         if c.len() >= self.cap {
             c.clear();
@@ -109,18 +109,16 @@ impl Z8 {
         Ok(t)
     }
 
-    /// The tile's highest pixel (despiked; 0 where nothing is built).
+    /// The tile's highest pixel (despiked; 0 where nothing is built). Worked out on its first use
+    /// and kept; the tile it decodes isn't kept (the isolation searches ask far more tiles' maxima
+    /// than they read: kept, they'd push the floods' tiles out of the cache).
     pub fn max(&self, x: u32, y: u32) -> Result<f32> {
         if let Some(m) = self.maxes.lock().unwrap().get(&(x, y)) {
             return Ok(*m);
         }
-        let in_pack = self.packs.get(&(x >> (Z - 3), y >> (Z - 3))).is_some_and(|p| p.idx.find(Z, x, y).is_some());
-        if !in_pack {
-            self.maxes.lock().unwrap().insert((x, y), 0.0);
-            return Ok(0.0);
-        }
-        self.tile(x, y)?;
-        Ok(self.maxes.lock().unwrap()[&(x, y)])
+        let m = self.decode(x, y)?.map_or(0.0, |e| Self::max_of(&e));
+        self.maxes.lock().unwrap().insert((x, y), m);
+        Ok(m)
     }
 }
 
