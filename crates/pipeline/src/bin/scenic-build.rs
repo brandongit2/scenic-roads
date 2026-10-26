@@ -130,7 +130,6 @@
 //!                                reported (`--full`: every file hashed, not only those whose size
 //!                                or time changed)
 //!   put <logical> <ext> <file>   upload a file under a logical name
-//!   verify                       check every unverified upload on the NAS (SHA-256 over SSH)
 //!   catalogue                      publish a catalogue of the build manifest
 //!   regions-check --dir d [--declarations d] [--report f]   the regions' check on a scratch
 //!                                folder, in memory: findings and sizes. Reads only
@@ -152,19 +151,6 @@ use pipeline::out::Out;
 use pipeline::timings::{phase, Class};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-
-const SSH: [&str; 10] = [
-    "ssh",
-    "-o",
-    "BatchMode=yes",
-    "-o",
-    "ControlMaster=auto",
-    "-o",
-    "ControlPath=~/.ssh/cm-%r@%h:%p",
-    "-o",
-    "ControlPersist=12h",
-    store::nas::SSH,
-];
 
 /// Stage `k` (from 0) of a step's `n` starting: its progress line, which the agent's status shows
 /// ("2 of 4 steps (what's being done)"). Within a part (`Parts`), its steps.
@@ -479,10 +465,6 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             };
             let (pieces, ways) = pipeline::osmpass::patch_ferries(&mut out, &date, &scratch, &near)?;
             eprintln!("patch-ferries: {pieces} pieces of the {date} pass gained {ways} ferry ways");
-        }
-        "verify" => {
-            let n = out.verify(&SSH, &format!("{}/{}", store::nas::SHARE_ON_NAS, store::nas::PROJECT))?;
-            eprintln!("verified {n} uploads");
         }
         // catalogue [--held] [--ready <ids>] [--delta]: held, it goes to catalog-held/, which
         // no server reads (a build to compare before it's switched to: inputs/hold-catalog);

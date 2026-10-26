@@ -269,7 +269,7 @@ fn ssh() -> Command {
 
 /// The proxy's `host:port` from its URL (`http://127.0.0.1:<port>`).
 #[cfg(not(target_os = "wasi"))]
-fn proxy_addr(url: &str) -> Option<String> {
+pub(crate) fn proxy_addr(url: &str) -> Option<String> {
     let a = url.strip_prefix("http://")?.trim_end_matches('/');
     a.contains(':').then(|| a.to_string())
 }

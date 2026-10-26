@@ -4,7 +4,7 @@
 //! A file is first written locally (this Mac's SSD), hashed, then copied to `<name>.tmp` on
 //! the NAS, read back past the client's cache and checked against its hash, and renamed into place
 //! (`store::naming::write_atomic`). A file already there is reused and touched, so GC sees it as
-//! in use (one the manifest names under the same logical name with one look: `put_file`). `verify` can also check uploads on the NAS itself (SHA-256 over SSH, run by hand).
+//! in use (one the manifest names under the same logical name with one look: `put_file`). An upload copied stays pending until `verify` checks it on the NAS itself (SHA-256 over SSH, GC's daily job).
 //!
 //! Several steps may run at once on the lead (the agent's job and a manual one): each records
 //! its own changes and merges them into the manifest on disk under this Mac's lock (`BuildLock`)
@@ -725,67 +725,31 @@ impl Out {
         s.extend(self.sizes.iter().map(|(c, n)| (c.clone(), *n)));
         Ok(s)
     }
+}
 
-    /// Check every unverified upload on the NAS itself: SHA-256 computed there over SSH (`ssh`
-    /// runs a command on the NAS; `nas_root` is the project folder as the NAS sees it). Files that
-    /// don't match are deleted there (over SSH, so they skip the share's Recycle Bin) and an error
-    /// lists them; rerunning the step uploads them again.
-    pub fn verify(&mut self, ssh: &[&str], nas_root: &str) -> Result<usize> {
-        if self.pending.is_empty() {
-            return Ok(0);
-        }
-        // (A first call, bounded: it authenticates, which may wait on the SSH agent unbounded
-        // (osmpass::SSH_START), and opens the shared connection the hashes' calls then take.)
-        #[cfg(not(target_os = "wasi"))]
-        crate::osmpass::ssh_opened(ssh)?;
-        let names: Vec<String> = self.pending.keys().cloned().collect();
-        let mut bad = Vec::new();
-        for chunk in names.chunks(200) {
-            let mut cmd = store::spawn::command(ssh[0]);
-            cmd.args(&ssh[1..]);
-            let quoted: Vec<String> = chunk.iter().map(|n| format!("'{}'", n.replace('\'', "'\\''"))).collect();
-            cmd.arg(format!("cd '{nas_root}' && sha256sum {}", quoted.join(" ")));
-            let out = store::spawn::output(&mut cmd).context("ssh to the NAS")?;
-            let text = String::from_utf8_lossy(&out.stdout);
-            let mut got: BTreeMap<String, String> = BTreeMap::new();
-            for line in text.lines() {
-                if let Some((h, n)) = line.split_once("  ") {
-                    got.insert(n.to_string(), h.to_string());
-                }
-            }
-            for n in chunk {
-                if got.get(n) != self.pending.get(n) {
-                    bad.push(n.clone());
-                }
-            }
-        }
-        let ok = names.len() - bad.len();
-        for n in &names {
-            if !bad.contains(n) {
-                self.pending.remove(n);
-                self.checked.insert(n.clone());
-            }
-        }
-        if !bad.is_empty() {
-            let quoted: Vec<String> = bad.iter().map(|n| format!("'{}'", n.replace('\'', "'\\''"))).collect();
-            let mut cmd = store::spawn::command(ssh[0]);
-            cmd.args(&ssh[1..]);
-            cmd.arg(format!("cd '{nas_root}' && rm -f {}", quoted.join(" ")));
-            store::spawn::status(&mut cmd).ok();
-            for n in &bad {
-                self.pending.remove(n);
-                self.checked.insert(n.clone());
-                let gone: Vec<String> = self.manifest.iter().filter(|(_, v)| *v == n).map(|(k, _)| k.clone()).collect();
-                for k in gone {
-                    self.remove(&k);
-                }
-            }
-            self.save()?;
-            bail!("{} uploads failed verification and were removed: {}", bad.len(), bad.join(", "));
-        }
-        self.save()?;
-        Ok(ok)
+/// Checks unverified uploads `uploads` (content name → SHA-256) on the NAS itself: SHA-256 computed
+/// there over SSH (`ssh` runs a command on the NAS; `nas_root` is the project folder as the NAS sees
+/// it). The names that match, and those that don't or aren't there; nothing is removed or written
+/// (GC's job takes the matching ones out of the records' pending: crate::agent::gc::verify_pending).
+pub fn verify(ssh: &[&str], nas_root: &str, uploads: &BTreeMap<String, String>) -> Result<(Vec<String>, Vec<String>)> {
+    if uploads.is_empty() {
+        return Ok(Default::default());
     }
+    // (A first call, bounded: it authenticates, which may wait on the SSH agent unbounded
+    // (osmpass::SSH_START), and opens the shared connection the hashes' calls then take.)
+    #[cfg(not(target_os = "wasi"))]
+    crate::osmpass::ssh_opened(ssh)?;
+    let mut cmd = store::spawn::command(ssh[0]);
+    cmd.args(&ssh[1..]);
+    let quoted: Vec<String> = uploads.keys().map(|n| format!("'{}'", n.replace('\'', "'\\''"))).collect();
+    // (A file not there: sha256sum says so on stderr and goes on; it's among those that don't match.)
+    cmd.arg(format!("cd '{nas_root}' && {{ sha256sum {} 2>/dev/null; true; }}", quoted.join(" ")));
+    let out = store::spawn::output(&mut cmd).context("ssh to the NAS")?;
+    anyhow::ensure!(out.status.success(), "ssh to the NAS: {}", String::from_utf8_lossy(&out.stderr).trim());
+    let text = String::from_utf8_lossy(&out.stdout);
+    let got: BTreeMap<&str, &str> = text.lines().filter_map(|l| l.split_once("  ")).map(|(h, n)| (n, h)).collect();
+    let (ok, bad): (Vec<_>, Vec<_>) = uploads.iter().partition(|(n, h)| got.get(n.as_str()) == Some(&h.as_str()));
+    Ok((ok.into_iter().map(|(n, _)| n.clone()).collect(), bad.into_iter().map(|(n, _)| n.clone()).collect()))
 }
 
 /// An error once the pool has begun (its first term made): the records are its lead's to write,

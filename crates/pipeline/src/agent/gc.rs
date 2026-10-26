@@ -18,12 +18,14 @@
 //! What removed steps made (`RETIRED`) and the depth packs of tiles no current depth target names
 //! (`DepthKeep`): the run first drops their names from the manifest through the records
 //! (`drop_names`), then their files go by the same rule as any content-named file.
+//! The records' unverified uploads: those the manifest doesn't name leave the pending unchecked
+//! (`drop_names`), those it names are checked on the NAS over SSH, last (`verify_pending`).
 //! The newest pass, a planet waiting for its pass, the rest of `sources/`, the user's folders (the
 //! inputs folders), state and the app are never touched. With no readable catalogue nothing is deleted.
 
 use anyhow::{Context, Result};
 use serde::Serialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime};
 use store::nasfs::NasPath;
 
@@ -46,6 +48,14 @@ pub struct Report {
     /// The depth packs no current depth target names (`DepthKeep`) this run dropped from the
     /// manifest (a dry run: would drop).
     pub depth_dropped: usize,
+    /// Unverified uploads the manifest doesn't name, dropped from the records' pending
+    /// (`drop_names`; a dry run: would drop).
+    pub pending_dropped: usize,
+    /// Those it names checked on the NAS (`verify_pending`; a dry run: would check, and their
+    /// bytes), and those that didn't match (left pending, named in the warnings).
+    pub pending_verified: usize,
+    pub pending_verify_bytes: u64,
+    pub pending_failed: usize,
     /// Of the removed, files of retired passes' sources and of removed steps (and their bytes).
     pub retired_removed: usize,
     pub retired_bytes: u64,
@@ -185,43 +195,131 @@ fn dropped(l: &str, depth: Option<&DepthKeep>) -> bool {
     retired(l) || depth.is_some_and(|k| k.orphan(l))
 }
 
+/// The records' unverified uploads (content name → SHA-256) and manifest, as one reading: with the
+/// pool its newest records (today's files may lag them), else (none yet) today's files, the pending read
+/// before the manifest (a save writes the manifest first: every upload the pending read holds is
+/// one the manifest read after has named, unless replaced since).
+pub fn records_now(root: &store::nasfs::NasRoot) -> Result<(BTreeMap<String, String>, BTreeMap<String, String>)> {
+    use crate::pool::{journal, records::Records, term};
+    if root.join(journal::DIR).exists() {
+        let cur = term::current(root).context("the current term")?;
+        if let Some(r) = Records::newest(root, cur.term, true).context("the newest records")? {
+            return Ok((r.pending, r.manifest));
+        }
+    }
+    let pending = crate::out::read_record(&root.join("state/build/pending.json")).context("the pending uploads")?;
+    Ok((pending, crate::out::read_manifest(root)?))
+}
+
+/// What `drop_names` dropped (a dry run: would drop).
+#[derive(Debug, Default, PartialEq)]
+pub struct Dropped {
+    /// Names removed steps made (`RETIRED`), and depth packs no current target names.
+    pub retired: usize,
+    pub depth: usize,
+    /// Unverified uploads the manifest doesn't name (once this run's names are dropped): replaced
+    /// or dropped since, read by nothing, so never checked; their files then go as any unnamed.
+    pub unpended: usize,
+}
+
 /// Drops from the build's manifest at `root` the names removed steps made (`RETIRED`) and the depth
-/// packs no current target names (`depth`), as the `gc` step's job (`Out`, its scratch `scratch`):
-/// in the pool a hand-off the lead merges, else saved under the build lock. How many of each
-/// (removed steps', depth's); none named, nothing written, so a run after is a no-op. A dry run
-/// counts them from the manifest, writing nothing.
+/// packs no current target names (`depth`), and from its unverified uploads every one the manifest
+/// then doesn't name, as the `gc` step's job (`Out`, its scratch `scratch`): in the pool a hand-off
+/// the lead merges (its `checked`), else saved under the build lock. None of either, nothing
+/// written, so a run after is a no-op. A dry run counts them, writing nothing.
 pub fn drop_names(
     root: &store::nasfs::NasRoot,
     scratch: &std::path::Path,
     depth: Option<&DepthKeep>,
     dry_run: bool,
-) -> Result<(usize, usize)> {
-    let count = |names: &[&String]| {
-        let r = names.iter().filter(|l| retired(l)).count();
-        (r, names.len() - r)
-    };
-    if dry_run {
-        let m = crate::out::read_manifest(root)?;
-        let names: Vec<&String> = m.keys().filter(|l| dropped(l, depth)).collect();
-        return Ok(count(&names));
+) -> Result<Dropped> {
+    let (pending, manifest) = records_now(root)?;
+    let names: Vec<&String> = manifest.keys().filter(|l| dropped(l, depth)).collect();
+    let named: BTreeSet<&String> = manifest.iter().filter(|(l, _)| !dropped(l, depth)).map(|(_, c)| c).collect();
+    let unpend: Vec<&String> = pending.keys().filter(|c| !named.contains(c)).collect();
+    let retired = names.iter().filter(|l| retired(l)).count();
+    let r = Dropped { retired, depth: names.len() - retired, unpended: unpend.len() };
+    if dry_run || (names.is_empty() && unpend.is_empty()) {
+        return Ok(r);
     }
     let mut out = crate::out::Out::open(root, scratch, STEP)?;
-    let names: Vec<String> = out.manifest.keys().filter(|l| dropped(l, depth)).cloned().collect();
-    for l in &names {
+    for l in names {
         out.remove(l);
     }
-    // (Their uploads never verified leave the pending ones too: the records' pending keep a file
-    // from the sweeps, and a verify would find it gone.)
-    let pending: std::collections::BTreeMap<String, String> =
-        crate::out::read_record(&root.join("state/build/pending.json")).context("the pending uploads")?;
-    let unpend: Vec<&String> = pending.keys().filter(|c| retired(c)).collect();
-    for c in &unpend {
+    for c in unpend {
         out.unpend(c);
     }
-    if !names.is_empty() || !unpend.is_empty() {
-        out.save()?;
+    out.save()?;
+    Ok(r)
+}
+
+/// What `verify_pending` checked (a dry run: would check).
+#[derive(Debug, Default, PartialEq)]
+pub struct Verified {
+    /// Uploads the manifest names, checked and out of the pending.
+    pub ok: usize,
+    /// Those whose file doesn't match its SHA-256, or isn't there: left pending (a rebuild of
+    /// their targets replaces them).
+    pub bad: Vec<String>,
+    /// A dry run's: the bytes it would hash, by the records' sizes.
+    pub bytes: u64,
+}
+
+/// How many uploads one `ssh` hashes (its command line's length, and the safe points between).
+const VERIFY_CHUNK: usize = 200;
+
+/// Checks the records' unverified uploads the manifest names on the NAS itself (crate::out::verify:
+/// `ssh`, `nas_root` the project folder as the NAS sees it), as the `gc` step's job (`scratch` its
+/// `Out`'s): those that match leave the pending (in the pool through its hand-off's `checked`);
+/// those that don't stay, said. Between batches a safe point (`yield_point`), the checked so far
+/// saved first when it stops. A dry run counts them and their bytes, hashing nothing.
+pub fn verify_pending(
+    root: &store::nasfs::NasRoot,
+    scratch: &std::path::Path,
+    ssh: &[&str],
+    nas_root: &str,
+    dry_run: bool,
+) -> Result<Verified> {
+    let (pending, manifest) = records_now(root)?;
+    let named: BTreeSet<&String> = manifest.values().collect();
+    let todo: Vec<(&String, &String)> = pending.iter().filter(|(c, _)| named.contains(c)).collect();
+    let mut v = Verified::default();
+    if dry_run {
+        let sizes: BTreeMap<String, u64> = crate::out::read_record(&root.join(crate::out::SIZES))?;
+        v.ok = todo.len();
+        v.bytes = todo.iter().filter_map(|(c, _)| sizes.get(*c)).sum();
+        return Ok(v);
     }
-    Ok(count(&names.iter().collect::<Vec<_>>()))
+    if todo.is_empty() {
+        return Ok(v);
+    }
+    let mut out = crate::out::Out::open(root, scratch, STEP)?;
+    for chunk in todo.chunks(VERIFY_CHUNK) {
+        let batch: BTreeMap<String, String> = chunk.iter().map(|(c, h)| ((*c).clone(), (*h).clone())).collect();
+        let (ok, bad) = crate::out::verify(ssh, nas_root, &batch)?;
+        v.ok += ok.len();
+        for c in &ok {
+            out.unpend(c);
+        }
+        v.bad.extend(bad);
+        if crate::control::draining() {
+            out.save()?;
+        }
+        yield_point();
+    }
+    out.save()?;
+    Ok(v)
+}
+
+/// The command line `verify_pending` reaches the NAS by: `ssh` in batch mode (no prompts), through
+/// the job's proxy when it has one (crate::budget::SANDBOX, as crate::osmpass's), its host last.
+fn nas_ssh() -> Vec<String> {
+    let mut a: Vec<String> = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20"].map(String::from).into();
+    if let Some(p) = std::env::var(crate::budget::PROXY_ENV).ok().and_then(|u| crate::osmpass::proxy_addr(&u)) {
+        a.extend(["-o".into(), format!("ProxyCommand=/usr/bin/nc -X connect -x {p} %h %p")]);
+    }
+    a.push(store::nas::SSH.into());
+    a
 }
 
 /// What the pool's records and journal name beyond today's manifest (docs/pool.md §7.3, §7.7): the
@@ -486,7 +584,7 @@ pub fn run(root: &store::nasfs::NasRoot, keep_days: u64, dry_run: bool, depth: O
     std::fs::remove_dir_all(&scratch).ok();
     let r = run_once(root, keep_days, dry_run).map(|mut rep| {
         match &dropped {
-            Ok((r, d)) => (rep.retired_dropped, rep.depth_dropped) = (*r, *d),
+            Ok(d) => (rep.retired_dropped, rep.depth_dropped, rep.pending_dropped) = (d.retired, d.depth, d.unpended),
             Err(e) => rep.warnings.push(format!("names not dropped: {e:#}")),
         }
         // The history's old days, one tar a day (task #531); a failure is said, never fails GC.
@@ -523,6 +621,27 @@ pub fn run(root: &store::nasfs::NasRoot, keep_days: u64, dry_run: bool, depth: O
                 rep.warnings.extend(h.warnings);
             }
             Err(e) => rep.warnings.push(format!("forecasts not archived: {e:#}")),
+        }
+        // The uploads still pending checked on the NAS itself, last (the longest, hashing on the
+        // NAS); a failure is said, never fails GC. Not a project folder on the NAS's share (a
+        // test's): none checked.
+        if let Some(nas_root) = store::nas::on_nas(&root.unchecked_path()) {
+            let ssh = nas_ssh();
+            let ssh: Vec<&str> = ssh.iter().map(String::as_str).collect();
+            match verify_pending(root, &scratch, &ssh, &nas_root, dry_run) {
+                Ok(v) => {
+                    (rep.pending_verified, rep.pending_verify_bytes, rep.pending_failed) = (v.ok, v.bytes, v.bad.len());
+                    if let Some(first) = v.bad.first() {
+                        rep.warnings.push(format!(
+                            "{} uploads don't match their SHA-256 on the NAS, or aren't there (left pending; rebuild their targets): {first}{}",
+                            v.bad.len(),
+                            if v.bad.len() > 1 { " …" } else { "" }
+                        ));
+                    }
+                }
+                Err(e) => rep.warnings.push(format!("uploads not verified: {e:#}")),
+            }
+            std::fs::remove_dir_all(&scratch).ok();
         }
         rep
     });
@@ -1801,7 +1920,8 @@ mod tests {
         journal::write(&nas, &e).unwrap();
         let k = keep();
         // Without the targets: no depth name goes (the removed step's does).
-        assert_eq!(drop_names(&nas, &d.path().join("s"), None, true).unwrap(), (1, 0));
+        let dr = drop_names(&nas, &d.path().join("s"), None, true).unwrap();
+        assert_eq!((dr.retired, dr.depth), (1, 0));
         // A dry run counts, writing nothing.
         let r = run(&nas, 14, true, Some(&k)).unwrap();
         assert_eq!((r.retired_dropped, r.depth_dropped), (1, 3), "{:?}", r.warnings);
@@ -1849,5 +1969,71 @@ mod tests {
         for l in ["layers/depth/hi/6-9-9", "layers/depth/lo/3-7-7"] {
             assert!(k.orphan(l), "{l}");
         }
+    }
+
+    /// Task #781: an upload the manifest no longer names leaves the records' pending unchecked (a
+    /// replaced or dropped file, read by nothing: kept only by the pending, never verified); one
+    /// it names stays for the check.
+    #[test]
+    fn pending_uploads_no_name_keeps_are_dropped() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("nas");
+        fs::create_dir_all(root.join("state/build")).unwrap();
+        let (now, was) = ("base/6-1-1.2222222222222222.sect", "base/6-1-1.1111111111111111.sect");
+        fs::write(root.join("state/build/manifest.json"), serde_json::json!({"base/6-1-1": now}).to_string()).unwrap();
+        let ppath = root.join("state/build/pending.json");
+        fs::write(&ppath, serde_json::json!({now: "a", was: "b"}).to_string()).unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        let dr = drop_names(&nas, &d.path().join("s"), None, true).unwrap();
+        assert_eq!(dr, Dropped { retired: 0, depth: 0, unpended: 1 });
+        assert_eq!(
+            fs::read_to_string(&ppath).unwrap(),
+            serde_json::json!({now: "a", was: "b"}).to_string(),
+            "a dry run writes nothing"
+        );
+        assert_eq!(drop_names(&nas, &d.path().join("s"), None, false).unwrap().unpended, 1);
+        let p: BTreeMap<String, String> = serde_json::from_slice(&fs::read(&ppath).unwrap()).unwrap();
+        assert_eq!(p.keys().collect::<Vec<_>>(), [now]);
+        assert_eq!(drop_names(&nas, &d.path().join("s"), None, false).unwrap(), Dropped::default(), "a no-op after");
+    }
+
+    /// Task #781: the named uploads are checked on the NAS (here a shell on this Mac in its place):
+    /// one that matches leaves the pending; one whose bytes differ, or that isn't there, stays, said,
+    /// nothing removed. A dry run counts them and their bytes by the records' sizes, hashing nothing.
+    #[test]
+    fn named_uploads_are_checked_and_only_the_matching_leave() {
+        use sha2::Digest;
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("nas");
+        fs::create_dir_all(root.join("state/build")).unwrap();
+        fs::create_dir_all(root.join("base")).unwrap();
+        let (good, spoilt, gone) = (
+            "base/6-1-1.1111111111111111.sect",
+            "base/6-1-2.2222222222222222.sect",
+            "base/6-1-3.3333333333333333.sect",
+        );
+        fs::write(root.join(good), b"good").unwrap();
+        fs::write(root.join(spoilt), b"spoilt").unwrap();
+        let sha = |b: &[u8]| format!("{:x}", sha2::Sha256::digest(b));
+        let manifest = serde_json::json!({"base/6-1-1": good, "base/6-1-2": spoilt, "base/6-1-3": gone});
+        fs::write(root.join("state/build/manifest.json"), manifest.to_string()).unwrap();
+        let ppath = root.join("state/build/pending.json");
+        let pending = serde_json::json!({good: sha(b"good"), spoilt: sha(b"as uploaded"), gone: sha(b"x")});
+        fs::write(&ppath, pending.to_string()).unwrap();
+        fs::write(root.join(crate::out::SIZES), serde_json::json!({good: 4, spoilt: 11}).to_string()).unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        let at = root.to_str().unwrap();
+        let s = d.path().join("s");
+        let v = verify_pending(&nas, &s, &["sh", "-c"], at, true).unwrap();
+        assert_eq!((v.ok, v.bytes, v.bad.len()), (3, 15, 0));
+        assert_eq!(fs::read_to_string(&ppath).unwrap(), pending.to_string(), "a dry run writes nothing");
+        let v = verify_pending(&nas, &s, &["sh", "-c"], at, false).unwrap();
+        assert_eq!((v.ok, v.bad), (1, vec![spoilt.to_string(), gone.to_string()]));
+        let p: BTreeMap<String, String> = serde_json::from_slice(&fs::read(&ppath).unwrap()).unwrap();
+        assert_eq!(p.keys().collect::<Vec<_>>(), [spoilt, gone]);
+        assert!(root.join(good).exists() && root.join(spoilt).exists());
+        let m: BTreeMap<String, String> =
+            serde_json::from_slice(&fs::read(root.join("state/build/manifest.json")).unwrap()).unwrap();
+        assert_eq!(m.len(), 3, "nothing unnamed");
     }
 }

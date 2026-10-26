@@ -53,6 +53,17 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
   (`state/build/jobs.json`) say what each output was made from. These and the unverified uploads
   (`pending.json`) and the files' sizes (`sizes.json`) are written by the lead from its term's records
   (`state/build/term/<E>/records.json`, the truth: docs/building.md §2, The pool).
+- **Unverified uploads** (`pending.json`: content name → SHA-256): a file a job copied to the NAS
+  (one reused isn't) is read back past the client's cache as it lands, and stays pending until
+  checked on the NAS itself. GC counts pending files as referenced. GC's daily job drains them
+  (`agent::gc`): first every pending upload the manifest doesn't name (replaced or dropped since,
+  read by nothing) leaves the pending unchecked, then every one it names is hashed on the NAS over
+  SSH (`out::verify`, 200 a call, a safe point between). A match leaves the pending; a file that
+  doesn't match or isn't there stays pending, nothing removed, and the job's warnings name it (a
+  rebuild of its target replaces it). Both are the `gc` job's change through `Out`: in the pool its
+  hand-off's `checked`, which the lead takes out of its records' pending. A root not on the NAS's
+  share (a test's) is never hashed. `scenic gc --dry-run` counts both, and the bytes it would
+  hash, writing nothing.
 
 **Copies carry the bytes and permissions, nothing else** (`store::sys::copy_data`; `cp -X` in
 scripts): the share refuses a copy that sets a `com.apple.provenance` attribute differing from its
@@ -97,8 +108,8 @@ of the lead's own (`QUIET_AGE`); running, it yields to a target held back for th
   an accepted index, an unmerged journal entry or an index of the last 14 days names them.
 - **Removed steps' data** (`agent::gc::RETIRED`, logical-name prefixes; today `sources/terrain-z8-`,
   the worldwide z8 terrain removed by task #670, and `global/legacy/`, the old pipeline's converted
-  data, read by nothing since): each run first drops every manifest name under one, and every
-  upload under one still pending verification (the records' pending would keep its file),
+  data, read by nothing since): each run first drops every manifest name under one (their uploads
+  still pending then leave the pending with every other one the manifest doesn't name, above),
   as the `gc` job's own change through `Out` (its write-set: these removals and the depth packs'
   below, `agent::steps`): in the pool a hand-off the lead merges into its records in one save, as any
   job's (pool.md §7.3). With nothing left to drop it writes nothing. The files then go by the rule

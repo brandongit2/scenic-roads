@@ -158,7 +158,8 @@ A term is `state/build/terms/<E>.json`, made once with create-new (`crate::pool:
 ### 6.2 Records per term
 
 - **One file per term** (`crate::pool::records`): `state/build/term/<E>/records.json` holds the
-  manifest, keys, pending uploads, the sizes of the files the manifest names (from the entries'
+  manifest, keys, pending uploads (an entry's `checked` takes them out: GC's job, which checks
+  them on the NAS, docs/storage.md), the sizes of the files the manifest names (from the entries'
   hand-offs, for the catalogues: `sizes.json` beside `manifest.json`), raw archives awaiting the
   index (each taken off once the lead has named it in the raw store's index and saved that,
   `Heard::named_raw`, with the next snapshot; one named but not yet off when the lead restarts is

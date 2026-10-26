@@ -152,7 +152,7 @@ fn what_went_wrong_before() {
     let (code, _, _) = run("scenic-build", &s(&["unit", "--pass", "a", "--pass", "b"]));
     assert_eq!(code, 2);
     // An argument too many.
-    let (code, _, _) = run("scenic-build", &s(&["verify", "stray"]));
+    let (code, _, _) = run("scenic-build", &s(&["pyenv", "stray"]));
     assert_eq!(code, 2);
     let (code, _, _) = run("scenic", &s(&["in-use", "3"]));
     assert_eq!(code, 2, "in-use takes off, or --cores");
