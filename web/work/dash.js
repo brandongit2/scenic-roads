@@ -432,7 +432,7 @@ function mapData(m) {
   // (The legend counts every step and tile area, those toggled off too, and every state of the
   // steps and areas shown; the map gets the kept.)
   askBuilt();
-  const [run0, done0] = mapTilesKept(runningTiles(runs, m.fc?.each_s, m.now), finishedTiles(endsHeld(), from, built.steps), { ...f, tiles: {}, offSteps: [], offAreas: [] },
+  const [run0, done0] = mapTilesKept(runningTiles(runs, m.fc?.each_s, m.now), finishedTiles(endsHeld(), from, built.steps, heldFrom()), { ...f, tiles: {}, offSteps: [], offAreas: [] },
     { pubAt, macOf: (w) => macSlot(w, hosts).host });
   const stepCount = {}, areaCount = {};
   for (const [k, v] of [...run0, ...done0]) { stepCount[v.step] = (stepCount[v.step] || 0) + 1; areaCount[areaOf(k)] = (areaCount[areaOf(k)] || 0) + 1; }
@@ -544,7 +544,7 @@ function mapLegend(m, md, map) {
       toggle(steps.some((id) => !off.has(id)), () => flipSteps(steps, steps.every((id) => off.has(id))), { stage }, sw(stage), h("b", null, stage || "–"), `Show or hide every ${stage} step's tiles on the map`, " stage", stage),
       steps.map((id) => toggle(!off.has(id), () => flipSteps([id], off.has(id)), { step: id }, sw(stage), `${id} ${n(stepCount[id] || 0)}`, `Show or hide ${id}'s tiles on the map`, " step", id)))),
     btn("Check all", []), btn("Uncheck all", allSteps)),
-  h("div", "wmap-legend small dim", h("span", null, `counts are tiles · finished in the ${span}: published solid, completed paler under a dashed outline · running: outlined, filled as far as done${f.member ? " · to come: faint, dotted" : ""} · steps at one spot: stripes · outline weight: the tile area`)),
+  h("div", "wmap-legend small dim", h("span", null, `counts are tiles · finished: every one built, those ended in the ${span} fading in · published solid, completed paler under a dashed outline · running: outlined, filled as far as done${f.member ? " · to come: faint, dotted" : ""} · steps at one spot: stripes · outline weight: the tile area`)),
   mapFilterBar(m)];
 }
 // The filters under a map (each map its own controls over one state). A member: the tiles it
@@ -901,6 +901,8 @@ const past = { ends: [], epoch: undefined, first: null, asking: false };
 // the page's own events.
 const isEnd = (e) => e.kind === "end" || e.kind === "done" || e.kind === "fail";
 const endsHeld = () => past.ends.concat(events.filter(isEnd));
+// The oldest event the page holds (its past window's or the live poll's), null: none.
+const heldFrom = () => { let t = events[0]?.t ?? null; for (const e of past.ends) if (t == null || e.t < t) t = e.t; return t; };
 async function loadPast(sw) {
   if (past.epoch !== sw.epoch) Object.assign(past, { ends: [], epoch: sw.epoch, first: null });
   if (!ui.past || past.asking || !events.length) return;

@@ -20,8 +20,10 @@ pub const EVERY: Duration = Duration::from_secs(60);
 
 /// Each step's tile targets ("z/x/y") recorded in `keys`: a per-target step's under its id (a
 /// record's name with `-` for `_`), a `-root` step's (kept with the lo keys under its own name) as
-/// the root tile, "0/0/0". Other records' targets (a worldwide step's) aren't tiles, and records of
-/// steps this app doesn't know (`Keys::other`) aren't drawn: left out.
+/// the root tile, "0/0/0". Other records' targets (a worldwide step's) aren't tiles, records of
+/// steps this app doesn't know (`Keys::other`: a retired step's, terrain_fine's) aren't drawn, and
+/// terrain-hi's, slope-hi's and tree cover's z3 records (whole runs from before their z6 tiles,
+/// `Keys`' docs; 18 each of terrain's and slope's on 26 Oct) aren't targets now: left out.
 pub fn tiles_of(keys: &Keys) -> BTreeMap<String, Vec<String>> {
     let tile = |t: &str| {
         let p: Vec<&str> = t.split('/').collect();
@@ -32,8 +34,9 @@ pub fn tiles_of(keys: &Keys) -> BTreeMap<String, Vec<String>> {
     let Ok(Value::Object(m)) = serde_json::to_value(&known) else { return out };
     for (name, v) in m {
         let Value::Object(targets) = v else { continue };
+        let z3_old = matches!(name.as_str(), "terrain_hi" | "slope_hi" | "trees");
         for t in targets.keys() {
-            if tile(t) {
+            if tile(t) && !(z3_old && t.starts_with("3/")) {
                 out.entry(name.replace('_', "-")).or_default().push(t.clone());
             } else if name == "lo" && t.ends_with("-root") {
                 out.entry(t.clone()).or_default().push("0/0/0".into());
@@ -112,7 +115,8 @@ mod tests {
     fn every_recorded_tile_by_its_step() {
         let mut k = Keys::default();
         k.record("terrain-deep", &[("10/257/342".into(), "a".into()), ("10/300/400".into(), "b".into())]);
-        k.record("terrain-hi", &[("6/16/21".into(), "c".into())]);
+        k.record("terrain-hi", &[("6/16/21".into(), "c".into()), ("3/2/2".into(), "old".into())]);
+        k.record("trees", &[("3/2/2".into(), "old".into())]);
         k.record("bldfield-lo", &[("3/2/2".into(), "d".into())]);
         k.record("terrain-root", &[("terrain-root".into(), "e".into())]);
         k.record("outlines", &[("outlines".into(), "f".into())]);

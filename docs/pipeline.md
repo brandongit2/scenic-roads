@@ -210,10 +210,11 @@ boxes).
   legend), the finished tiles (`sums.js` finishedTiles, #674: every tile the build's keys record
   as built, `/work/built`, whenever it was, and those the history's ends held finished in the Jobs
   tab's past window, not merged into the keys yet; its time and Mac the last end held for it, a
-  recorded tile with none "earlier"; each fades in as it comes, the window's history played back
+  recorded tile with none "earlier"; a recorded tile is built at some version, its key maybe not
+  the plan's now, so one to be built again stays drawn until its job runs; each fades in as it comes, the window's history played back
   on the first look, paler as it ages, or evenly with the fade filter off; a low zoom's tile paler
-  still; published, finished by the last catalogue's time (one with no end held taken as
-  published once there's a catalogue), solid; completed but not in a catalogue yet half as
+  still; published, finished by the last catalogue's time (one with no end held when the oldest
+  event the page holds is by then, else completed), solid; completed but not in a catalogue yet half as
   strong under a dashed outline), and each running job's target tiles (the
   history's start or lease event, else the tiles its id or words name: `sums.js` targetsOf) in
   its stage's colour, filled as far as they're done (`sums.js` runningTiles: from the job's

@@ -1,7 +1,7 @@
 // The overview's world map (the build page's Overview tab; docs/pipeline.md §5): one canvas in Web
 // Mercator (the world 0–1000 each way, y down: countries.json's and /work/regions' outlines), with
 // the z3 grid (and z6's when zoomed in enough to see it), the countries, the regions coloured by
-// how far they are, the tiles finished in the past window (each fading in as it comes, paler as it
+// how far they are, the finished tiles (every one built, #674; those of the past window each fading in as it comes, paler as it
 // ages; published solid, completed but not in a catalogue yet paler under a dashed outline), and
 // each running job's target tiles in its stage's colour, filled as far as they're done, and with a
 // pool member chosen the tiles the forecast places on it later ("to come": faint, dotted). Steps at

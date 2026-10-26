@@ -51,13 +51,19 @@ test('map: every tile the keys record stays finished, whatever the window and ev
   const f = finishedTiles(ends, 5000, built);
   assert.deepEqual([...f.keys()].sort(), ['terrain-deep 10/100/100', 'terrain-deep 10/257/342', 'terrain-deep 10/257/343', 'terrain-deep 10/264/360']);
   assert.deepEqual(f.get('terrain-deep 10/257/342'), { t: 1000, step: 'terrain-deep', worker: 'mini #3' }, 'its end held: its time, before the window too');
-  assert.deepEqual(f.get('terrain-deep 10/100/100'), { t: null, step: 'terrain-deep', worker: null }, 'none held');
+  assert.deepEqual(f.get('terrain-deep 10/100/100'), { t: null, before: null, step: 'terrain-deep', worker: null }, 'none held');
   // (The page's events gone, a new numbering: the recorded tiles stay.)
   assert.equal(finishedTiles([], 5000, built).size, 4);
   // (Finished, not merged into the keys yet: from its end.)
   assert.ok(finishedTiles([{ kind: 'done', step: 'terrain-deep', t: 9500, targets: ['10/1/1'] }], 5000, built).has('terrain-deep 10/1/1'));
-  const [, fin] = mapTilesKept(new Map(), f, {}, { pubAt: 8000 });
+  // (One with no end held finished before the oldest event held: published when that's by the
+  // catalogue's time, else it can't be told and isn't claimed.)
+  const held = finishedTiles(ends, 5000, built, 900);
+  assert.equal(held.get('terrain-deep 10/100/100').before, 900);
+  const [, fin] = mapTilesKept(new Map(), held, {}, { pubAt: 8000 });
   assert.deepEqual([...fin].map(([k, v]) => [k.split(' ')[1], v.state]).sort(), [['10/100/100', 'published'], ['10/257/342', 'published'], ['10/257/343', 'published'], ['10/264/360', 'completed']]);
+  assert.equal(mapTilesKept(new Map(), finishedTiles(ends, 5000, built, 8500), {}, { pubAt: 8000 })[1].get('terrain-deep 10/100/100').state, 'completed', 'held from after the catalogue');
+  assert.equal(mapTilesKept(new Map(), f, {}, { pubAt: 8000 })[1].get('terrain-deep 10/100/100').state, 'completed', 'nothing held');
   assert.equal(mapTilesKept(new Map(), f, {}, {})[1].get('terrain-deep 10/100/100').state, 'completed', 'no catalogue: none published');
   assert.equal(mapTilesKept(new Map(), f, { member: 'm4' }, {})[1].size, 1, 'a member: the tiles its ends name');
 });
