@@ -114,7 +114,7 @@ impl Pool {
     pub fn with_tiles<R>(&self, raw: &RawTiles, f: impl FnOnce(&Tiles) -> R) -> Result<R> {
         let net = crate::fetch::Fetcher::from_env();
         let fetch = RawFetch { raw, url: self.terrarium.as_deref(), inner: &net };
-        let o = Opts { fetch: &fetch, store: Some(self.store.clone()), pool: None };
+        let o = Opts { fetch: &fetch, store: Some(self.store.clone()) };
         let mid = (self.area[1] + self.area[3]) / 2.0;
         let plans: Vec<Plan> = (0..=MAX_Z).map(|z| self.at_zoom(z, mid)).collect();
         let by_row: Vec<OnceLock<Plan>> = (0..BY_ROW).map(|_| OnceLock::new()).collect();
@@ -171,6 +171,15 @@ impl Fetch for RawFetch<'_> {
         match self.tile(url) {
             Some((z, x, y)) => Ok(self.raw.get(z, x, y)?.0),
             None => self.inner.get(url),
+        }
+    }
+
+    // (The other pyramids' tiles held to the limits their reader asks, crate::dem::generic::TILE_WITHIN:
+    // a silent connection given up in 30 s, not the client's 90 s a try.)
+    fn get_within(&self, url: &str, within: crate::fetch::Within) -> Result<Option<Vec<u8>>> {
+        match self.tile(url) {
+            Some((z, x, y)) => Ok(self.raw.get(z, x, y)?.0),
+            None => self.inner.get_within(url, within),
         }
     }
 }
@@ -550,7 +559,7 @@ mod tests {
         let pool = Pool::of(plan.clone(), store.clone(), [10.0, 20.0, 11.0, 60.0]);
         let net = crate::fetch::MapFetch::default();
         let fetch = RawFetch { raw: &raw, url: pool.terrarium.as_deref(), inner: &net };
-        let o = Opts { fetch: &fetch, store: Some(store.clone()), pool: None };
+        let o = Opts { fetch: &fetch, store: Some(store.clone()) };
         let plans: Vec<Plan> = (0..=MAX_Z).map(|z| pool.at_zoom(z, 40.0)).collect();
         let at_area = Tiles::new(&plans, &o).sample(z, &[(x, y)]).unwrap().pop().unwrap().unwrap();
         assert_ne!(at_area, own, "the area's middle blends otherwise");
@@ -563,7 +572,7 @@ mod tests {
         // (A plan no sampler can open: sampling would fail.)
         let plans = vec![Plan { fmt: 1, version: "t".into(), tag: "t".into(), datasets: Vec::new() }; 13];
         let net = crate::fetch::MapFetch::default();
-        let o = Opts { fetch: &net, store: None, pool: None };
+        let o = Opts { fetch: &net, store: None };
         let t = Tiles::new(&plans, &o);
         for k in 0..4u32 {
             t.with_data.lock().unwrap().insert((10, 2 * 5 + (k & 1), 2 * 7 + (k >> 1)));

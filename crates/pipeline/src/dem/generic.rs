@@ -31,7 +31,7 @@
 
 use super::declared::{Cover, Dataset, Plan, Source};
 use super::proj::{mercator_tile, projected, Projection};
-use super::sample::{bilinear, blocks_read, sample_raster_noting, window_clean, within, Clean, Seen, NODATA_BELOW};
+use super::sample::{bilinear, blocks_read, sample_raster_noting, window_clean, Clean, Seen, NODATA_BELOW};
 use crate::fetch::Fetch;
 use crate::geotiff::{BlockCache, Tiff};
 use anyhow::{bail, ensure, Context, Result};
@@ -47,7 +47,6 @@ pub struct Opts<'a> {
     /// The stores' folder (`sources/fetched/`): a dataset declared `store` is read from
     /// `<it>/<dataset>/` alone (`stored`).
     pub store: Option<PathBuf>,
-    pub pool: Option<&'a rayon::ThreadPool>,
 }
 
 /// The heights sampled at points.
@@ -73,8 +72,8 @@ pub const M_PER_DEG: f64 = 111_320.0;
 /// tens of files a dataset, and sampling reads each block once).
 pub const CACHE_BYTES: usize = 512 << 20;
 
-/// How many of a GeoTIFF dataset's blocks are fetched at once ahead of their sampling
-/// (natively, with a pool), and how many blocks past the end of the chunk being sampled they go
+/// How many of a fetched GeoTIFF dataset's blocks are fetched at once ahead of their sampling
+/// (natively; a stored one's are read as sampled), and how many blocks past the end of the chunk being sampled they go
 /// at most (`ahead_for` holds that to a quarter of the cache).
 pub const GEO_FETCHES: usize = 32;
 pub const GEO_AHEAD: usize = 128;
@@ -502,8 +501,7 @@ impl GeoSet<'_> {
             // (A file whose fill mask has voids: no block of it is known to hold data in every pixel.)
             let has_mask = self.has_voids(k)?;
             let clean = (!has_mask).then(|| &self.clean[k]);
-            let v = sample_raster_noting(&t, level, &xs, &ys, self.o.pool, clean)
-                .with_context(|| self.files[k].0.clone())?;
+            let v = sample_raster_noting(&t, level, &xs, &ys, clean).with_context(|| self.files[k].0.clone())?;
             for (n, (&j, v)) in mine.iter().zip(v).enumerate() {
                 if v.is_finite() && !(has_mask && self.masked(k, xs[n], ys[n])?) {
                     out[j] = (v, k as u32);
@@ -612,16 +610,14 @@ impl GeoSet<'_> {
         }
         tally.add(sel.len() - groups.values().map(Vec::len).sum::<usize>());
         let groups: Vec<((u32, i64, i64), Vec<Band>)> = groups.into_iter().collect();
-        let got: Vec<Vec<(usize, f64)>> = within(self.o.pool, || {
-            groups
-                .par_iter()
-                .map(|((k, ..), bands)| {
-                    let d = self.distance_group(*k as usize, bands, radius);
-                    tally.add(bands.len());
-                    d
-                })
-                .collect::<Result<_>>()
-        })?;
+        let got: Vec<Vec<(usize, f64)>> = groups
+            .par_iter()
+            .map(|((k, ..), bands)| {
+                let d = self.distance_group(*k as usize, bands, radius);
+                tally.add(bands.len());
+                d
+            })
+            .collect::<Result<_>>()?;
         for (j, d) in got.into_iter().flatten() {
             out[j] = d;
         }
@@ -784,7 +780,8 @@ struct MemoIn {
 /// What a run's tile memo keeps at most.
 pub const TILE_MEMO_BYTES: usize = 512 << 20;
 
-/// How many tiles are fetched at once ahead of their sampling (natively, with a pool): kept in
+/// How many tiles are fetched at once ahead of their sampling (natively, whatever the threads
+/// sampling: task #665, where 3 threads fetching a tile each at a time held GSI's to 2 a second): kept in
 /// flight all along (`TileSet::rolling`), a slow tile holding up its own points alone.
 pub const TILE_FETCHES: usize = 64;
 
@@ -866,11 +863,11 @@ impl TileSet<'_> {
     /// to a quarter of the memo, so none is let go before its items are worked; the earliest item
     /// not yet worked always has its tiles fetched, whatever that holds. The first failed fetch
     /// stops the fetching (its requests' retries too: crate::fetch::cancellable) and is the error.
-    /// (WebAssembly, or no pool: none ahead; the work fetches them.)
+    /// (WebAssembly, or a single tile: none ahead; the work fetches them.)
     fn rolling<T: Send>(&self, need: &[Vec<(i64, i64)>], work: impl Fn(usize) -> Result<T> + Sync) -> Result<Vec<T>> {
         let n_items = need.len();
-        if self.o.pool.is_none() || cfg!(target_arch = "wasm32") || need.iter().map(Vec::len).sum::<usize>() < 2 {
-            return within(self.o.pool, || (0..n_items).into_par_iter().map(&work).collect());
+        if cfg!(target_arch = "wasm32") || need.iter().map(Vec::len).sum::<usize>() < 2 {
+            return (0..n_items).into_par_iter().map(&work).collect();
         }
         // (The tiles in the order the items first read them; by item its tiles' places in that
         // list, and the last of them; by tile, the items reading it.)
@@ -896,7 +893,7 @@ impl TileSet<'_> {
         let last: Vec<usize> = reads.iter().map(|r| r.iter().copied().max().unwrap_or(0)).collect();
         // (A quarter of the memo, less the decoded tiles the working threads hold at once.)
         let decoded = TILE_PX * TILE_PX * std::mem::size_of::<f32>();
-        let workers = self.o.pool.map_or(1, |p| p.current_num_threads());
+        let workers = rayon::current_num_threads();
         let hold = (self.memo.cap / 4).saturating_sub(workers * decoded);
         /// The fetching's and the working's shared state.
         struct St {
@@ -1016,8 +1013,7 @@ impl TileSet<'_> {
                     }
                     std::mem::take(&mut g.ready)
                 };
-                let got: Vec<(usize, T)> =
-                    within(self.o.pool, || batch.par_iter().map(|&i| work(i).map(|v| (i, v))).collect::<Result<_>>())?;
+                let got: Vec<(usize, T)> = batch.par_iter().map(|&i| work(i).map(|v| (i, v))).collect::<Result<_>>()?;
                 let mut g = lock();
                 for (i, v) in got {
                     out[i] = Some(v);
@@ -1324,20 +1320,11 @@ impl<'a> Set<'a> {
             Set::Tiles(t) => Reader::Tiles(t),
             Set::Geo(g) if projected(g.crs) => {
                 let atlas = Projection::of(g.crs).expect("a projected CRS");
-                let xy = within(g.o.pool, || {
-                    lon.par_iter()
-                        .zip(lat.par_iter())
-                        .map(
-                            |(&lo, &la)| {
-                                if cover.contains(lo, la) {
-                                    atlas.project(lo, la)
-                                } else {
-                                    (f64::NAN, f64::NAN)
-                                }
-                            },
-                        )
-                        .unzip()
-                });
+                let xy = lon
+                    .par_iter()
+                    .zip(lat.par_iter())
+                    .map(|(&lo, &la)| if cover.contains(lo, la) { atlas.project(lo, la) } else { (f64::NAN, f64::NAN) })
+                    .unzip();
                 Reader::Geo(g, Some(xy))
             }
             Set::Geo(g) => Reader::Geo(g, None),
@@ -1361,15 +1348,14 @@ impl Reader<'_, '_> {
         match self {
             Reader::Tiles(t) => {
                 let n = 1i64 << t.zoom;
-                let mut keyed: Vec<(i64, u32)> = within(t.o.pool, || {
-                    sel.par_iter()
-                        .map(|&i| {
-                            let (fx, fy) = mercator_tile(lon[i as usize], lat[i as usize], t.zoom);
-                            (fx.floor() as i64 * n + fy.floor() as i64, i)
-                        })
-                        .collect()
-                });
-                within(t.o.pool, || keyed.par_sort_unstable());
+                let mut keyed: Vec<(i64, u32)> = sel
+                    .par_iter()
+                    .map(|&i| {
+                        let (fx, fy) = mercator_tile(lon[i as usize], lat[i as usize], t.zoom);
+                        (fx.floor() as i64 * n + fy.floor() as i64, i)
+                    })
+                    .collect();
+                keyed.par_sort_unstable();
                 keyed.into_iter().map(|p| p.1).collect()
             }
             Reader::Geo(g, xy) => {
@@ -1378,19 +1364,18 @@ impl Reader<'_, '_> {
                     .iter()
                     .map(|&i| (g.holding(x[i as usize], y[i as usize]).next().unwrap_or(usize::MAX), y[i as usize], i))
                     .collect();
-                within(g.o.pool, || {
-                    keyed.par_sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)))
-                });
+                keyed.par_sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
                 keyed.into_iter().map(|p| p.2).collect()
             }
         }
     }
 
     /// What to read ahead of sampling `parts` in turn (`read_ahead`): a GeoTIFF dataset's blocks,
-    /// natively with a pool; None otherwise (a pyramid fetches its tiles ahead itself).
+    /// natively, where they're fetched (not the store's: those are read on the NAS as sampled); None
+    /// otherwise (a pyramid fetches its tiles ahead itself).
     fn ahead(&self, parts: &[&[u32]], lon: &[f64], lat: &[f64]) -> Result<Option<Ahead>> {
         match self {
-            Reader::Geo(g, xy) if g.o.pool.is_some() && !cfg!(target_arch = "wasm32") => {
+            Reader::Geo(g, xy) if g.store.is_none() && !cfg!(target_arch = "wasm32") => {
                 let (x, y) = native(xy, lon, lat);
                 Ok(Some(g.blocks_ahead(parts, x, y)?))
             }
@@ -1499,7 +1484,6 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: Said) -> Re
 /// sampled alone, so its height is the same in any batch.
 pub struct Sampler<'a> {
     plan: &'a Plan,
-    o: &'a Opts<'a>,
     covers: Vec<Cover>,
     sets: Vec<Set<'a>>,
     grids: super::geoid::Grids<'a>,
@@ -1531,7 +1515,6 @@ impl<'a> Sampler<'a> {
     ) -> Result<Sampler<'a>> {
         Ok(Sampler {
             plan,
-            o,
             covers: plan.datasets.iter().map(|d| Cover::of(d.cover.as_deref())).collect(),
             sets: plan.datasets.iter().map(|d| Set::new(d, o, &cache, &memo)).collect::<Result<_>>()?,
             grids: super::geoid::Grids::new(o),
@@ -1546,24 +1529,22 @@ impl<'a> Sampler<'a> {
     /// `step` (the share of its call done, 0 to 1) to a distance measure that reports.
     pub fn sample(&self, lon: &[f64], lat: &[f64], said: Said) -> Result<Sampled> {
         use crate::timings::{phase, Class};
-        let (plan, o, covers) = (self.plan, self.o, &self.covers);
+        let (plan, covers) = (self.plan, &self.covers);
         let n = lon.len();
         let mono = Mono { last: Mutex::new(0.0), to: said };
         // (The work to say by: points to sample (those some dataset covers), and points to measure (the
         // first dataset covering one is followed by another).)
-        let (to_sample, to_blend) = within(o.pool, || {
-            (0..n)
-                .into_par_iter()
-                .map(|i| {
-                    let mut c = (0..covers.len()).filter(|&k| covers[k].contains(lon[i], lat[i]));
-                    match (c.next(), c.next()) {
-                        (None, _) => (0usize, 0usize),
-                        (Some(_), None) => (1, 0),
-                        (Some(_), Some(_)) => (1, 1),
-                    }
-                })
-                .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
-        });
+        let (to_sample, to_blend) = (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let mut c = (0..covers.len()).filter(|&k| covers[k].contains(lon[i], lat[i]));
+                match (c.next(), c.next()) {
+                    (None, _) => (0usize, 0usize),
+                    (Some(_), None) => (1, 0),
+                    (Some(_), Some(_)) => (1, 1),
+                }
+            })
+            .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
         // (The blends' points counted twice: their distances measured, then their second heights.)
         let total = ((to_sample + 2 * to_blend) as f64).max(1.0);
         let mut a = vec![f32::NAN; n];

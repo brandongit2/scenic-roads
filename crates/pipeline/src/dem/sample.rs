@@ -78,26 +78,9 @@ pub fn block_key(w: i64, c: i64, r: i64) -> i64 {
 }
 
 /// Image `level` of `t` sampled at points (`px`, `py`, in the raster's CRS): each point's value,
-/// NaN where it's outside the raster or there's no data.
-pub fn sample_raster(
-    t: &Tiff,
-    level: usize,
-    px: &[f64],
-    py: &[f64],
-    pool: Option<&rayon::ThreadPool>,
-) -> Result<Vec<f32>> {
-    sample_raster_noting(t, level, px, py, pool, None)
-}
-
-/// `sample_raster`, each block read noted in `clean` (whether every pixel of it holds data).
-pub fn sample_raster_noting(
-    t: &Tiff,
-    level: usize,
-    px: &[f64],
-    py: &[f64],
-    pool: Option<&rayon::ThreadPool>,
-    clean: Option<&Clean>,
-) -> Result<Vec<f32>> {
+/// NaN where it's outside the raster or there's no data; each block read noted in `clean` (whether
+/// every pixel of it holds data).
+pub fn sample_raster_noting(t: &Tiff, level: usize, px: &[f64], py: &[f64], clean: Option<&Clean>) -> Result<Vec<f32>> {
     let img = t.level(level)?;
     let gt = t.transform(level)?;
     let (w, h) = (img.width as i64, img.height as i64);
@@ -127,28 +110,26 @@ pub fn sample_raster_noting(
         }
     }
     let nodata = t.nodata().filter(|&v| v >= NODATA_BELOW as f64).map(|v| v as f32);
-    let sampled: Vec<Vec<(u32, f32)>> = within(pool, || {
-        groups
-            .par_iter()
-            .map(|g| -> Result<Vec<(u32, f32)>> {
-                let k = g[0].0;
-                let (x0, y0) = ((k % nbx) * BLOCK, (k / nbx) * BLOCK);
-                let (bw, bh) = (BLOCK.min(w - x0), BLOCK.min(h - y0));
-                let mut a = t.read_window(level, x0 as u32, y0 as u32, bw as u32, bh as u32)?;
-                if let Some(c) = clean {
-                    c.note(level, k, &a, t.nodata());
+    let sampled: Vec<Vec<(u32, f32)>> = groups
+        .par_iter()
+        .map(|g| -> Result<Vec<(u32, f32)>> {
+            let k = g[0].0;
+            let (x0, y0) = ((k % nbx) * BLOCK, (k / nbx) * BLOCK);
+            let (bw, bh) = (BLOCK.min(w - x0), BLOCK.min(h - y0));
+            let mut a = t.read_window(level, x0 as u32, y0 as u32, bw as u32, bh as u32)?;
+            if let Some(c) = clean {
+                c.note(level, k, &a, t.nodata());
+            }
+            if let Some(nd) = nodata {
+                for v in a.iter_mut().filter(|v| **v == nd) {
+                    *v = -1e9;
                 }
-                if let Some(nd) = nodata {
-                    for v in a.iter_mut().filter(|v| **v == nd) {
-                        *v = -1e9;
-                    }
-                }
-                Ok(g.iter()
-                    .map(|&(_, i, cf, rf)| (i, bilinear(&a, bw as usize, bh as usize, cf - x0 as f64, rf - y0 as f64)))
-                    .collect())
-            })
-            .collect::<Result<_>>()
-    })?;
+            }
+            Ok(g.iter()
+                .map(|&(_, i, cf, rf)| (i, bilinear(&a, bw as usize, bh as usize, cf - x0 as f64, rf - y0 as f64)))
+                .collect())
+        })
+        .collect::<Result<_>>()?;
     let mut out = vec![f32::NAN; px.len()];
     for (i, v) in sampled.into_iter().flatten() {
         out[i as usize] = v;
@@ -163,7 +144,7 @@ pub struct Seen {
     blocks: HashSet<(u32, u32)>,
 }
 
-/// The file's own blocks (tiles or strips) of image `level` of `t` that `sample_raster` reads for
+/// The file's own blocks (tiles or strips) of image `level` of `t` that `sample_raster_noting` reads for
 /// points (`px`, `py`): those of each point's `BLOCK` window, in the points' order, each once
 /// (`seen`), onto `out`.
 pub fn blocks_read(

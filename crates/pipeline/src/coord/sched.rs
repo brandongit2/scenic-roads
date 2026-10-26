@@ -164,6 +164,9 @@ pub(crate) struct Need {
     /// Only waiting on a worker (its Mac's `Capacity::waiting`): counted at the memory it holds
     /// now, within its measure, and none of its cores (docs/pool.md §7.2, A job waiting on a worker).
     waits: bool,
+    /// Leaving its Mac's cores idle (its Mac's `Capacity::idle`): none of its cores (docs/pool.md
+    /// §7.2, A job leaving the cores idle).
+    idle: bool,
 }
 
 /// The steps known to honour the threads they're granted (task #499 review): their cold starts
@@ -556,8 +559,8 @@ impl Sched {
     /// a cold start (`Need::cold`), its provisional need (`provisional`).
     pub(super) fn pack_need(&self, step: &str, targets: &[String]) -> Need {
         match self.job_need(step, targets) {
-            Some((m, cores)) => Need { m, cores, cold: false, waits: false },
-            None => Need { m: self.provisional(step, targets), cores: None, cold: true, waits: false },
+            Some((m, cores)) => Need { m, cores, cold: false, waits: false, idle: false },
+            None => Need { m: self.provisional(step, targets), cores: None, cold: true, waits: false, idle: false },
         }
     }
 
@@ -567,7 +570,7 @@ impl Sched {
     /// the whole Mac (task #499 review: one that runs as many threads as the Mac has would swamp
     /// the jobs beside it).
     pub(super) fn need_cores(&self, step: &str, targets: &[String], n: &Need, share: u32, total: u32) -> u32 {
-        if n.waits {
+        if n.waits || n.idle {
             0
         } else if n.cold && !THREADS_HONOURED.contains(&step) {
             total
@@ -638,7 +641,8 @@ impl Sched {
         // (A job held: its measure, else its provisional need, `pack_need`; one its Mac says only
         // waits on a worker (`Capacity::waiting`), at what it holds now within that, none of its
         // cores: the room past it free for a job beside it, which yields to it when it goes on
-        // (crate::agent's `yielding`).)
+        // (crate::agent's `yielding`); one leaving its Mac's cores idle (`Capacity::idle`, a job
+        // waiting on the network), at its measure but none of its cores.)
         let waits =
             |l: &Lease| a.cap.as_ref().and_then(|c| c.waiting.iter().find(|w| w.lease == l.id)).map(|w| w.held_mb);
         let jobs: Vec<(&Lease, String, Vec<String>)> = mine
@@ -656,6 +660,7 @@ impl Sched {
                     n.m.mem_mb = n.m.mem_mb.min(held);
                     n.waits = true;
                 }
+                n.idle = a.cap.as_ref().is_some_and(|c| c.idle.contains(&l.id));
                 n
             })
             .collect();

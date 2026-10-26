@@ -107,7 +107,7 @@ fn offsets_add_grids_bilinearly_the_first_holding_a_point_serving() {
     ];
     let c = conversion("R", &s).unwrap().unwrap();
     let f = MapFetch(m);
-    let o = Opts { fetch: &f, store: None, pool: None };
+    let o = Opts { fetch: &f, store: None };
     let g = Grids::new(&o);
     // (0, 0): halfway between a's pixel centres −0.5° and 0.5° (11, 12), and egm's rows 1° and −1° (5, 6).
     let off = g.offsets(&c, &[0.0, 3.0, 2.0, 9.0], &[0.0, 1.0, 0.5, 0.0]).unwrap();

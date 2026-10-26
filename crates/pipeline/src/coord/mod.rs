@@ -897,6 +897,11 @@ pub struct Capacity {
     /// with the memory it holds now: packed at that and none of their cores (task #462).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub waiting: Vec<WaitingJob>,
+    /// The leases of its running jobs that left its cores idle (under a core-minute of CPU in the
+    /// last `crate::agent::IDLE_CPU_S`: a job waiting on the network): packed at their measures but
+    /// none of their cores, so CPU work goes beside them (task #665).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub idle: Vec<u64>,
     /// What it holds of each shared cache (crate::needs::CACHES, by name; task #392), measured on
     /// its disk as it asks: the first job reading one is reserved its fill less that.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -7788,6 +7793,43 @@ mod tests {
         assert_eq!(leases.len(), 4);
         assert!(w.ask(&ask("m1", 64_000, 1, leases.clone(), vec![])).unwrap().is_none(), "no core left");
         assert!(w.ask(&ask("m1", 64_000, 1, leases.clone(), wait(leases[0], 300))).unwrap().is_some());
+    }
+
+    /// A member's job leaving its cores idle (task #665, `Capacity::idle`: a job waiting on the
+    /// network): none of its cores counted, so a job goes beside it; its memory still counts at its
+    /// measure (unlike a job waiting on a worker).
+    #[test]
+    fn a_members_job_leaving_its_cores_idle_gives_its_cores_alone() {
+        let (_d, c, w, _clock) = every((0, 0));
+        packable(&c, "slope-hi", 6, Some(4));
+        let ask = |who: &str, mem: u64, leases: Vec<u64>, idle: Vec<u64>| Ask {
+            want: 8,
+            cap: Some(Capacity {
+                at: unix_now(),
+                cores: 8,
+                cores_free: 8,
+                disk_mb: 64_000,
+                leases,
+                idle,
+                ..Default::default()
+            }),
+            ..every_ask(who, "slope-hi", mem, 64_000)
+        };
+        // Cores: 8, a packed share of 2: four jobs, then no core left.
+        let gs = w.ask(&ask("m1", 64_000, vec![], vec![])).unwrap().unwrap();
+        let mut leases = vec![gs.lease];
+        leases.extend(gs.more.iter().map(|g| g.lease));
+        assert_eq!(leases.len(), 4);
+        assert!(w.ask(&ask("m1", 64_000, leases.clone(), vec![])).unwrap().is_none(), "no core left");
+        // Two of m1's idle: their cores go to two more.
+        assert_eq!(all_granted(&w, &ask("m1", 64_000, leases.clone(), leases[..2].to_vec())).len(), 2);
+        // Memory still counts at the measure (2000 MB a job): idle, but no room for a fifth in 9000.
+        let (_d, c, w, _clock) = every((0, 0));
+        packable(&c, "slope-hi", 6, Some(4));
+        let gs = w.ask(&ask("m1", 64_000, vec![], vec![])).unwrap().unwrap();
+        let mut leases = vec![gs.lease];
+        leases.extend(gs.more.iter().map(|g| g.lease));
+        assert!(w.ask(&ask("m1", 9000, leases.clone(), leases.clone())).unwrap().is_none(), "its memory counts");
     }
 
     /// Disk reservations (task #242): a grant carries its job's measured disk, which its agent

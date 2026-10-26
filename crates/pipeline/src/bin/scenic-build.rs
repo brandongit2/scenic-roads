@@ -298,8 +298,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         }
         let c = geoid::conversion(&from, &srcs)?.context("heights in EGM2008 already: no offset")?;
         let fetch = pipeline::fetch::Fetcher::from_env();
-        let o =
-            pipeline::dem::generic::Opts { fetch: &fetch, store: opt(&args, "--store").map(PathBuf::from), pool: None };
+        let o = pipeline::dem::generic::Opts { fetch: &fetch, store: opt(&args, "--store").map(PathBuf::from) };
         let grids = geoid::Grids::new(&o);
         let (lon, lat): (Vec<f64>, Vec<f64>) = at.iter().copied().unzip();
         let mut hops = Vec::new();

@@ -1204,9 +1204,13 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   read again. The decoded blocks of every file share one cache (`generic::CACHE_BYTES`, 512 MB),
   so a unit opening tens of files holds that much, not a cache's worth per file. A block several
   threads ask for at once is read and decoded once (`Tiff::block`), the others waiting for it.
-  A GeoTIFF dataset's blocks are read ahead of their sampling (`generic::read_ahead`, natively):
+  A fetched GeoTIFF dataset's blocks are read ahead of their sampling (`generic::read_ahead`,
+  natively; a stored dataset's, on the NAS, are read as they're sampled):
   `GEO_FETCHES` (32) at once, at most `GEO_AHEAD` (128) blocks past the chunk being sampled, so
-  the sampler doesn't wait on a chunk's few blocks one round trip after another. Only each point's
+  the sampler doesn't wait on a chunk's few blocks one round trip after another. A tile pyramid's
+  tiles likewise (`TileSet::rolling`): `TILE_FETCHES` (64) kept in flight, whatever the threads
+  the step was granted (task #665: a terrain job fetched GSI's tiles only on its three sampling
+  threads, one at a time each, about 2 tiles a second where the host answers 15 at once). Only each point's
   first file (the first whose footprint holds it) is read ahead; a point that file has no data for
   reads the next file's block when it's sampled. The reading ahead goes no further than a quarter
   of the cache holds (`generic::ahead_for`), and it stops with the sampling: a read of it waiting

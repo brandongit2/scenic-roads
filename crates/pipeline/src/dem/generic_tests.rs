@@ -67,7 +67,7 @@ fn tiles_blend_across_their_edges() {
     f.0.insert("https://b.org/10/512/511.png".into(), Some(flat(50.0)));
     f.0.insert("https://b.org/10/513/511.png".into(), Some(flat(50.0)));
     let fetch = NoneElse(f);
-    let o = Opts { fetch: &fetch, store: None, pool: None };
+    let o = Opts { fetch: &fetch, store: None };
     let w = 360.0 / 1024.0;
     // Its middle, 100 m inside its east edge, at the edge itself, and past it.
     let lon = [w / 2.0, w - 100.0 / M_PER_DEG, w - 1e-9, w + 0.01];
@@ -102,7 +102,7 @@ fn a_pyramids_tile_not_256_pixels_is_refused() {
     let mut f = crate::fetch::MapFetch::default();
     f.0.insert("https://e.org/3/1/1.png".into(), Some(png(256)));
     f.0.insert("https://e.org/3/2/1.png".into(), Some(png(512)));
-    let o = Opts { fetch: &f, store: None, pool: None };
+    let o = Opts { fetch: &f, store: None };
     let t = TileSet {
         url: "https://e.org/{z}/{x}/{y}.png",
         zoom: 3,
@@ -146,7 +146,7 @@ fn the_distance_to_the_invalid_area_is_the_scans_whatever_the_shortcut() {
     let mut f = crate::fetch::MapFetch::default();
     f.0.insert("https://a.org/fine.tif".into(), Some(fine));
     f.0.insert("https://b.org/coarse.tif".into(), Some(coarse));
-    let o = Opts { fetch: &f, store: None, pool: None };
+    let o = Opts { fetch: &f, store: None };
     let fine_box = [10.0, 50.0 - h as f64 * PX, 10.0 + w as f64 * PX, 50.0];
     let geo = |id: &str, code: u8, res: f64, url: &str, b: [f64; 4]| Dataset {
         convert: None,
@@ -249,7 +249,7 @@ fn sampling_says_increasing_fractions_to_one_per_chunk() {
     f.0.insert("https://a.org/10/512/511.png".into(), Some(flat(100.0)));
     f.0.insert("https://b.org/10/512/511.png".into(), Some(flat(50.0)));
     let fetch = NoneElse(f);
-    let o = Opts { fetch: &fetch, store: None, pool: None };
+    let o = Opts { fetch: &fetch, store: None };
     let n = 100_000;
     let w = 360.0 / 1024.0;
     let lon: Vec<f64> = (0..n).map(|i| w * (0.1 + 0.8 * i as f64 / n as f64)).collect();
@@ -313,7 +313,7 @@ fn a_pyramids_distance_is_the_whole_bands_scan() {
         }
     }
     let fetch = NoneElse(f);
-    let o = Opts { fetch: &fetch, store: None, pool: None };
+    let o = Opts { fetch: &fetch, store: None };
     let t = TileSet {
         url: "https://e.org/{z}/{x}/{y}.png",
         zoom: z,
@@ -449,10 +449,10 @@ fn a_runs_tiles_are_fetched_once_and_together_and_the_heights_are_the_same() {
         lat.push((std::f64::consts::PI * (1.0 - 2.0 * fy / n as f64)).sinh().atan().to_degrees());
     }
     let one = NoneElse(crate::fetch::MapFetch(f.0.clone()));
-    let want = sample(&plan, &lon, &lat, &Opts { fetch: &one, store: None, pool: None }, &|_| {}).unwrap();
+    let want = sample(&plan, &lon, &lat, &Opts { fetch: &one, store: None }, &|_| {}).unwrap();
     let counting = Counting::new(f);
     let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
-    let got = sample(&plan, &lon, &lat, &Opts { fetch: &counting, store: None, pool: Some(&pool) }, &|_| {}).unwrap();
+    let got = pool.install(|| sample(&plan, &lon, &lat, &Opts { fetch: &counting, store: None }, &|_| {})).unwrap();
     let bits = |s: &Sampled| s.elev.iter().map(|e| e.to_bits()).collect::<Vec<_>>();
     assert_eq!(bits(&got), bits(&want));
     assert_eq!((&got.src, &got.blended), (&want.src, &want.blended));
@@ -549,7 +549,7 @@ fn heights_are_converted_before_the_blend() {
     f.0.insert("https://g.org/up.tif".into(), Some(grid(2.0)));
     f.0.insert("https://g.org/down.tif".into(), Some(grid(-3.0)));
     let fetch = NoneElse(f);
-    let o = Opts { fetch: &fetch, store: None, pool: None };
+    let o = Opts { fetch: &fetch, store: None };
     let w = 360.0 / 1024.0;
     let lon = [w / 2.0, w - 100.0 / M_PER_DEG, w + 0.01, 5.0];
     let lat = [0.1; 4];
@@ -573,7 +573,7 @@ fn heights_are_converted_before_the_blend() {
         Some(crate::geotiff::write_f32(4, 4, &[1.0; 16], 16, [40.0, 1.0, 0.0, 2.0, 0.0, -1.0], 4326, None).unwrap()),
     );
     let fetch = NoneElse(f);
-    let o = Opts { fetch: &fetch, store: None, pool: None };
+    let o = Opts { fetch: &fetch, store: None };
     let s = sample(&plan, &lon[..2], &lat[..2], &o, &|_| {}).unwrap();
     assert!(s.blended[1] && s.unconverted_seam == 1 && s.unconverted == 0, "{s:?}");
 }
@@ -662,7 +662,7 @@ fn a_geotiffs_blocks_are_read_ahead_once_and_the_heights_are_the_same() {
         lon.push(10.0 + (rnd() * 2100.0 - 20.0) * PX);
         lat.push(50.0 - (rnd() * 1580.0 - 20.0) * PX);
     }
-    let want = sample(&plan, &lon, &lat, &Opts { fetch: &f, store: None, pool: None }, &|_| {}).unwrap();
+    let want = sample(&plan, &lon, &lat, &Opts { fetch: &f, store: None }, &|_| {}).unwrap();
     struct Slow {
         inner: crate::fetch::MapFetch,
         asked: Arc<Mutex<HashMap<(u64, usize), usize>>>,
@@ -688,7 +688,7 @@ fn a_geotiffs_blocks_are_read_ahead_once_and_the_heights_are_the_same() {
     }
     let slow = Slow { inner: f, asked: Default::default(), now: Default::default(), most: Default::default() };
     let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
-    let got = sample(&plan, &lon, &lat, &Opts { fetch: &slow, store: None, pool: Some(&pool) }, &|_| {}).unwrap();
+    let got = pool.install(|| sample(&plan, &lon, &lat, &Opts { fetch: &slow, store: None }, &|_| {})).unwrap();
     let bits = |s: &Sampled| s.elev.iter().map(|e| e.to_bits()).collect::<Vec<_>>();
     assert_eq!(bits(&got), bits(&want));
     assert_eq!((&got.src, &got.blended), (&want.src, &want.blended));
@@ -708,7 +708,7 @@ fn a_geotiffs_blocks_are_read_ahead_once_and_the_heights_are_the_same() {
 fn a_geotiff_dataset_in_degrees_keeps_no_copy_of_the_points() {
     use super::super::declared::{Dataset, Source};
     let f = crate::fetch::MapFetch::default();
-    let o = Opts { fetch: &f, store: None, pool: None };
+    let o = Opts { fetch: &f, store: None };
     let ds = |crs: u16| Dataset {
         convert: None,
         id: "d".into(),
@@ -820,7 +820,7 @@ fn rolling_tile_fetches_give_the_old_heights_to_the_bit() {
     let fetch = NoneElse(f);
     let sel: Vec<u32> = (0..lon.len() as u32).collect();
     // (The old way, by the letter: each point's tile, decoded, sampled bilinearly.)
-    let one = Opts { fetch: &fetch, store: None, pool: None };
+    let one = Opts { fetch: &fetch, store: None };
     let plain = ramp_set(&one, TILE_MEMO_BYTES);
     let want: Vec<u32> = sel
         .iter()
@@ -838,10 +838,10 @@ fn rolling_tile_fetches_give_the_old_heights_to_the_bit() {
     assert!(want.iter().any(|v| f32::from_bits(*v).is_nan()) && want.iter().any(|v| f32::from_bits(*v).is_finite()));
     let pool = rayon::ThreadPoolBuilder::new().num_threads(3).build().unwrap();
     for cap in [TILE_MEMO_BYTES, 64 << 10] {
-        let o = Opts { fetch: &fetch, store: None, pool: Some(&pool) };
+        let o = Opts { fetch: &fetch, store: None };
         let t = ramp_set(&o, cap);
         let said = Mutex::new(Vec::new());
-        let got = t.sample(&sel, &lon, &lat, &|f| said.lock().unwrap().push(f)).unwrap();
+        let got = pool.install(|| t.sample(&sel, &lon, &lat, &|f| said.lock().unwrap().push(f))).unwrap();
         let got: Vec<u32> = got.iter().map(|v| v.to_bits()).collect();
         assert_eq!(got, want, "a memo of {cap} bytes");
         let said = said.into_inner().unwrap();
@@ -891,7 +891,7 @@ fn one_slow_tile_does_not_stall_the_others() {
         by_progress: AtomicBool::new(false),
     };
     let pool = rayon::ThreadPoolBuilder::new().num_threads(3).build().unwrap();
-    let o = Opts { fetch: &slow, store: None, pool: Some(&pool) };
+    let o = Opts { fetch: &slow, store: None };
     let t = ramp_set(&o, TILE_MEMO_BYTES);
     let sel: Vec<u32> = (0..lon.len() as u32).collect();
     let tell = |f: f64| {
@@ -899,10 +899,10 @@ fn one_slow_tile_does_not_stall_the_others() {
         *g = g.max(f);
         slow.cv.notify_all();
     };
-    let got = t.sample(&sel, &lon, &lat, &tell).unwrap();
+    let got = pool.install(|| t.sample(&sel, &lon, &lat, &tell)).unwrap();
     assert!(slow.by_progress.load(SeqCst), "the other tiles waited on the slow one");
     let one = NoneElse(f);
-    let o1 = Opts { fetch: &one, store: None, pool: None };
+    let o1 = Opts { fetch: &one, store: None };
     let want = ramp_set(&o1, TILE_MEMO_BYTES).sample(&sel, &lon, &lat, &|_| {}).unwrap();
     let bits = |v: &[f32]| v.iter().map(|e| e.to_bits()).collect::<Vec<_>>();
     assert_eq!(bits(&got), bits(&want));
@@ -929,9 +929,9 @@ fn a_tile_fetch_that_panics_ends_the_sampling_in_an_error() {
     std::thread::spawn(move || {
         let fetch = Panics(NoneElse(f));
         let pool = rayon::ThreadPoolBuilder::new().num_threads(3).build().unwrap();
-        let o = Opts { fetch: &fetch, store: None, pool: Some(&pool) };
+        let o = Opts { fetch: &fetch, store: None };
         let sel: Vec<u32> = (0..lon.len() as u32).collect();
-        let r = ramp_set(&o, TILE_MEMO_BYTES).sample(&sel, &lon, &lat, &|_| {}).map(|_| ());
+        let r = pool.install(|| ramp_set(&o, TILE_MEMO_BYTES).sample(&sel, &lon, &lat, &|_| {})).map(|_| ());
         tx.send(r.map_err(|e| format!("{e:#}"))).unwrap();
     });
     let r = rx.recv_timeout(std::time::Duration::from_secs(60)).expect("the sampling hung");
@@ -1040,11 +1040,11 @@ fn sampling_many_stored_tiles_holds_a_bounded_number_of_files() {
     let f = crate::fetch::MapFetch::default();
     let threads = 2;
     let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
-    let o = Opts { fetch: &f, store: Some(d.path().to_path_buf()), pool: Some(&pool) };
+    let o = Opts { fetch: &f, store: Some(d.path().to_path_buf()) };
     let run = |cap: usize| {
         let _cap = store::range::cap_plain_opens(cap);
         let s = Sampler::new(&plan, &o).unwrap();
-        let got = s.sample(&lon, &lat, &|_| {}).unwrap();
+        let got = pool.install(|| s.sample(&lon, &lat, &|_| {})).unwrap();
         let held = fds_under(d.path());
         drop(s);
         (got, held)

@@ -1324,7 +1324,7 @@ fn make_tiles(
         return Ok(rep);
     }
     let bf = BaseFetch::new(fetch);
-    let o = Opts { fetch: &bf, store: Some(store.to_path_buf()), pool: None };
+    let o = Opts { fetch: &bf, store: Some(store.to_path_buf()) };
     let presence_s = Sampler::new(&presence, &o)?;
     let full_s = Sampler::sharing(&full, &o, &presence_s)?;
     // (Its files' reads planned over its base tiles' box, not the z8 tile's.)
@@ -1787,13 +1787,11 @@ mod tests {
         };
         let ts: Vec<(u32, u32)> = (0..2).flat_map(|j| (0..2).map(move |i| (t.1 * 2 + i, t.2 * 2 + j))).collect();
         let (lon, lat) = points(13, &ts);
-        let want =
-            crate::dem::generic::sample(&plan, &lon, &lat, &Opts { fetch: &f, store: None, pool: None }, &|_| {})
-                .unwrap();
+        let want = crate::dem::generic::sample(&plan, &lon, &lat, &Opts { fetch: &f, store: None }, &|_| {}).unwrap();
         let reads: Reads = Default::default();
         let counted = Counted(f, reads.clone());
         let bf = BaseFetch::new(&counted);
-        let o = Opts { fetch: &bf, store: None, pool: None };
+        let o = Opts { fetch: &bf, store: None };
         let s = Sampler::new(&plan, &o).unwrap();
         let items = plan_items(&plan_files(&plan, tb, &bf).unwrap(), &[vec![t]]).unwrap();
         assert!(items.len() > 4, "{} blocks planned", items.len());

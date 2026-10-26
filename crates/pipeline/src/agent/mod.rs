@@ -180,6 +180,12 @@ struct Ramp {
 /// of its own, the slots past these grown and shrunk with its leases (`Agent::slots`, `job_slots`).
 pub(crate) const SLOTS: usize = 2;
 
+/// How long a job uses under a core-minute of CPU (its sampler's `busy_at`) before its Mac's
+/// capacity names it idle (`Capacity::idle`): its lead counts none of its cores, so CPU work goes
+/// beside a job waiting on the network (task #665: four terrain jobs fetching GSI's tiles held
+/// the M4's cores for 4 h at half a CPU-second a minute).
+pub const IDLE_CPU_S: u64 = 10 * 60;
+
 /// The most slots an agent holds (a bound on a Mac's jobs, whatever its cores; the names of its
 /// slots' files and workers by number below it).
 pub(crate) const MAX_SLOTS: usize = 64;
@@ -5333,7 +5339,8 @@ impl Agent {
             t => t,
         };
         let limit_mb = self.jobs_limit(total);
-        let (mut held_mb, mut need, mut leases, mut waiting) = (0u64, 0u64, Vec::new(), Vec::new());
+        let (mut held_mb, mut need, mut leases, mut waiting, mut idle) =
+            (0u64, 0u64, Vec::new(), Vec::new(), Vec::new());
         for (k, s) in self.slots.iter().enumerate() {
             if let Some(r) = &s.running {
                 let held = self.held_mb(k).unwrap_or(0);
@@ -5349,6 +5356,11 @@ impl Agent {
                 // none of its cores, task #462.)
                 if let Some(held_mb) = self.held_mb(k).filter(|_| self.waiting_on(k).is_some()) {
                     waiting.push(crate::coord::WaitingJob { lease: n, held_mb });
+                } else if s.running.is_some()
+                    && self.sampler.busy_at(k).is_some_and(|t| t.elapsed().as_secs() >= IDLE_CPU_S)
+                {
+                    // (Its cores idle a while: a job waiting on the network, task #665.)
+                    idle.push(n);
                 }
             }
         }
@@ -5376,6 +5388,7 @@ impl Agent {
             guard: self.guard_stops(),
             leases,
             waiting,
+            idle,
             caches: caches_here(&self.o.home.join("cache")),
             nas_traffic: self.live.as_ref().and_then(|l| {
                 let t = now_s();
@@ -12465,6 +12478,13 @@ mod tests {
         assert!(matches!(a.slots[2].lease, Some(Held::Leased { .. })));
         assert_eq!(a.capacity(&cond).leases.len(), 3);
         let leases = a.capacity(&cond).leases;
+        // (Task #665: a job under a core-minute for IDLE_CPU_S is named idle, its lease alone; one
+        // busy within it, or not sampled yet, isn't.)
+        assert!(a.capacity(&cond).idle.is_empty());
+        let ago_i = |s: u64| Instant::now() - Duration::from_secs(s);
+        a.sampler.set_test_busy(Some(vec![Some(ago_i(IDLE_CPU_S + 60)), Some(ago_i(IDLE_CPU_S - 60)), None]));
+        assert_eq!(a.capacity(&cond).idle, [leases[0]]);
+        a.sampler.set_test_busy(None);
         // (Its slots full by what the lead grants: asked again, nothing more fits.)
         assert!(a.helper_grants(&root, &cond, &mut w).is_empty());
         assert_eq!(a.slots.len(), 3, "no slot made for nothing");
