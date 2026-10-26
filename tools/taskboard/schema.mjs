@@ -1,5 +1,5 @@
 // What the task board's data may look like: one schema per collection (items, events, meta),
-// enforced by server.mjs on every create and update, and by repair.mjs on the data already there.
+// enforced by server.mjs on every create and update (migrate.mjs checked the data already there).
 // Pure functions, no I/O. A document that doesn't fit gets a list of {field, message}: every reason
 // at once, in words the caller can act on.
 

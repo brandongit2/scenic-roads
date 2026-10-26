@@ -180,7 +180,7 @@
   .pane-h h2 { margin: 0; font: 600 11px/1 var(--sans); letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); }
   .pane-h .sum { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11.5px var(--mono); color: var(--faint); font-variant-numeric: tabular-nums; }
   .pane-h .sp { flex: 1; }
-  .ghost-btn { height: 24px; padding: 0 7px; border: 0; border-radius: 5px; background: none; color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .ghost-btn { flex-shrink: 0; height: 24px; padding: 0 7px; border: 0; border-radius: 5px; background: none; color: var(--muted); font-size: 12px; white-space: nowrap; }
   .ghost-btn:hover { background: var(--hover); color: var(--fg); }
   .pane-h label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
   .pane-h select { height: 24px; padding: 0 4px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); color: var(--fg); font-size: 12px; }
@@ -438,6 +438,8 @@
     .chips, .sep { display: none; }
     .app.filters-open .chips { display: flex; flex-basis: 100%; }
     .pane-h .ghost-btn { padding: 0 5px; }
+    /* (The View menu and the tree's buttons don't fit one line on a phone: they wrap.) */
+    .pane-h { height: auto; min-height: 34px; flex-wrap: wrap; row-gap: 2px; padding-block: 4px; }
   }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { transition: none !important; animation-duration: 0.01ms !important; }
@@ -608,7 +610,7 @@
     if (same(bad, S.bad)) return;
     S.bad = bad;
     $("bad").hidden = !bad.length;
-    $("bad-sum").textContent = `${bad.length} thing${bad.length === 1 ? "" : "s"} the page can't show as it should: records that don't fit the board's schema (the server accepts no more; repair.mjs fixes old ones).`;
+    $("bad-sum").textContent = `${bad.length} thing${bad.length === 1 ? "" : "s"} the page can't show as it should: records that don't fit the board's schema (the server accepts no more).`;
     $("bad-list").replaceChildren(...bad.slice(0, 200).map((t) => h("li", null, t)), ...(bad.length > 200 ? [h("li", null, `… and ${bad.length - 200} more`)] : []));
   }
   const TASK_FIELDS = ["priority", "where", "stage", "discuss", "started", "finished", "reply"];

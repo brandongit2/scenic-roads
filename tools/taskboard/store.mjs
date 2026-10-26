@@ -1,6 +1,5 @@
 // The task board's SQLite file: the tables, and documents <-> rows. No rules here (schema.mjs and
-// server.mjs have them); a document is written as given, and one with a field no column holds is
-// read back with it (a legacy row's `extra`, which repair.mjs clears) but never written with one.
+// server.mjs have them); a document is written as given, and a field no column holds isn't written.
 import { DatabaseSync } from "node:sqlite";
 import { STAGES } from "./schema.mjs";
 
@@ -24,7 +23,7 @@ const itemsTable = (name) => `CREATE TABLE ${name} (
     archivedAt TEXT,
     added TEXT, started TEXT, finished TEXT,   -- ISO times
     photos TEXT,               -- JSON array of blob ids
-    extra TEXT                 -- JSON: fields of old rows no column holds (never written now)
+    extra TEXT                 -- (unused: kept so old files need no rebuild; always null)
   )`;
 const ITEMS_INDEXES = `
   CREATE INDEX IF NOT EXISTS items_parent ON items(parent);
@@ -70,7 +69,6 @@ export function openStore(file) {
       if (v === null || v === undefined) continue;
       doc[c] = BOOL.has(c) ? !!v : JSONCOL.has(c) ? JSON.parse(v) : v;
     }
-    if (row.extra) Object.assign(doc, JSON.parse(row.extra));
     return doc;
   };
   const SELECT = { items: `SELECT * FROM items`, events: `SELECT * FROM events` };
