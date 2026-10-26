@@ -26,7 +26,7 @@ fn main() -> anyhow::Result<()> {
     let url = pool.terrarium.clone().ok_or_else(|| anyhow::anyhow!("no Terrarium pyramid in the plan"))?;
     let raw = RawTiles::with_store(Path::new(raw), &store::nasfs::NasRoot::from_arg(aws).path(), &url);
     let all = std::time::Instant::now();
-    pool.with_tiles(&raw, |tiles| -> anyhow::Result<()> {
+    pool.with_tiles(&raw, None, |tiles| -> anyhow::Result<()> {
         for z in (9..=12u8).rev() {
             let s = 1u32 << (z - 6);
             let ts: Vec<(u32, u32)> = (t[0] * s..(t[0] + 1) * s)

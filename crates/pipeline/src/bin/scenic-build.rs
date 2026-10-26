@@ -947,8 +947,9 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 let lv = pipeline::terrain_task::levels_of(&levels, &g.iter().copied().collect(), true);
                 let path = dir.join(format!("{}-{}", g[0].0, g[0].1)).join("u").join(pipeline::terrain_task::INPUT);
                 let t0 = std::time::Instant::now();
-                let c = pool
-                    .with_tiles(&raw, |tiles| pipeline::terrain_task::cut((t.x, t.y), g, &lv, tiles, &src, &path))??;
+                let c = pool.with_tiles(&raw, src.water, |tiles| {
+                    pipeline::terrain_task::cut((t.x, t.y), g, &lv, tiles, &src, &path)
+                })??;
                 println!(
                     "{}",
                     serde_json::json!({ "group": pipeline::terrain_task::subtrees_arg(g), "tiles": c.tiles, "made": c.made.len(), "raw": c.raw, "bytes": c.bytes, "mem_mb": pipeline::terrain_task::mem_mb(c.bytes, &lv), "secs": t0.elapsed().as_secs_f64() })
@@ -986,7 +987,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 anyhow::ensure!(!ts.is_empty(), "{} has no z6 tile near the coverage", q.slash());
                 let src = pipeline::terrain_pack::Sources { water: Some(&water), deeper: None };
                 let pool = base_pool(&out, 3, &[(q.x, q.y)])?;
-                let (lo, _) = pool.with_tiles(&raw, |tiles| {
+                let (lo, _) = pool.with_tiles(&raw, src.water, |tiles| {
                     pipeline::terrain_pack::make_lo(&out, tiles, (q.x, q.y), &ts, &src, &|_, _, _| {})
                 })??;
                 (lo, None)
@@ -995,7 +996,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 let src = pipeline::terrain_pack::Sources { water: Some(&water), deeper: Some(&deeper) };
                 let pool = base_pool(&out, 6, &[(t.x, t.y)])?;
                 let levels = pipeline::terrain_pack::piece_levels(&cov, (t.x, t.y));
-                let (hi, mid) = pool.with_tiles(&raw, |tiles| {
+                let (hi, mid) = pool.with_tiles(&raw, src.water, |tiles| {
                     if whole {
                         pipeline::terrain_pack::make_piece_whole(tiles, &src, levels)
                     } else {
@@ -1082,7 +1083,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let fetch = pipeline::fetch::Fetcher::from_env();
             let pool = base_pool(&out, 6, &pieces.iter().copied().collect::<Vec<_>>())?;
             let mut lines = String::new();
-            pool.with_tiles(&raw, |tiles| -> Result<()> {
+            pool.with_tiles(&raw, src.water, |tiles| -> Result<()> {
                 let bases = pipeline::terrain_pack::Bases::new(tiles, &src, &cov);
                 for &t in &ts {
                     let t0 = std::time::Instant::now();
@@ -1157,7 +1158,8 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let pool = base_pool(&out, 0, &[(0, 0)])?;
             drop(p);
             let src = pipeline::terrain_pack::Sources { water: Some(&water), deeper: None };
-            let n = pool.with_tiles(&raw, |tiles| pipeline::terrain_pack::build_root(&mut out, tiles, &src))??;
+            let n =
+                pool.with_tiles(&raw, src.water, |tiles| pipeline::terrain_pack::build_root(&mut out, tiles, &src))??;
             eprintln!("terrain root: {n} tiles");
             pack_raw(&out, &raw_dir);
         }
@@ -5023,7 +5025,7 @@ fn terrain_pieces(
     let fetch = pipeline::fetch::Fetcher::from_env();
     let deep = pipeline::terrain_deep::Deep { fine: fine.as_ref(), cov, fetch: &fetch };
     let pool = base_pool(out, 6, &ts.iter().map(|t| (t.x, t.y)).collect::<Vec<_>>())?;
-    pool.with_tiles(&raw, |tiles| terrain_pieces_from(out, cov, ts, same, tiles, &src, &deep))??;
+    pool.with_tiles(&raw, src.water, |tiles| terrain_pieces_from(out, cov, ts, same, tiles, &src, &deep))??;
     pack_raw_with(out, &raw_dir, &|what: &str, done: u64, total: u64| pipeline::agent::jobs::report(done, total, what));
     Ok(())
 }
@@ -5158,7 +5160,7 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
     let mut names: Vec<String> = ts.iter().map(|t| format!("Making {}'s deep terrain", t.slash())).collect();
     names.push("Packing the new raw tiles onto the NAS".into());
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
-    pool.with_tiles(&raw, |tiles| -> Result<()> {
+    pool.with_tiles(&raw, src.water, |tiles| -> Result<()> {
         let bases = pipeline::terrain_pack::Bases::new(tiles, &src, &cov);
         for (k, t) in ts.iter().enumerate() {
             pipeline::control::safe_point(STEP);
@@ -5270,8 +5272,9 @@ fn terrain_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
         pipeline::agent::jobs::part(k, &names);
         let c = cost_start("terrain-lo", &q.slash());
         let pool = base_pool(out, 3, &[(q.x, q.y)])?;
-        let r =
-            pool.with_tiles(&raw, |tiles| pipeline::terrain_pack::build_lo(out, tiles, (q.x, q.y), ts, &src, &say))??;
+        let r = pool.with_tiles(&raw, src.water, |tiles| {
+            pipeline::terrain_pack::build_lo(out, tiles, (q.x, q.y), ts, &src, &say)
+        })??;
         eprintln!("terrain-lo {}: {r:?} ({:.0?})", q.slash(), c.elapsed());
         pipeline::control::done("terrain-lo", &q.slash());
         note_cost("terrain-lo", &q.slash(), c);
@@ -5456,7 +5459,7 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
         let writing = std::sync::atomic::AtomicBool::new(false);
         let t = cost_start("terrain-hi", &format!("3/{}/{}", q.0, q.1));
         let pool = base_pool(out, 3, &[q])?;
-        let r = pool.with_tiles(&raw, |tiles| {
+        let r = pool.with_tiles(&raw, src.water, |tiles| {
             pipeline::terrain_pack::build_q_with(out, tiles, q, &list, &cov, &src, &|what, done, total| {
                 if what == "packs" && !writing.swap(true, std::sync::atomic::Ordering::Relaxed) {
                     pipeline::agent::jobs::part(2 * k + 1, &names);

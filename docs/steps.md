@@ -89,7 +89,10 @@ What each step does, in detail. The steps as one table (names, chains, the check
     half a pixel (at most its full resolution), a Terrarium
     pyramid at the level's zoom, another pyramid at its own and only on z9–12 (on z3–8, terrain-lo's,
     the next dataset serves: a z8 tile would read 16,384 of GSI's z15 tiles over the network, task
-    #704, where GLO-30 is read from its store); a z9–12 tile's detail at its own z6
+    #704, where GLO-30 is read from its store), and never in the open sea: a pixel wholly sea in the
+    terrain's water, with those around it, is flattened to 0 m whatever it reads, so its points skip
+    such pyramids (over Japan's seas each GSI layer answered 64 requests a z12 tile with 404s, task
+    #706); a z9–12 tile's detail at its own z6
     row's middle latitude (`terrain_base::row_mid`), so its bytes are its own whichever z6 tiles a
     job makes with it (a deep target's base among them); heights brought to EGM2008 as the
     roads' are; where no dataset has data, sea level. The Terrarium tiles are read through this
