@@ -370,7 +370,7 @@ devices away use the M6's (always on; https://map.brandontsang.net, docs/macs.md
      low zooms are next made.
    - **Publishing's switches** (crate::agent::publish), under `state/pool/`, each off while missing
      or `off`:
-     - `delta-catalog`: the catalogue job (`scenic-build catalogue --delta`) writes what changed over the
+     - `delta-catalog`: the catalogue job (`scenic-build catalog --delta`) writes what changed over the
        last (docs/formats.md, Delta catalogues), each file's size from the records
        (`state/build/sizes.json`, which the files' jobs hand off) or the last catalogue: it looks up no
        file's size on the NAS but a file written before sizes were recorded. The same job writes a whole
