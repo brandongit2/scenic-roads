@@ -196,6 +196,23 @@ What each step does, in detail. The steps as one table (names, chains, the check
   the job's threads, so its working memory has a bound (`working_bytes`: per thread a chain of
   tiles' children's quadrants and one tile's making); its tiles don't depend on the threads (each
   pixel the mean of its four children's in a fixed order, nothing summed across tiles).
+- **The polar caps** (`pipeline::polar`; docs/polar.md): the terrain and shading past the Web
+  Mercator tiles' 85.05°, on each pole's polar stereographic grid (EPSG:3031 south, 3413 north;
+  `roadcore::polar`), z0–9, of the poles built (`polar::POLES`: the south; the north is sea level
+  and waits for the depth). Each from the elevation pool as the Mercator terrain is, read at the
+  level's detail, the tile pyramids left out (a Web Mercator pyramid has nothing past 85.05°); where
+  no dataset has data, a fill mask's own filled value (`dem::generic::Sampler::fill_voids`), else
+  sea level; below zero to 0; no water flattened. **polar-terrain**, a run per block (a z4 tile of
+  the grid, "s/4/x/y", where the coverage meets its latitudes: `polar::built`): its cap tiles at z9
+  sampled, each coarser level its children's means (sampled where they aren't, past the cap), coded
+  as the Mercator terrain is: its pack `layers/polar-terrain-<pole>/polar/4-x-y`. **polar-slope**, a
+  run per block once its and its neighbours' terrain is built: Horn's method at z9 on the stored
+  terrain (its neighbours' edge tiles for the border), each coarser level its children's means at
+  full precision (Horn's on its own terrain where they aren't), as `shade-webp`: its pack
+  `layers/polar-slope-<pole>/polar/4-x-y`. **polar-root**, a pole's z0–3 of both from its blocks'
+  z4 tiles as stored, sampled and shaded past them; it drops the packs of blocks no longer built.
+  Memory: a block's z9 tiles held whole (heights and shading) and the pool's cache, `mem_mb` 4,096
+  for the terrain.
 - **Grids (z11):** land cover, canopy and cover, for analysis only. Each `unit` job makes the grid tiles
   its packs lack and uploads them as its z6 tile's `grid-*` hi packs; they aren't in those jobs' keys
   (made from fixed datasets, the same whether read or made).
@@ -607,6 +624,12 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   content (`slope_reads`).
 - **slope-lo:** its z6 tiles' mids and the z3 tile's terrain lo pack; `SLOPE_LO_V` and the codec.
   **slope-root:** the lo packs and the codec.
+- **polar-terrain (a polar block):** `polar::TERRAIN_V`, the terrain codec's version, the block,
+  and the pool's datasets meeting its latitudes (`roadcore::polar::lat_box`) by their lines, as the
+  Mercator terrain's keys name them (`agent::build::polar_targets`). **polar-slope:** `polar::SLOPE_V`,
+  the shading codec's, the block, and the terrain packs of it and its built neighbours by content.
+  **polar-root (a pole):** `polar::ROOT_V`, both codecs', the pole, the datasets meeting the root's
+  latitudes, the blocks built, and every block pack of its layers by logical and content name.
 - **trees (a z6 tile):** the coverage inside the tile; `TREES_V` changes with any change to the bytes
   a z6 tile writes.
 - **trees-lo:** its z6 tiles' mids; `TREES_LO_V`.
@@ -648,6 +671,7 @@ keeps its content name, so jobs keyed on it stop there.
 | What | How |
 |---|---|
 | our layers | the pack for the tile; names attached |
+| polar caps | `/tiles/polar-terrain/<pole>/z/x/y`, `/tiles/polar-slope/…`: the pole's root (z0–3) or block (z4–9) pack's tile as stored, else 404 |
 | basemap | tiles from the catalog's PMTiles archives (`/tiles/base`); names attached |
 | drives, rides, rail lines | parts from the hidata in view plus half the window, joined by offset; zoomed out (wider than ~1,200 km) from the 500 m summaries (`approx`) |
 | whole road (hover) | the road's parts, through the road → z6 tiles index; away from the NAS, cut where the Mac's downloads end |

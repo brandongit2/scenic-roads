@@ -85,10 +85,13 @@ paths (`terrain-mid`, `slope-mid`) and a mid's `step` field keep the old names. 
 | | `terrain-hi` | pack | a z6 tile | ⇄ |
 | | `terrain-deep` | pack | a z10 tile | ⇄ |
 | | `terrain-lo` | pack | a z3 tile | ⇄ |
+| | `polar-terrain` | pack | a polar block | ⇄ |
 | | `terrainsub` (task) | | a task of `terrain-hi` | ⇄ |
 | `slope` | `slope-deep` | pack | a z10 tile | ⇄ |
 | | `slope-hi` | pack | a z6 tile | ⇄ |
 | | `slope-lo` | pack | a z3 tile | ⇄ |
+| | `polar-slope` | pack | a polar block | ⇄ |
+| | `polar-root` | pack | the world | lead |
 | `trees` | `trees` | pack | a z6 tile | ⇄ |
 | | `trees-lo` | pack | a z3 tile | ⇄ |
 | | `treeblock` (task) | | a task of `trees` | ⇄ |

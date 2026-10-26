@@ -27,7 +27,7 @@ values' `byroad`, hidata's `railinfo` and meta `lsum`.
 16  u64      index offset
 24  u64      index entry count
 32  u32      meta length n
-36  [u8; n]  meta JSON: {"layer", "scope": "root"|"lo"|"hi"|"deep", "root": "z/x/y",
+36  [u8; n]  meta JSON: {"layer", "scope": "root"|"lo"|"hi"|"deep"|"polar", "root": "z/x/y",
              "encoding" (e.g. "rt7", "terrarium-webp", "shade-webp", "mvt"), …}
              (zoom ranges are the catalog's)
 …            blobs (identical blobs stored once; entries may share an offset)
@@ -56,6 +56,12 @@ index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
   R = 255 × √(steepness ÷ 400 %) of the mean steepness beneath the pixel, G and B its mean unit
   gradient direction (east, south) as 128 + 120 u in steps of 8 (8–248), (128, 128) where that
   direction's length (the coherence) is under 0.25 or the ground is flat (roadcore::shade).
+  **The polar caps** (`polar-terrain-<pole>`, `polar-slope-<pole>`: pipeline::polar, docs/polar.md)
+  are tiled on their pole's polar stereographic grid, not Web Mercator: their root pack
+  (`layers/<layer>/root/0-0-0`) holds z0–3 and a block pack (`layers/<layer>/polar/4-<x>-<y>`, scope
+  `polar`, root "4/x/y" of the grid) z4–9 under one z4 tile; the catalog names the blocks under the
+  layer's `polar` ("4/x/y"), and meta's `packs` gives their versions there likewise. The tiles are the
+  terrain's and the shading's encodings (the shading's directions on the grid: east = +x, south = −y).
   **Offline:** a region's deep packs, the terrain's and its shading's, are on a Mac only where its
   terrain detail is downloaded (an add-on to the region: crates/server/src/downloads.rs). Elsewhere,
   away from the NAS, a deep tile that can't be read is made from its ancestor in the hi packs (the
@@ -473,6 +479,8 @@ that decodes and parses, else the next.
     "terrain": {"encoding": "terrarium-webp", "minzoom": 0, "maxzoom": 16, "root": "<logical>",
                 "lo": {"3/4/2": "<logical>"}, "hi": {"6/32/21": "<logical>"},
                 "deep": {"10/295/360": "<logical>"}, "native_zoom": {"10/295/360": 16}},
+    "polar-terrain-s": {"encoding": "terrarium-webp", "minzoom": 0, "maxzoom": 9, "root": "<logical>",
+                        "lo": {}, "hi": {}, "polar": {"4/7/8": "<logical>"}},
     "roads": {"encoding": "rt7", "minzoom": 4, "maxzoom": 14, "lo": {…}, "hi": {…}}
   },
   "basemap": ["<logical of a .pmtiles>"],
