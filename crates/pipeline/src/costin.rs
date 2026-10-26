@@ -6,7 +6,8 @@
 //! target, store::nasio's `ReadBytes` and `Local`, its programs' added as each ends, plus the inputs a step opens itself and notes with `add`),
 //! `local` (of `bytes`, those read from this Mac's own disk, store::nasio's `Local`: a whole
 //! local copy's reads, task #551; not the NAS's, so not in its NAS weight),
-//! `threads` (always), `cpu_ms` (the CPU time its process took over it, where it can be read), and the step's own: `ways`/`vertices` (z6 tile, pack, lo), `units` (pack, lo:
+//! `threads` (always), `cpu_ms` (the CPU time its process took over it, where it can be read),
+//! `paused_ms` (the time its process was stopped over it, where it was: `stopped_ms`), and the step's own: `ways`/`vertices` (z6 tile, pack, lo), `units` (pack, lo:
 //! the base packs met), `nas_read` and `nas_secs` (pack, lo: the bytes the job read of the base packs
 //! from the NAS and the seconds that took, the same on each of its targets), `buildings` (bldprep, bldtiles), `tiffs` (the GeoTIFFs opened) and `km2`
 //! (the target's area: terrain, slope, trees and their assemblies, the z6 tiles' elevations), and,
@@ -22,12 +23,15 @@ use store::nasio::Count;
 struct State {
     /// This process's counts (store::nasio) as the target began.
     at: store::nasio::Counts,
-    /// The process's CPU time as the target began (µs: crate::timings::cpu_us).
+    /// The process's CPU time as the target began (µs: crate::timings::cpu_us), and the time it had
+    /// been stopped (ms: `stopped_ms`).
     cpu_at: Option<u64>,
+    stopped_at: u64,
     m: BTreeMap<String, u64>,
 }
 
-static STATE: Mutex<State> = Mutex::new(State { at: [0; store::nasio::SLOTS], cpu_at: None, m: BTreeMap::new() });
+static STATE: Mutex<State> =
+    Mutex::new(State { at: [0; store::nasio::SLOTS], cpu_at: None, stopped_at: 0, m: BTreeMap::new() });
 
 /// Counts a GeoTIFF opened (crate::geotiff::Tiff::open). One a job's open-file cache keeps from an
 /// earlier target isn't counted again.
@@ -51,7 +55,57 @@ pub fn begin() {
     let mut s = state();
     s.at = store::nasio::own();
     s.cpu_at = crate::timings::cpu_us();
+    s.stopped_at = stopped_ms();
     s.m.clear();
+}
+
+/// How long the stop watch (`stopped_ms`) sleeps between looks at the clock.
+const TICK: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The time this process was stopped, as its stop watch counted it (ms).
+static STOPPED_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The time this process has been stopped (SIGSTOP: the agent's memory or disk guard freezing its
+/// job, or the job paused for its conditions) since its stop watch began (ms), the watch begun at
+/// its first call. A thread wakes every `TICK`; a wake later than twice that counts its lateness
+/// (`stopped_in`). The monotonic clock runs on while a process is stopped, not while its Mac sleeps,
+/// as a target's `secs` does (task #697: a run's busy cores read over the time it ran).
+pub fn stopped_ms() -> u64 {
+    static WATCH: std::sync::Once = std::sync::Once::new();
+    WATCH.call_once(|| {
+        let r = std::thread::Builder::new().name("stop-watch".into()).spawn(|| {
+            let clock = store::clock::Real;
+            let mut last = store::clock::Clock::now(&clock);
+            loop {
+                let (now, ms) = tick(&clock, last);
+                STOPPED_MS.fetch_add(ms, std::sync::atomic::Ordering::Relaxed);
+                last = now;
+            }
+        });
+        if let Err(e) = r {
+            eprintln!("costin: no stop watch ({e}): time stopped counts as time run");
+        }
+    });
+    STOPPED_MS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// One look of the stop watch: a `TICK` slept from `last`, then the time now and how long of it the
+/// process was stopped (ms, `stopped_in`).
+fn tick(clock: &dyn store::clock::Clock, last: std::time::Instant) -> (std::time::Instant, u64) {
+    clock.sleep(TICK);
+    let now = clock.now();
+    (now, stopped_in(now.saturating_duration_since(last)))
+}
+
+/// The time stopped in a tick that took `took` (ms): past twice `TICK`, all of it but the tick (a
+/// thread on a busy Mac wakes a little late, never a second; a stop lasts as long as the Mac's
+/// memory or disk stays short, minutes), else none.
+fn stopped_in(took: std::time::Duration) -> u64 {
+    if took > 2 * TICK {
+        took.saturating_sub(TICK).as_millis() as u64
+    } else {
+        0
+    }
 }
 
 /// Adds `n` to measure `key`.
@@ -106,17 +160,22 @@ pub fn take() -> BTreeMap<String, u64> {
     if let (Some(a), Some(b)) = (s.cpu_at, crate::timings::cpu_us()) {
         m.insert("cpu_ms".into(), b.saturating_sub(a) / 1000);
     }
+    let paused = stopped_ms().saturating_sub(s.stopped_at);
+    if paused > 0 {
+        m.insert("paused_ms".into(), paused);
+    }
     m
 }
 
 /// What `measured` took: the bytes read (and of them, the local disk's), the GeoTIFFs opened and
-/// the CPU time (ms; None where it can't be read).
+/// the CPU time (ms; None where it can't be read), and the time it was stopped (ms, `stopped_ms`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Taken {
     pub bytes: u64,
     pub local: u64,
     pub tiffs: u64,
     pub cpu_ms: Option<u64>,
+    pub paused_ms: u64,
 }
 
 /// Runs `f` (a z6 tile's tail steps run here after its measures were taken, before the next z6 tile
@@ -124,17 +183,17 @@ pub struct Taken {
 /// own (their counts added to this process's as each ends: crate::unit's `run`; their CPU as each
 /// is waited for) among them. (Reads and CPU on other threads meanwhile are counted too.)
 pub fn measured<T>(f: impl FnOnce() -> T) -> (T, Taken) {
-    let (at, c0) = (store::nasio::own(), crate::timings::cpu_us());
+    let (at, c0, p0) = (store::nasio::own(), crate::timings::cpu_us(), stopped_ms());
     let v = f();
     let cpu_ms = match (c0, crate::timings::cpu_us()) {
         (Some(a), Some(b)) => Some(b.saturating_sub(a) / 1000),
         _ => None,
     };
     let (bytes, local, tiffs) = grew(&at, &store::nasio::own());
-    (v, Taken { bytes, local, tiffs, cpu_ms })
+    (v, Taken { bytes, local, tiffs, cpu_ms, paused_ms: stopped_ms().saturating_sub(p0) })
 }
 
-/// Adds measures taken by `measured` to a target's: its CPU too, so a z6 tile's `cpu_ms` counts its
+/// Adds measures taken by `measured` to a target's: its CPU and time stopped too, so a z6 tile's `cpu_ms` counts its
 /// tail's programs run after its measures were taken (crate::needs::Book::cores reads it over the
 /// target's whole time, the tail's included).
 pub fn add_to(m: &mut BTreeMap<String, u64>, t: Taken) {
@@ -147,6 +206,9 @@ pub fn add_to(m: &mut BTreeMap<String, u64>, t: Taken) {
     }
     if let Some(ms) = t.cpu_ms {
         *m.entry("cpu_ms".into()).or_default() += ms;
+    }
+    if t.paused_ms > 0 {
+        *m.entry("paused_ms".into()).or_default() += t.paused_ms;
     }
 }
 
@@ -211,7 +273,7 @@ mod tests {
         let ((), t) = measured(|| store::nasio::add_counts(&c));
         assert!(t.bytes >= 1024 && t.local >= 24 && t.tiffs >= 4);
         let mut m = BTreeMap::from([("km2".to_string(), 5)]);
-        add_to(&mut m, Taken { bytes: 7, local: 0, tiffs: 2, cpu_ms: None });
+        add_to(&mut m, Taken { bytes: 7, local: 0, tiffs: 2, cpu_ms: None, paused_ms: 0 });
         assert_eq!((m["bytes"], m["tiffs"]), (7, 2));
         assert!(!m.contains_key("cpu_ms"));
     }
@@ -228,6 +290,20 @@ mod tests {
         let m = take();
         assert!(m["bytes"] >= 500 && m["local"] >= 200, "{m:?}");
         assert_eq!((m["wrote"], m["creates"]), (50, 1));
+    }
+
+    /// The stop watch counts the time a process was stopped (task #697): a tick ending a minute and
+    /// a half late counts it, one a little late (a busy Mac) none.
+    #[test]
+    fn the_stop_watch_counts_a_tick_ending_late() {
+        let v = store::clock::Virtual::new();
+        let (t1, ms) = tick(&*v, store::clock::Clock::now(&*v));
+        assert_eq!(ms, 0, "on time");
+        v.advance(std::time::Duration::from_secs(90));
+        let (t2, ms) = tick(&*v, t1);
+        assert_eq!(ms, 90_000, "stopped for 90 s");
+        v.advance(std::time::Duration::from_millis(900));
+        assert_eq!(tick(&*v, t2).1, 0, "woken 0.9 s late: not stopped");
     }
 
     #[test]

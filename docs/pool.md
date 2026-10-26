@@ -482,12 +482,17 @@ and pass-sets reckon their room past it, and run by hand, without it, keep none.
 **Threads granted** (task #241). Each job granted carries the worker threads it runs with
 (`Grant::threads`), which the member's agent sets as `RAYON_NUM_THREADS` (the programs taking
 workers read it: `scenic-build`'s); costs record them (`threads`), with the CPU time the target
-took (`cpu_ms`). A job's measured cores (`needs::Book::cores`, its own run's, else the most of its
+took (`cpu_ms`) and the time its process was stopped meanwhile (`paused_ms`: frozen by the memory
+or disk guard, or paused for its conditions; `costin::stopped_ms`, a thread that counts its own
+wakes coming late, task #697). A job's measured cores (`needs::Book::cores`, its own run's, else the most of its
 step's) are two: its **grant**, the threads its runs were given, or fewer where their CPU time over
 their wall time says fewer were busy, plus one (a serial step: 1–2), or twice them where three
 quarters or more were busy (so a grant can climb back; capped at the Mac's cores); and its
-**busy** cores, that CPU time over that wall time to the nearest core (one at least, never past
-its grant). The cores a Mac's jobs may use together (`coord::ask_cores`) are its Mac's
+**busy** cores, that CPU time over the time it ran (its wall time less the time stopped) to the
+nearest tenth of a core (a tenth at least, never past its grant; the packing sums a Mac's jobs'
+tenths, so rounding no longer undercounts by up to half a core a job). A target not run the way
+it runs now, nearly every one granted, counts for its step's most, which no run crowded off the NAS
+lowers. The cores a Mac's jobs may use together (`coord::ask_cores`) are its Mac's
 less, while its owner uses it, its in-use share's. Each job is granted its
 measured grant within the packed share (`coord::packed_share`: a quarter of those cores, at least
 two where they allow: the M1's 8, 2), else the share; a step
@@ -496,7 +501,7 @@ reading the NAS as it goes (`coord::NAS_STEPS`: `unit`, elev, pack, lo; or one w
 counts for its busy cores** (task #688, `Sched::need_cores`): the packing takes those, not its
 threads, off its Mac's cores, so jobs waiting on their reads go beside each other until memory,
 disk or the NAS budget is full rather than their threads: terrain-hi kept 1.16 cores busy of 2–3
-threads on 26 Oct and counts for 1, where it counted for 3 and the M4 packed 3–4 of them ("cores:
+threads on 26 Oct and counts for 1.2, where it counted for 3 and the M4 packed 3–4 of them ("cores:
 2 of 14 left, a job of terrain-hi takes 3") with 22 GB of its 39 GB build memory free. The rule
 reads the runs, not the step: a terrain job reading faster (from this Mac's disk, say) keeps more
 busy and counts for more. A job's threads stay within the cores left plus those it leaves idle
@@ -506,8 +511,7 @@ by busy cores, and none until a minute has passed since its last grant (the span
 average its capacity reports) or while that load passes its jobs' busy cores by more than a core.
 So the M4 takes four terrain-hi jobs by their threads at once, then one a minute up to what its
 memory, disk and the NAS budget hold, and stops climbing as soon as jobs keep more busy than their
-runs said (a run's busy cores read low where it waited on a busy NAS or was paused by the memory
-guard: its wall time counts the pause). Load past the busy cores beyond the packed share comes off
+runs said (a run's busy cores read low where it waited on a busy NAS). Load past the busy cores beyond the packed share comes off
 the cores left as outside load does (`outside_cores`, at most half the Mac's), which stops further
 grants but stops no running job. A first
 job alone gets no more than the share, so its run is never measured to take every core and leave

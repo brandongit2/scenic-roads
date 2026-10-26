@@ -4180,6 +4180,7 @@ fn settle_tails(
                     (Some(a), Some(b)) => Some(a + b),
                     (a, b) => a.or(b),
                 },
+                paused_ms: read.paused_ms + t.paused_ms,
             };
             r
         };

@@ -217,6 +217,17 @@ pub fn outside_cores(a: &Ask, ours: u32) -> u32 {
     })
 }
 
+/// The whole cores `t` tenths of a core make, to the nearest (a Mac's jobs' busy cores summed
+/// before rounding, task #697: beside its load average's whole cores).
+fn tenths_to_cores(t: u32) -> u32 {
+    (t + 5) / 10
+}
+
+/// `t` tenths of a core in words: "1.2".
+fn tenths(t: u32) -> String {
+    format!("{}.{}", t / 10, t % 10)
+}
+
 /// How long a Mac's load is given to show its last grant before it's granted a job past the cores
 /// its jobs' threads leave (`Sched::pack`, task #688 review): the minute its load average spans.
 pub const SETTLE: Duration = Duration::from_secs(60);
@@ -548,7 +559,11 @@ impl Sched {
         let cores = targets.iter().map(|t| b.cores(step, t)).collect::<Option<Vec<crate::needs::Cores>>>().map(|v| {
             crate::needs::Cores {
                 grant: v.iter().map(|c| c.grant).max().unwrap_or(0),
-                busy: v.iter().map(|c| c.busy).collect::<Option<Vec<u32>>>().and_then(|b| b.into_iter().max()),
+                busy_tenths: v
+                    .iter()
+                    .map(|c| c.busy_tenths)
+                    .collect::<Option<Vec<u32>>>()
+                    .and_then(|b| b.into_iter().max()),
             }
         });
         Some((
@@ -571,26 +586,27 @@ impl Sched {
     }
 
     /// The threads a job packed as `n` is granted on a Mac of `total` cores (packed share `share`),
-    /// and the cores it counts for there (task #688): measured, its granted ones within the share
-    /// (`packed_cores`), counted for the cores it kept busy (`busy`; its threads where its runs
-    /// said no CPU time); not said, the share both; a
+    /// and the cores it counts for there, in tenths of a core (task #688; tenths, task #697: a
+    /// job's busy cores rounded to the nearest undercounted up to half a core each): measured, its
+    /// granted ones within the share (`packed_cores`), counted for the cores it kept busy
+    /// (`busy_tenths`; its threads where its runs said no CPU time); not said, the share both; a
     /// cold start the share only when its step honours the threads it's granted
     /// (`THREADS_HONOURED`), else the whole Mac both (task #499 review: one that runs as many
     /// threads as the Mac has would swamp the jobs beside it). One only waiting on a worker, or
     /// leaving its cores idle, counts for none.
     pub(super) fn need_cores(&self, step: &str, targets: &[String], n: &Need, share: u32, total: u32) -> (u32, u32) {
         let (threads, busy) = if n.cold && !THREADS_HONOURED.contains(&step) {
-            (total, total)
+            (total, total * 10)
         } else {
             match n.cores {
                 Some(c) => {
                     let threads = self.packed_cores(step, targets, c.grant, share);
-                    (threads, c.busy.unwrap_or(threads))
+                    (threads, c.busy_tenths.unwrap_or(threads * 10))
                 }
-                None => (share, share),
+                None => (share, share * 10),
             }
         };
-        (threads, if n.waits || n.idle { 0 } else { busy.min(threads) })
+        (threads, if n.waits || n.idle { 0 } else { busy.min(threads * 10) })
     }
 
     /// Whether no run of `step` has left a measure of any kind, whatever the way it ran (task #499
@@ -690,22 +706,23 @@ impl Sched {
         let mut cold_here = needs.iter().any(|n| n.cold);
         let total = ask_cores(a);
         let share = packed_share(total);
-        // (Cores left: each job's, the cores it counts for (`need_cores`).)
+        // (Cores left, in tenths of a core: each job's, the cores it counts for (`need_cores`).)
         let mut cores = needs
             .iter()
             .zip(&held_steps)
-            .fold(total, |left, (n, (st, ts))| left.saturating_sub(self.need_cores(st, ts, n, share, total).1));
+            .fold(total * 10, |left, (n, (st, ts))| left.saturating_sub(self.need_cores(st, ts, n, share, total).1));
         // (Its Mac's load from outside the pool (other processes: builds, tests): the cores its
         // last minute's load average keeps busy (`Capacity::cores_free`) past those the jobs it
         // holds count for, less those the in-use share keeps already, come off the cores left
         // (task #440), at most half its cores (task #684): a Mac swamped by other work is granted
         // jobs in the other half only. A job keeping more busy than it was measured to shows here.)
-        let outside = outside_cores(a, total.saturating_sub(cores));
-        cores = cores.saturating_sub(outside);
+        let ours = tenths_to_cores((total * 10).saturating_sub(cores));
+        let outside = outside_cores(a, ours);
+        cores = cores.saturating_sub(outside * 10);
         // (The cores left were its jobs counted at their threads, as before task #688: a grant
         // past them is an overcommit, trusting its busy cores (task #688 review). At most one per
         // ask, and none while its Mac's load hasn't had `SETTLE` to show its last grant or shows
-        // load past its jobs' busy cores by more than a core (their rounding): the jobs go up one at a time, each measured by the load
+        // load past its jobs' busy cores by more than a core (the load average's whole cores): the jobs go up one at a time, each measured by the load
         // before the next, so jobs busier than their runs said (or #690's reads in parallel) stop
         // the climb within a minute instead of a whole ask's worth landing at once.)
         let mut by_threads = needs
@@ -718,7 +735,7 @@ impl Sched {
         let settled = mine.iter().all(|l| now.saturating_duration_since(l.granted) >= SETTLE);
         let unexplained = a.cap.as_ref().is_some_and(|c| {
             let kept = if c.in_use { c.kept_cores } else { 0 };
-            c.cores.saturating_sub(c.cores_free).saturating_sub(kept) > total.saturating_sub(cores + outside) + 1
+            c.cores.saturating_sub(c.cores_free).saturating_sub(kept) > ours + 1
         });
         let mut over_ok = settled && !unexplained;
         // (The ask's memory and disk are its Mac's whole room for jobs, whatever it runs (the
@@ -854,10 +871,14 @@ impl Sched {
                     None if ramp_why.is_some() => ramp_why.unwrap_or_default(),
                     Some((st, c)) if outside > 0 => {
                         format!(
-                            "cores: {cores} of {total} left ({outside} busy outside the pool), a job of {st} takes {c}"
+                            "cores: {} of {total} left ({outside} busy outside the pool), a job of {st} takes {}",
+                            tenths(cores),
+                            tenths(c)
                         )
                     }
-                    Some((st, c)) => format!("cores: {cores} of {total} left, a job of {st} takes {c}"),
+                    Some((st, c)) => {
+                        format!("cores: {} of {total} left, a job of {st} takes {}", tenths(cores), tenths(c))
+                    }
                     None => format!(
                         "nothing offered fits the room left ({} memory{}) or is free to take",
                         gb(room.mem_mb),
@@ -875,7 +896,7 @@ impl Sched {
             // at least; and the cores it counts for.)
             let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
             let (threads, busy) = self.need_cores(&o.step, &ts, &n, share, total);
-            let threads = threads.min(cores + (threads - busy)).max(1);
+            let threads = threads.min((cores + (threads * 10).saturating_sub(busy)) / 10).max(1);
             // (A planned job of no targets of its own is offered under its id's, keyless, to be
             // measured by it: its lease holds none, as its hand-off names none.)
             let pick = if o.job.is_some() { pick.into_iter().filter(|t| !t.1.is_empty()).collect() } else { pick };
@@ -1261,15 +1282,16 @@ impl Sched {
                     let ts: Vec<String> = targets.iter().map(|t| t.0.clone()).collect();
                     let n = Need { idle: idle(l), ..self.pack_need(step, &ts) };
                     let counted = self.need_cores(step, &ts, &n, share, total).1;
-                    match n.cores.and_then(|c| c.busy) {
+                    match n.cores.and_then(|c| c.busy_tenths) {
                         _ if counted == 0 || l.threads == 0 => counted,
-                        Some(_) => counted.min(l.threads),
-                        None => l.threads,
+                        Some(_) => counted.min(l.threads * 10),
+                        None => l.threads * 10,
                     }
                 }
                 Work::Task { .. } => 0,
             })
             .sum();
+        let ours = tenths_to_cores(ours);
         let outside = outside_cores(x, ours);
         outside > 0 && ours.saturating_add(outside) >= total
     }
@@ -1417,7 +1439,7 @@ pub struct State {
 impl State {
     /// The cores `a`'s Mac has past those busy outside the pool as its ask says (`outside_cores`,
     /// past the cores the jobs it holds here count for: each its targets' most kept busy
-    /// (crate::needs::Cores::busy) within its threads, else its threads): the forecast's room for
+    /// (crate::needs::Cores::busy_tenths, summed in tenths) within its threads, else its threads): the forecast's room for
     /// its jobs (task #684).
     pub fn cores_left(&self, a: &Ask) -> u32 {
         let b = crate::needs::Book::new(&self.costs);
@@ -1426,10 +1448,11 @@ impl State {
             .iter()
             .filter(|l| l.worker == a.worker)
             .map(|l| {
-                let busy = l.targets.iter().map(|t| b.cores(&l.step, &t.0)?.busy).collect::<Option<Vec<u32>>>();
-                busy.and_then(|v| v.into_iter().max()).map_or(l.threads, |c| c.min(l.threads))
+                let busy = l.targets.iter().map(|t| b.cores(&l.step, &t.0)?.busy_tenths).collect::<Option<Vec<u32>>>();
+                busy.and_then(|v| v.into_iter().max()).map_or(l.threads * 10, |c| c.min(l.threads * 10))
             })
             .sum();
+        let ours = tenths_to_cores(ours);
         // (A capacity saying no cores falls back to the ask's, as `ask_cores` does.)
         let cores = a.cap.as_ref().map(|c| c.cores).filter(|&c| c > 0).unwrap_or(a.cores);
         cores.saturating_sub(outside_cores(a, ours)).max(1)

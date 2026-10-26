@@ -7989,7 +7989,7 @@ mod tests {
             );
             (d, c, w, clock)
         };
-        // Waiting on its reads (1.16 busy): granted 3 threads, counted for 1; the build's memory,
+        // Waiting on its reads (1.16 busy): granted 3 threads, counted for 1.2; the build's memory,
         // 39 GB, holds ten of 3.7 GB, where by threads 14 cores held four.
         // (Task #688 review: past the four their threads allow, one a minute, as the load shows
         // each.)
@@ -8000,10 +8000,11 @@ mod tests {
         assert_eq!(leases.len(), 5, "four by their threads, one past them");
         assert!(std::iter::once(&gs).chain(&gs.more).all(|g| g.threads == 3), "each keeps its threads");
         assert!(w.ask(&ask(39_000, leases.clone())).unwrap().is_none(), "none before the load shows the last");
-        // (Load past their busy cores by more than one: the climb stops.)
+        // (Load past their busy cores, 5 × 1.2 = 6 (task #697: summed in tenths), by more than
+        // one: the climb stops.)
         clock.advance(sched::SETTLE);
         let mut swamped = ask(39_000, leases.clone());
-        swamped.cap.as_mut().unwrap().cores_free = 14 - 5 - 2;
+        swamped.cap.as_mut().unwrap().cores_free = 14 - 6 - 2;
         assert!(w.ask(&swamped).unwrap().is_none(), "busier than measured: no more");
         while leases.len() < 10 {
             let gs = w.ask(&ask(39_000, leases.clone())).unwrap().expect("one more each minute");
