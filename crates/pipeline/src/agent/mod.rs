@@ -7130,13 +7130,17 @@ impl Agent {
         }
         if self.due("gc", Duration::from_secs(86400)) {
             // (The depth's targets for its clean-up, from this plan and the leases now: written as
-            // each plan finds GC due, so the job reads them minutes old; none found, none there.)
+            // each plan finds GC due, so the job reads them minutes old; none found, none there.
+            // Only by the agent that runs the jobs: a dry run beside it, maybe another app's and
+            // with no leases, shares its home and never touches the file.)
             let keep = self.o.home.join(gc::DEPTH_KEEP_FILE);
-            let leased = self.coord.as_ref().map(|c| c.leased_targets(&gc::DEPTH_STEPS)).unwrap_or_default();
-            let found = self.depth_keep.borrow().clone().map(|k| k.with_leased(&leased));
-            let written = found.map(|k| store::whole::write(&keep, &serde_json::to_vec(&k).unwrap_or_default()));
-            if !matches!(written, Some(Ok(()))) {
-                std::fs::remove_file(&keep).ok();
+            if self._lock.is_some() && !self.o.dry_run {
+                let leased = self.coord.as_ref().map(|c| c.leased_targets(&gc::DEPTH_STEPS)).unwrap_or_default();
+                let found = self.depth_keep.borrow().clone().map(|k| k.with_leased(&leased));
+                let written = found.map(|k| store::whole::write(&keep, &serde_json::to_vec(&k).unwrap_or_default()));
+                if !matches!(written, Some(Ok(()))) {
+                    std::fs::remove_file(&keep).ok();
+                }
             }
             out.push(JobSpec {
                 id: "gc".into(),
