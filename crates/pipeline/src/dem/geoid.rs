@@ -210,6 +210,108 @@ pub fn conversion(from: &str, sources: &[Source]) -> Result<Option<Conversion>> 
     Ok(Some(Conversion { hops, digest }))
 }
 
+/// Grid `url` of geoid source `id`: from the store (`sources/fetched/<id>/`) when `store`, else
+/// fetched.
+pub fn open_grid(o: &Opts, id: &str, url: &str, store: bool) -> Result<Tiff> {
+    let src = if store {
+        let dir = o
+            .store
+            .as_ref()
+            .with_context(|| format!("{id}: its grid is read from the store, and no store is given (SCENIC_STORE)"))?;
+        stored(id, &dir.join(id), url)?
+    } else {
+        open_url(o.fetch, url)?
+    };
+    let Some(s) = src else { bail!("{id}: its grid {url} isn't on the server") };
+    Tiff::open(s).with_context(|| format!("{id}: {url}"))
+}
+
+/// The box (w, s, e, n, degrees) grid `t` spans, in −180°…180° (a grid past 180° in two boxes;
+/// one a turn wide or more, every longitude).
+pub fn grid_boxes(t: &Tiff) -> Result<Vec<[f64; 4]>> {
+    let gt = t.transform(0)?;
+    let img = t.level(0)?;
+    let (xa, xb) = (gt[0], gt[0] + gt[1] * img.width as f64);
+    let (ya, yb) = (gt[3], gt[3] + gt[5] * img.height as f64);
+    let (w, e, s, n) = (xa.min(xb), xa.max(xb), ya.min(yb).max(-90.0), ya.max(yb).min(90.0));
+    if e - w >= 360.0 - 1e-6 {
+        return Ok(vec![[-180.0, s, 180.0, n]]);
+    }
+    let mut out = Vec::new();
+    for k in [-360.0, 0.0, 360.0] {
+        let (a, b) = ((w + k).max(-180.0), (e + k).min(180.0));
+        if a < b {
+            out.push([a, s, b, n]);
+        }
+    }
+    Ok(out)
+}
+
+/// What of footprint `cover` (boxes of whole 1° cells, None: the world) conversion `c` leaves
+/// unconverted: where some hop has no source, a grid reaching its box (`extent`: its id and URL,
+/// and whether it is stored) and a Helmert everywhere. Returned as the 1° cells holding any of it,
+/// merged into boxes, and its area in km² (on a sphere of the mean radius, at `STEP`°). A grid's
+/// own voids inside its box aren't looked at: the sampler counts those (`Stats::unconverted`).
+pub fn uncovered(
+    c: &Conversion,
+    cover: Option<&[[f64; 4]]>,
+    extent: &mut dyn FnMut(&str, &str, bool) -> Result<Vec<[f64; 4]>>,
+) -> Result<(Vec<[f64; 4]>, f64)> {
+    /// The step the area is reckoned at: 20 × 20 to a cell.
+    const STEP: f64 = 0.05;
+    const R_KM: f64 = 6371.0088;
+    // (Each hop's boxes; None: everywhere.)
+    let mut hops: Vec<Option<Vec<[f64; 4]>>> = Vec::new();
+    for h in &c.hops {
+        let mut boxes = Some(Vec::new());
+        for (l, _) in &h.by {
+            match l {
+                Link::Helmert { .. } => boxes = None,
+                Link::Grid { id, url, store } => {
+                    let b = extent(id, url, *store)?;
+                    if let Some(v) = boxes.as_mut() {
+                        v.extend(b);
+                    }
+                }
+            }
+        }
+        hops.push(boxes);
+    }
+    let cells: BTreeSet<(i32, i32)> = match cover {
+        None => (-180..180).flat_map(|x| (-90..90).map(move |y| (x, y))).collect(),
+        Some(_) => super::declared::Cover::of(cover).cells.into_iter().collect(),
+    };
+    let held = |b: &[[f64; 4]], x0: f64, y0: f64, x1: f64, y1: f64| {
+        b.iter().any(|b| b[0] <= x0 && b[1] <= y0 && b[2] >= x1 && b[3] >= y1)
+    };
+    let n = (1.0 / STEP).round() as i32;
+    let mut out = BTreeSet::new();
+    let mut km2 = 0.0;
+    for &(x, y) in &cells {
+        let (x, y) = (x as f64, y as f64);
+        let whole = |b: &Option<Vec<[f64; 4]>>| b.as_ref().is_none_or(|b| held(b, x, y, x + 1.0, y + 1.0));
+        if hops.iter().all(whole) {
+            continue;
+        }
+        let mut part = 0.0;
+        for i in 0..n {
+            for j in 0..n {
+                let (a, s) = (x + i as f64 * STEP, y + j as f64 * STEP);
+                let (cx, cy) = (a + STEP / 2.0, s + STEP / 2.0);
+                if hops.iter().all(|b| b.as_ref().is_none_or(|b| held(b, cx, cy, cx, cy))) {
+                    continue;
+                }
+                part += R_KM * R_KM * STEP.to_radians() * ((s + STEP).to_radians().sin() - s.to_radians().sin());
+            }
+        }
+        if part > 0.0 {
+            out.insert((x as i32, y as i32));
+            km2 += part;
+        }
+    }
+    Ok((super::declared::cells_to_boxes(&out), km2))
+}
+
 // ---- Applying a conversion ----------------------------------------------------------------------
 
 /// GRS 80's semi-major axis and flattening (the frames' ellipsoid: WGS 84's differs by 0.1 mm).
@@ -267,18 +369,7 @@ impl<'a> Grids<'a> {
         if let Some(t) = self.open.lock().unwrap().get(url) {
             return Ok(t.clone());
         }
-        let src = if store {
-            let dir = self.o.store.as_ref().with_context(|| {
-                format!("{id}: its grid is read from the store, and no store is given (SCENIC_STORE)")
-            })?;
-            stored(id, &dir.join(id), url)?
-        } else {
-            open_url(self.o.fetch, url)?
-        };
-        let t = match src {
-            Some(s) => Some(Arc::new(Tiff::open(s).with_context(|| format!("{id}: {url}"))?.with_cache(GRID_CACHE))),
-            None => bail!("{id}: its grid {url} isn't on the server"),
-        };
+        let t = Some(Arc::new(open_grid(self.o, id, url, store)?.with_cache(GRID_CACHE)));
         self.open.lock().unwrap().insert(url.to_string(), t.clone());
         Ok(t)
     }

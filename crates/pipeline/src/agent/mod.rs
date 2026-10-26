@@ -4675,16 +4675,7 @@ impl Agent {
             conditions: c,
             test_disk_extra_mb: Some(cond::test_disk_extra_mb()).filter(|&m| m > 0),
             waiting,
-            // (Declared elevation datasets no geoid chain brings to EGM2008: built in their own
-            // reference, docs/inputs.md §6.8, step 3.)
-            notices: self
-                .tiles
-                .borrow()
-                .elevation_unconverted()
-                .iter()
-                .map(|why| Notice { what: "elevation heights".into(), why: format!("not converted to EGM2008: {why}") })
-                .chain(old_app_notices(&capacity))
-                .collect(),
+            notices: old_app_notices(&capacity),
             recent: self.mem.recent.clone(),
             regions,
             bad_recipes: bad,

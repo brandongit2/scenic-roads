@@ -127,10 +127,12 @@ impl Fixture {
 }
 
 #[test]
-fn the_checks_key_names_the_accepted_regions() {
+fn the_checks_key_names_the_accepted_regions_and_sources() {
     let mut m = BTreeMap::new();
     m.insert(crate::inputs::logical(crate::inputs::regions::UNIT), "regions-index".to_string());
-    assert!(Elevation::default().context(&m).contains(&"regions regions-index".to_string()));
+    m.insert(crate::inputs::logical(crate::inputs::sources::UNIT), "sources-index".to_string());
+    let c = Elevation::default().context(&m);
+    assert!(c.contains(&"regions regions-index".to_string()) && c.contains(&"sources sources-index".to_string()));
 }
 
 #[test]
@@ -432,4 +434,66 @@ fn the_check_job_records_the_switch_once_with_the_first_accepted_index() {
     assert_ne!(m[&super::super::logical(UNIT)], first, "{said}");
     assert_eq!(m[&super::super::switched_logical(UNIT)], sw);
     TEST_PREPARED.with(|t| *t.borrow_mut() = None);
+}
+
+/// A geoid source linking `from` to EGM2008 by the grid at `url`.
+fn geoid_grid(id: &str, from: &str, url: &str) -> crate::inputs::sources::Source {
+    let t = format!(
+        "name = \"N\"\ncredit = \"C\"\nlicence = \"CC0-1.0\"\nterritory = \"world\"\n[data]\nrole = \"geoid\"\nkind = \"data\"\n\
+         format = \"geoid-grid\"\nurl = \"{url}\"\n[data.params]\nfrom = \"{from}\"\nto = \"EGM2008\""
+    );
+    let d = crate::inputs::sources::parse(t.as_bytes()).unwrap();
+    crate::inputs::sources::Source { id: id.into(), data: d.data, keyed: "g".into(), index: Vec::new() }
+}
+
+/// `single.toml` (its data in 1° cell 2° E 48° N, its coverage that cell's and those beside it, 2..4° E 48..50° N) in heights NAVD88, checked with geoid sources
+/// `geoid`, one grid served at https://g.org/w.tif spanning `grid` (w, s, e, n): its el-geoid findings.
+fn geoid_findings(geoid: Vec<crate::inputs::sources::Source>, grid: [f64; 4]) -> Vec<Finding> {
+    let d = String::from_utf8(decl("", "format = \"geotiff\"\nurl = \"https://e.org/a.tif\"")).unwrap();
+    let mut f = Fixture::new(vec![("single.toml", d.replace("EGM2008", "NAVD88").into_bytes())]);
+    let mut fetch = fetch();
+    let (w, h) = (((grid[2] - grid[0]) * 10.0) as u32, ((grid[3] - grid[1]) * 10.0) as u32);
+    let g = crate::geotiff::write_f32(
+        w,
+        h,
+        &vec![-30.0f32; (w * h) as usize],
+        16,
+        [grid[0], 0.1, 0.0, grid[3], 0.0, -0.1],
+        4326,
+        None,
+    )
+    .unwrap();
+    fetch.0.insert("https://g.org/w.tif".into(), Some(g));
+    f.checks = Elevation { geoid: Some(geoid), store: f.checks.store.take(), ..Elevation::new(Arc::new(fetch), None) };
+    f.whole().into_iter().filter(|x| x.check() == GEOID).collect()
+}
+
+#[test]
+fn heights_no_geoid_chain_reaches_are_an_error() {
+    let got = geoid_findings(vec![geoid_grid("g", "JGD2011", "https://g.org/w.tif")], [0.0, 40.0, 10.0, 50.0]);
+    assert!(got.len() == 1 && got[0].level == Level::Error, "{got:?}");
+    assert!(got[0].message.contains("NAVD88") && got[0].message.contains("EGM2008"), "{}", got[0].message);
+}
+
+#[test]
+fn heights_whose_grids_reach_part_of_the_data_are_a_warning_naming_the_rest() {
+    // (The grid stops at 3.5° E: the eastern cells' eastern halves aren't reached.)
+    let got = geoid_findings(vec![geoid_grid("g", "NAVD88", "https://g.org/w.tif")], [1.0, 47.0, 3.5, 51.0]);
+    assert!(got.len() == 1 && got[0].level == Level::Warning, "{got:?}");
+    let m = &got[0].message;
+    assert!(m.contains("cells 3..4° E 48..50° N:"), "{m}");
+    // Half a degree of longitude at 48..50° N: 111.2 × (73.7 + 72.2) / 2 km².
+    let km2: f64 = m.split(" km²").next().unwrap().rsplit(' ').next().unwrap().parse().unwrap();
+    assert!((km2 - 8110.0).abs() < 60.0, "{m}");
+}
+
+#[test]
+fn heights_whose_grids_reach_all_the_data_pass() {
+    let got = geoid_findings(vec![geoid_grid("g", "NAVD88", "https://g.org/w.tif")], [0.0, 40.0, 10.0, 50.0]);
+    assert!(got.is_empty(), "{got:?}");
+    // Not converted at all (already EGM2008): nothing to find either.
+    let d = decl("", "format = \"geotiff\"\nurl = \"https://e.org/a.tif\"");
+    let mut f = Fixture::new(vec![("single.toml", d)]);
+    f.checks.geoid = Some(Vec::new());
+    assert!(f.whole().iter().all(|x| x.check() != GEOID));
 }

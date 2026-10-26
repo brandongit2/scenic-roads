@@ -11,7 +11,9 @@
 //! coverage from its territory's outlines, and one of its tiles read for its size). Errors: a shape broken, a height reference or encoding the app doesn't know, a CRS
 //! the app can't project, a file named that isn't there, data that can't be read. Warnings: a
 //! dataset's folder or an index no declaration names; two datasets of one rank and resolution
-//! meeting (their order would fall to their ids).
+//! meeting (their order would fall to their ids). Heights (`el-geoid`): an error when no chain of
+//! the accepted geoid sources brings a dataset's to EGM2008; a warning naming where its chain's
+//! grids don't reach its coverage.
 //!
 //! What's measured goes in the index with the declaration (`facts.measured`, `facts.extent`), so the
 //! unit jobs read the order and coverage from the index alone (crate::dem::declared::plan). The
@@ -37,6 +39,7 @@ const MISSING: &str = "el-missing";
 const DATA: &str = "el-data";
 const ORPHAN: &str = "el-orphan";
 const TIE: &str = "el-tie";
+const GEOID: &str = "el-geoid";
 
 /// The checks: with the data's reader and the newest pass's outlines for the check job
 /// (`prepared`); without, the shapes alone.
@@ -55,11 +58,16 @@ pub struct Elevation {
     /// The accepted regions' coverage, which a dataset's `regions` cut its coverage to (`scoped`);
     /// None: none accepted, or none read here.
     pub regions: Option<crate::coverage::Coverage>,
+    /// The accepted geoid sources (crate::dem::geoid), which bring each dataset's heights to
+    /// EGM2008 (`geoid_findings`); None: not read here (the shapes alone).
+    pub geoid: Option<Vec<crate::inputs::sources::Source>>,
+    /// Each geoid grid's boxes, by its URL: read once a check.
+    grids: Mutex<HashMap<String, std::result::Result<Vec<[f64; 4]>, String>>>,
 }
 
 impl Elevation {
     pub fn new(fetch: Arc<dyn Fetch>, outlines: Option<Outlines>) -> Elevation {
-        Elevation { fetch: Some(fetch), outlines, memo: Mutex::default(), app: None, store: None, regions: None }
+        Elevation { fetch: Some(fetch), outlines, ..Elevation::default() }
     }
 }
 
@@ -356,6 +364,55 @@ impl Elevation {
         Ok(out)
     }
 
+    /// The findings on dataset `id`'s heights (its declaration at `path`, its coverage `m`): an
+    /// error when no chain of the geoid sources reaches EGM2008 from them, a warning naming where
+    /// the chain's grids don't reach (docs/inputs.md §6.8, step 3).
+    fn geoid_findings(&self, path: &str, id: &str, d: &Declaration, m: &Measured) -> Option<Finding> {
+        let sources = self.geoid.as_ref()?;
+        let c = match crate::dem::geoid::conversion(&d.heights, sources) {
+            Ok(None) => return None,
+            Ok(Some(c)) => c,
+            Err(e) => {
+                return Some(Finding::new(
+                    GEOID,
+                    Level::Error,
+                    &[path],
+                    &[&d.heights],
+                    vec![path.into()],
+                    format!("{id}: its heights ({}) aren't brought to EGM2008: {e:#}", d.heights),
+                ));
+            }
+        };
+        let fetch = self.fetch.as_deref()?;
+        let o = crate::dem::generic::Opts { fetch, store: self.store.clone() };
+        let mut extent = |gid: &str, url: &str, store: bool| -> Result<Vec<[f64; 4]>> {
+            let mut g = self.grids.lock().unwrap();
+            let r = g.entry(url.to_string()).or_insert_with(|| {
+                crate::dem::geoid::open_grid(&o, gid, url, store)
+                    .and_then(|t| crate::dem::geoid::grid_boxes(&t))
+                    .map_err(|e| format!("{e:#}"))
+            });
+            r.clone().map_err(anyhow::Error::msg)
+        };
+        match crate::dem::geoid::uncovered(&c, m.cover.as_deref(), &mut extent) {
+            Ok((boxes, _)) if boxes.is_empty() => None,
+            Ok((boxes, km2)) => {
+                let list: Vec<String> =
+                    boxes.iter().map(|b| format!("{}..{}° E {}..{}° N", b[0], b[2], b[1], b[3])).collect();
+                let list = list.join(", ");
+                Some(Finding::new(GEOID, Level::Warning, &[path], &[&d.heights, &list], vec![path.into()], format!("{id}: its heights ({}) stay unconverted over {km2:.0} km² its geoid grids don't reach, in the 1° cells {list}: accept this, or declare a grid that covers them", d.heights)))
+            }
+            Err(e) => Some(Finding::new(
+                GEOID,
+                Level::Error,
+                &[path],
+                &[&d.heights, "unread"],
+                vec![path.into()],
+                format!("{id}: its geoid grids can't be read: {e:#}"),
+            )),
+        }
+    }
+
     fn memo_key(v: &Version, id: &str, dk: &str, d: &Declaration) -> String {
         format!("{id} {} {}", keyed(dk, d), data_digest(v, id, d))
     }
@@ -366,9 +423,9 @@ impl Checks for Elevation {
         UNIT
     }
 
-    /// 2: a dataset read coarser has its full resolution measured too (`Measured::full`).
+    /// 3: heights no geoid chain converts, or converts only in part, found (`el-geoid`).
     fn version(&self) -> u32 {
-        2
+        3
     }
 
     fn recursive(&self) -> bool {
@@ -456,7 +513,10 @@ impl Checks for Elevation {
                 continue;
             }
             match self.measure(id, d, territory, v, &Self::memo_key(v, id, dk, d)).and_then(|m| self.scoped(d, m)) {
-                Ok(m) => measured.push((id.clone(), d.clone(), m)),
+                Ok(m) => {
+                    out.extend(self.geoid_findings(path, id, d, &m));
+                    measured.push((id.clone(), d.clone(), m));
+                }
                 Err(why) => {
                     let mut files = vec![path.clone()];
                     if let Data::Geotiff { index: Some(i), .. } = &d.data {
@@ -572,12 +632,15 @@ impl Checks for Elevation {
 
     fn context(&self, manifest: &BTreeMap<String, String>) -> Vec<String> {
         // (The newest pass's outlines: a tile pyramid's coverage is its territory's. The accepted
-        // regions: a dataset's `regions` cut its coverage.)
+        // regions: a dataset's `regions` cut its coverage. The accepted sources: their geoid grids
+        // convert its heights.)
         let regions = manifest.get(&crate::inputs::logical(crate::inputs::regions::UNIT));
+        let sources = manifest.get(&crate::inputs::logical(crate::inputs::sources::UNIT));
         outlines_of(manifest)
             .map(|o| format!("outlines {o}"))
             .into_iter()
             .chain(regions.map(|r| format!("regions {r}")))
+            .chain(sources.map(|s| format!("sources {s}")))
             .collect()
     }
 
@@ -610,18 +673,25 @@ impl Checks for Elevation {
             }
             _ => None,
         };
+        // (The accepted geoid sources: none accepted, none.)
+        let geoid = match manifest.get(&crate::inputs::logical(crate::inputs::sources::UNIT)) {
+            Some(_) => crate::inputs::sources::read(root, manifest)?.many(crate::inputs::sources::GEOID).to_vec(),
+            None => Vec::new(),
+        };
         #[cfg(test)]
         if let Some((fetch, app)) = TEST_PREPARED.with(|t| t.borrow().clone()) {
             return Ok(Some(Box::new(Elevation {
                 app: Some(app),
                 store: Some(root.join("sources/fetched")),
                 regions,
+                geoid: Some(geoid),
                 ..Elevation::new(fetch, outlines)
             })));
         }
         Ok(Some(Box::new(Elevation {
             store: Some(root.join("sources/fetched")),
             regions,
+            geoid: Some(geoid),
             ..Elevation::new(Arc::new(crate::fetch::Fetcher::from_env()), outlines)
         })))
     }

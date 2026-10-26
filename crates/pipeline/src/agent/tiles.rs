@@ -59,8 +59,6 @@ pub struct TerrainTiles {
     /// The accepted sources' index whose geoid sources converted the held datasets' heights
     /// (crate::dem::geoid; None: no sources accepted, nothing converted).
     elevation_geoid: Option<String>,
-    /// The held datasets no chain of declared geoid sources brings to EGM2008: why, each.
-    elevation_unconverted: Vec<String>,
     /// The declared sources as the z6 tiles' and tree cover's keys name them (crate::inputs::sources):
     /// the accepted sources' index content name, and what they read of it (None: not declared, or
     /// not to be read now).
@@ -158,19 +156,16 @@ impl TerrainTiles {
         if self.elevation.as_ref().is_some_and(|(c, _)| c == want) && self.elevation_geoid.as_ref() == sources {
             return;
         }
-        let mut unconverted = Vec::new();
         let got = crate::inputs::open(root, m, elevation::UNIT).and_then(|a| {
             let mut ds = crate::dem::declared::accepted(&a.ok_or_else(|| anyhow::anyhow!("no accepted version"))?)?;
             if sources.is_some() {
                 let s = crate::inputs::sources::read(root, m)?;
-                unconverted = crate::dem::declared::convert(&mut ds, s.many(crate::inputs::sources::GEOID));
-                for w in &unconverted {
+                for w in crate::dem::declared::convert(&mut ds, s.many(crate::inputs::sources::GEOID)) {
                     eprintln!("agent: elevation: {w}");
                 }
             }
             Ok(ds)
         });
-        self.elevation_unconverted = unconverted;
         self.elevation_geoid = sources.cloned();
         match got {
             Ok(ds) => {
@@ -428,12 +423,6 @@ impl TerrainTiles {
 
     pub fn hold_water(&mut self, content: &str, w: crate::terrain_water::WaterIdx) {
         self.water.insert(content.to_string(), w);
-    }
-
-    /// The held elevation datasets whose heights stay in their reference (no declared geoid
-    /// chain reaches EGM2008): why, each, for the build page and scenic status.
-    pub fn elevation_unconverted(&self) -> &[String] {
-        &self.elevation_unconverted
     }
 
     /// The packs whose index the last load couldn't read: (content name, why).

@@ -665,7 +665,9 @@ pub fn accepted(a: &crate::inputs::Accepted) -> Result<Vec<Accepted>> {
 
 /// The roads' datasets' heights given their conversions to EGM2008 by the declared geoid sources
 /// (`geoid`: the role's, crate::dem::geoid); for each dataset no chain of them reaches, why (its
-/// heights are then left as they are, and its key names no conversion).
+/// heights are then left as they are, and its key names no conversion). The input check refuses
+/// such a dataset (crate::inputs::elevation, `el-geoid`): one is met here only when the sources
+/// accepted since dropped its chain, until the elevation check runs again on them.
 pub fn convert(ds: &mut [Accepted], geoid: &[crate::inputs::sources::Source]) -> Vec<String> {
     let mut why = Vec::new();
     for d in ds.iter_mut() {
@@ -803,7 +805,7 @@ pub fn plan(a: &crate::inputs::Accepted, near: [f64; 4]) -> Result<Plan> {
 }
 
 /// `plan`, each dataset's heights converted to EGM2008 by the declared geoid sources `geoid`
-/// (`convert`; one no chain reaches said on stderr and left as it is).
+/// (`convert`; one no chain reaches, which the input check refuses, said on stderr).
 pub fn plan_converted(
     a: &crate::inputs::Accepted,
     near: [f64; 4],

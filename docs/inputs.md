@@ -1176,7 +1176,12 @@ index or files missing (`el-missing`); unreadable or unmeasurable data: a header
 CRS the app can't project (EPSG 4326, 4269, 3979, NAD83 / UTM 26901–26923, polar stereographic 3031
 and 3413: `pipeline::dem::proj`,
 `declared::known_crs`) or contradicting its index, a pyramid without a known territory or with
-non-256 tiles (`el-data`). Warnings: a folder or index no declaration names (`el-orphan`); two
+non-256 tiles (`el-data`); heights no chain of the accepted geoid sources brings to EGM2008
+(step 3), or whose chain's grids can't be read (`el-geoid`: declare the geoid source first).
+Warnings: heights whose chain's grids don't reach all of the dataset's coverage (`el-geoid`, by
+each grid's box, against the coverage's 1° cells: the cells left out, merged into boxes, and the
+area left out in km², reckoned at 0.05°; a grid's own voids inside its box are the sampler's
+`unconverted`); a folder or index no declaration names (`el-orphan`); two
 datasets of one rank, resolution and surface meeting (`el-tie`). A declaration is held with the
 index it names. Planned: files not meeting the declared territory.
 
@@ -1234,10 +1239,10 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   grid a region) takes, at a point, the first by id with a value there. Grids are read bilinearly
   between pixel centres in f64 (no data where a neighbour has none). A point no source of a link
   covers keeps its height as sampled, counted (the sampler's `unconverted`; a blended one whose
-  first dataset was converted and whose dataset beneath had no value, `unconverted_seam`); a
-  dataset no chain reaches is left as it is, said by the agent (the status's `notices`, apart from
-  the waits: an info line on the build page and "note: elevation heights — not converted to
-  EGM2008: …" in scenic status).
+  first dataset was converted and whose dataset beneath had no value, `unconverted_seam`). The
+  input check holds each dataset to its chain (`el-geoid`, below, against the accepted sources: the
+  check's key names them): no chain is an error, and a chain whose grids' boxes miss part of the
+  dataset's coverage is a warning, the dataset accepted only with it (§4.5).
   `producers/geoid/fetch.sh` downloads the grids (published data: no robots.txt, §6.9). Only
   EGM2008 is named in code. `scenic-build geoid-offsets --sources <folder>
   --from <reference> --at <lon,lat>[;…]` prints a chain's offsets, hop by hop.
