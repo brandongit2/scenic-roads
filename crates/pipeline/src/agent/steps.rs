@@ -1736,6 +1736,8 @@ mod tests {
                 "unit",
                 "osm-pass",
                 "regions-extract",
+                // (The owner's redos: `redo::job_id`.)
+                "redo",
             ]
             .map(String::from),
         );
