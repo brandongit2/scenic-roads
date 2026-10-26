@@ -3,7 +3,15 @@
 (() => {
   "use strict";
   const err = (code, message) => Object.assign(new Error(message || code), { code, message: message || code });
+  // Counts the writes answered so far: a read that began before the latest answer may predate that
+  // write, and showing it would put the old state back over the change (the page's own layer over
+  // the store ends when the write is answered).
+  let answered = 0;
   async function call(method, url, body, headers) {
+    if (method !== "GET") return call1(method, url, body, headers).finally(() => { answered++; });
+    return call1(method, url, body, headers);
+  }
+  async function call1(method, url, body, headers) {
     let r;
     try {
       r = await fetch(url, { method, headers: body !== undefined && !headers ? { "content-type": "application/json" } : headers, body: body === undefined ? undefined : headers ? body : JSON.stringify(body) });
@@ -19,7 +27,8 @@
     return { docs, size: docs.length, total: j.total, empty: !docs.length, metadata: META, forEach: (f) => docs.forEach(f) };
   };
 
-  // One event stream, shared: it tells which collection changed, and each listener reads again.
+  // One event stream, shared: it tells which collection changed, and each listener reads again (a read
+  // that a write was answered during is dropped and made again: it may predate the write).
   const listeners = new Set(); // {col, run}
   let es = null;
   function stream() {
@@ -34,7 +43,12 @@
     const run = async () => {
       if (busy) { again = true; return; }
       busy = true;
-      try { onNext(wrap(await read())); } catch (e) { if (!dead) onError && onError(e); }
+      const was = answered;
+      try {
+        const j = await read();
+        if (answered !== was) again = true;
+        else onNext(wrap(j));
+      } catch (e) { if (!dead) onError && onError(e); }
       busy = false;
       if (again && !dead) { again = false; run(); }
     };

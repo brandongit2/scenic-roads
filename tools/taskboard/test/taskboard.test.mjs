@@ -287,3 +287,28 @@ test("a path that isn't valid percent-encoding is a 400, not a 500", async () =>
   assert.equal(r.status, 400);
   assert.equal(r.body.error.code, "invalid_argument");
 });
+
+test("the page's shim never shows a read that began before a write was answered (the flicker on archive)", async () => {
+  const vm = await import("node:vm");
+  const ctl = []; // fetches held until the test answers them
+  const fetchStub = (url, o = {}) => new Promise((res) => ctl.push((state) => res({ ok: true, json: async () => state, method: o.method || "GET" })));
+  class ES { constructor() { ES.me = this; this.l = {}; } addEventListener(n, f) { this.l[n] = f; } }
+  const window = {};
+  vm.runInNewContext(fs.readFileSync(new URL("../public/shim.js", import.meta.url), "utf8"), { window, fetch: fetchStub, EventSource: ES, URLSearchParams, encodeURIComponent, JSON, Promise, Object, Error });
+  const db = (await window.claude.use("db"));
+  const shown = [];
+  db.collection("items").onSnapshot((s) => shown.push(s.size));
+  const tick = () => new Promise((r) => setImmediate(r));
+  const docs = (n) => ({ docs: Array.from({ length: n }, (_, i) => ({ id: "i" + i, data: {} })), total: n });
+  await tick();
+  ctl.shift()(docs(2)); await tick(); // the first read
+  assert.deepEqual(shown, [2]);
+  ES.me.l.change({ data: '{"col":"items"}' }); await tick(); // a read begins (it will answer with the old state)
+  const stale = ctl.shift();
+  const w = db.doc("items/i0").update({ archived: true }); await tick();
+  ctl.shift()({}); await w; // the write is answered
+  stale(docs(2)); await tick(); // the old read arrives after it
+  assert.deepEqual(shown, [2], "the stale read isn't shown");
+  ctl.shift()(docs(1)); await tick(); // the read made again
+  assert.deepEqual(shown, [2, 1]);
+});

@@ -985,6 +985,13 @@
     pump();
     return a;
   }
+  // The layers of actions written, kept until the store has been read again: a read that began
+  // before a write was answered is never shown (shim.js), so the next one shown has the write, and
+  // the screen goes straight from the layer to the store, not back to the old state between.
+  const held = [];
+  function unhold(col) {
+    for (let i = held.length - 1; i >= 0; i--) if (held[i].o.col === col) { const { o, tok } = held.splice(i, 1)[0]; release([o], tok); }
+  }
   async function pump() {
     if (writing || !Q.length) return;
     writing = true;
@@ -994,7 +1001,7 @@
     Q.shift();
     writing = false;
     if (a.error) failed(a);
-    else { release(a.ops, a.tok); render("data"); }
+    else { for (const o of a.ops) held.push({ o, tok: a.tok }); render("data"); }
     pump();
   }
   // An action's writes; if one fails for good, the rest stop, and what landed is put back. (What it
@@ -2681,6 +2688,7 @@
       const first = !S.loaded.items;
       S.raw.items = new Map(snap.docs.map((d) => [d.id, d.data() || {}]));
       S.loaded.items = true;
+      unhold("items");
       if (first) { M = build(); fromUrl(); }
       checkRaw();
       // (Only a cached view counts as not yet the server's: the page's own unconfirmed writes come
@@ -2693,6 +2701,7 @@
       S.raw.events = new Map(snap.docs.map((d) => [d.id, d.data() || {}]));
       S.unread.events = Math.max(0, (snap.total ?? 0) - snap.size);
       S.loaded.events = true;
+      unhold("events");
       checkRaw();
       soon();
     });
