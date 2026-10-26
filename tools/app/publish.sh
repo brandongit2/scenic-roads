@@ -212,8 +212,10 @@ pid=$!
 cleanup+=("kill $pid 2>/dev/null; rm -rf $home")
 # Up to 10 min for its first answer: its catalogue is read from the NAS first, which a busy NAS, or
 # this Mac under a second publish's build, slows (21 Oct: 19 s+ under the depth repack; 26 Oct:
-# past 2 min beside another publish's build, task #698).
-smoke $port $pid $home/server.log 600 /api/ping /api/meta /api/catalog / "/tiles/terrain/5/9/11" "/tiles/roads/10/300/380" || exit 1
+# past 2 min beside another publish's build, task #698). The shading layers' tiles too, as stored and
+# made from an ancestor (z16): every slope tile once answered 503, its packs' tiles undecodable.
+smoke $port $pid $home/server.log 600 /api/ping /api/meta /api/catalog / "/tiles/terrain/5/9/11" "/tiles/roads/10/300/380" \
+  "/tiles/slope/5/9/11" "/tiles/slope/12/1202/1463" "/tiles/slope/16/18732/22928" "/tiles/depth-shade/16/4608/16896" || exit 1
 kill $pid; wait $pid 2>/dev/null || true
 version=$(date -u +%Y%m%d-%H%M)-$head
 dest=$NAS/app/$version

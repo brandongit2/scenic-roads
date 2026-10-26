@@ -210,6 +210,13 @@ pub async fn terrain_tile(
     respond(got, v)
 }
 
+/// Whether a stored shading tile is in the shading's encoding (pipeline::shade_codec: WebP). A tile
+/// of a pack from before it (`slope4-png`, until its step is rebuilt) is read as none, as a parent
+/// and as itself: its PNG isn't decodable as shading.
+fn is_shade(b: &[u8]) -> bool {
+    b.starts_with(b"RIFF")
+}
+
 /// A shading tile's pixels made from its nearest stored ancestor in `layer` (up to eight levels
 /// up: the terrain's reach, roadcore::grid::tile_with_fallback_by), scaled up
 /// (roadcore::shade::upsampled), encoded as stored; None with none. A deep tile's ancestor that
@@ -218,8 +225,9 @@ pub fn shade_from_ancestor(s: &crate::AppState, layer: &str, z: u8, x: u32, y: u
     for dz in 1..=z.min(8) {
         let (pz, px, py) = (z - dz, x >> dz, y >> dz);
         let b = match s.data.tile(layer, pz, px, py) {
-            Ok(Some((b, _))) => b,
-            Ok(None) => continue,
+            Ok(Some((b, _))) if is_shade(b.bytes()) => b,
+            // Not stored, or a pack from before the shading's encoding (slope4-png): none.
+            Ok(_) => continue,
             Err(_) if deep_zoom(pz) => continue,
             Err(e) => return Err(e),
         };
@@ -247,7 +255,7 @@ pub async fn shade_tile(
     let cache = if layer == "slope" { &SHADE } else { &DEPTH_SHADE };
     let got = tokio::task::spawn_blocking(move || {
         match stored(&s, layer, z, x, y, &headers) {
-            Some(Got::Stored(b, _)) if !b.starts_with(b"RIFF") => {}
+            Some(Got::Stored(b, _)) if !is_shade(&b) => {}
             Some(Got::Failed) if deep_zoom(z) => {}
             Some(g) => return g,
             None => {}
@@ -443,5 +451,54 @@ mod tests {
                 .map(|b| roadcore::shade::code(roadcore::shade::decode(&b).unwrap()[0])),
             code(30.0)
         );
+    }
+
+    /// Through the route: a slope tile as stored (shade-webp) is served, 200; a pack from before the
+    /// shading's encoding (slope4-png, the live NAS's until its steps are rebuilt) is read as none,
+    /// itself and as an ancestor, so its tiles and those below come back flat, never 503 (every
+    /// slope tile 503'd, its PNG decoded as WebP).
+    #[tokio::test]
+    async fn a_slope_tile_is_served_whatever_its_pack_holds() {
+        let (root, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut cat = store::catalogue::Catalogue::new(1);
+        let mut l = store::catalogue::Layer {
+            encoding: pipeline::shade_codec::ENCODING.into(),
+            maxzoom: 16,
+            ..Default::default()
+        };
+        let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\x01\0\0\0\x01\0\x08\x06\0\0\0".to_vec();
+        let webp = pipeline::shade_codec::encode(&vec![roadcore::shade::Px { s: 30.0, u: [1.0, 0.0] }; 65536]).unwrap();
+        for (i, (y6, b)) in [(22u32, &webp), (23, &png)].into_iter().enumerate() {
+            let key = format!("6/18/{y6}");
+            let logical = format!("layers/slope/hi/{}", key.replace('/', "-"));
+            let file = format!("{logical}.000000000000000{i}.pack");
+            let path = root.path().join(&file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mut w = store::pack::PackWriter::create(&path, serde_json::json!({"layer": "slope"}), false).unwrap();
+            w.add(12, 18 << 6, y6 << 6, b, b.len() as u32).unwrap();
+            w.finish().unwrap();
+            l.hi.insert(key, logical.clone());
+            let size = std::fs::metadata(&path).unwrap().len();
+            cat.files.insert(logical, store::catalogue::FileRef { file, size, ..Default::default() });
+        }
+        cat.layers.insert("slope".into(), l);
+        store::catalogue::write_copy(&root.path().join("catalog"), &cat).unwrap();
+        let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(root.path()));
+        let get = |z: u8, x: u32, y: u32| {
+            let s = s.clone();
+            async move {
+                let r = slope_tile(State(s), Path((z, x, y)), RawQuery(None), HeaderMap::new()).await;
+                assert_eq!(r.status(), StatusCode::OK, "{z}/{x}/{y}");
+                assert_eq!(r.headers()[header::CONTENT_TYPE], "image/webp");
+                let b = axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap();
+                roadcore::shade::code(roadcore::shade::decode(&b).unwrap()[1000])
+            }
+        };
+        let code = |sl: f32| roadcore::shade::code(roadcore::shade::Px { s: sl, u: [1.0, 0.0] });
+        let flat = roadcore::shade::code(Default::default());
+        assert_eq!(get(12, 18 << 6, 22 << 6).await, code(30.0), "as stored");
+        assert_eq!(get(13, 18 << 7, 22 << 7).await, code(30.0), "from its stored ancestor");
+        assert_eq!(get(12, 18 << 6, 23 << 6).await, flat, "a slope4-png tile: none");
+        assert_eq!(get(13, 18 << 7, 23 << 7).await, flat, "below one: none");
     }
 }
