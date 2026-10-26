@@ -516,7 +516,7 @@ mod tests {
         );
         store::catalog::write_copy(&nas.path().join("catalog"), &cat).unwrap();
         let home = tempfile::tempdir().unwrap();
-        let s = crate::test_state(home.path(), nas.path());
+        let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
         let get = |z, x, y, q: &str| {
             water_tile(State(s.clone()), Path((z, x, y)), RawQuery(Some(q.to_string())), HeaderMap::new())
         };

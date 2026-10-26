@@ -106,7 +106,7 @@ impl TerrainTiles {
     /// Holds the index of every terrain pack `m` names, and only those: each read from where it's
     /// kept, else from the NAS (several at a time) and kept; how many were read. One that can't be
     /// read now is tried again with the next load (`unread`).
-    pub fn load(&mut self, root: &Path, m: &BTreeMap<String, String>) -> usize {
+    pub fn load(&mut self, root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) -> usize {
         use rayon::prelude::*;
         let want: BTreeSet<&str> = Self::packs(m).map(|(_, c)| c.as_str()).collect();
         // (What couldn't be read, dropped before the loads below say it again: kept after them, a
@@ -146,7 +146,7 @@ impl TerrainTiles {
 
     /// Holds the declared elevation datasets of the accepted version `m` names, once the build reads
     /// them (one that can't be read now: the z6 tiles' keys wait, tried again with the next load).
-    fn load_elevation(&mut self, root: &Path, m: &BTreeMap<String, String>) {
+    fn load_elevation(&mut self, root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) {
         use crate::inputs::elevation;
         let want = elevation::switched(m).then(|| m.get(&crate::inputs::logical(elevation::UNIT))).flatten();
         let Some(want) = want else {
@@ -192,7 +192,7 @@ impl TerrainTiles {
     }
 
     /// Holds the declared buildings source's release of the accepted sources `m` names.
-    fn load_buildings(&mut self, root: &Path, m: &BTreeMap<String, String>) {
+    fn load_buildings(&mut self, root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) {
         let Some(want) = m.get(&crate::inputs::logical(crate::inputs::sources::UNIT)) else {
             self.buildings = None;
             return;
@@ -215,7 +215,7 @@ impl TerrainTiles {
         self.buildings = Some((want.clone(), r));
     }
 
-    fn load_depth(&mut self, root: &Path, m: &BTreeMap<String, String>) {
+    fn load_depth(&mut self, root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) {
         let Some(want) = m.get(&crate::inputs::logical(crate::inputs::sources::UNIT)) else {
             self.depth = None;
             return;
@@ -239,7 +239,7 @@ impl TerrainTiles {
         Some(format!("{e} {s}"))
     }
 
-    fn load_fine(&mut self, root: &Path, m: &BTreeMap<String, String>) {
+    fn load_fine(&mut self, root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) {
         let Some(want) = Self::fine_from(m) else {
             self.fine = None;
             return;
@@ -358,7 +358,7 @@ impl TerrainTiles {
 
     /// Holds the water digests `m` names, and only those (one that can't be read now: tried again
     /// with the next load, its targets' keys unknown meanwhile).
-    fn load_water(&mut self, root: &Path, m: &BTreeMap<String, String>) {
+    fn load_water(&mut self, root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) {
         let want: BTreeSet<&str> = m
             .range(crate::terrain_water::IDX_PREFIX.to_string()..)
             .take_while(|(l, _)| l.starts_with(crate::terrain_water::IDX_PREFIX))
@@ -377,12 +377,12 @@ impl TerrainTiles {
                 .and_then(|b| crate::terrain_water::WaterIdx::from_bytes(&b).ok());
             let got = match local {
                 Some(w) => Ok(w),
-                None => std::fs::read(root.join(c)).map_err(anyhow::Error::from).and_then(|b| {
+                None => root.join(c).read().map_err(anyhow::Error::from).and_then(|b| {
                     let w = crate::terrain_water::WaterIdx::from_bytes(&b)?;
                     if let Some(p) = &kept {
                         if let Err(e) = std::fs::create_dir_all(p.parent().unwrap())
                             .map_err(anyhow::Error::from)
-                            .and_then(|()| crate::whole::write(p, &b))
+                            .and_then(|()| store::whole::write(p, &b))
                         {
                             eprintln!("tiles: {c} not kept: {e:#}");
                         }
@@ -453,7 +453,7 @@ impl TerrainTiles {
             let age = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).unwrap_or_default();
             let gone = match name.strip_suffix(".idx") {
                 Some(h) => !named.contains(h) && age > KEEP_GONE,
-                None => crate::whole::is_tmp(&e.path()) && age > Duration::from_secs(3600),
+                None => store::whole::is_tmp(&e.path()) && age > Duration::from_secs(3600),
             };
             if gone {
                 std::fs::remove_file(e.path()).ok();
@@ -513,7 +513,7 @@ fn kept(dir: Option<&Path>, content: &str) -> Option<PathBuf> {
 }
 
 /// Pack `content`'s tiles, from where its index is kept under `dir`, else from the NAS (then kept).
-fn read(dir: Option<&Path>, root: &Path, content: &str) -> Result<Held, String> {
+fn read(dir: Option<&Path>, root: &store::nasfs::NasRoot, content: &str) -> Result<Held, String> {
     let kept = kept(dir, content);
     if let Some(p) = &kept {
         match std::fs::read(p) {
@@ -525,13 +525,13 @@ fn read(dir: Option<&Path>, root: &Path, content: &str) -> Result<Held, String> 
             Err(e) => eprintln!("tiles: can't read {} ({e}); read from the NAS", p.display()),
         }
     }
-    let f = store::range::PlainFile::open(&root.join(content)).map_err(|e| format!("{content}: {e}"))?;
+    let f = root.join(content).open_plain().map_err(|e| format!("{content}: {e}"))?;
     let ix = PackIndex::read_from(&f).map_err(|e| format!("{content}: {e:#}"))?;
     if let Some(p) = &kept {
         // (Not kept: read from the NAS again next time, which is only slower.)
         if let Err(e) = std::fs::create_dir_all(p.parent().unwrap())
             .map_err(anyhow::Error::from)
-            .and_then(|()| crate::whole::write(p, &ix.to_bytes()))
+            .and_then(|()| store::whole::write(p, &ix.to_bytes()))
         {
             eprintln!("tiles: {content}'s index not kept: {e:#}");
         }
@@ -614,7 +614,7 @@ mod tests {
     /// A terrain pack of `tiles` (each tile's bytes: its z/x/y and `salt`) at its content name under
     /// `root`, as the manifest names it.
     fn pack(
-        root: &Path,
+        root: &store::nasfs::NasRoot,
         m: &mut BTreeMap<String, String>,
         logical: &str,
         hash16: &str,
@@ -623,8 +623,8 @@ mod tests {
     ) -> BTreeMap<(u8, u32, u32), u64> {
         let content = format!("{logical}.{hash16}.pack");
         let p = root.join(&content);
-        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        let mut w = PackWriter::create(&p, json!({"layer": "terrain"}), false).unwrap();
+        p.parent().unwrap().create_dir_all().unwrap();
+        let mut w = PackWriter::create(&p.unchecked_path(), json!({"layer": "terrain"}), false).unwrap();
         let mut out = BTreeMap::new();
         for &(z, x, y) in tiles {
             let b = format!("{z}/{x}/{y} {salt}").into_bytes();
@@ -642,7 +642,7 @@ mod tests {
         let (root, dir) = (d.path().join("nas"), d.path().join("pack-idx"));
         let mut m = BTreeMap::new();
         let hi = pack(
-            &root,
+            &store::nasfs::NasRoot::local_for_test(&root),
             &mut m,
             "layers/terrain/hi/6-28-16",
             "1111111111111111",
@@ -650,7 +650,7 @@ mod tests {
             "a",
         );
         let lo = pack(
-            &root,
+            &store::nasfs::NasRoot::local_for_test(&root),
             &mut m,
             "layers/terrain/lo/3-3-2",
             "2222222222222222",
@@ -660,8 +660,8 @@ mod tests {
         // Another layer's pack: not the terrain's.
         m.insert("layers/slope/hi/6-28-16".into(), "layers/slope/hi/6-28-16.3333333333333333.pack".into());
         let mut t = TerrainTiles::new(Some(dir.clone()));
-        assert_eq!(t.load(&root, &m), 2);
-        assert_eq!(t.load(&root, &m), 0, "held: nothing read again");
+        assert_eq!(t.load(&store::nasfs::NasRoot::local_for_test(&root), &m), 2);
+        assert_eq!(t.load(&store::nasfs::NasRoot::local_for_test(&root), &m), 0, "held: nothing read again");
         assert!(dir.join("1111111111111111.idx").exists() && dir.join("2222222222222222.idx").exists());
         assert_eq!(t.hash(&m, 12, 1792, 1024).unwrap(), Some(hi[&(12, 1792, 1024)]));
         assert_eq!(t.hash(&m, 8, 112, 64).unwrap(), Some(lo[&(8, 112, 64)]));
@@ -677,7 +677,7 @@ mod tests {
         // Kept: another agent (the NAS's packs gone) reads them from here.
         std::fs::remove_dir_all(&root).unwrap();
         let mut again = TerrainTiles::new(Some(dir.clone()));
-        assert_eq!(again.load(&root, &m), 2);
+        assert_eq!(again.load(&store::nasfs::NasRoot::local_for_test(&root), &m), 2);
         assert_eq!(again.hash(&m, 12, 1792, 1024).unwrap(), Some(hi[&(12, 1792, 1024)]));
     }
 
@@ -686,19 +686,26 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, dir) = (d.path().join("nas"), d.path().join("pack-idx"));
         let mut m = BTreeMap::new();
-        let hi = pack(&root, &mut m, "layers/terrain/hi/6-28-16", "1111111111111111", &[(12, 1792, 1024)], "a");
-        TerrainTiles::new(Some(dir.clone())).load(&root, &m);
+        let hi = pack(
+            &store::nasfs::NasRoot::local_for_test(&root),
+            &mut m,
+            "layers/terrain/hi/6-28-16",
+            "1111111111111111",
+            &[(12, 1792, 1024)],
+            "a",
+        );
+        TerrainTiles::new(Some(dir.clone())).load(&store::nasfs::NasRoot::local_for_test(&root), &m);
         let kept = dir.join("1111111111111111.idx");
         let good = std::fs::read(&kept).unwrap();
         std::fs::write(&kept, &good[..good.len() - 3]).unwrap();
         let mut t = TerrainTiles::new(Some(dir.clone()));
-        assert_eq!(t.load(&root, &m), 1);
+        assert_eq!(t.load(&store::nasfs::NasRoot::local_for_test(&root), &m), 1);
         assert_eq!(t.hash(&m, 12, 1792, 1024).unwrap(), Some(hi[&(12, 1792, 1024)]));
         assert_eq!(std::fs::read(&kept).unwrap(), good, "kept again, whole");
         // A pack that can't be read (gone from the NAS, nor kept here): its tiles can't be told, a
         // pack the manifest doesn't name has none, and the next load tries it again.
         m.insert("layers/terrain/hi/6-29-16".into(), "layers/terrain/hi/6-29-16.4444444444444444.pack".into());
-        assert_eq!(t.load(&root, &m), 0);
+        assert_eq!(t.load(&store::nasfs::NasRoot::local_for_test(&root), &m), 0);
         assert_eq!(
             t.unread().map(|(c, _)| c.as_str()).collect::<Vec<_>>(),
             ["layers/terrain/hi/6-29-16.4444444444444444.pack"]
@@ -706,19 +713,26 @@ mod tests {
         let e = t.hash(&m, 12, 1856, 1024).unwrap_err();
         assert!(e.0.starts_with("layers/terrain/hi/6-29-16.4444444444444444.pack: "), "{e}");
         assert_eq!(t.hash(&m, 12, 1920, 1024).unwrap(), None);
-        let made = pack(&root, &mut m, "layers/terrain/hi/6-29-16", "4444444444444444", &[(12, 1856, 1024)], "b");
-        assert_eq!(t.load(&root, &m), 1);
+        let made = pack(
+            &store::nasfs::NasRoot::local_for_test(&root),
+            &mut m,
+            "layers/terrain/hi/6-29-16",
+            "4444444444444444",
+            &[(12, 1856, 1024)],
+            "b",
+        );
+        assert_eq!(t.load(&store::nasfs::NasRoot::local_for_test(&root), &m), 1);
         assert_eq!(t.unread().count(), 0);
         assert_eq!(t.hash(&m, 12, 1856, 1024).unwrap(), Some(made[&(12, 1856, 1024)]));
         // A water digest that can't be read: its reason stays said after the load.
         let water = format!("{}0-0-0", crate::terrain_water::IDX_PREFIX);
         m.insert(water.clone(), "work/water-idx/0-0-0.5555555555555555.idx".into());
-        t.load(&root, &m);
+        t.load(&store::nasfs::NasRoot::local_for_test(&root), &m);
         assert!(t.unread().any(|(c, w)| c == &m[&water] && !w.is_empty()), "{:?}", t.unread().collect::<Vec<_>>());
         m.remove(&water);
         // A pack the manifest no longer names isn't held; its kept index stays (for a fortnight).
         m.remove("layers/terrain/hi/6-29-16");
-        t.load(&root, &m);
+        t.load(&store::nasfs::NasRoot::local_for_test(&root), &m);
         assert!(!t.held.contains_key("layers/terrain/hi/6-29-16.4444444444444444.pack"));
         assert!(dir.join("4444444444444444.idx").exists());
     }
@@ -728,10 +742,17 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("nas");
         let mut m = BTreeMap::new();
-        let hi = pack(&root, &mut m, "layers/terrain/hi/6-28-16", "1111111111111111", &[(12, 1792, 1024)], "a");
+        let hi = pack(
+            &store::nasfs::NasRoot::local_for_test(&root),
+            &mut m,
+            "layers/terrain/hi/6-28-16",
+            "1111111111111111",
+            &[(12, 1792, 1024)],
+            "a",
+        );
         let before: Vec<_> = walk(d.path());
         let mut t = TerrainTiles::new(None);
-        assert_eq!(t.load(&root, &m), 1);
+        assert_eq!(t.load(&store::nasfs::NasRoot::local_for_test(&root), &m), 1);
         assert_eq!(t.hash(&m, 12, 1792, 1024).unwrap(), Some(hi[&(12, 1792, 1024)]));
         assert_eq!(walk(d.path()), before, "nothing written");
     }

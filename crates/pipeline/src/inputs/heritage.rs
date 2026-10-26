@@ -31,7 +31,6 @@ use crate::outlines::{OutlineRec, Outlines};
 use anyhow::Result;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 /// The unit's name.
@@ -692,7 +691,11 @@ impl Checks for Heritage {
         outlines_of(manifest).map(|o| format!("outlines {o}")).into_iter().collect()
     }
 
-    fn prepared(&self, root: &Path, manifest: &BTreeMap<String, String>) -> Result<Option<Box<dyn Checks>>> {
+    fn prepared(
+        &self,
+        root: &store::nasfs::NasRoot,
+        manifest: &BTreeMap<String, String>,
+    ) -> Result<Option<Box<dyn Checks>>> {
         let mut h = Heritage::default();
         if let Some(a) = super::open(root, manifest, UNIT)? {
             for (p, f) in &a.index.files {
@@ -747,7 +750,7 @@ pub fn registers(a: &super::Accepted) -> Vec<Register> {
 /// An accepted version of one register meeting everywhere (`fixture`), its index named in records
 /// `m`: the tests' (the agent's, whose plans read the registers).
 #[cfg(test)]
-pub fn accept_fixture(root: &Path, m: &mut BTreeMap<String, String>) {
+pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, String>) {
     let mut files = BTreeMap::new();
     for (p, facts) in [
         ("fixture.geojson", serde_json::json!({"box": [-180.0, -85.0, 180.0, 85.0], "entries": 1})),
@@ -763,8 +766,8 @@ pub fn accept_fixture(root: &Path, m: &mut BTreeMap<String, String>) {
         super::Index { fmt: 1, unit: UNIT.into(), checks: format!("{UNIT} 1"), files, accepted: BTreeMap::new() };
     let body = serde_json::to_vec(&index).unwrap();
     let name = format!("{}/@index.{}.json", super::store_dir(UNIT), store::naming::hash16(&body));
-    std::fs::create_dir_all(root.join(super::store_dir(UNIT))).unwrap();
-    std::fs::write(root.join(&name), body).unwrap();
+    root.join(super::store_dir(UNIT)).create_dir_all().unwrap();
+    root.join(&name).write(body).unwrap();
     m.insert(super::logical(UNIT), name);
 }
 

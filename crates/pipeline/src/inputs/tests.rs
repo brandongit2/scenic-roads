@@ -125,7 +125,14 @@ fn an_error_holds_and_the_last_good_version_stays() {
     let id = r.findings[0].id.clone();
     let d2 = check(GT, &b, Some(&d.index), &[&id], &store, false);
     assert_eq!(held(&d2), ["a.jsonl"]);
-    assert!(accept(tempfile::tempdir().unwrap().path(), TEST_UNIT, &r.findings[0], "-", "test").is_err());
+    assert!(accept(
+        &store::nasfs::NasRoot::local_for_test(tempfile::tempdir().unwrap().path()),
+        TEST_UNIT,
+        &r.findings[0],
+        "-",
+        "test"
+    )
+    .is_err());
     // A held new file is simply absent.
     let mut b2 = Box_::default();
     b2.put("a.jsonl", "{\"k\": \"x\", \"v\": 1}\n", 100);
@@ -384,34 +391,48 @@ fn a_file_too_recent_is_neither_checked_nor_in_the_key_recorded() {
         .unwrap()
         .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(t))
         .unwrap();
-    let raw = list(&root, TEST_UNIT, false).unwrap();
+    let raw = list(&store::nasfs::NasRoot::local_for_test(&root), TEST_UNIT, false).unwrap();
     // The listings at T+2 and T+5: it isn't settled at either.
     assert!(settle(&raw, t + 2).files.is_empty() && settle(&raw, t + 5).files.is_empty());
     let planned = Planned { listing: settle(&raw, t + 5), accepted: BTreeSet::new() };
     let m: BTreeMap<String, String> = BTreeMap::new();
     let key = check_key(GT, &planned.listing, &planned.accepted, &m);
     // The check at T+6, given what the key was made from: it isn't taken, nor taken as removed.
-    let mut out = crate::out::Out::open(&root, &d.path().join("s"), "inputs").unwrap();
+    let mut out =
+        crate::out::Out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_UNIT, false, Some(planned)).unwrap();
-    let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
-    assert!(open(&root, &m, TEST_UNIT).unwrap().is_none());
+    let m: BTreeMap<String, String> =
+        crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
+            .unwrap();
+    assert!(open(&store::nasfs::NasRoot::local_for_test(&root), &m, TEST_UNIT).unwrap().is_none());
     // Once it has held still, the listing (and so the key) is another: it's checked, and taken.
     let later = settle(&raw, t + 11);
     assert_eq!(later.files.len(), 1);
     assert_ne!(check_key(GT, &later, &BTreeSet::new(), &m), key);
-    let mut out = crate::out::Out::open(&root, &d.path().join("s"), "inputs").unwrap();
+    let mut out =
+        crate::out::Out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_UNIT, false, Some(Planned { listing: later, accepted: BTreeSet::new() })).unwrap();
-    let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
-    assert!(open(&root, &m, TEST_UNIT).unwrap().unwrap().index.files.contains_key("a.jsonl"));
+    let m: BTreeMap<String, String> =
+        crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
+            .unwrap();
+    assert!(open(&store::nasfs::NasRoot::local_for_test(&root), &m, TEST_UNIT)
+        .unwrap()
+        .unwrap()
+        .index
+        .files
+        .contains_key("a.jsonl"));
     // A planned listing a file has changed since: left as it was (here, out), not taken half-read.
     std::fs::write(&p, "{\"k\": \"x\", \"v\": 1}\n{\"k\":").unwrap();
     let stale = Planned {
         listing: Listing { files: [("a.jsonl".to_string(), (1, 1))].into(), strays: vec![], ..Default::default() },
         accepted: BTreeSet::new(),
     };
-    let mut out = crate::out::Out::open(&root, &d.path().join("s"), "inputs").unwrap();
+    let mut out =
+        crate::out::Out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_UNIT, false, Some(stale)).unwrap();
-    let m2: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
+    let m2: BTreeMap<String, String> =
+        crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
+            .unwrap();
     assert_eq!(m2.get(&logical(TEST_UNIT)), m.get(&logical(TEST_UNIT)));
     assert!(!m2.contains_key(&held_logical(TEST_UNIT)));
 }
@@ -433,7 +454,7 @@ fn an_accepted_file_changed_or_gone_since_the_plan_stays_accepted() {
     put("a.jsonl", "{\"k\": \"x\", \"v\": 1}\n");
     put("b.jsonl", "{\"k\": \"y\", \"v\": 2}\n");
     let store = Store::default();
-    let listing = list(&root, TEST_UNIT, false).unwrap();
+    let listing = list(&store::nasfs::NasRoot::local_for_test(&root), TEST_UNIT, false).unwrap();
     let mut b = Box_::default();
     for n in ["a.jsonl", "b.jsonl"] {
         b.files.insert(n.into(), (std::fs::read(dropbox.join(n)).unwrap(), listing.files[n].1));
@@ -443,8 +464,14 @@ fn an_accepted_file_changed_or_gone_since_the_plan_stays_accepted() {
     let planned = Planned { listing: listing.clone(), accepted: BTreeSet::new() };
     std::fs::write(dropbox.join("a.jsonl"), "{\"k\": \"x\",").unwrap();
     std::fs::remove_file(dropbox.join("b.jsonl")).unwrap();
-    let (l, acc, unsettled) =
-        gate::candidate(&root, TEST_UNIT, false, Some(planned), crate::agent::jobs::now_s()).unwrap();
+    let (l, acc, unsettled) = gate::candidate(
+        &store::nasfs::NasRoot::local_for_test(&root),
+        TEST_UNIT,
+        false,
+        Some(planned),
+        crate::agent::jobs::now_s(),
+    )
+    .unwrap();
     assert_eq!(unsettled, ["a.jsonl".to_string(), "b.jsonl".to_string()].into());
     let read_new = |p: &str| -> Result<Vec<u8>> { panic!("{p} read though it changed since the plan") };
     let read_old = |e: &FileEntry| store.copies.borrow().get(&e.file).cloned().context("no copy");
@@ -487,10 +514,13 @@ fn a_nested_units_check_keeps_its_records_in_its_folder() {
             .unwrap();
     };
     put("{\"k\": \"x\", \"v\": 1}\n");
-    let mut out = crate::out::Out::open(&root, &d.path().join("s"), "inputs").unwrap();
+    let mut out =
+        crate::out::Out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_NESTED, false, None).unwrap();
-    let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
-    let a = open(&root, &m, TEST_NESTED).unwrap().unwrap();
+    let m: BTreeMap<String, String> =
+        crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
+            .unwrap();
+    let a = open(&store::nasfs::NasRoot::local_for_test(&root), &m, TEST_NESTED).unwrap().unwrap();
     assert!(
         a.version.starts_with("sources/inputs/_gate-nest/inner/@index.")
             && a.index.files["a.jsonl"].file.starts_with("sources/inputs/_gate-nest/inner/a.")
@@ -501,10 +531,16 @@ fn a_nested_units_check_keeps_its_records_in_its_folder() {
     }
     // A change of version: the check's state names the index it replaced.
     put("{\"k\": \"x\", \"v\": 22}\n");
-    let mut out = crate::out::Out::open(&root, &d.path().join("s"), "inputs").unwrap();
+    let mut out =
+        crate::out::Out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_NESTED, false, None).unwrap();
-    let m2: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
-    assert_eq!(read_listed(&root, &m2, TEST_NESTED).unwrap().replaced.as_deref(), Some(a.version.as_str()));
+    let m2: BTreeMap<String, String> =
+        crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
+            .unwrap();
+    assert_eq!(
+        read_listed(&store::nasfs::NasRoot::local_for_test(&root), &m2, TEST_NESTED).unwrap().replaced.as_deref(),
+        Some(a.version.as_str())
+    );
     // A copy named like a record can't be one: '@' starts no drop-box name.
     assert!(
         record_of("sources/inputs/_gate-nest/inner/index").is_none()
@@ -541,7 +577,14 @@ fn acceptances_of_files_changed_since_are_stale() {
     std::fs::write(root.join(&name), serde_json::to_vec(&v2).unwrap()).unwrap();
     let m: BTreeMap<String, String> = [(logical(TEST_UNIT), name)].into();
     let acc: BTreeMap<String, BTreeSet<String>> = [(TEST_UNIT.to_string(), ws.iter().cloned().collect())].into();
-    let v = view::of(root, &m, &[TEST_UNIT], &BTreeSet::new(), &acc, &mut view::Cache::default());
+    let v = view::of(
+        &store::nasfs::NasRoot::local_for_test(root),
+        &m,
+        &[TEST_UNIT],
+        &BTreeSet::new(),
+        &acc,
+        &mut view::Cache::default(),
+    );
     let a_id = ws.iter().find(|w| v1.accepted[*w] == ["a.jsonl"]).unwrap();
     assert_eq!(v[0].stale, [a_id.clone()]);
 }
@@ -555,12 +598,12 @@ fn listing_passes_over_the_macs_files_drafts_and_the_apps_folders_and_names_stra
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, b"x").unwrap();
     }
-    let l = list(d.path(), TEST_UNIT, false).unwrap();
+    let l = list(&store::nasfs::NasRoot::local_for_test(d.path()), TEST_UNIT, false).unwrap();
     assert_eq!(l.files.keys().cloned().collect::<Vec<_>>(), ["a.jsonl"]);
     assert_eq!(l.strays, ["sub/"]);
-    let r = list(d.path(), TEST_UNIT, true).unwrap();
+    let r = list(&store::nasfs::NasRoot::local_for_test(d.path()), TEST_UNIT, true).unwrap();
     assert_eq!(r.files.keys().cloned().collect::<Vec<_>>(), ["a.jsonl", "sub/v.jsonl"]);
-    assert!(list(d.path(), "none-yet", false).unwrap().files.is_empty());
+    assert!(list(&store::nasfs::NasRoot::local_for_test(d.path()), "none-yet", false).unwrap().files.is_empty());
 }
 
 #[test]
@@ -590,27 +633,39 @@ fn acceptances_are_written_once_and_undone() {
         vec!["a.jsonl".into()],
         "a.jsonl: 1 line with a negative v".into(),
     );
-    assert!(accept(d.path(), TEST_UNIT, &w, "m-0123456789abcdef", "test").unwrap());
-    assert!(!accept(d.path(), TEST_UNIT, &w, "m-fedcba9876543210", "again").unwrap(), "create-new: the first stays");
-    let a = read_acceptance(d.path(), TEST_UNIT, &w.id).unwrap();
+    assert!(
+        accept(&store::nasfs::NasRoot::local_for_test(d.path()), TEST_UNIT, &w, "m-0123456789abcdef", "test").unwrap()
+    );
+    assert!(
+        !accept(&store::nasfs::NasRoot::local_for_test(d.path()), TEST_UNIT, &w, "m-fedcba9876543210", "again")
+            .unwrap(),
+        "create-new: the first stays"
+    );
+    let a = read_acceptance(&store::nasfs::NasRoot::local_for_test(d.path()), TEST_UNIT, &w.id).unwrap();
     assert_eq!((a.member.as_str(), a.message.as_str()), ("m-0123456789abcdef", "a.jsonl: 1 line with a negative v"));
-    assert_eq!(acceptances(d.path(), TEST_UNIT).unwrap(), [w.id.clone()].into());
-    assert!(unaccept(d.path(), TEST_UNIT, &w.id).unwrap());
-    assert!(acceptances(d.path(), TEST_UNIT).unwrap().is_empty());
+    assert_eq!(
+        acceptances(&store::nasfs::NasRoot::local_for_test(d.path()), TEST_UNIT).unwrap(),
+        [w.id.clone()].into()
+    );
+    assert!(unaccept(&store::nasfs::NasRoot::local_for_test(d.path()), TEST_UNIT, &w.id).unwrap());
+    assert!(acceptances(&store::nasfs::NasRoot::local_for_test(d.path()), TEST_UNIT).unwrap().is_empty());
     // An ask: all the held warnings (not its errors), and an id not held refused.
     let e = Finding::new("gt-line", Level::Error, &["b.jsonl"], &["y"], vec!["b.jsonl".into()], "b.jsonl: bad".into());
     let r = Report { findings: vec![w.clone(), e], ..Default::default() };
     let said = apply_ask(
-        d.path(),
+        &store::nasfs::NasRoot::local_for_test(d.path()),
         &Ask { unit: TEST_UNIT.into(), all: true, by: "test".into(), ..Default::default() },
         Some(&r),
         "-",
     )
     .unwrap();
     assert_eq!(said.len(), 1);
-    assert_eq!(acceptances(d.path(), TEST_UNIT).unwrap(), [w.id.clone()].into());
+    assert_eq!(
+        acceptances(&store::nasfs::NasRoot::local_for_test(d.path()), TEST_UNIT).unwrap(),
+        [w.id.clone()].into()
+    );
     assert!(apply_ask(
-        d.path(),
+        &store::nasfs::NasRoot::local_for_test(d.path()),
         &Ask { unit: TEST_UNIT.into(), accept: vec!["gt-neg.ffffffffffffffff".into()], ..Default::default() },
         Some(&r),
         "-"
@@ -666,28 +721,41 @@ fn the_job_hands_off_the_accepted_version_and_the_report() {
     };
     put("a.jsonl", "{\"k\": \"x\", \"v\": 1}\n");
     std::fs::create_dir_all(root.join("state/build")).unwrap();
-    let mut out = crate::out::Out::open(&root, &d.path().join("s"), "inputs").unwrap();
+    let mut out =
+        crate::out::Out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_UNIT, false, None).unwrap();
-    let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
-    let a = open(&root, &m, TEST_UNIT).unwrap().unwrap();
+    let m: BTreeMap<String, String> =
+        crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
+            .unwrap();
+    let a = open(&store::nasfs::NasRoot::local_for_test(&root), &m, TEST_UNIT).unwrap().unwrap();
     assert!(a.version.starts_with("sources/inputs/_gate-test/@index.") && root.join(&a.version).exists());
     assert_eq!(a.read("a.jsonl").unwrap(), b"{\"k\": \"x\", \"v\": 1}\n");
     assert!(!m.contains_key(&held_logical(TEST_UNIT)));
     // A warning: held, its report named; the version as it was.
     put("a.jsonl", "{\"k\": \"x\", \"v\": -1}\n");
-    let mut out = crate::out::Out::open(&root, &d.path().join("s"), "inputs").unwrap();
+    let mut out =
+        crate::out::Out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_UNIT, false, None).unwrap();
-    let m2: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
+    let m2: BTreeMap<String, String> =
+        crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
+            .unwrap();
     assert_eq!(m2[&logical(TEST_UNIT)], a.version);
-    let r = read_report(&root, &m2[&held_logical(TEST_UNIT)]).unwrap();
+    let r = read_report(&store::nasfs::NasRoot::local_for_test(&root), &m2[&held_logical(TEST_UNIT)]).unwrap();
     assert_eq!(r.held, ["a.jsonl"]);
     // The status's view of it.
-    let v = view::of(&root, &m2, &[TEST_UNIT], &BTreeSet::new(), &BTreeMap::new(), &mut view::Cache::default());
+    let v = view::of(
+        &store::nasfs::NasRoot::local_for_test(&root),
+        &m2,
+        &[TEST_UNIT],
+        &BTreeSet::new(),
+        &BTreeMap::new(),
+        &mut view::Cache::default(),
+    );
     assert_eq!((v.len(), v[0].state, v[0].held.clone()), (1, view::State::Held, vec!["a.jsonl".to_string()]));
     assert!(v[0].line().contains("1 warning held"), "{}", v[0].line());
     // Checked again while held: still held, its findings shown, flagged checking.
     let v = view::of(
-        &root,
+        &store::nasfs::NasRoot::local_for_test(&root),
         &m2,
         &[TEST_UNIT],
         &[TEST_UNIT.to_string()].into(),
@@ -697,12 +765,15 @@ fn the_job_hands_off_the_accepted_version_and_the_report() {
     assert!(v[0].state == view::State::Held && v[0].checking && !v[0].findings.is_empty());
     // Accepted: taken in, the report gone; the version replaced made young (its index touched),
     // so GC keeps it restorable.
-    assert!(accept(&root, TEST_UNIT, &r.findings[0], "-", "test").unwrap());
+    assert!(accept(&store::nasfs::NasRoot::local_for_test(&root), TEST_UNIT, &r.findings[0], "-", "test").unwrap());
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 86400);
     std::fs::File::options().write(true).open(root.join(&a.version)).unwrap().set_modified(old).unwrap();
-    let mut out = crate::out::Out::open(&root, &d.path().join("s"), "inputs").unwrap();
+    let mut out =
+        crate::out::Out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_UNIT, false, None).unwrap();
-    let m3: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
+    let m3: BTreeMap<String, String> =
+        crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
+            .unwrap();
     assert_ne!(m3[&logical(TEST_UNIT)], a.version);
     assert!(
         std::fs::metadata(root.join(&a.version)).unwrap().modified().unwrap()
@@ -710,17 +781,27 @@ fn the_job_hands_off_the_accepted_version_and_the_report() {
     );
     assert!(!m3.contains_key(&held_logical(TEST_UNIT)));
     assert!(m3.contains_key(&listed_logical(TEST_UNIT)));
-    assert_eq!(open(&root, &m3, TEST_UNIT).unwrap().unwrap().read("a.jsonl").unwrap(), b"{\"k\": \"x\", \"v\": -1}\n");
-    let v = view::of(&root, &m3, &[TEST_UNIT], &BTreeSet::new(), &BTreeMap::new(), &mut view::Cache::default());
+    assert_eq!(
+        open(&store::nasfs::NasRoot::local_for_test(&root), &m3, TEST_UNIT).unwrap().unwrap().read("a.jsonl").unwrap(),
+        b"{\"k\": \"x\", \"v\": -1}\n"
+    );
+    let v = view::of(
+        &store::nasfs::NasRoot::local_for_test(&root),
+        &m3,
+        &[TEST_UNIT],
+        &BTreeSet::new(),
+        &BTreeMap::new(),
+        &mut view::Cache::default(),
+    );
     assert_eq!(v[0].state, view::State::Ok);
     assert!(v[0].stale.is_empty(), "the acceptance is the version's: {:?}", v[0].stale);
     // The NAS root a step gets refuses a drop-box path, naming the caller.
-    let out = crate::out::Out::unbound(&root, &d.path().join("s")).unwrap();
+    let out = crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s")).unwrap();
     let e =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| out.path("inputs/_gate-test/a.jsonl"))).unwrap_err();
     let msg = e.downcast_ref::<String>().cloned().unwrap_or_default();
     assert!(msg.contains("tests.rs") && msg.contains("crate::inputs::open"), "{msg}");
-    assert_eq!(out.path("sources/inputs/x"), root.join("sources/inputs/x"));
+    assert_eq!(out.path("sources/inputs/x"), store::nasfs::NasPath::local_for_test(root.join("sources/inputs/x")));
 }
 
 #[test]
@@ -942,7 +1023,14 @@ fn translation_lines_out_of_shape_and_the_area_tables_lines_are_errors() {
     assert!(old.message.contains("2 lines in the area tables' old format"), "{}", old.message);
     assert_eq!(finding(&d, "tr-shape").files, ["notes.txt"]);
     // Errors can't be accepted.
-    assert!(accept(tempfile::tempdir().unwrap().path(), "translations", old, "-", "a test").is_err());
+    assert!(accept(
+        &store::nasfs::NasRoot::local_for_test(tempfile::tempdir().unwrap().path()),
+        "translations",
+        old,
+        "-",
+        "a test"
+    )
+    .is_err());
 }
 
 #[test]
@@ -1078,9 +1166,9 @@ fn a_file_dropped_into_the_old_folder_is_an_error_saying_where_to_move_it() {
     // (An older app's to-do lists: the app's, not a drop.)
     put("descriptions/todo/landmarks.jsonl");
     // Before the drop box is there (the move's first publish): not yet.
-    assert!(list(d.path(), "descriptions", true).unwrap().misplaced.is_empty());
+    assert!(list(&store::nasfs::NasRoot::local_for_test(d.path()), "descriptions", true).unwrap().misplaced.is_empty());
     put("inputs/descriptions/a.jsonl");
-    let l = list(d.path(), "descriptions", true).unwrap();
+    let l = list(&store::nasfs::NasRoot::local_for_test(d.path()), "descriptions", true).unwrap();
     assert_eq!(l.misplaced, ["descriptions/heritage/late.jsonl"]);
     assert_eq!(l.files.keys().collect::<Vec<_>>(), ["a.jsonl"]);
     // In the key (a drop there is checked at once) and in the report, holding nothing else.

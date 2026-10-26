@@ -32,7 +32,6 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io;
-use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -303,13 +302,13 @@ pub fn compress(b: &[u8]) -> io::Result<Vec<u8>> {
 const WINDOW_LOG: u32 = 26;
 
 /// A day's file.
-pub fn day_path(root: &Path, day: &str) -> PathBuf {
+pub fn day_path(root: &store::nasfs::NasRoot, day: &str) -> store::nasfs::NasPath {
     root.join(DIR).join(format!("{day}.jsonl.zst"))
 }
 
 /// Appends `entries` (one day's) to its day's file: one zstd frame, one write, within `nasread`'s
 /// deadline.
-pub fn append(root: &Path, day: &str, entries: &[Entry]) -> Result<()> {
+pub fn append(root: &store::nasfs::NasRoot, day: &str, entries: &[Entry]) -> Result<()> {
     let mut b = Vec::new();
     for e in entries {
         b.extend(serde_json::to_vec(e)?);
@@ -320,8 +319,8 @@ pub fn append(root: &Path, day: &str, entries: &[Entry]) -> Result<()> {
     let q = p.clone();
     nasread::write(&p, move || {
         use std::io::Write;
-        std::fs::create_dir_all(q.parent().context("a day's folder")?)?;
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&q)?;
+        q.parent().context("a day's folder")?.create_dir_all()?;
+        let mut f = q.open_with(std::fs::OpenOptions::new().create(true).append(true))?;
         f.write_all(&z).with_context(|| format!("append to {}", q.display()))?;
         Ok(())
     })
@@ -336,7 +335,7 @@ pub struct Archiver {
 
 impl Archiver {
     /// Its thread started, writing under `root`.
-    pub fn start(root: PathBuf) -> io::Result<Archiver> {
+    pub fn start(root: store::nasfs::NasRoot) -> io::Result<Archiver> {
         let (tx, rx) = mpsc::sync_channel::<Entry>(CHANNEL);
         std::thread::Builder::new().name("forecast-archive".into()).spawn(move || Batcher::new(root).run(rx))?;
         Ok(Archiver { tx })
@@ -352,14 +351,14 @@ impl Archiver {
 
 /// The archiver's thread's state.
 struct Batcher {
-    root: PathBuf,
+    root: store::nasfs::NasRoot,
     last: Option<u64>,
     pending: Vec<Entry>,
     since: Option<Instant>,
 }
 
 impl Batcher {
-    fn new(root: PathBuf) -> Batcher {
+    fn new(root: store::nasfs::NasRoot) -> Batcher {
         Batcher { root, last: None, pending: Vec::new(), since: None }
     }
 
@@ -461,14 +460,14 @@ pub fn entries_of(b: &[u8], what: &str) -> Vec<Entry> {
 
 /// The archived forecasts made from `from` until `to` (unix s): the days' files and the months'
 /// tars, by time made.
-pub fn read(root: &Path, from: u64, to: u64) -> Vec<Entry> {
+pub fn read(root: &store::nasfs::NasRoot, from: u64, to: u64) -> Vec<Entry> {
     let mut out = Vec::new();
     let days: Vec<String> = (from / 86_400..=to / 86_400).filter_map(|d| journal::day(d * 86_400)).collect();
     let mut months: Vec<&str> = days.iter().map(|d| &d[..7]).collect();
     months.dedup();
     for m in months {
         let tar = root.join(ARCHIVE).join(format!("{m}.tar"));
-        if let Ok(members) = std::fs::read(&tar).map_err(anyhow::Error::from).and_then(|t| histarchive::list_tar(&t)) {
+        if let Ok(members) = tar.read().map_err(anyhow::Error::from).and_then(|t| histarchive::list_tar(&t)) {
             for (name, b) in members {
                 if days.iter().any(|d| name == format!("{d}.jsonl.zst")) {
                     out.extend(entries_of(&b, &name));
@@ -477,7 +476,7 @@ pub fn read(root: &Path, from: u64, to: u64) -> Vec<Entry> {
         }
     }
     for d in &days {
-        if let Ok(b) = std::fs::read(day_path(root, d)) {
+        if let Ok(b) = day_path(root, d).read() {
             out.extend(entries_of(&b, d));
         }
     }
@@ -491,7 +490,7 @@ pub fn read(root: &Path, from: u64, to: u64) -> Vec<Entry> {
 /// Packs the days before the history's window (histarchive::cutoff) into their months' tars and
 /// removes their files (each only if its size is still the one packed). `between` runs before each
 /// month (a safe point).
-pub fn pack(root: &Path, now: u64, dry_run: bool, between: &dyn Fn()) -> Result<histarchive::Report> {
+pub fn pack(root: &store::nasfs::NasRoot, now: u64, dry_run: bool, between: &dyn Fn()) -> Result<histarchive::Report> {
     let mut rep = histarchive::Report::default();
     let Some(cut) = histarchive::cutoff(now) else { return Ok(rep) };
     let dir = root.join(DIR);
@@ -522,8 +521,8 @@ pub fn pack(root: &Path, now: u64, dry_run: bool, between: &dyn Fn()) -> Result<
 }
 
 fn pack_month(
-    dir: &Path,
-    arch: &Path,
+    dir: &store::nasfs::NasPath,
+    arch: &store::nasfs::NasPath,
     month: &str,
     files: &[(String, u64)],
     dry_run: bool,
@@ -543,13 +542,13 @@ fn pack_month(
     for (name, size) in files {
         let p = dir.join(name);
         let q = p.clone();
-        let now = nasread::with(&p, move || std::fs::metadata(&q).map(|m| m.len()))?;
+        let now = nasread::with(&p, move || q.metadata().map(|m| m.len()))?;
         rep.stats += 1;
         if now != *size {
             rep.warnings.push(format!("{name} grew while it was packed (kept, packed again next run)"));
             continue;
         }
-        std::fs::remove_file(&p).with_context(|| format!("remove {name}"))?;
+        p.remove_file().with_context(|| format!("remove {name}"))?;
         rep.files_removed += 1;
         rep.days_archived += 1;
     }
@@ -559,6 +558,7 @@ fn pack_month(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     const NOW: u64 = 1_791_600_000; // 2026-10-10
 
@@ -585,43 +585,45 @@ mod tests {
     fn batches_append_as_frames_and_read_back_as_one_stream() {
         let r = tempfile::tempdir().unwrap();
         let day = journal::day(NOW).unwrap();
-        append(r.path(), &day, &[entry(NOW, 600), entry(NOW + 60, 900)]).unwrap();
-        append(r.path(), &day, &[entry(NOW + 120, 1200)]).unwrap();
-        let got = read(r.path(), NOW - 10, NOW + 3600);
+        append(&store::nasfs::NasRoot::local_for_test(r.path()), &day, &[entry(NOW, 600), entry(NOW + 60, 900)])
+            .unwrap();
+        append(&store::nasfs::NasRoot::local_for_test(r.path()), &day, &[entry(NOW + 120, 1200)]).unwrap();
+        let got = read(&store::nasfs::NasRoot::local_for_test(r.path()), NOW - 10, NOW + 3600);
         assert_eq!(got.iter().map(|e| e.at).collect::<Vec<_>>(), [NOW, NOW + 60, NOW + 120]);
         assert_eq!(got[2], entry(NOW + 120, 1200));
         // A frame cut short: the frames before it read.
-        let p = day_path(r.path(), &day);
-        let b = std::fs::read(&p).unwrap();
-        std::fs::write(&p, &b[..b.len() - 5]).unwrap();
-        assert_eq!(read(r.path(), NOW - 10, NOW + 3600).len(), 2);
+        let p = day_path(&store::nasfs::NasRoot::local_for_test(r.path()), &day);
+        let b = p.read().unwrap();
+        p.write(&b[..b.len() - 5]).unwrap();
+        assert_eq!(read(&store::nasfs::NasRoot::local_for_test(r.path()), NOW - 10, NOW + 3600).len(), 2);
     }
 
     #[test]
     fn a_damaged_frame_is_skipped_and_the_frames_after_it_read() {
         let r = tempfile::tempdir().unwrap();
         let day = journal::day(NOW).unwrap();
-        append(r.path(), &day, &[entry(NOW, 600)]).unwrap();
-        let p = day_path(r.path(), &day);
-        let one = std::fs::read(&p).unwrap().len();
-        append(r.path(), &day, &[entry(NOW + 60, 900)]).unwrap();
-        append(r.path(), &day, &[entry(NOW + 120, 1200)]).unwrap();
-        let mut b = std::fs::read(&p).unwrap();
+        append(&store::nasfs::NasRoot::local_for_test(r.path()), &day, &[entry(NOW, 600)]).unwrap();
+        let p = day_path(&store::nasfs::NasRoot::local_for_test(r.path()), &day);
+        let one = p.read().unwrap().len();
+        append(&store::nasfs::NasRoot::local_for_test(r.path()), &day, &[entry(NOW + 60, 900)]).unwrap();
+        append(&store::nasfs::NasRoot::local_for_test(r.path()), &day, &[entry(NOW + 120, 1200)]).unwrap();
+        let mut b = p.read().unwrap();
         // The second frame's middle overwritten (two appends crossed): the first and third read.
         let mid = one + (b.len() - one) / 4;
         b[mid..mid + 8].copy_from_slice(&[0xAA; 8]);
         // And junk before a frame's start.
         let mut junk = vec![1, 2, 3];
         junk.extend(&b);
-        std::fs::write(&p, &junk).unwrap();
-        let got: Vec<u64> = read(r.path(), NOW - 10, NOW + 3600).iter().map(|e| e.at).collect();
+        p.write(&junk).unwrap();
+        let got: Vec<u64> =
+            read(&store::nasfs::NasRoot::local_for_test(r.path()), NOW - 10, NOW + 3600).iter().map(|e| e.at).collect();
         assert_eq!(got, [NOW, NOW + 120]);
     }
 
     #[test]
     fn the_same_forecast_again_is_not_kept() {
         let r = tempfile::tempdir().unwrap();
-        let mut b = Batcher::new(r.path().to_path_buf());
+        let mut b = Batcher::new(store::nasfs::NasRoot::local_for_test(r.path().to_path_buf()));
         b.take(entry(NOW, 6000));
         // A minute on, the same target ending at the same time: the same forecast.
         b.take(entry(NOW + 60, 5940));
@@ -630,7 +632,7 @@ mod tests {
         assert_eq!(b.pending.len(), 2);
         b.flush();
         assert!(b.pending.is_empty() && b.since.is_none());
-        assert_eq!(read(r.path(), NOW, NOW + 3600).len(), 2);
+        assert_eq!(read(&store::nasfs::NasRoot::local_for_test(r.path()), NOW, NOW + 3600).len(), 2);
     }
 
     #[test]
@@ -638,22 +640,26 @@ mod tests {
         let r = tempfile::tempdir().unwrap();
         let d = |back: u64| journal::day(NOW - back * 86_400).unwrap();
         for back in [20, 9, 8, 0] {
-            append(r.path(), &d(back), &[entry(NOW - back * 86_400, 60)]).unwrap();
+            append(&store::nasfs::NasRoot::local_for_test(r.path()), &d(back), &[entry(NOW - back * 86_400, 60)])
+                .unwrap();
         }
-        let rep = pack(r.path(), NOW, false, &|| {}).unwrap();
+        let rep = pack(&store::nasfs::NasRoot::local_for_test(r.path()), NOW, false, &|| {}).unwrap();
         assert_eq!(rep.days_archived, 3, "{rep:?}");
         assert!(rep.warnings.is_empty());
-        assert!(day_path(r.path(), &d(0)).exists());
-        assert!(!day_path(r.path(), &d(8)).exists());
+        assert!(day_path(&store::nasfs::NasRoot::local_for_test(r.path()), &d(0)).exists());
+        assert!(!day_path(&store::nasfs::NasRoot::local_for_test(r.path()), &d(8)).exists());
         let sep = histarchive::list_tar(&std::fs::read(r.path().join(ARCHIVE).join("2026-09.tar")).unwrap()).unwrap();
         assert_eq!(sep.len(), 1);
         // All four read back, packed or not; again: nothing to do.
-        assert_eq!(read(r.path(), NOW - 21 * 86_400, NOW + 60).len(), 4);
-        assert_eq!(pack(r.path(), NOW, false, &|| {}).unwrap().days_archived, 0);
+        assert_eq!(read(&store::nasfs::NasRoot::local_for_test(r.path()), NOW - 21 * 86_400, NOW + 60).len(), 4);
+        assert_eq!(
+            pack(&store::nasfs::NasRoot::local_for_test(r.path()), NOW, false, &|| {}).unwrap().days_archived,
+            0
+        );
         // A late append to a packed day: merged into its month's tar next run.
-        append(r.path(), &d(8), &[entry(NOW - 8 * 86_400 + 60, 120)]).unwrap();
-        pack(r.path(), NOW, false, &|| {}).unwrap();
-        assert_eq!(read(r.path(), NOW - 8 * 86_400, NOW - 7 * 86_400).len(), 2);
+        append(&store::nasfs::NasRoot::local_for_test(r.path()), &d(8), &[entry(NOW - 8 * 86_400 + 60, 120)]).unwrap();
+        pack(&store::nasfs::NasRoot::local_for_test(r.path()), NOW, false, &|| {}).unwrap();
+        assert_eq!(read(&store::nasfs::NasRoot::local_for_test(r.path()), NOW - 8 * 86_400, NOW - 7 * 86_400).len(), 2);
     }
 
     #[test]
@@ -731,7 +737,7 @@ mod tests {
     #[test]
     fn recorded_size() {
         let Ok(ps) = std::env::var("SCENIC_FORECAST_RECORD") else { return };
-        let mut b = Batcher::new(PathBuf::new());
+        let mut b = Batcher::new(store::nasfs::NasRoot::local_for_test(PathBuf::new()));
         let (mut n, mut raw, mut alone) = (0, 0, 0);
         for p in ps.split(':') {
             let r = Record::from_bytes(&std::fs::read(p).unwrap()).unwrap();
@@ -758,7 +764,7 @@ mod tests {
             compress(&batch).unwrap().len()
         );
         if let Ok(root) = std::env::var("SCENIC_FCARCHIVE_ROOT") {
-            b.root = PathBuf::from(root);
+            b.root = store::nasfs::NasRoot::local_for_test(PathBuf::from(root));
             b.flush();
             assert!(b.pending.is_empty());
         }

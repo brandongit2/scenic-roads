@@ -87,8 +87,8 @@ pub struct Index {
 
 impl Index {
     /// The store's index (none yet: empty); an error when it can't be read now.
-    pub fn load(store: &Path) -> Result<Index> {
-        match std::fs::read(store.join(INDEX)) {
+    pub fn load(store: &store::nasfs::NasPath) -> Result<Index> {
+        match store.join(INDEX).read() {
             Ok(b) => serde_json::from_slice(&b).with_context(|| format!("parse {}", store.join(INDEX).display())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Index::default()),
             Err(e) => Err(e).with_context(|| format!("read {}", store.join(INDEX).display())),
@@ -101,14 +101,13 @@ impl Index {
     /// back.
     /// (`naming`: the archives about to be named, `name_handed`'s: a store whose only archives are
     /// those never had an index, as when a helper put the first ones.)
-    fn load_to_change(store: &Path, naming: &[&str]) -> Result<Index> {
-        if let Err(e) = std::fs::metadata(store.join(INDEX)) {
+    fn load_to_change(store: &store::nasfs::NasPath, naming: &[&str]) -> Result<Index> {
+        if let Err(e) = store.join(INDEX).metadata() {
             if e.kind() == std::io::ErrorKind::NotFound {
-                let others = match std::fs::read_dir(store.join("packs")) {
-                    Ok(rd) => rd
-                        .flatten()
-                        .map(|e| e.file_name().to_string_lossy().into_owned())
-                        .any(|n| n.ends_with(".tiles") && !naming.contains(&n.as_str())),
+                let others = match store.join("packs").read_dir() {
+                    Ok(rd) => {
+                        rd.into_iter().map(|e| e.name).any(|n| n.ends_with(".tiles") && !naming.contains(&n.as_str()))
+                    }
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
                     Err(e) => return Err(e).with_context(|| format!("list {}", store.join("packs").display())),
                 };
@@ -122,9 +121,9 @@ impl Index {
         Index::load(store)
     }
 
-    pub fn save(&self, store: &Path) -> Result<()> {
-        std::fs::create_dir_all(store.join("packs"))?;
-        crate::whole::write(&store.join(INDEX), &serde_json::to_vec_pretty(self)?)
+    pub fn save(&self, store: &store::nasfs::NasPath) -> Result<()> {
+        store.join("packs").create_dir_all()?;
+        store.join(INDEX).write_whole(serde_json::to_vec_pretty(self)?)
     }
 
     /// A shard's archives, oldest first.
@@ -167,7 +166,7 @@ impl Drop for Turn {
 /// Archive `name`'s copy here (`dir/packs/`), copied whole from the NAS's `store` the first time
 /// (`COPIES` at once) and checked against its name: a copy cut short or changed on the way is never
 /// used.
-pub fn local_copy(dir: &Path, store: &Path, name: &str) -> Result<PathBuf> {
+pub fn local_copy(dir: &Path, store: &store::nasfs::NasPath, name: &str) -> Result<PathBuf> {
     // (Held by this process: store::cachefile.)
     let local = dir.join("packs").join(name);
     if let Some(p) = store::cachefile::hold_existing(&local)? {
@@ -176,7 +175,7 @@ pub fn local_copy(dir: &Path, store: &Path, name: &str) -> Result<PathBuf> {
     let _turn = Turn::take();
     let src = store.join("packs").join(name);
     store::cachefile::hold(&local, &mut |tmp| {
-        let (n, want) = (store::sys::copy_data(&src, tmp)?, std::fs::metadata(&src)?.len());
+        let (n, want) = (src.copy_data_to_local(tmp)?, src.metadata()?.len());
         if n != want {
             return Err(std::io::Error::other(format!("copy {name} from the NAS: {n} of {want} bytes")));
         }
@@ -196,15 +195,17 @@ fn drop_copy(p: &Path) {
 }
 
 /// Whether the file at `p` holds what archive `name` names (its hash).
-fn named_right(p: &Path, name: &str) -> Result<bool> {
+fn named_right<'a>(p: impl Into<store::nasfs::Loc<'a>>, name: &str) -> Result<bool> {
+    let p = p.into();
     let want = name.strip_suffix(".tiles").and_then(|n| n.rsplit('.').next()).unwrap_or("");
-    Ok(store::naming::hash16_file(p)? == want)
+    Ok(store::naming::hash16_reader(p.open()?).with_context(|| format!("read {}", p.display()))? == want)
 }
 
 /// An archive's entries, read alone (not the whole archive: over SMB, one from the NAS's), and the
 /// file, open.
-pub fn entries_of(p: &Path) -> Result<(std::fs::File, Vec<Entry>)> {
-    let f = std::fs::File::open(p).with_context(|| format!("open {}", p.display()))?;
+pub fn entries_of<'a>(p: impl Into<store::nasfs::Loc<'a>>) -> Result<(std::fs::File, Vec<Entry>)> {
+    let p = p.into();
+    let f = p.open().with_context(|| format!("open {}", p.display()))?;
     let mut h = [0u8; 24];
     f.read_exact_at(&mut h, 0).with_context(|| format!("read {}", p.display()))?;
     ensure!(&h[..8] == MAGIC, "{}: not a tile archive", p.display());
@@ -270,8 +271,8 @@ struct Shard {
 pub struct Packer {
     /// The local cache: archives are made in its `packs/`, and stay there when `keep`.
     dir: PathBuf,
-    store: PathBuf,
-    root: PathBuf,
+    store: store::nasfs::NasPath,
+    root: store::nasfs::NasRoot,
     /// The index as last read.
     index: Index,
     /// Every new tile's bytes as they come, in one file: each shard's archive is written from it at
@@ -300,12 +301,17 @@ pub struct Packer {
 impl Packer {
     /// Packing into the local cache `dir` (its `packs/`) for the NAS's `store`, the build's at
     /// `root`: an error on a Mac that doesn't write its records.
-    pub fn new(dir: &Path, store: &Path, root: &Path) -> Result<Packer> {
+    pub fn new(dir: &Path, store: &store::nasfs::NasPath, root: &store::nasfs::NasRoot) -> Result<Packer> {
         Packer::open(dir, store, root, std::env::var_os("SCENIC_HANDOFF").map(PathBuf::from))
     }
 
     /// `new`, a job's (its hand-off folder `handoff`), or one before the pool began (None).
-    fn open(dir: &Path, store: &Path, root: &Path, handoff: Option<PathBuf>) -> Result<Packer> {
+    fn open(
+        dir: &Path,
+        store: &store::nasfs::NasPath,
+        root: &store::nasfs::NasRoot,
+        handoff: Option<PathBuf>,
+    ) -> Result<Packer> {
         if handoff.is_none() {
             crate::out::check_writer(root)?;
         }
@@ -323,8 +329,8 @@ impl Packer {
         store::cachefile::lock_shared(&f)?;
         Ok(Packer {
             dir: dir.to_path_buf(),
-            store: store.to_path_buf(),
-            root: root.to_path_buf(),
+            store: store.clone(),
+            root: root.clone(),
             index,
             spool: BufWriter::with_capacity(1 << 20, f),
             spool_path,
@@ -388,8 +394,8 @@ impl Packer {
             // look and the read would pass for the NAS's own missing.)
             let local = self.dir.join("packs").join(&p.name);
             let at = match store::cachefile::hold_existing(&local) {
-                Ok(Some(l)) => l,
-                _ => self.store.join("packs").join(&p.name),
+                Ok(Some(l)) => store::nasfs::Place::Local(l),
+                _ => store::nasfs::Place::Nas(self.store.join("packs").join(&p.name)),
             };
             match entries_of(&at) {
                 Ok((_, e)) => have.extend(e.iter().map(|e| e.key)),
@@ -485,18 +491,18 @@ impl Packer {
     /// (`<name>.<host>.<pid>.tmp`); here, its own (`.part`, `.spool`).
     fn sweep(&self) {
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(GRACE);
-        for (d, exts) in [(self.store.join("packs"), &["tmp"][..]), (self.dir.join("packs"), &["part", "spool"][..])] {
-            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
-                let p = e.path();
-                let ours = p.extension().and_then(|x| x.to_str()).is_some_and(|x| exts.contains(&x));
-                if ours && e.metadata().and_then(|m| m.modified()).is_ok_and(|m| m < old) {
-                    // (Here, not one a live job writes: store::cachefile.)
-                    if d == self.dir.join("packs") {
-                        store::cachefile::try_remove(&p);
-                    } else {
-                        std::fs::remove_file(&p).ok();
-                    }
-                }
+        // (On the NAS: an archive's copy, `<name>.<host>.<pid>.tmp`.)
+        for e in self.store.join("packs").read_dir().into_iter().flatten() {
+            if e.path.extension() == Some("tmp") && e.metadata().and_then(|m| m.modified()).is_ok_and(|m| m < old) {
+                e.path.remove_file().ok();
+            }
+        }
+        // (Here, its own, `.part`, `.spool`: not one a live job writes, store::cachefile.)
+        for e in std::fs::read_dir(self.dir.join("packs")).into_iter().flatten().flatten() {
+            let p = e.path();
+            let ours = p.extension().and_then(|x| x.to_str()).is_some_and(|x| ["part", "spool"].contains(&x));
+            if ours && e.metadata().and_then(|m| m.modified()).is_ok_and(|m| m < old) {
+                store::cachefile::try_remove(&p);
             }
         }
     }
@@ -530,9 +536,9 @@ impl Packer {
     /// Puts archive `p` (made here) on the NAS, unless it's there whole already.
     fn put(&self, p: &Pack) -> Result<()> {
         let nas = self.store.join("packs").join(&p.name);
-        if std::fs::metadata(&nas).map(|m| m.len()).ok() != Some(p.bytes) {
-            std::fs::create_dir_all(nas.parent().unwrap())?;
-            crate::whole::copy(&self.dir.join("packs").join(&p.name), &nas)
+        if nas.metadata().map(|m| m.len()).ok() != Some(p.bytes) {
+            nas.parent().unwrap().create_dir_all()?;
+            nas.copy_from_local(&self.dir.join("packs").join(&p.name))
                 .with_context(|| format!("put {} on the NAS", p.name))?;
         }
         Ok(())
@@ -671,8 +677,7 @@ impl Packer {
         f(&mut ix);
         // (Archives found missing, still so.)
         for (shard, name) in missing {
-            if std::fs::metadata(self.store.join("packs").join(&name))
-                .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+            if self.store.join("packs").join(&name).metadata().is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
             {
                 if let Some(l) = ix.shards.get_mut(&shard) {
                     l.retain(|p| p.name != name);
@@ -691,7 +696,7 @@ impl Packer {
                 gone.insert(name, at);
                 continue;
             }
-            match std::fs::remove_file(self.store.join("packs").join(&name)) {
+            match self.store.join("packs").join(&name).remove_file() {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(_) => {
@@ -705,10 +710,10 @@ impl Packer {
         // hand-off never came. Listed to go (GRACE later), as a replaced one. (Never from an index
         // that was missing: `load_to_change` refuses one while there are archives; nor while the
         // index names nothing, besides.)
-        if let (false, Ok(rd)) = (named.is_empty(), std::fs::read_dir(self.store.join("packs"))) {
+        if let (false, Ok(rd)) = (named.is_empty(), self.store.join("packs").read_dir()) {
             let old = std::time::SystemTime::now() - std::time::Duration::from_secs(GRACE);
-            for e in rd.flatten() {
-                let n = e.file_name().to_string_lossy().into_owned();
+            for e in rd {
+                let n = e.name.clone();
                 if n.ends_with(".tiles")
                     && !named.contains(&n)
                     && !gone.contains_key(&n)
@@ -734,7 +739,11 @@ impl Packer {
 /// unread, and the index saved only when it changed: a restarted lead names again those its records
 /// still hold (named, not yet taken off them: crate::pool::driver::Heard::named_raw). The caller
 /// holds the build lock (merging the hand-offs).
-pub fn name_handed(store: &Path, handed: &[(String, Pack)], _held: &crate::out::BuildLock) -> Result<Named> {
+pub fn name_handed(
+    store: &store::nasfs::NasPath,
+    handed: &[(String, Pack)],
+    _held: &crate::out::BuildLock,
+) -> Result<Named> {
     if handed.is_empty() {
         return Ok(Named::default());
     }
@@ -748,7 +757,7 @@ pub fn name_handed(store: &Path, handed: &[(String, Pack)], _held: &crate::out::
         }
         // (Only a definite answer drops it: the lead's records let it go once this returns. The NAS
         // slow or away, it's named later.)
-        match std::fs::metadata(store.join("packs").join(&p.name)) {
+        match store.join("packs").join(&p.name).metadata() {
             Ok(m) if m.len() == p.bytes => {}
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
                 eprintln!("rawpack: {} was handed over, but can't be looked at now ({e}): named later", p.name);
@@ -825,8 +834,8 @@ pub fn named_for(name: &str, shard: &str) -> bool {
 }
 
 /// Whether archive `p` is on the NAS whole (its size).
-fn there(store: &Path, p: &Pack) -> bool {
-    std::fs::metadata(store.join("packs").join(&p.name)).map(|m| m.len()).ok() == Some(p.bytes)
+fn there(store: &store::nasfs::NasPath, p: &Pack) -> bool {
+    store.join("packs").join(&p.name).metadata().map(|m| m.len()).ok() == Some(p.bytes)
 }
 
 impl Drop for Packer {
@@ -857,21 +866,32 @@ pub fn parse_tile(rel: &str) -> Option<(u8, u32, u32, bool)> {
 /// deletes them here once they're named there; how many were packed. The archives made stay here
 /// when `keep` (a job's tiles, which the next jobs read again), else go (room-making's: the disk is
 /// short). The agent asked to stop: it stops between tiles, every loose tile kept.
-pub fn pack_local(dir: &Path, store: &Path, root: &Path, keep: bool) -> Result<usize> {
+pub fn pack_local(
+    dir: &Path,
+    store: &store::nasfs::NasPath,
+    root: &store::nasfs::NasRoot,
+    keep: bool,
+) -> Result<usize> {
     pack_local_with(dir, store, root, keep, &|_, _, _| {})
 }
 
 /// `pack_local`, saying how far it is (`progress`): the tiles packed of those waiting ("raw tiles",
 /// their archives put on the NAS as they go), then the shards whose archives were merged ("shards").
-pub fn pack_local_with(dir: &Path, store: &Path, root: &Path, keep: bool, progress: Progress) -> Result<usize> {
+pub fn pack_local_with(
+    dir: &Path,
+    store: &store::nasfs::NasPath,
+    root: &store::nasfs::NasRoot,
+    keep: bool,
+    progress: Progress,
+) -> Result<usize> {
     pack_local_to(dir, store, root, keep, std::env::var_os("SCENIC_HANDOFF").map(PathBuf::from), progress)
 }
 
 /// `pack_local_with`, for a member's job's outbox `handoff` or (None) the lead.
 fn pack_local_to(
     dir: &Path,
-    store: &Path,
-    root: &Path,
+    store: &store::nasfs::NasPath,
+    root: &store::nasfs::NasRoot,
     keep: bool,
     handoff: Option<PathBuf>,
     progress: Progress,
@@ -961,7 +981,13 @@ pub struct Packed {
 /// Packs the tiles of a tar stream (the NAS's own, sent by `tar` over SSH: tools/nas/raw-pack.sh)
 /// into archives made in `dir` (gone from it once on the NAS). `expect`: the files listed for it,
 /// an error after when it held fewer (those packed are named; a run again packs the rest).
-pub fn pack_tar(input: impl Read, dir: &Path, store: &Path, root: &Path, expect: Option<usize>) -> Result<Packed> {
+pub fn pack_tar(
+    input: impl Read,
+    dir: &Path,
+    store: &store::nasfs::NasPath,
+    root: &store::nasfs::NasRoot,
+    expect: Option<usize>,
+) -> Result<Packed> {
     let mut p = Packer::new(dir, store, root)?;
     p.keep = false;
     let mut r = Packed::default();
@@ -1024,7 +1050,7 @@ pub fn order(paths: &str, have: impl Fn(&str, u64) -> bool) -> String {
 }
 
 /// The tiles the store's archives hold, by shard (their entries read, not the archives).
-pub fn packed(store: &Path) -> Result<std::collections::HashMap<String, HashSet<u64>>> {
+pub fn packed(store: &store::nasfs::NasPath) -> Result<std::collections::HashMap<String, HashSet<u64>>> {
     let index = Index::load(store)?;
     let mut out = std::collections::HashMap::new();
     for (shard, packs) in &index.shards {
@@ -1156,7 +1182,7 @@ pub struct Checked {
 
 /// Checks the NAS's archives: each the index names, read whole and matched against its name; and
 /// one tile in `every` of each, matched against the NAS's loose copy while that's there (0: none).
-pub fn check(store: &Path, every: usize) -> Result<Checked> {
+pub fn check(store: &store::nasfs::NasPath, every: usize) -> Result<Checked> {
     let index = Index::load(store)?;
     let mut c = Checked::default();
     for p in index.shards.values().flatten() {
@@ -1175,7 +1201,7 @@ pub fn check(store: &Path, every: usize) -> Result<Checked> {
                     } else {
                         store.join(format!("{z}/{x}/{y}.png"))
                     };
-                    match std::fs::read(&loose) {
+                    match loose.read() {
                         Ok(l) => {
                             c.sampled += 1;
                             if l != b {
@@ -1231,8 +1257,8 @@ mod tests {
         std::fs::File::options().append(true).open(&p).unwrap().set_modified(t).unwrap();
     }
 
-    fn names(store: &Path) -> Vec<String> {
-        let mut v: Vec<String> = std::fs::read_dir(store.join("packs"))
+    fn names(store: &store::nasfs::NasPath) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(store.join("packs").unchecked_path())
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .filter(|n| n.ends_with(".tiles"))
@@ -1252,8 +1278,17 @@ mod tests {
         put(&dir, "8/128/85.png", &png(), 120);
         put(&dir, "2/1/1.png", &png(), 120);
         put_at(&dir, "12/2050/1366.png", &png(), std::time::SystemTime::now() + std::time::Duration::from_secs(3600));
-        assert_eq!(pack_local(&dir, &store, &root, true).unwrap(), 4);
-        let index = Index::load(&store).unwrap();
+        assert_eq!(
+            pack_local(
+                &dir,
+                &store::nasfs::NasPath::local_for_test(&store),
+                &store::nasfs::NasRoot::local_for_test(&root),
+                true
+            )
+            .unwrap(),
+            4
+        );
+        let index = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap();
         // 12/2048/1365 is under z6 tile 32/21; 8/128/85 under z3 tile 4/2; 2/1/1 above z3.
         assert_eq!(index.shards.keys().collect::<Vec<_>>(), ["3-4-2", "6-32-21", "root"]);
         assert!(index.gone.is_empty(), "named, so off the list");
@@ -1273,17 +1308,17 @@ mod tests {
         // A fresh cache takes an archive from the NAS whole, checked against its name.
         let fresh = d.path().join("fresh");
         let name = &index.of("6-32-21")[0].name;
-        let local = local_copy(&fresh, &store, name).unwrap();
+        let local = local_copy(&fresh, &store::nasfs::NasPath::local_for_test(&store), name).unwrap();
         assert_eq!(std::fs::read(&local).unwrap(), std::fs::read(store.join("packs").join(name)).unwrap());
         // One changed on the NAS is refused, and leaves nothing here.
         let other = &index.of("root")[0].name;
         let mut b = std::fs::read(store.join("packs").join(other)).unwrap();
         *b.last_mut().unwrap() ^= 1;
         std::fs::write(store.join("packs").join(other), b).unwrap();
-        assert!(local_copy(&fresh, &store, other).is_err());
+        assert!(local_copy(&fresh, &store::nasfs::NasPath::local_for_test(&store), other).is_err());
         assert_eq!(std::fs::read_dir(fresh.join("packs")).unwrap().count(), 1);
         // The check finds it too, and matches the rest against the loose tiles they came from.
-        let c = check(&store, 1).unwrap();
+        let c = check(&store::nasfs::NasPath::local_for_test(&store), 1).unwrap();
         assert_eq!((c.archives, c.tiles, c.bad.len()), (3, 3, 1));
     }
 
@@ -1295,28 +1330,54 @@ mod tests {
         std::fs::create_dir_all(&outbox).unwrap();
         // The NAS's store names one shard's archive already; a helper fetched more of it, and another.
         put(&dir, "12/2048/1365.png", &png(), 120);
-        pack_local(&dir, &store, &root, true).unwrap();
-        let before = Index::load(&store).unwrap();
+        pack_local(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            true,
+        )
+        .unwrap();
+        let before = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap();
         put(&dir, "12/2048/1366.png", &png(), 120);
         put(&dir, "12/2049/1365.png", &png(), 120);
         put(&dir, "8/128/85.png", &png(), 120);
-        assert_eq!(pack_local_to(&dir, &store, &root, true, Some(outbox.clone()), &|_, _, _| {}).unwrap(), 3);
+        assert_eq!(
+            pack_local_to(
+                &dir,
+                &store::nasfs::NasPath::local_for_test(&store),
+                &store::nasfs::NasRoot::local_for_test(&root),
+                true,
+                Some(outbox.clone()),
+                &|_, _, _| {}
+            )
+            .unwrap(),
+            3
+        );
         // Its archives are on the NAS, none kept here, the index as it was, the loose tiles gone.
-        assert_eq!(Index::load(&store).unwrap(), before);
+        assert_eq!(Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap(), before);
         assert!(!dir.join("12/2048/1366.png").exists());
         let handed: Vec<crate::handoff::Handoff> = crate::handoff::written_in(&outbox).unwrap().unwrap();
         let raw: Vec<(String, Pack)> = handed.into_iter().flat_map(|h| h.raw).collect();
         assert_eq!(raw.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), ["3-4-2", "6-32-21"]);
         for (shard, p) in &raw {
-            assert!(there(&store, p) && named_for(&p.name, shard), "{}", p.name);
+            assert!(
+                there(&store::nasfs::NasPath::local_for_test(&store), p) && named_for(&p.name, shard),
+                "{}",
+                p.name
+            );
             assert!(!dir.join("packs").join(&p.name).exists());
         }
         // The lead names them; a missing one isn't.
-        let lock = crate::out::BuildLock::take(&root).unwrap();
+        let lock = crate::out::BuildLock::take(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         let ghost = ("6-1-1".to_string(), Pack { name: "6-1-1.0123456789abcdef.tiles".into(), bytes: 9 });
-        assert_eq!(name_handed(&store, &[raw.clone(), vec![ghost]].concat(), &lock).unwrap().new, 2);
+        assert_eq!(
+            name_handed(&store::nasfs::NasPath::local_for_test(&store), &[raw.clone(), vec![ghost]].concat(), &lock)
+                .unwrap()
+                .new,
+            2
+        );
         drop(lock);
-        let ix = Index::load(&store).unwrap();
+        let ix = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap();
         assert_eq!(ix.of("6-32-21").len(), 2);
         assert!(ix.of("6-1-1").is_empty());
         let a = Archive::open(&store.join("packs").join(&ix.of("6-32-21")[1].name)).unwrap();
@@ -1335,18 +1396,29 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (store, dir, root) = nas(d.path());
         put(&dir, "12/2048/1365.png", &png(), 120);
-        pack_local(&dir, &store, &root, true).unwrap();
-        let named = Index::load(&store).unwrap().of("6-32-21")[0].name.clone();
+        pack_local(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            true,
+        )
+        .unwrap();
+        let named = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap().of("6-32-21")[0].name.clone();
         // Its file gone (moved aside, say), the archives there: nothing packed, named or swept.
         std::fs::rename(store.join(INDEX), d.path().join("index.json.aside")).unwrap();
         put(&dir, "12/2050/1365.png", &png(), 120);
-        assert!(pack_local(&dir, &store, &root, true)
-            .unwrap_err()
-            .to_string()
-            .contains("is missing, but its archives are there"));
-        let lock = crate::out::BuildLock::take(&root).unwrap();
+        assert!(pack_local(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            true
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("is missing, but its archives are there"));
+        let lock = crate::out::BuildLock::take(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         assert!(name_handed(
-            &store,
+            &store::nasfs::NasPath::local_for_test(&store),
             &[("6-32-21".into(), Pack { name: "6-32-21.0123456789abcdef.tiles".into(), bytes: 1 })],
             &lock
         )
@@ -1355,8 +1427,17 @@ mod tests {
         assert!(!store.join(INDEX).exists() && store.join("packs").join(&named).exists());
         // Put back: packing goes on (the shard's archives merged as they grow).
         std::fs::rename(d.path().join("index.json.aside"), store.join(INDEX)).unwrap();
-        assert_eq!(pack_local(&dir, &store, &root, true).unwrap(), 1);
-        let ix = Index::load(&store).unwrap();
+        assert_eq!(
+            pack_local(
+                &dir,
+                &store::nasfs::NasPath::local_for_test(&store),
+                &store::nasfs::NasRoot::local_for_test(&root),
+                true
+            )
+            .unwrap(),
+            1
+        );
+        let ix = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap();
         assert!(ix.of("6-32-21").iter().any(|p| p.name == named) || ix.gone.contains_key(&named));
     }
 
@@ -1368,14 +1449,22 @@ mod tests {
         std::fs::create_dir_all(&outbox).unwrap();
         // A store with no index yet: a helper's archives are its first.
         put(&dir, "12/2048/1365.png", &png(), 120);
-        pack_local_to(&dir, &store, &root, true, Some(outbox.clone()), &|_, _, _| {}).unwrap();
+        pack_local_to(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            true,
+            Some(outbox.clone()),
+            &|_, _, _| {},
+        )
+        .unwrap();
         assert!(!store.join(INDEX).exists());
         let raw: Vec<(String, Pack)> =
             crate::handoff::written_in(&outbox).unwrap().unwrap().into_iter().flat_map(|h| h.raw).collect();
-        let lock = crate::out::BuildLock::take(&root).unwrap();
-        assert_eq!(name_handed(&store, &raw, &lock).unwrap().new, 1);
+        let lock = crate::out::BuildLock::take(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
+        assert_eq!(name_handed(&store::nasfs::NasPath::local_for_test(&store), &raw, &lock).unwrap().new, 1);
         drop(lock);
-        assert_eq!(Index::load(&store).unwrap().of(&raw[0].0).len(), 1);
+        assert_eq!(Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap().of(&raw[0].0).len(), 1);
     }
 
     #[test]
@@ -1386,21 +1475,29 @@ mod tests {
         let outbox = d.path().join("outbox");
         std::fs::create_dir_all(&outbox).unwrap();
         put(&dir, "12/2048/1365.png", &png(), 120);
-        pack_local_to(&dir, &store, &root, true, Some(outbox.clone()), &|_, _, _| {}).unwrap();
+        pack_local_to(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            true,
+            Some(outbox.clone()),
+            &|_, _, _| {},
+        )
+        .unwrap();
         let raw: Vec<(String, Pack)> =
             crate::handoff::written_in(&outbox).unwrap().unwrap().into_iter().flat_map(|h| h.raw).collect();
-        let lock = crate::out::BuildLock::take(&root).unwrap();
-        assert_eq!(name_handed(&store, &raw, &lock).unwrap().new, 1);
+        let lock = crate::out::BuildLock::take(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
+        assert_eq!(name_handed(&store::nasfs::NasPath::local_for_test(&store), &raw, &lock).unwrap().new, 1);
         // Named again (a new process of the lead, its records' archives all handed again): its
         // archive not read (gone from the folder here), the index not written again (its file's).
         let ino = std::fs::metadata(store.join(INDEX)).unwrap().ino();
         std::fs::remove_file(store.join("packs").join(&raw[0].1.name)).unwrap();
-        let n = name_handed(&store, &raw, &lock).unwrap();
+        let n = name_handed(&store::nasfs::NasPath::local_for_test(&store), &raw, &lock).unwrap();
         drop(lock);
         assert!(n.new == 0 && n.again.is_empty());
         assert_eq!(std::fs::metadata(store.join(INDEX)).unwrap().ino(), ino);
         assert_eq!(
-            Index::load(&store).unwrap().of(&raw[0].0),
+            Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap().of(&raw[0].0),
             &raw[..1].iter().map(|r| r.1.clone()).collect::<Vec<_>>()[..]
         );
     }
@@ -1413,20 +1510,42 @@ mod tests {
         std::fs::create_dir_all(&outbox).unwrap();
         // (The lead's store has its index: one missing while there are archives isn't written.)
         put(&dir, "8/128/85.png", &png(), 120);
-        pack_local(&dir, &store, &root, true).unwrap();
+        pack_local(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            true,
+        )
+        .unwrap();
         put(&dir, "12/2048/1365.png", &png(), 120);
-        pack_local_to(&dir, &store, &root, true, Some(outbox.clone()), &|_, _, _| {}).unwrap();
+        pack_local_to(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            true,
+            Some(outbox.clone()),
+            &|_, _, _| {},
+        )
+        .unwrap();
         let raw: Vec<(String, Pack)> =
             crate::handoff::written_in(&outbox).unwrap().unwrap().into_iter().flat_map(|h| h.raw).collect();
         // The same archive said to be another shard's (renamed to match): not named; as its own, named.
         let (shard, p) = raw[0].clone();
         let other = Pack { name: p.name.replacen(&shard, "6-33-21", 1), bytes: p.bytes };
         std::fs::copy(store.join("packs").join(&p.name), store.join("packs").join(&other.name)).unwrap();
-        let lock = crate::out::BuildLock::take(&root).unwrap();
-        assert_eq!(name_handed(&store, &[("6-33-21".into(), other)], &lock).unwrap().new, 0);
-        assert_eq!(name_handed(&store, &[(shard.clone(), p)], &lock).unwrap().new, 1);
+        let lock = crate::out::BuildLock::take(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
+        assert_eq!(
+            name_handed(&store::nasfs::NasPath::local_for_test(&store), &[("6-33-21".into(), other)], &lock)
+                .unwrap()
+                .new,
+            0
+        );
+        assert_eq!(
+            name_handed(&store::nasfs::NasPath::local_for_test(&store), &[(shard.clone(), p)], &lock).unwrap().new,
+            1
+        );
         drop(lock);
-        assert!(Index::load(&store).unwrap().of("6-33-21").is_empty());
+        assert!(Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap().of("6-33-21").is_empty());
     }
 
     #[test]
@@ -1434,7 +1553,13 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (store, dir, root) = nas(d.path());
         put(&dir, "12/2048/1365.png", &png(), 120);
-        pack_local(&dir, &store, &root, true).unwrap();
+        pack_local(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            true,
+        )
+        .unwrap();
         // A helper's archive whose hand-off never came: a day old, and a fresh one.
         let (stale, fresh) =
             (store.join("packs/6-1-1.0123456789abcdef.tiles"), store.join("packs/6-1-2.0123456789abcdef.tiles"));
@@ -1448,8 +1573,14 @@ mod tests {
             .unwrap();
         // The next packing lists the old one to go, not the new one, nor the named.
         put(&dir, "12/2050/1366.png", &png(), 120);
-        pack_local(&dir, &store, &root, true).unwrap();
-        let ix = Index::load(&store).unwrap();
+        pack_local(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            true,
+        )
+        .unwrap();
+        let ix = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap();
         assert!(ix.gone.contains_key("6-1-1.0123456789abcdef.tiles"));
         assert!(!ix.gone.contains_key("6-1-2.0123456789abcdef.tiles"));
         assert!(ix.of("6-32-21").iter().all(|p| !ix.gone.contains_key(&p.name)));
@@ -1464,8 +1595,14 @@ mod tests {
         put(&dir, "8/128/85.png", &png(), 120);
         let said = std::sync::Mutex::new(Vec::new());
         assert_eq!(
-            pack_local_with(&dir, &store, &root, true, &|w, d, t| said.lock().unwrap().push((w.to_string(), d, t)))
-                .unwrap(),
+            pack_local_with(
+                &dir,
+                &store::nasfs::NasPath::local_for_test(&store),
+                &store::nasfs::NasRoot::local_for_test(&root),
+                true,
+                &|w, d, t| said.lock().unwrap().push((w.to_string(), d, t))
+            )
+            .unwrap(),
             3
         );
         let said = said.into_inner().unwrap();
@@ -1486,21 +1623,39 @@ mod tests {
         for y in 0..20 {
             put(&dir, &format!("12/2048/{}.png", 1344 + y), &png(), 120);
         }
-        pack_local(&dir, &store, &root, true).unwrap();
-        let base = Index::load(&store).unwrap().of("6-32-21").to_vec();
+        pack_local(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            true,
+        )
+        .unwrap();
+        let base = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap().of("6-32-21").to_vec();
         assert_eq!(base.len(), 1);
         // One more: an archive of its own beside it; the first isn't written again.
         put(&dir, "12/2049/1344.png", &png(), 120);
-        pack_local(&dir, &store, &root, true).unwrap();
-        let two = Index::load(&store).unwrap().of("6-32-21").to_vec();
+        pack_local(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            true,
+        )
+        .unwrap();
+        let two = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap().of("6-32-21").to_vec();
         assert_eq!((two.len(), &two[0]), (2, &base[0]));
         assert!(two[1].bytes * 2 < two[0].bytes);
         // Ten more: together with the one before, half the first's size and more: all merged.
         for y in 0..10 {
             put(&dir, &format!("12/2050/{}.png", 1344 + y), &png(), 120);
         }
-        pack_local(&dir, &store, &root, true).unwrap();
-        let index = Index::load(&store).unwrap();
+        pack_local(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            true,
+        )
+        .unwrap();
+        let index = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap();
         let merged = index.of("6-32-21");
         assert_eq!(merged.len(), 1);
         let a = Archive::open(&store.join("packs").join(&merged[0].name)).unwrap();
@@ -1514,7 +1669,7 @@ mod tests {
                     && !dir.join("packs").join(&p.name).exists()
             );
         }
-        assert_eq!(names(&store).len(), 4);
+        assert_eq!(names(&store::nasfs::NasPath::local_for_test(&store)).len(), 4);
     }
 
     #[test]
@@ -1526,29 +1681,49 @@ mod tests {
         for y in 0..4 {
             put(&dir, &format!("12/2048/{}.png", 1344 + y), &png(), 120);
         }
-        pack_local(&dir, &store, &root, true).unwrap();
+        pack_local(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            true,
+        )
+        .unwrap();
         // A helper's archive of the shard, handed off and named.
         put(&dir, "12/2049/1344.png", &png(), 120);
-        pack_local_to(&dir, &store, &root, true, Some(outbox.clone()), &|_, _, _| {}).unwrap();
+        pack_local_to(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            true,
+            Some(outbox.clone()),
+            &|_, _, _| {},
+        )
+        .unwrap();
         let raw: Vec<(String, Pack)> =
             crate::handoff::written_in(&outbox).unwrap().unwrap().into_iter().flat_map(|h| h.raw).collect();
-        let lock = crate::out::BuildLock::take(&root).unwrap();
-        assert_eq!(name_handed(&store, &raw, &lock).unwrap().new, 1);
+        let lock = crate::out::BuildLock::take(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
+        assert_eq!(name_handed(&store::nasfs::NasPath::local_for_test(&store), &raw, &lock).unwrap().new, 1);
         drop(lock);
         // More of the shard: its archives merged into one, the helper's among them (on the NAS a day).
         for y in 0..4 {
             put(&dir, &format!("12/2050/{}.png", 1344 + y), &png(), 120);
         }
-        pack_local(&dir, &store, &root, true).unwrap();
-        let ix = Index::load(&store).unwrap();
+        pack_local(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            true,
+        )
+        .unwrap();
+        let ix = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap();
         assert_eq!(ix.of("6-32-21").len(), 1);
         assert!(ix.gone.contains_key(&raw[0].1.name) && ix.merged.contains(&raw[0].1.name));
-        assert!(there(&store, &raw[0].1));
+        assert!(there(&store::nasfs::NasPath::local_for_test(&store), &raw[0].1));
         // Handed again (a lead's records still holding it, a restart): not named beside its merged copy.
-        let lock = crate::out::BuildLock::take(&root).unwrap();
-        assert_eq!(name_handed(&store, &raw, &lock).unwrap().new, 0);
+        let lock = crate::out::BuildLock::take(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
+        assert_eq!(name_handed(&store::nasfs::NasPath::local_for_test(&store), &raw, &lock).unwrap().new, 0);
         drop(lock);
-        assert_eq!(Index::load(&store).unwrap(), ix);
+        assert_eq!(Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap(), ix);
     }
 
     #[test]
@@ -1556,22 +1731,33 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (store, dir, root) = nas(d.path());
         put(&dir, "12/2048/1365.png", &png(), 120);
-        pack_local(&dir, &store, &root, true).unwrap();
-        let named = Index::load(&store).unwrap().of("6-32-21")[0].name.clone();
+        pack_local(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            true,
+        )
+        .unwrap();
+        let named = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap().of("6-32-21")[0].name.clone();
         // One listed two days ago, one an hour ago, and the named one listed too (put up again).
         std::fs::create_dir_all(store.join("packs")).unwrap();
         for n in ["6-1-1.0000000000000001.tiles", "6-1-1.0000000000000002.tiles"] {
             std::fs::write(store.join("packs").join(n), b"x").unwrap();
         }
-        let mut ix = Index::load(&store).unwrap();
+        let mut ix = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap();
         let now = unix_now();
         ix.gone.insert("6-1-1.0000000000000001.tiles".into(), now - 2 * 86400);
         ix.gone.insert("6-1-1.0000000000000002.tiles".into(), now - 3600);
         ix.gone.insert(named.clone(), now - 2 * 86400);
-        ix.save(&store).unwrap();
-        let mut p = Packer::new(&dir, &store, &root).unwrap();
+        ix.save(&store::nasfs::NasPath::local_for_test(&store)).unwrap();
+        let mut p = Packer::new(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+        )
+        .unwrap();
         p.commit(|_| {}).unwrap();
-        let ix = Index::load(&store).unwrap();
+        let ix = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap();
         assert_eq!(ix.gone.keys().collect::<Vec<_>>(), ["6-1-1.0000000000000002.tiles"]);
         assert!(!store.join("packs/6-1-1.0000000000000001.tiles").exists());
         assert!(store.join("packs").join(&named).exists(), "named: kept");
@@ -1583,20 +1769,36 @@ mod tests {
         let (store, dir, root) = nas(d.path());
         // Two archives for a shard, due merging: the second put up and named, not yet merged.
         put(&dir, "12/2048/1365.png", &png(), 120);
-        pack_local(&dir, &store, &root, true).unwrap();
-        let mut p = Packer::new(&dir, &store, &root).unwrap();
+        pack_local(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            true,
+        )
+        .unwrap();
+        let mut p = Packer::new(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+        )
+        .unwrap();
         p.add(12, 2048, 1366, Some(&png())).unwrap();
         p.flush().unwrap();
         assert_eq!(p.index.of("6-32-21").len(), 2);
         // Another packer merges them meanwhile.
-        let mut q = Packer::new(&d.path().join("other"), &store, &root).unwrap();
+        let mut q = Packer::new(
+            &d.path().join("other"),
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+        )
+        .unwrap();
         q.merge_due("6-32-21").unwrap();
-        let theirs = Index::load(&store).unwrap().of("6-32-21").to_vec();
+        let theirs = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap().of("6-32-21").to_vec();
         assert_eq!(theirs.len(), 1);
         // This one, from the index it read before, merges them too: the same tiles make the same
         // archive, found named already; nothing is lost, doubled or deleted.
         p.merge_due("6-32-21").unwrap();
-        let ix = Index::load(&store).unwrap();
+        let ix = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap();
         assert_eq!(ix.of("6-32-21"), &theirs[..]);
         assert!(!ix.gone.contains_key(&theirs[0].name) && store.join("packs").join(&theirs[0].name).exists());
         assert_eq!(ix.gone.len(), 2);
@@ -1608,16 +1810,26 @@ mod tests {
         // archive holds a part of the other's, so merging the two makes the other's again, by name.
         let d = tempfile::tempdir().unwrap();
         let (store, _, root) = nas(d.path());
-        let mut all = Packer::new(&d.path().join("a"), &store, &root).unwrap();
-        let mut part = Packer::new(&d.path().join("b"), &store, &root).unwrap();
+        let mut all = Packer::new(
+            &d.path().join("a"),
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+        )
+        .unwrap();
+        let mut part = Packer::new(
+            &d.path().join("b"),
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+        )
+        .unwrap();
         for y in 0..4 {
             all.add(12, 2048, 1344 + y, Some(&png())).unwrap();
         }
         part.add(12, 2048, 1344, Some(&png())).unwrap();
         part.finish().unwrap();
-        let first = Index::load(&store).unwrap().of("6-32-21").to_vec();
+        let first = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap().of("6-32-21").to_vec();
         all.finish().unwrap();
-        let ix = Index::load(&store).unwrap();
+        let ix = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap();
         for p in ix.shards.values().flatten() {
             assert!(store.join("packs").join(&p.name).exists(), "{} is named and there", p.name);
         }
@@ -1631,20 +1843,37 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (store, dir, root) = nas(d.path());
         put(&dir, "12/2048/1365.png", &png(), 120);
-        pack_local(&dir, &store, &root, true).unwrap();
+        pack_local(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            true,
+        )
+        .unwrap();
         // A packer begun now, and the shard's archive merged away (and gone from the NAS, as a day
         // later) before it reaches the shard: it reads the index again.
-        let mut p = Packer::new(&d.path().join("late"), &store, &root).unwrap();
+        let mut p = Packer::new(
+            &d.path().join("late"),
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+        )
+        .unwrap();
         put(&dir, "12/2048/1366.png", &png(), 120);
-        pack_local(&dir, &store, &root, true).unwrap();
-        let ix = Index::load(&store).unwrap();
+        pack_local(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            true,
+        )
+        .unwrap();
+        let ix = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap();
         for n in ix.gone.keys() {
             std::fs::remove_file(store.join("packs").join(n)).unwrap();
         }
         assert!(!p.add(12, 2048, 1365, Some(&png())).unwrap(), "known, from the index read again");
         assert!(p.add(12, 2048, 1367, Some(&png())).unwrap());
         p.finish().unwrap();
-        let l = Index::load(&store).unwrap().of("6-32-21").to_vec();
+        let l = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap().of("6-32-21").to_vec();
         let tiles: usize =
             l.iter().map(|p| Archive::open(&store.join("packs").join(&p.name)).unwrap().entries().len()).sum();
         assert_eq!(tiles, 3);
@@ -1686,23 +1915,51 @@ mod tests {
         )
         .unwrap();
         assert!(
-            pack_tar(&odd.stdout[..], &dir, &store, &root, Some(1)).is_err(),
+            pack_tar(
+                &odd.stdout[..],
+                &dir,
+                &store::nasfs::NasPath::local_for_test(&store),
+                &store::nasfs::NasRoot::local_for_test(&root),
+                Some(1)
+            )
+            .is_err(),
             "a file that isn't a tile: a name misread"
         );
         // Cut short (in a header, in a tile): an error, nothing named.
         for cut in [512 * 3 + 100, 700] {
-            assert!(pack_tar(&tar.stdout[..cut], &dir, &store, &root, None).is_err());
+            assert!(pack_tar(
+                &tar.stdout[..cut],
+                &dir,
+                &store::nasfs::NasPath::local_for_test(&store),
+                &store::nasfs::NasRoot::local_for_test(&root),
+                None
+            )
+            .is_err());
         }
         assert!(!store.join(INDEX).exists());
         // A garbled header: an error too.
         let mut bad = tar.stdout.clone();
         bad[0] ^= 1;
-        assert!(pack_tar(&bad[..], &dir, &store, &root, None).is_err());
+        assert!(pack_tar(
+            &bad[..],
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            None
+        )
+        .is_err());
         assert_eq!(
-            pack_tar(&tar.stdout[..], &dir, &store, &root, Some(4)).unwrap(),
+            pack_tar(
+                &tar.stdout[..],
+                &dir,
+                &store::nasfs::NasPath::local_for_test(&store),
+                &store::nasfs::NasRoot::local_for_test(&root),
+                Some(4)
+            )
+            .unwrap(),
             Packed { files: 4, tiles: 3, added: 3, broken: 1, other: 0 }
         );
-        let index = Index::load(&store).unwrap();
+        let index = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap();
         assert_eq!(index.shards.keys().collect::<Vec<_>>(), ["6-32-21"]);
         let a = Archive::open(&store.join("packs").join(&index.of("6-32-21")[0].name)).unwrap();
         assert_eq!(a.get(9, 256, 170), Some(&png()[..]));
@@ -1710,18 +1967,32 @@ mod tests {
         assert_eq!(std::fs::read_dir(dir.join("packs")).unwrap().count(), 0, "nothing kept here");
         // Again: nothing new, the same archive; fewer files than listed: an error.
         assert_eq!(
-            pack_tar(&tar.stdout[..], &dir, &store, &root, None).unwrap(),
+            pack_tar(
+                &tar.stdout[..],
+                &dir,
+                &store::nasfs::NasPath::local_for_test(&store),
+                &store::nasfs::NasRoot::local_for_test(&root),
+                None
+            )
+            .unwrap(),
             Packed { files: 4, tiles: 3, added: 0, broken: 1, other: 0 }
         );
-        assert!(pack_tar(&tar.stdout[..], &dir, &store, &root, Some(5)).is_err());
-        assert_eq!(Index::load(&store).unwrap(), index);
+        assert!(pack_tar(
+            &tar.stdout[..],
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            Some(5)
+        )
+        .is_err());
+        assert_eq!(Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap(), index);
         // The archives match the loose tiles (here, the source folder as the store).
         std::fs::create_dir_all(src.join("packs")).unwrap();
         for e in std::fs::read_dir(store.join("packs")).unwrap() {
             let e = e.unwrap();
             store::sys::copy_data(e.path(), src.join("packs").join(e.file_name())).unwrap();
         }
-        let c = check(&src, 1).unwrap();
+        let c = check(&store::nasfs::NasPath::local_for_test(&src), 1).unwrap();
         assert_eq!((c.archives, c.tiles, c.sampled, c.bad.len(), c.differ.len()), (1, 3, 3, 0, 0));
     }
 
@@ -1730,20 +2001,30 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (store, _, root) = nas(d.path());
         // Both begin from the same (empty) index for one shard; each adds its own tile.
-        let mut a = Packer::new(&d.path().join("a"), &store, &root).unwrap();
-        let mut b = Packer::new(&d.path().join("b"), &store, &root).unwrap();
+        let mut a = Packer::new(
+            &d.path().join("a"),
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+        )
+        .unwrap();
+        let mut b = Packer::new(
+            &d.path().join("b"),
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+        )
+        .unwrap();
         a.add(12, 2048, 1365, Some(&png())).unwrap();
         b.add(12, 2048, 1366, Some(&png())).unwrap();
         a.finish().unwrap();
         b.finish().unwrap();
         // The second's archive went up beside the first's, and the two merged: both tiles there.
-        let index = Index::load(&store).unwrap();
+        let index = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap();
         let l = index.of("6-32-21");
         assert_eq!(l.len(), 1);
         let arch = Archive::open(&store.join("packs").join(&l[0].name)).unwrap();
         assert!(arch.get(12, 2048, 1365).is_some() && arch.get(12, 2048, 1366).is_some());
         // On the NAS, each archive is named or listed as gone.
-        for n in names(&store) {
+        for n in names(&store::nasfs::NasPath::local_for_test(&store)) {
             assert!(index.names(&n) || index.gone.contains_key(&n), "{n}");
         }
     }
@@ -1766,7 +2047,12 @@ mod tests {
     fn an_archive_is_named_only_once_its_on_the_nas_whole() {
         let d = tempfile::tempdir().unwrap();
         let (store, dir, root) = nas(d.path());
-        let mut p = Packer::new(&dir, &store, &root).unwrap();
+        let mut p = Packer::new(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+        )
+        .unwrap();
         let pack = p
             .write("6-32-21", 1, |_, b| {
                 b.clear();
@@ -1777,7 +2063,7 @@ mod tests {
         // (As if cut short there: a size the NAS's copy won't have.)
         let cut = Pack { bytes: pack.bytes + 1, ..pack.clone() };
         assert!(p.put_up(vec![("6-32-21".into(), cut)]).is_err());
-        let ix = Index::load(&store).unwrap();
+        let ix = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap();
         assert!(ix.shards.is_empty() && ix.gone.contains_key(&pack.name), "listed as gone, not named");
     }
 
@@ -1786,14 +2072,29 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (store, dir, root) = nas(d.path());
         put(&dir, "12/2048/1365.png", &png(), 120);
-        pack_local(&dir, &store, &root, true).unwrap();
-        let lost = Index::load(&store).unwrap().of("6-32-21")[0].name.clone();
+        pack_local(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            true,
+        )
+        .unwrap();
+        let lost = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap().of("6-32-21")[0].name.clone();
         std::fs::remove_file(store.join("packs").join(&lost)).unwrap();
         std::fs::remove_file(dir.join("packs").join(&lost)).unwrap();
         // More of that shard packs, and the index stops naming the lost archive.
         put(&dir, "12/2048/1366.png", &png(), 120);
-        assert_eq!(pack_local(&dir, &store, &root, true).unwrap(), 1);
-        let ix = Index::load(&store).unwrap();
+        assert_eq!(
+            pack_local(
+                &dir,
+                &store::nasfs::NasPath::local_for_test(&store),
+                &store::nasfs::NasRoot::local_for_test(&root),
+                true
+            )
+            .unwrap(),
+            1
+        );
+        let ix = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap();
         assert!(!ix.names(&lost));
         assert_eq!(ix.of("6-32-21").len(), 1);
     }
@@ -1815,9 +2116,21 @@ mod tests {
         )
         .unwrap();
         assert!(tar.status.success());
-        let r = pack_tar(&tar.stdout[..], &dir, &store, &root, Some(1)).unwrap();
+        let r = pack_tar(
+            &tar.stdout[..],
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            Some(1),
+        )
+        .unwrap();
         assert_eq!((r.tiles, r.other), (1, 0));
-        let a = Archive::open(&store.join("packs").join(&Index::load(&store).unwrap().of("6-32-21")[0].name)).unwrap();
+        let a = Archive::open(
+            &store
+                .join("packs")
+                .join(&Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap().of("6-32-21")[0].name),
+        )
+        .unwrap();
         assert_eq!(a.get(12, 2048, 1365), Some(&png()[..]));
     }
 
@@ -1827,7 +2140,13 @@ mod tests {
         let (store, dir, root) = nas(d.path());
         std::fs::create_dir_all(root.join(crate::pool::term::DIR)).unwrap();
         put(&dir, "12/2048/1365.png", &png(), 120);
-        assert!(pack_local(&dir, &store, &root, true).is_err());
+        assert!(pack_local(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            true
+        )
+        .is_err());
         assert!(dir.join("12/2048/1365.png").exists() && !store.exists());
     }
 
@@ -1850,8 +2169,14 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (store, dir, root) = nas(d.path());
         put(&dir, "12/2048/1365.png", &png(), 120);
-        pack_local(&dir, &store, &root, true).unwrap();
-        let have = packed(&store).unwrap();
+        pack_local(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+            true,
+        )
+        .unwrap();
+        let have = packed(&store::nasfs::NasPath::local_for_test(&store)).unwrap();
         let left =
             order("./12/2048/1365.png\n./12/2048/1366.png\n", |a, k| have.get(a).is_some_and(|s| s.contains(&k)));
         assert_eq!(left, "./12/2048/1366.png\n");
@@ -1861,30 +2186,43 @@ mod tests {
     fn a_big_pack_goes_up_as_it_goes() {
         let d = tempfile::tempdir().unwrap();
         let (store, dir, root) = nas(d.path());
-        let mut p = Packer::new(&dir, &store, &root).unwrap();
+        let mut p = Packer::new(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+        )
+        .unwrap();
         p.add(12, 2048, 1365, Some(&png())).unwrap();
         p.add(12, 2048, 1366, Some(&png())).unwrap();
         assert!(!store.join(INDEX).exists());
         // (Past the shard with the spool full, as if: what's spooled goes up, the spool starts again.)
         p.pos = GROUP;
         p.add(12, 4096, 1365, Some(&png())).unwrap();
-        assert_eq!(Index::load(&store).unwrap().shards.keys().collect::<Vec<_>>(), ["6-32-21"]);
+        assert_eq!(
+            Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap().shards.keys().collect::<Vec<_>>(),
+            ["6-32-21"]
+        );
         assert_eq!(p.pos, png().len() as u64);
         p.finish().unwrap();
-        assert_eq!(Index::load(&store).unwrap().shards.len(), 2);
+        assert_eq!(Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap().shards.len(), 2);
     }
 
     #[test]
     fn a_tile_both_aws_and_none_is_aws() {
         let d = tempfile::tempdir().unwrap();
         let (store, dir, root) = nas(d.path());
-        let mut p = Packer::new(&dir, &store, &root).unwrap();
+        let mut p = Packer::new(
+            &dir,
+            &store::nasfs::NasPath::local_for_test(&store),
+            &store::nasfs::NasRoot::local_for_test(&root),
+        )
+        .unwrap();
         assert!(p.add(12, 2048, 1365, None).unwrap());
         assert!(p.add(12, 2048, 1365, Some(&png())).unwrap());
         assert!(!p.add(12, 2048, 1365, None).unwrap());
         assert_eq!(p.added, 1);
         p.finish().unwrap();
-        let ix = Index::load(&store).unwrap();
+        let ix = Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap();
         let a = Archive::open(&store.join("packs").join(&ix.of("6-32-21")[0].name)).unwrap();
         assert_eq!(a.get(12, 2048, 1365), Some(&png()[..]));
     }

@@ -147,9 +147,13 @@ pub enum LoadError {
 
 impl Reaches {
     /// The pass's reaches from the build manifest (None when the pass has none yet).
-    pub fn load(root: &Path, m: &BTreeMap<String, String>, date: &str) -> Result<Option<Reaches>, LoadError> {
+    pub fn load(
+        root: &store::nasfs::NasRoot,
+        m: &BTreeMap<String, String>,
+        date: &str,
+    ) -> Result<Option<Reaches>, LoadError> {
         let Some(c) = m.get(&logical(date)) else { return Ok(None) };
-        let raw = std::fs::read(root.join(c)).map_err(LoadError::Io)?;
+        let raw = root.join(c).read().map_err(LoadError::Io)?;
         let b = zstd::decode_all(&raw[..]).map_err(|e| LoadError::Bad(format!("{c}: {e}")))?;
         let mut r: Reaches = serde_json::from_slice(&b).map_err(|e| LoadError::Bad(format!("{c}: {e}")))?;
         r.extents = crate::extents::load(root);

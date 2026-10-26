@@ -40,7 +40,7 @@
 use crate::handoff::Handoff;
 use crate::pool::driver::{self, Driver, Event, Heard, Io, Listed, Listing, Msg, Out, Saved};
 use crate::pool::journal::{self, Entry};
-use crate::pool::nas::{Created, Nas, Share};
+use crate::pool::nas::{Created, Nas};
 use crate::pool::records::Records;
 use crate::pool::{Beat, Member, MemberLock};
 use anyhow::{Context, Result};
@@ -430,7 +430,7 @@ impl Side {
         let id = crate::pool::member_id(home)?;
         let Some(lock) = MemberLock::take(locks, &id)? else { return Ok(None) };
         std::fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
-        let me = Member { id: id.clone(), host: crate::agent::cond::host_name(), app: app.to_string() };
+        let me = Member { id: id.clone(), host: store::sys::host_name(), app: app.to_string() };
         let (mut saved, written) = load_saved(&dir.join("saved.json"));
         // (A state from an earlier time the pool was on, its terms since moved aside: it names terms
         // no longer there, and would hold this member's view above them. Counted as lost: its jobs'
@@ -571,12 +571,12 @@ impl Side {
         }
         if self.forgotten != before {
             if let Ok(b) = serde_json::to_vec(&self.forgotten) {
-                crate::whole::write(&self.dir.join(FORGOTTEN), &b).ok();
+                store::whole::write(&self.dir.join(FORGOTTEN), &b).ok();
             }
             self.save_mail();
         }
         if let Ok(b) = serde_json::to_vec(&self.members) {
-            crate::whole::write(&self.dir.join("members.json"), &b).ok();
+            store::whole::write(&self.dir.join("members.json"), &b).ok();
         }
     }
 
@@ -750,7 +750,7 @@ impl Side {
     fn keep(&mut self) -> Result<()> {
         let b = serde_json::to_vec(&self.driver().saved())?;
         if b != self.written {
-            crate::whole::write(&self.dir.join("saved.json"), &b)?;
+            store::whole::write(&self.dir.join("saved.json"), &b)?;
             self.written = b;
         }
         for f in std::mem::take(&mut self.folders) {
@@ -910,7 +910,7 @@ impl Side {
         if b == self.mail_written {
             return true;
         }
-        match crate::whole::write(&self.dir.join("mail.json"), &b) {
+        match store::whole::write(&self.dir.join("mail.json"), &b) {
             Ok(()) => {
                 self.mail_written = b;
                 true
@@ -1353,7 +1353,7 @@ impl Ticking {
 #[derive(Default)]
 pub struct Cx {
     /// The NAS's project folder (None: unreachable, no tick).
-    pub root: Option<PathBuf>,
+    pub root: Option<store::nasfs::NasRoot>,
     /// The agent's folder.
     pub home: PathBuf,
     /// This process's coordinator (the lead's), for what the lead's step asks of it: the build
@@ -1807,7 +1807,7 @@ impl Run {
         let v = PoolFile { beat: self.side.now(), pool: self.pool_view() };
         let r = serde_json::to_vec(&v)
             .map_err(anyhow::Error::from)
-            .and_then(|b| crate::whole::write(&self.side.dir.join(VIEW), &b));
+            .and_then(|b| store::whole::write(&self.side.dir.join(VIEW), &b));
         if let Err(e) = r {
             eprintln!("pool: writing its view: {e:#}");
         }
@@ -1878,7 +1878,7 @@ impl Run {
                 let marker = dir.with_extension("merged");
                 let was = std::fs::read_to_string(&marker).unwrap_or_default();
                 if name.as_str() > was.trim() {
-                    if let Err(e) = crate::whole::write(&marker, name.as_bytes()) {
+                    if let Err(e) = store::whole::write(&marker, name.as_bytes()) {
                         eprintln!("pool: marking {} drained: {e:#}", dir.display());
                     }
                 }
@@ -2185,7 +2185,7 @@ pub fn seed(nas: &dyn Nas, coord: &Path) -> Result<()> {
         match nas.read(theirs)? {
             Some(b) if !b.is_empty() => {
                 if std::fs::read(&here).ok().as_deref() != Some(&b[..]) {
-                    crate::whole::write(&here, &b)?;
+                    store::whole::write(&here, &b)?;
                 }
             }
             _ => {
@@ -2213,7 +2213,11 @@ pub fn write_today(nas: &dyn Nas, r: &Records) -> Result<()> {
 /// The history's events appended to this member's file of their day,
 /// `state/coord/history/<day>/<member>.jsonl` (§7.5: one file per writer; merged for reading by
 /// time, writer and number). Through the share's path (an append: its one writer).
-pub fn append_history(root: &Path, member: &str, events: &[crate::coord::history::Event]) -> Result<()> {
+pub fn append_history(
+    root: &store::nasfs::NasRoot,
+    member: &str,
+    events: &[crate::coord::history::Event],
+) -> Result<()> {
     let mut by_day: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     for e in events {
         let Some(day) = journal::day(e.t) else { continue };
@@ -2223,12 +2227,9 @@ pub fn append_history(root: &Path, member: &str, events: &[crate::coord::history
     }
     for (day, b) in by_day {
         let p = root.join("state/coord/history").join(day).join(format!("{member}.jsonl"));
-        std::fs::create_dir_all(p.parent().unwrap())?;
+        p.parent().unwrap().create_dir_all()?;
         use std::io::Write;
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&p)
+        p.open_with(std::fs::OpenOptions::new().create(true).append(true))
             .and_then(|mut f| f.write_all(&b))
             .with_context(|| format!("append to {}", p.display()))?;
     }
@@ -2237,19 +2238,19 @@ pub fn append_history(root: &Path, member: &str, events: &[crate::coord::history
 
 /// The agents' statuses on the NAS: the lead's (`state/status.json`) and the members'
 /// (`state/helpers/<host>.json`), by file name.
-fn statuses(root: &Path) -> Vec<(String, super::Status)> {
+fn statuses(root: &store::nasfs::NasRoot) -> Vec<(String, super::Status)> {
     let mut out = Vec::new();
-    let read = |p: &Path| std::fs::read(p).ok().and_then(|b| serde_json::from_slice::<super::Status>(&b).ok());
+    let read = |p: &store::nasfs::NasPath| p.read().ok().and_then(|b| serde_json::from_slice::<super::Status>(&b).ok());
     if let Some(s) = read(&root.join("state/status.json")) {
         out.push(("state/status.json".to_string(), s));
     }
-    if let Ok(rd) = std::fs::read_dir(root.join("state/helpers")) {
-        let mut ps: Vec<PathBuf> =
-            rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
+    if let Ok(rd) = root.join("state/helpers").read_dir() {
+        let mut ps: Vec<store::nasfs::NasPath> =
+            rd.into_iter().map(|e| e.path).filter(|p| p.extension() == Some("json")).collect();
         ps.sort();
         for p in ps {
             if let Some(s) = read(&p) {
-                out.push((format!("state/helpers/{}", p.file_name().unwrap().to_string_lossy()), s));
+                out.push((format!("state/helpers/{}", p.file_name().unwrap()), s));
             }
         }
     }
@@ -2257,9 +2258,9 @@ fn statuses(root: &Path) -> Vec<(String, super::Status)> {
 }
 
 /// `scenic pool status`: the terms, the agents as their statuses say.
-pub fn status(root: &Path) -> String {
+pub fn status(root: &store::nasfs::NasRoot) -> String {
     let mut out = Vec::new();
-    let nas = Share::new(root);
+    let nas = root.clone();
     match crate::pool::term::current(&nas) {
         Ok(c) if c.term > 0 => out.push(match &c.lead {
             Some(t) => {
@@ -2347,8 +2348,8 @@ mod tests {
         r
     }
 
-    fn side(root: &Path, home: &Path) -> Side {
-        let nas: SharedNas = Arc::new(Share::new(root));
+    fn side(root: &store::nasfs::NasRoot, home: &Path) -> Side {
+        let nas: SharedNas = Arc::new(root.clone());
         // (Its clocks virtual: time passes as the test says, `ahead`, however slowly a busy Mac
         // steps it.)
         let mut s = Side::open(home, &home.join("pool"), home.parent().unwrap(), "development", nas)
@@ -2462,7 +2463,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
         let home = d.path().join("home");
-        let mut s = side(&r, &home);
+        let mut s = side(&store::nasfs::NasRoot::local_for_test(&r), &home);
         let me = s.member().id.clone();
         s.know(PH);
         s.post(PH, Msg::Tell(vec!["k".into()]));
@@ -2484,7 +2485,7 @@ mod tests {
         s.post(PH, Msg::Tell(vec!["k".into()]));
         assert!(!s.mail.sent.contains_key(PH));
         drop(s);
-        let mut s = side(&r, &home);
+        let mut s = side(&store::nasfs::NasRoot::local_for_test(&r), &home);
         assert!(!s.members().contains(PH));
         s.heard_of(PH);
         assert!(!s.members().contains(PH));
@@ -2501,7 +2502,7 @@ mod tests {
     fn the_budgets_count_the_members_heard_lately() {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
-        let mut s = side(&r, &d.path().join("home"));
+        let mut s = side(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("home"));
         for m in [PH, B] {
             s.know(m);
         }
@@ -2608,7 +2609,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
         let home = d.path().join("a/agent");
-        let mut a = side(&r, &home);
+        let mut a = side(&store::nasfs::NasRoot::local_for_test(&r), &home);
         let id = a.member().id.clone();
         // Its first step: term 1, its own (this Mac is the writer), taken up from today's records.
         let out = a.step(Give { able: true, ..Default::default() }, &any);
@@ -2632,8 +2633,8 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
         let home = d.path().join("a/agent");
-        let mut a = side(&r, &home);
-        let nas: SharedNas = Arc::new(Share::new(&r));
+        let mut a = side(&store::nasfs::NasRoot::local_for_test(&r), &home);
+        let nas: SharedNas = Arc::new(store::nasfs::NasRoot::local_for_test(&r));
         assert!(
             Side::open(&home, &home.join("pool"), home.parent().unwrap(), "development", nas).unwrap().is_none(),
             "a second process of the member runs none"
@@ -2660,7 +2661,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
         let home = d.path().join("a/agent");
-        let mut a = side(&r, &home);
+        let mut a = side(&store::nasfs::NasRoot::local_for_test(&r), &home);
         until(&mut a, || Give { able: true, ..Default::default() }, |o| o.leads == Some(1));
         drop(a);
         // Switched off, its terms moved aside: the state of term 1 would hold this member above them.
@@ -2669,7 +2670,7 @@ mod tests {
         for f in ["manifest.json", "jobs.json", "pending.json"] {
             std::fs::copy(d.path().join("aside").join(f), r.join("state/build").join(f)).unwrap();
         }
-        let mut a = side(&r, &home);
+        let mut a = side(&store::nasfs::NasRoot::local_for_test(&r), &home);
         assert_eq!(a.driver().saved().term, 0);
         assert!(home.join("pool/saved.earlier.json").exists());
         let out = a.step(Give { able: true, ..Default::default() }, &any);
@@ -2679,7 +2680,7 @@ mod tests {
     #[test]
     fn a_failed_listing_is_made_again_and_handed_back() {
         // (A NAS whose first listing of the journal fails.)
-        struct Flaky(Share, std::sync::atomic::AtomicU32);
+        struct Flaky(store::nasfs::NasRoot, std::sync::atomic::AtomicU32);
         impl Nas for Flaky {
             fn create_new(&self, p: &str, b: &[u8]) -> Result<Created> {
                 self.0.create_new(p, b)
@@ -2706,7 +2707,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
         let home = d.path().join("a/agent");
-        let nas = Arc::new(Flaky(Share::new(&r), Default::default()));
+        let nas = Arc::new(Flaky(store::nasfs::NasRoot::local_for_test(&r), Default::default()));
         let mut a =
             Side::open(&home, &home.join("pool"), home.parent().unwrap(), "development", nas.clone()).unwrap().unwrap();
         a.set_clock(store::clock::Virtual::new());
@@ -2732,7 +2733,10 @@ mod tests {
     fn two_members_mail_entries_acknowledge_and_hand_the_lead_over() {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
-        let (mut a, mut b) = (side(&r, &d.path().join("a/agent")), side(&r, &d.path().join("b/agent")));
+        let (mut a, mut b) = (
+            side(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("a/agent")),
+            side(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("b/agent")),
+        );
         let (ia, ib) = (a.member().id.clone(), b.member().id.clone());
         let lead = until(&mut a, || Give { able: true, ..Default::default() }, |o| o.caught_up);
         assert_eq!(lead.leads, Some(1));
@@ -2821,7 +2825,10 @@ mod tests {
     fn mail_pool() -> Mail {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
-        let (mut a, mut b) = (side(&r, &d.path().join("a/agent")), side(&r, &d.path().join("b/agent")));
+        let (mut a, mut b) = (
+            side(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("a/agent")),
+            side(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("b/agent")),
+        );
         assert_eq!(until(&mut a, || Give { able: true, ..Default::default() }, |o| o.caught_up).leads, Some(1));
         let (c, port) = crate::coord::start_for_test(&d.path().join("a/coord"), "a", "");
         c.set_member(Some(&a.member().id));
@@ -2945,7 +2952,7 @@ mod tests {
         let home = m.d.path().join("a/agent");
         m.c.stop();
         drop(m.a);
-        let mut a = side(&m.r, &home);
+        let mut a = side(&store::nasfs::NasRoot::local_for_test(&m.r), &home);
         Mail::acknowledged(&mut a, &ib, &key);
         // Its inbox can't be written (a folder where its file goes): refused, by mailbox.
         let mut m = mail_pool();
@@ -3001,7 +3008,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
         let home = d.path().join("a/agent");
-        let mut run = Run::new(side(&r, &home), Role::Lead, Gates::default());
+        let mut run = Run::new(side(&store::nasfs::NasRoot::local_for_test(&r), &home), Role::Lead, Gates::default());
         let done = |u: &str, k: &str| Handoff {
             done: Some(("unit".into(), vec![(u.into(), k.into())])),
             ..Default::default()
@@ -3079,7 +3086,10 @@ mod tests {
         assert!(journal.join("m1").with_extension("merged").exists());
         assert!(home.join("outbox/1791328399375").exists() && !failed.exists());
         // Term 1's records written to today's files too, for their readers.
-        assert_eq!(crate::agent::build::Keys::load(&r).recorded("unit", "6/2/2"), Some("k22"));
+        assert_eq!(
+            crate::agent::build::Keys::load(&store::nasfs::NasRoot::local_for_test(&r)).recorded("unit", "6/2/2"),
+            Some("k22")
+        );
     }
 
     #[test]
@@ -3087,7 +3097,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
         let home = d.path().join("a/agent");
-        let mut run = Run::new(side(&r, &home), Role::Lead, Gates::default());
+        let mut run = Run::new(side(&store::nasfs::NasRoot::local_for_test(&r), &home), Role::Lead, Gates::default());
         let me = run.side.member().id.clone();
         let pack = |n: u64, t: &str, names: &[&str]| {
             let dash = t.replace('/', "-");
@@ -3110,7 +3120,12 @@ mod tests {
         let outside = pack(2, "6/1/3", &["hidata", "layers/terrain/hi"]);
         let key = outside.key().unwrap();
         // (The same names a pack job's `Out` takes and refuses.)
-        let mut o = crate::out::Out::open(&d.path().join("o"), &d.path().join("o-scratch"), "pack").unwrap();
+        let mut o = crate::out::Out::open(
+            &store::nasfs::NasRoot::local_for_test(&d.path().join("o")),
+            &d.path().join("o-scratch"),
+            "pack",
+        )
+        .unwrap();
         for (l, c) in &within.handoff.changes {
             o.set(l, c.clone());
         }
@@ -3173,7 +3188,7 @@ mod tests {
     fn the_token_is_the_pools() {
         let d = tempfile::tempdir().unwrap();
         let r = d.path().join("nas");
-        let nas = Share::new(&r);
+        let nas = store::nasfs::NasRoot::local_for_test(&r);
         let (m4, m1) = (d.path().join("m4/coord"), d.path().join("m1/coord"));
         std::fs::create_dir_all(&m4).unwrap();
         std::fs::write(m4.join("workers-token"), "t0k3n").unwrap();
@@ -3280,14 +3295,25 @@ mod tests {
         let mut rec = Records { term: 2, seq: 4, ..Default::default() };
         rec.manifest.insert("base/6-1-1".into(), "base/6-1-1.1111111111111111.base".into());
         rec.keys.record("unit", &[("6/1/1".into(), "k1".into())]);
-        write_today(&Share::new(r), &rec).unwrap();
-        assert_eq!(crate::agent::build::Keys::load(r).recorded("unit", "6/1/1"), Some("k1"));
-        let m: BTreeMap<String, String> = crate::out::read_record(&r.join("state/build/manifest.json")).unwrap();
+        write_today(&store::nasfs::NasRoot::local_for_test(&r), &rec).unwrap();
+        assert_eq!(
+            crate::agent::build::Keys::load(&store::nasfs::NasRoot::local_for_test(r)).recorded("unit", "6/1/1"),
+            Some("k1")
+        );
+        let m: BTreeMap<String, String> =
+            crate::out::read_record(&store::nasfs::NasPath::local_for_test(&r.join("state/build/manifest.json")))
+                .unwrap();
         assert_eq!(m, rec.manifest);
         let ev =
             |seq: u64, t: u64| crate::coord::history::Event { seq, t, ..crate::coord::history::Event::new("start") };
-        append_history(r, "m-000000000000000a", &[ev(1, 1_791_400_000), ev(2, 1_791_400_001)]).unwrap();
-        append_history(r, "m-000000000000000a", &[ev(3, 1_791_500_000)]).unwrap();
+        append_history(
+            &store::nasfs::NasRoot::local_for_test(r),
+            "m-000000000000000a",
+            &[ev(1, 1_791_400_000), ev(2, 1_791_400_001)],
+        )
+        .unwrap();
+        append_history(&store::nasfs::NasRoot::local_for_test(r), "m-000000000000000a", &[ev(3, 1_791_500_000)])
+            .unwrap();
         let day = |t| journal::day(t).unwrap();
         let f = |t| {
             std::fs::read_to_string(r.join("state/coord/history").join(day(t)).join("m-000000000000000a.jsonl"))
@@ -3368,7 +3394,11 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
         let home = d.path().join("a/agent");
-        let shared: Shared = Arc::new(std::sync::Mutex::new(Run::new(side(&r, &home), Role::Member, Gates::default())));
+        let shared: Shared = Arc::new(std::sync::Mutex::new(Run::new(
+            side(&store::nasfs::NasRoot::local_for_test(&r), &home),
+            Role::Member,
+            Gates::default(),
+        )));
         {
             let _held = lock(&shared);
             assert!(try_lock(&shared).is_none(), "a tick holds it: not waited on");
@@ -3417,9 +3447,14 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
         let home = d.path().join("a/agent");
-        let mut run = Run::new(side(&r, &home), Role::Member, Gates::default());
+        let mut run = Run::new(side(&store::nasfs::NasRoot::local_for_test(&r), &home), Role::Member, Gates::default());
         assert!(!run.tick_due(), "no NAS known yet: nothing to tick");
-        run.cx = Cx { root: Some(r.clone()), home: home.clone(), able: true, ..Default::default() };
+        run.cx = Cx {
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
+            home: home.clone(),
+            able: true,
+            ..Default::default()
+        };
         assert!(run.tick_due(), "never stepped");
         // The loop's step: none while it runs, nor for `QUIET_S` after it.
         run.in_step = true;
@@ -3450,8 +3485,8 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
         let (ha, hb) = (d.path().join("a/agent"), d.path().join("b/agent"));
-        let mut a = Run::new(side(&r, &ha), Role::Member, Gates::default());
-        let mut b = Run::new(side(&r, &hb), Role::Member, Gates::default());
+        let mut a = Run::new(side(&store::nasfs::NasRoot::local_for_test(&r), &ha), Role::Member, Gates::default());
+        let mut b = Run::new(side(&store::nasfs::NasRoot::local_for_test(&r), &hb), Role::Member, Gates::default());
         let (ia, ib) = (a.side.member().id.clone(), b.side.member().id.clone());
         let (coord, _) = crate::coord::start_for_test(&d.path().join("a/coord"), "a", "development");
         let coord = Arc::new(coord);
@@ -3463,13 +3498,18 @@ mod tests {
         }
         assert_eq!(a.gates.leads, Some(1));
         a.cx = Cx {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: ha.clone(),
             coord: Some(coord.clone()),
             able: true,
             ..Default::default()
         };
-        b.cx = Cx { root: Some(r.clone()), home: hb.clone(), able: true, ..Default::default() };
+        b.cx = Cx {
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
+            home: hb.clone(),
+            able: true,
+            ..Default::default()
+        };
         tick_until(&mut [&mut a], |r| r[0].gates.caught_up);
         assert_eq!(coord.shared.lock().unwrap().moving, None, "it grants");
         a.side.know(&ib);
@@ -3515,8 +3555,8 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
         let (ha, hb) = (d.path().join("a/agent"), d.path().join("b/agent"));
-        let mut a = Run::new(side(&r, &ha), Role::Member, Gates::default());
-        let mut b = Run::new(side(&r, &hb), Role::Member, Gates::default());
+        let mut a = Run::new(side(&store::nasfs::NasRoot::local_for_test(&r), &ha), Role::Member, Gates::default());
+        let mut b = Run::new(side(&store::nasfs::NasRoot::local_for_test(&r), &hb), Role::Member, Gates::default());
         let (ia, ib) = (a.side.member().id.clone(), b.side.member().id.clone());
         let (coord, port) = crate::coord::start_for_test(&d.path().join("a/coord"), "a", "development");
         let coord = Arc::new(coord);
@@ -3526,13 +3566,18 @@ mod tests {
             std::thread::sleep(Duration::from_millis(30));
         }
         a.cx = Cx {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: ha.clone(),
             coord: Some(coord.clone()),
             able: true,
             ..Default::default()
         };
-        b.cx = Cx { root: Some(r.clone()), home: hb.clone(), able: true, ..Default::default() };
+        b.cx = Cx {
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
+            home: hb.clone(),
+            able: true,
+            ..Default::default()
+        };
         tick_until(&mut [&mut a], |r| r[0].gates.caught_up);
         coord.set_term(1);
         coord.keep_state(a.side.shared_nas(), 1);

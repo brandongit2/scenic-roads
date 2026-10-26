@@ -553,15 +553,20 @@ pub fn copy_resume(src: &Path, dst: &Path) -> Result<()> {
 }
 
 /// `copy_resume`, telling `progress` the bytes copied and the total as it goes (each 1 %).
-pub fn copy_resume_with(src: &Path, dst: &Path, progress: &mut dyn FnMut(u64, u64)) -> Result<()> {
+pub fn copy_resume_with<'a>(
+    src: impl Into<store::nasfs::Loc<'a>>,
+    dst: &Path,
+    progress: &mut dyn FnMut(u64, u64),
+) -> Result<()> {
     use std::io::{Read, Seek, SeekFrom, Write};
-    let total = std::fs::metadata(src)?.len();
+    let src = src.into();
+    let total = src.metadata()?.len();
     let have = std::fs::metadata(dst).map(|m| m.len()).unwrap_or(0);
     if have == total {
         return Ok(());
     }
     ensure!(have < total, "{} is larger than its source", dst.display());
-    let mut s = std::fs::File::open(src)?;
+    let mut s = src.open()?;
     s.seek(SeekFrom::Start(have))?;
     let mut d = std::fs::OpenOptions::new().create(true).append(true).open(dst)?;
     let mut buf = vec![0u8; 16 << 20];
@@ -596,7 +601,10 @@ pub fn copy_resume_with(src: &Path, dst: &Path, progress: &mut dyn FnMut(u64, u6
 /// Every z3 tile, with its extracts' bounds (the tile grown by the buffer).
 /// The pass's filtered planet on the NAS.
 fn filtered_nas(out: &Out, date: &str) -> Result<PathBuf> {
-    Ok(out.path(out.get(&format!("sources/osm/{date}/filtered")).context("the filtered planet on the NAS")?))
+    // (osmium's input, read where it lies: tests/nas_access.rs.)
+    Ok(out
+        .path(out.get(&format!("sources/osm/{date}/filtered")).context("the filtered planet on the NAS")?)
+        .unchecked_path())
 }
 
 /// Cuts `input` (the data of tile `t` and its buffer) down to the z6 extracts below `t`, a quarter at
@@ -905,7 +913,7 @@ pub fn make_outlines(out: &mut Out, date: &str, scratch: &Path) -> Result<crate:
     let nas = out.path(out.get(&set_name(date, "outlines")).context("the pass's outline set")?);
     let set = scratch.join("set-outlines.osm.pbf");
     let p = phase("the outline set copied here", Class::NasRead);
-    p.count(store::sys::copy_data(&nas, &set).with_context(|| format!("copy {}", nas.display()))?, 1);
+    p.count(nas.copy_data_to_local(&set).with_context(|| format!("copy {}", nas.display()))?, 1);
     drop(p);
     let file = scratch.join("outlines.sect");
     let previous = previous_outlines(&out.manifest, date).map(|(d, c)| (out.path(c), d.to_string()));
@@ -914,7 +922,7 @@ pub fn make_outlines(out: &mut Out, date: &str, scratch: &Path) -> Result<crate:
         &set,
         &scratch.join("outlines-work"),
         &file,
-        previous.as_ref().map(|(p, d)| (p.as_path(), d.as_str())),
+        previous.as_ref().map(|(p, d)| (p.into(), d.as_str())),
     )?;
     drop(p);
     std::fs::remove_file(&set).ok();
@@ -1054,7 +1062,7 @@ pub fn run_pass(
         );
         let pm = scratch.join("basemap.pmtiles");
         let downloads = out.root().join("sources/basemap");
-        std::fs::create_dir_all(&downloads)?;
+        downloads.create_dir_all()?;
         // Run in the scratch folder, its files named relative to it: Planetiler reads `--output` as
         // a URI, which a space in the path ("Application Support") breaks.
         let mut j = store::spawn::command("/opt/homebrew/opt/openjdk@21/bin/java");
@@ -1115,7 +1123,7 @@ pub fn run_pass(
             .manifest
             .range(prefix.clone()..)
             .take_while(|(l, _)| l.starts_with(&prefix))
-            .filter_map(|(_, c)| std::fs::metadata(out.path(c)).ok())
+            .filter_map(|(_, c)| out.path(c).metadata().ok())
             .map(|m| m.len() >> 20)
             .sum();
         part(6, "the planet cut into z6 tiles");
@@ -1157,7 +1165,7 @@ pub fn run_pass(
     std::fs::remove_dir_all(&tree).ok();
     std::fs::remove_file(&filtered).ok();
     let name = out.get(&format!("sources/osm/{date}/pieces")).context("pieces list")?.to_string();
-    let pieces: Pieces = serde_json::from_slice(&std::fs::read(out.path(&name))?)?;
+    let pieces: Pieces = serde_json::from_slice(&out.path(&name).read()?)?;
     if !done(scratch, "roads").exists() {
         // Every z6 tile's chaining inputs (kept by the cut, else worked out from its extract), then the
         // worldwide walk; values sliced by owner z6 tile.
@@ -1173,7 +1181,8 @@ pub fn run_pass(
                 Err(_) => {
                     let src =
                         out.path(out.get(&format!("sources/osm/{date}/pieces/{}", unit.dash())).context("piece")?);
-                    unit_links(extract_bin, &spacing, &src, unit, &scratch.join("extract-work"))?
+                    // (The extract program's input, read where it lies: tests/nas_access.rs.)
+                    unit_links(extract_bin, &spacing, &src.unchecked_path(), unit, &scratch.join("extract-work"))?
                 }
             };
             all.push((unit, ul));
@@ -1267,11 +1276,11 @@ pub fn retire_older(out: &mut Out, date: &str) -> usize {
 }
 
 /// Whether the pass from the planet of `date` is complete on the NAS (its `pass.<hash>.json`).
-pub fn pass_done(root: &Path, date: &str) -> bool {
-    std::fs::read_dir(root.join("sources/osm").join(date))
-        .map(|rd| {
-            rd.flatten().any(|e| e.file_name().to_str().is_some_and(|n| n.starts_with("pass.") && n.ends_with(".json")))
-        })
+pub fn pass_done(root: &store::nasfs::NasRoot, date: &str) -> bool {
+    root.join("sources/osm")
+        .join(date)
+        .read_dir()
+        .map(|rd| rd.iter().any(|e| e.name.starts_with("pass.") && e.name.ends_with(".json")))
         .unwrap_or(false)
 }
 
@@ -1281,14 +1290,14 @@ pub const RESUME_ENV: &str = "SCENIC_RESUME";
 
 /// The date of the newest complete pass: by the records when the job's agent says so
 /// (`RESUME_ENV`), else by the `pass.*.json` files on the NAS (`latest_pass_by`).
-pub fn latest_pass(root: &Path) -> Option<String> {
+pub fn latest_pass(root: &store::nasfs::NasRoot) -> Option<String> {
     latest_pass_by(root, std::env::var_os(RESUME_ENV).is_some())
 }
 
 /// The date of the newest complete pass: with `records`, the newest whose `sources/osm/<date>/pass`
 /// the merged records name (today's manifest, which the lead writes from them: docs/pool.md §7.4),
 /// none when they can't be read now; else the newest with a `pass.*.json` file on the NAS.
-pub fn latest_pass_by(root: &Path, records: bool) -> Option<String> {
+pub fn latest_pass_by(root: &store::nasfs::NasRoot, records: bool) -> Option<String> {
     if records {
         let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).ok()?;
         return latest_pass_in(&m);
@@ -1306,12 +1315,13 @@ pub fn latest_pass_in(m: &BTreeMap<String, String>) -> Option<String> {
 }
 
 /// The date of the newest complete pass on the NAS, by its `pass.*.json` file.
-fn latest_pass_on_nas(root: &Path) -> Option<String> {
+fn latest_pass_on_nas(root: &store::nasfs::NasRoot) -> Option<String> {
     let dir = root.join("sources/osm");
-    let mut dates: Vec<String> = std::fs::read_dir(&dir)
+    let mut dates: Vec<String> = dir
+        .read_dir()
         .ok()?
-        .flatten()
-        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .into_iter()
+        .map(|e| e.name)
         .filter(|n| n.len() == 10 && n.as_bytes()[4] == b'-' && pass_done(root, n))
         .collect();
     dates.sort();
@@ -1330,11 +1340,15 @@ fn copy_keep(p: &Path, scratch: &Path) -> Result<PathBuf> {
 }
 
 /// Whether the NAS has a planet newer than `have` (a pass date), and its path and date.
-pub fn newer_planet(root: &Path, have: Option<&str>) -> Result<Option<(PathBuf, String)>> {
+pub fn newer_planet(
+    root: &store::nasfs::NasRoot,
+    have: Option<&str>,
+) -> Result<Option<(store::nasfs::NasPath, String)>> {
     let dir = root.join("sources/osm");
-    let mut dates: Vec<String> = std::fs::read_dir(&dir)?
-        .filter_map(|e| e.ok())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
+    let mut dates: Vec<String> = dir
+        .read_dir()?
+        .into_iter()
+        .map(|e| e.name)
         .filter(|n| n.len() == 10 && n.as_bytes()[4] == b'-' && dir.join(n).join("planet.osm.pbf").exists())
         .collect();
     dates.sort();
@@ -1367,7 +1381,7 @@ pub fn patch_ferries(
     let work = scratch.join("patch-ferries");
     std::fs::create_dir_all(&work)?;
     let local_set = work.join("ferries.osm.pbf");
-    store::sys::copy_data(&set, &local_set)?;
+    set.copy_data_to_local(&local_set)?;
     let prefix = format!("sources/osm/{date}/pieces/");
     let pieces: Vec<(TileId, String, String)> = out
         .manifest
@@ -1394,12 +1408,13 @@ pub fn patch_ferries(
             continue;
         }
         // (Read where it is: copied only when it lacks some.)
-        let lacks = ids.len() - way_ids(&out.path(content), Some(&ids))?.len();
+        // (osmium's input, read where it lies: tests/nas_access.rs.)
+        let lacks = ids.len() - way_ids(&out.path(content).unchecked_path(), Some(&ids))?.len();
         if lacks == 0 {
             continue;
         }
         let piece = work.join("piece.osm.pbf");
-        store::sys::copy_data(out.path(content), &piece)?;
+        out.path(content).copy_data_to_local(&piece)?;
         let merged = work.join(format!("{}.osm.pbf", u.dash()));
         let mut c = osmium();
         c.args(["merge", "--no-progress", "--overwrite", "--output-header", "sorting=Type_then_ID", "-o"])
@@ -1523,8 +1538,8 @@ mod tests {
         }
         // (2026-10-01's pass file is there, its entry not merged yet; 2026-09-01's in the records.)
         std::fs::write(r.join("state/build/manifest.json"), r#"{"sources/osm/2026-09-01/pass": "sources/osm/2026-09-01/pass.1111111111111111.json", "sources/osm/2026-09-01/pieces/6-1-1": "p", "sources/osm/2026-12-01/sets/rail": "s", "sources/osm/x/pass": "y"}"#).unwrap();
-        assert_eq!(latest_pass_by(r, false).as_deref(), Some("2026-10-01"));
-        assert_eq!(latest_pass_by(r, true).as_deref(), Some("2026-09-01"));
+        assert_eq!(latest_pass_by(&store::nasfs::NasRoot::local_for_test(r), false).as_deref(), Some("2026-10-01"));
+        assert_eq!(latest_pass_by(&store::nasfs::NasRoot::local_for_test(r), true).as_deref(), Some("2026-09-01"));
         assert_eq!(latest_pass_in(&BTreeMap::new()), None);
         // When the records say what the files do, the same.
         std::fs::write(
@@ -1532,7 +1547,10 @@ mod tests {
             r#"{"sources/osm/2026-09-01/pass": "a", "sources/osm/2026-10-01/pass": "b"}"#,
         )
         .unwrap();
-        assert_eq!(latest_pass_by(r, true), latest_pass_by(r, false));
+        assert_eq!(
+            latest_pass_by(&store::nasfs::NasRoot::local_for_test(r), true),
+            latest_pass_by(&store::nasfs::NasRoot::local_for_test(r), false)
+        );
     }
 
     /// A pass stopped after its filter, resumed by its Mac before the lead merged that stage's
@@ -1557,9 +1575,9 @@ mod tests {
         };
         let f = d.path().join("unmerged.json");
         std::fs::write(&f, serde_json::to_vec(&earlier).unwrap()).unwrap();
-        let fresh = Out::open_with(&root, &scratch, None).unwrap();
+        let fresh = Out::open_with(&store::nasfs::NasRoot::local_for_test(&root), &scratch, None).unwrap();
         assert!(filtered_nas(&fresh, date).is_err(), "without them, the stage's output isn't there to read");
-        let resumed = Out::open_with(&root, &scratch, Some(&f)).unwrap();
+        let resumed = Out::open_with(&store::nasfs::NasRoot::local_for_test(&root), &scratch, Some(&f)).unwrap();
         assert!(done(&scratch, "filter").exists() && !done(&scratch, "sets").exists());
         assert_eq!(
             filtered_nas(&resumed, date).unwrap(),
@@ -1734,7 +1752,8 @@ mod tests {
     #[test]
     fn pieces_gain_the_ferries_they_lack() {
         let d = tempfile::tempdir().unwrap();
-        let mut out = Out::unbound(d.path(), &d.path().join("scratch")).unwrap();
+        let mut out =
+            Out::unbound(&store::nasfs::NasRoot::local_for_test(d.path()), &d.path().join("scratch")).unwrap();
         // Z6 tile 6/32/21 (lon 0 to 5.6, lat 48.9 to 52.5): a road and a ferry the filter kept (a route
         // relation's member) in its extract; z6 tile 6/40/20's extract has a road only.
         let shared = "n1 v1 x1.0 y50.0\nn2 v1 x1.1 y50.0\nn3 v1 x1.2 y50.1\nn4 v1 x1.5 y50.5\n";
@@ -1757,6 +1776,7 @@ mod tests {
         // The extract gained the standalone ferry, whole (its node at sea too), and kept the rest once.
         let after = out.path(out.get("sources/osm/2026-09-28/pieces/6-32-21").unwrap());
         assert_ne!(out.get("sources/osm/2026-09-28/pieces/6-32-21").unwrap(), before);
+        let after = after.unchecked_path();
         assert_eq!(way_ids(&after, None).unwrap().into_iter().collect::<Vec<_>>(), [10, 20, 30]);
         let opl = String::from_utf8(
             store::spawn::output(osmium().args(["cat", "--no-progress", "-f", "opl"]).arg(&after)).unwrap().stdout,
@@ -1773,7 +1793,8 @@ mod tests {
     #[test]
     fn older_passes_retire() {
         let d = tempfile::tempdir().unwrap();
-        let mut out = Out::unbound(d.path(), &d.path().join("scratch")).unwrap();
+        let mut out =
+            Out::unbound(&store::nasfs::NasRoot::local_for_test(d.path()), &d.path().join("scratch")).unwrap();
         for l in [
             "sources/osm/2026-03-28/pieces/6-1-2",
             "sources/osm/2026-03-28/sets/summits",

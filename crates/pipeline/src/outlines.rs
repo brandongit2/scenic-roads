@@ -313,7 +313,12 @@ fn osmium(args: &mut Command, what: &str) -> Result<()> {
 /// present in OSM has an outline, or the pass stops. Others are left out and counted
 /// ([`Summary::unassembled`]): a few dozen subdivisions broken in OSM at any time would otherwise
 /// stop every pass. The file's meta lists all three.
-pub fn assemble(set: &Path, work: &Path, out: &Path, previous: Option<(&Path, &str)>) -> Result<Summary> {
+pub fn assemble(
+    set: &Path,
+    work: &Path,
+    out: &Path,
+    previous: Option<(store::nasfs::Loc<'_>, &str)>,
+) -> Result<Summary> {
     use crate::timings::{sub, Class};
     std::fs::create_dir_all(work)?;
     let rels_opl = work.join("outlines-relations.opl");
@@ -415,7 +420,8 @@ struct Previous {
 impl Previous {
     /// The file at `path`, made by the pass of `date`; None (said in the log) when it can't be
     /// read: a country it would have given is then lost, and the assembly fails naming it.
-    fn open(path: &Path, date: &str) -> Option<Previous> {
+    fn open<'a>(path: impl Into<store::nasfs::Loc<'a>>, date: &str) -> Option<Previous> {
+        let path = path.into();
         let r = Outlines::open(path).and_then(|o| Ok((o, Outlines::stale_in(path)?)));
         match r {
             Ok((outlines, stale)) => {
@@ -1006,8 +1012,9 @@ pub struct Outlines {
 }
 
 impl Outlines {
-    pub fn open(path: &Path) -> Result<Outlines> {
-        let r = store::sect::SectReader::open(store::range::PlainFile::open(path)?)?;
+    pub fn open<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<Outlines> {
+        let path = path.into();
+        let r = store::sect::SectReader::open(path.open_plain()?)?;
         ensure!(r.meta().get("fmt").and_then(|v| v.as_str()) == Some(FORMAT), "{}: not {FORMAT}", path.display());
         Ok(Outlines {
             recs: r.read_pod("recs")?,
@@ -1067,8 +1074,8 @@ impl Outlines {
     /// The countries and territories of the file at `path` kept as the previous pass's outlines
     /// ([`flag::STALE`]): relation id and the date of the pass its rings are from, from its meta
     /// alone (none in a file made before they were recorded).
-    pub fn stale_in(path: &Path) -> Result<Vec<(u64, String)>> {
-        let r = store::sect::SectReader::open(store::range::PlainFile::open(path)?)?;
+    pub fn stale_in<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<Vec<(u64, String)>> {
+        let r = store::sect::SectReader::open(path.into().open_plain()?)?;
         Ok(r.meta().get("stale").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default())
     }
 
@@ -1236,17 +1243,18 @@ mod tests {
         let Ok(m) = std::env::var("SCENIC_OUTLINES_MEASURE") else { return };
         let a: Vec<&str> = m.split_whitespace().collect();
         let scratch = tempfile::tempdir().unwrap();
-        let out = crate::out::Out::unbound(Path::new(a[0]), scratch.path()).unwrap();
+        let out =
+            crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(Path::new(a[0])), scratch.path()).unwrap();
         let set = out.path(out.get(&crate::osmpass::set_name(a[1], "outlines")).unwrap());
         let previous =
             crate::osmpass::previous_outlines(&out.manifest, a[1]).map(|(d, c)| (out.path(c), d.to_string()));
         crate::timings::start("outlines");
         let p = crate::timings::phase("assembled", crate::timings::Class::Compute);
         let s = assemble(
-            &set,
+            &set.unchecked_path(),
             &scratch.path().join("work"),
             Path::new(a[2]),
-            previous.as_ref().map(|(p, d)| (p.as_path(), d.as_str())),
+            previous.as_ref().map(|(p, d)| (p.into(), d.as_str())),
         )
         .unwrap();
         drop(p);

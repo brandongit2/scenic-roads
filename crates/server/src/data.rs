@@ -79,7 +79,7 @@ pub struct Data {
     /// ~/Library/Application Support/scenic
     pub home: PathBuf,
     /// The project folder on the NAS, while the share is mounted.
-    nas: RwLock<Option<PathBuf>>,
+    nas: RwLock<Option<store::nasfs::NasRoot>>,
     pool: RwLock<Option<Arc<IoPool>>>,
     pub mirror: Option<Arc<store::mirror::Mirror>>,
     cat: RwLock<Arc<Catalog>>,
@@ -111,7 +111,7 @@ pub struct Data {
 /// A data development override: serve a local folder laid out like the NAS project folder.
 pub struct Options {
     pub home: PathBuf,
-    pub nas_root: Option<PathBuf>,
+    pub nas_root: Option<store::nasfs::NasRoot>,
     pub mirror: bool,
     /// The free space the mirror leaves on the disk (bytes).
     pub reserve: u64,
@@ -174,7 +174,7 @@ impl Data {
         self.cat.read().unwrap().clone()
     }
 
-    pub fn nas_root(&self) -> Option<PathBuf> {
+    pub fn nas_root(&self) -> Option<store::nasfs::NasRoot> {
         self.nas.read().unwrap().clone()
     }
 
@@ -187,12 +187,13 @@ impl Data {
         self.pool().is_some_and(|p| p.is_online())
     }
 
-    fn set_nas(&self, root: Option<PathBuf>) {
+    fn set_nas(&self, root: Option<store::nasfs::NasRoot>) {
         let mut cur = self.nas.write().unwrap();
         if *cur == root {
             return;
         }
-        *self.pool.write().unwrap() = root.as_ref().map(|r| IoPool::new(8, Duration::from_secs(8), r.clone()));
+        // (The pool's probe: a stat of the root itself, on its own thread: tests/nas_access.rs.)
+        *self.pool.write().unwrap() = root.as_ref().map(|r| IoPool::new(8, Duration::from_secs(8), r.unchecked_path()));
         *cur = root;
     }
 
@@ -205,7 +206,8 @@ impl Data {
                 eprintln!("NAS: mounted as {} (Tailscale's DNS can route that through the tunnel, at a fraction of the LAN's speed); new mounts use {}", m.from, store::nas::LAN_HOST);
             }
         }
-        let found = mount.map(|m| m.point.join(PROJECT));
+        // (The server's reads retried briefly, never for minutes: an HTTP worker waits on them.)
+        let found = mount.map(|m| store::nasfs::NasRoot::from_arg(m.point.join(PROJECT)).short_retry());
         if found.is_some() {
             self.set_nas(found);
             return;
@@ -224,7 +226,10 @@ impl Data {
         if let Err(e) = store::nas::mount(url, Duration::from_secs(20)) {
             eprintln!("NAS: can't mount {url}: {e:#}");
         }
-        self.set_nas(store::nas::find_mount(NAS_HOST, NAS_SHARE).map(|m| m.point.join(PROJECT)));
+        self.set_nas(
+            store::nas::find_mount(NAS_HOST, NAS_SHARE)
+                .map(|m| store::nasfs::NasRoot::from_arg(m.point.join(PROJECT)).short_retry()),
+        );
     }
 
     /// Follow a newer catalog on the NAS; true when the NAS was read (whether or not it changed).
@@ -702,17 +707,15 @@ impl Data {
 /// This Mac's name, for the map servers' log (pipeline::pubtimes).
 pub fn host() -> &'static str {
     static HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    HOST.get_or_init(pipeline::agent::cond::host_name)
+    HOST.get_or_init(store::sys::host_name)
 }
 
 /// Notes in the map servers' log on the NAS (`root`; pipeline::pubtimes::SERVERS, an append to
 /// this Mac's file) this server's adoption of catalog `n` or its mirror's sync of it (`kind`): on a
 /// thread of its own, as the share may be slow, best effort.
-pub fn publish_event(root: &std::path::Path, kind: &str, n: u64, secs: Option<f64>) {
-    let (root, e) = (
-        root.to_path_buf(),
-        pipeline::pubtimes::ServerEvent { t: 0, host: host().to_string(), kind: kind.into(), n, secs },
-    );
+pub fn publish_event(root: &store::nasfs::NasRoot, kind: &str, n: u64, secs: Option<f64>) {
+    let (root, e) =
+        (root.clone(), pipeline::pubtimes::ServerEvent { t: 0, host: host().to_string(), kind: kind.into(), n, secs });
     let _ = std::thread::Builder::new().name("publog".into()).spawn(move || {
         if let Err(err) = pipeline::pubtimes::append_server(&root, e) {
             eprintln!("publishing's log on the NAS: {err}");
@@ -839,7 +842,13 @@ mod tests {
         for (&(x, y), p) in tiles.iter().zip(&files) {
             let b = std::fs::read(p).unwrap();
             let l = format!("markdata/6-{x}-{y}");
-            let c = store::naming::write_atomic(nas.path(), &l, "sect", store::naming::Source::Bytes(&b)).unwrap();
+            let c = store::naming::write_atomic(
+                &store::nasfs::NasRoot::local_for_test(nas.path()),
+                &l,
+                "sect",
+                store::naming::Source::Bytes(&b),
+            )
+            .unwrap();
             old.files
                 .insert(l.clone(), store::catalog::FileRef { file: c, size: b.len() as u64, ..Default::default() });
             old.markdata.insert(format!("6/{x}/{y}"), l);
@@ -848,8 +857,13 @@ mod tests {
         }
         w.finish().unwrap();
         let b = std::fs::read(made.join("all.pack")).unwrap();
-        let c =
-            store::naming::write_atomic(nas.path(), "markdata/all", "pack", store::naming::Source::Bytes(&b)).unwrap();
+        let c = store::naming::write_atomic(
+            &store::nasfs::NasRoot::local_for_test(nas.path()),
+            "markdata/all",
+            "pack",
+            store::naming::Source::Bytes(&b),
+        )
+        .unwrap();
         new.files.insert(
             "markdata/all".into(),
             store::catalog::FileRef { file: c.clone(), size: b.len() as u64, ..Default::default() },
@@ -860,7 +874,7 @@ mod tests {
             store::catalog::write(&dir, cat).unwrap();
             Data::open(Options {
                 home: home.to_owned(),
-                nas_root: Some(nas.path().to_owned()),
+                nas_root: Some(store::nasfs::NasRoot::local_for_test(nas.path().to_owned())),
                 mirror: false,
                 reserve: 0,
             })
@@ -907,7 +921,7 @@ mod tests {
         let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let dir = nas.path().join("catalog");
         store::catalog::write_copy(&dir, &Catalog::new(1)).unwrap();
-        let s = crate::test_state(home.path(), nas.path());
+        let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
         assert_eq!(s.data.catalog().n, 1);
         store::catalog::write_copy(&dir, &Catalog::new(2)).unwrap();
         let ask = |peer: &str, proxied: bool| {
@@ -945,7 +959,7 @@ mod tests {
                 .unwrap();
             let d = Data::open(Options {
                 home: home.path().to_owned(),
-                nas_root: Some(nas.path().to_owned()),
+                nas_root: Some(store::nasfs::NasRoot::local_for_test(nas.path().to_owned())),
                 mirror: false,
                 reserve: 0,
             })
@@ -983,7 +997,7 @@ mod tests {
         store::catalog::write(&dir, &one).unwrap();
         let d = Data::open(Options {
             home: home.path().to_owned(),
-            nas_root: Some(nas.path().to_owned()),
+            nas_root: Some(store::nasfs::NasRoot::local_for_test(nas.path().to_owned())),
             mirror: false,
             reserve: 0,
         })

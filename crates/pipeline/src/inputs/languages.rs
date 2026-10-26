@@ -21,7 +21,6 @@ use super::{Checks, FileCheck, Finding, Level, Version};
 use crate::inputs::translations::{about_lines, lines};
 use anyhow::Result;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
 
 /// The unit's name.
 pub const UNIT: &str = "languages";
@@ -251,7 +250,11 @@ impl Checks for Languages {
         outlines_of(manifest).map(|o| format!("outlines {o}")).into_iter().collect()
     }
 
-    fn prepared(&self, root: &Path, manifest: &BTreeMap<String, String>) -> Result<Option<Box<dyn Checks>>> {
+    fn prepared(
+        &self,
+        root: &store::nasfs::NasRoot,
+        manifest: &BTreeMap<String, String>,
+    ) -> Result<Option<Box<dyn Checks>>> {
         let Some(o) = outlines_of(manifest) else { return Ok(None) };
         // (Outlines that can't be read now don't fail the check: it goes on without the "no
         // outline" warnings, which the next pass's check raises.)
@@ -275,6 +278,7 @@ pub fn table_of(a: &super::Accepted) -> Result<names::Table> {
 mod tests {
     use super::*;
     use crate::inputs::Level;
+    use std::path::Path;
 
     fn ids(fs: &[Finding]) -> Vec<(&str, Level)> {
         fs.iter().map(|f| (f.check(), f.level)).collect()
@@ -367,12 +371,15 @@ mod tests {
         ]);
         assert_eq!(l.context(&m), ["outlines o2"]);
         assert!(l.context(&BTreeMap::new()).is_empty());
-        assert!(l.prepared(Path::new("/nonexistent"), &BTreeMap::new()).unwrap().is_none());
+        assert!(l
+            .prepared(&store::nasfs::NasRoot::local_for_test(Path::new("/nonexistent")), &BTreeMap::new())
+            .unwrap()
+            .is_none());
         // Outlines named but missing, or not outlines: no error, checked without their codes.
         let d = tempfile::tempdir().unwrap();
-        assert!(l.prepared(d.path(), &m).unwrap().is_none());
+        assert!(l.prepared(&store::nasfs::NasRoot::local_for_test(d.path()), &m).unwrap().is_none());
         std::fs::create_dir_all(d.path().join("o2").parent().unwrap()).unwrap();
         std::fs::write(d.path().join("o2"), b"not outlines").unwrap();
-        assert!(l.prepared(d.path(), &m).unwrap().is_none());
+        assert!(l.prepared(&store::nasfs::NasRoot::local_for_test(d.path()), &m).unwrap().is_none());
     }
 }

@@ -31,7 +31,10 @@ const CHUNK: usize = 16;
 
 /// The Terrarium pyramid's URL template in the accepted elevation version manifest `m` names
 /// under `root` (the last declared: the base's raw tiles are its, through `RawTiles`).
-pub fn terrarium_template(root: &std::path::Path, m: &std::collections::BTreeMap<String, String>) -> Result<String> {
+pub fn terrarium_template(
+    root: &store::nasfs::NasRoot,
+    m: &std::collections::BTreeMap<String, String>,
+) -> Result<String> {
     use crate::dem::declared::Data;
     let a = crate::inputs::open(root, m, crate::inputs::elevation::UNIT)?
         .context("no version of the elevation datasets is accepted (docs/inputs.md §6.8)")?;
@@ -62,7 +65,7 @@ pub struct Pool {
     /// The Terrarium pyramid's URL template, where one is declared (read through `RawTiles`).
     pub terrarium: Option<String>,
     /// The stores' folder (`sources/fetched/`).
-    pub store: std::path::PathBuf,
+    pub store: store::nasfs::NasPath,
     /// The area (west, south, east, north): its middle latitude sets the detail each level reads.
     pub area: [f64; 4],
 }
@@ -70,7 +73,11 @@ pub struct Pool {
 impl Pool {
     /// The pool over box `b` (west, south, east, north) of the accepted elevation and sources
     /// versions manifest `m` names under `root`.
-    pub fn read(root: &std::path::Path, m: &std::collections::BTreeMap<String, String>, b: [f64; 4]) -> Result<Pool> {
+    pub fn read(
+        root: &store::nasfs::NasRoot,
+        m: &std::collections::BTreeMap<String, String>,
+        b: [f64; 4],
+    ) -> Result<Pool> {
         let a = crate::inputs::open(root, m, crate::inputs::elevation::UNIT)?.context(
             "no version of the elevation datasets is accepted: the terrain's are declared there (docs/inputs.md §6.8)",
         )?;
@@ -82,7 +89,7 @@ impl Pool {
     }
 
     /// The pool of plan `plan` over area `area`, its stores in `store`.
-    pub fn of(plan: Plan, store: std::path::PathBuf, area: [f64; 4]) -> Pool {
+    pub fn of(plan: Plan, store: store::nasfs::NasPath, area: [f64; 4]) -> Pool {
         let terrarium = plan.datasets.iter().rev().find_map(|d| match &d.source {
             Source::Tiles { url, encoding, .. } if encoding == "terrarium" => Some(url.clone()),
             _ => None,
@@ -480,7 +487,7 @@ mod tests {
                 },
             ],
         };
-        let pool = Pool::of(plan, store, [10.0, 45.0, 11.0, 46.0]);
+        let pool = Pool::of(plan, store::nasfs::NasPath::local_for_test(store), [10.0, 45.0, 11.0, 46.0]);
         assert_eq!(pool.terrarium.as_deref(), Some(crate::terrain_pack::TEST_BASE));
         let raw = RawTiles::new(&local, crate::terrain_pack::TEST_BASE);
         crate::fetch::go_offline();
@@ -577,7 +584,7 @@ mod tests {
         let raw = RawTiles::new(&d.path().join("local"), crate::terrain_pack::TEST_BASE);
         crate::fetch::go_offline();
         let tile_of = |area: [f64; 4]| {
-            Pool::of(plan.clone(), store.clone(), area)
+            Pool::of(plan.clone(), store::nasfs::NasPath::local_for_test(store.clone()), area)
                 .with_tiles(&raw, |t| t.sample(z, &[(x, y)]).unwrap().pop().unwrap().unwrap())
                 .unwrap()
         };
@@ -585,10 +592,11 @@ mod tests {
         let wide = tile_of([10.0, 20.0, 11.0, 60.0]);
         assert_eq!(own, wide, "its own z6 row's latitude, whatever the area");
         // (Read at the wide area's middle, 40°N: another blend.)
-        let pool = Pool::of(plan.clone(), store.clone(), [10.0, 20.0, 11.0, 60.0]);
+        let pool =
+            Pool::of(plan.clone(), store::nasfs::NasPath::local_for_test(store.clone()), [10.0, 20.0, 11.0, 60.0]);
         let net = crate::fetch::MapFetch::default();
         let fetch = RawFetch::new(&raw, pool.terrarium.as_deref(), &net);
-        let o = Opts { fetch: &fetch, store: Some(store.clone()) };
+        let o = Opts { fetch: &fetch, store: Some(store::nasfs::NasPath::local_for_test(store.clone())) };
         let plans: Vec<Plan> = (0..=MAX_Z).map(|z| pool.at_zoom(z, 40.0)).collect();
         let at_area = Tiles::new(&plans, &o).sample(z, &[(x, y)]).unwrap().pop().unwrap().unwrap();
         assert_ne!(at_area, own, "the area's middle blends otherwise");
@@ -649,7 +657,7 @@ mod tests {
                 ds("g", 5.0, Source::Tiles { url: "v".into(), zoom: 15, encoding: "gsi-png".into() }),
             ],
         };
-        let pool = Pool::of(plan, "/s".into(), [0.0, -1.0, 1.0, 1.0]);
+        let pool = Pool::of(plan, store::nasfs::NasPath::local_for_test("/s"), [0.0, -1.0, 1.0, 1.0]);
         let p12 = pool.at_zoom(12, 0.0);
         let half = tile_resolution(12, 0.0) / 2.0;
         assert!(

@@ -431,7 +431,7 @@ fn reader<'a>(
 /// still: it's left as accepted, or out while new, and the next listing, which differs, checks it
 /// again. So the key recorded never names a file the check didn't take as listed.
 pub fn candidate(
-    root: &std::path::Path,
+    root: &store::nasfs::NasRoot,
     unit: &str,
     recursive: bool,
     planned: Option<super::Planned>,
@@ -469,7 +469,7 @@ pub fn forget(out: &mut crate::out::Out, unit: &str) -> Result<String> {
 pub fn run(out: &mut crate::out::Out, unit: &str, full: bool, planned: Option<super::Planned>) -> Result<String> {
     use crate::timings::{phase, Class};
     let checks = super::checks(unit).with_context(|| format!("{unit} isn't a gate unit this app knows"))?;
-    let root = out.root().to_path_buf();
+    let root = out.root().clone();
     let p = phase("the accepted version and the drop box listed", Class::NasRead);
     let prepared = checks.prepared(&root, &out.manifest)?;
     let checks: &dyn Checks = prepared.as_deref().unwrap_or(checks);
@@ -487,9 +487,8 @@ pub fn run(out: &mut crate::out::Out, unit: &str, full: bool, planned: Option<su
     drop(p);
     let p = phase("the changes read and checked", Class::NasRead);
     let dir = super::drop_box(&root, unit);
-    let read_new =
-        |path: &str| std::fs::read(dir.join(path)).with_context(|| format!("read {}", dir.join(path).display()));
-    let read_old = |e: &FileEntry| std::fs::read(root.join(&e.file)).with_context(|| format!("read {}", e.file));
+    let read_new = |path: &str| dir.join(path).read().with_context(|| format!("read {}", dir.join(path).display()));
+    let read_old = |e: &FileEntry| root.join(&e.file).read().with_context(|| format!("read {}", e.file));
     let d = decide(&Given {
         checks,
         prev: prev.as_ref(),
@@ -523,11 +522,7 @@ pub fn run(out: &mut crate::out::Out, unit: &str, full: bool, planned: Option<su
         if let Some(old) = prev_name.as_ref().filter(|o| **o != name) {
             replaced = Some(old.clone());
             // (And its time made now, for GC's rule by time too; a failure only said.)
-            if let Err(e) = std::fs::File::options()
-                .write(true)
-                .open(root.join(old))
-                .and_then(|f| f.set_modified(std::time::SystemTime::now()))
-            {
+            if let Err(e) = root.join(old).set_modified(std::time::SystemTime::now()) {
                 eprintln!("inputs: {unit}: the index replaced, {old}, couldn't be touched ({e}); the check's state keeps it named");
             }
         }

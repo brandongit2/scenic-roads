@@ -12,7 +12,6 @@
 use crate::fetch::Fetch;
 use anyhow::{bail, Context, Result};
 use rayon::prelude::*;
-use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 /// Files downloaded at once.
@@ -49,18 +48,17 @@ pub fn urls(index: &[u8]) -> Result<Vec<String>> {
 pub fn run(
     fetch: &dyn Fetch,
     urls: &[String],
-    dir: &Path,
+    dir: &store::nasfs::NasPath,
     at_once: usize,
     say: &(dyn Fn(String) + Sync),
 ) -> Result<Done> {
-    std::fs::create_dir_all(dir).with_context(|| dir.display().to_string())?;
+    dir.create_dir_all().with_context(|| dir.display().to_string())?;
     let host = store::sys::hostname().unwrap_or_else(|| "unknown".into());
     // (This Mac's temporary files from a run stopped part way go first: never taken for a file.)
     let mine = format!(".{host}.");
-    for e in std::fs::read_dir(dir)?.flatten() {
-        let n = e.file_name().to_string_lossy().into_owned();
-        if n.ends_with(".tmp") && n.contains(&mine) {
-            std::fs::remove_file(e.path()).ok();
+    for e in dir.read_dir()? {
+        if e.name.ends_with(".tmp") && e.name.contains(&mine) {
+            e.path.remove_file().ok();
         }
     }
     let (stored, bytes, skipped, none, seen) =
@@ -77,17 +75,17 @@ pub fn run(
                         return Ok(());
                     }
                     let Some(b) = fetch.get(url)? else {
-                        std::fs::write(dir.join(format!("{name}.none")), b"")?;
+                        dir.join(format!("{name}.none")).write(b"")?;
                         none.fetch_add(1, Ordering::Relaxed);
                         return Ok(());
                     };
                     let tmp = dir.join(format!("{name}.{host}.{}.tmp", store::sys::pid()));
-                    std::fs::write(&tmp, &b)?;
-                    if !crate::whole::tiff_file_whole(&tmp) {
-                        let _ = std::fs::remove_file(&tmp);
+                    tmp.write(&b)?;
+                    if !tmp.open().is_ok_and(|f| crate::whole::tiff_whole(&f)) {
+                        let _ = tmp.remove_file();
                         bail!("not a whole GeoTIFF ({} bytes)", b.len());
                     }
-                    std::fs::rename(&tmp, &to)?;
+                    tmp.rename(&to)?;
                     stored.fetch_add(1, Ordering::Relaxed);
                     bytes.fetch_add(b.len() as u64, Ordering::Relaxed);
                     Ok(())
@@ -141,7 +139,7 @@ mod tests {
         let urls: Vec<String> = ["a/A_DEM.tif", "a/A_FLM.tif", "b/B_DEM.tif", "c/C_DEM.tif", "k/K_DEM.tif"]
             .map(|p| format!("https://e.org/{p}"))
             .into();
-        let done = run(&fetch, &urls, &store, 2, &|_| {}).unwrap();
+        let done = run(&fetch, &urls, &store::nasfs::NasPath::local_for_test(&store), 2, &|_| {}).unwrap();
         assert_eq!((done.stored, done.skipped, done.none), (2, 1, 1), "{done:?}");
         assert_eq!(done.failed.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(), ["C_DEM.tif"]);
         let mut names: Vec<String> =
@@ -150,7 +148,14 @@ mod tests {
         assert_eq!(names, ["A_DEM.tif", "A_FLM.tif", "B_DEM.tif.none", "K_DEM.tif"], "no temporary file left");
         assert_eq!(std::fs::read(store.join("A_DEM.tif")).unwrap(), tif(1.0));
         // Again: everything there, nothing asked.
-        let again = run(&crate::fetch::MapFetch(Default::default()), &urls[..3], &store, 2, &|_| {}).unwrap();
+        let again = run(
+            &crate::fetch::MapFetch(Default::default()),
+            &urls[..3],
+            &store::nasfs::NasPath::local_for_test(&store),
+            2,
+            &|_| {},
+        )
+        .unwrap();
         assert_eq!((again.stored, again.skipped), (0, 3));
     }
 }

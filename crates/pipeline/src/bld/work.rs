@@ -270,8 +270,9 @@ pub struct WorkFile {
 }
 
 impl WorkFile {
-    pub fn open(path: &Path) -> Result<WorkFile> {
-        let f = PlainFile::open(path).with_context(|| format!("open {}", path.display()))?;
+    pub fn open<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<WorkFile> {
+        let path = path.into();
+        let f = path.open_plain().with_context(|| format!("open {}", path.display()))?;
         let r = SectReader::open(f).with_context(|| format!("read {}", path.display()))?;
         let meta: Meta =
             serde_json::from_value(r.meta().clone()).with_context(|| format!("{}: its meta", path.display()))?;

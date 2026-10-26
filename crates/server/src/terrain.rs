@@ -295,11 +295,11 @@ mod tests {
 
     /// A NAS with a terrain hi pack (z12 at 50 m) and a deep pack (z13 at 100 m) under z10 tile
     /// (296, 360), and a catalog naming them; the deep pack's path.
-    fn nas(root: &std::path::Path) -> std::path::PathBuf {
+    fn nas(root: &store::nasfs::NasRoot) -> std::path::PathBuf {
         let (hi, fine) = ("layers/terrain/hi/6-18-22", "layers/terrain/deep/10-296-360");
         let (hc, fc) = (format!("{hi}.0000000000000001.pack"), format!("{fine}.0000000000000002.pack"));
-        let hs = pack(&root.join(&hc), &[(12, 296 * 4, 360 * 4, 50.0)]);
-        let fs = pack(&root.join(&fc), &[(13, 296 * 8, 360 * 8, 100.0)]);
+        let hs = pack(&root.unchecked_path().join(&hc), &[(12, 296 * 4, 360 * 4, 50.0)]);
+        let fs = pack(&root.unchecked_path().join(&fc), &[(13, 296 * 8, 360 * 8, 100.0)]);
         let mut cat = store::catalog::Catalog::new(1);
         let mut l = store::catalog::Layer {
             encoding: pipeline::terrain_codec::ENCODING.into(),
@@ -312,15 +312,15 @@ mod tests {
         for (lg, c, size) in [(hi, &hc, hs), (fine, &fc, fs)] {
             cat.files.insert(lg.into(), store::catalog::FileRef { file: c.clone(), size, ..Default::default() });
         }
-        store::catalog::write_copy(&root.join("catalog"), &cat).unwrap();
-        root.join(fc)
+        store::catalog::write_copy(&root.unchecked_path().join("catalog"), &cat).unwrap();
+        root.unchecked_path().join(fc)
     }
 
     #[test]
     fn deep_tiles_come_from_the_deep_packs_and_from_their_ancestor_when_those_cant_be_read() {
         let (root, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        nas(root.path());
-        let s = crate::test_state(home.path(), root.path());
+        nas(&store::nasfs::NasRoot::local_for_test(root.path()));
+        let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(root.path()));
         let at = |z: u8, x: u32, y: u32| terrain_f32(&s, z, x, y).unwrap().map(|e| e[0]);
         // z12 from the hi pack, z13 from the deep pack, z14 made from the deep z13.
         assert_eq!(at(12, 296 * 4, 360 * 4), Some(50.0));
@@ -332,8 +332,8 @@ mod tests {
         assert_eq!(image(flat(), false, None).headers()[header::CONTENT_TYPE], "image/webp");
         // The deep pack unreadable (the NAS away, no mirror of it): made from the hi pack's z12.
         let (root, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        std::fs::remove_file(nas(root.path())).unwrap();
-        let s = crate::test_state(home.path(), root.path());
+        std::fs::remove_file(nas(&store::nasfs::NasRoot::local_for_test(root.path()))).unwrap();
+        let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(root.path()));
         let at = |z: u8, x: u32, y: u32| terrain_f32(&s, z, x, y).unwrap().map(|e| e[0]);
         assert_eq!(at(13, 296 * 8, 360 * 8), Some(50.0));
         assert_eq!(at(15, 296 * 32, 360 * 32), Some(50.0));
@@ -375,7 +375,7 @@ mod tests {
             cat.files.insert(lg.into(), store::catalog::FileRef { file: c.clone(), size, ..Default::default() });
         }
         store::catalog::write_copy(&root.path().join("catalog"), &cat).unwrap();
-        let s = crate::test_state(home.path(), root.path());
+        let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(root.path()));
         let steep = |z: u8, x: u32, y: u32| {
             let b = match s.data.tile("slope", z, x, y) {
                 Ok(Some((b, _))) => b.bytes().to_vec(),
@@ -391,7 +391,7 @@ mod tests {
         assert_eq!(steep(12, 0, 0), None, "outside it: none (served flat)");
         // The deep pack unreadable (the NAS away, no mirror of it): from the hi pack's z12.
         std::fs::remove_file(root.path().join(&dc)).unwrap();
-        let s = crate::test_state(home.path(), root.path());
+        let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(root.path()));
         assert!(s.data.tile("slope", 13, 296 * 8, 360 * 8).is_err());
         assert_eq!(
             shade_from_ancestor(&s, "slope", 14, 296 * 16, 360 * 16)

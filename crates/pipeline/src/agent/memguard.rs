@@ -45,7 +45,7 @@ pub const SWAP_WINDOW: Duration = Duration::from_secs(300);
 
 /// The guard as the switch at `root` says: on or off; None when it can't be read now (the share not
 /// answering: the caller keeps what it had).
-pub fn on(root: &Path) -> Option<bool> {
+pub fn on(root: &store::nasfs::NasRoot) -> Option<bool> {
     match super::nasread::read_switch(&root.join(SWITCH)) {
         Ok(s) => Some(match s.trim() {
             "off" => false,
@@ -723,7 +723,7 @@ impl Sampler {
         };
         if let Some((f, l)) = live {
             if let Ok(b) = serde_json::to_vec(&l) {
-                crate::whole::write(&f, &b).ok();
+                store::whole::write(&f, &b).ok();
             }
         }
         self.tick_disk();
@@ -1249,11 +1249,11 @@ mod tests {
     #[test]
     fn the_switch() {
         let d = tempfile::tempdir().unwrap();
-        assert_eq!(on(d.path()), Some(DEFAULT));
+        assert_eq!(on(&store::nasfs::NasRoot::local_for_test(d.path())), Some(DEFAULT));
         std::fs::create_dir_all(d.path().join("state/pool")).unwrap();
         std::fs::write(d.path().join(SWITCH), "off\n").unwrap();
-        assert_eq!(on(d.path()), Some(false));
+        assert_eq!(on(&store::nasfs::NasRoot::local_for_test(d.path())), Some(false));
         std::fs::write(d.path().join(SWITCH), "on").unwrap();
-        assert_eq!(on(d.path()), Some(true));
+        assert_eq!(on(&store::nasfs::NasRoot::local_for_test(d.path())), Some(true));
     }
 }

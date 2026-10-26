@@ -49,10 +49,10 @@ pub fn files(local: &Path) -> Option<BTreeMap<String, (PathBuf, String)>> {
 /// Puts an accepted version of unit `unit` (`files`: drop-box path, content) on a NAS made for a
 /// test, its index named in the records (for the server's tests).
 #[cfg(test)]
-pub fn put(nas: &Path, unit: &str, files: &[(&str, &str)]) -> String {
+pub fn put(nas: &store::nasfs::NasRoot, unit: &str, files: &[(&str, &str)]) -> String {
     let put = |name: &str, bytes: &[u8]| {
-        std::fs::create_dir_all(nas.join(name).parent().unwrap()).unwrap();
-        std::fs::write(nas.join(name), bytes).unwrap();
+        nas.join(name).parent().unwrap().create_dir_all().unwrap();
+        nas.join(name).write(bytes).unwrap();
     };
     let mut index =
         pipeline::inputs::Index { fmt: 1, unit: unit.into(), checks: format!("{unit} 1"), ..Default::default() };
@@ -69,7 +69,7 @@ pub fn put(nas: &Path, unit: &str, files: &[(&str, &str)]) -> String {
     put(&name, &ib);
     let records = nas.join(served::RECORDS);
     let mut m: BTreeMap<String, String> =
-        std::fs::read(&records).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        records.read().ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     m.insert(pipeline::inputs::logical(unit), name.clone());
     put(served::RECORDS, &serde_json::to_vec(&m).unwrap());
     name

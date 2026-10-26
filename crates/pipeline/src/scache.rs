@@ -224,13 +224,13 @@ fn grid_basis(build: &Path) -> Result<Vec<([u32; 2], String)>> {
 /// Its earlier asides (any Mac's) are removed first, those still held passed over.
 fn drop_dir(dir: &Path) -> Result<()> {
     if let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) {
-        crate::whole::sweep_asides(parent, &format!("{}.", name.to_string_lossy()), std::time::Duration::ZERO);
+        store::whole::sweep_asides(parent, &format!("{}.", name.to_string_lossy()), std::time::Duration::ZERO);
     }
     if !dir.exists() {
         return Ok(());
     }
     if let Err(e) = std::fs::remove_dir_all(dir) {
-        let aside = crate::whole::tmp_name(dir).with_extension("aside.tmp");
+        let aside = store::whole::tmp_name(dir).with_extension("aside.tmp");
         std::fs::rename(dir, &aside).with_context(|| format!("remove {} ({e}), or rename it aside", dir.display()))?;
         eprintln!("scache: {} not removed ({e}): renamed aside to {}", dir.display(), aside.display());
     }
@@ -245,7 +245,7 @@ impl Carry {
         let have = KEPT_OUTPUTS.iter().chain(&KEPT_GRIDS).all(|f| build.join(f).exists())
             && KEPT_CACHE.iter().all(|f| cache.join(f).exists());
         // (This Mac's own temporary folder: each Mac may keep the same z6 tile's at once.)
-        let tmp = self.dir.with_extension(format!("{}.tmp", crate::agent::cond::host()));
+        let tmp = self.dir.with_extension(format!("{}.tmp", store::sys::host()));
         if tmp.exists() {
             std::fs::remove_dir_all(&tmp)?;
         }

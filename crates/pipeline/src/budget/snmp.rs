@@ -66,8 +66,8 @@ pub fn parse_keys(s: &str) -> Result<Keys, NoKeys> {
 }
 
 /// The keys under the project folder `root`.
-pub fn read_keys(root: &Path) -> Result<Keys, NoKeys> {
-    parse_keys(&std::fs::read_to_string(root.join(KEYS)).map_err(|_| NoKeys::Missing)?)
+pub fn read_keys(root: &store::nasfs::NasRoot) -> Result<Keys, NoKeys> {
+    parse_keys(&root.join(KEYS).read_to_string().map_err(|_| NoKeys::Missing)?)
 }
 
 /// How long a poll may run at all before it's killed (snmpget's own timeout doesn't cover the

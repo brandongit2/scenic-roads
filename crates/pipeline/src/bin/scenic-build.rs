@@ -250,7 +250,8 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
     if step == "tail-spec" {
         let u = positional(&args).first().and_then(|s| TileId::parse(s)).context("tail-spec U")?;
         // (The data servers as the accepted declarations under --root name them: crate::coord::hosts.)
-        let root = PathBuf::from(opt(&args, "--root").context("tail-spec U --root <nas project folder>")?);
+        let root =
+            store::nasfs::NasRoot::from_arg(opt(&args, "--root").context("tail-spec U --root <nas project folder>")?);
         let spec = serde_json::json!({ "runs": pipeline::unit::tail(u, true, true), "places": pipeline::offload::places(), "web_hosts": pipeline::coord::hosts::now(&root)? });
         println!("{spec}");
         return Ok(());
@@ -298,7 +299,10 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         }
         let c = geoid::conversion(&from, &srcs)?.context("heights in EGM2008 already: no offset")?;
         let fetch = pipeline::fetch::Fetcher::from_env();
-        let o = pipeline::dem::generic::Opts { fetch: &fetch, store: opt(&args, "--store").map(PathBuf::from) };
+        let o = pipeline::dem::generic::Opts {
+            fetch: &fetch,
+            store: opt(&args, "--store").map(|s| store::nasfs::NasRoot::from_arg(s).path()),
+        };
         let grids = geoid::Grids::new(&o);
         let (lon, lat): (Vec<f64>, Vec<f64>) = at.iter().copied().unzip();
         let mut hops = Vec::new();
@@ -313,7 +317,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         }
         return Ok(());
     }
-    let root = PathBuf::from(opt(&args, "--root").context("--root <nas project folder>")?);
+    let root = store::nasfs::NasRoot::from_arg(opt(&args, "--root").context("--root <nas project folder>")?);
     // (Before the scratch folder: it writes nothing.)
     if step == "regions-check" {
         // regions-check --root <nas project folder> --dir <folder of region files>
@@ -348,7 +352,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         // regions-fixture --root <scratch folder> <id> <lon,lat,km>: an accepted version of one
         // region, a circle, its index named in the folder's records (a scratch run's: the pool's
         // two-Mac procedure, tools/check/pool-two-macs.sh); never the project folder.
-        anyhow::ensure!(!root.to_string_lossy().contains("/projects/scenic-roads"), "not the project folder");
+        anyhow::ensure!(!root.display().to_string().contains("/projects/scenic-roads"), "not the project folder");
         let pos = positional(&args);
         let (Some(id), Some(at)) = (pos.first(), pos.get(1)) else {
             bail!("regions-fixture --root <folder> <id> <lon,lat,km>")
@@ -357,8 +361,8 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         let mut m: BTreeMap<String, String> = pipeline::out::read_record(&path).unwrap_or_default();
         let r =
             pipeline::agent::recipes::Recipe { id: id.clone(), name: id.clone(), outline: vec![format!("place:{at}")] };
-        let name = pipeline::inputs::regions::accept_fixture(&root, &root, &[r], &mut m);
-        pipeline::whole::write(&path, &serde_json::to_vec(&m)?)?;
+        let name = pipeline::inputs::regions::accept_fixture(&root, (&root.path()).into(), &[r], &mut m);
+        path.write_whole(&serde_json::to_vec(&m)?)?;
         println!("regions-fixture: {name}");
         return Ok(());
     }
@@ -401,7 +405,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         // translations' and descriptions' to-do lists from the newest catalog (pipeline::namestodo)
         // and those inputs' accepted versions the agent names (their indexes' content names), into
         // the drop boxes' todo/ under the root (or --out); it writes nothing else.
-        let out = opt(&args, "--out").map_or_else(|| root.clone(), PathBuf::from);
+        let out = opt(&args, "--out").map_or_else(|| root.clone(), store::nasfs::NasRoot::from_arg);
         let accepted = |unit: &str| -> Result<pipeline::inputs::Accepted> {
             let index = opt(&args, &format!("--{unit}-index"))
                 .with_context(|| format!("--{unit}-index <its accepted index's content name>"))?;
@@ -694,7 +698,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let nas = out.path(out.get(&format!("sources/osm/{date}/filtered")).context("the pass's filtered planet")?);
             std::fs::create_dir_all(&scratch)?;
             let local = scratch.join("filtered.osm.pbf");
-            let size = std::fs::metadata(&nas)?.len();
+            let size = nas.metadata()?.len();
             // (Room for the copy and the sets made from it, the owner's disk room target left free:
             // the agent tells it, room::TARGET_ENV; run by hand, none.)
             let room = pipeline::agent::room::free_past(&scratch, pipeline::agent::room::job_target())
@@ -712,8 +716,9 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 pipeline::timings::count(std::fs::metadata(&local).map(|m| m.len()).unwrap_or(0), 1);
                 pipeline::osmpass::Input::Local(local.clone())
             } else {
-                // (Streamed over SSH: the SMB mount times out on osmium's long reads.)
-                pipeline::osmpass::Input::Nas(nas)
+                // (Streamed over SSH: the SMB mount times out on osmium's long reads. Its path
+                // on the NAS from the mount's: tests/nas_access.rs.)
+                pipeline::osmpass::Input::Nas(nas.unchecked_path())
             };
             let n = pipeline::osmpass::make_missing_sets(&mut out, &date, &src, &scratch)?;
             let p = phase("the copy removed", Class::Disk);
@@ -744,7 +749,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let parts = Parts(&["Copying the hiking routes", "Finding their ends", "Uploading"]);
             parts.start(0);
             let p = phase("the hikes set copied here", Class::NasRead);
-            p.count(store::sys::copy_data(&set, &local).with_context(|| format!("copy {}", set.display()))?, 1);
+            p.count(set.copy_data_to_local(&local).with_context(|| format!("copy {}", set.display()))?, 1);
             drop(p);
             parts.start(1);
             let p = phase("their ends found", Class::Compute);
@@ -1137,7 +1142,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             // routes matching nothing on the map (pipeline::timetables), from the rail and ferries
             // jobs' z6 tiles.
             let cov = coverage_of(&out, &args)?;
-            let to = opt(&args, "--out").map_or_else(|| out.root().to_path_buf(), PathBuf::from);
+            let to = opt(&args, "--out").map_or_else(|| out.root().clone(), store::nasfs::NasRoot::from_arg);
             let r = pipeline::timetables::run(&mut out, &cov, &to)?;
             eprintln!("timetables-todo: {} rail and {} ferry lines with no timetable ({:.0} km), {} routes matching nothing on the map", r.rail, r.ferry, r.km, r.unmatched);
         }
@@ -1417,9 +1422,10 @@ fn open_units(
         }
         let to = [base, roads].map(|n| out.scratch_file(&format!("read/{n}")));
         reads.files.extend(to.iter().cloned());
+        // (Read through basepart's watched copies, by path: tests/nas_access.rs.)
         let (bp, n) = pipeline::basepart::open(
-            &out.path(base),
-            &out.path(roads),
+            &out.path(base).unchecked_path(),
+            &out.path(roads).unchecked_path(),
             &pipeline::basepart::index_path(cache, base),
             [&to[0], &to[1]],
             boxes,
@@ -1699,14 +1705,14 @@ fn units_meta(out: &Out, base: &BTreeMap<String, String>, now: u64) -> Result<se
     use pipeline::summary::Summary;
     let path = out.root().join("state/build/summaries.json");
     let mut known: BTreeMap<String, Summary> =
-        pipeline::whole::read_replaced(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        path.read_replaced().ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let mut total = Summary::default();
     let mut used: std::collections::BTreeSet<String> = Default::default();
     let mut made = 0;
     for logical in base.values() {
         let content = out.get(logical).with_context(|| format!("no file for {logical}"))?.to_string();
         if !known.contains_key(&content) {
-            let r = store::sect::SectReader::open(store::range::PlainFile::open(&out.path(&content))?)?;
+            let r = store::sect::SectReader::open(out.path(&content).open_plain()?)?;
             let s = match r.meta().get("summary").and_then(|v| serde_json::from_value::<Summary>(v.clone()).ok()) {
                 Some(s) => s,
                 None => {
@@ -1726,7 +1732,7 @@ fn units_meta(out: &Out, base: &BTreeMap<String, String>, now: u64) -> Result<se
     }
     if made > 0 || known.len() != used.len() {
         known.retain(|c, _| used.contains(c));
-        pipeline::whole::write(&path, &serde_json::to_vec(&known)?)?;
+        path.write_whole(&serde_json::to_vec(&known)?)?;
         eprintln!("catalog: {made} unit summaries made from their packs");
     }
     let mut m = total.meta();
@@ -1752,7 +1758,7 @@ fn bundled(
     };
     let index = |logical: &str| -> Result<store::pack::PackIndex> {
         let p = out.path(&out.manifest[logical]);
-        let f = store::range::PlainFile::open(&p).with_context(|| format!("open {}", p.display()))?;
+        let f = p.open_plain().with_context(|| format!("open {}", p.display()))?;
         store::pack::PackIndex::read_from(&f).with_context(|| format!("read {}", p.display()))
     };
     for (layer, logical) in layer_bundles {
@@ -2107,7 +2113,7 @@ fn catalog(
             s.spawn(|| loop {
                 let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let Some((_, n)) = listed.get(k) else { break };
-                sizes[k].set(std::fs::metadata(out.path(n)).map(|m| m.len())).ok();
+                sizes[k].set(out.path(n).metadata().map(|m| m.len())).ok();
                 let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 if d % (total / 100).max(1) == 0 {
                     pipeline::agent::jobs::report(d, total, "files checked on the NAS");
@@ -2132,7 +2138,7 @@ fn catalog(
     }
     drop(p);
     let _p = phase("the catalog written", Class::NasWrite);
-    std::fs::create_dir_all(&dir)?;
+    dir.create_dir_all()?;
     let n = store::catalog::next_n(&dir)?;
     let cat = serde_json::json!({
         "fmt": store::catalog::FMT,
@@ -2176,9 +2182,11 @@ fn catalog(
                 base.n,
                 store::catalog::delta::changed_keys(&d.patch).into_iter().collect::<Vec<_>>().join(", ")
             );
-            store::catalog::write_delta_of(&dir, base, &catalog, &d)?
+            // (Published by store::catalog's writer, its own temporary name and read-back:
+            // tests/nas_access.rs.)
+            store::catalog::write_delta_of(&dir.unchecked_path(), base, &catalog, &d)?
         }
-        None => store::catalog::write(&dir, &catalog)?,
+        None => store::catalog::write(&dir.unchecked_path(), &catalog)?,
     };
     eprintln!("published {}", path.display());
     // (What it did, for publishing's times (pipeline::pubtimes): its phases once written, the
@@ -2251,11 +2259,13 @@ fn catalog_coverage(
 /// Where each built z6 tile's ways are (E7): its summary's extent, as units_meta left the summaries in
 /// state/build/summaries.json by content name, else its tile.
 fn unit_extents(out: &Out, base: &BTreeMap<String, String>) -> Vec<[i32; 4]> {
-    let known: BTreeMap<String, pipeline::summary::Summary> =
-        std::fs::read(out.root().join("state/build/summaries.json"))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
+    let known: BTreeMap<String, pipeline::summary::Summary> = out
+        .root()
+        .join("state/build/summaries.json")
+        .read()
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
     base.iter()
         .filter_map(|(u, logical)| match out.get(logical).and_then(|c| known.get(c)) {
             // (An empty z6 tile's extent is inverted: nothing of it is anywhere.)
@@ -2410,7 +2420,7 @@ fn epoch_of(t: &str) -> Option<i64> {
 /// z6 tiles; then the work the plan has (agent::build::tree_work), and its time by the z3 tiles' last
 /// runs (`--costs`: the coordinator's costs.json; at this Mac's pace, another Mac's time
 /// halved) and the packs made again (their size now).
-fn p5_check(root: &Path, args: &[String]) -> Result<()> {
+fn p5_check(root: &store::nasfs::NasRoot, args: &[String]) -> Result<()> {
     use pipeline::agent::{build, rekey, tiles::TerrainTiles};
     match positional(args).first().map(String::as_str) {
         Some("trees") => {}
@@ -2424,10 +2434,11 @@ fn p5_check(root: &Path, args: &[String]) -> Result<()> {
     anyhow::ensure!(bad.is_empty(), "regions that can't be read now (the agent re-keys nothing meanwhile): {bad:?}");
     let cov = pipeline::coverage::Coverage::accepted(root, &src, None)?;
     let costs: BTreeMap<String, pipeline::coord::Cost> = match opt(args, "--costs") {
-        Some(p) => pipeline::out::read_record(Path::new(&p))?,
+        Some(p) => serde_json::from_slice(&std::fs::read(&p).with_context(|| format!("read {p}"))?)
+            .with_context(|| format!("parse {p}"))?,
         None => BTreeMap::new(),
     };
-    let me = pipeline::agent::cond::host();
+    let me = store::sys::host();
     // (A z3 tile's last run, at this Mac's pace.)
     let last_run = |q: &str| {
         costs.get(&pipeline::coord::cost_key("trees", q)).map(|c| {
@@ -2461,13 +2472,14 @@ fn p5_check(root: &Path, args: &[String]) -> Result<()> {
         .flatten();
     let tt = pipeline::treepacks::targets_with(&cov, &m, trees_extra.as_deref());
     let mtime = |c: &str| {
-        std::fs::metadata(root.join(c))
+        root.join(c)
+            .metadata()
             .and_then(|md| md.modified())
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64)
     };
-    let size = |c: &str| std::fs::metadata(root.join(c)).map(|md| md.len()).unwrap_or(0);
+    let size = |c: &str| root.join(c).metadata().map(|md| md.len()).unwrap_or(0);
     let packs_of = |q: TileId| -> Vec<&String> {
         m.iter()
             .filter(|(l, _)| {
@@ -2543,7 +2555,7 @@ fn p5_check(root: &Path, args: &[String]) -> Result<()> {
 /// The pass's road values of a z6 tile: (OSM way id, record), sorted by id.
 fn pass_roads(out: &Out, date: &str, u: TileId) -> Result<Vec<(u64, pipeline::legacy::RoadRec)>> {
     let Some(name) = out.get(&format!("sources/osm/{date}/roads/{}", u.dash())) else { return Ok(Vec::new()) };
-    let b = std::fs::read(out.path(name))?;
+    let b = out.path(name).read()?;
     Ok(b.chunks_exact(32)
         .map(|c| (u64::from_le_bytes(c[..8].try_into().unwrap()), bytemuck::pod_read_unaligned(&c[8..32])))
         .collect())
@@ -2560,7 +2572,8 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let (cov, _) = regions_coverage(out, args, &date, None)?;
     let trailends = out
         .get(&format!("work/trailends/{date}"))
-        .map(|c| out.path(c))
+        // (The extract program's input, read where it lies: tests/nas_access.rs.)
+        .map(|c| out.path(c).unchecked_path())
         .context("no hiking-route ends for the pass (the trailends step)")?;
     let extract = own_bin()?.join("extract");
     std::fs::create_dir_all(scratch)?;
@@ -2579,7 +2592,7 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         };
         let local = scratch.join(format!("piece-{}.osm.pbf", u.dash()));
         let p = phase("pieces copied from the NAS", Class::NasRead);
-        let n = store::sys::copy_data(&piece, &local).with_context(|| format!("copy {}", piece.display()))?;
+        let n = piece.copy_data_to_local(&local).with_context(|| format!("copy {}", piece.display()))?;
         p.count(n, 1);
         // (Its input's measure: the extract's bytes.)
         pipeline::costin::add("bytes", n);
@@ -2626,11 +2639,11 @@ fn local_copy(out: &Out, logical: &str, cache: &Path) -> Result<PathBuf> {
     let name = Path::new(content).file_name().context("file name")?.to_string_lossy().into_owned();
     let dir = cache.join(logical.replace('/', "-"));
     let local = dir.join(&name);
-    let size = std::fs::metadata(&src)?.len();
+    let size = src.metadata()?.len();
     // (Held for the job, copied first when it isn't here whole: store::cachefile. Content-named:
     // one here of another length was cut short.)
     let copy = &mut |tmp: &Path| {
-        let n = store::sys::copy_data(&src, tmp)?;
+        let n = src.copy_data_to_local(&tmp)?;
         pipeline::timings::count(n, 1);
         if n != size {
             return Err(std::io::Error::other(format!("{n} of {size} bytes copied")));
@@ -2747,7 +2760,7 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     parts.start(0);
     // Each z6 tile's candidates and z12 tiles, the next z6 tile's read while this one's are measured
     // (unit::read_ahead), from the packs as the manifest had them at the start (the job writes none).
-    let pois: Vec<Option<PathBuf>> =
+    let pois: Vec<Option<store::nasfs::NasPath>> =
         units.iter().map(|u| out.get(&format!("work/pois/{}", u.dash())).map(|c| out.path(c))).collect();
     let packs = pipeline::terrain_pack::ManifestTiles::new(out, "terrain");
     // (Their z12 the packs' tiles, else the pool's base tiles over the z6 tiles and 30 km more.)
@@ -2773,7 +2786,7 @@ fn peaks_from(
     out: &mut Out,
     scratch: &Path,
     units: &[TileId],
-    pois: &[Option<PathBuf>],
+    pois: &[Option<store::nasfs::NasPath>],
     packs: &pipeline::terrain_pack::ManifestTiles,
     raw: &dyn pipeline::terrain_pack::RawSource,
     summits: &[pipeline::summits::Summit],
@@ -2857,20 +2870,21 @@ fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
     let date =
         opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
     let cov = coverage_of(out, args)?;
-    let read_json = |p: PathBuf| -> Result<Value> {
-        Ok(serde_json::from_slice(&std::fs::read(&p).with_context(|| format!("read {}", p.display()))?)?)
+    let read_json = |p: store::nasfs::Place| -> Result<Value> {
+        let p = p.loc();
+        Ok(serde_json::from_slice(&p.read().with_context(|| format!("read {}", p.display()))?)?)
     };
     // The items job's for this pass.
-    let items = |name: &str| -> Result<PathBuf> {
+    let items = |name: &str| -> Result<store::nasfs::Place> {
         let l = format!("sources/items/{date}/{name}");
-        Ok(out.path(out.get(&l).with_context(|| format!("no {l} (the items step)"))?))
+        Ok(store::nasfs::Place::Nas(out.path(out.get(&l).with_context(|| format!("no {l} (the items step)"))?)))
     };
     let facts_file = match opt(args, "--facts") {
-        Some(f) => PathBuf::from(f),
+        Some(f) => store::nasfs::Place::Local(PathBuf::from(f)),
         None => items("facts")?,
     };
     let views_file = match opt(args, "--views") {
-        Some(f) => PathBuf::from(f),
+        Some(f) => store::nasfs::Place::Local(PathBuf::from(f)),
         None => items("views")?,
     };
     let p = phase("the items' facts and pageviews read", Class::NasRead);
@@ -2889,7 +2903,7 @@ fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
         let mut peaks: HashMap<String, Value> = HashMap::new();
         if let Some(pk) = out.get(&format!("work/peaks/{}", u.dash())).map(|c| out.path(c)) {
             use std::io::BufRead;
-            for line in std::io::BufReader::new(zstd::Decoder::new(std::fs::File::open(&pk)?)?).lines() {
+            for line in std::io::BufReader::new(zstd::Decoder::new(pk.open()?)?).lines() {
                 let mut v: Value = serde_json::from_str(&line?)?;
                 let key = v
                     .as_object_mut()
@@ -3074,7 +3088,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         let c = out
             .get(&base_logical(&date, stem))
             .with_context(|| format!("no {stem} for the pass of {date} (the heritage-sites step)"))?;
-        p.count(store::sys::copy_data(out.path(c), b.join(format!("{stem}.json")))?, 1);
+        p.count(out.path(c).copy_data_to_local(&b.join(format!("{stem}.json")))?, 1);
     }
     drop(p);
     // No stops & sights.
@@ -3089,8 +3103,10 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     areas_over_cover(out, &date, &poly, scratch, &root.join("data/areas/areas.geojsonseq"))?;
     stage(2, 5, "clipping the pass's named places to the coverage (osmium)");
     let p = phase("the named places clipped to the cover (osmium)", Class::NasRead);
+    // (osmium's input, read where it lies: tests/nas_access.rs.)
     let named = osmium_clip(
-        &out.path(out.get(&pipeline::osmpass::set_name(&date, "named")).context("the pass's named set")?),
+        &out.path(out.get(&pipeline::osmpass::set_name(&date, "named")).context("the pass's named set")?)
+            .unchecked_path(),
         &poly,
         &scratch.join("named-cover.osm.pbf"),
     )?;
@@ -3259,7 +3275,8 @@ fn osmium_clip(src: &Path, poly: &Path, dest: &Path) -> Result<PathBuf> {
 fn areas_over_cover(out: &Out, date: &str, poly: &Path, scratch: &Path, dest: &Path) -> Result<()> {
     let set = out.path(out.get(&pipeline::osmpass::set_name(date, "areas")).context("the pass's areas set")?);
     let p = phase("the protected areas clipped to the cover (osmium)", Class::NasRead);
-    let clip = osmium_clip(&set, poly, &scratch.join("areas-cover.osm.pbf"))?;
+    // (osmium's input, read where it lies: tests/nas_access.rs.)
+    let clip = osmium_clip(&set.unchecked_path(), poly, &scratch.join("areas-cover.osm.pbf"))?;
     drop(p);
     let _p = phase("the protected areas exported (osmium)", Class::Compute);
     let mut c = pipeline::osmpass::osmium();
@@ -3290,14 +3307,15 @@ fn whs_over_cover(out: &Out, date: &str, poly: &Path, cache: &Path, scratch: &Pa
     if store::cachefile::hold_existing(&dest)?.is_none() {
         let src = out.path(set);
         let local = scratch.join("whs.osm.pbf");
-        let room = pipeline::agent::room::free_past(scratch, pipeline::agent::room::job_target())
-            > 3 * std::fs::metadata(&src)?.len();
+        let room =
+            pipeline::agent::room::free_past(scratch, pipeline::agent::room::job_target()) > 3 * src.metadata()?.len();
         let read = if room {
             let _p = pipeline::timings::sub("the whs set copied here", Class::NasRead);
-            pipeline::timings::count(store::sys::copy_data(&src, &local)?, 1);
+            pipeline::timings::count(src.copy_data_to_local(&local)?, 1);
             local.clone()
         } else {
-            src
+            // (osmium's input, read where it lies: tests/nas_access.rs.)
+            src.unchecked_path()
         };
         let (tmp, held) = store::cachefile::scratch(&cache.join(format!("{name}.tmp.osm.pbf")))?;
         let pbf = tmp.with_extension("osm.pbf");
@@ -3381,7 +3399,7 @@ fn heritage_epoch(out: &Out, date: &str, cache: &Path, scratch: &Path) -> Result
     let _p = phase("the pass's answers made one with the NAS's", Class::NasRead);
     // (The registers' snapshot's caches, for the first pass since the registers became an input.)
     let legacy = out.get("sources/registers/legacy").map(|c| out.path(c));
-    if let Some(a) = pipeline::answers::heritage_start(out.root(), &epoch, date, legacy.as_deref())? {
+    if let Some(a) = pipeline::answers::heritage_start(out.root(), &epoch, date, legacy.as_ref())? {
         eprintln!("heritage: the pass's answers start from {}", a.display());
     }
     std::fs::write(epoch.join(".done"), b"")?;
@@ -3442,7 +3460,8 @@ fn heritage_script(root: &Path, dem: &Path, script: &str, args: &[&str]) -> Resu
 fn pageview_months(out: &Out, dir: PathBuf) -> Result<pipeline::pageviews::Months> {
     let s = pipeline::inputs::sources::read(out.root(), &out.manifest)?;
     let url = s.role(pipeline::inputs::sources::PAGEVIEWS)?.url()?.to_string();
-    Ok(pipeline::pageviews::Months::new(dir, Some(out.root().join("sources/pageviews")), url))
+    // (pageviews' store of the months' indexes, raw: tests/nas_access.rs.)
+    Ok(pipeline::pageviews::Months::new(dir, Some(out.root().join("sources/pageviews").unchecked_path()), url))
 }
 
 /// The accepted version of input `unit` the step reads: the index the agent names (`--<unit>-index`,
@@ -3475,8 +3494,9 @@ fn heritage_inputs(
     std::fs::create_dir_all(dir)?;
     let regs = pipeline::heritage::registers_meeting(cov, &a);
     for r in &regs {
-        pipeline::sys::symlink(&out.root().join(&r.geojson), &dir.join(format!("{}.geojson", r.id)))?;
-        pipeline::sys::symlink(&out.root().join(&r.toml), &dir.join(format!("{}.toml", r.id)))?;
+        // (Linked for heritage.py to read where they lie: tests/nas_access.rs.)
+        pipeline::sys::symlink(&out.root().join(&r.geojson).unchecked_path(), &dir.join(format!("{}.geojson", r.id)))?;
+        pipeline::sys::symlink(&out.root().join(&r.toml).unchecked_path(), &dir.join(format!("{}.toml", r.id)))?;
     }
     std::fs::remove_dir_all(matches).ok();
     let m = match accepted_input(out, args, heritage_matches::UNIT)? {
@@ -3484,7 +3504,7 @@ fn heritage_inputs(
             std::fs::create_dir_all(matches)?;
             for (k, (p, copy)) in m.files().enumerate() {
                 let name = format!("{k:04}-{}", p.replace('/', "+"));
-                pipeline::sys::symlink(&copy, &matches.join(name))?;
+                pipeline::sys::symlink(&copy.unchecked_path(), &matches.join(name))?;
             }
             Some(matches.to_path_buf())
         }
@@ -3589,7 +3609,7 @@ fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result
 /// The `unit` step's global-source layers: the manifest's, or a pilot's published catalog.
 fn layers_source<'a>(
     out: &'a Out,
-    pilot: &'a Option<(PathBuf, store::catalog::Catalog)>,
+    pilot: &'a Option<(store::nasfs::NasRoot, store::catalog::Catalog)>,
     blobs: Option<&'a store::blobs::Blobs>,
 ) -> pipeline::stage::Source<'a> {
     match pilot {
@@ -3646,10 +3666,8 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
                 (out.root().join("cache/scenic-units").join(u.dash()), shared.join("scenic-units").join(u.dash()));
             std::fs::remove_dir_all(&to).ok();
             std::fs::create_dir_all(&to)?;
-            for e in
-                std::fs::read_dir(&from).with_context(|| format!("no kept results in {}", from.display()))?.flatten()
-            {
-                store::sys::copy_data(e.path(), to.join(e.file_name()))?;
+            for e in from.read_dir().with_context(|| format!("no kept results in {}", from.display()))? {
+                e.path.copy_data_to_local(&to.join(&e.name))?;
             }
             Ok(pipeline::scache::Carry { dir: to })
         })
@@ -3661,7 +3679,8 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
         bin: own_bin()?,
         cache: PathBuf::from(opt(args, "--cache").context("--cache <dir>")?),
         buildings: Some(bdir),
-        sources: Some(out.root().join("sources")),
+        // (The programs' folder on the NAS, as their argument: tests/nas_access.rs.)
+        sources: Some(out.root().join("sources").unchecked_path()),
         shared: Some(shared),
         chm: None,
         stores_read_only: false,
@@ -3671,7 +3690,7 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
     };
     let piece = out.path(out.get(&format!("sources/osm/{date}/pieces/{}", u.dash())).context("no piece")?);
     let local = dir.join(format!("piece-{}.osm.pbf", u.dash()));
-    store::sys::copy_data(&piece, &local)?;
+    piece.copy_data_to_local(&local)?;
     let folder = dir.join("units").join(u.dash());
     std::fs::remove_dir_all(&folder).ok();
     std::fs::remove_dir_all(dir.join("snap")).ok();
@@ -3729,7 +3748,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     // Global-source layers: as this build's manifest has them now (what the z6 tile keys hash: a
     // terrain job of the same plan is published only with its catalog, at the end), or another
     // root's published catalog (a pilot builds against the real one).
-    let pilot = match opt(args, "--layers-root").map(PathBuf::from) {
+    let pilot = match opt(args, "--layers-root").map(store::nasfs::NasRoot::from_arg) {
         Some(r) => {
             let c = store::catalog::latest(&r.join("catalog"))?.context("no catalog for the global-source layers")?;
             Some((r, c))
@@ -3741,8 +3760,9 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         bin,
         cache: PathBuf::from(opt(args, "--cache-dir").unwrap_or_else(|| "data/cache".into())),
         buildings: opt(args, "--buildings").map(PathBuf::from),
-        sources: Some(out.root().join("sources")),
-        shared: Some(out.root().join("cache")),
+        // (The programs' folders on the NAS, as their arguments: tests/nas_access.rs.)
+        sources: Some(out.root().join("sources").unchecked_path()),
+        shared: Some(out.root().join("cache").unchecked_path()),
         chm: None,
         stores_read_only: false,
         snap: None,
@@ -3774,9 +3794,9 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         "no heritage sites for the pass of {date} (the heritage-sites step)"
     );
     // The z6 tiles: as asked, else every z6 tile whose extract meets the coverage.
-    let pieces: serde_json::Value = serde_json::from_slice(&std::fs::read(
-        out.path(out.get(&format!("sources/osm/{date}/pieces")).context("the pass's pieces list")?),
-    )?)?;
+    let pieces: serde_json::Value = serde_json::from_slice(
+        &(out.path(out.get(&format!("sources/osm/{date}/pieces")).context("the pass's pieces list")?)).read()?,
+    )?;
     let mut units: Vec<TileId> = positional(args).iter().filter_map(|s| TileId::parse(s)).collect();
     // The pass's reaches: which z6 tiles the coverage builds, and the roadside buildings' tiles each
     // reads (unless a folder of them is given), from the release's (the buildings step).
@@ -3884,7 +3904,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                 None => Vec::new(),
             };
             // Its roadside buildings' tiles, into this Mac's copies of them.
-            let tiles: Vec<(PathBuf, PathBuf, u64)> = match &buildings {
+            let tiles: Vec<(store::nasfs::NasPath, PathBuf, u64)> = match &buildings {
                 Some(index) => pipeline::buildtiles::tiles_for(next, reach.as_ref().and_then(|r| r.get(next)))
                     .into_iter()
                     .filter_map(|t| pipeline::buildtiles::tile_copy(o.root(), index, t, &tools.cache))
@@ -3896,22 +3916,21 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                 pipeline::scache::Carry { dir: tools.scenic_kept(next) },
                 pipeline::unit::ahead_carry(&scratch.join("units").join(next.dash())),
             );
-            let (root, blobs) = (o.root().to_path_buf(), blobs.clone());
+            let (root, blobs) = (o.root().clone(), blobs.clone());
             ahead = Some(std::thread::spawn(move || {
                 // (A phase beside the main thread's: crate::timings.)
                 let _p = phase("next z6 tile's piece and packs copied ahead", Class::NasRead);
                 // (Under this process's own temporary name, renamed whole: another job on this Mac
                 // may be copying the same file.)
-                let copy = |src: &Path, dst: &Path| {
+                let copy = |src: store::nasfs::Loc<'_>, dst: &Path| {
                     if dst.exists() || !src.exists() {
                         return;
                     }
-                    let tmp = pipeline::whole::tmp_name(dst);
-                    let whole = || {
-                        std::fs::metadata(src).ok().map(|m| m.len()) == std::fs::metadata(&tmp).ok().map(|m| m.len())
-                    };
+                    let tmp = store::whole::tmp_name(dst);
+                    let whole =
+                        || src.metadata().ok().map(|m| m.len()) == std::fs::metadata(&tmp).ok().map(|m| m.len());
                     if dst.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok())
-                        && store::sys::copy_data(src, &tmp).inspect(|n| pipeline::timings::count(*n, 1)).is_ok()
+                        && src.copy_data_to_local(&tmp).inspect(|n| pipeline::timings::count(*n, 1)).is_ok()
                         && whole()
                     {
                         std::fs::rename(&tmp, dst).ok();
@@ -3920,7 +3939,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                     }
                 };
                 if let Some((src, dst)) = &piece {
-                    copy(src, dst);
+                    copy(src.into(), dst);
                 }
                 if let Err(e) = std::fs::create_dir_all(carry.1.parent().unwrap_or(Path::new(".")))
                     .map_err(anyhow::Error::from)
@@ -3973,8 +3992,8 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         let local_piece = scratch.join(format!("piece-{}.osm.pbf", u.dash()));
         let s = unit_stage("piece copied from the NAS", Class::NasRead);
         // (Copied ahead, while the z6 tile before it built, unless it's the job's first.)
-        if std::fs::metadata(&local_piece).map(|m| m.len()).ok() != std::fs::metadata(&piece).map(|m| m.len()).ok() {
-            let n = store::sys::copy_data(&piece, &local_piece).with_context(|| format!("copy {}", piece.display()))?;
+        if std::fs::metadata(&local_piece).map(|m| m.len()).ok() != piece.metadata().map(|m| m.len()).ok() {
+            let n = piece.copy_data_to_local(&local_piece).with_context(|| format!("copy {}", piece.display()))?;
             pipeline::timings::count(n, 1);
         }
         s.end();
@@ -4046,7 +4065,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         // (Its tail's later steps run here add theirs: `costin::measured`.)
         pipeline::costin::set("km2", pipeline::costin::tile_km2(u.z, u.x, u.y));
         let mut sizes = pipeline::costin::take();
-        *sizes.entry("bytes".into()).or_default() += std::fs::metadata(&piece).map_or(0, |m| m.len());
+        *sizes.entry("bytes".into()).or_default() += piece.metadata().map_or(0, |m| m.len());
         sizes.extend([
             ("ways".into(), rep.kept_ways as u64),
             ("vertices".into(), rep.kept_verts as u64),
@@ -4161,7 +4180,7 @@ struct Built {
     rep: pipeline::unit::Report,
     tools: pipeline::unit::Tools,
     carry: pipeline::scache::Carry,
-    piece: PathBuf,
+    piece: store::nasfs::NasPath,
     t: std::time::Instant,
     peak: u64,
     /// The most the job's processes held together while it was built here (bytes, sampled: what
@@ -4405,7 +4424,7 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
     // memory guard measures a job: the same kind of figure, so either takes the other's place),
     // noted for the coordinator (`SCENIC_COSTS`), which gives a worker only z6 tiles that fit its
     // memory; its steps' programs' most, one at a time, logged against its extract's size.
-    let piece_mb = std::fs::metadata(&piece).map(|m| m.len() >> 20).unwrap_or(0);
+    let piece_mb = piece.metadata().map(|m| m.len() >> 20).unwrap_or(0);
     let peak = peak.max(pipeline::unit::take_peak());
     eprintln!(
         "unit {}: base pack of {} ways in {:.0?}; piece {piece_mb} MB, its steps' programs' peak memory {:.1} GB",
@@ -4471,7 +4490,7 @@ fn reach_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
     let list = out.get(&format!("sources/osm/{date}/pieces")).context("the pass's pieces list")?.to_string();
     let p = phase("the pass's pieces list read", Class::NasRead);
-    let pieces: pipeline::osmpass::Pieces = serde_json::from_slice(&std::fs::read(out.path(&list))?)?;
+    let pieces: pipeline::osmpass::Pieces = serde_json::from_slice(&out.path(&list).read()?)?;
     drop(p);
     std::fs::create_dir_all(scratch)?;
     let local = scratch.join("reach-piece.osm.pbf");
@@ -4486,7 +4505,7 @@ fn reach_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         let unit = TileId::parse(u).with_context(|| format!("unit {u}"))?;
         let src = out.path(out.get(l).with_context(|| format!("{l} isn't in the manifest"))?);
         let p = phase("pieces copied from the NAS", Class::NasRead);
-        p.count(store::sys::copy_data(&src, &local).with_context(|| format!("copy {}", src.display()))?, 1);
+        p.count(src.copy_data_to_local(&local).with_context(|| format!("copy {}", src.display()))?, 1);
         drop(p);
         let t = std::time::Instant::now();
         let p = phase("their roads' reach worked out", Class::Compute);
@@ -4523,7 +4542,7 @@ fn roadunits(out: &mut Out) -> Result<()> {
     // (The index before, and the lists it was made from.)
     let p = phase("the index before read", Class::NasRead);
     let before: Option<(BTreeMap<u64, String>, Vec<u64>)> = out.get("global/roadunits").and_then(|c| {
-        let r = store::sect::SectReader::open(store::range::PlainFile::open(&out.path(c)).ok()?).ok()?;
+        let r = store::sect::SectReader::open(out.path(c).open_plain().ok()?).ok()?;
         // (Made by another version of the step: read afresh.)
         let (v, s): (u32, Vec<(u64, String)>) = serde_json::from_slice(&r.read("srcs").ok()?).ok()?;
         (v == pipeline::agent::build::ROADUNITS_V).then_some(())?;
@@ -4539,7 +4558,7 @@ fn roadunits(out: &mut Out) -> Result<()> {
     let p = phase("the units' road ids read", Class::NasRead);
     for (k, (u, l, content)) in fresh.iter().enumerate() {
         pipeline::agent::jobs::report(k as u64, fresh.len() as u64, "units' road ids read");
-        let r = store::sect::SectReader::open(store::range::PlainFile::open(&out.path(content))?)?;
+        let r = store::sect::SectReader::open(out.path(content).open_plain()?)?;
         if l.starts_with(pipeline::out::ROAD_IDS) {
             let ids: Vec<u64> = r.read_pod("ids")?;
             pairs.extend(ids.iter().map(|&id| (id, u.key())));
@@ -4734,7 +4753,7 @@ fn treeblock_task(out: &Out, cov: &pipeline::coverage::Coverage, row: &[(u32, u3
     let whole = |top: i32, left: i32| {
         ["cover5m", "p95"]
             .iter()
-            .all(|k| std::fs::metadata(store.join(trees::chm_name(top, left, k))).is_ok_and(|m| m.len() > 0))
+            .all(|k| store.join(trees::chm_name(top, left, k)).metadata().is_ok_and(|m| m.len() > 0))
     };
     let mut squares: Vec<(i32, i32)> = row
         .iter()
@@ -4758,7 +4777,7 @@ fn treeblock_task(out: &Out, cov: &pipeline::coverage::Coverage, row: &[(u32, u3
     for l in pipeline::treepacks::LAYERS {
         packs.push(match out.get(&format!("layers/{l}/hi/{}", piece.dash())) {
             Some(c) => {
-                let f = store::range::PlainFile::open(&out.path(c))?;
+                let f = out.path(c).open_plain()?;
                 let idx = store::pack::PackIndex::read_from(&f)?;
                 Some((f, idx))
             }
@@ -5202,7 +5221,7 @@ fn water_idx_of(
     );
     let p = phase("the last digests and the depth's declarations read", Class::NasRead);
     let prior = match out.get(&pipeline::terrain_water::idx_logical(&pin)) {
-        Some(c) => Some(pipeline::terrain_water::WaterIdx::from_bytes(&std::fs::read(out.path(c))?)?),
+        Some(c) => Some(pipeline::terrain_water::WaterIdx::from_bytes(&out.path(c).read()?)?),
         None => None,
     };
     // (The depth's targets' too, once its sources are declared: pipeline::depth. Declarations that
@@ -5580,12 +5599,13 @@ fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
     parts.start(1);
     let ran = pipeline::railfeeds::run(pipeline::railfeeds::Args {
         declarations: &decls,
-        catalogue: catalogue.clone(),
+        // (railfeeds reads these by path: tests/nas_access.rs.)
+        catalogue: catalogue.as_ref().map(|c| c.unchecked_path()),
         coverage: &cov,
         countries: &countries,
-        checked,
+        checked: checked.map(|c| c.unchecked_path()),
         zips: &zips,
-        keys: Some(out.root().join("inputs/keys.env")),
+        keys: Some(out.root().join("inputs/keys.env").unchecked_path()),
         out: found.clone(),
     });
     parts.start(2);
@@ -5713,7 +5733,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     parts.start(2);
     let local = scratch.join("rail-set.osm.pbf");
     let p = phase("the rail set copied here", Class::NasRead);
-    p.count(store::sys::copy_data(&set, &local).with_context(|| format!("copy {}", set.display()))?, 1);
+    p.count(set.copy_data_to_local(&local).with_context(|| format!("copy {}", set.display()))?, 1);
     drop(p);
     let p = phase("the rail set clipped to the cover (osmium)", Class::Compute);
     let poly = scratch.join("cover.geojson");
@@ -5834,7 +5854,7 @@ fn labels_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let parts = Parts(&["Copying the labels set", "Ranking the labels", "Cutting them into packs"]);
     parts.start(0);
     let p = phase("the labels set copied here", Class::NasRead);
-    p.count(store::sys::copy_data(out.path(&set), &local).with_context(|| format!("copy {set}"))?, 1);
+    p.count(out.path(&set).copy_data_to_local(&local).with_context(|| format!("copy {set}"))?, 1);
     drop(p);
     parts.start(1);
     let tiles = work.join("labels.tiles");
@@ -5906,10 +5926,11 @@ fn lakefill_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     names.push("Uploading".into());
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     let p = phase("the lakes filled from CanVec's zips", Class::NasRead);
+    // (lakefill's readers open these by path: tests/nas_access.rs.)
     let f = pipeline::lakefill::run::all(
-        &basemap,
-        &outlines,
-        &source,
+        &basemap.loc().unchecked_path(),
+        &outlines.unchecked_path(),
+        &source.unchecked_path(),
         decl,
         &work.0,
         &|k| pipeline::agent::jobs::part(k, &names),
@@ -5950,7 +5971,7 @@ fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         None => pipeline::osmpass::latest_pass(out.root()).context("no complete OSM pass")?,
     };
     let basemap = match opt(args, "--basemap") {
-        Some(f) => PathBuf::from(f),
+        Some(f) => store::nasfs::Place::Local(PathBuf::from(f)),
         // (Read from this Mac's whole copy when it has room for one: pipeline::localread.)
         None => pipeline::localread::path(
             pipeline::localread::Local::from_env(out.root()).as_ref(),
@@ -5975,7 +5996,7 @@ fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     parts.start(0);
     let p = phase("the basemap's z14 directory read", Class::NasRead);
     let pm = store::pmtiles::PmTiles::open(Box::new(
-        store::range::PlainFile::open(&basemap).with_context(|| format!("open {}", basemap.display()))?,
+        basemap.loc().open_plain().with_context(|| format!("open {}", basemap.loc().display()))?,
     ))?;
     let z14 = wt::Z14::read(&pm)?;
     eprintln!("water: the z14 directory read in {:.0} s", t.elapsed().as_secs_f64());
@@ -6072,14 +6093,16 @@ mod tests {
             })
         };
         let root = d.path().join("nas");
-        let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
+        let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch")).unwrap();
         let put = |out: &mut Out, l: &str, bytes: &[u8]| {
             let p = out.scratch_file(l);
             std::fs::write(&p, bytes).unwrap();
             out.put_file_later(l, "pack", &p).unwrap();
         };
         let noted = || pipeline::control::read_done(&done, "slope");
-        let saved = |l: &str| pipeline::out::read_manifest(&root).unwrap().contains_key(l);
+        let saved = |l: &str| {
+            pipeline::out::read_manifest(&store::nasfs::NasRoot::local_for_test(&root)).unwrap().contains_key(l)
+        };
         let mut landing = Landing::default();
         put(&mut out, "layers/slope/hi/6-1-1", b"aaa");
         landing.then(&mut out, "slope", "6/1/1", "a".into(), now()).unwrap();
@@ -6184,7 +6207,8 @@ mod tests {
             }
         }
         std::fs::write(root.join("state/build/manifest.json"), serde_json::to_vec(&m).unwrap()).unwrap();
-        let out = pipeline::out::Out::unbound(&root, &d.path().join("scratch")).unwrap();
+        let out = pipeline::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch"))
+            .unwrap();
         let tile = [(6u8, 32u32, 21u32)];
         // (No reaches here: each z6 tile's ways taken to lie within its tile + 20 km.)
         let mut reach = pipeline::reach::Reaches::default();
@@ -6220,13 +6244,19 @@ mod tests {
         // The packs' extents (crate::extents), read by a job from their headers when the lead
         // hasn't kept them, in memory only; once the lead has, read from its file: the far z6 tile
         // whose pack spills into the tile is caught, and is an owner.
-        let (e, read) = pipeline::extents::fill(&root, &m, Default::default()).unwrap();
+        let (e, read) =
+            pipeline::extents::fill(&store::nasfs::NasRoot::local_for_test(&root), &m, Default::default()).unwrap();
         assert_eq!(read, units.len());
         assert!(!root.join(pipeline::extents::FILE).exists(), "a job writes nothing");
-        assert_eq!(pipeline::extents::keep(&root, &m).unwrap(), units.len());
-        assert_eq!(pipeline::extents::load(&root), e);
+        assert_eq!(pipeline::extents::keep(&store::nasfs::NasRoot::local_for_test(&root), &m).unwrap(), units.len());
+        assert_eq!(pipeline::extents::load(&store::nasfs::NasRoot::local_for_test(&root)), e);
         assert_eq!(
-            pipeline::extents::fill(&root, &m, pipeline::extents::load(&root)).unwrap(),
+            pipeline::extents::fill(
+                &store::nasfs::NasRoot::local_for_test(&root),
+                &m,
+                pipeline::extents::load(&store::nasfs::NasRoot::local_for_test(&root))
+            )
+            .unwrap(),
             (e.clone(), 0),
             "kept: no header read again"
         );
@@ -6239,10 +6269,20 @@ mod tests {
         // entry; the lead's own manifest listing fewer drops it from the file.
         let mut fewer = m.clone();
         fewer.remove("base/6-33-21");
-        assert_eq!(pipeline::extents::fill(&root, &fewer, pipeline::extents::load(&root)).unwrap().0.len(), 3);
-        assert_eq!(pipeline::extents::load(&root).len(), 4);
-        pipeline::extents::keep(&root, &fewer).unwrap();
-        assert_eq!(pipeline::extents::load(&root).len(), 3);
+        assert_eq!(
+            pipeline::extents::fill(
+                &store::nasfs::NasRoot::local_for_test(&root),
+                &fewer,
+                pipeline::extents::load(&store::nasfs::NasRoot::local_for_test(&root))
+            )
+            .unwrap()
+            .0
+            .len(),
+            3
+        );
+        assert_eq!(pipeline::extents::load(&store::nasfs::NasRoot::local_for_test(&root)).len(), 4);
+        pipeline::extents::keep(&store::nasfs::NasRoot::local_for_test(&root), &fewer).unwrap();
+        assert_eq!(pipeline::extents::load(&store::nasfs::NasRoot::local_for_test(&root)).len(), 3);
         // No tiles named: every z6 tile.
         assert_eq!(super::open_units(&out, &cache, Some(&mirror), None, None).unwrap().0.len(), units.len());
         for name in names.keys() {
@@ -6345,19 +6385,19 @@ mod tests {
     fn a_delta_catalog_is_the_whole_one_and_takes_the_last_ones_sizes() {
         let d = tempfile::tempdir().unwrap();
         let roots = [d.path().join("delta"), d.path().join("whole")];
-        let put = |root: &std::path::Path, logical: &str, bytes: &[u8]| -> String {
+        let put = |root: &store::nasfs::NasRoot, logical: &str, bytes: &[u8]| -> String {
             let name =
                 store::naming::content_name(logical, &format!("{:016x}", bytes.len() * 7 + logical.len()), "pack");
-            std::fs::create_dir_all(root.join(&name).parent().unwrap()).unwrap();
-            std::fs::write(root.join(&name), bytes).unwrap();
+            root.join(&name).parent().unwrap().create_dir_all().unwrap();
+            root.join(&name).write(bytes).unwrap();
             let p = root.join("state/build/manifest.json");
             let mut m: std::collections::BTreeMap<String, String> = pipeline::out::read_record(&p).unwrap();
             m.insert(logical.into(), name.clone());
-            std::fs::write(&p, serde_json::to_vec(&m).unwrap()).unwrap();
+            p.write(serde_json::to_vec(&m).unwrap()).unwrap();
             name
         };
-        let run = |root: &std::path::Path, way: super::CatalogWay| {
-            let mut out = pipeline::out::Out::unbound(root, &root.join("scratch")).unwrap();
+        let run = |root: &store::nasfs::NasRoot, way: super::CatalogWay| {
+            let mut out = pipeline::out::Out::unbound(root, &root.unchecked_path().join("scratch")).unwrap();
             super::catalog(&mut out, false, None, &Default::default(), way, NOW).unwrap();
         };
         let delta = super::CatalogWay { delta: true, whole: false };
@@ -6367,24 +6407,33 @@ mod tests {
             std::fs::create_dir_all(root.join("inputs/regions")).unwrap();
             // (The regions' accepted version, none in it, as the readers read it.)
             let mut m = std::collections::BTreeMap::new();
-            pipeline::inputs::regions::accept_fixture(root, root, &[], &mut m);
+            pipeline::inputs::regions::accept_fixture(
+                &store::nasfs::NasRoot::local_for_test(root),
+                root.into(),
+                &[],
+                &mut m,
+            );
             std::fs::write(root.join("state/build/manifest.json"), serde_json::to_vec(&m).unwrap()).unwrap();
-            put(root, "layers/roads/hi/6-1-2", b"one");
-            gone = put(root, "layers/roads/lo/3-0-0", b"lo pack");
+            put(&store::nasfs::NasRoot::local_for_test(root), "layers/roads/hi/6-1-2", b"one");
+            gone = put(&store::nasfs::NasRoot::local_for_test(root), "layers/roads/lo/3-0-0", b"lo pack");
             // (Enough files that a change is small beside the whole.)
             for i in 0..40 {
-                put(root, &format!("layers/roads/hi/6-2-{i}"), format!("tile {i}").as_bytes());
+                put(
+                    &store::nasfs::NasRoot::local_for_test(root),
+                    &format!("layers/roads/hi/6-2-{i}"),
+                    format!("tile {i}").as_bytes(),
+                );
             }
-            run(root, super::CatalogWay::default());
+            run(&store::nasfs::NasRoot::local_for_test(root), super::CatalogWay::default());
         }
         // A tile drawn again and one added; the lo pack gone from the NAS (its size from the last).
         for root in &roots {
-            put(root, "layers/roads/hi/6-1-2", b"one again");
-            put(root, "layers/roads/hi/6-1-3", b"three");
+            put(&store::nasfs::NasRoot::local_for_test(root), "layers/roads/hi/6-1-2", b"one again");
+            put(&store::nasfs::NasRoot::local_for_test(root), "layers/roads/hi/6-1-3", b"three");
         }
         std::fs::remove_file(roots[0].join(&gone)).unwrap();
-        run(&roots[0], delta);
-        run(&roots[1], super::CatalogWay::default());
+        run(&store::nasfs::NasRoot::local_for_test(&roots[0]), delta);
+        run(&store::nasfs::NasRoot::local_for_test(&roots[1]), super::CatalogWay::default());
         assert!(roots[0].join("catalog/2.delta.json.zst").exists() && !roots[0].join("catalog/2.json.zst").exists());
         let strip = |mut c: store::catalog::Catalog| {
             c.created.clear();
@@ -6397,24 +6446,32 @@ mod tests {
         assert_eq!(a.n, 2);
         assert_eq!(strip(a), strip(b));
         // Asked for whole: whole, whatever.
-        put(&roots[0], "layers/roads/hi/6-1-4", b"four");
+        put(&store::nasfs::NasRoot::local_for_test(&roots[0]), "layers/roads/hi/6-1-4", b"four");
         std::fs::write(roots[0].join(&gone), b"lo pack").unwrap();
-        run(&roots[0], super::CatalogWay { delta: true, whole: true });
+        run(&store::nasfs::NasRoot::local_for_test(&roots[0]), super::CatalogWay { delta: true, whole: true });
         assert!(roots[0].join("catalog/3.json.zst").exists());
         // A whole one checks every file: one the last catalog lists, gone from the NAS, stops it.
         std::fs::remove_file(roots[0].join(&gone)).unwrap();
-        put(&roots[0], "layers/roads/hi/6-1-5", b"five");
+        put(&store::nasfs::NasRoot::local_for_test(&roots[0]), "layers/roads/hi/6-1-5", b"five");
         for way in [super::CatalogWay { delta: true, whole: true }, super::CatalogWay::default()] {
-            let mut out = pipeline::out::Out::unbound(&roots[0], &roots[0].join("scratch")).unwrap();
+            let mut out = pipeline::out::Out::unbound(
+                &store::nasfs::NasRoot::local_for_test(&roots[0]),
+                &roots[0].join("scratch"),
+            )
+            .unwrap();
             let e = super::catalog(&mut out, false, None, &Default::default(), way, NOW).unwrap_err();
             assert!(format!("{e:#}").contains("missing on the NAS"), "{e:#}");
         }
         // So much new that the delta is as big as the whole one: a delta still (the whole one comes
         // in idle time), the files whose sizes came from the last not looked at.
         for i in 0..3000 {
-            put(&roots[0], &format!("layers/roads/hi/6-9-{i}"), format!("new {i}").as_bytes());
+            put(
+                &store::nasfs::NasRoot::local_for_test(&roots[0]),
+                &format!("layers/roads/hi/6-9-{i}"),
+                format!("new {i}").as_bytes(),
+            );
         }
-        run(&roots[0], delta);
+        run(&store::nasfs::NasRoot::local_for_test(&roots[0]), delta);
         assert!(roots[0].join("catalog/4.delta.json.zst").exists());
         assert!(store::catalog::whole_due(&roots[0].join("catalog")).unwrap());
     }
@@ -6429,17 +6486,26 @@ mod tests {
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         std::fs::create_dir_all(root.join("inputs/regions")).unwrap();
         let mut m = std::collections::BTreeMap::new();
-        pipeline::inputs::regions::accept_fixture(root, root, &[], &mut m);
+        pipeline::inputs::regions::accept_fixture(
+            &store::nasfs::NasRoot::local_for_test(root),
+            root.into(),
+            &[],
+            &mut m,
+        );
         std::fs::write(root.join("state/build/manifest.json"), serde_json::to_vec(&m).unwrap()).unwrap();
         let write = |files: &[(String, Vec<u8>)]| {
-            let mut out = pipeline::out::Out::unbound(root, &root.join("scratch")).unwrap();
+            let mut out =
+                pipeline::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch"))
+                    .unwrap();
             for (l, b) in files {
                 out.put_bytes(l, "pack", b).unwrap();
             }
             out.save().unwrap();
         };
         let run = |way| {
-            let mut out = pipeline::out::Out::unbound(root, &root.join("scratch")).unwrap();
+            let mut out =
+                pipeline::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch"))
+                    .unwrap();
             super::catalog(&mut out, false, None, &Default::default(), way, NOW).unwrap()
         };
         let delta = super::CatalogWay { delta: true, whole: false };
@@ -6450,7 +6516,8 @@ mod tests {
         let old = store::naming::content_name("layers/roads/hi/6-1-1", "00000000000000aa", "pack");
         std::fs::write(root.join(&old), b"written long ago").unwrap();
         let p = root.join("state/build/manifest.json");
-        let mut m: std::collections::BTreeMap<String, String> = pipeline::out::read_record(&p).unwrap();
+        let mut m: std::collections::BTreeMap<String, String> =
+            pipeline::out::read_record(&store::nasfs::NasPath::local_for_test(&p)).unwrap();
         m.insert("layers/roads/hi/6-1-1".into(), old.clone());
         std::fs::write(&p, serde_json::to_vec(&m).unwrap()).unwrap();
         write(&[
@@ -6461,11 +6528,13 @@ mod tests {
         let second = run(delta);
         assert_eq!((second.delta, second.stated, second.files), (true, 1, 42));
         write(&[("layers/roads/hi/6-1-3".into(), b"three".to_vec())]);
-        let names: Vec<String> = pipeline::out::read_record::<std::collections::BTreeMap<String, String>>(&p)
-            .unwrap()
-            .into_values()
-            .filter(|c| c.starts_with("layers/"))
-            .collect();
+        let names: Vec<String> = pipeline::out::read_record::<std::collections::BTreeMap<String, String>>(
+            &store::nasfs::NasPath::local_for_test(&p),
+        )
+        .unwrap()
+        .into_values()
+        .filter(|c| c.starts_with("layers/"))
+        .collect();
         let kept: Vec<(String, Vec<u8>)> =
             names.iter().map(|c| (c.clone(), std::fs::read(root.join(c)).unwrap())).collect();
         for (c, _) in &kept {
@@ -6484,7 +6553,8 @@ mod tests {
         assert_eq!(as_delta.files, as_whole.files);
         // A recorded size the NAS disagrees with stops a whole one.
         std::fs::write(root.join(&kept[0].0), b"another size altogether").unwrap();
-        let mut out = pipeline::out::Out::unbound(root, &root.join("scratch")).unwrap();
+        let mut out =
+            pipeline::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
         let e =
             super::catalog(&mut out, false, None, &Default::default(), super::CatalogWay::default(), NOW).unwrap_err();
         assert!(format!("{e:#}").contains("as recorded"), "{e:#}");
@@ -6502,9 +6572,15 @@ mod tests {
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         std::fs::create_dir_all(root.join("inputs/regions")).unwrap();
         let mut m = std::collections::BTreeMap::new();
-        pipeline::inputs::regions::accept_fixture(root, root, &[], &mut m);
+        pipeline::inputs::regions::accept_fixture(
+            &store::nasfs::NasRoot::local_for_test(root),
+            root.into(),
+            &[],
+            &mut m,
+        );
         std::fs::write(root.join("state/build/manifest.json"), serde_json::to_vec(&m).unwrap()).unwrap();
-        let mut out = pipeline::out::Out::unbound(root, &root.join("scratch")).unwrap();
+        let mut out =
+            pipeline::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
         // A pack of before, and the bundle: tiles at z1 (root), z4 under 3/1/2, z10 under 6/9/20.
         out.put_bytes("layers/ov-whs/hi/6-1-1", "pack", b"old").unwrap();
         let gz = |b: &[u8]| {
@@ -6527,7 +6603,9 @@ mod tests {
         assert!(pipeline::layers::write_file_bundle(&mut out, pipeline::marks::MARKDATA_BUNDLE, meta, files).unwrap());
         out.save().unwrap();
         let run = |way| {
-            let mut out = pipeline::out::Out::unbound(root, &root.join("scratch")).unwrap();
+            let mut out =
+                pipeline::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch"))
+                    .unwrap();
             super::catalog(&mut out, false, None, &Default::default(), way, NOW).unwrap()
         };
         run(super::CatalogWay::default());
@@ -6555,7 +6633,8 @@ mod tests {
         for l in ["layers/ov-whs/all", "markdata/all"] {
             std::fs::remove_file(root.join(first.content(l).unwrap())).unwrap();
         }
-        let mut out = pipeline::out::Out::unbound(root, &root.join("scratch")).unwrap();
+        let mut out =
+            pipeline::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
         out.put_bytes("layers/roads/hi/6-1-1", "pack", b"new").unwrap();
         out.save().unwrap();
         let second = run(super::CatalogWay { delta: true, whole: false });
@@ -6571,7 +6650,12 @@ mod tests {
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         std::fs::create_dir_all(root.join("inputs/regions")).unwrap();
         let mut m = std::collections::BTreeMap::new();
-        pipeline::inputs::regions::accept_fixture(root, root, &[], &mut m);
+        pipeline::inputs::regions::accept_fixture(
+            &store::nasfs::NasRoot::local_for_test(root),
+            root.into(),
+            &[],
+            &mut m,
+        );
         let mut put = |logical: &str, bytes: &[u8]| {
             let name =
                 store::naming::content_name(logical, &format!("{:016x}", bytes.len() * 7 + logical.len()), "pack");
@@ -6584,7 +6668,9 @@ mod tests {
             put(&format!("layers/roads/hi/6-2-{i}"), format!("tile {i}").as_bytes());
         }
         let run = |way| {
-            let mut out = pipeline::out::Out::unbound(root, &root.join("scratch")).unwrap();
+            let mut out =
+                pipeline::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch"))
+                    .unwrap();
             super::catalog(&mut out, false, None, &Default::default(), way, NOW).unwrap()
         };
         let first = run(super::CatalogWay::default());
@@ -6642,13 +6728,14 @@ mod tests {
             }
         };
         let pairs = |out: &pipeline::out::Out| -> Vec<u64> {
-            let f = store::range::PlainFile::open(&out.path(out.get("global/roadunits").unwrap())).unwrap();
+            let f = out.path(out.get("global/roadunits").unwrap()).open_plain().unwrap();
             store::sect::SectReader::open(f).unwrap().read_pod("pairs").unwrap()
         };
         let flat = |v: &[(u64, u64)]| v.iter().flat_map(|&(r, u)| [r, u]).collect::<Vec<_>>();
         let d = tempfile::tempdir().unwrap();
         let root = d.path();
-        let mut out = pipeline::out::Out::unbound(root, &root.join("scratch")).unwrap();
+        let mut out =
+            pipeline::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
         fill(&mut out, &[rec(3)]);
         super::roadunits(&mut out).unwrap();
         let (ka, kb, kc) = (a.key(), b.key(), c.key());
@@ -6657,7 +6744,7 @@ mod tests {
         assert_eq!(pairs(&out), flat(&want));
         // c's list changed, a's and b's files gone from the NAS: only c's is read.
         for l in ["global/roads/6-1-1", "global/roadids/6-1-2"] {
-            std::fs::remove_file(out.path(out.get(l).unwrap())).unwrap();
+            (out.path(out.get(l).unwrap())).remove_file().unwrap();
         }
         super::put_road_ids(&mut out, c, &[rec(4)]).unwrap();
         super::roadunits(&mut out).unwrap();
@@ -6666,7 +6753,11 @@ mod tests {
         assert_eq!(pairs(&out), flat(&want));
         // Made afresh from every list: the same file.
         let fresh = tempfile::tempdir().unwrap();
-        let mut o2 = pipeline::out::Out::unbound(fresh.path(), &fresh.path().join("scratch")).unwrap();
+        let mut o2 = pipeline::out::Out::unbound(
+            &store::nasfs::NasRoot::local_for_test(fresh.path()),
+            &fresh.path().join("scratch"),
+        )
+        .unwrap();
         fill(&mut o2, &[rec(4)]);
         super::roadunits(&mut o2).unwrap();
         assert_eq!(o2.get("global/roadunits"), out.get("global/roadunits"));

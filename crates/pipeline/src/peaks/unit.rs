@@ -916,7 +916,11 @@ mod tests {
     fn read_ahead_in_spans_gives_the_same_bytes_as_tile_by_tile() {
         use crate::terrain_pack::{ManifestTiles, RawTiles};
         let d = tempfile::tempdir().unwrap();
-        let mut out = crate::out::Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
+        let mut out = crate::out::Out::unbound(
+            &store::nasfs::NasRoot::local_for_test(&d.path().join("root")),
+            &d.path().join("scratch"),
+        )
+        .unwrap();
         // Two z6 tiles side by side (6/33/22, 6/34/22), peaks either side of their border.
         let pk = |n: u32, lon: f64, lat: f64, ele: Option<f32>| {
             let (lon, lat) = ((lon * 1e7) as i32, (lat * 1e7) as i32);

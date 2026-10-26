@@ -28,12 +28,12 @@ fn the_tiles_an_area_meets() {
 }
 
 /// Puts a file of `size` bytes on the "NAS" and lists it in `cat`.
-fn put(root: &std::path::Path, cat: &mut Catalog, logical: &str, size: usize) -> String {
+fn put(root: &store::nasfs::NasRoot, cat: &mut Catalog, logical: &str, size: usize) -> String {
     let body: Vec<u8> = (0..size).map(|i| (i as u8).wrapping_mul(7).wrapping_add(logical.len() as u8)).collect();
     put_bytes(root, cat, logical, "bin", &body)
 }
 
-fn put_bytes(root: &std::path::Path, cat: &mut Catalog, logical: &str, ext: &str, body: &[u8]) -> String {
+fn put_bytes(root: &store::nasfs::NasRoot, cat: &mut Catalog, logical: &str, ext: &str, body: &[u8]) -> String {
     let name = write_atomic(root, logical, ext, Source::Bytes(body)).unwrap();
     cat.files.insert(
         logical.into(),
@@ -53,7 +53,7 @@ fn gz(b: &[u8]) -> Vec<u8> {
 /// England, the Low Countries), a terrain layer's root and lo packs, a worldwide file, a basemap
 /// (a tile at z0 and z10, and z11–14 tiles under each of the three), and one region, London,
 /// recorded in its coverage.
-fn catalog(root: &std::path::Path) -> Catalog {
+fn catalog(root: &store::nasfs::NasRoot) -> Catalog {
     let mut c = Catalog::new(1);
     let mut terrain = Layer { encoding: "terrarium-png".into(), maxzoom: 12, ..Default::default() };
     let mut roads = Layer { encoding: "rt7".into(), minzoom: 4, maxzoom: 14, ..Default::default() };
@@ -90,7 +90,7 @@ fn catalog(root: &std::path::Path) -> Catalog {
         {"id": "east", "name": "East", "outline": ["osm:1"], "shapes": {"osm:1": [[rect(-0.06, 51.4, -0.03, 51.6)]]}},
     ]});
     c.validate().unwrap();
-    store::catalog::write(&root.join("catalog"), &c).unwrap();
+    store::catalog::write(&root.unchecked_path().join("catalog"), &c).unwrap();
     c
 }
 
@@ -104,7 +104,7 @@ fn logicals(f: &Files) -> Vec<String> {
 #[test]
 fn an_areas_files_are_its_tiles_hi_packs_and_base_packs_and_the_hi_data_around() {
     let nas = tempfile::tempdir().unwrap();
-    let cat = catalog(nas.path());
+    let cat = catalog(&store::nasfs::NasRoot::local_for_test(nas.path()));
     let f = files_of(&cat, &[rect(-0.3, 51.4, -0.1, 51.6)]);
     // Its tile's packs, the terrain of the tile within 25 km across the meridian (for the
     // viewshed), the hi data within 50 km, the worldwide file (read zoomed in too).
@@ -156,8 +156,8 @@ fn settle(s: &S) {
 #[tokio::test(flavor = "multi_thread")]
 async fn downloading_the_world_and_regions() {
     let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let cat = catalog(nas.path());
-    let s = crate::test_state_with(home.path(), nas.path(), true);
+    let cat = catalog(&store::nasfs::NasRoot::local_for_test(nas.path()));
+    let s = crate::test_state_with(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()), true);
     let london = area_part(&cat, &[rect(-0.3, 51.4, -0.1, 51.6)], &BTreeSet::new());
 
     // Nothing downloaded: nothing copied; the sizes worked out, the basemap's pieces too.
@@ -228,11 +228,11 @@ async fn downloading_the_world_and_regions() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_download_that_wouldnt_fit_is_refused_with_the_numbers() {
     let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    catalog(nas.path());
+    catalog(&store::nasfs::NasRoot::local_for_test(nas.path()));
     // A reserve no disk has: nothing fits.
     let data = Data::open(crate::data::Options {
         home: home.path().to_owned(),
-        nas_root: Some(nas.path().to_owned()),
+        nas_root: Some(store::nasfs::NasRoot::local_for_test(nas.path().to_owned())),
         mirror: true,
         reserve: u64::MAX / 4,
     })
@@ -250,7 +250,7 @@ async fn a_download_that_wouldnt_fit_is_refused_with_the_numbers() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_macs_downloaded_views_are_removed_and_their_files_go() {
     let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let cat = catalog(nas.path());
+    let cat = catalog(&store::nasfs::NasRoot::local_for_test(nas.path()));
     // Before views went: London and a view over Rotterdam downloaded, with the World, all here.
     let view = rect(4.0, 51.7, 4.6, 52.1);
     std::fs::write(
@@ -266,9 +266,9 @@ async fn a_macs_downloaded_views_are_removed_and_their_files_go() {
         let all =
             Wanted { items: cat.files.values().map(|f| Item::File { name: f.file.clone(), size: f.size }).collect() };
         let pool = store::IoPool::new(2, Duration::from_secs(60), nas.path().to_owned());
-        m.sync(&cat, &all, nas.path(), &pool, &Control::FREE).unwrap();
+        m.sync(&cat, &all, &store::nasfs::NasRoot::local_for_test(nas.path()), &pool, &Control::FREE).unwrap();
     }
-    let s = crate::test_state_with(home.path(), nas.path(), true);
+    let s = crate::test_state_with(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()), true);
     let asked = s.downloads.asked();
     assert!(asked.world.is_some() && asked.regions.len() == 1);
     let on_disk: Value = serde_json::from_slice(&std::fs::read(home.path().join(FILE)).unwrap()).unwrap();
@@ -332,10 +332,10 @@ fn a_downloads_file_from_before_one_terrain_keeps_its_terrain_detail() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_reserve_is_set_kept_and_bounded_and_the_mirror_takes_it_at_once() {
     let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    catalog(nas.path());
+    catalog(&store::nasfs::NasRoot::local_for_test(nas.path()));
     let data = Data::open(crate::data::Options {
         home: home.path().to_owned(),
-        nas_root: Some(nas.path().to_owned()),
+        nas_root: Some(store::nasfs::NasRoot::local_for_test(nas.path().to_owned())),
         mirror: true,
         reserve: crate::reserve::load(home.path()) * 1_000_000_000,
     })
@@ -362,13 +362,13 @@ async fn the_reserve_is_set_kept_and_bounded_and_the_mirror_takes_it_at_once() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_agents_room_target_above_the_reserve_is_the_mirrors_reserve() {
     let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    catalog(nas.path());
+    catalog(&store::nasfs::NasRoot::local_for_test(nas.path()));
     // This Mac's agent keeps 40 GiB free (`scenic room 40`), above the 30 GB reserve.
     std::fs::create_dir_all(home.path().join("agent")).unwrap();
     pipeline::agent::settings::set_room(&home.path().join("agent"), "40", "t").unwrap();
     let data = Data::open(crate::data::Options {
         home: home.path().to_owned(),
-        nas_root: Some(nas.path().to_owned()),
+        nas_root: Some(store::nasfs::NasRoot::local_for_test(nas.path().to_owned())),
         mirror: true,
         reserve: 30_000_000_000,
     })
@@ -388,7 +388,7 @@ async fn a_region_still_building_downloads_as_its_tiles_come() {
     let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     // A region over 31/21 and 32/21 (London to Kent), still building: catalog 1 has 31/21's files
     // alone, catalog 2 32/21's too.
-    let full = catalog(nas.path());
+    let full = catalog(&store::nasfs::NasRoot::local_for_test(nas.path()));
     let dir = nas.path().join("catalog");
     std::fs::remove_dir_all(&dir).unwrap();
     let se = rect(-0.3, 51.4, 0.3, 51.6);
@@ -409,7 +409,7 @@ async fn a_region_still_building_downloads_as_its_tiles_come() {
     first.coverage = coverage(1);
     first.validate().unwrap();
     store::catalog::write(&dir, &first).unwrap();
-    let s = crate::test_state_with(home.path(), nas.path(), true);
+    let s = crate::test_state_with(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()), true);
     assert_eq!(s.data.catalog().n, 1);
 
     // Downloaded while building: listed with its tiles, catalog 1's files copied.
@@ -449,7 +449,7 @@ async fn a_region_still_building_downloads_as_its_tiles_come() {
 
 /// A deep terrain pack (pipeline::terrain_deep) of one z13 tile `h` metres high, under z10 tile
 /// (x, y), put on the "NAS" and named in `cat`'s terrain.
-fn put_deep(root: &std::path::Path, cat: &mut Catalog, x: u32, y: u32, h: f32) {
+fn put_deep(root: &store::nasfs::NasRoot, cat: &mut Catalog, x: u32, y: u32, h: f32) {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("p.pack");
     let mut w = store::pack::PackWriter::create(&path, json!({"layer": "terrain"}), false).unwrap();
@@ -470,11 +470,11 @@ fn put_deep(root: &std::path::Path, cat: &mut Catalog, x: u32, y: u32, h: f32) {
 #[test]
 fn a_regions_terrain_detail_is_the_deep_packs_near_it_and_the_share_they_cover() {
     let nas = tempfile::tempdir().unwrap();
-    let mut cat = catalog(nas.path());
+    let mut cat = catalog(&store::nasfs::NasRoot::local_for_test(nas.path()));
     // A box from London to Sussex, in z10 tiles x 511, y 340 and 341. One deep pack under its
     // north (row 340), one an ocean away.
-    put_deep(nas.path(), &mut cat, 511, 340, 100.0);
-    put_deep(nas.path(), &mut cat, 600, 340, 1.0);
+    put_deep(&store::nasfs::NasRoot::local_for_test(nas.path()), &mut cat, 511, 340, 100.0);
+    put_deep(&store::nasfs::NasRoot::local_for_test(nas.path()), &mut cat, 600, 340, 1.0);
     let (f, cover) = detail_of(&cat, &[rect(-0.3, 51.2, -0.1, 51.6)]);
     assert_eq!(logicals(&f), ["layers/slope/deep/10-511-340", "layers/terrain/deep/10-511-340"]);
     // Its share: the part of the box north of row 341's edge (in Web Mercator).
@@ -493,12 +493,12 @@ fn a_regions_terrain_detail_is_the_deep_packs_near_it_and_the_share_they_cover()
 #[tokio::test(flavor = "multi_thread")]
 async fn terrain_detail_downloads_with_its_region_and_is_read_from_this_mac() {
     let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let mut cat = catalog(nas.path());
-    put_deep(nas.path(), &mut cat, 511, 340, 100.0);
+    let mut cat = catalog(&store::nasfs::NasRoot::local_for_test(nas.path()));
+    put_deep(&store::nasfs::NasRoot::local_for_test(nas.path()), &mut cat, 511, 340, 100.0);
     cat.n = 2;
     cat.validate().unwrap();
     store::catalog::write(&nas.path().join("catalog"), &cat).unwrap();
-    let s = crate::test_state_with(home.path(), nas.path(), true);
+    let s = crate::test_state_with(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()), true);
     let detail = |s: &S, on: bool| {
         let s = s.clone();
         async move { call(put_region_detail(State(s), Path("london".into()), Json(On { on })).await).await }
@@ -571,21 +571,21 @@ async fn terrain_detail_downloads_with_its_region_and_is_read_from_this_mac() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_region_alone_has_what_the_map_reads_zoomed_in() {
     let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let mut cat = catalog(nas.path());
+    let mut cat = catalog(&store::nasfs::NasRoot::local_for_test(nas.path()));
     // The World's per-tile records over London (landmarks, area details, roads' English names), and
     // one far away.
-    put(nas.path(), &mut cat, "markdata/6-31-21", 700);
+    put(&store::nasfs::NasRoot::local_for_test(nas.path()), &mut cat, "markdata/6-31-21", 700);
     cat.markdata.insert("6/31/21".into(), "markdata/6-31-21".into());
-    put(nas.path(), &mut cat, "ovdata/3-3-2", 800);
+    put(&store::nasfs::NasRoot::local_for_test(nas.path()), &mut cat, "ovdata/3-3-2", 800);
     cat.ovdata.insert("3/3/2".into(), "ovdata/3-3-2".into());
     for t in ["6-31-21", "6-10-10"] {
-        put(nas.path(), &mut cat, &format!("global/roaden/{t}"), 90);
+        put(&store::nasfs::NasRoot::local_for_test(nas.path()), &mut cat, &format!("global/roaden/{t}"), 90);
         cat.global.insert(format!("roaden/{t}"), format!("global/roaden/{t}"));
     }
     cat.n = 2;
     cat.validate().unwrap();
     store::catalog::write(&nas.path().join("catalog"), &cat).unwrap();
-    let s = crate::test_state_with(home.path(), nas.path(), true);
+    let s = crate::test_state_with(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()), true);
     assert_eq!(region(&s, "london", true).await.0, StatusCode::OK);
     assert!(s.downloads.asked().world.is_none());
     tokio::task::block_in_place(|| settle(&s));
@@ -632,7 +632,13 @@ fn put_roads(root: &std::path::Path, cat: &mut Catalog) {
                 .unwrap();
         write(&mut w);
         w.finish().unwrap();
-        let name = write_atomic(root, logical, "sect", Source::Bytes(&std::fs::read(&p).unwrap())).unwrap();
+        let name = write_atomic(
+            &store::nasfs::NasRoot::local_for_test(root),
+            logical,
+            "sect",
+            Source::Bytes(&std::fs::read(&p).unwrap()),
+        )
+        .unwrap();
         let size = std::fs::metadata(root.join(&name)).unwrap().len();
         cat.files.insert(logical.into(), FileRef { file: name, size, fmt: 1, extra: Default::default() });
     };
@@ -711,12 +717,12 @@ async fn away_a_regions_ways_have_their_info_and_its_roads_are_cut_at_its_edge()
     let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let root = nas.path().join("project");
     std::fs::create_dir_all(&root).unwrap();
-    let mut cat = catalog(&root);
+    let mut cat = catalog(&store::nasfs::NasRoot::local_for_test(&root));
     put_roads(&root, &mut cat);
     cat.n = 2;
     cat.validate().unwrap();
     store::catalog::write(&root.join("catalog"), &cat).unwrap();
-    let s = crate::test_state_with(home.path(), &root, true);
+    let s = crate::test_state_with(home.path(), &store::nasfs::NasRoot::local_for_test(&root), true);
     let in_london = [-0.15, 51.5];
 
     // At home: the whole road.
@@ -750,7 +756,7 @@ async fn away_a_regions_ways_have_their_info_and_its_roads_are_cut_at_its_edge()
     assert_eq!((v["ways"].clone(), v["truncated"].clone()), (json!([100, 101]), json!(true)));
 
     // Started again away from the NAS: the owners read from this Mac's hidata, nothing goes.
-    let s = crate::test_state_with(home.path(), &root, true);
+    let s = crate::test_state_with(home.path(), &store::nasfs::NasRoot::local_for_test(&root), true);
     if let Some(p) = s.data.pool() {
         p.mark_offline("test");
     }
@@ -767,12 +773,12 @@ async fn a_region_swapped_for_another_keeps_the_others_owners() {
     let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let root = nas.path().join("project");
     std::fs::create_dir_all(&root).unwrap();
-    let mut cat = catalog(&root);
+    let mut cat = catalog(&store::nasfs::NasRoot::local_for_test(&root));
     put_roads(&root, &mut cat);
     cat.n = 2;
     cat.validate().unwrap();
     store::catalog::write(&root.join("catalog"), &cat).unwrap();
-    let s = crate::test_state_with(home.path(), &root, true);
+    let s = crate::test_state_with(home.path(), &store::nasfs::NasRoot::local_for_test(&root), true);
     let m = s.data.mirror.clone().unwrap();
     let has = |l: &str| m.has(cat.content(l).unwrap());
     assert_eq!(region(&s, "london", true).await.0, StatusCode::OK);
@@ -792,12 +798,12 @@ async fn at_home_an_unread_hidata_lets_no_owner_go() {
     let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let root = nas.path().join("project");
     std::fs::create_dir_all(&root).unwrap();
-    let mut cat = catalog(&root);
+    let mut cat = catalog(&store::nasfs::NasRoot::local_for_test(&root));
     put_roads(&root, &mut cat);
     cat.n = 2;
     cat.validate().unwrap();
     store::catalog::write(&root.join("catalog"), &cat).unwrap();
-    let s = crate::test_state_with(home.path(), &root, true);
+    let s = crate::test_state_with(home.path(), &store::nasfs::NasRoot::local_for_test(&root), true);
     assert_eq!(region(&s, "london", true).await.0, StatusCode::OK);
     tokio::task::block_in_place(|| settle(&s));
     let far = cat.content("base/6-30-21").unwrap().to_string();
@@ -809,7 +815,7 @@ async fn at_home_an_unread_hidata_lets_no_owner_go() {
     cat.files.get_mut("hidata/6-31-21").unwrap().file = gone;
     cat.n = 3;
     store::catalog::write(&root.join("catalog"), &cat).unwrap();
-    let s = crate::test_state_with(home.path(), &root, true);
+    let s = crate::test_state_with(home.path(), &store::nasfs::NasRoot::local_for_test(&root), true);
     tokio::task::block_in_place(|| settle(&s));
     assert!(s.data.mirror.clone().unwrap().has(&far), "kept while its hidata is unread");
 }

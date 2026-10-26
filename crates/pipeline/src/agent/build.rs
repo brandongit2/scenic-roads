@@ -15,7 +15,6 @@ use crate::legacy::TileId;
 use crate::reach::{Reach, Reaches};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
 
 /// Step versions: bumping one rebuilds that step everywhere (oldest first, when idle).
 /// Terrain-hi 7 (task #639): its deep levels are their terrain-deep targets' (`TERRAIN_DEEP_V`), it
@@ -131,19 +130,19 @@ pub struct Keys {
 
 impl Keys {
     /// The keys for showing (the status): none when they can't be read now.
-    pub fn load(root: &Path) -> Keys {
+    pub fn load(root: &store::nasfs::NasRoot) -> Keys {
         Self::load_strict(root).unwrap_or_default()
     }
 
     /// The keys for planning and recording: none when there are none yet, an error when they can't
     /// be read now (so a job isn't started again, nor the keys written back, from empty ones).
-    pub fn load_strict(root: &Path) -> anyhow::Result<Keys> {
+    pub fn load_strict(root: &store::nasfs::NasRoot) -> anyhow::Result<Keys> {
         crate::out::read_record(&root.join("state/build/jobs.json"))
     }
 
     /// The keys with the done records of the hand-offs waiting under each of `bases` on top (the
     /// coordinator's journal on this Mac: crate::handoff), and the files they save (`handed`).
-    pub fn load_with(root: &Path, bases: &[std::path::PathBuf]) -> anyhow::Result<Keys> {
+    pub fn load_with(root: &store::nasfs::NasRoot, bases: &[std::path::PathBuf]) -> anyhow::Result<Keys> {
         let mut hs = Vec::new();
         for b in bases {
             hs.extend(crate::handoff::waiting_in(b)?);
@@ -164,10 +163,10 @@ impl Keys {
         Ok(k)
     }
 
-    pub fn save(&self, root: &Path) -> anyhow::Result<()> {
+    pub fn save(&self, root: &store::nasfs::NasRoot) -> anyhow::Result<()> {
         let p = root.join("state/build/jobs.json");
-        std::fs::create_dir_all(p.parent().unwrap())?;
-        crate::whole::write(&p, &serde_json::to_vec_pretty(self)?)
+        p.parent().unwrap().create_dir_all()?;
+        p.write_whole(serde_json::to_vec_pretty(self)?)
     }
 
     fn map(&mut self, step: &str) -> &mut BTreeMap<String, String> {
@@ -4955,7 +4954,7 @@ pub(crate) mod tests {
         assert_eq!(pois_keys(&c, "d", &m, &with("aaaa")).unwrap(), pois, "the same spacing: the same keys");
         assert_ne!(pois_keys(&c, "d", &m, &with("bbbb")).unwrap()[0].1, pois[0].1);
         // The accepted index unreadable (here: not on disk): "?", and the candidates wait.
-        assert!(crate::dem::spacing::digest_read(d.path(), &m).is_err());
+        assert!(crate::dem::spacing::digest_read(&store::nasfs::NasRoot::local_for_test(d.path()), &m).is_err());
         assert!(pois_keys(&c, "d", &m, &with("?")).is_none());
         assert!(pois_keys(&c, "d", &m, &BTreeMap::new()).is_none());
         m.insert("work/trailends/d".into(), "work/trailends/d.1111111111111111.zst".into());
@@ -7362,16 +7361,21 @@ pub(crate) mod tests {
         let mut job = lead.clone();
         job.remove("base/6-28-16");
         put(&mut job, "6-31-16", crate::hipack::tile_bounds(6, 31, 16));
-        assert_eq!(crate::extents::keep(root, &lead).unwrap(), 2);
+        assert_eq!(crate::extents::keep(&store::nasfs::NasRoot::local_for_test(root), &lead).unwrap(), 2);
         let mut r = reach();
-        r.extents = crate::extents::load(root);
+        r.extents = crate::extents::load(&store::nasfs::NasRoot::local_for_test(root));
         let before = pack_lo_targets(&lead, Some(&r));
         let file = std::fs::read(root.join(crate::extents::FILE)).unwrap();
         // The job's run: its own view, nothing written.
-        let (mine, read) = crate::extents::fill(root, &job, crate::extents::load(root)).unwrap();
+        let (mine, read) = crate::extents::fill(
+            &store::nasfs::NasRoot::local_for_test(root),
+            &job,
+            crate::extents::load(&store::nasfs::NasRoot::local_for_test(root)),
+        )
+        .unwrap();
         assert_eq!((read, mine.len()), (1, 2));
         assert_eq!(std::fs::read(root.join(crate::extents::FILE)).unwrap(), file, "the lead's file as it was");
-        r.extents = crate::extents::load(root);
+        r.extents = crate::extents::load(&store::nasfs::NasRoot::local_for_test(root));
         assert_eq!(r.extents.len(), 2, "no entry of the lead's lost");
         assert_eq!(pack_lo_targets(&lead, Some(&r)), before, "the keys as they were");
     }
@@ -8276,7 +8280,7 @@ pub(crate) mod tests {
         let g = |bbox: [f64; 4], zoom: u8| crate::depth::grids::Grid {
             bbox,
             zoom,
-            file: "g.tif".into(),
+            file: store::nasfs::NasPath::local_for_test("/r/g.tif"),
             zoom_file: None,
             low_file: None,
             packed: None,
@@ -8776,21 +8780,25 @@ pub(crate) mod tests {
             *t = std::time::Instant::now();
         };
         let mut t = t;
-        let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
-        let date = crate::osmpass::latest_pass_by(&root, false).unwrap();
-        let keys = Keys::load(&root);
-        let a = crate::inputs::regions::read::source(&root, &m).unwrap();
+        let m: BTreeMap<String, String> =
+            crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
+                .unwrap();
+        let date = crate::osmpass::latest_pass_by(&store::nasfs::NasRoot::local_for_test(&root), false).unwrap();
+        let keys = Keys::load(&store::nasfs::NasRoot::local_for_test(&root));
+        let a = crate::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m).unwrap();
         lap("records read", &mut t);
-        let cov = Coverage::accepted(&root, &a, None).unwrap();
+        let cov = Coverage::accepted(&store::nasfs::NasRoot::local_for_test(&root), &a, None).unwrap();
         let each = cov.by_region();
         lap(&format!("coverage made ({} shapes, {} regions)", cov.shapes.len(), each.len()), &mut t);
-        let reach = crate::reach::Reaches::load(&root, &m, &date).ok().flatten();
+        let reach =
+            crate::reach::Reaches::load(&store::nasfs::NasRoot::local_for_test(&root), &m, &date).ok().flatten();
         let mut tiles = TerrainTiles::new(std::env::var("SCENIC_BENCH_IDX").ok().map(std::path::PathBuf::from));
-        tiles.load(&root, &m);
-        let inputs = crate::agent::input_digests(&root);
+        tiles.load(&store::nasfs::NasRoot::local_for_test(&root), &m);
+        let inputs = crate::agent::input_digests(&store::nasfs::NasRoot::local_for_test(&root));
         lap("reaches, terrain indexes, input digests", &mut t);
         for round in 1..=2 {
-            let times = crate::agent::rekey::FileTimes::new(&root);
+            let nr = store::nasfs::NasRoot::local_for_test(&root);
+            let times = crate::agent::rekey::FileTimes::new(&nr);
             let mut k = keys.clone();
             crate::agent::rekey::as_read(&mut k, &cov, &m, &tiles, &times);
             lap(&format!("[{round}] rekey::as_read"), &mut t);

@@ -869,9 +869,11 @@ pub fn plan_converted(
 fn locate(a: &crate::inputs::Accepted, id: &str, w: &Where) -> Result<String> {
     match w {
         Where::Url(u) => Ok(u.clone()),
+        // (The converting program's input, read where it lies: tests/nas_access.rs.)
         Where::File(f) => Ok(a
             .path(&format!("{id}/{f}"))
             .with_context(|| format!("{id}/{f} isn't in the accepted version"))?
+            .unchecked_path()
             .to_string_lossy()
             .into_owned()),
     }

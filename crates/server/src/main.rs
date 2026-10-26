@@ -298,14 +298,14 @@ impl AppState {
 /// `--root`: the real NAS is never looked for), with this Mac's files in `home`. Nothing runs in
 /// the background.
 #[cfg(test)]
-pub fn test_state(home: &std::path::Path, root: &std::path::Path) -> S {
+pub fn test_state(home: &std::path::Path, root: &store::nasfs::NasRoot) -> S {
     test_state_with(home, root, false)
 }
 
 /// `test_state`, with a mirror in `home` when `mirror` (nothing copies into it unless a test
 /// syncs it).
 #[cfg(test)]
-pub fn test_state_with(home: &std::path::Path, root: &std::path::Path, mirror: bool) -> S {
+pub fn test_state_with(home: &std::path::Path, root: &store::nasfs::NasRoot, mirror: bool) -> S {
     test_state_from(
         home,
         data::Data::open(data::Options { home: home.to_owned(), nas_root: Some(root.to_owned()), mirror, reserve: 0 })
@@ -438,7 +438,7 @@ async fn main() -> Result<()> {
     }
     let d = data::Data::open(data::Options {
         home: home.clone(),
-        nas_root: root.clone(),
+        nas_root: root.clone().map(|r| store::nasfs::NasRoot::from_arg(r).short_retry()),
         mirror,
         reserve: reserve::Setting::load(&home).bytes(),
     })?;
@@ -1192,7 +1192,7 @@ mod tests {
             serde_json::json!({ "host": "lead", "beat": now - 100 }).to_string(),
         )
         .unwrap();
-        let body = test_state(home.path(), nas.path()).build_status_at(now);
+        let body = test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path())).build_status_at(now);
         assert_eq!((body["status"]["host"].as_str(), body["local"].as_bool()), (Some("lead"), Some(false)));
         assert_eq!(body["status"]["helpers"][0]["host"], "member");
         // Not for ten minutes: this member's own, as this Mac's.
@@ -1201,7 +1201,7 @@ mod tests {
             serde_json::json!({ "host": "lead", "beat": now - 3 * 86_400 }).to_string(),
         )
         .unwrap();
-        let body = test_state(home.path(), nas.path()).build_status_at(now);
+        let body = test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path())).build_status_at(now);
         assert_eq!((body["status"]["host"].as_str(), body["local"].as_bool()), (Some("member"), Some(true)));
         assert!(body["status"]["helpers"].is_null() && body.get("pages").is_none(), "{body}");
     }
@@ -1261,7 +1261,7 @@ mod tests {
         let nas = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
         store::catalog::write_copy(&nas.path().join("catalog"), &roads_catalog(1, "00000000000000c1")).unwrap();
-        let s = test_state(home.path(), nas.path());
+        let s = test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
         let packs = |s: &S| meta_json(s)["packs"]["roads"].clone();
         let p1 = packs(&s);
         let (root, lo, hi1) = (

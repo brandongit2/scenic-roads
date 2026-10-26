@@ -338,7 +338,7 @@ fn fetch_file(
             match std::fs::OpenOptions::new().write(true).create_new(true).open(&lock) {
                 Ok(mut f) => {
                     use std::io::Write;
-                    f.write_all(format!("{} {}", pipeline::agent::cond::host(), std::process::id()).as_bytes()).ok();
+                    f.write_all(format!("{} {}", store::sys::host(), std::process::id()).as_bytes()).ok();
                     _lock = Some(DownloadLock(lock));
                     break;
                 }
@@ -363,7 +363,7 @@ fn fetch_file(
     // (A file the source's index doesn't list: none there, asked of no one.)
     let Some(url) = url else {
         if let Some(st) = store {
-            pipeline::whole::write(st, b"")?;
+            store::whole::write(st, b"")?;
         }
         store::cachefile::create_bytes(path, b"")?;
         return Ok(None);
@@ -388,7 +388,7 @@ fn fetch_file(
                         return Ok(None);
                     }
                     if let Some(st) = store {
-                        pipeline::whole::copy(&tmp, st)?;
+                        store::whole::copy(&tmp, st)?;
                     }
                     store::cachefile::publish(f.try_clone()?, &tmp, path)?;
                     Ok(here().flatten())
@@ -406,7 +406,7 @@ fn fetch_file(
                 missing += 1;
                 if missing == 2 {
                     if let Some(st) = store {
-                        pipeline::whole::write(st, b"")?;
+                        store::whole::write(st, b"")?;
                     }
                     store::cachefile::create_bytes(path, b"")?;
                     return Ok(None);
@@ -1378,11 +1378,7 @@ mod tests {
         for dir in [&cache, &store] {
             for e in std::fs::read_dir(dir).unwrap() {
                 let p = e.unwrap().path();
-                assert!(
-                    !pipeline::whole::is_tmp(&p) && p.extension().is_some_and(|x| x == "tif"),
-                    "{} left",
-                    p.display()
-                );
+                assert!(!store::whole::is_tmp(&p) && p.extension().is_some_and(|x| x == "tif"), "{} left", p.display());
             }
         }
         // Read where they lie (a task's worker): what's whole, Meta's "none there"; one cut short,

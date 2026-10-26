@@ -17,6 +17,7 @@ use det::Det;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use store::nasfs::NasPath;
 
 /// The release the tests' records name (the staged declaration's).
 #[cfg(test)]
@@ -39,7 +40,7 @@ fn release_tag(release: &str) -> String {
 }
 
 /// Release `release`'s folder on the NAS.
-pub fn dir(root: &Path, release: &str) -> PathBuf {
+pub fn dir(root: &store::nasfs::NasRoot, release: &str) -> NasPath {
     root.join("sources/buildings").join(release_tag(release))
 }
 
@@ -49,13 +50,13 @@ pub fn index_logical(release: &str) -> String {
 }
 
 /// Where release `release`'s tile `t` is.
-pub fn tile_path(root: &Path, release: &str, t: TileId) -> PathBuf {
+pub fn tile_path(root: &store::nasfs::NasRoot, release: &str, t: TileId) -> NasPath {
     dir(root, release).join(format!("{}/{}-{}.f32", t.z, t.x, t.y))
 }
 
 /// The declared buildings source's release (its `version`) in the accepted sources the records `m`
 /// name (crate::inputs::sources), or why there's none.
-pub fn release_of(root: &Path, m: &BTreeMap<String, String>) -> Result<String> {
+pub fn release_of(root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) -> Result<String> {
     Ok(crate::inputs::sources::read(root, m)?.role(crate::inputs::sources::BUILDINGS)?.version()?.to_string())
 }
 
@@ -76,7 +77,7 @@ impl Index {
     pub fn load(out: &Out, release: &str) -> Result<Option<Index>> {
         let Some(c) = out.get(&index_logical(release)) else { return Ok(None) };
         let p = out.path(c);
-        let mut ix: Index = serde_json::from_slice(&std::fs::read(&p).with_context(|| format!("{}", p.display()))?)
+        let mut ix: Index = serde_json::from_slice(&p.read().with_context(|| format!("{}", p.display()))?)
             .with_context(|| format!("{}", p.display()))?;
         ix.tag = c.rsplit('.').nth(1).unwrap_or("").to_string();
         Ok(Some(ix))
@@ -93,14 +94,19 @@ impl Index {
 /// NAS whole when it isn't there and held for the job (store::cachefile): a unit's buildings step
 /// reads its tiles whole, and units side by side read the same ones. None when the tile has no
 /// buildings.
-pub fn local_tile(root: &Path, index: &Index, t: TileId, cache: &Path) -> Result<Option<PathBuf>> {
+pub fn local_tile(root: &store::nasfs::NasRoot, index: &Index, t: TileId, cache: &Path) -> Result<Option<PathBuf>> {
     let Some((src, local, want)) = tile_copy(root, index, t, cache) else { return Ok(None) };
     fetch_tile(&src, &local, want)?;
     Ok(Some(local))
 }
 
 /// Where tile `t` is on the NAS, where its copy in `cache` goes, and its length (`local_tile`).
-pub fn tile_copy(root: &Path, index: &Index, t: TileId, cache: &Path) -> Option<(PathBuf, PathBuf, u64)> {
+pub fn tile_copy(
+    root: &store::nasfs::NasRoot,
+    index: &Index,
+    t: TileId,
+    cache: &Path,
+) -> Option<(NasPath, PathBuf, u64)> {
     let want = index.bytes(t)?;
     Some((
         tile_path(root, &index.release, t),
@@ -110,9 +116,9 @@ pub fn tile_copy(root: &Path, index: &Index, t: TileId, cache: &Path) -> Option<
 }
 
 /// The copy of `src` at `local`, `want` bytes, made when it isn't there whole, and held.
-pub fn fetch_tile(src: &Path, local: &Path, want: u64) -> Result<()> {
+pub fn fetch_tile(src: &NasPath, local: &Path, want: u64) -> Result<()> {
     let copy = &mut |tmp: &Path| -> std::io::Result<()> {
-        let n = store::sys::copy_data(src, tmp)?;
+        let n = src.copy_data_to_local(tmp)?;
         crate::timings::count(n, 1);
         if n != want {
             return Err(std::io::Error::other(format!("{}: {n} bytes, not the index's {want}", src.display())));
@@ -367,18 +373,18 @@ pub fn build(out: &mut Out, scratch: &Path, workers: usize) -> Result<()> {
         let p = phase("tiles written to the NAS and read back", Class::NasWrite);
         let dest = tile_path(out.root(), &release, *t);
         // (Written whole by a run cut short: as it is.)
-        if std::fs::metadata(&dest).map(|m| m.len()).ok() != Some(bytes.len() as u64) {
-            std::fs::create_dir_all(dest.parent().context("tile folder")?)?;
+        if dest.metadata().map(|m| m.len()).ok() != Some(bytes.len() as u64) {
+            dest.parent().context("tile folder")?.create_dir_all()?;
             let tmp = dest.with_extension(format!("f32.{}.tmp", std::process::id()));
-            std::fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
+            tmp.write(bytes).with_context(|| format!("write {}", tmp.display()))?;
             // Read back, as every write to the NAS is.
-            let back = std::fs::read(&tmp).with_context(|| format!("read back {}", tmp.display()))?;
+            let back = tmp.read().with_context(|| format!("read back {}", tmp.display()))?;
             anyhow::ensure!(
                 store::naming::hash16(&back) == store::naming::hash16(bytes),
                 "{}: read back differs",
                 tmp.display()
             );
-            std::fs::rename(&tmp, &dest)?;
+            tmp.rename(&dest)?;
             p.count(bytes.len() as u64, 1);
         }
         drop(p);
@@ -416,7 +422,7 @@ fn canonical(mut v: Vec<[f32; 4]>) -> Vec<[f32; 4]> {
 /// The number of tiles linked.
 /// With `cache`, the links are to the tiles' copies there (`local_tile`), else to the NAS's files.
 pub fn stage(
-    root: &Path,
+    root: &store::nasfs::NasRoot,
     index: &Index,
     u: TileId,
     reach: Option<&Reach>,
@@ -434,7 +440,8 @@ pub fn stage(
         }
         let at = match cache {
             Some(c) => local_tile(root, index, t, c)?.context("a tile the index lists")?,
-            None => tile_path(root, &index.release, t),
+            // (Linked for the program to read where it lies: tests/nas_access.rs.)
+            None => tile_path(root, &index.release, t).unchecked_path(),
         };
         crate::sys::symlink(&at, &dir.join(format!("{}.f32", t.dash())))?;
         n += 1;
@@ -510,31 +517,45 @@ mod tests {
             tag: String::new(),
         };
         let staged = d.path().join("staged");
-        assert_eq!(stage(d.path(), &index, u, None, &staged, None).unwrap(), 2);
+        assert_eq!(stage(&store::nasfs::NasRoot::local_for_test(d.path()), &index, u, None, &staged, None).unwrap(), 2);
         let link = std::fs::read_link(staged.join(format!("{}.f32", near[7].dash()))).unwrap();
-        assert_eq!(link, tile_path(d.path(), TEST_RELEASE, near[7]));
+        assert_eq!(
+            link,
+            tile_path(&store::nasfs::NasRoot::local_for_test(d.path()), TEST_RELEASE, near[7]).unchecked_path()
+        );
         // With a cache: links to its copies, named by the index's hash, the same bytes.
         let mut index = index;
         index.tag = "0123456789abcdef".into();
         for (t, n) in [(near[0], 5usize), (near[7], 9)] {
-            let p = tile_path(d.path(), TEST_RELEASE, t);
-            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-            std::fs::write(&p, vec![t.x as u8; 16 * n]).unwrap();
+            let p = tile_path(&store::nasfs::NasRoot::local_for_test(d.path()), TEST_RELEASE, t);
+            p.parent().unwrap().create_dir_all().unwrap();
+            p.write(vec![t.x as u8; 16 * n]).unwrap();
         }
         let cache = d.path().join("cache");
-        assert_eq!(stage(d.path(), &index, u, None, &staged, Some(&cache)).unwrap(), 2);
+        assert_eq!(
+            stage(&store::nasfs::NasRoot::local_for_test(d.path()), &index, u, None, &staged, Some(&cache)).unwrap(),
+            2
+        );
         let link = std::fs::read_link(staged.join(format!("{}.f32", near[7].dash()))).unwrap();
         assert_eq!(link, cache.join(format!("blobs/buildings/0123456789abcdef/{}-{}.f32", near[7].x, near[7].y)));
-        assert_eq!(std::fs::read(&link).unwrap(), std::fs::read(tile_path(d.path(), TEST_RELEASE, near[7])).unwrap());
+        assert_eq!(
+            std::fs::read(&link).unwrap(),
+            tile_path(&store::nasfs::NasRoot::local_for_test(d.path()), TEST_RELEASE, near[7]).read().unwrap()
+        );
         // A copy cut short (another length than the index's) is made again; a tile on the NAS
         // that isn't the index's length is an error, not a short copy.
         std::fs::write(&link, b"short").unwrap();
-        assert_eq!(local_tile(d.path(), &index, near[7], &cache).unwrap().unwrap(), link);
+        assert_eq!(
+            local_tile(&store::nasfs::NasRoot::local_for_test(d.path()), &index, near[7], &cache).unwrap().unwrap(),
+            link
+        );
         assert_eq!(std::fs::metadata(&link).unwrap().len(), 16 * 9);
-        std::fs::write(tile_path(d.path(), TEST_RELEASE, near[0]), b"cut").unwrap();
+        tile_path(&store::nasfs::NasRoot::local_for_test(d.path()), TEST_RELEASE, near[0]).write(b"cut").unwrap();
         std::fs::remove_file(cache.join(format!("blobs/buildings/0123456789abcdef/{}-{}.f32", near[0].x, near[0].y)))
             .unwrap();
-        assert!(local_tile(d.path(), &index, near[0], &cache).is_err());
-        assert!(local_tile(d.path(), &index, near[1], &cache).unwrap().is_none());
+        assert!(local_tile(&store::nasfs::NasRoot::local_for_test(d.path()), &index, near[0], &cache).is_err());
+        assert!(local_tile(&store::nasfs::NasRoot::local_for_test(d.path()), &index, near[1], &cache)
+            .unwrap()
+            .is_none());
     }
 }

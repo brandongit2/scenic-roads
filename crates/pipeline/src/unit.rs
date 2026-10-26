@@ -24,12 +24,12 @@ pub fn move_kept_to_shared(cache: &Path, shared: &Path) -> Result<usize> {
     let local = cache.join("scenic-units");
     for e in std::fs::read_dir(&local).into_iter().flatten().flatten() {
         let (from, to) = (e.path(), shared.join("scenic-units").join(e.file_name()));
-        if !from.is_dir() || crate::whole::is_tmp(&from) {
+        if !from.is_dir() || store::whole::is_tmp(&from) {
             continue;
         }
         if !to.exists() {
             // (Named by this process too: another on this Mac may be copying the same folder.)
-            let tmp = to.with_extension(format!("{}-{}.tmp", crate::agent::cond::host(), std::process::id()));
+            let tmp = to.with_extension(format!("{}-{}.tmp", store::sys::host(), std::process::id()));
             std::fs::remove_dir_all(&tmp).ok();
             std::fs::create_dir_all(&tmp)?;
             let files = match std::fs::read_dir(&from) {
@@ -41,7 +41,7 @@ pub fn move_kept_to_shared(cache: &Path, shared: &Path) -> Result<usize> {
                 Err(e) => return Err(e.into()),
             };
             for f in files.flatten() {
-                crate::whole::copy(&f.path(), &tmp.join(f.file_name()))?;
+                store::whole::copy(&f.path(), &tmp.join(f.file_name()))?;
             }
             if let Err(e) = std::fs::rename(&tmp, &to) {
                 std::fs::remove_dir_all(&tmp).ok();
@@ -336,7 +336,7 @@ impl TileProgress {
     fn keep(&self) {
         if let Some(f) = &self.file {
             if let Ok(b) = serde_json::to_vec(&self.secs) {
-                crate::whole::write(f, &b).ok();
+                store::whole::write(f, &b).ok();
             }
         }
     }

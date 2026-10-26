@@ -7,6 +7,7 @@ use crate::coverage::Coverage;
 use crate::inputs::gate::{decide, Given};
 use crate::inputs::{FileEntry, Index, Listing};
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::Arc;
 
 /// An outline set made from GeoJSON polygons (degrees): (relation id, ISO 3166-1 code, rings).
@@ -526,7 +527,7 @@ fn job_root(f: &Fx, outlines: bool) -> tempfile::TempDir {
     d
 }
 
-fn manifest(root: &Path) -> BTreeMap<String, String> {
+fn manifest(root: &store::nasfs::NasRoot) -> BTreeMap<String, String> {
     crate::out::read_record(&root.join("state/build/manifest.json")).unwrap()
 }
 
@@ -534,16 +535,23 @@ fn manifest(root: &Path) -> BTreeMap<String, String> {
 fn without_the_pass_s_outline_set_the_check_does_nothing() {
     let f = fx();
     let d = job_root(&f, false);
-    let before = manifest(d.path());
-    let mut out = crate::out::Out::unbound(d.path(), &d.path().join("scratch")).unwrap();
+    let before = manifest(&store::nasfs::NasRoot::local_for_test(d.path()));
+    let mut out =
+        crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(d.path()), &d.path().join("scratch")).unwrap();
     let said = crate::inputs::gate::run(&mut out, UNIT, false, None).unwrap();
     assert!(said.contains("not checked now") && said.contains("outline set"), "{said}");
-    assert_eq!(manifest(d.path()), before, "nothing held, taken in or asked for");
-    let checks = Regions::default().prepared(d.path(), &before).unwrap().unwrap();
+    assert_eq!(
+        manifest(&store::nasfs::NasRoot::local_for_test(d.path())),
+        before,
+        "nothing held, taken in or asked for"
+    );
+    let checks =
+        Regions::default().prepared(&store::nasfs::NasRoot::local_for_test(d.path()), &before).unwrap().unwrap();
     assert!(checks.not_ready().is_some() && checks.needs().is_empty());
     // With it, the region is taken in.
     let d = job_root(&f, true);
-    let mut out = crate::out::Out::unbound(d.path(), &d.path().join("scratch")).unwrap();
+    let mut out =
+        crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(d.path()), &d.path().join("scratch")).unwrap();
     let said = crate::inputs::gate::run(&mut out, UNIT, false, None).unwrap();
     assert!(said.contains("taken in"), "{said}");
 }
@@ -553,11 +561,26 @@ fn a_region_missing_a_fact_is_an_error() {
     let f = fx();
     let d = job_root(&f, true);
     let root = d.path();
-    let mut out = crate::out::Out::unbound(root, &root.join("scratch")).unwrap();
+    let mut out =
+        crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
     crate::inputs::gate::run(&mut out, UNIT, true, None).unwrap();
     // (Not switched in these records: the readers refuse, naming the runbook.)
-    assert!(format!("{:#}", read::source(root, &manifest(root)).unwrap_err()).contains("runbook"));
-    let mut a = crate::inputs::open(root, &manifest(root), UNIT).unwrap().unwrap();
+    assert!(format!(
+        "{:#}",
+        read::source(
+            &store::nasfs::NasRoot::local_for_test(root),
+            &manifest(&store::nasfs::NasRoot::local_for_test(root))
+        )
+        .unwrap_err()
+    )
+    .contains("runbook"));
+    let mut a = crate::inputs::open(
+        &store::nasfs::NasRoot::local_for_test(root),
+        &manifest(&store::nasfs::NasRoot::local_for_test(root)),
+        UNIT,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(read::recipes(&a).unwrap().len(), 1);
     a.index.files.get_mut("a.toml").unwrap().facts.remove("drawn");
     assert!(read::listed(&a).is_err() && read::recipes(&a).is_err(), "never a region left out");
@@ -575,8 +598,11 @@ fn a_region_missing_a_fact_is_an_error() {
 fn the_rules_file_is_not_a_region() {
     let index: Index = serde_json::from_str(include_str!("testdata/index-empty-regions.json")).unwrap();
     let d = tempfile::tempdir().unwrap();
-    let mut a =
-        crate::inputs::Accepted { root: d.path().to_path_buf(), version: "@index.be2033d2b403ccb0.json".into(), index };
+    let mut a = crate::inputs::Accepted {
+        root: store::nasfs::NasRoot::local_for_test(d.path().to_path_buf()),
+        version: "@index.be2033d2b403ccb0.json".into(),
+        index,
+    };
     let n = read::listed(&a).unwrap().len();
     let mut rules = a.index.files.values().next().unwrap().clone();
     rules.facts = serde_json::from_str(r#"{"rules": {"cover": "earth", "sliver_km2": 50.0}}"#).unwrap();
@@ -594,8 +620,11 @@ fn the_rules_file_is_not_a_region() {
 fn the_live_index_with_empty_regions_reads() {
     let index: Index = serde_json::from_str(include_str!("testdata/index-empty-regions.json")).unwrap();
     let d = tempfile::tempdir().unwrap();
-    let a =
-        crate::inputs::Accepted { root: d.path().to_path_buf(), version: "@index.be2033d2b403ccb0.json".into(), index };
+    let a = crate::inputs::Accepted {
+        root: store::nasfs::NasRoot::local_for_test(d.path().to_path_buf()),
+        version: "@index.be2033d2b403ccb0.json".into(),
+        index,
+    };
     let l = read::listed(&a).unwrap();
     let by = |id: &str| l.iter().find(|x| x.recipe.id == id).unwrap();
     for id in ["bolivia-outside-its-regions", "china-outside-its-regions"] {
@@ -608,7 +637,13 @@ fn the_live_index_with_empty_regions_reads() {
     let t = read::tree(&a.index);
     let bolivia = t.folders.iter().find(|f| f.path == "bolivia").unwrap();
     assert_eq!(bolivia.regions, ["beni", "bolivia-outside-its-regions"]);
-    assert!(read::drawn(d.path(), &a, &[by("bolivia-outside-its-regions").recipe.clone()]).unwrap().is_empty());
+    assert!(read::drawn(
+        &store::nasfs::NasRoot::local_for_test(d.path()),
+        &a,
+        &[by("bolivia-outside-its-regions").recipe.clone()]
+    )
+    .unwrap()
+    .is_empty());
 }
 
 #[test]
@@ -669,12 +704,12 @@ fn the_switch_s_app_fails_closed() {
 }
 
 /// Writes region files into a check job's drop box, old enough to be taken.
-fn drop_files(root: &Path, files: &[(&str, &str)]) {
+fn drop_files(root: &store::nasfs::NasRoot, files: &[(&str, &str)]) {
     let dir = root.join("inputs/regions");
     let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
     for (p, t) in files {
-        std::fs::write(dir.join(p), t).unwrap();
-        std::fs::File::options().write(true).open(dir.join(p)).unwrap().set_modified(old).unwrap();
+        dir.join(p).write(t).unwrap();
+        dir.join(p).set_modified(old).unwrap();
     }
 }
 
@@ -697,11 +732,18 @@ fn a_disabled_region_is_checked_and_named_but_never_built() {
     // Taken in by the gate: stored like the others, the index saying it's disabled.
     let d = job_root(&f, true);
     let root = d.path();
-    drop_files(root, &[("b.toml", &b_off), ("c.toml", &c)]);
-    let mut out = crate::out::Out::unbound(root, &root.join("scratch")).unwrap();
+    drop_files(&store::nasfs::NasRoot::local_for_test(root), &[("b.toml", &b_off), ("c.toml", &c)]);
+    let mut out =
+        crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
     let said = crate::inputs::gate::run(&mut out, UNIT, true, None).unwrap();
     assert!(said.contains("taken in"), "{said}");
-    let a = crate::inputs::open(root, &manifest(root), UNIT).unwrap().unwrap();
+    let a = crate::inputs::open(
+        &store::nasfs::NasRoot::local_for_test(root),
+        &manifest(&store::nasfs::NasRoot::local_for_test(root)),
+        UNIT,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(a.index.files["b.toml"].facts["disabled"], true);
     assert!(a.index.files["b.toml"].facts.contains_key("geometry"), "stored, so others read it");
     assert!(!a.index.files["c.toml"].facts.contains_key("disabled"), "an enabled region's facts as before");
@@ -714,7 +756,7 @@ fn a_disabled_region_is_checked_and_named_but_never_built() {
     );
     assert!(read::tree(&a.index).regions.contains(&"b".to_string()));
     assert_eq!(read::recipes(&a).unwrap().iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["a", "c"]);
-    let cov = Coverage::accepted(root, &a, None).unwrap();
+    let cov = Coverage::accepted(&store::nasfs::NasRoot::local_for_test(root), &a, None).unwrap();
     let b_box = [10_200_000, 2_000_000, 19_800_000, 8_000_000];
     assert!(cov.contains([5_000_000, 5_000_000]) && !cov.contains([15_000_000, 5_000_000]));
     assert!(!cov.meets_rect(b_box));
@@ -747,21 +789,32 @@ fn a_disabled_region_is_checked_and_named_but_never_built() {
     let t = read::tree(&e.index);
     assert!(t.regions.contains(&"b".to_string()) && t.regions.contains(&"c".to_string()));
     assert_eq!(read::recipes(&e).unwrap().iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["a"]);
-    let ce = Coverage::accepted(root, &e, None).unwrap();
+    let ce = Coverage::accepted(&store::nasfs::NasRoot::local_for_test(root), &e, None).unwrap();
     assert!(ce.contains([5_000_000, 5_000_000]));
     assert!(ce.by_region().iter().all(|(id, _)| id.starts_with("a")));
     let named = |id: &str| Recipe { id: id.into(), name: id.into(), outline: vec![] };
-    assert_eq!(read::drawn(root, &e, &[named("a"), named("c")]).unwrap().len(), 1, "c has no drawing");
+    assert_eq!(
+        read::drawn(&store::nasfs::NasRoot::local_for_test(root), &e, &[named("a"), named("c")]).unwrap().len(),
+        1,
+        "c has no drawing"
+    );
 
     // Enabled: a new version, b in the regions and the coverage, and the jobs over its box keyed anew.
-    drop_files(root, &[("b.toml", &region("b", "outline = [\"osm:2\"]\n"))]);
-    let mut out = crate::out::Out::unbound(root, &root.join("scratch")).unwrap();
+    drop_files(&store::nasfs::NasRoot::local_for_test(root), &[("b.toml", &region("b", "outline = [\"osm:2\"]\n"))]);
+    let mut out =
+        crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
     crate::inputs::gate::run(&mut out, UNIT, true, None).unwrap();
-    let a2 = crate::inputs::open(root, &manifest(root), UNIT).unwrap().unwrap();
+    let a2 = crate::inputs::open(
+        &store::nasfs::NasRoot::local_for_test(root),
+        &manifest(&store::nasfs::NasRoot::local_for_test(root)),
+        UNIT,
+    )
+    .unwrap()
+    .unwrap();
     assert_ne!(a2.version, a.version);
     assert_eq!(a2.index.files["b.toml"].keyed, a.index.files["b.toml"].keyed, "the same geometry");
     assert_eq!(read::recipes(&a2).unwrap().len(), 3);
-    let cov2 = Coverage::accepted(root, &a2, None).unwrap();
+    let cov2 = Coverage::accepted(&store::nasfs::NasRoot::local_for_test(root), &a2, None).unwrap();
     assert!(cov2.contains([15_000_000, 5_000_000]) && cov2.meets_rect(b_box));
     assert_ne!(cov2.fingerprint(b_box), off_print);
     // A box b doesn't reach keeps its key.
@@ -769,10 +822,20 @@ fn a_disabled_region_is_checked_and_named_but_never_built() {
     assert_eq!(cov2.fingerprint(far), cov.fingerprint(far));
 
     // Disabled again: out of the coverage once more, as when it was first disabled.
-    drop_files(root, &[("b.toml", &b_off)]);
-    let mut out = crate::out::Out::unbound(root, &root.join("scratch")).unwrap();
+    drop_files(&store::nasfs::NasRoot::local_for_test(root), &[("b.toml", &b_off)]);
+    let mut out =
+        crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
     crate::inputs::gate::run(&mut out, UNIT, true, None).unwrap();
-    let a3 = crate::inputs::open(root, &manifest(root), UNIT).unwrap().unwrap();
+    let a3 = crate::inputs::open(
+        &store::nasfs::NasRoot::local_for_test(root),
+        &manifest(&store::nasfs::NasRoot::local_for_test(root)),
+        UNIT,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(read::recipes(&a3).unwrap().len(), 2);
-    assert_eq!(Coverage::accepted(root, &a3, None).unwrap().fingerprint(b_box), off_print);
+    assert_eq!(
+        Coverage::accepted(&store::nasfs::NasRoot::local_for_test(root), &a3, None).unwrap().fingerprint(b_box),
+        off_print
+    );
 }

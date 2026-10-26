@@ -21,8 +21,8 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
+use store::nasfs::NasPath;
 
 #[derive(Debug, Default, Serialize)]
 pub struct Report {
@@ -55,7 +55,7 @@ pub struct Report {
     pub forecast_days_archived: usize,
     /// The files put back this run: left alone by its sweeps (the next run decides).
     #[serde(skip)]
-    pub restored: BTreeSet<PathBuf>,
+    pub restored: BTreeSet<NasPath>,
     /// What it passed over and why (the agent's status says them as the job's note).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
@@ -104,15 +104,15 @@ const _: () = assert!(PASS_OVER_S >= crate::pool::driver::UNREADABLE_S + 2 * 864
 
 /// `now`: unix seconds, which `PASS_OVER_S` is counted to (by the entry's day, its key's: one
 /// whose day is before `now - PASS_OVER_S`'s was written longer ago than that).
-pub fn unmerged(root: &Path, now: u64) -> Result<Unmerged> {
+pub fn unmerged(root: &store::nasfs::NasRoot, now: u64) -> Result<Unmerged> {
     use crate::pool::{journal, records::Records, term};
     let mut u = Unmerged::default();
-    match std::fs::metadata(root.join(journal::DIR)) {
+    match root.join(journal::DIR).metadata() {
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(u),
         Err(e) => return Err(e).context("the journal"),
     }
-    let nas = crate::pool::nas::Share::new(root);
+    let nas = root.clone();
     let cur = term::current(&nas).context("the current term")?;
     let r = Records::newest(&nas, cur.term, true).context("the newest records")?.unwrap_or_default();
     // (Led: a term readable whole; only then does anyone refuse.)
@@ -174,7 +174,7 @@ pub fn unmerged(root: &Path, now: u64) -> Result<Unmerged> {
 /// Units' names may be nested (`timetables/gtfs`): every folder under `sources/inputs/` is walked.
 /// An error when any of them can't be read now: nothing there is swept then.
 pub fn inputs_kept(
-    root: &Path,
+    root: &store::nasfs::NasRoot,
     manifest: &std::collections::BTreeMap<String, String>,
     um: &Unmerged,
     within: Duration,
@@ -209,19 +209,18 @@ pub fn inputs_kept(
     // index's files, and a check's state's replaced index with its files.
     let mut stack = vec![root.join("sources/inputs")];
     while let Some(dir) = stack.pop() {
-        let rd = match std::fs::read_dir(&dir) {
+        let rd = match dir.read_dir() {
             Ok(rd) => rd,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => return Err(e).with_context(|| format!("list {}", dir.display())),
         };
         for e in rd {
-            let e = e.with_context(|| format!("list {}", dir.display()))?;
             meta(1, 0, 0);
             if e.file_type()?.is_dir() {
-                stack.push(e.path());
+                stack.push(e.path);
                 continue;
             }
-            let rel = e.path().strip_prefix(root).unwrap_or(&e.path()).to_string_lossy().replace('\\', "/");
+            let rel = e.path.rel().to_string();
             let Some(record) = store::naming::parse_content_name(&rel)
                 .filter(|n| n.ext == "json")
                 .and_then(|n| crate::inputs::record_of(n.logical))
@@ -313,7 +312,7 @@ fn meta(listed: u64, stats: u64, deletes: u64) {
 
 /// `run_once`, its NAS work counted from its start and noted as it ends (`note_cost`), in a job
 /// (`SCENIC_COSTS` set).
-pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
+pub fn run(root: &store::nasfs::NasRoot, keep_days: u64, dry_run: bool) -> Result<Report> {
     STARTED.get_or_init(std::time::Instant::now);
     if std::env::var_os("SCENIC_COSTS").is_some() {
         COUNTING.set(true);
@@ -331,10 +330,10 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
         }
         // The pool's journal's old days (task #644); a failure is said, never fails GC.
         // On unless the owner's switch says off (journal_gc::SWITCH).
-        let nas = crate::pool::nas::Share::new(root);
+        let nas = root.clone();
         if !dry_run && root.join(crate::pool::journal::DIR).exists() && crate::pool::journal_gc::enabled(&nas) {
             let rmdir = |d: &str| {
-                std::fs::remove_dir(root.join(d)).ok();
+                root.join(d).remove_dir().ok();
             };
             match crate::pool::journal_gc::run(&nas, crate::agent::jobs::now_s(), &yield_point, &rmdir) {
                 Ok(j) => {
@@ -361,7 +360,7 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
     r
 }
 
-fn run_once(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
+fn run_once(root: &store::nasfs::NasRoot, keep_days: u64, dry_run: bool) -> Result<Report> {
     use crate::timings::{phase, Class};
     let keep = Duration::from_secs(keep_days * 86400);
     let now = SystemTime::now();
@@ -375,16 +374,21 @@ fn run_once(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
     // Before the first catalog there's nothing to keep track of, so nothing is removed.
     let Some(&latest) = ns.iter().max() else { return Ok(rep) };
     let mut referenced: BTreeSet<String> = BTreeSet::new();
-    let mut drop_cats: Vec<PathBuf> = Vec::new();
+    let mut drop_cats: Vec<NasPath> = Vec::new();
+    let nas_file = |p: store::nasfs::Place| match p {
+        store::nasfs::Place::Nas(p) => Some(p),
+        store::nasfs::Place::Local(_) => None,
+    };
     // (How far it is, for the status: the catalogs read, then the folders swept.)
     crate::agent::jobs::stage(0, 2, "steps (reading the catalogs)");
     // (Each catalog's file, whole or a delta: store::catalog::path_n.)
     let mut in_window: BTreeSet<u64> = BTreeSet::new();
     for &n in &ns {
-        let p = store::catalog::path_n(&cat_dir, n).with_context(|| format!("catalog {n} gone meanwhile"))?;
+        let p = store::catalog::path_n(&cat_dir, n)
+            .and_then(nas_file)
+            .with_context(|| format!("catalog {n} gone meanwhile"))?;
         meta(0, 1, 0);
-        let mtime =
-            std::fs::metadata(&p).and_then(|m| m.modified()).with_context(|| format!("stat {}", p.display()))?;
+        let mtime = p.metadata().and_then(|m| m.modified()).with_context(|| format!("stat {}", p.display()))?;
         if n == latest || !old(mtime) {
             in_window.insert(n);
         }
@@ -399,23 +403,25 @@ fn run_once(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
         );
     }
     for &n in ns.iter().filter(|n| !kept_cats.contains(n)) {
-        drop_cats.extend(store::catalog::path_n(&cat_dir, n));
+        drop_cats.extend(store::catalog::path_n(&cat_dir, n).and_then(nas_file));
     }
     // Read oldest first, each delta applied to the one before when that's just been read (not
     // its chain read again).
     let mut prev: Option<store::catalog::Catalog> = None;
     for (k, &n) in in_window.iter().enumerate() {
         crate::agent::jobs::within(k as f64 / in_window.len() as f64);
-        let p = store::catalog::path_n(&cat_dir, n).with_context(|| format!("catalog {n} gone meanwhile"))?;
+        let p = store::catalog::path_n(&cat_dir, n)
+            .and_then(nas_file)
+            .with_context(|| format!("catalog {n} gone meanwhile"))?;
         // A catalog in the window that can't be read stops the sweep: its files might be in use.
-        let delta = (p.file_name() == Some(std::ffi::OsStr::new(&store::catalog::delta_file_name(n))))
-            .then(|| std::fs::read(&p).ok().and_then(|b| store::catalog::Delta::decode(&b).ok()))
+        let delta = (p.file_name() == Some(store::catalog::delta_file_name(n).as_str()))
+            .then(|| p.read().ok().and_then(|b| store::catalog::Delta::decode(&b).ok()))
             .flatten();
         let cat = match (delta, &prev) {
             (Some(d), Some(c)) if c.n == d.of => d.apply(c).with_context(|| format!("read {}", p.display()))?,
             _ => store::catalog::read_n(&cat_dir, n).with_context(|| format!("read {}", p.display()))?,
         };
-        read.count(std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0), 1);
+        read.count(p.metadata().map(|m| m.len()).unwrap_or(0), 1);
         referenced.extend(cat.files.values().map(|f| f.file.clone()));
         rep.catalogs_kept += 1;
         prev = Some(cat);
@@ -468,9 +474,9 @@ fn run_once(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
         let mut stack = vec![root.join(top)];
         while let Some(dir) = stack.pop() {
             yield_point();
-            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
-            for e in rd.flatten() {
-                let p = e.path();
+            let Ok(rd) = dir.read_dir() else { continue };
+            for e in rd {
+                let p = e.path.clone();
                 meta(1, 1, 0);
                 let Ok(md) = e.metadata() else { continue };
                 if md.is_dir() {
@@ -481,8 +487,8 @@ fn run_once(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
                 if rep.restored.contains(&p) {
                     continue;
                 }
-                let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().into_owned();
-                let name = e.file_name().to_string_lossy().into_owned();
+                let rel = p.rel().to_string();
+                let name = e.name.clone();
                 let mtime = md.modified().unwrap_or(now);
                 if name.ends_with(TOMB) {
                     put_back(&p, dry_run, &mut rep);
@@ -519,9 +525,9 @@ fn run_once(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
         let mut stack = vec![root.join("sources/inputs")];
         while let Some(dir) = stack.pop() {
             yield_point();
-            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
-            for e in rd.flatten() {
-                let p = e.path();
+            let Ok(rd) = dir.read_dir() else { continue };
+            for e in rd {
+                let p = e.path.clone();
                 meta(1, 1, 0);
                 let Ok(md) = e.metadata() else { continue };
                 if md.is_dir() {
@@ -532,13 +538,13 @@ fn run_once(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
                 if rep.restored.contains(&p) {
                     continue;
                 }
-                let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().into_owned();
+                let rel = p.rel().to_string();
                 let mtime = md.modified().unwrap_or(now);
-                if e.file_name().to_string_lossy().ends_with(TOMB) {
+                if e.name.ends_with(TOMB) {
                     put_back(&p, dry_run, &mut rep);
                     continue;
                 }
-                if e.file_name().to_string_lossy().ends_with(".tmp") {
+                if e.name.ends_with(".tmp") {
                     if now.duration_since(mtime).is_ok_and(|d| d > Duration::from_secs(2 * 86400)) {
                         remove(&p, dry_run)?;
                         rep.tmp_removed += 1;
@@ -565,26 +571,23 @@ fn run_once(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
         let _p = phase("retired passes swept", Class::NasWrite);
         // When the newest pass completed (its summary's time): a retired pass's plain files (the
         // planet download) go once that's `keep_days` ago, so a fresh pass can still be compared.
-        let done_at = std::fs::read_dir(root.join("sources/osm").join(&latest))
+        let done_at = root
+            .join("sources/osm")
+            .join(&latest)
+            .read_dir()
             .ok()
-            .and_then(|rd| {
-                rd.flatten()
-                    .find(|e| e.file_name().to_str().is_some_and(|n| n.starts_with("pass.") && n.ends_with(".json")))
-            })
+            .and_then(|rd| rd.into_iter().find(|e| e.name.starts_with("pass.") && e.name.ends_with(".json")))
             .and_then(|e| e.metadata().ok()?.modified().ok());
         let plain_due = done_at.is_some_and(old);
         for kind in ["osm", "items"] {
-            let Ok(rd) = std::fs::read_dir(root.join("sources").join(kind)) else { continue };
-            let mut dates: Vec<String> = rd
-                .flatten()
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .filter(|d| crate::osmpass::is_date(d) && *d < latest)
-                .collect();
+            let Ok(rd) = root.join("sources").join(kind).read_dir() else { continue };
+            let mut dates: Vec<String> =
+                rd.into_iter().map(|e| e.name).filter(|d| crate::osmpass::is_date(d) && *d < latest).collect();
             dates.sort();
             for d in dates {
                 yield_point();
                 let dir = root.join("sources").join(kind).join(&d);
-                sweep_retired(root, &dir, &referenced, &old, plain_due, dry_run, &mut rep)?;
+                sweep_retired(&dir, &referenced, &old, plain_due, dry_run, &mut rep)?;
             }
         }
     }
@@ -599,20 +602,19 @@ fn run_once(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
 /// One retired pass's folder: content-named files no catalog or manifest names, once old; any other
 /// file once `plain_due`; then the folders left empty.
 fn sweep_retired(
-    root: &Path,
-    dir: &Path,
+    dir: &NasPath,
     referenced: &BTreeSet<String>,
     old: &dyn Fn(SystemTime) -> bool,
     plain_due: bool,
     dry_run: bool,
     rep: &mut Report,
 ) -> Result<()> {
-    let mut dirs = vec![dir.to_path_buf()];
-    let mut stack = vec![dir.to_path_buf()];
+    let mut dirs = vec![dir.clone()];
+    let mut stack = vec![dir.clone()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
-        for e in rd.flatten() {
-            let p = e.path();
+        let Ok(rd) = d.read_dir() else { continue };
+        for e in rd {
+            let p = e.path.clone();
             meta(1, 1, 0);
             let Ok(md) = e.metadata() else { continue };
             if md.is_dir() {
@@ -621,14 +623,14 @@ fn sweep_retired(
                 continue;
             }
             rep.files_seen += 1;
-            if e.file_name().to_string_lossy().ends_with(TOMB) {
+            if e.name.ends_with(TOMB) {
                 put_back(&p, dry_run, rep);
                 continue;
             }
             if rep.restored.contains(&p) {
                 continue;
             }
-            let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().into_owned();
+            let rel = p.rel().to_string();
             let named = store::naming::parse_content_name(&rel).is_some();
             let due = if named {
                 !referenced.contains(&rel)
@@ -652,12 +654,12 @@ fn sweep_retired(
         }
     }
     // Deepest first: a folder emptied above may let its parent go too.
-    dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+    dirs.sort_by_key(|d| std::cmp::Reverse(d.rel().split('/').count()));
     for d in dirs {
         meta(1, 0, 0);
-        if std::fs::read_dir(&d).is_ok_and(|mut rd| rd.next().is_none()) && !dry_run {
+        if d.read_dir().is_ok_and(|rd| rd.is_empty()) && !dry_run {
             meta(0, 0, 1);
-            std::fs::remove_dir(&d).ok();
+            d.remove_dir().ok();
         }
     }
     Ok(())
@@ -665,9 +667,9 @@ fn sweep_retired(
 
 /// Whether file `p` is still old by a fresh look at its time (not the listing's: a job reusing a
 /// content-named file touches it, and GC's listing may be minutes old by the time it gets there).
-fn still_old(p: &Path, old: &dyn Fn(SystemTime) -> bool) -> bool {
+fn still_old(p: &NasPath, old: &dyn Fn(SystemTime) -> bool) -> bool {
     meta(0, 1, 0);
-    std::fs::metadata(p).ok().and_then(|m| m.modified().ok()).is_some_and(old)
+    p.metadata().ok().and_then(|m| m.modified().ok()).is_some_and(old)
 }
 
 /// What a file GC is about to remove is renamed to first (`remove_unless_touched`).
@@ -678,8 +680,10 @@ const TOMB: &str = store::naming::TOMB;
 /// when that's free, for the usual rules to decide next run; when its name has a file again (a job
 /// uploaded the same bytes meanwhile), the tombstone's copy is the same bytes and goes. Another
 /// GC's in flight finds its tombstone gone and keeps the file (`remove_unless_touched`).
-fn put_back(tomb: &Path, dry_run: bool, rep: &mut Report) {
-    let Some(name) = tomb.to_str().and_then(|t| t.strip_suffix(TOMB)).map(PathBuf::from) else { return };
+fn put_back(tomb: &NasPath, dry_run: bool, rep: &mut Report) {
+    let Some(name) = tomb.file_name().and_then(|t| t.strip_suffix(TOMB)).map(|n| tomb.with_file_name(n)) else {
+        return;
+    };
     if dry_run {
         eprintln!("gc: would put {} back", name.display());
         return;
@@ -699,10 +703,10 @@ fn put_back(tomb: &Path, dry_run: bool, rep: &mut Report) {
 /// uploaded the same bytes again meanwhile, newer than the tombstone's copy) is kept, and the
 /// tombstone goes. (A replacing rename would put the tombstone's old time over the new upload's,
 /// for the next run to remove.)
-fn restore(tomb: &Path, name: &Path) -> std::io::Result<()> {
+fn restore(tomb: &NasPath, name: &NasPath) -> std::io::Result<()> {
     meta(0, 0, 1);
-    match store::naming::rename_no_replace(tomb, name) {
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => std::fs::remove_file(tomb),
+    match tomb.rename_no_replace(name) {
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => tomb.remove_file(),
         r => r,
     }
 }
@@ -711,18 +715,16 @@ fn restore(tomb: &Path, name: &Path) -> std::io::Result<()> {
 /// first (a job reusing it now finds no file of its name, and uploads it again: out::Out::put_file),
 /// its time then looked at again, the tombstone's: touched since GC listed it (a job had it open
 /// before the rename), put back; else removed. True when it went.
-fn remove_unless_touched(p: &Path, old: &dyn Fn(SystemTime) -> bool, dry_run: bool) -> Result<bool> {
+fn remove_unless_touched(p: &NasPath, old: &dyn Fn(SystemTime) -> bool, dry_run: bool) -> Result<bool> {
     if dry_run {
         eprintln!("gc: would remove {}", p.display());
         return Ok(still_old(p, old));
     }
-    let mut tomb = p.as_os_str().to_owned();
-    tomb.push(TOMB);
-    let tomb = PathBuf::from(tomb);
+    let tomb = p.with_file_name(format!("{}{TOMB}", p.file_name().unwrap_or_default()));
     // (Not renamed aside, for whatever reason: kept this run, as a young file is.)
     // (A rename and a removal: each a metadata write, counted as a delete.)
     meta(0, 0, 1);
-    if let Err(e) = std::fs::rename(p, &tomb) {
+    if let Err(e) = p.rename(&tomb) {
         if e.kind() != std::io::ErrorKind::NotFound {
             eprintln!("gc: {} not set aside ({e}): kept this run", p.display());
         }
@@ -730,7 +732,7 @@ fn remove_unless_touched(p: &Path, old: &dyn Fn(SystemTime) -> bool, dry_run: bo
     }
     if still_old(&tomb, old) {
         meta(0, 0, 1);
-        return match std::fs::remove_file(&tomb) {
+        return match tomb.remove_file() {
             Ok(()) => Ok(true),
             // (Another GC put it back meanwhile: kept.)
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -748,19 +750,20 @@ fn remove_unless_touched(p: &Path, old: &dyn Fn(SystemTime) -> bool, dry_run: bo
     Ok(false)
 }
 
-fn remove(p: &Path, dry_run: bool) -> Result<()> {
+fn remove(p: &NasPath, dry_run: bool) -> Result<()> {
     if dry_run {
         eprintln!("gc: would remove {}", p.display());
         return Ok(());
     }
     meta(0, 0, 1);
-    std::fs::remove_file(p).with_context(|| format!("remove {}", p.display()))
+    p.remove_file().with_context(|| format!("remove {}", p.display()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs::{self, FileTimes};
+    use std::path::{Path, PathBuf};
 
     fn age(p: &Path, days: u64) {
         let t = SystemTime::now() - Duration::from_secs(days * 86400);
@@ -790,7 +793,7 @@ mod tests {
             store::catalog::FileRef { file: kept.into(), ..Default::default() },
         );
         store::catalog::write(&root.join("catalog"), &cat).unwrap();
-        let r = run(root, 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
         assert_eq!((r.removed, r.tmp_removed, r.young), (1, 1, 1));
         assert!(root.join(kept).exists());
         assert!(!root.join("layers/roads/hi/6-1-2.fedcba9876543210.pack").exists());
@@ -821,7 +824,7 @@ mod tests {
         store::catalog::write(&root.join("catalog"), &cat).unwrap();
         crate::costin::begin();
         COUNTING.set(true);
-        let r = run_once(root, 14, false).unwrap();
+        let r = run_once(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
         COUNTING.set(false);
         let m = crate::costin::take();
         assert_eq!(r.removed, 1);
@@ -849,7 +852,7 @@ mod tests {
         }
         store::catalog::write(&root.join("catalog"), &cat).unwrap();
         YIELD_CHECKS.set(0);
-        run(root, 14, false).unwrap();
+        run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
         // (layers, layers/a and its six folders.)
         assert!(YIELD_CHECKS.get() >= 8, "{}", YIELD_CHECKS.get());
     }
@@ -872,7 +875,7 @@ mod tests {
         mk(1, "layers/a/hi/6-1-1.1111111111111111.pack");
         mk(2, "layers/a/hi/6-1-1.2222222222222222.pack");
         mk(3, "layers/a/hi/6-1-1.3333333333333333.pack");
-        let r = run(root, 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
         assert_eq!((r.catalogs_kept, r.catalogs_removed, r.removed), (1, 2, 2));
         assert!(root.join("layers/a/hi/6-1-1.3333333333333333.pack").exists());
         assert_eq!(store::catalog::latest(&root.join("catalog")).unwrap().unwrap().n, 3);
@@ -904,7 +907,7 @@ mod tests {
             }
             prev = Some(cat);
         }
-        let r = run(root, 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
         // (3 and 4 kept, read; 1 and 2 kept as what 3 is read through, their files not kept for them
         // but 3's names them all.)
         assert_eq!((r.catalogs_kept, r.catalogs_removed, r.removed), (2, 0, 0));
@@ -932,7 +935,7 @@ mod tests {
         store::catalog::write(&root.join("catalog"), &cat2).unwrap();
         fs::create_dir_all(root.join("state/build")).unwrap();
         fs::write(root.join("state/build/manifest.json"), format!("{{\"base/6-1-1\": \"{f}\"}}")).unwrap();
-        let r = run(root, 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
         assert_eq!(r.removed, 0);
         assert!(root.join(f).exists());
     }
@@ -958,7 +961,7 @@ mod tests {
         put("sources/osm/2027-03-01/planet.osm.pbf", 1);
         put("sources/registers/legacy.5555555555555555.tar.zst", 300);
         store::catalog::write(&root.join("catalog"), &store::catalog::Catalog::new(1)).unwrap();
-        let r = run(root, 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
         assert_eq!(r.retired_removed, 3, "{r:?}");
         assert!(
             !root.join("sources/osm/2026-03-01").exists() && !root.join("sources/items/2026-03-01").exists(),
@@ -976,7 +979,7 @@ mod tests {
         put("sources/osm/2026-03-01/planet.osm.pbf", 200);
         put("sources/osm/2026-03-01/roads/6-1-1.6666666666666666.bin", 200);
         put("sources/osm/2026-09-28/pass.3333333333333333.json", 3);
-        let r = run(root, 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
         assert_eq!(r.retired_removed, 1);
         assert!(root.join("sources/osm/2026-03-01/planet.osm.pbf").exists());
     }
@@ -1042,8 +1045,8 @@ mod tests {
             },
             at: 1_791_500_000,
         };
-        crate::pool::journal::write(&crate::pool::nas::Share::new(root), &entry).unwrap();
-        let r = run(root, 14, false).unwrap();
+        crate::pool::journal::write(&store::nasfs::NasRoot::local_for_test(&root), &entry).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
         assert_eq!(r.inputs_skipped, None);
         assert_eq!(r.inputs_removed, 3, "{r:?}");
         assert!(
@@ -1072,7 +1075,7 @@ mod tests {
             &index("_gate-test", &[&format!("{u}/a.cccccccccccccccc.jsonl")]),
             1,
         );
-        let r = run(root, 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
         assert_eq!(r.inputs_removed, 0, "{r:?}");
         assert!(root.join(format!("{u}/a.cccccccccccccccc.jsonl")).exists());
         // Its touch failed (its time 30 days old), but the check's state made yesterday names it
@@ -1086,7 +1089,7 @@ mod tests {
             40,
         );
         put(&format!("{n}/@listed.bbbbbbbbbbbbbbbb.json"), &serde_json::json!({"fmt": 1, "unit": "_gate-nest/inner", "listed": {}, "replaced": format!("{n}/@index.aaaaaaaaaaaaaaaf.json")}).to_string(), 2);
-        let r = run(root, 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
         assert_eq!(r.inputs_removed, 0, "{r:?}");
         assert!(
             root.join(format!("{u}/a.cccccccccccccccc.jsonl")).exists()
@@ -1094,13 +1097,13 @@ mod tests {
         );
         // 15 days after it was replaced (the state that named it that old too): gone, with its index.
         age(&root.join(format!("{u}/@listed.eeeeeeeeeeeeeeee.json")), 15);
-        let r = run(root, 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
         assert_eq!(r.inputs_removed, 3, "the copy, its index, the old state: {r:?}");
         assert!(!root.join(format!("{u}/a.cccccccccccccccc.jsonl")).exists());
         // An index named that can't be read: nothing there swept.
         put(&format!("{u}/a.aaaaaaaaaaaaaaaa.jsonl"), "x", 60);
         fs::write(root.join(format!("{u}/@index.5555555555555555.json")), b"{not json").unwrap();
-        let r = run(root, 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
         assert!(r.inputs_skipped.is_some() && r.inputs_removed == 0);
         assert!(root.join(format!("{u}/a.aaaaaaaaaaaaaaaa.jsonl")).exists());
     }
@@ -1140,7 +1143,7 @@ mod tests {
         fs::create_dir_all(root.join("state/build")).unwrap();
         fs::write(root.join("state/build/manifest.json"), "{}").unwrap();
         // An entry of a member away three weeks, written, never merged: its change and its upload.
-        let nas = crate::pool::nas::Share::new(root);
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
         let mut h = crate::handoff::Handoff::default();
         h.changes.insert("layers/roads/hi/6-1-2".into(), Some(a.into()));
         h.pending.insert(b.into(), "0".repeat(64));
@@ -1152,7 +1155,7 @@ mod tests {
             at: 1_791_500_000,
         };
         journal::write(&nas, &e).unwrap();
-        let r = run(root, 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
         assert_eq!((r.unmerged, r.removed), (1, 1), "{r:?}");
         assert!(root.join(a).exists() && root.join(b).exists() && !root.join(c).exists());
         // Merged (term 1's records reflect it, naming nothing of it: replaced since): its files go.
@@ -1163,7 +1166,7 @@ mod tests {
         let mut rec = crate::pool::records::Records { term: 1, ..Default::default() };
         rec.reflected.insert(e.key().unwrap());
         rec.save(&nas).unwrap();
-        let r = run(root, 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
         assert_eq!((r.unmerged, r.removed), (0, 2), "{r:?}");
         // A term led: an entry that doesn't read whole (short, of whatever day: a read cut short
         // says nothing of it), or reads damaged: GC fails, nothing removed, every run, until the
@@ -1179,7 +1182,7 @@ mod tests {
         let short_key = format!("{}/1-5", journal::day(now - 10 * 86400).unwrap());
         entry_at(&short_key, b"{\"member\": ");
         for _ in 0..2 {
-            let e = format!("{:#}", run(root, 14, false).unwrap_err());
+            let e = format!("{:#}", run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap_err());
             assert!(e.contains("nothing removed") && e.contains("1-5"), "{e}");
             assert!(root.join(c).exists());
         }
@@ -1187,12 +1190,12 @@ mod tests {
         entry_at(&damaged_key, b"{\"not\": \"an entry\"}");
         rec.rejected.insert(short_key, "never whole".into());
         rec.save(&nas).unwrap();
-        let e = format!("{:#}", run(root, 14, false).unwrap_err());
+        let e = format!("{:#}", run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap_err());
         assert!(e.contains("damaged") && root.join(c).exists(), "{e}");
         // Both refused by the lead: passed over, the sweep goes on.
         rec.rejected.insert(damaged_key, "damaged".into());
         rec.save(&nas).unwrap();
-        let r = run(root, 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
         // (The journal's GC marks the old entries, refused or merged: its own note, said.)
         assert!(r.removed == 1 && r.warnings.iter().all(|w| w.starts_with("journal: marked")), "{r:?}");
         // No term led (its term not readable whole): no one refuses. An entry unreadable from today
@@ -1201,11 +1204,11 @@ mod tests {
         fs::write(root.join(crate::pool::term::DIR).join("1.json"), b"{\"term\": ").unwrap();
         put(c, 60);
         let young = entry_at(&format!("{}/1-8", journal::day(now).unwrap()), b"{\"member\": ");
-        let e = format!("{:#}", run(root, 14, false).unwrap_err());
+        let e = format!("{:#}", run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap_err());
         assert!(e.contains("1-8") && root.join(c).exists(), "{e}");
         fs::remove_file(&young).unwrap();
         entry_at(&format!("{}/1-7", journal::day(now - 10 * 86400).unwrap()), b"{\"member\": ");
-        let mut r = run(root, 14, false).unwrap();
+        let mut r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
         // (The journal's GC waits for a lead: its own note.)
         r.warnings.retain(|w| !w.starts_with("journal: "));
         assert!(
@@ -1232,17 +1235,17 @@ mod tests {
         // (Listed old; touched by a job before GC got to it.)
         age(&p, 30);
         fs::File::options().write(true).open(&p).unwrap().set_modified(SystemTime::now()).unwrap();
-        assert!(!remove_unless_touched(&p, &old, false).unwrap());
+        assert!(!remove_unless_touched(&store::nasfs::NasPath::local_for_test(&p), &old, false).unwrap());
         assert!(
             p.exists() && fs::read_dir(p.parent().unwrap()).unwrap().count() == 1,
             "back under its name, no tombstone left"
         );
         // Not touched: gone, no tombstone left.
         age(&p, 30);
-        assert!(remove_unless_touched(&p, &old, false).unwrap());
+        assert!(remove_unless_touched(&store::nasfs::NasPath::local_for_test(&p), &old, false).unwrap());
         assert!(!p.exists() && fs::read_dir(p.parent().unwrap()).unwrap().count() == 0);
         // Gone already (another GC, or never there): nothing.
-        assert!(!remove_unless_touched(&p, &old, false).unwrap());
+        assert!(!remove_unless_touched(&store::nasfs::NasPath::local_for_test(&p), &old, false).unwrap());
         // A tombstone a sweep finds (a GC stopped between, or another's in flight): never removed
         // as a stale file, put back under its name for the usual rules; its name taken again (the
         // same bytes uploaded meanwhile), it goes. Not a content-named file either way.
@@ -1264,12 +1267,12 @@ mod tests {
         store::catalog::write(&root.join("catalog"), &cat).unwrap();
         fs::create_dir_all(root.join("state/build")).unwrap();
         fs::write(root.join("state/build/manifest.json"), "{}").unwrap();
-        let r = run(root, 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
         assert!(r.tombs == 1 && p.exists() && !tomb.exists() && r.removed == 0, "put back, decided next run: {r:?}");
         // (Its name a young file of the same bytes, uploaded again meanwhile.)
         fs::File::options().write(true).open(&p).unwrap().set_modified(SystemTime::now()).unwrap();
         fs::write(&tomb, b"x").unwrap();
-        let r = run(root, 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(root), 14, false).unwrap();
         assert!(r.tombs == 1 && !tomb.exists() && p.exists(), "its name taken: the tombstone's copy goes: {r:?}");
         // (The upload's time kept, not the tombstone's: never replaced by it.)
         assert!(
@@ -1285,7 +1288,7 @@ mod tests {
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(&p, b"x").unwrap();
         age(&p, 300);
-        let r = run(d.path(), 14, false).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(d.path()), 14, false).unwrap();
         assert_eq!((r.removed, r.files_seen), (0, 0));
         assert!(p.exists());
     }

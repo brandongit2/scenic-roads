@@ -55,7 +55,7 @@ pub fn set(home: &Path, cores: Option<u32>, by: &str) -> Result<Option<Share>> {
     }
     std::fs::create_dir_all(home)?;
     let s = Share { cores, by: by.to_string(), at: super::jobs::now_s() };
-    crate::whole::write(&p, &serde_json::to_vec(&s)?)?;
+    store::whole::write(&p, &serde_json::to_vec(&s)?)?;
     Ok(Some(s))
 }
 

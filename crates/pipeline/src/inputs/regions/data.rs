@@ -159,12 +159,13 @@ impl Datasets {
 
     /// The datasets the accepted sources `s` declare, read from `root`'s `sources/fetched/<id>/`
     /// (each declaration's `params.path`). None when no `regions-sea` is declared.
-    pub fn read(root: &Path, s: &crate::inputs::sources::Sources) -> Result<Option<Datasets>> {
+    pub fn read(root: &store::nasfs::NasRoot, s: &crate::inputs::sources::Sources) -> Result<Option<Datasets>> {
         let Ok(sea) = s.role(SEA) else { return Ok(None) };
         let mut names = Vec::new();
         let mut path = |src: &crate::inputs::sources::Source| -> Result<std::path::PathBuf> {
             names.push(format!("{} {}", src.id, src.version().unwrap_or("-")));
-            Ok(root.join(src.param_str("path")?))
+            // (Read by GDAL and the shapefile reader, by path: tests/nas_access.rs.)
+            Ok(root.join(src.param_str("path")?).unchecked_path())
         };
         let mut d = Datasets::default();
         // (The zones read whole first, then simplified with the borders any two of their rings

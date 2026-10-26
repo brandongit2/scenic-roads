@@ -89,10 +89,10 @@ pub fn sync_with(read: &dyn Fn(&str) -> Result<Vec<u8>>, unit: &str, local: &Pat
         if let Some(d) = p.parent() {
             std::fs::create_dir_all(d).with_context(|| format!("create {}", d.display()))?;
         }
-        crate::whole::write(&p, &bytes)?;
+        store::whole::write(&p, &bytes)?;
     }
     std::fs::create_dir_all(local)?;
-    crate::whole::write(
+    store::whole::write(
         &local.join(LOCAL),
         &serde_json::to_vec(&Kept { version: version.clone(), index: index.clone() })?,
     )?;

@@ -15,7 +15,7 @@ fn per_window(ledgers: &[Vec<Token>]) -> BTreeMap<(Class, u64), u32> {
 
 const T0: u64 = 1_800_000_000_000;
 
-fn budget(root: &Path, me: &str, clock: &Arc<StepClock>) -> Arc<Budget> {
+fn budget(root: &store::nasfs::NasRoot, me: &str, clock: &Arc<StepClock>) -> Arc<Budget> {
     Arc::new(Budget::new(root, me, clock.clone()).with_ledger())
 }
 
@@ -40,7 +40,10 @@ fn hosts_are_metered_by_class() {
 fn two_processes_sharing_one_budget_never_pass_its_rate() {
     let dir = tempfile::tempdir().unwrap();
     let clock = Arc::new(StepClock::at(T0));
-    let (a, b) = (budget(dir.path(), "m-a", &clock), budget(dir.path(), "m-b", &clock));
+    let (a, b) = (
+        budget(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-a", &clock),
+        budget(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-b", &clock),
+    );
     let mut ts = Vec::new();
     for (i, x) in [a.clone(), a.clone(), b.clone(), b.clone()].into_iter().enumerate() {
         ts.push(std::thread::spawn(move || {
@@ -68,7 +71,7 @@ fn two_processes_sharing_one_budget_never_pass_its_rate() {
 fn a_querys_time_is_paid_for() {
     let dir = tempfile::tempdir().unwrap();
     let clock = Arc::new(StepClock::at(T0));
-    let a = budget(dir.path(), "m-a", &clock);
+    let a = budget(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-a", &clock);
     let t = a.take(Class::Query);
     // (Seven seconds: four tokens' time, three owed.)
     a.charge(Class::Query, 7_000);
@@ -85,7 +88,10 @@ fn a_querys_time_is_paid_for() {
 fn a_429_holds_every_process() {
     let dir = tempfile::tempdir().unwrap();
     let clock = Arc::new(StepClock::at(T0));
-    let (a, b) = (budget(dir.path(), "m-a", &clock), budget(dir.path(), "m-b", &clock));
+    let (a, b) = (
+        budget(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-a", &clock),
+        budget(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-b", &clock),
+    );
     let first = b.take(Class::Wiki);
     assert!(a.hold(45));
     let until = (T0 + 45_000) / 10_000;
@@ -102,7 +108,7 @@ fn a_429_holds_every_process() {
     assert!(a.take(Class::Query).window * 10_000 >= T0 + 45_000 - 10_000);
     assert!(clock.now_ms() >= a.held_until());
     // (A wait past the most is the most.)
-    let c = budget(dir.path(), "m-c", &clock);
+    let c = budget(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-c", &clock);
     c.hold(1_000_000);
     assert_eq!(c.held_until(), clock.now_ms() + HOLD_MAX_S * 1000);
 }
@@ -113,7 +119,7 @@ fn the_nas_away_divides_the_rate_by_the_members() {
     let dir = tempfile::tempdir().unwrap();
     let away = dir.path().join("not-mounted");
     let clock = Arc::new(StepClock::at(T0));
-    let a = budget(&away, "m-a", &clock);
+    let a = budget(&store::nasfs::NasRoot::local_for_test(&away), "m-a", &clock);
     a.members.store(2, Ordering::Relaxed);
     for _ in 0..35 {
         a.take(Class::Wiki);
@@ -129,7 +135,7 @@ fn the_nas_away_divides_the_rate_by_the_members() {
     assert_eq!(a.take(Class::Wiki).source, Source::Nas);
     assert!(a.away().is_none());
     // (A hold with the NAS away holds this Mac, and says the NAS didn't take it.)
-    let b = budget(&dir.path().join("gone"), "m-b", &clock);
+    let b = budget(&store::nasfs::NasRoot::local_for_test(&dir.path().join("gone")), "m-b", &clock);
     assert!(!b.hold(20));
     assert_eq!(b.held_until(), clock.now_ms() + 20_000);
 }
@@ -140,7 +146,10 @@ fn the_nas_away_divides_the_rate_by_the_members() {
 fn old_leases_are_removed_after_any_gap() {
     let dir = tempfile::tempdir().unwrap();
     let clock = Arc::new(StepClock::at(T0));
-    let (a, b) = (budget(dir.path(), "m-a", &clock), budget(dir.path(), "m-b", &clock));
+    let (a, b) = (
+        budget(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-a", &clock),
+        budget(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-b", &clock),
+    );
     let w0 = a.take(Class::Wiki).window;
     // (B leases a thousand windows later, A idle all the while.)
     clock.set((w0 + 1000) * 10_000);
@@ -149,7 +158,7 @@ fn old_leases_are_removed_after_any_gap() {
     a.take(Class::Wiki);
     let d = a.dir(Class::Wiki);
     assert!(!d.join(format!("{w0}-0")).exists() && !d.join(format!("{w1}-0")).exists());
-    assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1, "only the window just leased");
+    assert_eq!(d.read_dir().unwrap().len(), 1, "only the window just leased");
 }
 
 /// The state's lock isn't held while a thread leases on the NAS: what the status reads, and a hold
@@ -158,7 +167,7 @@ fn old_leases_are_removed_after_any_gap() {
 fn the_status_never_waits_on_the_share() {
     let dir = tempfile::tempdir().unwrap();
     let clock = Arc::new(StepClock::at(T0));
-    let a = budget(dir.path(), "m-a", &clock);
+    let a = budget(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-a", &clock);
     let _leasing = a.leasing.lock().unwrap();
     assert!(a.away().is_none() && a.held_until() == 0);
     assert_eq!(a.hold_here(10).1, T0 + 10_000);
@@ -170,9 +179,9 @@ fn the_status_never_waits_on_the_share() {
 fn a_holds_cost_on_the_nas_is_bounded() {
     let dir = tempfile::tempdir().unwrap();
     let clock = Arc::new(StepClock::at(T0));
-    let a = budget(dir.path(), "m-a", &clock);
+    let a = budget(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-a", &clock);
     assert!(a.hold(HOLD_MAX_S));
-    let n: usize = Class::ALL.iter().map(|c| std::fs::read_dir(a.dir(*c)).unwrap().count()).sum();
+    let n: usize = Class::ALL.iter().map(|c| a.dir(*c).read_dir().unwrap().len()).sum();
     let windows = (HOLD_NAS_MAX_S * 1000 / 10_000) as usize + 1;
     let slots: usize = Class::ALL.iter().map(|c| c.rate().slots() as usize).sum();
     assert!(n <= windows * slots, "{n} files");
@@ -184,7 +193,7 @@ fn a_holds_cost_on_the_nas_is_bounded() {
 fn old_leases_are_removed() {
     let dir = tempfile::tempdir().unwrap();
     let clock = Arc::new(StepClock::at(T0));
-    let a = budget(dir.path(), "m-a", &clock);
+    let a = budget(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-a", &clock);
     let first = a.take(Class::Query).window;
     let f = a.dir(Class::Query).join(format!("{first}-0"));
     assert!(f.is_file());

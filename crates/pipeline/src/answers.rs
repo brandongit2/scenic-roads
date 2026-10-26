@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use store::nasfs::NasPath;
 
 /// The archives' zstd level (JSON lines: a tenth of their size).
 const LEVEL: i32 = 10;
@@ -39,14 +40,14 @@ const LEVEL: i32 = 10;
 /// A step's answers: files under `dir` on this Mac, and their archive on the NAS.
 pub struct Kept {
     /// The archive on the NAS.
-    pub nas: PathBuf,
+    pub nas: store::nasfs::NasPath,
     /// Where they're kept on this Mac (the archive's names are under it).
     pub dir: PathBuf,
     /// This Mac's mark: the NAS's archive its files last matched, and their hashes then.
     pub mark: PathBuf,
     /// The answers' lease on the NAS (`LEASE`), taken around each sync and keep, with the budgets on
     /// (`leased`); None: none taken (the agent as it was).
-    pub lease: Option<PathBuf>,
+    pub lease: Option<store::nasfs::NasPath>,
     /// The lease while a sync or keep holds it: checked still this holder's before each write to
     /// the NAS (`still_ours`).
     pub holding: std::sync::Mutex<Option<Lease>>,
@@ -64,7 +65,7 @@ impl Drop for Holding<'_> {
 impl Kept {
     /// The answers' lease taken for a sync or keep (when it's `leased`).
     fn hold(&self) -> Result<Option<Holding<'_>>> {
-        let Some(p) = self.lease.as_deref() else { return Ok(None) };
+        let Some(p) = self.lease.as_ref() else { return Ok(None) };
         let l = Lease::take(p)?;
         *self.holding.lock().unwrap_or_else(|e| e.into_inner()) = Some(l);
         Ok(Some(Holding(self)))
@@ -222,12 +223,12 @@ impl Kept {
     }
 
     fn write_mark(&self, m: &Mark) -> Result<()> {
-        crate::whole::write(&self.mark, &serde_json::to_vec(m)?)
+        store::whole::write(&self.mark, &serde_json::to_vec(m)?)
     }
 
     /// The archive's name, for its copies in the scratch folder.
     fn name(&self) -> String {
-        self.nas.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "answers.tar.zst".into())
+        self.nas.file_name().map(str::to_string).unwrap_or_else(|| "answers.tar.zst".into())
     }
 
     /// The NAS's archive, copied here whole and hashed: None when the NAS has none, or had one that
@@ -235,14 +236,14 @@ impl Kept {
     /// this Mac's, perhaps fewer, don't take its place unseen. One that can't be read now (an I/O
     /// error) fails the step, to be tried again.
     fn fetch(&self, scratch: &Path) -> Result<Option<Fetched>> {
-        match std::fs::metadata(&self.nas) {
+        match self.nas.metadata() {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e).with_context(|| format!("stat {}", self.nas.display())),
             Ok(_) => {}
         }
         std::fs::create_dir_all(scratch)?;
         let copy = scratch.join(format!("nas-{}", self.name()));
-        crate::whole::copy(&self.nas, &copy)?;
+        self.nas.copy_to_local(&copy)?;
         if let Err(e) = readable(&copy) {
             std::fs::remove_file(&copy).ok();
             let now = crate::agent::jobs::now_s();
@@ -254,8 +255,7 @@ impl Kept {
                 aside = self.nas.with_file_name(format!("{}.bad-{now}-{k}", self.name()));
             }
             self.still_ours()?;
-            crate::whole::rename_over(&self.nas, &aside)
-                .with_context(|| format!("move {} aside", self.nas.display()))?;
+            self.nas.rename_over(&aside).with_context(|| format!("move {} aside", self.nas.display()))?;
             eprintln!("answers: {} doesn't read whole ({e:#}): moved aside as {}", self.nas.display(), aside.display());
             return Ok(None);
         }
@@ -271,10 +271,10 @@ impl Kept {
             pack(&self.dir, &here.keys().cloned().collect::<Vec<_>>(), &local)?;
             let archive = store::naming::hash16_file(&local)?;
             if let Some(d) = self.nas.parent() {
-                std::fs::create_dir_all(d)?;
+                d.create_dir_all()?;
             }
             self.still_ours()?;
-            crate::whole::copy(&local, &self.nas)?;
+            self.nas.copy_from_local(&local)?;
             self.write_mark(&Mark { archive, files: here.clone() })
         })();
         std::fs::remove_file(&local).ok();
@@ -354,7 +354,7 @@ impl Kept {
                     }
                     Do::Drop => self.drop_here(n)?,
                     Do::Write(b) => {
-                        crate::whole::write(&self.dir.join(n), &b)?;
+                        store::whole::write(&self.dir.join(n), &b)?;
                         now.push(n.clone());
                     }
                 }
@@ -376,7 +376,7 @@ impl Kept {
             std::fs::create_dir_all(d)?;
         }
         if std::fs::rename(from, &to).is_err() {
-            crate::whole::copy(from, &to)?;
+            store::whole::copy(from, &to)?;
         }
         Ok(())
     }
@@ -538,12 +538,13 @@ fn pack(dir: &Path, names: &[String], to: &Path) -> Result<()> {
 }
 
 /// Archive `from` unpacked into `dir`.
-fn unpack(from: &Path, dir: &Path) -> Result<()> {
+fn unpack<'a>(from: impl Into<store::nasfs::Loc<'a>>, dir: &Path) -> Result<()> {
+    let from = from.into();
     let mut tar =
         store::spawn::spawn(store::spawn::command("tar").arg("-xf").arg("-").arg("-C").arg(dir).stdin(Stdio::piped()))
             .context("run tar")?;
     let r = (|| -> Result<()> {
-        let mut z = zstd::Decoder::new(std::fs::File::open(from)?)?;
+        let mut z = zstd::Decoder::new(from.open()?)?;
         match std::io::copy(&mut z, tar.stdin.as_mut().context("tar's input")?) {
             // (tar ends at the archive's end without reading the padding after it: written after
             // that, as it can be on a loaded Mac, the padding meets a closed pipe. tar's status
@@ -569,7 +570,7 @@ pub fn items_files(dir: &Path, date: &str) -> Vec<String> {
 }
 
 /// The items job's for pass `date`: its cache `dir`, its archive in the NAS's project folder `root`.
-pub fn items(root: &Path, dir: &Path, date: &str) -> Kept {
+pub fn items(root: &store::nasfs::NasRoot, dir: &Path, date: &str) -> Kept {
     Kept {
         nas: root.join(format!("sources/items/{date}/answers.tar.zst")),
         dir: dir.to_path_buf(),
@@ -601,7 +602,7 @@ pub fn heritage_files(epoch: &Path) -> Vec<String> {
         .into_iter()
         .filter(|n| {
             !n.split('/').any(|c| c.starts_with('.'))
-                && !crate::whole::is_tmp(Path::new(n))
+                && !store::whole::is_tmp(Path::new(n))
                 && !n.starts_with("osm/")
                 && !REMADE.contains(&n.as_str())
         })
@@ -612,7 +613,7 @@ pub fn heritage_files(epoch: &Path) -> Vec<String> {
 
 /// The heritage chain's for pass `date`: its working copy `epoch`, its archive in the NAS's project
 /// folder `root`.
-pub fn heritage(root: &Path, epoch: &Path, date: &str) -> Kept {
+pub fn heritage(root: &store::nasfs::NasRoot, epoch: &Path, date: &str) -> Kept {
     Kept {
         nas: heritage_archive(root, date),
         dir: epoch.to_path_buf(),
@@ -623,7 +624,7 @@ pub fn heritage(root: &Path, epoch: &Path, date: &str) -> Kept {
 }
 
 /// The heritage chain's archive of pass `date`'s answers.
-pub fn heritage_archive(root: &Path, date: &str) -> PathBuf {
+pub fn heritage_archive(root: &store::nasfs::NasRoot, date: &str) -> store::nasfs::NasPath {
     root.join(format!("sources/items/{date}/heritage.tar.zst"))
 }
 
@@ -639,16 +640,17 @@ pub fn heritage_archive(root: &Path, date: &str) -> PathBuf {
 /// the pass's answers alone; a snapshot named (`legacy` given) that can't be read is an error, so
 /// an empty copy is never kept as the pass's answers. The archive it started from, when there was
 /// one (the snapshot's, else the pass's answers').
-pub fn heritage_start(root: &Path, epoch: &Path, date: &str, legacy: Option<&Path>) -> Result<Option<PathBuf>> {
+pub fn heritage_start(
+    root: &store::nasfs::NasRoot,
+    epoch: &Path,
+    date: &str,
+    legacy: Option<&store::nasfs::NasPath>,
+) -> Result<Option<store::nasfs::NasPath>> {
     if heritage_archive(root, date).exists() || epoch.join(".kept.json").exists() {
         return Ok(None);
     }
-    let mut earlier: Vec<String> = match std::fs::read_dir(root.join("sources/items")) {
-        Ok(rd) => rd
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|d| crate::osmpass::is_date(d) && d.as_str() < date)
-            .collect(),
+    let mut earlier: Vec<String> = match root.join("sources/items").read_dir() {
+        Ok(rd) => rd.into_iter().map(|e| e.name).filter(|d| crate::osmpass::is_date(d) && d.as_str() < date).collect(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(e) => return Err(e).context("list sources/items"),
     };
@@ -664,31 +666,26 @@ pub fn heritage_start(root: &Path, epoch: &Path, date: &str, legacy: Option<&Pat
     // (A snapshot the manifest names but that can't be read now, the NAS away: an error, the job
     // tried again; never an empty copy kept as the pass's answers.)
     if let Some(l) = legacy {
-        let md =
-            std::fs::metadata(l).with_context(|| format!("the registers' snapshot {} can't be read", l.display()))?;
+        let md = l.metadata().with_context(|| format!("the registers' snapshot {} can't be read", l.display()))?;
         ensure!(md.is_file(), "the registers' snapshot {} isn't a file", l.display());
     }
-    let kept: Vec<PathBuf> = match std::fs::read_dir(root.join(format!("sources/items/{date}"))) {
+    let kept: Vec<store::nasfs::NasPath> = match root.join(format!("sources/items/{date}")).read_dir() {
         Ok(rd) => rd
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| {
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("heritage-") && n.ends_with(".tar.zst"))
-            })
+            .into_iter()
+            .map(|e| e.path)
+            .filter(|p| p.file_name().is_some_and(|n| n.starts_with("heritage-") && n.ends_with(".tar.zst")))
             .collect(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(e) => return Err(e).context("list the pass's answers"),
     };
     ensure!(kept.len() <= 1, "more than one heritage answers archive for {date}: {kept:?}");
-    let Some(from) = legacy.map(Path::to_path_buf).or_else(|| kept.first().cloned()) else { return Ok(None) };
+    let Some(from) = legacy.cloned().or_else(|| kept.first().cloned()) else { return Ok(None) };
     let parent = epoch.parent().context("the working copy's folder")?;
     let tmp = parent.join(format!(".heritage-start-{date}"));
     std::fs::remove_dir_all(&tmp).ok();
     let r = (|| -> Result<()> {
         std::fs::create_dir_all(epoch)?;
-        let lay = |from: &Path, take: &dyn Fn(&str) -> bool| -> Result<()> {
+        let lay = |from: &store::nasfs::NasPath, take: &dyn Fn(&str) -> bool| -> Result<()> {
             std::fs::remove_dir_all(&tmp).ok();
             std::fs::create_dir_all(&tmp)?;
             unpack(from, &tmp)?;
@@ -727,11 +724,11 @@ pub fn heritage_start(root: &Path, epoch: &Path, date: &str, legacy: Option<&Pat
 /// With the budgets on (`leased`), alone among this Mac's steps that keep answers (`Local::writer`:
 /// it waits for those under way, and none starts meanwhile), and each archive's keep under the
 /// answers' lease on the NAS.
-pub fn seed(root: &Path, cache: &Path, scratch: &Path, leased: bool) -> Result<Vec<String>> {
+pub fn seed(root: &store::nasfs::NasRoot, cache: &Path, scratch: &Path, leased: bool) -> Result<Vec<String>> {
     let Some(date) = crate::osmpass::latest_pass(root) else { return Ok(Vec::new()) };
     let _local = if leased { Some(Local::writer(cache)?) } else { None };
     let lacks = |k: &Kept| -> Result<bool> {
-        match std::fs::metadata(&k.nas) {
+        match k.nas.metadata() {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
             Err(e) => Err(e).with_context(|| format!("stat {}", k.nas.display())),
             Ok(_) => Ok(false),
@@ -770,7 +767,7 @@ const LEASE_AGAIN: std::time::Duration = std::time::Duration::from_secs(5);
 impl Kept {
     /// With the answers' lease (`LEASE` under the NAS's project folder `root`) taken around its
     /// syncs and keeps when `on` (the budgets on).
-    pub fn leased(mut self, root: &Path, on: bool) -> Kept {
+    pub fn leased(mut self, root: &store::nasfs::NasRoot, on: bool) -> Kept {
         self.lease = on.then(|| root.join(LEASE));
         self
     }
@@ -799,7 +796,7 @@ pub enum Tried {
 /// The answers' lease, held: renewed by a thread of its own while it's held, given up when dropped
 /// (its file removed only while it's still this holder's).
 pub struct Lease {
-    path: PathBuf,
+    path: NasPath,
     token: String,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     renewer: Option<std::thread::JoinHandle<()>>,
@@ -807,7 +804,7 @@ pub struct Lease {
 
 impl Lease {
     /// Takes the lease at `path`, waiting while another holds it (a lapsed one broken).
-    pub fn take(path: &Path) -> Result<Lease> {
+    pub fn take(path: &NasPath) -> Result<Lease> {
         let token = format!(
             "{}-{}-{}",
             crate::agent::jobs::now_s(),
@@ -831,7 +828,7 @@ impl Lease {
             }
         }
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (p, t, s) = (path.to_path_buf(), token.clone(), stop.clone());
+        let (p, t, s) = (path.clone(), token.clone(), stop.clone());
         let renewer = std::thread::Builder::new()
             .name("answers-lease".into())
             .spawn(move || {
@@ -850,7 +847,7 @@ impl Lease {
                 }
             })
             .ok();
-        Ok(Lease { path: path.to_path_buf(), token, stop, renewer })
+        Ok(Lease { path: path.clone(), token, stop, renewer })
     }
 
     /// Whether it's still this holder's, as the NAS's file says now: it names this holder and
@@ -861,7 +858,7 @@ impl Lease {
 }
 
 /// Whether the lease at `path` is the holder of `token`'s at `now`: an error saying why not.
-pub fn lease_is(path: &Path, token: &str, now: u64) -> Result<()> {
+pub fn lease_is(path: &NasPath, token: &str, now: u64) -> Result<()> {
     match read_lease(path).with_context(|| format!("read {}", path.display()))? {
         Some(h) if h.token == token && h.until > now => Ok(()),
         Some(h) if h.token == token => {
@@ -894,8 +891,8 @@ fn hostname() -> String {
     "unknown".into()
 }
 
-fn read_lease(path: &Path) -> std::io::Result<Option<LeaseFile>> {
-    match std::fs::read(path) {
+fn read_lease(path: &NasPath) -> std::io::Result<Option<LeaseFile>> {
+    match path.read() {
         Ok(b) => Ok(serde_json::from_slice(&b).ok().or(Some(LeaseFile {
             by: "a holder whose lease doesn't read whole".into(),
             token: String::new(),
@@ -910,16 +907,16 @@ fn read_lease(path: &Path) -> std::io::Result<Option<LeaseFile>> {
 /// has lapsed broken (moved aside by a name of this taker's own, then removed once it's seen to be
 /// the lapsed one; one renewed meanwhile, or another's made since, is put back with create-new),
 /// then tried again.
-pub fn try_lease(path: &Path, by: &str, token: &str, now: u64) -> Result<Tried> {
+pub fn try_lease(path: &NasPath, by: &str, token: &str, now: u64) -> Result<Tried> {
     try_lease_with(path, by, token, now, &mut || {})
 }
 
 /// `try_lease`, with `between` run after a lapsed lease is read and before it's moved aside (the
 /// tests': its holder renewing meanwhile).
-fn try_lease_with(path: &Path, by: &str, token: &str, now: u64, between: &mut dyn FnMut()) -> Result<Tried> {
+fn try_lease_with(path: &NasPath, by: &str, token: &str, now: u64, between: &mut dyn FnMut()) -> Result<Tried> {
     let mine = LeaseFile { by: by.to_string(), token: token.to_string(), until: now + LEASE_S };
     if let Some(d) = path.parent() {
-        std::fs::create_dir_all(d).with_context(|| format!("make {}", d.display()))?;
+        d.create_dir_all().with_context(|| format!("make {}", d.display()))?;
     }
     for _ in 0..3 {
         match create_new(path, &serde_json::to_vec(&mine)?) {
@@ -936,11 +933,8 @@ fn try_lease_with(path: &Path, by: &str, token: &str, now: u64, between: &mut dy
         }
         // (Lapsed: broken.)
         between();
-        let aside = path.with_file_name(format!(
-            "{}.lapsed-{token}",
-            path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
-        ));
-        match std::fs::rename(path, &aside) {
+        let aside = path.with_file_name(format!("{}.lapsed-{token}", path.file_name().unwrap_or_default()));
+        match path.rename(&aside) {
             Ok(()) => {
                 let moved = read_lease(&aside)?;
                 // (Not the lapsed one as it was read: renewed since (its `until` moved on, the same
@@ -948,14 +942,14 @@ fn try_lease_with(path: &Path, by: &str, token: &str, now: u64, between: &mut dy
                 // made meanwhile (AlreadyExists), the one moved aside is lost: its holder finds so at
                 // its next check, before it writes, or its next renewal.)
                 if moved.as_ref().is_some_and(|m| *m != held) {
-                    let b = std::fs::read(&aside)?;
+                    let b = aside.read()?;
                     match create_new(path, &b) {
                         Ok(()) => {}
                         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                         Err(e) => return Err(e).with_context(|| format!("put back {}", path.display())),
                     }
                 }
-                std::fs::remove_file(&aside).ok();
+                aside.remove_file().ok();
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e).with_context(|| format!("break the lapsed {}", path.display())),
@@ -967,11 +961,11 @@ fn try_lease_with(path: &Path, by: &str, token: &str, now: u64, between: &mut dy
 
 /// The lease at `path` renewed at `now` by the holder of `token` (written whole, by a temporary
 /// name: its one writer); whether it's still theirs.
-pub fn renew_lease(path: &Path, token: &str, now: u64) -> bool {
+pub fn renew_lease(path: &NasPath, token: &str, now: u64) -> bool {
     match read_lease(path) {
         Ok(Some(mut h)) if h.token == token => {
             h.until = now + LEASE_S;
-            serde_json::to_vec(&h).ok().is_some_and(|b| crate::whole::write(path, &b).is_ok())
+            serde_json::to_vec(&h).ok().is_some_and(|b| path.write_whole(b).is_ok())
         }
         // (The NAS not answering now: kept, tried again next time.)
         Err(_) => true,
@@ -980,15 +974,15 @@ pub fn renew_lease(path: &Path, token: &str, now: u64) -> bool {
 }
 
 /// The lease at `path` given up by the holder of `token`: removed only while it's theirs.
-pub fn release_lease(path: &Path, token: &str) {
+pub fn release_lease(path: &NasPath, token: &str) {
     if read_lease(path).ok().flatten().is_some_and(|h| h.token == token) {
-        std::fs::remove_file(path).ok();
+        path.remove_file().ok();
     }
 }
 
-fn create_new(p: &Path, b: &[u8]) -> std::io::Result<()> {
+fn create_new(p: &NasPath, b: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    let mut f = std::fs::File::options().write(true).create_new(true).open(p)?;
+    let mut f = p.open_with(std::fs::File::options().write(true).create_new(true))?;
     f.write_all(b)
 }
 
@@ -1138,7 +1132,7 @@ mod tests {
         put(&m4.join("wp-2026-09-28.jsonl"), "{\"qid\":\"Q1\",\"n\":2}\n");
         put(&m4.join("fetched-2026-09-28.json"), "{\"first\":\"2026-10-05\"}");
         put(&m4.join("facts-2026-08-31.jsonl"), "old\n");
-        let k = items(&root, &m4, "2026-09-28");
+        let k = items(&store::nasfs::NasRoot::local_for_test(&root), &m4, "2026-09-28");
         assert_eq!(k.sync(&items_files(&m4, "2026-09-28"), &scratch).unwrap(), Synced::Sent);
         assert!(root.join("sources/items/2026-09-28/answers.tar.zst").is_file());
         assert_eq!(
@@ -1150,7 +1144,7 @@ mod tests {
         assert!(!k.keep(&items_files(&m4, "2026-09-28"), &scratch).unwrap());
         // Another Mac, without any: it takes them.
         let m1 = d.path().join("m1/items");
-        let k1 = items(&root, &m1, "2026-09-28");
+        let k1 = items(&store::nasfs::NasRoot::local_for_test(&root), &m1, "2026-09-28");
         assert_eq!(k1.sync(&items_files(&m1, "2026-09-28"), &scratch).unwrap(), Synced::Took);
         assert_eq!(read(&m1.join("facts-2026-09-28.jsonl")), "{\"qid\":\"Q1\"}\n");
         assert_eq!(items_files(&m1, "2026-09-28").len(), 3);
@@ -1159,7 +1153,9 @@ mod tests {
         assert_eq!(std::fs::read_dir(&scratch).unwrap().flatten().filter(|e| e.file_name() != "look").count(), 0);
         // Neither has any of another pass: nothing done.
         assert_eq!(
-            items(&root, &m1, "2026-10-12").sync(&items_files(&m1, "2026-10-12"), &scratch).unwrap(),
+            items(&store::nasfs::NasRoot::local_for_test(&root), &m1, "2026-10-12")
+                .sync(&items_files(&m1, "2026-10-12"), &scratch)
+                .unwrap(),
             Synced::None
         );
         assert!(!root.join("sources/items/2026-10-12").exists());
@@ -1172,8 +1168,8 @@ mod tests {
         let (m4, m1) = (d.path().join("m4"), d.path().join("m1"));
         let facts = |m: &Path| m.join("facts-2026-09-28.jsonl");
         put(&facts(&m4), &qids(&["Q1"]));
-        let k4 = items(&root, &m4, "2026-09-28");
-        let k1 = items(&root, &m1, "2026-09-28");
+        let k4 = items(&store::nasfs::NasRoot::local_for_test(&root), &m4, "2026-09-28");
+        let k1 = items(&store::nasfs::NasRoot::local_for_test(&root), &m1, "2026-09-28");
         let files = |dir: &Path| items_files(dir, "2026-09-28");
         k4.sync(&files(&m4), &scratch).unwrap();
         // The step fetches more: sent at its end.
@@ -1213,7 +1209,7 @@ mod tests {
         let (root, scratch, m4) = (d.path().join("nas"), d.path().join("scratch"), d.path().join("m4"));
         put(&m4.join("facts-2026-09-28.jsonl"), "{\"qid\":\"Q1\",\"old\":1}\n");
         put(&m4.join("wp-2026-09-28.jsonl"), "{\"qid\":\"Q1\"}\n");
-        let k = items(&root, &m4, "2026-09-28");
+        let k = items(&store::nasfs::NasRoot::local_for_test(&root), &m4, "2026-09-28");
         assert_eq!(k.sync(&items_files(&m4, "2026-09-28"), &scratch).unwrap(), Synced::Sent);
         std::fs::remove_file(m4.join("facts-2026-09-28.jsonl")).unwrap();
         assert_eq!(k.sync(&items_files(&m4, "2026-09-28"), &scratch).unwrap(), Synced::Sent);
@@ -1223,7 +1219,7 @@ mod tests {
         let m1 = d.path().join("m1");
         put(&m1.join("facts-2026-09-28.jsonl"), "{\"qid\":\"Q1\",\"old\":1}\n");
         put(&m1.join("wp-2026-09-28.jsonl"), "{\"qid\":\"Q1\"}\n");
-        let k1 = items(&root, &m1, "2026-09-28");
+        let k1 = items(&store::nasfs::NasRoot::local_for_test(&root), &m1, "2026-09-28");
         // (Its mark, as the lead's was before the deletion: an archive it matched then.)
         let first = Mark { archive: "0".repeat(16), files: hashes(&m1, &items_files(&m1, "2026-09-28")).unwrap() };
         k1.write_mark(&first).unwrap();
@@ -1232,7 +1228,7 @@ mod tests {
         // The heritage chain's park facts, cut short by a stopped run (sent at the next start), then
         // deleted by hand for the step to seed them again: they stay deleted.
         let epoch = d.path().join("cache/heritage-2026-09-28");
-        let h = heritage(&root, &epoch, "2026-09-28");
+        let h = heritage(&store::nasfs::NasRoot::local_for_test(&root), &epoch, "2026-09-28");
         put(&epoch.join("areas-wikidata.json"), "{\"Q1\": {}}");
         assert!(h.keep(&heritage_files(&epoch), &scratch).unwrap());
         put(&epoch.join("areas-wikidata.json"), "{\"Q1\": {}, \"Q2");
@@ -1245,7 +1241,7 @@ mod tests {
         put(&epoch.join("wd/ids.jsonl"), "{}");
         assert!(h.keep(&heritage_files(&epoch), &scratch).unwrap());
         let other = d.path().join("m1/heritage-2026-09-28");
-        let o = heritage(&root, &other, "2026-09-28");
+        let o = heritage(&store::nasfs::NasRoot::local_for_test(&root), &other, "2026-09-28");
         assert_eq!(o.sync(&heritage_files(&other), &scratch).unwrap(), Synced::Took);
         assert_eq!(read(&other.join("wd/ids.jsonl")), "{}");
         std::fs::remove_file(epoch.join("wd/ids.jsonl")).unwrap();
@@ -1264,7 +1260,10 @@ mod tests {
         let (m4, m1) = (d.path().join("m4"), d.path().join("m1"));
         let files = |dir: &Path| items_files(dir, "2026-09-28");
         put(&m4.join("facts-2026-09-28.jsonl"), &qids(&["Q1"]));
-        let (k4, k1) = (items(&root, &m4, "2026-09-28"), items(&root, &m1, "2026-09-28"));
+        let (k4, k1) = (
+            items(&store::nasfs::NasRoot::local_for_test(&root), &m4, "2026-09-28"),
+            items(&store::nasfs::NasRoot::local_for_test(&root), &m1, "2026-09-28"),
+        );
         assert_eq!(k4.sync(&files(&m4), &scratch).unwrap(), Synced::Sent);
         // The lead's run starts (Same) and runs long; the other Mac takes the archive,
         // fetches articles, keeps them.
@@ -1297,10 +1296,10 @@ mod tests {
         // the next start takes the NAS's.
         put(&m1.join("facts-2026-09-28.jsonl"), "the other's\n");
         assert!(k1.keep(&files(&m1), &scratch).unwrap());
-        let theirs = std::fs::read(&k4.nas).unwrap();
+        let theirs = k4.nas.read().unwrap();
         put(&m4.join("facts-2026-09-28.jsonl"), "this Mac's\n");
         assert!(!k4.keep(&files(&m4), &scratch).unwrap());
-        assert_eq!(std::fs::read(&k4.nas).unwrap(), theirs);
+        assert_eq!(k4.nas.read().unwrap(), theirs);
         assert_eq!(read(&m4.join("facts-2026-09-28.jsonl")), "this Mac's\n");
         assert_eq!(k4.sync(&files(&m4), &scratch).unwrap(), Synced::Took);
         assert_eq!(read(&m4.join("facts-2026-09-28.jsonl")), "the other's\n");
@@ -1314,7 +1313,7 @@ mod tests {
         let nas = folder.join("answers.tar.zst");
         put(&nas, "not an archive");
         put(&m4.join("facts-2026-09-28.jsonl"), "a\n");
-        let k = items(&root, &m4, "2026-09-28");
+        let k = items(&store::nasfs::NasRoot::local_for_test(&root), &m4, "2026-09-28");
         assert_eq!(k.sync(&items_files(&m4, "2026-09-28"), &scratch).unwrap(), Synced::Sent);
         assert_eq!(archived(&k, &scratch)["facts-2026-09-28.jsonl"], "a\n");
         let aside = |n: usize| {
@@ -1333,12 +1332,17 @@ mod tests {
         b[n - 6] ^= 1;
         std::fs::write(&nas, &b).unwrap();
         let m1 = d.path().join("m1");
-        assert_eq!(items(&root, &m1, "2026-09-28").sync(&[], &scratch).unwrap(), Synced::None);
+        assert_eq!(
+            items(&store::nasfs::NasRoot::local_for_test(&root), &m1, "2026-09-28").sync(&[], &scratch).unwrap(),
+            Synced::None
+        );
         assert!(!m1.exists() && !nas.exists());
         assert!(aside(2), "each kept");
         put(&m1.join("wp-2026-09-28.jsonl"), "w\n");
         assert_eq!(
-            items(&root, &m1, "2026-09-28").sync(&items_files(&m1, "2026-09-28"), &scratch).unwrap(),
+            items(&store::nasfs::NasRoot::local_for_test(&root), &m1, "2026-09-28")
+                .sync(&items_files(&m1, "2026-09-28"), &scratch)
+                .unwrap(),
             Synced::Sent
         );
         assert_eq!(archived(&k, &scratch).keys().collect::<Vec<_>>(), ["wp-2026-09-28.jsonl"]);
@@ -1368,11 +1372,11 @@ mod tests {
         let (root, scratch) = (d.path().join("nas"), d.path().join("scratch"));
         let epoch = d.path().join("cache/heritage-2026-09-28");
         assert_eq!(
-            heritage_start(&root, &epoch, "2026-09-28", None).unwrap(),
+            heritage_start(&store::nasfs::NasRoot::local_for_test(&root), &epoch, "2026-09-28", None).unwrap(),
             None,
             "no earlier pass's: an empty copy"
         );
-        let k = heritage(&root, &epoch, "2026-09-28");
+        let k = heritage(&store::nasfs::NasRoot::local_for_test(&root), &epoch, "2026-09-28");
         assert_eq!(k.sync(&heritage_files(&epoch), &scratch).unwrap(), Synced::None);
         // A run: the caches it asked, a park facts file; what it makes again each run; a temporary
         // file; a marker.
@@ -1388,8 +1392,12 @@ mod tests {
         assert!(root.join("sources/items/2026-09-28/heritage.tar.zst").is_file());
         // A Mac without the pass's copy takes the answers.
         let other = d.path().join("m1/heritage-2026-09-28");
-        assert_eq!(heritage_start(&root, &other, "2026-09-28", None).unwrap(), None, "the pass has its own");
-        let k1 = heritage(&root, &other, "2026-09-28");
+        assert_eq!(
+            heritage_start(&store::nasfs::NasRoot::local_for_test(&root), &other, "2026-09-28", None).unwrap(),
+            None,
+            "the pass has its own"
+        );
+        let k1 = heritage(&store::nasfs::NasRoot::local_for_test(&root), &other, "2026-09-28");
         assert_eq!(k1.sync(&heritage_files(&other), &scratch).unwrap(), Synced::Took);
         assert_eq!(read(&other.join("wd/ids.jsonl")), "wd/ids.jsonl");
         assert_eq!(heritage_files(&other), files);
@@ -1397,16 +1405,19 @@ mod tests {
         // A new pass: its copy starts from the last pass's answers, and sends them as its own.
         let next = d.path().join("cache/heritage-2027-03-01");
         assert_eq!(
-            heritage_start(&root, &next, "2027-03-01", None).unwrap(),
-            Some(heritage_archive(&root, "2026-09-28"))
+            heritage_start(&store::nasfs::NasRoot::local_for_test(&root), &next, "2027-03-01", None).unwrap(),
+            Some(heritage_archive(&store::nasfs::NasRoot::local_for_test(&root), "2026-09-28"))
         );
         assert_eq!(heritage_files(&next), files);
-        let k2 = heritage(&root, &next, "2027-03-01");
+        let k2 = heritage(&store::nasfs::NasRoot::local_for_test(&root), &next, "2027-03-01");
         assert_eq!(k2.sync(&heritage_files(&next), &scratch).unwrap(), Synced::Sent);
-        assert!(heritage_archive(&root, "2027-03-01").is_file());
+        assert!(heritage_archive(&store::nasfs::NasRoot::local_for_test(&root), "2027-03-01").is_file());
         // (Once it has its own, or a copy of its own: never again over it.)
         std::fs::remove_file(next.join("wd/ids.jsonl")).unwrap();
-        assert_eq!(heritage_start(&root, &next, "2027-03-01", None).unwrap(), None);
+        assert_eq!(
+            heritage_start(&store::nasfs::NasRoot::local_for_test(&root), &next, "2027-03-01", None).unwrap(),
+            None
+        );
         assert!(!next.join("wd/ids.jsonl").exists());
     }
 
@@ -1447,15 +1458,33 @@ mod tests {
         let before = names(&root);
         // No snapshot named: the pass's answers alone.
         let alone = d.path().join("alone").join(format!("heritage-{date}"));
-        assert_eq!(heritage_start(&root, &alone, date, None).unwrap(), Some(kept.clone()));
+        assert_eq!(
+            heritage_start(&store::nasfs::NasRoot::local_for_test(&root), &alone, date, None).unwrap(),
+            Some(kept.clone()).map(store::nasfs::NasPath::local_for_test)
+        );
         assert_eq!(heritage_files(&alone), ["areas-wikidata.json", "wd/ids.jsonl"]);
         assert_eq!(read(&alone.join("wd/ids.jsonl")), "new ids");
         // A snapshot named but not there (the NAS away): an error, nothing made.
         let away = d.path().join("away").join(format!("heritage-{date}"));
-        assert!(heritage_start(&root, &away, date, Some(&root.join("sources/registers/gone.tar.zst"))).is_err());
+        assert!(heritage_start(
+            &store::nasfs::NasRoot::local_for_test(&root),
+            &away,
+            date,
+            Some(&store::nasfs::NasPath::local_for_test(&root.join("sources/registers/gone.tar.zst")))
+        )
+        .is_err());
         assert!(heritage_files(&away).is_empty());
         let epoch = d.path().join("cache").join(format!("heritage-{date}"));
-        assert_eq!(heritage_start(&root, &epoch, date, Some(&legacy)).unwrap(), Some(legacy.clone()));
+        assert_eq!(
+            heritage_start(
+                &store::nasfs::NasRoot::local_for_test(&root),
+                &epoch,
+                date,
+                Some(&store::nasfs::NasPath::local_for_test(&legacy))
+            )
+            .unwrap(),
+            Some(legacy.clone()).map(store::nasfs::NasPath::local_for_test)
+        );
         assert_eq!(
             heritage_files(&epoch),
             ["areas-wikidata.json", "desc/en.jsonl", "wd/ids.jsonl", "whs/wd-p757.json"]
@@ -1465,15 +1494,30 @@ mod tests {
         assert!(!d.path().join("cache").join(format!(".heritage-start-{date}")).exists());
         assert_eq!(names(&root), before, "the NAS read only");
         // The job's keep sends them as the pass's archive; a later start never lays them again.
-        let k = heritage(&root, &epoch, date);
+        let k = heritage(&store::nasfs::NasRoot::local_for_test(&root), &epoch, date);
         assert_eq!(k.sync(&heritage_files(&epoch), &scratch).unwrap(), Synced::Sent);
         assert_eq!(archived(&k, &scratch).get("wd/ids.jsonl").map(String::as_str), Some("new ids"));
         let other = d.path().join("m1").join(format!("heritage-{date}"));
-        assert_eq!(heritage_start(&root, &other, date, Some(&legacy)).unwrap(), None);
+        assert_eq!(
+            heritage_start(
+                &store::nasfs::NasRoot::local_for_test(&root),
+                &other,
+                date,
+                Some(&store::nasfs::NasPath::local_for_test(&legacy))
+            )
+            .unwrap(),
+            None
+        );
         // Two answers archives for the pass: refused.
-        std::fs::remove_file(heritage_archive(&root, date)).unwrap();
+        heritage_archive(&store::nasfs::NasRoot::local_for_test(&root), date).remove_file().unwrap();
         std::fs::copy(&kept, kept.with_file_name("heritage-3333333333333333.tar.zst")).unwrap();
-        assert!(heritage_start(&root, &d.path().join("m2/heritage-x"), date, Some(&legacy)).is_err());
+        assert!(heritage_start(
+            &store::nasfs::NasRoot::local_for_test(&root),
+            &d.path().join("m2/heritage-x"),
+            date,
+            Some(&store::nasfs::NasPath::local_for_test(&legacy))
+        )
+        .is_err());
     }
 
     #[test]
@@ -1518,7 +1562,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, cache, scratch) = (d.path().join("nas"), d.path().join("cache"), d.path().join("scratch"));
         // No complete pass: nothing.
-        assert!(seed(&root, &cache, &scratch, false).unwrap().is_empty());
+        assert!(seed(&store::nasfs::NasRoot::local_for_test(&root), &cache, &scratch, false).unwrap().is_empty());
         put(&root.join("sources/osm/2026-09-28/pass.0000000000000001.json"), "{}");
         put(&cache.join("items/facts-2026-09-28.jsonl"), &qids(&["Q1"]));
         // (An older pass's: not this pass's to seed.)
@@ -1526,14 +1570,17 @@ mod tests {
         let epoch = cache.join("heritage-2026-09-28");
         put(&epoch.join(".done"), "");
         put(&epoch.join("areas-wikidata.json"), "{}");
-        let said = seed(&root, &cache, &scratch, false).unwrap();
+        let said = seed(&store::nasfs::NasRoot::local_for_test(&root), &cache, &scratch, false).unwrap();
         assert_eq!(said.len(), 2, "{said:?}");
-        let (k, h) = (items(&root, &cache.join("items"), "2026-09-28"), heritage(&root, &epoch, "2026-09-28"));
+        let (k, h) = (
+            items(&store::nasfs::NasRoot::local_for_test(&root), &cache.join("items"), "2026-09-28"),
+            heritage(&store::nasfs::NasRoot::local_for_test(&root), &epoch, "2026-09-28"),
+        );
         assert_eq!(archived(&k, &scratch).keys().collect::<Vec<_>>(), ["facts-2026-09-28.jsonl"]);
         assert_eq!(archived(&h, &scratch).keys().collect::<Vec<_>>(), ["areas-wikidata.json"]);
         // The NAS has them: nothing more, whatever this Mac changed since (the steps' to send).
         put(&cache.join("items/facts-2026-09-28.jsonl"), &qids(&["Q1", "Q2"]));
-        assert!(seed(&root, &cache, &scratch, false).unwrap().is_empty());
+        assert!(seed(&store::nasfs::NasRoot::local_for_test(&root), &cache, &scratch, false).unwrap().is_empty());
         assert_eq!(archived(&k, &scratch)["facts-2026-09-28.jsonl"], qids(&["Q1"]));
     }
 
@@ -1544,24 +1591,40 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("nas/state/pool/answers.lease");
         let t = 1_800_000_000;
-        assert_eq!(try_lease(&p, "m4", "a", t).unwrap(), Tried::Taken);
-        assert_eq!(try_lease(&p, "m4", "a", t + 1).unwrap(), Tried::Taken, "its own again");
-        assert_eq!(try_lease(&p, "m1", "b", t + 1).unwrap(), Tried::Held(t + LEASE_S, "m4".into()));
+        assert_eq!(try_lease(&store::nasfs::NasPath::local_for_test(&p), "m4", "a", t).unwrap(), Tried::Taken);
+        assert_eq!(
+            try_lease(&store::nasfs::NasPath::local_for_test(&p), "m4", "a", t + 1).unwrap(),
+            Tried::Taken,
+            "its own again"
+        );
+        assert_eq!(
+            try_lease(&store::nasfs::NasPath::local_for_test(&p), "m1", "b", t + 1).unwrap(),
+            Tried::Held(t + LEASE_S, "m4".into())
+        );
         // (Renewed: held past its first end.)
-        assert!(renew_lease(&p, "a", t + 500));
-        assert_eq!(try_lease(&p, "m1", "b", t + LEASE_S + 1).unwrap(), Tried::Held(t + 500 + LEASE_S, "m4".into()));
+        assert!(renew_lease(&store::nasfs::NasPath::local_for_test(&p), "a", t + 500));
+        assert_eq!(
+            try_lease(&store::nasfs::NasPath::local_for_test(&p), "m1", "b", t + LEASE_S + 1).unwrap(),
+            Tried::Held(t + 500 + LEASE_S, "m4".into())
+        );
         // (Lapsed: broken and taken.)
-        assert_eq!(try_lease(&p, "m1", "b", t + 500 + LEASE_S + 1).unwrap(), Tried::Taken);
-        assert!(!renew_lease(&p, "a", t + 500 + LEASE_S + 2), "the old holder's isn't its own any more");
-        release_lease(&p, "a");
+        assert_eq!(
+            try_lease(&store::nasfs::NasPath::local_for_test(&p), "m1", "b", t + 500 + LEASE_S + 1).unwrap(),
+            Tried::Taken
+        );
+        assert!(
+            !renew_lease(&store::nasfs::NasPath::local_for_test(&p), "a", t + 500 + LEASE_S + 2),
+            "the old holder's isn't its own any more"
+        );
+        release_lease(&store::nasfs::NasPath::local_for_test(&p), "a");
         assert!(p.is_file(), "the old holder can't remove the new one's");
-        release_lease(&p, "b");
+        release_lease(&store::nasfs::NasPath::local_for_test(&p), "b");
         assert!(!p.exists());
         // (Nothing left aside.)
         assert_eq!(std::fs::read_dir(p.parent().unwrap()).unwrap().count(), 0);
         // (A file that doesn't read whole is a lapsed one.)
         put(&p, "{\"by\":");
-        assert_eq!(try_lease(&p, "m1", "c", t).unwrap(), Tried::Taken);
+        assert_eq!(try_lease(&store::nasfs::NasPath::local_for_test(&p), "m1", "c", t).unwrap(), Tried::Taken);
     }
 
     /// A holder that renews between a taker's read of its lapsed lease and the taker's move aside
@@ -1571,13 +1634,19 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("nas/state/pool/answers.lease");
         let t = 1_800_000_000;
-        assert_eq!(try_lease(&p, "m4", "a", t).unwrap(), Tried::Taken);
+        assert_eq!(try_lease(&store::nasfs::NasPath::local_for_test(&p), "m4", "a", t).unwrap(), Tried::Taken);
         let late = t + LEASE_S + 1;
         let (p2, mut renewed) = (p.clone(), false);
-        let r = try_lease_with(&p, "m1", "b", late, &mut || renewed = renew_lease(&p2, "a", late)).unwrap();
+        let r = try_lease_with(&store::nasfs::NasPath::local_for_test(&p), "m1", "b", late, &mut || {
+            renewed = renew_lease(&store::nasfs::NasPath::local_for_test(&p2), "a", late)
+        })
+        .unwrap();
         assert!(renewed);
         assert_eq!(r, Tried::Held(late + LEASE_S, "m4".into()));
-        assert!(lease_is(&p, "a", late).is_ok() && lease_is(&p, "b", late).is_err());
+        assert!(
+            lease_is(&store::nasfs::NasPath::local_for_test(&p), "a", late).is_ok()
+                && lease_is(&store::nasfs::NasPath::local_for_test(&p), "b", late).is_err()
+        );
         assert_eq!(std::fs::read_dir(p.parent().unwrap()).unwrap().count(), 1, "nothing left aside");
     }
 
@@ -1588,18 +1657,21 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("nas/state/pool/answers.lease");
         let t = 1_800_000_000;
-        assert_eq!(try_lease(&p, "m4", "a", t).unwrap(), Tried::Taken);
+        assert_eq!(try_lease(&store::nasfs::NasPath::local_for_test(&p), "m4", "a", t).unwrap(), Tried::Taken);
         let late = t + LEASE_S + 1;
         // (B, the breaker, has moved A's lease aside; C takes the path; B's put-back of A's fails.)
         let aside = p.with_file_name("answers.lease.lapsed-x");
         std::fs::rename(&p, &aside).unwrap();
-        assert_eq!(try_lease(&p, "m2", "c", late).unwrap(), Tried::Taken);
-        assert!(create_new(&p, &std::fs::read(&aside).unwrap())
+        assert_eq!(try_lease(&store::nasfs::NasPath::local_for_test(&p), "m2", "c", late).unwrap(), Tried::Taken);
+        assert!(create_new(&store::nasfs::NasPath::local_for_test(&p), &std::fs::read(&aside).unwrap())
             .is_err_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists));
         std::fs::remove_file(&aside).unwrap();
         // (A finds its lease gone at its check, and can't renew it; C holds it alone.)
-        assert!(lease_is(&p, "a", late).is_err() && !renew_lease(&p, "a", late));
-        assert!(lease_is(&p, "c", late).is_ok());
+        assert!(
+            lease_is(&store::nasfs::NasPath::local_for_test(&p), "a", late).is_err()
+                && !renew_lease(&store::nasfs::NasPath::local_for_test(&p), "a", late)
+        );
+        assert!(lease_is(&store::nasfs::NasPath::local_for_test(&p), "c", late).is_ok());
     }
 
     /// The holder's renewal while a breaker has its lease aside (renewed just before the breaker
@@ -1609,12 +1681,15 @@ mod tests {
     fn a_renewal_while_the_lease_is_aside_loses_nothing() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("nas/state/pool/answers.lease");
-        let l = Lease::take(&p).unwrap();
+        let l = Lease::take(&store::nasfs::NasPath::local_for_test(&p)).unwrap();
         let aside = p.with_file_name("answers.lease.lapsed-b");
         std::fs::rename(&p, &aside).unwrap();
-        assert!(!renew_lease(&p, &l.token, crate::agent::jobs::now_s()), "aside: not found");
+        assert!(
+            !renew_lease(&store::nasfs::NasPath::local_for_test(&p), &l.token, crate::agent::jobs::now_s()),
+            "aside: not found"
+        );
         assert!(l.ours().is_err(), "nor written meanwhile");
-        create_new(&p, &std::fs::read(&aside).unwrap()).unwrap();
+        create_new(&store::nasfs::NasPath::local_for_test(&p), &std::fs::read(&aside).unwrap()).unwrap();
         std::fs::remove_file(&aside).unwrap();
         l.ours().unwrap();
         drop(l);
@@ -1627,11 +1702,21 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, cache, scratch) = (d.path().join("nas"), d.path().join("cache"), d.path().join("scratch"));
         put(&cache.join("items/facts-2026-09-28.jsonl"), &qids(&["Q1"]));
-        let k = items(&root, &cache.join("items"), "2026-09-28").leased(&root, true);
+        let k = items(&store::nasfs::NasRoot::local_for_test(&root), &cache.join("items"), "2026-09-28")
+            .leased(&store::nasfs::NasRoot::local_for_test(&root), true);
         let _held = k.hold().unwrap().unwrap();
         // (Another takes the path: the holder's file replaced.)
         std::fs::remove_file(root.join(LEASE)).unwrap();
-        assert_eq!(try_lease(&root.join(LEASE), "m1", "other", crate::agent::jobs::now_s()).unwrap(), Tried::Taken);
+        assert_eq!(
+            try_lease(
+                &store::nasfs::NasPath::local_for_test(&root.join(LEASE)),
+                "m1",
+                "other",
+                crate::agent::jobs::now_s()
+            )
+            .unwrap(),
+            Tried::Taken
+        );
         let e = k
             .send(&hashes(&cache.join("items"), &items_files(&cache.join("items"), "2026-09-28")).unwrap(), &scratch)
             .unwrap_err();
@@ -1639,7 +1724,12 @@ mod tests {
         assert!(!k.nas.exists(), "no archive written");
         // (Its lease, given back, leaves the other's.)
         drop(_held);
-        assert!(lease_is(&root.join(LEASE), "other", crate::agent::jobs::now_s()).is_ok());
+        assert!(lease_is(
+            &store::nasfs::NasPath::local_for_test(&root.join(LEASE)),
+            "other",
+            crate::agent::jobs::now_s()
+        )
+        .is_ok());
     }
 
     /// Writer preference on this Mac: a sender waits for the step under way, and a step starting
@@ -1701,7 +1791,7 @@ mod tests {
         let me = hostname();
         let ms = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
         for _ in 0..5 {
-            let l = Lease::take(&p).unwrap();
+            let l = Lease::take(&store::nasfs::NasPath::local_for_test(&p)).unwrap();
             let start = ms();
             std::thread::sleep(std::time::Duration::from_secs(3));
             let end = ms();
@@ -1717,15 +1807,19 @@ mod tests {
         let (root, cache, scratch) = (d.path().join("nas"), d.path().join("cache"), d.path().join("scratch"));
         put(&root.join("sources/osm/2026-09-28/pass.0000000000000001.json"), "{}");
         put(&cache.join("items/facts-2026-09-28.jsonl"), &qids(&["Q1"]));
-        let said = seed(&root, &cache, &scratch, true).unwrap();
+        let said = seed(&store::nasfs::NasRoot::local_for_test(&root), &cache, &scratch, true).unwrap();
         assert_eq!(said.len(), 1, "{said:?}");
         assert!(!root.join(LEASE).exists());
-        let k = items(&root, &cache.join("items"), "2026-09-28").leased(&root, true);
-        assert_eq!(k.lease.as_deref(), Some(root.join(LEASE).as_path()));
+        let k = items(&store::nasfs::NasRoot::local_for_test(&root), &cache.join("items"), "2026-09-28")
+            .leased(&store::nasfs::NasRoot::local_for_test(&root), true);
+        assert_eq!(k.lease.clone().map(|l| l.unchecked_path()), Some(root.join(LEASE)));
         put(&cache.join("items/facts-2026-09-28.jsonl"), &qids(&["Q1", "Q2"]));
         assert!(k.keep(&items_files(&cache.join("items"), "2026-09-28"), &scratch).unwrap());
         assert_eq!(k.sync(&items_files(&cache.join("items"), "2026-09-28"), &scratch).unwrap(), Synced::Same);
         assert!(!root.join(LEASE).exists());
-        assert!(items(&root, &cache, "x").leased(&root, false).lease.is_none());
+        assert!(items(&store::nasfs::NasRoot::local_for_test(&root), &cache, "x")
+            .leased(&store::nasfs::NasRoot::local_for_test(&root), false)
+            .lease
+            .is_none());
     }
 }

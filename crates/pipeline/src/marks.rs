@@ -17,14 +17,15 @@ pub type MarkdataFile = store::sect::SectReader<store::range::Slice<std::sync::A
 
 /// Every z6 tile's markdata in the file at `path`, by tile: a bundle's members (a `.pack`), each
 /// read in place, or a file of one tile (`.sect`, as the marks job wrote them before task #449).
-pub fn markdata_files(path: &Path) -> Result<Vec<((u32, u32), MarkdataFile)>> {
-    use store::range::{PlainFile, RangeRead, Slice};
-    let f = std::sync::Arc::new(PlainFile::open(path).with_context(|| format!("open {}", path.display()))?);
+pub fn markdata_files<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<Vec<((u32, u32), MarkdataFile)>> {
+    use store::range::{RangeRead, Slice};
+    let path = path.into();
+    let f = std::sync::Arc::new(path.open_plain().with_context(|| format!("open {}", path.display()))?);
     let read = |off: u64, len: u64| -> Result<MarkdataFile> {
         store::sect::SectReader::open(Slice::new(f.clone(), off, len)?)
             .with_context(|| format!("read {}", path.display()))
     };
-    if path.extension().is_some_and(|e| e == "pack") {
+    if path.extension() == Some("pack") {
         let idx = store::pack::PackIndex::read_from(&*f).with_context(|| format!("read {}", path.display()))?;
         idx.entries
             .iter()

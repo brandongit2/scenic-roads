@@ -303,7 +303,7 @@ pub struct ManifestTiles {
     layer: String,
     /// The layer's packs as the manifest named them when it was made (logical → file): its own,
     /// so the job may write packs while it reads (slope_pack::build_q_with).
-    files: HashMap<String, std::path::PathBuf>,
+    files: HashMap<String, store::nasfs::NasPath>,
     open: Mutex<HashMap<String, Option<std::sync::Arc<OpenPack>>>>,
     /// Where a pack read tile by tile throughout is copied whole and read from then on
     /// (`with_copies`, `copy_here`), and the copies made, deleted with this.
@@ -353,15 +353,15 @@ impl ManifestTiles {
 
     /// A pack opened and its index read, here (a copy) or on the NAS, under `nas_call`'s deadline
     /// and retries.
-    fn open_file(p: &std::path::Path) -> anyhow::Result<std::sync::Arc<OpenPack>> {
-        let owned = p.to_path_buf();
-        let open = nas_call(&p.display().to_string(), NAS_DEADLINE, &store::retry::waits(), move || {
-            let file = std::fs::File::open(&owned)?;
+    fn open_file(p: store::nasfs::Place) -> anyhow::Result<std::sync::Arc<OpenPack>> {
+        let shown = p.loc().display();
+        let open = nas_call(&shown, NAS_DEADLINE, &store::retry::waits(), move || {
+            let file = p.loc().open()?;
             let len = file.metadata()?.len();
             let idx = store::pack::PackIndex::read_from(&FileSource(&file, len)).map_err(store::retry::as_io)?;
             Ok(std::sync::Arc::new(OpenPack { file, idx }))
         });
-        anyhow::Context::with_context(open, || format!("open the pack {}", p.display()))
+        anyhow::Context::with_context(open, || format!("open the pack {shown}"))
     }
 
     /// The open pack holding tile (z, x, y), if the manifest has it.
@@ -381,7 +381,7 @@ impl ManifestTiles {
         let mut open = self.open.lock().unwrap();
         if !open.contains_key(&logical) {
             let v = match self.files.get(&logical) {
-                Some(p) => Some(Self::open_file(p)?),
+                Some(p) => Some(Self::open_file(store::nasfs::Place::Nas(p.clone()))?),
                 None => None,
             };
             open.insert(logical.clone(), v);
@@ -489,9 +489,9 @@ impl ManifestTiles {
         let copied = (|| -> anyhow::Result<(std::sync::Arc<OpenPack>, u64)> {
             std::fs::create_dir_all(dir)?;
             made.lock().unwrap().push(dst.clone());
-            let n = store::sys::copy_data(src, &dst)?;
-            anyhow::ensure!(n == std::fs::metadata(src)?.len(), "copied {n} bytes of {}", src.display());
-            Ok((Self::open_file(&dst)?, n))
+            let n = src.copy_data_to_local(&dst)?;
+            anyhow::ensure!(n == src.metadata()?.len(), "copied {n} bytes of {}", src.display());
+            Ok((Self::open_file(store::nasfs::Place::Local(dst.clone()))?, n))
         })();
         match copied {
             Ok((e, n)) => {
@@ -588,10 +588,10 @@ fn stamp_of(m: &std::fs::Metadata) -> Stamp {
 
 /// The raw tiles' archives' index in `store` as read now, with the stamp of the very file it was
 /// read from (taken from the open file, not its name again); none there, empty.
-fn load_index(store: &std::path::Path) -> anyhow::Result<(crate::rawpack::Index, Stamp)> {
+fn load_index(store: &store::nasfs::NasPath) -> anyhow::Result<(crate::rawpack::Index, Stamp)> {
     use std::io::Read;
     let p = store.join(crate::rawpack::INDEX);
-    let mut f = match std::fs::File::open(&p) {
+    let mut f = match p.open() {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((crate::rawpack::Index::default(), None)),
         Err(e) => return Err(anyhow::Error::from(e).context(format!("read {}", p.display()))),
@@ -603,8 +603,8 @@ fn load_index(store: &std::path::Path) -> anyhow::Result<(crate::rawpack::Index,
 }
 
 /// The stamp of the index in `store` as it is now (a stat: `Stamp`); Err when it can't be told.
-fn index_stamp(store: &std::path::Path) -> Result<Stamp, ()> {
-    match std::fs::metadata(store.join(crate::rawpack::INDEX)) {
+fn index_stamp(store: &store::nasfs::NasPath) -> Result<Stamp, ()> {
+    match store.join(crate::rawpack::INDEX).metadata() {
         Ok(m) => Ok(stamp_of(&m)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(_) => Err(()),
@@ -637,7 +637,7 @@ pub struct RawTiles {
     dir: std::path::PathBuf,
     /// The base's URL template (crate::terrain_sources::Declared::base).
     url: String,
-    store: Option<std::path::PathBuf>,
+    store: Option<store::nasfs::NasPath>,
     agent: ureq::Agent,
     /// The store's columns (`<z>/<x>/`) as listed once: over SMB each look is a round trip, and
     /// those, a tile's few, set a terrain job's pace. (The folders here are made as tiles are put:
@@ -677,11 +677,11 @@ impl RawTiles {
 
     /// The local cache `dir`, filled from the NAS's `store` where it has a tile, else by URL template
     /// `url`.
-    pub fn with_store(dir: &std::path::Path, store: &std::path::Path, url: &str) -> Self {
+    pub fn with_store(dir: &std::path::Path, store: &store::nasfs::NasPath, url: &str) -> Self {
         RawTiles {
             dir: dir.to_path_buf(),
             url: url.to_string(),
-            store: Some(store.to_path_buf()),
+            store: Some(store.clone()),
             agent: agent(),
             listed: Default::default(),
             index: Default::default(),
@@ -693,15 +693,17 @@ impl RawTiles {
 
     /// The names in the store's column `z/x`, listed once (none when it isn't there); None when it
     /// can't be listed whole now (then each tile is looked for itself, and it's listed again later).
-    fn column(&self, st: &std::path::Path, z: u8, x: u32) -> Option<std::sync::Arc<std::collections::HashSet<String>>> {
+    fn column(
+        &self,
+        st: &store::nasfs::NasPath,
+        z: u8,
+        x: u32,
+    ) -> Option<std::sync::Arc<std::collections::HashSet<String>>> {
         if let Some(c) = self.listed.lock().unwrap().get(&(z, x)) {
             return Some(c.clone());
         }
-        let names: std::collections::HashSet<String> = match std::fs::read_dir(st.join(format!("{z}/{x}"))) {
-            Ok(rd) => rd
-                .map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned()))
-                .collect::<std::io::Result<_>>()
-                .ok()?,
+        let names: std::collections::HashSet<String> = match st.join(format!("{z}/{x}")).read_dir() {
+            Ok(rd) => rd.into_iter().map(|e| e.name).collect(),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Default::default(),
             Err(_) => return None,
         };
@@ -712,14 +714,18 @@ impl RawTiles {
 
     /// The store's archives' index: as read before unless `fresh`; None when it can't be read (three
     /// tries a moment apart, then none for a minute: each try waits on the NAS).
-    fn index(&self, st: &std::path::Path, fresh: bool) -> Option<std::sync::Arc<crate::rawpack::Index>> {
+    fn index(&self, st: &store::nasfs::NasPath, fresh: bool) -> Option<std::sync::Arc<crate::rawpack::Index>> {
         self.index_pair(st, fresh).map(|p| p.0)
     }
 
     /// `index`, with the stamp of the bytes it was read from (`load_index`), taken together under
     /// its lock: a shard opened by it is known by the stamp of the index it was opened by, not one
     /// another thread read since.
-    fn index_pair(&self, st: &std::path::Path, fresh: bool) -> Option<(std::sync::Arc<crate::rawpack::Index>, Stamp)> {
+    fn index_pair(
+        &self,
+        st: &store::nasfs::NasPath,
+        fresh: bool,
+    ) -> Option<(std::sync::Arc<crate::rawpack::Index>, Stamp)> {
         let mut s = self.index.lock().unwrap();
         let pair = |s: &(Option<std::sync::Arc<crate::rawpack::Index>>, Option<std::time::Instant>)| {
             s.0.clone().map(|ix| (ix, *self.index_stamp.lock().unwrap()))
@@ -749,7 +755,7 @@ impl RawTiles {
     /// (each one's entries read now, from its copy here or the NAS's). None when one can't be (not
     /// remembered: the NAS may answer next time). An archive the index names that's gone from the
     /// NAS (a job that outlived the index it read) has the index read again.
-    fn open_shard(&self, st: &std::path::Path, shard: &str) -> Option<Opened> {
+    fn open_shard(&self, st: &store::nasfs::NasPath, shard: &str) -> Option<Opened> {
         for fresh in [false, true] {
             let (index, stamp) = self.index_pair(st, fresh)?;
             // (Known by the stamp of the index it's opened by, as `get` compares.)
@@ -765,8 +771,8 @@ impl RawTiles {
                 // (This Mac's copy held as it's read: store::cachefile.)
                 let local = self.dir.join("packs").join(&p.name);
                 let at = match store::cachefile::hold_existing(&local) {
-                    Ok(Some(l)) => l,
-                    _ => st.join("packs").join(&p.name),
+                    Ok(Some(l)) => store::nasfs::Place::Local(l),
+                    _ => store::nasfs::Place::Nas(st.join("packs").join(&p.name)),
                 };
                 match crate::rawpack::entries_of(&at) {
                     Ok(e) => v.push(e),
@@ -790,7 +796,7 @@ impl RawTiles {
     /// None when one can't be.
     fn copy_shard(
         &self,
-        st: &std::path::Path,
+        st: &store::nasfs::NasPath,
         packs: &[crate::rawpack::Pack],
     ) -> Option<std::sync::Arc<[roadcore::archive::Archive]>> {
         let mut v = Vec::new();
@@ -955,7 +961,7 @@ impl RawTiles {
     /// index read afresh when the index has changed since, or when they couldn't be opened (true);
     /// true too when another thread has opened them again since that look (look again); false when
     /// nothing has changed (the tile isn't in them: AWS is asked).
-    fn refresh_shard(&self, st: &std::path::Path, shard: &str, used: Option<Stamp>) -> bool {
+    fn refresh_shard(&self, st: &store::nasfs::NasPath, shard: &str, used: Option<Stamp>) -> bool {
         let Some(used) = used else { return false };
         // (The map let go before the shard's lock is waited on.)
         let cell = self.archives.lock().unwrap().entry(shard.to_string()).or_default().clone();
@@ -1053,13 +1059,13 @@ fn read_whole(p: &std::path::Path) -> Option<Vec<u8>> {
 
 /// A tile of the NAS's loose store when it's there and whole (not this Mac's cache: nothing
 /// locked); one that isn't whole is deleted.
-fn nas_whole(p: &std::path::Path) -> Option<Vec<u8>> {
-    let b = std::fs::read(p).ok()?;
+fn nas_whole(p: &store::nasfs::NasPath) -> Option<Vec<u8>> {
+    let b = p.read().ok()?;
     if crate::whole::png_whole(&b) {
         return Some(b);
     }
     eprintln!("terrain: {} isn't whole ({} bytes): fetched again", p.display(), b.len());
-    std::fs::remove_file(p).ok();
+    p.remove_file().ok();
     None
 }
 
@@ -1174,11 +1180,11 @@ pub fn write_mid(path: &std::path::Path, t: (u32, u32), mid: &Mid) -> anyhow::Re
 
 /// A mid (`write_mid`), read and checked: its format, step and version (one made for another
 /// version of the terrain isn't one to assemble), every section whole. Its z6 tile and the mid.
-pub fn read_mid(path: &std::path::Path) -> anyhow::Result<((u32, u32), Mid)> {
+pub fn read_mid<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> anyhow::Result<((u32, u32), Mid)> {
     use anyhow::Context;
-    let what = || path.display().to_string();
-    let r =
-        store::sect::SectReader::open(store::range::PlainFile::open(path).with_context(what)?).with_context(what)?;
+    let path = path.into();
+    let what = || path.display();
+    let r = store::sect::SectReader::open(path.open_plain().with_context(what)?).with_context(what)?;
     let m = r.meta();
     anyhow::ensure!(m["fmt"].as_u64() == Some(MID_FMT) && m["step"] == "terrain", "{}: not a terrain mid", what());
     anyhow::ensure!(
@@ -2295,7 +2301,7 @@ pub(crate) mod tests {
     fn a_pack_copied_here_reads_the_same_and_goes_with_its_reader() {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("root");
-        let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
+        let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch")).unwrap();
         let mut tiles: Vec<(u8, u32, u32, Vec<u8>, u32)> = Vec::new();
         for z in 9..=10u8 {
             let s = 1u32 << (z - 6);
@@ -2325,7 +2331,7 @@ pub(crate) mod tests {
         // Some read from the NAS's first, then the rest from the copy.
         assert_eq!(here.get(9, 40, 56).unwrap(), Some(b"tile 9/40/56".to_vec()));
         let n = here.copy_here(9, 40, 56).unwrap();
-        assert_eq!(n, std::fs::metadata(out.path(out.get("layers/terrain/hi/6-5-7").unwrap())).unwrap().len());
+        assert_eq!(n, (out.path(out.get("layers/terrain/hi/6-5-7").unwrap())).metadata().unwrap().len());
         assert_eq!(std::fs::read_dir(&copies).unwrap().count(), 1);
         assert_eq!(read(&here), all);
         assert!(here.has(10, 85, 120).unwrap() && !here.has(10, 200, 120).unwrap());
@@ -2398,9 +2404,13 @@ pub(crate) mod tests {
                 }
             }
         }
-        let raw = RawTiles::with_store(&local, &d.path().join("store"), crate::terrain_pack::TEST_BASE);
+        let raw = RawTiles::with_store(
+            &local,
+            &store::nasfs::NasPath::local_for_test(&d.path().join("store")),
+            crate::terrain_pack::TEST_BASE,
+        );
         let cov = Coverage::fixture(&[], None, d.path()).unwrap();
-        let mut out = Out::unbound(&root, &scratch).unwrap();
+        let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch).unwrap();
         let said = Mutex::new(Vec::new());
         build_q_with(&mut out, &raw, (1, 1), &[], &cov, &Sources::default(), &|w, d, t| {
             said.lock().unwrap().push((w.to_string(), d, t))
@@ -2568,11 +2578,23 @@ pub(crate) mod tests {
         let local = d.path().join("local");
         let (q, ts, cov) = north_tiles(d.path(), &local);
         let ts = &ts;
-        let raw = RawTiles::with_store(&local, &d.path().join("store"), crate::terrain_pack::TEST_BASE);
+        let raw = RawTiles::with_store(
+            &local,
+            &store::nasfs::NasPath::local_for_test(&d.path().join("store")),
+            crate::terrain_pack::TEST_BASE,
+        );
         let made = |root: &str, way: &dyn Fn(&mut Out)| {
-            let mut out = Out::unbound(&d.path().join(root), &d.path().join(format!("{root}-scratch"))).unwrap();
+            let mut out = Out::unbound(
+                &store::nasfs::NasRoot::local_for_test(&d.path().join(root)),
+                &d.path().join(format!("{root}-scratch")),
+            )
+            .unwrap();
             way(&mut out);
-            let out = Out::unbound(&d.path().join(root), &d.path().join(format!("{root}-scratch"))).unwrap();
+            let out = Out::unbound(
+                &store::nasfs::NasRoot::local_for_test(&d.path().join(root)),
+                &d.path().join(format!("{root}-scratch")),
+            )
+            .unwrap();
             out.manifest.into_iter().filter(|(l, _)| l.starts_with("layers/terrain/")).collect::<Vec<_>>()
         };
         let now = made("now", &|out| {
@@ -2610,12 +2632,33 @@ pub(crate) mod tests {
                 std::fs::File::options().append(true).open(f).unwrap().set_modified(old).unwrap();
             }
         }
-        assert!(crate::rawpack::pack_local(&staged, &store, &root, false).unwrap() > 0);
+        assert!(
+            crate::rawpack::pack_local(
+                &staged,
+                &store::nasfs::NasPath::local_for_test(&store),
+                &store::nasfs::NasRoot::local_for_test(&root),
+                false
+            )
+            .unwrap()
+                > 0
+        );
         let made = |name: &str, cache: &std::path::Path| {
-            let raw = RawTiles::with_store(cache, &store, crate::terrain_pack::TEST_BASE);
-            let mut out = Out::unbound(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
+            let raw = RawTiles::with_store(
+                cache,
+                &store::nasfs::NasPath::local_for_test(&store),
+                crate::terrain_pack::TEST_BASE,
+            );
+            let mut out = Out::unbound(
+                &store::nasfs::NasRoot::local_for_test(&d.path().join(name)),
+                &d.path().join(format!("{name}-scratch")),
+            )
+            .unwrap();
             build_q(&mut out, &raw, q, &ts, &cov, &Sources::default()).unwrap();
-            let out = Out::unbound(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
+            let out = Out::unbound(
+                &store::nasfs::NasRoot::local_for_test(&d.path().join(name)),
+                &d.path().join(format!("{name}-scratch")),
+            )
+            .unwrap();
             out.manifest.into_iter().filter(|(l, _)| l.starts_with("layers/terrain/")).collect::<Vec<_>>()
         };
         let calm = made("calm", &d.path().join("calm-cache"));
@@ -2684,12 +2727,34 @@ pub(crate) mod tests {
                 }
             }
         }
-        assert!(to_pack > 0 && crate::rawpack::pack_local(&staged, &store, &root, false).unwrap() > 0);
+        assert!(
+            to_pack > 0
+                && crate::rawpack::pack_local(
+                    &staged,
+                    &store::nasfs::NasPath::local_for_test(&store),
+                    &store::nasfs::NasRoot::local_for_test(&root),
+                    false
+                )
+                .unwrap()
+                    > 0
+        );
         let piece = |name: &str, cache: &std::path::Path, t: (u32, u32)| {
-            let raw = RawTiles::with_store(cache, &store, crate::terrain_pack::TEST_BASE);
-            let mut out = Out::unbound(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
+            let raw = RawTiles::with_store(
+                cache,
+                &store::nasfs::NasPath::local_for_test(&store),
+                crate::terrain_pack::TEST_BASE,
+            );
+            let mut out = Out::unbound(
+                &store::nasfs::NasRoot::local_for_test(&d.path().join(name)),
+                &d.path().join(format!("{name}-scratch")),
+            )
+            .unwrap();
             build_piece(&mut out, &raw, t, &cov, &Sources::default(), false, &|_, _, _| {}).unwrap();
-            let out = Out::unbound(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
+            let out = Out::unbound(
+                &store::nasfs::NasRoot::local_for_test(&d.path().join(name)),
+                &d.path().join(format!("{name}-scratch")),
+            )
+            .unwrap();
             out.manifest
                 .into_iter()
                 .filter(|(l, _)| l.starts_with("layers/terrain/") || l.starts_with("work/terrain-mid/"))
@@ -2705,7 +2770,13 @@ pub(crate) mod tests {
             let packer = s.spawn(|| {
                 let (mut packed, mut freed) = (0, 0);
                 while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    packed += crate::rawpack::pack_local(&shared, &store, &root, false).unwrap_or(0);
+                    packed += crate::rawpack::pack_local(
+                        &shared,
+                        &store::nasfs::NasPath::local_for_test(&store),
+                        &store::nasfs::NasRoot::local_for_test(&root),
+                        false,
+                    )
+                    .unwrap_or(0);
                     freed += store::cachefile::remove_tree(&shared.join("packs")).freed;
                 }
                 (packed, freed)
@@ -2762,10 +2833,18 @@ pub(crate) mod tests {
             }
         }
         let made = |name: &str, cache: &std::path::Path| {
-            let raw = RawTiles::with_store(&cache.join("aws-terrarium"), &store, crate::terrain_pack::TEST_BASE);
-            let mut out = Out::unbound(&d.join(name), &d.join(format!("{name}-scratch"))).unwrap();
+            let raw = RawTiles::with_store(
+                &cache.join("aws-terrarium"),
+                &store::nasfs::NasPath::local_for_test(&store),
+                crate::terrain_pack::TEST_BASE,
+            );
+            let mut out =
+                Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.join(name)), &d.join(format!("{name}-scratch")))
+                    .unwrap();
             build_q(&mut out, &raw, q, &ts, &cov, &Sources::default()).unwrap();
-            let out = Out::unbound(&d.join(name), &d.join(format!("{name}-scratch"))).unwrap();
+            let out =
+                Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.join(name)), &d.join(format!("{name}-scratch")))
+                    .unwrap();
             out.manifest.into_iter().filter(|(l, _)| l.starts_with("layers/terrain/")).collect::<Vec<_>>()
         };
         let t = std::time::Instant::now();
@@ -2783,7 +2862,13 @@ pub(crate) mod tests {
                 std::thread::sleep(Duration::from_millis(5));
             }
             let t0 = std::time::Instant::now();
-            let freed = crate::agent::room::toward(&cache, &sources, goal.clone(), &Default::default()).unwrap();
+            let freed = crate::agent::room::toward(
+                &cache,
+                &store::nasfs::NasPath::local_for_test(&sources),
+                goal.clone(),
+                &Default::default(),
+            )
+            .unwrap();
             let freeing_s = t0.elapsed().as_secs_f64();
             (job.join().unwrap(), freed, freeing_s)
         });
@@ -2819,7 +2904,11 @@ pub(crate) mod tests {
         std::fs::write(store.join("9/5/8.none"), b"").unwrap();
         // A tile cut short in the store: deleted, so it's taken again (from AWS: not reached here).
         std::fs::write(store.join("9/5/9.png"), &png[..png.len() / 2]).unwrap();
-        let raw = RawTiles::with_store(&local, &store, crate::terrain_pack::TEST_BASE);
+        let raw = RawTiles::with_store(
+            &local,
+            &store::nasfs::NasPath::local_for_test(&store),
+            crate::terrain_pack::TEST_BASE,
+        );
         let (b, fetched) = raw.get(9, 5, 7).unwrap();
         assert_eq!((b.as_deref(), fetched), (Some(&png[..]), false));
         assert_eq!(std::fs::read(local.join("9/5/7.png")).unwrap(), png, "copied here");
@@ -2847,11 +2936,24 @@ pub(crate) mod tests {
                 .set_modified(std::time::SystemTime::now() - Duration::from_secs(120))
                 .unwrap();
         }
-        assert_eq!(crate::rawpack::pack_local(&other, &store, &root, true).unwrap(), 2);
+        assert_eq!(
+            crate::rawpack::pack_local(
+                &other,
+                &store::nasfs::NasPath::local_for_test(&store),
+                &store::nasfs::NasRoot::local_for_test(&root),
+                true
+            )
+            .unwrap(),
+            2
+        );
         // A fresh cache reads them from their shard's archive on the NAS, a tile at a time (no loose
         // file here or there, no copy of the archive yet)...
         let local = d.path().join("local");
-        let raw = RawTiles::with_store(&local, &store, crate::terrain_pack::TEST_BASE);
+        let raw = RawTiles::with_store(
+            &local,
+            &store::nasfs::NasPath::local_for_test(&store),
+            crate::terrain_pack::TEST_BASE,
+        );
         assert_eq!(raw.get(12, 2048, 1365).unwrap(), (Some(png.clone()), false));
         assert_eq!(raw.get(12, 2049, 1365).unwrap(), (None, false), "AWS hasn't it");
         let copies = || std::fs::read_dir(local.join("packs")).map_or(0, |d| d.count());
@@ -2863,11 +2965,19 @@ pub(crate) mod tests {
         assert_eq!(copies(), 1);
         assert_eq!(raw.get(12, 2049, 1365).unwrap(), (None, false));
         // Another job finds the copy here.
-        let again = RawTiles::with_store(&local, &store, crate::terrain_pack::TEST_BASE);
+        let again = RawTiles::with_store(
+            &local,
+            &store::nasfs::NasPath::local_for_test(&store),
+            crate::terrain_pack::TEST_BASE,
+        );
         assert_eq!(again.get(12, 2048, 1365).unwrap(), (Some(png.clone()), false));
         // A prefetch passes archived tiles over, reading none of them: however often, the shard's
         // archive isn't copied here (as reading its tiles that often would).
-        let fresh = RawTiles::with_store(&d.path().join("fresh"), &store, crate::terrain_pack::TEST_BASE);
+        let fresh = RawTiles::with_store(
+            &d.path().join("fresh"),
+            &store::nasfs::NasPath::local_for_test(&store),
+            crate::terrain_pack::TEST_BASE,
+        );
         for _ in 0..=RANGED / 2 {
             assert_eq!(fresh.prefetch(12, &[(2048, 1365), (2049, 1365)], 2).unwrap(), 0);
         }
@@ -3147,10 +3257,20 @@ pub(crate) mod tests {
         let (&q, ts) = by_q.iter().next().unwrap();
         assert!(ts.len() >= 2, "{ts:?}");
         synthetic_raw(&local, &cov, q, ts);
-        let raw = RawTiles::with_store(&local, &d.path().join("store"), crate::terrain_pack::TEST_BASE);
+        let raw = RawTiles::with_store(
+            &local,
+            &store::nasfs::NasPath::local_for_test(&d.path().join("store")),
+            crate::terrain_pack::TEST_BASE,
+        );
         let water = crate::terrain_water::tests::Fixed(lake_across);
         let src = Sources { water: Some(&water), deeper: None };
-        let open = |root: &str| Out::unbound(&d.path().join(root), &d.path().join(format!("{root}-scratch"))).unwrap();
+        let open = |root: &str| {
+            Out::unbound(
+                &store::nasfs::NasRoot::local_for_test(&d.path().join(root)),
+                &d.path().join(format!("{root}-scratch")),
+            )
+            .unwrap()
+        };
         let terrain = |o: &Out| {
             o.manifest
                 .iter()
@@ -3332,10 +3452,13 @@ pub(crate) mod tests {
         assert!(ts.contains(&(35, 15)), "{ts:?}");
         real_raw(&local, &cov, &ts);
         crate::fetch::go_offline();
-        let raw = RawTiles::with_store(&local, &d.path().join("store"), TEST_BASE);
+        let raw =
+            RawTiles::with_store(&local, &store::nasfs::NasPath::local_for_test(&d.path().join("store")), TEST_BASE);
         let water = crate::terrain_water::tests::Fixed(real_water);
         // The terrain-hi runs, each z6 tile its own job.
-        let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
+        let mut out =
+            Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch"))
+                .unwrap();
         for &t in &ts {
             let deeper = td::deeper(&sets, t);
             let src = Sources { water: Some(&water), deeper: Some(&deeper) };
@@ -3401,8 +3524,13 @@ pub(crate) mod tests {
             .iter()
             .filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), std::path::PathBuf::from(v))))
             .collect();
-        let manifests: Vec<std::collections::BTreeMap<String, String>> =
-            roots.iter().map(|(_, r)| crate::out::read_record(&r.join("state/build/manifest.json")).unwrap()).collect();
+        let manifests: Vec<std::collections::BTreeMap<String, String>> = roots
+            .iter()
+            .map(|(_, r)| {
+                crate::out::read_record(&store::nasfs::NasPath::local_for_test(&r.join("state/build/manifest.json")))
+                    .unwrap()
+            })
+            .collect();
         let mut failed = false;
         for a in env("P5_AREAS").split(',') {
             let q = crate::legacy::TileId::parse(a).filter(|u| u.z == 3).unwrap();
@@ -3516,7 +3644,9 @@ pub(crate) mod tests {
         let cov = near_without_hi(d.path());
         let raw = RawTiles::new(&d.path().join("raw"), crate::terrain_pack::TEST_BASE);
         let src = Sources { water: None, deeper: None };
-        let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
+        let mut out =
+            Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch"))
+                .unwrap();
         // (Files an earlier run left: their bytes don't matter here.)
         let fake = |out: &mut Out, l: &str| {
             let ext = if l.starts_with("work/") { "sect" } else { "pack" };
@@ -3550,7 +3680,9 @@ pub(crate) mod tests {
         assert!(out.get(&lhi).is_none() && out.get(&lmid).is_none());
         assert_eq!(out.get(&other), Some(kept.as_str()), "another tile's hi pack stays");
         // Saved: the manifest on disk says the same.
-        let again = Out::unbound(&d.path().join("root"), &d.path().join("scratch2")).unwrap();
+        let again =
+            Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch2"))
+                .unwrap();
         assert!(
             again.get(&hi).is_none()
                 && again.get(&lhi).is_none()
@@ -3566,8 +3698,16 @@ pub(crate) mod tests {
         assert!(ts.contains(&(21, 18)) && ts.contains(&(22, 18)), "{ts:?}");
         let local = d.path().join("z3run-raw");
         synthetic_raw(&local, &cov, (2, 2), &ts);
-        let raw = RawTiles::with_store(&local, &d.path().join("store"), crate::terrain_pack::TEST_BASE);
-        let mut z3run = Out::unbound(&d.path().join("z3run"), &d.path().join("z3run-scratch")).unwrap();
+        let raw = RawTiles::with_store(
+            &local,
+            &store::nasfs::NasPath::local_for_test(&d.path().join("store")),
+            crate::terrain_pack::TEST_BASE,
+        );
+        let mut z3run = Out::unbound(
+            &store::nasfs::NasRoot::local_for_test(&d.path().join("z3run")),
+            &d.path().join("z3run-scratch"),
+        )
+        .unwrap();
         let (ahi, alhi, almid) =
             ("layers/terrain/hi/6-21-18".to_string(), "layers/terrain/hi/6-16-17".to_string(), mid_logical(16, 17));
         for l in [&ahi, &alhi, &almid] {

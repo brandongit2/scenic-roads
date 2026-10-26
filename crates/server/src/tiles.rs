@@ -515,7 +515,7 @@ mod tests {
         // The catalog names an archive the NAS doesn't have, so any read of it fails.
         let (nas, content) = nas_with_basemap("world-gone", None);
         let home = tempfile::tempdir().unwrap();
-        let s = crate::test_state(home.path(), nas.path());
+        let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
         let etag = format!("\"{:016x}-{:x}\"", base_hash(&[content], 3, 4, 2), s.names.version_for_tile(3, 4, 2, 1.0));
         let r = get(&s, (3, 4, 2), Some(&etag)).await;
         assert_eq!((r.status(), etag_of(&r)), (StatusCode::NOT_MODIFIED, Some(etag.clone())));
@@ -530,7 +530,7 @@ mod tests {
         let tile = [0x1a, 0x05, 0x0a, 0x01, b't', 0x78, 0x02];
         let (nas, content) = nas_with_basemap("world-here", Some(&archive(&tile)));
         let home = tempfile::tempdir().unwrap();
-        let s = crate::test_state(home.path(), nas.path());
+        let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
         let r = get(&s, (0, 0, 0), None).await;
         assert_eq!(r.status(), StatusCode::OK);
         let etag = etag_of(&r).unwrap();
@@ -559,9 +559,13 @@ mod tests {
         );
         let logical = "layers/basemap/world-piece";
         let nas = tempfile::tempdir().unwrap();
-        let content =
-            store::naming::write_atomic(nas.path(), logical, "pmtiles", store::naming::Source::Bytes(&archive))
-                .unwrap();
+        let content = store::naming::write_atomic(
+            &store::nasfs::NasRoot::local_for_test(nas.path()),
+            logical,
+            "pmtiles",
+            store::naming::Source::Bytes(&archive),
+        )
+        .unwrap();
         let mut cat = store::catalog::Catalog::new(1);
         cat.basemap = vec![logical.into()];
         cat.files.insert(
@@ -570,7 +574,7 @@ mod tests {
         );
         store::catalog::write_copy(&nas.path().join("catalog"), &cat).unwrap();
         let home = tempfile::tempdir().unwrap();
-        let s = crate::test_state_with(home.path(), nas.path(), true);
+        let s = crate::test_state_with(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()), true);
         // 31/21's piece downloaded; then the NAS's archive gone.
         let m = s.data.mirror.clone().unwrap();
         let w = store::mirror::Wanted {
@@ -579,7 +583,15 @@ mod tests {
                 piece: store::pieces::Piece::Tile(31, 21),
             }],
         };
-        let st = m.sync(&cat, &w, nas.path(), &s.data.pool().unwrap(), &store::mirror::Control::FREE).unwrap();
+        let st = m
+            .sync(
+                &cat,
+                &w,
+                &store::nasfs::NasRoot::local_for_test(nas.path()),
+                &s.data.pool().unwrap(),
+                &store::mirror::Control::FREE,
+            )
+            .unwrap();
         assert_eq!(st.copied, 1);
         s.data.forget_remote();
         std::fs::remove_file(nas.path().join(&content)).unwrap();

@@ -31,7 +31,7 @@ pub const INPUT: &str = "terrain-pool";
 /// `root`: the digest of its datasets' `keyed` digests and their heights' conversions (the geoid
 /// sources they read: crate::dem::declared::tag), so a dataset or a conversion changed is a new
 /// z8, and nothing else is. None while the pool can't be read (none accepted, or one from before it).
-pub fn pool_digest(root: &Path, m: &BTreeMap<String, String>) -> Option<String> {
+pub fn pool_digest(root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) -> Option<String> {
     let a = crate::inputs::open(root, m, crate::inputs::elevation::UNIT).ok()??;
     let mut ds = crate::dem::declared::accepted(&a).ok()?;
     let geoid = match crate::inputs::sources::open(root, m).ok()? {
@@ -275,9 +275,9 @@ mod tests {
     fn its_names_are_the_pools() {
         let d = tempfile::tempdir().unwrap();
         let mut m = BTreeMap::new();
-        assert_eq!(pool_digest(d.path(), &m), None);
-        crate::inputs::elevation::accept_fixture(d.path(), &mut m);
-        let pool = pool_digest(d.path(), &m).unwrap();
+        assert_eq!(pool_digest(&store::nasfs::NasRoot::local_for_test(d.path()), &m), None);
+        crate::inputs::elevation::accept_fixture(&store::nasfs::NasRoot::local_for_test(d.path()), &mut m);
+        let pool = pool_digest(&store::nasfs::NasRoot::local_for_test(d.path()), &m).unwrap();
         let (a, b) = (logical(&pool), logical("0123456789abcdef"));
         assert!(a != b && b.starts_with("sources/terrain-z8-v6-"));
         assert_eq!(max_logical(&pool), format!("{a}-max"));

@@ -33,13 +33,12 @@ use crate::pool::journal::Entry;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::Path;
 
 /// The switch (`on` in it, or present; `off` in it, or missing: off, the agent as it was).
 pub const SWITCH: &str = "state/pool/resume";
 
 /// Whether resuming is on, as the switch at `root` says; None when it can't be read now.
-pub fn on(root: &Path) -> Option<bool> {
+pub fn on(root: &store::nasfs::NasRoot) -> Option<bool> {
     match super::nasread::read_switch(&root.join(SWITCH)) {
         Ok(s) => Some(s.trim() != "off"),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
@@ -135,7 +134,7 @@ pub fn release_path(member: &str, job: &str, at: u64) -> String {
 
 /// Member `member`'s progress file at `root`: none when there's none; an error when it can't be
 /// read now, or isn't one.
-pub fn read(root: &Path, member: &str) -> Result<Option<Progress>> {
+pub fn read(root: &store::nasfs::NasRoot, member: &str) -> Result<Option<Progress>> {
     let p = root.join(path(member));
     match super::nasread::read(&p) {
         Ok(b) => Ok(Some(serde_json::from_slice(&b).with_context(|| format!("parse {}", p.display()))?)),
@@ -145,26 +144,26 @@ pub fn read(root: &Path, member: &str) -> Result<Option<Progress>> {
 }
 
 /// Writes this member's progress file whole (its own alone).
-pub fn write(root: &Path, p: &Progress) -> Result<()> {
-    std::fs::create_dir_all(root.join(DIR))?;
-    crate::whole::write(&root.join(path(&p.member)), &serde_json::to_vec_pretty(p)?)
+pub fn write(root: &store::nasfs::NasRoot, p: &Progress) -> Result<()> {
+    root.join(DIR).create_dir_all()?;
+    root.join(path(&p.member)).write_whole(serde_json::to_vec_pretty(p)?)
 }
 
 /// Whether the owner released `member`'s progress of `job` that began at `at`.
-pub fn released(root: &Path, member: &str, job: &str, at: u64) -> bool {
+pub fn released(root: &store::nasfs::NasRoot, member: &str, job: &str, at: u64) -> bool {
     root.join(release_path(member, job, at)).exists()
 }
 
 /// The owner's release of `member`'s progress of `job` (`scenic pool release`): the lead runs it
 /// wherever it fits from then. What it released, or why nothing.
-pub fn release(root: &Path, member: &str, job: &str) -> Result<String> {
+pub fn release(root: &store::nasfs::NasRoot, member: &str, job: &str) -> Result<String> {
     let p = read(root, member)?.with_context(|| format!("{member} has no progress file"))?;
     let h = p.jobs.get(job).with_context(|| {
         format!("{member}'s progress holds no {job:?} (it holds {:?})", p.jobs.keys().collect::<Vec<_>>())
     })?;
     let r = root.join(release_path(member, job, h.began()));
-    std::fs::create_dir_all(r.parent().unwrap())?;
-    match std::fs::OpenOptions::new().write(true).create_new(true).open(&r) {
+    r.parent().unwrap().create_dir_all()?;
+    match r.open_with(std::fs::OpenOptions::new().write(true).create_new(true)) {
         Ok(_) => Ok(format!("{job}'s progress on {member} ({}) released: the lead runs it wherever it fits", p.worker)),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             Ok(format!("{job}'s progress on {member} was released already"))
@@ -365,7 +364,7 @@ mod tests {
     #[test]
     fn a_refused_entry_is_not_laid_over_the_snapshot() {
         let d = tempfile::tempdir().unwrap();
-        let nas = crate::pool::nas::Share::new(d.path());
+        let nas = store::nasfs::NasRoot::local_for_test(d.path());
         let e = |n: u64, step: &str| Entry {
             member: "m-b".into(),
             lease: LeaseId { term: 2, n },
@@ -404,24 +403,33 @@ mod tests {
     fn progress_files_and_releases_on_the_nas() {
         let d = tempfile::tempdir().unwrap();
         let r = d.path();
-        assert!(read(r, "m-b").unwrap().is_none());
+        assert!(read(&store::nasfs::NasRoot::local_for_test(r), "m-b").unwrap().is_none());
         let p = file("m-b", "mac-b", &[(PASS, T, false)]);
-        write(r, &p).unwrap();
-        assert_eq!(read(r, "m-b").unwrap(), Some(p.clone()));
+        write(&store::nasfs::NasRoot::local_for_test(r), &p).unwrap();
+        assert_eq!(read(&store::nasfs::NasRoot::local_for_test(r), "m-b").unwrap(), Some(p.clone()));
         assert!(r.join("state/pool/progress/m-b.json").exists());
-        assert!(!released(r, "m-b", PASS, T));
-        assert!(release(r, "m-b", PASS).unwrap().contains("released"));
-        assert!(released(r, "m-b", PASS, T) && !released(r, "m-b", PASS, T + 1));
-        assert!(release(r, "m-b", PASS).unwrap().contains("already"));
-        assert!(release(r, "m-b", "osm-pass 2026-09-01").is_err() && release(r, "m-x", PASS).is_err());
+        assert!(!released(&store::nasfs::NasRoot::local_for_test(r), "m-b", PASS, T));
+        assert!(release(&store::nasfs::NasRoot::local_for_test(r), "m-b", PASS).unwrap().contains("released"));
+        assert!(
+            released(&store::nasfs::NasRoot::local_for_test(r), "m-b", PASS, T)
+                && !released(&store::nasfs::NasRoot::local_for_test(r), "m-b", PASS, T + 1)
+        );
+        assert!(release(&store::nasfs::NasRoot::local_for_test(r), "m-b", PASS).unwrap().contains("already"));
+        assert!(
+            release(&store::nasfs::NasRoot::local_for_test(r), "m-b", "osm-pass 2026-09-01").is_err()
+                && release(&store::nasfs::NasRoot::local_for_test(r), "m-x", PASS).is_err()
+        );
         std::fs::write(r.join(path("m-x")), "{").unwrap();
-        assert!(read(r, "m-x").is_err(), "a file that isn't one is an error, not none");
+        assert!(
+            read(&store::nasfs::NasRoot::local_for_test(r), "m-x").is_err(),
+            "a file that isn't one is an error, not none"
+        );
         // The switch.
-        assert_eq!(on(r), Some(false));
+        assert_eq!(on(&store::nasfs::NasRoot::local_for_test(r)), Some(false));
         std::fs::write(r.join(SWITCH), "").unwrap();
-        assert_eq!(on(r), Some(true));
+        assert_eq!(on(&store::nasfs::NasRoot::local_for_test(r)), Some(true));
         std::fs::write(r.join(SWITCH), "off\n").unwrap();
-        assert_eq!(on(r), Some(false));
+        assert_eq!(on(&store::nasfs::NasRoot::local_for_test(r)), Some(false));
     }
 
     #[test]

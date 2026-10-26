@@ -38,7 +38,7 @@ pub fn set(home: &Path, mb: Option<u64>, by: &str) -> Result<Option<Memory>> {
     };
     std::fs::create_dir_all(home)?;
     let m = Memory { mb, by: by.to_string(), at: super::jobs::now_s() };
-    crate::whole::write(&p, &serde_json::to_vec(&m)?)?;
+    store::whole::write(&p, &serde_json::to_vec(&m)?)?;
     Ok(Some(m))
 }
 

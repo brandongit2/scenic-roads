@@ -117,10 +117,10 @@ pub fn write(path: &Path, cands: &[Cand]) -> Result<()> {
     Ok(())
 }
 
-pub fn read(path: &Path) -> Result<Vec<Cand>> {
-    let r = std::io::BufReader::new(zstd::Decoder::new(
-        std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?,
-    )?);
+pub fn read<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<Vec<Cand>> {
+    let path = path.into();
+    let r =
+        std::io::BufReader::new(zstd::Decoder::new(path.open().with_context(|| format!("open {}", path.display()))?)?);
     r.lines().map(|l| Ok(serde_json::from_str(&l?)?)).collect()
 }
 

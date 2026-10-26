@@ -99,10 +99,10 @@ pub fn flagged(bytes: &[u8]) -> Result<Vec<Flag>> {
     // step of the app's dem/, and this one isn't.)
     let script = py.scratch.join(format!("check-{}", store::naming::hash16(CHECK.as_bytes()))).with_extension("py");
     if std::fs::read(&script).ok().as_deref() != Some(CHECK.as_bytes()) {
-        crate::whole::write(&script, CHECK.as_bytes())?;
+        store::whole::write(&script, CHECK.as_bytes())?;
     }
     let file = py.scratch.join(format!("flagged-{}-{}.jsonl", std::process::id(), store::naming::hash16(bytes)));
-    crate::whole::write(&file, bytes)?;
+    store::whole::write(&file, bytes)?;
     let mut c = store::spawn::command(&py.cmd[0]);
     c.current_dir(&py.cwd).args(&py.cmd[1..]).arg(&script).arg("--flagged").arg(&file);
     let out =

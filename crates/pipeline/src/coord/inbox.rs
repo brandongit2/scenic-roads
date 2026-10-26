@@ -57,7 +57,7 @@ impl Inbox {
         }
         let top = q.last().map_or(0, |(n, _)| *n);
         // (Under the lock: one writer of the file at a time.)
-        crate::whole::write(&self.path, &serde_json::to_vec(&next)?)?;
+        store::whole::write(&self.path, &serde_json::to_vec(&next)?)?;
         *g = next;
         Ok(top)
     }
@@ -80,7 +80,7 @@ impl Inbox {
         if next != *g {
             match serde_json::to_vec(&next)
                 .map_err(anyhow::Error::from)
-                .and_then(|b| crate::whole::write(&self.path, &b))
+                .and_then(|b| store::whole::write(&self.path, &b))
             {
                 Ok(()) => *g = next,
                 Err(e) => eprintln!("pool: the inbox: {e:#}"),

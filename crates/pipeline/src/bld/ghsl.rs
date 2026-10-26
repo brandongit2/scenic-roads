@@ -6,7 +6,6 @@
 use super::prep::{kind, Frame};
 use anyhow::{bail, ensure, Context, Result};
 use std::io::Read;
-use std::path::Path;
 
 /// A zip's member, as its central directory lists it.
 struct Member {
@@ -75,8 +74,8 @@ fn read_member(b: &[u8], m: &Member) -> Result<Vec<u8>> {
 
 /// Why a downloaded tile's zip isn't whole (None: it is): a member failing its CRC-32, no GeoTIFF
 /// in it, or not a zip at all.
-pub fn zip_bad(path: &Path) -> Option<String> {
-    let b = match std::fs::read(path) {
+pub fn zip_bad<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Option<String> {
+    let b = match path.into().read() {
         Ok(b) => b,
         Err(e) => return Some(format!("not a whole zip ({e})")),
     };
@@ -98,14 +97,19 @@ pub fn zip_bad(path: &Path) -> Option<String> {
 /// The window under `b` (w, s, e, n) of each GHSL tile meeting it (`tiles`: name, size and box, by
 /// name, from the index; their zips in `dir`), as frames: f32 rows, north first, a tile's nodata
 /// and non-finite values 0. And the tiles' names.
-pub fn windows(dir: &Path, tiles: &[(String, u64, [f64; 4])], b: [f64; 4]) -> Result<(Vec<Frame>, Vec<String>)> {
+pub fn windows<'a>(
+    dir: impl Into<store::nasfs::Loc<'a>>,
+    tiles: &[(String, u64, [f64; 4])],
+    b: [f64; 4],
+) -> Result<(Vec<Frame>, Vec<String>)> {
+    let dir = dir.into();
     let (mut frames, mut used) = (Vec::new(), Vec::new());
     for (name, _, bb) in tiles {
         if !(bb[0] <= b[2] && bb[2] >= b[0] && bb[1] <= b[3] && bb[3] >= b[1]) {
             continue;
         }
         let stem = name.strip_suffix(".zip").unwrap_or(name);
-        let zip = std::fs::read(dir.join(name)).with_context(|| format!("GHSL {name}"))?;
+        let zip = dir.join(name).loc().read().with_context(|| format!("GHSL {name}"))?;
         let tif_name = format!("{stem}.tif");
         let m = members(&zip)?
             .into_iter()

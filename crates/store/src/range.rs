@@ -134,12 +134,10 @@ pub struct PooledFile {
 }
 
 impl PooledFile {
-    /// Opens `path` through the pool (open and fstat in one trip).
-    pub fn open(pool: &Arc<IoPool>, path: &Path) -> Result<Self, IoError> {
-        let t = std::time::Instant::now();
+    /// Opens `path` through the pool (open and fstat in one trip; counted there).
+    pub fn open(pool: &Arc<IoPool>, path: &crate::nasfs::NasPath) -> Result<Self, IoError> {
         let (file, len) = pool.open_len(path)?;
-        crate::nasio::opened(path, len, t.elapsed().as_millis() as u64);
-        Ok(Self { file, len, pool: pool.clone(), path: path.to_owned() })
+        Ok(Self { file, len, pool: pool.clone(), path: path.unchecked_path() })
     }
 
     pub fn path(&self) -> &Path {
@@ -517,14 +515,15 @@ mod tests {
         assert_eq!(m.bytes(), b"0123456789");
         check(&b"0123456789".to_vec());
         let pool = IoPool::new(1, Duration::from_secs(60), dir.path().to_owned());
-        let f = PooledFile::open(&pool, &p).unwrap();
+        let np = crate::nasfs::NasRoot::local_for_test(dir.path()).join("f");
+        let f = PooledFile::open(&pool, &np).unwrap();
         check(&f);
         let shared: Arc<dyn RangeRead> = Arc::new(f);
         check(&shared);
         // Offline: reads fail fast with the typed error.
         pool.mark_offline("test");
         assert!(matches!(shared.read_at(0, 1), Err(IoError::Offline)));
-        assert!(matches!(PooledFile::open(&pool, &p), Err(IoError::Offline)));
+        assert!(matches!(PooledFile::open(&pool, &np), Err(IoError::Offline)));
     }
 
     #[test]

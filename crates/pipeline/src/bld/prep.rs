@@ -729,7 +729,7 @@ const JOBS: usize = 4;
 /// (crate::bld::sources::ghsl_dir: the windows under T, first). A listed file whose footer isn't
 /// the downloaded one's fails where it meets T.
 #[cfg(not(target_os = "wasi"))]
-pub fn read(root: &Path, release: &str, ghsl: &str, t: TileId) -> Result<Prepped> {
+pub fn read(root: &store::nasfs::NasRoot, release: &str, ghsl: &str, t: TileId) -> Result<Prepped> {
     use super::sources::{release_dir, Sources, PART_MARGIN_DEG};
     use crate::timings::{phase, Class};
     ensure!(t.z == 6, "bldprep takes z6 tiles ({} isn't one)", t.slash());
@@ -773,23 +773,17 @@ pub fn read(root: &Path, release: &str, ghsl: &str, t: TileId) -> Result<Prepped
     drop(ghsl_frames);
     let _p = phase("the row groups read", Class::Mixed);
     // Each file's footer, once.
-    let mut opened: HashMap<usize, (std::path::PathBuf, parquet::arrow::arrow_reader::ArrowReaderMetadata)> =
+    let mut opened: HashMap<usize, (store::nasfs::NasPath, parquet::arrow::arrow_reader::ArrowReaderMetadata)> =
         HashMap::new();
     for &(fi, ..) in &jobs {
         if let std::collections::hash_map::Entry::Vacant(e) = opened.entry(fi) {
             // (Read again while the share fails for a moment: store::retry; the file is listed.)
             let path = base.join(&src.files[fi].name);
             let what = format!("{}: its footer", path.display());
-            let meta = store::retry::any(
-                &what,
-                Some(&path),
-                &store::retry::waits(),
-                store::retry::transient_or_missing,
-                || {
-                    let file = std::fs::File::open(&path).with_context(|| format!("open {}", path.display()))?;
-                    super::overture::open(&file).with_context(|| what.clone())
-                },
-            )?;
+            let meta = path.retry_any(&what, &store::retry::waits(), store::retry::transient_or_missing, || {
+                let file = path.open().with_context(|| format!("open {}", path.display()))?;
+                super::overture::open(&file).with_context(|| what.clone())
+            })?;
             e.insert((path, meta));
         }
     }
@@ -799,7 +793,7 @@ pub fn read(root: &Path, release: &str, ghsl: &str, t: TileId) -> Result<Prepped
             .par_iter()
             .map(|(fi, k, part, bx, name)| {
                 let (path, meta) = &opened[fi];
-                store::retry::any(name, Some(path), &store::retry::waits(), store::retry::transient_or_missing, || {
+                path.retry_any(name, &store::retry::waits(), store::retry::transient_or_missing, || {
                     super::overture::row_group(path, meta, *k, *part, *bx, name)
                 })
             })

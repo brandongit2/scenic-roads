@@ -16,7 +16,6 @@ use super::{Checks, FileCheck, Finding, Level, Version};
 use crate::inputs::translations::{about_lines, lines};
 use anyhow::Result;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
 
 /// The unit's name.
 pub const UNIT: &str = "heritage-matches";
@@ -214,11 +213,15 @@ impl Checks for Matches {
         )]
     }
 
-    fn prepared(&self, root: &Path, manifest: &BTreeMap<String, String>) -> Result<Option<Box<dyn Checks>>> {
+    fn prepared(
+        &self,
+        root: &store::nasfs::NasRoot,
+        manifest: &BTreeMap<String, String>,
+    ) -> Result<Option<Box<dyn Checks>>> {
         let Some(a) = super::open(root, manifest, super::heritage::UNIT)? else { return Ok(None) };
         let mut es = HashSet::new();
         for r in super::heritage::registers(&a) {
-            let b = std::fs::read(root.join(&r.geojson))?;
+            let b = root.join(&r.geojson).read()?;
             for e in &super::heritage::summary(&b).entries {
                 es.insert(format!("{}:{}", r.id, e.id));
             }

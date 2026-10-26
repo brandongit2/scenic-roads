@@ -249,7 +249,8 @@ static D: [&str; 1] = ["translations"];"#;
 #[test]
 fn the_steps_root_refuses_a_drop_box_path() {
     let d = tempfile::tempdir().unwrap();
-    let out = pipeline::out::Out::unbound(d.path(), &d.path().join("s")).unwrap();
+    let out =
+        pipeline::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(d.path()), &d.path().join("s")).unwrap();
     for p in [
         "inputs/regions/wales.toml",
         "inputs/_gate-test/a.jsonl",
@@ -263,7 +264,7 @@ fn the_steps_root_refuses_a_drop_box_path() {
         assert!(msg.contains("inputs_accessor.rs") && msg.contains("drop box"), "{p}: {msg}");
     }
     for p in ["sources/inputs/_gate-test/a.0123456789abcdef.jsonl", "base/6-1-1.0123456789abcdef.base", "inputsx"] {
-        assert_eq!(out.path(p), d.path().join(p));
+        assert_eq!(out.path(p), store::nasfs::NasPath::local_for_test(d.path().join(p)));
     }
 }
 

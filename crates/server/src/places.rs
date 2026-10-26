@@ -1332,7 +1332,7 @@ mod tests {
     async fn the_search_answers_once_the_maps_places_are_made() {
         let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         catalog(nas.path(), 1, &packs(), &[]);
-        let s = crate::test_state(home.path(), nas.path());
+        let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
         // The first ask has them made: not ready until they are.
         assert_eq!(ask(&s, "", None).await, serde_json::json!({ "ready": false, "hits": [] }));
         assert_eq!(ready(&s).await["ready"], true);
@@ -1361,7 +1361,7 @@ mod tests {
     fn the_mirrors_packs_are_read_as_the_nass() {
         let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         catalog(nas.path(), 1, &packs(), &[]);
-        let on_nas = crate::test_state(home.path(), nas.path());
+        let on_nas = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
         let b = build(&on_nas.data, &sources(&on_nas.data.catalog()), None).unwrap();
         // The same packs in this Mac's mirror.
         let home = tempfile::tempdir().unwrap();
@@ -1372,7 +1372,7 @@ mod tests {
         }
         let data = crate::data::Data::open(crate::data::Options {
             home: home.path().to_owned(),
-            nas_root: Some(nas.path().to_owned()),
+            nas_root: Some(store::nasfs::NasRoot::local_for_test(nas.path().to_owned())),
             mirror: true,
             reserve: 0,
         })
@@ -1391,8 +1391,8 @@ mod tests {
         let (x, y) = (227, 101);
         let lo = labels_tile(&[(2, "横浜", None, "place", "city", 76.0, (2048, 2048))]);
         catalog(nas.path(), 1, &[("3/7/3", 1, vec![(8, x, y, lo)])], &[]);
-        crate::accepted::put(nas.path(), "translations", &[("0-converted/japanese.jsonl", "{\"n\": \"横浜\", \"kind\": \"settlement\", \"langs\": \"ja\", \"main\": \"横浜\", \"sub\": \"Yokohama-shi\"}\n")]);
-        let s = crate::test_state(home.path(), nas.path());
+        crate::accepted::put(&store::nasfs::NasRoot::local_for_test(nas.path()), "translations", &[("0-converted/japanese.jsonl", "{\"n\": \"横浜\", \"kind\": \"settlement\", \"langs\": \"ja\", \"main\": \"横浜\", \"sub\": \"Yokohama-shi\"}\n")]);
+        let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
         assert!(s.names.sync(&s.data));
         let pt = |x: f64, y: f64| [(x * 1e7) as i32, (y * 1e7) as i32];
         let japan = names::spoken::Area {
@@ -1424,7 +1424,7 @@ mod tests {
         let mut ps = packs();
         ps[0].2.push((8, 131, 70, vec![0x1f, 0x8b, 1, 2, 3]));
         catalog(nas.path(), 1, &ps, &["6/32/21"]);
-        let s = crate::test_state(home.path(), nas.path());
+        let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
         assert_eq!(ready(&s).await["ready"], true);
         assert_eq!(ask(&s, "banff", None).await["hits"].as_array().map(Vec::len), Some(1));
         assert!(ask(&s, "lake louise", None).await["hits"].as_array().unwrap().is_empty());
@@ -1437,7 +1437,7 @@ mod tests {
         // Nothing readable: not ready, and why, and when it's tried again.
         let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         catalog(nas.path(), 1, &packs(), &["3/4/2", "6/32/21"]);
-        let s = crate::test_state(home.path(), nas.path());
+        let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
         let v = ready(&s).await;
         assert_eq!(v["ready"], false);
         let why = v["failed"].as_str().unwrap();
@@ -1453,7 +1453,7 @@ mod tests {
         let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let ps = packs();
         catalog(nas.path(), 1, &ps, &[]);
-        let s = crate::test_state(home.path(), nas.path());
+        let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
         assert_eq!(ready(&s).await["ready"], true);
         let first = |s: &S| s.places.made.read().unwrap().as_ref().map(|m| (m.n, Arc::as_ptr(&m.places)));
         let was = first(&s);
@@ -1508,7 +1508,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let data = crate::data::Data::open(crate::data::Options {
             home: home.path().to_owned(),
-            nas_root: Some(root.into()),
+            nas_root: Some(store::nasfs::NasRoot::from_arg(root)),
             mirror: false,
             reserve: 0,
         })

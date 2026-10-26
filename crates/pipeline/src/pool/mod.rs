@@ -48,7 +48,7 @@ pub use beat::Beat;
 pub use driver::Driver;
 pub use handover::Handover;
 pub use journal::{Entry, LeaseId, Mine};
-pub use nas::{Nas, Share};
+pub use nas::Nas;
 pub use records::Records;
 pub use term::{Current, Term};
 
@@ -98,7 +98,7 @@ fn member_id_on(home: &Path, mac: Option<&str>) -> Result<String> {
                 (Some(_), _) | (None, None) => return Ok(id.to_string()),
                 // Made before its Mac could be read: bound now.
                 (None, Some(mac)) => {
-                    crate::whole::write(&p, format!("{id}\n{mac}\n").as_bytes())?;
+                    store::whole::write(&p, format!("{id}\n{mac}\n").as_bytes())?;
                     return Ok(id.to_string());
                 }
             }
@@ -108,7 +108,7 @@ fn member_id_on(home: &Path, mac: Option<&str>) -> Result<String> {
     }
     std::fs::create_dir_all(home).with_context(|| format!("make {}", home.display()))?;
     let id = new_id();
-    crate::whole::write(&p, format!("{id}\n{}\n", mac.unwrap_or("")).as_bytes())?;
+    store::whole::write(&p, format!("{id}\n{}\n", mac.unwrap_or("")).as_bytes())?;
     Ok(id)
 }
 
@@ -207,7 +207,7 @@ fn new_id() -> String {
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     seed.extend_from_slice(&t.to_le_bytes());
     seed.extend_from_slice(&std::process::id().to_le_bytes());
-    seed.extend_from_slice(crate::agent::cond::host().as_bytes());
+    seed.extend_from_slice(store::sys::host().as_bytes());
     format!("m-{}", store::naming::hash16(&seed))
 }
 

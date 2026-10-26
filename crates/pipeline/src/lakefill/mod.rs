@@ -866,12 +866,17 @@ fn clip(r: &[[f64; 2]], b: [f64; 4]) -> Vec<[f64; 2]> {
 impl Fill {
     /// The fill at `path`, pinned by `name` (its content name): mapped where the file is on this
     /// Mac's disk, read whole from the NAS.
-    pub fn open(path: &Path, name: &str) -> Result<Fill> {
-        let src: Box<dyn FillBytes> = match store::MmapFile::open(path) {
-            Ok(m) => Box::new(m),
-            Err(_) => Box::new(std::fs::read(path).with_context(|| format!("read {}", path.display()))?),
+    pub fn open<'a>(path: impl Into<store::nasfs::Loc<'a>>, name: &str) -> Result<Fill> {
+        let path = path.into();
+        let mapped = match path {
+            store::nasfs::Loc::Local(p) => store::MmapFile::open(p).ok(),
+            store::nasfs::Loc::Nas(_) => None,
         };
-        Fill::from_source(src, name).with_context(|| format!("{}", path.display()))
+        let src: Box<dyn FillBytes> = match mapped {
+            Some(m) => Box::new(m),
+            None => Box::new(path.read().with_context(|| format!("read {}", path.display()))?),
+        };
+        Fill::from_source(src, name).with_context(|| path.display())
     }
 
     /// The fill from its file's bytes (mapped or in memory), pinned by `name`.

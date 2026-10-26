@@ -55,6 +55,21 @@ pub fn hostname() -> Option<String> {
     None
 }
 
+/// This Mac's name (its LocalHostName: the heartbeat's, the temporary files' names), read once.
+pub fn host() -> &'static str {
+    static HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HOST.get_or_init(host_name)
+}
+
+/// This Mac's name, read now (`host`).
+pub fn host_name() -> String {
+    crate::spawn::output(crate::spawn::command("/usr/sbin/scutil").args(["--get", "LocalHostName"]))
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".into())
+}
+
 /// This process's id, or 0 where there are no processes (WASI, where `std::process::id` panics).
 pub fn pid() -> u32 {
     #[cfg(unix)]

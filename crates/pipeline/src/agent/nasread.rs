@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+use store::nasfs::NasPath;
 
 /// How long a small read or write may take before its caller goes on without it.
 pub const DEADLINE: Duration = Duration::from_secs(20);
@@ -180,26 +181,32 @@ fn noted<T>(p: &Path, r: io::Result<io::Result<T>>) -> io::Result<T> {
     }
 }
 
+/// A NAS path as its calls' label (their errors, the streaks' and in-flight keys): never opened.
+fn label(p: &NasPath) -> PathBuf {
+    PathBuf::from(p.display().to_string())
+}
+
 /// A switch file at `p` as text, read within `DEADLINE` on the switches' own readers.
-pub fn read_switch(p: &Path) -> io::Result<String> {
-    let owned = p.to_path_buf();
-    noted(p, switches().call(p, DEADLINE, move || std::fs::read_to_string(owned)))
+pub fn read_switch(p: &NasPath) -> io::Result<String> {
+    let (owned, p) = (p.clone(), &label(p));
+    noted(p, switches().call(p, DEADLINE, move || owned.read_to_string()))
 }
 
 /// The file at `p`, read within `DEADLINE` (`TimedOut` past it).
-pub fn read(p: &Path) -> io::Result<Vec<u8>> {
-    let owned = p.to_path_buf();
-    noted(p, records().call(p, DEADLINE, move || std::fs::read(owned)))
+pub fn read(p: &NasPath) -> io::Result<Vec<u8>> {
+    let (owned, p) = (p.clone(), &label(p));
+    noted(p, records().call(p, DEADLINE, move || owned.read()))
 }
 
 /// The file at `p` as text, read within `DEADLINE` (`TimedOut` past it).
-pub fn read_to_string(p: &Path) -> io::Result<String> {
-    let owned = p.to_path_buf();
-    noted(p, records().call(p, DEADLINE, move || std::fs::read_to_string(owned)))
+pub fn read_to_string(p: &NasPath) -> io::Result<String> {
+    let (owned, p) = (p.clone(), &label(p));
+    noted(p, records().call(p, DEADLINE, move || owned.read_to_string()))
 }
 
 /// `f`, a write of `p`, run on the writers within `DEADLINE` (an error past it).
-pub fn write(p: &Path, f: impl FnOnce() -> anyhow::Result<()> + Send + 'static) -> anyhow::Result<()> {
+pub fn write(p: &NasPath, f: impl FnOnce() -> anyhow::Result<()> + Send + 'static) -> anyhow::Result<()> {
+    let p = &label(p);
     let held = InFlight::take(p)?;
     match writers().call(p, DEADLINE, move || {
         let _held = held;
@@ -363,7 +370,8 @@ impl Nas for Deadlined {
 
 /// `f`, a read of what's under `p` (a few small files, a folder listed), run within `DEADLINE`
 /// (`TimedOut` past it), noted as a read of `p` is.
-pub fn with<T: Send + 'static>(p: &Path, f: impl FnOnce() -> io::Result<T> + Send + 'static) -> io::Result<T> {
+pub fn with<T: Send + 'static>(p: &NasPath, f: impl FnOnce() -> io::Result<T> + Send + 'static) -> io::Result<T> {
+    let p = &label(p);
     noted(p, records().call(p, DEADLINE, f))
 }
 
@@ -371,7 +379,7 @@ pub fn with<T: Send + 'static>(p: &Path, f: impl FnOnce() -> io::Result<T> + Sen
 /// which macOS's SMB client asks the server for, where a stat may come from its cache), on
 /// the records' readers within `DEADLINE`: None when it didn't answer in time, or when the last
 /// probe is still stuck in its call (never two at once, so a hung share holds one reader at most).
-pub fn probe(p: &Path) -> Option<Duration> {
+pub fn probe(p: &NasPath) -> Option<Duration> {
     static PROBING: AtomicBool = AtomicBool::new(false);
     /// Clears `PROBING` as the call's closure is dropped: once it ran, or refused unrun.
     struct Done;
@@ -383,11 +391,11 @@ pub fn probe(p: &Path) -> Option<Duration> {
     if PROBING.swap(true, Ordering::SeqCst) {
         return None;
     }
-    let (owned, done) = (p.to_path_buf(), Done);
-    let r = records().call(p, DEADLINE, move || {
+    let (owned, done) = (p.clone(), Done);
+    let r = records().call(&label(p), DEADLINE, move || {
         let _done = done;
         let t = std::time::Instant::now();
-        std::fs::read_dir(owned).map(|d| d.count()).is_ok().then(|| t.elapsed())
+        owned.read_dir().is_ok().then(|| t.elapsed())
     });
     r.ok().flatten()
 }
@@ -473,16 +481,16 @@ pub(crate) mod tests {
     #[test]
     fn a_probe_times_a_listing_and_one_that_fails_is_none() {
         let d = tempfile::tempdir().unwrap();
-        assert!(probe(d.path()).is_some_and(|t| t < DEADLINE));
-        assert_eq!(probe(&d.path().join("missing")), None);
+        assert!(probe(&store::nasfs::NasPath::local_for_test(d.path())).is_some_and(|t| t < DEADLINE));
+        assert_eq!(probe(&store::nasfs::NasPath::local_for_test(&d.path().join("missing"))), None);
         // (Its flag cleared each time: a third answers too.)
-        assert!(probe(d.path()).is_some());
+        assert!(probe(&store::nasfs::NasPath::local_for_test(d.path())).is_some());
     }
 
     /// A NAS whose calls on paths starting with `stuck` never return (until `release` drops),
     /// the rest a real share's.
     pub(crate) struct Stuck {
-        pub inner: crate::pool::nas::Share,
+        pub inner: store::nasfs::NasRoot,
         pub stuck: String,
         pub gate: Arc<Mutex<Receiver<()>>>,
     }
@@ -569,15 +577,21 @@ pub(crate) mod tests {
     fn a_healthy_read_is_the_read() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("s");
-        assert_eq!(read_to_string(&p).unwrap_err().kind(), io::ErrorKind::NotFound);
-        assert_eq!(read_switch(&p).unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(
+            read_to_string(&store::nasfs::NasPath::local_for_test(&p)).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(
+            read_switch(&store::nasfs::NasPath::local_for_test(&p)).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
         std::fs::write(&p, "on").unwrap();
-        assert_eq!(read_to_string(&p).unwrap(), "on");
-        assert_eq!(read_switch(&p).unwrap(), "on");
-        assert_eq!(read(&p).unwrap(), b"on");
+        assert_eq!(read_to_string(&store::nasfs::NasPath::local_for_test(&p)).unwrap(), "on");
+        assert_eq!(read_switch(&store::nasfs::NasPath::local_for_test(&p)).unwrap(), "on");
+        assert_eq!(read(&store::nasfs::NasPath::local_for_test(&p)).unwrap(), b"on");
         let q = d.path().join("w");
         let q2 = q.clone();
-        write(&q, move || Ok(std::fs::write(q2, "x")?)).unwrap();
+        write(&store::nasfs::NasPath::local_for_test(&q), move || Ok(std::fs::write(q2, "x")?)).unwrap();
         assert_eq!(std::fs::read(&q).unwrap(), b"x");
     }
 
@@ -588,7 +602,7 @@ pub(crate) mod tests {
         std::fs::write(d.path().join("state/pool/terms/1.json"), "{}").unwrap();
         let (hold, gate) = mpsc::channel::<()>();
         let stuck = Stuck {
-            inner: crate::pool::nas::Share::new(d.path()),
+            inner: store::nasfs::NasRoot::local_for_test(d.path()),
             stuck: "state/pool/members".into(),
             gate: Arc::new(Mutex::new(gate)),
         };
@@ -616,7 +630,7 @@ pub(crate) mod tests {
         assert_eq!(n.read("state/pool/terms/1.json").unwrap().unwrap(), b"{}");
         // And a switch, on its own readers.
         std::fs::write(d.path().join("sw"), "on").unwrap();
-        assert_eq!(read_switch(&d.path().join("sw")).unwrap(), "on");
+        assert_eq!(read_switch(&store::nasfs::NasPath::local_for_test(&d.path().join("sw"))).unwrap(), "on");
         // The share answers: the path's write ends on its thread, and the path is free again.
         drop(hold);
         store::testkit::eventually("the path's write ends", || writes.busy() == 0);
@@ -629,7 +643,7 @@ pub(crate) mod tests {
         let d = tempfile::tempdir().unwrap();
         let (hold, gate) = mpsc::channel::<()>();
         let stuck = Stuck {
-            inner: crate::pool::nas::Share::new(d.path()),
+            inner: store::nasfs::NasRoot::local_for_test(d.path()),
             stuck: crate::pool::term::DIR.into(),
             gate: Arc::new(Mutex::new(gate)),
         };
@@ -651,7 +665,7 @@ pub(crate) mod tests {
         let d = tempfile::tempdir().unwrap();
         let (hold, gate) = mpsc::channel::<()>();
         let stuck = Stuck {
-            inner: crate::pool::nas::Share::new(d.path()),
+            inner: store::nasfs::NasRoot::local_for_test(d.path()),
             stuck: crate::pool::term::DIR.into(),
             gate: Arc::new(Mutex::new(gate)),
         };
@@ -671,7 +685,7 @@ pub(crate) mod tests {
         // A listing that answers on a later try.
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(d.path().join(crate::pool::term::DIR)).unwrap();
-        let n = crate::pool::nas::Share::new(d.path());
+        let n = store::nasfs::NasRoot::local_for_test(d.path());
         assert_eq!(crate::agent::pool::list_patiently(&n, crate::pool::term::DIR, &[]).unwrap(), Vec::<String>::new());
     }
 

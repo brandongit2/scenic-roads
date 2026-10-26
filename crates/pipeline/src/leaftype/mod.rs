@@ -117,7 +117,7 @@ pub fn make(sqs: &[(i32, i32)], out: &Path, src: &LeafSources) -> Result<()> {
 fn save(top: i32, left: i32, a: &[u8], source: &str, out: &Path) -> Result<()> {
     std::fs::create_dir_all(out).with_context(|| out.display().to_string())?;
     let path = out.join(format!("{}.tif", name(top, left)));
-    let tmp = out.join(format!("{}.{}.{}.tmp.tif", name(top, left), crate::agent::cond::host(), std::process::id()));
+    let tmp = out.join(format!("{}.{}.{}.tmp.tif", name(top, left), store::sys::host(), std::process::id()));
     let r = (|| -> Result<()> {
         let b = tiff::square(
             a,
@@ -134,7 +134,7 @@ fn save(top: i32, left: i32, a: &[u8], source: &str, out: &Path) -> Result<()> {
             f.sync_all()?;
         }
         ensure!(crate::whole::tiff_file_whole(&tmp), "{}: written short", tmp.display());
-        crate::whole::rename_over(&tmp, &path)?;
+        store::whole::rename_over(&tmp, &path)?;
         Ok(())
     })();
     if r.is_err() {
@@ -309,7 +309,7 @@ fn read_npy(p: &Path, h: usize, w: usize) -> Option<Vec<u8>> {
 /// `a` written whole to `p` (a temporary name, flushed, renamed).
 fn keep(p: &Path, a: &[u8]) -> Result<()> {
     use std::io::Write;
-    let tmp = crate::whole::tmp_name(p);
+    let tmp = store::whole::tmp_name(p);
     let r = (|| -> Result<()> {
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(a)?;
@@ -524,7 +524,7 @@ fn fetch_nalcms(tif: &Path, src: &LeafSources) -> Result<()> {
     let (crc, csize, usize_, nlen, elen) = (u32_at(14), u32_at(18) as u64, u32_at(22) as u64, u16_at(26), u16_at(28));
     ensure!(csize == compressed, "NALCMS: the zip's member is {csize} bytes, not {compressed}");
     let start = offset + 30 + nlen as u64 + elen as u64;
-    let tmp = crate::whole::tmp_name(tif);
+    let tmp = store::whole::tmp_name(tif);
     eprintln!("streaming NALCMS GeoTIFF ({:.1} GB compressed)…", compressed as f64 / 1e9);
     let r = (|| -> Result<()> {
         let mut resp = get(start, start + compressed - 1)?;

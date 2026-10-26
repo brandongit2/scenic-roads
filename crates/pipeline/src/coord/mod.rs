@@ -94,7 +94,7 @@ pub struct Contact {
     pub page: Option<String>,
 }
 
-pub fn contact_path(root: &Path) -> PathBuf {
+pub fn contact_path(root: &store::nasfs::NasRoot) -> store::nasfs::NasPath {
     root.join("state/coordinator.json")
 }
 
@@ -373,7 +373,7 @@ pub struct Shared {
     pub forward: Option<PathBuf>,
     /// This Mac's agent's folder and the NAS's project folder (None: away), where the owner's
     /// settings lie (`/work/settings`, crate::agent::settings; `set_settings`). None: not said yet.
-    pub settings: Option<(PathBuf, Option<PathBuf>)>,
+    pub settings: Option<(PathBuf, Option<store::nasfs::NasRoot>)>,
     /// The build pages' asks to cancel a job or try a target again (`/work/act`), for this Mac's
     /// agent to act on, leading, or to pass on to the lead (crate::pool::driver::Act).
     pub page_acts: Vec<crate::pool::driver::Act>,
@@ -418,31 +418,31 @@ impl Shared {
         self.keep.changed();
         let r = serde_json::to_vec(&self.costs)
             .map_err(anyhow::Error::from)
-            .and_then(|b| crate::whole::write(&self.dir.join("costs.json"), &b));
+            .and_then(|b| store::whole::write(&self.dir.join("costs.json"), &b));
         if let Err(e) = r {
             eprintln!("coordinator: saving the costs: {e:#}");
         }
         let r = serde_json::to_vec(&self.floors)
             .map_err(anyhow::Error::from)
-            .and_then(|b| crate::whole::write(&self.dir.join("floors.json"), &b));
+            .and_then(|b| store::whole::write(&self.dir.join("floors.json"), &b));
         if let Err(e) = r {
             eprintln!("coordinator: saving the floors: {e:#}");
         }
         let r = serde_json::to_vec(&self.disks)
             .map_err(anyhow::Error::from)
-            .and_then(|b| crate::whole::write(&self.dir.join("disks.json"), &b));
+            .and_then(|b| store::whole::write(&self.dir.join("disks.json"), &b));
         if let Err(e) = r {
             eprintln!("coordinator: saving the disk floors: {e:#}");
         }
         let r = serde_json::to_vec(&self.fills)
             .map_err(anyhow::Error::from)
-            .and_then(|b| crate::whole::write(&self.dir.join(FILLS), &b));
+            .and_then(|b| store::whole::write(&self.dir.join(FILLS), &b));
         if let Err(e) = r {
             eprintln!("coordinator: saving the caches' fills: {e:#}");
         }
         let r = serde_json::to_vec(&self.job_disks)
             .map_err(anyhow::Error::from)
-            .and_then(|b| crate::whole::write(&self.dir.join(JOB_DISKS), &b));
+            .and_then(|b| store::whole::write(&self.dir.join(JOB_DISKS), &b));
         if let Err(e) = r {
             eprintln!("coordinator: saving the jobs' disk: {e:#}");
         }
@@ -744,7 +744,7 @@ pub struct Coordinator {
     me: String,
     /// The NAS's project folder while the agent has it, for tasks' reads where the data lies
     /// (`/work/net/…/nas/…`).
-    root: Arc<Mutex<Option<PathBuf>>>,
+    root: Arc<Mutex<Option<store::nasfs::NasRoot>>>,
     /// Set when it stops (`stop`, or dropped): its listener woken (`wake`) and closed, its port free
     /// once `stop` returns (a member that took the lead in its process starts one; one that lost it
     /// stops it): `closed` hears from its thread as its listener is gone.
@@ -1432,7 +1432,7 @@ impl Coordinator {
         let page = self.shared.lock().unwrap().dir.join("page");
         let text = format!("{base}work/\n");
         if std::fs::read_to_string(&page).ok().as_deref() != Some(text.as_str())
-            && crate::whole::write(&page, text.as_bytes()).is_ok()
+            && store::whole::write(&page, text.as_bytes()).is_ok()
         {
             if let Ok(f) = std::fs::File::open(&page) {
                 store::sys::set_mode(&f, 0o600).ok();
@@ -1441,8 +1441,8 @@ impl Coordinator {
     }
 
     /// The NAS's project folder as the agent has it now (None: away), for tasks' reads.
-    pub fn set_root(&self, root: Option<&Path>) {
-        *self.root.lock().unwrap() = root.map(Path::to_path_buf);
+    pub fn set_root(&self, root: Option<&store::nasfs::NasRoot>) {
+        *self.root.lock().unwrap() = root.cloned();
     }
 
     /// Where the hand-offs it took are journaled (a folder per worker), for the agent to merge.
@@ -1452,7 +1452,7 @@ impl Coordinator {
 
     /// Publishes how to reach it on the NAS, when what's there differs (written whole), and the
     /// worker page's address here (it moves to HTTPS once `tailscale serve` proxies the coordinator).
-    pub fn publish(&self, root: &Path) -> Result<()> {
+    pub fn publish(&self, root: &store::nasfs::NasRoot) -> Result<()> {
         #[cfg(not(target_os = "wasi"))]
         self.write_page();
         // (With the page's HTTPS address as it is now: `tailscale serve` may come or go.)
@@ -1461,9 +1461,9 @@ impl Coordinator {
         {
             contact.page = http::served_https(self.port).map(|b| format!("{b}work/"));
         }
-        let there = std::fs::read(contact_path(root)).ok().and_then(|b| serde_json::from_slice::<Contact>(&b).ok());
+        let there = contact_path(root).read().ok().and_then(|b| serde_json::from_slice::<Contact>(&b).ok());
         if there.as_ref() != Some(&contact) {
-            crate::whole::write(&contact_path(root), &serde_json::to_vec_pretty(&contact)?)?;
+            contact_path(root).write_whole(serde_json::to_vec_pretty(&contact)?)?;
         }
         Ok(())
     }
@@ -1471,16 +1471,16 @@ impl Coordinator {
     /// Takes it off the NAS (the agent stopping, or its Mac no longer leading), when it's this
     /// one's: its addresses, not only its token (the pool's, the same on every lead: a lead that
     /// lost its term while frozen would take the new lead's contact off).
-    pub fn unpublish(&self, root: &Path) {
+    pub fn unpublish(&self, root: &store::nasfs::NasRoot) {
         self.unpublish_unless(root, &|| false);
     }
 
     /// `unpublish`, unless `published` says the contact was published again meanwhile (asked just
     /// before the remove: a removal that waited on a hung share doesn't take a fresh contact off).
-    pub fn unpublish_unless(&self, root: &Path, published: &dyn Fn() -> bool) {
-        let there = std::fs::read(contact_path(root)).ok().and_then(|b| serde_json::from_slice::<Contact>(&b).ok());
+    pub fn unpublish_unless(&self, root: &store::nasfs::NasRoot, published: &dyn Fn() -> bool) {
+        let there = contact_path(root).read().ok().and_then(|b| serde_json::from_slice::<Contact>(&b).ok());
         if there.is_some_and(|c| c.token == self.contact.token && c.urls == self.contact.urls) && !published() {
-            std::fs::remove_file(contact_path(root)).ok();
+            contact_path(root).remove_file().ok();
         }
     }
 
@@ -2255,8 +2255,8 @@ impl Coordinator {
 
     /// Where the owner's settings lie (`Shared::settings`): this Mac's agent's folder `home`, the
     /// NAS's project folder `root`.
-    pub fn set_settings(&self, home: &Path, root: Option<&Path>) {
-        self.shared.lock().unwrap().settings = Some((home.to_path_buf(), root.map(Path::to_path_buf)));
+    pub fn set_settings(&self, home: &Path, root: Option<&store::nasfs::NasRoot>) {
+        self.shared.lock().unwrap().settings = Some((home.to_path_buf(), root.cloned()));
     }
 
     pub fn take_lead_asks(&self) -> Vec<crate::control::LeadRequest> {
@@ -2629,7 +2629,7 @@ fn app_when(v: &str) -> String {
 #[cfg(not(target_os = "wasi"))]
 fn nas_prober(
     shared: Arc<Mutex<Shared>>,
-    root: Arc<Mutex<Option<PathBuf>>>,
+    root: Arc<Mutex<Option<store::nasfs::NasRoot>>>,
     stopped: Arc<std::sync::atomic::AtomicBool>,
     me: String,
 ) {
@@ -2724,7 +2724,12 @@ fn nas_prober(
                         // (The mount, read outside the lock: statfs can wait on the NAS.)
                         let mount = if mounted.is_none_or(|t| t.elapsed() >= Duration::from_secs(MOUNT_EVERY_S)) {
                             mounted = Some(std::time::Instant::now());
-                            Some(store::sys::mount_of(&r).ok().map(|(f, k, free)| NasMount::of(&f, &k, free)))
+                            // (The share's mount by its statfs: tests/nas_access.rs.)
+                            Some(
+                                store::sys::mount_of(&r.unchecked_path())
+                                    .ok()
+                                    .map(|(f, k, free)| NasMount::of(&f, &k, free)),
+                            )
                         } else {
                             None
                         };
@@ -3020,14 +3025,14 @@ fn job_disks_load(
     if keep && disks.len() < before {
         let _ = serde_json::to_vec(&*disks)
             .map_err(anyhow::Error::from)
-            .and_then(|b| crate::whole::write(&dir.join("disks.json"), &b));
+            .and_then(|b| store::whole::write(&dir.join("disks.json"), &b));
     }
     let write = |m: &BTreeMap<String, Vec<u64>>, fills: &BTreeMap<String, u64>| {
         if !keep {
             return;
         }
         for (f, v) in [(JOB_DISKS, serde_json::to_vec(m)), (FILLS, serde_json::to_vec(fills))] {
-            let _ = v.map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&dir.join(f), &b));
+            let _ = v.map_err(anyhow::Error::from).and_then(|b| store::whole::write(&dir.join(f), &b));
         }
     };
     if let Some(mut m) = std::fs::read(dir.join(JOB_DISKS_V5)).ok().and_then(|b| serde_json::from_slice(&b).ok()) {
@@ -3149,7 +3154,7 @@ fn set_pause(s: &mut Shared, pause: Option<crate::control::Pause>, at: u64) {
     }
     let kept = serde_json::to_vec(&serde_json::json!({ "pause": pause, "at": at }))
         .map_err(anyhow::Error::from)
-        .and_then(|b| crate::whole::write(&s.dir.join("pause.json"), &b));
+        .and_then(|b| store::whole::write(&s.dir.join("pause.json"), &b));
     if let Err(e) = kept {
         eprintln!("coordinator: keeping the pause: {e:#} (it holds until this agent stops)");
     }
@@ -3644,17 +3649,17 @@ fn route(
             }
             if let Some(v) = said("nas_room")? {
                 let root =
-                    root.as_deref().ok_or_else(|| anyhow::anyhow!("the NAS is away: its reserve can't be set now"))?;
+                    root.as_ref().ok_or_else(|| anyhow::anyhow!("the NAS is away: its reserve can't be set now"))?;
                 settings::set_nas_room(root, &v, &by)?;
             }
             if let Some(v) = said("battery_floor")? {
                 let root = root
-                    .as_deref()
+                    .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("the NAS is away: the battery floor can't be set now"))?;
                 settings::set_battery_floor(root, &v, &by)?;
             }
-            let mut v = settings::view(&home, root.as_deref());
-            v["mac"] = crate::agent::cond::host().into();
+            let mut v = settings::view(&home, root.as_ref());
+            v["mac"] = store::sys::host().into();
             Ok((200, v))
         }
         "/work/act" => {
@@ -4447,7 +4452,7 @@ mod http {
         pub wasm: Option<PathBuf>,
         /// The NAS's project folder (Coordinator::set_root), and the data servers' files opened for
         /// tasks (`net`).
-        pub root: Arc<Mutex<Option<PathBuf>>>,
+        pub root: Arc<Mutex<Option<store::nasfs::NasRoot>>>,
         pub remote: Arc<Remote>,
         /// Held read by each request's `route`, true once the coordinator has stopped
         /// (Coordinator::stop): then none runs.
@@ -5033,7 +5038,8 @@ mod http {
             let Some(root) = c.root.lock().unwrap().clone() else {
                 return error(StatusCode::SERVICE_UNAVAILABLE, "the NAS isn't here now");
             };
-            let p = root.join(rel);
+            // (Served through tokio's files, a range streamed: tests/nas_access.rs.)
+            let p = root.join(rel.to_string_lossy()).unchecked_path();
             // (Not there, or the NAS not answering: a task fails rather than take the second for
             // the first, as Taiwan's elevations would, from GLO-30.)
             let meta = match tokio::fs::metadata(&p).await {
@@ -5345,19 +5351,19 @@ mod tests {
         let root = d.path().join("nas");
         std::fs::create_dir_all(root.join("state")).unwrap();
         let (c, _) = start_for_test(&d.path().join("a"), "m4", "");
-        c.publish(&root).unwrap();
+        c.publish(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         // The next lead's contact, the pool's token the same, its addresses its own.
         let next = Contact {
             urls: vec!["http://MacBook-Pro-de-Brandon.local:18091".into()],
             token: c.contact.token.clone(),
             page: None,
         };
-        std::fs::write(contact_path(&root), serde_json::to_vec(&next).unwrap()).unwrap();
-        c.unpublish(&root);
-        assert!(contact_path(&root).exists(), "the next lead's contact stays");
-        c.publish(&root).unwrap();
-        c.unpublish(&root);
-        assert!(!contact_path(&root).exists(), "its own goes");
+        contact_path(&store::nasfs::NasRoot::local_for_test(&root)).write(serde_json::to_vec(&next).unwrap()).unwrap();
+        c.unpublish(&store::nasfs::NasRoot::local_for_test(&root));
+        assert!(contact_path(&store::nasfs::NasRoot::local_for_test(&root)).exists(), "the next lead's contact stays");
+        c.publish(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
+        c.unpublish(&store::nasfs::NasRoot::local_for_test(&root));
+        assert!(!contact_path(&store::nasfs::NasRoot::local_for_test(&root)).exists(), "its own goes");
     }
 
     #[test]
@@ -5369,16 +5375,20 @@ mod tests {
         std::fs::create_dir_all(root.join("state")).unwrap();
         let (c, _) = start_for_test(&d.path().join("a"), "m4", "");
         let gens = std::sync::atomic::AtomicU64::new(1);
-        c.publish(&root).unwrap();
+        c.publish(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         let at = gens.load(std::sync::atomic::Ordering::SeqCst);
         // Published again meanwhile.
         gens.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        c.publish(&root).unwrap();
-        c.unpublish_unless(&root, &|| gens.load(std::sync::atomic::Ordering::SeqCst) != at);
-        assert!(contact_path(&root).exists(), "the fresh contact stays");
+        c.publish(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
+        c.unpublish_unless(&store::nasfs::NasRoot::local_for_test(&root), &|| {
+            gens.load(std::sync::atomic::Ordering::SeqCst) != at
+        });
+        assert!(contact_path(&store::nasfs::NasRoot::local_for_test(&root)).exists(), "the fresh contact stays");
         let at = gens.load(std::sync::atomic::Ordering::SeqCst);
-        c.unpublish_unless(&root, &|| gens.load(std::sync::atomic::Ordering::SeqCst) != at);
-        assert!(!contact_path(&root).exists(), "not published since: it goes");
+        c.unpublish_unless(&store::nasfs::NasRoot::local_for_test(&root), &|| {
+            gens.load(std::sync::atomic::Ordering::SeqCst) != at
+        });
+        assert!(!contact_path(&store::nasfs::NasRoot::local_for_test(&root)).exists(), "not published since: it goes");
     }
 
     /// #666 (25 Oct, the mini: its loop stuck ~10 min on the NAS lost terrain-z8 at 56 %, and a
@@ -7036,10 +7046,18 @@ mod tests {
     #[test]
     fn a_missing_switch_holds_the_members_too() {
         let d = tempfile::tempdir().unwrap();
-        assert_eq!(crate::budget::nas::read_switch(d.path()), Some(Some(Default::default())), "missing: on");
+        assert_eq!(
+            crate::budget::nas::read_switch(&store::nasfs::NasRoot::local_for_test(d.path())),
+            Some(Some(Default::default())),
+            "missing: on"
+        );
         std::fs::create_dir_all(d.path().join("state/pool")).unwrap();
         std::fs::write(d.path().join(crate::budget::nas::SWITCH), "off\n").unwrap();
-        assert_eq!(crate::budget::nas::read_switch(d.path()), Some(None), "`off`: off");
+        assert_eq!(
+            crate::budget::nas::read_switch(&store::nasfs::NasRoot::local_for_test(d.path())),
+            Some(None),
+            "`off`: off"
+        );
         let (_d, c, w, _clock) = every((0, 0));
         heavy_slope(&c);
         let limits =
@@ -9183,7 +9201,7 @@ mod tests {
         let post = |b: serde_json::Value| send(&addr, "POST", "/work/settings", None, &far, &b);
         assert_eq!(post(serde_json::json!({})).0, 503, "no folder said yet");
         let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        c.set_settings(home.path(), Some(nas.path()));
+        c.set_settings(home.path(), Some(&store::nasfs::NasRoot::local_for_test(nas.path())));
         let (code, _, v) = post(serde_json::json!({}));
         assert_eq!(code, 200, "{v}");
         assert_eq!(v["memory"]["set"], false);
@@ -9194,9 +9212,15 @@ mod tests {
         let m = crate::agent::buildmem::read(home.path()).unwrap();
         assert!(m.mb == 2048 && m.by == "the build page (100.101.1.2)", "{m:?}");
         assert_eq!(crate::agent::room::target(home.path()).unwrap().bytes, 1 << 30);
-        assert_eq!(crate::agent::room::nas_reserve(nas.path()).unwrap().bytes, 3 << 30);
+        assert_eq!(
+            crate::agent::room::nas_reserve(&store::nasfs::NasRoot::local_for_test(nas.path())).unwrap().bytes,
+            3 << 30
+        );
         assert_eq!(v["nas_room"]["bytes"], 3u64 << 30);
-        assert_eq!(crate::agent::cond::battery_floor(nas.path()).unwrap().pct, 20);
+        assert_eq!(
+            crate::agent::cond::battery_floor(&store::nasfs::NasRoot::local_for_test(nas.path())).unwrap().pct,
+            20
+        );
         assert_eq!(v["battery_floor"]["pct"], 20);
         assert_eq!(post(serde_json::json!({ "memory": "0.1" })).0, 400);
         assert_eq!(post(serde_json::json!({ "in_use": [1] })).0, 400);
@@ -9209,10 +9233,11 @@ mod tests {
             crate::agent::share::read(home.path()).is_none() && crate::agent::buildmem::read(home.path()).is_none()
         );
         assert!(
-            crate::agent::room::target(home.path()).is_none() && crate::agent::room::nas_reserve(nas.path()).is_none()
+            crate::agent::room::target(home.path()).is_none()
+                && crate::agent::room::nas_reserve(&store::nasfs::NasRoot::local_for_test(nas.path())).is_none()
         );
         c.set_settings(home.path(), None);
-        assert!(crate::agent::cond::battery_floor(nas.path()).is_none());
+        assert!(crate::agent::cond::battery_floor(&store::nasfs::NasRoot::local_for_test(nas.path())).is_none());
         assert_eq!(post(serde_json::json!({ "nas_room": "3" })).0, 400, "the NAS away");
         assert_eq!(post(serde_json::json!({ "battery_floor": "20" })).0, 400, "the NAS away");
     }
@@ -9293,7 +9318,10 @@ mod tests {
         assert!(matches!(&acts[..], [crate::pool::driver::Act::Retry(r)] if r.target == "6/1/3"), "{acts:?}");
         // In the pool (a pageview told a root), never the memory's views: not ready until it read.
         let pv = crate::agent::pageview::PageView::new();
-        pv.set_inputs(crate::agent::pageview::Inputs { root: Some("/nonexistent".into()), ..Default::default() });
+        pv.set_inputs(crate::agent::pageview::Inputs {
+            root: Some(store::nasfs::NasRoot::local_for_test("/nonexistent")),
+            ..Default::default()
+        });
         v.set_pageview(pv);
         assert_eq!(ask("/work/swarm", None), 503);
         assert_eq!(ask("/work/history", None), 503);
@@ -9648,7 +9676,7 @@ mod tests {
         let base = format!("/work/net/{}", g.lease);
         // Before the agent says where the NAS is: not there.
         assert_eq!(get(&format!("{base}/nas/sources/canopy/sq.tif?probe"), "ipad", None).0, 503);
-        c.set_root(Some(&nas));
+        c.set_root(Some(&store::nasfs::NasRoot::local_for_test(&nas)));
         let json = |b: &[u8]| serde_json::from_slice::<serde_json::Value>(b).unwrap();
         let (code, b) = get(&format!("{base}/nas/sources/canopy/sq.tif?probe"), "ipad", None);
         assert_eq!((code, json(&b)), (200, serde_json::json!({ "kind": "file", "size": 3000 })));

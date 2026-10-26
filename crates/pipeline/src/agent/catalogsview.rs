@@ -19,7 +19,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -341,21 +340,12 @@ pub trait Source: Send + Sync {
 }
 
 /// The NAS's `catalog/`, read through the agent's NAS reads under their deadline.
-pub struct NasCatalogs(pub PathBuf);
+pub struct NasCatalogs(pub store::nasfs::NasPath);
 
 impl Source for NasCatalogs {
     fn list(&self) -> Option<Vec<String>> {
         let p = self.0.clone();
-        super::nasread::with(&self.0, move || {
-            let mut out = vec![];
-            for e in std::fs::read_dir(&p)? {
-                if let Some(n) = e?.file_name().to_str() {
-                    out.push(n.to_string());
-                }
-            }
-            Ok(out)
-        })
-        .ok()
+        super::nasread::with(&self.0, move || Ok(p.read_dir()?.into_iter().map(|e| e.name).collect())).ok()
     }
     fn read(&self, name: &str) -> Option<Vec<u8>> {
         super::nasread::read(&self.0.join(name)).ok()

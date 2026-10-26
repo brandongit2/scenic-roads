@@ -1040,7 +1040,7 @@ fn sampling_many_stored_tiles_holds_a_bounded_number_of_files() {
     let f = crate::fetch::MapFetch::default();
     let threads = 2;
     let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
-    let o = Opts { fetch: &f, store: Some(d.path().to_path_buf()) };
+    let o = Opts { fetch: &f, store: Some(store::nasfs::NasPath::local_for_test(d.path().to_path_buf())) };
     let run = |cap: usize| {
         let _cap = store::range::cap_plain_opens(cap);
         let s = Sampler::new(&plan, &o).unwrap();

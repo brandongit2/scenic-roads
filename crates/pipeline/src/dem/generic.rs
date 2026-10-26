@@ -37,7 +37,6 @@ use crate::geotiff::{BlockCache, Tiff};
 use anyhow::{bail, ensure, Context, Result};
 use rayon::prelude::*;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use store::range::{PlainFile, RangeRead};
 
@@ -46,7 +45,7 @@ pub struct Opts<'a> {
     pub fetch: &'a dyn Fetch,
     /// The stores' folder (`sources/fetched/`): a dataset declared `store` is read from
     /// `<it>/<dataset>/` alone (`stored`).
-    pub store: Option<PathBuf>,
+    pub store: Option<store::nasfs::NasPath>,
 }
 
 /// The heights sampled at points.
@@ -210,43 +209,26 @@ pub fn stored_name(url: &str) -> String {
 /// where it lies; None for one the store notes the source doesn't have (`<name>.none`). Never
 /// fetched here: a file the store lacks, or holds cut short, is an error naming it (a stored
 /// dataset is fetched once, by `scenic-build store-fetch <id> --index <its index>`: crate::dem::store_fetch).
-pub fn stored(id: &str, dir: &std::path::Path, url: &str) -> Result<Option<Arc<dyn RangeRead>>> {
-    stored_with(id, dir, url, &store::retry::waits())
-}
-
-/// `stored`, a read the share fails for a moment tried again after each of `waits`
-/// (store::retry): a "not found" too, when the store's listing has the file (listed only when
-/// neither the file nor its `.none` is found). A file the listing lacks fails at once, as does one
-/// cut short.
-fn stored_with(
-    id: &str,
-    dir: &std::path::Path,
-    url: &str,
-    waits: &[std::time::Duration],
-) -> Result<Option<Arc<dyn RangeRead>>> {
-    use store::retry::{io, transient, transient_or_missing};
+/// A read the share fails for a moment is tried again (store::nasfs; store::retry): a "not found"
+/// too, when the store's listing has the file (listed only when neither the file nor its `.none`
+/// is found). A file the listing lacks fails at once, as does one cut short.
+pub fn stored(id: &str, dir: &store::nasfs::NasPath, url: &str) -> Result<Option<Arc<dyn RangeRead>>> {
     let name = stored_name(url);
     let f = dir.join(&name);
     let what = format!("{id}: tile {name} in the store ({})", dir.display());
-    if let Err(e) = io(&what, Some(&f), waits, transient, || std::fs::metadata(&f)) {
+    if let Err(e) = f.metadata() {
         if e.kind() != std::io::ErrorKind::NotFound {
             return Err(anyhow::Error::from(e).context(format!("{what}: its size")));
         }
         // (A tile with no data, its `.none` marker, is common: looked at by its name, not a listing.)
-        let none = dir.join(format!("{name}.none"));
-        match io(&what, Some(&none), waits, transient, || std::fs::metadata(&none)) {
+        match dir.join(format!("{name}.none")).metadata() {
             Ok(_) => return Ok(None),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(anyhow::Error::from(e).context(format!("{what}: its .none"))),
         }
-        let listed = io(&what, Some(dir), waits, transient, || {
-            let mut has = (false, false);
-            for d in std::fs::read_dir(dir)? {
-                let d = d?.file_name();
-                has.0 |= d.to_str() == Some(&name);
-                has.1 |= d.to_str() == Some(&format!("{name}.none"));
-            }
-            Ok(has)
+        let listed = dir.read_dir().map(|rd| {
+            let none = format!("{name}.none");
+            (rd.iter().any(|d| d.name == name), rd.iter().any(|d| d.name == none))
         });
         match listed {
             Ok((_, true)) => return Ok(None),
@@ -256,10 +238,11 @@ fn stored_with(
             Err(e) => return Err(anyhow::Error::from(e).context(format!("{id}: listing the store ({})", dir.display()))),
         }
     }
-    let read = io(&what, Some(&f), waits, transient_or_missing, || {
-        Ok(crate::whole::tiff_file_checked(&f)?.then(|| PlainFile::open(&f)).transpose()?)
-    })
-    .with_context(|| format!("{id}: reading tile {name} in the store ({})", dir.display()))?;
+    let read = f
+        .retry_with(&what, &store::retry::waits(), store::retry::transient_or_missing, || {
+            Ok(crate::whole::tiff_whole_checked(&f.open()?.into_file())?.then(|| f.open_plain()).transpose()?)
+        })
+        .with_context(|| format!("{id}: reading tile {name} in the store ({})", dir.display()))?;
     let Some(file) = read else {
         bail!(
             "{id}: tile {name} in the store ({}) isn't whole: remove it and fetch it again (scenic-build store-fetch {id} --index <its index>)",
@@ -277,7 +260,7 @@ struct GeoSet<'a> {
     /// By file, its fill mask's URL (empty: none has one; `Source::Geotiff::masks`).
     masks: &'a [Option<String>],
     read_resolution: Option<f64>,
-    store: Option<PathBuf>,
+    store: Option<store::nasfs::NasPath>,
     o: &'a Opts<'a>,
     /// By file: the open file and the level read (None: the server has none).
     opened: Mutex<HashMap<usize, Option<(Arc<Tiff>, usize)>>>,

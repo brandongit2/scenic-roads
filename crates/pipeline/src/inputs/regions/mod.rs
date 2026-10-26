@@ -29,7 +29,6 @@ use super::{Checks, Derived, FileCheck, Finding, Level, Version};
 use crate::outlines::Outlines;
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
 use std::sync::Mutex;
 
 /// The unit's name.
@@ -56,7 +55,7 @@ pub struct Prepared {
     pub data: Option<data::Datasets>,
     /// Else where the accepted sources say they are: read only once a region in the folder names
     /// them (`Region::needs_data`), so declaring them costs a check that needs none nothing.
-    pub data_from: Option<(std::path::PathBuf, crate::inputs::sources::Sources)>,
+    pub data_from: Option<(store::nasfs::NasRoot, crate::inputs::sources::Sources)>,
     pub data_read: std::sync::OnceLock<Option<data::Datasets>>,
     /// The outline set's and the extract's content names.
     pub names: String,
@@ -292,7 +291,11 @@ impl Checks for Regions {
         ]
     }
 
-    fn prepared(&self, root: &Path, manifest: &BTreeMap<String, String>) -> Result<Option<Box<dyn Checks>>> {
+    fn prepared(
+        &self,
+        root: &store::nasfs::NasRoot,
+        manifest: &BTreeMap<String, String>,
+    ) -> Result<Option<Box<dyn Checks>>> {
         Ok(Some(Box::new(Regions::new(Some(prepare(root, manifest, None)?)))))
     }
 }
@@ -300,7 +303,7 @@ impl Checks for Regions {
 /// What the check reads from the records `manifest` under `root` (`Checks::prepared`): the
 /// datasets those the accepted sources declare, or `data` when given (a scratch check's).
 pub fn prepare(
-    root: &Path,
+    root: &store::nasfs::NasRoot,
     manifest: &BTreeMap<String, String>,
     data: Option<Option<data::Datasets>>,
 ) -> Result<Prepared> {
@@ -308,11 +311,7 @@ pub fn prepare(
         let (date, o, e) = current(manifest);
         let outlines = o.map(|n| Outlines::open(&root.join(n)).with_context(|| format!("open {n}"))).transpose()?;
         let extract = e
-            .map(|n| {
-                std::fs::read(root.join(n))
-                    .with_context(|| format!("read {n}"))
-                    .and_then(|b| extract::Extract::read(&b))
-            })
+            .map(|n| root.join(n).read().with_context(|| format!("read {n}")).and_then(|b| extract::Extract::read(&b)))
             .transpose()?;
         // (Other passes' outline sets in the records: what a pin naming one is compared with.)
         let mut others = BTreeMap::new();
@@ -334,9 +333,7 @@ pub fn prepare(
         // one that can't be read holds the regions naming it, `rg-data`, saying so.)
         let (data, data_from) = match data {
             Some(d) => (d, None),
-            None => {
-                (None, crate::inputs::sources::open(root, manifest).ok().flatten().map(|s| (root.to_path_buf(), s)))
-            }
+            None => (None, crate::inputs::sources::open(root, manifest).ok().flatten().map(|s| (root.clone(), s))),
         };
         let names = match &data {
             Some(d) => format!("{names} {}", d.names),
@@ -361,16 +358,16 @@ pub fn prepare(
 /// small square at its id's place) stored under `root`, its index named in `manifest` (which the
 /// caller then writes as the records).
 pub fn accept_fixture(
-    root: &Path,
-    dir: &Path,
+    root: &store::nasfs::NasRoot,
+    dir: store::nasfs::Loc<'_>,
     recipes: &[crate::agent::recipes::Recipe],
     manifest: &mut BTreeMap<String, String>,
 ) -> String {
     use crate::inputs::{FileEntry, Index};
     let mut index = Index { fmt: 1, unit: UNIT.into(), checks: format!("{UNIT} 1"), ..Default::default() };
     let put = |name: &str, b: &[u8]| {
-        std::fs::create_dir_all(root.join(name).parent().unwrap()).unwrap();
-        std::fs::write(root.join(name), b).unwrap();
+        root.join(name).parent().unwrap().create_dir_all().unwrap();
+        root.join(name).write(b).unwrap();
     };
     for r in recipes {
         let mut shapes = Vec::new();
@@ -391,7 +388,7 @@ pub fn accept_fixture(
                         vec![crate::coverage::fixture_circle(n[0], n[1], n[2])]
                     }
                     None => crate::coverage::read_poly(
-                        &std::fs::read_to_string(dir.join(entry.trim_start_matches("poly:"))).unwrap(),
+                        &dir.join(entry.trim_start_matches("poly:")).loc().read_to_string().unwrap(),
                     )
                     .unwrap(),
                 },

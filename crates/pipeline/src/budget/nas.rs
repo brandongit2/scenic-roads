@@ -72,8 +72,8 @@ pub struct Target {
 }
 
 /// The target as set under the project folder `root` (None: none set, or unreadable: the default).
-pub fn read_target(root: &Path) -> Option<Target> {
-    let t: Target = serde_json::from_slice(&std::fs::read(root.join(TARGET_FILE)).ok()?).ok()?;
+pub fn read_target(root: &store::nasfs::NasRoot) -> Option<Target> {
+    let t: Target = serde_json::from_slice(&root.join(TARGET_FILE).read().ok()?).ok()?;
     TARGET_RANGE.contains(&t.pct).then_some(t)
 }
 
@@ -83,10 +83,10 @@ pub fn target_pct(t: Option<&Target>) -> u32 {
 }
 
 /// Sets the target under `root` (None: cleared, the default again).
-pub fn set_target(root: &Path, pct: Option<u32>, by: &str) -> anyhow::Result<Option<Target>> {
+pub fn set_target(root: &store::nasfs::NasRoot, pct: Option<u32>, by: &str) -> anyhow::Result<Option<Target>> {
     let p = root.join(TARGET_FILE);
     let Some(pct) = pct else {
-        match std::fs::remove_file(&p) {
+        match p.remove_file() {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
             _ => return Ok(None),
         }
@@ -99,7 +99,7 @@ pub fn set_target(root: &Path, pct: Option<u32>, by: &str) -> anyhow::Result<Opt
     );
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let t = Target { pct, by: by.to_string(), at: now };
-    crate::whole::write(&p, &serde_json::to_vec(&t)?)?;
+    p.write_whole(serde_json::to_vec(&t)?)?;
     Ok(Some(t))
 }
 
@@ -180,8 +180,8 @@ pub struct Switch {
 
 /// The switch at `root` (None in it: off; missing, on with no download cap); None when it can't
 /// be read now.
-pub fn read_switch(root: &Path) -> Option<Option<Switch>> {
-    match std::fs::read_to_string(root.join(SWITCH)) {
+pub fn read_switch(root: &store::nasfs::NasRoot) -> Option<Option<Switch>> {
+    match root.join(SWITCH).read_to_string() {
         Ok(s) => Some(parse(&s)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(Some(Switch::default())),
         Err(_) => None,
@@ -347,8 +347,8 @@ impl Probes {
     /// The probes kept at `path` within `KEEP_S` of `now` (unix s): none when missing or not
     /// parsed; an error when it can't be read now (a stale SMB handle, busy: try again later, and
     /// never save over what may be there).
-    pub fn load(path: &Path, now: u64) -> std::io::Result<Probes> {
-        let mut p: Probes = match std::fs::read(path) {
+    pub fn load(path: &store::nasfs::NasPath, now: u64) -> std::io::Result<Probes> {
+        let mut p: Probes = match path.read() {
             Ok(b) => serde_json::from_slice(&b).unwrap_or_default(),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Probes::default(),
             Err(e) => return Err(e),
@@ -358,8 +358,8 @@ impl Probes {
     }
 
     /// Keeps the probes at `path`, whole or not at all.
-    pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        crate::whole::write(path, &serde_json::to_vec(self)?)
+    pub fn save(&self, path: &store::nasfs::NasPath) -> anyhow::Result<()> {
+        path.write_whole(serde_json::to_vec(self)?)
     }
 
     /// The limits (None: nothing probed yet).
@@ -383,23 +383,24 @@ fn host_part(me: &str) -> String {
 
 /// A folder of a probe's own under `root` (`PROBE_DIR`), by `me` and this process:
 /// `<me>-<pid>` (`me` with no `-` in it, so one host's folders are told from another's).
-pub fn probe_dir(root: &Path, me: &str) -> PathBuf {
-    root.join(PROBE_DIR).join(format!("{}-{}", host_part(me), std::process::id()))
+pub fn probe_dir(root: &store::nasfs::NasRoot, me: &str) -> PathBuf {
+    // (Raw: the probe measures the share's own speed, its calls never counted as the build's NAS
+    // work: tests/nas_access.rs.)
+    root.join(PROBE_DIR).join(format!("{}-{}", host_part(me), std::process::id())).unchecked_path()
 }
 
 /// Removes `me`'s probe folders under `root` a stopped process left (a crash mid-probe): every
 /// `<me>-<pid>` but this process's; other hosts' left alone. How many were removed.
-pub fn clean_stale(root: &Path, me: &str) -> usize {
-    let mine = probe_dir(root, me);
+pub fn clean_stale(root: &store::nasfs::NasRoot, me: &str) -> usize {
+    let mine = format!("{}-{}", host_part(me), std::process::id());
     let prefix = format!("{}-", host_part(me));
-    let Ok(rd) = std::fs::read_dir(root.join(PROBE_DIR)) else { return 0 };
+    let Ok(rd) = root.join(PROBE_DIR).read_dir() else { return 0 };
     let mut n = 0;
-    for e in rd.flatten() {
-        let name = e.file_name().to_string_lossy().into_owned();
-        let pid = name.strip_prefix(&prefix);
+    for e in rd {
+        let pid = e.name.strip_prefix(&prefix);
         if pid.is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
-            && e.path() != mine
-            && std::fs::remove_dir_all(e.path()).is_ok()
+            && e.name != mine
+            && e.path.remove_dir_all().is_ok()
         {
             n += 1;
         }
@@ -661,14 +662,21 @@ mod tests {
     fn the_target_is_set_read_and_cleared() {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(d.path().join("state/pool")).unwrap();
-        assert_eq!(target_pct(read_target(d.path()).as_ref()), DEFAULT_TARGET_PCT);
-        assert!(set_target(d.path(), Some(100), "t").is_err(), "never 100 %");
-        let t = set_target(d.path(), Some(70), "t").unwrap();
-        assert_eq!(read_target(d.path()), t);
+        assert_eq!(
+            target_pct(read_target(&store::nasfs::NasRoot::local_for_test(d.path())).as_ref()),
+            DEFAULT_TARGET_PCT
+        );
+        assert!(set_target(&store::nasfs::NasRoot::local_for_test(d.path()), Some(100), "t").is_err(), "never 100 %");
+        let t = set_target(&store::nasfs::NasRoot::local_for_test(d.path()), Some(70), "t").unwrap();
+        assert_eq!(read_target(&store::nasfs::NasRoot::local_for_test(d.path())), t);
         assert_eq!(target_pct(t.as_ref()), 70);
-        assert_eq!(set_target(d.path(), None, "t").unwrap(), None);
-        assert_eq!(read_target(d.path()), None);
-        assert_eq!(set_target(d.path(), None, "t").unwrap(), None, "cleared twice: fine");
+        assert_eq!(set_target(&store::nasfs::NasRoot::local_for_test(d.path()), None, "t").unwrap(), None);
+        assert_eq!(read_target(&store::nasfs::NasRoot::local_for_test(d.path())), None);
+        assert_eq!(
+            set_target(&store::nasfs::NasRoot::local_for_test(d.path()), None, "t").unwrap(),
+            None,
+            "cleared twice: fine"
+        );
     }
 
     /// The limits are the best of the last day's probes.
@@ -692,28 +700,44 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(d.path().join("state/pool")).unwrap();
         let f = d.path().join(PROBES_FILE);
-        assert_eq!(Probes::load(&f, 5000).unwrap(), Probes::default(), "none kept: none");
+        assert_eq!(
+            Probes::load(&store::nasfs::NasPath::local_for_test(&f), 5000).unwrap(),
+            Probes::default(),
+            "none kept: none"
+        );
         let mut p = Probes::default();
         p.add(Probe { at: 1000, bytes_s: 86e6, creates_s: 30.0, ..Default::default() });
         p.add(Probe { at: 4000, bytes_s: 66.5e6, creates_s: 42.3, ..Default::default() });
-        p.save(&f).unwrap();
-        assert_eq!(Probes::load(&f, 5000).unwrap(), p);
-        assert_eq!(Probes::load(&f, 5000).unwrap().limits(None).unwrap().bytes_s, 86e6, "the day's best kept");
-        assert_eq!(Probes::load(&f, 1000 + KEEP_S).unwrap().0, [p.0[1]], "a day old: let go");
+        p.save(&store::nasfs::NasPath::local_for_test(&f)).unwrap();
+        assert_eq!(Probes::load(&store::nasfs::NasPath::local_for_test(&f), 5000).unwrap(), p);
+        assert_eq!(
+            Probes::load(&store::nasfs::NasPath::local_for_test(&f), 5000).unwrap().limits(None).unwrap().bytes_s,
+            86e6,
+            "the day's best kept"
+        );
+        assert_eq!(
+            Probes::load(&store::nasfs::NasPath::local_for_test(&f), 1000 + KEEP_S).unwrap().0,
+            [p.0[1]],
+            "a day old: let go"
+        );
         std::fs::write(&f, "not json").unwrap();
-        assert_eq!(Probes::load(&f, 5000).unwrap(), Probes::default(), "not parsed: none");
+        assert_eq!(
+            Probes::load(&store::nasfs::NasPath::local_for_test(&f), 5000).unwrap(),
+            Probes::default(),
+            "not parsed: none"
+        );
         // (Task #603 review: a read that fails otherwise (here a folder in its place) is an error,
         // not "none": the prober tries again and saves nothing until a load succeeds.)
         std::fs::remove_file(&f).unwrap();
         std::fs::create_dir(&f).unwrap();
-        assert!(Probes::load(&f, 5000).is_err(), "can't be read now: an error");
+        assert!(Probes::load(&store::nasfs::NasPath::local_for_test(&f), 5000).is_err(), "can't be read now: an error");
     }
 
     /// A probe measures and leaves nothing behind.
     #[test]
     fn a_probe_measures_and_removes_its_files() {
         let d = tempfile::tempdir().unwrap();
-        let dir = probe_dir(d.path(), "m1.local");
+        let dir = probe_dir(&store::nasfs::NasRoot::local_for_test(d.path()), "m1.local");
         let p = probe(&dir).unwrap();
         assert!(p.bytes_s > 0.0 && p.creates_s > 0.0, "{p:?}");
         assert!(!dir.exists());
@@ -731,7 +755,7 @@ mod tests {
         let p = probe(&dir).unwrap();
         assert!(p.listed_s > 0.0 && p.stats_s > 0.0, "{p:?}");
         assert!(!dir.exists() && m.exists());
-        let probe_m = probe_dir(d.path(), "m1.local");
+        let probe_m = probe_dir(&store::nasfs::NasRoot::local_for_test(d.path()), "m1.local");
         assert_eq!(meta_dir(&probe_m).file_name().unwrap(), "m1_local-meta");
     }
 
@@ -744,9 +768,9 @@ mod tests {
             std::fs::create_dir_all(base.join(f)).unwrap();
             std::fs::write(base.join(f).join("s0"), b"x").unwrap();
         }
-        let own = probe_dir(d.path(), "m4.local");
+        let own = probe_dir(&store::nasfs::NasRoot::local_for_test(d.path()), "m4.local");
         std::fs::create_dir_all(&own).unwrap();
-        assert_eq!(clean_stale(d.path(), "m4.local"), 2);
+        assert_eq!(clean_stale(&store::nasfs::NasRoot::local_for_test(d.path()), "m4.local"), 2);
         assert!(own.exists() && base.join("m1_local-3").exists() && base.join("m4_local-x").exists());
         assert!(!base.join("m4_local-1").exists() && !base.join("m4_local-22").exists());
     }

@@ -4,7 +4,6 @@
 //! `FloorCache`, hands over).
 
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -33,7 +32,7 @@ pub struct BatteryFloor {
 /// The battery floor as set under the project folder `root`: None when none is (one that doesn't
 /// parse, or past 100, is none); an error when the NAS didn't answer (crate::agent::nasread's
 /// deadline).
-pub fn read_battery_floor(root: &Path) -> std::io::Result<Option<BatteryFloor>> {
+pub fn read_battery_floor(root: &store::nasfs::NasRoot) -> std::io::Result<Option<BatteryFloor>> {
     match super::nasread::read(&root.join(BATTERY_FLOOR)) {
         Ok(b) => Ok(serde_json::from_slice::<BatteryFloor>(&b).ok().filter(|f| f.pct <= 100)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -42,7 +41,7 @@ pub fn read_battery_floor(root: &Path) -> std::io::Result<Option<BatteryFloor>> 
 }
 
 /// The battery floor as set under `root`, when one is and the NAS answers.
-pub fn battery_floor(root: &Path) -> Option<BatteryFloor> {
+pub fn battery_floor(root: &store::nasfs::NasRoot) -> Option<BatteryFloor> {
     read_battery_floor(root).ok().flatten()
 }
 
@@ -75,13 +74,13 @@ impl Default for FloorCache {
 
 impl FloorCache {
     /// The floor last read (%), and under `root`, a read begun when one is due.
-    pub fn get(&self, root: Option<&Path>) -> u8 {
+    pub fn get(&self, root: Option<&store::nasfs::NasRoot>) -> u8 {
         if let Some(r) = root {
             let mut asked = self.asked.lock().unwrap_or_else(|e| e.into_inner());
             let first = asked.is_none();
             if asked.is_none_or(|t| t.elapsed() >= FLOOR_EVERY) && !self.reading.swap(true, Ordering::AcqRel) {
                 *asked = Some(Instant::now());
-                let (r, pct, reading) = (r.to_path_buf(), self.pct.clone(), self.reading.clone());
+                let (r, pct, reading) = (r.clone(), self.pct.clone(), self.reading.clone());
                 std::thread::spawn(move || {
                     if let Ok(f) = read_battery_floor(&r) {
                         pct.store(f.map_or(DEFAULT_BATTERY_MIN, |f| f.pct), Ordering::Relaxed);
@@ -101,20 +100,24 @@ impl FloorCache {
 }
 
 /// Sets the battery floor under `root` to `pct` (0 to 100), or clears it (None: the default).
-pub fn set_battery_floor(root: &Path, pct: Option<u8>, by: &str) -> anyhow::Result<Option<BatteryFloor>> {
+pub fn set_battery_floor(
+    root: &store::nasfs::NasRoot,
+    pct: Option<u8>,
+    by: &str,
+) -> anyhow::Result<Option<BatteryFloor>> {
     let p = root.join(BATTERY_FLOOR);
     let Some(pct) = pct else {
-        match std::fs::remove_file(&p) {
+        match p.remove_file() {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
             _ => return Ok(None),
         }
     };
     anyhow::ensure!(pct <= 100, "the battery floor: 0 to 100 %, not {pct}");
     if let Some(d) = p.parent() {
-        std::fs::create_dir_all(d)?;
+        d.create_dir_all()?;
     }
     let f = BatteryFloor { pct, by: by.to_string(), at: super::jobs::now_s() };
-    crate::whole::write(&p, &serde_json::to_vec(&f)?)?;
+    p.write_whole(serde_json::to_vec(&f)?)?;
     Ok(Some(f))
 }
 
@@ -205,7 +208,7 @@ impl Mac {
     pub fn resources(
         &self,
         home: &std::path::Path,
-        root: Option<&std::path::Path>,
+        root: Option<&store::nasfs::NasRoot>,
         cache_gb: Option<f64>,
         nas_ms: Option<u64>,
     ) -> Resources {
@@ -385,7 +388,7 @@ pub fn load1() -> Option<f64> {
 /// caches' and the NAS's answer as the agent last measured them.
 pub fn resources(
     home: &std::path::Path,
-    root: Option<&std::path::Path>,
+    root: Option<&store::nasfs::NasRoot>,
     cache_gb: Option<f64>,
     nas_ms: Option<u64>,
 ) -> Resources {
@@ -421,7 +424,10 @@ pub fn resources(
         disk_free_gb: free_bytes(home).map(gb),
         cache_gb,
         nas_ms,
-        nas_free_tb: root.and_then(free_bytes).map(|b| (b as f64 / (1u64 << 40) as f64 * 100.0).round() / 100.0),
+        // (The share's free space by its mount's statfs: tests/nas_access.rs.)
+        nas_free_tb: root
+            .and_then(|r| free_bytes(&r.unchecked_path()))
+            .map(|b| (b as f64 / (1u64 << 40) as f64 * 100.0).round() / 100.0),
         chip,
     }
 }
@@ -431,21 +437,6 @@ pub fn chip_short(brand: &str) -> Option<String> {
     let b = brand.trim();
     let b = b.strip_prefix("Apple ").unwrap_or(b).trim();
     (!b.is_empty()).then(|| b.to_string())
-}
-
-/// This Mac's name, read once per process (temporary files' names: crate::whole).
-pub fn host() -> &'static str {
-    static HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    HOST.get_or_init(host_name)
-}
-
-/// This Mac's name (for the heartbeat).
-pub fn host_name() -> String {
-    store::spawn::output(store::spawn::command("/usr/sbin/scutil").args(["--get", "LocalHostName"]))
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "unknown".into())
 }
 
 #[cfg(test)]
@@ -462,23 +453,23 @@ mod tests {
         let c = FloorCache::default();
         assert_eq!(c.get(None), DEFAULT_BATTERY_MIN, "no NAS: the default, no read");
         assert!(c.asked.lock().unwrap().is_none());
-        set_battery_floor(d.path(), Some(12), "t").unwrap();
-        c.get(Some(d.path()));
+        set_battery_floor(&store::nasfs::NasRoot::local_for_test(d.path()), Some(12), "t").unwrap();
+        c.get(Some(&store::nasfs::NasRoot::local_for_test(d.path())));
         wait(&c, 12);
         // (Not due again within a minute: a change waits for the next read.)
-        set_battery_floor(d.path(), Some(0), "t").unwrap();
-        assert_eq!(c.get(Some(d.path())), 12);
+        set_battery_floor(&store::nasfs::NasRoot::local_for_test(d.path()), Some(0), "t").unwrap();
+        assert_eq!(c.get(Some(&store::nasfs::NasRoot::local_for_test(d.path()))), 12);
         // (A read that fails, here a folder where the file goes: the last floor stands.)
-        set_battery_floor(d.path(), None, "t").unwrap();
+        set_battery_floor(&store::nasfs::NasRoot::local_for_test(d.path()), None, "t").unwrap();
         std::fs::create_dir(d.path().join(BATTERY_FLOOR)).unwrap();
         *c.asked.lock().unwrap() = None;
-        c.get(Some(d.path()));
+        c.get(Some(&store::nasfs::NasRoot::local_for_test(d.path())));
         wait(&c, 12);
-        assert_eq!(c.get(Some(d.path())), 12);
+        assert_eq!(c.get(Some(&store::nasfs::NasRoot::local_for_test(d.path()))), 12);
         // (None set: the default.)
         std::fs::remove_dir(d.path().join(BATTERY_FLOOR)).unwrap();
         *c.asked.lock().unwrap() = None;
-        c.get(Some(d.path()));
+        c.get(Some(&store::nasfs::NasRoot::local_for_test(d.path())));
         wait(&c, DEFAULT_BATTERY_MIN);
     }
 

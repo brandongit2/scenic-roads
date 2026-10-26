@@ -101,7 +101,7 @@ pub fn written_in(dir: &Path) -> Result<Option<Vec<Handoff>>> {
         .into_iter()
         .filter(|p| {
             p.extension().is_some_and(|x| x == "json")
-                && !crate::whole::is_tmp(p)
+                && !store::whole::is_tmp(p)
                 && p.file_name().is_some_and(|n| stamp(&n.to_string_lossy()).is_some())
         })
         .collect();
@@ -130,7 +130,7 @@ pub fn write(dir: &Path, h: &Handoff) -> Result<()> {
     let names: Vec<u128> = listing(dir)?.iter().filter_map(|p| stamp(&p.file_name()?.to_string_lossy())).collect();
     let seen = names.into_iter().chain(merged(dir)?.as_deref().and_then(stamp)).max();
     let t = seen.map_or(now, |s| now.max(s + 1));
-    crate::whole::write(&dir.join(format!("{t:020}-{}.json", std::process::id())), &serde_json::to_vec(h)?)
+    store::whole::write(&dir.join(format!("{t:020}-{}.json", std::process::id())), &serde_json::to_vec(h)?)
 }
 
 /// Every hand-off waiting under `base` (the coordinator's journal of hand-offs received over HTTP,
@@ -145,7 +145,7 @@ pub fn waiting_in(base: &Path) -> Result<Vec<(PathBuf, Handoff)>> {
     for h in hosts {
         let mut files: Vec<PathBuf> = listing(&h)?
             .into_iter()
-            .filter(|p| p.extension().is_some_and(|x| x == "json") && !crate::whole::is_tmp(p))
+            .filter(|p| p.extension().is_some_and(|x| x == "json") && !store::whole::is_tmp(p))
             .collect();
         let done = merged(&h)?;
         files.retain(|p| {
@@ -199,7 +199,7 @@ mod tests {
         // Marked drained up to the last: none waits; a hand-off left behind isn't drained again; a
         // new one is named after it, whatever the clock; a damaged one is set aside.
         let last = w[2].0.file_name().unwrap().to_string_lossy().into_owned();
-        crate::whole::write(&m1.with_extension("merged"), last.as_bytes()).unwrap();
+        store::whole::write(&m1.with_extension("merged"), last.as_bytes()).unwrap();
         assert!(waiting_in(&base).unwrap().is_empty());
         let damaged = format!("{:020}-9.json", stamp(&last).unwrap() + 5);
         std::fs::write(m1.join(&damaged), b"{damaged").unwrap();

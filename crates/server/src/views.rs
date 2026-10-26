@@ -14,7 +14,6 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::ops::Range;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -72,7 +71,7 @@ impl store::range::RangeRead for MapRange {
 /// its own pool operation, so a big read on a busy NAS doesn't overrun the pool's timeout (which
 /// would mark the NAS offline).
 pub struct RemoteFile {
-    pub path: PathBuf,
+    pub path: store::nasfs::NasPath,
     pub pool: Arc<store::iopool::IoPool>,
     /// Unique per instance: its pages' key in `pages`.
     pub id: u64,
@@ -84,7 +83,7 @@ const PIECE: usize = 1 << 20;
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 impl RemoteFile {
-    pub fn new(path: PathBuf, pool: Arc<store::iopool::IoPool>) -> RemoteFile {
+    pub fn new(path: store::nasfs::NasPath, pool: Arc<store::iopool::IoPool>) -> RemoteFile {
         RemoteFile { path, pool, id: NEXT_ID.fetch_add(1, Ordering::Relaxed), file: Mutex::new(None) }
     }
 

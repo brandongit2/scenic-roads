@@ -5,14 +5,13 @@
 
 use super::{Ask, Contact, Done, Fail, Grant};
 use anyhow::{bail, Context, Result};
-use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
 #[derive(Debug)]
 pub struct Client {
     /// Where the contact is read from again (None: fixed addresses, in tests).
-    root: Option<PathBuf>,
+    root: Option<store::nasfs::NasRoot>,
     contact: Mutex<Contact>,
     /// This worker's name.
     pub worker: String,
@@ -246,10 +245,10 @@ pub enum Handed {
 impl Client {
     /// The coordinator as the NAS says to reach it; None when there's none (no file), an error when
     /// the file can't be read now (an SMB hiccup: not the same as none).
-    pub fn from_nas(root: &Path, worker: &str) -> Result<Option<Client>> {
+    pub fn from_nas(root: &store::nasfs::NasRoot, worker: &str) -> Result<Option<Client>> {
         let Some(c) = read_contact(root)? else { return Ok(None) };
         Ok(Some(Client {
-            root: Some(root.to_path_buf()),
+            root: Some(root.clone()),
             contact: Mutex::new(c),
             worker: worker.to_string(),
             answered: Mutex::new(None),
@@ -670,8 +669,8 @@ impl Client {
 }
 
 /// The contact on the NAS: None when there's no file, an error when it can't be read now.
-fn read_contact(root: &Path) -> Result<Option<Contact>> {
-    match std::fs::read(super::contact_path(root)) {
+fn read_contact(root: &store::nasfs::NasRoot) -> Result<Option<Contact>> {
+    match super::contact_path(root).read() {
         Ok(b) => Ok(Some(serde_json::from_slice(&b).context("the coordinator's contact")?)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e).context("read the coordinator's contact"),

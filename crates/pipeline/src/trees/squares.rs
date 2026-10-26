@@ -186,7 +186,7 @@ fn fetch_once(store: &Path, kept: &Path, url: Option<&str>, coming: &dyn Fn(f64)
         match std::fs::OpenOptions::new().write(true).create_new(true).open(&lock) {
             Ok(mut f) => {
                 use std::io::Write;
-                f.write_all(format!("{} {}", crate::agent::cond::host(), std::process::id()).as_bytes()).ok();
+                f.write_all(format!("{} {}", store::sys::host(), std::process::id()).as_bytes()).ok();
                 drop(f);
                 let r = download(url, kept, coming);
                 std::fs::remove_file(&lock).ok();
@@ -240,7 +240,7 @@ fn download(url: Option<&str>, path: &Path, coming: &dyn Fn(f64)) -> Result<()> 
         .http_status_as_error(false)
         .build()
         .into();
-    let tmp = crate::whole::tmp_name(path);
+    let tmp = store::whole::tmp_name(path);
     let mut missing = 0;
     let mut last = String::new();
     for attempt in 0..6u32 {

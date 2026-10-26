@@ -89,9 +89,9 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+use store::nasfs::NasPath;
 
 /// What's freed past a job's `need` once the disk is short of it: a sixth more (5 GB past a
 /// 30 GB need), so the jobs after it start without deleting again. (Not for the OSM pass, whose
@@ -119,7 +119,7 @@ pub const MONTHS: &str = "items/months";
 /// Bytes the cheap caches hold (what `make_room` can free on the lead: a member's,
 /// `helper_cheap_bytes`): of the pageview months, the indexes the NAS's `sources` has at their size
 /// (`months_bytes`), none without it.
-pub fn cheap_bytes(cache: &Path, sources: Option<&Path>) -> u64 {
+pub fn cheap_bytes(cache: &Path, sources: Option<&NasPath>) -> u64 {
     let mut files = Vec::new();
     for (d, _) in CHEAP.iter().filter(|(d, _)| *d != MONTHS) {
         walk_cheap(cache, d, None, &mut files);
@@ -130,12 +130,12 @@ pub fn cheap_bytes(cache: &Path, sources: Option<&Path>) -> u64 {
 /// The bytes of the pageview months here that room-making or a clear can free: the indexes the NAS's
 /// `sources` has at their size (one it lacks stays, for crate::pageviews to put there) and every
 /// other file there (`fate`). Nothing in the NAS's project folder (`ours`).
-fn months_bytes(cache: &Path, sources: &Path) -> u64 {
+fn months_bytes(cache: &Path, sources: &NasPath) -> u64 {
     let mut files = Vec::new();
-    walk_cheap(cache, MONTHS, sources.parent(), &mut files);
+    walk_cheap(cache, MONTHS, Some(sources.root()), &mut files);
     let there = |p: &Path, len: u64| {
         p.file_name().is_some_and(|n| {
-            std::fs::metadata(sources.join("pageviews").join(n)).is_ok_and(|m| m.is_file() && m.len() == len)
+            sources.join("pageviews").join(n.to_string_lossy()).metadata().is_ok_and(|m| m.is_file() && m.len() == len)
         })
     };
     let index = |p: &Path| p.to_string_lossy().ends_with(".tsv.zst");
@@ -157,12 +157,13 @@ pub fn helper_cheap_bytes(cache: &Path) -> u64 {
 /// Whether `p`, in the agent's cache, is this Mac's own to count and delete from: not a link (a
 /// cache folder linked to the NAS's own store would have the NAS's files deleted through it), nor,
 /// by its real path, in the NAS's project folder `root` (None: unknown, the link alone tells).
-fn ours(p: &Path, root: Option<&Path>) -> bool {
+fn ours(p: &Path, root: Option<&store::nasfs::NasRoot>) -> bool {
     if !std::fs::symlink_metadata(p).is_ok_and(|m| !m.file_type().is_symlink()) {
         return false;
     }
     let Some(root) = root else { return true };
-    match (p.canonicalize(), root.canonicalize()) {
+    // (By real paths, a local file's against the root's: tests/nas_access.rs.)
+    match (p.canonicalize(), root.unchecked_path().canonicalize()) {
         (Ok(p), Ok(r)) => !p.starts_with(r),
         // (No NAS folder there at all: nothing is in it.)
         (Ok(_), Err(e)) if e.kind() == std::io::ErrorKind::NotFound => true,
@@ -172,7 +173,7 @@ fn ours(p: &Path, root: Option<&Path>) -> bool {
 
 /// Walks cheap cache folder `d` of `cache` (`chm10`, `aws-terrarium/packs` …) into `out`, when it
 /// and each folder above it in the cache are this Mac's own (`ours`).
-fn walk_cheap(cache: &Path, d: &str, root: Option<&Path>, out: &mut Vec<(SystemTime, u64, PathBuf)>) {
+fn walk_cheap(cache: &Path, d: &str, root: Option<&store::nasfs::NasRoot>, out: &mut Vec<(SystemTime, u64, PathBuf)>) {
     let mut p = cache.to_path_buf();
     for part in d.split('/') {
         p.push(part);
@@ -223,12 +224,12 @@ const COPY_GRACE: std::time::Duration = std::time::Duration::from_secs(86400);
 /// non-empty manifest, only the retired caches. Nothing a job holds
 /// (store::cachefile), nothing through a link nor in the NAS's folder (`ours`). What it freed, by
 /// kind ("retired", "copies").
-pub fn retire(cache: &Path, root: Option<&Path>) -> BTreeMap<String, u64> {
+pub fn retire(cache: &Path, root: Option<&store::nasfs::NasRoot>) -> BTreeMap<String, u64> {
     let mut freed: BTreeMap<String, u64> = BTreeMap::new();
     // (Read as Out reads it, whole across the NAS's renames; an empty one is taken as unreadable.)
     let named: Option<HashSet<String>> = root.and_then(|r| {
         let m: BTreeMap<String, String> =
-            serde_json::from_slice(&crate::whole::read_replaced(&r.join("state/build/manifest.json")).ok()?).ok()?;
+            serde_json::from_slice(&r.join("state/build/manifest.json").read_replaced().ok()?).ok()?;
         (!m.is_empty()).then(|| m.keys().map(|l| l.replace('/', "-")).collect())
     });
     // (The manifest keeps naming the z8 terrain's older versions, which no code reads: those copies
@@ -435,7 +436,7 @@ pub const CLEAR_TAKEN: &str = "clear-request.json.taken";
 pub fn request_clear(home: &Path, by: &str) -> Result<ClearRequest> {
     std::fs::create_dir_all(home)?;
     let r = ClearRequest { by: by.to_string(), at: super::jobs::now_s() };
-    crate::whole::write(&home.join(CLEAR_REQUEST), &serde_json::to_vec(&r)?)?;
+    store::whole::write(&home.join(CLEAR_REQUEST), &serde_json::to_vec(&r)?)?;
     Ok(r)
 }
 
@@ -462,12 +463,12 @@ pub fn clear_answered(home: &Path) {
 /// Clears this Mac's build caches at `cache` on the owner's ask (the module's doc, On the owner's
 /// ask): the cheap caches as room-making empties them, the canopy squares too, then the others whole
 /// (nothing through a link, nor in the NAS's folder: `ours`). What it freed, and what stays of them.
-pub fn clear(cache: &Path, sources: &Path) -> Result<Freed> {
+pub fn clear(cache: &Path, sources: &NasPath) -> Result<Freed> {
     if !cache.is_dir() {
         return Ok(Freed::default());
     }
     let mut freed = free_cheap(cache, sources, u64::MAX, u64::MAX, &disk_free, &|_| false, None)?;
-    let mut left = cheap_left(cache, sources.parent());
+    let mut left = cheap_left(cache, Some(sources.root()));
     let mut others: Vec<(PathBuf, &str)> = std::fs::read_dir(cache)
         .into_iter()
         .flatten()
@@ -479,11 +480,11 @@ pub fn clear(cache: &Path, sources: &Path) -> Result<Freed> {
         if super::stopping() {
             break;
         }
-        if !ours(&p, sources.parent()) {
+        if !ours(&p, Some(sources.root())) {
             continue;
         }
         let bytes = bytes_under(&p);
-        if k == "heritage" && !heritage_remade(sources.parent(), &p) {
+        if k == "heritage" && !heritage_remade(Some(sources.root()), &p) {
             left += bytes;
             continue;
         }
@@ -530,7 +531,7 @@ fn write_target(p: &Path, bytes: Option<u64>, by: &str) -> Result<Option<Target>
         std::fs::create_dir_all(d)?;
     }
     let t = Target { bytes, by: by.to_string(), at: super::jobs::now_s() };
-    crate::whole::write(p, &serde_json::to_vec(&t)?)?;
+    store::whole::write(p, &serde_json::to_vec(&t)?)?;
     Ok(Some(t))
 }
 
@@ -542,9 +543,13 @@ pub fn target(home: &Path) -> Option<Target> {
 
 /// A target's file at `p` (none: missing, unreadable, or 0 bytes; at most `MAX_TARGET`).
 fn read_target(p: &Path) -> Option<Target> {
-    std::fs::read(p)
+    parse_target(&std::fs::read(p).ok()?)
+}
+
+/// A target's file's bytes (none: unreadable, or 0 bytes; at most `MAX_TARGET`).
+fn parse_target(b: &[u8]) -> Option<Target> {
+    serde_json::from_slice::<Target>(b)
         .ok()
-        .and_then(|b| serde_json::from_slice::<Target>(&b).ok())
         .filter(|t| t.bytes > 0)
         .map(|t| Target { bytes: t.bytes.min(MAX_TARGET), ..t })
 }
@@ -555,18 +560,37 @@ fn read_target(p: &Path) -> Option<Target> {
 pub const NAS_RESERVE: &str = "state/pool/nas-room.json";
 
 /// Sets the NAS reserve under the project folder `root` to `bytes`, or clears it (None).
-pub fn set_nas_reserve(root: &Path, bytes: Option<u64>, by: &str) -> Result<Option<Target>> {
-    write_target(&root.join(NAS_RESERVE), bytes, by)
+pub fn set_nas_reserve(root: &store::nasfs::NasRoot, bytes: Option<u64>, by: &str) -> Result<Option<Target>> {
+    let p = root.join(NAS_RESERVE);
+    let Some(bytes) = bytes else {
+        match p.remove_file() {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        return Ok(None);
+    };
+    if let Some(d) = p.parent() {
+        d.create_dir_all()?;
+    }
+    let t = Target { bytes, by: by.to_string(), at: super::jobs::now_s() };
+    p.write_whole(serde_json::to_vec(&t)?)?;
+    Ok(Some(t))
 }
 
 /// The NAS reserve as set under `root`, when one is.
-pub fn nas_reserve(root: &Path) -> Option<Target> {
-    read_target(&root.join(NAS_RESERVE))
+pub fn nas_reserve(root: &store::nasfs::NasRoot) -> Option<Target> {
+    parse_target(&root.join(NAS_RESERVE).read().ok()?)
 }
 
 /// The NAS's free space a step may fill (bytes): what's free under `root` less the reserve.
-pub fn nas_room(root: &Path) -> std::io::Result<u64> {
-    Ok(free_past_of(disk_free(root)?, nas_reserve(root).map_or(0, |t| t.bytes)))
+pub fn nas_room(root: &store::nasfs::NasRoot) -> std::io::Result<u64> {
+    Ok(free_past_of(nas_free(root)?, nas_reserve(root).map_or(0, |t| t.bytes)))
+}
+
+/// The NAS's free space: its mount's statfs (tests/nas_access.rs).
+pub fn nas_free(root: &store::nasfs::NasRoot) -> std::io::Result<u64> {
+    disk_free(&root.unchecked_path())
 }
 
 /// The variable a job is told the owner's room target in (MB; the agent sets it on every job it
@@ -629,14 +653,16 @@ const TOWARD_ORDER: [&str; 4] = ["retired", "copies", "base", "heritage"];
 /// can be made again: the NAS's build manifest (under `root`) names the pass's filtered planet of
 /// its date (`sources/osm/<date>/filtered`, what scenic-build's merged_over_cover clips), and it's
 /// there. A temporary one is no use either way.
-fn heritage_remade(root: Option<&Path>, p: &Path) -> bool {
+fn heritage_remade(root: Option<&store::nasfs::NasRoot>, p: &Path) -> bool {
     let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     if name.contains(".tmp") {
         return true;
     }
     let Some(date) = name.strip_prefix("heritage-merged-").and_then(|r| r.get(..10)) else { return false };
     let Some(root) = root else { return false };
-    let m: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json"))
+    let m: BTreeMap<String, String> = root
+        .join("state/build/manifest.json")
+        .read()
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
@@ -654,7 +680,7 @@ fn heritage_remade(root: Option<&Path>, p: &Path) -> bool {
 /// last (`hint`). What it freed, and when it falls short, what stays of what it may free.
 pub fn toward(
     cache: &Path,
-    sources: &Path,
+    sources: &NasPath,
     goal: std::sync::Arc<std::sync::atomic::AtomicU64>,
     hint: &Hints,
 ) -> Result<Freed> {
@@ -665,7 +691,7 @@ pub fn toward(
 
 fn toward_with(
     cache: &Path,
-    sources: &Path,
+    sources: &NasPath,
     goal: &dyn Fn() -> u64,
     free_space: &dyn Fn(&Path) -> std::io::Result<u64>,
     hint: &dyn Fn(&Path) -> bool,
@@ -675,7 +701,7 @@ fn toward_with(
         return Ok(Freed::default());
     }
     let mut freed = free_cheap(cache, sources, first, first, free_space, hint, Some(goal))?;
-    let root = sources.parent();
+    let root = Some(sources.root());
     let enough = || free_space(cache).map(|f| f >= goal());
     let mut left = 0;
     let mut short = !enough()?;
@@ -838,7 +864,7 @@ pub struct Sizes {
 /// helper's, `helper_cheap_bytes`, its loose raw tiles left out; the pageview months the NAS has, only
 /// when `root` is given), and what a clear would, by cache (those, and the others). Nothing through a link, nor in
 /// the NAS's project folder `root` (`ours`).
-pub fn sizes(cache: &Path, helper: bool, root: Option<&Path>) -> Sizes {
+pub fn sizes(cache: &Path, helper: bool, root: Option<&store::nasfs::NasRoot>) -> Sizes {
     let mut clear: BTreeMap<String, u64> = BTreeMap::new();
     let tiles = if helper { "aws-terrarium/packs" } else { "aws-terrarium" };
     for (d, k) in [("chm10", "canopy"), (tiles, "terrain"), ("blobs", "blobs")] {
@@ -863,7 +889,7 @@ pub fn sizes(cache: &Path, helper: bool, root: Option<&Path>) -> Sizes {
 /// The bytes the cheap caches at `cache` hold in files (not empty markers) `spare` doesn't keep and
 /// they may lose, of this Mac's own (not in the
 /// NAS's project folder `root`).
-fn cheap_left(cache: &Path, root: Option<&Path>) -> u64 {
+fn cheap_left(cache: &Path, root: Option<&store::nasfs::NasRoot>) -> u64 {
     let mut files = Vec::new();
     for (d, _) in CHEAP {
         walk_cheap(cache, d, root, &mut files);
@@ -895,7 +921,7 @@ fn given_back(home: &Path) -> Vec<(PathBuf, u64)> {
 fn keep_given_back(home: &Path, list: &[(PathBuf, u64)]) {
     if let Err(e) = serde_json::to_vec(list)
         .map_err(anyhow::Error::from)
-        .and_then(|b| crate::whole::write(&home.join(GIVEN_BACK), &b))
+        .and_then(|b| store::whole::write(&home.join(GIVEN_BACK), &b))
     {
         eprintln!("agent: keeping the given-back jobs' scratch folders: {e:#}");
     }
@@ -985,13 +1011,13 @@ fn bytes_under(p: &Path) -> u64 {
 /// When the disk has less than `need` free, deletes from the caches at `cache` until it has `need`
 /// and `margin` more (or they're empty), each cheap file only once the NAS's `sources` has it; the
 /// bytes deleted.
-pub fn make_room(cache: &Path, sources: &Path, need: u64, margin: u64, hint: &Hints) -> Result<u64> {
+pub fn make_room(cache: &Path, sources: &NasPath, need: u64, margin: u64, hint: &Hints) -> Result<u64> {
     make_room_with(cache, sources, need, need + margin, &disk_free, &|p| hint.has(cache, p))
 }
 
 /// The NAS folders' files and their sizes, each folder listed once (a folder not there: none; one
 /// that can't be listed now: None, and its files stay this run).
-type Listed = HashMap<PathBuf, Option<HashMap<OsString, u64>>>;
+type Listed = HashMap<NasPath, Option<HashMap<String, u64>>>;
 
 /// What becomes of a local cache file.
 #[derive(Debug, PartialEq)]
@@ -1000,37 +1026,36 @@ enum Fate {
     /// temporary file), so it's no use anywhere.
     Go,
     /// It may go once it's copied to `.0` in the NAS's store.
-    Copy(PathBuf),
+    Copy(NasPath),
     /// It stays (not a cheap file, or gone already).
     Stay,
 }
 
 /// Where local cache file `p` (under `cache/<dir>`) is kept in the NAS's store.
-fn nas_path(cache: &Path, sources: &Path, p: &Path) -> Option<PathBuf> {
+fn nas_path(cache: &Path, sources: &NasPath, p: &Path) -> Option<NasPath> {
     // (Copies of the records' files, and of the raw tiles' archives, have no NAS folder to list:
     // they go as they are.)
     if p.starts_with(cache.join("aws-terrarium/packs")) {
         return None;
     }
     let (dir, store) = CHEAP.iter().find(|(d, s)| !s.is_empty() && p.starts_with(cache.join(d)))?;
-    Some(sources.join(store).join(p.strip_prefix(cache.join(dir)).ok()?))
+    Some(sources.join(store).join(p.strip_prefix(cache.join(dir)).ok()?.to_string_lossy()))
 }
 
 /// A NAS folder's files and their sizes (none when it isn't there; None when it can't be read now,
 /// or its listing was cut short: a busy NAS's timeout midway, which would make the files it didn't
 /// get to look missing there).
-fn list(folder: &Path) -> Option<HashMap<OsString, u64>> {
-    let rd = match std::fs::read_dir(folder) {
+fn list(folder: &NasPath) -> Option<HashMap<String, u64>> {
+    let rd = match folder.read_dir() {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(HashMap::new()),
         Err(_) => return None,
     };
     let mut names = HashMap::new();
     for e in rd {
-        let e = e.ok()?;
         match e.metadata() {
             Ok(m) if m.is_file() => {
-                names.insert(e.file_name(), m.len());
+                names.insert(e.name, m.len());
             }
             Ok(_) => {}
             // (Gone since it was listed: a temporary file renamed.)
@@ -1042,7 +1067,7 @@ fn list(folder: &Path) -> Option<HashMap<OsString, u64>> {
 }
 
 /// What becomes of local cache file `p` (under `cache/<dir>`), its NAS folder listed once.
-fn fate(cache: &Path, sources: &Path, p: &Path, listed: &mut Listed) -> Fate {
+fn fate(cache: &Path, sources: &NasPath, p: &Path, listed: &mut Listed) -> Fate {
     // (Copies of files the NAS has by construction: the records', and the raw tiles' archives.)
     if p.starts_with(cache.join("blobs")) || p.starts_with(cache.join("aws-terrarium/packs")) {
         return Fate::Go;
@@ -1056,8 +1081,8 @@ fn fate(cache: &Path, sources: &Path, p: &Path, listed: &mut Listed) -> Fate {
     }
     let (Some(folder), Some(name)) = (dest.parent(), dest.file_name()) else { return Fate::Stay };
     let Ok(len) = std::fs::metadata(p).map(|m| m.len()) else { return Fate::Stay };
-    let there = || std::fs::metadata(&dest).is_ok_and(|m| m.is_file() && m.len() == len);
-    let Some(names) = listed.entry(folder.to_path_buf()).or_insert_with(|| list(folder)) else {
+    let there = || dest.metadata().is_ok_and(|m| m.is_file() && m.len() == len);
+    let Some(names) = listed.entry(folder.clone()).or_insert_with(|| list(&folder)) else {
         // (Its folder can't be listed now: a canopy square, hundreds of MB, is asked about alone;
         // a raw tile stays this run, a question each costing about what the listing would.)
         return if !p.starts_with(cache.join("aws-terrarium")) && there() { Fate::Go } else { Fate::Stay };
@@ -1071,7 +1096,7 @@ fn fate(cache: &Path, sources: &Path, p: &Path, listed: &mut Listed) -> Fate {
     if month {
         return Fate::Stay;
     }
-    if crate::whole::is_tmp(p) || !crate::whole::file_whole(p) {
+    if store::whole::is_tmp(p) || !crate::whole::file_whole(p) {
         eprintln!("room: {} isn't whole: deleted, not kept", p.display());
         return Fate::Go;
     }
@@ -1085,22 +1110,22 @@ fn fate(cache: &Path, sources: &Path, p: &Path, listed: &mut Listed) -> Fate {
 /// Copies local cache file `p` to `dest` in the NAS's store, whole and flushed (the local copy goes
 /// next: unflushed, a power cut on the NAS could lose both); whether it's there now. Each NAS folder
 /// is made once a run (`made`).
-fn copy_there(p: &Path, dest: &Path, made: &mut HashSet<PathBuf>) -> bool {
+fn copy_there(p: &Path, dest: &NasPath, made: &mut HashSet<NasPath>) -> bool {
     let Some(folder) = dest.parent() else { return false };
-    if !made.contains(folder) {
-        if std::fs::create_dir_all(folder).is_err() {
+    if !made.contains(&folder) {
+        if folder.create_dir_all().is_err() {
             return false;
         }
-        made.insert(folder.to_path_buf());
+        made.insert(folder);
     }
-    crate::whole::copy(p, dest).is_ok()
+    dest.copy_from_local(p).is_ok()
 }
 
 /// `make_room` with the disk's free space from `free_space`: nothing when it has `need`, else
 /// deleting until it has `target`.
 fn make_room_with(
     cache: &Path,
-    sources: &Path,
+    sources: &NasPath,
     need: u64,
     target: u64,
     free_space: &dyn Fn(&Path) -> std::io::Result<u64>,
@@ -1114,7 +1139,7 @@ fn make_room_with(
 #[allow(clippy::too_many_arguments)]
 fn free_cheap(
     cache: &Path,
-    sources: &Path,
+    sources: &NasPath,
     need: u64,
     target: u64,
     free_space: &dyn Fn(&Path) -> std::io::Result<u64>,
@@ -1134,7 +1159,7 @@ fn free_cheap(
     // the packer passes links over inside it.)
     let tiles = cache.join("aws-terrarium");
     let packs = tiles.join("packs");
-    let root = sources.parent();
+    let root = Some(sources.root());
     let mut packed = 0;
     if let Some(root) = root.filter(|r| ours(&tiles, Some(r))) {
         let before = loose_bytes(&tiles);
@@ -1184,9 +1209,9 @@ fn free_cheap(
             break;
         }
         // Their NAS folders listed at once.
-        let folders: BTreeSet<PathBuf> = ahead
+        let folders: BTreeSet<NasPath> = ahead
             .iter()
-            .filter_map(|g| nas_path(cache, sources, &g.first()?.2)?.parent().map(Path::to_path_buf))
+            .filter_map(|g| nas_path(cache, sources, &g.first()?.2)?.parent())
             .filter(|f| !listed.contains_key(f))
             .collect();
         // (A thread that can't start, or fails, leaves its folder to be listed when it's reached.)
@@ -1331,16 +1356,24 @@ mod tests {
     fn the_nas_reserve_is_kept_on_the_nas() {
         let d = tempfile::tempdir().unwrap();
         TEST_FREE.with(|c| c.set(Some(100 << 30)));
-        assert_eq!(nas_reserve(d.path()), None);
-        assert_eq!(nas_room(d.path()).unwrap(), 100 << 30);
-        let t = set_nas_reserve(d.path(), Some(30 << 30), "a test").unwrap().unwrap();
+        assert_eq!(nas_reserve(&store::nasfs::NasRoot::local_for_test(d.path())), None);
+        assert_eq!(nas_room(&store::nasfs::NasRoot::local_for_test(d.path())).unwrap(), 100 << 30);
+        let t = set_nas_reserve(&store::nasfs::NasRoot::local_for_test(d.path()), Some(30 << 30), "a test")
+            .unwrap()
+            .unwrap();
         assert!(d.path().join(NAS_RESERVE).is_file());
-        assert_eq!(nas_reserve(d.path()), Some(t));
-        assert_eq!(nas_room(d.path()).unwrap(), 70 << 30);
-        set_nas_reserve(d.path(), Some(200 << 30), "a test").unwrap();
-        assert_eq!(nas_room(d.path()).unwrap(), 0);
-        assert_eq!(set_nas_reserve(d.path(), None, "a test").unwrap(), None);
-        assert_eq!((nas_reserve(d.path()), nas_room(d.path()).unwrap()), (None, 100 << 30));
+        assert_eq!(nas_reserve(&store::nasfs::NasRoot::local_for_test(d.path())), Some(t));
+        assert_eq!(nas_room(&store::nasfs::NasRoot::local_for_test(d.path())).unwrap(), 70 << 30);
+        set_nas_reserve(&store::nasfs::NasRoot::local_for_test(d.path()), Some(200 << 30), "a test").unwrap();
+        assert_eq!(nas_room(&store::nasfs::NasRoot::local_for_test(d.path())).unwrap(), 0);
+        assert_eq!(set_nas_reserve(&store::nasfs::NasRoot::local_for_test(d.path()), None, "a test").unwrap(), None);
+        assert_eq!(
+            (
+                nas_reserve(&store::nasfs::NasRoot::local_for_test(d.path())),
+                nas_room(&store::nasfs::NasRoot::local_for_test(d.path())).unwrap()
+            ),
+            (None, 100 << 30)
+        );
         TEST_FREE.with(|c| c.set(None));
     }
 
@@ -1351,8 +1384,20 @@ mod tests {
         goal: u64,
         free_space: &dyn Fn(&Path) -> std::io::Result<u64>,
     ) -> Result<Freed> {
-        let freed = free_cheap(cache, sources, goal, goal, free_space, &|_| false, None)?;
-        let left = if free_space(cache)? < goal { cheap_left(cache, sources.parent()) } else { 0 };
+        let freed = free_cheap(
+            cache,
+            &store::nasfs::NasPath::local_for_test(sources),
+            goal,
+            goal,
+            free_space,
+            &|_| false,
+            None,
+        )?;
+        let left = if free_space(cache)? < goal {
+            cheap_left(cache, sources.parent().map(store::nasfs::NasRoot::local_for_test).as_ref())
+        } else {
+            0
+        };
         Ok(Freed { freed, left, ..Default::default() })
     }
 
@@ -1368,7 +1413,7 @@ mod tests {
         target: u64,
         free_space: &dyn Fn(&Path) -> std::io::Result<u64>,
     ) -> Result<u64> {
-        make_room_with(cache, sources, need, target, free_space, &|_| false)
+        make_room_with(cache, &store::nasfs::NasPath::local_for_test(sources), need, target, free_space, &|_| false)
     }
     use std::cell::Cell;
     use std::time::Duration;
@@ -1437,7 +1482,7 @@ mod tests {
         file(&c.join("chm10/a.tif"), 10, 9000);
         file(&c.join("heritage-merged-2026-09-28-x.osm.pbf"), 10, 9000);
         // (No manifest: only the retired caches.)
-        let f = retire(&c, Some(&root));
+        let f = retire(&c, Some(&store::nasfs::NasRoot::local_for_test(&root)));
         assert_eq!(f, BTreeMap::from([("retired".to_string(), 150)]));
         assert!(!c.join("dem-cache.keys.u64").exists() && c.join("sources-terrain-z8-v3").exists());
         let m = serde_json::json!({"sources/terrain-z8-v3": "w", "sources/terrain-z8-v6-abc": "x", "work/summits/2026-09-28": "y"});
@@ -1445,14 +1490,14 @@ mod tests {
         // (One held by a job stays.)
         let held = c.join("work-summits-2026-03-28/x.bin");
         store::cachefile::hold(&held, &mut |_| Ok(())).unwrap();
-        let f = retire(&c, Some(&root));
+        let f = retire(&c, Some(&store::nasfs::NasRoot::local_for_test(&root)));
         assert_eq!(f, BTreeMap::from([("copies".to_string(), 10)]));
         assert!(!c.join("sources-terrain-z8-v3").exists());
         assert!(held.exists() && c.join("sources-terrain-z8-v6-abc/x.bin").exists());
         assert!(c.join("sources-new-v1/x.bin").exists(), "unnamed but fresh");
         assert!(c.join("chm10/a.tif").exists() && c.join("heritage-merged-2026-09-28-x.osm.pbf").exists());
         store::cachefile::release(&held);
-        assert_eq!(retire(&c, Some(&root)).get("copies"), Some(&10));
+        assert_eq!(retire(&c, Some(&store::nasfs::NasRoot::local_for_test(&root))).get("copies"), Some(&10));
         assert!(!c.join("work-summits-2026-03-28").exists());
     }
 
@@ -1503,13 +1548,20 @@ mod tests {
         let disk = |base: u64| move |p: &Path| Ok(base + all - used(p));
         let hint = |p: &Path| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("6-1-1."));
         // Short of one archive: the other shard's goes, though the job's own was idle longer.
-        assert_eq!(make_room_with(c, nas, 1000 + own, 1000 + own, &disk(1000), &hint).unwrap(), other);
+        assert_eq!(
+            make_room_with(c, &store::nasfs::NasPath::local_for_test(nas), 1000 + own, 1000 + own, &disk(1000), &hint)
+                .unwrap(),
+            other
+        );
         assert!(
             c.join("aws-terrarium/packs/6-1-1.0000000000000001.tiles").exists()
                 && !c.join("aws-terrarium/packs/6-9-9.0000000000000002.tiles").exists()
         );
         // Far short: it goes too, last (a hint, not a rule: it costs a copy, never a failure).
-        assert_eq!(make_room_with(c, nas, 1 << 40, 1 << 40, &disk(0), &hint).unwrap(), own);
+        assert_eq!(
+            make_room_with(c, &store::nasfs::NasPath::local_for_test(nas), 1 << 40, 1 << 40, &disk(0), &hint).unwrap(),
+            own
+        );
         // As the agent hints a terrain run's own shard's archives (`terrain_reads`).
         let mut h = Hints::default();
         h.add("terrain", &["3/0/0".to_string()]);
@@ -1612,7 +1664,8 @@ mod tests {
         let disk = move |p: &Path| Ok(all - used(p));
         make_room_spared(c, nas, a, a, &disk).unwrap();
         // Packed onto the NAS (an archive for their shard, named in the index), gone here.
-        let index = crate::rawpack::Index::load(&nas.join("aws-terrarium")).unwrap();
+        let index =
+            crate::rawpack::Index::load(&store::nasfs::NasPath::local_for_test(&nas.join("aws-terrarium"))).unwrap();
         let name = &index.of("6-32-21")[0].name;
         assert!(nas.join("aws-terrarium/packs").join(name).exists());
         assert!(!c.join("aws-terrarium/packs").join(name).exists(), "the disk is short: not kept here");
@@ -1653,12 +1706,12 @@ mod tests {
         let months = c.join(MONTHS);
         file(&months.join("2026-05.tsv.zst"), 1000, 7200);
         file(&months.join("2026-08.json"), 300, 7200);
-        assert_eq!(cheap_bytes(c, Some(nas)), 300);
+        assert_eq!(cheap_bytes(c, Some(&store::nasfs::NasPath::local_for_test(nas))), 300);
         assert_eq!(make_room_spared(c, nas, 1 << 40, 1 << 40, &|_| Ok(0)).unwrap(), 300, "the index not freed");
         assert!(months.join("2026-05.tsv.zst").exists() && !months.join("2026-08.json").exists());
         // The NAS has it now: counted, and freed.
         file(&nas.join("pageviews/2026-05.tsv.zst"), 1000, 0);
-        assert_eq!(cheap_bytes(c, Some(nas)), 1000);
+        assert_eq!(cheap_bytes(c, Some(&store::nasfs::NasPath::local_for_test(nas))), 1000);
         assert_eq!(make_room_spared(c, nas, 1 << 40, 1 << 40, &|_| Ok(0)).unwrap(), 1000);
     }
 
@@ -1682,7 +1735,10 @@ mod tests {
         // What room-making can free of them: the index the NAS has at its size and the files that
         // aren't indexes, not one it lacks (the review's case, 2026-10-06: the OSM pass counts it as
         // room); none without the NAS to ask.
-        assert_eq!((cheap_bytes(c, Some(nas)), cheap_bytes(c, None)), (1300, 0));
+        assert_eq!(
+            (cheap_bytes(c, Some(&store::nasfs::NasPath::local_for_test(nas))), cheap_bytes(c, None)),
+            (1300, 0)
+        );
         let all = used_with(c, &["items"]);
         let disk = move |p: &Path| Ok(all - used_with(p, &["items"]));
         assert_eq!(make_room_spared(c, nas, 1 << 40, 1 << 40, &disk).unwrap(), 1300);
@@ -1875,7 +1931,7 @@ mod tests {
         file(&nas.join("pageviews/2026-05.tsv.zst"), 600, 0);
         file(&c.join(MONTHS).join("2026-08.tsv.zst"), 50, 7200);
         file(&c.join(MONTHS).join("2026-08.json"), 30, 7200);
-        let said = sizes(c, false, nas.parent());
+        let said = sizes(c, false, nas.parent().map(store::nasfs::NasRoot::local_for_test).as_ref());
         assert_eq!((said.clear.get("months"), said.cheap), (Some(&630), 630));
         assert_eq!(sizes(c, false, None).clear.get("months"), None, "not without the NAS to ask");
         let g = gone(&said.clear, 60.0);
@@ -1886,7 +1942,7 @@ mod tests {
             ),
             ("pageview months", true)
         );
-        let f = clear(c, nas).unwrap();
+        let f = clear(c, &store::nasfs::NasPath::local_for_test(nas)).unwrap();
         assert!(!c.join(MONTHS).join("2026-05.tsv.zst").exists() && !c.join(MONTHS).join("2026-08.json").exists());
         assert_eq!((f.freed.clone(), f.left), (BTreeMap::from([("months".to_string(), 630)]), 50));
         assert!(f.say().contains("pageview months 0 MB"), "{}", f.say());
@@ -1948,8 +2004,8 @@ mod tests {
         for p in &outside {
             file(p, 100, 60);
         }
-        filtered_planet(&d.path().join("nas"));
-        let f = clear(c, nas).unwrap();
+        filtered_planet(&store::nasfs::NasRoot::local_for_test(&d.path().join("nas")));
+        let f = clear(c, &store::nasfs::NasPath::local_for_test(nas)).unwrap();
         assert_eq!(
             f.freed,
             BTreeMap::from([
@@ -1980,7 +2036,7 @@ mod tests {
         // Leftovers of any count, a part or a temporary file: they go too, the NAS asked nothing.
         file(&c.join("dem-cache.keys.u64"), 80, 60);
         file(&c.join("dem-cache.keys.u64.m1.123.tmp"), 30, 60);
-        let f = clear(c, nas).unwrap();
+        let f = clear(c, &store::nasfs::NasPath::local_for_test(nas)).unwrap();
         assert_eq!((f.freed.get("retired"), f.left), (Some(&110), 100));
         assert!(!c.join("dem-cache.keys.u64").exists() && !c.join("dem-cache.keys.u64.m1.123.tmp").exists());
     }
@@ -2004,7 +2060,7 @@ mod tests {
         }
         file(&c.join("heritage-merged-2026-09-28-0123456789ab.osm.pbf"), 700, 60);
         // (The pass's filtered planet it's clipped from, on the NAS.)
-        filtered_planet(&d.path().join("nas"));
+        filtered_planet(&store::nasfs::NasRoot::local_for_test(&d.path().join("nas")));
         let all = |p: &Path| {
             let mut fs = Vec::new();
             walk(p, &mut fs);
@@ -2015,7 +2071,7 @@ mod tests {
         // the old DEM cache (130), the copies (500), then base packs a file at a time, the oldest
         // first, as far as needed: one.
         let disk = move |p: &Path| Ok(held - all(p));
-        let f = toward_with(c, nas, &|| 3500, &disk, &|_| false).unwrap();
+        let f = toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| 3500, &disk, &|_| false).unwrap();
         assert_eq!(
             f.freed,
             BTreeMap::from([
@@ -2035,27 +2091,28 @@ mod tests {
         );
         // A little more: the next base pack.
         assert_eq!(
-            toward_with(c, nas, &|| 4000, &disk, &|_| false).unwrap().freed,
+            toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| 4000, &disk, &|_| false).unwrap().freed,
             BTreeMap::from([("base".to_string(), 2000)])
         );
         // Already there: nothing goes.
-        assert_eq!(toward_with(c, nas, &|| 3500, &disk, &|_| false).unwrap(), Freed::default());
+        assert_eq!(
+            toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| 3500, &disk, &|_| false).unwrap(),
+            Freed::default()
+        );
         // A target past everything: the last base pack, then the heritage clip; short, and what
         // stays said (nothing here).
-        let f = toward_with(c, nas, &|| u64::MAX, &disk, &|_| false).unwrap();
+        let f = toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| u64::MAX, &disk, &|_| false).unwrap();
         assert_eq!(f.freed, BTreeMap::from([("base".to_string(), 2000), ("heritage".to_string(), 700)]));
         assert_eq!(f.left, 0);
     }
 
     /// The pass's filtered planet of 2026-09-28 in the NAS's manifest under `root`, and there.
-    fn filtered_planet(root: &Path) {
-        file(&root.join("sources/osm/2026-09-28/filtered.0000000000000001.osm.pbf"), 10, 60);
-        std::fs::create_dir_all(root.join("state/build")).unwrap();
-        std::fs::write(
-            root.join("state/build/manifest.json"),
-            br#"{"sources/osm/2026-09-28/filtered":"sources/osm/2026-09-28/filtered.0000000000000001.osm.pbf"}"#,
-        )
-        .unwrap();
+    fn filtered_planet(root: &store::nasfs::NasRoot) {
+        file(&root.unchecked_path().join("sources/osm/2026-09-28/filtered.0000000000000001.osm.pbf"), 10, 60);
+        root.join("state/build").create_dir_all().unwrap();
+        root.join("state/build/manifest.json")
+            .write(br#"{"sources/osm/2026-09-28/filtered":"sources/osm/2026-09-28/filtered.0000000000000001.osm.pbf"}"#)
+            .unwrap();
     }
 
     #[test]
@@ -2073,9 +2130,9 @@ mod tests {
         };
         let disk = move |p: &Path| Ok(700 - all(p));
         // No manifest naming the planet it's clipped from: kept, by a clear too.
-        let f = toward_with(c, nas, &|| u64::MAX, &disk, &|_| false).unwrap();
+        let f = toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| u64::MAX, &disk, &|_| false).unwrap();
         assert_eq!((f.bytes(), f.left), (0, 700));
-        assert_eq!((clear(c, nas).unwrap().bytes(), clip.exists()), (0, true));
+        assert_eq!((clear(c, &store::nasfs::NasPath::local_for_test(nas)).unwrap().bytes(), clip.exists()), (0, true));
         // Named, but not there: kept.
         std::fs::create_dir_all(d.path().join("nas/state/build")).unwrap();
         std::fs::write(
@@ -2083,10 +2140,22 @@ mod tests {
             br#"{"sources/osm/2026-09-28/filtered":"sources/osm/2026-09-28/filtered.0000000000000001.osm.pbf"}"#,
         )
         .unwrap();
-        assert!(toward_with(c, nas, &|| u64::MAX, &disk, &|_| false).unwrap().freed.is_empty() && clip.exists());
+        assert!(
+            toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| u64::MAX, &disk, &|_| false)
+                .unwrap()
+                .freed
+                .is_empty()
+                && clip.exists()
+        );
         // There: it goes.
-        filtered_planet(&d.path().join("nas"));
-        assert_eq!(toward_with(c, nas, &|| u64::MAX, &disk, &|_| false).unwrap().freed.get("heritage"), Some(&700));
+        filtered_planet(&store::nasfs::NasRoot::local_for_test(&d.path().join("nas")));
+        assert_eq!(
+            toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| u64::MAX, &disk, &|_| false)
+                .unwrap()
+                .freed
+                .get("heritage"),
+            Some(&700)
+        );
     }
 
     #[test]
@@ -2095,7 +2164,7 @@ mod tests {
         let c = &d.path().join("cache");
         let nas = &d.path().join("nas/sources");
         std::fs::create_dir_all(nas).unwrap();
-        filtered_planet(&d.path().join("nas"));
+        filtered_planet(&store::nasfs::NasRoot::local_for_test(&d.path().join("nas")));
         file(&c.join("sources-a/x.pack"), 500, 60);
         for (i, age) in [(1, 300), (2, 200), (3, 100)] {
             file(&c.join(format!("base/base/6-1-{i}.0000000000000001.base")), 2000, age);
@@ -2111,7 +2180,7 @@ mod tests {
         let first = c.join("base/base/6-1-1.0000000000000001.base");
         let goal = || if first.exists() { u64::MAX } else { 0 };
         let disk = move |p: &Path| Ok(held - all(p));
-        let f = toward_with(c, nas, &goal, &disk, &|_| false).unwrap();
+        let f = toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &goal, &disk, &|_| false).unwrap();
         assert_eq!(f.freed, BTreeMap::from([("base".to_string(), 2000), ("copies".to_string(), 500)]));
         assert!(
             c.join("base/base/6-1-2.0000000000000001.base").exists()
@@ -2135,7 +2204,7 @@ mod tests {
             fs.iter().map(|f| f.1).sum::<u64>()
         };
         let disk = move |p: &Path| Ok(held - all(p));
-        let f = toward_with(c, nas, &|| 400, &disk, &|_| false).unwrap();
+        let f = toward_with(c, &store::nasfs::NasPath::local_for_test(nas), &|| 400, &disk, &|_| false).unwrap();
         assert_eq!(f.freed, BTreeMap::from([("copies".to_string(), 500)]));
         assert!(
             !c.join("sources-a").exists()
@@ -2205,11 +2274,17 @@ mod tests {
         std::fs::create_dir_all(c).unwrap();
         std::os::unix::fs::symlink(nas.join("canopy"), c.join("chm10")).unwrap();
         let f = trim(c, &nas).unwrap();
-        let g = clear(c, &nas).unwrap();
+        let g = clear(c, &store::nasfs::NasPath::local_for_test(&nas)).unwrap();
         assert!(nas.join("canopy/a.tif").exists(), "the NAS's copy deleted through the link");
-        assert_eq!((f.bytes(), f.left, g.bytes(), cheap_bytes(c, Some(&nas))), (0, 0, 0, 0));
         assert_eq!(
-            (sizes(c, false, Some(root.as_path())), sizes(c, true, Some(root.as_path()))),
+            (f.bytes(), f.left, g.bytes(), cheap_bytes(c, Some(&store::nasfs::NasPath::local_for_test(&nas)))),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(
+            (
+                sizes(c, false, Some(&store::nasfs::NasRoot::local_for_test(root.as_path()))),
+                sizes(c, true, Some(&store::nasfs::NasRoot::local_for_test(root.as_path())))
+            ),
             (Sizes::default(), Sizes::default())
         );
     }
@@ -2244,7 +2319,10 @@ mod tests {
         file(&there.join("base/base/6-1-1.0000000000000001.base"), 100, 60);
         let c = &d.path().join("cache");
         std::os::unix::fs::symlink(&there, c).unwrap();
-        assert_eq!((trim(c, &nas).unwrap().bytes(), clear(c, &nas).unwrap().bytes()), (0, 0));
+        assert_eq!(
+            (trim(c, &nas).unwrap().bytes(), clear(c, &store::nasfs::NasPath::local_for_test(&nas)).unwrap().bytes()),
+            (0, 0)
+        );
         assert!(
             there.join("chm10/a.tif").exists()
                 && there.join("blobs/layers/x.0000000000000001.pack").exists()
@@ -2294,7 +2372,7 @@ mod tests {
         file(&elsewhere.join("base/6-1-1.0000000000000001.base"), 100, 60);
         std::fs::create_dir_all(c).unwrap();
         std::os::unix::fs::symlink(&elsewhere, c.join("base")).unwrap();
-        let f = clear(c, nas).unwrap();
+        let f = clear(c, &store::nasfs::NasPath::local_for_test(nas)).unwrap();
         assert!(elsewhere.join("base/6-1-1.0000000000000001.base").exists() && c.join("base").exists());
         assert_eq!((f.bytes(), f.left), (0, 0));
     }
@@ -2332,11 +2410,17 @@ mod nas_tests {
         }
         // The folder's listing came back without it (cut short): it's on the NAS, so it may go.
         let mut listed = Listed::new();
-        listed.insert(nas.join("aws-terrarium/9/1"), Some(HashMap::new()));
-        assert_eq!(fate(&c, &nas, &c.join("aws-terrarium/9/1/2.png"), &mut listed), Fate::Go);
+        listed.insert(store::nasfs::NasPath::local_for_test(nas.join("aws-terrarium/9/1")), Some(HashMap::new()));
+        assert_eq!(
+            fate(&c, &store::nasfs::NasPath::local_for_test(&nas), &c.join("aws-terrarium/9/1/2.png"), &mut listed),
+            Fate::Go
+        );
         // A folder that couldn't be listed keeps its raw tiles.
-        listed.insert(nas.join("aws-terrarium/9/1"), None);
-        assert_eq!(fate(&c, &nas, &c.join("aws-terrarium/9/1/2.png"), &mut listed), Fate::Stay);
+        listed.insert(store::nasfs::NasPath::local_for_test(nas.join("aws-terrarium/9/1")), None);
+        assert_eq!(
+            fate(&c, &store::nasfs::NasPath::local_for_test(&nas), &c.join("aws-terrarium/9/1/2.png"), &mut listed),
+            Fate::Stay
+        );
         // Its canopy squares are asked about alone: one the NAS has at its size may go, one it
         // lacks stays.
         let tif = crate::whole::testfiles::tiff(false);
@@ -2344,9 +2428,15 @@ mod nas_tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(&p, &tif).unwrap();
         }
-        listed.insert(nas.join("canopy"), None);
-        assert_eq!(fate(&c, &nas, &c.join("chm10/a.tif"), &mut listed), Fate::Go);
-        assert_eq!(fate(&c, &nas, &c.join("chm10/b.tif"), &mut listed), Fate::Stay);
+        listed.insert(store::nasfs::NasPath::local_for_test(nas.join("canopy")), None);
+        assert_eq!(
+            fate(&c, &store::nasfs::NasPath::local_for_test(&nas), &c.join("chm10/a.tif"), &mut listed),
+            Fate::Go
+        );
+        assert_eq!(
+            fate(&c, &store::nasfs::NasPath::local_for_test(&nas), &c.join("chm10/b.tif"), &mut listed),
+            Fate::Stay
+        );
     }
 
     #[test]
@@ -2359,7 +2449,11 @@ mod nas_tests {
         let nas = d.path().join("nas/sources");
         std::fs::create_dir_all(d.path().join("nas")).unwrap();
         std::fs::write(&nas, b"").unwrap();
-        assert_eq!(make_room_with(&c, &nas, 1000, 1000, &|_| Ok(0), &|_| false).unwrap(), 0);
+        assert_eq!(
+            make_room_with(&c, &store::nasfs::NasPath::local_for_test(&nas), 1000, 1000, &|_| Ok(0), &|_| false)
+                .unwrap(),
+            0
+        );
         assert!(c.join("chm10/a.tif").exists());
     }
 
@@ -2385,7 +2479,8 @@ mod nas_tests {
         put(&nas.join("canopy/b.tif"), &tif[..10]);
         put(&c.join("aws-terrarium/9/1/3.png"), &png);
         put(&nas.join("aws-terrarium/9/1/3.png"), &png[..10]);
-        make_room_with(&c, &nas, 1 << 40, 1 << 40, &|_| Ok(0), &|_| false).unwrap();
+        make_room_with(&c, &store::nasfs::NasPath::local_for_test(&nas), 1 << 40, 1 << 40, &|_| Ok(0), &|_| false)
+            .unwrap();
         for f in ["aws-terrarium/9/1/1.png", "chm10/a.tif.m4.12.tmp", "aws-terrarium/9/1/2.png", "chm10/b.tif"] {
             assert!(!c.join(f).exists(), "{f} deleted");
         }

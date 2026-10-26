@@ -12,8 +12,9 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use store::nasfs::{Loc, NasPath};
 
 /// The user's folders: the drop boxes and the owner's acceptances of the input check's warnings
 /// (docs/inputs.md §4.9).
@@ -51,24 +52,23 @@ fn skip(name: &str) -> bool {
 
 /// The user's folders as they are now; files whose size and time match `prev` keep its blob
 /// without being read again.
-fn scan(root: &Path, prev: &Manifest) -> Result<Vec<(String, PathBuf, u64, u64, Option<String>)>> {
+fn scan(root: &store::nasfs::NasRoot, prev: &Manifest) -> Result<Vec<(String, NasPath, u64, u64, Option<String>)>> {
     let mut out = Vec::new();
     for top in FOLDERS {
         let mut stack = vec![root.join(top)];
         while let Some(dir) = stack.pop() {
-            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
-            for e in rd.flatten() {
-                let name = e.file_name().to_string_lossy().into_owned();
-                if skip(&name) {
+            let Ok(rd) = dir.read_dir() else { continue };
+            for e in rd {
+                if skip(&e.name) {
                     continue;
                 }
-                let p = e.path();
+                let p = e.path.clone();
                 let md = e.metadata().with_context(|| format!("stat {}", p.display()))?;
                 if md.is_dir() {
                     stack.push(p);
                     continue;
                 }
-                let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().into_owned();
+                let rel = p.rel().to_string();
                 let (size, mtime) = (md.len(), mtime_s(&md));
                 let known = prev.get(&rel).filter(|e| e.size == size && e.mtime == mtime).map(|e| e.blob.clone());
                 out.push((rel, p, size, mtime, known));
@@ -80,23 +80,21 @@ fn scan(root: &Path, prev: &Manifest) -> Result<Vec<(String, PathBuf, u64, u64, 
 }
 
 /// The newest day's list in `dir`.
-fn latest(dir: &Path) -> Option<(String, Manifest)> {
+fn latest(dir: Loc<'_>) -> Option<(String, Manifest)> {
     let day = days(dir).pop()?;
-    let b = std::fs::read(dir.join(format!("{day}.json"))).ok()?;
+    let b = dir.join(&format!("{day}.json")).loc().read().ok()?;
     Some((day.clone(), serde_json::from_slice(&b).ok()?))
 }
 
 /// The days kept in `dir`, oldest first.
-fn days(dir: &Path) -> Vec<String> {
-    let mut v: Vec<String> = std::fs::read_dir(dir)
-        .map(|rd| {
-            rd.flatten()
-                .filter_map(|e| {
-                    e.file_name()
-                        .to_str()
-                        .and_then(|n| n.strip_suffix(".json"))
-                        .filter(|d| d.len() == 10 && d.as_bytes()[4] == b'-')
-                        .map(str::to_string)
+fn days(dir: Loc<'_>) -> Vec<String> {
+    let mut v: Vec<String> = dir
+        .list_names()
+        .map(|names| {
+            names
+                .iter()
+                .filter_map(|n| {
+                    n.strip_suffix(".json").filter(|d| d.len() == 10 && d.as_bytes()[4] == b'-').map(str::to_string)
                 })
                 .collect()
         })
@@ -105,26 +103,26 @@ fn days(dir: &Path) -> Vec<String> {
     v
 }
 
-/// Copies `src` to `dst`, whole (crate::whole::copy), its folder made.
-fn copy_atomic(src: &Path, dst: &Path) -> Result<u64> {
+/// Copies NAS file `src` to `dst` here, whole (store::whole::copy), its folder made.
+fn copy_atomic(src: &NasPath, dst: &Path) -> Result<u64> {
     if let Some(d) = dst.parent() {
         std::fs::create_dir_all(d)?;
     }
-    let n = crate::whole::copy(src, dst)?;
+    let n = src.copy_to_local(dst)?;
     crate::timings::count(n, 1);
     Ok(n)
 }
 
 /// Backs up the user's folders under `root` into `root/state/backups` (and mirrors that to
 /// `local`), dated `today`, keeping `keep_days`.
-pub fn run(root: &Path, local: Option<&Path>, today: &str, keep_days: u64) -> Result<Report> {
+pub fn run(root: &store::nasfs::NasRoot, local: Option<&Path>, today: &str, keep_days: u64) -> Result<Report> {
     let dir = root.join("state/backups");
     let blobs = dir.join("blobs");
     use crate::timings::{phase, Class};
-    std::fs::create_dir_all(&blobs)?;
+    blobs.create_dir_all()?;
     let prev = {
         let _p = phase("last backup read", Class::NasRead);
-        latest(&dir).map(|(_, m)| m).unwrap_or_default()
+        latest((&dir).into()).map(|(_, m)| m).unwrap_or_default()
     };
     let mut rep = Report::default();
     let mut now: Manifest = BTreeMap::new();
@@ -147,14 +145,14 @@ pub fn run(root: &Path, local: Option<&Path>, today: &str, keep_days: u64) -> Re
                 // Copy first, then name the copy by its own hash: a file changing meanwhile can't end
                 // up under another content's name.
                 let tmp = blobs.join(format!(".incoming-{}.tmp", std::process::id()));
-                let n = store::sys::copy_data(&p, &tmp).with_context(|| format!("copy {}", p.display()))?;
+                let n = p.copy_data_to(&tmp).with_context(|| format!("copy {}", p.display()))?;
                 copying.count(n, 1);
-                let h = store::naming::hash16_file(&tmp)?;
+                let h = store::naming::hash16_reader(tmp.open()?)?;
                 let dst = blobs.join(&h);
                 if dst.exists() {
-                    std::fs::remove_file(&tmp)?;
+                    tmp.remove_file()?;
                 } else {
-                    std::fs::rename(&tmp, &dst)?;
+                    tmp.rename(&dst)?;
                     rep.new_bytes += n;
                     rep.new_blobs += 1;
                 }
@@ -167,12 +165,12 @@ pub fn run(root: &Path, local: Option<&Path>, today: &str, keep_days: u64) -> Re
     rep.files = now.len();
     if now != prev {
         let _p = phase("day's list written", Class::NasWrite);
-        crate::whole::write(&dir.join(format!("{today}.json")), &serde_json::to_vec_pretty(&now)?)?;
+        dir.join(format!("{today}.json")).write_whole(serde_json::to_vec_pretty(&now)?)?;
         rep.written = Some(today.to_string());
     }
     let (d, b) = {
         let _p = phase("old days pruned", Class::NasWrite);
-        prune(&dir, today, keep_days)?
+        prune((&dir).into(), today, keep_days)?
     };
     rep.days_removed = d;
     rep.blobs_removed = b;
@@ -185,14 +183,14 @@ pub fn run(root: &Path, local: Option<&Path>, today: &str, keep_days: u64) -> Re
 
 /// Removes the days older than `keep_days` (always keeping the newest) and the blobs no kept day
 /// lists.
-fn prune(dir: &Path, today: &str, keep_days: u64) -> Result<(usize, usize)> {
+fn prune(dir: Loc<'_>, today: &str, keep_days: u64) -> Result<(usize, usize)> {
     let all = days(dir);
     let cutoff = day_before(today, keep_days);
     let mut removed = 0;
     let mut kept: Vec<String> = Vec::new();
     for (i, d) in all.iter().enumerate() {
         if d.as_str() < cutoff.as_str() && i + 1 < all.len() {
-            std::fs::remove_file(dir.join(format!("{d}.json")))?;
+            dir.join(&format!("{d}.json")).loc().remove_file()?;
             removed += 1;
         } else {
             kept.push(d.clone());
@@ -200,18 +198,18 @@ fn prune(dir: &Path, today: &str, keep_days: u64) -> Result<(usize, usize)> {
     }
     let mut live: BTreeSet<String> = BTreeSet::new();
     for d in &kept {
-        let m: Manifest = serde_json::from_slice(&std::fs::read(dir.join(format!("{d}.json")))?)?;
+        let m: Manifest = serde_json::from_slice(&dir.join(&format!("{d}.json")).loc().read()?)?;
         live.extend(m.into_values().map(|e| e.blob));
     }
     let mut blobs_removed = 0;
-    if let Ok(rd) = std::fs::read_dir(dir.join("blobs")) {
-        for e in rd.flatten() {
-            let n = e.file_name().to_string_lossy().into_owned();
+    let blobs = dir.join("blobs");
+    if let Ok(names) = blobs.loc().list_names() {
+        for n in names {
             if n.starts_with('.') {
                 continue;
             }
             if !live.contains(&n) {
-                std::fs::remove_file(e.path())?;
+                blobs.loc().join(&n).loc().remove_file()?;
                 blobs_removed += 1;
             }
         }
@@ -220,26 +218,26 @@ fn prune(dir: &Path, today: &str, keep_days: u64) -> Result<(usize, usize)> {
 }
 
 /// Mirrors the backups to the lead: missing blobs and days copied, the same pruning.
-fn mirror(dir: &Path, local: &Path, today: &str, keep_days: u64) -> Result<()> {
+fn mirror(dir: &NasPath, local: &Path, today: &str, keep_days: u64) -> Result<()> {
     std::fs::create_dir_all(local.join("blobs"))?;
-    for d in days(dir) {
+    for d in days(dir.into()) {
         let f = format!("{d}.json");
         if !local.join(&f).exists() || d.as_str() == today {
             copy_atomic(&dir.join(&f), &local.join(&f))?;
         }
     }
-    if let Ok(rd) = std::fs::read_dir(dir.join("blobs")) {
-        for e in rd.flatten() {
-            if e.file_name().to_string_lossy().starts_with('.') {
+    if let Ok(rd) = dir.join("blobs").read_dir() {
+        for e in rd {
+            if e.name.starts_with('.') {
                 continue;
             }
-            let dst = local.join("blobs").join(e.file_name());
+            let dst = local.join("blobs").join(&e.name);
             if !dst.exists() {
-                copy_atomic(&e.path(), &dst)?;
+                copy_atomic(&e.path, &dst)?;
             }
         }
     }
-    prune(local, today, keep_days)?;
+    prune(local.into(), today, keep_days)?;
     Ok(())
 }
 
@@ -305,18 +303,18 @@ mod tests {
         fs::write(root.join("inputs/translations/jp/places-jp.jsonl"), b"{\"n\":\"a\"}\n").unwrap();
         fs::write(root.join("inputs/translations/todo/jp.jsonl"), b"skipped").unwrap();
         fs::write(root.join("inputs/regions/x.toml"), b"id = \"x\"").unwrap();
-        let r = run(&root, Some(&local), "2026-09-01", 30).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(&root), Some(&local), "2026-09-01", 30).unwrap();
         assert_eq!((r.files, r.new_blobs, r.written.as_deref()), (2, 2, Some("2026-09-01")));
         // Nothing changed: no new day.
-        let r = run(&root, Some(&local), "2026-09-02", 30).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(&root), Some(&local), "2026-09-02", 30).unwrap();
         assert_eq!((r.new_blobs, r.written), (0, None));
         // A change: a new day with one new blob; the old blob stays (the first day lists it).
         fs::write(root.join("inputs/regions/x.toml"), b"id = \"x\"\nname = \"X\"").unwrap();
-        let r = run(&root, Some(&local), "2026-09-03", 30).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(&root), Some(&local), "2026-09-03", 30).unwrap();
         assert_eq!((r.new_blobs, r.written.as_deref()), (1, Some("2026-09-03")));
         assert_eq!(fs::read_dir(root.join("state/backups/blobs")).unwrap().count(), 3);
         // A month later the first day goes, and with it the blob only it listed.
-        let r = run(&root, Some(&local), "2026-10-04", 30).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(&root), Some(&local), "2026-10-04", 30).unwrap();
         assert_eq!((r.days_removed, r.blobs_removed), (1, 1));
         assert_eq!(fs::read_dir(local.join("blobs")).unwrap().count(), 2);
         assert!(local.join("2026-09-03.json").exists());

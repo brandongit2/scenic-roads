@@ -129,7 +129,7 @@ pub fn cover_of<'a>(names: impl Iterator<Item = &'a String>) -> std::collections
 /// heritage (or the dots predate the record of theirs).
 pub fn marks_dots(out: &Out, src: &str) -> Result<Option<HashMap<u64, (u64, f64, f64)>>> {
     let c = out.get(markconv::HERITAGE_DOTS).context("no heritage dots (the marks step writes them)")?;
-    let Ok(d) = serde_json::from_slice::<markconv::Dots>(&std::fs::read(out.path(c))?) else { return Ok(None) };
+    let Ok(d) = serde_json::from_slice::<markconv::Dots>(&out.path(c).read()?) else { return Ok(None) };
     let now = out.get(&format!("{src}/layer-heritage")).unwrap_or_default();
     Ok((d.heritage == now).then(|| d.dots.into_iter().collect()))
 }
@@ -417,7 +417,8 @@ pub fn ferries_job(out: &mut Out, date: &str, statics: &crate::inputs::Accepted)
         c.current_dir(&work).args(args);
         c
     };
-    let set_s = set.to_string_lossy().into_owned();
+    // (osmium's input, read where it lies: tests/nas_access.rs.)
+    let set_s = set.unchecked_path().to_string_lossy().into_owned();
     let p = crate::timings::phase("the ferries set filtered and exported (osmium)", crate::timings::Class::NasRead);
     run(
         osmium(&["tags-filter", &set_s, "w/route=ferry", "r/route=ferry", "-o", "ferries.osm.pbf", "--overwrite"]),
@@ -752,7 +753,8 @@ mod tests {
     #[test]
     fn the_overlays_take_only_dots_of_the_heritage_there() {
         let d = tempfile::tempdir().unwrap();
-        let mut out = Out::unbound(&d.path().join("root"), &d.path().join("s0")).unwrap();
+        let mut out =
+            Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("s0")).unwrap();
         let src = markconv::heritage_source("d");
         let lh = format!("{src}/layer-heritage");
         out.set(&lh, Some(format!("{lh}.0123456789abcdef.json")));
@@ -780,17 +782,20 @@ mod tests {
     fn a_stale_sweep_removes_only_its_steps_outputs() {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("root");
-        let mut seed = Out::unbound(&root, &d.path().join("s0")).unwrap();
+        let mut seed = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s0")).unwrap();
         for l in
             ["layers/stations/hi/6-1-2", "layers/stations/hi/6-1-3", "layers/stations/hi/7-1-2", "layers/stations/old"]
         {
             seed.set(l, Some(format!("{l}.0123456789abcdef.pack")));
         }
         seed.save().unwrap();
-        let mut out = Out::open(&root, &d.path().join("s1"), "stations").unwrap();
+        let mut out =
+            Out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s1"), "stations").unwrap();
         assert_eq!(drop_stale(&mut out, "stations", &["layers/stations/hi/6-1-2".to_string()]), 1);
         out.save().unwrap();
-        let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
+        let m: BTreeMap<String, String> =
+            crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
+                .unwrap();
         assert_eq!(
             m.keys().map(String::as_str).collect::<Vec<_>>(),
             ["layers/stations/hi/6-1-2", "layers/stations/hi/7-1-2", "layers/stations/old"]

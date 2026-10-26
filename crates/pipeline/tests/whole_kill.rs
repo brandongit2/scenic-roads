@@ -1,5 +1,5 @@
 //! A writer killed mid-write (SIGKILL) never leaves a torn file: a child process (this test binary
-//! again, `WHOLE_KILL_DIR` set) runs `whole::write` in a loop while this one reads the file; each
+//! again, `WHOLE_KILL_DIR` set) runs `store::whole::write` in a loop while this one reads the file; each
 //! read is a whole version, and after the kill the file still is. On this Mac's disk, not over SMB:
 //! it checks the write's own steps (a temporary name, flushed, checked, renamed), not the NAS.
 
@@ -26,7 +26,7 @@ fn writer() {
     let Some(dir) = std::env::var_os("WHOLE_KILL_DIR") else { return };
     let path = Path::new(&dir).join("f.json");
     for i in 0.. {
-        pipeline::whole::write(&path, &version(i)).unwrap();
+        store::whole::write(&path, &version(i)).unwrap();
         if i == 0 {
             // (The parent's kill clock starts once this one is writing.)
             std::fs::write(Path::new(&dir).join("started"), b"").unwrap();
@@ -38,7 +38,7 @@ fn writer() {
 fn killed_writer_leaves_whole_files() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("f.json");
-    pipeline::whole::write(&path, &version(0)).unwrap();
+    store::whole::write(&path, &version(0)).unwrap();
     let exe = std::env::current_exe().unwrap();
     for round in 0..5 {
         let mut child = store::spawn::spawn(
@@ -53,7 +53,7 @@ fn killed_writer_leaves_whole_files() {
         let wait = Instant::now() + store::testkit::WATCHDOG;
         while !started.exists() {
             assert!(Instant::now() < wait, "round {round}: the writer never started");
-            let b = pipeline::whole::read(&path).unwrap();
+            let b = store::whole::read(&path).unwrap();
             assert!(whole(&b), "round {round}: a torn read ({} bytes)", b.len());
         }
         std::fs::remove_file(&started).unwrap();
@@ -61,7 +61,7 @@ fn killed_writer_leaves_whole_files() {
         let until = Instant::now() + Duration::from_millis(300 + 97 * round);
         let mut reads = 0;
         while Instant::now() < until {
-            let b = pipeline::whole::read(&path).unwrap();
+            let b = store::whole::read(&path).unwrap();
             assert!(whole(&b), "round {round}: a torn read ({} bytes)", b.len());
             reads += 1;
         }
@@ -74,6 +74,6 @@ fn killed_writer_leaves_whole_files() {
     // The killed writers' temporary files are left beside it, never under its name.
     for e in std::fs::read_dir(dir.path()).unwrap().flatten() {
         let p = e.path();
-        assert!(p == path || pipeline::whole::is_tmp(&p), "{}", p.display());
+        assert!(p == path || store::whole::is_tmp(&p), "{}", p.display());
     }
 }

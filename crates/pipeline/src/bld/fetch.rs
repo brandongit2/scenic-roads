@@ -40,10 +40,10 @@ use crate::pyjson::{self, Py};
 use anyhow::{bail, ensure, Context, Result};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use store::nasfs::NasPath;
 
 /// How near the coverage a file's row group (or a GHSL tile) must come to be fetched (km).
 pub const MARGIN_KM: f64 = 20.0;
@@ -349,23 +349,23 @@ fn py_gzip(data: &[u8]) -> Result<Vec<u8>> {
 
 /// An index written whole: a temporary name, flushed, renamed; `gz`: on one line, gzip'd, else an
 /// item a line.
-fn write_json(path: &Path, v: Py, gz: bool) -> Result<()> {
+fn write_json(path: &NasPath, v: Py, gz: bool) -> Result<()> {
     let v = sorted(v);
     let text = ascii(&if gz { pyjson::dumps_spaced(&v) } else { pyjson::dumps_indent(&v, 1) });
     let bytes = if gz { py_gzip(text.as_bytes())? } else { text.into_bytes() };
-    let name = path.file_name().context("an index's name")?.to_string_lossy();
-    let tmp = path.with_file_name(format!("{name}.{}.{}.tmp", crate::agent::cond::host(), std::process::id()));
-    let mut f = std::fs::File::create(&tmp).with_context(|| format!("write {}", tmp.display()))?;
+    let name = path.file_name().context("an index's name")?;
+    let tmp = path.with_file_name(format!("{name}.{}.{}.tmp", store::sys::host(), std::process::id()));
+    let mut f = tmp.create().with_context(|| format!("write {}", tmp.display()))?;
     f.write_all(&bytes)?;
     f.sync_all()?;
     drop(f);
-    std::fs::rename(&tmp, path)?;
+    tmp.rename(path)?;
     Ok(())
 }
 
 /// A JSON file as Python read it, or None when it isn't there or doesn't read.
-fn read_json(path: &Path) -> Option<Py> {
-    let b = std::fs::read(path).ok()?;
+fn read_json(path: &NasPath) -> Option<Py> {
+    let b = path.read().ok()?;
     pyjson::loads(std::str::from_utf8(&b).ok()?).ok()
 }
 
@@ -485,7 +485,7 @@ fn row_groups(http: &Http, url: &str, size: u64) -> Result<(i64, Vec<([f64; 4], 
 struct Job {
     ghsl: bool,
     url: String,
-    dest: PathBuf,
+    dest: NasPath,
     size: u64,
     etag: Option<String>,
     name: String,
@@ -510,21 +510,21 @@ fn num(p: &Py) -> f64 {
 /// The release's files meeting the coverage, its folder, and the footers' cache.
 fn overture_jobs(
     http: &Http,
-    root: &Path,
+    root: &store::nasfs::NasRoot,
     release: &str,
     bucket: &str,
     types: &[String],
     near: &Near,
-) -> Result<(Vec<Job>, PathBuf)> {
+) -> Result<(Vec<Job>, NasPath)> {
     use crate::timings::{phase, Class};
     let base = root.join(super::sources::release_dir(release));
-    std::fs::create_dir_all(&base)?;
+    base.create_dir_all()?;
     // Every file's row groups (kept: a release's files never change).
     let p = phase("the footers' kept copy read", Class::NasRead);
     let foot_path = base.join("footers.json.gz");
     let mut footers: BTreeMap<String, Py> = BTreeMap::new();
     if foot_path.exists() {
-        let read = std::fs::read(&foot_path).map_err(anyhow::Error::from).and_then(|gz| {
+        let read = foot_path.read().map_err(anyhow::Error::from).and_then(|gz| {
             let mut s = String::new();
             flate2::read::GzDecoder::new(&gz[..]).read_to_string(&mut s)?;
             pyjson::loads(&s)
@@ -670,13 +670,13 @@ fn overture_jobs(
 /// listing rounds them, so one already here is known whole).
 fn ghsl_jobs(
     http: &Http,
-    root: &Path,
+    root: &store::nasfs::NasRoot,
     src: &crate::inputs::sources::Source,
     near: &Near,
-) -> Result<(Vec<Job>, PathBuf)> {
+) -> Result<(Vec<Job>, NasPath)> {
     use crate::timings::{phase, Class};
     let base = root.join(super::sources::ghsl_dir(src.version()?));
-    std::fs::create_dir_all(&base)?;
+    base.create_dir_all()?;
     ensure!(!src.index.is_empty(), "GHSL: its declaration's index lists no tiles");
     let p = phase("the files meeting the coverage picked", Class::Compute);
     let mut index: Vec<&crate::inputs::sources::Feature> = src.index.iter().collect();
@@ -843,9 +843,9 @@ impl PartHasher {
 }
 
 /// Waits for the NAS's folder `root` (up to `NAS_WAIT_H`).
-fn wait_for_nas(root: &Path) -> Result<()> {
+fn wait_for_nas(root: &store::nasfs::NasRoot) -> Result<()> {
     let t0 = Instant::now();
-    while !root.is_dir() {
+    while !root.path().is_dir() {
         ensure!(
             t0.elapsed().as_secs_f64() <= NAS_WAIT_H * 3600.0,
             "the NAS ({}) has been away {NAS_WAIT_H} h",
@@ -871,16 +871,16 @@ enum Attempt {
 
 /// One file into place (see the module's docs): whether it was fetched (else it was here), and
 /// the bytes this run fetched of it (the rest were here from a run cut short).
-fn fetch(http: &Http, job: &Job, root: &Path, prog: &Progress) -> Result<(bool, u64)> {
+fn fetch(http: &Http, job: &Job, root: &store::nasfs::NasRoot, prog: &Progress) -> Result<(bool, u64)> {
     let size = job.size;
-    if std::fs::metadata(&job.dest).is_ok_and(|m| m.len() == size) {
+    if job.dest.metadata().is_ok_and(|m| m.len() == size) {
         prog.add(size as i64);
         prog.file_done();
         return Ok((false, 0));
     }
-    std::fs::create_dir_all(job.dest.parent().context("a file's folder")?)?;
-    let name = job.dest.file_name().context("a file's name")?.to_string_lossy();
-    let tmp = job.dest.with_file_name(format!("{name}.{}.tmp", crate::agent::cond::host()));
+    job.dest.parent().context("a file's folder")?.create_dir_all()?;
+    let name = job.dest.file_name().context("a file's name")?;
+    let tmp = job.dest.with_file_name(format!("{name}.{}.tmp", store::sys::host()));
     let (mut fresh_starts, mut k) = (0, 0u32);
     let mut kept: Option<u64> = None; // the bytes a run before left in the temporary file
     loop {
@@ -888,13 +888,13 @@ fn fetch(http: &Http, job: &Job, root: &Path, prog: &Progress) -> Result<(bool, 
         let mut hasher: Option<PartHasher> = None;
         let attempt = (|| -> Attempt {
             let io = |e: std::io::Error| Attempt::Nas(e);
-            let mut have = match std::fs::metadata(&tmp) {
+            let mut have = match tmp.metadata() {
                 Ok(m) => m.len(),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
                 Err(e) => return io(e),
             };
             if have > size {
-                if let Err(e) = std::fs::remove_file(&tmp) {
+                if let Err(e) = tmp.remove_file() {
                     return io(e);
                 }
                 have = 0;
@@ -903,7 +903,7 @@ fn fetch(http: &Http, job: &Job, root: &Path, prog: &Progress) -> Result<(bool, 
             hasher = job.etag.as_deref().map(|e| PartHasher::new(size, e));
             if let (true, Some(h)) = (have > 0, hasher.as_mut()) {
                 // The bytes already here, hashed again (read back from the NAS).
-                let mut f = match std::fs::File::open(&tmp) {
+                let mut f = match tmp.open() {
                     Ok(f) => f,
                     Err(e) => return io(e),
                 };
@@ -919,7 +919,7 @@ fn fetch(http: &Http, job: &Job, root: &Path, prog: &Progress) -> Result<(bool, 
             prog.add(have as i64);
             counted += have as i64;
             let mut got = have;
-            let mut f = match std::fs::OpenOptions::new().create(true).append(true).open(&tmp) {
+            let mut f = match tmp.open_with(std::fs::OpenOptions::new().create(true).append(true)) {
                 Ok(f) => f,
                 Err(e) => return io(e),
             };
@@ -933,7 +933,7 @@ fn fetch(http: &Http, job: &Job, root: &Path, prog: &Progress) -> Result<(bool, 
                     Ok(r) => r,
                     Err(Fail::Refused(412)) => {
                         // The object isn't the one listed (replaced since?): from the start, next run.
-                        std::fs::remove_file(&tmp).ok();
+                        tmp.remove_file().ok();
                         return Attempt::Fatal(anyhow::anyhow!(
                             "{}: changed on the server since it was listed (412); run again",
                             job.name
@@ -1008,7 +1008,7 @@ fn fetch(http: &Http, job: &Job, root: &Path, prog: &Progress) -> Result<(bool, 
                     None
                 };
                 if let Some(why) = why {
-                    std::fs::remove_file(&tmp).ok();
+                    tmp.remove_file().ok();
                     prog.add(-counted);
                     kept = Some(0);
                     fresh_starts += 1;
@@ -1016,7 +1016,7 @@ fn fetch(http: &Http, job: &Job, root: &Path, prog: &Progress) -> Result<(bool, 
                     eprintln!("bld-fetch: {}: {why}; fetching it again from the start", job.name);
                     continue;
                 }
-                std::fs::rename(&tmp, &job.dest)?;
+                tmp.rename(&job.dest)?;
                 prog.file_done();
                 return Ok((true, size - kept.unwrap_or(0)));
             }
@@ -1049,7 +1049,7 @@ fn fetch(http: &Http, job: &Job, root: &Path, prog: &Progress) -> Result<(bool, 
 /// What `run` is given.
 pub struct Args<'a> {
     /// The NAS's project folder (the sources' home).
-    pub root: &'a Path,
+    pub root: &'a store::nasfs::NasRoot,
     /// The declared sources (crate::inputs::sources): `buildings` (its release, bucket and
     /// types) and `building-heights` (its version and index).
     pub sources: &'a crate::inputs::sources::Sources,
@@ -1084,7 +1084,7 @@ pub fn run(a: Args<'_>) -> Result<()> {
     eprintln!(
         "bld-fetch: pid {} on {}, root {}, {TRANSFERS} transfers at once",
         std::process::id(),
-        crate::agent::cond::host(),
+        store::sys::host(),
         root.display()
     );
     let p = phase("the coverage read", Class::Compute);
@@ -1103,7 +1103,7 @@ pub fn run(a: Args<'_>) -> Result<()> {
     eprintln!("bld-fetch: ghsl: {} tiles meet the coverage, {}", gh.len(), gb(gh.iter().map(|j| j.size as f64).sum()));
     let jobs: Vec<Job> = ov.into_iter().chain(gh).collect();
     let p = phase("the files here checked", Class::NasRead);
-    let whole = |j: &Job| std::fs::metadata(&j.dest).is_ok_and(|m| m.len() == j.size);
+    let whole = |j: &Job| j.dest.metadata().is_ok_and(|m| m.len() == j.size);
     let known: u64 = jobs.iter().map(|j| j.size).sum();
     let left: u64 = jobs.iter().filter(|j| !whole(j)).map(|j| j.size).sum();
     eprintln!(
@@ -1207,15 +1207,15 @@ pub fn run(a: Args<'_>) -> Result<()> {
 #[allow(clippy::too_many_arguments)]
 fn save_indexes(
     jobs: &[Job],
-    ov_base: &Path,
-    gh_base: &Path,
+    ov_base: &NasPath,
+    gh_base: &NasPath,
     release: &str,
     bucket: &str,
     ghsl: &crate::inputs::sources::Source,
     what: &[String],
     checked: &BTreeMap<String, &'static str>,
 ) -> Result<()> {
-    let whole = |j: &Job| std::fs::metadata(&j.dest).is_ok_and(|m| m.len() == j.size);
+    let whole = |j: &Job| j.dest.metadata().is_ok_and(|m| m.len() == j.size);
     let idx_path = ov_base.join("buildings.json");
     let idx = read_json(&idx_path);
     let mut files: BTreeMap<String, Py> = match idx.as_ref().and_then(|i| i.get("files")) {
@@ -1317,12 +1317,12 @@ mod tests {
         let v = dict(vec![("b", Py::Float(20.0)), ("a", Py::Str("© x".into())), ("c", Py::List(vec![int(1)]))]);
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("i.json");
-        write_json(&p, v.clone(), false).unwrap();
+        write_json(&store::nasfs::NasPath::local_for_test(&p), v.clone(), false).unwrap();
         assert_eq!(
             std::fs::read_to_string(&p).unwrap(),
             "{\n \"a\": \"\\u00a9 x\",\n \"b\": 20.0,\n \"c\": [\n  1\n ]\n}"
         );
-        write_json(&p, v, true).unwrap();
+        write_json(&store::nasfs::NasPath::local_for_test(&p), v, true).unwrap();
         let gz = std::fs::read(&p).unwrap();
         // gzip.compress(…, mtime=0): no time, level 9's flag, OS 255.
         assert_eq!(&gz[..10], &[0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 2, 255]);

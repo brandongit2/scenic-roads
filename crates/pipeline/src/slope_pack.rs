@@ -430,17 +430,13 @@ pub fn write_mid(path: &std::path::Path, t: (u32, u32), tiles: &[Made]) -> Resul
 
 /// A mid (`write_mid`), read and checked (its format, step and version, every section whole): its
 /// z6 tile and its tiles, in (z, x, y) order.
-pub fn read_mid(path: &std::path::Path) -> Result<((u32, u32), Vec<Made>)> {
+pub fn read_mid<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<((u32, u32), Vec<Made>)> {
     use anyhow::Context;
-    let what = || path.display().to_string();
+    let path = path.into();
+    let what = || path.display();
     // (Read whole, one read under a deadline, tried again while it fails transiently: its sections
     // read one by one from the share were a round trip each, some 21 a mid.)
-    let bytes = crate::depth::grids::open_retrying(
-        path,
-        &|p| crate::depth::grids::within(p, MID_DEADLINE, read_file),
-        &mid_waits(),
-    )
-    .with_context(what)?;
+    let bytes = read_whole(path).with_context(what)?;
     let r = store::sect::SectReader::open(bytes).with_context(what)?;
     let m = r.meta();
     anyhow::ensure!(m["fmt"].as_u64() == Some(MID_FMT) && m["step"] == "slope", "{}: not a slope mid", what());
@@ -486,6 +482,19 @@ const MIDS_AT_ONCE: usize = 8;
 
 fn read_file(p: &std::path::Path) -> std::io::Result<Vec<u8>> {
     std::fs::read(p)
+}
+
+fn read_nas(p: &store::nasfs::NasPath) -> std::io::Result<Vec<u8>> {
+    p.read()
+}
+
+/// A mid's bytes, read whole under `MID_DEADLINE`, tried again while it fails transiently.
+fn read_whole(path: store::nasfs::Loc<'_>) -> std::io::Result<Vec<u8>> {
+    use crate::depth::grids::{open_retrying, within};
+    match path {
+        store::nasfs::Loc::Local(p) => open_retrying(p, &|p| within(p, MID_DEADLINE, read_file), &mid_waits()),
+        store::nasfs::Loc::Nas(p) => open_retrying(p, &|p| within(p, MID_DEADLINE, read_nas), &mid_waits()),
+    }
 }
 
 /// The raw bytes of a tile's codes (RGB): the most its stored WebP is counted at.
@@ -953,15 +962,11 @@ pub fn write_deep_mid(path: &std::path::Path, t: (u32, u32), mid: &DeepMid) -> R
 
 /// A deep mid (`write_deep_mid`), read and checked (its format, step and version, every section
 /// whole): its z10 tile and its part.
-pub fn read_deep_mid(path: &std::path::Path) -> Result<((u32, u32), DeepMid)> {
+pub fn read_deep_mid<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<((u32, u32), DeepMid)> {
     use anyhow::Context;
-    let what = || path.display().to_string();
-    let bytes = crate::depth::grids::open_retrying(
-        path,
-        &|p| crate::depth::grids::within(p, MID_DEADLINE, read_file),
-        &mid_waits(),
-    )
-    .with_context(what)?;
+    let path = path.into();
+    let what = || path.display();
+    let bytes = read_whole(path).with_context(what)?;
     let r = store::sect::SectReader::open(bytes).with_context(what)?;
     let m = r.meta();
     anyhow::ensure!(
@@ -1275,7 +1280,9 @@ mod tests {
     #[test]
     fn a_z6_tile_stores_every_level_down_to_its_deep_terrain() {
         let d = tempfile::tempdir().unwrap();
-        let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
+        let mut out =
+            Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch"))
+                .unwrap();
         terrain(&mut out, true);
         let r = build_deep(&mut out, (448, 256), &|_, _, _| {}).unwrap();
         assert_eq!((r.deep_packs, r.deep_tiles, r.deep_dropped), (1, 6, 0), "{r:?}");
@@ -1471,7 +1478,11 @@ mod tests {
             out.save().unwrap();
         };
         let lo = "layers/slope/lo/3-3-2";
-        let mut fresh = Out::unbound(&d.path().join("fresh"), &d.path().join("fresh-scratch")).unwrap();
+        let mut fresh = Out::unbound(
+            &store::nasfs::NasRoot::local_for_test(&d.path().join("fresh")),
+            &d.path().join("fresh-scratch"),
+        )
+        .unwrap();
         terrain(&mut fresh);
         build_piece(&mut fresh, (28, 16), false, &|_, _, _| {}).unwrap();
         build_lo(&mut fresh, (3, 2), &[(28, 16)], &|_, _, _| {}).unwrap();
@@ -1484,7 +1495,11 @@ mod tests {
         );
         assert_ne!(made.get(6, 24, 23).unwrap().as_ref(), Some(&z6), "the earlier run's tile isn't the fresh one");
         drop(made);
-        let mut again = Out::unbound(&d.path().join("again"), &d.path().join("again-scratch")).unwrap();
+        let mut again = Out::unbound(
+            &store::nasfs::NasRoot::local_for_test(&d.path().join("again")),
+            &d.path().join("again-scratch"),
+        )
+        .unwrap();
         terrain(&mut again);
         let old = vec![(6, 24, 23, z6.clone(), z6.len() as u32), (7, 48, 46, z7.clone(), z7.len() as u32)];
         let enc = crate::shade_codec::ENCODING;
@@ -1518,7 +1533,9 @@ mod tests {
         };
         let (hi, mid, other) = (hi_logical(28, 16), mid_logical(28, 16), hi_logical(29, 16));
         let (lhi, lmid, ldeep) = (hi_logical(24, 23), mid_logical(24, 23), deep_logical(24 * 16 + 3, 23 * 16 + 15));
-        let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
+        let mut out =
+            Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch"))
+                .unwrap();
         fake(&mut out, &hi);
         let kept = fake(&mut out, &other);
         let e = build_piece(&mut out, (28, 16), true, &|_, _, _| {}).unwrap_err().to_string();
@@ -1550,7 +1567,9 @@ mod tests {
     #[test]
     fn an_areas_mids_read_together_are_each_pieces_tiles() {
         let d = tempfile::tempdir().unwrap();
-        let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
+        let mut out =
+            Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch"))
+                .unwrap();
         let q = (2u32, 1u32);
         let ts: Vec<(u32, u32)> = (0..20u32).map(|k| (16 + k % 8, 8 + k / 8)).collect();
         let tiles_of = |t: (u32, u32)| -> Vec<Made> {
@@ -1579,7 +1598,7 @@ mod tests {
         let e = read_mids(&out, q, &ts).unwrap_err().to_string();
         assert!(e.contains(&theirs) && e.contains(&format!("6/{}/{}'s mid", b.0, b.1)), "{e}");
         // One gone: an error (NotFound is tried again first, as a share's moment of it is).
-        std::fs::remove_file(out.path(&theirs)).unwrap();
+        out.path(&theirs).remove_file().unwrap();
         assert!(read_mids(&out, q, &ts[1..2]).is_err());
         // A z6 tile outside q: refused before anything is read.
         assert!(read_mids(&out, (0, 0), &ts).unwrap_err().to_string().contains("isn't in 3/0/0"));
@@ -1604,7 +1623,7 @@ mod tests {
         };
         let t = xy(a[2]);
         let scratch = tempfile::tempdir().unwrap();
-        let out = Out::unbound(root, scratch.path()).unwrap();
+        let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(root), scratch.path()).unwrap();
         let cpu = || {
             let mut u: libc::rusage = unsafe { std::mem::zeroed() };
             unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) };
@@ -1723,7 +1742,7 @@ mod tests {
         let a: Vec<&str> = m.split_whitespace().collect();
         let root = std::path::Path::new(a[0]);
         let scratch = tempfile::tempdir().unwrap();
-        let out = Out::unbound(root, scratch.path()).unwrap();
+        let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(root), scratch.path()).unwrap();
         let q = |p: Px| value(code(p));
         let shade = |p: Px| -> f32 {
             let (alt, az) = (45f32.to_radians(), 315f32.to_radians() + std::f32::consts::PI);

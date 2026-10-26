@@ -16,7 +16,6 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::BufRead;
-use std::path::Path;
 
 /// The rail job's piece: the rail lines in the coverage, with how much of each has trains, and its
 /// unmatched routes.
@@ -263,23 +262,27 @@ pub fn merge(rail: &Value, ferries: &Value, inside: &dyn Fn([i32; 2]) -> bool) -
         km: round1(todo.iter().filter_map(|l| l["km"].as_f64()).sum()),
         unmatched: unmatched.len(),
     };
-    let report = json!({"to_do": todo.len(), "to_do_km": r.km, "by_kind": {"rail": r.rail, "ferry": r.ferry}, "file": crate::inputs::todo_dir(Path::new(""), crate::inputs::gtfs::UNIT).join(TODO_FILE).to_string_lossy(), "unmatched": unmatched});
+    let report = json!({"to_do": todo.len(), "to_do_km": r.km, "by_kind": {"rail": r.rail, "ferry": r.ferry}, "file": format!("{}/{TODO_FILE}", crate::inputs::todo_rel(crate::inputs::gtfs::UNIT)), "unmatched": unmatched});
     (todo, report, r)
 }
 
-/// Writes a file whole (crate::whole::write: a held old file renamed aside).
-fn put(path: &Path, bytes: &[u8]) -> Result<()> {
-    crate::whole::write(path, bytes)
+/// Writes a file whole (store::whole::write: a held old file renamed aside).
+fn put(path: &store::nasfs::NasPath, bytes: &[u8]) -> Result<()> {
+    path.write_whole(bytes)
 }
 
 /// The job: the two pieces read from `out`'s records, the to-do list and its brief written whole
 /// into the static timetables' drop box's `todo/` (under `todo_root`: the project folder, or a
 /// scratch one; `todo/` is never read as an input, crate::inputs::list), the report put as
 /// [`REPORT`].
-pub fn run(out: &mut crate::out::Out, cov: &crate::coverage::Coverage, todo_root: &Path) -> Result<Report> {
+pub fn run(
+    out: &mut crate::out::Out,
+    cov: &crate::coverage::Coverage,
+    todo_root: &store::nasfs::NasRoot,
+) -> Result<Report> {
     let read = |l: &str| -> Result<Value> {
         let c = out.get(l).with_context(|| format!("no {l} yet"))?;
-        Ok(serde_json::from_slice(&std::fs::read(out.path(c)).with_context(|| format!("read {c}"))?)?)
+        Ok(serde_json::from_slice(&out.path(c).read().with_context(|| format!("read {c}"))?)?)
     };
     use crate::timings::{phase, Class};
     let p = phase("the rail and ferry lines read", Class::NasRead);
@@ -290,7 +293,7 @@ pub fn run(out: &mut crate::out::Out, cov: &crate::coverage::Coverage, todo_root
     drop(p);
     let _p = phase("the to-do list and the report written", Class::NasWrite);
     let dir = crate::inputs::todo_dir(todo_root, crate::inputs::gtfs::UNIT);
-    std::fs::create_dir_all(&dir)?;
+    dir.create_dir_all()?;
     let text: String = todo.iter().map(|l| l.to_string() + "\n").collect();
     put(&dir.join(TODO_FILE), text.as_bytes())?;
     put(&dir.join("README.md"), BRIEF.as_bytes())?;
@@ -464,11 +467,18 @@ r5 v1 Ttype=route,route=tram,name=Far Mw99@\n";
         for (step, l, v) in
             [("rail", RAIL_LINES, &rail[..]), ("ferries", FERRY_LINES, &br#"{"lines": [], "unmatched": []}"#[..])]
         {
-            let mut o = crate::out::Out::open(&root, &d.path().join("scratch"), step).unwrap();
+            let mut o =
+                crate::out::Out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch"), step)
+                    .unwrap();
             o.put_bytes(l, "json", v).unwrap();
             o.save().unwrap();
         }
-        let mut out = crate::out::Out::open(&root, &d.path().join("scratch"), "timetables-todo").unwrap();
+        let mut out = crate::out::Out::open(
+            &store::nasfs::NasRoot::local_for_test(&root),
+            &d.path().join("scratch"),
+            "timetables-todo",
+        )
+        .unwrap();
         std::fs::write(d.path().join("sq.poly"), "sq\n1\n 0 0\n 1 0\n 1 1\n 0 1\nEND\nEND\n").unwrap();
         let cov = crate::coverage::Coverage::fixture(
             &[crate::agent::recipes::Recipe { id: "s".into(), name: "S".into(), outline: vec!["poly:sq.poly".into()] }],
@@ -476,7 +486,7 @@ r5 v1 Ttype=route,route=tram,name=Far Mw99@\n";
             d.path(),
         )
         .unwrap();
-        let r = run(&mut out, &cov, &root).unwrap();
+        let r = run(&mut out, &cov, &store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         assert_eq!(r.rail, 1);
         let todo = root.join("inputs/timetables/gtfs/todo");
         assert_eq!(std::fs::read_to_string(todo.join(TODO_FILE)).unwrap().lines().count(), 1);
@@ -485,7 +495,12 @@ r5 v1 Ttype=route,route=tram,name=Far Mw99@\n";
         // The drop box's listing never takes todo/ in, nor counts it as a change.
         std::fs::write(root.join("inputs/timetables/gtfs/a.zip"), b"z").unwrap();
         for recursive in [false, true] {
-            let listed = crate::inputs::list(&root, crate::inputs::gtfs::UNIT, recursive).unwrap();
+            let listed = crate::inputs::list(
+                &store::nasfs::NasRoot::local_for_test(&root),
+                crate::inputs::gtfs::UNIT,
+                recursive,
+            )
+            .unwrap();
             assert_eq!(listed.files.keys().collect::<Vec<_>>(), vec!["a.zip"], "{listed:?}");
             assert!(listed.strays.is_empty(), "{listed:?}");
         }

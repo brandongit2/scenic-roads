@@ -575,7 +575,11 @@ impl Checks for SourcesCheck {
         super::elevation::outlines_of(manifest).map(|o| format!("outlines {o}")).into_iter().collect()
     }
 
-    fn prepared(&self, root: &Path, manifest: &BTreeMap<String, String>) -> Result<Option<Box<dyn Checks>>> {
+    fn prepared(
+        &self,
+        root: &store::nasfs::NasRoot,
+        manifest: &BTreeMap<String, String>,
+    ) -> Result<Option<Box<dyn Checks>>> {
         let outlines = match super::elevation::outlines_of(manifest) {
             Some(o) => match Outlines::open(&root.join(o)) {
                 Ok(x) => Some(x),
@@ -765,7 +769,7 @@ pub fn of(a: &super::Accepted) -> Result<Sources> {
 static READ: std::sync::Mutex<Option<(String, Sources)>> = std::sync::Mutex::new(None);
 
 /// The accepted sources the records `manifest` name; None before any version is accepted.
-pub fn open(root: &Path, manifest: &BTreeMap<String, String>) -> Result<Option<Sources>> {
+pub fn open(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Result<Option<Sources>> {
     let Some(name) = manifest.get(&super::logical(UNIT)) else { return Ok(None) };
     if let Some((n, s)) = READ.lock().unwrap().as_ref() {
         if n == name {
@@ -780,13 +784,13 @@ pub fn open(root: &Path, manifest: &BTreeMap<String, String>) -> Result<Option<S
 
 /// The accepted sources as the build's records name them now (`state/build/manifest.json` under
 /// the NAS project folder `root`).
-pub fn open_now(root: &Path) -> Result<Option<Sources>> {
+pub fn open_now(root: &store::nasfs::NasRoot) -> Result<Option<Sources>> {
     let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json"))?;
     open(root, &m)
 }
 
 /// The accepted sources, or why the step can't read them (none accepted yet: it waits for them).
-pub fn read(root: &Path, manifest: &BTreeMap<String, String>) -> Result<Sources> {
+pub fn read(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Result<Sources> {
     open(root, manifest)?
         .context("no version of the source declarations is accepted (inputs/sources/, docs/inputs.md §6.9)")
 }
@@ -850,15 +854,15 @@ pub const STAGED: [(&str, &[u8]); 17] = [
 /// An accepted version of the staged declarations (`STAGED`), its index named in records `m`: the
 /// steps' tests read them as the build does.
 #[cfg(test)]
-pub fn accept_fixture(root: &Path, m: &mut BTreeMap<String, String>) {
+pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, String>) {
     let mut files = BTreeMap::new();
-    std::fs::create_dir_all(root.join(super::store_dir(UNIT))).unwrap();
+    root.join(super::store_dir(UNIT)).create_dir_all().unwrap();
     for (path, b) in STAGED {
         let c = SourcesCheck::default().file(path, b);
         assert!(c.findings.is_empty(), "{path}: {:?}", c.findings);
         let (stem, ext) = path.rsplit_once('.').unwrap();
         let file = format!("{}/{stem}.{}.{ext}", super::store_dir(UNIT), store::naming::hash16(b));
-        std::fs::write(root.join(&file), b).unwrap();
+        root.join(&file).write(b).unwrap();
         files.insert(
             path.to_string(),
             super::FileEntry {
@@ -873,7 +877,7 @@ pub fn accept_fixture(root: &Path, m: &mut BTreeMap<String, String>) {
         super::Index { fmt: 1, unit: UNIT.into(), checks: format!("{UNIT} 1"), files, accepted: BTreeMap::new() };
     let body = serde_json::to_vec(&index).unwrap();
     let name = format!("{}/@index.{}.json", super::store_dir(UNIT), store::naming::hash16(&body));
-    std::fs::write(root.join(&name), body).unwrap();
+    root.join(&name).write(body).unwrap();
     m.insert(super::logical(UNIT), name);
 }
 
@@ -882,8 +886,8 @@ pub fn accept_fixture(root: &Path, m: &mut BTreeMap<String, String>) {
 pub fn staged() -> Sources {
     let d = tempfile::tempdir().unwrap();
     let mut m = BTreeMap::new();
-    accept_fixture(d.path(), &mut m);
-    read(d.path(), &m).unwrap()
+    accept_fixture(&store::nasfs::NasRoot::local_for_test(d.path()), &mut m);
+    read(&store::nasfs::NasRoot::local_for_test(d.path()), &m).unwrap()
 }
 
 #[cfg(test)]
@@ -968,8 +972,8 @@ mod tests {
     fn the_steps_sources() {
         let d = tempfile::tempdir().unwrap();
         let mut m = BTreeMap::new();
-        accept_fixture(d.path(), &mut m);
-        let s = read(d.path(), &m).unwrap();
+        accept_fixture(&store::nasfs::NasRoot::local_for_test(d.path()), &mut m);
+        let s = read(&store::nasfs::NasRoot::local_for_test(d.path()), &m).unwrap();
         // (crate::heritagewd's query service and its Wikipedia API, crate::pageviews's dumps.)
         assert_eq!(s.role(WIKIDATA).unwrap().url().unwrap(), "https://qlever.dev/api/wikidata");
         assert_eq!(s.role(WIKIPEDIA).unwrap().url().unwrap(), "https://en.wikipedia.org/w/api.php");

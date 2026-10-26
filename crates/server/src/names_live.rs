@@ -421,8 +421,12 @@ mod tests {
     #[test]
     fn names_wait_for_the_spoken_languages() {
         let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        crate::accepted::put(nas.path(), "translations", &[("0-converted/french.jsonl", &line("Blue Lake"))]);
-        let s = crate::test_state(home.path(), nas.path());
+        crate::accepted::put(
+            &store::nasfs::NasRoot::local_for_test(nas.path()),
+            "translations",
+            &[("0-converted/french.jsonl", &line("Blue Lake"))],
+        );
+        let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
         let st = &s.names;
         assert!(st.sync(&s.data));
         st.reload();
@@ -451,14 +455,18 @@ mod tests {
         std::fs::write(home.path().join("translations/x.jsonl"), line("Wrong Lake")).unwrap();
         std::fs::create_dir_all(nas.path().join("translations")).unwrap();
         std::fs::write(nas.path().join("translations/late.jsonl"), line("Wrong Lake")).unwrap();
-        let v = crate::accepted::put(nas.path(), "translations", &[("answers/fr-001.jsonl", &line("Blue Lake"))]);
+        let v = crate::accepted::put(
+            &store::nasfs::NasRoot::local_for_test(nas.path()),
+            "translations",
+            &[("answers/fr-001.jsonl", &line("Blue Lake"))],
+        );
         let index: pipeline::inputs::Index =
             serde_json::from_slice(&std::fs::read(nas.path().join(&v)).unwrap()).unwrap();
         let copy = nas.path().join(&index.files["answers/fr-001.jsonl"].file);
         let good = std::fs::read(&copy).unwrap();
         // (Its bytes not its name's yet: this Mac can't copy the records' version.)
         std::fs::write(&copy, line("Wrong Lake")).unwrap();
-        let s = crate::test_state(home.path(), nas.path());
+        let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
         s.names.set_spoken(france());
         // The old copy kept while the copy here isn't the records' version.
         assert!(!s.names.sync(&s.data));
@@ -475,7 +483,7 @@ mod tests {
         // A batch taken in: shown, and a French tile's ETag part changes; not where French isn't
         // spoken, nor as another kind.
         crate::accepted::put(
-            nas.path(),
+            &store::nasfs::NasRoot::local_for_test(nas.path()),
             "translations",
             &[("answers/fr-001.jsonl", &line("Blue Lake")), ("answers/fr-002.jsonl", &line("Azure Lake"))],
         );
@@ -486,7 +494,7 @@ mod tests {
         assert_eq!(s.names.display(Kind::Other, "Lac Bleu", None, &[], -30.0, 40.0).sub, None);
         assert_eq!(s.names.display(Kind::Road, "Lac Bleu", None, &[], 2.0, 46.0).sub, None);
         // Started again, the NAS away: the accepted version kept here.
-        let again = crate::test_state(home.path(), &home.path().join("no-nas"));
+        let again = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(&home.path().join("no-nas")));
         assert!(!home.path().join("translations").exists());
         again.names.set_spoken(france());
         again.names.reload();

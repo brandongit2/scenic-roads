@@ -12,7 +12,6 @@
 use super::{Finding, Level};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
 use std::sync::Mutex;
 
 /// A description (§5.1).
@@ -211,7 +210,7 @@ static READ: Mutex<Option<HashMap<String, Vec<Described>>>> = Mutex::new(None);
 
 /// Every accepted description the records `manifest` name (each unit's index), in unit and path
 /// order. An error when an index can't be read now.
-pub fn described(root: &Path, manifest: &BTreeMap<String, String>) -> anyhow::Result<Vec<Described>> {
+pub fn described(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> anyhow::Result<Vec<Described>> {
     let mut out = Vec::new();
     for (l, name) in
         manifest.range("sources/inputs/".to_string()..).take_while(|(l, _)| l.starts_with("sources/inputs/"))

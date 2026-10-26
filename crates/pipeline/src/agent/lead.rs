@@ -269,7 +269,7 @@ impl Controls {
         }
         let r = serde_json::to_vec(&self.kept)
             .map_err(anyhow::Error::from)
-            .and_then(|b| crate::whole::write(&dir.join(KEPT), &b));
+            .and_then(|b| store::whole::write(&dir.join(KEPT), &b));
         match r {
             Ok(()) => self.kept_written = Some(self.kept.clone()),
             Err(e) => eprintln!("pool: keeping the lead asks' state: {e:#}"),
@@ -378,7 +378,13 @@ pub fn take(run: &mut Run, home: &Path) {
 /// After a step: the ask's state followed, the last change of lead noted, the history's terms
 /// written, the view made again when due, and the lead handed away by itself when its members can't
 /// reach it (`away`) or its battery is low (`low_battery`). `coord`: this process's coordinator (the lead's), whose history the terms go to.
-pub fn after(run: &mut Run, out: &Out, root: &Path, home: &Path, coord: Option<&crate::coord::Coordinator>) {
+pub fn after(
+    run: &mut Run,
+    out: &Out,
+    root: &store::nasfs::NasRoot,
+    home: &Path,
+    coord: Option<&crate::coord::Coordinator>,
+) {
     let now = run.side.now();
     let dir = home.join("pool");
     let me = run.side.member().id.clone();
@@ -992,7 +998,13 @@ pub fn membership(
 /// stepping down appends its coordinator's history no more: crate::agent's `pool_lead_files`
 /// leaves them out); and into this process's coordinator's history, when it has one, else kept in
 /// its pool folder `dir` for its next process's coordinator (`replay`).
-fn note(events: &[history::Event], coord: Option<&crate::coord::Coordinator>, root: &Path, member: &str, dir: &Path) {
+fn note(
+    events: &[history::Event],
+    coord: Option<&crate::coord::Coordinator>,
+    root: &store::nasfs::NasRoot,
+    member: &str,
+    dir: &Path,
+) {
     if let Err(e) = super::pool::append_history(root, member, events) {
         eprintln!("pool: the terms in the history on the NAS: {e:#}");
     }
@@ -1453,7 +1465,6 @@ mod tests {
     mod runs {
         use super::super::*;
         use crate::agent::pool::{Gates, Role, Run, SharedNas, Side};
-        use crate::pool::nas::Share;
         use std::sync::Arc;
 
         const HOME: Conds =
@@ -1463,7 +1474,7 @@ mod tests {
             pub conds: Conds,
             pub run: Run,
             pub home: PathBuf,
-            pub root: PathBuf,
+            pub root: store::nasfs::NasRoot,
         }
 
         pub(super) fn pool(d: &Path) -> (Mac, Mac) {
@@ -1474,7 +1485,7 @@ mod tests {
             std::fs::write(r.join("state/build/pending.json"), "{}").unwrap();
             let mac = |n: &str| {
                 let home = d.join(n).join("agent");
-                let nas: SharedNas = Arc::new(Share::new(&r));
+                let nas: SharedNas = Arc::new(store::nasfs::NasRoot::local_for_test(&r));
                 let mut side =
                     Side::open(&home, &home.join("pool"), home.parent().unwrap(), "development", nas).unwrap().unwrap();
                 // (Its clocks virtual: time passes as the test says, `pass`, however slowly a busy
@@ -1485,7 +1496,7 @@ mod tests {
                 // unless a test says otherwise.)
                 run.prober.inline = true;
                 run.prober.probe = Arc::new(|_: &[String]| Ok(()));
-                Mac { conds: HOME, run, home, root: r.clone() }
+                Mac { conds: HOME, run, home, root: store::nasfs::NasRoot::local_for_test(r.clone()) }
             };
             let (mut a, mut b) = (mac("a"), mac("b"));
             assert_eq!(a.go().leads, Some(1));
@@ -1600,7 +1611,7 @@ mod tests {
             assert!(b.asked().said.contains("leads term 2"), "{:?}", b.asked());
             assert_eq!(a.run.side.driver().leads(), None);
             let term2: crate::pool::term::Term =
-                serde_json::from_slice(&std::fs::read(a.root.join("state/build/terms/2.json")).unwrap()).unwrap();
+                serde_json::from_slice(&a.root.join("state/build/terms/2.json").read().unwrap()).unwrap();
             assert!(term2.how.starts_with("handed over by") && term2.member == ib, "{term2:?}");
             assert!(
                 a.run.controls.kept.change.as_ref().is_some_and(|c| c
@@ -1614,8 +1625,8 @@ mod tests {
             let notes = std::fs::read_to_string(a.home.join("pool").join(NOTES)).unwrap();
             assert!(notes.contains("term 2: handed over by") && notes.contains("stepped down from term 1"), "{notes}");
             let day = crate::pool::journal::day(a.run.side.now()).unwrap();
-            let nas = std::fs::read_to_string(a.root.join("state/coord/history").join(day).join(format!("{ia}.jsonl")))
-                .unwrap();
+            let nas =
+                a.root.join("state/coord/history").join(day).join(format!("{ia}.jsonl")).read_to_string().unwrap();
             assert!(nas.contains("term 2: handed over by") && nas.contains("stepped down from term 1"), "{nas}");
             // And back: "Hand the Build To ▸ A" on the lead, B.
             until(&mut [&mut a, &mut b], |m| m[1].view().members.iter().any(|x| x.member == ia && x.can_lead));
@@ -1677,7 +1688,7 @@ mod tests {
             pass_all(&mut [&mut a, &mut b], AWAY_S);
             until(&mut [&mut a, &mut b], |m| m[1].run.side.driver().leads() == Some(2));
             let term2: crate::pool::term::Term =
-                serde_json::from_slice(&std::fs::read(a.root.join("state/build/terms/2.json")).unwrap()).unwrap();
+                serde_json::from_slice(&a.root.join("state/build/terms/2.json").read().unwrap()).unwrap();
             assert!(term2.member == ib && term2.how.starts_with("handed over by"), "{term2:?}");
             assert!(a.run.controls.kept.away_at > 0);
             // B leads; A, a member whose broker B can't reach, can't be handed the lead: not by the
@@ -1895,7 +1906,7 @@ mod tests {
             until(&mut [&mut b], |m| m[0].asked().state == State::Done);
             assert_eq!(b.run.side.driver().leads(), Some(2));
             let term2: crate::pool::term::Term =
-                serde_json::from_slice(&std::fs::read(b.root.join("state/build/terms/2.json")).unwrap()).unwrap();
+                serde_json::from_slice(&b.root.join("state/build/terms/2.json").read().unwrap()).unwrap();
             assert!(term2.how.starts_with("taken over by"), "{term2:?}");
             assert!(b.run.controls.kept.change.as_ref().is_some_and(|c| c.said.contains("This Mac leads term 2")));
             drop(a);
@@ -1990,7 +2001,7 @@ mod tests {
             b.go();
             assert_eq!(b.run.side.driver().leads(), Some(2));
             let term2: crate::pool::term::Term =
-                serde_json::from_slice(&std::fs::read(b.root.join("state/build/terms/2.json")).unwrap()).unwrap();
+                serde_json::from_slice(&b.root.join("state/build/terms/2.json").read().unwrap()).unwrap();
             assert!(term2.how.contains("silent for"), "{term2:?}");
             assert_eq!(b.view().alert, None);
             drop(a);
@@ -2047,13 +2058,13 @@ mod tests {
             let switch_to = |file: &str| {
                 let p = root.join("state/build/manifest.json");
                 let mut m: std::collections::BTreeMap<String, String> =
-                    std::fs::read(&p).ok().and_then(|x| serde_json::from_slice(&x).ok()).unwrap_or_default();
+                    p.read().ok().and_then(|x| serde_json::from_slice(&x).ok()).unwrap_or_default();
                 m.insert(crate::inputs::switched_logical(crate::inputs::regions::UNIT), file.to_string());
-                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-                std::fs::write(&p, serde_json::to_vec(&m).unwrap()).unwrap();
+                p.parent().unwrap().create_dir_all().unwrap();
+                p.write(serde_json::to_vec(&m).unwrap()).unwrap();
             };
             // Proved on an app newer than theirs: B can't be handed the lead, and the view says why.
-            std::fs::write(a.root.join("sw.json"), br#"{"same": true, "app": "29991231-0000-aaaaaaa"}"#).unwrap();
+            a.root.join("sw.json").write(br#"{"same": true, "app": "29991231-0000-aaaaaaa"}"#).unwrap();
             switch_to("sw.json");
             assert!(a.run.side.hand_to(&ib).unwrap_err().contains(
                 "older than the one the newer readers' switch (the regions', the elevation datasets') was recorded on"

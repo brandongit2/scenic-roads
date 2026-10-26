@@ -74,7 +74,7 @@ fn sources(dir: &Path) -> Vec<Source> {
             grids: vec![SGrid {
                 bbox: window_box(zoom, c0, r0, (c1 - c0) as usize, (r1 - r0) as usize),
                 zoom,
-                file: p,
+                file: store::nasfs::NasPath::local_for_test(p),
                 zoom_file: None,
                 low_file: None,
                 packed: None,
@@ -94,7 +94,7 @@ fn sources(dir: &Path) -> Vec<Source> {
 
 fn tile(out: &Out, layer: &str, scope: &str, root: (u8, u32, u32), z: u8, x: u32, y: u32) -> Option<Vec<u8>> {
     let c = out.get(&format!("layers/{layer}/{scope}/{}-{}-{}", root.0, root.1, root.2))?;
-    let b = std::fs::read(out.path(c)).unwrap();
+    let b = out.path(c).read().unwrap();
     let idx = store::pack::PackIndex::parse_bytes(&b).unwrap();
     idx.get(&b, z, x, y).unwrap().map(|(_, b)| b)
 }
@@ -119,7 +119,9 @@ fn where_(z: u8, u: f64, v: f64) -> (u32, u32, usize, usize) {
 fn the_depth_of_a_tile_follows_its_sources_detail() {
     let d = tempfile::tempdir().unwrap();
     let srcs = sources(d.path());
-    let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
+    let mut out =
+        Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch"))
+            .unwrap();
     let q = (T.0 >> 3, T.1 >> 3);
     let n_lo = build_lo(&mut out, &srcs, &Fixture, None, q).unwrap();
     assert!(
@@ -227,8 +229,12 @@ impl WaterSource for WithMore {
 }
 
 /// The content names of the packs `srcs` make on `water` (the assembly's and the piece's).
-fn packs(srcs: &[Source], water: &dyn WaterSource, root: &Path) -> (Out, Vec<Option<String>>) {
-    let mut out = Out::unbound(&root.join("root"), &root.join("scratch")).unwrap();
+fn packs(srcs: &[Source], water: &dyn WaterSource, root: &store::nasfs::NasRoot) -> (Out, Vec<Option<String>>) {
+    let mut out = Out::unbound(
+        &store::nasfs::NasRoot::local_for_test(root.unchecked_path().join("root")),
+        &root.unchecked_path().join("scratch"),
+    )
+    .unwrap();
     let q = (T.0 >> 3, T.1 >> 3);
     build_lo(&mut out, srcs, water, None, q).unwrap();
     build_hi(&mut out, srcs, water, None, T).unwrap();
@@ -248,14 +254,30 @@ fn packs(srcs: &[Source], water: &dyn WaterSource, root: &Path) -> (Out, Vec<Opt
 fn rivers_and_narrow_water_without_a_value_change_nothing() {
     let d = tempfile::tempdir().unwrap();
     let srcs = sources(d.path());
-    let (_, plain) = packs(&srcs, &WithMore { river: false, narrow: false }, &d.path().join("a"));
+    let (_, plain) = packs(
+        &srcs,
+        &WithMore { river: false, narrow: false },
+        &store::nasfs::NasRoot::local_for_test(&d.path().join("a")),
+    );
     // (No source is drawn in rivers.)
-    let (_, river) = packs(&srcs, &WithMore { river: true, narrow: false }, &d.path().join("b"));
+    let (_, river) = packs(
+        &srcs,
+        &WithMore { river: true, narrow: false },
+        &store::nasfs::NasRoot::local_for_test(&d.path().join("b")),
+    );
     assert_eq!(plain, river, "a river no source is drawn in");
     // (With only the lake's survey, the sea's narrow channel has no value.)
     let lake_only = &srcs[2..];
-    let (_, a) = packs(lake_only, &WithMore { river: false, narrow: false }, &d.path().join("c"));
-    let (_, b) = packs(lake_only, &WithMore { river: false, narrow: true }, &d.path().join("e"));
+    let (_, a) = packs(
+        lake_only,
+        &WithMore { river: false, narrow: false },
+        &store::nasfs::NasRoot::local_for_test(&d.path().join("c")),
+    );
+    let (_, b) = packs(
+        lake_only,
+        &WithMore { river: false, narrow: true },
+        &store::nasfs::NasRoot::local_for_test(&d.path().join("e")),
+    );
     assert!(a.iter().any(Option::is_some));
     assert_eq!(a, b, "narrow water no source has a value in");
 }
@@ -292,7 +314,7 @@ fn a_river_meeting_the_sea_or_a_lake_changes_nothing_without_a_value() {
     let ((c0, r0), (c1, r1)) = (at(8, 0.0, 0.0), at(8, 0.5, 1.0));
     let p = d.path().join("west.tif");
     grid_file(&p, 8, c0, r0, (c1 - c0) as u32, (r1 - r0) as u32, &|_, _| -50.0);
-    srcs[0].grids[0].file = p;
+    srcs[0].grids[0].file = store::nasfs::NasPath::local_for_test(p);
     srcs[0].grids[0].bbox = window_box(8, c0, r0, (c1 - c0) as usize, (r1 - r0) as usize);
     // (z8: 1024 pixels across T. The sea to x 512.25 of z8; a lake (no survey) on to 512.5, then a
     // river, in a band; further south the sea to 512.5, then the river; further still the sea to
@@ -309,8 +331,8 @@ fn a_river_meeting_the_sea_or_a_lake_changes_nothing_without_a_value() {
     with.push((WKind::River, 1 << 63, [x(512.5), 0.5, 0.65, 0.53]));
     with.push((WKind::River, 1 << 63, [x(512.5), 0.6, 0.65, 0.62]));
     with.push((WKind::River, 1 << 63, [x(512.25), 0.7, x(512.5), 0.72]));
-    let (_, a) = packs(&srcs, &Rects(base), &d.path().join("a"));
-    let (_, b) = packs(&srcs, &Rects(with), &d.path().join("b"));
+    let (_, a) = packs(&srcs, &Rects(base), &store::nasfs::NasRoot::local_for_test(&d.path().join("a")));
+    let (_, b) = packs(&srcs, &Rects(with), &store::nasfs::NasRoot::local_for_test(&d.path().join("b")));
     assert!(a.iter().any(Option::is_some));
     assert_eq!(a, b, "rivers no source is drawn in, meeting the sea and a lake");
 }
@@ -320,7 +342,8 @@ fn a_river_takes_the_sources_drawn_in_rivers() {
     let d = tempfile::tempdir().unwrap();
     let mut srcs = sources(d.path());
     srcs[0].rivers = true;
-    let (out, _) = packs(&srcs, &WithMore { river: true, narrow: false }, d.path());
+    let (out, _) =
+        packs(&srcs, &WithMore { river: true, narrow: false }, &store::nasfs::NasRoot::local_for_test(d.path()));
     let q = (3, T.0 >> 3, T.1 >> 3);
     let (x, y, px, py) = where_(8, 0.6, 0.61);
     let t8 = tile(&out, LAYER, "lo", q, 8, x, y).expect("the river's z8 tile");
@@ -335,13 +358,14 @@ fn a_river_takes_the_sources_drawn_in_rivers() {
 fn narrow_water_keeps_a_sources_depth() {
     let d = tempfile::tempdir().unwrap();
     let srcs = sources(d.path());
-    let (out, _) = packs(&srcs, &WithMore { river: false, narrow: true }, d.path());
+    let (out, _) =
+        packs(&srcs, &WithMore { river: false, narrow: true }, &store::nasfs::NasRoot::local_for_test(d.path()));
     let q = (3, T.0 >> 3, T.1 >> 3);
     let (x, y, px, py) = where_(8, 0.7, 0.80015);
     let t8 = tile(&out, LAYER, "lo", q, 8, x, y).expect("the channel's z8 tile");
     assert!((depth_at(&t8, px, py) + 50.0).abs() < 0.6, "{}", depth_at(&t8, px, py));
     // (Without the channel, the land there has none.)
-    let (plain, _) = packs(&srcs, &Fixture, &d.path().join("p"));
+    let (plain, _) = packs(&srcs, &Fixture, &store::nasfs::NasRoot::local_for_test(&d.path().join("p")));
     assert!(tile(&plain, LAYER, "lo", q, 8, x, y).is_none_or(|t| depth_at(&t, px, py) >= NODATA_MIN));
 }
 
@@ -350,7 +374,7 @@ fn an_estimated_source_is_classed_so() {
     let d = tempfile::tempdir().unwrap();
     let mut srcs = sources(d.path());
     srcs[2].estimated = true;
-    let (out, _) = packs(&srcs, &Fixture, d.path());
+    let (out, _) = packs(&srcs, &Fixture, &store::nasfs::NasRoot::local_for_test(d.path()));
     let (x, y, px, py) = where_(11, 0.75, 0.25);
     let c = tile(&out, CLASS_LAYER, "hi", (6, T.0, T.1), 11, x, y).expect("the lake's z11 tile");
     assert_eq!(class_at(&c, px, py), C_ESTIMATED | (3 << 4));
@@ -378,7 +402,7 @@ fn the_depth_steps_time_their_stages() {
     let srcs = sources(d.path());
     crate::timings::reset();
     crate::timings::start("depth-lo");
-    packs(&srcs, &Fixture, d.path());
+    packs(&srcs, &Fixture, &store::nasfs::NasRoot::local_for_test(d.path()));
     let r = crate::timings::snapshot(true).unwrap();
     let top: Vec<&str> = r.phases.iter().map(|p| p.name.as_str()).collect();
     for p in ["the basemap's water read", "composing", "tiles encoded", "z3–5 from their children", "packs written"] {
@@ -557,7 +581,7 @@ fn measure_the_waters_reads() {
         }
     }
     let scratch = tempfile::tempdir().unwrap();
-    let out = Out::unbound(root, scratch.path()).unwrap();
+    let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(root), scratch.path()).unwrap();
     let water = Counting(crate::terrain_pack::open_water(&out).unwrap(), AtomicUsize::new(0));
     let n = 1u32 << (zoom - 6);
     for round in 0..rounds {
@@ -604,7 +628,7 @@ fn measure_the_waters_reads() {
 /// set, the basemap and the packs are read from whole local copies there, as a job's are
 /// (crate::localread, task #551; the copies' time is the phase "whole local copies made").
 /// A packed index's feature as the build reads it (`Source::from_declared`'s, one grid).
-fn grid_of(root: &Path, id: &str, f: &crate::inputs::sources::Feature) -> grids::Grid {
+fn grid_of(root: &store::nasfs::NasRoot, id: &str, f: &crate::inputs::sources::Feature) -> grids::Grid {
     let decl = "name = \"N\"\ncredit = \"C\"\nlicence = \"CC0-1.0\"\nterritory = \"world\"\n[data]\nrole = \"depth\"\nkind = \"data\"\nformat = \"depth-grid\"\nindex = \"i.geojson\"\n[data.params]\ncode = 3\nwater = \"sea\"\nlabel = \"L\"\ndatum = \"D\"\n";
     let d = crate::inputs::sources::parse(decl.as_bytes()).unwrap();
     let s = crate::inputs::sources::Source { id: id.into(), data: d.data, keyed: "k".into(), index: vec![f.clone()] };
@@ -625,7 +649,7 @@ fn measure_a_real_assembly() {
     // (Its open-files limit a job's, so a reader keeps as many grids open: crate::sys.)
     crate::sys::raise_open_files();
     let scratch = tempfile::tempdir().unwrap();
-    let out = Out::unbound(root, scratch.path()).unwrap();
+    let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(root), scratch.path()).unwrap();
     let mut srcs = grids::declared(out.root(), &out.manifest).unwrap();
     for o in std::env::var("SCENIC_DEPTH_PACKED").unwrap_or_default().split_whitespace() {
         let v: Vec<&str> = o.split('=').collect();
@@ -635,20 +659,20 @@ fn measure_a_real_assembly() {
         let mut pin = std::collections::HashMap::new();
         let mut packed: Vec<grids::Grid> = Vec::new();
         for f in &feats {
-            let g = grid_of(root, id, f);
+            let g = grid_of(&store::nasfs::NasRoot::local_for_test(root), id, f);
             pin.insert(g.file.clone(), g);
         }
         for g in pin.into_values() {
             let mut g = g;
             let p = g.packed.as_mut().expect("a packed grid");
-            p.pack = std::sync::Arc::new(dir.join(p.pack.file_name().unwrap()));
+            p.pack = std::sync::Arc::new(store::nasfs::NasPath::local_for_test(dir.join(p.pack.file_name().unwrap())));
             packed.push(g);
         }
         // (Its grids as the index orders them: coarse first, then by file.)
         packed.sort_by(|a, b| a.zoom.cmp(&b.zoom).then(a.file.cmp(&b.file)));
         let n = packed.len();
         // (A trial's index has the grids meeting a box: those of the target, the rest kept loose.)
-        let names: std::collections::HashSet<std::path::PathBuf> = packed.iter().map(|g| g.file.clone()).collect();
+        let names: std::collections::HashSet<store::nasfs::NasPath> = packed.iter().map(|g| g.file.clone()).collect();
         let mut all: Vec<grids::Grid> = s.grids.iter().filter(|g| !names.contains(&g.file)).cloned().collect();
         all.extend(packed);
         all.sort_by(|a, b| a.zoom.cmp(&b.zoom).then(a.file.cmp(&b.file)));
@@ -657,7 +681,8 @@ fn measure_a_real_assembly() {
     }
     crate::timings::start(if z == 3 { "depth-lo" } else { "depth" });
     let t0 = std::time::Instant::now();
-    let local = crate::localread::Local::from_env(root).map(std::sync::Arc::new);
+    let local =
+        crate::localread::Local::from_env(&store::nasfs::NasRoot::local_for_test(root)).map(std::sync::Arc::new);
     let water = {
         let _p = crate::timings::phase("the basemap's water opened", crate::timings::Class::NasRead);
         crate::terrain_pack::open_water_with(&out, local.as_deref()).unwrap()
@@ -739,7 +764,9 @@ fn the_floors_shading_is_the_depths_pyramid() {
 fn the_floors_shading_assembly_takes_the_z6_tiles_finer_shading() {
     use roadcore::shade::{code, decode, quadrant, Px};
     let d = tempfile::tempdir().unwrap();
-    let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
+    let mut out =
+        Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch"))
+            .unwrap();
     let ramp: Vec<f32> = (0..65536).map(|i| -10.0 - (i % 256) as f32).collect();
     let enc = |v: &[f32]| fall::encode(&Grid::F(v.to_vec())).unwrap();
     let mut lo = vec![(8u8, 74u32, 91u32, enc(&ramp), 0u32), (8, 80, 91, enc(&ramp), 0)].into_iter();
@@ -786,11 +813,11 @@ fn measure_the_floors_shading() {
     let (x, y) = a[1].split_once('/').unwrap();
     let q: (u32, u32) = (x.parse().unwrap(), y.parse().unwrap());
     let scratch = tempfile::tempdir().unwrap();
-    let out = Out::unbound(Path::new(a[0]), scratch.path()).unwrap();
+    let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(Path::new(a[0])), scratch.path()).unwrap();
     let t0 = std::time::Instant::now();
     let read = |l: &str| -> std::collections::BTreeMap<(u8, u32, u32), Vec<u8>> {
         let Some(c) = out.get(l) else { return Default::default() };
-        let f = store::range::PlainFile::open(&out.path(c)).unwrap();
+        let f = out.path(c).open_plain().unwrap();
         let idx = store::pack::PackIndex::read_from(&f).unwrap();
         idx.entries.iter().map(|e| (e.zxy(), idx.read_blob(&f, e).unwrap())).collect()
     };
@@ -838,7 +865,9 @@ fn a_depth_run_stopped_after_some_blocks_resumes_there_and_makes_the_same_bytes(
     use crate::resume_log::STOP_AFTER;
     let d = tempfile::tempdir().unwrap();
     let srcs = sources(d.path());
-    let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
+    let mut out =
+        Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch"))
+            .unwrap();
     let q = (T.0 >> 3, T.1 >> 3);
     // (The assembly stored first: the z6 tile reads its lo packs.)
     build_lo(&mut out, &srcs, &Fixture, None, q).unwrap();
@@ -847,7 +876,7 @@ fn a_depth_run_stopped_after_some_blocks_resumes_there_and_makes_the_same_bytes(
     assert!(!crate::resume_log::path(&out.scratch, (6, T.0, T.1)).exists(), "nothing kept without resuming on");
     for stop in [1, 5, 40] {
         let scratch = d.path().join(format!("scratch-{stop}"));
-        let out = Out::unbound(&d.path().join("root"), &scratch).unwrap();
+        let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &scratch).unwrap();
         STOP_AFTER.set(Some(stop));
         assert!(compose_hi(&out, &srcs, &Fixture, None, T, 12, true).is_err(), "stopped after {stop} blocks");
         let log = std::fs::read(crate::resume_log::path(&scratch, (6, T.0, T.1))).unwrap();
@@ -869,7 +898,7 @@ fn a_depth_run_stopped_after_some_blocks_resumes_there_and_makes_the_same_bytes(
         crate::layers::write_pack(out, layer, enc, false, "lo", (3, at.0, at.1), &mut it).unwrap();
         out.save().unwrap();
     };
-    let mut out = Out::unbound(&d.path().join("root"), &scratch).unwrap();
+    let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &scratch).unwrap();
     lo_pack(&mut out, LAYER, ENCODING, (6, 6), -5.0);
     lo_pack(&mut out, SHADE_LAYER, crate::shade_codec::ENCODING, q, -5.0);
     lo_pack(&mut out, CLASS_LAYER, CLASS_ENCODING, q, -5.0);
@@ -879,9 +908,11 @@ fn a_depth_run_stopped_after_some_blocks_resumes_there_and_makes_the_same_bytes(
     assert!(compose_hi(&out, &srcs, &Fixture, None, T, 12, true).unwrap() == fresh_hi);
     // A neighbour's depth lo pack, which it may read, changed: its log not taken.
     lo_pack(&mut out, LAYER, ENCODING, (q.0 + 1, q.1), -5.0);
-    let out = Out::unbound(&d.path().join("root"), &scratch).unwrap();
+    let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &scratch).unwrap();
     assert!(compose_hi(&out, &srcs, &Fixture, None, T, 12, true).is_err(), "afresh, it reads the sources");
-    let fresh = Out::unbound(&d.path().join("root"), &d.path().join("scratch-none")).unwrap();
+    let fresh =
+        Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch-none"))
+            .unwrap();
     assert!(compose_hi(&fresh, &srcs, &Fixture, None, T, 12, true).is_err(), "made afresh, it reads them");
 }
 
@@ -896,7 +927,11 @@ fn a_resumed_z6_tiles_packs_and_shading_are_the_same_bytes() {
     let srcs = sources(d.path());
     let q = (T.0 >> 3, T.1 >> 3);
     let packs = |name: &str, stop: Option<usize>| {
-        let mut out = Out::unbound(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
+        let mut out = Out::unbound(
+            &store::nasfs::NasRoot::local_for_test(&d.path().join(name)),
+            &d.path().join(format!("{name}-scratch")),
+        )
+        .unwrap();
         build_lo(&mut out, &srcs, &Fixture, None, q).unwrap();
         if let Some(n) = stop {
             STOP_AFTER.set(Some(n));
@@ -907,7 +942,7 @@ fn a_resumed_z6_tiles_packs_and_shading_are_the_same_bytes() {
         assert!(!crate::resume_log::path(&out.scratch, (6, T.0, T.1)).exists(), "the log gone once saved");
         [LAYER, CLASS_LAYER, SHADE_LAYER].map(|l| {
             let c = out.get(&hi_logical(l, T.0, T.1)).unwrap_or_else(|| panic!("{l}'s hi pack")).to_string();
-            std::fs::read(out.path(&c)).unwrap()
+            out.path(&c).read().unwrap()
         })
     };
     let fresh = packs("fresh", None);

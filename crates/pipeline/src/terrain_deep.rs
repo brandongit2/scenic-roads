@@ -257,7 +257,7 @@ impl Fine {
     /// The fine datasets of the accepted versions `m` names under `root`, their heights converted by
     /// the accepted geoid sources (`geoid` from the accepted sources, if any); None without an
     /// accepted elevation version.
-    pub fn read(root: &std::path::Path, m: &BTreeMap<String, String>) -> Result<Option<Fine>> {
+    pub fn read(root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) -> Result<Option<Fine>> {
         let Some(a) = crate::inputs::open(root, m, crate::inputs::elevation::UNIT)? else { return Ok(None) };
         let geoid = match crate::inputs::sources::open(root, m)? {
             Some(s) => s.many(crate::inputs::sources::GEOID).to_vec(),
@@ -1289,7 +1289,7 @@ fn make_tiles(
     water: Option<&dyn crate::terrain_water::WaterSource>,
     fine: &Fine,
     fetch: &dyn crate::fetch::Fetch,
-    store: &std::path::Path,
+    store: &store::nasfs::NasPath,
     zs: std::ops::Range<u8>,
     mut log: Option<&mut crate::terrain_resume::DeepLog>,
     sink: &mut dyn FnMut(Vec<(u8, u32, u32, Vec<u8>)>) -> Result<()>,
@@ -1324,7 +1324,7 @@ fn make_tiles(
         return Ok(rep);
     }
     let bf = BaseFetch::new(fetch);
-    let o = Opts { fetch: &bf, store: Some(store.to_path_buf()) };
+    let o = Opts { fetch: &bf, store: Some(store.clone()) };
     let presence_s = Sampler::new(&presence, &o)?;
     let full_s = Sampler::sharing(&full, &o, &presence_s)?;
     // (Its files' reads planned over its base tiles' box, not the z8 tile's.)
@@ -1557,8 +1557,11 @@ mod tests {
     fn the_datasets_finer_than_the_terrains_are_fine() {
         let d = tempfile::tempdir().unwrap();
         let mut m = std::collections::BTreeMap::new();
-        crate::inputs::elevation::accept_fixture(d.path(), &mut m);
-        let a = crate::inputs::open(d.path(), &m, crate::inputs::elevation::UNIT).unwrap().unwrap();
+        crate::inputs::elevation::accept_fixture(&store::nasfs::NasRoot::local_for_test(d.path()), &mut m);
+        let a =
+            crate::inputs::open(&store::nasfs::NasRoot::local_for_test(d.path()), &m, crate::inputs::elevation::UNIT)
+                .unwrap()
+                .unwrap();
         let mut ds = declared::accepted(&a).unwrap();
         assert!(sets(&ds).is_empty(), "the fixture's datasets are no finer than the terrain's base");
         assert!(Fine::of(a.clone(), Vec::new()).unwrap().sets.is_empty());
@@ -1839,8 +1842,10 @@ mod tests {
     /// The fixture's elevation datasets, its world dataset taken as a pyramid to `zoom`.
     fn world_to(d: &std::path::Path, zoom: u8) -> Fine {
         let mut m = std::collections::BTreeMap::new();
-        crate::inputs::elevation::accept_fixture(d, &mut m);
-        let a = crate::inputs::open(d, &m, crate::inputs::elevation::UNIT).unwrap().unwrap();
+        crate::inputs::elevation::accept_fixture(&store::nasfs::NasRoot::local_for_test(d), &mut m);
+        let a = crate::inputs::open(&store::nasfs::NasRoot::local_for_test(d), &m, crate::inputs::elevation::UNIT)
+            .unwrap()
+            .unwrap();
         let mut fine = Fine::of(a, Vec::new()).unwrap();
         fine.sets = vec![FineSet {
             id: "world".into(),
@@ -1858,7 +1863,7 @@ mod tests {
         let fine = world_to(d.path(), 13);
         let root = d.path().join("nas");
         std::fs::create_dir_all(root.join("state/build")).unwrap();
-        let out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
+        let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch")).unwrap();
         // Z10 tile 10/299/369 (in z8 tile 8/74/92, z6 tile 6/18/23): two of its base tiles (one at
         // its east edge), the ring tile past that edge (in z10 tile 10/300/369), one further, and a
         // z9; each z12 at 50 m.
@@ -1947,7 +1952,7 @@ mod tests {
             let root = d.path().join(name);
             std::fs::create_dir_all(root.join("state/build")).unwrap();
             let scratch = d.path().join(format!("{name}-scratch"));
-            let mut out = Out::unbound(&root, &scratch).unwrap();
+            let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch).unwrap();
             STOP_AFTER.set(stop);
             let r = build_target_kept(&mut out, t, &bases, None, fine, &Varied, true);
             STOP_AFTER.set(None);
@@ -1983,7 +1988,7 @@ mod tests {
         let fine = world_to(d.path(), 14);
         let root = d.path().join("nas");
         std::fs::create_dir_all(root.join("state/build")).unwrap();
-        let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
+        let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch")).unwrap();
         // Z6 tile 6/18/23 (~45°N), the coverage over a few of its base tiles.
         let cov = crate::coverage::Coverage::fixture(
             &[crate::agent::recipes::Recipe {
@@ -2016,7 +2021,7 @@ mod tests {
         let l = pack_logical(t.0, t.1);
         let (idx, f) = {
             let p = out.path(out.get(&l).unwrap());
-            let f = store::range::PlainFile::open(&p).unwrap();
+            let f = p.open_plain().unwrap();
             (store::pack::PackIndex::read_from(&f).unwrap(), f)
         };
         let zs: std::collections::BTreeSet<u8> = idx.entries.iter().map(|e| e.zxy().0).collect();
@@ -2069,7 +2074,7 @@ mod tests {
         let fine = world_to(d.path(), 13);
         let root = d.path().join("nas");
         std::fs::create_dir_all(root.join("state/build")).unwrap();
-        let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
+        let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch")).unwrap();
         let cov = crate::coverage::Coverage::fixture(
             &[crate::agent::recipes::Recipe {
                 id: "r".into(),
@@ -2167,7 +2172,7 @@ mod tests {
             None,
             &fine,
             &flat,
-            d.path(),
+            &store::nasfs::NasPath::local_for_test(d.path()),
             0..MAX_Z + 1,
             None,
             &mut |m| {

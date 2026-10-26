@@ -668,7 +668,6 @@ mod tests {
     use super::super::{Clock, Source, StepClock, Token};
     use super::*;
     use std::collections::BTreeMap;
-    use std::path::Path;
 
     const T0: u64 = 1_800_000_000_000;
 
@@ -720,7 +719,7 @@ mod tests {
         Upstream { addr, heads }
     }
 
-    fn proxy(root: &Path, me: &str, clock: &Arc<StepClock>, up: &Upstream) -> Proxy {
+    fn proxy(root: &store::nasfs::NasRoot, me: &str, clock: &Arc<StepClock>, up: &Upstream) -> Proxy {
         let b = Arc::new(Budget::new(root, me, clock.clone()).with_ledger());
         let a = up.addr;
         Proxy::start(b, Some(Arc::new(move |_: &str, _: u16| Some(a)))).unwrap()
@@ -768,7 +767,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let clock = Arc::new(StepClock::at(T0));
         let up = upstream(Arc::new(|| {}));
-        let (a, b) = (proxy(dir.path(), "m-a", &clock, &up), proxy(dir.path(), "m-b", &clock, &up));
+        let (a, b) = (
+            proxy(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-a", &clock, &up),
+            proxy(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-b", &clock, &up),
+        );
         let mut ts = Vec::new();
         for i in 0..6 {
             let p = if i % 2 == 0 { a.addr } else { b.addr };
@@ -797,7 +799,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let clock = Arc::new(StepClock::at(T0));
         let up = upstream(Arc::new(|| {}));
-        let (a, b) = (proxy(dir.path(), "m-a", &clock, &up), proxy(dir.path(), "m-b", &clock, &up));
+        let (a, b) = (
+            proxy(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-a", &clock, &up),
+            proxy(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-b", &clock, &up),
+        );
         let r = request(&a.addr, "POST /hold?s=40 HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n");
         assert!(r.starts_with("HTTP/1.1 200") && r.ends_with("held\n"), "{r}");
         // (Its proxy held at once; the NAS's part on a thread: waited for here.)
@@ -815,7 +820,15 @@ mod tests {
     #[test]
     fn a_proxys_port_is_bound_by_none_beside_it() {
         let dir = tempfile::tempdir().unwrap();
-        let first = Proxy::start(Arc::new(Budget::new(dir.path(), "m-a", Arc::new(StepClock::at(T0)))), None).unwrap();
+        let first = Proxy::start(
+            Arc::new(Budget::new(
+                &store::nasfs::NasRoot::local_for_test(dir.path()),
+                "m-a",
+                Arc::new(StepClock::at(T0)),
+            )),
+            None,
+        )
+        .unwrap();
         let port = first.port();
         assert!(listen(port).is_err());
         first.stop();
@@ -824,7 +837,7 @@ mod tests {
         assert!(listen(plain.local_addr().unwrap().port()).is_err());
     }
 
-    fn proxy_within(root: &Path, clock: &Arc<StepClock>, up: &Upstream, limits: Limits) -> Proxy {
+    fn proxy_within(root: &store::nasfs::NasRoot, clock: &Arc<StepClock>, up: &Upstream, limits: Limits) -> Proxy {
         let b = Arc::new(Budget::new(root, "m-a", clock.clone()).with_ledger());
         let a = up.addr;
         Proxy::start_with(b, Some(Arc::new(move |_: &str, _: u16| Some(a))), limits).unwrap()
@@ -844,13 +857,22 @@ mod tests {
         let up = upstream(Arc::new(move || c.set(c.now_ms() + 7_000)));
         let (short, long) = (Duration::from_millis(100), Duration::from_secs(60));
         // (Nothing sent: closed at its head's limit, nothing answered.)
-        let h =
-            proxy_within(&dir.path().join("h"), &clock, &up, Limits { head: short, idle: long, conns: 8, wait: long });
+        let h = proxy_within(
+            &store::nasfs::NasRoot::local_for_test(&dir.path().join("h")),
+            &clock,
+            &up,
+            Limits { head: short, idle: long, conns: 8, wait: long },
+        );
         let mut out = Vec::new();
         TcpStream::connect(h.addr).unwrap().read_to_end(&mut out).unwrap();
         assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
         // (A query's tunnel, its byte sent with its head; the client never ends its side.)
-        let a = proxy_within(dir.path(), &clock, &up, Limits { head: long, idle: short, conns: 8, wait: long });
+        let a = proxy_within(
+            &store::nasfs::NasRoot::local_for_test(dir.path()),
+            &clock,
+            &up,
+            Limits { head: long, idle: short, conns: 8, wait: long },
+        );
         let mut s = TcpStream::connect(a.addr).unwrap();
         s.write_all(b"CONNECT query.wikidata.org:443 HTTP/1.1\r\n\r\nq").unwrap();
         let mut all = Vec::new();
@@ -867,7 +889,7 @@ mod tests {
         // (One connection out at most, no wait: while one is open, the next is answered 503; a
         // hold told meanwhile isn't kept waiting.)
         let b = proxy_within(
-            &dir.path().join("b"),
+            &store::nasfs::NasRoot::local_for_test(&dir.path().join("b")),
             &clock,
             &up,
             Limits { head: long, idle: long, conns: 1, wait: Duration::ZERO },
@@ -893,7 +915,12 @@ mod tests {
         let clock = Arc::new(StepClock::at(T0));
         let up = upstream(Arc::new(|| std::thread::sleep(Duration::from_millis(50))));
         let long = Duration::from_secs(60);
-        let a = proxy_within(dir.path(), &clock, &up, Limits { head: long, idle: long, conns: 4, wait: long });
+        let a = proxy_within(
+            &store::nasfs::NasRoot::local_for_test(dir.path()),
+            &clock,
+            &up,
+            Limits { head: long, idle: long, conns: 4, wait: long },
+        );
         let p = a.addr;
         let ts: Vec<_> = (0..8)
             .map(|i| {
@@ -920,7 +947,9 @@ mod tests {
         let clock = Arc::new(StepClock::at(T0));
         let up = upstream(Arc::new(|| {}));
         let a = up.addr;
-        let b = Arc::new(Budget::new(dir.path(), "m-a", clock.clone()).with_ledger());
+        let b = Arc::new(
+            Budget::new(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-a", clock.clone()).with_ledger(),
+        );
         let p = Proxy::start(b, Some(Arc::new(move |_: &str, _: u16| Some(a)))).unwrap();
         let env = p.env_for("job2");
         assert!(env.contains(&("HTTPS_PROXY".into(), format!("http://job2:x@{}", p.addr))));
@@ -947,7 +976,9 @@ mod tests {
         let clock = Arc::new(StepClock::at(T0));
         let up = upstream(Arc::new(|| {}));
         let a = up.addr;
-        let b = Arc::new(Budget::new(dir.path(), "m-a", clock.clone()).with_ledger());
+        let b = Arc::new(
+            Budget::new(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-a", clock.clone()).with_ledger(),
+        );
         // (gone.example: a port nothing listens on.)
         let gone = store::spawn::listen("127.0.0.1:0").unwrap().local_addr().unwrap();
         let p =
@@ -998,7 +1029,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let clock = Arc::new(StepClock::at(T0));
         let up = upstream(Arc::new(|| {}));
-        let a = proxy(&dir.path().join("away"), "m-a", &clock, &up);
+        let a = proxy(&store::nasfs::NasRoot::local_for_test(&dir.path().join("away")), "m-a", &clock, &up);
         let r = request(&a.addr, "POST /hold?s=30 HTTP/1.1\r\n\r\n");
         assert!(r.ends_with("held\n"), "{r}");
         assert_eq!(a.budget.held_until(), T0 + 30_000);
@@ -1013,7 +1044,7 @@ mod tests {
         let clock = Arc::new(StepClock::at(T0));
         let c = clock.clone();
         let up = upstream(Arc::new(move || c.set(c.now_ms() + 7_000)));
-        let a = proxy(dir.path(), "m-a", &clock, &up);
+        let a = proxy(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-a", &clock, &up);
         assert_eq!(tunnel(&a.addr, "query.wikidata.org", b"q\n"), b"q\n");
         let w0 = a.budget.ledger()[0].window;
         assert_eq!(tunnel(&a.addr, "en.wikipedia.org", b"x"), b"x", "another class owes nothing");
@@ -1031,7 +1062,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let clock = Arc::new(StepClock::at(T0));
         let up = upstream(Arc::new(|| {}));
-        let a = proxy(dir.path(), "m-a", &clock, &up);
+        let a = proxy(&store::nasfs::NasRoot::local_for_test(dir.path()), "m-a", &clock, &up);
         let r = request(&a.addr, "GET http://example.test:8080/a/b?c=1 HTTP/1.1\r\nHost: example.test:8080\r\nProxy-Connection: keep-alive\r\n\r\n");
         assert!(r.starts_with("GET /a/b?c=1 HTTP/1.1\r\n"), "{r}");
         assert!(r.contains("Connection: close\r\n") && !r.contains("Proxy-Connection"), "{r}");

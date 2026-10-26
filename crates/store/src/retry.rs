@@ -36,6 +36,16 @@ pub fn waits() -> Vec<Duration> {
     WAITS.iter().map(|s| Duration::from_millis(s * u)).collect()
 }
 
+/// The server's waits between tries, in seconds (5 s in all, decision D3 of #663: an HTTP worker
+/// never stalls for minutes).
+pub const SHORT_WAITS: [u64; 4] = [1, 1, 1, 2];
+
+/// `SHORT_WAITS` in this process (scaled by `fast`).
+pub fn short_waits() -> Vec<Duration> {
+    let u = UNIT_MS.load(Ordering::Relaxed);
+    SHORT_WAITS.iter().map(|s| Duration::from_millis(s * u)).collect()
+}
+
 /// Makes this process's waits milliseconds (tests).
 pub fn fast() {
     UNIT_MS.store(1, Ordering::Relaxed);

@@ -9,7 +9,6 @@
 
 use anyhow::Result;
 use std::collections::BTreeMap;
-use std::path::Path;
 
 /// The file, under the project's root.
 pub const FILE: &str = "state/build/extents.json";
@@ -18,15 +17,19 @@ pub const FILE: &str = "state/build/extents.json";
 pub type Extents = BTreeMap<String, [i32; 4]>;
 
 /// The extents kept (none when the file isn't there or can't be read).
-pub fn load(root: &Path) -> Extents {
-    crate::whole::read_replaced(&root.join(FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+pub fn load(root: &store::nasfs::NasRoot) -> Extents {
+    root.join(FILE).read_replaced().ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
 /// `known`, with the extents of manifest `m`'s base packs it lacks read from their headers, and
 /// those of packs `m` doesn't list dropped. How many headers were read. Writes nothing. A pack
 /// whose header can't be read, or has no extent, is said and left out (looked at again next time),
 /// the rest kept: one left out is taken to lie within its reach (`unit_reach`).
-pub fn fill(root: &Path, m: &BTreeMap<String, String>, mut known: Extents) -> Result<(Extents, usize)> {
+pub fn fill(
+    root: &store::nasfs::NasRoot,
+    m: &BTreeMap<String, String>,
+    mut known: Extents,
+) -> Result<(Extents, usize)> {
     let contents: std::collections::BTreeSet<&String> =
         m.iter().filter(|(l, _)| l.starts_with("base/")).map(|(_, c)| c).collect();
     let mut read = 0;
@@ -47,27 +50,27 @@ pub fn fill(root: &Path, m: &BTreeMap<String, String>, mut known: Extents) -> Re
 }
 
 /// A base pack's extent, from its header.
-fn header_extent(p: &Path) -> Result<[i32; 4]> {
-    let r = store::sect::SectReader::open(store::range::PlainFile::open(p)?)?;
+fn header_extent(p: &store::nasfs::NasPath) -> Result<[i32; 4]> {
+    let r = store::sect::SectReader::open(p.open_plain()?)?;
     let e: Vec<i32> = serde_json::from_value(r.meta().get("extent").cloned().unwrap_or_default())?;
     anyhow::ensure!(e.len() == 4, "no extent in its header");
     Ok([e[0], e[1], e[2], e[3]])
 }
 
 /// The lead's keeping (as it plans, with its manifest `m`): the file brought in line with `m`
-/// (`fill`), written whole (crate::whole::write), only when it changed. How many headers were read.
-pub fn keep(root: &Path, m: &BTreeMap<String, String>) -> Result<usize> {
+/// (`fill`), written whole (store::whole::write), only when it changed. How many headers were read.
+pub fn keep(root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) -> Result<usize> {
     let old = load(root);
     let (new, read) = fill(root, m, old.clone())?;
     if new != old {
-        crate::whole::write(&root.join(FILE), &serde_json::to_vec(&new)?)?;
+        root.join(FILE).write_whole(serde_json::to_vec(&new)?)?;
     }
     Ok(read)
 }
 
 /// What the file is now (its size and time), for a reader that keeps what it read.
-pub fn stamp(root: &Path) -> String {
-    std::fs::metadata(root.join(FILE)).map(|m| format!("{} {:?}", m.len(), m.modified().ok())).unwrap_or_default()
+pub fn stamp(root: &store::nasfs::NasRoot) -> String {
+    root.join(FILE).metadata().map(|m| format!("{} {:?}", m.len(), m.modified().ok())).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -94,9 +97,13 @@ mod tests {
         }
         // (And one that isn't there at all.)
         m.insert("base/6-1-4".into(), "base/6-1-4.0000000000000004.sect".into());
-        assert_eq!(super::keep(root, &m).unwrap(), 2);
-        let kept = super::load(root);
+        assert_eq!(super::keep(&store::nasfs::NasRoot::local_for_test(root), &m).unwrap(), 2);
+        let kept = super::load(&store::nasfs::NasRoot::local_for_test(root));
         assert_eq!(kept.values().copied().collect::<Vec<_>>(), [[1, 2, 3, 4], [5, 6, 7, 8]]);
-        assert_eq!(super::keep(root, &m).unwrap(), 0, "only the bad ones looked at again");
+        assert_eq!(
+            super::keep(&store::nasfs::NasRoot::local_for_test(root), &m).unwrap(),
+            0,
+            "only the bad ones looked at again"
+        );
     }
 }

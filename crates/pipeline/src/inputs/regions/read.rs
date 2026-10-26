@@ -15,7 +15,7 @@ use std::path::Path;
 /// The regions' accepted version the records `manifest` name: what every reader reads; an error
 /// before the records say the readers switched (`sources/inputs/regions/@switched`: publish 1's
 /// runbook, docs/inputs.md §6.1.10, comes first), or when it can't be read now.
-pub fn source(root: &Path, manifest: &BTreeMap<String, String>) -> Result<Accepted> {
+pub fn source(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Result<Accepted> {
     anyhow::ensure!(
         switched(manifest),
         "the records don't say the regions' readers switched: run publish 1's runbook first (docs/inputs.md §6.1.10)"
@@ -74,7 +74,7 @@ pub fn needed_app(term: Option<&str>, regions: Option<&str>) -> Option<String> {
 }
 
 /// `source`, the records read from the NAS.
-pub fn source_now(root: &Path) -> Result<Accepted> {
+pub fn source_now(root: &store::nasfs::NasRoot) -> Result<Accepted> {
     let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json"))?;
     source(root, &m)
 }
@@ -229,7 +229,7 @@ pub fn skipped_empty(version: &str, listed: &[Listed]) -> Option<String> {
 
 /// Reads `names` (content names under `root`), 16 at a time (on the NAS each waits a round trip or
 /// two), in their order.
-fn read_all(root: &Path, names: &[String]) -> Result<Vec<Vec<u8>>> {
+fn read_all(root: &store::nasfs::NasRoot, names: &[String]) -> Result<Vec<Vec<u8>>> {
     let next = std::sync::atomic::AtomicUsize::new(0);
     let read: Vec<std::sync::OnceLock<Result<Vec<u8>>>> = names.iter().map(|_| std::sync::OnceLock::new()).collect();
     std::thread::scope(|s| {
@@ -237,7 +237,7 @@ fn read_all(root: &Path, names: &[String]) -> Result<Vec<Vec<u8>>> {
             s.spawn(|| loop {
                 let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let Some(n) = names.get(k) else { break };
-                read[k].set(std::fs::read(root.join(n)).with_context(|| format!("read {n}"))).ok();
+                read[k].set(root.join(n).read().with_context(|| format!("read {n}"))).ok();
             });
         }
     });
@@ -268,7 +268,7 @@ impl Coverage {
     /// (a disabled region is no coverage). Where there's
     /// a `cache` (this Mac's), kept there by the version (`coverage/<hash>.cov`): the geometry
     /// files are read once per version and Mac.
-    pub fn accepted(root: &Path, a: &Accepted, cache: Option<&Path>) -> Result<Coverage> {
+    pub fn accepted(root: &store::nasfs::NasRoot, a: &Accepted, cache: Option<&Path>) -> Result<Coverage> {
         let made = || -> Result<Coverage> {
             let l = enabled(a)?;
             let names: Vec<String> = l.iter().filter_map(|x| Some(x.stored.as_ref()?.geometry.clone())).collect();
@@ -305,7 +305,7 @@ impl Coverage {
 
 /// The drawn regions of `regions` (as `recipes` lists them) from the accepted version's drawn
 /// files; an empty region (none stored) has none.
-pub fn drawn(root: &Path, a: &Accepted, regions: &[Recipe]) -> Result<Vec<DrawnRegion>> {
+pub fn drawn(root: &store::nasfs::NasRoot, a: &Accepted, regions: &[Recipe]) -> Result<Vec<DrawnRegion>> {
     let l = listed(a)?;
     let names: Vec<String> = regions
         .iter()
@@ -322,7 +322,11 @@ pub fn drawn(root: &Path, a: &Accepted, regions: &[Recipe]) -> Result<Vec<DrawnR
 /// §6.1.10, 10): the check's own code run on it in memory against the records' current pass,
 /// storing nothing; a region it would hold is an error naming why. Disabled regions are checked
 /// and resolved, and left out of the coverage.
-pub fn coverage_of_folder(root: &Path, manifest: &BTreeMap<String, String>, dir: &Path) -> Result<(Coverage, usize)> {
+pub fn coverage_of_folder(
+    root: &store::nasfs::NasRoot,
+    manifest: &BTreeMap<String, String>,
+    dir: &Path,
+) -> Result<(Coverage, usize)> {
     let mut paths = Vec::new();
     let mut stack = vec![(dir.to_path_buf(), String::new())];
     while let Some((d, rel)) = stack.pop() {
@@ -384,7 +388,7 @@ pub fn coverage_of_folder(root: &Path, manifest: &BTreeMap<String, String>, dir:
 /// region resolved, with its size. Against the records' current pass, the datasets those that
 /// `declarations` (a folder of source declarations) names when given; reads, stores nothing.
 pub fn check_folder(
-    root: &Path,
+    root: &store::nasfs::NasRoot,
     manifest: &BTreeMap<String, String>,
     dir: &Path,
     declarations: Option<&Path>,

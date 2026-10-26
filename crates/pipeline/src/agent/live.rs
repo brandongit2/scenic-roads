@@ -308,9 +308,9 @@ pub struct Store {
     file: Option<PathBuf>,
     host: String,
     /// The NAS's root while a build runs (`set_nas`): its latency sampled meanwhile alone.
-    nas: Mutex<Option<PathBuf>>,
+    nas: Mutex<Option<store::nasfs::NasRoot>>,
     /// The NAS's root whenever the agent reads it (`set_root`): the days archived there.
-    root: Mutex<Option<PathBuf>>,
+    root: Mutex<Option<store::nasfs::NasRoot>>,
     /// The proxy's counts (`set_net`): answered as `net`, their rates sampled.
     net: Mutex<Option<Arc<crate::budget::net::Net>>>,
     /// The file stream (module doc), oldest first.
@@ -423,9 +423,9 @@ impl Store {
     }
 
     /// The NAS's root, whether or not a build runs: the days archived there (`archive`).
-    pub fn set_root(&self, root: Option<&Path>) {
+    pub fn set_root(&self, root: Option<&store::nasfs::NasRoot>) {
         if let Ok(mut n) = self.root.lock() {
-            *n = root.map(Path::to_path_buf);
+            *n = root.cloned();
         }
     }
 
@@ -435,15 +435,15 @@ impl Store {
     /// with no samples is noted done, not written).
     pub fn archive(
         &self,
-        root: &Path,
+        root: &store::nasfs::NasRoot,
         now: u64,
         done: &mut std::collections::BTreeSet<String>,
     ) -> anyhow::Result<usize> {
         let dir = root.join(ARCHIVE).join(&self.host);
         if done.is_empty() {
             let d = dir.clone();
-            let names = super::nasread::with(&dir, move || match std::fs::read_dir(&d) {
-                Ok(rd) => Ok(rd.filter_map(|e| e.ok()?.file_name().into_string().ok()).collect::<Vec<_>>()),
+            let names = super::nasread::with(&dir, move || match d.read_dir() {
+                Ok(rd) => Ok(rd.into_iter().map(|e| e.name).collect::<Vec<_>>()),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
                 Err(e) => Err(e),
             })?;
@@ -482,10 +482,10 @@ impl Store {
                 let bytes = zstd::encode_all(&encode(&day_s)[..], 9)?;
                 let (d, f) = (dir.clone(), dir.join(&name));
                 super::nasread::write(&f.clone(), move || {
-                    std::fs::create_dir_all(&d)?;
+                    d.create_dir_all()?;
                     let tmp = f.with_extension("zst.tmp");
-                    std::fs::write(&tmp, &bytes)?;
-                    std::fs::rename(&tmp, &f)?;
+                    tmp.write(&bytes)?;
+                    tmp.rename(&f)?;
                     Ok(())
                 })?;
                 wrote += 1;
@@ -496,9 +496,9 @@ impl Store {
     }
 
     /// The NAS's latency sampled at `root` while a build runs (None: not sampled).
-    pub fn set_nas(&self, root: Option<&Path>) {
+    pub fn set_nas(&self, root: Option<&store::nasfs::NasRoot>) {
         if let Ok(mut n) = self.nas.lock() {
-            *n = root.map(Path::to_path_buf);
+            *n = root.cloned();
         }
     }
 
@@ -519,7 +519,8 @@ impl Store {
         let root = self.nas.lock().ok().and_then(|n| n.clone());
         let Ok(mut f) = self.files.lock() else { return };
         for mut n in notes {
-            if let Some(rel) = root.as_ref().and_then(|r| Path::new(&n.path).strip_prefix(r).ok()) {
+            // (A note's full path shown under the root: tests/nas_access.rs.)
+            if let Some(rel) = root.as_ref().and_then(|r| Path::new(&n.path).strip_prefix(r.unchecked_path()).ok()) {
                 n.path = rel.to_string_lossy().into_owned();
             }
             if f.len() == FILES {
@@ -711,7 +712,7 @@ pub fn spawn(store: Arc<Store>, home: PathBuf, guard: super::memguard::Sampler) 
                 let root = store.nas.lock().ok().and_then(|n| n.clone());
                 if let Some(r) = root {
                     let t = now_s();
-                    if let Some(d) = super::nasread::probe(&r) {
+                    if let Some(d) = super::nasread::probe(&r.path()) {
                         store.record(NAS_MS, t, d.as_secs_f64() * 1000.0);
                     }
                 }
@@ -1242,7 +1243,7 @@ mod tests {
             t += 60;
         }
         let mut done = std::collections::BTreeSet::new();
-        assert_eq!(s.archive(root.path(), now, &mut done).unwrap(), 6);
+        assert_eq!(s.archive(&store::nasfs::NasRoot::local_for_test(root.path()), now, &mut done).unwrap(), 6);
         let dir = root.path().join(ARCHIVE).join("m1");
         let mut names: Vec<String> =
             std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
@@ -1259,10 +1260,13 @@ mod tests {
         assert_eq!(o[LOAD].buckets(3, 0, u64::MAX).len(), 288);
         assert_eq!(o[LOAD].buckets(3, 0, u64::MAX)[0].slot * 300, today - 6 * day);
         // (Again: nothing new; a new agent lists the folder and writes nothing either.)
-        assert_eq!(s.archive(root.path(), now, &mut done).unwrap(), 0);
-        assert_eq!(s.archive(root.path(), now, &mut Default::default()).unwrap(), 0);
+        assert_eq!(s.archive(&store::nasfs::NasRoot::local_for_test(root.path()), now, &mut done).unwrap(), 0);
+        assert_eq!(
+            s.archive(&store::nasfs::NasRoot::local_for_test(root.path()), now, &mut Default::default()).unwrap(),
+            0
+        );
         // (A day on: today's, now whole, alone.)
-        assert_eq!(s.archive(root.path(), now + day, &mut done).unwrap(), 1);
+        assert_eq!(s.archive(&store::nasfs::NasRoot::local_for_test(root.path()), now + day, &mut done).unwrap(), 1);
         assert!(dir.join(format!("{}.bin.zst", crate::pool::journal::day(today).unwrap())).exists());
     }
 
@@ -1307,7 +1311,7 @@ mod tests {
     #[test]
     fn the_file_stream_keeps_the_newest_files_below_the_root() {
         let s = Store::new(None, "m4");
-        s.set_nas(Some(Path::new("/Volumes/p/scenic")));
+        s.set_nas(Some(&store::nasfs::NasRoot::local_for_test(Path::new("/Volumes/p/scenic"))));
         let note = |t: u64, path: &str| FileNote {
             t,
             kind: store::nasio::Kind::Wrote,

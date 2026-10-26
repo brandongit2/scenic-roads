@@ -40,7 +40,7 @@ impl Remote {
         let Some(base) = base else { return };
         let text = format!("{base}\n");
         if std::fs::read_to_string(&self.page).ok().as_deref() != Some(text.as_str())
-            && pipeline::whole::write(&self.page, text.as_bytes()).is_ok()
+            && store::whole::write(&self.page, text.as_bytes()).is_ok()
         {
             if let Ok(f) = std::fs::File::open(&self.page) {
                 store::sys::set_mode(&f, 0o600).ok();

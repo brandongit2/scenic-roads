@@ -80,7 +80,7 @@ pub fn parse_registers(s: &str) -> Vec<(String, String, Option<[f64; 4]>)> {
 
 /// The accepted registers as the records now name them (`registers_line`), for the agent's plan
 /// (crate::agent::input_digests): None without an accepted version.
-pub fn registers_now(root: &Path) -> Result<Option<String>> {
+pub fn registers_now(root: &store::nasfs::NasRoot) -> Result<Option<String>> {
     let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json"))?;
     Ok(crate::inputs::open(root, &m, crate::inputs::heritage::UNIT)?
         .map(|a| registers_line(&crate::inputs::heritage::registers(&a))))
@@ -419,10 +419,10 @@ pub fn unit_inputs_with(
     dir: &Path,
     blobs: Option<&store::blobs::Blobs>,
 ) -> Result<(usize, usize)> {
-    let path = |c: &str| -> Result<std::path::PathBuf> {
+    let path = |c: &str| -> Result<store::nasfs::Place> {
         Ok(match blobs {
-            Some(bl) => bl.get(out.root(), c).with_context(|| format!("copy {c}"))?,
-            None => out.path(c),
+            Some(bl) => store::nasfs::Place::Local(bl.get(out.root(), c).with_context(|| format!("copy {c}"))?),
+            None => store::nasfs::Place::Nas(out.path(c)),
         })
     };
     let inside = |p: &[i32; 2]| {
@@ -433,12 +433,12 @@ pub fn unit_inputs_with(
     let mut polys: BTreeMap<String, String> = BTreeMap::new();
     for (x, y) in crate::stage::tiles_in(6, b) {
         if let Some(c) = out.get(&pos_logical(date, x, y)) {
-            let pts: Vec<[i32; 2]> = serde_json::from_slice(&std::fs::read(path(c)?)?)
+            let pts: Vec<[i32; 2]> = serde_json::from_slice(&path(c)?.loc().read()?)
                 .with_context(|| format!("{}", pos_logical(date, x, y)))?;
             sites.extend(pts.into_iter().filter(inside));
         }
         if let Some(c) = out.get(&areas_logical(date, x, y)) {
-            for line in std::fs::read_to_string(path(c)?)?.lines().filter(|l| !l.is_empty()) {
+            for line in path(c)?.loc().read_to_string()?.lines().filter(|l| !l.is_empty()) {
                 polys.entry(store::naming::hash16(line.as_bytes())).or_insert_with(|| line.to_string());
             }
         }
@@ -489,15 +489,20 @@ mod tests {
             (21, 22, "[[-640000000,468000000]]", "{\"b\":2}\n"),
         ] {
             for (l, body) in [(pos_logical("d", x, y), pts), (areas_logical("d", x, y), area)] {
-                let c = store::naming::write_atomic(&root, &l, "json", store::naming::Source::Bytes(body.as_bytes()))
-                    .unwrap();
+                let c = store::naming::write_atomic(
+                    &store::nasfs::NasRoot::local_for_test(&root),
+                    &l,
+                    "json",
+                    store::naming::Source::Bytes(body.as_bytes()),
+                )
+                .unwrap();
                 m.insert(l, c);
             }
         }
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         std::fs::write(root.join("state/build/manifest.json"), serde_json::to_vec(&m).unwrap()).unwrap();
         std::fs::write(root.join("state/build/pending.json"), b"{}").unwrap();
-        let out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
+        let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch")).unwrap();
         let b = [-71.0, 45.0, -55.0, 48.0];
         let blobs = store::blobs::Blobs::new(d.path().join("blobs"));
         let (a, c) = (d.path().join("a"), d.path().join("c"));
@@ -553,7 +558,8 @@ mod tests {
     #[test]
     fn slices_and_a_units_inputs() {
         let d = tempfile::tempdir().unwrap();
-        let mut out = Out::unbound(d.path(), &d.path().join("scratch")).unwrap();
+        let mut out =
+            Out::unbound(&store::nasfs::NasRoot::local_for_test(d.path()), &d.path().join("scratch")).unwrap();
         let her = br#"{"type":"FeatureCollection","features":[
             {"type":"Feature","geometry":{"type":"Point","coordinates":[-1.6,55.0]},"properties":{"name":"a"}},
             {"type":"Feature","geometry":{"type":"Point","coordinates":[-1.6,55.0]},"properties":{"name":"a again"}},

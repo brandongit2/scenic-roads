@@ -10,6 +10,7 @@ pub mod iopool;
 pub mod mirror;
 pub mod naming;
 pub mod nas;
+pub mod nasfs;
 pub mod nasio;
 pub mod pack;
 pub mod pieces;
@@ -21,6 +22,7 @@ pub mod spawn;
 pub mod sys;
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
+pub mod whole;
 
 pub use iopool::{IoError, IoPool};
 pub use range::{MmapFile, PooledFile, RangeRead};

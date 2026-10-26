@@ -51,7 +51,7 @@ pub(crate) fn src_bytes(out: &Out, src: &str, stem: &str) -> Result<Vec<u8>> {
         Some(b) => b,
         None => {
             let path = out.path(content);
-            std::fs::read(&path).with_context(|| format!("read {}", path.display()))?
+            path.read().with_context(|| format!("read {}", path.display()))?
         }
     };
     p.count(b.len() as u64, 1);

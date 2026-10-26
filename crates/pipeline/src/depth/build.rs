@@ -354,8 +354,7 @@ impl<'a> Tiles<'a> {
         if !lo.contains_key(&q) {
             let p = match self.out.get(&lo_logical(LAYER, q.0, q.1)) {
                 Some(c) => {
-                    let f = store::range::PlainFile::open(&self.out.path(c))
-                        .with_context(|| format!("the depth lo pack {c}"))?;
+                    let f = self.out.path(c).open_plain().with_context(|| format!("the depth lo pack {c}"))?;
                     Some((store::pack::PackIndex::read_from(&f)?, f))
                 }
                 None => None,

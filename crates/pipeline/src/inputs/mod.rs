@@ -90,7 +90,7 @@ pub fn is_test(unit: &str) -> bool {
 }
 
 /// The units on the gate now: `UNITS`, and the test unit while its flag is there.
-pub fn units(root: &Path) -> Vec<&'static str> {
+pub fn units(root: &store::nasfs::NasRoot) -> Vec<&'static str> {
     let mut v: Vec<&'static str> = UNITS.to_vec();
     if root.join(TEST_FLAG).exists() {
         v.push(TEST_UNIT);
@@ -188,14 +188,19 @@ pub fn in_drop_box(rel: &str) -> bool {
 }
 
 /// Unit `unit`'s drop box. Only the gate lists and reads it (§7.1).
-fn drop_box(root: &Path, unit: &str) -> PathBuf {
+fn drop_box(root: &store::nasfs::NasRoot, unit: &str) -> store::nasfs::NasPath {
     root.join("inputs").join(unit)
 }
 
 /// A request–fulfil unit's to-do lists (`inputs/<unit>/todo/`, the app's: never read as input),
 /// under the NAS project folder `root`: what crate::namestodo writes.
-pub fn todo_dir(root: &Path, unit: &str) -> PathBuf {
+pub fn todo_dir(root: &store::nasfs::NasRoot, unit: &str) -> store::nasfs::NasPath {
     drop_box(root, unit).join("todo")
+}
+
+/// `todo_dir` relative to the project folder.
+pub fn todo_rel(unit: &str) -> String {
+    format!("inputs/{unit}/todo")
 }
 
 /// Where the checked copies of unit `unit` are kept (content-named, never edited).
@@ -373,7 +378,7 @@ pub trait Checks: Sync {
     /// The bytes to record as the unit's `@switched` (`switched_logical`), when its readers are to
     /// switch to accepted version `index` now (the regions': the migration's proof says the same of
     /// exactly that index; the elevation datasets': at once); None otherwise. Asked only while the records have none.
-    fn switch(&self, _root: &Path, _index: &str) -> Result<Option<Vec<u8>>> {
+    fn switch(&self, _root: &store::nasfs::NasRoot, _index: &str) -> Result<Option<Vec<u8>>> {
         Ok(None)
     }
     /// The content names of what else its checks read from the records (the pass's outlines): in
@@ -383,7 +388,11 @@ pub trait Checks: Sync {
     }
     /// The checks the check job runs, given what they read from the records `manifest` names (the
     /// languages' the pass's outlines' codes); None: these as they are.
-    fn prepared(&self, _root: &Path, _manifest: &BTreeMap<String, String>) -> Result<Option<Box<dyn Checks>>> {
+    fn prepared(
+        &self,
+        _root: &store::nasfs::NasRoot,
+        _manifest: &BTreeMap<String, String>,
+    ) -> Result<Option<Box<dyn Checks>>> {
         Ok(None)
     }
 }
@@ -460,7 +469,7 @@ pub struct Listed {
 }
 
 /// A unit's check's state, as the records name it (empty before its first check).
-pub fn read_listed(root: &Path, manifest: &BTreeMap<String, String>, unit: &str) -> Result<Listed> {
+pub fn read_listed(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>, unit: &str) -> Result<Listed> {
     let Some(name) = manifest.get(&listed_logical(unit)) else {
         return Ok(Listed { fmt: 1, unit: unit.into(), ..Default::default() });
     };
@@ -468,8 +477,8 @@ pub fn read_listed(root: &Path, manifest: &BTreeMap<String, String>, unit: &str)
 }
 
 /// A check's state, by its content name.
-pub fn read_listed_file(root: &Path, name: &str) -> Result<Listed> {
-    let b = std::fs::read(root.join(name)).with_context(|| format!("read {name}"))?;
+pub fn read_listed_file(root: &store::nasfs::NasRoot, name: &str) -> Result<Listed> {
+    let b = root.join(name).read().with_context(|| format!("read {name}"))?;
     serde_json::from_slice::<Listed>(&b).with_context(|| format!("parse {name}"))
 }
 
@@ -508,7 +517,7 @@ pub struct Report {
 /// A unit's accepted version as a step reads it: the files by their drop-box paths.
 #[derive(Clone, Debug)]
 pub struct Accepted {
-    root: PathBuf,
+    root: store::nasfs::NasRoot,
     /// The index's content name: the unit's version.
     pub version: String,
     pub index: Index,
@@ -516,40 +525,40 @@ pub struct Accepted {
 
 impl Accepted {
     /// The checked copy of drop-box path `path`.
-    pub fn path(&self, path: &str) -> Option<PathBuf> {
+    pub fn path(&self, path: &str) -> Option<store::nasfs::NasPath> {
         self.index.files.get(path).map(|f| self.root.join(&f.file))
     }
 
     /// Every accepted file: (drop-box path, its checked copy).
-    pub fn files(&self) -> impl Iterator<Item = (&String, PathBuf)> + '_ {
+    pub fn files(&self) -> impl Iterator<Item = (&String, store::nasfs::NasPath)> + '_ {
         self.index.files.iter().map(|(p, f)| (p, self.root.join(&f.file)))
     }
 
     /// The bytes of drop-box path `path`.
     pub fn read(&self, path: &str) -> Result<Vec<u8>> {
         let p = self.path(path).with_context(|| format!("{path} isn't in {}'s accepted version", self.index.unit))?;
-        std::fs::read(&p).with_context(|| format!("read {}", p.display()))
+        p.read().with_context(|| format!("read {}", p.display()))
     }
 }
 
 /// Unit `unit`'s accepted files, as the records `manifest` a step planned with name them: the one
 /// way a step reads an input (docs/inputs.md §4.6, §7.1). None before any version is accepted.
-pub fn open(root: &Path, manifest: &BTreeMap<String, String>, unit: &str) -> Result<Option<Accepted>> {
+pub fn open(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>, unit: &str) -> Result<Option<Accepted>> {
     let Some(version) = manifest.get(&logical(unit)) else { return Ok(None) };
     let index = read_index(root, version)?;
     anyhow::ensure!(index.unit == unit, "{version} is {}'s index, not {unit}'s", index.unit);
-    Ok(Some(Accepted { root: root.to_path_buf(), version: version.clone(), index }))
+    Ok(Some(Accepted { root: root.clone(), version: version.clone(), index }))
 }
 
 /// An index, by its content name.
-pub fn read_index(root: &Path, name: &str) -> Result<Index> {
-    let b = std::fs::read(root.join(name)).with_context(|| format!("read {name}"))?;
+pub fn read_index(root: &store::nasfs::NasRoot, name: &str) -> Result<Index> {
+    let b = root.join(name).read().with_context(|| format!("read {name}"))?;
     serde_json::from_slice(&b).with_context(|| format!("parse {name}"))
 }
 
 /// A held report, by its content name.
-pub fn read_report(root: &Path, name: &str) -> Result<Report> {
-    let b = std::fs::read(root.join(name)).with_context(|| format!("read {name}"))?;
+pub fn read_report(root: &store::nasfs::NasRoot, name: &str) -> Result<Report> {
+    let b = root.join(name).read().with_context(|| format!("read {name}"))?;
     serde_json::from_slice(&b).with_context(|| format!("parse {name}"))
 }
 
@@ -596,27 +605,26 @@ pub fn ignored(name: &str) -> bool {
 
 /// Unit `unit`'s drop box listed now (`todo/` and `how/` aside, and the names `ignored`): an empty
 /// listing when there's no drop box yet, an error when it can't be listed now.
-pub fn list(root: &Path, unit: &str, recursive: bool) -> Result<Listing> {
+pub fn list(root: &store::nasfs::NasRoot, unit: &str, recursive: bool) -> Result<Listing> {
     let top = drop_box(root, unit);
     let mut l = Listing::default();
-    match std::fs::metadata(&top) {
+    match top.metadata() {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(l),
         Err(e) => return Err(e).with_context(|| format!("list {}", top.display())),
         Ok(_) => {}
     }
     let mut stack = vec![(top.clone(), String::new())];
     while let Some((dir, rel)) = stack.pop() {
-        for e in std::fs::read_dir(&dir).with_context(|| format!("list {}", dir.display()))? {
-            let e = e.with_context(|| format!("list {}", dir.display()))?;
+        for e in dir.read_dir().with_context(|| format!("list {}", dir.display()))? {
             // (Its NAS metadata work, for the step's weight: crate::costin::meta, task #451.)
             crate::costin::meta(1, 0, 0);
-            let name = e.file_name().to_string_lossy().into_owned();
+            let name = e.name.clone();
             if ignored(&name) && !checks(unit).is_some_and(|c| c.takes_ignored(&name)) {
                 continue;
             }
             let path = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
             crate::costin::meta(0, 1, 0);
-            let md = e.metadata().with_context(|| format!("stat {}", e.path().display()))?;
+            let md = e.metadata().with_context(|| format!("stat {}", e.path.display()))?;
             if !md.is_dir() && checks(unit).is_some_and(|c| !c.takes(&path)) {
                 continue;
             }
@@ -625,7 +633,7 @@ pub fn list(root: &Path, unit: &str, recursive: bool) -> Result<Listing> {
                     continue;
                 }
                 if recursive {
-                    stack.push((e.path(), path));
+                    stack.push((e.path, path));
                 } else {
                     l.strays.push(format!("{path}/"));
                 }
@@ -645,23 +653,22 @@ pub fn list(root: &Path, unit: &str, recursive: bool) -> Result<Listing> {
     if let Some(old) = checks(unit).and_then(|c| c.old_folder()) {
         let mut stack = vec![(root.join(old), old.to_string())];
         while let Some((dir, rel)) = stack.pop() {
-            let rd = match std::fs::read_dir(&dir) {
+            let rd = match dir.read_dir() {
                 Ok(rd) => rd,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(e) => return Err(e).with_context(|| format!("list {}", dir.display())),
             };
             for e in rd {
-                let e = e.with_context(|| format!("list {}", dir.display()))?;
                 crate::costin::meta(1, 0, 0);
-                let name = e.file_name().to_string_lossy().into_owned();
+                let name = e.name.clone();
                 if ignored(&name) {
                     continue;
                 }
                 let path = format!("{rel}/{name}");
-                if e.file_type().with_context(|| format!("stat {}", e.path().display()))?.is_dir() {
+                if e.file_type().with_context(|| format!("stat {}", e.path.display()))?.is_dir() {
                     // (An older app's to-do lists, `todo/` at its top: the app's, not a drop.)
                     if !(rel == old && name == "todo") {
-                        stack.push((e.path(), path));
+                        stack.push((e.path, path));
                     }
                 } else {
                     l.misplaced.push(path);
@@ -706,22 +713,22 @@ pub struct Acceptance {
     pub message: String,
 }
 
-fn accepted_dir(root: &Path, unit: &str) -> PathBuf {
+fn accepted_dir(root: &store::nasfs::NasRoot, unit: &str) -> store::nasfs::NasPath {
     root.join(ACCEPTED).join(unit)
 }
 
 /// The ids accepted for unit `unit` (its acceptances' file names): none when there are none yet,
 /// an error when they can't be listed now.
-pub fn acceptances(root: &Path, unit: &str) -> Result<BTreeSet<String>> {
+pub fn acceptances(root: &store::nasfs::NasRoot, unit: &str) -> Result<BTreeSet<String>> {
     let d = accepted_dir(root, unit);
-    let rd = match std::fs::read_dir(&d) {
+    let rd = match d.read_dir() {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
         Err(e) => return Err(e).with_context(|| format!("list {}", d.display())),
     };
     let mut out = BTreeSet::new();
     for e in rd {
-        let name = e?.file_name().to_string_lossy().into_owned();
+        let name = e.name;
         if let Some(id) = name.strip_suffix(".json").filter(|id| valid_id(id)) {
             out.insert(id.to_string());
         }
@@ -731,25 +738,25 @@ pub fn acceptances(root: &Path, unit: &str) -> Result<BTreeSet<String>> {
 
 /// Accepts warning `f` of unit `unit` (create-new: one already there is left as it was): whether
 /// it was written now. Errors can't be accepted.
-pub fn accept(root: &Path, unit: &str, f: &Finding, member: &str, by: &str) -> Result<bool> {
+pub fn accept(root: &store::nasfs::NasRoot, unit: &str, f: &Finding, member: &str, by: &str) -> Result<bool> {
     if f.level == Level::Error {
         bail!("{} is an error: errors can't be accepted; fix or remove {}", f.id, f.files.join(", "));
     }
     anyhow::ensure!(valid_id(&f.id), "{:?} isn't a finding id", f.id);
     anyhow::ensure!(valid_unit(unit), "{unit:?} isn't a unit's name");
     let d = accepted_dir(root, unit);
-    std::fs::create_dir_all(&d).with_context(|| format!("create {}", d.display()))?;
+    d.create_dir_all().with_context(|| format!("create {}", d.display()))?;
     let a = Acceptance {
         id: f.id.clone(),
         member: member.to_string(),
-        host: crate::agent::cond::host_name(),
+        host: store::sys::host_name(),
         at: crate::agent::jobs::now_s(),
         by: by.to_string(),
         message: f.message.clone(),
     };
     let body = serde_json::to_vec_pretty(&a)?;
     let p = d.join(format!("{}.json", f.id));
-    match std::fs::File::options().write(true).create_new(true).open(&p) {
+    match p.open_with(std::fs::File::options().write(true).create_new(true)) {
         Ok(mut file) => {
             std::io::Write::write_all(&mut file, &body).with_context(|| format!("write {}", p.display()))?;
             Ok(true)
@@ -760,10 +767,10 @@ pub fn accept(root: &Path, unit: &str, f: &Finding, member: &str, by: &str) -> R
 }
 
 /// Removes the acceptance of `id` for unit `unit`: whether there was one.
-pub fn unaccept(root: &Path, unit: &str, id: &str) -> Result<bool> {
+pub fn unaccept(root: &store::nasfs::NasRoot, unit: &str, id: &str) -> Result<bool> {
     anyhow::ensure!(valid_id(id), "{id:?} isn't a finding id");
     anyhow::ensure!(valid_unit(unit), "{unit:?} isn't a unit's name");
-    match std::fs::remove_file(accepted_dir(root, unit).join(format!("{id}.json"))) {
+    match accepted_dir(root, unit).join(format!("{id}.json")).remove_file() {
         Ok(()) => Ok(true),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(e).context("remove the acceptance"),
@@ -771,9 +778,9 @@ pub fn unaccept(root: &Path, unit: &str, id: &str) -> Result<bool> {
 }
 
 /// An acceptance's file, read.
-pub fn read_acceptance(root: &Path, unit: &str, id: &str) -> Result<Acceptance> {
+pub fn read_acceptance(root: &store::nasfs::NasRoot, unit: &str, id: &str) -> Result<Acceptance> {
     let p = accepted_dir(root, unit).join(format!("{id}.json"));
-    serde_json::from_slice(&std::fs::read(&p).with_context(|| format!("read {}", p.display()))?)
+    serde_json::from_slice(&p.read().with_context(|| format!("read {}", p.display()))?)
         .with_context(|| format!("parse {}", p.display()))
 }
 
@@ -842,7 +849,7 @@ pub fn ask(home: &Path, a: &Ask) -> Result<()> {
     let d = home.join(ASKS);
     std::fs::create_dir_all(&d)?;
     let name = format!("{:020}-{}-{}.json", a.at, std::process::id(), store::naming::hash16(&serde_json::to_vec(a)?));
-    crate::whole::write(&d.join(name), &serde_json::to_vec(a)?)
+    store::whole::write(&d.join(name), &serde_json::to_vec(a)?)
 }
 
 /// The asks waiting in `home`, taken (each removed once read; one that doesn't parse goes).
@@ -864,7 +871,7 @@ pub fn take_asks(home: &Path) -> Vec<Ask> {
 
 /// Carries out an ask's acceptances (`held`: the unit's held report, for the findings' messages and
 /// `all`): what was done, in words.
-pub fn apply_ask(root: &Path, a: &Ask, held: Option<&Report>, member: &str) -> Result<Vec<String>> {
+pub fn apply_ask(root: &store::nasfs::NasRoot, a: &Ask, held: Option<&Report>, member: &str) -> Result<Vec<String>> {
     let mut said = Vec::new();
     let findings: Vec<&Finding> = held.map(|r| r.findings.iter().collect()).unwrap_or_default();
     let want: Vec<&Finding> = if a.all {

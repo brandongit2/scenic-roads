@@ -6,6 +6,7 @@
 
 use crate::iopool::{IoError, IoPool};
 use crate::naming::{parse_content_name, rename_no_replace, tmp_path};
+use crate::nasfs::{Loc, NasPath, Place};
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -318,27 +319,30 @@ fn same_as_existing(path: &Path, cat: &Catalog) -> Result<Option<PathBuf>> {
 }
 
 /// Reads one whole catalog file (`read_n` reads a catalog by number, whichever way it was written).
-pub fn read(path: &Path) -> Result<Catalog> {
-    let b = fs::read(path).with_context(|| format!("read {}", path.display()))?;
-    Catalog::decode(&b).with_context(|| format!("{}", path.display()))
+pub fn read<'a>(path: impl Into<Loc<'a>>) -> Result<Catalog> {
+    let path = path.into();
+    let b = path.read().with_context(|| format!("read {}", path.display()))?;
+    Catalog::decode(&b).with_context(|| path.display())
 }
 
 /// Catalog `n` in `dir`, whole: its own file, or what changed over the one before it applied to
 /// that one (`Delta`), back to a whole one.
-pub fn read_n(dir: &Path, n: u64) -> Result<Catalog> {
+pub fn read_n<'a>(dir: impl Into<Loc<'a>>, n: u64) -> Result<Catalog> {
+    let dir = dir.into();
     let names = Names::of_dir(dir)?;
-    materialize(dir, &names, n, None, &mut local_read)?
+    materialize(Path::new(&dir.display()), &names, n, None, &mut |f| local_read(dir.join(f).loc()))?
         .with_context(|| format!("catalog {n} in {} can't be read whole", dir.display()))
 }
 
 /// The file catalog `n` is in (whole, or as a delta), for its time: None when neither is there.
-pub fn path_n(dir: &Path, n: u64) -> Option<PathBuf> {
-    [file_name(n), delta_file_name(n)].into_iter().map(|f| dir.join(f)).find(|p| p.exists())
+pub fn path_n<'a>(dir: impl Into<Loc<'a>>, n: u64) -> Option<Place> {
+    let dir = dir.into();
+    [file_name(n), delta_file_name(n)].into_iter().map(|f| dir.join(&f)).find(|p| p.loc().exists())
 }
 
 /// The catalog numbers in `dir`, whole or deltas, highest first (none when `dir` doesn't exist).
-pub fn list(dir: &Path) -> Result<Vec<u64>> {
-    Ok(Names::of_dir(dir)?.numbers())
+pub fn list<'a>(dir: impl Into<Loc<'a>>) -> Result<Vec<u64>> {
+    Ok(Names::of_dir(dir.into())?.numbers())
 }
 
 /// The catalogs in a folder by kind.
@@ -357,18 +361,15 @@ impl Names {
         }
     }
 
-    fn of_dir(dir: &Path) -> Result<Self> {
+    fn of_dir(dir: Loc<'_>) -> Result<Self> {
         let mut names = Names::default();
-        let rd = match fs::read_dir(dir) {
-            Ok(rd) => rd,
+        let listed = match dir.list_names() {
+            Ok(v) => v,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(names),
             Err(e) => return Err(e).with_context(|| format!("list {}", dir.display())),
         };
-        for e in rd {
-            let e = e.with_context(|| format!("list {}", dir.display()))?;
-            if let Some(name) = e.file_name().to_str() {
-                names.add(name);
-            }
+        for name in &listed {
+            names.add(name);
         }
         Ok(names)
     }
@@ -381,8 +382,8 @@ impl Names {
     }
 }
 
-fn local_read(p: &Path) -> Result<Option<Vec<u8>>> {
-    match fs::read(p) {
+fn local_read(p: Loc<'_>) -> Result<Option<Vec<u8>>> {
+    match p.read() {
         Ok(b) => Ok(Some(b)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => {
@@ -393,21 +394,44 @@ fn local_read(p: &Path) -> Result<Option<Vec<u8>>> {
 }
 
 /// The highest catalog in `dir` that reads whole; damaged ones are logged and skipped.
-pub fn latest(dir: &Path) -> Result<Option<Catalog>> {
+pub fn latest<'a>(dir: impl Into<Loc<'a>>) -> Result<Option<Catalog>> {
+    let dir = dir.into();
     let names = Names::of_dir(dir)?;
-    pick(dir, &names, None, &mut local_read)
+    pick(Path::new(&dir.display()), &names, None, &mut |n| local_read(dir.join(n).loc()))
+}
+
+/// `latest` for a folder on the NAS read directly (crate::nasfs: counted, its reads retried), not
+/// through the I/O pool: a build's or the CLI's.
+pub fn latest_on(dir: &NasPath) -> Result<Option<Catalog>> {
+    let mut names = Names::default();
+    let entries = match dir.read_dir() {
+        Ok(v) => v,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(e).with_context(|| format!("list {dir:?}")),
+    };
+    for e in &entries {
+        names.add(&e.name);
+    }
+    pick(Path::new(&format!("{dir:?}")), &names, None, &mut |n| match dir.join(n).read() {
+        Ok(b) => Ok(Some(b)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => {
+            eprintln!("catalog: skipping {dir:?}/{n}: {e}");
+            Ok(None)
+        }
+    })
 }
 
 /// `latest` for a directory on the NAS: every listing and read goes through the I/O pool. The
 /// NAS going offline midway is an error, never a reason to fall back to an older catalog.
-pub fn latest_nas(pool: &IoPool, dir: &Path) -> Result<Option<Catalog>> {
+pub fn latest_nas(pool: &IoPool, dir: &NasPath) -> Result<Option<Catalog>> {
     latest_nas_from(pool, dir, None)
 }
 
 /// `latest_nas` from a catalog this Mac read before (`have`): the newest is `have` itself when its
 /// number is the highest there (nothing read but the listing), and the deltas after it are read
 /// and applied to it, not the chain back to a whole catalog.
-pub fn latest_nas_from(pool: &IoPool, dir: &Path, have: Option<&Catalog>) -> Result<Option<Catalog>> {
+pub fn latest_nas_from(pool: &IoPool, dir: &NasPath, have: Option<&Catalog>) -> Result<Option<Catalog>> {
     let mut names = Names::default();
     match pool.list(dir) {
         Ok(items) => {
@@ -416,19 +440,19 @@ pub fn latest_nas_from(pool: &IoPool, dir: &Path, have: Option<&Catalog>) -> Res
             }
         }
         Err(IoError::Io(e)) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e).with_context(|| format!("list {}", dir.display())),
+        Err(e) => return Err(e).with_context(|| format!("list {dir:?}")),
     }
     if let Some(h) = have.filter(|h| names.numbers().first() == Some(&h.n)) {
         return Ok(Some(h.clone()));
     }
-    pick(dir, &names, have, &mut |p| match pool.read_all(p) {
+    pick(Path::new(&format!("{dir:?}")), &names, have, &mut |n| match pool.read_all(&dir.join(n)) {
         Ok(b) => Ok(Some(b)),
         Err(IoError::Io(e)) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(IoError::Io(e)) => {
-            eprintln!("catalog: skipping {}: {e}", p.display());
+            eprintln!("catalog: skipping {dir:?}/{n}: {e}");
             Ok(None)
         }
-        Err(e) => Err(e).with_context(|| format!("read {}", p.display())),
+        Err(e) => Err(e).with_context(|| format!("read {dir:?}/{n}")),
     })
 }
 
@@ -437,7 +461,7 @@ fn pick(
     dir: &Path,
     names: &Names,
     have: Option<&Catalog>,
-    read: &mut dyn FnMut(&Path) -> Result<Option<Vec<u8>>>,
+    read: &mut dyn FnMut(&str) -> Result<Option<Vec<u8>>>,
 ) -> Result<Option<Catalog>> {
     for n in names.numbers() {
         if let Some(c) = materialize(dir, names, n, have, read)? {
@@ -455,7 +479,7 @@ fn materialize(
     names: &Names,
     n: u64,
     have: Option<&Catalog>,
-    read: &mut dyn FnMut(&Path) -> Result<Option<Vec<u8>>>,
+    read: &mut dyn FnMut(&str) -> Result<Option<Vec<u8>>>,
 ) -> Result<Option<Catalog>> {
     let mut chain: Vec<Delta> = Vec::new();
     let mut at = n;
@@ -469,7 +493,7 @@ fn materialize(
         }
         if names.whole.contains(&at) {
             let p = dir.join(file_name(at));
-            let Some(bytes) = read(&p)? else { return Ok(None) };
+            let Some(bytes) = read(&file_name(at))? else { return Ok(None) };
             match Catalog::decode(&bytes) {
                 Ok(c) if c.n == at => break c,
                 Ok(c) => eprintln!("catalog: skipping {}: it says it is number {}", p.display(), c.n),
@@ -482,7 +506,7 @@ fn materialize(
             return Ok(None);
         }
         let p = dir.join(delta_file_name(at));
-        let Some(bytes) = read(&p)? else { return Ok(None) };
+        let Some(bytes) = read(&delta_file_name(at))? else { return Ok(None) };
         match Delta::decode(&bytes) {
             Ok(d) if d.n == at && d.of < at => {
                 at = d.of;
@@ -620,15 +644,16 @@ pub fn write_delta_of(dir: &Path, base: &Catalog, cat: &Catalog, d: &Delta) -> R
 
 /// The sizes of the deltas written since the last whole catalog in `dir` (newest first), and that
 /// whole one's size: what `Delta::due_whole` weighs.
-pub fn since_whole(dir: &Path) -> Result<(Vec<u64>, Option<u64>)> {
+pub fn since_whole<'a>(dir: impl Into<Loc<'a>>) -> Result<(Vec<u64>, Option<u64>)> {
+    let dir = dir.into();
     let names = Names::of_dir(dir)?;
     let mut sizes = Vec::new();
     for n in names.numbers() {
         if names.whole.contains(&n) {
-            let len = fs::metadata(dir.join(file_name(n))).with_context(|| format!("catalog {n}"))?.len();
+            let len = dir.join(&file_name(n)).loc().metadata().with_context(|| format!("catalog {n}"))?.len();
             return Ok((sizes, Some(len)));
         }
-        sizes.push(fs::metadata(dir.join(delta_file_name(n))).with_context(|| format!("delta {n}"))?.len());
+        sizes.push(dir.join(&delta_file_name(n)).loc().metadata().with_context(|| format!("delta {n}"))?.len());
     }
     Ok((sizes, None))
 }
@@ -636,8 +661,8 @@ pub fn since_whole(dir: &Path) -> Result<(Vec<u64>, Option<u64>)> {
 /// How many deltas `dir` holds past its newest whole catalog, from its listing alone (nothing
 /// read): about the length of the chain its newest catalog is read through. None when it holds no
 /// whole catalog.
-pub fn deltas_since_whole(dir: &Path) -> Result<Option<usize>> {
-    let names = Names::of_dir(dir)?;
+pub fn deltas_since_whole<'a>(dir: impl Into<Loc<'a>>) -> Result<Option<usize>> {
+    let names = Names::of_dir(dir.into())?;
     Ok(names.whole.iter().next_back().map(|w| names.delta.range(w + 1..).count()))
 }
 
@@ -652,7 +677,7 @@ pub fn chain_full(deltas: usize) -> bool {
 /// the deltas since the last whole one add up to its size, or their run is half MAX_CHAIN long
 /// (`Delta::due_whole`). False with no whole catalog (the next catalog is whole anyway) or no
 /// delta since one. Stats each delta since the last whole catalog.
-pub fn whole_due(dir: &Path) -> Result<bool> {
+pub fn whole_due<'a>(dir: impl Into<Loc<'a>>) -> Result<bool> {
     let (since, whole) = since_whole(dir)?;
     Ok(match whole {
         Some(w) if !since.is_empty() => Delta::due_whole(&since, 0, w),
@@ -662,14 +687,16 @@ pub fn whole_due(dir: &Path) -> Result<bool> {
 
 /// The catalogs catalog `n` in `dir` is read through: itself, and back by its deltas' `of` to the
 /// whole one they start from (what's kept while `n` is). An error when a delta doesn't read.
-pub fn chain(dir: &Path, n: u64) -> Result<Vec<u64>> {
+pub fn chain<'a>(dir: impl Into<Loc<'a>>, n: u64) -> Result<Vec<u64>> {
+    let dir = dir.into();
     let names = Names::of_dir(dir)?;
     let mut out = vec![n];
     let mut at = n;
     while !names.whole.contains(&at) && names.delta.contains(&at) && out.len() <= MAX_CHAIN {
-        let p = dir.join(delta_file_name(at));
-        let d = Delta::decode(&fs::read(&p).with_context(|| format!("read {}", p.display()))?)
-            .with_context(|| format!("{}", p.display()))?;
+        let p = dir.join(&delta_file_name(at));
+        let p = p.loc();
+        let d =
+            Delta::decode(&p.read().with_context(|| format!("read {}", p.display()))?).with_context(|| p.display())?;
         at = d.of;
         out.push(at);
     }
@@ -678,7 +705,7 @@ pub fn chain(dir: &Path, n: u64) -> Result<Vec<u64>> {
 
 /// The number the next publish takes: one past the highest present (damaged ones included, since
 /// their names are taken), or 1.
-pub fn next_n(dir: &Path) -> Result<u64> {
+pub fn next_n<'a>(dir: impl Into<Loc<'a>>) -> Result<u64> {
     Ok(list(dir)?.first().map_or(1, |n| n + 1))
 }
 
@@ -850,14 +877,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path().join("catalog");
         let pool = IoPool::new(2, Duration::from_secs(60), dir.path().to_owned());
-        assert!(latest_nas(&pool, &d).unwrap().is_none());
+        let nd = crate::nasfs::NasRoot::local_for_test(dir.path()).join("catalog");
+        assert!(latest_nas(&pool, &nd).unwrap().is_none());
+        assert!(latest_on(&nd).unwrap().is_none());
         write(&d, &sample(1)).unwrap();
         write(&d, &sample(2)).unwrap();
         fs::write(d.join("3.json.zst"), b"damaged").unwrap();
-        assert_eq!(latest_nas(&pool, &d).unwrap().unwrap().n, 2);
+        assert_eq!(latest_nas(&pool, &nd).unwrap().unwrap().n, 2);
+        assert_eq!(latest_on(&nd).unwrap().unwrap().n, 2);
         // Offline is an error, not "no catalog".
         pool.mark_offline("test");
-        let e = latest_nas(&pool, &d).unwrap_err();
+        let e = latest_nas(&pool, &nd).unwrap_err();
         assert!(matches!(IoError::find(&e), Some(IoError::Offline)), "{e:#}");
     }
 
@@ -928,11 +958,13 @@ mod tests {
         }
         assert_eq!(latest(&d).unwrap().unwrap(), latest(&whole).unwrap().unwrap());
         let pool = IoPool::new(2, Duration::from_secs(60), dir.path().to_owned());
-        assert_eq!(latest_nas(&pool, &d).unwrap().unwrap(), prev);
+        let nd = crate::nasfs::NasRoot::local_for_test(dir.path()).join("catalog");
+        assert_eq!(latest_nas(&pool, &nd).unwrap().unwrap(), prev);
+        assert_eq!(latest_on(&nd).unwrap().unwrap(), prev);
         // From one this Mac has: the deltas after it applied to it; itself when it's the newest.
         let have = read_n(&whole, 10).unwrap();
-        assert_eq!(latest_nas_from(&pool, &d, Some(&have)).unwrap().unwrap(), prev);
-        assert_eq!(latest_nas_from(&pool, &d, Some(&prev)).unwrap().unwrap(), prev);
+        assert_eq!(latest_nas_from(&pool, &nd, Some(&have)).unwrap().unwrap(), prev);
+        assert_eq!(latest_nas_from(&pool, &nd, Some(&prev)).unwrap().unwrap(), prev);
         // The chains: back to the whole one each starts from.
         assert_eq!(chain(&d, 11).unwrap(), [11, 10, 9]);
         assert_eq!(chain(&d, 9).unwrap(), [9]);

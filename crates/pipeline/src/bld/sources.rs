@@ -12,7 +12,6 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 
 /// How far around T a parts file's row groups are read (degrees).
 pub const PART_MARGIN_DEG: f64 = 0.02;
@@ -98,15 +97,15 @@ impl Sources {
     /// Reads the indexes under `root` of release `release` and GHSL's folder `ghsl` (`ghsl_dir`): None when the release has no `buildings.json` (nothing
     /// downloaded yet); an error when one is there and can't be read. A listed file whose footer is
     /// missing or of another ETag is `stale` (`bldprep` refuses it where it meets a tile).
-    pub fn read(root: &Path, release: &str, ghsl: &str) -> Result<Option<Sources>> {
+    pub fn read(root: &store::nasfs::NasRoot, release: &str, ghsl: &str) -> Result<Option<Sources>> {
         let base = root.join(release_dir(release));
-        let listed = match std::fs::read(base.join("buildings.json")) {
+        let listed = match base.join("buildings.json").read() {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e).context("buildings.json"),
         };
         let listed: Listed = serde_json::from_slice(&listed).context("buildings.json")?;
-        let gz = std::fs::read(base.join("footers.json.gz")).context("footers.json.gz")?;
+        let gz = base.join("footers.json.gz").read().context("footers.json.gz")?;
         let mut json = Vec::new();
         std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(&gz[..]), &mut json).context("footers.json.gz")?;
         let footers: BTreeMap<String, Footer> = serde_json::from_slice(&json).context("footers.json.gz")?;
@@ -128,7 +127,7 @@ impl Sources {
             });
             files.push(File { part: name.contains("type=building_part/"), name, etag: f.etag, rgs, bbox });
         }
-        let ghsl = match std::fs::read(root.join(ghsl).join("index.json")) {
+        let ghsl = match root.join(ghsl).join("index.json").read() {
             Ok(b) => serde_json::from_slice::<GhslIndex>(&b)
                 .context("GHSL's index.json")?
                 .tiles
@@ -186,7 +185,7 @@ impl Sources {
 }
 
 /// What `Memo` was read for: the root, the release, and its indexes' sizes and times.
-type Stamp = (PathBuf, String, Vec<(u64, u64)>);
+type Stamp = (store::nasfs::NasRoot, String, Vec<(u64, u64)>);
 
 /// `Sources::read`, kept while its indexes' sizes and times stay the same (the agent plans every
 /// loop; the footers are 2.6 MB of gzip'd JSON).
@@ -197,13 +196,18 @@ pub struct Memo {
 }
 
 impl Memo {
-    pub fn get(&mut self, root: &Path, release: &str, ghsl: &str) -> Result<Option<std::sync::Arc<Sources>>> {
+    pub fn get(
+        &mut self,
+        root: &store::nasfs::NasRoot,
+        release: &str,
+        ghsl: &str,
+    ) -> Result<Option<std::sync::Arc<Sources>>> {
         let base = root.join(release_dir(release));
         let stamp: Vec<(u64, u64)> =
             [base.join("buildings.json"), base.join("footers.json.gz"), root.join(ghsl).join("index.json")]
                 .iter()
                 .map(|p| {
-                    std::fs::metadata(p)
+                    p.metadata()
                         .map(|m| {
                             (
                                 m.len(),
@@ -216,7 +220,7 @@ impl Memo {
                         .unwrap_or((0, 0))
                 })
                 .collect();
-        let key = (root.to_path_buf(), format!("{release} {ghsl}"), stamp);
+        let key = (root.clone(), format!("{release} {ghsl}"), stamp);
         if self.at.as_ref() == Some(&key) {
             return Ok(self.held.clone());
         }
@@ -231,7 +235,7 @@ impl Memo {
 /// when its indexes read, "?" when they can't be read now, "" before anything was downloaded),
 /// and for each z6 tile that reads anything, "bldprep 6/x/y" (`Sources::read_for`, hashed) and
 /// "bldprep-rows 6/x/y" (`Sources::rows_for`). Worked out again only when an index changes.
-pub fn digests(root: &Path, release: &str, ghsl: &str) -> BTreeMap<String, String> {
+pub fn digests(root: &store::nasfs::NasRoot, release: &str, ghsl: &str) -> BTreeMap<String, String> {
     type Kept = (Memo, Option<(std::sync::Arc<Sources>, BTreeMap<String, String>)>);
     static KEPT: std::sync::Mutex<Option<Kept>> = std::sync::Mutex::new(None);
     let mut g = KEPT.lock().unwrap_or_else(|e| e.into_inner());
@@ -271,9 +275,9 @@ pub(crate) mod tests {
     /// A release's indexes under `root`: a buildings file over Tokyo's z6 tile 6/56/25 (two row
     /// groups, one in it), a parts file whose row group lies just outside it (0.01° west), and a
     /// file listed with a stale footer; a GHSL tile over Japan.
-    pub(crate) fn write(root: &Path, release: &str) {
+    pub(crate) fn write(root: &store::nasfs::NasRoot, release: &str) {
         let base = root.join(release_dir(release));
-        std::fs::create_dir_all(&base).unwrap();
+        base.create_dir_all().unwrap();
         let b = crate::bld::tile_box_deg(6, 56, 25);
         let listed = serde_json::json!({"files": {
             "theme=buildings/type=building/a.parquet": {"etag": "ea"},
@@ -281,7 +285,7 @@ pub(crate) mod tests {
             "theme=buildings/type=building/stale.parquet": {"etag": "new", "bbox": [0.0, 0.0, 1.0, 1.0]},
             "theme=buildings/type=building/stale-near.parquet": {"etag": "new", "bbox": [b[0], b[1], b[0] + 0.5, b[1] + 0.5]},
         }});
-        std::fs::write(base.join("buildings.json"), serde_json::to_vec(&listed).unwrap()).unwrap();
+        base.join("buildings.json").write(serde_json::to_vec(&listed).unwrap()).unwrap();
         let footers = serde_json::json!({
             format!("release/{release}/theme=buildings/type=building/a.parquet"): {"etag": "ea", "rgs": [[b[0] + 0.1, b[1] + 0.1, b[0] + 0.2, b[1] + 0.2, 1000], [0.0, 0.0, 1.0, 1.0, 5]]},
             format!("release/{release}/theme=buildings/type=building_part/p.parquet"): {"etag": "ep", "rgs": [[b[0] - 0.05, b[1], b[0] - 0.01, b[3], 20]]},
@@ -289,10 +293,10 @@ pub(crate) mod tests {
         });
         let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         gz.write_all(&serde_json::to_vec(&footers).unwrap()).unwrap();
-        std::fs::write(base.join("footers.json.gz"), gz.finish().unwrap()).unwrap();
-        std::fs::create_dir_all(root.join(ghsl_dir("R2023A"))).unwrap();
+        base.join("footers.json.gz").write(gz.finish().unwrap()).unwrap();
+        root.join(ghsl_dir("R2023A")).create_dir_all().unwrap();
         let g = serde_json::json!({"tiles": {"G_R5_C30.zip": {"size": 123, "bbox": [130.0, 30.0, 140.0, 40.0]}, "G_R1_C1.zip": {"size": 9, "bbox": [-180.0, 80.0, -170.0, 90.0]}}});
-        std::fs::write(root.join(ghsl_dir("R2023A")).join("index.json"), serde_json::to_vec(&g).unwrap()).unwrap();
+        root.join(ghsl_dir("R2023A")).join("index.json").write(serde_json::to_vec(&g).unwrap()).unwrap();
     }
 
     /// The declared buildings and building-heights sources (producers/sources/) name what the code
@@ -343,9 +347,16 @@ pub(crate) mod tests {
     #[test]
     fn what_bldprep_reads_of_a_tile() {
         let d = tempfile::tempdir().unwrap();
-        assert_eq!(Sources::read(d.path(), "2026-09-23.1", &ghsl_dir("R2023A")).unwrap(), None, "nothing downloaded");
-        write(d.path(), "2026-09-23.1");
-        let s = Sources::read(d.path(), "2026-09-23.1", &ghsl_dir("R2023A")).unwrap().unwrap();
+        assert_eq!(
+            Sources::read(&store::nasfs::NasRoot::local_for_test(d.path()), "2026-09-23.1", &ghsl_dir("R2023A"))
+                .unwrap(),
+            None,
+            "nothing downloaded"
+        );
+        write(&store::nasfs::NasRoot::local_for_test(d.path()), "2026-09-23.1");
+        let s = Sources::read(&store::nasfs::NasRoot::local_for_test(d.path()), "2026-09-23.1", &ghsl_dir("R2023A"))
+            .unwrap()
+            .unwrap();
         // (The stale files left out of what's read; the one meeting the tile named in its reads,
         // `bldprep` failing on it there; the far one not.)
         assert_eq!((s.files.len(), s.stale.len()), (2, 2));
@@ -371,9 +382,22 @@ pub(crate) mod tests {
         assert!(s.read_for(10, 10).is_empty());
         // Kept while the indexes stay as they are; read again once one changes.
         let mut m = Memo::default();
-        let a = m.get(d.path(), "2026-09-23.1", &ghsl_dir("R2023A")).unwrap().unwrap();
-        assert!(std::sync::Arc::ptr_eq(&a, &m.get(d.path(), "2026-09-23.1", &ghsl_dir("R2023A")).unwrap().unwrap()));
+        let a = m
+            .get(&store::nasfs::NasRoot::local_for_test(d.path()), "2026-09-23.1", &ghsl_dir("R2023A"))
+            .unwrap()
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &a,
+            &m.get(&store::nasfs::NasRoot::local_for_test(d.path()), "2026-09-23.1", &ghsl_dir("R2023A"))
+                .unwrap()
+                .unwrap()
+        ));
         std::fs::write(d.path().join(ghsl_dir("R2023A")).join("index.json"), br#"{"tiles": {}}"#).unwrap();
-        assert!(m.get(d.path(), "2026-09-23.1", &ghsl_dir("R2023A")).unwrap().unwrap().ghsl.is_empty());
+        assert!(m
+            .get(&store::nasfs::NasRoot::local_for_test(d.path()), "2026-09-23.1", &ghsl_dir("R2023A"))
+            .unwrap()
+            .unwrap()
+            .ghsl
+            .is_empty());
     }
 }

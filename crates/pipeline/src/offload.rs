@@ -65,7 +65,7 @@ pub struct WaitFile {
 impl WaitNote {
     /// Writes `self` to `path` (whole: crate::whole), kept until the returned value drops.
     pub fn keep(&self, path: &Path) -> Option<WaitFile> {
-        crate::whole::write(path, &serde_json::to_vec(self).ok()?).ok()?;
+        store::whole::write(path, &serde_json::to_vec(self).ok()?).ok()?;
         Some(WaitFile { path: path.to_path_buf() })
     }
 
@@ -562,7 +562,7 @@ pub fn run_task(
     spec: &serde_json::Value,
     dir: &Path,
     bin: &Path,
-    root: Option<&Path>,
+    root: Option<&store::nasfs::NasRoot>,
 ) -> Result<serde_json::Value> {
     std::fs::remove_dir_all(dir).ok();
     std::fs::create_dir_all(dir.join("u"))?;
@@ -608,7 +608,8 @@ pub fn run_task(
     let uses = |k: &str| runs.iter().any(|r| r.args.iter().chain(r.env.iter().map(|(_, v)| v)).any(|v| v.contains(k)));
     let nas = |p: &str| -> Result<Option<PathBuf>> {
         match (spec["places"][p].as_str().and_then(|v| v.strip_prefix("/net/nas/")), root) {
-            (Some(rel), Some(root)) => Ok(Some(root.join(rel))),
+            // (A step's place on the NAS, as its program's argument: tests/nas_access.rs.)
+            (Some(rel), Some(root)) => Ok(Some(root.join(rel).unchecked_path())),
             (Some(_), None) if uses(p) => anyhow::bail!("the task reads the NAS, which this worker hasn't"),
             _ => Ok(None),
         }

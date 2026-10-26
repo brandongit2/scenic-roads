@@ -5,7 +5,6 @@
 
 use anyhow::Result;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
 
 /// The host of an HTTPS URL (a task's reads go over HTTPS only); None for anything else.
 pub fn host(url: &str) -> Option<&str> {
@@ -15,7 +14,7 @@ pub fn host(url: &str) -> Option<&str> {
 }
 
 /// The hosts the accepted versions the records `manifest` name allow (none before they're accepted).
-pub fn of(root: &Path, manifest: &BTreeMap<String, String>) -> Result<BTreeSet<String>> {
+pub fn of(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Result<BTreeSet<String>> {
     let mut out = BTreeSet::new();
     let mut add = |u: &str| {
         if let Some(h) = host(u) {
@@ -53,7 +52,7 @@ pub struct Cache(std::sync::Mutex<State>);
 impl Cache {
     /// The hosts as the records under `root` name the accepted versions (`at`: now):
     /// Cache::get_with reading `state/build/manifest.json` and deriving with `of`.
-    pub fn get(&self, root: &Path, at: std::time::Instant) -> Result<BTreeSet<String>> {
+    pub fn get(&self, root: &store::nasfs::NasRoot, at: std::time::Instant) -> Result<BTreeSet<String>> {
         self.get_with(at, || crate::out::read_manifest(root), |m| of(root, m))
     }
 
@@ -113,7 +112,7 @@ static CACHE: std::sync::LazyLock<Cache> = std::sync::LazyLock::new(Cache::defau
 
 /// The hosts as the build's records name the accepted versions now (`state/build/manifest.json`
 /// under the NAS project folder `root`): Cache::get, process-wide.
-pub fn now(root: &Path) -> Result<BTreeSet<String>> {
+pub fn now(root: &store::nasfs::NasRoot) -> Result<BTreeSet<String>> {
     CACHE.get(root, std::time::Instant::now())
 }
 
@@ -134,10 +133,10 @@ mod tests {
     fn derived() {
         let d = tempfile::tempdir().unwrap();
         let mut m = BTreeMap::new();
-        assert!(of(d.path(), &m).unwrap().is_empty());
-        crate::inputs::sources::accept_fixture(d.path(), &mut m);
-        crate::inputs::elevation::accept_fixture(d.path(), &mut m);
-        let h = of(d.path(), &m).unwrap();
+        assert!(of(&store::nasfs::NasRoot::local_for_test(d.path()), &m).unwrap().is_empty());
+        crate::inputs::sources::accept_fixture(&store::nasfs::NasRoot::local_for_test(d.path()), &mut m);
+        crate::inputs::elevation::accept_fixture(&store::nasfs::NasRoot::local_for_test(d.path()), &mut m);
+        let h = of(&store::nasfs::NasRoot::local_for_test(d.path()), &m).unwrap();
         assert_eq!(h.into_iter().collect::<Vec<_>>(), ["esa-worldcover.s3.eu-central-1.amazonaws.com"]);
     }
 
@@ -153,22 +152,25 @@ mod tests {
         // A manifest that can't be read, none derived yet: an error.
         std::fs::write(&mf, b"{not json").unwrap();
         let c = Cache::default();
-        assert!(c.get(d.path(), t0).is_err());
+        assert!(c.get(&store::nasfs::NasRoot::local_for_test(d.path()), t0).is_err());
         let mut m = BTreeMap::new();
-        crate::inputs::sources::accept_fixture(d.path(), &mut m);
-        crate::inputs::elevation::accept_fixture(d.path(), &mut m);
+        crate::inputs::sources::accept_fixture(&store::nasfs::NasRoot::local_for_test(d.path()), &mut m);
+        crate::inputs::elevation::accept_fixture(&store::nasfs::NasRoot::local_for_test(d.path()), &mut m);
         std::fs::write(&mf, serde_json::to_vec(&m).unwrap()).unwrap();
-        let want = of(d.path(), &m).unwrap();
-        assert_eq!(c.get(d.path(), t0).unwrap(), want);
+        let want = of(&store::nasfs::NasRoot::local_for_test(d.path()), &m).unwrap();
+        assert_eq!(c.get(&store::nasfs::NasRoot::local_for_test(d.path()), t0).unwrap(), want);
         // Within RECHECK, nothing read: a changed manifest isn't seen yet.
         std::fs::write(&mf, b"{}").unwrap();
-        assert_eq!(c.get(d.path(), t0 + RECHECK - Duration::from_secs(1)).unwrap(), want);
+        assert_eq!(
+            c.get(&store::nasfs::NasRoot::local_for_test(d.path()), t0 + RECHECK - Duration::from_secs(1)).unwrap(),
+            want
+        );
         // A read that fails after it: the last set kept.
         std::fs::write(&mf, b"{not json").unwrap();
-        assert_eq!(c.get(d.path(), t0 + RECHECK).unwrap(), want);
+        assert_eq!(c.get(&store::nasfs::NasRoot::local_for_test(d.path()), t0 + RECHECK).unwrap(), want);
         // Read again (after RECHECK more): the versions changed (none accepted), so none.
         std::fs::write(&mf, b"{}").unwrap();
-        assert!(c.get(d.path(), t0 + RECHECK * 2).unwrap().is_empty());
+        assert!(c.get(&store::nasfs::NasRoot::local_for_test(d.path()), t0 + RECHECK * 2).unwrap().is_empty());
     }
 
     /// A recheck whose versions are the same derives nothing again.

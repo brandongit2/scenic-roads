@@ -17,9 +17,10 @@ use sha2::Digest;
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use store::nasfs::NasPath;
 
 pub struct Out {
-    root: PathBuf,
+    root: store::nasfs::NasRoot,
     /// Logical name → content name of every file this build wrote or reused.
     pub manifest: BTreeMap<String, String>,
     /// This run's changes to the manifest (None: removed), merged into the file when saving.
@@ -31,7 +32,7 @@ pub struct Out {
     /// Content name → size (bytes) of the files this run wrote or reused, handed on with the
     /// manifest changes that name them (`SIZES`, the catalogs' sizes without a look at the NAS).
     sizes: BTreeMap<String, u64>,
-    manifest_path: PathBuf,
+    manifest_path: NasPath,
     /// Local scratch space for files before upload.
     pub scratch: PathBuf,
     /// A helper's job: where its saves go as hand-offs ($SCENIC_HANDOFF), never the manifest.
@@ -73,7 +74,7 @@ struct Later {
 
 /// An upload put off.
 struct Upload {
-    root: PathBuf,
+    root: store::nasfs::NasRoot,
     logical: String,
     ext: String,
     local: PathBuf,
@@ -138,12 +139,12 @@ pub fn lay_over(m: &mut BTreeMap<String, String>, h: &crate::handoff::Handoff) {
 /// it can't be read now (an SMB hiccup), so nothing is ever written from an empty one by mistake.
 /// The records' manifest under `root` (`state/build/manifest.json`), read only: the accepted
 /// versions, for a reader that needs no `Out` (coord::hosts).
-pub fn read_manifest(root: &Path) -> Result<BTreeMap<String, String>> {
+pub fn read_manifest(root: &store::nasfs::NasRoot) -> Result<BTreeMap<String, String>> {
     read_record(&root.join("state/build/manifest.json"))
 }
 
-pub fn read_record<T: Default + serde::de::DeserializeOwned>(p: &Path) -> Result<T> {
-    match crate::whole::read_replaced(p) {
+pub fn read_record<T: Default + serde::de::DeserializeOwned>(p: &NasPath) -> Result<T> {
+    match p.read_replaced() {
         Ok(b) => serde_json::from_slice(&b).with_context(|| format!("parse {}", p.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
         Err(e) => Err(e).with_context(|| format!("read {}", p.display())),
@@ -186,7 +187,7 @@ fn hashes_of(p: &Path) -> Result<(String, String)> {
 impl Out {
     /// A job of `step`'s: `root`, the NAS project folder (or a local folder standing in for it);
     /// `scratch`, local space. It puts and removes only `step`'s outputs (`for_step`).
-    pub fn open(root: &Path, scratch: &Path, step: &str) -> Result<Self> {
+    pub fn open(root: &store::nasfs::NasRoot, scratch: &Path, step: &str) -> Result<Self> {
         let mut out = Self::open_here(root, scratch)?;
         out.for_step(step);
         Ok(out)
@@ -194,13 +195,13 @@ impl Out {
 
     /// Not a step's job's: the agent merging hand-offs, a tool, a test of a step's parts. It may
     /// put and remove any name, so a step's job opens with `open`, never this.
-    pub fn unbound(root: &Path, scratch: &Path) -> Result<Self> {
+    pub fn unbound(root: &store::nasfs::NasRoot, scratch: &Path) -> Result<Self> {
         Self::open_here(root, scratch)
     }
 
     /// The records at `root`, with this Mac's unmerged hand-offs its agent names
     /// (crate::agent::resume::UNMERGED_ENV).
-    fn open_here(root: &Path, scratch: &Path) -> Result<Self> {
+    fn open_here(root: &store::nasfs::NasRoot, scratch: &Path) -> Result<Self> {
         let unmerged = std::env::var_os(crate::agent::resume::UNMERGED_ENV).map(PathBuf::from);
         Self::open_with(root, scratch, unmerged.as_deref())
     }
@@ -212,7 +213,7 @@ impl Out {
     /// sleep) finds its earlier stages' outputs (docs/pool.md §7.4). Its agent gives them only to a
     /// job that hands off (`SCENIC_HANDOFF`): one that saves the records has none. They're the snapshot's,
     /// not this job's changes: its saves hand off only its own.
-    pub fn open_with(root: &Path, scratch: &Path, unmerged: Option<&Path>) -> Result<Self> {
+    pub fn open_with(root: &store::nasfs::NasRoot, scratch: &Path, unmerged: Option<&Path>) -> Result<Self> {
         let _p = crate::timings::phase("records read", crate::timings::Class::NasRead);
         std::fs::create_dir_all(scratch)?;
         let manifest_path = root.join("state/build/manifest.json");
@@ -229,7 +230,7 @@ impl Out {
         let pending =
             if handoff.is_some() { BTreeMap::new() } else { read_record(&root.join("state/build/pending.json"))? };
         Ok(Out {
-            root: root.to_path_buf(),
+            root: root.clone(),
             manifest,
             changes: BTreeMap::new(),
             checked: Default::default(),
@@ -297,7 +298,7 @@ impl Out {
         }
     }
 
-    pub fn root(&self) -> &Path {
+    pub fn root(&self) -> &store::nasfs::NasRoot {
         &self.root
     }
 
@@ -306,7 +307,7 @@ impl Out {
     /// through `crate::inputs::open` alone (docs/inputs.md §7.1), so a reader missed fails its
     /// first run instead of bypassing the gate.
     #[track_caller]
-    pub fn path(&self, content: &str) -> PathBuf {
+    pub fn path(&self, content: &str) -> NasPath {
         if crate::inputs::in_drop_box(content) {
             panic!("{}: {content} is in a drop box; a step reads an input through crate::inputs::open alone (docs/inputs.md §7.1)", std::panic::Location::caller());
         }
@@ -348,12 +349,8 @@ impl Out {
             // damaged content-named file is removed by hand: store::naming); not touchable, taken
             // as an upload of its own, its check pending (nothing written).
             let dest = self.root.join(&name);
-            let here = std::fs::metadata(&dest).is_ok_and(|m| m.len() == size)
-                && std::fs::File::options()
-                    .write(true)
-                    .open(&dest)
-                    .and_then(|f| f.set_modified(std::time::SystemTime::now()))
-                    .is_ok();
+            let here = dest.metadata().is_ok_and(|m| m.len() == size)
+                && dest.set_modified(std::time::SystemTime::now()).is_ok();
             if here {
                 std::fs::remove_file(local).ok();
                 return Ok(self.landed(Landed { logical: logical.to_string(), name, sha: None, size, ms: 0 }));
@@ -501,7 +498,7 @@ impl Out {
             self.later.landed += 1;
             if l.sha.is_some() {
                 // (Its NAS write counted as it lands; its cost line's as its target claims it.)
-                store::nasio::wrote(&self.root.join(&l.name), l.size, l.ms);
+                self.root.join(&l.name).count_wrote(l.size, l.ms);
                 self.later.unclaimed.push((seq, l.size));
             }
             self.uploaded.insert(l.logical.clone(), l.name.clone());
@@ -553,11 +550,7 @@ impl Out {
         let t = std::time::Instant::now();
         let got = store::naming::write_atomic_hashed(&self.root, logical, ext, &local, &h, bytes.len() as u64);
         if got.is_ok() && existed {
-            let touched = std::fs::File::options()
-                .write(true)
-                .open(&dest)
-                .and_then(|f| f.set_modified(std::time::SystemTime::now()))
-                .is_ok();
+            let touched = dest.set_modified(std::time::SystemTime::now()).is_ok();
             if !touched || !dest.exists() {
                 existed = false;
                 let again =
@@ -672,8 +665,8 @@ impl Out {
     /// written again: a step's last save often has none, and each write is a rename over a file
     /// another Mac may have open.)
     pub fn save_held(&mut self, _lock: &BuildLock) -> Result<()> {
-        let dir = self.manifest_path.parent().unwrap().to_path_buf();
-        std::fs::create_dir_all(&dir)?;
+        let dir = self.manifest_path.parent().unwrap();
+        dir.create_dir_all()?;
         let read: BTreeMap<String, String> = read_record(&self.manifest_path)?;
         let mut on_disk = read.clone();
         for (k, v) in &self.changes {
@@ -696,11 +689,11 @@ impl Out {
         pending.retain(|k, _| !self.checked.contains(k));
         for (p, v, was) in [(&self.manifest_path, &on_disk, &read), (&pending_path, &pending, &pending_read)] {
             if v != was || !p.exists() {
-                crate::whole::write(p, &serde_json::to_vec_pretty(v)?)?;
+                p.write_whole(serde_json::to_vec_pretty(v)?)?;
             }
         }
         if sizes != sizes_read {
-            crate::whole::write(&sizes_path, &serde_json::to_vec(&sizes)?)?;
+            sizes_path.write_whole(serde_json::to_vec(&sizes)?)?;
         }
         let handed = self.named_sizes();
         self.sizes.retain(|c, _| !handed.contains_key(c));
@@ -798,7 +791,7 @@ impl Out {
 /// after: its content name, and its SHA-256 when it was copied. An identical file already on the
 /// NAS is reused (and touched), not copied again; one of the same name with another size is an
 /// error (content-named files are never rewritten).
-fn upload(root: &Path, logical: &str, ext: &str, local: &Path) -> Result<Landed> {
+fn upload(root: &store::nasfs::NasRoot, logical: &str, ext: &str, local: &Path) -> Result<Landed> {
     // (Its name's hash and its checksum from one read of it: `write_atomic_hashed` checks the
     // read-back against the hash, as against its own.)
     let size = std::fs::metadata(local)?.len();
@@ -807,7 +800,7 @@ fn upload(root: &Path, logical: &str, ext: &str, local: &Path) -> Result<Landed>
 
 /// `upload` of a file whose hashes (`hashes_of`) and size are known.
 fn upload_hashed(
-    root: &Path,
+    root: &store::nasfs::NasRoot,
     logical: &str,
     ext: &str,
     local: &Path,
@@ -824,11 +817,7 @@ fn upload_hashed(
         // In use again: a fresh time keeps GC's age rule from taking it before a catalog does
         // (GC looks at a file's time again right before it removes it). One that can't be
         // touched, or is gone once touched (GC took it between), is uploaded again.
-        let touched = std::fs::File::options()
-            .write(true)
-            .open(&dest)
-            .and_then(|f| f.set_modified(std::time::SystemTime::now()))
-            .is_ok();
+        let touched = dest.set_modified(std::time::SystemTime::now()).is_ok();
         if !touched || !dest.exists() {
             existed = false;
             let again = store::naming::write_atomic_hashed(root, logical, ext, local, &h, size)?;
@@ -844,7 +833,7 @@ fn upload_hashed(
 /// (store::retry::transient_or_missing: an SMB moment of ENOENT, EIO, a reset connection), each retry
 /// logged; its last error returned.
 fn upload_retrying(
-    root: &Path,
+    root: &store::nasfs::NasRoot,
     logical: &str,
     ext: &str,
     local: &Path,
@@ -870,7 +859,7 @@ fn upload_retrying(
     }
 }
 
-pub fn check_writer(root: &Path) -> Result<()> {
+pub fn check_writer(root: &store::nasfs::NasRoot) -> Result<()> {
     let terms = root.join(crate::pool::term::DIR);
     if terms.exists() {
         bail!("the pool leads this build ({} exists): the records are its lead's to write; a step saves only as a job's, handing off (SCENIC_HANDOFF)", terms.display());
@@ -883,21 +872,22 @@ pub fn check_writer(root: &Path) -> Result<()> {
 pub struct BuildLock(#[allow(dead_code)] crate::sys::PathLock);
 
 impl BuildLock {
-    fn file(root: &Path) -> PathBuf {
+    fn file(root: &store::nasfs::NasRoot) -> PathBuf {
         // By the root's real path: `x`, `x/` and a link to it are one build.
-        let real = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let raw = root.unchecked_path();
+        let real = raw.canonicalize().unwrap_or(raw);
         let key = store::naming::hash16(real.to_string_lossy().as_bytes());
         std::env::temp_dir().join(format!("scenic-build-{key}.lock"))
     }
 
     /// Waits until the lock is ours.
-    pub fn take(root: &Path) -> Result<BuildLock> {
+    pub fn take(root: &store::nasfs::NasRoot) -> Result<BuildLock> {
         let l = crate::sys::PathLock::take(&Self::file(root), true).context("lock the build manifest")?;
         Ok(BuildLock(l.context("lock the build manifest: not taken")?))
     }
 
     /// The lock when it's free now; None when another holds it (a paused job may, for hours).
-    pub fn try_take(root: &Path) -> Result<Option<BuildLock>> {
+    pub fn try_take(root: &store::nasfs::NasRoot) -> Result<Option<BuildLock>> {
         Ok(crate::sys::PathLock::take(&Self::file(root), false).context("lock the build manifest")?.map(BuildLock))
     }
 }
@@ -918,7 +908,7 @@ mod tests {
             std::fs::write(&p, bytes).unwrap();
             p
         };
-        let records = |root: &Path| {
+        let records = |root: &store::nasfs::NasRoot| {
             let m: BTreeMap<String, String> = read_record(&root.join("state/build/manifest.json")).unwrap();
             let p: BTreeMap<String, String> = read_record(&root.join("state/build/pending.json")).unwrap();
             let s: BTreeMap<String, u64> = read_record(&root.join(SIZES)).unwrap();
@@ -926,21 +916,27 @@ mod tests {
         };
         // Now and put off: the same records.
         let (now, later) = (d.path().join("now"), d.path().join("later"));
-        let mut a = Out::unbound(&now, &d.path().join("s1")).unwrap();
+        let mut a = Out::unbound(&store::nasfs::NasRoot::local_for_test(&now), &d.path().join("s1")).unwrap();
         a.put_file("base/6-1-1", "base", &file("a1", b"one")).unwrap();
         a.put_file("base/6-1-2", "base", &file("a2", b"two two")).unwrap();
         a.save().unwrap();
-        let mut b = Out::unbound(&later, &d.path().join("s2")).unwrap();
+        let mut b = Out::unbound(&store::nasfs::NasRoot::local_for_test(&later), &d.path().join("s2")).unwrap();
         let first = file("b1", b"one");
         b.put_file_later("base/6-1-1", "base", &first).unwrap();
         let m1 = b.mark();
         b.put_file_later("base/6-1-2", "base", &file("b2", b"two two")).unwrap();
         assert_eq!(b.get("base/6-1-1"), None, "not named before it has landed");
         b.save_upto(m1).unwrap();
-        assert!(records(&later).0.contains_key("base/6-1-1"), "up to the mark: saved");
+        assert!(
+            records(&store::nasfs::NasRoot::local_for_test(&later)).0.contains_key("base/6-1-1"),
+            "up to the mark: saved"
+        );
         assert!(!first.exists(), "its local file removed once uploaded");
         b.save().unwrap();
-        assert_eq!(records(&later), records(&now));
+        assert_eq!(
+            records(&store::nasfs::NasRoot::local_for_test(&later)),
+            records(&store::nasfs::NasRoot::local_for_test(&now))
+        );
         assert_eq!(b.manifest, a.manifest);
         // Reused (already there): named, nothing pending for it.
         b.put_file_later("base/6-1-3", "base", &file("b3", b"one")).unwrap();
@@ -952,12 +948,16 @@ mod tests {
         b.put_file_later("hidata/6-1-4", "sect", &kept).unwrap();
         let e = b.save().unwrap_err();
         assert!(format!("{e:#}").contains("an upload put off failed"), "{e:#}");
-        assert!(b.get("hidata/6-1-4").is_none() && !records(&later).0.contains_key("hidata/6-1-4"));
+        assert!(
+            b.get("hidata/6-1-4").is_none()
+                && !records(&store::nasfs::NasRoot::local_for_test(&later)).0.contains_key("hidata/6-1-4")
+        );
         assert!(kept.exists(), "its local file kept");
         // Failed once, every later save fails, even with nothing new put off.
         assert!(b.save().is_err());
         // A name in flight put, set or removed: its upload lands first, never over the newer state.
-        let mut c = Out::unbound(&d.path().join("c"), &d.path().join("s4")).unwrap();
+        let mut c =
+            Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("c")), &d.path().join("s4")).unwrap();
         c.put_file_later("base/6-2-1", "base", &file("c1", b"old")).unwrap();
         c.remove("base/6-2-1");
         c.put_file_later("base/6-2-2", "base", &file("c2", b"old two")).unwrap();
@@ -973,7 +973,7 @@ mod tests {
         assert_eq!(c.claim_written(c.mark()), (4, 1));
         assert_eq!(c.claim_written(c.mark()), (0, 0));
         // Outside the step's outputs: refused at once, as `put_file` is.
-        let mut job = Out::open(&later, &d.path().join("s3"), "pack").unwrap();
+        let mut job = Out::open(&store::nasfs::NasRoot::local_for_test(&later), &d.path().join("s3"), "pack").unwrap();
         assert!(job.put_file_later("base/6-1-5", "base", &file("b5", b"five")).is_err());
         // Each a minute, and a second each 2 MB.
         assert_eq!(upload_deadline(0).as_secs(), 60);
@@ -988,10 +988,10 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("nas");
         let l = "work/heritage/d/pos/6-1-1";
-        let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
+        let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch")).unwrap();
         let a = out.put_bytes(l, "json", b"[[1,2]]").unwrap();
         out.save().unwrap();
-        let open = || Out::unbound(&root, &d.path().join("scratch")).unwrap();
+        let open = || Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch")).unwrap();
         // There: touched.
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 86400);
         std::fs::File::options().write(true).open(root.join(&a)).unwrap().set_modified(old).unwrap();
@@ -1022,11 +1022,11 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("nas");
         let l = "work/heritage/d/pos/6-1-1";
-        let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
+        let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch")).unwrap();
         let a = out.put_bytes(l, "json", b"[[1,2],[3,4]]").unwrap();
         out.save().unwrap();
         std::fs::write(root.join(&a), b"[[1,2]").unwrap();
-        let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
+        let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch")).unwrap();
         assert!(out.put_bytes(l, "json", b"[[1,2],[3,4]]").is_err());
         assert_eq!(std::fs::read(root.join(&a)).unwrap(), b"[[1,2]", "left for the owner");
     }
@@ -1042,19 +1042,24 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("nas");
         std::fs::create_dir_all(&root).unwrap();
-        let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
+        let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch")).unwrap();
         let a = out.put_bytes("base/6-1-1", "base", b"twelve bytes").unwrap();
         let unnamed = out.store_bytes("inputs-copy/x", "json", b"{}").unwrap();
         out.save().unwrap();
-        let saved: BTreeMap<String, u64> = read_record(&root.join(SIZES)).unwrap();
+        let saved: BTreeMap<String, u64> =
+            read_record(&store::nasfs::NasPath::local_for_test(&root.join(SIZES))).unwrap();
         assert_eq!(saved, [(a.clone(), 12)].into());
         assert_eq!(out.recorded_sizes().unwrap().get(&unnamed), Some(&2), "this run's own, named or not");
         out.remove("base/6-1-1");
         out.save().unwrap();
-        assert!(read_record::<BTreeMap<String, u64>>(&root.join(SIZES)).unwrap().is_empty());
+        assert!(read_record::<BTreeMap<String, u64>>(&store::nasfs::NasPath::local_for_test(&root.join(SIZES)))
+            .unwrap()
+            .is_empty());
         // A helper's job hands them off.
         let hd = d.path().join("handoff");
-        let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap().handing_off(&hd);
+        let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch"))
+            .unwrap()
+            .handing_off(&hd);
         let b = out.put_bytes("base/6-1-2", "base", b"four").unwrap();
         out.save().unwrap();
         let h = crate::handoff::written_in(&hd).unwrap().unwrap();
@@ -1080,7 +1085,8 @@ mod tests {
         };
         let f = d.path().join("unmerged.json");
         std::fs::write(&f, serde_json::to_vec(&h).unwrap()).unwrap();
-        let mut out = Out::open_with(&root, &d.path().join("scratch"), Some(&f)).unwrap();
+        let mut out =
+            Out::open_with(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch"), Some(&f)).unwrap();
         out.for_step("osm-pass");
         assert_eq!(
             out.get("sources/osm/2026-10-01/filtered"),
@@ -1090,13 +1096,19 @@ mod tests {
             out.get("sources/osm/2026-10-01/sets/old").is_none() && out.get("sources/osm/2026-09-01/pass").is_some()
         );
         assert!(out.changes.is_empty(), "the snapshot's, not this job's");
-        let plain = Out::open_with(&root, &d.path().join("scratch"), None).unwrap();
+        let plain =
+            Out::open_with(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch"), None).unwrap();
         assert!(
             plain.get("sources/osm/2026-10-01/filtered").is_none()
                 && plain.get("sources/osm/2026-10-01/sets/old").is_some()
         );
         // (A file that can't be read fails the job rather than open the snapshot without them.)
-        assert!(Out::open_with(&root, &d.path().join("scratch"), Some(&d.path().join("missing.json"))).is_err());
+        assert!(Out::open_with(
+            &store::nasfs::NasRoot::local_for_test(&root),
+            &d.path().join("scratch"),
+            Some(&d.path().join("missing.json"))
+        )
+        .is_err());
     }
 
     /// One read gives the name's hash and the checksum, each as hashing the bytes alone gives it,
@@ -1121,7 +1133,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("nas");
         std::fs::create_dir_all(root.join("state/build")).unwrap();
-        let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
+        let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch")).unwrap();
         let local = |n: &str| {
             let p = d.path().join(n);
             std::fs::write(&p, b"the same bytes").unwrap();
@@ -1156,7 +1168,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("nas");
         std::fs::create_dir_all(root.join("state/build")).unwrap();
-        let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
+        let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch")).unwrap();
         let name = out.store_bytes("sources/inputs/_gate-test/a", "jsonl", b"the same lines").unwrap();
         out.pending.clear();
         let dest = root.join(&name);
@@ -1188,14 +1200,17 @@ mod tests {
     #[test]
     fn a_root_and_its_spelling_with_a_slash_share_the_lock() {
         let d = tempfile::tempdir().unwrap();
-        let held = BuildLock::take(d.path()).unwrap();
+        let held = BuildLock::take(&store::nasfs::NasRoot::local_for_test(d.path())).unwrap();
         let slashed = PathBuf::from(format!("{}/", d.path().display()));
-        assert!(BuildLock::try_take(&slashed).unwrap().is_none());
+        assert!(BuildLock::try_take(&store::nasfs::NasRoot::local_for_test(&slashed)).unwrap().is_none());
         drop(held);
         // (Free at once, however loaded the Mac: its file went with it, so a copy of its descriptor
         // a process another test is starting holds between its fork and its exec holds nothing:
         // crate::sys::PathLock.)
-        assert!(BuildLock::try_take(&slashed).unwrap().is_some(), "the lock wasn't free after it was dropped");
+        assert!(
+            BuildLock::try_take(&store::nasfs::NasRoot::local_for_test(&slashed)).unwrap().is_some(),
+            "the lock wasn't free after it was dropped"
+        );
     }
 
     #[test]
@@ -1203,29 +1218,31 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("manifest.json");
         // None yet: empty.
-        assert!(read_record::<BTreeMap<String, String>>(&p).unwrap().is_empty());
+        assert!(read_record::<BTreeMap<String, String>>(&store::nasfs::NasPath::local_for_test(&p))
+            .unwrap()
+            .is_empty());
         // Unreadable (a folder in its place, as an I/O error), or not JSON: errors.
         std::fs::create_dir(&p).unwrap();
-        assert!(read_record::<BTreeMap<String, String>>(&p).is_err());
+        assert!(read_record::<BTreeMap<String, String>>(&store::nasfs::NasPath::local_for_test(&p)).is_err());
         std::fs::remove_dir(&p).unwrap();
         std::fs::write(&p, b"{not json").unwrap();
-        assert!(read_record::<BTreeMap<String, String>>(&p).is_err());
+        assert!(read_record::<BTreeMap<String, String>>(&store::nasfs::NasPath::local_for_test(&p)).is_err());
         // A save with the manifest unreadable fails, and writes nothing over it.
         let root = d.path().join("root");
-        let mut out = Out::unbound(&root, &d.path().join("s")).unwrap();
+        let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s")).unwrap();
         out.changes.insert("a".into(), Some("a.1111111111111111.x".into()));
         std::fs::create_dir_all(root.join("state/build/manifest.json")).unwrap();
         assert!(out.save().is_err());
         assert!(root.join("state/build/manifest.json").is_dir());
         // And opening with it unreadable fails too.
-        assert!(Out::unbound(&root, &d.path().join("s")).is_err());
+        assert!(Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s")).is_err());
     }
 
     #[test]
     fn a_save_with_nothing_new_writes_nothing_and_still_reads_what_others_saved() {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("root");
-        let mut out = Out::unbound(&root, &d.path().join("s")).unwrap();
+        let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s")).unwrap();
         out.changes.insert("a".into(), Some("a.1111111111111111.x".into()));
         out.save().unwrap();
         let m = root.join("state/build/manifest.json");
@@ -1234,7 +1251,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         // Nothing new: the records stay as they were (no rename over a file another Mac may have
         // open), and what another step saved meanwhile is read.
-        let mut other = Out::unbound(&root, &d.path().join("s2")).unwrap();
+        let mut other = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s2")).unwrap();
         other.changes.insert("b".into(), Some("b.2222222222222222.x".into()));
         other.save().unwrap();
         let theirs = std::fs::metadata(&m).unwrap().modified().unwrap();
@@ -1245,14 +1262,14 @@ mod tests {
         // No temporary file left beside them.
         assert!(std::fs::read_dir(root.join("state/build"))
             .unwrap()
-            .all(|e| !crate::whole::is_tmp(&e.unwrap().path())));
+            .all(|e| !store::whole::is_tmp(&e.unwrap().path())));
     }
 
     #[test]
     fn once_the_pool_has_begun_no_step_saves_the_records() {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("root");
-        let mut out = Out::unbound(&root, &d.path().join("s")).unwrap();
+        let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s")).unwrap();
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         // No term made: saved, as today's files.
         out.changes.insert("a".into(), Some("a.1111111111111111.x".into()));
@@ -1262,7 +1279,7 @@ mod tests {
         std::fs::create_dir_all(root.join(crate::pool::term::DIR)).unwrap();
         out.changes.insert("b".into(), Some("b.2222222222222222.x".into()));
         assert!(format!("{:#}", out.save().unwrap_err()).contains("the pool leads this build"));
-        assert!(check_writer(&root).is_err());
+        assert!(check_writer(&store::nasfs::NasRoot::local_for_test(&root)).is_err());
     }
 
     /// A job puts and removes only its step's outputs (crate::agent::steps::writes, the function
@@ -1273,14 +1290,15 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("root");
         let local = d.path().join("f.bin");
-        let mut out = Out::open(&root, &d.path().join("s"), "pack").unwrap();
+        let mut out = Out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "pack").unwrap();
         // Its own: a map tile's data and road pack, a rail pack removed.
         std::fs::write(&local, b"tile").unwrap();
         out.put_file("hidata/6-1-2", "hidata", &local).unwrap();
         out.put_bytes("layers/roads/hi/6-1-2", "pack", b"roads").unwrap();
         out.remove("layers/rails/hi/6-1-2");
         out.save().unwrap();
-        let saved: BTreeMap<String, String> = read_record(&root.join("state/build/manifest.json")).unwrap();
+        let saved: BTreeMap<String, String> =
+            read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json"))).unwrap();
         assert_eq!(saved.keys().collect::<Vec<_>>(), ["hidata/6-1-2", "layers/roads/hi/6-1-2"]);
         // Another step's file: refused before it's uploaded, the local file left.
         std::fs::write(&local, b"terrain").unwrap();
@@ -1297,17 +1315,24 @@ mod tests {
             e.contains("layers/terrain/hi/6-1-3") && e.contains("and 1 more") && e.contains("nothing saved"),
             "{e}"
         );
-        assert_eq!(read_record::<BTreeMap<String, String>>(&root.join("state/build/manifest.json")).unwrap(), saved);
+        assert_eq!(
+            read_record::<BTreeMap<String, String>>(&store::nasfs::NasPath::local_for_test(
+                &root.join("state/build/manifest.json")
+            ))
+            .unwrap(),
+            saved
+        );
         assert!(out.save().is_err(), "it stays failed");
         // A step the table doesn't know: held to nothing while it writes the manifest (a tool run
         // by hand) and to no change at all when it hands off (the merge refuses such an entry).
-        let mut tool = Out::open(&root, &d.path().join("s2"), "patch-ferries").unwrap();
+        let mut tool =
+            Out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s2"), "patch-ferries").unwrap();
         tool.put_bytes("sources/osm/2026-09-28/pieces/6-1-2", "osm", b"p").unwrap();
         tool.handoff = Some(d.path().join("handoff"));
         assert!(format!("{:#}", tool.put_bytes("sources/osm/2026-09-28/pieces/6-1-3", "osm", b"q").unwrap_err())
             .contains("isn't a step the steps table knows"));
         // Not bound to a step (the agent merging hand-offs): anything.
-        let mut merge = Out::unbound(&root, &d.path().join("s3")).unwrap();
+        let mut merge = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s3")).unwrap();
         merge.set("layers/terrain/hi/6-1-4", Some("layers/terrain/hi/6-1-4.2222222222222222.pack".into()));
         merge.save().unwrap();
     }

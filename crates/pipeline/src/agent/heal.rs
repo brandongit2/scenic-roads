@@ -1,5 +1,5 @@
 //! The agent's self-heal for stale SMB handles (docs/pool.md §3, docs/macs.md): when NAS calls on
-//! this Mac (the agent's own, and its Rust jobs' through `crate::whole::STUCK_ENV`) keep staying
+//! this Mac (the agent's own, and its Rust jobs' through `store::whole::STUCK_ENV`) keep staying
 //! "Resource busy" past `crate::whole`'s retries, the agent remounts its share, which ends this
 //! Mac's SMB session and with it every handle the session held (a process here killed with a file
 //! open). It can't free another Mac's session: that one ends when the server drops it.
@@ -9,7 +9,7 @@
 //! and the agent's own NAS threads to end, `DRAIN_MAX` at most; past it the drain is given up
 //! without cutting a job.
 
-use crate::whole::Stuck;
+use store::whole::Stuck;
 
 /// Calls stuck within this long count (seconds).
 const WINDOW: u64 = 10 * 60;

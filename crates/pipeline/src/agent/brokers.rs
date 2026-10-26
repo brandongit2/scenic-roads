@@ -24,7 +24,6 @@
 
 use crate::agent::pool::Heartbeat;
 use crate::coord::brokers::{Broker, Peer};
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// The switch (`on` in it, or present; `off` in it, or missing: off, the agent as it was).
@@ -32,7 +31,7 @@ pub const SWITCH: &str = "state/pool/brokers";
 
 /// Whether tasks are brokered by every member, as the switch at `root` says; None when it can't
 /// be read now.
-pub fn on(root: &Path) -> Option<bool> {
+pub fn on(root: &store::nasfs::NasRoot) -> Option<bool> {
     match super::nasread::read_switch(&root.join(SWITCH)) {
         Ok(s) => Some(s.trim() != "off"),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
@@ -101,12 +100,12 @@ mod tests {
     #[test]
     fn the_switch_is_off_while_missing_or_off() {
         let d = tempfile::tempdir().unwrap();
-        assert_eq!(on(d.path()), Some(false));
+        assert_eq!(on(&store::nasfs::NasRoot::local_for_test(d.path())), Some(false));
         std::fs::create_dir_all(d.path().join("state/pool")).unwrap();
         std::fs::write(d.path().join(SWITCH), "off\n").unwrap();
-        assert_eq!(on(d.path()), Some(false));
+        assert_eq!(on(&store::nasfs::NasRoot::local_for_test(d.path())), Some(false));
         std::fs::write(d.path().join(SWITCH), "").unwrap();
-        assert_eq!(on(d.path()), Some(true));
+        assert_eq!(on(&store::nasfs::NasRoot::local_for_test(d.path())), Some(true));
     }
 
     fn b(urls: &[&str], waiting: u32) -> Broker {

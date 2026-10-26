@@ -109,8 +109,8 @@ pub struct BasemapWater {
 
 impl BasemapWater {
     /// The basemap at `path`, pinned by `name` (its content name in the manifest).
-    pub fn open(path: &std::path::Path, name: &str) -> Result<BasemapWater> {
-        let f = store::range::PlainFile::open(path)?;
+    pub fn open<'a>(path: impl Into<store::nasfs::Loc<'a>>, name: &str) -> Result<BasemapWater> {
+        let f = path.into().open_plain()?;
         Ok(BasemapWater { pm: store::pmtiles::PmTiles::with_leaf_cache(Box::new(f), 4096)?, name: name.to_string() })
     }
 }

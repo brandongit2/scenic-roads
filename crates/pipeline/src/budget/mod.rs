@@ -103,7 +103,7 @@ pub fn listen(port: u16) -> std::io::Result<std::net::TcpListener> {
 
 /// The agent's proxy, taking from the pool's budget on the NAS's project folder `root` as `me`,
 /// serving `listener` (proxy::listen's).
-pub fn start_proxy(root: &Path, me: &str, listener: std::net::TcpListener) -> anyhow::Result<Proxy> {
+pub fn start_proxy(root: &store::nasfs::NasRoot, me: &str, listener: std::net::TcpListener) -> anyhow::Result<Proxy> {
     #[cfg(not(target_os = "wasi"))]
     {
         let to: Option<std::net::SocketAddr> = std::env::var(TEST_PROXY_TO)
@@ -124,7 +124,6 @@ pub fn start_proxy(root: &Path, me: &str, listener: std::net::TcpListener) -> an
 
 use std::collections::BTreeMap;
 use std::io;
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -377,7 +376,7 @@ struct State {
 /// The pool's budget, as one process (an agent's proxy) takes from it.
 pub struct Budget {
     /// The NAS's project folder.
-    root: PathBuf,
+    root: store::nasfs::NasRoot,
     /// Who leases (a member id, or the host's name): written in each lease, for whoever looks.
     me: String,
     clock: Arc<dyn Clock>,
@@ -390,9 +389,9 @@ pub struct Budget {
 }
 
 impl Budget {
-    pub fn new(root: &Path, me: &str, clock: Arc<dyn Clock>) -> Budget {
+    pub fn new(root: &store::nasfs::NasRoot, me: &str, clock: Arc<dyn Clock>) -> Budget {
         Budget {
-            root: root.to_path_buf(),
+            root: root.clone(),
             me: me.to_string(),
             clock,
             members: Arc::new(AtomicUsize::new(1)),
@@ -426,7 +425,7 @@ impl Budget {
     }
 
     /// The folder of `class`'s leases.
-    pub fn dir(&self, class: Class) -> PathBuf {
+    pub fn dir(&self, class: Class) -> store::nasfs::NasPath {
         self.root.join(DIR).join(class.name())
     }
 
@@ -540,8 +539,8 @@ impl Budget {
                 Ok(()) => return Leased::Slot,
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
                 // (Its folder not made yet: made once, the NAS's project folder there.)
-                Err(e) if e.kind() == io::ErrorKind::NotFound && !made && self.root.is_dir() => {
-                    if let Err(e) = std::fs::create_dir_all(&dir) {
+                Err(e) if e.kind() == io::ErrorKind::NotFound && !made && self.root.path().is_dir() => {
+                    if let Err(e) = dir.create_dir_all() {
                         return Leased::Away(e);
                     }
                     made = true;
@@ -570,16 +569,15 @@ impl Budget {
             Some(from) if to.saturating_sub(from) <= CLEAN_BY_NAME => {
                 for old in from..to {
                     for slot in 0..class.rate().slots() {
-                        std::fs::remove_file(dir.join(format!("{old}-{slot}"))).ok();
+                        dir.join(format!("{old}-{slot}")).remove_file().ok();
                     }
                 }
                 to.max(from)
             }
             _ => {
-                for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-                    let name = e.file_name().to_string_lossy().into_owned();
-                    if name.split_once('-').and_then(|(win, _)| win.parse::<u64>().ok()).is_some_and(|win| win < to) {
-                        std::fs::remove_file(e.path()).ok();
+                for e in dir.read_dir().into_iter().flatten() {
+                    if e.name.split_once('-').and_then(|(win, _)| win.parse::<u64>().ok()).is_some_and(|win| win < to) {
+                        e.path.remove_file().ok();
                     }
                 }
                 to
@@ -657,9 +655,9 @@ impl Budget {
 
 /// Makes `p` with `b` in it, only if it isn't there (create-new: atomic on the share for one
 /// client, and between two, as crate::agent::claims relies on).
-fn create_new(p: &Path, b: &[u8]) -> io::Result<()> {
+fn create_new(p: &store::nasfs::NasPath, b: &[u8]) -> io::Result<()> {
     use std::io::Write;
-    let mut f = std::fs::File::options().write(true).create_new(true).open(p)?;
+    let mut f = p.open_with(std::fs::File::options().write(true).create_new(true))?;
     f.write_all(b)
 }
 

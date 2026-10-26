@@ -18,10 +18,13 @@ fn main() -> anyhow::Result<()> {
     };
     let plan: pipeline::dem::declared::Plan = serde_json::from_slice(&std::fs::read(plan)?)?;
     let t: Vec<u32> = t.split('/').map(|v| v.parse()).collect::<Result<_, _>>()?;
-    let pool =
-        pipeline::terrain_base::Pool::of(plan, store.into(), pipeline::terrain_base::tiles_box(6, &[(t[0], t[1])]));
+    let pool = pipeline::terrain_base::Pool::of(
+        plan,
+        store::nasfs::NasRoot::from_arg(store).path(),
+        pipeline::terrain_base::tiles_box(6, &[(t[0], t[1])]),
+    );
     let url = pool.terrarium.clone().ok_or_else(|| anyhow::anyhow!("no Terrarium pyramid in the plan"))?;
-    let raw = RawTiles::with_store(Path::new(raw), Path::new(aws), &url);
+    let raw = RawTiles::with_store(Path::new(raw), &store::nasfs::NasRoot::from_arg(aws).path(), &url);
     let all = std::time::Instant::now();
     pool.with_tiles(&raw, |tiles| -> anyhow::Result<()> {
         for z in (9..=12u8).rev() {

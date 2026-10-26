@@ -191,13 +191,12 @@ fn run(shared: Weak<Mutex<Shared>>, k: Arc<Keep>, nas: Arc<dyn Nas + Send + Sync
 mod tests {
     use super::*;
     use crate::coord::{client, start_for_test, Ask, Offer, PoolState};
-    use crate::pool::nas::Share;
 
     const QUICK: Pace =
         Pace { batch: Duration::from_millis(20), gap: Duration::from_millis(200), sweep: Duration::from_secs(60) };
 
-    fn state(root: &std::path::Path, term: u64) -> Option<PoolState> {
-        let b = std::fs::read(root.join(crate::agent::pool::state_path(term))).ok()?;
+    fn state(root: &store::nasfs::NasRoot, term: u64) -> Option<PoolState> {
+        let b = root.join(crate::agent::pool::state_path(term)).read().ok()?;
         serde_json::from_slice(&b).ok()
     }
 
@@ -223,17 +222,19 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let (c, port) = start_for_test(&d.path().join("a"), "m4", "");
         c.set_term(1);
-        keep(&c.shared, Arc::new(Share::new(&root)), 1, QUICK);
+        keep(&c.shared, Arc::new(store::nasfs::NasRoot::local_for_test(&root)), 1, QUICK);
         let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
         c.offer("p", vec![Offer { step: "unit".into(), targets: vec![("6/1/1".into(), "k".into(), 100)], job: None }]);
         let g = w.ask(&ask()).unwrap().expect("granted");
         let key = g.lease.to_string();
-        until("the grant on the NAS", || state(&root, 1).is_some_and(|s| s.leases.to_string().contains(&key)));
+        until("the grant on the NAS", || {
+            state(&store::nasfs::NasRoot::local_for_test(&root), 1).is_some_and(|s| s.leases.to_string().contains(&key))
+        });
         // The lead gone, no word (no stop, no step): term 2's lead takes up term 1's file.
         std::mem::forget(c);
         let (b, _) = start_for_test(&d.path().join("b"), "m6", "");
         b.set_term(2);
-        assert_eq!(b.load_pool_state(&state(&root, 1).unwrap()).unwrap(), 1);
+        assert_eq!(b.load_pool_state(&state(&store::nasfs::NasRoot::local_for_test(&root), 1).unwrap()).unwrap(), 1);
         assert_eq!(b.lease_term(g.lease), 1, "the lease taken up: its worker renews it with the new lead");
     }
 
@@ -246,7 +247,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let (c, _) = start_for_test(&d.path().join("a"), "m4", "");
         c.set_term(3);
-        keep(&c.shared, Arc::new(Share::new(&root)), 3, QUICK);
+        keep(&c.shared, Arc::new(store::nasfs::NasRoot::local_for_test(&root)), 3, QUICK);
         let k = c.shared.lock().unwrap().keep.clone();
         until("the first write", || k.writes() == 1);
         let t0 = Instant::now();
@@ -257,7 +258,8 @@ mod tests {
         }
         let took = t0.elapsed();
         until("every grant on the NAS", || {
-            state(&root, 3).is_some_and(|s| ids.iter().all(|id| s.leases.to_string().contains(&id.to_string())))
+            state(&store::nasfs::NasRoot::local_for_test(&root), 3)
+                .is_some_and(|s| ids.iter().all(|id| s.leases.to_string().contains(&id.to_string())))
         });
         let n = k.writes() - 1;
         let most = (took.as_millis() / QUICK.gap.as_millis()) as u64 + 2;
@@ -278,11 +280,12 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let (c, _) = start_for_test(&d.path().join("a"), "m4", "");
         c.set_term(4);
-        keep(&c.shared, Arc::new(Share::new(&root)), 4, QUICK);
+        keep(&c.shared, Arc::new(store::nasfs::NasRoot::local_for_test(&root)), 4, QUICK);
         let k = c.shared.lock().unwrap().keep.clone();
         let id = c.hold("unit", &[("6/4/1".into(), "k".into())]).unwrap();
         until("the lease on the NAS", || {
-            state(&root, 4).is_some_and(|s| s.leases.to_string().contains(&id.to_string()))
+            state(&store::nasfs::NasRoot::local_for_test(&root), 4)
+                .is_some_and(|s| s.leases.to_string().contains(&id.to_string()))
         });
         // (Counted once `off` has returned: the file can be on the NAS before its write is counted.)
         c.become_broker();
@@ -293,8 +296,8 @@ mod tests {
         assert_eq!(k.writes(), n, "a broker: no more writes");
         assert_eq!(std::fs::read(root.join(crate::agent::pool::state_path(4))).unwrap(), before);
         // Leading again (a later term): that term's file.
-        keep(&c.shared, Arc::new(Share::new(&root)), 6, QUICK);
-        until("term 6's file", || state(&root, 6).is_some());
+        keep(&c.shared, Arc::new(store::nasfs::NasRoot::local_for_test(&root)), 6, QUICK);
+        until("term 6's file", || state(&store::nasfs::NasRoot::local_for_test(&root), 6).is_some());
         c.stop();
         std::thread::sleep(QUICK.gap * 2);
         assert_eq!(k.writes(), n + 1, "stopped: no more");

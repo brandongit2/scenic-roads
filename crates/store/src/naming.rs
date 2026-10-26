@@ -45,7 +45,8 @@ pub fn hex16(h: &blake3::Hash) -> String {
     h.to_hex()[..HASH_LEN].to_string()
 }
 
-fn hash16_reader(mut r: impl Read) -> io::Result<String> {
+/// The first 16 hex digits of the BLAKE3 hash of what `r` reads.
+pub fn hash16_reader(mut r: impl Read) -> io::Result<String> {
     let mut h = blake3::Hasher::new();
     let mut buf = vec![0u8; CHUNK];
     loop {
@@ -126,7 +127,7 @@ pub enum Source<'a> {
 /// never overwritten (one with the wrong size is an error to resolve by hand, not a file to replace).
 ///
 /// On the NAS this blocks on the share: callers that must stay responsive run it in the I/O pool.
-pub fn write_atomic(root: &Path, logical: &str, ext: &str, src: Source<'_>) -> Result<String> {
+pub fn write_atomic(root: &crate::nasfs::NasRoot, logical: &str, ext: &str, src: Source<'_>) -> Result<String> {
     write_atomic_as(root, logical, ext, src, None)
 }
 
@@ -135,7 +136,7 @@ pub fn write_atomic(root: &Path, logical: &str, ext: &str, src: Source<'_>) -> R
 /// it isn't read for them again. The read-back is checked against them as against its own: a wrong
 /// hash, or a file changed since, fails as a corrupted write does, and leaves nothing.
 pub fn write_atomic_hashed(
-    root: &Path,
+    root: &crate::nasfs::NasRoot,
     logical: &str,
     ext: &str,
     file: &Path,
@@ -147,7 +148,7 @@ pub fn write_atomic_hashed(
 }
 
 fn write_atomic_as(
-    root: &Path,
+    root: &crate::nasfs::NasRoot,
     logical: &str,
     ext: &str,
     src: Source<'_>,
@@ -164,7 +165,9 @@ fn write_atomic_as(
         }
     };
     let name = content_name(logical, &hash, ext);
-    let dest = root.join(&name);
+    // (Raw: its own temporary name, an exclusive rename, a read-back past the cache, counted once
+    // by its caller as the upload: tests/nas_access.rs.)
+    let dest = root.join(&name).unchecked_path();
     if present(&dest, size)? {
         return Ok(name);
     }
@@ -375,8 +378,9 @@ mod tests {
     #[test]
     fn atomic_writes() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let name = write_atomic(root, "layers/roads/root", "pack", Source::Bytes(b"hello")).unwrap();
+        let nas = crate::nasfs::NasRoot::local_for_test(dir.path());
+        let (root, nr) = (dir.path(), &nas);
+        let name = write_atomic(nr, "layers/roads/root", "pack", Source::Bytes(b"hello")).unwrap();
         assert_eq!(name, format!("layers/roads/root.{}.pack", hash16(b"hello")));
         assert_eq!(fs::read(root.join(&name)).unwrap(), b"hello");
         assert!(!tmp_path(&root.join(&name)).exists());
@@ -384,27 +388,27 @@ mod tests {
         // Same bytes again: same name, nothing rewritten.
         let mtime = fs::metadata(root.join(&name)).unwrap().modified().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20)); // (absence)
-        assert_eq!(write_atomic(root, "layers/roads/root", "pack", Source::Bytes(b"hello")).unwrap(), name);
+        assert_eq!(write_atomic(nr, "layers/roads/root", "pack", Source::Bytes(b"hello")).unwrap(), name);
         assert_eq!(fs::metadata(root.join(&name)).unwrap().modified().unwrap(), mtime);
 
         // From a file, larger than one copy chunk.
         let src = root.join("src.bin");
         let big: Vec<u8> = (0..(CHUNK + 999)).map(|i| (i % 253) as u8).collect();
         fs::write(&src, &big).unwrap();
-        let name2 = write_atomic(root, "base/6-1-2", "sect", Source::File(&src)).unwrap();
+        let name2 = write_atomic(nr, "base/6-1-2", "sect", Source::File(&src)).unwrap();
         assert_eq!(fs::read(root.join(&name2)).unwrap(), big);
 
         // A content-named file with the wrong size is never replaced.
         let bogus = root.join(content_name("x", &hash16(b"right"), "bin"));
         fs::write(&bogus, b"wrong size").unwrap();
-        let err = write_atomic(root, "x", "bin", Source::Bytes(b"right")).unwrap_err();
+        let err = write_atomic(nr, "x", "bin", Source::Bytes(b"right")).unwrap_err();
         assert!(err.to_string().contains("never rewritten"), "{err:#}");
         assert_eq!(fs::read(&bogus).unwrap(), b"wrong size");
 
         // Bad logical names.
-        assert!(write_atomic(root, "a.b", "bin", Source::Bytes(b"x")).is_err());
-        assert!(write_atomic(root, "../a", "bin", Source::Bytes(b"x")).is_err());
-        assert!(write_atomic(root, "/abs", "bin", Source::Bytes(b"x")).is_err());
+        assert!(write_atomic(nr, "a.b", "bin", Source::Bytes(b"x")).is_err());
+        assert!(write_atomic(nr, "../a", "bin", Source::Bytes(b"x")).is_err());
+        assert!(write_atomic(nr, "/abs", "bin", Source::Bytes(b"x")).is_err());
     }
 
     #[test]
@@ -412,19 +416,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("root");
         fs::create_dir(&root).unwrap();
+        let nr = &crate::nasfs::NasRoot::local_for_test(&root);
         let src = dir.path().join("src.bin");
         fs::write(&src, b"the bytes").unwrap();
         // A wrong hash (or the file changed since it was hashed): the read-back doesn't match it,
         // and nothing is left, under its name or a temporary one.
-        let e = write_atomic_hashed(&root, "h", "bin", &src, &hash16(b"other bytes"), 9).unwrap_err();
+        let e = write_atomic_hashed(nr, "h", "bin", &src, &hash16(b"other bytes"), 9).unwrap_err();
         assert!(format!("{e:#}").contains("the write was corrupted"), "{e:#}");
         assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
         // A wrong length likewise.
-        assert!(write_atomic_hashed(&root, "h", "bin", &src, &hash16(b"the bytes"), 8).is_err());
+        assert!(write_atomic_hashed(nr, "h", "bin", &src, &hash16(b"the bytes"), 8).is_err());
         assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
         // The right ones: the name write_atomic gives.
-        let name = write_atomic_hashed(&root, "h", "bin", &src, &hash16(b"the bytes"), 9).unwrap();
-        assert_eq!(name, write_atomic(&root, "h", "bin", Source::File(&src)).unwrap());
+        let name = write_atomic_hashed(nr, "h", "bin", &src, &hash16(b"the bytes"), 9).unwrap();
+        assert_eq!(name, write_atomic(nr, "h", "bin", Source::File(&src)).unwrap());
         assert_eq!(fs::read(root.join(&name)).unwrap(), b"the bytes");
     }
 

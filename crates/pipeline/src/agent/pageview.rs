@@ -25,7 +25,6 @@ use super::forecast::{Forecast, Record, SlotJob};
 use crate::coord::history::{self, Event, History, DAYS};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -80,7 +79,7 @@ fn head_of(b: &[u8]) -> Vec<u8> {
 }
 
 /// The NAS's files, each read on the records' readers under their deadline (crate::agent::nasread).
-pub struct NasFiles(pub PathBuf);
+pub struct NasFiles(pub store::nasfs::NasRoot);
 
 impl Source for NasFiles {
     fn read(&self, path: &str) -> Option<Vec<u8>> {
@@ -88,13 +87,13 @@ impl Source for NasFiles {
     }
     fn mtime(&self, path: &str) -> Option<SystemTime> {
         let p = self.0.join(path);
-        super::nasread::with(&p.clone(), move || std::fs::metadata(&p)?.modified()).ok()
+        super::nasread::with(&p.clone(), move || p.metadata()?.modified()).ok()
     }
     fn read_from(&self, path: &str, offset: u64) -> Option<Chunk> {
         let p = self.0.join(path);
         super::nasread::with(&p.clone(), move || {
             use std::io::{Read, Seek};
-            let mut f = std::fs::File::open(&p)?;
+            let mut f = p.open()?;
             let m = f.metadata()?;
             let from = if m.len() < offset { 0 } else { offset };
             let mut head = vec![0u8; 512];
@@ -114,7 +113,7 @@ impl Source for NasFiles {
 /// lanes now (only while a page asks: `PageView::wanted`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Inputs {
-    pub root: Option<PathBuf>,
+    pub root: Option<store::nasfs::NasRoot>,
     pub term: u64,
     pub members: Vec<String>,
     pub app: String,
@@ -559,8 +558,8 @@ pub fn spawn(pv: Arc<PageView>) {
 
 /// A path's file read here, for the tests' sources.
 #[cfg(test)]
-fn local(root: &std::path::Path, p: &str) -> Option<Vec<u8>> {
-    std::fs::read(root.join(p)).ok()
+fn local(root: &store::nasfs::NasRoot, p: &str) -> Option<Vec<u8>> {
+    root.join(p).read().ok()
 }
 
 #[cfg(test)]
@@ -568,6 +567,7 @@ mod tests {
     use super::super::forecast::{self, Cadence, Cost, Input, Machine};
     use super::*;
     use std::borrow::Cow;
+    use std::path::PathBuf;
     use std::sync::atomic::AtomicUsize;
 
     /// A folder's files, counted as read.
@@ -576,7 +576,7 @@ mod tests {
     impl Source for Dir {
         fn read(&self, p: &str) -> Option<Vec<u8>> {
             self.1.fetch_add(1, Ordering::Relaxed);
-            local(&self.0, p)
+            local(&store::nasfs::NasRoot::local_for_test(&self.0), p)
         }
         fn mtime(&self, p: &str) -> Option<SystemTime> {
             self.1.fetch_add(1, Ordering::Relaxed);
@@ -584,7 +584,7 @@ mod tests {
         }
         fn read_from(&self, p: &str, offset: u64) -> Option<Chunk> {
             self.1.fetch_add(1, Ordering::Relaxed);
-            let b = local(&self.0, p)?;
+            let b = local(&store::nasfs::NasRoot::local_for_test(&self.0), p)?;
             let ino = ino(&std::fs::metadata(self.0.join(p)).ok()?);
             let from = if (b.len() as u64) < offset { 0 } else { offset };
             let to = b.len().min(from as usize + CHUNK_MAX as usize);
@@ -592,10 +592,10 @@ mod tests {
         }
     }
 
-    fn put(root: &std::path::Path, p: &str, b: &[u8]) {
+    fn put(root: &store::nasfs::NasRoot, p: &str, b: &[u8]) {
         let p = root.join(p);
-        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(p, b).unwrap();
+        p.parent().unwrap().create_dir_all().unwrap();
+        p.write(b).unwrap();
     }
 
     fn mac(name: &str, busy_s: f64) -> Machine {
@@ -630,7 +630,7 @@ mod tests {
 
     /// The lead's files for term 7: its status, its view, its forecast's input, two members' history
     /// of a day, a member's status.
-    fn fixture(root: &std::path::Path, now: u64) {
+    fn fixture(root: &store::nasfs::NasRoot, now: u64) {
         put(root, "state/status.json", br#"{"host":"m4","beat":1,"forecast":null,"helpers":[]}"#);
         let view = serde_json::json!({ "at": now, "view": {
             "pause": null,
@@ -671,7 +671,7 @@ mod tests {
     fn the_snapshot_is_made_from_the_leads_files_in_the_pages_shape() {
         let d = tempfile::tempdir().unwrap();
         let now = now_s();
-        fixture(d.path(), now);
+        fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
         let pv = PageView::default();
         pv.set_inputs(inputs("1.2.3"));
         pv.touch_at(now);
@@ -703,7 +703,7 @@ mod tests {
     fn the_regions_are_the_leads_read_again_only_when_their_file_changes() {
         let d = tempfile::tempdir().unwrap();
         let now = now_s();
-        fixture(d.path(), now);
+        fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
         let src = Dir(d.path().into(), AtomicUsize::new(0));
         let pv = PageView::default();
         pv.set_inputs(inputs(""));
@@ -711,7 +711,11 @@ mod tests {
         pv.tick(&src, now);
         assert!(pv.regions().is_none(), "none written yet");
         let path = d.path().join(super::super::pool::regions_path(7));
-        put(d.path(), &super::super::pool::regions_path(7), br#"{"catalog":3,"regions":[{"id":"a"}]}"#);
+        put(
+            &store::nasfs::NasRoot::local_for_test(d.path()),
+            &super::super::pool::regions_path(7),
+            br#"{"catalog":3,"regions":[{"id":"a"}]}"#,
+        );
         pv.state.lock().unwrap().last = None;
         pv.tick(&src, now);
         assert_eq!(pv.regions().unwrap()["catalog"], 3);
@@ -732,7 +736,7 @@ mod tests {
     fn the_history_is_merged_by_time_writer_and_number_its_cursor_rising() {
         let d = tempfile::tempdir().unwrap();
         let now = now_s();
-        fixture(d.path(), now);
+        fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
         let src = Dir(d.path().into(), AtomicUsize::new(0));
         let pv = PageView::default();
         pv.set_inputs(inputs(""));
@@ -763,7 +767,7 @@ mod tests {
     fn a_members_answer_is_the_leads_but_for_its_own_lanes() {
         let d = tempfile::tempdir().unwrap();
         let now = now_s();
-        fixture(d.path(), now);
+        fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
         let (lead, member) = (PageView::default(), PageView::default());
         lead.set_inputs(inputs("1.2.3"));
         member.set_inputs(inputs("1.2.3"));
@@ -801,7 +805,7 @@ mod tests {
     fn nothing_is_read_while_no_page_asks() {
         let d = tempfile::tempdir().unwrap();
         let now = now_s();
-        fixture(d.path(), now);
+        fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
         let src = Dir(d.path().into(), AtomicUsize::new(0));
         let pv = PageView::default();
         pv.set_inputs(inputs(""));
@@ -852,7 +856,7 @@ mod tests {
         // process's view (its agent restarted) numbers from 1 again, under another epoch.
         let d = tempfile::tempdir().unwrap();
         let now = now_s();
-        fixture(d.path(), now);
+        fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
         let first = PageView::default();
         first.set_inputs(inputs(""));
         assert!(first.swarm().is_none() && first.history(0, 10).is_none(), "nothing before the first read");
@@ -892,7 +896,7 @@ mod tests {
     fn a_slow_read_never_holds_up_an_answer() {
         let d = tempfile::tempdir().unwrap();
         let now = now_s();
-        fixture(d.path(), now);
+        fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
         let pv = Arc::new(PageView::default());
         pv.set_inputs(inputs(""));
         pv.touch_at(now);
@@ -915,7 +919,7 @@ mod tests {
     fn a_history_file_made_again_shorter_is_read_from_its_start() {
         let d = tempfile::tempdir().unwrap();
         let now = now_s();
-        fixture(d.path(), now);
+        fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
         let src = Dir(d.path().into(), AtomicUsize::new(0));
         let pv = PageView::default();
         pv.set_inputs(inputs(""));
@@ -936,7 +940,7 @@ mod tests {
         // from its start, the events taken already passed over.
         let d = tempfile::tempdir().unwrap();
         let now = now_s();
-        fixture(d.path(), now);
+        fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
         let src = Dir(d.path().into(), AtomicUsize::new(0));
         let pv = PageView::default();
         pv.set_inputs(inputs(""));
@@ -966,7 +970,7 @@ mod tests {
         // (Task #509) today's and the six days before; the eighth not; `data` dropped.
         let d = tempfile::tempdir().unwrap();
         let now = now_s();
-        fixture(d.path(), now);
+        fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
         for k in 1..=DAYS {
             let t = now - k * 86_400 + 60;
             let day = crate::pool::journal::day(t).unwrap();
@@ -978,7 +982,11 @@ mod tests {
                 ..Event::new("task")
             };
             let line = serde_json::to_string(&e).unwrap() + "\n";
-            put(d.path(), &format!("state/coord/history/{day}/m-a.jsonl"), line.as_bytes());
+            put(
+                &store::nasfs::NasRoot::local_for_test(d.path()),
+                &format!("state/coord/history/{day}/m-a.jsonl"),
+                line.as_bytes(),
+            );
         }
         let src = Dir(d.path().into(), AtomicUsize::new(0));
         let pv = PageView::default();
@@ -1015,9 +1023,13 @@ mod tests {
                         + "\n"
                 })
                 .collect();
-            put(d.path(), &format!("state/coord/history/{day}/m-b.jsonl"), text.as_bytes());
+            put(
+                &store::nasfs::NasRoot::local_for_test(d.path()),
+                &format!("state/coord/history/{day}/m-b.jsonl"),
+                text.as_bytes(),
+            );
         }
-        put(d.path(), "state/status.json", b"{}");
+        put(&store::nasfs::NasRoot::local_for_test(d.path()), "state/status.json", b"{}");
         let src = Dir(d.path().into(), AtomicUsize::new(0));
         let pv = PageView::default();
         pv.set_inputs(inputs(""));
@@ -1039,7 +1051,7 @@ mod tests {
         // (Task #509 review) a chunk with no line's end: skipped, counted, the lines after it read.
         let d = tempfile::tempdir().unwrap();
         let now = now_s();
-        fixture(d.path(), now);
+        fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
         let day = crate::pool::journal::day(now).unwrap();
         let p = d.path().join(format!("state/coord/history/{day}/m-b.jsonl"));
         let mut text = "x".repeat(CHUNK_MAX as usize + 10) + "\n";

@@ -19,6 +19,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+/// The NAS project folder as a child process's `--root` argument (its spec's): the spawners' one
+/// way out of the type (tests/nas_access.rs).
+pub fn root_arg(root: &store::nasfs::NasRoot) -> String {
+    root.unchecked_path().to_string_lossy().into_owned()
+}
+
 /// What a job needs to run: the NAS (every job's: a test's may not). It runs at any charge, at home
 /// or away (the owner's choice: docs/pool.md §7.7); a record an older app wrote, with its power and
 /// home, reads as this.
@@ -432,7 +438,7 @@ pub fn save_hand(record: &Path, r: &Running, hand: serde_json::Value) {
     rec.hand = Some(hand);
     rec.paused = r.paused.clone();
     if let Ok(b) = serde_json::to_vec(&rec) {
-        if let Err(e) = crate::whole::write(record, &b) {
+        if let Err(e) = store::whole::write(record, &b) {
             eprintln!("agent: saving {}'s record: {e:#}", r.spec.id);
         }
     }
@@ -1082,7 +1088,12 @@ mod tests {
             write!(s, "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\nupstream saw: {first}\n").unwrap();
         });
         let budget = Arc::new(
-            Budget::new(&d.path().join("nas"), "m-test", Arc::new(StepClock::at(1_800_000_000_000))).with_ledger(),
+            Budget::new(
+                &store::nasfs::NasRoot::local_for_test(&d.path().join("nas")),
+                "m-test",
+                Arc::new(StepClock::at(1_800_000_000_000)),
+            )
+            .with_ledger(),
         );
         let proxy = Proxy::start(budget.clone(), Some(Arc::new(move |_: &str, _: u16| Some(up_addr)))).unwrap();
         let env: Vec<(String, String)> = proxy.env_for("job1");

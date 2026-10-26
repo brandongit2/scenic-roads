@@ -15,6 +15,7 @@
 //! The API is blocking (std threads and channels), for use from plain threads or
 //! `spawn_blocking`.
 
+use crate::nasfs::NasPath;
 use crate::sys::PosIo;
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{self, Write};
@@ -347,18 +348,44 @@ impl IoPool {
     }
 
     /// Opens a file for reading.
-    pub fn open(&self, path: &Path) -> Result<Arc<File>, IoError> {
+    pub fn open(&self, path: &NasPath) -> Result<Arc<File>, IoError> {
         Ok(self.open_len(path)?.0)
     }
 
-    /// Opens a file for reading and gets its length, in one trip.
-    pub fn open_len(&self, path: &Path) -> Result<(Arc<File>, u64), IoError> {
-        let p = path.to_owned();
-        self.call(move || {
-            let f = File::open(&p)?;
-            let len = f.metadata()?.len();
-            Ok((Arc::new(f), len))
-        })
+    /// Opens a file for reading and gets its length, in one trip (the open retried on a transient
+    /// error, on the root's schedule: the server's short one). Counted as a file opened.
+    pub fn open_len(&self, path: &NasPath) -> Result<(Arc<File>, u64), IoError> {
+        let p = path.unchecked_path();
+        let t = Instant::now();
+        let r = self.retried(path, "open", || {
+            let p = p.clone();
+            self.call(move || {
+                let f = File::open(&p)?;
+                let len = f.metadata()?.len();
+                Ok((Arc::new(f), len))
+            })
+        })?;
+        crate::nasio::opened(&p, r.1, t.elapsed().as_millis() as u64);
+        Ok(r)
+    }
+
+    /// `f()`, tried again on the root's schedule while it fails with a transient I/O error (never
+    /// a timeout or the breaker's `Offline`: those are the pool's own).
+    fn retried<T>(&self, path: &NasPath, what: &str, mut f: impl FnMut() -> Result<T, IoError>) -> Result<T, IoError> {
+        let mut other = None;
+        let r = path.retry(what, || match f() {
+            Ok(t) => Ok(t),
+            Err(IoError::Io(e)) => Err(e),
+            Err(e) => {
+                other = Some(e);
+                Err(io::Error::other("(pool)"))
+            }
+        });
+        match (r, other) {
+            (Ok(t), _) => Ok(t),
+            (Err(_), Some(e)) => Err(e),
+            (Err(e), None) => Err(IoError::Io(e)),
+        }
     }
 
     /// Reads exactly `len` bytes at `off` (pread; an error if the file is shorter).
@@ -387,81 +414,110 @@ impl IoPool {
         })
     }
 
-    /// Reads a whole (small) file.
-    pub fn read_all(&self, path: &Path) -> Result<Vec<u8>, IoError> {
-        let p = path.to_owned();
-        self.call(move || fs::read(&p))
+    /// Reads a whole (small) file. Counted as a file read; retried as `open_len`.
+    pub fn read_all(&self, path: &NasPath) -> Result<Vec<u8>, IoError> {
+        let p = path.unchecked_path();
+        let t = Instant::now();
+        let b = self.retried(path, "read", || {
+            let p = p.clone();
+            self.call(move || fs::read(&p))
+        })?;
+        crate::nasio::opened(&p, b.len() as u64, t.elapsed().as_millis() as u64);
+        crate::nasio::read(b.len() as u64);
+        Ok(b)
     }
 
-    /// `fs::metadata` (following symlinks).
-    pub fn stat(&self, path: &Path) -> Result<Metadata, IoError> {
-        let p = path.to_owned();
-        self.call(move || fs::metadata(&p))
+    /// `fs::metadata` (following symlinks). One `Stats`; retried as `open_len`.
+    pub fn stat(&self, path: &NasPath) -> Result<Metadata, IoError> {
+        let p = path.unchecked_path();
+        crate::nasio::add(crate::nasio::Count::Stats, 1);
+        self.retried(path, "stat", || {
+            let p = p.clone();
+            self.call(move || fs::metadata(&p))
+        })
     }
 
     /// Whether `path` exists. A missing path while the whole share is gone is `Offline`, not false.
-    pub fn exists(&self, path: &Path) -> Result<bool, IoError> {
-        let (p, probe) = (path.to_owned(), self.inner.cfg.probe.clone());
-        self.call(move || match fs::metadata(&p) {
-            Ok(_) => Ok(true),
-            Err(e) if e.kind() == io::ErrorKind::NotFound && fs::metadata(&probe).is_ok() => Ok(false),
-            Err(e) => Err(e),
+    /// One `Stats`; retried as `open_len`.
+    pub fn exists(&self, path: &NasPath) -> Result<bool, IoError> {
+        let p = path.unchecked_path();
+        crate::nasio::add(crate::nasio::Count::Stats, 1);
+        self.retried(path, "stat", || {
+            let (p, probe) = (p.clone(), self.inner.cfg.probe.clone());
+            self.call(move || match fs::metadata(&p) {
+                Ok(_) => Ok(true),
+                Err(e) if e.kind() == io::ErrorKind::NotFound && fs::metadata(&probe).is_ok() => Ok(false),
+                Err(e) => Err(e),
+            })
         })
     }
 
     /// The entries of a directory with their type, size and modification time, sorted by name.
-    pub fn list(&self, dir: &Path) -> Result<Vec<DirItem>, IoError> {
-        let d = dir.to_owned();
-        self.call(move || {
-            let mut out = Vec::new();
-            for e in fs::read_dir(&d)? {
-                let e = e?;
-                // Gone between the listing and the stat: skip it.
-                let Ok(m) = e.metadata() else { continue };
-                out.push(DirItem {
-                    name: e.file_name().to_string_lossy().into_owned(),
-                    is_dir: m.is_dir(),
-                    len: m.len(),
-                    modified: m.modified().ok(),
-                });
-            }
-            out.sort_by(|a, b| a.name.cmp(&b.name));
-            Ok(out)
-        })
+    /// Its entries counted as `Listed`; retried as `open_len`.
+    pub fn list(&self, dir: &NasPath) -> Result<Vec<DirItem>, IoError> {
+        let d = dir.unchecked_path();
+        let v = self.retried(dir, "list", || {
+            let d = d.clone();
+            self.call(move || {
+                let mut out = Vec::new();
+                for e in fs::read_dir(&d)? {
+                    let e = e?;
+                    // Gone between the listing and the stat: skip it.
+                    let Ok(m) = e.metadata() else { continue };
+                    out.push(DirItem {
+                        name: e.file_name().to_string_lossy().into_owned(),
+                        is_dir: m.is_dir(),
+                        len: m.len(),
+                        modified: m.modified().ok(),
+                    });
+                }
+                out.sort_by(|a, b| a.name.cmp(&b.name));
+                Ok(out)
+            })
+        })?;
+        crate::nasio::add(crate::nasio::Count::Listed, v.len() as u64);
+        Ok(v)
     }
 
     /// `fs::create_dir_all`.
-    pub fn create_dir_all(&self, dir: &Path) -> Result<(), IoError> {
-        let d = dir.to_owned();
+    pub fn create_dir_all(&self, dir: &NasPath) -> Result<(), IoError> {
+        let d = dir.unchecked_path();
         self.call(move || fs::create_dir_all(&d))
     }
 
     /// `fs::rename`, replacing `to` if it exists (both on the share).
-    pub fn rename(&self, from: &Path, to: &Path) -> Result<(), IoError> {
-        let (a, b) = (from.to_owned(), to.to_owned());
+    pub fn rename(&self, from: &NasPath, to: &NasPath) -> Result<(), IoError> {
+        let (a, b) = (from.unchecked_path(), to.unchecked_path());
         self.call(move || fs::rename(&a, &b))
     }
 
     /// Creates `path` exclusively (`O_EXCL`: `AlreadyExists` if it's there) and writes `bytes`.
-    pub fn write_new(&self, path: &Path, bytes: Vec<u8>) -> Result<(), IoError> {
-        let p = path.to_owned();
+    /// Counted as a file made. Never retried.
+    pub fn write_new(&self, path: &NasPath, bytes: Vec<u8>) -> Result<(), IoError> {
+        let p = path.unchecked_path();
+        let (n, t, q) = (bytes.len() as u64, Instant::now(), p.clone());
         self.call(move || {
             let mut f = OpenOptions::new().write(true).create_new(true).open(&p)?;
             f.write_all(&bytes)?;
             f.sync_all()
-        })
+        })?;
+        crate::nasio::wrote(&q, n, t.elapsed().as_millis() as u64);
+        Ok(())
     }
 
     /// Creates or truncates `path` and writes `bytes`, synced. (Callers write a temporary file this
     /// way and rename it over the real one, so no reader sees half of it; one left by a write that
-    /// never finished is simply written again.)
-    pub fn write(&self, path: &Path, bytes: Vec<u8>) -> Result<(), IoError> {
-        let p = path.to_owned();
+    /// never finished is simply written again.) Counted as a file made. Never retried.
+    pub fn write(&self, path: &NasPath, bytes: Vec<u8>) -> Result<(), IoError> {
+        let p = path.unchecked_path();
+        let (n, t, q) = (bytes.len() as u64, Instant::now(), p.clone());
         self.call(move || {
             let mut f = File::create(&p)?;
             f.write_all(&bytes)?;
             f.sync_all()
-        })
+        })?;
+        crate::nasio::wrote(&q, n, t.elapsed().as_millis() as u64);
+        Ok(())
     }
 }
 
@@ -807,7 +863,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let pool = IoPool::with_config(PoolConfig::new(2, LONG, dir.path().to_owned()));
         assert_eq!(pool.call(|| Ok(41 + 1)).unwrap(), 42);
-        let p = dir.path().join("a.bin");
+        let nas = crate::nasfs::NasRoot::local_for_test(dir.path());
+        let p = nas.join("a.bin");
         pool.write_new(&p, b"0123456789".to_vec()).unwrap();
         match pool.write_new(&p, b"x".to_vec()) {
             Err(IoError::Io(e)) => assert_eq!(e.kind(), io::ErrorKind::AlreadyExists),
@@ -820,25 +877,25 @@ mod tests {
         assert_eq!(pool.read_all(&p).unwrap(), b"0123456789");
         assert_eq!(pool.stat(&p).unwrap().len(), 10);
         assert!(pool.exists(&p).unwrap());
-        assert!(!pool.exists(&dir.path().join("nope")).unwrap());
+        assert!(!pool.exists(&nas.join("nope")).unwrap());
         fs::create_dir(dir.path().join("sub")).unwrap();
-        let q = dir.path().join("b.bin");
+        let q = nas.join("b.bin");
         pool.rename(&p, &q).unwrap();
-        let names: Vec<_> = pool.list(dir.path()).unwrap().into_iter().map(|e| (e.name, e.is_dir, e.len)).collect();
+        let names: Vec<_> = pool.list(&nas.path()).unwrap().into_iter().map(|e| (e.name, e.is_dir, e.len)).collect();
         assert_eq!(names, [("b.bin".to_string(), false, 10), ("sub".to_string(), true, names[1].2)]);
         // A file written through a temporary one, over a stale temporary file, in a new folder.
-        let deeper = dir.path().join("sub/deeper");
+        let deeper = nas.join("sub/deeper");
         pool.create_dir_all(&deeper).unwrap();
         pool.create_dir_all(&deeper).unwrap();
         let tmp = deeper.join("c.bin.tmp");
         pool.write(&tmp, b"stale, and longer".to_vec()).unwrap();
         pool.write(&tmp, b"new".to_vec()).unwrap();
         pool.rename(&tmp, &deeper.join("c.bin")).unwrap();
-        assert_eq!(fs::read(deeper.join("c.bin")).unwrap(), b"new");
+        assert_eq!(deeper.join("c.bin").read().unwrap(), b"new");
         assert!(!tmp.exists());
         // An ordinary error leaves the NAS online.
         assert!(
-            matches!(pool.read_all(&dir.path().join("missing")), Err(IoError::Io(e)) if e.kind() == io::ErrorKind::NotFound)
+            matches!(pool.read_all(&nas.join("missing")), Err(IoError::Io(e)) if e.kind() == io::ErrorKind::NotFound)
         );
         assert!(pool.is_online());
         // A panicking operation is an error, and its worker lives on.
@@ -876,7 +933,10 @@ mod tests {
             pool.call_timeout(Duration::from_secs(600), move || Ok(r2.store(true, SeqCst))),
             Err(IoError::Offline)
         ));
-        assert!(matches!(pool.read_all(&dir.path().join("x")), Err(IoError::Offline)));
+        assert!(matches!(
+            pool.read_all(&crate::nasfs::NasRoot::local_for_test(dir.path()).join("x")),
+            Err(IoError::Offline)
+        ));
         assert!(t0.elapsed() < Duration::from_secs(600) && !ran.load(SeqCst));
 
         // The probe keeps failing while the share is away.
@@ -1029,11 +1089,17 @@ mod tests {
 
         let pool = IoPool::with_config(cfg());
         fs::remove_dir(&probe).unwrap();
-        assert!(matches!(pool.stat(&probe.join("file")), Err(IoError::Offline)));
+        assert!(matches!(
+            pool.stat(&crate::nasfs::NasRoot::local_for_test(&probe).join("file")),
+            Err(IoError::Offline)
+        ));
         assert!(!pool.is_online());
 
         let pool = IoPool::with_config(cfg());
-        assert!(matches!(pool.exists(&probe.join("file")), Err(IoError::Offline)));
+        assert!(matches!(
+            pool.exists(&crate::nasfs::NasRoot::local_for_test(&probe).join("file")),
+            Err(IoError::Offline)
+        ));
         pool.mark_offline("test");
         assert!(matches!(pool.call(|| Ok(())), Err(IoError::Offline)));
     }

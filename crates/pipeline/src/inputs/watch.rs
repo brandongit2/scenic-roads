@@ -7,7 +7,6 @@
 
 use super::Listing;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -45,7 +44,7 @@ pub struct Watch {
 impl Watch {
     /// Starts listing the drop boxes of the units on the gate under `root` (crate::inputs::units,
     /// read again each time) every `every`.
-    pub fn start(root: PathBuf, every: Duration) -> Watch {
+    pub fn start(root: store::nasfs::NasRoot, every: Duration) -> Watch {
         let shared: Arc<(Mutex<Shared>, Condvar)> = Default::default();
         let s = shared.clone();
         let thread = std::thread::Builder::new()

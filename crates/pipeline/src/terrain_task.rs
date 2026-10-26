@@ -746,7 +746,15 @@ mod tests {
         let (&q, ts) = by_q.iter().next().unwrap();
         assert!(ts.contains(&(34, 14)), "{ts:?}");
         crate::terrain_pack::tests::synthetic_raw(&d.join("local"), &cov, q, &[(34, 14)]);
-        ((34, 14), cov, RawTiles::with_store(&d.join("local"), &d.join("store"), crate::terrain_pack::TEST_BASE))
+        (
+            (34, 14),
+            cov,
+            RawTiles::with_store(
+                &d.join("local"),
+                &store::nasfs::NasPath::local_for_test(&d.join("store")),
+                crate::terrain_pack::TEST_BASE,
+            ),
+        )
     }
 
     /// Raw tiles with the pool's shortcut (crate::terrain_base::Tiles): a tile whose four children
@@ -813,7 +821,7 @@ mod tests {
                 let raw = Shortcut::new(&inner);
                 let root = d.path().join(name);
                 let scratch = d.path().join(format!("{name}-scratch"));
-                let mut out = Out::unbound(&root, &scratch).unwrap();
+                let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch).unwrap();
                 STOP_AFTER.set(stop);
                 let r = crate::terrain_pack::build_piece_keeping(&mut out, &raw, t, &cov, &src);
                 STOP_AFTER.set(None);
@@ -823,7 +831,7 @@ mod tests {
                     assert!(e.to_string().contains("a test's interruption"), "{e:#}");
                     return (None, stood, read);
                 }
-                let out = Out::unbound(&root, &scratch).unwrap();
+                let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch).unwrap();
                 let packs = out.manifest.into_iter().filter(|(l, _)| l.starts_with("layers/terrain/")).collect();
                 (Some(packs), stood, read)
             };
@@ -857,7 +865,7 @@ mod tests {
         let run = |name: &str, src: &Sources, stop: Option<usize>| -> Option<Vec<(String, String)>> {
             let root = d.path().join(name);
             let scratch = d.path().join(format!("{name}-scratch"));
-            let mut out = Out::unbound(&root, &scratch).unwrap();
+            let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch).unwrap();
             STOP_AFTER.set(stop);
             let r = crate::terrain_pack::build_piece_keeping(&mut out, &raw, t, &cov, src);
             STOP_AFTER.set(None);
@@ -867,7 +875,7 @@ mod tests {
                 return None;
             }
             assert!(!log.exists(), "the log gone once written");
-            let out = Out::unbound(&root, &scratch).unwrap();
+            let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch).unwrap();
             Some(
                 out.manifest
                     .into_iter()
@@ -990,7 +998,9 @@ mod tests {
         src: &Sources,
         offload: Option<&Offload>,
     ) -> (Option<String>, Option<String>) {
-        let mut out = Out::unbound(&d.join(name), &d.join(format!("{name}-scratch"))).unwrap();
+        let mut out =
+            Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.join(name)), &d.join(format!("{name}-scratch")))
+                .unwrap();
         rayon::ThreadPoolBuilder::new()
             .num_threads(4)
             .build()
@@ -1148,7 +1158,9 @@ mod tests {
         use crate::terrain_water::{tile_water, WaterSource};
         use rayon::prelude::*;
         let root = PathBuf::from(std::env::var("TT_ROOT").expect("TT_ROOT"));
-        let out = Out::unbound(&root, &std::env::temp_dir().join("tt-own-keys")).unwrap();
+        let out =
+            Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &std::env::temp_dir().join("tt-own-keys"))
+                .unwrap();
         let cov = live_coverage(&out);
         let water = crate::terrain_pack::open_water(&out).unwrap();
         let pieces: Vec<(u32, u32)> = crate::agent::build::coverage_tiles(&cov).into_values().flatten().collect();
@@ -1220,12 +1232,13 @@ mod tests {
         let env = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("{k} isn't set"));
         let (root, scratch) = (PathBuf::from(env("TT_ROOT")), PathBuf::from(env("TT_SCRATCH")));
         let port: u16 = env("TT_PORT").parse().unwrap();
-        let mut out = Out::unbound(&root, &scratch.join("job")).unwrap();
+        let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch.join("job")).unwrap();
         let cov = live_coverage(&out);
         let raw = RawTiles::with_store(
             &PathBuf::from(env("TT_RAW")),
-            &root.join("sources/aws-terrarium"),
-            &crate::terrain_base::terrarium_template(&root, &out.manifest).unwrap(),
+            &store::nasfs::NasPath::local_for_test(&root.join("sources/aws-terrarium")),
+            &crate::terrain_base::terrarium_template(&store::nasfs::NasRoot::local_for_test(&root), &out.manifest)
+                .unwrap(),
         );
         let water = crate::terrain_pack::open_water(&out).unwrap();
         let src = Sources { water: Some(&water), deeper: None };

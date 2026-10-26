@@ -342,7 +342,7 @@ impl FillOpts {
 /// no zip (no fill made); Err: not declared, its declared folder not there (the zips not moved yet,
 /// or the NAS away), or not to be read now: the step and what reads its fill wait.
 pub fn planned_source(
-    root: &Path,
+    root: &store::nasfs::NasRoot,
     m: &std::collections::BTreeMap<String, String>,
 ) -> std::result::Result<Option<String>, String> {
     let s = crate::inputs::sources::open(root, m)
@@ -373,20 +373,19 @@ pub fn source_dir(s: &crate::inputs::sources::Source) -> String {
 /// (a zip replaced by one of the same size is a new source), in order; None when there's no such
 /// folder or no zip in it (no fill made); an error when it can't be read now (the NAS away), which
 /// is never taken for "no source".
-pub fn source_pin(dir: &Path) -> std::io::Result<Option<String>> {
-    let rd = match std::fs::read_dir(dir) {
+pub fn source_pin<'a>(dir: impl Into<store::nasfs::Loc<'a>>) -> std::io::Result<Option<String>> {
+    let dir = dir.into();
+    let rd = match dir.list_names() {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
     let mut v = Vec::new();
-    for e in rd {
-        let e = e?;
-        let n = e.file_name().to_string_lossy().into_owned();
+    for n in rd {
         if !n.to_ascii_lowercase().ends_with(".zip") || n.starts_with('.') {
             continue;
         }
-        let md = e.metadata()?;
+        let md = dir.join(&n).loc().metadata()?;
         let t = md.modified()?.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
         v.push(format!("{n} {} {t}", md.len()));
     }
@@ -987,7 +986,8 @@ mod tests {
         let Ok(m) = std::env::var("SCENIC_LAKEFILL_MEASURE") else { return };
         let a: Vec<&str> = m.split_whitespace().collect();
         let scratch = tempfile::tempdir().unwrap();
-        let out = crate::out::Out::unbound(Path::new(a[0]), scratch.path()).unwrap();
+        let out =
+            crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(Path::new(a[0])), scratch.path()).unwrap();
         let basemap = out.path(out.get(&format!("layers/basemap/world-{}", a[1])).unwrap());
         let outlines = out.path(out.get(&format!("sources/osm/{}/outlines", a[1])).unwrap());
         let decl = crate::inputs::sources::read(out.root(), &out.manifest).unwrap();
@@ -995,7 +995,16 @@ mod tests {
         let source = out.root().join(source_dir(decl));
         crate::timings::start("lakefill");
         let p = crate::timings::phase("the lakes filled from CanVec's zips", crate::timings::Class::NasRead);
-        let f = all(&basemap, &outlines, &source, decl, Path::new(a[2]), &|_| {}, &|_, _| {}).unwrap();
+        let f = all(
+            &basemap.unchecked_path(),
+            &outlines.unchecked_path(),
+            &source.unchecked_path(),
+            decl,
+            Path::new(a[2]),
+            &|_| {},
+            &|_, _| {},
+        )
+        .unwrap();
         drop(p);
         println!("{}", f.display());
         print!("{}", crate::timings::table(&crate::timings::snapshot(true).unwrap()));
@@ -1041,15 +1050,22 @@ mod tests {
     fn the_lake_fills_source_as_planned() {
         let d = tempfile::tempdir().unwrap();
         let mut m = std::collections::BTreeMap::new();
-        assert!(planned_source(d.path(), &m).unwrap_err().contains("no accepted version"));
-        crate::inputs::sources::accept_fixture(d.path(), &mut m);
+        assert!(planned_source(&store::nasfs::NasRoot::local_for_test(d.path()), &m)
+            .unwrap_err()
+            .contains("no accepted version"));
+        crate::inputs::sources::accept_fixture(&store::nasfs::NasRoot::local_for_test(d.path()), &mut m);
         // (Declared, its folder not there: an error, which holds the water, terrain and catalog.)
-        assert!(planned_source(d.path(), &m).unwrap_err().contains("isn't there"));
+        assert!(planned_source(&store::nasfs::NasRoot::local_for_test(d.path()), &m)
+            .unwrap_err()
+            .contains("isn't there"));
         let z = d.path().join("sources/fetched/canvec-lakes");
         std::fs::create_dir_all(&z).unwrap();
-        assert_eq!(planned_source(d.path(), &m), Ok(None), "no zips: no fill");
+        assert_eq!(planned_source(&store::nasfs::NasRoot::local_for_test(d.path()), &m), Ok(None), "no zips: no fill");
         std::fs::write(z.join("canvec_50K_AB_Hydro_shp.zip"), b"zip").unwrap();
-        assert_eq!(planned_source(d.path(), &m).unwrap(), source_pin(&z).unwrap());
+        assert_eq!(
+            planned_source(&store::nasfs::NasRoot::local_for_test(d.path()), &m).unwrap(),
+            source_pin(&z).unwrap()
+        );
     }
 
     /// A survey row for the 0.5° × 0.25° sheet at column `c`, row `r` (south-west at 60°W + c/2,

@@ -219,7 +219,7 @@ fn the_accepted_registers() {
         entry("sources/inputs/heritage/c.6666666666666666.geojson", serde_json::json!({})),
     );
     let a = crate::inputs::Accepted {
-        root: std::path::PathBuf::from("/nowhere"),
+        root: store::nasfs::NasRoot::local_for_test("/nowhere"),
         version: "v".into(),
         index: crate::inputs::Index {
             fmt: 1,

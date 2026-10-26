@@ -4,7 +4,6 @@
 use super::{Finding, Index, Report};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::Path;
 
 /// The flagged lines a status shows of a finding (all are in the report).
 pub const LINES_SHOWN: usize = 50;
@@ -117,7 +116,7 @@ pub struct Cache {
 }
 
 impl Cache {
-    fn report(&mut self, root: &Path, name: &str) -> anyhow::Result<Report> {
+    fn report(&mut self, root: &store::nasfs::NasRoot, name: &str) -> anyhow::Result<Report> {
         if let Some(r) = self.reports.get(name) {
             return Ok(r.clone());
         }
@@ -126,7 +125,7 @@ impl Cache {
         Ok(r)
     }
 
-    fn index(&mut self, root: &Path, name: &str) -> anyhow::Result<Index> {
+    fn index(&mut self, root: &store::nasfs::NasRoot, name: &str) -> anyhow::Result<Index> {
         if let Some(i) = self.indexes.get(name) {
             return Ok(i.clone());
         }
@@ -135,17 +134,11 @@ impl Cache {
         Ok(i)
     }
 
-    fn time(&mut self, root: &Path, name: &str) -> Option<u64> {
+    fn time(&mut self, root: &store::nasfs::NasRoot, name: &str) -> Option<u64> {
         if let Some(&t) = self.times.get(name) {
             return Some(t);
         }
-        let t = std::fs::metadata(root.join(name))
-            .ok()?
-            .modified()
-            .ok()?
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?
-            .as_secs();
+        let t = root.join(name).metadata().ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
         self.times.insert(name.to_string(), t);
         Some(t)
     }
@@ -155,7 +148,7 @@ impl Cache {
 /// have it; `checking`, those with a check planned or running; `accepted`, each unit's
 /// acceptances (listed here for one missing).
 pub fn of(
-    root: &Path,
+    root: &store::nasfs::NasRoot,
     manifest: &BTreeMap<String, String>,
     units: &[&str],
     checking: &BTreeSet<String>,

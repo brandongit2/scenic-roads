@@ -13,7 +13,7 @@ fn main() -> anyhow::Result<()> {
         &set,
         &std::env::temp_dir().join("outlines-work"),
         &out,
-        previous.as_deref().map(|p| (p, date.as_str())),
+        previous.as_deref().map(|p| (p.into(), date.as_str())),
     )?;
     println!("repaired {:?}, stale {:?}, unassembled {:?}", s.repaired, s.stale, s.unassembled);
     println!(

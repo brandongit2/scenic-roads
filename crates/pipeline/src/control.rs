@@ -66,7 +66,7 @@ pub const REQUEST: &str = "pause-request.json";
 /// Asks this Mac's agent (its folder `home`) to pause the build, or let it go on.
 pub fn request(home: &Path, pause: Option<Pause>) -> anyhow::Result<()> {
     std::fs::create_dir_all(home)?;
-    crate::whole::write(&home.join(REQUEST), &serde_json::to_vec(&Request { pause, at: now() })?)
+    store::whole::write(&home.join(REQUEST), &serde_json::to_vec(&Request { pause, at: now() })?)
 }
 
 /// The ask waiting in `home`, if any (one that doesn't parse: none, and it goes).
@@ -128,7 +128,7 @@ pub const LEAD_REQUEST: &str = "lead-request.json";
 pub fn request_lead(home: &Path, ask: LeadAsk, by: &str) -> anyhow::Result<LeadRequest> {
     std::fs::create_dir_all(home)?;
     let r = LeadRequest { ask, by: by.to_string(), at: now() };
-    crate::whole::write(&home.join(LEAD_REQUEST), &serde_json::to_vec(&r)?)?;
+    store::whole::write(&home.join(LEAD_REQUEST), &serde_json::to_vec(&r)?)?;
     Ok(r)
 }
 
@@ -183,7 +183,7 @@ pub const QUIT_EXIT: i32 = 76;
 pub fn request_quit(home: &Path, mode: QuitMode, by: &str) -> anyhow::Result<Quit> {
     std::fs::create_dir_all(home)?;
     let q = Quit { mode, by: by.to_string(), at: now() };
-    crate::whole::write(&home.join(QUIT_REQUEST), &serde_json::to_vec(&q)?)?;
+    store::whole::write(&home.join(QUIT_REQUEST), &serde_json::to_vec(&q)?)?;
     Ok(q)
 }
 
@@ -282,7 +282,7 @@ pub fn request_cancel(home: &Path, c: &Cancel) -> anyhow::Result<()> {
     std::fs::create_dir_all(&dir)?;
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     let name = format!("{nanos}-{}.json", std::process::id());
-    crate::whole::write(&dir.join(name), &serde_json::to_vec(c)?)
+    store::whole::write(&dir.join(name), &serde_json::to_vec(c)?)
 }
 
 /// The cancel asks' files waiting in `home`, oldest first.
@@ -327,7 +327,7 @@ pub fn take_cancels(home: &Path, now: u64) -> Vec<Cancel> {
 pub fn answer_cancel(home: &Path, a: &CancelAnswer) {
     let w = serde_json::to_vec(a)
         .map_err(anyhow::Error::from)
-        .and_then(|b| crate::whole::write(&home.join(CANCEL_ANSWER), &b));
+        .and_then(|b| store::whole::write(&home.join(CANCEL_ANSWER), &b));
     if let Err(e) = w {
         eprintln!("agent: writing the cancel's answer: {e:#}");
     }
@@ -477,7 +477,7 @@ pub struct HoldAnswer {
 pub fn request_hold(home: &Path, member: Option<&str>, held: Option<Hold>) -> anyhow::Result<HoldRequest> {
     std::fs::create_dir_all(home)?;
     let r = HoldRequest { member: member.map(str::to_string), held, at: now() };
-    crate::whole::write(&home.join(HOLD_REQUEST), &serde_json::to_vec(&r)?)?;
+    store::whole::write(&home.join(HOLD_REQUEST), &serde_json::to_vec(&r)?)?;
     Ok(r)
 }
 
@@ -498,7 +498,7 @@ pub fn peek_hold_request(home: &Path) -> Option<HoldRequest> {
 pub fn answer_hold(home: &Path, a: &HoldAnswer) {
     let w = serde_json::to_vec(a)
         .map_err(anyhow::Error::from)
-        .and_then(|b| crate::whole::write(&home.join(HOLD_ANSWER), &b));
+        .and_then(|b| store::whole::write(&home.join(HOLD_ANSWER), &b));
     if let Err(e) = w {
         eprintln!("agent: writing the hold's answer: {e:#}");
     }

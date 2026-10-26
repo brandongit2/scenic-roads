@@ -49,34 +49,34 @@ fn now_s() -> u64 {
 
 /// Appends `e` (now, unless it says when) to its Mac's log under the project folder `root`; a log
 /// past `SERVERS_MAX` is written again with its newer half first.
-pub fn append_server(root: &Path, mut e: ServerEvent) -> std::io::Result<()> {
+pub fn append_server(root: &store::nasfs::NasRoot, mut e: ServerEvent) -> std::io::Result<()> {
     if e.t == 0 {
         e.t = now_s();
     }
     let dir = root.join(SERVERS);
-    std::fs::create_dir_all(&dir)?;
+    dir.create_dir_all()?;
     let name: String =
         e.host.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
     let line = serde_json::to_string(&e).map_err(std::io::Error::other)?;
     let p = dir.join(format!("{name}.jsonl"));
-    if std::fs::metadata(&p).is_ok_and(|m| m.len() > SERVERS_MAX) {
-        let text = std::fs::read_to_string(&p)?;
+    if p.metadata().is_ok_and(|m| m.len() > SERVERS_MAX) {
+        let text = p.read_to_string()?;
         let lines: Vec<&str> = text.lines().collect();
         let kept = lines[lines.len() / 2..].join("\n");
-        return crate::whole::write(&p, format!("{kept}\n{line}\n").as_bytes()).map_err(std::io::Error::other);
+        return p.write_whole(format!("{kept}\n{line}\n")).map_err(std::io::Error::other);
     }
-    std::fs::OpenOptions::new().create(true).append(true).open(&p)?.write_all(format!("{line}\n").as_bytes())
+    p.open_with(std::fs::OpenOptions::new().create(true).append(true))?.write_all(format!("{line}\n").as_bytes())
 }
 
 /// Every Mac's map server's events since `since` (unix seconds), in time order.
-pub fn read_servers(root: &Path, since: u64) -> Vec<ServerEvent> {
+pub fn read_servers(root: &store::nasfs::NasRoot, since: u64) -> Vec<ServerEvent> {
     let mut out = Vec::new();
-    let Ok(rd) = std::fs::read_dir(root.join(SERVERS)) else { return out };
-    for f in rd.flatten() {
-        if f.path().extension().and_then(|x| x.to_str()) != Some("jsonl") {
+    let Ok(rd) = root.join(SERVERS).read_dir() else { return out };
+    for f in rd {
+        if f.path.extension() != Some("jsonl") {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(f.path()) else { continue };
+        let Ok(text) = f.path.read_to_string() else { continue };
         out.extend(text.lines().filter_map(|l| serde_json::from_str::<ServerEvent>(l).ok()).filter(|e| e.t >= since));
     }
     out.sort_by_key(|e| e.t);
@@ -194,7 +194,9 @@ pub fn restaled_by(
 
 /// The served catalog's base packs' and road values' content names, by logical name (what
 /// `restaled_by` compares with): the latest in `dir`, with its number.
-pub fn served_units(dir: &Path) -> anyhow::Result<Option<(u64, BTreeMap<String, String>)>> {
+pub fn served_units<'a>(
+    dir: impl Into<store::nasfs::Loc<'a>>,
+) -> anyhow::Result<Option<(u64, BTreeMap<String, String>)>> {
     Ok(store::catalog::latest(dir)?.map(|c| {
         (
             c.n,
@@ -290,7 +292,7 @@ impl PlannedNotes {
 
     /// The NAS's history since its notes began (`root`), read on a thread; taken up by the
     /// next `new_tiles`.
-    pub fn seed_from_nas(&self, root: std::path::PathBuf) {
+    pub fn seed_from_nas(&self, root: store::nasfs::NasRoot) {
         let (b, seed) = (self.began, self.seed.clone());
         let spawned = std::thread::Builder::new().name("planned-seed".into()).spawn(move || {
             let s = Self::nas_noted(&root, b);
@@ -302,7 +304,7 @@ impl PlannedNotes {
     }
 
     /// What the NAS's history (`root`) says was noted planned since `b`.
-    pub fn nas_noted(root: &Path, b: u64) -> BTreeSet<(String, String)> {
+    pub fn nas_noted(root: &store::nasfs::NasRoot, b: u64) -> BTreeSet<(String, String)> {
         let days = now_s().saturating_sub(b) / 86400 + 1;
         planned_since(&load_history(Some(root), None, days), b)
     }
@@ -323,7 +325,8 @@ impl PlannedNotes {
     }
 
     /// The served catalog's z6 tiles (in `dir`), read again only when a newer catalog is there.
-    pub fn served(&mut self, dir: &Path) -> BTreeMap<String, String> {
+    pub fn served<'a>(&mut self, dir: impl Into<store::nasfs::Loc<'a>>) -> BTreeMap<String, String> {
+        let dir = dir.into();
         let latest = store::catalog::list(dir).ok().and_then(|ns| ns.into_iter().max());
         if latest.is_some() && self.served.as_ref().map(|s| s.0) != latest {
             self.served_reads += 1;
@@ -689,25 +692,25 @@ pub fn text(cats: &[CatalogChain], units: &[UnitChain], last: usize) -> String {
 /// The build's history: the NAS's (`state/coord/history/<day>/*.jsonl`, or the day's tar in
 /// `history-archive/` once GC packed it, the last `days` days',
 /// every writer's), else the lead's own (`local`, its coordinator's file); duplicates once.
-pub fn load_history(root: Option<&Path>, local: Option<&Path>, days: u64) -> Vec<Event> {
+pub fn load_history(root: Option<&store::nasfs::NasRoot>, local: Option<&Path>, days: u64) -> Vec<Event> {
     let mut out: Vec<Event> = Vec::new();
     let since = now_s().saturating_sub(days * 86400);
-    let read = |p: &Path| -> Vec<Event> {
-        std::fs::read_to_string(p)
+    let read = |p: store::nasfs::Loc<'_>| -> Vec<Event> {
+        p.read_to_string()
             .map(|t| t.lines().filter_map(|l| serde_json::from_str::<Event>(l).ok()).filter(|e| e.t >= since).collect())
             .unwrap_or_default()
     };
     if let Some(dir) = root.map(|r| r.join("state/coord/history")).filter(|d| d.is_dir()) {
         for d in (0..=days).filter_map(|k| crate::pool::journal::day(since + k * 86400)) {
-            if let Ok(rd) = std::fs::read_dir(dir.join(&d)) {
-                for f in rd.flatten() {
-                    out.extend(read(&f.path()));
+            if let Ok(rd) = dir.join(&d).read_dir() {
+                for f in rd {
+                    out.extend(read((&f.path).into()));
                 }
             }
             // A day packed by GC (agent::histarchive); a folder and tar both there: duplicates once.
             let tar = dir.with_file_name("history-archive").join(format!("{d}.tar"));
             if let Ok(members) =
-                std::fs::read(&tar).map_err(anyhow::Error::from).and_then(|t| crate::agent::histarchive::list_tar(&t))
+                tar.read().map_err(anyhow::Error::from).and_then(|t| crate::agent::histarchive::list_tar(&t))
             {
                 for (_, b) in members {
                     out.extend(
@@ -722,7 +725,7 @@ pub fn load_history(root: Option<&Path>, local: Option<&Path>, days: u64) -> Vec
     }
     if out.is_empty() {
         if let Some(l) = local {
-            out.extend(read(l));
+            out.extend(read(l.into()));
         }
     }
     let mut seen = BTreeSet::new();
@@ -1000,7 +1003,7 @@ mod tests {
         .unwrap();
         let mut m = PlannedNotes::default();
         assert!(m.begin(t, &[ev("agent", t + 100)], t + 300));
-        m.seed_from_nas(d.path().to_path_buf());
+        m.seed_from_nas(store::nasfs::NasRoot::local_for_test(d.path().to_path_buf()));
         for _ in 0..200 {
             if m.seed.lock().unwrap().is_some() {
                 break;
@@ -1063,14 +1066,17 @@ mod tests {
     fn the_servers_log_is_appended_per_mac_read_in_order_and_cut() {
         let d = tempfile::tempdir().unwrap();
         append_server(
-            d.path(),
+            &store::nasfs::NasRoot::local_for_test(d.path()),
             ServerEvent { t: 20, host: "Brandon's M4".into(), kind: "adopt".into(), n: 2, secs: None },
         )
         .unwrap();
-        append_server(d.path(), ServerEvent { t: 10, host: "m1".into(), kind: "adopt".into(), n: 1, secs: None })
-            .unwrap();
         append_server(
-            d.path(),
+            &store::nasfs::NasRoot::local_for_test(d.path()),
+            ServerEvent { t: 10, host: "m1".into(), kind: "adopt".into(), n: 1, secs: None },
+        )
+        .unwrap();
+        append_server(
+            &store::nasfs::NasRoot::local_for_test(d.path()),
             ServerEvent { t: 30, host: "m1".into(), kind: "mirror-end".into(), n: 2, secs: Some(5.0) },
         )
         .unwrap();
@@ -1079,9 +1085,9 @@ mod tests {
             .map(|f| f.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(files.len(), 2);
-        let all = read_servers(d.path(), 0);
+        let all = read_servers(&store::nasfs::NasRoot::local_for_test(d.path()), 0);
         assert_eq!(all.iter().map(|e| e.t).collect::<Vec<_>>(), [10, 20, 30]);
-        assert_eq!(read_servers(d.path(), 15).len(), 2);
+        assert_eq!(read_servers(&store::nasfs::NasRoot::local_for_test(d.path()), 15).len(), 2);
         // Past SERVERS_MAX: its newer half kept, the new line after it.
         let p = d.path().join(SERVERS).join("m1.jsonl");
         let line =
@@ -1089,8 +1095,11 @@ mod tests {
                 .unwrap();
         std::fs::write(&p, format!("{line}\n").repeat((SERVERS_MAX as usize / line.len()) + 10)).unwrap();
         let before = std::fs::read_to_string(&p).unwrap().lines().count();
-        append_server(d.path(), ServerEvent { t: 50, host: "m1".into(), kind: "adopt".into(), n: 4, secs: None })
-            .unwrap();
+        append_server(
+            &store::nasfs::NasRoot::local_for_test(d.path()),
+            ServerEvent { t: 50, host: "m1".into(), kind: "adopt".into(), n: 4, secs: None },
+        )
+        .unwrap();
         let after: Vec<String> = std::fs::read_to_string(&p).unwrap().lines().map(str::to_string).collect();
         assert_eq!(after.len(), before - before / 2 + 1);
         assert!(after.last().unwrap().contains("\"n\":4"));
@@ -1108,7 +1117,7 @@ mod tests {
         let b = Event { seq: 2, ..ev("merged", t + 1) };
         std::fs::write(dir.join("m-a.jsonl"), line(&a) + &line(&b)).unwrap();
         std::fs::write(dir.join("m-b.jsonl"), line(&Event { seq: 9, ..a.clone() })).unwrap();
-        let h = load_history(Some(d.path()), None, 2);
+        let h = load_history(Some(&store::nasfs::NasRoot::local_for_test(d.path())), None, 2);
         assert_eq!(h.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(), ["catalog", "merged"]);
         let local = d.path().join("h.jsonl");
         std::fs::write(&local, line(&b)).unwrap();
@@ -1131,7 +1140,7 @@ mod tests {
         let dir = d.path().join("state/coord/history").join(&day);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("m-a.jsonl"), line(&a) + &line(&b)).unwrap();
-        let h = load_history(Some(d.path()), None, 3);
+        let h = load_history(Some(&store::nasfs::NasRoot::local_for_test(d.path())), None, 3);
         assert_eq!(h.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(), ["catalog", "merged"]);
     }
 }

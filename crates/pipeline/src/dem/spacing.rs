@@ -106,7 +106,7 @@ impl Fine {
 
     /// From the declared datasets' accepted version the records name (`m`): an error before the
     /// build reads them (their switch, docs/inputs.md §6.8).
-    pub fn of_records(root: &Path, m: &std::collections::BTreeMap<String, String>) -> Result<Fine> {
+    pub fn of_records(root: &store::nasfs::NasRoot, m: &std::collections::BTreeMap<String, String>) -> Result<Fine> {
         use crate::inputs::elevation;
         anyhow::ensure!(
             elevation::switched(m),
@@ -145,7 +145,7 @@ pub const INPUT: &str = "spacing";
 
 /// `Fine::digest` of the accepted elevation version the records `m` name, read from its index
 /// (`Fine::of_records`), cached by that version.
-pub fn digest_read(root: &Path, m: &std::collections::BTreeMap<String, String>) -> Result<String> {
+pub fn digest_read(root: &store::nasfs::NasRoot, m: &std::collections::BTreeMap<String, String>) -> Result<String> {
     let v = m
         .get(&crate::inputs::logical(crate::inputs::elevation::UNIT))
         .context("the records name no accepted version of the declared elevation datasets")?;

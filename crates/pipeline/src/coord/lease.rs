@@ -191,7 +191,7 @@ impl Leases {
 
     /// Saves the jobs' leases (whole: a crash never leaves half a file).
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        crate::whole::write(path, &serde_json::to_vec_pretty(&self.saved())?)
+        store::whole::write(path, &serde_json::to_vec_pretty(&self.saved())?)
     }
 
     fn saved(&self) -> Saved {

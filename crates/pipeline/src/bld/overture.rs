@@ -379,7 +379,7 @@ pub fn open(file: &std::fs::File) -> Result<ArrowReaderMetadata> {
 /// errors. (The file opened for this read alone: a parquet reader seeks its handle, which clones
 /// share.)
 pub fn row_group(
-    path: &std::path::Path,
+    path: &store::nasfs::NasPath,
     meta: &ArrowReaderMetadata,
     rg: usize,
     part: bool,
@@ -391,7 +391,7 @@ pub fn row_group(
     if !missing.is_empty() {
         bail!("{src}: Overture's columns changed: no {missing:?}");
     }
-    let file = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let file = path.open().with_context(|| format!("open {}", path.display()))?.into_file();
     let builder = ParquetRecordBatchReaderBuilder::new_with_metadata(file, meta.clone());
     let mask = ProjectionMask::leaves(builder.parquet_schema(), idx);
     let rows = meta.metadata().row_group(rg).num_rows().max(1) as usize;

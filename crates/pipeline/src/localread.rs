@@ -23,6 +23,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use store::nasfs::{NasPath, Place};
 
 /// The shared cache's name (crate::needs::CACHES).
 pub const CACHE: &str = "whole copies";
@@ -33,7 +34,7 @@ pub const FOLDERS: [(&str, &str); 2] = [("layers", "basemap"), ("sources", "fetc
 
 /// This Mac's copies of the NAS's files under `root`.
 pub struct Local {
-    root: PathBuf,
+    root: store::nasfs::NasRoot,
     blobs: store::blobs::Blobs,
     /// Where the copies' lock files are (`<cache>/copying/`).
     locks: PathBuf,
@@ -47,14 +48,14 @@ pub struct Local {
 impl Local {
     /// The agent's cache (`SCENIC_CACHE`) and room target (crate::agent::room::job_target) for the
     /// NAS's files under `root`; None without a cache (a job run by hand, a test): the NAS read.
-    pub fn from_env(root: &Path) -> Option<Local> {
+    pub fn from_env(root: &store::nasfs::NasRoot) -> Option<Local> {
         let cache = std::env::var_os(crate::coverage::CACHE_ENV)?;
         Some(Local::new(root, Path::new(&cache), crate::agent::room::job_target()))
     }
 
-    pub fn new(root: &Path, cache: &Path, target: u64) -> Local {
+    pub fn new(root: &store::nasfs::NasRoot, cache: &Path, target: u64) -> Local {
         Local {
-            root: root.to_path_buf(),
+            root: root.clone(),
             blobs: store::blobs::Blobs::new(cache.join("blobs")),
             locks: cache.join("copying"),
             target,
@@ -65,42 +66,43 @@ impl Local {
     /// Where NAS file `p` (a content-named file under the root) is read: its whole local copy,
     /// held by this process, when it's here or there's room to make it (made now, counted as the
     /// NAS's bytes read); else `p` itself (a copy that fails says so and reads the NAS).
-    pub fn path(&self, p: &Path) -> PathBuf {
-        let Some(content) = p.strip_prefix(&self.root).ok().and_then(|r| r.to_str()).map(str::to_string) else {
-            return p.to_path_buf();
-        };
+    pub fn path(&self, p: &NasPath) -> Place {
+        let nas = || Place::Nas(p.clone());
+        if p.root() != &self.root {
+            return nas();
+        }
+        let content = p.rel().to_string();
         if let Some(l) = self.blobs.have(&content) {
-            return l;
+            return Place::Local(l);
         }
         let one = self.making.lock().unwrap_or_else(|e| e.into_inner()).entry(content.clone()).or_default().clone();
         let _one = one.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(l) = self.blobs.have(&content) {
-            return l;
+            return Place::Local(l);
         }
         // (Another process copying it: waited for, its copy read.)
         let _lock = self.lock(&content);
         if let Some(l) = self.blobs.have(&content) {
-            return l;
+            return Place::Local(l);
         }
-        let Ok(len) = std::fs::metadata(p).map(|m| m.len()) else { return p.to_path_buf() };
+        let Ok(len) = p.metadata().map(|m| m.len()) else { return nas() };
         if std::fs::create_dir_all(self.blobs.dir()).is_err()
             || crate::agent::room::free_past(self.blobs.dir(), self.target) < len
         {
-            return p.to_path_buf();
+            return nas();
         }
         let _p = crate::timings::phase("whole local copies made", crate::timings::Class::NasRead);
         let t = std::time::Instant::now();
         match self.blobs.get(&self.root, &content) {
             Ok(l) => {
-                store::nasio::read(len);
-                store::nasio::opened(p, len, t.elapsed().as_millis() as u64);
+                p.count_read(len, t.elapsed().as_millis() as u64);
                 crate::timings::count(len, 1);
                 eprintln!("{content}: copied here ({} MB in {:.1} s)", len >> 20, t.elapsed().as_secs_f64());
-                l
+                Place::Local(l)
             }
             Err(e) => {
                 eprintln!("{content}: not copied here ({e}): read from the NAS");
-                p.to_path_buf()
+                nas()
             }
         }
     }
@@ -123,8 +125,8 @@ impl Local {
 }
 
 /// `p` as `local` reads it (`Local::path`), or `p` without one.
-pub fn path(local: Option<&Local>, p: &Path) -> PathBuf {
-    local.map_or_else(|| p.to_path_buf(), |l| l.path(p))
+pub fn path(local: Option<&Local>, p: &NasPath) -> Place {
+    local.map_or_else(|| Place::Nas(p.clone()), |l| l.path(p))
 }
 
 /// The bytes this Mac's cache folder `cache` holds of the shared cache (`FOLDERS`).
@@ -146,21 +148,26 @@ mod tests {
         std::fs::create_dir_all(nas.join(name).parent().unwrap()).unwrap();
         std::fs::write(nas.join(name), vec![5u8; 4096]).unwrap();
         // (No room: a target past any disk.)
-        let full = Local::new(&nas, &cache, crate::agent::room::MAX_TARGET);
-        assert_eq!(full.path(&nas.join(name)), nas.join(name));
+        let nr = store::nasfs::NasRoot::local_for_test(&nas);
+        let at = |p: Place| match p {
+            Place::Local(l) => l,
+            Place::Nas(n) => n.unchecked_path(),
+        };
+        let full = Local::new(&nr, &cache, crate::agent::room::MAX_TARGET);
+        assert_eq!(at(full.path(&nr.join(name))), nas.join(name));
         assert_eq!(held(&cache), 0);
-        let l = Local::new(&nas, &cache, 0);
+        let l = Local::new(&store::nasfs::NasRoot::local_for_test(&nas), &cache, 0);
         let outside = d.path().join("elsewhere.tar");
-        assert_eq!(l.path(&outside), outside);
+        assert_eq!(at(l.path(&store::nasfs::NasPath::local_for_test(&outside))), outside);
         let read = store::nasio::get(store::nasio::Count::ReadBytes);
-        let got = l.path(&nas.join(name));
+        let got = at(l.path(&nr.join(name)));
         assert_eq!(got, cache.join("blobs").join(name));
         assert!(store::nasio::get(store::nasio::Count::ReadBytes) - read >= 4096, "the copy counted as read");
         assert_eq!(std::fs::read(&got).unwrap(), vec![5u8; 4096]);
         assert_eq!(held(&cache), 4096);
         std::fs::remove_dir_all(&nas).unwrap();
         // (Here already: no room asked, the NAS not read.)
-        assert_eq!(full.path(&nas.join(name)), got);
+        assert_eq!(at(full.path(&nr.join(name))), got);
         // Its reads are the local disk's.
         let local = store::nasio::get(store::nasio::Count::Local);
         let f = store::range::PlainFile::open(&got).unwrap();

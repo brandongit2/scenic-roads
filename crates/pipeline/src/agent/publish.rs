@@ -8,8 +8,6 @@
 //! - **Slope and tree cover near** (`near-slope`): a done region's slope and tree cover the z6 tiles
 //!   near it (crate::agent::build::Publishing::near), their assemblies with the low zooms.
 
-use std::path::Path;
-
 pub const DELTA_CATALOG: &str = "state/pool/delta-catalog";
 pub const NEAR_SLOPE: &str = "state/pool/near-slope";
 /// The switches as last read.
@@ -20,7 +18,7 @@ pub struct Switches {
 }
 
 /// Whether the switch at `root` is on; None when it can't be read now.
-fn on(root: &Path, switch: &str) -> Option<bool> {
+fn on(root: &store::nasfs::NasRoot, switch: &str) -> Option<bool> {
     match super::nasread::read_switch(&root.join(switch)) {
         Ok(s) => Some(s.trim() != "off"),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
@@ -30,7 +28,7 @@ fn on(root: &Path, switch: &str) -> Option<bool> {
 
 impl Switches {
     /// The switches at `root`, each one that can't be read now as it was (`was`).
-    pub fn read(root: &Path, was: Switches) -> Switches {
+    pub fn read(root: &store::nasfs::NasRoot, was: Switches) -> Switches {
         Switches { delta: on(root, DELTA_CATALOG).unwrap_or(was.delta), near: on(root, NEAR_SLOPE).unwrap_or(was.near) }
     }
 }
@@ -63,18 +61,21 @@ mod tests {
     #[test]
     fn each_switch_is_off_while_missing_or_off_and_kept_while_unreadable() {
         let d = tempfile::tempdir().unwrap();
-        assert_eq!(Switches::read(d.path(), Switches::default()), Switches::default());
+        assert_eq!(
+            Switches::read(&store::nasfs::NasRoot::local_for_test(d.path()), Switches::default()),
+            Switches::default()
+        );
         std::fs::create_dir_all(d.path().join("state/pool")).unwrap();
         for (f, s) in [(DELTA_CATALOG, "on\n"), (NEAR_SLOPE, "off\n")] {
             std::fs::write(d.path().join(f), s).unwrap();
         }
-        let s = Switches::read(d.path(), Switches::default());
+        let s = Switches::read(&store::nasfs::NasRoot::local_for_test(d.path()), Switches::default());
         assert_eq!(s, Switches { delta: true, near: false });
         // (A switch that's a folder can't be read: as it was.)
         std::fs::remove_file(d.path().join(NEAR_SLOPE)).unwrap();
         std::fs::create_dir_all(d.path().join(NEAR_SLOPE)).unwrap();
         let was = Switches { near: true, ..Default::default() };
-        assert!(Switches::read(d.path(), was).near);
+        assert!(Switches::read(&store::nasfs::NasRoot::local_for_test(d.path()), was).near);
     }
 
     #[test]

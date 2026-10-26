@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::fetch::MapFetch;
+use std::path::Path;
 
 const PX: f64 = 1.0 / 3600.0;
 
@@ -96,7 +97,10 @@ impl Fixture {
         std::fs::create_dir_all(store.path().join("tiled")).unwrap();
         std::fs::write(store.path().join("tiled/N48E002.tif"), tile(2.0, 48.0)).unwrap();
         std::fs::write(store.path().join("tiled/N49E002.tif"), tile(2.0, 49.0)).unwrap();
-        let checks = Elevation { store: Some(store.path().to_path_buf()), ..Elevation::new(Arc::new(f), None) };
+        let checks = Elevation {
+            store: Some(store::nasfs::NasPath::local_for_test(store.path().to_path_buf())),
+            ..Elevation::new(Arc::new(f), None)
+        };
         Fixture { files: files.into_iter().map(|(p, b)| (p.to_string(), Arc::new(b))).collect(), checks, store }
     }
 
@@ -188,9 +192,13 @@ fn good_declarations_are_measured_from_their_data() {
     };
     let name = "sources/inputs/elevation/@index.0000000000000000.json";
     std::fs::write(d2.path().join(name), serde_json::to_vec(&ix).unwrap()).unwrap();
-    let a = super::super::open(d2.path(), &BTreeMap::from([(super::super::logical(UNIT), name.to_string())]), UNIT)
-        .unwrap()
-        .unwrap();
+    let a = super::super::open(
+        &store::nasfs::NasRoot::local_for_test(d2.path()),
+        &BTreeMap::from([(super::super::logical(UNIT), name.to_string())]),
+        UNIT,
+    )
+    .unwrap()
+    .unwrap();
     let plan = declared::plan(&a, [2.3, 48.8, 2.4, 48.9]).unwrap();
     let ids: Vec<&str> = plan.datasets.iter().map(|d| d.id.as_str()).collect();
     assert_eq!(ids, vec!["single", "tiled", "pyramid"]);
@@ -272,7 +280,10 @@ fn a_stored_dataset_is_measured_from_the_store_alone() {
     std::fs::remove_file(f.store.path().join("tiled/N49E002.tif")).unwrap();
     let g = Fixture {
         files: f.files.clone(),
-        checks: Elevation { store: Some(f.store.path().to_path_buf()), ..Elevation::new(Arc::new(fetch()), None) },
+        checks: Elevation {
+            store: Some(store::nasfs::NasPath::local_for_test(f.store.path().to_path_buf())),
+            ..Elevation::new(Arc::new(fetch()), None)
+        },
         store: tempfile::tempdir().unwrap(),
     };
     let why: Vec<String> = g.whole().iter().map(|x| format!("{x:?}")).collect();
@@ -363,7 +374,10 @@ fn the_switch_names_the_accepted_index_and_a_published_app_only() {
     f.checks.app = Some(APP.into());
     let b = f
         .checks
-        .switch(Path::new("/nonexistent"), "sources/inputs/elevation/@index.0123456789abcdef.json")
+        .switch(
+            &store::nasfs::NasRoot::local_for_test(Path::new("/nonexistent")),
+            "sources/inputs/elevation/@index.0123456789abcdef.json",
+        )
         .unwrap()
         .expect("switched at once");
     let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
@@ -372,7 +386,10 @@ fn the_switch_names_the_accepted_index_and_a_published_app_only() {
     f.checks.app = Some("development".into());
     assert!(f
         .checks
-        .switch(Path::new("/nonexistent"), "sources/inputs/elevation/@index.0123456789abcdef.json")
+        .switch(
+            &store::nasfs::NasRoot::local_for_test(Path::new("/nonexistent")),
+            "sources/inputs/elevation/@index.0123456789abcdef.json"
+        )
         .unwrap()
         .is_none());
 }
@@ -391,10 +408,13 @@ fn the_check_job_records_the_switch_once_with_the_first_accepted_index() {
         std::fs::write(dir.join(p), b).unwrap();
         std::fs::File::options().write(true).open(dir.join(p)).unwrap().set_modified(old).unwrap();
     };
-    let manifest =
-        || -> BTreeMap<String, String> { crate::out::read_record(&root.join("state/build/manifest.json")).unwrap() };
+    let manifest = || -> BTreeMap<String, String> {
+        crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
+            .unwrap()
+    };
     let run = || {
-        let mut out = crate::out::Out::unbound(root, &root.join("scratch")).unwrap();
+        let mut out =
+            crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
         crate::inputs::gate::run(&mut out, UNIT, false, None).unwrap()
     };
     drop("single.toml", &decl("", "format = \"geotiff\"\nurl = \"https://e.org/a.tif\""));

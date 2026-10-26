@@ -31,7 +31,7 @@ pub fn kept_token(p: &Path) -> Result<String> {
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d)?;
     }
-    crate::whole::write(p, t.as_bytes())?;
+    store::whole::write(p, t.as_bytes())?;
     if let Ok(f) = std::fs::File::open(p) {
         store::sys::set_mode(&f, 0o600).ok();
     }
@@ -249,7 +249,7 @@ pub fn urls(port: u16) -> Vec<String> {
             }
         }
     }
-    out.push(format!("http://{}.local:{port}", crate::agent::cond::host_name()));
+    out.push(format!("http://{}.local:{port}", store::sys::host_name()));
     out
 }
 

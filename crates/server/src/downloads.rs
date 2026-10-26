@@ -552,7 +552,7 @@ fn once(s: &crate::AppState, m: &Mirror) -> bool {
 fn size_pieces<'a>(
     m: &Mirror,
     pieces: impl Iterator<Item = (&'a str, Piece)>,
-    root: &std::path::Path,
+    root: &store::nasfs::NasRoot,
     pool: &Arc<store::IoPool>,
     stop: &dyn Fn() -> bool,
 ) -> Result<()> {

@@ -35,7 +35,7 @@ pub const TREES_LO_V: u32 = 1;
 pub const LAYERS: [&str; 3] = ["trees-cover", "trees-height", "trees-leaf"];
 
 /// The leaf-type squares on the NAS (`lat<top>_lon<left>.tif`).
-pub fn leaf_dir(root: &Path) -> PathBuf {
+pub fn leaf_dir(root: &store::nasfs::NasRoot) -> store::nasfs::NasPath {
     root.join("sources/trees/leaf")
 }
 
@@ -236,10 +236,11 @@ fn run_args(out: &Out, t: TileId, dir: &Path, chm: &Path, workers: usize) -> Res
         "--sources".into(),
         sources.into(),
     ];
+    // (The program's arguments: its NAS folders as paths, tests/nas_access.rs.)
     for (k, v) in [
         ("--chm", chm.to_path_buf()),
-        ("--chm-store", out.root().join("sources/canopy")),
-        ("--leaf", leaf_dir(out.root())),
+        ("--chm-store", out.root().join("sources/canopy").unchecked_path()),
+        ("--leaf", leaf_dir(out.root()).unchecked_path()),
         ("--out", dir.to_path_buf()),
     ] {
         a.push(k.into());
@@ -524,7 +525,8 @@ pub fn build_lo(out: &mut Out, cov: &Coverage, q: TileId, scratch: &Path, worker
         let c = out
             .get(&mid_logical(u.x, u.y))
             .with_context(|| format!("{t} has no mid yet: its z3 tile can't be assembled"))?;
-        args.push(out.path(c).into());
+        // (The program's arguments: its mids as paths, tests/nas_access.rs.)
+        args.push(out.path(c).unchecked_path().into());
     }
     let dir = scratch.join(format!("trees-lo-{}", q.dash()));
     if dir.exists() {
@@ -672,7 +674,13 @@ mod tests {
             };
             (if t.z == 3 { crate::trees::z3(&r) } else { crate::trees::z6(&r) }).unwrap();
         };
-        let out = |name: &str| Out::unbound(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
+        let out = |name: &str| {
+            Out::unbound(
+                &store::nasfs::NasRoot::local_for_test(&d.path().join(name)),
+                &d.path().join(format!("{name}-scratch")),
+            )
+            .unwrap()
+        };
         // The whole run.
         let mut whole = out("whole");
         let q = TileId { z: 3, x: 4, y: 2 };
@@ -689,7 +697,7 @@ mod tests {
             put_piece(&mut parts, t, &dir, false).unwrap();
         }
         let mids: Vec<PathBuf> =
-            pieces.iter().map(|t| parts.path(parts.get(&mid_logical(t.x, t.y)).unwrap())).collect();
+            pieces.iter().map(|t| parts.path(parts.get(&mid_logical(t.x, t.y)).unwrap()).unchecked_path()).collect();
         crate::trees::assemble_lo(&mids, &d.path().join("lo"), &|_, _| {}).unwrap();
         put_lo(&mut parts, q, &d.path().join("lo"), false).unwrap();
         let trees = |o: &Out| {
@@ -797,11 +805,13 @@ mod tests {
         let z3s: Vec<TileId> =
             env("P5T_AREAS").split(',').map(|a| TileId::parse(a).filter(|u| u.z == 3).unwrap()).collect();
         let t0 = std::time::Instant::now();
-        let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
-        let date = crate::osmpass::latest_pass(&root).unwrap();
-        let a = crate::inputs::regions::read::source(&root, &m).unwrap();
+        let m: BTreeMap<String, String> =
+            crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
+                .unwrap();
+        let date = crate::osmpass::latest_pass(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
+        let a = crate::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m).unwrap();
         let recipes = crate::inputs::regions::read::recipes(&a).unwrap();
-        let cov = Coverage::accepted(&root, &a, None).unwrap();
+        let cov = Coverage::accepted(&store::nasfs::NasRoot::local_for_test(&root), &a, None).unwrap();
         let tt = targets(&cov, &m);
         eprintln!(
             "pass {date}, {} regions, {} pieces, {} assemblies ({:.0} s)",
@@ -810,7 +820,8 @@ mod tests {
             tt.lo.len(),
             t0.elapsed().as_secs_f64()
         );
-        let out = Out::unbound(&data.join("no-root"), &data.join("scratch")).unwrap();
+        let out =
+            Out::unbound(&store::nasfs::NasRoot::local_for_test(&data.join("no-root")), &data.join("scratch")).unwrap();
         let chm = data.join("chm");
         std::fs::create_dir_all(&chm).unwrap();
         let run = |t: TileId, dir: &Path| {
@@ -826,14 +837,18 @@ mod tests {
                     std::fs::write(
                         &p,
                         serde_json::to_vec(
-                            &crate::trees::RunSources::of(&crate::inputs::sources::read(&root, &m).unwrap()).unwrap(),
+                            &crate::trees::RunSources::of(
+                                &crate::inputs::sources::read(&store::nasfs::NasRoot::local_for_test(&root), &m)
+                                    .unwrap(),
+                            )
+                            .unwrap(),
                         )
                         .unwrap(),
                     )
                     .unwrap();
                     p
                 },
-                leaf: leaf_dir(&root),
+                leaf: leaf_dir(&store::nasfs::NasRoot::local_for_test(&root)).unchecked_path(),
                 out: dir.into(),
             };
             (if t.z == 3 { crate::trees::z3(&r) } else { crate::trees::z6(&r) }).unwrap();

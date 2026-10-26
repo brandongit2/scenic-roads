@@ -16,7 +16,6 @@ use anyhow::{Context, Result};
 use osmpbf::{Element, ElementReader};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::path::Path;
 
 /// A relation as extracted: its rings (E7, unclosed; none when they don't close into an area, with
 /// why) and its tags.
@@ -120,12 +119,17 @@ pub fn key(date: &str, ids: &BTreeSet<Id>) -> String {
 }
 
 /// The extract of `ids` from the OSM file `pbf` of pass `date`: three scans.
-pub fn make(pbf: &Path, date: &str, ids: &BTreeSet<Id>) -> Result<Extract> {
+pub fn make<'a>(pbf: impl Into<store::nasfs::Loc<'a>>, date: &str, ids: &BTreeSet<Id>) -> Result<Extract> {
+    let pbf = pbf.into();
     let want_r: HashSet<i64> =
         ids.iter().filter_map(|i| if let Id::R(r) = i { Some(*r as i64) } else { None }).collect();
     let want_w: HashSet<i64> =
         ids.iter().filter_map(|i| if let Id::W(w) = i { Some(*w as i64) } else { None }).collect();
-    let open = || ElementReader::from_path(pbf).with_context(|| format!("open {}", pbf.display()));
+    let open = || {
+        pbf.open()
+            .map(|f| ElementReader::new(std::io::BufReader::new(f)))
+            .with_context(|| format!("open {}", pbf.display()))
+    };
     // Scan 1: the relations, their tags and member ways (role, id) in order.
     type Rel = (i64, BTreeMap<String, String>, Vec<(String, i64)>);
     let rels: Vec<Rel> = open()?.par_map_reduce(
@@ -257,7 +261,7 @@ pub fn run(out: &mut crate::out::Out, date: &str, ids: &BTreeSet<Id>) -> Result<
     use crate::timings::{phase, Class};
     let mut all = ids.clone();
     if let Some(name) = out.get(&logical(date)).map(str::to_string) {
-        let e = Extract::read(&std::fs::read(out.root().join(&name)).with_context(|| format!("read {name}"))?)?;
+        let e = Extract::read(&out.root().join(&name).read().with_context(|| format!("read {name}"))?)?;
         all.extend(e.ids());
     }
     let planet = out.root().join(format!("sources/osm/{date}/planet.osm.pbf"));

@@ -355,7 +355,7 @@ mod measure {
             .enumerate()
             .map(|(i, r)| {
                 std::fs::create_dir_all(r.join("state/build")).unwrap();
-                Out::unbound(r, &local.path().join(format!("s{i}"))).unwrap()
+                Out::unbound(&store::nasfs::NasRoot::local_for_test(r), &local.path().join(format!("s{i}"))).unwrap()
             })
             .collect();
         let [mut old, mut new]: [Out; 2] = outs.try_into().ok().unwrap();
@@ -563,21 +563,21 @@ mod measure {
         std::fs::create_dir_all(&sd).unwrap();
         let read: Vec<(String, Vec<u8>)> =
             slices.iter().map(|(l, c)| (l.to_string(), std::fs::read(live.join(c)).unwrap())).collect();
-        let mut o = Out::unbound(&her, &sd).unwrap();
+        let mut o = Out::unbound(&store::nasfs::NasRoot::local_for_test(&her), &sd).unwrap();
         let t = Instant::now();
         for (l, b) in &read {
             o.put_bytes(l, "json", b).unwrap();
         }
         o.save().unwrap();
         let first = t.elapsed();
-        let mut o = Out::unbound(&her, &sd).unwrap();
+        let mut o = Out::unbound(&store::nasfs::NasRoot::local_for_test(&her), &sd).unwrap();
         let t = Instant::now();
         for (l, b) in &read {
             o.remove(l);
             o.put_bytes(l, "json", b).unwrap();
         }
         let before = t.elapsed();
-        let mut o = Out::unbound(&her, &sd).unwrap();
+        let mut o = Out::unbound(&store::nasfs::NasRoot::local_for_test(&her), &sd).unwrap();
         let t = Instant::now();
         for (l, b) in &read {
             o.put_bytes(l, "json", b).unwrap();

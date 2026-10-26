@@ -20,16 +20,17 @@ fn main() -> anyhow::Result<()> {
         anyhow::bail!("usage: checklist <root> <pack-idx copy> <out.json>")
     };
     let root = PathBuf::from(root);
-    let m: BTreeMap<String, String> = pipeline::out::read_record(&root.join("state/build/manifest.json"))?;
-    let date = pipeline::osmpass::latest_pass_by(&root, false).ok_or_else(|| anyhow::anyhow!("no complete pass"))?;
-    let mut keys = Keys::load(&root);
-    let a = pipeline::inputs::regions::read::source(&root, &m)?;
-    let cov = Coverage::accepted(&root, &a, None)?;
-    let reach = pipeline::reach::Reaches::load(&root, &m, &date).ok().flatten();
+    let nr = store::nasfs::NasRoot::from_arg(&root);
+    let m: BTreeMap<String, String> = pipeline::out::read_record(&nr.join("state/build/manifest.json"))?;
+    let date = pipeline::osmpass::latest_pass_by(&nr, false).ok_or_else(|| anyhow::anyhow!("no complete pass"))?;
+    let mut keys = Keys::load(&nr);
+    let a = pipeline::inputs::regions::read::source(&nr, &m)?;
+    let cov = Coverage::accepted(&nr, &a, None)?;
+    let reach = pipeline::reach::Reaches::load(&nr, &m, &date).ok().flatten();
     let mut tiles = TerrainTiles::new(Some(PathBuf::from(idx)));
-    tiles.load(&root, &m);
-    let inputs = pipeline::agent::input_digests(&root);
-    let times = FileTimes::new(&root);
+    tiles.load(&nr, &m);
+    let inputs = pipeline::agent::input_digests(&nr);
+    let times = FileTimes::new(&nr);
     as_read(&mut keys, &cov, &m, &tiles, &times);
     let (items, next) = checklist(
         &cov,

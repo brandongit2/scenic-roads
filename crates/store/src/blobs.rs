@@ -37,9 +37,10 @@ impl Blobs {
     /// A whole local copy of `content` (under the NAS root `root`), copied first if it isn't here;
     /// held by this process (crate::cachefile: room-making leaves it until the job lets go) and
     /// marked used.
-    pub fn get(&self, root: &Path, content: &str) -> io::Result<PathBuf> {
+    pub fn get(&self, root: &crate::nasfs::NasRoot, content: &str) -> io::Result<PathBuf> {
         let local = self.path_of(content);
-        let src = root.join(content);
+        // (Raw: crate::sys::copy_data's copy, counted by its caller: tests/nas_access.rs.)
+        let src = root.join(content).unchecked_path();
         crate::cachefile::hold(&local, &mut |tmp| {
             let n = crate::sys::copy_data(&src, tmp)?;
             let want = fs::metadata(&src)?.len();
@@ -120,6 +121,7 @@ mod tests {
             fs::create_dir_all(nas.join(n).parent().unwrap()).unwrap();
             fs::write(nas.join(n), vec![i as u8; 1000 + i]).unwrap();
         }
+        let nr = &crate::nasfs::NasRoot::local_for_test(&nas);
         let b = Blobs::new(&local);
         let stop = std::sync::atomic::AtomicBool::new(false);
         let freed = std::thread::scope(|s| {
@@ -133,7 +135,7 @@ mod tests {
             let mut wrong = Vec::new();
             for _ in 0..30 {
                 for (i, n) in names.iter().enumerate() {
-                    match b.get(&nas, n).and_then(|p| fs::read(&p).map(|b| (p, b))) {
+                    match b.get(nr, n).and_then(|p| fs::read(&p).map(|b| (p, b))) {
                         Ok((p, got)) => {
                             if got != vec![i as u8; 1000 + i] {
                                 wrong.push(format!("{n}: {} bytes", got.len()));
@@ -155,20 +157,21 @@ mod tests {
     fn copies_once_and_evicts_the_least_recently_used() {
         let d = tempfile::tempdir().unwrap();
         let (nas, local) = (d.path().join("nas"), d.path().join("local"));
+        let nr = &crate::nasfs::NasRoot::local_for_test(&nas);
         for (n, len) in [("layers/a/6-1-2.0000000000000001.pack", 100), ("layers/b/6-1-3.0000000000000002.pack", 200)] {
             fs::create_dir_all(nas.join(n).parent().unwrap()).unwrap();
             fs::write(nas.join(n), vec![7u8; len]).unwrap();
         }
         let b = Blobs::new(&local);
-        let a = b.get(&nas, "layers/a/6-1-2.0000000000000001.pack").unwrap();
+        let a = b.get(nr, "layers/a/6-1-2.0000000000000001.pack").unwrap();
         assert_eq!(fs::read(&a).unwrap(), vec![7u8; 100]);
         // (Held: room-making leaves it.)
         assert_eq!(crate::cachefile::try_remove(&a), crate::cachefile::Removed::InUse);
         crate::cachefile::release(&a);
         // Copied once: a second ask is served here even with the NAS gone.
         fs::remove_dir_all(&nas).unwrap();
-        assert_eq!(b.get(&nas, "layers/a/6-1-2.0000000000000001.pack").unwrap(), a);
-        assert!(b.get(&nas, "layers/b/6-1-3.0000000000000002.pack").is_err());
+        assert_eq!(b.get(nr, "layers/a/6-1-2.0000000000000001.pack").unwrap(), a);
+        assert!(b.get(nr, "layers/b/6-1-3.0000000000000002.pack").is_err());
         assert!(b.have("layers/b/6-1-3.0000000000000002.pack").is_none());
         assert_eq!(b.bytes(), 100);
         // Used just now: kept within `keep`, deleted past it.

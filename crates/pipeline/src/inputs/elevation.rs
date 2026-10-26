@@ -24,7 +24,6 @@ use crate::fetch::Fetch;
 use crate::outlines::Outlines;
 use anyhow::Result;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 /// The unit's name.
@@ -52,7 +51,7 @@ pub struct Elevation {
     pub app: Option<String>,
     /// The stores' folder (`sources/fetched/`): a dataset declared `store` is measured from its
     /// stored files there (crate::dem::generic::stored), never fetched.
-    pub store: Option<std::path::PathBuf>,
+    pub store: Option<store::nasfs::NasPath>,
     /// The accepted regions' coverage, which a dataset's `regions` cut its coverage to (`scoped`);
     /// None: none accepted, or none read here.
     pub regions: Option<crate::coverage::Coverage>,
@@ -525,7 +524,7 @@ impl Checks for Elevation {
         Ok(out)
     }
 
-    fn switch(&self, _root: &Path, index: &str) -> Result<Option<Vec<u8>>> {
+    fn switch(&self, _root: &store::nasfs::NasRoot, index: &str) -> Result<Option<Vec<u8>>> {
         // (As soon as a version is accepted: the version and the app that recorded it, which bars
         // older apps from leading: regions::read::switch_app. Not by an app that isn't published
         // (a development build): it would bar none, for good; the next published app's check
@@ -582,7 +581,11 @@ impl Checks for Elevation {
             .collect()
     }
 
-    fn prepared(&self, root: &Path, manifest: &BTreeMap<String, String>) -> Result<Option<Box<dyn Checks>>> {
+    fn prepared(
+        &self,
+        root: &store::nasfs::NasRoot,
+        manifest: &BTreeMap<String, String>,
+    ) -> Result<Option<Box<dyn Checks>>> {
         let outlines = match outlines_of(manifest) {
             Some(o) => match Outlines::open(&root.join(o)) {
                 Ok(x) => Some(x),
@@ -730,7 +733,7 @@ pub fn switched(manifest: &BTreeMap<String, String>) -> bool {
 /// An accepted version of one dataset covering the world, its index named in records `m` and the
 /// switch recorded (the units' tests: they're built only from the declared datasets).
 #[cfg(test)]
-pub fn accept_fixture(root: &Path, m: &mut BTreeMap<String, String>) {
+pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, String>) {
     let d = Declaration {
         surface: "ground".into(),
         heights: "EGM2008".into(),
@@ -790,8 +793,8 @@ pub fn accept_fixture(root: &Path, m: &mut BTreeMap<String, String>) {
     )
     .unwrap();
     let ifile = format!("{}/glo30.0000000000000000.geojson", super::store_dir(UNIT));
-    std::fs::create_dir_all(root.join(super::store_dir(UNIT))).unwrap();
-    std::fs::write(root.join(&ifile), &index).unwrap();
+    root.join(super::store_dir(UNIT)).create_dir_all().unwrap();
+    root.join(&ifile).write(&index).unwrap();
     files.insert(
         "glo30.geojson".into(),
         super::FileEntry { file: ifile, size: index.len() as u64, keyed: "i".into(), facts: Default::default() },
@@ -800,12 +803,12 @@ pub fn accept_fixture(root: &Path, m: &mut BTreeMap<String, String>) {
         super::Index { fmt: 1, unit: UNIT.into(), checks: format!("{UNIT} 1"), files, accepted: BTreeMap::new() };
     let body = serde_json::to_vec(&index).unwrap();
     let name = format!("{}/@index.{}.json", super::store_dir(UNIT), store::naming::hash16(&body));
-    std::fs::create_dir_all(root.join(super::store_dir(UNIT))).unwrap();
-    std::fs::write(root.join(&name), body).unwrap();
+    root.join(super::store_dir(UNIT)).create_dir_all().unwrap();
+    root.join(&name).write(body).unwrap();
     m.insert(super::logical(UNIT), name);
     // (Its switch, recorded on an app every app passes.)
     let sw = format!("{}/@switched.1111111111111111.json", super::store_dir(UNIT));
-    std::fs::write(root.join(&sw), br#"{"ok": true, "app": "development"}"#).unwrap();
+    root.join(&sw).write(br#"{"ok": true, "app": "development"}"#).unwrap();
     m.insert(super::switched_logical(UNIT), sw);
 }
 

@@ -380,7 +380,7 @@ fn sample_fixture(f: &Fixture, store: Option<std::path::PathBuf>, fetch: &dyn Fe
     let plan = declared_plan();
     let lon: Vec<f64> = f.verts.iter().map(|v| v[0] as f64 * 1e-7).collect();
     let lat: Vec<f64> = f.verts.iter().map(|v| v[1] as f64 * 1e-7).collect();
-    let o = generic::Opts { fetch: &Lenient(fetch), store };
+    let o = generic::Opts { fetch: &Lenient(fetch), store: store.map(store::nasfs::NasPath::local_for_test) };
     generic::sample(&plan, &lon, &lat, &o, &|_| {})
 }
 

@@ -11,8 +11,9 @@
 use crate::geotiff::{BlockCache, Tiff};
 use anyhow::{bail, ensure, Context, Result};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
+use store::nasfs::{NasPath, Place};
 use store::range::RangeRead;
 
 /// Web Mercator's half extent (m).
@@ -46,9 +47,9 @@ pub struct Grid {
     /// Its footprint (w, s, e, n, degrees).
     pub bbox: [f64; 4],
     pub zoom: u8,
-    pub file: PathBuf,
-    pub zoom_file: Option<PathBuf>,
-    pub low_file: Option<PathBuf>,
+    pub file: NasPath,
+    pub zoom_file: Option<NasPath>,
+    pub low_file: Option<NasPath>,
     /// Where its files are packed (task #452): the pack in the source's folder, and each file's
     /// bytes in it (`file`, `zoom_file`, `low_file`); None: loose files, as before.
     pub packed: Option<Packed>,
@@ -58,7 +59,7 @@ pub struct Grid {
 /// place by its byte range (store::range::Slice), so the TIFF reading is a loose file's.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Packed {
-    pub pack: Arc<PathBuf>,
+    pub pack: Arc<NasPath>,
     pub at: [Option<(u64, u64)>; 3],
 }
 
@@ -66,12 +67,12 @@ pub struct Packed {
 /// byte range.
 #[derive(Clone, Copy, Debug)]
 pub struct Loc<'a> {
-    pub path: &'a Path,
-    pub pack: Option<(&'a Path, u64, u64)>,
+    pub path: &'a NasPath,
+    pub pack: Option<(&'a NasPath, u64, u64)>,
 }
 
 impl<'a> Loc<'a> {
-    pub fn loose(path: &'a Path) -> Self {
+    pub fn loose(path: &'a NasPath) -> Self {
         Loc { path, pack: None }
     }
 }
@@ -80,11 +81,11 @@ impl Grid {
     /// Its file `k` (0 depth, 1 zoom, 2 low water), if it has it.
     pub fn loc(&self, k: usize) -> Option<Loc<'_>> {
         let path = match k {
-            0 => self.file.as_path(),
-            1 => self.zoom_file.as_deref()?,
-            _ => self.low_file.as_deref()?,
+            0 => &self.file,
+            1 => self.zoom_file.as_ref()?,
+            _ => self.low_file.as_ref()?,
         };
-        let pack = self.packed.as_ref().and_then(|p| p.at[k].map(|(o, n)| (p.pack.as_path(), o, n)));
+        let pack = self.packed.as_ref().and_then(|p| p.at[k].map(|(o, n)| (&*p.pack, o, n)));
         Some(Loc { path, pack })
     }
 }
@@ -122,13 +123,13 @@ pub struct Source {
 
 impl Source {
     /// Declaration `s` (of the depth role), its grids in `sources/fetched/<id>/` under `root`.
-    pub fn from_declared(root: &Path, s: &crate::inputs::sources::Source) -> Result<Source> {
+    pub fn from_declared(root: &store::nasfs::NasRoot, s: &crate::inputs::sources::Source) -> Result<Source> {
         let dir = root.join("sources/fetched").join(&s.id);
         let p = &s.data.params;
         let code = s.param_u64("code")?;
         ensure!((1..=15).contains(&code), "the depth source {}: code {code} isn't 1–15", s.id);
         let mut grids = Vec::with_capacity(s.index.len());
-        let mut packs: HashMap<String, Arc<PathBuf>> = HashMap::new();
+        let mut packs: HashMap<String, Arc<NasPath>> = HashMap::new();
         for f in &s.index {
             let name = |k: &str| f.props.get(k).and_then(|v| v.as_str()).map(|n| dir.join(n));
             let packed = match f.props.get("pack").and_then(|v| v.as_str()) {
@@ -206,7 +207,10 @@ pub fn unpacked_digest(s: &crate::inputs::sources::Source) -> String {
 
 /// The accepted depth sources of the records `manifest`, in code order; none before any version
 /// of the declarations is accepted.
-pub fn declared(root: &Path, manifest: &std::collections::BTreeMap<String, String>) -> Result<Vec<Source>> {
+pub fn declared(
+    root: &store::nasfs::NasRoot,
+    manifest: &std::collections::BTreeMap<String, String>,
+) -> Result<Vec<Source>> {
     let Some(s) = crate::inputs::sources::open(root, manifest)? else { return Ok(Vec::new()) };
     let mut out: Vec<Source> =
         s.many(crate::inputs::sources::DEPTH).iter().map(|d| Source::from_declared(root, d)).collect::<Result<_>>()?;
@@ -229,15 +233,15 @@ pub struct Reader {
 #[derive(Default)]
 struct Open {
     /// Path → the file open; `uses`: when each was last used.
-    files: HashMap<PathBuf, Arc<Tiff>>,
+    files: HashMap<NasPath, Arc<Tiff>>,
     /// The next cache id, and the use clock: ids never reused, so a reopened file never reads an
     /// evicted one's blocks under another's id.
     next_id: u64,
     clock: u64,
-    uses: HashMap<PathBuf, u64>,
+    uses: HashMap<NasPath, u64>,
     /// The packs open (task #452), each opened once and its grids read from it by range; the least
     /// recently used let go past the reader's `keep` (closed when its last grid is).
-    packs: HashMap<PathBuf, (Arc<Counted<store::range::PlainFile>>, u64)>,
+    packs: HashMap<NasPath, (Arc<Counted<store::range::PlainFile>>, u64)>,
 }
 
 /// A depth file's reads counted (`io_counts`).
@@ -341,22 +345,22 @@ impl Reader {
         self.open.lock().unwrap().files.len()
     }
 
-    fn get(o: &mut Open, p: &Path) -> Option<Arc<Tiff>> {
+    fn get(o: &mut Open, p: &NasPath) -> Option<Arc<Tiff>> {
         let t = o.files.get(p)?.clone();
         o.clock += 1;
         let c = o.clock;
-        o.uses.insert(p.to_path_buf(), c);
+        o.uses.insert(p.clone(), c);
         Some(t)
     }
 
     /// Loose file `p` (a test's).
     #[cfg(test)]
-    fn tiff(&self, p: &Path) -> Result<Arc<Tiff>> {
+    fn tiff(&self, p: &NasPath) -> Result<Arc<Tiff>> {
         self.tiff_at(Loc::loose(p))
     }
 
     /// Pack `p`, open (opened now, or kept from before).
-    fn pack(&self, p: &Path) -> Result<Arc<Counted<store::range::PlainFile>>> {
+    fn pack(&self, p: &NasPath) -> Result<Arc<Counted<store::range::PlainFile>>> {
         {
             let mut o = self.open.lock().unwrap();
             o.clock += 1;
@@ -369,9 +373,13 @@ impl Reader {
         // (Its whole local copy where there's one or room for one: one sequential read of the NAS,
         // in place of a seek a grid's every block.)
         let at = crate::localread::path(self.local.as_deref(), p);
-        let f =
-            open_retrying(&at, &|p| within(p, OPEN_DEADLINE, store::range::PlainFile::open), &store::retry::waits())
-                .with_context(|| format!("{}", at.display()))?;
+        let f = match &at {
+            Place::Local(l) => {
+                open_retrying(l.as_path(), &|l| within(l, OPEN_DEADLINE, plain_local), &store::retry::waits())
+            }
+            Place::Nas(n) => open_retrying(n, &|n| within(n, OPEN_DEADLINE, plain_nas), &store::retry::waits()),
+        }
+        .with_context(|| at.loc().display())?;
         IO[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut o = self.open.lock().unwrap();
         if let Some(e) = o.packs.get(p) {
@@ -384,7 +392,7 @@ impl Reader {
         let f = Arc::new(Counted(f));
         o.clock += 1;
         let c = o.clock;
-        o.packs.insert(p.to_path_buf(), (f.clone(), c));
+        o.packs.insert(p.clone(), (f.clone(), c));
         Ok(f)
     }
 
@@ -429,10 +437,10 @@ impl Reader {
         let id = o.next_id;
         o.next_id += 1;
         let t = Arc::new(tiff.with_shared_cache(id, self.cache.clone()));
-        o.files.insert(p.to_path_buf(), t.clone());
+        o.files.insert(p.clone(), t.clone());
         o.clock += 1;
         let c = o.clock;
-        o.uses.insert(p.to_path_buf(), c);
+        o.uses.insert(p.clone(), c);
         Ok(t)
     }
 
@@ -485,8 +493,8 @@ pub const GRIDS_AT_ONCE: usize = 8;
 /// threads, busy, fail a call at once, and the grids are opened `GRIDS_AT_ONCE` at once.)
 /// An I/O error in its header's read keeps its kind (a transient one is tried again); a header
 /// that isn't a GeoTIFF's is `InvalidData` (never tried again).
-fn open_file(p: &Path) -> std::io::Result<Tiff> {
-    let f = store::range::PlainFile::open(p)?;
+fn open_file(p: &NasPath) -> std::io::Result<Tiff> {
+    let f = p.open_plain()?;
     IO[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     tiff_of(Arc::new(Counted(f)))
 }
@@ -502,13 +510,42 @@ pub const OPEN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(12
 
 /// `open(p)` on a thread of its own, waited for `deadline` at most: past it, `TimedOut` (the
 /// thread stuck in it left behind).
-pub fn within<T: Send + 'static>(
-    p: &Path,
+pub fn within<P: ?Sized + ToOwned + 'static, T: Send + 'static>(
+    p: &P,
     deadline: std::time::Duration,
-    open: fn(&Path) -> std::io::Result<T>,
-) -> std::io::Result<T> {
-    let owned = p.to_path_buf();
-    within_do(deadline, move || open(&owned))
+    open: fn(&P) -> std::io::Result<T>,
+) -> std::io::Result<T>
+where
+    P::Owned: Send + 'static,
+{
+    let owned = p.to_owned();
+    within_do(deadline, move || open(std::borrow::Borrow::borrow(&owned)))
+}
+
+/// A pack opened for positioned reads: this Mac's copy, or the NAS's.
+fn plain_local(p: &Path) -> std::io::Result<store::range::PlainFile> {
+    store::range::PlainFile::open(p)
+}
+
+fn plain_nas(p: &NasPath) -> std::io::Result<store::range::PlainFile> {
+    p.open_plain()
+}
+
+/// A path whose operations `open_retrying` tries again: a local one's or the NAS's.
+pub trait Retried {
+    fn retried<T>(&self, waits: &[std::time::Duration], f: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T>;
+}
+
+impl Retried for Path {
+    fn retried<T>(&self, waits: &[std::time::Duration], f: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+        store::retry::io(&self.display().to_string(), Some(self), waits, store::retry::transient_or_missing, f)
+    }
+}
+
+impl Retried for NasPath {
+    fn retried<T>(&self, waits: &[std::time::Duration], f: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+        self.retry_with(&self.display().to_string(), waits, store::retry::transient_or_missing, f)
+    }
 }
 
 /// `f()` on a thread of its own, waited for `deadline` at most (`within`'s).
@@ -532,12 +569,12 @@ pub fn within_do<T: Send + 'static>(
 /// (store::retry::transient_or_missing: SMB's moment of "No such file or directory" on a file
 /// that's there, EIO, ENXIO, ESTALE…; not a deadline passed, nor a file that isn't a GeoTIFF), each
 /// retry logged; past the waits, its last error.
-pub fn open_retrying<T>(
-    p: &Path,
-    open: &dyn Fn(&Path) -> std::io::Result<T>,
+pub fn open_retrying<P: ?Sized + Retried, T>(
+    p: &P,
+    open: &dyn Fn(&P) -> std::io::Result<T>,
     waits: &[std::time::Duration],
 ) -> std::io::Result<T> {
-    store::retry::io(&p.display().to_string(), Some(p), waits, store::retry::transient_or_missing, || open(p))
+    p.retried(waits, || open(p))
 }
 
 /// How many of a window's blocks are read at once (`Tiff::prefetch_window`; 1: in turn, as
@@ -953,6 +990,7 @@ fn sample_grid_on(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
 
     /// A reader's grids all closed as it's dropped, several at once, every one exactly once.
     #[test]
@@ -1083,7 +1121,7 @@ pub(crate) mod tests {
         let zoom: u8 = a[2].parse().unwrap();
         let sample: usize = a[3].parse().unwrap();
         let scratch = tempfile::tempdir().unwrap();
-        let out = crate::out::Out::unbound(root, scratch.path()).unwrap();
+        let out = crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), scratch.path()).unwrap();
         let srcs = declared(out.root(), &out.manifest).unwrap();
         let n = 1u32 << (zoom - 3);
         let b = window_box(zoom, i64::from(x * n) * 256, i64::from(y * n) * 256, n as usize * 256, n as usize * 256);
@@ -1132,7 +1170,7 @@ pub(crate) mod tests {
         let s = source(vec![Grid {
             bbox: bbox(zoom, c, r, 1024, 512),
             zoom,
-            file: p.clone(),
+            file: store::nasfs::NasPath::local_for_test(p.clone()),
             zoom_file: None,
             low_file: None,
             packed: None,
@@ -1175,13 +1213,13 @@ pub(crate) mod tests {
             p
         };
         let askew = at(3, 1, "askew.tif");
-        let t = rd.tiff(&askew).unwrap();
+        let t = rd.tiff(&store::nasfs::NasPath::local_for_test(&askew)).unwrap();
         assert_eq!(level_for(&t, 4, c + 3, r + 1), (2, 2), "four zooms coarser: the 4-cell overview");
         assert_eq!(level_for(&t, 3, c + 3, r + 1), (1, 1), "three: the 2-cell one");
         assert_eq!(level_for(&t, 1, c + 3, r + 1), (0, 0), "under two: the full image");
         assert_eq!(level_for(&t, 0, c + 3, r + 1), (0, 0));
         let even = at(2, 2, "even.tif");
-        let t2 = rd.tiff(&even).unwrap();
+        let t2 = rd.tiff(&store::nasfs::NasPath::local_for_test(&even)).unwrap();
         assert_eq!(
             level_for(&t2, 4, c + 2, r + 2),
             (2, 2),
@@ -1189,7 +1227,7 @@ pub(crate) mod tests {
         );
         assert_eq!(level_for(&t2, 3, c + 2, r + 2), (1, 1), "as coarse: the lined-up one");
         let lined = at(4, 0, "lined.tif");
-        let t4 = rd.tiff(&lined).unwrap();
+        let t4 = rd.tiff(&store::nasfs::NasPath::local_for_test(&lined)).unwrap();
         assert_eq!(level_for(&t4, 4, c + 4, r), (2, 2));
         assert_eq!(
             level_for(&t4, 2, c + 4, r),
@@ -1202,7 +1240,7 @@ pub(crate) mod tests {
         let s = source(vec![Grid {
             bbox: bbox(zoom, c + 3, r + 1, 1024, 512),
             zoom,
-            file: askew.clone(),
+            file: store::nasfs::NasPath::local_for_test(askew.clone()),
             zoom_file: None,
             low_file: None,
             packed: None,
@@ -1256,8 +1294,8 @@ pub(crate) mod tests {
         let s = source(vec![Grid {
             bbox: bbox(zoom, c + 3, r + 1, 256, 128),
             zoom,
-            file: p,
-            zoom_file: Some(zp),
+            file: store::nasfs::NasPath::local_for_test(p),
+            zoom_file: Some(store::nasfs::NasPath::local_for_test(zp)),
             low_file: None,
             packed: None,
         }]);
@@ -1286,8 +1324,8 @@ pub(crate) mod tests {
         let s = source(vec![Grid {
             bbox: bbox(zoom, c + 3, r + 1, 256, 128),
             zoom,
-            file: d.path().join("g.tif"),
-            zoom_file: Some(zp),
+            file: store::nasfs::NasPath::local_for_test(d.path().join("g.tif")),
+            zoom_file: Some(store::nasfs::NasPath::local_for_test(zp)),
             low_file: None,
             packed: None,
         }]);
@@ -1311,7 +1349,14 @@ pub(crate) mod tests {
                 grid_file(&p, zoom, gc, gr, 64, 64, &|x, y| {
                     -(i as f32) - ((x - gc) as f32) * 0.01 - (y - gr) as f32 * 0.02
                 });
-                Grid { bbox: bbox(zoom, gc, gr, 64, 64), zoom, file: p, zoom_file: None, low_file: None, packed: None }
+                Grid {
+                    bbox: bbox(zoom, gc, gr, 64, 64),
+                    zoom,
+                    file: store::nasfs::NasPath::local_for_test(p),
+                    zoom_file: None,
+                    low_file: None,
+                    packed: None,
+                }
             })
             .collect();
         let s = source(grids);
@@ -1354,9 +1399,9 @@ pub(crate) mod tests {
             let g = Grid {
                 bbox: bbox(zoom, gc, gr, 64, 64),
                 zoom,
-                file: p.clone(),
+                file: store::nasfs::NasPath::local_for_test(p.clone()),
                 zoom_file: None,
-                low_file: Some(l.clone()),
+                low_file: Some(store::nasfs::NasPath::local_for_test(l.clone())),
                 packed: None,
             };
             loose.push(g.clone());
@@ -1369,10 +1414,10 @@ pub(crate) mod tests {
                 packs[k].extend_from_slice(&b);
                 packs[k].extend_from_slice(&[0u8; 100]);
             }
-            let pack = Arc::new(d.path().join(format!("pack{k}.tar")));
+            let pack = Arc::new(store::nasfs::NasPath::local_for_test(d.path().join(format!("pack{k}.tar"))));
             packed.push(Grid {
-                file: d.path().join(format!("packed/g{i}.tif")),
-                low_file: Some(d.path().join(format!("packed/g{i}.low.tif"))),
+                file: store::nasfs::NasPath::local_for_test(d.path().join(format!("packed/g{i}.tif"))),
+                low_file: Some(store::nasfs::NasPath::local_for_test(d.path().join(format!("packed/g{i}.low.tif")))),
                 packed: Some(Packed { pack, at }),
                 ..g
             });
@@ -1403,7 +1448,8 @@ pub(crate) mod tests {
         }
         // Task #551: read from whole local copies of the packs, the same, the copies made once.
         let cache = tempfile::tempdir().unwrap();
-        let local = Arc::new(crate::localread::Local::new(d.path(), cache.path(), 0));
+        let local =
+            Arc::new(crate::localread::Local::new(&store::nasfs::NasRoot::local_for_test(d.path()), cache.path(), 0));
         let (ra, rl) = (Reader::keeping(100), Reader::keeping(100).with_local(Some(local)));
         let sa = sample(&ra, &a, zoom, c, r, 320, 64).unwrap().unwrap();
         let sl = sample(&rl, &b, zoom, c, r, 320, 64).unwrap().unwrap();
@@ -1419,7 +1465,7 @@ pub(crate) mod tests {
         // A range past its pack's end is an error, never a short read.
         let mut bad = b.grids[0].clone();
         bad.packed.as_mut().unwrap().at[0] = Some((10, 1 << 30));
-        bad.file = d.path().join("packed/bad.tif");
+        bad.file = store::nasfs::NasPath::local_for_test(d.path().join("packed/bad.tif"));
         assert!(sample(&Reader::keeping(4), &source(vec![bad]), zoom, c, r, 64, 64).is_err());
     }
 
@@ -1438,20 +1484,23 @@ pub(crate) mod tests {
             let d = crate::inputs::sources::parse(decl.as_bytes()).unwrap();
             let index = crate::inputs::sources::parse_index(idx(extra).as_bytes()).unwrap();
             let s = crate::inputs::sources::Source { id: "s".into(), data: d.data, keyed: "k".into(), index };
-            Source::from_declared(Path::new("/r"), &s).unwrap()
+            Source::from_declared(&store::nasfs::NasRoot::local_for_test(Path::new("/r")), &s).unwrap()
         };
         let loose = src("");
         let packed = src(r#","pack":"6-1-2.00ff.tar","at":{"file":[512,100],"low_file":[1024,50]}"#);
         assert_eq!(loose.pin, packed.pin);
         assert_eq!(src(r#","hash":"9999""#).pin == loose.pin, false, "the grid's own change changes the pin");
         let g = &packed.grids[0];
-        assert_eq!(g.file, Path::new("/r/sources/fetched/s/a.tif"));
+        assert_eq!(g.file, store::nasfs::NasPath::local_for_test(Path::new("/r/sources/fetched/s/a.tif")));
         let p = g.packed.as_ref().unwrap();
-        assert_eq!(p.pack.as_path(), Path::new("/r/sources/fetched/s/6-1-2.00ff.tar"));
+        assert_eq!(p.pack.unchecked_path(), Path::new("/r/sources/fetched/s/6-1-2.00ff.tar"));
         assert_eq!(p.at, [Some((512, 100)), None, Some((1024, 50))]);
         assert!(loose.grids[0].packed.is_none());
         let l = g.loc(2).unwrap();
-        assert_eq!((l.path, l.pack), (Path::new("/r/sources/fetched/s/a.low.tif"), Some((p.pack.as_path(), 1024, 50))));
+        assert_eq!(
+            (l.path.unchecked_path(), l.pack.map(|(p, o, n)| (p.unchecked_path(), o, n))),
+            (PathBuf::from("/r/sources/fetched/s/a.low.tif"), Some((p.pack.unchecked_path(), 1024, 50)))
+        );
         assert!(g.loc(1).is_none());
     }
 
@@ -1473,7 +1522,7 @@ pub(crate) mod tests {
         let s = source(vec![Grid {
             bbox: bbox(zoom, c, r, 40, 24),
             zoom,
-            file: p,
+            file: store::nasfs::NasPath::local_for_test(p),
             zoom_file: None,
             low_file: None,
             packed: None,
@@ -1520,7 +1569,7 @@ pub(crate) mod tests {
         let s = source(vec![Grid {
             bbox: bbox(zoom, c + 3, r + 1, 300, 200),
             zoom,
-            file: p,
+            file: store::nasfs::NasPath::local_for_test(p),
             zoom_file: None,
             low_file: None,
             packed: None,
@@ -1564,7 +1613,7 @@ pub(crate) mod tests {
                 Grid {
                     bbox: bbox(zoom, gc, gr, 320, 256),
                     zoom,
-                    file: p,
+                    file: store::nasfs::NasPath::local_for_test(p),
                     zoom_file: None,
                     low_file: None,
                     packed: None,
@@ -1616,7 +1665,15 @@ pub(crate) mod tests {
         // A file that isn't a GeoTIFF: InvalidData, not tried again.
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("n.tif"), b"nope").unwrap();
-        assert!(!store::retry::transient_or_missing(&open_file(&d.path().join("n.tif")).map(|_| ()).unwrap_err()));
-        assert_eq!(open_file(&d.path().join("missing.tif")).map(|_| ()).unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert!(!store::retry::transient_or_missing(
+            &open_file(&store::nasfs::NasPath::local_for_test(&d.path().join("n.tif"))).map(|_| ()).unwrap_err()
+        ));
+        assert_eq!(
+            open_file(&store::nasfs::NasPath::local_for_test(&d.path().join("missing.tif")))
+                .map(|_| ())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
     }
 }

@@ -62,21 +62,19 @@ pub fn add(key: &str, n: u64) {
 /// Counts file `path` of `bytes` made on the NAS in `ms` (crate::out's `put_file`, `store_bytes`): `wrote`
 /// and `creates`, and this process's NAS count (store::nasio). One already there (reused, touched)
 /// isn't counted.
-pub fn wrote(path: &std::path::Path, bytes: u64, ms: u64) {
-    store::nasio::wrote(path, bytes, ms);
+pub fn wrote(path: &store::nasfs::NasPath, bytes: u64, ms: u64) {
+    path.count_wrote(bytes, ms);
     let mut s = state();
     *s.m.entry("wrote".into()).or_default() += bytes;
     *s.m.entry("creates".into()).or_default() += 1;
 }
 
 /// Counts NAS metadata work (task #451): `listed` folder entries listed, `stats` files statted,
-/// `deletes` files deleted, for its weight beside its bytes and creates (crate::budget::nas), and
-/// this process's NAS counts (store::nasio). A walk that only lists, stats and removes (GC's)
+/// `deletes` files deleted, for its weight beside its bytes and creates (crate::budget::nas). (This
+/// process's NAS counts, store::nasio's, are store::nasfs's: each listing, stat and remove counts
+/// there.) A walk that only lists, stats and removes (GC's)
 /// reads and writes next to nothing.
 pub fn meta(listed: u64, stats: u64, deletes: u64) {
-    store::nasio::add(Count::Listed, listed);
-    store::nasio::add(Count::Stats, stats);
-    store::nasio::add(Count::Deletes, deletes);
     let mut s = state();
     for (k, n) in [("listed", listed), ("stats", stats), ("deletes", deletes)] {
         if n > 0 {
@@ -190,8 +188,8 @@ mod tests {
         assert!(m["threads"] >= 1);
         assert!(!m.contains_key("wrote"));
         begin();
-        wrote(std::path::Path::new("a"), 10, 0);
-        wrote(std::path::Path::new("b"), 5, 0);
+        wrote(&store::nasfs::NasPath::local_for_test(std::path::Path::new("a")), 10, 0);
+        wrote(&store::nasfs::NasPath::local_for_test(std::path::Path::new("b")), 5, 0);
         let m = take();
         assert_eq!((m["wrote"], m["creates"]), (15, 2));
         begin();
@@ -226,7 +224,7 @@ mod tests {
         begin();
         store::nasio::read(300);
         store::nasio::add(Count::Local, 200);
-        wrote(std::path::Path::new("a"), 50, 0);
+        wrote(&store::nasfs::NasPath::local_for_test(std::path::Path::new("a")), 50, 0);
         let m = take();
         assert!(m["bytes"] >= 500 && m["local"] >= 200, "{m:?}");
         assert_eq!((m["wrote"], m["creates"]), (50, 1));

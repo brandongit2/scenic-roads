@@ -20,6 +20,7 @@ use roadcore::grid::{decode_terrain, CELLS};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use store::catalog::Catalog;
+use store::nasfs::Place;
 use store::pack::PackIndex;
 use store::range::PlainFile;
 
@@ -33,7 +34,7 @@ pub enum Source<'a> {
     /// local copies when there's a cache.
     Manifest(&'a Out, Option<&'a store::blobs::Blobs>),
     /// A published catalog under a root (another root's, for a pilot built against the real one).
-    Catalog(&'a Path, &'a Catalog),
+    Catalog(&'a store::nasfs::NasRoot, &'a Catalog),
 }
 
 impl Source<'_> {
@@ -59,25 +60,26 @@ impl Source<'_> {
 
     /// The file of a pack or worldwide file, by logical name (None: there's none): the local copy
     /// when there's a cache (the NAS's if copying fails: the read is only slower).
-    fn file(&self, logical: &str) -> Option<PathBuf> {
+    fn file(&self, logical: &str) -> Option<Place> {
         match self {
-            Source::Manifest(out, None) => out.get(logical).map(|c| out.path(c)),
-            Source::Manifest(out, Some(blobs)) => out.get(logical).map(|c| {
-                blobs.get(out.root(), c).unwrap_or_else(|e| {
+            Source::Manifest(out, None) => out.get(logical).map(|c| Place::Nas(out.path(c))),
+            Source::Manifest(out, Some(blobs)) => out.get(logical).map(|c| match blobs.get(out.root(), c) {
+                Ok(l) => Place::Local(l),
+                Err(e) => {
                     eprintln!("stage: {c} not copied here ({e}); read from the NAS");
-                    out.path(c)
-                })
+                    Place::Nas(out.path(c))
+                }
             }),
-            Source::Catalog(root, cat) => cat.files.get(logical).map(|f| root.join(&f.file)),
+            Source::Catalog(root, cat) => cat.files.get(logical).map(|f| Place::Nas(root.join(&f.file))),
         }
     }
 
     /// The file of a pack, by logical name, without copying it here: this Mac's copy when it has
     /// one, else the NAS's (`file` copies it first).
-    fn file_here(&self, logical: &str) -> Option<PathBuf> {
+    fn file_here(&self, logical: &str) -> Option<Place> {
         match self {
             Source::Manifest(out, Some(blobs)) => {
-                out.get(logical).map(|c| blobs.have(c).unwrap_or_else(|| out.path(c)))
+                out.get(logical).map(|c| blobs.have(c).map_or_else(|| Place::Nas(out.path(c)), Place::Local))
             }
             _ => self.file(logical),
         }
@@ -135,7 +137,8 @@ impl<'a> LayerReader<'a> {
         if !self.open.contains_key(&logical) {
             let opened = match self.src.file(&logical) {
                 Some(p) => {
-                    let pf = PlainFile::open(&p).with_context(|| format!("open {}", p.display()))?;
+                    let p = p.loc();
+                    let pf = p.open_plain().with_context(|| format!("open {}", p.display()))?;
                     let idx = PackIndex::read_from(&pf).with_context(|| format!("index of {}", p.display()))?;
                     Some((pf, idx))
                 }
@@ -223,9 +226,10 @@ fn terrain_tiles(src: &Source, b: [f64; 4], want: &[(u8, u32, u32)]) -> Result<H
         let (z, x, y) = tiles[0];
         let file = if copied_whole(z, x, y, b) { src.file(&logical) } else { src.file_here(&logical) };
         let Some(p) = file else { continue };
-        let pf = PlainFile::open(&p).with_context(|| format!("open {}", p.display()))?;
+        let p = p.loc();
+        let pf = p.open_plain().with_context(|| format!("open {}", p.display()))?;
         let idx = PackIndex::read_from(&pf).with_context(|| format!("index of {}", p.display()))?;
-        for (t, blob) in read_tiles(&pf, &idx, &tiles).with_context(|| format!("{}", p.display()))? {
+        for (t, blob) in read_tiles(&pf, &idx, &tiles).with_context(|| p.display())? {
             got.insert(t, blob);
         }
     }
@@ -384,7 +388,9 @@ mod tests {
     #[test]
     fn a_neighbours_strip_is_read_where_it_is_and_staged_the_same() {
         let d = tempfile::tempdir().unwrap();
-        let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
+        let mut out =
+            Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch"))
+                .unwrap();
         let (x6, y6) = (31u32, 19u32);
         let b = tile_box_grown(6, x6, y6, MARGIN_KM);
         assert!(

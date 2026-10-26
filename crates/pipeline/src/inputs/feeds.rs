@@ -21,7 +21,6 @@ use super::{Checks, FileCheck, Finding, Level, Version};
 use anyhow::Result;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
 
 /// The unit's name.
 pub const UNIT: &str = "timetables/feeds";
@@ -407,7 +406,11 @@ impl Checks for Feeds {
         v
     }
 
-    fn prepared(&self, root: &Path, manifest: &BTreeMap<String, String>) -> Result<Option<Box<dyn Checks>>> {
+    fn prepared(
+        &self,
+        root: &store::nasfs::NasRoot,
+        manifest: &BTreeMap<String, String>,
+    ) -> Result<Option<Box<dyn Checks>>> {
         // (What can't be read now doesn't fail the check: it goes on without those warnings.)
         let territories = super::languages::outlines_of(manifest).and_then(|o| match crate::outlines::Outlines::open(&root.join(o)) {
             Ok(outlines) => Some(outlines.recs.iter().filter(|r| r.flags & crate::outlines::flag::ISO1 != 0).map(|r| outlines.string(r.iso).to_string()).collect()),
@@ -428,8 +431,8 @@ impl Checks for Feeds {
 }
 
 /// The feed ids of a catalogue (`feeds_v2.csv`: its `id` column).
-pub fn catalogue_ids(path: &Path) -> Result<BTreeSet<String>> {
-    let text = std::fs::read_to_string(path)?;
+pub fn catalogue_ids<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<BTreeSet<String>> {
+    let text = path.into().read_to_string()?;
     let mut lines = text.lines();
     let head = lines.next().unwrap_or("");
     let col =
@@ -467,7 +470,7 @@ static DECLARED: std::sync::Mutex<Option<BTreeMap<String, Declared>>> = std::syn
 
 /// The declarations of accepted index `index` (its content name), as `Declared`: read once per
 /// index.
-pub fn declared(root: &Path, index: &str) -> Result<Declared> {
+pub fn declared(root: &store::nasfs::NasRoot, index: &str) -> Result<Declared> {
     if let Some(d) = DECLARED.lock().unwrap().get_or_insert_with(BTreeMap::new).get(index) {
         return Ok(d.clone());
     }
@@ -489,7 +492,7 @@ static CREDITED: std::sync::Mutex<Option<(String, Vec<String>)>> = std::sync::Mu
 /// The declared feeds the map's trains and ferries count (in the rail or ferry feeds' list with a
 /// zip), sorted: the declarations a catalog credits (docs/inputs.md §6.7.1). None before the
 /// declarations are accepted; read again only when the lists or the index change.
-pub fn credited(root: &Path, manifest: &BTreeMap<String, String>) -> Result<Option<Vec<String>>> {
+pub fn credited(root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Result<Option<Vec<String>>> {
     let Some(index) = manifest.get(&super::logical(UNIT)) else { return Ok(None) };
     let lists: Vec<&String> =
         [crate::rail::FEEDS, crate::rail::FERRY_FEEDS].iter().filter_map(|l| manifest.get(*l)).collect();
@@ -509,7 +512,7 @@ pub fn credited(root: &Path, manifest: &BTreeMap<String, String>) -> Result<Opti
         .collect();
     let mut ids = BTreeSet::new();
     for l in lists {
-        let v: Value = serde_json::from_slice(&std::fs::read(root.join(l))?)?;
+        let v: Value = serde_json::from_slice(&root.join(l).read()?)?;
         for f in v["feeds"].as_array().into_iter().flatten() {
             if let Some(id) = f["id"].as_str().filter(|id| declared.contains(id)) {
                 if f.get("zip").is_some_and(|z| !z.is_null()) {

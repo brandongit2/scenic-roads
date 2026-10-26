@@ -62,6 +62,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+use store::nasfs::{NasPath, NasRoot};
 
 /// Free space the OSM pass needs on the lead to start: the filtered planet (about half the
 /// planet's 95 GB) with room to spare. The planet is read from the NAS when there's no room to
@@ -78,7 +79,7 @@ fn scratch_of(spec: &JobSpec) -> Option<PathBuf> {
 #[derive(Clone, Debug)]
 pub struct Options {
     /// The NAS project folder; None: find the share (and mount it when missing).
-    pub root: Option<PathBuf>,
+    pub root: Option<store::nasfs::NasRoot>,
     /// The agent's local folder (`~/Library/Application Support/scenic/agent`).
     pub home: PathBuf,
     /// The folder of the programs jobs run (`scenic-build`, `extract`): the agent's own.
@@ -278,7 +279,7 @@ fn take_map_update(home: &Path, mut r: build::LastCatalog) -> build::LastCatalog
 
 /// Keeps the lead's record of its catalogs in `home` (`PUBLISHED_FILE`).
 fn write_published(home: &Path, r: &build::LastCatalog) -> Result<()> {
-    crate::whole::write(&home.join(PUBLISHED_FILE), &serde_json::to_vec(r)?)
+    store::whole::write(&home.join(PUBLISHED_FILE), &serde_json::to_vec(r)?)
 }
 
 /// The pass's worldwide steps the checklist counts, after the planet's own.
@@ -942,8 +943,8 @@ pub fn host_of(worker: &str) -> &str {
 /// The catalog each Mac's map server last adopted, from the servers' log under `root`
 /// (crate::pubtimes::SERVERS; the last two days'), read within the NAS readers' deadline
 /// (`nasread::with`): `TimedOut` past it.
-fn adopted(root: &Path) -> std::io::Result<BTreeMap<String, CatalogSeen>> {
-    let owned = root.to_path_buf();
+fn adopted(root: &store::nasfs::NasRoot) -> std::io::Result<BTreeMap<String, CatalogSeen>> {
+    let owned = root.clone();
     let since = now_s().saturating_sub(2 * 86_400);
     let events =
         nasread::with(&root.join(crate::pubtimes::SERVERS), move || Ok(crate::pubtimes::read_servers(&owned, since)))?;
@@ -1186,67 +1187,35 @@ thread_local! {
     static TEST_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Whether `p` is the real NAS's or the app's real home: a test never writes there.
-pub fn is_live_path(p: &Path) -> bool {
-    p.starts_with("/Volumes")
-        || std::env::var_os("HOME")
-            .is_some_and(|h| p.starts_with(Path::new(&h).join("Library/Application Support/scenic")))
-}
-
-/// The NAS project folder: the share's mount, by whatever name it's mounted. When it's missing and
-/// `mount` is set, it's mounted: at home by the LAN name, away through Tailscale when the Keychain
-/// has the bare name's password (else nothing: a dialog would ask for it).
-pub fn find_root(mount: bool) -> Option<PathBuf> {
+/// The NAS project folder: the share's mount (store::nasfs::NasRoot::find, mounted first when
+/// `mount` is set).
+pub fn find_root(mount: bool) -> Option<NasRoot> {
     // (A test never finds the mounted NAS: only a root a test set, never one on the NAS.)
     #[cfg(test)]
     {
         let _ = mount;
-        let r = TEST_ROOT.with(|t| t.borrow().clone());
-        assert!(r.as_deref().is_none_or(|r| !is_live_path(r)), "a test's root is the real NAS: {r:?}");
-        r
+        TEST_ROOT.with(|t| t.borrow().clone()).map(NasRoot::local_for_test)
     }
     #[cfg(not(test))]
-    find_live_root(mount)
-}
-
-#[cfg(not(test))]
-fn find_live_root(mount: bool) -> Option<PathBuf> {
-    use store::nas::{find_mount, HOST, PROJECT, SHARE};
-    if let Some(m) = find_mount(HOST, SHARE) {
-        return Some(m.point.join(PROJECT));
-    }
-    if mount {
-        let url = if store::nas::at_home() { Some(store::nas::smb_url()) } else { store::nas::tunnel_url() };
-        match url {
-            Some(url) => {
-                if let Err(e) = store::nas::mount(url, Duration::from_secs(60)) {
-                    eprintln!("agent: mounting the NAS: {e:#}");
-                }
-            }
-            None => eprintln!(
-                "agent: away from home, and the Keychain has no password for the NAS's Tailscale name ({HOST})"
-            ),
-        }
-        return find_mount(HOST, SHARE).map(|m| m.point.join(PROJECT));
-    }
-    None
+    NasRoot::find(mount)
 }
 
 /// The shares with a check still waiting on a hung mount: no second one starts meanwhile.
-static CHECKING: std::sync::Mutex<std::collections::BTreeSet<PathBuf>> =
+static CHECKING: std::sync::Mutex<std::collections::BTreeSet<String>> =
     std::sync::Mutex::new(std::collections::BTreeSet::new());
 
 /// Whether `root` answers within a few seconds (a stat on a worker thread; a hung share counts as
 /// away, and its thread is left to finish on its own, the only one for that share until it does).
-fn answers(root: &Path) -> bool {
-    if !CHECKING.lock().unwrap().insert(root.to_path_buf()) {
+fn answers(root: &store::nasfs::NasRoot) -> bool {
+    let key = root.display().to_string();
+    if !CHECKING.lock().unwrap().insert(key.clone()) {
         return false;
     }
     let (tx, rx) = std::sync::mpsc::channel();
-    let p = root.to_path_buf();
+    let p = root.clone();
     std::thread::spawn(move || {
-        let ok = std::fs::metadata(p.join("catalog")).is_ok();
-        CHECKING.lock().unwrap().remove(&p);
+        let ok = p.join("catalog").metadata().is_ok();
+        CHECKING.lock().unwrap().remove(&key);
         let _ = tx.send(ok);
     });
     rx.recv_timeout(Duration::from_secs(8)).unwrap_or(false)
@@ -1394,12 +1363,12 @@ pub struct Agent {
     disk_room: Option<Instant>,
     /// Whether the NAS's folder answers now (`answers`: a stat on a thread, eight seconds at most); a
     /// test's own, deciding it without the clock or the Mac's load (`test_agent`).
-    probe: fn(&Path) -> bool,
+    probe: fn(&NasRoot) -> bool,
     /// The idle-sleep assertion it holds while it leads with leases out (`lead_awake`).
     lead_awake: Option<std::process::Child>,
     /// The NAS's project folder as the loop last found it (a job ending between loops tells the
     /// lead through a client made from it).
-    last_root: Option<PathBuf>,
+    last_root: Option<NasRoot>,
     /// Quitting as the app asked (crate::control::Quit): this Mac's lead handed away then
     /// (`hand_for_quit`; true: asked of a member, false: none could take it), and whether the loop
     /// ended for it (the process then exits with `QUIT_EXIT`).
@@ -1412,7 +1381,7 @@ pub struct Agent {
     /// The self-heal for stale SMB handles: stuck NAS calls seen, its drain and remounts
     /// (crate::agent::heal).
     heal: heal::Heal,
-    /// How many of this process's stuck calls were taken in (`whole::stuck_after`).
+    /// How many of this process's stuck calls were taken in (`store::whole::stuck_after`).
     heal_seen: u64,
     /// The heartbeat last written to the NAS (without its time) and when: written again only when it
     /// changes or every five minutes, so an idle NAS can rest.
@@ -1477,7 +1446,7 @@ pub struct Agent {
     /// A helper's: the bytes its cheap caches held (room::cheap_bytes) and when they were counted.
     cheap: Option<(Instant, u64)>,
     /// The last catalog's folder and number, and its regions' outline entries by id (`on_map`).
-    last_catalog: std::cell::RefCell<Option<((PathBuf, u64), BTreeMap<String, Vec<String>>)>>,
+    last_catalog: std::cell::RefCell<Option<((String, u64), BTreeMap<String, Vec<String>>)>>,
     /// The regions the last plan would publish as built (build::Plan::ready), for the checklist.
     ready: std::cell::RefCell<Vec<String>>,
     /// The build's pause as this agent knows it (crate::control): its coordinator's on the
@@ -1617,7 +1586,7 @@ pub struct Agent {
 struct Gate {
     /// The drop boxes listed off the loop (the lead's), with the root it
     /// lists.
-    watch: Option<(PathBuf, crate::inputs::watch::Watch)>,
+    watch: Option<(NasRoot, crate::inputs::watch::Watch)>,
     view: std::cell::RefCell<Vec<crate::inputs::view::InputView>>,
     cache: std::cell::RefCell<crate::inputs::view::Cache>,
     full: std::cell::RefCell<BTreeSet<String>>,
@@ -1699,7 +1668,7 @@ impl Agent {
 
     /// `new`, with how it asks whether the NAS's folder answers (`probe`: the real one, `answers`;
     /// a test's).
-    fn new_with(mut o: Options, probe: fn(&Path) -> bool) -> Result<Agent> {
+    fn new_with(mut o: Options, probe: fn(&NasRoot) -> bool) -> Result<Agent> {
         // Its programs' folder resolved (launchd starts it by `app/current`): its jobs start from
         // its own version's folder, which they name in their command, so the agent after it lists
         // that version as theirs (`job_apps`) once `current` names a newer one.
@@ -1733,7 +1702,7 @@ impl Agent {
             mem.retry.clear();
             mem.app = app.clone();
         }
-        let me = format!("{} {}", cond::host_name(), std::process::id());
+        let me = format!("{} {}", store::sys::host_name(), std::process::id());
         // The budgets' proxy for the jobs the agent before left running, at once (not once this
         // one has joined the pool, which may take minutes): on the port they were told, which the
         // agent before freed before its lock (its `proxy` dropped first), so their connections are
@@ -1751,13 +1720,12 @@ impl Agent {
         // leads or works as a member.
         let mut run: Option<pool::Run> = None;
         let mut out_why = NAS_AWAY.to_string();
-        let mut first: Option<(crate::pool::driver::Out, PathBuf)> = None;
+        let mut first: Option<(crate::pool::driver::Out, NasRoot)> = None;
         if lock.is_some() && !o.dry_run {
             if let Some(r) = o.root.clone().or_else(|| find_root(false)).filter(|r| probe(r)) {
                 {
-                    let nas: pool::SharedNas = std::sync::Arc::new(nasread::Deadlined::new(std::sync::Arc::new(
-                        crate::pool::nas::Share::new(&r),
-                    )));
+                    let nas: pool::SharedNas =
+                        std::sync::Arc::new(nasread::Deadlined::new(std::sync::Arc::new(r.clone())));
                     let locks = o.home.parent().unwrap_or(&o.home).to_path_buf();
                     // (The member's lock held by another process, most often the agent before this
                     // one still draining after an update: tried again each second for `JOIN_WAIT`,
@@ -1823,12 +1791,12 @@ impl Agent {
         // pool), with a root of its own too (a test's, on a port of its own, SCENIC_COORD_PORT).
         let pooled = run.is_some();
         let coord = if !o.helper && lock.is_some() && !o.dry_run && pooled {
-            make_coordinator(&o, run.as_ref(), &app, &cond::host_name()).map(std::sync::Arc::new)
+            make_coordinator(&o, run.as_ref(), &app, &store::sys::host_name()).map(std::sync::Arc::new)
         } else {
             None
         };
         if let (Some(r), Some((out, root))) = (run.as_mut(), &first) {
-            pool::took_up(r, coord.as_deref(), &out.events, out.leads, &cond::host_name(), &[]);
+            pool::took_up(r, coord.as_deref(), &out.events, out.leads, &store::sys::host_name(), &[]);
             // (The terms' events a member's process before this one kept, for this coordinator's
             // history; and this first step's.)
             if let Some(c) = &coord {
@@ -1849,7 +1817,7 @@ impl Agent {
         }
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
         let mut a = Agent {
-            host: test_worker().unwrap_or_else(cond::host_name),
+            host: test_worker().unwrap_or_else(store::sys::host_name),
             app,
             started: now_s(),
             mem,
@@ -1995,12 +1963,12 @@ impl Agent {
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
     /// on top (a worker's job built and handed back, not yet merged: not built again).
-    fn planning_keys(&self, root: &Path) -> Result<build::Keys> {
+    fn planning_keys(&self, root: &store::nasfs::NasRoot) -> Result<build::Keys> {
         build::Keys::load_with(root, &self.handoff_bases(root))
     }
 
     /// Where hand-offs wait to be drained into the journal: the coordinator's journal on this Mac.
-    fn handoff_bases(&self, _root: &Path) -> Vec<PathBuf> {
+    fn handoff_bases(&self, _root: &NasRoot) -> Vec<PathBuf> {
         vec![self.o.home.join("coord/journal")]
     }
 
@@ -2011,7 +1979,11 @@ impl Agent {
     }
 
     /// A member's way to the lead's coordinator; None (with why, in `waiting`) when there's none.
-    fn client(&mut self, root: &Path, waiting: &mut Vec<Waiting>) -> Option<&crate::coord::client::Client> {
+    fn client(
+        &mut self,
+        root: &store::nasfs::NasRoot,
+        waiting: &mut Vec<Waiting>,
+    ) -> Option<&crate::coord::client::Client> {
         if self.client.is_none() {
             match crate::coord::client::Client::from_nas(root, &self.host) {
                 Ok(Some(c)) => {
@@ -2064,7 +2036,7 @@ impl Agent {
     /// stays until the coordinator has it (or says its lease is gone: then its work was offered
     /// again, and it's dropped), across restarts; one left by a task that died with an earlier agent
     /// is given back. (A job's work goes through the journal: crate::agent::pool.)
-    fn send_outbox(&mut self, root: &Path, waiting: &mut Vec<Waiting>) {
+    fn send_outbox(&mut self, root: &store::nasfs::NasRoot, waiting: &mut Vec<Waiting>) {
         let Ok(rd) = std::fs::read_dir(self.outbox()) else { return };
         // (Every slot's: a member's packed jobs' too.)
         let running: Vec<PathBuf> = self
@@ -2209,13 +2181,18 @@ impl Agent {
     /// says, saving into the lease's outbox folder. Asked only when it could start now. (Its jobs
     /// alone: `helper_grants`.)
     #[cfg(test)]
-    fn helper_job(&mut self, root: &Path, c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
+    fn helper_job(&mut self, root: &store::nasfs::NasRoot, c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
         self.helper_grants(root, c, waiting).into_iter().map(|(_, spec)| spec).collect()
     }
 
     /// A member's next jobs (`helper_job`), each with the slot it goes in: as many as it has slots
     /// free (`want`), each granted put in a slot of its own (`take_grant`).
-    fn helper_grants(&mut self, root: &Path, c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<(usize, JobSpec)> {
+    fn helper_grants(
+        &mut self,
+        root: &store::nasfs::NasRoot,
+        c: &Conditions,
+        waiting: &mut Vec<Waiting>,
+    ) -> Vec<(usize, JobSpec)> {
         let needs = Needs { nas: true };
         if let Some(why) = lapsed(&needs, c) {
             waiting.push(Waiting { step: None, what: "Building".into(), why });
@@ -2367,7 +2344,7 @@ impl Agent {
     fn take_grant(
         &mut self,
         grant: crate::coord::Grant,
-        root: &Path,
+        root: &store::nasfs::NasRoot,
         waiting: &mut Vec<Waiting>,
     ) -> Option<(usize, JobSpec)> {
         let needs = Needs { nas: true };
@@ -2499,7 +2476,7 @@ impl Agent {
                     s(&dir.join("task.json")),
                     // (What a page reads through the coordinator, read on the NAS here.)
                     "--root".into(),
-                    s(root),
+                    jobs::root_arg(root),
                 ];
                 let unit = task["unit"].as_str().unwrap_or("").to_string();
                 self.slots[k].lease = Some(Held::Leased { lease, dir });
@@ -2588,7 +2565,7 @@ impl Agent {
         &mut self,
         jobs: &[JobSpec],
         c: &Conditions,
-        root: &Path,
+        root: &store::nasfs::NasRoot,
         waiting: &mut Vec<Waiting>,
     ) -> Vec<(usize, JobSpec)> {
         // (A dry run: the plan's first job that could start said, nothing asked for.)
@@ -2670,7 +2647,7 @@ impl Agent {
         &mut self,
         granted: Vec<(usize, JobSpec)>,
         c: &Conditions,
-        root: Option<&Path>,
+        root: Option<&store::nasfs::NasRoot>,
         waiting: &mut Vec<Waiting>,
     ) {
         for (k, spec) in granted {
@@ -2692,7 +2669,7 @@ impl Agent {
         g: crate::coord::Grant,
         co: &crate::coord::Coordinator,
         jobs: &[JobSpec],
-        root: &Path,
+        root: &store::nasfs::NasRoot,
         waiting: &mut Vec<Waiting>,
     ) -> Option<(usize, JobSpec)> {
         let spec = match (&g.job, &g.work) {
@@ -2744,7 +2721,7 @@ impl Agent {
         let kept = pool::JobKept { step: w.step.clone(), targets: w.targets.clone(), lease };
         if let Err(e) = std::fs::create_dir_all(&dir)
             .map_err(anyhow::Error::from)
-            .and_then(|()| crate::whole::write(&dir.join("work.json"), &serde_json::to_vec(&kept)?))
+            .and_then(|()| store::whole::write(&dir.join("work.json"), &serde_json::to_vec(&kept)?))
         {
             co.finish(n, &[]);
             waiting.push(Waiting { step: Some(w.step), what: spec.what.clone(), why: format!("its folder: {e:#}") });
@@ -2758,13 +2735,19 @@ impl Agent {
     /// `pass`, the lead's and a member's alike: `scenic-build` with the step's arguments, the z6 tiles
     /// made again as they are expected the same (by the build's records as read; records that can't
     /// be read now expect nothing).
-    fn step_cmd(&self, root: &Path, step: &str, targets: &[(String, String)], pass: &str) -> Vec<String> {
+    fn step_cmd(
+        &self,
+        root: &store::nasfs::NasRoot,
+        step: &str,
+        targets: &[(String, String)],
+        pass: &str,
+    ) -> Vec<String> {
         let s = |p: &Path| p.to_string_lossy().into_owned();
         let mut cmd = vec![
             s(&self.o.bin.join("scenic-build")),
             step.to_string(),
             "--root".into(),
-            s(root),
+            jobs::root_arg(root),
             "--scratch".into(),
             s(&self.o.home.join("scratch").join(step)),
         ];
@@ -3010,7 +2993,7 @@ impl Agent {
                 // (What its targets held at least, for the lead's floors when it isn't done.)
                 let floors = if ok { Vec::new() } else { floors_of(&read_costs(&dir.join("costs.jsonl"))) };
                 let r = serde_json::json!({ "ok": ok, "done": done, "failed": failed, "interrupted": interrupted, "task": task.and_then(|t| t.get("task").cloned()), "error": note.chars().take(3000).collect::<String>(), "floors": floors });
-                if let Err(e) = crate::whole::write(&dir.join("result.json"), r.to_string().as_bytes()) {
+                if let Err(e) = store::whole::write(&dir.join("result.json"), r.to_string().as_bytes()) {
                     eprintln!("agent: writing a job's result for the coordinator: {e:#}");
                 }
             }
@@ -3050,7 +3033,7 @@ impl Agent {
 
     /// The ends owed to the lead (`owed`), told once this process works as a member, through the
     /// lead's client: each kept until the lead answers, or `OWED_S` after it ended.
-    fn tell_owed(&mut self, root: &Path) {
+    fn tell_owed(&mut self, root: &store::nasfs::NasRoot) {
         if self.owed.is_empty() || self.coord.is_some() {
             return;
         }
@@ -3104,7 +3087,7 @@ impl Agent {
     /// lapsed and its work went to another worker. (One of this Mac's running jobs never lapses
     /// while it leads, `keep_own`, docs/pool.md §7.6; one gone all the same, as across a handover,
     /// is held again when no one took its work meanwhile.)
-    fn beat(&mut self, k: usize, root: Option<&Path>) -> bool {
+    fn beat(&mut self, k: usize, root: Option<&store::nasfs::NasRoot>) -> bool {
         self.slots[k].beaten = Some(Instant::now());
         // (Its progress as the status last read it: what it said, out of sight or not.)
         let progress = self.slots[k]
@@ -3521,7 +3504,7 @@ impl Agent {
     }
 
     /// The NAS root, when mounted and answering; tries to mount it every five minutes otherwise.
-    fn root(&mut self) -> Option<PathBuf> {
+    fn root(&mut self) -> Option<NasRoot> {
         let root = match &self.o.root {
             Some(r) => Some(r.clone()),
             None => {
@@ -3948,7 +3931,7 @@ impl Agent {
         self.hold.held.as_ref().map(|h| h.why()).or_else(|| self.heal.drain_why())
     }
 
-    /// Where this Mac's jobs report their NAS calls stuck busy (crate::whole::STUCK_ENV).
+    /// Where this Mac's jobs report their NAS calls stuck busy (store::whole::STUCK_ENV).
     fn stuck_log(&self) -> PathBuf {
         self.o.home.join("nas-stuck.log")
     }
@@ -3967,9 +3950,9 @@ impl Agent {
     /// in; once drained, the share unmounted under the pool's lock (no tick mid-write) and mounted
     /// again by this loop's `root` at once.
     fn heal_step(&mut self) {
-        let (mut new, seen) = crate::whole::stuck_after(self.heal_seen);
+        let (mut new, seen) = store::whole::stuck_after(self.heal_seen);
         self.heal_seen = seen;
-        new.extend(crate::whole::take_reported(&self.stuck_log()));
+        new.extend(store::whole::take_reported(&self.stuck_log()));
         let idle = self.idle() && self.nas_threads_idle();
         if self.heal.tick(new, now_s(), idle) != heal::Act::Remount {
             return;
@@ -4014,7 +3997,7 @@ impl Agent {
         self.hold_mirrored = false;
         let kept = serde_json::to_vec(&self.hold)
             .map_err(anyhow::Error::from)
-            .and_then(|b| crate::whole::write(&self.o.home.join(crate::control::HOLD), &b));
+            .and_then(|b| store::whole::write(&self.o.home.join(crate::control::HOLD), &b));
         if let Err(e) = kept {
             eprintln!("agent: keeping this Mac's pause: {e:#}");
         }
@@ -4025,7 +4008,7 @@ impl Agent {
     /// (this Mac's own set here; another member's written to its file on the NAS, under a
     /// deadline), this Mac's file on the NAS read every `HOLD_READ_EVERY` (a later setting there,
     /// another Mac's ask, taken), and its own written there once it changed.
-    fn sync_hold(&mut self, root: Option<&Path>) {
+    fn sync_hold(&mut self, root: Option<&store::nasfs::NasRoot>) {
         use crate::control::{HoldAnswer, HoldState};
         self.hold_seen = self.hold_ask_time();
         if self._lock.is_none() || self.o.dry_run {
@@ -4209,8 +4192,8 @@ impl Agent {
         let (ac, battery) = self.mac.power();
         let c = Conditions { ac, battery, nas: root.is_some(), home, idle_s: self.mac.idle_seconds() };
         self.note_conditions(&c, slept);
-        self.pool_switch(root.as_deref());
-        self.tend_live(root.as_deref(), &c);
+        self.pool_switch(root.as_ref());
+        self.tend_live(root.as_ref(), &c);
         let mut waiting: Vec<Waiting> = Vec::new();
         if let Some(why) = self.heal.warning() {
             waiting.push(Waiting { step: None, what: "the NAS".into(), why });
@@ -4218,13 +4201,13 @@ impl Agent {
         let mut ended = false;
         self.begin_round();
         // The build's pause: this Mac's ask passed on; the lead's coordinator's.
-        self.sync_pause(root.as_deref(), &mut waiting);
+        self.sync_pause(root.as_ref(), &mut waiting);
         // This Mac paused alone, or going on (task #224).
-        self.sync_hold(root.as_deref());
+        self.sync_hold(root.as_ref());
 
         // The running jobs; then what they hold together, against this Mac's limit (the memory
         // guard: crate::agent::memguard), its switch as the NAS says.
-        if let Some(on) = root.as_deref().and_then(memguard::on) {
+        if let Some(on) = root.as_ref().and_then(memguard::on) {
             if self.guard_on != Some(on) {
                 eprintln!("agent: the memory guard is {}", if on { "on" } else { "off" });
             }
@@ -4236,10 +4219,10 @@ impl Agent {
         }
         // The owner's cancels (`scenic job cancel`, the menu bar, the lead's word): those jobs stopped
         // and given back first.
-        ended |= self.tend_cancels(root.as_deref(), &mut waiting);
+        ended |= self.tend_cancels(root.as_ref(), &mut waiting);
         self.tend_ramp();
         for k in 0..self.slots.len() {
-            ended |= self.tend(k, &c, root.as_deref(), slept)?;
+            ended |= self.tend(k, &c, root.as_ref(), slept)?;
         }
         // (The leases its slots run jobs under, which its coordinator keeps however long this loop
         // stalls: docs/pool.md §7.6.)
@@ -4256,16 +4239,16 @@ impl Agent {
             );
         }
         ended |= self.guard();
-        ended |= self.disk_guard(root.as_deref());
+        ended |= self.disk_guard(root.as_ref());
         // (A job ended: room for the target may be made again.)
         if ended {
             self.floor_short = None;
         }
         // The pool's step, once the jobs that ended handed their work over (docs/pool.md §12):
         // what this Mac may do now, as its lead or a member.
-        let gates = self.pool_step(root.as_deref(), &c, &mut waiting);
+        let gates = self.pool_step(root.as_ref(), &c, &mut waiting);
         // (Ends owed to the lead, once this process works as a member.)
-        if let Some(r) = root.as_deref() {
+        if let Some(r) = root.as_ref() {
             self.tell_owed(r);
         }
         self.lead_awake();
@@ -4287,17 +4270,17 @@ impl Agent {
             _ => None,
         };
         // The pass's answers on the NAS, once this agent starts (the lead's).
-        self.seed_answers(root.as_deref());
+        self.seed_answers(root.as_ref());
 
         // The coordinator: where the NAS is (tasks read it where it lies), how to reach it on the NAS
         // (looked at every five minutes: it may have been deleted, or this Mac's addresses changed),
         // and leases whose workers went quiet dropped.
         if let Some(c) = &self.coord {
-            c.set_root(root.as_deref());
+            c.set_root(root.as_ref());
         }
         // (Where the owner's settings lie, for the build page's `/work/settings`, whichever serves it.)
         for c in [&self.coord, &self.broker, &self.viewer].into_iter().flatten() {
-            c.set_settings(&self.o.home, root.as_deref());
+            c.set_settings(&self.o.home, root.as_ref());
         }
         // (In the pool, only while this Mac leads: a lead that stepped down takes its contact off,
         // so members find the new lead's.)
@@ -4336,7 +4319,7 @@ impl Agent {
         let free = self.may_pack();
         // The gate: the drop boxes listed off the loop (the lead's), and the asks of it from this
         // Mac's menu bar, map, `scenic inputs` and (leading) the build page.
-        if let Some(r) = root.as_deref() {
+        if let Some(r) = root.as_ref() {
             self.tend_gate(r);
         }
 
@@ -4479,7 +4462,7 @@ impl Agent {
         }
         // The jobs granted, each in its slot (`start_granted`).
         if !newer && self.pause.is_none() && pool_holds.is_none() {
-            self.start_granted(granted, &c, root.as_deref(), &mut waiting);
+            self.start_granted(granted, &c, root.as_ref(), &mut waiting);
         }
         // (A start held by something on a short timer: planned again next loop. Why the jobs wait:
         // kept with the plan made this loop, so the status says so while the jobs started run.)
@@ -4506,7 +4489,7 @@ impl Agent {
         self.trim_slots();
         // This Mac's caches, between jobs: the owner's ask to clear them (room::clear), else the
         // freeing toward the room target.
-        let caches_why = self.tend_caches(root.as_deref());
+        let caches_why = self.tend_caches(root.as_ref());
         // The owner's disk room target, while the disk is short of it and stays so.
         if let Some(why) = self.room_short(root.is_some()) {
             waiting.push(Waiting { step: None, what: "The disk room target".into(), why });
@@ -4584,7 +4567,7 @@ impl Agent {
             self.slots.iter().filter_map(|s| s.running.as_ref().and_then(|r| step_of(&r.spec.id))).collect();
         annotate(&mut checklist, &now_steps, &helpers, &waiting);
         let views: Vec<JobView> = (0..self.slots.len()).filter_map(|k| self.job_view(k)).collect();
-        let all_new = self.all_new(root.as_deref());
+        let all_new = self.all_new(root.as_ref());
         let mut status = Status {
             host: self.host.clone(),
             pid: std::process::id(),
@@ -4637,12 +4620,12 @@ impl Agent {
                 .unwrap_or_default(),
             pause: self.pause.clone(),
             held: self.hold.held.clone(),
-            resources: Some(self.resources(root.as_deref())),
+            resources: Some(self.resources(root.as_ref())),
             forecast: if self.o.helper { None } else { self.forecast.borrow().clone() },
             publishing: if self.o.helper { None } else { self.publish_line.borrow().clone() },
             timetables: if self.o.helper { None } else { self.timetables.borrow().as_ref().map(|t| t.1.clone()) },
             catalog: self.catalog_seen.get(),
-            published: if self.o.helper { None } else { Some(self.published(root.as_deref())) },
+            published: if self.o.helper { None } else { Some(self.published(root.as_ref())) },
             caches: Some(self.caches_view(caches_why, c.home, c.nas)),
             pool: match self.try_pooled() {
                 Some(Some(p)) => Some(p.pool_view()),
@@ -4703,7 +4686,7 @@ impl Agent {
                 // (On the writers, under a deadline: a share that hangs fails it, nasread::write.)
                 let (p, b) = (root.join(&shared), body.clone());
                 let p2 = p.clone();
-                match nasread::write(&p, move || write_replace(&p2, &b)) {
+                match nasread::write(&p, move || write_replace_nas(&p2, &b)) {
                     Ok(()) => self.last_beat = Some((same, Instant::now())),
                     // (A timeout logged once by nasread.)
                     Err(e) if nasread::timed_out(&e) => {}
@@ -4718,7 +4701,7 @@ impl Agent {
     /// a growing delay), restarted after a sleep when it touches the NAS, stopped when its lease
     /// lapsed or another Mac took its claims, paused or resumed as its conditions and the build's
     /// pause say. True when it ended.
-    fn tend(&mut self, k: usize, c: &Conditions, root: Option<&Path>, slept: u64) -> Result<bool> {
+    fn tend(&mut self, k: usize, c: &Conditions, root: Option<&store::nasfs::NasRoot>, slept: u64) -> Result<bool> {
         let run_time = self.run_time(k);
         let draining = self.slots[k].drain_since.is_some();
         let Some(r) = self.slots[k].running.as_mut() else { return Ok(false) };
@@ -4998,7 +4981,7 @@ impl Agent {
         k: usize,
         spec: JobSpec,
         c: &Conditions,
-        root: Option<&Path>,
+        root: Option<&store::nasfs::NasRoot>,
         waiting: &mut Vec<Waiting>,
     ) -> bool {
         if !self.o.helper && self.slots[k].lease.is_none() {
@@ -5081,7 +5064,7 @@ impl Agent {
         k: usize,
         spec: JobSpec,
         c: &Conditions,
-        root: Option<&Path>,
+        root: Option<&store::nasfs::NasRoot>,
         waiting: &mut Vec<Waiting>,
     ) -> bool {
         // (Scenic quitting: no new work taken. A target the owner cancelled to rerun on a newer
@@ -5770,7 +5753,7 @@ impl Agent {
     /// exclusive locks: room::toward, on a thread of its own), and once that's done, the disk still
     /// short, the job is given back (`guard_stop`: not failed, its work kept by its hand-off, its
     /// disk floor learned). True when it stopped a job.
-    fn disk_guard(&mut self, root: Option<&Path>) -> bool {
+    fn disk_guard(&mut self, root: Option<&store::nasfs::NasRoot>) -> bool {
         // (The target alone the threshold, task #421: no fixed reserve, none hidden; with no target
         // a byte free, so a full disk.)
         let floor = self.floor().max(1);
@@ -6015,7 +5998,7 @@ impl Agent {
     /// Whether every member of the pool reports the new app (`Status::all_new`): the lead's
     /// coordinator's word (`Coordinator::all_new`); a member's, its lead's heartbeat's as last
     /// read (once a minute: `lead_all_new`; an older lead's says no). No coordinator and no pool: true.
-    fn all_new(&mut self, root: Option<&Path>) -> bool {
+    fn all_new(&mut self, root: Option<&store::nasfs::NasRoot>) -> bool {
         if let Some(c) = self.coord.as_ref() {
             return c.all_new();
         }
@@ -6100,16 +6083,16 @@ impl Agent {
 
     /// This Mac's resources for the status (cond::Resources); its caches counted again on a thread
     /// of their own when ten minutes old.
-    fn resources(&self, root: Option<&Path>) -> cond::Resources {
+    fn resources(&self, root: Option<&store::nasfs::NasRoot>) -> cond::Resources {
         let (counted, bytes) = self.cache_size.lock().unwrap().clone();
         if counted.is_none_or(|t| t.elapsed() >= Duration::from_secs(600)) {
             // (Marked counted now: one walk at a time.)
             let now = Instant::now();
             self.cache_size.lock().unwrap().0 = Some(now);
             let (cache, helper, size, nas) =
-                (self.o.home.join("cache"), self.o.helper, self.cache_size.clone(), root.map(Path::to_path_buf));
+                (self.o.home.join("cache"), self.o.helper, self.cache_size.clone(), root.cloned());
             std::thread::spawn(move || {
-                let n = room::sizes(&cache, helper, nas.as_deref());
+                let n = room::sizes(&cache, helper, nas.as_ref());
                 // (Not over a count made since, a clear's or a freeing's.)
                 let mut s = size.lock().unwrap();
                 if s.0 == Some(now) {
@@ -6134,7 +6117,7 @@ impl Agent {
     /// else the freeing toward the owner's room target when the disk is short of it (a Mac with
     /// room keeps its caches after a build). Why they can't be cleared now (None: they can), for the
     /// status.
-    fn tend_caches(&mut self, root: Option<&Path>) -> Option<String> {
+    fn tend_caches(&mut self, root: Option<&store::nasfs::NasRoot>) -> Option<String> {
         // One under way: its result once it's done.
         if let Some(t) = self.caches_task.take() {
             if !t.thread.is_finished() {
@@ -6180,7 +6163,7 @@ impl Agent {
     /// store::cachefile); not while a job an earlier agent left runs (its programs may not hold what
     /// they use), nor without the NAS (the manifest says which copies are current). What it freed
     /// logged.
-    fn retire(&mut self, cache: &Path, root: Option<&Path>) {
+    fn retire(&mut self, cache: &Path, root: Option<&store::nasfs::NasRoot>) {
         if let Some(t) = self.retire_task.take_if(|t| t.is_finished()) {
             match t.join() {
                 Ok(f) if !f.is_empty() => {
@@ -6201,7 +6184,7 @@ impl Agent {
             return;
         }
         self.retired_at = Some(Instant::now());
-        let (cache, root) = (cache.to_path_buf(), root.to_path_buf());
+        let (cache, root) = (cache.to_path_buf(), root.clone());
         self.retire_task =
             std::thread::Builder::new().name("retire".into()).spawn(move || room::retire(&cache, Some(&root))).ok();
     }
@@ -6211,7 +6194,7 @@ impl Agent {
     /// kept them, or one a stopped job left, needn't wait for the steps' next run, perhaps the next
     /// pass's), on a thread of its own (a slow NAS doesn't hold the loop; no items or heritage job
     /// starts meanwhile). Done: what it did logged; failed: the steps' next start sends them.
-    fn seed_answers(&mut self, root: Option<&Path>) {
+    fn seed_answers(&mut self, root: Option<&store::nasfs::NasRoot>) {
         if let Some(t) = self.answers_seed.take_if(|t| t.is_finished()) {
             match t.join() {
                 Ok(Ok(said)) => said.iter().for_each(|s| eprintln!("agent: {s}")),
@@ -6227,8 +6210,7 @@ impl Agent {
             return;
         };
         self.answers_seeded = true;
-        let (root, cache, scratch) =
-            (root.to_path_buf(), self.o.home.join("cache"), self.o.home.join("scratch/answers"));
+        let (root, cache, scratch) = (root.clone(), self.o.home.join("cache"), self.o.home.join("scratch/answers"));
         // (With the budgets on, alone among the steps keeping answers here by their lock, and each
         // archive sent under the answers' lease on the NAS: crate::answers::Local, Lease.)
         let leased = true;
@@ -6467,7 +6449,7 @@ impl Agent {
     /// goes must be kept there), or the build has work left (`work_left`: by the lead's
     /// forecast, its own; a member's, the one in the lead's heartbeat on the NAS, read at most
     /// each minute, with no job of the lead's running, nor beside it).
-    fn caches_why_not(&mut self, root: Option<&Path>) -> Option<String> {
+    fn caches_why_not(&mut self, root: Option<&store::nasfs::NasRoot>) -> Option<String> {
         // (A job of this agent's running is no reason: what it uses it holds, store::cachefile.)
         self.orphans.retain(jobs::Group::is_the_jobs);
         if let Some(g) = self.orphans.first() {
@@ -6629,7 +6611,7 @@ impl Agent {
                 if let Some(Held::Pooled { dir, .. }) = &self.slots[k].lease {
                     let step = step_of(&spec.id).unwrap_or_default();
                     let f = dir.join("unmerged.json");
-                    crate::whole::write(&f, &serde_json::to_vec(&self.unmerged_for(&step)?)?)?;
+                    store::whole::write(&f, &serde_json::to_vec(&self.unmerged_for(&step)?)?)?;
                     env.push((resume::UNMERGED_ENV.into(), f.to_string_lossy().into_owned()));
                 }
                 self.progress_started(&spec);
@@ -6674,7 +6656,7 @@ impl Agent {
         std::fs::remove_file(&waiting).ok();
         env.push((crate::offload::WAITING_ENV.into(), waiting.to_string_lossy().into_owned()));
         // Where it reports NAS calls stuck busy (crate::agent::heal).
-        env.push((crate::whole::STUCK_ENV.into(), self.stuck_log().to_string_lossy().into_owned()));
+        env.push((store::whole::STUCK_ENV.into(), self.stuck_log().to_string_lossy().into_owned()));
         // Its connections out through the proxy (Wikimedia's metered by the pool's budget), this
         // Mac's own direct, and no other way out (the sandbox).
         let sandbox = match &self.proxy {
@@ -6870,7 +6852,7 @@ impl Agent {
     }
 
     /// The timetables' report, read again when the records name another (a small file).
-    fn note_timetables(&self, root: &Path, manifest: &BTreeMap<String, String>) {
+    fn note_timetables(&self, root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) {
         let Some(c) = manifest.get(crate::timetables::REPORT) else { return };
         if self.timetables.borrow().as_ref().is_some_and(|t| &t.0 == c) {
             return;
@@ -6887,24 +6869,24 @@ impl Agent {
     /// manifest, the jobs' keys, the hand-offs waiting), the gate's view of the inputs, the pool
     /// (membership, role, gates), its mode and switch, and the pause. Equal digests: the plan would
     /// come out the same but for what `IDLE_REPLAN` covers (time, disk room, planets newly on the NAS).
-    fn plan_seen(&self, root: &Path) -> u64 {
+    fn plan_seen(&self, root: &store::nasfs::NasRoot) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        let stat = |h: &mut std::collections::hash_map::DefaultHasher, p: &Path| {
-            let m = std::fs::metadata(p).ok();
+        let stat = |h: &mut std::collections::hash_map::DefaultHasher, p: store::nasfs::Loc<'_>| {
+            let m = p.metadata().ok();
             m.as_ref().map(|m| (m.len(), m.modified().ok())).hash(h);
         };
         for f in ["state/build/manifest.json", "state/build/jobs.json"] {
-            stat(&mut h, &root.join(f));
+            stat(&mut h, (&root.join(f)).into());
         }
         for b in self.handoff_bases(root) {
-            stat(&mut h, &b);
+            stat(&mut h, (&b).into());
             let mut hosts: Vec<PathBuf> =
                 std::fs::read_dir(&b).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
             hosts.sort();
             for d in hosts {
                 d.hash(&mut h);
-                stat(&mut h, &d);
+                stat(&mut h, (&d).into());
             }
         }
         serde_json::to_string(&*self.inputs.view.borrow()).unwrap_or_default().hash(&mut h);
@@ -6915,7 +6897,7 @@ impl Agent {
         serde_json::to_string(&self.pause).unwrap_or_default().hash(&mut h);
         // (Publishing's switches, the hold on catalogs, the catalogs' folders.)
         for f in [publish::DELTA_CATALOG, publish::NEAR_SLOPE, "inputs/hold-catalog", "catalog", "catalog-held"] {
-            stat(&mut h, &root.join(f));
+            stat(&mut h, (&root.join(f)).into());
         }
         // (The coordinator's leases: one lapsed, given back or taken frees or holds targets.)
         self.coord.as_ref().map(|c| c.lease_gen()).hash(&mut h);
@@ -6952,7 +6934,7 @@ impl Agent {
         earliest_after(at, now)
     }
 
-    fn plan(&self, root: &Path, c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
+    fn plan(&self, root: &store::nasfs::NasRoot, c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
         let jobs = self.plan_unchecked(root, c, waiting);
         // (In the tests, every planned command checked against its program's table, crate::cli.)
         #[cfg(test)]
@@ -6964,7 +6946,12 @@ impl Agent {
         jobs
     }
 
-    fn plan_unchecked(&self, root: &Path, _c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
+    fn plan_unchecked(
+        &self,
+        root: &store::nasfs::NasRoot,
+        _c: &Conditions,
+        waiting: &mut Vec<Waiting>,
+    ) -> Vec<JobSpec> {
         let mut out = Vec::new();
         // (Nothing offered but what this plan offers: `region_jobs`.)
         *self.offered.borrow_mut() = Default::default();
@@ -7039,7 +7026,7 @@ impl Agent {
                     s(&me),
                     "backup".into(),
                     "--root".into(),
-                    s(root),
+                    jobs::root_arg(root),
                     "--local".into(),
                     s(&self.o.home.join("backups")),
                 ],
@@ -7052,7 +7039,7 @@ impl Agent {
             out.push(JobSpec {
                 id: "gc".into(),
                 what: "gc".into(),
-                cmd: vec![s(&me), "gc".into(), "--root".into(), s(root)],
+                cmd: vec![s(&me), "gc".into(), "--root".into(), jobs::root_arg(root)],
                 needs: Needs { nas: true },
                 restart_after_sleep: true,
                 record: None,
@@ -7067,7 +7054,7 @@ impl Agent {
     /// waiting out a failure, so one failing job doesn't hold up the others.
     fn region_work(
         &self,
-        root: &Path,
+        root: &store::nasfs::NasRoot,
         pass: Option<&str>,
         newer: Option<&str>,
         waiting: &mut Vec<Waiting>,
@@ -7087,7 +7074,7 @@ impl Agent {
     /// declarations is accepted (`hold_for_sources`).
     fn region_jobs(
         &self,
-        root: &Path,
+        root: &store::nasfs::NasRoot,
         pass: Option<&str>,
         newer: Option<&str>,
         waiting: &mut Vec<Waiting>,
@@ -7111,7 +7098,7 @@ impl Agent {
         // (Once a readers' switch is recorded, an app older than the one it was recorded on reads
         // the wrong regions: it builds nothing, and says so.)
         let regions_app = crate::inputs::regions::read::switch_app(&manifest, &|n| {
-            std::fs::read(root.join(n)).with_context(|| format!("read {n}"))
+            root.join(n).read().with_context(|| format!("read {n}"))
         })
         .map_err(|e| format!("{e:#}"));
         // (And the coordinator grants nothing to an app older than it, a page's included.)
@@ -7151,8 +7138,14 @@ impl Agent {
         // command, the step by its id's.)
         let job = |id: String, step: &str, extra: Vec<String>, record: Option<build::Work>| {
             let scratch = self.o.home.join("scratch").join(step);
-            let mut cmd =
-                vec![build_bin.clone(), step.to_string(), "--root".into(), s(root), "--scratch".into(), s(&scratch)];
+            let mut cmd = vec![
+                build_bin.clone(),
+                step.to_string(),
+                "--root".into(),
+                jobs::root_arg(root),
+                "--scratch".into(),
+                s(&scratch),
+            ];
             cmd.extend(extra);
             let what = steps::current(step_of(&id).as_deref().unwrap_or(step)).to_string();
             // (Every job needs the NAS; none waits for power or home, the owner's choice: the pass's
@@ -7309,7 +7302,7 @@ impl Agent {
         // After each catalog the map serves: the names to translate and descriptions to write.
         // (From the translations' and descriptions' accepted versions, which the agent names: the
         // job reads them through the accessor, never the drop boxes.)
-        let served = served_catalog_and(&root.join("catalog"));
+        let served = served_catalog_and((&root.join("catalog")).into());
         // (The steps gated by time: when each last ran, as its recorded key changed.)
         self.note_ran(&keys);
         let (since, idle) = {
@@ -7481,9 +7474,9 @@ impl Agent {
         } else {
             root.join("catalog")
         };
-        let (on_map, since_publish) = self.on_map(&dir, &recipes);
+        let (on_map, since_publish) = self.on_map((&dir).into(), &recipes);
         // (The map's: the served catalog's, held ones aside.)
-        self.catalog_seen.set(served_catalog(&root.join("catalog")));
+        self.catalog_seen.set(served_catalog((&root.join("catalog")).into()));
         // (Publishing's switches: crate::agent::publish.)
         let sw = publish::Switches::read(root, self.publishing.get());
         if sw != self.publishing.get() {
@@ -7593,7 +7586,7 @@ impl Agent {
             if notes.began() != b {
                 let own = self.coord.as_ref().map(|c| c.history_since(0)).unwrap_or_default();
                 if notes.begin(b, &own, now_s()) {
-                    notes.seed_from_nas(root.to_path_buf());
+                    notes.seed_from_nas(root.clone());
                 }
             }
             let tiles: Vec<(String, String)> =
@@ -7687,7 +7680,7 @@ impl Agent {
             if let Some(&n) = self.piece_sizes.borrow().get(c) {
                 return n;
             }
-            let n = std::fs::metadata(root.join(c)).map_or(u64::MAX, |m| m.len());
+            let n = root.join(c).metadata().map_or(u64::MAX, |m| m.len());
             if n != u64::MAX {
                 self.piece_sizes.borrow_mut().insert(c.clone(), n);
             }
@@ -7941,7 +7934,7 @@ impl Agent {
     /// Publishing as it stands (`Published`), the servers' log under `root` read again (within the
     /// NAS readers' deadline; past it, the last read kept) when a newer catalog is seen or five
     /// minutes have passed.
-    fn published(&self, root: Option<&Path>) -> Published {
+    fn published(&self, root: Option<&store::nasfs::NasRoot>) -> Published {
         let last = self.catalog_seen.get();
         let c = self.catalogs.borrow();
         let mut drawing: BTreeMap<String, usize> = BTreeMap::new();
@@ -7974,7 +7967,7 @@ impl Agent {
     #[allow(clippy::too_many_arguments)]
     fn forecast_record(
         &self,
-        root: &Path,
+        root: &store::nasfs::NasRoot,
         before: &[JobSpec],
         regions: &[build::RegionLeft],
         backfill: &[build::Work],
@@ -8405,7 +8398,7 @@ impl Agent {
     /// The build to the end (the status's checklist): a line per stage (crate::agent::steps::STAGES)
     /// with an item per step counted: the OSM pass (the planet, read when a newer one is on the
     /// NAS, and its worldwide steps), then the regions' steps (build::checklist).
-    fn checklist(&self, root: &Path, regions: &[recipes::Recipe]) -> Vec<build::Line> {
+    fn checklist(&self, root: &store::nasfs::NasRoot, regions: &[recipes::Recipe]) -> Vec<build::Line> {
         let mut items = Vec::new();
         let mut next: BTreeMap<&str, Vec<String>> = BTreeMap::new();
         let mut notes: BTreeMap<&str, String> = BTreeMap::new();
@@ -8511,7 +8504,7 @@ impl Agent {
     #[allow(clippy::type_complexity)]
     fn start_as_built<T: Send + 'static>(
         &self,
-        root: &Path,
+        root: &store::nasfs::NasRoot,
         name: &str,
         f: fn(
             &crate::coverage::Coverage,
@@ -8525,7 +8518,7 @@ impl Agent {
     ) -> Option<std::thread::JoinHandle<(T, Duration)>> {
         let (date, manifest, covs, keys, reach) = self.as_built_parts(root)?;
         let tiles = self.terrain_tiles(root, &manifest).clone();
-        let root = root.to_path_buf();
+        let root = root.clone();
         let run = move || {
             let t = Instant::now();
             let mut keys = keys;
@@ -8544,7 +8537,7 @@ impl Agent {
     #[allow(clippy::type_complexity)]
     fn as_built_parts(
         &self,
-        root: &Path,
+        root: &store::nasfs::NasRoot,
     ) -> Option<(
         String,
         BTreeMap<String, String>,
@@ -8564,7 +8557,7 @@ impl Agent {
     }
 
     /// `keys` as every reader reads them (agent::rekey::as_read), for a job's `--expect-same`; as they are when what that reads can't be told now.
-    fn as_read(&self, root: &Path, mut keys: build::Keys) -> build::Keys {
+    fn as_read(&self, root: &store::nasfs::NasRoot, mut keys: build::Keys) -> build::Keys {
         if self.latest_pass(root).is_none() {
             return keys;
         }
@@ -8587,7 +8580,7 @@ impl Agent {
     /// the NAS: half a minute for the whole build's, once).
     fn terrain_tiles(
         &self,
-        root: &Path,
+        root: &store::nasfs::NasRoot,
         manifest: &BTreeMap<String, String>,
     ) -> std::cell::Ref<'_, tiles::TerrainTiles> {
         let t = std::time::Instant::now();
@@ -8607,7 +8600,7 @@ impl Agent {
     /// jobs), or why they can't be read.
     fn current_reach(
         &self,
-        root: &Path,
+        root: &store::nasfs::NasRoot,
         manifest: &BTreeMap<String, String>,
         keys: &build::Keys,
         date: &str,
@@ -8639,7 +8632,7 @@ impl Agent {
     /// the heartbeat's, whose read may have failed).
     fn coverage(
         &self,
-        root: &Path,
+        root: &store::nasfs::NasRoot,
         manifest: &BTreeMap<String, String>,
         edits: bool,
     ) -> Result<std::sync::Arc<Coverages>, String> {
@@ -8669,7 +8662,7 @@ impl Agent {
         self.coverage.borrow_mut().take();
         let mut making = self.coverage_making.borrow_mut();
         let fresh = if making.as_ref().is_none_or(|(v, h)| *v != a.version && h.is_finished()) {
-            let (root, cache, a, v) = (root.to_path_buf(), self.o.home.join("cache"), a.clone(), a.version.clone());
+            let (root, cache, a, v) = (root.clone(), self.o.home.join("cache"), a.clone(), a.version.clone());
             let run = std::thread::Builder::new().name("coverage".into()).spawn(move || {
                 let all = crate::coverage::Coverage::accepted(&root, &a, Some(&cache)).map_err(|e| format!("{e:#}"))?;
                 Ok(Coverages { each: all.by_region(), all })
@@ -8703,15 +8696,14 @@ impl Agent {
     /// drawn files, the catalogue's sizes once per catalogue). Given to this Mac's coordinator (the
     /// page out of the pool) once made; the lead's pool step writes them for the others'
     /// (`pool_lead_files`).
-    fn regions_view(&self, root: &Path, a: &crate::inputs::Accepted, regions: &[recipes::Recipe]) {
+    fn regions_view(&self, root: &store::nasfs::NasRoot, a: &crate::inputs::Accepted, regions: &[recipes::Recipe]) {
         self.take_regions();
-        let n = served_catalog(&root.join("catalog")).map(|c| c.n);
+        let n = served_catalog((&root.join("catalog")).into()).map(|c| c.n);
         let key: RegionsKey = (a.version.clone(), n);
         if self.regions_making.borrow().is_some() || self.regions_tried.borrow().as_ref() == Some(&key) {
             return;
         }
-        let (root, a, regions, had) =
-            (root.to_path_buf(), a.clone(), regions.to_vec(), self.region_bytes.borrow().clone());
+        let (root, a, regions, had) = (root.clone(), a.clone(), regions.to_vec(), self.region_bytes.borrow().clone());
         let run = std::thread::Builder::new()
             .name("regions-view".into())
             .spawn(move || regionsview::build(&root, &a, &regions, n, had));
@@ -8750,7 +8742,7 @@ impl Agent {
     /// The regions the last catalog in `dir` has, by id: whether as its recipe is now (same outline
     /// entries); and how long ago it went out (seconds, by its file's time). Read once per catalog;
     /// none (nothing on the map: every region new) when there's none, or it can't be read now.
-    fn on_map(&self, dir: &Path, recipes: &[recipes::Recipe]) -> (BTreeMap<String, bool>, Option<u64>) {
+    fn on_map(&self, dir: store::nasfs::Loc<'_>, recipes: &[recipes::Recipe]) -> (BTreeMap<String, bool>, Option<u64>) {
         // (The newest catalog that reads: a damaged one is passed over, as the map's server does,
         // not taken for none.)
         let mut cached = self.last_catalog.borrow_mut();
@@ -8758,8 +8750,8 @@ impl Agent {
         for n in store::catalog::list(dir).unwrap_or_default() {
             // (Whole, or what changed over the one before: store::catalog::read_n.)
             let Some(path) = store::catalog::path_n(dir, n) else { continue };
-            let Ok(t) = std::fs::metadata(&path).and_then(|m| m.modified()) else { continue };
-            if cached.as_ref().is_none_or(|c| c.0 != (dir.to_path_buf(), n)) {
+            let Ok(t) = path.loc().metadata().and_then(|m| m.modified()) else { continue };
+            if cached.as_ref().is_none_or(|c| c.0 != (dir.display(), n)) {
                 let Ok(cat) = store::catalog::read_n(dir, n) else { continue };
                 let regions: BTreeMap<String, Vec<String>> = cat
                     .coverage
@@ -8771,7 +8763,7 @@ impl Agent {
                         Some((r["id"].as_str()?.to_string(), serde_json::from_value(r["outline"].clone()).ok()?))
                     })
                     .collect();
-                *cached = Some(((dir.to_path_buf(), n), regions));
+                *cached = Some(((dir.display(), n), regions));
             }
             at = Some(t);
             break;
@@ -8802,7 +8794,7 @@ impl Agent {
     /// be reached); on the lead, then, its coordinator's, mirrored to the NAS
     /// (`state/build/pause.json`, for whoever reads the build's state there). A helper hears the
     /// build's otherwise in its asks and beats.
-    fn sync_pause(&mut self, root: Option<&Path>, waiting: &mut Vec<Waiting>) {
+    fn sync_pause(&mut self, root: Option<&store::nasfs::NasRoot>, waiting: &mut Vec<Waiting>) {
         // (Not a dry run's, in another agent's folder: the asks are the real agent's to take up.)
         if self._lock.is_none() || self.o.dry_run {
             return;
@@ -8861,10 +8853,9 @@ impl Agent {
             if let (Some(r), false) = (root, self.mirrored.as_ref() == Some(&p)) {
                 let path = r.join("state/build/pause.json");
                 let kept = match &p {
-                    Some(x) => {
-                        serde_json::to_vec(x).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&path, &b))
-                    }
-                    None => std::fs::remove_file(&path)
+                    Some(x) => serde_json::to_vec(x).map_err(anyhow::Error::from).and_then(|b| path.write_whole(b)),
+                    None => path
+                        .remove_file()
                         .or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) })
                         .map_err(anyhow::Error::from),
                 };
@@ -8885,7 +8876,7 @@ impl Agent {
         eprintln!("agent: {}", p.as_ref().map_or("the build goes on".to_string(), |p| p.why()));
         let path = self.o.home.join("pause.json");
         let kept = match &p {
-            Some(x) => serde_json::to_vec(x).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&path, &b)),
+            Some(x) => serde_json::to_vec(x).map_err(anyhow::Error::from).and_then(|b| store::whole::write(&path, &b)),
             None => std::fs::remove_file(&path)
                 .or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) })
                 .map_err(anyhow::Error::from),
@@ -9017,7 +9008,7 @@ impl Agent {
     /// up (`take_cancel`), the lead's word for this Mac's own leases (its coordinator's here, a
     /// member's in its beat's answer, `beat`), and each slot so told stopped (`cancel_slot`); the
     /// targets held for a newer app said in `waiting`. True when a job ended.
-    fn tend_cancels(&mut self, root: Option<&Path>, waiting: &mut Vec<Waiting>) -> bool {
+    fn tend_cancels(&mut self, root: Option<&store::nasfs::NasRoot>, waiting: &mut Vec<Waiting>) -> bool {
         if self._lock.is_some() && !self.o.dry_run {
             for ask in crate::control::take_cancels(&self.o.home, now_s()) {
                 self.take_cancel(ask, root);
@@ -9068,7 +9059,7 @@ impl Agent {
     /// An owner's cancel taken up: the slots running its target marked (stopped by `tend_cancels`),
     /// the lead told (this Mac's coordinator, or the lead's by HTTP: its leases elsewhere told, the
     /// target held for a newer app when asked), and the answer written for `scenic job cancel`.
-    fn take_cancel(&mut self, ask: crate::control::Cancel, root: Option<&Path>) {
+    fn take_cancel(&mut self, ask: crate::control::Cancel, root: Option<&store::nasfs::NasRoot>) {
         let mut said: Vec<String> = Vec::new();
         let mut here: Vec<(String, u64)> = Vec::new();
         for k in 0..self.slots.len() {
@@ -9199,7 +9190,7 @@ impl Agent {
     /// The budgets' proxy: started once (taking from the pool's budget on the NAS's project folder
     /// `root`, as this agent); told the members this Mac knows (its share of the rate with the NAS
     /// away).
-    fn tend_proxy(&mut self, root: &Path) {
+    fn tend_proxy(&mut self, root: &store::nasfs::NasRoot) {
         if self.proxy.is_none() {
             let me = self.member_id.clone().unwrap_or_else(|| self.me.clone());
             // (On the port the jobs taken over were told, while it can be bound: `proxy_port`.)
@@ -9350,7 +9341,7 @@ impl Agent {
     /// broker or viewer), and the NAS's latency sampled while a build runs here (a job of this
     /// Mac's, or its coordinator's leases out); the power and the owner's idleness as this loop
     /// read them (`c`), recorded.
-    fn tend_live(&mut self, root: Option<&Path>, c: &Conditions) {
+    fn tend_live(&mut self, root: Option<&store::nasfs::NasRoot>, c: &Conditions) {
         let Some(l) = &self.live else { return };
         let t = now_s();
         l.record(live::AC, t, if c.ac { 1.0 } else { 0.0 });
@@ -9384,7 +9375,7 @@ impl Agent {
     /// neither a coordinator nor a broker answers there; each serving it from this Mac's read of the
     /// NAS; that read told the term, the members, this app and this Mac's lanes now. In the pool
     /// alone (out of it, the coordinator answers from its memory, as before).
-    fn tend_pageview(&mut self, root: &Path) {
+    fn tend_pageview(&mut self, root: &store::nasfs::NasRoot) {
         if self.o.dry_run {
             return;
         }
@@ -9500,7 +9491,7 @@ impl Agent {
             Vec::new()
         };
         self.pageview.set_inputs(pageview::Inputs {
-            root: Some(root.to_path_buf()),
+            root: Some(root.clone()),
             term,
             members,
             app: self.app.clone(),
@@ -9557,7 +9548,7 @@ impl Agent {
 
     /// The newest complete pass: by the merged records with resuming on (docs/pool.md §7.4), else
     /// by the NAS's `pass.*.json` files, as before.
-    fn latest_pass(&self, root: &Path) -> Option<String> {
+    fn latest_pass(&self, root: &store::nasfs::NasRoot) -> Option<String> {
         crate::osmpass::latest_pass_by(root, self.resume_on())
     }
 
@@ -9571,7 +9562,7 @@ impl Agent {
 
     /// This member's progress file: as this process last wrote it, else read from the NAS (once,
     /// or again after a read failed). None out of the pool, or when it can't be read now.
-    fn own_progress(&mut self, root: &Path) -> Option<resume::Progress> {
+    fn own_progress(&mut self, root: &store::nasfs::NasRoot) -> Option<resume::Progress> {
         if self.held_progress.is_none() {
             let me = self.member_id.clone()?;
             match resume::read(root, &me) {
@@ -9593,7 +9584,7 @@ impl Agent {
 
     /// Notes job `job`'s progress on this Mac in its member's progress file (None: dropped),
     /// written whole when that changes it, and only then.
-    fn note_progress(&mut self, root: &Path, job: &str, held: Option<resume::Held>) {
+    fn note_progress(&mut self, root: &store::nasfs::NasRoot, job: &str, held: Option<resume::Held>) {
         let Some(mut p) = self.own_progress(root) else { return };
         let before = p.clone();
         match held {
@@ -9648,7 +9639,7 @@ impl Agent {
     /// pass the records hold complete, finished here; a day past its job's last run here, or
     /// released by the owner), its scratch folder left to room-making as before. A job running
     /// here is left as it is.
-    fn tend_progress(&mut self, root: &Path) {
+    fn tend_progress(&mut self, root: &store::nasfs::NasRoot) {
         if !self.resume_on() {
             return;
         }
@@ -9690,7 +9681,7 @@ impl Agent {
     /// (crate::agent::resume::decide): None to plan it here as before; else why not, the pass
     /// offered meanwhile to the one member whose Mac holds its progress (the coordinator's
     /// `offer_resume`, none otherwise).
-    fn resume_hold(&self, root: &Path, newer: Option<&(PathBuf, String)>) -> Option<Waiting> {
+    fn resume_hold(&self, root: &store::nasfs::NasRoot, newer: Option<&(NasPath, String)>) -> Option<Waiting> {
         let offer = |to: Option<(String, crate::coord::Offer)>| {
             if let Some(c) = &self.coord {
                 c.offer_resume(to);
@@ -9755,7 +9746,7 @@ impl Agent {
                 })
             }
             resume::Decision::Offer { member, worker, until } => {
-                let key = planet.strip_prefix(root).unwrap_or(planet.as_path()).to_string_lossy().into_owned();
+                let key = planet.rel().to_string();
                 offer(Some((
                     worker.clone(),
                     crate::coord::Offer { step: "osm-pass".into(), targets: vec![(date.clone(), key, 0)], job: None },
@@ -9772,24 +9763,26 @@ impl Agent {
 
     /// The OSM pass's command for the planet `planet` of `date`, in this Mac's scratch folder of it
     /// (where its stages' markers are: crate::osmpass), the lead's own and a member's resumed alike.
-    fn osm_pass_cmd(&self, root: &Path, planet: &Path, date: &str) -> Vec<String> {
+    fn osm_pass_cmd(&self, root: &store::nasfs::NasRoot, planet: &NasPath, date: &str) -> Vec<String> {
+        // (The planet and planetiler as the pass's arguments: tests/nas_access.rs.)
+        let (planet, jar) = (planet.unchecked_path(), root.join("sources/basemap/planetiler.jar").unchecked_path());
         let s = |p: &Path| p.to_string_lossy().into_owned();
         let scratch = self.o.home.join("scratch").join(format!("osm-{date}"));
         vec![
             s(&self.o.bin.join("scenic-build")),
             "osm-pass".into(),
             "--root".into(),
-            s(root),
+            jobs::root_arg(root),
             "--scratch".into(),
             s(&scratch),
             "--planet".into(),
-            s(planet),
+            s(&planet),
             "--date".into(),
             date.to_string(),
             "--extract".into(),
             s(&self.o.bin.join("extract")),
             "--planetiler".into(),
-            s(&root.join("sources/basemap/planetiler.jar")),
+            s(&jar),
             "--clear".into(),
             s(&self.o.home.join("cache").join("base")),
         ]
@@ -9822,7 +9815,7 @@ impl Agent {
 
     /// The pool's switches on the NAS, looked at each loop; and, not in the pool, whether this
     /// process can be now (it restarts into it).
-    fn pool_switch(&mut self, root: Option<&Path>) {
+    fn pool_switch(&mut self, root: Option<&store::nasfs::NasRoot>) {
         let Some(r) = root.filter(|_| self._lock.is_some() && !self.o.dry_run) else { return };
         self.tend_proxy(r);
         if let Some(on) = resume::on(r) {
@@ -9900,7 +9893,12 @@ impl Agent {
     /// (`pool::Ticker`) steps nothing from its start to its end, and steps the driver itself while
     /// this loop is busy elsewhere (`pool::Run::tick`); what it needs of the agent for that is set
     /// here (`pool::Cx`).
-    fn pool_step(&mut self, root: Option<&Path>, c: &Conditions, waiting: &mut Vec<Waiting>) -> Option<pool::Gates> {
+    fn pool_step(
+        &mut self,
+        root: Option<&store::nasfs::NasRoot>,
+        c: &Conditions,
+        waiting: &mut Vec<Waiting>,
+    ) -> Option<pool::Gates> {
         let shared = self.pool.clone()?;
         {
             // (A tick under way, on a share slow to answer: this loop goes on without the pool's
@@ -9945,7 +9943,12 @@ impl Agent {
     /// the NAS (members find no lead to ask, rather than one that won't answer them), and from
     /// `HUNG_SKIPS` passed over the status says so, naming the cause; all of it until a pool step
     /// runs again.
-    fn pool_skipped(&mut self, root: Option<&Path>, since: Option<u64>, waiting: &mut Vec<Waiting>) -> pool::Gates {
+    fn pool_skipped(
+        &mut self,
+        root: Option<&store::nasfs::NasRoot>,
+        since: Option<u64>,
+        waiting: &mut Vec<Waiting>,
+    ) -> pool::Gates {
         self.pool_skips += 1;
         // (By the awake clock: a sleep isn't a hang.)
         let held = since.map_or(0, |t| pool::Ticking::awake().saturating_sub(t));
@@ -9963,7 +9966,7 @@ impl Agent {
                 // at a time; and not once the contact was published again since it began.)
                 let busy = self.unpublishing.as_ref().is_some_and(|t| !t.is_finished());
                 if let (Some(r), true, false) = (root, self.published.is_some(), busy) {
-                    let (c, r, gens) = (co.clone(), r.to_path_buf(), self.publish_gen.clone());
+                    let (c, r, gens) = (co.clone(), r.clone(), self.publish_gen.clone());
                     let at = gens.load(std::sync::atomic::Ordering::SeqCst);
                     self.unpublishing = Some(std::thread::spawn(move || {
                         c.unpublish_unless(&r, &|| gens.load(std::sync::atomic::Ordering::SeqCst) != at)
@@ -9984,7 +9987,12 @@ impl Agent {
         pool::Gates { term: g.term, leads: g.leads, ..Default::default() }
     }
 
-    fn pool_step_in(&mut self, root: Option<&Path>, c: &Conditions, waiting: &mut Vec<Waiting>) -> Option<pool::Gates> {
+    fn pool_step_in(
+        &mut self,
+        root: Option<&store::nasfs::NasRoot>,
+        c: &Conditions,
+        waiting: &mut Vec<Waiting>,
+    ) -> Option<pool::Gates> {
         let lead = self.pooled()?.role == pool::Role::Lead;
         let Some(r) = root else {
             // (No NAS: no step; leading, nothing the driver hasn't said. Nor a tick.)
@@ -10046,7 +10054,7 @@ impl Agent {
             co.set_member(Some(&run.side.member().id));
         }
         run.cx = pool::Cx {
-            root: Some(r.to_path_buf()),
+            root: Some(r.clone()),
             home: home.clone(),
             coord: self.coord.clone(),
             able,
@@ -10167,7 +10175,7 @@ impl Agent {
     /// again: `beat`); or it no longer leads one, so its coordinator stops (its contact taken off
     /// the NAS) and it works as a member, its jobs going on through the lead, wherever it is, by
     /// HTTP. A coordinator that can't start leaves the part to a restart, as before.
-    fn change_part(&mut self, root: &Path, out: &crate::pool::driver::Out) {
+    fn change_part(&mut self, root: &store::nasfs::NasRoot, out: &crate::pool::driver::Out) {
         let Some(role) = self.pooled().map(|r| r.role) else { return };
         match (role, out.leads) {
             (pool::Role::Member, Some(term)) => {
@@ -10284,7 +10292,7 @@ impl Agent {
     /// records are on the NAS), the raw tiles' archives its records hold named in the raw store's
     /// index, its term named to the coordinator's state's writer (crate::coord::keep), its history's
     /// new events.
-    fn pool_lead_files(&mut self, root: &Path, saved: bool) {
+    fn pool_lead_files(&mut self, root: &store::nasfs::NasRoot, saved: bool) {
         let Some(mut guard) = self.pooled() else { return };
         let run = &mut *guard;
         if let Some(rec) = run.side.driver().records() {
@@ -10361,7 +10369,7 @@ impl Agent {
         // Into the forecasts' archive (fcarchive): handed to its thread, which writes in batches.
         if let Some(e) = self.fc_entry.borrow_mut().take() {
             let a = self.fc_archiver.get_or_init(|| {
-                fcarchive::Archiver::start(root.to_path_buf())
+                fcarchive::Archiver::start(root.clone())
                     .map_err(|e| eprintln!("agent: the forecasts' archive's thread: {e}"))
                     .ok()
             });
@@ -10399,12 +10407,10 @@ impl Agent {
     /// The gate's part of a loop: the listing thread started (on the lead or in a dry
     /// run: not a member's), and the asks of it taken up: a listing now (and a full check), and
     /// acceptances, which this Mac writes itself (docs/inputs.md §4.5).
-    fn tend_gate(&mut self, root: &Path) {
+    fn tend_gate(&mut self, root: &store::nasfs::NasRoot) {
         if !self.o.helper && self.inputs.watch.as_ref().is_none_or(|(r, _)| r != root) {
-            self.inputs.watch = Some((
-                root.to_path_buf(),
-                crate::inputs::watch::Watch::start(root.to_path_buf(), crate::inputs::watch::EVERY),
-            ));
+            self.inputs.watch =
+                Some((root.clone(), crate::inputs::watch::Watch::start(root.clone(), crate::inputs::watch::EVERY)));
         }
         // (Not a dry run's: the asks are the agent's that runs.)
         if self.o.dry_run {
@@ -10494,7 +10500,7 @@ impl Agent {
     /// or when asked; and the status's entries, from the records it plans with.
     fn gate_work(
         &self,
-        root: &Path,
+        root: &store::nasfs::NasRoot,
         manifest: &BTreeMap<String, String>,
         keys: &build::Keys,
         waiting: &mut Vec<Waiting>,
@@ -10560,7 +10566,7 @@ impl Agent {
                                 std::fs::remove_file(e.path()).ok();
                             }
                         }
-                        crate::whole::write(
+                        store::whole::write(
                             &planned,
                             &serde_json::to_vec(&crate::inputs::Planned {
                                 listing: l.listing.clone(),
@@ -10580,7 +10586,7 @@ impl Agent {
                     s(&self.o.bin.join("scenic-build")),
                     "inputs".into(),
                     "--root".into(),
-                    s(root),
+                    jobs::root_arg(root),
                     "--scratch".into(),
                     s(&self.o.home.join("scratch").join("inputs")),
                     unit.to_string(),
@@ -10629,7 +10635,7 @@ impl Agent {
                     s(&self.o.bin.join("scenic-build")),
                     "inputs".into(),
                     "--root".into(),
-                    s(root),
+                    jobs::root_arg(root),
                     "--scratch".into(),
                     s(&self.o.home.join("scratch").join("inputs")),
                     unit.clone(),
@@ -10656,7 +10662,12 @@ impl Agent {
 
     /// The regions' extract job (docs/inputs.md §6.1.6), when the regions' held report needs ids of
     /// the current pass and the job for them (and those the extract has) isn't done.
-    fn extract_job(&self, root: &Path, manifest: &BTreeMap<String, String>, keys: &build::Keys) -> Option<JobSpec> {
+    fn extract_job(
+        &self,
+        root: &store::nasfs::NasRoot,
+        manifest: &BTreeMap<String, String>,
+        keys: &build::Keys,
+    ) -> Option<JobSpec> {
         use crate::inputs::regions::extract;
         let held = manifest.get(&crate::inputs::held_logical(crate::inputs::regions::UNIT))?;
         let report = crate::inputs::read_report(root, held).ok()?;
@@ -10687,7 +10698,7 @@ impl Agent {
             s(&self.o.bin.join("scenic-build")),
             "regions-extract".into(),
             "--root".into(),
-            s(root),
+            jobs::root_arg(root),
             "--scratch".into(),
             s(&self.o.home.join("scratch").join("regions-extract")),
             "--pass".into(),
@@ -10843,7 +10854,7 @@ fn clear_target_scratch(dir: &Path, target: &str) -> Vec<PathBuf> {
 /// `keys` as every reader reads them (agent::rekey::as_read), for `Agent::start_as_built`'s counts
 /// off the loop.
 fn as_built_keys(
-    root: &Path,
+    root: &store::nasfs::NasRoot,
     cov: &crate::coverage::Coverage,
     manifest: &BTreeMap<String, String>,
     keys: &mut build::Keys,
@@ -10853,7 +10864,7 @@ fn as_built_keys(
     rekey::as_read(keys, cov, manifest, tiles, &times);
 }
 
-pub fn input_digests(root: &Path) -> BTreeMap<String, String> {
+pub fn input_digests(root: &store::nasfs::NasRoot) -> BTreeMap<String, String> {
     let mut inputs: BTreeMap<String, String> = BTreeMap::new();
     // The heritage registers as the heritage sites' key names them (crate::heritage::registers_line);
     // "?" when they can't be read now (the heritage sites then wait), none without an accepted version.
@@ -10916,8 +10927,8 @@ fn missing_feed_keys(inputs: &BTreeMap<String, String>) -> Option<String> {
 
 /// The names of the keys a `KEY=value` file holds a value for, sorted and comma-separated ("" when
 /// there's no file; None when it can't be read). Never their values: the names go in job keys.
-fn key_names(path: &Path) -> Option<String> {
-    let text = match std::fs::read_to_string(path) {
+fn key_names(path: &NasPath) -> Option<String> {
+    let text = match path.read_to_string() {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(String::new()),
         Err(_) => return None,
@@ -10979,7 +10990,7 @@ const PROXY_REPLAN: Duration = Duration::from_secs(60);
 /// The regions as the readers read them now (the accepted version: crate::inputs::regions::read),
 /// sorted by id, and why none can be read when it can't (one line).
 
-fn load_regions(root: &Path) -> (Vec<recipes::Recipe>, Vec<(String, String)>) {
+fn load_regions(root: &store::nasfs::NasRoot) -> (Vec<recipes::Recipe>, Vec<(String, String)>) {
     match crate::inputs::regions::read::source_now(root) {
         Ok(a) => match crate::inputs::regions::read::recipes(&a) {
             Ok(r) => (r, Vec::new()),
@@ -11176,14 +11187,14 @@ fn stop_for(
 
 /// A member's hold (crate::control::HoldState) written whole to `p` on the NAS, on the writers
 /// under a deadline (`nasread::write`).
-fn write_hold(p: &Path, st: &crate::control::HoldState) -> Result<()> {
+fn write_hold(p: &NasPath, st: &crate::control::HoldState) -> Result<()> {
     let b = serde_json::to_vec(st)?;
-    let owned = p.to_path_buf();
+    let owned = p.clone();
     nasread::write(p, move || {
         if let Some(d) = owned.parent() {
-            std::fs::create_dir_all(d)?;
+            d.create_dir_all()?;
         }
-        crate::whole::write(&owned, &b)
+        owned.write_whole(&b)
     })
 }
 
@@ -11350,17 +11361,25 @@ fn present_or_missing(r: std::io::Result<Vec<u8>>) -> Option<Option<Vec<u8>>> {
 }
 
 /// Writes a small file that is replaced each time (status files), its folder made
-/// (crate::whole::write: this Mac's own temporary name, a busy rename falling back to an aside).
+/// (store::whole::write: this Mac's own temporary name, a busy rename falling back to an aside).
 fn write_replace(p: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d)?;
     }
-    crate::whole::write(p, bytes)
+    store::whole::write(p, bytes)
+}
+
+/// `write_replace` on the NAS (its folder made once a process: store::nasfs).
+fn write_replace_nas(p: &NasPath, bytes: &[u8]) -> Result<()> {
+    if let Some(d) = p.parent() {
+        d.create_dir_all()?;
+    }
+    p.write_whole(bytes)
 }
 
 /// The status a `scenic status` shows: the NAS's heartbeat, else this Mac's copy.
-pub fn read_status(root: Option<&Path>, home: &Path) -> Option<Status> {
-    root.and_then(|r| crate::whole::read_replaced(&r.join("state/status.json")).ok())
+pub fn read_status(root: Option<&store::nasfs::NasRoot>, home: &Path) -> Option<Status> {
+    root.and_then(|r| r.join("state/status.json").read_replaced().ok())
         .or_else(|| std::fs::read(home.join("status.json")).ok())
         .and_then(|b| serde_json::from_slice(&b).ok())
 }
@@ -11382,12 +11401,12 @@ fn expect_same(w: &build::Work, done: &build::Keys) -> Vec<String> {
 }
 
 /// The helpers building now: `state/helpers/<host>.json` beaten within ten minutes.
-fn helpers(root: &Path) -> Vec<Status> {
-    let Ok(rd) = std::fs::read_dir(root.join("state/helpers")) else { return Vec::new() };
+fn helpers(root: &store::nasfs::NasRoot) -> Vec<Status> {
+    let Ok(rd) = root.join("state/helpers").read_dir() else { return Vec::new() };
     let mut out: Vec<Status> = rd
-        .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
-        .filter_map(|e| std::fs::read(e.path()).ok().and_then(|b| serde_json::from_slice::<Status>(&b).ok()))
+        .into_iter()
+        .filter(|e| e.path.extension() == Some("json"))
+        .filter_map(|e| e.path.read().ok().and_then(|b| serde_json::from_slice::<Status>(&b).ok()))
         .filter(|h| now_s().saturating_sub(h.beat) < 600)
         .map(|h| Status { regions: Vec::new(), checklist: Vec::new(), built: BTreeMap::new(), recent: Vec::new(), ..h })
         .collect();
@@ -11398,20 +11417,20 @@ fn helpers(root: &Path) -> Vec<Status> {
 /// The newest catalog in `dir` that reads, its number and when it went out: what the map's server
 /// serves (a damaged one passed over, as it does). (One read whole once: by its file and time, the
 /// last that read is remembered, so a delta's chain isn't read again each loop.)
-fn served_catalog(dir: &Path) -> Option<CatalogSeen> {
+fn served_catalog(dir: store::nasfs::Loc<'_>) -> Option<CatalogSeen> {
     served_catalog_and(dir).map(|(c, _)| c)
 }
 
 /// `served_catalog`, with what the names' to-do lists read of it (crate::namestodo::inputs_key),
 /// worked out as it's read.
-fn served_catalog_and(dir: &Path) -> Option<(CatalogSeen, String)> {
-    type Seen = Option<(PathBuf, std::time::SystemTime, String)>;
+fn served_catalog_and(dir: store::nasfs::Loc<'_>) -> Option<(CatalogSeen, String)> {
+    type Seen = Option<(store::nasfs::Place, std::time::SystemTime, String)>;
     static READ: std::sync::Mutex<Seen> = std::sync::Mutex::new(None);
     let mut ns = store::catalog::list(dir).ok()?;
     ns.sort_unstable();
     ns.into_iter().rev().find_map(|n| {
         let path = store::catalog::path_n(dir, n)?;
-        let t = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
+        let t = path.loc().metadata().and_then(|m| m.modified()).ok()?;
         let mut g = READ.lock().unwrap_or_else(|e| e.into_inner());
         let key = match &*g {
             Some((p, at, k)) if *p == path && *at == t => k.clone(),
@@ -11498,9 +11517,13 @@ fn first_secs(step: &str) -> f64 {
 #[cfg(test)]
 fn test_agent(o: Options) -> Result<Agent> {
     // (Never the real NAS or the app's home: a test with no root would find the mounted NAS.)
-    let root = o.root.as_deref().expect("a test agent needs a root of its own (a temp folder)");
-    assert!(!is_live_path(root), "a test agent's root is the real NAS: {}", root.display());
-    assert!(!is_live_path(&o.home), "a test agent's home is the app's real one: {}", o.home.display());
+    let root = o.root.as_ref().expect("a test agent needs a root of its own (a temp folder)");
+    assert!(
+        !store::nasfs::is_live_path(&root.unchecked_path()),
+        "a test agent's root is the real NAS: {}",
+        root.display()
+    );
+    assert!(!store::nasfs::is_live_path(&o.home), "a test agent's home is the app's real one: {}", o.home.display());
     // (The NAS's answer as the real probe decides it, by its folder, but at once: a loaded Mac's
     // threads can't make a test's NAS look away.)
     // (Its jobs go out through the budgets' proxy, as every agent's: started as its first loop
@@ -11665,7 +11688,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("catalog")).unwrap();
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
             dry_run: true,
@@ -11714,7 +11737,7 @@ mod tests {
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         std::fs::write(root.join("state/build/manifest.json"), "{}").unwrap();
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
             dry_run: true,
@@ -11722,46 +11745,47 @@ mod tests {
             helper: false,
         })
         .unwrap();
-        let mut last = a.plan_seen(&root);
+        let mut last = a.plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
         assert_ne!(last, 0);
-        assert_eq!(a.plan_seen(&root), last);
+        assert_eq!(a.plan_seen(&store::nasfs::NasRoot::local_for_test(&root)), last);
         // (Each change a different length: the digest doesn't rest on the file times' resolution.)
         std::fs::write(root.join("state/build/manifest.json"), "{\"a\":\"b\"}").unwrap();
-        let now = a.plan_seen(&root);
+        let now = a.plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
         assert_ne!(now, last);
         last = now;
         std::fs::write(root.join("state/build/jobs.json"), "{}").unwrap();
-        let now = a.plan_seen(&root);
+        let now = a.plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
         assert_ne!(now, last);
         last = now;
-        std::fs::create_dir_all(a.handoff_bases(&root)[0].join("other-mac")).unwrap();
-        let now = a.plan_seen(&root);
+        std::fs::create_dir_all(a.handoff_bases(&store::nasfs::NasRoot::local_for_test(&root))[0].join("other-mac"))
+            .unwrap();
+        let now = a.plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
         assert_ne!(now, last);
         last = now;
         // Publishing's switches and the hold on catalogs.
         for f in [publish::DELTA_CATALOG, publish::NEAR_SLOPE, "inputs/hold-catalog"] {
             std::fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
             std::fs::write(root.join(f), "on").unwrap();
-            let now = a.plan_seen(&root);
+            let now = a.plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
             assert_ne!(now, last, "{f}");
             last = now;
         }
         // A held catalog's folder made.
         std::fs::create_dir_all(root.join("catalog-held")).unwrap();
-        let now = a.plan_seen(&root);
+        let now = a.plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
         assert_ne!(now, last);
         last = now;
         // The coordinator's leases: this Mac's own taken and let go (a start that didn't go
         // through) changes nothing; another worker's taken, then given back, does.
         let co = std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0);
         a.coord = Some(co.clone());
-        let now = a.plan_seen(&root);
+        let now = a.plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
         assert_ne!(now, last);
         last = now;
         let id = co.hold("gc", &[("t".into(), "k".into())]).unwrap();
-        assert_eq!(a.plan_seen(&root), last);
+        assert_eq!(a.plan_seen(&store::nasfs::NasRoot::local_for_test(&root)), last);
         co.finish(id, &[]);
-        assert_eq!(a.plan_seen(&root), last);
+        assert_eq!(a.plan_seen(&store::nasfs::NasRoot::local_for_test(&root)), last);
         let id = {
             let mut s = co.shared.lock().unwrap();
             let t = s.now();
@@ -11771,18 +11795,18 @@ mod tests {
                 t,
             )
         };
-        let now = a.plan_seen(&root);
+        let now = a.plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
         assert_ne!(now, last);
         last = now;
         co.shared.lock().unwrap().leases.cancel(id).unwrap();
-        let now = a.plan_seen(&root);
+        let now = a.plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
         assert_ne!(now, last);
         last = now;
         // The pool's switches the agent holds.
         a.placement = true;
-        let now = a.plan_seen(&root);
+        let now = a.plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
         assert_ne!(now, last);
-        assert_eq!(a.plan_seen(&root), now);
+        assert_eq!(a.plan_seen(&store::nasfs::NasRoot::local_for_test(&root)), now);
     }
 
     /// Every scenic-build command line the agent makes, by its own code (step_args, the targets as
@@ -11793,7 +11817,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("catalog")).unwrap();
         let a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
             dry_run: true,
@@ -11820,7 +11844,7 @@ mod tests {
                     s(&a.o.bin.join("scenic-build")),
                     step.clone(),
                     "--root".into(),
-                    s(&root),
+                    jobs::root_arg(&store::nasfs::NasRoot::local_for_test(&root)),
                     "--scratch".into(),
                     s(&home.join("scratch").join(&step)),
                 ];
@@ -11834,7 +11858,11 @@ mod tests {
                 }
             }
         }
-        let pass = a.osm_pass_cmd(&root, &root.join("planet.osm.pbf"), "2026-10-01");
+        let pass = a.osm_pass_cmd(
+            &store::nasfs::NasRoot::local_for_test(&root),
+            &store::nasfs::NasPath::local_for_test(&root.join("planet.osm.pbf")),
+            "2026-10-01",
+        );
         assert_eq!(crate::cli::check_command(&pass), Some(Ok(())));
     }
 
@@ -11898,10 +11926,10 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("root"), d.path().join("home"));
         std::fs::create_dir_all(root.join("state/build")).unwrap();
-        let a = agent(&root, &home);
+        let a = agent(&store::nasfs::NasRoot::local_for_test(&root), &home);
         let mut keys = build::Keys::default();
         keys.record("unit", &[("6/1/1".to_string(), "k1".to_string())]);
-        keys.save(&root).unwrap();
+        keys.save(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         // Hand-offs the coordinator journaled here: they count as built until drained.
         let done = |u: &str, k: &str| crate::handoff::Handoff {
             done: Some(("unit".into(), vec![(u.into(), k.into())])),
@@ -11926,18 +11954,21 @@ mod tests {
         )
         .unwrap();
         crate::handoff::write(&home.join("coord/journal/m1"), &save("layers/trees-cover/hi/6-28-17", None)).unwrap();
-        let k = a.planning_keys(&root).unwrap();
+        let k = a.planning_keys(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         assert_eq!(
             (k.recorded("unit", "6/1/1"), k.recorded("unit", "6/1/2"), k.recorded("unit", "6/1/3")),
             (Some("k1"), Some("k2"), Some("k3"))
         );
         assert_eq!(k.handed.iter().collect::<Vec<_>>(), ["work/trees-mid/6-28-16"]);
-        assert!(build::Keys::load(&root).handed.is_empty(), "never in the keys saved");
+        assert!(
+            build::Keys::load(&store::nasfs::NasRoot::local_for_test(&root)).handed.is_empty(),
+            "never in the keys saved"
+        );
     }
 
-    fn agent(root: &Path, home: &Path) -> Agent {
+    fn agent(root: &store::nasfs::NasRoot, home: &Path) -> Agent {
         test_agent(Options {
-            root: Some(root.to_path_buf()),
+            root: Some(root.clone()),
             home: home.to_path_buf(),
             bin: PathBuf::from("/nonexistent/bin"),
             dry_run: true,
@@ -11961,11 +11992,18 @@ mod tests {
         let root = d.path();
         let recipes = vec![recipes::Recipe { id: "a".into(), name: "Alpha".into(), outline: vec!["osm:5".into()] }];
         let mut m = BTreeMap::new();
-        crate::inputs::regions::accept_fixture(root, root, &recipes, &mut m);
-        let a = crate::inputs::open(root, &m, crate::inputs::regions::UNIT).unwrap().unwrap();
-        let ag = agent(root, &home.path().join("home"));
+        crate::inputs::regions::accept_fixture(
+            &store::nasfs::NasRoot::local_for_test(root),
+            root.into(),
+            &recipes,
+            &mut m,
+        );
+        let a = crate::inputs::open(&store::nasfs::NasRoot::local_for_test(root), &m, crate::inputs::regions::UNIT)
+            .unwrap()
+            .unwrap();
+        let ag = agent(&store::nasfs::NasRoot::local_for_test(root), &home.path().join("home"));
         // No catalogue yet: its name and crumbs, no size.
-        ag.regions_view(root, &a, &recipes);
+        ag.regions_view(&store::nasfs::NasRoot::local_for_test(root), &a, &recipes);
         settle(&ag);
         let v = ag.regions_view.borrow().as_ref().unwrap().1.clone();
         assert_eq!(
@@ -11986,12 +12024,12 @@ mod tests {
         c.coverage = serde_json::json!({ "regions": [{ "id": "a", "name": "Alpha", "outline": ["osm:5"],
             "shapes": { "osm:5": [[[[50.0, 0.5], [50.1, 0.5], [50.1, 0.6], [50.0, 0.6], [50.0, 0.5]]]] } }] });
         store::catalog::write(&root.join("catalog"), &c).unwrap();
-        ag.regions_view(root, &a, &recipes);
+        ag.regions_view(&store::nasfs::NasRoot::local_for_test(root), &a, &recipes);
         settle(&ag);
         let v = ag.regions_view.borrow().as_ref().unwrap().1.clone();
         assert_eq!((v["catalog"].as_u64(), v["regions"][0]["bytes"].as_u64()), (Some(1), Some(777)));
         // (Made once for the same version and catalogue: not again, even had it failed.)
-        ag.regions_view(root, &a, &recipes);
+        ag.regions_view(&store::nasfs::NasRoot::local_for_test(root), &a, &recipes);
         assert!(ag.regions_making.borrow().is_none());
     }
 
@@ -12020,7 +12058,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("sources")).unwrap();
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
             dry_run: false,
@@ -12044,11 +12082,23 @@ mod tests {
         room::set_target(&home, Some(50 << 30), "a test").unwrap();
         a.room_target = room::target(&home);
         let mut w = Vec::new();
-        assert!(!a.try_start(0, job("terrain-hi 3/1/1"), &cond, Some(&root), &mut w));
+        assert!(!a.try_start(
+            0,
+            job("terrain-hi 3/1/1"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut w
+        ));
         assert_eq!(w.iter().map(|w| w.what.as_str()).collect::<Vec<_>>(), ["terrain-hi 3/1/1"], "{w:?}");
         assert!(w.iter().all(|w| w.why.contains("disk room target")), "{w:?}");
         a.slots[0].lease = None;
-        assert!(a.try_start(0, job("backup daily"), &cond, Some(&root), &mut w));
+        assert!(a.try_start(
+            0,
+            job("backup daily"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut w
+        ));
         assert_eq!(a.slots[0].running.as_ref().map(|r| r.spec.id.as_str()), Some("backup daily"));
         a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
         a.slots = Default::default();
@@ -12058,7 +12108,7 @@ mod tests {
         assert!(a.room_short(false).is_some_and(|s| s.contains("NAS isn't reachable")));
         // Tried again within ten minutes: held without making room again.
         let mut w = Vec::new();
-        assert!(!a.try_start(0, job("unit 6/1/1"), &cond, Some(&root), &mut w));
+        assert!(!a.try_start(0, job("unit 6/1/1"), &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), &mut w));
         assert!(w[0].why.contains("disk room target"), "{w:?}");
         // (Its need past the target: past what the disk has.)
         assert!(a.disk_free() < a.need_of(0, &job("unit 6/1/1")) + a.floor());
@@ -12066,7 +12116,13 @@ mod tests {
         room::set_target(&home, Some(5 << 30), "a test").unwrap();
         a.room_target = room::target(&home);
         a.floor_short = None;
-        assert!(a.try_start(0, job("unit 6/1/1"), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(
+            0,
+            job("unit 6/1/1"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
         // A target past what's free: between jobs (none runs), the caches are freed toward
         // it (all they hold here: their others too, not the canopy squares alone), and once they
         // have nothing more, the status says so.
@@ -12093,7 +12149,7 @@ mod tests {
         a.room_target = room::target(&home);
         assert_eq!(a.toward_due(), Some(big));
         // (One loop at a time: the freeing waited for, its disk this test's.)
-        a.tend_caches(Some(&root));
+        a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root)));
         assert!(a.caches_task.is_none());
         let t = a.mem.toward.clone().unwrap();
         assert_eq!((t.target, t.bytes()), (Some(big), 1100), "{t:?}");
@@ -12121,7 +12177,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("sources")).unwrap();
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
             dry_run: false,
@@ -12138,7 +12194,13 @@ mod tests {
         put(&idle, &[0; 500]);
         // A job runs (the daily backup: it keeps no target), holding one of the packs.
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
-        assert!(a.try_start(0, waiting_job("backup daily"), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(
+            0,
+            waiting_job("backup daily"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
         store::cachefile::hold_existing(&used).unwrap();
         // A target past what's free (the freeing's thread sees this Mac's disk): freed toward now,
         // the job running, all but what it holds.
@@ -12147,7 +12209,7 @@ mod tests {
         a.room_target = room::target(&home);
         assert!(!a.idle());
         assert_eq!(a.toward_due(), Some(target));
-        a.tend_caches(Some(&root));
+        a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root)));
         let f = a.mem.toward.clone().unwrap();
         assert_eq!((f.target, f.bytes()), (Some(target), 500), "{f:?}");
         assert!(used.exists() && !idle.exists());
@@ -12162,7 +12224,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("sources")).unwrap();
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
             dry_run: false,
@@ -12189,17 +12251,17 @@ mod tests {
         room::set_target(&home, Some(target), "a test").unwrap();
         a.room_target = room::target(&home);
         let mut w = Vec::new();
-        assert!(!a.try_start(0, job("unit 6/1/1"), &cond, Some(&root), &mut w));
+        assert!(!a.try_start(0, job("unit 6/1/1"), &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), &mut w));
         a.slots[0].lease = None;
         assert!(a.idle() && w[0].why.contains("disk room target"), "{w:?}");
         assert_eq!(a.toward_due(), Some(room));
-        a.tend_caches(Some(&root));
+        a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root)));
         let f = a.mem.toward.clone().unwrap();
         assert_eq!((f.target, f.goal, f.bytes()), (Some(target), None, 1000), "{f:?}");
         // Done, and short of both: no freeing again within ten minutes, toward the z6 tile's room nor
         // toward the target, loop after loop (nor once the z6 tile's wait is over).
         for _ in 0..3 {
-            a.tend_caches(Some(&root));
+            a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root)));
             assert!(a.caches_task.is_none());
             assert_eq!(a.mem.toward.as_ref().map(|t| t.at), Some(f.at));
             assert_eq!(a.toward_due(), None);
@@ -12221,7 +12283,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         // (A root of its own, no catalog/: the NAS away, the pool off.)
         let mut a = test_agent(Options {
-            root: Some(d.path().join("nas")),
+            root: Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))),
             home: d.path().join("home"),
             bin: PathBuf::from("/app"),
             dry_run: false,
@@ -12261,10 +12323,10 @@ mod tests {
     fn tests_never_reach_the_nas() {
         assert_eq!(find_root(false), None);
         assert_eq!(find_root(true), None);
-        assert!(is_live_path(Path::new("/Volumes/personal/projects/scenic-roads")));
+        assert!(store::nasfs::is_live_path(Path::new("/Volumes/personal/projects/scenic-roads")));
         let d = tempfile::tempdir().unwrap();
-        assert!(!is_live_path(d.path()));
-        let o = |root: Option<PathBuf>| Options {
+        assert!(!store::nasfs::is_live_path(d.path()));
+        let o = |root: Option<store::nasfs::NasRoot>| Options {
             root,
             home: d.path().join("home"),
             bin: PathBuf::from("/app"),
@@ -12274,18 +12336,21 @@ mod tests {
         };
         assert!(std::panic::catch_unwind(|| test_agent(o(None))).is_err(), "no root");
         assert!(
-            std::panic::catch_unwind(|| test_agent(o(Some("/Volumes/personal/projects/scenic-roads".into())))).is_err(),
+            std::panic::catch_unwind(|| test_agent(o(Some(store::nasfs::NasRoot::local_for_test(
+                "/Volumes/personal/projects/scenic-roads"
+            )))))
+            .is_err(),
             "the NAS"
         );
         if let Some(h) = std::env::var_os("HOME") {
             let live = Options {
                 home: Path::new(&h).join("Library/Application Support/scenic"),
-                ..o(Some(d.path().join("nas")))
+                ..o(Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))))
             };
             assert!(std::panic::catch_unwind(|| test_agent(live)).is_err(), "the app's home");
         }
         assert!(
-            std::panic::catch_unwind(|| crate::pool::nas::Share::new(Path::new("/Volumes/x/scenic-roads"))).is_err(),
+            std::panic::catch_unwind(|| store::nasfs::NasRoot::local_for_test("/Volumes/x/scenic-roads")).is_err(),
             "a share on the NAS"
         );
         TEST_ROOT.with(|t| *t.borrow_mut() = Some("/Volumes/personal/projects/scenic-roads".into()));
@@ -12300,7 +12365,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         // (A root of its own, no catalog/: the NAS away, the pool off.)
         let mut a = test_agent(Options {
-            root: Some(d.path().join("nas")),
+            root: Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))),
             home: d.path().join("home"),
             bin: PathBuf::from("/app"),
             dry_run: false,
@@ -12334,7 +12399,7 @@ mod tests {
             }],
         );
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
             dry_run: false,
@@ -12349,7 +12414,7 @@ mod tests {
         ));
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let mut w = Vec::new();
-        let jobs = a.helper_job(&root, &cond, &mut w);
+        let jobs = a.helper_job(&store::nasfs::NasRoot::local_for_test(&root), &cond, &mut w);
         assert_eq!(jobs.len(), 1, "{w:?}");
         let j = &jobs[0];
         // The lead's own command for slope, its saves handed off to its lease's outbox.
@@ -12384,7 +12449,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(d.path().join("nas")).unwrap();
         let mut a = test_agent(Options {
-            root: Some(d.path().join("nas")),
+            root: Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))),
             home: d.path().join("home"),
             bin: PathBuf::from("/app"),
             dry_run: false,
@@ -12415,7 +12480,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(d.path().join("nas")).unwrap();
         let mut a = test_agent(Options {
-            root: Some(d.path().join("nas")),
+            root: Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))),
             home: d.path().join("home"),
             bin: PathBuf::from("/app"),
             dry_run: false,
@@ -12479,7 +12544,7 @@ mod tests {
             }],
         );
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: apps.join("v1"),
             dry_run: false,
@@ -12502,7 +12567,7 @@ mod tests {
         a.build_memory = buildmem::read(&home);
         assert_eq!(a.build_room(), 6 << 10);
         assert_eq!(a.capacity(&cond).build_mb, 6 << 10);
-        let got = a.helper_grants(&root, &cond, &mut w);
+        let got = a.helper_grants(&store::nasfs::NasRoot::local_for_test(&root), &cond, &mut w);
         assert_eq!(got.iter().map(|(k, _)| *k).collect::<Vec<_>>(), [0, 1, 2], "{w:?}");
         assert_eq!(a.slots.len(), 3);
         // Each started in its slot (a job that sleeps, its scratch argument kept).
@@ -12510,7 +12575,10 @@ mod tests {
             let scratch = scratch_of(&spec).unwrap();
             spec.cmd = vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into(), "x".into(), "--scratch".into()];
             spec.cmd.push(scratch.to_string_lossy().into_owned());
-            assert!(a.try_start_said(k, spec, &cond, Some(&root), &mut w), "{w:?}");
+            assert!(
+                a.try_start_said(k, spec, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), &mut w),
+                "{w:?}"
+            );
         }
         let scratches: Vec<PathBuf> =
             a.slots.iter().map(|s| scratch_of(&s.running.as_ref().unwrap().spec).unwrap()).collect();
@@ -12534,11 +12602,11 @@ mod tests {
             a.sampler.set_test_busy(None);
         }
         // (Its slots full by what the lead grants: asked again, nothing more fits.)
-        assert!(a.helper_grants(&root, &cond, &mut w).is_empty());
+        assert!(a.helper_grants(&store::nasfs::NasRoot::local_for_test(&root), &cond, &mut w).is_empty());
         assert_eq!(a.slots.len(), 3, "no slot made for nothing");
         let tend_all = |a: &mut Agent| {
             for k in 0..a.slots.len() {
-                a.tend(k, &cond, Some(&root), 0).unwrap();
+                a.tend(k, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), 0).unwrap();
             }
         };
         // An update: every slot drains for it, and the loop restarts only once each has its safe
@@ -12649,7 +12717,7 @@ mod tests {
         for l in &leases {
             a.client.as_ref().unwrap().give_back(*l, "the test").unwrap();
         }
-        let again = a.helper_grants(&root, &cond, &mut w);
+        let again = a.helper_grants(&store::nasfs::NasRoot::local_for_test(&root), &cond, &mut w);
         assert!(!again.is_empty(), "{w:?}");
         for (k, spec) in &again {
             assert!(spec.record.as_ref().unwrap().targets.iter().all(|t| t.0 != target), "{target} granted again");
@@ -12690,7 +12758,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
             dry_run: false,
@@ -12711,16 +12779,33 @@ mod tests {
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let mut w = Vec::new();
-        assert_eq!(lead_start(&mut a, std::slice::from_ref(&job), &cond, &root, &mut w), [0], "{w:?}");
+        assert_eq!(
+            lead_start(
+                &mut a,
+                std::slice::from_ref(&job),
+                &cond,
+                &store::nasfs::NasRoot::local_for_test(&root),
+                &mut w
+            ),
+            [0],
+            "{w:?}"
+        );
         let t = Instant::now();
         while a.slots[0].running.is_some() {
             assert!(t.elapsed() < store::testkit::WATCHDOG, "it ends");
-            a.tend(0, &cond, Some(&root), 0).unwrap();
+            a.tend(0, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), 0).unwrap();
             std::thread::sleep(Duration::from_millis(50));
         }
         // (The agent's own wait set aside: the coordinator's backoff alone holds it.)
         a.mem.retry.clear();
-        assert!(lead_start(&mut a, std::slice::from_ref(&job), &cond, &root, &mut w).is_empty());
+        assert!(lead_start(
+            &mut a,
+            std::slice::from_ref(&job),
+            &cond,
+            &store::nasfs::NasRoot::local_for_test(&root),
+            &mut w
+        )
+        .is_empty());
     }
 
     /// The lead's slots' ramp (`tend_ramp`): held at two while the NAS's limits aren't known, the
@@ -12734,7 +12819,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
             dry_run: false,
@@ -12829,7 +12914,7 @@ mod tests {
             record: Some(build::Work { step: "rail".into(), targets: vec![("rail".into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
-        assert!(a.try_start(0, job, &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(0, job, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), &mut Vec::new()));
         assert!(a.guard_stop_as(0, "memory guard", "past the limit (a test)", false));
         assert!(near_now(kept(&home).clean_since) && kept(&home).peak == 0, "{:?}", kept(&home));
         // A member's slots: by its cores alone.
@@ -12850,7 +12935,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
             dry_run: false,
@@ -12894,12 +12979,22 @@ mod tests {
         };
         let mut w = Vec::new();
         // Nothing starts without a grant.
-        assert!(!a.try_start_said(0, job("labels"), &cond, Some(&root), &mut w));
+        assert!(!a.try_start_said(
+            0,
+            job("labels"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut w
+        ));
         assert!(w.iter().any(|w| w.why.contains("not granted")), "{w:?}");
         // A cold start of a step never measured (labels): alone, nothing beside it.
         let plan = [job("labels"), job("items")];
-        assert_eq!(lead_start(&mut a, &plan, &cond, &root, &mut w), [0], "{w:?}");
-        assert!(lead_start(&mut a, &plan, &cond, &root, &mut w).is_empty());
+        assert_eq!(
+            lead_start(&mut a, &plan, &cond, &store::nasfs::NasRoot::local_for_test(&root), &mut w),
+            [0],
+            "{w:?}"
+        );
+        assert!(lead_start(&mut a, &plan, &cond, &store::nasfs::NasRoot::local_for_test(&root), &mut w).is_empty());
         assert_eq!(running(&a), ["labels labels"]);
         // A member asking for the lead's steps: none of them.
         let m1 = crate::coord::client::Client::at(
@@ -12933,14 +13028,22 @@ mod tests {
         c.add_disks(&[(crate::coord::cost_key("items", "items"), 25 << 10)]);
         // Heritage first (the plan's order); labels doesn't fit beside it, past this Mac's limit.
         let plan = [job("heritage"), job("labels")];
-        assert_eq!(lead_start(&mut a, &plan, &cond, &root, &mut w), [0], "{w:?}");
-        assert!(lead_start(&mut a, &plan, &cond, &root, &mut w).is_empty());
+        assert_eq!(
+            lead_start(&mut a, &plan, &cond, &store::nasfs::NasRoot::local_for_test(&root), &mut w),
+            [0],
+            "{w:?}"
+        );
+        assert!(lead_start(&mut a, &plan, &cond, &store::nasfs::NasRoot::local_for_test(&root), &mut w).is_empty());
         // Items fits its memory beside it, but not its disk (25 GB) while the disk has 20 GB.
         let plan = [job("heritage"), job("labels"), job("items")];
         a.free_set = Some(20 << 30);
-        assert!(lead_start(&mut a, &plan, &cond, &root, &mut w).is_empty());
+        assert!(lead_start(&mut a, &plan, &cond, &store::nasfs::NasRoot::local_for_test(&root), &mut w).is_empty());
         a.free_set = Some(100 << 30);
-        assert_eq!(lead_start(&mut a, &plan, &cond, &root, &mut w), [1], "{w:?}");
+        assert_eq!(
+            lead_start(&mut a, &plan, &cond, &store::nasfs::NasRoot::local_for_test(&root), &mut w),
+            [1],
+            "{w:?}"
+        );
         assert_eq!(running(&a), ["heritage heritage", "items items"]);
         // In a slot of its own: its scratch, and its worker in the history.
         let r = a.slots[1].running.as_ref().unwrap();
@@ -12964,7 +13067,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
             dry_run: false,
@@ -12998,33 +13101,43 @@ mod tests {
             (crate::coord::cost_key("unit", "6/3/3"), cost("unit", 9216)),
             (crate::coord::cost_key("labels", "labels"), cost("labels", 6144)),
         ]);
-        assert!(a.try_start(0, job("unit", "6/3/3"), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(
+            0,
+            job("unit", "6/3/3"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
         let mut w = Vec::new();
         let tick = |a: &mut Agent, held: Vec<Option<u64>>| {
             a.sampler.set_test(Some(held), Some(false));
             a.sampler.tick();
             for k in 0..SLOTS {
-                a.tend(k, &cond, Some(&root), 0).unwrap();
+                a.tend(k, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), 0).unwrap();
             }
         };
         // Its tail out, holding 1 GB now, but not saying it waits: by its measure (9 GB), labels
         // (6 GB) isn't granted beside it.
         tick(&mut a, vec![Some(1 << 10), None]);
         let labels = [job("labels", "labels")];
-        assert!(lead_start(&mut a, &labels, &cond, &root, &mut w).is_empty());
+        assert!(lead_start(&mut a, &labels, &cond, &store::nasfs::NasRoot::local_for_test(&root), &mut w).is_empty());
         assert!(a.slots[1].running.is_none());
         // A stale file (a process not of the job's): the same.
         let note = |pid: u32| crate::offload::WaitNote { pid, worker: "ipad".into(), task: 7, since: now_s() };
         assert!(note(1).keep(&a.waiting_path(0)).map(std::mem::forget).is_some());
         assert!(a.waiting_on(0).is_none());
-        assert!(lead_start(&mut a, &labels, &cond, &root, &mut w).is_empty());
+        assert!(lead_start(&mut a, &labels, &cond, &store::nasfs::NasRoot::local_for_test(&root), &mut w).is_empty());
         // Its own (the job's process): labels is granted beside it (the z6 tile counted as it holds
         // now), with its measured threads, yielding.
         let pgid = a.slots[0].running.as_ref().unwrap().pgid as u32;
         assert!(note(pgid).keep(&a.waiting_path(0)).map(std::mem::forget).is_some());
         assert_eq!(a.waiting_on(0).map(|n| n.worker), Some("ipad".to_string()));
         assert!(a.job_view(0).and_then(|j| j.waiting).is_some_and(|w| w.contains("waiting on ipad")));
-        assert_eq!(lead_start(&mut a, &labels, &cond, &root, &mut w), [1], "{w:?}");
+        assert_eq!(
+            lead_start(&mut a, &labels, &cond, &store::nasfs::NasRoot::local_for_test(&root), &mut w),
+            [1],
+            "{w:?}"
+        );
         assert_eq!(a.slots[1].running.as_ref().map(|r| r.spec.id.clone()).as_deref(), Some("labels labels"));
         assert_eq!(a.slots[1].yields.as_deref(), Some("unit 6/3/3"));
         assert!(a.slots[1].running.as_ref().is_some_and(|r| r.threads >= 1));
@@ -13048,7 +13161,11 @@ mod tests {
         // Started beside it again, the Mac short of memory though within the limit: stopped at once.
         assert!(note(pgid).keep(&a.waiting_path(0)).map(std::mem::forget).is_some());
         tick(&mut a, vec![Some(1 << 10), None]);
-        assert_eq!(lead_start(&mut a, &labels, &cond, &root, &mut w), [1], "{w:?}");
+        assert_eq!(
+            lead_start(&mut a, &labels, &cond, &store::nasfs::NasRoot::local_for_test(&root), &mut w),
+            [1],
+            "{w:?}"
+        );
         assert!(a.slots[1].running.is_some());
         std::fs::remove_file(a.waiting_path(0)).unwrap();
         a.sampler.set_test(Some(vec![Some(3 << 10), Some(3 << 10)]), Some(true));
@@ -13058,7 +13175,13 @@ mod tests {
         // longer running (the first slot's ended, another started) doesn't yield.
         a.sampler.set_test(Some(vec![Some(1 << 10), None]), Some(false));
         a.sampler.tick();
-        assert!(a.try_start(1, job("labels", "labels"), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(
+            1,
+            job("labels", "labels"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
         a.slots[1].yields = Some("unit 6/3/3".into());
         assert!(a.yielding(1));
         a.slots[1].yields = Some("unit 6/9/9".into());
@@ -13081,7 +13204,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("state/pool")).unwrap();
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
             dry_run: false,
@@ -13114,10 +13237,22 @@ mod tests {
                 a.slots[k].running = None;
             }
         };
-        a.pool_switch(Some(&root));
+        a.pool_switch(Some(&store::nasfs::NasRoot::local_for_test(&root)));
         let url = a.proxy.as_ref().map(|p| p.url()).expect("the proxy started");
-        assert!(a.try_start(0, job("items", "items"), &cond, Some(&root), &mut Vec::new()));
-        assert!(a.try_start(1, job("heritage", "heritage"), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(
+            0,
+            job("items", "items"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
+        assert!(a.try_start(
+            1,
+            job("heritage", "heritage"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
         // (Each job ends by itself once it has looked: its exit waited for, bounded by nc's own
         // five seconds at most; no clock in the test.)
         for k in 0..SLOTS {
@@ -13153,7 +13288,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
             dry_run: false,
@@ -13175,7 +13310,13 @@ mod tests {
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         a.free_set = Some(100 * g);
         a.room_target = Some(room::Target { bytes: 30 * g, by: "a test".into(), at: now_s() });
-        assert!(a.try_start(0, job("6/1/1"), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(
+            0,
+            job("6/1/1"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
         a.sampler.set_test(Some(vec![None, None]), Some(false));
         a.sampler.set_disk(true, 30 * g, &home);
         // The disk falls short: frozen; room made (here none to make), then the disk has room again
@@ -13184,17 +13325,23 @@ mod tests {
         a.sampler.set_test_disk(Some(20 * g), Some(vec![Some(5 * g), None]));
         a.sampler.tick();
         assert!(a.sampler.disk_frozen(0));
-        assert!(!a.disk_guard(Some(&root)) && a.disk_room.is_some(), "room being made");
+        assert!(
+            !a.disk_guard(Some(&store::nasfs::NasRoot::local_for_test(&root))) && a.disk_room.is_some(),
+            "room being made"
+        );
         a.free_set = Some(40 * g);
-        assert!(!a.disk_guard(Some(&root)));
+        assert!(!a.disk_guard(Some(&store::nasfs::NasRoot::local_for_test(&root))));
         assert!(!a.sampler.disk_frozen(0) && a.slots[0].running.is_some(), "it goes on");
         // Short again, and no room to be made: given back, not failed, its disk floor learned.
         a.free_set = Some(20 * g);
         a.sampler.set_test_disk(Some(20 * g), Some(vec![Some(7 * g), None]));
         a.sampler.tick();
         assert!(a.sampler.disk_frozen(0));
-        assert!(!a.disk_guard(Some(&root)));
-        assert!(a.disk_guard(Some(&root)) && a.slots[0].running.is_none(), "given back");
+        assert!(!a.disk_guard(Some(&store::nasfs::NasRoot::local_for_test(&root))));
+        assert!(
+            a.disk_guard(Some(&store::nasfs::NasRoot::local_for_test(&root))) && a.slots[0].running.is_none(),
+            "given back"
+        );
         assert!(!a.mem.retry.contains_key("terrain-hi 6/1/1"), "not held against it as a failure");
         assert!(
             a.coord
@@ -13214,22 +13361,39 @@ mod tests {
         // Two frozen (the second filling the disk past half the target meanwhile), no room to make:
         // the one taking the most given back first, the other kept frozen until the next decision.
         a.free_set = Some(200 * g);
-        assert!(a.try_start(0, job("6/2/2"), &cond, Some(&root), &mut Vec::new()));
-        assert!(a.try_start(1, job("6/3/3"), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(
+            0,
+            job("6/2/2"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
+        assert!(a.try_start(
+            1,
+            job("6/3/3"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
         a.sampler.set_test_disk(Some(20 * g), Some(vec![Some(2 * g), None]));
         a.sampler.tick();
         a.sampler.set_test_disk(Some(10 * g), Some(vec![Some(2 * g), Some(9 * g)]));
         a.sampler.tick();
         assert!(a.sampler.disk_frozen(0) && a.sampler.disk_frozen(1));
         a.free_set = Some(10 * g);
-        assert!(!a.disk_guard(Some(&root)));
+        assert!(!a.disk_guard(Some(&store::nasfs::NasRoot::local_for_test(&root))));
         assert!(
-            a.disk_guard(Some(&root)) && a.slots[1].running.is_none() && a.slots[0].running.is_some(),
+            a.disk_guard(Some(&store::nasfs::NasRoot::local_for_test(&root)))
+                && a.slots[1].running.is_none()
+                && a.slots[0].running.is_some(),
             "the larger given back"
         );
         assert!(a.sampler.disk_frozen(0));
         a.free_set = Some(40 * g);
-        assert!(!a.disk_guard(Some(&root)) && !a.sampler.disk_frozen(0), "the other goes on once there's room");
+        assert!(
+            !a.disk_guard(Some(&store::nasfs::NasRoot::local_for_test(&root))) && !a.sampler.disk_frozen(0),
+            "the other goes on once there's room"
+        );
         if let Some(r) = a.slots[0].running.as_mut() {
             r.stop(Duration::from_secs(5));
         }
@@ -13245,7 +13409,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
             dry_run: false,
@@ -13289,7 +13453,7 @@ mod tests {
         };
         assert_eq!(a.measured_job(&batch).map(|m| m.disk_mb), Some(39 * 1024 + 3072), "summed, not its largest");
         a.free_set = Some(100 * g);
-        assert!(a.try_start(0, batch, &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(0, batch, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), &mut Vec::new()));
         // Five done, 5 GB taken so far: 34 of 1 GB and one of 3 GB still to come.
         std::fs::write(a.done_path(0), (0..5).map(|i| format!("slope-hi 6/{i}/0\n")).collect::<String>()).unwrap();
         a.sampler.set_test(Some(vec![None, None]), Some(false));
@@ -13324,7 +13488,7 @@ mod tests {
         c_disks_huge(a.coord.as_ref().unwrap());
         a.free_set = Some(40 * g);
         assert!(
-            a.try_start(0, unit.clone(), &cond, Some(&root), &mut Vec::new()),
+            a.try_start(0, unit.clone(), &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), &mut Vec::new()),
             "started alone, the guard its backstop"
         );
         if let Some(r) = a.slots[0].running.as_mut() {
@@ -13347,7 +13511,7 @@ mod tests {
         let mut scratched = unit.clone();
         scratched.cmd.extend(["--scratch".into(), mine.to_string_lossy().into_owned()]);
         let mut w = Vec::new();
-        assert!(!a.try_start(0, scratched, &cond, Some(&root), &mut w));
+        assert!(!a.try_start(0, scratched, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), &mut w));
         assert!(
             a.slots[0].running.is_none() && w.iter().any(|x| x.why.contains("waits for the disk room target")),
             "{w:?}"
@@ -13358,7 +13522,7 @@ mod tests {
         a.free_set = Some(21 * g);
         let mut w = Vec::new();
         assert!(
-            a.try_start(0, unit.clone(), &cond, Some(&root), &mut w),
+            a.try_start(0, unit.clone(), &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), &mut w),
             "started alone past a high floor, the target kept: {w:?}"
         );
         if let Some(r) = a.slots[0].running.as_mut() {
@@ -13379,7 +13543,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
             dry_run: false,
@@ -13406,12 +13570,24 @@ mod tests {
             a.sampler.set_test(Some(held), Some(trouble));
             a.sampler.tick();
             for k in 0..SLOTS {
-                a.tend(k, &cond, Some(&root), 0).unwrap();
+                a.tend(k, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), 0).unwrap();
             }
             a.guard()
         };
-        assert!(a.try_start(0, job("terrain-hi 6/1/1"), &cond, Some(&root), &mut Vec::new()));
-        assert!(a.try_start(1, job("bldtiles 6/2/2"), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(
+            0,
+            job("terrain-hi 6/1/1"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
+        assert!(a.try_start(
+            1,
+            job("bldtiles 6/2/2"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
         // Frozen at once, not drained; the largest ending, it goes on.
         assert!(!tick(&mut a, vec![Some(9 << 10), Some(4 << 10)], true));
         assert!(a.sampler.frozen(1) && a.slots[1].mem_drain.is_none() && a.slots[1].running.is_some());
@@ -13421,7 +13597,13 @@ mod tests {
         assert!(!tick(&mut a, vec![None, Some(4 << 10)], true));
         assert!(!a.sampler.frozen(1) && a.slots[1].pressure_frozen.is_none() && a.slots[1].running.is_some());
         // Frozen again beside a new largest; within the minute it's held, then stopped.
-        assert!(a.try_start(0, job("terrain-hi 6/1/2"), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(
+            0,
+            job("terrain-hi 6/1/2"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
         assert!(!tick(&mut a, vec![Some(9 << 10), Some(4 << 10)], true));
         assert!(a.sampler.frozen(1));
         assert!(!tick(&mut a, vec![Some(9 << 10), Some(4 << 10)], true) && a.slots[1].running.is_some());
@@ -13438,7 +13620,7 @@ mod tests {
         let mut beating = job("bldtiles 6/2/3");
         beating.cmd =
             vec!["/bin/sh".into(), "-c".into(), format!("while :; do echo x >> '{}'; sleep 0.05; done", hb.display())];
-        assert!(a.try_start(1, beating, &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(1, beating, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), &mut Vec::new()));
         let size = || std::fs::metadata(&hb).map_or(0, |m| m.len());
         let until = |what: &str, f: &dyn Fn() -> bool| {
             let t = Instant::now();
@@ -13485,7 +13667,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
             dry_run: false,
@@ -13517,14 +13699,26 @@ mod tests {
         // starts, so it can't be blamed.)
         std::fs::create_dir_all(&home).unwrap();
         std::fs::write(a.costs_path(0), "{\"unit\":\"water water\",\"started\":1}\n").unwrap();
-        assert!(a.try_start(0, job("terrain-hi 6/1/1", &["6/1/1", "6/1/2"]), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(
+            0,
+            job("terrain-hi 6/1/1", &["6/1/1", "6/1/2"]),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
         assert!(!a.costs_path(0).exists());
-        assert!(a.try_start(1, job("bldtiles 6/2/2", &["6/2/2"]), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(
+            1,
+            job("bldtiles 6/2/2", &["6/2/2"]),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
         let tick = |a: &mut Agent, held: Vec<Option<u64>>, trouble: bool| {
             a.sampler.set_test(Some(held), Some(trouble));
             a.sampler.tick();
             for k in 0..SLOTS {
-                a.tend(k, &cond, Some(&root), 0).unwrap();
+                a.tend(k, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), 0).unwrap();
             }
         };
         // Together within the limit: nothing.
@@ -13588,7 +13782,13 @@ mod tests {
         // Learned alone (a job of that one target): held here, and everywhere while no Mac has room,
         // the status saying why; with a Mac of more room in the pool, left to it.
         a.guard_backoff.clear();
-        assert!(a.try_start(0, job("terrain-hi 6/1/1", &["6/1/1"]), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(
+            0,
+            job("terrain-hi 6/1/1", &["6/1/1"]),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
         tick(&mut a, vec![Some(14 << 10), None], true);
         assert!(a.guard());
         let c = a.coord.as_ref().unwrap();
@@ -13654,8 +13854,20 @@ mod tests {
         c.floors(true, Some("heritage"), None);
         // The job beside the larger drained when the larger is the second slot's: nothing is asked
         // for until the larger ends.
-        assert!(a.try_start(1, job("bldtiles 6/5/5", &["6/5/5"]), &cond, Some(&root), &mut Vec::new()));
-        assert!(a.try_start(0, job("pack 6/4/4", &["6/4/4"]), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(
+            1,
+            job("bldtiles 6/5/5", &["6/5/5"]),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
+        assert!(a.try_start(
+            0,
+            job("pack 6/4/4", &["6/4/4"]),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
         tick(&mut a, vec![Some(4 << 10), Some(9 << 10)], false);
         assert!(!a.guard() && a.slots[0].mem_drain.is_some());
         assert!(a.guard_held(1).is_some() && !a.may_pack());
@@ -13669,7 +13881,7 @@ mod tests {
         a.mem_set = Some((16 << 10, 12 << 10));
         std::fs::create_dir_all(root.join("state/pool")).unwrap();
         std::fs::write(root.join(memguard::SWITCH), "off").unwrap();
-        a.guard_on = memguard::on(&root);
+        a.guard_on = memguard::on(&store::nasfs::NasRoot::local_for_test(&root));
         tick(&mut a, vec![None, Some(20 << 10)], true);
         assert!(!a.guard() && a.slots[1].running.is_some());
         assert!(a.guard_holds(&works).here.is_empty());
@@ -13690,7 +13902,7 @@ mod tests {
         // starts.)
         std::fs::write(home.join("map-update.json"), r#"{"began":90,"regions":[],"low":false,"low_at":50}"#).unwrap();
         let a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
             dry_run: false,
@@ -13721,7 +13933,7 @@ mod tests {
         // A dry run beside it (a second agent on this Mac, planning only): its record its own,
         // never the file.
         let dry = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
             dry_run: true,
@@ -13741,7 +13953,13 @@ mod tests {
     /// The lead's plan `jobs` offered through its coordinator and asked for as its loop asks
     /// (`offer_plan`, `lead_grants`), each job granted started in its slot (`start_granted`); the
     /// slots granted, and why not in `w`.
-    fn lead_start(a: &mut Agent, jobs: &[JobSpec], cond: &Conditions, root: &Path, w: &mut Vec<Waiting>) -> Vec<usize> {
+    fn lead_start(
+        a: &mut Agent,
+        jobs: &[JobSpec],
+        cond: &Conditions,
+        root: &store::nasfs::NasRoot,
+        w: &mut Vec<Waiting>,
+    ) -> Vec<usize> {
         a.offer_plan(jobs);
         let granted = a.lead_grants(jobs, cond, root, w);
         let slots: Vec<usize> = granted.iter().map(|g| g.0).collect();
@@ -13755,9 +13973,9 @@ mod tests {
     }
 
     /// An agent that runs jobs (no dry run), the NAS at `root`: the lead's, or a member's.
-    fn running_agent(root: &Path, home: &Path, helper: bool) -> Agent {
+    fn running_agent(root: &store::nasfs::NasRoot, home: &Path, helper: bool) -> Agent {
         test_agent(Options {
-            root: Some(root.to_path_buf()),
+            root: Some(root.clone()),
             home: home.to_path_buf(),
             bin: PathBuf::from("/app"),
             dry_run: false,
@@ -13787,12 +14005,12 @@ mod tests {
             ev("m1", "adopt", 811, 5),
             ev("m1", "mirror-start", 812, 20),
         ] {
-            append_server(d.path(), e).unwrap();
+            append_server(&store::nasfs::NasRoot::local_for_test(d.path()), e).unwrap();
         }
-        let a = adopted(d.path()).unwrap();
+        let a = adopted(&store::nasfs::NasRoot::local_for_test(d.path())).unwrap();
         assert_eq!(a["m4"], CatalogSeen { n: 812, at: t + 10 });
         assert_eq!(a["m1"], CatalogSeen { n: 811, at: t + 5 });
-        assert!(adopted(&d.path().join("none")).unwrap().is_empty());
+        assert!(adopted(&store::nasfs::NasRoot::local_for_test(&d.path().join("none"))).unwrap().is_empty());
         assert_eq!((host_of("m4 #3"), host_of("m4"), host_of("page #1")), ("m4", "m4", "page #1"));
     }
 
@@ -13833,20 +14051,22 @@ mod tests {
         let copy = c.join("blobs/layers/terrain/hi/6-1-1.0000000000000001.pack");
         put(&c.join("chm10/a.tif"), &crate::whole::testfiles::tiff(false));
         put(&copy, &[1; 1000]);
-        let mut a = running_agent(&root, &home, false);
+        let mut a = running_agent(&store::nasfs::NasRoot::local_for_test(&root), &home, false);
         // Work left: the caches can't be cleared now, and say why.
         *a.forecast.borrow_mut() = Some(forecast_now(false));
-        assert!(a.tend_caches(Some(&root)).is_some_and(|w| w.starts_with("the build has work left")));
+        assert!(a
+            .tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root)))
+            .is_some_and(|w| w.starts_with("the build has work left")));
         // The build done, with or without a job having run here since: nothing is freed, none
         // started (no room target: nothing to free toward), whatever is free.
         *a.forecast.borrow_mut() = Some(forecast_now(true));
         a.worked("unit 6/1/1");
         *a.forecast.borrow_mut() = Some(forecast_now(true));
-        assert_eq!(a.tend_caches(Some(&root)), None);
+        assert_eq!(a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root))), None);
         assert!(a.caches_task.is_none() && copy.exists() && c.join("chm10/a.tif").exists());
         // A target the disk is short of: freed toward it, and only then.
         a.room_target = Some(room::Target { bytes: 1 << 50, by: String::new(), at: 0 });
-        a.tend_caches(Some(&root));
+        a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root)));
         // (One loop at a time: waited for.)
         assert!(!copy.exists() && a.mem.toward.as_ref().is_some_and(|f| f.bytes() >= 1000));
     }
@@ -13863,23 +14083,29 @@ mod tests {
             put(&d.path().join(m).join("cache/items/facts-2026-09-28.jsonl"), b"{\"qid\":\"Q1\"}\n");
         }
         // A member's: never (the steps that keep them are the lead's).
-        let mut helper = running_agent(&root, &d.path().join("m1"), true);
-        helper.seed_answers(Some(&root));
+        let mut helper = running_agent(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("m1"), true);
+        helper.seed_answers(Some(&store::nasfs::NasRoot::local_for_test(&root)));
         assert!(!archive.exists());
         // The lead's: not while a job runs here, nor without the NAS; then once.
-        let mut a = running_agent(&root, &d.path().join("m4"), false);
+        let mut a = running_agent(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("m4"), false);
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
-        assert!(a.try_start(0, waiting_job("pack 6/1/1"), &cond, Some(&root), &mut Vec::new()));
-        a.seed_answers(Some(&root));
+        assert!(a.try_start(
+            0,
+            waiting_job("pack 6/1/1"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
+        a.seed_answers(Some(&store::nasfs::NasRoot::local_for_test(&root)));
         assert!(!archive.exists());
         a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
         a.slots[0].running = None;
         a.seed_answers(None);
         assert!(!archive.exists());
-        a.seed_answers(Some(&root));
+        a.seed_answers(Some(&store::nasfs::NasRoot::local_for_test(&root)));
         assert!(archive.is_file());
         std::fs::remove_file(&archive).unwrap();
-        a.seed_answers(Some(&root));
+        a.seed_answers(Some(&store::nasfs::NasRoot::local_for_test(&root)));
         assert!(!archive.exists(), "once an agent");
         // (While it runs, the steps that keep the answers wait on its hold of them here, their
         // own: crate::answers::Local.)
@@ -13893,7 +14119,7 @@ mod tests {
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         // (Not one loop at a time: the freeing isn't waited for.)
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
             dry_run: false,
@@ -13920,10 +14146,16 @@ mod tests {
             }),
         });
         assert!(a
-            .tend_caches(Some(&root))
+            .tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root)))
             .is_some_and(|w| w.starts_with("this Mac's caches are being freed toward the disk room target")));
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
-        assert!(a.try_start(0, waiting_job("pack 6/1/1"), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(
+            0,
+            waiting_job("pack 6/1/1"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
         a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
         a.slots[0].running = None;
         // Done: what it freed kept.
@@ -13931,10 +14163,16 @@ mod tests {
         while a.caches_task.as_ref().is_some_and(|t| !t.thread.is_finished()) {
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert_eq!(a.tend_caches(Some(&root)), None);
+        assert_eq!(a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root))), None);
         assert_eq!(a.mem.toward.as_ref().map(|f| f.bytes()), Some(1000));
         assert!(a.caches_task.is_none());
-        assert!(a.try_start(0, waiting_job("pack 6/1/1"), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(
+            0,
+            waiting_job("pack 6/1/1"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
         a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
     }
 
@@ -13944,7 +14182,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("state/build")).unwrap();
-        let mut a = running_agent(&root, &home, false);
+        let mut a = running_agent(&store::nasfs::NasRoot::local_for_test(&root), &home, false);
         *a.forecast.borrow_mut() = Some(forecast_now(true));
         // (A process group of its own, as a job's.)
         let mut left =
@@ -13954,17 +14192,17 @@ mod tests {
             |leader_start: u64| jobs::Group { pgid, leader_start, started: now_s() - 5, id: "unit 6/1/1".into() };
         // Its group's id another program's now (another leader's start time): not the job's.
         a.orphans.push(group(1));
-        assert_eq!(a.tend_caches(Some(&root)), None);
+        assert_eq!(a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root))), None);
         assert!(a.orphans.is_empty());
         // The job's: held while it runs, not once it's gone.
         a.orphans.push(group(crate::sys::process_start(pgid).unwrap()));
         assert_eq!(
-            a.tend_caches(Some(&root)).as_deref(),
+            a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root))).as_deref(),
             Some("a job an earlier agent left still runs here (unit 6/1/1)")
         );
         left.kill().unwrap();
         left.wait().unwrap();
-        assert_eq!(a.tend_caches(Some(&root)), None);
+        assert_eq!(a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root))), None);
         assert!(a.orphans.is_empty());
     }
 
@@ -13978,7 +14216,7 @@ mod tests {
         let c = home.join("cache");
         put(&c.join("base/base/6-1-1.0000000000000001.base"), &[1; 500]);
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
             dry_run: false,
@@ -14004,14 +14242,14 @@ mod tests {
             }
         };
         // The ask waits for the freeing under way; once it's done, it's taken up, and cleared.
-        a.tend_caches(Some(&root));
+        a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root)));
         assert!(home.join(room::CLEAR_REQUEST).exists());
         go.send(()).unwrap();
         settle(&mut a);
-        a.tend_caches(Some(&root));
+        a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root)));
         assert!(a.caches_task.as_ref().is_some_and(|t| t.ask.is_some()));
         settle(&mut a);
-        a.tend_caches(Some(&root));
+        a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root)));
         assert!(a.mem.cleared.as_ref().is_some_and(|f| f.why_not.is_none() && f.freed.get("base") == Some(&500)));
         assert!(!c.join("base").exists());
     }
@@ -14025,7 +14263,7 @@ mod tests {
         let c = home.join("cache");
         let tif = crate::whole::testfiles::tiff(false);
         put(&c.join("chm10/a.tif"), &tif);
-        let mut a = running_agent(&root, &home, true);
+        let mut a = running_agent(&store::nasfs::NasRoot::local_for_test(&root), &home, true);
         let beat = |at: u64, done: bool, job: Option<&str>| {
             let job = job.map(|id| JobView {
                 id: id.into(),
@@ -14053,24 +14291,34 @@ mod tests {
             std::fs::write(root.join("state/status.json"), serde_json::to_vec(&st).unwrap()).unwrap();
         };
         // No word from the lead: the caches can't be cleared.
-        assert_eq!(a.tend_caches(Some(&root)).as_deref(), Some("the lead's status can't be read now"));
+        assert_eq!(
+            a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root))).as_deref(),
+            Some("the lead's status can't be read now")
+        );
         // Its heartbeat an hour old, the build with work left, or a job of the lead's running
         // (its forecast "done" all the same, as an older agent's said with a lone worldwide job):
         // still nothing.
         beat(now_s() - 3600, true, None);
         a.heard = None;
-        assert_eq!(a.tend_caches(Some(&root)).as_deref(), Some("the lead hasn't been heard from for 60 min"));
+        assert_eq!(
+            a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root))).as_deref(),
+            Some("the lead hasn't been heard from for 60 min")
+        );
         beat(now_s(), false, None);
         a.heard = None;
-        assert!(a.tend_caches(Some(&root)).is_some_and(|w| w.starts_with("the build has work left")));
+        assert!(a
+            .tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root)))
+            .is_some_and(|w| w.starts_with("the build has work left")));
         beat(now_s(), true, Some("labels 2026-09-28"));
         a.heard = None;
-        assert!(a.tend_caches(Some(&root)).is_some_and(|w| w.starts_with("the lead runs a job (Ranking")));
+        assert!(a
+            .tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root)))
+            .is_some_and(|w| w.starts_with("the lead runs a job (Ranking")));
         assert!(c.join("chm10/a.tif").exists());
         // Fresh, and the build done: nothing to say, and the caches stay.
         beat(now_s(), true, None);
         a.heard = None;
-        assert_eq!(a.tend_caches(Some(&root)), None);
+        assert_eq!(a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root))), None);
         assert!(c.join("chm10/a.tif").exists() && a.caches_task.is_none());
     }
 
@@ -14086,7 +14334,7 @@ mod tests {
         put(&c.join("blobs/layers/terrain/hi/6-1-2.0000000000000001.pack"), &[1; 1000]);
         put(&c.join("base/base/6-1-1.0000000000000001.base"), &[1; 500]);
         put(&c.join("unit-stages.json"), b"{}");
-        let mut a = running_agent(&root, &home, false);
+        let mut a = running_agent(&store::nasfs::NasRoot::local_for_test(&root), &home, false);
         *a.forecast.borrow_mut() = Some(forecast_now(true));
         let asked = |home: &Path| home.join(room::CLEAR_REQUEST).exists() || home.join(room::CLEAR_TAKEN).exists();
         // Asked while a job an earlier agent left runs here (its programs may not hold what they
@@ -14102,7 +14350,7 @@ mod tests {
             id: "backup".into(),
         });
         let r = room::request_clear(&home, "scenic clean on m4").unwrap();
-        a.tend_caches(Some(&root));
+        a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root)));
         let f = a.mem.declined.clone().unwrap();
         assert_eq!(
             (f.asked, f.bytes(), f.why_not.as_deref()),
@@ -14114,9 +14362,15 @@ mod tests {
         // The build done, a job of this agent's running: cleared, the canopy squares too, and what
         // it freed said.
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
-        assert!(a.try_start(0, waiting_job("backup"), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(
+            0,
+            waiting_job("backup"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
         let r = room::request_clear(&home, "the menu bar on m4").unwrap();
-        assert_eq!(a.tend_caches(Some(&root)), None);
+        assert_eq!(a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root))), None);
         let f = a.mem.cleared.clone().unwrap();
         assert_eq!((f.asked, f.by.as_deref(), f.why_not.as_deref()), (Some(r.at), Some("the menu bar on m4"), None));
         assert_eq!(
@@ -14148,7 +14402,7 @@ mod tests {
         // A dry run beside it (another agent runs the jobs) takes up no ask.
         room::request_clear(&home, "scenic clean on m4").unwrap();
         let mut dry = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
             dry_run: true,
@@ -14157,7 +14411,7 @@ mod tests {
         })
         .unwrap();
         *dry.forecast.borrow_mut() = Some(forecast_now(true));
-        dry.tend_caches(Some(&root));
+        dry.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root)));
         assert!(home.join(room::CLEAR_REQUEST).exists());
     }
 
@@ -14166,7 +14420,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
-        let mut a = running_agent(&root, &home, false);
+        let mut a = running_agent(&store::nasfs::NasRoot::local_for_test(&root), &home, false);
         a.coord = Some(std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0));
         let helper = |at: u64, bytes: u64| Status {
             host: "m1".into(),
@@ -14193,26 +14447,27 @@ mod tests {
     /// A root as the build has it: a pass whose reaches build Reykjavik's z6 tile (6/28/17) for
     /// region a, the heritage sites and the terrain made (the z3 tile's lo pack a real pack), and the
     /// z6 tile to build.
-    fn rekey_root(root: &Path) {
+    fn rekey_root(root: &store::nasfs::NasRoot) {
         rekey_root_with(root, [-220_000_000, 640_000_000, -217_000_000, 641_600_000])
     }
 
     /// `rekey_root`, the z6 tile's ways where `owned` says (E7).
-    fn rekey_root_with(root: &Path, owned: [i32; 4]) {
+    fn rekey_root_with(root: &store::nasfs::NasRoot, owned: [i32; 4]) {
         let date = "2026-09-28";
-        std::fs::create_dir_all(root.join("catalog")).unwrap();
-        put(&root.join(format!("sources/osm/{date}/pass.1111111111111111.json")), b"{}");
+        root.join("catalog").create_dir_all().unwrap();
+        put(&root.unchecked_path().join(format!("sources/osm/{date}/pass.1111111111111111.json")), b"{}");
         let recipes =
             vec![recipes::Recipe { id: "a".into(), name: "A".into(), outline: vec!["place:-21.9,64.13,20".into()] }];
-        let cov = crate::coverage::Coverage::fixture(&recipes, None, &root.join("inputs/outlines")).unwrap();
+        let cov =
+            crate::coverage::Coverage::fixture(&recipes, None, &root.unchecked_path().join("inputs/outlines")).unwrap();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
-        crate::inputs::regions::accept_fixture(root, &root.join("inputs/outlines"), &recipes, &mut m);
+        crate::inputs::regions::accept_fixture(root, (&root.join("inputs/outlines")).into(), &recipes, &mut m);
         let piece = format!("sources/osm/{date}/pieces/6-28-17");
         m.insert(piece.clone(), format!("{piece}.4444444444444444.osm.pbf"));
         let mut reaches = crate::reach::Reaches { fmt: 1, date: date.into(), ..Default::default() };
         reaches.units.insert("6/28/17".into(), crate::reach::Reach { cells: vec![], owned: Some(owned), long: vec![] });
         let rc = format!("{}.5555555555555555.json.zst", crate::reach::logical(date));
-        put(&root.join(&rc), &reaches.encode().unwrap());
+        put(&root.unchecked_path().join(&rc), &reaches.encode().unwrap());
         m.insert(crate::reach::logical(date), rc);
         // (What the z6 tiles wait for: the heritage sites' inputs and outputs, the buildings' index.)
         m.insert(
@@ -14230,9 +14485,13 @@ mod tests {
             format!("work/heritage/{date}/base/heritage-sources.5656565656565656.json"),
         );
         let lo = "layers/terrain/lo/3-3-2.1111111111111111.pack";
-        std::fs::create_dir_all(root.join(lo).parent().unwrap()).unwrap();
-        let mut w =
-            store::pack::PackWriter::create(&root.join(lo), serde_json::json!({"layer": "terrain"}), false).unwrap();
+        root.join(lo).parent().unwrap().create_dir_all().unwrap();
+        let mut w = store::pack::PackWriter::create(
+            &root.unchecked_path().join(lo),
+            serde_json::json!({"layer": "terrain"}),
+            false,
+        )
+        .unwrap();
         for z in 3..=8u8 {
             for x in 3 << (z - 3)..4 << (z - 3) {
                 for y in 2 << (z - 3)..3 << (z - 3) {
@@ -14248,10 +14507,10 @@ mod tests {
             ("layers/trees-cover/lo/3-3-2", "layers/trees-cover/lo/3-3-2.7777777777777777.pack"),
             ("layers/trees-cover/hi/6-28-17", "layers/trees-cover/hi/6-28-17.8888888888888888.pack"),
         ] {
-            put(&root.join(c), b"pack");
+            put(&root.unchecked_path().join(c), b"pack");
             m.insert(l.into(), c.into());
         }
-        put(&root.join("state/build/manifest.json"), &serde_json::to_vec(&m).unwrap());
+        put(&root.unchecked_path().join("state/build/manifest.json"), &serde_json::to_vec(&m).unwrap());
         let mut keys = build::Keys::default();
         keys.lo.insert("reach".into(), build::reach_key(date, &m).unwrap());
         keys.record(
@@ -14300,17 +14559,26 @@ mod tests {
         let Some(root) = std::env::var_os("SCENIC_SCRATCH_PUBLISH").map(PathBuf::from) else { return };
         assert!(!root.to_string_lossy().contains("projects/scenic-roads"), "not the project folder");
         let date = "2026-09-28";
-        rekey_root_with(&root, [-220_000_000, 640_000_000, -10_000_000, 641_600_000]);
+        rekey_root_with(
+            &store::nasfs::NasRoot::local_for_test(&root),
+            [-220_000_000, 640_000_000, -10_000_000, 641_600_000],
+        );
         let m: BTreeMap<String, String> =
             serde_json::from_slice(&std::fs::read(root.join("state/build/manifest.json")).unwrap()).unwrap();
-        let cov =
-            crate::coverage::Coverage::accepted(&root, &crate::inputs::regions::read::source(&root, &m).unwrap(), None)
-                .unwrap();
-        let reaches = crate::reach::Reaches::load(&root, &m, date).ok().flatten().expect("the reaches");
-        let mut keys = build::Keys::load(&root);
+        let cov = crate::coverage::Coverage::accepted(
+            &store::nasfs::NasRoot::local_for_test(&root),
+            &crate::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m).unwrap(),
+            None,
+        )
+        .unwrap();
+        let reaches = crate::reach::Reaches::load(&store::nasfs::NasRoot::local_for_test(&root), &m, date)
+            .ok()
+            .flatten()
+            .expect("the reaches");
+        let mut keys = build::Keys::load(&store::nasfs::NasRoot::local_for_test(&root));
         let tiles = {
             let mut t = tiles::TerrainTiles::new(None);
-            t.load(&root, &m);
+            t.load(&store::nasfs::NasRoot::local_for_test(&root), &m);
             t
         };
         let plan = build::plan(
@@ -14318,7 +14586,7 @@ mod tests {
             date,
             &m,
             &keys,
-            &input_digests(&root),
+            &input_digests(&store::nasfs::NasRoot::local_for_test(&root)),
             Some(&reaches),
             &tiles,
             build::Publish {
@@ -14333,7 +14601,7 @@ mod tests {
         );
         let unit = plan.work.iter().find(|w| w.step == "unit").expect("the unit to build").targets.clone();
         keys.record("unit", &unit);
-        keys.save(&root).unwrap();
+        keys.save(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         eprintln!("seeded {}: unit {:?} built", root.display(), unit);
     }
 
@@ -14342,7 +14610,7 @@ mod tests {
         room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("nas");
-        rekey_root(&root);
+        rekey_root(&store::nasfs::NasRoot::local_for_test(&root));
         let date = "2026-09-28";
         let mf = root.join("state/build/manifest.json");
         let mut m: BTreeMap<String, String> = serde_json::from_slice(&std::fs::read(&mf).unwrap()).unwrap();
@@ -14353,11 +14621,11 @@ mod tests {
         // (Outlines the pass made itself, before the step: no record of the step's.)
         m.insert(format!("sources/osm/{date}/outlines"), format!("sources/osm/{date}/outlines.2424242424242424.sect"));
         put(&mf, &serde_json::to_vec(&m).unwrap());
-        let a = agent(&root, &d.path().join("home"));
+        let a = agent(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("home"));
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let ids = |plan: &[JobSpec]| plan.iter().map(|j| j.id.clone()).collect::<Vec<_>>();
         let mut w = Vec::new();
-        let plan = a.plan(&root, &cond, &mut w);
+        let plan = a.plan(&store::nasfs::NasRoot::local_for_test(&root), &cond, &mut w);
         let o = plan.iter().find(|j| j.id == format!("outlines {date}")).unwrap_or_else(|| panic!("{:?}", ids(&plan)));
         assert_eq!(o.record.as_ref().map(|r| r.step.as_str()), Some("outlines"));
         assert!(o.cmd[1] == "outlines" && o.cmd.windows(2).any(|p| p == ["--pass", date]), "{:?}", o.cmd);
@@ -14372,10 +14640,10 @@ mod tests {
         );
         assert!(w.iter().any(|x| x.why.contains("outlines job")), "{w:?}");
         // Made under its key: the rest comes back, and no outlines job.
-        let mut keys = build::Keys::load(&root);
+        let mut keys = build::Keys::load(&store::nasfs::NasRoot::local_for_test(&root));
         keys.record("outlines", &build::outlines_work(date, &m, &keys).unwrap().targets);
-        keys.save(&root).unwrap();
-        let plan = a.plan(&root, &cond, &mut Vec::new());
+        keys.save(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
+        let plan = a.plan(&store::nasfs::NasRoot::local_for_test(&root), &cond, &mut Vec::new());
         assert!(
             !ids(&plan).iter().any(|i| i.starts_with("outlines"))
                 && ids(&plan).iter().any(|i| i.starts_with("terrain-z8")),
@@ -14408,9 +14676,9 @@ mod tests {
             &root.join("state/build/manifest.json"),
             &serde_json::to_vec(&BTreeMap::from([(sw.clone(), name)])).unwrap(),
         );
-        let a = agent(&root, &home);
+        let a = agent(&store::nasfs::NasRoot::local_for_test(&root), &home);
         let (mut w, mut held) = (Vec::new(), Holds::default());
-        assert!(a.region_jobs(&root, None, None, &mut w, &mut held).is_empty());
+        assert!(a.region_jobs(&store::nasfs::NasRoot::local_for_test(&root), None, None, &mut w, &mut held).is_empty());
         assert!(
             w.iter().any(|x| x.why.contains(
                 "older than the one the newer readers' switch (the regions', the elevation datasets') was recorded on"
@@ -14423,7 +14691,7 @@ mod tests {
             &serde_json::to_vec(&BTreeMap::from([(sw, "gone.json".to_string())])).unwrap(),
         );
         let mut w = Vec::new();
-        assert!(a.region_jobs(&root, None, None, &mut w, &mut held).is_empty());
+        assert!(a.region_jobs(&store::nasfs::NasRoot::local_for_test(&root), None, None, &mut w, &mut held).is_empty());
         assert!(w.iter().any(|x| x.why.contains("can't be read now")), "{w:?}");
     }
 
@@ -14434,15 +14702,15 @@ mod tests {
         std::fs::create_dir_all(root.join("catalog")).unwrap();
         let mut m = BTreeMap::new();
         crate::inputs::regions::accept_fixture(
-            &root,
-            &root,
+            &store::nasfs::NasRoot::local_for_test(&root),
+            (&root).into(),
             &[recipes::Recipe { id: "x".into(), name: "X".into(), outline: vec!["osm:1".into()] }],
             &mut m,
         );
         put(&root.join("state/build/manifest.json"), &serde_json::to_vec(&m).unwrap());
-        let mut a = agent(&root, &home);
+        let mut a = agent(&store::nasfs::NasRoot::local_for_test(&root), &home);
         a.step().unwrap();
-        let st = read_status(Some(&root), &home).unwrap();
+        let st = read_status(Some(&store::nasfs::NasRoot::local_for_test(&root)), &home).unwrap();
         assert_eq!(st.regions.len(), 1);
         assert!(st.conditions.nas);
         // (The regions' check of their accepted version comes first, the gate's jobs first of all;
@@ -14457,7 +14725,10 @@ mod tests {
         // Once backed up today, it isn't due.
         a.mem.last_ok.insert("backup".into(), now_s());
         let mut w = Vec::new();
-        assert!(!a.plan(&root, &st.conditions, &mut w).iter().any(|j| j.id == "backup"));
+        assert!(!a
+            .plan(&store::nasfs::NasRoot::local_for_test(&root), &st.conditions, &mut w)
+            .iter()
+            .any(|j| j.id == "backup"));
     }
 
     /// The gate in the agent (docs/inputs.md §4.2, §4.3, §4.7): the drop boxes listed off the loop,
@@ -14483,12 +14754,15 @@ mod tests {
                 .unwrap();
         };
         put("{\"k\": \"x\", \"v\": -1}\n");
-        let mut a = agent(&root, &home);
+        let mut a = agent(&store::nasfs::NasRoot::local_for_test(&root), &home);
         // Off the gate (no flag): nothing planned.
         a.step().unwrap();
-        let c = read_status(Some(&root), &home).unwrap().conditions;
+        let c = read_status(Some(&store::nasfs::NasRoot::local_for_test(&root)), &home).unwrap().conditions;
         let mut w = Vec::new();
-        assert!(!a.plan(&root, &c, &mut w).iter().any(|j| j.id.starts_with("inputs ")));
+        assert!(!a
+            .plan(&store::nasfs::NasRoot::local_for_test(&root), &c, &mut w)
+            .iter()
+            .any(|j| j.id.starts_with("inputs ")));
         std::fs::create_dir_all(root.join("state/inputs")).unwrap();
         std::fs::write(root.join(crate::inputs::TEST_FLAG), b"").unwrap();
         let watch = |a: &Agent| a.inputs.watch.as_ref().unwrap().1.get(unit);
@@ -14500,7 +14774,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         // The first check: a full one, before every other job.
-        let plan = a.plan(&root, &c, &mut w);
+        let plan = a.plan(&store::nasfs::NasRoot::local_for_test(&root), &c, &mut w);
         assert_eq!(plan[0].id, format!("inputs {unit} full"));
         assert!(
             plan[0].cmd[1] == "inputs"
@@ -14516,23 +14790,27 @@ mod tests {
         assert_eq!(work.targets[0].0, format!("inputs/{unit}"));
         // Run (as its job would) and recorded: a normal check planned next (its key without the full
         // one's), then nothing while nothing changes.
-        let mut out = crate::out::Out::unbound(&root, &d.path().join("s")).unwrap();
+        let mut out =
+            crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s")).unwrap();
         crate::inputs::gate::run(&mut out, unit, true, None).unwrap();
-        let mut keys = build::Keys::load_strict(&root).unwrap();
+        let mut keys = build::Keys::load_strict(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         keys.record("inputs", &work.targets);
-        keys.save(&root).unwrap();
+        keys.save(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         // (The full check's time is the records', not this agent's: no daily full check due now,
         // for this agent or a new lead's, `b`.)
-        let plan = a.plan(&root, &c, &mut w);
+        let plan = a.plan(&store::nasfs::NasRoot::local_for_test(&root), &c, &mut w);
         assert_eq!(plan[0].id, format!("inputs {unit}"));
         let work = plan[0].record.clone().unwrap();
-        let mut keys = build::Keys::load_strict(&root).unwrap();
+        let mut keys = build::Keys::load_strict(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         keys.record("inputs", &work.targets);
-        keys.save(&root).unwrap();
-        assert!(!a.plan(&root, &c, &mut w).iter().any(|j| j.id.starts_with("inputs ")));
+        keys.save(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
+        assert!(!a
+            .plan(&store::nasfs::NasRoot::local_for_test(&root), &c, &mut w)
+            .iter()
+            .any(|j| j.id.starts_with("inputs ")));
         // Held (the negative v): the status says so.
         a.step().unwrap();
-        let st = read_status(Some(&root), &home).unwrap();
+        let st = read_status(Some(&store::nasfs::NasRoot::local_for_test(&root)), &home).unwrap();
         let v = st.inputs.iter().find(|v| v.unit == unit).unwrap();
         assert_eq!(v.state, crate::inputs::view::State::Held);
         assert_eq!(v.held, ["a.jsonl"]);
@@ -14544,17 +14822,17 @@ mod tests {
             &crate::inputs::Ask { unit: unit.into(), all: true, by: "a test".into(), ..Default::default() },
         )
         .unwrap();
-        a.tend_gate(&root);
+        a.tend_gate(&store::nasfs::NasRoot::local_for_test(&root));
         a.o.dry_run = true;
-        assert_eq!(crate::inputs::acceptances(&root, unit).unwrap().len(), 1);
+        assert_eq!(crate::inputs::acceptances(&store::nasfs::NasRoot::local_for_test(&root), unit).unwrap().len(), 1);
         let t = Instant::now();
         while watch(&a).is_none_or(|l| l.accepted.is_empty()) {
             assert!(t.elapsed() < store::testkit::WATCHDOG, "listed again");
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert_eq!(a.plan(&root, &c, &mut w)[0].id, format!("inputs {unit}"));
+        assert_eq!(a.plan(&store::nasfs::NasRoot::local_for_test(&root), &c, &mut w)[0].id, format!("inputs {unit}"));
         drop(a);
-        let mut b = agent(&root, &d.path().join("home-b"));
+        let mut b = agent(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("home-b"));
         b.step().unwrap();
         let t = Instant::now();
         while watch(&b).is_none() {
@@ -14562,37 +14840,51 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(
-            b.plan(&root, &c, &mut w).iter().filter(|j| j.id.starts_with("inputs ")).all(|j| !j.id.ends_with(" full")),
+            b.plan(&store::nasfs::NasRoot::local_for_test(&root), &c, &mut w)
+                .iter()
+                .filter(|j| j.id.starts_with("inputs "))
+                .all(|j| !j.id.ends_with(" full")),
             "a new lead doesn't repeat a full check less than a day old"
         );
         // Off the gate: no longer shown, nor checked; its records forgotten when asked, by a job of
         // the lead's.
         std::fs::remove_file(root.join(crate::inputs::TEST_FLAG)).unwrap();
         b.step().unwrap();
-        assert!(read_status(Some(&root), &d.path().join("home-b")).unwrap().inputs.is_empty());
+        assert!(read_status(Some(&store::nasfs::NasRoot::local_for_test(&root)), &d.path().join("home-b"))
+            .unwrap()
+            .inputs
+            .is_empty());
         b.o.dry_run = false;
         crate::inputs::ask(
             &d.path().join("home-b"),
             &crate::inputs::Ask { unit: unit.into(), forget: true, ..Default::default() },
         )
         .unwrap();
-        b.tend_gate(&root);
+        b.tend_gate(&store::nasfs::NasRoot::local_for_test(&root));
         b.o.dry_run = true;
-        let plan = b.plan(&root, &c, &mut w);
+        let plan = b.plan(&store::nasfs::NasRoot::local_for_test(&root), &c, &mut w);
         let f = plan.iter().find(|j| j.id == format!("inputs {unit} forget")).expect("a job forgetting its records");
         assert!(f.cmd.ends_with(&["--forget".to_string()]));
-        let mut out = crate::out::Out::unbound(&root, &d.path().join("s")).unwrap();
+        let mut out =
+            crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s")).unwrap();
         crate::inputs::gate::forget(&mut out, unit).unwrap();
-        let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
+        let m: BTreeMap<String, String> =
+            crate::out::read_record(&store::nasfs::NasPath::local_for_test(&root.join("state/build/manifest.json")))
+                .unwrap();
         assert!(!m.keys().any(|l| crate::inputs::unit_of(l) == Some(unit)));
-        assert!(!b.plan(&root, &c, &mut w).iter().any(|j| j.id.starts_with("inputs ")), "nothing left to forget");
+        assert!(
+            !b.plan(&store::nasfs::NasRoot::local_for_test(&root), &c, &mut w)
+                .iter()
+                .any(|j| j.id.starts_with("inputs ")),
+            "nothing left to forget"
+        );
     }
 
     #[test]
     fn the_agents_own_footprint_comes_off_what_its_jobs_may_hold() {
         // (#619: the Mac mini's agent held 9.5 GB beside jobs given 28 of its 32 GB.)
         let d = tempfile::tempdir().unwrap();
-        let mut a = agent(&d.path().join("nas"), &d.path().join("home"));
+        let mut a = agent(&store::nasfs::NasRoot::local_for_test(&d.path().join("nas")), &d.path().join("home"));
         a.mem_set = Some((32 << 10, 20 << 10));
         a.own_mb = 9 << 10;
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
@@ -14616,13 +14908,22 @@ mod tests {
         };
         let rings = |c: &Coverages| c.all.shapes.iter().map(|s| s.rings.clone()).collect::<Vec<_>>();
         let mut m1 = BTreeMap::new();
-        crate::inputs::regions::accept_fixture(&root, &root, &r("-21.9,64.13"), &mut m1);
-        let a = crate::inputs::regions::read::source(&root, &m1).unwrap();
+        crate::inputs::regions::accept_fixture(
+            &store::nasfs::NasRoot::local_for_test(&root),
+            (&root).into(),
+            &r("-21.9,64.13"),
+            &mut m1,
+        );
+        let a = crate::inputs::regions::read::source(&store::nasfs::NasRoot::local_for_test(&root), &m1).unwrap();
         // A kept file of another format is made again in its place, not read past every time.
         let kept = home.join("cache/coverage").join(format!("{}.cov", store::naming::hash16(a.version.as_bytes())));
         std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
         std::fs::write(&kept, b"RDCOV001").unwrap();
-        let first = rings(&agent(&root, &home).coverage(&root, &m1, false).unwrap());
+        let first = rings(
+            &agent(&store::nasfs::NasRoot::local_for_test(&root), &home)
+                .coverage(&store::nasfs::NasRoot::local_for_test(&root), &m1, false)
+                .unwrap(),
+        );
         assert!(crate::coverage::from_kept(&std::fs::read(&kept).unwrap()).is_some());
         let geoms: Vec<PathBuf> = crate::inputs::regions::read::listed(&a)
             .unwrap()
@@ -14634,11 +14935,30 @@ mod tests {
             std::fs::remove_file(g).unwrap();
         }
         // The restart: a new agent, the same home, the files gone from the NAS: the cache answers.
-        assert_eq!(rings(&agent(&root, &home).coverage(&root, &m1, false).unwrap()), first);
+        assert_eq!(
+            rings(
+                &agent(&store::nasfs::NasRoot::local_for_test(&root), &home)
+                    .coverage(&store::nasfs::NasRoot::local_for_test(&root), &m1, false)
+                    .unwrap()
+            ),
+            first
+        );
         // A new version isn't the cached one: read from its own files.
         let mut m2 = BTreeMap::new();
-        crate::inputs::regions::accept_fixture(&root, &root, &r("-21.9,64.2"), &mut m2);
-        assert_ne!(rings(&agent(&root, &home).coverage(&root, &m2, false).unwrap()), first);
+        crate::inputs::regions::accept_fixture(
+            &store::nasfs::NasRoot::local_for_test(&root),
+            (&root).into(),
+            &r("-21.9,64.2"),
+            &mut m2,
+        );
+        assert_ne!(
+            rings(
+                &agent(&store::nasfs::NasRoot::local_for_test(&root), &home)
+                    .coverage(&store::nasfs::NasRoot::local_for_test(&root), &m2, false)
+                    .unwrap()
+            ),
+            first
+        );
     }
 
     #[test]
@@ -14649,17 +14969,27 @@ mod tests {
             vec![recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec![format!("place:{p},20")] }]
         };
         let mut m1 = BTreeMap::new();
-        crate::inputs::regions::accept_fixture(&root, &root, &r("-21.9,64.13"), &mut m1);
+        crate::inputs::regions::accept_fixture(
+            &store::nasfs::NasRoot::local_for_test(&root),
+            (&root).into(),
+            &r("-21.9,64.13"),
+            &mut m1,
+        );
         let mut m2 = BTreeMap::new();
-        crate::inputs::regions::accept_fixture(&root, &root, &r("-21.9,64.2"), &mut m2);
+        crate::inputs::regions::accept_fixture(
+            &store::nasfs::NasRoot::local_for_test(&root),
+            (&root).into(),
+            &r("-21.9,64.2"),
+            &mut m2,
+        );
         // The agent: the first look isn't an edit; a new accepted version is (the plan's look, not
         // the heartbeat's).
-        let a = agent(&root, &home);
-        a.coverage(&root, &m1, true).unwrap();
-        a.coverage(&root, &m1, true).unwrap();
-        a.coverage(&root, &m1, false).unwrap();
+        let a = agent(&store::nasfs::NasRoot::local_for_test(&root), &home);
+        a.coverage(&store::nasfs::NasRoot::local_for_test(&root), &m1, true).unwrap();
+        a.coverage(&store::nasfs::NasRoot::local_for_test(&root), &m1, true).unwrap();
+        a.coverage(&store::nasfs::NasRoot::local_for_test(&root), &m1, false).unwrap();
         assert!(a.edited_at.get().is_none());
-        a.coverage(&root, &m2, true).unwrap();
+        a.coverage(&store::nasfs::NasRoot::local_for_test(&root), &m2, true).unwrap();
         let (first, last) = a.edited_at.get().unwrap();
         assert_eq!(edit_held(Some((first, last)), last), Some((Duration::ZERO, EDIT_HOLD)));
         // A run of edits holds the work an hour at most.
@@ -14684,7 +15014,7 @@ mod tests {
         std::fs::create_dir_all(apps.join("v2")).unwrap();
         std::os::unix::fs::symlink("v2", apps.join("current")).unwrap();
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: apps.join("v1"),
             dry_run: true,
@@ -14694,14 +15024,14 @@ mod tests {
         .unwrap();
         assert_eq!(a.app, "v1");
         a.step().unwrap();
-        let st = read_status(Some(&root), &home).unwrap();
+        let st = read_status(Some(&store::nasfs::NasRoot::local_for_test(&root)), &home).unwrap();
         assert!(st.waiting.iter().any(|w| w.why.contains("newly installed app")), "{:?}", st.waiting);
         assert!(!st.waiting.iter().any(|w| w.why.contains("would start")), "{:?}", st.waiting);
         // Pointing back at its own version: work starts again.
         std::fs::remove_file(apps.join("current")).unwrap();
         std::os::unix::fs::symlink("v1", apps.join("current")).unwrap();
         a.step().unwrap();
-        let st = read_status(Some(&root), &home).unwrap();
+        let st = read_status(Some(&store::nasfs::NasRoot::local_for_test(&root)), &home).unwrap();
         assert!(st.waiting.iter().any(|w| w.why.contains("would start")), "{:?}", st.waiting);
     }
 
@@ -14719,7 +15049,7 @@ mod tests {
         }
         std::os::unix::fs::symlink("v1", apps.join("current")).unwrap();
         let a = test_agent(Options {
-            root: Some(root),
+            root: Some(store::nasfs::NasRoot::local_for_test(root)),
             home,
             bin: apps.join("current"),
             dry_run: true,
@@ -14747,7 +15077,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/nonexistent/bin"),
             dry_run: false,
@@ -14766,7 +15096,13 @@ mod tests {
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
         assert!(a.quit_ask().is_none() && a.quit_due());
-        assert!(a.try_start(0, job("bldtiles 6/1/1"), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(
+            0,
+            job("bldtiles 6/1/1"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
         let pgid = a.slots[0].running.as_ref().unwrap().pgid;
         struct Kill(i32);
         impl Drop for Kill {
@@ -14779,10 +15115,16 @@ mod tests {
         // the loop not ended while it runs.
         crate::control::request_quit(&home, crate::control::QuitMode::Finish, "Scenic on m1").unwrap();
         let mut waiting = Vec::new();
-        assert!(!a.try_start(1, job("bldtiles 6/2/2"), &cond, Some(&root), &mut waiting));
+        assert!(!a.try_start(
+            1,
+            job("bldtiles 6/2/2"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut waiting
+        ));
         a.slots[1].lease = None;
         assert!(waiting.iter().any(|w| w.why.contains("Scenic quits once the job under way ends")), "{waiting:?}");
-        a.tend(0, &cond, Some(&root), 0).unwrap();
+        a.tend(0, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), 0).unwrap();
         assert!(a.slots[0].running.as_ref().is_some_and(|r| r.pausing.is_none() && r.paused.is_none()));
         assert!(!a.quit_due());
         // Its job over ("Stop now" stops it so: given back, not a failure): the quit is due (this
@@ -14808,7 +15150,7 @@ mod tests {
         std::fs::create_dir_all(apps.join("v2")).unwrap();
         std::os::unix::fs::symlink("v1", apps.join("current")).unwrap();
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: apps.join("v1"),
             dry_run: false,
@@ -14835,12 +15177,24 @@ mod tests {
                 }
             }
         }
-        assert!(a.try_start(0, job("bldtiles 6/1/1", "6/1/1"), &cond, Some(&root), &mut Vec::new()));
-        assert!(a.try_start(1, job("bldtiles 6/2/2", "6/2/2"), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(
+            0,
+            job("bldtiles 6/1/1", "6/1/1"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
+        assert!(a.try_start(
+            1,
+            job("bldtiles 6/2/2", "6/2/2"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
         let _kill = Kill(a.slots.iter().map(|s| s.running.as_ref().unwrap().pgid).collect());
         let tend = |a: &mut Agent| {
             for k in 0..SLOTS {
-                a.tend(k, &cond, Some(&root), 0).unwrap();
+                a.tend(k, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), 0).unwrap();
             }
         };
         // Its own app current: the jobs go on, no restart.
@@ -14900,7 +15254,7 @@ mod tests {
         std::fs::create_dir_all(apps.join(new)).unwrap();
         std::os::unix::fs::symlink(old, apps.join("current")).unwrap();
         let opts = |bin: &str| Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: apps.join(bin),
             dry_run: false,
@@ -14926,7 +15280,13 @@ mod tests {
             record: Some(build::Work { step: "terrain-hi".into(), targets: vec![("6/55/25".into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
-        assert!(a.try_start(0, job.clone(), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(
+            0,
+            job.clone(),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
         let pgid = a.slots[0].running.as_ref().unwrap().pgid;
         struct Kill(i32);
         impl Drop for Kill {
@@ -14958,17 +15318,17 @@ mod tests {
         let r = b.slots[0].running.as_ref().expect("taken over");
         assert!(r.adopted && r.pgid == pgid && r.spec == job);
         assert!(matches!(b.slots[0].lease, Some(Held::Own(_))));
-        assert!(b.beat(0, Some(&root)));
+        assert!(b.beat(0, Some(&store::nasfs::NasRoot::local_for_test(&root))));
         assert!(co.held("terrain-hi").contains("6/55/25"));
         assert_eq!(co.hold("terrain-hi", &job.record.as_ref().unwrap().targets), None, "never held twice");
         // Its app's folder kept for it while it runs (the map server's updater reads it).
         assert_eq!(b.job_apps(), Vec::<String>::new(), "its programs aren't in an app's folder here");
         // Tended to its end: its status read from its file (not this process's child), its lease
         // finished, its record gone, nothing of it left.
-        assert_eq!(b.tend(0, &cond, Some(&root), 0).unwrap(), false);
+        assert_eq!(b.tend(0, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), 0).unwrap(), false);
         std::fs::write(&go, "").unwrap();
         let t = Instant::now();
-        while !b.tend(0, &cond, Some(&root), 0).unwrap() {
+        while !b.tend(0, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), 0).unwrap() {
             assert!(t.elapsed() < store::testkit::WATCHDOG, "the job ends");
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -15006,7 +15366,7 @@ mod tests {
             *r.borrow_mut() = Some(std::sync::Arc::new(move |_: &str, _: u16| Some(up_addr)));
         });
         let opts = || Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: d.path().join("bin"),
             dry_run: false,
@@ -15032,7 +15392,7 @@ mod tests {
             record: Some(build::Work { step: "items".into(), targets: vec![("items".into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
-        assert!(a.try_start(0, job, &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(0, job, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), &mut Vec::new()));
         let pgid = a.slots[0].running.as_ref().unwrap().pgid;
         struct Kill(i32);
         impl Drop for Kill {
@@ -15077,7 +15437,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         let opts = || Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: d.path().join("bin"),
             dry_run: false,
@@ -15095,7 +15455,7 @@ mod tests {
             record: Some(build::Work { step: "terrain-hi".into(), targets: vec![("6/55/25".into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
-        assert!(a.try_start(0, job, &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(0, job, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), &mut Vec::new()));
         let pgid = a.slots[0].running.as_ref().unwrap().pgid;
         a.hand_over_jobs();
         drop(a);
@@ -15127,7 +15487,7 @@ mod tests {
         });
         std::fs::write(home.join("job.json"), rec.to_string()).unwrap();
         let o = Options {
-            root: Some(root),
+            root: Some(store::nasfs::NasRoot::local_for_test(root)),
             home: home.clone(),
             bin: d.path().join("bin"),
             dry_run: false,
@@ -15159,7 +15519,7 @@ mod tests {
         std::fs::create_dir_all(apps.join(new)).unwrap();
         std::os::unix::fs::symlink(old, apps.join("current")).unwrap();
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: apps.join(old),
             dry_run: false,
@@ -15186,7 +15546,13 @@ mod tests {
             record: Some(build::Work { step: "terrain-hi".into(), targets: vec![("6/55/25".into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
-        assert!(a.try_start(0, job.clone(), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(
+            0,
+            job.clone(),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
         struct Kill(i32);
         impl Drop for Kill {
             fn drop(&mut self) {
@@ -15200,19 +15566,19 @@ mod tests {
         // A newer app installed: the update waits on the long job (task #266).
         std::fs::remove_file(apps.join("current")).unwrap();
         std::os::unix::fs::symlink(new, apps.join("current")).unwrap();
-        a.tend(0, &cond, Some(&root), 0).unwrap();
+        a.tend(0, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), 0).unwrap();
         assert!(!a.update_due(), "the update waits for the job");
         // A cancel of something not running: said, nothing stopped.
         let miss = crate::control::Cancel::new("6/1/1", None, true, "scenic job cancel on m4");
         crate::control::request_cancel(&home, &miss).unwrap();
-        assert!(!a.tend_cancels(Some(&root), &mut Vec::new()));
+        assert!(!a.tend_cancels(Some(&store::nasfs::NasRoot::local_for_test(&root)), &mut Vec::new()));
         let ans = crate::control::cancel_answer(&home, &miss).unwrap();
         assert!(!ans.hit && ans.said.contains("nothing builds 6/1/1"), "{}", ans.said);
         // The owner's cancel, to rerun after the update.
         let ask = crate::control::Cancel::new("6/55/25", None, true, "scenic job cancel on m4");
         crate::control::request_cancel(&home, &ask).unwrap();
         let mut waiting = Vec::new();
-        assert!(a.tend_cancels(Some(&root), &mut waiting));
+        assert!(a.tend_cancels(Some(&store::nasfs::NasRoot::local_for_test(&root)), &mut waiting));
         let ans = crate::control::cancel_answer(&home, &ask).unwrap();
         assert!(ans.hit && ans.said.contains("terrain-hi 6/55/25 on this Mac"), "{}", ans.said);
         assert!(crate::control::peek_cancels(&home).is_empty());
@@ -15234,7 +15600,7 @@ mod tests {
         // Held on this app: it doesn't start here, said in the status.
         assert!(waiting.iter().any(|w| w.what == "terrain-hi 6/55/25" && w.why.contains(old)), "{waiting:?}");
         let mut w = Vec::new();
-        assert!(!a.try_start(0, job.clone(), &cond, Some(&root), &mut w));
+        assert!(!a.try_start(0, job.clone(), &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), &mut w));
         assert!(w.iter().any(|w| w.why.contains("held until the lead runs an app newer")), "{w:?}");
         // The agent on the new app: its coordinator's app releases the hold, and the job reruns.
         co.stop();
@@ -15243,7 +15609,7 @@ mod tests {
         a.coord = Some(std::sync::Arc::new(crate::coord::start_for_test(&coord, &a.me, new).0));
         assert!(a.held_why(&job).is_none());
         let job = JobSpec { cmd: vec!["/bin/sh".into(), "-c".into(), "exit 0".into()], ..job };
-        assert!(a.try_start(0, job, &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(0, job, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), &mut Vec::new()));
         if let Some(r) = a.slots[0].running.as_mut() {
             r.stop(Duration::from_secs(1));
         }
@@ -15262,7 +15628,7 @@ mod tests {
         std::fs::create_dir_all(apps.join("v2")).unwrap();
         std::os::unix::fs::symlink("v1", apps.join("current")).unwrap();
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: apps.join("v1"),
             dry_run: false,
@@ -15290,9 +15656,15 @@ mod tests {
         let update = |a: &mut Agent, to: &str| {
             std::fs::remove_file(apps.join("current")).unwrap();
             std::os::unix::fs::symlink(to, apps.join("current")).unwrap();
-            a.tend(0, &cond, Some(&root), 0).unwrap();
+            a.tend(0, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), 0).unwrap();
         };
-        assert!(a.try_start(0, job("elev 6/55/25", "elev", "6/55/25"), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(
+            0,
+            job("elev 6/55/25", "elev", "6/55/25"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
         let _kill = Kill(a.slots[0].running.as_ref().unwrap().pgid);
         // Its progress's pace says an hour left: the update waits 90 min (×1.5).
         a.slots[0].job_eta = Some(3600);
@@ -15397,7 +15769,7 @@ mod tests {
         std::fs::create_dir_all(apps.join("v2")).unwrap();
         std::os::unix::fs::symlink("v1", apps.join("current")).unwrap();
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: apps.join("v1"),
             dry_run: false,
@@ -15415,11 +15787,11 @@ mod tests {
             restart_after_sleep: false,
             record: Some(build::Work { step: "trees".into(), targets: vec![("6/1/1".into(), "k".into())] }),
         };
-        assert!(a.try_start(0, spec, &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(0, spec, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), &mut Vec::new()));
         let pgid = a.slots[0].running.as_ref().unwrap().pgid;
         std::fs::remove_file(apps.join("current")).unwrap();
         std::os::unix::fs::symlink("v2", apps.join("current")).unwrap();
-        a.tend(0, &cond, Some(&root), 0).unwrap();
+        a.tend(0, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), 0).unwrap();
         let (wait, words) = a.slots[0].update_wait.clone().unwrap();
         assert_eq!(wait, None);
         assert!(words.contains("no estimate"), "{words}");
@@ -15438,15 +15810,23 @@ mod tests {
         std::fs::write(root.join("sources/osm/2026-09-28/planet.osm.pbf"), b"x").unwrap();
         std::fs::create_dir_all(root.join("sources/basemap")).unwrap();
         std::fs::write(root.join("sources/basemap/planetiler.jar"), b"x").unwrap();
-        let mut a = agent(&root, &home);
+        let mut a = agent(&store::nasfs::NasRoot::local_for_test(&root), &home);
         // (The disk as the test says, both ways: not this Mac's.)
         a.free_set = Some(PASS_SPACE);
         let mut w = Vec::new();
-        let plan = a.plan(&root, &Conditions { ac: true, nas: true, idle_s: 0, ..Default::default() }, &mut w);
+        let plan = a.plan(
+            &store::nasfs::NasRoot::local_for_test(&root),
+            &Conditions { ac: true, nas: true, idle_s: 0, ..Default::default() },
+            &mut w,
+        );
         assert!(plan.iter().any(|j| j.id == "osm-pass 2026-09-28"));
         a.free_set = Some(PASS_SPACE / 4);
         let mut w = Vec::new();
-        let plan = a.plan(&root, &Conditions { ac: true, nas: true, idle_s: 0, ..Default::default() }, &mut w);
+        let plan = a.plan(
+            &store::nasfs::NasRoot::local_for_test(&root),
+            &Conditions { ac: true, nas: true, idle_s: 0, ..Default::default() },
+            &mut w,
+        );
         assert!(
             !plan.iter().any(|j| j.id == "osm-pass 2026-09-28") && w.iter().any(|x| x.why.contains("GB free")),
             "{w:?}"
@@ -15456,12 +15836,20 @@ mod tests {
         a.free_set = Some(PASS_SPACE);
         a.room_target = Some(room::Target { bytes: 20 << 30, by: "a test".into(), at: 0 });
         let mut w = Vec::new();
-        let plan = a.plan(&root, &Conditions { ac: true, nas: true, idle_s: 0, ..Default::default() }, &mut w);
+        let plan = a.plan(
+            &store::nasfs::NasRoot::local_for_test(&root),
+            &Conditions { ac: true, nas: true, idle_s: 0, ..Default::default() },
+            &mut w,
+        );
         assert!(!plan.iter().any(|j| j.id == "osm-pass 2026-09-28"), "{w:?}");
         assert!(w.iter().any(|x| x.why.contains("needs 100 GB free") && x.why.contains("disk room target")), "{w:?}");
         a.free_set = Some(PASS_SPACE + (20 << 30));
         let mut w = Vec::new();
-        let plan = a.plan(&root, &Conditions { ac: true, nas: true, idle_s: 0, ..Default::default() }, &mut w);
+        let plan = a.plan(
+            &store::nasfs::NasRoot::local_for_test(&root),
+            &Conditions { ac: true, nas: true, idle_s: 0, ..Default::default() },
+            &mut w,
+        );
         let pass = plan.iter().find(|j| j.id == "osm-pass 2026-09-28").expect("the pass past the target");
         assert_eq!(a.target_env(pass), (room::TARGET_ENV.to_string(), "20480".to_string()));
         let backup = JobSpec { id: "backup daily".into(), ..pass.clone() };
@@ -15471,7 +15859,10 @@ mod tests {
         // A complete pass of that planet: nothing to do.
         std::fs::write(root.join("sources/osm/2026-09-28/pass.0123456789abcdef.json"), b"{}").unwrap();
         let mut w = Vec::new();
-        assert!(!a.plan(&root, &Conditions::default(), &mut w).iter().any(|j| j.id.starts_with("osm-pass")));
+        assert!(!a
+            .plan(&store::nasfs::NasRoot::local_for_test(&root), &Conditions::default(), &mut w)
+            .iter()
+            .any(|j| j.id.starts_with("osm-pass")));
     }
 
     /// A "none" terrain or slope z6 tile (the coverage gone from its z6 tile) is never expected the
@@ -15534,10 +15925,10 @@ mod tests {
     fn key_names_only() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("keys.env");
-        assert_eq!(key_names(&p).as_deref(), Some(""), "no file: no keys");
+        assert_eq!(key_names(&store::nasfs::NasPath::local_for_test(&p)).as_deref(), Some(""), "no file: no keys");
         std::fs::write(&p, "LTA_ACCOUNT_KEY=s3cr3t\nODPT_KEY=\n# OLD_KEY=x\n TDX_CLIENT_ID = abc \nnot a line\n")
             .unwrap();
-        let names = key_names(&p).unwrap();
+        let names = key_names(&store::nasfs::NasPath::local_for_test(&p)).unwrap();
         assert_eq!(names, "LTA_ACCOUNT_KEY,TDX_CLIENT_ID", "the keys with values, by name");
         assert!(!names.contains("s3cr3t") && !names.contains("abc"));
     }
@@ -15907,7 +16298,7 @@ mod pool_tests {
         let r = nas(d.path());
         assert!(!r.join("state/pool").exists());
         let mut a = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("app-folder/agent"),
             bin: PathBuf::from("/nonexistent/bin"),
             dry_run: false,
@@ -15918,7 +16309,7 @@ mod pool_tests {
         assert!(a.pool.is_some(), "this Mac's member in the pool, with no switch on the NAS");
         a.step().unwrap();
         assert!(r.join(crate::pool::term::DIR).join("1.json").exists(), "term 1 made");
-        assert!(read_status(Some(&r), &a.o.home).unwrap().pool.is_some());
+        assert!(read_status(Some(&store::nasfs::NasRoot::local_for_test(&r)), &a.o.home).unwrap().pool.is_some());
         assert!(a.pool_restart().is_none());
     }
 
@@ -15929,7 +16320,7 @@ mod pool_tests {
         let r = nas(d.path());
         let bin = app(d.path());
         let mut a = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("app-folder/agent"),
             bin,
             dry_run: false,
@@ -15996,7 +16387,7 @@ mod pool_tests {
         assert_eq!(member(&a), None, "its answers say no term: not late, not gone");
         a.step().unwrap();
         assert!(a.published.is_none(), "kept off while it hangs");
-        let st = read_status(Some(&r), &a.o.home).unwrap();
+        let st = read_status(Some(&store::nasfs::NasRoot::local_for_test(&r)), &a.o.home).unwrap();
         assert!(
             st.waiting.iter().any(|w| w.why.contains("has hung") && w.why.contains("the NAS isn't answering")),
             "{:?}",
@@ -16010,7 +16401,7 @@ mod pool_tests {
         assert!(a.pool_hung.is_none() && a.pool_skips == 0 && a.published.is_some());
         assert!(member(&a).is_some(), "its term said again");
         assert_ne!(moving(&a).as_deref(), Some(HUNG));
-        let st = read_status(Some(&r), &a.o.home).unwrap();
+        let st = read_status(Some(&store::nasfs::NasRoot::local_for_test(&r)), &a.o.home).unwrap();
         assert!(!st.waiting.iter().any(|w| w.why.contains("has hung")), "{:?}", st.waiting);
         stop_jobs(&mut a);
     }
@@ -16024,7 +16415,7 @@ mod pool_tests {
         let home = d.path().join("app-folder/agent");
         // (`--helper` passed, as the M1's launch file does: the pool says what it is.)
         let mut a = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: home.clone(),
             bin: bin.clone(),
             dry_run: false,
@@ -16076,7 +16467,7 @@ mod pool_tests {
             .flatten()
             .any(|day| day.path().join(format!("{me}.jsonl")).exists()));
         assert!(r.join(crate::pool::beat::path(&me)).exists());
-        let st = read_status(Some(&r), &home).unwrap();
+        let st = read_status(Some(&store::nasfs::NasRoot::local_for_test(&r)), &home).unwrap();
         let pv = st.pool.expect("the pool in its status");
         assert_eq!((pv.role, pv.member.as_str()), (pool::Role::Lead, me.as_str()));
         // The daily sweep waits for a re-assertion, then runs on the step that made it, caught up:
@@ -16084,7 +16475,9 @@ mod pool_tests {
         until(&mut a, |a| a.mem.last_ok.contains_key("gc"));
         assert!(a.pooled().unwrap().gates.term >= 2);
         assert!(r.join("state/build/terms/2.json").exists());
-        let m: BTreeMap<String, String> = crate::out::read_record(&r.join("state/build/pending.json")).unwrap();
+        let m: BTreeMap<String, String> =
+            crate::out::read_record(&store::nasfs::NasPath::local_for_test(&r.join("state/build/pending.json")))
+                .unwrap();
         assert!(m.contains_key("work/gc.0123456789abcdef.json"), "{m:?}");
         stop_jobs(&mut a);
     }
@@ -16103,9 +16496,9 @@ mod pool_tests {
         let absent = crate::rawpack::Pack { name: "6-1-1.00000000000000bb.tiles".into(), bytes: 9 };
         let mut ix = crate::rawpack::Index::default();
         ix.shards.insert("6-1-1".into(), vec![named.clone()]);
-        ix.save(&store).unwrap();
+        ix.save(&store::nasfs::NasPath::local_for_test(&store)).unwrap();
         let mut a = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("app-folder/agent"),
             bin,
             dry_run: false,
@@ -16132,7 +16525,7 @@ mod pool_tests {
         };
         let c = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 9999 };
         until(&mut a, |a| a.pooled().unwrap().gates.leads.is_some());
-        assert!(a.try_start(0, job, &c, Some(&r), &mut Vec::new()));
+        assert!(a.try_start(0, job, &c, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut Vec::new()));
         until(&mut a, |a| {
             a.pooled()
                 .unwrap()
@@ -16148,7 +16541,7 @@ mod pool_tests {
             s.contains("work/backup.0123456789abcdef.json") && !s.contains("00000000000000aa")
         });
         // (The index as it was: nothing read or named.)
-        assert_eq!(crate::rawpack::Index::load(&store).unwrap(), ix);
+        assert_eq!(crate::rawpack::Index::load(&store::nasfs::NasPath::local_for_test(&store)).unwrap(), ix);
         stop_jobs(&mut a);
     }
 
@@ -16162,7 +16555,7 @@ mod pool_tests {
         // The lead (this Mac is the writer: term 1 is its), and a member, another process with a
         // folder (and member) of its own; its `--helper` or not, the pool says.
         let dry = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin: bin.clone(),
             dry_run: true,
@@ -16173,7 +16566,7 @@ mod pool_tests {
         assert!(dry.pool.is_none(), "a dry run takes no part");
         drop(dry);
         let mut lead = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin: bin.clone(),
             dry_run: false,
@@ -16185,7 +16578,7 @@ mod pool_tests {
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
         let mut m = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("m/agent"),
             bin: bin.clone(),
             dry_run: false,
@@ -16255,7 +16648,7 @@ mod pool_tests {
         let r = nas(d.path());
         let bin = app(d.path());
         let mut lead = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin: bin.clone(),
             dry_run: false,
@@ -16267,7 +16660,7 @@ mod pool_tests {
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
         let mut m = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("m/agent"),
             bin: bin.clone(),
             dry_run: false,
@@ -16307,8 +16700,8 @@ mod pool_tests {
                 .map(|(_, w)| (w.can.clone(), w.ask.as_ref().and_then(|a| a.disk_mb)))
         };
         // The lead's coordinator told (with its own room), the member asking for every step.
-        lead.pool_switch(Some(&r));
-        m.pool_switch(Some(&r));
+        lead.pool_switch(Some(&store::nasfs::NasRoot::local_for_test(&r)));
+        m.pool_switch(Some(&store::nasfs::NasRoot::local_for_test(&r)));
         until(&mut m, |m| m.slots[0].running.is_some() || bin.join("env-pack").exists());
         until(&mut m, |m| m.slots[0].running.is_none() && m.pooled().is_some_and(|p| p.entries.is_empty()));
         let (can, disk) = asked(&lead).unwrap();
@@ -16365,7 +16758,7 @@ mod pool_tests {
         let r = nas(d.path());
         let bin = app(d.path());
         let mut lead = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin: bin.clone(),
             dry_run: false,
@@ -16377,7 +16770,7 @@ mod pool_tests {
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
         let mut m = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("m/agent"),
             bin: bin.clone(),
             dry_run: false,
@@ -16388,8 +16781,8 @@ mod pool_tests {
         let im = m.pooled().unwrap().side.member().id.clone();
         lead.pooled().unwrap().side.know(&im);
         // Off: not told.
-        lead.pool_switch(Some(&r));
-        m.pool_switch(Some(&r));
+        lead.pool_switch(Some(&store::nasfs::NasRoot::local_for_test(&r)));
+        m.pool_switch(Some(&store::nasfs::NasRoot::local_for_test(&r)));
         assert!(lead.coord.as_ref().unwrap().shared.lock().unwrap().placement.is_none());
         // On: told, the forecast's slack and speeds in it.
         switch_on(&r, placement::SWITCH);
@@ -16398,8 +16791,8 @@ mod pool_tests {
             steps: vec![forecast::StepFc { step: "slope-hi".into(), done_at: Some(1000), ..Default::default() }],
             ..Default::default()
         });
-        lead.pool_switch(Some(&r));
-        m.pool_switch(Some(&r));
+        lead.pool_switch(Some(&store::nasfs::NasRoot::local_for_test(&r)));
+        m.pool_switch(Some(&store::nasfs::NasRoot::local_for_test(&r)));
         assert_eq!(
             lead.coord.as_ref().unwrap().shared.lock().unwrap().placement.as_ref().map(|p| p.0.slack_of("slope-hi")),
             Some(0)
@@ -16432,8 +16825,8 @@ mod pool_tests {
         assert!(env.lines().any(|l| l == format!("{}=1", placement::AHEAD_ENV)), "{env}");
         // Off again: as before.
         std::fs::write(r.join(placement::SWITCH), "off").unwrap();
-        lead.pool_switch(Some(&r));
-        m.pool_switch(Some(&r));
+        lead.pool_switch(Some(&store::nasfs::NasRoot::local_for_test(&r)));
+        m.pool_switch(Some(&store::nasfs::NasRoot::local_for_test(&r)));
         assert!(lead.coord.as_ref().unwrap().shared.lock().unwrap().placement.is_none());
         assert!(!m.placement_on());
         stop_jobs(&mut lead);
@@ -16454,7 +16847,7 @@ mod pool_tests {
         let pass = format!("osm-pass {date}");
         let bin = app(d.path());
         let mut lead = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin: bin.clone(),
             dry_run: false,
@@ -16472,7 +16865,7 @@ mod pool_tests {
         std::fs::create_dir_all(r.join("sources/basemap")).unwrap();
         std::fs::write(r.join("sources/basemap/planetiler.jar"), "jar").unwrap();
         let mut m = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("m/agent"),
             bin: bin.clone(),
             dry_run: false,
@@ -16484,7 +16877,7 @@ mod pool_tests {
         lead.pooled().unwrap().side.know(&im);
         let planned = |a: &Agent| {
             let mut w = Vec::new();
-            let p = a.plan(&r, &Conditions::default(), &mut w);
+            let p = a.plan(&store::nasfs::NasRoot::local_for_test(&r), &Conditions::default(), &mut w);
             (p.iter().any(|j| j.id == pass), w)
         };
         // The member's Mac holds the pass's progress (its filter done), noted an hour ago.
@@ -16493,23 +16886,23 @@ mod pool_tests {
         std::fs::write(scratch.join("filter.done"), "").unwrap();
         let held = |at: u64, done: bool| resume::Progress {
             member: im.clone(),
-            worker: cond::host_name(),
+            worker: store::sys::host_name(),
             jobs: [(
                 pass.clone(),
                 resume::Held { at, done, scratch: scratch.to_string_lossy().into_owned(), since: 0 },
             )]
             .into(),
         };
-        resume::write(&r, &held(now_s() - 3600, false)).unwrap();
+        resume::write(&store::nasfs::NasRoot::local_for_test(&r), &held(now_s() - 3600, false)).unwrap();
         // Off: the lead plans it as before, whoever holds progress.
-        lead.pool_switch(Some(&r));
-        m.pool_switch(Some(&r));
+        lead.pool_switch(Some(&store::nasfs::NasRoot::local_for_test(&r)));
+        m.pool_switch(Some(&store::nasfs::NasRoot::local_for_test(&r)));
         assert!(planned(&lead).0);
         assert!(lead.coord.as_ref().unwrap().shared.lock().unwrap().resume.is_none());
         // On: not here; offered to the member alone, which resumes it in its scratch folder.
         switch_on(&r, resume::SWITCH);
-        lead.pool_switch(Some(&r));
-        m.pool_switch(Some(&r));
+        lead.pool_switch(Some(&store::nasfs::NasRoot::local_for_test(&r)));
+        m.pool_switch(Some(&store::nasfs::NasRoot::local_for_test(&r)));
         let (here, w) = planned(&lead);
         assert!(!here && w.iter().any(|w| w.why.contains("offered to it alone")), "{w:?}");
         // (Its earlier stage's entry, handed and not yet merged: laid over the snapshot for its job.)
@@ -16546,7 +16939,7 @@ mod pool_tests {
         assert!(env.contains(&format!("{}", d.path().join("m/agent/pool/jobs/1-").display())), "{env}");
         assert!(lead.coord.as_ref().unwrap().held("osm-pass").is_empty(), "its lease ended at the lead, not lapsing");
         // Finished there: held, unoffered, until merged.
-        let p = resume::read(&r, &im).unwrap().unwrap();
+        let p = resume::read(&store::nasfs::NasRoot::local_for_test(&r), &im).unwrap().unwrap();
         assert!(p.jobs[&pass].done, "{p:?}");
         let (here, w) = planned(&lead);
         assert!(!here && w.iter().any(|w| w.why.contains("waiting to be merged")), "{w:?}");
@@ -16557,7 +16950,7 @@ mod pool_tests {
             .unwrap()
             .hold("osm-pass", &[(date.to_string(), format!("sources/osm/{date}/planet.osm.pbf"))])
             .unwrap();
-        resume::write(&r, &held(now_s() - resume::HOLD_S - 1, false)).unwrap();
+        resume::write(&store::nasfs::NasRoot::local_for_test(&r), &held(now_s() - resume::HOLD_S - 1, false)).unwrap();
         let (here, w) = planned(&lead);
         assert!(!here && w.iter().any(|w| w.why.contains("under its lease")), "{w:?}");
         lead.coord.as_ref().unwrap().finish(lease, &[]);
@@ -16565,24 +16958,24 @@ mod pool_tests {
         // lead lost, so not run here too.
         let mut lately = held(now_s() - 60, false);
         lately.jobs.get_mut(&pass).unwrap().since = now_s() - resume::HOLD_S - 1;
-        resume::write(&r, &lately).unwrap();
+        resume::write(&store::nasfs::NasRoot::local_for_test(&r), &lately).unwrap();
         let (here, w) = planned(&lead);
         assert!(!here && w.iter().any(|w| w.why.contains("may be running")), "{w:?}");
         // A day on with nothing more there: the lead's to run.
-        resume::write(&r, &held(now_s() - resume::HOLD_S - 1, false)).unwrap();
+        resume::write(&store::nasfs::NasRoot::local_for_test(&r), &held(now_s() - resume::HOLD_S - 1, false)).unwrap();
         assert!(planned(&lead).0);
         // Released by the owner: the same. (Noted half an hour ago: not maybe running now.)
         let at = now_s() - 1800;
-        resume::write(&r, &held(at, false)).unwrap();
+        resume::write(&store::nasfs::NasRoot::local_for_test(&r), &held(at, false)).unwrap();
         assert!(!planned(&lead).0);
-        resume::release(&r, &im, &pass).unwrap();
+        resume::release(&store::nasfs::NasRoot::local_for_test(&r), &im, &pass).unwrap();
         assert!(planned(&lead).0);
         // Switched off again: the offer taken back, the plan as before. (Progress begun a minute
         // before the released one: not that release's.)
-        resume::write(&r, &held(at - 60, false)).unwrap();
+        resume::write(&store::nasfs::NasRoot::local_for_test(&r), &held(at - 60, false)).unwrap();
         assert!(!planned(&lead).0 && lead.coord.as_ref().unwrap().shared.lock().unwrap().resume.is_some());
         std::fs::write(r.join(resume::SWITCH), "off").unwrap();
-        lead.pool_switch(Some(&r));
+        lead.pool_switch(Some(&store::nasfs::NasRoot::local_for_test(&r)));
         assert!(planned(&lead).0 && lead.coord.as_ref().unwrap().shared.lock().unwrap().resume.is_none());
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
@@ -16596,7 +16989,7 @@ mod pool_tests {
         let r = nas(d.path());
         let bin = app(d.path());
         let mut lead = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin: bin.clone(),
             dry_run: false,
@@ -16608,7 +17001,7 @@ mod pool_tests {
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
         let mut m = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("m/agent"),
             bin: bin.clone(),
             dry_run: false,
@@ -16655,7 +17048,7 @@ mod pool_tests {
         let gate = d.path().join("gate");
         gate_step(&bin, "slope-hi", &gate);
         let mut lead = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin: bin.clone(),
             dry_run: false,
@@ -16667,7 +17060,7 @@ mod pool_tests {
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
         let mut m = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("m/agent"),
             bin: bin.clone(),
             dry_run: false,
@@ -16762,7 +17155,7 @@ mod pool_tests {
         let gate = d.path().join("gate");
         gate_step(&bin, "slope-hi", &gate);
         let mut lead = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin: bin.clone(),
             dry_run: false,
@@ -16774,7 +17167,7 @@ mod pool_tests {
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
         let mut m = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("m/agent"),
             bin: bin.clone(),
             dry_run: false,
@@ -16891,7 +17284,7 @@ mod pool_tests {
         let gate = d.path().join("gate");
         gate_step(&bin, "slope-hi", &gate);
         let mut lead = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin: bin.clone(),
             dry_run: false,
@@ -16904,7 +17297,7 @@ mod pool_tests {
         lead.step().unwrap();
         let lport = lead.coord.as_ref().unwrap().port();
         let mut m = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("m/agent"),
             bin: bin.clone(),
             dry_run: false,
@@ -17116,7 +17509,7 @@ mod pool_tests {
         let gate = d.path().join("gate");
         gate_step(&bin, "pack", &gate);
         let mut lead = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin: bin.clone(),
             dry_run: false,
@@ -17128,7 +17521,7 @@ mod pool_tests {
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
         let mut m = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("m/agent"),
             bin: bin.clone(),
             dry_run: false,
@@ -17152,7 +17545,7 @@ mod pool_tests {
             record: Some(build::Work { step: "pack".into(), targets: vec![("6/4/4".into(), "kn".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
-        assert!(lead.try_start(0, job, &cond, Some(&r), &mut Vec::new()));
+        assert!(lead.try_start(0, job, &cond, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut Vec::new()));
         assert!(matches!(lead.slots[0].lease, Some(Held::Pooled { own: true, .. })));
         crate::control::request_lead(
             &lead.o.home,
@@ -17188,7 +17581,7 @@ mod pool_tests {
         };
         assert!(m.coord.as_ref().unwrap().held("pack").contains("6/4/4"), "the new lead holds its lease");
         lead.slots[0].beaten = None;
-        assert!(lead.beat(0, Some(&r)), "renewed by HTTP");
+        assert!(lead.beat(0, Some(&store::nasfs::NasRoot::local_for_test(&r))), "renewed by HTTP");
         assert!(matches!(lead.slots[0].lease, Some(Held::Pooled { id, .. }) if id == lid));
         // It ends: its entry in the new lead's records (the new lead reading the old one's mail),
         // its lease ended there.
@@ -17224,7 +17617,7 @@ mod pool_tests {
         let gate = d.path().join("gate");
         gate_step(&bin, "pass-sets", &gate);
         let mut lead = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin: bin.clone(),
             dry_run: false,
@@ -17236,7 +17629,7 @@ mod pool_tests {
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
         let mut m = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("m/agent"),
             bin: bin.clone(),
             dry_run: false,
@@ -17259,7 +17652,7 @@ mod pool_tests {
             record: None,
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
-        assert!(lead.try_start(0, job, &cond, Some(&r), &mut Vec::new()));
+        assert!(lead.try_start(0, job, &cond, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut Vec::new()));
         crate::control::request_lead(
             &lead.o.home,
             crate::control::LeadAsk::Give { to: im.clone() },
@@ -17310,7 +17703,7 @@ mod pool_tests {
         // (Each coordinator on a port of its own: the frozen lead's still holds its own.)
         TEST_PORT.with(|p| p.set(Some(free_port())));
         let mut lead = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin: bin.clone(),
             dry_run: false,
@@ -17322,7 +17715,7 @@ mod pool_tests {
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
         let mut m = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("m/agent"),
             bin: bin.clone(),
             dry_run: false,
@@ -17347,7 +17740,7 @@ mod pool_tests {
             record: Some(build::Work { step: "pack".into(), targets: vec![("6/4/4".into(), "kn".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
-        assert!(lead.try_start(0, job, &cond, Some(&r), &mut Vec::new()));
+        assert!(lead.try_start(0, job, &cond, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut Vec::new()));
         // (Its coordinator's state, its job's lease with it, saved for the term: by the coordinator's
         // own thread, crate::coord::keep, once the loop's step has named the term.)
         lead.step().unwrap();
@@ -17393,7 +17786,7 @@ mod pool_tests {
         let r = nas(d.path());
         let bin = app(d.path());
         let mut lead = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin: bin.clone(),
             dry_run: false,
@@ -17403,7 +17796,7 @@ mod pool_tests {
         .unwrap();
         lead.step().unwrap();
         let mut m = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("m/agent"),
             bin,
             dry_run: false,
@@ -17415,7 +17808,7 @@ mod pool_tests {
         assert_eq!(m.pooled().unwrap().role, pool::Role::Member);
         // (The port its coordinator would take is the lead's, still answering.)
         let out = crate::pool::driver::Out { leads: Some(2), ..Default::default() };
-        m.change_part(&r, &out);
+        m.change_part(&store::nasfs::NasRoot::local_for_test(&r), &out);
         assert!(m.coord.is_none() && m.o.helper);
         assert!(m.pool_restart().is_some_and(|w| w.contains("didn't start")), "{:?}", m.pool_restart());
         drop(lead);
@@ -17426,7 +17819,7 @@ mod pool_tests {
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let mut a = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("agent"),
             bin: app(d.path()),
             dry_run: false,
@@ -17463,7 +17856,7 @@ mod pool_tests {
         let r = nas(d.path());
         let bin = app(d.path());
         let mut lead = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin,
             dry_run: false,
@@ -17483,11 +17876,11 @@ mod pool_tests {
             record: Some(build::Work { step: "catalog".into(), targets: vec![("catalog".into(), "kc".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
-        assert!(lead.try_start(0, catalog, &cond, Some(&r), &mut Vec::new()));
+        assert!(lead.try_start(0, catalog, &cond, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut Vec::new()));
         let port = TEST_PORT.with(|p| p.get()).unwrap();
         // (Its step said it leads no term any more.)
         let out = crate::pool::driver::Out::default();
-        lead.change_part(&r, &out);
+        lead.change_part(&store::nasfs::NasRoot::local_for_test(&r), &out);
         assert!(lead.slots[0].running.is_none(), "its catalog stopped");
         assert!(lead.coord.is_none() && lead.o.helper && lead.pooled().unwrap().role == pool::Role::Member);
         // (Its listener closed as its stop returned: the port can be listened on again.)
@@ -17528,7 +17921,7 @@ mod pool_tests {
         }
         std::os::unix::fs::symlink(&new, apps.join("current")).unwrap();
         let mut lead = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("l/agent"),
             bin: old.clone(),
             dry_run: false,
@@ -17550,7 +17943,7 @@ mod pool_tests {
         lead.step().unwrap();
         assert_eq!(lead.pending_app().as_deref(), Some("20261010-0200-bbbbbbb"));
         let mut m = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("m/agent"),
             bin: new.clone(),
             dry_run: false,
@@ -17561,7 +17954,7 @@ mod pool_tests {
         let im = m.pooled().unwrap().side.member().id.clone();
         lead.pooled().unwrap().side.know(&im);
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
-        assert!(lead.try_start(0, job, &cond, Some(&r), &mut Vec::new()));
+        assert!(lead.try_start(0, job, &cond, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut Vec::new()));
         for _ in 0..12 {
             lead.step().unwrap();
             m.step().unwrap();
@@ -17591,7 +17984,7 @@ mod pool_tests {
             std::fs::copy(made.join(p), v.join(p)).unwrap();
         }
         let opts = |h: &str| Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join(h),
             bin: v.clone(),
             dry_run: false,
@@ -17663,7 +18056,7 @@ mod pool_tests {
             std::fs::copy(made.join(p), v.join(p)).unwrap();
         }
         let opts = |h: &str| Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join(h),
             bin: v.clone(),
             dry_run: false,
@@ -17759,7 +18152,7 @@ mod pool_tests {
         // (Task #224: its jobs are given back and it takes nothing new until resumed.)
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        let a = agent_dry(&r, &d.path().join("home"));
+        let a = agent_dry(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("home"));
         std::fs::create_dir_all(r.join("state/helpers")).unwrap();
         for (host, held) in [("busy-mac", false), ("held-mac", true)] {
             let st = Status {
@@ -17773,7 +18166,15 @@ mod pool_tests {
         let work: Vec<build::Work> = (0..40)
             .map(|i| build::Work { step: "bldtiles".into(), targets: vec![(format!("6/{i}/1"), "k".into())] })
             .collect();
-        let rec = a.forecast_record(&r, &[], &[], &work, Default::default(), None, &|_, _| 0);
+        let rec = a.forecast_record(
+            &store::nasfs::NasRoot::local_for_test(&r),
+            &[],
+            &[],
+            &work,
+            Default::default(),
+            None,
+            &|_, _| 0,
+        );
         let fc = rec.forecast();
         let named = |h: &str| fc.lanes.keys().chain(fc.next.keys()).any(|k| is_slot_of(k, h));
         assert!(
@@ -17795,7 +18196,7 @@ mod pool_tests {
         // (Task #628: a lead paused alone grants itself nothing new, so none of its lanes show work.)
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        let mut a = agent_dry(&r, &d.path().join("home"));
+        let mut a = agent_dry(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("home"));
         a.hold.held = Some(crate::control::Hold::new("scenic pause --here"));
         std::fs::create_dir_all(r.join("state/helpers")).unwrap();
         let st = Status { host: "busy-mac".into(), beat: now_s(), ..Default::default() };
@@ -17803,7 +18204,15 @@ mod pool_tests {
         let work: Vec<build::Work> = (0..40)
             .map(|i| build::Work { step: "bldtiles".into(), targets: vec![(format!("6/{i}/1"), "k".into())] })
             .collect();
-        let rec = a.forecast_record(&r, &[], &[], &work, Default::default(), None, &|_, _| 0);
+        let rec = a.forecast_record(
+            &store::nasfs::NasRoot::local_for_test(&r),
+            &[],
+            &[],
+            &work,
+            Default::default(),
+            None,
+            &|_, _| 0,
+        );
         assert!(rec.input.machines.iter().all(|m| m.mac.as_deref() != Some(a.host.as_str())));
         let fc = rec.forecast();
         let named = |h: &str| fc.lanes.keys().chain(fc.next.keys()).any(|k| is_slot_of(k, h));
@@ -17818,7 +18227,7 @@ mod pool_tests {
         let r = nas(d.path());
         let bin = app(d.path());
         let mut a = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: d.path().join("app-folder/agent"),
             bin,
             dry_run: false,
@@ -17836,17 +18245,17 @@ mod pool_tests {
             held: Some(crate::control::Hold::new("scenic pause on ahead")),
             at: now_s() + 3600,
         };
-        write_hold(&r.join(crate::control::hold_path(&me)), &ahead).unwrap();
+        write_hold(&store::nasfs::NasPath::local_for_test(&r.join(crate::control::hold_path(&me))), &ahead).unwrap();
         a.hold_read = None;
-        a.sync_hold(Some(&r));
+        a.sync_hold(Some(&store::nasfs::NasRoot::local_for_test(&r)));
         assert!(a.hold.held.is_some());
         let ask = crate::control::request_hold(&home, None, None).unwrap();
-        a.sync_hold(Some(&r));
+        a.sync_hold(Some(&store::nasfs::NasRoot::local_for_test(&r)));
         assert!(crate::control::hold_answer(&home, &ask).is_some_and(|x| x.ok));
         assert!(a.hold.held.is_none() && a.hold.at > ahead.at);
         // Written back over the NAS's older setting.
         a.hold_read = None;
-        a.sync_hold(Some(&r));
+        a.sync_hold(Some(&store::nasfs::NasRoot::local_for_test(&r)));
         let there: crate::control::HoldState =
             serde_json::from_slice(&std::fs::read(r.join(crate::control::hold_path(&me))).unwrap()).unwrap();
         assert_eq!(there, a.hold);
@@ -17863,10 +18272,10 @@ mod pool_tests {
         held_rx.recv().unwrap();
         crate::control::request_hold(&home, Some("other-mac"), Some(crate::control::Hold::new("x"))).unwrap();
         assert!(a.hold_asked_anew());
-        a.sync_hold(Some(&r));
+        a.sync_hold(Some(&store::nasfs::NasRoot::local_for_test(&r)));
         assert!(home.join(crate::control::HOLD_REQUEST).exists() && !a.hold_asked_anew());
         let ask = crate::control::request_hold(&home, None, Some(crate::control::Hold::new("here"))).unwrap();
-        a.sync_hold(Some(&r));
+        a.sync_hold(Some(&store::nasfs::NasRoot::local_for_test(&r)));
         assert!(crate::control::hold_answer(&home, &ask).is_some_and(|x| x.ok) && a.hold.held.is_some());
         tx.send(()).unwrap();
         t.join().unwrap();
@@ -17879,7 +18288,7 @@ mod pool_tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         let opts = || Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/nonexistent/bin"),
             dry_run: false,
@@ -17897,7 +18306,13 @@ mod pool_tests {
             record: Some(build::Work { step: "bldtiles".into(), targets: vec![("6/1/1".into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
-        assert!(a.try_start(0, job("bldtiles 6/1/1"), &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(
+            0,
+            job("bldtiles 6/1/1"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut Vec::new()
+        ));
         let pgid = a.slots[0].running.as_ref().unwrap().pgid;
         struct Kill(i32);
         impl Drop for Kill {
@@ -17910,17 +18325,23 @@ mod pool_tests {
         // (the status says why), the build itself not paused.
         let ask =
             crate::control::request_hold(&home, None, Some(crate::control::Hold::new("scenic pause on m1"))).unwrap();
-        a.sync_hold(Some(&root));
+        a.sync_hold(Some(&store::nasfs::NasRoot::local_for_test(&root)));
         assert!(crate::control::hold_answer(&home, &ask).is_some_and(|x| x.ok));
         assert!(a.hold.held.is_some() && a.pause.is_none());
-        a.tend(0, &cond, Some(&root), 0).unwrap();
+        a.tend(0, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), 0).unwrap();
         assert!(a.slots[0]
             .running
             .as_ref()
             .is_some_and(|r| r.pausing.as_deref().is_some_and(|w| w.contains("scenic pause on m1"))));
         assert_eq!(std::fs::read(a.control_path(0)).unwrap(), b"drain");
         let mut waiting = Vec::new();
-        assert!(!a.try_start(1, job("bldtiles 6/2/2"), &cond, Some(&root), &mut waiting));
+        assert!(!a.try_start(
+            1,
+            job("bldtiles 6/2/2"),
+            &cond,
+            Some(&store::nasfs::NasRoot::local_for_test(&root)),
+            &mut waiting
+        ));
         a.slots[1].lease = None;
         assert!(waiting.iter().any(|w| w.why.contains("this Mac is paused")), "{waiting:?}");
         a.stop_jobs("stopped: the test");
@@ -17931,7 +18352,7 @@ mod pool_tests {
         assert!(a.hold_why().is_some());
         // Resumed: work starts again.
         crate::control::request_hold(&home, None, None).unwrap();
-        a.sync_hold(Some(&root));
+        a.sync_hold(Some(&store::nasfs::NasRoot::local_for_test(&root)));
         assert!(a.hold.held.is_none() && a.hold_why().is_none() && crate::control::read_hold(&home).held.is_none());
     }
 
@@ -17944,7 +18365,7 @@ mod pool_tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         let mut a = test_agent(Options {
-            root: Some(root.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(root.clone())),
             home: home.clone(),
             bin: PathBuf::from("/app"),
             dry_run: false,
@@ -17956,7 +18377,7 @@ mod pool_tests {
         a.coord = Some(std::sync::Arc::new(co));
         a.free_set = Some(100 << 30);
         a.mem_set = Some((16 << 10, 12 << 10));
-        let nas_: pool::SharedNas = std::sync::Arc::new(crate::pool::nas::Share::new(&root));
+        let nas_: pool::SharedNas = std::sync::Arc::new(store::nasfs::NasRoot::local_for_test(&root));
         let side = pool::Side::open(&home, &home.join("pool"), d.path(), "development", nas_).unwrap().unwrap();
         a.pool = Some(std::sync::Arc::new(std::sync::Mutex::new(pool::Run::new(
             side,
@@ -17976,12 +18397,19 @@ mod pool_tests {
         a.offer_plan(jobs);
         for _ in 0..2 {
             let mut w = Vec::new();
-            assert!(a.lead_grants(jobs, &cond, &root, &mut w).is_empty(), "held: not granted");
+            assert!(
+                a.lead_grants(jobs, &cond, &store::nasfs::NasRoot::local_for_test(&root), &mut w).is_empty(),
+                "held: not granted"
+            );
             assert!(w.iter().any(|w| w.why == UNPUBLISHED), "{w:?}");
         }
         a.pooled().unwrap().gates.caught_up = true;
         let mut w = Vec::new();
-        assert_eq!(a.lead_grants(jobs, &cond, &root, &mut w).len(), 1, "caught up: granted {w:?}");
+        assert_eq!(
+            a.lead_grants(jobs, &cond, &store::nasfs::NasRoot::local_for_test(&root), &mut w).len(),
+            1,
+            "caught up: granted {w:?}"
+        );
     }
 
     #[test]
@@ -17989,8 +18417,8 @@ mod pool_tests {
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let home = d.path().join("home");
-        let mut a = agent_dry(&r, &home);
-        let nas_: pool::SharedNas = std::sync::Arc::new(crate::pool::nas::Share::new(&r));
+        let mut a = agent_dry(&store::nasfs::NasRoot::local_for_test(&r), &home);
+        let nas_: pool::SharedNas = std::sync::Arc::new(store::nasfs::NasRoot::local_for_test(&r));
         let side = pool::Side::open(&home, &home.join("pool"), d.path(), "development", nas_).unwrap().unwrap();
         a.pool = Some(std::sync::Arc::new(std::sync::Mutex::new(pool::Run::new(
             side,
@@ -18008,19 +18436,22 @@ mod pool_tests {
         };
         // Not caught up: no catalog; a sweep asks for a re-assertion first.
         let mut w = Vec::new();
-        assert!(!a.try_start(0, job("catalog"), &c, Some(&r), &mut w));
+        assert!(!a.try_start(0, job("catalog"), &c, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut w));
         assert!(w.iter().any(|w| w.why.contains("reflect the journal")), "{w:?}");
-        assert!(!a.try_start(0, job("gc"), &c, Some(&r), &mut w));
+        assert!(!a.try_start(0, job("gc"), &c, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut w));
         assert!(a.pooled().unwrap().reassert);
         // Caught up: the catalog; the sweep only on a step that re-asserted.
         a.pooled().unwrap().gates.caught_up = true;
-        assert!(a.try_start(0, job("catalog"), &c, Some(&r), &mut Vec::new()), "would start (dry run)");
-        assert!(!a.try_start(0, job("gc"), &c, Some(&r), &mut Vec::new()));
+        assert!(
+            a.try_start(0, job("catalog"), &c, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut Vec::new()),
+            "would start (dry run)"
+        );
+        assert!(!a.try_start(0, job("gc"), &c, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut Vec::new()));
         a.pooled().unwrap().gates.fresh = true;
-        assert!(a.try_start(0, job("gc"), &c, Some(&r), &mut Vec::new()));
+        assert!(a.try_start(0, job("gc"), &c, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut Vec::new()));
         // Other work as before.
         a.pooled().unwrap().gates = pool::Gates::default();
-        assert!(a.try_start(0, job("backup"), &c, Some(&r), &mut Vec::new()));
+        assert!(a.try_start(0, job("backup"), &c, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut Vec::new()));
     }
 
     #[test]
@@ -18031,7 +18462,7 @@ mod pool_tests {
         let id = crate::pool::member_id(&home).unwrap();
         let held = crate::pool::MemberLock::take(&d.path().join("app-folder"), &id).unwrap().unwrap();
         let mut a = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: home.clone(),
             bin: PathBuf::from("/nonexistent/bin"),
             dry_run: false,
@@ -18041,7 +18472,7 @@ mod pool_tests {
         .unwrap();
         assert!(a.pool.is_none() && a.coord.is_none() && !a.o.dry_run, "waiting, not a dry run for good");
         a.step().unwrap();
-        let st = read_status(Some(&r), &home).unwrap();
+        let st = read_status(Some(&store::nasfs::NasRoot::local_for_test(&r)), &home).unwrap();
         assert!(
             st.waiting.iter().any(|w| w.why.contains("not in the pool yet") && w.why.contains("member's lock")),
             "{:?}",
@@ -18062,7 +18493,7 @@ mod pool_tests {
             record: None,
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 9999 };
-        assert!(a.try_start(0, job, &cond, Some(&r), &mut Vec::new()));
+        assert!(a.try_start(0, job, &cond, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut Vec::new()));
         assert!(a.slots[0].running.is_some() && a.restart_now().is_none());
         drop(held);
         a.step().unwrap();
@@ -18087,7 +18518,7 @@ mod pool_tests {
             drop(held);
         });
         let a = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: home.clone(),
             bin: PathBuf::from("/nonexistent/bin"),
             dry_run: false,
@@ -18108,7 +18539,7 @@ mod pool_tests {
     fn an_owed_end_aged_out_no_longer_waits_on_the_lead() {
         let d = tempfile::tempdir().unwrap();
         let mut a = test_agent(Options {
-            root: Some(d.path().join("nas")),
+            root: Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))),
             home: d.path().join("home"),
             bin: PathBuf::from("/app"),
             dry_run: false,
@@ -18121,7 +18552,7 @@ mod pool_tests {
         a.unjournaled.insert(9, dir.clone());
         a.owed
             .push((now_s() - OWED_S - 1, Tell::Done(Box::new(crate::coord::Done { lease: 9, ..Default::default() }))));
-        a.tell_owed(&d.path().join("nas"));
+        a.tell_owed(&store::nasfs::NasRoot::local_for_test(&d.path().join("nas")));
         assert!(a.owed.is_empty() && a.unjournaled.is_empty());
         assert!(dir.is_dir(), "kept for the next process");
     }
@@ -18143,7 +18574,7 @@ mod pool_tests {
             std::fs::remove_file(&gone).unwrap();
         });
         let a = test_agent(Options {
-            root: Some(r.clone()),
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
             home: home.clone(),
             bin: PathBuf::from("/nonexistent/bin"),
             dry_run: false,
@@ -18163,7 +18594,7 @@ mod pool_tests {
         let d = tempfile::tempdir().unwrap();
         // (A root of its own, no catalog/: the NAS away as it started, the pool off.)
         let mut a = test_agent(Options {
-            root: Some(d.path().join("nas")),
+            root: Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))),
             home: d.path().join("home"),
             bin: PathBuf::from("/app"),
             dry_run: false,
@@ -18220,7 +18651,7 @@ mod pool_tests {
         // The lead reached: it journals the hand-off and ends the lease; the folder goes, so the
         // next process doesn't hand it off again.
         a.client = cl;
-        a.tell_owed(&d.path().join("nas"));
+        a.tell_owed(&store::nasfs::NasRoot::local_for_test(&d.path().join("nas")));
         assert!(a.owed.is_empty() && a.unjournaled.is_empty());
         assert_eq!(crate::handoff::waiting_in(&c.journal()).unwrap().len(), 1, "journaled by the lead");
         assert!(!c.held("unit").contains("6/12/25"));
@@ -18267,9 +18698,9 @@ mod pool_tests {
         assert_eq!(crate::handoff::waiting_in(&c.journal()).unwrap().len(), 1);
     }
 
-    fn agent_dry(root: &Path, home: &Path) -> Agent {
+    fn agent_dry(root: &store::nasfs::NasRoot, home: &Path) -> Agent {
         test_agent(Options {
-            root: Some(root.to_path_buf()),
+            root: Some(root.clone()),
             home: home.to_path_buf(),
             bin: PathBuf::from("/nonexistent/bin"),
             dry_run: true,

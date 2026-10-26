@@ -41,17 +41,23 @@ fn bytes(seed: u8, len: usize) -> Vec<u8> {
 
 struct Nas {
     dir: tempfile::TempDir,
+    root: crate::nasfs::NasRoot,
     pool: Arc<IoPool>,
 }
 
 fn nas() -> Nas {
     let dir = tempfile::tempdir().unwrap();
     let pool = IoPool::new(2, Duration::from_secs(60), dir.path().to_owned());
-    Nas { dir, pool }
+    let root = crate::nasfs::NasRoot::local_for_test(dir.path());
+    Nas { dir, root, pool }
 }
 
 impl Nas {
-    fn root(&self) -> &Path {
+    fn root(&self) -> &crate::nasfs::NasRoot {
+        &self.root
+    }
+
+    fn dir(&self) -> &Path {
         self.dir.path()
     }
 
@@ -229,7 +235,7 @@ fn the_world_and_an_area_are_copied_in_order_and_verified() {
     assert_eq!((s.copied, s.failed, s.pending, s.end), (11, 0, 0, SyncEnd::Done));
     for i in &w.items {
         if let Item::File { name, .. } = i {
-            assert_eq!(fs::read(m.local(name).unwrap()).unwrap(), fs::read(nas.root().join(name)).unwrap());
+            assert_eq!(fs::read(m.local(name).unwrap()).unwrap(), fs::read(nas.dir().join(name)).unwrap());
         }
     }
     // Not B, nor the outlines.
@@ -237,7 +243,7 @@ fn the_world_and_an_area_are_copied_in_order_and_verified() {
         !m.has(cat.content("base/6-33-21").unwrap()) && !m.has(cat.content("sources/osm/2026-09-28/outlines").unwrap())
     );
     // The pieces: each tile of theirs, as the archive has it; no other.
-    let src = pieces::open_file(&nas.root().join(basemap(&cat))).unwrap();
+    let src = pieces::open_file(&nas.dir().join(basemap(&cat))).unwrap();
     for p in [Piece::Lo, Piece::Tile(32, 21)] {
         let a = pieces::open_file(&m.piece_local(&basemap(&cat), p).unwrap()).unwrap();
         for (z, x, y, _) in basemap_tiles(6) {
@@ -459,7 +465,7 @@ fn pause_and_resume() {
     assert_eq!(fs::metadata(&part).unwrap().len(), CHUNK);
     let s = sync(&m, &cat, &w, &nas);
     assert_eq!((s.copied, s.end, s.pending), (7, SyncEnd::Done, 0));
-    assert_eq!(fs::read(m.local(&name).unwrap()).unwrap(), fs::read(nas.root().join(&name)).unwrap());
+    assert_eq!(fs::read(m.local(&name).unwrap()).unwrap(), fs::read(nas.dir().join(&name)).unwrap());
     assert!(!part.exists());
 }
 
@@ -492,7 +498,7 @@ fn a_copy_stopped_by_a_new_catalog_resumes_under_it() {
     let s = m.sync(&cat2, &w2, nas.root(), &nas.pool, &Control { stop: &stop, ..Control::FREE }).unwrap();
     assert_eq!((s.end, s.pending), (SyncEnd::Done, 0));
     assert_eq!(*first.lock().unwrap(), Some(CHUNK), "resumed, not begun again");
-    assert_eq!(fs::read(m.local(&name).unwrap()).unwrap(), fs::read(nas.root().join(&name)).unwrap());
+    assert_eq!(fs::read(m.local(&name).unwrap()).unwrap(), fs::read(nas.dir().join(&name)).unwrap());
 }
 
 #[test]
@@ -514,14 +520,14 @@ fn damaged_nas_files_are_not_kept() {
     let cat = two_areas(&nas, 1, 0, 1);
     // Same size, different bytes: the hash check catches it.
     let hi = cat.content("layers/roads/hi/6-32-21").unwrap().to_string();
-    let mut body = fs::read(nas.root().join(&hi)).unwrap();
+    let mut body = fs::read(nas.dir().join(&hi)).unwrap();
     body[100] ^= 1;
-    fs::write(nas.root().join(&hi), &body).unwrap();
+    fs::write(nas.dir().join(&hi), &body).unwrap();
     // Wrong size: caught before copying.
     let lo = cat.content("layers/roads/lo/3-4-2").unwrap().to_string();
-    fs::write(nas.root().join(&lo), b"short").unwrap();
+    fs::write(nas.dir().join(&lo), b"short").unwrap();
     // A damaged tile in the basemap: its piece isn't kept.
-    let bm = nas.root().join(basemap(&cat));
+    let bm = nas.dir().join(basemap(&cat));
     let src = pieces::open_file(&bm).unwrap();
     let (off, len) = src.locate(14, (32 << 8) + 1, (21 << 8) + 1).unwrap().unwrap();
     let mut b = fs::read(&bm).unwrap();
@@ -545,7 +551,7 @@ fn pieces_are_sized_from_the_directory_alone() {
     let m = big(home.path());
     let cat = two_areas(&nas, 1, 0, 1);
     let a = basemap(&cat);
-    let pm = pieces::open_file(&nas.root().join(&a)).unwrap();
+    let pm = pieces::open_file(&nas.dir().join(&a)).unwrap();
     let all = [Piece::Lo, Piece::Tile(32, 21), Piece::Tile(33, 21)];
     assert_eq!(m.size_pieces(&a, &all, &pm, &|| false).unwrap(), 3);
     assert_eq!(m.size_pieces(&a, &all, &pm, &|| false).unwrap(), 0, "kept");
@@ -564,7 +570,7 @@ fn index_cache() {
     let nas = nas();
     let home = tempfile::tempdir().unwrap();
     let m = big(home.path());
-    let p = nas.root().join("x.pack");
+    let p = nas.dir().join("x.pack");
     let mut w = PackWriter::create(&p, json!({"layer": "roads"}), false).unwrap();
     w.add(3, 1, 1, b"tile", 4).unwrap();
     w.finish().unwrap();

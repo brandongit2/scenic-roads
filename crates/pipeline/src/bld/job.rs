@@ -502,7 +502,7 @@ pub fn build_lo(out: &mut Out, q: TileId) -> Result<usize> {
     ensure!(q.z == 3, "bldfield-lo takes z3 tiles ({} isn't one)", q.slash());
     use crate::timings::{phase, Class};
     let t0 = std::time::Instant::now();
-    let mut paths: BTreeMap<(u32, u32), std::path::PathBuf> = BTreeMap::new();
+    let mut paths: BTreeMap<(u32, u32), store::nasfs::NasPath> = BTreeMap::new();
     for y in q.y * 8..q.y * 8 + 8 {
         for x in q.x * 8..q.x * 8 + 8 {
             if let Some(c) = out.get(&field::mid_logical(x, y)) {
@@ -512,7 +512,7 @@ pub fn build_lo(out: &mut Out, q: TileId) -> Result<usize> {
     }
     let p = phase("the mids read, the levels made", Class::Compute);
     let tiles = field::lo((q.x, q.y), &|x, y| {
-        paths.get(&(x, y)).map(|p| std::fs::read(p).with_context(|| format!("read {}", p.display()))).transpose()
+        paths.get(&(x, y)).map(|p| p.read().with_context(|| format!("read {}", p.display()))).transpose()
     })?;
     drop(p);
     let logical = field::lo_logical(q.x, q.y);
@@ -556,7 +556,7 @@ pub fn sites(out: &Out, t: TileId) -> Result<Vec<[i32; 2]>> {
     let Some(d) = crate::heritage::latest_date(&out.manifest) else { return Ok(Vec::new()) };
     let read = |l: String| -> Result<Vec<[i32; 2]>> {
         match out.get(&l) {
-            Some(c) => Ok(serde_json::from_slice(&std::fs::read(out.path(c))?).with_context(|| format!("{l}"))?),
+            Some(c) => Ok(serde_json::from_slice(&out.path(c).read()?).with_context(|| format!("{l}"))?),
             None => Ok(Vec::new()),
         }
     };

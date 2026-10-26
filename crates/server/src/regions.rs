@@ -197,7 +197,7 @@ fn err(code: StatusCode, msg: impl std::fmt::Display) -> Response {
 
 /// The regions' drop box on the NAS, and the I/O pool every access to it goes through (None while the
 /// NAS is away).
-fn nas(s: &crate::AppState) -> Option<(std::path::PathBuf, Arc<IoPool>)> {
+fn nas(s: &crate::AppState) -> Option<(store::nasfs::NasPath, Arc<IoPool>)> {
     let (root, pool) = (s.data.nas_root()?, s.data.pool()?);
     pool.is_online().then(|| (root.join("inputs/regions"), pool))
 }
@@ -243,9 +243,9 @@ type ListedAll = (Vec<Listed>, Vec<(String, String)>);
 /// Every region file in the folder and its subfolders (`how/`, `todo/` and the names every drop box
 /// passes over aside, and the special files), by id; the files that don't parse. The NAS failing midway is
 /// an error, never a shorter list.
-fn load_all(pool: &IoPool, dir: &std::path::Path) -> Result<ListedAll> {
+fn load_all(pool: &IoPool, dir: &store::nasfs::NasPath) -> Result<ListedAll> {
     let (mut ok, mut bad) = (Vec::new(), Vec::new());
-    let mut stack = vec![(dir.to_path_buf(), String::new())];
+    let mut stack = vec![(dir.clone(), String::new())];
     while let Some((d, rel)) = stack.pop() {
         let items = match pool.list(&d) {
             Ok(items) => items,
@@ -607,15 +607,15 @@ mod tests {
     use std::time::Duration;
 
     /// A pool over the share `root` with a minute for each operation: none here is timed.
-    fn pool(root: &std::path::Path) -> Arc<IoPool> {
-        IoPool::new(2, Duration::from_secs(60), root.to_owned())
+    fn pool(root: &store::nasfs::NasRoot) -> Arc<IoPool> {
+        IoPool::new(2, Duration::from_secs(60), root.unchecked_path())
     }
 
     /// A pool over the share `root` that gives up on an operation after 300 ms (`hang`'s never
     /// end), and waits as long as it takes for the share to answer a probe after one: busy, not
     /// away, however slowly a busy Mac answers it.
-    fn hung_pool(root: &std::path::Path) -> Arc<IoPool> {
-        let cfg = store::iopool::PoolConfig::new(2, Duration::from_millis(300), root.to_owned());
+    fn hung_pool(root: &store::nasfs::NasRoot) -> Arc<IoPool> {
+        let cfg = store::iopool::PoolConfig::new(2, Duration::from_millis(300), root.unchecked_path());
         IoPool::with_config(store::iopool::PoolConfig {
             probe_interval: Duration::from_millis(50),
             alive_timeout: Duration::from_secs(600),
@@ -651,9 +651,9 @@ mod tests {
     fn lists_every_folder() {
         let share = tempfile::tempdir().unwrap();
         let dir = share.path().join("inputs/regions");
-        let pool = pool(share.path());
+        let pool = pool(&store::nasfs::NasRoot::local_for_test(share.path()));
         // No folder yet: no regions.
-        assert_eq!(load_all(&pool, &dir).unwrap(), (vec![], vec![]));
+        assert_eq!(load_all(&pool, &store::nasfs::NasPath::local_for_test(&dir)).unwrap(), (vec![], vec![]));
         std::fs::create_dir_all(dir.join("eu/pt")).unwrap();
         std::fs::write(dir.join("borders.toml"), region("borders", "Scottish Borders")).unwrap();
         std::fs::write(
@@ -671,7 +671,7 @@ mod tests {
         }
         std::fs::create_dir_all(dir.join("how")).unwrap();
         std::fs::write(dir.join("how/example.toml"), region("example", "Example")).unwrap();
-        let (ok, bad) = load_all(&pool, &dir).unwrap();
+        let (ok, bad) = load_all(&pool, &store::nasfs::NasPath::local_for_test(&dir)).unwrap();
         assert_eq!(
             ok.iter().map(|l| (l.id.as_str(), l.path.as_str())).collect::<Vec<_>>(),
             [("azores", "eu/pt/azores.toml"), ("borders", "borders.toml")]
@@ -687,7 +687,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("on.toml"), region("on", "On")).unwrap();
         std::fs::write(dir.join("off.toml"), format!("{}disabled = true\n", region("off", "Off"))).unwrap();
-        let (ok, bad) = load_all(&pool(share.path()), &dir).unwrap();
+        let (ok, bad) = load_all(
+            &pool(&store::nasfs::NasRoot::local_for_test(share.path())),
+            &store::nasfs::NasPath::local_for_test(&dir),
+        )
+        .unwrap();
         assert!(bad.is_empty(), "{bad:?}");
         assert_eq!(ok.iter().map(|l| (l.id.as_str(), l.disabled)).collect::<Vec<_>>(), [("off", true), ("on", false)]);
         // The panel's field: there only when set.
@@ -704,7 +708,10 @@ mod tests {
         let dir = share.path().join("inputs/regions");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("borders.toml"), region("borders", "Scottish Borders")).unwrap();
-        let (pool, hung) = (pool(share.path()), hung_pool(share.path()));
+        let (pool, hung) = (
+            pool(&store::nasfs::NasRoot::local_for_test(share.path())),
+            hung_pool(&store::nasfs::NasRoot::local_for_test(share.path())),
+        );
         // A region file the share never gives: reading it fails (in the pool's time, rather than
         // never: the read itself never ends).
         let stuck = dir.join("stuck.toml");
@@ -712,7 +719,7 @@ mod tests {
         // (A watchdog: a listing that waited on the read would never return.)
         let (tx, rx) = std::sync::mpsc::channel();
         let (h, d) = (hung.clone(), dir.clone());
-        std::thread::spawn(move || tx.send(load_all(&h, &d).unwrap_err()).ok());
+        std::thread::spawn(move || tx.send(load_all(&h, &store::nasfs::NasPath::local_for_test(&d)).unwrap_err()).ok());
         let e = rx
             .recv_timeout(Duration::from_secs(300))
             .unwrap_or_else(|_| panic!("the listing waited on the hung read: no answer in 5 min"));
@@ -721,7 +728,7 @@ mod tests {
         // The share still answers, so it's busy rather than away: the rest goes on.
         assert!(hung.is_online());
         std::fs::remove_file(&stuck).unwrap();
-        assert_eq!(load_all(&pool, &dir).unwrap().0.len(), 1);
+        assert_eq!(load_all(&pool, &store::nasfs::NasPath::local_for_test(&dir)).unwrap().0.len(), 1);
     }
 
     async fn json_of(r: Response) -> Value {
@@ -738,7 +745,7 @@ mod tests {
         let (root, gone) = (nas.path().join("project"), nas.path().join("gone"));
         std::fs::create_dir_all(root.join("inputs/regions")).unwrap();
         std::fs::write(root.join("inputs/regions/borders.toml"), region("borders", "Scottish Borders")).unwrap();
-        let s = crate::test_state(home.path(), &root);
+        let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(&root));
         let v = json_of(list(State(s.clone())).await).await;
         assert_eq!((ids(&v), v.get("offline")), (vec!["borders".to_string()], None));
         // The share goes away: the list is the last one read.

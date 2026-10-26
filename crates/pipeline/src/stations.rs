@@ -13,7 +13,6 @@ use anyhow::{Context, Result};
 use det::Det;
 use osmpbf::{Element, ElementReader};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 pub const TRAM: u8 = 0;
 pub const METRO: u8 = 1;
@@ -194,10 +193,12 @@ struct Building {
 
 /// The stops of the routes in an OSM file (the pass's `rail` set): read in three passes (routes,
 /// their member ways, the nodes needed), then merged in routes' id order.
-pub fn stops(pbf: &Path) -> Result<Vec<Stop>> {
+pub fn stops<'a>(pbf: impl Into<store::nasfs::Loc<'a>>) -> Result<Vec<Stop>> {
+    let pbf = pbf.into();
+    let reader = || pbf.open().map(|f| ElementReader::new(std::io::BufReader::new(f)));
     // Pass 1: the passenger routes, by id.
     let mut routes: Vec<(i64, HashMap<String, String>, Vec<(u8, i64, String)>)> =
-        ElementReader::from_path(pbf).with_context(|| format!("open {}", pbf.display()))?.par_map_reduce(
+        reader().with_context(|| format!("open {}", pbf.display()))?.par_map_reduce(
             |el| match el {
                 Element::Relation(r) => {
                     let t: HashMap<String, String> = r.tags().map(|(k, v)| (k.to_string(), v.to_string())).collect();
@@ -247,7 +248,7 @@ pub fn stops(pbf: &Path) -> Result<Vec<Stop>> {
         Obj { c, name, en, station }
     };
     // Pass 2: the member ways that are stop objects, and their nodes.
-    let ways: Vec<(i64, Vec<i64>, HashMap<String, String>)> = ElementReader::from_path(pbf)?.par_map_reduce(
+    let ways: Vec<(i64, Vec<i64>, HashMap<String, String>)> = reader()?.par_map_reduce(
         |el| match el {
             Element::Way(w) if member_ways.contains(&w.id()) => {
                 let t: HashMap<&str, &str> = w.tags().collect();
@@ -266,28 +267,27 @@ pub fn stops(pbf: &Path) -> Result<Vec<Stop>> {
     )?;
     let way_nodes: HashSet<i64> = ways.iter().flat_map(|w| w.1.iter().copied()).collect();
     // Pass 3: the nodes: stop objects among the members, and the stop ways' vertices.
-    let nodes: Vec<(i64, (f64, f64), Option<HashMap<String, String>>)> = ElementReader::from_path(pbf)?
-        .par_map_reduce(
-            |el| {
-                let (id, c, tags): (i64, (f64, f64), Vec<(&str, &str)>) = match el {
-                    Element::Node(n) => (n.id(), (n.lon(), n.lat()), n.tags().collect()),
-                    Element::DenseNode(n) => (n.id(), (n.lon(), n.lat()), n.tags().collect()),
-                    _ => return Vec::new(),
-                };
-                let member = member_nodes.contains(&id);
-                if !member && !way_nodes.contains(&id) {
-                    return Vec::new();
-                }
-                let t: HashMap<&str, &str> = tags.into_iter().collect();
-                let keep = member && stop_tags(&t);
-                vec![(id, c, keep.then(|| t.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()))]
-            },
-            Vec::new,
-            |mut a, mut b| {
-                a.append(&mut b);
-                a
-            },
-        )?;
+    let nodes: Vec<(i64, (f64, f64), Option<HashMap<String, String>>)> = reader()?.par_map_reduce(
+        |el| {
+            let (id, c, tags): (i64, (f64, f64), Vec<(&str, &str)>) = match el {
+                Element::Node(n) => (n.id(), (n.lon(), n.lat()), n.tags().collect()),
+                Element::DenseNode(n) => (n.id(), (n.lon(), n.lat()), n.tags().collect()),
+                _ => return Vec::new(),
+            };
+            let member = member_nodes.contains(&id);
+            if !member && !way_nodes.contains(&id) {
+                return Vec::new();
+            }
+            let t: HashMap<&str, &str> = tags.into_iter().collect();
+            let keep = member && stop_tags(&t);
+            vec![(id, c, keep.then(|| t.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()))]
+        },
+        Vec::new,
+        |mut a, mut b| {
+            a.append(&mut b);
+            a
+        },
+    )?;
     let coords: HashMap<i64, (f64, f64)> = nodes.iter().map(|n| (n.0, n.1)).collect();
     let mut objs: HashMap<(u8, i64), Obj> = HashMap::new();
     for (id, c, t) in &nodes {

@@ -31,7 +31,6 @@ use crate::coverage::Coverage;
 use crate::legacy::TileId;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
 
 /// Tree cover's key scheme before 2026-10-06, before its z6 tiles.
 pub mod v1 {
@@ -121,12 +120,12 @@ impl Times for FileTimes<'_> {
 
 /// The NAS's files' times, each read once.
 pub struct FileTimes<'a> {
-    root: &'a Path,
+    root: &'a store::nasfs::NasRoot,
     seen: RefCell<HashMap<String, Option<i64>>>,
 }
 
 impl<'a> FileTimes<'a> {
-    pub fn new(root: &'a Path) -> FileTimes<'a> {
+    pub fn new(root: &'a store::nasfs::NasRoot) -> FileTimes<'a> {
         FileTimes { root, seen: RefCell::default() }
     }
 
@@ -135,7 +134,10 @@ impl<'a> FileTimes<'a> {
         if let Some(&t) = self.seen.borrow().get(content) {
             return t;
         }
-        let t = std::fs::metadata(self.root.join(content))
+        let t = self
+            .root
+            .join(content)
+            .metadata()
             .and_then(|md| md.modified())
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
@@ -561,7 +563,8 @@ mod tests {
         at("layers/trees-cover/lo/3-3-2", since - std::time::Duration::from_secs(3600));
         at("layers/trees-height/lo/3-4-2", since + std::time::Duration::from_secs(60));
         at("layers/trees-leaf/hi/6-56-25", since + std::time::Duration::from_secs(60));
-        let t = FileTimes::new(d.path());
+        let nr = store::nasfs::NasRoot::local_for_test(d.path());
+        let t = FileTimes::new(&nr);
         assert_eq!(
             (t.trees_by_program(&m, 3, 2), t.trees_by_program(&m, 4, 2), t.trees_by_program(&m, 7, 3)),
             (Some(false), Some(true), Some(true))

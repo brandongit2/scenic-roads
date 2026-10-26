@@ -567,7 +567,8 @@ impl Checks for Gtfs {
 
 /// The accepted zips, in their drop-box paths' order: (path, checked copy) — what the counters read.
 pub fn zips(a: &super::Accepted) -> Vec<(String, std::path::PathBuf)> {
-    a.files().filter(|(p, _)| p.ends_with(".zip")).map(|(p, c)| (p.clone(), c)).collect()
+    // (The counters' zip reader opens a member by its file's path, each time: tests/nas_access.rs.)
+    a.files().filter(|(p, _)| p.ends_with(".zip")).map(|(p, c)| (p.clone(), c.unchecked_path())).collect()
 }
 
 #[cfg(test)]

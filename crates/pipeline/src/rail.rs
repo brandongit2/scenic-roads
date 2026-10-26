@@ -211,7 +211,7 @@ pub type Fetched = BTreeMap<String, String>;
 
 pub fn read_fetched(out: &Out) -> Result<Fetched> {
     match out.get(FETCHED) {
-        Some(c) => Ok(serde_json::from_slice(&std::fs::read(out.path(c)).with_context(|| format!("read {c}"))?)?),
+        Some(c) => Ok(serde_json::from_slice(&out.path(c).read().with_context(|| format!("read {c}"))?)?),
         None => Ok(Fetched::new()),
     }
 }
@@ -238,12 +238,14 @@ pub fn cache_index(out: &Out, fetched: &Fetched) -> Value {
     let mut idx = serde_json::Map::new();
     let prefix = "sources/rail/gtfs/";
     for (l, c) in out.manifest.range(prefix.to_string()..).take_while(|(l, _)| l.starts_with(prefix)) {
-        let day = fetched
-            .get(c)
-            .cloned()
-            .or_else(|| std::fs::metadata(out.path(c)).and_then(|m| m.modified()).ok().map(day_of));
+        let day =
+            fetched.get(c).cloned().or_else(|| out.path(c).metadata().and_then(|m| m.modified()).ok().map(day_of));
         let Some(day) = day else { continue };
-        idx.insert(l[prefix.len()..].to_string(), serde_json::json!({"path": out.path(c), "fetched": day}));
+        // (A path the counting program opens: tests/nas_access.rs.)
+        idx.insert(
+            l[prefix.len()..].to_string(),
+            serde_json::json!({"path": out.path(c).unchecked_path(), "fetched": day}),
+        );
     }
     Value::Object(idx)
 }
@@ -338,7 +340,7 @@ pub fn keep_downloads(out: &mut Out, gtfs: &Path) -> Result<usize> {
 /// local space. A pin whose zip can't be read fails the job (it's tried again), rather than fetch
 /// the feed anew. Returns how many were pinned.
 pub fn pin_seeds(out: &mut Out, decls: &[Value], dir: &Path) -> Result<usize> {
-    let mut by_day: BTreeMap<String, Vec<(String, PathBuf)>> = BTreeMap::new();
+    let mut by_day: BTreeMap<String, Vec<(String, store::nasfs::NasPath)>> = BTreeMap::new();
     for d in decls {
         let (Some(id), Some(zip), Some(day)) = (d["id"].as_str(), d["pin"]["zip"].as_str(), d["pin"]["day"].as_str())
         else {
@@ -354,7 +356,7 @@ pub fn pin_seeds(out: &mut Out, decls: &[Value], dir: &Path) -> Result<usize> {
         std::fs::remove_dir_all(&at).ok();
         std::fs::create_dir_all(&at)?;
         for (id, src) in zips {
-            store::sys::copy_data(&src, at.join(format!("{id}.zip")))
+            src.copy_data_to_local(&at.join(format!("{id}.zip")))
                 .with_context(|| format!("{id}: its pin, {}", src.display()))?;
         }
         n += put_zips(out, &at, Some(&day))?;
@@ -394,10 +396,11 @@ fn put_zips(out: &mut Out, gtfs: &Path, day: Option<&str>) -> Result<usize> {
 /// its path on the NAS.
 pub fn feeds_for_counting(out: &Out, logical: &str) -> Result<Value> {
     let c = out.get(logical).with_context(|| format!("no {logical} yet (the rail-feeds step)"))?;
-    let mut v: Value = serde_json::from_slice(&std::fs::read(out.path(c)).with_context(|| format!("read {c}"))?)?;
+    let mut v: Value = serde_json::from_slice(&out.path(c).read().with_context(|| format!("read {c}"))?)?;
     for f in v["feeds"].as_array_mut().context("feeds")? {
         if let Some(z) = f.get("zip").and_then(Value::as_str) {
-            f["path"] = Value::from(out.path(z).to_string_lossy().into_owned());
+            // (A path the counting program opens: tests/nas_access.rs.)
+            f["path"] = Value::from(out.path(z).unchecked_path().to_string_lossy().into_owned());
         }
     }
     Ok(v)
@@ -581,7 +584,12 @@ mod tests {
     #[test]
     fn the_feeds_list_names_each_zip() {
         let d = tempfile::tempdir().unwrap();
-        let mut out = Out::open(&d.path().join("root"), &d.path().join("scratch"), "rail-feeds").unwrap();
+        let mut out = Out::open(
+            &store::nasfs::NasRoot::local_for_test(&d.path().join("root")),
+            &d.path().join("scratch"),
+            "rail-feeds",
+        )
+        .unwrap();
         let cached = d.path().join("c.zip");
         std::fs::write(&cached, b"cached").unwrap();
         let cname = out.put_file(&zip_logical("mdb-1"), "zip", &cached).unwrap();
@@ -593,7 +601,7 @@ mod tests {
         let found = d.path().join("feeds.json");
         std::fs::write(&found, r#"{"feeds": [{"id": "sncf", "zip": "new", "fetched": "2026-10-04"}, {"id": "mdb-1", "zip": "cache", "fetched": "2026-09-30"}, {"id": "mdb-2", "status": "replaced by sncf"}]}"#).unwrap();
         assert_eq!(put_feeds(&mut out, &found, &gtfs, FEEDS).unwrap(), 1);
-        let v: Value = serde_json::from_slice(&std::fs::read(out.path(out.get(FEEDS).unwrap())).unwrap()).unwrap();
+        let v: Value = serde_json::from_slice(&(out.path(out.get(FEEDS).unwrap())).read().unwrap()).unwrap();
         let f = v["feeds"].as_array().unwrap();
         assert_eq!(f[0]["zip"], Value::from(out.get(&zip_logical("sncf")).unwrap()));
         assert_eq!((f[0]["fetched"].as_str(), f[1]["fetched"].as_str()), (Some("2026-10-04"), Some("2026-09-30")));
@@ -632,7 +640,9 @@ mod tests {
             serde_json::json!({"id": "sncf", "format": "gtfs"}),
         ];
         let handoff = d.path().join("handoff.json");
-        let mut out = Out::open(&root, &scratch, "rail-feeds").unwrap().handing_off(&handoff);
+        let mut out = Out::open(&store::nasfs::NasRoot::local_for_test(&root), &scratch, "rail-feeds")
+            .unwrap()
+            .handing_off(&handoff);
         assert_eq!(pin_seeds(&mut out, &decls, &scratch.join("pins")).unwrap(), 1);
         out.save().unwrap();
         assert!(root.join("old/gtfs/mbta.zip").exists(), "the pin's zip is copied, not moved");
@@ -664,9 +674,9 @@ mod tests {
         // with its day, though its local copy is gone; no list.
         let found = d.path().join("feeds.json");
         std::fs::write(&found, r#"{"feeds": [{"id": "sncf", "zip": "new", "fetched": "2026-10-04"}, {"id": "renfe", "zip": "new", "fetched": "2026-10-04"}]}"#).unwrap();
-        let mut out = Out::open(&root, &scratch, "rail-feeds").unwrap();
+        let mut out = Out::open(&store::nasfs::NasRoot::local_for_test(&root), &scratch, "rail-feeds").unwrap();
         assert!(put_feeds(&mut out, &found, &gtfs, FEEDS).is_err());
-        let out = Out::unbound(&root, &scratch).unwrap();
+        let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch).unwrap();
         let sncf = out.get(&zip_logical("sncf")).unwrap().to_string();
         assert!(!gtfs.join("sncf.zip").exists() && out.path(&sncf).exists());
         assert_eq!(read_fetched(&out).unwrap()[&sncf], "2026-10-04");
@@ -674,9 +684,9 @@ mod tests {
         // What a failed run downloaded, likewise.
         std::fs::write(gtfs.join("a.zip"), b"a").unwrap();
         std::fs::create_dir_all(gtfs.join("b.zip")).unwrap();
-        let mut out = Out::open(&root, &scratch, "rail-feeds").unwrap();
+        let mut out = Out::open(&store::nasfs::NasRoot::local_for_test(&root), &scratch, "rail-feeds").unwrap();
         assert!(keep_downloads(&mut out, &gtfs).is_err());
-        let out = Out::unbound(&root, &scratch).unwrap();
+        let out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &scratch).unwrap();
         let a = out.get(&zip_logical("a")).unwrap().to_string();
         assert!(read_fetched(&out).unwrap().get(&a).is_some_and(|d| d.len() == 10));
         assert!(read_fetched(&out).unwrap().contains_key(&sncf), "the other days kept");

@@ -318,23 +318,28 @@ impl Lists<'_> {
 }
 
 /// A catalog file's path under the root.
-fn path_of(root: &Path, cat: &store::catalog::Catalog, logical: &str) -> Option<PathBuf> {
+fn path_of(
+    root: &store::nasfs::NasRoot,
+    cat: &store::catalog::Catalog,
+    logical: &str,
+) -> Option<store::nasfs::NasPath> {
     cat.file(logical).map(|f| root.join(&f.file))
 }
 
-fn sect(path: &Path) -> Result<SectReader<PlainFile>> {
-    SectReader::open(PlainFile::open(path).with_context(|| format!("open {}", path.display()))?)
+fn sect<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<SectReader<PlainFile>> {
+    let path = path.into();
+    SectReader::open(path.open_plain().with_context(|| format!("open {}", path.display()))?)
         .with_context(|| format!("read {}", path.display()))
 }
 
 /// The spoken languages the catalog was made with: its `global/spoken` (the `spoken` job's, from
 /// the languages input's accepted version).
-pub fn spoken_for(root: &Path, cat: &store::catalog::Catalog) -> Result<Spoken> {
+pub fn spoken_for(root: &store::nasfs::NasRoot, cat: &store::catalog::Catalog) -> Result<Spoken> {
     let f =
         cat.global.get("spoken").and_then(|l| cat.file(l)).context(
             "the catalog has no global/spoken (the spoken job makes it from the languages' accepted version)",
         )?;
-    let b = std::fs::read(root.join(&f.file)).with_context(|| format!("read {}", f.file))?;
+    let b = root.join(&f.file).read().with_context(|| format!("read {}", f.file))?;
     Spoken::from_bytes(&b).with_context(|| format!("read {}", f.file))
 }
 
@@ -403,7 +408,7 @@ fn coverage(cat: &store::catalog::Catalog) -> Vec<crate::coverage::Shape> {
 /// Labels: the zoom-12 tiles of the labels layer's hi packs in the units' tiles, the labels inside
 /// the coverage (`cov`; empty: all).
 fn labels(
-    root: &Path,
+    root: &store::nasfs::NasRoot,
     cat: &store::catalog::Catalog,
     units: &HashSet<(u32, u32)>,
     cov: &[crate::coverage::Shape],
@@ -417,7 +422,7 @@ fn labels(
     for (i, logical) in packs.iter().enumerate() {
         progress("label packs read", i as u64, packs.len() as u64);
         let Some(path) = path_of(root, cat, logical) else { continue };
-        let src = PlainFile::open(&path).with_context(|| format!("open {}", path.display()))?;
+        let src = path.open_plain().with_context(|| format!("open {}", path.display()))?;
         let idx = store::pack::PackIndex::read_from(&src)?;
         for e in idx.entries.iter().filter(|e| e.zxy().0 == 12) {
             let (z, x, y) = e.zxy();
@@ -507,7 +512,7 @@ fn road_priority(c: u8) -> f64 {
 /// Roads and rail lines: each unit's named ways, then placed by their boxes in the hidata's
 /// ways-here index (each way once: its first tile's record).
 fn roads(
-    root: &Path,
+    root: &store::nasfs::NasRoot,
     cat: &store::catalog::Catalog,
     lists: &mut Lists,
     progress: &dyn Fn(&str, u64, u64),
@@ -530,7 +535,7 @@ fn roads(
         let strings: Vec<String> =
             String::from_utf8_lossy(&s.read("strings")?).split('\n').map(str::to_owned).collect();
         let roaden: HashMap<String, String> = path_of(root, cat, &format!("global/roaden/{}", unit.replace('/', "-")))
-            .and_then(|p| std::fs::read(p).ok())
+            .and_then(|p| p.read().ok())
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
         let own: Vec<bool> = ways.iter().map(|w| roaden.contains_key(&w.id.to_string())).collect();
@@ -587,12 +592,13 @@ struct Wanted {
 /// files, in their paths' order: later ones win, `drop` removes one). An error when a file can't be
 /// read: a list made without it would ask for descriptions already written.
 fn described(accepted: &crate::inputs::Accepted) -> Result<HashSet<String>> {
-    let mut files: Vec<(&String, PathBuf)> = accepted.files().filter(|(p, _)| p.ends_with(".jsonl")).collect();
+    let mut files: Vec<(&String, store::nasfs::NasPath)> =
+        accepted.files().filter(|(p, _)| p.ends_with(".jsonl")).collect();
     // (By the paths' components, as the map's server reads them.)
     files.sort_by(|a, b| Path::new(a.0).cmp(Path::new(b.0)));
     let mut set = HashSet::new();
     for (_, f) in files {
-        let text = std::fs::read_to_string(&f).with_context(|| format!("read {}", f.display()))?;
+        let text = f.read_to_string().with_context(|| format!("read {}", f.display()))?;
         for line in text.lines() {
             let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
             let Some(key) = v.get("qid").or_else(|| v.get("id")).and_then(Value::as_str) else { continue };
@@ -612,7 +618,8 @@ pub fn translation_files(accepted: &crate::inputs::Accepted) -> BTreeMap<String,
     accepted
         .files()
         .filter(|(p, _)| p.ends_with(".jsonl"))
-        .map(|(p, path)| (p.clone(), (path, accepted.index.files[p].file.clone())))
+        // (The names crate's tables read their files by path: tests/nas_access.rs.)
+        .map(|(p, path)| (p.clone(), (path.unchecked_path(), accepted.index.files[p].file.clone())))
         .collect()
 }
 
@@ -632,7 +639,7 @@ fn enwiki(info: &Value) -> Option<String> {
 
 /// The landmarks: names on the lists, and the descriptions wanted.
 fn landmarks(
-    root: &Path,
+    root: &store::nasfs::NasRoot,
     cat: &store::catalog::Catalog,
     lists: &mut Lists,
     done: &HashSet<String>,
@@ -731,7 +738,12 @@ fn landmarks(
 
 /// Parks and protected areas with an English article (their records have no register entry), by
 /// Wikidata's sitelinks where known, else area.
-fn areas(root: &Path, cat: &store::catalog::Catalog, done: &HashSet<String>, want: &mut Vec<Wanted>) -> Result<()> {
+fn areas(
+    root: &store::nasfs::NasRoot,
+    cat: &store::catalog::Catalog,
+    done: &HashSet<String>,
+    want: &mut Vec<Wanted>,
+) -> Result<()> {
     let mut seen = HashSet::new();
     for logical in cat.ovdata.values() {
         let Some(path) = path_of(root, cat, logical) else { continue };
@@ -782,17 +794,17 @@ fn example((id, lon, lat): &(String, f64, f64)) -> Value {
     }
 }
 
-/// Writes a file whole (crate::whole::write: a held old file renamed aside).
-fn put(path: &Path, bytes: &[u8]) -> Result<()> {
-    crate::whole::write(path, bytes)
+/// Writes a file whole (store::whole::write: a held old file renamed aside).
+fn put(path: &store::nasfs::NasPath, bytes: &[u8]) -> Result<()> {
+    path.write_whole(bytes)
 }
 
 /// Makes the lists from the newest catalog under `root` into `out` (the translations' and the
 /// descriptions' `todo/` under it: the root itself for the job, a scratch folder to look first),
 /// with the accepted versions of the translations and the descriptions the agent names.
 pub fn run(
-    root: &Path,
-    out: &Path,
+    root: &store::nasfs::NasRoot,
+    out: &store::nasfs::NasRoot,
     translations: &crate::inputs::Accepted,
     descriptions: &crate::inputs::Accepted,
     progress: &dyn Fn(&str, u64, u64),
@@ -833,7 +845,7 @@ pub fn run(
         by_lang.entry(l).or_default().push((n, k, e));
     }
     let dir = crate::inputs::todo_dir(out, crate::inputs::translations::UNIT);
-    std::fs::create_dir_all(&dir)?;
+    dir.create_dir_all()?;
     let mut written = HashSet::new();
     for (lang, mut es) in by_lang {
         let pri = |e: &Entry| e.best + (e.things as f64).log10();
@@ -860,10 +872,9 @@ pub fn run(
         report.langs.insert(lang.as_str().to_owned(), es.len());
     }
     // Lists of languages with nothing left go.
-    for e in std::fs::read_dir(&dir)?.flatten() {
-        let n = e.file_name().to_string_lossy().into_owned();
-        if n.ends_with(".jsonl") && !written.contains(&n) {
-            std::fs::remove_file(e.path()).ok();
+    for e in dir.read_dir()? {
+        if e.name.ends_with(".jsonl") && !written.contains(&e.name) {
+            e.path.remove_file().ok();
         }
     }
     put(&dir.join("README.md"), TRANSLATORS.as_bytes())?;
@@ -873,7 +884,7 @@ pub fn run(
 
     // The descriptions' lists.
     let ddir = crate::inputs::todo_dir(out, crate::inputs::descriptions::UNIT);
-    std::fs::create_dir_all(&ddir)?;
+    ddir.create_dir_all()?;
     for (file, mut w) in [("landmarks.jsonl", want), ("areas.jsonl", wanted_areas)] {
         w.sort_by(|a, b| b.fame.total_cmp(&a.fame));
         let text: String = w.iter().map(|x| x.line.to_string() + "\n").collect();

@@ -170,7 +170,7 @@ impl History {
     fn rewrite(&mut self) {
         let Some(p) = &self.path else { return };
         let text: String = self.events.iter().map(|e| serde_json::to_string(e).unwrap_or_default() + "\n").collect();
-        match crate::whole::write(p, text.as_bytes()) {
+        match store::whole::write(p, text.as_bytes()) {
             Ok(()) => self.lines = self.events.len(),
             Err(e) => eprintln!("coordinator: rewriting the history: {e:#}"),
         }

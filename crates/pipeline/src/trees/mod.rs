@@ -577,7 +577,7 @@ pub fn write_block(b: &BlockOut, out: &Path) -> Result<()> {
         w.add(t)?;
     }
     w.finish()?;
-    crate::whole::write(&out.join(TOPS), &b.tops.to_bytes()?)?;
+    store::whole::write(&out.join(TOPS), &b.tops.to_bytes()?)?;
     Ok(())
 }
 
@@ -1086,9 +1086,10 @@ pub fn write_mid(path: &Path, tile: (u32, u32), blocks: &MidBlocks) -> Result<()
 
 /// A mid's file (`write_mid`), read and checked: its format and step version (a mid made for another
 /// version of the layers isn't one to assemble), every section whole.
-pub fn read_mid(path: &Path) -> Result<Mid> {
-    let what = || path.display().to_string();
-    let r = store::sect::SectReader::open(PlainFile::open(path).with_context(what)?).with_context(what)?;
+pub fn read_mid<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<Mid> {
+    let path = path.into();
+    let what = || path.display();
+    let r = store::sect::SectReader::open(path.open_plain().with_context(what)?).with_context(what)?;
     let m = r.meta();
     ensure!(m["fmt"].as_u64() == Some(MID_FMT) && m["step"] == "trees", "{}: not a tree cover mid", what());
     ensure!(

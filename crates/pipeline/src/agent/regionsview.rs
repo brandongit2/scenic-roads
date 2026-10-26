@@ -38,7 +38,7 @@ pub struct Made {
 /// `root`: its drawn files read, and the catalogue's sizes unless `had` has them (its number's).
 /// Run off the agent's loop (`Agent::regions_view`); a read that fails is logged, its part left out.
 pub fn build(
-    root: &std::path::Path,
+    root: &store::nasfs::NasRoot,
     a: &crate::inputs::Accepted,
     regions: &[crate::agent::recipes::Recipe],
     n: Option<u64>,

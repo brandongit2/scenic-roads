@@ -646,7 +646,7 @@ impl Mirror {
         &self,
         cat: &Catalog,
         wanted: &Wanted,
-        nas_root: &Path,
+        nas_root: &crate::nasfs::NasRoot,
         pool: &Arc<IoPool>,
         ctl: &Control,
     ) -> Result<SyncStats> {
@@ -765,7 +765,7 @@ impl Mirror {
         &self,
         name: &str,
         size: u64,
-        nas_root: &Path,
+        nas_root: &crate::nasfs::NasRoot,
         pool: &Arc<IoPool>,
         ctl: &Control,
         pace: &mut Pace,
@@ -860,7 +860,7 @@ impl Mirror {
     fn archive(
         &self,
         name: &str,
-        nas_root: &Path,
+        nas_root: &crate::nasfs::NasRoot,
         pool: &Arc<IoPool>,
         open: &mut HashMap<String, Arc<PmTiles>>,
     ) -> Result<Arc<PmTiles>> {
@@ -880,7 +880,7 @@ impl Mirror {
         &self,
         archive: &str,
         piece: Piece,
-        nas_root: &Path,
+        nas_root: &crate::nasfs::NasRoot,
         pool: &Arc<IoPool>,
         ctl: &Control,
         pace: &mut Pace,

@@ -236,7 +236,7 @@ mod tests {
         let data: Vec<u8> = (0..(PAGE as usize * 3 + 100)).map(|i| (i % 251) as u8).collect();
         std::fs::write(&p, &data).unwrap();
         let pool = store::iopool::IoPool::new(2, std::time::Duration::from_secs(60), dir.path().to_owned());
-        let f = RemoteFile::new(p, pool);
+        let f = RemoteFile::new(store::nasfs::NasPath::local_for_test(p), pool);
         for (off, len) in
             [(0u64, 10usize), (PAGE - 3, 6), (5, PAGE as usize * 2 + 50), (PAGE * 3, 100), (PAGE * 3 + 99, 1)]
         {
@@ -253,7 +253,7 @@ mod tests {
         // Forgetting a file drops its pages and sections, not other files'.
         let p2 = dir.path().join("g");
         std::fs::write(&p2, &data[..2000]).unwrap();
-        let g = RemoteFile::new(p2, f.pool.clone());
+        let g = RemoteFile::new(store::nasfs::NasPath::local_for_test(p2), f.pool.clone());
         whole(&g, 0, 100).unwrap();
         forget(&[f.id].into_iter().collect());
         assert!(cached_whole(&f, 7, 1000).is_none() && cached_whole(&g, 0, 100).is_some());

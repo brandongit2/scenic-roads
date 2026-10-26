@@ -82,9 +82,9 @@ fn home_or_default(home: &Option<PathBuf>) -> PathBuf {
 }
 
 /// The NAS project folder: `--root`'s, else the share (mounted first if `mount`).
-fn root(root: &Option<PathBuf>, mount: bool) -> Result<PathBuf> {
+fn root(root: &Option<PathBuf>, mount: bool) -> Result<store::nasfs::NasRoot> {
     match root {
-        Some(r) => Ok(r.clone()),
+        Some(r) => Ok(store::nasfs::NasRoot::from_arg(r.clone())),
         None => agent::find_root(mount).context("the NAS isn't mounted (and couldn't be mounted)"),
     }
 }
@@ -118,7 +118,7 @@ fn timings(a: &cli::Timings) -> Result<()> {
     } else {
         let asked = (|| -> Result<Vec<RunRec>> {
             let root = root(&a.places.root, false)?;
-            let c = pipeline::coord::client::Client::from_nas(&root, &agent::cond::host_name())?
+            let c = pipeline::coord::client::Client::from_nas(&root, &store::sys::host_name())?
                 .context("no coordinator to ask")?;
             let (code, v) = c.post_json("/work/timings", &serde_json::json!({ "kind": kind, "last": last }))?;
             anyhow::ensure!(code == 200, "the coordinator answered {code} (an older app?)");
@@ -156,10 +156,10 @@ fn timings_publish(last: usize, file: Option<&Path>, json: bool, places: &cli::P
     let days = 8;
     let events = match file {
         Some(f) => pubtimes::load_history(None, Some(f), days),
-        None => pubtimes::load_history(root.as_deref(), Some(&home.join("coord/history.jsonl")), days),
+        None => pubtimes::load_history(root.as_ref(), Some(&home.join("coord/history.jsonl")), days),
     };
     let servers =
-        root.as_deref().map(|r| pubtimes::read_servers(r, now_s().saturating_sub(days * 86400))).unwrap_or_default();
+        root.as_ref().map(|r| pubtimes::read_servers(r, now_s().saturating_sub(days * 86400))).unwrap_or_default();
     let (cats, units) = pubtimes::chains(&events, &servers);
     if json {
         let from = cats.len().saturating_sub(last);
@@ -185,7 +185,7 @@ fn lead(a: &cli::Lead) -> Result<()> {
     use pipeline::agent::lead::{self as l, State};
     use pipeline::control::LeadAsk;
     let home = home_or_default(&a.home);
-    let host = agent::cond::host_name();
+    let host = store::sys::host_name();
     let view = || l::own_status(&home).and_then(|s| s.pool).and_then(|p| p.lead);
     let ask = match &a.cmd {
         None | Some(LeadCmd::Status) => {
@@ -272,7 +272,7 @@ fn inputs(a: &cli::Inputs) -> Result<()> {
         })
         .collect();
     let views = view::of(&r, &manifest, &units, &checking, &Default::default(), &mut view::Cache::default());
-    let by = format!("scenic inputs on {}", agent::cond::host_name());
+    let by = format!("scenic inputs on {}", store::sys::host_name());
     let unit_arg = |u: &str| -> Result<String> {
         anyhow::ensure!(
             gi::checks(u).is_some() || views.iter().any(|v| v.unit == u),
@@ -406,8 +406,8 @@ fn inputs(a: &cli::Inputs) -> Result<()> {
             let p = r.join(gi::TEST_FLAG);
             match state {
                 Some(OnOff::On) => {
-                    std::fs::create_dir_all(p.parent().unwrap())?;
-                    pipeline::whole::write(&p, format!("turned on by {by}\n").as_bytes())?;
+                    p.parent().unwrap().create_dir_all()?;
+                    p.write_whole(format!("turned on by {by}\n"))?;
                     println!(
                         "on: {} is on the gate (its drop box inputs/{}/, .jsonl files of {{\"k\": …, \"v\": …}} lines)",
                         gi::TEST_UNIT,
@@ -415,14 +415,14 @@ fn inputs(a: &cli::Inputs) -> Result<()> {
                     );
                 }
                 Some(OnOff::Off) => {
-                    if let Err(e) = std::fs::remove_file(&p) {
+                    if let Err(e) = p.remove_file() {
                         anyhow::ensure!(e.kind() == std::io::ErrorKind::NotFound, "{e}");
                     }
                     if *forget {
                         // Its acceptances removed here; its records by the lead (a job of the
                         // lead's: the records are its to write), asked through this Mac's agent.
                         let acc = r.join(gi::ACCEPTED).join(gi::TEST_UNIT);
-                        if let Err(e) = std::fs::remove_dir_all(&acc) {
+                        if let Err(e) = acc.remove_dir_all() {
                             anyhow::ensure!(e.kind() == std::io::ErrorKind::NotFound, "remove {}: {e}", acc.display());
                         }
                         gi::ask(
@@ -725,7 +725,7 @@ fn status(places: &cli::Places) -> Result<()> {
     // pool): `--home`'s; with a `--root` of another build (a scratch one) and no `--home`, none:
     // that build's status alone, never this Mac's real agent's.)
     let own_home = places.home.clone().or_else(|| places.root.is_none().then(|| app_home().join("agent")));
-    let Some(st) = agent::read_status(root.as_deref(), own_home.as_deref().unwrap_or(Path::new("/nonexistent"))) else {
+    let Some(st) = agent::read_status(root.as_ref(), own_home.as_deref().unwrap_or(Path::new("/nonexistent"))) else {
         bail!("no status yet: the build agent hasn't run (or the NAS isn't mounted)");
     };
     let c = &st.conditions;
@@ -924,7 +924,7 @@ fn status(places: &cli::Places) -> Result<()> {
         .filter(|p| !p.is_empty());
     let contact = root
         .as_ref()
-        .and_then(|r| std::fs::read(pipeline::coord::contact_path(r)).ok())
+        .and_then(|r| pipeline::coord::contact_path(r).read().ok())
         .and_then(|b| serde_json::from_slice::<pipeline::coord::Contact>(&b).ok());
     let page = match (page, contact) {
         (Some(p), _) => Some(p),
@@ -1052,7 +1052,7 @@ fn in_use(cores_asked: Option<u32>, off: bool, home: &Option<PathBuf>) -> Result
         }
         return Ok(());
     };
-    let by = format!("scenic in-use on {}", agent::cond::host_name());
+    let by = format!("scenic in-use on {}", store::sys::host_name());
     let s = agent::settings::set_in_use(&home, Some(n), &by)?;
     say(s.as_ref());
     Ok(())
@@ -1064,7 +1064,7 @@ fn in_use(cores_asked: Option<u32>, off: bool, home: &Option<PathBuf>) -> Result
 fn nas_target(what: Option<&str>, root_: &Option<PathBuf>) -> Result<()> {
     use pipeline::budget::nas;
     let r = root(root_, true)?;
-    let by = format!("scenic nas-target on {}", agent::cond::host_name());
+    let by = format!("scenic nas-target on {}", store::sys::host_name());
     let t = match what {
         Some("off") => nas::set_target(&r, None, &by)?,
         Some(p) => {
@@ -1090,9 +1090,9 @@ fn nas_target(what: Option<&str>, root_: &Option<PathBuf>) -> Result<()> {
 /// `scenic nas-room [<GB> | off]`: the NAS reserve (agent::room::NAS_RESERVE), set in the project
 /// folder on the NAS, which every job reads; off: none; with none, how it stands.
 fn nas_room(what: Option<&str>, root_: &Option<PathBuf>) -> Result<()> {
-    use agent::room::{disk_free, nas_reserve, size};
+    use agent::room::{nas_reserve, size};
     let r = root(root_, true)?;
-    let by = format!("scenic nas-room on {}", agent::cond::host_name());
+    let by = format!("scenic nas-room on {}", store::sys::host_name());
     if let Some(what) = what {
         agent::settings::set_nas_room(&r, what, &by)?;
     }
@@ -1100,7 +1100,7 @@ fn nas_room(what: Option<&str>, root_: &Option<PathBuf>) -> Result<()> {
         Some(t) => println!("NAS reserve: {} (set {} by {})", size(t.bytes), ago(t.at), t.by),
         None => println!("NAS reserve: off (`scenic nas-room <GB>` sets one)"),
     }
-    if let Ok(f) = disk_free(&r) {
+    if let Ok(f) = pipeline::agent::room::nas_free(&r) {
         println!("Free on the NAS now: {}", size(f));
     }
     Ok(())
@@ -1112,7 +1112,7 @@ fn nas_room(what: Option<&str>, root_: &Option<PathBuf>) -> Result<()> {
 fn battery_floor(what: Option<&str>, root_: &Option<PathBuf>) -> Result<()> {
     use agent::cond::{read_battery_floor, DEFAULT_BATTERY_MIN};
     let r = root(root_, true)?;
-    let by = format!("scenic battery-floor on {}", agent::cond::host_name());
+    let by = format!("scenic battery-floor on {}", store::sys::host_name());
     if let Some(what) = what {
         agent::settings::set_battery_floor(&r, what, &by)?;
     }
@@ -1131,7 +1131,7 @@ fn battery_floor(what: Option<&str>, root_: &Option<PathBuf>) -> Result<()> {
 fn memory(what: Option<&str>, home: &Option<PathBuf>) -> Result<()> {
     use agent::buildmem;
     let home = home_or_default(home);
-    let by = format!("scenic memory on {}", agent::cond::host_name());
+    let by = format!("scenic memory on {}", store::sys::host_name());
     let total_mb = pipeline::sys::memsize().map_or(0, |b| b >> 20);
     let limit = agent::memguard::limit_mb(total_mb);
     let set = match what {
@@ -1172,7 +1172,7 @@ fn memory_line(set: Option<&agent::buildmem::Memory>, limit_mb: u64, ago: impl F
 fn room(what: Option<&str>, home: &Option<PathBuf>) -> Result<()> {
     use agent::room::{size, target};
     let home = home_or_default(home);
-    let by = format!("scenic room on {}", agent::cond::host_name());
+    let by = format!("scenic room on {}", store::sys::host_name());
     match what {
         Some("off") => {
             agent::settings::set_room(&home, "off", &by)?;
@@ -1274,7 +1274,7 @@ fn clean(yes: bool, home: &Option<PathBuf>) -> Result<()> {
             return Ok(());
         }
     }
-    let r = agent::room::request_clear(&home, &format!("scenic clean on {}", agent::cond::host_name()))?;
+    let r = agent::room::request_clear(&home, &format!("scenic clean on {}", store::sys::host_name()))?;
     println!("asked this Mac's agent to clear them; waiting for it…");
     let t = std::time::Instant::now();
     loop {
@@ -1302,7 +1302,7 @@ fn clean(yes: bool, home: &Option<PathBuf>) -> Result<()> {
 /// until it says what it stopped.
 fn job_cancel(target: &str, step: Option<&str>, rerun_after_update: bool, home: &Option<PathBuf>) -> Result<()> {
     let home = home_or_default(home);
-    let host = agent::cond::host_name();
+    let host = store::sys::host_name();
     let c = pipeline::control::Cancel::new(target, step, rerun_after_update, &format!("scenic job cancel on {host}"));
     pipeline::control::request_cancel(&home, &c)?;
     let t = std::time::Instant::now();
@@ -1328,8 +1328,14 @@ fn main() -> Result<()> {
         Some(Cmd::Lead(a)) => lead(&a),
         Some(Cmd::Agent { once, dry_run, helper: _, places }) => {
             let bin = std::env::current_exe()?.parent().map(Path::to_path_buf).context("the agent's folder")?;
-            let o =
-                Options { home: home_or_default(&places.home), root: places.root, bin, dry_run, once, helper: false };
+            let o = Options {
+                home: home_or_default(&places.home),
+                root: places.root.map(store::nasfs::NasRoot::from_arg),
+                bin,
+                dry_run,
+                once,
+                helper: false,
+            };
             eprintln!(
                 "agent: started (app {}, root {})",
                 o.bin.display(),
@@ -1389,7 +1395,7 @@ fn main() -> Result<()> {
                 }
                 Some(PoolCmd::JournalGc { repair }) => {
                     // The journal GC's marker against the newest records (crate::pool::journal_gc::check).
-                    let nas = pipeline::pool::nas::Share::new(&r);
+                    let nas = r.clone();
                     println!(
                         "{}",
                         pipeline::pool::journal_gc::check(&nas, now_s(), repair, &|| {
@@ -1401,7 +1407,7 @@ fn main() -> Result<()> {
                     // The NAS budget's probe once (pipeline::budget::nas), in `--dir <folder>` (made,
                     // then removed with what it holds), else a folder of its own under the project
                     // folder's `state/pool/nas-probe`.
-                    let dir = dir.unwrap_or_else(|| pipeline::budget::nas::probe_dir(&r, &agent::cond::host_name()));
+                    let dir = dir.unwrap_or_else(|| pipeline::budget::nas::probe_dir(&r, &store::sys::host_name()));
                     anyhow::ensure!(!dir.exists(), "{} exists: the probe makes its own folder", dir.display());
                     let p =
                         pipeline::budget::nas::probe(&dir).with_context(|| format!("probing in {}", dir.display()))?;
@@ -1419,7 +1425,7 @@ fn main() -> Result<()> {
                     // The targets' floors the lead's coordinator keeps (crate::agent::memguard):
                     // `--clear` clears them all, `--clear <step>` a step's, `--clear <step> <target>`
                     // one target's (a step fixed, or a floor learned wrong).
-                    let c = pipeline::coord::client::Client::from_nas(&r, &agent::cond::host_name())?
+                    let c = pipeline::coord::client::Client::from_nas(&r, &store::sys::host_name())?
                         .context("no lead's coordinator to ask")?;
                     let (code, v) = c.post_json(
                         "/work/floors",
@@ -1476,14 +1482,21 @@ fn main() -> Result<()> {
             // (Timed as a task of its kind: a tail's, a 3D buildings' z3 tile's, tree cover's blocks'.)
             let kind = format!("task {}", pipeline::offload::task_kind(&spec));
             let r = pipeline::timings::job(&kind, || {
-                pipeline::offload::run_task(&client, lease, &spec, &dir, &bin, root.as_deref())
+                pipeline::offload::run_task(
+                    &client,
+                    lease,
+                    &spec,
+                    &dir,
+                    &bin,
+                    root.map(store::nasfs::NasRoot::from_arg).as_ref(),
+                )
             });
             std::fs::remove_dir_all(&dir).ok();
             let v = match &r {
                 Ok(t) => serde_json::json!({ "ok": true, "task": t }),
                 Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
             };
-            pipeline::whole::write(&result, v.to_string().as_bytes())?;
+            store::whole::write(&result, v.to_string().as_bytes())?;
             r.map(|_| ())
         }
         Some(Cmd::Pause { now, here, member, home }) => pause_resume(true, now, here, member.as_deref(), &home.home),
@@ -1529,7 +1542,7 @@ fn main() -> Result<()> {
 fn pause_resume(pause: bool, now: bool, here: bool, member: Option<&str>, home: &Option<PathBuf>) -> Result<()> {
     use pipeline::control::{Mode, Pause};
     let home = home_or_default(home);
-    let host = pipeline::agent::cond::host_name();
+    let host = store::sys::host_name();
     if here || member.is_some() {
         let held = pause.then(|| pipeline::control::Hold::new(&format!("scenic pause on {host}")));
         let r = pipeline::control::request_hold(&home, member, held)?;

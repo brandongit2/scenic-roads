@@ -1,24 +1,12 @@
 //! The NAS as the pool's protocol sees it (docs/pool.md §3): the six operations it needs, each
 //! saying what the SMB share guarantees and what it doesn't, so the protocol runs the same against
-//! the share (`Share`) and against the simulator's model of its faults. Paths are relative to the
+//! the share (`NasRoot`) and against the simulator's model of its faults. Paths are relative to the
 //! NAS project folder, parts separated by `/`.
 
-use anyhow::{ensure, Context, Result};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use anyhow::{Context, Result};
+use store::nasfs::NasRoot;
 
-/// What a create-new did.
-#[derive(Debug)]
-pub enum Created {
-    /// This call made the file, and its bytes landed.
-    Made,
-    /// Something had that name: nothing was done.
-    There,
-    /// This call made the file, but its bytes didn't all land (the share went away between the
-    /// two): the file is this Mac's, empty or short, for it to finish with a whole write (no other
-    /// Mac's create of that name can succeed), or to leave; why.
-    Unwritten(anyhow::Error),
-}
+pub use store::nasfs::Created;
 
 /// The operations the pool's protocol makes on the NAS.
 pub trait Nas {
@@ -30,7 +18,7 @@ pub trait Nas {
 
     /// Writes `path` whole: a temporary name, renamed over it; when that rename stays busy (the
     /// server holding the old file open for another session, maybe for hours) the old file is
-    /// renamed aside first (crate::whole::write). The rename may land long after the call began
+    /// renamed aside first (store::whole::write). The rename may land long after the call began
     /// (this Mac asleep in between), over whatever was written there meanwhile; and it may have
     /// landed when the call says it failed (its answer lost). `read` waits out the moment between.
     fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()>;
@@ -58,181 +46,53 @@ pub trait Nas {
     fn remove(&self, path: &str) -> Result<()>;
 }
 
-/// The NAS project folder (or a local folder standing in for it).
-#[derive(Clone, Debug)]
-pub struct Share {
-    root: PathBuf,
-    /// The folders this process has made (or found made) under it: the writes' hot path makes no
-    /// folder twice (`parent_made`); one dropped again when a write into it fails (`forget`).
-    made: std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<PathBuf>>>,
-}
-
-impl Share {
-    /// The share at `root`, the NAS project folder.
-    pub fn new(root: &Path) -> Share {
-        #[cfg(test)]
-        assert!(!crate::agent::is_live_path(root), "a test's share is the real NAS: {}", root.display());
-        Share { root: root.to_path_buf(), made: Default::default() }
-    }
-
-    /// The folder the paths are under.
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
-    fn at(&self, path: &str) -> PathBuf {
-        self.root.join(path)
-    }
-
-    /// `p`'s folder made, once a process. On SMB `create_dir_all` may fail with EEXIST when its
-    /// follow-up stat of a folder another Mac just made is stale: taken as made (the write that
-    /// follows fails if the folder truly is missing), but not remembered.
-    fn parent_made(&self, p: &Path) -> Result<()> {
-        let Some(d) = p.parent() else { return Ok(()) };
-        if self.made.lock().unwrap().contains(d) {
-            return Ok(());
-        }
-        match std::fs::create_dir_all(d) {
-            Ok(()) => {
-                self.made.lock().unwrap().insert(d.to_path_buf());
-                Ok(())
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-            Err(e) => Err(e).with_context(|| format!("make {}", d.display())),
-        }
-    }
-
-    /// Writes `path` whole by `write`, its folder made (again, when it went).
-    fn write_by(&self, path: &str, bytes: &[u8], write: fn(&Path, &[u8]) -> Result<()>) -> Result<()> {
-        let p = self.at(path);
-        self.parent_made(&p)?;
-        let mut r = write(&p, bytes);
-        // (Its folder gone since it was made, an outside reset: made again, and written once more.)
-        if r.as_ref().is_err_and(not_found) {
-            self.forget(&p);
-            self.parent_made(&p)?;
-            r = write(&p, bytes);
-        }
-        if r.is_err() {
-            self.forget(&p);
-        }
-        r
-    }
-
-    /// A write into `p`'s folder failed: it's made again next time (it may have gone).
-    fn forget(&self, p: &Path) {
-        if let Some(d) = p.parent() {
-            self.made.lock().unwrap().remove(d);
-        }
-    }
-}
-
-impl Nas for Share {
+/// The NAS project folder: the protocol's operations are store::nasfs's (its `made` set and whole
+/// writes in one place).
+impl Nas for NasRoot {
     fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
-        let p = self.at(path);
-        self.parent_made(&p)?;
-        let open = || std::fs::OpenOptions::new().write(true).create_new(true).open(&p);
-        // (Its folder gone since it was made, an outside reset: made again, and tried once more.)
-        let opened = match open() {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                self.forget(&p);
-                self.parent_made(&p)?;
-                open()
-            }
-            r => r,
-        };
-        let mut f = match opened {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(Created::There),
-            Err(e) => {
-                self.forget(&p);
-                return Err(e).with_context(|| format!("create {}", p.display()));
-            }
-        };
-        let r = (|| -> Result<()> {
-            f.write_all(bytes)?;
-            f.sync_all()?;
-            let n = f.metadata()?.len();
-            ensure!(n == bytes.len() as u64, "{n} of {} bytes written", bytes.len());
-            Ok(())
-        })();
-        Ok(match r {
-            Ok(()) => Created::Made,
-            Err(e) => Created::Unwritten(e.context(format!("write {} (made, and left short)", p.display()))),
-        })
+        self.join(path).create_new(bytes)
     }
 
     fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
-        self.write_by(path, bytes, crate::whole::write)
+        self.join(path).write_whole_made(bytes)
     }
 
     fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
-        let p = self.at(path);
-        match crate::whole::read(&p) {
+        let p = self.join(path);
+        match p.read() {
             Ok(b) => Ok(Some(b)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e).with_context(|| format!("read {}", p.display())),
+            Err(e) => Err(e).with_context(|| format!("read {}", p.unchecked_path().display())),
         }
     }
 
     fn read_fresh(&self, path: &str) -> Result<Option<Vec<u8>>> {
-        use std::io::Read;
-        let p = self.at(path);
-        let mut f = match crate::whole::retried(&p, &|q| std::fs::File::open(q)) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e).with_context(|| format!("open {}", p.display())),
-        };
-        #[cfg(target_os = "macos")]
-        {
-            use std::os::fd::AsRawFd;
-            // SAFETY: fcntl on a descriptor this function owns, with an int argument.
-            if unsafe { libc::fcntl(f.as_raw_fd(), libc::F_NOCACHE, 1) } == -1 {
-                return Err(std::io::Error::last_os_error()).with_context(|| format!("F_NOCACHE {}", p.display()));
-            }
+        let p = self.join(path);
+        match p.read_fresh() {
+            Ok(b) => Ok(Some(b)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e).with_context(|| format!("read {}", p.unchecked_path().display())),
         }
-        let mut b = Vec::new();
-        f.read_to_end(&mut b).with_context(|| format!("read {}", p.display()))?;
-        Ok(Some(b))
     }
 
     fn exists(&self, path: &str) -> Result<bool> {
-        let p = self.at(path);
-        p.try_exists().with_context(|| format!("stat {}", p.display()))
+        let p = self.join(path);
+        p.try_exists().with_context(|| format!("stat {}", p.unchecked_path().display()))
     }
 
     fn list(&self, dir: &str) -> Result<Vec<String>> {
-        let d = self.at(dir);
-        let rd = match std::fs::read_dir(&d) {
-            Ok(rd) => rd,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(e).with_context(|| format!("list {}", d.display())),
-        };
-        let mut names = Vec::new();
-        // (An error midway is an error, not a shorter list.)
-        for e in rd {
-            let name = e.with_context(|| format!("list {}", d.display()))?.file_name().to_string_lossy().into_owned();
-            if !crate::whole::is_tmp(Path::new(&name)) {
-                names.push(name);
-            }
-        }
-        names.sort();
-        Ok(names)
+        let d = self.join(dir);
+        d.list().with_context(|| format!("list {}", d.unchecked_path().display()))
     }
 
     fn remove(&self, path: &str) -> Result<()> {
-        let p = self.at(path);
-        match std::fs::remove_file(&p) {
+        let p = self.join(path);
+        match p.remove_file() {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e).with_context(|| format!("remove {}", p.display())),
+            Err(e) => Err(e).with_context(|| format!("remove {}", p.unchecked_path().display())),
         }
     }
-}
-
-/// Whether an error is a path's not being there (its folder gone).
-fn not_found(e: &anyhow::Error) -> bool {
-    e.chain().any(|c| c.downcast_ref::<std::io::Error>().is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound))
 }
 
 /// Whether bytes read of a file made with create-new aren't all there: empty, or JSON cut short (its
@@ -293,46 +153,10 @@ impl Nas for Mem {
 mod tests {
     use super::*;
 
-    /// A read past the cache reads what a write left, and None for a file that isn't there.
-    #[test]
-    fn a_fresh_read_reads_what_was_written() {
-        let d = tempfile::tempdir().unwrap();
-        let s = Share::new(d.path());
-        assert_eq!(s.read_fresh("state/pool/x.json").unwrap(), None);
-        s.write_whole("state/pool/x.json", b"{\"beat\":1}").unwrap();
-        assert_eq!(s.read_fresh("state/pool/x.json").unwrap().as_deref(), Some(&b"{\"beat\":1}"[..]));
-    }
-
-    /// A folder's make that says it exists (SMB's stale stat after another Mac made it) isn't an
-    /// error: the write that follows says whether it's there. A folder made is made once a
-    /// process, and made again after a write into it fails (it went).
-    #[test]
-    fn the_share_takes_a_folder_said_to_exist_and_makes_one_once() {
-        let d = tempfile::tempdir().unwrap();
-        let s = Share::new(d.path());
-        // (A file where the folder would be: create_dir_all says AlreadyExists, as SMB's stale stat
-        // does; the write then fails, not the make.)
-        std::fs::create_dir_all(d.path().join("state/pool")).unwrap();
-        std::fs::write(d.path().join("state/pool/members"), b"x").unwrap();
-        let e = s.write_whole("state/pool/members/m-1.json", b"a").unwrap_err();
-        assert!(!format!("{e:#}").starts_with("make "), "{e:#}");
-        assert!(s.create_new("state/pool/members/m-2.json", b"a").is_err());
-        std::fs::remove_file(d.path().join("state/pool/members")).unwrap();
-        s.write_whole("state/pool/members/m-1.json", b"a").unwrap();
-        assert!(s.made.lock().unwrap().contains(&d.path().join("state/pool/members")));
-        // Gone (an outside reset): the write makes it again and goes through, create-new's too.
-        std::fs::remove_dir_all(d.path().join("state/pool/members")).unwrap();
-        s.write_whole("state/pool/members/m-1.json", b"b").unwrap();
-        assert_eq!(s.read("state/pool/members/m-1.json").unwrap().as_deref(), Some(&b"b"[..]));
-        std::fs::remove_dir_all(d.path().join("state/pool/members")).unwrap();
-        assert!(matches!(s.create_new("state/pool/members/m-3.json", b"c").unwrap(), Created::Made));
-        assert_eq!(s.read("state/pool/members/m-3.json").unwrap().as_deref(), Some(&b"c"[..]));
-    }
-
     #[test]
     fn the_share_makes_once_writes_whole_and_lists_without_temporary_files() {
         let d = tempfile::tempdir().unwrap();
-        let s = Share::new(d.path());
+        let s = NasRoot::local_for_test(d.path());
         assert!(matches!(s.create_new("state/build/terms/1.json", b"one").unwrap(), Created::Made));
         assert!(matches!(s.create_new("state/build/terms/1.json", b"two").unwrap(), Created::There), "made once");
         assert_eq!(s.read("state/build/terms/1.json").unwrap().as_deref(), Some(&b"one"[..]));
