@@ -478,7 +478,7 @@ pub fn inputs_kept(
             crate::inputs::read_index(root, c)?
                 .files
                 .values()
-                .flat_map(|f| f.stored().map(str::to_string))
+                .flat_map(|f| f.stored().into_iter().map(str::to_string))
                 .collect::<Vec<_>>(),
         );
         keep.insert(c.to_string());

@@ -109,7 +109,10 @@ of the lead's own (`QUIET_AGE`); running, it yields to a target held back for th
 - Retired passes' sources (`sources/osm/<date>/`, `sources/items/<date>/`) go by the same rule, their
   other files 14 days after the newer pass completed.
 - The input check's checked copies (`sources/inputs/`, inputs.md §4.9) are kept while the manifest,
-  an accepted index, an unmerged journal entry or an index of the last 14 days names them.
+  an accepted index, an unmerged journal entry or an index of the last 14 days names them; an
+  index names its files' copies and every content name under `sources/inputs/` in their facts,
+  nested ones too (`FileEntry::stored`: a region's `.rgeo`, and the regions' `.rgeo` an elevation
+  dataset's `measured.outline` was cut by, which its plans read while that index is accepted).
 - **Removed steps' data** (`agent::gc::RETIRED`, logical-name prefixes; today `sources/terrain-z8-`,
   the worldwide z8 terrain removed by task #670, and `global/legacy/`, the old pipeline's converted
   data, read by nothing since): each run first drops every manifest name under one (their uploads

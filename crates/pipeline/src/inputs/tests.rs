@@ -1329,3 +1329,25 @@ fn a_file_held_for_the_extract_puts_its_ids_in_the_held_reports_needs() {
     let d2 = check(&w, &b, Some(&d.index), &[], &store, false);
     assert_eq!(d2.report.unwrap().needs, ["pass 2026-09-28", "r21030917"]);
 }
+
+/// Task #708: an elevation dataset's outline names the regions' stored geometry nested in its
+/// facts (`measured.outline.geometry`); GC keeps what `stored` names, so those are named too.
+#[test]
+fn stored_names_content_names_nested_in_facts() {
+    let g = "sources/inputs/regions/@geometry/quebec.0123456789abcdef.rgeo";
+    let top = "sources/inputs/regions/@geometry/andorra.0123456789abcdef.rgeo";
+    let facts = serde_json::json!({
+        "geometry": top,
+        "measured": { "outline": { "geometry": [g], "edges": { "1,2": "fedcba9876543210" } } },
+        "note": "sources/inputs/not a content name",
+    });
+    let f = FileEntry {
+        file: "sources/inputs/elevation/hrdem.toml.0123456789abcdef.toml".into(),
+        size: 1,
+        keyed: "k".into(),
+        facts: facts.as_object().unwrap().clone(),
+    };
+    let mut s = f.stored();
+    s.sort();
+    assert_eq!(s, ["sources/inputs/elevation/hrdem.toml.0123456789abcdef.toml", top, g]);
+}

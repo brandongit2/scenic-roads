@@ -422,15 +422,26 @@ pub struct FileEntry {
 }
 
 impl FileEntry {
-    /// The files stored with it: its copy, and those its facts name (a content name under
-    /// `sources/inputs/`: a region's stored geometry), which GC keeps while it's kept.
-    pub fn stored(&self) -> impl Iterator<Item = &str> {
-        std::iter::once(self.file.as_str()).chain(
-            self.facts
-                .values()
-                .filter_map(|v| v.as_str())
-                .filter(|s| s.starts_with("sources/inputs/") && store::naming::parse_content_name(s).is_some()),
-        )
+    /// The files stored with it: its copy, and those its facts name anywhere in them (a content
+    /// name under `sources/inputs/`: a region's stored geometry, at the top or nested, as an
+    /// elevation dataset's `measured.outline.geometry` names the regions' it was cut by), which GC
+    /// keeps while it's kept.
+    pub fn stored(&self) -> Vec<&str> {
+        fn walk<'a>(v: &'a serde_json::Value, out: &mut Vec<&'a str>) {
+            match v {
+                serde_json::Value::String(s)
+                    if s.starts_with("sources/inputs/") && store::naming::parse_content_name(s).is_some() =>
+                {
+                    out.push(s)
+                }
+                serde_json::Value::Array(a) => a.iter().for_each(|v| walk(v, out)),
+                serde_json::Value::Object(o) => o.values().for_each(|v| walk(v, out)),
+                _ => {}
+            }
+        }
+        let mut out = vec![self.file.as_str()];
+        self.facts.values().for_each(|v| walk(v, &mut out));
+        out
     }
 }
 
