@@ -1,5 +1,5 @@
 // The Regions panel (Layers → Regions; docs/surface.md): the regions the map is built for, read
-// only. Regions are files in the inputs folder's inputs/regions/ (docs/inputs.md §6.1), changed there
+// only. Regions are files in their inputs folder, inputs/regions/ (docs/inputs.md §6.1), changed there
 // alone and checked before they're used: the list shows them grouped by their folders, each with
 // its check's state (and the findings holding it), and the coverage they add up to on the map.
 // The coverage drawn is the one the map's catalog was built for; a region it doesn't have (added

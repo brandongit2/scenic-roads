@@ -262,13 +262,15 @@ fn inputs(a: &cli::Inputs) -> Result<()> {
         .as_ref()
         .map(|s| s.inputs.iter().filter(|v| v.checking).map(|v| v.unit.clone()).collect())
         .unwrap_or_default();
-    // (A running check's job on the lead, for its progress: "Checking the <unit> inputs".)
+    // (A running check's job on the lead, for its progress: "Checking the <unit> inputs", or from
+    // a lead older than task #502, "Checking the inputs dropped in <unit>".)
     let running: Vec<(String, agent::JobView)> = status
         .iter()
         .flat_map(|s| s.jobs())
         .filter_map(|j| {
             let unit = j.what.strip_prefix("Checking the ")?;
-            let unit = unit.strip_suffix(", every file").unwrap_or(unit).strip_suffix(" inputs")?;
+            let unit = unit.strip_suffix(", every file").unwrap_or(unit);
+            let unit = unit.strip_prefix("inputs dropped in ").or_else(|| unit.strip_suffix(" inputs"))?;
             Some((unit.to_string(), j))
         })
         .collect();

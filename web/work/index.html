@@ -679,6 +679,8 @@ try { if (sessionStorage.getItem("paused") === "1") setPaused(true); sessionStor
 // ---- Tabs, by the address's #hash (kept in it: a link or a reload opens the same tab) -------------
 const panels = Object.fromEntries([...document.querySelectorAll(".panel[data-tab]")].map((el) => [el.dataset.tab, el]));
 function showTab() {
+  // (#dropboxes: the Inputs tab's old address, task #502, so old links still open it.)
+  if (location.hash === "#dropboxes") history.replaceState(null, "", "#inputs");
   const want = location.hash.slice(1);
   const name = panels[want] ? want : "overview";
   for (const [k, el] of Object.entries(panels)) el.hidden = k !== name;
