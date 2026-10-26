@@ -660,7 +660,8 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   the tile, the depth sources meeting it (id and
   digest of declaration and index), the digest of its z6–8 water as the depth reads it, rivers
   included ("depth 3/x/y", worked out by the terrain-water job).
-- **depth (a z6 tile):** the same versions, the tile, the sources meeting it (2 km round), the content
+- **depth (a z6 tile):** the same versions, the tile, the sources its blocks read (meeting
+  it with the blocks' 32-px margin at the coarsest zoom it composes), the content
   names of the depth lo packs of its z3 tile and its neighbours, and the digest of its water,
   rivers included ("depth 6/x/y"): its tiles and the ring around them at each zoom from z9 to z14
   its blocks compose (a source of that zoom or finer meets the tile with the blocks' 32-px margin;
