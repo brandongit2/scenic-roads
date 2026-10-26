@@ -2555,8 +2555,8 @@ pub(crate) mod tests {
         let by_q = crate::agent::build::coverage_tiles(&cov);
         let (&q, ts) = by_q.iter().next().unwrap();
         assert!(ts.len() >= 2, "{ts:?}");
-        // Raw tiles: smooth slopes, every third with a spike (a repair, whose pixels the level above
-        // takes in), every seventh missing (the open sea); every level's, z12 to z3.
+        // Raw tiles: smooth slopes, every third with a one-pixel spike (kept as read; the level
+        // above takes it in), every seventh missing (the open sea); every level's, z12 to z3.
         let mut want: Vec<(u8, u32, u32)> = Vec::new();
         for z in 9..=12u8 {
             let s = 1u32 << (z - 6);
@@ -3218,8 +3218,8 @@ pub(crate) mod tests {
     }
 
     /// Raw tiles for the z3 tile of `ts` (z3 tile `q`): every z9–12 tile near `cov` and every z3–8 tile
-    /// of q; smooth slopes, every third with a spike and a pit (repairs, which the level above takes
-    /// in), every seventh missing (the open sea).
+    /// of q; smooth slopes, every third with a one-pixel spike and a one-pixel pit (kept as read;
+    /// no repair; the level above takes them in), every seventh missing (the open sea).
     pub(crate) fn synthetic_raw(local: &std::path::Path, cov: &Coverage, q: (u32, u32), ts: &[(u32, u32)]) {
         let mut want: Vec<(u8, u32, u32)> = Vec::new();
         for z in 9..=12u8 {
