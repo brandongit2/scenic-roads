@@ -302,9 +302,10 @@ impl Elevation {
                             .as_ref()
                             .ok_or("its files are read from the store, and no store is given here")?
                             .join(id);
-                        crate::dem::generic::stored(id, &dir, w)
+                        crate::dem::generic::stored(id, &dir, w, None)
                             .map_err(|e| format!("{e:#}"))?
                             .ok_or_else(|| format!("{w}: the store notes the source has no such file"))?
+                            .read
                     } else if w.starts_with("http") {
                         crate::dem::generic::open_url(&**fetch, w)
                             .map_err(|e| format!("{w}: {e:#}"))?
@@ -422,7 +423,7 @@ impl Elevation {
             }
         };
         let fetch = self.fetch.as_deref()?;
-        let o = crate::dem::generic::Opts { fetch, store: self.store.clone() };
+        let o = crate::dem::generic::Opts { fetch, store: self.store.clone(), local: None };
         let mut extent = |gid: &str, url: &str, store: bool| -> Result<Vec<[f64; 4]>> {
             let mut g = self.grids.lock().unwrap();
             let r = g.entry(url.to_string()).or_insert_with(|| {

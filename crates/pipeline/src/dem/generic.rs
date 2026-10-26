@@ -46,6 +46,24 @@ pub struct Opts<'a> {
     /// The stores' folder (`sources/fetched/`): a dataset declared `store` is read from
     /// `<it>/<dataset>/` alone (`stored`).
     pub store: Option<store::nasfs::NasPath>,
+    /// This Mac's whole copies of the stored files (crate::localread, task #689): a stored file read
+    /// at a level holding `COPY_SHARE` of it or more is copied there once and read there.
+    pub local: Option<&'a crate::localread::Local>,
+}
+
+/// The share of a stored file's pixels (its levels' together) the level read must hold for the
+/// file to be copied whole to this Mac (`Opts::local`), not read by ranges on the NAS. A copy runs
+/// at ~100 MB/s; a range read waits ~40 ms on the NAS's seeks, so copying pays from a few percent
+/// read, and this keeps a run over many files at a coarse level (terrain-lo's: 1,648 at its 90th
+/// percentile) to its ranges, its disk unused. GLO-30's levels hold 75, 19, 4.7 and 1.2 % of a
+/// file: the two finest copy. A fill mask, read whole (`Mask::of`), copies.
+pub const COPY_SHARE: f64 = 0.1;
+
+/// The share of `t`'s pixels image `level` holds.
+fn level_share(t: &Tiff, level: usize) -> f64 {
+    let px = |i: &crate::geotiff::Image| i.width as f64 * i.height as f64;
+    let all: f64 = t.images().iter().map(px).sum();
+    t.images().get(level).map_or(0.0, |i| px(i) / all.max(1.0))
 }
 
 /// The heights sampled at points.
@@ -211,31 +229,48 @@ pub fn stored_name(url: &str) -> String {
 /// dataset is fetched once, by `scenic-build store-fetch <id> --index <its index>`: crate::dem::store_fetch).
 /// A read the share fails for a moment is tried again (store::nasfs; store::retry): a "not found"
 /// too, when the store's listing has the file (listed only when neither the file nor its `.none`
-/// is found). A file the listing lacks fails at once, as does one cut short.
-pub fn stored(id: &str, dir: &store::nasfs::NasPath, url: &str) -> Result<Option<Arc<dyn RangeRead>>> {
+/// is found). A file the listing lacks fails at once, as does one cut short. With `local`, this
+/// Mac's whole copy where it's here (task #689); else the NAS's file with its length (`Stored::nas`),
+/// for the caller to copy.
+pub fn stored(
+    id: &str,
+    dir: &store::nasfs::NasPath,
+    url: &str,
+    local: Option<&crate::localread::Local>,
+) -> Result<Option<Stored>> {
     let name = stored_name(url);
     let f = dir.join(&name);
     let what = format!("{id}: tile {name} in the store ({})", dir.display());
-    if let Err(e) = f.metadata() {
-        if e.kind() != std::io::ErrorKind::NotFound {
-            return Err(anyhow::Error::from(e).context(format!("{what}: its size")));
-        }
-        // (A tile with no data, its `.none` marker, is common: looked at by its name, not a listing.)
-        match dir.join(format!("{name}.none")).metadata() {
-            Ok(_) => return Ok(None),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(anyhow::Error::from(e).context(format!("{what}: its .none"))),
-        }
-        let listed = dir.read_dir().map(|rd| {
-            let none = format!("{name}.none");
-            (rd.iter().any(|d| d.name == name), rd.iter().any(|d| d.name == none))
-        });
-        match listed {
+    let len = match f.metadata() {
+        Ok(m) => m.len(),
+        Err(e) => {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                return Err(anyhow::Error::from(e).context(format!("{what}: its size")));
+            }
+            // (A tile with no data, its `.none` marker, is common: looked at by its name, not a listing.)
+            match dir.join(format!("{name}.none")).metadata() {
+                Ok(_) => return Ok(None),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(anyhow::Error::from(e).context(format!("{what}: its .none"))),
+            }
+            let listed = dir.read_dir().map(|rd| {
+                let none = format!("{name}.none");
+                (rd.iter().any(|d| d.name == name), rd.iter().any(|d| d.name == none))
+            });
+            match listed {
             Ok((_, true)) => return Ok(None),
             Ok((false, false)) => bail!("{id}: tile {name} isn't in the store ({}): z6 tile builds don't download it; fetch it into the store first (scenic-build store-fetch {id} --index <its index>, docs/inputs.md §6.8)", dir.display()),
             Ok((true, false)) => eprintln!("{what}: not found, yet listed: the share's moment"),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => bail!("{id}: the store {} isn't there", dir.display()),
             Err(e) => return Err(anyhow::Error::from(e).context(format!("{id}: listing the store ({})", dir.display()))),
+        }
+            f.metadata().with_context(|| format!("{what}: its size"))?.len()
+        }
+    };
+    // (A copy here is the NAS's bytes: checked whole here, the NAS not read.)
+    if let Some(l) = local.and_then(|c| c.here(&f, len)) {
+        if std::fs::File::open(&l).and_then(|h| crate::whole::tiff_whole_checked(&h)).unwrap_or(false) {
+            return Ok(Some(Stored { read: Arc::new(PlainFile::open(&l)?), nas: None }));
         }
     }
     let read = f
@@ -249,7 +284,14 @@ pub fn stored(id: &str, dir: &store::nasfs::NasPath, url: &str) -> Result<Option
             dir.display()
         );
     };
-    Ok(Some(Arc::new(file)))
+    Ok(Some(Stored { read: Arc::new(file), nas: Some((f, len)) }))
+}
+
+/// A stored file as it's read (`stored`).
+pub struct Stored {
+    pub read: Arc<dyn RangeRead>,
+    /// The NAS's file and its length when that is what's read (no copy of it here).
+    pub nas: Option<(store::nasfs::NasPath, u64)>,
 }
 
 /// One GeoTIFF dataset's files as they're read.
@@ -398,12 +440,31 @@ fn in_box(b: &[f64; 4], x: f64, y: f64) -> bool {
 }
 
 impl GeoSet<'_> {
-    /// A file by URL, from the store where the dataset is kept there.
-    fn source(&self, url: &str) -> Result<Option<Arc<dyn RangeRead>>> {
-        match &self.store {
-            Some(dir) if !url.starts_with('/') => stored(self.id, dir, url),
-            _ => open_url(self.o.fetch, url),
+    /// A file by URL, from the store where the dataset is kept there, open, with its image read
+    /// (`level`'s answer): a stored file whose level holds `COPY_SHARE` of it or more copied to
+    /// this Mac first (`Opts::local`; the same bytes) and read there.
+    fn source(&self, url: &str, level: impl Fn(&Tiff) -> Result<usize>) -> Result<Option<(Tiff, usize)>> {
+        let (read, nas) = match &self.store {
+            Some(dir) if !url.starts_with('/') => match stored(self.id, dir, url, self.o.local)? {
+                Some(s) => (s.read, s.nas),
+                None => return Ok(None),
+            },
+            _ => match open_url(self.o.fetch, url)? {
+                Some(r) => (r, None),
+                None => return Ok(None),
+            },
+        };
+        let t = Tiff::open(read).with_context(|| url.to_string())?;
+        let k = level(&t)?;
+        if let (Some(local), Some((f, len))) = (self.o.local, nas) {
+            if level_share(&t, k) >= COPY_SHARE {
+                if let store::nasfs::Place::Local(l) = local.path_sized(&f, len) {
+                    let t = Tiff::open(Arc::new(PlainFile::open(&l)?)).with_context(|| url.to_string())?;
+                    return Ok(Some((t, k)));
+                }
+            }
         }
+        Ok(Some((t, k)))
     }
 
     /// File `k`'s fill mask, read once (None: it has none).
@@ -413,10 +474,9 @@ impl GeoSet<'_> {
             .get_or_init(|| self.memo.masks.lock().unwrap().entry(format!("{} {url}", self.id)).or_default().clone())
             .get_or_init(|| {
                 (|| -> Result<Option<Arc<Mask>>> {
-                    let src = self
-                        .source(url)?
+                    let (t, _) = self
+                        .source(url, |_| Ok(0))?
                         .with_context(|| format!("{}: its fill mask {url} isn't on the server", self.id))?;
-                    let t = Tiff::open(src).with_context(|| url.clone())?;
                     Ok(Some(Arc::new(Mask::of(t).with_context(|| url.clone())?)))
                 })()
                 .map_err(|e| format!("{e:#}"))
@@ -441,14 +501,11 @@ impl GeoSet<'_> {
             return Ok(t.clone());
         }
         let url = &self.files[k].0;
-        let src = self.source(url)?;
-        let t = match src {
+        let t = match self.source(url, |t| level_for(t, self.crs, self.read_resolution))? {
             None => bail!("{}: {url}, which its index lists, isn't on the server (the index is out of date?)", self.id),
-            Some(s) => {
+            Some((t, level)) => {
                 let id = FILE_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let t = Tiff::open(s).with_context(|| url.clone())?.with_shared_cache(id, self.cache.clone());
-                let level = level_for(&t, self.crs, self.read_resolution)?;
-                Some((Arc::new(t), level))
+                Some((Arc::new(t.with_shared_cache(id, self.cache.clone())), level))
             }
         };
         self.opened.lock().unwrap().insert(k, t.clone());

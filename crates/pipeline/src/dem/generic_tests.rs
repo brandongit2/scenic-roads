@@ -68,7 +68,7 @@ fn tiles_blend_across_their_edges() {
     f.0.insert("https://b.org/10/512/511.png".into(), Some(flat(50.0)));
     f.0.insert("https://b.org/10/513/511.png".into(), Some(flat(50.0)));
     let fetch = NoneElse(f);
-    let o = Opts { fetch: &fetch, store: None };
+    let o = Opts { fetch: &fetch, store: None, local: None };
     let w = 360.0 / 1024.0;
     // Its middle, 100 m inside its east edge, at the edge itself, and past it.
     let lon = [w / 2.0, w - 100.0 / M_PER_DEG, w - 1e-9, w + 0.01];
@@ -103,7 +103,7 @@ fn a_pyramids_tile_not_256_pixels_is_refused() {
     let mut f = crate::fetch::MapFetch::default();
     f.0.insert("https://e.org/3/1/1.png".into(), Some(png(256)));
     f.0.insert("https://e.org/3/2/1.png".into(), Some(png(512)));
-    let o = Opts { fetch: &f, store: None };
+    let o = Opts { fetch: &f, store: None, local: None };
     let t = TileSet {
         url: "https://e.org/{z}/{x}/{y}.png",
         zoom: 3,
@@ -147,7 +147,7 @@ fn the_distance_to_the_invalid_area_is_the_scans_whatever_the_shortcut() {
     let mut f = crate::fetch::MapFetch::default();
     f.0.insert("https://a.org/fine.tif".into(), Some(fine));
     f.0.insert("https://b.org/coarse.tif".into(), Some(coarse));
-    let o = Opts { fetch: &f, store: None };
+    let o = Opts { fetch: &f, store: None, local: None };
     let fine_box = [10.0, 50.0 - h as f64 * PX, 10.0 + w as f64 * PX, 50.0];
     let geo = |id: &str, code: u8, res: f64, url: &str, b: [f64; 4]| Dataset {
         convert: None,
@@ -252,7 +252,7 @@ fn sampling_says_increasing_fractions_to_one_per_chunk() {
     f.0.insert("https://a.org/10/512/511.png".into(), Some(flat(100.0)));
     f.0.insert("https://b.org/10/512/511.png".into(), Some(flat(50.0)));
     let fetch = NoneElse(f);
-    let o = Opts { fetch: &fetch, store: None };
+    let o = Opts { fetch: &fetch, store: None, local: None };
     let n = 100_000;
     let w = 360.0 / 1024.0;
     let lon: Vec<f64> = (0..n).map(|i| w * (0.1 + 0.8 * i as f64 / n as f64)).collect();
@@ -316,7 +316,7 @@ fn a_pyramids_distance_is_the_whole_bands_scan() {
         }
     }
     let fetch = NoneElse(f);
-    let o = Opts { fetch: &fetch, store: None };
+    let o = Opts { fetch: &fetch, store: None, local: None };
     let t = TileSet {
         url: "https://e.org/{z}/{x}/{y}.png",
         zoom: z,
@@ -453,10 +453,12 @@ fn a_runs_tiles_are_fetched_once_and_together_and_the_heights_are_the_same() {
         lat.push((std::f64::consts::PI * (1.0 - 2.0 * fy / n as f64)).sinh().atan().to_degrees());
     }
     let one = NoneElse(crate::fetch::MapFetch(f.0.clone()));
-    let want = sample(&plan, &lon, &lat, &Opts { fetch: &one, store: None }, &|_| {}).unwrap();
+    let want = sample(&plan, &lon, &lat, &Opts { fetch: &one, store: None, local: None }, &|_| {}).unwrap();
     let counting = Counting::new(f);
     let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
-    let got = pool.install(|| sample(&plan, &lon, &lat, &Opts { fetch: &counting, store: None }, &|_| {})).unwrap();
+    let got = pool
+        .install(|| sample(&plan, &lon, &lat, &Opts { fetch: &counting, store: None, local: None }, &|_| {}))
+        .unwrap();
     let bits = |s: &Sampled| s.elev.iter().map(|e| e.to_bits()).collect::<Vec<_>>();
     assert_eq!(bits(&got), bits(&want));
     assert_eq!((&got.src, &got.blended), (&want.src, &want.blended));
@@ -554,7 +556,7 @@ fn heights_are_converted_before_the_blend() {
     f.0.insert("https://g.org/up.tif".into(), Some(grid(2.0)));
     f.0.insert("https://g.org/down.tif".into(), Some(grid(-3.0)));
     let fetch = NoneElse(f);
-    let o = Opts { fetch: &fetch, store: None };
+    let o = Opts { fetch: &fetch, store: None, local: None };
     let w = 360.0 / 1024.0;
     let lon = [w / 2.0, w - 100.0 / M_PER_DEG, w + 0.01, 5.0];
     let lat = [0.1; 4];
@@ -578,7 +580,7 @@ fn heights_are_converted_before_the_blend() {
         Some(crate::geotiff::write_f32(4, 4, &[1.0; 16], 16, [40.0, 1.0, 0.0, 2.0, 0.0, -1.0], 4326, None).unwrap()),
     );
     let fetch = NoneElse(f);
-    let o = Opts { fetch: &fetch, store: None };
+    let o = Opts { fetch: &fetch, store: None, local: None };
     let s = sample(&plan, &lon[..2], &lat[..2], &o, &|_| {}).unwrap();
     assert!(s.blended[1] && s.unconverted_seam == 1 && s.unconverted == 0, "{s:?}");
 }
@@ -668,7 +670,7 @@ fn a_geotiffs_blocks_are_read_ahead_once_and_the_heights_are_the_same() {
         lon.push(10.0 + (rnd() * 2100.0 - 20.0) * PX);
         lat.push(50.0 - (rnd() * 1580.0 - 20.0) * PX);
     }
-    let want = sample(&plan, &lon, &lat, &Opts { fetch: &f, store: None }, &|_| {}).unwrap();
+    let want = sample(&plan, &lon, &lat, &Opts { fetch: &f, store: None, local: None }, &|_| {}).unwrap();
     struct Slow {
         inner: crate::fetch::MapFetch,
         asked: Arc<Mutex<HashMap<(u64, usize), usize>>>,
@@ -694,7 +696,8 @@ fn a_geotiffs_blocks_are_read_ahead_once_and_the_heights_are_the_same() {
     }
     let slow = Slow { inner: f, asked: Default::default(), now: Default::default(), most: Default::default() };
     let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
-    let got = pool.install(|| sample(&plan, &lon, &lat, &Opts { fetch: &slow, store: None }, &|_| {})).unwrap();
+    let got =
+        pool.install(|| sample(&plan, &lon, &lat, &Opts { fetch: &slow, store: None, local: None }, &|_| {})).unwrap();
     let bits = |s: &Sampled| s.elev.iter().map(|e| e.to_bits()).collect::<Vec<_>>();
     assert_eq!(bits(&got), bits(&want));
     assert_eq!((&got.src, &got.blended), (&want.src, &want.blended));
@@ -714,7 +717,7 @@ fn a_geotiffs_blocks_are_read_ahead_once_and_the_heights_are_the_same() {
 fn a_geotiff_dataset_in_degrees_keeps_no_copy_of_the_points() {
     use super::super::declared::{Dataset, Source};
     let f = crate::fetch::MapFetch::default();
-    let o = Opts { fetch: &f, store: None };
+    let o = Opts { fetch: &f, store: None, local: None };
     let ds = |crs: u16| Dataset {
         convert: None,
         id: "d".into(),
@@ -827,7 +830,7 @@ fn rolling_tile_fetches_give_the_old_heights_to_the_bit() {
     let fetch = NoneElse(f);
     let sel: Vec<u32> = (0..lon.len() as u32).collect();
     // (The old way, by the letter: each point's tile, decoded, sampled bilinearly.)
-    let one = Opts { fetch: &fetch, store: None };
+    let one = Opts { fetch: &fetch, store: None, local: None };
     let plain = ramp_set(&one, TILE_MEMO_BYTES);
     let want: Vec<u32> = sel
         .iter()
@@ -845,7 +848,7 @@ fn rolling_tile_fetches_give_the_old_heights_to_the_bit() {
     assert!(want.iter().any(|v| f32::from_bits(*v).is_nan()) && want.iter().any(|v| f32::from_bits(*v).is_finite()));
     let pool = rayon::ThreadPoolBuilder::new().num_threads(3).build().unwrap();
     for cap in [TILE_MEMO_BYTES, 64 << 10] {
-        let o = Opts { fetch: &fetch, store: None };
+        let o = Opts { fetch: &fetch, store: None, local: None };
         let t = ramp_set(&o, cap);
         let said = Mutex::new(Vec::new());
         let got = pool.install(|| t.sample(&sel, &lon, &lat, &|f| said.lock().unwrap().push(f))).unwrap();
@@ -898,7 +901,7 @@ fn one_slow_tile_does_not_stall_the_others() {
         by_progress: AtomicBool::new(false),
     };
     let pool = rayon::ThreadPoolBuilder::new().num_threads(3).build().unwrap();
-    let o = Opts { fetch: &slow, store: None };
+    let o = Opts { fetch: &slow, store: None, local: None };
     let t = ramp_set(&o, TILE_MEMO_BYTES);
     let sel: Vec<u32> = (0..lon.len() as u32).collect();
     let tell = |f: f64| {
@@ -909,7 +912,7 @@ fn one_slow_tile_does_not_stall_the_others() {
     let got = pool.install(|| t.sample(&sel, &lon, &lat, &tell)).unwrap();
     assert!(slow.by_progress.load(SeqCst), "the other tiles waited on the slow one");
     let one = NoneElse(f);
-    let o1 = Opts { fetch: &one, store: None };
+    let o1 = Opts { fetch: &one, store: None, local: None };
     let want = ramp_set(&o1, TILE_MEMO_BYTES).sample(&sel, &lon, &lat, &|_| {}).unwrap();
     let bits = |v: &[f32]| v.iter().map(|e| e.to_bits()).collect::<Vec<_>>();
     assert_eq!(bits(&got), bits(&want));
@@ -936,7 +939,7 @@ fn a_tile_fetch_that_panics_ends_the_sampling_in_an_error() {
     std::thread::spawn(move || {
         let fetch = Panics(NoneElse(f));
         let pool = rayon::ThreadPoolBuilder::new().num_threads(3).build().unwrap();
-        let o = Opts { fetch: &fetch, store: None };
+        let o = Opts { fetch: &fetch, store: None, local: None };
         let sel: Vec<u32> = (0..lon.len() as u32).collect();
         let r = pool.install(|| ramp_set(&o, TILE_MEMO_BYTES).sample(&sel, &lon, &lat, &|_| {})).map(|_| ());
         tx.send(r.map_err(|e| format!("{e:#}"))).unwrap();
@@ -1048,7 +1051,7 @@ fn sampling_many_stored_tiles_holds_a_bounded_number_of_files() {
     let f = crate::fetch::MapFetch::default();
     let threads = 2;
     let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
-    let o = Opts { fetch: &f, store: Some(store::nasfs::NasPath::local_for_test(d.path().to_path_buf())) };
+    let o = Opts { fetch: &f, store: Some(store::nasfs::NasPath::local_for_test(d.path().to_path_buf())), local: None };
     let run = |cap: usize| {
         let _cap = store::range::cap_plain_opens(cap);
         let s = Sampler::new(&plan, &o).unwrap();
@@ -1129,4 +1132,100 @@ fn a_mask_answers_as_its_pixels() {
         }
     }
     assert!(!m.masked(9.99, 45.9) && !m.masked(10.71, 45.9) && !m.masked(10.1, 46.01) && !m.masked(10.1, 45.49));
+}
+
+/// Task #689: a stored file read at a level holding `COPY_SHARE` of it or more is copied whole to
+/// this Mac once (crate::localread) and read there, its fill mask too (read whole); one read at a
+/// coarse level stays on the NAS. The heights are those read in place, to the bit; a copy of
+/// another length than the NAS's (a file fetched again) is deleted and copied again.
+#[test]
+fn stored_files_read_finely_are_copied_here_and_read_the_same() {
+    use super::super::declared::{Dataset, Plan, Source};
+    use crate::geotiff::testtiff::{make_images, Opts as TOpts};
+    let d = tempfile::tempdir().unwrap();
+    let (nas, cache) = (d.path().join("nas"), d.path().join("cache"));
+    let dir = nas.join("sources/fetched/glo");
+    std::fs::create_dir_all(&dir).unwrap();
+    // (Two tiles of 64 pixels of 0.001°, each with two overviews: 76, 19 and 4.8 % of its pixels.)
+    let sizes = [(64, 64), (32, 32), (16, 16)];
+    let mut files = Vec::new();
+    let mut masks = Vec::new();
+    for c in 0..2u32 {
+        let w = 10.0 + 0.064 * c as f64;
+        let gt = [w, 0.001, 0.0, 46.0, 0.0, -0.001];
+        let (dem, _) = make_images(&sizes, TOpts { tile: Some(16), ..TOpts::default() }, gt, None, &|k, x, y, _| {
+            (100 * c + 10 * k as u32 + x + 2 * y) as f64
+        });
+        let (flm, _) =
+            make_images(&sizes[..1], TOpts { tile: Some(16), ..TOpts::default() }, gt, None, &|_, x, _, _| {
+                if x == 3 {
+                    3.0
+                } else {
+                    1.0
+                }
+            });
+        std::fs::write(dir.join(format!("T{c}_DEM.tif")), dem).unwrap();
+        std::fs::write(dir.join(format!("T{c}_FLM.tif")), flm).unwrap();
+        files.push((format!("https://e.org/T{c}_DEM.tif"), Some([w, 46.0 - 0.064, w + 0.064, 46.0])));
+        masks.push(Some(format!("https://e.org/T{c}_FLM.tif")));
+    }
+    let plan = |read_resolution: Option<f64>| Plan {
+        fmt: 1,
+        version: "t".into(),
+        tag: "1".into(),
+        datasets: vec![Dataset {
+            convert: None,
+            outline: None,
+            id: "glo".into(),
+            code: 3,
+            resolution: 78.0,
+            cover: None,
+            source: Source::Geotiff {
+                crs: 4326,
+                read_resolution,
+                store: true,
+                files: files.clone(),
+                masks: masks.clone(),
+            },
+        }],
+    };
+    let (lon, lat): (Vec<f64>, Vec<f64>) =
+        (0..2000).map(|i| (10.0005 + 0.127 * (i % 50) as f64 / 50.0, 45.9995 - 0.063 * (i / 50) as f64 / 40.0)).unzip();
+    let f = crate::fetch::MapFetch::default();
+    let root = store::nasfs::NasRoot::local_for_test(&nas);
+    let local = crate::localread::Local::new(&root, &cache, 0);
+    let bits = |s: &Sampled| (s.elev.iter().map(|e| e.to_bits()).collect::<Vec<_>>(), s.src.clone(), s.blended.clone());
+    let run = |p: &Plan, local: Option<&crate::localread::Local>| {
+        let o = Opts { fetch: &f, store: Some(root.join("sources/fetched")), local };
+        bits(&sample(p, &lon, &lat, &o, &|_| {}).unwrap())
+    };
+    let copies = || {
+        let mut v: Vec<String> = store::blobs::Blobs::new(cache.join("blobs"))
+            .list()
+            .iter()
+            .map(|f| f.0.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    };
+    // A coarse level (4.8 %): read in place, the masks alone copied.
+    let coarse = plan(Some(400.0));
+    assert_eq!(run(&coarse, Some(&local)), run(&coarse, None));
+    assert_eq!(copies(), ["T0_FLM.tif", "T1_FLM.tif"]);
+    // The finest: copied, and read from the copies the same.
+    let fine = plan(None);
+    let want = run(&fine, None);
+    assert!(want.0.iter().any(|&e| f32::from_bits(e).is_finite()));
+    assert_eq!(run(&fine, Some(&local)), want);
+    assert_eq!(copies(), ["T0_DEM.tif", "T0_FLM.tif", "T1_DEM.tif", "T1_FLM.tif"]);
+    // A copy of another length: deleted and copied again.
+    let copy = cache.join("blobs/sources/fetched/glo/T0_DEM.tif");
+    let len = std::fs::metadata(&copy).unwrap().len();
+    store::cachefile::release(&copy);
+    std::fs::write(&copy, b"short").unwrap();
+    assert_eq!(run(&fine, Some(&local)), want);
+    assert_eq!(std::fs::metadata(&copy).unwrap().len(), len);
+    for c in copies() {
+        store::cachefile::release(&cache.join("blobs/sources/fetched/glo").join(c));
+    }
 }

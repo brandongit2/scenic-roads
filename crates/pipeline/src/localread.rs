@@ -1,11 +1,15 @@
 //! Whole local copies of the NAS's content-named files a job reads by many small ranges (task #551):
 //! the basemap (`layers/basemap/world-<date>.<hash>.pmtiles`, the depth's, the terrain's, the lakes'
-//! and the water's water) and the depth sources' packs (`sources/fetched/<id>/<z6 tile>.<hash>.tar`).
+//! and the water's water), the depth sources' packs (`sources/fetched/<id>/<z6 tile>.<hash>.tar`),
+//! and the stored elevation datasets' GeoTIFFs (`sources/fetched/<id>/<name>.tif`, task #689:
+//! crate::dem::generic::stored) a terrain job reads at a level holding a large share of the file.
 //! A random 64 KB read of the NAS waits ~40 ms on its disks' seeks, the Mac's own SSD's 0.2 ms: a
 //! file read in thousands of ranges is copied once, whole, in one sequential read, and read here.
 //!
 //! The copies are this Mac's `blobs/` (store::blobs, in the agent's cache, `SCENIC_CACHE`):
-//! content-named, so never stale; kept between jobs, so the targets after share them; held while a
+//! content-named, so never stale; a stored GeoTIFF is named by its source, not its content, yet
+//! written once (store-fetch; one cut short is deleted and fetched again), so its copy is read only
+//! while its length is the NAS file's (`path_sized`: one that isn't is deleted). Kept between jobs, so the targets after share them; held while a
 //! job reads them, and otherwise freed by room-making, the least recently used first
 //! (crate::agent::room::toward). A copy is made only when the disk has room for it past the
 //! owner's room target; short of it (a laptop), or with no cache named (a job run by
@@ -67,22 +71,50 @@ impl Local {
     /// held by this process, when it's here or there's room to make it (made now, counted as the
     /// NAS's bytes read); else `p` itself (a copy that fails says so and reads the NAS).
     pub fn path(&self, p: &NasPath) -> Place {
+        self.place(p, None)
+    }
+
+    /// As `path`, for a file named by its source, not its content (a stored GeoTIFF), `len` bytes
+    /// long on the NAS: a copy of another length is stale, deleted, and copied again.
+    pub fn path_sized(&self, p: &NasPath, len: u64) -> Place {
+        self.place(p, Some(len))
+    }
+
+    /// The copy of `p` if it's here already (held, as `path`'s), `len` bytes long; None, nothing
+    /// copied, otherwise.
+    pub fn here(&self, p: &NasPath, len: u64) -> Option<PathBuf> {
+        self.have(&p.rel_under(&self.root)?, Some(len)).ok()
+    }
+
+    fn place(&self, p: &NasPath, len: Option<u64>) -> Place {
         let nas = || Place::Nas(p.clone());
         let Some(content) = p.rel_under(&self.root) else { return nas() };
-        if let Some(l) = self.blobs.have(&content) {
-            return Place::Local(l);
+        // (A stale copy that can't be deleted, one another job holds: the NAS read.)
+        let have = || match self.have(&content, len) {
+            Ok(l) => Some(Some(l)),
+            Err(true) => None,
+            Err(false) => Some(None),
+        };
+        match have() {
+            None => return nas(),
+            Some(Some(l)) => return Place::Local(l),
+            Some(None) => {}
         }
         let one = self.making.lock().unwrap_or_else(|e| e.into_inner()).entry(content.clone()).or_default().clone();
         let _one = one.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(l) = self.blobs.have(&content) {
-            return Place::Local(l);
+        match have() {
+            None => return nas(),
+            Some(Some(l)) => return Place::Local(l),
+            Some(None) => {}
         }
         // (Another process copying it: waited for, its copy read.)
         let _lock = self.lock(&content);
-        if let Some(l) = self.blobs.have(&content) {
-            return Place::Local(l);
+        match have() {
+            None => return nas(),
+            Some(Some(l)) => return Place::Local(l),
+            Some(None) => {}
         }
-        let Ok(len) = p.metadata().map(|m| m.len()) else { return nas() };
+        let Some(len) = len.or_else(|| p.metadata().ok().map(|m| m.len())) else { return nas() };
         if std::fs::create_dir_all(self.blobs.dir()).is_err()
             || crate::agent::room::free_past(self.blobs.dir(), self.target) < len
         {
@@ -102,6 +134,23 @@ impl Local {
                 nas()
             }
         }
+    }
+
+    /// The copy of `content` here, held (`len`: its length must be that); Err(true) for a copy of
+    /// another length still there (one another job holds), Err(false) for none.
+    fn have(&self, content: &str, len: Option<u64>) -> Result<PathBuf, bool> {
+        let l = self.blobs.have(content).ok_or(false)?;
+        let Some(want) = len else { return Ok(l) };
+        if std::fs::metadata(&l).is_ok_and(|m| m.len() == want) {
+            return Ok(l);
+        }
+        store::cachefile::release(&l);
+        let gone = store::cachefile::try_remove(&l) != store::cachefile::Removed::InUse;
+        eprintln!(
+            "{content}: the copy here isn't the NAS's {want} bytes: {}",
+            if gone { "deleted" } else { "held elsewhere, the NAS read" }
+        );
+        Err(!gone)
     }
 }
 

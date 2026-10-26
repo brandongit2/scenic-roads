@@ -12,7 +12,8 @@
 //!
 //! A Terrarium pyramid's tiles are read through `RawTiles` (this Mac's cache, the NAS's archives,
 //! else AWS: crate::terrain_pack), not fetched by the sampler; every other file as the roads read
-//! them (the store, `sources/fetched/`, for a stored dataset; else the network).
+//! them (the store, `sources/fetched/`, for a stored dataset, a file read at a fine level copied
+//! whole to this Mac first where it has room: crate::localread; else the network).
 
 use crate::dem::declared::{Plan, Source};
 use crate::dem::generic::{tile_resolution, Opts, Sampler};
@@ -88,6 +89,9 @@ pub struct Pool {
     pub store: store::nasfs::NasPath,
     /// The area (west, south, east, north): its middle latitude sets the detail each level reads.
     pub area: [f64; 4],
+    /// This Mac's whole copies of the stores' files read at a fine level (crate::localread:
+    /// crate::dem::generic::COPY_SHARE); None, the NAS's read in place.
+    pub local: Option<crate::localread::Local>,
 }
 
 impl Pool {
@@ -105,16 +109,18 @@ impl Pool {
             Some(s) => s.many(crate::inputs::sources::GEOID).to_vec(),
             None => Vec::new(),
         };
-        Ok(Pool::of(crate::dem::declared::plan_converted(&a, b, &geoid)?, root.join("sources/fetched"), b))
+        let mut pool = Pool::of(crate::dem::declared::plan_converted(&a, b, &geoid)?, root.join("sources/fetched"), b);
+        pool.local = crate::localread::Local::from_env(root);
+        Ok(pool)
     }
 
-    /// The pool of plan `plan` over area `area`, its stores in `store`.
+    /// The pool of plan `plan` over area `area`, its stores in `store` (read in place).
     pub fn of(plan: Plan, store: store::nasfs::NasPath, area: [f64; 4]) -> Pool {
         let terrarium = plan.datasets.iter().rev().find_map(|d| match &d.source {
             Source::Tiles { url, encoding, .. } if encoding == "terrarium" => Some(url.clone()),
             _ => None,
         });
-        Pool { plan, terrarium, store, area }
+        Pool { plan, terrarium, store, area, local: None }
     }
 
     /// The plan read at zoom `z` over latitude `lat` (`Pool`'s rule). Below `ROW_Z` (the z3 tiles'
@@ -154,7 +160,7 @@ impl Pool {
     ) -> Result<R> {
         let net = crate::fetch::Fetcher::from_env();
         let fetch = RawFetch::new(raw, self.terrarium.as_deref(), &net);
-        let o = Opts { fetch: &fetch, store: Some(self.store.clone()) };
+        let o = Opts { fetch: &fetch, store: Some(self.store.clone()), local: self.local.as_ref() };
         let mid = (self.area[1] + self.area[3]) / 2.0;
         let plans: Vec<Plan> = (0..=MAX_Z).map(|z| self.at_zoom(z, mid)).collect();
         let by_row: Vec<OnceLock<Plan>> = (0..BY_ROW).map(|_| OnceLock::new()).collect();
@@ -745,7 +751,7 @@ mod tests {
             Pool::of(plan.clone(), store::nasfs::NasPath::local_for_test(store.clone()), [10.0, 20.0, 11.0, 60.0]);
         let net = crate::fetch::MapFetch::default();
         let fetch = RawFetch::new(&raw, pool.terrarium.as_deref(), &net);
-        let o = Opts { fetch: &fetch, store: Some(store::nasfs::NasPath::local_for_test(store.clone())) };
+        let o = Opts { fetch: &fetch, store: Some(store::nasfs::NasPath::local_for_test(store.clone())), local: None };
         let plans: Vec<Plan> = (0..=MAX_Z).map(|z| pool.at_zoom(z, 40.0)).collect();
         let at_area = Tiles::new(&plans, &o).sample(z, &[(x, y)]).unwrap().pop().unwrap().unwrap();
         assert_ne!(at_area, own, "the area's middle blends otherwise");
@@ -830,7 +836,7 @@ mod tests {
                 },
             ],
         };
-        let o = Opts { fetch: &net, store: Some(store::nasfs::NasPath::local_for_test(store.clone())) };
+        let o = Opts { fetch: &net, store: Some(store::nasfs::NasPath::local_for_test(store.clone())), local: None };
         let plans = vec![plan; 13];
         let east: fn(u8, u32, u32) -> Vec<Poly> = |_, _, _| vec![square(Kind::Sea, 1, 128.0, 0.0, 256.0, 256.0)];
         let water = Fixed(east);
@@ -852,7 +858,7 @@ mod tests {
         // (A plan no sampler can open: sampling would fail.)
         let plans = vec![Plan { fmt: 1, version: "t".into(), tag: "t".into(), datasets: Vec::new() }; 13];
         let net = crate::fetch::MapFetch::default();
-        let o = Opts { fetch: &net, store: None };
+        let o = Opts { fetch: &net, store: None, local: None };
         let t = Tiles::new(&plans, &o);
         for k in 0..4u32 {
             t.with_data.lock().unwrap().insert((10, 2 * 5 + (k & 1), 2 * 7 + (k >> 1)));
@@ -957,7 +963,7 @@ mod tests {
         crate::fetch::go_offline();
         let net = crate::fetch::Fetcher::from_env();
         let fetch = RawFetch::new(&raw, None, &net);
-        let o = Opts { fetch: &fetch, store: Some(pool.store.clone()) };
+        let o = Opts { fetch: &fetch, store: Some(pool.store.clone()), local: None };
         let plans: Vec<Plan> = (0..=MAX_Z).map(|z| pool.at_zoom(z, 45.5)).collect();
         // (Three chunks' tiles of z12 over the raster.)
         let z = 12u8;

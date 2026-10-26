@@ -291,6 +291,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         let o = pipeline::dem::generic::Opts {
             fetch: &fetch,
             store: opt(&args, "--store").map(|s| store::nasfs::NasRoot::from_arg(s).path()),
+            local: None,
         };
         let grids = geoid::Grids::new(&o);
         let (lon, lat): (Vec<f64>, Vec<f64>) = at.iter().copied().unzip();

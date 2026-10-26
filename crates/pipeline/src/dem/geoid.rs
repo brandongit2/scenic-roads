@@ -218,7 +218,7 @@ pub fn open_grid(o: &Opts, id: &str, url: &str, store: bool) -> Result<Tiff> {
             .store
             .as_ref()
             .with_context(|| format!("{id}: its grid is read from the store, and no store is given (SCENIC_STORE)"))?;
-        stored(id, &dir.join(id), url)?
+        stored(id, &dir.join(id), url, None)?.map(|s| s.read)
     } else {
         open_url(o.fetch, url)?
     };

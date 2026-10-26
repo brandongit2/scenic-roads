@@ -581,7 +581,7 @@ pub fn terrain_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -
         crate::control::safe_point("polar-terrain");
         crate::agent::jobs::report(k as u64, targets.len() as u64, "polar blocks");
         let (plans, store) = pool_plans(out, polar::lat_box(pole, BLOCK_Z, b.0, b.1))?;
-        let o = crate::dem::generic::Opts { fetch: &net, store: Some(store) };
+        let o = crate::dem::generic::Opts { fetch: &net, store: Some(store), local: None };
         let ss = samplers(&plans, &o)?;
         let voids = Voids::default();
         let mut tiles = Vec::new();
@@ -638,7 +638,7 @@ pub fn slope_step(out: &mut crate::out::Out, targets: &[(Pole, (u32, u32))]) -> 
 pub fn root_step(out: &mut crate::out::Out, pole: Pole, built: &[(u32, u32)]) -> Result<()> {
     let net = crate::fetch::Fetcher::from_env();
     let (plans, store) = pool_plans(out, polar::lat_box(pole, 0, 0, 0))?;
-    let o = crate::dem::generic::Opts { fetch: &net, store: Some(store) };
+    let o = crate::dem::generic::Opts { fetch: &net, store: Some(store), local: None };
     let ss = samplers(&plans[..BLOCK_Z as usize], &o)?;
     let open = |kind: &str| -> Result<HashMap<(u32, u32), Pack>> {
         let mut m = HashMap::new();
@@ -775,7 +775,11 @@ mod tests {
         };
         crate::fetch::go_offline();
         let net = crate::fetch::Fetcher::from_env();
-        let o = crate::dem::generic::Opts { fetch: &net, store: Some(store::nasfs::NasPath::local_for_test(store)) };
+        let o = crate::dem::generic::Opts {
+            fetch: &net,
+            store: Some(store::nasfs::NasPath::local_for_test(store)),
+            local: None,
+        };
         let s = Sampler::new(&plan, &o).unwrap();
         let (lon, lat) = ([10.2525, 10.7525, 12.0], [45.5, 45.5, 45.5]);
         let mut got = s.sample(&lon, &lat, &|_| {}).unwrap();

@@ -1335,7 +1335,9 @@ fn make_tiles(
         return Ok(rep);
     }
     let bf = BaseFetch::new(fetch);
-    let o = Opts { fetch: &bf, store: Some(store.clone()) };
+    // (A stored file read at a fine level from this Mac's whole copy: crate::localread.)
+    let local = crate::localread::Local::from_env(store.root());
+    let o = Opts { fetch: &bf, store: Some(store.clone()), local: local.as_ref() };
     let presence_s = Sampler::new(&presence, &o)?;
     let full_s = Sampler::sharing(&full, &o, &presence_s)?;
     // (The wholly-water pixels' sampler: the plan less its pyramids read tile by tile, where it has
@@ -1861,11 +1863,13 @@ mod tests {
         };
         let ts: Vec<(u32, u32)> = (0..2).flat_map(|j| (0..2).map(move |i| (t.1 * 2 + i, t.2 * 2 + j))).collect();
         let (lon, lat) = points(13, &ts);
-        let want = crate::dem::generic::sample(&plan, &lon, &lat, &Opts { fetch: &f, store: None }, &|_| {}).unwrap();
+        let want =
+            crate::dem::generic::sample(&plan, &lon, &lat, &Opts { fetch: &f, store: None, local: None }, &|_| {})
+                .unwrap();
         let reads: Reads = Default::default();
         let counted = Counted(f, reads.clone());
         let bf = BaseFetch::new(&counted);
-        let o = Opts { fetch: &bf, store: None };
+        let o = Opts { fetch: &bf, store: None, local: None };
         let s = Sampler::new(&plan, &o).unwrap();
         let items = plan_items(&plan_files(&plan, tb, &bf).unwrap(), &[vec![t]]).unwrap();
         assert!(items.len() > 4, "{} blocks planned", items.len());
@@ -2380,7 +2384,7 @@ mod tests {
         let water = Fixed(east);
         let run = |skip: bool| {
             let f = Asked(crate::fetch::MapFetch(net.0.clone()), Mutex::new(Vec::new()));
-            let o = Opts { fetch: &f, store: None };
+            let o = Opts { fetch: &f, store: None, local: None };
             let a = Sampler::new(&full, &o).unwrap();
             let b = Sampler::new(&afloat, &o).unwrap();
             let s = Samplers { ashore: &a, afloat: skip.then_some(&b) };
