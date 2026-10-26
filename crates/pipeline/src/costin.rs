@@ -62,39 +62,50 @@ pub fn begin() {
 /// How long the stop watch (`stopped_ms`) sleeps between looks at the clock.
 const TICK: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// The time this process was stopped, as its stop watch counted it (ms).
-static STOPPED_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// The stop watch: its last look at the clock, and the time it has counted stopped (ms).
+struct Watch {
+    last: std::time::Instant,
+    stopped: u64,
+}
+
+impl Watch {
+    /// A look at the clock at `now`: the time since the last look, past twice `TICK`, counts as
+    /// stopped (`stopped_in`); the total so far. The watch's thread looks every `TICK`, and a
+    /// reader looks too, so a stop just ended counts before the thread has woken from it (a target
+    /// ending right after its job was thawed counts its freeze, not the next target).
+    fn look(&mut self, now: std::time::Instant) -> u64 {
+        self.stopped += stopped_in(now.saturating_duration_since(self.last));
+        self.last = now;
+        self.stopped
+    }
+}
 
 /// The time this process has been stopped (SIGSTOP: the agent's memory or disk guard freezing its
-/// job, or the job paused for its conditions) since its stop watch began (ms), the watch begun at
-/// its first call. A thread wakes every `TICK`; a wake later than twice that counts its lateness
-/// (`stopped_in`). The monotonic clock runs on while a process is stopped, not while its Mac sleeps,
-/// as a target's `secs` does (task #697: a run's busy cores read over the time it ran).
+/// job's group, or the job paused for its conditions) since its stop watch began (ms), the watch
+/// begun at its first call. A thread wakes every `TICK`; a look more than twice that after the
+/// last counts its lateness (`Watch::look`). The monotonic clock (CLOCK_UPTIME_RAW) runs on while a
+/// process is stopped, not while its Mac sleeps, as a target's `secs` does (task #697: a run's busy
+/// cores read over the time it ran).
 pub fn stopped_ms() -> u64 {
-    static WATCH: std::sync::Once = std::sync::Once::new();
-    WATCH.call_once(|| {
+    use store::clock::Clock;
+    static WATCH: std::sync::OnceLock<std::sync::Mutex<Watch>> = std::sync::OnceLock::new();
+    fn lock(w: &std::sync::Mutex<Watch>) -> std::sync::MutexGuard<'_, Watch> {
+        w.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    let w = WATCH.get_or_init(|| {
         let r = std::thread::Builder::new().name("stop-watch".into()).spawn(|| {
-            let clock = store::clock::Real;
-            let mut last = store::clock::Clock::now(&clock);
+            let w = WATCH.wait();
             loop {
-                let (now, ms) = tick(&clock, last);
-                STOPPED_MS.fetch_add(ms, std::sync::atomic::Ordering::Relaxed);
-                last = now;
+                store::clock::Real.sleep(TICK);
+                lock(w).look(store::clock::Real.now());
             }
         });
         if let Err(e) = r {
             eprintln!("costin: no stop watch ({e}): time stopped counts as time run");
         }
+        std::sync::Mutex::new(Watch { last: store::clock::Real.now(), stopped: 0 })
     });
-    STOPPED_MS.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// One look of the stop watch: a `TICK` slept from `last`, then the time now and how long of it the
-/// process was stopped (ms, `stopped_in`).
-fn tick(clock: &dyn store::clock::Clock, last: std::time::Instant) -> (std::time::Instant, u64) {
-    clock.sleep(TICK);
-    let now = clock.now();
-    (now, stopped_in(now.saturating_duration_since(last)))
+    lock(w).look(store::clock::Real.now())
 }
 
 /// The time stopped in a tick that took `took` (ms): past twice `TICK`, all of it but the tick (a
@@ -292,18 +303,27 @@ mod tests {
         assert_eq!((m["wrote"], m["creates"]), (50, 1));
     }
 
-    /// The stop watch counts the time a process was stopped (task #697): a tick ending a minute and
-    /// a half late counts it, one a little late (a busy Mac) none.
+    /// The stop watch counts the time a process was stopped (task #697): a look a minute and a
+    /// half late counts it, one a little late (a busy Mac) none, a reader's look as the watch's.
     #[test]
-    fn the_stop_watch_counts_a_tick_ending_late() {
+    fn the_stop_watch_counts_a_look_coming_late() {
+        use store::clock::Clock;
         let v = store::clock::Virtual::new();
-        let (t1, ms) = tick(&*v, store::clock::Clock::now(&*v));
-        assert_eq!(ms, 0, "on time");
+        let mut w = Watch { last: v.now(), stopped: 0 };
+        v.sleep(TICK);
+        assert_eq!(w.look(v.now()), 0, "on time");
         v.advance(std::time::Duration::from_secs(90));
-        let (t2, ms) = tick(&*v, t1);
-        assert_eq!(ms, 90_000, "stopped for 90 s");
+        v.sleep(TICK);
+        assert_eq!(w.look(v.now()), 90_000, "stopped for 90 s");
         v.advance(std::time::Duration::from_millis(900));
-        assert_eq!(tick(&*v, t2).1, 0, "woken 0.9 s late: not stopped");
+        v.sleep(TICK);
+        assert_eq!(w.look(v.now()), 90_000, "woken 0.9 s late: not stopped");
+        // (A reader looking just after a thaw, the thread not yet woken: counted then, not again.)
+        v.advance(std::time::Duration::from_secs(30));
+        assert_eq!(w.look(v.now()), 119_000, "30 s since the last look, a tick of it run");
+        v.sleep(TICK);
+        assert_eq!(w.look(v.now()), 119_000);
+        assert!(stopped_ms() < 60_000, "the real watch runs");
     }
 
     #[test]
