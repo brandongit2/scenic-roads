@@ -188,29 +188,28 @@ class Repack(unittest.TestCase):
             self.refused(args, "not on the NAS")  # past every guard but the packs' check
             gone.write_bytes(keep)
             # A day on, but the lead's status stale (its beat, or its file's time alone), a depth
-            # job started before the take-in (here, on a helper, in an older agent's field, or
-            # with no start said), one waiting, or one held to resume: nothing deleted.
+            # job running (here, on a helper, in an older agent's field; started before the
+            # take-in, after it, or with no start said), one waiting, or one held to resume:
+            # nothing deleted.
             accept(root, before, "packed", beat_ago=3600)
             self.refused(args, "stale")
             accept(root, before, "packed")
             old = time.time() - 3600
             os.utime(root / "state/status.json", (old, old))
             self.refused(args, "stale")
-            before_in = time.time() - 26 * 3600
+            before_in, after_in = time.time() - 26 * 3600, time.time() - 3600
             for kw, why in [
-                ({"jobs": ["depth 6/20/23"], "started": before_in}, "depth 6/20/23 (started"),
-                ({"helper_jobs": ["depth-lo 3/2/2"], "started": before_in}, "depth-lo 3/2/2 (started"),
-                ({"old_wire": ["depth 6/1/1"], "started": before_in}, "depth 6/1/1 (started"),
-                ({"jobs": ["depth 6/20/23"], "started": None}, "depth 6/20/23 (no start time)"),
+                ({"jobs": ["depth 6/20/23"], "started": before_in}, "depth 6/20/23"),
+                ({"helper_jobs": ["depth-lo 3/2/2"], "started": before_in}, "depth-lo 3/2/2"),
+                ({"old_wire": ["depth 6/1/1"], "started": before_in}, "depth 6/1/1"),
+                ({"jobs": ["depth 6/20/23"], "started": None}, "depth 6/20/23"),
+                # (Started after the first sighting: a rollback and a return to the same copy
+                # between two sweeps leave no trace, so it may have started on the loose index.)
+                ({"jobs": ["depth 6/20/23"], "helper_jobs": ["depth-lo 3/2/2"], "started": after_in}, "depth 6/20/23, depth-lo 3/2/2"),
                 ({"waiting": ["depth"]}, "waiting: depth 6/1/2"),
             ]:
                 accept(root, before, "packed", **kw)
                 self.refused(args, why)
-            # Depth jobs started after the take-in read the packs: they hold nothing back.
-            gone.unlink()
-            accept(root, before, "packed", jobs=["depth 6/20/23"], helper_jobs=["depth-lo 3/2/2"], started=time.time() - 3600)
-            self.refused(args, "not on the NAS")
-            gone.write_bytes(keep)
             # A changed index (the source packed anew, as ncei-crm by #677): the wait starts again.
             accept(root, before, "repacked")
             self.refused(args, "only 0.0 h ago")

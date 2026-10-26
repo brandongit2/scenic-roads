@@ -1481,10 +1481,12 @@ member's hash recorded, the inputs folder's index replaced only once every pack 
 size). Its `--sweep` deletes the loose files only while both the inputs folder and the build's current
 accepted version hold the packed index, the lead's status is fresh (10 min), the accepted versions
 have named the same copy of the index for 24 h (a rollback or a new pack starts the wait again; a
-new acceptance for other files doesn't), and no depth or depth-lo job may read the loose index: a
-job reads the records when it starts, so one running on any Mac refuses only if it started before
-the sweep first saw the switch (or says no start), and any waiting or held to resume in a member's
-progress file refuses. The packs are checked on the NAS, and the build on the packed index,
+new acceptance for other files doesn't), and no depth or depth-lo job is running on any Mac,
+waiting, or held to resume in a member's progress file. A job reads the records when it starts, so
+jobs planned but not yet started read the index current then; a running one refuses whatever its
+start: the accepted copies are content-named, so a rollback and a return to the same packed copy
+between two sweeps leave no trace, and a job started on the loose index in between can't be told
+from one started after the switch. The packs are checked on the NAS, and the build on the packed index,
 once more just before. The sweep is the point of no return: after it the loose index can't be rolled back to;
 until it, putting the loose index back in the inputs folder is a full rollback.
 

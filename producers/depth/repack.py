@@ -26,13 +26,15 @@ lists them in):
    the accepted versions naming that same copy of the index for `--min-age-h` (24 h) at least,
    from when a sweep first saw it (`done.json`'s `taken_in_seen`, with the copy seen: another copy
    seen, as after a rollback or a new pack of the source, starts the wait again; a new acceptance
-   of the unit for other files doesn't); and no depth or depth-lo job that may read the loose
-   index: a job reads the records once, when it starts (`Out::open`), so of those running on any
-   Mac (the lead's and each helper's jobs in status.json, the old fields `job`, `beside`, `more`
-   too) only one started before that first sighting (`START_MARGIN_S` before it, for the Macs'
-   clocks), or with no start time, refuses; so does any its waiting list names, and any held to
-   resume in the members' progress files (`state/pool/progress/<member>.json`: its work so far may
-   be the loose index's). Jobs planned or leased but not started read the records when they start.
+   of the unit for other files doesn't); and no depth or depth-lo job running on any Mac (the
+   lead's and each helper's jobs in status.json, the old fields `job`, `beside`, `more` too),
+   none its waiting list names, and none held to resume in the members' progress files
+   (`state/pool/progress/<member>.json`). A job reads the records once, when it starts
+   (`Out::open`), and its grids by the paths they gave it all through its run; a running one
+   refuses whenever it started: the accepted copies are content-named, so a rollback and a return
+   to the same packed copy between two sweeps leave no trace here, and a job started on the loose
+   index in between would look like one started after the switch. Jobs planned or leased but not
+   started read the records when they start.
    Then the packs are checked on the NAS at their sizes once more and the build checked to
    read the packed index still, and the loose grids it packed are deleted (one `xargs rm` over
    SSH).
@@ -304,26 +306,20 @@ def taken_in(a, sid: str, packed: Path) -> bool:
 
 
 DEPTH_STEPS = ("depth", "depth-lo")
-# Seconds a job's start must be past the packed index's first sighting: the Macs' clocks apart.
-START_MARGIN_S = 300
 
 
-def depth_jobs(a, since: float) -> list[str]:
-    """The depth and depth-lo jobs that may read the loose index: those running on any Mac as the
-    lead's status says (its jobs, and an older agent's `job`, `beside` and `more`, the lead's and
-    each helper's) that started before `since` or say no start, the depth steps it says wait, and
-    the depth jobs held to resume in the members' progress files (state/pool/progress/<member>.json,
+def depth_jobs(a) -> list[str]:
+    """The depth and depth-lo jobs running on any Mac as the lead's status says (its jobs, and an
+    older agent's `job`, `beside` and `more`, the lead's and each helper's), whenever they started
+    (see the module's docstring, step 4), the depth steps it says wait, and the depth jobs held to
+    resume in the members' progress files (state/pool/progress/<member>.json,
     crate::agent::resume)."""
     status = json.loads((a.root / "state/status.json").read_text())
     found = []
 
     def job(v):
         if isinstance(v, dict) and isinstance(v.get("id"), str) and v["id"].split(" ", 1)[0] in DEPTH_STEPS:
-            started = v.get("started")
-            if not isinstance(started, (int, float)):
-                found.append(f"{v['id']} (no start time)")
-            elif started < since:
-                found.append(f"{v['id']} (started {time.strftime('%d %b %H:%M', time.localtime(started))})")
+            found.append(v["id"])
 
     for who in [status, *(status.get("helpers") or [])]:
         for j in [*(who.get("jobs") or []), who.get("job"), who.get("beside"), *(who.get("more") or [])]:
@@ -371,9 +367,9 @@ def safe_to_sweep(a, sid: str, packed: Path, done_path: Path) -> str | None:
         write_json(done_path, saved)
     if now - seen["at"] < a.min_age_h * 3600:
         return f"the packed index taken in only {(now - seen['at']) / 3600:.1f} h ago (wait {a.min_age_h:g} h, a margin to roll back in)"
-    jobs = depth_jobs(a, seen["at"] + START_MARGIN_S)
+    jobs = depth_jobs(a)
     if jobs:
-        return f"depth jobs that may read the loose index: started before the packed index was taken in, waiting or held ({', '.join(jobs[:5])})"
+        return f"depth jobs running, waiting or held ({', '.join(jobs[:5])}): any may read the loose index"
     return None
 
 
