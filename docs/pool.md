@@ -803,6 +803,8 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   from a member on a newer app is **held** (`check_from`, `records::HOLD`) until the lead runs that
   app; otherwise it's refused, the why noted at `state/journal/rejected/<key>.why`
   (`journal::note_refusal`). The lint `tests/write_sets.rs` gates publish.
+- **A redo is a hand-off too:** `scenic redo` (§11) clears targets' keys through a job of the
+  lead's whose entry carries only a done record, merged as any.
 - **Sizes ride along:** `Out` records each file it writes with its size, and the hand-off carries
   them (`Handoff::sizes`); the merge keeps those of the files the entry names, so a delta catalogue
   never looks at them on the NAS. Entries from before carry none.
@@ -1608,6 +1610,27 @@ planned: `/pool/status` in place of reading heartbeats for the view.
   an update waiting on it (docs/building.md §2) restarts at once. The cancel is a `cancel` event in the
   history; `scenic status` shows it among the recent jobs ("Cancelled:") and each held target
   under Waiting.
+- **Building finished targets again** (`crate::agent::redo`, task #780): `scenic redo <step>
+  <target>… [--run]`, from any Mac. A target done under its key is never planned again, so one
+  saved wrong under the right key (25 Oct: terrain-hi z6 tiles saved without their water while the
+  NAS restarted) stays until named here. Without `--run` it reads the newest records and prints,
+  per target, the key it would clear and the files that stay served until the target is rebuilt
+  (a target with no key: nothing to clear); it changes nothing. With `--run` it posts the targets
+  that have a key to the lead's coordinator (`/work/redo`, the build's key: not a page's), whose
+  agent keeps the ask in its folder (`redo.json`, over restarts) and plans a job of the `redo`
+  step for it, the lead's own (`every::LEAD_ONLY`). That job changes no file (its write-set is
+  empty) and hands off a done record of `<step> <target>` with no key; the merge checks it as any
+  entry (§7.3) and `Keys::record` forgets those targets' keys and nothing else, the lease order
+  kept by `<step>, <target>` as a prune's is (a build of the target leased before the redo,
+  merged after, is passed over). The job succeeded, the ask leaves `redo.json`. The plan then
+  offers the targets again under the keys it has; what reads their outputs follows by content
+  (slope-hi's key names the terrain hi pack's content, the assemblies' keys their z6 tiles'
+  mids), and the old files leave the manifest as the new ones replace them, for GC (§7.3, 14
+  days). The command then follows the records until the keys are gone (15 minutes at most). A
+  lead on an app from before `scenic redo` answers the post with an error: the command says so
+  and asks nothing. An entry of a redo merged by such a lead (a takeover replaying the journal)
+  clears nothing (that app records `<step> <target>` under the lo keys, as an unknown step's): the
+  targets keep their keys, and `scenic redo`'s next dry run says so.
 - **Pausing one Mac** (`crate::control::Hold`, task #224): `scenic pause --here` / `scenic resume
   --here`, `scenic pause <member>` / `scenic resume <member>` (host name or member id) from another
   Mac, or the menu bar's "Pause This Mac" / "Resume This Mac". The ask goes to this Mac's agent (a

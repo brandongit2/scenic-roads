@@ -176,8 +176,10 @@ impl Keys {
         p.write_whole(serde_json::to_vec_pretty(self)?)
     }
 
-    fn map(&mut self, step: &str) -> &mut BTreeMap<String, String> {
-        match super::steps::current(step) {
+    /// The keys of per-target step `step` (by its current name), by target; None for a step that
+    /// keeps none per target.
+    pub fn per_target(&mut self, step: &str) -> Option<&mut BTreeMap<String, String>> {
+        Some(match super::steps::current(step) {
             "terrain-hi" => &mut self.terrain_hi,
             "slope-hi" => &mut self.slope_hi,
             "terrain-deep" => &mut self.terrain_deep,
@@ -199,8 +201,8 @@ impl Keys {
             "polar-terrain" => &mut self.polar_terrain,
             "polar-slope" => &mut self.polar_slope,
             "polar-root" => &mut self.polar_root,
-            _ => &mut self.lo,
-        }
+            _ => return None,
+        })
     }
 
     /// The key recorded for `target` of a per-target step.
@@ -235,8 +237,8 @@ impl Keys {
 
     /// Records a job's targets as done with their keys. A prune forgets its targets' keys instead
     /// ("unit 6/x/y", "pois 6/x/y", "pack 6/x/y", "lo 3/x/y", "bldprep 6/x/y", "bldtiles 6/x/y",
-    /// "bldfield-lo 3/x/y"), so a
-    /// region added back is built again.
+    /// "bldfield-lo 3/x/y"), so a region added back is built again; a redo (`scenic redo`,
+    /// crate::agent::redo) forgets any per-target step's ("terrain-hi 6/x/y"), so it's built again.
     pub fn record(&mut self, step: &str, done: &[(String, String)]) {
         if step == "prune" {
             for (t, _) in done {
@@ -313,7 +315,15 @@ impl Keys {
             }
             return;
         }
-        let m = self.map(step);
+        if step == super::redo::STEP {
+            for (t, _) in done {
+                if let Some((m, at)) = t.split_once(' ').and_then(|(s, at)| Some((self.per_target(s)?, at))) {
+                    m.remove(at);
+                }
+            }
+            return;
+        }
+        let m = if self.per_target(step).is_some() { self.per_target(step).unwrap() } else { &mut self.lo };
         for (t, k) in done {
             m.insert(t.clone(), k.clone());
         }
@@ -5876,6 +5886,63 @@ pub(crate) mod tests {
         assert_eq!(serde_json::from_value::<Keys>(saved).unwrap(), k);
         assert_eq!(crate::agent::steps::current("slope"), "slope-hi");
         assert!(crate::agent::steps::row("terrain").is_some_and(|r| r.name == "terrain-hi"));
+    }
+
+    /// Task #780: a redo (`scenic redo`, crate::agent::redo) forgets one target's key, so the plan
+    /// offers that target again under the key it has, alone; nothing else changes; the same redo
+    /// again changes nothing. Built again to new content, what reads it follows by content: its z3
+    /// tile's assembly and its slope.
+    #[test]
+    fn a_redo_offers_its_target_again_and_nothing_else() {
+        let (c, date) = (cov(), "2026-09-28");
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        unit_inputs(&mut m, date);
+        let mut done = Keys::default();
+        let w = plan(&c, date, &m, &done, &BTreeMap::new());
+        heritage_done(&mut m, &mut done, date, &w[0]);
+        heritage_chain_done(&c, &m, &mut done, date);
+        let built_out = |m: &mut BTreeMap<String, String>, done: &mut Keys| {
+            for _ in 0..200 {
+                let w = plan(&c, date, m, done, &BTreeMap::new());
+                let Some(x) = w.first() else { return };
+                match crate::agent::steps::current(&x.step) {
+                    "terrain-hi" | "terrain-lo" | "slope-hi" | "slope-lo" | "terrain-deep" | "slope-deep" => {
+                        terrain_did(m, done, x)
+                    }
+                    _ => did(m, done, x),
+                }
+            }
+            panic!("the plan never ends");
+        };
+        built_out(&mut m, &mut done);
+        let t = "6/28/16";
+        let key = done.recorded("terrain-hi", t).expect("built").to_string();
+        let (m0, keys0) = (m.clone(), done.clone());
+        let redo = [(crate::agent::redo::done_target("terrain-hi", t), String::new())];
+        done.record(crate::agent::redo::STEP, &redo);
+        assert_eq!(done.recorded("terrain-hi", t), None);
+        let mut back = done.clone();
+        back.record("terrain-hi", &[(t.to_string(), key.clone())]);
+        assert_eq!(back, keys0, "nothing else forgotten");
+        let w = plan(&c, date, &m, &done, &BTreeMap::new());
+        assert_eq!(
+            w.iter().map(|w| (w.step.as_str(), w.targets.clone())).collect::<Vec<_>>(),
+            vec![("terrain-hi", vec![(t.to_string(), key.clone())])],
+            "that target alone, under its key"
+        );
+        assert_eq!(m, m0, "the manifest as it was: its files served until rebuilt");
+        let again = done.clone();
+        done.record(crate::agent::redo::STEP, &redo);
+        assert_eq!(done, again, "a second redo changes nothing");
+        // Built again, to new content: its assembly and its slope follow.
+        done.record("terrain-hi", &[(t.to_string(), key)]);
+        m.insert("layers/terrain/hi/6-28-16".into(), "layers/terrain/hi/6-28-16.00000000000000aa.pack".into());
+        m.insert("work/terrain-mid/6-28-16".into(), "work/terrain-mid/6-28-16.00000000000000aa.sect".into());
+        let w = past_publishing(&c, date, &mut m, &mut done);
+        assert_eq!(w.iter().map(|w| w.step.as_str()).collect::<Vec<_>>(), ["terrain-lo"], "the assembly first: {w:?}");
+        terrain_did(&mut m, &mut done, &w[0]);
+        let w = past_publishing(&c, date, &mut m, &mut done);
+        assert!(w.iter().any(|w| w.step == "slope-hi" && w.targets.iter().any(|x| x.0 == t)), "{w:?}");
     }
 
     #[test]

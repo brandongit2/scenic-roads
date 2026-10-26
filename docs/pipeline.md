@@ -127,6 +127,7 @@ paths (`terrain-mid`, `slope-mid`) and a mid's `step` field keep the old names. 
 | | `names-todo` | keep | the world | lead |
 | | `timetables-todo` | keep | the world | lead |
 | | `gc` | keep | the world | lead |
+| | `redo` | keep | the world | lead |
 | | `backup` | keep | the world | lead |
 
 Publishing has no lane or step of its own: it goes per z6 tile (docs/building.md §2, Publishing), and the

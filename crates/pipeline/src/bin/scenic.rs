@@ -1324,6 +1324,62 @@ fn job_cancel(target: &str, step: Option<&str>, rerun_after_update: bool, home: 
     }
 }
 
+/// `scenic redo <step> <target>… [--run]` (pipeline::agent::redo): what the newest records hold for
+/// the targets; with --run, an ask of the lead's coordinator (`/work/redo`), followed until the
+/// records no longer hold them.
+fn redo(step: &str, targets: &[String], run: bool, root_: &Option<PathBuf>) -> Result<()> {
+    use pipeline::agent::redo;
+    use pipeline::pool::{records::Records, term};
+    let (step, targets) = redo::checked(step, targets)?;
+    let r = root(root_, false)?;
+    let records = || -> Result<Records> {
+        let cur = term::current(&r).context("the current term")?;
+        Records::newest(&r, cur.term, true)?.context("no records")
+    };
+    let rec = records()?;
+    for l in redo::said(&rec.keys, &rec.manifest, &step, &targets) {
+        println!("{l}");
+    }
+    let left = |rec: &Records| -> Vec<String> {
+        redo::clears(&rec.keys, &step, &targets)
+            .into_iter()
+            .filter(|(_, k)| k.is_some())
+            .map(|(t, _)| t.to_string())
+            .collect()
+    };
+    let todo = left(&rec);
+    if todo.is_empty() {
+        println!("nothing to clear");
+        return Ok(());
+    }
+    if !run {
+        println!("a dry run: `scenic redo {step} {} --run` asks the lead to clear them", todo.join(" "));
+        return Ok(());
+    }
+    let c = pipeline::coord::client::Client::from_nas(&r, &store::sys::host_name())?
+        .context("no lead's coordinator to ask")?;
+    let by = format!("scenic redo on {}", store::sys::host_name());
+    let (code, v) = c.post_json("/work/redo", &serde_json::json!({ "step": step, "targets": todo, "by": by }))?;
+    anyhow::ensure!(
+        code == 200,
+        "the lead's coordinator answered {code} ({v}): a lead on an app from before `scenic redo` can't take it; nothing asked"
+    );
+    println!("asked the lead (redo {}); its job clears them, merged within minutes", v["n"]);
+    let t = std::time::Instant::now();
+    while t.elapsed() < std::time::Duration::from_secs(15 * 60) {
+        std::thread::sleep(std::time::Duration::from_secs(15));
+        match records() {
+            Ok(rec) if left(&rec).is_empty() => {
+                println!("cleared: the plan offers the {} target(s) again", todo.len());
+                return Ok(());
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("the records can't be read now: {e:#}"),
+        }
+    }
+    bail!("not merged in 15 minutes; the lead keeps the ask (`scenic status`; `scenic redo {step} …` says what's still recorded)")
+}
+
 fn main() -> Result<()> {
     // (Its command line checked first: `--help` or a flag it doesn't know runs nothing.)
     let cli = cli::Cli::parse();
@@ -1528,6 +1584,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
+        Some(Cmd::Redo { step, targets, run, root: r }) => redo(&step, &targets, run, &r.root),
         Some(Cmd::Backup { local, root: r }) => {
             let today = backup::format_day(std::time::SystemTime::now());
             let r =

@@ -316,6 +316,9 @@ pub struct Shared {
     /// The build page's acceptances of the gate's warnings (`/work/inputs`), for the agent to write
     /// (crate::inputs::apply_ask).
     pub inputs_asks: Vec<crate::inputs::Ask>,
+    /// The owner's asks to build targets again (`/work/redo`: `scenic redo`), for the agent to keep
+    /// and run (crate::agent::redo).
+    pub redo_asks: Vec<crate::agent::redo::Ask>,
     /// The lead's own Mac's capacity (`Coordinator::set_capacity`), as its members' asks carry theirs.
     pub own_cap: Option<Capacity>,
     /// The probes failed in a row, the last first (0: the last landed): at `NAS_FAILED_RUN` or more
@@ -1332,6 +1335,7 @@ impl Coordinator {
             lead_asks: Vec::new(),
             inbox: None,
             inputs_asks: Vec::new(),
+            redo_asks: Vec::new(),
             nas_failures: 0,
             nas_loop: Default::default(),
             nas_probes: Vec::new(),
@@ -2294,6 +2298,11 @@ impl Coordinator {
         std::mem::take(&mut self.shared.lock().unwrap().lead_asks)
     }
 
+    /// The owner's asks to build targets again since the last call (`/work/redo`).
+    pub fn take_redo_asks(&self) -> Vec<crate::agent::redo::Ask> {
+        std::mem::take(&mut self.shared.lock().unwrap().redo_asks)
+    }
+
     /// The build page's acceptances since the last call (`/work/inputs`).
     pub fn take_inputs_asks(&self) -> Vec<crate::inputs::Ask> {
         std::mem::take(&mut self.shared.lock().unwrap().inputs_asks)
@@ -2478,6 +2487,7 @@ impl Coordinator {
         s.told = None;
         s.lead_asks.clear();
         s.inputs_asks.clear();
+        s.redo_asks.clear();
         s.done.clear();
         let gone = s.leases.drop_where(|l| matches!(l.work, Work::Job { .. }));
         if !gone.is_empty() {
@@ -4215,6 +4225,23 @@ fn route(
                 serde_json::json!({ "steps": crate::agent::steps::table(), "stages": crate::agent::steps::STAGES }),
             ))
         }
+        "/work/redo" => {
+            // The owner's ask to build `step`'s finished `targets` again (`scenic redo`, with the
+            // build's key; crate::agent::redo): kept by this Mac's agent, which runs it as a job of
+            // its own. Its number answered.
+            let b: serde_json::Value = serde_json::from_slice(body)?;
+            let targets: Vec<String> = b["targets"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            let (step, targets) = crate::agent::redo::checked(b["step"].as_str().unwrap_or(""), &targets)?;
+            let by = b["by"].as_str().unwrap_or("").chars().take(100).collect();
+            let mut s = shared.lock().unwrap();
+            // (Its number unique in this coordinator: ms, one more than the last.)
+            let n = (unix_now() * 1000).max(s.redo_asks.iter().map(|a| a.n + 1).max().unwrap_or(0));
+            s.redo_asks.push(crate::agent::redo::Ask { n, step, targets, by });
+            Ok((200, serde_json::json!({ "n": n })))
+        }
         "/work/floors" => {
             // The targets' floors (crate::agent::memguard), cleared (`{"clear": true}`, of a `step`,
             // of its `target`) first when asked: `scenic pool floors`.
@@ -4575,6 +4602,7 @@ mod http {
             .route("/work/built", any(json))
             .route("/work/timings", any(json))
             .route("/work/floors", any(json))
+            .route("/work/redo", any(json))
             .route("/pool/mail", any(json))
             .route("/work/in/{lease}/{*path}", get(input))
             .route("/work/net/{lease}/{*path}", get(net))
@@ -6305,6 +6333,46 @@ mod tests {
         assert_eq!((v["cleared"]["floors"].as_u64(), v["cleared"]["disks"].as_u64()), (Some(1), Some(0)), "{v}");
         assert_eq!(c.holding_floor("peaks", "6/1/1"), None, "the floor held it off a Mac still");
         assert!(c.peak("peaks", "6/1/1").unwrap() < 43_000, "and sized it: {:?}", c.peak("peaks", "6/1/1"));
+    }
+
+    /// Task #780: the owner's redo (`scenic redo`, with the build's key) is taken for the agent, its
+    /// step's current name and its targets once each, numbered; a step with no key per target, a
+    /// bad target or a page's ask is refused.
+    #[test]
+    fn the_owners_redo_is_taken_for_the_agent() {
+        let (_d, c, w) = start();
+        let (code, v) = w
+            .post_json(
+                "/work/redo",
+                &serde_json::json!({ "step": "terrain", "targets": ["6/18/22", "6/18/22", "6/18/23"], "by": "t" }),
+            )
+            .unwrap();
+        assert_eq!(code, 200, "{v}");
+        let asks = c.take_redo_asks();
+        assert_eq!(asks.len(), 1);
+        assert_eq!(
+            (asks[0].n, asks[0].step.as_str(), asks[0].targets.clone()),
+            (v["n"].as_u64().unwrap(), "terrain-hi", vec!["6/18/22".to_string(), "6/18/23".into()])
+        );
+        for bad in [
+            serde_json::json!({ "step": "catalog", "targets": ["x"] }),
+            serde_json::json!({ "step": "terrain-hi", "targets": [] }),
+            serde_json::json!({ "step": "terrain-hi", "targets": ["6/1/../2"] }),
+        ] {
+            assert_ne!(w.post_json("/work/redo", &bad).map(|r| r.0).unwrap_or(500), 200, "{bad}");
+        }
+        let addr = w.urls()[0].trim_start_matches("http://").to_string();
+        let page = send(
+            &addr,
+            "POST",
+            "/work/redo",
+            None,
+            &[],
+            &serde_json::json!({ "step": "terrain-hi", "targets": ["6/1/1"] }),
+        )
+        .0;
+        assert_eq!(page, 403, "not a page's");
+        assert!(c.take_redo_asks().is_empty());
     }
 
     #[test]

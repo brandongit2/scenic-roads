@@ -199,6 +199,21 @@ pub enum Cmd {
         #[command(flatten)]
         root: Root,
     },
+    /// Build finished targets again (docs/pool.md §11): their keys forgotten in the records, through
+    /// a job of the lead's, so the plan offers them again. Says what it would clear; --run asks the
+    /// lead
+    Redo {
+        /// The step ("terrain-hi")
+        step: String,
+        /// Its targets ("6/18/22")
+        #[arg(required = true)]
+        targets: Vec<String>,
+        /// Ask the lead to clear them (without: says what it would clear, changing nothing)
+        #[arg(long)]
+        run: bool,
+        #[command(flatten)]
+        root: Root,
+    },
     /// Back up the user's folders (the agent runs it daily)
     Backup {
         /// A local folder too

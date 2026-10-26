@@ -108,10 +108,10 @@ fn read_or_default<T: Default + serde::de::DeserializeOwned>(nas: &dyn Nas, p: &
 }
 
 /// The slots a done record's target `t` of step `step` is kept under, for lease order (`last`): a
-/// prune's `<kind> <at>` removes kind's key for `at` (and a pois prune the peaks' too:
+/// prune's or a redo's `<kind> <at>` removes kind's key for `at` (and a pois prune the peaks' too:
 /// crate::agent::build::Keys::record); any other target is its step's.
 fn slots(step: &str, t: &str) -> Vec<(String, String)> {
-    match t.split_once(' ').filter(|_| step == "prune") {
+    match t.split_once(' ').filter(|_| step == "prune" || step == crate::agent::redo::STEP) {
         Some(("pois", at)) => vec![("pois".into(), at.into()), ("peaks".into(), at.into())],
         Some((kind, at)) => vec![(kind.into(), at.into())],
         None => vec![(step.into(), t.into())],
@@ -686,6 +686,49 @@ mod tests {
         assert_eq!(r.last["unit"]["6-1-1"], LeaseId { term: 3, n: 12 });
         // Kept in the snapshot, for the next lead.
         assert_eq!(serde_json::from_slice::<Records>(&serde_json::to_vec(&r).unwrap()).unwrap(), r);
+    }
+
+    /// Task #780: a redo's entry (`scenic redo`: a job of the lead's, no file changed) passes the
+    /// lead's check and forgets the key of the target it names alone, the manifest as it was; a
+    /// build leased before it, merged after, is passed over, and one leased after applies; the
+    /// same redo again changes nothing.
+    #[test]
+    fn a_redo_forgets_its_targets_keys_alone() {
+        let nas = Mem::default();
+        let mut r = Records { term: 3, ..Default::default() };
+        let check = |e: &Entry, r: &Records| crate::agent::pool::check(e, r);
+        let keys: Vec<String> = [built(3, 1, "6-1-1", "k1"), built(3, 2, "6-1-2", "k2")]
+            .iter()
+            .map(|e| journal::write(&nas, e).unwrap())
+            .collect();
+        assert_eq!(merge(&nas, &mut r, &keys, &any).applied.len(), 2);
+        let redo = |n: u64| {
+            let h = Handoff {
+                done: Some((
+                    crate::agent::redo::STEP.into(),
+                    vec![(crate::agent::redo::done_target("unit", "6-1-1"), String::new())],
+                )),
+                ..Default::default()
+            };
+            Entry { step: crate::agent::redo::STEP.into(), handoff: h, ..built(3, n, "-", "-") }
+        };
+        let (manifest, before) = (r.manifest.clone(), r.keys.clone());
+        let k = journal::write(&nas, &redo(5)).unwrap();
+        let m = merge(&nas, &mut r, std::slice::from_ref(&k), &check);
+        assert!(m.refused.is_empty() && m.applied == [k], "{:?}", m.refused);
+        assert_eq!(r.keys.unit.get("6-1-1"), None);
+        assert_eq!(r.keys.unit.get("6-1-2").map(String::as_str), Some("k2"), "the other target's kept");
+        assert_eq!(r.manifest, manifest, "no file changed");
+        let late = journal::write(&nas, &built(3, 4, "6-1-1", "k4")).unwrap();
+        assert_eq!(merge(&nas, &mut r, std::slice::from_ref(&late), &any).overtaken, [late]);
+        assert_eq!(r.keys.unit.get("6-1-1"), None, "a build leased before the redo doesn't bring its key back");
+        let again = r.keys.clone();
+        let k = journal::write(&nas, &redo(6)).unwrap();
+        merge(&nas, &mut r, std::slice::from_ref(&k), &check);
+        assert_eq!(r.keys, again, "a second redo changes nothing");
+        let next = journal::write(&nas, &built(3, 7, "6-1-1", "k1")).unwrap();
+        assert_eq!(merge(&nas, &mut r, std::slice::from_ref(&next), &any).applied, [next]);
+        assert_eq!(r.keys, before, "built again under its key");
     }
 
     #[test]

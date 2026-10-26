@@ -178,7 +178,7 @@ use Kind::{Derive, Fetch, Keep, Pack, Publish};
 use Scope::{Input, Polar, World, Z10, Z3, Z6};
 
 /// The table, by stage (the ranks order what's ranked).
-pub const TABLE: [Step; 56] = [
+pub const TABLE: [Step; 57] = [
     // The OSM pass: the planet filtered, its sets, extracts and road values; then its worldwide steps.
     Step {
         alone: true,
@@ -741,6 +741,17 @@ pub const TABLE: [Step; 56] = [
     Step {
         alone: true,
         ..step("upkeep", Keep, World, "gc", "Removes replaced files from the NAS.", w_gc)
+    },
+    Step {
+        alone: true,
+        ..step(
+            "upkeep",
+            Keep,
+            World,
+            "redo",
+            "Forgets the records of targets the owner named (`scenic redo`), so they're built again.",
+            w_none,
+        )
     },
     Step {
         ..step(
@@ -1849,6 +1860,7 @@ mod tests {
                 "names-todo",
                 "timetables-todo",
                 "gc",
+                "redo",
                 "backup"
             ]
         );

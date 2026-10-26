@@ -24,15 +24,16 @@
 /// The steps kept to the lead: the catalogues and prune (their gates:
 /// crate::agent's catalogue and sweep), the 3D buildings' sources' fetch (written outside the records,
 /// under `sources/`), and its duties outside the plan (the OSM pass, offered only to the Mac holding
-/// its progress: crate::agent::resume; GC, the backup, the input checks, the names and timetables to do: written into the inputs folders'
+/// its progress: crate::agent::resume; GC, a redo (crate::agent::redo), the backup, the input checks, the names and timetables to do: written into the inputs folders'
 /// `todo/`, outside the records).
-pub const LEAD_ONLY: [&str; 11] = [
+pub const LEAD_ONLY: [&str; 12] = [
     store::catalogue::NAME,
     store::catalogue::HELD_NAME,
     "prune",
     "bld-fetch",
     "osm-pass",
     "gc",
+    "redo",
     "backup",
     "inputs",
     "names-todo",

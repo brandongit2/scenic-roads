@@ -44,6 +44,7 @@ pub mod placement;
 pub mod pool;
 pub mod publish;
 pub mod recipes;
+pub mod redo;
 pub mod regionsview;
 pub mod rekey;
 pub mod resume;
@@ -4414,6 +4415,7 @@ impl Agent {
         if let Some(r) = root.as_ref() {
             self.tend_gate(r);
         }
+        self.tend_redo();
 
         nasread::phase("the plan");
         // The plan (leading): offered through this Mac's coordinator as it's made (`offer_plan`).
@@ -6854,6 +6856,11 @@ impl Agent {
             if let Some(unit) = id.strip_prefix("inputs ").and_then(|r| r.strip_suffix(" forget")) {
                 self.inputs.forget.borrow_mut().remove(unit);
             }
+            if let Some(n) = redo::ask_of(id) {
+                if let Err(e) = redo::finished(&self.o.home, n) {
+                    eprintln!("agent: redo {n} done, but its ask stays: {e:#}");
+                }
+            }
         } else {
             let n = self.mem.retry.get(id).map(|r| r.0).unwrap_or(0) + 1;
             // 10 min, 20, 40 … up to 6 h.
@@ -6983,6 +6990,8 @@ impl Agent {
         for f in [publish::DELTA_CATALOGUE, publish::NEAR_SLOPE, "inputs/hold-catalog", "catalog", "catalog-held"] {
             stat(&mut h, (&root.join(f)).into());
         }
+        // (The owner's redo asks: one taken or done.)
+        stat(&mut h, (&self.o.home.join(redo::ASKS)).into());
         // (The coordinator's leases: one lapsed, given back or taken frees or holds targets.)
         self.coord.as_ref().map(|c| c.lease_gen()).hash(&mut h);
         self.newer_app().hash(&mut h);
@@ -7136,6 +7145,11 @@ impl Agent {
                 record: None,
             });
         }
+        // The owner's redos (`scenic redo`, crate::agent::redo), the lead's: a job each, which forgets
+        // its targets' records.
+        if self.coord.is_some() && !self.o.helper {
+            out.extend(self.redo_jobs(root));
+        }
         if self.due("gc", Duration::from_secs(86400)) {
             let keep = self.keep_depth_targets();
             out.push(JobSpec {
@@ -7148,6 +7162,67 @@ impl Agent {
             });
         }
         out
+    }
+
+    /// The jobs of the owner's redos kept in this Mac's agent's folder (crate::agent::redo): one per
+    /// ask, `scenic redo` listing what it clears (it changes no file), its done record ("<step>
+    /// <target>", no key) forgetting their keys as the lead merges it.
+    fn redo_jobs(&self, root: &store::nasfs::NasRoot) -> Vec<JobSpec> {
+        let asks = match redo::pending(&self.o.home) {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("agent: the redo asks: {e:#}");
+                return Vec::new();
+            }
+        };
+        let me = self.o.bin.join("scenic");
+        asks.into_iter()
+            .map(|a| {
+                let mut cmd = vec![
+                    me.to_string_lossy().into_owned(),
+                    redo::STEP.into(),
+                    "--root".into(),
+                    jobs::root_arg(root),
+                    a.step.clone(),
+                ];
+                cmd.extend(a.targets.iter().cloned());
+                JobSpec {
+                    id: redo::job_id(a.n),
+                    what: format!(
+                        "Forgetting {} {} target{}' records",
+                        a.targets.len(),
+                        a.step,
+                        if a.targets.len() == 1 { "" } else { "s" }
+                    ),
+                    cmd,
+                    needs: Needs { nas: true },
+                    restart_after_sleep: true,
+                    record: Some(build::Work {
+                        step: redo::STEP.into(),
+                        targets: a.targets.iter().map(|t| (redo::done_target(&a.step, t), String::new())).collect(),
+                    }),
+                }
+            })
+            .collect()
+    }
+
+    /// The owner's redo asks this Mac's coordinator took (`/work/redo`), kept in its agent's folder
+    /// until their jobs are done: not a dry run's.
+    fn tend_redo(&self) {
+        if self.o.dry_run {
+            return;
+        }
+        let Some(c) = &self.coord else { return };
+        let asks = c.take_redo_asks();
+        if asks.is_empty() {
+            return;
+        }
+        for a in &asks {
+            eprintln!("agent: {} asked to redo {} {} target(s) (redo {})", a.by, a.targets.len(), a.step, a.n);
+        }
+        if let Err(e) = redo::add(&self.o.home, asks) {
+            eprintln!("agent: the redo asks can't be kept: {e:#}");
+        }
     }
 
     /// The build steps for the regions, as jobs (docs/building.md §2), in order: the newest pass's
@@ -12069,6 +12144,58 @@ mod tests {
             helper: false,
         })
         .unwrap()
+    }
+
+    /// Task #780: the owner's redo, as the lead's coordinator takes it (`/work/redo`), kept in its
+    /// agent's folder (not by a dry run), planned as a job of the `redo` step whose done record
+    /// names "<step> <target>", and dropped once that job succeeded; a failure keeps it.
+    #[test]
+    fn a_redo_ask_is_kept_run_as_a_job_and_dropped_when_done() {
+        let d = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(&d.path().join("nas"));
+        let home = d.path().join("home");
+        let mut a = agent(&root, &home);
+        let co = std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0);
+        a.coord = Some(co.clone());
+        let ask = redo::Ask {
+            n: 7,
+            step: "terrain-hi".into(),
+            targets: vec!["6/18/22".into(), "6/18/23".into()],
+            by: "t".into(),
+        };
+        co.shared.lock().unwrap().redo_asks.push(ask.clone());
+        a.tend_redo();
+        assert!(redo::pending(&home).unwrap().is_empty(), "a dry run's agent takes no ask");
+        assert_eq!(co.take_redo_asks(), [ask.clone()], "left for the agent that runs");
+        a.o.dry_run = false;
+        co.shared.lock().unwrap().redo_asks.push(ask.clone());
+        let seen = a.plan_seen(&root);
+        a.tend_redo();
+        assert_eq!(redo::pending(&home).unwrap(), [ask.clone()]);
+        assert_ne!(a.plan_seen(&root), seen, "planned again");
+        let jobs = a.redo_jobs(&root);
+        assert_eq!(jobs.len(), 1);
+        let j = &jobs[0];
+        assert_eq!(j.id, "redo 7");
+        assert_eq!(
+            j.record,
+            Some(build::Work {
+                step: "redo".into(),
+                targets: vec![
+                    ("terrain-hi 6/18/22".into(), String::new()),
+                    ("terrain-hi 6/18/23".into(), String::new())
+                ]
+            })
+        );
+        assert!(
+            j.cmd.ends_with(&["terrain-hi".to_string(), "6/18/22".into(), "6/18/23".into()])
+                && !j.cmd.contains(&"--run".to_string())
+        );
+        a.finished(&j.id, &j.what, false, 5, String::new());
+        assert_eq!(redo::pending(&home).unwrap().len(), 1, "a failure keeps the ask");
+        a.finished(&j.id, &j.what, true, 5, String::new());
+        assert!(redo::pending(&home).unwrap().is_empty() && !home.join(redo::ASKS).exists());
+        assert!(a.redo_jobs(&root).is_empty());
     }
 
     /// Task #679: only the agent that runs the jobs writes GC's depth targets; a planning-only
