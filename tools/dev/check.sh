@@ -12,6 +12,7 @@
 #   web       web/test/rings.test.ts, wheelkind.test.ts, chartmath.test.mjs, catalogs.test.mjs and tools/check/worksums.test.mjs under node, pnpm typecheck and vite build (to a scratch folder), when web/ changed
 #   taskboard node --test tools/taskboard/test/*.test.mjs, when tools/taskboard changed
 #   shell     tools/app/test/shell.zsh (publish.sh's shell steps, tools/app/lib.zsh), when tools/app changed
+#   testguard tools/dev/test/test-guard.zsh (the test guard's worktree lookup), when it changed
 #   swift     swiftc of tools/status/main.swift (publish's line) and its --test (arguments, reopen, launchd), when tools/status changed
 #   tests     each command tools/dev/affected-tests.sh prints, run on the test Mac (tools/app/remote-tests.sh;
 #             here when it can't be reached or SCENIC_CHECK_LOCAL=1)
@@ -24,7 +25,7 @@
 set -uo pipefail
 case $#:${1:-} in
   0:) ;;
-  1:-h|1:--help) sed -n '2,22p' ${0:A} | sed 's/^# \{0,1\}//'; exit 0 ;;
+  1:-h|1:--help) sed -n '2,23p' ${0:A} | sed 's/^# \{0,1\}//'; exit 0 ;;
   *) print -u2 "check.sh takes no arguments (check.sh --help)"; exit 2 ;;
 esac
 root=$(git rev-parse --show-toplevel) || exit 2
@@ -57,6 +58,8 @@ if has 'tools/taskboard/*'; then part taskboard zsh -c "cd tools/taskboard && no
 else skip taskboard "tools/taskboard unchanged"; fi
 if has 'tools/app/*'; then part shell zsh tools/app/test/shell.zsh
 else skip shell "tools/app unchanged"; fi
+if has 'tools/dev/test-guard*' || has 'tools/dev/test/*'; then part testguard zsh tools/dev/test/test-guard.zsh
+else skip testguard "tools/dev/test-guard unchanged"; fi
 if has 'tools/status/*'; then
   part swift zsh -c "swiftc -O -swift-version 5 -target arm64-apple-macos26.0 -o ${(q)logs}/scenic-status tools/status/*.swift && ${(q)logs}/scenic-status --test tools/status/test"
 else skip swift "tools/status unchanged"; fi

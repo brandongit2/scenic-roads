@@ -116,8 +116,11 @@ def parse(toks):
 
 # (The tree the tests run in: the session's folder, else a worktree the command goes into, `cd` or
 # `--manifest-path`, as a reviewer in the main checkout runs a worktree's tests: its modules, not main's.)
-into = re.search(r"(/\S*?/\.claude/worktrees/[^/\s'\";&|)]+)", cmd)
-wt = cwd if "/.claude/worktrees/" in cwd else (into.group(1) if into else None)
+# (`~/…` and `$HOME/…` as the shell expands them: cut at the first `/`, the path pointed nowhere and no
+# module was found.)
+into = re.search(r"((?:~|\$HOME|\$\{HOME\})?/\S*?/\.claude/worktrees/[^/\s'\";&|)]+)", cmd)
+into = into and re.sub(r"^(~|\$HOME|\$\{HOME\})", lambda _: os.path.expanduser("~"), into.group(1))
+wt = cwd if "/.claude/worktrees/" in cwd else (into or None)
 root = (wt.split("/.claude/worktrees/")[0] + "/.claude/worktrees/" + wt.split("/.claude/worktrees/")[1].split("/")[0]) if wt else repo
 def crate_dirs(): return sorted(os.listdir(os.path.join(root, "crates")))
 def is_module(c, seg):
