@@ -1578,7 +1578,7 @@ pub struct Agent {
     /// Why this process isn't in the pool, while it isn't (`NAS_AWAY`, `LOCK_HELD`): the status's
     /// `out_of_pool`.
     out_why: String,
-    /// The gate (crate::inputs): the drop boxes' listing thread, the status's entries as the last
+    /// The gate (crate::inputs): the inputs folders' listing thread, the status's entries as the last
     /// plan made them, what they read, and the units a full check was asked of.
     inputs: Gate,
     /// The last start held by something on a short timer (the pool's step under way, the answers
@@ -1589,7 +1589,7 @@ pub struct Agent {
 /// The agent's part of the gate (docs/inputs.md §4.2, §4.7).
 #[derive(Default)]
 struct Gate {
-    /// The drop boxes listed off the loop (the lead's), with the root it
+    /// The inputs folders listed off the loop (the lead's), with the root it
     /// lists.
     watch: Option<(NasRoot, crate::inputs::watch::Watch)>,
     view: std::cell::RefCell<Vec<crate::inputs::view::InputView>>,
@@ -4343,7 +4343,7 @@ impl Agent {
         // (A slot free and nothing holding more back: this agent asks for work, `may_pack`.)
         let free = self.may_pack();
         nasread::phase("the gate");
-        // The gate: the drop boxes listed off the loop (the lead's), and the asks of it from this
+        // The gate: the inputs folders listed off the loop (the lead's), and the asks of it from this
         // Mac's menu bar, map, `scenic inputs` and (leading) the build page.
         if let Some(r) = root.as_ref() {
             self.tend_gate(r);
@@ -7311,7 +7311,7 @@ impl Agent {
         }
         // After each catalog the map serves: the names to translate and descriptions to write.
         // (From the translations' and descriptions' accepted versions, which the agent names: the
-        // job reads them through the accessor, never the drop boxes.)
+        // job reads them through the accessor, never the inputs folders.)
         let served = served((&root.join("catalog")).into());
         // (The steps gated by time: when each last ran, as its recorded key changed.)
         self.note_ran(&keys);
@@ -7364,7 +7364,7 @@ impl Agent {
         };
         let cov = &covs.all;
         // The timetables' to-do list and report, after each rail and ferries run (lead-only: it
-        // writes into the static timetables' drop box's todo/, never read as an input).
+        // writes into the static timetables' inputs folder's todo/, never read as an input).
         if let Some(w) = build::timetables_todo_work(cov, &manifest, &keys) {
             jobs.push(job(
                 "timetables-todo".into(),
@@ -7892,7 +7892,7 @@ impl Agent {
                 ]);
             }
             // (The heritage registers' and matches' accepted versions the plan read: the job reads
-            // them, never the drop boxes.)
+            // them, never the inputs folders.)
             if w.step == "heritage-sites" {
                 for unit in [crate::inputs::heritage::UNIT, crate::inputs::heritage_matches::UNIT] {
                     if let Some(i) = manifest.get(&crate::inputs::logical(unit)) {
@@ -10424,7 +10424,7 @@ impl Agent {
         }
         let member = crate::inputs::member_of(&self.o.home);
         // (A member's: what changed the lead's check's key, told to the lead's coordinator, so it
-        // lists the drop boxes and the acceptances now rather than at its next listing.)
+        // lists the inputs folders and the acceptances now rather than at its next listing.)
         let mut tell: Vec<serde_json::Value> = Vec::new();
         for a in asks {
             if a.forget {
@@ -10485,11 +10485,11 @@ impl Agent {
                 Some(c) => {
                     for t in tell {
                         if let Err(e) = c.post_json("/work/inputs", &t) {
-                            eprintln!("agent: telling the lead of {t}: {e:#} (it lists the drop boxes within two minutes all the same)");
+                            eprintln!("agent: telling the lead of {t}: {e:#} (it lists the inputs folders within two minutes all the same)");
                         }
                     }
                 }
-                None => eprintln!("agent: the lead's coordinator can't be reached ({}); it lists the drop boxes within two minutes all the same", waiting.first().map(|w| w.why.clone()).unwrap_or_default()),
+                None => eprintln!("agent: the lead's coordinator can't be reached ({}); it lists the inputs folders within two minutes all the same", waiting.first().map(|w| w.why.clone()).unwrap_or_default()),
             }
         }
     }
@@ -10521,11 +10521,11 @@ impl Agent {
                     waiting.push(Waiting {
                         step: Some("inputs".into()),
                         what: format!("Checking {unit}"),
-                        why: format!("its drop box can't be listed now: {why}"),
+                        why: format!("its inputs folder can't be listed now: {why}"),
                     });
                 }
                 let Some(l) = watch.get(unit) else { continue };
-                // (Nothing dropped yet and nothing ever taken in or held: nothing to check.)
+                // (Nothing added yet and nothing ever taken in or held: nothing to check.)
                 let empty = l.listing.files.is_empty() && l.listing.strays.is_empty() && l.listing.misplaced.is_empty();
                 if empty
                     && [crate::inputs::logical(unit), crate::inputs::held_logical(unit)]
@@ -10600,7 +10600,7 @@ impl Agent {
                 let id = if full { format!("inputs {unit} full") } else { format!("inputs {unit}") };
                 jobs.push(JobSpec {
                     id,
-                    what: format!("Checking the inputs dropped in {unit}{}", if full { ", every file" } else { "" }),
+                    what: format!("Checking the {unit} inputs{}", if full { ", every file" } else { "" }),
                     cmd,
                     needs: Needs { nas: true },
                     restart_after_sleep: true,
@@ -14721,9 +14721,7 @@ mod tests {
         // (The regions' check of their accepted version comes first, the gate's jobs first of all;
         // the backup after it.)
         assert!(
-            st.waiting
-                .iter()
-                .any(|w| w.what == "backup" || w.what.starts_with("Checking the inputs dropped in regions")),
+            st.waiting.iter().any(|w| w.what == "backup" || w.what.starts_with("Checking the regions inputs")),
             "{:?}",
             st.waiting
         );
@@ -14736,7 +14734,7 @@ mod tests {
             .any(|j| j.id == "backup"));
     }
 
-    /// The gate in the agent (docs/inputs.md §4.2, §4.3, §4.7): the drop boxes listed off the loop,
+    /// The gate in the agent (docs/inputs.md §4.2, §4.3, §4.7): the inputs folders listed off the loop,
     /// a unit's check planned before every other job while its key isn't the one recorded (a full
     /// one daily), the status's entry; an acceptance asked of the agent written by it.
     #[test]
@@ -14746,10 +14744,10 @@ mod tests {
         std::fs::create_dir_all(root.join("catalog")).unwrap();
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         let unit = crate::inputs::TEST_UNIT;
-        let dropbox = root.join("inputs").join(unit);
-        std::fs::create_dir_all(&dropbox).unwrap();
+        let inputs_dir = root.join("inputs").join(unit);
+        std::fs::create_dir_all(&inputs_dir).unwrap();
         let put = |text: &str| {
-            let p = dropbox.join("a.jsonl");
+            let p = inputs_dir.join("a.jsonl");
             std::fs::write(&p, text).unwrap();
             std::fs::File::options()
                 .write(true)
@@ -14819,7 +14817,7 @@ mod tests {
         let v = st.inputs.iter().find(|v| v.unit == unit).unwrap();
         assert_eq!(v.state, crate::inputs::view::State::Held);
         assert_eq!(v.held, ["a.jsonl"]);
-        // An acceptance asked of the agent: written by it (not by a dry run's), and the drop boxes
+        // An acceptance asked of the agent: written by it (not by a dry run's), and the inputs folders
         // listed again, so its key changes and the unit's checked again.
         a.o.dry_run = false;
         crate::inputs::ask(

@@ -1,5 +1,5 @@
 //! The translations (docs/inputs.md §6.3): a request–fulfil input. The app lists the names it has no
-//! English for (`todo/`, crate::namestodo); the answers are `**/*.jsonl` files dropped anywhere else
+//! English for (`todo/`, crate::namestodo); the answers are `**/*.jsonl` files added anywhere else
 //! in `inputs/translations/`, one translation a line, `{"n", "kind", "langs", "main", "sub", "via"}`,
 //! read by the map's server (crate `names`) from the accepted copies.
 //!
@@ -17,7 +17,7 @@
 use super::{Checks, FileCheck, Finding, Level};
 use anyhow::Result;
 
-/// The unit's name, and its drop box's old place at the NAS's root (before #137).
+/// The unit's name, and its inputs folder's old place at the NAS's root (before #137).
 pub const UNIT: &str = "translations";
 
 /// The translations' checks.
@@ -77,7 +77,7 @@ impl Checks for Translations {
     fn file(&self, path: &str, bytes: &[u8]) -> FileCheck {
         let mut c = FileCheck::default();
         if !path.ends_with(".jsonl") {
-            c.findings.push(Finding::new(SHAPE, Level::Error, &[path], &["not jsonl"], vec![path.into()], format!("{path} isn't the drop box's shape: translations takes .jsonl files of translation lines (docs/inputs.md §6.3); notes go in how/")));
+            c.findings.push(Finding::new(SHAPE, Level::Error, &[path], &["not jsonl"], vec![path.into()], format!("{path} isn't the inputs folder's shape: translations takes .jsonl files of translation lines (docs/inputs.md §6.3); notes go in how/")));
             return c;
         }
         let Ok(text) = std::str::from_utf8(bytes) else {

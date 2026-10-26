@@ -235,15 +235,17 @@ fn the_gate_takes_regions_in_and_holds_them_on_a_new_pass() {
         ..Default::default()
     }));
     let a = region("a", "outline = [\"osm:1\"]\n");
-    let drop: BTreeMap<String, Vec<u8>> = [("_pins.toml", PINS.1), ("eu/a.toml", a.as_str())]
+    let update: BTreeMap<String, Vec<u8>> = [("_pins.toml", PINS.1), ("eu/a.toml", a.as_str())]
         .iter()
         .map(|(p, t)| (p.to_string(), t.as_bytes().to_vec()))
         .collect();
-    let listing =
-        Listing { files: drop.keys().map(|p| (p.clone(), (drop[p].len() as u64, 1))).collect(), ..Default::default() };
+    let listing = Listing {
+        files: update.keys().map(|p| (p.clone(), (update[p].len() as u64, 1))).collect(),
+        ..Default::default()
+    };
     let accepted = Default::default();
     let unsettled = Default::default();
-    let rn = |p: &str| Ok(drop[p].clone());
+    let rn = |p: &str| Ok(update[p].clone());
     let ro = |_: &FileEntry| -> Result<Vec<u8>> { unreachable!() };
     let d = decide(&Given {
         checks: &checks,
@@ -308,14 +310,16 @@ fn a_new_checks_version_derives_again_and_changes_only_the_drawn_files() {
         ..Default::default()
     }));
     let a = region("a", "outline = [\"osm:1\"]\n");
-    let drop: BTreeMap<String, Vec<u8>> = [("_pins.toml", PINS.1), ("eu/a.toml", a.as_str())]
+    let update: BTreeMap<String, Vec<u8>> = [("_pins.toml", PINS.1), ("eu/a.toml", a.as_str())]
         .iter()
         .map(|(p, t)| (p.to_string(), t.as_bytes().to_vec()))
         .collect();
-    let listing =
-        Listing { files: drop.keys().map(|p| (p.clone(), (drop[p].len() as u64, 1))).collect(), ..Default::default() };
+    let listing = Listing {
+        files: update.keys().map(|p| (p.clone(), (update[p].len() as u64, 1))).collect(),
+        ..Default::default()
+    };
     let (accepted, unsettled) = (Default::default(), Default::default());
-    let rn = |p: &str| Ok(drop[p].clone());
+    let rn = |p: &str| Ok(update[p].clone());
     let kept = std::cell::RefCell::new(BTreeMap::<String, Arc<Vec<u8>>>::new());
     let ro = |e: &FileEntry| -> Result<Vec<u8>> { Ok(kept.borrow()[&e.file].to_vec()) };
     let run = |prev: Option<&Index>, listed: &BTreeMap<String, (u64, u64)>| {
@@ -401,13 +405,13 @@ fn folders_make_the_tree_and_moving_a_region_changes_no_key() {
         ..Default::default()
     }));
     let take = |files: &[(&str, &str)]| {
-        let drop: BTreeMap<String, Vec<u8>> =
+        let update: BTreeMap<String, Vec<u8>> =
             files.iter().map(|(p, t)| (p.to_string(), t.as_bytes().to_vec())).collect();
         let listing = Listing {
-            files: drop.keys().map(|p| (p.clone(), (drop[p].len() as u64, 1))).collect(),
+            files: update.keys().map(|p| (p.clone(), (update[p].len() as u64, 1))).collect(),
             ..Default::default()
         };
-        let rn = |p: &str| Ok(drop[p].clone());
+        let rn = |p: &str| Ok(update[p].clone());
         let ro = |_: &FileEntry| -> Result<Vec<u8>> { unreachable!() };
         decide(&Given {
             checks: &checks,
@@ -503,7 +507,7 @@ fn a_name_starting_with_an_underscore_is_special() {
 }
 
 /// A NAS root for the check job: the records naming pass `PASS` (and its outline set, when
-/// `outlines`), and region `a` in the drop box, old enough to be taken.
+/// `outlines`), and region `a` in the inputs folder, old enough to be taken.
 fn job_root(f: &Fx, outlines: bool) -> tempfile::TempDir {
     let d = tempfile::tempdir().unwrap();
     let root = d.path();
@@ -703,7 +707,7 @@ fn the_switch_s_app_fails_closed() {
     assert_eq!(read::needed_app(None, Some("20261015-1200-aaaaaaa")).as_deref(), Some("20261015-1200-aaaaaaa"));
 }
 
-/// Writes region files into a check job's drop box, old enough to be taken.
+/// Writes region files into a check job's inputs folder, old enough to be taken.
 fn drop_files(root: &store::nasfs::NasRoot, files: &[(&str, &str)]) {
     let dir = root.join("inputs/regions");
     let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);

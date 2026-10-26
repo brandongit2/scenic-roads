@@ -15,7 +15,7 @@
 //! Outlines come from the latest OSM pass (the catalog's `global.outlines`); records and strings are
 //! read once per catalog, rings when an outline is drawn or tested.
 //!
-//! Nothing here writes a region: regions change only as files in the drop box, which the input
+//! Nothing here writes a region: regions change only as files in the inputs folder, which the input
 //! check takes in (docs/inputs.md §6.1). The region files are read through the NAS I/O pool like
 //! every other access to the share: a mount that hangs fails the request in the pool's time (a
 //! 503, as for any read the NAS can't answer) instead of holding it.
@@ -195,7 +195,7 @@ fn err(code: StatusCode, msg: impl std::fmt::Display) -> Response {
     (code, Json(json!({ "error": msg.to_string() }))).into_response()
 }
 
-/// The regions' drop box on the NAS, and the I/O pool every access to it goes through (None while the
+/// The regions' inputs folder on the NAS, and the I/O pool every access to it goes through (None while the
 /// NAS is away).
 fn nas(s: &crate::AppState) -> Option<(store::nasfs::NasPath, Arc<IoPool>)> {
     let (root, pool) = (s.data.nas_root()?, s.data.pool()?);
@@ -210,7 +210,7 @@ pub struct Listed {
     pub id: String,
     pub name: String,
     pub outline: Vec<String>,
-    /// Its path in the drop box (`europe/portugal/azores.toml`).
+    /// Its path in the inputs folder (`europe/portugal/azores.toml`).
     pub path: String,
     /// accepted, checking or held ("" when the check's records can't be read now).
     #[serde(default)]
@@ -240,7 +240,7 @@ impl Listed {
 /// The region files and the files that don't parse (path, problem), as the panel lists them.
 type ListedAll = (Vec<Listed>, Vec<(String, String)>);
 
-/// Every region file in the folder and its subfolders (`how/`, `todo/` and the names every drop box
+/// Every region file in the folder and its subfolders (`how/`, `todo/` and the names every inputs folder
 /// passes over aside, and the special files), by id; the files that don't parse. The NAS failing midway is
 /// an error, never a shorter list.
 fn load_all(pool: &IoPool, dir: &store::nasfs::NasPath) -> Result<ListedAll> {
@@ -449,7 +449,7 @@ pub fn colour(id: &str) -> String {
 }
 
 /// Whether region `id` is disabled (`disabled = true`): by the accepted copy kept on this Mac, else
-/// the last list read from the drop box.
+/// the last list read from the inputs folder.
 pub fn is_disabled(s: &crate::AppState, id: &str) -> bool {
     let dir = accepted_dir(s);
     let kept: Option<pipeline::inputs::served::Kept> =

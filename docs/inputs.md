@@ -1,17 +1,16 @@
-# Inputs: every input through a standard shape and a checked drop box
+# Inputs: every input through a standard shape and a checked inputs folder
 
-Every input the map is built from has one written shape and one folder on the NAS, its **drop
-box**. The owner makes inputs however they like, to that shape, and drops them there. The build
+Every input the map is built from has one written shape and one folder on the NAS, its **inputs folder**. The owner makes inputs however they like, to that shape, and adds them there. The build
 checks each change before taking it in, keeps the last good version while a change is held, and
 reads only checked, content-named copies, so builds stay deterministic. Per-source conversion
 happens outside the app (`producers/`, §8); what the app must know about a source (where to fetch
-it, its licence, its credit) is written in a declaration file in a drop box.
+it, its licence, its credit) is written in a declaration file in an inputs folder.
 
-**The input check** (§4) checks every change dropped into a drop box: first its shape, then the
+**The input check** (§4) checks every change to an inputs folder: first its shape, then the
 input's own rules. A change that passes is copied into `sources/inputs/` and becomes the version the
 build reads. A change with a problem is held: the app keeps the last version that passed, shows the
 problem on the menu bar icon and the build page, and takes the change in once
-it's fixed or, for a warning, once the owner accepts it. Each drop box is checked on its own and is
+it's fixed or, for a warning, once the owner accepts it. Each inputs folder is checked on its own and is
 a **unit** of the input check. (In the code the mechanism keeps the older word "gate":
 `gate_work`, `_gate-test`.)
 
@@ -30,22 +29,22 @@ terrain's), the remaining sources (§6.9); the guards (§7). Companions: `docs/s
   counts, a feed's box) is read at check time. Where a declared fact can be checked against the
   data, it is, and a wrong one is a finding.
 - **The NAS's limits** (docs/storage.md): no input is stored or read as thousands of small files, and
-  nothing lists a drop box in a tight loop.
+  nothing lists an inputs folder in a tight loop.
 
 ## 2. The three kinds of input
 
-| Kind | What the owner drops | The app's side | Missing data means |
+| Kind | What the owner adds | The app's side | Missing data means |
 |---|---|---|---|
 | **Declare** | the data itself, in the input's shape | reads it as given; the files are the whole input; never writes there | the map has none of it |
-| **Request–fulfil** | answers to the app's requests | writes a to-do list and a brief into the drop box's `todo/` after building; reads the answers like a declare input | the map falls back, the request stays listed |
+| **Request–fulfil** | answers to the app's requests | writes a to-do list and a brief into the inputs folder's `todo/` after building; reads the answers like a declare input | the map falls back, the request stays listed |
 | **Source declaration** | a small file naming a standard format, where to get the data, its licence and credit (data may lie beside it) | fetches the data itself into `sources/`, content-named and pinned in the records | the source isn't used |
 
 Not inputs: `inputs/keys.env` (secrets; their names enter keys, never their values),
 `inputs/hold-catalog` (a control), `todo/` lists, and `how/` notes (§8).
 
-## 3. The drop boxes on the NAS
+## 3. The inputs folders on the NAS
 
-Every drop box is a folder under `inputs/` in the NAS project folder (docs/storage.md):
+Every inputs folder is a folder under `inputs/` in the NAS project folder (docs/storage.md):
 
 ```
 inputs/
@@ -64,27 +63,27 @@ inputs/
 ```
 
 Each folder is one unit (`timetables/feeds` and `timetables/gtfs` are two units of one input).
-Inside any drop box:
+Inside any inputs folder:
 - `todo/` is the app's and `how/` the owner's notes (pointing to `producers/<input>/`, §8); neither
   is read as input.
 - Names starting with `.`, `@`, `#` or `_` are ignored (`@eaDir`, `#recycle`, `.DS_Store`, drafts),
   except the regions' special files (`_*.toml`, §6.1.2).
 - A file is taken only once its time is 10 s old, so a half-written file isn't checked.
-- Any other file that isn't the drop box's shape is an error finding, never skipped silently
+- Any other file that isn't the inputs folder's shape is an error finding, never skipped silently
   (except in `regions/`, which ignores unknown files: §6.1.2).
 
-A file dropped into the old NAS-root `translations/` or `descriptions/` is an error finding on the
+A file added to the old NAS-root `translations/` or `descriptions/` is an error finding on the
 new unit (`moved`); GC's never-swept list keeps those folders. The checked copies live under
 `sources/inputs/` (§4.6) and are the app's, never the owner's to edit.
 
 ## 4. The input check
 
 crate::inputs; `scenic-build inputs`; the agent's `gate_work` and `tend_gate`. Units are listed in
-`inputs::UNITS`. A unit with nothing dropped and no records isn't checked or shown.
+`inputs::UNITS`. A unit with nothing added and no records isn't checked or shown.
 
 ### 4.1 Terms
 
-- **Candidate:** the drop box's files as they are now, once they've held still.
+- **Candidate:** the inputs folder's files as they are now, once they've held still.
 - **Finding:** an **error** (the file can't be used) or a **warning** (usable, likely a mistake),
   with a stable id (§4.4), the files it's about, a message, and a place when it has one.
 - **Held:** a change with an unaccepted finding; the last accepted version of its files stays in use.
@@ -93,7 +92,7 @@ crate::inputs; `scenic-build inputs`; the agent's `gate_work` and `tend_gate`. U
 
 ### 4.2 Noticing a change
 
-- The lead (pool.md §5) lists every drop box (recursively, skipping `todo/` and `how/` at the top)
+- The lead (pool.md §5) lists every inputs folder (recursively, skipping `todo/` and `how/` at the top)
   and the acceptances every two minutes, on a thread of its own (crate::inputs::watch). Members
   don't list. `scenic inputs check [<unit>]` asks for a listing now.
 - A file whose time is within the last 10 s is left for the next listing. The check is given the
@@ -133,7 +132,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   6. Stores each file content-named under `sources/inputs/<unit>/` (uploaded and read back, docs/storage.md).
   7. Hands off the records: `sources/inputs/<unit>/@index` (when it differs; the replaced index is
      touched so GC keeps it, §4.9), `@listed`, and `@held` (the held report, or none). `@` starts
-     no drop-box path component or unit name, so these never clash with copies or nested units.
+     no inputs-folder path component or unit name, so these never clash with copies or nested units.
 - **Threads and progress.** A job's threads are set as it starts, and a check lasts hours, so the
   check doesn't keep its grant: its agent keeps a file (`SCENIC_THREADS_FILE`,
   `Agent::tend_threads`, every loop) with the threads it may use now (`pace::allowed_now`). Never
@@ -194,7 +193,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
 
 ### 4.6 The accepted version and how steps read it
 
-- **Files:** `sources/inputs/<unit>/<path>.<hash16>.<ext>`, the drop-box path content-named.
+- **Files:** `sources/inputs/<unit>/<path>.<hash16>.<ext>`, the inputs-folder path content-named.
 - **The index:** `sources/inputs/<unit>/@index.<hash16>.json`:
   ```json
   {"fmt": 1, "unit": "heritage", "checks": "heritage 1",
@@ -210,9 +209,9 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   are unchanged. No file time is in it, so the same contents have the same version.
 - **The records:** the manifest's `sources/inputs/<unit>/@index` names the index, which roots its
   files for GC. Only a check job's hand-off, merged by the lead, changes it.
-- **Readers:** `inputs::open(root, manifest, unit)` gives a step a unit's accepted files by drop-box
+- **Readers:** `inputs::open(root, manifest, unit)` gives a step a unit's accepted files by inputs-folder
   path, from the records it planned with. Python steps get the paths on their command line from the
-  agent. No step reads a drop box (§7.1).
+  agent. No step reads an inputs folder (§7.1).
 - **Keys:** a step names the index's content name when it reads the whole unit, or the `keyed`
   digests of the files it reads (heritage-sites names only the registers meeting its cover).
 - **The map's server** reads the translations, descriptions, languages and regions' drawn files from
@@ -272,8 +271,8 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   manifest's and newest records' indexes, listings and held reports, those of journal entries not
   yet merged (pool.md §7.3), every index touched within `keep_days`, and the index each recent check
   state names as `replaced`. So a replaced version stays restorable for 14 days. If any folder can't
-  be read, nothing is swept that day. Drop boxes and `state/inputs/` are never swept.
-- Every accepted version of a file is kept whole, so the briefs say to drop one answer file per
+  be read, nothing is swept that day. The inputs folders and `state/inputs/` are never swept.
+- Every accepted version of a file is kept whole, so the briefs say to add one answer file per
   batch rather than append to a big one.
 - Backups (docs/storage.md; agent/backup.rs `FOLDERS`) cover `inputs/` and `state/inputs/accepted/`, not
   `todo/`.
@@ -285,7 +284,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   acceptances and asks the lead to drop its records, the job `inputs _gate-test forget`). Shape:
   `.jsonl` lines `{"k": "<string>", "v": <number>}`; an error for a bad line, a warning for a
   negative `v` and for a removed file. No build step reads it. `tools/check/gate-two-macs.sh` is
-  the procedure that exercises the input check on the NAS between two Macs (a drop taken in, an
+  the procedure that exercises the input check on the NAS between two Macs (an update taken in, an
   error held, warnings accepted from each Mac, an unaccept, a touch, a removal, a lead handover
   mid-check).
 - **Tests** (no wall clock, no real NAS): crate::inputs's tests (verdicts as a function of candidate,
@@ -326,7 +325,7 @@ A declaration adds, under `[data]`:
 | `format` | the standard format: `gtfs`, `mdb-catalogue`, `geotiff`, `tiles`, `geoid-grid`, … one generic reader each |
 | `url` / `urls` | where to fetch; may be a template (`{z}`, `{x}`, `{y}`) |
 | `index` | a file beside the declaration listing files and their footprints (GeoJSON), made by a producer (§8) |
-| `files` | data dropped beside the declaration, in `<name>/` |
+| `files` | data added beside the declaration, in `<name>/` |
 | `version` | a pinned release where the source has releases |
 | `[data.fetch]` | `method`: `get` (default), `get-key-header` (`header`, `key` naming a key in `inputs/keys.env`), `get-key-json-link` (also `link`, the JSON path of the download link) |
 
@@ -357,7 +356,7 @@ checked with `If-Match` on every read so a file changed mid-build fails rather t
 
 ### 6.1 Regions
 
-**Kind:** declare. **Drop box:** `inputs/regions/`, read recursively. **Unit:** `regions`. Code:
+**Kind:** declare. **Inputs folder:** `inputs/regions/`, read recursively. **Unit:** `regions`. Code:
 crate::inputs::regions (`file`, `shapes`, `geom`, `resolve`, `water`, `data`, `stored`, `extract`,
 `read`).
 
@@ -738,7 +737,7 @@ duplicate ids, a pin mismatch, the antimeridian, byte-identical output twice.
 
 ### 6.2 Languages by territory
 
-**Kind:** declare. **Drop box:** `inputs/languages/`. Code: crate::inputs::languages.
+**Kind:** declare. **Inputs folder:** `inputs/languages/`. Code: crate::inputs::languages.
 
 **Shape:** `territories.tsv`, one line `<code>\t<language>,<language>…`, most spoken first: an ISO
 3166-1 alpha-2 code (`FR`) or 3166-2 subdivision (`CA-QC`), and ISO 639 base subtags (`fr`, `yue`).
@@ -768,7 +767,7 @@ catalogs without `global/spoken`.
 
 ### 6.3 Translations
 
-**Kind:** request–fulfil. **Drop box:** `inputs/translations/`. Code: crate::inputs::translations,
+**Kind:** request–fulfil. **Inputs folder:** `inputs/translations/`. Code: crate::inputs::translations,
 crate::inputs::lint; the server's crate::accepted; `names::Names::set_files`.
 
 **Shape** (docs/names.md, Files): `**/*.jsonl` outside `todo/` and `how/`, one translation a line, read by
@@ -803,7 +802,7 @@ content. `names-todo` keys on the accepted version.
 
 ### 6.4 Descriptions
 
-**Kind:** request–fulfil. **Drop box:** `inputs/descriptions/`. Code: crate::inputs::descriptions.
+**Kind:** request–fulfil. **Inputs folder:** `inputs/descriptions/`. Code: crate::inputs::descriptions.
 
 **Shape** (docs/names.md, Descriptions): `**/*.jsonl` lines, and an optional `about.toml` (its credit;
 without one the catalog keeps `rules::CREDITS`' "Heritage descriptions"; its extent is the world
@@ -825,7 +824,7 @@ version from the agent.
 
 ### 6.5 Heritage registers
 
-**Kind:** declare. **Drop box:** `inputs/heritage/`, a pair per register: `<register>.geojson` and
+**Kind:** declare. **Inputs folder:** `inputs/heritage/`, a pair per register: `<register>.geojson` and
 `<register>.toml`, the id the file's stem (`fr-merimee`, `unesco-whc`; lower-case letters, digits,
 `-`). Code: crate::inputs::heritage; `producers/heritage/` makes them; dem/heritage.py reads any
 register.
@@ -933,7 +932,7 @@ The old `sources/registers/legacy-seeds` archive is read by nothing:
 
 #### 6.5.4 Heritage matches: the owner's judgment calls
 
-**Kind:** declare. **Drop box:** `inputs/heritage-matches/`, `*.jsonl`. Code:
+**Kind:** declare. **Inputs folder:** `inputs/heritage-matches/`, `*.jsonl`. Code:
 crate::inputs::heritage_matches; applied by dem/heritage.py.
 
 | Field | Type | |
@@ -979,7 +978,7 @@ counter, whichever unit its timetables come from.
 
 #### 6.7.1 Feeds
 
-**Kind:** source declarations. **Drop box:** `inputs/timetables/feeds/`, unit `timetables/feeds`.
+**Kind:** source declarations. **Inputs folder:** `inputs/timetables/feeds/`, unit `timetables/feeds`.
 Code: crate::inputs::feeds; crate::railfeeds; crate::rail.
 
 **A feed:** `<id>.toml` (letters, digits, `-`, `_`), a description (§5.1) and:
@@ -1051,7 +1050,7 @@ refreshed yet (task #367).
 
 #### 6.7.2 Static GTFS
 
-**Kind:** declare (the fulfil half of §6.7.3's to-do). **Drop box:** `inputs/timetables/gtfs/`,
+**Kind:** declare (the fulfil half of §6.7.3's to-do). **Inputs folder:** `inputs/timetables/gtfs/`,
 unit `timetables/gtfs`: `<name>.zip` (letters, digits, `-`, `_`), each a GTFS feed compiled by hand,
 with an optional `<name>.toml` description (held together). The researchers' brief is in `how/`.
 Code: crate::inputs::gtfs; crate::gtfs::statics; `producers/timetables/` (`gtfszip.py` and others).
@@ -1125,8 +1124,7 @@ reported).
 
 ### 6.8 Elevation
 
-**Kind:** source declarations, one per dataset; a small dataset's files may lie beside it. **Drop
-box:** `inputs/elevation/`: `<dataset>.toml`, tile indexes (`<name>.geojson`) and `<dataset>/` for
+**Kind:** source declarations, one per dataset; a small dataset's files may lie beside it. **Inputs folder:** `inputs/elevation/`: `<dataset>.toml`, tile indexes (`<name>.geojson`) and `<dataset>/` for
 local files. Code: crate::inputs::elevation (the check), crate::dem::generic and crate::dem::declared
 (the sampler and blend), crate::dem::encoding, crate::dem::store_fetch (the store), crate::terrain_base
 (the terrain's base), crate::dem::spacing (the densification), crate::dem::geoid (the heights brought
@@ -1146,7 +1144,7 @@ the same declarations.
 | `regions` | region ids (§6.1) | optional: the map regions the dataset is used in at all, by the roads and the terrain alike; elsewhere the next dataset in the order serves both. Its coverage (`facts.measured.cover`) is cut at check time to the 1° cells meeting one of them (`declared::scope_cover`; the check's key names the accepted regions, so a regions change measures again); an id no accepted region has is an `el-data` error. Not in its `keyed` digest (`Declaration::keyed_part`): a key names the cut only where it changed the cells the key's box reads (`cut_note`), so the z6 tiles inside keep their keys and those whose datasets change are built again. Planned: cut to the regions' outlines inside those cells too |
 | `territory` | ISO codes or `"world"` | required for a tile pyramid (its coverage is its territory's outlines' boxes); `"world"` makes any dataset's coverage the world |
 | `[data] format` | `geotiff` or `tiles` | |
-| `[data] url` / `urls` / `index` / `files` | | exactly one: GeoTIFFs by URL, a tile index (GeoJSON footprints with each file's `url` or `file`, and optionally its fill mask's URL, `mask`; made by `producers/elevation/indexes.py`), or dropped files by glob |
+| `[data] url` / `urls` / `index` / `files` | | exactly one: GeoTIFFs by URL, a tile index (GeoJSON footprints with each file's `url` or `file`, and optionally its fill mask's URL, `mask`; made by `producers/elevation/indexes.py`), or files added by glob |
 | `[data] store` | bool | the files (and fill masks) read from `sources/fetched/<dataset>/` alone, by their URLs' last part (after a `#`, the member's name); never fetched by a build: a file the store lacks is an error naming it, one noted `<name>.none` has no data. Filled once by `scenic-build store-fetch <id> --index <its index>` (crate::dem::store_fetch: every file of the index and its mask the store lacks, as published, by the build's fetcher: its User-Agent, 429 and 5xx answers waited out; each checked a whole GeoTIFF under a temporary name, then renamed; restartable) |
 | `[data] encoding`, `url`, `zoom` | | for `tiles`: `terrarium`, `terrain-rgb`, `gsi-png`; the URL template; the zoom |
 
@@ -1267,7 +1265,7 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   but GLO-30 covers that land, so the tiles serve there only in its voids.
 - **Keys:** a z6 tile names the `keyed` digests of the datasets whose coverage meets its ways
   (`agent::build::unit_key`), and the terrain packs its roads' heights read (`terrain_packs`: the
-  hi packs of the z6 tiles over its grown box and the deep packs of its z10 tiles); a dataset's `keyed` includes its index's content and dropped files, so
+  hi packs of the z6 tiles over its grown box and the deep packs of its z10 tiles); a dataset's `keyed` includes its index's content and added files, so
   adding a tile reruns the z6 tiles it meets. `agent::rekey` keeps what keys made before the
   declarations need (`dem_rules_meeting`, `pre_elevation_unit_key`).
 - **The switch:** the check records `sources/inputs/elevation/@switched` (the accepted index and the
@@ -1300,7 +1298,7 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
     names those of them that are fine, with their zooms and the floor (`Fine::key`), so a dataset added, dropped or measured
     again rebuilds just the z6 tiles with a way starting where the spacing changes.
 - NRCan's tile squares, the HRDEM index producer's input, are `producers/elevation/hrdem-squares.geojson`.
-- **The 1 m datasets** (#594), staged in `producers/elevation/1m/` and in the drop box: NRCan's
+- **The 1 m datasets** (#594), staged in `producers/elevation/1m/` and in the inputs folder: NRCan's
   HRDEM 1 m mosaic (`hrdem-1m`: EPSG:3979, the 2 m mosaic's 56 squares, `indexes.py hrdem --res 1`)
   and USGS 3DEP's 1 m tiles (`usgs-3dep-1m-17`, `-18`, `-19`: one declaration a UTM zone, as a dataset
   is in one CRS; `indexes.py 3dep-1m --bbox -79.8,40.4,-66.8,47.5`), each with `regions` the ten
@@ -1309,7 +1307,7 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   alike); 3DEP 1 m takes code 8. Their heights reach EGM2008 by the existing
   chains (CGVD2013 by CGG2013a, NAVD88 by GEOID18).
 - **REMA** (#601, the owner's approval of 25 Oct; staged in `producers/elevation/rema.toml`, not yet
-  in the drop box): PGC's Reference Elevation Model of Antarctica, its 32 m mosaic v2.0, cloud-optimised
+  in the inputs folder): PGC's Reference Elevation Model of Antarctica, its 32 m mosaic v2.0, cloud-optimised
   GeoTIFFs in EPSG:3031 on AWS's open data (`pgc-opendata-dems`, CC-BY-4.0; PGC's acknowledgement
   and the mosaic's citation in its credit). Ranked after GLO-30 and the Terrarium tiles (`rank = 3`,
   `code = 9`, `roadcore::NDEM` raised to 10 for it), so it serves only in GLO-30's voids where the
@@ -1339,7 +1337,7 @@ are read from the finished terrain (above).
 
 ### 6.9 The remaining sources
 
-**Kind:** source declarations. **Drop box:** `inputs/sources/`: `<id>.toml` each, and a source's
+**Kind:** source declarations. **Inputs folder:** `inputs/sources/`: `<id>.toml` each, and a source's
 index (`<name>.geojson`) beside it. Code: crate::inputs::sources (the check, and `Sources`, the
 accepted declarations by role, which the steps read). Built for the sources in the table marked
 built (#145); the declarations themselves are kept in `producers/sources/`, with the producers of
@@ -1416,8 +1414,8 @@ URL one the code asked for; the leaf sources, boxes and zip member the same),
 | GHSL building heights | built: `ghsl-built-h.toml`, the `building-heights` role, its index `ghsl-tiles.geojson` (`producers/sources/ghsl.py`, from the tiles folder's listing: the tiles' grid read there) | `zip-geotiff` by an index of its tiles, its version naming its folder |
 | Wikidata, Wikipedia's API | built: `wikidata-qlever.toml`, `wikipedia-api.toml`, the `wikidata` and `wikipedia` roles | endpoints (`sparql`, `mediawiki-api`, `refresh = "live"`) |
 | Wikipedia pageviews | built: `wikipedia-pageviews.toml`, the `pageviews` role | URL template (`{y}`, `{m}`); the months stay the items job's rule |
-| Geoid grids | staged, not yet dropped: `producers/geoid/declarations/` (the `geoid` role, any number; the grids by `producers/geoid/fetch.sh`), read by the elevation step (§6.8, step 3) | `geoid-grid` (a URL, its two references, `store`) and `helmert` (its parameters), pinned |
-| The regions' datasets (Marine Regions EEZ v12, Internal Waters v4, Territorial Seas v4; Natural Earth lakes; OSM land polygons) | staged, not yet dropped: `producers/sources/` (§6.1.7); the files fetched into `sources/fetched/marineregions-eez-v12/`, `marineregions-internal-waters-v4/`, `marineregions-territorial-seas-v4/`, `natural-earth-lakes-10m/`, `osm-land-polygons/` on 2026-10-18 | `geojson` and `zip-shapefile`, their file (`params.path`), id field and layer |
+| Geoid grids | staged, not yet added: `producers/geoid/declarations/` (the `geoid` role, any number; the grids by `producers/geoid/fetch.sh`), read by the elevation step (§6.8, step 3) | `geoid-grid` (a URL, its two references, `store`) and `helmert` (its parameters), pinned |
+| The regions' datasets (Marine Regions EEZ v12, Internal Waters v4, Territorial Seas v4; Natural Earth lakes; OSM land polygons) | staged, not yet added: `producers/sources/` (§6.1.7); the files fetched into `sources/fetched/marineregions-eez-v12/`, `marineregions-internal-waters-v4/`, `marineregions-territorial-seas-v4/`, `natural-earth-lakes-10m/`, `osm-land-polygons/` on 2026-10-18 | `geojson` and `zip-shapefile`, their file (`params.path`), id field and layer |
 | Canada's lake fill (CanVec) | built: `canvec-lakes.toml`, the `lake-fill` role; its zips kept by hand in `sources/fetched/canvec-lakes/` | `zip-shapefile`: where they come from, its layer, field, values kept, the intermittent ones and the confirming share (`params`) |
 
 Also kept: fonts (`scripts/fonts.sh`, the app's own assets). The depth's sources are §6.10's, NCEI's
@@ -1431,9 +1429,9 @@ grids on the NAS (`sources/ncei-crm/`, `sources/ncei-greatlakes/`) among them.
    `sources/fetched/canvec-lakes/`, and each copy's modification time checked to match its
    original's to the second (`stat`): over SMB a time not kept changes the fill's pin, and its key,
    and the fill is made again. A declared lake-fill source whose folder isn't there holds the fill
-   and what reads it (`lakefill::run::planned_source`), so the copy comes before the drop.
+   and what reads it (`lakefill::run::planned_source`), so the copy comes before the update.
 3. The files of `producers/sources/` (the `.toml` declarations, `canopy-squares.geojson` and
-   `ghsl-tiles.geojson`) are dropped into `inputs/sources/`. Once accepted, everything goes on under
+   `ghsl-tiles.geojson`) are added to `inputs/sources/`. Once accepted, everything goes on under
    the keys it had.
 4. `sources/canvec/50k/` is deleted only after both Macs run the new app (an older app still reads
    it).
@@ -1479,15 +1477,15 @@ the depth file's `hash` too, or a new key is forced by the declaration's `versio
 is a loose file, read as before. The producers pack as they write the index (`grid.Writer`); a
 source's loose grids already on the NAS are packed once by `producers/depth/repack.py` (its
 docstring: by tar over SSH, resumable, each depth file checked against its `hash` and every
-member's hash recorded, the drop box's index replaced only once every pack is on the NAS at its
-size). Its `--sweep` deletes the loose files only while both the drop box and the build's current
+member's hash recorded, the inputs folder's index replaced only once every pack is on the NAS at its
+size). Its `--sweep` deletes the loose files only while both the inputs folder and the build's current
 accepted version hold the packed index, the lead's status is fresh (10 min), the same accepted
 version has named it for 24 h (a rollback starts the wait again), and no depth or depth-lo job is
 running on any Mac, waiting, or held to resume in a member's progress file; jobs planned before the
 switch read the loose index, and those planned but not yet started aren't in the status, so the
 24 h wait is what guards them. The packs are checked on the NAS, and the build on the packed index,
 once more just before. The sweep is the point of no return: after it the loose index can't be rolled back to;
-until it, putting the loose index back in the drop box is a full rollback.
+until it, putting the loose index back in the inputs folder is a full rollback.
 
 **`[data.params]`:** `code` (1–15, the source byte the class tiles carry, one a source), `water`
 (`sea` or `lake`: where it's drawn: a sea source stays off the lakes, a lake source in them),
@@ -1591,13 +1589,13 @@ every entry must match a line (`every_exemption_matches_a_line`). Both run befor
 first, before the build (`tools/app/guards.sh`, which `tools/app/publish.sh` runs; a failure stops
 publishing; the tests' whole output in `~/Library/Logs/scenic/guards-<time>.log`).
 
-### 7.1 Drop boxes only through the accessor
+### 7.1 Inputs folders only through the accessor
 
-- **Rust:** `inputs::open` (§4.6) and the input check's job are the only code given drop-box paths.
+- **Rust:** `inputs::open` (§4.6) and the input check's job are the only code given inputs-folder paths.
   `Out::path` (the project root type) panics, naming its caller, when asked for a content name under
   `inputs/`, `translations/` or `descriptions/`. A step gets its inputs' paths from the agent.
 - **The test** (`crates/pipeline/tests/inputs_accessor.rs`): every non-test item in `crates/` (a
-  function by its block, a `const` or `static`, or the file's top level) whose code names a drop box
+  function by its block, a `const` or `static`, or the file's top level) whose code names an inputs folder
   (`"inputs`, `join("inputs")`, `/inputs/`, `"translations`, `}/translations`, `"descriptions`,
   `}/descriptions`, each unit's name; `sources/inputs` aside) must call an accessor (`inputs::open(`,
   `inputs::gate::run(`) or be exempt by item name and line anchor with a reason. No reader is
@@ -1608,9 +1606,9 @@ publishing; the tests' whole output in `~/Library/Logs/scenic/guards-<time>.log`
   a path not under `sources/inputs/`, `sources/fetched/` or the job's scratch, and the same test
   scans `dem/**/*.py` (functions by indentation) by the same rules.
 - **The stand-in root:** `tools/app/guards.sh` loads every Python step the agent runs from the
-  app's `dem/` (its tracked files alone) placed in a stand-in NAS root whose drop boxes
+  app's `dem/` (its tracked files alone) placed in a stand-in NAS root whose inputs folders
   (`inputs/`, `inputs/sources/`, `inputs/elevation/`, `translations/`, `descriptions/`) hold a file
-  each and can't be read, then checks them with pyflakes: a step that reads a drop box as it loads,
+  each and can't be read, then checks them with pyflakes: a step that reads an inputs folder as it loads,
   by a path the scanner doesn't see, fails there.
 
 ### 7.2 No source names in the app's code
@@ -1672,14 +1670,14 @@ rules have a test (`the_scanner_finds_sources_by_their_declarations`).
   out of the app, with their history and review. They're outside what `publish.sh` ships and
   outside the guards' scans; the app never runs them. Each runs on its own (`uv run --project
   producers python producers/heritage/registers.py --data <folder> --out <folder>`), writing the
-  drop box's shape, checked when dropped. Their environment is their own (`producers/pyproject.toml`).
-- **Each drop box's `how/`** on the NAS says how its input is made and points to its producers; it
+  inputs folder's shape, checked when added. Their environment is their own (`producers/pyproject.toml`).
+- **Each inputs folder's `how/`** on the NAS says how its input is made and points to its producers; it
   holds what isn't code: the briefs and models of agent-made inputs (translations: Haiku, the
   earlier work's brief and launch prompt; descriptions: Sonnet, the September rounds' briefs; the
   ferry researchers' `PROMPT.md` and batches; the ferry feeds' search) and what was done by hand.
   Its README is kept in the repository, `producers/how/<box>/README.md`, and copied there with any
   briefs; the input check never reads `how/` (§3), so a copy changes no accepted version.
-- **`inputs/README.md`** on the NAS describes the drop boxes, the kinds and the input check
+- **`inputs/README.md`** on the NAS describes the inputs folders, the kinds and the input check
   (`producers/how/inputs-README.md`).
 - **What can't be remade exactly:** the regions and heritage matches (they are the owner's
   decisions); the converted translations (the earlier work's rules and later brief are in its own

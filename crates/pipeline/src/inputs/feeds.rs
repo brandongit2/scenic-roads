@@ -82,7 +82,7 @@ pub fn id_of(path: &str) -> Option<&str> {
 fn parse(path: &str, bytes: &[u8]) -> (Option<Value>, Vec<Finding>) {
     let mut fs = Vec::new();
     let Some(id) = id_of(path) else {
-        fs.push(Finding::new(SHAPE, Level::Error, &[path], &["not a declaration"], vec![path.into()], format!("{path} isn't the drop box's shape: timetables/feeds takes <id>.toml declarations (an id of letters, digits, - and _: docs/inputs.md §6.7.1); notes go in how/")));
+        fs.push(Finding::new(SHAPE, Level::Error, &[path], &["not a declaration"], vec![path.into()], format!("{path} isn't the inputs folder's shape: timetables/feeds takes <id>.toml declarations (an id of letters, digits, - and _: docs/inputs.md §6.7.1); notes go in how/")));
         return (None, fs);
     };
     let (d, mut df, _) = super::credits::parse_description(path, bytes);
@@ -694,8 +694,8 @@ url = "https://files.mobilitydatabase.org/feeds_v2.csv"
             assert!(!c.facts.contains_key("feed"), "{what}");
             assert!(errors(&c).iter().any(|m| m.contains(what)), "{what}: {:?}", errors(&c));
         };
-        bad("notes.md", SNCF.into(), "isn't the drop box's shape");
-        bad("sncf feed.toml", SNCF.into(), "isn't the drop box's shape");
+        bad("notes.md", SNCF.into(), "isn't the inputs folder's shape");
+        bad("sncf feed.toml", SNCF.into(), "isn't the inputs folder's shape");
         bad("sncf.toml", SNCF.replace("credit = \"SNCF Voyageurs\"\n", ""), "`credit` is required");
         bad("sncf.toml", SNCF.replace("format = \"gtfs\"", "format = \"netex\""), "`format`");
         bad("sncf.toml", SNCF.replace("url = \"https", "url = \"ftp"), "`url`");

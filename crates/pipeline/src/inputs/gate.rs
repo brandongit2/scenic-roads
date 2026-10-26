@@ -1,4 +1,4 @@
-//! The check job (docs/inputs.md §4.3): one gate unit's drop box against its accepted version.
+//! The check job (docs/inputs.md §4.3): one gate unit's inputs folder against its accepted version.
 //!
 //! 1. The files whose size or time differ from those the last check listed (`super::Listed`) are
 //!    read and hashed (all of them with `full`); one whose bytes are those accepted is unchanged,
@@ -35,7 +35,7 @@ pub struct Given<'a> {
     /// The sizes and times the last check listed (`super::Listed`): a file listed as it was there
     /// isn't read.
     pub prev_listed: &'a BTreeMap<String, (u64, u64)>,
-    /// The candidate: the drop box as listed, its files held still.
+    /// The candidate: the inputs folder as listed, its files held still.
     pub listing: &'a Listing,
     /// Files there but not held still now (changed since the listing, or too recent): as accepted
     /// if they are, absent while new; neither read nor taken as removed.
@@ -43,7 +43,7 @@ pub struct Given<'a> {
     pub accepted: &'a BTreeSet<String>,
     /// Every file read and hashed, whatever its size and time.
     pub full: bool,
-    /// A drop-box file's bytes now.
+    /// An inputs folder file's bytes now.
     pub read_new: &'a (dyn Fn(&str) -> Result<Vec<u8>> + Sync),
     /// An accepted file's bytes (its checked copy), by its entry.
     pub read_old: &'a dyn Fn(&FileEntry) -> Result<Vec<u8>>,
@@ -64,7 +64,7 @@ pub struct Decision {
     pub report: Option<Report>,
     /// The bytes of the files taken in, by their copies' content names, to store.
     pub store: BTreeMap<String, Arc<Vec<u8>>>,
-    /// The drop-box files read (the rest were taken as unchanged by their size and time).
+    /// The inputs-folder files read (the rest were taken as unchanged by their size and time).
     pub read: Vec<String>,
 }
 
@@ -109,7 +109,7 @@ pub fn decide(g: &Given) -> Result<Decision> {
     let looked: Vec<Result<(String, Looked)>> = pool.install(|| {
         super::pace::par_map(to_read.clone(), |p| {
             let one = (|| {
-                let bytes = (g.read_new)(p).with_context(|| format!("read {p} in the drop box"))?;
+                let bytes = (g.read_new)(p).with_context(|| format!("read {p} in the inputs folder"))?;
                 let hash = store::naming::hash16(&bytes);
                 if prev.files.get(p).and_then(|w| super::hash_of(&w.file)) == Some(hash.as_str()) {
                     return Ok((p.clone(), None));
@@ -155,7 +155,7 @@ pub fn decide(g: &Given) -> Result<Decision> {
             changes.insert(p.clone(), Change::Removed);
         }
     }
-    // (What isn't the drop box's shape: a folder in a unit without them.)
+    // (What isn't the inputs folder's shape: a folder in a unit without them.)
     for s in &g.listing.strays {
         findings.push(Finding::new(
             "stray",
@@ -166,7 +166,7 @@ pub fn decide(g: &Given) -> Result<Decision> {
             format!("{s}: {unit} takes no folders (but todo/ and how/): move what's in it up, or out"),
         ));
     }
-    // (A file dropped into the drop box's old place: never read, never quietly passed over.)
+    // (A file added to the inputs folder's old place: never read, never quietly passed over.)
     for m in &g.listing.misplaced {
         findings.push(Finding::new(
             "moved",
@@ -175,7 +175,7 @@ pub fn decide(g: &Given) -> Result<Decision> {
             &[],
             vec![m.clone()],
             format!(
-                "{m}: dropped into the old folder: move it to inputs/{unit}/{}",
+                "{m}: added to the old folder: move it to inputs/{unit}/{}",
                 m.split_once('/').map_or("", |(_, r)| r)
             ),
         ));
@@ -470,7 +470,7 @@ pub fn run(out: &mut crate::out::Out, unit: &str, full: bool, planned: Option<su
     use crate::timings::{phase, Class};
     let checks = super::checks(unit).with_context(|| format!("{unit} isn't a gate unit this app knows"))?;
     let root = out.root().clone();
-    let p = phase("the accepted version and the drop box listed", Class::NasRead);
+    let p = phase("the accepted version and the inputs folder listed", Class::NasRead);
     let prepared = checks.prepared(&root, &out.manifest)?;
     let checks: &dyn Checks = prepared.as_deref().unwrap_or(checks);
     // (Not ready: nothing read, nothing held or taken, nothing asked for; its key changes when it is.)
@@ -486,7 +486,7 @@ pub fn run(out: &mut crate::out::Out, unit: &str, full: bool, planned: Option<su
         candidate(&root, unit, checks.recursive(), planned, crate::agent::jobs::now_s())?;
     drop(p);
     let p = phase("the changes read and checked", Class::NasRead);
-    let dir = super::drop_box(&root, unit);
+    let dir = super::inputs_folder(&root, unit);
     let read_new = |path: &str| dir.join(path).read().with_context(|| format!("read {}", dir.join(path).display()));
     let read_old = |e: &FileEntry| root.join(&e.file).read().with_context(|| format!("read {}", e.file));
     let d = decide(&Given {

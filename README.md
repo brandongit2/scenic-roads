@@ -48,7 +48,7 @@ Rail frequencies come only from published timetables (GTFS feeds from the Mobili
 The lead Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the map into the NAS from a worldwide OpenStreetMap download, a region at a time, and publishes a catalog that each Mac's server switches to in place. Other Macs and any browser on the LAN help through its coordinator (`docs/workers.md`); the lead can be handed between Macs (`scenic lead`, `docs/pool.md`).
 
 - `scenic status` shows what the build is doing; `scenic pause` / `scenic resume` pause the whole build; `scenic --help` lists the commands. The menu bar item and the lead's build page (`/work/`) show and control the same.
-- **Inputs** are NAS drop boxes, each checked before use (`docs/inputs.md`): regions (`inputs/regions/`, §6.1), translations and descriptions (`inputs/translations/`, `inputs/descriptions/`; what still lacks them is listed in each `todo/`), heritage registers (§6.5), languages (§6.2), timetables (§6.7), elevation (§6.8).
+- **Inputs** are NAS inputs folders, each checked before use (`docs/inputs.md`): regions (`inputs/regions/`, §6.1), translations and descriptions (`inputs/translations/`, `inputs/descriptions/`; what still lacks them is listed in each `todo/`), heritage registers (§6.5), languages (§6.2), timetables (§6.7), elevation (§6.8).
 - **Publishing the app** (`tools/app/publish.sh`) needs Rust (per `rust-toolchain.toml`), Node, pnpm and the wasi-sdk (per `mise.toml`, `mise install`) and `pnpm install --frozen-lockfile` in `web/`. The agent also needs uv, `osmium-tool`, Java 21+ and Planetiler's jar on the NAS.
 - **Formatting**: run `cargo fmt` before committing (`rustfmt.toml`); `tools/app/guards.sh` fails publishing on `cargo fmt --check`. `.git-blame-ignore-revs` skips the one reformat commit (`git config blame.ignoreRevsFile .git-blame-ignore-revs`).
 - Tools: `tools/bench/` (load and frame benchmarks), `tools/coastcheck/` (shoreline accuracy), `tools/taskboard/` (task board).
@@ -59,7 +59,7 @@ The lead Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the ma
 - `docs/diagram/`: the pipeline diagram (`python3 page.py out.html`, then republish out.html to https://claude.ai/artifact/2LamxyqCeK6YLbkSpPPbrj).
 - `docs/pipeline.md`: every build step as one row of one table (the concepts, the names, the checklist, the build page).
 - `docs/formats.md`: the files.
-- `docs/inputs.md`: the input drop boxes and their checks.
+- `docs/inputs.md`: the input inputs folders and their checks.
 - `docs/workers.md`: the coordinator and its workers.
 - `docs/pool.md`: any Mac leading the build.
 - `docs/buildings3d.md`: 3D buildings.

@@ -137,9 +137,9 @@ fi
 security find-identity -p codesigning 2>/dev/null | grep -q "\"$sign_id\"" || { echo "publish: no \"$sign_id\" identity in this Mac's keychain (docs/building.md, App publishing)"; exit 1; }
 probe=$(mktemp -d)/probe; cp /usr/bin/true $probe
 codesign -s "$sign_id" --force $probe </dev/null || { echo "publish: codesign can't use the \"$sign_id\" key: unlock the login keychain and let codesign use the key (docs/building.md, App publishing)"; exit 1; }
-# The guards first (tools/app/guards.sh, docs/inputs.md §7): the drop boxes read only through their
+# The guards first (tools/app/guards.sh, docs/inputs.md §7): the inputs folders read only through their
 # accessor, no data source named in the app's code, and the Python steps loaded from the app's dem/
-# in a stand-in NAS root whose drop boxes can't be read (and checked by pyflakes).
+# in a stand-in NAS root whose inputs folders can't be read (and checked by pyflakes).
 zsh tools/app/guards.sh || exit 1
 cargo build --release -p server -p pipeline 2>&1 | tail -2
 # Room for the files the tests open at once: a session over SSH starts with 256, which the tests

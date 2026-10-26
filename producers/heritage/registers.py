@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The heritage registers as the drop box inputs/heritage/ takes them (docs/inputs.md §6.5): for
+"""The heritage registers as the inputs folder inputs/heritage/ takes them (docs/inputs.md §6.5): for
 each register, <register>.geojson (its entries, any geometry, with the standard properties) and
 <register>.toml (its description: name, credit, licence, source, download date, class, territory,
 the Wikidata property and OSM tags holding its ids).
@@ -29,10 +29,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import math
 import re
 import sys
-import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path

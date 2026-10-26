@@ -1,4 +1,4 @@
-//! The source declarations' drop box, `inputs/sources/` (docs/inputs.md §6.9, #145): one
+//! The source declarations' inputs folder, `inputs/sources/` (docs/inputs.md §6.9, #145): one
 //! `<id>.toml` per source the build reads that isn't an elevation dataset (those are §6.8's), each a
 //! description (§5.1) and a `[data]` table: the role the app reads it in (`role`, one source a
 //! role), its format, where to fetch it (`url`, `urls` or an `index` beside it), its version, its
@@ -14,7 +14,7 @@
 //! territory's polygons' boxes in the newest pass's outlines.
 //!
 //! The steps read the accepted declarations through `open`/`of` (`Sources`, by role), never the
-//! drop box (§7.1). Each step's keys name a source by its declaration only where they named it in
+//! inputs folder (§7.1). Each step's keys name a source by its declaration only where they named it in
 //! code before (`key_part`): while a declaration names what the code did, by digest, the part is
 //! what the code's was, so nothing is built again when a source moves into its declaration.
 
@@ -376,7 +376,7 @@ pub fn parse_index(bytes: &[u8]) -> std::result::Result<Vec<Feature>, String> {
     Ok(out)
 }
 
-/// What kind of file a drop-box path is.
+/// What kind of file an inputs folder path is.
 enum Kind<'a> {
     Declaration(&'a str),
     Index,
@@ -463,7 +463,7 @@ impl Checks for SourcesCheck {
                 }
                 Err(e) => c.findings.push(err(INDEX, &[e])),
             },
-            Kind::Other => c.findings.push(Finding::new(SHAPE, Level::Error, &[path], &["not the drop box's shape"], vec![path.into()], format!("{path} isn't the drop box's shape: sources takes <id>.toml and an index <name>.geojson beside it (docs/inputs.md §6.9); notes go in how/"))),
+            Kind::Other => c.findings.push(Finding::new(SHAPE, Level::Error, &[path], &["not the inputs folder's shape"], vec![path.into()], format!("{path} isn't the inputs folder's shape: sources takes <id>.toml and an index <name>.geojson beside it (docs/inputs.md §6.9); notes go in how/"))),
         }
         c
     }
@@ -823,7 +823,7 @@ pub fn accepted(manifest: &BTreeMap<String, String>) -> bool {
     manifest.contains_key(&super::logical(UNIT))
 }
 
-/// The staged declarations (producers/sources/), as the drop box takes them: path and bytes.
+/// The staged declarations (producers/sources/), as the inputs folder takes them: path and bytes.
 #[cfg(test)]
 pub const STAGED: [(&str, &[u8]); 17] = [
     ("overture-buildings.toml", include_bytes!("../../../../producers/sources/overture-buildings.toml")),
@@ -951,7 +951,7 @@ mod tests {
         );
     }
 
-    /// The declarations staged for the drop box (producers/sources/) pass the input check, file by
+    /// The declarations staged for the inputs folder (producers/sources/) pass the input check, file by
     /// file and whole, one a role.
     #[test]
     fn the_staged_declarations_pass_the_check() {

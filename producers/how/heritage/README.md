@@ -13,7 +13,7 @@ Historic Places' pages; `tiers.py` gives each entry its `tier`.
 
 `<data>` is the readers' download cache, laid out as the old app's registers' snapshot was: the
 NAS's `sources/registers/legacy.*.tar.zst` extracted. To fetch a register again, delete its folder
-there; the readers download what's missing. Drop the outputs here; the input check takes them in.
+there; the readers download what's missing. Add the outputs here (update the heritage inputs); the input check takes them in.
 
 Not recorded: each register file's exact download URL beyond its description's `source` and
 download date. A register whose site has changed since needs its reader updated.

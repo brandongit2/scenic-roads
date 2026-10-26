@@ -1,4 +1,4 @@
-//! Dated copies of the user's folders (docs/storage.md, Backups): `inputs/` (every drop box, the
+//! Dated copies of the user's folders (docs/storage.md, Backups): `inputs/` (every inputs folder, the
 //! translations and descriptions among them since #137) and the input check's acceptances (`state/inputs/accepted/`), kept 30 days under
 //! `state/backups/` on the NAS and mirrored to the lead.
 //!
@@ -16,7 +16,7 @@ use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use store::nasfs::{Loc, NasPath};
 
-/// The user's folders: the drop boxes and the owner's acceptances of the input check's warnings
+/// The user's folders: the inputs folders and the owner's acceptances of the input check's warnings
 /// (docs/inputs.md §4.9).
 pub const FOLDERS: [&str; 2] = ["inputs", crate::inputs::ACCEPTED];
 

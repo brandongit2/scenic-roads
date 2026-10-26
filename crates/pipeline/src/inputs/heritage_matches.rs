@@ -1,5 +1,5 @@
 //! The heritage matches (docs/inputs.md §6.5.4): a declare input, the owner's judgment calls where
-//! the merging rule gets two registers' entries wrong. Its drop box, `inputs/heritage-matches/`,
+//! the merging rule gets two registers' entries wrong. Its inputs folder, `inputs/heritage-matches/`,
 //! holds `*.jsonl` files of lines `{"a": "<register>:<id>", "b": "<register>:<id>", "same": bool,
 //! "note": "…"}`: `same: true`, one place (transitively); `same: false`, never merged by the rule.
 //! The heritage-sites job applies them before the rule (dem/heritage.py).
@@ -99,7 +99,7 @@ impl Checks for Matches {
     fn file(&self, path: &str, bytes: &[u8]) -> FileCheck {
         let mut c = FileCheck::default();
         if !path.ends_with(".jsonl") {
-            c.findings.push(Finding::new(SHAPE, Level::Error, &[path], &["not jsonl"], vec![path.into()], format!("{path} isn't the drop box's shape: heritage-matches takes .jsonl files of match lines (docs/inputs.md §6.5.4); notes go in how/")));
+            c.findings.push(Finding::new(SHAPE, Level::Error, &[path], &["not jsonl"], vec![path.into()], format!("{path} isn't the inputs folder's shape: heritage-matches takes .jsonl files of match lines (docs/inputs.md §6.5.4); notes go in how/")));
             return c;
         }
         let Ok(text) = std::str::from_utf8(bytes) else {

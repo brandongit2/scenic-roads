@@ -2,7 +2,7 @@
 # The geoid grids the declarations in declarations/ name (docs/inputs.md §6.8, step 3), each
 # downloaded whole into the store: <root>/sources/fetched/<id>/<the URL's last part>, where the
 # elevation step reads a grid declared `store = true` (pipeline::dem::geoid). A grid already there
-# at the server's size is skipped; a partial one is resumed. Then drop the declarations into
+# at the server's size is skipped; a partial one is resumed. Then add the declarations to
 # <root>/inputs/sources/.
 #
 # usage: producers/geoid/fetch.sh <root, the NAS project folder>

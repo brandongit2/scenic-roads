@@ -106,8 +106,8 @@
 - The status bar offers to reload when new data or a new app is in, and says when the NAS or the map server can't be reached.
 - New areas appear as their catalog goes out, a z6 tile's tiles within minutes of its build (docs/building.md §2, Publishing).
 
-**Translations and descriptions** (docs/names.md) are drop boxes of the input check: `inputs/translations/` and
-`inputs/descriptions/` (docs/inputs.md §6.3, §6.4). A drop shows on the map a few minutes after it's
+**Translations and descriptions** (docs/names.md) are inputs folders of the input check: `inputs/translations/` and
+`inputs/descriptions/` (docs/inputs.md §6.3, §6.4). An update shows on the map a few minutes after it's
 accepted, with nothing rebuilt. After each build the agent lists what still lacks English or a
 description in each folder's `todo/`, with the briefs.
 

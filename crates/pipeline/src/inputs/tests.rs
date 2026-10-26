@@ -5,7 +5,7 @@ use super::*;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
-/// A drop box in memory: path → (bytes, time).
+/// An inputs folder in memory: path → (bytes, time).
 #[derive(Clone, Default)]
 struct Box_ {
     files: BTreeMap<String, (Vec<u8>, u64)>,
@@ -378,12 +378,12 @@ fn quiet_files_alone_are_settled() {
 fn a_file_too_recent_is_neither_checked_nor_in_the_key_recorded() {
     let d = tempfile::tempdir().unwrap();
     let root = d.path().join("nas");
-    let dropbox = root.join("inputs").join(TEST_UNIT);
-    std::fs::create_dir_all(&dropbox).unwrap();
+    let inputs_dir = root.join("inputs").join(TEST_UNIT);
+    std::fs::create_dir_all(&inputs_dir).unwrap();
     std::fs::create_dir_all(root.join("state/build")).unwrap();
     let now = crate::agent::jobs::now_s();
     let t = now - 6;
-    let p = dropbox.join("a.jsonl");
+    let p = inputs_dir.join("a.jsonl");
     std::fs::write(&p, "{\"k\": \"x\", \"v\": 1}\n").unwrap();
     std::fs::File::options()
         .write(true)
@@ -443,11 +443,11 @@ fn a_file_too_recent_is_neither_checked_nor_in_the_key_recorded() {
 fn an_accepted_file_changed_or_gone_since_the_plan_stays_accepted() {
     let d = tempfile::tempdir().unwrap();
     let root = d.path().join("nas");
-    let dropbox = root.join("inputs").join(TEST_UNIT);
-    std::fs::create_dir_all(&dropbox).unwrap();
+    let inputs_dir = root.join("inputs").join(TEST_UNIT);
+    std::fs::create_dir_all(&inputs_dir).unwrap();
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
     let put = |name: &str, text: &str| {
-        let p = dropbox.join(name);
+        let p = inputs_dir.join(name);
         std::fs::write(&p, text).unwrap();
         std::fs::File::options().write(true).open(&p).unwrap().set_modified(old).unwrap();
     };
@@ -457,13 +457,13 @@ fn an_accepted_file_changed_or_gone_since_the_plan_stays_accepted() {
     let listing = list(&store::nasfs::NasRoot::local_for_test(&root), TEST_UNIT, false).unwrap();
     let mut b = Box_::default();
     for n in ["a.jsonl", "b.jsonl"] {
-        b.files.insert(n.into(), (std::fs::read(dropbox.join(n)).unwrap(), listing.files[n].1));
+        b.files.insert(n.into(), (std::fs::read(inputs_dir.join(n)).unwrap(), listing.files[n].1));
     }
     let v1 = check(GT, &b, None, &[], &store, false);
     // The plan lists them; then a is rewritten (half-written, say) and b deleted.
     let planned = Planned { listing: listing.clone(), accepted: BTreeSet::new() };
-    std::fs::write(dropbox.join("a.jsonl"), "{\"k\": \"x\",").unwrap();
-    std::fs::remove_file(dropbox.join("b.jsonl")).unwrap();
+    std::fs::write(inputs_dir.join("a.jsonl"), "{\"k\": \"x\",").unwrap();
+    std::fs::remove_file(inputs_dir.join("b.jsonl")).unwrap();
     let (l, acc, unsettled) = gate::candidate(
         &store::nasfs::NasRoot::local_for_test(&root),
         TEST_UNIT,
@@ -500,11 +500,11 @@ fn an_accepted_file_changed_or_gone_since_the_plan_stays_accepted() {
 fn a_nested_units_check_keeps_its_records_in_its_folder() {
     let d = tempfile::tempdir().unwrap();
     let root = d.path().join("nas");
-    let dropbox = root.join("inputs").join(TEST_NESTED);
-    std::fs::create_dir_all(&dropbox).unwrap();
+    let inputs_dir = root.join("inputs").join(TEST_NESTED);
+    std::fs::create_dir_all(&inputs_dir).unwrap();
     std::fs::create_dir_all(root.join("state/build")).unwrap();
     let put = |text: &str| {
-        let p = dropbox.join("a.jsonl");
+        let p = inputs_dir.join("a.jsonl");
         std::fs::write(&p, text).unwrap();
         std::fs::File::options()
             .write(true)
@@ -541,7 +541,7 @@ fn a_nested_units_check_keeps_its_records_in_its_folder() {
         read_listed(&store::nasfs::NasRoot::local_for_test(&root), &m2, TEST_NESTED).unwrap().replaced.as_deref(),
         Some(a.version.as_str())
     );
-    // A copy named like a record can't be one: '@' starts no drop-box name.
+    // A copy named like a record can't be one: '@' starts no inputs-folder name.
     assert!(
         record_of("sources/inputs/_gate-nest/inner/index").is_none()
             && record_of("sources/inputs/x/b/@index").is_some_and(|r| r.0 == "x/b")
@@ -695,11 +695,11 @@ fn copies_are_named_by_their_path_and_content() {
     );
     assert!(copy_name("x", "a\\b.json", "0123456789abcdef").is_none());
     assert!(
-        in_drop_box("inputs/regions/a.toml")
-            && in_drop_box("translations/x.jsonl")
-            && in_drop_box("descriptions")
-            && !in_drop_box("sources/inputs/x/a.0123456789abcdef.toml")
-            && !in_drop_box("inputsx/a")
+        in_inputs_folder("inputs/regions/a.toml")
+            && in_inputs_folder("translations/x.jsonl")
+            && in_inputs_folder("descriptions")
+            && !in_inputs_folder("sources/inputs/x/a.0123456789abcdef.toml")
+            && !in_inputs_folder("inputsx/a")
     );
 }
 
@@ -710,10 +710,10 @@ fn copies_are_named_by_their_path_and_content() {
 fn the_job_hands_off_the_accepted_version_and_the_report() {
     let d = tempfile::tempdir().unwrap();
     let root = d.path().join("nas");
-    let dropbox = root.join("inputs").join(TEST_UNIT);
-    std::fs::create_dir_all(&dropbox).unwrap();
+    let inputs_dir = root.join("inputs").join(TEST_UNIT);
+    std::fs::create_dir_all(&inputs_dir).unwrap();
     let put = |name: &str, text: &str| {
-        let p = dropbox.join(name);
+        let p = inputs_dir.join(name);
         std::fs::write(&p, text).unwrap();
         // (Old enough to have held still.)
         let t = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
@@ -795,7 +795,7 @@ fn the_job_hands_off_the_accepted_version_and_the_report() {
     );
     assert_eq!(v[0].state, view::State::Ok);
     assert!(v[0].stale.is_empty(), "the acceptance is the version's: {:?}", v[0].stale);
-    // The NAS root a step gets refuses a drop-box path, naming the caller.
+    // The NAS root a step gets refuses an inputs folder path, naming the caller.
     let out = crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s")).unwrap();
     let e =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| out.path("inputs/_gate-test/a.jsonl"))).unwrap_err();
@@ -1163,15 +1163,15 @@ fn a_file_dropped_into_the_old_folder_is_an_error_saying_where_to_move_it() {
     };
     put("descriptions/heritage/late.jsonl");
     put("descriptions/.DS_Store");
-    // (An older app's to-do lists: the app's, not a drop.)
+    // (An older app's to-do lists: the app's, not an update.)
     put("descriptions/todo/landmarks.jsonl");
-    // Before the drop box is there (the move's first publish): not yet.
+    // Before the inputs folder is there (the move's first publish): not yet.
     assert!(list(&store::nasfs::NasRoot::local_for_test(d.path()), "descriptions", true).unwrap().misplaced.is_empty());
     put("inputs/descriptions/a.jsonl");
     let l = list(&store::nasfs::NasRoot::local_for_test(d.path()), "descriptions", true).unwrap();
     assert_eq!(l.misplaced, ["descriptions/heritage/late.jsonl"]);
     assert_eq!(l.files.keys().collect::<Vec<_>>(), ["a.jsonl"]);
-    // In the key (a drop there is checked at once) and in the report, holding nothing else.
+    // In the key (an update there is checked at once) and in the report, holding nothing else.
     let none = BTreeSet::new();
     let m = BTreeMap::new();
     assert_ne!(check_key(DE, &l, &none, &m), check_key(DE, &Listing { misplaced: vec![], ..l.clone() }, &none, &m));
@@ -1195,9 +1195,7 @@ fn a_file_dropped_into_the_old_folder_is_an_error_saying_where_to_move_it() {
     assert_eq!(r.findings.len(), 1);
     assert_eq!(r.findings[0].level, Level::Error);
     assert!(
-        r.findings[0]
-            .message
-            .contains("dropped into the old folder: move it to inputs/descriptions/heritage/late.jsonl"),
+        r.findings[0].message.contains("added to the old folder: move it to inputs/descriptions/heritage/late.jsonl"),
         "{}",
         r.findings[0].message
     );

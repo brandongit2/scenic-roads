@@ -1,4 +1,4 @@
-//! The heritage registers (docs/inputs.md §6.5): a declare input. Its drop box, `inputs/heritage/`,
+//! The heritage registers (docs/inputs.md §6.5): a declare input. Its inputs folder, `inputs/heritage/`,
 //! holds one pair of files per register, `<register>.geojson` (its entries: any geometry, with the
 //! standard properties) and `<register>.toml` (its description, §5.1, with its `class`,
 //! `territory`, `wikidata_property` and `osm_ref_tags`); the register's id is the files' stem. The
@@ -431,7 +431,7 @@ impl Checks for Heritage {
     fn file(&self, path: &str, bytes: &[u8]) -> FileCheck {
         let mut c = FileCheck::default();
         let Some((rid, ext)) = split(path) else {
-            c.findings.push(Finding::new(SHAPE, Level::Error, &[path], &["not a register's file"], vec![path.into()], format!("{path} isn't the drop box's shape: heritage takes <register>.geojson and <register>.toml, the register's id lower-case letters, digits and - (docs/inputs.md §6.5); notes go in how/")));
+            c.findings.push(Finding::new(SHAPE, Level::Error, &[path], &["not a register's file"], vec![path.into()], format!("{path} isn't the inputs folder's shape: heritage takes <register>.geojson and <register>.toml, the register's id lower-case letters, digits and - (docs/inputs.md §6.5); notes go in how/")));
             return c;
         };
         if ext == "toml" {
@@ -597,7 +597,7 @@ impl Checks for Heritage {
                     &[rid],
                     &[lacks],
                     vec![have.clone()],
-                    format!("{have} without {lacks}: a register is its entries and its description, dropped together"),
+                    format!("{have} without {lacks}: a register is its entries and its description, added together"),
                 ));
                 continue;
             }

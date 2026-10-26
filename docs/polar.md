@@ -3,7 +3,7 @@
 **Status (task #601):** built and tested in scratch roots; not yet in the live build. The steps,
 packs, catalog entries, server routes, region downloads and the app's layer exist. Nothing of it is
 registered with the live pool or published until the worldwide rebuild ends, and REMA's declaration
-is staged in `producers/elevation/` but not in the NAS's drop box (§9). Roads, labels and landmarks
+is staged in `producers/elevation/` but not in the NAS's inputs folder (§9). Roads, labels and landmarks
 past 85° are task #668.
 
 The Web Mercator tiles end at 85.05° N/S. Past them the map draws a cap per pole from its own
@@ -203,7 +203,7 @@ Memory: 0.3–0.9 GB a terrain job as measured (its `mem_mb`, 4,096, is the firs
 ## 8. What remains
 
 1. Registering the steps with the live pool and publishing, after the rebuild.
-2. REMA into the drop box and the store on the NAS (the owner's word first: §9), then the input
+2. REMA into the inputs folder and the store on the NAS (the owner's word first: §9), then the input
    check accepts it.
 3. Labels and landmarks past 85° (§10). Depth for the Arctic floor (the north cap).
 
@@ -217,7 +217,7 @@ Memory: 0.3–0.9 GB a terrain job as measured (its `mem_mb`, 4,096, is the firs
    filled values where nothing lies beneath, the caps only. REMA has no data within ~150 km of the
    pole, so without it the pole keeps its 2,800 m pits. Measured: 0.405 % of the pole's z4 pixels
    were pits before, 0 after.
-3. **REMA on the NAS (approved 26 Oct; not yet done).** Its store and drop box need writing
+3. **REMA on the NAS (approved 26 Oct; not yet done).** Its store and inputs folder need writing
    (`scenic-build store-fetch rema` against the NAS, then the declaration and index into
    `inputs/elevation/`). **What accepting it re-keys: the polar targets alone.** The keys name the
    pool's datasets meeting each target's box (`declared::meeting`, unexpanded tile boxes); REMA's

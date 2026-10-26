@@ -1,7 +1,7 @@
 //! The translations' and the descriptions' accepted versions, kept on this Mac (docs/inputs.md
 //! §4.6, §6.3, §6.4): the files the lead's records name for the unit, copied from the NAS through
 //! the pool (pipeline::inputs::served), so they work offline and load fast. The server never reads
-//! a drop box.
+//! an inputs folder.
 
 use crate::data::Data;
 use pipeline::inputs::served::{self, Synced};
@@ -40,13 +40,13 @@ pub fn synced(data: &Data, unit: &str, local: &Path) -> anyhow::Result<Option<Sy
     served::sync(&read, unit, local).map(Some)
 }
 
-/// The accepted files kept for unit `unit` in `local` (by drop-box path: the copy and its content
+/// The accepted files kept for unit `unit` in `local` (by inputs-folder path: the copy and its content
 /// name); None before any.
 pub fn files(local: &Path) -> Option<BTreeMap<String, (PathBuf, String)>> {
     served::files(local).map(|(_, f)| f)
 }
 
-/// Puts an accepted version of unit `unit` (`files`: drop-box path, content) on a NAS made for a
+/// Puts an accepted version of unit `unit` (`files`: inputs-folder path, content) on a NAS made for a
 /// test, its index named in the records (for the server's tests).
 #[cfg(test)]
 pub fn put(nas: &store::nasfs::NasRoot, unit: &str, files: &[(&str, &str)]) -> String {

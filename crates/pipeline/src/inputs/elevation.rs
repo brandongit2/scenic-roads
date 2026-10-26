@@ -1,6 +1,6 @@
-//! The elevation datasets' drop box, `inputs/elevation/` (docs/inputs.md §6.8, #143): a declaration
+//! The elevation datasets' inputs folder, `inputs/elevation/` (docs/inputs.md §6.8, #143): a declaration
 //! per dataset (`<dataset>.toml`: a description, §5.1, and crate::dem::declared's fields), a tile
-//! index beside it when it names one (`<name>.geojson`), and the files of a dataset dropped whole in
+//! index beside it when it names one (`<name>.geojson`), and the files of a dataset added whole in
 //! `<dataset>/`.
 //!
 //! Checked: each declaration's shape (its description's, and its own: surface, height reference,
@@ -69,7 +69,7 @@ thread_local! {
     pub static TEST_PREPARED: std::cell::RefCell<Option<(Arc<dyn Fetch>, String)>> = const { std::cell::RefCell::new(None) };
 }
 
-/// What kind of file a drop-box path is: a declaration (its dataset's id), an index, or a dataset's
+/// What kind of file an inputs folder path is: a declaration (its dataset's id), an index, or a dataset's
 /// file.
 enum Kind<'a> {
     Declaration(&'a str),
@@ -96,7 +96,7 @@ fn keyed(desc: &str, d: &Declaration) -> String {
 }
 
 /// The digest of what a declaration's data is beyond the declaration itself: its index's content and
-/// its dropped files' names and contents ("" for none). Part of its `keyed` (`derive`): adding a
+/// its added files' names and contents ("" for none). Part of its `keyed` (`derive`): adding a
 /// tile to an index, or a file to its folder, reruns the units it meets.
 fn data_digest(v: &Version, id: &str, d: &Declaration) -> String {
     let Data::Geotiff { index, files, .. } = &d.data else { return String::new() };
@@ -411,7 +411,7 @@ impl Checks for Elevation {
                 Err(e) => c.findings.push(err(INDEX, &[e])),
             },
             Kind::Data(_) => {}
-            Kind::Other => c.findings.push(Finding::new(SHAPE, Level::Error, &[path], &["not the drop box's shape"], vec![path.into()], format!("{path} isn't the drop box's shape: elevation takes <dataset>.toml, an index <name>.geojson beside it, and a dataset's files in <dataset>/ (docs/inputs.md §6.8); notes go in how/"))),
+            Kind::Other => c.findings.push(Finding::new(SHAPE, Level::Error, &[path], &["not the inputs folder's shape"], vec![path.into()], format!("{path} isn't the inputs folder's shape: elevation takes <dataset>.toml, an index <name>.geojson beside it, and a dataset's files in <dataset>/ (docs/inputs.md §6.8); notes go in how/"))),
         }
         c
     }

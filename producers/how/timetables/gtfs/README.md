@@ -12,7 +12,7 @@ alone, so a file made again is the same file).
       uv run --project producers python producers/timetables/ferry_lookups.py --out <folder> timetables-batch-*.json
 
   Lines still without a timetable are listed in `todo/` (its README is the brief for a GTFS answer);
-  a researcher's zip is dropped here.
+  a researcher's zip is added here.
 - **The MTR** (`mtr.zip`): researched by hand from MTR's published frequencies into `mtr.json`,
   then, with a Hong Kong stations extract from OSM,
 

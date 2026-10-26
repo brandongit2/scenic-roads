@@ -158,7 +158,7 @@ case $cmd in
     [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
     mkdir -p $r/sources/osm/2026-09-28 $r/inputs/regions
     print -n '{}' > $r/sources/osm/2026-09-28/pass.0000000000000000.json
-    # (The regions' accepted version, a 20 km circle round 7° E 46° N: the build reads no drop box.)
+    # (The regions' accepted version, a 20 km circle round 7° E 46° N: the build reads no inputs folder.)
     ${3:-scenic-build} regions-fixture --root $r b4test 7.0,46.0,20
     ;;
   app)

@@ -302,14 +302,14 @@ impl Out {
         &self.root
     }
 
-    /// The NAS path of a content name. A path in a drop box (`inputs/`, `translations/`,
+    /// The NAS path of a content name. A path in an inputs folder (`inputs/`, `translations/`,
     /// `descriptions/`) is refused, naming the caller: a step reads an input's accepted version
     /// through `crate::inputs::open` alone (docs/inputs.md §7.1), so a reader missed fails its
     /// first run instead of bypassing the gate.
     #[track_caller]
     pub fn path(&self, content: &str) -> NasPath {
-        if crate::inputs::in_drop_box(content) {
-            panic!("{}: {content} is in a drop box; a step reads an input through crate::inputs::open alone (docs/inputs.md §7.1)", std::panic::Location::caller());
+        if crate::inputs::in_inputs_folder(content) {
+            panic!("{}: {content} is in an inputs folder; a step reads an input through crate::inputs::open alone (docs/inputs.md §7.1)", std::panic::Location::caller());
         }
         self.root.join(content)
     }

@@ -17,9 +17,9 @@ lists them in):
    run (and the reverse).
 3. Once every z6 tile is done, the packs on the NAS are listed (one `ls` over SSH) and must all be
    there at their recorded sizes; then the packed index is written (`<work>/<id>/<index>`). `--adopt` copies
-   it into the drop box (`inputs/sources/`, as `_<index>.repack` then renamed: the build checks and
+   it into the inputs folder (`inputs/sources/`, as `_<index>.repack` then renamed: the build checks and
    takes it in like any edit). Until then the build reads the loose files, untouched.
-4. `--sweep`, once the build reads the packed index: the drop box holds exactly its bytes, and the
+4. `--sweep`, once the build reads the packed index: the inputs folder holds exactly its bytes, and the
    build's current accepted version of the unit (`state/status.json`'s `inputs` entry for
    `sources`, its `@index`) names an accepted copy with exactly its bytes; and safely past the
    switch: the lead's status fresh (its beat and its file's time within `--stale-min`, 10 min); the
@@ -34,10 +34,9 @@ lists them in):
    read the packed index still, and the loose grids it packed are deleted (one `xargs rm` over
    SSH).
    The sweep is the point of no return: after it the loose index can't be rolled back to (its
-   files are gone); until it, putting the loose index back in the drop box is a full rollback.
+   files are gone); until it, putting the loose index back in the inputs folder is a full rollback.
 
-The drop box's index is read once and kept (`<work>/<id>/index.orig.geojson`): a run whose drop
-box index changed since stops (start again with a new --work).
+The inputs folder's index is read once and kept (`<work>/<id>/index.orig.geojson`): a run whose inputs-folder index changed since stops (start again with a new --work).
 `--box w,s,e,n` packs only the grids meeting a box, into `--dest` (a scratch folder on the NAS):
 a trial; it never adopts or sweeps.
 """
@@ -170,14 +169,14 @@ def repack(a, sid: str, rem: Remote) -> Path | None:
     work = a.work / sid
     out = work / "out"
     out.mkdir(parents=True, exist_ok=True)
-    name = index_name(a.drop, sid)
+    name = index_name(a.inputs, sid)
     orig = work / "index.orig.geojson"
-    now = (a.drop / name).read_bytes()
+    now = (a.inputs / name).read_bytes()
     if not orig.exists():
         orig.write_bytes(now)
     elif orig.read_bytes() != now and not ((work / name).exists() and (work / name).read_bytes() == now):
-        # (Adopted already: the drop box holds this run's packed index.)
-        raise SystemExit(f"{sid}: {a.drop / name} changed since this run began: start again with a new --work")
+        # (Adopted already: the inputs folder holds this run's packed index.)
+        raise SystemExit(f"{sid}: {a.inputs / name} changed since this run began: start again with a new --work")
     index = json.loads(orig.read_text())
     feats = index["features"]
     if a.box:
@@ -250,17 +249,17 @@ def repack(a, sid: str, rem: Remote) -> Path | None:
 
 
 def adopt(a, sid: str, packed: Path):
-    """The packed index into the drop box, whole (written under an ignored name, then renamed)."""
-    name = index_name(a.drop, sid)
-    now = (a.drop / name).read_bytes()
+    """The packed index into the inputs folder, whole (written under an ignored name, then renamed)."""
+    name = index_name(a.inputs, sid)
+    now = (a.inputs / name).read_bytes()
     if now == packed.read_bytes():
         return
     if now != (a.work / sid / "index.orig.geojson").read_bytes():
-        raise SystemExit(f"{sid}: the drop box's {name} changed since this run began: not adopted")
-    tmp = a.drop / f"_{name}.repack"
+        raise SystemExit(f"{sid}: the inputs folder's {name} changed since this run began: not adopted")
+    tmp = a.inputs / f"_{name}.repack"
     tmp.write_bytes(packed.read_bytes())
-    os.replace(tmp, a.drop / name)
-    log(f"{sid}: {a.drop / name} is the packed index now (the build checks and takes it in)")
+    os.replace(tmp, a.inputs / name)
+    log(f"{sid}: {a.inputs / name} is the packed index now (the build checks and takes it in)")
 
 
 def verify(pack: Path, at: dict[str, tuple[int, int, str]]):
@@ -290,12 +289,12 @@ def current_version(a, name: str):
 
 
 def taken_in(a, sid: str, packed: Path) -> bool:
-    """Whether the build reads the packed index now: the drop box holds its bytes, and the unit's
+    """Whether the build reads the packed index now: the inputs folder holds its bytes, and the unit's
     current accepted version (state/status.json's `sources` entry, its @index) names a copy with
     its bytes."""
-    name = index_name(a.drop, sid)
+    name = index_name(a.inputs, sid)
     want = packed.read_bytes()
-    if (a.drop / name).read_bytes() != want:
+    if (a.inputs / name).read_bytes() != want:
         return False
     _, copy = current_version(a, name)
     return copy is not None and (a.root / copy).read_bytes() == want
@@ -340,14 +339,14 @@ def safe_to_sweep(a, sid: str, packed: Path, done_path: Path) -> str | None:
     a sweep first saw the build's current version name the packed index, kept in done.json with
     that version; a different version seen (a rollback, a new acceptance) starts it again."""
     saved = json.loads(done_path.read_text())
-    name = index_name(a.drop, sid)
+    name = index_name(a.inputs, sid)
     ver, copy = current_version(a, name)
     if not taken_in(a, sid, packed):
         if saved.pop("taken_in_seen", None) is not None:
             write_json(done_path, saved)
         if ver is None:
             return "the lead's status names no accepted version of the sources unit"
-        return "the build doesn't read the packed index (the drop box's, or its current accepted version's, isn't it)"
+        return "the build doesn't read the packed index (the inputs folder's, or its current accepted version's, isn't it)"
     st = a.root / "state/status.json"
     status = json.loads(st.read_text())
     now = time.time()
@@ -397,7 +396,7 @@ def main(argv=None):
     ap.add_argument("--work", required=True, type=Path)
     ap.add_argument("--nas", default=NAS, help='"local": the commands run here (tests)')
     ap.add_argument("--nas-root", default=NAS_ROOT)
-    ap.add_argument("--drop", type=Path, default=MOUNT / "inputs/sources", help="the drop box (indexes, declarations)")
+    ap.add_argument("--inputs", type=Path, default=MOUNT / "inputs/sources", help="the inputs folder (indexes, declarations)")
     ap.add_argument("--root", type=Path, default=MOUNT, help="the build's root (state/status.json, the accepted copies)")
     ap.add_argument("--dest", help="a trial: the packs go to <dest>/<id> on the NAS (a scratch folder), not the source folder")
     ap.add_argument("--box", help="w,s,e,n: only the grids meeting it (a trial)")

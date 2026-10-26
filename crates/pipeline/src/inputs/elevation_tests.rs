@@ -314,7 +314,7 @@ fn a_datasets_keyed_digest_names_its_index_and_dropped_files() {
         a.checks.file("tiled.toml", &a.files["tiled.toml"]).keyed,
         b.checks.file("tiled.toml", &b.files["tiled.toml"]).keyed
     );
-    // Dropped files: one added, or one changed, likewise.
+    // Added files: one added, or one changed, likewise.
     let d = |files: Vec<(&str, Vec<u8>)>| {
         let mut v = vec![("local.toml", decl("", "format = \"geotiff\"\nfiles = [\"*.tif\"]"))];
         v.extend(files);
@@ -404,7 +404,7 @@ fn the_check_job_records_the_switch_once_with_the_first_accepted_index() {
     let dir = root.join("inputs/elevation");
     std::fs::create_dir_all(&dir).unwrap();
     let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
-    let drop = |p: &str, b: &[u8]| {
+    let add = |p: &str, b: &[u8]| {
         std::fs::write(dir.join(p), b).unwrap();
         std::fs::File::options().write(true).open(dir.join(p)).unwrap().set_modified(old).unwrap();
     };
@@ -417,7 +417,7 @@ fn the_check_job_records_the_switch_once_with_the_first_accepted_index() {
             crate::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
         crate::inputs::gate::run(&mut out, UNIT, false, None).unwrap()
     };
-    drop("single.toml", &decl("", "format = \"geotiff\"\nurl = \"https://e.org/a.tif\""));
+    add("single.toml", &decl("", "format = \"geotiff\"\nurl = \"https://e.org/a.tif\""));
     let said = run();
     let m = manifest();
     let first = m.get(&super::super::logical(UNIT)).cloned().unwrap_or_else(|| panic!("not taken in: {said}"));
@@ -426,7 +426,7 @@ fn the_check_job_records_the_switch_once_with_the_first_accepted_index() {
     let v: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join(&sw)).unwrap()).unwrap();
     assert_eq!(v, serde_json::json!({ "index": first, "app": APP }));
     // A later version replaces the index; the switch stays as it was.
-    drop("second.toml", &decl("rank = 1", "format = \"geotiff\"\nurl = \"https://e.org/t/N48E002.tif\""));
+    add("second.toml", &decl("rank = 1", "format = \"geotiff\"\nurl = \"https://e.org/t/N48E002.tif\""));
     let said = run();
     let m = manifest();
     assert_ne!(m[&super::super::logical(UNIT)], first, "{said}");

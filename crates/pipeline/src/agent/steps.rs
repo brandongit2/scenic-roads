@@ -7,8 +7,8 @@
 //! - **does**: one sentence of what it makes from what.
 //! - **kind**: where its output goes (`Kind`: a fetch from outside, a derived work file, a pack the
 //!   map serves, a publish, upkeep).
-//! - **scope**: what one target is (`Scope`: the world, a z3 tile, a z6 tile, an input's drop
-//!   box); its noun counts a job's targets everywhere ("8 z6 tiles").
+//! - **scope**: what one target is (`Scope`: the world, a z3 tile, a z6 tile, an input's inputs
+//!   folder); its noun counts a job's targets everywhere ("8 z6 tiles").
 //! - **stage**: where it sits in the build's order (`STAGES`): the checklist's lines, the page's
 //!   groups and colours.
 //! - **place**: which Mac runs it (`Place`: the lead alone, or any member), derived from the pool's
@@ -76,7 +76,7 @@ pub enum Scope {
     Z10,
     /// A polar block ("s/4/x/y": a pole and a z4 tile of its grid, crate::polar::target).
     Polar,
-    /// An input's drop box (docs/inputs.md §4.3).
+    /// An input's inputs folder (docs/inputs.md §4.3).
     Input,
     /// A task's piece of a job (`TASKS`).
     Task,
@@ -707,14 +707,14 @@ pub const TABLE: [Step; 56] = [
         )
     },
     // The gate's checks (crate::inputs::gate): one per gate unit, ordered before the rest; reading
-    // the drop boxes and the accepted copies on the NAS.
+    // the inputs folders and the accepted copies on the NAS.
     Step {
         ..step(
             "upkeep",
             Keep,
             Input,
             "inputs",
-            "Checks an input's dropped files and takes them in.",
+            "Checks an input's files and takes them in.",
             w_inputs,
         )
     },
@@ -1426,7 +1426,7 @@ fn w_rail(l: &str, _: bool) -> bool {
     l == "work/rail/used" || l == "global/railfreq" || l == crate::timetables::RAIL_LINES
 }
 
-/// The timetables' report (its to-do list is written into the drop box's todo/, outside the
+/// The timetables' report (its to-do list is written into the inputs folder's todo/, outside the
 /// records).
 fn w_timetables_todo(l: &str, _: bool) -> bool {
     l == crate::timetables::REPORT

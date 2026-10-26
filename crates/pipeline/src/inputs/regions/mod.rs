@@ -13,7 +13,7 @@
 //! geometry.
 //!
 //! The readers (crate::inputs::regions::read): `Coverage::accepted` and the regions as accepted,
-//! and, until the migration's proof (§6.1.10), the drop box's recipes as before.
+//! and, until the migration's proof (§6.1.10), the inputs folder's recipes as before.
 
 pub mod data;
 pub mod extract;

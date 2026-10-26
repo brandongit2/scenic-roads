@@ -1,10 +1,10 @@
-# inputs/: the map's drop boxes
+# inputs/: the map's inputs folders
 
 Everything the map is built from that isn't OpenStreetMap or a job's own download comes in through
 a folder here. The app never writes here except each request–fulfil box's `todo/`. The full
 contract is docs/inputs.md in the repository.
 
-## The drop boxes
+## The inputs folders
 
 | Folder | Kind | What goes in |
 |---|---|---|
@@ -19,17 +19,17 @@ contract is docs/inputs.md in the repository.
 | `elevation/` | source declarations | `<dataset>.toml`, its tile index `.geojson` |
 | `sources/` | source declarations | `<id>.toml`, its index `.geojson` (land cover, canopy, leaf type, buildings, Wikidata, Wikipedia, lake fill, depth) |
 
-Not inputs: `keys.env` (secrets), `hold-catalog` (a control), `ferries/` (not a drop box: nothing reads it; its research answers are kept in `timetables/gtfs/how/research/`, and the folder can be deleted).
+Not inputs: `keys.env` (secrets), `hold-catalog` (a control), `ferries/` (not an inputs folder: nothing reads it; its research answers are kept in `timetables/gtfs/how/research/`, and the folder can be deleted).
 
 ## The three kinds
 
 - **Declare:** the files are the data, read as given.
 - **Request–fulfil:** after a build the app lists what it lacks in `todo/` with a brief; answers
-  dropped anywhere else in the box are read like a declare input.
+  added anywhere else in the folder are read like a declare input.
 - **Source declarations:** a small file naming a standard format, where to fetch the data, its
   licence and credit; the app fetches the data itself.
 
-## In every drop box
+## In every inputs folder
 
 - `todo/` is the app's, `how/` the owner's: how the input is made, pointing to the producers in the
   repository's `producers/<input>/`, with agents' briefs and what was done by hand. Neither is read

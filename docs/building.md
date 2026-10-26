@@ -321,7 +321,7 @@ devices away use the M6's (always on; https://map.brandontsang.net, docs/macs.md
 
 **Order:**
 0. **The input check** (`inputs <unit>`, docs/inputs.md §4.3), before every other job: a unit whose
-   drop box, acceptances or accepted index changed is checked (in full once a day), in the first
+   inputs folder, acceptances or accepted index changed is checked (in full once a day), in the first
    slot or beside a job.
 1. **The OSM pass**, when the NAS holds a newer planet.
 2. **The pass's worldwide jobs:** `pass-sets`, `outlines` (the rest waits for them), hiking routes'

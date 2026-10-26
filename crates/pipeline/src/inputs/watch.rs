@@ -1,4 +1,4 @@
-//! The drop boxes' listing (docs/inputs.md §4.2): the lead lists every unit's drop box and its
+//! The inputs folders' listing (docs/inputs.md §4.2): the lead lists every unit's inputs folder and its
 //! acceptances every two minutes, off its loop (a thread of its own: a listing can take half a
 //! minute under load), and keeps the last listing. A file changed in the last `QUIET_S` is left for
 //! the next listing. The listing is only a trigger: what changed is decided by content, in the
@@ -10,13 +10,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-/// How often the drop boxes are listed.
+/// How often the inputs folders are listed.
 pub const EVERY: Duration = Duration::from_secs(120);
 
 /// A unit as last listed.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Listed {
-    /// What of its drop box held still.
+    /// What of its inputs folder held still.
     pub listing: Listing,
     /// Its acceptances' ids.
     pub accepted: BTreeSet<String>,
@@ -42,7 +42,7 @@ pub struct Watch {
 }
 
 impl Watch {
-    /// Starts listing the drop boxes of the units on the gate under `root` (crate::inputs::units,
+    /// Starts listing the inputs folders of the units on the gate under `root` (crate::inputs::units,
     /// read again each time) every `every`.
     pub fn start(root: store::nasfs::NasRoot, every: Duration) -> Watch {
         let shared: Arc<(Mutex<Shared>, Condvar)> = Default::default();

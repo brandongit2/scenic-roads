@@ -362,7 +362,7 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
      local folder, packed by z6 tile, each source's packs then copied to `sources/fetched/<id>/`
      with `tar` over SSH (the NAS's small-file limits; docs/storage.md). Grids already there loose are
      packed once by `producers/depth/repack.py`.
-  3. The declarations (`producers/depth/declarations/`) and the indexes are dropped into
+  3. The declarations (`producers/depth/declarations/`) and the indexes are added to
      `inputs/sources/`. Once accepted, the terrain-water job works out the depth targets' water
      digests (once a basemap), then the assemblies run, then the z6 tiles.
 
@@ -586,7 +586,7 @@ What no job makes, kept on the NAS with how it was made. Scripts run in `dem/` (
   `producers/timetables/mtr.py --mtr mtr.json --stations hk-stations.geojsonseq --out mtr.zip`).
 - **Translations' and descriptions' methods** (docs/names.md): `inputs/translations/how/`,
   `inputs/descriptions/how/`.
-- **Every drop box's `how/`** says how its input is made, pointing to `producers/<input>/`
+- **Every inputs folder's `how/`** says how its input is made, pointing to `producers/<input>/`
   (docs/inputs.md §8); its README is kept in the repository as `producers/how/<box>/README.md`, and
   `inputs/README.md` as `producers/how/inputs-README.md`.
 - **Fonts** (`app/fonts/` on the NAS, `data/fonts` in a checkout): three Noto Sans styles' glyph

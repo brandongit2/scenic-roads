@@ -33,7 +33,7 @@ impl Descriptions {
         })
     }
 
-    /// The accepted version's `.jsonl` files, in their drop-box paths' order (by component; later
+    /// The accepted version's `.jsonl` files, in their inputs-folder paths' order (by component; later
     /// ones win).
     fn files(&self) -> Vec<PathBuf> {
         let mut fs: Vec<(String, PathBuf)> = crate::accepted::files(&self.accepted)

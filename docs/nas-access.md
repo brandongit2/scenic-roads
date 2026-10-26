@@ -105,7 +105,7 @@ local folder of links, is a `Path`.
 
 ## 5. What is not done
 
-- `Out::path`'s run-time refusal of drop-box paths stays as it was (docs/inputs.md §7.1); it did
+- `Out::path`'s run-time refusal of inputs-folder paths stays as it was (docs/inputs.md §7.1); it did
   not become a typed `inputs()` accessor.
 - Errors carry the path through `display()`, as before; they don't carry `nas:<rel>` and the
   operation.

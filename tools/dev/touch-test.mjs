@@ -50,7 +50,7 @@ const WEB = join(dirname(fileURLToPath(import.meta.url)), "../../web/work");
 // (`--agent HOST:PORT`: another Mac's agent read instead, e.g. the lead's: the page is then its own
 // Mac's, the NAS tab's answer its own, no cross-origin call the test origin isn't allowed.)
 const AGENT = (([host, port]) => ({ host, port: +port }))(arg("--agent", "127.0.0.1:8090").split(":"));
-const TABS = ["overview", "jobs", "machines", "regions", "nas", "dropboxes", "activity", "details"];
+const TABS = ["overview", "jobs", "machines", "regions", "nas", "inputs", "activity", "details"];
 
 // ---- The read-only server ------------------------------------------------------------------------
 // A call forwarded only when its body has no other keys than these (an empty body: {}).

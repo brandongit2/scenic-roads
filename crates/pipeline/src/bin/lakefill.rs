@@ -160,7 +160,7 @@ fn view(base: &Path, b: [f64; 4], z: u8, out: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The lake-fill source's declaration (`--declaration <file.toml>`: one as dropped into
+/// The lake-fill source's declaration (`--declaration <file.toml>`: one as added to
 /// inputs/sources/, producers/sources/canvec-lakes.toml), as the step reads it accepted.
 fn declaration(d: &Declaration) -> Result<pipeline::inputs::sources::Source> {
     let p = &d.declaration;

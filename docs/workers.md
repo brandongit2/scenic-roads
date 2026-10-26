@@ -185,7 +185,7 @@ Common rules:
   address's `#hash` in the right panel, and a fixed footer (the charts' range, the Live dot).
   Overview (the alerts, the work left in the queue, the last and next catalogue, the Macs); Jobs (the schedule: each
   Mac's lanes with the jobs that ran, running and to come; the stages: done and left a step; a card on hover, pinned on a click or tap); Machines (a card per
-  machine, the pool: who leads, "Make lead", "Take it"; the settings); Regions (a virtual list; a row under the pointer lights its region on the left panel's map and shows its card); NAS (`nas.js`: how fast it responds, use against its limits, its use over time); Drop boxes (the gate's held changes with Accept and Accept all, docs/inputs.md §4.7); Activity (last day by the hour,
+  machine, the pool: who leads, "Make lead", "Take it"; the settings); Regions (a virtual list; a row under the pointer lights its region on the left panel's map and shows its card); NAS (`nas.js`: how fast it responds, use against its limits, its use over time); Inputs (the gate's held changes with Accept and Accept all, docs/inputs.md §4.7); Activity (last day by the hour,
   events, the file stream and the internet by website: `activity.js`); Details (leases, waits, each Mac's capacity, workers, the steps table with each step's measured
   phase shares: the lead's status's `phase_shares`, docs/pool.md §10); This device. It reads
   `/work/steps` once (the steps table: every word about a step), `/work/swarm` every 10 s and

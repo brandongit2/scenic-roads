@@ -100,7 +100,7 @@ const STEPS: &[Step] = &[
     s("regions-fixture", "<id> <lon,lat,km>", "an accepted version of one region, a circle, in a scratch folder (never the project folder)", &[], &[], 2),
     s("names-todo", "--translations-index i --descriptions-index i [--out dir]", "the translations' and descriptions' to-do lists from the newest catalog", &[], &["--translations-index", "--descriptions-index", "--out"], 0),
     s("timetables-todo", "[--pass d] [--regions dir] [--out dir]", "the timetables' to-do list (into the static timetables' todo/ under the root, or --out) and the report of routes matching nothing on the map, from the rail and ferries jobs' pieces", &[], &["--pass", "--regions", "--out"], 0),
-    s("inputs", "<unit> [--full] [--listing f] [--dem dir] [--forget]", "a gate unit's drop box checked: its clean changes taken in, the held ones reported", &["--full", "--forget"], &["--listing", "--dem"], 1),
+    s("inputs", "<unit> [--full] [--listing f] [--dem dir] [--forget]", "a gate unit's inputs folder checked: its clean changes taken in, the held ones reported", &["--full", "--forget"], &["--listing", "--dem"], 1),
     s("put", "<logical> <ext> <file>", "upload a file under a logical name", &[], &[], 3),
     s("verify", "", "check every unverified upload on the NAS (SHA-256 over SSH)", &[], &[], 0),
     s("catalog", "[--held] [--ready <ids>] [--building <id>=<built>/<total>,…] [--delta]", "publish a catalog of the build manifest (--held: into catalog-held/)", &["--held", "--delta"], &["--ready", "--building"], 0),

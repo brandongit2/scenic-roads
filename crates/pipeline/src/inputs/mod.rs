@@ -1,5 +1,5 @@
-//! The drop boxes and the checking gate (docs/inputs.md §3, §4). Every input the map is built from
-//! has a folder on the NAS, its drop box (`inputs/<unit>/`), where the owner drops it in its shape.
+//! The inputs folders and the checking gate (docs/inputs.md §3, §4). Every input the map is built from
+//! has a folder on the NAS, its inputs folder (`inputs/<unit>/`), where the owner adds it in its shape.
 //! A change is checked before it's taken in: the `inputs` step (crate::inputs::gate), one target per
 //! gate unit, a job like any other (it hands off; the lead merges). A change with an unaccepted
 //! finding is held, and the last accepted version stays in use. The build reads only the accepted
@@ -8,7 +8,7 @@
 //! accessor: §7.1).
 //!
 //! The parts: the units and their checks (`Checks`; the test unit's, crate::inputs::gatetest); the
-//! drop boxes' listing (`list`, `settle`), which the agent makes every two minutes off its loop
+//! inputs folders' listing (`list`, `settle`), which the agent makes every two minutes off its loop
 //! (crate::inputs::watch); the check job (crate::inputs::gate); the acceptances (`accept`,
 //! `unaccept`); the status's entries (crate::inputs::view); the credits from the inputs'
 //! descriptions (crate::inputs::credits).
@@ -76,7 +76,7 @@ pub const TEST_FLAG: &str = "state/inputs/gate-test";
 /// Where the owner's acceptances are kept, a folder per unit, a file per finding id.
 pub const ACCEPTED: &str = "state/inputs/accepted";
 
-/// The folders that hold the drop boxes (`inputs/`, and the request–fulfil inputs' folders until
+/// The folders that hold the inputs folders (`inputs/`, and the request–fulfil inputs' folders until
 /// they move under it, #137): nothing but the gate and `open` reads under them (§7.1).
 pub const DROP_ROOTS: [&str; 3] = ["inputs", "translations", "descriptions"];
 
@@ -130,7 +130,7 @@ pub fn checks(unit: &str) -> Option<&'static dyn Checks> {
 }
 
 /// A unit's own records, in its folder under `sources/inputs/`: its accepted index, its held report,
-/// its last listing. A `@` starts no component of a drop-box path (`ignored`) nor of a unit's name
+/// its last listing. A `@` starts no component of an inputs folder path (`ignored`) nor of a unit's name
 /// (`valid_unit`), so these are never a copy's name nor a nested unit's (`a`'s copy of `b/x.json`
 /// and unit `a/b`'s index can't be confused).
 pub const RECORDS: [&str; 4] = ["@index", "@held", "@listed", "@switched"];
@@ -180,22 +180,22 @@ pub fn unit_of(logical: &str) -> Option<&str> {
     record_of(logical).map(|(u, _)| u)
 }
 
-/// Whether `rel` (a path relative to the NAS project folder) lies in a drop box: what the NAS root
+/// Whether `rel` (a path relative to the NAS project folder) lies in an inputs folder: what the NAS root
 /// the steps get refuses (crate::out::Out::path).
-pub fn in_drop_box(rel: &str) -> bool {
+pub fn in_inputs_folder(rel: &str) -> bool {
     let rel = rel.trim_start_matches("./");
     DROP_ROOTS.iter().any(|d| rel == *d || rel.strip_prefix(d).is_some_and(|r| r.starts_with('/')))
 }
 
-/// Unit `unit`'s drop box. Only the gate lists and reads it (§7.1).
-fn drop_box(root: &store::nasfs::NasRoot, unit: &str) -> store::nasfs::NasPath {
+/// Unit `unit`'s inputs folder. Only the gate lists and reads it (§7.1).
+fn inputs_folder(root: &store::nasfs::NasRoot, unit: &str) -> store::nasfs::NasPath {
     root.join("inputs").join(unit)
 }
 
 /// A request–fulfil unit's to-do lists (`inputs/<unit>/todo/`, the app's: never read as input),
 /// under the NAS project folder `root`: what crate::namestodo writes.
 pub fn todo_dir(root: &store::nasfs::NasRoot, unit: &str) -> store::nasfs::NasPath {
-    drop_box(root, unit).join("todo")
+    inputs_folder(root, unit).join("todo")
 }
 
 /// `todo_dir` relative to the project folder.
@@ -227,7 +227,7 @@ pub struct Finding {
     /// acceptance's file on the share.)
     pub id: String,
     pub level: Level,
-    /// The files it's about (drop-box paths).
+    /// The files it's about (inputs-folder paths).
     pub files: Vec<String>,
     /// In plain words.
     pub message: String,
@@ -300,7 +300,7 @@ pub struct FileCheck {
     pub refers: Vec<String>,
 }
 
-/// A version of a unit's files to check whole: their drop-box paths, and their bytes read when a
+/// A version of a unit's files to check whole: their inputs-folder paths, and their bytes read when a
 /// check asks (`read`).
 pub struct Version<'a> {
     pub paths: BTreeSet<String>,
@@ -312,7 +312,7 @@ pub trait Checks: Sync {
     fn unit(&self) -> &'static str;
     /// Bumped with any change to the checks: the unit is checked again.
     fn version(&self) -> u32;
-    /// Whether its drop box's subfolders are part of it (translations, descriptions); otherwise a
+    /// Whether its inputs folder's subfolders are part of it (translations, descriptions); otherwise a
     /// folder there (but `todo/` and `how/`) isn't its shape.
     fn recursive(&self) -> bool {
         false
@@ -325,8 +325,8 @@ pub trait Checks: Sync {
     fn lint(&self, _path: &str, _bytes: &[u8]) -> Result<Vec<Finding>> {
         Ok(Vec::new())
     }
-    /// The drop box's old place at the NAS's root, for an input moved under `inputs/` (#137): a
-    /// file there is an error finding saying where to move it, once the drop box exists.
+    /// The inputs folder's old place at the NAS's root, for an input moved under `inputs/` (#137): a
+    /// file there is an error finding saying where to move it, once the inputs folder exists.
     fn old_folder(&self) -> Option<&'static str> {
         None
     }
@@ -342,12 +342,12 @@ pub trait Checks: Sync {
     fn partners(&self, _path: &str, _all: &BTreeSet<String>) -> Vec<String> {
         Vec::new()
     }
-    /// Whether it takes a file of its drop box at all (the regions take their region files, shapes
+    /// Whether it takes a file of its inputs folder at all (the regions take their region files, shapes
     /// and special files alone): a file it doesn't take is ignored, neither listed nor read.
     fn takes(&self, _path: &str) -> bool {
         true
     }
-    /// Whether it takes a file whose name every drop box passes over (`ignored`): the regions'
+    /// Whether it takes a file whose name every inputs folder passes over (`ignored`): the regions'
     /// special files, `_*.toml` (§6.1.2).
     fn takes_ignored(&self, _name: &str) -> bool {
         false
@@ -400,7 +400,7 @@ pub trait Checks: Sync {
 /// What `Checks::derive` gives.
 #[derive(Clone, Debug, Default)]
 pub struct Derived {
-    /// By drop-box path: facts set over the file check's, and the `keyed` digest (None: as it was).
+    /// By inputs-folder path: facts set over the file check's, and the `keyed` digest (None: as it was).
     pub facts: BTreeMap<String, (serde_json::Map<String, serde_json::Value>, Option<String>)>,
     /// Files stored with the version, by their content names (under `sources/inputs/<unit>/`).
     pub store: BTreeMap<String, std::sync::Arc<Vec<u8>>>,
@@ -441,7 +441,7 @@ pub struct Index {
     pub unit: String,
     /// The checks it was taken with (`<unit> <version>`).
     pub checks: String,
-    /// By drop-box path.
+    /// By inputs-folder path.
     pub files: BTreeMap<String, FileEntry>,
     /// The warnings it was taken with, by id, each with the files it's about: kept while those
     /// files are in the version unchanged (an acceptance of none of them is stale).
@@ -495,7 +495,7 @@ pub struct Report {
     pub fmt: u32,
     pub unit: String,
     pub checks: String,
-    /// The changes held (drop-box paths: a held new file is absent from the version, a held edit
+    /// The changes held (inputs-folder paths: a held new file is absent from the version, a held edit
     /// or removal keeps the file as accepted).
     pub held: Vec<String>,
     /// The findings that hold them.
@@ -514,7 +514,7 @@ pub struct Report {
     pub needs: Vec<String>,
 }
 
-/// A unit's accepted version as a step reads it: the files by their drop-box paths.
+/// A unit's accepted version as a step reads it: the files by their inputs-folder paths.
 #[derive(Clone, Debug)]
 pub struct Accepted {
     root: store::nasfs::NasRoot,
@@ -524,17 +524,17 @@ pub struct Accepted {
 }
 
 impl Accepted {
-    /// The checked copy of drop-box path `path`.
+    /// The checked copy of inputs-folder path `path`.
     pub fn path(&self, path: &str) -> Option<store::nasfs::NasPath> {
         self.index.files.get(path).map(|f| self.root.join(&f.file))
     }
 
-    /// Every accepted file: (drop-box path, its checked copy).
+    /// Every accepted file: (inputs-folder path, its checked copy).
     pub fn files(&self) -> impl Iterator<Item = (&String, store::nasfs::NasPath)> + '_ {
         self.index.files.iter().map(|(p, f)| (p, self.root.join(&f.file)))
     }
 
-    /// The bytes of drop-box path `path`.
+    /// The bytes of inputs-folder path `path`.
     pub fn read(&self, path: &str) -> Result<Vec<u8>> {
         let p = self.path(path).with_context(|| format!("{path} isn't in {}'s accepted version", self.index.unit))?;
         p.read().with_context(|| format!("read {}", p.display()))
@@ -562,7 +562,7 @@ pub fn read_report(root: &store::nasfs::NasRoot, name: &str) -> Result<Report> {
     serde_json::from_slice(&b).with_context(|| format!("parse {name}"))
 }
 
-/// The content name a drop-box file's checked copy takes: its path up to its file name's first dot
+/// The content name an inputs folder file's checked copy takes: its path up to its file name's first dot
 /// (the logical name, which has none), the hash, and the rest of the name (the extension; `bin`
 /// for a name without a dot). None when the path can't be a content name (a backslash in it).
 pub fn copy_name(unit: &str, path: &str, hash16: &str) -> Option<String> {
@@ -582,31 +582,31 @@ pub fn hash_of(content: &str) -> Option<&str> {
     store::naming::parse_content_name(content).map(|c| c.hash16)
 }
 
-// ---- Listing a drop box ------------------------------------------------------------------------
+// ---- Listing an inputs folder ------------------------------------------------------------------------
 
-/// A drop box as listed: each file's size and time (seconds), by path, and what isn't its shape's
+/// An inputs folder as listed: each file's size and time (seconds), by path, and what isn't its shape's
 /// (a folder in a unit without them).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Listing {
     pub files: BTreeMap<String, (u64, u64)>,
     #[serde(default)]
     pub strays: Vec<String>,
-    /// Files in the drop box's old place (`Checks::old_folder`), by their paths from the NAS's
+    /// Files in the inputs folder's old place (`Checks::old_folder`), by their paths from the NAS's
     /// root: each an error finding saying where to move it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub misplaced: Vec<String>,
 }
 
-/// Whether a name in a drop box is passed over: the Mac's and the NAS's own files (`.DS_Store`,
+/// Whether a name in an inputs folder is passed over: the Mac's and the NAS's own files (`.DS_Store`,
 /// `@eaDir`, `#recycle`) and the owner's drafts (`_draft.toml`).
 pub fn ignored(name: &str) -> bool {
     name.starts_with(['.', '@', '#', '_'])
 }
 
-/// Unit `unit`'s drop box listed now (`todo/` and `how/` aside, and the names `ignored`): an empty
-/// listing when there's no drop box yet, an error when it can't be listed now.
+/// Unit `unit`'s inputs folder listed now (`todo/` and `how/` aside, and the names `ignored`): an empty
+/// listing when there's no inputs folder yet, an error when it can't be listed now.
 pub fn list(root: &store::nasfs::NasRoot, unit: &str, recursive: bool) -> Result<Listing> {
-    let top = drop_box(root, unit);
+    let top = inputs_folder(root, unit);
     let mut l = Listing::default();
     match top.metadata() {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(l),
@@ -648,8 +648,8 @@ pub fn list(root: &store::nasfs::NasRoot, unit: &str, recursive: bool) -> Result
         }
     }
     l.strays.sort();
-    // (The drop box's old place, once the drop box is there: anything in it, at any depth, was
-    // meant for the drop box, and is never passed over quietly.)
+    // (The inputs folder's old place, once the inputs folder is there: anything in it, at any depth, was
+    // meant for the inputs folder, and is never passed over quietly.)
     if let Some(old) = checks(unit).and_then(|c| c.old_folder()) {
         let mut stack = vec![(root.join(old), old.to_string())];
         while let Some((dir, rel)) = stack.pop() {
@@ -827,7 +827,7 @@ pub struct Ask {
     pub all: bool,
     #[serde(default)]
     pub unaccept: Vec<String>,
-    /// List the drop boxes now (`full`: hash every file of the unit).
+    /// List the inputs folders now (`full`: hash every file of the unit).
     #[serde(default)]
     pub check: bool,
     #[serde(default)]

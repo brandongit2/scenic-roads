@@ -33,7 +33,7 @@ def build(check=False):
         if label:
             lb.append(tx('st-lbl', at[0], at[1], label, anchor=anchor))
 
-    rows = [            ('inputs/', 'the drop boxes: regions (enabled and disabled), translations, descriptions, registers, timetables, sources, keys'),
+    rows = [            ('inputs/', 'the inputs folders: regions (enabled and disabled), translations, descriptions, registers, timetables, sources, keys'),
             ('sources/', 'the planet (the NAS fetches it), its z6 tile extracts and sets; every download, once; the depth grids, packed per z6 tile'),
             ('base/ · hidata/', 'per z6 tile: its ways with elevations and scenic values; query parts'),
             ('markdata/ · ovdata/', 'landmark points per z6 tile, in one bundle; area and park details per z3 tile'),
@@ -87,7 +87,7 @@ def build(check=False):
     arrow((hx, by + bh / 2), (xh, by + bh / 2), (xh, top + hh), label='by hand', at=(xh + 8, top + hh + 33))
 
     h = by + bh + 14
-    aria = ('Where the data lives. The NAS is the source of truth: the drop boxes in inputs, with your regions, translations, '
+    aria = ('Where the data lives. The NAS is the source of truth: the inputs folders in inputs, with your regions, translations, '
             'descriptions, registers, timetables and source declarations; sources (the planet the NAS fetches itself, and every '
             'download, kept once, the depth grids among them); base data and query data per z6 tile, landmark points in one bundle, '
             'worldwide results, the layers in packs or bundles, build intermediates and what each z6 tile keeps for its next run, the '

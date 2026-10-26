@@ -124,7 +124,7 @@
 //!                                what each terrain z6 tile and assembly near the coverage reads of
 //!                                the latest basemap's water, as work/water-idx/<hash16 of its
 //!                                pin>; those made before for the same reads kept
-//!   inputs <unit> [--full] [--listing f]  a gate unit's drop box checked (pipeline::inputs::gate): its clean
+//!   inputs <unit> [--full] [--listing f]  a gate unit's inputs folder checked (pipeline::inputs::gate): its clean
 //!                                changes taken in as its next accepted version, the held ones
 //!                                reported (`--full`: every file hashed, not only those whose size
 //!                                or time changed)
@@ -211,11 +211,11 @@ fn main() -> Result<()> {
     pipeline::timings::job(&step, || step_main(&args, &step))
 }
 
-/// inputs <unit> [--full] [--listing f]: a gate unit's drop box checked against its accepted version
+/// inputs <unit> [--full] [--listing f]: a gate unit's inputs folder checked against its accepted version
 /// (pipeline::inputs::gate; docs/inputs.md §4.3): the clean changes taken in, the held ones
 /// reported, both handed off as records changes. `--listing <file>`: the listing and acceptances
 /// the agent's key was made from, so the key recorded is the one of what was checked; by hand, the
-/// drop box listed now. `--forget`: a unit off the gate, its records removed.
+/// inputs folder listed now. `--forget`: a unit off the gate, its records removed.
 fn inputs_step(out: &mut Out, args: &[String]) -> Result<()> {
     let unit =
         positional(args).first().map(|u| u.trim_start_matches("inputs/").to_string()).context("inputs <unit>")?;
@@ -406,7 +406,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         // names-todo --translations-index <index> --descriptions-index <index> [--out <dir>]: the
         // translations' and descriptions' to-do lists from the newest catalog (pipeline::namestodo)
         // and those inputs' accepted versions the agent names (their indexes' content names), into
-        // the drop boxes' todo/ under the root (or --out); it writes nothing else.
+        // the inputs folders' todo/ under the root (or --out); it writes nothing else.
         let out = opt(&args, "--out").map_or_else(|| root.clone(), store::nasfs::NasRoot::from_arg);
         let accepted = |unit: &str| -> Result<pipeline::inputs::Accepted> {
             let index = opt(&args, &format!("--{unit}-index"))

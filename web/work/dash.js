@@ -229,22 +229,22 @@ function alerts(m) {
     else if (p.visible === false && p.seen_s < 300) out.push({ cls: "warn", text: `${p.label} is in the background (iPhones and iPads stop it)`, to: "machines" });
   }
   if ((a.bad_recipes || []).length) out.push({ cls: "warn", text: `${plural(a.bad_recipes.length, "region recipe")} doesn't read`, to: "details" });
-  for (const v of (a.inputs || []).filter((v) => v.state === "held")) out.push({ cls: (v.findings || []).some((f) => f.level === "error") ? "bad" : "warn", text: `${v.unit}: a change held`, to: "dropboxes" });
+  for (const v of (a.inputs || []).filter((v) => v.state === "held")) out.push({ cls: (v.findings || []).some((f) => f.level === "error") ? "bad" : "warn", text: `${v.unit}: a change held`, to: "inputs" });
   return out;
 }
 
-// ---- The drop boxes' gate (docs/inputs.md §4.7): the Drop boxes tab -----------------------------
+// ---- The inputs folders' gate (docs/inputs.md §4.7): the Inputs tab -----------------------------
 // A banner per held unit: its held files, each finding, Accept per warning and Accept All; errors
 // say what to fix. A quiet line per unit being checked; a line saying so when none waits.
-function dropBoxes(m) {
+function inputsTab(m) {
   const accept = (body) => ctx.call("/work/inputs", body).then(poll, (e) => ctx.onError?.(`couldn't accept: ${e.message}`));
   const units = (m.a.inputs || []).filter((v) => v.state !== "ok");
   const held = units.filter((v) => v.state === "held").length;
-  return section("d-inputs", "Drop boxes", held ? `${plural(held, "change")} held for a look` : "",
-    units.length ? units.map((v) => gateBanner(v, accept)) : h("div", "box dim small", `Nothing held: ${plural((m.a.inputs || []).length, "drop box", "drop boxes")} taken in${(m.a.inputs || []).length ? ` (${m.a.inputs.map((v) => v.unit).join(", ")})` : ""}.`));
+  return section("d-inputs", "Inputs", held ? `${plural(held, "change")} held for a look` : "",
+    units.length ? units.map((v) => gateBanner(v, accept)) : h("div", "box dim small", `Nothing held: ${plural((m.a.inputs || []).length, "inputs folder", "inputs folders")} taken in${(m.a.inputs || []).length ? ` (${m.a.inputs.map((v) => v.unit).join(", ")})` : ""}.`));
 }
 function gateBanner(v, accept) {
-  if (v.state === "checking") return h("div", "gate checking", `${v.unit}: checking the files put in its drop box…`);
+  if (v.state === "checking") return h("div", "gate checking", `${v.unit}: checking the files put in its inputs folder…`);
   const fs = v.findings || [];
   const warns = fs.filter((f) => f.level === "warning");
   const errors = fs.filter((f) => f.level === "error");
@@ -1682,7 +1682,7 @@ function tabs(m, md) {
     ],
     regions: [part("d-regions", () => regionsPane(m, md))],
     nas: [part("d-nas", () => nasSection(last.agent))],
-    dropboxes: [part("d-inputs", () => dropBoxes(m))],
+    inputs: [part("d-inputs", () => inputsTab(m))],
     activity: [part("d-activity", () => section("d-activity", "Activity", "the last day",
       h("div", "box", hours(m),
         h("div", "feedbar", h("div", "seg", [["all", "All"], ["problems", "Problems"], ["publishing", "Publishing"], ["pauses", "Pauses & conditions"]].map(([k, t]) => h("button", { class: ui.feed === k ? "on" : "", onclick: () => { ui.feed = k; render(); } }, t)))),

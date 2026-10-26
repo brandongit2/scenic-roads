@@ -47,7 +47,7 @@
 //!   scenic inputs                       every gate unit (docs/inputs.md §4): its accepted version, its
 //!                                       state, what holds it, its acceptances (those no check raises
 //!                                       any more marked stale)
-//!   scenic inputs check [<unit>] [--full]  the drop boxes listed now (the lead's agent checks what
+//!   scenic inputs check [<unit>] [--full]  the inputs folders listed now (the lead's agent checks what
 //!                                       changed; --full: every file hashed)
 //!   scenic inputs accept <unit> <finding id>|--all  a held warning accepted (or all the unit's),
 //!                                       written from this Mac; errors can't be
@@ -262,13 +262,14 @@ fn inputs(a: &cli::Inputs) -> Result<()> {
         .as_ref()
         .map(|s| s.inputs.iter().filter(|v| v.checking).map(|v| v.unit.clone()).collect())
         .unwrap_or_default();
-    // (A running check's job on the lead, for its progress: "Checking the inputs dropped in <unit>".)
+    // (A running check's job on the lead, for its progress: "Checking the <unit> inputs".)
     let running: Vec<(String, agent::JobView)> = status
         .iter()
         .flat_map(|s| s.jobs())
         .filter_map(|j| {
-            let unit = j.what.strip_prefix("Checking the inputs dropped in ")?;
-            Some((unit.strip_suffix(", every file").unwrap_or(unit).to_string(), j))
+            let unit = j.what.strip_prefix("Checking the ")?;
+            let unit = unit.strip_suffix(", every file").unwrap_or(unit).strip_suffix(" inputs")?;
+            Some((unit.to_string(), j))
         })
         .collect();
     let views = view::of(&r, &manifest, &units, &checking, &Default::default(), &mut view::Cache::default());
@@ -349,7 +350,7 @@ fn inputs(a: &cli::Inputs) -> Result<()> {
                     &gi::Ask { unit: u.clone(), check: true, full, by: by.clone(), at: now_s(), ..Default::default() },
                 )?;
             }
-            println!("asked this Mac's agent to list the drop boxes now{}: the lead checks what changed (`scenic inputs` says how it stands)", if full { ", hashing every file" } else { "" });
+            println!("asked this Mac's agent to list the inputs folders now{}: the lead checks what changed (`scenic inputs` says how it stands)", if full { ", hashing every file" } else { "" });
             Ok(())
         }
         Some(InputsCmd::Accept { unit, id, all }) => {
@@ -409,7 +410,7 @@ fn inputs(a: &cli::Inputs) -> Result<()> {
                     p.parent().unwrap().create_dir_all()?;
                     p.write_whole(format!("turned on by {by}\n"))?;
                     println!(
-                        "on: {} is on the gate (its drop box inputs/{}/, .jsonl files of {{\"k\": …, \"v\": …}} lines)",
+                        "on: {} is on the gate (its inputs folder inputs/{}/, .jsonl files of {{\"k\": …, \"v\": …}} lines)",
                         gi::TEST_UNIT,
                         gi::TEST_UNIT
                     );
@@ -435,7 +436,7 @@ fn inputs(a: &cli::Inputs) -> Result<()> {
                                 ..Default::default()
                             },
                         )?;
-                        println!("off: {} is off the gate, its acceptances removed; the lead removes its records from the build's (its copies go with GC's 14 days; its drop box is yours)", gi::TEST_UNIT);
+                        println!("off: {} is off the gate, its acceptances removed; the lead removes its records from the build's (its copies go with GC's 14 days; its inputs folder is yours)", gi::TEST_UNIT);
                     } else {
                         println!("off: {} is off the gate and no longer shown (its records stay: `scenic inputs test off --forget` removes them)", gi::TEST_UNIT);
                     }

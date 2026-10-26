@@ -1,4 +1,4 @@
-//! Static GTFS compiled by hand (docs/inputs.md §6.7.2): a declare drop box,
+//! Static GTFS compiled by hand (docs/inputs.md §6.7.2): a declare inputs folder,
 //! `inputs/timetables/gtfs/`, of `<name>.zip` files, each a GTFS feed compiled from timetables found
 //! anywhere, with a `<name>.toml` description (§5.1) beside it when its sources need a credit line
 //! beyond each route's page. The `rail` and `ferries` jobs count the accepted zips (`zips`) with
@@ -75,7 +75,7 @@ const MAX_TABLE: u64 = 256 << 20;
 /// The static files' checks.
 pub struct Gtfs;
 
-/// A name the drop box takes: letters, digits, `-` and `_`, then `.zip` or `.toml`.
+/// A name the inputs folder takes: letters, digits, `-` and `_`, then `.zip` or `.toml`.
 fn stem_of(path: &str) -> Option<(&str, &str)> {
     let (stem, ext) = path.rsplit_once('.')?;
     (!stem.is_empty()
@@ -513,7 +513,7 @@ impl Checks for Gtfs {
     fn file(&self, path: &str, bytes: &[u8]) -> FileCheck {
         let mut c = FileCheck::default();
         match stem_of(path) {
-            None => c.findings.push(Finding::new(SHAPE, Level::Error, &[path], &["not a static file"], vec![path.into()], format!("{path} isn't the drop box's shape: timetables/gtfs takes <name>.zip static GTFS files and their <name>.toml descriptions (a name of letters, digits, - and _: docs/inputs.md §6.7.2); notes go in how/"))),
+            None => c.findings.push(Finding::new(SHAPE, Level::Error, &[path], &["not a static file"], vec![path.into()], format!("{path} isn't the inputs folder's shape: timetables/gtfs takes <name>.zip static GTFS files and their <name>.toml descriptions (a name of letters, digits, - and _: docs/inputs.md §6.7.2); notes go in how/"))),
             Some((_, "toml")) => {
                 let (d, mut fs, _) = super::credits::parse_description(path, bytes);
                 c.findings.append(&mut fs);
@@ -565,7 +565,7 @@ impl Checks for Gtfs {
     }
 }
 
-/// The accepted zips, in their drop-box paths' order: (path, checked copy) — what the counters read.
+/// The accepted zips, in their inputs-folder paths' order: (path, checked copy) — what the counters read.
 pub fn zips(a: &super::Accepted) -> Vec<(String, std::path::PathBuf)> {
     // (The counters' zip reader opens a member by its file's path, each time: tests/nas_access.rs.)
     a.files().filter(|(p, _)| p.ends_with(".zip")).map(|(p, c)| (p.clone(), c.unchecked_path())).collect()

@@ -420,7 +420,7 @@ Each a folder on the job's Mac, its files sent to the worker as `u/…`, not in 
 
 ## Names (docs/names.md)
 
-- **Translation lines** (`inputs/translations/**/*.jsonl`, not `todo/` nor `how/`; a drop box of the
+- **Translation lines** (`inputs/translations/**/*.jsonl`, not `todo/` nor `how/`; an inputs folder of the
   input check, docs/inputs.md §6.3): `{"n", "kind", "langs", "main", "sub", "via"}`: `kind` road,
   settlement or other, or a list; `langs` an ISO 639 language (first subtag counts) or a list;
   `main` required, null or empty for the name itself; `sub` null for none; `via` free text, "todo"
@@ -991,7 +991,7 @@ class, id) within a tile. The client sends the id with the clicked point.
   `pois`, `peaks`, `pack`, `lo` (z3 tiles, worldwide steps by name, input check jobs as
   `inputs/<unit>`), `trees`, `trees_lo`, the 3D buildings', `catalog`, `catalog_held`).
 - **The input check** (docs/inputs.md §3, §4; a unit's name is `/`-separated components of
-  `[a-z0-9_-]`; its records start with `@`): drop boxes under `inputs/` (docs/inputs.md §3: `regions`,
+  `[a-z0-9_-]`; its records start with `@`): inputs folders under `inputs/` (docs/inputs.md §3: `regions`,
   `languages`, `translations`, `descriptions`, `heritage`, `heritage-matches`, `timetables/feeds`,
   `timetables/gtfs`, `elevation`, `sources`; and the test unit's `inputs/_gate-test/`, `{"k", "v"}`
   lines, checked while `state/inputs/gate-test` exists), each box's top-level `todo/` (the app's)

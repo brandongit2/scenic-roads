@@ -11,7 +11,7 @@ pub const LINES_SHOWN: usize = 50;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum State {
-    /// Its accepted version is the drop box's.
+    /// Its accepted version is the inputs folder's.
     #[default]
     Ok,
     /// A check of it is planned or running, nothing of it held (`checking` says so of a held one).
@@ -219,7 +219,7 @@ pub fn of(
         if v.checked.is_some() && v.unread.is_none() {
             v.stale = acc.iter().filter(|id| !raised.contains(*id)).cloned().collect();
         }
-        // (A unit with nothing dropped yet, never checked, held nor accepted: not shown.)
+        // (A unit with nothing added yet, never checked, held nor accepted: not shown.)
         if v.version.is_none()
             && v.state == State::Ok
             && v.unread.is_none()

@@ -414,7 +414,7 @@ pub struct Inputs {
 pub enum InputsCmd {
     /// Every gate unit (the same as `scenic inputs`)
     List,
-    /// The drop boxes listed now: the lead's agent checks what changed
+    /// The inputs folders listed now: the lead's agent checks what changed
     Check {
         /// One unit (default: every one)
         unit: Option<String>,

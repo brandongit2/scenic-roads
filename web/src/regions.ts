@@ -25,7 +25,7 @@ export interface Area {
   bbox: [number, number, number, number];
 }
 
-/** A region as the server lists it (docs/inputs.md §6.1): a checked input in the drop box's
+/** A region as the server lists it (docs/inputs.md §6.1): a checked input in the inputs folder's
  * inputs/regions/, changed there only. Its outline is its parts as texts to read ("osm:<relation>",
  * "shape:<name>.geojson", or more: minus, intersect, a buffer, a cut). */
 export interface Region {

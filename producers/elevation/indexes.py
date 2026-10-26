@@ -25,7 +25,7 @@ the index's CRS), which the app reads as the file's box (min x <= x < max x, min
           corner farthest from the pole), so the dataset meets no Web Mercator tile (they end at
           85.05° S) and its coverage changes no existing key (docs/polar.md §2).
 
-Drop the index beside its declaration in inputs/elevation/; the input check reads it.
+Add the index beside its declaration in inputs/elevation/; the input check reads it.
 
 usage: indexes.py hrdem [--res 1|2] [--tiles <listing.txt>] --squares <index.geojson> --out <file>
        indexes.py 3dep --out <file>

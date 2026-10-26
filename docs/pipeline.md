@@ -32,7 +32,7 @@ Every row has the same fields; nothing about a step is kept anywhere else.
 | `id` (`name`) | the stored name: in the records, the journal, the leases, the timings, the floors, the `work/` paths; and the name every reader shows (task #659: no display names, the build page's, the menu bar's and `scenic status`' alike); renamed only with its old name read as the new (§3) | `unit`, `terrain-lo`, … |
 | `does` | one sentence: what it makes from what | |
 | `kind` | where its output goes | `fetch` (`sources/`, from outside), `derive` (`work/`, `global/`: what other steps read), `pack` (what the map serves), `publish` (a catalog), `keep` (checks, lists, removals, backups) |
-| `scope` | what one target is, and the noun its targets are counted in | `world` (one target: a run), z3 tile, z6 tile, `input` (a drop box); a task's `task`. Counted in "z3 tiles", "z6 tiles", … (`Scope::noun`); sent as `scope` `area` and `tile` by `/work/steps` (the stored words, kept: `Scope`'s serde names) |
+| `scope` | what one target is, and the noun its targets are counted in | `world` (one target: a run), z3 tile, z6 tile, `input` (an inputs folder); a task's `task`. Counted in "z3 tiles", "z6 tiles", … (`Scope::noun`); sent as `scope` `area` and `tile` by `/work/steps` (the stored words, kept: `Scope`'s serde names) |
 | `stage` | its stage | `pass`, `sites`, `terrain`, `slope`, `trees`, `depth`, `roads`, `tiles`, `finish`, `trains`, `landmarks`, `buildings`, `publish`, `upkeep` |
 | `place` | which Mac runs it: derived from the pool's rules (`agent::every::offered`), not kept | `any` (any member whose measured room fits), `lead` |
 | resources | its first guess of memory until measured, whether members take it and at what rank (`shared`), a whole-build run alone (`alone`), whether it keeps the pass's answers (`answered`), its write-set (`writes`). The rest is measured, not kept: each target's memory, disk, cores, time and NAS rate by the step's model (`needs::Book`), targets per job (`coord::JOB_S`), and whether a job runs with others on a Mac (packing, by those measures) | pool.md §7.2, §7.7 |
@@ -168,9 +168,8 @@ fixed at the bottom (the charts' range, the Live dot). Under 720 px the panels s
 first, and the page scrolls; what's in the tabs' panel lays out by the panel's width
 (`@container tabs`), so one dragged narrow beside the map reads as a phone's. A tab per part, in
 the mockup's order, chosen by the address's `#hash` (`#overview`, `#jobs`, `#machines`, `#nas`,
-`#regions`, `#dropboxes`, `#activity`, `#details`, `#device`; none or another: Overview), so a
-link or a reload opens the same tab; an alert links to the tab that says more (a held change: Drop
-boxes).
+`#regions`, `#inputs`, `#activity`, `#details`, `#device`; none or another: Overview), so a
+link or a reload opens the same tab; an alert links to the tab that says more (a held change: Inputs).
 
 Progress is the work left in the queue, never a share of a whole (no percentage, no "x of y" for
 the build): a build has no definite start, its keys invalidate and catalogues publish as it goes.
@@ -395,10 +394,10 @@ The Jobs tab's stages are the one exception.
   time goes: its three largest phases by their mean share of a run's wall time, each with its share
   of the bytes read and written (local disk, NAS and internet: "I/O"), over its last 10 runs that ended well (the lead's status's `phase_shares`,
   docs/pool.md §10; measured, none typed by hand; blank before a step's first run).
-- **Drop boxes tab:** the gate (docs/inputs.md §4.7), from the status's `inputs`: a banner per held
+- **Inputs tab:** the gate (docs/inputs.md §4.7), from the status's `inputs`: a banner per held
   unit (its held files, each finding, Accept per warning, Accept all; errors say what to fix, the
   only actions here: the inputs are otherwise read-only through the page), a quiet line per unit
-  being checked, else a line naming the drop boxes, all taken in. The Overview's alerts still say a
+  being checked, else a line naming the inputs folders, all taken in. The Overview's alerts still say a
   change is held.
 - **This device:** helping with this tab (index.html; not in `?view`).
 

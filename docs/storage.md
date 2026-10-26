@@ -4,7 +4,7 @@ NAS root: `personal/projects/scenic-roads/`, on the `personal` share. Deletions 
 Recycle Bin.
 
 ```
-inputs/        the drop boxes (docs/inputs.md): regions/, languages/, translations/, descriptions/,
+inputs/        the inputs folders (docs/inputs.md): regions/, languages/, translations/, descriptions/,
                heritage/, heritage-matches/, timetables/{feeds,gtfs}/, elevation/, sources/, each
                with how/ (how it's made); README.md; keys.env (API keys, KEY=value); hold-catalog;
                _gate-test/ (the input check's test unit)
@@ -74,7 +74,7 @@ folder's, so `std::fs::copy` or plain `cp` fail with "Permission denied".
 
 **Writers.** Every job uploads its files (content-named) and hands its record changes to the journal
 on the NAS, which the lead merges; no step writes the records directly once a term exists
-(`crate::out::check_writer`). Other writers: the owner's drop boxes, `tools/app/publish.sh`, and the
+(`crate::out::check_writer`). Other writers: the owner's inputs folders, `tools/app/publish.sh`, and the
 NAS's own planet fetch.
 
 **GC** runs daily, in the agent, when the NAS is quiet: only beside leased jobs that leave its

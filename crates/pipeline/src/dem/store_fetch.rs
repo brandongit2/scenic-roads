@@ -35,7 +35,7 @@ pub fn urls(index: &[u8]) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for (w, m) in ix.files.into_iter().map(|(w, _)| w).zip(ix.masks) {
         let Where::Url(u) = w else {
-            bail!("the index names a dropped file: a stored dataset's files are named by URL")
+            bail!("the index names an added file: a stored dataset's files are named by URL")
         };
         out.push(u);
         out.extend(m);

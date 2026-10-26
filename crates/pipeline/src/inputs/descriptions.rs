@@ -1,6 +1,6 @@
 //! The descriptions (docs/inputs.md §6.4): a request–fulfil input. The app lists the landmarks and
 //! areas without a description (`todo/`, crate::namestodo); the answers are `**/*.jsonl` files
-//! dropped anywhere else in `inputs/descriptions/`, a line a thing, `{"qid" | "id", "long", "src",
+//! added anywhere else in `inputs/descriptions/`, a line a thing, `{"qid" | "id", "long", "src",
 //! "drop"}`, laid over the popups by the map's server from the accepted copies. Beside them,
 //! `about.toml` may describe the input (docs/inputs.md §5.1): its credit goes into the catalog's
 //! credits (crate::inputs::credits) in place of `rules::CREDITS`' "Heritage descriptions".
@@ -17,10 +17,10 @@
 use super::{Checks, FileCheck, Finding, Level};
 use crate::inputs::translations::{about_lines, lines};
 
-/// The unit's name, and its drop box's old place at the NAS's root (before #137).
+/// The unit's name, and its inputs folder's old place at the NAS's root (before #137).
 pub const UNIT: &str = "descriptions";
 
-/// The input's description, at the drop box's top.
+/// The input's description, at the inputs folder's top.
 pub const ABOUT: &str = "about.toml";
 
 /// The writers' brief's most words (tools/names/descriptions-todo.md).
@@ -107,7 +107,7 @@ impl Checks for Descriptions {
             return c;
         }
         if !path.ends_with(".jsonl") {
-            c.findings.push(Finding::new(SHAPE, Level::Error, &[path], &["not jsonl"], vec![path.into()], format!("{path} isn't the drop box's shape: descriptions takes .jsonl files of description lines and about.toml (docs/inputs.md §6.4); notes go in how/")));
+            c.findings.push(Finding::new(SHAPE, Level::Error, &[path], &["not jsonl"], vec![path.into()], format!("{path} isn't the inputs folder's shape: descriptions takes .jsonl files of description lines and about.toml (docs/inputs.md §6.4); notes go in how/")));
             return c;
         }
         let Ok(text) = std::str::from_utf8(bytes) else {

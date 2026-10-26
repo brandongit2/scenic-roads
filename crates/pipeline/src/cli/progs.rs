@@ -263,7 +263,7 @@ pub struct Lakefill {
     pub cmd: LakefillCmd,
 }
 
-/// The lake-fill source's declaration (one as dropped into inputs/sources/,
+/// The lake-fill source's declaration (one as added to inputs/sources/,
 /// producers/sources/canvec-lakes.toml).
 #[derive(Args, Debug)]
 pub struct Declaration {

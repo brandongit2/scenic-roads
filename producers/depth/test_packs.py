@@ -98,15 +98,15 @@ def backdate(work: Path, hours: float):
 
 class Repack(unittest.TestCase):
     def setup(self, t: Path):
-        root, drop, acc = t / "nas", t / "drop", t / "nas/sources/inputs/sources"
-        for d in (drop, acc):
+        root, inputs_dir, acc = t / "nas", t / "inputs_dir", t / "nas/sources/inputs/sources"
+        for d in (inputs_dir, acc):
             d.mkdir(parents=True)
         src = root / "sources/fetched/s"
         feats = grids(src)
-        (drop / "s.toml").write_text('[data]\nrole = "depth"\nindex = "s-grids.geojson"\n')
-        (drop / "s-grids.geojson").write_text(json.dumps({"type": "FeatureCollection", "features": feats}))
-        args = ["s", "--work", str(t / "work"), "--nas", "local", "--nas-root", str(root), "--drop", str(drop), "--root", str(root), "--batch-gb", "0"]
-        return root, drop, acc, src, feats, args
+        (inputs_dir / "s.toml").write_text('[data]\nrole = "depth"\nindex = "s-grids.geojson"\n')
+        (inputs_dir / "s-grids.geojson").write_text(json.dumps({"type": "FeatureCollection", "features": feats}))
+        args = ["s", "--work", str(t / "work"), "--nas", "local", "--nas-root", str(root), "--inputs", str(inputs_dir), "--root", str(root), "--batch-gb", "0"]
+        return root, inputs_dir, acc, src, feats, args
 
     def run_(self, args):
         with redirect_stdout(io.StringIO()):
@@ -115,12 +115,12 @@ class Repack(unittest.TestCase):
     def test_a_repack_packs_on_the_nas_adopts_and_sweeps_only_once_taken_in(self):
         with tempfile.TemporaryDirectory() as t:
             t = Path(t)
-            root, drop, acc, src, feats, args = self.setup(t)
+            root, inputs_dir, acc, src, feats, args = self.setup(t)
             loose = {n: (src / n).read_bytes() for f in feats for n in packs.names(f)}
-            orig = (drop / "s-grids.geojson").read_bytes()
+            orig = (inputs_dir / "s-grids.geojson").read_bytes()
             self.run_(args)
-            # The packs on the NAS beside the loose files, the drop box untouched without --adopt.
-            self.assertEqual((drop / "s-grids.geojson").read_bytes(), orig)
+            # The packs on the NAS beside the loose files, the inputs folder untouched without --adopt.
+            self.assertEqual((inputs_dir / "s-grids.geojson").read_bytes(), orig)
             packed = json.loads((t / "work/s/s-grids.geojson").read_text())["features"]
             self.assertEqual([f["properties"]["file"] for f in packed], [f["properties"]["file"] for f in feats])
             for f in packed:
@@ -137,19 +137,19 @@ class Repack(unittest.TestCase):
             self.assertEqual((t / "work/s/s-grids.geojson").read_bytes(), before)
             # Adopted; a sweep before the build takes it in deletes nothing.
             self.run_(args + ["--adopt"])
-            self.assertEqual((drop / "s-grids.geojson").read_bytes(), before)
+            self.assertEqual((inputs_dir / "s-grids.geojson").read_bytes(), before)
             with self.assertRaises(SystemExit):
                 self.run_(args + ["--sweep"])
             self.assertTrue(all((src / n).exists() for n in loose))
-            # Taken in, then rolled back (the drop box and the accepted version the loose index
+            # Taken in, then rolled back (the inputs folder and the accepted version the loose index
             # again, an accepted copy of the packed one still there): nothing deleted.
             accept(root, before, "packed")
-            (drop / "s-grids.geojson").write_bytes(orig)
+            (inputs_dir / "s-grids.geojson").write_bytes(orig)
             accept(root, orig, "loose")
             with self.assertRaises(SystemExit):
                 self.run_(args + ["--sweep"])
             self.assertTrue(all((src / n).exists() for n in loose))
-            # The drop box packed again but the build's version still the loose one: nothing deleted.
+            # The inputs folder packed again but the build's version still the loose one: nothing deleted.
             self.run_(args + ["--adopt"])
             with self.assertRaises(SystemExit):
                 self.run_(args + ["--sweep"])
@@ -164,7 +164,7 @@ class Repack(unittest.TestCase):
             self.assertTrue(all((src / n).exists() for n in loose))
             # A rollback between sweeps (and back): the wait starts again.
             backdate(work, 25)
-            (drop / "s-grids.geojson").write_bytes(orig)
+            (inputs_dir / "s-grids.geojson").write_bytes(orig)
             accept(root, orig, "loose")
             self.refused(args, "doesn't read the packed index")
             self.assertNotIn("taken_in_seen", json.loads((work / "done.json").read_text()))
@@ -219,7 +219,7 @@ class Repack(unittest.TestCase):
     def test_a_trial_packs_a_box_into_its_own_folder_and_never_adopts(self):
         with tempfile.TemporaryDirectory() as t:
             t = Path(t)
-            root, drop, acc, src, feats, args = self.setup(t)
+            root, inputs_dir, acc, src, feats, args = self.setup(t)
             dest = root / "scratch"
             dest.mkdir()
             self.run_(args + ["--box", "-64,44,-63,45", "--dest", str(dest)])
@@ -233,12 +233,12 @@ class Repack(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 self.run_(args)
 
-    def test_a_changed_drop_box_index_stops_a_run(self):
+    def test_a_changed_inputs_folder_index_stops_a_run(self):
         with tempfile.TemporaryDirectory() as t:
             t = Path(t)
-            root, drop, acc, src, feats, args = self.setup(t)
+            root, inputs_dir, acc, src, feats, args = self.setup(t)
             self.run_(args)
-            (drop / "s-grids.geojson").write_text(json.dumps({"type": "FeatureCollection", "features": feats[:2]}))
+            (inputs_dir / "s-grids.geojson").write_text(json.dumps({"type": "FeatureCollection", "features": feats[:2]}))
             with self.assertRaises(SystemExit):
                 self.run_(args + ["--adopt"])
 

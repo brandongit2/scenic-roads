@@ -1,7 +1,7 @@
 //! The elevation datasets as the owner declares them (docs/inputs.md §6.8): one `<dataset>.toml` per
 //! dataset in `inputs/elevation/`, a description (§5.1) with its surface, height reference, an
 //! optional rank, the source byte its heights carry (`code`) and its data: GeoTIFFs by URL, a tile
-//! index beside it, files dropped in `<dataset>/`, or a tile pyramid in a declared encoding. What's
+//! index beside it, files added in `<dataset>/`, or a tile pyramid in a declared encoding. What's
 //! read from the data (each GeoTIFF's CRS and resolution, a dataset's coverage) is measured by the
 //! input check (crate::inputs::elevation), never typed, and kept in the accepted index's facts.
 //!
@@ -80,7 +80,7 @@ pub enum Data {
         /// `file` in `<dataset>/`, and its footprint in the index's CRS).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         index: Option<String>,
-        /// Files dropped in `<dataset>/`, by glob.
+        /// Files added in `<dataset>/`, by glob.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         files: Vec<String>,
         /// Each file downloaded whole once, kept in `sources/fetched/<dataset>/` (read in place
@@ -597,7 +597,7 @@ pub enum Source {
         /// Kept in the store (`sources/fetched/<id>/`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         store: bool,
-        /// The files near the unit, in the index's order: a URL (or a path for a dropped file) and
+        /// The files near the unit, in the index's order: a URL (or a path for an added file) and
         /// its footprint in `crs` (None: the raster's own bounds).
         files: Vec<(String, Option<[f64; 4]>)>,
         /// Each file's fill mask (its index's `mask`), in the same order: a pixel whose mask is
@@ -796,7 +796,7 @@ fn native_box(crs: u16, b: [f64; 4], grow_m: f64) -> Result<[f64; 4]> {
 
 /// The plan a unit samples from: the accepted datasets in their order, each with its files whose
 /// footprints meet `near` (w, s, e, n, degrees: the unit's vertices' box, grown here by a few km,
-/// past any blend band), the index read from its accepted copy (`a`). A dropped file is named by its
+/// past any blend band), the index read from its accepted copy (`a`). An added file is named by its
 /// accepted copy's path.
 pub fn plan(a: &crate::inputs::Accepted, near: [f64; 4]) -> Result<Plan> {
     plan_converted(a, near, &[])
@@ -873,7 +873,7 @@ pub fn plan_converted(
     Ok(Plan { fmt: 1, version: a.version.clone(), tag: tagged, datasets: out })
 }
 
-/// A file's URL, or a dropped file's accepted copy's path.
+/// A file's URL, or an added file's accepted copy's path.
 fn locate(a: &crate::inputs::Accepted, id: &str, w: &Where) -> Result<String> {
     match w {
         Where::Url(u) => Ok(u.clone()),

@@ -1,7 +1,7 @@
 //! A unit's accepted version kept on a Mac for the map's server (docs/inputs.md §4.6, §6.3, §6.4):
 //! the translations and the descriptions are served from the accepted copies the lead's records
 //! (`state/build/manifest.json`) name, copied to the Mac so they work offline and load fast, and
-//! read from that copy. The server never reads a drop box.
+//! read from that copy. The server never reads an inputs folder.
 //!
 //! On the Mac, in the unit's folder: `@index.json` (the index's content name and the index), and
 //! each accepted file under its content name. A sync reads the records, and when they name another
@@ -20,7 +20,7 @@ pub const RECORDS: &str = "state/build/manifest.json";
 /// The local copy's index.
 const LOCAL: &str = "@index.json";
 
-/// Accepted files by drop-box path: the local copy and its content name.
+/// Accepted files by inputs-folder path: the local copy and its content name.
 pub type Files = BTreeMap<String, (PathBuf, String)>;
 
 /// The local copy's index: the accepted index's content name, and the index.
@@ -30,7 +30,7 @@ pub struct Kept {
     pub index: Index,
 }
 
-/// The accepted files kept in `local`: by drop-box path, the local copy and its content name. None
+/// The accepted files kept in `local`: by inputs-folder path, the local copy and its content name. None
 /// before a version was kept.
 pub fn files(local: &Path) -> Option<(String, Files)> {
     let k: Kept = serde_json::from_slice(&std::fs::read(local.join(LOCAL)).ok()?).ok()?;

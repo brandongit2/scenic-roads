@@ -1,5 +1,5 @@
 //! The languages by territory (docs/inputs.md §6.2): a declare input, generated once and rarely
-//! touched. Its drop box, `inputs/languages/`, holds `territories.tsv`, one territory a line,
+//! touched. Its inputs folder, `inputs/languages/`, holds `territories.tsv`, one territory a line,
 //! `<code>\t<language>,<language>…`, most spoken first (`names::Table`'s reading; `#` lines are
 //! comments), and `about.toml` (§5.1: CLDR's version, the Unicode licence, its credit). The
 //! `spoken` job builds `global/spoken` from the accepted table (crate::agent::build::spoken_work).
@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// The unit's name.
 pub const UNIT: &str = "languages";
 
-/// The table, and the input's description, at the drop box's top.
+/// The table, and the input's description, at the inputs folder's top.
 pub const TABLE: &str = "territories.tsv";
 pub const ABOUT: &str = "about.toml";
 
@@ -118,7 +118,7 @@ impl Checks for Languages {
             return c;
         }
         if path != TABLE {
-            c.findings.push(Finding::new(SHAPE, Level::Error, &[path], &["not the table"], vec![path.into()], format!("{path} isn't the drop box's shape: languages takes {TABLE} and {ABOUT} (docs/inputs.md §6.2); notes go in how/")));
+            c.findings.push(Finding::new(SHAPE, Level::Error, &[path], &["not the table"], vec![path.into()], format!("{path} isn't the inputs folder's shape: languages takes {TABLE} and {ABOUT} (docs/inputs.md §6.2); notes go in how/")));
             return c;
         }
         let Ok(text) = std::str::from_utf8(bytes) else {
@@ -186,7 +186,7 @@ impl Checks for Languages {
         if path != TABLE {
             return Vec::new();
         }
-        vec![Finding::new(MISSING, Level::Error, &[path], &["removed"], vec![path.into()], format!("{path} removed: the languages spoken where are built from it; put it back (a new one dropped replaces it)"))]
+        vec![Finding::new(MISSING, Level::Error, &[path], &["removed"], vec![path.into()], format!("{path} removed: the languages spoken where are built from it; put it back (a new one added replaces it)"))]
     }
 
     fn whole(&self, v: &Version) -> Result<Vec<Finding>> {

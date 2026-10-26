@@ -3777,7 +3777,7 @@ fn route(
                 })
                 .unwrap_or_default();
             let all = b["all"].as_bool() == Some(true);
-            // (And a member's agent's word that the drop boxes or acceptances changed, `check`, so
+            // (And a member's agent's word that the inputs folders or acceptances changed, `check`, so
             // they're listed now; or its owner's ask to forget a z6 tile's records, `forget`: not a
             // page's.)
             let check = b["check"].as_bool() == Some(true);

@@ -25,7 +25,7 @@
 //! beyond the coverage. And `used`: per feed its day, trips and duplicates, or why it was left out.
 //!
 //! The static files (the accepted zips of inputs/timetables/gtfs/, docs/inputs.md §6.7.2, in their
-//! drop-box paths' order), read after the feeds:
+//! inputs-folder paths' order), read after the feeds:
 //!   - their trips as a feed's, the days from `calendar.txt` read as months and days over one
 //!     reference year (crate::gtfs::statics), the typical day the median-busy Tuesday to Thursday of
 //!     that year; their trains deduplicated with the feeds' by times;

@@ -2,7 +2,7 @@
 //! §6.3): its rules on each line (`problem`: romanisation that isn't Hepburn, English in the
 //! original's word order, a half translation…) and its stretches of English that drifted from their
 //! names (`drift`) are the translations' warnings. One checker, so what the translators run on a
-//! batch before dropping it and what the input check says of it can't differ.
+//! batch before adding it and what the input check says of it can't differ.
 //!
 //! It runs as the Python steps do, from the app's copy of `dem/` (`uv run`, the Python that
 //! `dem/.python-version` pins, so its Unicode tables, and with them its verdicts, are the same on

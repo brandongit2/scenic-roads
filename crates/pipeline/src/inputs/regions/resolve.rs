@@ -49,7 +49,7 @@ pub struct Folder {
     pub hashes: BTreeMap<String, String>,
 }
 
-/// The file name of a drop-box path.
+/// The file name of an inputs folder path.
 pub fn file_name(path: &str) -> &str {
     path.rsplit_once('/').map_or(path, |(_, n)| n)
 }
@@ -61,14 +61,14 @@ pub fn takes(path: &str) -> bool {
     n.ends_with(".toml") || n.ends_with(".geojson")
 }
 
-/// Whether a drop-box path is a special file, never a region: a `.toml` whose name starts with `_`
+/// Whether an inputs folder path is a special file, never a region: a `.toml` whose name starts with `_`
 /// (§6.1.2). Only the known ones (`special`) are taken; any other is a check fault.
 pub fn is_special(path: &str) -> bool {
     let n = file_name(path);
     n.starts_with('_') && n.ends_with(".toml")
 }
 
-/// Whether the regions pass over a name in a drop box: `inputs::ignored`'s, but a special file's
+/// Whether the regions pass over a name in an inputs folder: `inputs::ignored`'s, but a special file's
 /// (`_*.toml`) is taken, to be read or to be a fault.
 pub fn passes_over(name: &str) -> bool {
     crate::inputs::ignored(name) && !is_special(name)
@@ -89,7 +89,7 @@ pub enum Special {
     Rules,
 }
 
-/// Which known special file a drop-box path is: `_group.toml` in any folder, `_pins.toml` and
+/// Which known special file an inputs folder path is: `_group.toml` in any folder, `_pins.toml` and
 /// `_rules.toml` at the top.
 pub fn special(path: &str) -> Option<Special> {
     match (file_name(path), path.contains('/')) {

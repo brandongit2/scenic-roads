@@ -9,7 +9,7 @@
 //!
 //! - **Which datasets:** those whose full resolution (`Measured::full`, else `resolution`) is finer
 //!   than the worldwide datasets' finest by over a tenth (`FINER`, `base_resolution`): HRDEM, USGS
-//!   3DEP and GSI's, not GLO-30 (30 m: a worldwide one). None is named in code: one dropped into
+//!   3DEP and GSI's, not GLO-30 (30 m: a worldwide one). None is named in code: one added to
 //!   `inputs/elevation/` later is taken the same way.
 //! - **How deep:** a dataset's zoom at a latitude is the finest whose pixels are no finer than half
 //!   its cell (`zoom_for`): 2 m data to z16 in most of Canada, 3DEP's 10 m to z14 (z13 north of
@@ -590,7 +590,7 @@ fn grid(b: [f64; 4]) -> Vec<(f64, f64)> {
 }
 
 /// The GeoTIFF files of `plan`'s datasets meeting box `b` (those fetched: not in a store, nor
-/// dropped files) whose footprints come within their bands' reach of it, open (`FETCHES` at once).
+/// added files) whose footprints come within their bands' reach of it, open (`FETCHES` at once).
 fn plan_files(plan: &Plan, b: [f64; 4], bf: &BaseFetch) -> Result<Vec<PlanFile>> {
     use crate::dem::generic::M_PER_DEG;
     let lat = poleward(b);

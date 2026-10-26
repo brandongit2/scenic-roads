@@ -8,7 +8,7 @@
 #
 #   gate-two-macs.sh root <folder>              the scratch folder: the pool's records as it begins
 #                                               (no term yet: the first Mac in makes term 1), the
-#                                               test unit on the gate, its drop box empty (once, on
+#                                               test unit on the gate, its inputs folder empty (once, on
 #                                               one Mac)
 #   gate-two-macs.sh app <dir> <bin>            <dir>/v/app/20261010-0000-gatetest/: scenic and
 #                                               scenic-build copied from <bin> (target/release);
@@ -17,7 +17,7 @@
 #                                               whenever it exits (on the M1: inside a persistent ssh
 #                                               session, as for pool-two-macs.sh)
 #   gate-two-macs.sh stop <dir>                 the launcher and the agent stopped
-#   gate-two-macs.sh drop <folder> <name> <line>…  a file dropped (lines, written by a temporary
+#   gate-two-macs.sh add <folder> <name> <line>…  a file added (lines, written by a temporary
 #                                               name and renamed in, as the owner's tools do)
 #   gate-two-macs.sh big <folder> <name> <n>    a file of n good lines (a check that takes a while)
 #   gate-two-macs.sh touch <folder> <name>      a file's time changed, its bytes not
@@ -37,12 +37,12 @@
 #
 # The proof, in order (M4 and M1 each with `app` and `run`; <F> the scratch folder; check each step
 # with `wait`, keep each Mac's <dir>/agent.log):
-#   1. A drop taken in: `drop <F> a.jsonl '{"k": "x", "v": 1}'`; wait 'taken in' and a version.
-#   2. An error held, the last good version kept: `drop <F> a.jsonl '{"k": "x", "v": 1}' 'oops'`;
+#   1. An update taken in: `add <F> a.jsonl '{"k": "x", "v": 1}'`; wait 'taken in' and a version.
+#   2. An error held, the last good version kept: `add <F> a.jsonl '{"k": "x", "v": 1}' 'oops'`;
 #      wait 'error gt-line'; `state` shows the version of step 1.
-#   3. A warning accepted from the build page: `drop <F> a.jsonl '{"k": "x", "v": -1}'`; wait
+#   3. A warning accepted from the build page: `add <F> a.jsonl '{"k": "x", "v": -1}'`; wait
 #      'warning gt-neg'; `page-accept <F> _gate-test`; wait 'taken in' with a new version.
-#   4. A warning accepted from the other Mac's menu: `drop <F> b.jsonl '{"k": "y", "v": -2}'`; on the
+#   4. A warning accepted from the other Mac's menu: `add <F> b.jsonl '{"k": "y", "v": -2}'`; on the
 #      Mac that doesn't lead, `menu-accept <dir> _gate-test <id>` (the id `state` shows); wait
 #      'taken in'.
 #   5. An unaccept: `scenic inputs unaccept _gate-test <id>` (with --root <F> --home <dir>/agent);
@@ -84,7 +84,7 @@
 # folder without the pool) checked, held, accepted, taken in and swept the same way. After `test
 # off` no check runs; the status still lists the unit while its records are there.
 set -euo pipefail
-usage="usage: tools/check/gate-two-macs.sh root|app|run|stop|drop|big|touch|remove|state|wait|page-accept|menu-accept|lead … (see the top of this file)"
+usage="usage: tools/check/gate-two-macs.sh root|app|run|stop|add|big|touch|remove|state|wait|page-accept|menu-accept|lead … (see the top of this file)"
 case ${1:-} in
   -h|--help) print -r -- $usage; exit 0 ;;
   ""|-*) print -ru2 -- "gate-two-macs.sh: unexpected ${1:-end}"$'\n'"$usage"; exit 2 ;;
@@ -92,7 +92,7 @@ esac
 cmd=$1
 V=20261010-0000-gatetest
 U=_gate-test
-# A drop box's file, written whole by a temporary name (passed over: names starting with "."), then
+# An inputs folder's file, written whole by a temporary name (passed over: names starting with "."), then
 # renamed in.
 put() {
   local f=$1; shift
@@ -138,7 +138,7 @@ case $cmd in
       [[ $(ps -o command= -p $pid 2>/dev/null) == "$d/v/app/current/scenic agent"* ]] && kill $pid
     done
     ;;
-  drop)
+  add)
     r=${2:?the scratch folder}; n=${3:?a file name}; shift 3
     put $r/inputs/$U/$n "$@"
     ;;
@@ -189,5 +189,5 @@ for i in range(int(sys.argv[1])): w("{\"k\": \"k%d\", \"v\": %d}\n" % (i, i))' $
     d=${2:?its folder}; shift 2
     $(scenic_of $d) lead --home ${d:a}/agent "$@"
     ;;
-  *) print -u2 "root, app, run, stop, drop, big, touch, remove, state, wait, page-accept, menu-accept or lead"; exit 2 ;;
+  *) print -u2 "root, app, run, stop, add, big, touch, remove, state, wait, page-accept, menu-accept or lead"; exit 2 ;;
 esac

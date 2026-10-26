@@ -150,7 +150,7 @@ fn errors_name_what_is_wrong() {
     assert!(msgs.iter().any(|m| m.contains("route_type \"13\"")), "{msgs:?}");
     assert!(msgs.iter().any(|m| m.contains("no osm pin")), "{msgs:?}");
     assert!(msgs.iter().any(|m| m.contains("both trips and count rows")), "{msgs:?}");
-    // Not a zip, not the drop box's shape.
+    // Not a zip, not the inputs folder's shape.
     assert_eq!(checks_of(&Gtfs.file("lake.zip", b"PK nothing")), vec![("tg-zip".to_string(), Level::Error)]);
     assert_eq!(checks_of(&Gtfs.file("lake.csv", b"")), vec![("tg-shape".to_string(), Level::Error)]);
     assert_eq!(

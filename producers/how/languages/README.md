@@ -11,4 +11,4 @@ or, to reapply the refinements to the table here:
 
     uv run --project producers python producers/languages/cldr-languages.py --base inputs/languages/territories.tsv --out <folder>
 
-Drop both outputs (`territories.tsv`, `about.toml`) here; the input check takes them in.
+Add both outputs (`territories.tsv`, `about.toml`) to the languages inputs; the input check takes them in.

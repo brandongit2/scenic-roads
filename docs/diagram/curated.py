@@ -1,7 +1,7 @@
 """The curated inputs: what a person or an AI agent made by hand (research, curation, agents' writing, hand downloads,
 hand-run steps), not a deterministic job or configuration in the code. For each: what it feeds, who or what makes it, where
 it lives, where its method is written down, and what making it again would take today. The owner's starting point for
-standardising them (9 Oct 2026). Kept to what's true on main; each drop box's how/ (docs/inputs.md §8) and docs/steps.md
+standardising them (9 Oct 2026). Kept to what's true on main; each inputs folder's how/ (docs/inputs.md §8) and docs/steps.md
 "Hand-made inputs" say how each is made."""
 from html import escape as E
 
@@ -56,7 +56,7 @@ GROUPS = [
     ('Chosen, researched or downloaded by hand', [
         ('doc', None, 'osm', 'Regions',
          'the coverage (the enabled regions’ union): what every step builds; disabled ones are checked, never built',
-         'you, as files in the drop box: OSM relations and ways, shapes, sea zones; _rules.toml (cover = "earth")',
+         'you, as files in the inputs folder: OSM relations and ways, shapes, sea zones; _rules.toml (cover = "earth")',
          'NAS inputs/regions/ (backed up daily)',
          'docs/regions.md, docs/inputs.md §6.1; its how/',
          'nothing: they are the definition'),
@@ -65,7 +65,7 @@ GROUPS = [
          'producers/heritage/registers.py from the registers’ downloads (Canada’s federal list located by federal.py, the CRHP read by crhp.py, each country’s and province’s open data), a GeoJSON file and a description per register',
          'NAS inputs/heritage/ (through the input check), the owner’s matches in inputs/heritage-matches/',
          'inputs.md §6.5: each register’s credit, licence, source, download date and territory in its description; its how/ (the commands, the downloads’ cache); no download URL per file of a register',
-         'the producers on the downloads (their data folder), dropped into the drop box'),
+         'the producers on the downloads (their data folder), added to the inputs folder'),
         ('part', None, 'base', 'The basemap’s pinned versions',
          'the basemap, and from it the water, the terrain’s water and labels',
          'downloaded by hand: the jar (0.10.2), Natural Earth, the water polygons, lake centrelines',
@@ -154,5 +154,5 @@ def html():
     return ('<section class="cur-list" aria-label="Curated inputs"><h3>Curated inputs · made by hand</h3>'
             '<p>Everything a person or an AI agent made by hand rather than a job: what it feeds, who makes it, where it lives, '
             'where its method is written down and what making it again would take today. ' + E(summary) +
-            ' Each drop box’s how/ on the NAS says how its input is made, pointing to its producers in the repository '
+            ' Each inputs folder’s how/ on the NAS says how its input is made, pointing to its producers in the repository '
             '(producers/).</p>' + ''.join(rows) + '</section>')

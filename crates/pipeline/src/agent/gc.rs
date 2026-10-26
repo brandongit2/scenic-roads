@@ -16,7 +16,7 @@
 //! journal entry not yet merged does, or an index made or replaced within `keep_days` lists them
 //! (`inputs_kept`; none swept when one of those can't be read).
 //! The newest pass, a planet waiting for its pass, the rest of `sources/`, the user's folders (the
-//! drop boxes), state and the app are never touched. With no readable catalog nothing is deleted.
+//! inputs folders), state and the app are never touched. With no readable catalog nothing is deleted.
 
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -985,7 +985,7 @@ mod tests {
     }
 
     /// The gate's copies (docs/inputs.md §4.9): kept while the manifest's index or report names
-    /// them, or a journal entry not merged yet does; the rest of `sources/` and the drop boxes
+    /// them, or a journal entry not merged yet does; the rest of `sources/` and the inputs folders
     /// never swept; none swept while an index can't be read.
     #[test]
     fn the_inputs_copies_go_once_nothing_names_them() {
@@ -1019,7 +1019,7 @@ mod tests {
         );
         put(&format!("{u}/@held.7777777777777777.json"), "{}", 60);
         put(&format!("{u}/@held.8888888888888888.json"), "{}", 60); // an old report: goes
-        put("inputs/_gate-test/a.jsonl", "x", 300); // the drop box: never
+        put("inputs/_gate-test/a.jsonl", "x", 300); // the inputs folder: never
         put("sources/registers/legacy.9999999999999999.tar.zst", "x", 300); // the rest of sources/: never
         store::catalog::write(&root.join("catalog"), &store::catalog::Catalog::new(1)).unwrap();
         fs::create_dir_all(root.join("state/build")).unwrap();

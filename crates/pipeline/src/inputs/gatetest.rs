@@ -34,7 +34,7 @@ impl Checks for GateTest {
                 &["not jsonl"],
                 vec![path.into()],
                 format!(
-                    "{path} isn't the drop box's shape: _gate-test takes .jsonl files of {{\"k\": …, \"v\": …}} lines"
+                    "{path} isn't the inputs folder's shape: _gate-test takes .jsonl files of {{\"k\": …, \"v\": …}} lines"
                 ),
             ));
             return c;

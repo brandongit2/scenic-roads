@@ -21,7 +21,7 @@
 //! - **Parks:** the ovdata's park records.
 //! - The languages spoken where: the catalog's outlines (`names::spoken`), kept in the scratch.
 //! - The translations' and the descriptions' accepted versions (docs/inputs.md §6.3, §6.4), as the
-//!   agent names them (their indexes' content names, in the job's key): never the drop boxes.
+//!   agent names them (their indexes' content names, in the job's key): never the inputs folders.
 
 use anyhow::{Context, Result};
 use names::{Kind, Lang, Names, Spoken};
@@ -612,7 +612,7 @@ fn described(accepted: &crate::inputs::Accepted) -> Result<HashSet<String>> {
     Ok(set)
 }
 
-/// The translations' accepted files as the tables read them: by drop-box path, the copy and its
+/// The translations' accepted files as the tables read them: by inputs-folder path, the copy and its
 /// content name.
 pub fn translation_files(accepted: &crate::inputs::Accepted) -> BTreeMap<String, (PathBuf, String)> {
     accepted

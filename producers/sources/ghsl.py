@@ -7,7 +7,7 @@ The tiles' grid is read here, never in the app: a zip named `<product>_R<row>_C<
 10° square `GRID_DEG` × (row − 1) below `GRID_TOP` and × (col − 1) right of `GRID_LEFT` (R1_C1's
 corner, read from R1_C8's GeoTIFF); squares wholly beyond the poles are left out.
 
-Drop the index beside its declaration in inputs/sources/; the input check reads it.
+Add the index beside its declaration in inputs/sources/; the input check reads it.
 
 usage: ghsl.py --out <file>
 """

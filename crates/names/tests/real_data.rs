@@ -1,5 +1,5 @@
 //! Against the real data: the label archive and basemap in `data/build`, and the converted lines
-//! by language (`$NAMES_CONVERTED`: a copy of the translations' `0-converted/`, never the drop box). Those reading it are
+//! by language (`$NAMES_CONVERTED`: a copy of the translations' `0-converted/`, never the inputs folder). Those reading it are
 //! ignored unless asked for (`--ignored`: the suite reads no real data), and each skips (passes,
 //! saying so) when its data isn't there.
 //!

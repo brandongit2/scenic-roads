@@ -9,7 +9,7 @@ The bucket's naming quirk is read here, never in the app: most of the equator's 
 a square's corner is the name's latitude as a number (-0.0 is 0); where one file is under both
 names, the `lat=0.0` one is listed (as the app asked for it first before the index).
 
-Drop the index beside its declaration in inputs/sources/; the input check reads it.
+Add the index beside its declaration in inputs/sources/; the input check reads it.
 
 usage: canopy.py --out <file>
 """

@@ -3,7 +3,7 @@
 //! OSM decides what's drawn; timetables only add counts. Two things the owner can't see otherwise:
 //! - **The to-do:** OSM's rail and ferry lines in the coverage that no timetable covers, by
 //!   priority, as `inputs/timetables/gtfs/todo/lines.jsonl` beside a brief (`todo/README.md`). The
-//!   owner answers with static GTFS zips in the drop box (crate::inputs::gtfs).
+//!   owner answers with static GTFS zips in the inputs folder (crate::inputs::gtfs).
 //! - **The report:** timetable routes that match nothing on the map, as `work/timetables/report`,
 //!   which the lead shows on the build page and in `scenic status`. Never drawn, never held.
 //!
@@ -24,7 +24,7 @@ pub const RAIL_LINES: &str = "work/rail/lines";
 pub const FERRY_LINES: &str = "work/ferries/lines";
 /// The report: `{"to_do", "to_do_km", "by_kind", "unmatched": [...]}`.
 pub const REPORT: &str = "work/timetables/report";
-/// The to-do list's file in the drop box's `todo/`.
+/// The to-do list's file in the inputs folder's `todo/`.
 pub const TODO_FILE: &str = "lines.jsonl";
 /// The job's version: in its key.
 pub const VERSION: u32 = 1;
@@ -272,7 +272,7 @@ fn put(path: &store::nasfs::NasPath, bytes: &[u8]) -> Result<()> {
 }
 
 /// The job: the two pieces read from `out`'s records, the to-do list and its brief written whole
-/// into the static timetables' drop box's `todo/` (under `todo_root`: the project folder, or a
+/// into the static timetables' inputs folder's `todo/` (under `todo_root`: the project folder, or a
 /// scratch one; `todo/` is never read as an input, crate::inputs::list), the report put as
 /// [`REPORT`].
 pub fn run(
@@ -492,7 +492,7 @@ r5 v1 Ttype=route,route=tram,name=Far Mw99@\n";
         assert_eq!(std::fs::read_to_string(todo.join(TODO_FILE)).unwrap().lines().count(), 1);
         assert!(todo.join("README.md").exists());
         assert!(out.get(REPORT).is_some());
-        // The drop box's listing never takes todo/ in, nor counts it as a change.
+        // The inputs folder's listing never takes todo/ in, nor counts it as a change.
         std::fs::write(root.join("inputs/timetables/gtfs/a.zip"), b"z").unwrap();
         for recursive in [false, true] {
             let listed = crate::inputs::list(
