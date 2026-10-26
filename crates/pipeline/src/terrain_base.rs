@@ -282,7 +282,7 @@ pub struct Tiles<'a> {
     /// The tiles sampled with data: a tile whose four children all are one is made from them alone
     /// (crate::terrain_pack::prepare's quarters), so it isn't sampled (`FLAT` stands for it).
     with_data: Mutex<std::collections::HashSet<(u8, u32, u32)>>,
-    /// Whether the build is pausing (crate::control::draining; a test's own): checked before each
+    /// Whether the build is pausing (crate::control::draining_lately; a test's own): checked before each
     /// sampling, a chunk or a tile, which then stops with crate::control::Paused.
     draining: &'a (dyn Fn() -> bool + Sync),
 }
@@ -302,7 +302,7 @@ impl<'a> Tiles<'a> {
             at_sea: &[],
             held: Mutex::new(HashMap::new()),
             with_data: Mutex::new(Default::default()),
-            draining: &crate::control::draining,
+            draining: &crate::control::draining_lately,
         }
     }
 

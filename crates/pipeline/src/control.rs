@@ -357,6 +357,24 @@ pub fn draining() -> bool {
     std::env::var_os(CONTROL_ENV).and_then(|p| std::fs::read(p).ok()).is_some_and(|b| b.starts_with(b"drain"))
 }
 
+/// `draining`, read at most once a second (a stale answer for no longer): for checks made on every
+/// sampling call (crate::terrain_base::Tiles), which a file read each would slow.
+pub fn draining_lately() -> bool {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    static BEGAN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    static READ_AT_MS: AtomicU64 = AtomicU64::new(0);
+    static WAS: AtomicBool = AtomicBool::new(false);
+    let now = BEGAN.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64 + 1_000;
+    let at = READ_AT_MS.load(Ordering::Relaxed);
+    if now.saturating_sub(at) < 1_000 {
+        return WAS.load(Ordering::Relaxed);
+    }
+    let d = draining();
+    WAS.store(d, Ordering::Relaxed);
+    READ_AT_MS.store(now, Ordering::Relaxed);
+    d
+}
+
 /// A safe point of `step`: with the build pausing, the job ends here, as paused (each target before
 /// it saved and noted done as it finished).
 pub fn safe_point(step: &str) {

@@ -5383,6 +5383,10 @@ impl Landing {
             Ok(v) => Ok(v),
             Err(e) => {
                 if let Err(l) = self.land(out) {
+                    // (Pausing, a failed landing is the job's failure: not hidden by the pause's exit.)
+                    if pipeline::control::is_paused(&e) {
+                        return Err(l);
+                    }
                     eprintln!("{l:#}");
                 }
                 Err(e)

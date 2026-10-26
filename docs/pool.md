@@ -701,7 +701,7 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   tile's tiles at z12, then the level's end) and a terrain-deep z10 tile (its base tiles, each
   with its z13â€“16 subtree; crate::terrain_resume). slope-hi and slope-deep keep none: their
   targets take minutes at most. A drain also stops the terrain's steps (terrain-hi, -deep, -lo, -root) mid-target: their
-  sampling of the elevation pool checks `SCENIC_CONTROL` before each chunk (16 tiles) and ends
+  sampling of the elevation pool checks `SCENIC_CONTROL` (`control::draining_lately`, read at most once a second) before each chunk (16 tiles) or tile read alone and ends
   with `control::Paused` (a level's sampling ran 7.7 h on 3/7/3, task #705); the step catches it
   once its uploads in flight have landed and exits as paused, the target unsaved and not noted
   done, its log kept (terrain-hi, terrain-deep; a level's sampling not yet in a block is redone). A log at the top of its step's scratch folder
