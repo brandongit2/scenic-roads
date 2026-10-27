@@ -4307,6 +4307,8 @@ fn depth_hi_water(sources: &[crate::depth::grids::Source], t: (u32, u32)) -> Vec
         let s = 1u32 << (z - 6);
         (z, Area { x0: t.0 * s, y0: t.1 * s, nx: s, ny: s })
     });
+    // (A set, not a scan of `out`: a z14 tile's ring alone is ~66k tiles.)
+    let mut seen = std::collections::HashSet::new();
     let mut out: Vec<(u8, u32, u32)> = Vec::new();
     for (z, a) in (lo0..=lo1).flat_map(|z| coarse_areas(t, z).into_iter().map(move |a| (z, a))).chain(fine) {
         let n = 1i64 << z;
@@ -4314,7 +4316,7 @@ fn depth_hi_water(sources: &[crate::depth::grids::Source], t: (u32, u32)) -> Vec
         for ty in (y0 - 1..=y0 + i64::from(a.ny)).filter(|ty| (0..n).contains(ty)) {
             for tx in (x0 - 1..=x0 + i64::from(a.nx)).filter(|tx| (0..n).contains(tx)) {
                 let k = (z, tx as u32, ty as u32);
-                if !out.contains(&k) {
+                if seen.insert(k) {
                     out.push(k);
                 }
             }
@@ -8850,6 +8852,20 @@ pub(crate) mod tests {
         assert_eq!((at(6), at(7), at(8)), (5 * 5, 6 * 6, 8 * 8));
         assert_eq!(at(9), 10 * 10, "z9's 8 × 8 tiles and the ring");
         assert_eq!(w.len(), 25 + 36 + 64 + 100);
+    }
+
+    /// A z6 tile under a z14 grid reads every zoom to z14, each zoom's tiles and ring once: ~90k
+    /// tiles, listed without a scan per tile (the plan lists them for every such tile each round).
+    #[test]
+    fn a_depth_tiles_water_to_z14_is_listed_once_each() {
+        let mut src = depth_sources().remove(1);
+        src.grids[0].bbox = [-23.0, 64.9, -16.5, 66.7];
+        src.grids[0].zoom = 14;
+        let t0 = std::time::Instant::now();
+        let w = depth_hi_water(&[src], (28, 16));
+        eprintln!("depth_hi_water to z14: {} tiles in {:?}", w.len(), t0.elapsed());
+        let ring: usize = (9..=14).map(|z| ((1usize << (z - 6)) + 2).pow(2)).sum();
+        assert_eq!(w.len(), 25 + 36 + 64 + ring);
     }
 
     /// A z6 tile at the date line composes its coarse levels' ring across it (the map's fallback
