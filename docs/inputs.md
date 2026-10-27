@@ -692,10 +692,13 @@ Features of one id are unioned as they're read. Their declarations are staged in
 
 **The coastline's land** (crate::inputs::regions::land) is the pass's: the `regions-land` step
 (lead, once per pass, alone, 8 GB) reads the pass's `coastline` set (`w/natural=coastline`, made by
-pass-sets), joins the ways end to start into rings (land on their left, as OSM draws them; a chain
-that doesn't close joined to the nearest open chain's start within 1 km, else left out; a ring
-round a pole, Antarctica's, closed along the pole's latitude), simplifies them within 20 m, and
-keeps the land on disk by 2° cell: `sources/osm/<date>/regions-land.<hash16>.bin` (magic
+pass-sets), joins the ways end to start into rings (land on their left, as OSM draws them),
+links the chains that don't close end to start, each to the chain starting at its last node, else
+to the nearest chain start within 10 km (the nearest pairs first; the 2026-09-28 coastline was broken
+by 5.5 km at the Outer Banks, cutting the Americas' ring, and by 1.1 km in Scotland), leaves out
+what never comes round (counted, the largest named in the file's head), closes a ring round a pole
+along its latitude, simplifies the rings within 20 m, adds the Earth south of 85°S (OSM closes
+Antarctica along 85.0511°S) and keeps the land on disk by 2° cell: `sources/osm/<date>/regions-land.<hash16>.bin` (magic
 `RLAND001`, a JSON head with its counts and each cell's offset and length, then each cell's rings
 as zigzag varint deltas), keyed by the set and `land::LAND_V`. The check reads its head, then each
 cell where it's asked for, by its offset (`Land::cell`; the last 256 cells kept decoded), never the

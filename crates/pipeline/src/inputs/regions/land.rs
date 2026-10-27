@@ -3,10 +3,11 @@
 //! (`sources/osm/<date>/regions-land`), each cell read where it's asked for.
 //!
 //! - **Assembly** (`assemble`): the `natural=coastline` ways joined end to start into rings (land on
-//!   their left, as OSM draws them); a chain that doesn't close is joined to the nearest open chain's
-//!   start within `GAP_M`, else left out (counted). A ring that goes round a pole (Antarctica's, its
+//!   their left, as OSM draws them); chains that don't close linked end to start (by node, else
+//!   the nearest start within `GAP_M`); what never comes round is left out (counted). A ring that goes round a pole (Antarctica's, its
 //!   longitudes unwrapped a whole turn apart at its ends) is closed along the pole's latitude. Each
-//!   ring simplified within `SIMPLIFY_M`, as the zones are.
+//!   ring simplified within `SIMPLIFY_M`, as the zones are. OSM closes Antarctica along 85.0511°S,
+//!   so the Earth south of 85°S is added as land (`cells`).
 //! - **The file** (`encode`): magic `RLAND001`, a JSON head (`{"fmt", "pass", "stats", "cells":
 //!   [[col, row, offset, length], …]}`), then each cell's rings (even–odd, E7, the cell's
 //!   canonical area) as zigzag varint deltas, a ring's point count first.
@@ -29,8 +30,10 @@ pub const LAND_V: u32 = 1;
 /// Rings simplified within this (metres) as they're assembled.
 pub const SIMPLIFY_M: f64 = super::data::SIMPLIFY_M;
 
-/// The widest gap between a chain's end and an open chain's start closed by a straight line (m).
-pub const GAP_M: f64 = 1_000.0;
+/// The widest gap between a chain's end and an open chain's start closed by a straight line (m):
+/// the 2026-09-28 pass's coastline was broken by 5.5 km at the Outer Banks (the Americas' ring)
+/// and by 1.1 km in Scotland (Great Britain's).
+pub const GAP_M: f64 = 10_000.0;
 
 /// The cells kept decoded.
 const CACHED: usize = 256;
@@ -54,6 +57,9 @@ pub struct Stats {
     pub nodes_missing: u64,
     /// Rings round a pole.
     pub polar: u64,
+    /// The largest chains left out (at most 20): their points, first and last point (degrees).
+    #[serde(default)]
+    pub dropped: Vec<(u64, [f64; 2], [f64; 2])>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -159,41 +165,77 @@ pub fn assemble(ways: Vec<Vec<(i64, Pt)>>, stats: &mut Stats) -> Vec<Ring> {
         }
     }
     drop(ways);
-    // Open chains: each end joined to the nearest open chain's start within GAP_M (itself
-    // included), in order; what's left open is left out.
-    let mut alive = vec![true; open.len()];
-    for k in 0..open.len() {
-        if !alive[k] {
-            continue;
-        }
-        loop {
-            let end = open[k][open[k].len() - 1].1;
-            let best = (0..open.len())
-                .filter(|&j| alive[j])
-                .map(|j| (geom::length_m(end, open[j][0].1), j))
-                .filter(|(d, _)| *d <= GAP_M)
-                .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-            match best {
-                Some((_, j)) if j == k => {
-                    stats.gaps_closed += 1;
-                    alive[k] = false;
-                    rings.push(open[k].iter().map(|p| p.1).collect());
-                    break;
-                }
-                Some((_, j)) => {
-                    stats.gaps_closed += 1;
-                    let more = std::mem::take(&mut open[j]);
-                    alive[j] = false;
-                    open[k].extend(more);
-                }
-                None => {
-                    stats.chains_dropped += 1;
-                    stats.points_dropped += open[k].len() as u64;
-                    alive[k] = false;
-                    break;
-                }
+    // Open chains (a ring broken somewhere, its ways chained from wherever they started): each
+    // chain's end linked to the chain starting at its last node, else to the nearest chain start
+    // within GAP_M (the nearest pairs first; each start taken once). Linked chains that come round
+    // are rings; the rest, lines that never close, are left out.
+    let n = open.len();
+    let mut next: Vec<Option<usize>> = vec![None; n];
+    let mut prev: Vec<Option<usize>> = vec![None; n];
+    let starts: HashMap<i64, usize> = open.iter().enumerate().map(|(j, c)| (c[0].0, j)).collect();
+    for i in 0..n {
+        if let Some(&j) = starts.get(&open[i][open[i].len() - 1].0) {
+            if prev[j].is_none() {
+                next[i] = Some(j);
+                prev[j] = Some(i);
             }
         }
+    }
+    let mut pairs: Vec<(f64, usize, usize)> = Vec::new();
+    for i in (0..n).filter(|&i| next[i].is_none()) {
+        let end = open[i][open[i].len() - 1].1;
+        for j in (0..n).filter(|&j| prev[j].is_none()) {
+            let d = geom::length_m(end, open[j][0].1);
+            if d <= GAP_M {
+                pairs.push((d, i, j));
+            }
+        }
+    }
+    pairs.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+    for (_, i, j) in pairs {
+        if next[i].is_none() && prev[j].is_none() {
+            next[i] = Some(j);
+            prev[j] = Some(i);
+            stats.gaps_closed += 1;
+        }
+    }
+    let mut seen = vec![false; n];
+    let deg = |p: Pt| [p[0] as f64 / 1e7, p[1] as f64 / 1e7];
+    // (Lines first: from each chain nothing links to.)
+    for s0 in (0..n).filter(|&j| prev[j].is_none()) {
+        let (mut k, mut pts, mut at) = (Some(s0), 0usize, s0);
+        while let Some(c) = k {
+            seen[c] = true;
+            pts += open[c].len();
+            at = c;
+            k = next[c];
+        }
+        stats.chains_dropped += 1;
+        stats.points_dropped += pts as u64;
+        stats.dropped.push((pts as u64, deg(open[s0][0].1), deg(open[at][open[at].len() - 1].1)));
+    }
+    stats.dropped.sort_by(|a, b| b.0.cmp(&a.0).then(a.1[0].total_cmp(&b.1[0])));
+    stats.dropped.truncate(20);
+    // (Then the cycles, each from its least chain.)
+    for s0 in 0..n {
+        if seen[s0] {
+            continue;
+        }
+        let mut ring: Vec<Pt> = Vec::new();
+        let mut k = s0;
+        loop {
+            seen[k] = true;
+            let c = &open[k];
+            // (A chain linked by its last node: that node is the next chain's first.)
+            let exact = next[k].is_some_and(|j| open[j][0].0 == c[c.len() - 1].0);
+            let take = if exact { c.len() - 1 } else { c.len() };
+            ring.extend(c[..take].iter().map(|p| p.1));
+            k = next[k].expect("a cycle");
+            if k == s0 {
+                break;
+            }
+        }
+        rings.push(ring);
     }
     // Each ring unwrapped (the short way round each step); one going round a pole closed along its
     // latitude; then simplified.
@@ -239,6 +281,27 @@ pub fn assemble(ways: Vec<Vec<(i64, Pt)>>, stats: &mut Stats) -> Vec<Ring> {
     }
     stats.rings = out.len() as u64;
     out
+}
+
+/// OSM's Antarctica is closed along Web Mercator's edge (85.0511°S) and the antimeridian; the land
+/// is all of the Earth south of this (E7), its interior ice.
+pub const SOUTH_E7: i64 = -850_000_000;
+
+/// The rings cut into 2° cells, the Earth south of `SOUTH_E7` added (OSM's coastline stops short
+/// of the pole: Antarctica's ring runs along 85.0511°S).
+pub fn cells(rings: &[Ring]) -> TArea {
+    let mut t = TArea::from_rings(rings);
+    let cell = super::tiles::CELL;
+    for x in -90..90 {
+        for y in -45..=SOUTH_E7.div_euclid(cell) {
+            let c = (x, y);
+            let b = super::tiles::cell_box(c);
+            let south = geom::box_area([b[0], b[1], b[2], b[3].min(SOUTH_E7)]);
+            let a = t.get(c).union(&south);
+            t.set(c, a);
+        }
+    }
+    t
 }
 
 fn varint(out: &mut Vec<u8>, mut v: u64) {

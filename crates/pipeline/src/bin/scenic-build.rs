@@ -356,7 +356,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             t.elapsed().as_secs_f64(),
             pipeline::sys::peak_rss() / 1_000_000
         );
-        let cells = pipeline::inputs::regions::tiles::TArea::from_rings(&rings);
+        let cells = land::cells(&rings);
         drop(rings);
         let bytes = land::encode(opt(&args, "--pass").as_deref().unwrap_or("-"), &stats, &cells);
         std::fs::write(&to, &bytes)?;
@@ -786,7 +786,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             drop(p);
             parts.start(2);
             let p = phase("the land cut by cell", Class::Compute);
-            let cells = pipeline::inputs::regions::tiles::TArea::from_rings(&rings);
+            let cells = land::cells(&rings);
             drop(rings);
             let bytes = land::encode(&date, &stats, &cells);
             drop(p);
