@@ -335,6 +335,33 @@ pub fn read(path: &Path) -> io::Result<Option<Vec<u8>>> {
     Err(io::Error::other(format!("{}: deleted each time it was opened", path.display())))
 }
 
+/// The cache file at `path` read through `f` as a stream under a shared lock (let go once read),
+/// never held whole in memory: a large file parsed as it's read (the regions' coverage); None when
+/// it isn't there.
+pub fn read_streamed<T>(path: &Path, f: &mut dyn FnMut(&mut dyn io::Read) -> T) -> io::Result<Option<T>> {
+    struct Counted<R>(R, u64);
+    impl<R: io::Read> io::Read for Counted<R> {
+        fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+            let n = self.0.read(b)?;
+            self.1 += n as u64;
+            Ok(n)
+        }
+    }
+    for _ in tries() {
+        match open_shared(path)? {
+            Some(file) => {
+                let mut r = Counted(io::BufReader::with_capacity(1 << 20, file), 0);
+                let v = f(&mut r);
+                crate::range::count_local(r.1);
+                return Ok(Some(v));
+            }
+            None if !path.exists() => return Ok(None),
+            None => {}
+        }
+    }
+    Err(io::Error::other(format!("{}: deleted each time it was opened", path.display())))
+}
+
 /// The bytes the caches hold under `dir` of the entries whose names start with `prefix` (all of
 /// them: ""), folders walked, temporary files (`tmp_of`'s, a copy not yet in place) left out; 0 when
 /// it isn't there. Reads only sizes, never a file.

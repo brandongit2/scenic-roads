@@ -393,6 +393,22 @@ struct Spanned {
     inner: Arc<dyn RangeRead>,
     start: u64,
     bytes: Vec<u8>,
+    /// Its share of `SPANNED`.
+    held: u64,
+}
+
+/// The bytes all `Spanned` of a process hold at most (task #807 review: an open file is kept for
+/// its set's life, `dem::generic::GeoSet`, so its span would be too; terrain-lo's z3 tile opens
+/// GLO-30's files by the thousand, 1.3 GB of spans unbounded). Past it, a level is read a block
+/// at a time, as before.
+pub const SPANNED_MAX: u64 = 512 << 20;
+
+static SPANNED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+impl Drop for Spanned {
+    fn drop(&mut self) {
+        SPANNED.fetch_sub(self.held, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 impl RangeRead for Spanned {
@@ -880,8 +896,9 @@ impl Tiff {
 
     /// Image `level`'s blocks read in one range and served from memory from now on (task #807:
     /// over the NAS each block read alone waits a round trip; a COG keeps a level's blocks
-    /// together). Only where the level's blocks are at least half the bytes they span and the span
-    /// is at most `cap`: otherwise as it was. The same bytes.
+    /// together). Only where the level's blocks are at least half the bytes they span, the span
+    /// is at most `cap` and the process's spans stay within `SPANNED_MAX`: otherwise as it was.
+    /// The same bytes.
     pub fn read_level_whole(mut self, level: usize, cap: u64) -> Result<Tiff> {
         let img = self.level(level)?;
         let n = img.blocks_across() as u64 * img.height.div_ceil(img.block_h) as u64;
@@ -895,8 +912,19 @@ impl Tiff {
         if lo >= hi || hi - lo > cap || sum * 2 < hi - lo {
             return Ok(self);
         }
-        let bytes = self.src.read_at(lo, (hi - lo) as usize)?;
-        self.src = Arc::new(Spanned { inner: self.src.clone(), start: lo, bytes });
+        use std::sync::atomic::Ordering::Relaxed;
+        let span = hi - lo;
+        if SPANNED.fetch_update(Relaxed, Relaxed, |v| (v + span <= SPANNED_MAX).then_some(v + span)).is_err() {
+            return Ok(self);
+        }
+        let bytes = match self.src.read_at(lo, span as usize) {
+            Ok(b) => b,
+            Err(e) => {
+                SPANNED.fetch_sub(span, Relaxed);
+                return Err(e.into());
+            }
+        };
+        self.src = Arc::new(Spanned { inner: self.src.clone(), start: lo, bytes, held: span });
         Ok(self)
     }
 

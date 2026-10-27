@@ -26,7 +26,10 @@ use std::collections::{BTreeMap, BTreeSet};
 /// (crate::terrain_codec: its version in the key). 5: the elevation pool's base tiles
 /// (crate::terrain_base: the datasets meeting a target in its key), each coarser level from the
 /// finer, the water flattened from the pass's basemap (the digest of what each target reads of it in
-/// the key: `water_key`; docs/steps.md §2, Terrain).
+/// the key: `water_key`; docs/steps.md §2, Terrain). Not bumped for task #807's geoid lattice
+/// (crate::dem::geoid::Grids::offsets): a pixel changes by one quantum at most, so tiles of before
+/// and after may stand side by side; `terrain-same` reports a content name differing from the
+/// manifest's until its tile is next built.
 pub const TERRAIN_V: u32 = 7;
 /// Terrain-deep 1 (task #639): a z10 tile's deep levels a target of their own, from the base made as
 /// terrain-hi makes it (crate::terrain_pack::Bases, `TERRAIN_V` in its key), the ring of base pixels

@@ -282,16 +282,25 @@ impl Coverage {
         };
         let Some(dir) = cache.map(|c| c.join("coverage")) else { return made() };
         let at = dir.join(format!("{}.cov", store::naming::hash16(a.version.as_bytes())));
-        match store::cachefile::read(&at) {
-            Ok(Some(b)) => match crate::coverage::from_kept(&b) {
-                Some(c) => return Ok(c),
-                // (Another format's: made again in its place, not read past forever.)
-                None => drop(store::cachefile::try_remove(&at)),
-            },
+        // (Read and written as a stream, never whole in memory: the file holds the grids, about the
+        // coverage's own size, task #807.)
+        match store::cachefile::read_streamed(&at, &mut |r| crate::coverage::from_kept(r)) {
+            Ok(Some(Some(c))) => return Ok(c),
+            // (Another format's: made again in its place, not read past forever.)
+            Ok(Some(None)) => drop(store::cachefile::try_remove(&at)),
             _ => {}
         }
         let c = made()?;
-        if store::cachefile::create_bytes(&at, &crate::coverage::kept_bytes(&c)).is_ok() {
+        let written = store::cachefile::create(&at, &mut |t| {
+            use std::io::Write;
+            let mut w = std::io::BufWriter::with_capacity(
+                1 << 20,
+                std::fs::File::options().write(true).truncate(true).open(t)?,
+            );
+            crate::coverage::write_kept(&c, &mut w)?;
+            w.flush()
+        });
+        if written.is_ok() {
             store::cachefile::release(&at);
             for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
                 if e.path() != at {

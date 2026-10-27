@@ -15268,7 +15268,7 @@ mod tests {
                 .coverage(&store::nasfs::NasRoot::local_for_test(&root), &m1, false)
                 .unwrap(),
         );
-        assert!(crate::coverage::from_kept(&std::fs::read(&kept).unwrap()).is_some());
+        assert!(crate::coverage::from_kept(&mut &std::fs::read(&kept).unwrap()[..]).is_some());
         let geoms: Vec<PathBuf> = crate::inputs::regions::read::listed(&a)
             .unwrap()
             .iter()

@@ -542,33 +542,23 @@ impl Coverage {
     /// The memory a step's process takes to read this coverage (MB; `coverage_of` in scenic-build,
     /// through `Coverage::accepted`), worked out from the coverage itself: every shape's rings (8 B a
     /// point), its grid (`Grid`: per cell a bool and its edges' 4 B start, 8 B an entry), the
-    /// kept bytes, grids among them, read whole while the shapes are read from them (`from_kept`; or written,
-    /// `kept_bytes`, when the cache misses), and the memos' cap (`MEMO_CAP`). A job's memory bound
+    /// kept file's stream buffer and one shape's cells in passing (`from_kept`, `write_kept`: read
+    /// and written as a stream, task #807), and the memos' cap (`MEMO_CAP`). A job's memory bound
     /// adds it to what its step holds besides (the agent's `guess` and `peak`, task #639).
     pub fn read_peak_mb(&self) -> u64 {
-        let mut bytes = MEMO_CAP as u64 + KEPT_MAGIC.len() as u64;
+        let mut bytes = MEMO_CAP as u64 + (1 << 20);
+        let mut passing = 0u64;
         for list in [&self.shapes, &self.depth_only] {
-            bytes += 8;
             for sh in list {
                 let points: u64 = sh.rings.iter().map(|r| r.len() as u64).sum();
                 let g = &sh.grid;
                 let rings = points * 8 + sh.rings.len() as u64 * 24;
                 let grid = (g.nx * g.ny) as u64 * 5 + 4 + g.edges.len() as u64 * 8;
-                let kept = 8
-                    + sh.source.len() as u64
-                    + 8
-                    + sh.country.len() as u64
-                    + 8
-                    + 1
-                    + 8
-                    + sh.rings.len() as u64 * 8
-                    + points * 8
-                    + 16
-                    + 56
-                    + grid;
-                bytes += rings + grid + kept;
+                passing = passing.max((g.nx * g.ny) as u64);
+                bytes += rings + grid + sh.source.len() as u64 + sh.country.len() as u64;
             }
         }
+        bytes += passing;
         bytes.div_ceil(1 << 20)
     }
 }
@@ -631,96 +621,102 @@ const KEPT_MAGIC: &[u8; 8] = b"RDCOV005";
 
 /// The coverage's shapes as kept (`Coverage::accepted`): their source, country, buffer, whether
 /// water, rings, box and grid (task #807: the grids made again from the rings were 14 s of CPU a
-/// job; read whole, a read).
+/// job). Written and read as a stream (`write_kept`, `from_kept`), never whole in memory: the file
+/// is about as large as the coverage itself (1.84 GB, 27 Oct).
+#[cfg(test)]
 pub(crate) fn kept_bytes(c: &Coverage) -> Vec<u8> {
-    let mut b = KEPT_MAGIC.to_vec();
-    let s = |b: &mut Vec<u8>, t: &str| {
-        b.extend_from_slice(&(t.len() as u64).to_le_bytes());
-        b.extend_from_slice(t.as_bytes());
-    };
-    for list in [&c.shapes, &c.depth_only] {
-        b.extend_from_slice(&(list.len() as u64).to_le_bytes());
-        for sh in list {
-            s(&mut b, &sh.source);
-            s(&mut b, &sh.country);
-            b.extend_from_slice(&sh.buffer_m.to_le_bytes());
-            b.push(sh.water as u8);
-            b.extend_from_slice(&(sh.rings.len() as u64).to_le_bytes());
-            for r in sh.rings.iter() {
-                b.extend_from_slice(&(r.len() as u64).to_le_bytes());
-                b.extend_from_slice(bytemuck::cast_slice(r));
-            }
-            b.extend_from_slice(bytemuck::cast_slice(&sh.bbox));
-            let g = &sh.grid;
-            for v in [g.x0, g.y0, g.cw, g.ch] {
-                b.extend_from_slice(&v.to_le_bytes());
-            }
-            for v in [g.nx, g.ny, g.edges.len()] {
-                b.extend_from_slice(&(v as u64).to_le_bytes());
-            }
-            b.extend(g.centre.iter().map(|&c| c as u8));
-            b.extend_from_slice(bytemuck::cast_slice(&g.starts));
-            for &(ri, i) in &g.edges {
-                b.extend_from_slice(&ri.to_le_bytes());
-                b.extend_from_slice(&i.to_le_bytes());
-            }
-        }
-    }
+    let mut b = Vec::new();
+    write_kept(c, &mut b).unwrap();
     b
 }
 
-/// `kept_bytes` read back: the shapes as `Shape::new` made them, their grids read, not made;
-/// None when they don't read.
-pub(crate) fn from_kept(b: &[u8]) -> Option<Coverage> {
-    struct Rd<'a>(&'a [u8]);
-    impl<'a> Rd<'a> {
-        fn take(&mut self, n: usize) -> Option<&'a [u8]> {
-            if n > self.0.len() {
-                return None;
+/// `kept_bytes` written to `w`.
+pub(crate) fn write_kept(c: &Coverage, w: &mut dyn std::io::Write) -> std::io::Result<()> {
+    let n = |w: &mut dyn std::io::Write, v: usize| w.write_all(&(v as u64).to_le_bytes());
+    w.write_all(KEPT_MAGIC)?;
+    for list in [&c.shapes, &c.depth_only] {
+        n(w, list.len())?;
+        for sh in list {
+            for t in [&sh.source, &sh.country] {
+                n(w, t.len())?;
+                w.write_all(t.as_bytes())?;
             }
-            let (a, rest) = self.0.split_at(n);
-            self.0 = rest;
-            Some(a)
-        }
-        fn n(&mut self) -> Option<usize> {
-            usize::try_from(u64::from_le_bytes(self.take(8)?.try_into().ok()?)).ok()
-        }
-        fn text(&mut self) -> Option<String> {
-            let n = self.n()?;
-            String::from_utf8(self.take(n)?.to_vec()).ok()
+            w.write_all(&sh.buffer_m.to_le_bytes())?;
+            w.write_all(&[sh.water as u8])?;
+            n(w, sh.rings.len())?;
+            for r in sh.rings.iter() {
+                n(w, r.len())?;
+                w.write_all(bytemuck::cast_slice(r))?;
+            }
+            w.write_all(bytemuck::cast_slice(&sh.bbox))?;
+            let g = &sh.grid;
+            for v in [g.x0, g.y0, g.cw, g.ch] {
+                w.write_all(&v.to_le_bytes())?;
+            }
+            for v in [g.nx, g.ny, g.edges.len()] {
+                n(w, v)?;
+            }
+            w.write_all(&g.centre.iter().map(|&c| c as u8).collect::<Vec<u8>>())?;
+            w.write_all(bytemuck::cast_slice(&g.starts))?;
+            for &(ri, i) in &g.edges {
+                w.write_all(&ri.to_le_bytes())?;
+                w.write_all(&i.to_le_bytes())?;
+            }
         }
     }
-    let mut r = Rd(b);
-    if r.take(8)? != KEPT_MAGIC {
+    Ok(())
+}
+
+/// `kept_bytes` read back from `r` as a stream: the shapes as `Shape::new` made them, their grids
+/// read, not made; None when they don't read (cut short, bytes past the end, another format).
+pub(crate) fn from_kept(r: &mut dyn std::io::Read) -> Option<Coverage> {
+    // (A length read is checked against the bytes left only by reading them: an absurd one fails
+    // its allocation's try_reserve rather than aborting.)
+    fn take(r: &mut dyn std::io::Read, n: usize) -> Option<Vec<u8>> {
+        let mut v = Vec::new();
+        v.try_reserve_exact(n).ok()?;
+        std::io::Read::read_to_end(&mut std::io::Read::take(r, n as u64), &mut v).ok()?;
+        (v.len() == n).then_some(v)
+    }
+    fn pod<T: bytemuck::Pod>(r: &mut dyn std::io::Read, count: usize) -> Option<Vec<T>> {
+        let mut v = Vec::new();
+        v.try_reserve_exact(count).ok()?;
+        v.resize(count, T::zeroed());
+        r.read_exact(bytemuck::cast_slice_mut(&mut v)).ok()?;
+        Some(v)
+    }
+    fn n(r: &mut dyn std::io::Read) -> Option<usize> {
+        usize::try_from(u64::from_le_bytes(pod::<u8>(r, 8)?.try_into().ok()?)).ok()
+    }
+    fn f(r: &mut dyn std::io::Read) -> Option<f64> {
+        Some(f64::from_le_bytes(pod::<u8>(r, 8)?.try_into().ok()?))
+    }
+    fn text(r: &mut dyn std::io::Read) -> Option<String> {
+        let len = n(r)?;
+        String::from_utf8(take(r, len)?).ok()
+    }
+    if take(r, 8)? != KEPT_MAGIC {
         return None;
     }
     let mut lists = [Vec::new(), Vec::new()];
     for shapes in lists.iter_mut() {
-        for _ in 0..r.n()? {
-            let source = r.text()?;
-            let country = r.text()?;
-            let buffer_m = f64::from_le_bytes(r.take(8)?.try_into().ok()?);
-            let water = r.take(1)?[0] != 0;
+        for _ in 0..n(r)? {
+            let source = text(r)?;
+            let country = text(r)?;
+            let buffer_m = f(r)?;
+            let water = take(r, 1)?[0] != 0;
             let mut rings = Vec::new();
-            for _ in 0..r.n()? {
-                let n = r.n()?;
-                rings.push(bytemuck::pod_collect_to_vec::<u8, [i32; 2]>(r.take(n.checked_mul(8)?)?));
+            for _ in 0..n(r)? {
+                let len = n(r)?;
+                rings.push(pod::<[i32; 2]>(r, len)?);
             }
-            let bbox: [i32; 4] = bytemuck::pod_read_unaligned(r.take(16)?);
-            let f = |r: &mut Rd| Some(f64::from_le_bytes(r.take(8)?.try_into().ok()?));
-            let (x0, y0, cw, ch) = (f(&mut r)?, f(&mut r)?, f(&mut r)?, f(&mut r)?);
-            let (nx, ny, ne) = (r.n()?, r.n()?, r.n()?);
+            let bbox: [i32; 4] = pod::<[i32; 4]>(r, 1)?[0];
+            let (x0, y0, cw, ch) = (f(r)?, f(r)?, f(r)?, f(r)?);
+            let (nx, ny, ne) = (n(r)?, n(r)?, n(r)?);
             let cells = nx.checked_mul(ny)?;
-            let centre = r.take(cells)?.iter().map(|&c| c != 0).collect();
-            let starts = bytemuck::pod_collect_to_vec::<u8, u32>(r.take(cells.checked_add(1)?.checked_mul(4)?)?);
-            let edges = r
-                .take(ne.checked_mul(8)?)?
-                .chunks_exact(8)
-                .map(|e| {
-                    (u32::from_le_bytes(e[..4].try_into().unwrap()), u32::from_le_bytes(e[4..].try_into().unwrap()))
-                })
-                .collect();
-            let edges: Vec<(u32, u32)> = edges;
+            let centre = take(r, cells)?.into_iter().map(|c| c != 0).collect();
+            let starts = pod::<u32>(r, cells.checked_add(1)?)?;
+            let edges: Vec<(u32, u32)> = pod::<[u32; 2]>(r, ne)?.into_iter().map(|[a, b]| (a, b)).collect();
             if starts.last().copied() != Some(ne as u32)
                 || starts.windows(2).any(|w| w[0] > w[1])
                 || edges.iter().any(|&(ri, i)| rings.get(ri as usize).is_none_or(|ring| i as usize >= ring.len()))
@@ -741,7 +737,8 @@ pub(crate) fn from_kept(b: &[u8]) -> Option<Coverage> {
         }
     }
     let [shapes, depth_only] = lists;
-    r.0.is_empty().then_some(Coverage { shapes, depth_only })
+    let mut past = [0u8; 1];
+    matches!(r.read(&mut past), Ok(0)).then_some(Coverage { shapes, depth_only })
 }
 
 impl Coverage {
@@ -1408,7 +1405,7 @@ mod tests {
         assert!(!c.meets_box(r(1.4)) && c.touches(&[e7(1.5, 50.5)]));
         let alone = Coverage { shapes: vec![land], depth_only: Vec::new() };
         assert_ne!(c.fingerprint(r(1.4)), alone.fingerprint(r(1.4)));
-        let back = from_kept(&kept_bytes(&c)).unwrap();
+        let back = from_kept(&mut &kept_bytes(&c)[..]).unwrap();
         assert_eq!(back.shapes.iter().map(|s| s.water).collect::<Vec<_>>(), vec![false, true]);
         assert!(!back.meets_rect(r(1.4)) && back.meets_rect_depth(r(1.4)));
     }
@@ -1431,19 +1428,19 @@ mod tests {
             shapes.push(Shape::new(format!("r{k}: place"), vec![fixture_circle(x, y, 20.0)], 0.0));
         }
         let made = Coverage { shapes, depth_only: Vec::new() };
-        let c = from_kept(&kept_bytes(&made)).unwrap();
+        let c = from_kept(&mut &kept_bytes(&made)[..]).unwrap();
         // The grids read back are those made (task #807: kept, not made again).
         for (a, b) in made.shapes.iter().zip(&c.shapes) {
             assert!(a.grid == b.grid && a.bbox == b.bbox && a.rings == b.rings && a.source == b.source);
         }
         // Cut short anywhere, or an edge naming no ring's point: not read.
         let k = kept_bytes(&made);
-        assert!(from_kept(&k[..k.len() - 1]).is_none());
+        assert!(from_kept(&mut &k[..k.len() - 1]).is_none());
         let points: u64 = c.shapes.iter().flat_map(|s| s.rings.iter()).map(|r| r.len() as u64).sum();
         let entries: u64 = c.shapes.iter().map(|s| s.grid.edges.len() as u64).sum();
         let cells: u64 = c.shapes.iter().map(|s| (s.grid.nx * s.grid.ny) as u64).sum();
-        // Held at once while it's read: the kept bytes, the rings made from them, every grid, the memos.
-        let held = kept_bytes(&c).len() as u64 + points * 8 + cells * 5 + entries * 8 + MEMO_CAP as u64;
+        // Held at once while it's read (as a stream): the rings, every grid, the memos.
+        let held = points * 8 + cells * 5 + entries * 8 + MEMO_CAP as u64;
         let mb = c.read_peak_mb();
         assert!(mb << 20 >= held, "{mb} MB under {held} B");
         assert!(entries > points, "the coast's buffer lists its edges in several cells");
