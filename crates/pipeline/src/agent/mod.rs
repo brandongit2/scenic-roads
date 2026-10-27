@@ -11692,8 +11692,9 @@ fn first_secs(step: &str) -> f64 {
         "heritage-sites" => 240.0,
         // (Reading the latest basemap's water under every z6 tile near the coverage.)
         "terrain-water" => 900.0,
-        // (A z6 tile of GSI's: PYRAMIDS_MEASURE.)
-        "pyramids-fill" => 1800.0,
+        // (A z6 tile of GSI's five layers: 6/56/23's into a scratch store on the M4, 2026-10-27,
+        // 4,950 s for 170,612 tiles, 1.97 GB; task #810.)
+        "pyramids-fill" => 5000.0,
         "heritage" => 5400.0,
         // (Terrain's and slope's z6 tiles a z6 tile, their assemblies a z3 tile's zoomed-out levels:
         // the z3 tiles' last runs, 9,707 s and ~4,100 s over ~400 z6 tiles, 2026-10.)
