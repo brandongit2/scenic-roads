@@ -64,7 +64,7 @@ const TABS = ["overview", "jobs", "machines", "regions", "nas", "inputs", "activ
 
 // ---- The read-only server ------------------------------------------------------------------------
 // A call forwarded only when its body has no other keys than these (an empty body: {}).
-const READS = { pause: ["pause"], swarm: [], steps: [], regions: ["steps"], settings: [], history: ["since", "max"], live: ["range", "series", "net", "since"], catalogs: ["after"], tocome: [], built: [] };
+const READS = { pause: ["pause"], swarm: [], steps: [], regions: ["steps"], settings: [], history: ["since", "max"], live: ["range", "series", "net", "since"], catalogs: ["after"], tocome: ["raw", "renumber"], built: [] };
 const CATS = arg("--catalogs", null);
 const TOCOME = arg("--tocome", null);
 const BUILT = arg("--built", null);
@@ -146,7 +146,8 @@ function serve() {
               const f = JSON.parse(readFileSync(TOCOME, "utf8"));
               const at = await fetch(`http://${AGENT.host}:${AGENT.port}/work/swarm`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()).then((w) => w.agent?.forecast?.at ?? f.at, () => f.at);
               a = { at, macs: Object.fromEntries(Object.entries(f.macs).map(([mac, steps]) => [mac, Object.fromEntries(Object.entries(steps).map(([k, ts]) => [k, ts.map(([t, s]) => [t, Math.max(0, s + f.at - at)])]))])) };
-            } else {
+            } else if (v.raw || v.renumber) a = await ask(v);
+            else {
               a = await ask({});
               if (Array.isArray(a.macs)) {
                 const each = await Promise.all(a.macs.map((mac) => ask({ mac })));
