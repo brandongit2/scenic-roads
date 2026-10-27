@@ -1356,9 +1356,12 @@ fn coast(
                 let idx = idx.get_or_insert_with(|| index(sea));
                 let (mut far, mut near) = (0.0f64, BTreeSet::new());
                 for p in poly.iter().flatten().copied().chain([interior(&poly)]) {
-                    // (The nearest region within reach, ties to the lesser id.)
-                    let best =
-                        idx.near(p, COAST_REACH_M).min_by(|x, y| x.1.total_cmp(&y.1).then(ids[x.0].cmp(ids[y.0])));
+                    // (The nearest region within reach, ties to the lesser id: looked for within 10 m,
+                    // then 100 m, then the reach; whatever lies nearer than the first found is
+                    // within the radius that found it.)
+                    let best = [10.0, 100.0, COAST_REACH_M]
+                        .into_iter()
+                        .find_map(|r| idx.near(p, r).min_by(|x, y| x.1.total_cmp(&y.1).then(ids[x.0].cmp(ids[y.0]))));
                     match best {
                         Some((k, d)) => {
                             far = far.max(d);
