@@ -27,11 +27,20 @@
 //! The map reads a download's own older files while it's behind (Data::content), the NAS for what
 //! it lacks. An Update copies the catalogue served's files for it alongside the old ones; once all
 //! are here, the download moves to that catalogue and the files only the old one named go. A
-//! download moves on by itself only when that copies nothing: the catalogue's files for it are the
-//! same, or its own catalogue had none of it (downloaded before it was built); or when it has
+//! download moves on by itself only when that copies nothing: all an Update would copy is here (the
+//! catalogue's files for it are the same, or other downloads brought them), or its own catalogue had
+//! none of it (downloaded before it was built); or when it has
 //! nothing whole to keep: not all here at its own catalogue (still copying when the new one came),
 //! whose older files the map never reads (they'd mix with the NAS's, `older`). Catalogues a download
 //! is at or updating to are kept on this Mac (store::mirror::Mirror::keep_catalogues).
+//!
+//! **Whole tiles.** No z6 tile is read from two catalogues (a list's ways index their owner's base
+//! pack). A download at the served catalogue moves every tile it has files of there (`Plan::moved`):
+//! a download behind keeps only its other tiles at its own catalogue, and takes its files of those at
+//! the served one (`Plan::own`). An Update copies, besides its own files, every other download's of
+//! its tiles (`Plan::target`), so a shared tile moves whole. A road from a tile kept behind into a
+//! moved one may lack its info at the crossing until that download is updated too (not found, never
+//! wrong).
 //!
 //! - **The World, zoomed out** (`world_part`): the worldwide files, every layer's root and lo
 //!   packs, the landmark points and area details (store::mirror::essentials), and the basemap's
@@ -194,18 +203,6 @@ impl Part {
         Part { files, items }
     }
 
-    /// Its size as far as it's known, how much of it is here, and how many of its pieces aren't
-    /// sized yet.
-    fn tally(&self, m: &Mirror) -> (u64, u64, u32) {
-        tally(self.items.iter(), m)
-    }
-
-    /// Whether all of it is here.
-    fn complete(&self, m: &Mirror) -> bool {
-        let (bytes, here, unknown) = self.tally(m);
-        unknown == 0 && here >= bytes
-    }
-
     fn pieces(&self) -> impl Iterator<Item = (&str, Piece)> {
         self.items.iter().filter_map(|i| match i {
             Item::Piece { archive, piece } => Some((archive.as_str(), *piece)),
@@ -228,6 +225,12 @@ fn tally<'a>(items: impl Iterator<Item = &'a Item>, m: &Mirror) -> (u64, u64, u3
         }
     }
     (bytes, here, unknown)
+}
+
+/// Whether all these items are here.
+fn complete<'a>(items: impl Iterator<Item = &'a Item>, m: &Mirror) -> bool {
+    let (bytes, here, unknown) = tally(items, m);
+    unknown == 0 && here >= bytes
 }
 
 /// What a region's downloads copy: the region, and its terrain detail (an add-on), with the share
@@ -267,6 +270,9 @@ pub struct Plan {
     /// has.
     pub at: BTreeMap<u64, Arc<At>>,
     pub asked: Asked,
+    /// The z6 tiles a download at the catalogue served has files of: a download behind it takes
+    /// those tiles' files at the served one too (`own`), so no tile mixes catalogues.
+    moved: HashSet<(u32, u32)>,
 }
 
 impl Plan {
@@ -290,9 +296,69 @@ impl Plan {
         }
     }
 
+    /// What `w`, pinned at `pin`, keeps: at its own catalogue, its files there of tiles no download
+    /// at the served one has (`kept`, with every file of no tile), and its files at the served one
+    /// of the tiles one has (`taken`: moved, with that download's, by its download or Update).
+    fn own(&self, w: &Which, pin: Pin) -> Option<Own<'_>> {
+        let c = self.eff(pin.cat);
+        let old = self.part(w, c)?;
+        if c == self.current {
+            return Some(Own { kept: old.items.iter().collect(), taken: Vec::new() });
+        }
+        let moved = |i: &&Item| tile_of(i).is_some_and(|t| self.moved.contains(&t));
+        let kept = old.items.iter().filter(|i| !moved(i)).collect();
+        let taken = self.part(w, self.current).map_or(Vec::new(), |p| p.items.iter().filter(moved).collect());
+        Some(Own { kept, taken })
+    }
+
+    /// What an Update of `w` to catalogue `n` copies: its files there, and every other download's
+    /// files there of the same z6 tiles (a tile moves whole: module doc).
+    fn target(&self, w: &Which, n: u64) -> Option<Vec<&Item>> {
+        let part = self.part(w, n)?;
+        let tiles: HashSet<(u32, u32)> = part.items.iter().filter_map(tile_of).collect();
+        let mut seen: HashSet<&Item> = part.items.iter().collect();
+        let mut out: Vec<&Item> = part.items.iter().collect();
+        for (o, _) in self.asked.pins().iter().filter(|(o, _)| o != w) {
+            for i in self.part(o, n).into_iter().flat_map(|p| p.items.iter()) {
+                if tile_of(i).is_some_and(|t| tiles.contains(&t)) && seen.insert(i) {
+                    out.push(i);
+                }
+            }
+        }
+        Some(out)
+    }
+
     /// The catalogue served's.
     pub fn now(&self) -> &At {
         &self.at[&self.current]
+    }
+}
+
+/// What a download keeps (`Plan::own`).
+struct Own<'a> {
+    kept: Vec<&'a Item>,
+    taken: Vec<&'a Item>,
+}
+
+impl<'a> Own<'a> {
+    fn all(&self) -> impl Iterator<Item = &'a Item> + '_ {
+        self.kept.iter().chain(&self.taken).copied()
+    }
+}
+
+/// The z6 tile a file or basemap piece is of (its logical name ending in "6-x-y"), if any.
+fn tile_of(i: &Item) -> Option<(u32, u32)> {
+    match i {
+        Item::Piece { piece: Piece::Tile(x, y), .. } => Some((*x, *y)),
+        Item::Piece { .. } => None,
+        Item::File { name, .. } => {
+            let logical = store::naming::parse_content_name(name)?.logical;
+            let mut t = logical.rsplit('/').next()?.split('-');
+            match (t.next(), t.next(), t.next(), t.next()) {
+                (Some("6"), Some(x), Some(y), None) => Some((x.parse().ok()?, y.parse().ok()?)),
+                _ => None,
+            }
+        }
     }
 }
 
@@ -453,20 +519,20 @@ fn at_of(cat: Arc<Catalogue>, owners: &Owners) -> At {
 }
 
 /// The older files the downloads behind the catalogue served keep, by logical name, for the map to
-/// read (Data::content): those of each download's own catalogue that the served one replaced,
-/// unless a download at the served catalogue has its file (a file shared by both: the newer). Only
-/// a download all here at its catalogue counts: one partly here would mix its catalogue's files
-/// with the served one's (a list's ways index their owner's base pack), and what it reads would
-/// change as each file came, under the same URLs (`advance` moves it on).
+/// read (Data::content): those each keeps of its own catalogue (`Plan::own`: none of a tile a
+/// download at the served one has) that the served one replaced, unless a download at the served
+/// catalogue has its file (a file of no tile shared by both: the newer). Only a download with all it
+/// keeps here counts: one partly here would mix its catalogue's files with the served one's (a list's
+/// ways index their owner's base pack), and what it reads would change as each file came, under the
+/// same URLs (`advance` moves it on).
 fn older(plan: &Plan, m: &Mirror) -> HashMap<String, String> {
-    let names = |p: &Part| -> Vec<String> { p.items.iter().map(store::mirror::copy_name).collect() };
     let current: HashSet<String> = plan
         .asked
         .pins()
         .iter()
         .filter(|(_, p)| plan.eff(p.cat) == plan.current)
         .filter_map(|(w, p)| plan.part(w, p.cat))
-        .flat_map(names)
+        .flat_map(|p| p.items.iter().map(store::mirror::copy_name))
         .collect();
     let cat = &plan.now().cat;
     let mut out = HashMap::new();
@@ -474,10 +540,10 @@ fn older(plan: &Plan, m: &Mirror) -> HashMap<String, String> {
         if plan.eff(p.cat) == plan.current {
             continue;
         }
-        let Some(part) = plan.part(&w, p.cat).filter(|part| part.items.iter().all(|i| m.is_here(i))) else {
+        let Some(own) = plan.own(&w, p).filter(|o| o.kept.iter().all(|i| m.is_here(i))) else {
             continue;
         };
-        for i in &part.items {
+        for i in own.kept {
             let name = match i {
                 Item::File { name, .. } => name,
                 Item::Piece { archive, .. } => archive,
@@ -545,9 +611,9 @@ impl Downloads {
     }
 
     /// Moves each download's pin on where the plan says (`Plan::eff`, module doc): pinned at last
-    /// (none yet, or its catalogue lost: the one served); an Update all here: to its catalogue; behind,
-    /// with nothing to copy, or with nothing whole to keep (not all here at its own catalogue): to
-    /// the one served. Tells the mirror which catalogues to keep. Whether anything moved.
+    /// (none yet, or its catalogue lost: the one served); an Update all here (`Plan::target`): to its
+    /// catalogue; behind, with nothing to copy (all an Update would copy here already), or with
+    /// nothing whole to keep (not all it keeps here at its own catalogue): to the one served. Tells the mirror which catalogues to keep. Whether anything moved.
     fn advance(&self, plan: &Plan, m: &Mirror) -> bool {
         let cur = plan.current;
         let mut next = plan.asked.clone();
@@ -558,20 +624,21 @@ impl Downloads {
                 p.to = Some(t);
                 if t == p.cat {
                     p.to = None;
-                } else if plan.part(&w, t).is_none_or(|part| part.complete(m)) {
+                } else if plan.target(&w, t).is_none_or(|items| complete(items.into_iter(), m)) {
                     p = Pin { cat: t, to: None };
                 }
             }
             if p.cat != cur {
-                let whole = plan.part(&w, p.cat).is_some_and(|part| part.items.iter().all(|i| m.is_here(i)));
+                let whole = plan.own(&w, p).is_some_and(|o| o.kept.iter().all(|i| m.is_here(i)));
                 if !whole {
                     p = Pin { cat: cur, to: None };
                 }
             }
+            // (Nothing to copy: its catalogue had none of it, or all an Update would copy is here,
+            // through another download or the same files.)
             if p.to.is_none() && p.cat != cur {
-                let set = |n| plan.part(&w, n).map(|p| p.items.iter().collect::<HashSet<_>>());
-                let old = set(p.cat);
-                if old.is_none() || old == set(cur) {
+                let none = plan.part(&w, p.cat).is_none();
+                if none || plan.target(&w, cur).is_some_and(|items| complete(items.into_iter(), m)) {
                     p.cat = cur;
                 }
             }
@@ -638,14 +705,23 @@ fn units_of(owners: &Owners, cat: &Catalogue, region: &str, rings: &[Vec<[f64; 2
 }
 
 fn make_plan(generation: u64, version: u64, asked: Asked, current: u64, at: BTreeMap<u64, Arc<At>>) -> Plan {
-    let mut plan = Plan { generation, version, wanted: Wanted::default(), current, at, asked };
+    let mut plan = Plan { generation, version, wanted: Wanted::default(), current, at, asked, moved: HashSet::new() };
+    let moved: HashSet<(u32, u32)> = plan
+        .asked
+        .pins()
+        .iter()
+        .filter(|(_, p)| plan.eff(p.cat) == current)
+        .filter_map(|(w, _)| plan.part(w, current))
+        .flat_map(|p| p.items.iter().filter_map(tile_of))
+        .collect();
+    plan.moved = moved;
     let mut wanted = Wanted::default();
     let mut seen = HashSet::new();
     for (w, p) in plan.asked.pins() {
-        for n in [Some(p.cat), p.to].into_iter().flatten() {
-            for i in plan.part(&w, n).into_iter().flat_map(|p| p.items.iter()) {
-                wanted.push(i.clone(), &mut seen);
-            }
+        let own = plan.own(&w, p);
+        let to = p.to.and_then(|t| plan.target(&w, t));
+        for i in own.iter().flat_map(Own::all).chain(to.into_iter().flatten()) {
+            wanted.push(i.clone(), &mut seen);
         }
     }
     plan.wanted = wanted;
@@ -902,7 +978,7 @@ pub fn status(s: &crate::AppState) -> Result<Value> {
             return Some(v);
         };
         let cat = plan.eff(pin.cat);
-        let own: Vec<&Item> = plan.part(w, cat)?.items.iter().collect();
+        let own: Vec<&Item> = plan.own(w, pin)?.all().collect();
         let mut v = tally_of(&own);
         v["on"] = json!(true);
         v["cat"] = json!(cat);
@@ -910,8 +986,8 @@ pub fn status(s: &crate::AppState) -> Result<Value> {
         let had: HashSet<&Item> = own.iter().copied().collect();
         let to = pin.to.map(|t| plan.eff(t)).unwrap_or(plan.current);
         if to != cat {
-            if let Some(p) = plan.part(w, to) {
-                let new: Vec<&Item> = p.items.iter().filter(|i| !had.contains(i)).collect();
+            if let (Some(p), Some(target)) = (plan.part(w, to), plan.target(w, to)) {
+                let new: Vec<&Item> = target.into_iter().filter(|i| !had.contains(i)).collect();
                 let gone = own.len() - p.items.iter().filter(|i| had.contains(i)).count();
                 let mut kinds: Vec<String> = new.iter().map(|i| kind(i)).collect::<BTreeSet<_>>().into_iter().collect();
                 kinds.retain(|k| !k.is_empty());
@@ -1048,9 +1124,11 @@ pub async fn get_status(State(s): State<S>) -> Response {
     }
 }
 
-/// Bytes in metric units, as the panel says them: 840 MB, 2.4 GB.
+/// Bytes in metric units, as the panel says them: 12 KB, 840 MB, 2.4 GB (under 1 MB in KB, at least 1).
 fn size(b: u64) -> String {
-    if b < 1_000_000_000 {
+    if b > 0 && b < 1_000_000 {
+        format!("{} KB", (b as f64 / 1e3).round().max(1.0))
+    } else if b < 1_000_000_000 {
         format!("{} MB", (b as f64 / 1e6).round())
     } else {
         format!("{:.1} GB", b as f64 / 1e9)

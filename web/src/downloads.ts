@@ -112,8 +112,10 @@ export const dlDetail = (id: string, on: boolean) => call<{ ok: boolean }>(`/api
 /** Sets the free space downloads leave on this Mac's disk (whole GB; refused, with why, out of
  * bounds). */
 export const setReserve = (gb: number) => call<{ ok: boolean; reserve: number; reserve_set: number }>('/api/downloads/reserve', json('PUT', { gb }));
-/** Bytes in metric units: 840 MB, 2.4 GB, 251 GB. */
+/** Bytes in metric units: 12 KB, 840 MB, 2.4 GB, 251 GB (under 1 MB in KB, at least 1: a tiny
+ * change isn't "0 MB"). */
 export function size(b: number): string {
+  if (b > 0 && b < 1e6) return `${Math.max(1, Math.round(b / 1e3))} KB`;
   if (b < 1e9) return `${fmt.n(Math.max(0, b) / 1e6)} MB`;
   return b < 100e9 ? `${(b / 1e9).toFixed(1)} GB` : `${fmt.n(b / 1e9)} GB`;
 }

@@ -273,8 +273,15 @@ and codesign.
   to copy, and offers **Update**. Meanwhile the map reads the download's own older files first, the
   NAS for what it lacks. An update copies the catalogue served's files beside the old ones (so the
   region keeps working offline throughout), then moves the download to that catalogue, and the
-  files only the old one named go. A download moves on by itself only when that copies nothing (its
-  files are the same in the new catalogue, or its catalogue didn't have it yet), or when it has
+  files only the old one named go. **Whole tiles:** an update moves every z6 tile the download has,
+  including those it shares with another download (a neighbouring region's tiles, or its ways'
+  owners'), and copies the other download's files of those tiles too (base pack, hi packs, lists,
+  road values, basemap piece), so the map never reads one tile from two catalogues. The other
+  download keeps its other tiles at its own catalogue, still out of date for those alone (its size
+  to copy counts only them). A road crossing from its old tile into a moved one may lack its info at
+  the crossing until it's updated too (a way not found, never a wrong one). A download moves on by
+  itself only when that copies nothing (all an update would copy is here: its files are the same in
+  the new catalogue, or other downloads brought them; or its catalogue didn't have it yet), or when it has
   nothing whole to keep (not all here when the new catalogue came: the map never mixes a partial
   download's older files with the NAS's newer ones). The catalogues
   downloads are at stay in `catalog/` however old. Removing a download deletes what no other

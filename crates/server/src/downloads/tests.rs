@@ -944,3 +944,143 @@ async fn at_home_an_unread_hidata_lets_no_owner_go() {
     tokio::task::block_in_place(|| settle(&s));
     assert!(s.data.mirror.clone().unwrap().has(&far), "kept while its hidata is unread");
 }
+
+/// Two regions sharing z6 tiles (task #796), on the roads fixture at catalogue 2: London (its tile
+/// 31/21, way 100's owner 30/21, the lists and terrain of 32/21) and East, stretched to 33/21 (its
+/// own tile: roads and terrain there), keeping 32/21's base pack (way 103's owner), which London
+/// doesn't. Both downloaded and all here. The NAS's root, the catalogue, and the state.
+async fn two_regions(home: &std::path::Path, nas: &std::path::Path) -> (std::path::PathBuf, Catalogue, S) {
+    let root = nas.join("project");
+    std::fs::create_dir_all(&root).unwrap();
+    let r = store::nasfs::NasRoot::local_for_test(&root);
+    let mut cat = catalogue(&r);
+    put_roads(&root, &mut cat);
+    for l in ["terrain", "roads"] {
+        put(&r, &mut cat, &format!("layers/{l}/hi/6-33-21"), 7_000);
+        cat.layers.get_mut(l).unwrap().hi.insert("6/33/21".into(), format!("layers/{l}/hi/6-33-21"));
+    }
+    cat.coverage = json!({"recorded": true, "regions": [
+        {"id": "london", "name": "London", "outline": ["osm:175342"], "shapes": {"osm:175342": [[rect(-0.3, 51.4, -0.1, 51.6)]]}},
+        {"id": "east", "name": "East", "outline": ["osm:1"], "shapes": {"osm:1": [[rect(-0.06, 51.4, 5.7, 51.6)]]}},
+    ]});
+    cat.n = 2;
+    cat.validate().unwrap();
+    store::catalogue::write(&root.join("catalog"), &cat).unwrap();
+    let s = crate::test_state_with(home, &r, true);
+    for id in ["london", "east"] {
+        assert_eq!(region(&s, id, true).await.0, StatusCode::OK);
+    }
+    tokio::task::block_in_place(|| settle(&s));
+    let v = get(&s).await;
+    for id in ["london", "east"] {
+        assert_eq!(v["regions"][id]["state"].as_str(), Some("done"), "{v}");
+    }
+    let m = s.data.mirror.clone().unwrap();
+    assert!(m.has(cat.content("base/6-32-21").unwrap()) && m.has(cat.content("layers/roads/hi/6-33-21").unwrap()));
+    (root, cat, s)
+}
+
+/// Catalogue `n`: `cat` with these files made again (other bytes), written to the NAS and served.
+fn next_catalogue(s: &S, root: &std::path::Path, cat: &Catalogue, n: u64, remade: &[&str]) -> Catalogue {
+    let mut c = cat.clone();
+    c.n = n;
+    for l in remade {
+        put(&store::nasfs::NasRoot::local_for_test(root), &mut c, l, 1_234);
+    }
+    c.validate().unwrap();
+    store::catalogue::write(&root.join("catalog"), &c).unwrap();
+    assert!(tokio::task::block_in_place(|| s.data.refresh_catalogue()));
+    c
+}
+
+/// The catalogues (of `cats`) whose file the map reads, for each logical name of z6 tile `t` that
+/// one of them lists (a file the same in both: both).
+fn tile_cats(s: &S, cats: &[&Catalogue], t: &str) -> BTreeMap<String, BTreeSet<u64>> {
+    let logicals: BTreeSet<&String> =
+        cats.iter().flat_map(|c| c.files.keys()).filter(|l| l.ends_with(&format!("/{t}"))).collect();
+    logicals
+        .into_iter()
+        .filter_map(|l| {
+            let read = s.data.content(l)?;
+            Some((l.clone(), cats.iter().filter(|c| c.content(l) == Some(read.as_str())).map(|c| c.n).collect()))
+        })
+        .collect()
+}
+
+/// Updating London moves every tile it has to the new catalogue whole, East's files of them too
+/// (32/21's base pack, which London doesn't keep): no tile mixes catalogues. East keeps its own
+/// tile (33/21) at its catalogue, out of date for that alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn updating_a_region_moves_the_tiles_it_shares_whole() {
+    let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (root, two, s) = two_regions(home.path(), nas.path()).await;
+    let m = s.data.mirror.clone().unwrap();
+    let remade = ["base/6-32-21", "layers/terrain/hi/6-31-21", "layers/roads/hi/6-33-21"];
+    let three = next_catalogue(&s, &root, &two, 3, &remade);
+    tokio::task::block_in_place(|| settle(&s));
+    // Both behind, read at 2.
+    for t in ["6-31-21", "6-32-21", "6-33-21"] {
+        assert!(tile_cats(&s, &[&two, &three], t).values().all(|n| n.contains(&2)), "{t}");
+    }
+
+    let (code, v) = call(post_region_update(State(s.clone()), Path("london".into())).await).await;
+    assert_eq!(code, StatusCode::OK, "{v}");
+    tokio::task::block_in_place(|| settle(&s));
+    let pins: BTreeMap<String, Pin> = s.downloads.asked().regions.iter().map(|r| (r.id.clone(), r.pin)).collect();
+    assert_eq!(pins["london"], Pin { cat: 3, to: None });
+    assert_eq!(pins["east"], Pin { cat: 2, to: None }, "East stays at its own");
+    // Whole tiles: London's and East's of 31/21 and 32/21 at 3, here (East's base pack too);
+    // East's own 33/21 at 2.
+    for t in ["6-30-21", "6-31-21", "6-32-21"] {
+        let c = tile_cats(&s, &[&two, &three], t);
+        assert!(c.values().all(|n| n.contains(&3)), "{t}: {c:?}");
+    }
+    assert!(m.has(three.content("base/6-32-21").unwrap()), "East's base pack of the shared tile, moved");
+    assert!(!m.has(two.content("base/6-32-21").unwrap()), "its old one gone");
+    let c = tile_cats(&s, &[&two, &three], "6-33-21");
+    assert!(c.values().all(|n| n.contains(&2)), "{c:?}");
+    assert!(m.has(two.content("layers/roads/hi/6-33-21").unwrap()));
+    // East: all here, out of date for 33/21's roads alone.
+    let v = get(&s).await;
+    let e = &v["regions"]["east"];
+    assert_eq!((e["state"].as_str(), e["cat"].as_u64()), (Some("done"), Some(2)), "{v}");
+    assert_eq!(e["here"], e["bytes"]);
+    assert_eq!(e["behind"]["files"], 1, "{e}");
+    assert_eq!(e["behind"]["what"], json!(["roads"]));
+    assert_eq!(e["behind"]["bytes"], 1_234);
+    assert!(v["regions"]["london"].get("behind").is_none(), "{v}");
+
+    // East updated in its turn: all at 3, the old 33/21 gone.
+    let (code, v) = call(post_region_update(State(s.clone()), Path("east".into())).await).await;
+    assert_eq!(code, StatusCode::OK, "{v}");
+    tokio::task::block_in_place(|| settle(&s));
+    assert!(s.downloads.asked().regions.iter().all(|r| r.pin == Pin { cat: 3, to: None }));
+    assert!(!m.has(two.content("layers/roads/hi/6-33-21").unwrap()));
+}
+
+/// A download whose tiles another's update moved, with nothing else changed, has nothing left to
+/// copy: it moves on by itself.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_download_another_update_covered_moves_on_by_itself() {
+    let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (root, two, s) = two_regions(home.path(), nas.path()).await;
+    let three = next_catalogue(&s, &root, &two, 3, &["base/6-32-21", "layers/terrain/hi/6-31-21"]);
+    tokio::task::block_in_place(|| settle(&s));
+    let v = get(&s).await;
+    assert_eq!(v["regions"]["east"]["behind"]["files"], 2, "{v}");
+    assert_eq!(call(post_region_update(State(s.clone()), Path("london".into())).await).await.0, StatusCode::OK);
+    tokio::task::block_in_place(|| settle(&s));
+    assert!(s.downloads.asked().regions.iter().all(|r| r.pin == Pin { cat: 3, to: None }));
+    let v = get(&s).await;
+    assert!(v["regions"]["east"].get("behind").is_none(), "{v}");
+    assert_eq!(v["regions"]["east"]["state"].as_str(), Some("done"));
+    assert!(tile_cats(&s, &[&two, &three], "6-32-21").values().all(|n| n.contains(&3)));
+}
+
+#[test]
+fn sizes_under_a_megabyte_are_in_kilobytes() {
+    assert_eq!(
+        [0, 1, 400, 1_234, 999_000, 4_200_000, 2_400_000_000].map(size),
+        ["0 MB", "1 KB", "1 KB", "1 KB", "999 KB", "4 MB", "2.4 GB"]
+    );
+}

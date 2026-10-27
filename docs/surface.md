@@ -92,7 +92,7 @@
   - **Each region**: its size, Download or Remove, and its state (downloaded, copying N %, next,
     waiting for room, away, updating N %), with a progress bar under it while it's downloading or
     updating. Behind the catalogue served, it says "↻ out of date", what changed (new files, of
-    which kinds) and the size to copy, with an **Update** button; the World and terrain detail
+    which kinds) and the size to copy (under 1 MB in KB), with an **Update** button; the World and terrain detail
     rows the same. A region still building says "x of y tiles, on the map as they come"
     (every z6 tile built but not yet recorded built: "finishing: x of x tiles, the last map tiles and
     layers being made")
