@@ -217,6 +217,29 @@ impl Block {
         }
     }
 
+    /// Row `y`'s samples from column `x0` on, as `f32_at` gives each, into `out` (as many as it
+    /// holds): the type matched once a row, not a sample (task #807: `read_window`'s copy, a sample
+    /// at a time, was the largest part of terrain-deep's CPU).
+    pub fn row_f32(&self, y: usize, x0: usize, out: &mut [f32]) {
+        let i = y * self.width + x0;
+        let n = out.len();
+        fn conv<T: Copy>(src: &[T], out: &mut [f32], f: impl Fn(T) -> f32) {
+            for (o, &v) in out.iter_mut().zip(src) {
+                *o = f(v);
+            }
+        }
+        match &self.data {
+            Samples::U8(v) => conv(&v[i..i + n], out, |v| v as f32),
+            Samples::I8(v) => conv(&v[i..i + n], out, |v| v as f32),
+            Samples::U16(v) => conv(&v[i..i + n], out, |v| v as f32),
+            Samples::I16(v) => conv(&v[i..i + n], out, |v| v as f32),
+            Samples::U32(v) => conv(&v[i..i + n], out, |v| v as f32),
+            Samples::I32(v) => conv(&v[i..i + n], out, |v| v as f32),
+            Samples::F32(v) => out.copy_from_slice(&v[i..i + n]),
+            Samples::F64(v) => conv(&v[i..i + n], out, |v| v as f32),
+        }
+    }
+
     /// The samples, row by row, when they're 16-bit unsigned.
     pub fn u16s(&self) -> Option<&[u16]> {
         match &self.data {
@@ -898,9 +921,11 @@ impl Tiff {
                 let (ys, ye) = (y0.max(oy), (y0 + h).min(oy + b.height as u32));
                 for y in ys..ye {
                     let o = (y - y0) as usize * w as usize;
-                    for x in xs..xe {
-                        out[o + (x - x0) as usize] = b.f32_at((x - ox) as usize, (y - oy) as usize);
-                    }
+                    b.row_f32(
+                        (y - oy) as usize,
+                        (xs - ox) as usize,
+                        &mut out[o + (xs - x0) as usize..o + (xe - x0) as usize],
+                    );
                 }
             }
         }

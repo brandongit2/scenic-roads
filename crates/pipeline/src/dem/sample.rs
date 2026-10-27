@@ -117,7 +117,8 @@ pub fn sample_raster_noting(t: &Tiff, level: usize, px: &[f64], py: &[f64], clea
             let (x0, y0) = ((k % nbx) * BLOCK, (k / nbx) * BLOCK);
             let (bw, bh) = (BLOCK.min(w - x0), BLOCK.min(h - y0));
             let mut a = t.read_window(level, x0 as u32, y0 as u32, bw as u32, bh as u32)?;
-            if let Some(c) = clean {
+            // (Each block's cleanness noted once: it doesn't change.)
+            if let Some(c) = clean.filter(|c| c.get(level, k).is_none()) {
                 c.note(level, k, &a, t.nodata());
             }
             if let Some(nd) = nodata {
