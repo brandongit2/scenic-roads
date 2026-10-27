@@ -696,7 +696,7 @@ fn measure_the_waters_reads() {
 
 /// A measure on real data, reading the NAS alone (nothing written): `SCENIC_DEPTH_MEASURE="<root>
 /// x/y <upto> <reads>"` composes z3 tile x/y's assembly to zoom `upto` (`SCENIC_DEPTH_MEASURE="<root>
-/// 6/x/y <upto> <reads>"`: z6 tile x/y's piece, from the NAS's lo packs) with `reads` windows read
+/// 6/x/y <upto> <reads>"`: z6 tile x/y's piece; an assembly reads the NAS's z9 tiles) with `reads` windows read
 /// at once (1: in turn, the grids too), and prints its phases, the depth files opened and read, and
 /// the digest of the tiles made. `SCENIC_DEPTH_PACKED="<id>=<index>=<folder> …"` (task #452) reads
 /// source `id`'s grids by a packed index (producers/depth/repack.py's) from its packs in `folder`
@@ -792,119 +792,6 @@ fn measure_a_real_assembly() {
         }
     }
     println!("  untimed {:.1} s of {:.1} s", r.untimed_s, r.wall_s);
-    if let Ok(dir) = std::env::var("SCENIC_DEPTH_COMPARE") {
-        review_compare(&out, &made, z, q, upto, Path::new(&dir));
-    }
-}
-
-fn review_compare(
-    out: &Out,
-    made: &std::collections::BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>,
-    z: u8,
-    q: (u32, u32),
-    upto: u8,
-    dir: &Path,
-) {
-    use super::fall::{decode, Grid, Kind};
-    std::fs::create_dir_all(dir).unwrap();
-    let mt = crate::terrain_pack::ManifestTiles::new(out, LAYER);
-    let logical = if z == 3 { lo_logical(LAYER, q.0, q.1) } else { hi_logical(LAYER, q.0, q.1) };
-    let stored_keys: Vec<(u8, u32, u32)> = mt.tiles_in(&logical).unwrap().into_iter().filter(|k| k.0 <= upto).collect();
-    let mut all: std::collections::BTreeSet<(u8, u32, u32)> = made.keys().copied().collect();
-    all.extend(stored_keys.iter().copied());
-    let keys: Vec<(u8, u32, u32)> = all.into_iter().collect();
-    let got = mt.get_many(&keys).unwrap();
-    let f = |b: &[u8]| match decode(Kind::Terrarium, b).unwrap() {
-        Grid::F(v) => v,
-        _ => unreachable!(),
-    };
-    let mut per: std::collections::BTreeMap<u8, [f64; 8]> = Default::default();
-    let mut worst: Vec<(usize, (u8, u32, u32))> = Vec::new();
-    for (k, old) in keys.iter().zip(got) {
-        let e = per.entry(k.0).or_default();
-        let new = made.get(k);
-        match (&old, new) {
-            (Some(o), Some((n, _))) => {
-                e[0] += 1.0;
-                if o == n {
-                    e[1] += 1.0;
-                    continue;
-                }
-                let (o, n) = (f(o), f(n));
-                let mut c = 0;
-                for i in 0..65536 {
-                    let (a, b) = (o[i] < NODATA_MIN, n[i] < NODATA_MIN);
-                    if a != b {
-                        e[4] += 1.0;
-                        c += 1;
-                    } else if a {
-                        let d = (o[i] - n[i]).abs() as f64;
-                        if d > 0.05 {
-                            e[5] += 1.0;
-                            e[6] += d;
-                            e[7] = e[7].max(d);
-                            c += 1;
-                        }
-                    }
-                }
-                worst.push((c, *k));
-            }
-            (Some(_), None) => e[2] += 1.0,
-            (None, Some(_)) => e[3] += 1.0,
-            (None, None) => {}
-        }
-    }
-    println!("COMPARE {z}/{}/{} to z{upto} (old = the NAS's packs, new = this build)", q.0, q.1);
-    for (zz, e) in &per {
-        println!(
-            "  z{zz}: both {} (byte-identical {}), old only {}, new only {}; pixels data<->none {}, differing >0.05 m {} (mean {:.2} m, max {:.2} m)",
-            e[0], e[1], e[2], e[3], e[4], e[5], if e[5] > 0.0 { e[6] / e[5] } else { 0.0 }, e[7]
-        );
-    }
-    worst.sort_by(|a, b| b.0.cmp(&a.0));
-    let png = |name: String, rgb: Vec<u8>| {
-        let file = std::fs::File::create(dir.join(name)).unwrap();
-        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), 256, 256);
-        enc.set_color(png::ColorType::Rgb);
-        enc.set_depth(png::BitDepth::Eight);
-        enc.write_header().unwrap().write_image_data(&rgb).unwrap();
-    };
-    for (c, k) in worst.iter().take(4) {
-        let old = mt.get_many(&[*k]).unwrap().remove(0).unwrap();
-        let (o, n) = (f(&old), f(&made[k].0));
-        let deep = o.iter().chain(&n).filter(|v| **v < NODATA_MIN).fold(1f32, |m, v| m.max(-v));
-        let gray = |v: &[f32]| -> Vec<u8> {
-            v.iter()
-                .flat_map(|&x| {
-                    if x < NODATA_MIN {
-                        let g = (255.0 * (1.0 - (-x).max(0.0) / deep)).clamp(0.0, 255.0) as u8;
-                        [g / 2, g / 2 + 40, g]
-                    } else {
-                        [90, 60, 40]
-                    }
-                })
-                .collect()
-        };
-        let diff: Vec<u8> = (0..65536)
-            .flat_map(|i| {
-                let (a, b) = (o[i] < NODATA_MIN, n[i] < NODATA_MIN);
-                if a != b {
-                    [255, 255, 0]
-                } else if !a {
-                    [40, 40, 40]
-                } else {
-                    let d = ((n[i] - o[i]) / 2.0).clamp(-1.0, 1.0);
-                    let m = (255.0 * d.abs()) as u8;
-                    if d > 0.0 { [255, 255 - m, 255 - m] } else { [255 - m, 255 - m, 255] }
-                }
-            })
-            .collect();
-        let tag = format!("{}-{}-{}", k.0, k.1, k.2);
-        png(format!("{tag}-old.png"), gray(&o));
-        png(format!("{tag}-new.png"), gray(&n));
-        png(format!("{tag}-diff.png"), diff);
-        println!("  rendered {tag} ({c} pixels differ; diff: red new shallower, blue deeper, full at 2 m; yellow data<->none)");
-    }
 }
 
 /// The floor's shading (`build::shading`): a tile's own where it's the finest, by Horn's method on

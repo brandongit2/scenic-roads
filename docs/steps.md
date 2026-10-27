@@ -326,7 +326,8 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   there: not one feathered in under half, nor a gap filled from one), so no tile is finer than the
   data under it and a finer view scales up the nearest stored tile; its capped pixels scaled up
   from this job's coarser tiles. At z8 and coarser those are its own: before z9 it composes z6–8
-  over the tile and the ring of tiles around it, as an assembly composes them (below), which serve
+  over the tile and the ring of tiles around it (across the date line too, where the map's
+  fallback takes an ancestor's east–west neighbours), as an assembly composes them (below), which serve
   only that and aren't stored, so a block's 32-pixel margin across the tile's edge has them too
   (its neighbours' fine tiles are another job's and aren't read).
 - **depth-lo (a z3 tile, after its z6 tiles' depth):** its coarse levels from the finer, as the
@@ -699,13 +700,14 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   tile meeting it (`crate::bld::sources`).
 - **depth (a z6 tile):** `DEPTH_V`, `DEPTH_LO_V` and the shading's codec (`shade_codec::version`),
   the tile, the sources its blocks read (meeting the tile and the ring of z6 tiles around it with
-  z6's 32-px margin: its coarse levels', the widest), and the digest of its water, rivers included
+  z6's 32-px margin: its coarse levels', the widest; across the date line too), and the digest of its water, rivers included
   ("depth 6/x/y"): at z6–8 its tiles and two rings around them (its coarse levels are composed over
   it and a ring, each block reading a ring past it), and its tiles and the ring around them at each
   zoom from z9 to z14 its blocks compose (a source of that zoom or finer meets the tile with the
   blocks' 32-px margin; z15–16 are drawn from z14's polygons), so a change the basemap shows only at
   z13–14 remakes the z6 tiles whose sources reach it, and one finer than a tile's sources none.
-- **depth-lo (a z3 tile):** the same versions, the tile, the depth sources meeting it (id and
+- **depth-lo (a z3 tile):** the same versions, the tile, the depth sources meeting it with its z6
+  blocks' 32-px margin (id and
   digest of declaration and index), the digest of its z6–8 water as the depth reads it, rivers
   included ("depth 3/x/y", worked out by the terrain-water job), and the content names of its z6
   tiles' `depth` and `depth-class` hi packs (its z8 is made from their z9).
