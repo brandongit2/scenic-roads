@@ -101,7 +101,7 @@ Common rules:
 - **Built:** packs that staging reads are copied once to the job's Mac's SSD (`blobs/`,
   content-named) and shared by its z6 tiles; the next z6 tile's inputs are copied ahead; task files are
   served from that SSD; one disk budget covers the caches (docs/building.md §2, Room on the disk).
-- **Planned:** exact byte ranges fetched; a content-named index per dataset instead of listings;
+- **Planned:** exact byte ranges fetched;
   writes journaled on the SSD and committed in groups; reads and writes paced by the NAS's latency.
 
 ## 5. Control: leases and trust
