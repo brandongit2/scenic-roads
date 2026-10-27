@@ -1,7 +1,7 @@
 //! The per-Mac mirror (docs/macs.md, "Mirror, per Mac"; docs/formats.md, "On each Mac"): the map's
 //! files this Mac has downloaded, copied from the NAS under the same content names, so the map
 //! reads them mmapped and works away from home where they reach. Nothing is copied unless the
-//! owner downloaded it (the Regions panel: the World, zoomed out; a region; a view), and nothing
+//! owner downloaded it (the Regions panel: the World, zoomed out; a region; its terrain detail), and nothing
 //! downloaded goes by itself.
 //!
 //! Under the app's folder (`~/Library/Application Support/scenic/`):
@@ -14,12 +14,14 @@
 //! mirror/.basemap/<hash16>/<piece>.pmtiles.part   a piece being made, resumed where it stopped
 //! mirror/.basemap/<hash16>/sizes.json             each piece's size, worked out from the archive
 //! idx/<hash16>.idx                  pack indexes (PackIndex::to_bytes), cached as they're read
-//! catalog/<n>.json.zst              the last catalogues adopted
+//! catalog/<n>.json.zst              the last catalogues adopted, and those a download is at or
+//!                                   updating to (`keep_catalogues`)
 //! ```
 //!
-//! **What's wanted** (`Wanted`, from the caller: the server's downloads) is a list of files of the
-//! current catalogue and pieces of its basemap, in the order they're copied. A sync first lets go of
-//! everything else here (an older catalogue's files, replaced ones, what a removed download had), then
+//! **What's wanted** (`Wanted`, from the caller: the server's downloads) is a list of files and
+//! basemap pieces, in the order they're copied: each download's, of the catalogue it's at (and, while
+//! it's updating, of the one it's updating to). A sync first lets go of everything else here (what a
+//! removed download had, what an updated one no longer needs), then
 //! copies what's wanted and missing, one at a time, in large sequential reads through the I/O pool.
 //! A file that doesn't fit (the disk's free space, less the reserve) waits, and nothing goes to make
 //! room for it. While the caller says the build is running (`Control::slow`), copies keep to 20 MB/s
@@ -204,6 +206,8 @@ struct State {
     copying: Option<Copying>,
     /// What the last sync did, and when.
     last: Option<(SyncStats, SystemTime)>,
+    /// The catalogues kept in `catalog/` besides the last few (`keep_catalogues`).
+    kept: std::collections::BTreeSet<u64>,
 }
 
 /// The local copy of what this Mac has downloaded.
@@ -291,7 +295,7 @@ impl Mirror {
             root,
             reserve: std::sync::atomic::AtomicU64::new(reserve_bytes),
             floor: std::sync::OnceLock::new(),
-            state: Mutex::new(State { files, pieces, sizes, copying: None, last: None }),
+            state: Mutex::new(State { files, pieces, sizes, copying: None, last: None, kept: Default::default() }),
             free_space: Box::new(disk_free),
             on_remove: Mutex::new(None),
         })
@@ -485,12 +489,32 @@ impl Mirror {
         Ok(ix)
     }
 
-    /// Keeps a copy of `cat` in `catalog/` (for starting offline), and the last few before it.
+    /// Keeps a copy of `cat` in `catalog/` (for starting offline), the last few before it, and those
+    /// `keep_catalogues` names.
     pub fn save_catalogue(&self, cat: &Catalogue) -> Result<()> {
         let dir = self.root.join(crate::catalogue::NAME);
         catalogue::write_copy(&dir, cat)?;
-        catalogue::prune(&dir, KEEP_CATALOGUES)?;
+        let kept = self.state().kept.clone();
+        catalogue::prune(&dir, KEEP_CATALOGUES, &kept)?;
         Ok(())
+    }
+
+    /// Keeps these catalogues in `catalog/` however old (those a download is at or updating to: their
+    /// files are read by them), from now on; others past the last few go now.
+    pub fn keep_catalogues(&self, ns: std::collections::BTreeSet<u64>) -> Result<()> {
+        if self.state().kept == ns {
+            return Ok(());
+        }
+        let dir = self.root.join(crate::catalogue::NAME);
+        catalogue::prune(&dir, KEEP_CATALOGUES, &ns)?;
+        self.state().kept = ns;
+        Ok(())
+    }
+
+    /// Catalogue `n` as kept here (None: it isn't).
+    pub fn catalogue(&self, n: u64) -> Option<Catalogue> {
+        let dir = self.root.join(crate::catalogue::NAME);
+        catalogue::list(&dir).ok()?.contains(&n).then(|| catalogue::read_n(&dir, n).ok()).flatten()
     }
 
     /// The newest catalogue kept here.
@@ -557,8 +581,8 @@ impl Mirror {
     }
 
     /// Lets go of what `wanted` doesn't name: the files and pieces here, copies in progress, the
-    /// pieces of archives `cat` no longer has (their sizes too). Away from home as at home. A file
-    /// a job holds stays (`SyncStats::held`). What it did.
+    /// sizes of pieces of archives neither `cat` nor `wanted` has. Whether or not the NAS is
+    /// reachable. A file a job holds stays (`SyncStats::held`). What it did.
     pub fn let_go(&self, cat: &Catalogue, wanted: &Wanted) -> Result<SyncStats> {
         let mut stats = SyncStats::default();
         let files = wanted.files();
@@ -596,8 +620,15 @@ impl Mirror {
         }
         // Pieces: those of archives the catalogue no longer has go with their folder.
         let pieces = wanted.pieces();
-        let current: HashSet<String> =
-            cat.basemap.iter().filter_map(|l| cat.content(l)).filter_map(hash_of).map(str::to_string).collect();
+        // (The sizes of a wanted archive's pieces stay: an older catalogue's, for a download at it.)
+        let current: HashSet<String> = cat
+            .basemap
+            .iter()
+            .filter_map(|l| cat.content(l))
+            .filter_map(hash_of)
+            .map(str::to_string)
+            .chain(pieces.iter().map(|(h, _)| h.clone()))
+            .collect();
         let base = self.root.join("mirror").join(BASEMAP);
         for e in fs::read_dir(&base).into_iter().flatten().flatten() {
             let Ok(hash) = e.file_name().into_string() else { continue };
@@ -697,15 +728,6 @@ impl Mirror {
         }
         stats.pending = left;
         self.tidy(cat);
-        self.state().last = Some((stats, SystemTime::now()));
-        Ok(stats)
-    }
-
-    /// Away from the NAS: lets go of what isn't wanted, copies nothing. What it did.
-    pub fn sync_away(&self, cat: &Catalogue, wanted: &Wanted) -> Result<SyncStats> {
-        let mut stats = self.let_go(cat, wanted)?;
-        stats.end = SyncEnd::Offline;
-        stats.pending = wanted.items.iter().filter(|i| !self.is_here(i)).count() as u32;
         self.state().last = Some((stats, SystemTime::now()));
         Ok(stats)
     }
@@ -942,11 +964,12 @@ impl Mirror {
         Ok(Some(Copy::Done(plan.size)))
     }
 
-    /// After a sync: drops pack indexes no recent catalogue needs (and temporary files an
-    /// interrupted write left in `idx/`).
+    /// After a sync: drops pack indexes no recent catalogue needs and of no file here (and
+    /// temporary files an interrupted write left in `idx/`).
     fn tidy(&self, cat: &Catalogue) {
         let mut recent: HashSet<String> =
             cat.files.values().filter_map(|f| parse_content_name(&f.file).map(|c| c.hash16.to_string())).collect();
+        recent.extend(self.state().files.keys().filter_map(|n| parse_content_name(n).map(|c| c.hash16.to_string())));
         let dir = self.root.join(crate::catalogue::NAME);
         if let Ok(ns) = catalogue::list(&dir) {
             if let Some(prev) = ns.into_iter().filter(|&n| n < cat.n).find_map(|n| catalogue::read_n(&dir, n).ok()) {

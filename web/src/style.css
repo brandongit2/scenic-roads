@@ -577,6 +577,10 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 #layers .kp-res-say.warn { color: #f3c77a; }
 #layers .kp-bar { height: 3px; margin: 2px 0 3px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
 #layers .kp-bar i { display: block; height: 100%; background: var(--accent); transition: width 0.4s ease; }
+/* A download's own progress and its out-of-date line, under its row. */
+#layers .rg-prog[hidden] { display: none; }
+#layers .kp-bar.rg-bar { height: 2px; margin: 3px 0 1px; }
+#layers .rg2s.rg-behind { color: #a9b6c8; }
 #layers .rg-bad { color: #f3c77a; font-size: 10.5px; line-height: 1.4; padding: 2px 0; overflow-wrap: anywhere; }
 #layers .rg-empty { font-size: 11px; padding: 2px 0; }
 #layers :is(.rg-note, .rg-msg) { font-size: 10.5px; line-height: 1.45; color: var(--muted); }

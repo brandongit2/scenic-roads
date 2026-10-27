@@ -599,11 +599,14 @@ names/spoken-<content>.bin   languages spoken where, for a catalogue without `gl
                         count, 23,041 u32 row starts, runs of (u32 first column, u16 region))
 regions.json            the last regions read
 reserve.json            the mirror's reserve {gb} (crates/server/src/reserve.rs); default 30 GB
-downloads.json          {fmt: 3, world: at | null, regions: [{id, name, at, detail}]} (`detail`: its
-                        terrain detail too; read as `fine` too, its name before one terrain)
-                        (crates/server/src/downloads.rs; `at` unix seconds); one that doesn't read is
-                        set aside as downloads.json.bad; a fmt 2 file is written again without its
-                        `views` (their files no region needs are deleted)
+downloads.json          {fmt: 4, world: {at, cat, to?} | null, regions: [{id, name, at, cat, to?,
+                        detail: {cat, to?} | null}]} (crates/server/src/downloads.rs; `at` unix
+                        seconds; `cat` the catalogue a download is at, 0 until the mirror's next
+                        round pins it to the one served; `to` the catalogue an Update is copying;
+                        `detail` its terrain detail, when downloaded). A file of fmt 3 or before
+                        (`world` a time, `detail` or `fine` a flag, fmt 2's `views`) is written again
+                        as fmt 4, each download pinned to the catalogue served; one that doesn't read
+                        is set aside as downloads.json.bad
 map-page                the address to open the map on another device (docs/macs.md, Devices; 0600)
 pool-<id>.lock          the lock of this Mac's member `<id>` (crate::pool::MemberLock)
 ```
@@ -773,16 +776,24 @@ batch of lines, a line a forecast, `fcarchive::Entry`:
   here"), as is one whose `Host` isn't the map's (an address, a local or tailnet name, or one in
   `~/.config/scenic/names`) or whose `Origin` is another page's. CORS answers only this Mac's own origins.
 - **Downloads** (`downloads.rs`): `GET /api/downloads` → `{mirror, online, slow, rate, free,
-  reserve, reserve_min, disk, here, world: {bytes, here, unknown, on, at, state}, wanted: {bytes,
-  here, more, unknown}, copying: {what, bytes, have, slow} | null, last: {…} | null, regions: {id:
-  {name, bytes, here, unknown, on, state, tiles?, detail?: {bytes, here, unknown, on, state, cover}}}}`
-  (`unknown`: basemap pieces not yet sized; `state`: done, copying, queued, room, away,
-  missing; `tiles`: a region still building, as its catalogue has it, its files those of the catalogue
-  served, more with each catalogue). `PUT /api/downloads/world {on}` (each on its own: a region
-  doesn't bring the World, and the World goes while regions stay); `PUT /api/downloads/regions/{id}
-  {on}` (off removes its terrain detail too); `PUT /api/downloads/regions/{id}/detail {on}` (its
-  terrain detail, the deep packs near it; on refused unless the region is downloaded); `PUT /api/downloads/reserve {gb}` (whole GB, 5 to under the
-  disk size) → `{ok, reserve}`. A download that wouldn't fit is refused; refusals are 400 `{error}`.
+  reserve, reserve_min, disk, here, world: {…dl, at}, wanted: {bytes, here, more, unknown}, copying:
+  {what, bytes, have, slow} | null, last: {…} | null, regions: {id: {…dl, name, tiles?, detail?:
+  {…dl, cover}}}}`, each `dl` `{bytes, here, unknown, on, state, cat?, behind?, update?}`: its size and
+  how much is here at its own catalogue (not downloaded: at the one served); `unknown`: basemap
+  pieces not yet sized; `state`: done, copying, queued, room, away, missing, updating; `cat`: the
+  catalogue it's at; `behind` (behind the one served): `{cat, files, gone, what, bytes, unknown,
+  state?}`, the catalogue an update takes it to, the files new to it and those it lets go, the
+  kinds of what changed (a layer's name, basemap, road data, lists…), the bytes still to copy;
+  `update` (updating): the tally of those new files; `tiles`: a region still building, as the
+  served catalogue has it. `PUT /api/downloads/world {on}` (each on its own: a region doesn't
+  bring the World, and the World goes while regions stay); `PUT /api/downloads/regions/{id} {on}`
+  (off removes its terrain detail too); `PUT /api/downloads/regions/{id}/detail {on}` (its terrain
+  detail, the deep packs near it; on refused unless the region is downloaded); a new download is at
+  the catalogue served. `POST /api/downloads/world/update`, `…/regions/{id}/update`,
+  `…/regions/{id}/detail/update`: update it to the catalogue served (refused when it isn't
+  downloaded or isn't behind). `PUT /api/downloads/reserve {gb}` (whole GB, 5 to under the disk
+  size) → `{ok, reserve}`. A download or update that wouldn't fit is refused; refusals are 400
+  `{error}`.
 - **Regions** (read only): `GET /api/regions`, `/api/regions/layer`, `/api/areas/{id}`,
   `/api/coverage` (the catalogue's coverage as GeoJSON, one feature per outline entry, with `regions`
   and `catalog`).

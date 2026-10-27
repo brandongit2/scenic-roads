@@ -728,12 +728,12 @@ pub fn next_n<'a>(dir: impl Into<Loc<'a>>) -> Result<u64> {
     Ok(list(dir)?.first().map_or(1, |n| n + 1))
 }
 
-/// Deletes all but the `keep` highest catalogues in `dir`. For a Mac's own copies only: on the NAS,
-/// deletions go through SSH (docs/storage.md); a Mac keeps its copies whole (`write_copy`), so none is a
-/// delta another needs. Returns how many were deleted.
-pub fn prune(dir: &Path, keep: usize) -> Result<usize> {
+/// Deletes all but the `keep` highest catalogues in `dir`, and those in `also`. For a Mac's own copies
+/// only: on the NAS, deletions go through SSH (docs/storage.md); a Mac keeps its copies whole
+/// (`write_copy`), so none is a delta another needs. Returns how many were deleted.
+pub fn prune(dir: &Path, keep: usize, also: &BTreeSet<u64>) -> Result<usize> {
     let mut gone = 0;
-    for n in list(dir)?.into_iter().skip(keep) {
+    for n in list(dir)?.into_iter().skip(keep).filter(|n| !also.contains(n)) {
         for p in [dir.join(file_name(n)), dir.join(delta_file_name(n))] {
             match fs::remove_file(&p) {
                 Ok(()) => gone += 1,
@@ -888,8 +888,9 @@ mod tests {
         fs::write(d.join("9.json.zst"), &bad).unwrap();
         assert_eq!(latest(&d).unwrap().unwrap().n, 3);
 
-        assert_eq!(prune(&d, 2).unwrap(), 6);
-        assert_eq!(list(&d).unwrap(), [9, 7]);
+        // (One named kept stays however old.)
+        assert_eq!(prune(&d, 2, &[3].into()).unwrap(), 5);
+        assert_eq!(list(&d).unwrap(), [9, 7, 3]);
     }
 
     #[test]

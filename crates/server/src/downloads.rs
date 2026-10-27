@@ -4,19 +4,32 @@
 //!
 //!   GET    /api/downloads                 this Mac's room, the World download, every region the
 //!                                         catalogue has (a region still building with its `tiles`
-//!                                         built of total) with its size, how much of it is here
-//!                                         and whether it's downloaded, the copy under way
+//!                                         built of total) with its size, how much of it is here,
+//!                                         whether it's downloaded and whether it's behind the
+//!                                         catalogue (what changed, the bytes an update copies),
+//!                                         the copy under way
 //!   PUT    /api/downloads/world           {on}: download the World, zoomed out, or remove it
 //!   PUT    /api/downloads/regions/{id}    {on}: download a region, or remove it (with its
 //!                                         terrain detail)
 //!   PUT    /api/downloads/regions/{id}/detail {on}: download a downloaded region's terrain detail,
 //!                                         or remove it
+//!   POST   /api/downloads/world/update, /api/downloads/regions/{id}/update,
+//!          /api/downloads/regions/{id}/detail/update: update a download to the catalogue served
 //!   PUT    /api/downloads/reserve         {gb}: the free space downloads leave on the disk
 //!                                         (crate::reserve)
 //!
-//! A download that wouldn't fit (all that's downloaded, less what's here, more than the free space
-//! above the reserve) is refused, with the numbers. What's downloaded is this Mac's alone:
+//! A download or update that wouldn't fit (all that's downloaded, less what's here, more than the
+//! free space above the reserve) is refused, with the numbers. What's downloaded is this Mac's alone:
 //! `<home>/downloads.json` (docs/formats.md), never the NAS.
+//!
+//! **Updates only when asked.** Each download (the World, a region, a region's terrain detail) stays
+//! at the catalogue it was downloaded or last updated at (its `Pin`): a new catalogue copies nothing.
+//! The map reads a download's own older files while it's behind (Data::content), the NAS for what
+//! it lacks. An Update copies the catalogue served's files for it alongside the old ones; once all
+//! are here, the download moves to that catalogue and the files only the old one named go. A
+//! download moves on by itself only when that copies nothing: the catalogue's files for it are the
+//! same, or its own catalogue had none of it (downloaded before it was built). Catalogues a download
+//! is at or updating to are kept on this Mac (store::mirror::Mirror::keep_catalogues).
 //!
 //! - **The World, zoomed out** (`world_part`): the worldwide files, every layer's root and lo
 //!   packs, the landmark points and area details (store::mirror::essentials), and the basemap's
@@ -49,7 +62,7 @@ use axum::{
 use pipeline::areafiles::{box_meets, detail_of, files_of, outer_rings, tiles_meeting, Files, NEAR_KM};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -58,19 +71,41 @@ use store::mirror::{Control, Item, Mirror, SyncEnd, Wanted};
 use store::pieces::Piece;
 
 const FILE: &str = "downloads.json";
-/// `downloads.json`'s format: 3 since downloaded views went (2 had `views`).
-const FMT: u32 = 3;
+/// `downloads.json`'s format: 4 since downloads update only when asked (each its `Pin`); 3 had
+/// `world` as a time and `detail` as a flag.
+const FMT: u32 = 4;
+
+/// The catalogue a download is at, and the one an Update is taking it to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pin {
+    /// The number of the catalogue whose files it keeps (0: none yet: the mirror's next round
+    /// pins it to the one served).
+    #[serde(default)]
+    pub cat: u64,
+    /// An Update under way: the catalogue whose files it's copying; it moves there once they're all
+    /// here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<u64>,
+}
 
 /// What this Mac has downloaded (`downloads.json`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Asked {
     pub fmt: u32,
-    /// When the World, zoomed out, was downloaded (seconds since 1970); None: it isn't.
+    /// The World, zoomed out (None: it isn't downloaded).
     #[serde(default)]
-    pub world: Option<u64>,
+    pub world: Option<AskedWorld>,
     /// Downloaded regions, by id, as they were named then (for one the map no longer has).
     #[serde(default)]
     pub regions: Vec<AskedRegion>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AskedWorld {
+    /// When it was downloaded (seconds since 1970).
+    pub at: u64,
+    #[serde(flatten)]
+    pub pin: Pin,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -79,13 +114,60 @@ pub struct AskedRegion {
     pub name: String,
     /// When it was downloaded (seconds since 1970).
     pub at: u64,
-    /// Its terrain detail downloaded too (`detail_of`). (`fine` in downloads.json files from before
-    /// one terrain, task #633.)
-    #[serde(default, alias = "fine")]
-    pub detail: bool,
+    #[serde(flatten)]
+    pub pin: Pin,
+    /// Its terrain detail, when downloaded too (`detail_of`): its own catalogue.
+    #[serde(default)]
+    pub detail: Option<Pin>,
 }
 
-/// What a download copies: files of the catalogue and pieces of its basemap's archives, in copy order.
+/// A download: the World, a region, or a region's terrain detail.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Which {
+    World,
+    Region(String),
+    Detail(String),
+}
+
+impl Asked {
+    /// Every download and its pin, in copy order: the World, the regions as they were asked, then
+    /// their terrain detail.
+    fn pins(&self) -> Vec<(Which, Pin)> {
+        let mut v: Vec<(Which, Pin)> = self.world.iter().map(|w| (Which::World, w.pin)).collect();
+        v.extend(self.regions.iter().map(|r| (Which::Region(r.id.clone()), r.pin)));
+        v.extend(self.regions.iter().filter_map(|r| Some((Which::Detail(r.id.clone()), r.detail?))));
+        v
+    }
+
+    fn pin_mut(&mut self, w: &Which) -> Option<&mut Pin> {
+        match w {
+            Which::World => self.world.as_mut().map(|w| &mut w.pin),
+            Which::Region(id) => self.regions.iter_mut().find(|r| r.id == *id).map(|r| &mut r.pin),
+            Which::Detail(id) => self.regions.iter_mut().find(|r| r.id == *id).and_then(|r| r.detail.as_mut()),
+        }
+    }
+}
+
+/// A downloads file of an earlier format, as format 4: `world` a time → {at}; a region's `detail`
+/// (or `fine`, before one terrain) a flag → {} or nothing; the views of format 2 dropped. Each
+/// download pinned to the catalogue served at the mirror's next round.
+fn upgrade(mut v: Value) -> Value {
+    if let Some(at) = v["world"].as_u64() {
+        v["world"] = json!({ "at": at });
+    }
+    if let Some(rs) = v["regions"].as_array_mut() {
+        for r in rs.iter_mut().filter_map(Value::as_object_mut) {
+            let on = r.remove("fine").or_else(|| r.remove("detail")).and_then(|d| d.as_bool()).unwrap_or(false);
+            r.insert("detail".into(), if on { json!({}) } else { Value::Null });
+        }
+    }
+    if let Some(o) = v.as_object_mut() {
+        o.remove("views");
+    }
+    v
+}
+
+/// What a download copies: files of a catalogue and pieces of its basemap's archives, in copy order.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Part {
     pub files: Files,
@@ -95,8 +177,7 @@ pub struct Part {
 impl Part {
     /// The files (`names`, content names; put in copy order) and the pieces of each of `archives`.
     fn new(cat: &Catalogue, files: Files, archives: &[String], pieces: &[Piece]) -> Part {
-        let by_content: std::collections::HashMap<&str, &str> =
-            cat.files.iter().map(|(l, f)| (f.file.as_str(), l.as_str())).collect();
+        let by_content: HashMap<&str, &str> = cat.files.iter().map(|(l, f)| (f.file.as_str(), l.as_str())).collect();
         let mut logicals: Vec<&str> =
             files.names.iter().filter_map(|(n, _)| by_content.get(n.as_str()).copied()).collect();
         store::mirror::copy_order(cat, &mut logicals);
@@ -114,17 +195,13 @@ impl Part {
     /// Its size as far as it's known, how much of it is here, and how many of its pieces aren't
     /// sized yet.
     fn tally(&self, m: &Mirror) -> (u64, u64, u32) {
-        let (mut bytes, mut here, mut unknown) = (0, 0, 0);
-        for i in &self.items {
-            match m.item_size(i) {
-                Some(s) => {
-                    bytes += s;
-                    here += m.item_here(i).min(s);
-                }
-                None => unknown += 1,
-            }
-        }
-        (bytes, here, unknown)
+        tally(self.items.iter(), m)
+    }
+
+    /// Whether all of it is here.
+    fn complete(&self, m: &Mirror) -> bool {
+        let (bytes, here, unknown) = self.tally(m);
+        unknown == 0 && here >= bytes
     }
 
     fn pieces(&self) -> impl Iterator<Item = (&str, Piece)> {
@@ -135,6 +212,22 @@ impl Part {
     }
 }
 
+/// These items' size as far as it's known, how much of them is here, and how many pieces aren't
+/// sized yet.
+fn tally<'a>(items: impl Iterator<Item = &'a Item>, m: &Mirror) -> (u64, u64, u32) {
+    let (mut bytes, mut here, mut unknown) = (0, 0, 0);
+    for i in items {
+        match m.item_size(i) {
+            Some(s) => {
+                bytes += s;
+                here += m.item_here(i).min(s);
+            }
+            None => unknown += 1,
+        }
+    }
+    (bytes, here, unknown)
+}
+
 /// What a region's downloads copy: the region, and its terrain detail (an add-on), with the share
 /// of the region the detail covers (per cent).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -142,30 +235,63 @@ pub struct RegionParts {
     pub coarse: Part,
     pub detail: Part,
     pub cover: f64,
-    /// Its z6 tiles' hidata ("6/x/y" with one): whose ways' owners its download keeps
-    /// (`Downloads::learn_owners`).
-    pub near: Vec<String>,
 }
 
-/// By (region id, z6 tile): the hidata's content name read, and the owner units (tile keys) of the
-/// ways it lists (`here`) whose boxes meet the region's outline grown by `NEAR_KM`.
-type Owners = std::collections::HashMap<(String, String), (String, Arc<BTreeSet<u64>>)>;
+/// By (region id, a z6 tile's hidata content name): the owner units (tile keys) of the ways it
+/// lists (`here`) whose boxes meet the region's outline grown by `NEAR_KM`.
+type Owners = HashMap<(String, String), Arc<BTreeSet<u64>>>;
 
-/// Every region the catalogue records, what downloading it copies, by id.
-type Regions = Arc<BTreeMap<String, RegionParts>>;
+/// Every region a catalogue records, what downloading it copies, by id.
+type Regions = BTreeMap<String, RegionParts>;
 
-/// What the mirror copies for one catalogue and one set of downloads.
+/// What downloads of one catalogue copy: the World, and every region it records.
+pub struct At {
+    pub cat: Arc<Catalogue>,
+    pub world: Part,
+    pub regions: Regions,
+}
+
+/// What the mirror copies for the catalogues served and kept, and one set of downloads.
 pub struct Plan {
     /// The catalogue generation and the downloads' version it was made for.
     generation: u64,
     version: u64,
     /// What's downloaded, in copy order: the World, then the regions as they were asked, then their
-    /// terrain detail.
+    /// terrain detail; each at its catalogue, then (updating) at the one it's updating to.
     pub wanted: Wanted,
-    pub world: Part,
-    /// Every region the catalogue records (for its size, downloaded or not).
-    pub regions: Regions,
+    /// The catalogue served's number.
+    pub current: u64,
+    /// By catalogue number: the one served, and each a download is at or updating to that this Mac
+    /// has.
+    pub at: BTreeMap<u64, Arc<At>>,
     pub asked: Asked,
+}
+
+impl Plan {
+    /// The catalogue a pin's `n` reads: its own when this Mac has it, else the one served (none
+    /// pinned yet, or its catalogue lost).
+    fn eff(&self, n: u64) -> u64 {
+        if self.at.contains_key(&n) {
+            n
+        } else {
+            self.current
+        }
+    }
+
+    /// What `w` copies at catalogue `n` (None: that catalogue doesn't have it).
+    fn part(&self, w: &Which, n: u64) -> Option<&Part> {
+        let at = self.at.get(&self.eff(n))?;
+        match w {
+            Which::World => Some(&at.world),
+            Which::Region(id) => at.regions.get(id).map(|p| &p.coarse),
+            Which::Detail(id) => at.regions.get(id).map(|p| &p.detail),
+        }
+    }
+
+    /// The catalogue served's.
+    pub fn now(&self) -> &At {
+        &self.at[&self.current]
+    }
 }
 
 /// The downloads: what's asked, the plan made of it, and the mirror thread's alarm.
@@ -175,11 +301,11 @@ pub struct Downloads {
     /// Bumped at every change of what's asked, and when owners are learned.
     version: AtomicU64,
     plan: Mutex<Option<Arc<Plan>>>,
-    /// The regions' parts for a catalogue generation and an owners' change (they don't change
-    /// with the downloads otherwise).
-    regions: Mutex<Option<(u64, u64, Regions)>>,
+    /// What each catalogue's downloads copy, by its number, with the owners' change it was made
+    /// at (they don't change with the downloads otherwise).
+    ats: Mutex<HashMap<u64, (u64, Arc<At>)>>,
     /// The downloaded regions' hidata's owners, as far as they're read, and a count of their
-    /// changes (what `regions` is keyed on: their number alone stays when one region's swap for
+    /// changes (what `ats` is keyed on: their number alone stays when one region's swap for
     /// another's).
     owners: Mutex<(u64, Arc<Owners>)>,
     /// Set when the downloads change, to wake the mirror thread.
@@ -188,23 +314,17 @@ pub struct Downloads {
 
 impl Downloads {
     /// The downloads in `home` (none yet: none). A file that doesn't read is set aside as
-    /// `downloads.json.bad`. One from before views went (`fmt` 2) is written again without them:
-    /// their files no region needs go at the mirror's next round.
+    /// `downloads.json.bad`. One of an earlier format is written again as this one (`upgrade`).
     pub fn load(home: &std::path::Path) -> Arc<Downloads> {
         let path = home.join(FILE);
+        let read = |b: &[u8]| -> Result<(Asked, bool)> {
+            let v: Value = serde_json::from_slice(b)?;
+            let old = v["fmt"].as_u64().unwrap_or(0) < u64::from(FMT);
+            Ok((serde_json::from_value(if old { upgrade(v) } else { v })?, old))
+        };
         let (asked, old) = match std::fs::read(&path) {
-            Ok(b) => match serde_json::from_slice::<Asked>(&b) {
-                Ok(a) => {
-                    let views = serde_json::from_slice::<Value>(&b)
-                        .ok()
-                        .and_then(|v| v["views"].as_array().map(Vec::len))
-                        .unwrap_or(0);
-                    if views > 0 {
-                        eprintln!("downloads: the downloaded views ({views}) are removed: views went in fmt {FMT}");
-                    }
-                    let old = a.fmt < FMT;
-                    (a, old)
-                }
+            Ok(b) => match read(&b) {
+                Ok(v) => v,
                 Err(e) => {
                     eprintln!("downloads: {} doesn't read ({e}); set aside as {FILE}.bad", path.display());
                     let _ = std::fs::rename(&path, home.join(format!("{FILE}.bad")));
@@ -223,7 +343,7 @@ impl Downloads {
             asked: Mutex::new(asked.clone()),
             version: AtomicU64::new(1),
             plan: Mutex::new(None),
-            regions: Mutex::new(None),
+            ats: Default::default(),
             owners: Default::default(),
             wake: (Mutex::new(false), Condvar::new()),
         });
@@ -275,7 +395,8 @@ impl Downloads {
         *g = false;
     }
 
-    /// The plan for the catalogue being served and the downloads as they are.
+    /// The plan for the catalogue being served and the downloads as they are; the map told which
+    /// older files the downloads behind it keep (Data::set_older).
     pub fn plan(&self, data: &Data) -> Arc<Plan> {
         let generation = data.generation.load(Ordering::SeqCst);
         let version = self.version();
@@ -284,73 +405,128 @@ impl Downloads {
                 return p.clone();
             }
         }
-        let cat = data.catalogue();
-        let (changes, owners) = self.owners.lock().unwrap().clone();
-        let regions = {
-            let mut g = self.regions.lock().unwrap();
-            match g.as_ref() {
-                Some((gen, n, r)) if *gen == generation && *n == changes => r.clone(),
-                _ => {
-                    let r: Regions = Arc::new(
-                        crate::regions::recorded(&cat)
-                            .iter()
-                            .map(|r| (r.id.clone(), region_parts(&cat, &outer_rings(r), &units_of(&owners, &r.id))))
-                            .collect(),
-                    );
-                    *g = Some((generation, changes, r.clone()));
-                    r
-                }
-            }
-        };
+        let cur = data.catalogue();
         let asked = self.asked();
-        let plan = Arc::new(make_plan(&cat, generation, version, asked, regions));
+        let (changes, owners) = self.owners.lock().unwrap().clone();
+        let mut ns: BTreeSet<u64> = asked.pins().iter().flat_map(|(_, p)| [Some(p.cat), p.to]).flatten().collect();
+        ns.insert(cur.n);
+        let at: BTreeMap<u64, Arc<At>> = {
+            let mut g = self.ats.lock().unwrap();
+            g.retain(|n, _| ns.contains(n));
+            ns.iter()
+                .filter_map(|&n| {
+                    if let Some((c, a)) = g.get(&n) {
+                        // (The served catalogue's again when it was swapped under the same number:
+                        // a test's, or a fresh NAS.)
+                        if *c == changes && (n != cur.n || Arc::ptr_eq(&a.cat, &cur)) {
+                            return Some((n, a.clone()));
+                        }
+                    }
+                    let cat = if n == cur.n { cur.clone() } else { Arc::new(data.mirror.as_ref()?.catalogue(n)?) };
+                    let a = Arc::new(at_of(cat, &owners));
+                    g.insert(n, (changes, a.clone()));
+                    Some((n, a))
+                })
+                .collect()
+        };
+        let mut plan = make_plan(generation, version, asked, cur.n, at);
+        // (A change moves the generation on: the plan is for the one it leaves.)
+        if data.set_older(older(&plan)) {
+            plan.generation = data.generation.load(Ordering::SeqCst);
+        }
+        let plan = Arc::new(plan);
         *self.plan.lock().unwrap() = Some(plan.clone());
         plan
     }
 }
 
+/// What downloads of `cat` copy, with the owners learned.
+fn at_of(cat: Arc<Catalogue>, owners: &Owners) -> At {
+    let regions = crate::regions::recorded(&cat)
+        .iter()
+        .map(|r| (r.id.clone(), region_parts(&cat, &r.id, &outer_rings(r), owners)))
+        .collect();
+    At { world: world_part(&cat), regions, cat }
+}
+
+/// The older files the downloads behind the catalogue served keep, by logical name, for the map to
+/// read (Data::content): those of each download's own catalogue that the served one replaced,
+/// unless a download at the served catalogue has its file (a file shared by both: the newer).
+fn older(plan: &Plan) -> HashMap<String, String> {
+    let names = |p: &Part| -> Vec<String> { p.items.iter().map(store::mirror::copy_name).collect() };
+    let current: HashSet<String> = plan
+        .asked
+        .pins()
+        .iter()
+        .filter(|(_, p)| plan.eff(p.cat) == plan.current)
+        .filter_map(|(w, p)| plan.part(w, p.cat))
+        .flat_map(names)
+        .collect();
+    let cat = &plan.now().cat;
+    let mut out = HashMap::new();
+    for (w, p) in plan.asked.pins() {
+        if plan.eff(p.cat) == plan.current {
+            continue;
+        }
+        for i in plan.part(&w, p.cat).into_iter().flat_map(|p| p.items.iter()) {
+            let name = match i {
+                Item::File { name, .. } => name,
+                Item::Piece { archive, .. } => archive,
+            };
+            let Some(logical) = store::naming::parse_content_name(name).map(|c| c.logical.to_string()) else {
+                continue;
+            };
+            let now = cat.content(&logical);
+            if now != Some(name.as_str()) && !now.is_some_and(|c| current.contains(c)) {
+                out.insert(logical, name.clone());
+            }
+        }
+    }
+    out
+}
+
 impl Downloads {
-    /// Reads the owners of the ways the downloaded regions' hidata list, where not known yet: from
-    /// this Mac's copy, else the NAS. A region keeps the base packs and road values of the owners
-    /// of those ways whose boxes meet its outline grown by `NEAR_KM` (`area_part`), so a way drawn
-    /// in it that starts far outside has its info away from the NAS. Whether every one is known
-    /// for the catalogue served: a hidata that can't be read keeps what was known of its tile, and is
-    /// tried again next round. A change changes the plan.
+    /// Reads the owners of the ways the downloaded regions' hidata list, where not known yet, at
+    /// each catalogue they're at or updating to and the one served: from this Mac's copy, else the
+    /// NAS. A region keeps the base packs and road values of the owners of those ways whose boxes
+    /// meet its outline grown by `NEAR_KM` (`area_part`), so a way drawn in it that starts far
+    /// outside has its info away from the NAS. Whether every one is known: a hidata that can't be
+    /// read is tried again next round. A change changes the plan.
     fn learn_owners(&self, data: &Data, plan: &Plan) -> bool {
-        let cat = data.catalogue();
-        let drawn = crate::regions::recorded(&cat);
         let known = self.owners.lock().unwrap().1.clone();
         let mut next = Owners::new();
         let mut complete = true;
         for asked in &plan.asked.regions {
-            let (Some(parts), Some(r)) = (plan.regions.get(&asked.id), drawn.iter().find(|d| d.id == asked.id)) else {
-                continue;
-            };
-            let rings = outer_rings(r);
-            for t in &parts.near {
-                let Some(content) = cat.hidata.get(t).and_then(|l| cat.content(l)) else { continue };
-                let key = (asked.id.clone(), t.clone());
-                let old = known.get(&key);
-                if let Some(o) = old.filter(|o| o.0 == content) {
-                    next.insert(key, o.clone());
-                    continue;
-                }
-                match owners_near(data, t, &rings) {
-                    Ok(o) => {
-                        next.insert(key, (content.to_string(), Arc::new(o)));
+            let ns: BTreeSet<u64> =
+                [plan.eff(asked.pin.cat), plan.current].into_iter().chain(asked.pin.to.map(|t| plan.eff(t))).collect();
+            for n in ns {
+                let cat = &plan.at[&n].cat;
+                let Some(r) = crate::regions::recorded(cat).into_iter().find(|d| d.id == asked.id) else { continue };
+                let rings = outer_rings(&r);
+                for t in near(cat, &rings) {
+                    let Some(content) = cat.hidata.get(&t).and_then(|l| cat.content(l)) else { continue };
+                    let key = (asked.id.clone(), content.to_string());
+                    if next.contains_key(&key) {
+                        continue;
                     }
-                    Err(e) => {
-                        eprintln!("mirror: the owners of hidata {t}'s ways: {e:#}");
-                        complete = false;
-                        if let Some(o) = old {
-                            next.insert(key, o.clone());
+                    if let Some(o) = known.get(&key) {
+                        next.insert(key, o.clone());
+                        continue;
+                    }
+                    match owners_near(data, content, &rings) {
+                        Ok(o) => {
+                            next.insert(key, Arc::new(o));
+                        }
+                        Err(e) => {
+                            eprintln!("mirror: the owners of hidata {t}'s ways: {e:#}");
+                            complete = false;
                         }
                     }
                 }
             }
         }
-        let same = next.len() == known.len()
-            && next.iter().all(|(k, v)| known.get(k).is_some_and(|o| o.0 == v.0 && Arc::ptr_eq(&o.1, &v.1)));
+        let same =
+            next.len() == known.len() && next.iter().all(|(k, v)| known.get(k).is_some_and(|o| Arc::ptr_eq(o, v)));
         if !same {
             let mut g = self.owners.lock().unwrap();
             *g = (g.0 + 1, Arc::new(next));
@@ -358,12 +534,74 @@ impl Downloads {
         }
         complete
     }
+
+    /// Moves each download's pin on where the plan says (`Plan::eff`, module doc): pinned at last
+    /// (none yet, or its catalogue lost: the one served); an Update all here: to its catalogue; behind,
+    /// with nothing to copy: to the one served. Tells the mirror which catalogues to keep. Whether
+    /// anything moved.
+    fn advance(&self, plan: &Plan, m: &Mirror) -> bool {
+        let cur = plan.current;
+        let mut next = plan.asked.clone();
+        for (w, pin) in plan.asked.pins() {
+            let mut p = pin;
+            p.cat = plan.eff(p.cat);
+            if let Some(t) = p.to.map(|t| plan.eff(t)) {
+                p.to = Some(t);
+                if t == p.cat {
+                    p.to = None;
+                } else if plan.part(&w, t).is_none_or(|part| part.complete(m)) {
+                    p = Pin { cat: t, to: None };
+                }
+            }
+            if p.to.is_none() && p.cat != cur {
+                let set = |n| plan.part(&w, n).map(|p| p.items.iter().collect::<HashSet<_>>());
+                let old = set(p.cat);
+                if old.is_none() || old == set(cur) {
+                    p.cat = cur;
+                }
+            }
+            if p != pin {
+                *next.pin_mut(&w).expect("a pin listed") = p;
+            }
+        }
+        let keep: BTreeSet<u64> = next.pins().iter().flat_map(|(_, p)| [Some(p.cat), p.to]).flatten().collect();
+        if let Err(e) = m.keep_catalogues(keep) {
+            eprintln!("mirror: keeping the downloads' catalogues: {e:#}");
+        }
+        if next == plan.asked {
+            return false;
+        }
+        match self.edit(|a| {
+            // (Only the pins move: what was asked meanwhile stays.)
+            for (w, p) in next.pins() {
+                if let Some(q) = a.pin_mut(&w) {
+                    *q = p;
+                }
+            }
+            Ok(())
+        }) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("downloads: {e:#}");
+                false
+            }
+        }
+    }
 }
 
-/// The owners of the ways a z6 tile's hidata lists ("6/x/y") whose boxes meet `rings` grown by
+/// The z6 tiles ("6/x/y") within `NEAR_KM` of `rings` with hidata in `cat`.
+fn near(cat: &Catalogue, rings: &[Vec<[f64; 2]>]) -> Vec<String> {
+    tiles_meeting(rings, NEAR_KM)
+        .into_iter()
+        .map(|(x, y)| format!("6/{x}/{y}"))
+        .filter(|k| cat.hidata.contains_key(k))
+        .collect()
+}
+
+/// The owners of the ways a hidata file (`content`) lists whose boxes meet `rings` grown by
 /// `NEAR_KM`. An owner kept isn't tested again; the box's own test first.
-fn owners_near(data: &Data, tile: &str, rings: &[Vec<[f64; 2]>]) -> Result<BTreeSet<u64>> {
-    let Some(hv) = data.hidata(tile)? else { return Ok(BTreeSet::new()) };
+fn owners_near(data: &Data, content: &str, rings: &[Vec<[f64; 2]>]) -> Result<BTreeSet<u64>> {
+    let hv = data.hidata_of(content)?;
     let all = hv.here.all()?;
     let mut out = BTreeSet::new();
     for h in all.cast::<roadcore::packs::Here>() {
@@ -374,28 +612,29 @@ fn owners_near(data: &Data, tile: &str, rings: &[Vec<[f64; 2]>]) -> Result<BTree
     Ok(out)
 }
 
-/// The owner units a region's download keeps, as far as they're known.
-fn units_of(owners: &Owners, region: &str) -> BTreeSet<u64> {
-    owners.iter().filter(|((r, _), _)| r == region).flat_map(|(_, (_, o))| o.iter().copied()).collect()
+/// The owner units a region's download at `cat` keeps, as far as they're known.
+fn units_of(owners: &Owners, cat: &Catalogue, region: &str, rings: &[Vec<[f64; 2]>]) -> BTreeSet<u64> {
+    near(cat, rings)
+        .iter()
+        .filter_map(|t| cat.hidata.get(t).and_then(|l| cat.content(l)))
+        .filter_map(|c| owners.get(&(region.to_string(), c.to_string())))
+        .flat_map(|o| o.iter().copied())
+        .collect()
 }
 
-fn make_plan(cat: &Catalogue, generation: u64, version: u64, asked: Asked, regions: Regions) -> Plan {
-    let world = world_part(cat);
+fn make_plan(generation: u64, version: u64, asked: Asked, current: u64, at: BTreeMap<u64, Arc<At>>) -> Plan {
+    let mut plan = Plan { generation, version, wanted: Wanted::default(), current, at, asked };
     let mut wanted = Wanted::default();
     let mut seen = HashSet::new();
-    let parts = asked
-        .world
-        .is_some()
-        .then_some(&world)
-        .into_iter()
-        .chain(asked.regions.iter().filter_map(|r| regions.get(&r.id).map(|p| &p.coarse)))
-        .chain(asked.regions.iter().filter(|r| r.detail).filter_map(|r| regions.get(&r.id).map(|p| &p.detail)));
-    for p in parts {
-        for i in &p.items {
-            wanted.push(i.clone(), &mut seen);
+    for (w, p) in plan.asked.pins() {
+        for n in [Some(p.cat), p.to].into_iter().flatten() {
+            for i in plan.part(&w, n).into_iter().flat_map(|p| p.items.iter()) {
+                wanted.push(i.clone(), &mut seen);
+            }
         }
     }
-    Plan { generation, version, wanted, world, regions, asked }
+    plan.wanted = wanted;
+    plan
 }
 
 /// The World, zoomed out: the essentials and the basemap's zooms 0–10.
@@ -423,15 +662,11 @@ fn area_part(cat: &Catalogue, rings: &[Vec<[f64; 2]>], units: &BTreeSet<u64>) ->
     Part::new(cat, Files::from_map(files), &basemap_archives(cat), &pieces)
 }
 
-/// A region's downloads (`rings`, its outer rings): the region, and its terrain detail.
-fn region_parts(cat: &Catalogue, rings: &[Vec<[f64; 2]>], units: &BTreeSet<u64>) -> RegionParts {
+/// A region's downloads (`id`, `rings` its outer rings): the region, and its terrain detail.
+fn region_parts(cat: &Catalogue, id: &str, rings: &[Vec<[f64; 2]>], owners: &Owners) -> RegionParts {
     let (files, cover) = detail_of(cat, rings);
-    let near = tiles_meeting(rings, NEAR_KM)
-        .into_iter()
-        .map(|(x, y)| format!("6/{x}/{y}"))
-        .filter(|k| cat.hidata.contains_key(k))
-        .collect();
-    RegionParts { coarse: area_part(cat, rings, units), detail: Part::new(cat, files, &[], &[]), cover, near }
+    let units = units_of(owners, cat, id, rings);
+    RegionParts { coarse: area_part(cat, rings, &units), detail: Part::new(cat, files, &[], &[]), cover }
 }
 
 fn basemap_archives(cat: &Catalogue) -> Vec<String> {
@@ -447,13 +682,12 @@ fn of_contents<'a>(cat: &Catalogue, contents: impl IntoIterator<Item = &'a str>)
 // ---- the mirror thread --------------------------------------------------------------------------
 
 /// Keeps the mirror (store::mirror) on its own thread: every minute, or as soon as the downloads
-/// change, it lets go of what isn't downloaded and copies what is; a new catalogue or a change of the
-/// downloads has it plan again at once. Away from home, it only lets go. While the build runs (the
-/// lead's heartbeat on the NAS says a job runs, as the copies' pause read it before
-/// downloads), copies keep to 20 MB/s; a file this Mac's pack or lo job holds isn't deleted
-/// (store::mirror).
-/// Between copies it works out the basemap pieces' sizes (for the panel's sizes), those of what's
-/// downloaded first.
+/// change, it lets go of what no download wants and copies what they do, while the NAS is reachable
+/// (from home or not); a new catalogue or a change of the downloads has it plan again at once. A new
+/// catalogue copies nothing by itself (module doc). While the build runs (the lead's heartbeat on the
+/// NAS says a job runs), copies keep to 20 MB/s; a file this Mac's pack or lo job holds isn't
+/// deleted (store::mirror). Between copies it works out the basemap pieces' sizes (for the panel's
+/// sizes), those of what's downloaded first.
 pub fn spawn_mirror(s: S) {
     let Some(m) = s.data.mirror.clone() else { return };
     let spawned = std::thread::Builder::new().name("mirror".into()).spawn(move || loop {
@@ -473,78 +707,89 @@ static MIRROR_MARKS: std::sync::Mutex<pipeline::pubtimes::MirrorMarks> =
 /// One round of the mirror; whether to go again at once (the catalogue or the downloads changed
 /// meanwhile).
 fn once(s: &crate::AppState, m: &Mirror) -> bool {
-    let owners_known = s.downloads.learn_owners(&s.data, &s.downloads.plan(&s.data));
-    let plan = s.downloads.plan(&s.data);
-    let changed =
-        || s.data.generation.load(Ordering::SeqCst) != plan.generation || s.downloads.version() != plan.version;
     let cat = s.data.catalogue();
     // (Nothing known of the map yet: what's here can't be told from what isn't wanted.)
     if cat.n == 0 {
         return false;
     }
+    let owners_known = s.downloads.learn_owners(&s.data, &s.downloads.plan(&s.data));
+    if s.downloads.advance(&s.downloads.plan(&s.data), m) {
+        return true;
+    }
+    let plan = s.downloads.plan(&s.data);
+    let changed =
+        || s.data.generation.load(Ordering::SeqCst) != plan.generation || s.downloads.version() != plan.version;
     // While a downloaded region's hidata is unread, its owners can't be told: every base pack and
-    // road values here stay (at home too: a NAS hiccup mustn't let them go).
+    // road values here stay (a NAS hiccup mustn't let them go).
     let keep;
     let wanted = if owners_known {
         &plan.wanted
     } else {
         let mut w = plan.wanted.clone();
-        let mut seen: std::collections::HashSet<Item> = w.items.iter().cloned().collect();
-        for f in cat.base.values().chain(cat.roads.values()).filter_map(|l| cat.files.get(l)) {
-            if m.has(&f.file) {
-                w.push(Item::File { name: f.file.clone(), size: f.size }, &mut seen);
+        let mut seen: HashSet<Item> = w.items.iter().cloned().collect();
+        for at in plan.at.values() {
+            let c = &at.cat;
+            for f in c.base.values().chain(c.roads.values()).filter_map(|l| c.files.get(l)) {
+                if m.has(&f.file) {
+                    w.push(Item::File { name: f.file.clone(), size: f.size }, &mut seen);
+                }
             }
         }
         keep = w;
         &keep
     };
-    match (s.data.nas_root(), s.data.pool()) {
-        (Some(root), Some(pool)) if pool.is_online() => {
-            let pieces = plan.wanted.items.iter().filter_map(|i| match i {
-                Item::Piece { archive, piece } => Some((archive.as_str(), *piece)),
-                Item::File { .. } => None,
-            });
-            if let Err(e) = size_pieces(m, pieces, &root, &pool, &changed) {
-                eprintln!("mirror: sizing the basemap's pieces: {e:#}");
-            }
-            let slow = || s.data.agent_busy();
-            // (Each catalogue's sync begun and through, once, in publishing's log: pipeline::pubtimes.)
-            let now = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-            if MIRROR_MARKS.lock().unwrap().start(cat.n, now()) {
-                crate::data::publish_event(&root, "mirror-start", cat.n, None);
-            }
-            match m.sync(&cat, wanted, &root, &pool, &Control { stop: &changed, slow: &slow }) {
-                Ok(st) => {
-                    let through =
-                        st.end == store::mirror::SyncEnd::Done && st.waiting == 0 && st.failed == 0 && st.pending == 0;
-                    if let Some(secs) = MIRROR_MARKS.lock().unwrap().end(cat.n, now(), through) {
-                        crate::data::publish_event(&root, "mirror-end", cat.n, Some(secs));
-                    }
-                    if st.copied > 0 || st.removed > 0 || st.waiting > 0 || st.failed > 0 {
-                        eprintln!("mirror: {st:?}");
-                    }
-                    if st.copied > 0 {
-                        s.data.forget_remote();
-                    }
-                }
-                Err(e) => eprintln!("mirror: {e:#}"),
-            }
-            if changed() {
-                return true;
-            }
-            let all = plan.world.pieces().chain(plan.regions.values().flat_map(|r| r.coarse.pieces()));
-            if let Err(e) = size_pieces(m, all, &root, &pool, &changed) {
-                eprintln!("mirror: sizing the basemap's pieces: {e:#}");
-            }
-        }
-        // Away from home: what isn't downloaded goes all the same.
-        _ => match m.sync_away(&cat, wanted) {
-            Ok(st) if st.removed > 0 => eprintln!("mirror (away): {st:?}"),
+    let Some((root, pool)) = s.data.nas_root().zip(s.data.pool()) else {
+        // No NAS mounted: what no download wants goes all the same; nothing can be copied.
+        match m.let_go(&cat, wanted) {
+            Ok(st) if st.removed > 0 => eprintln!("mirror (no NAS): {st:?}"),
             Ok(_) => {}
             Err(e) => eprintln!("mirror: {e:#}"),
-        },
+        }
+        return changed();
+    };
+    if pool.is_online() {
+        if let Err(e) = size_pieces(m, plan.wanted.items.iter().filter_map(piece_of), &root, &pool, &changed) {
+            eprintln!("mirror: sizing the basemap's pieces: {e:#}");
+        }
+    }
+    let slow = || s.data.agent_busy();
+    // (Each catalogue's sync begun and through, once, in publishing's log: pipeline::pubtimes.)
+    if MIRROR_MARKS.lock().unwrap().start(cat.n, now()) {
+        crate::data::publish_event(&root, "mirror-start", cat.n, None);
+    }
+    match m.sync(&cat, wanted, &root, &pool, &Control { stop: &changed, slow: &slow }) {
+        Ok(st) => {
+            let through = st.end == SyncEnd::Done && st.waiting == 0 && st.failed == 0 && st.pending == 0;
+            if let Some(secs) = MIRROR_MARKS.lock().unwrap().end(cat.n, now(), through) {
+                crate::data::publish_event(&root, "mirror-end", cat.n, Some(secs));
+            }
+            if st.copied > 0 || st.removed > 0 || st.waiting > 0 || st.failed > 0 {
+                eprintln!("mirror: {st:?}");
+            }
+            if st.copied > 0 {
+                s.data.forget_remote();
+            }
+        }
+        Err(e) => eprintln!("mirror: {e:#}"),
+    }
+    // (An update all here now moves on at once.)
+    if changed() || s.downloads.advance(&plan, m) {
+        return true;
+    }
+    if pool.is_online() {
+        let all = plan.now().world.pieces().chain(plan.now().regions.values().flat_map(|r| r.coarse.pieces()));
+        if let Err(e) = size_pieces(m, all, &root, &pool, &changed) {
+            eprintln!("mirror: sizing the basemap's pieces: {e:#}");
+        }
     }
     changed()
+}
+
+fn piece_of(i: &Item) -> Option<(&str, Piece)> {
+    match i {
+        Item::Piece { archive, piece } => Some((archive.as_str(), *piece)),
+        Item::File { .. } => None,
+    }
 }
 
 /// Works out the sizes of these pieces not known yet, from their archives on the NAS (their
@@ -575,19 +820,36 @@ fn size_pieces<'a>(
 
 // ---- the state, for the panel ------------------------------------------------------------------
 
-/// A download's state: all here, being copied, waiting its turn, waiting for room, or away.
-fn part_state(part: &Part, m: &Mirror, copying: Option<&str>, more: u64, online: bool) -> &'static str {
-    let (bytes, here, unknown) = part.tally(m);
+/// A download's state: all here, being copied, waiting its turn, waiting for room, or the NAS
+/// unreachable; for these items (its own, or an update's).
+fn items_state(items: &[&Item], m: &Mirror, copying: Option<&str>, more: u64, online: bool) -> &'static str {
+    let (bytes, here, unknown) = tally(items.iter().copied(), m);
     if unknown == 0 && here >= bytes {
         "done"
     } else if !online {
         "away"
-    } else if copying.is_some_and(|c| part.items.iter().any(|i| store::mirror::copy_name(i) == c)) {
+    } else if copying.is_some_and(|c| items.iter().any(|i| store::mirror::copy_name(i) == c)) {
         "copying"
     } else if more > 0 {
         "room"
     } else {
         "queued"
+    }
+}
+
+/// What a file or piece is of, in a word, for what changed: a layer's name, "basemap", "road data",
+/// "lists" (hidata), or a worldwide file's kind.
+fn kind(i: &Item) -> String {
+    let Item::File { name, .. } = i else { return "basemap".into() };
+    let logical = store::naming::parse_content_name(name).map_or("", |c| c.logical);
+    let mut parts = logical.split('/');
+    match (parts.next(), parts.next()) {
+        (Some("layers"), Some(l)) => l.to_string(),
+        (Some("base"), _) | (Some("global"), Some("roads")) => "road data".into(),
+        (Some("hidata"), _) => "lists".into(),
+        (Some("global"), Some(g)) => g.to_string(),
+        (Some(o), _) => o.to_string(),
+        _ => String::new(),
     }
 }
 
@@ -610,50 +872,84 @@ pub fn status(s: &crate::AppState) -> Result<Value> {
     let cname = copying.as_ref().map(|c| c.name.as_str());
     let online = s.data.online();
     let slow = online && s.data.agent_busy();
-    let tally = |p: &Part| {
-        let (bytes, here, unknown) = p.tally(m);
+    let tally_of = |items: &[&Item]| {
+        let (bytes, here, unknown) = tally(items.iter().copied(), m);
         json!({ "bytes": bytes, "here": here, "unknown": unknown })
     };
-    let state = |p: &Part| part_state(p, m, cname, room.more, online);
-    let on: HashSet<&str> = plan.asked.regions.iter().map(|r| r.id.as_str()).collect();
+    // A download's own: its size and how much is here (at its catalogue), its state, and how it's
+    // behind the catalogue served or updating to it; not downloaded, the served catalogue's size.
+    let dl = |w: &Which, pin: Option<Pin>| -> Option<Value> {
+        let Some(pin) = pin else {
+            let p = plan.part(w, plan.current)?;
+            let mut v = tally_of(&p.items.iter().collect::<Vec<_>>());
+            v["on"] = json!(false);
+            v["state"] = Value::Null;
+            return Some(v);
+        };
+        let cat = plan.eff(pin.cat);
+        let own: Vec<&Item> = plan.part(w, cat)?.items.iter().collect();
+        let mut v = tally_of(&own);
+        v["on"] = json!(true);
+        v["cat"] = json!(cat);
+        v["state"] = json!(items_state(&own, m, cname, room.more, online));
+        let had: HashSet<&Item> = own.iter().copied().collect();
+        let to = pin.to.map(|t| plan.eff(t)).unwrap_or(plan.current);
+        if to != cat {
+            if let Some(p) = plan.part(w, to) {
+                let new: Vec<&Item> = p.items.iter().filter(|i| !had.contains(i)).collect();
+                let gone = own.len() - p.items.iter().filter(|i| had.contains(i)).count();
+                let mut kinds: Vec<String> = new.iter().map(|i| kind(i)).collect::<BTreeSet<_>>().into_iter().collect();
+                kinds.retain(|k| !k.is_empty());
+                let (bytes, here, unknown) = tally(new.iter().copied(), m);
+                let mut b = json!({ "cat": to, "files": new.len(), "gone": gone, "what": kinds,
+                    "bytes": bytes.saturating_sub(here), "unknown": unknown });
+                if pin.to.is_some() {
+                    v["update"] = tally_of(&new);
+                    v["state"] = json!("updating");
+                    b["state"] = json!(items_state(&new, m, cname, room.more, online));
+                }
+                v["behind"] = b;
+            }
+        }
+        Some(v)
+    };
+    let asked: HashMap<&str, &AskedRegion> = plan.asked.regions.iter().map(|r| (r.id.as_str(), r)).collect();
     let listed: BTreeMap<String, Value> = crate::regions::recorded_list(&s.data.catalogue())
         .into_iter()
         .filter_map(|r| Some((r["id"].as_str()?.to_string(), r)))
         .collect();
     let mut regions = serde_json::Map::new();
-    for (id, rp) in plan.regions.iter() {
-        let p = &rp.coarse;
-        let mut v = tally(p);
-        let downloaded = on.contains(id.as_str());
+    let ids: BTreeSet<&str> = plan.now().regions.keys().map(String::as_str).chain(asked.keys().copied()).collect();
+    for id in ids {
+        let a = asked.get(id);
+        let (rw, dw) = (Which::Region(id.to_string()), Which::Detail(id.to_string()));
+        let Some(mut v) = dl(&rw, a.map(|a| a.pin)) else { continue };
         // (Its terrain detail, where it has any: its size, the share of the region it covers.)
-        let detail_on = plan.asked.regions.iter().any(|r| r.id == *id && r.detail);
-        if !rp.detail.items.is_empty() || detail_on {
-            let mut f = tally(&rp.detail);
-            f["cover"] = json!((rp.cover * 10.0).round() / 10.0);
-            f["on"] = json!(detail_on);
-            f["state"] = json!(detail_on.then(|| state(&rp.detail)));
-            v["detail"] = f;
+        let detail_pin = a.and_then(|a| a.detail);
+        let rp = plan.at.get(&plan.eff(detail_pin.map_or(plan.current, |p| p.cat))).and_then(|at| at.regions.get(id));
+        if rp.is_some_and(|rp| !rp.detail.items.is_empty()) || detail_pin.is_some() {
+            if let Some(mut f) = dl(&dw, detail_pin) {
+                let cover = rp.map_or(0.0, |rp| rp.cover);
+                f["cover"] = json!((cover * 10.0).round() / 10.0);
+                v["detail"] = f;
+            }
         }
         let r = listed.get(id);
-        v["name"] = json!(r.and_then(|r| r["name"].as_str()).unwrap_or_default());
-        // (Still building: its tiles built of total; its files grow with each catalogue.)
+        v["name"] = json!(r.and_then(|r| r["name"].as_str()).or(a.map(|a| a.name.as_str())).unwrap_or_default());
+        // (Still building: its tiles built of total.)
         if let Some(t) = r.and_then(|r| r.get("tiles")) {
             v["tiles"] = t.clone();
         }
-        v["on"] = json!(downloaded);
-        v["state"] = json!(downloaded.then(|| state(p)));
-        regions.insert(id.clone(), v);
+        regions.insert(id.to_string(), v);
     }
-    // Downloaded regions the catalogue doesn't have (not built yet, or removed since).
+    // Downloaded regions no catalogue here has (not built yet, or removed since).
     for r in &plan.asked.regions {
         regions.entry(r.id.clone()).or_insert_with(
             || json!({ "name": r.name, "bytes": 0, "here": 0, "unknown": 0, "on": true, "state": "missing" }),
         );
     }
-    let mut world = tally(&plan.world);
-    world["on"] = json!(plan.asked.world.is_some());
-    world["at"] = json!(plan.asked.world);
-    world["state"] = json!(plan.asked.world.map(|_| state(&plan.world)));
+    let mut world = dl(&Which::World, plan.asked.world.as_ref().map(|w| w.pin)).unwrap_or_default();
+    world["at"] = json!(plan.asked.world.as_ref().map(|w| w.at));
     let wanted_here: u64 = plan.wanted.items.iter().map(|i| m.item_here(i)).sum();
     let last = m.last().map(|(st, at)| {
         json!({
@@ -751,37 +1047,35 @@ fn size(b: u64) -> String {
 /// the NAS first where they aren't known.
 fn need(s: &crate::AppState, m: &Mirror, next: &Asked) -> Result<(u64, u64)> {
     let cur = s.downloads.plan(&s.data);
-    let cat = s.data.catalogue();
-    let plan = make_plan(&cat, cur.generation, cur.version, next.clone(), cur.regions.clone());
-    let unknown = plan.wanted.items.iter().any(|i| m.item_size(i).is_none());
-    if unknown {
+    let plan = make_plan(cur.generation, cur.version, next.clone(), cur.current, cur.at.clone());
+    if plan.wanted.items.iter().any(|i| m.item_size(i).is_none()) {
         let (Some(root), Some(pool)) = (s.data.nas_root(), s.data.pool().filter(|p| p.is_online())) else {
             bail!("The NAS isn't reachable, so this Mac can't download from it now")
         };
-        let pieces = plan.wanted.items.iter().filter_map(|i| match i {
-            Item::Piece { archive, piece } => Some((archive.as_str(), *piece)),
-            Item::File { .. } => None,
-        });
-        size_pieces(m, pieces, &root, &pool, &|| false)?;
+        size_pieces(m, plan.wanted.items.iter().filter_map(piece_of), &root, &pool, &|| false)?;
     }
     let room = m.room(&plan.wanted)?;
     Ok((room.missing, room.free.saturating_sub(room.reserve)))
 }
 
-/// Refuses `next` when it wouldn't fit, saying why with the numbers (`what` the download asked
-/// for).
+/// Refuses `next` when it wouldn't fit, saying why with the numbers (`what`: "Downloading “London”").
 fn check_fits(s: &crate::AppState, next: &Asked, what: &str) -> Result<()> {
     let Some(m) = s.data.mirror.as_ref() else { bail!("this server keeps no copy of the map (--no-mirror)") };
     let (need, room) = need(s, m, next)?;
     let already = if s.downloads.asked() != Asked::default() { ", with what's downloaded already" } else { "" };
     ensure!(
         need <= room,
-        "Downloading {what} takes {} more on this Mac{already}, and it has {} free above the reserve ({}): free some space, or remove a download",
+        "{what} takes {} more on this Mac{already}, and it has {} free above the reserve ({}): free some space, or remove a download",
         size(need),
         size(room),
         size(m.reserve())
     );
     Ok(())
+}
+
+/// A new download's pin: the catalogue served.
+fn pin_now(s: &crate::AppState) -> Pin {
+    Pin { cat: s.data.catalogue().n, to: None }
 }
 
 #[derive(Deserialize)]
@@ -820,8 +1114,8 @@ pub async fn put_world(State(s): State<S>, Json(q): Json<On>) -> Response {
         let mut next = s.downloads.asked();
         if q.on {
             if next.world.is_none() {
-                next.world = Some(now());
-                check_fits(s, &next, "the World, zoomed out")?;
+                next.world = Some(AskedWorld { at: now(), pin: pin_now(s) });
+                check_fits(s, &next, "Downloading the World, zoomed out,")?;
             }
         } else {
             next.world = None;
@@ -835,10 +1129,10 @@ pub async fn put_world(State(s): State<S>, Json(q): Json<On>) -> Response {
     .await
 }
 
-/// Downloads a region, or removes it (with its terrain detail). A region the catalogue doesn't have yet
-/// can be downloaded: its files come once a catalogue has it. One still building (its `tiles`) is
-/// downloaded as its tiles come: its files are those of the catalogue served, more with each catalogue
-/// (what's here already never fetched again), copied at the slow rate while the build runs.
+/// Downloads a region, at the catalogue served, or removes it (with its terrain detail). A region the
+/// catalogue doesn't have yet can be downloaded: its files come once a catalogue has it (its download
+/// moves on to it: it has nothing to keep). One still building (its `tiles`) has the files of the
+/// catalogue served; an Update brings those of the tiles built since.
 pub async fn put_region(State(s): State<S>, Path(id): Path<String>, Json(q): Json<On>) -> Response {
     blocking(s, move |s| {
         ensure!(pipeline::agent::recipes::valid_id(&id), "{id:?} isn't a region id");
@@ -854,14 +1148,20 @@ pub async fn put_region(State(s): State<S>, Path(id): Path<String>, Json(q): Jso
             .and_then(|r| r["name"].as_str().map(str::to_string))
             .unwrap_or_else(|| id.clone());
         let mut next = s.downloads.asked();
-        let was = next.regions.iter().find(|r| r.id == id).cloned();
-        next.regions.retain(|r| r.id != id);
+        let was = next.regions.iter().any(|r| r.id == id);
         if q.on {
-            let detail = was.as_ref().is_some_and(|r| r.detail);
-            next.regions.push(AskedRegion { id: id.clone(), name: name.clone(), at: now(), detail });
-            if was.is_none() {
-                check_fits(s, &next, &format!("“{name}”"))?;
+            if !was {
+                next.regions.push(AskedRegion {
+                    id: id.clone(),
+                    name: name.clone(),
+                    at: now(),
+                    pin: pin_now(s),
+                    detail: None,
+                });
+                check_fits(s, &next, &format!("Downloading “{name}”"))?;
             }
+        } else {
+            next.regions.retain(|r| r.id != id);
         }
         s.downloads.edit(|a| {
             *a = next;
@@ -883,20 +1183,71 @@ pub async fn put_region_detail(State(s): State<S>, Path(id): Path<String>, Json(
         if q.on {
             let Some(i) = at else { bail!("Download the region first: its terrain detail needs it") };
             let plan = s.downloads.plan(&s.data);
-            let has = plan.regions.get(&id).is_some_and(|p| !p.detail.items.is_empty());
+            let has = plan.now().regions.get(&id).is_some_and(|p| !p.detail.items.is_empty());
             ensure!(has, "{id:?} has no terrain detail on the map");
-            if !std::mem::replace(&mut next.regions[i].detail, true) {
+            if next.regions[i].detail.is_none() {
+                next.regions[i].detail = Some(pin_now(s));
                 let name = next.regions[i].name.clone();
-                check_fits(s, &next, &format!("the terrain detail of “{name}”"))?;
+                check_fits(s, &next, &format!("Downloading the terrain detail of “{name}”"))?;
             }
         } else if let Some(i) = at {
-            next.regions[i].detail = false;
+            next.regions[i].detail = None;
         }
         s.downloads.edit(|a| {
             *a = next;
             Ok(())
         })?;
         Ok(json!({ "ok": true }))
+    })
+    .await
+}
+
+/// Updates a download to the catalogue served (`w`; `what` names it): its files copied beside its
+/// old ones, the download moved there once they're all here (the mirror thread). Refused when it
+/// isn't downloaded, isn't behind, or wouldn't fit.
+fn update(s: &crate::AppState, w: Which, what: &str) -> Result<Value> {
+    ensure!(s.data.mirror.is_some(), "this server keeps no copy of the map (--no-mirror)");
+    let plan = s.downloads.plan(&s.data);
+    let mut next = s.downloads.asked();
+    let Some(pin) = next.pin_mut(&w) else { bail!("{what} isn't downloaded") };
+    ensure!(plan.eff(pin.cat) != plan.current, "{what} is at the catalogue served already");
+    if pin.to == Some(plan.current) {
+        return Ok(json!({ "ok": true }));
+    }
+    pin.to = Some(plan.current);
+    check_fits(s, &next, &format!("Updating {what}"))?;
+    s.downloads.edit(|a| {
+        if let Some(p) = a.pin_mut(&w) {
+            p.to = Some(plan.current);
+        }
+        Ok(())
+    })?;
+    Ok(json!({ "ok": true }))
+}
+
+/// The name a region's download goes by in what's said.
+fn region_name(s: &crate::AppState, id: &str) -> String {
+    s.downloads.asked().regions.iter().find(|r| r.id == id).map_or_else(|| id.to_string(), |r| format!("“{}”", r.name))
+}
+
+pub async fn post_world_update(State(s): State<S>) -> Response {
+    blocking(s, |s| update(s, Which::World, "the World, zoomed out,")).await
+}
+
+pub async fn post_region_update(State(s): State<S>, Path(id): Path<String>) -> Response {
+    blocking(s, move |s| {
+        ensure!(pipeline::agent::recipes::valid_id(&id), "{id:?} isn't a region id");
+        let what = region_name(s, &id);
+        update(s, Which::Region(id), &what)
+    })
+    .await
+}
+
+pub async fn post_detail_update(State(s): State<S>, Path(id): Path<String>) -> Response {
+    blocking(s, move |s| {
+        ensure!(pipeline::agent::recipes::valid_id(&id), "{id:?} isn't a region id");
+        let what = format!("the terrain detail of {}", region_name(s, &id));
+        update(s, Which::Detail(id), &what)
     })
     .await
 }

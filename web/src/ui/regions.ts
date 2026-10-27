@@ -7,7 +7,7 @@
 // Downloads (docs/macs.md, "Mirror, per Mac"): nothing is copied to this Mac unless it's
 // downloaded here: the World, zoomed out, each region, and a downloaded region's terrain detail, each
 // with its size, its state and a Download or Remove button; this Mac's room (downloads.ts).
-import { dlDetail, dlRegion, dlStatus, dlWorld, setReserve, size, sizeOf, stateClass, stateText, type DlStatus, type DetailDl, type RegionDl } from '../downloads';
+import { behindText, dlDetail, dlRegion, dlStatus, dlUpdate, dlWorld, pct, setReserve, size, sizeOf, stateClass, stateText, type Dl, type DlStatus, type DetailDl, type RegionDl } from '../downloads';
 import * as prefs from '../prefs';
 import {
   RegionLayers, RegionsError, areaOutline, entryLabel, getCoverage, getRegionsLayer, listRegions, tilesText,
@@ -82,7 +82,11 @@ export class RegionsPanel {
   private dlTimer = 0;
   /** What each region row shows of its download, updated in place as the state comes (a row isn't
    * drawn again: a hover or a rename in it stays). */
-  private dlEls = new Map<string, { row: HTMLElement; slot: HTMLElement; btn: HTMLButtonElement | null; on: boolean; size: HTMLElement; detail: HTMLElement; detailSize: HTMLElement; detailBtn: HTMLButtonElement | null; detailOn: boolean }>();
+  private dlEls = new Map<string, { row: HTMLElement; slot: HTMLElement; btn: HTMLButtonElement | null; on: boolean; size: HTMLElement; prog: HTMLElement; detail: HTMLElement; detailSize: HTMLElement; detailBtn: HTMLButtonElement | null; detailOn: boolean; detailProg: HTMLElement }>();
+  /** Under the World's row: its progress, and its Update while it's behind. */
+  private worldProg = h('div', { class: 'rg-prog', hidden: true });
+  /** The downloads whose Update was asked and not answered yet ("world", a region's id, "<id>/detail"). */
+  private updating = new Set<string>();
 
   private regions: Region[] = [];
   /** The folders the list is grouped by (null: a server from before folders). */
@@ -291,7 +295,7 @@ export class RegionsPanel {
     if (r.disabled) return { text: 'disabled', cls: 'off', title: 'Disabled in its file (disabled = true): checked like every region, and other regions may name it, but nothing is built for it, so it isn’t on the map and can’t be downloaded. Its file enables it.' };
     if (this.isPending(r)) return { text: 'pending', cls: 'wait', title: 'Not on the map yet: it’s added when the lead next publishes the map data' };
     const building = this.coverage?.regions?.find((b) => b.id === r.id)?.tiles;
-    if (building) return { text: tilesText(building), cls: 'wait', title: 'Still building: its tiles are on the map as each catalogue brings them, and a download of it grows with them' };
+    if (building) return { text: tilesText(building), cls: 'wait', title: 'Still building: its tiles are on the map as each catalogue brings them; a download of it gets those built since when it’s updated' };
     if (this.coverage?.regions) return { text: 'built', cls: 'ok' };
     return null;
   }
@@ -311,13 +315,17 @@ export class RegionsPanel {
       const sz = h('span', { class: 'rg-size' });
       const detailSize = h('span', { class: 'rg-size rg-fsize' });
       const detail = h('div', { class: 'rg2', hidden: true }, h('span', { class: 'rg2s rg-fine', title: 'The terrain past z12 (z13–z16), where its data has the detail: an add-on to the region, which gives the rest of it and every zoom to z12' }, 'Terrain detail (z13+)'), detailSize);
-      this.dlEls.set(r.id, { row, slot, btn: null, on: false, size: sz, detail, detailSize, detailBtn: null, detailOn: false });
+      const prog = h('div', { class: 'rg-prog', hidden: true });
+      const detailProg = h('div', { class: 'rg-prog', hidden: true });
+      this.dlEls.set(r.id, { row, slot, btn: null, on: false, size: sz, prog, detail, detailSize, detailBtn: null, detailOn: false, detailProg });
       row.replaceChildren(
         h('div', { class: 'rg1' }, name, h('span', { class: 'rg-id faint', title: `Its file: inputs/regions/${r.path ?? `${r.id}.toml`}` }, r.id),
           ...(state ? [h('span', { class: `rg-state ${state.cls}`, title: state.title }, state.text)] : []),
           slot),
         h('div', { class: 'rg2' }, h('span', { class: 'rg2s', title: summary }, summary), sz),
-        this.dlEls.get(r.id)!.detail,
+        prog,
+        detail,
+        detailProg,
       );
       this.showDl(r.id);
     };
@@ -406,7 +414,7 @@ export class RegionsPanel {
     if (!k || !k.mirror) text = '';
     else if (!rk) text = 'not built yet';
     else if (rk.on) {
-      text = rk.state === 'missing' ? stateText(rk, rk.state) : `${sizeOf(rk)} · ${stateText(rk, rk.state)}`;
+      text = rk.state === 'missing' ? stateText(rk) : `${sizeOf(rk)} · ${stateText(rk)}`;
       cls += ` ${stateClass(rk.state)}`;
     } else {
       text = sizeOf(rk);
@@ -414,11 +422,12 @@ export class RegionsPanel {
     els.size.className = cls;
     els.size.textContent = text;
     els.size.title = (rk ? `Its packs and the basemap’s zooms 11–14 over it: ${size(rk.bytes)}, of which ${size(rk.here)} on this Mac` : '');
-    // (Still building: so far; a download of it grows with each catalogue, copied slowly meanwhile.)
-    if (rk?.tiles) els.size.title += `\nSo far: ${tilesText(rk.tiles)}. Downloaded, it grows with each catalogue, copied slowly while the build runs`;
+    // (Still building: so far; a download of it stays as it is until it's updated.)
+    if (rk?.tiles) els.size.title += `\nSo far: ${tilesText(rk.tiles)}. Downloaded, it keeps the tiles it has: Update brings those built since`;
+    const name = r?.name ?? rk?.name ?? id;
+    this.showProg(els.prog, k?.mirror ? rk : undefined, id, `“${name}”`, () => dlUpdate(id), (t, w) => this.sayRow(els.row, t, w));
     const on = !!rk?.on;
     if (els.on !== on || !els.btn) {
-      const name = r?.name ?? rk?.name ?? id;
       const btn = this.dlButton(on, `“${name}”`, () => (this.dl?.regions[id]?.bytes ?? 0) + (this.dl?.regions[id]?.detail?.on ? this.dl.regions[id].detail!.bytes : 0), (o) => dlRegion(id, o), (o) =>
         o ? `Downloading “${name}” to this Mac.` : `“${name}” is removed from this Mac.`, (t, w) => this.sayRow(els.row, t, w));
       btn.hidden = !k?.mirror;
@@ -436,11 +445,12 @@ export class RegionsPanel {
   private showDetail(id: string, f: DetailDl | undefined, name: string, regionOn: boolean) {
     const els = this.dlEls.get(id)!;
     els.detail.hidden = !f;
+    this.showProg(els.detailProg, f, `${id}/detail`, `the terrain detail of “${name}”`, () => dlUpdate(id, true), (t, w) => this.sayRow(els.row, t, w));
     if (!f) return;
     const cover = `${f.cover < 1 && f.cover > 0 ? '<1' : fmt.n(f.cover)} % of it`;
     const needs = !f.on && !regionOn;
     els.detailSize.className = `rg-size rg-fsize${f.on ? ` ${stateClass(f.state)}` : ''}`;
-    els.detailSize.textContent = f.on ? `${cover} · ${sizeOf(f)} · ${stateText(f, f.state)}` : needs ? `${sizeOf(f)} · needs the region` : `${cover} · ${sizeOf(f)}`;
+    els.detailSize.textContent = f.on ? `${cover} · ${sizeOf(f)} · ${stateText(f)}` : needs ? `${sizeOf(f)} · needs the region` : `${cover} · ${sizeOf(f)}`;
     els.detailSize.title = `The deep packs over it: ${size(f.bytes)}, of which ${size(f.here)} on this Mac; they cover ${fmt.n(f.cover)} % of the region${needs ? '. Download the region first: they need it' : ''}`;
     if (els.detailOn !== f.on || !els.detailBtn) {
       const btn = this.dlButton(f.on, `the terrain detail of “${name}”`, () => this.dl?.regions[id]?.detail?.bytes ?? 0, (o) => dlDetail(id, o), (o) =>
@@ -520,7 +530,8 @@ export class RegionsPanel {
     const wd = k.world;
     if (!wd) return;
     const regions = Object.values(k.regions).filter((r) => r.on).length;
-    const state = wd.on ? h('span', { class: `rg-size ${stateClass(wd.state)}` }, `${sizeOf(wd)} · ${stateText(wd, wd.state)}`) : h('span', { class: 'rg-size' }, sizeOf(wd));
+    const state = wd.on ? h('span', { class: `rg-size ${stateClass(wd.state)}` }, `${sizeOf(wd)} · ${stateText(wd)}`) : h('span', { class: 'rg-size' }, sizeOf(wd));
+    this.showProg(this.worldProg, wd, 'world', 'the World, zoomed out', () => dlUpdate(), (t, w) => this.sayDl(t, w));
     if (this.worldOn !== wd.on || !this.worldBtn) {
       this.worldBtn = this.dlButton(wd.on, 'the World, zoomed out', () => this.dl?.world?.bytes ?? 0, (o) => dlWorld(o), (o) =>
         o ? 'Downloading the World, zoomed out: the map then shows the whole world without the NAS, to zoom 10.' : 'The World is removed from this Mac: the map needs the NAS to show anything.');
@@ -540,7 +551,43 @@ export class RegionsPanel {
       h('div', { class: 'rg2' },
         wd.on ? h('span', { class: 'rg2s faint' }, `downloaded ${new Date((wd.at ?? 0) * 1000).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' })}`) : off,
         state),
+      this.worldProg,
     );
+  }
+
+  /** Under a download's row: a progress bar while it's copied (downloading, or updating: then of
+   * the update's files), and while it's behind the catalogue, what changed, the size to copy and an
+   * Update button. Hidden when there's none of that. */
+  private showProg(box: HTMLElement, d: Dl | undefined, key: string, what: string, act: () => Promise<unknown>, say: (text: string, warn?: boolean) => void) {
+    const kids: HTMLElement[] = [];
+    if (d?.on && d.state && d.state !== 'done' && d.state !== 'missing') {
+      const t = d.update ?? d;
+      const bar = h('div', { class: 'kp-bar rg-bar', title: `${d.update ? 'Updating' : 'Downloading'}: ${size(t.here)} of ${size(t.bytes)} here (${pct(t)} %)` }, h('i', {}));
+      (bar.firstChild as HTMLElement).style.width = `${(100 * t.here) / Math.max(1, t.bytes)}%`;
+      kids.push(bar);
+    }
+    const b = d?.on ? d.behind : undefined;
+    if (b && !d!.update) {
+      const busy = this.updating.has(key);
+      const btn = h('button', { class: 'rg-dl', type: 'button', title: `Copy catalogue ${b.cat}’s files for ${what} to this Mac; its own stay until they’re all here` }, busy ? 'Asking…' : 'Update') as HTMLButtonElement;
+      btn.disabled = busy;
+      btn.addEventListener('click', () => {
+        this.updating.add(key);
+        btn.disabled = true;
+        btn.textContent = 'Asking…';
+        act().then(() => say(`Updating ${what}.`), (e) => say(says(e), true)).finally(() => {
+          this.updating.delete(key);
+          void this.pollDl();
+        });
+      });
+      const owe = b.unknown > 0 ? `${size(b.bytes)}…` : size(b.bytes);
+      kids.push(h('div', { class: 'rg2' },
+        h('span', { class: 'rg2s rg-behind', title: `Catalogue ${b.cat} has newer files for it: ${behindText(b)}${b.gone ? `, ${fmt.n(b.gone)} it no longer needs` : ''}. It stays at catalogue ${d!.cat} until it’s updated: the map reads its files here meanwhile, the NAS for the rest` }, `↻ out of date · ${behindText(b)}`),
+        h('span', { class: 'rg-size', title: 'Still to copy' }, owe),
+        btn));
+    }
+    box.replaceChildren(...kids);
+    box.hidden = kids.length === 0;
   }
 
   /** A line under a region's row: what its Download or Remove did, or why it didn't (gone a little

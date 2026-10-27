@@ -94,7 +94,10 @@ pub struct Data {
     ovs: Mutex<Bounded<Arc<crate::ovdata::OvView>>>,
     roadunits: Mutex<Option<(String, Arc<RoadUnits>)>>,
     globals: Mutex<Bounded<Arc<Vec<u8>>>>,
-    /// Set when the catalogue changes, so caches built from the old one are dropped.
+    /// The older files the downloads behind the catalogue keep, by logical name (`set_older`).
+    older: RwLock<Arc<HashMap<String, String>>>,
+    /// Set when the catalogue changes, or what's read of the downloads behind it
+    /// (`set_older`), so caches built from what was read before are dropped.
     pub generation: std::sync::atomic::AtomicU64,
     /// Set when the mirror has copied files, so archives opened from the NAS are opened again.
     pub mirror_gen: std::sync::atomic::AtomicU64,
@@ -135,6 +138,7 @@ impl Data {
             pool: RwLock::new(None),
             mirror,
             cat: RwLock::new(Arc::new(Catalogue::default())),
+            older: Default::default(),
             maps: Mutex::new(Bounded::new(4096)),
             remotes: Mutex::new(Bounded::new(128)),
             indexes: Mutex::new(Bounded::new(8192)),
@@ -270,9 +274,45 @@ impl Data {
         }
     }
 
-    /// A logical name's content name in the current catalogue.
+    /// The content name read for a logical name: a download behind the catalogue reads its own
+    /// older file while it's on this Mac (the region stays as it was downloaded, docs/macs.md,
+    /// "Mirror, per Mac"), else the current catalogue's file (here or on the NAS).
     pub fn content(&self, logical: &str) -> Option<String> {
-        self.catalogue().files.get(logical).map(|f| f.file.clone())
+        let cur = self.catalogue().files.get(logical).map(|f| f.file.clone());
+        let older = self.older.read().unwrap().get(logical).cloned();
+        match (older, self.mirror.as_ref()) {
+            (Some(o), Some(m)) if m.has(&o) => Some(o),
+            _ => cur,
+        }
+    }
+
+    /// A token of the older files read (`set_older`): "" when there are none; it changes with them,
+    /// for the URLs of what's read across many files (way info, the basemap).
+    pub fn older_token(&self) -> String {
+        let g = self.older.read().unwrap();
+        if g.is_empty() {
+            return String::new();
+        }
+        let mut v: Vec<&String> = g.values().collect();
+        v.sort();
+        let mut h = blake3::Hasher::new();
+        for c in v {
+            h.update(c.as_bytes());
+        }
+        format!("-o{}", &h.finalize().to_hex()[..8])
+    }
+
+    /// Sets the older files the downloads behind the catalogue keep (logical name → content
+    /// name: crate::downloads); a change bumps the generation, so what was read before is read
+    /// again. Whether it changed.
+    pub fn set_older(&self, older: HashMap<String, String>) -> bool {
+        let mut g = self.older.write().unwrap();
+        if **g == older {
+            return false;
+        }
+        *g = Arc::new(older);
+        self.generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        true
     }
 
     /// A content-named file: mapped from the mirror, else on the NAS.
@@ -347,13 +387,18 @@ impl Data {
         let cat = self.catalogue();
         let Some(l) = cat.hidata.get(tile) else { return Ok(None) };
         let Some(content) = self.content(l) else { return Ok(None) };
-        if let Some(v) = self.his.lock().unwrap().get(&content) {
-            return Ok(Some(v));
+        self.hidata_of(&content).map(Some)
+    }
+
+    /// A hidata file by content name (of whichever catalogue named it).
+    pub fn hidata_of(&self, content: &str) -> Result<Arc<HiView>> {
+        if let Some(v) = self.his.lock().unwrap().get(content) {
+            return Ok(v);
         }
         let v =
-            Arc::new(HiView::new(SectView::open(self.src(&content)?)?).with_context(|| format!("hidata {content}"))?);
-        self.his.lock().unwrap().put(content, v.clone());
-        Ok(Some(v))
+            Arc::new(HiView::new(SectView::open(self.src(content)?)?).with_context(|| format!("hidata {content}"))?);
+        self.his.lock().unwrap().put(content.to_string(), v.clone());
+        Ok(v)
     }
 
     /// What names a z6 tile's landmark points ("6/32/21") in caches and ETags: its file's content
@@ -576,8 +621,8 @@ impl Data {
         for logical in
             l.root.iter().chain(l.lo.values()).chain(l.hi.values()).chain(l.deep.values()).chain(l.polar.values())
         {
-            if let Some(f) = cat.files.get(logical) {
-                h.update(f.file.as_bytes());
+            if let Some(c) = self.content(logical) {
+                h.update(c.as_bytes());
             }
         }
         h.finalize().to_hex()[..12].to_string()
@@ -590,13 +635,17 @@ impl Data {
     }
 
     /// Where tile z/x/y of the basemap archive `archive` (a content name) is read from: the
-    /// mirror's piece holding it when it's here (its path in the mirror, `.basemap/…`), else the
-    /// archive itself (on the NAS, or whole in the mirror).
+    /// mirror's piece holding it when it's here (its path in the mirror, `.basemap/…`; a download
+    /// behind the catalogue's piece of its older archive first, as `content`), else the archive itself
+    /// (on the NAS, or whole in the mirror).
     pub fn basemap_key(&self, archive: &str, z: u8, x: u32, y: u32) -> String {
-        let piece =
-            self.mirror.as_ref().zip(store::pieces::Piece::of(z, x, y)).filter(|(m, p)| m.has_piece(archive, *p));
+        let older =
+            store::naming::parse_content_name(archive).and_then(|c| self.older.read().unwrap().get(c.logical).cloned());
+        let piece = self.mirror.as_ref().zip(store::pieces::Piece::of(z, x, y)).and_then(|(m, p)| {
+            older.iter().map(String::as_str).chain([archive]).find(|a| m.has_piece(a, p)).map(|a| (m, a, p))
+        });
         match piece {
-            Some((m, p)) => m
+            Some((m, archive, p)) => m
                 .piece_path(archive, p)
                 .strip_prefix(m.root().join("mirror"))
                 .map_or_else(|_| archive.to_string(), |r| r.to_string_lossy().into_owned()),

@@ -551,6 +551,9 @@ async fn main() -> Result<()> {
         .route("/api/downloads/world", axum::routing::put(downloads::put_world))
         .route("/api/downloads/regions/{id}", axum::routing::put(downloads::put_region))
         .route("/api/downloads/regions/{id}/detail", axum::routing::put(downloads::put_region_detail))
+        .route("/api/downloads/world/update", axum::routing::post(downloads::post_world_update))
+        .route("/api/downloads/regions/{id}/update", axum::routing::post(downloads::post_region_update))
+        .route("/api/downloads/regions/{id}/detail/update", axum::routing::post(downloads::post_detail_update))
         .route("/api/downloads/reserve", axum::routing::put(downloads::put_reserve))
         .route("/api/ping", get(|| async { ([(header::CACHE_CONTROL, "no-store")], "ok") }))
         .route("/api/build", get(build_h))
@@ -792,14 +795,17 @@ fn meta_json(s: &AppState) -> serde_json::Value {
         }
     }
     // Way info and whole roads change with any data (the catalogue's number) and carry names.
-    versions.insert("ways.bin".into(), named(format!("c{}", cat.n)));
+    // (And with what's read of the downloads behind it: Data::older_token.)
+    let older = s.data.older_token();
+    versions.insert("ways.bin".into(), named(format!("c{}{older}", cat.n)));
     // The basemap: its archives' content names.
     let mut bm = blake3::Hasher::new();
     for l in &cat.basemap {
-        if let Some(c) = cat.files.get(l) {
-            bm.update(c.file.as_bytes());
+        if let Some(c) = s.data.content(l) {
+            bm.update(c.as_bytes());
         }
     }
+    bm.update(older.as_bytes());
     let bmv = bm.finalize().to_hex()[..12].to_string();
     versions.insert("basemap".into(), named(bmv.clone()));
     versions.insert("base.pmtiles".into(), named(bmv));
@@ -814,8 +820,8 @@ fn meta_json(s: &AppState) -> serde_json::Value {
     for (k, l) in &cat.layers {
         let names = k == "labels" || k == "stations" || k == "ferries" || k.starts_with("ov-");
         let tok = |logical: &String| {
-            cat.files.get(logical).map(|f| {
-                let v = pack_token(&f.file);
+            s.data.content(logical).map(|f| {
+                let v = pack_token(&f);
                 if names {
                     named(v)
                 } else {

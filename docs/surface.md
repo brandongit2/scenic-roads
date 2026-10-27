@@ -90,12 +90,15 @@
     downloaded and the World isn't, the row is marked and warns that away from the NAS, zoomed out,
     the map shows nothing.
   - **Each region**: its size, Download or Remove, and its state (downloaded, copying N %, next,
-    waiting for room, away). A region still building says "x of y tiles, on the map as they come"
+    waiting for room, away, updating N %), with a progress bar under it while it's downloading or
+    updating. Behind the catalogue served, it says "↻ out of date", what changed (new files, of
+    which kinds) and the size to copy, with an **Update** button; the World and terrain detail
+    rows the same. A region still building says "x of y tiles, on the map as they come"
     (every z6 tile built but not yet recorded built: "finishing: x of x tiles, the last map tiles and
     layers being made")
     (its catalogue's `tiles`; the menu bar and `scenic status` say the same, from the agent's
-    status) and can be downloaded: its download grows with each catalogue, what's here never fetched
-    again, copied at the build's slow rate.
+    status) and can be downloaded: its download has the tiles built then; an Update brings those
+    built since, what's here never fetched again.
   - **Terrain detail (z13+)** (a region's second line, only where it has any): the share of the
     region the terrain past z12 covers, its size, Download or Remove, its state. An add-on: its Download
     is disabled ("needs the region") until the region is downloaded, and the server refuses it
@@ -112,6 +115,5 @@ accepted, with nothing rebuilt. After each build the agent lists what still lack
 description in each folder's `todo/`, with the briefs.
 
 **Everything else is automatic:** building whenever a Mac of the pool is awake and reaches the NAS
-(at any charge; away from home through Tailscale, slowly), copying downloads and keeping them
-current, emptying build caches once the build is done, installing a newly published app when the
+(at any charge; away from home through Tailscale, slowly), copying downloads (updated only when the owner asks), emptying build caches once the build is done, installing a newly published app when the
 map is idle, backups. Publishing the app is a command (`tools/app/publish.sh`, docs/building.md §2, App publishing).

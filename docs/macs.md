@@ -254,8 +254,8 @@ and codesign.
   So a region works zoomed in without the World; only zoomed out is missing. Away from the NAS, a
   whole road (hover, profile) leaving it is cut where this Mac's files end: the ways joined end to
   end through the one asked for, the profile marked cut short. While a downloaded region's hi data
-  can't be read for its owners, no base pack or road values here go, at home or away (a hi data
-  that stays unreadable keeps them all).
+  can't be read for its owners, no base pack or road values here go (a hi data that stays
+  unreadable keeps them all).
 - **A region's terrain detail** (an add-on to the region, which it needs): the terrain's deep packs
   and their shading's (z13 and finer, by z10 tile) within 2 km of it, where the terrain goes past
   z12; the panel says
@@ -267,12 +267,21 @@ and codesign.
   runs and mostly sequential reads. Sizes are known ahead (`sizes.json`); a piece cut short resumes;
   each tile's gzip checksum is checked. Pieces rather than a sparse copy: removed by deleting, sized
   as packs are, shared, opened as any archive.
-- **Kept current:** each new catalogue's files a download names are copied, and what no download
-  names any more goes. Nothing else goes, ever.
+- **Updated only when asked:** each download (the World, a region, a region's terrain detail) stays
+  at the catalogue it was downloaded or last updated at (`downloads.json`); a new catalogue copies
+  nothing. Its row in the Regions panel then says it's out of date, with what changed and the size
+  to copy, and offers **Update**. Meanwhile the map reads the download's own older files first, the
+  NAS for what it lacks. An update copies the catalogue served's files beside the old ones (so the
+  region keeps working offline throughout), then moves the download to that catalogue, and the
+  files only the old one named go. A download moves on by itself only when that copies nothing (its
+  files are the same in the new catalogue, or its catalogue didn't have it yet). The catalogues
+  downloads are at stay in `catalog/` however old. Removing a download deletes what no other
+  download names. Nothing else goes, ever.
 - **Copies:** one file or piece at a time, the World first, then small worldwide files, root and lo
-  packs, hi data and road values, base packs, hi packs, buildings, basemap pieces. While the build
+  packs, hi data and road values, base packs, hi packs, buildings, basemap pieces. They run whenever
+  the NAS is reachable, from home or not (no rule holds them back away from home). While the build
   runs (the lead's heartbeat says a job runs) copies keep to 20 MB/s. Each copy is checked before
-  it's moved into place.
+  it's moved into place. Each downloading or updating row shows its own progress bar.
 - **Room:** a per-Mac reserve ("Keep free", 30 GB unless set; `reserve.json`, `PUT
   /api/downloads/reserve`), applied at once. When this Mac's build agent's room target (`scenic
   room`, docs/building.md §2) is higher, the mirror keeps that instead (seen within 5 s). A

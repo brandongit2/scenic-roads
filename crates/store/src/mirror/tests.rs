@@ -404,8 +404,8 @@ fn a_file_a_job_holds_stays_until_let_go() {
     assert_eq!(std::fs::read(&base).unwrap(), bytes, "the held file as it was");
     assert!(m.local(&cat.files["base/6-32-21"].file).is_some(), "still listed: a later sync takes it");
     crate::cachefile::release(&base);
-    let s = m.sync_away(&cat, &wanted(&[world(&cat)])).unwrap();
-    assert_eq!((s.removed, s.held, s.end), (1, 0, SyncEnd::Offline), "away from the NAS too");
+    let s = m.let_go(&cat, &wanted(&[world(&cat)])).unwrap();
+    assert_eq!((s.removed, s.held), (1, 0), "{s:?}");
     assert!(!base.exists());
 }
 
@@ -608,6 +608,16 @@ fn saved_catalogues() {
     }
     assert_eq!(m.saved_catalogue().unwrap().unwrap().n, 5);
     assert_eq!(catalogue::list(&home.path().join("catalog")).unwrap(), [5, 4, 3]);
+    // One a download is at stays however old; let go, it goes.
+    m.keep_catalogues([3].into()).unwrap();
+    for n in 6..=7 {
+        m.save_catalogue(&two_areas(&nas, n, n as u8, 1)).unwrap();
+    }
+    assert_eq!(catalogue::list(&home.path().join("catalog")).unwrap(), [7, 6, 5, 3]);
+    assert_eq!(m.catalogue(3).unwrap().n, 3);
+    assert!(m.catalogue(4).is_none());
+    m.keep_catalogues(Default::default()).unwrap();
+    assert_eq!(catalogue::list(&home.path().join("catalog")).unwrap(), [7, 6, 5]);
 }
 
 #[test]
