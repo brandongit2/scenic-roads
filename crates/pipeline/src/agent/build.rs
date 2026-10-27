@@ -4177,9 +4177,9 @@ fn depth_versions(step: &str) -> String {
 /// What a depth z6 tile's water digest is made from (`WaterIdx`'s from): at z6–8 its tiles and two
 /// rings around them (the coarse levels it composes over it and a ring, each block reading a ring
 /// past it), and at each zoom from z9 to z14 a grid of that zoom meets (those its blocks compose:
-/// `compose::composes_at`) its tiles and the ring around them (z15–16 draw on z14's), as the
-/// depth reads them, the rivers too (`depth_hi_water`).
-pub const DEPTH_WATER_FROM: &str = "depth z6-8 ring 2, z9-14 of a grid's zoom ring 1, +rivers";
+/// `compose::composes_at`; a grid of z15–16 at z14, which they're drawn from) its tiles and the
+/// ring around them, as the depth reads them, the rivers too (`depth_hi_water`).
+pub const DEPTH_WATER_FROM: &str = "depth z6-8 ring 2, z9-14 of a grid's zoom (z15-16 as z14) ring 1, +rivers";
 /// A depth assembly's: its z3 tile's z3–8, the rivers too ("depth 3/x/y": `depth_lo_water`).
 pub const DEPTH_LO_WATER_FROM: &str = "depth z3-8 +rivers";
 
@@ -4304,13 +4304,13 @@ fn depth_hi_zooms(sources: &[crate::depth::grids::Source], t: (u32, u32)) -> Vec
 
 /// The water tiles z6 tile `t`'s depth reads: at z6–8 its tiles and two rings around them (its
 /// coarse levels are composed over it and a ring, a block reading a ring past it); at each zoom it
-/// composes (`depth_hi_zooms`) up to the basemap's z14 (z15–16 are drawn from z14's polygons; a
-/// zoom past z14 composed has z14 composed too, its box being inside z14's), its tiles and the ring
-/// of one around them. A change at a zoom from z9 it never composes isn't among them.
+/// composes (`depth_hi_zooms`), its tiles and the ring of one around them, a zoom past the
+/// basemap's z14 read as z14 (z15–16 are drawn from z14's polygons, and a grid of z15–16 alone
+/// composes no z14). A change at a zoom from z9 it never composes isn't among them.
 fn depth_hi_water(sources: &[crate::depth::grids::Source], t: (u32, u32)) -> Vec<(u8, u32, u32)> {
     use crate::depth::build::{coarse_areas, Area, LO, PIECE_Z};
     let (lo0, lo1) = (PIECE_Z, LO.1);
-    let fine = depth_hi_zooms(sources, t).into_iter().filter(|&z| z <= crate::depth::build::WATER_Z).map(|z| {
+    let fine = depth_hi_zooms(sources, t).into_iter().map(|z| z.min(crate::depth::build::WATER_Z)).map(|z| {
         let s = 1u32 << (z - 6);
         (z, Area { x0: t.0 * s, y0: t.1 * s, nx: s, ny: s })
     });
@@ -8829,6 +8829,20 @@ pub(crate) mod tests {
         eprintln!("depth_hi_water to z14: {} tiles in {:?}", w.len(), t0.elapsed());
         let ring: usize = ((1usize << (14 - 6)) + 2).pow(2);
         assert_eq!(w.len(), 25 + 36 + 64 + ring);
+    }
+
+    /// A z6 tile under a z16 grid alone (a chart's) reads z14's water, which its z15–16 are drawn
+    /// from, though it composes no z14 (task #804 review: it listed none, so a change of the
+    /// basemap's water there left its key as it was).
+    #[test]
+    fn a_depth_tile_of_z16_alone_reads_z14s_water() {
+        let mut src = depth_sources().remove(1);
+        src.grids[0].bbox = [-23.0, 64.9, -16.5, 66.7];
+        src.grids[0].zoom = 16;
+        assert_eq!(depth_hi_zooms(std::slice::from_ref(&src), (28, 16)), [16]);
+        let w = depth_hi_water(&[src], (28, 16));
+        assert_eq!(w.iter().filter(|k| k.0 == 14).count(), ((1usize << (14 - 6)) + 2).pow(2));
+        assert!(w.iter().all(|k| k.0 <= 14));
     }
 
     /// A z6 tile at the date line composes its coarse levels' ring across it (the map's fallback
