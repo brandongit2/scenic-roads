@@ -7709,7 +7709,7 @@ impl Agent {
             summits_held = summits;
             waiting.push(Waiting {
                 step: Some("summits".into()),
-                what: "summits and peaks".into(),
+                what: "summits".into(),
                 why: build::PEAKS_TERRAIN_WAIT.into(),
             });
         } else if let Some(w) = summits {

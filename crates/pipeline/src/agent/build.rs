@@ -981,8 +981,13 @@ pub const PEAKS_TERRAIN_WAIT: &str = "wait for the terrain packs they read (terr
 const TERRAIN_LO_WAIT: &str = "wait for the terrain-hi tiles of their z3 tile";
 const SLOPE_DEEP_WAIT: &str =
     "wait for the terrain of their z3 tile and its neighbours' (terrain-hi, terrain-lo, terrain-deep)";
-const SLOPE_HI_WAIT: &str = "wait for the terrain of their z3 tile and its neighbours' (terrain-hi, terrain-lo, terrain-deep), and for their z10 tiles' slope-deep";
-const SLOPE_LO_WAIT: &str = "wait for the terrain-lo of their z3 tile and the slope-hi tiles in it";
+const SLOPE_HI_WAIT: &str =
+    "wait for the terrain of their z3 tile and its neighbours' (terrain-hi, terrain-lo, terrain-deep)";
+const SLOPE_HI_DEEP_WAIT: &str = "wait for their z10 tiles' slope-deep";
+const SLOPE_HI_BOTH_WAIT: &str =
+    "wait for the terrain of their z3 tile and its neighbours' (terrain-hi, terrain-lo, terrain-deep), or their z10 tiles' slope-deep";
+const SLOPE_LO_WAIT: &str =
+    "wait for their z3 tile's terrain (terrain-hi, terrain-lo, terrain-deep) and slope-hi tiles";
 const TREES_LO_WAIT: &str = "wait for the trees tiles of their z3 tile";
 const PEAKS_WAIT: &str =
     "wait for the candidates (pois), the pass's summits and the terrain packs they read (terrain-hi, terrain-lo)";
@@ -2112,10 +2117,12 @@ pub fn terrain_work(tt: &TerrainTargets, m: &BTreeMap<String, String>, done: &Ke
             idle.push((t.clone(), k.clone()));
         }
     }
-    if s_terrain {
-        w.held.push(("slope-hi", SLOPE_HI_WAIT));
-    } else if s_deep {
-        w.held.push(("slope-hi", "wait for their z10 tiles' slope-deep"));
+    // (Each wait said once: a z6 tile whose terrain isn't built waits for that first.)
+    match (s_terrain, s_deep) {
+        (true, true) => w.held.push(("slope-hi", SLOPE_HI_BOTH_WAIT)),
+        (true, false) => w.held.push(("slope-hi", SLOPE_HI_WAIT)),
+        (false, true) => w.held.push(("slope-hi", SLOPE_HI_DEEP_WAIT)),
+        (false, false) => {}
     }
     // (A "none" z6 tile reads no terrain: it runs whenever.)
     w.slope.extend(snone);
@@ -2585,7 +2592,6 @@ pub fn plan(
     if trees_lo_held {
         held_steps.push(("trees-lo".into(), TREES_LO_WAIT.into()));
     }
-    held_steps.extend(landmarks_held(cov, date, m, done, inputs, terrain_built));
     let mut backfill: Vec<Work> = Vec::new();
     if !tree_backfill.is_empty() {
         backfill.push(Work { step: "trees".into(), targets: tree_backfill });
@@ -2605,11 +2611,9 @@ pub fn plan(
     // (`landmarks_work`: none waits for the z6 tiles but the overlays), listed after the regions'
     // work. A slot beside the regions' work takes them (crate::agent: every job by grant, packed by
     // its measures), a helper the candidates and peaks.
-    let chains = |last: bool| -> Vec<Work> {
-        rail_chain(cov, date, m, done, inputs)
-            .into_iter()
-            .chain(landmarks_work(cov, date, m, done, inputs, terrain_built, last, updates.way))
-            .collect()
+    let chains = |last: bool| -> (Vec<Work>, Vec<(String, String)>) {
+        let (lw, held) = landmarks_work(cov, date, m, done, inputs, terrain_built, last, updates.way);
+        (rail_chain(cov, date, m, done, inputs).into_iter().chain(lw).collect(), held)
     };
     let Some(reach) = reach.filter(|_| !waiting) else {
         push(&mut work, "terrain-hi", terrain);
@@ -2620,7 +2624,9 @@ pub fn plan(
         push(&mut work, "slope-lo", slope_lo);
         push(&mut work, "trees", trees);
         push(&mut work, "trees-lo", trees_lo);
-        work.extend(chains(false));
+        let (cw, lh) = chains(false);
+        work.extend(cw);
+        held_steps.extend(lh);
         let each: Vec<&Coverage> = updates.each.iter().map(|(_, c)| c).collect();
         work.extend(bld_work(cov, m, done, inputs, &bld_rank(&each)));
         work.extend(depth_work(cov, m, done, tiles));
@@ -3114,7 +3120,9 @@ pub fn plan(
     push(&mut work, "slope-lo", slope_lo);
     push(&mut work, "trees", trees);
     push(&mut work, "trees-lo", trees_lo);
-    work.extend(chains(last_now));
+    let (cw, lh) = chains(last_now);
+    work.extend(cw);
+    held_steps.extend(lh);
     work.extend(bld);
     work.extend(depth);
     work.extend(polar);
@@ -3717,7 +3725,9 @@ fn landmarks_chain(
 /// then the overlays. They don't wait for each other otherwise: the heritage chain (an hour and
 /// more of network) runs beside the candidates. The landmark points and the overlays are gated by
 /// time (`gate_open`, `way`'s gaps): the points at most hourly while z6 tiles build (`MARKS_EVERY_S`),
-/// the overlays every `OVERLAYS_EVERY_S`; both at once after the last z6 tile.
+/// the overlays every `OVERLAYS_EVERY_S`; both at once after the last z6 tile. With it, the steps
+/// with work left (stale against what's built now) that wait for those before them, each with what
+/// it waits for (`Plan::held`); the time gates aren't a wait for a step.
 #[allow(clippy::too_many_arguments)]
 fn landmarks_work(
     cov: &Coverage,
@@ -3728,9 +3738,11 @@ fn landmarks_work(
     terrain_built: bool,
     last: bool,
     way: Publishing,
-) -> Vec<Work> {
+) -> (Vec<Work>, Vec<(String, String)>) {
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
     let mut out = Vec::new();
+    let mut held: Vec<(String, String)> = Vec::new();
+    let mut hold = |step: &str, why: &str| held.push((step.into(), why.into()));
     // (None while the spacing their extract reads isn't known: the candidates wait, and what reads
     // them.)
     let keyed = pois_keys(cov, date, m, inputs);
@@ -3746,25 +3758,38 @@ fn landmarks_work(
     if !stale_pois.is_empty() {
         out.push(Work { step: "pois".into(), targets: stale_pois });
     }
-    if pois_built
+    let peaks_ready = pois_built
         && terrain_built
         && m.contains_key(&format!("work/summits/{date}"))
-        && summits_work(date, m, done).is_none()
-    {
-        let ready: Vec<(String, String)> = peaks_keys(cov, date, m)
+        && summits_work(date, m, done).is_none();
+    // (Held, they're said only with keyed candidates: before, nothing of the chain is known.)
+    let stale_peaks: Vec<(String, String)> = if peaks_ready || keyed.is_some() {
+        peaks_keys(cov, date, m)
             .into_iter()
             .filter(|(u, k)| stale(&done.peaks, &u.slash(), k))
             .map(|(u, k)| (u.slash(), k))
-            .collect();
-        if !ready.is_empty() {
-            out.push(Work { step: "peaks".into(), targets: ready });
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if !stale_peaks.is_empty() {
+        if peaks_ready {
+            out.push(Work { step: "peaks".into(), targets: stale_peaks });
+        } else {
+            hold("peaks", PEAKS_WAIT);
         }
     }
-    let pois_now = if pois_built { current_pois(cov, date, m) } else { Vec::new() };
+    // (Held for the candidates, the items say so only when stale on the candidates there now: a
+    // candidates' run that writes the same files leaves their key as it is.)
+    let pois_now = if keyed.is_some() { current_pois(cov, date, m) } else { Vec::new() };
     if !pois_now.is_empty() {
         let k = items_key(date, &pois_now);
         if done.lo.get("items").map(String::as_str) != Some(k.as_str()) {
-            out.push(Work { step: "items".into(), targets: vec![("items".into(), k)] });
+            if pois_built {
+                out.push(Work { step: "items".into(), targets: vec![("items".into(), k)] });
+            } else {
+                hold("items", ITEMS_WAIT);
+            }
         }
     }
     // (Not before the heritage sites are made as the coverage wants them; with no key for them (no
@@ -3772,15 +3797,26 @@ fn landmarks_work(
     // not, and the marks and overlays wait.)
     let sites_due =
         heritage_sites_key(cov, date, m, inputs).is_none() || heritage_sites_work(cov, date, m, done, inputs).is_some();
-    if let Some(k) = heritage_key(cov, date, m).filter(|k| !sites_due && done.lo.get("heritage") != Some(k)) {
-        out.push(Work { step: "heritage".into(), targets: vec![("heritage".into(), k)] });
+    if let Some(k) = heritage_key(cov, date, m).filter(|k| done.lo.get("heritage") != Some(k)) {
+        if sites_due {
+            hold("heritage", HERITAGE_WAIT);
+        } else {
+            out.push(Work { step: "heritage".into(), targets: vec![("heritage".into(), k)] });
+        }
     }
-    if marks_ready(cov, date, m, done, inputs) {
-        let k = marks_key(date, m, &units.iter().map(|(u, _)| *u).collect::<Vec<_>>());
-        if done.lo.get("marks").map(String::as_str) != Some(k.as_str())
+    let marks_k = marks_key(date, m, &units.iter().map(|(u, _)| *u).collect::<Vec<_>>());
+    if !marks_ready(cov, date, m, done, inputs) {
+        if keyed.is_some() && done.lo.get("marks").map(String::as_str) != Some(marks_k.as_str()) {
+            hold("marks", MARKS_WAIT);
+        }
+        if overlays_key(date, m).is_some_and(|k| done.lo.get("overlays") != Some(&k)) {
+            hold("overlays", MARKS_WAIT);
+        }
+    } else {
+        if done.lo.get("marks").map(String::as_str) != Some(marks_k.as_str())
             && gate_open(last, way.since_marks, MARKS_EVERY_S)
         {
-            out.push(Work { step: "marks".into(), targets: vec![("marks".into(), k)] });
+            out.push(Work { step: "marks".into(), targets: vec![("marks".into(), marks_k)] });
         }
         // (The overlays on their own gate, from the dots the last marks run wrote, whether or not
         // the marks are current: under z6 tiles arriving every minute they rarely are.)
@@ -3792,49 +3828,7 @@ fn landmarks_work(
             out.push(Work { step: "overlays".into(), targets: vec![("overlays".into(), k)] });
         }
     }
-    out
-}
-
-/// The landmarks' steps with work left that `landmarks_work` holds for the steps before them, each
-/// with what it waits for (`Plan::held`).
-fn landmarks_held(
-    cov: &Coverage,
-    date: &str,
-    m: &BTreeMap<String, String>,
-    done: &Keys,
-    inputs: &BTreeMap<String, String>,
-    terrain_built: bool,
-) -> Vec<(String, String)> {
-    let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
-    let mut out: Vec<(String, String)> = Vec::new();
-    let mut hold = |step: &str, why: &str| out.push((step.into(), why.into()));
-    let Some(units) = pois_keys(cov, date, m, inputs) else { return out };
-    let ends = m.contains_key(&format!("work/trailends/{date}")) && trailends_work(date, m, done).is_none();
-    let pois_built = ends && units.iter().all(|(u, k)| !stale(&done.pois, &u.slash(), k));
-    let summits_made = m.contains_key(&format!("work/summits/{date}")) && summits_work(date, m, done).is_none();
-    if !(pois_built && terrain_built && summits_made)
-        && peaks_keys(cov, date, m).iter().any(|(u, k)| stale(&done.peaks, &u.slash(), k))
-    {
-        hold("peaks", PEAKS_WAIT);
-    }
-    if ends && !pois_built {
-        hold("items", ITEMS_WAIT);
-    }
-    let sites_due =
-        heritage_sites_key(cov, date, m, inputs).is_none() || heritage_sites_work(cov, date, m, done, inputs).is_some();
-    if sites_due && heritage_key(cov, date, m).is_some_and(|k| done.lo.get("heritage") != Some(&k)) {
-        hold("heritage", HERITAGE_WAIT);
-    }
-    if !marks_ready(cov, date, m, done, inputs) {
-        let k = marks_key(date, m, &units.iter().map(|(u, _)| *u).collect::<Vec<_>>());
-        if done.lo.get("marks").map(String::as_str) != Some(k.as_str()) {
-            hold("marks", MARKS_WAIT);
-        }
-        if overlays_key(date, m).is_some_and(|k| done.lo.get("overlays") != Some(&k)) {
-            hold("overlays", MARKS_WAIT);
-        }
-    }
-    out
+    (out, held)
 }
 
 /// Whether the landmark points' inputs are built as `landmarks_work` decides it (the candidates,
@@ -8118,10 +8112,29 @@ pub(crate) mod tests {
         assert_eq!(steps(&plan(&c, "d", &m, &done, &BTreeMap::new())), vec!["items"]);
         m.insert("work/summits/d".into(), "work/summits/d.aaaaaaaaaaaaaaaa.bin".into());
         // Nor while terrain-hi or terrain-lo has work left (#670: they read the packs it makes).
-        let w = landmarks_work(&c, "d", &m, &done, &spaced(&BTreeMap::new()), false, false, Default::default());
+        let (w, held) = landmarks_work(&c, "d", &m, &done, &spaced(&BTreeMap::new()), false, false, Default::default());
         assert_eq!(steps(&w), vec!["items"]);
+        // Said: the peaks wait; the items, offered, don't (#786).
+        assert!(held.iter().any(|(s, w)| s == "peaks" && w == PEAKS_WAIT), "{held:?}");
+        assert!(!held.iter().any(|(s, _)| s == "items"), "{held:?}");
         // The terrain built: offered.
         assert_eq!(steps(&plan(&c, "d", &m, &done, &BTreeMap::new())), vec!["peaks", "items"]);
+        // Offered, the peaks say nothing.
+        let (w, held) = landmarks_work(&c, "d", &m, &done, &spaced(&BTreeMap::new()), true, false, Default::default());
+        assert!(steps(&w).iter().any(|s| s == "peaks") && !held.iter().any(|(s, _)| s == "peaks"), "{w:?} {held:?}");
+        // The items made, then the candidates stale again: the items, current on the candidates
+        // there, aren't said to wait (a run writing the same files leaves their key); the peaks are.
+        let items = w.iter().find(|w| w.step == "items").unwrap().targets.clone();
+        done.record("items", &items);
+        done.pois.insert("6/28/16".into(), "older".into());
+        let (w, held) = landmarks_work(&c, "d", &m, &done, &spaced(&BTreeMap::new()), true, false, Default::default());
+        assert_eq!(steps(&w), vec!["pois"]);
+        assert!(!held.iter().any(|(s, _)| s == "items"), "{held:?}");
+        assert!(held.iter().any(|(s, _)| s == "peaks"), "{held:?}");
+        // Their files changed meanwhile: now the items wait for the candidates.
+        m.insert("work/pois/6-28-16".into(), "work/pois/6-28-16.bbbbbbbbbbbbbbbb.json".into());
+        let (_, held) = landmarks_work(&c, "d", &m, &done, &spaced(&BTreeMap::new()), true, false, Default::default());
+        assert!(held.iter().any(|(s, w)| s == "items" && w == ITEMS_WAIT), "{held:?}");
     }
 
     #[test]
