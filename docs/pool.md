@@ -1298,6 +1298,12 @@ member's page reruns the same:
   tenth alone, the MacBook Pro's 1.6 lane-hours of terrain-deep (6 %) a day before it did 1,126
   targets of it in the test's first 6 h were skipped, terrain-deep's test median 198 to 242 min;
   with the hour kept, 202. At a fiftieth instead the gain shrank (test median 614 to 614).
+  The skip holds for the run's first day alone (`SKIP_FOR_S`, the span the shares were read over);
+  after it every Mac is offered every step. Skipping throughout, a step one busy Mac mostly took
+  waited on it for weeks: depth, ~90 % the Mac mini's on 24-25 Oct, the MacBook Pro's few jobs
+  skipped, its train end p90 35,814 to 78,057 min (with the day, 33,136); terrain-deep's 2,614 to
+  4,011 (2,539). The price: train's median 884 against 1,054, the test's depth and bldtiles less
+  improved (depth median 8,838 against 11,330).
 - **Lanes cut, not slowed** (`hold_back`): `Held::util` is no longer applied (0 in code 3's
   records; the replay takes a code 2 record's off).
 
@@ -1311,30 +1317,32 @@ than the pool's working ones (slower still: the whole and its main steps worse).
 
 | | test old | test new | train old | train new |
 |---|---|---|---|---|
-| end, all | 614 / 10,394 | 566 / 8,091 | 2,491 / 21,734 | 937 / 8,626 |
-| end bias | +3,455 | +2,569 | +11,585 | +4,264 |
-| start, all | 589 / 10,367 | 519 / 8,054 | 2,458 / 21,706 | 919 / 8,590 |
-| end < 15 min | 9 / 198 | 9 / 155 | 1,133 / 1,909 | 274 / 2,618 |
-| end 15 min-1 h | 33 / 330 | 49 / 323 | 163 / 1,860 | 90 / 1,292 |
-| end 1-4 h | 159 / 612 | 199 / 668 | 211 / 1,139 | 116 / 477 |
-| end 4-12 h | 192 / 423 | 206 / 404 | 271 / 1,372 | 256 / 1,000 |
-| end 12 h + | 5,840 / 12,286 | 4,751 / 10,651 | 5,192 / 37,917 | 2,517 / 12,912 |
-| end, pack | 4,228 / 8,192 | 2,959 / 6,236 | 1,726 / 18,284 | 1,527 / 5,288 |
-| end, terrain-hi | 4,580 / 8,186 | 3,504 / 6,432 | 6,485 / 37,898 | 808 / 8,654 |
-| end, terrain-deep | 198 / 588 | 202 / 528 | 486 / 2,614 | 454 / 4,011 |
-| end, unit | 3,664 / 8,408 | 2,274 / 5,343 | 3,446 / 36,946 | 1,635 / 9,264 |
-| end, depth | 14,206 / 18,234 | 8,838 / 13,963 | 3,117 / 35,814 | 3,552 / 78,914 |
-| end, slope-hi | 10,827 / 14,512 | 9,912 / 12,282 | 8,574 / 32,372 | 7,505 / 13,409 |
-| end, terrain-lo | 184 / 3,666 | 195 / 2,919 | 6,901 / 69,828 | 598 / 23,660 |
-| end, trees | 11,702 / 15,959 | 10,651 / 12,856 | 7,480 / 25,519 | 6,658 / 12,720 |
-| end, pois | 9,927 / 14,880 | 5,813 / 10,324 | 1,513 / 166,612 | 1,513 / 47,912 |
-| placed in 6 h / done | 6,503 / 10,523 | 9,142 / 10,523 | 31,650 / 24,940 | 10,061 / 24,940 |
-| not done by the end | 22,111 | 29,369 | 171,799 | 138,326 |
-| same Mac / slot | 54 / 18 % | 67 / 29 % | 43 / 20 % | 74 / 45 % |
-| in order (all / within 4 h) | 65 / 77 % | 65 / 81 % | 58 / 51 % | 64 / 59 % |
+| end, all | 614 / 10,394 | 566 / 8,097 | 2,491 / 21,734 | 1,054 / 10,538 |
+| end bias | +3,455 | +2,675 | +11,585 | +4,888 |
+| start, all | 589 / 10,367 | 519 / 8,099 | 2,458 / 21,706 | 1,036 / 10,304 |
+| end < 15 min | 9 / 198 | 9 / 155 | 1,133 / 1,909 | 1,569 / 2,538 |
+| end 15 min-1 h | 33 / 330 | 49 / 323 | 163 / 1,860 | 103 / 1,844 |
+| end 1-4 h | 159 / 612 | 199 / 668 | 211 / 1,139 | 102 / 441 |
+| end 4-12 h | 192 / 423 | 206 / 405 | 271 / 1,372 | 259 / 980 |
+| end 12 h + | 5,840 / 12,286 | 4,855 / 10,335 | 5,192 / 37,917 | 3,618 / 34,264 |
+| end, pack | 4,228 / 8,192 | 3,092 / 6,561 | 1,726 / 18,284 | 1,682 / 9,712 |
+| end, terrain-hi | 4,580 / 8,186 | 3,624 / 6,549 | 6,485 / 37,898 | 4,651 / 33,455 |
+| end, terrain-deep | 198 / 588 | 203 / 529 | 486 / 2,614 | 428 / 2,539 |
+| end, unit | 3,664 / 8,408 | 2,733 / 7,260 | 3,446 / 36,946 | 1,741 / 10,758 |
+| end, depth | 14,206 / 18,234 | 11,330 / 14,613 | 3,117 / 35,814 | 2,455 / 33,136 |
+| end, bldtiles | 10,761 / 16,299 | 8,327 / 12,964 | 383 / 8,689 | 324 / 6,494 |
+| end, slope-hi | 10,827 / 14,512 | 8,762 / 11,707 | 8,574 / 32,372 | 7,891 / 29,795 |
+| end, terrain-lo | 184 / 3,666 | 195 / 2,898 | 6,901 / 69,828 | 716 / 35,031 |
+| end, trees | 11,702 / 15,959 | 9,332 / 13,903 | 7,480 / 25,519 | 6,845 / 18,365 |
+| end, pois | 9,927 / 14,880 | 8,107 / 12,927 | 1,513 / 166,612 | 1,513 / 47,958 |
+| placed in 6 h / done | 6,503 / 10,523 | 9,142 / 10,523 | 31,650 / 24,940 | 20,687 / 24,940 |
+| not done by the end | 22,111 | 29,369 | 171,799 | 162,244 |
+| same Mac / slot | 54 / 18 % | 55 / 20 % | 43 / 20 % | 65 / 38 % |
+| in order (all / within 4 h) | 65 / 77 % | 65 / 81 % | 58 / 51 % | 62 / 49 % |
 
-Better overall on both sets, and for every step of note on the test set but terrain-deep (median 4
-min worse, p90 60 better) and terrain-lo (70 samples, median 11 min worse, p90 750 better). Worse
+Better overall on both sets, and for every step of note on both but terrain-deep on the test set
+(median 5 min worse, p90 60 better) and terrain-lo there (70 samples, median 11 min worse, p90 770
+better). On train the end < 15 min rows are worse (n 982 to 393: inputs paused then place nothing). Worse
 from 15 min to 12 h ahead (median 16-40 min): work brought forward from days out now crowds the
 near term. The test's targets forecast done that weren't rose (22,111 to 29,369): it now places as
 much in its first 6 h as the pool did, but not all of the same targets. What's left: the order of
