@@ -1601,6 +1601,13 @@ pub mod nts {
         (f64::from(k.0) * w, f64::from(k.1) / 4.0, f64::from(k.0 + 1) * w, f64::from(k.1 + 1) / 4.0)
     }
 
+    /// A sheet's area (km², on the mean sphere).
+    pub fn area_km2(k: Key) -> f64 {
+        const R: f64 = 6371.0088;
+        let (w, s, e, n) = bounds(k);
+        R * R * (e - w).to_radians() * (n.to_radians().sin() - s.to_radians().sin())
+    }
+
     /// Back and forth from the south-east: the label of cell (`col` from the east, `row` from the
     /// south) of a grid `cols` wide.
     fn snake(col: i32, row: i32, cols: i32) -> i32 {

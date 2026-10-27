@@ -42,6 +42,7 @@ pub struct SheetRow {
     pub east: f64,
     pub north: f64,
     pub region: String,
+    /// Its area less its sea and inland water (a z12 tile the basemap doesn't have is land).
     pub land_km2: f64,
     pub sea_km2: f64,
     pub inland_km2: f64,
@@ -144,7 +145,6 @@ const MIN_LAND: f64 = 50.0;
 /// - **empty:** under `EMPTY`;
 /// - **truncated:** its size curve cut off: 3 or more lakes over 0.1 km², fewer under.
 pub fn gaps(rows: &[SheetRow]) -> Vec<Gap> {
-    const R: f64 = 6371.0088;
     struct S {
         width: f64,
         area: f64,
@@ -156,7 +156,7 @@ pub fn gaps(rows: &[SheetRow]) -> Vec<Gap> {
     let mut idx: HashMap<(i64, i64), usize> = HashMap::new();
     let mut ss: Vec<S> = Vec::with_capacity(rows.len());
     for (i, r) in rows.iter().enumerate() {
-        let area = R * R * (r.east - r.west).to_radians() * (r.north.to_radians().sin() - r.south.to_radians().sin());
+        let area = nts::area_km2(r.key());
         let land = (area - r.sea_km2 - r.inland_km2).max(0.0);
         let small = f64::from(r.lakes[0] + r.lakes[1] + r.lakes[2]);
         ss.push(S {
@@ -441,7 +441,6 @@ pub fn all(
 /// A sheet's sums as the survey goes.
 #[derive(Default, Clone)]
 struct Sheet {
-    land_km2: f64,
     sea_km2: f64,
     inland_km2: f64,
     /// Lakes and ponds by ring area: < 0.01, 0.01–0.1, 0.1–1, ≥ 1 km².
@@ -458,9 +457,9 @@ fn lonlat(z: u8, x: f64, y: f64) -> (f64, f64) {
 }
 
 /// The survey: every NTS 1:50,000 sheet across the Canadian regions (`PROVINCES`, from the pass's
-/// outlines), with the basemap's z12 water in it: its land and water (km², to the metre² as the
-/// survey's CSV holds them) and its lakes by size (counted by where their rings' vertices average).
-/// In the sheets' order (west to east within a row, rows south to north).
+/// outlines), those the basemap has no z12 tile over too, with the basemap's z12 water in it: its
+/// land and water (km², to the metre² as the survey's CSV holds them) and its lakes by size (counted
+/// by where their rings' vertices average). By column west to east, each south to north.
 pub fn survey(base: &Path, outlines: &Path, said: &(dyn Fn(u64, u64) + Sync)) -> Result<Vec<SheetRow>> {
     // The regions' outlines (simplified), to say which sheets are Canada's.
     let o = crate::outlines::Outlines::open(outlines)?;
@@ -602,7 +601,6 @@ pub fn survey(base: &Path, outlines: &Path, said: &(dyn Fn(u64, u64) + Sync)) ->
                         let sh = local.entry(sheet_of(lon, lat)).or_default();
                         sh.sea_km2 += f64::from(s_) * a;
                         sh.inland_km2 += f64::from(i_) * a;
-                        sh.land_km2 += f64::from(1.0 - s_ - i_) * a;
                     }
                 }
             }
@@ -610,7 +608,6 @@ pub fn survey(base: &Path, outlines: &Path, said: &(dyn Fn(u64, u64) + Sync)) ->
         let mut all = sheets.lock().unwrap();
         for (k, v) in local {
             let s = all.entry(k).or_default();
-            s.land_km2 += v.land_km2;
             s.sea_km2 += v.sea_km2;
             s.inland_km2 += v.inland_km2;
             for i in 0..4 {
@@ -624,7 +621,14 @@ pub fn survey(base: &Path, outlines: &Path, said: &(dyn Fn(u64, u64) + Sync)) ->
         said(d as u64, fives.len() as u64);
         Ok(())
     })?;
-    let sheets = sheets.into_inner().unwrap();
+    let mut sheets = sheets.into_inner().unwrap();
+    // Every sheet in the box, also one the basemap has no z12 tile over: a tile with nothing in it
+    // (no water, no road) isn't stored, so a sheet of bare land, which is what a sheet OSM's import
+    // skipped looks like, would have no row and could never be a gap (task #784: 33B/09–11,
+    // 33A/11–12, 33A/15, 33G/04 in Québec). Missing tiles are land (`land_km2`).
+    for k in sheets_in(w, s, east, n) {
+        sheets.entry(k).or_default();
+    }
     let mut keys: Vec<_> = sheets.keys().copied().collect();
     keys.sort_unstable();
     let mut rows = Vec::new();
@@ -652,7 +656,7 @@ pub fn survey(base: &Path, outlines: &Path, said: &(dyn Fn(u64, u64) + Sync)) ->
             east: el,
             north: nl,
             region: region.to_string(),
-            land_km2: mm(s.land_km2),
+            land_km2: mm((nts::area_km2(k) - s.sea_km2 - s.inland_km2).max(0.0)),
             sea_km2: mm(s.sea_km2),
             inland_km2: mm(s.inland_km2),
             lakes: s.lakes,
@@ -661,6 +665,14 @@ pub fn survey(base: &Path, outlines: &Path, said: &(dyn Fn(u64, u64) + Sync)) ->
         });
     }
     Ok(rows)
+}
+
+/// Every sheet meeting a box (west, south, east, north; degrees).
+fn sheets_in(w: f64, s: f64, e: f64, n: f64) -> impl Iterator<Item = nts::Key> {
+    ((s * 4.0).floor() as i32..(n * 4.0).ceil() as i32).flat_map(move |row| {
+        let wd = nts::width(row);
+        ((w / wd).floor() as i32..(e / wd).ceil() as i32).map(move |col| (col, row))
+    })
 }
 
 /// Where a file of the source is: on disk, or a member of a zip.
@@ -1144,6 +1156,20 @@ mod tests {
         let g = found(&grid(&odd));
         assert_eq!(g.len(), 25, "{g:?}");
         assert!(g.iter().all(|(_, why)| *why == ["neighbours"]));
+    }
+
+    #[test]
+    fn the_survey_has_every_sheet_in_its_box() {
+        // 33B/10 (52.5–52.75°N, 75–74.5°W): no z12 tile of the basemap over it (nothing to draw),
+        // so only the box gave it a row (task #784).
+        let all: HashSet<nts::Key> = sheets_in(-141.5, 41.5, -52.0, 83.5).collect();
+        let k = nts::sheet_key(-74.8, 52.6);
+        assert_eq!(nts::name(k), "33B/10");
+        assert!(all.contains(&k));
+        assert!(all.contains(&nts::sheet_key(-141.4, 41.6)) && all.contains(&nts::sheet_key(-52.1, 83.4)));
+        // Wider sheets north of 68° and 80°, each once.
+        assert_eq!(all.iter().filter(|k| k.1 == 4 * 70).count(), 90);
+        assert_eq!(all.iter().filter(|k| k.1 == 4 * 81).count(), 45);
     }
 
     #[test]

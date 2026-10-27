@@ -420,7 +420,8 @@ drawn as a raster.
   before the water, and the `lakefill` tool). OSM's CanVec import skipped some map sheets, whose
   small lakes vanish in rectangles.
   - **The survey** (`lakefill::run::survey`, `gaps`): every NTS 1:50,000 sheet in the Canadian
-    regions, its small lakes (under 1 km²) per 100 km² of land. A sheet is a gap when that's under a
+    regions (also one with no basemap tile over it at z12: an empty tile isn't stored, so a skipped
+    sheet of bare land has none), its small lakes (under 1 km²) per 100 km² of land. A sheet is a gap when that's under a
     tenth of its neighbours' (75th percentile within 3 sheets), under 2, or its size curve is cut
     off.
   - **The source:** CanVec 1:50,000 Hydro `waterbody_2`, the provinces' zips, downloaded by hand
@@ -431,7 +432,7 @@ drawn as a raster.
   - **The rules** (`lakefill::select`): whole lakes only (pieces sharing an edge or a sheet line are
     one); none touching OSM's water within 10 m; OSM's lakes cut at a gap sheet's edge completed with
     the source's part inside the gap; duplicates once; lakes over 1° across left out; a sheet filled
-    only where under half the source's lakes in it touch OSM's water (`FillOpts::canvec`).
+    only where under half the source's lakes in it touch OSM's water (the source's `params.confirm`, `FillOpts::declared`).
   - `lakefill seamcheck` checks the edges where filled lakes meet OSM's water.
   - **Where it plugs in:** the step makes `work/lakefill/<date>.<h>.sect` (docs/formats.md), keyed
     by the basemap, the outlines and the source's zips (`run::source_pin`); only the fill from the

@@ -509,7 +509,7 @@ pub fn timetables_todo_work(cov: &Coverage, m: &BTreeMap<String, String>, done: 
 }
 
 /// The lakefill step's version (crate::lakefill::run): bumped with any change to what it makes.
-pub const LAKEFILL_V: u32 = 1;
+pub const LAKEFILL_V: u32 = 2;
 
 /// The lakes filled from Canada's own data (crate::lakefill), once per pass (or step version, or
 /// source): from the pass's basemap and outlines and the declared source's zips (`source`, their pin
