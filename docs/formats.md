@@ -46,7 +46,10 @@ index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
   (`terrain_deep::native_zoom`; elsewhere the base's finest, z12 to 67°), and the terrain's
   `maxzoom` is the finest of those. The app's meta passes `native_zoom` on as `terrainAreas`
   (`{"zoom": 10, "tiles": {"x/y": z}}`), and the map takes its terrain and shading tiles to that
-  zoom there (our MapLibre's `scenic:zoom-by-area`), z12 elsewhere. The meta's
+  zoom there (our MapLibre's `scenic:zoom-by-area`), z12 elsewhere. The shading goes up to two
+  zooms finer than the screen within those zooms, nearest the camera first and within a budget,
+  once the screen's own tiles are in and the camera is still (web/src/basemap.ts `SHADE_DETAIL`,
+  our MapLibre's `scenic:detail`). The meta's
   `packs.terrain.deep` gives each deep pack's version by z10 tile (`"10/x/y"`), as `lo` and `hi` do
   theirs, so a tile past z12 there carries its deep pack's `?v=` and a new catalogue asks again only
   for the tiles of the deep packs it changed. **The terrain's shading** (the `slope` layer:

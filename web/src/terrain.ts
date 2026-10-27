@@ -1,7 +1,7 @@
 // Terrain presentation: 3D mesh + exaggeration, hillshade, hypsometric tint, contours, sky.
 import type { Map as MLMap } from 'maplibre-gl';
 import * as maplibregl from 'maplibre-gl';
-import { HYPSO, terrainTiles } from './basemap';
+import { HYPSO, SHADE_DETAIL, terrainTiles } from './basemap';
 import { PALETTES, baseKey, isRev, paletteFn } from './palettes';
 import type { ScaleFields, Terrain } from './state';
 import { CONTOUR_MINZOOM } from './contours';
@@ -431,10 +431,12 @@ const TERRAIN_MESH = 252;
  * tilted over mountains.
  */
 function finerTerrainMesh(map: MLMap) {
-  type T = { tileManager?: { deltaZoom: number; _sourceTileCache: Record<string, string> }; meshSize: number; _meshCache: Record<string, { destroy(): void }> };
+  type T = { tileManager?: { deltaZoom: number; drapeDetail: number; _sourceTileCache: Record<string, string> }; meshSize: number; _meshCache: Record<string, { destroy(): void }> };
   const t = (map as unknown as { terrain?: T }).terrain;
   if (!t?.tileManager || t.tileManager.deltaZoom === 0 || typeof t.meshSize !== 'number') return;
   t.tileManager.deltaZoom = 0;
+  // The drapes hold the shading's detail (basemap.ts SHADE_DETAIL; FORK.md "drapeDetail").
+  t.tileManager.drapeDetail = SHADE_DETAIL;
   t.tileManager._sourceTileCache = {};
   // (Not 256: the mesh is one draw with 16-bit indices, 65,535 points at most, its skirts included.)
   t.meshSize = TERRAIN_MESH;

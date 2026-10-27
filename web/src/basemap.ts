@@ -227,6 +227,9 @@ export const coastInput = () => ({ tiles: basemapTiles(), cov: WATER_TILES ? wat
 export const WATER_TILE_SIZE = 256 / Math.SQRT2;
 export const WATER_MAXZOOM = 18;
 
+/** The shading's texels a side for the screen's (the slope source; the drapes sized to hold them). */
+export const SHADE_DETAIL = 4;
+
 /** Labels thinned to the label spacing (Layers → Map → Label density): the place, water and park
  * labels from our label tiles (the landmarks' and stations' are set with their layers). */
 export function applyLabelDensity(map: import('maplibre-gl').Map, d: LabelDensity) {
@@ -505,10 +508,13 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
       // pipeline::slope_pack): each pixel's mean steepness and direction, which the slope tint
       // colours and the hill-shading shades (web/maplibre's color_relief and hillshade shaders). The
       // encoding is Terrarium's with a half-unit shift: the colour ramp's stops are packed with it as
-      // usual, and the shaders know the source by it.
+      // usual, and the shaders know the source by it. Up to two zooms finer than the screen where the
+      // terrain goes that deep (our MapLibre's `scenic:detail`: nearest the camera first, within a
+      // budget, once the screen's own tiles are in and the camera is still), the drapes sized to hold
+      // it and their mipmaps averaging it (terrain.ts finerTerrainMesh).
       slope: {
         ...dem, encoding: 'custom' as const, redFactor: 256, greenFactor: 1, blueFactor: 1 / 256, baseShift: SHADE_SHIFT,
-        tiles: [tiles.slope], attribution: '',
+        tiles: [tiles.slope], attribution: '', ...{ 'scenic:detail': SHADE_DETAIL },
       },
       // Tree cover layer (crates/pipeline/src/trees): values Terrarium-encoded as if they were elevation.
       ...Object.fromEntries((['cover', 'height', 'leaf'] as const).map((v) => [`trees-${v}`, {

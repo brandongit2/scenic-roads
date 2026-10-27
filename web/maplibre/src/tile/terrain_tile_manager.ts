@@ -92,6 +92,33 @@ export class TerrainTileManager extends Evented {
     /** Scenic Roads: the smallest texture footprintSizing gives a tile. */
     minRttSize: number = 128;
     /**
+     * Scenic Roads: at most, the drapes' texels a side for each one footprintSizing gives (a power
+     * of two): a drape under a draped source's tiles finer than the screen (the app's shading, up to
+     * two zooms finer: 4; _drapeDetails) keeps their detail in the texture, its mipmaps averaging it
+     * on screen. The full size grows as much, at most the GPU's MAX_TEXTURE_SIZE; the cover itself
+     * (texelParity) is unchanged.
+     */
+    drapeDetail: number = 1;
+    /**
+     * Scenic Roads: with drapeDetail, the textures keep the sizes they would have without it while
+     * the camera moves and for this many ms after (redraws while moving stay as cheap as before);
+     * then they grow, a tile a frame (RenderToTexture's paced redraws).
+     */
+    refineDelay: number = 300;
+    _stillSince: number | null = null;
+    _refineTimer: ReturnType<typeof setTimeout> | null = null;
+    /**
+     * Scenic Roads: with drapeDetail, the drapes' budget: the cover's textures hold together at most
+     * as many texels as they would without drapeDetail plus `drapeExtra` times the screen's device
+     * pixels. Over it, the texture most oversampled for its footprint is halved, then the next, none
+     * below the size it would have without drapeDetail, until the cover fits. (With 16 times the
+     * screen's pixels, a 4K view's drapes outgrew what Chrome would allocate on the M4, and tiles came out black.)
+     */
+    drapeExtra: number = 2;
+    drapeBudgetTexels(screenPx: number, todayTexels: number): number {
+        return todayTexels + screenPx * this.drapeExtra;
+    }
+    /**
      * Scenic Roads: draped textures redrawn at a steady pace. A source tile's load (`releaseRTT`)
      * notes the terrain tiles under it (`_dirtyRTT`) for the next frame instead of dropping their
      * textures at once; the map leaves the textures alone for a tile of a source with no layer
@@ -187,20 +214,59 @@ export class TerrainTileManager extends Evented {
                 changed = true;
             }
         }
-        // Scenic Roads: each tile's texture size by its footprint (footprintSizing)
+        // Scenic Roads: each tile's texture size by its footprint (footprintSizing), drapeDetail
+        // times the texels, then within drapeBudgetTexels
+        // (today's sizes while the camera moves and for refineDelay ms after: finer once still)
+        const t = now();
+        const moving = this.drapeDetail > 1 && !!this.tileManager.map?.isMoving?.();
+        if (moving) this._stillSince = null;
+        else this._stillSince ??= t;
+        const still = this._stillSince !== null && t - this._stillSince >= this.refineDelay;
+        // (the sources updated once the camera has stopped and refineDelay passed, though no frame asks for it)
+        if (this.drapeDetail > 1 && !still && !this._refineTimer) {
+            this._refineTimer = setTimeout(() => { this._refineTimer = null; this.tileManager.map?._update(); }, this.refineDelay);
+        }
+        const tileDetail = still && this.drapeDetail > 1 ? this._drapeDetails() : null;
         const camera = sizing ? cameraMercatorCoordinate(transform) : null;
         const focal = sizing ? focalLengthPx(transform, pixelRatio) : 0;
         const perMeter = sizing ? mercatorZfromAltitude(1, transform.center.lat) : 0;
-        // (only tiles finer than the view's own zoom, the ones the zoom over the terrain and by depth
-        // lifted, are sized: a tile at or above it keeps the full size upstream gives it)
+        // (a tile at or above the view's own zoom keeps at least the full size upstream gives it;
+        // the finer ones, which the zoom over the terrain and by depth lifted, their footprint's)
         const centerZ = sizing ? coveringZoomLevel(transform, {tileSize: this.tileSize}) : 0;
+        const wants: number[] = [], maxes: number[] = [], todays: number[] = [];
+        let texels = 0, todayTexels = 0;
         for (const key of this._renderableTilesKeys) {
             const tile = this._tiles[key];
-            if (!sizing || tile.tileID.canonical.z <= centerZ) { tile.rttTargetSize = fullSize; continue; }
-            const {minElevation, maxElevation} = terrain.getMinMaxElevation(tile.tileID);
-            const px = tileFootprintPx(camera, tile.tileID.canonical, tile.tileID.wrap,
-                (minElevation ?? 0) * perMeter, (maxElevation ?? 0) * perMeter, focal);
-            tile.rttTargetSize = rttSizeForFootprint(px, this.minRttSize, fullSize);
+            const detail = tileDetail ? tileDetail(tile.tileID) : 1;
+            const maxSize = Math.min(painter?.context?.maxTextureSize ?? Infinity, fullSize * detail);
+            let want = Infinity;
+            if (sizing && (detail > 1 || tile.tileID.canonical.z > centerZ)) {
+                const {minElevation, maxElevation} = terrain.getMinMaxElevation(tile.tileID);
+                want = tileFootprintPx(camera, tile.tileID.canonical, tile.tileID.wrap,
+                    (minElevation ?? 0) * perMeter, (maxElevation ?? 0) * perMeter, focal) * detail;
+            }
+            const lifted = tile.tileID.canonical.z > centerZ;
+            const today = lifted ? rttSizeForFootprint(want / detail, this.minRttSize, fullSize) : fullSize;
+            tile.rttTargetSize = lifted ? rttSizeForFootprint(want, this.minRttSize, maxSize) :
+                Math.max(fullSize, rttSizeForFootprint(want, this.minRttSize, maxSize));
+            wants.push(want);
+            maxes.push(maxSize);
+            todays.push(today);
+            texels += tile.rttTargetSize ** 2;
+            todayTexels += today ** 2;
+        }
+        const budget = tileDetail ? this.drapeBudgetTexels(transform.width * transform.height * pixelRatio ** 2, todayTexels) : Infinity;
+        while (texels > budget) {
+            let worst = -1, ratio = 0;
+            this._renderableTilesKeys.forEach((key, i) => {
+                const size = this._tiles[key].rttTargetSize;
+                const r = size / Math.min(wants[i], maxes[i]);
+                if (size > todays[i] && (worst < 0 || r > ratio)) { worst = i; ratio = r; }
+            });
+            if (worst < 0) break;
+            const tile = this._tiles[this._renderableTilesKeys[worst]];
+            texels -= tile.rttTargetSize ** 2 * 3 / 4;
+            tile.rttTargetSize /= 2;
         }
         // free unused tiles
         for (const key in this._tiles) {
@@ -214,6 +280,33 @@ export class TerrainTileManager extends Evented {
             }
         }
         return changed;
+    }
+
+    /**
+     * Scenic Roads: each drape tile's detail, at most drapeDetail: 2 to the most zooms by which a
+     * draped source's tiles over it are finer than the screen's (TileManager._detailOffset), 1
+     * where there are none, so a texture grows only where what is drawn into it is finer. Without a
+     * style (tests), drapeDetail everywhere.
+     */
+    _drapeDetails(): (id: OverscaledTileID) => number {
+        const managers = this.tileManager.map?.style?.tileManagers;
+        if (!managers) return () => this.drapeDetail;
+        const byDrape: Record<string, number> = {};
+        for (const k in managers) {
+            for (const {id, offset} of managers[k]._detailOffset?.values() ?? []) {
+                for (let z = id.canonical.z; z >= 0; z--) {
+                    const p = id.scaledTo(z);
+                    if (this._tiles[p.key]) { byDrape[p.key] = Math.max(byDrape[p.key] ?? 0, offset); break; }
+                }
+            }
+        }
+        const keys = Object.keys(byDrape);
+        return (id: OverscaledTileID) => {
+            let off = byDrape[id.key];
+            // (a drape tile finer than the source's tile: its ancestor's)
+            if (off === undefined) for (const key of keys) if (id.isChildOf(this._tiles[key].tileID)) off = Math.max(off ?? 0, byDrape[key]);
+            return Math.min(this.drapeDetail, 2 ** (off ?? 0));
+        };
     }
 
     /**

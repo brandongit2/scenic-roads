@@ -69,6 +69,11 @@ export class RasterTileSource extends Evented<SourceEventType> implements Source
     roundZoom: boolean;
     /** Scenic Roads: its finest zoom by area (`scenic:zoom-by-area`, covering_tiles.ts). */
     zoomByArea?: ZoomByArea;
+    /**
+     * Scenic Roads: tiles this many times finer a side than the screen where they are worth it
+     * (`scenic:detail`, a power of two; TileManager._refineCover).
+     */
+    detail: number = 1;
     dispatcher: Dispatcher;
     map: Map;
     tiles: string[];
@@ -110,6 +115,7 @@ export class RasterTileSource extends Evented<SourceEventType> implements Source
                 if (tileJSON.bounds) this.tileBounds = new TileBounds(tileJSON.bounds, this.minzoom, this.maxzoom);
                 // Scenic Roads: once its maxzoom is known.
                 this.zoomByArea = zoomByArea((this._options as Record<string, unknown>)['scenic:zoom-by-area'], this.maxzoom);
+                this.detail = Number((this._options as Record<string, unknown>)['scenic:detail'] ?? 1) || 1;
 
                 // `content` is included here to prevent a race condition where `Style._updateSources` is called
                 // before the TileJSON arrives. this makes sure the tiles needed are loaded once TileJSON arrives

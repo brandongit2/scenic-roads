@@ -127,6 +127,8 @@ export interface Source {
      * `scenic:zoom-by-area`; see covering_tiles.ts `ZoomByArea`).
      */
     zoomByArea?: ZoomByArea;
+    /** Scenic Roads: see RasterTileSource.detail. */
+    detail?: number;
     /**
      * Optional function to determine whether a tile should be reloaded, given a
      * set of options associated with a `MapSourceDataChangedEvent`.

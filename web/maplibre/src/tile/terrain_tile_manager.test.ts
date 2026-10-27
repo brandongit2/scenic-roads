@@ -114,6 +114,38 @@ describe('TerrainTileManager', () => {
             expect(renderableKeys()).not.toEqual(keys);
         });
 
+        test('drapeDetail multiplies the textures\' texels, within MAX_TEXTURE_SIZE and the drapes\' budget (Scenic Roads)', () => {
+            const manager = new TerrainTileManager(style.tileManagers.terrain);
+            const context = {maxTextureSize: 1024};
+            manager.tileManager.map = {painter: {pixelRatio: 1, context}} as any;
+            const transform = new MercatorTransform();
+            transform.resize(512, 512);
+            transform.setCenter(new LngLat(-46, -6));
+            transform.setZoom(8);
+            const sizes = () => manager.getRenderableTiles().map(t => t.rttTargetSize);
+            manager.update(transform, null);
+            const n = sizes().length;
+            expect(sizes()).toEqual(Array(n).fill(manager.tileSize));
+            manager.drapeDetail = 4;
+            manager.refineDelay = 0;
+            // the budget: today's texels and twice the screen's pixels
+            expect(manager.drapeBudgetTexels(512 * 512, 1024 * 1024)).toBe(1.5 * 1024 * 1024);
+            // (with 2, the 512² screen's extra texels hold no doubled tile, 3 × 1024² more each: room for one)
+            manager.drapeExtra = 12;
+            const budget = manager.drapeBudgetTexels(512 * 512, n * manager.tileSize ** 2);
+            for (const maxTextureSize of [1024, 8192]) {
+                context.maxTextureSize = maxTextureSize;
+                manager.update(transform, null);
+                const total = sizes().reduce((a, s) => a + s * s, 0);
+                expect(total).toBeLessThanOrEqual(budget);
+                // (a GPU whose largest texture is the full size has no room to grow them)
+                if (maxTextureSize > manager.tileSize) expect(total).toBeGreaterThan(n * manager.tileSize ** 2);
+                else expect(total).toBe(n * manager.tileSize ** 2);
+                expect(Math.max(...sizes())).toBeLessThanOrEqual(maxTextureSize);
+                expect(sizes().every(s => s >= manager.minRttSize)).toBe(true);
+            }
+        });
+
         test('with pacedDrapes, a tile leaving the cover with its textures is kept as a stand-in, and taken back with them if the cover returns (Scenic Roads)', () => {
             const manager = new TerrainTileManager(style.tileManagers.terrain);
             const painter = {releaseRTT: vi.fn()};

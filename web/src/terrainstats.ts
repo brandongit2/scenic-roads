@@ -15,8 +15,11 @@ type Dem = { dim: number; stride: number; data: Uint32Array; get(x: number, y: n
 type TileLike = { tileID: { canonical: { z: number; x: number; y: number } }; dem?: Dem | null };
 type TileManagerLike = { getRenderableIds(): string[]; getTileByID(id: string): TileLike | undefined };
 
-/** Samples per tile side. */
+/** Samples per tile side, for up to SIDE_TILES tiles; with more (the shading's finer tiles near the
+ * camera: basemap.ts SHADE_DETAIL) fewer a side, the same for every tile, so a sample's weight
+ * stays its tile's area and the whole costs about as much. */
 const SIDE = 24;
+const SIDE_TILES = 80;
 /** The polar caps' samples: rings from the Mercator tiles' edge to the pole, and steps around. */
 const CAP_RINGS = 12, CAP_STEPS = 96;
 const BINS = 1024;
@@ -37,21 +40,23 @@ export function terrainDist(map: MLMap, source: string, domain: [number, number]
   const [lo, hi] = domain;
   const k = BINS / (hi - lo);
   let total = 0;
-  for (const id of tm.getRenderableIds()) {
+  const ids = tm.getRenderableIds();
+  const side = Math.max(4, Math.floor(SIDE * Math.sqrt(SIDE_TILES / Math.max(SIDE_TILES, ids.length))));
+  for (const id of ids) {
     const t = tm.getTileByID(id);
     const dem = t?.dem;
     if (!t || !dem) continue;
     const { z, x, y } = t.tileID.canonical;
     const n = 2 ** z;
-    const step = dem.dim / SIDE;
+    const step = dem.dim / side;
     const bytes = shade ? new Uint8Array(dem.data.buffer, dem.data.byteOffset, dem.data.byteLength) : null;
-    for (let j = 0; j < SIDE; j++) {
+    for (let j = 0; j < side; j++) {
       const py = (j + 0.5) * step;
       const lat = y2lat((y + py / dem.dim) / n);
       // Ground area of a sample: the tile's side shrinks with the cosine of the latitude.
       const c = Math.cos((lat * Math.PI) / 180) / n;
       const w = c * c;
-      for (let i = 0; i < SIDE; i++) {
+      for (let i = 0; i < side; i++) {
         const px = (i + 0.5) * step;
         const lng = ((x + px / dem.dim) / n) * 360 - 180;
         if (!inView(lng, lat)) continue;
@@ -73,12 +78,12 @@ export function terrainDist(map: MLMap, source: string, domain: [number, number]
   }
   // The polar caps past the Mercator tiles (elevation only: their shading isn't read here), on a
   // grid of latitude and longitude, each sample weighted by its ground area in the units above
-  // (a Mercator sample's (cos φ ÷ 2^z)², its side 2π ÷ SIDE of the tile's). Their sea, clamped to 0,
+  // (a Mercator sample's (cos φ ÷ 2^z)², its side 2π ÷ side of the tile's). Their sea, clamped to 0,
   // is water. Without them the plateau within 5° of the South Pole was never counted, and drawn
   // past the range's top (#822).
   if (caps && !shade) {
     const D = Math.PI / 180, dLat = (90 - MERCATOR_LAT) / CAP_RINGS, dLng = 360 / CAP_STEPS;
-    const unit = (SIDE / (2 * Math.PI)) ** 2;
+    const unit = (side / (2 * Math.PI)) ** 2;
     for (const sign of [1, -1])
       for (let r = 0; r < CAP_RINGS; r++) {
         const lat = sign * (MERCATOR_LAT + (r + 0.5) * dLat);

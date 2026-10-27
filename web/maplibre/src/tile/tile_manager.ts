@@ -10,6 +10,7 @@ import {OverscaledTileID} from './tile_id.ts';
 import {SourceFeatureState} from '../source/source_state.ts';
 import {config} from '../util/config.ts';
 import {coveringTiles, coveringZoomLevel} from '../geo/projection/covering_tiles.ts';
+import {cameraMercatorCoordinate} from '../geo/projection/mercator_utils.ts';
 import {Bounds} from '../geo/bounds.ts';
 import {EXTENT_BOUNDS} from '../data/extent_bounds.ts';
 import {GEOJSON_TILE_LAYER_NAME} from '../data/feature_index.ts';
@@ -77,6 +78,18 @@ export class TileManager extends Evented<SourceEventType> {
      * same gets a copy (task #434).
      */
     _coverMemo: globalThis.Map<string, OverscaledTileID[]> | null = null;
+    /** Scenic Roads: with source.detail, the finer tiles' budget in texels a device pixel (_refineCover). */
+    detailBudget: number = 8;
+    /** Scenic Roads: with source.detail, the most of its tiles drawn into one terrain drape (the stencil holds 255 tiles' IDs a texture). */
+    maxTilesADrape: number = 240;
+    /** Scenic Roads: with source.detail, how long the camera stays still before finer tiles are asked for. */
+    refineDelay: number = 300;
+    _stillSince: number | null = null;
+    _refineTimer: ReturnType<typeof setTimeout> | null = null;
+    _detailKids: Record<string, OverscaledTileID[]> | null = null;
+    /** Scenic Roads: with source.detail, each finer tile in the cover's zooms beyond its screen tile's (the drapes grow over them: TerrainTileManager._drapeDetails). */
+    _detailOffset: globalThis.Map<string, {id: OverscaledTileID; offset: number}> = new globalThis.Map();
+    detailState?: {todayLoaded: boolean; refined: boolean; tiles: number; texels: number};
     /** Scenic Roads: the frame's renderable coordinates, worked out once a frame (getVisibleCoordinates). */
     _visibleMemo: {frame: number; bearing: number; plain: OverscaledTileID[] | null; symbol: OverscaledTileID[] | null} | null = null;
     style: Style;
@@ -619,12 +632,20 @@ export class TileManager extends Evented<SourceEventType> {
             const memo = this._coverMemo;
             const key = memo ? [options.tileSize, options.minzoom, options.maxzoom, options.roundZoom ? 1 : 0, options.reparseOverscaled ? 1 : 0,
                 options.maxContentElevation, options.calculateTileZoom ? coverFnKey(options.calculateTileZoom) : '', options.zoomByArea?.key ?? ''].join('|') : '';
-            const known = memo?.get(key);
-            if (known) {
-                idealTileIDs = known.slice();
-            } else {
-                idealTileIDs = coveringTiles(transform, options);
-                memo?.set(key, idealTileIDs.slice());
+            const cover = (o: typeof options, k: string) => {
+                const known = memo?.get(k);
+                if (known) return known.slice();
+                const ids = coveringTiles(transform, o);
+                memo?.set(k, ids.slice());
+                return ids;
+            };
+            idealTileIDs = cover(options, key);
+            // Scenic Roads: finer tiles where they are worth it (source.detail, _refineCover).
+            const detail = this.usedForTerrain ? 1 : this._source.detail ?? 1;
+            if (detail > 1) {
+                const hasTile = (coord: OverscaledTileID) => !this._source.hasTile || this._source.hasTile(coord);
+                idealTileIDs = this._refineCover(transform, idealTileIDs.filter(hasTile),
+                    () => cover({...options, tileSize: options.tileSize / detail}, `${key}|/${detail}`).filter(hasTile));
             }
 
             if (this._source.hasTile) { // tile should be in bounds
@@ -786,6 +807,98 @@ export class TileManager extends Evented<SourceEventType> {
         }
 
         return retainTileMap;
+    }
+
+    /**
+     * Scenic Roads: a source with `detail` (RasterTileSource.detail): each tile of the screen's own
+     * cover (`today`) is replaced by its tiles in the finer cover (`fine`), nearest the camera first,
+     * while the texels of the tiles chosen stay within `detailBudget` times the screen's device
+     * pixels (or today's cover's, if more). Progressive: a tile is refined only once it has data
+     * itself (it stands in for its finer tiles while they load), and only after the camera has been
+     * still for `refineDelay` ms; while it moves, the finer tiles of the last cover worked out that are loaded are kept and no new
+     * ones asked for. `detailState` says whether today's cover has loaded and whether the refinement
+     * is done (for measuring).
+     */
+    _refineCover(transform: ITransform, today: OverscaledTileID[], fineCover: () => OverscaledTileID[]): OverscaledTileID[] {
+        const t = now();
+        const moving = !!this.map?.isMoving?.();
+        if (moving) this._stillSince = null;
+        else this._stillSince ??= t;
+        const still = this._stillSince !== null && t - this._stillSince >= this.refineDelay;
+        // (the sources updated once the camera has stopped and refineDelay passed, though no frame asks for it)
+        if (!still && !this._refineTimer) {
+            this._refineTimer = setTimeout(() => { this._refineTimer = null; this.map?._update(); }, this.refineDelay);
+        }
+        // (while moving, the finer tiles of the last cover worked out: the finer cover isn't)
+        let kids = this._detailKids;
+        if (!moving || !kids) {
+            const todayKeys = new Set(today.map(id => id.key));
+            kids = {};
+            for (const f of fineCover()) {
+                for (let z = f.overscaledZ - 1; z >= 0; z--) {
+                    const p = f.scaledTo(z);
+                    if (todayKeys.has(p.key)) { (kids[p.key] ??= []).push(f); break; }
+                    if (p.canonical.z === 0) break;
+                }
+            }
+            this._detailKids = kids;
+        }
+        const cam = cameraMercatorCoordinate(transform);
+        const dist = (id: OverscaledTileID) => {
+            const n = 2 ** id.canonical.z;
+            return Math.hypot((id.canonical.x + 0.5) / n + id.wrap - cam.x, (id.canonical.y + 0.5) / n - cam.y);
+        };
+        const order = today.map(id => ({id, d: dist(id)})).sort((a, b) => a.d - b.d).map(o => o.id);
+        const texels = (id: OverscaledTileID) => this._inViewTiles.getTileById(id.key)?.dem?.dim ** 2 || 256 * 256;
+        const pixelRatio = this.map?.getPixelRatio?.() ?? 1;
+        let used = today.reduce((a, id) => a + texels(id), 0);
+        const budget = Math.max(used, transform.width * transform.height * pixelRatio ** 2 * this.detailBudget);
+        // (a tile that failed counts as in: it won't come)
+        const has = (id: OverscaledTileID) => {
+            const tile = this._inViewTiles.getTileById(id.key);
+            return !!tile && (tile.hasData() || tile.state === 'errored');
+        };
+        // (the terrain's drapes: at most maxTilesADrape of this source's tiles drawn into one, the
+        // stencil's IDs a texture; RenderToTexture)
+        const drapes = (this.map as {terrain?: {tileManager?: {_tiles: Record<string, unknown>}}} | undefined)?.terrain?.tileManager?._tiles;
+        const drapeOf = (id: OverscaledTileID) => {
+            if (!drapes) return null;
+            for (let z = id.canonical.z; z >= 0; z--) {
+                const p = id.scaledTo(z);
+                if (drapes[p.key]) return p.key;
+            }
+            return null;
+        };
+        const inDrape: Record<string, number> = {};
+        const drapeKeys = today.map(id => drapeOf(id));
+        for (const d of drapeKeys) if (d) inDrape[d] = (inDrape[d] ?? 0) + 1;
+        const drapeOfToday: Record<string, string | null> = {};
+        today.forEach((id, i) => { drapeOfToday[id.key] = drapeKeys[i]; });
+        const out: OverscaledTileID[] = [];
+        const offsets = new globalThis.Map<string, {id: OverscaledTileID; offset: number}>();
+        let todayLoaded = true, refined = true;
+        for (const id of order) {
+            const k = kids[id.key];
+            const ready = !!k && k.every(has);
+            // (once its finer tiles are in, the tile itself may have left the pyramid)
+            const loaded = ready || has(id);
+            if (!loaded) todayLoaded = false;
+            const cost = k ? k.reduce((a, f) => a + texels(f), 0) - texels(id) : 0;
+            const d = drapeOfToday[id.key];
+            const fits = !k || !d || inDrape[d] + k.length - 1 <= this.maxTilesADrape;
+            if (k && loaded && (ready || still) && used + cost <= budget && fits) {
+                out.push(...k);
+                for (const f of k) offsets.set(f.key, {id: f, offset: f.overscaledZ - id.overscaledZ});
+                used += cost;
+                if (d) inDrape[d] += k.length - 1;
+            } else {
+                out.push(id);
+                if (k && used + cost <= budget && fits) refined = false;
+            }
+        }
+        this._detailOffset = offsets;
+        this.detailState = {todayLoaded, refined: refined && still, tiles: out.length, texels: used};
+        return out;
     }
 
     /**

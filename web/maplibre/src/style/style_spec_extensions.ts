@@ -59,13 +59,20 @@ const zoomByAreaSpec = {
     doc: 'Where the source has finer tiles than its maxzoom: `{"zoom": z, "tiles": {"x/y": finest zoom}}`, the tiles of zoom z (at most the source\'s maxzoom) whose area goes on to a finer zoom (Scenic Roads).',
 };
 
+/** A raster-dem source's tiles finer than the screen where worth it (Scenic Roads). */
+const detailSpec = {
+    type: 'number',
+    default: 1,
+    doc: 'Up to this many times finer a side than the screen (a power of two): the screen\'s own tiles first, then finer ones nearest the camera, within a budget, once the camera is still (`TileManager._refineCover`; Scenic Roads).',
+};
+
 export const SCENIC_PROPERTIES: Record<string, Record<string, unknown>> = {
     paint_line: {'line-z-offset': zOffset('line'), 'line-elevation-reference': elevationReference('line')},
     paint_fill: {'fill-z-offset': zOffset('fill'), 'fill-elevation-reference': elevationReference('fill')},
     paint_raster: {'raster-z-offset': rasterZOffset, 'raster-elevation-reference': elevationReference('raster')},
     // A source's finest zoom by area: `{zoom, tiles: {"x/y": finest zoom}}` (covering_tiles.ts `ZoomByArea`).
     source_raster: {'scenic:zoom-by-area': zoomByAreaSpec},
-    source_raster_dem: {'scenic:zoom-by-area': zoomByAreaSpec},
+    source_raster_dem: {'scenic:zoom-by-area': zoomByAreaSpec, 'scenic:detail': detailSpec},
 };
 
 // Point labels on the same terms: `symbol-height-anchor` `sea`, its `symbol-height-offset` an
